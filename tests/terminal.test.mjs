@@ -1437,14 +1437,15 @@ function bashExpected(tool, args, dump, { partial = false } = {}) {
   const output = (tool.content || []).filter((block) => block.type === 'text').map((block) => block.text).join('\n').replace(/\r\n?/g, '\n');
   const code = tool.details?.exit_code;
   const nonzero = Number.isFinite(code) && Number.isInteger(code) && code !== 0;
-  const footer = nonzero ? `[exit code: ${code}${tool.isError ? '; error: execution failed' : ''}]` : tool.isError ? '[error: execution failed]' : '';
-  const logical = output.split('\n');
+   const logical = output.split('\n');
    while (logical.length && !logical.at(-1).trim()) logical.pop();
-  // One final, exact logical suffix only: never parse status from output or compare wrapped rows.
-  if (!partial && nonzero && logical.at(-1) === footer && logical.length > 1 && !logical.at(-2).trim()) {
-    logical.pop();
-    while (logical.length && !logical.at(-1).trim()) logical.pop();
-  }
+   // Independent ASCII suffix expression, not production's logical-row indexing.
+   const timeout = !partial && code === 124 && /(?:^|\n)[ \t]*\n\[command timed out\]\n\[exit code: 124\]$/.test(logical.join('\n'));
+   const footer = timeout ? '[exit code: 124; error: command timed out]' :
+     nonzero ? `[exit code: ${code}${tool.isError ? '; error: execution failed' : ''}]` : tool.isError ? '[error: execution failed]' : '';
+   if (timeout) logical.splice(-2);
+   else if (!partial && nonzero && logical.at(-1) === footer && logical.length > 1 && !logical.at(-2).trim()) logical.pop();
+   while (logical.length && !logical.at(-1).trim()) logical.pop();
    // Keep the leading separator available for a suffix-only duplicate before edge trimming.
    while (logical.length && !logical[0].trim()) logical.shift();
    // Deliberately wrap all ASCII output; production's bounded 11-row iterator is not this oracle.
@@ -4824,3 +4825,173 @@ test('terminal colors: initially automatic and first production late load stay i
     }
   }
 });
+
+for (const mode of ['regular', 'fullscreen']) test(`real CLI: isolated bash timeout tails preserve exact traffic (${mode})`,
+  { skip: stockOnly, timeout: 180000 }, async () => {
+    const terminals = [], footer = '[exit code: 124; error: command timed out]';
+    const start = async (name, options = {}) => {
+      const terminal = new PiTerminal('bash-timeout-' + mode + '-' + name,
+        { toolview: true, mode, extraEnv: { TOOLVIEW_TEST_BASH_SHAPE: '1' }, ...options });
+      terminals.push(terminal); await terminal.ready(); await terminal.resize(100, 260); return terminal;
+    };
+    const row = (count) => Array.from({ length: count }, (_, index) => `SHAPE_ROW_${String(index + 1).padStart(2, '0')}`);
+    // Literal expectations are independent of both the presenter and fixture implementation.
+    const cases = [
+      ['timeout-match', 'BODY\n \t\n[command timed out]\n[exit code: 124]\n \n', 124, false],
+      ['timeout-both', 'BODY\n\n[command timed out]\n[exit code: 124]', 124, true],
+      ['timeout-only', '\n[command timed out]\n[exit code: 124]', 124, false],
+      ['timeout-no-gap', 'BODY\n[command timed out]\n[exit code: 124]', 124, false],
+      ['timeout-mismatch', 'BODY\n\n[command timed out]\n[exit code: 125]', 124, false],
+      ['timeout-string', 'BODY\n\n[command timed out]\n[exit code: 124]', '124', false],
+      ['timeout-unknown', 'BODY\n\n[command timed out]\n[exit code: 124]', undefined, false],
+      ['timeout-code-only', 'BODY\n\n[exit code: 124]', 124, false],
+      ['timeout-interior', 'BODY\n\n[command timed out]\n[exit code: 124]\nAFTER_TIMEOUT', 124, false],
+      ['timeout-preview', row(9).join('\n') + '\n\n[command timed out]\n[exit code: 124]', 124, false],
+      ['timeout-deep', row(11).join('\n') + '\n\n[command timed out]\n[exit code: 124]', 124, false],
+      ['timeout-indent', 'BODY\n\n [command timed out]\n[exit code: 124]', 124, false],
+    ];
+    const matching = ['timeout-match', 'timeout-both', 'timeout-only', 'timeout-preview', 'timeout-deep'];
+    const tool = (dump, name) => dump.tools[cases.findIndex(([fixtureCase]) => fixtureCase === name)];
+    const body = (value) => {
+      const rows = value.lines.map(stripVTControlCharacters), top = rows.findIndex((line) => line.includes('┃'));
+      return rows.slice(top + 1, -1).map((line) => line.slice(3, -2).trimEnd());
+    };
+    const identity = (dump, baseline, bytes) => {
+      assert.deepEqual(dump.branch, baseline.branch);
+      assert.deepEqual(persisted(dump), persisted(baseline));
+      const raw = ({ id, args, content, details, isError }) => ({ id, args, content, details, isError });
+      assert.deepEqual(dump.tools.map(raw), baseline.tools.map(raw));
+      assert.equal(readFileSync(dump.session, 'utf8'), bytes, 'presentation must not rewrite the saved timeout marker or code');
+    };
+    const physicalSamples = [];
+    const timeoutCells = async (dump, label) => {
+      const error = await referenceCell(dump.summaryStyles.error), background = await referenceCell(dump.backgroundStyles.toolPendingBg);
+      for (const name of matching) {
+        // Keep the full frame width: painted terminal spaces are not necessarily
+        // trimmed by xterm. Never compare trimmed component rows to full cells.
+        const component = tool(dump, name).lines.map(stripVTControlCharacters);
+        if (component[0] === '') component.shift();
+        const start = dump.screen.findIndex((_, index) => component.every((line, offset) => dump.screen[index + offset]?.padEnd(dump.width) === line));
+        assert.ok(start >= 0, `${name}: entire actual panel is on the physical screen at ${dump.width} columns`);
+        const available = dump.width - 5, fragments = hardRows(footer, available);
+        const first = component.length - 1 - fragments.length;
+        assert.deepEqual(component.slice(first, -1).map((line) => line.slice(3, -2)), fragments.map((line) => line.padEnd(available)), 'complete physical frame rows preserve footer fragments and right padding');
+        let checkedCells = 0;
+        for (const [offset, fragment] of fragments.entries()) {
+          const y = start + first + offset;
+          for (let x = 3; x < 3 + fragment.length; x++) {
+            const cell = dump.cells[y][x];
+            assert.deepEqual({ fg: cell.fg, fgMode: cell.fgMode, dim: cell.dim },
+              { fg: error.fg, fgMode: error.fgMode, dim: error.dim }, `${name}: every footer cell uses error, including wrapped rows`);
+            assert.deepEqual({ bg: cell.bg, bgMode: cell.bgMode }, { bg: background.bg, bgMode: background.bgMode });
+            checkedCells++;
+          }
+          const stripe = dump.cells[y][1];
+          assert.deepEqual({ fg: stripe.fg, fgMode: stripe.fgMode, dim: stripe.dim }, { fg: error.fg, fgMode: error.fgMode, dim: error.dim });
+          for (const x of [0, 1, dump.width - 1]) assert.equal(dump.cells[y][x].bgMode, 0);
+        }
+        physicalSamples.push({ label, name, width: dump.width, footerRows: fragments.length, checkedCells });
+      }
+    };
+    const wideChecks = (dump) => {
+      for (const name of matching) {
+        const rows = body(tool(dump, name));
+        assert.equal(rows.filter((line) => line === footer).length, 1, `${name}: exactly one own timeout footer`);
+        assert.ok(!rows.includes('[command timed out]') && !rows.includes('[exit code: 124]'), `${name}: both original service rows disappear`);
+      }
+      assert.deepEqual(body(tool(dump, 'timeout-only')), ['$ shape timeout-only', '', footer], 'timeout-only output leaves no empty output section');
+      assert.deepEqual(body(tool(dump, 'timeout-preview')), ['$ shape timeout-preview', '', ...row(9), '', footer], 'timeout tail does not cause a false overflow hint');
+      for (const name of ['timeout-no-gap', 'timeout-mismatch', 'timeout-string', 'timeout-unknown', 'timeout-interior', 'timeout-indent']) {
+        const rows = body(tool(dump, name));
+        assert.ok(rows.some((line) => line.includes('[command timed out]')), `${name}: original marker remains output`);
+        assert.ok(!rows.includes(footer), `${name}: no synthesized timeout label`);
+      }
+      assert.deepEqual(body(tool(dump, 'timeout-code-only')), ['$ shape timeout-code-only', '', 'BODY', '', '[exit code: 124]']);
+    };
+    try {
+      const live = await start('live'); await live.run('bash-shape-timeouts');
+      const wide = await live.capture('wide'); allBashCards(wide); wideChecks(wide); await timeoutCells(wide, 'wide');
+      const observed = traffic(live, cases.length), bytes = readFileSync(wide.session, 'utf8');
+      const rawResults = cases.map(([, text, code, isError]) => ({ name: 'bash', content: [{ type: 'text', text }],
+        ...(code === undefined ? {} : { details: { exit_code: code } }), isError }));
+      assert.deepEqual(observed.filter((event) => event.type === 'call').map((event) => event.input),
+        cases.map(([fixtureCase]) => ({ command: 'shape ' + fixtureCase, fixtureCase })));
+      assert.deepEqual(observed.filter((event) => event.type === 'result').map(({ type, ...value }) => value), rawResults);
+      observed.filter((event) => event.type === 'model_context').forEach((event, index) =>
+        assert.deepEqual(event.results, rawResults.slice(0, index), `model context ${index}: exact original timeout text and metadata`));
+      assert.deepEqual(persisted(wide).filter((entry) => entry.role === 'toolResult'),
+        rawResults.map(({ name, details, ...value }) => ({ role: 'toolResult', toolName: name, ...value, details })));
+      for (const theme of ['light', 'dark']) {
+        await live.command('/tv-theme ' + theme); const dump = await live.capture('theme-' + theme);
+        allBashCards(dump); wideChecks(dump); identity(dump, wide, bytes); await timeoutCells(dump, theme);
+      }
+      await live.resize(24, 360); const narrow = await live.capture('narrow'); allBashCards(narrow); identity(narrow, wide, bytes);
+      await timeoutCells(narrow, 'narrow');
+      assert.ok(!body(tool(narrow, 'timeout-preview')).some((line) => line.includes('Click')), 'filtering compares logical rows before wrapping');
+      for (const value of narrow.tools) await assertFits(value.lines, 24);
+      live.send('\x0f'); await live.settle(); const narrowExpanded = await live.capture('narrow-expanded');
+      allBashCards(narrowExpanded); identity(narrowExpanded, wide, bytes); await timeoutCells(narrowExpanded, 'narrow-expanded');
+      assert.ok(narrowExpanded.tools.every((value) => value.expanded));
+      await live.resize(100, 260); const expanded = await live.capture('expanded');
+      allBashCards(expanded); identity(expanded, wide, bytes); wideChecks(expanded); await timeoutCells(expanded, 'expanded');
+      assert.deepEqual(body(tool(expanded, 'timeout-deep')), ['$ shape timeout-deep', '', ...row(11), '', footer]);
+      live.send('\x0f'); await live.settle(); const collapsed = await live.capture('collapsed');
+      assert.deepEqual(collapsed.tools.map((value) => value.lines), wide.tools.map((value) => value.lines)); identity(collapsed, wide, bytes);
+      await live.command('/toolview off'); const off = await live.capture('off'); identity(off, wide, bytes);
+      await live.command('/toolview on'); const on = await live.capture('on');
+      allBashCards(on); identity(on, wide, bytes); assert.deepEqual(on.tools.map((value) => value.lines), wide.tools.map((value) => value.lines));
+      const starts = live.events().filter((event) => event.type === 'start').length;
+      await live.command('/reload'); await live.event('start', starts + 1);
+      const reloaded = await live.capture('reloaded'); allBashCards(reloaded); identity(reloaded, wide, bytes);
+      assert.deepEqual(reloaded.tools.map((value) => value.lines), wide.tools.map((value) => value.lines));
+      const native = await start('native', { toolview: false, session: wide.session, workspace: live.work });
+      const control = await native.capture('native'); identity(control, wide, bytes);
+      await live.command('/toolview off'); const reloadedOff = await live.capture('reloaded-off'); identity(reloadedOff, wide, bytes);
+      assert.deepEqual(reloadedOff.tools.map((value) => value.lines), control.tools.map((value) => value.lines), 'off restores exact native history');
+      const replay = await start('replay', { session: wide.session, workspace: live.work });
+      const resumed = await replay.capture('replay'); allBashCards(resumed); identity(resumed, wide, bytes); wideChecks(resumed); await timeoutCells(resumed, 'replay');
+      assert.deepEqual(resumed.tools.map((value) => value.lines), wide.tools.map((value) => value.lines));
+      await replay.command('/toolview off'); const replayOff = await replay.capture('off'); identity(replayOff, wide, bytes);
+      assert.deepEqual(replayOff.tools.map((value) => value.lines), control.tools.map((value) => value.lines));
+      for (const terminal of [native, replay]) for (const type of ['call', 'result', 'model_context', 'provider_error'])
+        assert.equal(terminal.events().filter((event) => event.type === type).length, 0, `history ${type} remains zero`);
+      assert.deepEqual(traffic(live, cases.length), observed);
+
+      const stream = await start('stream'); stream.send('run bash-shape-timeout-stream\r'); await stream.event('shape_timeout_gate');
+      const raw = row(9).join('\n') + '\n\n[command timed out]\n[exit code: 124]';
+      const original = { content: [{ type: 'text', text: raw }], details: { exit_code: 124 }, isError: false };
+      const streamIdentity = (dump) => assert.deepEqual(dump.tools.map(({ content, details, isError }) => ({ content, details, isError })), [original]);
+      const partial = await stream.capture('partial', { animated: true }); allBashCards(partial, { partial: true }); streamIdentity(partial);
+      assert.equal(partial.tools[0].partial, true); assert.ok(body(partial.tools[0]).includes('… (Click to expand)'));
+      assert.ok(!body(partial.tools[0]).includes(footer));
+      stream.send('\x0f'); await stream.settle(true); const partialExpanded = await stream.capture('partial-expanded', { animated: true });
+      allBashCards(partialExpanded, { partial: true }); streamIdentity(partialExpanded);
+      assert.deepEqual(body(partialExpanded.tools[0]), ['$ shape timeout-stream', '', ...row(9), '', '[command timed out]', '[exit code: 124]']);
+      await bashScreenStyle(partialExpanded, '[command timed out]', 'toolOutput', 'toolPendingBg');
+      await bashScreenStyle(partialExpanded, '[exit code: 124]', 'toolOutput', 'toolPendingBg');
+      writeFileSync(join(stream.output, 'shape-timeout-final'), 'go'); await stream.event('agent_end');
+      const final = await stream.capture('final'); allBashCards(final); streamIdentity(final);
+      assert.equal(final.tools[0].partial, false); assert.deepEqual(body(final.tools[0]), ['$ shape timeout-stream', '', ...row(9), '', footer]);
+      await bashScreenStyle(final, footer, 'error', 'toolPendingBg');
+      stream.send('\x0f'); await stream.settle(); const streamCollapsed = await stream.capture('collapsed'); allBashCards(streamCollapsed); streamIdentity(streamCollapsed);
+      assert.equal(streamCollapsed.tools[0].expanded, false); assert.ok(!body(streamCollapsed.tools[0]).some((line) => line.includes('Click')));
+      const streamTraffic = traffic(stream, 1), updates = stream.events().filter((event) => event.type === 'execution_update');
+      assert.deepEqual(streamTraffic.filter((event) => event.type === 'call').map((event) => event.input),
+        [{ command: 'shape timeout-stream', fixtureCase: 'timeout-stream' }]);
+      assert.deepEqual(streamTraffic.filter((event) => event.type === 'result').map(({ type, name, ...value }) => value), [original]);
+      assert.deepEqual(streamTraffic.filter((event) => event.type === 'model_context').map((event) => event.results), [[], [{ name: 'bash', ...original }]]);
+      assert.equal(updates.length, 1); assert.deepEqual(updates[0].partialResult, original);
+      assert.deepEqual(persisted(final).filter((entry) => entry.role === 'toolResult'), [{ role: 'toolResult', toolName: 'bash', ...original }]);
+      writeFileSync(join(artifacts, 'bash-timeout-' + mode + '-coverage.json'), JSON.stringify({ installedAFT: false, mode,
+        optIn: 'TOOLVIEW_TEST_BASH_SHAPE=1', calls: cases.length, results: cases.length, modelContexts: cases.length + 1,
+        streamCalls: 1, streamResults: 1, streamContexts: 2, updates: updates.length, historyCalls: 0,
+        cases: cases.map(([name]) => name), widths: [100, 24, 100], themes: ['dark', 'light', 'dark'], physicalSamples,
+        checked: ['one exact separated terminal timeout pair', 'code-only/mismatching/string/unknown/interior/indent/no-gap guards',
+          'before-preview filtering and real overflow retained', 'all wrapped footer cells error with neutral background',
+          'partial literals toolOutput to final own error footer', 'exact raw results/model/session/branch identity',
+          'Ctrl+O/off/on/reload/native/replay, no history execution'],
+        limitations: ['real CLI with isolated deterministic AFT-shaped results; not installed AFT execution',
+          'identical printed terminal pair is an accepted display ambiguity'],
+      }, null, 2));
+    } finally { for (const terminal of terminals.reverse()) { await terminal.close(); terminal.dispose(); } }
+  });

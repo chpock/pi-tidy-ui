@@ -1299,6 +1299,112 @@ test("bash removes only an exact separated final exit-footer duplicate without r
   } finally { controller.restore(); }
 });
 
+test("bash timeout replaces only one exact separated final pair with its own error footer", () => {
+  const tool = bashTool("run"), marker = "[command timed out]", exit = "[exit code: 124]";
+  const pair = `${marker}\n${exit}`, timeoutFooter = "[exit code: 124; error: command timed out]";
+  const { controller } = setup([tool]);
+  try {
+    const cases: [string, unknown, boolean, boolean, string[], boolean][] = [
+      [`BODY\n\n${pair}`, 124, false, false, ["BODY"], true],
+      [`BODY\n \t\n${pair}\n \n`, 124, true, false, ["BODY"], true],
+      [`\n${pair}`, 124, false, false, [], true],
+      [`BODY\n\n${pair}\n\n${pair}`, 124, false, false, ["BODY", "", marker, exit], true],
+      [`BODY\n${pair}`, 124, false, false, ["BODY", marker, exit], false],
+      [pair, 124, false, false, [marker, exit], false],
+      [`BODY\n\n${pair}\nTAIL`, 124, false, false, ["BODY", "", marker, exit, "TAIL"], false],
+      [`BODY\n\n ${marker}\n${exit}`, 124, false, false, ["BODY", "", ` ${marker}`, exit], false],
+      [`BODY\n\n${marker} \n${exit}`, 124, false, false, ["BODY", "", `${marker} `, exit], false],
+      [`BODY\n\n${marker}\n ${exit}`, 124, false, false, ["BODY", "", marker, ` ${exit}`], false],
+      [`BODY\n\n${marker}\n${exit} `, 124, false, false, ["BODY", "", marker, `${exit} `], false],
+      [`BODY\n\n${marker}\n[exit code: 125]`, 124, false, false, ["BODY", "", marker, "[exit code: 125]"], false],
+      [`BODY\n\n${marker}`, 124, false, false, ["BODY", "", marker], false],
+      [`BODY\n\n${exit}`, 124, false, false, ["BODY"], false],
+      [`BODY\n\n${marker}\n\n${exit}`, 124, false, false, ["BODY", "", marker], false],
+      [`BODY\n\n${pair}\n\n${exit}`, 124, false, false, ["BODY", "", marker, exit], false],
+      [`BODY\n\n${pair}`, 7, false, false, ["BODY", "", marker, exit], false],
+      [`BODY\n\n${pair}`, 0, true, false, ["BODY", "", marker, exit], false],
+      [`BODY\n\n${pair}`, "124", false, false, ["BODY", "", marker, exit], false],
+      [`BODY\n\n${pair}`, undefined, false, false, ["BODY", "", marker, exit], false],
+      [`BODY\n\n${pair}`, null, true, false, ["BODY", "", marker, exit], false],
+      [`BODY\n\n${pair}`, 124, true, true, ["BODY", "", marker, exit], false],
+    ];
+    for (const [text, exit_code, isError, partial, displayed, timeout] of cases) {
+      const result = { content: [{ type: "text", text }], details: { exit_code }, isError };
+      const before = structuredClone(result);
+      tool.updateResult(result, partial);
+      const footer = partial ? "" : timeout ? timeoutFooter : typeof exit_code === "number" && exit_code !== 0
+        ? `[exit code: ${exit_code}${isError ? "; error: execution failed" : ""}]`
+        : isError ? "[error: execution failed]" : "";
+      for (const expanded of [false, true]) {
+        tool.setExpanded(expanded);
+        assert.deepEqual(bashBody(tool, 100), ["$ run", ...(displayed.length ? ["", ...displayed.map((line) => line.trimEnd())] : []), ...(footer ? ["", footer] : [])],
+          JSON.stringify({ text, exit_code, isError, partial, expanded }));
+        assert.deepEqual(tool.result, before, "timeout recognition is presentation-only");
+      }
+    }
+    const result = { content: [{ type: "text", text: "BODY\r\n" },
+      { type: "text", text: `\x1b[31m${marker}\x1b[0m\r\n${exit}\r\n` }], details: { exit_code: 124 } };
+    const before = structuredClone(result);
+    tool.updateResult(result);
+    assert.deepEqual(bashBody(tool, 100), ["$ run", "", "BODY", "", timeoutFooter], "match sanitized logical rows across content blocks");
+    assert.deepEqual(tool.result, before);
+  } finally { controller.restore(); }
+});
+
+test("bash timeout filtering precedes visual cutoff and preserves partial-to-final snapshots", () => {
+  const tool = bashTool("run"), footer = "[exit code: 124; error: command timed out]";
+  const rows = Array.from({ length: 9 }, (_, index) => `ROW_${index}`);
+  const raw = rows.join("\n") + "\n\n[command timed out]\n[exit code: 124]";
+  const result = { content: [{ type: "text", text: raw }], details: { exit_code: 124 }, isError: false };
+  const before = structuredClone(result), { controller } = setup([tool]);
+  try {
+    tool.updateResult(result, true);
+    assert.deepEqual(bashBody(tool, 100), ["$ run", "", ...rows, "… (Click to expand)"], "partial retains raw tail as hidden output, not a completion footer");
+    tool.setExpanded(true);
+    assert.deepEqual(bashBody(tool, 100), ["$ run", "", ...rows, "", "[command timed out]", "[exit code: 124]"], "expanded partial exposes both literals");
+    tool.updateResult(result); tool.setExpanded(false);
+    for (const width of [100, 24]) {
+      const available = width - 5;
+      // bashBody discards terminal right padding, including a fragment's trailing space.
+      const fragments = Array.from({ length: Math.ceil(footer.length / available) }, (_, index) => footer.slice(index * available, (index + 1) * available).trimEnd());
+      assert.deepEqual(bashBody(tool, width), ["$ run", "", ...rows, "", ...fragments]);
+      assert.equal(tool.handleMouse(mouse(2, width)), undefined, "nine real output rows do not become expandable from synthetic status rows");
+      assert.equal(tool.expanded, false);
+      tool.setExpanded(true);
+      assert.deepEqual(bashBody(tool, width), ["$ run", "", ...rows, "", ...fragments]);
+      tool.setExpanded(false);
+    }
+    const longer = [...rows, "ROW_9", "HIDDEN_TAIL"].join("\n") + "\n\n[command timed out]\n[exit code: 124]";
+    tool.updateResult({ ...result, content: [{ type: "text", text: longer }] });
+    assert.deepEqual(bashBody(tool, 100), ["$ run", "", ...rows, "ROW_9", "… (Click to expand)", "", footer]);
+    tool.setExpanded(true);
+    assert.deepEqual(bashBody(tool, 100), ["$ run", "", ...rows, "ROW_9", "HIDDEN_TAIL", "", footer]);
+    assert.deepEqual(result, before, "all updates leave the original snapshot intact");
+  } finally { controller.restore(); }
+});
+
+test("bash timeout footer wraps entirely in the error role without recoloring command output", () => {
+  const root = new Root(), tool = bashTool("run"); root.addChild(tool);
+  tool.updateResult({ content: [{ type: "text", text: "BODY\n\n[command timed out]\n[exit code: 124]" }], details: { exit_code: 124 }, isError: true });
+  const fg: [string, string][] = [], bg: string[] = [];
+  const controller = installToolview(root, () => ({
+    fg: (role, text) => { fg.push([role, text]); return text; },
+    bg: (role, text) => { bg.push(role); return text; },
+  }));
+  try {
+    for (const width of [100, 24]) {
+      fg.length = 0; bg.length = 0;
+      const lines = tool.render(width);
+      assert.ok(lines.every((line) => visibleWidth(line) <= width));
+      assert.equal(fg.filter(([role, text]) => role === "error" && text !== "┃").map(([, text]) => text).join(""),
+        "[exit code: 124; error: command timed out]");
+      assert.deepEqual(fg.filter(([role]) => role === "toolOutput").map(([, text]) => text), ["BODY"]);
+      assert.ok(fg.some(([role, text]) => role === "error" && text === "┃"), "error stripe remains metadata-derived");
+      assert.deepEqual([...new Set(bg)], ["toolPendingBg"]);
+    }
+  } finally { controller.restore(); }
+});
+
 test("bash removes trailing preview blanks before hint without backfilling or changing expansion", () => {
   const tool = bashTool("true");
   const { controller } = setup([tool]);
@@ -1334,7 +1440,7 @@ test("bash removes trailing preview blanks before hint without backfilling or ch
   } finally { controller.restore(); }
 });
 
-test("bash completion uses persisted numeric metadata and error flags, never output parsing", () => {
+test("bash exit/error status uses persisted numeric metadata and flags, never output parsing", () => {
   const tool = bashTool("false");
   const cases: [unknown, boolean, string | undefined][] = [
     [7, false, "[exit code: 7]"], [7, true, "[exit code: 7; error: execution failed]"],

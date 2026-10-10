@@ -65,17 +65,22 @@ export function renderBashCard(node: BashPresentation, directory: string | undef
   });
   const code = exitCode(node), final = !!node.result && !node.isPartial;
   const error = final && (node.result?.isError === true || (code !== undefined && code !== 0));
-  const fields = error ? [code !== undefined && code !== 0 ? `exit code: ${code}` : "", node.result?.isError === true ? "error: execution failed" : ""].filter(Boolean) : [];
-  const footer = fields.length ? `[${fields.join("; ")}]` : "";
   const output = blockText(node.result?.content.filter((part) => part.type === "text").map((part) => part.text ?? "").join("\n") ?? "").split("\n");
   let first = 0, last = output.length;
   while (last > first && !output[last - 1].trim()) last--;
-  // The sole semantic output exception: a separated terminal duplicate of our
-  // metadata-derived exit footer. Never infer status or remove partial text.
-  if (footer && code !== undefined && code !== 0 && last >= 2 && output[last - 1] === footer && !output[last - 2].trim()) {
-    last--;
-    while (last > first && !output[last - 1].trim()) last--;
-  }
+  // AFT does not persist its timeout reason. This is an approved display-only
+  // exception, not producer detection or proof of process status: an identical
+  // printed tail is indistinguishable. Code 124 alone never implies a timeout.
+  const timeout = final && code === 124 && last >= 3 && output[last - 1] === "[exit code: 124]"
+    && output[last - 2] === "[command timed out]" && !output[last - 3].trim();
+  const fields = error ? [code !== undefined && code !== 0 ? `exit code: ${code}` : "",
+    timeout ? "error: command timed out" : node.result?.isError === true ? "error: execution failed" : ""].filter(Boolean) : [];
+  const footer = fields.length ? `[${fields.join("; ")}]` : "";
+  // Remove at most one exact separated terminal block, before wrapping/cutoff.
+  // Do not rescan a newly exposed suffix or remove either kind during streaming.
+  if (timeout) last -= 2;
+  else if (footer && code !== undefined && code !== 0 && last >= 2 && output[last - 1] === footer && !output[last - 2].trim()) last--;
+  while (last > first && !output[last - 1].trim()) last--;
   while (first < last && !output[first].trim()) first++;
   const outputRows: string[] = [], limit = node.expanded ? Infinity : 11;
   for (let index = first; index < last && outputRows.length < limit; index++)
