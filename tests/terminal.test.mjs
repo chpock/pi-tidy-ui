@@ -4146,7 +4146,7 @@ test('right-aligned cwd and live Git branch preserve colors padding and zero hot
     await terminal.settle(!dump.idle); terminal.session = dump.session;
     assert.deepEqual(dump.after, dump.before); return terminal.captureScreen(name, dump);
   };
-  const check = async (dump, { full = false, branch, name } = {}) => {
+  const check = async (dump, { full = false, branch, name, displayedCwd = dump.cwd } = {}) => {
     assert.equal(dump.statusRows.length, 2); await assertFits(dump.statusRows, dump.width);
     const edge = dump.screen.findIndex(row => row.includes('╹▀')), y = edge - 1;
     assert.ok(y >= 0); const text = dump.screen[y].trimEnd(), cells = dump.cells[y];
@@ -4161,9 +4161,9 @@ test('right-aligned cwd and live Git branch preserve colors padding and zero hot
       for (let x = start; x < start + count; x++) { assert.equal(cells[x].fg, reference.fg); assert.equal(cells[x].fgMode, reference.fgMode); }
     };
     if (full) {
-      const right = dump.cwd + (branch ? ':' + branch : '');
-      assert.ok(text.endsWith(right), 'full ctx.cwd and actual named branch are right-aligned');
-      const start = dump.width - 2 - visibleWidth(right), nameX = start + visibleWidth(dump.cwd.slice(0, -name.length));
+      const right = displayedCwd + (branch ? ':' + branch : '');
+      assert.ok(text.endsWith(right), 'display-only cwd and actual named branch are right-aligned');
+      const start = dump.width - 2 - visibleWidth(right), nameX = start + visibleWidth(displayedCwd.slice(0, -name.length));
       assert.equal(cells[dump.width - 3].text, [...(branch || name)].at(-1) === '\u0301' ? 'é' : [...(branch || name)].at(-1));
       await fg(start, nameX - start, dump.styles.parent);
       await fg(nameX, visibleWidth(name), dump.styles.directory);
@@ -4230,6 +4230,34 @@ test('right-aligned cwd and live Git branch preserve colors padding and zero hot
       await check(dump, { full: true, name });
       assert.ok(!dump.screen.some(row => row.endsWith(':' + branch)), 'no stale branch after repository removal');
       writeFileSync(join(terminal.output, 'git-counters.json'), JSON.stringify({ warm: baseline, busy: busy, final: dump.git }, null, 2));
+
+      const homeTerminal = new PiTerminal(`cwd-home-${mode}`, { mode, agentSettings: { editorPaddingX: 1 },
+        extensions: [join(fixtures, 'editor-driver.ts')] });
+      terminals.push(homeTerminal);
+      assert.equal(spawnSync('git', ['-C', homeTerminal.work, 'init', '-b', 'home-main']).status, 0);
+      await homeTerminal.ready(); await homeTerminal.resize(220);
+      const homeCheck = async (name, action = 'snapshot', full = true) => {
+        const value = await observe(homeTerminal, name, action);
+        assert.equal(value.home, homeTerminal.temp, 'formatter reads the actual isolated process HOME');
+        assert.equal(value.cwd, homeTerminal.work, 'context and Git retain the real absolute directory');
+        await check(value, { full, branch: 'home-main', name: 'work', displayedCwd: '~/work' });
+        return value;
+      };
+      const homeBaseline = (await homeCheck('home-full')).git;
+      for (const action of ['light', 'dark']) await homeCheck('home-' + action, action);
+      for (const width of [100, 60, 24, 220]) {
+        await homeTerminal.resize(width); await homeCheck('home-width-' + width, 'snapshot', width === 220);
+      }
+      for (let i = 0; i < 3; i++) {
+        const value = await homeCheck('home-hot-' + i);
+        assert.equal(value.git.queries, homeBaseline.queries); assert.equal(value.git.spawned, homeBaseline.spawned);
+      }
+      const homeOff = await observe(homeTerminal, 'home-off', 'off'); assert.deepEqual(homeOff.statusRows, []);
+      await observe(homeTerminal, 'home-on', 'on'); await homeTerminal.settle(); await homeCheck('home-on-ready');
+      await homeTerminal.command('/reload'); await homeTerminal.event('start', 2); await homeCheck('home-reload');
+      assert.equal(homeTerminal.events().filter(event => ['call', 'result', 'model_context'].includes(event.type)).length, 0);
+      writeFileSync(join(homeTerminal.output, 'home-cwd-coverage.json'), JSON.stringify({ cwd: homeTerminal.work, home: homeTerminal.temp,
+        displayedCwd: '~/work', warm: homeBaseline, final: (await homeCheck('home-final')).git, traffic: 0 }, null, 2));
     }
   } finally { for (const terminal of terminals) { await terminal.close(); terminal.dispose(); } rmSync(base, { recursive: true, force: true }); }
 });

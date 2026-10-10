@@ -3,7 +3,7 @@ import test from "node:test";
 import { spawnSync } from "node:child_process";
 import { mkdirSync, writeFileSync, readFileSync, mkdtempSync, rmSync, renameSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, parse, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import xterm from "@xterm/headless";
 import { Box, Container, Editor, CURSOR_MARKER, Spacer, Text, visibleWidth, truncateToWidth, parseColor, colorToRgb, TuiAltScreen, TuiMainScreen, type Component, type Terminal, type TuiMouseEvent } from "@earendil-works/pi-tui";
@@ -4415,21 +4415,59 @@ test("editor widget gap ignores stale-width observations and restores both publi
 });
 
 
+test("editor directory abbreviates the native home only at a path boundary before fitting", () => {
+  const previous = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE };
+  const home = join(tmpdir(), "toolview-home-界"), theme = { fg: (_role: string, value: string) => value };
+  const setHome = (value: string) => { process.env.HOME = value; process.env.USERPROFILE = value; };
+  const render = (cwd: string, width = 120) => renderEditorStatus(width, theme,
+    { model: "M", provider: "P", thinking: "off", idle: false, cwd, branch: "main" });
+  try {
+    setHome(home);
+    for (const [cwd, expected] of [[home, "~"], [home + sep, "~"], [join(home, "project"), "~" + sep + "project"],
+      [join(home, "parent", "界é"), "~" + sep + "parent" + sep + "界é"],
+      [home + "-other" + sep + "project", home + "-other" + sep + "project"], [home + "2", home + "2"]]) {
+      const row = plain(render(cwd!)[0]!);
+      assert.ok(row.endsWith(expected + ":main  "), JSON.stringify({ cwd, expected, row }));
+      assert.equal(visibleWidth(row), 120);
+      for (const width of [7, 24, 60]) assert.ok(render(cwd!, width).every(line => visibleWidth(line) === width));
+      assert.equal(plain(render(cwd!)[0]!), row, "resize starts from the original directory");
+    }
+    const calls: [string, string][] = [], info = { model: "M", provider: "P", thinking: "off", idle: false,
+      cwd: join(home, "project"), branch: "main" }, before = structuredClone(info);
+    renderEditorStatus(120, { fg: (role, value) => { calls.push([role, value]); return value; } }, info);
+    for (const expected of [["dim", "~" + sep], ["mdLinkUrl", "project"], ["muted", ":"], ["text", "main"]])
+      assert.ok(calls.some(call => call[0] === expected[0] && call[1] === expected[1]), JSON.stringify(expected));
+    assert.deepEqual(info, before, "real cwd and branch remain unchanged");
+    setHome(home + sep);
+    assert.ok(plain(render(home)[0]!).endsWith("~:main  "), "non-root trailing home separators are ignored");
+    setHome(home + "-other");
+    assert.ok(plain(render(home)[0]!).endsWith(home + ":main  "), "home is read live, not retained as presentation state");
+    const root = parse(home).root; setHome(root);
+    assert.ok(plain(render(root)[0]!).endsWith("~:main  "), "home may be the filesystem root");
+    assert.ok(plain(render(join(root, "project"))[0]!).endsWith("~" + sep + "project:main  "));
+    assert.doesNotMatch(plain(render("")[0]!), /:main/u, "missing cwd stays absent even with a root home");
+  } finally {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
+  }
+});
+
 test("editor directory is right-aligned with one shared inner padding cell", () => {
   const info = { model: "M", provider: "raw-id", thinking: "off", idle: false,
-    cwd: "/home/kot/work/project", branch: "feature/input-status" };
+    cwd: "/toolview-directory/work/project", branch: "feature/input-status" };
   const row = plain(renderEditorStatus(100, { fg: (_role, text) => text }, info)[0]!);
   assert.equal(visibleWidth(row), 100);
   assert.ok(row.endsWith(info.cwd + ":" + info.branch + "  "), "one painted padding plus one exterior margin");
   assert.ok(row.startsWith(" ┃ M (raw-id) • off"));
-  assert.match(row, /off {2,}\/home\//u);
+  assert.match(row, /off {2,}\/toolview-directory\//u);
 });
 
 test("editor directory colors keep last path element distinct from parents and branch", () => {
   const calls: [string, string][] = [];
-  const info = { model: "M", provider: "P", thinking: "high", idle: true, cwd: "/home/kot/project", branch: "main" };
+  const info = { model: "M", provider: "P", thinking: "high", idle: true, cwd: "/toolview-directory/project", branch: "main" };
   renderEditorStatus(100, { fg: (role, value) => { calls.push([role, value]); return value; } }, info);
-  for (const expected of [["dim", "/home/kot/"], ["mdLinkUrl", "project"], ["muted", ":"], ["text", "main"]])
+  for (const expected of [["dim", "/toolview-directory/"], ["mdLinkUrl", "project"], ["muted", ":"], ["text", "main"]])
     assert.ok(calls.some(call => call[0] === expected[0] && call[1] === expected[1]), JSON.stringify(expected));
 });
 
@@ -4513,6 +4551,10 @@ test("directory reduction stages are ordered and column/grapheme safe", () => {
   assert.equal(directoryStatus("/home/kot/trailing/", undefined, 100, theme), "/home/kot/trailing");
   assert.equal(directoryStatus("/", "main", 100, theme), "/:main");
   assert.equal(directoryStatus("C:\\", undefined, 100, theme), "C:\\");
+  assert.equal(directoryStatus("~\\", undefined, 100, theme), "~");
+  const calls: [string, string][] = [];
+  assert.equal(directoryStatus("~\\parent\\project", "main", 100, { fg: (role, value) => { calls.push([role, value]); return value; } }), "~\\parent\\project:main");
+  assert.deepEqual(calls, [["dim", "~\\parent\\"], ["mdLinkUrl", "project"], ["muted", ":"], ["text", "main"]]);
   assert.equal(directoryStatus("\\\\server\\share\\", undefined, 100, theme), "\\\\server\\share\\");
 });
 

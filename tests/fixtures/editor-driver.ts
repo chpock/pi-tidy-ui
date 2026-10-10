@@ -4,6 +4,7 @@ import { CustomEditor, type ExtensionAPI, type RegisteredCommand } from "@earend
 import { Editor } from "@earendil-works/pi-tui";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { homedir } from "node:os";
 import toolview from "../../src/index.ts";
 import { gitDiagnostics } from "../../src/git-branch.ts";
 
@@ -87,7 +88,7 @@ export default function editorDriver(pi: ExtensionAPI) {
         sharedEditorPrototype: Object.getPrototypeOf(CustomEditor.prototype) === Editor.prototype,
         inputMethodUnchanged: editor.handleInput === CustomEditor.prototype.handleInput,
         padding: editor.getPaddingX(), menu: editor.isShowingAutocomplete(), session: ctx.sessionManager.getSessionFile(),
-        cwd: ctx.cwd, git: gitDiagnostics(), statusRows, modelName: ctx.model?.name, provider: ctx.model?.provider, thinking: ctx.thinkingLevel ?? pi.getThinkingLevel(), idle: ctx.isIdle(),
+        cwd: ctx.cwd, home: homedir(), git: gitDiagnostics(), statusRows, modelName: ctx.model?.name, provider: ctx.model?.provider, thinking: ctx.thinkingLevel ?? pi.getThinkingLevel(), idle: ctx.isIdle(),
         footerRows: tui.children[6]?.render(width) ?? [],
         footerOwner: tui.children[6]?.children[0]?.constructor?.name,
         styles: { border: ctx.ui.theme.fg("customMessageLabel", "┃"),

@@ -1,5 +1,6 @@
 import { visibleWidth } from "@earendil-works/pi-tui";
-import { win32 } from "node:path";
+import { homedir } from "node:os";
+import { sep, win32 } from "node:path";
 import type { ThemeColor } from "@earendil-works/pi-coding-agent";
 import { cardGeometry, frameRows, type CardGeometry } from "./card-frame.ts";
 import type { CardTheme } from "./card-theme.ts";
@@ -60,8 +61,11 @@ export function renderEditorStatus(width: number, theme: CardTheme, info: Editor
     const prefix = metadata(info, size - visibleWidth(status) - (status ? 3 : 0), theme);
     return prefix + (prefix && status ? theme.fg("dim", " • ") : "") + status;
   };
+  const home = homedir(), homePath = home.replace(sep === "\\" ? /\\+$/u : /\/+$/u, "");
+  const cwd = info.cwd ?? "";
+  const directory = cwd && home && (cwd === homePath || cwd.startsWith(homePath + sep)) ? `~${cwd.slice(homePath.length)}` : cwd;
   const fullLeft = left(Number.MAX_SAFE_INTEGER);
-  const fullRight = directoryStatus(info.cwd ?? "", info.branch, Number.MAX_SAFE_INTEGER, theme);
+  const fullRight = directoryStatus(directory, info.branch, Number.MAX_SAFE_INTEGER, theme);
   let text: string;
   if (!fullRight) text = left(budget);
   else {
@@ -71,10 +75,10 @@ export function renderEditorStatus(width: number, theme: CardTheme, info: Editor
     const leftWant = visibleWidth(fullLeft) - idleWidth, rightWant = visibleWidth(fullRight);
     if (leftWant < l) { r += l - leftWant; l = leftWant; }
     if (rightWant < r) { l += r - rightWant; r = rightWant; }
-    let lhs = left(l + idleWidth), rhs = directoryStatus(info.cwd ?? "", info.branch, r, theme);
+    let lhs = left(l + idleWidth), rhs = directoryStatus(directory, info.branch, r, theme);
     if (!rhs) text = left(budget);
     else {
-      if (!lhs) rhs = directoryStatus(info.cwd ?? "", info.branch, budget, theme);
+      if (!lhs) rhs = directoryStatus(directory, info.branch, budget, theme);
       if (visibleWidth(fullLeft) + rightWant + 2 <= budget) { lhs = fullLeft; rhs = fullRight; }
       text = lhs + " ".repeat(budget - visibleWidth(lhs) - visibleWidth(rhs)) + rhs;
     }
@@ -112,7 +116,7 @@ function middle(value: string, budget: number, parent = false): string {
 export function directoryStatus(cwd: string, branch: string | undefined, budget: number, theme: CardTheme): string {
   if (!cwd || budget < 1) return "";
   let path = sanitize(cwd);
-  const windows = /^[a-z]:[\\/]/iu.test(path) || path.startsWith("\\\\");
+  const windows = /^[a-z]:[\\/]/iu.test(path) || path.startsWith("\\\\") || path.startsWith("~\\");
   const root = windows ? win32.parse(path).root : path.match(/^\/+/u)?.[0] ?? "";
   // Keep filesystem/drive/UNC roots intact, but not non-root trailing separators.
   const separators = windows ? /[\\/]/u : /\//u;
