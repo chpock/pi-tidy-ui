@@ -9,7 +9,7 @@
   "pi": { "extensions": ["./src/index.ts"] },
   "scripts": {
     "check": "tsc --noEmit",
-    "test": "node --test tests/unit.test.ts",
+    "test": "node --test tests/unit.test.ts tests/queued-cards.test.ts",
     "test:terminal": "node --test --test-concurrency=1 tests/terminal.test.mjs"
   },
   "engines": { "node": ">=22.19.0" },

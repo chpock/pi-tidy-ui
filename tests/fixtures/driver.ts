@@ -36,6 +36,8 @@ export default function terminalDriver(pi: ExtensionAPI) {
   const nativeRenderCalls: Record<string, number> = {};
   if (editDiagnostics) observeNativeRenders(nativeRenderCalls);
   const userDiagnostics = process.env.TOOLVIEW_TEST_USER_CARDS === "1";
+  const queuedDiagnostics = process.env.TOOLVIEW_TEST_QUEUED_CARDS === "1";
+  let queuedRequests = 0;
   const userWork = { transforms: 0, widths: [] as number[] };
   if (userDiagnostics) pi.registerMarkdownTransformer((text, context) => {
     if (context.messageType !== "user") return text;
@@ -93,8 +95,8 @@ export default function terminalDriver(pi: ExtensionAPI) {
       },
     });
   }
-  async function gate(name: string, signal?: AbortSignal) {
-    const end = Date.now() + 15000;
+  async function gate(name: string, signal?: AbortSignal, timeout = 15000) {
+    const end = Date.now() + timeout;
     while (!existsSync(join(output, name))) {
       if (signal?.aborted || Date.now() > end) throw new Error(`Fixture gate expired: ${name}`);
       await wait(25);
@@ -438,6 +440,18 @@ export default function terminalDriver(pi: ExtensionAPI) {
           cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
       };
       void (async () => {
+        if (queuedDiagnostics) {
+          const request = ++queuedRequests;
+          record({ type: "queued_context", request, messages: context.messages });
+          stream.push({ type: "start", partial: message });
+          if (request === 1) { record({ type: "queued_gate" }); await gate("queued-release", options?.signal, 180000); }
+          const text = `QUEUED_RESPONSE_${request}`;
+          message.content.push({ type: "text", text });
+          stream.push({ type: "text_start", contentIndex: 0, partial: message });
+          stream.push({ type: "text_delta", contentIndex: 0, delta: text, partial: message });
+          stream.push({ type: "text_end", contentIndex: 0, content: text, partial: message });
+          stream.push({ type: "done", reason: "stop", message }); stream.end(); return;
+        }
         const last = context.messages.findLastIndex((m) => m.role === "user");
         const user: any = context.messages[last];
         const prompt = typeof user?.content === "string" ? user.content :

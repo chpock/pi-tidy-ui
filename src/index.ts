@@ -1,10 +1,11 @@
 import { CustomEditor, createEditToolDefinition, highlightCode, getLanguageFromPath, type ExtensionAPI, type ExtensionContext, type ThemeColor } from "@earendil-works/pi-coding-agent";
-import { Box, Container, Editor, Markdown, Spacer, visibleWidth, type Component, type TuiMouseEvent, type TuiMouseEventResult } from "@earendil-works/pi-tui";
+import { Box, Container, Editor, Markdown, Spacer, TruncatedText, visibleWidth, type Component, type TuiMouseEvent, type TuiMouseEventResult } from "@earendil-works/pi-tui";
 import { isAbsolute, resolve } from "node:path";
 import { stripVTControlCharacters } from "node:util";
 import { renderBashCard } from "./bash-card.ts";
 import { filePath, measureFileCard, renderFileCard } from "./file-card.ts";
 import { renderUserCard } from "./user-card.ts";
+import { prepareQueuedCard, projectQueuedCards, type QueuedCard } from "./queued-card.ts";
 import { EDITOR_TOP, EDITOR_BOTTOM, renderEditorCard, type EditorLayout } from "./editor-card.ts";
 import { cardGeometry, insidePanel } from "./card-frame.ts";
 import { renderEditorStatus, type EditorStatusInfo } from "./editor-status.ts";
@@ -62,6 +63,7 @@ const compatibleUser = (node: UserNode) => typeof node.text === "string" &&
 
 type LiveTui = Component & {
   requestRender(): void;
+  terminal?: { readonly rows: number };
   hasActiveSelection?(): boolean;
   getFocusedComponent?(): Component | null;
   setFocus?(component: Component | null): void;
@@ -315,7 +317,9 @@ export function installToolview(tui: LiveTui, getTheme: () => Palette, options: 
   const forget = (node: ToolNode) => { const state = states.get(node); state?.pool.drop(state.entry); states.delete(node); };
   let userStates = new WeakMap<UserNode, { signature: unknown[]; entry: CacheEntry<Layout> }>();
   const forgetUser = (node: UserNode) => { cache.drop(userStates.get(node)?.entry); userStates.delete(node); };
-  const clearCache = () => { cache.clear(); cardCache.clear(); states = new WeakMap(); userStates = new WeakMap(); };
+  let queuedStates = new WeakMap<Component, { signature: unknown[]; entry: CacheEntry<QueuedCard> }>();
+  const forgetQueued = (node: Component) => { cache.drop(queuedStates.get(node)?.entry); queuedStates.delete(node); };
+  const clearCache = () => { cache.clear(); cardCache.clear(); states = new WeakMap(); userStates = new WeakMap(); queuedStates = new WeakMap(); };
   const cards = new Set([...DEFAULT_CARDS, ...options.cards ?? []]);
   const overrides = new Set(options.compact ?? []);
   const nativeOverrides = new Set(options.cards ?? []);
@@ -324,6 +328,7 @@ export function installToolview(tui: LiveTui, getTheme: () => Palette, options: 
   const containerClear = Container.prototype.clear;
   const containerRemove = Container.prototype.removeChild;
   const spacerRender = Object.getOwnPropertyDescriptor(Spacer.prototype, "render")!;
+  const truncatedRender = TruncatedText.prototype.render, truncatedInvalidate = TruncatedText.prototype.invalidate;
   let widgetSpacerPass: { spacer: Spacer; width: number; rows?: number; blank?: boolean } | undefined;
   let upperWidgetRows = new WeakMap<Container, { width: number; rows: number; spacer: WeakRef<Spacer> }>();
   const patches = new Map<object, {
@@ -889,7 +894,92 @@ export function installToolview(tui: LiveTui, getTheme: () => Palette, options: 
       if (completed) finishSpinnerPass(); // A failed pass must not postpone fallback.
     }
   }
+  function renderQueuedProjection(group: Container, width: number, projections: { node: Component; rows: string[] }[]): string[] {
+    const restores: { node: Component; own?: PropertyDescriptor; render: Component["render"] }[] = [];
+    try {
+      for (const { node, rows } of projections) {
+        const own = Object.getOwnPropertyDescriptor(node, "render"), original = node.render;
+        const render = function (this: Component, requestedWidth: number) {
+          return requestedWidth === width ? rows : original.call(this, requestedWidth);
+        };
+        Object.defineProperty(node, "render", { configurable: true, writable: true, enumerable: own?.enumerable ?? false, value: render });
+        restores.push({ node, own, render });
+      }
+      // Container.render also refreshes native hit geometry and strong child
+      // references. Returning a fabricated block would leave that state stale.
+      // Feed it projected rows through call-local public methods, not private fields.
+      return containerRender.value.call(group, width) as string[];
+    } finally {
+      for (const { node, own, render } of restores) if (Object.getOwnPropertyDescriptor(node, "render")?.value === render) {
+        if (own) Object.defineProperty(node, "render", own); else Reflect.deleteProperty(node, "render");
+      }
+    }
+  }
+  // Pi owns queued items and their edit-all shortcut. Only this verified native
+  // prefix is projected; appended Bash/foreign components still render normally.
+  // TruncatedText has no public source getter, so read its own text data field,
+  // never queue/session internals or an arbitrary accessor. Do not patch its prototype.
+  function queuedRows(group: Container, width: number): string[] | undefined {
+    if (!(tui instanceof Container) || tui.children[1] !== group) return undefined;
+    const fallback = () => { for (const child of group.children) forgetQueued(child); return undefined; };
+    const height = tui.terminal?.rows, slots = tui.children, children = group.children, spacer = children[0];
+    if (slots.length !== 7 || !slots.every(node => Object.getPrototypeOf(node) === Container.prototype) ||
+      group.render !== observeWidgetRows || group.addChild !== patchedAdd || group.clear !== patchedClear || group.removeChild !== patchedRemove ||
+      typeof height !== "number" || !Number.isSafeInteger(height) || height < 1 ||
+      !spacer || Object.getPrototypeOf(spacer) !== Spacer.prototype || spacer.render !== observeWidgetSpacer) return fallback();
+    const text = (node: Component): string | undefined => {
+      if (Object.getPrototypeOf(node) !== TruncatedText.prototype || node.render !== truncatedRender || node.invalidate !== truncatedInvalidate) return undefined;
+      const value: unknown = Object.getOwnPropertyDescriptor(node, "text")?.value;
+      return typeof value === "string" ? value : undefined;
+    };
+    const messages: { node: Component; raw: string; mode: "Steering" | "Follow-up"; prefix: number }[] = [];
+    let index = 1, hint = "";
+    for (; index < children.length; index++) {
+      const node = children[index]!, raw = text(node);
+      if (raw === undefined) return fallback();
+      // Inspect only the small native prefix on warm frames, not the entire body.
+      const match = /^(?:\x1b\[[0-9;:]*m)*(Steering|Follow-up): /u.exec(raw);
+      if (match) { messages.push({ node, raw, mode: match[1] as "Steering" | "Follow-up", prefix: match[0].length }); continue; }
+      const label = /^↳ (.+ to edit all queued messages)$/u.exec(stripVTControlCharacters(raw));
+      if (!label) return fallback();
+      hint = label[1]!; break;
+    }
+    if (!messages.length || !hint) return fallback();
+    const prefix = children.slice(0, index + 1);
+    if (!prefix.every(node => {
+      const own = Object.getOwnPropertyDescriptor(node, "render");
+      return own ? "value" in own && own.configurable : Object.isExtensible(node);
+    })) return fallback();
+    if (width < 1) return renderQueuedProjection(group, width, prefix.map(node => ({ node, rows: [] })));
+    const spacerRows = spacer.render(width);
+    if (spacerRows.length !== 1 || spacerRows[0] !== "") {
+      fallback();
+      return renderQueuedProjection(group, width, [{ node: spacer, rows: spacerRows }]);
+    }
+    const theme = getTheme(), padding = outputPadding();
+    const cards = messages.map(({ node, raw, mode, prefix }, position) => {
+      const editHint = position === messages.length - 1 ? hint : "";
+      const signature = [width, padding, theme, theme.fg, theme.bg, theme.style, theme.colors, raw, editHint];
+      const state = queuedStates.get(node);
+      if (state && signature.every((value, key) => value === state.signature[key])) {
+        const retained = cache.get(state.entry); if (retained) return retained;
+      } else { forgetQueued(node); cache.get(undefined); }
+      const card = prepareQueuedCard(raw.slice(prefix), mode, editHint, width, theme, padding);
+      queuedStates.set(node, { signature, entry: cache.put(card, [...card.rows, ...card.ellipsis], "queued") });
+      return card;
+    });
+    // Height is a soft policy, not Pi's allocated dock height. Selecting prepared
+    // rows cannot prevent the host from clipping an oversized minimum block.
+    const blocks = projectQueuedCards(cards, height);
+    return renderQueuedProjection(group, width, [{ node: spacer, rows: spacerRows },
+      ...messages.map(({ node }, position) => ({ node, rows: blocks[position]! })),
+      { node: children[index]!, rows: [] }]);
+  }
   function observeContainerRows(this: Container, width: number): string[] {
+    if (active) {
+      try { const rows = queuedRows(this, width); if (rows) return rows; }
+      catch { fail("Toolview could not render queued messages; native rendering restored"); }
+    }
     const position = active && parents.get(this);
     const input = tui instanceof Container && position && position.parent.children === tui.children &&
       (position.parent.children[3] === this || position.parent.children[2] === this) && position.parent.children[4];
@@ -999,6 +1089,7 @@ export function installToolview(tui: LiveTui, getTheme: () => Palette, options: 
     visit(child, this, this.children.length - 1);
   }
   function releaseTree(node: Component) {
+    forgetQueued(node);
     if (candidate(node)) { forget(node); removeAnimation(node); }
     else if (userCandidate(node)) forgetUser(node);
     parents.delete(node);
@@ -1248,7 +1339,7 @@ export default function toolview(pi: ExtensionAPI) {
         ctx.ui.notify(`Pi Toolview cache: ${JSON.stringify({ ...stats, footerLayout,
           presentationRetainedBytes: stats.retainedBytes + footerLayout.retainedBytes,
           presentationEntries: stats.entries + footerLayout.entries, presentationRows: stats.rows + footerLayout.rows,
-          memoryScope: "estimated Toolview retained transcript and footer layouts; excludes native caches, source/signature data and transient rendering",
+          memoryScope: "estimated Toolview retained transcript, queued-message and footer layouts; excludes native caches, source/signature data and transient rendering",
           processHeapUsedBytes: process.memoryUsage().heapUsed, processMemoryScope: "whole Pi process, not Toolview" })}`, "info");
         return;
       }
