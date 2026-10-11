@@ -36,7 +36,8 @@ jobs:
         env:
           TAG: ${{ inputs.tag }}
         run: |
-          export SOURCE_COMMIT="$(git rev-parse HEAD)"
+          SOURCE_COMMIT="$(git rev-parse HEAD)"
+          export SOURCE_COMMIT
           node scripts/release/native-ci.mjs assemble native-artifacts "$TAG" release-assets
           cd release-assets
           sha256sum --check SHA256SUMS

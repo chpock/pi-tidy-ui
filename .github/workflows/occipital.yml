@@ -108,7 +108,8 @@ jobs:
           RUST_TARGET: ${{ matrix.rust }}
           EXECUTABLE: ${{ matrix.executable }}
         run: |
-          export SOURCE_COMMIT="$(git rev-parse HEAD)"
+          SOURCE_COMMIT="$(git rev-parse HEAD)"
+          export SOURCE_COMMIT
           node scripts/release/native-ci.mjs stage "$TARGET" "target/$RUST_TARGET/release/$EXECUTABLE" target/native-artifact
       - uses: actions/upload-artifact@v4
         with:
