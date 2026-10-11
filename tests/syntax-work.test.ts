@@ -203,12 +203,23 @@ test('syntax work source, selected language and palette transitions invalidate e
   assert.deepEqual(paintFileSyntax(sources, resolveSyntax(sources, palette, neutral), plainTheme), ['y']);
 });
 
+test('syntax work accepts faint Pi rows and reuses the exact result', () => {
+  const { client, sources } = fixture(); let calls = 0;
+  const classify = () => { calls++; return ['\x1b[2mx']; };
+  const d = demand();
+  assert.deepEqual(requestSyntax(client, d, classify), { outcome: 'pi' });
+  assert.deepEqual(requestSyntax(client, d, classify), { outcome: 'pi' });
+  assert.equal(calls, 1);
+  assert.equal(sources.piFailure(d.key, d.version, d.palette), undefined);
+  assert.equal(resolveSyntax(sources, d, neutral).needsPi, false);
+});
+
 for (const kind of ['threw', 'invalid_rows'] as const) {
   test(`syntax work exact ${kind} failure is cached and new palette permits one attempt`, () => {
     const { client, sources } = fixture(); let calls = 0, captures = 0;
     const capture = sources.capturePiSource.bind(sources);
     sources.capturePiSource = (...args) => { captures++; return capture(...args); };
-    const classify = () => { calls++; if (kind === 'threw') throw new Error('fixture'); return ['\x1b[2mx']; };
+    const classify = () => { calls++; if (kind === 'threw') throw new Error('fixture'); return ['\x1b[8mx']; };
     const d = demand();
     assert.deepEqual(requestSyntax(client, d, classify), { outcome: 'failed', failure: kind });
     assert.deepEqual(requestSyntax(client, d, classify), { outcome: 'failed', failure: kind });
@@ -222,7 +233,7 @@ for (const failure of ['threw', 'invalid_rows'] as const) {
   test(`syntax work ${failure} from another language never vetoes current fallback`, () => {
     const { client, sources, host } = fixture(); let calls = 0;
     const initial = demand();
-    const bad = () => { calls++; if (failure === 'threw') throw new Error('fixture'); return ['\x1b[2mx']; };
+    const bad = () => { calls++; if (failure === 'threw') throw new Error('fixture'); return ['\x1b[8mx']; };
     assert.deepEqual(requestSyntax(client, initial, bad), { outcome: 'failed', failure });
     assert.equal(resolveSyntax(sources, initial, neutral).needsPi, false);
     const changed = { ...initial, language: 'python' };

@@ -95,7 +95,7 @@ impl Service {
             bindings: HashMap::new(),
             next_lease: 0,
             incarnation: SERVICE_INCARNATION
-                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+                .try_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
                     value.checked_add(1)
                 })
                 .expect("service incarnation exhausted"),

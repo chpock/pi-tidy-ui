@@ -229,7 +229,7 @@ impl ActorPool {
         limits.leases /= workers;
         limits.state_pool_bytes /= workers;
         let incarnation = POOL_INCARNATION
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
                 value.checked_add(1)
             })
             .map_err(|_| Fault::not_started("runtime_limit"))?;
@@ -495,7 +495,7 @@ impl Hub {
         }
         let id = self
             .next
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
                 value.checked_add(1)
             })
             .map_err(|_| Fault::not_started("route_limit"))?;

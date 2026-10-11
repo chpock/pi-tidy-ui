@@ -59,8 +59,14 @@ async fn worker_expiry_runs_without_new_requests_or_an_idle_poll() {
     ticket.take().await.unwrap().commit();
     pool.barrier().await.unwrap();
     assert_eq!(pool.stats().leases, 1);
-    tokio::time::sleep(std::time::Duration::from_millis(600)).await;
-    // Only inspect the published scalar snapshot; no barrier/request can cause expiry.
+    // Expiry and publication run on a separate worker; passive reads do not wake it.
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while pool.stats().leases != 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("idle worker must publish lease expiry without another request");
     assert_eq!(pool.stats().leases, 0);
     assert_eq!(pool.stats().credits.bytes, 0);
     drop(route);
