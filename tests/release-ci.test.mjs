@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
+import { execFileSync } from 'node:child_process';
 import { mkdtemp, mkdir, readFile, rm, writeFile, cp, readdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -117,7 +118,7 @@ test('declared native acquisition accepts complete SemVer and keeps the exact ve
   assert.equal(second.downloaded, false); assert.equal(second.path, first.path); assert.equal(fetches, 1);
 });
 
-for (const change of ['commit', 'version', 'target', 'bytes', 'url', 'notice-gaps', 'missing-platform']) {
+for (const change of ['commit', 'version', 'target', 'bytes', 'url', 'notice-gaps', 'license-bytes', 'missing-platform']) {
   test(`release rejects ${change} before creating any publish directory`, async t => {
     const f = await artifacts(t), target = 'linux-x64-gnu', directory = join(f.directory, artifactName(f.version, target));
     if (['commit', 'version', 'target'].includes(change)) {
@@ -129,11 +130,41 @@ for (const change of ['commit', 'version', 'target', 'bytes', 'url', 'notice-gap
       await writeFile(join(directory, 'native-release.staged.json'), JSON.stringify(info));
     } else if (change === 'notice-gaps') {
       await writeFile(join(directory, 'notices/notice-sources.json'), '{"gaps":["unresolved"]}');
+    } else if (change === 'license-bytes') {
+      await writeFile(join(directory, 'assets/LICENSE'), (await readFile(join(directory, 'assets/LICENSE'), 'utf8')).replaceAll('\n', '\r\n'));
     } else await rm(directory, { recursive: true });
     await assert.rejects(assembleRelease({ ...f, repository, commit }));
     await assert.rejects(readFile(join(f.output, 'native-release.json')), { code: 'ENOENT' });
   });
 }
+
+test('Git Windows-style checkout preserves exact project and supplementary license bytes', async t => {
+  const root = await source(t);
+  const git = (...args) => execFileSync('git', ['-C', root, ...args], { stdio: 'pipe' });
+  git('init');
+  git('config', 'core.autocrlf', 'false');
+  git('config', 'core.safecrlf', 'false');
+  const attributes = await readFile(join(repo, '.gitattributes')).catch(error => {
+    if (error.code === 'ENOENT') return Buffer.alloc(0);
+    throw error;
+  });
+  await writeFile(join(root, '.gitattributes'), attributes);
+  const paths = ['LICENSE', ...new Set((await json(join(repo, 'scripts/release/notices/supplements.json')))
+    .map(item => 'scripts/release/notices/' + item.file))];
+  const originals = new Map();
+  for (const path of paths) {
+    const bytes = await readFile(join(repo, path)); originals.set(path, bytes);
+    await mkdir(resolve(root, path, '..'), { recursive: true });
+    await writeFile(join(root, path), bytes);
+  }
+  await writeFile(join(root, 'ordinary.txt'), 'ordinary text\n');
+  git('add', '--', '.gitattributes', 'ordinary.txt', ...paths);
+  git('config', 'core.autocrlf', 'true');
+  for (const path of [...paths, 'ordinary.txt']) await rm(join(root, path));
+  git('checkout-index', '--all', '--force');
+  assert.equal(await readFile(join(root, 'ordinary.txt'), 'utf8'), 'ordinary text\r\n', 'actual checkout conversion must be exercised');
+  for (const path of paths) assert.deepEqual(await readFile(join(root, path)), originals.get(path), path);
+});
 
 test('CI release staging stays outside restored Cargo output and preserves stale cache contents', async t => {
   const root = await source(t);

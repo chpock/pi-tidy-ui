@@ -1,0 +1,3 @@
+# Release notices must retain their original bytes on every checkout.
+/LICENSE -text
+/scripts/release/notices/*.txt -text
