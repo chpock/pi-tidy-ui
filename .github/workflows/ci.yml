@@ -1,0 +1,119 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ['pi-tidy-ui-v*', 'occipital-v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+jobs:
+  version:
+    runs-on: ubuntu-24.04
+    outputs:
+      product: ${{ steps.version.outputs.product }}
+      version: ${{ steps.version.outputs.version }}
+      daemon_version: ${{ steps.version.outputs.daemon_version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.19.0'
+      - id: version
+        env:
+          RELEASE_REF: ${{ github.ref }}
+        run: node scripts/release/version.mjs --resolve "$RELEASE_REF"
+      - name: Validate workflows
+        uses: docker://rhysd/actionlint:1.7.12
+
+  native:
+    needs: version
+    uses: ./.github/workflows/occipital.yml
+    with:
+      release-ref: ${{ github.ref }}
+      version: ${{ needs.version.outputs.daemon_version }}
+
+  extension:
+    needs: version
+    if: needs.version.outputs.product != 'occipital'
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['22.19.0', '26.7.0']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - name: Assert selected Node runtime
+        env:
+          EXPECTED_NODE: ${{ matrix.node }}
+        run: node -e 'if (process.version !== "v" + process.env.EXPECTED_NODE) throw new Error(process.version)'
+      - run: npm ci
+      - run: npm run check
+      - name: Unit, actual-SDK and GC regressions
+        run: node --expose-gc --test --test-concurrency=2 tests/*.test.ts
+      - name: Inert native packaging and release regressions
+        run: npm run test:native-release
+      - name: Apply extension tag version only after source checks
+        env:
+          RELEASE_REF: ${{ github.ref }}
+        run: node scripts/release/version.mjs "$RELEASE_REF"
+      - name: Pack extension without publishing
+        run: npm pack --ignore-scripts
+      - uses: actions/upload-artifact@v4
+        with:
+          name: extension-${{ needs.version.outputs.version }}-node-${{ matrix.node }}
+          path: pi-toolview-*.tgz
+          if-no-files-found: error
+
+  terminal:
+    needs: [version, native]
+    if: needs.version.outputs.product != 'occipital'
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['22.19.0', '26.7.0']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm ci
+      - uses: actions/download-artifact@v4
+        with:
+          name: occipital-v${{ needs.version.outputs.daemon_version }}-linux-x64-gnu
+          path: .test-artifacts/ci-native
+      - name: Restore raw executable permissions
+        run: chmod +x .test-artifacts/ci-native/assets/occipital-v0.0.0-linux-x64-gnu
+      - run: npm run test:terminal
+      - name: Physical syntax CLI and replay using this commit's native artifact
+        env:
+          OCCIPITAL_TEST_BIN: .test-artifacts/ci-native/assets/occipital-v0.0.0-linux-x64-gnu
+        run: npm run test:syntax-terminal
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: terminal-failure-node-${{ matrix.node }}
+          path: .test-artifacts/terminal-*/
+          if-no-files-found: ignore
+
+  release-occipital:
+    needs: [version, native]
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/occipital-v')
+    permissions:
+      contents: write
+    uses: ./.github/workflows/occipital-release.yml
+    with:
+      tag: ${{ github.ref_name }}

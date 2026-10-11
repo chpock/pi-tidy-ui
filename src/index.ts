@@ -1,9 +1,9 @@
 import { CustomEditor, createEditToolDefinition, highlightCode, getLanguageFromPath, type ExtensionAPI, type ExtensionContext, type ThemeColor } from "@earendil-works/pi-coding-agent";
-import { Box, Container, Editor, Markdown, Spacer, TruncatedText, visibleWidth, type Component, type TuiMouseEvent, type TuiMouseEventResult } from "@earendil-works/pi-tui";
+import { Box, Container, Editor, Markdown, Spacer, TruncatedText, colorToRgb, visibleWidth, type Component, type TuiMouseEvent, type TuiMouseEventResult } from "@earendil-works/pi-tui";
 import { isAbsolute, resolve } from "node:path";
 import { stripVTControlCharacters } from "node:util";
 import { renderBashCard } from "./bash-card.ts";
-import { filePath, measureFileCard, renderFileCard } from "./file-card.ts";
+import { filePath, measureFileCard, renderFileCard, renderPreparedFileCard } from "./file-card.ts";
 import { renderUserCard } from "./user-card.ts";
 import { prepareQueuedCard, projectQueuedCards, type QueuedCard } from "./queued-card.ts";
 import { EDITOR_TOP, EDITOR_BOTTOM, renderEditorCard, type EditorLayout } from "./editor-card.ts";
@@ -15,6 +15,11 @@ import { TerminalColors, terminalColorExit } from "./terminal-colors.ts";
 import type { CardTheme } from "./card-theme.ts";
 import { RenderCache, LAYOUT_KINDS, MEMORY_FIELDS, type LayoutKind, type LayoutMemory, type CacheEntry, type CacheStats } from "./render-cache.ts";
 import { argumentParts, summaryName } from "./summary-args.ts";
+import { CardSources, type CardSourceInput } from "./syntax/cards.ts";
+import type { PiClassifier } from "./syntax/work.ts";
+import type { SyntaxClient } from "./occipital/client.ts";
+import { createSyntaxOptions } from "./occipital/bootstrap.ts";
+import { SyntaxRuntime, type SyntaxRuntimeOptions } from "./syntax/runtime.ts";
 export { describeArgs, sanitize } from "./summary-args.ts";
 let terminalColorDebug: WeakRef<TerminalColors> | undefined;
 /** Primitive current-instance counters for controlled CLI diagnostics; no retained owner. */
@@ -80,6 +85,13 @@ type Render = (this: ToolNode, width: number) => string[];
 type Mouse = (this: ToolNode, event: TuiMouseEvent) => TuiMouseEventResult | undefined;
 
 export interface ToolviewOptions {
+  /** Optional composed client; lifecycle/startup remains the caller's responsibility. */
+  syntax?: {
+    client: Pick<SyntaxClient, "sources" | "snapshot">;
+    /** Established cheap Pi palette generation, never color sampling or theme inference. */
+    palette(): number;
+    classify?: PiClassifier;
+  };
   cards?: readonly string[];
   compact?: readonly string[];
   warn?: (reason: string) => void;
@@ -104,6 +116,9 @@ export interface ToolviewController {
   renderEditorStatus(width: number, info: EditorStatusInfo): string[];
   cacheStats(): ToolviewCacheStats;
   clearCache(): void;
+  /** Forward composed-client notices without traversing transcript history. */
+  syntaxSourceChanged(keys: readonly string[]): void;
+  syntaxMetadataChanged(): void;
 }
 const DEFAULT_CARDS = ["bash", "powershell", "write", "edit"];
 // The public factory exposes the stable stock renderer functions; no execution or file I/O.
@@ -341,6 +356,74 @@ export function installToolview(tui: LiveTui, getTheme: () => Palette, options: 
     updates: { name: string; original?: PropertyDescriptor; wrapper: (...args: unknown[]) => unknown }[];
   }>();
   const refresh = () => { tui.invalidate(); tui.requestRender(); };
+  // Native argument identity only, not prepared/encoded source or a reader cache.
+  type SyntaxState = { revision: number; identity: unknown[]; palette: number; authorized: boolean };
+  let syntaxStates = new WeakMap<ToolNode, SyntaxState>();
+  const syntax = options.syntax && new CardSources<ToolNode>(options.syntax.client, {
+    read: readSyntax,
+    classify: options.syntax.classify ?? ((text, info) => highlightCode(text, info.language)),
+    invalidate: forget,
+    requestRender: () => { if (active) tui.requestRender(); },
+  });
+  const primitiveIdentity = (value: unknown) => value !== null && (typeof value === "object" || typeof value === "function") ? typeof value : value;
+  function sourceIdentity(node: ToolNode): unknown[] {
+    if (node.toolName === "bash") return [node.toolName, primitiveIdentity(node.args.command), node.argsComplete];
+    const details = node.result?.details as { diff?: unknown; patch?: unknown; truncated?: unknown; noOp?: unknown } | undefined;
+    return [node.toolName, filePath(node.args), node.toolName === "write" ? primitiveIdentity(node.args.content) : undefined,
+      !!node.result, node.isPartial, node.result?.isError === true, primitiveIdentity(details?.diff), primitiveIdentity(details?.patch),
+      primitiveIdentity(details?.truncated), primitiveIdentity(details?.noOp)];
+  }
+  function abandonedBashSource(node: ToolNode): boolean {
+    return node.toolName === "bash" && !node.argsComplete && !node.isPartial && node.result?.isError === true;
+  }
+  function syntaxEligible(node: ToolNode): boolean {
+    if (!active || !attached(node) || node.hideComponent || node.result?.content.some(part => part.type === "image")) return false;
+    if (node.toolName === "bash") return !abandonedBashSource(node) && !overrides.has("bash") && !nativeOverrides.has("bash") &&
+      typeof node.args.command === "string" && bashDirectory(node) !== null;
+    return fileSucceeded(node) && !node.expanded && !overrides.has(node.toolName) && !nativeOverrides.has(node.toolName) && !!filePath(node.args);
+  }
+  function observeSyntax(node: ToolNode): SyntaxState | undefined {
+    if (!syntax || (node.toolName !== "bash" && node.toolName !== "edit" && node.toolName !== "write")) return undefined;
+    const identity = sourceIdentity(node), palette = options.syntax!.palette();
+    let state = syntaxStates.get(node);
+    if (!state) {
+      state = { revision: 1, identity, palette, authorized: false }; syntaxStates.set(node, state);
+      syntax.record(node, state.revision, false);
+    } else if (state.palette !== palette || identity.some((value, index) => value !== state!.identity[index])) {
+      state.identity = identity; state.palette = palette; state.revision++;
+      forget(node);
+      syntax.record(node, state.revision, node.toolName === "bash" ? node.argsComplete : fileSucceeded(node));
+    }
+    if (!syntaxEligible(node)) pauseSyntax(node);
+    return state;
+  }
+  function pauseSyntax(node: ToolNode): void {
+    const state = syntaxStates.get(node);
+    if (state) state.authorized = false;
+    syntax?.pause(node);
+  }
+  function usefulSyntax(node: ToolNode): void {
+    const state = observeSyntax(node);
+    if (!state || !syntaxEligible(node)) return;
+    state.authorized = true;
+    syntax!.useful(node, state.revision);
+  }
+  function readSyntax(node: ToolNode): CardSourceInput | undefined {
+    const previous = syntaxStates.get(node)?.revision;
+    const state = observeSyntax(node);
+    if (!state?.authorized || !syntaxEligible(node)) { pauseSyntax(node); return undefined; }
+    // A source/palette event during the deferred boundary replaces its pending ticket.
+    if (previous !== state.revision) syntax!.useful(node, state.revision);
+    if (node.toolName === "bash") return { kind: "bash", args: node.args, complete: node.argsComplete, language: "bash", palette: state.palette };
+    return { kind: "file", node, language: getLanguageFromPath(filePath(node.args)!), palette: state.palette };
+  }
+  function syntaxNeutral(theme: Palette): number {
+    const color = theme.colors?.toolOutput;
+    if (!color) return 0;
+    if (color.kind === "indexed") return (0x80000000 | color.index) >>> 0;
+    const rgb = colorToRgb(color);
+    return (0x40000000 | (rgb.r << 16) | (rgb.g << 8) | rgb.b) >>> 0;
+  }
   function layoutSignature(node: ToolNode, kind: string, width: number, theme: Palette, directory: string | undefined, padding: number): unknown[] {
     return [kind, width, padding, theme, theme.fg, kind === "bash" ? undefined : node.args, node.result, node.expanded, node.isPartial,
       node.toolName, node.result?.isError, kind === "bash" ? (node.result?.details as { exit_code?: unknown } | undefined)?.exit_code : undefined,
@@ -365,16 +448,22 @@ export function installToolview(tui: LiveTui, getTheme: () => Palette, options: 
   }
   const bashLayout = (node: ToolNode, width: number) => {
     const theme = getTheme(), directory = bashDirectory(node) ?? undefined, padding = outputPadding();
-    return memo(node, "bash", width, theme, directory, padding, () => renderBashCard(node, directory, width, theme, padding));
+    return memo(node, "bash", width, theme, directory, padding, () => renderBashCard(node, directory, width, theme, padding,
+      syntax?.bash(node, cardGeometry(width, padding).contentWidth, theme, 0)));
   };
   const fileLayout = (node: ToolNode, width: number) => {
     const theme = getTheme();
     const context = node.getRenderContext() as { cwd?: unknown } | undefined;
     const cwd = typeof context?.cwd === "string" ? context.cwd : undefined;
     const padding = outputPadding();
-    return memo(node, node.toolName as "edit" | "write", width, theme, cwd, padding, () => renderFileCard(node, cwd, width, theme,
-      theme.colors && theme.style ? (code, path) => highlightCode(code, getLanguageFromPath(path)) : undefined, padding) ??
-      { rows: nativeRows(node, width), framed: false, native: true });
+    return memo(node, node.toolName as "edit" | "write", width, theme, cwd, padding, () => {
+      const projection = syntax?.file(node, theme, syntaxNeutral(theme));
+      return (projection ? renderPreparedFileCard(projection.display, cwd, width, theme, { outputPad: padding,
+        styledRows: projection.styledRows, diagnostics: (node.result?.details as { diagnostics?: unknown } | undefined)?.diagnostics }) :
+        renderFileCard(node, cwd, width, theme,
+          !syntax && theme.colors && theme.style ? (code, path) => highlightCode(code, getLanguageFromPath(path)) : undefined, padding)) ??
+        { rows: nativeRows(node, width), framed: false, native: true };
+    });
   };
   function fileMeasure(node: ToolNode, width: number) {
     const theme = getTheme();
@@ -431,9 +520,14 @@ export function installToolview(tui: LiveTui, getTheme: () => Palette, options: 
       catch { fail("Toolview could not render editor status; native rendering restored"); return []; }
     },
     clearCache,
+    syntaxSourceChanged(keys) { if (active) syntax?.sourceChanged(keys); },
+    syntaxMetadataChanged() { if (active) syntax?.metadataChanged(); },
     restore() {
-      if (!active && !patches.size && !userPatches.size && !editorPatches.size) return;
+      if (!active && !patches.size && !userPatches.size && !editorPatches.size) {
+        syntax?.dispose(); syntaxStates = new WeakMap(); return;
+      }
       active = false;
+      syntax?.dispose(); syntaxStates = new WeakMap();
       stopSpinner(); animated.clear(); animationRefs = new WeakMap();
       clearCache();
       if (Container.prototype.addChild === patchedAdd) Container.prototype.addChild = originalAdd;
@@ -620,6 +714,7 @@ export function installToolview(tui: LiveTui, getTheme: () => Palette, options: 
   function install(node: ToolNode) {
     if (!compatible(node)) { fail("Tool component contract is incompatible; native rendering retained"); return; }
     patchPrototype(Object.getPrototypeOf(node) as object);
+    observeSyntax(node);
   }
   // Persistent wrappers must be created in a scope with no tool-instance parameter.
   function patchPrototype(prototype: object) {
@@ -633,18 +728,23 @@ export function installToolview(tui: LiveTui, getTheme: () => Palette, options: 
     const originalMouse = mouse.value as Mouse;
     const patchedRender: Render = function (width) {
       try {
+        observeSyntax(this);
         if (bashCard(this, width)) {
           removeAnimation(this);
           const rows = bashLayout(this, width).rows;
-          if (!rows.length) return rows;
+          if (!rows.length) { pauseSyntax(this); return rows; }
+          usefulSyntax(this);
           return previousLayout(this, width) ? ["", ...rows] : rows;
         }
         if (fileCard(this, width)) {
           removeAnimation(this);
           const layout = fileLayout(this, width);
+          if (layout.framed && !layout.native && layout.rows.length) usefulSyntax(this);
+          else pauseSyntax(this);
           const offset = layout.native ? nativeGap(this, width, layout.rows) : layout.framed ? (previousLayout(this, width) ? 1 : 0) : gap(this, width);
           return offset ? [""].concat(layout.rows) : layout.rows;
         }
+        pauseSyntax(this);
         if (!eligible(this)) {
           removeAnimation(this);
           const lines = originalRender.call(this, width);
@@ -658,6 +758,7 @@ export function installToolview(tui: LiveTui, getTheme: () => Palette, options: 
       catch { fail("Toolview could not render this component; native rendering restored"); return originalRender.call(this, width); }
     };
     const patchedMouse: Mouse = function (event) {
+      observeSyntax(this);
       if (event.width > 0 && bashCard(this, event.width)) {
         if (event.type !== "click" || event.button !== "left" || tui.hasActiveSelection?.()) return undefined;
         const layout = bashLayout(this, event.width);
@@ -696,7 +797,12 @@ export function installToolview(tui: LiveTui, getTheme: () => Palette, options: 
       tui.requestRender();
       return { handled: true };
     };
-    const updates = ["updateArgs", "updateResult", "setExpanded", "invalidate", "markExecutionStarted"].map((name) => {
+    const updateNames = ["updateArgs", "updateResult", "setExpanded", "invalidate", "markExecutionStarted"];
+    const argsCompleteDescriptor = Object.getOwnPropertyDescriptor(prototype, "setArgsComplete");
+    // Compatible older/foreign tools need not expose an observable finalization method.
+    if (typeof argsCompleteDescriptor?.value === "function" && argsCompleteDescriptor.writable && argsCompleteDescriptor.configurable)
+      updateNames.push("setArgsComplete");
+    const updates = updateNames.map((name) => {
       const original = Object.getOwnPropertyDescriptor(prototype, name);
       const method = (prototype as Record<string, unknown>)[name];
       if (typeof method !== "function" || (original && (!original.writable || !original.configurable)) || (!original && !Object.isExtensible(prototype)))
@@ -706,6 +812,12 @@ export function installToolview(tui: LiveTui, getTheme: () => Palette, options: 
         if (name !== "markExecutionStarted" && !(name === "updateArgs" && this.toolName === "bash" && !overrides.has("bash")) &&
           !(name === "setExpanded" && args[0] === this.expanded)) forget(this);
         const result = method.apply(this, args);
+        observeSyntax(this);
+        if (syntax && name === "updateResult" && abandonedBashSource(this)) {
+          // Terminal argument errors retire ownership; they do not finalize arguments.
+          syntax.remove(this);
+          options.syntax!.client.sources.flush();
+        }
         if (!executing(this) || !attached(this)) removeAnimation(this);
         return result;
       };
@@ -1090,7 +1202,7 @@ export function installToolview(tui: LiveTui, getTheme: () => Palette, options: 
   }
   function releaseTree(node: Component) {
     forgetQueued(node);
-    if (candidate(node)) { forget(node); removeAnimation(node); }
+    if (candidate(node)) { forget(node); removeAnimation(node); syntax?.remove(node); syntaxStates.delete(node); }
     else if (userCandidate(node)) forgetUser(node);
     parents.delete(node);
     if (node instanceof Container) for (const child of node.children) releaseTree(child);
@@ -1129,7 +1241,16 @@ export function installToolview(tui: LiveTui, getTheme: () => Palette, options: 
   return controller;
 }
 
-export default function toolview(pi: ExtensionAPI) {
+export interface ToolviewRuntimeOptions {
+  /** Existing provider/settings bindings for controlled SDK embeddings. */
+  syntax?: (ctx: ExtensionContext) => SyntaxRuntimeOptions;
+}
+interface SyntaxContext { current?: ExtensionContext }
+function syntaxNotice(owner: WeakRef<SyntaxContext>) {
+  return (message: string, type: "error") => owner.deref()?.current?.ui.notify(message, type);
+}
+
+export default function toolview(pi: ExtensionAPI, options: ToolviewRuntimeOptions = {}) {
   pi.registerFlag("toolview-card", { type: "string", description: "Additional comma-separated tool names that retain native cards" });
   pi.registerFlag("toolview-compact", { type: "string", description: "Comma-separated tool names that use compact summaries instead of native cards" });
   const retiredBudgetFlags = ["toolview-cache-mb", "toolview-card-cache-mb"];
@@ -1138,6 +1259,18 @@ export default function toolview(pi: ExtensionAPI) {
   let controller: ToolviewController | undefined;
   let enabled = true, colorsEnabled = true;
   let liveContext: ExtensionContext | undefined;
+  let syntax: SyntaxRuntime | undefined, syntaxEnabled = true;
+  const syntaxContext: SyntaxContext = {};
+  function ensureSyntax(ctx: ExtensionContext) {
+    syntaxContext.current = ctx;
+    syntax ??= new SyntaxRuntime({ ...(options.syntax ?? createSyntaxOptions)(ctx), enabled: syntaxEnabled,
+      enabledChanged: value => { syntaxEnabled = value; }, notify: syntaxNotice(new WeakRef(syntaxContext)) });
+    return syntax;
+  }
+  function stopSyntax() {
+    const previous = syntax; syntax = undefined;
+    return previous?.dispose();
+  }
   let colors: TerminalColors | undefined;
   let colorExit: (() => void) | undefined;
   const colorWidget = "pi-toolview-terminal-colors";
@@ -1239,7 +1372,7 @@ export default function toolview(pi: ExtensionAPI) {
   const statusWidget = "pi-toolview-editor-status";
   const names = (flag: string) => String(pi.getFlag(flag) ?? "").split(",").map((name) => name.trim()).filter(Boolean);
   function start(ctx: ExtensionContext) {
-    liveContext = ctx;
+    liveContext = ctx; syntaxContext.current = ctx;
     footerEpoch++;
     directorySource?.refresh(true);
     if (ctx.mode !== "tui" || !enabled) return;
@@ -1256,7 +1389,9 @@ export default function toolview(pi: ExtensionAPI) {
       const slot = tui.children.length === 7 ? tui.children[6] : undefined;
       if (ctx.ui.getEditorComponent() === undefined && slot instanceof Container && slot.children.length === 1)
         pendingFooter = { slot: new WeakRef(slot), owner: new WeakRef(slot.children[0]!) };
+      const sourceRuntime = ensureSyntax(ctx);
       controller = installToolview(tui, palette, {
+        syntax: { client: sourceRuntime, palette: () => sourceRuntime.palette(liveContext!.ui.theme) },
         cards: names("toolview-card"), compact: names("toolview-compact"),
         outputPad: () => pi.getSettings().outputPad ?? 1,
         nativeEditor: () => liveContext?.ui.getEditorComponent() === undefined,
@@ -1268,6 +1403,7 @@ export default function toolview(pi: ExtensionAPI) {
         },
         warn: (message) => { restoreFooter(); liveContext?.ui.notify(`Pi Toolview disabled: ${message}`, "warning"); },
       });
+      if (controller.active) sourceRuntime.attach(controller);
       return { render: () => [], invalidate() {} };
     });
     ctx.ui.setWidget("pi-toolview-capture", undefined);
@@ -1287,7 +1423,7 @@ export default function toolview(pi: ExtensionAPI) {
     }; }, { placement: "belowEditor" });
     startFooter(ctx);
   }
-  const refreshFooter = (_event: unknown, ctx: ExtensionContext) => { liveContext = ctx; footerEpoch++; };
+  const refreshFooter = (_event: unknown, ctx: ExtensionContext) => { liveContext = ctx; syntaxContext.current = ctx; footerEpoch++; };
   pi.on("session_tree", refreshFooter);
   pi.on("session_compact", refreshFooter);
   pi.on("model_select", refreshFooter);
@@ -1301,13 +1437,22 @@ export default function toolview(pi: ExtensionAPI) {
   pi.on("tool_execution_end", refreshDirectory);
   pi.on("agent_end", refreshDirectory);
   pi.on("session_start", (_event, ctx) => start(ctx));
-  pi.on("session_shutdown", (_event, ctx) => { liveContext = ctx; pendingFooter = undefined; stopColors(); restoreFooter(); controller?.restore(); controller = undefined; liveContext = undefined; });
+  pi.on("session_shutdown", async (_event, ctx) => {
+    liveContext = ctx; pendingFooter = undefined; stopColors(); restoreFooter(); controller?.restore(); controller = undefined;
+    const stopped = stopSyntax(); liveContext = undefined; syntaxContext.current = undefined;
+    await stopped;
+  });
   pi.registerCommand("toolview", {
-    description: "Control presentation, terminal colors and component-layout diagnostics: on, off, status, colors, cache",
+    description: "Control presentation, syntax highlighting, terminal colors and component-layout diagnostics: on, off, status, syntax, colors, cache",
     handler: async (args, ctx) => {
-      liveContext = ctx;
+      liveContext = ctx; syntaxContext.current = ctx;
       const command = args.trim() || "status";
       const words = command.split(/\s+/u);
+      if (words[0] === "syntax") {
+        if (words.length !== 1) { ctx.ui.notify("Usage: /toolview syntax", "warning"); return; }
+        if (ctx.mode !== "tui" || !ctx.hasUI) { ctx.ui.notify("Syntax menu is available only in terminal mode with UI.", "error"); return; }
+        await ensureSyntax(ctx).menu(ctx); return;
+      }
       if (words[0] === "colors") {
         const action = words[1] ?? "status";
         if (words.length > 2 || !["on", "off", "status"].includes(action)) {
@@ -1343,9 +1488,9 @@ export default function toolview(pi: ExtensionAPI) {
           processHeapUsedBytes: process.memoryUsage().heapUsed, processMemoryScope: "whole Pi process, not Toolview" })}`, "info");
         return;
       }
-      if (command === "off") { enabled = false; pendingFooter = undefined; stopColors(); restoreFooter(); controller?.restore(); }
+      if (command === "off") { enabled = false; pendingFooter = undefined; stopColors(); restoreFooter(); controller?.restore(); await stopSyntax(); }
       else if (command === "on") { enabled = true; start(ctx); }
-      else if (command !== "status") { ctx.ui.notify("Usage: /toolview on|off|status|colors on|off|status|cache [clear]", "warning"); return; }
+      else if (command !== "status") { ctx.ui.notify("Usage: /toolview on|off|status|syntax|colors on|off|status|cache [clear]", "warning"); return; }
       const status = controller?.active ? "on" : ctx.mode !== "tui" ? "unavailable outside terminal mode" : controller?.reason ?? "off";
       ctx.ui.notify(`Pi Toolview: ${status}`, "info");
     },

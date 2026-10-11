@@ -1,0 +1,11 @@
+{
+  "name": "@kchpock/occipital-linux-arm64-gnu",
+  "version": "__OCCIPITAL_VERSION__",
+  "description": "Occipital native payload for Linux arm64 glibc",
+  "license": "MIT",
+  "os": ["linux"],
+  "cpu": ["arm64"],
+  "libc": ["glibc"],
+  "files": ["occipital", "LICENSE", "NOTICE"],
+  "exports": { "./package.json": "./package.json" }
+}

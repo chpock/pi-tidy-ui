@@ -1,0 +1,1243 @@
+import assert from 'node:assert/strict';
+import { afterEach, test } from 'node:test';
+import { setImmediate as turn } from 'node:timers/promises';
+import { SourceController, CONTROLLER_LIMITS, sourceReservation, type SourceDemand } from '../src/occipital/controller.ts';
+import { decodeSources, PROTOCOL_VERSION, type Description } from '../src/occipital/protocol.ts';
+import { OCCIPITAL_LIMITS } from '../src/occipital/limits.ts';
+import { RequestFailure } from '../src/occipital/request-failure.ts';
+import type { ProviderSnapshot } from '../src/occipital/provider.ts';
+import { StdioTransport } from '../src/occipital/stdio.ts';
+import { ProviderBroker } from '../src/occipital/provider.ts';
+import { RetentionPool } from '../src/occipital/retention.ts';
+import { awaitFixture } from './fixtures/await-fixture.ts';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+const fingerprint = 'a'.repeat(64);
+const description: Description = { instance: 'daemon', assets: 'assets', backend_version: 'test', catalogue_revision: 0,
+  profiles: [{ id: 'pi', label: 'Pi', fingerprint }], diagnostic: null,
+  limits: { request_bytes: OCCIPITAL_LIMITS.wireBytes, reply_bytes: OCCIPITAL_LIMITS.wireBytes, control_request_bytes: 4096, control_reply_bytes: 32768,
+    source_bytes: OCCIPITAL_LIMITS.sourceBytes, line_bytes: 65536, batch_sources: 8, queue_wait_ms: 1000, state_pool_bytes: OCCIPITAL_LIMITS.retainedBytes,
+    leases: 4096, leases_per_route: 512, runs: OCCIPITAL_LIMITS.runs, styles: OCCIPITAL_LIMITS.styles, idle_ms: 300000, age_ms: 3600000,
+    quantum_ms: 2, data_per_route: 2, control_per_route: 1, routes: 8, workers: 2 },
+  runtime: { pid: 1, routes: 1, leases: 0, data_bytes: 0, data_jobs: 0, queued: 0, control_bytes: 0, control_jobs: 0 } };
+const fixtureHosts = new Set<Host>();
+const fixtureControllers = new Set<SourceController>();
+type Call = { request: Record<string, any>; signal?: AbortSignal; deadlineMs?: number; resolve: (value: unknown) => void; reject: (error: unknown) => void };
+class Host {
+  constructor() { fixtureHosts.add(this); }
+  generation = 1;
+  ready = true;
+  description = { ...description, limits: { ...description.limits } };
+  calls: Call[] = [];
+  acceptedClassifications: number[] = [];
+  classificationAccepted(generation: number) { this.acceptedClassifications.push(generation); return this.isReady(generation); }
+  streams = new Map<string, { text: string; revision: number; committed: number; lease: string }>();
+  snapshot(): ProviderSnapshot { return { availability: this.ready ? 'ready' : 'initializing', reason: this.ready ? 'ready' : 'initializing', generation: this.generation, initialShared: false, kind: 'owned', description: this.ready ? this.description : undefined }; }
+  isReady(generation: number) { return this.ready && generation === this.generation; }
+  request(_generation: number, request: Record<string, unknown>, options?: { signal?: AbortSignal; deadlineMs?: number }) {
+    return new Promise<unknown>((resolve, reject) => this.calls.push({ request, signal: options?.signal, deadlineMs: options?.deadlineMs, resolve, reject }));
+  }
+  answer(index: number) {
+    const c = this.calls[index]!, r = c.request;
+    if (r.op === 'stream.close') { this.streams.delete(r.key); c.resolve({ v: PROTOCOL_VERSION, ticket: r.ticket, instance: description.instance, assets: description.assets, status: 'ok', body: { kind: 'closed' } }); return; }
+    const s = r.sources?.[0] ?? r, prior = this.streams.get(s.key);
+    const text = r.op === 'stream.append' ? prior!.text + r.append : s.text;
+    const complete = r.op === 'highlight' || r.final === true;
+    const revision = r.op === 'stream.append' ? prior!.revision + 1 : 1;
+    const replace_from = r.op === 'stream.append' ? prior!.committed : 0;
+    const source_bytes = Buffer.byteLength(text);
+    const committed_bytes = complete ? source_bytes : Buffer.byteLength(text.slice(0, text.lastIndexOf('\n') + 1));
+    const lease = prior?.lease ?? `lease-${index}`;
+    if (!complete) this.streams.set(s.key, { text, revision, committed: committed_bytes, lease });
+    const result = { key: s.key, generation: s.generation, source_version: s.source_version, profile: s.profile, fingerprint: s.fingerprint,
+      revision, replace_from, source_bytes, committed_bytes, complete, ...(r.op !== 'highlight' ? { lease } : {}),
+      styles: [{ role: 'syntaxKeyword' }], runs: source_bytes > replace_from ? [source_bytes - replace_from, 0] : [],
+      counters: { committed_line_calls: 0, committed_line_bytes: 0, tail_calls: 0, tail_bytes: 0 } };
+    c.resolve({ v: PROTOCOL_VERSION, ticket: r.ticket, instance: description.instance, assets: description.assets, status: 'ok', body: { kind: 'source', sources: [result] } });
+  }
+  fault(index: number, code: string, execution = 'not_started') {
+    const r = this.calls[index]!.request;
+    this.calls[index]!.resolve({ v: PROTOCOL_VERSION, ticket: r.ticket, instance: description.instance, assets: description.assets, status: 'error', error: { code, execution } });
+  }
+}
+function demand(text: string, version = 1, complete = false, key = 'source'): SourceDemand {
+  return { key, version, text, language: 'bash', profile: 'pi', fingerprint, complete };
+}
+function fixture(options: ConstructorParameters<typeof SourceController>[1] = { deadlineMs: 1000 }) {
+  const host = new Host(), controller = new SourceController(host, options);
+  fixtureControllers.add(controller);
+  return { host, controller };
+}
+function ranges(controller: SourceController, key = 'source') {
+  const rows: number[][] = []; controller.visitRanges(key, (a, b, s) => rows.push([a, b, s])); return rows;
+}
+async function settle() { await turn(); }
+afterEach(async () => {
+  for (const controller of fixtureControllers) controller.dispose();
+  // Synthetic hosts deliberately hold promises; every terminal fixture outcome
+  // must release module-global credit before the next independent test.
+  for (let turnIndex = 0; turnIndex < 10; turnIndex++) {
+    for (const host of fixtureHosts) for (const call of host.calls) call.resolve({});
+    await settle();
+  }
+  for (const controller of fixtureControllers) {
+    assert.equal(controller.stats().globalUnsettledJobs, 0);
+    assert.equal(controller.stats().bookkeepingBytes, 0); assert.equal(controller.stats().sourceRecords, 0);
+  }
+  fixtureControllers.clear(); fixtureHosts.clear();
+});
+
+test('observe is inert; explicit flush coalesces latest; warmed observations do no preparation', async () => {
+  const { host, controller: c } = fixture();
+  for (let version = 1; version <= 100; version++) c.observe(demand('x'.repeat(version), version, true));
+  assert.equal(host.calls.length, 0); assert.equal(c.stats().preparedBytes, 0);
+  c.flush(); assert.equal(host.calls.length, 1); assert.equal(host.calls[0]!.request.sources[0].source_version, 100);
+  host.answer(0); await settle();
+  const before = c.stats();
+  for (let i = 0; i < 100; i++) { c.observe(demand('x'.repeat(100), 100, true)); c.flush(); ranges(c); }
+  assert.deepEqual(c.stats(), before); assert.equal(host.calls.length, 1); assert.equal(c.status('source')!.exact, true);
+});
+
+test('two unsettled captures, latest replacement, older useful acknowledgement then only suffix', async () => {
+  const { host, controller: c } = fixture();
+  c.observe(demand('a\nt', 1)); c.observe(demand('b\n', 1, true, 'second')); c.flush();
+  assert.equal(host.calls.length, 2); const held = c.stats().transientBytes; assert.ok(held > 0 && held <= CONTROLLER_LIMITS.transientBytes);
+  assert.equal(c.stats().captures, 2); assert.equal(c.stats().peakJobs, 2);
+  c.observe(demand('a\ntx', 2)); c.observe(demand('a\ntxy', 3));
+  c.observe(demand('third', 1, true, 'third')); c.flush(); assert.equal(host.calls.length, 2);
+  host.answer(0); await settle();
+  assert.equal(c.status('source')!.acknowledgedVersion, 1); assert.equal(c.status('source')!.exact, false);
+  assert.deepEqual(host.acceptedClassifications, [host.generation], 'older useful parser acknowledgement is validated native success');
+  assert.deepEqual(ranges(c), [[0, 2, 2]]);
+  assert.equal(host.calls[2]!.request.op, 'stream.append'); assert.equal(host.calls[2]!.request.append, 'xy');
+  assert.equal(host.calls[2]!.request.base_revision, 1); assert.equal(host.calls[2]!.request.source_version, 3);
+  host.answer(1); await settle(); host.answer(2); await settle(); host.answer(3); await settle();
+  assert.equal(c.stats().transientBytes, 0); assert.equal(c.stats().unsettledJobs, 0);
+  assert.equal(c.stats().retention.prefixCopiedBytes, 0); assert.equal(c.stats().preparedBytes, 12);
+});
+
+test('empty final suffix is dispatched once and commits tail without invented bytes', async () => {
+  const { host, controller: c } = fixture(); c.observe(demand('a\nt')); c.flush(); host.answer(0); await settle();
+  c.observe(demand('a\nt', 1, true)); c.flush();
+  assert.equal(host.calls[1]!.request.append, ''); assert.equal(host.calls[1]!.request.final, true);
+  host.answer(1); await settle(); assert.equal(c.status('source')!.exact, true);
+  assert.equal(c.status('source')!.committedBytes, 3); assert.equal(c.stats().remoteLeases, 0);
+  c.observe(demand('a\nt', 1, true)); c.flush(); assert.equal(host.calls.length, 2);
+});
+
+test('restart_required preserves independently valid colors and retries latest once with fresh identity', async () => {
+  const { host, controller: c } = fixture(); c.observe(demand('a\nt')); c.flush(); host.answer(0); await settle();
+  c.observe(demand('a\ntx', 2)); c.flush(); host.fault(1, 'restart_required'); await settle();
+  assert.equal(host.calls[2]!.request.op, 'stream.close'); host.answer(2); await settle();
+  const restarted = host.calls[3]!.request;
+  assert.equal(restarted.op, 'stream.open'); assert.equal(restarted.sources[0].text, 'a\ntx');
+  assert.notEqual(restarted.sources[0].generation, host.calls[0]!.request.sources[0].generation);
+  assert.notEqual(restarted.sources[0].key, host.calls[0]!.request.sources[0].key);
+  assert.deepEqual(ranges(c), [[0, 2, 2]]); assert.equal(c.status('source')!.acknowledgedVersion, undefined);
+  host.fault(3, 'restart_required'); await settle();
+  assert.equal(c.status('source')!.execution, 'not_started'); assert.equal(c.status('source')!.protective, true);
+  for (let v = 3; v < 10; v++) { c.observe(demand('a\ntx'.padEnd(v + 3, 'x'), v)); c.flush(); }
+  assert.equal(host.calls.length, 4); assert.equal(c.stats().restarts, 1);
+});
+
+test('no-start refusal never loops unchanged work; untyped rejection stays unknown across new demands', async () => {
+  const { host, controller: c } = fixture(); c.observe(demand('echo x', 1, true)); c.flush(); host.fault(0, 'busy'); await settle();
+  assert.equal(c.status('source')!.fallbackEligible, true);
+  for (let i = 0; i < 10; i++) { c.observe(demand('echo x', 1, true)); c.flush(); }
+  assert.equal(host.calls.length, 1);
+  c.observe(demand('echo xy', 2, true)); c.flush(); host.calls[1]!.reject(new Error('anything')); await settle();
+  assert.equal(c.status('source')!.execution, 'unknown'); assert.equal(c.status('source')!.fallbackEligible, false);
+  c.observe(demand('echo xyz', 3, true)); c.flush(); assert.equal(host.calls.length, 2);
+  host.generation++; c.observe(demand('echo xyz', 3, true)); c.flush(); assert.equal(host.calls.length, 3);
+  host.answer(2); await settle(); assert.equal(c.status('source')!.exact, true);
+});
+
+test('rewrite/language/profile retire generations; stale replies do not revive entries or free early slots', async () => {
+  const { host, controller: c } = fixture(); c.observe(demand('before')); c.flush(); const held = c.stats().transientBytes;
+  c.observe(demand('after', 2)); c.flush();
+  assert.equal(host.calls[0]!.signal!.aborted, true); assert.equal(host.calls.length, 1); assert.equal(c.stats().transientBytes, held);
+  host.answer(0); await settle(); assert.equal(host.calls[1]!.request.op, 'stream.close'); host.answer(1); await settle();
+  assert.equal(host.calls[2]!.request.sources[0].text, 'after'); assert.deepEqual(ranges(c), []);
+  host.answer(2); await settle(); c.observe({ ...demand('after', 2), language: 'rust' }); c.flush();
+  assert.deepEqual(ranges(c), []); assert.equal(host.calls[3]!.request.op, 'stream.close');
+  host.answer(3); await settle(); host.answer(4); await settle();
+  c.observe({ ...demand('after', 2), profile: 'missing' }); c.flush(); host.answer(5); await settle();
+  assert.equal(c.status('source')!.protective, true); assert.deepEqual(ranges(c), []);
+});
+
+test('provider epoch change rejects late acknowledgement and allows only newly observed demand replay', async () => {
+  const { host, controller: c } = fixture(); c.observe(demand('old', 1, true)); c.flush(); host.generation++;
+  host.answer(0); await settle(); assert.deepEqual(ranges(c), []); assert.equal(host.calls.length, 1);
+  c.observe(demand('old', 1, true)); c.flush(); host.answer(1); await settle(); assert.equal(c.status('source')!.exact, true);
+});
+
+test('pool pressure retires evicted leases, rejects late suffix, then caller re-admits fresh full source', async () => {
+  const { host, controller: c } = fixture({ deadlineMs: 1000, retention: { maxBytes: 3300 } });
+  c.observe(demand('a\nt')); c.flush(); host.answer(0); await settle(); c.observe(demand('a\ntx', 2)); c.flush();
+  c.observe(demand('second', 1, true, 'second')); c.observe(demand('third', 1, true, 'third')); c.flush();
+  assert.equal(c.status('source')!.generation, undefined); assert.equal(host.calls[1]!.signal!.aborted, true);
+  host.answer(1); await settle();
+  for (let i = 2; i < host.calls.length; i++) { host.answer(i); await settle(); }
+  assert.equal(c.observe(demand('a\ntx', 2)), false); c.flush();
+  c.retryEvicted('source'); c.observe(demand('a\ntx', 2, true)); c.flush(); const last = host.calls.at(-1)!;
+  assert.equal(last.request.op, 'highlight'); assert.equal(last.request.sources[0].text, 'a\ntx');
+  assert.notEqual(last.request.sources[0].generation, host.calls[0]!.request.sources[0].generation);
+  last.resolve({}); await settle(); assert.equal(c.stats().retention.prefixCopiedBytes, 0);
+});
+
+test('transient admission precedes preparation, capacity waits and abort never releases a capture', async () => {
+  const f = fixture({ deadlineMs: 1000, maxTransientBytes: 128 }); f.controller.observe(demand('echo x', 1, true)); f.controller.flush();
+  assert.equal(f.host.calls.length, 0); assert.equal(f.controller.stats().preparedBytes, 0);
+  assert.equal(f.controller.status('source')!.execution, 'not_started');
+  const { host, controller: c } = fixture(); c.observe(demand('one', 1, true)); c.observe(demand('two', 1, true, 'two')); c.flush();
+  const held = c.stats().transientBytes; c.dispose(); assert.equal(c.stats().transientBytes, held); assert.equal(c.stats().retention.entries, 0);
+  assert.ok(host.calls.every(call => call.signal!.aborted)); host.answer(0); host.answer(1); await settle();
+  assert.equal(c.stats().transientBytes, 0); assert.equal(c.stats().unsettledJobs, 0); assert.equal(c.status('source'), undefined);
+  c.observe(demand('new')); c.flush(); assert.equal(host.calls.length, 2);
+});
+
+test('malformed UTF16 waits without encoding; append preparation and decode never encode a committed prefix', async () => {
+  const { host, controller: c } = fixture(); c.observe(demand('echo \ud83d')); c.flush(); assert.equal(host.calls.length, 0);
+  c.observe(demand('echo 😀\n', 2)); c.flush(); host.answer(0); await settle();
+  const original = Buffer.from, encoded: string[] = [];
+  Buffer.from = ((value: unknown, ...args: any[]) => { if (typeof value === 'string') encoded.push(value); return (original as any)(value, ...args); }) as typeof Buffer.from;
+  try {
+    for (let v = 3; v <= 12; v++) { c.observe(demand('echo 😀\n' + 'x\n'.repeat(v - 2), v)); c.flush(); host.answer(host.calls.length - 1); await settle(); }
+  } finally { Buffer.from = original; }
+  assert.deepEqual(encoded, Array(10).fill('x\n')); assert.equal(c.stats().preparedBytes, Buffer.byteLength('echo 😀\n') + 20);
+  assert.equal(c.stats().decodedBytes, Buffer.byteLength('echo 😀\n') + 20); assert.equal(c.stats().retention.prefixCopiedBytes, 0);
+});
+
+test('remote stream leases remain bounded; empty sources never launch parse work', async () => {
+  const { host, controller: c } = fixture(); c.observe(demand('', 1, true)); c.flush(); assert.equal(host.calls.length, 0); assert.equal(c.status('source')!.exact, true);
+  host.description.limits.leases_per_route = 4;
+  for (let i = 0; i < 5; i++) { c.observe(demand(`x${i}`, 1, false, `s${i}`)); c.flush(); }
+  for (let i = 0; i < 4; i++) { host.answer(i); await settle(); }
+  assert.equal(host.calls.length, 4); assert.equal(c.stats().remoteLeases, 4); assert.equal(c.status('s4')!.execution, 'not_started');
+  c.remove('s0'); c.flush(); assert.equal(host.calls[4]!.request.op, 'stream.close'); host.answer(4); await settle();
+  assert.equal(host.calls[5]!.request.op, 'stream.open'); assert.equal(c.stats().remoteLeases, 4);
+});
+
+test('first discarded controller collects while externally held request and second controller remain active', async () => {
+  assert.ok(global.gc, 'run controller gate with --expose-gc');
+  const host = new Host();
+  function discarded() { const c = new SourceController(host, { deadlineMs: 1000 }); c.observe(demand('first', 1, true)); c.flush(); return new WeakRef(c); }
+  const weak = discarded(); const second = new SourceController(host, { deadlineMs: 1000 }); second.observe(demand('second', 1, true)); second.flush();
+  second.observe(demand('third', 1, true, 'third')); second.flush();
+  assert.equal(host.calls.length, 2); assert.equal(second.stats().globalUnsettledJobs, 2);
+  const held = second.stats().globalTransientBytes;
+  for (let i = 0; i < 30; i++) { await turn(); global.gc!(); }
+  assert.equal(weak.deref(), undefined); assert.equal(host.calls.length, 2);
+  assert.equal(second.stats().globalTransientBytes, held);
+  assert.equal(second.stats().globalBookkeepingBytes, second.stats().bookkeepingBytes);
+  host.answer(0); await settle(); assert.equal(host.calls.length, 3);
+  assert.equal(second.stats().globalUnsettledJobs, 2); assert.equal(second.stats().unsettledJobs, 2);
+  host.answer(1); host.answer(2); await settle(); assert.equal(second.status('source')!.exact, true);
+  assert.equal(second.status('third')!.exact, true); assert.equal(second.stats().globalTransientBytes, 0);
+  second.dispose();
+});
+
+test('actual product stdio controller opens, coalesces, finalizes and retains native parse counters', { skip: !process.env.OCCIPITAL_TEST_BIN }, async () => {
+  const root = await mkdtemp(join(tmpdir(), 'occipital-controller-'));
+  const env = { ...process.env, HOME: root, XDG_CONFIG_HOME: root, XDG_DATA_HOME: root, XDG_CACHE_HOME: root, XDG_RUNTIME_DIR: root };
+  const transport = new StdioTransport({ command: process.env.OCCIPITAL_TEST_BIN!, args: ['--stdio', '--config', join(root, 'config.json')], env, cwd: root, requestDeadlineMs: 5000, terminateGraceMs: 100 });
+  const broker = new ProviderBroker({ tryShared: async () => undefined, acquireOwned: async () => transport });
+  let changes = 0;
+  const c = new SourceController(broker, { deadlineMs: 5000, onChange: () => { changes++; } });
+  try {
+    await awaitFixture(broker.start()); const profile = broker.snapshot().description!.profiles.find(p => p.id === 'pi')!;
+    const d = { ...demand('echo α\necho t'), fingerprint: profile.fingerprint }; c.observe(d); c.flush();
+    await awaitFixture((async () => { while (c.stats().unsettledJobs) await turn(); })()); assert.equal(c.status('source')!.committedBytes, Buffer.byteLength('echo α\n'));
+    c.observe({ ...d, version: 2, text: d.text + 'ail' }); c.observe({ ...d, version: 3, text: d.text + 'ail\n' }); c.flush();
+    await awaitFixture((async () => { while (c.stats().unsettledJobs) await turn(); })());
+    c.observe({ ...d, version: 3, text: d.text + 'ail\n', complete: true }); c.flush();
+    await awaitFixture((async () => { while (c.stats().unsettledJobs) await turn(); })());
+    assert.equal(c.status('source')!.exact, true); assert.equal(c.stats().dispatches, 3); assert.equal(c.stats().remoteLeases, 0);
+    assert.equal(changes, 3);
+    assert.equal(c.stats().committedLineCalls, 2); assert.equal(c.stats().tailCalls, 1); assert.equal(c.stats().retention.prefixCopiedBytes, 0);
+    assert.equal(c.stats().preparedBytes, Buffer.byteLength(d.text) + 4); assert.equal(c.stats().transientBytes, 0);
+    const fullText = d.text + 'ail\n', descriptor = broker.snapshot().description!;
+    const wire = await awaitFixture(broker.request(broker.snapshot().generation, { v: PROTOCOL_VERSION, ticket: 'independent-batch', instance: descriptor.instance,
+      op: 'highlight', admission: 'bounded_queue', queue_wait_ms: 1000, sources: [{ key: 'control', generation: 1, source_version: 3,
+        profile: 'pi', fingerprint: profile.fingerprint, hint: { language: 'bash' }, text: fullText }] }, { deadlineMs: 5000 }));
+    const chunk = decodeSources(wire, 'independent-batch', descriptor, [{ key: 'control', generation: 1, source_version: 3,
+      profile: 'pi', fingerprint: profile.fingerprint, revision: 1, replace_from: 0, source_bytes: Buffer.byteLength(fullText), complete: true, replacementText: fullText }])[0]!;
+    const independent: number[][] = []; let from = 0;
+    for (let i = 0; i < chunk.runs.length; i += 2) { independent.push([from, chunk.runs[i]!, chunk.runs[i + 1]!]); from = chunk.runs[i]!; }
+    const coalesce = (input: number[][]) => { const result: number[][] = []; for (const row of input) {
+      const prior = result.at(-1); if (prior && prior[1] === row[0] && prior[2] === row[2]) prior[1] = row[1]!; else result.push([...row]);
+    } return result; };
+    assert.deepEqual(coalesce(ranges(c)), coalesce(independent));
+    c.observe({ ...demand('cleanup\ntail', 1, false, 'cleanup'), fingerprint: profile.fingerprint }); c.flush();
+    await awaitFixture((async () => { while (c.stats().unsettledJobs) await turn(); })());
+    c.remove('cleanup'); c.flush(); await awaitFixture((async () => { while (c.stats().unsettledJobs) await turn(); })());
+    assert.equal(c.stats().dispatches, 5); assert.equal(c.stats().remoteLeases, 0); assert.equal(c.stats().transientBytes, 0);
+    assert.equal(changes, 4); // native close is bookkeeping, not another color change.
+  } finally { c.dispose(); await awaitFixture(broker.dispose()); await rm(root, { recursive: true, force: true }); }
+});
+
+
+test('borrowed snapshot accessor reuses cached byte length and cannot mutate pool records', () => {
+  const pool = new RetentionPool(); const generation = pool.admit('snapshot', 1, '😀').generation!;
+  const first = pool.borrowSnapshot(generation)!; assert.deepEqual(first, { version: 1, text: '😀', utf8Bytes: 4 });
+  (first as { text: string }).text = 'changed'; assert.equal(pool.borrowSnapshot(generation)!.text, '😀');
+  pool.replaceSnapshot(generation, 2, '😀é'); assert.equal(pool.borrowSnapshot(generation)!.utf8Bytes, 6);
+  assert.equal(pool.borrowSnapshot(generation, 'basis')!.version, 1);
+  pool.remove(generation); assert.equal(pool.borrowSnapshot(generation), undefined);
+});
+
+test('unknown obsolete outcome blocks replacement and survives eviction/re-admission on same provider', async () => {
+  const { host, controller: c } = fixture({ deadlineMs: 1000, retention: { maxBytes: 2200 } });
+  c.observe(demand('first')); c.flush(); c.observe(demand('rewrite', 2)); c.flush(); assert.equal(host.calls.length, 1);
+  host.calls[0]!.reject(new Error('untyped rejection after abort')); await settle();
+  assert.equal(host.calls.length, 1); assert.equal(c.status('source')!.execution, 'unknown');
+  c.observe(demand('other', 1, true, 'other')); c.flush(); host.answer(1); await settle();
+  c.retryEvicted('source'); c.observe(demand('rewrite', 3)); c.flush(); assert.equal(host.calls.length, 2);
+  assert.equal(c.status('source')!.fallbackEligible, false);
+  host.generation++; c.observe(demand('rewrite', 3)); c.flush(); host.answer(2); await settle();
+  assert.equal(c.status('source')!.exact, true);
+});
+
+test('retirement close waits for same-source append settlement rather than overlapping physical jobs', async () => {
+  const { host, controller: c } = fixture(); c.observe(demand('line\ntail')); c.flush(); host.answer(0); await settle();
+  c.observe(demand('line\ntails', 2)); c.flush(); c.remove('source'); c.flush();
+  assert.equal(host.calls.length, 2); assert.equal(c.stats().unsettledJobs, 1); assert.equal(c.stats().pendingCloses, 1);
+  host.answer(1); await settle(); assert.equal(host.calls[2]!.request.op, 'stream.close');
+  host.answer(2); await settle(); assert.equal(c.stats().remoteLeases, 0); assert.equal(c.stats().transientBytes, 0);
+});
+
+test('provider replay retains exact classifications but does not transfer old parser acknowledgement', async () => {
+  const { host, controller: c } = fixture(); c.observe(demand('line\ntail')); c.flush(); host.answer(0); await settle();
+  const old = ranges(c); host.generation++; c.observe(demand('line\ntail')); c.flush();
+  assert.deepEqual(ranges(c), old); assert.equal(c.status('source')!.acknowledgedVersion, undefined);
+  assert.equal(host.calls[1]!.request.op, 'stream.open');
+  c.observe(demand('line\ntail', 1, true)); host.answer(1); await settle();
+  assert.equal(host.calls[2]!.request.op, 'stream.append'); assert.equal(host.calls[2]!.request.append, '');
+  host.answer(2); await settle(); assert.equal(c.status('source')!.exact, true); assert.equal(c.stats().retention.entries, 1);
+});
+
+test('previous recovery result obeys pool pressure and reset retry budget survives evictions', async () => {
+  const { host, controller: c } = fixture({ deadlineMs: 1000, retention: { maxBytes: 5500 } });
+  c.observe(demand('a\nt')); c.flush(); host.answer(0); await settle(); c.observe(demand('a\ntx', 2)); c.flush();
+  host.fault(1, 'restart_required'); await settle(); host.answer(2); await settle();
+  assert.deepEqual(ranges(c), [[0, 2, 2]]); assert.equal(c.stats().retention.entries, 2);
+  c.observe(demand('second', 1, true, 'second')); c.observe(demand('a\ntxy', 3));
+  c.observe(demand('third', 1, true, 'third')); c.flush();
+  assert.deepEqual(ranges(c), []); assert.ok(c.stats().retention.entries <= 3);
+  host.fault(3, 'restart_required'); await settle();
+  assert.equal(c.status('source')!.protective, true);
+  c.observe(demand('fourth', 1, true, 'fourth')); c.observe(demand('fifth', 1, true, 'fifth')); c.flush();
+  c.retryEvicted('source'); c.observe(demand('a\ntxyz', 4)); c.flush();
+  assert.notEqual(c.status('source')?.execution, 'unsettled'); assert.equal(c.stats().restarts, 1);
+});
+
+test('disable drops demand, keeps unsettled accounting, and re-enable requires fresh caller observations', async () => {
+  const { host, controller: c } = fixture(); c.observe(demand('first', 1, true)); c.flush(); c.observe(demand('waiting', 2, true));
+  c.setEnabled(false); const bytes = c.stats().transientBytes; assert.ok(bytes > 0); assert.equal(c.stats().retention.entries, 0);
+  assert.equal(c.observe(demand('ignored', 1, true)), false); c.setEnabled(true); c.flush(); assert.equal(host.calls.length, 1);
+  host.answer(0); await settle(); assert.equal(c.stats().transientBytes, 0); assert.equal(host.calls.length, 1);
+  c.observe(demand('fresh', 3, true)); c.flush(); host.answer(1); await settle(); assert.equal(c.status('source')!.exact, true);
+});
+
+
+test('byte credit can serialize two admitted sources without preparing the waiting source early', async () => {
+  const { host, controller: c } = fixture({ deadlineMs: 1000, maxTransientBytes: 40000 });
+  host.description.limits.request_bytes = 1024; host.description.limits.reply_bytes = 1024;
+  c.observe(demand('one', 1, true)); c.observe(demand('two', 1, true, 'two')); c.flush();
+  assert.equal(host.calls.length, 1); assert.equal(c.stats().preparedBytes, 3); assert.equal(c.stats().transientBytes, 38365);
+  c.flush(); assert.equal(host.calls.length, 1); assert.equal(c.stats().preparedBytes, 3);
+  host.answer(0); await settle(); assert.equal(host.calls.length, 2); assert.equal(c.stats().preparedBytes, 6);
+  assert.equal(c.stats().transientBytes, 38365); host.answer(1); await settle();
+  assert.equal(c.stats().transientBytes, 0); assert.equal(c.stats().peakJobs, 1);
+});
+
+test('bad decoded reply and explicit started fault cannot enable fallback or unchanged-frame retries', async () => {
+  for (const outcome of ['invalid', 'started']) {
+    const { host, controller: c } = fixture(); c.observe(demand('echo x', 1, true)); c.flush();
+    if (outcome === 'invalid') host.calls[0]!.resolve({ v: 1 }); else host.fault(0, 'engine_failure', 'started');
+    await settle(); assert.equal(c.status('source')!.fallbackEligible, false); assert.equal(c.status('source')!.protective, true);
+    assert.deepEqual(ranges(c), []); c.observe(demand('echo xy', 2, true)); c.flush(); assert.equal(host.calls.length, 1);
+  }
+});
+
+test('provider startup/read paths stay inert, readiness flushes queued demand, absence preserves exact colors', async () => {
+  const { host, controller: c } = fixture(); host.ready = false; c.observe(demand('echo x', 1, true));
+  for (let i = 0; i < 20; i++) { c.status('source'); ranges(c); c.flush(); }
+  assert.equal(host.calls.length, 0); assert.equal(c.stats().preparedBytes, 0);
+  assert.equal(c.status('source')!.availability, 'initializing'); assert.equal(c.status('source')!.execution, 'not_started');
+  host.ready = true; c.flush(); host.answer(0); await settle(); const painted = ranges(c);
+  host.ready = false; host.generation++; assert.equal(c.status('source')!.acknowledgedVersion, undefined);
+  assert.equal(c.status('source')!.exact, true); assert.deepEqual(ranges(c), painted); c.flush(); assert.equal(host.calls.length, 1);
+  c.observe(demand('echo x', 1, true)); host.ready = true; c.flush();
+  assert.equal(host.calls.length, 1); assert.deepEqual(ranges(c), painted);
+  assert.equal(c.status('source')!.acknowledgedVersion, undefined);
+});
+
+test('mismatched profile identities refuse before source encoding or RPC', () => {
+  for (const d of [{ ...demand('echo x', 1, true), fingerprint: 'b'.repeat(64) }]) {
+    const { host, controller: c } = fixture(); c.observe(d); c.flush(); assert.equal(host.calls.length, 0);
+    assert.equal(c.stats().preparedBytes, 0); assert.equal(c.stats().transientBytes, 0);
+    assert.equal(c.status('source')!.execution, 'not_started'); assert.equal(c.status('source')!.protective, true);
+    c.observe(d); c.flush(); assert.equal(host.calls.length, 0);
+  }
+});
+
+
+test('current temporary family admits two32MiB fact sets without allocating those sources', () => {
+  const l = OCCIPITAL_LIMITS;
+  const full = 7*l.sourceBytes + 4*l.wireBytes + 24*l.runs + 128*l.styles + 32768 + 1024;
+  const two32 = 2*(7*(32*1024*1024) + 4*l.wireBytes + 24*l.runs + 128*l.styles + 32768 + 1024);
+  assert.equal(CONTROLLER_LIMITS.transientBytes, 2*full);
+  assert.ok(two32 <= CONTROLLER_LIMITS.transientBytes);
+});
+
+test('warm visits never traverse full source via prefix comparisons or UTF8 measurement', async () => {
+  const { host, controller: c } = fixture(); const text = 'a distinctive raw source\nwith tail';
+  const d = demand(text, 1, true); c.observe(d); c.flush(); host.answer(0); await settle();
+  const prefix = String.prototype.startsWith, size = Buffer.byteLength; let visits = 0;
+  String.prototype.startsWith = function (...args) { if (String(this) === text) visits++; return prefix.apply(this, args); };
+  Buffer.byteLength = ((value: any, ...args: any[]) => { if (value === text) visits++; return (size as any)(value, ...args); }) as typeof Buffer.byteLength;
+  try { for (let i = 0; i < 20; i++) { c.observe(d); c.flush(); c.status(d.key); ranges(c); } }
+  finally { String.prototype.startsWith = prefix; Buffer.byteLength = size; }
+  assert.equal(visits, 0); assert.equal(host.calls.length, 1);
+});
+
+test('257 tiny demands have no unrelated count eviction and removal drops all primitive refusal records', () => {
+  const { controller: c } = fixture();
+  for (let i = 0; i < 257; i++) assert.equal(c.observe(demand('x', 1, true, `tiny-${i}`)), true);
+  assert.equal(c.stats().retention.entries, 257);
+  for (let i = 0; i < 257; i++) c.remove(`tiny-${i}`);
+  assert.equal(c.stats().sourceRecords, 0); assert.equal(c.stats().guardRecords, 0);
+});
+
+
+test('reviewed typed local no-start is current-attempt proof; foreign structure and untyped failures are unknown', async () => {
+  const errors = [new RequestFailure('preflight only', 'not_started'), new RequestFailure('not_started in message'),
+    { execution: 'not_started' }, new Error('no-start')];
+  for (let i = 0; i < errors.length; i++) {
+    const { host, controller: c } = fixture(); c.observe(demand('echo x', 1, true)); c.flush(); host.calls[0]!.reject(errors[i]); await settle();
+    assert.equal(c.status('source')!.execution, i === 0 ? 'not_started' : 'unknown');
+    assert.equal(c.status('source')!.fallbackEligible, i === 0);
+    c.observe(demand('echo x', 1, true)); c.flush(); assert.equal(host.calls.length, 1); c.dispose();
+  }
+});
+
+
+test('working-set pressure never evicts and resends on identical visits; explicit retry is finite', async () => {
+  const { host, controller: c } = fixture({ retention: { maxBytes: 2000 } });
+  const demands = Array.from({ length: 4 }, (_, i) => demand('x', 1, true, `pressure-${i}`));
+  for (const d of demands) c.observe(d); c.flush(); assert.equal(host.calls.length, 1);
+  host.answer(0); await settle(); assert.equal(c.stats().retention.entries, 1);
+  const before = c.stats();
+  for (let visit = 0; visit < 30; visit++) for (const d of demands) { c.observe(d); c.flush(); c.status(d.key); ranges(c, d.key); }
+  assert.deepEqual(c.stats(), before); assert.equal(c.stats().preparedBytes, 1);
+  assert.equal(c.retryEvicted(demands[0]!.key), true); c.observe(demands[0]!); c.flush(); host.answer(1); await settle();
+  assert.equal(c.retryEvicted(demands[0]!.key), false);
+  for (const d of demands) c.remove(d.key);
+  assert.equal(c.stats().sourceRecords, 0); assert.equal(c.stats().guardRecords, 0); assert.equal(c.stats().bookkeepingBytes, 128);
+});
+
+test('unretainable result keeps a primitive refusal without repeated source measurements or dispatch', async () => {
+  const { host, controller: c } = fixture({ retention: { maxBytes: 1500 } }); const d = demand('unretainable result', 1, true);
+  c.observe(d); c.flush(); host.answer(0); await settle(); assert.equal(c.status(d.key)!.generation, undefined);
+  assert.deepEqual(host.acceptedClassifications, [host.generation], 'local retention pressure does not undo validated native success');
+  const before = c.stats(), byteLength = Buffer.byteLength; let scans = 0;
+  Buffer.byteLength = ((value: any, ...args: any[]) => { if (value === d.text) scans++; return (byteLength as any)(value, ...args); }) as typeof Buffer.byteLength;
+  try { for (let i = 0; i < 30; i++) { c.observe(d); c.flush(); } } finally { Buffer.byteLength = byteLength; }
+  assert.equal(scans, 0); assert.deepEqual(c.stats(), before); assert.equal(host.calls.length, 1);
+  assert.deepEqual(host.acceptedClassifications, [host.generation]);
+  c.remove(d.key); assert.equal(c.stats().guardRecords, 0); c.dispose(); assert.equal(c.stats().bookkeepingBytes, 0);
+});
+
+test('bookkeeping has byte admission, deterministic removal and no separate source count limit', () => {
+  const { controller: c } = fixture({ maxBookkeepingBytes: 1400 });
+  assert.equal(c.observe(demand('x', 1, true, 'first')), true);
+  assert.equal(c.observe(demand('x', 1, true, 'second')), false);
+  c.remove('first'); assert.equal(c.observe(demand('x', 1, true, 'second')), true);
+  assert.ok(c.stats().bookkeepingBytes <= 1400); c.dispose(); assert.equal(c.stats().bookkeepingBytes, 0);
+});
+
+test('full raw path hint and over64KiB logical line are transmitted without local line rejection', async () => {
+  const { host, controller: c } = fixture(); const text = 'x'.repeat(65537);
+  const d = { ...demand(text, 1, true), language: undefined, path: '/raw/source/example.json' };
+  c.observe(d); assert.equal(host.calls.length, 0); c.flush();
+  assert.deepEqual(host.calls[0]!.request.sources[0].hint, { path: d.path });
+  assert.equal(host.calls[0]!.request.sources[0].text, text); host.answer(0); await settle();
+  assert.equal(c.status('source')!.exact, true); assert.equal(c.stats().preparedBytes, 65537);
+  c.observe({ ...d, path: '/raw/source/example.rs' }); c.flush();
+  assert.notEqual(host.calls[1]!.request.sources[0].generation, host.calls[0]!.request.sources[0].generation);
+  assert.deepEqual(ranges(c), []); host.answer(1); await settle();
+});
+
+test('exact frame admission stays transport-owned rather than an escaping estimate or second stringify', async () => {
+  const { host, controller: c } = fixture(); host.description.limits.request_bytes = 1024; host.description.limits.reply_bytes = 1024;
+  const text = 'x'.repeat(300); const stringify = JSON.stringify; let encodes = 0;
+  JSON.stringify = ((...args: any[]) => { encodes++; return (stringify as any)(...args); }) as typeof JSON.stringify;
+  try { c.observe(demand(text, 1, true)); c.flush(); } finally { JSON.stringify = stringify; }
+  assert.equal(encodes, 0); assert.equal(host.calls.length, 1);
+  assert.ok(Buffer.byteLength(JSON.stringify(host.calls[0]!.request)) < 1024);
+  assert.ok(6*Buffer.byteLength(text) > 1024); host.answer(0); await settle(); assert.equal(c.status('source')!.exact, true);
+});
+
+test('default source usefulness deadline is five minutes and no-start preserves newer waiting demand', async () => {
+  const host = new Host(), c = new SourceController(host); fixtureControllers.add(c);
+  c.observe(demand('first', 1, true)); c.flush(); assert.equal(host.calls[0]!.deadlineMs, 300000);
+  c.observe(demand('first waiting', 2, true)); host.calls[0]!.reject(new RequestFailure('local preflight', 'not_started')); await settle();
+  assert.equal(host.calls.length, 2); assert.equal(host.calls[1]!.request.sources[0].source_version, 2);
+  host.answer(1); await settle(); c.observe(demand('first waiting', 2, true)); c.flush(); assert.equal(host.calls.length, 2);
+});
+
+test('typed local no-start releases only that opening reservation, never guesses loss or clears an earlier unknown', async () => {
+  const { host, controller: c } = fixture(); host.description.limits.leases_per_route = 1;
+  c.observe(demand('first')); c.observe(demand('second', 1, false, 'second')); c.flush(); assert.equal(host.calls.length, 1);
+  host.calls[0]!.reject(new RequestFailure('local refusal', 'not_started')); await settle();
+  assert.equal(host.calls.length, 2); assert.equal(c.stats().remoteLeases, 1); host.answer(1); await settle();
+  c.observe(demand('first changed', 2)); c.remove('second'); c.flush(); host.answer(2); await settle();
+  host.calls[3]!.reject(new RequestFailure('unknown')); await settle(); assert.equal(c.status('source')!.execution, 'unknown');
+  c.observe(demand('first changed again', 3)); c.flush(); assert.equal(host.calls.length, 4);
+  assert.equal(c.status('source')!.fallbackEligible, false); assert.equal(host.generation, 1);
+});
+
+test('reservation arithmetic uses tiny positions/facts rather than source allocation and rejects invalid arithmetic', () => {
+  assert.equal(sourceReservation({ captureUnits: 32*1024*1024, replacementUnits: 3, inputUnits: 3, replacementBytes: 3,
+    frameBytes: OCCIPITAL_LIMITS.wireBytes, runs: OCCIPITAL_LIMITS.runs, styles: OCCIPITAL_LIMITS.styles }),
+    2*(32*1024*1024 + 3 + 3) + 3 + 4*OCCIPITAL_LIMITS.wireBytes + 24*3 + 128*3 + 33792);
+  assert.throws(() => sourceReservation({ captureUnits: -1, replacementUnits: 0, inputUnits: 0, replacementBytes: 0, frameBytes: 0, runs: 0, styles: 0 }));
+});
+
+
+test('completed tail never masquerades as stable prefix after provider replay and changed finite text', async () => {
+  const { host, controller: c } = fixture(); c.observe(demand('if', 1, true)); c.flush(); host.answer(0); await settle();
+  host.generation++; c.observe(demand('if', 1, true)); c.flush(); assert.equal(host.calls.length, 1);
+  assert.deepEqual(ranges(c), [[0, 2, 2]]);
+  c.observe(demand('iffy', 2, true)); c.flush(); assert.deepEqual(ranges(c), []);
+  host.answer(1); await settle(); assert.equal(c.status('source')!.exact, true);
+});
+
+test('changed already-complete demand retires a pending one-shot instead of admitting its completed tail as prefix', async () => {
+  const { host, controller: c } = fixture(); c.observe(demand('if', 1, true)); c.flush();
+  c.observe(demand('iffy', 2, true)); c.flush(); assert.equal(host.calls[0]!.signal!.aborted, true);
+  host.answer(0); await settle(); assert.deepEqual(ranges(c), []); assert.equal(host.calls.length, 2);
+  host.answer(1); await settle(); assert.equal(c.status('source')!.exact, true);
+});
+
+
+test('review F1: held physical source attempt forbids fallback for original, changed, retired and reused demand', async () => {
+  for (const mode of ['original', 'changed', 'retired', 'reused']) {
+    const { host, controller: c } = fixture(); c.observe(demand('a\nt')); c.flush();
+    if (mode === 'changed') c.observe(demand('a\ntx', 2));
+    if (mode === 'retired') c.observe({ ...demand('a\nt', 2), language: 'rust' });
+    if (mode === 'reused') { c.remove('source'); c.observe(demand('new', 1, true)); }
+    assert.equal(c.status('source')!.execution, 'unsettled', mode);
+    assert.equal(c.status('source')!.fallbackEligible, false, mode);
+    const held = c.stats().transientBytes; c.flush(); assert.equal(host.calls.length, 1);
+    assert.equal(c.stats().transientBytes, held);
+    host.calls[0]!.reject(new RequestFailure('explicit preflight proof', 'not_started')); await settle();
+    if (mode !== 'original') {
+      assert.equal(host.calls.length, 2); assert.equal(c.status('source')!.fallbackEligible, false);
+      host.calls[1]!.reject(new RequestFailure('current attempt proof', 'not_started')); await settle();
+    }
+    assert.equal(c.status('source')!.execution, 'not_started'); assert.equal(c.status('source')!.fallbackEligible, true);
+    c.dispose();
+  }
+});
+
+test('review F2: real broker retire/publish preserves completed aliases without a new parser acknowledgement', async () => {
+  const first = new Host(), next = new Host(); let publish!: () => void; let acquisitions = 0, closes = 0;
+  const gate = new Promise<void>(resolve => { publish = resolve; });
+  function transport(host: Host) {
+    let endReason: 'closed' | undefined, resolveEnd!: (reason: 'closed') => void;
+    const ended = new Promise<'closed'>(resolve => { resolveEnd = resolve; });
+    return { ended, get endReason() { return endReason; }, request: (r: Record<string, unknown>, options?: { signal?: AbortSignal; deadlineMs?: number }) => r.op === 'describe'
+      ? Promise.resolve({ v: PROTOCOL_VERSION, ticket: r.ticket, instance: description.instance, assets: description.assets, status: 'ok',
+        body: { ...description, kind: 'descriptor', protocol_version: PROTOCOL_VERSION, category_version: 1,
+          capability: 'syntax-highlight/v2', service: 'syntax', operations: ['describe', 'themes.refresh', 'highlight', 'stream.open', 'stream.append', 'stream.close'],
+          modes: ['one_shot', 'growing'], admission: ['try_now', 'bounded_queue'] } })
+      : host.request(0, r, options), close: async () => { closes++; endReason = 'closed'; resolveEnd('closed'); } };
+  }
+  const broker = new ProviderBroker({ tryShared: async () => undefined, acquireOwned: async () => {
+    if (++acquisitions === 1) return transport(first); await gate; return transport(next);
+  } });
+  const c = new SourceController(broker); fixtureControllers.add(c);
+  try {
+    await awaitFixture(broker.start()); const d = demand('echo x', 1, true); c.observe(d); c.flush(); first.answer(0); await settle();
+    c.observe({ ...d, version: 2 }); const original = ranges(c); assert.deepEqual(original, [[0, 6, 2]]);
+    const generation = broker.snapshot().generation, loss = broker.provenLoss(generation);
+    assert.equal(broker.snapshot().availability, 'transitioning'); assert.equal(broker.snapshot().generation, generation + 1);
+    c.observe({ ...d, version: 2 }); c.flush(); assert.deepEqual(ranges(c), original);
+    assert.equal(c.status('source')!.acknowledgedVersion, undefined);
+    publish(); await awaitFixture(loss); assert.equal(broker.snapshot().generation, generation + 2);
+    c.observe({ ...d, version: 2 }); c.flush(); assert.deepEqual(ranges(c), original);
+    assert.equal(c.status('source')!.exact, true); assert.equal(c.status('source')!.acknowledgedVersion, undefined);
+    assert.equal(c.status('source')!.classificationVersion, 1);
+    assert.equal(first.calls.length, 1); assert.equal(next.calls.length, 0); assert.equal(c.stats().dispatches, 1);
+    assert.equal(c.stats().preparedBytes, 6);
+  } finally { publish(); c.dispose(); await awaitFixture(broker.dispose()); assert.equal(closes, 2); }
+});
+
+test('review F2 pressure: six actual source bytes recover once after restart admission evicts completed colors', { skip: !process.env.OCCIPITAL_TEST_BIN }, async () => {
+  const root = await mkdtemp(join(tmpdir(), 'occipital-controller-pressure-'));
+  const env = { ...process.env, HOME: root, XDG_CONFIG_HOME: root, XDG_DATA_HOME: root, XDG_CACHE_HOME: root, XDG_RUNTIME_DIR: root };
+  const pipe = new StdioTransport({ command: process.env.OCCIPITAL_TEST_BIN!, args: ['--stdio', '--config', join(root, 'config.json')], env, cwd: root, requestDeadlineMs: 5000, terminateGraceMs: 100 });
+  const broker = new ProviderBroker({ tryShared: async () => undefined, acquireOwned: async () => pipe });
+  // Only generation notification is controlled; this is not a physical loss/failover proof.
+  let generation = 1;
+  const provider = { snapshot: () => ({ ...broker.snapshot(), generation }), isReady: (g: number) => g === generation && broker.snapshot().availability === 'ready',
+    classificationAccepted: (g: number) => g === generation && broker.classificationAccepted(broker.snapshot().generation),
+    request: (_g: number, r: Record<string, unknown>, options?: { signal?: AbortSignal; deadlineMs?: number }) => broker.request(broker.snapshot().generation, r, options) };
+  const c = new SourceController(provider, { retention: { maxBytes: 2200 }, deadlineMs: 5000 });
+  try {
+    await awaitFixture(broker.start()); const profile = broker.snapshot().description!.profiles.find(p => p.id === 'pi')!;
+    const d = { ...demand('echo x', 1, true), fingerprint: profile.fingerprint };
+    c.observe(d); c.flush(); await awaitFixture((async () => { while (c.stats().unsettledJobs) await turn(); })());
+    const original = ranges(c); assert.deepEqual(original, [[0, 4, 6], [4, 6, 0]]);
+    assert.ok(c.stats().retention.retainedBytes > 1800 && c.stats().retention.retainedBytes <= 2200);
+    generation++; c.observe(d); assert.equal(c.stats().retention.rangeBytes, 0); c.flush();
+    assert.equal(c.stats().dispatches, 2); assert.equal(c.stats().preparedBytes, 12);
+    assert.equal(c.status('source')!.acknowledgedVersion, undefined);
+    await awaitFixture((async () => { while (c.stats().unsettledJobs) await turn(); })());
+    assert.equal(c.status('source')!.exact, true); assert.deepEqual(ranges(c), original);
+    const before = c.stats(); for (let i = 0; i < 10; i++) { c.observe(d); c.flush(); ranges(c); }
+    assert.deepEqual(c.stats(), before); assert.equal(c.stats().dispatches, 2);
+    assert.equal(c.stats().transientBytes, 0); assert.equal(c.stats().remoteLeases, 0);
+  } finally { c.dispose(); await awaitFixture(broker.dispose()); assert.equal(c.stats().bookkeepingBytes, 0); await rm(root, { recursive: true, force: true }); }
+});
+
+test('review F3: identical newer snapshots before flush preserve initial work for the latest version', async () => {
+  const { host, controller: c } = fixture(); c.observe(demand('a\nt')); c.observe(demand('a\nt', 2)); c.flush();
+  assert.equal(host.calls.length, 1); assert.equal(host.calls[0]!.request.sources[0].source_version, 2);
+  host.answer(0); await settle(); assert.equal(c.status('source')!.exact, true); assert.equal(c.stats().preparedBytes, 3);
+});
+
+test('review F3: identical newer waiting text preserves one owed suffix after useful older acknowledgement', async () => {
+  const { host, controller: c } = fixture(); c.observe(demand('a\nt')); c.flush();
+  c.observe(demand('a\ntx', 2)); c.observe(demand('a\ntx', 3)); host.answer(0); await settle();
+  assert.equal(host.calls.length, 2); assert.equal(host.calls[1]!.request.append, 'x');
+  assert.equal(host.calls[1]!.request.source_version, 3); assert.equal(host.calls[1]!.request.base_revision, 1);
+  assert.deepEqual(ranges(c), [[0, 2, 2]]); assert.equal(c.status('source')!.acknowledgedVersion, 1);
+  host.answer(1); await settle(); assert.equal(c.status('source')!.exact, true); assert.equal(c.stats().preparedBytes, 4);
+  assert.equal(c.stats().retention.prefixCopiedBytes, 0);
+});
+
+test('review F3: classified identical aliases retain full tail but never invent a newer remote acknowledgement', async () => {
+  for (const complete of [false, true]) {
+    const { host, controller: c } = fixture(); c.observe(demand('a\nt', 1, complete)); c.flush(); host.answer(0); await settle();
+    const original = ranges(c), bytes = c.stats().preparedBytes;
+    for (let version = 2; version <= 4; version++) {
+      c.observe(demand('a\nt', version, complete)); c.flush(); assert.deepEqual(ranges(c), original);
+      assert.equal(c.status('source')!.exact, true); assert.equal(c.status('source')!.version, version);
+      assert.equal(c.status('source')!.acknowledgedVersion, 1); assert.equal(c.status('source')!.classificationVersion, 1);
+      assert.equal(host.calls.length, 1); assert.equal(c.stats().preparedBytes, bytes);
+    }
+    if (!complete) {
+      c.observe(demand('a\ntx', 5)); c.flush(); assert.deepEqual(ranges(c), [[0, 2, 2]]);
+      assert.equal(host.calls[1]!.request.append, 'x'); assert.equal(host.calls[1]!.request.base_revision, 1);
+      assert.equal(host.calls[1]!.request.source_version, 5); host.answer(1); await settle();
+      assert.equal(c.status('source')!.acknowledgedVersion, 5); assert.equal(c.status('source')!.exact, true);
+    }
+    c.dispose();
+  }
+});
+
+test('review F3: repeated equal content while in flight aliases its real acknowledgement without a redundant append', async () => {
+  const { host, controller: c } = fixture(); c.observe(demand('a\nt')); c.flush(); c.observe(demand('a\nt', 2));
+  host.answer(0); await settle(); assert.equal(host.calls.length, 1); assert.deepEqual(ranges(c), [[0, 2, 2], [2, 3, 2]]);
+  assert.equal(c.status('source')!.exact, true); assert.equal(c.status('source')!.acknowledgedVersion, 1);
+  c.observe(demand('a\nt', 3, true)); c.flush(); assert.equal(host.calls[1]!.request.append, '');
+  assert.equal(host.calls[1]!.request.source_version, 3); assert.equal(host.calls[1]!.request.base_revision, 1);
+  host.answer(1); await settle(); assert.equal(c.status('source')!.exact, true); assert.equal(c.stats().remoteLeases, 0);
+  c.observe(demand('a\nt', 4, true)); c.flush(); assert.equal(host.calls.length, 2);
+  assert.equal(c.status('source')!.acknowledgedVersion, 3); assert.equal(c.status('source')!.classificationVersion, 3);
+});
+
+test('review F3: equal version aliases cannot retry identical authoritative no-start work', async () => {
+  const { host, controller: c } = fixture(); c.observe(demand('a\nt')); c.flush(); c.observe(demand('a\nt', 2));
+  host.fault(0, 'busy'); await settle(); assert.equal(host.calls.length, 1);
+  assert.equal(c.status('source')!.execution, 'not_started'); assert.equal(c.status('source')!.fallbackEligible, true);
+  for (let version = 3; version <= 8; version++) { c.observe(demand('a\nt', version)); c.flush(); }
+  assert.equal(host.calls.length, 1); assert.equal(c.stats().preparedBytes, 3);
+});
+
+test('source changes notify once after two useful settlements, expose installed colors/zero credits, and never on warm reads', async () => {
+  let notices = 0; const snapshots: boolean[] = [], credits: number[][] = [];
+  const { host, controller } = fixture({ onChange: () => {
+    notices++; snapshots.push(controller.status('a')!.exact && controller.status('b')!.exact);
+    const stats = controller.stats();
+    credits.push([stats.unsettledJobs, stats.globalUnsettledJobs, stats.transientBytes, stats.globalTransientBytes]);
+  } });
+  controller.observe(demand('a', 1, true, 'a')); controller.observe(demand('b', 1, true, 'b')); controller.flush();
+  assert.equal(notices, 0); host.answer(0); host.answer(1); await settle();
+  assert.equal(notices, 1); assert.deepEqual(snapshots, [true]); assert.deepEqual(credits, [[0, 0, 0, 0]]);
+  for (let i = 0; i < 10; i++) { controller.observe(demand('a', 1, true, 'a')); controller.status('a'); ranges(controller, 'a'); controller.stats(); controller.flush(); }
+  await settle(); assert.equal(notices, 1); assert.equal(host.calls.length, 2);
+});
+
+test('source no-start and unknown terminal outcomes notify without inventing fallback permission', async () => {
+  for (const execution of ['not_started', 'unknown'] as const) {
+    let notices = 0; const { host, controller } = fixture({ onChange: () => { notices++; } });
+    controller.observe(demand('tail')); controller.flush();
+    host.calls[0]!.reject(new RequestFailure('fixed local reason', execution)); await settle();
+    assert.equal(notices, 1); assert.equal(controller.status('source')!.fallbackEligible, execution === 'not_started');
+    assert.equal(controller.stats().unsettledJobs, 0); controller.dispose();
+  }
+});
+
+test('queued source notification cannot cross off/on or disposal, including stale completion after removal', async () => {
+  let notices = 0; const { host, controller } = fixture({ onChange: () => { notices++; } });
+  controller.observe(demand('first', 1, true)); controller.flush();
+  const original = globalThis.queueMicrotask, queued: (() => void)[] = [];
+  globalThis.queueMicrotask = callback => { queued.push(callback); };
+  try {
+    host.answer(0); await turn();
+    assert.equal(controller.status('source')!.exact, true); assert.equal(notices, 0);
+    controller.setEnabled(false); controller.setEnabled(true);
+    while (queued.length) queued.shift()!(); assert.equal(notices, 0);
+    controller.observe(demand('second', 2, true)); controller.flush(); host.answer(1); await turn();
+    controller.dispose(); while (queued.length) queued.shift()!(); assert.equal(notices, 0);
+  } finally { globalThis.queueMicrotask = original; }
+  const other = fixture({ onChange: () => { notices++; } });
+  other.controller.observe(demand('removed')); other.controller.flush(); other.controller.remove('source');
+  assert.equal(other.controller.status('source'), undefined); assert.equal(notices, 0);
+  other.host.answer(0); await settle(); assert.equal(notices, 0);
+  // The obsolete open really created a lease: settle its required close too.
+  assert.equal(other.host.calls.length, 2); assert.equal(other.host.calls[1]!.request.op, 'stream.close');
+  other.host.answer(1); await settle();
+  assert.equal(notices, 0); assert.equal(other.controller.stats().unsettledJobs, 0);
+});
+
+test('throwing source observer cannot prevent classification, credit release or later notifications', async () => {
+  let notices = 0; const { host, controller } = fixture({ onChange: () => { notices++; throw Error('caller observer'); } });
+  controller.observe(demand('one', 1, true)); controller.flush(); host.answer(0); await settle();
+  assert.equal(controller.status('source')!.exact, true); assert.equal(controller.stats().unsettledJobs, 0);
+  controller.observe(demand('two', 2, true)); controller.flush(); host.answer(1); await settle();
+  assert.equal(controller.status('source')!.exact, true); assert.equal(notices, 2);
+});
+
+test('source observer is validated before ownership and an empty source needs no asynchronous notice', async () => {
+  const host = new Host();
+  assert.throws(() => new SourceController(host, { onChange: 1 as unknown as () => void }), /observer/);
+  let notices = 0; const { controller } = fixture({ onChange: () => { notices++; } });
+  controller.observe(demand('', 1, true)); controller.flush(); await settle();
+  assert.equal(notices, 0); assert.equal(controller.stats().dispatches, 0);
+});
+
+function observedOwner(host: Host, onChange: () => void) {
+  const controller = new SourceController(host, { onChange });
+  controller.observe(demand('first', 1, true)); controller.flush();
+  return new WeakRef(controller);
+}
+test('first source owner collects with its production notice externally held and another source owner active', { skip: !global.gc }, async () => {
+  let notices = 0; const firstHost = new Host(), first = observedOwner(firstHost, () => { notices++; });
+  const second = fixture(); second.controller.observe(demand('still pending', 1, false, 'second')); second.controller.flush();
+  const original = globalThis.queueMicrotask, queued: (() => void)[] = [];
+  globalThis.queueMicrotask = callback => { queued.push(callback); };
+  try { firstHost.answer(0); await turn(); assert.equal(queued.length, 2); }
+  finally { globalThis.queueMicrotask = original; }
+  for (let i = 0; i < 100; i++) { await turn(); global.gc!(); await turn(); if (!first.deref()) break; }
+  assert.equal(first.deref(), undefined); assert.equal(second.controller.stats().unsettledJobs, 1);
+  for (const callback of queued) callback();
+  await settle(); assert.equal(notices, 0);
+  second.host.answer(0); await settle();
+  assert.equal(second.controller.status('second')!.exact, true);
+});
+
+test('obsolete source callback cannot clear newer pending notice before a second current settlement', async () => {
+  let notices = 0; const exact: boolean[] = [], packets: string[][] = [];
+  const { host, controller } = fixture({ onChange: keys => { notices++; packets.push([...keys]); exact.push(controller.status('b')!.exact && controller.status('c')!.exact); } });
+  controller.observe(demand('first', 1, true)); controller.flush();
+  const original = globalThis.queueMicrotask, queued: (() => void)[] = [];
+  globalThis.queueMicrotask = callback => { queued.push(callback); };
+  try {
+    host.answer(0); await turn(); assert.equal(queued.length, 2);
+    const oldContinuation = queued.shift()!, oldNotice = queued.shift()!;
+    oldContinuation(); controller.setEnabled(false); controller.setEnabled(true);
+    controller.observe(demand('second', 2, true, 'b')); controller.flush(); host.answer(1); await turn();
+    assert.equal(queued.length, 2); oldNotice(); assert.equal(notices, 0);
+    controller.observe(demand('third', 3, true, 'c')); controller.flush(); host.answer(2); await turn();
+    assert.equal(queued.length, 3); // two continuations, still only one CURRENT notice.
+    while (queued.length) queued.shift()!();
+    assert.equal(notices, 1); assert.deepEqual(exact, [true]);
+    assert.deepEqual(packets, [['b', 'c']], 'obsolete epoch cannot erase a current source key or deliver its old key');
+  } finally { globalThis.queueMicrotask = original; }
+});
+
+test('classification success is emitted only after full source validation, never warm cached visits or stream close', async () => {
+  const {host, controller:c} = fixture(); c.observe(demand('a\nt')); c.flush();
+  assert.deepEqual(host.acceptedClassifications, []); host.answer(0); await settle();
+  assert.deepEqual(host.acceptedClassifications, [host.generation]);
+  for (let i=0; i<10; i++) { c.observe(demand('a\nt')); c.flush(); ranges(c); }
+  assert.deepEqual(host.acceptedClassifications, [host.generation]); assert.equal(host.calls.length, 1);
+  c.remove('source'); c.flush(); assert.equal(host.calls[1]!.request.op, 'stream.close');
+  host.answer(1); await settle(); assert.deepEqual(host.acceptedClassifications, [host.generation]);
+});
+
+for (const outcome of ['malformed','wrong_coverage','wrong_profile','wrong_revision','not_started','started','unknown','stale_provider','removed','disabled'] as const)
+  test(`classification success is not emitted for ${outcome} source outcome`, async () => {
+    const {host, controller:c} = fixture(); c.observe(demand('hello', 1, true)); c.flush();
+    if (outcome==='malformed') host.calls[0]!.resolve({});
+    else if (outcome==='wrong_coverage' || outcome==='wrong_profile' || outcome==='wrong_revision') {
+      const call = host.calls[0]!, resolve = call.resolve;
+      call.resolve = (raw: any) => {
+        call.resolve = resolve; // Do not intercept the common afterEach's later empty settlement.
+        const chunk = raw.body.sources[0];
+        if (outcome==='wrong_coverage') chunk.runs = [1, 0];
+        if (outcome==='wrong_profile') chunk.fingerprint = 'b'.repeat(64);
+        if (outcome==='wrong_revision') chunk.revision++;
+        resolve(raw);
+      };
+      host.answer(0);
+    }
+    else if (outcome==='not_started' || outcome==='started') host.fault(0, 'busy', outcome);
+    else if (outcome==='unknown') host.calls[0]!.reject(new Error('uncertain dispatched source'));
+    else {
+      if (outcome==='stale_provider') host.generation++;
+      if (outcome==='removed') c.remove('source');
+      if (outcome==='disabled') c.setEnabled(false);
+      host.answer(0);
+    }
+    await settle(); assert.deepEqual(host.acceptedClassifications, []);
+  });
+
+test('real owned exits stop after two restarts; a validated six-byte classification opens a fresh pair', { skip: !process.env.OCCIPITAL_TEST_BIN }, async () => {
+  const root = await mkdtemp(join(tmpdir(), 'occipital-crash-budget-'));
+  const env = { ...process.env, HOME: root, XDG_CONFIG_HOME: root, XDG_DATA_HOME: root, XDG_CACHE_HOME: root, XDG_RUNTIME_DIR: root };
+  const pipes: StdioTransport[] = [];
+  const broker = new ProviderBroker({ tryShared: async () => undefined, acquireOwned: async () => {
+    const pipe = new StdioTransport({ command: process.env.OCCIPITAL_TEST_BIN!, args: ['--stdio', '--config', join(root, 'config.json')], env, cwd: root, requestDeadlineMs: 5000, terminateGraceMs: 100 });
+    pipes.push(pipe); return pipe;
+  } });
+  const c = new SourceController(broker);
+  async function exitAndRecover() {
+    const generation = broker.snapshot().generation, pipe = pipes.at(-1)!;
+    process.kill(pipe.stats().pid!, 'SIGKILL');
+    await awaitFixture(pipe.ended); assert.equal(pipe.endReason, 'lost');
+    await awaitFixture(broker.start()); // Published end observer already started this generation's recovery.
+    assert.notEqual(broker.snapshot().generation, generation);
+    assert.equal(pipe.stats().childState, 'exited'); assert.throws(() => process.kill(pipe.stats().pid!, 0), {code:'ESRCH'});
+    assert.equal(pipe.stats().retainedBytes, 0); assert.equal(pipe.stats().liveTimers, 0); assert.equal(pipe.stats().ownedListeners, 0);
+  }
+  try {
+    await awaitFixture(broker.start());
+    await exitAndRecover(); await exitAndRecover();
+    assert.equal(pipes.length, 3); assert.equal(broker.stats().ownedRestarts, 2);
+    const profile = broker.snapshot().description!.profiles.find(p => p.id==='pi')!;
+    const d = {...demand('echo x', 1, true), fingerprint:profile.fingerprint};
+    c.observe(d); c.flush(); await awaitFixture((async () => { while (c.stats().unsettledJobs) await turn(); })());
+    assert.equal(c.status(d.key)!.exact, true); assert.equal(c.stats().dispatches, 1);
+    assert.equal(broker.stats().successfulClassifications, 1);
+    const retained = ranges(c); assert.deepEqual(retained, [[0, 4, 6], [4, 6, 0]]);
+    await exitAndRecover(); await exitAndRecover(); await exitAndRecover();
+    assert.equal(pipes.length, 5); assert.equal(broker.stats().ownedRestarts, 4);
+    assert.equal(broker.stats().ownedRestartStops, 1); assert.equal(broker.snapshot().reason, 'restart_limit');
+    c.observe(d); c.flush(); assert.deepEqual(ranges(c), retained); assert.equal(c.status(d.key)!.exact, true);
+    assert.equal(c.stats().dispatches, 1); assert.equal(broker.stats().sourceDispatches, 1);
+  } finally {
+    c.dispose(); await awaitFixture(broker.dispose());
+    for (const pipe of pipes) await awaitFixture(pipe.close());
+    await rm(root, {recursive:true,force:true});
+  }
+});
+
+test('profile refusal requests metadata once, then waits for a current full-source demand before restarting', async () => {
+  const { host, controller: c } = fixture(), d = demand('echo x', 1, true);
+  c.observe(d); c.flush(); const first = host.calls[0]!.request.sources[0];
+  host.fault(0, 'profile_changed'); await settle();
+  const notice = c.profileReconciliationNeeded(); assert.ok(notice); assert.equal(notice.generation, host.generation);
+  assert.equal(c.status('source')!.fallbackEligible, true);
+  c.acknowledgeProfiles(notice.generation, notice.sequence); c.flush(); await settle();
+  assert.equal(host.calls.length, 1); assert.equal(c.profileReconciliationNeeded(), undefined);
+  c.observe(d); c.flush(); assert.equal(host.calls.length, 2);
+  const next = host.calls[1]!.request;
+  assert.equal(next.op, 'highlight'); assert.equal(next.sources[0].text, d.text);
+  assert.notEqual(next.sources[0].key, first.key); assert.notEqual(next.sources[0].generation, first.generation);
+  host.answer(1); await settle(); assert.equal(c.status('source')!.exact, true);
+});
+test('profile refusal metadata acknowledgment cannot erase a newer pending refusal', async () => {
+  const { host, controller: c } = fixture();
+  c.observe(demand('a', 1, true, 'one')); c.observe(demand('b', 1, true, 'two')); c.flush();
+  host.fault(0, 'theme_unavailable'); await settle(); const first = c.profileReconciliationNeeded(); assert.ok(first);
+  host.fault(1, 'profile_changed'); await settle(); const second = c.profileReconciliationNeeded(); assert.ok(second);
+  assert.ok(second.sequence > first.sequence);
+  c.acknowledgeProfiles(first.generation, first.sequence); assert.deepEqual(c.profileReconciliationNeeded(), second);
+  c.observe(demand('a', 1, true, 'one')); c.flush(); assert.equal(host.calls.length, 3);
+  c.observe(demand('b', 1, true, 'two')); c.flush(); assert.equal(host.calls.length, 3);
+  c.acknowledgeProfiles(second.generation, second.sequence); c.observe(demand('b', 1, true, 'two')); c.flush();
+  assert.equal(host.calls.length, 4); assert.equal(c.profileReconciliationNeeded(), undefined);
+  host.answer(2); host.answer(3); await settle();
+});
+test('repeated profile refusal of unchanged demand stops after one metadata-admitted source restart', async () => {
+  const { host, controller: c } = fixture(), d = demand('abc', 1, true);
+  c.observe(d); c.flush(); host.fault(0, 'theme_unavailable'); await settle();
+  const notice = c.profileReconciliationNeeded(); assert.ok(notice);
+  c.acknowledgeProfiles(notice.generation, notice.sequence); c.observe(d); c.flush();
+  host.fault(1, 'theme_unavailable'); await settle(); assert.equal(c.profileReconciliationNeeded(), undefined);
+  for (let i = 0; i < 20; i++) { c.observe(d); c.flush(); }
+  assert.equal(host.calls.length, 2); assert.equal(c.status('source')!.execution, 'not_started');
+  assert.equal(c.status('source')!.fallbackEligible, true);
+  c.observe(demand('abcd', 2, true)); c.flush(); host.fault(2, 'profile_changed'); await settle();
+  assert.ok(c.profileReconciliationNeeded());
+});
+for (const outcome of ['busy', 'started', 'invalid_header', 'stale', 'removed'] as const) test(`profile metadata demand excludes ${outcome} source outcome`, async () => {
+  const { host, controller: c } = fixture(); c.observe(demand('abc', 1, true)); c.flush();
+  if (outcome === 'stale') host.generation++;
+  if (outcome === 'removed') c.remove('source');
+  if (outcome === 'invalid_header') host.calls[0]!.resolve({ v: 2, ticket: 'wrong', instance: 'daemon', assets: 'assets', status: 'error', error: { code: 'profile_changed', execution: 'not_started' } });
+  else host.fault(0, outcome === 'busy' ? 'busy' : 'profile_changed', outcome === 'started' ? 'started' : 'not_started');
+  await settle(); assert.equal(c.profileReconciliationNeeded(), undefined); assert.equal(host.calls.length, 1);
+});
+test('profile acknowledgment is inert after provider change, off and disposal', async () => {
+  const { host, controller: c } = fixture(); c.observe(demand('x', 1, true)); c.flush(); host.fault(0, 'profile_changed'); await settle();
+  const notice = c.profileReconciliationNeeded(); assert.ok(notice);
+  host.generation++; c.acknowledgeProfiles(notice.generation, notice.sequence);
+  assert.equal(c.profileReconciliationNeeded(), undefined); assert.equal(host.calls.length, 1);
+  c.setEnabled(false); c.acknowledgeProfiles(host.generation, notice.sequence); assert.equal(c.profileReconciliationNeeded(), undefined);
+  c.setEnabled(true); c.observe(demand('x', 1, true)); c.flush(); host.fault(1, 'profile_changed'); await settle();
+  const next = c.profileReconciliationNeeded(); assert.ok(next);
+  c.dispose(); c.acknowledgeProfiles(next.generation, next.sequence); assert.equal(c.profileReconciliationNeeded(), undefined);
+});
+
+
+test('source observer identifies only changed keys and coalesces two current completions', async () => {
+  const observed: string[][] = [];
+  const { host, controller } = fixture({ onChange: (keys: readonly string[] = []) => { observed.push([...keys]); } });
+  controller.observe(demand('a', 1, true, 'a')); controller.observe(demand('b', 1, true, 'b')); controller.flush();
+  assert.deepEqual(observed, []);
+  host.answer(0); host.answer(1); await settle();
+  assert.deepEqual(observed, [['a', 'b']]);
+  const before = controller.stats();
+  controller.observe(demand('a', 1, true, 'a')); controller.flush(); await settle();
+  assert.deepEqual(observed, [['a', 'b']]); assert.deepEqual(controller.stats(), before);
+});
+
+test('queued keyed notification removes a retired source without losing its current sibling', async () => {
+  const observed: string[][] = [], queued: (() => void)[] = [];
+  const { host, controller } = fixture({ onChange: (keys: readonly string[] = []) => { observed.push([...keys]); } });
+  const original = global.queueMicrotask; global.queueMicrotask = callback => { queued.push(callback); };
+  try {
+    controller.observe(demand('a', 1, true, 'a')); controller.observe(demand('b', 1, true, 'b')); controller.flush();
+    host.answer(0); host.answer(1); await Promise.resolve(); await Promise.resolve();
+    assert.equal(controller.status('a')!.exact, true); assert.equal(controller.status('b')!.exact, true);
+    assert.ok(queued.length); controller.remove('a');
+    while (queued.length) queued.shift()!();
+    assert.deepEqual(observed, [['b']]);
+    controller.observe(demand('new', 1, true, 'a')); controller.flush(); host.answer(2);
+    await Promise.resolve(); await Promise.resolve(); controller.remove('a');
+    while (queued.length) queued.shift()!();
+    assert.deepEqual(observed, [['b']], 'retirement after settlement cannot paint a recycled key');
+  } finally { global.queueMicrotask = original; }
+});
+
+test('keyed terminal refusal identifies the failed source but not a warm unrelated owner', async () => {
+  const observed: string[][] = [];
+  const { host, controller } = fixture({ onChange: (keys: readonly string[] = []) => { observed.push([...keys]); } });
+  controller.observe(demand('a', 1, true, 'a')); controller.flush(); host.answer(0); await settle(); observed.length = 0;
+  controller.observe(demand('b', 1, true, 'b')); controller.flush(); host.fault(1, 'busy'); await settle();
+  assert.deepEqual(observed, [['b']]);
+  assert.equal(controller.status('a')!.exact, true); assert.equal(controller.status('b')!.fallbackEligible, true);
+});
+
+test('a source completion observed reentrantly belongs to a fresh notification packet', async () => {
+  const observed: string[][] = [];
+  const { host, controller } = fixture({ onChange: (keys: readonly string[] = []) => {
+    observed.push([...keys]);
+    if (observed.length === 1) {
+      controller.observe(demand('b', 1, true, 'b')); controller.flush(); host.answer(1);
+    }
+  } });
+  controller.observe(demand('a', 1, true, 'a')); controller.flush(); host.answer(0); await settle();
+  assert.deepEqual(observed, [['a'], ['b']]);
+  assert.equal(controller.status('a')!.exact, true); assert.equal(controller.status('b')!.exact, true);
+  assert.equal(controller.stats().globalUnsettledJobs, 0);
+});
+
+
+test('canonical work permission survives off, unknown settlement and permits unrelated fresh fallback', async () => {
+  const packets: string[][] = [];
+  const { host, controller: c } = fixture({ onChange: keys => packets.push([...keys]) });
+  c.observe(demand('x', 1, true)); c.flush(); c.setEnabled(false);
+  assert.equal(c.status('source'), undefined);
+  assert.equal(c.workStatus('source').execution, 'unsettled');
+  assert.equal(c.workStatus('source').fallbackEligible, false);
+  assert.equal(c.workStatus('fresh').fallbackEligible, true);
+  assert.equal(c.stats().retention.retainedBytes, 0);
+  assert.ok(c.stats().bookkeepingBytes > 128, 'retired primitive evidence remains charged');
+  host.calls[0]!.reject(new RequestFailure('unknown after cancellation')); await settle();
+  assert.equal(c.workStatus('source').execution, 'unknown');
+  assert.equal(c.workStatus('source').fallbackEligible, false);
+  assert.deepEqual(packets, [['source']]);
+  c.dispose(); assert.equal(c.stats().sourceRecords, 0); assert.equal(c.stats().bookkeepingBytes, 0);
+});
+
+test('canonical retired settlement distinguishes validated completion, no-start, malformed and started outcomes', async () => {
+  for (const outcome of ['complete', 'not_started', 'malformed', 'started', 'forged', 'old_not_started'] as const) {
+    const packets: string[][] = [];
+    const { host, controller: c } = fixture({ onChange: keys => packets.push([...keys]) });
+    c.observe(demand('x', 1, true)); c.flush(); c.setEnabled(false);
+    if (outcome === 'complete') host.answer(0);
+    else if (outcome === 'not_started') host.fault(0, 'busy');
+    else if (outcome === 'started') host.fault(0, 'engine_failure', 'started');
+    else if (outcome === 'forged') host.calls[0]!.reject({ execution: 'not_started' });
+    else if (outcome === 'old_not_started') host.calls[0]!.resolve({ v: PROTOCOL_VERSION, ticket: 'old-ticket', instance: description.instance,
+      assets: description.assets, status: 'error', error: { code: 'busy', execution: 'not_started' } });
+    else host.calls[0]!.resolve({ status: 'ok' });
+    await settle();
+    assert.equal(c.workStatus('source').fallbackEligible, outcome === 'complete' || outcome === 'not_started', outcome);
+    assert.equal(c.workStatus('source').execution, outcome === 'complete' ? 'acknowledged' : outcome === 'not_started' ? 'not_started' : outcome === 'started' ? 'started' : 'unknown');
+    assert.deepEqual(host.acceptedClassifications, []);
+    assert.deepEqual(ranges(c), []); assert.equal(c.stats().retention.entries, 0);
+    assert.equal(c.stats().committedLineCalls, 0); assert.equal(c.stats().tailCalls, 0);
+    assert.deepEqual(packets, [['source']]); c.dispose();
+  }
+});
+
+test('canonical profile retry permission is current, readable, consumed once and never dispatches on read', async () => {
+  const { host, controller: c } = fixture(); const d = demand('x', 1, true);
+  c.observe(d); c.flush(); host.fault(0, 'profile_changed'); await settle();
+  assert.equal(c.workStatus('source').profileRetryAllowed, false);
+  const need = c.profileReconciliationNeeded()!;
+  c.acknowledgeProfiles(need.generation, need.sequence);
+  assert.equal(c.workStatus('source').profileRetryAllowed, true);
+  assert.equal(host.calls.length, 1);
+  c.observe(d); assert.equal(c.workStatus('source').profileRetryAllowed, false); c.flush();
+  host.fault(1, 'profile_changed'); await settle();
+  c.acknowledgeProfiles(need.generation, need.sequence);
+  assert.equal(c.workStatus('source').profileRetryAllowed, false);
+  c.setEnabled(false); assert.equal(c.workStatus('source').profileRetryAllowed, false);
+});
+
+
+test('terminal shared unknown survives provider changes and later no-start; pending alone is not sticky unknown', async () => {
+  for (const terminalUnknown of [true, false]) {
+    const { host, controller: c } = fixture();
+    host.snapshot = () => ({ availability: host.ready ? 'ready' : 'initializing', reason: host.ready ? 'ready' : 'initializing',
+      generation: host.generation, kind: 'shared', initialShared: true, description: host.ready ? host.description : undefined });
+    c.observe(demand('x', 1, true)); c.flush();
+    if (terminalUnknown) { host.calls[0]!.reject(new RequestFailure('shared unknown')); await settle(); }
+    host.generation++; host.ready = false;
+    c.observe(demand('x', 1, true));
+    assert.equal(c.workStatus('source').fallbackEligible, false);
+    if (!terminalUnknown) { host.answer(0); await settle(); assert.equal(c.workStatus('source').fallbackEligible, true); }
+    host.ready = true; c.flush(); host.fault(1, 'busy'); await settle();
+    assert.equal(c.workStatus('source').fallbackEligible, !terminalUnknown);
+    c.ownedStopped(host.generation); assert.equal(c.workStatus('source').fallbackEligible, !terminalUnknown, 'owned reap never clears shared unknown');
+    c.setEnabled(false); c.setEnabled(true);
+    assert.equal(c.workStatus('source').fallbackEligible, !terminalUnknown);
+    c.remove('source'); assert.equal(c.workStatus('source').fallbackEligible, true, 'explicit owner removal ends its evidence');
+    assert.deepEqual(host.acceptedClassifications, []); c.dispose();
+  }
+});
+
+test('owned reap releases only matching source evidence, never newer job or shared terminal unknown', async () => {
+  const packets: string[][] = [];
+  const { host, controller: c } = fixture({ onChange: keys => packets.push([...keys]) });
+  c.observe(demand('x', 1, true)); c.flush(); const generation = host.generation;
+  host.calls[0]!.reject(new RequestFailure('owned unknown')); await settle(); c.setEnabled(false);
+  assert.equal(c.workStatus('source').fallbackEligible, false);
+  c.ownedStopped(generation + 1); assert.equal(c.workStatus('source').fallbackEligible, false);
+  c.ownedStopped(generation); await settle(); assert.equal(c.workStatus('source').fallbackEligible, true);
+  c.setEnabled(true); host.generation++; c.observe(demand('x', 1, true)); c.flush();
+  c.ownedStopped(generation); assert.equal(c.workStatus('source').execution, 'unsettled');
+  assert.equal(c.workStatus('source').fallbackEligible, false);
+  host.fault(1, 'busy'); await settle(); assert.equal(c.workStatus('source').fallbackEligible, true);
+  assert.deepEqual(host.acceptedClassifications, []); assert.ok(packets.length >= 2);
+});
+
+function retiredCaptureOwner(host: Host) {
+  const c = new SourceController(host); c.observe(demand('x', 1, true)); c.flush(); c.setEnabled(false);
+  const job = (c as unknown as { jobs: Map<number, { source?: object }> }).jobs.values().next().value!;
+  return { owner: new WeakRef(c), payload: new WeakRef(job.source!) };
+}
+test('first off owner GC releases necessary retired-validation payload while retained callback keeps physical credit', async () => {
+  assert.equal(typeof global.gc, 'function');
+  const firstHost = new Host(), first = retiredCaptureOwner(firstHost), second = fixture();
+  second.controller.observe(demand('y', 1, true)); second.controller.flush();
+  const credit = second.controller.stats().globalTransientBytes;
+  for (let i = 0; i < 60; i++) { await turn(); global.gc!(); await turn(); }
+  assert.equal(first.owner.deref(), undefined); assert.equal(first.payload.deref(), undefined);
+  assert.equal(second.controller.stats().globalTransientBytes, credit);
+  assert.equal(second.controller.stats().globalBookkeepingBytes, second.controller.stats().bookkeepingBytes);
+  firstHost.calls[0]!.resolve({}); await settle();
+  assert.equal(second.controller.stats().globalUnsettledJobs, 1);
+  second.host.answer(0); await settle(); assert.equal(second.controller.stats().globalUnsettledJobs, 0);
+});
+
+test('explicit owner/key reuse rejects stale terminal authority and disposal drops validation payload without early credit release', async () => {
+  const { host, controller: c } = fixture(); c.observe(demand('x', 1, true)); c.flush();
+  c.remove('source'); c.observe(demand('y', 1, true));
+  assert.equal(c.workStatus('source').execution, 'unsettled');
+  host.calls[0]!.reject(new RequestFailure('old owner unknown')); await settle();
+  assert.equal(host.calls.length, 2); assert.equal(c.workStatus('source').execution, 'unsettled');
+  host.fault(1, 'busy'); await settle(); assert.equal(c.workStatus('source').fallbackEligible, true);
+  c.observe(demand('z', 2, true)); c.flush();
+  const jobs = (c as unknown as { jobs: Map<number, { source?: object }> }).jobs;
+  assert.ok([...jobs.values()][0]!.source);
+  const credit = c.stats().transientBytes; c.dispose();
+  assert.equal([...jobs.values()][0]!.source, undefined); assert.equal(c.stats().transientBytes, credit);
+  host.calls[2]!.resolve({}); await settle(); assert.equal(c.stats().transientBytes, 0); assert.equal(c.stats().bookkeepingBytes, 0);
+});
+
+
+test('validated old completion notifies current fallback permission across provider retirement without useful credit', async () => {
+  const packets: string[][] = [];
+  const { host, controller: c } = fixture({ onChange: keys => packets.push([...keys]) });
+  c.observe(demand('x', 1, true)); c.flush();
+  host.generation++; host.ready = false; c.observe(demand('x', 1, true));
+  assert.equal(c.workStatus('source').fallbackEligible, false);
+  host.answer(0); await settle();
+  assert.equal(c.workStatus('source').fallbackEligible, true); assert.deepEqual(packets, [['source']]);
+  assert.deepEqual(host.acceptedClassifications, []); assert.deepEqual(ranges(c), []); assert.equal(host.calls.length, 1);
+});
+
+test('owned stopped pending capture drops payload and notifies off permission without early physical-credit release', async () => {
+  const packets: string[][] = [];
+  const { host, controller: c } = fixture({ onChange: keys => packets.push([...keys]) });
+  c.observe(demand('x', 1, true)); c.flush(); c.setEnabled(false);
+  const credit = c.stats().transientBytes;
+  c.ownedStopped(host.generation); await settle();
+  assert.equal(c.workStatus('source').fallbackEligible, true); assert.deepEqual(packets, [['source']]);
+  assert.equal(c.stats().captures, 0); assert.equal(c.stats().transientBytes, credit);
+  host.calls[0]!.reject(new RequestFailure('old uncertain cancellation')); await settle();
+  assert.equal(c.workStatus('source').fallbackEligible, true); assert.equal(c.stats().transientBytes, 0);
+  assert.deepEqual(host.acceptedClassifications, []); assert.deepEqual(packets, [['source']]);
+});
+
+
+test('dispose preserves only required pending-open validation capture until validated remote lease cleanup settles', async () => {
+  const { host, controller: c } = fixture(); c.observe(demand('x', 1, false)); c.flush();
+  const credit = c.stats().transientBytes; c.dispose();
+  assert.equal(c.stats().sourceRecords, 0); assert.equal(c.stats().retention.retainedBytes, 0);
+  assert.equal(c.stats().captures, 1, 'required physical cleanup capture remains under its existing credit');
+  assert.equal(c.stats().transientBytes, credit); assert.equal(c.workStatus('source').fallbackEligible, false);
+  host.answer(0); await settle();
+  assert.equal(host.calls.length, 2); assert.equal(host.calls[1]!.request.op, 'stream.close');
+  assert.deepEqual(host.acceptedClassifications, []); assert.deepEqual(ranges(c), []);
+  host.answer(1); await settle(); assert.equal(c.stats().remoteLeases, 0);
+  assert.equal(c.stats().captures, 0); assert.equal(c.stats().globalTransientBytes, 0); assert.equal(c.stats().bookkeepingBytes, 0);
+});
+
+
+test('canonical correction F1: ready dirty demand forbids Pi before explicit native flush', async () => {
+  const { host, controller: c } = fixture();
+  c.observe(demand('x', 1, true));
+  assert.equal(host.calls.length, 0);
+  assert.equal(c.workStatus('source').fallbackEligible, false);
+  assert.equal(c.workStatus('fresh').fallbackEligible, true);
+  c.flush(); assert.equal(host.calls.length, 1);
+  assert.equal(c.workStatus('source').fallbackEligible, false);
+  host.fault(0, 'busy'); await settle();
+  assert.equal(c.workStatus('source').fallbackEligible, true, 'terminal no-start is not queued native demand');
+  c.observe(demand('x', 1, true)); c.flush(); assert.equal(host.calls.length, 1);
+});
+
+test('canonical correction F1: native capacity wait forbids Pi until its queued job settles no-start', async () => {
+  const { host, controller: c } = fixture();
+  for (const key of ['first', 'second', 'third']) c.observe(demand('x', 1, true, key));
+  c.flush(); assert.equal(host.calls.length, 2); assert.equal(c.stats().captures, 2);
+  assert.equal(c.workStatus('third').fallbackEligible, false);
+  host.answer(0); await settle();
+  assert.equal(host.calls.length, 3); assert.equal(host.calls[2]!.request.sources[0].text, 'x');
+  assert.equal(c.workStatus('third').fallbackEligible, false);
+  host.fault(2, 'busy'); await settle(); assert.equal(c.workStatus('third').fallbackEligible, true);
+  host.answer(1); await settle();
+});
+
+for (const proof of ['owned_stop', 'validated_reply', 'typed_no_start', 'local_no_start'] as const) {
+  test(`canonical correction F2: reobserve unavailable provider before ${proof} initializes only current execution`, async () => {
+    for (const identityChange of [false, true]) {
+      const packets: string[][] = [];
+      const { host, controller: c } = fixture({ onChange: keys => packets.push([...keys]) });
+      c.observe(demand('x', 1, true)); c.flush(); const credit = c.stats().transientBytes;
+      c.setEnabled(false); assert.equal(c.stats().retention.retainedBytes, 0);
+      host.generation++; host.ready = false; c.setEnabled(true);
+      c.observe({ ...demand('x', 1, true), ...(identityChange ? { language: 'rust' } : {}) });
+      assert.equal(c.workStatus('source').execution, 'unsettled');
+      assert.equal(c.workStatus('source').fallbackEligible, false, 'prior held attempt remains authoritative');
+      assert.equal(c.stats().transientBytes, credit); assert.equal(host.calls.length, 1);
+      if (proof === 'owned_stop') c.ownedStopped(1);
+      else if (proof === 'validated_reply') host.answer(0);
+      else if (proof === 'typed_no_start') host.fault(0, 'busy');
+      else host.calls[0]!.reject(new RequestFailure('local preflight', 'not_started'));
+      await settle();
+      assert.equal(c.workStatus('source').execution, 'not_started');
+      assert.equal(c.workStatus('source').fallbackEligible, true);
+      assert.deepEqual(packets, [['source']]); assert.equal(host.calls.length, 1);
+      assert.deepEqual(host.acceptedClassifications, []); assert.deepEqual(ranges(c), []);
+      assert.equal(c.stats().committedLineCalls, 0); assert.equal(c.stats().tailCalls, 0);
+      if (proof === 'owned_stop') {
+        assert.equal(c.stats().transientBytes, credit, 'reaping proof does not invent RPC settlement');
+        host.calls[0]!.reject(new RequestFailure('old cancellation after reap')); await settle();
+        assert.equal(c.workStatus('source').fallbackEligible, true); assert.deepEqual(packets, [['source']]);
+      }
+      assert.equal(c.stats().transientBytes, 0); c.dispose(); assert.equal(c.stats().bookkeepingBytes, 0);
+    }
+  });
+}
+
+test('canonical correction permission preserves fresh off startup unavailable and admission-refused no-start', () => {
+  const { host, controller: c } = fixture();
+  assert.equal(c.workStatus('fresh').fallbackEligible, true);
+  host.ready = false; c.observe(demand('x', 1, true));
+  assert.equal(c.workStatus('source').fallbackEligible, true, 'startup does not queue dispatchable native work');
+  host.snapshot = () => ({ generation: host.generation, availability: 'unavailable', reason: 'optional_unavailable', initialShared: false });
+  assert.equal(c.workStatus('source').fallbackEligible, true);
+  c.setEnabled(false); assert.equal(c.workStatus('source').fallbackEligible, true); c.setEnabled(true);
+  const refused = fixture({ maxTransientBytes: 128 });
+  refused.controller.observe(demand('x', 1, true)); refused.controller.flush();
+  assert.equal(refused.host.calls.length, 0);
+  assert.equal(refused.controller.workStatus('source').fallbackEligible, true, 'local no-start admission refusal remains distinct');
+});
+
+
+test('canonical correction F2 guards retain old unknown evidence until exact owned proof, never shared proof', async () => {
+  for (const kind of ['owned', 'shared'] as const) {
+    const { host, controller: c } = fixture();
+    host.snapshot = () => ({ availability: host.ready ? 'ready' : 'initializing', reason: host.ready ? 'ready' : 'initializing',
+      generation: host.generation, kind, initialShared: kind === 'shared', description: host.ready ? host.description : undefined });
+    c.observe(demand('x', 1, true)); c.flush();
+    host.calls[0]!.reject(new RequestFailure('old terminal unknown')); await settle();
+    c.setEnabled(false); host.generation++; host.ready = false; c.setEnabled(true);
+    c.observe({ ...demand('x', 1, true), language: 'rust' });
+    assert.equal(c.workStatus('source').execution, 'unknown'); assert.equal(c.workStatus('source').fallbackEligible, false);
+    c.ownedStopped(2); assert.equal(c.workStatus('source').fallbackEligible, false, 'unrelated receipt is not old-work proof');
+    c.ownedStopped(1); await settle();
+    assert.equal(c.workStatus('source').fallbackEligible, kind === 'owned');
+    assert.deepEqual(host.acceptedClassifications, []); assert.equal(host.calls.length, 1); c.dispose();
+  }
+});
+
+for (const guard of ['transient', 'source-limit', 'profile-limit'] as const) {
+  test(`local native admission ${guard} reports one terminal keyed permission transition`, async () => {
+    const notices: string[][] = [];
+    const { host, controller } = fixture({ ...(guard === 'transient' ? { maxTransientBytes: 128 } : {}), onChange: keys => { notices.push([...keys]); } });
+    controller.observe(demand('xy', 1, true));
+    if (guard === 'source-limit') host.description.limits.source_bytes = 1;
+    if (guard === 'profile-limit') host.description.profiles = [{ ...description.profiles[0]!, id: 'new-profile' }];
+    assert.equal(controller.workStatus('source').fallbackEligible, false);
+    controller.flush(); await settle();
+    assert.equal(controller.workStatus('source').fallbackEligible, true);
+    assert.deepEqual(notices, [['source']]); assert.equal(host.calls.length, 0);
+    controller.flush(); await settle();
+    assert.deepEqual(notices, [['source']]);
+  });
+}
+test('local native admission after credit wake reports refusal and preserves its validated peer', async () => {
+  const notices: string[] = [];
+  const { host, controller } = fixture({ onChange: keys => { notices.push(...keys); } });
+  controller.observe(demand('x', 1, true, 'peer'));
+  controller.observe(demand('x', 1, true, 'busy-peer'));
+  controller.observe(demand('xy', 1, true, 'waiting'));
+  controller.flush(); assert.equal(host.calls.length, 2);
+  assert.equal(controller.workStatus('waiting').fallbackEligible, false);
+  host.description.limits.source_bytes = 1;
+  host.answer(0); await settle();
+  assert.equal(controller.workStatus('waiting').fallbackEligible, true);
+  assert.equal(controller.status('peer')?.exact, true);
+  assert.equal(notices.filter(key => key === 'waiting').length, 1);
+  assert.equal(notices.filter(key => key === 'peer').length, 1);
+  assert.equal(host.calls.length, 2);
+  controller.flush(); await settle(); assert.equal(notices.filter(key => key === 'waiting').length, 1);
+  host.answer(1); await settle();
+  assert.equal(controller.status('busy-peer')?.exact, true);
+});

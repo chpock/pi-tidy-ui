@@ -1,0 +1,10 @@
+{
+  "name": "@kchpock/occipital-darwin-x64",
+  "version": "__OCCIPITAL_VERSION__",
+  "description": "Occipital native payload for macOS x64",
+  "license": "MIT",
+  "os": ["darwin"],
+  "cpu": ["x64"],
+  "files": ["occipital", "LICENSE", "NOTICE"],
+  "exports": { "./package.json": "./package.json" }
+}

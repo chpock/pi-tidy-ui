@@ -1,0 +1,118 @@
+name: Occipital native CI
+
+on:
+  workflow_call:
+    inputs:
+      release-ref:
+        required: true
+        type: string
+      version:
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  packaging-fixtures:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['22.19.0', '26.7.0']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      - name: Assert selected Node runtime
+        env:
+          EXPECTED_NODE: ${{ matrix.node }}
+        run: node -e 'if (process.version !== "v" + process.env.EXPECTED_NODE) throw new Error(process.version)'
+      - name: Inert packaging and exact-tag/commit artifact checks
+        run: npm run test:native-release
+
+  build:
+    needs: packaging-fixtures
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: linux-x64-gnu
+            runner: ubuntu-24.04
+            rust: x86_64-unknown-linux-gnu
+            executable: occipital
+          - target: linux-arm64-gnu
+            runner: ubuntu-24.04-arm
+            rust: aarch64-unknown-linux-gnu
+            executable: occipital
+          - target: darwin-x64
+            runner: macos-15-intel
+            rust: x86_64-apple-darwin
+            executable: occipital
+          - target: darwin-arm64
+            runner: macos-14
+            rust: aarch64-apple-darwin
+            executable: occipital
+          - target: windows-x64-msvc
+            runner: windows-2022
+            rust: x86_64-pc-windows-msvc
+            executable: occipital.exe
+          - target: windows-arm64-msvc
+            runner: windows-11-arm
+            rust: aarch64-pc-windows-msvc
+            executable: occipital.exe
+    runs-on: ${{ matrix.runner }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.19.0'
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust }}
+          components: rustfmt, clippy
+      - name: Stamp daemon before compilation
+        env:
+          RELEASE_REF: ${{ inputs.release-ref }}
+        run: node scripts/release/version.mjs "$RELEASE_REF"
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all --check
+      - name: Fetch every locked build/target dependency for the notice inventory
+        run: cargo fetch --locked
+      - name: Native correctness, pipe protocol and parser-affinity doctest
+        env:
+          RUST_TARGET: ${{ matrix.rust }}
+        run: cargo test --workspace --locked --target "$RUST_TARGET"
+      - name: Strict native lint
+        env:
+          RUST_TARGET: ${{ matrix.rust }}
+        run: cargo clippy --workspace --all-targets --locked --target "$RUST_TARGET" -- -D warnings
+      - name: Build release executable
+        env:
+          RUST_TARGET: ${{ matrix.rust }}
+        run: cargo build --release --locked -p occipital --target "$RUST_TARGET"
+      - name: Real release-binary protocol, UTF8 colors, append counters and cleanup
+        env:
+          RUST_TARGET: ${{ matrix.rust }}
+          EXECUTABLE: ${{ matrix.executable }}
+        run: |
+          export OCCIPITAL_TEST_BIN="$GITHUB_WORKSPACE/target/$RUST_TARGET/release/$EXECUTABLE"
+          node --test --test-name-pattern="^actual owned helper preserves compact UTF8 highlighting and incremental work counters$" tests/occipital-native.test.ts
+      - name: Version smoke, pinned-source notices, hashes and native package staging
+        env:
+          TARGET: ${{ matrix.target }}
+          RUST_TARGET: ${{ matrix.rust }}
+          EXECUTABLE: ${{ matrix.executable }}
+        run: |
+          export SOURCE_COMMIT="$(git rev-parse HEAD)"
+          node scripts/release/native-ci.mjs stage "$TARGET" "target/$RUST_TARGET/release/$EXECUTABLE" target/native-artifact
+      - uses: actions/upload-artifact@v4
+        with:
+          name: occipital-v${{ inputs.version }}-${{ matrix.target }}
+          path: target/native-artifact/
+          if-no-files-found: error
+          retention-days: 14

@@ -1,0 +1,32 @@
+[
+  {
+    "name": "subc-client-rs",
+    "version": "0.26.3",
+    "file": "subconscious-MIT.txt",
+    "source": "https://raw.githubusercontent.com/cortexkit/subconscious/a0bf19b5987503d16f555721159de6fd87fec26b/LICENSE"
+  },
+  {
+    "name": "subc-control",
+    "version": "0.28.0",
+    "file": "subconscious-MIT.txt",
+    "source": "https://raw.githubusercontent.com/cortexkit/subconscious/a0477899580556caf3ae07929746f94178d42020/LICENSE"
+  },
+  {
+    "name": "subc-os",
+    "version": "0.1.10",
+    "file": "subconscious-MIT.txt",
+    "source": "https://raw.githubusercontent.com/cortexkit/subconscious/a0bf19b5987503d16f555721159de6fd87fec26b/LICENSE"
+  },
+  {
+    "name": "subc-protocol",
+    "version": "0.29.4",
+    "file": "subconscious-MIT.txt",
+    "source": "https://raw.githubusercontent.com/cortexkit/subconscious/82646385e62d76164412ca3a3f518028b49502e2/LICENSE"
+  },
+  {
+    "name": "subc-transport",
+    "version": "0.10.0",
+    "file": "subconscious-MIT.txt",
+    "source": "https://raw.githubusercontent.com/cortexkit/subconscious/30bdd279db864d43d61f9e30bb28febc7c09b69e/LICENSE"
+  }
+]

@@ -27,6 +27,8 @@ Hard-wrap printable text by terminal cell width, preserving spaces rather than u
 
 Display-only sanitization removes terminal escape/control sequences, bidi controls and zero-width spaces; retain Unicode joining marks used by graphemes (including emoji ZWJ sequences); normalize CRLF and standalone CR to logical line breaks. Preserve other printable characters, newlines and indentation. Incoming ANSI colors are not executed or retained: use the agreed semantic foregrounds. Arguments, result content and stored data are never changed.
 
+Optional native command syntax follows the [syntax contract](syntax-highlighting-spec.md). Logical command preparation and gradual/final classification occur outside render, before display sanitization/tab expansion. Valid structured foregrounds use Pi palette or the selected independent daemon theme; command geometry and full text remain unchanged. Without usable native colors, retain the existing entire-command `toolTitle` color, never invoke Pi's highlighter for Bash. Output/comments/footer retain their existing semantic colors and are not syntax sources. Argument completion is independent of process completion.
+
 ## 4. Output and streaming
 
 Output means the text content returned by the tool, in content-block order, joined with newlines. It does not mean raw stdout reconstructed from other sources. Display partial results as they arrive through Pi's existing updates; do not append overlapping snapshots, rerun commands, or poll. Final results replace partial snapshots.

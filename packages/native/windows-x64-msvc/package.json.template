@@ -1,0 +1,10 @@
+{
+  "name": "@kchpock/occipital-windows-x64-msvc",
+  "version": "__OCCIPITAL_VERSION__",
+  "description": "Occipital native payload for Windows x64 MSVC",
+  "license": "MIT",
+  "os": ["win32"],
+  "cpu": ["x64"],
+  "files": ["occipital.exe", "LICENSE", "NOTICE"],
+  "exports": { "./package.json": "./package.json" }
+}

@@ -9,6 +9,7 @@ import xterm from "@xterm/headless";
 import { Box, Container, Editor, CURSOR_MARKER, Spacer, Text, visibleWidth, truncateToWidth, parseColor, colorToRgb, TuiAltScreen, TuiMainScreen, type Component, type Terminal, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import { CustomEditor, ToolExecutionComponent as NativeToolExecution, createEditToolDefinition, createWriteToolDefinition, createWriteTool, highlightCode, getLanguageFromPath, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import toolview, { installToolview, describeArgs, sanitize, terminalAppearanceTracking, type ToolviewOptions } from "../src/index.ts";
+import type { SyntaxRuntimeOptions } from "../src/syntax/runtime.ts";
 import { cardGeometry, frameRows, insidePanel } from "../src/card-frame.ts";
 import { renderUserCard } from "../src/user-card.ts";
 import { editorGeometry } from "../src/editor-card.ts";
@@ -16,6 +17,7 @@ import { measureFileCard, renderFileCard } from "../src/file-card.ts";
 import { generateDiffString, generateUnifiedPatch } from "../node_modules/@earendil-works/pi-coding-agent/dist/core/tools/edit-diff.js";
 import type { CardTheme } from "../src/card-theme.ts";
 import { RenderCache } from "../src/render-cache.ts";
+import { awaitFixture } from "./fixtures/await-fixture.ts";
 import { renderEditorStatus, directoryStatus } from "../src/editor-status.ts";
 import { IdleStatus, StatusIndicator } from "../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/components/status-indicator.js";
 import { InteractiveMode } from "../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/interactive-mode.js";
@@ -82,7 +84,7 @@ class Tool extends Container {
   }
 }
 const spinnerFrames = Array.from("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏");
-const color = { fg: (_name: string, text: string) => text };
+const color = { colors: {}, fg: (_name: string, text: string) => text };
 function setup(children: (Container | Text | Tool)[] = [], options: ToolviewOptions = {}) {
   const root = new Root();
   for (const child of children) root.addChild(child);
@@ -377,18 +379,25 @@ test("extension off and shutdown cancel active clocks; non-TUI loading starts no
   t.mock.timers.enable({ apis: ["setTimeout", "Date"], now: 0 });
   t.mock.method(performance, "now", () => Date.now());
   const intervals = t.mock.method(globalThis, "setTimeout"), clears = t.mock.method(globalThis, "clearTimeout");
+  // Broker startup deadlines share global timers, but are not the 100ms animation clock.
+  const animations = () => intervals.mock.calls.filter(call => call.arguments[1] === 100);
+  const animationStops = () => {
+    const handles = new Set<unknown>(animations().map(call => call.result));
+    return clears.mock.calls.filter(call => handles.has(call.arguments[0])).length;
+  };
   const h = extensionHarness("tui"), tool = new Tool(); tool.result = undefined; h.root.addChild(tool);
   try {
-    h.events.get("session_start")!({}, h.ctx); h.root.render(80); assert.equal(intervals.mock.calls.length, 1);
-    await h.commands.get("toolview")!.handler("off", h.ctx); assert.equal(clears.mock.calls.length, 1);
+    h.events.get("session_start")!({}, h.ctx); h.root.render(80); assert.equal(animations().length, 1);
+    await h.commands.get("toolview")!.handler("off", h.ctx); assert.equal(animationStops(), 1);
     const off = h.root.requests; t.mock.timers.tick(10000); assert.equal(h.root.requests, off);
-    await h.commands.get("toolview")!.handler("on", h.ctx); h.root.render(80); assert.equal(intervals.mock.calls.length, 2);
-    h.events.get("session_shutdown")!({}, h.ctx); assert.equal(clears.mock.calls.length, 2);
+    await h.commands.get("toolview")!.handler("on", h.ctx); h.root.render(80); assert.equal(animations().length, 2);
+    h.events.get("session_shutdown")!({}, h.ctx); assert.equal(animationStops(), 2);
     const closed = h.root.requests; t.mock.timers.tick(10000); assert.equal(h.root.requests, closed);
     for (const mode of ["print", "json", "rpc"] as const) {
+      const starts = intervals.mock.calls.length;
       const other = extensionHarness(mode); other.root.addChild(tool);
       other.events.get("session_start")!({}, other.ctx); other.root.render(80); other.events.get("session_shutdown")!({}, other.ctx);
-      assert.equal(intervals.mock.calls.length, 2, `${mode} installs no animation resources`);
+      assert.equal(intervals.mock.calls.length, starts, `${mode} installs no timers`);
     }
   } finally { h.events.get("session_shutdown")!({}, h.ctx); }
 });
@@ -551,6 +560,12 @@ test("frozen tool prototypes fail safely without partially installing hooks", ()
   assert.equal(warnings.length, 1);
 });
 
+function fixtureSyntaxOptions(): SyntaxRuntimeOptions {
+  return { standaloneVersion: "fixture", settings: {
+    async load() { return { ok: true, syntaxTheme: { kind: "pi" } }; }, async update() { return { ok: true }; },
+  }, provider: { async tryShared() { return undefined; }, async acquireOwned() { throw new Error("fixture unavailable"); } } };
+}
+
 function extensionHarness(mode: "tui" | "print" | "json" | "rpc" = "tui", flagValues: Record<string, string> = {}) {
   const root = new Root(); root.addChild(new Tool());
   const events = new Map<string, (event: unknown, ctx: ExtensionContext) => void>();
@@ -577,7 +592,7 @@ function extensionHarness(mode: "tui" | "print" | "json" | "rpc" = "tui", flagVa
       else { widgetComponents.delete(name); widgetPlacements.delete(name); }
     },
   } } as unknown as ExtensionContext;
-  toolview(api);
+  toolview(api, { syntax: fixtureSyntaxOptions });
   return { root, ctx, events, commands, flags, widgets, notices, widgetComponents, widgetPlacements };
 }
 
@@ -4499,15 +4514,15 @@ test("Git branch source validates real repository kinds without environment redi
     const nested = join(repo, "nested"); mkdirSync(nested);
     for (const [cwd, expected] of [[plainDir, undefined], [fake, undefined], [repo, "unborn"], [nested, "unborn"], [bare, "bare-main"]] as const) {
       const source = new GitBranchSource(() => {}); sources.push(source);
-      source.setDirectory(cwd); await source.settled(); assert.equal(source.branch(cwd), expected);
+      source.setDirectory(cwd); await awaitFixture(source.settled()); assert.equal(source.branch(cwd), expected);
     }
     const poisoned = new GitBranchSource(() => {}, { env: { ...process.env, GIT_DIR: join(bare, "."), GIT_WORK_TREE: bare } });
-    sources.push(poisoned); poisoned.setDirectory(plainDir); await poisoned.settled(); assert.equal(poisoned.branch(plainDir), undefined);
-    poisoned.setDirectory(repo); await poisoned.settled(); assert.equal(poisoned.branch(repo), "unborn");
+    sources.push(poisoned); poisoned.setDirectory(plainDir); await awaitFixture(poisoned.settled()); assert.equal(poisoned.branch(plainDir), undefined);
+    poisoned.setDirectory(repo); await awaitFixture(poisoned.settled()); assert.equal(poisoned.branch(repo), "unborn");
     git(repo, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "--allow-empty", "-m", "initial");
-    git(repo, "checkout", "--detach"); poisoned.refresh(true); await poisoned.settled(); assert.equal(poisoned.branch(repo), undefined);
+    git(repo, "checkout", "--detach"); poisoned.refresh(true); await awaitFixture(poisoned.settled()); assert.equal(poisoned.branch(repo), undefined);
     const worktree = join(base, "linked"); git(repo, "worktree", "add", "-b", "linked-name", worktree);
-    poisoned.setDirectory(worktree); await poisoned.settled(); assert.equal(poisoned.branch(worktree), "linked-name");
+    poisoned.setDirectory(worktree); await awaitFixture(poisoned.settled()); assert.equal(poisoned.branch(worktree), "linked-name");
   } finally { for (const source of sources) source.dispose(); rmSync(base, { recursive: true, force: true }); }
 });
 
@@ -4518,14 +4533,14 @@ test("Git branch source observes atomic HEAD changes with zero warm-frame querie
   const source = new GitBranchSource(() => resolve?.());
   try {
     assert.equal(spawnSync("git", ["-C", cwd, "init", "-b", "first"]).status, 0);
-    source.setDirectory(cwd); await source.settled(); assert.equal(source.branch(cwd), "first");
+    source.setDirectory(cwd); await awaitFixture(source.settled()); assert.equal(source.branch(cwd), "first");
     const before = gitDiagnostics();
     for (let n = 0; n < 100; n++) { source.setDirectory(cwd); source.branch(cwd); }
-    await source.settled(); assert.equal(gitDiagnostics().queries, before.queries);
+    await awaitFixture(source.settled()); assert.equal(gitDiagnostics().queries, before.queries);
     const changed = new Promise<void>(done => { resolve = done; });
     assert.equal(spawnSync("git", ["-C", cwd, "symbolic-ref", "HEAD", "refs/heads/second"]).status, 0);
-    await Promise.race([changed, new Promise((_, reject) => setTimeout(() => reject(new Error("HEAD watch did not refresh")), 3000).unref())]);
-    await source.settled(); assert.equal(source.branch(cwd), "second");
+    await awaitFixture(changed);
+    await awaitFixture(source.settled()); assert.equal(source.branch(cwd), "second");
     assert.ok(gitDiagnostics().queries > before.queries);
     source.dispose(); assert.equal(source.branch(cwd), undefined);
   } finally { source.dispose(); rmSync(cwd, { recursive: true, force: true }); }
@@ -4587,10 +4602,10 @@ test("Git branch source ignores late cancelled replies and releases jobs/watches
   } });
   source.setDirectory("/toolview-old-not-present"); await waiting;
   source.setDirectory("/toolview-new-not-present");
-  release!({ ok: true, output: "refs/heads/stale\n" }); await source.settled();
+  release!({ ok: true, output: "refs/heads/stale\n" }); await awaitFixture(source.settled());
   assert.equal(source.branch("/toolview-old-not-present"), undefined);
   assert.equal(source.branch("/toolview-new-not-present"), "fresh");
-  source.dispose(); await source.settled();
+  source.dispose(); await awaitFixture(source.settled());
   assert.equal(gitDiagnostics().activeJobs, before.activeJobs); assert.equal(gitDiagnostics().watchers, before.watchers);
 });
 
@@ -4604,19 +4619,19 @@ test("Git branch source recovers repository creation and supports available reft
     const done = new Promise<void>((resolve, reject) => {
       listener = resolve; timer = setTimeout(() => reject(new Error("repository watch did not refresh")), 3000);
     });
-    try { action(); await done; await source.settled(); } finally { clearTimeout(timer!); listener = undefined; }
+    try { action(); await done; await awaitFixture(source.settled()); } finally { clearTimeout(timer!); listener = undefined; }
   };
   try {
-    source.setDirectory(cwd); await source.settled(); assert.equal(source.branch(cwd), undefined);
+    source.setDirectory(cwd); await awaitFixture(source.settled()); assert.equal(source.branch(cwd), undefined);
     await change(() => { assert.equal(spawnSync("git", ["-C", cwd, "init", "-b", "created"]).status, 0); });
     assert.equal(source.branch(cwd), "created");
-    source.dispose(); await source.settled(); rmSync(join(cwd, ".git"), { recursive: true });
+    source.dispose(); await awaitFixture(source.settled()); rmSync(join(cwd, ".git"), { recursive: true });
     const reftable = spawnSync("git", ["-C", cwd, "init", "--ref-format=reftable", "-b", "table-first"]);
     if (reftable.status !== 0) { t.diagnostic("Git reftable is unavailable; repository creation control passed"); return; }
-    source.setDirectory(cwd); await source.settled(); assert.equal(source.branch(cwd), "table-first");
+    source.setDirectory(cwd); await awaitFixture(source.settled()); assert.equal(source.branch(cwd), "table-first");
     await change(() => { assert.equal(spawnSync("git", ["-C", cwd, "symbolic-ref", "HEAD", "refs/heads/table-next"]).status, 0); });
     assert.equal(source.branch(cwd), "table-next");
-  } finally { source.dispose(); await source.settled(); rmSync(cwd, { recursive: true, force: true }); }
+  } finally { source.dispose(); await awaitFixture(source.settled()); rmSync(cwd, { recursive: true, force: true }); }
 });
 
 
@@ -4633,17 +4648,17 @@ test("Git rediscovery rearms watches after same-path metadata directory replacem
       listener = () => { if (source.branch(cwd) === expected) done(); };
       timer = setTimeout(() => fail(new Error(`watch did not publish ${expected}; actual ${source.branch(cwd)}`)), 1500);
     });
-    try { action(); await changed; await source.settled(); } finally { clearTimeout(timer!); listener = undefined; }
+    try { action(); await changed; await awaitFixture(source.settled()); } finally { clearTimeout(timer!); listener = undefined; }
   };
   try {
     git(cwd, "init", "-b", "first"); git(other, "init", "-b", "second");
-    source.setDirectory(cwd); await source.settled(); assert.equal(source.branch(cwd), "first");
+    source.setDirectory(cwd); await awaitFixture(source.settled()); assert.equal(source.branch(cwd), "first");
     await change("second", () => {
       renameSync(join(cwd, ".git"), join(base, "moved-away")); renameSync(join(other, ".git"), join(cwd, ".git"));
     });
     await change("third", () => git(cwd, "symbolic-ref", "HEAD", "refs/heads/third"));
     assert.equal(source.branch(cwd), "third");
-  } finally { source.dispose(); await source.settled(); rmSync(base, { recursive: true, force: true }); }
+  } finally { source.dispose(); await awaitFixture(source.settled()); rmSync(base, { recursive: true, force: true }); }
 });
 
 
@@ -4669,11 +4684,11 @@ test("Git failures omit branch without blocking cwd or retaining resources", asy
   const cwd = mkdtempSync(join(tmpdir(), "toolview-git-error-"));
   const before = gitDiagnostics(), source = new GitBranchSource(() => {}, { env: { ...process.env, PATH: "/git-not-present" } });
   try {
-    source.setDirectory(cwd); await source.settled(); assert.equal(source.branch(cwd), undefined);
+    source.setDirectory(cwd); await awaitFixture(source.settled()); assert.equal(source.branch(cwd), undefined);
     const current = gitDiagnostics(); assert.equal(current.spawned, before.spawned, "missing binary started zero processes");
     for (let n = 0; n < 50; n++) source.setDirectory(cwd);
-    await source.settled(); assert.equal(gitDiagnostics().queries, current.queries, "no retry polling on errors");
-  } finally { source.dispose(); await source.settled(); rmSync(cwd, { recursive: true, force: true }); }
+    await awaitFixture(source.settled()); assert.equal(gitDiagnostics().queries, current.queries, "no retry polling on errors");
+  } finally { source.dispose(); await awaitFixture(source.settled()); rmSync(cwd, { recursive: true, force: true }); }
   assert.equal(gitDiagnostics().watchers, before.watchers); assert.equal(gitDiagnostics().activeJobs, before.activeJobs);
 });
 
@@ -4692,11 +4707,11 @@ test("Git rediscovery reads HEAD after installing current metadata watches", asy
     return { ok: result.status === 0, output: result.stdout, code: result.status ?? undefined };
   } });
   try {
-    source.setDirectory(cwd); await source.settled(); assert.equal(source.branch(cwd), "before-rearm");
-    armed = true; source.refresh(true); await source.settled();
+    source.setDirectory(cwd); await awaitFixture(source.settled()); assert.equal(source.branch(cwd), "before-rearm");
+    armed = true; source.refresh(true); await awaitFixture(source.settled());
     assert.equal(mutations, 1, "one controlled HEAD mutation before metadata-query completion");
     assert.equal(source.branch(cwd), "changed-during-rearm", "publish post-installation HEAD, not stale pre-rearm snapshot");
-  } finally { source.dispose(); await source.settled(); rmSync(cwd, { recursive: true, force: true }); }
+  } finally { source.dispose(); await awaitFixture(source.settled()); rmSync(cwd, { recursive: true, force: true }); }
 });
 
 
@@ -4709,9 +4724,9 @@ test("Git repository environment isolation removes case-variant redirect keys", 
       return { ok: args[0] === "symbolic-ref", output: args[0] === "symbolic-ref" ? "refs/heads/isolated\n" : "" };
     } });
   try {
-    source.setDirectory("/toolview-env-not-present"); await source.settled();
+    source.setDirectory("/toolview-env-not-present"); await awaitFixture(source.settled());
     assert.equal(source.branch("/toolview-env-not-present"), "isolated");
-  } finally { source.dispose(); await source.settled(); }
+  } finally { source.dispose(); await awaitFixture(source.settled()); }
 });
 
 
@@ -4762,7 +4777,7 @@ async function footerSetup(foreignEditor = false, selectorAtStartup = false) {
       cost: { input: cost, output: 0, cacheRead: 0, cacheWrite: 0, total: cost } } });
   if (foreignEditor) ctx.ui.setEditorComponent(footerForeignEditor);
   if (selectorAtStartup) { input.clear(); input.addChild(new Text("NATIVE_RELOAD_BOX", 0, 0)); }
-  append(); toolview(pi as unknown as ExtensionAPI); emit("session_start");
+  append(); toolview(pi as unknown as ExtensionAPI, { syntax: fixtureSyntaxOptions }); emit("session_start");
   return { root, host, footer, native, ctx, manager, statuses, append, emit, editor, input,
     render: (width = 140) => footer.children[0]!.render(width), counts: () => ({ scans, contextReads }), authReads: () => authReads,
     context(value: typeof context) { context = value; }, auto(value: boolean) { auto = value; }, subscription(value: boolean) { subscription = value; },

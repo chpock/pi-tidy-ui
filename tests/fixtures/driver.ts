@@ -456,7 +456,7 @@ export default function terminalDriver(pi: ExtensionAPI) {
         const user: any = context.messages[last];
         const prompt = typeof user?.content === "string" ? user.content :
           user?.content?.filter((c: any) => c.type === "text").map((c: any) => c.text).join("");
-        const scenario = prompt?.includes("run write-stock") ? "write-stock" : prompt?.includes("run write-shapes") ? "write-shapes" : prompt?.includes("run edit-performance") ? "edit-performance" : prompt?.includes("run edit-cards") ? "edit-cards" : prompt?.includes("run user-card") ? "user-card" : prompt === "run cache-performance" ? "cache-performance" : prompt?.includes("bash-width") ? "bash-width" : prompt?.includes("bash-stream") ? "bash-stream" : prompt?.includes("bash-real") ? "bash-real" :
+        const scenario = prompt === "run syntax-cards" ? "syntax-cards" : prompt?.includes("run write-stock") ? "write-stock" : prompt?.includes("run write-shapes") ? "write-shapes" : prompt?.includes("run edit-performance") ? "edit-performance" : prompt?.includes("run edit-cards") ? "edit-cards" : prompt?.includes("run user-card") ? "user-card" : prompt === "run cache-performance" ? "cache-performance" : prompt?.includes("bash-width") ? "bash-width" : prompt?.includes("bash-stream") ? "bash-stream" : prompt?.includes("bash-real") ? "bash-real" :
           prompt?.includes("bash-shape-timeout-stream") ? "bash-shape-timeout-stream" : prompt?.includes("bash-shape-timeouts") ? "bash-shape-timeouts" :
           prompt?.includes("bash-shape-exception-stream") ? "bash-shape-exception-stream" : prompt?.includes("bash-shape-exceptions") ? "bash-shape-exceptions" :
           prompt?.includes("bash-shape-stream") ? "bash-shape-stream" : prompt?.includes("bash-shapes") ? "bash-shapes" :
@@ -473,7 +473,11 @@ export default function terminalDriver(pi: ExtensionAPI) {
         if (scenario === "write-shapes" && !writeShape) throw new Error("write-shapes requires explicit isolated opt-in");
         if (writeShape && scenario !== "write-shapes") throw new Error("write-shape opt-in is isolated from all other scenarios");
         if (scenario.startsWith("footer-") && process.env.TOOLVIEW_TEST_FOOTER_HISTORY !== "1") throw new Error("footer-history requests require explicit isolated opt-in");
-        const calls: Pick<ToolCall, "name" | "arguments">[] = scenario === "footer-cold" ? [] : scenario === "footer-history" || scenario === "footer-varied" ?
+        const calls: Pick<ToolCall, "name" | "arguments">[] = scenario === "syntax-cards" ? [
+          { name: "bash", arguments: { command: "printf 'SYNTAX_OUTPUT\\n'\ntouch \"$TOOLVIEW_TEST_OUTPUT/syntax-shell-ready\"\nwhile [ ! -f \"$TOOLVIEW_TEST_OUTPUT/syntax-shell-final\" ]; do sleep 0.025; done" } },
+          { name: "write", arguments: { path: "syntax.ts", content: "const x=1;\n" } },
+          { name: "edit", arguments: { path: "syntax.ts", oldText: "const x=1;", newText: "const x=2;" } },
+        ] : scenario === "footer-cold" ? [] : scenario === "footer-history" || scenario === "footer-varied" ?
           Array.from({ length: scenario === "footer-history" ? 19 : 11 }, () => ({ name: "read", arguments: { path: "a.txt", offset: 1, limit: 1 } })) : scenario === "write-stock" ? writeStockSuite : scenario === "write-shapes" ? writeShapeSuite : scenario === "edit-performance" ? editPerformanceSuite : scenario === "edit-cards" ? editSuite : scenario === "user-card" ? [
           { name: "bash", arguments: { command: "printf 'USER_BASH_OUTPUT\\n'" } },
           { name: "read", arguments: { path: "a.txt" } },
@@ -503,6 +507,9 @@ export default function terminalDriver(pi: ExtensionAPI) {
           { name: "tv_unknown", arguments: { query: "future after reload" } },
         ] : suite;
         const step = results.length;
+        if (scenario === "syntax-cards" && step === 2 && process.env.TOOLVIEW_TEST_SYNTAX_REPLY_GATE === "1") {
+          record({ type: "syntax_reply_tool_gate" }); await gate("syntax-reply-tool-go", options?.signal);
+        }
         if (scenario.startsWith("footer-")) {
           const rate = scenario === "footer-cold" ? 0 : scenario === "footer-history" ? 10 :
             [100, 85.7, 71.4, 57.1, 42.9, 28.6, 14.3, 0, 79.96, 94.96, 100, undefined][step];
@@ -517,9 +524,20 @@ export default function terminalDriver(pi: ExtensionAPI) {
           message.content.push({ ...call, arguments: {} });
           stream.push({ type: "toolcall_start", contentIndex: 0, partial: message });
           await wait(60);
+          if (scenario === "syntax-cards" && step === 0) {
+            const command = String(call.arguments.command), first = command.indexOf("\n") + 1, second = command.indexOf("\n", first) + 1;
+            const prefixes = [command.slice(0, 1), command.slice(0, first), command.slice(0, first + 1),
+              command.slice(0, second) + "wihle [", command.slice(0, second) + "while ["];
+            for (const [phase, prefix] of prefixes.entries()) {
+              message.content[0] = { ...call, arguments: { command: prefix } };
+              stream.push({ type: "toolcall_delta", contentIndex: 0, delta: JSON.stringify({ command: prefix }), partial: message });
+              record({ type: "syntax_prefix", phase, bytes: Buffer.byteLength(prefix) });
+              await gate(`syntax-prefix-go-${phase}`, options?.signal);
+            }
+          }
           message.content[0] = call;
           stream.push({ type: "toolcall_delta", contentIndex: 0, delta: JSON.stringify(call.arguments), partial: message });
-          if ((scenario === "pending" || scenario === "bash-stream" || scenario === "edit-cards" || (writeDiagnostics && scenario.startsWith("write-"))) && step === 0) {
+          if ((scenario === "pending" || scenario === "bash-stream" || scenario === "syntax-cards" || scenario === "edit-cards" || (writeDiagnostics && scenario.startsWith("write-"))) && step === 0) {
             record({ type: "provider_gate" });
             await gate("provider-go", options?.signal);
           }
@@ -701,7 +719,7 @@ export default function terminalDriver(pi: ExtensionAPI) {
         registrations: pi.getAllTools().map((tool) => tool.name),
         commands: pi.getCommands().map((command) => command.name),
         errorStyle: ctx.ui.theme.fg("error", "TERMINAL_ERROR"),
-        summaryStyles: Object.fromEntries((["dim", "toolTitle", "muted", "toolOutput", "error", "userMessageText", "syntaxKeyword", "syntaxNumber", "syntaxString", "syntaxComment", "syntaxFunction", "syntaxType", "toolDiffAdded", "toolDiffRemoved"] as const)
+        summaryStyles: Object.fromEntries((["dim", "toolTitle", "muted", "toolOutput", "mdCodeBlock", "error", "userMessageText", "syntaxKeyword", "syntaxNumber", "syntaxString", "syntaxComment", "syntaxFunction", "syntaxType", "toolDiffAdded", "toolDiffRemoved"] as const)
           .map((role) => [role, ctx.ui.theme.fg(role, "X")])),
         backgroundStyles: Object.fromEntries((["toolPendingBg", "toolSuccessBg", "toolErrorBg", "userMessageBg"] as const)
           .map((role) => [role, ctx.ui.theme.bg(role, "X")])),
@@ -726,6 +744,7 @@ export default function terminalDriver(pi: ExtensionAPI) {
           expanded: node.expanded, executionStarted: node.executionStarted, isError: node.result?.isError,
           content: node.result?.content, details: node.result?.details, structuredContent: node.result?.structuredContent,
           args: node.args, partial: node.isPartial, lines: node.render(width),
+          ...(process.env.TOOLVIEW_TEST_SYNTAX_CARDS === "1" ? { argsComplete: node.getRenderContext().argsComplete } : {}),
           ...(spinnerDiagnostics ? { before: parents.get(node)?.children.slice(Math.max(0, parents.get(node).children.indexOf(node) - 3), parents.get(node).children.indexOf(node))
             .map((previous: any) => ({ kind: previous.constructor.name, name: previous.toolName, lines: previous.render(width).map(stripVTControlCharacters) })) } : {}),
           // Pointer/clock-work captures inspect only actual viewport paint; alternate widths intentionally rebuild layouts and width zero stops/restarts animation.

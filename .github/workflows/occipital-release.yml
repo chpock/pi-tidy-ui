@@ -1,0 +1,55 @@
+name: Occipital release
+
+# CI's occipital-v* tag path calls this after its versioned native matrix succeeds.
+# Artifacts belong to the same workflow run and commit; no second build or lookup.
+on:
+  workflow_call:
+    inputs:
+      tag:
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/occipital-v')
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.19.0'
+      - name: Validate exact event tag
+        id: version
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          test "$TAG" = "$GITHUB_REF_NAME"
+          node scripts/release/version.mjs --resolve "refs/tags/$TAG"
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: occipital-v${{ steps.version.outputs.version }}-*
+          path: native-artifacts
+      - name: Validate all platform bytes, notices, versions and source commit
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          export SOURCE_COMMIT="$(git rev-parse HEAD)"
+          node scripts/release/native-ci.mjs assemble native-artifacts "$TAG" release-assets
+          cd release-assets
+          sha256sum --check SHA256SUMS
+      - name: Create draft with all assets, then publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+          PRERELEASE: ${{ steps.version.outputs.prerelease }}
+        run: |
+          flags=()
+          if [ "$PRERELEASE" = true ]; then flags+=(--prerelease); fi
+          gh release create "$TAG" release-assets/* --repo "$GITHUB_REPOSITORY" \
+            --verify-tag --draft --title "Occipital ${TAG#occipital-v}" \
+            --notes "Occipital-only release. Raw executables, per-platform third-party notices, LICENSE, SHA256SUMS and exact native-release.json metadata. No extension or npm publication." \
+            "${flags[@]}"
+          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false

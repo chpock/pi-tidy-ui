@@ -13,13 +13,17 @@ interface BashPresentation {
   result?: { content: { type: string; text?: string }[]; isError?: boolean; details?: unknown };
 }
 
+/** Logical parser input only: no prompt, synthetic metadata or execution output. */
+export function bashCommandSource(args: Record<string, unknown>): string | undefined {
+  return typeof args.command === "string" ? blockText(args.command) : undefined;
+}
 function exitCode(node: BashPresentation): number | undefined {
   const code = (node.result?.details as { exit_code?: unknown } | null | undefined)?.exit_code;
   return typeof code === "number" && Number.isFinite(code) && Number.isInteger(code) ? code : undefined;
 }
 
 /** Content policy is independent of both the host's tool class and the shared shell. */
-export function renderBashCard(node: BashPresentation, directory: string | undefined, width: number, theme: CardTheme, outputPad = 1) {
+export function renderBashCard(node: BashPresentation, directory: string | undefined, width: number, theme: CardTheme, outputPad = 1, commandRows?: readonly string[]) {
   const geometry = cardGeometry(width, outputPad), available = geometry.contentWidth;
   if (!available) return { rows: [] as string[], geometry, expandable: false };
   const body: string[] = [];
@@ -28,7 +32,9 @@ export function renderBashCard(node: BashPresentation, directory: string | undef
   if (description) body.push(...styled(`# ${description}`, "muted"));
   if (directory) body.push(...styled(`# Running in ${blockText(directory).replace(/[\n\t]/gu, " ")}`, "muted"));
   if (body.length) body.push("");
-  blockText(node.args.command as string).split("\n").forEach((line, index) => {
+  // Projected rows already include the prompt and viewport-aware tab stops.
+  if (commandRows) body.push(...commandRows);
+  else blockText(node.args.command as string).split("\n").forEach((line, index) => {
     let prompt = index === 0 ? 2 : 0;
     for (const row of terminalRows(index === 0 ? `$ ${line}` : line, available)) {
       const count = Math.min(prompt, row.length);

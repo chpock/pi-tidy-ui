@@ -2825,6 +2825,8 @@ test('real CLI: OpenCode-style edit syntax, numbered unified/split format, error
       const cell = reference.buffer.active.getLine(0).getCell(0);
       return { fg: cell.getFgColor(), fgMode: cell.getFgColorMode(), dim: cell.isDim() };
     };
+    const replayColors = async (actual, expected) =>
+      compareEditReplayColors(actual, expected, await fg(actual, 'mdCodeBlock'));
     const check = async (dump, split) => {
       assert.equal(dump.tools.length, 7);
       const first = dump.tools[0], second = dump.tools[1];
@@ -3014,8 +3016,20 @@ test('real CLI: OpenCode-style edit syntax, numbered unified/split format, error
       for (const mode of ['fullscreen', 'regular']) {
         const replay = await start(`edit-replay-${mode}`, { toolview: true, session: wide.session, workspace: stock.work, mode });
         const resumed = await replay.capture('replayed'); await check(resumed, false);
-        assert.deepEqual(toolLines(resumed), toolLines(wide)); assert.deepEqual(persisted(resumed), persisted(wide));
+        await replayColors(resumed, wide); assert.deepEqual(persisted(resumed), persisted(wide));
+        const htmlBlock = resumed.tools[4].lines.map(plain), htmlStart = replayBlockStart(resumed, htmlBlock);
+        const codeRow = htmlBlock.findIndex(line => /^\s*┃\s+\d+ [ +\-] /.test(line));
+        const from = /^\s*┃\s+\d+ [ +\-] /.exec(htmlBlock[codeRow])[0].length;
+        const codeColumn = from + htmlBlock[codeRow].slice(from).search(/\S/);
+        assert.ok(codeColumn >= from && resumed.cells[htmlStart + codeRow][codeColumn].text.trim(), 'negative code controls mutate an actual visible source glyph');
+        for (const [column, field] of [[codeColumn, 'fg'], [codeColumn, 'bg'], [1, 'fg']]) {
+          const damaged = { ...resumed, cells: resumed.cells.slice() }, y = htmlStart + codeRow;
+          damaged.cells[y] = resumed.cells[y].slice();
+          damaged.cells[y][column] = { ...resumed.cells[y][column], [field]: resumed.cells[y][column][field] ^ 1 };
+          await assert.rejects(() => replayColors(damaged, wide), `comparison detects ${field} corruption at column ${column}`);
+        }
         assert.equal(resumed.nativeRenderCalls.edit ?? 0, 0, `${mode} replay uses the native-free custom path`);
+        assert.deepEqual(toolLines(await replay.capture('replayed-warm')), toolLines(resumed), 'warm replay does not replace the accepted exact fallback');
       }
       // Native live calls have an async preview; native replay does not recompute it.
       // Compare the explicit override with unpatched Pi replaying the identical session.
@@ -3032,6 +3046,7 @@ test('real CLI: OpenCode-style edit syntax, numbered unified/split format, error
         identity: 'exact traffic, persisted metadata and unchanged session bytes',
         cache: 'zero extra warm-frame builds; no alternate-width diagnostic probes',
         nativeWork: 'zero native edit renders while custom (pending/running/failure/success/resize/theme/reload/replay); stock/expanded controls are positive',
+        acceptedFallback: 'cold HTML may retain exact Pi mdCodeBlock foreground before lazy grammar readiness; only source foreground differs, no glyph/background/font/gutter/session/model deviation',
         scope: 'actual built-in edit; no installed AFT execution or pixel-perfect OpenCode screenshot claim' }, null, 2));
     } finally {
       reference.dispose();
@@ -5171,3 +5186,75 @@ for (const mode of ['regular', 'fullscreen']) test(`real CLI: queued cards adapt
       assert.deepEqual(saved(replay), stored, 'replay adds neither queue rows nor model requests');
     } finally { for (const terminal of terminals) await terminal.close(); for (const terminal of terminals) terminal.dispose(); }
   });
+
+function replayBlockStart(dump, block) {
+  return dump.screen.map(plain).findIndex((row, y, screen) =>
+    row === block[0] && block.every((value, offset) => screen[y + offset] === value));
+}
+function compareEditReplayColors(actual, expected, uncolored) {
+  assert.deepEqual(toolLines(actual).filter((_, index) => index !== 4), toolLines(expected).filter((_, index) => index !== 4),
+    'all eager-language, summary and one-sided replay colors remain byte-identical');
+  const actualHtml = actual.tools[4].lines, expectedHtml = expected.tools[4].lines;
+  assert.deepEqual(actualHtml.map(plain), expectedHtml.map(plain), 'accepted cold HTML fallback changes no glyphs or geometry');
+  const plainFallback = JSON.stringify(actualHtml) !== JSON.stringify(expectedHtml);
+  // Pi loads HTML after initial replay paint. Only its exact retained mdCodeBlock
+  // foreground alternative is accepted; all other physical cell fields stay exact.
+  const block = actualHtml.map(plain), actualStart = replayBlockStart(actual, block), expectedStart = replayBlockStart(expected, block);
+  assert.ok(actualStart >= 0 && expectedStart >= 0);
+  let sourceCells = 0, sourceOrigin;
+  for (let row = 0; row < block.length; row++) {
+    const prefix = /^\s*┃\s+\d+ [ +\-] /.exec(block[row]);
+    if (prefix) sourceOrigin = prefix[0].length;
+    const to = block[row].trimEnd().length;
+    const continuation = sourceOrigin !== undefined && to > sourceOrigin && /^\s*┃\s+$/.test(block[row].slice(0, sourceOrigin));
+    const from = prefix?.[0].length ?? (continuation ? sourceOrigin : undefined);
+    for (let column = 0; column < actual.width; column++) {
+      const cell = actual.cells[actualStart + row][column], old = expected.cells[expectedStart + row][column];
+      if (plainFallback && from !== undefined && column >= from && column < to) {
+        if (cell.text.trim()) {
+          assert.deepEqual({ fg: cell.fg, fgMode: cell.fgMode, dim: cell.dim }, uncolored, 'only the exact plain Pi HTML foreground is allowed');
+          sourceCells++;
+        } else assert.ok(cell.fg === old.fg && cell.fgMode === old.fgMode
+          || cell.fg === uncolored.fg && cell.fgMode === uncolored.fgMode, 'source blanks use only the original or exact fallback foreground');
+        const { fg: _fg, fgMode: _mode, ...rest } = cell;
+        const { fg: _oldFg, fgMode: _oldMode, ...oldRest } = old;
+        assert.deepEqual(rest, oldRest, 'HTML syntax color deviation preserves every background/font/glyph field');
+      } else if (plainFallback && from !== undefined && column >= to && !cell.text.trim()
+        && cell.fg === uncolored.fg && cell.fgMode === uncolored.fgMode) {
+        // A wrapped fragment can carry its foreground across blank trailing padding.
+        const { fg: _fg, fgMode: _mode, ...rest } = cell;
+        const { fg: _oldFg, fgMode: _oldMode, ...oldRest } = old;
+        assert.deepEqual(rest, oldRest, 'blank wrap padding retains exact glyph/background/font fields');
+      } else assert.deepEqual(cell, old, 'HTML gutters, signs, heading, spine and all unaffected cells stay exact');
+    }
+  }
+  if (plainFallback) assert.ok(sourceCells > 0, 'the allowed foreground alternative is positively exercised');
+}
+
+test('edit replay comparison: accepts exact cold foreground including wrapped source and rejects all unrelated changes', () => {
+  const uncolored = { fg: 0x68b58d, fgMode: 50331648, dim: 0 };
+  const colored = 0xa798d7, width = 36;
+  const rows = [' ┃ ← Edited html-example.html', ' ┃   1 -   <meta charset>', ' ┃         var(--bg) 75%); }', ' ┃ …', ' ┃ +1 -1'];
+  const expected = { width, screen: rows, tools: Array.from({ length: 7 }, (_, index) =>
+    ({ name: 'edit', lines: index === 4 ? rows.map(row => `\x1b[38;2;167;152;215m${row}\x1b[39m`) : ['other'] })),
+    cells: rows.map(row => Array.from({ length: width }, (_, x) => ({ text: row[x] ?? ' ', width: 1,
+      fg: colored, fgMode: uncolored.fgMode, dim: 0, bold: 0, italic: 0, underline: 0, inverse: false, bg: 0x333435, bgMode: uncolored.fgMode }))) };
+  const actual = { ...expected, tools: expected.tools.map(tool => ({ ...tool, lines: tool.lines.slice() })),
+    cells: expected.cells.map(row => row.map(cell => ({ ...cell }))) };
+  actual.tools[4].lines = rows.map(row => `\x1b[38;2;104;181;141m${row}\x1b[39m`);
+  const sourceOrigin = /^\s*┃\s+\d+ [ +\-] /.exec(rows[1])[0].length;
+  for (const row of [1, 2]) for (let x = sourceOrigin; x < width; x++) actual.cells[row][x].fg = uncolored.fg;
+  compareEditReplayColors(expected, expected, uncolored);
+  compareEditReplayColors(actual, expected, uncolored);
+  for (const [row, column, field] of [[1, sourceOrigin, 'fg'], [1, sourceOrigin + 2, 'fg'],
+    [2, sourceOrigin + 2, 'fg'], [1, sourceOrigin + 2, 'bg'], [1, sourceOrigin + 2, 'bold'],
+    [1, 1, 'fg'], [0, 4, 'fg'], [3, 3, 'fg'], [4, 3, 'fg']]) {
+    const damaged = { ...actual, cells: actual.cells.slice() };
+    damaged.cells[row] = actual.cells[row].slice();
+    damaged.cells[row][column] = { ...actual.cells[row][column], [field]: actual.cells[row][column][field] ^ 1 };
+    assert.throws(() => compareEditReplayColors(damaged, expected, uncolored), `${field} at ${row}:${column} stays protected`);
+  }
+  const eagerChanged = { ...actual, tools: actual.tools.map(tool => ({ ...tool, lines: tool.lines.slice() })) };
+  eagerChanged.tools[0].lines[0] = '\x1b[31mother\x1b[39m';
+  assert.throws(() => compareEditReplayColors(eagerChanged, expected, uncolored), 'non-HTML color changes are never accepted');
+});

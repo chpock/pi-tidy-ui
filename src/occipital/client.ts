@@ -1,0 +1,226 @@
+import { ExtensionSettings, type SyntaxTheme } from '../settings.ts';
+import { SourceController, type ControllerOptions } from './controller.ts';
+import type { SyntaxMenuOutcome, SyntaxMenuOwner, SyntaxMenuSnapshot } from './menu.ts';
+import { resolveTheme } from './profiles.ts';
+import type { ProfileDescription } from './protocol.ts';
+import { ProviderBroker, type ProviderOptions, type ProviderSnapshot } from './provider.ts';
+
+export interface SyntaxClientOptions {
+  provider: Omit<ProviderOptions, 'onChange' | 'onOwnedStopped'>;
+  /** Trusted delivery metadata, not a version discovery request. */
+  standaloneVersion: string;
+  settings?: Pick<ExtensionSettings, 'load' | 'update'>;
+  source?: Omit<ControllerOptions, 'onChange'>;
+  notify?: (message: string, type: 'error') => void;
+  onChange?: () => void;
+  /** Source-only coalesced keys for targeted presentation invalidation. Generic
+   * onChange still delivers metadata/availability; source dispatch stays explicit. */
+  onSourceChange?: (keys: readonly string[]) => void;
+}
+
+type ProfileNeed = Readonly<{ generation: number; sequence: number }>;
+const SAVE_FAILED = 'Syntax theme selection could not be saved.';
+const REFRESH_FAILED = 'Syntax themes could not be reloaded.';
+const LOAD_FAILED = 'Settings could not be read.';
+// Abort reasons can retain their creation stack; keep this outside receiver scopes.
+const saveCancelled = new Error('Syntax preference retired');
+function copyTheme(choice: SyntaxTheme): SyntaxTheme {
+  return choice.kind === 'pi' ? { kind: 'pi' } : { kind: 'occipital', id: choice.id };
+}
+// Each factory has its own receiver-free lexical scope, even when observers are
+// retained through a still-live broker/controller after the client is collected.
+function brokerObserver(owner: WeakRef<SyntaxClient>) { return () => owner.deref()?.acceptBrokerChange(); }
+function ownedStopObserver(owner: WeakRef<SyntaxClient>) { return (generation: number) => owner.deref()?.sources.ownedStopped(generation); }
+function sourceObserver(owner: WeakRef<SyntaxClient>) { return (keys: readonly string[]) => owner.deref()?.acceptSourceChange(keys); }
+function changeNotice(owner: WeakRef<SyntaxClient>) { return () => owner.deref()?.deliverChange(); }
+function menuCapture(owner: WeakRef<SyntaxClient>, epoch: number) { return () => owner.deref()?.menuCurrent(epoch) ?? false; }
+
+/** UI-independent composition only. Sources, transport recovery and disk publication
+ * retain their existing owners; preference reconciliation never observes source text. */
+export class SyntaxClient implements SyntaxMenuOwner {
+  readonly broker: ProviderBroker;
+  readonly sources: SourceController;
+  private readonly settings: Pick<ExtensionSettings, 'load' | 'update'>;
+  private readonly standaloneVersion: string;
+  private readonly notify?: SyntaxClientOptions['notify'];
+  private readonly onChange?: SyntaxClientOptions['onChange'];
+  private readonly onSourceChange?: SyntaxClientOptions['onSourceChange'];
+  private provider: ProviderSnapshot;
+  private enabled = true;
+  private disposed = false;
+  private menuEpoch = 0;
+  private preferenceRevision = 0;
+  private preferenceKnown = false;
+  private selected: SyntaxTheme = { kind: 'pi' };
+  private effective?: ProfileDescription;
+  private missingEpisode = false;
+  private lastIssue?: string;
+  private restore?: Promise<void>;
+  private startup?: Promise<void>;
+  private shutdown?: Promise<void>;
+  private save?: AbortController;
+  private metadata?: { epoch: number; generation: number };
+  private attemptedNeed?: ProfileNeed;
+  private noticeScheduled = false;
+
+  constructor(options: SyntaxClientOptions) {
+    this.settings = options.settings ?? new ExtensionSettings();
+    this.standaloneVersion = options.standaloneVersion;
+    this.notify = options.notify; this.onChange = options.onChange; this.onSourceChange = options.onSourceChange;
+    this.broker = new ProviderBroker({ ...options.provider, onChange: brokerObserver(new WeakRef(this)),
+      onOwnedStopped: ownedStopObserver(new WeakRef(this)) });
+    this.provider = this.broker.snapshot();
+    this.sources = new SourceController(this.broker, { ...options.source, onChange: sourceObserver(new WeakRef(this)) });
+    this.sources.setEnabled(false);
+  }
+
+  start(): Promise<void> {
+    if (this.disposed) return this.shutdown ?? Promise.resolve();
+    if (!this.startup) this.startup = Promise.all([this.restorePreference(), this.broker.start()]).then(() => {});
+    return this.startup;
+  }
+
+  snapshot(): SyntaxMenuSnapshot {
+    return { enabled: this.enabled, provider: { ...this.provider }, standaloneVersion: this.standaloneVersion,
+      selected: copyTheme(this.selected), effective: this.effective ? { ...this.effective } : undefined, lastIssue: this.lastIssue };
+  }
+
+  async selectTheme(choice: SyntaxTheme): Promise<SyntaxMenuOutcome> {
+    if (this.disposed) return { ok: false, message: SAVE_FAILED };
+    const selected = copyTheme(choice);
+    if (selected.kind !== this.selected.kind || selected.kind === 'occipital' && this.selected.kind === 'occipital' && selected.id !== this.selected.id)
+      this.missingEpisode = false;
+    ++this.preferenceRevision; this.preferenceKnown = true; this.selected = selected;
+    this.cancelSave(); const save = new AbortController(); this.save = save;
+    this.reconcile();
+    try {
+      const result = await this.settings.update({ syntaxTheme: copyTheme(selected) }, { signal: save.signal });
+      if (this.disposed || save.signal.aborted || this.save !== save) return { ok: false, message: SAVE_FAILED };
+      if (!result.ok) { this.issue(result.issue.message); return { ok: false, message: result.issue.message }; }
+      return { ok: true };
+    } catch {
+      if (!this.disposed && !save.signal.aborted && this.save === save) this.issue(SAVE_FAILED);
+      return { ok: false, message: SAVE_FAILED };
+    } finally { if (this.save === save) this.save = undefined; }
+  }
+
+  refreshThemes(): Promise<SyntaxMenuOutcome> {
+    if (this.disposed) return Promise.resolve({ ok: false, message: REFRESH_FAILED });
+    if (!this.enabled || this.provider.availability !== 'ready' || this.metadata) {
+      this.issue(REFRESH_FAILED); return Promise.resolve({ ok: false, message: REFRESH_FAILED });
+    }
+    const need = this.sources.profileReconciliationNeeded();
+    if (need) this.attemptedNeed = need;
+    return this.readCatalogue('themes.refresh', need);
+  }
+
+  setEnabled(enabled: boolean): Promise<void> {
+    if (this.disposed) return this.shutdown ?? Promise.resolve();
+    if (this.enabled === enabled) return Promise.resolve();
+    this.enabled = enabled; ++this.menuEpoch; this.cancelSave();
+    this.sources.setEnabled(enabled && this.preferenceKnown);
+    const operation = this.broker.setEnabled(enabled);
+    this.acceptBrokerChange();
+    return enabled ? Promise.all([this.restorePreference(), operation]).then(() => {}) : operation;
+  }
+
+  dispose(): Promise<void> {
+    if (this.shutdown) return this.shutdown;
+    this.disposed = true; ++this.menuEpoch; this.cancelSave(); this.sources.dispose();
+    this.shutdown = this.broker.dispose(); this.provider = this.broker.snapshot(); this.effective = undefined;
+    return this.shutdown;
+  }
+
+  captureMenu(): () => boolean { return menuCapture(new WeakRef(this), this.menuEpoch); }
+  /** Internal weak callback delivery, not a source/metadata demand. */
+  menuCurrent(epoch: number): boolean { return !this.disposed && epoch === this.menuEpoch; }
+  /** Internal weak broker observer; reconcile only real cached publication events. */
+  acceptBrokerChange(): void {
+    if (this.disposed) return;
+    const next = this.broker.snapshot(), previous = this.provider;
+    if (next.availability === previous.availability && next.reason === previous.reason && next.generation === previous.generation
+      && next.initialShared === previous.initialShared && next.kind === previous.kind && next.description === previous.description) return;
+    this.provider = next; this.reconcile();
+    this.tryProfileMetadata();
+  }
+  /** Internal weak source observer, called after the controller's coalesced notice. */
+  acceptSourceChange(keys: readonly string[] = []): void {
+    if (this.disposed) return;
+    const current = keys.filter(key => this.sources.workStatus(key).version !== undefined);
+    try { if (current.length) this.onSourceChange?.(current); } catch { /* Presentation cannot suppress reconciliation. */ }
+    this.changed(); this.tryProfileMetadata();
+  }
+  /** Internal weak coalesced presentation delivery. No source observation/flush. */
+  deliverChange(): void {
+    this.noticeScheduled = false;
+    if (this.disposed) return;
+    try { this.onChange?.(); } catch { /* Presentation cannot disturb ownership. */ }
+  }
+
+  private restorePreference(): Promise<void> {
+    if (!this.restore) this.restore = this.loadPreference(this.preferenceRevision);
+    return this.restore;
+  }
+  private async loadPreference(revision: number): Promise<void> {
+    try {
+      const result = await this.settings.load();
+      if (this.disposed || revision !== this.preferenceRevision || this.preferenceRevision !== 0) return;
+      this.selected = copyTheme(result.syntaxTheme); this.preferenceKnown = true;
+      if (!result.ok) this.issue(result.issue.message, true);
+    } catch {
+      if (this.disposed || revision !== this.preferenceRevision || this.preferenceRevision !== 0) return;
+      this.preferenceKnown = true; this.issue(LOAD_FAILED, true);
+    }
+    this.reconcile();
+  }
+  private reconcile(): void {
+    const resolved = resolveTheme(this.selected, this.preferenceKnown && this.enabled && this.provider.availability === 'ready'
+      ? this.provider.description?.profiles : undefined);
+    this.effective = resolved.effective;
+    this.sources.setEnabled(this.preferenceKnown && this.enabled);
+    if (resolved.missing && this.selected.kind === 'occipital') {
+      if (!this.missingEpisode) {
+        this.missingEpisode = true;
+        this.issue(`Syntax theme ${JSON.stringify(this.selected.id)} is unavailable; using Pi palette temporarily.`, true);
+      }
+    } else if (resolved.effective) this.missingEpisode = false;
+    // Unavailability alone cannot end an unresolved missing-theme episode.
+    this.changed();
+  }
+  private cancelSave(): void { this.save?.abort(saveCancelled); this.save = undefined; }
+  private issue(message: string, notify = false): void {
+    this.lastIssue = message; this.changed();
+    if (notify && !this.disposed) { try { this.notify?.(message, 'error'); } catch { /* UI is optional. */ } }
+  }
+  private changed(): void {
+    if (this.disposed || !this.onChange || this.noticeScheduled) return;
+    this.noticeScheduled = true; queueMicrotask(changeNotice(new WeakRef(this)));
+  }
+  private tryProfileMetadata(): void {
+    if (this.disposed || !this.enabled || !this.preferenceKnown || this.metadata) return;
+    const need = this.sources.profileReconciliationNeeded();
+    if (!need || need.generation === this.attemptedNeed?.generation && need.sequence === this.attemptedNeed.sequence) return;
+    this.attemptedNeed = need;
+    void this.readCatalogue('describe', need);
+  }
+  private async readCatalogue(op: 'describe' | 'themes.refresh', need?: ProfileNeed): Promise<SyntaxMenuOutcome> {
+    const attempt = { epoch: this.menuEpoch, generation: this.provider.generation }; this.metadata = attempt;
+    try {
+      const description = await this.broker.catalogue(attempt.generation, op);
+      if (!this.menuCurrent(attempt.epoch) || !this.broker.isReady(attempt.generation)) return { ok: false, message: REFRESH_FAILED };
+      this.acceptBrokerChange();
+      // A newer refusal that arrived in flight remains a separate metadata need.
+      if (need) this.sources.acknowledgeProfiles(need.generation, need.sequence);
+      if (op === 'themes.refresh' && description.diagnostic !== null) {
+        this.issue(REFRESH_FAILED); return { ok: false, message: REFRESH_FAILED };
+      }
+      return { ok: true };
+    } catch {
+      if (this.menuCurrent(attempt.epoch) && this.broker.isReady(attempt.generation)) this.issue(REFRESH_FAILED, op === 'describe');
+      return { ok: false, message: REFRESH_FAILED };
+    } finally {
+      if (this.metadata === attempt) this.metadata = undefined;
+      this.tryProfileMetadata();
+    }
+  }
+}

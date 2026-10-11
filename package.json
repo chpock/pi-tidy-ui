@@ -1,18 +1,44 @@
 {
   "name": "pi-toolview",
-  "version": "0.1.0",
+  "version": "0.0.0",
   "description": "An alternative presentation for Pi tools: concise summaries and native rich cards",
   "type": "module",
   "license": "MIT",
-  "keywords": ["pi-package"],
-  "files": ["src", "docs/architecture.md", "docs/testing.md", "docs/tool-summary-spec.md", "docs/bash-card-spec.md", "docs/edit-card-spec.md", "docs/write-card-spec.md", "docs/card-frame-spec.md", "docs/render-cache-spec.md", "docs/footer-spec.md", "docs/terminal-colors-spec.md", "README.md", "LICENSE"],
-  "pi": { "extensions": ["./src/index.ts"] },
+  "keywords": [
+    "pi-package"
+  ],
+  "files": [
+    "src",
+    "docs/architecture.md",
+    "docs/testing.md",
+    "docs/releases.md",
+    "docs/tool-summary-spec.md",
+    "docs/bash-card-spec.md",
+    "docs/edit-card-spec.md",
+    "docs/write-card-spec.md",
+    "docs/card-frame-spec.md",
+    "docs/render-cache-spec.md",
+    "docs/footer-spec.md",
+    "docs/terminal-colors-spec.md",
+    "docs/syntax-highlighting-spec.md",
+    "README.md",
+    "LICENSE"
+  ],
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  },
   "scripts": {
     "check": "tsc --noEmit",
-    "test": "node --test tests/unit.test.ts tests/queued-cards.test.ts",
-    "test:terminal": "node --test --test-concurrency=1 tests/terminal.test.mjs"
+    "test": "node --test tests/*.test.ts",
+    "test:terminal": "node --test --test-concurrency=1 tests/terminal.test.mjs",
+    "test:syntax-terminal": "node --test --test-concurrency=1 --test-name-pattern=\"^occipital CLI:\" tests/syntax-terminal.test.mjs",
+    "test:native-release": "node --test tests/native-release.test.mjs tests/release-ci.test.mjs"
   },
-  "engines": { "node": ">=22.19.0" },
+  "engines": {
+    "node": ">=22.19.0"
+  },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*",
     "@earendil-works/pi-tui": "*"
@@ -23,5 +49,8 @@
     "@types/node": "^22.19.0",
     "@xterm/headless": "^6.0.0",
     "typescript": "^5.9.3"
+  },
+  "optionalDependencies": {
+    "@cortexkit/subc-client": "0.21.1"
   }
 }

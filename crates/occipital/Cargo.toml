@@ -1,0 +1,23 @@
+[package]
+name = "occipital"
+version = "0.0.0"
+edition = "2021"
+license = "MIT"
+description = "Optional persistent syntax-highlighting backend for Pi Toolview"
+
+[dependencies]
+dirs = "=6.0.0"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["raw_value"] }
+syntect = { version = "=5.3.0", default-features = false, features = ["parsing", "dump-load", "plist-load", "regex-onig"] }
+two-face = { version = "=0.5.2", default-features = false, features = ["syntect-onig"] }
+sha2 = "0.10"
+plist = { version = "=1.10.1", features = ["enable_unstable_features_that_may_break_with_minor_version_bumps"] }
+quick-xml = "=0.42.0"
+tokio = { version = "1", features = ["sync", "rt-multi-thread", "macros", "time", "signal"] }
+tokio-util = { version = "0.7", features = ["rt"] }
+getrandom = "=0.3.4"
+subc-client-rs = "=0.26.3"
+subc-protocol = "=0.29.4"
+
+[dev-dependencies]

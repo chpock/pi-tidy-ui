@@ -51,7 +51,8 @@ Pi loads the TypeScript source directly. No build, fork, copying into `~/.pi`, o
 - Ctrl+O remains Pi's global expansion control. In fullscreen mode, completed summaries/edit/write panels expand on click and expandable Bash panels toggle; exterior margins/separators are not targets. Card clicks do not interrupt active selection. Regular mode uses terminal-owned mouse handling, so use Ctrl+O there.
 - One public session footer shows a ten-report cache-use gauge and the latest CH percentage first, followed by current context usage, then right-aligned extension statuses. It highlights disabled native auto-compaction rather than annotating the normal enabled state. Each complete status, including our statistics, stays on one row; whole producer statuses move to later rows when needed, and a status wider than a full row is ellipsized. Cumulative counters/cost remain implemented behind disabled source flags. See [reading the footer](#reading-the-footer) and the [footer contract](docs/footer-spec.md).
 - Fixed file-backed themes can set terminal defaults from `export.pageBg` and `colors.text`, including variable chains and native color formats. Missing/empty values release only our channels; source errors retain the last valid complete targets. Auto/system modes suspend application and release defaults before Pi queries its profile. A zero-row observer follows native theme/hot-reload updates without polling. RGB calculations use a local concrete projection rather than modifying Pi's Theme. See the [terminal-color contract](docs/terminal-colors-spec.md).
-- Colors follow the active Pi theme and layouts follow the actual viewport width. Tool execution, model-facing results and saved session data are unchanged.
+- Bash commands and edit/write sources can use asynchronous Occipital syntax classification outside rendering. `/toolview syntax` selects Pi palette or an independent daemon theme, reloads its catalogue, shows service status and enables/disables native highlighting for this session. Only the theme preference is saved. Without native availability, Bash retains whole-command title coloring and files retain cached Pi highlighting. This checkout has no published standalone release declaration: compatible user-managed shared service is usable, while controlled local-helper tests do not establish public installation. See the [syntax contract](docs/syntax-highlighting-spec.md).
+- Colors otherwise follow the active Pi theme and layouts follow the actual viewport width. An explicitly selected independent syntax theme remains fixed across Pi-theme changes. Tool execution, model-facing results and saved session data are unchanged.
 
 Exact formatting, metadata, geometry and safeguards are defined in the [specifications](#documentation).
 
@@ -86,6 +87,7 @@ The three `FOOTER_FIELDS` source flags in `src/footer.ts` default to `false`: `t
 /toolview colors on
 /toolview cache
 /toolview cache clear
+/toolview syntax
 ```
 
 Each transcript/queued-message component owns its latest prepared presentation through weak component state, much like Pi's `Text` retains its latest rendered rows. There is **no entry-count or byte-limit eviction**: an unchanged attached component reuses its rows regardless of transcript age or the size of other presentations. Width/Output-padding/theme and relevant state changes replace its previous layout, not accumulate variants. The execution spinner changes only its prefix, using Pi's existing document frames whenever available. One shared, unreferenced 100 ms timeout requests a fallback frame only after document visits fall silent; it stops when no compact calls are executing. See the [host-driven animation design](docs/architecture.md#host-driven-spinner-and-fallback).
@@ -114,7 +116,7 @@ pi -e ./src/index.ts --toolview-card Agent,ask_user_question
 pi -e ./src/index.ts --toolview-compact write
 ```
 
-`--toolview-card` adds to the native-card defaults; explicitly naming `bash`, `edit` or `write` restores its original Pi card. `--toolview-compact` takes precedence over that list, but never over expansion, image, or hidden-component safeguards. There is no separate configuration file.
+`--toolview-card` adds to the native-card defaults; explicitly naming `bash`, `edit` or `write` restores its original Pi card. `--toolview-compact` takes precedence over that list, but never over expansion, image, or hidden-component safeguards. These presentation overrides have no configuration file; the syntax menu separately persists only its theme preference through Pi's agent directory.
 
 ## Compatibility
 
@@ -135,7 +137,7 @@ npm test
 npm run test:terminal
 ```
 
-Development copies of host packages are pinned for reproducible tests; runtime imports are wildcard peer dependencies supplied by Pi. There is no bundling step.
+Development copies of host packages are pinned for reproducible tests; runtime imports are wildcard peer dependencies supplied by Pi. There is no bundling step. Repository versions are `0.0.0`; CI substitutes independent `pi-tidy-ui-vSEMVER` and `occipital-vSEMVER` tag versions. See [CI and releases](docs/releases.md).
 
 Terminal tests require a POSIX environment, Python 3, and a real Pi CLI. They use an offline scripted provider, isolated configuration/workspaces, real tool execution and keyboard/mouse input, and native control runs. They do not require model credentials. Generated evidence belongs in the gitignored `.test-artifacts/` directory.
 
@@ -152,6 +154,7 @@ The installed-package smoke test is version-audited and explicitly skips unavail
 - [Terminal-color specification](docs/terminal-colors-spec.md) — fixed-theme metadata, automatic-mode boundaries, OSC ownership and concrete RGB.
 - [Session-footer specification](docs/footer-spec.md) — native usage/context data, colors, whole-status fitting and ownership.
 - [Render-cache specification](docs/render-cache-spec.md) — invalidation, component ownership, memory diagnostics and performance guarantees.
+- [Syntax-highlighting specification](docs/syntax-highlighting-spec.md) — source/presentation separation, native/Pi fallback, themes, providers, resources and outstanding delivery gates.
 - [Testing and coverage](docs/testing.md) — automated gates, strict native/data controls and coverage limits.
 
 These documents describe the current project. Run evidence and working review reports belong in gitignored `.test-artifacts/`, not in the documentation tree.
