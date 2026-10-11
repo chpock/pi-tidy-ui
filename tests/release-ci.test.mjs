@@ -192,6 +192,17 @@ test('CI release staging stays outside restored Cargo output and preserves stale
     url: 'https://example.invalid/occipital-v0.1.1-linux-x64-gnu' }] } }), { code: 'EEXIST' });
 });
 
+test('CI retains the selected hidden-directory physical terminal failure captures', async () => {
+  const ci = await readFile(join(repo, '.github/workflows/ci.yml'), 'utf8');
+  const terminal = ci.match(/^  terminal:\n([\s\S]*?)(?=^  \w[\w-]*:|$(?![\s\S]))/m)?.[1];
+  assert.ok(terminal);
+  const upload = terminal.match(/^      - uses: actions\/upload-artifact@v4\n([\s\S]*)/m)?.[1];
+  assert.ok(upload);
+  assert.match(upload, /^        if: failure\(\)$/m);
+  assert.match(upload, /^          path: \.test-artifacts\/terminal-\*\/$/m);
+  assert.match(upload, /^          include-hidden-files: true$/m);
+});
+
 test('CI routes both tag families, reuses the same-run native matrix, and publishes only Occipital', async () => {
   const ci = await readFile(join(repo, '.github/workflows/ci.yml'), 'utf8');
   const native = await readFile(join(repo, '.github/workflows/occipital.yml'), 'utf8');

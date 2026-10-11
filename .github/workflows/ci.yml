@@ -110,6 +110,7 @@ jobs:
         with:
           name: terminal-failure-node-${{ matrix.node }}
           path: .test-artifacts/terminal-*/
+          include-hidden-files: true
           if-no-files-found: ignore
 
   release-occipital:

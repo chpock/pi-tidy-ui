@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { once } from 'node:events';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, copyFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, copyFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -155,7 +155,8 @@ export class PiTerminal {
   events() {
     this.health();
     try {
-      return readFileSync(join(this.output, 'events.jsonl'), 'utf8').trim().split('\n').filter(Boolean).map(JSON.parse);
+      // A live read may end inside the producer's newline-delimited record.
+      return readFileSync(join(this.output, 'events.jsonl'), 'utf8').split('\n').slice(0, -1).filter(Boolean).map(JSON.parse);
     } catch (error) { if (error.code === 'ENOENT') return []; throw error; }
   }
   async event(type, count = 1) {
@@ -255,6 +256,75 @@ export class PiTerminal {
   }
   dispose() { rmSync(this.temp, { recursive: true, force: true }); }
 }
+
+function journalReader(t) {
+  const output = mkdtempSync(join(tmpdir(), 'pi-toolview-journal-'));
+  t.after(() => rmSync(output, { recursive: true, force: true }));
+  return Object.assign(Object.create(PiTerminal.prototype), { output });
+}
+
+test('CLI event journal: incomplete model-context record never reaches the JSON parser', t => {
+  const reader = journalReader(t), path = join(reader.output, 'events.jsonl');
+  const event = { type: 'model_context', text: 'x'.repeat(600) };
+  const bytes = Buffer.from(JSON.stringify(event) + '\n');
+  writeFileSync(path, bytes.subarray(0, 537));
+  assert.deepEqual(reader.events(), []);
+  appendFileSync(path, bytes.subarray(537));
+  assert.deepEqual(reader.events(), [event]);
+});
+
+test('CLI event journal: every UTF8 snapshot returns only complete exact records', t => {
+  const reader = journalReader(t), path = join(reader.output, 'events.jsonl');
+  const events = [{ type: 'start' }, { type: 'call', text: 'я🙂\nline\r\n' }, { type: 'agent_end' }];
+  const records = events.map(event => Buffer.from(JSON.stringify(event) + '\n'));
+  const bytes = Buffer.concat(records);
+  const ends = records.map((_, index) => records.slice(0, index + 1).reduce((sum, record) => sum + record.length, 0));
+  for (let length = 0; length <= bytes.length; length++) {
+    writeFileSync(path, bytes.subarray(0, length));
+    assert.deepEqual(reader.events(), events.filter((_, index) => ends[index] <= length), `snapshot ${length}`);
+  }
+});
+
+test('CLI event journal: valid JSON remains unpublished until its newline arrives', t => {
+  const reader = journalReader(t), path = join(reader.output, 'events.jsonl');
+  const event = { type: 'agent_end' };
+  writeFileSync(path, JSON.stringify(event));
+  assert.deepEqual(reader.events(), []);
+  appendFileSync(path, '\n');
+  assert.deepEqual(reader.events(), [event]);
+});
+
+test('CLI event journal: polling publishes an event exactly after its delimiter', async t => {
+  const reader = journalReader(t), path = join(reader.output, 'events.jsonl');
+  const event = { type: 'agent_end' };
+  writeFileSync(path, JSON.stringify(event));
+  let observed = false;
+  const waiting = reader.event('agent_end').then(() => { observed = true; });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(observed, false);
+  appendFileSync(path, '\n');
+  await waiting;
+  assert.equal(observed, true);
+  assert.deepEqual(reader.events(), [event]);
+});
+
+test('CLI event journal: malformed completed records still fail immediately', t => {
+  const reader = journalReader(t), path = join(reader.output, 'events.jsonl');
+  for (const body of ['not-json\n', '{"type":\n', '{"type":"start"}\n{"type":\n{"unfinished":"']) {
+    writeFileSync(path, body);
+    assert.throws(() => reader.events(), SyntaxError);
+  }
+});
+
+test('CLI event journal: missing files are empty and host failures remain visible', t => {
+  const reader = journalReader(t);
+  assert.deepEqual(reader.events(), []);
+  const error = new Error('fixture host failed'); reader.error = error;
+  assert.throws(() => reader.events(), thrown => thrown === error);
+  delete reader.error;
+  reader.exited = { code: 1, signal: null }; reader.stderr = 'fixture host exited';
+  assert.throws(() => reader.events(), /Bridge exited/);
+});
 
 function execution(terminal) {
   const events = terminal.events();
