@@ -135,6 +135,32 @@ for (const change of ['commit', 'version', 'target', 'bytes', 'url', 'notice-gap
   });
 }
 
+test('CI release staging stays outside restored Cargo output and preserves stale cache contents', async t => {
+  const root = await source(t);
+  await stampVersion(root, 'refs/tags/occipital-v0.1.1');
+  const stale = join(root, 'target/native-artifact');
+  await mkdir(stale, { recursive: true });
+  await writeFile(join(stale, 'old-release'), 'unchanged previous release');
+  const runnerTemp = join(root, 'runner-temp'); await mkdir(runnerTemp);
+  const native = await readFile(join(repo, '.github/workflows/occipital.yml'), 'utf8');
+  const argument = native.match(/node scripts\/release\/native-ci\.mjs stage "\$TARGET" "target\/\$RUST_TARGET\/release\/\$EXECUTABLE" ([^\n]+)/)?.[1].trim();
+  assert.ok(argument);
+  const external = argument.match(/^"\$RUNNER_TEMP\/([^"\n]+)"$/);
+  if (!external) assert.equal(argument, 'target/native-artifact');
+  const output = external ? join(runnerTemp, external[1]) : join(root, argument);
+  const notice = join(root, 'NOTICE'), binary = join(root, 'tiny');
+  await writeFile(notice, 'Inert fixture notice\n'); await writeFile(binary, 'new inert payload\n');
+  await stageRelease({ root, output, input: { notice, artifacts: [{ target: 'linux-x64-gnu', path: binary,
+    url: 'https://example.invalid/occipital-v0.1.1-linux-x64-gnu' }] } });
+  assert.equal((await json(join(output, 'native-release.staged.json'))).version, '0.1.1');
+  assert.deepEqual(await readFile(join(output, 'assets/occipital-v0.1.1-linux-x64-gnu')), await readFile(binary));
+  assert.equal(await readFile(join(stale, 'old-release'), 'utf8'), 'unchanged previous release');
+  assert.deepEqual(await readdir(stale), ['old-release']);
+  assert.match(native, /path: \$\{\{ runner.temp \}\}\/occipital-native-artifact\//);
+  await assert.rejects(stageRelease({ root, output, input: { notice, artifacts: [{ target: 'linux-x64-gnu', path: binary,
+    url: 'https://example.invalid/occipital-v0.1.1-linux-x64-gnu' }] } }), { code: 'EEXIST' });
+});
+
 test('CI routes both tag families, reuses the same-run native matrix, and publishes only Occipital', async () => {
   const ci = await readFile(join(repo, '.github/workflows/ci.yml'), 'utf8');
   const native = await readFile(join(repo, '.github/workflows/occipital.yml'), 'utf8');

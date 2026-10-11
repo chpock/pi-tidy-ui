@@ -110,10 +110,10 @@ jobs:
         run: |
           SOURCE_COMMIT="$(git rev-parse HEAD)"
           export SOURCE_COMMIT
-          node scripts/release/native-ci.mjs stage "$TARGET" "target/$RUST_TARGET/release/$EXECUTABLE" target/native-artifact
+          node scripts/release/native-ci.mjs stage "$TARGET" "target/$RUST_TARGET/release/$EXECUTABLE" "$RUNNER_TEMP/occipital-native-artifact"
       - uses: actions/upload-artifact@v4
         with:
           name: occipital-v${{ inputs.version }}-${{ matrix.target }}
-          path: target/native-artifact/
+          path: ${{ runner.temp }}/occipital-native-artifact/
           if-no-files-found: error
           retention-days: 14
