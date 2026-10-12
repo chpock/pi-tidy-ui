@@ -437,3 +437,12 @@ test('GNU CI builds and tests natively in verified glibc2.28 without restoring n
   assert.match(script, /await verifyLinuxRuntime\(process.env.OCCIPITAL_TEST_BIN\)/);
   assert.match(script, /\^actual owned helper preserves compact UTF8 highlighting and incremental work counters\$/);
 });
+
+
+test('GNU gate forwards the mounted SDK selection to Cargo-home Rustup proxies', async () => {
+  const script = await readFile(join(repo, 'scripts/release/linux-gnu.sh'), 'utf8');
+  assert.match(script, /rust_sysroot="\$\(rustc --print sysroot\)"/);
+  assert.match(script, /-v "\$rust_sysroot:\$rust_sysroot:ro"/);
+  assert.match(script, /--env RUSTUP_TOOLCHAIN="\$rust_sysroot"/);
+  assert.doesNotMatch(script, /rustup default|rustup toolchain install/);
+});

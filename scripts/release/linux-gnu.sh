@@ -23,11 +23,13 @@ image="occipital-gnu228-$docker_arch"
 
 docker build --platform "linux/$docker_arch" --tag "$image" \
   --file "$root/scripts/release/Dockerfile.linux-gnu" "$root/scripts/release"
+# Cargo prioritizes Cargo-home proxies; keep their toolchain identical to the mounted SDK.
 docker run --rm --platform "linux/$docker_arch" --network=none --user "$(id -u):$(id -g)" \
   -v "$root:$root" -v "$rust_sysroot:$rust_sysroot:ro" \
   -v "$node_root:$node_root:ro" -v "$cargo_home:$cargo_home" -v "$target_dir:$target_dir" \
   --workdir "$root" --env HOME=/tmp/occipital-gnu-home \
   --env CARGO_HOME="$cargo_home" --env CARGO_TARGET_DIR="$target_dir" \
+  --env RUSTUP_TOOLCHAIN="$rust_sysroot" \
   --env PATH="$rust_sysroot/bin:$node_root/bin:/usr/bin:/bin" \
   --env RUST_TARGET="$RUST_TARGET" --env EXPECTED_ARCHITECTURE="$architecture" \
   "$image" bash -euo pipefail -c '
