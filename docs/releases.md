@@ -40,9 +40,11 @@ The unit/SDK/GC step also has a five-minute limit within its ten-minute job. The
 The release workflow checks all six artifacts' source commits, versions, targets, raw executable hashes/sizes, URLs and notice inventories before publication. It uploads:
 
 - `occipital-vVERSION-TARGET` raw executables (`.exe` for Windows);
-- matching `*.NOTICE` files and the project's `LICENSE`;
+- one common `NOTICE` covering every platform, plus the project's `LICENSE`;
 - `native-release.json` with the exact version, platform URLs, SHA-256 and byte sizes;
 - `SHA256SUMS` for every preceding asset.
+
+The common `NOTICE` preserves each distinct platform inventory byte-for-byte and labels its covered targets; identical complete inventories appear once. Native npm packages retain their own platform `NOTICE`. This layout applies to future releases; already-published assets remain unchanged.
 
 It creates a draft, uploads all files, then publishes it. An existing release/draft is not overwritten; after a failed upload inspect or remove the draft before rerunning. It uses the job-scoped `GITHUB_TOKEN` with `contents: write`, not an npm token. Do not move published tags.
 

@@ -45,7 +45,7 @@ export async function assembleRelease({ directory, tag, repository, commit, outp
   identity(repository, commit);
   const release = releaseRef('refs/tags/' + tag);
   if (release.product !== 'occipital') throw new Error('Only occipital tags create a native release');
-  const prepared = [], metadata = { version: release.version, artifacts: [] };
+  const prepared = [], noticeGroups = [], metadata = { version: release.version, artifacts: [] };
   let license;
   for (const target of Object.keys(candidateTargets)) {
     const root = join(directory, artifactName(release.version, target)), info = await json(join(root, 'build-info.json'));
@@ -59,14 +59,17 @@ export async function assembleRelease({ directory, tag, repository, commit, outp
     const notice = await readFile(join(root, 'assets/NOTICE')), own = await readFile(join(root, 'assets/LICENSE'));
     if (!notice.toString('utf8').trim() || !own.toString('utf8').trim() || (license && !license.equals(own))) throw new Error('Missing or inconsistent release notices');
     license = own;
-    prepared.push({ name, path, notice }); metadata.artifacts.push(record);
+    const group = noticeGroups.find(item => item.bytes.equals(notice));
+    if (group) group.targets.push(target);
+    else noticeGroups.push({ bytes: notice, targets: [target] });
+    prepared.push({ name, path }); metadata.artifacts.push(record);
   }
   // Refuse an existing output instead of mixing this run with partial older files.
   await mkdir(output);
-  for (const artifact of prepared) {
-    await copyFile(artifact.path, join(output, artifact.name));
-    await writeFile(join(output, artifact.name + '.NOTICE'), artifact.notice);
-  }
+  for (const artifact of prepared) await copyFile(artifact.path, join(output, artifact.name));
+  const notices = [Buffer.from('Occipital third-party notices for all release platforms.\nIdentical platform inventories are included once; every distinct inventory is preserved below.\n')];
+  for (const group of noticeGroups) notices.push(Buffer.from(`\n===== Targets: ${group.targets.join(', ')} =====\n\n`), group.bytes, Buffer.from('\n'));
+  await writeFile(join(output, 'NOTICE'), Buffer.concat(notices));
   await writeFile(join(output, 'LICENSE'), license);
   await writeFile(join(output, 'native-release.json'), JSON.stringify(metadata, null, 2) + '\n');
   const sums = [];

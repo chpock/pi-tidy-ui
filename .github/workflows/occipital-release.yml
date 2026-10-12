@@ -52,6 +52,6 @@ jobs:
           if [ "$PRERELEASE" = true ]; then flags+=(--prerelease); fi
           gh release create "$TAG" release-assets/* --repo "$GITHUB_REPOSITORY" \
             --verify-tag --draft --title "Occipital ${TAG#occipital-v}" \
-            --notes "Occipital-only release. Raw executables, per-platform third-party notices, LICENSE, SHA256SUMS and exact native-release.json metadata. No extension or npm publication." \
+            --notes "Occipital-only release. Raw executables, one common third-party NOTICE covering all platforms, LICENSE, SHA256SUMS and exact native-release.json metadata. No extension or npm publication." \
             "${flags[@]}"
           gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false

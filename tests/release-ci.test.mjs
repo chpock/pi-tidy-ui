@@ -88,10 +88,43 @@ test('release assembles six exact-commit/version artifacts and publishes checksu
     const hash = createHash('sha256').update(await readFile(join(f.output, file))).digest('hex');
     assert.ok(sums.includes(`${hash}  ${file}\n`), file);
   }
-  assert.equal(files.filter(name => name.endsWith('.NOTICE')).length, 6);
+  assert.deepEqual(files.sort(), ['LICENSE', 'NOTICE', 'native-release.json', 'SHA256SUMS',
+    ...Object.keys(candidateTargets).map(target => assetName(f.version, target))].sort());
+  assert.ok((await readFile(join(f.output, 'NOTICE'))).includes(Buffer.from('Inert fixture notice\n')));
   assert.ok(files.includes('occipital-v0.1.0-windows-arm64-msvc.exe'));
   assert.deepEqual(await readFile(join(f.root, 'package.json')), npm);
   assert.equal(files.some(name => name.endsWith('.tgz')), false);
+});
+
+test('one release NOTICE preserves every distinct platform text once and leaves native package notices unchanged', async t => {
+  const f = await artifacts(t);
+  const common = Buffer.from('Common exact license ☃\r\nSecond line without final newline');
+  const windows = Buffer.from('Windows-specific dependency license\n');
+  const windowsArm = Buffer.from('Windows ARM-specific dependency license\r\n');
+  const originals = new Map();
+  for (const target of Object.keys(candidateTargets)) {
+    const bytes = target === 'windows-x64-msvc' ? windows : target === 'windows-arm64-msvc' ? windowsArm : common;
+    const root = join(f.directory, artifactName(f.version, target));
+    await writeFile(join(root, 'assets/NOTICE'), bytes);
+    await writeFile(join(root, 'packages', target, 'NOTICE'), bytes);
+    originals.set(target, bytes);
+  }
+  await assembleRelease({ ...f, repository, commit });
+  const notice = await readFile(join(f.output, 'NOTICE'));
+  for (const bytes of [common, windows, windowsArm]) {
+    const first = notice.indexOf(bytes);
+    assert.ok(first >= 0, 'original notice bytes must remain intact');
+    assert.equal(notice.indexOf(bytes, first + bytes.length), -1, 'identical platform inventories appear only once');
+  }
+  for (const [target, bytes] of originals) {
+    assert.ok(notice.includes(Buffer.from(target)), 'identify all covered targets');
+    const root = join(f.directory, artifactName(f.version, target));
+    assert.deepEqual(await readFile(join(root, 'assets/NOTICE')), bytes);
+    assert.deepEqual(await readFile(join(root, 'packages', target, 'NOTICE')), bytes);
+  }
+  const sums = await readFile(join(f.output, 'SHA256SUMS'), 'utf8');
+  assert.ok(sums.includes(`${createHash('sha256').update(notice).digest('hex')}  NOTICE\n`));
+  assert.doesNotMatch(sums, /\.NOTICE\n/);
 });
 
 test('prerelease-plus-build version survives stamping, staging and exact artifact assembly', async t => {
