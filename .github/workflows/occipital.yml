@@ -167,7 +167,7 @@ jobs:
             npm run test:installed-native
           fi
       - name: Installed npm preparation diagnostics
-        if: ${{ failure() && !startsWith(inputs.release-ref, 'refs/tags/occipital-v') }}
+        if: ${{ always() && !startsWith(inputs.release-ref, 'refs/tags/occipital-v') }}
         uses: actions/upload-artifact@v4
         with:
           name: installed-preparation-${{ matrix.target }}

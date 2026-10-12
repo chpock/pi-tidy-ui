@@ -466,11 +466,11 @@ test('GNU installed consumer verifies the public pin in glibc2.28 without compil
 });
 
 
-test('installed npm preparation failures retain safe diagnostics without weakening independent daemon releases', async () => {
+test('installed npm preparation retains successful and failed safe diagnostics without weakening independent daemon releases', async () => {
   const workflow = await readFile(join(repo, '.github/workflows/occipital.yml'), 'utf8');
   const upload = workflow.match(/      - name: Installed npm preparation diagnostics\n[\s\S]*?(?=      - |$)/)?.[0];
-  assert.ok(upload, 'installed failure diagnostics upload required');
-  assert.match(upload, /failure\(\) && !startsWith\(inputs\.release-ref, 'refs\/tags\/occipital-v'\)/);
+  assert.ok(upload, 'installed preparation diagnostics upload required');
+  assert.match(upload, /always\(\) && !startsWith\(inputs\.release-ref, 'refs\/tags\/occipital-v'\)/);
   assert.match(upload, /uses: actions\/upload-artifact@v4/);
   assert.match(upload, /path: \.test-artifacts\/installed-preparation-\*\//);
   assert.match(upload, /include-hidden-files: true/);
@@ -479,6 +479,9 @@ test('installed npm preparation failures retain safe diagnostics without weakeni
   const fixture = await readFile(join(repo, 'tests/fixtures/installed-occipital.mjs'), 'utf8');
   assert.match(fixture, /runNpmPreparation/);
   assert.match(fixture, /finally[\s\S]*await rm\(temporary, \{ recursive: true, force: true \}\)/);
+  assert.match(fixture, /fixture\.json/);
+  assert.match(fixture, /npmMs: Math\.round\(npmMs\), cleanupMs/);
+  assert.ok(fixture.indexOf('await rm(temporary') < fixture.indexOf("join(report, 'fixture.json')"));
 });
 
 
