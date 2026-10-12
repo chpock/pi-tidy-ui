@@ -90,11 +90,29 @@ jobs:
       - run: cargo fmt --all --check
       - name: Fetch every locked build/target dependency for the notice inventory
         run: cargo fetch --locked
+      - name: GNU tooling image cache
+        id: gnu-image-cache
+        if: startsWith(matrix.target, 'linux-')
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/occipital-gnu-image.tar
+          key: gnu-tooling-v1-${{ matrix.target }}-${{ hashFiles('scripts/release/Dockerfile.linux-gnu') }}
+      - name: Restore GNU tooling image
+        if: ${{ startsWith(matrix.target, 'linux-') && steps.gnu-image-cache.outputs.cache-hit == 'true' }}
+        env:
+          IMAGE_ARCHIVE: ${{ runner.temp }}/occipital-gnu-image.tar
+        run: docker load --input "$IMAGE_ARCHIVE"
       - name: GNU glibc 2.28 native build and runtime checks
         if: startsWith(matrix.target, 'linux-')
         env:
           RUST_TARGET: ${{ matrix.rust }}
         run: bash scripts/release/linux-gnu.sh "$RUST_TARGET"
+      - name: Export GNU tooling image on cache miss
+        if: ${{ startsWith(matrix.target, 'linux-') && steps.gnu-image-cache.outputs.cache-hit != 'true' }}
+        env:
+          IMAGE_ARCHIVE: ${{ runner.temp }}/occipital-gnu-image.tar
+          IMAGE_ARCH: ${{ matrix.target == 'linux-x64-gnu' && 'amd64' || 'arm64' }}
+        run: docker save --output "$IMAGE_ARCHIVE" "occipital-gnu228-$IMAGE_ARCH"
       - name: Native correctness, pipe protocol and parser-affinity doctest
         if: ${{ !startsWith(matrix.target, 'linux-') }}
         env:

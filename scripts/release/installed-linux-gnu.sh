@@ -23,7 +23,11 @@ if [[ -n "${npm_config_cache:-}" ]]; then
   npm_cache_args=(-v "$npm_cache:$npm_cache" --env "npm_config_cache=$npm_cache")
 fi
 
-docker build --platform "linux/$docker_arch" --tag "$image" \
+cache_args=(--build-arg BUILDKIT_INLINE_CACHE=1)
+if docker image inspect "$image" >/dev/null 2>&1; then
+  cache_args+=(--cache-from "$image")
+fi
+docker build "${cache_args[@]}" --platform "linux/$docker_arch" --tag "$image" \
   --file "$root/scripts/release/Dockerfile.linux-gnu" "$root/scripts/release"
 # Installation and exact public acquisition need networking; native compilation remains separate and offline.
 docker run --rm --platform "linux/$docker_arch" --user "$(id -u):$(id -g)" \

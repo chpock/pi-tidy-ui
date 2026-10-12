@@ -543,3 +543,23 @@ test('research installed checks compare both I/O pool sizes on the same runner w
   const wrapper = await readFile(join(repo, 'scripts/release/installed-linux-gnu.sh'), 'utf8');
   assert.match(wrapper, /--env UV_THREADPOOL_SIZE/);
 });
+
+
+test('GNU tooling-image cache is recipe/platform scoped and leaves full native checks intact', async () => {
+  const workflow = await readFile(join(repo, '.github/workflows/occipital.yml'), 'utf8');
+  assert.match(workflow, /id: gnu-image-cache\n        if: startsWith\(matrix.target, 'linux-'\)\n        uses: actions\/cache@v4/);
+  assert.match(workflow, /path: \$\{\{ runner.temp \}\}\/occipital-gnu-image.tar/);
+  assert.match(workflow, /key: gnu-tooling-v1-\$\{\{ matrix.target \}\}-\$\{\{ hashFiles\('scripts\/release\/Dockerfile.linux-gnu'\) \}\}/);
+  assert.match(workflow, /if: \$\{\{ startsWith\(matrix.target, 'linux-'\) && steps.gnu-image-cache.outputs.cache-hit == 'true' \}\}/);
+  assert.match(workflow, /docker load --input "\$IMAGE_ARCHIVE"/);
+  assert.match(workflow, /docker save --output "\$IMAGE_ARCHIVE" "occipital-gnu228-\$IMAGE_ARCH"/);
+  assert.ok(workflow.indexOf('docker load --input') < workflow.indexOf('- name: GNU glibc 2.28 native build and runtime checks'));
+  for (const name of ['linux-gnu.sh', 'installed-linux-gnu.sh']) {
+    const helper = await readFile(join(repo, 'scripts/release', name), 'utf8');
+    assert.match(helper, /cache_args=\(--build-arg BUILDKIT_INLINE_CACHE=1\)/);
+    assert.match(helper, /if docker image inspect "\$image" >\/dev\/null 2>&1; then/);
+    assert.match(helper, /cache_args\+=\(--cache-from "\$image"\)/);
+    assert.match(helper, /docker build "\$\{cache_args\[@\]\}" --platform "linux\/\$docker_arch"/);
+    assert.match(helper, /test "\$\(getconf GNU_LIBC_VERSION\)" = "glibc 2.28"/);
+  }
+});

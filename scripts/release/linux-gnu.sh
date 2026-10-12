@@ -21,7 +21,11 @@ mkdir -p "$target_dir"
 target_dir="$(cd "$target_dir" && pwd)"
 image="occipital-gnu228-$docker_arch"
 
-docker build --platform "linux/$docker_arch" --tag "$image" \
+cache_args=(--build-arg BUILDKIT_INLINE_CACHE=1)
+if docker image inspect "$image" >/dev/null 2>&1; then
+  cache_args+=(--cache-from "$image")
+fi
+docker build "${cache_args[@]}" --platform "linux/$docker_arch" --tag "$image" \
   --file "$root/scripts/release/Dockerfile.linux-gnu" "$root/scripts/release"
 # Cargo prioritizes Cargo-home proxies; keep their toolchain identical to the mounted SDK.
 docker run --rm --platform "linux/$docker_arch" --network=none --user "$(id -u):$(id -g)" \
