@@ -39,12 +39,14 @@ function empty(p: SharedTransport) {
 }
 async function tick() { await delay(0); }
 
-test('optional import rejection is handled and diagnostics never echo raw errors', async () => {
+test('optional import rejection is handled and diagnostics never echo raw errors', async t => {
   const f = fixture(); let imports = 0;
   const p = f.transport(3000, async () => { imports++; throw new Error('credential /private/path source'); });
   await assert.rejects(p.ready, { message: 'shared initialization failed' });
   assert.equal(imports, 1); await p.close(); empty(p);
   const missing = new SharedTransport({ connectionFile: '/fixture/missing', identity, initDeadlineMs: 1000, requestDeadlineMs: 1000 });
+  // The readiness notification intentionally does not keep its transport alive.
+  t.after(() => missing.close());
   await assert.rejects(missing.ready, /initialization/); await missing.close(); empty(missing);
 });
 
