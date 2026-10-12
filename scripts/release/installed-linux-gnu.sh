@@ -16,12 +16,18 @@ node_version="${EXPECTED_NODE:-$(node -p 'process.version.slice(1)')}"
 node_path="$(EXPECTED_NODE="$node_version" node -p 'if (!["v22.19.0", "v26.7.0"].includes(process.version) || process.version !== "v" + process.env.EXPECTED_NODE) throw new Error("Installed GNU gate requires the expected supported official Node distribution"); process.execPath')"
 node_root="$(cd "$(dirname "$node_path")/.." && pwd)"
 image="occipital-gnu228-$docker_arch"
+npm_cache_args=()
+if [[ -n "${npm_config_cache:-}" ]]; then
+  mkdir -p "$npm_config_cache"
+  npm_cache="$(cd "$npm_config_cache" && pwd -P)"
+  npm_cache_args=(-v "$npm_cache:$npm_cache" --env "npm_config_cache=$npm_cache")
+fi
 
 docker build --platform "linux/$docker_arch" --tag "$image" \
   --file "$root/scripts/release/Dockerfile.linux-gnu" "$root/scripts/release"
 # Installation and exact public acquisition need networking; native compilation remains separate and offline.
 docker run --rm --platform "linux/$docker_arch" --user "$(id -u):$(id -g)" \
-  -v "$root:$root" -v "$node_root:$node_root:ro" \
+  -v "$root:$root" -v "$node_root:$node_root:ro" "${npm_cache_args[@]}" \
   --workdir "$root" --env HOME=/tmp/occipital-installed-home \
   --env EXPECTED_NODE="$node_version" --env EXPECTED_ARCHITECTURE="$architecture" \
   --env PATH="$node_root/bin:/usr/bin:/bin" \

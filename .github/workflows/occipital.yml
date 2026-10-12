@@ -127,13 +127,21 @@ jobs:
           SOURCE_COMMIT="$(git rev-parse HEAD)"
           export SOURCE_COMMIT
           node scripts/release/native-ci.mjs stage "$TARGET" "target/$RUST_TARGET/release/$EXECUTABLE" "$RUNNER_TEMP/occipital-native-artifact"
+      - name: Installed npm package cache
+        if: ${{ !startsWith(inputs.release-ref, 'refs/tags/occipital-v') }}
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/occipital-npm-cache/_cacache
+          key: installed-npm-v1-${{ matrix.target }}-${{ hashFiles('package-lock.json') }}
+          restore-keys: installed-npm-v1-${{ matrix.target }}-
       - name: Installed adopted pin on Node 22.19.0
         if: ${{ !startsWith(inputs.release-ref, 'refs/tags/occipital-v') }}
-        timeout-minutes: 5
+        timeout-minutes: 15
         env:
           EXPECTED_NODE: '22.19.0'
           TARGET: ${{ matrix.target }}
           RUST_TARGET: ${{ matrix.rust }}
+          npm_config_cache: ${{ runner.temp }}/occipital-npm-cache
         run: |
           if [[ "$TARGET" == linux-* ]]; then
             bash scripts/release/installed-linux-gnu.sh "$RUST_TARGET"
@@ -146,11 +154,12 @@ jobs:
           node-version: '26.7.0'
       - name: Installed adopted pin on Node 26.7.0
         if: ${{ !startsWith(inputs.release-ref, 'refs/tags/occipital-v') }}
-        timeout-minutes: 5
+        timeout-minutes: 15
         env:
           EXPECTED_NODE: '26.7.0'
           TARGET: ${{ matrix.target }}
           RUST_TARGET: ${{ matrix.rust }}
+          npm_config_cache: ${{ runner.temp }}/occipital-npm-cache
         run: |
           if [[ "$TARGET" == linux-* ]]; then
             bash scripts/release/installed-linux-gnu.sh "$RUST_TARGET"

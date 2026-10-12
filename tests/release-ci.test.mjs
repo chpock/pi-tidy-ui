@@ -354,7 +354,7 @@ test('native CI verifies the installed adopted pin on both Nodes without couplin
   assert.ok(workflow, 'installed acceptance must run inside the native platform matrix');
   assert.match(workflow, /^    runs-on: \$\{\{ matrix\.runner \}\}$/m);
   for (const version of ['22.19.0', '26.7.0']) {
-    const step = workflow.match(new RegExp(`- name: Installed adopted pin on Node ${version.replaceAll('.', '\\.') }\\n        if: ([^\\n]+)\\n        timeout-minutes: 5\\n        env:\\n          EXPECTED_NODE: '${version.replaceAll('.', '\\.') }'\\n          TARGET: \\$\\{\\{ matrix.target \\}\\}\\n          RUST_TARGET: \\$\\{\\{ matrix.rust \\}\\}\\n        run: \\|\\n([\\s\\S]*?)(?=\\n      -|$)`));
+    const step = workflow.match(new RegExp(`- name: Installed adopted pin on Node ${version.replaceAll('.', '\\.') }\\n        if: ([^\\n]+)\\n        timeout-minutes: 15\\n        env:\\n          EXPECTED_NODE: '${version.replaceAll('.', '\\.') }'\\n          TARGET: \\$\\{\\{ matrix.target \\}\\}\\n          RUST_TARGET: \\$\\{\\{ matrix.rust \\}\\}\\n          npm_config_cache: \\$\\{\\{ runner.temp \\}\\}/occipital-npm-cache\\n        run: \\|\\n([\\s\\S]*?)(?=\\n      -|$)`));
     assert.ok(step, `${version}: actual installed pin gate on every native runner`);
     assert.equal(step[1], "${{ !startsWith(inputs.release-ref, 'refs/tags/occipital-v') }}");
     assert.match(step[2], /if \[\[ "\$TARGET" == linux-\* \]\]; then\s+bash scripts\/release\/installed-linux-gnu\.sh "\$RUST_TARGET"\s+else\s+npm run test:installed-native\s+fi/);
@@ -478,4 +478,47 @@ test('installed npm preparation failures retain safe diagnostics without weakeni
   const fixture = await readFile(join(repo, 'tests/fixtures/installed-occipital.mjs'), 'utf8');
   assert.match(fixture, /runNpmPreparation/);
   assert.match(fixture, /finally[\s\S]*await rm\(temporary, \{ recursive: true, force: true \}\)/);
+});
+
+
+test('all native platforms reuse only the npm content cache across both installed runtimes', async () => {
+  const workflow = await readFile(join(repo, '.github/workflows/occipital.yml'), 'utf8');
+  const step = workflow.match(/      - name: Installed npm package cache\n[\s\S]*?(?=      - |$)/)?.[0];
+  assert.ok(step, 'installed npm package cache required on the whole native matrix');
+  assert.match(step, /if: \$\{\{ !startsWith\(inputs\.release-ref, 'refs\/tags\/occipital-v'\) \}\}/);
+  assert.doesNotMatch(step, /startsWith\(matrix\.target|windows-|linux-/);
+  assert.match(step, /uses: actions\/cache@v4/);
+  assert.match(step, /path: \$\{\{ runner\.temp \}\}\/occipital-npm-cache\/_cacache/);
+  assert.match(step, /key: installed-npm-v1-\$\{\{ matrix\.target \}\}-\$\{\{ hashFiles\('package-lock\.json'\) \}\}/);
+  assert.match(step, /restore-keys: installed-npm-v1-\$\{\{ matrix\.target \}\}-/);
+  assert.doesNotMatch(step, /node_modules|_logs|\.npmrc|payload-preparation|cache\/occipital/);
+  assert.ok(workflow.indexOf(step) < workflow.indexOf('- name: Installed adopted pin on Node 22.19.0'));
+  for (const version of ['22.19.0', '26.7.0']) {
+    const installed = workflow.match(new RegExp(`      - name: Installed adopted pin on Node ${version.replaceAll('.', '\\.')}\\n[\\s\\S]*?(?=      - |$)`))?.[0];
+    assert.ok(installed);
+    assert.match(installed, /timeout-minutes: 15/);
+    assert.match(installed, /npm_config_cache: \$\{\{ runner\.temp \}\}\/occipital-npm-cache/);
+  }
+});
+
+test('installed npm preparation has five-minute headroom without changing native deadlines or output limits', async () => {
+  const preparation = await readFile(join(repo, 'tests/fixtures/npm-preparation.ts'), 'utf8');
+  assert.match(preparation, /timeout: 300000, maxBuffer: 1024 \* 1024/);
+  const fixture = await readFile(join(repo, 'tests/fixtures/installed-occipital.mjs'), 'utf8');
+  assert.match(fixture, /Installed source did not complete[\s\S]*\}, 10000\)/);
+  assert.match(fixture, /timeout: 5000/);
+  assert.match(fixture, /nativeDispatches: complete\.dispatches/);
+});
+
+test('GNU installed checks bind and forward the optional host npm cache without changing isolation', async () => {
+  const script = await readFile(join(repo, 'scripts/release/installed-linux-gnu.sh'), 'utf8');
+  assert.match(script, /npm_cache_args=\(\)/);
+  assert.match(script, /if \[\[ -n "\$\{npm_config_cache:-\}" \]\]; then/);
+  assert.match(script, /mkdir -p "\$npm_config_cache"/);
+  assert.match(script, /npm_cache="\$\(cd "\$npm_config_cache" && pwd -P\)"/);
+  assert.match(script, /npm_cache_args=\(-v "\$npm_cache:\$npm_cache" --env "npm_config_cache=\$npm_cache"\)/);
+  assert.match(script, /"\$\{npm_cache_args\[@\]\}"/);
+  assert.match(script, /--env HOME=\/tmp\/occipital-installed-home/);
+  assert.match(script, /--env EXPECTED_NODE="\$node_version"/);
+  assert.doesNotMatch(script, /node_modules|OCCIPITAL_TEST_BIN|NATIVE_RELEASE|\/cache\/occipital/);
 });

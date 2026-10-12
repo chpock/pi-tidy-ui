@@ -46,7 +46,7 @@ export async function runNpmPreparation(args: string[], options: {
   const logs = await mkdtemp(join(options.logsRoot, 'command-'));
   try {
     return await run(process.execPath, [options.npmPath, ...args, `--logs-dir=${logs}`], {
-      cwd: options.cwd, timeout: 120000, maxBuffer: 1024 * 1024,
+      cwd: options.cwd, timeout: 300000, maxBuffer: 1024 * 1024,
     });
   } catch (error) {
     const failed = error as { code?: unknown; killed?: boolean; signal?: unknown };
