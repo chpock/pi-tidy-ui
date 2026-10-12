@@ -226,6 +226,38 @@ test('every executable workflow job has an explicit bounded timeout, including r
   assert.match(ci, /- name: Unit, actual-SDK and GC regressions\n        timeout-minutes: 5\n/);
 });
 
+test('CI reserves the full terminal suite for extension release refs and keeps syntax CLI in ordinary runs', async () => {
+  const ci = await readFile(join(repo, '.github/workflows/ci.yml'), 'utf8');
+  const terminal = ci.match(/^  terminal:\n([\s\S]*?)(?=^  \w[\w-]*:|$(?![\s\S]))/m)?.[1];
+  assert.ok(terminal);
+  assert.match(terminal, /^    needs: \[version, native\]$/m);
+  const jobCondition = terminal.match(/^    if: ([^\n]+)$/m)?.[1];
+  const full = terminal.match(/^      - name: Full physical CLI and replay \(extension release only\)\n        if: ([^\n]+)\n        run: npm run test:terminal$/m);
+  assert.ok(full, 'full terminal step needs its own release guard, not a release-only job');
+  assert.equal(full[1], "needs.version.outputs.product == 'pi-tidy-ui'");
+  assert.equal([...ci.matchAll(/\brun: npm run test:terminal$/gm)].length, 1, 'no unguarded duplicate full-suite invocation');
+  assert.match(terminal, /- name: Physical syntax CLI and replay using this commit's native artifact\n        env:\n          OCCIPITAL_TEST_BIN: [^\n]+\n        run: npm run test:syntax-terminal/);
+  const enabled = (condition, ref) => {
+    const match = condition?.match(/^needs\.version\.outputs\.product (==|!=) '([^']+)'$/);
+    assert.ok(match, 'evaluate the actual workflow product comparison');
+    const same = (releaseRef(ref).product ?? '') === match[2];
+    return match[1] === '==' ? same : !same;
+  };
+  for (const [ref, syntax, complete] of [
+    ['refs/heads/main', true, false],
+    ['refs/heads/feature/ui', true, false],
+    ['refs/heads/pi-tidy-ui-v0.2.0', true, false],
+    ['refs/pull/1/merge', true, false],
+    ['refs/tags/pi-tidy-ui-v0.2.0', true, true],
+    ['refs/tags/pi-tidy-ui-v0.2.0-rc.1+build.2', true, true],
+    ['refs/tags/occipital-v0.1.2', false, false],
+  ]) {
+    const job = enabled(jobCondition, ref);
+    assert.equal(job, syntax, `${ref}: short syntax CLI eligibility`);
+    assert.equal(job && enabled(full[1], ref), complete, `${ref}: full terminal eligibility`);
+  }
+});
+
 test('CI retains the selected hidden-directory physical terminal failure captures', async () => {
   const ci = await readFile(join(repo, '.github/workflows/ci.yml'), 'utf8');
   const terminal = ci.match(/^  terminal:\n([\s\S]*?)(?=^  \w[\w-]*:|$(?![\s\S]))/m)?.[1];

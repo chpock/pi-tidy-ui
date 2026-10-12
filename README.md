@@ -134,8 +134,9 @@ The extension is inactive in print, JSON, and RPC modes. Component restyling app
 npm ci --ignore-scripts
 npm run check
 npm test
-npm run test:terminal
 ```
+
+Reserve the full `npm run test:terminal` for final UI/integration verification, not each edit or commit. See the [testing cadence](docs/testing.md#test-selection-and-cadence) for focused checks and the shorter syntax CLI suite.
 
 Development copies of host packages are pinned for reproducible tests; runtime imports are wildcard peer dependencies supplied by Pi. There is no bundling step. Repository versions are `0.0.0`; CI substitutes independent `pi-tidy-ui-vSEMVER` and `occipital-vSEMVER` tag versions. See [CI and releases](docs/releases.md).
 

@@ -15,13 +15,25 @@ From the repository root:
 npm ci --ignore-scripts
 npm run check
 npm test
-npm run test:terminal
+npm run test:native-release
 npm pack --dry-run
 ```
 
 `check` is the authoritative strict project TypeScript gate. Unit tests include actual-SDK component/ownership probes as well as deterministic presenter cases. The terminal runner uses `--test-concurrency=1` because its controls drive real CLI processes. Packaging must include every runtime module and maintained document linked from the README, without bundling host libraries or tests.
 
-For a focused edit check, without claiming the unrelated full CLI suite was rerun:
+## Test selection and cadence
+
+During the edit–test–fix loop, run strict types and affected unit/SDK cases; run Rust checks when native behavior is affected. `npm test` is the full unit/SDK suite, and `test:native-release` is an inexpensive inert packaging/release suite. For explicit full ownership/GC coverage with the truecolor environment used by CI:
+
+```sh
+TERM=xterm-256color COLORTERM=truecolor node --expose-gc --test --test-concurrency=2 tests/*.test.ts
+```
+
+The broad `npm run test:terminal` suite is time-expensive. Reserve a full run for final verification after UI/integration work is complete, not each edit or commit. Focused physical CLI cases may be used during development to reproduce or verify a concrete defect. Documentation-only work does not require the full CLI suite; workflow-only work uses workflow lint and `test:native-release`. After later edits, rerun the affected checks whose results could have been invalidated rather than automatically repeating the whole terminal suite.
+
+The shorter `test:syntax-terminal` checks real syntax integration and may run when that behavior is affected, with an explicit helper as described [below](#syntaxnative-checks). Ordinary PR/`main` CI and branch manual dispatch retain this suite on both supported CI Node runtimes; the full `test:terminal` suite runs only for `pi-tidy-ui-v*` release refs, including manual dispatch of such a tag. Occipital tags keep their independent native checks and skip extension CLI tests. A green ordinary CI run does not establish full physical UI acceptance; the local final run and extension-tag CI provide that coverage.
+
+For a focused CLI check, without claiming the unrelated full CLI suite was rerun:
 
 ```sh
 node --test --test-name-pattern='OpenCode-style edit syntax' --test-concurrency=1 tests/terminal.test.mjs

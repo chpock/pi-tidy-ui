@@ -104,7 +104,9 @@ jobs:
           path: .test-artifacts/ci-native
       - name: Restore raw executable permissions
         run: chmod +x .test-artifacts/ci-native/assets/occipital-v0.0.0-linux-x64-gnu
-      - run: npm run test:terminal
+      - name: Full physical CLI and replay (extension release only)
+        if: needs.version.outputs.product == 'pi-tidy-ui'
+        run: npm run test:terminal
       - name: Physical syntax CLI and replay using this commit's native artifact
         env:
           OCCIPITAL_TEST_BIN: .test-artifacts/ci-native/assets/occipital-v0.0.0-linux-x64-gnu
