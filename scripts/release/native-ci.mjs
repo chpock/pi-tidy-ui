@@ -22,10 +22,31 @@ function url(repository, tag, version, target) {
   return `https://github.com/${repository}/releases/download/${encodeURIComponent(tag)}/${encodeURIComponent(assetName(version, target))}`;
 }
 
+export function windowsRuntimeImports(output) {
+  const imports = [...output.matchAll(/^\s+Name:\s+([^\r\n]+\.dll)\s*$/gim)].map(match => match[1].trim());
+  if (!imports.length) throw new Error('Windows executable inspection returned no DLL imports');
+  const runtime = imports.filter(name => /^(?:(?:vcruntime|msvcp|msvcr|concrt)\d[^.]*|ucrtbase|api-ms-win-crt-[^.]+)\.dll$/i.test(name));
+  if (runtime.length) throw new Error(`Windows executable depends on runtime DLL: ${runtime.join(', ')}`);
+  return imports;
+}
+
+export async function verifyWindowsRuntime(binary, execute = run) {
+  const options = { timeout: 30000 };
+  const { stdout: sysroot } = await execute('rustc', ['--print', 'sysroot'], options);
+  const { stdout: version } = await execute('rustc', ['-vV'], options);
+  const host = version.match(/^host: (\S+)$/m)?.[1];
+  if (!host) throw new Error('Cannot determine Rust host for Windows executable inspection');
+  const tool = join(sysroot.trim(), 'lib', 'rustlib', host, 'bin', `llvm-readobj${process.platform === 'win32' ? '.exe' : ''}`);
+  const { stdout } = await execute(tool, ['--coff-imports', binary], options);
+  const imports = windowsRuntimeImports(stdout);
+  console.log(`Windows static-runtime check passed: ${imports.join(', ')}`);
+}
+
 /** Runs only after the native job builds/tests its stamped version. */
 export async function stageCI({ root, target, binary, repository, commit, output }) {
   identity(repository, commit);
   if (!Object.hasOwn(candidateTargets, target)) throw new Error('Unknown native target');
+  if (candidateTargets[target].os === 'win32') await verifyWindowsRuntime(binary);
   const version = await daemonVersion(root);
   const result = await run(binary, ['--version'], { timeout: 30000 });
   if (result.stdout.trim() !== `occipital ${version}`) throw new Error('Executable version differs from stamped Cargo version');

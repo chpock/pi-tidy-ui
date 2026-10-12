@@ -77,6 +77,9 @@ jobs:
         with:
           targets: ${{ matrix.rust }}
           components: rustfmt, clippy
+      - name: Install Windows executable inspection tool
+        if: startsWith(matrix.target, 'windows-')
+        run: rustup component add llvm-tools-preview
       - name: Stamp daemon before compilation
         env:
           RELEASE_REF: ${{ inputs.release-ref }}

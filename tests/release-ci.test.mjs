@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { releaseRef, stampVersion } from '../scripts/release/version.mjs';
 import { assembleRelease, assetName, artifactName } from '../scripts/release/native-ci.mjs';
+import * as nativeCI from '../scripts/release/native-ci.mjs';
 import { candidateTargets, daemonVersion, stageRelease } from '../scripts/release/native-release.mjs';
 import { acquireNative } from '../src/occipital/native.ts';
 
@@ -300,6 +301,51 @@ test('CI retains the selected hidden-directory physical terminal failure capture
   assert.match(upload, /^        if: failure\(\)$/m);
   assert.match(upload, /^          path: \.test-artifacts\/terminal-\*\/$/m);
   assert.match(upload, /^          include-hidden-files: true$/m);
+});
+
+test('Windows builds statically link CRT for both targets and inspect the actual executable before staging', async () => {
+  const config = await readFile(join(repo, '.cargo/config.toml'), 'utf8');
+  const targets = [...config.matchAll(/^\[target\.([^\]]+)\]\nrustflags = \["-C", "target-feature=\+crt-static"\]$/gm)].map(match => match[1]);
+  assert.deepEqual(targets.sort(), ['aarch64-pc-windows-msvc', 'x86_64-pc-windows-msvc']);
+  assert.equal([...config.matchAll(/^\[/gm)].length, 2, 'no flags for unrelated targets or host-wide build override');
+  const workflow = await readFile(join(repo, '.github/workflows/occipital.yml'), 'utf8');
+  assert.match(workflow, /- name: Install Windows executable inspection tool\n        if: startsWith\(matrix.target, 'windows-'\)\n        run: rustup component add llvm-tools-preview/);
+  for (const command of ['test --workspace', 'clippy --workspace', 'build --release']) {
+    assert.match(workflow, new RegExp(`cargo ${command}[^\\n]*--target "\\$RUST_TARGET"`), 'target flags must not affect host build scripts/proc macros');
+  }
+  const script = await readFile(join(repo, 'scripts/release/native-ci.mjs'), 'utf8');
+  assert.match(script, /candidateTargets\[target\]\.os === 'win32'\) await verifyWindowsRuntime\(binary\)/);
+  assert.ok(script.indexOf('await verifyWindowsRuntime(binary)') < script.indexOf('await stageRelease('));
+});
+
+test('Windows executable import guard rejects VC runtime variants and refuses empty inspection output', () => {
+  assert.equal(typeof nativeCI.windowsRuntimeImports, 'function');
+  const inspect = nativeCI.windowsRuntimeImports;
+  const system = 'Import {\n  Name: KERNEL32.dll\n}\nImport {\n  Name: api-ms-win-core-synch-l1-2-0.dll\n}\n';
+  assert.deepEqual(inspect(system), ['KERNEL32.dll', 'api-ms-win-core-synch-l1-2-0.dll']);
+  for (const dll of ['VCRUNTIME140.dll', 'vcruntime140_1.dll', 'MSVCP140.dll', 'MSVCP140_ATOMIC_WAIT.dll', 'msvcr120.dll', 'CONCRT140.dll', 'ucrtbase.dll', 'api-ms-win-crt-runtime-l1-1-0.dll']) {
+    assert.throws(() => inspect(system + `DelayImport {\r\n  Name: ${dll}\r\n}\r\n`), /runtime DLL/i, dll);
+  }
+  for (const output of ['', 'File: example.exe\nFormat: COFF-ARM64\n', 'Import {}\n']) assert.throws(() => inspect(output), /imports/i);
+});
+
+test('Windows executable inspection uses Rust host tools, checks real command output and propagates failure', async () => {
+  const calls = [], host = 'aarch64-pc-windows-msvc', sysroot = join(repo, 'inert-rust-root'), binary = 'inert spaced.exe';
+  const tool = join(sysroot, 'lib/rustlib', host, 'bin', `llvm-readobj${process.platform === 'win32' ? '.exe' : ''}`);
+  const execute = async (command, args, options) => {
+    calls.push([command, args]);
+    assert.equal(options.timeout, 30000);
+    if (command === 'rustc') return { stdout: args[0] === '--print' ? `${sysroot}\r\n` : `rustc fixture\r\nhost: ${host}\r\n` };
+    assert.equal(command, tool); assert.deepEqual(args, ['--coff-imports', binary]);
+    return { stdout: 'Import {\n  Name: KERNEL32.dll\n}\nImport {\n  Name: VCRUNTIME140.dll\n}\n' };
+  };
+  await assert.rejects(nativeCI.verifyWindowsRuntime(binary, execute), /runtime DLL: VCRUNTIME140\.dll/);
+  assert.deepEqual(calls, [['rustc', ['--print', 'sysroot']], ['rustc', ['-vV']], [tool, ['--coff-imports', binary]]]);
+  const failed = new Error('LLVM inspection failed');
+  await assert.rejects(nativeCI.verifyWindowsRuntime(binary, async (command, args) => {
+    if (command === 'rustc') return { stdout: args[0] === '--print' ? sysroot : `host: ${host}` };
+    throw failed;
+  }), error => error === failed);
 });
 
 test('CI routes both tag families, reuses the same-run native matrix, and publishes only Occipital', async () => {
