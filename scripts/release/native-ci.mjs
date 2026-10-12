@@ -42,11 +42,34 @@ export async function verifyWindowsRuntime(binary, execute = run) {
   console.log(`Windows static-runtime check passed: ${imports.join(', ')}`);
 }
 
+export function linuxRuntimeVersions(output) {
+  const required = [];
+  for (const match of output.matchAll(/^\s+0x[\da-f]+:\s+Name:\s+(GLIBC_\S+)\s+Flags:\s+(\S+)\s+Version:\s+\d+\s*$/gim)) {
+    if (match[2] === 'WEAK') continue;
+    const version = /^GLIBC_(\d+)\.(\d+)(?:\.(\d+))?$/.exec(match[1]);
+    if (match[2] !== 'none' || !version) throw new Error(`Unsupported glibc requirement for the 2.28 baseline: ${match[1]}`);
+    const major = Number(version[1]), minor = Number(version[2]), patch = Number(version[3] ?? 0);
+    if (major > 2 || (major === 2 && (minor > 28 || (minor === 28 && patch > 0)))) {
+      throw new Error(`Executable exceeds glibc 2.28: ${match[1]}`);
+    }
+    required.push(match[1].slice('GLIBC_'.length));
+  }
+  if (!required.length) throw new Error('Linux executable inspection returned no required glibc version requirements');
+  return required;
+}
+
+export async function verifyLinuxRuntime(binary, execute = run) {
+  const { stdout } = await execute('readelf', ['--wide', '--version-info', binary], { timeout: 30000, maxBuffer: 1024 * 1024, env: { ...process.env, LC_ALL: 'C' } });
+  const versions = linuxRuntimeVersions(stdout);
+  console.log(`GNU glibc 2.28 check passed: ${[...new Set(versions)].join(', ')}`);
+}
+
 /** Runs only after the native job builds/tests its stamped version. */
 export async function stageCI({ root, target, binary, repository, commit, output }) {
   identity(repository, commit);
   if (!Object.hasOwn(candidateTargets, target)) throw new Error('Unknown native target');
   if (candidateTargets[target].os === 'win32') await verifyWindowsRuntime(binary);
+  if (candidateTargets[target].os === 'linux') await verifyLinuxRuntime(binary);
   const version = await daemonVersion(root);
   const result = await run(binary, ['--version'], { timeout: 30000 });
   if (result.stdout.trim() !== `occipital ${version}`) throw new Error('Executable version differs from stamped Cargo version');

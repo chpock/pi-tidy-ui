@@ -85,22 +85,33 @@ jobs:
           RELEASE_REF: ${{ inputs.release-ref }}
         run: node scripts/release/version.mjs "$RELEASE_REF"
       - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ startsWith(matrix.target, 'linux-') && 'glibc-2.28' || '' }}
       - run: cargo fmt --all --check
       - name: Fetch every locked build/target dependency for the notice inventory
         run: cargo fetch --locked
+      - name: GNU glibc 2.28 native build and runtime checks
+        if: startsWith(matrix.target, 'linux-')
+        env:
+          RUST_TARGET: ${{ matrix.rust }}
+        run: bash scripts/release/linux-gnu.sh "$RUST_TARGET"
       - name: Native correctness, pipe protocol and parser-affinity doctest
+        if: ${{ !startsWith(matrix.target, 'linux-') }}
         env:
           RUST_TARGET: ${{ matrix.rust }}
         run: cargo test --workspace --locked --target "$RUST_TARGET"
       - name: Strict native lint
+        if: ${{ !startsWith(matrix.target, 'linux-') }}
         env:
           RUST_TARGET: ${{ matrix.rust }}
         run: cargo clippy --workspace --all-targets --locked --target "$RUST_TARGET" -- -D warnings
       - name: Build release executable
+        if: ${{ !startsWith(matrix.target, 'linux-') }}
         env:
           RUST_TARGET: ${{ matrix.rust }}
         run: cargo build --release --locked -p occipital --target "$RUST_TARGET"
       - name: Real release-binary protocol, UTF8 colors, append counters and cleanup
+        if: ${{ !startsWith(matrix.target, 'linux-') }}
         env:
           RUST_TARGET: ${{ matrix.rust }}
           EXECUTABLE: ${{ matrix.executable }}

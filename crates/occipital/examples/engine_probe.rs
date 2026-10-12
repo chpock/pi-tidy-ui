@@ -51,11 +51,24 @@ fn allocator_memory() -> Option<AllocatorMemory> {
         fordblks: usize,
         keepcost: usize,
     }
+    #[link(name = "dl")]
     extern "C" {
-        fn mallinfo2() -> MallInfo2;
+        fn dlsym(
+            handle: *mut std::ffi::c_void,
+            symbol: *const std::ffi::c_char,
+        ) -> *mut std::ffi::c_void;
     }
-    // SAFETY: glibc's public mallinfo2 returns this exact ten-size_t structure.
-    let info = unsafe { mallinfo2() };
+    // mallinfo2 is absent before glibc 2.33; missing diagnostics stay unknown.
+    // SAFETY: null is RTLD_DEFAULT and the symbol is a terminated C string.
+    let address = unsafe { dlsym(std::ptr::null_mut(), c"mallinfo2".as_ptr()) };
+    if address.is_null() {
+        return None;
+    }
+    // SAFETY: glibc's public mallinfo2 has this exact ten-size_t return ABI.
+    let capture = unsafe {
+        std::mem::transmute::<*mut std::ffi::c_void, unsafe extern "C" fn() -> MallInfo2>(address)
+    };
+    let info = unsafe { capture() };
     Some(AllocatorMemory {
         live_bytes: info.uordblks + info.hblkhd,
         arena_bytes: info.arena,
@@ -416,4 +429,19 @@ fn main() {
     }
 
     println!("{}",serde_json::to_string_pretty(&json!({"kernel_only_not_rpc":true,"pid":std::process::id(),"before":before,"cold_assets_us":cold_assets_us,"cold_grammars":cold,"larger_warm":larger_warm,"ordinary_warm":ordinary_warm,"warm_parse":distribution(timings),"json_encode":distribution(encodings),"json_decode_rust_value_not_node":distribution(decodings),"encoded_bytes_over_1000":encoded_bytes,"incremental":{"source_bytes":multiline.len(),"committed_calls":calls,"committed_bytes":bytes,"tail_parse_bytes":tail_bytes,"finalization_parse_calls":final_result.counters.committed_line_calls+final_result.counters.tail_calls,"latency":distribution(increment)},"stress":stress,"calibration_line_cap":32<<10,"production_line_cap":engine.limits.line_bytes,"fair_quanta":fair_quanta,"leases32":{"known_bytes":lease_bytes,"memory":leased},"all_grammar":{"count":names.len(),"memory":all_grammar},"capture_leases":capture_leases,"capture_released":capture_released,"capture_cycles":capture_cycles,"admitted_peer":admitted_peer,"selected_theme_cold":native_themes,"released":memory(),"live_leases":engine.leases(),"known_retained_state_bytes":engine.retained_state_bytes()})).unwrap());
+}
+
+#[cfg(all(test, target_os = "linux", target_env = "gnu"))]
+#[test]
+fn allocator_diagnostic_tracks_the_actual_glibc_api() {
+    let output = std::process::Command::new("getconf")
+        .arg("GNU_LIBC_VERSION")
+        .output()
+        .expect("read actual GNU libc version");
+    assert!(output.status.success());
+    let version = String::from_utf8(output.stdout).unwrap();
+    let mut components = version.trim().strip_prefix("glibc ").unwrap().split('.');
+    let major = components.next().unwrap().parse::<u32>().unwrap();
+    let minor = components.next().unwrap().parse::<u32>().unwrap();
+    assert_eq!(allocator_memory().is_some(), (major, minor) >= (2, 33));
 }

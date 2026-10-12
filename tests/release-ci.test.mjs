@@ -380,3 +380,60 @@ test('CI routes both tag families, reuses the same-run native matrix, and publis
   assert.match(release, /assemble native-artifacts/);
   assert.match(release, /sha256sum --check SHA256SUMS/);
 });
+
+
+test('GNU executable version-needs guard enforces glibc2.28 and distinguishes optional weak versions', () => {
+  assert.equal(typeof nativeCI.linuxRuntimeVersions, 'function');
+  const inspect = nativeCI.linuxRuntimeVersions;
+  const entry = (name, flags = 'none') => `  0x0010:   Name: ${name}  Flags: ${flags}  Version: 2\n`;
+  const allowed = entry('GLIBC_2.2.5') + entry('GLIBC_2.17') + entry('GLIBC_2.28');
+  assert.deepEqual(inspect(allowed + entry('GLIBC_2.39', 'WEAK')), ['2.2.5', '2.17', '2.28']);
+  for (const name of ['GLIBC_2.29', 'GLIBC_2.34', 'GLIBC_3.0', 'GLIBC_ABI_DT_RELR', 'GLIBC_PRIVATE']) {
+    assert.throws(() => inspect(allowed + entry(name)), /glibc.*2\.28/i, name);
+  }
+  for (const output of ['', 'File: example.elf\n', '  004: 2 (GLIBC_2.28)\n', entry('GLIBC_2.28', 'WEAK')]) assert.throws(() => inspect(output), /requirements/i);
+});
+
+test('GNU executable inspection reads actual version needs before staging and propagates command failures', async () => {
+  assert.equal(typeof nativeCI.verifyLinuxRuntime, 'function');
+  const binary = 'inert spaced.elf', calls = [];
+  await assert.rejects(nativeCI.verifyLinuxRuntime(binary, async (command, args, options) => {
+    calls.push([command, args]);
+    assert.equal(options.timeout, 30000);
+    assert.equal(options.maxBuffer, 1024 * 1024);
+    assert.equal(options.env.LC_ALL, 'C');
+    return { stdout: '  0x0010:   Name: GLIBC_2.34  Flags: none  Version: 2\n' };
+  }), /glibc.*2\.28/i);
+  assert.deepEqual(calls, [['readelf', ['--wide', '--version-info', binary]]]);
+  const failure = new Error('ELF inspection failed');
+  await assert.rejects(nativeCI.verifyLinuxRuntime(binary, async () => { throw failure; }), error => error === failure);
+  const source = await readFile(join(repo, 'scripts/release/native-ci.mjs'), 'utf8');
+  assert.match(source, /candidateTargets\[target\]\.os === 'linux'\) await verifyLinuxRuntime\(binary\)/);
+  assert.ok(source.indexOf('await verifyLinuxRuntime(binary)') < source.indexOf('await stageRelease('));
+});
+
+
+test('GNU CI builds and tests natively in verified glibc2.28 without restoring newer-host compiler outputs', async () => {
+  const workflow = await readFile(join(repo, '.github/workflows/occipital.yml'), 'utf8');
+  assert.match(workflow, /- name: GNU glibc 2\.28 native build and runtime checks\n        if: startsWith\(matrix.target, 'linux-'\)\n        env:\n          RUST_TARGET: \$\{\{ matrix.rust \}\}\n        run: bash scripts\/release\/linux-gnu.sh "\$RUST_TARGET"/);
+  assert.match(workflow, /- uses: Swatinem\/rust-cache@v2\n        with:\n          key: \$\{\{ startsWith\(matrix.target, 'linux-'\) && 'glibc-2\.28' \|\| '' \}\}/);
+  for (const step of ['Native correctness, pipe protocol and parser-affinity doctest', 'Strict native lint', 'Build release executable', 'Real release-binary protocol, UTF8 colors, append counters and cleanup']) {
+    assert.ok(workflow.includes(`- name: ${step}\n        if: \${{ !startsWith(matrix.target, 'linux-') }}`), step);
+  }
+  const image = await readFile(join(repo, 'scripts/release/Dockerfile.linux-gnu'), 'utf8');
+  assert.match(image, /^FROM almalinux:8@sha256:[a-f0-9]{64}$/m);
+  assert.match(image, /dnf install -y gcc gcc-c\+\+ make binutils/);
+  assert.match(image, /getconf GNU_LIBC_VERSION/);
+  const script = await readFile(join(repo, 'scripts/release/linux-gnu.sh'), 'utf8');
+  assert.match(script, /x86_64-unknown-linux-gnu/); assert.match(script, /aarch64-unknown-linux-gnu/);
+  assert.match(script, /uname -m/); assert.match(script, /getconf GNU_LIBC_VERSION/);
+  assert.match(script, /rustc --print sysroot/); assert.match(script, /process.execPath/);
+  assert.match(script, /--network=none/); assert.match(script, /--user/);
+  for (const command of ['test --workspace', 'clippy --workspace --all-targets', 'build --release']) {
+    const line = script.split('\n').find(line => line.includes(`cargo ${command}`));
+    assert.ok(line?.includes('--locked --offline') && line.includes('--target "$RUST_TARGET"'), command);
+  }
+  assert.match(script, /allocator_diagnostic_tracks_the_actual_glibc_api/);
+  assert.match(script, /await verifyLinuxRuntime\(process.env.OCCIPITAL_TEST_BIN\)/);
+  assert.match(script, /\^actual owned helper preserves compact UTF8 highlighting and incremental work counters\$/);
+});
