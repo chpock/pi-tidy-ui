@@ -354,9 +354,10 @@ test('native CI verifies the installed adopted pin on both Nodes without couplin
   assert.ok(workflow, 'installed acceptance must run inside the native platform matrix');
   assert.match(workflow, /^    runs-on: \$\{\{ matrix\.runner \}\}$/m);
   for (const version of ['22.19.0', '26.7.0']) {
-    const step = workflow.match(new RegExp(`- name: Installed adopted pin on Node ${version.replaceAll('.', '\\.') }\\n        if: ([^\\n]+)\\n        timeout-minutes: 5\\n        env:\\n          EXPECTED_NODE: '${version.replaceAll('.', '\\.') }'\\n        run: npm run test:installed-native`));
+    const step = workflow.match(new RegExp(`- name: Installed adopted pin on Node ${version.replaceAll('.', '\\.') }\\n        if: ([^\\n]+)\\n        timeout-minutes: 5\\n        env:\\n          EXPECTED_NODE: '${version.replaceAll('.', '\\.') }'\\n          TARGET: \\$\\{\\{ matrix.target \\}\\}\\n          RUST_TARGET: \\$\\{\\{ matrix.rust \\}\\}\\n        run: \\|\\n([\\s\\S]*?)(?=\\n      -|$)`));
     assert.ok(step, `${version}: actual installed pin gate on every native runner`);
     assert.equal(step[1], "${{ !startsWith(inputs.release-ref, 'refs/tags/occipital-v') }}");
+    assert.match(step[2], /if \[\[ "\$TARGET" == linux-\* \]\]; then\s+bash scripts\/release\/installed-linux-gnu\.sh "\$RUST_TARGET"\s+else\s+npm run test:installed-native\s+fi/);
   }
   assert.match(workflow, /- uses: actions\/setup-node@v4\n        if: \$\{\{ !startsWith\(inputs.release-ref, 'refs\/tags\/occipital-v'\) \}\}\n        with:\n          node-version: '26\.7\.0'/);
   const pkg = JSON.parse(await readFile(join(repo, 'package.json'), 'utf8'));
@@ -445,4 +446,20 @@ test('GNU gate forwards the mounted SDK selection to Cargo-home Rustup proxies',
   assert.match(script, /-v "\$rust_sysroot:\$rust_sysroot:ro"/);
   assert.match(script, /--env RUSTUP_TOOLCHAIN="\$rust_sysroot"/);
   assert.doesNotMatch(script, /rustup default|rustup toolchain install/);
+});
+
+
+test('GNU installed consumer verifies the public pin in glibc2.28 without compiler or payload overrides', async () => {
+  const image = await readFile(join(repo, 'scripts/release/Dockerfile.linux-gnu'), 'utf8');
+  assert.match(image, /dnf install -y[^\n]*\blibatomic\b/, 'official Node25+ runtime prerequisite must exist in the GNU test image');
+  const script = await readFile(join(repo, 'scripts/release/installed-linux-gnu.sh'), 'utf8');
+  for (const target of ['x86_64-unknown-linux-gnu', 'aarch64-unknown-linux-gnu']) assert.ok(script.includes(target));
+  assert.match(script, /uname -m/);
+  assert.match(script, /process\.execPath/);
+  assert.match(script, /process\.env\.EXPECTED_NODE/, 'do not overwrite a fixed CI Node requirement with the detected host version');
+  assert.match(script, /--user "\$\(id -u\):\$\(id -g\)"/);
+  assert.match(script, /--env EXPECTED_NODE="\$node_version"/);
+  assert.match(script, /test "\$\(getconf GNU_LIBC_VERSION\)" = "glibc 2\.28"/);
+  assert.match(script, /npm run test:installed-native/);
+  assert.doesNotMatch(script, /cargo|rustc|OCCIPITAL_TEST_BIN|RUSTUP|--network=none|\.cargo|npm publish/);
 });

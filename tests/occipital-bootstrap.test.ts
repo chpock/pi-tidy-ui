@@ -23,10 +23,10 @@ test('bootstrap maps only actual candidate ABI tuples, never musl to GNU', () =>
 });
 
 test('bootstrap defaults to the verified independent Occipital release and aborted acquisition does no network work', async () => {
-  const published = JSON.parse(await readFile(new URL('./fixtures/occipital-release-0.1.3.json', import.meta.url), 'utf8'));
+  const published = JSON.parse(await readFile(new URL('./fixtures/occipital-release-0.1.4.json', import.meta.url), 'utf8'));
   assert.deepEqual(NATIVE_RELEASE, published);
   const options = createSyntaxOptions(ctx);
-  assert.equal(options.standaloneVersion, '0.1.3');
+  assert.equal(options.standaloneVersion, '0.1.4');
   const fetch = globalThis.fetch;
   let downloads = 0;
   globalThis.fetch = async () => { downloads++; throw Error('An aborted acquisition must not download'); };

@@ -132,7 +132,14 @@ jobs:
         timeout-minutes: 5
         env:
           EXPECTED_NODE: '22.19.0'
-        run: npm run test:installed-native
+          TARGET: ${{ matrix.target }}
+          RUST_TARGET: ${{ matrix.rust }}
+        run: |
+          if [[ "$TARGET" == linux-* ]]; then
+            bash scripts/release/installed-linux-gnu.sh "$RUST_TARGET"
+          else
+            npm run test:installed-native
+          fi
       - uses: actions/setup-node@v4
         if: ${{ !startsWith(inputs.release-ref, 'refs/tags/occipital-v') }}
         with:
@@ -142,7 +149,14 @@ jobs:
         timeout-minutes: 5
         env:
           EXPECTED_NODE: '26.7.0'
-        run: npm run test:installed-native
+          TARGET: ${{ matrix.target }}
+          RUST_TARGET: ${{ matrix.rust }}
+        run: |
+          if [[ "$TARGET" == linux-* ]]; then
+            bash scripts/release/installed-linux-gnu.sh "$RUST_TARGET"
+          else
+            npm run test:installed-native
+          fi
       - uses: actions/upload-artifact@v4
         with:
           name: occipital-v${{ inputs.version }}-${{ matrix.target }}
