@@ -3,6 +3,7 @@
   "version": "__OCCIPITAL_VERSION__",
   "description": "Occipital native payload for Linux x64 glibc",
   "license": "MIT",
+  "repository": { "type": "git", "url": "git+https://github.com/chpock/pi-tidy-ui.git" },
   "os": ["linux"],
   "cpu": ["x64"],
   "libc": ["glibc"],

@@ -1,0 +1,78 @@
+name: Occipital npm publication
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Published Occipital tag (occipital-vVERSION)
+        required: true
+        type: string
+      run-id:
+        description: Successful CI run ID that built and published that exact tag
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+  id-token: write
+
+concurrency:
+  group: occipital-npm-publication
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: github.repository == 'chpock/pi-tidy-ui' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      TAG: ${{ inputs.tag }}
+      SOURCE_RUN: ${{ inputs.run-id }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '26.7.0'
+      - name: Install exact trusted-publishing npm CLI
+        timeout-minutes: 5
+        run: npm install --global npm@12.0.2 --ignore-scripts --no-audit --no-fund
+      - name: Validate explicit publication inputs
+        id: version
+        run: node scripts/release/npm-release.mjs validate-input "$TAG" "$SOURCE_RUN"
+      - name: Verify the successful exact-tag CI run and published release
+        run: |
+          mkdir -p .test-artifacts/npm-publish
+          git fetch --depth=1 origin "refs/tags/$TAG:refs/tags/$TAG"
+          SOURCE_COMMIT="$(git rev-parse "refs/tags/$TAG^{commit}")"
+          printf 'SOURCE_COMMIT=%s\n' "$SOURCE_COMMIT" >> "$GITHUB_ENV"
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN" > .test-artifacts/npm-publish/source-run.json
+          node scripts/release/npm-release.mjs check-run .test-artifacts/npm-publish/source-run.json "$TAG" "$SOURCE_RUN" "$SOURCE_COMMIT"
+          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" > .test-artifacts/npm-publish/release.json
+          node scripts/release/npm-release.mjs check-release .test-artifacts/npm-publish/release.json "$TAG"
+      - uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.run-id }}
+          pattern: occipital-v${{ steps.version.outputs.version }}-*
+          path: .test-artifacts/npm-publish/native-artifacts
+      - name: Download the immutable public GitHub release
+        run: gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir .test-artifacts/npm-publish/public-assets
+      - name: Verify all six native packages and pack without scripts or rebuilding
+        run: |
+          node scripts/release/npm-release.mjs prepare .test-artifacts/npm-publish/native-artifacts \
+            .test-artifacts/npm-publish/public-assets "$TAG" "$SOURCE_COMMIT" .test-artifacts/npm-publish/prepared
+      - name: Publish native packages using OIDC and verify public registry bytes
+        run: node scripts/release/npm-release.mjs publish .test-artifacts/npm-publish/prepared/plan.json
+      - name: Preserve publication authority and per-package receipts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: occipital-npm-publication-${{ github.run_id }}
+          path: |
+            .test-artifacts/npm-publish/prepared/plan.json
+            .test-artifacts/npm-publish/prepared/receipts.json
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 14

@@ -3,6 +3,7 @@
   "version": "__OCCIPITAL_VERSION__",
   "description": "Occipital native payload for Windows x64 MSVC",
   "license": "MIT",
+  "repository": { "type": "git", "url": "git+https://github.com/chpock/pi-tidy-ui.git" },
   "os": ["win32"],
   "cpu": ["x64"],
   "files": ["occipital.exe", "LICENSE", "NOTICE"],

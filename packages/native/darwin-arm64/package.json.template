@@ -3,6 +3,7 @@
   "version": "__OCCIPITAL_VERSION__",
   "description": "Occipital native payload for macOS arm64",
   "license": "MIT",
+  "repository": { "type": "git", "url": "git+https://github.com/chpock/pi-tidy-ui.git" },
   "os": ["darwin"],
   "cpu": ["arm64"],
   "files": ["occipital", "LICENSE", "NOTICE"],

@@ -34,6 +34,7 @@ Every runner job has an explicit `timeout-minutes`; matrix entries each receive 
 | Native checks, cold Rust build and artifact staging | 45 |
 | Physical syntax CLI; full CLI/replay on extension release tags | 30 |
 | GitHub Release assembly and publication | 10 |
+| Manual native npm publication | 15 |
 
 The unit/SDK/GC step also has a five-minute limit within its ten-minute job. Installed-client steps have fifteen minutes each within the unchanged forty-five-minute native job; only npm preparation commands receive five-minute headroom, not native source/classification deadlines. These allowances leave headroom above successful runs, including cold installation/build work. Expiry stops the process or cancels the job; it does not bypass assertions or trigger a successful retry. Job execution timeouts do not bound waiting for a runner. Interrupted release publication can leave a draft; the existing inspection/no-overwrite rule below still applies.
 
@@ -50,7 +51,19 @@ The common `NOTICE` preserves each distinct platform inventory byte-for-byte and
 
 It creates a draft, uploads all files, then publishes it. An existing release/draft is not overwritten; after a failed upload inspect or remove the draft before rerunning. It uses the job-scoped `GITHUB_TOKEN` with `contents: write`, not an npm token. Do not move published tags.
 
-Creating/pushing a tag is a separate operator action. These workflows do not create tags, commit version changes, publish npm packages, or update `src/occipital/release.ts`. Adoption of an owned helper still requires downloading/verifying the published release and explicitly pinning `NATIVE_RELEASE`. That pin remains a real exact daemon version, independent of the extension's version and repository placeholders.
+Creating/pushing a tag is a separate operator action. The tag-triggered workflows do not create tags, commit version changes, publish npm packages, or update `src/occipital/release.ts`. Native npm publication is a separate manual workflow described below. Adoption of an owned helper still requires downloading/verifying the published release and explicitly pinning `NATIVE_RELEASE`. That pin remains a real exact daemon version, independent of the extension's version and repository placeholders.
+
+## Manual native npm publication
+
+`.github/workflows/occipital-npm-publish.yml` runs only by explicit manual dispatch on `main`, independently of GitHub/extension release workflows. Supply the published `occipital-vVERSION` tag and the exact successful CI run ID that built/released it. The run must be this repository's `ci.yml` push-tag run, with the tag's resolved commit and a successful conclusion; PR/branch/development artifacts cannot substitute. CI artifacts currently expire after 14 days. Missing/expired artifacts stop publication; the workflow does not rebuild or select a different run. This npm path rejects versions containing SemVer `+build` metadata before packing or registry access because npm removes that metadata from the version. GitHub/native releases retain their full-SemVer contract; no version aliases or rewrites are introduced.
+
+The workflow compares every assembled executable, notice, license, metadata and checksum file with the already-public GitHub release. It validates all six platform package manifests, payloads and platform notices before packing, restores executable permissions lost by artifact ZIPs, and never runs package scripts. Future native manifests include the canonical `repository.url` required by npm provenance; already-published `0.1.4` packages remain unchanged.
+
+Configure trusted publishing for **each** `@kchpock/occipital-*` package: GitHub owner `chpock`, repository `pi-tidy-ui`, workflow filename `occipital-npm-publish.yml`, direct `npm publish` allowed, and no environment name (this workflow does not use one). The GitHub-hosted job grants `id-token: write` and installs exact npm `12.0.2` on Node `26.7.0` (npm 12's own Node requirements do not change the extension's Node 22.19.0 minimum). It uses short-lived OIDC authentication, not an npm token, approval command or bypass-2FA credential. Although npm normally generates provenance automatically with trusted publishing, the workflow explicitly passes `--provenance` to require generation and stop publication on generation failure. The provenance describes this verified-artifact packaging/publication workflow, not a source audit or proof of reproducible Rust compilation; the original Rust build's authority remains the checked source CI run/commit.
+
+Before any upload, all six registry versions are inspected. An existing version is skipped only when its integrity matches the prepared archive; a mismatch or registry error stops the family before publication. Prereleases use `next`; stable versions retain npm's normal implicit-`latest` checks. After publication, all six public tarballs are downloaded and their bytes checked against the prepared SHA-512. npm publication is not atomic: interruption can leave some packages public. Per-package receipts distinguish not-started, unconfirmed, published and already-published outcomes; an explicit rerun with identical artifacts skips matching versions instead of overwriting them. Receipts/plan are retained for 14 days, without raw npm logs or credentials.
+
+A staged version already occupies its package/version identity and cannot be published again through this workflow. The maintainer must approve it with 2FA; OIDC does not authorize stage approval. The manually approved `0.1.4` family is the first native npm delivery, not a reason to rerun publication or issue another daemon release. This workflow never publishes the root extension, changes tags, adopts another pin or dispatches itself.
 
 ## Local checks
 

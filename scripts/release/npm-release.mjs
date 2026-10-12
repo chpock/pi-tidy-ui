@@ -1,0 +1,162 @@
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import { createHash } from 'node:crypto';
+import { chmod, copyFile, mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
+import { dirname, join, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
+import { isDeepStrictEqual } from 'node:util';
+import { candidateTargets } from './native-release.mjs';
+import { artifactName, assembleRelease } from './native-ci.mjs';
+import { releaseRef } from './version.mjs';
+
+const run = promisify(execFile), npm = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+const registry = '--registry=https://registry.npmjs.org';
+const json = async path => JSON.parse(await readFile(path, 'utf8'));
+const integrity = bytes => 'sha512-' + createHash('sha512').update(bytes).digest('base64');
+function singleTarball(text) {
+  const value = JSON.parse(text), items = Array.isArray(value) ? value : Object.values(value);
+  if (items.length !== 1) throw new Error('Expected exactly one npm tarball record');
+  return items[0];
+}
+function singleVersion(text) {
+  const value = JSON.parse(text);
+  if (!Array.isArray(value)) return value;
+  if (value.length !== 1) throw new Error('Expected exactly one npm version record');
+  return value[0];
+}
+function npmReleaseTag(tag) {
+  const release = releaseRef('refs/tags/' + tag);
+  if (release.product !== 'occipital') throw new Error('Expected an Occipital release tag');
+  if (release.version.includes('+')) throw new Error('npm publication does not preserve SemVer build metadata');
+  return release;
+}
+function releaseInput(tag, runId) {
+  const release = npmReleaseTag(tag);
+  if (!/^[1-9]\d*$/.test(runId) || !Number.isSafeInteger(Number(runId))) throw new Error('Expected an explicit numeric source CI run ID');
+  return release;
+}
+export function validateSourceRun(value, { tag, runId, repository, commit }) {
+  const release = releaseInput(tag, runId);
+  if (!/^[a-f0-9]{40}$/.test(commit) || value.id !== Number(runId) || value.path !== '.github/workflows/ci.yml'
+    || value.event !== 'push' || value.status !== 'completed' || value.conclusion !== 'success'
+    || value.repository?.full_name !== repository || value.head_repository?.full_name !== repository
+    || value.head_branch !== tag || value.head_sha !== commit) throw new Error('Source CI run is not the exact successful release-tag build');
+  return release;
+}
+export function validatePublicRelease(value, tag) {
+  const release = npmReleaseTag(tag);
+  if (value.tag_name !== tag || value.draft !== false || value.prerelease !== release.prerelease) {
+    throw new Error('Expected the already-published exact Occipital GitHub release');
+  }
+}
+
+export async function prepareNpmRelease({ directory, publicDirectory, tag, repository, commit, output, execute = run }) {
+  const release = npmReleaseTag(tag);
+  await mkdir(output);
+  const checked = join(output, 'checked-release');
+  const metadata = await assembleRelease({ directory, tag, repository, commit, output: checked });
+  for (const name of await readdir(checked)) {
+    if (!(await readFile(join(checked, name))).equals(await readFile(join(publicDirectory, name)))) throw new Error(`Public release differs from source CI: ${name}`);
+  }
+  const inputs = [];
+  for (const [target, platform] of Object.entries(candidateTargets)) {
+    const source = join(directory, artifactName(release.version, target), 'packages', target), manifest = await json(join(source, 'package.json'));
+    const expected = { name: `@kchpock/occipital-${target}`, version: release.version, os: [platform.os], cpu: [platform.cpu],
+      libc: platform.libc ? [platform.libc] : undefined, files: [platform.executable, 'LICENSE', 'NOTICE'], exports: { './package.json': './package.json' },
+      repository: { type: 'git', url: `git+https://github.com/${repository}.git` }, license: 'MIT' };
+    for (const [key, value] of Object.entries(expected)) {
+      if (!isDeepStrictEqual(manifest[key], value)) throw new Error(`Native manifest differs: ${target}/${key}`);
+    }
+    for (const key of ['scripts', 'dependencies', 'optionalDependencies', 'devDependencies', 'bundleDependencies', 'bundledDependencies', 'bin', 'main', 'private', 'publishConfig']) {
+      if (manifest[key] !== undefined) throw new Error(`Unexpected native manifest field: ${target}/${key}`);
+    }
+    const files = [...expected.files, 'package.json'].sort();
+    if (!isDeepStrictEqual((await readdir(source)).sort(), files)) throw new Error(`Unexpected native package contents: ${target}`);
+    const record = metadata.artifacts.find(record => record.target === target), bytes = await readFile(join(source, platform.executable));
+    if (bytes.length !== record.maxBytes || createHash('sha256').update(bytes).digest('hex') !== record.sha256) throw new Error(`Native package binary differs: ${target}`);
+    for (const name of ['LICENSE', 'NOTICE']) {
+      if (!(await readFile(join(source, name))).equals(await readFile(join(directory, artifactName(release.version, target), 'assets', name)))) {
+        throw new Error(`Native package notice differs: ${target}/${name}`);
+      }
+    }
+    inputs.push({ target, source, manifest, files, executable: platform.executable });
+  }
+  // Admit the complete family before npm can pack or publish anything.
+  const tarballs = join(output, 'tarballs'); await mkdir(tarballs);
+  const plan = { tag, version: release.version, prerelease: release.prerelease, repository, commit, packages: [] };
+  for (const item of inputs) {
+    const packageDir = join(output, 'packages', item.target); await mkdir(packageDir, { recursive: true });
+    for (const name of item.files) await copyFile(join(item.source, name), join(packageDir, name));
+    // GitHub artifact ZIPs do not preserve the executable mode.
+    await chmod(join(packageDir, item.executable), 0o755);
+    const { stdout } = await execute(npm, ['pack', '--ignore-scripts', '--json', '--pack-destination', tarballs], { cwd: packageDir, timeout: 300000, maxBuffer: 1024 * 1024 });
+    const packed = singleTarball(stdout);
+    if (packed.name !== item.manifest.name || packed.version !== release.version
+      || !isDeepStrictEqual(packed.files.map(file => file.path).sort(), item.files)) throw new Error('npm pack changed native package identity/contents');
+    const tarball = join(tarballs, packed.filename), actual = integrity(await readFile(tarball));
+    if (actual !== packed.integrity) throw new Error('npm pack integrity differs from its bytes');
+    plan.packages.push({ target: item.target, name: item.manifest.name, version: release.version, tarball, integrity: actual });
+  }
+  await writeFile(join(output, 'plan.json'), JSON.stringify(plan, null, 2) + '\n');
+  return plan;
+}
+
+export async function publishNpmRelease({ planPath, env = process.env, execute = run }) {
+  if (env.GITHUB_ACTIONS !== 'true' || env.GITHUB_REPOSITORY !== 'chpock/pi-tidy-ui' || env.GITHUB_REF !== 'refs/heads/main'
+    || env.GITHUB_WORKFLOW_REF !== 'chpock/pi-tidy-ui/.github/workflows/occipital-npm-publish.yml@refs/heads/main'
+    || !env.ACTIONS_ID_TOKEN_REQUEST_URL || !env.ACTIONS_ID_TOKEN_REQUEST_TOKEN) throw new Error('Publication requires the manual main-branch OIDC workflow, not local npm credentials');
+  const plan = await json(planPath), release = npmReleaseTag(plan.tag);
+  if (plan.repository !== env.GITHUB_REPOSITORY || plan.version !== release.version || plan.prerelease !== release.prerelease
+    || !isDeepStrictEqual(plan.packages.map(row => row.target), Object.keys(candidateTargets))) throw new Error('Unexpected native publication plan');
+  for (const row of plan.packages) {
+    if (row.name !== `@kchpock/occipital-${row.target}` || row.version !== release.version || integrity(await readFile(row.tarball)) !== row.integrity) {
+      throw new Error('Native tarball identity/integrity changed after preparation');
+    }
+  }
+  const receipts = { version: plan.version, commit: plan.commit, packages: [] }, receiptPath = join(dirname(planPath), 'receipts.json');
+  const save = () => writeFile(receiptPath, JSON.stringify(receipts, null, 2) + '\n');
+  for (const row of plan.packages) {
+    let existing;
+    try { existing = singleVersion((await execute(npm, ['view', `${row.name}@${row.version}`, '--json', registry], { env, timeout: 60000, maxBuffer: 1024 * 1024 })).stdout); }
+    catch (error) {
+      let code; try { code = JSON.parse(error.stdout).error?.code; } catch { /* Non-JSON failures are not registry absence. */ }
+      if (code !== 'E404') throw error;
+    }
+    if (existing !== undefined && (existing?.name !== row.name || existing?.version !== row.version || existing?.dist?.integrity !== row.integrity)) throw new Error(`Existing registry version differs: ${row.name}`);
+    receipts.packages.push({ name: row.name, version: row.version, integrity: row.integrity, outcome: existing ? 'already-published' : 'not-started' });
+  }
+  await save();
+  for (let i = 0; i < plan.packages.length; i++) {
+    const row = plan.packages[i], receipt = receipts.packages[i];
+    if (receipt.outcome === 'already-published') continue;
+    receipt.outcome = 'unconfirmed'; await save();
+    const args = ['publish', row.tarball, '--access=public', '--provenance', '--ignore-scripts', '--json', registry];
+    if (plan.prerelease) args.push('--tag=next');
+    const { stdout } = await execute(npm, args, { env, timeout: 300000, maxBuffer: 1024 * 1024 });
+    const item = singleTarball(stdout);
+    if (item.name !== row.name || item.version !== row.version || item.integrity !== row.integrity) throw new Error('npm publish reply differs from prepared native tarball');
+    receipt.outcome = 'published'; await save();
+  }
+  const downloaded = join(dirname(planPath), 'registry-downloads'); await mkdir(downloaded);
+  for (let i = 0; i < plan.packages.length; i++) {
+    const row = plan.packages[i];
+    const { stdout } = await execute(npm, ['pack', `${row.name}@${row.version}`, '--ignore-scripts', '--json', '--pack-destination', downloaded, registry], { env, timeout: 300000, maxBuffer: 1024 * 1024 });
+    const item = singleTarball(stdout);
+    if (item.name !== row.name || item.version !== row.version
+      || integrity(await readFile(join(downloaded, item.filename))) !== row.integrity) throw new Error(`Public registry archive differs: ${row.name}`);
+    receipts.packages[i].registryByteVerified = true; await save();
+  }
+  return receipts;
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+  const [mode, ...args] = process.argv.slice(2), repository = process.env.GITHUB_REPOSITORY;
+  if (mode === 'validate-input' && args.length === 2) {
+    const release = releaseInput(args[0], args[1]);
+    if (process.env.GITHUB_OUTPUT) await import('node:fs/promises').then(fs => fs.appendFile(process.env.GITHUB_OUTPUT, `version=${release.version}\n`));
+  } else if (mode === 'check-run' && args.length === 4) validateSourceRun(await json(args[0]), { tag: args[1], runId: args[2], commit: args[3], repository });
+  else if (mode === 'check-release' && args.length === 2) validatePublicRelease(await json(args[0]), args[1]);
+  else if (mode === 'prepare' && args.length === 5) await prepareNpmRelease({ directory: resolve(args[0]), publicDirectory: resolve(args[1]), tag: args[2], commit: args[3], output: resolve(args[4]), repository });
+  else if (mode === 'publish' && args.length === 1) console.log(JSON.stringify(await publishNpmRelease({ planPath: resolve(args[0]) })));
+  else throw new Error('Usage: npm-release.mjs validate-input TAG RUN-ID | check-run JSON TAG RUN-ID COMMIT | check-release JSON TAG | prepare ARTIFACTS PUBLIC-ASSETS TAG COMMIT NEW-DIR | publish PLAN');
+}

@@ -254,7 +254,8 @@ test('every executable workflow job has an explicit bounded timeout, including r
   }
   assert.deepEqual(timeouts, {
     'ci.yml/version': 5, 'ci.yml/extension': 10, 'ci.yml/terminal': 30,
-    'occipital-release.yml/publish': 10, 'occipital.yml/packaging-fixtures': 5, 'occipital.yml/build': 45,
+    'occipital-npm-publish.yml/publish': 15, 'occipital-release.yml/publish': 10,
+    'occipital.yml/packaging-fixtures': 5, 'occipital.yml/build': 45,
   });
   const ci = await readFile(join(directory, 'ci.yml'), 'utf8');
   assert.match(ci, /- name: Unit, actual-SDK and GC regressions\n        timeout-minutes: 5\n/);
