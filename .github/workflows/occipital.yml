@@ -116,6 +116,22 @@ jobs:
           SOURCE_COMMIT="$(git rev-parse HEAD)"
           export SOURCE_COMMIT
           node scripts/release/native-ci.mjs stage "$TARGET" "target/$RUST_TARGET/release/$EXECUTABLE" "$RUNNER_TEMP/occipital-native-artifact"
+      - name: Installed adopted pin on Node 22.19.0
+        if: ${{ !startsWith(inputs.release-ref, 'refs/tags/occipital-v') }}
+        timeout-minutes: 5
+        env:
+          EXPECTED_NODE: '22.19.0'
+        run: npm run test:installed-native
+      - uses: actions/setup-node@v4
+        if: ${{ !startsWith(inputs.release-ref, 'refs/tags/occipital-v') }}
+        with:
+          node-version: '26.7.0'
+      - name: Installed adopted pin on Node 26.7.0
+        if: ${{ !startsWith(inputs.release-ref, 'refs/tags/occipital-v') }}
+        timeout-minutes: 5
+        env:
+          EXPECTED_NODE: '26.7.0'
+        run: npm run test:installed-native
       - uses: actions/upload-artifact@v4
         with:
           name: occipital-v${{ inputs.version }}-${{ matrix.target }}

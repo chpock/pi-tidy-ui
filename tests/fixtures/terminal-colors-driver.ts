@@ -18,7 +18,8 @@ export default async function colorDriver(pi: ExtensionAPI) {
   if (!nativeOnly) {
     const module = await import("../../src/index.ts");
     diagnostics = module.terminalColorDiagnostics; appearanceTracking = module.terminalAppearanceTracking;
-    module.default({ ...pi, registerCommand(name, options) {
+    const { default: presentationDriver } = await import("./presentation-driver.ts");
+    presentationDriver({ ...pi, registerCommand(name, options) {
       if (name === "toolview") control = options.handler;
       pi.registerCommand(name, options);
     } });

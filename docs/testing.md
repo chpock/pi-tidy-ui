@@ -63,12 +63,13 @@ Test names, scenario switches and audited package versions live in the test sour
 | `tests/component-layouts.test.ts`, `tests/fixtures/component-layout-probe.ts` | Count/byte-pressure warm scans, actual-SDK native removal/clear while removed owners remain held, weak rendered-data/accounting GC and exact presentation-kind arithmetic |
 | `tests/fixtures/cache-probe.ts` | Actual-SDK viewport work and first-installer collection with an active adapter, including an active execution clock, retained write-source rows and the stock input editor |
 | `tests/fixtures/cache-partition-probe.ts` | Actual-SDK mixed transcript, ordinary/card accounting, isolated card replacement and detached-edit collection |
-| `tests/terminal.test.mjs` | Real bundled CLI execution, physical terminal cells, keyboard/mouse, controls and same-session replay |
+| `tests/terminal.test.mjs` | Real bundled CLI execution, physical terminal cells, keyboard/mouse, controls and same-session replay; generic presentation controls inject unavailable syntax transports to stay offline |
 | `tests/occipital-*.test.ts`, `tests/settings.test.ts` | Typed client/protocol, immutable ranges, byte accounting, transport/provider lifecycle, theme/preferences/menu and exact acquisition; real helper controls require `OCCIPITAL_TEST_BIN` |
 | `tests/syntax-*.test.ts` | Logical source/tab/diff-gap boundaries, paint/work/card/host/runtime contracts, canonical duplicate-work protection and weak ownership |
 | `tests/syntax-terminal.test.mjs`, `tests/fixtures/syntax-driver.ts` | Real CLI/helper, genuinely gated gradual/corrected arguments, args completion, source RGB, warm/resize counts, off/on/replay, theme selection/restoration and controlled asynchronous readiness |
 | `tests/native-release.test.mjs` | Inert payload packaging, Cargo-independent version, template metadata, byte/hash/acquisition/notice/allowlist controls; not per-platform build/install acceptance |
 | `tests/fixtures/driver.ts` | Offline provider, representative custom tools, explicit metadata-shape scenarios and test-only diagnostics/gates |
+| `tests/fixtures/presentation-driver.ts` | Production entry with explicit unavailable syntax transports for generic UI controls; no shared service or binary download. Native syntax and clean-package checks cover available providers separately |
 | `tests/fixtures/queued-driver.ts` | Same loader graph with production Toolview; draft-safe pending-block/cache observations and lifecycle controls, with native keyboard queue operations and an explicitly gated provider scenario; native comparison renders use a disposable receiver and must not repair production Container bookkeeping |
 | `tests/fixtures/editor-driver.ts` | Real production-extension editor controls and draft-safe shortcut observations; exact public stock identity, not fake-editor execution |
 | `tests/fixtures/footer-driver.ts` | Public footer/status controls, real side-usage records, scripted primary-request histories and native history/context spies; one loader graph with production Toolview for actual presenter counters |
@@ -87,10 +88,13 @@ With an existing locally built helper, use its **absolute** path; the fixture in
 OCCIPITAL_TEST_BIN=/absolute/path/to/occipital node --test tests/occipital-native.test.ts
 OCCIPITAL_TEST_BIN=/absolute/path/to/occipital npm run test:syntax-terminal
 npm run test:native-release
+npm run test:installed-native
 node --expose-gc --test tests/syntax-work.test.ts tests/syntax-host.test.ts tests/syntax-runtime.test.ts
 ```
 
 `test:syntax-terminal` selects only `occipital CLI:` cases: its reusable terminal harness imports the broad CLI registrations, which otherwise also run. The shared UI cases additionally require an explicitly supplied isolated `OCCIPITAL_TEST_SHARED_HOST`; without it they skip rather than touching an installed service. Structured-style coverage checks actual RGB/bold/italic/underline cells in write/old/new sources, unified/split frames and unchanged diff backgrounds; width and Pi dark/light changes retain the independent theme without new classification.
+
+`test:installed-native` is a separate networked clean-install control, not part of the ordinary unit or inert release suites. It packs the actual extension, installs real peers into a temporary consumer outside checkout ancestry, and uses the production pin/bootstrap with an isolated HOME/agent/config and empty executable PATH. A locally prepared matching native package must produce zero downloads; omitting that payload and the shared SDK must produce one exact public-artifact download, then zero warm HTTP. It checks real SDK import failure, compiled helper version, UTF-8 colors, three incremental dispatches, no repeated warm work and process reaping. No Rust build, service installation or npm publication is performed. The six native CI runners execute it on both Node versions outside Occipital release tags; run it through npm so its package-preparation commands use the same actual Node executable. This is installed-client acceptance, not physical terminal coverage or a minimum-OS guarantee.
 
 A missing helper explicitly skips native cases; a skip is not native acceptance. GC-only cases may skip without `--expose-gc` and must be run explicitly for ownership claims. Assert `process.version` before minimum-Node gates and use that executable directly; do not assume an npm/npx wrapper selected it. `PI_TEST_EXPECT_NODE` makes the physical syntax fixture assert the observed child runtime.
 

@@ -3,7 +3,7 @@ import { AgentSession, SessionManager, CustomEditor, type ExtensionAPI } from "@
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { footerDiagnostics } from "../../src/footer.ts";
-import toolview from "../../src/index.ts";
+import toolview from "./presentation-driver.ts";
 
 export default function footerDriver(pi: ExtensionAPI) {
   // One loader graph keeps numeric diagnostics attached to the actual presenter.

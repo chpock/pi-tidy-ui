@@ -5,7 +5,7 @@ import { Editor } from "@earendil-works/pi-tui";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
-import toolview from "../../src/index.ts";
+import toolview from "./presentation-driver.ts";
 import { gitDiagnostics } from "../../src/git-branch.ts";
 
 const originalEditorRender = CustomEditor.prototype.render;

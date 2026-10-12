@@ -1,13 +1,13 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { createHash } from 'node:crypto';
-import { chmod, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createSyntaxOptions, nativePackageName, nativeTarget } from '../src/occipital/bootstrap.ts';
 import type { ExtensionContext } from '@earendil-works/pi-coding-agent';
-import type { NativeReleaseDeclaration } from '../src/occipital/release.ts';
+import { NATIVE_RELEASE, type NativeReleaseDeclaration } from '../src/occipital/release.ts';
 import { StdioTransport } from '../src/occipital/stdio.ts';
 
 const ctx = { cwd: '/project', sessionManager: { getSessionId: () => 'session' } } as ExtensionContext;
@@ -22,10 +22,19 @@ test('bootstrap maps only actual candidate ABI tuples, never musl to GNU', () =>
   assert.equal(nativePackageName('linux-x64-gnu'), '@kchpock/occipital-linux-x64-gnu');
 });
 
-test('unreleased checkout has no fabricated owned release or artifact acquisition', async () => {
+test('bootstrap defaults to the verified independent Occipital release and aborted acquisition does no network work', async () => {
+  const published = JSON.parse(await readFile(new URL('./fixtures/occipital-release-0.1.3.json', import.meta.url), 'utf8'));
+  assert.deepEqual(NATIVE_RELEASE, published);
   const options = createSyntaxOptions(ctx);
-  assert.equal(options.standaloneVersion, 'not declared');
-  await assert.rejects(options.provider.acquireOwned(new AbortController().signal), /release is not declared/);
+  assert.equal(options.standaloneVersion, '0.1.3');
+  const fetch = globalThis.fetch;
+  let downloads = 0;
+  globalThis.fetch = async () => { downloads++; throw Error('An aborted acquisition must not download'); };
+  try {
+    const abort = new AbortController(); abort.abort();
+    await assert.rejects(options.provider.acquireOwned(abort.signal), hostTarget ? /acquisition was cancelled/ : /platform\/ABI/);
+    assert.equal(downloads, 0);
+  } finally { globalThis.fetch = fetch; }
 });
 
 test('bootstrap constructs without source, preferences, SDK import or provider work', () => {

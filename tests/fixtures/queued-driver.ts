@@ -3,7 +3,7 @@ import { type ExtensionAPI, type RegisteredCommand } from "@earendil-works/pi-co
 import { Container } from "@earendil-works/pi-tui";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import toolview from "../../src/index.ts";
+import toolview from "./presentation-driver.ts";
 
 const nativeRender = Container.prototype.render;
 export default function queuedDriver(pi: ExtensionAPI) {

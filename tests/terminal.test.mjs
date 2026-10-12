@@ -16,7 +16,7 @@ import { sliceByColumn, visibleWidth } from '@earendil-works/pi-tui';
 const { Terminal } = xterm;
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const cli = process.env.PI_TEST_CLI || 'pi';
-const extension = join(root, 'src/index.ts');
+const extension = join(root, 'tests/fixtures/presentation-driver.ts');
 const fixtures = join(root, 'tests/fixtures');
 const artifacts = join(root, '.test-artifacts', `terminal-${Date.now()}-${process.pid}`);
 mkdirSync(artifacts, { recursive: true });

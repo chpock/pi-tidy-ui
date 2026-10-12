@@ -348,6 +348,24 @@ test('Windows executable inspection uses Rust host tools, checks real command ou
   }), error => error === failed);
 });
 
+test('native CI verifies the installed adopted pin on both Nodes without coupling independent daemon tags', async () => {
+  const source = await readFile(join(repo, '.github/workflows/occipital.yml'), 'utf8');
+  const workflow = source.match(/^  build:\n([\s\S]*)/m)?.[1];
+  assert.ok(workflow, 'installed acceptance must run inside the native platform matrix');
+  assert.match(workflow, /^    runs-on: \$\{\{ matrix\.runner \}\}$/m);
+  for (const version of ['22.19.0', '26.7.0']) {
+    const step = workflow.match(new RegExp(`- name: Installed adopted pin on Node ${version.replaceAll('.', '\\.') }\\n        if: ([^\\n]+)\\n        timeout-minutes: 5\\n        env:\\n          EXPECTED_NODE: '${version.replaceAll('.', '\\.') }'\\n        run: npm run test:installed-native`));
+    assert.ok(step, `${version}: actual installed pin gate on every native runner`);
+    assert.equal(step[1], "${{ !startsWith(inputs.release-ref, 'refs/tags/occipital-v') }}");
+  }
+  assert.match(workflow, /- uses: actions\/setup-node@v4\n        if: \$\{\{ !startsWith\(inputs.release-ref, 'refs\/tags\/occipital-v'\) \}\}\n        with:\n          node-version: '26\.7\.0'/);
+  const pkg = JSON.parse(await readFile(join(repo, 'package.json'), 'utf8'));
+  assert.equal(pkg.scripts['test:installed-native'], 'node tests/fixtures/installed-occipital.mjs');
+  for (const [ref, enabled] of [['refs/heads/main', true], ['refs/pull/1/merge', true], ['refs/tags/pi-tidy-ui-v0.2.0', true], ['refs/tags/occipital-v0.1.3', false]]) {
+    assert.equal(!ref.startsWith('refs/tags/occipital-v'), enabled, ref);
+  }
+});
+
 test('CI routes both tag families, reuses the same-run native matrix, and publishes only Occipital', async () => {
   const ci = await readFile(join(repo, '.github/workflows/ci.yml'), 'utf8');
   const native = await readFile(join(repo, '.github/workflows/occipital.yml'), 'utf8');
