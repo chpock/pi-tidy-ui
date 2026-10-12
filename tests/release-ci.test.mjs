@@ -526,3 +526,20 @@ test('GNU installed checks bind and forward the optional host npm cache without 
   assert.match(script, /--env EXPECTED_NODE="\$node_version"/);
   assert.doesNotMatch(script, /node_modules|OCCIPITAL_TEST_BIN|NATIVE_RELEASE|\/cache\/occipital/);
 });
+
+
+test('research installed checks compare both I/O pool sizes on the same runner without reducing gates', async () => {
+  const workflow = await readFile(join(repo, '.github/workflows/occipital.yml'), 'utf8');
+  for (const [version, order] of [['22.19.0', '4 16'], ['26.7.0', '16 4']]) {
+    const step = workflow.split(`      - name: Installed adopted pin on Node ${version}\n`)[1]?.split('\n      - ')[0];
+    assert.ok(step);
+    assert.match(step, /timeout-minutes: 15/);
+    assert.ok(step.includes(`for UV_THREADPOOL_SIZE in ${order}; do`));
+    assert.match(step, /export UV_THREADPOOL_SIZE/);
+    assert.match(step, /bash scripts\/release\/installed-linux-gnu.sh "\$RUST_TARGET"/);
+    assert.match(step, /npm run test:installed-native/);
+    assert.doesNotMatch(step, /--omit|--offline|--prefer-offline|--test-name-pattern/);
+  }
+  const wrapper = await readFile(join(repo, 'scripts/release/installed-linux-gnu.sh'), 'utf8');
+  assert.match(wrapper, /--env UV_THREADPOOL_SIZE/);
+});

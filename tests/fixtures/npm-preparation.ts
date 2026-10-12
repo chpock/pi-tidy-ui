@@ -78,6 +78,8 @@ export async function runNpmPreparation(args: string[], options: {
   await mkdir(options.logsRoot, { recursive: true });
   const logs = await mkdtemp(join(options.logsRoot, 'command-'));
   const started = performance.now();
+  const configuredThreads = Number(process.env.UV_THREADPOOL_SIZE);
+  const configuredThreadpoolSize = Number.isSafeInteger(configuredThreads) && configuredThreads > 0 ? configuredThreads : null;
   async function save(failed?: { code?: unknown; killed?: boolean; signal?: unknown }) {
     const elapsedMs = Math.round(performance.now() - started);
     const summaries: Event[][] = [], timings: ReturnType<typeof summarizeNpmTimings>[] = [];
@@ -95,7 +97,7 @@ export async function runNpmPreparation(args: string[], options: {
     const report = await mkdtemp(join(options.reportsRoot, 'installed-preparation-'));
     await writeFile(join(report, 'npm.json'), JSON.stringify({
       node: process.version, platform: process.platform, arch: process.arch,
-      operation: args[0] === 'pack' ? 'pack' : 'install', elapsedMs,
+      operation: args[0] === 'pack' ? 'pack' : 'install', elapsedMs, configuredThreadpoolSize,
       exitCode: failed ? typeof failed.code === 'number' ? failed.code : null : 0,
       errno: typeof failed?.code === 'string' && errno.has(failed.code) ? failed.code : null,
       signal: typeof failed?.signal === 'string' && signals.has(failed.signal) ? failed.signal : null,

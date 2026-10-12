@@ -9,6 +9,8 @@ import test from 'node:test';
 import * as npmPreparation from './fixtures/npm-preparation.ts';
 import { NATIVE_RELEASE } from '../src/occipital/release.ts';
 const { runNpmPreparation, summarizeNpmLog, summarizeNpmTimings } = npmPreparation;
+const configuredThreads = Number(process.env.UV_THREADPOOL_SIZE);
+const configuredThreadpoolSize = Number.isSafeInteger(configuredThreads) && configuredThreads > 0 ? configuredThreads : null;
 
 const secret = 'PRIVATE_AUTH_MARKER';
 const log = `0 verbose cli /private/${secret}/node /private/npm
@@ -103,6 +105,7 @@ test('failed real preparation child preserves original failure and safe diagnost
   assert.doesNotMatch(bytes, /PRIVATE_AUTH_MARKER|private|https|registry|npmrc|stdout|stderr|cmd|environment/);
   const packet = JSON.parse(bytes);
   assert.equal(packet.node, process.version); assert.equal(packet.operation, 'install');
+  assert.equal(packet.configuredThreadpoolSize, configuredThreadpoolSize);
   assert.equal(packet.exitCode, 17); assert.equal(packet.killed, false);
   assert.equal(packet.signal, null); assert.deepEqual(packet.debugLogs, [summarizeNpmLog(log)]);
   assert.deepEqual(packet.timings, [summarizeNpmTimings(timing)]);
@@ -118,9 +121,28 @@ test('successful preparation preserves exact pack stdout/stderr and safe cache/t
   assert.doesNotMatch(bytes, /PRIVATE_AUTH_MARKER|private|https|registry|npmrc|stdout|stderr|cmd|environment/);
   const packet = JSON.parse(bytes);
   assert.equal(packet.exitCode, 0); assert.equal(packet.operation, 'pack');
+  assert.equal(packet.configuredThreadpoolSize, configuredThreadpoolSize);
   assert.equal(typeof packet.elapsedMs, 'number'); assert.ok(packet.elapsedMs >= 0);
   assert.deepEqual(packet.debugLogs, [summarizeNpmLog(log)]);
   assert.deepEqual(packet.timings, [summarizeNpmTimings(timing)]);
+});
+
+test('configured I/O pool projection preserves valid integers and drops invalid or opaque values', async t => {
+  const original = process.env.UV_THREADPOOL_SIZE;
+  try {
+    for (const [value, expected] of [['4', 4], ['16', 16], ['1.5', null], [secret, null]] as const) {
+      process.env.UV_THREADPOOL_SIZE = value;
+      const f = await fixture(t, false);
+      await runNpmPreparation(['pack'], f.options);
+      const [directory] = await readdir(f.reportsRoot);
+      const bytes = await readFile(join(f.reportsRoot, directory!, 'npm.json'), 'utf8');
+      assert.equal(JSON.parse(bytes).configuredThreadpoolSize, expected);
+      assert.doesNotMatch(bytes, /PRIVATE_AUTH_MARKER/);
+    }
+  } finally {
+    if (original === undefined) delete process.env.UV_THREADPOOL_SIZE;
+    else process.env.UV_THREADPOOL_SIZE = original;
+  }
 });
 
 test('successful preparation does not silently discard capture I/O failures', async t => {

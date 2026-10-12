@@ -21,6 +21,8 @@ assert.ok(target, 'Supported native platform required');
 const artifact = NATIVE_RELEASE.artifacts.find(item => item.target === target);
 assert.ok(artifact);
 const started = performance.now();
+const configuredThreads = Number(process.env.UV_THREADPOOL_SIZE);
+const configuredThreadpoolSize = Number.isSafeInteger(configuredThreads) && configuredThreads > 0 ? configuredThreads : null;
 const temporary = await mkdtemp(join(tmpdir(), 'occipital-installed-'));
 let npmMs = 0, completed = false, fixtureError;
 const npm = async args => {
@@ -154,7 +156,7 @@ try {
   try {
     await mkdir(join(repo, '.test-artifacts'), { recursive: true });
     const report = await mkdtemp(join(repo, '.test-artifacts/installed-preparation-'));
-    await writeFile(join(report, 'fixture.json'), JSON.stringify({ node: process.version, target,
+    await writeFile(join(report, 'fixture.json'), JSON.stringify({ node: process.version, target, configuredThreadpoolSize,
       completed, elapsedMs, npmMs: Math.round(npmMs), cleanupMs }, null, 2) + '\n');
   } catch (error) {
     if (fixtureError) throw new AggregateError([fixtureError, error], 'Installed acceptance failed and fixture diagnostics could not be saved');

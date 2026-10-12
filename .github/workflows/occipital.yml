@@ -143,11 +143,14 @@ jobs:
           RUST_TARGET: ${{ matrix.rust }}
           npm_config_cache: ${{ runner.temp }}/occipital-npm-cache
         run: |
-          if [[ "$TARGET" == linux-* ]]; then
-            bash scripts/release/installed-linux-gnu.sh "$RUST_TARGET"
-          else
-            npm run test:installed-native
-          fi
+          for UV_THREADPOOL_SIZE in 4 16; do
+            export UV_THREADPOOL_SIZE
+            if [[ "$TARGET" == linux-* ]]; then
+              bash scripts/release/installed-linux-gnu.sh "$RUST_TARGET"
+            else
+              npm run test:installed-native
+            fi
+          done
       - uses: actions/setup-node@v4
         if: ${{ !startsWith(inputs.release-ref, 'refs/tags/occipital-v') }}
         with:
@@ -161,11 +164,14 @@ jobs:
           RUST_TARGET: ${{ matrix.rust }}
           npm_config_cache: ${{ runner.temp }}/occipital-npm-cache
         run: |
-          if [[ "$TARGET" == linux-* ]]; then
-            bash scripts/release/installed-linux-gnu.sh "$RUST_TARGET"
-          else
-            npm run test:installed-native
-          fi
+          for UV_THREADPOOL_SIZE in 16 4; do
+            export UV_THREADPOOL_SIZE
+            if [[ "$TARGET" == linux-* ]]; then
+              bash scripts/release/installed-linux-gnu.sh "$RUST_TARGET"
+            else
+              npm run test:installed-native
+            fi
+          done
       - name: Installed npm preparation diagnostics
         if: ${{ always() && !startsWith(inputs.release-ref, 'refs/tags/occipital-v') }}
         uses: actions/upload-artifact@v4

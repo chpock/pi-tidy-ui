@@ -30,6 +30,7 @@ docker run --rm --platform "linux/$docker_arch" --user "$(id -u):$(id -g)" \
   -v "$root:$root" -v "$node_root:$node_root:ro" "${npm_cache_args[@]}" \
   --workdir "$root" --env HOME=/tmp/occipital-installed-home \
   --env EXPECTED_NODE="$node_version" --env EXPECTED_ARCHITECTURE="$architecture" \
+  --env UV_THREADPOOL_SIZE \
   --env PATH="$node_root/bin:/usr/bin:/bin" \
   "$image" bash -euo pipefail -c '
     mkdir -p "$HOME"
