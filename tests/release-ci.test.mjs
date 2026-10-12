@@ -355,10 +355,10 @@ test('native CI verifies the installed adopted pin on both Nodes without couplin
   assert.ok(workflow, 'installed acceptance must run inside the native platform matrix');
   assert.match(workflow, /^    runs-on: \$\{\{ matrix\.runner \}\}$/m);
   for (const version of ['22.19.0', '26.7.0']) {
-    const step = workflow.match(new RegExp(`- name: Installed adopted pin on Node ${version.replaceAll('.', '\\.') }\\n        if: ([^\\n]+)\\n        timeout-minutes: 15\\n        env:\\n          EXPECTED_NODE: '${version.replaceAll('.', '\\.') }'\\n          TARGET: \\$\\{\\{ matrix.target \\}\\}\\n          RUST_TARGET: \\$\\{\\{ matrix.rust \\}\\}\\n          npm_config_cache: \\$\\{\\{ runner.temp \\}\\}/occipital-npm-cache\\n        run: \\|\\n([\\s\\S]*?)(?=\\n      -|$)`));
+    const step = workflow.match(new RegExp(`- name: Installed adopted pin on Node ${version.replaceAll('.', '\\.') }\\n        if: ([^\\n]+)\\n        timeout-minutes: 15\\n        env:\\n          EXPECTED_NODE: '${version.replaceAll('.', '\\.') }'\\n          TARGET: \\$\\{\\{ matrix.target \\}\\}\\n          RUST_TARGET: \\$\\{\\{ matrix.rust \\}\\}\\n          npm_config_cache: \\$\\{\\{ runner.temp \\}\\}/occipital-npm-cache\\n          UV_THREADPOOL_SIZE: '4'\\n          SYSTEM_TEMP: \\$\\{\\{ steps.windows-temp.outputs.system-temp \\}\\}\\n        run: \\|\\n([\\s\\S]*?)(?=\\n      -|$)`));
     assert.ok(step, `${version}: actual installed pin gate on every native runner`);
     assert.equal(step[1], "${{ !startsWith(inputs.release-ref, 'refs/tags/occipital-v') }}");
-    assert.match(step[2], /if \[\[ "\$TARGET" == linux-\* \]\]; then\s+bash scripts\/release\/installed-linux-gnu\.sh "\$RUST_TARGET"\s+else\s+npm run test:installed-native\s+fi/);
+    assert.match(step[2], /elif \[\[ "\$TARGET" == linux-\* \]\]; then\s+bash scripts\/release\/installed-linux-gnu\.sh "\$RUST_TARGET"\s+else\s+npm run test:installed-native\s+fi/);
   }
   assert.match(workflow, /- uses: actions\/setup-node@v4\n        if: \$\{\{ !startsWith\(inputs.release-ref, 'refs\/tags\/occipital-v'\) \}\}\n        with:\n          node-version: '26\.7\.0'/);
   const pkg = JSON.parse(await readFile(join(repo, 'package.json'), 'utf8'));
@@ -528,20 +528,31 @@ test('GNU installed checks bind and forward the optional host npm cache without 
 });
 
 
-test('research installed checks compare both I/O pool sizes on the same runner without reducing gates', async () => {
+test('research installed checks compare Windows temporary volumes without changing npm cache or gates', async () => {
   const workflow = await readFile(join(repo, '.github/workflows/occipital.yml'), 'utf8');
-  for (const [version, order] of [['22.19.0', '4 16'], ['26.7.0', '16 4']]) {
+  const preparation = workflow.split('      - name: Prepare Windows temporary-volume comparison\n')[1]?.split('\n      - ')[0];
+  assert.ok(preparation);
+  assert.match(preparation, /id: windows-temp/);
+  assert.match(preparation, /startsWith\(matrix.target, 'windows-'\).*!startsWith\(inputs.release-ref, 'refs\/tags\/occipital-v'\)/);
+  assert.match(preparation, /shell: pwsh/);
+  assert.match(preparation, /GetPathRoot\(\$env:SystemRoot\)/);
+  assert.match(preparation, /system-temp=\$systemTemp/);
+  for (const [version, order] of [['22.19.0', 'runner system'], ['26.7.0', 'system runner']]) {
     const step = workflow.split(`      - name: Installed adopted pin on Node ${version}\n`)[1]?.split('\n      - ')[0];
     assert.ok(step);
     assert.match(step, /timeout-minutes: 15/);
-    assert.ok(step.includes(`for UV_THREADPOOL_SIZE in ${order}; do`));
-    assert.match(step, /export UV_THREADPOOL_SIZE/);
-    assert.match(step, /bash scripts\/release\/installed-linux-gnu.sh "\$RUST_TARGET"/);
-    assert.match(step, /npm run test:installed-native/);
-    assert.doesNotMatch(step, /--omit|--offline|--prefer-offline|--test-name-pattern/);
+    assert.match(step, /UV_THREADPOOL_SIZE: '4'/);
+    assert.match(step, /npm_config_cache: \$\{\{ runner.temp \}\}\/occipital-npm-cache/);
+    assert.match(step, /SYSTEM_TEMP: \$\{\{ steps.windows-temp.outputs.system-temp \}\}/);
+    assert.ok(step.includes(`for location in ${order}; do`));
+    assert.match(step, /if \[\[ "\$TARGET" == windows-\* \]\]; then/);
+    assert.match(step, /temp_root="\$RUNNER_TEMP"/);
+    assert.match(step, /temp_root="\$SYSTEM_TEMP"/);
+    assert.match(step, /TEMP="\$temp_root" TMP="\$temp_root" npm run test:installed-native/);
+    assert.match(step, /elif \[\[ "\$TARGET" == linux-\* \]\]; then\n +bash scripts\/release\/installed-linux-gnu.sh "\$RUST_TARGET"/);
+    assert.match(step, /else\n +npm run test:installed-native/);
+    assert.doesNotMatch(step, /4 16|16 4|--omit|--offline|--prefer-offline|--test-name-pattern|Set-MpPreference/);
   }
-  const wrapper = await readFile(join(repo, 'scripts/release/installed-linux-gnu.sh'), 'utf8');
-  assert.match(wrapper, /--env UV_THREADPOOL_SIZE/);
 });
 
 

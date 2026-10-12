@@ -65,6 +65,16 @@ test('npm cache counters distinguish body hits, revalidation and misses without 
   assert.doesNotMatch(JSON.stringify(observations), /PRIVATE_AUTH_MARKER|https|registry/);
 });
 
+test('temporary-volume projection reports only an absolute Windows drive letter', () => {
+  const project = (npmPreparation as unknown as { summarizeTemporaryDrive: (path: string) => string | null }).summarizeTemporaryDrive;
+  assert.equal(typeof project, 'function');
+  for (const [path, expected] of [[`c:\\private\\${secret}`, 'C'], [`D:/private/${secret}`, 'D'],
+    [`/private/${secret}`, null], [`\\\\private\\${secret}`, null], [`C:private-${secret}`, null]]) {
+    assert.equal(project(path!), expected);
+    assert.doesNotMatch(JSON.stringify(project(path!)), /PRIVATE_AUTH_MARKER|private/);
+  }
+});
+
 test('npm timing projection preserves named phases and unpack work counts without opaque keys or metadata', () => {
   assert.deepEqual(summarizeNpmTimings(timing), {
     phases: { npm: 1700, 'idealTree:buildDeps': 300, 'reify:unpack': 1200 },
@@ -106,6 +116,7 @@ test('failed real preparation child preserves original failure and safe diagnost
   const packet = JSON.parse(bytes);
   assert.equal(packet.node, process.version); assert.equal(packet.operation, 'install');
   assert.equal(packet.configuredThreadpoolSize, configuredThreadpoolSize);
+  assert.equal(packet.temporaryDrive, process.platform === 'win32' ? resolve(f.temporary)[0]!.toUpperCase() : null);
   assert.equal(packet.exitCode, 17); assert.equal(packet.killed, false);
   assert.equal(packet.signal, null); assert.deepEqual(packet.debugLogs, [summarizeNpmLog(log)]);
   assert.deepEqual(packet.timings, [summarizeNpmTimings(timing)]);
@@ -122,6 +133,7 @@ test('successful preparation preserves exact pack stdout/stderr and safe cache/t
   const packet = JSON.parse(bytes);
   assert.equal(packet.exitCode, 0); assert.equal(packet.operation, 'pack');
   assert.equal(packet.configuredThreadpoolSize, configuredThreadpoolSize);
+  assert.equal(packet.temporaryDrive, process.platform === 'win32' ? resolve(f.temporary)[0]!.toUpperCase() : null);
   assert.equal(typeof packet.elapsedMs, 'number'); assert.ok(packet.elapsedMs >= 0);
   assert.deepEqual(packet.debugLogs, [summarizeNpmLog(log)]);
   assert.deepEqual(packet.timings, [summarizeNpmTimings(timing)]);

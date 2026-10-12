@@ -152,6 +152,18 @@ jobs:
           path: ${{ runner.temp }}/occipital-npm-cache/_cacache
           key: installed-npm-v1-${{ matrix.target }}-${{ hashFiles('package-lock.json') }}
           restore-keys: installed-npm-v1-${{ matrix.target }}-
+      - name: Prepare Windows temporary-volume comparison
+        id: windows-temp
+        if: ${{ startsWith(matrix.target, 'windows-') && !startsWith(inputs.release-ref, 'refs/tags/occipital-v') }}
+        shell: pwsh
+        run: |
+          $systemDrive = [System.IO.Path]::GetPathRoot($env:SystemRoot)
+          if ([System.IO.Path]::GetPathRoot($env:RUNNER_TEMP) -eq $systemDrive) {
+            throw 'Runner and system storage share a drive; no volume comparison is possible'
+          }
+          $systemTemp = Join-Path $systemDrive 'occipital-ci-temp'
+          New-Item -ItemType Directory -Path $systemTemp -Force | Out-Null
+          "system-temp=$systemTemp" >> $env:GITHUB_OUTPUT
       - name: Installed adopted pin on Node 22.19.0
         if: ${{ !startsWith(inputs.release-ref, 'refs/tags/occipital-v') }}
         timeout-minutes: 15
@@ -160,15 +172,19 @@ jobs:
           TARGET: ${{ matrix.target }}
           RUST_TARGET: ${{ matrix.rust }}
           npm_config_cache: ${{ runner.temp }}/occipital-npm-cache
+          UV_THREADPOOL_SIZE: '4'
+          SYSTEM_TEMP: ${{ steps.windows-temp.outputs.system-temp }}
         run: |
-          for UV_THREADPOOL_SIZE in 4 16; do
-            export UV_THREADPOOL_SIZE
-            if [[ "$TARGET" == linux-* ]]; then
-              bash scripts/release/installed-linux-gnu.sh "$RUST_TARGET"
-            else
-              npm run test:installed-native
-            fi
-          done
+          if [[ "$TARGET" == windows-* ]]; then
+            for location in runner system; do
+              if [[ "$location" == runner ]]; then temp_root="$RUNNER_TEMP"; else temp_root="$SYSTEM_TEMP"; fi
+              TEMP="$temp_root" TMP="$temp_root" npm run test:installed-native
+            done
+          elif [[ "$TARGET" == linux-* ]]; then
+            bash scripts/release/installed-linux-gnu.sh "$RUST_TARGET"
+          else
+            npm run test:installed-native
+          fi
       - uses: actions/setup-node@v4
         if: ${{ !startsWith(inputs.release-ref, 'refs/tags/occipital-v') }}
         with:
@@ -181,15 +197,19 @@ jobs:
           TARGET: ${{ matrix.target }}
           RUST_TARGET: ${{ matrix.rust }}
           npm_config_cache: ${{ runner.temp }}/occipital-npm-cache
+          UV_THREADPOOL_SIZE: '4'
+          SYSTEM_TEMP: ${{ steps.windows-temp.outputs.system-temp }}
         run: |
-          for UV_THREADPOOL_SIZE in 16 4; do
-            export UV_THREADPOOL_SIZE
-            if [[ "$TARGET" == linux-* ]]; then
-              bash scripts/release/installed-linux-gnu.sh "$RUST_TARGET"
-            else
-              npm run test:installed-native
-            fi
-          done
+          if [[ "$TARGET" == windows-* ]]; then
+            for location in system runner; do
+              if [[ "$location" == runner ]]; then temp_root="$RUNNER_TEMP"; else temp_root="$SYSTEM_TEMP"; fi
+              TEMP="$temp_root" TMP="$temp_root" npm run test:installed-native
+            done
+          elif [[ "$TARGET" == linux-* ]]; then
+            bash scripts/release/installed-linux-gnu.sh "$RUST_TARGET"
+          else
+            npm run test:installed-native
+          fi
       - name: Installed npm preparation diagnostics
         if: ${{ always() && !startsWith(inputs.release-ref, 'refs/tags/occipital-v') }}
         uses: actions/upload-artifact@v4

@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
 import { mkdir, mkdtemp, readdir, readFile, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { join, win32 } from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { promisify } from 'node:util';
 
@@ -16,6 +16,11 @@ const phaseNames = new Set(['npm', 'npm:load', 'idealTree', 'idealTree:init', 'i
   'reify', 'reify:loadTrees', 'reify:diffTrees', 'reify:retireShallow', 'reify:createSparse',
   'reify:loadBundles', 'reify:unpack', 'reify:unretire', 'reify:build', 'reify:trash', 'reify:save',
   'build', 'build:deps', 'build:queue', 'build:link', 'command:install', 'command:pack']);
+
+export function summarizeTemporaryDrive(path: string): string | null {
+  const root = win32.parse(path).root;
+  return /^[A-Za-z]:[\\/]$/.test(root) ? root[0]!.toUpperCase() : null;
+}
 
 function resource(url: string): Event['resource'] {
   try { return new URL(url).pathname.endsWith('.tgz') ? 'tarball' : 'document'; }
@@ -98,6 +103,7 @@ export async function runNpmPreparation(args: string[], options: {
     await writeFile(join(report, 'npm.json'), JSON.stringify({
       node: process.version, platform: process.platform, arch: process.arch,
       operation: args[0] === 'pack' ? 'pack' : 'install', elapsedMs, configuredThreadpoolSize,
+      temporaryDrive: summarizeTemporaryDrive(logs),
       exitCode: failed ? typeof failed.code === 'number' ? failed.code : null : 0,
       errno: typeof failed?.code === 'string' && errno.has(failed.code) ? failed.code : null,
       signal: typeof failed?.signal === 'string' && signals.has(failed.signal) ? failed.signal : null,

@@ -9,7 +9,7 @@ import { pathToFileURL } from 'node:url';
 import { candidateTargets } from '../../scripts/release/native-release.mjs';
 import { acquireNative } from '../../src/occipital/native.ts';
 import { NATIVE_RELEASE } from '../../src/occipital/release.ts';
-import { runNpmPreparation } from './npm-preparation.ts';
+import { runNpmPreparation, summarizeTemporaryDrive } from './npm-preparation.ts';
 
 const repo = resolve(import.meta.dirname, '../..');
 if (process.env.EXPECTED_NODE) assert.equal(process.version, `v${process.env.EXPECTED_NODE}`);
@@ -156,7 +156,7 @@ try {
   try {
     await mkdir(join(repo, '.test-artifacts'), { recursive: true });
     const report = await mkdtemp(join(repo, '.test-artifacts/installed-preparation-'));
-    await writeFile(join(report, 'fixture.json'), JSON.stringify({ node: process.version, target, configuredThreadpoolSize,
+    await writeFile(join(report, 'fixture.json'), JSON.stringify({ node: process.version, target, configuredThreadpoolSize, temporaryDrive: summarizeTemporaryDrive(temporary),
       completed, elapsedMs, npmMs: Math.round(npmMs), cleanupMs }, null, 2) + '\n');
   } catch (error) {
     if (fixtureError) throw new AggregateError([fixtureError, error], 'Installed acceptance failed and fixture diagnostics could not be saved');
