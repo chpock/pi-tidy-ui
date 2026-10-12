@@ -20,6 +20,21 @@ On an Occipital tag, CI passes these **same-run, same-commit, tag-versioned arti
 
 Daemon tags skip unrelated extension checks and do not publish or change the extension. Extension tags do not publish Occipital. Native platform availability is established by successful runner builds/tests, not merely by this matrix's presence; broader minimum-OS/ABI claims still require their own verification.
 
+## Execution timeouts
+
+Every runner job has an explicit `timeout-minutes`; matrix entries each receive the same job-specific bound. Reusable-workflow callers do not accept this setting, so their executable jobs own it.
+
+| Job | Minutes |
+| --- | ---: |
+| Ref/version and workflow lint | 5 |
+| Inert native packaging fixtures | 5 |
+| Extension checks and packaging | 10 |
+| Native checks, cold Rust build and artifact staging | 45 |
+| Physical CLI and replay | 30 |
+| GitHub Release assembly and publication | 10 |
+
+The unit/SDK/GC step also has a five-minute limit within its ten-minute job. These allowances leave headroom above successful runs, including cold installation/build work. Expiry stops the process or cancels the job; it does not bypass assertions or trigger a successful retry. Job execution timeouts do not bound waiting for a runner. Interrupted release publication can leave a draft; the existing inspection/no-overwrite rule below still applies.
+
 ## Published assets
 
 The release workflow checks all six artifacts' source commits, versions, targets, raw executable hashes/sizes, URLs and notice inventories before publication. It uploads:

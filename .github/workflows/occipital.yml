@@ -16,6 +16,7 @@ permissions:
 jobs:
   packaging-fixtures:
     runs-on: ubuntu-24.04
+    timeout-minutes: 5
     strategy:
       fail-fast: false
       matrix:
@@ -63,6 +64,7 @@ jobs:
             rust: aarch64-pc-windows-msvc
             executable: occipital.exe
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
     defaults:
       run:
         shell: bash

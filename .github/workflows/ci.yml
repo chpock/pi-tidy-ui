@@ -17,6 +17,7 @@ concurrency:
 jobs:
   version:
     runs-on: ubuntu-24.04
+    timeout-minutes: 5
     outputs:
       product: ${{ steps.version.outputs.product }}
       version: ${{ steps.version.outputs.version }}
@@ -44,6 +45,7 @@ jobs:
     needs: version
     if: needs.version.outputs.product != 'occipital'
     runs-on: ubuntu-24.04
+    timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
@@ -61,6 +63,7 @@ jobs:
       - run: npm ci
       - run: npm run check
       - name: Unit, actual-SDK and GC regressions
+        timeout-minutes: 5
         env:
           TERM: xterm-256color
           COLORTERM: truecolor
@@ -83,6 +86,7 @@ jobs:
     needs: [version, native]
     if: needs.version.outputs.product != 'occipital'
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
