@@ -1,6 +1,5 @@
 import assert from 'node:assert/strict';
 import childProcess from 'node:child_process';
-import { promisify } from 'node:util';
 import { createRequire, syncBuiltinESMExports } from 'node:module';
 import { chmod, copyFile, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -9,8 +8,9 @@ import { pathToFileURL } from 'node:url';
 import { candidateTargets } from '../../scripts/release/native-release.mjs';
 import { acquireNative } from '../../src/occipital/native.ts';
 import { NATIVE_RELEASE } from '../../src/occipital/release.ts';
+import { runNpmPreparation } from './npm-preparation.ts';
 
-const run = promisify(childProcess.execFile), repo = resolve(import.meta.dirname, '../..');
+const repo = resolve(import.meta.dirname, '../..');
 if (process.env.EXPECTED_NODE) assert.equal(process.version, `v${process.env.EXPECTED_NODE}`);
 assert.ok(process.env.npm_execpath, 'Invoke with npm run test:installed-native');
 assert.ok(NATIVE_RELEASE, 'Installed acceptance needs a verified declared release');
@@ -20,7 +20,8 @@ assert.ok(target, 'Supported native platform required');
 const artifact = NATIVE_RELEASE.artifacts.find(item => item.target === target);
 assert.ok(artifact);
 const temporary = await mkdtemp(join(tmpdir(), 'occipital-installed-'));
-const npm = args => run(process.execPath, [process.env.npm_execpath, ...args], { cwd: repo, timeout: 120000, maxBuffer: 1024 * 1024 });
+const npm = args => runNpmPreparation(args, { cwd: repo, npmPath: process.env.npm_execpath,
+  logsRoot: join(temporary, 'npm-logs'), reportsRoot: join(repo, '.test-artifacts') });
 async function packed(spec) {
   const output = JSON.parse((await npm(['pack', spec, '--ignore-scripts', '--json', '--pack-destination', pack])).stdout);
   // npm <=11 returns an array; npm 12 keys the same records by package name.

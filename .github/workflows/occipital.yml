@@ -157,6 +157,15 @@ jobs:
           else
             npm run test:installed-native
           fi
+      - name: Installed npm preparation diagnostics
+        if: ${{ failure() && !startsWith(inputs.release-ref, 'refs/tags/occipital-v') }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: installed-preparation-${{ matrix.target }}
+          path: .test-artifacts/installed-preparation-*/
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 14
       - uses: actions/upload-artifact@v4
         with:
           name: occipital-v${{ inputs.version }}-${{ matrix.target }}

@@ -463,3 +463,19 @@ test('GNU installed consumer verifies the public pin in glibc2.28 without compil
   assert.match(script, /npm run test:installed-native/);
   assert.doesNotMatch(script, /cargo|rustc|OCCIPITAL_TEST_BIN|RUSTUP|--network=none|\.cargo|npm publish/);
 });
+
+
+test('installed npm preparation failures retain safe diagnostics without weakening independent daemon releases', async () => {
+  const workflow = await readFile(join(repo, '.github/workflows/occipital.yml'), 'utf8');
+  const upload = workflow.match(/      - name: Installed npm preparation diagnostics\n[\s\S]*?(?=      - |$)/)?.[0];
+  assert.ok(upload, 'installed failure diagnostics upload required');
+  assert.match(upload, /failure\(\) && !startsWith\(inputs\.release-ref, 'refs\/tags\/occipital-v'\)/);
+  assert.match(upload, /uses: actions\/upload-artifact@v4/);
+  assert.match(upload, /path: \.test-artifacts\/installed-preparation-\*\//);
+  assert.match(upload, /include-hidden-files: true/);
+  assert.match(upload, /if-no-files-found: ignore/);
+  assert.match(upload, /name: installed-preparation-\$\{\{ matrix\.target \}\}/);
+  const fixture = await readFile(join(repo, 'tests/fixtures/installed-occipital.mjs'), 'utf8');
+  assert.match(fixture, /runNpmPreparation/);
+  assert.match(fixture, /finally[\s\S]*await rm\(temporary, \{ recursive: true, force: true \}\)/);
+});
