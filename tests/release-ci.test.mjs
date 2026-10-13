@@ -355,9 +355,10 @@ test('native CI verifies the installed adopted pin on both Nodes without couplin
   assert.ok(workflow, 'installed acceptance must run inside the native platform matrix');
   assert.match(workflow, /^    runs-on: \$\{\{ matrix\.runner \}\}$/m);
   for (const version of ['22.19.0', '26.7.0']) {
-    const step = workflow.match(new RegExp(`- name: Installed adopted pin on Node ${version.replaceAll('.', '\\.') }\\n        if: ([^\\n]+)\\n        timeout-minutes: 15\\n        env:\\n          EXPECTED_NODE: '${version.replaceAll('.', '\\.') }'\\n          TARGET: \\$\\{\\{ matrix.target \\}\\}\\n          RUST_TARGET: \\$\\{\\{ matrix.rust \\}\\}\\n          npm_config_cache: \\$\\{\\{ runner.temp \\}\\}/occipital-npm-cache\\n          UV_THREADPOOL_SIZE: '4'\\n          SYSTEM_TEMP: \\$\\{\\{ steps.windows-temp.outputs.system-temp \\}\\}\\n          COMPARE_WINDOWS_VOLUMES: \\$\\{\\{ steps.windows-temp.outputs.comparison-enabled \\}\\}\\n        run: \\|\\n([\\s\\S]*?)(?=\\n      -|$)`));
+    const step = workflow.match(new RegExp(`- name: Installed adopted pin on Node ${version.replaceAll('.', '\\.') }\\n        if: ([^\\n]+)\\n        timeout-minutes: 15\\n        env:\\n          EXPECTED_NODE: '${version.replaceAll('.', '\\.') }'\\n          TARGET: \\$\\{\\{ matrix.target \\}\\}\\n          RUST_TARGET: \\$\\{\\{ matrix.rust \\}\\}\\n          npm_config_cache: \\$\\{\\{ runner.temp \\}\\}/occipital-npm-cache\\n          UV_THREADPOOL_SIZE: '4'\\\n        run: \\|\\n([\\s\\S]*?)(?=\\n      -|$)`));
     assert.ok(step, `${version}: actual installed pin gate on every native runner`);
     assert.equal(step[1], "${{ !startsWith(inputs.release-ref, 'refs/tags/occipital-v') }}");
+    assert.match(step[2], /if \[\[ "\$TARGET" == windows-\* \]\]; then\s+TEMP="\$RUNNER_TEMP" TMP="\$RUNNER_TEMP" npm run test:installed-native/);
     assert.match(step[2], /elif \[\[ "\$TARGET" == linux-\* \]\]; then\s+bash scripts\/release\/installed-linux-gnu\.sh "\$RUST_TARGET"\s+else\s+npm run test:installed-native\s+fi/);
   }
   assert.match(workflow, /- uses: actions\/setup-node@v4\n        if: \$\{\{ !startsWith\(inputs.release-ref, 'refs\/tags\/occipital-v'\) \}\}\n        with:\n          node-version: '26\.7\.0'/);
@@ -528,37 +529,20 @@ test('GNU installed checks bind and forward the optional host npm cache without 
 });
 
 
-test('research installed checks compare Windows temporary volumes without changing npm cache or gates', async () => {
+test('installed checks select Windows runner storage without changing cache or native gates', async () => {
   const workflow = await readFile(join(repo, '.github/workflows/occipital.yml'), 'utf8');
-  const preparation = workflow.split('      - name: Prepare Windows temporary-volume comparison\n')[1]?.split('\n      - ')[0];
-  assert.ok(preparation);
-  assert.match(preparation, /id: windows-temp/);
-  assert.match(preparation, /startsWith\(matrix.target, 'windows-'\).*!startsWith\(inputs.release-ref, 'refs\/tags\/occipital-v'\)/);
-  assert.match(preparation, /shell: pwsh/);
-  assert.match(preparation, /GetPathRoot\(\$env:SystemRoot\)/);
-  assert.match(preparation, /system-temp=\$systemTemp/);
-  assert.match(preparation, /comparison-enabled=false/);
-  assert.match(preparation, /comparison-enabled=true/);
-  assert.match(preparation, /Windows volume comparison unavailable: runner and system share a drive; retaining baseline acceptance/);
-  assert.doesNotMatch(preparation, /throw|Set-MpPreference/);
-  for (const [version, order] of [['22.19.0', 'runner system'], ['26.7.0', 'system runner']]) {
+  assert.doesNotMatch(workflow, /windows-temp|SYSTEM_TEMP|COMPARE_WINDOWS_VOLUMES|Set-MpPreference/);
+  for (const version of ['22.19.0', '26.7.0']) {
     const step = workflow.split(`      - name: Installed adopted pin on Node ${version}\n`)[1]?.split('\n      - ')[0];
     assert.ok(step);
     assert.match(step, /timeout-minutes: 15/);
     assert.match(step, /UV_THREADPOOL_SIZE: '4'/);
     assert.match(step, /npm_config_cache: \$\{\{ runner.temp \}\}\/occipital-npm-cache/);
-    assert.match(step, /SYSTEM_TEMP: \$\{\{ steps.windows-temp.outputs.system-temp \}\}/);
-    assert.match(step, /COMPARE_WINDOWS_VOLUMES: \$\{\{ steps.windows-temp.outputs.comparison-enabled \}\}/);
-    assert.match(step, /locations=runner/);
-    assert.ok(step.includes(`if [[ "$COMPARE_WINDOWS_VOLUMES" == true ]]; then locations="${order}"; fi`));
-    assert.match(step, /for location in \$locations; do/);
-    assert.match(step, /if \[\[ "\$TARGET" == windows-\* \]\]; then/);
-    assert.match(step, /temp_root="\$RUNNER_TEMP"/);
-    assert.match(step, /temp_root="\$SYSTEM_TEMP"/);
-    assert.match(step, /TEMP="\$temp_root" TMP="\$temp_root" npm run test:installed-native/);
+    assert.match(step, /if \[\[ "\$TARGET" == windows-\* \]\]; then\n +TEMP="\$RUNNER_TEMP" TMP="\$RUNNER_TEMP" npm run test:installed-native/);
     assert.match(step, /elif \[\[ "\$TARGET" == linux-\* \]\]; then\n +bash scripts\/release\/installed-linux-gnu.sh "\$RUST_TARGET"/);
     assert.match(step, /else\n +npm run test:installed-native/);
-    assert.doesNotMatch(step, /4 16|16 4|--omit|--offline|--prefer-offline|--test-name-pattern|Set-MpPreference/);
+    assert.equal((step.match(/TEMP="\$RUNNER_TEMP" TMP="\$RUNNER_TEMP"/g) ?? []).length, 1);
+    assert.doesNotMatch(step, /for |16|--omit|--offline|--prefer-offline|--test-name-pattern/);
   }
 });
 
@@ -583,25 +567,26 @@ test('GNU tooling-image cache is recipe/platform scoped and leaves full native c
 });
 
 
-test('actual installed step keeps baseline on a single drive and propagates paired child failure', async t => {
+test('actual installed step overrides Windows temp for both architectures and propagates child failure', async t => {
   const root = await mkdtemp(join(tmpdir(), 'tidy-storage-step-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   await writeFile(join(root, 'npm'), '#!/bin/bash\n[[ "$TEMP" == "$TMP" ]] || exit 91\nprintf "%s\\n" "$TEMP"\nif [[ "${SIMULATED_FAILURE:-false}" == true ]]; then exit 17; fi\n', { mode: 0o755 });
   const workflow = await readFile(join(repo, '.github/workflows/occipital.yml'), 'utf8');
-  for (const [version, expected] of [['22.19.0', ['runner-root', 'system-root']], ['26.7.0', ['system-root', 'runner-root']]]) {
+  for (const version of ['22.19.0', '26.7.0']) {
     const step = workflow.split(`      - name: Installed adopted pin on Node ${version}\n`)[1]?.split('\n      - ')[0];
     assert.ok(step);
     const script = step.split('        run: |\n')[1]?.split('\n').map(line => line.replace(/^          /, '')).join('\n');
     assert.ok(script);
-    const env = { ...process.env, PATH: `${root}:${process.env.PATH}`, TARGET: 'windows-arm64-msvc',
-      RUNNER_TEMP: 'runner-root', SYSTEM_TEMP: 'system-root', COMPARE_WINDOWS_VOLUMES: 'false' };
+    const runnerRoot = join(root, 'runner with spaces');
+    const env = { ...process.env, PATH: `${root}:${process.env.PATH}`, RUNNER_TEMP: runnerRoot, TEMP: 'system-root', TMP: 'system-root' };
     const run = extra => execFileSync('bash', ['-e', '-o', 'pipefail', '-c', script], { env: { ...env, ...extra }, encoding: 'utf8' });
-    assert.equal(run({}), 'runner-root\n', `${version}: full baseline command still runs`);
-    assert.deepEqual(run({ COMPARE_WINDOWS_VOLUMES: 'true' }).trim().split('\n'), expected);
-    assert.throws(() => run({ COMPARE_WINDOWS_VOLUMES: 'true', SIMULATED_FAILURE: 'true' }), error => {
-      assert.equal(error.status, 17);
-      assert.equal(error.stdout, expected[0] + '\n', 'failure stops before a second fixture');
-      return true;
-    });
+    for (const TARGET of ['windows-arm64-msvc', 'windows-x64-msvc']) {
+      assert.equal(run({ TARGET }), runnerRoot + '\n', `${version}/${TARGET}: full baseline command runs once on runner storage`);
+      assert.throws(() => run({ TARGET, SIMULATED_FAILURE: 'true' }), error => {
+        assert.equal(error.status, 17);
+        assert.equal(error.stdout, runnerRoot + '\n');
+        return true;
+      });
+    }
   }
 });
