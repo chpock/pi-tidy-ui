@@ -105,10 +105,19 @@ for (const change of ['name', 'version', 'os', 'cpu', 'libc', 'repository', 'scr
 
 function absent() { return Object.assign(new Error('fixture absent'), { stdout: JSON.stringify({ error: { code: 'E404' } }) }); }
 async function planned(t, version) { const f = await fixture(t, version), { prepareNpmRelease } = await publisher(); return { f, plan: await prepareNpmRelease(f) }; }
-async function downloaded(args, row) {
-  const filename = row.tarball.split(/[\\/]/).at(-1);
-  await cp(row.tarball, join(args[args.indexOf('--pack-destination') + 1], filename));
-  return { stdout: JSON.stringify([{ name: row.name, version: row.version, filename }]) };
+function registryFetcher(plan, { corrupt = false, missing = false } = {}) {
+  return async url => {
+    const archive = String(url).includes('/archive/');
+    const row = plan.packages.find(row => archive ? String(url).endsWith('/' + row.target) : String(url).includes(encodeURIComponent(row.name) + '/'));
+    assert.ok(row, 'exact package identity in registry request');
+    if (archive) {
+      const bytes = await readFile(row.tarball);
+      if (corrupt) bytes[bytes.length - 1] ^= 1;
+      return new Response(bytes);
+    }
+    if (missing) return new Response('{}', { status: 404 });
+    return Response.json({ name: row.name, version: row.version, dist: { integrity: row.integrity, tarball: 'https://registry.npmjs.org/archive/' + row.target } });
+  };
 }
 
 test('publication requires this manual main-branch OIDC workflow and never uses local npm login', async t => {
@@ -140,14 +149,13 @@ test('all-six registry preflight rejects a late mismatch/auth failure without an
 
 test('existing byte-identical packages are skipped and unpublished packages get direct public OIDC publish only', async t => {
   const { f, plan } = await planned(t), { publishNpmRelease } = await publisher(), calls = [];
-  const result = await publishNpmRelease({ planPath: join(f.output, 'plan.json'), env: host, execute: async (_npm, args) => {
+  const result = await publishNpmRelease({ planPath: join(f.output, 'plan.json'), env: host, fetcher: registryFetcher(plan), execute: async (_npm, args) => {
     calls.push(args);
     if (args[0] === 'view') {
       const index = plan.packages.findIndex(row => args[1] === `${row.name}@${row.version}`), row = plan.packages[index];
       if (index % 2 === 0) return { stdout: JSON.stringify([{ name: row.name, version: row.version, dist: { integrity: row.integrity } }]) };
       throw absent();
     }
-    if (args[0] === 'pack') return downloaded(args, plan.packages.find(row => args[1] === `${row.name}@${row.version}`));
     assert.equal(args[0], 'publish'); assert.ok(args.includes('--ignore-scripts')); assert.ok(args.includes('--access=public'));
     assert.ok(args.includes('--provenance'));
     assert.equal(args.includes('--force'), false); assert.equal(args.includes('approve'), false); assert.equal(args.includes('--provenance=false'), false);
@@ -163,9 +171,8 @@ test('existing byte-identical packages are skipped and unpublished packages get 
 test('prerelease publication uses next rather than replacing stable latest', async t => {
   const { f } = await planned(t, '0.1.5-rc.1'), { publishNpmRelease } = await publisher();
   const path = join(f.output, 'plan.json'), value = await json(path);
-  await publishNpmRelease({ planPath: path, env: host, execute: async (_npm, args) => {
+  await publishNpmRelease({ planPath: path, env: host, fetcher: registryFetcher(value), execute: async (_npm, args) => {
     if (args[0] === 'view') throw absent();
-    if (args[0] === 'pack') return downloaded(args, value.packages.find(row => args[1] === `${row.name}@${row.version}`));
     assert.ok(args.includes('--tag=next'));
     const row = value.packages.find(row => row.tarball === args[1]);
     return { stdout: JSON.stringify({ [row.name]: { name: row.name, version: row.version, integrity: row.integrity } }) };
@@ -208,11 +215,9 @@ test('public tarball corruption is refused even when registry metadata reports t
     const row = plan.packages.find(row => args[1] === `${row.name}@${row.version}`);
     if (args[0] === 'view') return { stdout: JSON.stringify([{ name: row.name, version: row.version, dist: { integrity: row.integrity } }]) };
     if (args[0] === 'publish') { uploads++; throw new Error('Unexpected upload'); }
-    const result = await downloaded(args, row), item = JSON.parse(result.stdout)[0];
-    await writeFile(join(args[args.indexOf('--pack-destination') + 1], item.filename), 'Corrupted registry body');
-    return { stdout: JSON.stringify({ [row.name]: item }) };
+    assert.fail('Archive verification must not resolve the version through npm pack');
   };
-  await assert.rejects(publishNpmRelease({ planPath: join(f.output, 'plan.json'), env: host, execute }), /Public registry archive differs/);
+  await assert.rejects(publishNpmRelease({ planPath: join(f.output, 'plan.json'), env: host, execute, fetcher: registryFetcher(plan, { corrupt: true }) }), /Public registry archive differs/);
   assert.equal(uploads, 0);
   assert.equal((await json(join(f.output, 'receipts.json'))).packages.some(row => row.registryByteVerified), false);
 });
@@ -275,4 +280,50 @@ test('provenance generation failure stops the native family without a fallback u
   assert.equal(attempts, 1);
   const receipts = await json(join(f.output, 'receipts.json'));
   assert.deepEqual(receipts.packages.map(row => row.outcome), ['unconfirmed', 'not-started', 'not-started', 'not-started', 'not-started', 'not-started']);
+});
+
+test('post-publication verification reads exact version and raw archive, never package-version resolution or a second publish', async t => {
+  const { f, plan } = await planned(t), { publishNpmRelease } = await publisher(), requests = [], calls = [];
+  const fetcher = registryFetcher(plan), execute = async (_npm, args) => {
+    calls.push(args);
+    const row = plan.packages.find(row => args[1] === `${row.name}@${row.version}` || args[1] === row.tarball);
+    assert.ok(row);
+    if (args[0] === 'view') return { stdout: JSON.stringify({ name: row.name, version: row.version, dist: { integrity: row.integrity } }) };
+    assert.fail('Existing versions cannot be republished or packed');
+  };
+  const result = await publishNpmRelease({ planPath: join(f.output, 'plan.json'), env: host, execute,
+    fetcher: async (url, options) => { requests.push(String(url)); assert.ok(options.signal); assert.equal(options.redirect, 'error'); return fetcher(url); } });
+  assert.equal(calls.length, 6); assert.equal(requests.length, 12);
+  assert.equal(requests.filter(url => url.endsWith('/0.1.5')).length, 6);
+  assert.equal(requests.filter(url => url.includes('/archive/')).length, 6);
+  assert.equal(result.packages.filter(row => row.registryByteVerified).length, 6);
+  requests.length = 0;
+  await assert.rejects(publishNpmRelease({ planPath: join(f.output, 'plan.json'), env: host, execute,
+    fetcher: async url => { requests.push(url); return new Response('{}', { status: 404 }); } }), /HTTP 404/);
+  assert.equal(requests.length, 1, 'an unavailable exact version is surfaced, never slept/retried');
+});
+
+test('public verification cancels HTTP-error and oversized bodies without replacing the HTTP failure', async t => {
+  const { f, plan } = await planned(t), { publishNpmRelease } = await publisher(), row = plan.packages[0];
+  const execute = async (_, args) => {
+    const item = plan.packages.find(item => args[1] === `${item.name}@${item.version}`);
+    assert.equal(args[0], 'view');
+    return { stdout: JSON.stringify({ name: item.name, version: item.version, dist: { integrity: item.integrity } }) };
+  };
+  const expectedSize = (await stat(row.tarball)).size;
+  for (const kind of ['metadata', 'archive', 'oversized']) {
+    let cancelled = 0;
+    const fetcher = async url => {
+      const archive = String(url).includes('/archive/');
+      if (kind !== 'metadata' && !archive) return Response.json({ name: row.name, version: row.version,
+        dist: { integrity: row.integrity, tarball: 'https://registry.npmjs.org/archive/' + row.target } });
+      const stream = new ReadableStream({ start(controller) { controller.enqueue(new Uint8Array(kind === 'oversized' ? (expectedSize + 1) : 1)); },
+        cancel() { cancelled++; if (kind === 'metadata') throw new Error('Cancellation must not replace HTTP failure'); } });
+      return new Response(stream, { status: kind === 'metadata' ? 404 : kind === 'archive' ? 503 : 200 });
+    };
+    await assert.rejects(publishNpmRelease({ planPath: join(f.output, 'plan.json'), env: host, execute, fetcher }),
+      kind === 'oversized' ? /Public registry archive differs/ : new RegExp(kind === 'metadata' ? 'HTTP 404' : 'HTTP 503'));
+    assert.equal(cancelled, 1, kind);
+    assert.equal((await json(join(f.output, 'receipts.json'))).packages.some(item => item.registryByteVerified), false);
+  }
 });

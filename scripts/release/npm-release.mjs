@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { createHash } from 'node:crypto';
-import { chmod, copyFile, mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
+import { chmod, copyFile, mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { isDeepStrictEqual } from 'node:util';
@@ -101,7 +101,34 @@ export async function prepareNpmRelease({ directory, publicDirectory, tag, repos
   return plan;
 }
 
-export async function publishNpmRelease({ planPath, env = process.env, execute = run }) {
+async function verifyPublicArchive(row, fetcher) {
+  // Verify the immutable version/archive directly: npm pack re-resolves the version
+  // through package-wide metadata and returned ETARGET after a successful publication.
+  const metadata = await fetcher(`https://registry.npmjs.org/${encodeURIComponent(row.name)}/${row.version}`, { signal: AbortSignal.timeout(60000), redirect: 'error' });
+  if (!metadata.ok) {
+    await metadata.body?.cancel().catch(() => {}); // Preserve the HTTP failure even if body cleanup fails.
+    throw new Error(`Public registry version unavailable: HTTP ${metadata.status}`);
+  }
+  const item = await metadata.json();
+  if (item.name !== row.name || item.version !== row.version || item.dist?.integrity !== row.integrity) throw new Error(`Public registry version differs: ${row.name}`);
+  const url = new URL(item.dist.tarball);
+  if (url.protocol !== 'https:' || url.hostname !== 'registry.npmjs.org' || url.username || url.password || url.port) throw new Error('Unexpected public registry archive URL');
+  const expected = (await stat(row.tarball)).size;
+  const reply = await fetcher(url, { signal: AbortSignal.timeout(60000), redirect: 'error' });
+  if (!reply.ok || !reply.body) {
+    await reply.body?.cancel().catch(() => {});
+    throw new Error(`Public registry archive unavailable: HTTP ${reply.status}`);
+  }
+  const hash = createHash('sha512'); let size = 0;
+  for await (const chunk of reply.body) {
+    size += chunk.byteLength;
+    if (size > expected) throw new Error(`Public registry archive differs: ${row.name}`);
+    hash.update(chunk);
+  }
+  if (size !== expected || 'sha512-' + hash.digest('base64') !== row.integrity) throw new Error(`Public registry archive differs: ${row.name}`);
+}
+
+export async function publishNpmRelease({ planPath, env = process.env, execute = run, fetcher = fetch }) {
   if (env.GITHUB_ACTIONS !== 'true' || env.GITHUB_REPOSITORY !== 'chpock/pi-tidy-ui' || env.GITHUB_REF !== 'refs/heads/main'
     || env.GITHUB_WORKFLOW_REF !== 'chpock/pi-tidy-ui/.github/workflows/occipital-npm-publish.yml@refs/heads/main'
     || !env.ACTIONS_ID_TOKEN_REQUEST_URL || !env.ACTIONS_ID_TOKEN_REQUEST_TOKEN) throw new Error('Publication requires the manual main-branch OIDC workflow, not local npm credentials');
@@ -137,13 +164,8 @@ export async function publishNpmRelease({ planPath, env = process.env, execute =
     if (item.name !== row.name || item.version !== row.version || item.integrity !== row.integrity) throw new Error('npm publish reply differs from prepared native tarball');
     receipt.outcome = 'published'; await save();
   }
-  const downloaded = join(dirname(planPath), 'registry-downloads'); await mkdir(downloaded);
   for (let i = 0; i < plan.packages.length; i++) {
-    const row = plan.packages[i];
-    const { stdout } = await execute(npm, ['pack', `${row.name}@${row.version}`, '--ignore-scripts', '--json', '--pack-destination', downloaded, registry], { env, timeout: 300000, maxBuffer: 1024 * 1024 });
-    const item = singleTarball(stdout);
-    if (item.name !== row.name || item.version !== row.version
-      || integrity(await readFile(join(downloaded, item.filename))) !== row.integrity) throw new Error(`Public registry archive differs: ${row.name}`);
+    await verifyPublicArchive(plan.packages[i], fetcher);
     receipts.packages[i].registryByteVerified = true; await save();
   }
   return receipts;
