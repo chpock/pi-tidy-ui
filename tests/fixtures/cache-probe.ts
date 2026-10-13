@@ -1,5 +1,9 @@
 // Isolated actual-SDK work/ownership oracle; no real tools or user settings are touched.
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { TextJournal } from "../../src/debug-log.ts";
 import { stripVTControlCharacters } from "node:util";
 import { Container, ScrollView, Spacer, Text, colorToHex } from "@earendil-works/pi-tui";
 import { renderLayoutFrame } from "../../node_modules/@earendil-works/pi-tui/dist/layout.js";
@@ -27,7 +31,11 @@ Intl.Segmenter.prototype.segment = function (input) {
   return original.call(this, input);
 };
 root.render(80);
-const controller = installTidyUi(root as never, () => theme);
+const logDirectory = mkdtempSync(join(tmpdir(), "tidy-ui-gc-logging-"));
+const journal = new TextJournal({ session: "sdk-owners", cwd: "/tmp", reason: "test", extension: "0.0.0", pi: "sdk" }, { root: logDirectory });
+await journal.ready;
+const diagnostic = journal.sink;
+const controller = installTidyUi(root as never, () => theme, { diagnostic });
 const observations: object[] = [];
 function frame(label: string, width = 80) {
   segments = 0; enabled = true;
@@ -91,7 +99,7 @@ try {
   let spinning: ToolExecutionComponent | undefined = new ToolExecutionComponent("read", "spinner-owner", { path: "a.txt", limit: 1 },
     undefined, undefined, spinnerRoot as never, "/tmp");
   spinnerRoot.addChild(spinning);
-  const spinnerController = installTidyUi(spinnerRoot as never, () => theme);
+  const spinnerController = installTidyUi(spinnerRoot as never, () => theme, { diagnostic });
   const spinnerFrame = () => renderLayoutFrame(spinnerViewport, 80, 24, () => {}).lines.map(stripVTControlCharacters);
   try {
     const before = spinnerFrame(), builds = spinnerController.cacheStats().builds;
@@ -122,7 +130,7 @@ try {
    const userRoot = new Root(), userViewport = new ScrollView(userRoot, { scrollbar: "hidden", primary: true });
    let user: UserMessageComponent | undefined = new UserMessageComponent("FIRST_USER_INSTALLER\n\n**native Markdown**");
    userRoot.addChild(user);
-   const userController = installTidyUi(userRoot as never, () => theme);
+   const userController = installTidyUi(userRoot as never, () => theme, { diagnostic });
    try {
      const draw = () => renderLayoutFrame(userViewport, 80, 24, () => {}).lines;
      draw(); assert.equal(userController.cacheStats().builds, 1);
@@ -140,7 +148,7 @@ try {
    let writeNode: ToolExecutionComponent | undefined = new ToolExecutionComponent("write", "first-write-installer",
      { path: "example.txt", content: "WRITE_CACHE_PROBE_" + "x".repeat(2000) }, undefined, createWriteToolDefinition("/tmp"), writeRoot as never, "/tmp");
    writeNode.updateResult({ content: [{ type: "text", text: "STOCK_WRITE_RESULT" }], isError: false }); writeRoot.addChild(writeNode);
-   const writeController = installTidyUi(writeRoot as never, () => theme);
+   const writeController = installTidyUi(writeRoot as never, () => theme, { diagnostic });
    const writeFrame = () => { segments = 0; enabled = true; renderLayoutFrame(writeViewport, 80, 24, () => {}); enabled = false; return segments; };
    try {
      assert.equal(writeFrame(), 1); const cold = writeController.cacheStats();
@@ -159,7 +167,7 @@ try {
     let upper: Container | undefined = new Container();
     upper.addChild(new Spacer(1)); upper.addChild(new Text("GC_UPPER_WIDGET", 0, 0));
     for (const child of [new Container(), new Container(), new Container(), upper, input, new Container(), new Container()]) editorRoot.addChild(child);
-    const editorController = installTidyUi(editorRoot as never, () => theme, { editorStatus: true });
+    const editorController = installTidyUi(editorRoot as never, () => theme, { editorStatus: true, diagnostic });
     try {
       editorRoot.render(80);
       assert.equal(editor.render(80)[0], "", "recognized upper group activates the first installer's separator");
@@ -192,8 +200,11 @@ try {
     tidyUi({ on(name: string, callback: Function) { handlers.set(name, [...(handlers.get(name) ?? []), callback]); },
       registerFlag() {}, getFlag() {}, getThinkingLevel: () => "off", getSettings: () => ({}),
       registerCommand(name: string, options: { handler: Function }) { if (name === "tidy-ui") footerCommand = options.handler; },
-    } as unknown as ExtensionAPI);
-    for (const callback of handlers.get("session_start") ?? []) callback({}, footerContext);
+    } as unknown as ExtensionAPI, { logging: { root: join(logDirectory, "footer") }, syntax: () => ({ standaloneVersion: "gc",
+      settings: { async load() { return { ok: true, syntaxTheme: { kind: "pi" } }; }, async update() { return { ok: true }; } },
+      provider: { async tryShared() { return undefined; }, async acquireOwned() { throw Error("isolated unavailable fixture"); } } }) });
+    for (const callback of handlers.get("session_start") ?? []) await callback({ reason: "startup" }, footerContext);
+    await footerCommand!("logs snapshot", footerContext);
     const replaceFirstFooter = async () => {
       const first = footerHost.customFooter;
       first.render(80); const reference = new WeakRef(first);
@@ -207,7 +218,7 @@ try {
       for (let i = 0; i < 12; i++) { await new Promise<void>(resolve => setImmediate(resolve)); globalThis.gc!(); }
       assert.equal(reference.deref(), undefined, "active runtime/events/next footer must not retain the first public footer component");
       observations.push({ firstFooterCollected: true });
-    } finally { for (const callback of handlers.get("session_shutdown") ?? []) callback({}, footerContext); }
+    } finally { for (const callback of handlers.get("session_shutdown") ?? []) await callback({ reason: "quit" }, footerContext); }
     let lateColorReport: ((colors: { foreground: { r: number; g: number; b: number } }) => void) | undefined;
     const pendingColorReport = new Promise<never>(() => {});
     const gcBackgroundRoles = new Set(["selectedBg", "searchMatchBg", "userMessageBg", "customMessageBg", "toolPendingBg", "toolSuccessBg", "toolErrorBg"]);
@@ -216,7 +227,7 @@ try {
     gcForeground.text = ""; gcBackground.userMessageBg = "";
     const colorTheme = new Theme(gcForeground as ConstructorParameters<typeof Theme>[0], gcBackground as ConstructorParameters<typeof Theme>[1], "truecolor", { name: "gc-colors", sourcePath: "/fixture.json" });
     function colorActor(owner: Root & { terminalColorSchemeNotificationsEnabled: boolean }) {
-      return new TerminalColors({
+      return new TerminalColors({ diagnostic,
         snapshot: () => ({ enabled: true, automatic: terminalAppearanceTracking(owner), configured: "gc-colors", theme: colorTheme }),
         source: () => "/fixture.json", read: () => '{"colors":{"text":""},"export":{"pageBg":"#123456"}}',
         write() { owner.requestRender(); }, changed() { owner.requestRender(); },
@@ -241,5 +252,7 @@ try {
       lateColorReport!({ foreground: { r: 1, g: 2, b: 3 } }); retired.exit();
       observations.push({ retiredColorActorCollected: true, retiredColorOwnerCollected: true });
     } finally { process.off("exit", retired.exit); }
+    await journal.flush(); assert.ok(journal.status().writes > 0); assert.equal(journal.status().state, "active");
+    observations.push({ loggingActiveDuringGc: true, loggerRecords: journal.status().records, loggerWrites: journal.status().writes });
     console.log(JSON.stringify(observations));
-} finally { controller.restore(); Intl.Segmenter.prototype.segment = original; }
+} finally { controller.restore(); Intl.Segmenter.prototype.segment = original; await journal.close("quit"); rmSync(logDirectory, { recursive: true, force: true }); }

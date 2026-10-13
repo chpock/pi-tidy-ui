@@ -25,6 +25,7 @@ For user-facing behavior and controls, start with the [README](../README.md). Ex
 | `src/render-cache.ts` | Weak rendered-layout accounting; component state owns retained values, without budget/recency eviction |
 | `src/syntax/` | Card-source consumer, native/Pi work gating, ANSI/structured-range projection and interactive runtime/menu binding; preparation outside render |
 | `src/occipital/` | UI-independent bounded client, canonical source controller/retention, provider recovery, JSON codec, stdio/shared factories and exact native acquisition |
+| `src/debug-log.ts`, `src/session-logging.ts`, `src/diagnostics.ts` | Bounded human-readable journals, run-bound observers and safe primitive error/decision reporting; independent from presentation ownership |
 | `src/settings.ts` | Theme-only preferences at the public Pi agent directory, validation and serialized complete-file writes |
 | `crates/occipital/` | Independent native service: Syntect/two-face engine, worker/scheduler/ingress/protocol, stdio/shared frontends and daemon-owned catalogue |
 | `scripts/release/`, `packages/native/` | Preparation-only payload staging/notices/templates; not published availability or platform-support evidence |
@@ -44,6 +45,8 @@ This integration deliberately depends on inspected private component shapes, whi
 The stable TUI reference survives native fullscreen/regular renderer replacement. Public method/child access is sufficient for component integration; terminal synchronization additionally reads one guarded boolean renderer field for native appearance tracking, without wrapping its setter or any query/scheme API; no receiver-capture probe, raw input observer, private `handleViewportInput` wrapper or input-hook migration is used. Pi retains focus, selection and terminal mouse processing. pi-tidy-ui handles normalized tool clicks and forwards stock-editor normalized mouse coordinates after translating its frame geometry; user cards add no mouse handler. Regular mode uses terminal-owned mouse handling, so expansion there uses native keyboard controls.
 
 Persistent prototype wrappers are constructed in prototype-only factory scopes, not in an installer scope containing a component parameter. Otherwise a shared V8 closure context can retain the first installer even when all explicit component maps are weak. Ownership tests must collect the first installer while the adapter remains active, including an executing installer while another call keeps the clock running.
+
+Diagnostic capture starts from public session ID/file/lifecycle events, independently of TUI presentation. Its [text journals](debug-logging-spec.md) report existing decisions without transcript/source scans or new component hooks. Metadata is formatted into a bounded in-memory queue; asynchronous file batches and infrequent cleanup run outside rendering. Component/source markers retain only primitive decisions through weak ownership. Reload closes the outgoing run, late callbacks keep their old observer, and master presentation off does not stop capture. The public `logs` command reads memory or explicitly records existing counters, never renders or repeats classification.
 
 ### Syntax source lifetime
 

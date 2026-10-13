@@ -1,3 +1,4 @@
+import { diagnose } from '../diagnostics.ts';
 import type { ExtensionContext } from '@earendil-works/pi-coding-agent';
 import { SyntaxClient, type SyntaxClientOptions } from '../occipital/client.ts';
 import { openSyntaxMenu, type SyntaxMenuOwner } from '../occipital/menu.ts';
@@ -54,13 +55,15 @@ export class SyntaxRuntime implements SyntaxMenuOwner {
    * or terminal-default changes. Never sample tokens or inspect its private target. */
   palette(theme: { readonly colors: object }): number {
     const colors = theme.colors;
-    if (this.paletteColors?.deref() !== colors) { this.paletteColors = new WeakRef(colors); ++this.paletteRevision; }
+    if (this.paletteColors?.deref() !== colors) { this.paletteColors = new WeakRef(colors); ++this.paletteRevision;
+      diagnose(this.options.diagnostic, 'DEBUG', 'syntax', 'Public Pi palette generation changed', { palette: this.paletteRevision }); }
     return this.paletteRevision;
   }
   attach(presentation: Presentation): void {
     if (this.disposed || !presentation.active) return;
     if (this.presentation?.deref() === presentation) return;
     this.presentation = new WeakRef(presentation); ++this.epoch;
+    diagnose(this.options.diagnostic, 'INFO', 'syntax', 'Syntax runtime attached to presentation', { epoch: this.epoch });
     if (!this.scheduled) { this.scheduled = true; queueMicrotask(activation(this.owner)); }
   }
   setEnabled(enabled: boolean): Promise<void> {
@@ -74,11 +77,12 @@ export class SyntaxRuntime implements SyntaxMenuOwner {
   refreshThemes() { return this.client.refreshThemes(); }
   async menu(ctx: Pick<ExtensionContext, 'mode' | 'hasUI' | 'ui'>): Promise<void> {
     if (this.disposed) return;
+    diagnose(this.options.diagnostic, 'INFO', 'syntax', 'Syntax menu opened', { presentation: !!this.presentation?.deref()?.active });
     if (ctx.mode === 'tui' && ctx.hasUI) this.start();
     await openSyntaxMenu(ctx, this, menuCurrent(this.owner, ++this.epoch));
   }
   dispose(): Promise<void> {
-    if (!this.disposed) { this.disposed = true; ++this.epoch; this.presentation = undefined; this.paletteColors = undefined; }
+    if (!this.disposed) { diagnose(this.options.diagnostic, 'INFO', 'syntax', 'Syntax runtime disposing; current source owners are retired'); this.disposed = true; ++this.epoch; this.presentation = undefined; this.paletteColors = undefined; }
     return this.client.dispose();
   }
 
@@ -99,7 +103,8 @@ export class SyntaxRuntime implements SyntaxMenuOwner {
     this.start();
   }
   reportStartupFailure(): void {
-    if (!this.disposed) this.options.notify?.('Syntax highlighting could not be started.', 'error');
+    if (!this.disposed) { diagnose(this.options.diagnostic, 'ERROR', 'syntax', 'Syntax startup failed; exception payload is not recorded');
+      this.options.notify?.('Syntax highlighting could not be started.', 'error'); }
   }
   private start(): void {
     if (this.started || this.disposed) return;

@@ -46,7 +46,7 @@ test('entry registers only the tidy-ui command and flags, with branded diagnosti
   await command.handler('colors extra', ctx);
   assert.deepEqual(notices.pop(), ['Usage: /tidy-ui colors on|off|status', 'warning']);
   await command.handler('unknown', ctx);
-  assert.deepEqual(notices.pop(), ['Usage: /tidy-ui on|off|status|syntax|colors on|off|status|cache [clear]', 'warning']);
+  assert.deepEqual(notices.pop(), ['Usage: /tidy-ui on|off|status|syntax|colors on|off|status|cache [clear]|logs [on|off|snapshot]', 'warning']);
 });
 
 

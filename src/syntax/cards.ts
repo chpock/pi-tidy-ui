@@ -1,3 +1,4 @@
+import { diagnose, type DiagnosticFields, type DiagnosticSink } from '../diagnostics.ts';
 import { bashCommandSource } from '../bash-card.ts';
 import type { CardTheme } from '../card-theme.ts';
 import { displayFileCard, prepareFileCard, type FileDisplayCard } from '../file-card.ts';
@@ -5,7 +6,7 @@ import type { SyntaxClient } from '../occipital/client.ts';
 import { CONTROLLER_LIMITS, type SourceController } from '../occipital/controller.ts';
 import { RETENTION_LIMITS } from '../occipital/retention.ts';
 import { paintBashSyntax, paintFileSyntax, requestSyntax, resolveSyntax,
-  type PiClassifier, type SyntaxIdentity, type SyntaxWorkResult } from './work.ts';
+  type PiClassifier, type SyntaxIdentity, type SyntaxResolution, type SyntaxWorkResult } from './work.ts';
 
 export type CardSourceInput = { palette: number; language?: string } & (
   { kind: 'file'; node: Parameters<typeof prepareFileCard>[0] } |
@@ -20,8 +21,11 @@ export interface CardSourceHost<Owner extends object> {
   /** Target the owner's layout only. Never pass a renderContext.invalidate closure. */
   invalidate(owner: Owner): void;
   requestRender(): void;
+  diagnostic?: DiagnosticSink;
+  /** Primitive call identity, never source/argument/result bodies. */
+  identify?(owner: Owner): DiagnosticFields;
 }
-type Slot = SyntaxIdentity & { rows?: readonly number[]; side?: 'old' | 'next'; outcome: SyntaxWorkResult['outcome'] };
+type Slot = SyntaxIdentity & { rows?: readonly number[]; side?: 'old' | 'next'; outcome: SyntaxWorkResult['outcome']; paintDecision?: string };
 type State = { revision: number; requested?: number; processed?: number; version: number; slots: Slot[];
   display?: FileDisplayCard; kind?: 'file' | 'bash'; record?: RecordTicket; paused?: boolean };
 type RecordTicket = { id: number; owner: WeakRef<object>; state: WeakRef<State>; keys: Set<string>; bytes: number };
@@ -142,7 +146,9 @@ export class CardSources<Owner extends object> {
     if (this.disposed || state?.paused || state?.processed !== state?.revision || !state?.display) return undefined;
     const styledRows = new Map<number, string>();
     for (const slot of state.slots) {
-      const rows = paintFileSyntax(this.client.sources, resolveSyntax(this.client.sources, slot, neutralStyle), theme);
+      const resolution = resolveSyntax(this.client.sources, slot, neutralStyle);
+      const rows = paintFileSyntax(this.client.sources, resolution, theme);
+      this.paintDecision(owner, slot, resolution, rows !== undefined);
       if (!rows) continue;
       slot.rows?.forEach((index, row) => {
         if (slot.side === 'next' || state.display!.lines[index]?.kind === '-') styledRows.set(index, rows[row]!);
@@ -153,7 +159,10 @@ export class CardSources<Owner extends object> {
   bash(owner: Owner, width: number, theme: CardTheme, neutralStyle: number): string[] | undefined {
     const state = this.states.get(owner), slot = state?.slots[0];
     if (this.disposed || state?.paused || state?.processed !== state?.revision || state?.kind !== 'bash' || !slot) return undefined;
-    return paintBashSyntax(this.client.sources, resolveSyntax(this.client.sources, slot, neutralStyle), width, theme);
+    const resolution = resolveSyntax(this.client.sources, slot, neutralStyle);
+    const rows = paintBashSyntax(this.client.sources, resolution, width, theme);
+    this.paintDecision(owner, slot, resolution, rows !== undefined);
+    return rows;
   }
   /** Primitive diagnostic/cache-key copy; no pool payload or reader escapes. */
   identities(owner: Owner): SyntaxIdentity[] {
@@ -165,6 +174,7 @@ export class CardSources<Owner extends object> {
   pause(owner: Owner): void {
     const state = this.states.get(owner);
     if (!state) return;
+    if (!state.paused) this.log(owner, 'Source presentation paused; this does not prove native work stopped', { revision: state.revision });
     state.paused = true;
     if (state.record) this.pending.delete(state.record);
   }
@@ -181,6 +191,7 @@ export class CardSources<Owner extends object> {
   /** Internal weak finalizer delivery, also used by explicit removal. */
   release(ticket: RecordTicket): void {
     if (!this.records.delete(ticket.id)) return;
+    this.log(ticket.owner.deref() as Owner | undefined, 'Source owner released', { ticket: ticket.id, sources: ticket.keys.size });
     collected.unregister(ticket); this.pending.delete(ticket);
     if (this.latest?.ticket === ticket) this.latest = undefined;
     for (const key of ticket.keys) { this.keys.delete(key); this.client.sources.remove(key); }
@@ -208,10 +219,13 @@ export class CardSources<Owner extends object> {
         this.pause(owner); this.host.invalidate(owner); changed = true; continue;
       }
       // A revision represents a host source event; ready/profile retry reuses it.
-      if (state.processed !== revision) state.version++;
+      const newVersion = state.processed !== revision;
+      if (newVersion) state.version++;
       const demands = prepared ? prepared.sources.map(source => ({ text: source.text, rows: source.rows, side: source.side }))
         : [{ text: command!, rows: undefined, side: undefined }];
       const language = wireHint(input.language, 128), path = wireHint(prepared?.path, 4096);
+      if (newVersion) this.log(owner, 'Logical source prepared outside render', { ticket: ticket.id, kind: input.kind, revision,
+        version: state.version, language: language ?? 'unknown', segments: demands.length, complete: input.kind === 'file' || input.complete });
       const slots: Slot[] = [];
       for (let index = 0; index < demands.length; index++) {
         const key = `card:${ticket.id}:${index}`, demand = demands[index]!;
@@ -230,6 +244,8 @@ export class CardSources<Owner extends object> {
           ticket.keys.add(key); this.keys.set(key, ticket); ticket.bytes += bytes; this.bytes += bytes;
         }
         slot.outcome = requestSyntax(this.client, { ...slot, text: demand.text, path }, this.host.classify).outcome;
+        this.log(owner, 'Syntax work evaluated', { source: key, version: slot.version, units: demand.text.length,
+          language: language ?? 'unknown', palette: slot.palette, outcome: slot.outcome });
         if (!this.current(owner, state, ticket) || state.revision !== revision) break;
       }
       if (!this.current(owner, state, ticket)) {
@@ -255,6 +271,33 @@ export class CardSources<Owner extends object> {
     if (!this.disposed) this.client.sources.flush();
   }
 
+  private log(owner: Owner | undefined, explanation: string, fields: DiagnosticFields): void {
+    if (!this.host.diagnostic) return;
+    try { diagnose(this.host.diagnostic, 'DEBUG', 'syntax', explanation,
+      { ...(owner ? this.host.identify?.(owner) : undefined), ...fields }); } catch { /* Identity observers do not own source work. */ }
+  }
+  private paintDecision(owner: Owner, slot: Slot, resolution: SyntaxResolution, applied: boolean): void {
+    if (!this.host.diagnostic) return;
+    const selected = applied ? resolution.nativeExact ? 'exact-native' : resolution.pi ? resolution.piStyled === false ? 'plain-pi' : resolution.piStyled === true ? 'styled-pi' : 'pi-unknown' : resolution.committedBytes === 0 ? 'neutral-retained' : 'retained-native'
+      : slot.fallback === 'neutral' ? 'toolTitle' : 'plain';
+    const marker = `${selected}:${resolution.execution}:${resolution.fallbackEligible}:${resolution.nativeGeneration}:${resolution.piGeneration}:${slot.palette}`;
+    if (slot.paintDecision === marker) return;
+    slot.paintDecision = marker;
+    const explanations = {
+      'exact-native': 'Occipital classification applied; unclassified glyphs keep their neutral color',
+      'retained-native': 'Retained native ranges selected for the committed prefix; remaining text keeps its neutral color',
+      'neutral-retained': 'Retained native projection has no committed prefix; whole source is neutral',
+      'plain-pi': 'Cached Pi fallback applied; Pi returned plain text',
+      'styled-pi': 'Cached Pi fallback applied; style directives are not proof of physical colors',
+      'pi-unknown': 'Cached Pi fallback applied; style information was not supplied',
+      toolTitle: resolution.fallbackEligible ? 'Whole Bash command uses toolTitle; Pi classification is intentionally disabled'
+        : 'Native work is queued, unsettled or uncertain; Bash keeps toolTitle without Pi classification',
+      plain: resolution.fallbackEligible ? 'Full text shown without prepared coloring; see source preparation/refusal/failure records'
+        : 'Native work is queued, unsettled or uncertain; full text shown without duplicate Pi classification',
+    };
+    this.log(owner, explanations[selected], { source: slot.key, version: slot.version, palette: slot.palette, selected,
+      execution: resolution.execution, fallbackEligible: resolution.fallbackEligible, committedBytes: resolution.committedBytes, outcome: slot.outcome });
+  }
   private current(owner: Owner, state: State, ticket: RecordTicket): boolean {
     return !this.disposed && !state.paused && this.states.get(owner) === state && this.records.get(ticket.id) === ticket;
   }

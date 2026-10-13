@@ -5,7 +5,7 @@ import { dirname, resolve } from 'node:path';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import { stripVTControlCharacters } from 'node:util';
 import { Box, Container, Text } from '@earendil-works/pi-tui';
-import { highlightCode, getLanguageFromPath, createEditToolDefinition } from '@earendil-works/pi-coding-agent';
+import { VERSION, highlightCode, getLanguageFromPath, createEditToolDefinition } from '@earendil-works/pi-coding-agent';
 import { installTidyUi, type TidyUiController, type TidyUiOptions } from '../src/index.ts';
 import { SourceController } from '../src/occipital/controller.ts';
 import type { SyntaxClient } from '../src/occipital/client.ts';
@@ -15,6 +15,11 @@ import { PROTOCOL_VERSION, type Description } from '../src/occipital/protocol.ts
 import { CardSources } from '../src/syntax/cards.ts';
 import { renderBashCard } from '../src/bash-card.ts';
 import { renderFileCard } from '../src/file-card.ts';
+import * as fs from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { TextJournal } from '../src/debug-log.ts';
+import type { DiagnosticFields, DiagnosticSink } from '../src/diagnostics.ts';
 
 const sdkDist = dirname(fileURLToPath(import.meta.resolve('@earendil-works/pi-coding-agent')));
 const { ToolExecutionComponent } = await import(pathToFileURL(resolve(sdkDist, 'modes/interactive/components/tool-execution.js')).href);
@@ -34,9 +39,9 @@ const description: Description = {
 class UI extends Container { requests = 0; requestRender() { this.requests++; } }
 const fixtures: { adapter: TidyUiController; sources: SourceController;
   calls: { request: Record<string, unknown>; resolve(value: unknown): void }[] }[] = [];
-function fixture(ready = false, useDefaultClassifier = false, options: Pick<TidyUiOptions, 'cards' | 'compact'> = {}) {
+function fixture(ready = false, useDefaultClassifier = false, options: Pick<TidyUiOptions, 'cards' | 'compact' | 'diagnostic'> = {}) {
   const ui = new UI();
-  const env = { ready, enabled: true, palette: 1, padding: 1, depth: 0, boldPi: false, pi: [] as string[], observes: 0, captures: 0, reads: 0, keys: [] as string[], capturedKeys: [] as string[] };
+  const env = { ready, enabled: true, palette: 1, padding: 1, depth: 0, boldPi: false, plainPi: false, pi: [] as string[], observes: 0, captures: 0, reads: 0, keys: [] as string[], capturedKeys: [] as string[] };
   const calls: { request: Record<string, unknown>; resolve(value: unknown): void }[] = [];
   const provider = {
     snapshot(): ProviderSnapshot { return { generation: 1, availability: env.ready ? 'ready' : 'initializing',
@@ -47,8 +52,8 @@ function fixture(ready = false, useDefaultClassifier = false, options: Pick<Tidy
       return new Promise<unknown>(resolve => calls.push({ request, resolve }));
     }
   };
-  let adapter: TidyUiController;
-  const sources = new SourceController(provider, { onChange: keys => adapter.syntaxSourceChanged(keys) });
+  let adapter: TidyUiController, toolIdentity = 0;
+  const sources = new SourceController(provider, { diagnostic: options.diagnostic, onChange: keys => adapter.syntaxSourceChanged(keys) });
   const observe = sources.observe.bind(sources), capture = sources.capturePiSource.bind(sources);
   sources.observe = (...args) => { assert.equal(env.depth, 0, 'no native source preparation in render'); env.observes++; env.keys.push(args[0].key); return observe(...args); };
   sources.capturePiSource = (...args) => { assert.equal(env.depth, 0, 'no Pi source preparation in render'); env.captures++; env.capturedKeys.push(args[0]); return capture(...args); };
@@ -59,7 +64,7 @@ function fixture(ready = false, useDefaultClassifier = false, options: Pick<Tidy
   const presentationOptions: TidyUiOptions = { ...options, outputPad: () => env.padding, syntax: { client,
     palette: () => env.palette, classify: useDefaultClassifier ? undefined : (text, info) => {
       assert.equal(env.depth, 0, 'no Pi call in render'); env.pi.push(text);
-      const rows = highlightCode(text, info.language);
+      const rows = env.plainPi ? text.split('\n') : highlightCode(text, info.language);
       return env.boldPi ? rows.map(row => themes.theme.style(row, { bold: true })) : rows;
     } } };
   const install = () => {
@@ -76,7 +81,7 @@ function fixture(ready = false, useDefaultClassifier = false, options: Pick<Tidy
       env.depth++; try { return ui.render(width); } finally { env.depth--; }
     },
     tool(name: string, args: Record<string, unknown>, definition?: unknown) {
-      const tool = new ToolExecutionComponent(name, `host-${name}`, args, undefined, definition, ui, '/tmp');
+      const tool = new ToolExecutionComponent(name, `host-${name}-${++toolIdentity}`, args, undefined, definition, ui, '/tmp');
       ui.addChild(tool); return tool;
     } };
   fixtures.push(value); return value;
@@ -98,14 +103,14 @@ function written(f: ReturnType<typeof fixture>, content: string, path = 'a.ts') 
   const tool = f.tool('write', { path, content });
   tool.updateResult({ content: [{ type: 'text', text: 'saved' }], isError: false }, false); return tool;
 }
-function answer(f: ReturnType<typeof fixture>, index: number, text: string, complete = true) {
+function answer(f: ReturnType<typeof fixture>, index: number, text: string, complete = true, committedBytes?: number) {
   const call = f.calls[index]!, r = call.request;
   const source = r.op === 'stream.append' ? r : (r.sources as Record<string, unknown>[])[0]!;
   const bytes = Buffer.byteLength(text), from = r.op === 'stream.append' ? r.base_bytes as number : 0;
   call.resolve({ v: PROTOCOL_VERSION, ticket: r.ticket, instance: 'daemon', assets: 'assets', status: 'ok', body: {
     kind: 'source', sources: [{ key: source.key, generation: source.generation, source_version: source.source_version,
       profile: source.profile, fingerprint: source.fingerprint, revision: r.op === 'stream.append' ? (r.base_revision as number) + 1 : 1,
-      replace_from: from, source_bytes: bytes, committed_bytes: bytes, complete,
+      replace_from: from, source_bytes: bytes, committed_bytes: committedBytes ?? bytes, complete,
       ...(r.op !== 'highlight' ? { lease: 'lease' } : {}), styles: [{ role: 'syntaxKeyword' }], runs: bytes > from ? [bytes - from, 0] : [],
       counters: { committed_line_calls: 0, committed_line_bytes: 0, tail_calls: 0, tail_bytes: 0 } }]
   } });
@@ -502,4 +507,103 @@ test('host partial Bash errors do not retire forming args and completed argument
   assert.equal(f.calls.length, 2, 'completed args retain syntax on execution failure');
   assert.ok(f.render(tool).join('').includes(themes.theme.fg('syntaxKeyword', 'x')));
   assert.equal(f.env.pi.length, 0);
+});
+
+
+test('logging actual SDK final paint separates cached plain Pi, waiting file, native result and neutral Bash without extra warm work or I/O', async t => {
+  const root = await fs.mkdtemp(join(tmpdir(), 'tidy-logging-host-'));
+  const journal = new TextJournal({ session: 'actual-sdk', cwd: root, reason: 'startup', extension: '0.0.0', pi: VERSION }, { root });
+  t.after(async () => { await journal.close('test'); await fs.rm(root, { recursive: true, force: true }); });
+  await journal.ready;
+  const f = fixture(false, false, { diagnostic: journal.sink });
+  f.env.plainPi = true;
+  const text = 'const PRIVATE_FILE_BODY = 17;', shell = 'printf PRIVATE_SHELL_BODY\n';
+  const file = written(f, text, 'probe.unknown'), bash = f.tool('bash', { command: shell });
+  const args = JSON.stringify(file.args), result = JSON.stringify(file.result);
+  f.document(); await settled(); const initial = f.document(); await journal.flush();
+  const before = { counts: counts(f), builds: f.adapter.cacheStats().builds, logger: journal.status() };
+  assert.equal(before.counts[0], 1); assert.equal(before.counts[4], 0);
+  assert.ok(before.logger.records > 0); assert.ok(before.logger.writes > 0);
+  for (let i = 0; i < 100; i++) assert.deepEqual(f.document(), initial);
+  await settled(); await journal.flush();
+  assert.deepEqual(counts(f), before.counts); assert.equal(f.adapter.cacheStats().builds, before.builds);
+  for (const key of ['records', 'writes', 'scans', 'rotations', 'pendingBytes', 'inFlightBytes', 'timer'] as const)
+    assert.equal(journal.status()[key], before.logger[key], key);
+  let body = await fs.readFile(journal.status().path, 'utf8');
+  assert.match(body, /call=host-write.*selected=plain-pi/); assert.match(body, /Pi returned plain text/);
+  assert.match(body, /call=host-bash.*selected=toolTitle/);
+  assert.equal(body.includes(text), false); assert.equal(body.includes(shell), false); assert.equal(body.includes('text=saved'), false);
+  f.env.ready = true; f.adapter.syntaxMetadataChanged(); await settled();
+  assert.equal(f.calls.length, 1); assert.equal(f.env.pi.length, 1, 'Bash starts native, never Pi');
+  f.document(); const heldFile = written(f, 'const PRIVATE_HELD_BODY = 18;');
+  f.document(); await settled(); assert.equal(f.calls.length, 2);
+  const waiting = f.render(heldFile); await journal.flush();
+  body = await fs.readFile(journal.status().path, 'utf8');
+  assert.match(body, /Native work is queued, unsettled or uncertain; full text shown without duplicate Pi classification/);
+  assert.equal(f.env.pi.length, 1); assert.equal(body.includes('PRIVATE_HELD_BODY'), false);
+  answer(f, 0, shell, false); answer(f, 1, 'const PRIVATE_HELD_BODY = 18;'); await settled();
+  const native = f.render(heldFile); assert.deepEqual(plain(native), plain(waiting)); assert.notDeepEqual(native, waiting);
+  f.document(); await journal.flush(); body = await fs.readFile(journal.status().path, 'utf8');
+  assert.match(body, /call=host-write.*selected=exact-native/); assert.match(body, /call=host-bash.*selected=exact-native/);
+  const workBeforeWidth = counts(f);
+  for (const width of [60, 60, 100, 100, 60]) f.document(width);
+  await settled(); await journal.flush(); assert.deepEqual(counts(f), workBeforeWidth);
+  const widthBaseline = journal.status(); const builds = f.adapter.cacheStats().builds;
+  for (let i = 0; i < 100; i++) f.document(60);
+  await settled(); await journal.flush(); assert.equal(f.adapter.cacheStats().builds, builds);
+  assert.equal(journal.status().records, widthBaseline.records); assert.equal(journal.status().writes, widthBaseline.writes);
+  assert.equal(JSON.stringify(file.args), args); assert.equal(JSON.stringify(file.result), result);
+  assert.deepEqual(bash.args, { command: shell });
+});
+
+test('logging observer failure cannot change SDK rendering, fallback or native dispatch', async () => {
+  const f = fixture(false, false, { diagnostic: () => { throw Error('untrusted diagnostic observer'); } });
+  const tool = written(f, 'const x=1;'); const cold = f.render(tool); await settled();
+  const fallback = f.render(tool); assert.deepEqual(plain(cold), plain(fallback)); assert.equal(f.env.pi.length, 1);
+  const before = counts(f); for (let i = 0; i < 50; i++) f.document(); await settled(); assert.deepEqual(counts(f), before);
+  f.env.ready = true; f.adapter.syntaxMetadataChanged(); await settled(); assert.equal(f.calls.length, 1);
+  answer(f, 0, 'const x=1;'); await settled(); assert.deepEqual(plain(f.render(tool)), plain(fallback));
+  assert.equal(f.env.pi.length, 1); assert.equal(f.sources.status(f.env.keys.at(-1)!)?.exact, true);
+});
+
+function firstDiagnosticOwner(f: ReturnType<typeof fixture>) {
+  const node = written(f, 'const first=1;'); f.render(node); return new WeakRef(node);
+}
+test('logging keeps primitive decisions only; active first SDK installer still collects with peer and logger alive', { skip: !global.gc }, async () => {
+  assert.equal(typeof global.gc, 'function', 'ownership control requires --expose-gc');
+  const root = await fs.mkdtemp(join(tmpdir(), 'tidy-log-first-owner-'));
+  const journal = new TextJournal({ session: 'actual-sdk-gc', cwd: '/tmp', reason: 'test', extension: '0.0.0', pi: VERSION }, { root });
+  try {
+    await journal.ready;
+    const packets: { area: string; explanation: string; fields?: DiagnosticFields }[] = [];
+    const diagnostic: DiagnosticSink = (level, area, explanation, fields) => {
+      for (const value of Object.values(fields ?? {})) assert.ok(value === null || ['undefined', 'string', 'number', 'boolean'].includes(typeof value));
+      packets.push({ area, explanation, fields }); journal.sink(level, area, explanation, fields);
+    };
+    const f = fixture(false, false, { diagnostic }), first = firstDiagnosticOwner(f);
+    await settled(); f.render(written(f, 'const peer=2;')); await settled(); f.ui.clear(); f.render(written(f, 'const live=3;')); await settled();
+    await journal.flush(); assert.ok(packets.some(packet => packet.area === 'syntax')); assert.ok(journal.status().writes > 0);
+    for (let i = 0; i < 40; i++) { await settled(); global.gc!(); await settled(); }
+    assert.equal(first.deref(), undefined); assert.equal(f.adapter.active, true); assert.ok(packets.length > 0);
+    assert.equal(journal.status().state, 'active');
+  } finally { await journal.close('quit'); await fs.rm(root, { recursive: true, force: true }); }
+});
+
+
+test('logging review P1: held no-newline Bash append has zero stable native prefix and truthful neutral projection', async () => {
+  const records: { explanation: string; fields?: DiagnosticFields }[] = [];
+  const f = fixture(true, false, { diagnostic: (_level, _area, explanation, fields) => records.push({ explanation, fields }) });
+  const bash = f.tool('bash', { command: 'echo a' }); f.render(bash); await settled();
+  assert.equal(f.calls.length, 1); answer(f, 0, 'echo a', false, 0); await settled(); f.render(bash);
+  bash.updateArgs({ command: 'echo ab' }); f.render(bash); await settled(); const rows = f.render(bash);
+  assert.equal(f.calls.length, 2); assert.equal(f.sources.status(f.env.keys.at(-1)!)?.committedBytes, 0);
+  assert.ok(rows.join('\n').includes(themes.theme.fg('toolTitle', 'echo ab')), 'the entire command uses its neutral role');
+  assert.equal(f.env.pi.length, 0);
+  const painted = records.findLast(record => record.fields?.selected === 'neutral-retained');
+  assert.ok(painted, 'successful projection must not claim a colored prefix when committed bytes are zero');
+  assert.match(painted.explanation, /no committed prefix.*neutral/);
+  const before = counts(f), builds = f.adapter.cacheStats().builds, length = records.length;
+  for (let i = 0; i < 100; i++) assert.deepEqual(f.render(bash), rows);
+  assert.deepEqual(counts(f), before); assert.equal(f.adapter.cacheStats().builds, builds); assert.equal(records.length, length);
+  assert.equal(records.some(record => record.explanation.includes('prepared native coloring')), false);
 });

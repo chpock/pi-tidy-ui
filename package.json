@@ -21,6 +21,7 @@
     "docs/footer-spec.md",
     "docs/terminal-colors-spec.md",
     "docs/syntax-highlighting-spec.md",
+    "docs/debug-logging-spec.md",
     "README.md",
     "LICENSE"
   ],

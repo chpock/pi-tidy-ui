@@ -1,3 +1,4 @@
+import { diagnose, type DiagnosticSink } from '../diagnostics.ts';
 import { getAgentDir, type ExtensionContext } from '@earendil-works/pi-coding-agent';
 import { createRequire } from 'node:module';
 import { open } from 'node:fs/promises';
@@ -55,17 +56,20 @@ async function installedPayload(target: NativeTarget, version: string): Promise<
 
 /** Native filesystem/network work starts only after eligible presentation attachment. */
 export function createSyntaxOptions(ctx: Pick<ExtensionContext, 'cwd' | 'sessionManager' | 'ui'>,
-  release: NativeReleaseDeclaration | undefined = NATIVE_RELEASE): SyntaxRuntimeOptions {
+  release: NativeReleaseDeclaration | undefined = NATIVE_RELEASE, diagnostic?: DiagnosticSink): SyntaxRuntimeOptions {
   const agentDir = getAgentDir(), cwd = ctx.cwd;
   const identity = { harness: 'pi', session: ctx.sessionManager.getSessionId(), project_root: cwd };
   // Local runs must never silently select a shared or published engine instead of the build under development.
   const local = development ? createLocalOwnedFactory({ command: join(extensionRoot, process.platform === 'win32' ? 'occipital.exe' : 'occipital'),
-    onMissing: missingLocalWarning(new WeakRef(ctx.ui)), requestDeadlineMs: OCCIPITAL_LIMITS.dataDeadlineMs, terminateGraceMs: 1000, cwd }) : undefined;
+    diagnostic, onMissing: missingLocalWarning(new WeakRef(ctx.ui)), requestDeadlineMs: OCCIPITAL_LIMITS.dataDeadlineMs, terminateGraceMs: 1000, cwd }) : undefined;
+  diagnose(diagnostic, 'INFO', 'occipital', development ? 'Local development: colocated binary only; no shared service, download or build'
+    : 'Published extension: shared-first, then exact declared native delivery', { version: release?.version ?? 'not declared' });
   return {
+    diagnostic,
     standaloneVersion: development ? 'local development' : release?.version ?? 'not declared',
     settings: new ExtensionSettings({ agentDir }),
     provider: {
-      tryShared: development ? async () => undefined : createSharedFactory({ identity, requestDeadlineMs: OCCIPITAL_LIMITS.dataDeadlineMs }),
+      tryShared: development ? async () => undefined : createSharedFactory({ identity, diagnostic, requestDeadlineMs: OCCIPITAL_LIMITS.dataDeadlineMs }),
       async acquireOwned(signal) {
         if (local) return local(signal);
         if (!release) throw new Error('Standalone Occipital release is not declared in this build.');
@@ -73,7 +77,7 @@ export function createSyntaxOptions(ctx: Pick<ExtensionContext, 'cwd' | 'session
         if (!target || !artifact) throw new Error('The declared Occipital release has no artifact for this platform/ABI.');
         const installedPath = await installedPayload(target, release.version);
         if (signal.aborted) throw new Error('Occipital acquisition was cancelled.');
-        return createOwnedFactory({ release: { version: release.version, ...artifact }, cacheDir: join(agentDir, 'cache', 'occipital'), installedPath,
+        return createOwnedFactory({ diagnostic, release: { version: release.version, ...artifact }, cacheDir: join(agentDir, 'cache', 'occipital'), installedPath,
           requestDeadlineMs: OCCIPITAL_LIMITS.dataDeadlineMs, terminateGraceMs: 1000, cwd })(signal);
       },
     },

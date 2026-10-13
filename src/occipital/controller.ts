@@ -1,3 +1,4 @@
+import { type DiagnosticFields, type DiagnosticLevel, type DiagnosticSink, diagnose, diagnosticError } from '../diagnostics.ts';
 import { decodeClosed, decodeSources, PROTOCOL_VERSION, RemoteFault, type Description, type ExpectedSource } from './protocol.ts';
 import { OCCIPITAL_LIMITS } from './limits.ts';
 import { RequestFailure } from './request-failure.ts';
@@ -24,6 +25,7 @@ export interface SourceDemand {
   key: string; version: number; text: string; language?: string; path?: string; profile: string; fingerprint: string; complete: boolean;
 }
 export interface ControllerOptions {
+  diagnostic?: DiagnosticSink;
   deadlineMs?: number; admission?: 'try_now' | 'bounded_queue'; queueWaitMs?: number;
   maxTransientBytes?: number; maxBookkeepingBytes?: number;
   retention?: ConstructorParameters<typeof RetentionPool>[0];
@@ -48,7 +50,7 @@ type SourceState = {
   sharedUnknown?: boolean; ownedUnknown?: number;
 };
 type PiSource = { storageKey: string; generation?: number; version: number; contentVersion: number;
-  language?: string; palette?: number; failure?: PiFailure; refused?: boolean; bytes: number };
+   language?: string; palette?: number; failure?: PiFailure; refused?: boolean; styleDirectives?: boolean; bytes: number };
 type Close = { key: string; ownerKey: string; generation: number; lease: string; provider: number; bytes: number };
 type Job = { id: number; provider: number; generation: number; key: string; stateId: number; ticket: string;
   abort: AbortController; bytes: number; description: Description; reserved: boolean;
@@ -156,7 +158,7 @@ export class SourceController {
       if (!Number.isSafeInteger(value) || value! < 128 || value! > cap!) throw new Error('invalid controller byte limit');
     }
     this.provider = provider;
-    this.options = { deadlineMs, admission: options.admission, queueWaitMs: options.queueWaitMs, onChange: options.onChange };
+    this.options = { deadlineMs, admission: options.admission, queueWaitMs: options.queueWaitMs, onChange: options.onChange, diagnostic: options.diagnostic };
     this.pool = new RetentionPool(options.retention);
     if (!this.charge(128)) throw new Error('controller bookkeeping capacity');
     lifetimes.register(this, this.lifetime, this.lifetime);
@@ -288,9 +290,9 @@ export class SourceController {
   borrowPiSource(key: string) {
     const state = this.piSources.get(key);
     const source = state?.generation === undefined ? undefined : this.pool.borrowSnapshot(state.generation);
-    return source && state ? { ...source, generation: state.generation!, language: state.language } : undefined;
+    return source && state ? { ...source, generation: state.generation!, language: state.language, styleDirectives: state.styleDirectives } : undefined;
   }
-  installPiBridge(key: string, generation: number, version: number, text: string, palette: number, lines: readonly string[]): boolean {
+  installPiBridge(key: string, generation: number, version: number, text: string, palette: number, lines: readonly string[], styleDirectives?: boolean): boolean {
     if (!Number.isSafeInteger(palette) || palette < 0) throw new Error('invalid Pi palette revision');
     const state = this.piSources.get(key);
     if (this.disposed || !state || state.generation !== generation || state.version !== version
@@ -300,7 +302,12 @@ export class SourceController {
     // Equal-text versions use the same basis. A newer alias must not invalidate
     // valid Pi rows or trigger another classifier merely for a lifecycle marker.
     const result = this.pool.installBridge(generation, basis.version, text, lines); this.receipts(result.released);
-    if (result.accepted && state.generation === generation) { state.palette = palette; state.failure = undefined; }
+    if (result.accepted && state.generation === generation) {
+      const changed = state.palette !== palette || state.failure !== undefined;
+      state.palette = palette; state.failure = undefined; state.styleDirectives = styleDirectives;
+      if (changed) this.log('DEBUG', styleDirectives === false ? 'Pi returned plain text; exact fallback cached' : 'Pi fallback cached; style directives are not proof of physical colors',
+        { source: key, version, generation, palette, styleDirectives, bytes: basis.utf8Bytes });
+    }
     return result.accepted && state.generation === generation;
   }
   /** Exact classifier failure, distinct from source/row storage refusal. */
@@ -316,7 +323,10 @@ export class SourceController {
     if (this.disposed || !state || state.generation !== generation || state.version !== version
       || state.palette !== undefined && palette < state.palette) return false;
     if (this.hasPiBridge(key, version, palette)) return false;
-    state.palette = palette; state.failure = failure; return true;
+    const changed = state.palette !== palette || state.failure !== failure;
+    state.palette = palette; state.failure = failure;
+    if (changed) this.log('WARN', 'Pi fallback classification failed; exact failure cached', { source: key, version, generation, palette, reason: failure });
+    return true;
   }
   hasPiBridge(key: string, version: number, palette: number): boolean {
     const state = this.piSources.get(key), generation = state?.generation;
@@ -499,9 +509,16 @@ export class SourceController {
   }
   private busy(key: string): boolean { return [...this.jobs.values()].some(job => job.key === key); }
   private wireKey(): string { return `source:${this.id}:${++this.wireSequence}`; }
+  private log(level: DiagnosticLevel, explanation: string, fields?: DiagnosticFields): void {
+    if (this.options.diagnostic) diagnose(this.options.diagnostic, level, 'syntax', explanation, { controller: this.id, ...fields });
+  }
   private admit(state: SourceState, text: string): boolean {
     const result = this.pool.admit(this.wireKey(), state.version, text); this.receipts(result.released);
-    if (!result.accepted) { state.blocked = true; state.dirty = false; return false; }
+    if (!result.accepted) {
+      this.log('WARN', 'Native source storage refused; no source dispatched', { source: state.key, version: state.version, units: text.length });
+      state.blocked = true; state.dirty = false; return false;
+    }
+    this.log('DEBUG', 'Native source admitted', { source: state.key, version: state.version, generation: result.generation, language: state.language, units: text.length });
     state.generation = result.generation; state.committedUnits = 0;
     state.dirty = !state.empty && !state.blocked; return true;
   }
@@ -633,6 +650,9 @@ export class SourceController {
   }
   private dispatch(job: Job, request: Record<string, unknown>): void {
     this.counters.dispatches++; const observers = completion(this.owner, job);
+    this.log('DEBUG', 'Native job dispatched', { source: job.key, job: job.id, generation: job.generation, provider: job.provider,
+      operation: typeof request.op === 'string' ? request.op : 'unknown', version: job.source?.expected.source_version,
+      sourceBytes: job.source?.expected.source_bytes, reservedBytes: job.bytes });
     try { void this.provider.request(job.provider, request, { signal: job.abort.signal, deadlineMs: this.options.deadlineMs, acceptRetired: true })
       .then(observers.reply, observers.failed).catch(ignored); } catch (error) { observers.failed(error); }
   }
@@ -670,6 +690,8 @@ export class SourceController {
       && state?.id === job.stateId && state.generation === job.generation && !!this.pool.status(job.generation);
     try {
       if (rejected) {
+        this.log('WARN', 'Native request rejected; cancellation or rejection is not stop proof', { source: job.key, job: job.id, provider: job.provider,
+          version: job.source?.expected.source_version, execution: raw instanceof RequestFailure ? raw.execution : 'unknown', code: diagnosticError(raw) });
         if (raw instanceof RequestFailure && raw.execution === 'not_started') {
           if (job.source?.open && providerCurrent && this.leaseProvider === job.provider) this.remoteLeases = Math.max(0, this.remoteLeases - 1);
           if (!job.stopped && state?.id === job.stateId && state.provider === job.provider && !state.uncertain) {
@@ -685,6 +707,7 @@ export class SourceController {
       }
       if (job.close) {
         decodeClosed(raw, job.ticket, job.description);
+        this.log('DEBUG', 'Native source lease close acknowledged', { source: job.key, job: job.id, provider: job.provider });
         if (providerCurrent && this.leaseProvider === job.provider) this.remoteLeases = Math.max(0, this.remoteLeases - 1);
         return;
       }
@@ -696,6 +719,7 @@ export class SourceController {
           state.execution = 'acknowledged'; changed = true;
         }
         this.counters.staleReplies++;
+        this.log('DEBUG', 'Validated native reply is stale; its colors rejected', { source: job.key, job: job.id, provider: job.provider, version: source.expected.source_version });
         if (source.open && chunk.lease && !chunk.complete && providerCurrent) this.close({ key: chunk.key, ownerKey: job.key,
           generation: chunk.generation, lease: chunk.lease, provider: job.provider });
         return;
@@ -705,6 +729,7 @@ export class SourceController {
       this.provider.classificationAccepted(job.provider);
       const result = this.pool.installChunk(job.generation, chunk, source.capture); this.receipts(result.released);
       if (!result.accepted || state.generation !== job.generation) {
+        this.log('WARN', 'Validated native colors refused by local storage', { source: job.key, job: job.id, provider: job.provider, version: source.expected.source_version });
         if (source.open && chunk.lease && !chunk.complete) this.close({ key: chunk.key, ownerKey: job.key, generation: chunk.generation, lease: chunk.lease, provider: job.provider });
         return;
       }
@@ -715,8 +740,13 @@ export class SourceController {
       this.counters.tailCalls += chunk.counters.tail_calls; this.counters.tailBytes += chunk.counters.tail_bytes;
       if (chunk.complete && source.expected.lease && this.leaseProvider === job.provider) this.remoteLeases = Math.max(0, this.remoteLeases - 1);
       changed = true;
+      this.log('DEBUG', 'Validated native result accepted', { source: job.key, job: job.id, provider: job.provider, version: source.expected.source_version,
+        sourceBytes: chunk.source_bytes, committedBytes: chunk.committed_bytes, complete: chunk.complete,
+        committedLineCalls: chunk.counters.committed_line_calls, tailCalls: chunk.counters.tail_calls });
     } catch (error) {
       const source = job.source;
+      this.log('WARN', 'Native reply refused by validation or remote admission', { source: job.key, job: job.id, provider: job.provider,
+        version: source?.expected.source_version, execution: error instanceof RemoteFault ? error.execution : 'unknown', code: diagnosticError(error) });
       if (error instanceof RemoteFault && error.execution === 'not_started') {
         if (source?.open && providerCurrent && this.leaseProvider === job.provider) this.remoteLeases = Math.max(0, this.remoteLeases - 1);
         if (!job.stopped && state?.id === job.stateId && state.provider === job.provider && !state.uncertain) {
@@ -727,7 +757,10 @@ export class SourceController {
           state.execution = 'not_started';
           if (error.code === 'restart_required') {
             state.restarts++;
-            if (state.restarts <= CONTROLLER_LIMITS.restarts) { this.counters.restarts++; this.restart(state, state.provider, false); }
+             if (state.restarts <= CONTROLLER_LIMITS.restarts) {
+               this.log('INFO', 'Parser state lost; bounded source restart selected', { source: state.key, version: state.version, restart: state.restarts });
+               this.counters.restarts++; this.restart(state, state.provider, false);
+             }
             else { this.retire(state); state.blocked = true; state.dirty = false; }
            } else if (error.code === 'profile_changed' || error.code === 'theme_unavailable') {
              state.execution = 'not_started'; state.blocked = true; state.dirty = false;
@@ -743,7 +776,12 @@ export class SourceController {
       this.release(job); this.schedule(); this.finishLifetime();
       const current = this.states.get(job.key), next = this.workStatus(job.key);
       if (current?.id === job.stateId && (changed || permission.execution !== next.execution
-        || permission.fallbackEligible !== next.fallbackEligible)) this.changed(job.key);
+        || permission.fallbackEligible !== next.fallbackEligible)) {
+        if (permission.execution !== next.execution || permission.fallbackEligible !== next.fallbackEligible)
+          this.log('DEBUG', next.fallbackEligible ? 'Pi fallback permitted by settled source authority' : 'Source authority prohibits a duplicate Pi classifier',
+            { source: job.key, version: current.version, execution: next.execution, fallbackEligible: next.fallbackEligible });
+        this.changed(job.key);
+      }
     }
   }
 }

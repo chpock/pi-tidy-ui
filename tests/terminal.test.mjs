@@ -116,6 +116,7 @@ export class PiTerminal {
       PI_CODING_AGENT_DIR: this.agent, TIDY_UI_TEST_OUTPUT: this.output,
       PI_OFFLINE: '1', PI_SKIP_VERSION_CHECK: '1', PI_TELEMETRY: '0',
     };
+    Object.assign(env, { TMPDIR: this.temp, TMP: this.temp, TEMP: this.temp });
     this.child = spawn('python3', [join(fixtures, 'pty_bridge.py'), '100', '80', this.work, cli, ...args],
       { env, stdio: ['pipe', 'pipe', 'pipe'] });
     this.child.on('error', (error) => { this.error = error; });

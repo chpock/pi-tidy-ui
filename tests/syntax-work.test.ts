@@ -539,3 +539,59 @@ test('syntax work neutral fallback keeps held native authority through off witho
   assert.equal(requestSyntax(client, identity, classify).outcome, 'neutral');
   assert.equal(pi, 0); assert.equal(host.calls.length, 1); assert.equal(sources.borrowPiSource('source'), undefined);
 });
+
+
+test('syntax diagnostics distinguish a cached plain Pi result from native work without logging source content', async () => {
+  const events: string[] = [];
+  const diagnostic = (_level: unknown, _area: unknown, explanation: string, fields?: object) => events.push(`${explanation} ${JSON.stringify(fields)}`);
+  const { client, sources, host } = fixture(false, { diagnostic });
+  let calls = 0;
+  const d = demand('PRIVATE_SOURCE_CONTENT', 1, false);
+  requestSyntax(client, d, text => { calls++; return text.split('\n'); });
+  assert.ok(events.some(row => /plain.*Pi|Pi.*plain/u.test(row)), events.join('\n'));
+  const before = events.length;
+  for (let index = 0; index < 20; index++) {
+    requestSyntax(client, d, () => { throw new Error('must reuse Pi'); });
+    resolveSyntax(sources, d, neutral);
+    paintFileSyntax(sources, resolveSyntax(sources, d, neutral), plainTheme);
+  }
+  assert.equal(events.length, before);
+  assert.equal(calls, 1);
+  host.ready = true;
+  assert.equal(requestSyntax(client, d, highlight).outcome, 'pi'); // Retained fallback remains usable while native is queued.
+  sources.flush();
+  assert.ok(events.some(row => /dispatched/u.test(row)), events.join('\n'));
+  assert.equal(host.calls.length, 1);
+  host.answer(0, d.text, false); await settled();
+  assert.ok(events.some(row => /accepted/u.test(row)), events.join('\n'));
+  assert.ok(events.every(row => !row.includes('PRIVATE_SOURCE_CONTENT')), events.join('\n'));
+});
+
+test('syntax diagnostics are observational even if their sink throws', async () => {
+  const { client, sources, host } = fixture(true, { diagnostic: () => { throw new Error('unavailable logger'); } });
+  let calls = 0;
+  const d = demand('x', 1, false);
+  assert.equal(requestSyntax(client, d, text => { calls++; return highlight(text); }).outcome, 'waiting');
+  sources.flush(); assert.equal(host.calls.length, 1);
+  host.answer(0, d.text, false); await settled();
+  assert.equal(resolveSyntax(sources, d, neutral).nativeExact, true);
+  assert.equal(calls, 0);
+  assert.equal(sources.stats().globalUnsettledJobs, 0);
+});
+
+
+for (const code of ['busy', 'profile_changed', 'theme_unavailable', 'invalid_header', 'PRIVATE_NATIVE_CODE'])
+  test(`logging review P2: native rejection preserves safe ${code} without exposing arbitrary code/message`, async () => {
+    const records: { explanation: string; fields?: import('../src/diagnostics.ts').DiagnosticFields }[] = [];
+    const f = fixture(true, { diagnostic: (_level, _area, explanation, fields) => records.push({ explanation, fields }) });
+    const d = demand('PRIVATE_SOURCE_TEXT'); requestSyntax(f.client, d, highlight); f.sources.flush();
+    assert.equal(f.host.calls.length, 1);
+    if (code === 'invalid_header') f.host.calls[0]!.resolve({ malformed: 'PRIVATE_REPLY_TEXT' });
+    else f.host.fault(0, code);
+    await settled();
+    const rejection = records.find(record => record.explanation.startsWith('Native reply refused'));
+    assert.equal(rejection?.fields?.code, code === 'PRIVATE_NATIVE_CODE' ? 'unknown' : code);
+    assert.equal(f.host.calls.length, 1); assert.equal(f.sources.stats().unsettledJobs, 0);
+    const text = JSON.stringify(records); assert.equal(text.includes('PRIVATE_NATIVE_CODE'), false);
+    assert.equal(text.includes('PRIVATE_SOURCE_TEXT'), false); assert.equal(text.includes('PRIVATE_REPLY_TEXT'), false);
+  });

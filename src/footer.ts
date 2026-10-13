@@ -1,4 +1,5 @@
 import type { ContextUsage, SessionEntry, ThemeColor } from "@earendil-works/pi-coding-agent";
+import { diagnose, type DiagnosticSink } from './diagnostics.ts';
 import { truncateToWidth, visibleWidth, type Component } from "@earendil-works/pi-tui";
 import { layoutMemory, type LayoutMemory } from "./render-cache.ts";
 
@@ -150,8 +151,9 @@ export class FooterView implements Component {
   private readonly readStatuses: () => ReadonlyMap<string, string>;
   private readonly readTheme: () => FooterTheme;
   private readonly isActive: () => boolean;
-  constructor(read: () => FooterData, readStatuses: () => ReadonlyMap<string, string>, readTheme: () => FooterTheme, isActive: () => boolean = () => true) {
-    this.read = read; this.readStatuses = readStatuses; this.readTheme = readTheme; this.isActive = isActive;
+  private readonly diagnostic?: DiagnosticSink;
+  constructor(read: () => FooterData, readStatuses: () => ReadonlyMap<string, string>, readTheme: () => FooterTheme, isActive: () => boolean = () => true, diagnostic?: DiagnosticSink) {
+    this.read = read; this.readStatuses = readStatuses; this.readTheme = readTheme; this.isActive = isActive; this.diagnostic = diagnostic;
   }
   render(width: number): string[] {
     if (width < 1 || !this.isActive()) return [];
@@ -159,12 +161,14 @@ export class FooterView implements Component {
     if (this.rows && this.width === width && this.data === data && this.theme === theme &&
       this.statuses.length === statuses.length && this.statuses.every(([key, value], i) => key === statuses[i]?.[0] && value === statuses[i]?.[1])) return this.rows;
     this.width = width; this.data = data; this.theme = theme; this.statuses = statuses;
-    return this.rows = renderFooter(width, data, statuses, theme);
+    this.rows = renderFooter(width, data, statuses, theme);
+    diagnose(this.diagnostic, 'DEBUG', 'footer', 'Footer layout rebuilt from existing snapshots; producer status strings excluded', { width, rows: this.rows.length, statuses: statuses.length });
+    return this.rows;
   }
   /** On-demand retained-row estimate; never reads session data or rebuilds the footer. */
   retainedMemory(): LayoutMemory {
     return this.rows ? layoutMemory(this.rows) : { retainedBytes: 0, stringBytes: 0, overheadBytes: 0, entries: 0, rows: 0 };
   }
-  invalidate(): void { this.rows = undefined; }
-  clear(): void { this.rows = undefined; this.data = undefined; this.theme = undefined; this.statuses = []; }
+  invalidate(): void { if (this.rows) diagnose(this.diagnostic, 'DEBUG', 'footer', 'Existing footer layout invalidated'); this.rows = undefined; }
+  clear(): void { if (this.rows || this.data) diagnose(this.diagnostic, 'DEBUG', 'footer', 'Footer snapshots and layout cleared'); this.rows = undefined; this.data = undefined; this.theme = undefined; this.statuses = []; }
 }

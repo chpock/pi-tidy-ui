@@ -47,7 +47,8 @@ function logicalRows(text: string): number {
  * source/palette authority and any accepted result retention outside this reader.
  * Empty source succeeds without visiting rows; invalid source/neutral fails
  * before visiting rows. Reader creation does not inspect source or invoke Pi. */
-export function piRangeReader(text: string, rows: PiRowReader, neutralStyle = 0): RangeReader {
+export function piRangeReader(text: string, rows: PiRowReader, neutralStyle = 0,
+  diagnostics?: { styleDirectives: boolean }): RangeReader {
   return consume => {
     if (!validNeutral(neutralStyle)) return false;
     const expectedRows = logicalRows(text);
@@ -91,16 +92,17 @@ export function piRangeReader(text: string, rows: PiRowReader, neutralStyle = 0)
         const code = parameter();
         if (code === undefined) return -1;
         if (code === 0) reset();
-        else if (code === 1) attributes |= 1;
-        else if (code === 2) attributes |= 8;
-        else if (code === 3) attributes |= 4;
-        else if (code === 4) attributes |= 2;
+        else if (code === 1 || code === 2 || code === 3 || code === 4) {
+          attributes |= code === 1 ? 1 : code === 2 ? 8 : code === 3 ? 4 : 2;
+          if (diagnostics) diagnostics.styleDirectives = true;
+        }
         else if (code === 22) attributes &= ~(1 | 8);
         else if (code === 23) attributes &= ~4;
         else if (code === 24) attributes &= ~2;
         else if (code === 39) foreground = neutralFg;
         else if ((code >= 30 && code <= 37) || (code >= 90 && code <= 97)) {
           foreground = ((2 << 30) | (code >= 90 ? code - 90 + 8 : code - 30)) >>> 0;
+          if (diagnostics) diagnostics.styleDirectives = true;
         } else if (code === 38 || code === 48) {
           const mode = parameter();
           let color: number;
@@ -113,7 +115,7 @@ export function piRangeReader(text: string, rows: PiRowReader, neutralStyle = 0)
             if (r === undefined || g === undefined || b === undefined) return -1;
             color = ((1 << 30) | (r << 16) | (g << 8) | b) >>> 0;
           } else return -1;
-          if (code === 38) foreground = color;
+          if (code === 38) { foreground = color; if (diagnostics) diagnostics.styleDirectives = true; }
         } else if (!(code === 49 || (code >= 40 && code <= 47) || (code >= 100 && code <= 107))) return -1;
       }
       return at;

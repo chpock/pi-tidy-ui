@@ -1,3 +1,4 @@
+import { diagnose, diagnosticError, type DiagnosticFields, type DiagnosticSink } from '../diagnostics.ts';
 import { ExtensionSettings, type SyntaxTheme } from '../settings.ts';
 import { SourceController, type ControllerOptions } from './controller.ts';
 import type { SyntaxMenuOutcome, SyntaxMenuOwner, SyntaxMenuSnapshot } from './menu.ts';
@@ -6,6 +7,7 @@ import type { ProfileDescription } from './protocol.ts';
 import { ProviderBroker, type ProviderOptions, type ProviderSnapshot } from './provider.ts';
 
 export interface SyntaxClientOptions {
+  diagnostic?: DiagnosticSink;
   provider: Omit<ProviderOptions, 'onChange' | 'onOwnedStopped'>;
   /** Trusted delivery metadata, not a version discovery request. */
   standaloneVersion: string;
@@ -42,6 +44,7 @@ export class SyntaxClient implements SyntaxMenuOwner {
   readonly sources: SourceController;
   private readonly settings: Pick<ExtensionSettings, 'load' | 'update'>;
   private readonly standaloneVersion: string;
+  private readonly diagnostic?: DiagnosticSink;
   private readonly notify?: SyntaxClientOptions['notify'];
   private readonly onChange?: SyntaxClientOptions['onChange'];
   private readonly onSourceChange?: SyntaxClientOptions['onSourceChange'];
@@ -65,12 +68,12 @@ export class SyntaxClient implements SyntaxMenuOwner {
 
   constructor(options: SyntaxClientOptions) {
     this.settings = options.settings ?? new ExtensionSettings();
-    this.standaloneVersion = options.standaloneVersion;
+    this.standaloneVersion = options.standaloneVersion; this.diagnostic = options.diagnostic;
     this.notify = options.notify; this.onChange = options.onChange; this.onSourceChange = options.onSourceChange;
-    this.broker = new ProviderBroker({ ...options.provider, onChange: brokerObserver(new WeakRef(this)),
+    this.broker = new ProviderBroker({ ...options.provider, diagnostic: options.diagnostic ?? options.provider.diagnostic, onChange: brokerObserver(new WeakRef(this)),
       onOwnedStopped: ownedStopObserver(new WeakRef(this)) });
     this.provider = this.broker.snapshot();
-    this.sources = new SourceController(this.broker, { ...options.source, onChange: sourceObserver(new WeakRef(this)) });
+    this.sources = new SourceController(this.broker, { ...options.source, diagnostic: options.diagnostic ?? options.source?.diagnostic, onChange: sourceObserver(new WeakRef(this)) });
     this.sources.setEnabled(false);
   }
 
@@ -91,14 +94,16 @@ export class SyntaxClient implements SyntaxMenuOwner {
     if (selected.kind !== this.selected.kind || selected.kind === 'occipital' && this.selected.kind === 'occipital' && selected.id !== this.selected.id)
       this.missingEpisode = false;
     ++this.preferenceRevision; this.preferenceKnown = true; this.selected = selected;
+    this.log('Syntax theme selected; applying before persistence', { choice: selected.kind, theme: selected.kind === 'occipital' ? selected.id : 'Pi', revision: this.preferenceRevision });
     this.cancelSave(); const save = new AbortController(); this.save = save;
     this.reconcile();
     try {
       const result = await this.settings.update({ syntaxTheme: copyTheme(selected) }, { signal: save.signal });
-      if (this.disposed || save.signal.aborted || this.save !== save) return { ok: false, message: SAVE_FAILED };
-      if (!result.ok) { this.issue(result.issue.message); return { ok: false, message: result.issue.message }; }
-      return { ok: true };
-    } catch {
+      if (this.disposed || save.signal.aborted || this.save !== save) { this.log('Theme save result ignored; request cancelled or retired'); return { ok: false, message: SAVE_FAILED }; }
+      if (!result.ok) { this.log('Theme persistence failed; selection remains session-local'); this.issue(result.issue.message); return { ok: false, message: result.issue.message }; }
+      this.log('Syntax theme persisted'); return { ok: true };
+    } catch (error) {
+      this.log('Theme persistence did not complete', { code: diagnosticError(error), cancelled: save.signal.aborted });
       if (!this.disposed && !save.signal.aborted && this.save === save) this.issue(SAVE_FAILED);
       return { ok: false, message: SAVE_FAILED };
     } finally { if (this.save === save) this.save = undefined; }
@@ -118,6 +123,7 @@ export class SyntaxClient implements SyntaxMenuOwner {
     if (this.disposed) return this.shutdown ?? Promise.resolve();
     if (this.enabled === enabled) return Promise.resolve();
     this.enabled = enabled; ++this.menuEpoch; this.cancelSave();
+    this.log('Native highlighting session activation changed', { enabled });
     this.sources.setEnabled(enabled && this.preferenceKnown);
     const operation = this.broker.setEnabled(enabled);
     this.acceptBrokerChange();
@@ -166,6 +172,7 @@ export class SyntaxClient implements SyntaxMenuOwner {
       const result = await this.settings.load();
       if (this.disposed || revision !== this.preferenceRevision || this.preferenceRevision !== 0) return;
       this.selected = copyTheme(result.syntaxTheme); this.preferenceKnown = true;
+      this.log('Syntax preference restored', { ok: result.ok, choice: this.selected.kind, theme: this.selected.kind === 'occipital' ? this.selected.id : 'Pi' });
       if (!result.ok) this.issue(result.issue.message, true);
     } catch {
       if (this.disposed || revision !== this.preferenceRevision || this.preferenceRevision !== 0) return;
@@ -176,7 +183,9 @@ export class SyntaxClient implements SyntaxMenuOwner {
   private reconcile(): void {
     const resolved = resolveTheme(this.selected, this.preferenceKnown && this.enabled && this.provider.availability === 'ready'
       ? this.provider.description?.profiles : undefined);
-    this.effective = resolved.effective;
+    const previous = this.effective; this.effective = resolved.effective;
+    if (previous?.id !== this.effective?.id || previous?.fingerprint !== this.effective?.fingerprint)
+      this.log('Effective syntax profile changed without observing source text', { profile: this.effective?.id ?? 'unavailable', missing: resolved.missing });
     this.sources.setEnabled(this.preferenceKnown && this.enabled);
     if (resolved.missing && this.selected.kind === 'occipital') {
       if (!this.missingEpisode) {
@@ -187,6 +196,7 @@ export class SyntaxClient implements SyntaxMenuOwner {
     // Unavailability alone cannot end an unresolved missing-theme episode.
     this.changed();
   }
+  private log(explanation: string, fields?: DiagnosticFields): void { diagnose(this.diagnostic, 'INFO', 'syntax', explanation, fields); }
   private cancelSave(): void { this.save?.abort(saveCancelled); this.save = undefined; }
   private issue(message: string, notify = false): void {
     this.lastIssue = message; this.changed();
@@ -205,6 +215,7 @@ export class SyntaxClient implements SyntaxMenuOwner {
   }
   private async readCatalogue(op: 'describe' | 'themes.refresh', need?: ProfileNeed): Promise<SyntaxMenuOutcome> {
     const attempt = { epoch: this.menuEpoch, generation: this.provider.generation }; this.metadata = attempt;
+    this.log('Provider catalogue read started; this is not source classification', { operation: op, generation: attempt.generation });
     try {
       const description = await this.broker.catalogue(attempt.generation, op);
       if (!this.menuCurrent(attempt.epoch) || !this.broker.isReady(attempt.generation)) return { ok: false, message: REFRESH_FAILED };
@@ -214,8 +225,10 @@ export class SyntaxClient implements SyntaxMenuOwner {
       if (op === 'themes.refresh' && description.diagnostic !== null) {
         this.issue(REFRESH_FAILED); return { ok: false, message: REFRESH_FAILED };
       }
+      this.log('Provider catalogue read completed', { operation: op, generation: attempt.generation, profiles: description.profiles.length });
       return { ok: true };
-    } catch {
+    } catch (error) {
+      this.log('Provider catalogue read failed or wait expired; source deadline policy is unchanged', { operation: op, code: diagnosticError(error) });
       if (this.menuCurrent(attempt.epoch) && this.broker.isReady(attempt.generation)) this.issue(REFRESH_FAILED, op === 'describe');
       return { ok: false, message: REFRESH_FAILED };
     } finally {

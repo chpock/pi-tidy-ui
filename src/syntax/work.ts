@@ -1,6 +1,6 @@
 import type { CardTheme } from '../card-theme.ts';
 import type { SyntaxClient } from '../occipital/client.ts';
-import type { PiFailure, SourceController, SourceDemand } from '../occipital/controller.ts';
+import type { PiFailure, SourceController, SourceDemand, SourceWorkStatus } from '../occipital/controller.ts';
 import { paintBashCommand, paintFileSource, type RangeReader } from './paint.ts';
 import { piRangeReader, type PiRowReader } from './pi.ts';
 
@@ -11,6 +11,10 @@ export type SyntaxWorkResult = { outcome: 'native' | 'pi' | 'neutral' | 'waiting
 export interface SyntaxResolution extends SyntaxIdentity {
   owner: WeakRef<SourceController>;
   nativeExact: boolean;
+  execution: SourceWorkStatus['execution'];
+  fallbackEligible: boolean;
+  piStyled?: boolean;
+  committedBytes?: number;
   needsPi: boolean;
   profileRetryAllowed: boolean;
   nativeGeneration?: number;
@@ -111,10 +115,11 @@ export function requestSyntax(client: Client, demand: SyntaxDemand, classify: Pi
   if (!piCurrent(sources, key, source.generation, version, language)) return { outcome: 'stale' };
   // Validation only: a concrete neutral permits bare fonts/reset without theme
   // inference. Rendering projects those ANSI rows with the caller's real neutral.
-  if (!piRangeReader(source.text, classificationRows(lines), 0x40000000)(ignoreRange))
+  const diagnostic = { styleDirectives: false };
+  if (!piRangeReader(source.text, classificationRows(lines), 0x40000000, diagnostic)(ignoreRange))
     return sources.recordPiFailure(key, source.generation, version, palette, 'invalid_rows')
       ? { outcome: 'failed', failure: 'invalid_rows' } : { outcome: 'stale' };
-  return { outcome: sources.installPiBridge(key, source.generation, version, source.text, palette, lines) ? 'pi' : 'refused' };
+  return { outcome: sources.installPiBridge(key, source.generation, version, source.text, palette, lines, diagnostic.styleDirectives) ? 'pi' : 'refused' };
 }
 
 /** Pure keyed completion/display read. needsPi is permission/usefulness, not a
@@ -133,6 +138,7 @@ export function resolveSyntax(sources: SourceController, identity: SyntaxIdentit
   const failure = matchingPi && sources.piFailure(key, version, palette);
   const owner = new WeakRef(sources);
   return { key, version, language, complete, palette, fallback, owner, nativeExact,
+    execution: work.execution, fallbackEligible: work.fallbackEligible, piStyled: currentPi?.styleDirectives, committedBytes: status?.committedBytes,
     needsPi: allowPi && (work.version === undefined || work.version <= version) && (pi === undefined || pi.version <= version)
       && !nativeExact && !currentPi && work.fallbackEligible && !failure,
     profileRetryAllowed: work.version === version && work.profileRetryAllowed,

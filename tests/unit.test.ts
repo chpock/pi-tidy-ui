@@ -206,7 +206,9 @@ test("completion marker constant can restore success and failure symbols without
   const temporary = mkdtempSync(join(tmpdir(), "tidy-ui-completion-markers-"));
   let controller: ReturnType<typeof installTidyUi> | undefined;
   try {
-    const file = join(temporary, "index.ts"); writeFileSync(file, enabled);
+    mkdirSync(join(temporary, "src"));
+    writeFileSync(join(temporary, "package.json"), readFileSync(new URL("../package.json", sourceUrl)));
+    const file = join(temporary, "src/index.ts"); writeFileSync(file, enabled);
     const alternate = await import(pathToFileURL(file).href);
     const root = new Root(), tool = new Tool(); root.addChild(tool);
     controller = alternate.installTidyUi(root, () => color);
@@ -228,7 +230,8 @@ test("one execution-only spinner clock changes prefixes without rebuilding cache
   const intervals = t.mock.method(globalThis, "setTimeout"), clears = t.mock.method(globalThis, "clearTimeout");
   const first = new Tool("read", { path: "a.txt", query: "x".repeat(90) }), second = new Tool("custom", { drop: "1,2,3,4" });
   first.result = second.result = undefined; first.executionStarted = second.executionStarted = false;
-  const { root, controller } = setup([first, second]);
+  const records: { area: string; explanation: string; fields?: import('../src/diagnostics.ts').DiagnosticFields }[] = [];
+  const { root, controller } = setup([first, second], { diagnostic: (_level, area, explanation, fields) => records.push({ area, explanation, fields }) });
   try {
     assert.ok(root.render(30).every((row) => !row.includes("…")));
     assert.equal(intervals.mock.calls.length, 0, "argument streaming alone starts no animation clock");
@@ -252,6 +255,11 @@ test("one execution-only spinner clock changes prefixes without rebuilding cache
       assert.equal(controller.cacheStats().builds, builds, "ticks cause no custom layout rebuilds or global invalidation");
     }
     assert.equal(seen.size, 4);
+    controller.logSnapshot();
+    const aggregate = records.find(record => record.area === 'animation' && record.explanation.startsWith('Snapshot'));
+    assert.equal(aggregate?.fields?.wakes, 4); assert.equal(aggregate?.fields?.requests, 4);
+    assert.equal(aggregate?.fields?.participants, 2);
+    assert.equal(records.some(record => record.explanation.includes('tick')), false, 'no per-tick records');
     const armed = intervals.mock.calls.length;
     first.updateResult({ isError: true, content: [{ type: "text", text: "PARTIAL" }] }, true);
     first.render(30); assert.equal(intervals.mock.calls.length, armed, "partial failure keeps the existing deadline");
@@ -524,19 +532,23 @@ test("restoration does not overwrite methods subsequently replaced by another ex
 });
 
 test("incompatible existing or future tool contract restores all owned hooks and warns", () => {
-  const warnings: string[] = [];
+  const warnings: string[] = [], diagnostics: string[] = [];
+  const diagnostic = (_level: unknown, _area: unknown, explanation: string) => diagnostics.push(explanation);
   const bad = new Tool(); Object.defineProperty(bad, "expanded", { value: "not-a-boolean" });
-  const { controller, original, addChild } = setup([bad], { warn: (reason) => warnings.push(reason) });
+  const { controller, original, addChild } = setup([bad], { warn: (reason) => warnings.push(reason), diagnostic });
   assert.equal(controller.active, false);
   assert.equal(Tool.prototype.render, original);
   assert.equal(Container.prototype.addChild, addChild);
   assert.equal(warnings.length, 1);
-  const live = setup([new Tool()], { warn: (reason) => warnings.push(reason) });
+  const live = setup([new Tool()], { warn: (reason) => warnings.push(reason), diagnostic });
   live.root.addChild(bad);
   assert.equal(live.controller.active, false);
   assert.equal(Tool.prototype.render, original);
   assert.equal(Container.prototype.addChild, addChild);
   assert.equal(warnings.length, 2);
+  assert.equal(diagnostics.filter(text => text === "Tool component contract is incompatible; native rendering retained").length, 2);
+  live.controller.restore(); live.root.addChild(bad);
+  assert.equal(diagnostics.filter(text => text === "Tool component contract is incompatible; native rendering retained").length, 2, "known failure is recorded once per adapter");
 });
 
 test("foreign TUI instance is left untouched with a compatibility warning", () => {
@@ -592,7 +604,7 @@ function extensionHarness(mode: "tui" | "print" | "json" | "rpc" = "tui", flagVa
       else { widgetComponents.delete(name); widgetPlacements.delete(name); }
     },
   } } as unknown as ExtensionContext;
-  tidyUi(api, { syntax: fixtureSyntaxOptions });
+  tidyUi(api, { logging: false, syntax: fixtureSyntaxOptions });
   return { root, ctx, events, commands, flags, widgets, notices, widgetComponents, widgetPlacements };
 }
 
@@ -4326,7 +4338,9 @@ test("editor widget gap excludes absent zero-height and below-only widgets and f
   for (const mode of ["regular", "fullscreen"]) {
     const { root, editor, host, frame } = editorWidgetSetup();
     editor.setText("GAP_INPUT_界é");
-    const controller = installTidyUi(root, () => color, { editorStatus: true });
+    const records: { explanation: string; fields?: import('../src/diagnostics.ts').DiagnosticFields }[] = [];
+    const controller = installTidyUi(root, () => color, { editorStatus: true,
+      diagnostic: (_level, area, explanation, fields) => { if (area === 'editor') records.push({ explanation, fields }); } });
     let content: string[] = [], calls = 0;
     const nativeCalls = mode === "regular" ? 1 : 2;
     try {
@@ -4340,11 +4354,15 @@ test("editor widget gap excludes absent zero-height and below-only widgets and f
       assert.equal(calls, nativeCalls);
       content = ["UPPER_ONE", "UPPER_TWO"];
       const shown = draw(); assert.deepEqual(shown, ["", ...baseline]); assert.equal(calls, 2 * nativeCalls);
+      assert.equal(records.at(-1)?.fields?.offsetY, 1, "same-size editor must report its newly computed separator mapping");
+      assert.equal(records.length, 2, "zero-height observations deduplicate; positive mapping emits once");
       assert.equal(shown.findIndex(row => row.includes(CURSOR_MARKER)), baseline.findIndex(row => row.includes(CURSOR_MARKER)) + 1);
       host.setExtensionWidget("later-registration", () => ({ render: () => ["LAST_UPPER"], invalidate() {} }));
       assert.deepEqual(draw(), shown, "new widget registration cannot cross the editor-owned gap"); assert.equal(calls, 3 * nativeCalls);
+      assert.equal(records.length, 2, "unchanged positive mapping emits no repeated record");
       content = []; host.setExtensionWidget("later-registration", undefined);
       assert.deepEqual(draw(), baseline, "same registered component becoming zero-height removes the gap"); assert.equal(calls, 4 * nativeCalls);
+      assert.equal(records.at(-1)?.fields?.offsetY, 0); assert.equal(records.length, 3);
       host.setExtensionWidget("live-height", undefined);
       assert.deepEqual(draw(), baseline, "removing the last upper widget removes the gap"); assert.equal(calls, 4 * nativeCalls);
       assert.equal(controller.renderEditorStatus(80, { model: "M", provider: "P", thinking: "off", idle: true }).length, 2);
@@ -4682,10 +4700,13 @@ test("native activity same-editor routing restores another focused component", (
 test("Git failures omit branch without blocking cwd or retaining resources", async () => {
   const { GitBranchSource, gitDiagnostics } = await import("../src/git-branch.ts");
   const cwd = mkdtempSync(join(tmpdir(), "tidy-ui-git-error-"));
-  const before = gitDiagnostics(), source = new GitBranchSource(() => {}, { env: { ...process.env, PATH: "/git-not-present" } });
+  const records: { explanation: string; fields?: import('../src/diagnostics.ts').DiagnosticFields }[] = [];
+  const before = gitDiagnostics(), source = new GitBranchSource(() => {}, { env: { ...process.env, PATH: "/git-not-present" },
+    diagnostic: (_level, _area, explanation, fields) => records.push({ explanation, fields }) });
   try {
     source.setDirectory(cwd); await awaitFixture(source.settled()); assert.equal(source.branch(cwd), undefined);
     const current = gitDiagnostics(); assert.equal(current.spawned, before.spawned, "missing binary started zero processes");
+    assert.equal(records.find(record => record.explanation.startsWith('Git query did not succeed'))?.fields?.code, 'ENOENT');
     for (let n = 0; n < 50; n++) source.setDirectory(cwd);
     await awaitFixture(source.settled()); assert.equal(gitDiagnostics().queries, current.queries, "no retry polling on errors");
   } finally { source.dispose(); await awaitFixture(source.settled()); rmSync(cwd, { recursive: true, force: true }); }
@@ -4777,7 +4798,7 @@ async function footerSetup(foreignEditor = false, selectorAtStartup = false) {
       cost: { input: cost, output: 0, cacheRead: 0, cacheWrite: 0, total: cost } } });
   if (foreignEditor) ctx.ui.setEditorComponent(footerForeignEditor);
   if (selectorAtStartup) { input.clear(); input.addChild(new Text("NATIVE_RELOAD_BOX", 0, 0)); }
-  append(); tidyUi(pi as unknown as ExtensionAPI, { syntax: fixtureSyntaxOptions }); emit("session_start");
+  append(); tidyUi(pi as unknown as ExtensionAPI, { logging: false, syntax: fixtureSyntaxOptions }); emit("session_start");
   return { root, host, footer, native, ctx, manager, statuses, append, emit, editor, input,
     render: (width = 140) => footer.children[0]!.render(width), counts: () => ({ scans, contextReads }), authReads: () => authReads,
     context(value: typeof context) { context = value; }, auto(value: boolean) { auto = value; }, subscription(value: boolean) { subscription = value; },

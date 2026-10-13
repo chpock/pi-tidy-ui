@@ -1,3 +1,4 @@
+import { diagnose, diagnosticError, type DiagnosticSink } from '../diagnostics.ts';
 import { acquireNative, type NativeRelease } from './native.ts';
 import { constants } from 'node:fs';
 import { access, stat } from 'node:fs/promises';
@@ -8,6 +9,7 @@ import { SharedTransport, type SharedOptions } from './shared.ts';
 import { connectionCandidates } from './discovery.ts';
 
 export interface OwnedFactoryOptions {
+  diagnostic?: DiagnosticSink;
   /** Trusted daemon release, independent of the extension version. */
   release: NativeRelease;
   cacheDir: string;
@@ -21,7 +23,7 @@ export interface OwnedFactoryOptions {
   env?: NodeJS.ProcessEnv;
   cwd?: string;
 }
-type OwnedLaunchOptions = Pick<OwnedFactoryOptions, 'attemptDeadlineMs' | 'requestDeadlineMs' | 'terminateGraceMs' | 'env' | 'cwd'>;
+type OwnedLaunchOptions = Pick<OwnedFactoryOptions, 'diagnostic' | 'attemptDeadlineMs' | 'requestDeadlineMs' | 'terminateGraceMs' | 'env' | 'cwd'>;
 export interface LocalOwnedFactoryOptions extends OwnedLaunchOptions {
   command: string;
   onMissing?(): void;
@@ -101,8 +103,13 @@ function trackOwned(transport: StdioTransport, slot: OwnedSlot) {
  * Shared discovery composition is separate and broker-negotiated. */
 export function createOwnedFactory(input: OwnedFactoryOptions): ProviderOptions['acquireOwned'] {
   const options = { ...input, release: { ...input.release } };
-  return ownedFactory(options, async signal => (await acquireNative({ cacheDir: options.cacheDir, release: options.release,
-    installedPath: options.installedPath, fetcher: options.fetcher, signal })).path);
+  return ownedFactory(options, async signal => {
+    const acquired = await acquireNative({ cacheDir: options.cacheDir, release: options.release,
+      installedPath: options.installedPath, fetcher: options.fetcher, signal });
+    diagnose(options.diagnostic, 'INFO', 'occipital', 'Exact native artifact acquired and validated',
+      { version: options.release.version, target: options.release.target, downloaded: acquired.downloaded, installed: acquired.path === options.installedPath });
+    return acquired.path;
+  });
 }
 
 /** Development uses only the explicitly colocated file, never release/cache/PATH discovery. */
@@ -113,6 +120,7 @@ export function createLocalOwnedFactory(input: LocalOwnedFactoryOptions): Provid
     let file;
     try { file = await stat(options.command); }
     catch (error) {
+      diagnose(options.diagnostic, 'WARN', 'occipital', 'Colocated development binary unavailable; using existing fallback policy', { code: diagnosticError(error) });
       if (!signal.aborted && ['ENOENT', 'ENOTDIR'].includes((error as NodeJS.ErrnoException).code ?? '')) options.onMissing?.();
       throw error;
     }
@@ -148,13 +156,15 @@ function ownedFactory(options: OwnedLaunchOptions, acquire: (signal: AbortSignal
       } catch (error) { slot.release(); throw error; }
       trackOwned(transport, slot);
       // Constructor is synchronous; transfer drops the acquisition abort listener.
+      diagnose(options.diagnostic, 'INFO', 'occipital', 'Owned stdio transport created; broker compatibility check still pending');
       return transport;
-    } catch { throw unavailable(); }
+    } catch (error) { diagnose(options.diagnostic, 'WARN', 'occipital', 'Owned acquisition or launch attempt did not complete', { cancelled: budget.signal.aborted, code: diagnosticError(error) }); throw unavailable(); }
     finally { budget.dispose(); }
   };
 }
 
 export interface SharedFactoryOptions extends Omit<SharedOptions, 'connectionFile' | 'initDeadlineMs'> {
+  diagnostic?: DiagnosticSink;
   /** Existing public discovery priorities and explicit/env exclusivity. */
   discovery?: Parameters<typeof connectionCandidates>[0];
   /** May narrow, never extend, the existing shared attempt budget. */
@@ -178,6 +188,7 @@ export function createSharedFactory(input: SharedFactoryOptions): ProviderOption
       budget.check();
       for (const connectionFile of connectionCandidates(options.discovery)) {
         budget.check();
+        diagnose(options.diagnostic, 'DEBUG', 'occipital', 'Shared connection candidate considered', { connectionFile });
         try {
           const candidate = new SharedTransport({ connectionFile, identity: options.identity,
             initDeadlineMs: budget.remaining(), requestDeadlineMs: options.requestDeadlineMs,
@@ -195,7 +206,8 @@ export function createSharedFactory(input: SharedFactoryOptions): ProviderOption
             budget.signal.removeEventListener('abort', abort);
             if (!transferred) { await wait(candidate.close(), budget.signal); budget.check(); }
           }
-        } catch { budget.check(); /* Optional failed candidate; continue in the same attempt. */ }
+        } catch (error) { diagnose(options.diagnostic, 'DEBUG', 'occipital', 'Shared connection candidate did not complete', { code: diagnosticError(error) });
+          budget.check(); /* Optional failed candidate; continue in the same attempt. */ }
       }
     } catch { /* Optional service unavailable; the broker alone decides owned selection. */ }
     finally { budget.dispose(); }

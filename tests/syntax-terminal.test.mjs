@@ -12,7 +12,7 @@ import { PiTerminal } from './terminal.test.mjs';
 import { sharedSyntaxHost, themeDefinition, reaped } from './fixtures/shared-syntax-host.mjs';
 
 const binary = process.env.OCCIPITAL_TEST_BIN;
-let fixture = resolve('tests/fixtures/syntax-driver.ts');
+let fixture = resolve('tests/fixtures/syntax-driver.ts'), loggingFixture = resolve('tests/fixtures/logging-driver.ts');
 if (binary) {
   await mkdir(resolve('.test-artifacts'), { recursive: true });
   const directory = await mkdtemp(resolve('.test-artifacts/syntax-package-')), source = join(directory, 'extension');
@@ -23,6 +23,8 @@ if (binary) {
   await mkdir(join(source, 'tests/fixtures'), { recursive: true });
   fixture = join(source, 'tests/fixtures/syntax-driver.ts');
   await cp(resolve('tests/fixtures/syntax-driver.ts'), fixture);
+  loggingFixture = join(source, 'tests/fixtures/logging-driver.ts');
+  for (const name of ['logging-driver.ts', 'presentation-driver.ts']) await cp(resolve('tests/fixtures', name), join(source, 'tests/fixtures', name));
 }
 const helperVersion = binary ? execFileSync(resolve(binary), ['--version'], { encoding: 'utf8', timeout: 30000 }).trim().match(/^occipital (\S+)$/)?.[1] : undefined;
 if (binary && !helperVersion) throw new Error('Unexpected local artifact version output');
@@ -559,3 +561,89 @@ test('occipital CLI: structured RGB and font attributes preserve both file diff 
         structuredRgb: true, bold: true, italic: true, underline: true, semanticBackgrounds: true, widths: [24, 60, 100, 140], piThemes: ['dark', 'light'], warmWorkDelta: 0 }));
     } finally { await terminal.close(); terminal.dispose(); await host.close(); }
   });
+
+
+async function loggingFrame(terminal) {
+  const count = terminal.events().filter(event => event.type === 'logging_frame').length;
+  terminal.send('\x1b\x0c');
+  await terminal.event('logging_frame', count + 1);
+  const status = terminal.events().filter(event => event.type === 'logging_frame').at(-1).logging;
+  assert.ok(status); assert.equal(status.state, 'active'); return status;
+}
+async function loggingIdle(terminal) {
+  await terminal.command('/tidy-ui logs snapshot');
+  return until(async () => {
+    const status = await loggingFrame(terminal);
+    return status.pendingBytes === 0 && status.inFlightBytes === 0 && !status.timer ? status : false;
+  }, 'actual active journal drained');
+}
+const loggerWork = status => ({ records: status.records, writes: status.writes, rotations: status.rotations, scans: status.scans, writeErrors: status.writeErrors });
+function loggingPrivacy(text, events) {
+  for (const event of events.filter(event => event.type === 'call')) {
+    for (const value of [event.input.command, event.input.content, ...(event.input.edits ?? []).flatMap(edit => [edit.oldText, edit.newText])]) {
+      if (typeof value === 'string' && value.length >= 8) {
+        assert.equal(text.includes(value), false, 'journal contains no full command/source');
+        assert.equal(text.includes(JSON.stringify(value).slice(1, -1)), false, 'journal contains no escaped full command/source');
+      }
+    }
+  }
+}
+for (const mode of ['regular', 'fullscreen']) for (const native of [false, true])
+  test(`occipital CLI: logging ${mode} ${native ? 'native' : 'fallback'} truthful decisions, unchanged frames, reload and replay`,
+    { skip: native && !binary, timeout: 120000 }, async () => {
+      const terminal = new PiTerminal(`logging-${mode}-${native ? 'native' : 'fallback'}`, { mode, extensions: [loggingFixture],
+        extraEnv: { ...descriptor, TIDY_UI_TEST_LOGGING_NATIVE: native ? '1' : '0', TIDY_UI_TEST_LOGGING_CANCEL: '1', TIDY_UI_TEST_SYNTAX_CARDS: '1' } });
+      const stock = new PiTerminal(`logging-${mode}-stock-${native}`, { mode, extraEnv: { TIDY_UI_TEST_SYNTAX_CARDS: '1' } });
+      let replay;
+      try {
+        const shown = await scenario(terminal, native), control = await scenario(stock, false);
+        assert.deepEqual(traffic(terminal), traffic(stock)); assert.deepEqual(persisted(shown), persisted(control));
+        if (native) sourceColors(shown);
+        const counters = native ? await stats(terminal, 'logging-before') : undefined, baseline = await loggingIdle(terminal);
+        assert.ok(baseline.records > 0); assert.ok(baseline.writes > 0); assert.equal(baseline.capture, true);
+        assert.equal(baseline.dropped, 0); assert.equal(baseline.writeErrors, 0);
+        const originalEvents = terminal.events(), text = readFileSync(baseline.path, 'utf8'); loggingPrivacy(text, originalEvents);
+        writeFileSync(join(terminal.output, 'logging-live.log'), text);
+        assert.match(text, /Session started:.*session=.*run=/); assert.match(text, /\[cache\].*Tool layout built/);
+        const bashId = shown.tools.find(tool => tool.name === 'bash').id;
+        assert.ok(text.split('\n').some(row => row.includes('[syntax]') && row.includes(`call=${bashId}`) && row.includes('source=')), 'final decision correlates the actual Bash call and source');
+        assert.match(text, native ? /Occipital classification applied/ : /Whole Bash command uses toolTitle/);
+        if (!native) assert.match(text, /Cached Pi fallback applied/);
+        for (let i = 0; i < 5; i++) assert.deepEqual(loggerWork(await loggingFrame(terminal)), loggerWork(baseline));
+        await terminal.resize(100);
+        assert.deepEqual(loggerWork(await loggingFrame(terminal)), loggerWork(baseline), 'same-size observation adds no records or I/O');
+        if (native) { const after = await stats(terminal, 'logging-after'); assert.deepEqual(work(after), work(counters)); assert.equal(after.counts.piBridges, counters.counts.piBridges); }
+        await terminal.command('/new'); await terminal.event('logging_cancelled_switch');
+        const cancelled = await loggingFrame(terminal); assert.equal(cancelled.run, baseline.run); assert.equal(cancelled.session, baseline.session);
+        await terminal.command('/tidy-ui off'); await terminal.command('/tidy-ui logs');
+        assert.ok(terminal.screen().some(line => line.includes('pi-tidy-ui logs: active')), 'capture survives master presentation off');
+        await terminal.command('/tidy-ui on');
+        if (native) await settledStats(terminal, 'logging-on-ready', nativeReady);
+        const on = await terminal.capture('logging-after-on'); assert.deepEqual(body(on), body(shown)); assert.deepEqual(persisted(on), persisted(shown));
+        const beforeReload = await loggingIdle(terminal); await terminal.command('/reload');
+        if (native) await syntaxReady(terminal);
+        const afterReload = await loggingIdle(terminal);
+        assert.equal(afterReload.session, beforeReload.session); assert.notEqual(afterReload.run, beforeReload.run);
+        assert.ok(existsSync(beforeReload.path.replace(/\.log$/u, '.closed.log')));
+        writeFileSync(join(terminal.output, 'logging-reload.log'), readFileSync(beforeReload.path.replace(/\.log$/u, '.closed.log')));
+        const reloaded = await terminal.capture('logging-after-reload'); assert.deepEqual(body(reloaded), body(shown)); assert.deepEqual(persisted(reloaded), persisted(shown));
+        if (native) await finish(terminal); else await terminal.close();
+        replay = new PiTerminal(`logging-${mode}-replay-${native}`, { mode, session: shown.session, workspace: terminal.work, extensions: [loggingFixture],
+          extraEnv: { ...descriptor, TIDY_UI_TEST_LOGGING_NATIVE: native ? '1' : '0' } });
+        await replay.ready(); if (native) await settledStats(replay, 'logging-replay-ready', s => nativeReady(s) && s.source.dispatches > 0);
+        const restored = await replay.capture('logging-replay'); const replayStatus = await loggingIdle(replay);
+        assert.equal(replayStatus.session, baseline.session); assert.notEqual(replayStatus.run, baseline.run);
+        assert.deepEqual(body(restored), body(shown)); assert.deepEqual(persisted(restored), persisted(shown));
+        assert.equal(traffic(replay).length, 0); const replayText = readFileSync(replayStatus.path, 'utf8'); loggingPrivacy(replayText, originalEvents);
+        writeFileSync(join(replay.output, 'logging-replay.log'), replayText);
+        const replayBaseline = loggerWork(replayStatus);
+        for (let i = 0; i < 3; i++) assert.deepEqual(loggerWork(await loggingFrame(replay)), replayBaseline);
+        if (native) await finish(replay); else await replay.close();
+        const closed = readFileSync(replayStatus.path.replace(/\.log$/u, '.closed.log'), 'utf8'); assert.match(closed, /Session run ended/);
+        console.log(JSON.stringify({ logging: terminal.output, replay: replay.output, mode, native, session: baseline.session,
+          run: baseline.run, reloadRun: afterReload.run, replayRun: replayStatus.run, warmRecordDelta: 0, warmWriteDelta: 0,
+          nativeWork: native ? work(counters) : undefined }));
+      } finally {
+        await terminal.close(); await stock.close(); await replay?.close(); replay?.dispose(); terminal.dispose(); stock.dispose();
+      }
+    });

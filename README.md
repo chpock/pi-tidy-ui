@@ -88,6 +88,10 @@ The three `FOOTER_FIELDS` source flags in `src/footer.ts` default to `false`: `t
 /tidy-ui cache
 /tidy-ui cache clear
 /tidy-ui syntax
+/tidy-ui logs
+/tidy-ui logs snapshot
+/tidy-ui logs off
+/tidy-ui logs on
 ```
 
 Each transcript/queued-message component owns its latest prepared presentation through weak component state, much like Pi's `Text` retains its latest rendered rows. There is **no entry-count or byte-limit eviction**: an unchanged attached component reuses its rows regardless of transcript age or the size of other presentations. Width/Output-padding/theme and relevant state changes replace its previous layout, not accumulate variants. The execution spinner changes only its prefix, using Pi's existing document frames whenever available. One shared, unreferenced 100 ms timeout requests a fallback frame only after document visits fall silent; it stops when no compact calls are executing. See the [host-driven animation design](docs/architecture.md#host-driven-spinner-and-fallback).
@@ -106,6 +110,8 @@ Removing a component/subtree through native `Container.removeChild` or `clear` r
 Estimates are not exact V8 heap measurements: native caches, raw/signature data and transient rendering are excluded, and strings may be shared. Memory necessarily grows with the current **live retained transcript and queue**, but no detached-owner or width/state history is intentionally retained. No fixed total-process memory bound is claimed. See the [cache contract](docs/render-cache-spec.md).
 
 `/tidy-ui colors off` stops terminal-default application and theme reads without disabling cards. Remaining presentation can make a one-shot profile RGB query after releasing colors. On retries the current source; global on respects local off. Reload enables the feature again. Releases restore terminal **profile defaults**, not another application's prior dynamic override. Disable the old standalone `theme-background` extension manually: concurrent default-color writers are unsupported.
+
+Diagnostic capture is on by default, including while presentation is off. `/tidy-ui logs` shows private human-readable journal paths and counters; `logs snapshot` records existing state without rendering. Capture can be stopped or explicitly retried with `logs off/on`. No conversation, command or source bodies are logged. See [diagnostic journals](docs/debug-logging-spec.md) for batching, cleanup and accepted loss limits.
 
 Controls apply to the current extension runtime only. Disabling restores the original presentation methods, including the editor, without transferring its draft; re-enabling covers existing and future components. Reload creates a fresh enabled runtime.
 
@@ -160,6 +166,7 @@ The installed-package smoke test is version-audited and explicitly skips unavail
 - [Session-footer specification](docs/footer-spec.md) — native usage/context data, colors, whole-status fitting and ownership.
 - [Render-cache specification](docs/render-cache-spec.md) — invalidation, component ownership, memory diagnostics and performance guarantees.
 - [Syntax-highlighting specification](docs/syntax-highlighting-spec.md) — source/presentation separation, native/Pi fallback, themes, providers, resources and outstanding delivery gates.
+- [Diagnostic journals](docs/debug-logging-spec.md) — session/run identity, decision explanations, controls, low-I/O writing and retention.
 - [Testing and coverage](docs/testing.md) — automated gates, strict native/data controls and coverage limits.
 
 These documents describe the current project. Run evidence and working review reports belong in gitignored `.test-artifacts/`, not in the documentation tree.

@@ -1,3 +1,4 @@
+import { diagnose, diagnosticError, type DiagnosticFields, type DiagnosticSink } from '../diagnostics.ts';
 import { decodeDescription, PROTOCOL_VERSION, ProtocolError, type Description } from './protocol.ts';
 import { RequestFailure } from './request-failure.ts';
 import type { TransportEnd } from './transport-end.ts';
@@ -30,6 +31,7 @@ export interface ProviderClock {
  * or source execution authority. False closes the rejected candidate. */
 export type SharedNegotiator = (transport: ProviderTransport) => Promise<boolean>;
 export interface ProviderOptions {
+  diagnostic?: DiagnosticSink;
   /** Auth/discovery/catalogue/capability checks are factory-owned. Each successful
    * call transfers a fresh dedicated disposable candidate, never a reused retired
    * transport or someone else's shared client handle.
@@ -367,7 +369,11 @@ export class ProviderBroker {
     const changed = this.availability !== 'unavailable' || this.reason !== reason;
     this.availability = 'unavailable'; this.reason = reason; if (changed) this.changed();
   }
+  private log(explanation: string, fields?: DiagnosticFields): void { if (this.options.diagnostic) diagnose(this.options.diagnostic, 'INFO', 'occipital', explanation,
+    { generation: this.generation, kind: this.active?.kind, ...fields }); }
   private changed(): void {
+    this.log('Provider publication changed', { availability: this.availability, reason: this.reason, version: this.active?.description.backend_version,
+      pid: this.active?.description.runtime.pid });
     if (!this.options.onChange || this.availability === 'disposed' || this.noticeScheduled) return;
     this.noticeScheduled = true; queueMicrotask(availabilityNotice(new WeakRef(this)));
   }
@@ -379,6 +385,7 @@ export class ProviderBroker {
   }
   /** Receiver-free close observers deliver evidence, never publication/recovery. */
   notifyOwnedStopped(generation: number): void {
+    this.log('Owned helper actually closed/reaped; source authority may use this receipt', { generation });
     try { this.options.onOwnedStopped?.(generation); } catch { /* Evidence delivery cannot disrupt cleanup. */ }
   }
   private close(transport: ProviderTransport): Promise<boolean> {
@@ -396,10 +403,12 @@ export class ProviderBroker {
     if (!closings.has(transport)) this.metric('closesStarted', 1);
     try {
       const success = await bounded(closeResource(transport), this.clock, PROVIDER_LIMITS.closeMs, undefined, new WeakRef(this));
-      this.metric(success ? 'closesCompleted' : 'closeFailures', 1); return success;
-    } catch { this.metric('closeFailures', 1); return false; }
+      this.metric(success ? 'closesCompleted' : 'closeFailures', 1);
+      this.log(success ? 'Provider cleanup completed' : 'Provider cleanup wait expired; not exit proof', { owned: transport === this.owned }); return success;
+    } catch (error) { this.metric('closeFailures', 1); this.log('Provider cleanup failed; not exit proof', { code: diagnosticError(error) }); return false; }
   }
   private async candidate(kind: Kind, epoch: number): Promise<Candidate | undefined> {
+    this.log('Provider selection attempt started', { candidate: kind });
     const signal = this.cancellation.signal;
     const attempt = new AbortController();
     const cancel = () => attempt.abort(); signal.addEventListener('abort', cancel, { once: true }); this.metric('abortListeners', 1);
@@ -505,14 +514,17 @@ export class ProviderBroker {
     if (previous.kind === 'shared') await this.select(epoch, false, PROVIDER_LIMITS.reconnectAttempts);
     else {
       if (this.consecutiveOwnedRestarts >= PROVIDER_LIMITS.ownedRestarts) {
+        this.log('Owned restart budget exhausted; awaiting deliberate re-enable', { attempts: this.consecutiveOwnedRestarts });
         this.metric('ownedRestartStops', 1); this.unavailable('restart_limit'); return;
       }
       this.consecutiveOwnedRestarts++; this.metric('ownedRestarts', 1);
+      this.log('Restarting after confirmed owned process loss and cleanup', { attempt: this.consecutiveOwnedRestarts });
       this.recoveryStart = recovery.start; this.recoveryEnd = recovery.end;
       await this.takeOwned(epoch, false);
     }
   }
   private beginRecovery(epoch: number) {
+    this.log('Bounded shared-return episode started');
     this.metric('recoveryEpisodes', 1); this.recoveryStart = this.clock.now(); this.recoveryEnd = this.recoveryStart + PROVIDER_LIMITS.recoveryWindowMs;
     this.scheduleRecovery(epoch);
   }
@@ -561,7 +573,7 @@ export class ProviderBroker {
         await this.takeOwned(epoch, false);
         return;
       }
-      this.metric('handoffsSucceeded', 1);
+      this.metric('handoffsSucceeded', 1); this.log('Shared return completed after owned helper exit');
     } finally {
       this.metric('activeProbes', -1); this.metric('probesCompleted', 1);
       if (this.current(epoch)) this.scheduleRecovery(epoch);

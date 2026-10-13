@@ -1,9 +1,11 @@
+import { diagnose, diagnosticError, type DiagnosticSink } from './diagnostics.ts';
 import { execFile } from "node:child_process";
 import { watch, type FSWatcher } from "node:fs";
 import { basename, join, resolve } from "node:path";
 
-interface GitResult { ok: boolean; output: string; code?: number }
+interface GitResult { ok: boolean; output: string; code?: number; error?: string }
 export interface GitSourceOptions {
+  diagnostic?: DiagnosticSink;
   env?: NodeJS.ProcessEnv;
   /** Test seam for cancellation/error controls; production always uses execFile. */
   execute?: (cwd: string, args: readonly string[], env: NodeJS.ProcessEnv, signal: AbortSignal) => Promise<GitResult>;
@@ -15,7 +17,8 @@ export const gitDiagnostics = () => ({ ...counters });
 function execute(cwd: string, args: readonly string[], env: NodeJS.ProcessEnv, signal: AbortSignal): Promise<GitResult> {
   return new Promise(done => {
     const child = execFile("git", ["-C", cwd, ...args], { env, signal, timeout: 2000, maxBuffer: 65536, encoding: "utf8" },
-      (error, output) => done({ ok: !error, output, code: typeof error?.code === "number" ? error.code : undefined }));
+      (error, output) => done({ ok: !error, output, code: typeof error?.code === "number" ? error.code : undefined,
+        error: error ? diagnosticError(error) : undefined }));
     child.once("spawn", () => { counters.spawned++; });
   });
 }
@@ -44,6 +47,7 @@ export class GitBranchSource {
   branch(cwd: string): string | undefined { return cwd === this.cwd ? this.value : undefined; }
   setDirectory(cwd: string | undefined): void {
     if (cwd === this.cwd) return;
+    diagnose(this.options.diagnostic, 'DEBUG', 'git', 'Directory identity changed; previous Git job/watchers are retired', { cwd: cwd ?? 'none', generation: this.generation + 1, cancelled: !!this.running });
     this.generation++; this.running?.abort(); this.closeWatches();
     if (this.timer) clearTimeout(this.timer); this.timer = undefined;
     this.cwd = cwd; this.value = undefined; this.pending = false; this.discover = false;
@@ -94,22 +98,27 @@ export class GitBranchSource {
           if (role === "metadata" && name && !["HEAD", "commondir", "config", "packed-refs", "refs", "reftable", basename(path)].includes(name)) return;
           this.filesystem(role !== "metadata" || name !== "HEAD");
         });
-        watcher.on("error", () => {
+        watcher.on("error", (error: unknown) => {
           if (this.watched.get(path) !== watcher) return;
+          diagnose(this.options.diagnostic, 'WARN', 'git', 'Git metadata watcher failed; rediscovery requested', { path, code: diagnosticError(error) });
           watcher.close(); this.watched.delete(path); counters.watchers--; this.filesystem(true);
         });
         this.watched.set(path, watcher); counters.watchers++;
-      } catch { /* Missing/unsupported watches degrade to completed-operation refresh. */ }
+      } catch (error) { diagnose(this.options.diagnostic, 'DEBUG', 'git', 'Git metadata watch unavailable; completed-operation refresh remains', { path, code: diagnosticError(error) }); }
+
     }
   }
   private async run(): Promise<void> {
     const cwd = this.cwd!, generation = this.generation, discover = this.discover;
     const abort = new AbortController(); this.running = abort; this.pending = false; this.discover = false;
     counters.activeJobs++;
+    diagnose(this.options.diagnostic, 'DEBUG', 'git', 'Asynchronous Git refresh started', { cwd, generation, discover });
     const current = () => generation === this.generation && !abort.signal.aborted;
     const query = async (args: readonly string[], env: NodeJS.ProcessEnv): Promise<GitResult> => {
       counters.queries++; if (args[0] === "symbolic-ref") counters.branchReads++;
-      return (this.options.execute ?? execute)(cwd, args, env, abort.signal);
+      const result = await (this.options.execute ?? execute)(cwd, args, env, abort.signal);
+      if (!result.ok && current()) diagnose(this.options.diagnostic, 'DEBUG', 'git', 'Git query did not succeed; output is not logged', { operation: args[0], exit: result.code, code: result.error, generation });
+      return result;
     };
     try {
       const env = { ...(this.options.env ?? process.env) };
@@ -142,9 +151,11 @@ export class GitBranchSource {
       const ref = line(head.output);
       const branch = head.ok && ref.startsWith("refs/heads/") && ref.length > 11 && !/[\r\n\x00-\x1f\x7f]/u.test(ref) ? ref.slice(11) : undefined;
       this.publish(branch);
-    } catch {
+    } catch (error) {
+      diagnose(this.options.diagnostic, 'WARN', 'git', 'Git refresh failed or was cancelled; output is not logged', { generation, cancelled: abort.signal.aborted, code: diagnosticError(error) });
       if (current()) { this.syncWatches(cwd, []); this.publish(undefined); }
     } finally {
+      diagnose(this.options.diagnostic, 'DEBUG', 'git', 'Asynchronous Git refresh finished', { generation, current: current(), cancelled: abort.signal.aborted, watchers: this.watched.size });
       counters.activeJobs--; if (this.running === abort) this.running = undefined;
       if (this.cwd && this.pending) this.refresh(this.discover); else this.flush();
     }
@@ -152,6 +163,7 @@ export class GitBranchSource {
   private publish(value: string | undefined): void {
     if (value === this.value) return;
     this.value = value;
+    diagnose(this.options.diagnostic, 'INFO', 'git', 'Displayed Git branch snapshot changed', { cwd: this.cwd, branch: value ?? 'unavailable or detached', generation: this.generation });
     this.notify();
   }
 }

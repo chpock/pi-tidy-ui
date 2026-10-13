@@ -1,5 +1,9 @@
 // Isolated actual-SDK ownership control. Only deadline dispatch is held for GC.
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { TextJournal } from "../../src/debug-log.ts";
 import { Container } from "@earendil-works/pi-tui";
 import { ToolExecutionComponent } from "../../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/components/tool-execution.js";
 import { initTheme, theme } from "../../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js";
@@ -28,12 +32,16 @@ globalThis.clearTimeout = ((handle: ReturnType<typeof setTimeout>) => {
 let node: ToolExecutionComponent | undefined = new ToolExecutionComponent("read", "last-spinner-owner", { path: "a.txt" },
   undefined, undefined, root as never, "/tmp");
 root.addChild(node);
-const controller = installTidyUi(root as never, () => theme);
+const logDirectory = mkdtempSync(join(tmpdir(), "tidy-ui-spinner-gc-"));
+const journal = new TextJournal({ session: "spinner-gc", cwd: "/tmp", reason: "test", extension: "0.0.0", pi: "sdk" }, { root: logDirectory });
+await journal.ready;
+const controller = installTidyUi(root as never, () => theme, { diagnostic: journal.sink });
 try {
   node.markExecutionStarted(); node.render(80);
   assert.equal(controller.cacheStats().entries, 1);
   assert.equal(starts, 1); assert.equal(deadlines.size, 1);
   assert.equal([...deadlines.keys()][0]!.hasRef(), false, "the live real Node deadline is unreferenced");
+  await journal.flush(); assert.ok(journal.status().writes > 0); assert.equal(journal.status().state, "active");
   const reference = new WeakRef(node);
   // Bypass the owned remove/clear hooks so only weak-owner GC can release it.
   // No viewport/mouse-layout registry was created by the direct component visit.
@@ -59,4 +67,5 @@ try {
   controller.restore();
   for (const handle of deadlines.keys()) nativeClear(handle);
   globalThis.setTimeout = nativeTimeout; globalThis.clearTimeout = nativeClear;
+  await journal.close("quit"); rmSync(logDirectory, { recursive: true, force: true });
 }
