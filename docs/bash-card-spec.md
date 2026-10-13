@@ -6,7 +6,7 @@ This is the default presentation for the exact tool name `bash`; other shell/too
 
 Change presentation only: no tool registration/replacement, execution interception, result rewriting, additional session entries, subprocesses, polling or file reads. Off restores the original Pi rendering. Images and intentionally hidden native components retain native behavior. Non-terminal modes remain unaffected.
 
-By default `bash` uses this card both collapsed and expanded. An explicit `--toolview-card bash` requests the original native card; `--toolview-compact bash` keeps the existing compact override and takes precedence. Invalid/non-string command arguments fall back to native presentation; an empty string command is displayable. During argument streaming the card updates when a string command is available.
+By default `bash` uses this card both collapsed and expanded. An explicit `--tidy-ui-card bash` requests the original native card; `--tidy-ui-compact bash` keeps the existing compact override and takes precedence. Invalid/non-string command arguments fall back to native presentation; an empty string command is displayable. During argument streaming the card updates when a string command is available.
 
 ## 2. Command and comments
 

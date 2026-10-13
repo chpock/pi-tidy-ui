@@ -6,7 +6,7 @@ import { spawnSync } from 'node:child_process';
 import test from 'node:test';
 
 test('native test skip patterns prevent excluded top-level and nested bodies from executing', () => {
-  const directory = mkdtempSync(join(tmpdir(), 'toolview-test-filter-'));
+  const directory = mkdtempSync(join(tmpdir(), 'tidy-ui-test-filter-'));
   try {
     const fixture = join(directory, 'filter.test.mjs');
     writeFileSync(fixture, `import assert from 'node:assert/strict';

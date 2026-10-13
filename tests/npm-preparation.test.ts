@@ -189,7 +189,7 @@ test('actual installed fixture retains npm child and capture failures when its f
   const aliasType = process.platform === 'win32' ? 'junction' : 'dir';
   await symlink(join(repo, 'scripts'), join(root, 'scripts'), aliasType);
   await symlink(join(repo, 'packages'), join(root, 'packages'), aliasType);
-  await writeFile(join(root, 'package.json'), '{"name":"pi-toolview","version":"0.0.0","type":"module","files":["src","LICENSE"]}');
+  await writeFile(join(root, 'package.json'), '{"name":"pi-tidy-ui","version":"0.0.0","type":"module","files":["src","LICENSE"]}');
   await copyFile(join(repo, 'LICENSE'), join(root, 'LICENSE'));
   for (const name of ['installed-occipital.mjs', 'npm-preparation.ts']) await copyFile(join(repo, 'tests/fixtures', name), join(fixtures, name));
   for (const name of ['native.ts', 'version.ts']) await copyFile(join(repo, 'src/occipital', name), join(native, name));

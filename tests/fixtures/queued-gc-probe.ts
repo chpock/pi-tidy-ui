@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { Container, Spacer, TruncatedText } from "@earendil-works/pi-tui";
 import { initTheme, theme } from "../../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js";
-import { installToolview } from "../../src/index.ts";
+import { installTidyUi } from "../../src/index.ts";
 import { RenderCache } from "../../src/render-cache.ts";
 
 initTheme("dark", false);
@@ -18,7 +18,7 @@ function add() {
   return { first: new WeakRef(first), second };
 }
 const original = add();
-pending.render(100); // Native rendering before enabling Toolview owns a mouse-layout snapshot.
+pending.render(100); // Native rendering before enabling pi-tidy-ui owns a mouse-layout snapshot.
 const values: WeakRef<object>[] = [];
 const put = RenderCache.prototype.put;
 RenderCache.prototype.put = function (this: RenderCache, ...args: Parameters<typeof put>) {
@@ -26,7 +26,7 @@ RenderCache.prototype.put = function (this: RenderCache, ...args: Parameters<typ
   if (args[2] === "queued") values.push(new WeakRef(entry.value as object));
   return entry;
 } as typeof put;
-const controller = installToolview(root, () => theme);
+const controller = installTidyUi(root, () => theme);
 async function collect() {
   for (let i = 0; i < 16; i++) { await new Promise<void>(resolve => setImmediate(resolve)); globalThis.gc!(); }
 }
@@ -37,7 +37,7 @@ try {
   pending.render(100);
   await collect();
   assert.equal(original.first.deref(), undefined, "a pre-install native mouse layout must not retain an earlier queue generation");
-  assert.equal(values[0]!.deref(), undefined, "the first generation's Toolview preparation was released");
+  assert.equal(values[0]!.deref(), undefined, "the first generation's pi-tidy-ui preparation was released");
   assert.equal(original.second.render(100).length, 1, "temporarily projected native methods are restored");
   // Bypass removal hooks deliberately: actual collection, not explicit drop, must work.
   pending.children.splice(1, 1);

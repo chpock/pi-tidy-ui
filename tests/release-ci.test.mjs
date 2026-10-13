@@ -18,8 +18,8 @@ async function source(t) {
   await mkdir(join(root, 'crates/occipital'), { recursive: true });
   await writeFile(join(root, 'crates/occipital/Cargo.toml'), '[package]\nname = "occipital"\nversion = "0.0.0"\nedition = "2021"\n\n[dependencies]\nfixture = "0.0.0"\n');
   await writeFile(join(root, 'Cargo.lock'), 'version = 4\n\n[[package]]\nname = "occipital"\nversion = "0.0.0"\ndependencies = ["fixture"]\n\n[[package]]\nname = "fixture"\nversion = "0.0.0"\n');
-  await writeFile(join(root, 'package.json'), JSON.stringify({ name: 'pi-toolview', version: '0.0.0', optionalDependencies: { fixture: '0.0.0' } }));
-  await writeFile(join(root, 'package-lock.json'), JSON.stringify({ name: 'pi-toolview', version: '0.0.0', lockfileVersion: 3, packages: { '': { name: 'pi-toolview', version: '0.0.0' }, 'node_modules/fixture': { version: '0.0.0' } } }));
+  await writeFile(join(root, 'package.json'), JSON.stringify({ name: 'pi-tidy-ui', version: '0.0.0', optionalDependencies: { fixture: '0.0.0' } }));
+  await writeFile(join(root, 'package-lock.json'), JSON.stringify({ name: 'pi-tidy-ui', version: '0.0.0', lockfileVersion: 3, packages: { '': { name: 'pi-tidy-ui', version: '0.0.0' }, 'node_modules/fixture': { version: '0.0.0' } } }));
   await cp(join(repo, 'packages'), join(root, 'packages'), { recursive: true });
   await cp(join(repo, 'LICENSE'), join(root, 'LICENSE'));
   return root;
@@ -36,7 +36,7 @@ test('release refs are strict independent SemVer tags; branches/PRs remain devel
 test('extension stamping updates only npm root versions and preserves name/dependencies/Cargo', async t => {
   const root = await source(t), cargo = await readFile(join(root, 'Cargo.lock'));
   await stampVersion(root, 'refs/tags/pi-tidy-ui-v0.2.0');
-  assert.deepEqual(await json(join(root, 'package.json')), { name: 'pi-toolview', version: '0.2.0', optionalDependencies: { fixture: '0.0.0' } });
+  assert.deepEqual(await json(join(root, 'package.json')), { name: 'pi-tidy-ui', version: '0.2.0', optionalDependencies: { fixture: '0.0.0' } });
   const lock = await json(join(root, 'package-lock.json'));
   assert.equal(lock.version, '0.2.0'); assert.equal(lock.packages[''].version, '0.2.0'); assert.equal(lock.packages['node_modules/fixture'].version, '0.0.0');
   assert.deepEqual(await readFile(join(root, 'Cargo.lock')), cargo);

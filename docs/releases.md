@@ -8,7 +8,7 @@ The extension and Occipital have independent release versions. Repository manife
 | `pi-tidy-ui-v0.2.0` | Extension release version; daemon uses the nearest reachable `occipital-v*` version | Extension tarball in CI artifacts; no publishing workflow yet |
 | `occipital-v0.1.0` | Only the daemon Cargo manifest/lock entry, **before compilation** | Occipital GitHub Release only |
 
-Tags must contain a complete SemVer version. Prerelease tags such as `occipital-v0.1.0-rc.1` produce prereleases. CI substitutions affect disposable checkouts, not repository commits or dependency versions. The npm package is still named `pi-toolview` and the command is still `/toolview`; the tag prefix does not rename them.
+Tags must contain a complete SemVer version. Prerelease tags such as `occipital-v0.1.0-rc.1` produce prereleases. CI substitutions affect disposable checkouts, not repository commits or dependency versions. The npm package is named `pi-tidy-ui` and the command is `/tidy-ui`; tags select versions without changing these identities.
 
 ## Extension delivery
 
@@ -20,7 +20,7 @@ Keep concrete native package versions out of the repository `package.json` and `
 
 Select the nearest reachable `occipital-v*` by Git history from the built commit (the commit of `pi-tidy-ui-v*` for an extension release), using `git describe --tags --match 'occipital-v*' --abbrev=0`, not maximum SemVer or publication time. Complete history and tags are required. A malformed nearest tag, missing release or incomplete six-package npm family stops preparation; never silently choose an older release. Development without a usable colocated binary falls back without downloading or compiling. See [the accepted delivery revision](syntax-highlighting-plan.md#accepted-localpublished-delivery-revision).
 
-`src/occipital/release.ts` is an unpinned source template. `scripts/release/extension-release.mjs` prepares a real-version package after release admission; its lower-level staging helper also creates isolated test packages. Neither modifies repository manifests/lockfiles nor publishes the extension. The npm package remains `pi-toolview` until separately renamed.
+`src/occipital/release.ts` is an unpinned source template. `scripts/release/extension-release.mjs` prepares a real-version package after release admission; its lower-level staging helper also creates isolated test packages. Neither modifies repository manifests/lockfiles nor publishes the extension. The npm package is `pi-tidy-ui`; its public command is `/tidy-ui`.
 
 ## Compiler and release equality
 

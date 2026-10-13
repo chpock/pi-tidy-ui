@@ -1,13 +1,13 @@
 // Research-only complete upstream Python highlights query; no injections/locals renderer.
 // Query provenance: tree-sitter/tree-sitter-python@26855eabccb19c6abf499fbc5b8dc7cc9ab8bc64.
 // See python-query-LICENSE.txt. WASM grammar comes from @vscode/tree-sitter-wasm@0.3.1.
-// npm install --prefix /tmp/pi-toolview-syntax-research-20261006 --no-package-lock --ignore-scripts --no-audit --no-fund web-tree-sitter@0.27.0 @vscode/tree-sitter-wasm@0.3.1
+// npm install --prefix /tmp/pi-tidy-ui-syntax-research-20261006 --no-package-lock --ignore-scripts --no-audit --no-fund web-tree-sitter@0.27.0 @vscode/tree-sitter-wasm@0.3.1
 // node docs/research/syntax-highlighting/probes/tree-sitter-python.mjs
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { performance } from 'node:perf_hooks';
-const root = process.env.SHIKI_RESEARCH_ROOT ?? '/tmp/pi-toolview-syntax-research-20261006';
+const root = process.env.SHIKI_RESEARCH_ROOT ?? '/tmp/pi-tidy-ui-syntax-research-20261006';
 const start = performance.now();
 const { Parser, Language, Query } = await import(pathToFileURL(`${root}/node_modules/web-tree-sitter/web-tree-sitter.js`).href);
 await Parser.init();

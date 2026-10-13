@@ -5,7 +5,7 @@ import { readFileSync, existsSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
 import { performance } from 'node:perf_hooks';
-export const root = process.env.HIGHLIGHT_RESEARCH_ROOT ?? '/tmp/pi-toolview-head-to-head';
+export const root = process.env.HIGHLIGHT_RESEARCH_ROOT ?? '/tmp/pi-tidy-ui-head-to-head';
 const require = createRequire(`${root}/package.json`);
 const load = path => import(pathToFileURL(`${root}/node_modules/${path}`).href);
 export const colors = { plain: '#c6c8d1', keyword: '#c792ea', variable: '#82aaff', property: '#ffcb6b', function: '#89ddff', type: '#f78c6c', string: '#c3e88d', number: '#f07178', comment: '#676e95', operator: '#a9c8de', constant: '#ff5370' };

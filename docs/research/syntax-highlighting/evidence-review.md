@@ -47,7 +47,7 @@ The final README already qualifies them appropriately:
 
 - **Actual Hunk versions verified:** [pinned lockfile](https://github.com/modem-dev/hunk/blob/a3321c829d8bd8b39fe1c41e1b2537e41e82354c/bun.lock), worker source and [published Pierre 1.3.5 code](https://cdn.jsdelivr.net/npm/@pierre/diffs@1.3.5/dist/highlighter/shared_highlighter.js) support Pierre 1.3.5 → Shiki 3.23.0 with explicit WASM selection. Independent latest repository versions must not replace that evidence.
 - **OpenCode source pins do not pin remote queries:** its parser configuration contains mutable URLs. Deterministic local assets are therefore a necessary deployment choice.
-- **Language totals are inventories:** Prism/highlight.js catalog counts and Shiki’s versioned compatibility samples do not measure equivalent quality or Toolview coverage.
+- **Language totals are inventories:** Prism/highlight.js catalog counts and Shiki’s versioned compatibility samples do not measure equivalent quality or pi-tidy-ui coverage.
 - Audit `source_check` calls returned **unclear** because automated semantic assessment was unavailable. Conclusions rely on manually inspected primary passages.
 
 ## 5. Missing evidence

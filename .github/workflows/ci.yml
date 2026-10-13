@@ -88,7 +88,7 @@ jobs:
         if: needs.version.outputs.product != 'pi-tidy-ui'
         with:
           name: extension-${{ needs.version.outputs.version }}-node-${{ matrix.node }}
-          path: pi-toolview-*.tgz
+          path: pi-tidy-ui-*.tgz
           if-no-files-found: error
 
   terminal:
@@ -180,7 +180,7 @@ jobs:
         with:
           name: extension-${{ needs.version.outputs.version }}-release
           path: |
-            .test-artifacts/extension-release/prepared/pi-toolview-*.tgz
+            .test-artifacts/extension-release/prepared/pi-tidy-ui-*.tgz
             .test-artifacts/extension-release/prepared/plan.json
           include-hidden-files: true
           if-no-files-found: error

@@ -48,7 +48,7 @@ export class SyntaxRuntime implements SyntaxMenuOwner {
   snapshot() {
     const snapshot = this.client.snapshot();
     return { ...snapshot, enabled: this.enabled,
-      lastIssue: snapshot.lastIssue ?? (!this.presentation?.deref()?.active && !this.disposed ? 'Toolview presentation is off.' : undefined) };
+      lastIssue: snapshot.lastIssue ?? (!this.presentation?.deref()?.active && !this.disposed ? 'pi-tidy-ui presentation is off.' : undefined) };
   }
   /** The public Theme proxy is stable; its cached colors object changes on theme
    * or terminal-default changes. Never sample tokens or inspect its private target. */

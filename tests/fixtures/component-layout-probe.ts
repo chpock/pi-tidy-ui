@@ -4,7 +4,7 @@ import { Container, ScrollView } from "@earendil-works/pi-tui";
 import { ToolExecutionComponent } from "@earendil-works/pi-coding-agent";
 import { renderLayoutFrame } from "../../node_modules/@earendil-works/pi-tui/dist/layout.js";
 import { initTheme, theme } from "../../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js";
-import { installToolview } from "../../src/index.ts";
+import { installTidyUi } from "../../src/index.ts";
 import { RenderCache } from "../../src/render-cache.ts";
 
 initTheme("dark", false);
@@ -15,7 +15,7 @@ const tools: (ToolExecutionComponent | undefined)[] = Array.from({ length: 3000 
   const node = new ToolExecutionComponent("custom", `owner-${i}`, { path: `file-${i}.txt`, query: "q".repeat(240), value: "v".repeat(240), source: "s".repeat(240) }, undefined, undefined, root as never, "/tmp");
   node.updateResult({ content: [], isError: false }); root.addChild(node); return node;
 });
-const controller = installToolview(root, () => theme);
+const controller = installTidyUi(root, () => theme);
 const draw = () => renderLayoutFrame(viewport, 80, 24, () => {}).lines.length;
 async function collect() {
   for (let i = 0; i < 16; i++) { await new Promise<void>(resolve => setImmediate(resolve)); globalThis.gc!(); }

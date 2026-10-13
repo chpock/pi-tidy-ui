@@ -1,10 +1,10 @@
 // Research-only Lezer and modern highlight.js control, not a terminal adapter.
-// npm install --prefix /tmp/pi-toolview-syntax-research-20261006 --no-package-lock --ignore-scripts --no-audit --no-fund @lezer/javascript@1.5.6 @lezer/python@1.1.19 @lezer/highlight@1.2.5 highlight.js@11.12.0
+// npm install --prefix /tmp/pi-tidy-ui-syntax-research-20261006 --no-package-lock --ignore-scripts --no-audit --no-fund @lezer/javascript@1.5.6 @lezer/python@1.1.19 @lezer/highlight@1.2.5 highlight.js@11.12.0
 // node docs/research/syntax-highlighting/probes/pure-js-highlight.mjs
 import assert from 'node:assert/strict';
 import { pathToFileURL } from 'node:url';
 import { performance } from 'node:perf_hooks';
-const root = process.env.SHIKI_RESEARCH_ROOT ?? '/tmp/pi-toolview-syntax-research-20261006';
+const root = process.env.SHIKI_RESEARCH_ROOT ?? '/tmp/pi-tidy-ui-syntax-research-20261006';
 const at = p => import(pathToFileURL(`${root}/node_modules/${p}`).href);
 const started = performance.now();
 const { parser: js } = await at('@lezer/javascript/dist/index.js');

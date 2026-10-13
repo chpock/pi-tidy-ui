@@ -90,7 +90,7 @@ For category-oriented output, `includeExplanation: 'scopeName'` gives scopes. In
 
 Shiki preserves line-oriented grammar state; chunks ending mid-line need the unfinished line retokenized with its preceding state, not simply passed as an independent next line. Its documentation warns that separately calculating state can duplicate highlighting work. Tree-sitter incrementality requires an edited retained old tree and reparsing; input callbacks are source readers, not asynchronous network-token streams. Later input can change parse structure/captures. Rust `HighlightEvent` iteration emits source/highlight events for supplied source, not proof of incremental incoming-text processing.
 
-**Researcher inference for Toolview:** neither engine reconstructs unavailable context across disjoint diff hunks. Keeping ASTs to exploit incremental edits adds an ownership/memory policy that is not implied by the current rendered-only caches.
+**Researcher inference for pi-tidy-ui:** neither engine reconstructs unavailable context across disjoint diff hunks. Keeping ASTs to exploit incremental edits adds an ownership/memory policy that is not implied by the current rendered-only caches.
 
 ### 7. Native-versus-web API cost pitfalls
 
@@ -142,8 +142,10 @@ Use the parent's equal-workload Node22.19 results before selecting native versus
     }
   ],
   "changedFiles": [
-    "/home/kot/.pi/agent/sessions/--w-projects-pi-toolview--/subagent-artifacts/outputs/d63644d9-a074-4632-952b-c06b84fa1c26/head-to-head/coverage.md"
+    "head-to-head/coverage.md"
   ],
+  "artifactRunId": "d63644d9-a074-4632-952b-c06b84fa1c26",
+  "artifactNote": "Original artifact-relative path and run identity retained; host-specific session directory omitted during repository branding normalization.",
   "testsAddedOrUpdated": [],
   "commandsRun": [],
   "validationOutput": [

@@ -29,7 +29,7 @@ This does **not** make Lumis unsuitable for a streaming UI: incremental CPU-work
 
 The complete [93-comment discussion][Z1] and [60-comment successor, issue 2758][Z2] provide engineering evidence, not a present-day five-library benchmark:
 
-| Date / source | Observation | Correct interpretation for Toolview |
+| Date / source | Observation | Correct interpretation for pi-tidy-ui |
 |---|---|---|
 | 2022, original issue | Zola could not update some Sublime grammars because Syntect lacked newer syntax-format features | Engine compatibility can freeze assets even while the asset repository is active |
 | 2022, early Giallo | The first Giallo was a Tree-sitter experiment; mapping generic captures to VS Code's language-specific themes was difficult | Current Giallo is a different implementation; repository creation is not its TextMate engine's age |
@@ -52,7 +52,7 @@ The successor explains difficult TextMate porting details: dynamic end patterns,
 
 ## Recommendation and its basis
 
-**Conditional primary: Lumis 0.17.0 for the Rust highlighting module.** It combines a ready native Tree-sitter language/query collection with source-preserving events/segments and, importantly for the original complaint, explicit ordinary-variable, member, function and type captures in the inspected priority-language queries. It avoids making Toolview maintain a bespoke language registry and highlighting-query pack. **Use the correct public boundary:** ordinary `highlight_events` can conceal timeout/match-limit degradation, but the published `write_highlight_with_options` + custom `Formatter::render_budgeted` path reports both through `BudgetExhausted::{Time, Matches}`. A service formatter can serialize category events and this status, without HTML, hidden APIs or a library patch. Processed JavaScript locals definitions still do not match the runtime's exact special-capture lookup; no working local-binding propagation is credited. These qualifications must not be hidden by the recommendation.
+**Conditional primary: Lumis 0.17.0 for the Rust highlighting module.** It combines a ready native Tree-sitter language/query collection with source-preserving events/segments and, importantly for the original complaint, explicit ordinary-variable, member, function and type captures in the inspected priority-language queries. It avoids making pi-tidy-ui maintain a bespoke language registry and highlighting-query pack. **Use the correct public boundary:** ordinary `highlight_events` can conceal timeout/match-limit degradation, but the published `write_highlight_with_options` + custom `Formatter::render_budgeted` path reports both through `BudgetExhausted::{Time, Matches}`. A service formatter can serialize category events and this status, without HTML, hidden APIs or a library patch. Processed JavaScript locals definitions still do not match the runtime's exact special-capture lookup; no working local-binding propagation is credited. These qualifications must not be hidden by the recommendation.
 
 **Arborium is the closest ready native Tree-sitter alternative.** Explicit shared `GrammarStore`, worker-local parsers and raw UTF-8 captures are excellent service features. Lumis's broader implemented locals/injection semantics and public work controls favor it here; one Rust catch-all alone does not prove a visible/global quality advantage. Arborium's raw captures are richer than its built-in flattened slots, so compare equivalent API layers.
 
@@ -64,7 +64,7 @@ No option is declared fastest, lowest-memory or visually correct for all its lan
 
 ## 1. What is being selected
 
-The library classifies **the supplied source** and returns syntax ranges/categories or styled source slices. The Rust process and Subconscious SDK handle requests separately. Toolview keeps diff reconstruction/projection, old/new independence, line numbers, backgrounds, wrapping, layout and mouse behavior.
+The library classifies **the supplied source** and returns syntax ranges/categories or styled source slices. The Rust process and Subconscious SDK handle requests separately. pi-tidy-ui keeps diff reconstruction/projection, old/new independence, line numbers, backgrounds, wrapping, layout and mouse behavior.
 
 Priority evidence: TypeScript/TSX/JavaScript, Python, Rust and Bash command source; embedded HTML/CSS/JS and common configuration formats also matter. A language called `diff` usually classifies patch headers/signs; it does **not** imply language-aware coloring of changed TypeScript or Python lines.
 
@@ -120,7 +120,7 @@ Observed repository pushes: Lumis 2026-10-07, Arborium 2026-08-28, Syntect 2026-
 
 | Candidate | Evidence of use | Evidence strength / test artifacts |
 |---|---|---|
-| Syntect | Bat manifest directly depends on 5.3.0; delta uses Syntect for terminal diff syntax | Strongest relevant terminal/diff adoption. Public line-state API and long-established compatibility work; Toolview acceptance was not run |
+| Syntect | Bat manifest directly depends on 5.3.0; delta uses Syntect for terminal diff syntax | Strongest relevant terminal/diff adoption. Public line-state API and long-established compatibility work; pi-tidy-ui acceptance was not run |
 | Arborium | Registry lists 26 reverse dependencies, including `miette-arborium` and related ecosystem wrappers | Real downstream availability, not 26 independent production teams. Source samples and wrapper tests exist; sponsors are not counted as adopters |
 | Lumis | Registry lists Autumnus, `see-cat`, `tuicore`, `rs-rich-lumis`; native, CLI, Elixir and JS surfaces | Exclude deprecated Autumnus from independent adopters. Reconstruction/Unicode tests and multi-runtime conformance workflow exist; not proof of our terminal quality |
 | Giallo | Zola's config manifest directly declares Giallo | Real consumer, not just author's intended migration. Shiki playground is upstream illustration, not Giallo execution |
@@ -182,7 +182,7 @@ The Tree-sitter bundles have different **parser provenance and execution semanti
 
 **Embedded languages:** Lumis implements injection/local/highlight sections, combined injections and included ranges. Arborium recursively parses contiguous child slices; it records `injection.include-children` but recursion does not consume it, and combined disjoint regions are not grouped. Both contain HTML/CSS, Markdown, Vue/Svelte and config assets. Simple fences/script bodies are credible cases; universal complex-interpolation equivalence is unestablished. [Lumis engine][L12], [Arborium recursion][A3]
 
-**Raw categories are not final color:** Arborium raw spans preserve nested/overlapping captures. Its built-in slot mapping collapses function/call/method distinctions, parameter/member/ordinary variables and string variants. Raw spans avoid that collapse, but overlap/category policy then belongs to the consumer. Its Dracula `variable` equals foreground: a missing variable capture can be visually invisible, whereas a Toolview mapping could expose it. Palettes cannot invent missing categories. Flat tokens omit metadata entries for untagged gaps; ANSI output retains that plain text. Both convenience paths trim trailing LF characters. Raw spans plus retained original remain the category-service/source-preserving boundary. [Rendering implementation][A8] Lumis canonical events also filter/map captures; they are not compiler semantic tokens. [Arborium mapping][A6], [Lumis events][L13]
+**Raw categories are not final color:** Arborium raw spans preserve nested/overlapping captures. Its built-in slot mapping collapses function/call/method distinctions, parameter/member/ordinary variables and string variants. Raw spans avoid that collapse, but overlap/category policy then belongs to the consumer. Its Dracula `variable` equals foreground: a missing variable capture can be visually invisible, whereas a pi-tidy-ui mapping could expose it. Palettes cannot invent missing categories. Flat tokens omit metadata entries for untagged gaps; ANSI output retains that plain text. Both convenience paths trim trailing LF characters. Raw spans plus retained original remain the category-service/source-preserving boundary. [Rendering implementation][A8] Lumis canonical events also filter/map captures; they are not compiler semantic tokens. [Arborium mapping][A6], [Lumis events][L13]
 
 **Concrete source concern, not a failure count:** Arborium's Rust constant regex contains `^[A-Z][A-Z\\d_]+$'`, with a quote after the end anchor. This appears incapable of the intended all-caps match under ordinary regex semantics. A constructor rule also exists, so it is not proof every uppercase name is plain. It merits upstream checking, not a percentage-quality claim. [Rust query][A1]
 
@@ -253,7 +253,7 @@ Published Syntect `ParseState` is cloneable and exposes byte-positioned `ScopeSt
 
 All five can classify a language source segment independently of HTML. None needs to own our diff renderer. Syntect's adoption in delta is concrete evidence of suitability for syntax inside terminal diffs, not just a theoretical API fit.
 
-Correct use for Toolview:
+Correct use for pi-tidy-ui:
 
 1. Reconstruct the available old and new source streams independently from saved metadata.
 2. Highlight supplied contiguous context before projecting visible rows.
@@ -367,7 +367,7 @@ Syntaxmate's source manifest pins Shiki `@shikijs/langs@4.4.3` and commit `48cd2
 - **L4 — Native packaging/defaults/toolchain:** [native manifest][L4], [workspace MSRV](https://github.com/leandrocp/lumis/blob/d5f7620a50942e1b71d09a3e7f0890783ab3e56d/Cargo.toml#L13-L19).
 - **L5 — Language/provenance catalog:** [language reference][L5].
 - **L6 — Rename/continuity:** [changelog][L6].
-- **L7 — Verification artifacts:** [conformance workflow][L7]; reconstruction/Unicode tests in L1. Presence is not a claimed passing Toolview run.
+- **L7 — Verification artifacts:** [conformance workflow][L7]; reconstruction/Unicode tests in L1. Presence is not a claimed passing pi-tidy-ui run.
 - **L8–L9 — JS locals mismatch:** [runtime capture lookup][L8] versus [processed locals query][L9].
 - **L10 — Public budget-aware formatter:** [native call path][L10], [public trait source](https://github.com/leandrocp/lumis/blob/d5f7620a50942e1b71d09a3e7f0890783ab3e56d/crates/lumis-core/src/formatter/mod.rs#L128-L204), [published Formatter 4.0.1](https://docs.rs/lumis-core/4.0.1/lumis_core/formatter/trait.Formatter.html), [published write_highlight_with_options 0.17.0](https://docs.rs/lumis/0.17.0/lumis/fn.write_highlight_with_options.html), [published BudgetExhausted](https://docs.rs/lumis-core/4.0.1/lumis_core/formatter/enum.BudgetExhausted.html).
 - **A1 — Arborium priority query/provenance:** [Rust][A1], [Python](https://github.com/bearcove/arborium/blob/45fae8adc0d4e62a42d68eda0454f606b3fff6aa/langs/group-hazel/python/def/queries/highlights.scm), [Bash](https://github.com/bearcove/arborium/blob/45fae8adc0d4e62a42d68eda0454f606b3fff6aa/langs/group-hazel/bash/def/queries/highlights.scm), [Rust definition](https://github.com/bearcove/arborium/blob/45fae8adc0d4e62a42d68eda0454f606b3fff6aa/langs/group-birch/rust/def/arborium.yaml).
@@ -429,7 +429,7 @@ Metadata ledger: [Arborium package][P1], [Lumis package][P2], [Syntastica packag
 
 ## 10. Original-selection audit (before the expanded revision)
 
-A fresh-context auditor read the completed report and authoritative sources on 2026-10-07. It supported the conditional Lumis recommendation, ordinary-Rust-query distinction, published public budget-reporting formatter, locals qualifications, state/source boundaries, native dependency defaults and the audited coverage/adoption subset. It explicitly did **not** recount every secondary catalog/popularity value or execute a Toolview corpus.
+A fresh-context auditor read the completed report and authoritative sources on 2026-10-07. It supported the conditional Lumis recommendation, ordinary-Rust-query distinction, published public budget-reporting formatter, locals qualifications, state/source boundaries, native dependency defaults and the audited coverage/adoption subset. It explicitly did **not** recount every secondary catalog/popularity value or execute a pi-tidy-ui corpus.
 
 | Written finding | Parent verification and disposition |
 |---|---|

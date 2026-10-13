@@ -1,10 +1,10 @@
 # Syntax highlighting
 
-This contract describes Toolview's implemented Occipital consumer and local/generated delivery; the delivery section distinguishes verified releases from remaining acceptance checks. The repository-only `docs/syntax-highlighting-plan.md` records the approved design and remaining release/acceptance gates; it is not shipped as runtime documentation.
+This contract describes pi-tidy-ui's implemented Occipital consumer and local/generated delivery; the delivery section distinguishes verified releases from remaining acceptance checks. The repository-only `docs/syntax-highlighting-plan.md` records the approved design and remaining release/acceptance gates; it is not shipped as runtime documentation.
 
 ## Surfaces and source text
 
-- Native classification applies only to Toolview's Bash command and successful edit/write source bodies. Bash output, ordinary summaries, Markdown, user messages, the editor and native delegated cards are outside this feature.
+- Native classification applies only to pi-tidy-ui's Bash command and successful edit/write source bodies. Bash output, ordinary summaries, Markdown, user messages, the editor and native delegated cards are outside this feature.
 - Bash argument updates prepare the latest command outside `render`. Pi's `setArgsComplete` finalizes the input independently of tool execution: a still-running Bash process does not require an unfinished syntax lease. Persisted completed calls use one-shot classification.
 - A final native error while Bash arguments are still incomplete retires that source and attempts lease closure outside `render`, without pretending that arguments completed or a tool executed. Late replies cannot restore it; warm frames cannot reopen it. Partial error output and execution errors after argument completion do not abandon the source.
 - Edit/write use validated supplied source/diff data. Old/new sides are separate logical sources; a missing diff region starts a new parser context. No file reread or invented continuity across omitted context is permitted.
@@ -26,7 +26,7 @@ The canonical `SourceController.workStatus` determines whether Pi classification
 | Native work queued/running/uncertain | Valid retained colors/proven prefix, otherwise complete uncolored text |
 | Source/result cannot be retained or admitted | Complete text, with only any valid reusable classification |
 
-Pi fallback preserves public foregrounds and bold/faint/italic/underline semantics, including SGR `22` clearing both bold and faint. File backgrounds remain Toolview-owned. Faint is local Pi projection data; the daemon's independent-theme wire contract retains its three font bits.
+Pi fallback preserves public foregrounds and bold/faint/italic/underline semantics, including SGR `22` clearing both bold and faint. File backgrounds remain pi-tidy-ui-owned. Faint is local Pi projection data; the daemon's independent-theme wire contract retains its three font bits.
 
 There is no millisecond budget, cold/warm timing gate, cooldown, sampling heuristic or per-frame classifier retry. A synchronous Pi fallback remains synchronous; moving it outside `render` does not make it an asynchronous parser. Exact source/palette reuse prevents ordinary repeated fallback work.
 
@@ -64,12 +64,12 @@ Temporary hidden/expanded/unsupported presentation and session-native-off retain
 
 ## Menu and preferences
 
-`/toolview syntax` opens one public Pi management menu:
+`/tidy-ui syntax` opens one public Pi management menu:
 
 - **Theme:** Pi palette plus the active daemon's catalogue; show selected and effective themes separately. Listing is not a reload. A public scrolling `SelectList` keeps the selected row visible in larger catalogues.
 - **Reload themes:** explicitly reload the active daemon catalogue. No watcher, update polling, daemon restart, file upload or provider selector.
 - **Service status:** cached provider/lifecycle, daemon/protocol/standalone versions, selected/effective theme and bounded last issue. No source text or new source work.
-- **Enable / Disable for this session:** native-only activation. Disable closes owned resources without stopping a shared module. It persists across master Toolview off/on, but a fresh extension runtime is enabled again.
+- **Enable / Disable for this session:** native-only activation. Disable closes owned resources without stopping a shared module. It persists across master pi-tidy-ui off/on, but a fresh extension runtime is enabled again.
 - **Close / Back:** no preference change or save. Retired menu epochs cannot publish late selections/actions.
 
 Opening/status/cancelling cannot enable a disabled provider. Pi palette remains selectable without a live catalogue. Errors are Pi UI notifications, not conversation/model messages.
@@ -82,7 +82,7 @@ Only `syntaxTheme` is persisted through the common settings reader/writer:
 
 or `{ "syntaxTheme": { "kind": "occipital", "id": "<catalogue ID>" } }`.
 
-The file is `join(getAgentDir(), "extensions", "pi-tidy-ui", "config.json")`; Pi resolves the agent directory and its `PI_CODING_AGENT_DIR` override. This future-facing preference path does not rename the current extension/package/command. No enablement, provider, retry, lease, source or expanded theme data is saved.
+The file is `join(getAgentDir(), "extensions", "pi-tidy-ui", "config.json")`; Pi resolves the agent directory and its `PI_CODING_AGENT_DIR` override. This settings path is unchanged by the completed extension/package/command naming refactor. No enablement, provider, retry, lease, source or expanded theme data is saved.
 
 Missing configuration defaults to Pi palette without writing. Invalid/unreadable files and failed/cancelled saves report bounded errors rather than rewriting them or claiming success. Updating the one known field preserves unrelated keys, serializes writes per client and replaces a complete file. Across clients, the last published choice becomes the default for future launches; already-running clients keep their own preference. No settings watcher, database, migration or cross-process lock service is added.
 
@@ -114,7 +114,7 @@ Exactly extension version **`0.0.0`** selects development: only `<extension-root
 
 Real-version packages retain shared-first operation. Their standalone declaration and exact six `@kchpock/occipital-*` optional dependencies are generated together from the nearest `occipital-v*` ancestor of the `pi-tidy-ui-v*` release commit; source manifest/lockfile and `release.ts` remain unpinned. Missing or incomplete selected releases fail preparation without older fallback. The release-only gate compares all six current raw CI executables and published npm payloads with the public release before packing. Runtime does not inspect Git/latest or build Rust. If optional payload/SDK is omitted, exact declared cache/download delivery remains available. See [releases](releases.md#extension-delivery) and the [plan](https://github.com/chpock/pi-tidy-ui/blob/main/docs/syntax-highlighting-plan.md#accepted-localpublished-delivery-revision).
 
-Native packages contain only the executable, LICENSE/third-party NOTICE and metadata, with no JS-client duplication, installer or helper-startup script. All six **`0.1.5`** packages are public; their archive integrity/provenance and raw executable equality with GitHub release assets have been verified. The extension itself remains separately released and named `pi-toolview` until explicitly renamed.
+Native packages contain only the executable, LICENSE/third-party NOTICE and metadata, with no JS-client duplication, installer or helper-startup script. All six **`0.1.5`** packages are public; their archive integrity/provenance and raw executable equality with GitHub release assets have been verified. The extension is named `pi-tidy-ui`, uses `/tidy-ui`, and retains its independent release lifecycle.
 
 The six public `0.1.5` binaries passed native release-CI protocol/build/packaging checks. Both GNU architectures are built/executed in glibc 2.28 userspace, with required ELF symbols no newer than 2.28. Both Windows binaries statically link the compiler runtime and omit external VC++ runtime DLLs; system Windows DLLs remain required. `/Brepro` removes the identified PE timestamp/CodeView nondeterminism, and independent cached/clean builds matched raw files on all six targets with pinned Rust `1.99.0`. This does not freeze every hosted SDK/linker; future drift fails release equality visibly. Earlier public releases are immutable.
 

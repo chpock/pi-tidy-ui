@@ -6,7 +6,7 @@ import { Container, Spacer, Text, TruncatedText, visibleWidth, type TuiMouseEven
 import { stripVTControlCharacters } from "node:util";
 import { InteractiveMode } from "../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/interactive-mode.js";
 import { initTheme, theme } from "../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js";
-import { installToolview } from "../src/index.ts";
+import { installTidyUi } from "../src/index.ts";
 import { cardGeometry } from "../src/card-frame.ts";
 import { prepareQueuedCard } from "../src/queued-card.ts";
 
@@ -55,7 +55,7 @@ test("queued cards use actual native queue construction and preserve full text, 
   host.compactionQueuedMessages = [{ mode: "steer", text: "COMPACTION" }]; host.updatePendingMessagesDisplay();
   const native = pending.render(100), children = [...pending.children];
   const original = Container.prototype.render;
-  const controller = installToolview(root, () => theme);
+  const controller = installTidyUi(root, () => theme);
   try {
     const rows = content(pending.render(100));
     assert.deepEqual(rows, ["", "FIRST", "  indentation", "", "**plain, not Markdown**", "", "QUEUED · Steering", "",
@@ -79,7 +79,7 @@ test("queued cards use actual native queue construction and preserve full text, 
 
 test("queued cards allocate max(10,floor(screen/3)) including decoration and stop the sweep as soon as they fit", () => {
   const { root, pending } = fixture([message("A", 8), message("B", 8)], [], 69);
-  const controller = installToolview(root, () => theme);
+  const controller = installTidyUi(root, () => theme);
   try {
     // Leading spacer + 4 decoration rows per card + one card separator = 10.
     let rows = pending.render(100);
@@ -101,14 +101,14 @@ test("queued cards allocate max(10,floor(screen/3)) including decoration and sto
     assert.deepEqual(bodies(pending.render(100)).map(body => body.length), [8, 8], "resizing restores original complete text");
   } finally { controller.restore(); }
   const single = fixture([message("S", 20)], [], 12);
-  const adapter = installToolview(single.root, () => theme);
+  const adapter = installTidyUi(single.root, () => theme);
   try { assert.equal(single.pending.render(100).length, 10); assert.equal(bodies(single.pending.render(100))[0]!.length, 5); }
   finally { adapter.restore(); }
 });
 
 test("queued cards reuse prepared bodies across warm and height-only frames and account/release each native owner", () => {
   const source = [message("A", 15), message("B", 15)], { root, pending, host } = fixture(source);
-  const controller = installToolview(root, () => theme);
+  const controller = installTidyUi(root, () => theme);
   try {
     pending.render(100); const cold = controller.cacheStats();
     assert.equal(cold.entries, 2);
@@ -137,7 +137,7 @@ test("queued cards wrap metadata without hiding it, follow native remapped keys 
   const source = [raw], { root, pending, host } = fixture(source, [], 150);
   host.getAppKeyDisplay = () => "Ctrl+Alt+E"; host.updatePendingMessagesDisplay();
   let padding = 1;
-  const controller = installToolview(root, () => theme, { outputPad: () => padding });
+  const controller = installTidyUi(root, () => theme, { outputPad: () => padding });
   try {
     const rows = pending.render(100);
     assert.ok(content(rows).includes("QUEUED · Steering (Ctrl+Alt+E to edit all queued messages)"));
@@ -159,7 +159,7 @@ test("queued cards wrap metadata without hiding it, follow native remapped keys 
 
 test("queued-card badge background matches the user stripe and hint follows dim punctuation with muted text", async () => {
   const { root, pending } = fixture(["BODY"]);
-  const controller = installToolview(root, () => theme);
+  const controller = installTidyUi(root, () => theme);
   try {
     for (const name of ["dark", "light"] as const) {
       initTheme(name, false);
@@ -190,7 +190,7 @@ test("queued-card guards retain native unknown shapes, foreign methods and unrel
   const { root, slots, pending } = fixture(["EXPECTED"]);
   const other = new TruncatedText("Steering: NOT_A_QUEUE", 1, 0); slots[0]!.addChild(other);
   const native = pending.render(100), unrelated = other.render(100), render = Container.prototype.render;
-  const controller = installToolview(root, () => theme);
+  const controller = installTidyUi(root, () => theme);
   try {
     assert.ok(content(pending.render(100)).includes("EXPECTED"));
     assert.deepEqual(other.render(100), unrelated);
@@ -222,7 +222,7 @@ test("queued cards leave subsequent native pending components untouched and do n
   const render = shell.render;
   shell.render = width => { renders++; return render.call(shell, width); };
   pending.addChild(shell);
-  const controller = installToolview(root, () => theme);
+  const controller = installTidyUi(root, () => theme);
   try {
     renders = 0;
     const rows = pending.render(100);
@@ -252,7 +252,7 @@ test("queued cards preserve native Container mouse bookkeeping and scoped method
   Object.defineProperty(nodes[1], "render", { value: TruncatedText.prototype.render, configurable: true, writable: false, enumerable: true });
   const renderDescriptors = nodes.map(node => Object.getOwnPropertyDescriptor(node, "render"));
   const nativeRender = TruncatedText.prototype.render;
-  const controller = installToolview(root, () => theme);
+  const controller = installTidyUi(root, () => theme);
   try {
     const rows = pending.render(100);
     const result = pending.handleMouse({ type: "click", button: "left", x: 1, y: rows.length - 1,
@@ -302,7 +302,7 @@ test("queued projection restores methods on render failure, preserves later owne
       }
       return ["NATIVE_SUFFIX"];
     } });
-    const controller = installToolview(root, () => theme);
+    const controller = installTidyUi(root, () => theme);
     try {
       const rows = pending.render(100);
       assert.equal(hint.render, TruncatedText.prototype.render);

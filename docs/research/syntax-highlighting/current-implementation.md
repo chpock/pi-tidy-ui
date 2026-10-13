@@ -28,7 +28,7 @@ The installed TypeScript grammar returns this for a commonplace expression:
 
 There is no variable, user-defined type, member, call, operator or punctuation scope for the remainder. Adding more color mappings cannot color nonexistent tokens. The absence of syntax scopes is not proof that semantic analysis is required: richer TextMate grammars or syntax-tree queries can recognize many of these positions without knowing what `User` resolves to.
 
-The diagnostic [`probes/current-highlight.mjs`](probes/current-highlight.mjs) inspects raw grammar HTML and actual xterm cells, then compares all source-cell foregrounds against the actual Toolview file card at width 100. It uses Pi's actual theme, not a mock.
+The diagnostic [`probes/current-highlight.mjs`](probes/current-highlight.mjs) inspects raw grammar HTML and actual xterm cells, then compares all source-cell foregrounds against the actual pi-tidy-ui file card at width 100. It uses Pi's actual theme, not a mock.
 
 Recorded output: [`probes/current-highlight-output.jsonl`](probes/current-highlight-output.jsonl).
 
@@ -43,7 +43,7 @@ Recorded output: [`probes/current-highlight-output.jsonl`](probes/current-highli
 
 These are deliberately small diagnostic examples, **not** language-wide quality scores or performance benchmarks. Ordinary-color cells include recognized roles intentionally sharing the ordinary palette. A separate Vue sample falls back to one `mdCodeBlock` color: zero ordinary-color cells there does **not** mean any syntax was recognized.
 
-All **419 source cells** across seven samples matched the corresponding Pi reference foreground inside the Toolview card. Thus these examples do not support blaming split layout, diff tint or wrapping for dropped token foregrounds. They do not prove correctness for every language, width or malformed input.
+All **419 source cells** across seven samples matched the corresponding Pi reference foreground inside the pi-tidy-ui card. Thus these examples do not support blaming split layout, diff tint or wrapping for dropped token foregrounds. They do not prove correctness for every language, width or malformed input.
 
 ## Cause 2: supported grammar and filename dispatch are different things
 
@@ -71,7 +71,7 @@ Pi's installed dark and light themes assign `syntaxComment`, `syntaxOperator`, `
 
 Pi maps scopes into approximately nine syntax roles, with some additional general/diff styles. That is a deliberately smaller palette than an editor's many TextMate scopes. `function`/`title` map to function color, `class`/`type`/built-ins to type color, `params` to variable color. A newer parser should preserve finer classification until the presentation mapping, rather than irreversibly merging it inside parsing.
 
-There is also an explicit reset detail: Pi `Theme.fg` is a shallow wrapper ending in SGR 39 (`theme.js:201–205`). Toolview wraps a highlighted row in `toolOutput`, but inner token SGR 39 restores terminal-default foreground, **not the enclosing toolOutput color**. Raw unclassified text after a token can consequently use the terminal default, whereas preceding unclassified text uses toolOutput. The probe counts both states as ordinary/default. This is a real foreground-composition limitation; changing only that reset behavior would normalize the base foreground, not supply missing syntax tokens.
+There is also an explicit reset detail: Pi `Theme.fg` is a shallow wrapper ending in SGR 39 (`theme.js:201–205`). pi-tidy-ui wraps a highlighted row in `toolOutput`, but inner token SGR 39 restores terminal-default foreground, **not the enclosing toolOutput color**. Raw unclassified text after a token can consequently use the terminal default, whereas preceding unclassified text uses toolOutput. The probe counts both states as ordinary/default. This is a real foreground-composition limitation; changing only that reset behavior would normalize the base foreground, not supply missing syntax tokens.
 
 ## Cause 4: a saved diff is not a complete source file
 

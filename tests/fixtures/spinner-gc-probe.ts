@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { Container } from "@earendil-works/pi-tui";
 import { ToolExecutionComponent } from "../../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/components/tool-execution.js";
 import { initTheme, theme } from "../../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js";
-import { installToolview } from "../../src/index.ts";
+import { installTidyUi } from "../../src/index.ts";
 
 initTheme("dark", false);
 class Root extends Container { requests = 0; requestRender() { this.requests++; } }
@@ -28,7 +28,7 @@ globalThis.clearTimeout = ((handle: ReturnType<typeof setTimeout>) => {
 let node: ToolExecutionComponent | undefined = new ToolExecutionComponent("read", "last-spinner-owner", { path: "a.txt" },
   undefined, undefined, root as never, "/tmp");
 root.addChild(node);
-const controller = installToolview(root as never, () => theme);
+const controller = installTidyUi(root as never, () => theme);
 try {
   node.markExecutionStarted(); node.render(80);
   assert.equal(controller.cacheStats().entries, 1);

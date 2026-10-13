@@ -7,7 +7,7 @@ import { ToolExecutionComponent, createEditToolDefinition } from "@earendil-work
 import { renderLayoutFrame } from "../../node_modules/@earendil-works/pi-tui/dist/layout.js";
 import { generateDiffString } from "../../node_modules/@earendil-works/pi-coding-agent/dist/core/tools/edit-diff.js";
 import { initTheme, theme } from "../../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js";
-import { installToolview } from "../../src/index.ts";
+import { installTidyUi } from "../../src/index.ts";
 
 initTheme("dark", false);
 class Root extends Container { requestRender() {} }
@@ -30,7 +30,7 @@ for (let i = 0; i < 24; i++) {
   const node = new ToolExecutionComponent("edit", `diff-${i}`, { path: `example-${i}.ts` }, undefined, createEditToolDefinition("/tmp"), root as never, "/tmp");
   node.updateResult({ content: [], details, isError: false }); root.addChild(node); edits.push(node);
 }
-const controller = installToolview(root, () => theme), observations: object[] = [];
+const controller = installTidyUi(root, () => theme), observations: object[] = [];
 function frame(stage: string, width = 140, height = 24) {
   const before = controller.cacheStats();
   const visible = renderLayoutFrame(viewport, width, height, () => {}).lines.length;

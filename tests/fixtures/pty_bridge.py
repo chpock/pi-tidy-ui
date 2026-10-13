@@ -39,8 +39,8 @@ def main():
     emit({"ready": pid})
     deadline = time.monotonic() + 180
     # Isolated regression opt-in: delay ioctl itself, not Pi's text or geometry.
-    resize_delay = int(os.environ.get("TOOLVIEW_TEST_RESIZE_DELAY_MS", "0")) / 1000
-    host_hold = int(os.environ.get("TOOLVIEW_TEST_RESIZE_HOLD_MS", "0")) / 1000
+    resize_delay = int(os.environ.get("TIDY_UI_TEST_RESIZE_DELAY_MS", "0")) / 1000
+    host_hold = int(os.environ.get("TIDY_UI_TEST_RESIZE_HOLD_MS", "0")) / 1000
     try:
         while time.monotonic() < deadline:
             readers, _, _ = select.select([master, sys.stdin.fileno()], [], [], 0.1)

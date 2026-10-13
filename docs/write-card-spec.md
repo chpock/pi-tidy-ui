@@ -1,12 +1,12 @@
 # Write card specification
 
-This specification defines the interactive presentation of the exact, case-sensitive tool name `write`. Toolview supports stock Pi and compatible third-party result shapes without identifying the producer or changing execution, arguments, results or session data. [Architecture](architecture.md) owns the host boundary; the [edit contract](edit-card-spec.md) owns the shared diff layout.
+This specification defines the interactive presentation of the exact, case-sensitive tool name `write`. pi-tidy-ui supports stock Pi and compatible third-party result shapes without identifying the producer or changing execution, arguments, results or session data. [Architecture](architecture.md) owns the host boundary; the [edit contract](edit-card-spec.md) owns the shared diff layout.
 
 ## Lifecycle and routing
 
 Before final success, use the ordinary compact presentation: `write <path>` when `path` is a nonempty primitive string, ignoring every other argument without reading it. Otherwise use generic argument formatting. The [compact text budgets](tool-summary-spec.md) apply; long paths wrap rather than acquiring a one-row hard cut. Argument streaming uses the compact left-arrow glyph (`←`), as for edit; actual execution and partial results use the existing shared spinner. Final failure keeps the compact view with every visible segment colored `error`. Never inspect partial/failure diff metadata or paint proposed content as a successful card.
 
-Only a final non-error result can enter the write presenter. Rendering, predecessor spacing, mouse and animation teardown share this condition. Native expansion, images and intentional native hiding remain authoritative. `--toolview-card write` restores native rendering; `--toolview-compact write` takes precedence and keeps every state compact. Unknown self-shell renderers retain actual-width native visibility checks; the stock-edit visibility exception is not extended to write by name or schema.
+Only a final non-error result can enter the write presenter. Rendering, predecessor spacing, mouse and animation teardown share this condition. Native expansion, images and intentional native hiding remain authoritative. `--tidy-ui-card write` restores native rendering; `--tidy-ui-compact write` takes precedence and keeps every state compact. Unknown self-shell renderers retain actual-width native visibility checks; the stock-edit visibility exception is not extended to write by name or schema.
 
 Card paths accept `path`, `file_path` or `filePath` and display absolute paths relative to the native component `cwd`. The exact compact shortcut uses only `path`, as for edit. Missing usable card paths or unavailable required source delegate to native.
 
@@ -31,7 +31,7 @@ Without a usable diff, the old source and changed positions are unknown. Show th
 
 ## Body and completeness
 
-All available changed rows remain visible: no Bash-like preview, compact 256/1024-grapheme cap, body ellipsis or hidden changed-line tail. “Complete” means all available changes, not reconstruction of the whole final file. Producer omissions/truncation cannot be repaired by Toolview; the explicit truncated fallback states that limitation. No diff fallback can identify which submitted lines were already unchanged, so it displays all supplied content.
+All available changed rows remain visible: no Bash-like preview, compact 256/1024-grapheme cap, body ellipsis or hidden changed-line tail. “Complete” means all available changes, not reconstruction of the whole final file. Producer omissions/truncation cannot be repaired by pi-tidy-ui; the explicit truncated fallback states that limitation. No diff fallback can identify which submitted lines were already unchanged, so it displays all supplied content.
 
 Plain `Created`/`Wrote` bodies are always one full-width pane. Use right-aligned new-line numbers in `dim`, one gutter space before the number and one space before code; continuation gutters are blank. Do not reserve a sign column or use added/removed tint. Preserve logical blank lines, trailing spaces and available source positions; an empty input has no invented numbered source row. Omission markers already supplied inside an additions-only diff remain visible rather than pretending missing source exists.
 

@@ -1,5 +1,5 @@
 // Research-only isolated comparison, not a production adapter.
-// npm install --prefix /tmp/pi-toolview-syntax-research-20261006 --no-package-lock --ignore-scripts --no-audit --no-fund shiki@4.5.0
+// npm install --prefix /tmp/pi-tidy-ui-syntax-research-20261006 --no-package-lock --ignore-scripts --no-audit --no-fund shiki@4.5.0
 // node --expose-gc docs/research/syntax-highlighting/probes/shiki-highlight.mjs oniguruma
 // node --expose-gc docs/research/syntax-highlighting/probes/shiki-highlight.mjs javascript
 // Override the dependency directory with SHIKI_RESEARCH_ROOT.
@@ -9,7 +9,7 @@ import { performance } from 'node:perf_hooks';
 import { initTheme, theme } from '../../../../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js';
 import { colorToRgb } from '@earendil-works/pi-tui';
 import { highlightCode } from '@earendil-works/pi-coding-agent';
-const root = process.env.SHIKI_RESEARCH_ROOT ?? '/tmp/pi-toolview-syntax-research-20261006';
+const root = process.env.SHIKI_RESEARCH_ROOT ?? '/tmp/pi-tidy-ui-syntax-research-20261006';
 const moduleAt = (path) => import(pathToFileURL(`${root}/node_modules/${path}`).href);
 const engineName = process.argv[2] ?? 'oniguruma';
 assert.ok(['oniguruma', 'javascript'].includes(engineName));
@@ -26,7 +26,7 @@ const roleRules = [
   [['keyword.operator'], 'syntaxOperator'],
   [['punctuation'], 'syntaxPunctuation'],
 ];
-const hostTheme = { name: 'toolview-research-dark', type: 'dark', colors: { 'editor.foreground': hex('toolOutput'), 'editor.background': hex('toolPendingBg') },
+const hostTheme = { name: 'tidy-ui-research-dark', type: 'dark', colors: { 'editor.foreground': hex('toolOutput'), 'editor.background': hex('toolPendingBg') },
   tokenColors: roleRules.map(([scope, role]) => ({ scope, settings: { foreground: hex(role) } })) };
 global.gc?.();
 const startMemory = process.memoryUsage();

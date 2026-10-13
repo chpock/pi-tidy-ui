@@ -2,7 +2,7 @@
 import { spawnSync } from 'node:child_process';
 import { writeFileSync, appendFileSync, readFileSync } from 'node:fs';
 import assert from 'node:assert/strict';
-const bin=process.env.RESEARCH_NODE ?? '/tmp/pi-toolview-head-to-head/node-v22.19.0-linux-x64/bin/node';
+const bin=process.env.RESEARCH_NODE ?? '/tmp/pi-tidy-ui-head-to-head/node-v22.19.0-linux-x64/bin/node';
 const kinds=['tree-wasm','shiki-onig','tree-native','shiki-js'];
 const target=new URL('./results.jsonl',import.meta.url);const refresh=process.argv[2]==='memory-refresh';const kept=refresh?readFileSync(target,'utf8').trim().split('\n').map(JSON.parse).filter(r=>r.scenario!=='memory'):[];writeFileSync(target,kept.map(JSON.stringify).join('\n')+(kept.length?'\n':''));
 for(const scenario of refresh?['memory']:['bench','memory'])for(let trial=0;trial<(scenario==='bench'?5:3);trial++) {

@@ -1,4 +1,4 @@
-// Research corpus: synthetic source and a snapshot of real Toolview source.
+// Research corpus: synthetic source and a snapshot of real pi-tidy-ui source.
 import { readFileSync } from 'node:fs';
 export const samples = {
   typescript: 'const result: User = client.fetch(user.id) ?? fallback;\nfunction greet(name: string): string { return `hello ${name}`; }\n// Unicode: 😀 é 中文\n',

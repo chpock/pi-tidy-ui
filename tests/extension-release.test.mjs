@@ -17,7 +17,7 @@ const release = JSON.parse(await readFile(join(repo, 'tests/fixtures/occipital-r
 async function fixture(t) {
   const root = await mkdtemp(join(tmpdir(), 'extension-release-')); t.after(() => rm(root, { recursive: true, force: true }));
   await mkdir(join(root, 'src/occipital'), { recursive: true });
-  const manifest = { name: 'pi-toolview', version: '0.0.0', type: 'module', files: ['src', 'README.md', 'LICENSE'],
+  const manifest = { name: 'pi-tidy-ui', version: '0.0.0', type: 'module', files: ['src', 'README.md', 'LICENSE'],
     optionalDependencies: { '@cortexkit/subc-client': '0.21.1' } };
   await writeFile(join(root, 'package.json'), JSON.stringify(manifest));
   await writeFile(join(root, 'package-lock.json'), '{"version":"0.0.0","packages":{}}');
@@ -68,7 +68,7 @@ test('generated extension packs its own version and native declaration without r
   const { stdout } = await run(process.platform === 'win32' ? 'npm.cmd' : 'npm', ['pack', '--dry-run', '--ignore-scripts', '--json'],
     { cwd: f.output, timeout: 30000, maxBuffer: 1024 * 1024 });
   const records = JSON.parse(stdout), result = Array.isArray(records) ? records[0] : Object.values(records)[0];
-  assert.equal(result.name, 'pi-toolview'); assert.equal(result.version, '0.2.0');
+  assert.equal(result.name, 'pi-tidy-ui'); assert.equal(result.version, '0.2.0');
   assert.deepEqual(result.files.map(file => file.path).sort(), ['LICENSE', 'README.md', 'package.json', 'src/occipital/release.ts']);
 });
 

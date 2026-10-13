@@ -5,7 +5,7 @@ import { stripVTControlCharacters as plain } from "node:util";
 import { Container, type Component } from "@earendil-works/pi-tui";
 import { ToolExecutionComponent } from "../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/components/tool-execution.js";
 import { initTheme, theme } from "../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js";
-import { installToolview } from "../src/index.ts";
+import { installTidyUi } from "../src/index.ts";
 
 initTheme("dark", false);
 const frames = Array.from("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏");
@@ -20,7 +20,7 @@ function fixture(t: TestContext, count = 1) {
       undefined, undefined, root as never, "/tmp");
     document.addChild(node); return node;
   });
-  const controller = installToolview(root as never, () => theme);
+  const controller = installTidyUi(root as never, () => theme);
   t.after(() => controller.restore());
   const render = () => root.render(80).map(plain);
   const glyph = (node = tools[0]!) => node.render(80).map(plain).find(row => row.includes(" read "))![1]!;
@@ -32,7 +32,7 @@ test("host document visits drive time-based spinner frames without any fallback 
   f.render(); assert.equal(f.deadlines.mock.calls.length, 0, "argument streaming starts no deadline");
   f.tools.forEach(node => node.markExecutionStarted());
   const initial = f.render(), builds = f.controller.cacheStats().builds, requests = f.root.requests;
-  assert.equal(f.intervals.mock.calls.length, 0, "Toolview owns no periodic interval");
+  assert.equal(f.intervals.mock.calls.length, 0, "pi-tidy-ui owns no periodic interval");
   assert.equal(f.deadlines.mock.calls.length, 1, "parallel calls share one initial deadline");
   const seen = new Set<string>();
   for (let i = 0; i < 12; i++) {

@@ -76,7 +76,7 @@ impl Profile {
     }
 }
 
-/// Bound selector preparation. Theme backgrounds never replace Toolview's panel/diff paint.
+/// Bound selector preparation. Theme backgrounds never replace pi-tidy-ui's panel/diff paint.
 /// Foreground conversion follows the bat0.26.1 conventions used by the bundled assets.
 pub const THEME_SELECTORS: usize = 512;
 pub const THEME_PATHS: usize = 4096;

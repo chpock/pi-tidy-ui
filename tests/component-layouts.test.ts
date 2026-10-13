@@ -6,7 +6,7 @@ import { ToolExecutionComponent } from "@earendil-works/pi-coding-agent";
 import { UserMessageComponent } from "../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/components/user-message.js";
 import { initTheme, theme } from "../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js";
 import { RenderCache } from "../src/render-cache.ts";
-import { installToolview } from "../src/index.ts";
+import { installTidyUi } from "../src/index.ts";
 
 initTheme("dark", false);
 class Root extends Container { requestRender() {} }
@@ -62,7 +62,7 @@ test("actual SDK removal and subtree clear immediately release component layouts
   const root = new Root(), group = new Container();
   const first = tool(root), bash = tool(root, "bash", "bash"), user = new UserMessageComponent("**USER_BODY**");
   group.addChild(bash); group.addChild(user); root.addChild(first); root.addChild(group);
-  const controller = installToolview(root, () => theme);
+  const controller = installTidyUi(root, () => theme);
   try {
     root.render(80);
     assert.equal(controller.cacheStats().entries, 3);
@@ -90,7 +90,7 @@ test("actual SDK removal and subtree clear immediately release component layouts
 test("actual SDK clear/remove hooks restore only owned methods", () => {
   const clear = Container.prototype.clear, remove = Container.prototype.removeChild;
   const root = new Root(); root.addChild(tool(root));
-  const controller = installToolview(root, () => theme);
+  const controller = installTidyUi(root, () => theme);
   const later = function (this: Container) { clear.call(this); };
   try {
     assert.notEqual(Container.prototype.clear, clear);

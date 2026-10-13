@@ -64,7 +64,7 @@ try {
       `@earendil-works/pi-coding-agent@${peers['@earendil-works/pi-coding-agent']}`, `@earendil-works/pi-tui@${peers['@earendil-works/pi-tui']}`]);
     Object.assign(process.env, { HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: join(home, 'config'), APPDATA: join(home, 'config'), LOCALAPPDATA: join(home, 'local'),
       PI_CODING_AGENT_DIR: join(home, 'agent'), SUBC_CONNECTION_FILE: join(home, 'missing-service.json'), PATH: '' });
-    const entry = join(consumer, 'node_modules/pi-toolview/src'), require = createRequire(join(consumer, 'package.json'));
+    const entry = join(consumer, 'node_modules/pi-tidy-ui/src'), require = createRequire(join(consumer, 'package.json'));
     const { createJiti } = createRequire(join(consumer, 'node_modules/@earendil-works/pi-coding-agent/package.json'))('jiti');
     const jiti = createJiti(pathToFileURL(join(entry, 'index.ts')).href, { fsCache: false });
     const load = relative => jiti.import(pathToFileURL(join(entry, relative)).href);

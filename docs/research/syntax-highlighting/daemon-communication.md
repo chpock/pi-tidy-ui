@@ -31,7 +31,7 @@ A child binary connected by stdin/stdout remains a **per-parent sidecar** unless
 ## 2. Requirements for this project
 
 1. Independent agents under the same user can reuse one loaded highlighting module across projects.
-2. Calls are asynchronous and happen outside Toolview's synchronous rendering path.
+2. Calls are asynchronous and happen outside pi-tidy-ui's synchronous rendering path.
 3. Source text and syntax ranges are preserved exactly; terminals, line wrapping and diff backgrounds remain client-owned.
 4. Replies can arrive out of order, and source/theme revisions prevent stale replies from repainting a card.
 5. A disconnected agent, restart or incompatible version fails explicitly without blocking rendering.
@@ -60,9 +60,9 @@ No relative latency or memory ranking for these transports is inferred from docu
 ### 4.1 Process shape
 
 ```text
-agent A / Toolview ── public TypeScript SDK ──┐
-agent B / Toolview ── public TypeScript SDK ──┼── ck-subc (per user)
-agent C / Toolview ── public TypeScript SDK ──┘       │
+agent A / pi-tidy-ui ── public TypeScript SDK ──┐
+agent B / pi-tidy-ui ── public TypeScript SDK ──┼── ck-subc (per user)
+agent C / pi-tidy-ui ── public TypeScript SDK ──┘       │
                                                     └── one supervised Rust highlighting module
                                                          shared grammars / queries
                                                          bounded worker-local parse state
@@ -83,7 +83,7 @@ The current sources define:
 - On Unix, connection-file ownership and owner-only permissions are checked. On Windows, the implementation relies on the per-user directory ACL rather than claiming equivalent Unix mode checks.
 - Route handles bound to the connection and epoch; replies match correlation identifiers, not arrival order.
 
-Use the public SDK's discovery/configuration facilities and the compatible installed fleet contract; do not hardcode a filename from old README examples. The repository explicitly describes `docs/` as working design history, and some README installation/source-only examples lag current package exports. Never copy authentication or envelope implementations into Toolview. [C3–C5]
+Use the public SDK's discovery/configuration facilities and the compatible installed fleet contract; do not hardcode a filename from old README examples. The repository explicitly describes `docs/` as working design history, and some README installation/source-only examples lag current package exports. Never copy authentication or envelope implementations into pi-tidy-ui. [C3–C5]
 
 HMAC authentication protects access within the intended local user trust boundary. It is **not** encrypted remote transport, isolation from every same-user program or authorization to publish the listener externally.
 
@@ -93,7 +93,7 @@ The TypeScript SDK exposes `SubcClient`, catalog/route operations, `request`, ma
 
 **Prefer the explicit `internal_service` role with `agent_facing: false`**, not a fake tool provider. Its public consumer path is `routeOpen({ kind: "internal_service", module_id, service_id }, identity)` followed by `request(handle, ...)`. Current managed `call`/`callBinary` accept only management-surface or tool-provider targets, so they do **not** provide managed internal-service recovery. A small client adapter must reconnect and reopen this explicit route. Representing highlighting as a management-query surface would instead be a deliberate semantic decision, not a shortcut justified by `call()` convenience. No production `syntax.highlight` module/capability is claimed to exist. [C3]
 
-Avoid using the MCP gateway as the normal Toolview path: an extension already running in Node can directly consume the daemon. MCP compatibility is valuable for model-facing tool fleets, but our operation changes presentation and must not add model calls, session records or another per-agent shim process.
+Avoid using the MCP gateway as the normal pi-tidy-ui path: an extension already running in Node can directly consume the daemon. MCP compatibility is valuable for model-facing tool fleets, but our operation changes presentation and must not add model calls, session records or another per-agent shim process.
 
 **SDK limitation found by source inspection:** the published TypeScript provider builds response/stream flags with `binary=false`; the inspected Rust serve path likewise sends `HandlerOutcome::Response` and `RequestCtx::emit` with `data_flags()` whose binary bit is false. The Node consumer decodes replies from the reply's binary bit, not from the request option. Thus a `Uint8Array`/`Vec<u8>` handler result and the presence of `callBinary` do not prove arbitrary binary reply interoperability. JSON-encoded spans are a supported-shaped candidate; promising compact opaque replies requires a public supported path or an upstream correction verified separately. This is a source finding, not a runtime reproduction or permission to patch Subconscious. [C2, C3, C7]
 
@@ -122,13 +122,13 @@ These are constraints for a separately authorized design, not a POC or a new gen
 - **Supply source, not a reread instruction.** The service highlights exactly the saved/submitted text passed to it; filenames are language hints, not permission to load current disk contents.
 - **Start with a clear snapshot operation.** A growing-code API may use retained state later, but only if the selected library really supports it and old/new source equality is verified. Transport streaming alone is not incremental highlighting.
 - **Return syntax ranges/categories independently of layout.** Prefer UTF-8 byte ranges plus category/style identifiers in a versioned JSON reply for the inspected SDK surface. Node can map those ranges to the original source and Pi's palette. Returning final foreground-only ANSI is possible, but must not reset diff backgrounds or introduce layout. Compact binary replies are not assumed available through today's serve helpers.
-- **Keep presentation in Toolview.** Frame dimensions, wrapping, signs, line numbers, diff backgrounds and mouse geometry stay where they are. The daemon is not a replacement TUI renderer.
+- **Keep presentation in pi-tidy-ui.** Frame dimensions, wrapping, signs, line numbers, diff backgrounds and mouse geometry stay where they are. The daemon is not a replacement TUI renderer.
 - **Validate reply identity.** Source revision/hash, grammar/engine revision and applicable palette revision must match before publication. Width-only changes reuse classification without new RPC.
 - **Bound work and release state.** Avoid letting one agent monopolize the module. Dispose client/document state on completion, disconnect and reload; do not persist source caches by default.
 - **No heavyweight hidden fallback.** A missing daemon must have explicitly agreed pending/unavailable behavior, not silently load Shiki or another full engine in every agent.
 - **Use framework-owned lifecycle.** Register/package a module and use normal CortexKit deployment. Do not make ten extensions race to install, upgrade or replace a shared service.
 
-The existing async-precompute integration constraint is explained in [shared-service.md](shared-service.md#integration-constraints-for-toolview). No framework choice makes a synchronous render callback awaitable.
+The existing async-precompute integration constraint is explained in [shared-service.md](shared-service.md#integration-constraints-for-pi-tidy-ui). No framework choice makes a synchronous render callback awaitable.
 
 ## 6. Maturity and remaining decisions
 

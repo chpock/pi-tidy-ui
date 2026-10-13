@@ -145,9 +145,9 @@ test('extension-only version changes reuse an unchanged daemon release; daemon c
   await cp(join(root, 'LICENSE'), join(sourceRoot, 'LICENSE'));
   const cargo = join(sourceRoot, 'crates/occipital/Cargo.toml');
   await writeFile(cargo, '[package]\nname = "occipital"\nversion = "0.1.0"\n\n[dependencies]\n');
-  await writeFile(join(sourceRoot, 'package.json'), '{"name":"pi-toolview","version":"99.0.0"}');
+  await writeFile(join(sourceRoot, 'package.json'), '{"name":"pi-tidy-ui","version":"99.0.0"}');
   const first = await stageRelease({ root: sourceRoot, input: inputFor(f), output: join(f.directory, 'independent-1') });
-  await writeFile(join(sourceRoot, 'package.json'), '{"name":"pi-toolview","version":"100.0.0"}');
+  await writeFile(join(sourceRoot, 'package.json'), '{"name":"pi-tidy-ui","version":"100.0.0"}');
   const second = await stageRelease({ root: sourceRoot, input: inputFor(f), output: join(f.directory, 'independent-2') });
   assert.deepEqual(first, second);
   await writeFile(cargo, '[package]\nname = "occipital"\nversion = "0.2.0"\n');

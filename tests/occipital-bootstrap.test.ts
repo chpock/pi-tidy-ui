@@ -107,7 +107,7 @@ test('published bootstrap exact installed metadata hands verified payload to own
     const repo = dirname(dirname(fileURLToPath(import.meta.url)));
     const root = join(directory, 'extension'); await mkdir(root);
     await cp(join(repo, 'src'), join(root, 'src'), { recursive: true });
-    await writeFile(join(root, 'package.json'), JSON.stringify({ name: 'pi-toolview', version: '0.2.0', type: 'module' }));
+    await writeFile(join(root, 'package.json'), JSON.stringify({ name: 'pi-tidy-ui', version: '0.2.0', type: 'module' }));
     await mkdir(join(root, 'node_modules'));
     const { symlink } = await import('node:fs/promises');
     for (const scope of ['@earendil-works', '@cortexkit']) await symlink(join(repo, 'node_modules', scope), join(root, 'node_modules', scope), 'dir');

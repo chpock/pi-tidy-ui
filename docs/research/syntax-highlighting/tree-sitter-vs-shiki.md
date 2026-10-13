@@ -14,7 +14,7 @@ Reasons, in order:
 2. Both support reuse for growing source. Saved line state is particularly effective for append-heavy source; Shiki/Oniguruma wins the tested Bash and growing-function append adapters. Tree-sitter's incremental parsing alone does not make the complete highlighter incremental.
 3. The tested Shiki adapters have lower stress-process resident memory and substantially less capture-materialization overhead. This is not an engine-only byte count or a universal memory ranking.
 4. Classification quality depends on grammars/queries, not simply regex versus syntax tree. Shiki's ordinary Python names remain a confirmed limitation; the bundled Tree-sitter Rust query has the inverse ordinary-name limitation. Neither is universally richer.
-5. Oniguruma is preferred over JavaScript RegExp because the real Toolview TypeScript source and tested growing Bash/function workloads cost substantially less. Pure JS has cheaper initialization and wins some complete Python/Rust workloads, not the overall measured use case.
+5. Oniguruma is preferred over JavaScript RegExp because the real pi-tidy-ui TypeScript source and tested growing Bash/function workloads cost substantially less. Pure JS has cheaper initialization and wins some complete Python/Rust workloads, not the overall measured use case.
 
 **Main counterargument:** Tree-sitter/WASM is markedly faster on complete unembedded sources, the real TypeScript source snapshot, and local edits in this study. A project prioritizing these costs over integrated breadth and append behavior could reasonably select Tree-sitter. This advantage is retained in the tables, not explained away.
 
@@ -41,7 +41,7 @@ These are research Node/web binding adapters, **not the complete Rust `tree-sitt
 
 The measured adapter uses public token/state APIs, not private stack equality. A middle edit retokenizes the suffix; no state-convergence optimization is assumed. This is less efficient than the tested Tree-sitter range adapter for several middle-edit cases.
 
-Both require an explicitly owned live-source state. That is separate from Toolview's current rendered-only LRUs. No new production AST/token cache or lifecycle is authorized by this research.
+Both require an explicitly owned live-source state. That is separate from pi-tidy-ui's current rendered-only LRUs. No new production AST/token cache or lifecycle is authorized by this research.
 
 ## Reproducible method
 
@@ -55,8 +55,8 @@ Both require an explicitly owned live-source state. That is separate from Toolvi
 - All timing adapters return contiguous normalized category spans, then use the same foreground-only ANSI serializer. Different grammars produce different spans; equal inputs/output format are not equal classification work. No diff tint, wrapping, frame, TUI scheduling or real candidate CLI replay is timed.
 - Shiki diagnostic explanations are disabled in timing. Diagnostic scope output is separately captured for quality; it runs an additional tokenizer pass. Time/line caps are disabled so truncation cannot masquerade as a speed win.
 - Exact source/ANSI reconstruction includes tabs/newlines and Unicode comments; every tested incremental revision must equal a fresh full highlight under the same engine. Both runtimes within each family must produce equal role spans for the nine samples. Repeated identical source updates explicitly require zero parse/query/tokenization work.
-- Real input: archived, hash-identified Toolview `src/file-card.ts` snapshot, **20,001 UTF-16 units, 363 lines**; the SHA256 is recorded in every timing result.
-- Stress sources: 10,000 generated statements per language; Rust wraps them in a function so the full source is syntactically valid. Twenty active sessions contain 1,000 statements each. These are stress controls, not evidence of ordinary Toolview traffic size or concurrency.
+- Real input: archived, hash-identified pi-tidy-ui `src/file-card.ts` snapshot, **20,001 UTF-16 units, 363 lines**; the SHA256 is recorded in every timing result.
+- Stress sources: 10,000 generated statements per language; Rust wraps them in a function so the full source is syntactically valid. Twenty active sessions contain 1,000 statements each. These are stress controls, not evidence of ordinary pi-tidy-ui traffic size or concurrency.
 
 The complete harness, dependency metadata, source snapshot, controls and raw results are in [probes/head-to-head](probes/head-to-head/). `summary.json` is generated from `results.jsonl`, not independently edited.
 
@@ -66,7 +66,7 @@ The complete harness, dependency metadata, source snapshot, controls and raw res
 # Outside the project: use the archived dependencies.json as package.json and
 # dependencies-lock.json as package-lock.json in HIGHLIGHT_RESEARCH_ROOT.
 # npm ci --ignore-scripts --legacy-peer-deps --no-audit --no-fund
-export HIGHLIGHT_RESEARCH_ROOT=/tmp/pi-toolview-head-to-head
+export HIGHLIGHT_RESEARCH_ROOT=/tmp/pi-tidy-ui-head-to-head
 export RESEARCH_NODE="$HIGHLIGHT_RESEARCH_ROOT/node-v22.19.0-linux-x64/bin/node"
 for kind in shiki-js shiki-onig tree-native tree-wasm; do
   "$RESEARCH_NODE" --expose-gc docs/research/syntax-highlighting/probes/head-to-head/run.mjs "$kind" check \
@@ -86,7 +86,7 @@ Native packages loaded without build scripts on this Linux x64/Node22 host. This
 | Python, 1,000 statements | 82.1 | 61.2 | **44.7** | 139.2 |
 | Bash, 1,000 statements | 36.5 | **23.9** | 45.0 | 59.6 |
 | Rust, 1,000 statements in function | 73.6 | **41.9** | 46.2 | 135.0 |
-| Actual Toolview TS source snapshot | 25.9 | **14.6** | 257.9 | 68.3 |
+| Actual pi-tidy-ui TS source snapshot | 25.9 | **14.6** | 257.9 | 68.3 |
 | TS single line, 26,902 units | 47.4 | **27.1** | 77.1 | 125.7 |
 
 The actual TS input exposes a much larger JS/Oniguruma difference than the original repetitive TypeScript probe. Shiki's JS regex path is not simply a universally faster WASM replacement. Native Tree-sitter's per-node binding/marshalling costs also make it slower than its WASM counterpart here; cache repeated node getter reads rather than timing accidental repeated crossings.

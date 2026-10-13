@@ -5,19 +5,19 @@ import { Editor } from "@earendil-works/pi-tui";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
-import toolview from "./presentation-driver.ts";
+import tidyUi from "./presentation-driver.ts";
 import { gitDiagnostics } from "../../src/git-branch.ts";
 
 const originalEditorRender = CustomEditor.prototype.render;
 const identities = new WeakMap<object, number>();
 let nextIdentity = 0;
 export default function editorDriver(pi: ExtensionAPI) {
-  const output = process.env.TOOLVIEW_TEST_OUTPUT!;
+  const output = process.env.TIDY_UI_TEST_OUTPUT!;
   let control: RegisteredCommand["handler"];
   let tui: any;
   let upperRows: string[] = [], upperRegistered = false, widgetCalls = 0;
-  toolview({ ...pi, registerCommand(name, options) {
-    if (name === "toolview") control = options.handler;
+  tidyUi({ ...pi, registerCommand(name, options) {
+    if (name === "tidy-ui") control = options.handler;
     pi.registerCommand(name, options);
   } });
   pi.on("session_start", (_event, ctx) => {
@@ -25,7 +25,7 @@ export default function editorDriver(pi: ExtensionAPI) {
     ctx.ui.setWidget("editor-probe", undefined);
   });
   pi.registerShortcut("ctrl+alt+d", {
-    description: "Observe the unchanged draft or toggle production Toolview without submitting it",
+    description: "Observe the unchanged draft or toggle production pi-tidy-ui without submitting it",
     handler: async ctx => {
       const { name, action = "snapshot" } = JSON.parse(readFileSync(join(output, "editor-request.json"), "utf8"));
       if (!/^[a-z0-9-]+$/.test(name)) throw new Error("Invalid editor observation name");
@@ -83,7 +83,7 @@ export default function editorDriver(pi: ExtensionAPI) {
         embedWorkingStatus: editor.embedWorkingStatus,
         nativeStatusRows: tui.children[2]?.render(width) ?? [],
         embeddedStatusPresent: !!(editor as any).workingStatusIndicator,
-        toolviewRenderOverride: editor.render !== originalEditorRender,
+        tidyUiRenderOverride: editor.render !== originalEditorRender,
         identity: identities.get(editor), exactStockPrototype: true,
         sharedEditorPrototype: Object.getPrototypeOf(CustomEditor.prototype) === Editor.prototype,
         inputMethodUnchanged: editor.handleInput === CustomEditor.prototype.handleInput,

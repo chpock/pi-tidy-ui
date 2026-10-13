@@ -8,7 +8,7 @@ import { pathToFileURL } from "node:url";
 import xterm from "@xterm/headless";
 import { Box, Container, Editor, CURSOR_MARKER, Spacer, Text, visibleWidth, truncateToWidth, parseColor, colorToRgb, TuiAltScreen, TuiMainScreen, type Component, type Terminal, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import { CustomEditor, ToolExecutionComponent as NativeToolExecution, createEditToolDefinition, createWriteToolDefinition, createWriteTool, highlightCode, getLanguageFromPath, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
-import toolview, { installToolview, describeArgs, sanitize, terminalAppearanceTracking, type ToolviewOptions } from "../src/index.ts";
+import tidyUi, { installTidyUi, describeArgs, sanitize, terminalAppearanceTracking, type TidyUiOptions } from "../src/index.ts";
 import type { SyntaxRuntimeOptions } from "../src/syntax/runtime.ts";
 import { cardGeometry, frameRows, insidePanel } from "../src/card-frame.ts";
 import { renderUserCard } from "../src/user-card.ts";
@@ -85,12 +85,12 @@ class Tool extends Container {
 }
 const spinnerFrames = Array.from("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏");
 const color = { colors: {}, fg: (_name: string, text: string) => text };
-function setup(children: (Container | Text | Tool)[] = [], options: ToolviewOptions = {}) {
+function setup(children: (Container | Text | Tool)[] = [], options: TidyUiOptions = {}) {
   const root = new Root();
   for (const child of children) root.addChild(child);
   const original = Tool.prototype.render;
   const addChild = Container.prototype.addChild;
-  const controller = installToolview(root, () => color, options);
+  const controller = installTidyUi(root, () => color, options);
   return { root, controller, original, addChild };
 }
 function mouse(y: number, width = 80): TuiMouseEvent {
@@ -140,7 +140,7 @@ test("completed summaries hide result text and markers; failures color every vis
     const tool = new Tool(name, { pattern: "needle", path: "文件/" + "p".repeat(40), query: "a,b,c", limit: 0 });
     const root = new Root(); root.addChild(tool);
     const paints: { role: string; text: string }[] = [];
-    const controller = installToolview(root, () => ({ fg: (role, text) => {
+    const controller = installTidyUi(root, () => ({ fg: (role, text) => {
       paints.push({ role, text });
       return `\x1b[${role === "error" ? 31 : 37}m${text}\x1b[39m`;
     } }));
@@ -203,13 +203,13 @@ test("completion marker constant can restore success and failure symbols without
   const enabled = source.replace(switchLine, "const SHOW_COMPLETION_MARKERS = true;")
     .replace(/from "([^"]+)"/gu, (_match, specifier: string) =>
       `from ${JSON.stringify(specifier.startsWith(".") ? new URL(specifier, sourceUrl).href : import.meta.resolve(specifier))}`);
-  const temporary = mkdtempSync(join(tmpdir(), "toolview-completion-markers-"));
-  let controller: ReturnType<typeof installToolview> | undefined;
+  const temporary = mkdtempSync(join(tmpdir(), "tidy-ui-completion-markers-"));
+  let controller: ReturnType<typeof installTidyUi> | undefined;
   try {
     const file = join(temporary, "index.ts"); writeFileSync(file, enabled);
     const alternate = await import(pathToFileURL(file).href);
     const root = new Root(), tool = new Tool(); root.addChild(tool);
-    controller = alternate.installToolview(root, () => color);
+    controller = alternate.installTidyUi(root, () => color);
     assert.equal(tool.render(80).at(-1), " → read a.txt ✓");
     tool.updateResult({ isError: true, content: [{ type: "text", text: "ERROR_BODY_SENTINEL" }] });
     assert.equal(plain(tool.render(80).at(-1)!), " → read a.txt ✗");
@@ -315,7 +315,7 @@ test("spinner clock stops on native zero-row visibility and render failure", (t)
   const tool = new SelfTool("custom"); tool.result = undefined;
   const root = new Root(); root.addChild(tool);
   let bad = false;
-  const controller = installToolview(root, () => { if (bad) throw new Error("paint failure"); return color; });
+  const controller = installTidyUi(root, () => { if (bad) throw new Error("paint failure"); return color; });
   try {
     tool.visible = false; assert.deepEqual(tool.render(80), []); assert.equal(intervals.mock.calls.length, 0);
     tool.visible = true; tool.render(80); assert.equal(intervals.mock.calls.length, 1);
@@ -359,7 +359,7 @@ test("spinner attachment follows stable TUI renderer replacement without probes,
     getPrototypeOf: () => Reflect.getPrototypeOf(current),
   }) as TuiAltScreen;
   const first = new Tool("read"); first.result = undefined; documents[0]!.addChild(first);
-  const controller = installToolview(reference, () => color);
+  const controller = installTidyUi(reference, () => color);
   try {
     first.render(80); tick(); assert.equal(intervals.mock.calls.length, 1);
     current = roots[1]!; current.addChild(documents[1]!); const before = [...requests];
@@ -388,9 +388,9 @@ test("extension off and shutdown cancel active clocks; non-TUI loading starts no
   const h = extensionHarness("tui"), tool = new Tool(); tool.result = undefined; h.root.addChild(tool);
   try {
     h.events.get("session_start")!({}, h.ctx); h.root.render(80); assert.equal(animations().length, 1);
-    await h.commands.get("toolview")!.handler("off", h.ctx); assert.equal(animationStops(), 1);
+    await h.commands.get("tidy-ui")!.handler("off", h.ctx); assert.equal(animationStops(), 1);
     const off = h.root.requests; t.mock.timers.tick(10000); assert.equal(h.root.requests, off);
-    await h.commands.get("toolview")!.handler("on", h.ctx); h.root.render(80); assert.equal(animations().length, 2);
+    await h.commands.get("tidy-ui")!.handler("on", h.ctx); h.root.render(80); assert.equal(animations().length, 2);
     h.events.get("session_shutdown")!({}, h.ctx); assert.equal(animationStops(), 2);
     const closed = h.root.requests; t.mock.timers.tick(10000); assert.equal(h.root.requests, closed);
     for (const mode of ["print", "json", "rpc"] as const) {
@@ -486,7 +486,7 @@ test("mouse dispatch uses rendered summary heights and ignores gaps, pending cal
 test("theme is read during rendering instead of captured at installation", () => {
   const root = new Root(), tool = new Tool(); root.addChild(tool);
   let prefix = "A";
-  const controller = installToolview(root, () => ({ fg: (_color, text) => `${prefix}${text}` }));
+  const controller = installTidyUi(root, () => ({ fg: (_color, text) => `${prefix}${text}` }));
   try {
     const before = tool.render(80).join(""); prefix = "B";
     const after = tool.render(80).join("");
@@ -501,7 +501,7 @@ test("restoration is idempotent; re-enabling covers existing and future tools", 
   assert.equal(controller.active, false);
   assert.equal(Tool.prototype.render, original);
   assert.equal(Container.prototype.addChild, addChild);
-  const second = installToolview(root, () => color);
+  const second = installTidyUi(root, () => color);
   try {
     const future = new Tool(); root.addChild(future);
     assert.equal(future.render(80).at(-1), " → read a.txt");
@@ -541,7 +541,7 @@ test("incompatible existing or future tool contract restores all owned hooks and
 
 test("foreign TUI instance is left untouched with a compatibility warning", () => {
   const warnings: string[] = [];
-  const controller = installToolview({} as Root, () => color, { warn: (reason) => warnings.push(reason) });
+  const controller = installTidyUi({} as Root, () => color, { warn: (reason) => warnings.push(reason) });
   assert.equal(controller.active, false);
   assert.equal(warnings.length, 1);
 });
@@ -553,7 +553,7 @@ test("frozen tool prototypes fail safely without partially installing hooks", ()
   const before = Container.prototype.addChild;
   const root = new Root(); root.addChild(new Tool()); root.addChild(new Frozen());
   const original = Tool.prototype.render;
-  const controller = installToolview(root, () => color, { warn: (reason) => warnings.push(reason) });
+  const controller = installTidyUi(root, () => color, { warn: (reason) => warnings.push(reason) });
   assert.equal(controller.active, false);
   assert.equal(Container.prototype.addChild, before);
   assert.equal(Tool.prototype.render, original);
@@ -592,7 +592,7 @@ function extensionHarness(mode: "tui" | "print" | "json" | "rpc" = "tui", flagVa
       else { widgetComponents.delete(name); widgetPlacements.delete(name); }
     },
   } } as unknown as ExtensionContext;
-  toolview(api, { syntax: fixtureSyntaxOptions });
+  tidyUi(api, { syntax: fixtureSyntaxOptions });
   return { root, ctx, events, commands, flags, widgets, notices, widgetComponents, widgetPlacements };
 }
 
@@ -605,18 +605,18 @@ test("extension lifecycle removes the temporary widget, restores on shutdown, an
     assert.notEqual(installed, before);
     h.events.get("session_start")!({}, h.ctx);
     assert.equal(Container.prototype.addChild, installed);
-    assert.deepEqual(h.widgets, ["pi-toolview-terminal-colors", "pi-toolview-capture", "pi-toolview-capture", "pi-toolview-editor-status"]);
-    assert.deepEqual(h.widgetPlacements.get("pi-toolview-terminal-colors"), { placement: "belowEditor" });
-    assert.deepEqual(h.widgetComponents.get("pi-toolview-terminal-colors")!.render(80), [], "colors observation adds no layout rows");
-    assert.deepEqual(h.widgetPlacements.get("pi-toolview-editor-status"), { placement: "belowEditor" });
-    assert.deepEqual([...h.flags.keys()], ["toolview-card", "toolview-compact", "toolview-cache-mb", "toolview-card-cache-mb"]);
-    await h.commands.get("toolview")!.handler("off", h.ctx);
+    assert.deepEqual(h.widgets, ["pi-tidy-ui-terminal-colors", "pi-tidy-ui-capture", "pi-tidy-ui-capture", "pi-tidy-ui-editor-status"]);
+    assert.deepEqual(h.widgetPlacements.get("pi-tidy-ui-terminal-colors"), { placement: "belowEditor" });
+    assert.deepEqual(h.widgetComponents.get("pi-tidy-ui-terminal-colors")!.render(80), [], "colors observation adds no layout rows");
+    assert.deepEqual(h.widgetPlacements.get("pi-tidy-ui-editor-status"), { placement: "belowEditor" });
+    assert.deepEqual([...h.flags.keys()], ["tidy-ui-card", "tidy-ui-compact", "tidy-ui-cache-mb", "tidy-ui-card-cache-mb"]);
+    await h.commands.get("tidy-ui")!.handler("off", h.ctx);
     assert.equal(Container.prototype.addChild, before);
     assert.equal(h.widgetComponents.size, 0, "off removes the persistent status widget");
-    await h.commands.get("toolview")!.handler("on", h.ctx);
+    await h.commands.get("tidy-ui")!.handler("on", h.ctx);
     assert.notEqual(Container.prototype.addChild, before);
     assert.match(h.root.render(80).at(-1)!, /read a\.txt/);
-    await h.commands.get("toolview")!.handler("invalid", h.ctx);
+    await h.commands.get("tidy-ui")!.handler("invalid", h.ctx);
     assert.match(h.notices.at(-1)!, /Usage:/);
   } finally { h.events.get("session_shutdown")!({}, h.ctx); }
   assert.equal(Container.prototype.addChild, before);
@@ -625,7 +625,7 @@ test("extension lifecycle removes the temporary widget, restores on shutdown, an
 test("off persists across session replacements but a reload creates a fresh enabled runtime", async () => {
   const h = extensionHarness(); const before = Container.prototype.addChild;
   h.events.get("session_start")!({}, h.ctx);
-  await h.commands.get("toolview")!.handler("off", h.ctx);
+  await h.commands.get("tidy-ui")!.handler("off", h.ctx);
   h.events.get("session_shutdown")!({}, h.ctx);
   h.events.get("session_start")!({}, h.ctx);
   assert.equal(Container.prototype.addChild, before);
@@ -641,7 +641,7 @@ test("print, JSON and RPC modes install no UI hooks or widgets", async () => {
   for (const mode of ["print", "json", "rpc"] as const) {
     const h = extensionHarness(mode);
     h.events.get("session_start")!({}, h.ctx);
-    await h.commands.get("toolview")!.handler("on", h.ctx);
+    await h.commands.get("tidy-ui")!.handler("on", h.ctx);
     assert.equal(h.widgets.length, 0);
     assert.equal(Container.prototype.addChild, before);
     assert.match(h.notices.at(-1)!, /unavailable outside terminal mode/);
@@ -672,7 +672,7 @@ test("exact read/edit/write summaries use directional arrows; other compact tool
   const names = ["read", "Read", "grep", "aft_inspect", "ctx_reduce", "TaskList", "custom", "write", "edit", "Write", "Edit", "write_custom", "edit_custom", "bash"];
   const tools = names.map((name) => new Tool(name, { path: "a.txt", query: "x".repeat(50) }));
   const root = new Root(); tools.forEach((tool) => root.addChild(tool));
-  const controller = installToolview(root, () => ({ fg: (role, text) =>
+  const controller = installTidyUi(root, () => ({ fg: (role, text) =>
     `\x1b[${role === "dim" ? 90 : 37}m${text}\x1b[39m` }), { compact: names });
   const terminal = new xterm.Terminal({ cols: 80, rows: 4, allowProposedApi: true });
   try {
@@ -712,7 +712,7 @@ test("read summaries use distinct semantic roles and bracket only non-path param
   const root = new Root(), tool = new Tool("read", { path: "a.txt", offset: 5, limit: 10 });
   root.addChild(tool);
   const parts: { color: string; text: string }[] = [];
-  const controller = installToolview(root, () => ({ fg: (color, text) => { parts.push({ color, text }); return text; } }));
+  const controller = installTidyUi(root, () => ({ fg: (color, text) => { parts.push({ color, text }); return text; } }));
   try {
     assert.equal(tool.render(120).at(-1), " → read a.txt [offset=5, limit=10]");
     assert.deepEqual(parts, [
@@ -736,7 +736,7 @@ test("read without parameters has no empty brackets; patterns are primary descri
 test("colored completed summary wrapping preserves content and terminal-width bounds", () => {
   const root = new Root(), tool = new Tool("read", { path: "文件/🦀/é".repeat(20), offset: 5, limit: 100 });
   root.addChild(tool);
-  const controller = installToolview(root, () => ({ fg: (role, text) => {
+  const controller = installTidyUi(root, () => ({ fg: (role, text) => {
     const colors: Record<string, number> = { dim: 90, muted: 37, toolTitle: 97, success: 32 };
     const color = colors[role] ?? 31;
     return `\x1b[${color}m${text}\x1b[39m`;
@@ -929,7 +929,7 @@ test("important fields precede locale-independent alphabetical keys regardless o
 test("colored word-boundary wraps never add padding or blank clickable content rows", () => {
   const root = new Root(), tool = new Tool("read", { path: "abcdefghijklm", limit: 1 });
   root.addChild(tool);
-  const controller = installToolview(root, () => ({ fg: (role, text) => {
+  const controller = installTidyUi(root, () => ({ fg: (role, text) => {
     const colors: Record<string, number> = { dim: 90, muted: 37, toolTitle: 97, success: 32 };
     return `\x1b[${colors[role] ?? 31}m${text}\x1b[39m`;
   } }));
@@ -988,7 +988,7 @@ test("comma-separated string values can start on the tool-name row and wrap afte
 test("comma-aware wrapping preserves nested JSON, quotes, colors, graphemes and width bounds", () => {
   const tool = new Tool("custom", { target: ["a,b", ["文件/🦀/é", "comma,\u0301suffix"], { quoted: 'a,"b\\c' }], drop: "1-3,5,8-10" });
   const root = new Root(); root.addChild(tool);
-  const controller = installToolview(root, () => ({ fg: (role, text) => {
+  const controller = installTidyUi(root, () => ({ fg: (role, text) => {
     const colors: Record<string, number> = { dim: 90, muted: 37, toolTitle: 97, success: 32 };
     return `\x1b[${colors[role] ?? 31}m${text}\x1b[39m`;
   } }));
@@ -1122,7 +1122,7 @@ test("summary long-word preserves Unicode graphemes, all text, failure styles, c
   tool.result!.isError = true;
   const root = new Root(); root.addChild(tool);
   const palette = { fg: (_role: string, text: string) => `\x1b[31m${text}\x1b[39m` };
-  const controller = installToolview(root, () => palette);
+  const controller = installTidyUi(root, () => palette);
   try {
     const expected = `read ${describeArgs("read", tool.args)}`.replace(/ /g, "");
     for (let width = 6; width <= 100; width++) {
@@ -1402,7 +1402,7 @@ test("bash timeout footer wraps entirely in the error role without recoloring co
   const root = new Root(), tool = bashTool("run"); root.addChild(tool);
   tool.updateResult({ content: [{ type: "text", text: "BODY\n\n[command timed out]\n[exit code: 124]" }], details: { exit_code: 124 }, isError: true });
   const fg: [string, string][] = [], bg: string[] = [];
-  const controller = installToolview(root, () => ({
+  const controller = installTidyUi(root, () => ({
     fg: (role, text) => { fg.push([role, text]); return text; },
     bg: (role, text) => { bg.push(role); return text; },
   }));
@@ -1534,7 +1534,7 @@ test("bash foregrounds and neutral panel follow live theme while Unicode geometr
   tool.result = { content: [{ type: "text", text: "\x1b]0;BAD\x07\x1b[31mOUTPUT\x1b[0m\r\n  é\u202e" }] };
   const fg: [string, string][] = [], bg: string[] = [];
   let theme = "A";
-  const controller = installToolview(root, () => ({
+  const controller = installTidyUi(root, () => ({
     fg: (role, text) => { fg.push([role, text]); return text; },
     bg: (role: string, text: string) => { bg.push(`${theme}:${role}`); return text; },
   }));
@@ -1684,7 +1684,7 @@ test("failed stripe and footer share error foreground, never a background-token 
     bg: (role, text) => { backgrounds.push(role); return text; },
     style: () => { throw new Error("Stripe must use the same semantic foreground as the footer"); },
   };
-  const controller = installToolview(root, () => theme);
+  const controller = installTidyUi(root, () => theme);
   try {
     for (const result of [
       { content: [], details: { exit_code: 7 }, isError: false },
@@ -1718,7 +1718,7 @@ test("card motion and focus keep neutral paint without replacing native input or
     fg: (_role, text) => text, bg: (role, text) => { backgrounds.push(role); return text; },
     style: (text, options) => { styles.push(options); return text; } };
   let paletteReads = 0;
-  const controller = installToolview(root, () => { paletteReads++; return theme; });
+  const controller = installTidyUi(root, () => { paletteReads++; return theme; });
   try {
     assert.equal(controller.active, true);
     assert.equal(root.handleViewportInput, native);
@@ -1732,7 +1732,7 @@ test("card motion and focus keep neutral paint without replacing native input or
       assert.equal(paletteReads, before, "ignored mouse events do not render the card body");
       assert.deepEqual(tool.render(80), expected);
     }
-    assert.equal(root.requests, requests, "pointer events do not request Toolview redraws");
+    assert.equal(root.requests, requests, "pointer events do not request pi-tidy-ui redraws");
     assert.equal(tool.expanded, false); assert.deepEqual(styles, []);
     assert.deepEqual([...new Set(backgrounds)], ["toolPendingBg"]);
     controller.restore();
@@ -1741,7 +1741,7 @@ test("card motion and focus keep neutral paint without replacing native input or
   } finally { controller.restore(); }
 });
 
-test("absent, immutable and throwing private input methods are not a Toolview dependency", () => {
+test("absent, immutable and throwing private input methods are not a pi-tidy-ui dependency", () => {
   for (const shape of ["missing", "immutable", "throwing"]) {
     const root = new Root(), tool = bashTool(); root.addChild(tool);
     const warnings: string[] = []; let reads = 0;
@@ -1749,7 +1749,7 @@ test("absent, immutable and throwing private input methods are not a Toolview de
     else if (shape === "immutable") Object.defineProperty(root, "handleViewportInput", { value: Root.prototype.handleViewportInput, configurable: false, writable: false });
     else Object.defineProperty(root, "handleViewportInput", { get() { reads++; throw new Error("Private input must not be read"); }, configurable: false });
     const descriptor = Object.getOwnPropertyDescriptor(root, "handleViewportInput");
-    const controller = installToolview(root, () => color, { warn: (text) => warnings.push(text) });
+    const controller = installTidyUi(root, () => color, { warn: (text) => warnings.push(text) });
     try {
       assert.equal(controller.active, true); assert.deepEqual(warnings, []);
       assert.ok(tool.render(80).some((row) => plain(row).startsWith(" ┃ $ ")));
@@ -1760,7 +1760,7 @@ test("absent, immutable and throwing private input methods are not a Toolview de
   }
 });
 
-test("actual fullscreen keeps native input identity and consumption throughout Toolview lifecycle", () => {
+test("actual fullscreen keeps native input identity and consumption throughout pi-tidy-ui lifecycle", () => {
   const noop = () => {};
   const terminal: Terminal = { columns: 80, rows: 20, kittyProtocolActive: false,
     start: noop, stop: noop, drainInput: async () => {}, write: noop, moveBy: noop, hideCursor: noop,
@@ -1771,7 +1771,7 @@ test("actual fullscreen keeps native input identity and consumption throughout T
   const tool = bashTool(); root.addChild(tool);
   let lateObservations = 0;
   const unsubscribe = root.addInputListener(() => { lateObservations++; return undefined; });
-  const controller = installToolview(root, () => color);
+  const controller = installTidyUi(root, () => color);
   try {
     assert.equal(controller.active, true); assert.equal(input.handleViewportInput, native);
     assert.deepEqual(Object.getOwnPropertyDescriptor(root, "handleViewportInput"), descriptor);
@@ -1795,7 +1795,7 @@ test("stable TUI reference needs no receiver probe, writes or private input acce
     defineProperty: () => { throw new Error("No proxy target writes allowed"); },
     getPrototypeOf: () => Reflect.getPrototypeOf(root),
   }) as Root;
-  const controller = installToolview(reference, () => color);
+  const controller = installTidyUi(reference, () => color);
   try {
     assert.equal(controller.active, true);
     assert.ok(tool.render(80).some((row) => plain(row).startsWith(" ┃ $ ")));
@@ -1811,7 +1811,7 @@ test("narrow truncated bash hints cannot reset the panel background or dim foreg
     fg: (_role, text) => `\x1b[38;2;180;180;180m${text}\x1b[39m`,
     bg: (_role, text) => `\x1b[48;2;32;32;32m${text}\x1b[49m`,
   };
-  const controller = installToolview(root, () => theme);
+  const controller = installTidyUi(root, () => theme);
   const terminal = new xterm.Terminal({ cols: 22, rows: 30, allowProposedApi: true });
   try {
     const rows = tool.render(22);
@@ -1856,7 +1856,7 @@ test("renderer replacement preserves cards and clicks without touching any nativ
     const symbols = roots.map((root) => Object.getOwnPropertySymbols(root));
     const tool = bashTool(); tool.result = { content: [{ type: "text", text: Array(11).fill("OUT").join("\n") }] };
     current.addChild(tool);
-    const controller = installToolview(reference, () => color);
+    const controller = installTidyUi(reference, () => color);
     try {
       const expected = tool.render(80);
       for (let index = 0; index < roots.length; index++) {
@@ -1910,7 +1910,7 @@ test("ordinary and error stripes use terminal-default background, not panel or i
     bg: (_role, text) => `\x1b[48;2;32;32;32m${text}\x1b[49m`,
     style: (text) => `\x1b[38;2;80;0;0m${text}\x1b[39m`,
   };
-  const controller = installToolview(root, () => theme);
+  const controller = installTidyUi(root, () => theme);
   try {
     for (const failed of [false, true]) {
       tool.result = { content: [], isError: failed, details: { exit_code: failed ? 7 : 0 } };
@@ -1949,7 +1949,7 @@ test("unchanged UI frames reuse custom layout; one tool update does not rebuild 
   let segments = 0;
   const original = Intl.Segmenter.prototype.segment;
   Intl.Segmenter.prototype.segment = function (input) { if (input.startsWith("PERF_OUTPUT_")) segments++; return original.call(this, input); };
-  const controller = installToolview(root, () => color);
+  const controller = installTidyUi(root, () => color);
   try {
     root.render(80);
     assert.equal(segments, 88, "only first eleven output rows are wrapped once per tool");
@@ -1969,7 +1969,7 @@ test("unchanged UI frames reuse custom layout; one tool update does not rebuild 
 test("reused mutable arguments and results invalidate only through native update methods", () => {
   const tool = new Tool("custom", { query: "before" });
   const root = new Root(); root.addChild(tool);
-  const controller = installToolview(root, () => ({ fg: (role, text) =>
+  const controller = installTidyUi(root, () => ({ fg: (role, text) =>
     `\x1b[${role === "error" ? 31 : 37}m${text}\x1b[39m` }));
   try {
     assert.ok(root.render(80).some((row) => plain(row).includes("before")));
@@ -2024,7 +2024,7 @@ test("new theme and expansion/structure changes do not leave stale cache geometr
   const a = new Tool("custom", { query: "x".repeat(80) }), b = new Tool();
   const root = new Root(); root.addChild(a); root.addChild(b);
   let theme = { fg: (_role: string, text: string) => `\x1b[31m${text}\x1b[39m` };
-  const controller = installToolview(root, () => theme);
+  const controller = installTidyUi(root, () => theme);
   try {
     root.render(80); const built = controller.cacheStats().builds;
     theme = { fg: (_role: string, text: string) => `\x1b[32m${text}\x1b[39m` };
@@ -2036,18 +2036,18 @@ test("new theme and expansion/structure changes do not leave stale cache geometr
 
 
 test("optional layout diagnostics distinguish retained estimates from whole-process heap and reject retired controls", async () => {
-  const h = extensionHarness("tui", { "toolview-cache-mb": "0.01" });
-  const command = h.commands.get("toolview")!.handler;
-  const stats = () => JSON.parse(h.notices.at(-1)!.replace("Pi Toolview cache: ", ""));
+  const h = extensionHarness("tui", { "tidy-ui-cache-mb": "0.01" });
+  const command = h.commands.get("tidy-ui")!.handler;
+  const stats = () => JSON.parse(h.notices.at(-1)!.replace("pi-tidy-ui cache: ", ""));
   try {
     h.events.get("session_start")!({}, h.ctx); h.root.render(80);
-    assert.ok(h.notices.some(text => /toolview-cache-mb is ignored/u.test(text)));
+    assert.ok(h.notices.some(text => /tidy-ui-cache-mb is ignored/u.test(text)));
     await command("cache", h.ctx);
     const first = stats(); assert.ok(first.entries > 0); assert.ok(first.processHeapUsedBytes > 0);
     assert.equal(first.retainedBytes, first.stringBytes + first.overheadBytes);
     assert.equal(first.presentationRetainedBytes, first.retainedBytes + first.footerLayout.retainedBytes);
-    assert.match(first.memoryScope, /estimated Toolview retained/u);
-    assert.match(first.processMemoryScope, /whole Pi process, not Toolview/u);
+    assert.match(first.memoryScope, /estimated pi-tidy-ui retained/u);
+    assert.match(first.processMemoryScope, /whole Pi process, not pi-tidy-ui/u);
     assert.equal("limitBytes" in first, false);
     for (const invalid of ["cache limit 0", "cache limit -1", "cache cards limit 0", "cache wrong", "cache limit 1 extra"] ) {
       await command(invalid, h.ctx); assert.match(h.notices.at(-1)!, /limits have been removed|Usage:/);
@@ -2056,7 +2056,7 @@ test("optional layout diagnostics distinguish retained estimates from whole-proc
     await command("cache clear", h.ctx); assert.equal(stats().entries, 0); assert.equal(stats().retainedBytes, 0);
     h.root.render(80); await command("off", h.ctx); await command("on", h.ctx); h.root.render(80);
     await command("cache", h.ctx); assert.equal(stats().entries, first.entries);
-    assert.equal(h.notices.filter(text => /toolview-cache-mb is ignored/u.test(text)).length, 1, "legacy warning is runtime-local, not repeated on every frame/on");
+    assert.equal(h.notices.filter(text => /tidy-ui-cache-mb is ignored/u.test(text)).length, 1, "legacy warning is runtime-local, not repeated on every frame/on");
   } finally { h.events.get("session_shutdown")!({}, h.ctx); }
 });
 
@@ -2113,7 +2113,7 @@ test("user messages reuse Bash frame geometry, their own palette and native Mark
     fg(role, text) { calls.push(`fg:${role}`); return nativeTheme.fg(role, text); },
     bg(role, text) { calls.push(`bg:${role}`); return nativeTheme.bg(role, text); },
   };
-  const controller = installToolview(root, () => palette);
+  const controller = installTidyUi(root, () => palette);
   try {
     for (const width of [24, 40, 80]) {
       const rows = user.render(width), geometry = cardGeometry(width);
@@ -2145,7 +2145,7 @@ test("user-card cache performs no native Markdown work on unchanged frames and c
   };
   const user = new UserMessageComponent("USER_CACHE", undefined, 1, [transform]);
   const root = new Root(); root.addChild(user);
-  const controller = installToolview(root, () => nativeTheme);
+  const controller = installTidyUi(root, () => nativeTheme);
   try {
     user.render(80); const cold = controller.cacheStats(), work = widths.length;
     assert.equal(cold.builds, 1); assert.equal(cold.entries, 1); assert.deepEqual(widths, [75]);
@@ -2168,7 +2168,7 @@ test("user cards cover tiny widths, empty messages, new subtrees and visible pre
   initTheme("dark", false);
   const root = new Root(), empty = new UserMessageComponent(" \n "), first = new UserMessageComponent("ABCDEFGHI");
   root.addChild(empty); root.addChild(first);
-  const controller = installToolview(root, () => nativeTheme);
+  const controller = installTidyUi(root, () => nativeTheme);
   try {
     assert.deepEqual(empty.render(80), []); assert.deepEqual(first.render(0), []);
     for (const width of [1, 2, 3, 4, 5, 6, 7, 8, 24, 80]) {
@@ -2197,14 +2197,14 @@ test("user-card hooks restore native methods without changing input/selection or
     rebuild = (prototype as unknown as { rebuild(): void }).rebuild,
     invalidate = prototype.invalidate, setOutputPad = prototype.setOutputPad;
   const native = user.render(80), input = root.handleViewportInput, listeners = root.listeners.size;
-  let controller = installToolview(root, () => nativeTheme);
+  let controller = installTidyUi(root, () => nativeTheme);
   assert.notDeepEqual(user.render(80), native);
   assert.equal(root.handleViewportInput, input); assert.equal(root.listeners.size, listeners);
   controller.restore();
   assert.equal(prototype.render, render); assert.equal((prototype as unknown as { rebuild(): void }).rebuild, rebuild);
   assert.equal(prototype.invalidate, invalidate); assert.equal(prototype.setOutputPad, setOutputPad);
   assert.deepEqual(user.render(80), native);
-  controller = installToolview(root, () => nativeTheme);
+  controller = installTidyUi(root, () => nativeTheme);
   const later = () => ["LATER_USER_RENDERER"];
   try { prototype.render = later; controller.restore(); assert.equal(prototype.render, later); }
   finally { prototype.render = render; controller.restore(); }
@@ -2217,10 +2217,10 @@ test("user cards delegate terminal images and impossible narrow native glyph row
   const rendered = renderUserCard(24, 1, nativeTheme, (width) => { widths.push(width); return media; });
   assert.deepEqual(widths, [21, 24]); assert.equal(rendered.rows, media, "native protocol rows stay byte-identical");
   const native = new UserMessageComponent("文字"), root = new Root(); root.addChild(native);
-  const original = native.render(6), controller = installToolview(root, () => nativeTheme);
+  const original = native.render(6), controller = installTidyUi(root, () => nativeTheme);
   try {
     assert.deepEqual(native.render(6), original, "delegate when W-5 cannot fit a native wide grapheme");
-    assert.equal(controller.active, true, "native delegation does not disable other Toolview presentations");
+    assert.equal(controller.active, true, "native delegation does not disable other pi-tidy-ui presentations");
   } finally { controller.restore(); }
 });
 
@@ -2229,7 +2229,7 @@ test("changed user-component contracts restore all owned hooks and retain exact 
   const user = new UserMessageComponent("USER_CONTRACT"), tool = new Tool(), root = new Root();
   root.addChild(user); root.addChild(tool);
   const userRender = UserMessageComponent.prototype.render, toolRender = Tool.prototype.render, warnings: string[] = [];
-  const controller = installToolview(root, () => nativeTheme, { warn: (reason) => warnings.push(reason) });
+  const controller = installTidyUi(root, () => nativeTheme, { warn: (reason) => warnings.push(reason) });
   try {
     user.children.push(new Text("ADDITIONAL_NATIVE_CHILD", 0, 0));
     assert.deepEqual(user.render(80), userRender.call(user, 80));
@@ -2368,7 +2368,7 @@ test("edit context constant controls projection without fetching unavailable sou
   const url = new URL("../src/file-card.ts", import.meta.url), source = readFileSync(url, "utf8");
   const declaration = "const DIFF_CONTEXT_LINES = 3;";
   assert.ok(source.includes(declaration), "context is configured by one source constant, defaulting to three");
-  const temporary = mkdtempSync(join(tmpdir(), "toolview-edit-context-"));
+  const temporary = mkdtempSync(join(tmpdir(), "tidy-ui-edit-context-"));
   try {
     const before = Array.from({ length: 20 }, (_, index) => `source_${index + 1}`).join("\n") + "\n", after = before.replace("source_10\n", "changed_10\n");
     for (const count of [0, 1, 6]) {
@@ -2667,7 +2667,7 @@ test("edit adapter chooses syntax from the file type for TypeScript, Python, JSO
       const node = new Tool("edit", { path: sample.path });
       node.result = { content: [], details: { diff: sample.code.split("\n").map((line, index) => `+${index + 1} ${line}`).join("\n") } };
       const root = new Root(); root.addChild(node);
-      const controller = installToolview(root, () => nativeTheme);
+      const controller = installTidyUi(root, () => nativeTheme);
       try {
         const rows = node.render(100), highlighted = highlightCode(sample.code, sample.lang);
         for (const [index, line] of sample.code.split("\n").entries()) {
@@ -2932,7 +2932,7 @@ test("edit final failures color every ordinary-summary segment and preserve stat
     const edit = new Tool("edit", { path: "example.ts", edits: [{ oldText: "old", newText: "new" }] });
     const root = new Root(); root.addChild(edit);
     const roles: string[] = [];
-    const controller = installToolview(root, () => ({ fg: (role, text) => { roles.push(role); return nativeTheme.fg(role, text); } }));
+    const controller = installTidyUi(root, () => ({ fg: (role, text) => { roles.push(role); return nativeTheme.fg(role, text); } }));
     try {
       for (const width of [1, 5, 24, 140]) {
         edit.updateResult({ content: [{ type: "text", text: "ERROR_BODY" }], isError: true, details: { diff: editDiff } });
@@ -2995,7 +2995,7 @@ test("verified stock edit presentation never visits native rows for rendering, s
   const follower = new Tool("read", { path: "a.txt" });
   root.addChild(first); root.addChild(second); root.addChild(follower);
   const native = t.mock.method(NativeToolExecution.prototype, "render");
-  const controller = installToolview(root, () => nativeTheme);
+  const controller = installTidyUi(root, () => nativeTheme);
   try {
     const success = { content: [{ type: "text" as const, text: "UNCHANGED_RESULT" }], details: { diff: editDiff }, isError: false };
     for (const phase of ["arguments", "execution", "partial", "failure", "success"] as const) {
@@ -3036,7 +3036,7 @@ test("stock edit visibility proof rejects same-name custom renderers and is chec
   const node = new NativeToolExecution("edit", "custom-visibility", { path: "example.ts" }, undefined, custom, root as never, "/project");
   root.addChild(node);
   const native = t.mock.method(NativeToolExecution.prototype, "render");
-  const controller = installToolview(root, () => nativeTheme, { compact: ["edit"] });
+  const controller = installTidyUi(root, () => nativeTheme, { compact: ["edit"] });
   try {
     node.updateResult({ content: [], details: { diff: editDiff }, isError: false });
     assert.equal(Reflect.get(node, "hideComponent"), false);
@@ -3083,7 +3083,7 @@ test("stock renderer functions cannot prove visibility of a reused custom call B
     root.addChild(node);
     const follower = new Tool("read", { path: "next.txt" }); root.addChild(follower);
     const original = NativeToolExecution.prototype.render;
-    const controller = installToolview(root, () => nativeTheme);
+    const controller = installTidyUi(root, () => nativeTheme);
     try {
       node.updateResult({ content: [], details: { diff: editDiff }, isError: false });
       assert.deepEqual(node.render(140), []);
@@ -3106,7 +3106,7 @@ test("split caches classify rendered Bash/diff bodies separately from all ordina
   const inline = new Tool("edit", { path: "inline.ts" }); inline.result = { content: [] };
   const user = new UserMessageComponent("ordinary user card");
   const root = new Root(); for (const node of [read, bash, pending, failed, diff, inline, user]) root.addChild(node);
-  const controller = installToolview(root, () => nativeTheme);
+  const controller = installTidyUi(root, () => nativeTheme);
   try {
     const empty = controller.cacheStats();
     assert.equal(empty.retainedBytes, 0, "component storage does not preallocate retained bodies");
@@ -3172,10 +3172,10 @@ test("forced compact Bash/edit stay ordinary and large bodies remain component-o
 });
 
 test("layout diagnostics preserve group attribution and ignore retired launch budgets across off/on", async () => {
-  const h = extensionHarness("tui", { "toolview-cache-mb": "0.1", "toolview-card-cache-mb": "128" });
+  const h = extensionHarness("tui", { "tidy-ui-cache-mb": "0.1", "tidy-ui-card-cache-mb": "128" });
   h.root.addChild(bashTool("card"));
-  const command = h.commands.get("toolview")!.handler;
-  const stats = () => JSON.parse(h.notices.at(-1)!.replace("Pi Toolview cache: ", ""));
+  const command = h.commands.get("tidy-ui")!.handler;
+  const stats = () => JSON.parse(h.notices.at(-1)!.replace("pi-tidy-ui cache: ", ""));
   try {
     h.events.get("session_start")!({}, h.ctx); h.root.render(80); await command("cache", h.ctx);
     assert.equal(stats().ordinary.entries, 1); assert.equal(stats().cards.entries, 1);
@@ -3186,7 +3186,7 @@ test("layout diagnostics preserve group attribution and ignore retired launch bu
     await command("cache", h.ctx); assert.equal(stats().entries, 2);
     await command("off", h.ctx); await command("on", h.ctx); h.root.render(80); await command("cache", h.ctx);
     assert.equal(stats().entries, 2);
-    assert.equal(h.notices.filter(text => /toolview-card-cache-mb is ignored/u.test(text)).length, 1);
+    assert.equal(h.notices.filter(text => /tidy-ui-card-cache-mb is ignored/u.test(text)).length, 1);
     await command("cache clear", h.ctx); assert.equal(stats().entries, 0);
   } finally { h.events.get("session_shutdown")!({}, h.ctx); }
 });
@@ -3273,7 +3273,7 @@ test("bounded compact total text caps name plus description at 1024 graphemes be
   const tool = new Tool("custom", args), root = new Root(); root.addChild(tool);
   const paints: string[] = [];
   const theme = { fg: (role: string, text: string) => { paints.push(role); return text; } };
-  const controller = installToolview(root, () => theme);
+  const controller = installTidyUi(root, () => theme);
   try {
     const rows = tool.render(5000);
     assert.equal(rows.length, 1);
@@ -3452,7 +3452,7 @@ test("write validates both metadata formats and classifies globally before conte
   const node = { toolName: "write", args: { path: "example.ts" }, result: { details: { patch: multi } }, isPartial: false };
   assert.match(renderFileCard(node, undefined, 140, color)!.rows.join(""), /← Replaced/);
   const url = new URL("../src/file-card.ts", import.meta.url), source = readFileSync(url, "utf8");
-  const temporary = mkdtempSync(join(tmpdir(), "toolview-write-context-"));
+  const temporary = mkdtempSync(join(tmpdir(), "tidy-ui-write-context-"));
   try {
     const alternateSource = source.replace("const DIFF_CONTEXT_LINES = 3;", "const DIFF_CONTEXT_LINES = 0;")
       .replace(/from "([^"]+)"/gu, (_match, specifier: string) =>
@@ -3544,7 +3544,7 @@ test("write failure skips metadata/payload, uses only error paint and tears down
   const tool = new Tool("write", { path: "example.ts", get content(): string { return assert.fail("failure must not read payload"); } });
   tool.result = undefined;
   const root = new Root(); root.addChild(tool); const roles: string[] = [];
-  const controller = installToolview(root, () => ({ fg(role, text) { roles.push(role); return text; } }));
+  const controller = installTidyUi(root, () => ({ fg(role, text) { roles.push(role); return text; } }));
   try {
     tool.render(80); assert.equal(starts.mock.calls.length, 1);
     const details = { get patch(): string { return assert.fail("partial/failure must not parse metadata"); } };
@@ -3584,14 +3584,14 @@ test("write measurement and rejected clicks never build source and repeated body
 
 test("actual SDK write stays provider-neutral for new, empty, replaced and cleared files and delegates expansion", async (t) => {
   initTheme("dark");
-  const directory = mkdtempSync(join(tmpdir(), "toolview-stock-write-")), root = new Root();
+  const directory = mkdtempSync(join(tmpdir(), "tidy-ui-stock-write-")), root = new Root();
   const tool = createWriteTool(directory), definition = createWriteToolDefinition(directory);
   const source = Array.from({ length: 22 }, (_, i) => `const stock_${i + 1} = ${i + 1};`).join("\n");
   writeFileSync(join(directory, "empty.ts"), ""); writeFileSync(join(directory, "existing.ts"), "OLD_CONTENT");
   const nodes: NativeToolExecution[] = [];
   const originalRender = NativeToolExecution.prototype.render;
   const native = t.mock.method(NativeToolExecution.prototype, "render");
-  const controller = installToolview(root, () => nativeTheme);
+  const controller = installTidyUi(root, () => nativeTheme);
   try {
     for (const [index, args] of [{ path: "new.ts", content: source }, { path: "empty.ts", content: source },
       { path: "existing.ts", content: source }, { path: "existing.ts", content: "" }].entries()) {
@@ -3651,7 +3651,7 @@ test("editor card uses configured exterior geometry without exchanging native st
     const { root, editor } = editorSetup(padding), originalInput = editor.handleInput;
     editor.setText("EDITOR_LINE\n  indented\n> literal");
     const before = { text: editor.getText(), expanded: editor.getExpandedText(), cursor: editor.getCursor() };
-    const controller = installToolview(root, () => color);
+    const controller = installTidyUi(root, () => color);
     try {
       for (const width of [100, 24, 12, 8, 7]) {
         const rows = editor.render(width), geometry = editorGeometry(width, padding);
@@ -3676,7 +3676,7 @@ test("editor card uses configured exterior geometry without exchanging native st
 test("editor card retains full-width hardware cursor in right internal padding", () => {
   for (const padding of [0, 1, 2, 3]) {
     const { root, editor } = editorSetup(padding);
-    const controller = installToolview(root, () => color);
+    const controller = installTidyUi(root, () => color);
     try {
       const width = 24, geometry = editorGeometry(width, padding);
       editor.setText("x".repeat(geometry.contentWidth));
@@ -3696,14 +3696,14 @@ test("editor card keeps paste maps undo history shortcuts and nested text insert
   editor.handleInput("\x1b[200~" + paste + "\x1b[201~");
   editor.handleInput("\x1b[D");
   const text = editor.getText(), cursor = editor.getCursor();
-  let controller = installToolview(root, () => color);
+  let controller = installTidyUi(root, () => color);
   try {
     editor.render(60); assert.equal(editor.getExpandedText(), paste);
     assert.equal(editor.getText(), text); assert.deepEqual(editor.getCursor(), cursor);
     assert.equal(editor.handleInput, input);
     controller.restore(); editor.render(60);
     assert.equal(editor.getExpandedText(), paste); assert.deepEqual(editor.getCursor(), cursor);
-    controller = installToolview(root, () => color); editor.render(24);
+    controller = installTidyUi(root, () => color); editor.render(24);
     assert.equal(editor.getExpandedText(), paste); assert.equal(editor.getText(), text);
     editor.insertTextAtCursor("PROGRAMMATIC_TEXT_INSERTION");
     editor.handleInput("\x1f");
@@ -3720,7 +3720,7 @@ test("editor card maps normalized clicks to native CJK combining and wrapped cur
     const control = new CustomEditor(root as never, theme, keybindings as never, { paddingX: padding });
     const value = "word 界é ".repeat(8);
     editor.setText(value); control.setText(value);
-    const controller = installToolview(root, () => color);
+    const controller = installTidyUi(root, () => color);
     try {
       for (const width of [24, 60]) {
         const geometry = editorGeometry(width, padding), nativeWidth = geometry.contentWidth + (padding ? 2 * padding : 1);
@@ -3743,7 +3743,7 @@ test("editor card preserves native status literals scroll indicators and border-
   const border = Object.getOwnPropertyDescriptor(editor, "borderColor");
   editor.setWorkingStatusIndicator({ renderInBorder: () => "RUN─STATUS", renderSpinnerInBorder: () => "S" } as never);
   editor.setText(Array.from({ length: 20 }, (_, i) => `EDITOR_SCROLL_${i}`).join("\n"));
-  const controller = installToolview(root, () => color);
+  const controller = installTidyUi(root, () => color);
   try {
     const rows = editor.render(60).map(editorPlain);
     assert.ok(rows[0]!.includes("RUN─STATUS"), "native status is not an optional model information row");
@@ -3762,7 +3762,7 @@ test("editor card leaves custom editors and later presentation owners native", (
   root.addChild(alternate);
   const native = alternate.render(60);
   const original = Object.getOwnPropertyDescriptor(CustomEditor.prototype, "render");
-  const controller = installToolview(root, () => color);
+  const controller = installTidyUi(root, () => color);
   try {
     assert.deepEqual(alternate.render(60), native, "inherited wrappers do not style a subclass");
     assert.match(editor.render(60).map(editorPlain).join(""), /┃/u);
@@ -3783,7 +3783,7 @@ test("editor card keeps native autocomplete outside frame and routes its normali
     getSuggestions: async () => ({ items: [{ value: "/editor-result", label: "/editor-result", description: "NATIVE_MENU" }], prefix: "/ed" }),
     applyCompletion: () => ({ lines: ["/editor-result "], cursorLine: 0, cursorCol: 15 }),
   });
-  const controller = installToolview(root, () => color);
+  const controller = installTidyUi(root, () => color);
   try {
     editor.handleInput("/ed"); await new Promise<void>(resolve => setImmediate(resolve));
     assert.equal(editor.isShowingAutocomplete(), true);
@@ -3802,18 +3802,18 @@ test("editor card skips unknown factory instance overrides and preexisting rende
     const { root, editor } = editorSetup();
     const original = (editor as unknown as Record<string, Function>)[method]!;
     Object.defineProperty(editor, method, { configurable: true, writable: true, value: function (this: CustomEditor, ...args: unknown[]) { return original.apply(this, args); } });
-    const controller = installToolview(root, () => color);
+    const controller = installTidyUi(root, () => color);
     try { assert.doesNotMatch(editor.render(60).map(editorPlain).join(""), /┃/u, `instance ${method} override is not stock proof`); }
     finally { controller.restore(); }
   }
   const { root, editor } = editorSetup();
-  const controller = installToolview(root, () => color, { nativeEditor: () => false });
+  const controller = installTidyUi(root, () => color, { nativeEditor: () => false });
   try { assert.doesNotMatch(editor.render(60).map(editorPlain).join(""), /┃/u, "a registered editor factory retains authority"); }
   finally { controller.restore(); }
   const previous = Object.getOwnPropertyDescriptor(CustomEditor.prototype, "render");
   const other = () => ["OTHER_EDITOR_RENDERER"];
   Object.defineProperty(CustomEditor.prototype, "render", { configurable: true, writable: true, value: other });
-  const guarded = installToolview(root, () => color);
+  const guarded = installTidyUi(root, () => color);
   try { assert.deepEqual(editor.render(60), ["OTHER_EDITOR_RENDERER"]); assert.equal(CustomEditor.prototype.render, other); }
   finally {
     guarded.restore();
@@ -3826,7 +3826,7 @@ test("editor card restores exact paint descriptor on failures and zero/tiny widt
   editor.setText("界");
   const original = Editor.prototype.render;
   const descriptor = Object.getOwnPropertyDescriptor(editor, "borderColor");
-  const controller = installToolview(root, () => color);
+  const controller = installTidyUi(root, () => color);
   try {
     assert.deepEqual(editor.render(0), []);
     for (const width of [1, 2]) {
@@ -3850,7 +3850,7 @@ test("editor card foreground and padding retain user paint after the native inve
       initTheme(mode);
       const { root, editor } = editorSetup(2); editor.setText("BEFORE AFTER");
       for (let i = 0; i < 6; i++) editor.handleInput("\x1b[D");
-      const controller = installToolview(root, () => nativeTheme);
+      const controller = installTidyUi(root, () => nativeTheme);
       try {
         const rows = editor.render(24);
         terminal.reset(); await new Promise<void>(resolve => terminal.write(rows.join("\r\n"), resolve));
@@ -3876,7 +3876,7 @@ test("editor card keeps excessive native padding bounded by actual-width delegat
   const probe = t.mock.method(Editor.prototype, "render", function (this: Editor, width: number) {
     widths.push(width); return native.call(this, width);
   });
-  const controller = installToolview(root, () => color);
+  const controller = installTidyUi(root, () => color);
   try {
     const rows = editor.render(60);
     assert.deepEqual(widths, [60], "do not materialize million-column native padding for a small input frame");
@@ -3890,7 +3890,7 @@ test("editor full-line cursor inverse never paints exterior margins or subsequen
   initTheme("dark");
   const terminal = new xterm.Terminal({ cols: 24, rows: 10, allowProposedApi: true });
   const { root, editor } = editorSetup(1); editor.setText("x".repeat(editorGeometry(24, 1).contentWidth));
-  const controller = installToolview(root, () => nativeTheme);
+  const controller = installTidyUi(root, () => nativeTheme);
   try {
     await new Promise<void>(resolve => terminal.write(editor.render(24).join("\r\n"), resolve));
     const line = terminal.buffer.active.getLine(1)!;
@@ -3907,7 +3907,7 @@ function nativeStatusEditorSetup() {
   Object.assign(host, { defaultEditor: editor, editor, editorContainer: input, statusContainer: root.children[2],
     idleStatus: new IdleStatus(), options: { tuiMode: "regular" } });
   const options = { editorStatus: true, nativeEditor: () => host.editorComponentFactory === undefined,
-    rerouteEditorStatus: () => host.setCustomEditorComponent(undefined) } as ToolviewOptions;
+    rerouteEditorStatus: () => host.setCustomEditorComponent(undefined) } as TidyUiOptions;
   return { ...value, options };
 }
 
@@ -3926,7 +3926,7 @@ test("native status container preserves active unknown indicator and same-editor
     const indicator = { kind: "unknown-future-kind", render: () => ["", "FUTURE A─B ───"], invalidate() {},
       renderInBorder: () => { borderCalls++; return "FUTURE A─B ───"; }, renderSpinnerInBorder: () => "S", dispose: () => disposed++ };
     host.showStatusIndicator(indicator); assert.equal(host.activeWorkingIndicatorEmbedded, true);
-    const controller = installToolview(root, () => color, options);
+    const controller = installTidyUi(root, () => color, options);
     try {
       assert.equal(editor.embedWorkingStatus, false, "native SDK must select its own separate container");
       assert.equal(host.editor, editor); assert.equal(host.editorComponentFactory, undefined);
@@ -3953,7 +3953,7 @@ test("native status container preserves active unknown indicator and same-editor
 // Below-editor rows display Idle only; Pi owns all active status rendering.
 test("editor status never extracts native operation text and retains fixed editor geometry", () => {
   const { root, editor, host, options, frame } = nativeStatusEditorSetup();
-  const controller = installToolview(root, () => color, options);
+  const controller = installTidyUi(root, () => color, options);
   const info = { model: "GPT-6 Astra", provider: "openai-codex", thinking: "high", idle: true };
   try {
     for (const value of ["Working", "A─B ───", "── beginning", "界é", "\u0301leading", "ending\u0600"]) {
@@ -3974,7 +3974,7 @@ test("editor status never extracts native operation text and retains fixed edito
 
 test("editor status distinguishes native status, idle and busy-hidden and updates metadata without a draft", () => {
   const { root, editor } = editorSetup();
-  const controller = installToolview(root, () => color, { editorStatus: true } as ToolviewOptions);
+  const controller = installTidyUi(root, () => color, { editorStatus: true } as TidyUiOptions);
   const info = { model: "GPT-6 Astra", provider: "openai-codex", thinking: "off", idle: true };
   try {
     editor.render(100);
@@ -3993,7 +3993,7 @@ test("editor status distinguishes native status, idle and busy-hidden and update
 
 test("editor status preserves native overflow and menu clicks with no added editor-local rows", async () => {
   const { root, editor } = editorSetup(2);
-  const controller = installToolview(root, () => color, { editorStatus: true } as ToolviewOptions);
+  const controller = installTidyUi(root, () => color, { editorStatus: true } as TidyUiOptions);
   try {
     editor.setWorkingStatusIndicator({ renderInBorder: () => "ACTIVE", renderSpinnerInBorder: () => "S" } as never);
     editor.setText(Array.from({ length: 30 }, (_, i) => `ROW_${i}`).join("\n"));
@@ -4017,7 +4017,7 @@ test("editor status preserves native overflow and menu clicks with no added edit
 test("editor status delegates tiny widths and foreign ownership without reading operation headers", () => {
   const { root, editor } = editorSetup();
   let stock = true, restored = 0;
-  const controller = installToolview(root, () => color, { editorStatus: true, nativeEditor: () => stock, editorStatusRestored: () => restored++ } as ToolviewOptions);
+  const controller = installTidyUi(root, () => color, { editorStatus: true, nativeEditor: () => stock, editorStatusRestored: () => restored++ } as TidyUiOptions);
   const info = { model: "M", provider: "P", thinking: "high", idle: true };
   try {
     for (const width of [0, 3, 6]) { editor.render(width); assert.deepEqual((controller as any).renderEditorStatus(width, info), []); }
@@ -4063,11 +4063,11 @@ test("editor status unsupported immutable placement preserves native editor and 
   const { root, editor } = editorSetup();
   Object.defineProperty(editor, "embedWorkingStatus", { value: true, writable: false, configurable: false });
   const native = editor.render(100);
-  const controller = installToolview(root, () => color, { editorStatus: true });
+  const controller = installTidyUi(root, () => color, { editorStatus: true });
   try {
     assert.deepEqual(editor.render(100), native);
     assert.deepEqual(controller.renderEditorStatus(100, { model: "M", provider: "P", thinking: "high", idle: true }), []);
-    assert.equal(controller.active, true, "other Toolview features need not fail with the editor feature");
+    assert.equal(controller.active, true, "other pi-tidy-ui features need not fail with the editor feature");
     assert.deepEqual(renderEditorStatus(0, color, {} as never), []);
     assert.deepEqual(renderEditorStatus(6, color, {} as never), []);
   } finally { controller.restore(); }
@@ -4078,7 +4078,7 @@ test("editor status native clock stays in its container across animation off/on 
   const { root, editor, host, options, frame } = nativeStatusEditorSetup();
   const indicator = new StatusIndicator("unknown-future-kind" as never, root as never, text => text, text => text, "Future operation ───");
   host.showStatusIndicator(indicator);
-  let controller = installToolview(root, () => color, options);
+  let controller = installTidyUi(root, () => color, options);
   const info = { model: "M", provider: "P", thinking: "high", idle: true };
   try {
     frame("regular", 100); const before = editor.render(100), first = host.statusContainer.render(100);
@@ -4088,7 +4088,7 @@ test("editor status native clock stays in its container across animation off/on 
     assert.equal(editor.render(100).length, before.length); assert.equal(intervals.mock.calls.length, 1);
     controller.restore(); assert.equal(clears.mock.calls.length, 0, "rerouting never disposes the indicator");
     assert.match(editor.render(100).map(editorPlain).join("\n"), /Future operation ───/u);
-    controller = installToolview(root, () => color, options); frame("regular", 100);
+    controller = installTidyUi(root, () => color, options); frame("regular", 100);
     assert.equal(host.statusContainer.children[0], indicator); assert.equal(intervals.mock.calls.length, 1);
     host.clearStatusIndicator(); frame("regular", 100);
     assert.match(controller.renderEditorStatus(100, info).map(editorPlain).join("\n"), / • Idle/u);
@@ -4109,15 +4109,15 @@ test("editor status public widget reads fresh session metadata and is removed on
   const first = Object.assign(h.ctx, { model: { name: "First Name", provider: "literal-provider-id" }, thinkingLevel: "high" });
   try {
     h.events.get("session_start")!({}, first); editor.render(100);
-    const widget = h.widgetComponents.get("pi-toolview-editor-status")!;
+    const widget = h.widgetComponents.get("pi-tidy-ui-editor-status")!;
     assert.match(widget.render(100).map(editorPlain).join("\n"), /First Name \(literal-provider-id\) • high • Idle/u);
     const next = { ...first, model: { name: "Second Name", provider: "other-id" }, thinkingLevel: "off" } as unknown as ExtensionContext;
     h.events.get("session_start")!({}, next); editor.render(100);
-    assert.equal(h.widgetComponents.get("pi-toolview-editor-status"), widget, "no stacked widget on session events");
+    assert.equal(h.widgetComponents.get("pi-tidy-ui-editor-status"), widget, "no stacked widget on session events");
     assert.match(widget.render(100).map(editorPlain).join("\n"), /Second Name \(other-id\) • off • Idle/u);
-    await h.commands.get("toolview")!.handler("off", next); assert.equal(h.widgetComponents.size, 0);
-    await h.commands.get("toolview")!.handler("on", next); editor.render(100);
-    assert.match(h.widgetComponents.get("pi-toolview-editor-status")!.render(100).map(editorPlain).join("\n"), /Second Name/u);
+    await h.commands.get("tidy-ui")!.handler("off", next); assert.equal(h.widgetComponents.size, 0);
+    await h.commands.get("tidy-ui")!.handler("on", next); editor.render(100);
+    assert.match(h.widgetComponents.get("pi-tidy-ui-editor-status")!.render(100).map(editorPlain).join("\n"), /Second Name/u);
   } finally { h.events.get("session_shutdown")!({}, h.ctx); }
   assert.equal(h.widgetComponents.size, 0);
 });
@@ -4186,7 +4186,7 @@ test("editor status hides both metadata rows for autocomplete but native activit
   });
   const indicator = new StatusIndicator("unknown-future-kind" as never, root as never, text => text, text => text, "ACTIVE");
   host.showStatusIndicator(indicator);
-  const controller = installToolview(root, () => color, options);
+  const controller = installTidyUi(root, () => color, options);
   const info = { model: "M", provider: "P", thinking: "high", idle: false };
   const status = () => controller.renderEditorStatus(60, info);
   try {
@@ -4204,7 +4204,7 @@ test("editor status hides both metadata rows for autocomplete but native activit
     assert.deepEqual(status(), [], "unchanged menu has no widget output");
     assert.equal(intervals.mock.calls.length, 1); assert.equal(clears.mock.calls.length, 0);
     controller.restore(); assert.match(editor.render(60).map(editorPlain).join("\n"), /ACTIVE/u);
-    const again = installToolview(root, () => color, options);
+    const again = installTidyUi(root, () => color, options);
     try {
       editor.render(60); assert.deepEqual(again.renderEditorStatus(60, info), [], "on while menu open still hides widget");
       assert.equal(editor.handleMouse({ ...mouse(menu, 60), x: 5, height: rows.length })?.handled, true);
@@ -4232,7 +4232,7 @@ test("editor status hides both metadata rows for autocomplete but native activit
 
 test("editor padding moves the whole input and status panel live while inner spacing stays one", () => {
   const { root, editor } = editorSetup(1);
-  const controller = installToolview(root, () => color, { editorStatus: true });
+  const controller = installTidyUi(root, () => color, { editorStatus: true });
   const info = { model: "MODEL", provider: "raw-id", thinking: "high", idle: false };
   const budgets: number[] = [];
   editor.setWorkingStatusIndicator({ renderInBorder: (width: number) => { budgets.push(width); return truncateToWidth("ACTIVE", width, ""); }, renderSpinnerInBorder: () => "S" } as never);
@@ -4300,7 +4300,7 @@ test("editor widget gap SDK compatibility: stock spacer dock ordering and curren
     const nativeCalls = events.length;
     assert.equal(nativeCalls, mode === "regular" ? 1 : 2, "actual SDK frame has an explicit native render-count control");
     events.length = 0; order.length = 0;
-    const controller = installToolview(root, () => { order.push("editor"); return color; });
+    const controller = installTidyUi(root, () => { order.push("editor"); return color; });
     try {
       const rows = frame(mode);
       assert.deepEqual(order, Array.from({ length: nativeCalls }, () => ["upper", "editor"]).flat(), "SDK must render the upper group before every editor projection in the current pass");
@@ -4326,7 +4326,7 @@ test("editor widget gap excludes absent zero-height and below-only widgets and f
   for (const mode of ["regular", "fullscreen"]) {
     const { root, editor, host, frame } = editorWidgetSetup();
     editor.setText("GAP_INPUT_界é");
-    const controller = installToolview(root, () => color, { editorStatus: true });
+    const controller = installTidyUi(root, () => color, { editorStatus: true });
     let content: string[] = [], calls = 0;
     const nativeCalls = mode === "regular" ? 1 : 2;
     try {
@@ -4357,7 +4357,7 @@ test("editor widget gap maps native text menu clicks and leaves the empty row no
   for (const mode of ["regular", "fullscreen"]) {
     const { root, editor, host, frame } = editorWidgetSetup();
     host.setExtensionWidget("upper", ["CLICK_WIDGET"]);
-    const controller = installToolview(root, () => color, { editorStatus: true });
+    const controller = installTidyUi(root, () => color, { editorStatus: true });
     try {
       editor.setText("abc界éXYZ"); frame(mode);
       const rows = editor.render(80); assert.equal(rows[0], "");
@@ -4387,7 +4387,7 @@ test("editor widget gap rejects changed managed layout spacer and later containe
   const { root, editor, host, above, frame } = editorWidgetSetup();
   host.setExtensionWidget("upper", ["GUARD_WIDGET"]);
   const original = Object.getOwnPropertyDescriptor(Container.prototype, "render")!;
-  const controller = installToolview(root, () => color);
+  const controller = installTidyUi(root, () => color);
   try {
     frame("regular"); const valid = editor.render(80); assert.equal(valid[0], "");
     root.addChild(new Container()); frame("regular");
@@ -4412,7 +4412,7 @@ test("editor widget gap ignores stale-width observations and restores both publi
   host.setExtensionWidget("upper", ["WIDTH_WIDGET"]);
   const container = Object.getOwnPropertyDescriptor(Container.prototype, "render")!;
   const spacer = Object.getOwnPropertyDescriptor(Spacer.prototype, "render")!;
-  const controller = installToolview(root, () => color);
+  const controller = installTidyUi(root, () => color);
   try {
     frame("regular", 80); assert.equal(editor.render(80)[0], "");
     assert.equal(editorPlain(editor.render(60)[0]!)[1], "┃", "another width cannot use the retained group height");
@@ -4432,7 +4432,7 @@ test("editor widget gap ignores stale-width observations and restores both publi
 
 test("editor directory abbreviates the native home only at a path boundary before fitting", () => {
   const previous = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE };
-  const home = join(tmpdir(), "toolview-home-界"), theme = { fg: (_role: string, value: string) => value };
+  const home = join(tmpdir(), "tidy-ui-home-界"), theme = { fg: (_role: string, value: string) => value };
   const setHome = (value: string) => { process.env.HOME = value; process.env.USERPROFILE = value; };
   const render = (cwd: string, width = 120) => renderEditorStatus(width, theme,
     { model: "M", provider: "P", thinking: "off", idle: false, cwd, branch: "main" });
@@ -4470,19 +4470,19 @@ test("editor directory abbreviates the native home only at a path boundary befor
 
 test("editor directory is right-aligned with one shared inner padding cell", () => {
   const info = { model: "M", provider: "raw-id", thinking: "off", idle: false,
-    cwd: "/toolview-directory/work/project", branch: "feature/input-status" };
+    cwd: "/tidy-ui-directory/work/project", branch: "feature/input-status" };
   const row = plain(renderEditorStatus(100, { fg: (_role, text) => text }, info)[0]!);
   assert.equal(visibleWidth(row), 100);
   assert.ok(row.endsWith(info.cwd + ":" + info.branch + "  "), "one painted padding plus one exterior margin");
   assert.ok(row.startsWith(" ┃ M (raw-id) • off"));
-  assert.match(row, /off {2,}\/toolview-directory\//u);
+  assert.match(row, /off {2,}\/tidy-ui-directory\//u);
 });
 
 test("editor directory colors keep last path element distinct from parents and branch", () => {
   const calls: [string, string][] = [];
-  const info = { model: "M", provider: "P", thinking: "high", idle: true, cwd: "/toolview-directory/project", branch: "main" };
+  const info = { model: "M", provider: "P", thinking: "high", idle: true, cwd: "/tidy-ui-directory/project", branch: "main" };
   renderEditorStatus(100, { fg: (role, value) => { calls.push([role, value]); return value; } }, info);
-  for (const expected of [["dim", "/toolview-directory/"], ["mdLinkUrl", "project"], ["muted", ":"], ["text", "main"]])
+  for (const expected of [["dim", "/tidy-ui-directory/"], ["mdLinkUrl", "project"], ["muted", ":"], ["text", "main"]])
     assert.ok(calls.some(call => call[0] === expected[0] && call[1] === expected[1]), JSON.stringify(expected));
 });
 
@@ -4500,7 +4500,7 @@ test("editor directory retains its last name before a long branch and recovers o
 
 test("Git branch source validates real repository kinds without environment redirection", async () => {
   const { GitBranchSource } = await import("../src/git-branch.ts");
-  const base = mkdtempSync(join(tmpdir(), "toolview-git-"));
+  const base = mkdtempSync(join(tmpdir(), "tidy-ui-git-"));
   const git = (cwd: string, ...args: string[]) => {
     const result = spawnSync("git", ["-C", cwd, ...args], { encoding: "utf8" });
     assert.equal(result.status, 0, result.stderr); return result.stdout.trim();
@@ -4528,7 +4528,7 @@ test("Git branch source validates real repository kinds without environment redi
 
 test("Git branch source observes atomic HEAD changes with zero warm-frame queries", async () => {
   const { GitBranchSource, gitDiagnostics } = await import("../src/git-branch.ts");
-  const cwd = mkdtempSync(join(tmpdir(), "toolview-git-watch-"));
+  const cwd = mkdtempSync(join(tmpdir(), "tidy-ui-git-watch-"));
   let resolve: (() => void) | undefined;
   const source = new GitBranchSource(() => resolve?.());
   try {
@@ -4597,21 +4597,21 @@ test("Git branch source ignores late cancelled replies and releases jobs/watches
   const source = new GitBranchSource(() => {}, { execute: async (cwd, args) => {
     if (args[1] === "--local-env-vars") return { ok: true, output: "GIT_DIR\n" };
     if (args[0] !== "symbolic-ref") return { ok: false, output: "" };
-    if (cwd === "/toolview-old-not-present") { started?.(); return new Promise(done => { release = done; }); }
+    if (cwd === "/tidy-ui-old-not-present") { started?.(); return new Promise(done => { release = done; }); }
     return { ok: true, output: "refs/heads/fresh\n" };
   } });
-  source.setDirectory("/toolview-old-not-present"); await waiting;
-  source.setDirectory("/toolview-new-not-present");
+  source.setDirectory("/tidy-ui-old-not-present"); await waiting;
+  source.setDirectory("/tidy-ui-new-not-present");
   release!({ ok: true, output: "refs/heads/stale\n" }); await awaitFixture(source.settled());
-  assert.equal(source.branch("/toolview-old-not-present"), undefined);
-  assert.equal(source.branch("/toolview-new-not-present"), "fresh");
+  assert.equal(source.branch("/tidy-ui-old-not-present"), undefined);
+  assert.equal(source.branch("/tidy-ui-new-not-present"), "fresh");
   source.dispose(); await awaitFixture(source.settled());
   assert.equal(gitDiagnostics().activeJobs, before.activeJobs); assert.equal(gitDiagnostics().watchers, before.watchers);
 });
 
 test("Git branch source recovers repository creation and supports available reftable watches", async t => {
   const { GitBranchSource } = await import("../src/git-branch.ts");
-  const cwd = mkdtempSync(join(tmpdir(), "toolview-git-new-"));
+  const cwd = mkdtempSync(join(tmpdir(), "tidy-ui-git-new-"));
   let listener: (() => void) | undefined;
   const source = new GitBranchSource(() => listener?.());
   const change = async (action: () => void) => {
@@ -4637,7 +4637,7 @@ test("Git branch source recovers repository creation and supports available reft
 
 test("Git rediscovery rearms watches after same-path metadata directory replacement", async () => {
   const { GitBranchSource } = await import("../src/git-branch.ts");
-  const base = mkdtempSync(join(tmpdir(), "toolview-git-replaced-")), cwd = join(base, "current"), other = join(base, "other");
+  const base = mkdtempSync(join(tmpdir(), "tidy-ui-git-replaced-")), cwd = join(base, "current"), other = join(base, "other");
   mkdirSync(cwd); mkdirSync(other);
   const git = (path: string, ...args: string[]) => assert.equal(spawnSync("git", ["-C", path, ...args]).status, 0);
   let listener: (() => void) | undefined;
@@ -4669,7 +4669,7 @@ test("native activity same-editor routing restores another focused component", (
   Object.assign(root, { getFocusedComponent: () => focused,
     setFocus: (node: Component | null) => { focused = node; editor.focused = node === editor; } });
   const text = "PRESERVED_DRAFT"; editor.setText(text);
-  const before = editor.getCursor(); const controller = installToolview(root, () => color, options);
+  const before = editor.getCursor(); const controller = installTidyUi(root, () => color, options);
   try {
     assert.equal(focused, other); assert.equal(editor.focused, false); assert.equal(host.editor, editor);
     assert.equal(editor.getText(), text); assert.deepEqual(editor.getCursor(), before);
@@ -4681,7 +4681,7 @@ test("native activity same-editor routing restores another focused component", (
 
 test("Git failures omit branch without blocking cwd or retaining resources", async () => {
   const { GitBranchSource, gitDiagnostics } = await import("../src/git-branch.ts");
-  const cwd = mkdtempSync(join(tmpdir(), "toolview-git-error-"));
+  const cwd = mkdtempSync(join(tmpdir(), "tidy-ui-git-error-"));
   const before = gitDiagnostics(), source = new GitBranchSource(() => {}, { env: { ...process.env, PATH: "/git-not-present" } });
   try {
     source.setDirectory(cwd); await awaitFixture(source.settled()); assert.equal(source.branch(cwd), undefined);
@@ -4695,7 +4695,7 @@ test("Git failures omit branch without blocking cwd or retaining resources", asy
 
 test("Git rediscovery reads HEAD after installing current metadata watches", async () => {
   const { GitBranchSource } = await import("../src/git-branch.ts");
-  const cwd = mkdtempSync(join(tmpdir(), "toolview-git-rearm-race-"));
+  const cwd = mkdtempSync(join(tmpdir(), "tidy-ui-git-rearm-race-"));
   assert.equal(spawnSync("git", ["-C", cwd, "init", "-b", "before-rearm"]).status, 0);
   let armed = false, mutations = 0;
   const source = new GitBranchSource(() => {}, { execute: async (path, args, env) => {
@@ -4724,8 +4724,8 @@ test("Git repository environment isolation removes case-variant redirect keys", 
       return { ok: args[0] === "symbolic-ref", output: args[0] === "symbolic-ref" ? "refs/heads/isolated\n" : "" };
     } });
   try {
-    source.setDirectory("/toolview-env-not-present"); await awaitFixture(source.settled());
-    assert.equal(source.branch("/toolview-env-not-present"), "isolated");
+    source.setDirectory("/tidy-ui-env-not-present"); await awaitFixture(source.settled());
+    assert.equal(source.branch("/tidy-ui-env-not-present"), "isolated");
   } finally { source.dispose(); await awaitFixture(source.settled()); }
 });
 
@@ -4766,7 +4766,7 @@ async function footerSetup(foreignEditor = false, selectorAtStartup = false) {
   let command: Function;
   const pi = { on(name: string, fn: Function) { handlers.set(name, [...(handlers.get(name) ?? []), fn]); return () => {}; },
     registerFlag() {}, getFlag() {}, getThinkingLevel: () => "off", getSettings: () => ({ compaction: { enabled: auto } }),
-    registerCommand(name: string, options: { handler: Function }) { if (name === "toolview") command = options.handler; } };
+    registerCommand(name: string, options: { handler: Function }) { if (name === "tidy-ui") command = options.handler; } };
   const ctx = { mode: "tui", cwd: "/footer-probe", ui: { ...host.createExtensionUIContext(), notify() {} }, model, sessionManager: manager,
     modelRegistry: { isUsingOAuth: () => { authReads++; return subscription; }, getProvider: () => { authReads++; return { auth: { oauth: { isSubscription: true } } }; } },
     getContextUsage: readContext, isIdle: () => true };
@@ -4777,7 +4777,7 @@ async function footerSetup(foreignEditor = false, selectorAtStartup = false) {
       cost: { input: cost, output: 0, cacheRead: 0, cacheWrite: 0, total: cost } } });
   if (foreignEditor) ctx.ui.setEditorComponent(footerForeignEditor);
   if (selectorAtStartup) { input.clear(); input.addChild(new Text("NATIVE_RELOAD_BOX", 0, 0)); }
-  append(); toolview(pi as unknown as ExtensionAPI, { syntax: fixtureSyntaxOptions }); emit("session_start");
+  append(); tidyUi(pi as unknown as ExtensionAPI, { syntax: fixtureSyntaxOptions }); emit("session_start");
   return { root, host, footer, native, ctx, manager, statuses, append, emit, editor, input,
     render: (width = 140) => footer.children[0]!.render(width), counts: () => ({ scans, contextReads }), authReads: () => authReads,
     context(value: typeof context) { context = value; }, auto(value: boolean) { auto = value; }, subscription(value: boolean) { subscription = value; },
@@ -5164,7 +5164,7 @@ test("Output padding sets transcript frame margins at both native values and kee
 
 test("Output padding updates every tool layout cache, inline measurement and panel clicks live", () => {
   let padding = 1, settingsReads = 0;
-  const compact = new Tool("tv_padding", { query: "PAD_" + "x".repeat(100) });
+  const compact = new Tool("tidy_ui_padding", { query: "PAD_" + "x".repeat(100) });
   const bash = bashTool(); bash.result = { content: [{ type: "text", text: Array(11).fill("BASH_PAD").join("\n") }] };
   const edit = new Tool("edit", { path: "padding.ts" }); edit.result = { content: [], details: { diff: "-1 const before = 1;\n+1 const after = 2;" } };
   const write = new Tool("write", { path: "padding.ts", content: "const written = 3;\n" });
@@ -5202,7 +5202,7 @@ test("Output padding user cards use live native padding without altering Markdow
   const user = new UserMessageComponent("USER_PADDING **bold** 文字\n\n" + "x".repeat(70));
   const root = new Root(); root.addChild(user);
   const render = UserMessageComponent.prototype.render;
-  const controller = installToolview(root, () => nativeTheme);
+  const controller = installTidyUi(root, () => nativeTheme);
   try {
     for (const padding of [1, 0, 1]) {
       user.setOutputPad(padding);
@@ -5249,7 +5249,7 @@ test("Output padding effective settings remain authoritative when native user pa
   const user = new UserMessageComponent("PROJECT_PADDING **bold** " + "x".repeat(70));
   const compact = new Tool("read", { path: "project.txt" }), root = new Root(); root.addChild(user); root.addChild(compact);
   const render = UserMessageComponent.prototype.render;
-  const controller = installToolview(root, () => nativeTheme, { outputPad: () => padding });
+  const controller = installTidyUi(root, () => nativeTheme, { outputPad: () => padding });
   try {
     // Pi's onOutputPadChange assigns the selected value to user messages even when
     // a project override leaves public effective settings at zero.
@@ -5402,7 +5402,7 @@ test("terminal appearance SDK contract preserves native methods and flags, follo
 
 test("terminal defaults extension commands honor local/master lifetime without saving settings or stacking exit listeners", async () => {
   const h = extensionHarness(), fixture = terminalColorFixture();
-  const directory = mkdtempSync(join(tmpdir(), "toolview-colors-")), path = join(directory, "theme.json");
+  const directory = mkdtempSync(join(tmpdir(), "tidy-ui-colors-")), path = join(directory, "theme.json");
   writeFileSync(path, '{"colors":{"text":"#eeeeee"},"export":{"pageBg":"#123456"}}');
   fixture.snapshot.theme.sourcePath = path;
   Object.assign(h.ctx.ui, { theme: fixture.snapshot.theme });
@@ -5413,13 +5413,13 @@ test("terminal defaults extension commands honor local/master lifetime without s
     assert.equal(fixture.packets.length, 1); assert.equal(process.listenerCount("exit"), listeners + 1);
     h.events.get("session_start")!({}, h.ctx); await terminalMicrotasks();
     assert.equal(fixture.packets.length, 1); assert.equal(process.listenerCount("exit"), listeners + 1);
-    const control = (command: string) => h.commands.get("toolview")!.handler(command, h.ctx);
+    const control = (command: string) => h.commands.get("tidy-ui")!.handler(command, h.ctx);
     await control("colors off"); assert.equal(fixture.packets.at(-1), "\x1b]111\x07\x1b]110\x07");
     assert.equal(process.listenerCount("exit"), listeners); assert.notEqual(Tool.prototype.render, nativeToolRender);
     await control("off"); await control("on"); await terminalMicrotasks(); assert.equal(fixture.packets.length, 2, "master on preserves the local off choice");
     await control("colors on"); await terminalMicrotasks(); assert.equal(fixture.packets.length, 3);
     h.root.terminalColorSchemeNotificationsEnabled = true;
-    const observer = h.widgetComponents.get("pi-toolview-terminal-colors")!;
+    const observer = h.widgetComponents.get("pi-tidy-ui-terminal-colors")!;
     observer.render(80); assert.equal(fixture.packets.length, 4); assert.equal(fixture.packets.at(-1), "\x1b]111\x07\x1b]110\x07");
     await control("colors status"); assert.match(h.notices.at(-1)!, /automatic/u);
     await control("colors invalid"); assert.match(h.notices.at(-1)!, /Usage/u);

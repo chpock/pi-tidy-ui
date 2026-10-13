@@ -4,7 +4,7 @@ import { appendFileSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { copyFile, mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { setTimeout as pause } from 'node:timers/promises';
-import toolview from '../../src/index.ts';
+import tidyUi from '../../src/index.ts';
 import { createSyntaxOptions } from '../../src/occipital/bootstrap.ts';
 import { SourceController } from '../../src/occipital/controller.ts';
 import type { StdioTransport } from '../../src/occipital/stdio.ts';
@@ -14,16 +14,16 @@ import { SyntaxClient } from '../../src/occipital/client.ts';
 import { SyntaxRuntime } from '../../src/syntax/runtime.ts';
 
 export default function syntaxDriver(pi: ExtensionAPI) {
-  const output = process.env.TOOLVIEW_TEST_OUTPUT!, binary = process.env.TOOLVIEW_TEST_OCCIPITAL_BIN!;
-  if (!binary || !process.env.TOOLVIEW_TEST_OCCIPITAL_SHA) throw new Error('An explicit local test artifact is required');
-  const artifact = { target: 'linux-x64-gnu' as const, sha256: process.env.TOOLVIEW_TEST_OCCIPITAL_SHA,
-    maxBytes: Number(process.env.TOOLVIEW_TEST_OCCIPITAL_BYTES), url: 'https://example.invalid/not-a-production-release' };
-  const version = process.env.TOOLVIEW_TEST_OCCIPITAL_VERSION;
+  const output = process.env.TIDY_UI_TEST_OUTPUT!, binary = process.env.TIDY_UI_TEST_OCCIPITAL_BIN!;
+  if (!binary || !process.env.TIDY_UI_TEST_OCCIPITAL_SHA) throw new Error('An explicit local test artifact is required');
+  const artifact = { target: 'linux-x64-gnu' as const, sha256: process.env.TIDY_UI_TEST_OCCIPITAL_SHA,
+    maxBytes: Number(process.env.TIDY_UI_TEST_OCCIPITAL_BYTES), url: 'https://example.invalid/not-a-production-release' };
+  const version = process.env.TIDY_UI_TEST_OCCIPITAL_VERSION;
   if (!version) throw new Error('The explicit local artifact version is required');
   const release = { version, artifacts: [artifact] };
-  if (process.env.TOOLVIEW_TEST_SYNTAX_CONFIG !== undefined) {
+  if (process.env.TIDY_UI_TEST_SYNTAX_CONFIG !== undefined) {
     const preferences = join(getAgentDir(), 'extensions', 'pi-tidy-ui');
-    mkdirSync(preferences, { recursive: true }); writeFileSync(join(preferences, 'config.json'), process.env.TOOLVIEW_TEST_SYNTAX_CONFIG);
+    mkdirSync(preferences, { recursive: true }); writeFileSync(join(preferences, 'config.json'), process.env.TIDY_UI_TEST_SYNTAX_CONFIG);
   }
   const transports: StdioTransport[] = [], sharedTransports: SharedTransport[] = [];
   const counts = { constructions: 0, acquisitions: 0, downloads: 0, piCaptures: 0, piBridges: 0, describeReplies: 0, refreshReplies: 0, sharedAttempts: 0, heldReplies: 0, deliveredReplies: 0 };
@@ -69,12 +69,12 @@ export default function syntaxDriver(pi: ExtensionAPI) {
       notify.call(ctx.ui, message, level);
     };
   });
-  toolview(pi, { syntax(ctx: ExtensionContext) {
+  tidyUi(pi, { syntax(ctx: ExtensionContext) {
     counts.constructions++;
     const options = createSyntaxOptions(ctx, release), acquire = options.provider.acquireOwned;
-    return { ...options, provider: { ...(process.env.TOOLVIEW_TEST_SYNTAX_SHARED === '1' ? { clock } : {}),
+    return { ...options, provider: { ...(process.env.TIDY_UI_TEST_SYNTAX_SHARED === '1' ? { clock } : {}),
       async tryShared(signal, negotiate) {
-        if (process.env.TOOLVIEW_TEST_SYNTAX_SHARED !== '1') return undefined;
+        if (process.env.TIDY_UI_TEST_SYNTAX_SHARED !== '1') return undefined;
         counts.sharedAttempts++;
         return options.provider.tryShared(signal, async transport => {
           const shared = transport as SharedTransport, request = shared.request.bind(shared);
@@ -89,7 +89,7 @@ export default function syntaxDriver(pi: ExtensionAPI) {
       },
       async acquireOwned(signal: AbortSignal) {
         counts.acquisitions++;
-        if (process.env.TOOLVIEW_TEST_SYNTAX_ACQUIRE_GATE === '1') {
+        if (process.env.TIDY_UI_TEST_SYNTAX_ACQUIRE_GATE === '1') {
           record({ type: 'syntax_acquire_gate' });
           while (!existsSync(join(output, 'syntax-acquire-go'))) await pause(20, undefined, { signal });
         }
@@ -102,7 +102,7 @@ export default function syntaxDriver(pi: ExtensionAPI) {
         transport.request = async (payload, opts) => {
           const reply = await request(payload, opts);
           if (payload.op === 'describe') counts.describeReplies++;
-          if (payload.op === 'highlight' && process.env.TOOLVIEW_TEST_SYNTAX_REPLY_GATE === '1') {
+          if (payload.op === 'highlight' && process.env.TIDY_UI_TEST_SYNTAX_REPLY_GATE === '1') {
             counts.heldReplies++; pendingHeldReplies++;
             record({ type: 'syntax_reply_held', payload, reply });
             try {
@@ -115,12 +115,12 @@ export default function syntaxDriver(pi: ExtensionAPI) {
         transports.push(transport); record({ type: 'syntax_acquired', pid: transport.stats().pid }); return transport;
       } } };
   } });
-  pi.registerCommand('tv-syntax-stats', { description: 'Capture actual client/helper work counters', handler: async (name, ctx) => {
+  pi.registerCommand('tidy-ui-syntax-stats', { description: 'Capture actual client/helper work counters', handler: async (name, ctx) => {
     if (!/^[a-z0-9-]+$/.test(name)) throw new Error('Invalid capture name');
     writeFileSync(join(output, `syntax-stats-${name}.json`), JSON.stringify(snapshot(), null, 2));
     ctx.ui.notify(`SYNTAX_COUNTERS_${name}`, 'info');
   } });
-  pi.registerCommand('tv-syntax-clock', { description: 'Advance only the injected broker cadence', handler: async (value, ctx) => {
+  pi.registerCommand('tidy-ui-syntax-clock', { description: 'Advance only the injected broker cadence', handler: async (value, ctx) => {
     if (!/^\d+$/.test(value) || Number(value) > 600000) throw new Error('Invalid clock advance');
     offset += Number(value);
     for (const [timer, pending] of [...timers].sort((a, b) => a[1].at - b[1].at)) {

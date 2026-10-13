@@ -8,14 +8,14 @@ Can independent coding-agent processes use one local syntax-highlighting service
 
 Yes, this is a viable architecture. Sharing a process and choosing a compiled engine are **two independent decisions**. A shared Shiki service can remove duplicated engines without changing grammars; a native service can additionally avoid V8 and JS/native capture materialization. Neither benefit should be inferred just from the word "daemon" or "Rust".
 
-The previous [Tree-sitter/Shiki comparison](tree-sitter-vs-shiki.md) reports whole experimental-process RSS after specific workloads, not a fixed per-agent charge. It explicitly did not measure a native Rust highlighter returning compact output. Multiplying its largest RSS row by ten is not a prediction of ten ordinary Toolview instances.
+The previous [Tree-sitter/Shiki comparison](tree-sitter-vs-shiki.md) reports whole experimental-process RSS after specific workloads, not a fixed per-agent charge. It explicitly did not measure a native Rust highlighter returning compact output. Multiplying its largest RSS row by ten is not a prediction of ten ordinary pi-tidy-ui instances.
 
 A useful resource model is:
 
 - **In process:** `N × (agent runtime + loaded highlighter assets + live-source state + rendered output)`.
 - **Shared service:** `N × (agent runtime + client + rendered output) + shared assets + worker state + all live-source states`.
 
-Grammar tables, compiled regexes and immutable queries can be shared. Independent documents' parse/line states generally cannot. Source bytes, returned colors, Toolview's per-agent rendered-card LRU, the agent's model/session data and existing Node runtimes do not disappear. Identical-source result caching is a separate optional saving, not a prerequisite for sharing assets.
+Grammar tables, compiled regexes and immutable queries can be shared. Independent documents' parse/line states generally cannot. Source bytes, returned colors, pi-tidy-ui's per-agent rendered-card LRU, the agent's model/session data and existing Node runtimes do not disappear. Identical-source result caching is a separate optional saving, not a prerequisite for sharing assets.
 
 RSS double-counts shared executable/library pages. The experiment therefore records Linux **PSS** (resident pages divided among their users), private resident pages, RSS and swap PSS. These remain process footprints, not exact retained engine allocations.
 
@@ -84,7 +84,7 @@ The moving repository README says about 70 default permissive grammars, but **th
 
 **[Inkjet 0.11.1](https://github.com/Colonial-Dev/inkjet)** should not be a new dependency: the maintainer explicitly ended support and points to Autumnus. The current Autumnus 0.9.0 crate is itself deprecated in favor of Lumis. Search-result/project-name history must not obscure this maintenance chain.
 
-These collections change the integration tradeoff: a Rust Tree-sitter service does **not** necessarily have to curate every language from scratch. They do not yet establish which collection has the best language-specific classification, native resource footprint or append API for Toolview.
+These collections change the integration tradeoff: a Rust Tree-sitter service does **not** necessarily have to curate every language from scratch. They do not yet establish which collection has the best language-specific classification, native resource footprint or append API for pi-tidy-ui.
 
 ### 5. Another native TextMate candidate, not benchmarked
 
@@ -115,7 +115,7 @@ For portable production transport, [interprocess 2.4.4](https://docs.rs/interpro
 
 **[Subconscious](https://github.com/cortexkit/subconscious)** is the directly relevant existing framework: one daemon, supervised modules and many agent clients. Its source documents opaque payload routing, authenticated loopback transport, flow control, module manifests, health checks, restart handling, and TS/Rust client SDKs. A native highlighting **module process** could share one registry across all connected agents; it does not have to be linked into the router.
 
-It is MIT and currently labelled **alpha**. This is a real option if the operator already adopts the CortexKit daemon, not proof of a stable highlighting module or a deployment prerequisite. No existing syntax-highlighting module was verified. Introducing this supervisor solely for one small rendering service carries more dependency/protocol/lifecycle surface than a direct socket service. Do not modify AFT or assume Toolview can access its private bridge.
+It is MIT and currently labelled **alpha**. This is a real option if the operator already adopts the CortexKit daemon, not proof of a stable highlighting module or a deployment prerequisite. No existing syntax-highlighting module was verified. Introducing this supervisor solely for one small rendering service carries more dependency/protocol/lifecycle surface than a direct socket service. Do not modify AFT or assume pi-tidy-ui can access its private bridge.
 
 MCP is not required: rendering should call a local client API directly, not ask the model to invoke a highlighting tool.
 
@@ -222,7 +222,7 @@ The final v2 packet has **33 scenario records, 195 fresh Node client processes a
 
 A faster native process cannot invent missing grammar/query classifications. Generic theme matching can itself omit language-specific scope rules; these controls do not replace an all-language acceptance corpus, injection testing or official-theme parity.
 
-## Integration constraints for Toolview
+## Integration constraints for pi-tidy-ui
 
 Current `src/index.ts` calls `highlightCode` synchronously inside `fileLayout`/`renderFileCard`; `src/file-card.ts` separately highlights old and next diff sources. **A socket promise is not a drop-in replacement for that callback.** Blocking RPC in a render callback would freeze the TUI and reintroduce the wrong architectural coupling.
 
@@ -249,7 +249,7 @@ A complete native highlighter inside each agent could also avoid the old JS-capt
 
 For infrastructure, a small direct local-socket service is sufficient. **Subconscious is a credible existing supervisor/router if the operator already wants that platform**, not a mandatory extra daemon for one feature. Do not add HTTP/MCP/general plugin infrastructure just because the engines allow it.
 
-This is a researched architecture choice and a native-engine shortlist, **not** approval to implement or install them. Toolview integration remains asynchronous precomputation outside render, with explicit pending/error behavior and strict source/theme/owner revisions. Real-agent memory, a bounded multi-worker/stateful workload and actual SDK/CLI/replay verification are not completed by this prototype.
+This is a researched architecture choice and a native-engine shortlist, **not** approval to implement or install them. pi-tidy-ui integration remains asynchronous precomputation outside render, with explicit pending/error behavior and strict source/theme/owner revisions. Real-agent memory, a bounded multi-worker/stateful workload and actual SDK/CLI/replay verification are not completed by this prototype.
 
 ## Verified corrections and remaining findings
 

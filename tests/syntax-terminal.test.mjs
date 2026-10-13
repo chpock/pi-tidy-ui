@@ -26,16 +26,16 @@ if (binary) {
 }
 const helperVersion = binary ? execFileSync(resolve(binary), ['--version'], { encoding: 'utf8', timeout: 30000 }).trim().match(/^occipital (\S+)$/)?.[1] : undefined;
 if (binary && !helperVersion) throw new Error('Unexpected local artifact version output');
-const descriptor = binary ? { TOOLVIEW_TEST_OCCIPITAL_BIN: resolve(binary), TOOLVIEW_TEST_OCCIPITAL_VERSION: helperVersion,
-  TOOLVIEW_TEST_OCCIPITAL_SHA: createHash('sha256').update(readFileSync(binary)).digest('hex'),
-  TOOLVIEW_TEST_OCCIPITAL_BYTES: String(statSync(binary).size), TOOLVIEW_TEST_SYNTAX_CARDS: '1' } : undefined;
+const descriptor = binary ? { TIDY_UI_TEST_OCCIPITAL_BIN: resolve(binary), TIDY_UI_TEST_OCCIPITAL_VERSION: helperVersion,
+  TIDY_UI_TEST_OCCIPITAL_SHA: createHash('sha256').update(readFileSync(binary)).digest('hex'),
+  TIDY_UI_TEST_OCCIPITAL_BYTES: String(statSync(binary).size), TIDY_UI_TEST_SYNTAX_CARDS: '1' } : undefined;
 const pause = ms => new Promise(done => setTimeout(done, ms));
 async function until(check, label) {
   for (let end = Date.now() + 12000; Date.now() < end;) { const result = await check(); if (result) return result; await pause(30); }
   throw new Error('Timed out: ' + label);
 }
 async function stats(terminal, name) {
-  terminal.send(`/tv-syntax-stats ${name}\r`);
+  terminal.send(`/tidy-ui-syntax-stats ${name}\r`);
   return until(() => {
     terminal.health();
     try { return JSON.parse(readFileSync(`${terminal.output}/syntax-stats-${name}.json`, 'utf8')); }
@@ -130,7 +130,7 @@ for (const mode of ['fullscreen', 'regular']) test(`occipital CLI: actual ${mode
   { skip: !binary, timeout: 120000 }, async () => {
     const terminals = [], create = (name, options) => { const t = new PiTerminal(`syntax-${mode}-${name}`, { mode, ...options }); terminals.push(t); return t; };
     try {
-      const native = create('native', { toolview: false, extraEnv: descriptor, extensions: [fixture] });
+      const native = create('native', { tidyUi: false, extraEnv: descriptor, extensions: [fixture] });
       const shown = await scenario(native, true), nativeTraffic = traffic(native), nativeData = persisted(shown), baseline = await stats(native, 'warm-before');
       sourceColors(shown);
       assert.equal(baseline.counts.acquisitions, 1); assert.equal(baseline.counts.piBridges, 0); assert.equal(baseline.source.globalUnsettledJobs, 0);
@@ -138,21 +138,21 @@ for (const mode of ['fullscreen', 'regular']) test(`occipital CLI: actual ${mode
       for (const width of [60, 100]) { await native.resize(width); await native.capture(`syntax-width-${width}`); }
       const warmed = await stats(native, 'warm-after'); assert.deepEqual(work(warmed), work(baseline)); assert.equal(warmed.counts.piBridges, 0);
       assert.deepEqual(body(await native.capture('syntax-back-wide')), body(shown));
-      await native.command('/toolview syntax'); native.send('\x1b'); await native.settle();
+      await native.command('/tidy-ui syntax'); native.send('\x1b'); await native.settle();
       const menu = await stats(native, 'menu-cancel'); assert.deepEqual(work(menu), work(baseline)); assert.equal(menu.counts.acquisitions, 1);
       const pid = baseline.transports[0].pid;
-      await native.command('/toolview syntax');
+      await native.command('/tidy-ui syntax');
       for (let i = 0; i < 3; i++) { native.send('\x1b[B'); await native.settle(); }
       native.send('\r'); await native.settle();
       // Native-off invalidates the originating menu epoch by contract.
-      await native.command('/toolview syntax'); native.captureScreen('syntax-menu-off', {});
+      await native.command('/tidy-ui syntax'); native.captureScreen('syntax-menu-off', {});
       assert.ok(native.screen().some(row => row.includes('Enable for this session')), 'fresh real menu confirms native session off: ' + native.output);
       native.send('\x1b'); await native.settle();
       const disabled = await stats(native, 'native-off'); assert.ok(disabled.transports.every(t => t.childState === 'exited'));
-      await native.command('/toolview off'); const off = await stats(native, 'master-off');
+      await native.command('/tidy-ui off'); const off = await stats(native, 'master-off');
       assert.ok(off.transports.every(t => t.childState === 'exited' && t.retainedBytes === 0 && t.liveTimers === 0));
       assert.throws(() => process.kill(pid, 0), { code: 'ESRCH' });
-      await native.command('/toolview on'); const reenabled = await native.capture('syntax-reenabled');
+      await native.command('/tidy-ui on'); const reenabled = await native.capture('syntax-reenabled');
       assert.deepEqual(body(reenabled), body(shown));
       const afterOn = await stats(native, 'master-on'); assert.equal(afterOn.counts.acquisitions, 1, 'session-native-off survives full adapter reinstall');
       assert.ok(afterOn.source.piSourceRecords > 0, 'post-reinstall diagnostics describe the current fallback owner, not the disposed native controller');
@@ -172,7 +172,7 @@ for (const mode of ['fullscreen', 'regular']) test(`occipital CLI: actual ${mode
       console.log(JSON.stringify({ mode, native: native.output, replay: replay.output, nativeWork: work(baseline), replayWork: work(replayStats),
         coldReplayPiBridges: replayStats.counts.piBridges, warmNativeDelta: 0, warmReplayDelta: 0 }));
       await finish(replay);
-      const control = create('control', { extraEnv: { TOOLVIEW_TEST_SYNTAX_CARDS: '1' } }); const plain = await scenario(control, false);
+      const control = create('control', { extraEnv: { TIDY_UI_TEST_SYNTAX_CARDS: '1' } }); const plain = await scenario(control, false);
       assert.deepEqual(traffic(control), nativeTraffic); assert.deepEqual(persisted(plain), nativeData); await control.close();
     } finally { for (const terminal of terminals) { await terminal.close(); terminal.dispose(); } }
   });
@@ -183,7 +183,7 @@ test('occipital CLI: real theme picker, explicit RGB, persisted selection and fr
     let replay;
     try {
       const initial = await scenario(native, true);
-      await native.command('/toolview syntax'); native.send('\r'); await native.settle();
+      await native.command('/tidy-ui syntax'); native.send('\r'); await native.settle();
       assert.ok(native.screen().some(row => row.includes('1. Pi palette')), 'public scrolling theme picker installed');
       native.send('\x1b[B'); await native.settle(); native.send('\r'); await native.settle();
       assert.ok(native.screen().some(row => row.includes('Syntax highlighting')), 'theme action returns to management menu');
@@ -199,7 +199,7 @@ test('occipital CLI: real theme picker, explicit RGB, persisted selection and fr
       const after = await stats(native, 'theme-after'); assert.deepEqual(work(after), work(before)); assert.equal(after.counts.piBridges, before.counts.piBridges);
       const session = initial.session, workspace = native.work; await finish(native);
       replay = new PiTerminal('syntax-theme-restored', { mode: 'fullscreen', session, workspace, extensions: [fixture],
-        extraEnv: { ...descriptor, TOOLVIEW_TEST_SYNTAX_CONFIG: prefs } });
+        extraEnv: { ...descriptor, TIDY_UI_TEST_SYNTAX_CONFIG: prefs } });
       await replay.ready(); await settledStats(replay, 'theme-restored-settled', s => nativeReady(s)
         && s.source.dispatches > 0 && s.client.effective.id === saved.syntaxTheme.id);
       const restored = await replay.capture('syntax-theme-restored');
@@ -217,7 +217,7 @@ test('occipital CLI: real theme picker, explicit RGB, persisted selection and fr
 test('occipital CLI: provider readiness waits for the actual acquired/publication state, not terminal silence',
   { skip: !binary, timeout: 30000 }, async () => {
     const terminal = new PiTerminal('syntax-acquisition-gated', { mode: 'fullscreen', extensions: [fixture],
-      extraEnv: { ...descriptor, TOOLVIEW_TEST_SYNTAX_ACQUIRE_GATE: '1' } });
+      extraEnv: { ...descriptor, TIDY_UI_TEST_SYNTAX_ACQUIRE_GATE: '1' } });
     try {
       await terminal.ready(); await terminal.event('syntax_acquire_gate');
       const early = await stats(terminal, 'gated-early'); assert.equal(early.counts.describeReplies, 0);
@@ -231,10 +231,10 @@ test('occipital CLI: provider readiness waits for the actual acquired/publicatio
 
 for (const mode of ['fullscreen', 'regular']) test(`occipital CLI: ${mode} input and tool progress with held real file replies and no duplicate Pi classification`,
   { skip: !binary, timeout: 120000 }, async () => {
-    const terminal = new PiTerminal(`syntax-held-${mode}`, { mode, toolview: false, extensions: [fixture],
-      extraEnv: { ...descriptor, TOOLVIEW_TEST_SYNTAX_REPLY_GATE: '1' } });
-    const stock = new PiTerminal(`syntax-held-${mode}-stock`, { mode, toolview: false,
-      extraEnv: { TOOLVIEW_TEST_SYNTAX_CARDS: '1' } });
+    const terminal = new PiTerminal(`syntax-held-${mode}`, { mode, tidyUi: false, extensions: [fixture],
+      extraEnv: { ...descriptor, TIDY_UI_TEST_SYNTAX_REPLY_GATE: '1' } });
+    const stock = new PiTerminal(`syntax-held-${mode}-stock`, { mode, tidyUi: false,
+      extraEnv: { TIDY_UI_TEST_SYNTAX_CARDS: '1' } });
     let run;
     try {
       run = scenario(terminal, true, false).then(value => ({ value }), error => ({ error }));
@@ -297,7 +297,7 @@ for (const mode of ['fullscreen', 'regular']) test(`occipital CLI: ${mode} input
   });
 
 async function menuAction(terminal, index) {
-  await terminal.command('/toolview syntax');
+  await terminal.command('/tidy-ui syntax');
   assert.ok(terminal.screen().some(row => row.includes('Syntax highlighting')));
   for (let i = 0; i < index; i++) { terminal.send('\x1b[B'); await terminal.settle(); }
   terminal.send('\r'); await terminal.settle();
@@ -330,7 +330,7 @@ test('occipital CLI: shared discovery, public refresh/status/Pi menu, actual los
   { skip: !binary || !process.env.OCCIPITAL_TEST_SHARED_HOST, timeout: 120000 }, async () => {
     const host = await sharedSyntaxHost(process.env.OCCIPITAL_TEST_SHARED_HOST, binary);
     const terminal = new PiTerminal('syntax-shared-transitions', { mode: 'fullscreen', extensions: [fixture],
-      extraEnv: { ...descriptor, SUBC_CONNECTION_FILE: host.alias, TOOLVIEW_TEST_SYNTAX_SHARED: '1' } });
+      extraEnv: { ...descriptor, SUBC_CONNECTION_FILE: host.alias, TIDY_UI_TEST_SYNTAX_SHARED: '1' } });
     let returnedPeer;
     try {
       const initial = await scenario(terminal, true), original = await stats(terminal, 'shared-initial');
@@ -378,7 +378,7 @@ test('occipital CLI: shared discovery, public refresh/status/Pi menu, actual los
       const newPid = returnedPeer.snapshot().provider.description.runtime.pid, peerBefore = returnedPeer.sources.stats();
       assert.notEqual(newPid, oldPid); assert.notEqual(newPid, owned.transports[0].pid);
       writeFileSync(host.alias, readFileSync(host.connection), { mode: 0o600 });
-      await terminal.command('/tv-syntax-clock 60000');
+      await terminal.command('/tidy-ui-syntax-clock 60000');
       const returned = await settledStats(terminal, 'shared-returned', s => nativeReady(s) && s.client.provider.kind === 'shared');
       assert.equal(returned.client.provider.description.runtime.pid, newPid);
       assert.equal(returned.broker.probesStarted, 1); assert.equal(returned.broker.handoffsSucceeded, 1);
@@ -407,8 +407,8 @@ test('occipital CLI: shared discovery, public refresh/status/Pi menu, actual los
 for (const mode of ['fullscreen', 'regular']) test(`occipital CLI: ${mode} gradual argument abort preserves prefix, stock traffic and warm work`,
   { skip: !binary, timeout: 60000 }, async () => {
     const live = new PiTerminal(`syntax-abort-${mode}`, { mode, extensions: [fixture], extraEnv: descriptor });
-    const stock = new PiTerminal(`syntax-abort-stock-${mode}`, { mode, toolview: false, extraEnv: descriptor });
-    const fallback = new PiTerminal(`syntax-abort-fallback-${mode}`, { mode, toolview: true, extraEnv: descriptor });
+    const stock = new PiTerminal(`syntax-abort-stock-${mode}`, { mode, tidyUi: false, extraEnv: descriptor });
+    const fallback = new PiTerminal(`syntax-abort-fallback-${mode}`, { mode, tidyUi: true, extraEnv: descriptor });
     try {
       for (const terminal of [live, stock, fallback]) {
         await terminal.ready(); if (terminal === live) await syntaxReady(terminal);
@@ -442,8 +442,8 @@ for (const mode of ['fullscreen', 'regular']) test(`occipital CLI: ${mode} gradu
       assert.deepEqual(assistant(aborted), assistant(baseline)); assert.deepEqual(assistant(neutral), assistant(baseline));
       assert.deepEqual(raw(aborted), raw(baseline)); assert.deepEqual(raw(neutral), raw(baseline));
       assert.equal(raw(aborted)[0].args.command, "printf 'SYNTAX_OUTPUT\\n'\n");
-      assert.ok(body(neutral)[0].lines.some(row => /^ ┃/.test(row)), 'neutral control really installs the existing Toolview card');
-      assert.deepEqual(body(aborted), body(neutral), 'native syntax preserves the existing Toolview frame and abort presentation');
+      assert.ok(body(neutral)[0].lines.some(row => /^ ┃/.test(row)), 'neutral control really installs the existing pi-tidy-ui card');
+      assert.deepEqual(body(aborted), body(neutral), 'native syntax preserves the existing pi-tidy-ui frame and abort presentation');
       assert.ok(body(aborted)[0].lines.some(row => row.includes("printf 'SYNTAX_OUTPUT\\n'")));
       const before = await stats(live, 'abort-warm-before');
       assert.equal(before.source.sourceRecords, 0, 'terminal argument abort retires its source, not merely its useful presentation');
@@ -464,7 +464,7 @@ test('occipital CLI: structured RGB and font attributes preserve both file diff 
   { skip: !binary || !process.env.OCCIPITAL_TEST_SHARED_HOST, timeout: 120000 }, async () => {
     const host = await sharedSyntaxHost(process.env.OCCIPITAL_TEST_SHARED_HOST, binary);
     const terminal = new PiTerminal('syntax-physical-styles', { mode: 'fullscreen', extensions: [fixture],
-      extraEnv: { ...descriptor, SUBC_CONNECTION_FILE: host.alias, TOOLVIEW_TEST_SYNTAX_SHARED: '1' } });
+      extraEnv: { ...descriptor, SUBC_CONNECTION_FILE: host.alias, TIDY_UI_TEST_SYNTAX_SHARED: '1' } });
     const vectors = dump => {
       const found = [];
       for (const [y, row] of dump.screen.entries()) {
@@ -538,7 +538,7 @@ test('occipital CLI: structured RGB and font attributes preserve both file diff 
       }
       for (const theme of ['light', 'dark']) {
         const previousEvents = terminal.events().filter(event => event.type === 'theme').length;
-        await terminal.command(`/tv-theme ${theme}`); await terminal.event('theme', previousEvents + 1);
+        await terminal.command(`/tidy-ui-theme ${theme}`); await terminal.event('theme', previousEvents + 1);
         const transition = terminal.events().filter(event => event.type === 'theme')[previousEvents];
         assert.equal(transition.name, theme); assert.equal(transition.result.success, true, 'fresh requested Pi theme transition succeeds');
         const dump = await terminal.capture(`styles-${theme}`);

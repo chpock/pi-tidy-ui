@@ -50,7 +50,7 @@ Taking it into a Node extension needs a maintained native binding, custom WASM b
 
 Relevant patterns:
 
-- **Codex** at [`7aa8f510496316b86a91a75ed0a71598ef03c640`](https://github.com/openai/codex/commit/7aa8f510496316b86a91a75ed0a71598ef03c640): [syntect + two_face highlighter](https://github.com/openai/codex/blob/7aa8f510496316b86a91a75ed0a71598ef03c640/codex-rs/tui/src/render/highlight.rs), documented ~250 languages, shared syntax/theme state with theme revision invalidation, plain fallbacks at 512 KiB/10,000 lines and 4 KiB per line. [Diff](https://github.com/openai/codex/blob/7aa8f510496316b86a91a75ed0a71598ef03c640/codex-rs/tui/src/diff_render.rs) highlights hunk blocks rather than individual lines, without cross-hunk lexical state. The thresholds are Codex's choices, not proposed silent Toolview truncation.
+- **Codex** at [`7aa8f510496316b86a91a75ed0a71598ef03c640`](https://github.com/openai/codex/commit/7aa8f510496316b86a91a75ed0a71598ef03c640): [syntect + two_face highlighter](https://github.com/openai/codex/blob/7aa8f510496316b86a91a75ed0a71598ef03c640/codex-rs/tui/src/render/highlight.rs), documented ~250 languages, shared syntax/theme state with theme revision invalidation, plain fallbacks at 512 KiB/10,000 lines and 4 KiB per line. [Diff](https://github.com/openai/codex/blob/7aa8f510496316b86a91a75ed0a71598ef03c640/codex-rs/tui/src/diff_render.rs) highlights hunk blocks rather than individual lines, without cross-hunk lexical state. The thresholds are Codex's choices, not proposed silent pi-tidy-ui truncation.
 - **delta 0.18.2**: [composes syntax and emphasis/diff ranges](https://github.com/dandavison/delta/blob/0.18.2/src/paint.rs), handles side-by-side and limits long-line syntax work, acknowledging state inaccuracies after truncation; [hunk handler](https://github.com/dandavison/delta/blob/0.18.2/src/handlers/hunk_header.rs) resets state.
 - **bat 0.25.0**: [printer](https://github.com/sharkdp/bat/blob/v0.25.0/src/printer.rs) highlights hidden preceding source before dropping out-of-range lines, preserving state when full source exists. Lines above 16 KiB substitute a newline for highlighting. Whole-file availability is stronger context than a saved partial diff.
 
@@ -64,7 +64,7 @@ Syntect's [performance notes](https://github.com/trishume/syntect/blob/v5.3.0/Re
 
 Pinned [`fb972b2f87fe7d5b06d37eac711490162d98de2c`](https://github.com/google-gemini/gemini-cli/commit/fb972b2f87fe7d5b06d37eac711490162d98de2c): [CodeColorizer](https://github.com/google-gemini/gemini-cli/blob/fb972b2f87fe7d5b06d37eac711490162d98de2c/packages/cli/src/ui/utils/CodeColorizer.tsx) uses `createLowlight(common)`, maps `hljs-*` token classes to Ink colors and auto-detects unknown languages. Its [DiffRenderer](https://github.com/google-gemini/gemini-cli/blob/fb972b2f87fe7d5b06d37eac711490162d98de2c/packages/cli/src/ui/components/messages/DiffRenderer.tsx) highlights line by line.
 
-Transfer the idea of token-tree-to-terminal mapping, **not** React/Ink, unreliable prose autodetection or per-line tokenization that loses multiline state Toolview already retains.
+Transfer the idea of token-tree-to-terminal mapping, **not** React/Ink, unreliable prose autodetection or per-line tokenization that loses multiline state pi-tidy-ui already retains.
 
 ### Aider
 

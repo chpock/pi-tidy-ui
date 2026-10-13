@@ -11,9 +11,10 @@
   "baselineHeadAtResearchStart": "2c19660",
   "harnessVersion": 2,
   "measuredNativeExecutable": {
-    "path": "/tmp/pi-toolview-highlight-service-target/release/highlight-service-research",
     "sha256": "ed7e37d0b3c1238d1717d6f192a887d0b00a3f40b0e16c781e5336ddb0971829",
-    "bytes": 12364184
+    "bytes": 12364184,
+    "fileName": "highlight-service-research",
+    "archiveNote": "Historical temporary-directory path omitted during repository branding normalization; measured binary SHA-256 and size are unchanged."
   },
   "sourceOnlyCandidates": {
     "arborium": "2.18.2",
@@ -53,8 +54,13 @@
       "bytes": 3528
     },
     "docs/research/syntax-highlighting/probes/shared-service/controller.mjs": {
-      "sha256": "039d35239d70a96dfc444a4d8f917b3173c9afca0f57adaaf78dc2d2d1eb7772",
-      "bytes": 8143
+      "sha256": "71ddbe908953c4d761561dfa3237fb4ba4e46790a0e55baa2cfa30b93aa60158",
+      "bytes": 8139,
+      "measuredSource": {
+        "sha256": "039d35239d70a96dfc444a4d8f917b3173c9afca0f57adaaf78dc2d2d1eb7772",
+        "bytes": 8143
+      },
+      "archiveNote": "Project branding and temporary-path labels were normalized during the repository rename. measuredSource retains the original measured/archive input identity; no measurements were repeated."
     },
     "docs/research/syntax-highlighting/probes/shared-service/discarded-unbuffered-v1.jsonl": {
       "sha256": "ed1289e8a9f970643a2728cde39fae8bf667149a643f3c92e2f2c947ad55900e",
@@ -114,12 +120,22 @@
       "bytes": 1077
     },
     "docs/research/syntax-highlighting/probes/head-to-head/engine.mjs": {
-      "sha256": "4d289bbbb8321e6596dd72b9cd4f0ebc33b92bd31d78d6a960184bb27837b428",
-      "bytes": 12292
+      "sha256": "609822355e28b10e9c50e054fcae6510970e520e4d9a735fc58d5b168635b81e",
+      "bytes": 12291,
+      "measuredSource": {
+        "sha256": "4d289bbbb8321e6596dd72b9cd4f0ebc33b92bd31d78d6a960184bb27837b428",
+        "bytes": 12292
+      },
+      "archiveNote": "Project branding and temporary-path labels were normalized during the repository rename. measuredSource retains the original measured/archive input identity; no measurements were repeated."
     },
     "docs/research/syntax-highlighting/probes/head-to-head/corpus.mjs": {
-      "sha256": "f167bf3efe9ad53079dc3830261a68fc562377c1b21a9e949a5e5e78d9d7879e",
-      "bytes": 2366
+      "sha256": "af9320bc909699ac7f93eda56db0a38e2fc6d6002217c80563603e11d67c26b6",
+      "bytes": 2368,
+      "measuredSource": {
+        "sha256": "f167bf3efe9ad53079dc3830261a68fc562377c1b21a9e949a5e5e78d9d7879e",
+        "bytes": 2366
+      },
+      "archiveNote": "Project branding and temporary-path labels were normalized during the repository rename. measuredSource retains the original measured/archive input identity; no measurements were repeated."
     },
     "docs/research/syntax-highlighting/probes/head-to-head/file-card-snapshot.txt": {
       "sha256": "6ddf560938abd989a0ea75a40da9cfb81ae8e8b61c04d42643b520be81b10e7e",
@@ -130,8 +146,13 @@
       "bytes": 437
     },
     "docs/research/syntax-highlighting/probes/head-to-head/dependencies-lock.json": {
-      "sha256": "eb5c531b52d17eef2eb5363d97d6c578c5e0b5dcb0c1d977a1a864340a2d3a4a",
-      "bytes": 29739
+      "sha256": "fd76e7ca468b96b684cf487ae396c33ff9a8fc5cb2ae5f24332dbd1c217d77af",
+      "bytes": 29738,
+      "measuredSource": {
+        "sha256": "eb5c531b52d17eef2eb5363d97d6c578c5e0b5dcb0c1d977a1a864340a2d3a4a",
+        "bytes": 29739
+      },
+      "archiveNote": "Project branding and temporary-path labels were normalized during the repository rename. measuredSource retains the original measured/archive input identity; no measurements were repeated."
     }
   }
 }

@@ -5,22 +5,22 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 export default async function colorDriver(pi: ExtensionAPI) {
-  const output = process.env.TOOLVIEW_TEST_OUTPUT!;
+  const output = process.env.TIDY_UI_TEST_OUTPUT!;
   let control: RegisteredCommand["handler"];
   let tui: any, query: unknown, notify: unknown, scheme: unknown;
-  const nativeOnly = process.env.TOOLVIEW_TEST_COLORS_NATIVE === "1";
+  const nativeOnly = process.env.TIDY_UI_TEST_COLORS_NATIVE === "1";
   let diagnostics: typeof import("../../src/index.ts").terminalColorDiagnostics | undefined;
   let appearanceTracking: typeof import("../../src/index.ts").terminalAppearanceTracking = value => {
     try { const flag = Reflect.get(value, "terminalColorSchemeNotificationsEnabled"); return typeof flag === "boolean" ? flag : undefined; }
     catch { return undefined; }
   };
-  // Native/first-late controls do not import production Toolview until it is actually installed.
+  // Native/first-late controls do not import production pi-tidy-ui until it is actually installed.
   if (!nativeOnly) {
     const module = await import("../../src/index.ts");
     diagnostics = module.terminalColorDiagnostics; appearanceTracking = module.terminalAppearanceTracking;
     const { default: presentationDriver } = await import("./presentation-driver.ts");
     presentationDriver({ ...pi, registerCommand(name, options) {
-      if (name === "toolview") control = options.handler;
+      if (name === "tidy-ui") control = options.handler;
       pi.registerCommand(name, options);
     } });
   }

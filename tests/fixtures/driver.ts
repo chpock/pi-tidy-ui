@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { stripVTControlCharacters } from "node:util";
 
 // Counter-only native wrapper; unwrap the prior fixture on reload instead of stacking observers.
-const nativeProbeKey = Symbol.for("toolview-test:native-render-original");
+const nativeProbeKey = Symbol.for("tidy-ui-test:native-render-original");
 function observeNativeRenders(counts: Record<string, number>) {
   const current = ToolExecutionComponent.prototype.render as typeof ToolExecutionComponent.prototype.render & {
     [nativeProbeKey]?: typeof ToolExecutionComponent.prototype.render;
@@ -23,7 +23,7 @@ function observeNativeRenders(counts: Record<string, number>) {
 }
 
 export default function terminalDriver(pi: ExtensionAPI) {
-  const output = process.env.TOOLVIEW_TEST_OUTPUT!;
+  const output = process.env.TIDY_UI_TEST_OUTPUT!;
   let tui: any;
   const record = (event: object) => appendFileSync(join(output, "events.jsonl"), JSON.stringify(event) + "\n");
   const wait = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
@@ -31,12 +31,12 @@ export default function terminalDriver(pi: ExtensionAPI) {
   const observeTerminalSize = () => record({ type: "terminal_size", width: process.stdout.columns, height: process.stdout.rows });
   pi.on("session_shutdown", () => { process.stdout.off("resize", observeTerminalSize); });
   // Opt-in UI-clock observations only: real timers/render requests, no model/session mutation.
-  const editPerformance = process.env.TOOLVIEW_TEST_EDIT_PERFORMANCE === "1";
-  const editDiagnostics = process.env.TOOLVIEW_TEST_EDIT_CARDS === "1" || editPerformance;
+  const editPerformance = process.env.TIDY_UI_TEST_EDIT_PERFORMANCE === "1";
+  const editDiagnostics = process.env.TIDY_UI_TEST_EDIT_CARDS === "1" || editPerformance;
   const nativeRenderCalls: Record<string, number> = {};
   if (editDiagnostics) observeNativeRenders(nativeRenderCalls);
-  const userDiagnostics = process.env.TOOLVIEW_TEST_USER_CARDS === "1";
-  const queuedDiagnostics = process.env.TOOLVIEW_TEST_QUEUED_CARDS === "1";
+  const userDiagnostics = process.env.TIDY_UI_TEST_USER_CARDS === "1";
+  const queuedDiagnostics = process.env.TIDY_UI_TEST_QUEUED_CARDS === "1";
   let queuedRequests = 0;
   const userWork = { transforms: 0, widths: [] as number[] };
   if (userDiagnostics) pi.registerMarkdownTransformer((text, context) => {
@@ -44,7 +44,7 @@ export default function terminalDriver(pi: ExtensionAPI) {
     userWork.transforms++; userWork.widths.push(context.availableWidth);
     return text + "\n\nTRANSFORMED_USER";
   });
-  const spinnerDiagnostics = process.env.TOOLVIEW_TEST_SPINNER_DIAGNOSTICS === "1";
+  const spinnerDiagnostics = process.env.TIDY_UI_TEST_SPINNER_DIAGNOSTICS === "1";
   const spinnerStats = { starts: 0, cancels: 0, active: 0, maxActive: 0, ticks: 0, requests: 0, unrefs: 0, delays: [] as number[] };
   let insideSpinnerTick = false;
   const spinnerWork = { widths: {} as Record<string, number>, invalidations: 0 };
@@ -84,7 +84,7 @@ export default function terminalDriver(pi: ExtensionAPI) {
       globalThis.setTimeout = nativeTimeout; globalThis.clearTimeout = nativeClear;
       if (nativeRequest && tui) tui.requestRender = nativeRequest;
     });
-    pi.registerCommand("tv-spinner-working", {
+    pi.registerCommand("tidy-ui-spinner-working", {
       description: "Control native Working animation through its public API for fallback coverage",
       handler: async (mode, ctx) => {
         if (mode === "static") ctx.ui.setWorkingIndicator({ frames: ["●"] });
@@ -104,9 +104,9 @@ export default function terminalDriver(pi: ExtensionAPI) {
   }
   // Representative AFT-shaped results only; this never loads or executes installed AFT.
   // It must be enabled in a separate invocation, never in the built-in scenarios.
-  const bashShape = process.env.TOOLVIEW_TEST_BASH_SHAPE === "1";
-  const writeShape = process.env.TOOLVIEW_TEST_WRITE_SHAPE === "1";
-  const writeDiagnostics = process.env.TOOLVIEW_TEST_WRITE_CARDS === "1";
+  const bashShape = process.env.TIDY_UI_TEST_BASH_SHAPE === "1";
+  const writeShape = process.env.TIDY_UI_TEST_WRITE_SHAPE === "1";
+  const writeDiagnostics = process.env.TIDY_UI_TEST_WRITE_CARDS === "1";
   const writeSource = '/* write comment\ncontinued write comment */\nexport const value = "界é";\n' +
     Array.from({ length: 15 }, (_, i) => `const line${i + 4} = ${i + 4};`).join("\n") + '\nconst WRITE_TAIL_19 = 19;';
   const writeStockSuite: Pick<ToolCall, "name" | "arguments">[] = [
@@ -231,7 +231,7 @@ export default function terminalDriver(pi: ExtensionAPI) {
     },
   });
   const bashReal: Pick<ToolCall, "name" | "arguments">[] = [
-    { name: "bash", arguments: { command: "cat <<'TV_EOF'\n  HEREDOC_INDENT\nHEREDOC_END\nTV_EOF\nprintf 'AFTER_HEREDOC\\n'" } },
+    { name: "bash", arguments: { command: "cat <<'TIDY_UI_EOF'\n  HEREDOC_INDENT\nHEREDOC_END\nTIDY_UI_EOF\nprintf 'AFTER_HEREDOC\\n'" } },
     { name: "bash", arguments: { command: "printf '%s\\n' '" + "LONG_WORD".repeat(30) + "'" } },
     { name: "bash", arguments: { command: "for i in $(seq 1 11); do printf 'REAL_ROW_%02d\\n' \"$i\"; done" } },
     { name: "bash", arguments: { command: "printf 'REAL_ERROR\\n'; exit 7" } },
@@ -248,7 +248,7 @@ export default function terminalDriver(pi: ExtensionAPI) {
     } })),
     { name: "read", arguments: { path: "a.txt", offset: 1, limit: 1 } },
     { name: "read", arguments: { path: "b.txt" } },
-    { name: "tv_hidden", arguments: {} },
+    { name: "tidy_ui_hidden", arguments: {} },
   ];
   const shapeCases = ["literal", "whitespace", "ten", "eleven", "soft", "edges", "exit", "both", "zero-error", "unknown-error", "zero", "string", "null", "transient"];
   const bashShapes: Pick<ToolCall, "name" | "arguments">[] = shapeCases.map((fixtureCase, index) => ({
@@ -270,14 +270,14 @@ export default function terminalDriver(pi: ExtensionAPI) {
     name: "bash", arguments: { command: "shape " + fixtureCase, fixtureCase },
   }));
   pi.registerTool({
-    name: "tv_unknown", label: "Unknown fixture label", description: "Offline unknown text-only tool",
+    name: "tidy_ui_unknown", label: "Unknown fixture label", description: "Offline unknown text-only tool",
     parameters: Type.Object({ query: Type.String() }),
     async execute(_id, args) {
       return { content: [{ type: "text", text: `UNKNOWN_RESULT ${args.query}` }], details: undefined };
     },
   });
   pi.registerTool({
-    name: "tv_stream", label: "Streaming fixture", description: "Offline gated streaming tool",
+    name: "tidy_ui_stream", label: "Streaming fixture", description: "Offline gated streaming tool",
     parameters: Type.Object({ query: Type.String() }),
     async execute(_id, _args, signal, onUpdate) {
       onUpdate?.({ content: [{ type: "text", text: "STREAM_PARTIAL" }], details: undefined });
@@ -287,7 +287,7 @@ export default function terminalDriver(pi: ExtensionAPI) {
     },
   });
   pi.registerTool({
-    name: "tv_hidden", label: "Hidden fixture", description: "Intentionally empty native renderer",
+    name: "tidy_ui_hidden", label: "Hidden fixture", description: "Intentionally empty native renderer",
     parameters: Type.Object({}), renderShell: "self",
     renderCall: () => new Text("", 0, 0), renderResult: () => new Text("", 0, 0),
     async execute() {
@@ -297,7 +297,7 @@ export default function terminalDriver(pi: ExtensionAPI) {
   // All credentials and payloads below are synthetic sentinels, not host data.
   const longReadPath = "long-directory/" + "r".repeat(180) + ".txt";
   pi.registerTool({
-    name: "tv_summary", label: "Summary fixture", description: "Offline arbitrary JSON summary fixture",
+    name: "tidy_ui_summary", label: "Summary fixture", description: "Offline arbitrary JSON summary fixture",
     parameters: Type.Object({}, { additionalProperties: true }),
     async execute(_id, args) {
       if ("fixtureError" in args && args.fixtureError === true) throw new Error("ERROR_BODY_SENTINEL first line\nERROR_STACK_SENTINEL second line");
@@ -306,12 +306,12 @@ export default function terminalDriver(pi: ExtensionAPI) {
     },
   });
   pi.registerTool({
-    name: "tv_noargs", label: "No arguments fixture", description: "Offline no-arguments tool",
+    name: "tidy_ui_noargs", label: "No arguments fixture", description: "Offline no-arguments tool",
     parameters: Type.Object({}),
     async execute() { return { content: [{ type: "text", text: "NOARGS_RESULT" }], details: undefined }; },
   });
   pi.registerTool({
-    name: "tv_card", label: "Self-shell card fixture", description: "Native self-shell renderer without padding",
+    name: "tidy_ui_card", label: "Self-shell card fixture", description: "Native self-shell renderer without padding",
     parameters: Type.Object({}), renderShell: "self",
     renderCall: (_args, theme) => new Text(theme.bg("toolSuccessBg", "NATIVE_CARD_CALL"), 0, 0),
     renderResult: (_result, _options, theme) => new Text(theme.bg("toolSuccessBg", "NATIVE_CARD_RESULT"), 0, 0),
@@ -321,10 +321,10 @@ export default function terminalDriver(pi: ExtensionAPI) {
     { name: "read", arguments: { path: "a.txt" } },
     { name: "read", arguments: { path: "b.txt" } },
     { name: "read", arguments: { path: longReadPath, offset: 1, limit: 1 } },
-    { name: "tv_hidden", arguments: {} },
-    { name: "tv_noargs", arguments: {} },
-    { name: "tv_noargs", arguments: {} },
-    { name: "tv_summary", arguments: {
+    { name: "tidy_ui_hidden", arguments: {} },
+    { name: "tidy_ui_noargs", arguments: {} },
+    { name: "tidy_ui_noargs", arguments: {} },
+    { name: "tidy_ui_summary", arguments: {
       zLast: "LAST_FIELD_VISIBLE", "odd key": "QUOTED_KEY", enabled: false, count: 0,
       empty: "", nothing: null, nested: { input: "NESTED_PAYLOAD_VISIBLE", token: "NESTED_TOKEN_VISIBLE", values: [false, 0, "nested quoted value"], clean: "clean\n \t nested\u202evalue" },
       sanitized: "white\n \tspace \u001b[31mred\u001b[0m\u202eend",
@@ -340,58 +340,58 @@ export default function terminalDriver(pi: ExtensionAPI) {
       query: "quoted \"query\"\\value 界 é " + "UNBREAKABLE".repeat(30) + " END_QUERY_VISIBLE",
       AFirst: "FIRST_ALPHA_VISIBLE",
     } },
-    { name: "tv_hidden", arguments: {} },
-    { name: "tv_card", arguments: {} },
+    { name: "tidy_ui_hidden", arguments: {} },
+    { name: "tidy_ui_card", arguments: {} },
     { name: "read", arguments: { path: "b.txt" } },
-    { name: "tv_summary", arguments: {
+    { name: "tidy_ui_summary", arguments: {
       paths: ["ordinary-path"], scope: "ordinary-scope", url: "https://example.invalid/ordinary", target: "ordinary-target",
       pattern: "needle \"quoted\"", path: ["src dir", "tests"], query: "always named", enabled: true,
     } },
     { name: "bash", arguments: { command: "printf 'MULTILINE_NATIVE_BASH\\n'" } },
-    { name: "tv_summary", arguments: { pattern: 0, path: null, target: "chosen target", url: "ordinary-url", scope: "ordinary-scope", paths: ["ordinary-path"], query: "named" } },
-    { name: "tv_summary", arguments: { path: "chosen-path", target: "ordinary-target", url: "ordinary-url", scope: "ordinary-scope", paths: ["ordinary-path"] } },
-    { name: "tv_summary", arguments: { url: "https://example.invalid/chosen", scope: "ordinary-scope", paths: [], pattern: false } },
-    { name: "tv_summary", arguments: { scope: [], paths: ["ordinary-path"] } },
-    { name: "tv_summary", arguments: { paths: [] } },
-    { name: "tv_summary", arguments: { pattern: "", path: [], query: "" } },
-    { name: "tv_noargs", arguments: {} },
+    { name: "tidy_ui_summary", arguments: { pattern: 0, path: null, target: "chosen target", url: "ordinary-url", scope: "ordinary-scope", paths: ["ordinary-path"], query: "named" } },
+    { name: "tidy_ui_summary", arguments: { path: "chosen-path", target: "ordinary-target", url: "ordinary-url", scope: "ordinary-scope", paths: ["ordinary-path"] } },
+    { name: "tidy_ui_summary", arguments: { url: "https://example.invalid/chosen", scope: "ordinary-scope", paths: [], pattern: false } },
+    { name: "tidy_ui_summary", arguments: { scope: [], paths: ["ordinary-path"] } },
+    { name: "tidy_ui_summary", arguments: { paths: [] } },
+    { name: "tidy_ui_summary", arguments: { pattern: "", path: [], query: "" } },
+    { name: "tidy_ui_noargs", arguments: {} },
   ];
   const commaWrap: Pick<ToolCall, "name" | "arguments">[] = [
-    { name: "tv_summary", arguments: { scope: [
+    { name: "tidy_ui_summary", arguments: { scope: [
       "experiments/gruvbox-dark-hard/semantic-implementation-review.md",
       "experiments/gruvbox-dark-hard/semantic-implementation.md",
       "experiments/gruvbox-dark-hard/semantic-analysis.md",
     ] } },
-    { name: "tv_summary", arguments: { target: [
+    { name: "tidy_ui_summary", arguments: { target: [
       "agent/npm/node_modules/pi-subagents/src/runs/shared/single-output.js",
       "agent/npm/node_modules/pi-subagents/src/shared/artifacts.js",
       "agent/npm/node_modules/pi-subagents/src/runs/background/async-execution.js",
     ] } },
-    { name: "tv_summary", arguments: { drop: Array.from({ length: 60 }, (_, i) => i + 1).join(",") } },
+    { name: "tidy_ui_summary", arguments: { drop: Array.from({ length: 60 }, (_, i) => i + 1).join(",") } },
   ];
   const longWordWrap: Pick<ToolCall, "name" | "arguments">[] = [
     { name: "read", arguments: { path: longReadPath } },
     { name: "read", arguments: { path: longReadPath, offset: 1, limit: 1 } },
-    { name: "tv_summary", arguments: { url: "https://example.invalid/" + "segment.with-dashes_".repeat(6) + "?key=" + "v".repeat(24), fixtureError: true } },
-    { name: "tv_summary", arguments: { query: "\u0301" + "q".repeat(12) + '"' + "r".repeat(75), target: "é界/".repeat(12), offset: 1, limit: 1 } },
+    { name: "tidy_ui_summary", arguments: { url: "https://example.invalid/" + "segment.with-dashes_".repeat(6) + "?key=" + "v".repeat(24), fixtureError: true } },
+    { name: "tidy_ui_summary", arguments: { query: "\u0301" + "q".repeat(12) + '"' + "r".repeat(75), target: "é界/".repeat(12), offset: 1, limit: 1 } },
   ];
   const boundedSummaries: Pick<ToolCall, "name" | "arguments">[] = [
-    { name: "tv_summary", arguments: { op: "inspect", action: "preview", command: "echo", query: "STRING_BEGIN_" + "x".repeat(1000),
+    { name: "tidy_ui_summary", arguments: { op: "inspect", action: "preview", command: "echo", query: "STRING_BEGIN_" + "x".repeat(1000),
       paths: ["src"], symbol: "render", limit: 0, wait: false, mystery: "UNKNOWN", api_key: "COMPACT_SECRET_NEVER_VISIBLE",
       content: "CONTENT_VISIBLE", edits: [{ oldText: "OLD_VISIBLE", newText: "NEW_VISIBLE" }] } },
-    { name: "tv_summary", arguments: { content: "界é".repeat(300), newText: "ONE_REPLACEMENT" } },
-    { name: "tv_summary", arguments: { query: Array(100).fill("ARRAY_ENTRY") } },
-    { name: "tv_summary", arguments: { query: { list: Array(100).fill("OBJECT_ENTRY"), tail: "OBJECT_TAIL" }, unknownTail: "DISPLAY_TAIL" } },
-    { name: "tv_summary", arguments: Object.fromEntries(Array.from({ length: 30 }, (_, i) => [`field${String(i).padStart(2, "0")}`, "v".repeat(180)])) },
+    { name: "tidy_ui_summary", arguments: { content: "界é".repeat(300), newText: "ONE_REPLACEMENT" } },
+    { name: "tidy_ui_summary", arguments: { query: Array(100).fill("ARRAY_ENTRY") } },
+    { name: "tidy_ui_summary", arguments: { query: { list: Array(100).fill("OBJECT_ENTRY"), tail: "OBJECT_TAIL" }, unknownTail: "DISPLAY_TAIL" } },
+    { name: "tidy_ui_summary", arguments: Object.fromEntries(Array.from({ length: 30 }, (_, i) => [`field${String(i).padStart(2, "0")}`, "v".repeat(180)])) },
     { name: "edit", arguments: { path: "missing-bounded.ts", pattern: "EDIT_PATTERN_IGNORED", query: "EDIT_QUERY_IGNORED",
       oldText: "OLD_PROPOSAL_IGNORED".repeat(100), newText: "NEW_PROPOSAL_IGNORED".repeat(100) } },
     { name: "write", arguments: { path: "bounded-write.txt", content: "WRITE_BODY_" + "w".repeat(1000) } },
   ];
   const compactErrors: Pick<ToolCall, "name" | "arguments">[] = [
     { name: "read", arguments: { path: "missing/" + "r".repeat(90) + ".txt", offset: 3, limit: 7 } },
-    { name: "tv_summary", arguments: { pattern: "needle", path: "src/文件/" + "p".repeat(40), query: "a,b,c,".repeat(8), fixtureError: true } },
-    { name: "tv_summary", arguments: { target: ["src/" + "t".repeat(50), "tests/文件/" + "u".repeat(40)], query: "named", fixtureError: true } },
-    { name: "tv_summary", arguments: { query: "SUCCESS_CALL" } },
+    { name: "tidy_ui_summary", arguments: { pattern: "needle", path: "src/文件/" + "p".repeat(40), query: "a,b,c,".repeat(8), fixtureError: true } },
+    { name: "tidy_ui_summary", arguments: { target: ["src/" + "t".repeat(50), "tests/文件/" + "u".repeat(40)], query: "named", fixtureError: true } },
+    { name: "tidy_ui_summary", arguments: { query: "SUCCESS_CALL" } },
   ];
   const editSuite: Pick<ToolCall, "name" | "arguments">[] = [
     { name: "edit", arguments: { path: "edit-example.ts", edits: [
@@ -420,21 +420,21 @@ export default function terminalDriver(pi: ExtensionAPI) {
     { name: "bash", arguments: { command: "printf 'BASH_RESULT\\n'" } },
     { name: "write", arguments: { path: "written.txt", content: "WRITE_BEFORE\n" } },
     { name: "edit", arguments: { path: "written.txt", oldText: "WRITE_BEFORE", newText: "WRITE_AFTER" } },
-    { name: "tv_unknown", arguments: { query: "wide 界 é query" } },
+    { name: "tidy_ui_unknown", arguments: { query: "wide 界 é query" } },
     { name: "read", arguments: { path: "missing.txt" } },
   ];
-  pi.registerProvider("toolview-offline", {
-    api: "toolview-offline", baseUrl: "http://127.0.0.1/unused", apiKey: "offline-fixture",
+  pi.registerProvider("tidy-ui-offline", {
+    api: "tidy-ui-offline", baseUrl: "http://127.0.0.1/unused", apiKey: "offline-fixture",
     models: [{ id: "scripted", name: "Offline terminal fixture", reasoning: false,
       // The opt-in eight-output cache scenario must not trigger unrelated automatic compaction.
-      input: ["text", "image"], contextWindow: process.env.TOOLVIEW_TEST_FOOTER === "1" ? 272000 : process.env.TOOLVIEW_TEST_CACHE_DIAGNOSTICS === "1" ? 512000 : 32000, maxTokens: 1024,
+      input: ["text", "image"], contextWindow: process.env.TIDY_UI_TEST_FOOTER === "1" ? 272000 : process.env.TIDY_UI_TEST_CACHE_DIAGNOSTICS === "1" ? 512000 : 32000, maxTokens: 1024,
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } }],
     streamSimple(model, context, options) {
       const stream = createAssistantMessageEventStream();
       const message: any = {
         role: "assistant", api: model.api, provider: model.provider, model: model.id,
         timestamp: Date.now(), content: [], stopReason: "stop",
-        usage: process.env.TOOLVIEW_TEST_FOOTER === "1" ? { input: 1000, output: 100, cacheRead: 9500, cacheWrite: 500, totalTokens: 11100,
+        usage: process.env.TIDY_UI_TEST_FOOTER === "1" ? { input: 1000, output: 100, cacheRead: 9500, cacheWrite: 500, totalTokens: 11100,
           cost: { input: 0.123, output: 0, cacheRead: 0, cacheWrite: 0, total: 0.123 } } :
           { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
           cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
@@ -472,9 +472,9 @@ export default function terminalDriver(pi: ExtensionAPI) {
         if (["cache-performance", "bash-width", "bash-real", "bash-stream", "suite", "multiline"].includes(scenario) && bashShape) throw new Error("Built-in scenario cannot run with bash-shape opt-in");
         if (scenario === "write-shapes" && !writeShape) throw new Error("write-shapes requires explicit isolated opt-in");
         if (writeShape && scenario !== "write-shapes") throw new Error("write-shape opt-in is isolated from all other scenarios");
-        if (scenario.startsWith("footer-") && process.env.TOOLVIEW_TEST_FOOTER_HISTORY !== "1") throw new Error("footer-history requests require explicit isolated opt-in");
+        if (scenario.startsWith("footer-") && process.env.TIDY_UI_TEST_FOOTER_HISTORY !== "1") throw new Error("footer-history requests require explicit isolated opt-in");
         const calls: Pick<ToolCall, "name" | "arguments">[] = scenario === "syntax-cards" ? [
-          { name: "bash", arguments: { command: "printf 'SYNTAX_OUTPUT\\n'\ntouch \"$TOOLVIEW_TEST_OUTPUT/syntax-shell-ready\"\nwhile [ ! -f \"$TOOLVIEW_TEST_OUTPUT/syntax-shell-final\" ]; do sleep 0.025; done" } },
+          { name: "bash", arguments: { command: "printf 'SYNTAX_OUTPUT\\n'\ntouch \"$TIDY_UI_TEST_OUTPUT/syntax-shell-ready\"\nwhile [ ! -f \"$TIDY_UI_TEST_OUTPUT/syntax-shell-final\" ]; do sleep 0.025; done" } },
           { name: "write", arguments: { path: "syntax.ts", content: "const x=1;\n" } },
           { name: "edit", arguments: { path: "syntax.ts", oldText: "const x=1;", newText: "const x=2;" } },
         ] : scenario === "footer-cold" ? [] : scenario === "footer-history" || scenario === "footer-varied" ?
@@ -489,25 +489,25 @@ export default function terminalDriver(pi: ExtensionAPI) {
           scenario === "bash-shape-stream" ? [{ name: "bash", arguments: { command: "shape stream", description: "Streaming comment", fixtureCase: "stream" } }] :
           scenario === "bash-stream" ? [{ name: "bash", arguments: { command:
             "for i in $(seq 1 12); do printf 'LIVE_ROW_%02d\\n' \"$i\"; done\n" +
-            "touch \"$TOOLVIEW_TEST_OUTPUT/shell-ready\"\n" +
-            "while [ ! -f \"$TOOLVIEW_TEST_OUTPUT/shell-final\" ]; do sleep 0.025; done\n" +
+            "touch \"$TIDY_UI_TEST_OUTPUT/shell-ready\"\n" +
+            "while [ ! -f \"$TIDY_UI_TEST_OUTPUT/shell-final\" ]; do sleep 0.025; done\n" +
             "printf 'LIVE_FINAL\\n'" } }] : scenario === "boundary" ? [
           { name: "read", arguments: { path: "abcdefghijklm", limit: 1 } },
-          { name: "tv_summary", arguments: { path: "abcdefghijklm", query: "x".repeat(40) } },
+          { name: "tidy_ui_summary", arguments: { path: "abcdefghijklm", query: "x".repeat(40) } },
         ] : scenario === "long-word-wrap" ? longWordWrap : scenario === "bounded-summaries" ? boundedSummaries : scenario === "compact-errors" ? compactErrors : scenario === "comma-wrap" ? commaWrap : scenario === "multiline" ? multiline : scenario === "integration" ? [
           { name: "TaskCreate", arguments: { subject: "TERMINAL_LOCAL_TASK", description: "Offline installed renderer smoke; do not execute." } },
           { name: "TaskList", arguments: {} },
         ] : scenario === "pending" ? [
           { name: "read", arguments: { path: "a.txt" } },
-          { name: "tv_stream", arguments: { query: "gated" } },
+          { name: "tidy_ui_stream", arguments: { query: "gated" } },
         ] : scenario === "fallback" ? [
           { name: "read", arguments: { path: "pixel.png" } },
-          { name: "tv_hidden", arguments: {} },
+          { name: "tidy_ui_hidden", arguments: {} },
         ] : scenario === "future" ? [
-          { name: "tv_unknown", arguments: { query: "future after reload" } },
+          { name: "tidy_ui_unknown", arguments: { query: "future after reload" } },
         ] : suite;
         const step = results.length;
-        if (scenario === "syntax-cards" && step === 2 && process.env.TOOLVIEW_TEST_SYNTAX_REPLY_GATE === "1") {
+        if (scenario === "syntax-cards" && step === 2 && process.env.TIDY_UI_TEST_SYNTAX_REPLY_GATE === "1") {
           record({ type: "syntax_reply_tool_gate" }); await gate("syntax-reply-tool-go", options?.signal);
         }
         if (scenario.startsWith("footer-")) {
@@ -583,7 +583,7 @@ export default function terminalDriver(pi: ExtensionAPI) {
   pi.on("tool_call", async (event) => {
     record({ type: "call", name: event.toolName, input: event.input });
     // Await after native execution-start, without replacing the actual built-in edit implementation.
-    if (!editExecutionGated && process.env.TOOLVIEW_TEST_EDIT_CARDS === "1" && event.toolName === "edit" &&
+    if (!editExecutionGated && process.env.TIDY_UI_TEST_EDIT_CARDS === "1" && event.toolName === "edit" &&
       event.input.path === "edit-example.ts" && Array.isArray(event.input.edits)) {
       editExecutionGated = true;
       record({ type: "edit_execution_gate" });
@@ -593,7 +593,7 @@ export default function terminalDriver(pi: ExtensionAPI) {
       writeExecutionGated = true; record({ type: "write_execution_gate" }); await gate("write-execution-go");
     }
     // Installed-profile requests are restricted to the two audited, real local task tools.
-    if (process.env.TOOLVIEW_TEST_PROFILE === "installed" && !["TaskCreate", "TaskList"].includes(event.toolName)) {
+    if (process.env.TIDY_UI_TEST_PROFILE === "installed" && !["TaskCreate", "TaskList"].includes(event.toolName)) {
       record({ type: "unsafe_call_blocked", name: event.toolName });
       return { block: true, reason: "Installed-profile fixture only executes local TaskCreate/TaskList" };
     }
@@ -602,7 +602,7 @@ export default function terminalDriver(pi: ExtensionAPI) {
     content: event.content, details: event.details, isError: event.isError }));
   pi.on("tool_execution_update", (event) => record({ type: "execution_update", name: event.toolName, partialResult: event.partialResult }));
   pi.on("agent_end", () => record({ type: "agent_end" }));
-  pi.registerCommand("tv-theme", {
+  pi.registerCommand("tidy-ui-theme", {
     description: "Set a built-in theme for this isolated terminal",
     handler: async (name, ctx) => {
       const result = ctx.ui.setTheme(name);
@@ -611,7 +611,7 @@ export default function terminalDriver(pi: ExtensionAPI) {
     },
   });
   // Native component update probe is opt-in, UI-only and never mutates model/session objects.
-  if (process.env.TOOLVIEW_TEST_CACHE_DIAGNOSTICS === "1") {
+  if (process.env.TIDY_UI_TEST_CACHE_DIAGNOSTICS === "1") {
     const replacements = new Map<string, { node: any; original: any; replacement: any }>();
     let detached: { parent: Container; node: ToolExecutionComponent; index: number } | undefined;
     function restoreDetached() {
@@ -622,7 +622,7 @@ export default function terminalDriver(pi: ExtensionAPI) {
       parent.children.splice(parent.children.indexOf(node), 1); parent.children.splice(index, 0, node);
       detached = undefined;
     }
-    pi.registerCommand("tv-cache-detach", {
+    pi.registerCommand("tidy-ui-cache-detach", {
       description: "Isolated ownership regression: remove/restore a real native tool while retaining the removed owner",
       handler: async (args, ctx) => {
         const [id, operation, extra] = args.trim().split(/\s+/u);
@@ -646,7 +646,7 @@ export default function terminalDriver(pi: ExtensionAPI) {
         tui.requestRender(); ctx.ui.notify(`TERMINAL_CACHE_DETACH ${id} ${operation}`, "info");
       },
     });
-    pi.registerCommand("tv-cache-update", {
+    pi.registerCommand("tidy-ui-cache-update", {
       description: "Isolated cache regression: update one native result, reuse it, or restore it",
       handler: async (args, ctx) => {
         const [id, operation, extra] = args.trim().split(/\s+/u);
@@ -686,7 +686,7 @@ export default function terminalDriver(pi: ExtensionAPI) {
       replacements.clear(); restoreDetached();
     });
   }
-  pi.registerCommand("tv-dump", {
+  pi.registerCommand("tidy-ui-dump", {
     description: "Inspect the actual live component tree (does not invoke mouse handlers)",
     handler: async (name, ctx) => {
       if (!/^[a-z0-9-]+$/.test(name)) throw new Error("Invalid capture name");
@@ -727,7 +727,7 @@ export default function terminalDriver(pi: ExtensionAPI) {
         cacheDiagnostics: nodes.flatMap((node) => {
           if (typeof node.text !== "string") return [];
           const text = stripVTControlCharacters(node.text);
-          const prefix = "Pi Toolview cache: ";
+          const prefix = "pi-tidy-ui cache: ";
           const start = text.indexOf(prefix + "{");
           return start < 0 ? [] : [JSON.parse(text.slice(start + prefix.length))];
         }),
@@ -744,7 +744,7 @@ export default function terminalDriver(pi: ExtensionAPI) {
           expanded: node.expanded, executionStarted: node.executionStarted, isError: node.result?.isError,
           content: node.result?.content, details: node.result?.details, structuredContent: node.result?.structuredContent,
           args: node.args, partial: node.isPartial, lines: node.render(width),
-          ...(process.env.TOOLVIEW_TEST_SYNTAX_CARDS === "1" ? { argsComplete: node.getRenderContext().argsComplete } : {}),
+          ...(process.env.TIDY_UI_TEST_SYNTAX_CARDS === "1" ? { argsComplete: node.getRenderContext().argsComplete } : {}),
           ...(spinnerDiagnostics ? { before: parents.get(node)?.children.slice(Math.max(0, parents.get(node).children.indexOf(node) - 3), parents.get(node).children.indexOf(node))
             .map((previous: any) => ({ kind: previous.constructor.name, name: previous.toolName, lines: previous.render(width).map(stripVTControlCharacters) })) } : {}),
           // Pointer/clock-work captures inspect only actual viewport paint; alternate widths intentionally rebuild layouts and width zero stops/restarts animation.

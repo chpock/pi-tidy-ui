@@ -31,9 +31,9 @@ Relevant direct APIs:
 
 - [`codeToTokens`](https://github.com/shikijs/shiki/blob/f7d0167873fd676fe4e190bc9b53832fba9ee01d/packages/core/src/highlight/code-to-tokens.ts): tokens/foreground/background/theme/grammar state.
 - [`codeToTokensBase`](https://github.com/shikijs/shiki/blob/f7d0167873fd676fe4e190bc9b53832fba9ee01d/packages/primitive/src/highlight/code-to-tokens-base.ts): arrays of line tokens with content, UTF-16 string offsets, colors and font-style bits.
-- [`@shikijs/cli` codeToANSI](https://github.com/shikijs/shiki/blob/f7d0167873fd676fe4e190bc9b53832fba9ee01d/packages/cli/src/code-to-ansi.ts): useful ANSI serialization reference, but its appended line endings and bundled-theme interface are not exact Toolview row behavior.
+- [`@shikijs/cli` codeToANSI](https://github.com/shikijs/shiki/blob/f7d0167873fd676fe4e190bc9b53832fba9ee01d/packages/cli/src/code-to-ansi.ts): useful ANSI serialization reference, but its appended line endings and bundled-theme interface are not exact pi-tidy-ui row behavior.
 
-Prefer **direct tokens**, not HTML/HAST parsing, when integrating solely syntax highlighting into existing Toolview rows. `lang: 'ansi'` means parsing existing ANSI input, not source-to-ANSI highlighting. Token offsets are not terminal-cell widths; grapheme/wide-character layout remains Toolview's responsibility.
+Prefer **direct tokens**, not HTML/HAST parsing, when integrating solely syntax highlighting into existing pi-tidy-ui rows. `lang: 'ansi'` means parsing existing ANSI input, not source-to-ANSI highlighting. Token offsets are not terminal-cell widths; grapheme/wide-character layout remains pi-tidy-ui's responsibility.
 
 ## Host-theme integration
 
@@ -104,4 +104,4 @@ Shiki and Hunk root licenses are MIT; [Pierre diffs](https://github.com/pierreco
 
 ## Decision relevance
 
-Shiki has the most convenient broad maintained grammar/theme ecosystem among the JS-first candidates studied, and direct tokens fit terminal rendering well. It is the strongest alternative if broad TextMate/VS Code-compatible coverage and simpler deployment outweigh matching OpenCode's identifier classification. For the stated sparse-code complaint, retain the Python negative control and do not choose it on reputation alone. Pierre/Hunk are useful design references, not necessary production dependencies for Toolview syntax highlighting.
+Shiki has the most convenient broad maintained grammar/theme ecosystem among the JS-first candidates studied, and direct tokens fit terminal rendering well. It is the strongest alternative if broad TextMate/VS Code-compatible coverage and simpler deployment outweigh matching OpenCode's identifier classification. For the stated sparse-code complaint, retain the Python negative control and do not choose it on reputation alone. Pierre/Hunk are useful design references, not necessary production dependencies for pi-tidy-ui syntax highlighting.

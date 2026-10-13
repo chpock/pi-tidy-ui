@@ -45,8 +45,8 @@ export function getInstalledIntegrationProfile({
   homeDir,
   agentDir,
   workDir,
-  sourceAgentDir = process.env.TOOLVIEW_SOURCE_AGENT_DIR || join(homedir(), ".pi", "agent"),
-  provider = "toolview-offline",
+  sourceAgentDir = process.env.TIDY_UI_SOURCE_AGENT_DIR || join(homedir(), ".pi", "agent"),
+  provider = "tidy-ui-offline",
   model = "scripted",
 } = {}) {
   for (const [name, path] of Object.entries({ homeDir, agentDir, workDir, sourceAgentDir })) {

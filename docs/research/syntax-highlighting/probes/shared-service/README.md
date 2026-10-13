@@ -1,6 +1,6 @@
 # Shared-service experiment (v2)
 
-Research-only Unix/Linux prototype. It is **not** a packaged daemon or a Toolview adapter. The extension's dependencies, code and runtime are unchanged by this directory.
+Research-only Unix/Linux prototype. It is **not** a packaged daemon or a pi-tidy-ui adapter. The extension's dependencies, code and runtime are unchanged by this directory.
 
 See [the report](../../shared-service.md) for interpretation, queueing limits, source/quality gates and unmeasured candidate frameworks.
 
@@ -13,8 +13,8 @@ From repository root:
 ```sh
 # Reuse the previous study's isolated Shiki 4.5.0 setup, or create it from
 # its archived manifests. These dependencies do not belong to the extension.
-export HIGHLIGHT_RESEARCH_ROOT=/tmp/pi-toolview-head-to-head
-export RESEARCH_NODE=/tmp/pi-toolview-head-to-head/node-v22.19.0-linux-x64/bin/node
+export HIGHLIGHT_RESEARCH_ROOT=/tmp/pi-tidy-ui-head-to-head
+export RESEARCH_NODE=/tmp/pi-tidy-ui-head-to-head/node-v22.19.0-linux-x64/bin/node
 mkdir -p "$HIGHLIGHT_RESEARCH_ROOT"
 cp docs/research/syntax-highlighting/probes/head-to-head/dependencies.json "$HIGHLIGHT_RESEARCH_ROOT/package.json"
 cp docs/research/syntax-highlighting/probes/head-to-head/dependencies-lock.json "$HIGHLIGHT_RESEARCH_ROOT/package-lock.json"
@@ -22,8 +22,8 @@ PATH="$(dirname "$RESEARCH_NODE"):$PATH" npm ci --legacy-peer-deps --prefix "$HI
 
 cargo build --locked --release \
   --manifest-path docs/research/syntax-highlighting/probes/shared-service/Cargo.toml \
-  --target-dir /tmp/pi-toolview-highlight-service-target
-export RESEARCH_NATIVE=/tmp/pi-toolview-highlight-service-target/release/highlight-service-research
+  --target-dir /tmp/pi-tidy-ui-highlight-service-target
+export RESEARCH_NATIVE=/tmp/pi-tidy-ui-highlight-service-target/release/highlight-service-research
 
 # Actual service/source/counter controls; no timing matrix.
 "$RESEARCH_NODE" docs/research/syntax-highlighting/probes/shared-service/controller.mjs check
@@ -36,7 +36,7 @@ export RESEARCH_NATIVE=/tmp/pi-toolview-highlight-service-target/release/highlig
 "$RESEARCH_NODE" docs/research/syntax-highlighting/probes/shared-service/quality.mjs
 "$RESEARCH_NODE" docs/research/syntax-highlighting/probes/shared-service/verify.mjs
 
-/tmp/pi-toolview-highlight-service-target/release/inventory \
+/tmp/pi-tidy-ui-highlight-service-target/release/inventory \
   > docs/research/syntax-highlighting/probes/shared-service/inventory.json
 ```
 

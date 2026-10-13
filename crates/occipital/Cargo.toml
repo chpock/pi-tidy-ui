@@ -3,7 +3,7 @@ name = "occipital"
 version = "0.0.0"
 edition = "2021"
 license = "MIT"
-description = "Optional persistent syntax-highlighting backend for Pi Toolview"
+description = "Optional persistent syntax-highlighting backend for pi-tidy-ui"
 
 [dependencies]
 dirs = "=6.0.0"

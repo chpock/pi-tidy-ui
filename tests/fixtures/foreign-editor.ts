@@ -7,10 +7,10 @@ import { join } from "node:path";
 import { gitDiagnostics } from "../../src/git-branch.ts";
 
 export default function foreignEditorExtension(pi: ExtensionAPI) {
-  const output = process.env.TOOLVIEW_TEST_OUTPUT!;
+  const output = process.env.TIDY_UI_TEST_OUTPUT!;
   let tui: any, current: CustomEditor | undefined;
   let sequence = 0, identity = 0;
-  const embedWorkingStatus = process.env.TOOLVIEW_TEST_FOREIGN_EMBED === "1";
+  const embedWorkingStatus = process.env.TIDY_UI_TEST_FOREIGN_EMBED === "1";
   let factory: ReturnType<ExtensionContext["ui"]["getEditorComponent"]>;
 
   class ForeignEditor extends CustomEditor {
@@ -49,7 +49,7 @@ export default function foreignEditorExtension(pi: ExtensionAPI) {
     ctx.ui.setWidget("foreign-observer", undefined);
     ctx.ui.setWidget("foreign-upper", () => ({ render: () => ["FOREIGN_UPPER_ROW"], invalidate() {} }));
     ctx.ui.setWidget("foreign-lower", () => ({ render: () => ["FOREIGN_LOWER_ROW"], invalidate() {} }), { placement: "belowEditor" });
-    if (process.env.TOOLVIEW_TEST_DEFER_EDITOR !== "1" || existsSync(join(output, "foreign-installed"))) install(ctx);
+    if (process.env.TIDY_UI_TEST_DEFER_EDITOR !== "1" || existsSync(join(output, "foreign-installed"))) install(ctx);
   });
   pi.registerShortcut("ctrl+alt+d", {
     description: "Observe foreign editor state without submitting or replacing its draft",

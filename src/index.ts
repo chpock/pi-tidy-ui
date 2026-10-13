@@ -84,7 +84,7 @@ export function terminalAppearanceTracking(tui: object): boolean | undefined {
 type Render = (this: ToolNode, width: number) => string[];
 type Mouse = (this: ToolNode, event: TuiMouseEvent) => TuiMouseEventResult | undefined;
 
-export interface ToolviewOptions {
+export interface TidyUiOptions {
   /** Optional composed client; lifecycle/startup remains the caller's responsibility. */
   syntax?: {
     client: Pick<SyntaxClient, "sources" | "snapshot">;
@@ -105,8 +105,8 @@ export interface ToolviewOptions {
   rerouteEditorStatus?: () => void;
   editorStatusRestored?: () => void;
 }
-export interface ToolviewCacheStats extends CacheStats { ordinary: CacheStats; cards: CacheStats }
-export interface ToolviewController {
+export interface TidyUiCacheStats extends CacheStats { ordinary: CacheStats; cards: CacheStats }
+export interface TidyUiController {
   readonly active: boolean;
   readonly reason: string | undefined;
   readonly editorStatusActive: boolean;
@@ -114,7 +114,7 @@ export interface ToolviewController {
   readonly editorActive: boolean;
   restore(): void;
   renderEditorStatus(width: number, info: EditorStatusInfo): string[];
-  cacheStats(): ToolviewCacheStats;
+  cacheStats(): TidyUiCacheStats;
   clearCache(): void;
   /** Forward composed-client notices without traversing transcript history. */
   syntaxSourceChanged(keys: readonly string[]): void;
@@ -241,7 +241,7 @@ function bashDirectory(node: ToolNode): string | null | undefined {
 }
 
 /** The only compatibility-sensitive adapter. It does not change tools or session entries. */
-export function installToolview(tui: LiveTui, getTheme: () => Palette, options: ToolviewOptions = {}): ToolviewController {
+export function installTidyUi(tui: LiveTui, getTheme: () => Palette, options: TidyUiOptions = {}): TidyUiController {
   let active = false;
   let reason: string | undefined;
   const parents = new WeakMap<Component, { parent: Container; index: number }>();
@@ -482,7 +482,7 @@ export function installToolview(tui: LiveTui, getTheme: () => Palette, options: 
     const theme = getTheme(), padding = outputPadding();
     return memo(node, "summary", width, theme, undefined, padding, () => summaryRows(node, width, theme, padding));
   };
-  const controller: ToolviewController = {
+  const controller: TidyUiController = {
     get active() { return active; },
     get reason() { return reason; },
     get editorActive() {
@@ -517,7 +517,7 @@ export function installToolview(tui: LiveTui, getTheme: () => Palette, options: 
         return renderEditorStatus(width, getTheme(), { ...info,
           idle: info.idle && !(activity?.width === width && activity.visible) }, state.geometry);
       }
-      catch { fail("Toolview could not render editor status; native rendering restored"); return []; }
+      catch { fail("pi-tidy-ui could not render editor status; native rendering restored"); return []; }
     },
     clearCache,
     syntaxSourceChanged(keys) { if (active) syntax?.sourceChanged(keys); },
@@ -755,7 +755,7 @@ export function installToolview(tui: LiveTui, getTheme: () => Palette, options: 
         const offset = gap(this, width), rows = paintSummary(this, width);
         return offset ? ["", ...rows] : rows;
       }
-      catch { fail("Toolview could not render this component; native rendering restored"); return originalRender.call(this, width); }
+      catch { fail("pi-tidy-ui could not render this component; native rendering restored"); return originalRender.call(this, width); }
     };
     const patchedMouse: Mouse = function (event) {
       observeSyntax(this);
@@ -861,7 +861,7 @@ export function installToolview(tui: LiveTui, getTheme: () => Palette, options: 
         const previous = rows.length ? previousLayout(this, width) : undefined;
         return previous && !previous.separator ? ["", ...rows] : rows;
       } catch {
-        fail("Toolview could not render this user message; native rendering restored");
+        fail("pi-tidy-ui could not render this user message; native rendering restored");
         return originalRender.call(this, width);
       }
     };
@@ -929,7 +929,7 @@ export function installToolview(tui: LiveTui, getTheme: () => Palette, options: 
       queueMicrotask(() => {
         queuedEditorRoute = false;
         if (active) try { rerouteNativeStatus(); }
-        catch { fail("Toolview could not route native editor activity; native rendering restored"); }
+        catch { fail("pi-tidy-ui could not route native editor activity; native rendering restored"); }
       });
     }
   }
@@ -1090,7 +1090,7 @@ export function installToolview(tui: LiveTui, getTheme: () => Palette, options: 
   function observeContainerRows(this: Container, width: number): string[] {
     if (active) {
       try { const rows = queuedRows(this, width); if (rows) return rows; }
-      catch { fail("Toolview could not render queued messages; native rendering restored"); }
+      catch { fail("pi-tidy-ui could not render queued messages; native rendering restored"); }
     }
     const position = active && parents.get(this);
     const input = tui instanceof Container && position && position.parent.children === tui.children &&
@@ -1150,7 +1150,7 @@ export function installToolview(tui: LiveTui, getTheme: () => Palette, options: 
         if (mapping.framed && options.editorStatus) statusEditor = new WeakRef(this);
         return offsetY ? ["", ...rows] : rows;
       } catch {
-        fail("Toolview could not render this editor; native rendering restored");
+        fail("pi-tidy-ui could not render this editor; native rendering restored");
         return editorRender.call(this, width);
       }
     };
@@ -1236,12 +1236,12 @@ export function installToolview(tui: LiveTui, getTheme: () => Palette, options: 
       refresh();
     }
   } catch {
-    fail("Toolview could not install its UI hooks; native rendering restored");
+    fail("pi-tidy-ui could not install its UI hooks; native rendering restored");
   }
   return controller;
 }
 
-export interface ToolviewRuntimeOptions {
+export interface TidyUiRuntimeOptions {
   /** Existing provider/settings bindings for controlled SDK embeddings. */
   syntax?: (ctx: ExtensionContext) => SyntaxRuntimeOptions;
 }
@@ -1250,13 +1250,13 @@ function syntaxNotice(owner: WeakRef<SyntaxContext>) {
   return (message: string, type: "error") => owner.deref()?.current?.ui.notify(message, type);
 }
 
-export default function toolview(pi: ExtensionAPI, options: ToolviewRuntimeOptions = {}) {
-  pi.registerFlag("toolview-card", { type: "string", description: "Additional comma-separated tool names that retain native cards" });
-  pi.registerFlag("toolview-compact", { type: "string", description: "Comma-separated tool names that use compact summaries instead of native cards" });
-  const retiredBudgetFlags = ["toolview-cache-mb", "toolview-card-cache-mb"];
+export default function tidyUi(pi: ExtensionAPI, options: TidyUiRuntimeOptions = {}) {
+  pi.registerFlag("tidy-ui-card", { type: "string", description: "Additional comma-separated tool names that retain native cards" });
+  pi.registerFlag("tidy-ui-compact", { type: "string", description: "Comma-separated tool names that use compact summaries instead of native cards" });
+  const retiredBudgetFlags = ["tidy-ui-cache-mb", "tidy-ui-card-cache-mb"];
   for (const flag of retiredBudgetFlags) pi.registerFlag(flag, { type: "string", description: "Deprecated and ignored: layouts are retained per component without eviction limits" });
   let warnedBudgetFlags = false;
-  let controller: ToolviewController | undefined;
+  let controller: TidyUiController | undefined;
   let enabled = true, colorsEnabled = true;
   let liveContext: ExtensionContext | undefined;
   let syntax: SyntaxRuntime | undefined, syntaxEnabled = true;
@@ -1273,7 +1273,7 @@ export default function toolview(pi: ExtensionAPI, options: ToolviewRuntimeOptio
   }
   let colors: TerminalColors | undefined;
   let colorExit: (() => void) | undefined;
-  const colorWidget = "pi-toolview-terminal-colors";
+  const colorWidget = "pi-tidy-ui-terminal-colors";
   function stopColors() {
     const previous = colors; colors = undefined;
     if (colorExit) process.off("exit", colorExit);
@@ -1300,7 +1300,7 @@ export default function toolview(pi: ExtensionAPI, options: ToolviewRuntimeOptio
         },
         query: late => reference.deref()?.queryTerminalColors({ timeoutMs: 100, onLateReply: late }) ?? Promise.resolve({}),
         changed: () => reference.deref()?.requestRender(),
-        warn: message => liveContext?.ui.notify(`Pi Toolview colors: ${message}`, "warning"),
+        warn: message => liveContext?.ui.notify(`pi-tidy-ui colors: ${message}`, "warning"),
       });
       colors = view; terminalColorDebug = new WeakRef(view);
       if (colorsEnabled) { colorExit = terminalColorExit(new WeakRef(view)); process.on("exit", colorExit); }
@@ -1369,7 +1369,7 @@ export default function toolview(pi: ExtensionAPI, options: ToolviewRuntimeOptio
       } });
     });
   }
-  const statusWidget = "pi-toolview-editor-status";
+  const statusWidget = "pi-tidy-ui-editor-status";
   const names = (flag: string) => String(pi.getFlag(flag) ?? "").split(",").map((name) => name.trim()).filter(Boolean);
   function start(ctx: ExtensionContext) {
     liveContext = ctx; syntaxContext.current = ctx;
@@ -1381,18 +1381,18 @@ export default function toolview(pi: ExtensionAPI, options: ToolviewRuntimeOptio
     if (!warnedBudgetFlags) {
       warnedBudgetFlags = true;
       for (const flag of retiredBudgetFlags) if (pi.getFlag(flag) !== undefined)
-        ctx.ui.notify(`Pi Toolview: --${flag} is ignored; layouts are retained per component without eviction limits`, "warning");
+        ctx.ui.notify(`pi-tidy-ui: --${flag} is ignored; layouts are retained per component without eviction limits`, "warning");
     }
     // A public widget factory exposes the actual live tree, including bundled CLI classes.
     // Remove the empty widget immediately: it is not part of our layout.
-    ctx.ui.setWidget("pi-toolview-capture", (tui) => {
+    ctx.ui.setWidget("pi-tidy-ui-capture", (tui) => {
       const slot = tui.children.length === 7 ? tui.children[6] : undefined;
       if (ctx.ui.getEditorComponent() === undefined && slot instanceof Container && slot.children.length === 1)
         pendingFooter = { slot: new WeakRef(slot), owner: new WeakRef(slot.children[0]!) };
       const sourceRuntime = ensureSyntax(ctx);
-      controller = installToolview(tui, palette, {
+      controller = installTidyUi(tui, palette, {
         syntax: { client: sourceRuntime, palette: () => sourceRuntime.palette(liveContext!.ui.theme) },
-        cards: names("toolview-card"), compact: names("toolview-compact"),
+        cards: names("tidy-ui-card"), compact: names("tidy-ui-compact"),
         outputPad: () => pi.getSettings().outputPad ?? 1,
         nativeEditor: () => liveContext?.ui.getEditorComponent() === undefined,
         editorStatus: true,
@@ -1401,12 +1401,12 @@ export default function toolview(pi: ExtensionAPI, options: ToolviewRuntimeOptio
           directorySource?.dispose(); directorySource = undefined;
           liveContext?.ui.setWidget(statusWidget, undefined);
         },
-        warn: (message) => { restoreFooter(); liveContext?.ui.notify(`Pi Toolview disabled: ${message}`, "warning"); },
+        warn: (message) => { restoreFooter(); liveContext?.ui.notify(`pi-tidy-ui disabled: ${message}`, "warning"); },
       });
       if (controller.active) sourceRuntime.attach(controller);
       return { render: () => [], invalidate() {} };
     });
-    ctx.ui.setWidget("pi-toolview-capture", undefined);
+    ctx.ui.setWidget("pi-tidy-ui-capture", undefined);
     if (controller?.active) ctx.ui.setWidget(statusWidget, (tui) => {
       directorySource ??= new GitBranchSource(() => tui.requestRender());
       return {
@@ -1442,21 +1442,21 @@ export default function toolview(pi: ExtensionAPI, options: ToolviewRuntimeOptio
     const stopped = stopSyntax(); liveContext = undefined; syntaxContext.current = undefined;
     await stopped;
   });
-  pi.registerCommand("toolview", {
+  pi.registerCommand("tidy-ui", {
     description: "Control presentation, syntax highlighting, terminal colors and component-layout diagnostics: on, off, status, syntax, colors, cache",
     handler: async (args, ctx) => {
       liveContext = ctx; syntaxContext.current = ctx;
       const command = args.trim() || "status";
       const words = command.split(/\s+/u);
       if (words[0] === "syntax") {
-        if (words.length !== 1) { ctx.ui.notify("Usage: /toolview syntax", "warning"); return; }
+        if (words.length !== 1) { ctx.ui.notify("Usage: /tidy-ui syntax", "warning"); return; }
         if (ctx.mode !== "tui" || !ctx.hasUI) { ctx.ui.notify("Syntax menu is available only in terminal mode with UI.", "error"); return; }
         await ensureSyntax(ctx).menu(ctx); return;
       }
       if (words[0] === "colors") {
         const action = words[1] ?? "status";
         if (words.length > 2 || !["on", "off", "status"].includes(action)) {
-          ctx.ui.notify("Usage: /toolview colors on|off|status", "warning"); return;
+          ctx.ui.notify("Usage: /tidy-ui colors on|off|status", "warning"); return;
         }
         if (action === "off") {
           colorsEnabled = false; colors?.observe();
@@ -1468,31 +1468,31 @@ export default function toolview(pi: ExtensionAPI, options: ToolviewRuntimeOptio
             colors.observe(true);
           } else startColors(ctx);
         }
-        const state = !enabled ? "off (Toolview off)" : !colorsEnabled ? "off" : ctx.mode !== "tui" ? "unavailable outside terminal mode" : colors?.status().state ?? "starting";
-        ctx.ui.notify(`Pi Toolview colors: ${state}`, "info"); return;
+        const state = !enabled ? "off (pi-tidy-ui off)" : !colorsEnabled ? "off" : ctx.mode !== "tui" ? "unavailable outside terminal mode" : colors?.status().state ?? "starting";
+        ctx.ui.notify(`pi-tidy-ui colors: ${state}`, "info"); return;
       }
       if (words[0] === "cache") {
-        if (!controller || ctx.mode !== "tui") { ctx.ui.notify("Pi Toolview cache: unavailable outside an initialized terminal runtime", "info"); return; }
+        if (!controller || ctx.mode !== "tui") { ctx.ui.notify("pi-tidy-ui cache: unavailable outside an initialized terminal runtime", "info"); return; }
         if (words.length === 2 && words[1] === "clear") { controller.clearCache(); ownedFooter?.clear(); }
         else if (words[1] === "limit" || (words[1] === "cards" && words[2] === "limit")) {
-          ctx.ui.notify("Pi Toolview: cache limits have been removed; layouts are retained per component. Use /toolview cache [clear]", "warning"); return;
+          ctx.ui.notify("pi-tidy-ui: cache limits have been removed; layouts are retained per component. Use /tidy-ui cache [clear]", "warning"); return;
         } else if (words.length !== 1) {
-          ctx.ui.notify("Usage: /toolview cache [clear]", "warning"); return;
+          ctx.ui.notify("Usage: /tidy-ui cache [clear]", "warning"); return;
         }
         const stats = controller.cacheStats();
         const footerLayout = ownedFooter?.retainedMemory() ?? { retainedBytes: 0, stringBytes: 0, overheadBytes: 0, entries: 0, rows: 0 };
-        ctx.ui.notify(`Pi Toolview cache: ${JSON.stringify({ ...stats, footerLayout,
+        ctx.ui.notify(`pi-tidy-ui cache: ${JSON.stringify({ ...stats, footerLayout,
           presentationRetainedBytes: stats.retainedBytes + footerLayout.retainedBytes,
           presentationEntries: stats.entries + footerLayout.entries, presentationRows: stats.rows + footerLayout.rows,
-          memoryScope: "estimated Toolview retained transcript, queued-message and footer layouts; excludes native caches, source/signature data and transient rendering",
-          processHeapUsedBytes: process.memoryUsage().heapUsed, processMemoryScope: "whole Pi process, not Toolview" })}`, "info");
+          memoryScope: "estimated pi-tidy-ui retained transcript, queued-message and footer layouts; excludes native caches, source/signature data and transient rendering",
+          processHeapUsedBytes: process.memoryUsage().heapUsed, processMemoryScope: "whole Pi process, not pi-tidy-ui" })}`, "info");
         return;
       }
       if (command === "off") { enabled = false; pendingFooter = undefined; stopColors(); restoreFooter(); controller?.restore(); await stopSyntax(); }
       else if (command === "on") { enabled = true; start(ctx); }
-      else if (command !== "status") { ctx.ui.notify("Usage: /toolview on|off|status|syntax|colors on|off|status|cache [clear]", "warning"); return; }
+      else if (command !== "status") { ctx.ui.notify("Usage: /tidy-ui on|off|status|syntax|colors on|off|status|cache [clear]", "warning"); return; }
       const status = controller?.active ? "on" : ctx.mode !== "tui" ? "unavailable outside terminal mode" : controller?.reason ?? "off";
-      ctx.ui.notify(`Pi Toolview: ${status}`, "info");
+      ctx.ui.notify(`pi-tidy-ui: ${status}`, "info");
     },
   });
 }

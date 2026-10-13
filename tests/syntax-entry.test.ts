@@ -5,7 +5,7 @@ import { dirname, resolve } from 'node:path';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import { Container } from '@earendil-works/pi-tui';
 import { createWriteToolDefinition, ToolExecutionComponent, type ExtensionAPI, type ExtensionContext } from '@earendil-works/pi-coding-agent';
-import toolview from '../src/index.ts';
+import tidyUi from '../src/index.ts';
 import { SourceController } from '../src/occipital/controller.ts';
 
 const dist = dirname(fileURLToPath(import.meta.resolve('@earendil-works/pi-coding-agent')));
@@ -24,7 +24,7 @@ function fixture(mode = 'tui') {
   const pi = { on: (name: string, callback: (event: unknown, ctx: ExtensionContext) => unknown) => events.set(name, callback),
     registerCommand: (name: string, command: { handler(args: string, ctx: ExtensionContext): Promise<void> }) => commands.set(name, command),
     registerFlag() {}, getFlag() {}, getSettings: () => ({}), getThinkingLevel: () => 'off' } as unknown as ExtensionAPI;
-  toolview(pi, { syntax: () => {
+  tidyUi(pi, { syntax: () => {
     counts.constructed++;
     return { standaloneVersion: 'fixture', settings: {
       async load() { counts.load++; return { ok: true, syntaxTheme: { kind: 'pi' } }; },
@@ -34,7 +34,7 @@ function fixture(mode = 'tui') {
   const stop = async () => { await events.get('session_shutdown')!({}, ctx); await settled(); };
   cleanups.push(stop);
   return { root, ctx, counts, actions, notices, start: () => events.get('session_start')!({}, ctx),
-    command: (args: string) => commands.get('toolview')!.handler(args, ctx) };
+    command: (args: string) => commands.get('tidy-ui')!.handler(args, ctx) };
 }
 async function settled() { for (let i = 0; i < 5; i++) await turn(); }
 afterEach(async () => { for (const cleanup of cleanups.splice(0)) await cleanup(); });
@@ -66,7 +66,7 @@ test('entry native session disable survives master off/on without persistence or
 test('entry menu while master-off may read preference, never starts provider', async () => {
   const h = fixture(); await h.command('off'); h.actions.push('Service status', 'Close'); await h.command('syntax'); await settled();
   assert.equal(h.counts.constructed, 1); assert.equal(h.counts.load, 1); assert.equal(h.counts.shared, 0); assert.equal(h.counts.owned, 0);
-  assert.ok(h.notices.some(message => message.includes('Toolview presentation is off.')));
+  assert.ok(h.notices.some(message => message.includes('pi-tidy-ui presentation is off.')));
 });
 
 test('entry uses prepared file path and preserves actual SDK args/results on warm and resized frames', async () => {

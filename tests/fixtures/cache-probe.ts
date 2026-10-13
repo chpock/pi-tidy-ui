@@ -6,7 +6,7 @@ import { renderLayoutFrame } from "../../node_modules/@earendil-works/pi-tui/dis
 import { ToolExecutionComponent } from "../../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/components/tool-execution.js";
 import { UserMessageComponent } from "../../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/components/user-message.js";
 import { initTheme, theme } from "../../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js";
-import toolview, { installToolview, terminalAppearanceTracking } from "../../src/index.ts";
+import tidyUi, { installTidyUi, terminalAppearanceTracking } from "../../src/index.ts";
 import { TerminalColors, terminalColorExit } from "../../src/terminal-colors.ts";
 import { InteractiveMode } from "../../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/interactive-mode.js";
 import { CustomEditor, Theme, getSelectListTheme, createWriteToolDefinition, SessionManager, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -27,7 +27,7 @@ Intl.Segmenter.prototype.segment = function (input) {
   return original.call(this, input);
 };
 root.render(80);
-const controller = installToolview(root as never, () => theme);
+const controller = installTidyUi(root as never, () => theme);
 const observations: object[] = [];
 function frame(label: string, width = 80) {
   segments = 0; enabled = true;
@@ -78,7 +78,7 @@ try {
   const compactNode = new ToolExecutionComponent("bash", "compact-mutable", sharedArgs,
     undefined, undefined, compactRoot as never, "/tmp");
   compactRoot.addChild(compactNode);
-  const compactController = installToolview(compactRoot as never, () => theme, { compact: ["bash"] });
+  const compactController = installTidyUi(compactRoot as never, () => theme, { compact: ["bash"] });
   try {
     assert.ok(compactRoot.render(80).some((row) => row.includes("timeout=1")));
     sharedArgs.timeout = 2; compactNode.updateArgs(sharedArgs);
@@ -91,7 +91,7 @@ try {
   let spinning: ToolExecutionComponent | undefined = new ToolExecutionComponent("read", "spinner-owner", { path: "a.txt", limit: 1 },
     undefined, undefined, spinnerRoot as never, "/tmp");
   spinnerRoot.addChild(spinning);
-  const spinnerController = installToolview(spinnerRoot as never, () => theme);
+  const spinnerController = installTidyUi(spinnerRoot as never, () => theme);
   const spinnerFrame = () => renderLayoutFrame(spinnerViewport, 80, 24, () => {}).lines.map(stripVTControlCharacters);
   try {
     const before = spinnerFrame(), builds = spinnerController.cacheStats().builds;
@@ -122,7 +122,7 @@ try {
    const userRoot = new Root(), userViewport = new ScrollView(userRoot, { scrollbar: "hidden", primary: true });
    let user: UserMessageComponent | undefined = new UserMessageComponent("FIRST_USER_INSTALLER\n\n**native Markdown**");
    userRoot.addChild(user);
-   const userController = installToolview(userRoot as never, () => theme);
+   const userController = installTidyUi(userRoot as never, () => theme);
    try {
      const draw = () => renderLayoutFrame(userViewport, 80, 24, () => {}).lines;
      draw(); assert.equal(userController.cacheStats().builds, 1);
@@ -140,7 +140,7 @@ try {
    let writeNode: ToolExecutionComponent | undefined = new ToolExecutionComponent("write", "first-write-installer",
      { path: "example.txt", content: "WRITE_CACHE_PROBE_" + "x".repeat(2000) }, undefined, createWriteToolDefinition("/tmp"), writeRoot as never, "/tmp");
    writeNode.updateResult({ content: [{ type: "text", text: "STOCK_WRITE_RESULT" }], isError: false }); writeRoot.addChild(writeNode);
-   const writeController = installToolview(writeRoot as never, () => theme);
+   const writeController = installTidyUi(writeRoot as never, () => theme);
    const writeFrame = () => { segments = 0; enabled = true; renderLayoutFrame(writeViewport, 80, 24, () => {}); enabled = false; return segments; };
    try {
      assert.equal(writeFrame(), 1); const cold = writeController.cacheStats();
@@ -159,7 +159,7 @@ try {
     let upper: Container | undefined = new Container();
     upper.addChild(new Spacer(1)); upper.addChild(new Text("GC_UPPER_WIDGET", 0, 0));
     for (const child of [new Container(), new Container(), new Container(), upper, input, new Container(), new Container()]) editorRoot.addChild(child);
-    const editorController = installToolview(editorRoot as never, () => theme, { editorStatus: true });
+    const editorController = installTidyUi(editorRoot as never, () => theme, { editorStatus: true });
     try {
       editorRoot.render(80);
       assert.equal(editor.render(80)[0], "", "recognized upper group activates the first installer's separator");
@@ -189,9 +189,9 @@ try {
     const footerContext = { mode: "tui", cwd: "/tmp", ui: { ...footerHost.createExtensionUIContext(), notify() {} }, sessionManager: manager,
       getContextUsage: () => undefined, isIdle: () => true } as unknown as ExtensionContext;
     const handlers = new Map<string, Function[]>(); let footerCommand: Function;
-    toolview({ on(name: string, callback: Function) { handlers.set(name, [...(handlers.get(name) ?? []), callback]); },
+    tidyUi({ on(name: string, callback: Function) { handlers.set(name, [...(handlers.get(name) ?? []), callback]); },
       registerFlag() {}, getFlag() {}, getThinkingLevel: () => "off", getSettings: () => ({}),
-      registerCommand(name: string, options: { handler: Function }) { if (name === "toolview") footerCommand = options.handler; },
+      registerCommand(name: string, options: { handler: Function }) { if (name === "tidy-ui") footerCommand = options.handler; },
     } as unknown as ExtensionAPI);
     for (const callback of handlers.get("session_start") ?? []) callback({}, footerContext);
     const replaceFirstFooter = async () => {

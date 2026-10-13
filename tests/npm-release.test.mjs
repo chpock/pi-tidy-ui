@@ -93,7 +93,7 @@ for (const change of ['name', 'version', 'os', 'cpu', 'libc', 'repository', 'scr
     } else if (change === 'public-binary') await writeFile(join(f.publicDirectory, assetName(f.version, target)), 'changed public bytes');
     else {
       const manifest = await json(manifestPath);
-      const values = { name: 'pi-toolview', version: '0.0.0', os: ['win32'], cpu: ['arm64'], libc: ['musl'],
+      const values = { name: 'pi-tidy-ui', version: '0.0.0', os: ['win32'], cpu: ['arm64'], libc: ['musl'],
         repository: { type: 'git', url: 'https://github.com/stranger/repo' }, scripts: { postinstall: 'must never run' }, files: ['*'] };
       manifest[change] = values[change]; await writeFile(manifestPath, JSON.stringify(manifest));
     }

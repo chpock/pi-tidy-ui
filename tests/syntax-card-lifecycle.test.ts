@@ -3,7 +3,7 @@ import test from 'node:test';
 import { dirname, resolve } from 'node:path';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import { Container } from '@earendil-works/pi-tui';
-import { installToolview } from '../src/index.ts';
+import { installTidyUi } from '../src/index.ts';
 
 const sdkDist = dirname(fileURLToPath(import.meta.resolve('@earendil-works/pi-coding-agent')));
 const { ToolExecutionComponent } = await import(pathToFileURL(resolve(sdkDist, 'modes/interactive/components/tool-execution.js')).href);
@@ -21,7 +21,7 @@ test('public args finalization invalidates one owned layout without starting exe
   const tool = new ToolExecutionComponent('probe', 'g3-finalize', args, undefined, undefined, ui, '/tmp');
   const original = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(tool), 'setArgsComplete');
   ui.addChild(tool);
-  const adapter = installToolview(ui, () => themes.theme);
+  const adapter = installTidyUi(ui, () => themes.theme);
   try {
     assert.equal(adapter.active, true, adapter.reason);
     const rows = tool.render(60);
@@ -54,7 +54,7 @@ test('an unobservable optional finalization method does not disable existing too
   const original = Object.getOwnPropertyDescriptor(prototype, 'setArgsComplete')!;
   const foreign = { ...original, writable: false };
   Object.defineProperty(prototype, 'setArgsComplete', foreign);
-  const adapter = installToolview(ui, () => themes.theme);
+  const adapter = installTidyUi(ui, () => themes.theme);
   try {
     assert.equal(adapter.active, true, adapter.reason);
     assert.deepEqual(Object.getOwnPropertyDescriptor(prototype, 'setArgsComplete'), foreign);
@@ -78,7 +78,7 @@ test('restoration preserves a later owner of the public finalization method', ()
   const prototype = Object.getPrototypeOf(tool);
   const original = Object.getOwnPropertyDescriptor(prototype, 'setArgsComplete')!;
   ui.addChild(tool);
-  const adapter = installToolview(ui, () => themes.theme);
+  const adapter = installTidyUi(ui, () => themes.theme);
   const later = { ...original, value: function (this: unknown, ...args: unknown[]) { return original.value.apply(this, args); } };
   try {
     assert.equal(adapter.active, true, adapter.reason);
@@ -104,7 +104,7 @@ test('an optional accessor is not invoked or replaced during tool installation',
   let reads = 0;
   const foreign = { configurable: true, enumerable: false, set: undefined, get() { reads++; throw new Error('foreign finalization accessor'); } };
   Object.defineProperty(prototype, 'setArgsComplete', foreign);
-  const adapter = installToolview(ui, () => themes.theme);
+  const adapter = installTidyUi(ui, () => themes.theme);
   try {
     assert.equal(adapter.active, true, adapter.reason);
     assert.equal(reads, 0);
@@ -132,7 +132,7 @@ test('public finalization wrapper preserves a decorated setter return value and 
   } };
   Object.defineProperty(prototype, 'setArgsComplete', decorated);
   ui.addChild(tool);
-  const adapter = installToolview(ui, () => themes.theme);
+  const adapter = installTidyUi(ui, () => themes.theme);
   try {
     assert.equal(adapter.active, true, adapter.reason);
     const requests = ui.requests;

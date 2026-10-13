@@ -1,4 +1,4 @@
-# Pi Toolview
+# pi-tidy-ui
 
 An alternative presentation for Pi: concise tool summaries, terminal-style bash cards, framed user messages and input, OpenCode-style syntax-colored edit diffs, source-aware write cards, native rich cards for other commands, and a compact session footer.
 
@@ -31,10 +31,10 @@ pi -e ./src/index.ts
 Or install this directory as a local Pi package:
 
 ```sh
-pi install /absolute/path/to/pi-toolview
+pi install /absolute/path/to/pi-tidy-ui
 ```
 
-Pi loads the TypeScript source directly. No build, fork, copying into `~/.pi`, or npm publication is necessary. To remove the local installation, use `pi remove /absolute/path/to/pi-toolview`.
+Pi loads the TypeScript source directly. No build, fork, copying into `~/.pi`, or npm publication is necessary. To remove the local installation, use `pi remove /absolute/path/to/pi-tidy-ui`.
 
 ## Behavior
 
@@ -51,7 +51,7 @@ Pi loads the TypeScript source directly. No build, fork, copying into `~/.pi`, o
 - Ctrl+O remains Pi's global expansion control. In fullscreen mode, completed summaries/edit/write panels expand on click and expandable Bash panels toggle; exterior margins/separators are not targets. Card clicks do not interrupt active selection. Regular mode uses terminal-owned mouse handling, so use Ctrl+O there.
 - One public session footer shows a ten-report cache-use gauge and the latest CH percentage first, followed by current context usage, then right-aligned extension statuses. It highlights disabled native auto-compaction rather than annotating the normal enabled state. Each complete status, including our statistics, stays on one row; whole producer statuses move to later rows when needed, and a status wider than a full row is ellipsized. Cumulative counters/cost remain implemented behind disabled source flags. See [reading the footer](#reading-the-footer) and the [footer contract](docs/footer-spec.md).
 - Fixed file-backed themes can set terminal defaults from `export.pageBg` and `colors.text`, including variable chains and native color formats. Missing/empty values release only our channels; source errors retain the last valid complete targets. Auto/system modes suspend application and release defaults before Pi queries its profile. A zero-row observer follows native theme/hot-reload updates without polling. RGB calculations use a local concrete projection rather than modifying Pi's Theme. See the [terminal-color contract](docs/terminal-colors-spec.md).
-- Bash commands and edit/write sources can use asynchronous Occipital syntax classification outside rendering. `/toolview syntax` selects Pi palette or an independent daemon theme, reloads its catalogue, shows service status and enables/disables native highlighting for this session. Only the theme preference is saved. Without native availability, Bash retains whole-command title coloring and files retain cached Pi highlighting. Source version `0.0.0` uses only `occipital` (`occipital.exe`) beside the extension; a missing local build produces a `[pi-tidy-ui]` warning and fallback, never a shared/downloaded engine. Published packages fix exact native optional dependencies and SHA-256 download metadata during release preparation. They prefer a compatible user-managed shared service; otherwise they use the verified installed/cache/download payload (GNU Linux requires glibc 2.28+). Rust and an external Subconscious installation are not required for published standalone use. See [delivery](docs/releases.md#extension-delivery). See the [syntax contract](docs/syntax-highlighting-spec.md).
+- Bash commands and edit/write sources can use asynchronous Occipital syntax classification outside rendering. `/tidy-ui syntax` selects Pi palette or an independent daemon theme, reloads its catalogue, shows service status and enables/disables native highlighting for this session. Only the theme preference is saved. Without native availability, Bash retains whole-command title coloring and files retain cached Pi highlighting. Source version `0.0.0` uses only `occipital` (`occipital.exe`) beside the extension; a missing local build produces a `[pi-tidy-ui]` warning and fallback, never a shared/downloaded engine. Published packages fix exact native optional dependencies and SHA-256 download metadata during release preparation. They prefer a compatible user-managed shared service; otherwise they use the verified installed/cache/download payload (GNU Linux requires glibc 2.28+). Rust and an external Subconscious installation are not required for published standalone use. See [delivery](docs/releases.md#extension-delivery). See the [syntax contract](docs/syntax-highlighting-spec.md).
 - Colors otherwise follow the active Pi theme and layouts follow the actual viewport width. An explicitly selected independent syntax theme remains fixed across Pi-theme changes. Tool execution, model-facing results and saved session data are unchanged.
 
 Exact formatting, metadata, geometry and safeguards are defined in the [specifications](#documentation).
@@ -79,52 +79,52 @@ The three `FOOTER_FIELDS` source flags in `src/footer.ts` default to `false`: `t
 ### Controls
 
 ```text
-/toolview status
-/toolview off
-/toolview on
-/toolview colors status
-/toolview colors off
-/toolview colors on
-/toolview cache
-/toolview cache clear
-/toolview syntax
+/tidy-ui status
+/tidy-ui off
+/tidy-ui on
+/tidy-ui colors status
+/tidy-ui colors off
+/tidy-ui colors on
+/tidy-ui cache
+/tidy-ui cache clear
+/tidy-ui syntax
 ```
 
 Each transcript/queued-message component owns its latest prepared presentation through weak component state, much like Pi's `Text` retains its latest rendered rows. There is **no entry-count or byte-limit eviction**: an unchanged attached component reuses its rows regardless of transcript age or the size of other presentations. Width/Output-padding/theme and relevant state changes replace its previous layout, not accumulate variants. The execution spinner changes only its prefix, using Pi's existing document frames whenever available. One shared, unreferenced 100 ms timeout requests a fallback frame only after document visits fall silent; it stops when no compact calls are executing. See the [host-driven animation design](docs/architecture.md#host-driven-spinner-and-fallback).
 
 Removing a component/subtree through native `Container.removeChild` or `clear` releases its presentation immediately, even if another caller still holds the component. Otherwise component collection also releases its weakly owned layout. Accounting retains only weak references/numbers, with eventual finalizer cleanup and on-demand snapshots; it cannot keep components or rendered strings alive. Detached/replaced layouts do not accumulate.
 
-`/toolview cache` reports:
+`/tidy-ui cache` reports:
 - Transcript/queued totals and `byKind` breakdown for `summary`, `bash`, `edit`, `write`, `user` and `queued`: retained-byte estimates, strings/overhead, saved entries and visual rows.
 - Queued-card rows include full preparation and up to five possible ellipsized endings per item; height-only changes select rows without rebuilding. They belong to `ordinary` and release with the native queued item, not with the persistent pending container.
 - The `ordinary` and `cards` accounting groups (not bounded pools), plus hits, misses, builds, releases and GC-only `collected` accounting cleanups.
-- `footerLayout` and combined `presentationRetainedBytes`, `presentationEntries` and `presentationRows`. The main editor retains no Toolview row cache.
-- Whole-Pi `processHeapUsedBytes`, explicitly **not** Toolview attribution.
+- `footerLayout` and combined `presentationRetainedBytes`, `presentationEntries` and `presentationRows`. The main editor retains no pi-tidy-ui row cache.
+- Whole-Pi `processHeapUsedBytes`, explicitly **not** pi-tidy-ui attribution.
 
-`/toolview cache clear` releases transcript, queued-message and footer layouts; the next requested frame rebuilds them on demand. The former `cache limit` commands warn without changing retention. Legacy `--toolview-cache-mb` / `--toolview-card-cache-mb` flags are recognized only to warn that they are ignored, preserving launch compatibility without silently reintroducing limits. These commands write no settings.
+`/tidy-ui cache clear` releases transcript, queued-message and footer layouts; the next requested frame rebuilds them on demand. The former `cache limit` commands warn without changing retention. Legacy `--tidy-ui-cache-mb` / `--tidy-ui-card-cache-mb` flags are recognized only to warn that they are ignored, preserving launch compatibility without silently reintroducing limits. These commands write no settings.
 
 Estimates are not exact V8 heap measurements: native caches, raw/signature data and transient rendering are excluded, and strings may be shared. Memory necessarily grows with the current **live retained transcript and queue**, but no detached-owner or width/state history is intentionally retained. No fixed total-process memory bound is claimed. See the [cache contract](docs/render-cache-spec.md).
 
-`/toolview colors off` stops terminal-default application and theme reads without disabling cards. Remaining presentation can make a one-shot profile RGB query after releasing colors. On retries the current source; global on respects local off. Reload enables the feature again. Releases restore terminal **profile defaults**, not another application's prior dynamic override. Disable the old standalone `theme-background` extension manually: concurrent default-color writers are unsupported.
+`/tidy-ui colors off` stops terminal-default application and theme reads without disabling cards. Remaining presentation can make a one-shot profile RGB query after releasing colors. On retries the current source; global on respects local off. Reload enables the feature again. Releases restore terminal **profile defaults**, not another application's prior dynamic override. Disable the old standalone `theme-background` extension manually: concurrent default-color writers are unsupported.
 
 Controls apply to the current extension runtime only. Disabling restores the original presentation methods, including the editor, without transferring its draft; re-enabling covers existing and future components. Reload creates a fresh enabled runtime.
 
 Use exact, case-sensitive tool names to customize the presentation for one invocation:
 
 ```sh
-pi -e ./src/index.ts --toolview-card Agent,ask_user_question
-pi -e ./src/index.ts --toolview-compact write
+pi -e ./src/index.ts --tidy-ui-card Agent,ask_user_question
+pi -e ./src/index.ts --tidy-ui-compact write
 ```
 
-`--toolview-card` adds to the native-card defaults; explicitly naming `bash`, `edit` or `write` restores its original Pi card. `--toolview-compact` takes precedence over that list, but never over expansion, image, or hidden-component safeguards. These presentation overrides have no configuration file; the syntax menu separately persists only its theme preference through Pi's agent directory.
+`--tidy-ui-card` adds to the native-card defaults; explicitly naming `bash`, `edit` or `write` restores its original Pi card. `--tidy-ui-compact` takes precedence over that list, but never over expansion, image, or hidden-component safeguards. These presentation overrides have no configuration file; the syntax menu separately persists only its theme preference through Pi's agent directory.
 
 ## Compatibility
 
 The supported/tested host is **Pi 1.0.0**. One adapter obtains the stable TUI reference through a public widget factory and narrowly wraps private component rendering, normalized tool clicks, UI updates, stock-editor presentation and child attachment/removal. Native methods still execute; no tool execution or raw input is intercepted. Host libraries are not bundled or privately imported. See [architecture](docs/architecture.md) for the integration and ownership boundaries.
 
-This is intentionally a compatibility-sensitive integration. If a required component contract cannot be established, Toolview warns and retains native rendering. Optional queue-card and upper-widget shape guards instead leave the affected block native. Runtime restoration does not overwrite hooks subsequently replaced by another extension. Arbitrary extensions wrapping the same private methods and future Pi versions are not guaranteed compatible; run the terminal checks after upgrading.
+This is intentionally a compatibility-sensitive integration. If a required component contract cannot be established, pi-tidy-ui warns and retains native rendering. Optional queue-card and upper-widget shape guards instead leave the affected block native. Runtime restoration does not overwrite hooks subsequently replaced by another extension. Arbitrary extensions wrapping the same private methods and future Pi versions are not guaranteed compatible; run the terminal checks after upgrading.
 
-**Main-input styling is stock-editor-only.** If another extension installs or replaces its own editor (for example, `pi-powerline-footer`), Toolview leaves that editor and its appearance under the owning extension's control. It does not disable the extension or replace its editing behavior. This ownership limitation also disables Toolview's session footer, restoring stock only while we own that slot. Tool and user-message cards retain their own eligibility safeguards. Terminal-default synchronization is global and remains independent of editor/footer ownership. After the stock editor returns, `/toolview on` or reload reinstalls the footer; an ineligible editor cannot reclaim it. Footer-only extensions do not block input styling. Footer replacements instead compete for Pi's single footer slot: the last owner wins. Off restores stock only while Toolview still owns it, never removes a later owner, and cannot restore a previous foreign footer. Publishers using `setStatus` coexist through the shared status map. See the [editor contract](docs/card-frame-spec.md#main-input-editor).
+**Main-input styling is stock-editor-only.** If another extension installs or replaces its own editor (for example, `pi-powerline-footer`), pi-tidy-ui leaves that editor and its appearance under the owning extension's control. It does not disable the extension or replace its editing behavior. This ownership limitation also disables pi-tidy-ui's session footer, restoring stock only while we own that slot. Tool and user-message cards retain their own eligibility safeguards. Terminal-default synchronization is global and remains independent of editor/footer ownership. After the stock editor returns, `/tidy-ui on` or reload reinstalls the footer; an ineligible editor cannot reclaim it. Footer-only extensions do not block input styling. Footer replacements instead compete for Pi's single footer slot: the last owner wins. Off restores stock only while pi-tidy-ui still owns it, never removes a later owner, and cannot restore a previous foreign footer. Publishers using `setStatus` coexist through the shared status map. See the [editor contract](docs/card-frame-spec.md#main-input-editor).
 
 The extension is inactive in print, JSON, and RPC modes. Component restyling applies to interactive terminal tools, ordinary user messages, queued-message previews, the stock main editor and the session footer, not HTML exports or standalone user shell messages. Terminal defaults affect the shared terminal. Their eligibility additionally depends on one guarded native renderer flag; missing/incompatible state disables only this feature with a warning.
 

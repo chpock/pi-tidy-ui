@@ -6,7 +6,7 @@ import { pathToFileURL, fileURLToPath } from 'node:url';
 import { stripVTControlCharacters } from 'node:util';
 import { Box, Container, Text } from '@earendil-works/pi-tui';
 import { highlightCode, getLanguageFromPath, createEditToolDefinition } from '@earendil-works/pi-coding-agent';
-import { installToolview, type ToolviewController, type ToolviewOptions } from '../src/index.ts';
+import { installTidyUi, type TidyUiController, type TidyUiOptions } from '../src/index.ts';
 import { SourceController } from '../src/occipital/controller.ts';
 import type { SyntaxClient } from '../src/occipital/client.ts';
 import type { ProviderSnapshot } from '../src/occipital/provider.ts';
@@ -32,9 +32,9 @@ const description: Description = {
   runtime: { pid: 1, routes: 1, leases: 0, data_bytes: 0, data_jobs: 0, queued: 0, control_bytes: 0, control_jobs: 0 }
 };
 class UI extends Container { requests = 0; requestRender() { this.requests++; } }
-const fixtures: { adapter: ToolviewController; sources: SourceController;
+const fixtures: { adapter: TidyUiController; sources: SourceController;
   calls: { request: Record<string, unknown>; resolve(value: unknown): void }[] }[] = [];
-function fixture(ready = false, useDefaultClassifier = false, options: Pick<ToolviewOptions, 'cards' | 'compact'> = {}) {
+function fixture(ready = false, useDefaultClassifier = false, options: Pick<TidyUiOptions, 'cards' | 'compact'> = {}) {
   const ui = new UI();
   const env = { ready, enabled: true, palette: 1, padding: 1, depth: 0, boldPi: false, pi: [] as string[], observes: 0, captures: 0, reads: 0, keys: [] as string[], capturedKeys: [] as string[] };
   const calls: { request: Record<string, unknown>; resolve(value: unknown): void }[] = [];
@@ -47,7 +47,7 @@ function fixture(ready = false, useDefaultClassifier = false, options: Pick<Tool
       return new Promise<unknown>(resolve => calls.push({ request, resolve }));
     }
   };
-  let adapter: ToolviewController;
+  let adapter: TidyUiController;
   const sources = new SourceController(provider, { onChange: keys => adapter.syntaxSourceChanged(keys) });
   const observe = sources.observe.bind(sources), capture = sources.capturePiSource.bind(sources);
   sources.observe = (...args) => { assert.equal(env.depth, 0, 'no native source preparation in render'); env.observes++; env.keys.push(args[0].key); return observe(...args); };
@@ -56,14 +56,14 @@ function fixture(ready = false, useDefaultClassifier = false, options: Pick<Tool
     assert.equal(env.depth, 0, 'no work metadata read in render'); env.reads++;
     return { enabled: env.enabled, provider: provider.snapshot(), standaloneVersion: 'test', selected: { kind: 'pi' }, effective: env.ready ? profile : undefined };
   } };
-  const presentationOptions: ToolviewOptions = { ...options, outputPad: () => env.padding, syntax: { client,
+  const presentationOptions: TidyUiOptions = { ...options, outputPad: () => env.padding, syntax: { client,
     palette: () => env.palette, classify: useDefaultClassifier ? undefined : (text, info) => {
       assert.equal(env.depth, 0, 'no Pi call in render'); env.pi.push(text);
       const rows = highlightCode(text, info.language);
       return env.boldPi ? rows.map(row => themes.theme.style(row, { bold: true })) : rows;
     } } };
   const install = () => {
-    adapter = installToolview(ui, () => themes.theme, presentationOptions);
+    adapter = installTidyUi(ui, () => themes.theme, presentationOptions);
     assert.equal(adapter.active, true, adapter.reason);
   };
   install();
@@ -284,7 +284,7 @@ test('host default classifier uses explicit public file language outside render 
   assert.equal(f.env.captures, 1); const warm = f.render(tool);
   assert.deepEqual(plain(warm), plain(cold)); assert.ok(warm.join('').includes(themes.theme.fg('syntaxKeyword', 'const')));
   f.adapter.restore();
-  const native = installToolview(f.ui, () => themes.theme);
+  const native = installTidyUi(f.ui, () => themes.theme);
   try {
     assert.equal(native.active, true, native.reason);
     assert.deepEqual(tool.render(60), renderFileCard(tool, '/tmp', 60, themes.theme,

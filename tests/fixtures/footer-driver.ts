@@ -3,13 +3,13 @@ import { AgentSession, SessionManager, CustomEditor, type ExtensionAPI } from "@
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { footerDiagnostics } from "../../src/footer.ts";
-import toolview from "./presentation-driver.ts";
+import tidyUi from "./presentation-driver.ts";
 
 export default function footerDriver(pi: ExtensionAPI) {
   // One loader graph keeps numeric diagnostics attached to the actual presenter.
-  // The native control does not activate Toolview or install any of its hooks.
-  if (process.env.TOOLVIEW_TEST_FOOTER_PRESENTATION === "1") toolview(pi);
-  const output = process.env.TOOLVIEW_TEST_OUTPUT!;
+  // The native control does not activate pi-tidy-ui or install any of its hooks.
+  if (process.env.TIDY_UI_TEST_FOOTER_PRESENTATION === "1") tidyUi(pi);
+  const output = process.env.TIDY_UI_TEST_OUTPUT!;
   let tui: any;
   const observed = { scans: 0, contextReads: 0 };
   const entries = SessionManager.prototype.getEntries, context = AgentSession.prototype.getContextUsage;
@@ -25,7 +25,7 @@ export default function footerDriver(pi: ExtensionAPI) {
     // An explicit persisted side-usage fixture, not another model request or context message.
     // Readonly API is a type restriction: test-only native record creation uses the exported class.
     const manager = ctx.sessionManager as SessionManager;
-    if (!manager.getEntries().some(e => e.type === "usage" && e.kind === "footer-fixture")) manager.appendUsage("footer-fixture", "toolview-offline", "scripted", {
+    if (!manager.getEntries().some(e => e.type === "usage" && e.kind === "footer-fixture")) manager.appendUsage("footer-fixture", "tidy-ui-offline", "scripted", {
       input: 11000000, output: 1500000, cacheRead: 243000000, cacheWrite: 0, totalTokens: 255500000,
       cost: { input: 61.761, output: 0, cacheRead: 0, cacheWrite: 0, total: 61.761 },
     });
