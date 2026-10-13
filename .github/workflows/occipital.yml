@@ -9,6 +9,9 @@ on:
       version:
         required: true
         type: string
+      clean-build:
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -73,18 +76,27 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22.19.0'
-      - uses: dtolnay/rust-toolchain@stable
+      - name: Resolve fixed Rust toolchain
+        id: toolchain
+        run: node scripts/release/version.mjs --toolchain
+      - uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: ${{ steps.toolchain.outputs.version }}
           targets: ${{ matrix.rust }}
           components: rustfmt, clippy
       - name: Install Windows executable inspection tool
         if: startsWith(matrix.target, 'windows-')
         run: rustup component add llvm-tools-preview
+      # Match the nearest native release's embedded version even on branch CI:
+      # otherwise version text alone makes an unchanged binary's checksum differ.
       - name: Stamp daemon before compilation
         env:
-          RELEASE_REF: ${{ inputs.release-ref }}
-        run: node scripts/release/version.mjs "$RELEASE_REF"
+          DAEMON_VERSION: ${{ inputs.version }}
+        run: node scripts/release/version.mjs --daemon-version "$DAEMON_VERSION"
       - uses: Swatinem/rust-cache@v2
+        # The opt-in clean control proves hashes without restored compiler outputs.
+        # Ordinary CI retains dependency caching and every native acceptance check.
+        if: ${{ !inputs.clean-build }}
         with:
           key: ${{ startsWith(matrix.target, 'linux-') && 'glibc-2.28' || '' }}
       - run: cargo fmt --all --check

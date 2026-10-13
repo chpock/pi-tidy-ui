@@ -4,11 +4,31 @@ The extension and Occipital have independent release versions. Repository manife
 
 | Ref | CI version substitution | Publication |
 | --- | --- | --- |
-| Branch / pull request | None; `0.0.0` development artifacts | None |
-| `pi-tidy-ui-v0.2.0` | Only the extension npm manifest/lock roots | Extension tarball in CI artifacts; no publishing workflow yet |
+| Branch / pull request | Extension remains `0.0.0`; daemon uses the nearest reachable `occipital-v*` version | None |
+| `pi-tidy-ui-v0.2.0` | Extension release version; daemon uses the nearest reachable `occipital-v*` version | Extension tarball in CI artifacts; no publishing workflow yet |
 | `occipital-v0.1.0` | Only the daemon Cargo manifest/lock entry, **before compilation** | Occipital GitHub Release only |
 
 Tags must contain a complete SemVer version. Prerelease tags such as `occipital-v0.1.0-rc.1` produce prereleases. CI substitutions affect disposable checkouts, not repository commits or dependency versions. The npm package is still named `pi-toolview` and the command is still `/toolview`; the tag prefix does not rename them.
+
+## Accepted extension delivery revision — implementation pending
+
+The operator selected the extension's **own package version** as the only local/published discriminator: exactly `0.0.0` is development; a real release version uses the published-package contract. This does not compare the extension version with the daemon version. `0.0.0` is reserved for development, not a production extension release. No `.git`/path/install-method heuristic, environment override or extra mode flag is required.
+
+Development uses `occipital` (`occipital.exe` on Windows) in the extension root when an owned helper is needed. Resolve that directory from the extension, not the current project cwd or `PATH`; building the binary is the developer's explicit action. Shared-first selection and protocol/capability validation remain unchanged. Unusable native capability must not prevent ordinary extension loading or fallback.
+
+Keep concrete native package versions out of the repository `package.json` and `package-lock.json`. During extension release preparation, select the nearest `occipital-v*` tag once, verify the published artifacts/native npm packages and compatibility, then generate exact optional native dependencies and matching version/URL/SHA-256/size metadata in the disposable release package. Do not commit those generated native pins or change the source lockfile. The installed archive remains fixed; no runtime Git/latest lookup is introduced. Consumer lockfiles may record the resolved native versions.
+
+Select the nearest reachable `occipital-v*` by Git history from the built commit (the commit of `pi-tidy-ui-v*` for an extension release), using `git describe --tags --match 'occipital-v*' --abbrev=0`, not maximum SemVer or publication time. Complete history and tags are required. A malformed nearest tag, missing release or incomplete six-package npm family stops preparation; never silently choose an older release. Development without a usable colocated binary falls back without downloading or compiling. See [the accepted delivery revision](syntax-highlighting-plan.md#accepted-localpublished-delivery-revision--implementation-pending).
+
+Runtime/package delivery is **not implemented yet**. CI now resolves the daemon version by ancestry and stamps it before every native compilation, while the current bootstrap still uses the explicit `0.1.4` declaration in `src/occipital/release.ts` regardless of the extension version. Generated dependencies, delivery metadata, local development loading and installed-registry controls must be implemented/verified before G5 closes. It does not authorize package renaming, commits, publication or another Occipital release.
+
+## Compiler and release equality
+
+`rust-toolchain.toml` pins Rust **1.99.0**, the compiler used for published Occipital `0.1.4` on all six platforms. Native CI resolves that exact version from the file rather than following `stable`; compiler upgrades are explicit reviewed changes. Repository Cargo manifests keep `0.0.0`, but disposable CI checkouts stamp the nearest daemon tag before compilation so embedded version text alone does not change an otherwise identical executable. On an Occipital tag, the tag itself supplies its release version even when multiple tags share a commit.
+
+When both products change, complete the Occipital GitHub/native npm release before releasing the extension. The accepted extension-release barrier will compare every platform's CI executable SHA-256 with the selected published Occipital artifacts and verify the six npm versions; it must not block ordinary CI or independent daemon releases merely because new native code has changed the bytes. This barrier remains pending actual reproducibility verification. Rust pinning does not by itself pin hosted C compilers/linkers/SDKs or prove repeatable bytes.
+
+Manual CI dispatch has an optional `clean-native-build` control, default `false`. It disables only restoration/saving of Cargo build outputs, preserving all native tests/lint/ABI/protocol and installed checks. Compare its fresh raw binaries with ordinary CI and the published release to establish the equality prerequisite; no tag or publication is needed. Ordinary CI retains its compilation cache.
 
 ## Workflow relationship
 
@@ -20,7 +40,7 @@ GNU jobs also cache the public AlmaLinux/system-tool image, separately from Carg
 
 Outside Occipital tags, every native runner also packs/installs the extension and checks its adopted public pin on Node 22.19.0 and 26.7.0, with and without a locally prepared matching native package/optional SDK. The isolated installed consumer uses normal bootstrap, not a release or executable override: real cold download, warm cache reuse, incremental source counters and owned-process cleanup must pass. These checks consume the extension's already-published pin, not the current Cargo build. GNU runners use `scripts/release/installed-linux-gnu.sh` to run that same consumer in the pinned glibc 2.28 userspace with the selected official Node distribution. Unlike offline compilation, this isolated clean installation/acquisition needs networking; it performs no compiler discovery or payload override. Other platforms run the consumer directly. They are skipped on daemon tags so an independent daemon release cannot be blocked by the extension's previous pin. Each installed check has a fifteen-minute step timeout; each npm preparation command has a five-minute limit. A per-platform npm content cache is restored before both Node checks and saved after a successful job. Its key includes the root lockfile hash, with a same-platform fallback when dependencies change. Only `_cacache` is retained, not `node_modules`, raw logs or the Occipital binary cache. Both Node versions share that package data; GNU checks bind the same directory into the container through `npm_config_cache`. Every consumer still starts clean and exercises the native cold/warm acquisition assertions.
 
-On an Occipital tag, CI passes these **same-run, same-commit, tag-versioned artifacts** to `.github/workflows/occipital-release.yml`. No second build, historical-run lookup, or artifact race is needed. Branch artifacts with compiled version `0.0.0` cannot substitute for a release version.
+On an Occipital tag, CI passes these **same-run, same-commit, tag-versioned artifacts** to `.github/workflows/occipital-release.yml`. No second build, historical-run lookup, or artifact race is needed. Branch artifacts now carry the nearest tag's compiled version, but are not that published release: source-commit/tag authority and actual binary hashes still govern admission.
 
 Daemon tags skip unrelated extension checks and do not publish or change the extension. Extension tags do not publish Occipital. Native platform availability is established by successful runner builds/tests, not merely by this matrix's presence; broader minimum-OS/ABI claims still require their own verification. The selected GNU glibc floor is 2.28 for both architectures, with the installed Pi/Node host's kernel/CPU/OS requirements as well; container testing establishes userspace compatibility, not execution on an older kernel.
 

@@ -1,0 +1,6 @@
+# Release 0.1.4 used this compiler on all six platforms. Keep compiler upgrades
+# deliberate: moving stable changes native bytes independently of daemon source.
+[toolchain]
+channel = "1.99.0"
+profile = "minimal"
+components = ["rustfmt", "clippy"]

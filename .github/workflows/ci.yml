@@ -6,6 +6,11 @@ on:
     tags: ['pi-tidy-ui-v*', 'occipital-v*']
   pull_request:
   workflow_dispatch:
+    inputs:
+      clean-native-build:
+        description: 'Build every native target without restoring Cargo outputs (reproducibility control)'
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -22,8 +27,12 @@ jobs:
       product: ${{ steps.version.outputs.product }}
       version: ${{ steps.version.outputs.version }}
       daemon_version: ${{ steps.version.outputs.daemon_version }}
+      daemon_tag: ${{ steps.version.outputs.daemon_tag }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          # The nearest daemon version comes from ancestry, not registry/latest.
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: '22.19.0'
@@ -40,6 +49,7 @@ jobs:
     with:
       release-ref: ${{ github.ref }}
       version: ${{ needs.version.outputs.daemon_version }}
+      clean-build: ${{ inputs.clean-native-build || false }}
 
   extension:
     needs: version
@@ -103,13 +113,15 @@ jobs:
           name: occipital-v${{ needs.version.outputs.daemon_version }}-linux-x64-gnu
           path: .test-artifacts/ci-native
       - name: Restore raw executable permissions
-        run: chmod +x .test-artifacts/ci-native/assets/occipital-v0.0.0-linux-x64-gnu
+        env:
+          DAEMON_VERSION: ${{ needs.version.outputs.daemon_version }}
+        run: chmod +x ".test-artifacts/ci-native/assets/occipital-v$DAEMON_VERSION-linux-x64-gnu"
       - name: Full physical CLI and replay (extension release only)
         if: needs.version.outputs.product == 'pi-tidy-ui'
         run: npm run test:terminal
       - name: Physical syntax CLI and replay using this commit's native artifact
         env:
-          OCCIPITAL_TEST_BIN: .test-artifacts/ci-native/assets/occipital-v0.0.0-linux-x64-gnu
+          OCCIPITAL_TEST_BIN: .test-artifacts/ci-native/assets/occipital-v${{ needs.version.outputs.daemon_version }}-linux-x64-gnu
         run: npm run test:syntax-terminal
       - uses: actions/upload-artifact@v4
         if: failure()
