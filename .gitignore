@@ -3,3 +3,6 @@ coverage/
 .test-artifacts/
 *.tgz
 /target/
+# Version 0.0.0 uses a colocated development helper, never a committed payload.
+/occipital
+/occipital.exe

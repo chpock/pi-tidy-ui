@@ -253,7 +253,7 @@ test('every executable workflow job has an explicit bounded timeout, including r
     }
   }
   assert.deepEqual(timeouts, {
-    'ci.yml/version': 5, 'ci.yml/extension': 10, 'ci.yml/terminal': 30,
+    'ci.yml/version': 5, 'ci.yml/extension': 10, 'ci.yml/terminal': 30, 'ci.yml/extension-package': 15,
     'occipital-npm-publish.yml/publish': 15, 'occipital-release.yml/publish': 10,
     'occipital.yml/packaging-fixtures': 5, 'occipital.yml/build': 45,
   });
@@ -598,4 +598,36 @@ test('actual installed step overrides Windows temp for both architectures and pr
       });
     }
   }
+});
+
+test('extension release tags admit all-six current/public/npm bytes before packing generated native pins; branches and daemon tags do not', async () => {
+  const workflow = await readFile(join(repo, '.github/workflows/ci.yml'), 'utf8');
+  const publication = workflow.slice(workflow.indexOf('\n  extension-package:'));
+  assert.ok(workflow.includes('\n  extension-package:'), 'a release-only preparation gate is required');
+  assert.match(publication, /needs: \[version, native, extension, terminal\]/);
+  assert.match(publication, /if: needs\.version\.outputs\.product == 'pi-tidy-ui'/);
+  assert.match(publication, /fetch-depth: 0/);
+  assert.match(publication, /pattern: occipital-v\$\{\{ needs\.version\.outputs\.daemon_version \}\}-\*/);
+  assert.match(publication, /gh api .*releases\/tags\/\$DAEMON_TAG/);
+  assert.match(publication, /gh release download "\$DAEMON_TAG"/);
+  assert.match(publication, /node scripts\/release\/extension-release\.mjs "\$RELEASE_REF"/);
+  assert.ok(publication.indexOf('extension-release.mjs') < publication.indexOf('npm pack'));
+  assert.match(publication, /npm pack .*\/extension --ignore-scripts/);
+  assert.doesNotMatch(publication, /npm publish|contents: write|id-token: write/);
+  const sourcePack = workflow.slice(workflow.indexOf('\n  extension:'), workflow.indexOf('\n  terminal:'));
+  assert.match(sourcePack, /Pack development extension without publishing\n\s+if: needs\.version\.outputs\.product != 'pi-tidy-ui'/);
+  assert.doesNotMatch(sourcePack, /version\.mjs "\$RELEASE_REF"/);
+  const manifest = await json(join(repo, 'package.json')), lock = await json(join(repo, 'package-lock.json'));
+  assert.equal(manifest.version, '0.0.0');
+  assert.equal(Object.keys(manifest.optionalDependencies).some(name => name.startsWith('@kchpock/occipital-')), false);
+  assert.equal(Object.keys(lock.packages).some(name => name.startsWith('node_modules/@kchpock/occipital-')), false);
+});
+
+test('registry-installed native preparation has full tag history and Git inside the GNU baseline', async () => {
+  const workflow = await readFile(join(repo, '.github/workflows/occipital.yml'), 'utf8');
+  const build = workflow.slice(workflow.indexOf('\n  build:'));
+  assert.match(build, /uses: actions\/checkout@v4\n        with:\n(?:          #[^\n]*\n)*          fetch-depth: 0/,
+    'the installed consumer resolves the nearest published tag, not a shallow-history guess');
+  const image = await readFile(join(repo, 'scripts/release/Dockerfile.linux-gnu'), 'utf8');
+  assert.match(image, /dnf install -y[^\n]*\bgit\b/, 'the exact same consumer selects the nearest ancestor inside glibc 2.28 too');
 });

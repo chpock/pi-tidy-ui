@@ -7,7 +7,6 @@ import { pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 import test from 'node:test';
 import * as npmPreparation from './fixtures/npm-preparation.ts';
-import { NATIVE_RELEASE } from '../src/occipital/release.ts';
 const { runNpmPreparation, summarizeNpmLog, summarizeNpmTimings } = npmPreparation;
 const configuredThreads = Number(process.env.UV_THREADPOOL_SIZE);
 const configuredThreadpoolSize = Number.isSafeInteger(configuredThreads) && configuredThreads > 0 ? configuredThreads : null;
@@ -181,25 +180,29 @@ test('actual installed fixture retains npm child and capture failures when its f
   const root = await mkdtemp(join(tmpdir(), 'tidy-npm-outer-failure-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   const repo = resolve(import.meta.dirname, '..');
-  assert.ok(NATIVE_RELEASE);
-  const artifacts = NATIVE_RELEASE.artifacts.map(({ target }) => ({ target,
-    sha256: '2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881', url: 'https://example.invalid/payload', maxBytes: 16 }));
+  const reference = JSON.parse(await readFile(join(repo, 'tests/fixtures/occipital-release-0.1.4.json'), 'utf8')) as { artifacts: { target: string }[] };
+  const artifacts = reference.artifacts.map(({ target }) => ({ target,
+    sha256: '2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881',
+    url: `https://github.com/chpock/pi-tidy-ui/releases/download/occipital-v1.0.0/occipital-v1.0.0-${target}${target.startsWith('windows-') ? '.exe' : ''}`, maxBytes: 16 }));
   const fixtures = join(root, 'tests/fixtures'), native = join(root, 'src/occipital');
   await mkdir(fixtures, { recursive: true }); await mkdir(native, { recursive: true });
   const aliasType = process.platform === 'win32' ? 'junction' : 'dir';
   await symlink(join(repo, 'scripts'), join(root, 'scripts'), aliasType);
   await symlink(join(repo, 'packages'), join(root, 'packages'), aliasType);
-  await writeFile(join(root, 'package.json'), '{"type":"module"}');
+  await writeFile(join(root, 'package.json'), '{"name":"pi-toolview","version":"0.0.0","type":"module","files":["src","LICENSE"]}');
   await copyFile(join(repo, 'LICENSE'), join(root, 'LICENSE'));
   for (const name of ['installed-occipital.mjs', 'npm-preparation.ts']) await copyFile(join(repo, 'tests/fixtures', name), join(fixtures, name));
   for (const name of ['native.ts', 'version.ts']) await copyFile(join(repo, 'src/occipital', name), join(native, name));
-  await writeFile(join(native, 'release.ts'), `export const NATIVE_RELEASE = ${JSON.stringify({ version: '1.0.0', artifacts })};`);
+  await copyFile(join(repo, 'src/occipital/release.ts'), join(native, 'release.ts'));
+  const git = (args: string[]) => promisify(execFile)('git', args, { cwd: root, timeout: 10000 });
+  await git(['init', '-q']); await git(['config', 'user.email', 'fixture@example.invalid']); await git(['config', 'user.name', 'Fixture']);
+  await git(['add', '.']); await git(['commit', '-qm', 'fixture: selected release']); await git(['tag', 'occipital-v1.0.0']);
   await writeFile(join(root, '.test-artifacts'), 'block reports');
   const fakeNpm = join(root, 'fake-npm.mjs');
   await writeFile(fakeNpm, `console.error(${JSON.stringify(secret)}); process.exitCode=17;`);
   const wrapper = join(root, 'verify.mjs');
   await writeFile(wrapper, `import assert from 'node:assert/strict';
-let fetches=0; globalThis.fetch=async()=>{fetches++;return new Response('x')};
+let fetches=0; globalThis.fetch=async()=>{fetches++;return new Response(${JSON.stringify(JSON.stringify({ version: '1.0.0', artifacts }))})};
 process.env.npm_execpath=${JSON.stringify(fakeNpm)};
 process.env.EXPECTED_NODE=process.version.slice(1);
 await assert.rejects(import(${JSON.stringify(pathToFileURL(join(fixtures, 'installed-occipital.mjs')).href)}),error=>{
@@ -211,7 +214,7 @@ await assert.rejects(import(${JSON.stringify(pathToFileURL(join(fixtures, 'insta
   assert.ok(['EEXIST','ENOTDIR'].includes(error.errors[1].code));
   return true;
 });
-assert.equal(fetches,2);
+assert.equal(fetches,1);
 console.log('original failure preserved');`);
   const result = await promisify(execFile)(process.execPath, [wrapper], { timeout: 10000 });
   assert.equal(result.stdout, 'original failure preserved\n');

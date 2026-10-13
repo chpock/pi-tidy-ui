@@ -2,13 +2,16 @@ import { getAgentDir, type ExtensionContext } from '@earendil-works/pi-coding-ag
 import { createRequire } from 'node:module';
 import { open } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { ExtensionSettings } from '../settings.ts';
 import type { SyntaxRuntimeOptions } from '../syntax/runtime.ts';
-import { createOwnedFactory, createSharedFactory } from './factories.ts';
+import { createLocalOwnedFactory, createOwnedFactory, createSharedFactory } from './factories.ts';
 import { OCCIPITAL_LIMITS } from './limits.ts';
 import { NATIVE_RELEASE, type NativeReleaseDeclaration, type NativeTarget } from './release.ts';
 
 const require = createRequire(import.meta.url);
+const extensionRoot = fileURLToPath(new URL('../../', import.meta.url));
+const development = (require(join(extensionRoot, 'package.json')) as { version: string }).version === '0.0.0';
 const PACKAGE_METADATA_BYTES = 64 * 1024;
 
 export function nativePackageName(target: NativeTarget): string { return `@kchpock/occipital-${target}`; }
@@ -50,18 +53,21 @@ async function installedPayload(target: NativeTarget, version: string): Promise<
   } finally { await handle?.close(); }
 }
 
-/** Bind the existing bounded factories. No imports, file reads, downloads or helper
- * startup here; the broker invokes them asynchronously after eligible attachment. */
-export function createSyntaxOptions(ctx: Pick<ExtensionContext, 'cwd' | 'sessionManager'>,
+/** Native filesystem/network work starts only after eligible presentation attachment. */
+export function createSyntaxOptions(ctx: Pick<ExtensionContext, 'cwd' | 'sessionManager' | 'ui'>,
   release: NativeReleaseDeclaration | undefined = NATIVE_RELEASE): SyntaxRuntimeOptions {
   const agentDir = getAgentDir(), cwd = ctx.cwd;
   const identity = { harness: 'pi', session: ctx.sessionManager.getSessionId(), project_root: cwd };
+  // Local runs must never silently select a shared or published engine instead of the build under development.
+  const local = development ? createLocalOwnedFactory({ command: join(extensionRoot, process.platform === 'win32' ? 'occipital.exe' : 'occipital'),
+    onMissing: missingLocalWarning(new WeakRef(ctx.ui)), requestDeadlineMs: OCCIPITAL_LIMITS.dataDeadlineMs, terminateGraceMs: 1000, cwd }) : undefined;
   return {
-    standaloneVersion: release?.version ?? 'not declared',
+    standaloneVersion: development ? 'local development' : release?.version ?? 'not declared',
     settings: new ExtensionSettings({ agentDir }),
     provider: {
-      tryShared: createSharedFactory({ identity, requestDeadlineMs: OCCIPITAL_LIMITS.dataDeadlineMs }),
+      tryShared: development ? async () => undefined : createSharedFactory({ identity, requestDeadlineMs: OCCIPITAL_LIMITS.dataDeadlineMs }),
       async acquireOwned(signal) {
+        if (local) return local(signal);
         if (!release) throw new Error('Standalone Occipital release is not declared in this build.');
         const target = runtimeTarget(), artifact = release.artifacts.find(item => item.target === target);
         if (!target || !artifact) throw new Error('The declared Occipital release has no artifact for this platform/ABI.');
@@ -71,5 +77,16 @@ export function createSyntaxOptions(ctx: Pick<ExtensionContext, 'cwd' | 'session
           requestDeadlineMs: OCCIPITAL_LIMITS.dataDeadlineMs, terminateGraceMs: 1000, cwd })(signal);
       },
     },
+  };
+}
+
+function missingLocalWarning(ui: WeakRef<ExtensionContext['ui']>): () => void {
+  let warned = false;
+  return () => {
+    if (warned) return;
+    const current = ui.deref();
+    if (!current) return;
+    warned = true;
+    current.notify('[pi-tidy-ui] Local Occipital build not found next to this extension; using fallback highlighting without Occipital.', 'warning');
   };
 }

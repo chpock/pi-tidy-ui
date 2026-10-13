@@ -1,4 +1,7 @@
 import { acquireNative, type NativeRelease } from './native.ts';
+import { constants } from 'node:fs';
+import { access, stat } from 'node:fs/promises';
+import { isAbsolute } from 'node:path';
 import { PROVIDER_LIMITS, type ProviderOptions } from './provider.ts';
 import { StdioTransport } from './stdio.ts';
 import { SharedTransport, type SharedOptions } from './shared.ts';
@@ -17,6 +20,11 @@ export interface OwnedFactoryOptions {
   terminateGraceMs: number;
   env?: NodeJS.ProcessEnv;
   cwd?: string;
+}
+type OwnedLaunchOptions = Pick<OwnedFactoryOptions, 'attemptDeadlineMs' | 'requestDeadlineMs' | 'terminateGraceMs' | 'env' | 'cwd'>;
+export interface LocalOwnedFactoryOptions extends OwnedLaunchOptions {
+  command: string;
+  onMissing?(): void;
 }
 interface OwnedSlot { settled: Promise<void>; release(): void }
 let ownedSlot: OwnedSlot | undefined;
@@ -93,6 +101,31 @@ function trackOwned(transport: StdioTransport, slot: OwnedSlot) {
  * Shared discovery composition is separate and broker-negotiated. */
 export function createOwnedFactory(input: OwnedFactoryOptions): ProviderOptions['acquireOwned'] {
   const options = { ...input, release: { ...input.release } };
+  return ownedFactory(options, async signal => (await acquireNative({ cacheDir: options.cacheDir, release: options.release,
+    installedPath: options.installedPath, fetcher: options.fetcher, signal })).path);
+}
+
+/** Development uses only the explicitly colocated file, never release/cache/PATH discovery. */
+export function createLocalOwnedFactory(input: LocalOwnedFactoryOptions): ProviderOptions['acquireOwned'] {
+  const options = { ...input };
+  return ownedFactory(options, async signal => {
+    if (!isAbsolute(options.command)) throw unavailable();
+    let file;
+    try { file = await stat(options.command); }
+    catch (error) {
+      if (!signal.aborted && ['ENOENT', 'ENOTDIR'].includes((error as NodeJS.ErrnoException).code ?? '')) options.onMissing?.();
+      throw error;
+    }
+    if (!file.isFile()) {
+      if (!signal.aborted) options.onMissing?.();
+      throw unavailable();
+    }
+    await access(options.command, constants.X_OK);
+    return options.command;
+  });
+}
+
+function ownedFactory(options: OwnedLaunchOptions, acquire: (signal: AbortSignal) => Promise<string>): ProviderOptions['acquireOwned'] {
   const ms = Math.min(duration(options.attemptDeadlineMs ?? PROVIDER_LIMITS.ownedFactoryMs), PROVIDER_LIMITS.ownedFactoryMs);
   duration(options.requestDeadlineMs); duration(options.terminateGraceMs);
   return async caller => {
@@ -101,8 +134,7 @@ export function createOwnedFactory(input: OwnedFactoryOptions): ProviderOptions[
       budget.check();
       let previous: OwnedSlot | undefined;
       while ((previous = currentOwned())) { await wait(previous.settled, budget.signal); budget.check(); }
-      const acquired = await wait(acquireNative({ cacheDir: options.cacheDir, release: options.release,
-        installedPath: options.installedPath, fetcher: options.fetcher, signal: budget.signal }), budget.signal);
+      const command = await wait(acquire(budget.signal), budget.signal);
       budget.check();
       // Another owner can have acquired while this one was awaiting delivery.
       while ((previous = currentOwned())) { await wait(previous.settled, budget.signal); budget.check(); }
@@ -110,7 +142,7 @@ export function createOwnedFactory(input: OwnedFactoryOptions): ProviderOptions[
       const slot = reserve();
       let transport: StdioTransport;
       try {
-        transport = new StdioTransport({ command: acquired.path, args: ['--stdio'],
+        transport = new StdioTransport({ command, args: ['--stdio'],
           requestDeadlineMs: options.requestDeadlineMs, terminateGraceMs: options.terminateGraceMs,
           env: options.env, cwd: options.cwd });
       } catch (error) { slot.release(); throw error; }

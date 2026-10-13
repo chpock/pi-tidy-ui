@@ -1,4 +1,4 @@
-// Controlled local helper fixture; production release.ts remains undeclared.
+// Copied with the source into a real-version fixture package; only controlled helper bytes are seeded.
 import { getAgentDir, type ExtensionAPI, type ExtensionContext } from '@earendil-works/pi-coding-agent';
 import { appendFileSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { copyFile, mkdir } from 'node:fs/promises';

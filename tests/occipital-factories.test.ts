@@ -4,9 +4,9 @@ import childProcess from 'node:child_process';
 import { syncBuiltinESMExports } from 'node:module';
 import { createHash } from 'node:crypto';
 import { createReadStream } from 'node:fs';
-import { mkdtemp, rm, stat } from 'node:fs/promises';
+import { chmod, mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, relative } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { createOwnedFactory } from '../src/occipital/factories.ts';
 import * as factories from '../src/occipital/factories.ts';
@@ -116,6 +116,46 @@ test('real exact helper: zero acquisition requests; repeated owners wait actual 
   assert.equal(secondReply.status, 'ok'); await second.close();
   assert.equal(second.stats().childState, 'exited'); assert.equal(second.stats().ownedListeners, 0);
 });
+
+test('local owned factory refuses pre-abort and missing binary without download, cache or spawn', async t => {
+  assert.equal(typeof factories.createLocalOwnedFactory, 'function');
+  const f = await setup(t), command = join(f.cacheDir, 'absent-local-binary');
+  const abort = new AbortController(); abort.abort();
+  let warnings = 0;
+  const acquire = factories.createLocalOwnedFactory({ command, onMissing() { warnings++; }, requestDeadlineMs: 1000, terminateGraceMs: 30 });
+  let downloads = 0;
+  t.mock.method(globalThis, 'fetch', async () => { downloads++; throw new Error('Local mode must not download'); });
+  await assert.rejects(acquire(abort.signal), /owned factory unavailable/); assert.equal(warnings, 0);
+  await assert.rejects(acquire(new AbortController().signal), /owned factory unavailable/); assert.equal(warnings, 1);
+  const existing = join(f.cacheDir, process.platform === 'win32' ? 'occipital.exe' : 'occipital');
+  await writeFile(existing, `#!${process.execPath}\nsetInterval(() => {}, 1000000);\n`); await chmod(existing, 0o755);
+  const relativeAcquire = factories.createLocalOwnedFactory({ command: relative(process.cwd(), existing), onMissing() { warnings++; }, requestDeadlineMs: 1000, terminateGraceMs: 30 });
+  await assert.rejects(async () => { const unexpected = await relativeAcquire(new AbortController().signal); await unexpected.close(); }, /owned factory unavailable/);
+  assert.equal(warnings, 1);
+  assert.equal(f.spawns(), 0); assert.equal(downloads, 0);
+});
+
+test('local owned factory starts only its explicit file and shares the actual-close guard with release factories',
+  { skip: process.platform === 'win32' }, async t => {
+    assert.equal(typeof factories.createLocalOwnedFactory, 'function');
+    const f = await setup(t), command = join(f.cacheDir, 'local occipital');
+    await writeFile(command, `#!${process.execPath}\nprocess.stdin.resume();setInterval(() => {}, 1000000);\n`);
+    await chmod(command, 0o755);
+    const acquire = factories.createLocalOwnedFactory({ command, cwd: f.cacheDir, requestDeadlineMs: 1000, terminateGraceMs: 30 });
+    const first = await acquire(new AbortController().signal); t.after(() => first.close());
+    assert.ok(first instanceof StdioTransport);
+    assert.equal(f.spawns(), 1); assert.equal(f.calls[0][0], command); assert.deepEqual(f.calls[0][1], ['--stdio']);
+    const pid = first.stats().pid; assert.ok(pid);
+    const cancelled = new AbortController();
+    const releaseAcquire = createOwnedFactory({ cacheDir: f.cacheDir, release, requestDeadlineMs: 1000, terminateGraceMs: 30,
+      fetcher: async () => { throw new Error('A held local owner must prevent acquisition'); } });
+    const refused = assert.rejects(releaseAcquire(cancelled.signal), /owned factory unavailable/);
+    cancelled.abort(); await refused; assert.equal(f.spawns(), 1);
+    await first.close(); assert.throws(() => process.kill(pid!, 0), { code: 'ESRCH' });
+    const second = await acquire(new AbortController().signal); t.after(() => second.close());
+    assert.equal(f.spawns(), 2); assert.ok(second instanceof StdioTransport); await second.close();
+    assert.equal(second.stats().childState, 'exited'); assert.equal(second.stats().ownedListeners, 0);
+  });
 
 // Tiny public SDK adapter: the product SharedTransport owns all route/readiness cleanup.
 const identity = { project_root: '/factory/project', harness: 'fixture', session: 'factory' };

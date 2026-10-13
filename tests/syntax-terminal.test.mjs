@@ -3,13 +3,27 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync, statSync, writeFileSync, rmSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { cp, mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
+import { join, resolve } from 'node:path';
 import { stripVTControlCharacters } from 'node:util';
-import test from 'node:test';
+import test, { after } from 'node:test';
+import { stageExtensionPackage } from '../scripts/release/extension-release.mjs';
 import { PiTerminal } from './terminal.test.mjs';
 import { sharedSyntaxHost, themeDefinition, reaped } from './fixtures/shared-syntax-host.mjs';
 
-const binary = process.env.OCCIPITAL_TEST_BIN, fixture = resolve('tests/fixtures/syntax-driver.ts');
+const binary = process.env.OCCIPITAL_TEST_BIN;
+let fixture = resolve('tests/fixtures/syntax-driver.ts');
+if (binary) {
+  await mkdir(resolve('.test-artifacts'), { recursive: true });
+  const directory = await mkdtemp(resolve('.test-artifacts/syntax-package-')), source = join(directory, 'extension');
+  after(() => rm(directory, { recursive: true, force: true }));
+  // A real-version copy exercises published bootstrap without weakening source 0.0.0's local-only rule.
+  const release = JSON.parse(await readFile(resolve('tests/fixtures/occipital-release-0.1.4.json'), 'utf8'));
+  await stageExtensionPackage({ root: resolve('.'), output: source, version: '0.0.0-cli', release });
+  await mkdir(join(source, 'tests/fixtures'), { recursive: true });
+  fixture = join(source, 'tests/fixtures/syntax-driver.ts');
+  await cp(resolve('tests/fixtures/syntax-driver.ts'), fixture);
+}
 const helperVersion = binary ? execFileSync(resolve(binary), ['--version'], { encoding: 'utf8', timeout: 30000 }).trim().match(/^occipital (\S+)$/)?.[1] : undefined;
 if (binary && !helperVersion) throw new Error('Unexpected local artifact version output');
 const descriptor = binary ? { TOOLVIEW_TEST_OCCIPITAL_BIN: resolve(binary), TOOLVIEW_TEST_OCCIPITAL_VERSION: helperVersion,

@@ -1,25 +1,21 @@
 import assert from 'node:assert/strict';
 import childProcess from 'node:child_process';
 import { createRequire, syncBuiltinESMExports } from 'node:module';
-import { chmod, copyFile, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { pathToFileURL } from 'node:url';
 import { candidateTargets } from '../../scripts/release/native-release.mjs';
-import { acquireNative } from '../../src/occipital/native.ts';
-import { NATIVE_RELEASE } from '../../src/occipital/release.ts';
+import { publishedDeclaration, stageExtensionPackage } from '../../scripts/release/extension-release.mjs';
 import { runNpmPreparation, summarizeTemporaryDrive } from './npm-preparation.ts';
 
 const repo = resolve(import.meta.dirname, '../..');
 if (process.env.EXPECTED_NODE) assert.equal(process.version, `v${process.env.EXPECTED_NODE}`);
 assert.ok(process.env.npm_execpath, 'Invoke with npm run test:installed-native');
-assert.ok(NATIVE_RELEASE, 'Installed acceptance needs a verified declared release');
 const glibc = process.platform !== 'linux' || typeof process.report.getReport().header.glibcVersionRuntime === 'string';
 const target = Object.keys(candidateTargets).find(key => candidateTargets[key].os === process.platform && candidateTargets[key].cpu === process.arch && glibc);
 assert.ok(target, 'Supported native platform required');
-const artifact = NATIVE_RELEASE.artifacts.find(item => item.target === target);
-assert.ok(artifact);
 const started = performance.now();
 const configuredThreads = Number(process.env.UV_THREADPOOL_SIZE);
 const configuredThreadpoolSize = Number.isSafeInteger(configuredThreads) && configuredThreads > 0 ? configuredThreads : null;
@@ -52,27 +48,19 @@ try {
   const root = await realpath(await mkdtemp(join(alias, 'consumer-')));
   pack = join(root, 'pack');
   await mkdir(pack);
-  const prepared = await acquireNative({ cacheDir: join(root, 'payload-preparation'), release: { version: NATIVE_RELEASE.version, ...artifact } });
-  const native = join(root, 'native');
-  await mkdir(native);
-  const manifest = JSON.parse(await readFile(join(repo, 'packages/native', target, 'package.json.template'), 'utf8'));
-  manifest.version = NATIVE_RELEASE.version;
-  await writeFile(join(native, 'package.json'), JSON.stringify(manifest));
-  const executable = candidateTargets[target].executable;
-  await copyFile(prepared.path, join(native, executable)); await chmod(join(native, executable), 0o755);
-  const noticeURL = new URL('./NOTICE', artifact.url).href;
-  const notice = await fetch(noticeURL, { signal: AbortSignal.timeout(30000) });
-  assert.equal(notice.ok, true); const noticeBytes = Buffer.from(await notice.arrayBuffer()); assert.ok(noticeBytes.length);
-  await writeFile(join(native, 'NOTICE'), noticeBytes);
-  await copyFile(join(repo, 'LICENSE'), join(native, 'LICENSE'));
-  const extensionPack = await packed(repo), nativePack = await packed(native);
+  const NATIVE_RELEASE = await publishedDeclaration(repo), artifact = NATIVE_RELEASE.artifacts.find(item => item.target === target);
+  assert.ok(artifact);
+  const extension = join(root, 'extension');
+  await stageExtensionPackage({ root: repo, output: extension, version: '0.0.0-installed', release: NATIVE_RELEASE });
+  const executable = candidateTargets[target].executable, nativeName = `@kchpock/occipital-${target}`;
+  const extensionPack = await packed(extension);
   const peers = JSON.parse(await readFile(join(repo, 'package.json'), 'utf8')).devDependencies;
   for (const installed of [true, false]) {
     const consumer = join(root, installed ? 'with-native' : 'without-native'), home = join(consumer, 'home');
     await mkdir(consumer); await mkdir(home);
     await writeFile(join(consumer, 'package.json'), '{"private":true,"type":"module"}');
     await npm(['install', '--ignore-scripts', '--no-audit', '--no-fund', ...(installed ? [] : ['--omit=optional']), '--prefix', consumer,
-      join(pack, extensionPack), ...(installed ? [join(pack, nativePack)] : []),
+      join(pack, extensionPack),
       `@earendil-works/pi-coding-agent@${peers['@earendil-works/pi-coding-agent']}`, `@earendil-works/pi-tui@${peers['@earendil-works/pi-tui']}`]);
     Object.assign(process.env, { HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: join(home, 'config'), APPDATA: join(home, 'config'), LOCALAPPDATA: join(home, 'local'),
       PI_CODING_AGENT_DIR: join(home, 'agent'), SUBC_CONNECTION_FILE: join(home, 'missing-service.json'), PATH: '' });
@@ -102,7 +90,7 @@ try {
       await client.start(); await client.start();
       const snapshot = client.snapshot();
       assert.equal(snapshot.standaloneVersion, NATIVE_RELEASE.version); assert.equal(snapshot.provider.kind, 'owned'); assert.equal(snapshot.provider.availability, 'ready');
-      const expectedPath = installed ? join(consumer, 'node_modules', manifest.name, executable)
+      const expectedPath = installed ? join(consumer, 'node_modules', nativeName, executable)
         : join(home, 'agent/cache/occipital', NATIVE_RELEASE.version, target, executable);
       assert.equal(starts.length, beforeStarts + 1); assert.equal(starts.at(-1), expectedPath);
       assert.equal(childProcess.execFileSync(expectedPath, ['--version'], { encoding: 'utf8', timeout: 5000 }).trim(), `occipital ${NATIVE_RELEASE.version}`);

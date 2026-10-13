@@ -80,13 +80,12 @@ jobs:
         run: node --expose-gc --test --test-concurrency=2 tests/*.test.ts
       - name: Inert native packaging and release regressions
         run: npm run test:native-release
-      - name: Apply extension tag version only after source checks
-        env:
-          RELEASE_REF: ${{ github.ref }}
-        run: node scripts/release/version.mjs "$RELEASE_REF"
-      - name: Pack extension without publishing
+      # Real release packages are generated only after all platform/CLI and delivery gates.
+      - name: Pack development extension without publishing
+        if: needs.version.outputs.product != 'pi-tidy-ui'
         run: npm pack --ignore-scripts
       - uses: actions/upload-artifact@v4
+        if: needs.version.outputs.product != 'pi-tidy-ui'
         with:
           name: extension-${{ needs.version.outputs.version }}-node-${{ matrix.node }}
           path: pi-toolview-*.tgz
@@ -139,3 +138,49 @@ jobs:
     uses: ./.github/workflows/occipital-release.yml
     with:
       tag: ${{ github.ref_name }}
+
+  extension-package:
+    needs: [version, native, extension, terminal]
+    if: needs.version.outputs.product == 'pi-tidy-ui'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_REF: ${{ github.ref }}
+      DAEMON_TAG: ${{ needs.version.outputs.daemon_tag }}
+      SOURCE_COMMIT: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '26.7.0'
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: occipital-v${{ needs.version.outputs.daemon_version }}-*
+          path: .test-artifacts/extension-release/native-ci
+      - name: Fetch the selected completed public Occipital release
+        run: |
+          mkdir -p .test-artifacts/extension-release/public
+          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$DAEMON_TAG" > .test-artifacts/extension-release/public/release.json
+          gh release download "$DAEMON_TAG" --repo "$GITHUB_REPOSITORY" --dir .test-artifacts/extension-release/public
+      # Identical native input is not inferred from Git paths: compare all six raw binaries.
+      # A changed daemon is normal on branches, but must be released before this extension tag.
+      - name: Admit current native bytes, public release and all six npm payloads
+        run: |
+          node scripts/release/extension-release.mjs "$RELEASE_REF" \
+            .test-artifacts/extension-release/native-ci .test-artifacts/extension-release/public \
+            .test-artifacts/extension-release/prepared
+      - name: Pack the admitted extension without publishing
+        run: |
+          npm pack ./.test-artifacts/extension-release/prepared/extension --ignore-scripts \
+            --pack-destination .test-artifacts/extension-release/prepared
+      - uses: actions/upload-artifact@v4
+        with:
+          name: extension-${{ needs.version.outputs.version }}-release
+          path: |
+            .test-artifacts/extension-release/prepared/pi-toolview-*.tgz
+            .test-artifacts/extension-release/prepared/plan.json
+          include-hidden-files: true
+          if-no-files-found: error

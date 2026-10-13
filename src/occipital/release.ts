@@ -4,45 +4,6 @@ export interface NativeReleaseDeclaration {
   artifacts: readonly { target: NativeTarget; sha256: string; url: string; maxBytes: number }[];
 }
 
-// Verified published artifacts; this daemon pin is independent of extension tags.
-export const NATIVE_RELEASE: NativeReleaseDeclaration | undefined = {
-  version: '0.1.4',
-  artifacts: [
-    {
-      target: 'linux-x64-gnu',
-      sha256: '2b6ed5952d4eb606f57d83ad25fd0624721cb931919250c0020567a60aa1f5f6',
-      maxBytes: 4043240,
-      url: 'https://github.com/chpock/pi-tidy-ui/releases/download/occipital-v0.1.4/occipital-v0.1.4-linux-x64-gnu',
-    },
-    {
-      target: 'linux-arm64-gnu',
-      sha256: '14febd8e725c514052768adf899dab3c9c81027bfb806bb38af9ce906190547b',
-      maxBytes: 3830168,
-      url: 'https://github.com/chpock/pi-tidy-ui/releases/download/occipital-v0.1.4/occipital-v0.1.4-linux-arm64-gnu',
-    },
-    {
-      target: 'darwin-x64',
-      sha256: 'ef5440b3baaf9fd63afefd38ac43c364b0563ef640faeb22041c72be5a488049',
-      maxBytes: 3885240,
-      url: 'https://github.com/chpock/pi-tidy-ui/releases/download/occipital-v0.1.4/occipital-v0.1.4-darwin-x64',
-    },
-    {
-      target: 'darwin-arm64',
-      sha256: '1d6a4bbc7fe84994ff16f0c7057d7173372dde435916206dfa6c1edb221528fe',
-      maxBytes: 3774640,
-      url: 'https://github.com/chpock/pi-tidy-ui/releases/download/occipital-v0.1.4/occipital-v0.1.4-darwin-arm64',
-    },
-    {
-      target: 'windows-x64-msvc',
-      sha256: 'fdc31b4432ed40dd90bd8937f34f8d6bc583c85b33a7b06889688b6546f48629',
-      maxBytes: 4418560,
-      url: 'https://github.com/chpock/pi-tidy-ui/releases/download/occipital-v0.1.4/occipital-v0.1.4-windows-x64-msvc.exe',
-    },
-    {
-      target: 'windows-arm64-msvc',
-      sha256: 'c47206cb00c2ec018cd2ab9297ef811d634a495c46a923ffb5dba073576cbb70',
-      maxBytes: 4089344,
-      url: 'https://github.com/chpock/pi-tidy-ui/releases/download/occipital-v0.1.4/occipital-v0.1.4-windows-arm64-msvc.exe',
-    },
-  ],
-};
+// Release preparation fills this declaration only in the disposable npm package.
+// Source version 0.0.0 never uses a published pin, cache, download or shared daemon.
+export const NATIVE_RELEASE: NativeReleaseDeclaration | undefined = undefined;

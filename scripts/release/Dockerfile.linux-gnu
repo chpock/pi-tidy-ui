@@ -1,3 +1,4 @@
 FROM almalinux:8@sha256:8b469a3a78515e8a18ea8fc727e6a3679e1d0c5ba6f58d5b30be3d0d9b86cffe
-RUN dnf install -y gcc gcc-c++ make binutils libatomic && dnf clean all \
+# The unchanged installed-client fixture resolves Git ancestry inside this userspace.
+RUN dnf install -y gcc gcc-c++ make binutils libatomic git && dnf clean all \
     && test "$(getconf GNU_LIBC_VERSION)" = "glibc 2.28"
