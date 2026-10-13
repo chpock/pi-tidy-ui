@@ -131,10 +131,14 @@ The extension is inactive in print, JSON, and RPC modes. Component restyling app
 ## Development
 
 ```sh
-npm ci --ignore-scripts
-npm run check
-npm test
+make deps
+make check
+make test
+# Optional local syntax helper, copied beside the extension:
+make build
 ```
+
+`make` lists shortcuts and performs no work by default. Useful modes include `make test-gc`, `make test-focus TEST_FILES='tests/unit.test.ts' TEST_PATTERN='^bash timeout'`, `make test-release` and `make test-syntax`. The latter requires an existing helper; `make build` needs the pinned Rust toolchain. npm commands remain available. See [Make shortcuts](docs/testing.md#make-shortcuts) for scopes, requirements and networked checks.
 
 Reserve the full `npm run test:terminal` for final UI/integration verification, not each edit or commit. See the [testing cadence](docs/testing.md#test-selection-and-cadence) for focused checks and the shorter syntax CLI suite.
 

@@ -34,7 +34,7 @@ docker run --rm --platform "linux/$docker_arch" --network=none --user "$(id -u):
   -v "$root:$root" -v "$rust_sysroot:$rust_sysroot:ro" \
   -v "$node_root:$node_root:ro" -v "$cargo_home:$cargo_home" -v "$target_dir:$target_dir" \
   --workdir "$root" --env HOME=/tmp/occipital-gnu-home \
-  --env CARGO_HOME="$cargo_home" --env CARGO_TARGET_DIR="$target_dir" \
+  --env CARGO_HOME="$cargo_home" --env CARGO_TARGET_DIR="$target_dir" --env CARGO_NET_OFFLINE=true \
   --env RUSTUP_TOOLCHAIN="$rust_sysroot" \
   --env PATH="$rust_sysroot/bin:$node_root/bin:/usr/bin:/bin" \
   --env RUST_TARGET="$RUST_TARGET" --env EXPECTED_ARCHITECTURE="$architecture" \
@@ -45,11 +45,5 @@ docker run --rm --platform "linux/$docker_arch" --network=none --user "$(id -u):
     getconf GNU_LIBC_VERSION
     rustc --version
     node --version
-    cargo test --workspace --locked --offline --target "$RUST_TARGET"
-    cargo test --locked --offline -p occipital --example engine_probe --target "$RUST_TARGET" allocator_diagnostic_tracks_the_actual_glibc_api
-    cargo clippy --workspace --all-targets --locked --offline --target "$RUST_TARGET" -- -D warnings
-    cargo build --release --locked --offline -p occipital --target "$RUST_TARGET"
-    export OCCIPITAL_TEST_BIN="$CARGO_TARGET_DIR/$RUST_TARGET/release/occipital"
-    node --input-type=module -e '\''import {verifyLinuxRuntime} from "./scripts/release/native-ci.mjs"; await verifyLinuxRuntime(process.env.OCCIPITAL_TEST_BIN);'\''
-    node --test --test-name-pattern="^actual owned helper preserves compact UTF8 highlighting and incremental work counters$" tests/occipital-native.test.ts
+    exec make _gnu-native RUST_TARGET="$RUST_TARGET"
   '

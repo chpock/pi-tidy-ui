@@ -425,30 +425,7 @@ test('GNU executable inspection reads actual version needs before staging and pr
 });
 
 
-test('GNU CI builds and tests natively in verified glibc2.28 without restoring newer-host compiler outputs', async () => {
-  const workflow = await readFile(join(repo, '.github/workflows/occipital.yml'), 'utf8');
-  assert.match(workflow, /- name: GNU glibc 2\.28 native build and runtime checks\n        if: startsWith\(matrix.target, 'linux-'\)\n        env:\n          RUST_TARGET: \$\{\{ matrix.rust \}\}\n        run: bash scripts\/release\/linux-gnu.sh "\$RUST_TARGET"/);
-  assert.match(workflow, /- uses: Swatinem\/rust-cache@v2\n(?:        #[^\n]*\n)*        if: \$\{\{ !inputs\.clean-build \}\}\n        with:\n          key: \$\{\{ startsWith\(matrix.target, 'linux-'\) && 'glibc-2\.28' \|\| '' \}\}/);
-  for (const step of ['Native correctness, pipe protocol and parser-affinity doctest', 'Strict native lint', 'Build release executable', 'Real release-binary protocol, UTF8 colors, append counters and cleanup']) {
-    assert.ok(workflow.includes(`- name: ${step}\n        if: \${{ !startsWith(matrix.target, 'linux-') }}`), step);
-  }
-  const image = await readFile(join(repo, 'scripts/release/Dockerfile.linux-gnu'), 'utf8');
-  assert.match(image, /^FROM almalinux:8@sha256:[a-f0-9]{64}$/m);
-  assert.match(image, /dnf install -y gcc gcc-c\+\+ make binutils/);
-  assert.match(image, /getconf GNU_LIBC_VERSION/);
-  const script = await readFile(join(repo, 'scripts/release/linux-gnu.sh'), 'utf8');
-  assert.match(script, /x86_64-unknown-linux-gnu/); assert.match(script, /aarch64-unknown-linux-gnu/);
-  assert.match(script, /uname -m/); assert.match(script, /getconf GNU_LIBC_VERSION/);
-  assert.match(script, /rustc --print sysroot/); assert.match(script, /process.execPath/);
-  assert.match(script, /--network=none/); assert.match(script, /--user/);
-  for (const command of ['test --workspace', 'clippy --workspace --all-targets', 'build --release']) {
-    const line = script.split('\n').find(line => line.includes(`cargo ${command}`));
-    assert.ok(line?.includes('--locked --offline') && line.includes('--target "$RUST_TARGET"'), command);
-  }
-  assert.match(script, /allocator_diagnostic_tracks_the_actual_glibc_api/);
-  assert.match(script, /await verifyLinuxRuntime\(process.env.OCCIPITAL_TEST_BIN\)/);
-  assert.match(script, /\^actual owned helper preserves compact UTF8 highlighting and incremental work counters\$/);
-});
+// Actual GNU wrapper/Make invocation, ordering, isolation and failure controls live in makefile.test.ts.
 
 
 test('GNU gate forwards the mounted SDK selection to Cargo-home Rustup proxies', async () => {

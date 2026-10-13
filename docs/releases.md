@@ -118,6 +118,8 @@ bash scripts/release/linux-gnu.sh x86_64-unknown-linux-gnu
 # bash scripts/release/linux-gnu.sh aarch64-unknown-linux-gnu
 ```
 
+The wrapper owns the native-architecture/glibc assertions, Docker image/cache, SDK mounts and network isolation. Inside that environment it delegates the ordered tests, allocator diagnostic, strict lint, locked release build, ABI admission and actual helper smoke to the Makefile's internal `_gnu-native` target, with `CARGO_NET_OFFLINE=true`. That target is not a standalone host baseline check. The shared Make recipes also provide [local build/test shortcuts](testing.md#make-shortcuts); they do not replace release admission, stamping, same-run artifact authority or publication workflows.
+
 The helper honors `CARGO_HOME` and `CARGO_TARGET_DIR`; use an isolated target directory for local experiments. It writes ordinary ignored Cargo/catalogue-test outputs as the invoking user, not root. The diagnostic-only `engine_probe` reports unavailable allocator data as `null` before glibc 2.33; no calibration mode is invoked by this gate.
 
 The release regression suite uses tiny inert files: it checks independent version substitution, lock agreement, invalid tags, GNU symbol-version admission and native baseline wiring, Windows import policy, all-platform assembly and rejection of wrong commits/versions/targets/bytes/URLs or unresolved notices. It does not publish, launch a service, run a load calibration, or replace the real per-platform CI gates.

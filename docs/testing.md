@@ -21,6 +21,47 @@ npm pack --dry-run
 
 `check` is the authoritative strict project TypeScript gate. Unit tests include actual-SDK component/ownership probes as well as deterministic presenter cases. The terminal runner uses `--test-concurrency=1` because its controls drive real CLI processes. Packaging must include every runtime module and maintained document linked from the README, without bundling host libraries or tests.
 
+## Make shortcuts
+
+The checkout includes a GNU Make/POSIX-shell entry point. `make` prints help and performs no installation, compilation or tests. The existing npm commands remain available; the GNU baseline image already includes make.
+
+| Target | Scope |
+| --- | --- |
+| `make deps` | Install lockfile development dependencies with scripts disabled |
+| `make build` | Locked release-mode Occipital build for the local host; copy `occipital`/`occipital.exe` beside the extension |
+| `make check` | Strict TypeScript |
+| `make check-native` | Rust format check and strict all-targets Clippy |
+| `make test` | Ordinary unit/SDK suite; GC/native cases can skip |
+| `make test-gc` | Full unit/SDK suite with `--expose-gc`, truecolor and concurrency 2, matching the CI mode |
+| `make test-focus` | Selected files and optional name pattern; GC/truecolor enabled, concurrency 1 |
+| `make test-rust` | Rust workspace tests and doctests |
+| `make test-native` | Full unit/SDK/GC suite with an existing required helper, including native-gated cases |
+| `make test-syntax` | Short physical syntax CLI suite with an existing required helper |
+| `make test-terminal` | Expensive full physical CLI/replay suite for final UI checks |
+| `make test-release` | Inert packaging/release regressions, including executable Make/GNU-wrapper controls |
+| `make test-installed` | Separate **networked** clean consumer, exact npm installation/acquisition/cache/cleanup check |
+| `make pack-check` | Development-package dry run; no archive or publication |
+
+The extension has no TypeScript bundling step. `make build` does not stamp versions, install packages, download a release, start a service or prepare a published extension. It requires the compiler pinned by `rust-toolchain.toml`, disables Rustup automatic installation (`RUSTUP_AUTO_INSTALL=0`) and fails on a different Cargo/rustc version rather than silently building with it; select an installed toolchain on `PATH` (or set `CARGO`/`RUSTC`). Cargo may fetch missing locked build dependencies. `CARGO_TARGET_DIR` selects the build directory; `RUST_TARGET` can explicitly select the local host triple. Native calibration examples are not run by these shortcuts.
+
+Examples:
+
+```sh
+make check
+make test-focus TEST_FILES='tests/unit.test.ts' TEST_PATTERN='^bash timeout'
+make test-focus TEST_FILES='tests/syntax-work.test.ts tests/syntax-host.test.ts'
+make test-release
+make build
+make test-native
+make test-syntax
+# Final UI verification, not each edit:
+make test-terminal
+```
+
+`test-native` and `test-syntax` default to the colocated helper; `OCCIPITAL_TEST_BIN=/absolute/path/to/occipital` selects another existing executable. They refuse a missing helper instead of returning a green all-skipped native run, and never build implicitly. `test-gc` alone does not establish native acceptance. Shared syntax cases still need an explicit isolated `OCCIPITAL_TEST_SHARED_HOST`; these shortcuts do not discover or start user services. `test-focus` requires `TEST_FILES`; whitespace-separated paths/globs select files, and `TEST_PATTERN` is forwarded as one regex argument. Use the runner's existing `--test-skip-pattern` directly for explicit exclusions, as described below. `NODE`/`NPM` select existing executables, not a runtime installer; select the matching runtime on `PATH` for npm-spawned checks.
+
+`tests/makefile.test.ts` executes the actual Makefile and GNU wrapper in disposable trees with inert tool executors, asserting arguments, phase order, outputs, failure propagation and the real ABI admission function. These are orchestration controls, not a claim that they compiled Rust or passed the physical CLI. These executable fixtures require POSIX and GNU Make; an unavailable environment is an explicit skip. The real native baseline gate remains separate.
+
 ## Test selection and cadence
 
 During the edit–test–fix loop, run strict types and affected unit/SDK cases; run Rust checks when native behavior is affected. `npm test` is the full unit/SDK suite, and `test:native-release` is an inexpensive inert packaging/release suite. For explicit full ownership/GC coverage with the truecolor environment used by CI:

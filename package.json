@@ -34,7 +34,7 @@
     "test": "node --test tests/*.test.ts",
     "test:terminal": "node --test --test-concurrency=1 tests/terminal.test.mjs",
     "test:syntax-terminal": "node --test --test-concurrency=1 --test-name-pattern=\"^occipital CLI:\" tests/syntax-terminal.test.mjs",
-    "test:native-release": "node --test tests/native-release.test.mjs tests/release-ci.test.mjs tests/release-version.test.mjs tests/npm-release.test.mjs tests/extension-release.test.mjs",
+    "test:native-release": "node --test tests/native-release.test.mjs tests/release-ci.test.mjs tests/release-version.test.mjs tests/npm-release.test.mjs tests/extension-release.test.mjs tests/makefile.test.ts",
     "test:installed-native": "node tests/fixtures/installed-occipital.mjs"
   },
   "engines": {
