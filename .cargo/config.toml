@@ -1,5 +1,7 @@
+# PE wall-clock timestamps and CodeView GUIDs changed otherwise identical release bytes.
+# Ask the MSVC linker for reproducible output; compare raw artifacts, never patched bytes.
 [target.x86_64-pc-windows-msvc]
-rustflags = ["-C", "target-feature=+crt-static"]
+rustflags = ["-C", "target-feature=+crt-static", "-C", "link-arg=/Brepro"]
 
 [target.aarch64-pc-windows-msvc]
-rustflags = ["-C", "target-feature=+crt-static"]
+rustflags = ["-C", "target-feature=+crt-static", "-C", "link-arg=/Brepro"]

@@ -306,7 +306,9 @@ test('CI retains the selected hidden-directory physical terminal failure capture
 
 test('Windows builds statically link CRT for both targets and inspect the actual executable before staging', async () => {
   const config = await readFile(join(repo, '.cargo/config.toml'), 'utf8');
-  const targets = [...config.matchAll(/^\[target\.([^\]]+)\]\nrustflags = \["-C", "target-feature=\+crt-static"\]$/gm)].map(match => match[1]);
+  const entries = [...config.matchAll(/^\[target\.([^\]]+)\]\nrustflags = (\[[^\n]+\])$/gm)];
+  const targets = entries.map(match => match[1]);
+  for (const entry of entries) assert.deepEqual(JSON.parse(entry[2]).slice(0, 2), ['-C', 'target-feature=+crt-static']);
   assert.deepEqual(targets.sort(), ['aarch64-pc-windows-msvc', 'x86_64-pc-windows-msvc']);
   assert.equal([...config.matchAll(/^\[/gm)].length, 2, 'no flags for unrelated targets or host-wide build override');
   const workflow = await readFile(join(repo, '.github/workflows/occipital.yml'), 'utf8');
@@ -317,6 +319,13 @@ test('Windows builds statically link CRT for both targets and inspect the actual
   const script = await readFile(join(repo, 'scripts/release/native-ci.mjs'), 'utf8');
   assert.match(script, /candidateTargets\[target\]\.os === 'win32'\) await verifyWindowsRuntime\(binary\)/);
   assert.ok(script.indexOf('await verifyWindowsRuntime(binary)') < script.indexOf('await stageRelease('));
+});
+
+test('Windows native builds request deterministic PE timestamps and CodeView identity without byte normalization', async () => {
+  const config = await readFile(join(repo, '.cargo/config.toml'), 'utf8');
+  const entries = [...config.matchAll(/^\[target\.([^\]]+)\]\nrustflags = (\[[^\n]+\])$/gm)];
+  assert.deepEqual(entries.map(entry => entry[1]), ['x86_64-pc-windows-msvc', 'aarch64-pc-windows-msvc']);
+  for (const entry of entries) assert.deepEqual(JSON.parse(entry[2]), ['-C', 'target-feature=+crt-static', '-C', 'link-arg=/Brepro']);
 });
 
 test('Windows executable import guard rejects VC runtime variants and refuses empty inspection output', () => {
