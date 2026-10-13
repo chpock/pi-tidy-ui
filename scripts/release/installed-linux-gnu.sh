@@ -23,6 +23,8 @@ if [[ -n "${npm_config_cache:-}" ]]; then
   npm_cache_args=(-v "$npm_cache:$npm_cache" --env "npm_config_cache=$npm_cache")
 fi
 
+# Reuse the native gate's tooling layer instead of reinstalling system packages;
+# explicit inline metadata/cache-from also makes CI archive restores effective.
 cache_args=(--build-arg BUILDKIT_INLINE_CACHE=1)
 if docker image inspect "$image" >/dev/null 2>&1; then
   cache_args+=(--cache-from "$image")

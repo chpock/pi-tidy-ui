@@ -21,6 +21,8 @@ mkdir -p "$target_dir"
 target_dir="$(cd "$target_dir" && pwd)"
 image="occipital-gnu228-$docker_arch"
 
+# Imported images need inline metadata and --cache-from on a fresh builder:
+# reuse the slow package-install layer while still evaluating the current recipe.
 cache_args=(--build-arg BUILDKIT_INLINE_CACHE=1)
 if docker image inspect "$image" >/dev/null 2>&1; then
   cache_args+=(--cache-from "$image")

@@ -11,6 +11,8 @@ const stages = new Set(['npm', 'idealTree', 'reify', 'build', 'command', 'instal
 
 type CacheStatus = 'hit' | 'miss' | 'revalidated' | 'updated' | 'skip';
 type Event = { line: number; event: string; status?: number; elapsedMs?: number; cache?: CacheStatus; resource?: 'tarball' | 'document' | 'unknown' };
+// An HTTP-free install can still spend most of its time rebuilding the dependency
+// tree. Keep phase timers separate from cache/network events to locate that cost.
 const phaseNames = new Set(['npm', 'npm:load', 'idealTree', 'idealTree:init', 'idealTree:userRequests',
   'idealTree:buildDeps', 'idealTree:fixDepFlags', 'idealTree:inflate', 'idealTree:prune',
   'reify', 'reify:loadTrees', 'reify:diffTrees', 'reify:retireShallow', 'reify:createSparse',
