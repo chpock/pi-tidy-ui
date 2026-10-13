@@ -90,11 +90,33 @@ jobs:
       - run: cargo fmt --all --check
       - name: Fetch every locked build/target dependency for the notice inventory
         run: cargo fetch --locked
+      # Repeated system-package installation was measurable CI overhead. Cache only
+      # the public tooling image; compiler outputs and all native checks remain separate.
+      # Scope it by architecture and recipe/base digest: packages refresh on recipe
+      # changes, not every commit, and a different userspace must not reuse this image.
+      - name: GNU tooling image cache
+        id: gnu-image-cache
+        if: startsWith(matrix.target, 'linux-')
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/occipital-gnu-image.tar
+          key: gnu-tooling-v1-${{ matrix.target }}-${{ hashFiles('scripts/release/Dockerfile.linux-gnu') }}
+      - name: Restore GNU tooling image
+        if: ${{ startsWith(matrix.target, 'linux-') && steps.gnu-image-cache.outputs.cache-hit == 'true' }}
+        env:
+          IMAGE_ARCHIVE: ${{ runner.temp }}/occipital-gnu-image.tar
+        run: docker load --input "$IMAGE_ARCHIVE"
       - name: GNU glibc 2.28 native build and runtime checks
         if: startsWith(matrix.target, 'linux-')
         env:
           RUST_TARGET: ${{ matrix.rust }}
         run: bash scripts/release/linux-gnu.sh "$RUST_TARGET"
+      - name: Export GNU tooling image on cache miss
+        if: ${{ startsWith(matrix.target, 'linux-') && steps.gnu-image-cache.outputs.cache-hit != 'true' }}
+        env:
+          IMAGE_ARCHIVE: ${{ runner.temp }}/occipital-gnu-image.tar
+          IMAGE_ARCH: ${{ matrix.target == 'linux-x64-gnu' && 'amd64' || 'arm64' }}
+        run: docker save --output "$IMAGE_ARCHIVE" "occipital-gnu228-$IMAGE_ARCH"
       - name: Native correctness, pipe protocol and parser-affinity doctest
         if: ${{ !startsWith(matrix.target, 'linux-') }}
         env:
@@ -127,6 +149,8 @@ jobs:
           SOURCE_COMMIT="$(git rev-parse HEAD)"
           export SOURCE_COMMIT
           node scripts/release/native-ci.mjs stage "$TARGET" "target/$RUST_TARGET/release/$EXECUTABLE" "$RUNNER_TEMP/occipital-native-artifact"
+      # Reuse downloaded package bodies across commits and Node versions, not installed
+      # trees: clean consumers and Occipital's cold-download checks must still run.
       - name: Installed npm package cache
         if: ${{ !startsWith(inputs.release-ref, 'refs/tags/occipital-v') }}
         uses: actions/cache@v4
@@ -134,6 +158,11 @@ jobs:
           path: ${{ runner.temp }}/occipital-npm-cache/_cacache
           key: installed-npm-v1-${{ matrix.target }}-${{ hashFiles('package-lock.json') }}
           restore-keys: installed-npm-v1-${{ matrix.target }}-
+      # HTTP-free x64 installs were still slow in system temp (C:); paired C:/D:
+      # trials showed much faster unpacking/cleanup in runner temp (D:). Use the
+      # runner's directory without assuming a second drive or changing antivirus;
+      # the current single-volume ARM64 runner has no measured cross-drive gain.
+      # A larger Node I/O pool did not resolve unpack costs; retain the default four.
       - name: Installed adopted pin on Node 22.19.0
         if: ${{ !startsWith(inputs.release-ref, 'refs/tags/occipital-v') }}
         timeout-minutes: 15
@@ -142,8 +171,11 @@ jobs:
           TARGET: ${{ matrix.target }}
           RUST_TARGET: ${{ matrix.rust }}
           npm_config_cache: ${{ runner.temp }}/occipital-npm-cache
+          UV_THREADPOOL_SIZE: '4'
         run: |
-          if [[ "$TARGET" == linux-* ]]; then
+          if [[ "$TARGET" == windows-* ]]; then
+            TEMP="$RUNNER_TEMP" TMP="$RUNNER_TEMP" npm run test:installed-native
+          elif [[ "$TARGET" == linux-* ]]; then
             bash scripts/release/installed-linux-gnu.sh "$RUST_TARGET"
           else
             npm run test:installed-native
@@ -160,14 +192,18 @@ jobs:
           TARGET: ${{ matrix.target }}
           RUST_TARGET: ${{ matrix.rust }}
           npm_config_cache: ${{ runner.temp }}/occipital-npm-cache
+          UV_THREADPOOL_SIZE: '4'
         run: |
-          if [[ "$TARGET" == linux-* ]]; then
+          if [[ "$TARGET" == windows-* ]]; then
+            TEMP="$RUNNER_TEMP" TMP="$RUNNER_TEMP" npm run test:installed-native
+          elif [[ "$TARGET" == linux-* ]]; then
             bash scripts/release/installed-linux-gnu.sh "$RUST_TARGET"
           else
             npm run test:installed-native
           fi
+      # Keep safe success metrics too: a cache hit alone did not explain slow installs.
       - name: Installed npm preparation diagnostics
-        if: ${{ failure() && !startsWith(inputs.release-ref, 'refs/tags/occipital-v') }}
+        if: ${{ always() && !startsWith(inputs.release-ref, 'refs/tags/occipital-v') }}
         uses: actions/upload-artifact@v4
         with:
           name: installed-preparation-${{ matrix.target }}

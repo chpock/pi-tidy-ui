@@ -4,11 +4,12 @@ import { createRequire, syncBuiltinESMExports } from 'node:module';
 import { chmod, copyFile, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { performance } from 'node:perf_hooks';
 import { pathToFileURL } from 'node:url';
 import { candidateTargets } from '../../scripts/release/native-release.mjs';
 import { acquireNative } from '../../src/occipital/native.ts';
 import { NATIVE_RELEASE } from '../../src/occipital/release.ts';
-import { runNpmPreparation } from './npm-preparation.ts';
+import { runNpmPreparation, summarizeTemporaryDrive } from './npm-preparation.ts';
 
 const repo = resolve(import.meta.dirname, '../..');
 if (process.env.EXPECTED_NODE) assert.equal(process.version, `v${process.env.EXPECTED_NODE}`);
@@ -19,9 +20,18 @@ const target = Object.keys(candidateTargets).find(key => candidateTargets[key].o
 assert.ok(target, 'Supported native platform required');
 const artifact = NATIVE_RELEASE.artifacts.find(item => item.target === target);
 assert.ok(artifact);
+const started = performance.now();
+const configuredThreads = Number(process.env.UV_THREADPOOL_SIZE);
+const configuredThreadpoolSize = Number.isSafeInteger(configuredThreads) && configuredThreads > 0 ? configuredThreads : null;
 const temporary = await mkdtemp(join(tmpdir(), 'occipital-installed-'));
-const npm = args => runNpmPreparation(args, { cwd: repo, npmPath: process.env.npm_execpath,
-  logsRoot: join(temporary, 'npm-logs'), reportsRoot: join(repo, '.test-artifacts') });
+let npmMs = 0, completed = false, fixtureError;
+const npm = async args => {
+  const before = performance.now();
+  try {
+    return await runNpmPreparation(args, { cwd: repo, npmPath: process.env.npm_execpath,
+      logsRoot: join(temporary, 'npm-logs'), reportsRoot: join(repo, '.test-artifacts') });
+  } finally { npmMs += performance.now() - before; }
+};
 async function packed(spec) {
   const output = JSON.parse((await npm(['pack', spec, '--ignore-scripts', '--json', '--pack-destination', pack])).stdout);
   // npm <=11 returns an array; npm 12 keys the same records by package name.
@@ -132,8 +142,24 @@ try {
     globalThis.fetch = originalFetch; childProcess.spawn = originalSpawn; syncBuiltinESMExports();
     restoreEnv();
   }
+  completed = true;
+} catch (error) {
+  fixtureError = error;
+  throw error;
 } finally {
   await client?.dispose();
   restoreEnv(); globalThis.fetch = originalFetch; childProcess.spawn = originalSpawn; syncBuiltinESMExports();
+  const cleanupStarted = performance.now();
   await rm(temporary, { recursive: true, force: true });
+  const cleanupMs = Math.round(performance.now() - cleanupStarted);
+  const elapsedMs = Math.round(performance.now() - started);
+  try {
+    await mkdir(join(repo, '.test-artifacts'), { recursive: true });
+    const report = await mkdtemp(join(repo, '.test-artifacts/installed-preparation-'));
+    await writeFile(join(report, 'fixture.json'), JSON.stringify({ node: process.version, target, configuredThreadpoolSize, temporaryDrive: summarizeTemporaryDrive(temporary),
+      completed, elapsedMs, npmMs: Math.round(npmMs), cleanupMs }, null, 2) + '\n');
+  } catch (error) {
+    if (fixtureError) throw new AggregateError([fixtureError, error], 'Installed acceptance failed and fixture diagnostics could not be saved');
+    throw error;
+  }
 }
