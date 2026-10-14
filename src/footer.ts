@@ -2,6 +2,7 @@ import type { ContextUsage, SessionEntry, ThemeColor } from "@earendil-works/pi-
 import { diagnose, type DiagnosticSink } from './diagnostics.ts';
 import { truncateToWidth, visibleWidth, type Component } from "@earendil-works/pi-tui";
 import { layoutMemory, type LayoutMemory } from "./render-cache.ts";
+import { sanitize } from "./summary-args.ts";
 
 /** Source-only switches; reload after changing them. No runtime setting or command. */
 export const FOOTER_FIELDS = { tokenTotals: false, cacheTotals: false, cost: false };
@@ -22,9 +23,10 @@ export interface FooterData {
   context?: ContextUsage;
   auto: boolean;
   subscription: boolean;
+  sessionName?: string;
 }
 interface FooterTheme { fg(color: ThemeColor, text: string): string }
-const counters = { aggregations: 0, entries: 0, layouts: 0 };
+const counters = { aggregations: 0, entries: 0, layouts: 0, titleLookups: 0, titleEntries: 0 };
 /** Numeric test observations only; never retains a session/component. */
 export const footerDiagnostics = () => ({ ...counters });
 
@@ -33,6 +35,19 @@ function cacheRate(usage: Pick<FooterUsage, "input" | "cacheRead" | "cacheWrite"
   if (!usage || ![usage.input, usage.cacheRead, usage.cacheWrite].every(n => Number.isFinite(n) && n >= 0)) return undefined;
   const prompt = usage.input + usage.cacheRead + usage.cacheWrite;
   return prompt > 0 && Number.isFinite(prompt) ? usage.cacheRead / prompt * 100 : undefined;
+}
+
+/** Match /resume's first nonempty raw user text, including abandoned branches. */
+export function footerFirstMessage(entries: readonly SessionEntry[]): string | undefined {
+  counters.titleLookups++;
+  for (const entry of entries) {
+    counters.titleEntries++;
+    if (entry.type !== "message" || entry.message.role !== "user") continue;
+    const content = entry.message.content;
+    const text = typeof content === "string" ? content : content.filter(block => block.type === "text").map(block => block.text).join(" ");
+    if (text) return text;
+  }
+  return undefined;
 }
 
 /** Match native cumulative accounting; retain ten primary reports, not ten distinct percentages. */
@@ -113,6 +128,25 @@ const RESET = "\x1b[0m";
 const CLOSE_LINK = "\x1b]8;;\x1b\\";
 const isolated = (text: string) => RESET + text + CLOSE_LINK + RESET;
 
+/** Fill only the gap left by ordinary status packing; never take producer columns. */
+function sessionLabel(name: string | undefined, gap: number, hasRight: boolean, theme: FooterTheme): string {
+  if (!name || gap < 4) return "";
+  const clean = sanitize(name).replace(/\s+/gu, " ").trim(), size = visibleWidth(clean);
+  const available = gap - 3 - (hasRight ? 3 : 0);
+  if (!size || available < 1) return "";
+  let label = clean;
+  const clipped = size > available;
+  if (clipped) {
+    if (available < 6) return "";
+    const prefix = sanitize(truncateToWidth(clean, available - 1, ""));
+    if (visibleWidth(prefix) < 5) return "";
+    label = prefix + "…";
+  }
+  const separator = isolated(theme.fg("dim", " • "));
+  return separator + isolated(theme.fg("muted", label)) +
+    (hasRight && (clipped || gap - 3 - size === 3) ? separator : "");
+}
+
 /** Pure width fitting: preserve producer ANSI, never parse extension-specific values. */
 export function renderFooter(width: number, data: FooterData, statuses: readonly (readonly [string, string])[], theme: FooterTheme, fields = FOOTER_FIELDS): string[] {
   if (width < 1) return [];
@@ -121,6 +155,10 @@ export function renderFooter(width: number, data: FooterData, statuses: readonly
   const stats = truncateToWidth(metrics(data, theme, fields), width, theme.fg("dim", "…"));
   let leftRow = stats, leftWidth = visibleWidth(stats), right = "", rightWidth = 0;
   const flush = () => {
+    if (!left.length) {
+      const name = sessionLabel(data.sessionName, width - leftWidth - rightWidth, !!right, theme);
+      leftRow += name; leftWidth += visibleWidth(name);
+    }
     if (right) left.push(leftRow + " ".repeat(Math.max(0, width - leftWidth - rightWidth)) + right);
     else if (leftRow) left.push(leftRow);
     leftRow = ""; leftWidth = 0; right = ""; rightWidth = 0;

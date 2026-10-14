@@ -4767,7 +4767,9 @@ async function footerSetup(foreignEditor = false, selectorAtStartup = false) {
   const manager = SessionManager.inMemory("/footer-probe");
   const model = { id: "FOOTER_MODEL", name: "Footer Model", provider: "footer-provider", contextWindow: 272000 };
   let context: { tokens: number | null; percent: number | null; contextWindow: number } | undefined = { tokens: 104500, percent: 104500 / 272000 * 100, contextWindow: 272000 };
-  let scans = 0, contextReads = 0, authReads = 0, auto = true, subscription = true;
+  let scans = 0, contextReads = 0, nameReads = 0, authReads = 0, auto = true, subscription = true;
+  const getName = manager.getSessionName.bind(manager);
+  manager.getSessionName = () => { nameReads++; return getName(); };
   const entries = manager.getEntries.bind(manager);
   manager.getEntries = () => { scans++; return entries(); };
   const statuses = new Map<string, string>([["magic-context", "mc: 104.5K (51%) · idle"]]);
@@ -4806,6 +4808,7 @@ async function footerSetup(foreignEditor = false, selectorAtStartup = false) {
   append(); tidyUi(pi as unknown as ExtensionAPI, { logging: false, settings: fixtureSyntaxOptions().settings, syntax: fixtureSyntaxOptions }); await emit('session_start');
   return { root, host, footer, native, ctx, manager, statuses, append, emit, editor, input,
     render: (width = 140) => footer.children[0]!.render(width), counts: () => ({ scans, contextReads }), authReads: () => authReads,
+    nameReads: () => nameReads,
     context(value: typeof context) { context = value; }, auto(value: boolean) { auto = value; }, subscription(value: boolean) { subscription = value; },
     control: (action: string) => setAppearance(command! as any, ctx as unknown as ExtensionContext, action === 'on'), close: () => emit("session_shutdown") };
 }
@@ -4868,6 +4871,135 @@ test("footer warm frames avoid session scans and context reads across status wid
     const leaf = f.manager.getLeafId()!; f.append(1, 2, 3, 4, 0); f.manager.branch(leaf); f.emit("session_tree");
     const rows = f.render().map(stripVTControlCharacters).join(" ");
     assert.ok(rows.includes("[·······▁▅▅] CH37.5%"), "branch-back retains reports from abandoned raw history");
+  } finally { f.close(); }
+});
+
+test("footer session title follows native resume fallback through first message rename clear and raw branches", async () => {
+  const { footerDiagnostics } = await import("../src/footer.ts");
+  const f = await footerSetup();
+  try {
+    f.statuses.clear();
+    const title = () => f.render().map(stripVTControlCharacters).join(" ");
+    assert.ok(title().endsWith(" • (no messages)"));
+    f.manager.appendMessage({ role: "user", content: [{ type: "image", data: "", mimeType: "image/png" }], timestamp: 1 });
+    await f.emit("message_end"); assert.ok(title().endsWith(" • (no messages)"));
+    f.manager.appendMessage({ role: "user", content: [{ type: "text", text: "First" }, { type: "image", data: "", mimeType: "image/png" }, { type: "text", text: "session message" }], timestamp: 2 });
+    await f.emit("message_end"); assert.ok(title().endsWith(" • First session message"));
+    const first = f.manager.getLeafId()!, found = footerDiagnostics();
+    f.manager.appendMessage({ role: "user", content: "A later message is not the title", timestamp: 3 });
+    await f.emit("message_end"); assert.ok(title().endsWith(" • First session message"));
+    assert.equal(footerDiagnostics().titleLookups, found.titleLookups, "first raw text is stable under later appends");
+    assert.equal(footerDiagnostics().titleEntries, found.titleEntries);
+    const before = f.counts(), names = f.nameReads();
+    f.manager.appendSessionInfo("Explicit title"); await f.emit("session_info_changed", { name: "Explicit title" });
+    assert.ok(title().endsWith(" • Explicit title"));
+    f.manager.appendSessionInfo(""); await f.emit("session_info_changed", { name: undefined });
+    assert.ok(title().endsWith(" • First session message"));
+    assert.deepEqual(f.counts(), before, "rename/clear uses cached fallback without rereading history/context");
+    assert.equal(f.nameReads(), names + 2);
+    const row = f.render(); for (let i = 0; i < 20; i++) assert.equal(f.render(), row);
+    f.render(80); f.statuses.set("extra", "EXTRA"); f.render(140); f.statuses.clear();
+    assert.deepEqual(f.counts(), before); assert.equal(f.nameReads(), names + 2);
+    assert.equal(footerDiagnostics().titleLookups, found.titleLookups);
+    assert.equal(footerDiagnostics().titleEntries, found.titleEntries);
+    f.manager.resetLeaf(); await f.emit("session_tree");
+    assert.ok(title().endsWith(" • First session message"), "resume uses first raw user text even outside current branch");
+    f.manager.createBranchedSession(first); await f.emit("session_start", { reason: "fork" });
+    assert.ok(title().endsWith(" • First session message"), "fork uses its retained file entries");
+    await f.control("off"); await f.control("on"); assert.ok(title().endsWith(" • First session message"));
+    await f.emit("session_start", { reason: "reload" }); assert.ok(title().endsWith(" • First session message"));
+    f.manager.newSession(); await f.emit("session_start", { reason: "new" }); assert.ok(title().endsWith(" • (no messages)"));
+  } finally { f.close(); }
+});
+
+test("footer session names refresh independently of usage and retain warm layouts", async () => {
+  const { footerDiagnostics } = await import("../src/footer.ts");
+  const f = await footerSetup();
+  try {
+    const baseline = f.render(), before = f.counts();
+    for (const name of ["SESSION_TITLE", "X", "", "Another session"]) {
+      const nameReads = f.nameReads();
+      f.manager.appendSessionInfo(name); f.emit("session_info_changed", { name: name || undefined });
+      const updated = f.render();
+      assert.equal(f.nameReads(), nameReads + 1, "one saved-name lookup at a metadata boundary");
+      if (name) assert.ok(updated.map(stripVTControlCharacters).join(" ").includes(" • " + name));
+      else assert.deepEqual(updated.map(stripVTControlCharacters), baseline.map(stripVTControlCharacters));
+      assert.deepEqual(f.counts(), before, "rename/clear is not a usage or context invalidation");
+      const warm = footerDiagnostics();
+      for (let i = 0; i < 20; i++) assert.equal(f.render(), updated);
+      f.statuses.set("extra", "EXTRA"); f.render(100); f.render(140); f.statuses.delete("extra");
+      assert.equal(footerDiagnostics().aggregations, warm.aggregations);
+      assert.equal(f.nameReads(), nameReads + 1, "warm/resize/status changes never search the name again");
+    }
+    f.manager.appendSessionInfo("Pending title one"); f.emit("session_info_changed", { name: "Pending title one" });
+    f.manager.appendSessionInfo("Pending title two"); f.emit("session_info_changed", { name: "Pending title two" });
+    assert.ok(f.render().map(stripVTControlCharacters).join(" ").includes("Pending title two"));
+    assert.deepEqual(f.counts(), before, "consecutive metadata-only appends do not rescan history");
+    f.append(1, 2, 3, 4, 0); f.manager.appendSessionInfo("After real usage"); f.emit("session_info_changed", { name: "After real usage" });
+    f.render(); assert.deepEqual(f.counts(), { scans: before.scans + 1, contextReads: before.contextReads + 1 }, "name must not hide an intervening usage append");
+    f.manager.appendSessionInfo(""); f.emit("session_info_changed", { name: undefined });
+    f.render(); f.statuses.delete("extra");
+    assert.ok(!f.render().map(stripVTControlCharacters).join(" ").includes("After real usage"));
+    assert.notEqual(f.render(), baseline);
+  } finally { f.close(); }
+});
+
+test("footer session name late older events cannot overwrite the current saved name", async () => {
+  const f = await footerSetup();
+  try {
+    f.render(); const before = f.counts();
+    f.manager.appendSessionInfo("Older title"); f.manager.appendSessionInfo("Current title");
+    f.emit("session_info_changed", { name: "Current title" });
+    assert.ok(f.render().map(stripVTControlCharacters).join(" ").includes("Current title"));
+    f.emit("session_info_changed", { name: "Older title" });
+    const row = f.render().map(stripVTControlCharacters).join(" ");
+    assert.ok(row.includes("Current title"), "concurrent async dispatch may deliver an older notification last");
+    assert.ok(!row.includes("Older title")); assert.deepEqual(f.counts(), before);
+    await f.control("off"); f.manager.newSession(); await f.emit("session_start", { reason: "new" });
+    f.emit("session_info_changed", { name: "Older title" }); await f.control("on");
+    assert.ok(!f.render().map(stripVTControlCharacters).join(" ").includes("Older title"), "delayed notification must not rename a replacement session");
+  } finally { f.close(); }
+});
+
+test("footer session name requests a fresh owned frame after delayed event delivery", async () => {
+  const f = await footerSetup();
+  try {
+    const baseline = f.render(), before = f.counts();
+    f.manager.appendSessionInfo("Delayed title");
+    assert.equal(f.render(), baseline, "native repaint can run before an earlier async event handler releases");
+    const requests = f.root.requests;
+    f.emit("session_info_changed", { name: "Delayed title" });
+    assert.equal(f.root.requests, requests + 1, "name delivery requests its own frame even after native repaint");
+    assert.ok(f.render().map(stripVTControlCharacters).join(" ").includes("Delayed title"));
+    assert.deepEqual(f.counts(), before);
+    const updated = f.render();
+    f.emit("session_info_changed", { name: "Delayed title" });
+    assert.equal(f.render(), updated, "duplicate metadata notice preserves the unchanged layout");
+    await f.control("off"); const off = f.root.requests;
+    f.manager.appendSessionInfo("Off title"); f.emit("session_info_changed", { name: "Off title" });
+    assert.equal(f.root.requests, off, "released footer does not request a frame");
+  } finally { f.close(); }
+});
+
+test("footer session name restores through off-on reload and new-session boundaries", async () => {
+  const f = await footerSetup();
+  try {
+    f.manager.appendSessionInfo("Saved session title"); f.emit("session_info_changed", { name: "Saved session title" });
+    const named = f.render().map(stripVTControlCharacters);
+    await f.control("off"); await f.emit("session_start", { reason: "reload" });
+    assert.equal(f.footer.children[0], f.native, "reload preserves the saved appearance-off preference");
+    await f.control("on"); assert.deepEqual(f.render().map(stripVTControlCharacters), named);
+    await f.emit("session_start", { reason: "reload" }); assert.deepEqual(f.render().map(stripVTControlCharacters), named);
+    f.manager.newSession(); await f.emit("session_start", { reason: "new" });
+    assert.ok(!f.render().map(stripVTControlCharacters).join(" ").includes("Saved session title"));
+    f.manager.appendSessionInfo("Restored session title"); await f.emit("session_start", { reason: "resume" });
+    assert.ok(f.render().map(stripVTControlCharacters).join(" ").includes("Restored session title"));
+    const forkLeaf = f.manager.getLeafId()!;
+    f.manager.appendSessionInfo("Later parent title"); f.emit("session_info_changed", { name: "Later parent title" });
+    assert.ok(f.render().map(stripVTControlCharacters).join(" ").includes("Later parent title"));
+    f.manager.createBranchedSession(forkLeaf); await f.emit("session_start", { reason: "fork" });
+    const forked = f.render().map(stripVTControlCharacters).join(" ");
+    assert.ok(forked.includes("Restored session title")); assert.ok(!forked.includes("Later parent title"));
   } finally { f.close(); }
 });
 
