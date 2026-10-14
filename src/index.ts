@@ -1455,7 +1455,9 @@ export default function tidyUi(pi: ExtensionAPI, options: TidyUiRuntimeOptions =
   const palette = () => colors?.palette(liveContext!.ui.theme) ?? liveContext!.ui.theme;
   let directorySource: GitBranchSource | undefined;
   let ownedFooter: FooterView | undefined;
+  let footerRender: WeakRef<{ requestRender(): void }> | undefined;
   let footerEpoch = 0;
+  let footerName: { session: string; value: string | undefined } | undefined;
   function restoreFooter() {
     // Public dispose tells us when another owner replaced our component.
     if (ownedFooter) { diagnose(logging?.sink, "INFO", "footer", "Owned footer released through public UI; native placement restored"); liveContext?.ui.setFooter(undefined); }
@@ -1496,26 +1498,38 @@ export default function tidyUi(pi: ExtensionAPI, options: TidyUiRuntimeOptions =
     const diagnostic = logging?.sink;
     diagnose(diagnostic, "INFO", "footer", "Custom footer installed beside owned stock input");
     ctx.ui.setFooter((_tui, _theme, data) => {
+      footerRender = new WeakRef(_tui);
       let snapshot: FooterData | undefined;
       let stamp: { epoch: number; session: string; leaf: string | null; model: ExtensionContext["model"] } | undefined;
       const view = new FooterView(() => {
         const current = liveContext!;
         const manager = current.sessionManager, session = manager.getSessionId(), leaf = manager.getLeafId(), model = current.model;
+        if (footerName?.session !== session) footerName = { session, value: manager.getSessionName() };
+        if (stamp?.session === session && stamp.leaf !== leaf) {
+          // Metadata-only appends move the leaf but do not change usage/context.
+          let entry = manager.getLeafEntry();
+          while (entry?.type === "session_info") {
+            if (entry.parentId === stamp.leaf) { stamp.leaf = leaf; break; }
+            entry = entry.parentId ? manager.getEntry(entry.parentId) : undefined;
+          }
+        }
+        const sessionName = footerName.value;
         const auto = pi.getSettings().compaction?.enabled ?? true;
         const subscription = FOOTER_FIELDS.cost && !!model && (model.provider === "kimi-coding" ||
           (current.modelRegistry.isUsingOAuth(model) && current.modelRegistry.getProvider(model.provider)?.auth.oauth?.isSubscription === true));
         if (!snapshot || !stamp || stamp.epoch !== footerEpoch || stamp.session !== session || stamp.leaf !== leaf || stamp.model !== model) {
-          snapshot = { usage: footerUsage(manager.getEntries()), context: current.getContextUsage(), auto, subscription };
+          snapshot = { usage: footerUsage(manager.getEntries()), context: current.getContextUsage(), auto, subscription, sessionName };
           diagnose(diagnostic, "DEBUG", "footer", "Footer usage snapshot refreshed by existing semantic boundary", { epoch: footerEpoch, session, model: model?.name, provider: model?.provider, auto });
           stamp = { epoch: footerEpoch, session, leaf, model };
-        } else if (snapshot.auto !== auto || snapshot.subscription !== subscription) snapshot = { ...snapshot, auto, subscription };
+        } else if (snapshot.auto !== auto || snapshot.subscription !== subscription || snapshot.sessionName !== sessionName)
+          snapshot = { ...snapshot, auto, subscription, sessionName };
         return snapshot;
       }, () => data.getExtensionStatuses(), () => liveContext!.ui.theme, footerActive, diagnostic);
       ownedFooter = view;
       return Object.assign(view, { dispose() {
         view.clear(); snapshot = undefined; stamp = undefined;
         diagnose(diagnostic, "INFO", "footer", "Public footer disposal observed; no replacement of a later owner");
-        if (ownedFooter === view) ownedFooter = undefined;
+        if (ownedFooter === view) { ownedFooter = undefined; footerRender = undefined; }
       } });
     });
   }
@@ -1603,10 +1617,15 @@ export default function tidyUi(pi: ExtensionAPI, options: TidyUiRuntimeOptions =
   };
   pi.on("tool_execution_end", refreshDirectory);
   pi.on("agent_end", (event, ctx) => { liveBashCalls.clear(); refreshDirectory(event, ctx); });
-  pi.on("session_start", (event, ctx) => { liveBashCalls.clear(); startLogging(ctx, event.reason); start(ctx); });
-  pi.on("session_info_changed", (event, _ctx) => { logging?.nameChanged(event.name); });
+  pi.on("session_start", (event, ctx) => { liveBashCalls.clear(); footerName = undefined; startLogging(ctx, event.reason); start(ctx); });
+  pi.on("session_info_changed", (event) => {
+    // Async handlers may deliver old notifications last; reread current saved metadata once.
+    footerName = undefined;
+    if (ownedFooter) footerRender?.deref()?.requestRender();
+    logging?.nameChanged(event.name);
+  });
   pi.on("session_shutdown", async (event, ctx) => {
-    liveBashCalls.clear();
+    liveBashCalls.clear(); footerName = undefined;
     liveContext = ctx; logSnapshot(); pendingFooter = undefined; stopColors(); restoreFooter(); controller?.restore(); controller = undefined;
     const stopped = stopSyntax(); liveContext = undefined; syntaxContext.current = undefined;
     await stopped;

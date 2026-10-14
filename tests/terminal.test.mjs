@@ -4361,7 +4361,7 @@ test('right-aligned cwd and live Git branch preserve colors padding and zero hot
 
 
 async function footerObserve(terminal, name, action = 'snapshot', animated = false) {
-  writeFileSync(join(terminal.output, 'footer-request.json'), JSON.stringify({ name, action }));
+  writeFileSync(join(terminal.output, 'footer-request.json'), JSON.stringify({ name, ...(typeof action === 'string' ? { action } : action) }));
   terminal.send('\x1b\x06');
   const dump = await until(() => {
     terminal.health();
@@ -4465,6 +4465,103 @@ test('footer whole-status fitting colors native data warm counters ownership and
       observations.push({ mode, warm: warm.counters, nativeContext: control.context, replayContext: resumed.context });
     }
     writeFileSync(join(artifacts, 'footer-counters.json'), JSON.stringify(observations, null, 2));
+  } finally { for (const terminal of terminals) { await terminal.close(); terminal.dispose(); } }
+});
+
+test('footer session name fills spare columns without repacking statuses and restores saved metadata', { skip: stockOnly }, async () => {
+  const terminals = [], observations = [];
+  try {
+    for (const mode of ['regular', 'fullscreen']) {
+      const options = { mode, extraEnv: { TIDY_UI_TEST_FOOTER: '1' }, extensions: [join(fixtures, 'footer-driver.ts')] };
+      const native = new PiTerminal(`footer-name-native-${mode}`, options); terminals.push(native); await native.ready();
+      await native.run('future'); const nativeTraffic = await native.capture('traffic');
+      const nativeName = await footerObserve(native, 'named', { action: 'name', sessionName: 'SESSION' });
+      const live = new PiTerminal(`footer-name-live-${mode}`, { ...options, extraEnv: { ...options.extraEnv, TIDY_UI_TEST_FOOTER_PRESENTATION: '1' }, workspace: native.work });
+      terminals.push(live); await live.ready(); await live.run('future');
+      const traffic = await live.capture('traffic');
+      assert.deepEqual(persisted(traffic), persisted(nativeTraffic));
+      const trafficKinds = ['call', 'result', 'model_context'];
+      assert.deepEqual(live.events().filter(e => trafficKinds.includes(e.type)), native.events().filter(e => trafficKinds.includes(e.type)));
+      assert.equal(live.events().filter(e => e.type === 'call').length, 1);
+      assert.equal(live.events().filter(e => e.type === 'result').length, 1);
+      let empty = await footerObserve(live, 'empty'); footerPhysical(empty);
+      const stats = plain(empty.rows[0]), statsWidth = visibleWidth(stats);
+      const changed = await footerObserve(live, 'named', { action: 'name', sessionName: 'SESSION' });
+      assert.equal(plain(changed.rows[0]), stats + ' • SESSION'); footerPhysical(changed);
+      for (const key of ['scans', 'contextReads', 'aggregations', 'entries']) assert.equal(changed.counters[key], empty.counters[key], 'rename updates no usage/context work');
+      assert.equal(changed.nameActionReads, nativeName.nameActionReads, 'same synchronous name reads as the actual native rename control');
+      assert.equal(changed.counters.nameReads, empty.counters.nameReads + nativeName.nameActionReads + 1, 'one saved-name lookup at the metadata boundary beyond measured native rename work');
+      let statuses = await footerObserve(live, 'statuses', 'statuses');
+      const firstStatus = plain(statuses.statuses.find(([key]) => key === 'a-probe')[1]);
+      const allRight = firstStatus + ' • OTHER_STATUS';
+      for (const [gap, expected] of [[15, ' • SESSION     '], [13, ' • SESSION • '], [12, ' • SESSI… • '], [11, ' '.repeat(11)]]) {
+        await live.resize(statsWidth + visibleWidth(allRight) + gap);
+        const named = await footerObserve(live, `gap-${gap}`); footerPhysical(named);
+        assert.deepEqual(named.rows.map(plain), [stats + expected + allRight]);
+        const cleared = await footerObserve(live, `gap-${gap}-clear`, { action: 'name', sessionName: '' });
+        assert.equal(cleared.rows.length, named.rows.length);
+        assert.equal(plain(cleared.rows[0]).indexOf(firstStatus), plain(named.rows[0]).indexOf(firstStatus), 'name never changes producer x');
+        assert.deepEqual(cleared.rows.slice(1), named.rows.slice(1));
+        await footerObserve(live, `gap-${gap}-restore`, { action: 'name', sessionName: 'SESSION' });
+      }
+      await live.resize(statsWidth + 10);
+      const overflow = await footerObserve(live, 'overflow'); footerPhysical(overflow);
+      assert.equal(plain(overflow.rows[0]), stats + ' • SESSION', 'statuses on later rows do not add a trailing separator');
+      const noName = await footerObserve(live, 'overflow-clear-name', { action: 'name', sessionName: '' });
+      assert.deepEqual(noName.rows.slice(1), overflow.rows.slice(1));
+      await footerObserve(live, 'clear-statuses', 'clear');
+      await live.resize(statsWidth + 9);
+      let unicode = await footerObserve(live, 'unicode-hidden', { action: 'name', sessionName: '界界界界' });
+      assert.deepEqual(unicode.rows.map(plain), [stats], 'five available prefix columns retaining four CJK columns are hidden');
+      await live.resize(statsWidth + 10); unicode = await footerObserve(live, 'unicode-shown');
+      assert.equal(plain(unicode.rows[0]), stats + ' • 界界界…'); footerPhysical(unicode);
+      await live.resize(statsWidth + 4);
+      const short = await footerObserve(live, 'short', { action: 'name', sessionName: 'X' });
+      assert.equal(plain(short.rows[0]), stats + ' • X'); footerPhysical(short);
+      await live.resize(100);
+      await footerObserve(live, 'color-statuses', 'statuses');
+      await footerObserve(live, 'color-name', { action: 'name', sessionName: 'A long readable session title with more text than fits beside statuses' });
+      for (const action of ['light', 'dark']) {
+        const styled = await footerObserve(live, `name-${action}`, action), y = footerPhysical(styled), row = plain(styled.rows[0]);
+        const x = row.indexOf('A long'), end = row.indexOf('…', x);
+        assert.ok(x >= 0 && end > x, 'actual shortened title is visible');
+        const mutedRef = await referenceCell(styled.styles.muted), dimRef = await referenceCell(styled.styles.dim);
+        for (let i = x; i <= end; i++) { assert.equal(styled.cells[y][i].fg, mutedRef.fg); assert.equal(styled.cells[y][i].fgMode, mutedRef.fgMode); }
+        for (const begin of [x - 3, end + 1]) for (let i = begin; i < begin + 3; i++) {
+          assert.equal(styled.cells[y][i].fg, dimRef.fg); assert.equal(styled.cells[y][i].fgMode, dimRef.fgMode);
+        }
+      }
+      await footerObserve(live, 'delayed-clear-statuses', 'clear');
+      const delayed = await footerObserve(live, 'delayed-pending', { action: 'delayed-name', sessionName: 'Delayed session title' });
+      assert.ok(!delayed.rows.map(plain).join(' ').includes('Delayed session title'), 'earlier async extension holds public name event past the native repaint');
+      footerPhysical(delayed);
+      writeFileSync(join(live.output, 'footer-name-release'), 'release');
+      const frame = await until(() => {
+        try { const value = JSON.parse(readFileSync(join(live.output, 'delayed-name-frame.json'), 'utf8')); return value.rows.map(plain).join(' ').includes('Delayed session title') && value; }
+        catch (error) { if (error.code === 'ENOENT' || error instanceof SyntaxError) return false; throw error; }
+      }, 'fresh footer frame after delayed event, without any further terminal input');
+      await live.settle(); footerPhysical(live.captureScreen('delayed-fresh-frame', frame));
+      assert.equal(plain(frame.rows[0]), stats + ' • Delayed session title');
+      for (const key of ['scans', 'contextReads', 'aggregations', 'entries']) assert.equal(frame.counters[key], delayed.counters[key], 'delayed name delivery only rebuilds presentation');
+      assert.equal(frame.counters.nameReads, delayed.counters.nameReads + 1, 'delayed delivery rereads the current saved name exactly once');
+      await footerObserve(live, 'saved-name', { action: 'name', sessionName: 'Saved session title' });
+      await footerObserve(live, 'saved-clear-statuses', 'clear');
+      const saved = await footerObserve(live, 'saved'), bytes = readFileSync(saved.session);
+      for (const command of ['/tidy-ui off', '/tidy-ui on', '/reload']) await live.command(command);
+      const reloaded = await footerObserve(live, 'reloaded'); footerPhysical(reloaded);
+      assert.deepEqual(reloaded.rows, saved.rows);
+      const warm = await footerObserve(live, 'warm');
+      for (let i = 0; i < 8; i++) assert.deepEqual((await footerObserve(live, `warm-${i}`)).counters, warm.counters);
+      assert.deepEqual(readFileSync(saved.session), bytes, 'presentation lifecycle leaves saved name/session bytes unchanged');
+      const replay = new PiTerminal(`footer-name-replay-${mode}`, { ...options, extraEnv: { ...options.extraEnv, TIDY_UI_TEST_FOOTER_PRESENTATION: '1' }, session: saved.session, workspace: live.work });
+      terminals.push(replay); await replay.ready();
+      const resumed = await footerObserve(replay, 'restored'); footerPhysical(resumed);
+      assert.deepEqual(resumed.rows, saved.rows);
+      assert.deepEqual(readFileSync(saved.session), bytes);
+      assert.equal(replay.events().filter(e => trafficKinds.includes(e.type)).length, 0, 'replay executes zero tools/results/model requests');
+      observations.push({ mode, renameBefore: empty.counters, renameAfter: changed.counters, warm: warm.counters, replay: resumed.counters });
+    }
+    writeFileSync(join(artifacts, 'footer-name-counters.json'), JSON.stringify(observations, null, 2));
   } finally { for (const terminal of terminals) { await terminal.close(); terminal.dispose(); } }
 });
 
