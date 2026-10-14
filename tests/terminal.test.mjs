@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { once } from 'node:events';
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, copyFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync, copyFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -51,13 +51,17 @@ async function until(check, label, timeout = 12000) {
 export class PiTerminal {
   // The integration-profile helper may supply additional isolated settings, environment and explicit extensions.
   constructor(name, { tidyUi = false, mode = 'fullscreen', session, flags = [],
-    agentSettings = {}, extraEnv = {}, extensions = [], workspace, profileFactory } = {}) {
+    agentSettings = {}, extraEnv = {}, extensions = [], workspace, profileFactory, tidyUiSettings } = {}) {
     this.output = join(artifacts, name);
     mkdirSync(this.output);
     this.temp = mkdtempSync(join(tmpdir(), 'pi-tidy-ui-terminal-'));
     this.work = workspace || join(this.temp, 'work');
     this.agent = join(this.temp, 'agent');
     mkdirSync(this.work, { recursive: true }); mkdirSync(this.agent);
+    if (tidyUiSettings) {
+      const config = join(this.agent, 'extensions/pi-tidy-ui/config.json');
+      mkdirSync(dirname(config), { recursive: true }); writeFileSync(config, JSON.stringify(tidyUiSettings));
+    }
     this.profile = profileFactory?.({ homeDir: this.temp, agentDir: this.agent, workDir: this.work,
       provider: 'tidy-ui-offline', model: 'scripted' });
     for (const file of this.profile?.configFiles || []) {
@@ -184,6 +188,121 @@ export class PiTerminal {
   screen() {
     const buffer = this.term.buffer.active;
     return Array.from({ length: this.term.rows }, (_, y) => buffer.getLine(buffer.viewportY + y)?.translateToString(true) || '');
+  }
+  tidyRows() {
+    const width = Math.min(72, this.term.cols), left = Math.floor((this.term.cols - width) / 2);
+    return this.screen().map(row => row.slice(left, left + width)).map(row => row.startsWith('│') ? row.slice(1, -1).trimEnd() : this.term.rows < 5 ? row.trimEnd() : '');
+  }
+  tidyHeading(title) { return this.tidyRows().some(row => row === title || row.length >= 4 && row.endsWith('…') && title.startsWith(row.slice(0, -1))); }
+  async openTidyMenu() {
+    this.send('/tidy-ui\r');
+    await until(() => this.tidyHeading('Tidy UI') || this.term.rows < 5 && this.tidyRows().some(row => row.startsWith('→ Code color theme')), 'public Tidy UI popup');
+  }
+  async selectTidyItem(label, activate = true) {
+    const selected = () => this.tidyRows().findIndex(row => row.startsWith('→ '));
+    for (let i = 0; i < 100; i++) {
+      const index = selected(), row = this.tidyRows()[index];
+      assert.ok(row, `selected public popup row for ${label}: ${this.screen().join('\n')}`);
+      const paintedLabel = row.slice(2).split('…')[0].split(/ {2,}/u)[0].replace(/\s+›$/u, '').trimEnd();
+      // This root row has an arbitrary theme value; an exact-fit label can leave only one separating space.
+      const rootTheme = label === 'Code color theme' && row.startsWith(`→ ${label} `);
+      if (rootTheme || label.startsWith(paintedLabel)) {
+        if (!activate) return row;
+        const before = row;
+        this.send('\r');
+        const pages = ['Code color theme', 'Status & troubleshooting', 'Highlighting service details', 'Diagnostic logs', 'Display cache'];
+        if (pages.includes(label)) await until(() => {
+          const rows = this.tidyRows(), selected = rows.find(line => line.startsWith('→ ')) ?? '';
+          const first = { 'Status & troubleshooting': 'Reapply Tidy UI appearance', 'Highlighting service details': 'Back',
+            'Diagnostic logs': 'Record diagnostic logs', 'Display cache': 'Refresh statistics' }[label];
+          const prefix = selected.slice(2).split('…')[0].split(/ {2,}/u)[0].trimEnd();
+          return this.tidyHeading(label) && !rows.some(line => line.includes('Loading saved code theme')) &&
+            (first ? prefix && first.startsWith(prefix) : selected.includes('Follow Pi') || selected.endsWith('Selected'));
+        }, `popup page ${label}`);
+        else await until(() => {
+          const rows = this.tidyRows();
+          const feedback = rows.some(line => /Applied and saved\.|Done\.|Status refreshed\.|Cache statistics refreshed\./u.test(line));
+          const changed = !/\s(?:On|Off)$/u.test(before) || rows.find(line => line.startsWith('→ ')) !== before;
+          if (this.term.rows < 5) {
+            const switches = { 'Tidy UI appearance': 'appearanceEnabled', 'Match terminal colors to Pi': 'terminalColorsEnabled' };
+            const key = switches[label];
+            if (key && changed) { try { return JSON.parse(readFileSync(join(this.agent, 'extensions/pi-tidy-ui/config.json'), 'utf8'))[key] === before.endsWith('Off'); } catch { return false; } }
+          }
+          return feedback && changed;
+        }, `popup action ${label}`);
+        return;
+      }
+      const before = `${index}:${row}`;
+      this.send('\x1b[B');
+      await until(() => `${selected()}:${this.tidyRows()[selected()]}` !== before, `popup selection after ${paintedLabel}`);
+    }
+    assert.fail(`Public popup item not found: ${label}`);
+  }
+  async closeTidyMenu() {
+    this.send('\x03');
+    await until(() => !this.tidyRows().some(row => row.startsWith('→ ')), 'popup closed');
+  }
+  async tidyPage(path = []) {
+    await this.openTidyMenu();
+    try { for (const label of path) await this.selectTidyItem(label); return this.tidyRows(); }
+    finally { await this.closeTidyMenu(); }
+  }
+  async appearance(enabled, { alreadyOpen = false, leaveOpen = false } = {}) {
+    if (alreadyOpen) await until(() => this.tidyRows().some(row => row.startsWith('→ ')), 'shortcut opened public settings popup');
+    else await this.openTidyMenu();
+    try {
+      const row = await this.selectTidyItem('Tidy UI appearance', false);
+      if (row.endsWith(enabled ? 'Off' : 'On')) await this.selectTidyItem('Tidy UI appearance');
+      else if (enabled) { await this.selectTidyItem('Status & troubleshooting'); await this.selectTidyItem('Reapply Tidy UI appearance'); }
+    } finally { if (!leaveOpen) await this.closeTidyMenu(); }
+  }
+  async terminalColors(enabled, { alreadyOpen = false } = {}) {
+    if (alreadyOpen) await until(() => this.tidyHeading('Tidy UI'), 'shortcut opened terminal-color settings');
+    else await this.openTidyMenu();
+    try {
+      const row = await this.selectTidyItem('Match terminal colors to Pi', false);
+      if (row.endsWith(enabled ? 'Off' : 'On')) await this.selectTidyItem('Match terminal colors to Pi');
+      else if (enabled) { await this.selectTidyItem('Status & troubleshooting'); await this.selectTidyItem('Reapply terminal colors'); }
+    } finally { await this.closeTidyMenu(); }
+  }
+  async diagnosticLogging(enabled) {
+    await this.openTidyMenu();
+    try {
+      await this.selectTidyItem('Status & troubleshooting'); await this.selectTidyItem('Diagnostic logs');
+      const row = await this.selectTidyItem('Record diagnostic logs', false);
+      if (row.endsWith(enabled ? 'Off' : 'On')) await this.selectTidyItem('Record diagnostic logs');
+    } finally { await this.closeTidyMenu(); }
+  }
+  async cacheSnapshot(clear = false, { alreadyOpen = false, beforeClose, refreshAfterClear = false } = {}) {
+    if (alreadyOpen) await until(() => this.tidyHeading('Tidy UI'), 'shortcut opened cache popup');
+    else await this.openTidyMenu();
+    try {
+      await this.selectTidyItem('Status & troubleshooting'); await this.selectTidyItem('Display cache');
+      if (clear) {
+        await this.selectTidyItem('Clear saved layouts');
+        await until(() => this.tidyRows().some(row => row.startsWith('Saved layouts: 0;')), 'zero-layout clear receipt in public popup');
+      }
+      if (clear && refreshAfterClear) await this.selectTidyItem('Refresh statistics');
+      let combined = [], previous = [];
+      for (let i = 0; i < 100; i++) {
+        const rows = this.tidyRows(), start = rows.indexOf('Display cache') + 1;
+        const end = rows.findIndex(row => /^(?:→ |  )(?:Refresh statistics|Clear saved layouts|Back)/u.test(row));
+        assert.ok(start > 0 && end > start, `public cache detail region is visible: ${JSON.stringify(rows)}`);
+        const current = rows.slice(start, end);
+        let overlap = Math.min(previous.length, current.length);
+        while (overlap && JSON.stringify(previous.slice(-overlap)) !== JSON.stringify(current.slice(0, overlap))) overlap--;
+        combined.push(...current.slice(overlap)); previous = current;
+        const begin = combined.indexOf('Diagnostic JSON:'), finish = combined.indexOf('End diagnostic JSON');
+        if (begin >= 0 && finish > begin) {
+          const result = JSON.parse(combined.slice(begin + 1, finish).join(''));
+          if (clear) this.captureScreen('tidy-cache-cleared', { cacheSnapshot: result });
+          beforeClose?.(result); return result;
+        }
+        this.send('\x1b[6~');
+        await until(() => JSON.stringify(this.tidyRows().slice(start, end)) !== JSON.stringify(current), 'scroll public cache details');
+      }
+      assert.fail('No complete public cache diagnostic JSON');
+    } finally { await this.closeTidyMenu(); }
   }
   async capture(name, { animated = false } = {}) {
     this.send(`/tidy-ui-dump ${name}\r`);
@@ -619,14 +738,14 @@ test('real CLI: pi-tidy-ui policy, input, lifecycle and same-session stock repla
       assert.ok(titleRow >= 0);
       live.send(`\x1b[<0;${column};${titleRow + 1}M\x1b[<0;${column};${titleRow + 1}m`);
       await live.settle(); compact(await live.capture('mouse-collapsed'));
-      await live.command('/tidy-ui status');
-      await live.command('/tidy-ui off'); const off = await live.capture('disabled');
+      await live.tidyPage(['Status & troubleshooting']);
+      await live.appearance(false); const off = await live.capture('disabled');
       assert.deepEqual(toolLines(off), toolLines(control));
       assert.ok(off.screen.some((line) => line.includes('read a.txt')));
       const offRow = off.screen.findIndex((line) => line.includes('read a.txt'));
       assert.notEqual(off.cells[offRow][off.screen[offRow].indexOf('read')].bgMode, 0, 'disabled read is a stock card on screen');
-      await live.command('/tidy-ui on'); compact(await live.capture('enabled'));
-      await live.command('/tidy-ui on'); compact(await live.capture('enabled-twice'));
+      await live.appearance(true); compact(await live.capture('enabled'));
+      await live.appearance(true); compact(await live.capture('enabled-twice'));
       const starts = live.events().filter((e) => e.type === 'start').length;
       await live.command('/reload'); await live.event('start', starts + 1);
       compact(await live.capture('reloaded'));
@@ -667,7 +786,7 @@ test('real CLI: pi-tidy-ui policy, input, lifecycle and same-session stock repla
       const native = await nativeReplay.capture('collapsed');
       assert.deepEqual(byName(resumed, 'write')[0].lines, byName(beforeReplay, 'write')[0].lines, 'same-session Wrote replay retains the exact input-source card');
       assert.deepEqual(resumed.tools.map(({ name, content }) => ({ name, content })), beforeReplay.tools.map(({ name, content }) => ({ name, content })));
-      await replay.command('/tidy-ui off'); const disabledReplay = await replay.capture('disabled');
+      await replay.appearance(false); const disabledReplay = await replay.capture('disabled');
       assert.deepEqual(disabledReplay.tools.map((t) => t.lines), native.tools.map((t) => t.lines), 'disable restores exact same-session stock rendering');
       const regular = await start('tidy-ui-regular', { tidyUi: true, mode: 'regular' });
       await regular.run(); compact(await regular.capture('collapsed'));
@@ -790,10 +909,10 @@ test('real CLI: complete multiline summaries, adaptive separation, continuation 
         toolLines({ tools: nativeExpanded.tools.filter((tool) => tool.name !== 'bash') }), 'Ctrl+O returns exact native cards/results except custom bash');
       assert.deepEqual(persisted(expanded), persisted(wide));
       live.send('\x0f'); await live.settle(); multilineLayout(await live.capture('recollapsed'));
-      await live.command('/tidy-ui off'); const off = await live.capture('disabled');
+      await live.appearance(false); const off = await live.capture('disabled');
       assert.deepEqual(toolLines(off), toolLines(control));
       assert.deepEqual(persisted(off), persisted(wide));
-      await live.command('/tidy-ui on'); multilineLayout(await live.capture('enabled'));
+      await live.appearance(true); multilineLayout(await live.capture('enabled'));
       const starts = live.events().filter((event) => event.type === 'start').length;
       await live.command('/reload'); await live.event('start', starts + 1);
       const reloaded = await live.capture('reloaded'); multilineLayout(reloaded);
@@ -807,7 +926,7 @@ test('real CLI: complete multiline summaries, adaptive separation, continuation 
       assert.deepEqual(persisted(resumed), persisted(wide));
       const nativeReplay = await start('multiline-native-replay', { session, workspace: stock.work });
       const native = await nativeReplay.capture('replayed');
-      await replay.command('/tidy-ui off'); const replayOff = await replay.capture('disabled');
+      await replay.appearance(false); const replayOff = await replay.capture('disabled');
       assert.deepEqual(replayOff.tools.map((tool) => tool.lines), native.tools.map((tool) => tool.lines), 'same-session off restores native rendering exactly');
       const regular = await start('multiline-regular', { tidyUi: true, flags, mode: 'regular' });
       await regular.run('multiline'); const regularWide = await regular.capture('wide'); multilineLayout(regularWide);
@@ -896,8 +1015,8 @@ test('real CLI: comma wrap points preserve array members and index lists in live
       assert.ok(expanded.tools.every((tool) => tool.expanded));
       assert.deepEqual(toolLines(expanded), toolLines(nativeExpanded));
       live.send('\x0f'); await live.settle(); await check(await live.capture('recollapsed'), 110, true);
-      await live.command('/tidy-ui off'); assert.deepEqual(toolLines(await live.capture('off')), toolLines(native));
-      await live.command('/tidy-ui on'); await check(await live.capture('on'), 110, true);
+      await live.appearance(false); assert.deepEqual(toolLines(await live.capture('off')), toolLines(native));
+      await live.appearance(true); await check(await live.capture('on'), 110, true);
       const starts = live.events().filter((event) => event.type === 'start').length;
       await live.command('/reload'); await live.event('start', starts + 1);
       const reloaded = await live.capture('reloaded'); await check(reloaded, 110, true);
@@ -983,8 +1102,8 @@ test('real CLI: long-word summaries fill preceding space and prefer bounded punc
         live.send('\x0f'); await live.settle(); const expanded = await live.capture('expanded');
         assert.ok(expanded.tools.every(tool => tool.expanded)); assert.deepEqual(toolLines(expanded), toolLines(nativeExpanded));
         live.send('\x0f'); await live.settle(); await check(await live.capture('collapsed'), 105);
-        await live.command('/tidy-ui off'); assert.deepEqual(toolLines(await live.capture('off')), toolLines(native));
-        await live.command('/tidy-ui on'); await check(await live.capture('on'), 105);
+        await live.appearance(false); assert.deepEqual(toolLines(await live.capture('off')), toolLines(native));
+        await live.appearance(true); await check(await live.capture('on'), 105);
         const starts = live.events().filter(event => event.type === 'start').length;
         await live.command('/reload'); await live.event('start', starts + 1);
         const reloaded = await live.capture('reloaded'); await check(reloaded, 105);
@@ -1069,8 +1188,8 @@ test('real CLI: failed summaries are wholly error-colored, hide bodies and final
       assert.ok(expanded.tools.every((tool) => tool.expanded));
       assert.deepEqual(toolLines(expanded), toolLines(nativeExpanded));
       live.send('\x0f'); await live.settle(); await check(await live.capture('recollapsed'), 80);
-      await live.command('/tidy-ui off'); assert.deepEqual(toolLines(await live.capture('off')), toolLines(native));
-      await live.command('/tidy-ui on'); await check(await live.capture('on'), 80);
+      await live.appearance(false); assert.deepEqual(toolLines(await live.capture('off')), toolLines(native));
+      await live.appearance(true); await check(await live.capture('on'), 80);
       const starts = live.events().filter((event) => event.type === 'start').length;
       await live.command('/reload'); await live.event('start', starts + 1);
       const reloaded = await live.capture('reloaded'); await check(reloaded, 80);
@@ -1145,9 +1264,9 @@ test('real CLI: width-21 colored-segment boundary preserves content and exact in
       await live.resize(21); assert.deepEqual(toolLines(await live.capture('boundary-again')), toolLines(narrow));
       assert.equal(leadingBlanks(narrow.tools[1]), 1, 'following multiline call receives exactly one separator');
       assert.deepEqual(persisted(narrow), persisted(wide));
-      await live.command('/tidy-ui off'); const off = await live.capture('disabled');
+      await live.appearance(false); const off = await live.capture('disabled');
       assert.deepEqual(off.tools.map((tool) => tool.lines), native.tools.map((tool) => tool.lines), 'boundary disable restores exact stock native renderer');
-      await live.command('/tidy-ui on'); const enabled = await live.capture('enabled');
+      await live.appearance(true); const enabled = await live.capture('enabled');
       assert.deepEqual(enabled.tools.map((tool) => tool.lines), narrow.tools.map((tool) => tool.lines));
       await live.resize(100); const resizedBack = await live.capture('wide-again');
       assert.deepEqual(resizedBack.tools.map((tool) => tool.lines), wide.tools.map((tool) => tool.lines), 'boundary resize restores exact wide rendering');
@@ -1218,36 +1337,36 @@ for (const mode of ['regular', 'fullscreen']) test(`real CLI: spinner shares Wor
       assert.equal(lines(argumentsOnly.tools[0])[0], ' → read a.txt');
        writeFileSync(join(live.output, 'provider-go'), 'go'); await live.event('tool_gate');
        // Cache notifications precede repaint; warm the cold owners before sampling.
-       live.send('/tidy-ui cache clear\r'); await live.settle(true);
+       const clearStats = await live.cacheSnapshot(true);
        const prepared = await busyCapture(live, 'working-prepare'); await assertBusy(prepared);
-       assert.equal(prepared.cacheDiagnostics.at(-1).entries, 0, 'the clear packet precedes cold layout materialization');
-       live.send('/tidy-ui cache\r'); await live.settle(true);
+       assert.equal(clearStats.entries, 0, 'the clear packet precedes cold layout materialization');
+       const warmStats = await live.cacheSnapshot();
        const warm = await busyCapture(live, 'working-warm'); await assertBusy(warm);
-       assert.equal(warm.cacheDiagnostics.at(-1).byKind.summary.entries, warm.tools.length, 'all tool summaries are warm before the baseline packet');
-       assert.equal(warm.cacheDiagnostics.at(-1).byKind.user.entries, warm.users.length, 'all user layouts are warm before the baseline packet');
-       const builds = warm.cacheDiagnostics.at(-1).builds, bytesRunning = readFileSync(warm.session);
+       assert.equal(warmStats.byKind.summary.entries, warm.tools.length, 'all tool summaries are warm before the baseline packet');
+       assert.equal(warmStats.byKind.user.entries, warm.users.length, 'all user layouts are warm before the baseline packet');
+       const builds = warmStats.builds, bytesRunning = readFileSync(warm.session);
       const hostFrames = await physicalFrames(live);
-      live.send('/tidy-ui cache\r'); await live.settle(true);
+      const hotStats = await live.cacheSnapshot();
       const hot = await busyCapture(live, 'working-hot'); await assertBusy(hot);
       assert.equal(hot.spinnerStats.ticks, 0, 'regular native Working frames never let fallback fire');
       assert.equal(hot.spinnerStats.requests, 0, 'pi-tidy-ui adds zero UI requests while native Working supplies frames');
       assert.ok(hot.spinnerStats.starts > warm.spinnerStats.starts, 'real host document visits rearm the one-shot deadline');
-      assert.equal(hot.cacheDiagnostics.at(-1).builds, builds, 'host-driven animation builds no custom body');
+      assert.equal(hotStats.builds, builds, 'host-driven animation builds no custom body');
       assert.deepEqual(readFileSync(warm.session), bytesRunning);
       // A one-frame public Working configuration stops only Pi's native animation.
       // The still-running real tool must continue moving via pi-tidy-ui's fallback.
       live.send('/tidy-ui-spinner-working static\r'); await live.event('spinner_working');
       await live.event('spinner_tick_checkpoint');
-      live.send('/tidy-ui cache\r'); await live.settle(true);
+      const fallbackWarmStats = await live.cacheSnapshot();
       const fallbackWarm = await busyCapture(live, 'fallback-warm'); await assertBusy(fallbackWarm);
       const fallbackFrames = await physicalFrames(live);
       await live.event('spinner_tick_checkpoint', 2);
-      live.send('/tidy-ui cache\r'); await live.settle(true);
+      const fallbackHotStats = await live.cacheSnapshot();
       const fallbackHot = await busyCapture(live, 'fallback-hot'); await assertBusy(fallbackHot);
       assert.ok(fallbackHot.spinnerStats.ticks > fallbackWarm.spinnerStats.ticks);
       assert.equal(fallbackHot.spinnerStats.requests - fallbackWarm.spinnerStats.requests,
         fallbackHot.spinnerStats.ticks - fallbackWarm.spinnerStats.ticks, 'each eligible fallback wake requests exactly one frame');
-      assert.equal(fallbackHot.cacheDiagnostics.at(-1).builds, builds, 'fallback-driven animation builds no custom body');
+      assert.equal(fallbackHotStats.builds, builds, 'fallback-driven animation builds no custom body');
       assert.ok(Object.keys(fallbackHot.spinnerWork.widths).every(key => key.endsWith(':100')), 'clock diagnostics never render alternate widths');
       assert.equal(fallbackHot.spinnerWork.invalidations, hot.spinnerWork.invalidations, 'fallback requests no native tool invalidation');
       assert.deepEqual(readFileSync(warm.session), bytesRunning);
@@ -1258,12 +1377,12 @@ for (const mode of ['regular', 'fullscreen']) test(`real CLI: spinner shares Wor
       assert.equal(sharedHot.spinnerStats.ticks, sharedAgain.spinnerStats.ticks, 'restoring Working suppresses fallback again');
       assert.equal(sharedHot.spinnerStats.requests, sharedAgain.spinnerStats.requests);
       assert.deepEqual(readFileSync(warm.session), bytesRunning);
-      live.send('/tidy-ui off\r'); await live.settle(true);
+      await live.appearance(false);
       const off = await busyCapture(live, 'off'); assert.equal(off.spinnerStats.active, 0);
       assert.equal(off.spinnerStats.starts - off.spinnerStats.cancels - off.spinnerStats.ticks, 0);
       assert.deepEqual(toolLines(off), toolLines(nativePartial), 'off delegates actual partial information exactly to native');
       const offAgain = await busyCapture(live, 'off-again'); assert.deepEqual(offAgain.spinnerStats, off.spinnerStats, 'zero pi-tidy-ui ticks/redraws while off despite active native animation');
-      live.send('/tidy-ui on\r'); await live.settle(true);
+      await live.appearance(true);
       const on = await busyCapture(live, 'on'); await assertBusy(on); assert.ok(on.spinnerStats.starts > off.spinnerStats.starts);
       writeFileSync(join(live.output, 'tool-go'), 'go'); await live.event('agent_end');
       const complete = await live.capture('complete'); assert.equal(complete.spinnerStats.active, 0);
@@ -1278,12 +1397,16 @@ for (const mode of ['regular', 'fullscreen']) test(`real CLI: spinner shares Wor
       const bytes = readFileSync(complete.session), starts = live.events().filter(event => event.type === 'start').length;
       await live.command('/reload'); await live.event('start', starts + 1);
       const reloaded = await live.capture('reloaded'); assert.equal(reloaded.spinnerStats.starts, 0);
-      assert.ok(complete.tools[1].before.some(entry => entry.kind === 'ThemedText' && entry.lines.some(row => row.includes('pi-tidy-ui: on'))),
-        'live on-command notification is a visible native sibling, not persisted session data');
-      assert.equal(complete.tools[1].lines[0], '', 'visible notification requires one native-text separator');
+       assert.ok(!complete.tools[1].before.some(entry => entry.kind === 'ThemedText' && entry.lines.some(row => row.includes('pi-tidy-ui: on'))),
+         'settings feedback stays inside the popup and does not add transcript notifications');
+       assert.ok(complete.tools[1].before.some(entry => entry.kind === 'ThemedText' && entry.lines.some(row => row.trim() === 'TERMINAL_CAPTURE off-again')),
+         'the test observation notification, not a popup action, precedes the live tool');
+       assert.deepEqual(complete.tools[1].lines.map(plain), ['', ' ⚙ tidy_ui_stream [query="gated"]'],
+         'the known test-only notification creates exactly one leading gap');
       assert.ok(reloaded.tools[1].before.some(entry => entry.name === 'read'));
       assert.deepEqual(reloaded.tools[0].lines, complete.tools[0].lines);
-      assert.deepEqual(reloaded.tools[1].lines, complete.tools[1].lines.slice(1), 'reload removes only the separator for the vanished on-notification; call bytes stay exact');
+       assert.deepEqual(reloaded.tools[1].lines, complete.tools[1].lines.slice(1),
+         'history has no test-only notification; only its proven single leading gap disappears');
       assert.deepEqual(readFileSync(complete.session), bytes);
       const replay = await start('spinner-replay', { tidyUi: true, session: complete.session, workspace: stock.work });
       const resumed = await replay.capture('replay'); assert.equal(resumed.spinnerStats.starts, 0); assert.equal(resumed.spinnerStats.ticks, 0);
@@ -1303,7 +1426,7 @@ for (const mode of ['regular', 'fullscreen']) test(`real CLI: spinner shares Wor
       assert.deepEqual(persisted(aborted), persisted(abortedNative));
       const afterAbort = await live.capture('after-abort'); assert.deepEqual(afterAbort.spinnerStats, aborted.spinnerStats);
       writeFileSync(join(artifacts, `spinner-coverage-${mode}.json`), JSON.stringify({
-        mode, normalCalls: 2, normalResults: 2, normalModelContexts: 3, buildsBefore: builds, buildsAfter: fallbackHot.cacheDiagnostics.at(-1).builds,
+        mode, normalCalls: 2, normalResults: 2, normalModelContexts: 3, buildsBefore: builds, buildsAfter: fallbackHotStats.builds,
         sharedClock: hot.spinnerStats, fallbackClock: fallbackHot.spinnerStats, sharedAgain: sharedHot.spinnerStats,
         stoppedClock: complete.spinnerStats, abortedClock: aborted.spinnerStats,
         hostPhysicalFrames: hostFrames, fallbackPhysicalFrames: fallbackFrames, idleRequestsAdded: 0, idleTicksAdded: 0,
@@ -1465,7 +1588,7 @@ test('real CLI: installed-profile registrations and real local task renderers',
       assert.ok(expanded.screen.some((line) => line.includes('created successfully')));
       assert.deepEqual(expanded.tools.map((tool) => tool.content), compacted.tools.map((tool) => tool.content));
       live.send('\x0f'); await live.settle();
-      await live.command('/tidy-ui off'); const disabled = await live.capture('disabled'); assertHealthy(live, disabled);
+      await live.appearance(false); const disabled = await live.capture('disabled'); assertHealthy(live, disabled);
       assert.deepEqual(disabled.tools.map((tool) => tool.content), compacted.tools.map((tool) => tool.content), 'within-profile off preserves actual results');
       assert.deepEqual(disabled.tools.map((tool) => tool.lines), control.tools.map((tool) => tool.lines));
       assert.ok(disabled.screen.some((line) => line.includes('created successfully')));
@@ -1775,8 +1898,8 @@ async function bashPointerChecks(live, initial) {
   await panelCells(current, 2, 'for i in $(seq');
   await live.resize(100, 150); await snapshot('resize-back'); await panelCells(current, 2, anchor);
   await moveAt(live, 5, panel().command); await snapshot('before-off'); await panelCells(current, 2, anchor);
-  await live.command('/tidy-ui off'); await snapshot('off');
-  await live.command('/tidy-ui on'); await snapshot('on'); await panelCells(current, 2, anchor);
+  await live.appearance(false); await snapshot('off');
+  await live.appearance(true); await snapshot('on'); await panelCells(current, 2, anchor);
   await moveAt(live, 5, panel().command); await snapshot('before-reload'); await panelCells(current, 2, anchor);
   const starts = live.events().filter((event) => event.type === 'start').length;
   await live.command('/reload'); await live.event('start', starts + 1); await snapshot('reload'); await panelCells(current, 2, anchor);
@@ -1924,13 +2047,13 @@ async function bashPointerChecks(live, initial) {
       assert.deepEqual(persisted(native), persisted(wide), 'same-session native control receives identical actual tool results and command arguments');
       assert.deepEqual(native.tools.map((tool) => tool.content), wide.tools.map((tool) => tool.content));
       assert.ok(native.tools[0].lines.some((row) => row.includes('$ cat')));
-      await live.command('/tidy-ui off'); const off = await live.capture('off');
+      await live.appearance(false); const off = await live.capture('off');
       assert.ok(off.tools.every((tool) => tool.lines.some((row) => row.includes('Took'))), 'live native timing is displayed but not persisted by Pi');
       assert.deepEqual(off.tools.map((tool) => tool.content), native.tools.map((tool) => tool.content));
-      await live.command('/tidy-ui on'); allBashCards(await live.capture('on'));
-      await live.command('/tidy-ui off'); const offAgain = await live.capture('off-again');
+      await live.appearance(true); allBashCards(await live.capture('on'));
+      await live.appearance(false); const offAgain = await live.capture('off-again');
       assert.deepEqual(offAgain.tools.map((tool) => tool.lines), off.tools.map((tool) => tool.lines), 'same live component native rendering restored exactly');
-       await live.command('/tidy-ui on');
+       await live.appearance(true);
        // Keep existing live-duration/native controls before the pointer matrix's reload:
        // Pi does not persist native execution durations in a reconstructed component.
        await bashPointerChecks(live, wide);
@@ -1943,9 +2066,9 @@ async function bashPointerChecks(live, initial) {
       const resumed = await replay.capture('replay'); allBashCards(resumed);
       assert.deepEqual(resumed.tools.map((tool) => tool.lines), reloaded.tools.map((tool) => tool.lines));
       assert.deepEqual(persisted(resumed), persisted(native));
-      await replay.command('/tidy-ui off'); const replayOff = await replay.capture('off');
+      await replay.appearance(false); const replayOff = await replay.capture('off');
       assert.deepEqual(replayOff.tools.map((tool) => tool.lines), native.tools.map((tool) => tool.lines), 'same-session native replay restored exactly without unpersisted live duration');
-      await replay.command('/tidy-ui on'); allBashCards(await replay.capture('on'));
+      await replay.appearance(true); allBashCards(await replay.capture('on'));
       const card = await start('bash-real-card', { tidyUi: true, session, workspace: live.work, flags: ['--tidy-ui-card', 'bash'] });
       const nativeCard = await card.capture('card');
       assert.deepEqual(nativeCard.tools.map((tool) => tool.lines), native.tools.map((tool) => tool.lines));
@@ -2052,20 +2175,20 @@ async function bashPointerChecks(live, initial) {
       live.send('\x0f'); await live.settle();
       const native = await start('bash-shapes-native', { tidyUi: false, session: wide.session, workspace: live.work });
       const control = await native.capture('native'); assert.deepEqual(persisted(control), persisted(wide));
-      await live.command('/tidy-ui off'); const off = await live.capture('off');
+      await live.appearance(false); const off = await live.capture('off');
       assert.deepEqual(off.tools.map((tool) => tool.content), control.tools.map((tool) => tool.content));
-      await live.command('/tidy-ui on'); allBashCards(await live.capture('on'));
-      await live.command('/tidy-ui off'); const offAgain = await live.capture('off-again');
+      await live.appearance(true); allBashCards(await live.capture('on'));
+      await live.appearance(false); const offAgain = await live.capture('off-again');
       assert.deepEqual(offAgain.tools.map((tool) => tool.lines), off.tools.map((tool) => tool.lines), 'same live native fixture rendering restored exactly');
-      await live.command('/tidy-ui on');
+      await live.appearance(true);
       const observed = traffic(live, 14);
       const replay = await start('bash-shapes-replay', { session: wide.session, workspace: live.work });
       const resumed = await replay.capture('replay'); allBashCards(resumed);
       assert.deepEqual(resumed.tools.map((tool) => tool.lines), wide.tools.map((tool) => tool.lines), 'details footer is stable live/replay; transient structuredContent intentionally ignored');
       assert.deepEqual(persisted(resumed), persisted(wide));
-      await replay.command('/tidy-ui off'); const replayOff = await replay.capture('off');
+      await replay.appearance(false); const replayOff = await replay.capture('off');
       assert.deepEqual(replayOff.tools.map((tool) => tool.lines), control.tools.map((tool) => tool.lines), 'same-session fixture native replay restored exactly');
-      await replay.command('/tidy-ui on');
+      await replay.appearance(true);
       // Independent invocation for partial/final replacement, never an installed AFT execution.
       const stream = await start('bash-shape-stream'); stream.send('run bash-shape-stream\r'); await stream.event('shape_gate');
       let partial = await stream.capture('partial-one', { animated: true }); allBashCards(partial, { partial: true });
@@ -2225,22 +2348,22 @@ test('real CLI: isolated bash presentation exceptions preserve exact traffic',
       assert.equal(emptyExpanded.at(-1).trim(), 'HIDDEN_TAIL');
       live.send('\x0f'); await live.settle(); const back = await live.capture('wide-again');
       assert.deepEqual(back.tools.map((tool) => tool.lines), wide.tools.map((tool) => tool.lines)); identity(back, wide, sessionBytes);
-      await live.command('/tidy-ui off'); const off = await live.capture('off'); identity(off, wide, sessionBytes);
-      await live.command('/tidy-ui on'); allBashCards(await live.capture('on'));
-      await live.command('/tidy-ui off'); const offAgain = await live.capture('off-again');
+      await live.appearance(false); const off = await live.capture('off'); identity(off, wide, sessionBytes);
+      await live.appearance(true); allBashCards(await live.capture('on'));
+      await live.appearance(false); const offAgain = await live.capture('off-again');
       assert.deepEqual(offAgain.tools.map((tool) => tool.lines), off.tools.map((tool) => tool.lines), 'live native renderer restored without normalization');
       const starts = live.events().filter((event) => event.type === 'start').length;
-      await live.command('/tidy-ui on'); await live.command('/reload'); await live.event('start', starts + 1);
+      await live.appearance(true); await live.command('/reload'); await live.event('start', starts + 1);
       const reloaded = await live.capture('reloaded'); allBashCards(reloaded); identity(reloaded, wide, sessionBytes);
       assert.deepEqual(reloaded.tools.map((tool) => tool.lines), wide.tools.map((tool) => tool.lines), 'same-session reload preserves exception presentation');
       const native = await start('bash-shape-exceptions-native', { tidyUi: false, session: wide.session, workspace: live.work });
       const control = await native.capture('native'); identity(control, wide, sessionBytes);
-      await live.command('/tidy-ui off'); const reloadedOff = await live.capture('reloaded-off'); identity(reloadedOff, wide, sessionBytes);
+      await live.appearance(false); const reloadedOff = await live.capture('reloaded-off'); identity(reloadedOff, wide, sessionBytes);
       assert.deepEqual(reloadedOff.tools.map((tool) => tool.lines), control.tools.map((tool) => tool.lines), 'reloaded native output matches stock history byte-for-byte');
       const replay = await start('bash-shape-exceptions-replay', { session: wide.session, workspace: live.work });
       const resumed = await replay.capture('replay'); allBashCards(resumed); identity(resumed, wide, sessionBytes);
       assert.deepEqual(resumed.tools.map((tool) => tool.lines), wide.tools.map((tool) => tool.lines));
-      await replay.command('/tidy-ui off'); const replayOff = await replay.capture('off'); identity(replayOff, wide, sessionBytes);
+      await replay.appearance(false); const replayOff = await replay.capture('off'); identity(replayOff, wide, sessionBytes);
       assert.deepEqual(replayOff.tools.map((tool) => tool.lines), control.tools.map((tool) => tool.lines), 'disabled same-session replay restores exact native rendering');
       for (const terminal of [native, replay]) for (const type of ['call', 'result', 'model_context', 'provider_error'])
         assert.equal(terminal.events().filter((event) => event.type === type).length, 0, `history ${type} count remains zero`);
@@ -2474,7 +2597,7 @@ test('real CLI: actual-screen complete command width regression', { skip: stockO
 });
 
 
-// Observable work counters come only from actual /tidy-ui notifications in the live tree.
+// Observable work counters come from the public cache popup's frozen diagnostic snapshot.
 // pointer-cache-* deliberately avoids the pre-existing alternate-width dump probes.
 test('real CLI: component-owned layout work counters and released retained memory',
   { skip: stockOnly, timeout: 120000 }, async () => {
@@ -2483,11 +2606,10 @@ test('real CLI: component-owned layout work counters and released retained memor
       const terminal = new PiTerminal(name, options); terminals.push(terminal);
       await terminal.ready(); if (resizeTall) await terminal.resize(100, 320); return terminal;
     };
-    const observe = async (terminal, name, command = '/tidy-ui cache') => {
-      await terminal.command(command);
-      const dump = await terminal.capture(`pointer-cache-${name}`);
-      const stats = dump.cacheDiagnostics.at(-1);
-      assert.ok(stats, 'real cache command produced a JSON notification in the native tree');
+     const observe = async (terminal, name, command = '/tidy-ui cache') => {
+       const stats = await terminal.cacheSnapshot(command === '/tidy-ui cache clear');
+       const dump = await terminal.capture(`pointer-cache-${name}`);
+       assert.ok(stats, 'real popup displayed complete frozen diagnostic JSON');
       const numeric = ['retainedBytes', 'stringBytes', 'overheadBytes', 'rows', 'entries', 'hits', 'misses', 'builds', 'releases', 'collected'];
       const memory = ['retainedBytes', 'stringBytes', 'overheadBytes', 'rows', 'entries'];
       assert.deepEqual(Object.keys(stats).sort(), [...numeric, 'byKind', 'ordinary', 'cards', 'footerLayout',
@@ -2531,10 +2653,10 @@ test('real CLI: component-owned layout work counters and released retained memor
     try {
       const live = await start('cache-performance-live', { tidyUi: true,
         flags: ['--tidy-ui-cache-mb', '1'], extraEnv: { TIDY_UI_TEST_CACHE_DIAGNOSTICS: '1' } });
-      await live.command('/tidy-ui off');
+      await live.appearance(false);
       await live.run('cache-performance');
       const nativeLive = await live.capture('pointer-cache-native-live-original');
-      await live.command('/tidy-ui on');
+      await live.appearance(true);
       const wide = await live.capture('pointer-cache-wide');
       assert.equal(wide.bashShape, false, 'eight commands execute actual built-in bash, never shape mocks');
       assert.equal(wide.tools.length, 11);
@@ -2668,25 +2790,25 @@ test('real CLI: component-owned layout work counters and released retained memor
       assert.deepEqual(control.branch, wide.branch); identity(control, wide);
       for (const type of ['call', 'result', 'model_context', 'provider_error'])
         assert.equal(native.events().filter((event) => event.type === type).length, 0, `native replay emits no ${type}`);
-      await live.command('/tidy-ui off'); const off = await observe(live, 'off');
+      await live.appearance(false); const off = await observe(live, 'off');
       assert.equal(off.stats.entries, 0); assert.equal(off.stats.retainedBytes, 0);
       const nativeRows = off.dump.tools.map((tool) => tool.lines);
       assert.deepEqual(off.dump.tools.map((tool) => tool.lines), nativeLive.tools.map((tool) => tool.lines),
         'off restores the original same-live native bodies byte-for-byte, including real unpersisted timing');
-      await live.command('/tidy-ui on'); const on = await observe(live, 'on-cold');
+      await live.appearance(true); const on = await observe(live, 'on-cold');
       assert.equal(on.stats.builds, 11, 'new controller starts cold and builds ten tool bodies plus one user card once');
       assert.equal(on.stats.entries, 11); identity(on.dump, wide);
       assert.deepEqual(on.dump.tools.map((tool) => tool.lines), wide.tools.map((tool) => tool.lines));
       const onWarm = await observe(live, 'on-warm'); delta(on.stats, onWarm.stats, 0, 'reenabled steady frames');
-      await live.command('/tidy-ui off'); const offAgain = await live.capture('pointer-cache-off-again');
+      await live.appearance(false); const offAgain = await live.capture('pointer-cache-off-again');
       assert.deepEqual(offAgain.tools.map((tool) => tool.lines), nativeRows, 'same live native bodies are restored byte-for-byte');
       // Compare reconstructed native bodies with reconstructed native control; neither has unpersisted live durations.
-      await live.command('/reload'); await live.command('/tidy-ui off');
+      await live.command('/reload'); await live.appearance(false);
       const reloadedNative = await live.capture('pointer-cache-reloaded-native');
       assert.deepEqual(reloadedNative.tools.map((tool) => tool.lines), control.tools.map((tool) => tool.lines),
         'native history after reload matches same-session stock replay byte-for-byte without normalization');
       identity(reloadedNative, wide);
-      await live.command('/tidy-ui on'); const final = await observe(live, 'final'); identity(final.dump, wide);
+      await live.appearance(true); const final = await observe(live, 'final'); identity(final.dump, wide);
       assert.deepEqual(traffic(live, 11), activity, 'all editor/pointer/resize/theme/cache commands preserve eleven calls/results and twelve model contexts exactly');
       await live.close();
       const replay = await start('cache-performance-replay', { tidyUi: true, session, workspace: live.work, flags: ['--tidy-ui-cache-mb', '1'] }, false);
@@ -2844,10 +2966,10 @@ test('real CLI: user cards share Bash geometry with customMessageLabel and prese
         await stock.command(`/tidy-ui-theme ${name}`); native = await stock.capture(`native-user-${name}`);
         await live.command(`/tidy-ui-theme ${name}`); await check(await live.capture(`pointer-user-${name}`), native);
       }
-      await live.command('/tidy-ui off');
+      await live.appearance(false);
       const disabled = await live.capture('native-user-disabled');
       assert.deepEqual(disabled.users, native.users, 'off restores native user rows and padding byte-for-byte');
-      await live.command('/tidy-ui on'); wide = await live.capture('pointer-user-on'); await check(wide, native);
+      await live.appearance(true); wide = await live.capture('pointer-user-on'); await check(wide, native);
       const starts = live.events().filter((event) => event.type === 'start').length;
       await live.command('/reload'); await live.event('start', starts + 1);
       const reloaded = await live.capture('pointer-user-reloaded'); await check(reloaded, native);
@@ -3084,14 +3206,15 @@ test('real CLI: OpenCode-style edit syntax, numbered unified/split format, error
       assert.deepEqual(clicked.tools[2].lines, nativeExpanded.tools[2].lines, 'click exposes native failure details');
       // Ctrl+O is still the host's global expansion toggle.
       live.send('\x0f'); await live.settle(); live.send('\x0f'); await live.settle();
-      await live.command('/tidy-ui off'); assert.deepEqual(toolLines(await live.capture('off')), toolLines(native));
-      await live.command('/tidy-ui on'); await check(await live.capture('on'), false);
+      await live.appearance(false); assert.deepEqual(toolLines(await live.capture('off')), toolLines(native));
+      await live.appearance(true); await check(await live.capture('on'), false);
       const starts = live.events().filter((event) => event.type === 'start').length;
       await live.command('/reload'); await live.event('start', starts + 1); const reloaded = await live.capture('reload'); await check(reloaded, false);
-      await live.command('/tidy-ui cache'); const warm = await live.capture('warm');
-      await live.command('/tidy-ui cache'); const warmAgain = await live.capture('warm-again');
-      assert.equal(warmAgain.cacheDiagnostics.at(-1).builds, warm.cacheDiagnostics.at(-1).builds, 'warm CLI frames do not rebuild/re-highlight edit layouts');
-      assert.equal(warmAgain.nativeRenderCalls.edit ?? 0, 0, 'reload resets fixture counters and warm custom frames still skip native rows');
+       const warmStats = await live.cacheSnapshot(); const warm = await live.capture('warm');
+       const warmAgainStats = await live.cacheSnapshot(); const warmAgain = await live.capture('warm-again');
+       assert.equal(warmAgainStats.builds, warmStats.builds, 'warm CLI frames do not rebuild/re-highlight edit layouts');
+       for (const frame of [warm, warmAgain]) assert.equal(frame.nativeRenderCalls.edit ?? 0, reloaded.nativeRenderCalls.edit ?? 0,
+         'both warm observations add exactly zero native renders to the post-reload baseline');
       assert.deepEqual(traffic(live), traffic(stock)); assert.deepEqual(readFileSync(wide.session), sessionBytes);
       await live.close();
       for (const mode of ['fullscreen', 'regular']) {
@@ -3126,7 +3249,9 @@ test('real CLI: OpenCode-style edit syntax, numbered unified/split format, error
         format: 'Ordinary compact edit while arguments stream/execute; wholly error-colored failed summaries; final successes use Bash-aligned Edited diff cards with context3 and symmetric padding',
         identity: 'exact traffic, persisted metadata and unchanged session bytes',
         cache: 'zero extra warm-frame builds; no alternate-width diagnostic probes',
-        nativeWork: 'zero native edit renders while custom (pending/running/failure/success/resize/theme/reload/replay); stock/expanded controls are positive',
+        nativeWork: 'zero native edit renders while custom (pending/running/failure/success/resize/theme/replay); stock/expanded controls are positive',
+        reloadNativeWork: { baseline: reloaded.nativeRenderCalls.edit ?? 0, warm: warm.nativeRenderCalls.edit ?? 0,
+          warmAgain: warmAgain.nativeRenderCalls.edit ?? 0, added: (warmAgain.nativeRenderCalls.edit ?? 0) - (reloaded.nativeRenderCalls.edit ?? 0) },
         acceptedFallback: 'cold HTML may retain exact Pi mdCodeBlock foreground before lazy grammar readiness; only source foreground differs, no glyph/background/font/gutter/session/model deviation',
         scope: 'actual built-in edit; no installed AFT execution or pixel-perfect OpenCode screenshot claim' }, null, 2));
     } finally {
@@ -3169,8 +3294,8 @@ test('real CLI: minified edit keeps linear ANSI size, warm work, exact traffic a
       return chars;
     };
     const observe = async (terminal, name) => {
-      await terminal.command('/tidy-ui cache');
-      const dump = await terminal.capture(`pointer-minified-${name}`), stats = dump.cacheDiagnostics.at(-1);
+      const stats = await terminal.cacheSnapshot();
+      const dump = await terminal.capture(`pointer-minified-${name}`);
       assert.ok(stats);
       assert.equal('limitBytes' in stats, false, 'component-owned diffs have no admission or byte limit');
       assert.equal(stats.byKind.edit.entries, 1, 'memory is attributed to the rendered edit representation');
@@ -3284,10 +3409,10 @@ test('real CLI: bounded argument previews, path-only edits and visible payloads 
         toolLines({ tools: nativeExpanded.tools.filter(tool => tool.name !== 'edit') }), 'full generic/write native details are unchanged');
       assert.match(expanded.tools[5].lines.map(plain).join('\n'), /missing-bounded.ts/u);
       live.send('\x0f'); await live.settle(); await check(await live.capture('recollapsed'));
-      await live.command('/tidy-ui off'); const off = await live.capture('off');
+      await live.appearance(false); const off = await live.capture('off');
       assert.deepEqual(toolLines({ tools: off.tools.filter(tool => tool.name !== 'edit') }),
         toolLines({ tools: native.tools.filter(tool => tool.name !== 'edit') }));
-      await live.command('/tidy-ui on'); await check(await live.capture('on'));
+      await live.appearance(true); await check(await live.capture('on'));
       const starts = live.events().filter(event => event.type === 'start').length;
       await live.command('/reload'); await live.event('start', starts + 1);
       const reloaded = await live.capture('reloaded'); await check(reloaded);
@@ -3301,7 +3426,7 @@ test('real CLI: bounded argument previews, path-only edits and visible payloads 
       assert.equal(replay.events().filter(event => ['call', 'result', 'model_context'].includes(event.type)).length, 0);
       const nativeReplay = await start('bounded-native-replay', { session: wide.session, workspace: stock.work });
       const sameSessionNative = await nativeReplay.capture('replayed');
-      await replay.command('/tidy-ui off');
+      await replay.appearance(false);
       assert.deepEqual(toolLines(await replay.capture('off')), toolLines(sameSessionNative), 'same-session native control includes unchanged edit details');
       assert.deepEqual(readFileSync(wide.session), bytes);
       writeFileSync(join(artifacts, 'bounded-summary-coverage.json'), JSON.stringify({
@@ -3437,9 +3562,9 @@ for (const shape of [false, true]) test(`real CLI: write cards ${shape ? 'repres
         assert.equal(readFileSync(join(live.work, 'write-cleared.ts'), 'utf8'), '');
       }
       const bytes = readFileSync(liveFirst.session);
-      await live.command('/tidy-ui cache clear'); await live.capture('pointer-write-cold');
-      await live.command('/tidy-ui cache'); const cold = (await live.capture('pointer-write-cache-cold')).cacheDiagnostics.at(-1);
-      await live.command('/tidy-ui cache'); const warm = (await live.capture('pointer-write-cache-warm')).cacheDiagnostics.at(-1);
+       await live.cacheSnapshot(true); await live.capture('pointer-write-cold');
+       const cold = await live.cacheSnapshot(); await live.capture('pointer-write-cache-cold');
+       const warm = await live.cacheSnapshot(); await live.capture('pointer-write-cache-warm');
       assert.equal(warm.builds, cold.builds, 'unchanged frames rebuild no write body');
       assert.equal(warm.cards.builds, cold.cards.builds); assert.ok(warm.cards.hits > cold.cards.hits);
       assert.equal(warm.cards.entries, shape ? 8 : 4, 'successful write frames share the existing card pool; malformed/hidden/error stay outside');
@@ -3461,8 +3586,8 @@ for (const shape of [false, true]) test(`real CLI: write cards ${shape ? 'repres
       live.send('\x0f'); await live.settle(); const expanded = await live.capture('pointer-write-expanded');
       assert.deepEqual(toolLines(expanded), toolLines(nativeExpanded));
       live.send('\x0f'); await live.settle(); await check(await live.capture('pointer-write-recollapsed'));
-      await live.command('/tidy-ui off'); assert.deepEqual(toolLines(await live.capture('pointer-write-off')), toolLines(nativeControl));
-      await live.command('/tidy-ui on'); await check(await live.capture('pointer-write-on'));
+      await live.appearance(false); assert.deepEqual(toolLines(await live.capture('pointer-write-off')), toolLines(nativeControl));
+      await live.appearance(true); await check(await live.capture('pointer-write-on'));
       const starts = live.events().filter(event => event.type === 'start').length;
       await live.command('/reload'); await live.event('start', starts + 1); const reloaded = await live.capture('pointer-write-reloaded'); await check(reloaded);
       assert.deepEqual(events(live), events(stock)); assert.deepEqual(readFileSync(liveFirst.session), bytes);
@@ -3473,7 +3598,7 @@ for (const shape of [false, true]) test(`real CLI: write cards ${shape ? 'repres
       assert.equal(replay.events().filter(event => ['call', 'result', 'model_context'].includes(event.type)).length, 0);
       const sameSessionNative = await start('native-replay', { session: liveFirst.session, workspace: stock.work });
       const nativeReplay = await sameSessionNative.capture('pointer-write-native-replay');
-      await replay.command('/tidy-ui off'); assert.deepEqual(toolLines(await replay.capture('pointer-write-replay-off')), toolLines(nativeReplay));
+      await replay.appearance(false); assert.deepEqual(toolLines(await replay.capture('pointer-write-replay-off')), toolLines(nativeReplay));
       const explicit = await start('native-override', { tidyUi: true, flags: ['--tidy-ui-card', 'write'], session: liveFirst.session, workspace: stock.work });
       const explicitNative = await explicit.capture('pointer-write-explicit-native');
       assert.deepEqual(toolLines({ tools: byName(explicitNative, 'write') }), toolLines({ tools: byName(nativeReplay, 'write') }), 'write-only native override preserves every write row');
@@ -3509,6 +3634,7 @@ test('main editor user-card styling preserves real draft input, cursor, menus an
   const observe = async (terminal, name, action = 'snapshot') => {
     writeFileSync(join(terminal.output, 'editor-request.json'), JSON.stringify({ name, action }));
     terminal.send('\x1b\x04');
+    if (action === 'on' || action === 'off') await terminal.appearance(action === 'on', { alreadyOpen: true });
     const dump = await until(() => {
       terminal.health();
       try { return JSON.parse(readFileSync(join(terminal.output, `${name}.json`), 'utf8')); }
@@ -3612,6 +3738,7 @@ test('belowEditor metadata and separate native status preserve physical half-blo
   const observe = async (terminal, name, action = 'snapshot') => {
     writeFileSync(join(terminal.output, 'editor-request.json'), JSON.stringify({ name, action }));
     terminal.send('\x1b\x04');
+    if (action === 'on' || action === 'off') await terminal.appearance(action === 'on', { alreadyOpen: true });
     const dump = await until(() => {
       terminal.health();
       try { return JSON.parse(readFileSync(join(terminal.output, `${name}.json`), 'utf8')); }
@@ -3777,6 +3904,7 @@ test('belowEditor clipping leaves activity in Pi separate container without chan
   const terminal = new PiTerminal('editor-status-height-four', { mode: 'fullscreen', agentSettings: { editorPaddingX: 1 }, extensions: [join(fixtures, 'editor-driver.ts')] });
   const observe = async (name, action) => {
     writeFileSync(join(terminal.output, 'editor-request.json'), JSON.stringify({ name, action })); terminal.send('\x1b\x04');
+    if (action === 'on' || action === 'off') await terminal.appearance(action === 'on', { alreadyOpen: true });
     const dump = await until(() => {
       terminal.health();
       try { return JSON.parse(readFileSync(join(terminal.output, `${name}.json`), 'utf8')); }
@@ -3898,6 +4026,7 @@ test('aboveEditor widget separator stays immediately before input and follows ze
   const observe = async (terminal, name, action = 'snapshot') => {
     writeFileSync(join(terminal.output, 'editor-request.json'), JSON.stringify({ name, action }));
     terminal.send('\x1b\x04');
+    if (action === 'on' || action === 'off') await terminal.appearance(action === 'on', { alreadyOpen: true });
     const dump = await until(() => {
       terminal.health();
       try { return JSON.parse(readFileSync(join(terminal.output, `${name}.json`), 'utf8')); }
@@ -4047,7 +4176,9 @@ test('foreign editor extension retains native input, widgets, mouse and replay i
     assert.notEqual(dump.rows[0], '', 'no pi-tidy-ui upper-widget separator');
     const top = dump.screen.findIndex(row => row === 'FOREIGN_UPPER_ROW');
     assert.ok(top >= 0, 'real upper widget is painted');
-    const rows = dump.rows.map(row => plain(row.replaceAll('\x1b_pi:c\x07', '')));
+    // Hardware/fake-cursor APC markers are zero-column native metadata, not terminal text.
+    const rows = dump.rows.map(row => plain(row.replaceAll('\x1b_pi:c\x07', '')
+      .replaceAll('\x1b_pi:fc\x07', '').replaceAll('\x1b_pi:/fc\x07', '')));
     const physical = dump.screen.slice(top + 1, top + 1 + rows.length).map(plain);
     if (!dump.idle && dump.embedWorkingStatus) {
       // Native clock ticks between the packet and the physical-screen sample.
@@ -4163,7 +4294,7 @@ test('foreign editor extension retains native input, widgets, mouse and replay i
         assert.equal(event.screenY, menuClicked.get(terminal), 'autocomplete handler retains the independently measured physical click row');
       await send('\x03'); await pair('cleared');
       for (const action of ['off', 'on']) {
-        await live.command(`/tidy-ui ${action}`); await pair(action);
+        await live.appearance(action === 'on'); await pair(action);
       }
       // A factory returning the exact stock class must also remain untouched.
       await observe(native, 'factory-stock', 'factory-stock'); await observe(live, 'factory-stock', 'factory-stock');
@@ -4235,6 +4366,7 @@ test('right-aligned cwd and live Git branch preserve colors padding and zero hot
   const terminals = [], base = mkdtempSync(join(tmpdir(), 'tidy-ui-cwd-cli-'));
   const observe = async (terminal, name, action = 'snapshot') => {
     writeFileSync(join(terminal.output, 'editor-request.json'), JSON.stringify({ name, action })); terminal.send('\x1b\x04');
+    if (action === 'on' || action === 'off') await terminal.appearance(action === 'on', { alreadyOpen: true });
     const dump = await until(() => {
       terminal.health();
       try { return JSON.parse(readFileSync(join(terminal.output, `${name}.json`), 'utf8')); }
@@ -4448,12 +4580,12 @@ test('footer whole-status fitting colors native data warm counters ownership and
         for (const key of ['scans', 'contextReads', 'aggregations', 'entries']) assert.equal(changed.counters[key], before.counters[key], 'auto is presentation-only, not a history/context invalidation');
       }
       assert.deepEqual(readFileSync(packet.session), bytes, 'status/theme/resize/settings actions do not rewrite saved usage or session data');
-      await live.command('/tidy-ui off'); dump = await footerObserve(live, 'off'); assert.equal(dump.owner, 'FooterComponent');
+      await live.appearance(false); dump = await footerObserve(live, 'off'); assert.equal(dump.owner, 'FooterComponent');
       assert.ok(dump.rows.some(row => plain(row).includes(live.work)), 'off restores native cwd');
-      await live.command('/tidy-ui on'); dump = await footerObserve(live, 'on'); assert.equal(dump.owner, 'FooterView'); footerPhysical(dump);
-      dump = await footerObserve(live, 'foreign', 'foreign'); await live.command('/tidy-ui off'); dump = await footerObserve(live, 'foreign-off');
+      await live.appearance(true); dump = await footerObserve(live, 'on'); assert.equal(dump.owner, 'FooterView'); footerPhysical(dump);
+      dump = await footerObserve(live, 'foreign', 'foreign'); await live.appearance(false); dump = await footerObserve(live, 'foreign-off');
       assert.deepEqual(dump.rows, ['FOREIGN_FOOTER']); assert.equal(dump.foreignDisposals, 0, 'off never removes a later owner'); footerPhysical(dump);
-      await live.command('/tidy-ui on'); dump = await footerObserve(live, 'reclaimed'); assert.equal(dump.owner, 'FooterView'); assert.equal(dump.foreignDisposals, 1);
+      await live.appearance(true); dump = await footerObserve(live, 'reclaimed'); assert.equal(dump.owner, 'FooterView'); assert.equal(dump.foreignDisposals, 1);
       await live.command('/reload'); dump = await footerObserve(live, 'reloaded', 'accounting'); assert.equal(dump.owner, 'FooterView');
       assert.deepEqual(usage(dump), usage(packet), 'reload never duplicates fixture side usage'); footerPhysical(dump);
       const warm = await footerObserve(live, 'warm');
@@ -4547,7 +4679,9 @@ test('footer session name fills spare columns without repacking statuses and res
       await footerObserve(live, 'saved-name', { action: 'name', sessionName: 'Saved session title' });
       await footerObserve(live, 'saved-clear-statuses', 'clear');
       const saved = await footerObserve(live, 'saved'), bytes = readFileSync(saved.session);
-      for (const command of ['/tidy-ui off', '/tidy-ui on', '/reload']) await live.command(command);
+      await live.appearance(false); await live.command('/reload');
+      assert.equal((await footerObserve(live, 'saved-off-reload')).owner, 'FooterComponent', 'reload preserves saved appearance Off');
+      await live.appearance(true); await live.command('/reload');
       const reloaded = await footerObserve(live, 'reloaded'); footerPhysical(reloaded);
       assert.deepEqual(reloaded.rows, saved.rows);
       const warm = await footerObserve(live, 'warm');
@@ -4628,7 +4762,7 @@ test('footer cache history tracks every real request including equal CH, cold ze
         const text = plain(narrow.rows[0]); assert.equal(text.endsWith('…'), width === 24);
         assert.ok(text.startsWith(cachePrefix), 'narrow clipping keeps the full cache block from the preceding saved-report snapshot before the context tail');
       }
-      await live.command('/tidy-ui off'); await live.command('/tidy-ui on'); dump = await footerObserve(live, 'history-on', 'accounting');
+      await live.appearance(false); await live.appearance(true); dump = await footerObserve(live, 'history-on', 'accounting');
       assert.deepEqual(dump.rows, initialRows); await check(dump);
       await live.command('/reload'); dump = await footerObserve(live, 'history-reload', 'accounting');
       assert.deepEqual(dump.rows, initialRows); assert.deepEqual(dump.context, context); await check(dump);
@@ -4745,13 +4879,13 @@ test('Output padding settings update summaries and all transcript cards live wit
           const dump = await check(live, padding, width, `${mode}-${cycle}-${width}`);
           saved.set(`${padding}-${width}`, dump); assert.deepEqual(identity(dump), identity(first));
           const rows = dump.users[0].lines.filter(row => row !== '');
-          await live.command('/tidy-ui off');
+          await live.appearance(false);
           const native = await live.capture(`native-user-output-${mode}-${cycle}-${width}`);
           const contentWidth = width - 2 * padding - 3;
           assert.deepEqual(rows.slice(1, -1).map(row => stripVTControlCharacters(sliceByColumn(row, padding + 2, contentWidth))),
             native.users[0].contentControl.slice(1, -1).map(row => stripVTControlCharacters(sliceByColumn(row, padding, contentWidth))), 'native Markdown body at equal content width');
           assert.deepEqual(identity(native), identity(first));
-          await live.command('/tidy-ui on');
+          await live.appearance(true);
           const restored = await check(live, padding, width, `${mode}-${cycle}-${width}-on`);
           assert.deepEqual(restored.tools.map(tool => tool.lines), dump.tools.map(tool => tool.lines));
         }
@@ -4781,13 +4915,13 @@ test('Output padding settings update summaries and all transcript cards live wit
           const custom = await check(replay, padding, width, `replay-${mode}-${padding}-${width}`), expected = saved.get(`${padding}-${width}`);
           assert.deepEqual(custom.tools.map(tool => tool.lines), expected.tools.map(tool => tool.lines));
           assert.deepEqual(custom.users.map(user => user.lines), expected.users.map(user => user.lines));
-          await replay.command('/tidy-ui off');
+          await replay.appearance(false);
           const off = await replay.capture(`pointer-output-native-${mode}-${padding}-${width}`);
           await native.resize(width, 220);
           const control = await native.capture(`pointer-output-control-${mode}-${padding}-${width}`);
           assert.deepEqual(off.tools.map(tool => tool.lines), control.tools.map(tool => tool.lines), 'complete native same-session tool rows restored without padding changes');
           assert.deepEqual(off.users.map(user => user.lines), control.users.map(user => user.lines));
-          await replay.command('/tidy-ui on');
+          await replay.appearance(true);
         }
       }
       for (const terminal of [native, replay]) for (const type of ['call', 'result', 'model_context', 'provider_error'])
@@ -4822,7 +4956,7 @@ test('Output padding project override stays consistent after native user padding
       assert.deepEqual(after.tools.map(tool => tool.lines), before.tools.map(tool => tool.lines));
       assert.deepEqual(after.users.map(user => user.lines), before.users.map(user => user.lines), 'all pi-tidy-ui margins continue using effective padding with identical Markdown');
       const body = after.users[0].lines.filter(row => row !== '').slice(1, -1);
-      await live.command('/tidy-ui off');
+      await live.appearance(false);
       const native = await live.capture(`native-user-project-${mode}`);
       assert.equal(native.users[0].outputPad, 1, 'never mutate Pi component geometry to reconcile settings');
       assert.deepEqual(body.map(row => stripVTControlCharacters(sliceByColumn(row, 2, 97))),
@@ -4870,6 +5004,12 @@ function colorTerminal(name, mode, { native = false, project = false, automatic 
   const capture = async (name, action = 'snapshot', theme) => {
     writeFileSync(join(terminal.output, 'colors-request.json'), JSON.stringify({ name, action, theme }));
     terminal.send('\x1b[98;7u');
+    if (action === 'on' || action === 'off') await terminal.appearance(action === 'on', { alreadyOpen: true });
+    else if (action === 'colors on' || action === 'colors off') await terminal.terminalColors(action === 'colors on', { alreadyOpen: true });
+    else if (action === 'colors status') {
+      await until(() => terminal.tidyHeading('Tidy UI'), 'shortcut opened color status');
+      await terminal.selectTidyItem('Status & troubleshooting'); await terminal.closeTidyMenu();
+    }
     const data = await until(() => {
       terminal.health();
       try { return JSON.parse(readFileSync(join(terminal.output, `${name}.json`), 'utf8')); }
@@ -5159,8 +5299,8 @@ for (const mode of ['regular', 'fullscreen']) test(`real CLI: isolated bash time
       assert.deepEqual(body(tool(expanded, 'timeout-deep')), ['$ shape timeout-deep', '', ...row(11), '', footer]);
       live.send('\x0f'); await live.settle(); const collapsed = await live.capture('collapsed');
       assert.deepEqual(collapsed.tools.map((value) => value.lines), wide.tools.map((value) => value.lines)); identity(collapsed, wide, bytes);
-      await live.command('/tidy-ui off'); const off = await live.capture('off'); identity(off, wide, bytes);
-      await live.command('/tidy-ui on'); const on = await live.capture('on');
+      await live.appearance(false); const off = await live.capture('off'); identity(off, wide, bytes);
+      await live.appearance(true); const on = await live.capture('on');
       allBashCards(on); identity(on, wide, bytes); assert.deepEqual(on.tools.map((value) => value.lines), wide.tools.map((value) => value.lines));
       const starts = live.events().filter((event) => event.type === 'start').length;
       await live.command('/reload'); await live.event('start', starts + 1);
@@ -5168,12 +5308,12 @@ for (const mode of ['regular', 'fullscreen']) test(`real CLI: isolated bash time
       assert.deepEqual(reloaded.tools.map((value) => value.lines), wide.tools.map((value) => value.lines));
       const native = await start('native', { tidyUi: false, session: wide.session, workspace: live.work });
       const control = await native.capture('native'); identity(control, wide, bytes);
-      await live.command('/tidy-ui off'); const reloadedOff = await live.capture('reloaded-off'); identity(reloadedOff, wide, bytes);
+      await live.appearance(false); const reloadedOff = await live.capture('reloaded-off'); identity(reloadedOff, wide, bytes);
       assert.deepEqual(reloadedOff.tools.map((value) => value.lines), control.tools.map((value) => value.lines), 'off restores exact native history');
       const replay = await start('replay', { session: wide.session, workspace: live.work });
       const resumed = await replay.capture('replay'); allBashCards(resumed); identity(resumed, wide, bytes); wideChecks(resumed); await timeoutCells(resumed, 'replay');
       assert.deepEqual(resumed.tools.map((value) => value.lines), wide.tools.map((value) => value.lines));
-      await replay.command('/tidy-ui off'); const replayOff = await replay.capture('off'); identity(replayOff, wide, bytes);
+      await replay.appearance(false); const replayOff = await replay.capture('off'); identity(replayOff, wide, bytes);
       assert.deepEqual(replayOff.tools.map((value) => value.lines), control.tools.map((value) => value.lines));
       for (const terminal of [native, replay]) for (const type of ['call', 'result', 'model_context', 'provider_error'])
         assert.equal(terminal.events().filter((event) => event.type === type).length, 0, `history ${type} remains zero`);
@@ -5226,6 +5366,11 @@ for (const mode of ['regular', 'fullscreen']) test(`real CLI: queued cards adapt
     const observe = async (terminal, name, action = 'snapshot', busy = true) => {
       writeFileSync(join(terminal.output, 'queued-request.json'), JSON.stringify({ name, action }));
       terminal.send('\x1b[121;7u');
+      if (!terminal.queuedNative) {
+        if (action === 'on' || action === 'off') await terminal.appearance(action === 'on', { alreadyOpen: true, leaveOpen: true });
+        await terminal.cacheSnapshot(action === 'cache clear', { alreadyOpen: true, refreshAfterClear: true,
+          beforeClose: stats => writeFileSync(join(terminal.output, `${name}-menu-stats.json`), JSON.stringify(stats)) });
+      }
       const dump = await until(() => {
         terminal.health(); const file = join(terminal.output, `${name}.json`);
         if (!existsSync(file)) return false;
@@ -5239,6 +5384,7 @@ for (const mode of ['regular', 'fullscreen']) test(`real CLI: queued cards adapt
         agentSettings: { steeringMode: 'one-at-a-time', followUpMode: 'one-at-a-time' },
         extraEnv: { TIDY_UI_TEST_QUEUED_CARDS: '1', ...(native ? { TIDY_UI_TEST_QUEUE_NATIVE: '1' } : {}) },
         extensions: [join(fixtures, 'queued-driver.ts')] });
+      terminal.queuedNative = native;
       terminals.push(terminal); await terminal.ready(); await terminal.resize(100, 120); return terminal;
     };
     const enqueue = async terminal => {
@@ -5436,3 +5582,65 @@ test('edit replay comparison: accepts exact cold foreground including wrapped so
   eagerChanged.tools[0].lines[0] = '\x1b[31mother\x1b[39m';
   assert.throws(() => compareEditReplayColors(eagerChanged, expected, uncolored), 'non-HTML color changes are never accepted');
 });
+
+for (const mode of ['regular', 'fullscreen']) test(`real CLI: settings popup navigation, saved switches, reload and fresh-process replay (${mode})`,
+  { skip: stockOnly, timeout: 120000 }, async () => {
+    const terminals = [], initialSettings = { unrelated: { retained: 42 } };
+    const dataEvents = terminal => terminal.events().filter(event => ['call', 'result', 'model_context'].includes(event.type));
+    const live = new PiTerminal(`settings-${mode}`, { tidyUi: true, mode, tidyUiSettings: initialSettings }); terminals.push(live);
+    try {
+      await live.ready(); await live.run('user-card');
+      const original = await live.capture('settings-original'), sessionBytes = readFileSync(original.session), originalEvents = dataEvents(live);
+      assert.deepEqual(['call', 'result', 'model_context'].map(type => originalEvents.filter(event => event.type === type).length), [2, 2, 3]);
+      const path = join(live.agent, 'extensions/pi-tidy-ui/config.json'), before = readFileSync(path);
+      await live.resize(100, 30); await live.openTidyMenu();
+      live.captureScreen('settings-root', { root: live.tidyRows() });
+      assert.ok(live.tidyRows().some(row => row.startsWith('→ Code color theme')), 'initial Enter is navigation, not a toggle');
+      assert.ok(!live.tidyRows().some(row => /Occipital|cache|logs/u.test(row)), 'technical controls are nested');
+      live.send('\r'); await until(() => live.tidyHeading('Code color theme') && live.tidyRows().some(row => row.includes('Follow Pi theme')), 'first Enter opens theme picker');
+      live.send('zz_no_such_theme');
+      await until(() => live.tidyRows().some(row => row.includes('Search:') && row.includes('zz_no_such_theme')) && !live.tidyRows().some(row => row.includes('Follow Pi theme')), 'search filters theme choices');
+      live.captureScreen('settings-theme-filter', {});
+      live.send('\x1b'); await until(() => live.tidyHeading('Tidy UI') && live.tidyRows().some(row => row.startsWith('→ Code color theme')), 'Escape returns to the root');
+      await live.closeTidyMenu(); assert.deepEqual(readFileSync(path), before, 'opening, searching and cancelling never writes settings');
+      await live.tidyPage(['Code color theme', 'Follow Pi theme']);
+      if (mode === 'fullscreen') {
+        await live.openTidyMenu();
+        const y = live.screen().findIndex(row => row.includes('Match terminal colors to Pi'));
+        const x = live.screen()[y].indexOf('Match terminal colors to Pi') + 3;
+        assert.ok(y >= 0 && x > 0);
+        live.send(`\x1b[<0;${x};${y + 1}M\x1b[<0;${x};${y + 1}m`);
+        await until(() => JSON.parse(readFileSync(path, 'utf8')).terminalColorsEnabled === false, 'normalized mouse toggles exactly the clicked setting');
+        assert.ok(live.tidyHeading('Tidy UI')); await live.closeTidyMenu();
+      } else await live.terminalColors(false);
+      await live.tidyPage(['Status & troubleshooting', 'Use Occipital highlighting']);
+      await live.diagnosticLogging(false); await live.appearance(false);
+      const saved = { ...initialSettings, syntaxTheme: { kind: 'pi' }, terminalColorsEnabled: false,
+        nativeHighlightingEnabled: false, loggingEnabled: false, appearanceEnabled: false };
+      assert.deepEqual(JSON.parse(readFileSync(path, 'utf8')), saved);
+      const off = await live.capture('settings-all-off');
+      assert.notDeepEqual(toolLines(off), toolLines(original), 'appearance Off removes the enabled card presentation');
+      const nativeReplay = new PiTerminal(`settings-native-replay-${mode}`, { mode, session: original.session, workspace: live.work }); terminals.push(nativeReplay);
+      await nativeReplay.ready(); const nativeHistory = await nativeReplay.capture('settings-native-history');
+      assert.equal(dataEvents(nativeReplay).length, 0, 'native history reference executes no tools or model requests');
+      const starts = live.events().filter(event => event.type === 'start').length;
+      await live.command('/reload'); await live.event('start', starts + 1);
+      const reloaded = await live.capture('settings-restored-off');
+      assert.deepEqual(toolLines(reloaded), toolLines(nativeHistory), 'saved Off restores exact native history rows, not just the visible switch');
+      const rootRows = await live.tidyPage();
+      assert.ok(rootRows.some(row => /Tidy UI appearance\s+Off$/u.test(row)));
+      assert.ok(rootRows.some(row => /Match terminal colors to Pi\s+Off$/u.test(row)));
+      const support = await live.tidyPage(['Status & troubleshooting']);
+      assert.ok(support.some(row => /Use Occipital highlighting\s+Off$/u.test(row)));
+      assert.ok((await live.tidyPage(['Status & troubleshooting', 'Diagnostic logs'])).some(row => row === 'Recording: Off'));
+      assert.deepEqual(readFileSync(original.session), sessionBytes); assert.deepEqual(dataEvents(live), originalEvents);
+      const replay = new PiTerminal(`settings-replay-${mode}`, { tidyUi: true, mode, session: original.session, workspace: live.work, tidyUiSettings: saved }); terminals.push(replay);
+      await replay.ready(); const restored = await replay.capture('settings-fresh-process');
+      assert.deepEqual(toolLines(restored), toolLines(nativeHistory)); assert.deepEqual(restored.branch, original.branch);
+      assert.equal(dataEvents(replay).length, 0, 'saved history executes no tool or model request');
+      assert.equal(readdirSync(replay.temp, { recursive: true }).filter(file => file.endsWith('.log')).length, 0, 'disabled logging creates no files at startup');
+      assert.ok((await replay.tidyPage(['Status & troubleshooting', 'Diagnostic logs'])).some(row => row === 'No log file created.'));
+      assert.equal(readdirSync(replay.temp, { recursive: true }).filter(file => file.endsWith('.log')).length, 0, 'reading status does not enable logging');
+      assert.deepEqual(readFileSync(original.session), sessionBytes);
+    } finally { for (const terminal of terminals.reverse()) { await terminal.close(); terminal.dispose(); } }
+  });

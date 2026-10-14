@@ -12,67 +12,80 @@ import { createWriteToolDefinition, ToolExecutionComponent, type ExtensionAPI, t
 import tidyUi, { debugLoggingDiagnostics } from '../src/index.ts';
 import { SourceController } from '../src/occipital/controller.ts';
 import { CardSources, type CardSourceHost } from '../src/syntax/cards.ts';
+import { SyntaxRuntime } from '../src/syntax/runtime.ts';
+import { menuPage, withMenu, setAppearance, setLogging } from './helpers/menu-driver.ts';
+import { ExtensionSettings, type SettingsLoadResult, type SettingsPatch } from '../src/settings.ts';
 
 const dist = dirname(fileURLToPath(import.meta.resolve('@earendil-works/pi-coding-agent')));
 const themes = await import(pathToFileURL(resolve(dist, 'modes/interactive/theme/theme.js')).href);
 themes.initTheme('dark', false);
 class UI extends Container { requests = 0; requestRender() { this.requests++; } }
 const cleanups: (() => Promise<void>)[] = [];
-function fixture(mode = 'tui', logging: false | Omit<JournalOptions, 'warn'> = false) {
+function fixture(mode = 'tui', logging: false | Omit<JournalOptions, 'warn' | 'enabled'> = false,
+  settings?: Pick<ExtensionSettings, 'load' | 'update'>) {
   const root = new UI(), events = new Map<string, (event: unknown, ctx: ExtensionContext) => unknown>();
   const commands = new Map<string, { handler(args: string, ctx: ExtensionContext): Promise<void> }>();
-  const counts = { constructed: 0, load: 0, saves: 0, shared: 0, owned: 0 }, actions: (string | undefined)[] = [], notices: string[] = [];
+  const counts = { constructed: 0, load: 0, saves: 0, shared: 0, owned: 0 }, notices: string[] = [];
+  let saved: SettingsLoadResult = { ok: true, syntaxTheme: { kind: 'pi' } }, view = '';
+  const store = settings ?? { async load() { counts.load++; return { ...saved }; },
+    async update(patch: SettingsPatch) { counts.saves++; saved = { ...saved, ...patch }; return { ok: true as const }; } };
   const ctx = { mode, hasUI: mode === 'tui', cwd: '/tmp', isIdle: () => true,
     sessionManager: { getSessionId: () => 'entry-fixture', getSessionFile: () => '/example/entry-fixture.jsonl',
       getSessionName: () => { throw Error('Logging must not scan history for a session name'); } }, ui: { theme: themes.theme,
-      getEditorComponent: () => undefined, select: async () => actions.shift(), notify: (message: string) => notices.push(message),
+      getEditorComponent: () => undefined, notify: (message: string) => notices.push(message),
       setWidget(_name: string, factory?: (tui: UI) => unknown) { factory?.(root); } } } as unknown as ExtensionContext;
   const pi = { on: (name: string, callback: (event: unknown, ctx: ExtensionContext) => unknown) => events.set(name, callback),
     registerCommand: (name: string, command: { handler(args: string, ctx: ExtensionContext): Promise<void> }) => commands.set(name, command),
     registerFlag() {}, getFlag() {}, getSettings: () => ({}), getThinkingLevel: () => 'off' } as unknown as ExtensionAPI;
-  tidyUi(pi, { logging, syntax: () => {
+  tidyUi(pi, { logging, settings: store, syntax: () => {
     counts.constructed++;
-    return { standaloneVersion: 'fixture', settings: {
-      async load() { counts.load++; return { ok: true, syntaxTheme: { kind: 'pi' } }; },
-      async update() { counts.saves++; return { ok: true }; } },
+    return { standaloneVersion: 'fixture',
       provider: { async tryShared() { counts.shared++; return undefined; }, async acquireOwned() { counts.owned++; throw Error('fixture unavailable'); } } };
   } });
+  const command = (args: string) => commands.get('tidy-ui')!.handler(args, ctx);
   const stop = async () => { await events.get('session_shutdown')!({ type: 'session_shutdown', reason: 'quit' }, ctx); await settled(); };
   cleanups.push(stop);
-  return { root, ctx, counts, actions, notices, events, start: (event: unknown = { type: 'session_start', reason: 'startup' }) => events.get('session_start')!(event, ctx),
-    command: (args: string) => commands.get('tidy-ui')!.handler(args, ctx) };
+  return { root, ctx, counts, notices, events, stop, get view() { return view; },
+    start: (event: unknown = { type: 'session_start', reason: 'startup' }) => events.get('session_start')!(event, ctx), command,
+    async page(...path: string[]) { return view = await menuPage(commands.get('tidy-ui')!.handler, ctx, path); },
+    async appearance(value: boolean) { return view = await setAppearance(commands.get('tidy-ui')!.handler, ctx, value); },
+    async recording(value: boolean) { return view = await setLogging(commands.get('tidy-ui')!.handler, ctx, value); } };
 }
 async function settled() { for (let i = 0; i < 5; i++) await turn(); }
 afterEach(async () => { for (const cleanup of cleanups.splice(0)) await cleanup(); });
 
 test('entry starts syntax only asynchronously after eligible interactive adapter attachment', async () => {
   const h = fixture(); assert.deepEqual(h.counts, { constructed: 0, load: 0, saves: 0, shared: 0, owned: 0 });
-  h.start(); assert.equal(h.counts.constructed, 1); assert.equal(h.counts.shared, 0); assert.equal(h.counts.load, 0);
+  const starting = h.start(); assert.equal(h.counts.constructed, 0); assert.equal(h.counts.shared, 0); assert.equal(h.counts.load, 1);
+  await starting; assert.equal(h.counts.constructed, 1);
   await settled(); assert.equal(h.counts.load, 1); assert.equal(h.counts.shared, 1); assert.equal(h.counts.owned, 1);
-  h.start(); h.root.render(80); await settled(); assert.equal(h.counts.constructed, 1); assert.equal(h.counts.shared, 1);
+  await h.start(); h.root.render(80); await settled(); assert.equal(h.counts.constructed, 1); assert.equal(h.counts.shared, 1);
 });
 
-test('entry print/json/rpc modes and syntax commands construct no syntax owner', async () => {
+test('entry print/json/rpc modes restore preferences for logging but never construct syntax or open a menu', async () => {
   for (const mode of ['print', 'json', 'rpc']) {
-    const h = fixture(mode); h.start(); await h.command('syntax'); await settled();
-    assert.equal(h.counts.constructed, 0); assert.equal(h.counts.shared, 0); assert.equal(h.counts.load, 0);
+    const h = fixture(mode); await h.start(); await h.command(''); await settled();
+    assert.equal(h.counts.constructed, 0); assert.equal(h.counts.shared, 0); assert.equal(h.counts.load, 1);
     assert.match(h.notices.at(-1)!, /terminal mode/);
   }
 });
 
-test('entry native session disable survives master off/on without persistence or provider activation', async () => {
-  const h = fixture(); h.start(); await settled();
-  h.actions.push('Disable for this session', 'Close'); await h.command('syntax');
-  await h.command('off'); const before = { ...h.counts };
-  await h.command('on'); await settled();
-  assert.equal(h.counts.constructed, before.constructed + 1); assert.equal(h.counts.load, before.load + 1);
-  assert.equal(h.counts.shared, before.shared); assert.equal(h.counts.owned, before.owned); assert.equal(h.counts.saves, 0);
+test('entry native disable is saved and survives master off/on without provider reactivation or duplicate loads', async () => {
+  const h = fixture(); await h.start(); await settled();
+  await h.page('Status & troubleshooting', 'Use Occipital highlighting');
+  assert.equal(h.counts.saves, 1);
+  await h.appearance(false); const before = { ...h.counts };
+  await h.appearance(true); await settled();
+  assert.equal(h.counts.constructed, before.constructed + 1); assert.equal(h.counts.load, before.load);
+  assert.equal(h.counts.shared, before.shared); assert.equal(h.counts.owned, before.owned); assert.equal(h.counts.saves, 3);
 });
 
-test('entry menu while master-off may read preference, never starts provider', async () => {
-  const h = fixture(); await h.command('off'); h.actions.push('Service status', 'Close'); await h.command('syntax'); await settled();
+test('entry root/status while master-off never construct syntax; theme page never starts a provider', async () => {
+  const h = fixture(); await h.appearance(false);
+  await h.page('Status & troubleshooting', 'Highlighting service details');
+  assert.equal(h.counts.constructed, 0); assert.equal(h.counts.load, 1); assert.equal(h.counts.shared, 0);
+  await h.page('Code color theme'); await settled();
   assert.equal(h.counts.constructed, 1); assert.equal(h.counts.load, 1); assert.equal(h.counts.shared, 0); assert.equal(h.counts.owned, 0);
-  assert.ok(h.notices.some(message => message.includes('pi-tidy-ui presentation is off.')));
 });
 
 test('entry uses prepared file path and preserves actual SDK args/results on warm and resized frames', async () => {
@@ -89,7 +102,7 @@ test('entry uses prepared file path and preserves actual SDK args/results on war
   };
   const render = (width: number) => { inRender = true; try { return h.root.render(width); } finally { inRender = false; } };
   try {
-    h.start(); render(80); assert.equal(stores, 0); await settled(); const before = { ...h.counts };
+    await h.start(); render(80); assert.equal(stores, 0); await settled(); const before = { ...h.counts };
     assert.equal(stores, 1, 'one prepared public Pi bridge, not the legacy render classifier');
     for (const width of [80, 60, 100, 80]) render(width);
     await settled(); assert.deepEqual(h.counts, before); assert.equal(stores, 1); assert.equal(storesInRender, 0);
@@ -102,18 +115,18 @@ test('entry logging controls use public session metadata, remain alive while pre
   const directory = await fs.mkdtemp(join(tmpdir(), 'tidy-entry-log-'));
   const h = fixture('tui', { root: directory });
   try {
-    h.start(); await settled();
+    await h.start(); await settled();
     await h.events.get('session_info_changed')!({ name: 'Readable session' }, h.ctx);
-    await h.command('logs');
-    assert.match(h.notices.at(-1)!, /entry-fixture/);
-    assert.match(h.notices.at(-1)!, /Readable session/);
-    await h.command('off');
-    await h.command('logs snapshot');
-    assert.match(h.notices.at(-1)!, /snapshot/i);
-    await h.command('logs off');
-    assert.match(h.notices.at(-1)!, /off/i);
-    await h.command('logs on');
-    await h.command('logs snapshot');
+    await h.page('Status & troubleshooting', 'Diagnostic logs');
+    assert.match(h.view, /entry-fixture/);
+    assert.match(h.view, /Readable session/);
+    await h.appearance(false);
+    await h.page('Status & troubleshooting', 'Diagnostic logs', 'Write state snapshot');
+    assert.match(h.view, /snapshot/i);
+    await h.recording(false);
+    assert.match(h.view, /off/i);
+    await h.recording(true);
+    await h.page('Status & troubleshooting', 'Diagnostic logs', 'Write state snapshot');
     await h.events.get('session_shutdown')!({ type: 'session_shutdown', reason: 'quit' }, h.ctx);
     const names = await fs.readdir(directory);
     assert.ok(names.every(name => /\.log(?:\.1)?$/u.test(name)), names.join(', '));
@@ -126,7 +139,7 @@ test('entry logging controls use public session metadata, remain alive while pre
     assert.match(await fs.readFile(join(directory, 'sessions.log'), 'utf8'), /session=entry-fixture/);
     const filesBefore = await fs.readdir(directory);
     await h.command('logs list');
-    assert.match(h.notices.at(-1)!, /Usage:.*logs/u);
+    assert.match(h.notices.at(-1)!, /Usage:.*tidy-ui/u);
     assert.deepEqual(await fs.readdir(directory), filesBefore);
   } finally {
     await h.events.get('session_shutdown')!({ type: 'session_shutdown', reason: 'quit' }, h.ctx);
@@ -138,19 +151,19 @@ test('entry logging controls use public session metadata, remain alive while pre
 test('entry logging escapes UI session metadata and separates switch/resume/reload runs without history scans', async () => {
   const root = await fs.mkdtemp(join(tmpdir(), 'tidy-log-session-events-')), h = fixture('tui', { root });
   try {
-    h.start(); await h.command('logs snapshot'); const first = debugLoggingDiagnostics()!;
+    await h.start(); await h.page('Status & troubleshooting', 'Diagnostic logs', 'Write state snapshot'); const first = debugLoggingDiagnostics()!;
     assert.equal(first.session, 'entry-fixture'); assert.equal(first.state, 'active');
     await h.events.get('session_info_changed')!({ name: 'name\nforged\x1b[31m' }, h.ctx);
-    await h.command('logs'); assert.match(h.notices.at(-1)!, /name\\nforged\\x1b\[31m/);
-    assert.equal(h.notices.at(-1)!.includes('name\nforged'), false);
-    h.start(); await h.command('logs snapshot'); assert.equal(debugLoggingDiagnostics()!.run, first.run);
+    await h.page('Status & troubleshooting', 'Diagnostic logs'); assert.match(h.view, /name\\nforged\\x1b\[31m/);
+    assert.equal(h.view.includes('name\nforged'), false);
+    await h.start(); await h.page('Status & troubleshooting', 'Diagnostic logs', 'Write state snapshot'); assert.equal(debugLoggingDiagnostics()!.run, first.run);
     await h.events.get('session_shutdown')!({ type: 'session_shutdown', reason: 'resume' }, h.ctx);
     Object.assign(h.ctx.sessionManager, { getSessionId: () => 'other-session' });
-    h.start({ type: 'session_start', reason: 'resume' }); await h.command('logs snapshot'); const second = debugLoggingDiagnostics()!;
+    await h.start({ type: 'session_start', reason: 'resume' }); await h.page('Status & troubleshooting', 'Diagnostic logs', 'Write state snapshot'); const second = debugLoggingDiagnostics()!;
     assert.equal(second.session, 'other-session'); assert.notEqual(second.run, first.run);
     await h.events.get('session_shutdown')!({ type: 'session_shutdown', reason: 'reload' }, h.ctx);
     Object.assign(h.ctx.sessionManager, { getSessionId: () => 'entry-fixture' });
-    h.start({ type: 'session_start', reason: 'resume' }); await h.command('logs snapshot'); const resumed = debugLoggingDiagnostics()!;
+    await h.start({ type: 'session_start', reason: 'resume' }); await h.page('Status & troubleshooting', 'Diagnostic logs', 'Write state snapshot'); const resumed = debugLoggingDiagnostics()!;
     assert.equal(resumed.session, first.session); assert.notEqual(resumed.run, first.run);
     await h.events.get('session_shutdown')!({ type: 'session_shutdown', reason: 'quit' }, h.ctx);
     const common = await fs.readFile(join(root, 'sessions.log'), 'utf8');
@@ -176,21 +189,21 @@ test('entry logging failure and disabled snapshot are truthful, isolate presenta
   } };
   const h = fixture('tui', { root, io });
   try {
-    h.start(); await h.command('logs snapshot'); await settled(); const before = { ...h.counts }, initial = debugLoggingDiagnostics()!;
-    await h.command('logs off'); const disabled = debugLoggingDiagnostics()!;
-    await h.command('logs snapshot'); assert.match(h.notices.at(-1)!, /snapshot not written.*off/);
+    await h.start(); await h.page('Status & troubleshooting', 'Diagnostic logs', 'Write state snapshot'); await settled(); const before = { ...h.counts }, initial = debugLoggingDiagnostics()!;
+    await h.recording(false); const disabled = debugLoggingDiagnostics()!;
+    await h.page('Status & troubleshooting', 'Diagnostic logs', 'Write state snapshot'); assert.match(h.view, /Snapshot not written.*off/i);
     assert.equal(debugLoggingDiagnostics()!.records, disabled.records); assert.equal(debugLoggingDiagnostics()!.writes, disabled.writes);
-    await h.command('logs on'); refuse = true;
-    await h.command('logs snapshot'); assert.match(h.notices.at(-1)!, /snapshot not written.*ENOSPC/);
+    await h.recording(true); refuse = true;
+    await h.page('Status & troubleshooting', 'Diagnostic logs', 'Write state snapshot'); assert.match(h.view, /snapshot could not be written/i); assert.match(h.view, /ENOSPC/);
     const failed = debugLoggingDiagnostics()!;
     assert.equal(failed.state, 'failed'); assert.equal(failed.pendingBytes, 0); assert.equal(failed.inFlightBytes, 0); assert.equal(failed.timer, false);
     assert.equal(h.notices.filter(message => message.includes('Debug logging stopped')).length, 1);
     assert.equal(h.notices.some(message => message.includes('PRIVATE_DISK_ERROR_BODY')), false);
     for (let i = 0; i < 50; i++) h.root.render(80);
-    await settled(); assert.deepEqual(h.counts, before); assert.equal(debugLoggingDiagnostics()!.writes, failed.writes);
-    refuse = false; await h.command('logs on'); await h.command('logs snapshot');
+    await settled(); assert.deepEqual(h.counts, { ...before, saves: before.saves + 2 }); assert.equal(debugLoggingDiagnostics()!.writes, failed.writes);
+    refuse = false; await h.recording(true); await h.page('Status & troubleshooting', 'Diagnostic logs', 'Write state snapshot');
     assert.equal(debugLoggingDiagnostics()!.state, 'active'); assert.equal(debugLoggingDiagnostics()!.run, initial.run);
-    assert.notEqual(debugLoggingDiagnostics()!.path, initial.path); assert.deepEqual(h.counts, before);
+    assert.notEqual(debugLoggingDiagnostics()!.path, initial.path); assert.deepEqual(h.counts, { ...before, saves: before.saves + 2 });
   } finally {
     await h.events.get('session_shutdown')!({ type: 'session_shutdown', reason: 'quit' }, h.ctx);
     await fs.rm(root, { recursive: true, force: true });
@@ -201,7 +214,7 @@ test('entry logging failure and disabled snapshot are truthful, isolate presenta
 test('logging review H3: explicit snapshot includes existing Git and owned fallback-animation aggregates', async () => {
   const root = await fs.mkdtemp(join(tmpdir(), 'tidy-log-snapshot-')), h = fixture('tui', { root });
   try {
-    h.start(); await h.command('logs snapshot'); const status = debugLoggingDiagnostics()!;
+    await h.start(); await h.page('Status & troubleshooting', 'Diagnostic logs', 'Write state snapshot'); const status = debugLoggingDiagnostics()!;
     const text = await fs.readFile(status.path, 'utf8');
     assert.match(text, /\[git\].*Snapshot.*queries=/);
     assert.match(text, /\[animation\].*Snapshot.*wakes=0.*requests=0/);
@@ -235,7 +248,7 @@ test('entry public streaming identities separate quick live abort from restored 
       assistantMessageEvent: { type: kind, contentIndex: 0, partial: message } }, h.ctx);
   };
   try {
-    h.start(); await settled();
+    await h.start(); await settled();
     const restored = tool('restored', ": 'saved"); abort(restored);
     h.root.render(80); await settled();
     assert.deepEqual(observed, [{ text: ": 'saved", complete: true }]);
@@ -257,4 +270,126 @@ test('entry public streaming identities separate quick live abort from restored 
     await settled(); assert.equal(observed.length, baseline);
     assert.equal(Reflect.get(restored, 'argsComplete'), false); assert.equal(Reflect.get(restored, 'executionStarted'), false);
   } finally { CardSources.prototype.drain = drain; }
+});
+
+test('entry persists every switch and theme through the popup; a fresh runtime restores Off before any provider or log IO', async () => {
+  const directory = await fs.mkdtemp(join(tmpdir(), 'tidy-preferences-entry-'));
+  const file = join(directory, 'config.json'), store = new ExtensionSettings({ file });
+  const first = fixture('tui', { root: join(directory, 'first-logs') }, store);
+  try {
+    await first.start(); await settled();
+    await first.page('Status & troubleshooting', 'Use Occipital highlighting');
+    await first.page('Match terminal colors to Pi');
+    await first.recording(false); await first.appearance(false);
+    await first.page('Code color theme', 'Follow Pi theme');
+    assert.deepEqual(JSON.parse(await fs.readFile(file, 'utf8')), { syntaxTheme: { kind: 'pi' },
+      appearanceEnabled: false, terminalColorsEnabled: false, nativeHighlightingEnabled: false, loggingEnabled: false });
+    await first.stop();
+    const nextRoot = join(directory, 'restored-logs');
+    const next = fixture('tui', { root: nextRoot }, new ExtensionSettings({ file }));
+    await next.start(); await settled();
+    assert.equal(next.counts.constructed, 0); assert.equal(next.counts.shared, 0); assert.equal(next.counts.owned, 0);
+    const log = debugLoggingDiagnostics()!;
+    assert.equal(log.capture, false); assert.equal(log.writes, 0); assert.equal(log.scans, 0); assert.equal(log.timer, false);
+    await assert.rejects(fs.stat(nextRoot), { code: 'ENOENT' });
+    await next.page(); assert.match(next.view, /Tidy UI appearance\s+Off/); assert.match(next.view, /Match terminal colors to Pi\s+Off/);
+    await next.page('Status & troubleshooting'); assert.match(next.view, /Use Occipital highlighting\s+Off/);
+    assert.equal(next.counts.constructed, 0);
+    await next.page('Code color theme'); assert.equal(next.counts.constructed, 1); assert.equal(next.counts.shared, 0);
+    await next.appearance(true); await settled(); assert.equal(next.counts.shared, 0); assert.equal(next.counts.owned, 0);
+    await next.page('Status & troubleshooting', 'Use Occipital highlighting'); await settled();
+    assert.equal(next.counts.shared, 1); assert.equal(next.counts.owned, 1);
+    assert.equal(debugLoggingDiagnostics()!.writes, 0); await next.stop();
+  } finally { await first.stop(); await fs.rm(directory, { recursive: true, force: true }); }
+});
+
+test('entry failed switch persistence reports applied-but-unsaved without undoing the live choice', async () => {
+  let saves = 0;
+  const store = { async load(): Promise<SettingsLoadResult> { return { ok: true, syntaxTheme: { kind: 'pi' }, appearanceEnabled: false }; },
+    async update() { saves++; return { ok: false as const, issue: { code: 'write-failed' as const, message: 'Settings could not be saved.' } }; } };
+  const h = fixture('tui', false, store); await h.start();
+  await h.appearance(true);
+  assert.match(h.view, /Tidy UI appearance\s+On/); assert.match(h.view, /Applied for now, but not saved/);
+  assert.equal(saves, 1); await h.stop();
+  const fresh = fixture('tui', false, store); await fresh.start(); await fresh.page();
+  assert.match(fresh.view, /Tidy UI appearance\s+Off/); assert.equal(fresh.counts.constructed, 0);
+});
+
+test('entry one overlay survives native generation changes and master off/on, using the new syntax owner afterward', async () => {
+  const h = fixture(); await h.start(); await settled();
+  let mounts = 0;
+  await withMenu(async (args, ctx) => { mounts++; await h.command(args); }, h.ctx, async menu => {
+    await menu.select('Status & troubleshooting'); await menu.select('Use Occipital highlighting');
+    await menu.key('\x1b'); await menu.select('Tidy UI appearance');
+    assert.match(menu.text(), /Tidy UI appearance\s+Off/);
+    await menu.select('Tidy UI appearance'); assert.match(menu.text(), /Tidy UI appearance\s+On/);
+    await menu.select('Code color theme'); await menu.select('Follow Pi theme');
+    assert.match(menu.text(), /Applied and saved/);
+  });
+  assert.equal(mounts, 1); assert.equal(h.counts.constructed, 2); assert.equal(h.counts.saves, 4);
+  assert.equal(h.counts.load, 1); assert.equal(h.counts.shared, 1);
+});
+
+test('entry shutdown aborts a pending switch save and closes the overlay; late completion cannot notify or restart anything', async () => {
+  let release!: (value: { ok: true }) => void, signal: AbortSignal | undefined;
+  const saving = new Promise<{ ok: true }>(resolve => { release = resolve; });
+  const h = fixture('tui', false, {
+    async load() { return { ok: true, syntaxTheme: { kind: 'pi' }, appearanceEnabled: false }; },
+    update(_patch, options) { signal = options?.signal; return saving; },
+  });
+  await h.start();
+  await withMenu((_args, _ctx) => h.command(''), h.ctx, async menu => {
+    const changing = menu.select('Match terminal colors to Pi'); await turn();
+    assert.equal(signal?.aborted, false);
+    await h.stop(); assert.equal(signal?.aborted, true);
+    const before = { ...h.counts }, notices = [...h.notices];
+    release({ ok: true }); await changing; await settled();
+    assert.deepEqual(h.counts, before); assert.deepEqual(h.notices, notices); assert.equal(menu.text(), '');
+  });
+});
+
+test('entry a retired pending initial load cannot install UI, open logs, start providers, or emit a stale warning', async () => {
+  let release!: (value: SettingsLoadResult) => void;
+  const loading = new Promise<SettingsLoadResult>(resolve => { release = resolve; });
+  const directory = await fs.mkdtemp(join(tmpdir(), 'tidy-retired-start-')), logs = join(directory, 'logs');
+  const h = fixture('tui', { root: logs }, { load: () => loading, async update() { return { ok: true }; } });
+  try {
+    const starting = h.start(); await h.stop();
+    release({ ok: false, syntaxTheme: { kind: 'pi' }, issue: { code: 'invalid-json', message: 'Settings JSON could not be read.' } });
+    await starting; await settled();
+    assert.deepEqual(h.counts, { constructed: 0, load: 0, saves: 0, shared: 0, owned: 0 });
+    assert.equal(h.notices.length, 0); await assert.rejects(fs.stat(logs), { code: 'ENOENT' });
+  } finally { await h.stop(); await fs.rm(directory, { recursive: true, force: true }); }
+});
+
+test('latest confirmed switch wins across popup reopening while older cleanup is pending', async () => {
+  const directory = await fs.mkdtemp(join(tmpdir(), 'tidy-switch-order-'));
+  const disk = new ExtensionSettings({ file: join(directory, 'config.json') });
+  const saves: Promise<unknown>[] = [];
+  const store = { load: () => disk.load(), update(...args: Parameters<ExtensionSettings['update']>) {
+    const operation = disk.update(...args); saves.push(operation); return operation;
+  } };
+  let release!: () => void, entered!: () => void;
+  const heldCleanup = new Promise<void>(resolve => { release = resolve; });
+  const disposing = new Promise<void>(resolve => { entered = resolve; });
+  const original = SyntaxRuntime.prototype.dispose; let first = true;
+  SyntaxRuntime.prototype.dispose = function () {
+    const stopped = original.call(this);
+    if (!first) return stopped;
+    first = false; entered(); return Promise.all([stopped, heldCleanup]).then(() => {});
+  };
+  try {
+    const h = fixture('tui', false, store); await h.start(); await settled();
+    await withMenu(() => h.command(''), h.ctx, async menu => {
+      await menu.key('\x1b[A'); menu.input('\r'); await disposing; menu.input('\x03');
+    });
+    await h.appearance(true);
+    assert.equal((await disk.load()).appearanceEnabled, true, 'new confirmation is saved while older cleanup remains held');
+    release(); await settled(); await Promise.all(saves);
+    assert.equal(saves.length, 2, 'one save per explicit confirmation, no cleanup-time rewrite');
+    assert.equal((await disk.load()).appearanceEnabled, true, 'older completion cannot overwrite the newer preference');
+    await h.page(); assert.match(h.view, /Tidy UI appearance\s+On/);
+    const restored = fixture('tui', false, store); await restored.start(); await restored.page();
+    assert.match(restored.view, /Tidy UI appearance\s+On/);
+  } finally { release(); SyntaxRuntime.prototype.dispose = original; await fs.rm(directory, { recursive: true, force: true }); }
 });

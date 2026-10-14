@@ -1,17 +1,12 @@
 # Diagnostic journals
 
-pi-tidy-ui records human-readable text journals for session lifecycle, presentation decisions and failures across the extension. Capture is enabled by default and is independent of `/tidy-ui off`. It does not change highlighting or UI ownership policy.
+pi-tidy-ui records human-readable text journals for session lifecycle, presentation decisions and failures across the extension. Capture is enabled by default and is independent of the Tidy UI appearance switch. It does not change highlighting or UI ownership policy.
 
 ## Reading and controls
 
-```text
-/tidy-ui logs           # current session/run, paths, capture state and counters
-/tidy-ui logs snapshot  # existing runtime/cache/syntax/color/Git/animation counters
-/tidy-ui logs off       # stop capture for this runtime; flush pending records
-/tidy-ui logs on        # resume, or explicitly retry a failed writer
-```
+Bare `/tidy-ui` → **Status & troubleshooting → Diagnostic logs** shows current session/run, paths, capture state and counters. **Record diagnostic logs** stops or resumes capture; **Retry recording** explicitly retries a failed writer. **Write state snapshot** records existing runtime/cache/syntax/color/Git/animation counters, without enabling capture or rendering.
 
-There is no settings file, session index, JSON journal or `logs list` command. Read or tail the overview and detailed text files at the paths shown by `logs`. Reload starts a new enabled logging runtime. Explicit retry keeps the run identity but uses a new capture file. Turning capture off does not disable the extension.
+The capture preference is stored in the [extension config](settings-menu-spec.md), independently of appearance. A saved Off is loaded before journal initialization: no files, retention scan or cleanup are started. Reload restores this preference in a new logging runtime. There is no separate log browser, JSON journal or session-history index; read or tail the overview and detailed text files at the displayed paths. Explicit retry keeps the run identity but uses a new capture file. Turning capture off flushes pending records without disabling the extension.
 
 The private directory is `os.tmpdir()/pi-tidy-ui-<user>`: the numeric UID on POSIX, a sanitized username on Windows. The directory contains:
 

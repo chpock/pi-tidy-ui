@@ -42,7 +42,7 @@ export default async function colorDriver(pi: ExtensionAPI) {
       const state = () => editor ? { text: editor.getText(), expanded: editor.getExpandedText(), cursor: editor.getCursor() } : undefined;
       const before = state();
       let report;
-      if (["on", "off", "colors on", "colors off", "colors status"].includes(action)) await control!(action, ctx as never);
+      if (["on", "off", "colors on", "colors off", "colors status"].includes(action)) await control!('', ctx as never);
       else if (action === "theme") { const result = ctx.ui.setTheme(theme); if (!result.success) throw new Error(result.error); }
       else if (action === "foreign-query") report = await tui.queryTerminalColors({ timeoutMs: 100 });
       else if (action === "foreign-enable" || action === "foreign-disable") {

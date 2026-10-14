@@ -37,7 +37,7 @@ export default function editorDriver(pi: ExtensionAPI) {
       if (!identities.has(editor)) identities.set(editor, ++nextIdentity);
       const state = () => ({ text: editor.getText(), expanded: editor.getExpandedText(), cursor: editor.getCursor() });
       const before = state();
-      if (action === "on" || action === "off") await control!(action, ctx as never);
+      if (action === "on" || action === "off") await control!('', ctx as never);
       else if (action === "dark" || action === "light") ctx.ui.setTheme(action);
       else if (action === "working-message") ctx.ui.setWorkingMessage("Working A─B ───");
       else if (action === "working-hide") ctx.ui.setWorkingVisible(false);

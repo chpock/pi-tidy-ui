@@ -12,6 +12,8 @@ export interface SyntaxClientOptions {
   /** Trusted delivery metadata, not a version discovery request. */
   standaloneVersion: string;
   settings?: Pick<ExtensionSettings, 'load' | 'update'>;
+  /** A validated preference already loaded by the extension before activation. */
+  initialTheme?: SyntaxTheme;
   source?: Omit<ControllerOptions, 'onChange'>;
   notify?: (message: string, type: 'error') => void;
   onChange?: () => void;
@@ -68,6 +70,9 @@ export class SyntaxClient implements SyntaxMenuOwner {
 
   constructor(options: SyntaxClientOptions) {
     this.settings = options.settings ?? new ExtensionSettings();
+    if (options.initialTheme) {
+      this.selected = copyTheme(options.initialTheme); this.preferenceKnown = true; this.restore = Promise.resolve();
+    }
     this.standaloneVersion = options.standaloneVersion; this.diagnostic = options.diagnostic;
     this.notify = options.notify; this.onChange = options.onChange; this.onSourceChange = options.onSourceChange;
     this.broker = new ProviderBroker({ ...options.provider, diagnostic: options.diagnostic ?? options.provider.diagnostic, onChange: brokerObserver(new WeakRef(this)),
@@ -163,7 +168,7 @@ export class SyntaxClient implements SyntaxMenuOwner {
     try { this.onChange?.(); } catch { /* Presentation cannot disturb ownership. */ }
   }
 
-  private restorePreference(): Promise<void> {
+  restorePreference(): Promise<void> {
     if (!this.restore) this.restore = this.loadPreference(this.preferenceRevision);
     return this.restore;
   }

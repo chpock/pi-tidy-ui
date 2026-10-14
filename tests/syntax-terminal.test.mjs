@@ -141,21 +141,18 @@ for (const mode of ['fullscreen', 'regular']) test(`occipital CLI: actual ${mode
       for (const width of [60, 100]) { await native.resize(width); await native.capture(`syntax-width-${width}`); }
       const warmed = await stats(native, 'warm-after'); assert.deepEqual(work(warmed), work(baseline)); assert.equal(warmed.counts.piBridges, 0);
       assert.deepEqual(body(await native.capture('syntax-back-wide')), body(shown));
-      await native.command('/tidy-ui syntax'); native.send('\x1b'); await native.settle();
+      await native.openTidyMenu(); await native.selectTidyItem('Code color theme'); await native.closeTidyMenu();
       const menu = await stats(native, 'menu-cancel'); assert.deepEqual(work(menu), work(baseline)); assert.equal(menu.counts.acquisitions, 1);
       const pid = baseline.transports[0].pid;
-      await native.command('/tidy-ui syntax');
-      for (let i = 0; i < 3; i++) { native.send('\x1b[B'); await native.settle(); }
-      native.send('\r'); await native.settle();
-      // Native-off invalidates the originating menu epoch by contract.
-      await native.command('/tidy-ui syntax'); native.captureScreen('syntax-menu-off', {});
-      assert.ok(native.screen().some(row => row.includes('Enable for this session')), 'fresh real menu confirms native session off: ' + native.output);
-      native.send('\x1b'); await native.settle();
+      await native.openTidyMenu(); await native.selectTidyItem('Status & troubleshooting');
+      await native.selectTidyItem('Use Occipital highlighting'); native.captureScreen('syntax-menu-off', {});
+      assert.ok(native.tidyRows().some(row => /Use Occipital highlighting\s+Off/u.test(row)), 'same real overlay survives native disable: ' + native.output);
+      await native.closeTidyMenu();
       const disabled = await stats(native, 'native-off'); assert.ok(disabled.transports.every(t => t.childState === 'exited'));
-      await native.command('/tidy-ui off'); const off = await stats(native, 'master-off');
+      await native.appearance(false); const off = await stats(native, 'master-off');
       assert.ok(off.transports.every(t => t.childState === 'exited' && t.retainedBytes === 0 && t.liveTimers === 0));
       assert.throws(() => process.kill(pid, 0), { code: 'ESRCH' });
-      await native.command('/tidy-ui on'); const reenabled = await native.capture('syntax-reenabled');
+      await native.appearance(true); const reenabled = await native.capture('syntax-reenabled');
       assert.deepEqual(body(reenabled), body(shown));
       const afterOn = await stats(native, 'master-on'); assert.equal(afterOn.counts.acquisitions, 1, 'session-native-off survives full adapter reinstall');
       assert.ok(afterOn.source.piSourceRecords > 0, 'post-reinstall diagnostics describe the current fallback owner, not the disposed native controller');
@@ -186,11 +183,7 @@ test('occipital CLI: real theme picker, explicit RGB, persisted selection and fr
     let replay;
     try {
       const initial = await scenario(native, true);
-      await native.command('/tidy-ui syntax'); native.send('\r'); await native.settle();
-      assert.ok(native.screen().some(row => row.includes('1. Pi palette')), 'public scrolling theme picker installed');
-      native.send('\x1b[B'); await native.settle(); native.send('\r'); await native.settle();
-      assert.ok(native.screen().some(row => row.includes('Syntax highlighting')), 'theme action returns to management menu');
-      native.send('\x1b'); await native.settle();
+      await chooseTheme(native, 1);
       const prefs = readFileSync(`${native.agent}/extensions/pi-tidy-ui/config.json`, 'utf8'), saved = JSON.parse(prefs);
       assert.deepEqual(Object.keys(saved), ['syntaxTheme']); assert.equal(saved.syntaxTheme.kind, 'occipital'); assert.equal(typeof saved.syntaxTheme.id, 'string');
       await settledStats(native, 'theme-settled', s => nativeReady(s) && s.client.effective.id === saved.syntaxTheme.id);
@@ -299,17 +292,20 @@ for (const mode of ['fullscreen', 'regular']) test(`occipital CLI: ${mode} input
     }
   });
 
-async function menuAction(terminal, index) {
-  await terminal.command('/tidy-ui syntax');
-  assert.ok(terminal.screen().some(row => row.includes('Syntax highlighting')));
-  for (let i = 0; i < index; i++) { terminal.send('\x1b[B'); await terminal.settle(); }
-  terminal.send('\r'); await terminal.settle();
+let menuSequence = 0;
+async function menuAction(terminal, action) {
+  await terminal.openTidyMenu();
+  if (action === 'status') { await terminal.selectTidyItem('Status & troubleshooting'); await terminal.selectTidyItem('Highlighting service details'); }
+  else if (action === 'refresh') { await terminal.selectTidyItem('Code color theme'); await terminal.selectTidyItem('Refresh theme list'); }
+  else throw Error('Unknown test menu action');
 }
 async function chooseTheme(terminal, index) {
-  await menuAction(terminal, 0);
-  assert.ok(terminal.screen().some(row => row.includes('1. Pi palette')));
-  for (let i = 0; i < index; i++) { terminal.send('\x1b[B'); await terminal.settle(); }
-  terminal.send('\r'); await terminal.settle(); terminal.send('\x1b'); await terminal.settle();
+  const snapshot = await stats(terminal, `theme-choice-${++menuSequence}`);
+  const profiles = snapshot.client.provider.description.profiles.filter(profile => profile.id !== 'pi');
+  const label = index === 0 ? 'Follow Pi theme' : profiles[index - 1].label;
+  await terminal.openTidyMenu(); await terminal.selectTidyItem('Code color theme');
+  assert.ok(terminal.tidyRows().some(row => row.includes('Follow Pi')), 'public searchable theme picker installed');
+  await terminal.selectTidyItem(label); await terminal.closeTidyMenu();
 }
 async function peerSource(client) {
   const profile = client.snapshot().effective;
@@ -341,9 +337,9 @@ test('occipital CLI: shared discovery, public refresh/status/Pi menu, actual los
       const oldPid = original.client.provider.description.runtime.pid;
       assert.equal(oldPid, host.initialPeer.snapshot().provider.description.runtime.pid);
       const initialTraffic = traffic(terminal), initialData = persisted(initial), initialBranch = initial.branch;
-      await menuAction(terminal, 2);
+      await menuAction(terminal, 'status');
       assert.ok(terminal.screen().some(row => row.includes('Provider: shared')), 'public status reports the actual provider');
-      terminal.send('\x1b'); await terminal.settle();
+      await terminal.closeTidyMenu();
       const custom = original.client.provider.description.profiles.find(profile => profile.label === 'cli-shared'); assert.ok(custom);
       const index = original.client.provider.description.profiles.filter(profile => profile.id !== 'pi').findIndex(profile => profile.id === custom.id) + 1;
       await terminal.resize(42, 12);
@@ -354,7 +350,7 @@ test('occipital CLI: shared discovery, public refresh/status/Pi menu, actual los
       const selected = JSON.parse(readFileSync(`${terminal.agent}/extensions/pi-tidy-ui/config.json`, 'utf8'));
       assert.deepEqual(selected, { syntaxTheme: { kind: 'occipital', id: custom.id } });
       rmSync(host.themeFile);
-      await menuAction(terminal, 1); terminal.send('\x1b'); await terminal.settle();
+      await menuAction(terminal, 'refresh'); await terminal.closeTidyMenu();
       const missing = await settledStats(terminal, 'shared-missing', s => nativeReady(s) && s.client.effective.id === 'pi');
       assert.equal(missing.client.selected.id, custom.id); assert.equal(missing.counts.refreshReplies, 1);
       const errors = terminal.events().filter(event => event.type === 'syntax_notify' && event.level === 'error');
@@ -365,7 +361,7 @@ test('occipital CLI: shared discovery, public refresh/status/Pi menu, actual los
       assert.deepEqual(work(await stats(terminal, 'missing-after')), work(absentWarm));
       assert.equal(terminal.events().filter(event => event.type === 'syntax_notify' && event.level === 'error').length, 1);
       writeFileSync(host.themeFile, themeDefinition('#667788'));
-      await menuAction(terminal, 1); terminal.send('\x1b'); await terminal.settle();
+      await menuAction(terminal, 'refresh'); await terminal.closeTidyMenu();
       await settledStats(terminal, 'shared-restored', s => nativeReady(s) && s.client.effective.id === custom.id);
       await keywordColor(terminal, 0x667788, 'shared-restored');
       rmSync(host.alias); process.kill(oldPid, 'SIGKILL');
@@ -501,7 +497,7 @@ test('occipital CLI: structured RGB and font attributes preserve both file diff 
         <dict><key>scope</key><string>constant.numeric</string><key>settings</key><dict>
           <key>foreground</key><string>#22aa44</string><key>fontStyle</key><string>italic</string></dict></dict>
         </array></dict></plist>`);
-      await menuAction(terminal, 1); terminal.send('\x1b'); await terminal.settle();
+      await menuAction(terminal, 'refresh'); await terminal.closeTidyMenu();
       const refreshed = await stats(terminal, 'styles-refreshed');
       assert.equal(refreshed.counts.refreshReplies, 1);
       const custom = refreshed.client.provider.description.profiles.find(profile => profile.label === 'cli-shared'); assert.ok(custom);
@@ -574,7 +570,7 @@ async function loggingFrame(terminal) {
   assert.ok(status); assert.equal(status.state, 'active'); return status;
 }
 async function loggingIdle(terminal) {
-  await terminal.command('/tidy-ui logs snapshot');
+  await terminal.tidyPage(['Status & troubleshooting', 'Diagnostic logs', 'Write state snapshot']);
   return until(async () => {
     const status = await loggingFrame(terminal);
     return status.pendingBytes === 0 && status.inFlightBytes === 0 && !status.timer ? status : false;
@@ -618,9 +614,10 @@ for (const mode of ['regular', 'fullscreen']) for (const native of [false, true]
         if (native) { const after = await stats(terminal, 'logging-after'); assert.deepEqual(work(after), work(counters)); assert.equal(after.counts.piBridges, counters.counts.piBridges); }
         await terminal.command('/new'); await terminal.event('logging_cancelled_switch');
         const cancelled = await loggingFrame(terminal); assert.equal(cancelled.run, baseline.run); assert.equal(cancelled.session, baseline.session);
-        await terminal.command('/tidy-ui off'); await terminal.command('/tidy-ui logs');
-        assert.ok(terminal.screen().some(line => line.includes('pi-tidy-ui logs: active')), 'capture survives master presentation off');
-        await terminal.command('/tidy-ui on');
+        await terminal.appearance(false);
+        const logRows = await terminal.tidyPage(['Status & troubleshooting', 'Diagnostic logs']);
+        assert.ok(logRows.some(line => line === 'Recording: On'), 'capture survives master presentation off');
+        await terminal.appearance(true);
         if (native) await settledStats(terminal, 'logging-on-ready', nativeReady);
         const on = await terminal.capture('logging-after-on'); assert.deepEqual(body(on), body(shown)); assert.deepEqual(persisted(on), persisted(shown));
         const beforeReload = await loggingIdle(terminal); await terminal.command('/reload');

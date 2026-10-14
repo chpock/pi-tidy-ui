@@ -16,6 +16,7 @@ export class SessionLogging {
 
   constructor(identity: JournalIdentity, options: JournalOptions = {}) {
     this.identity = { ...identity, run: identity.run ?? randomUUID() }; this.options = options;
+    this.enabled = options.enabled ?? true;
     this.journal = new TextJournal(this.identity, options);
   }
   ready() { return this.journal.ready; }
@@ -32,14 +33,14 @@ export class SessionLogging {
     this.enabled = enabled;
     if (!enabled) { this.journal.setEnabled(false); return this.journal.flush(); }
     if (this.retrying) return this.retrying;
-    if (this.journal.status().state !== 'failed') { this.journal.setEnabled(true); return Promise.resolve(); }
+    if (this.journal.status().state !== 'failed') { this.journal.setEnabled(true); return this.journal.ready; }
     this.retrying = this.retry().finally(() => { this.retrying = undefined; });
     return this.retrying;
   }
   private async retry(): Promise<void> {
     await this.journal.close('logging retry');
     if (this.closed) return;
-    this.journal = new TextJournal({ ...this.identity, reason: `logging retry after ${this.identity.reason}` }, this.options);
+    this.journal = new TextJournal({ ...this.identity, reason: `logging retry after ${this.identity.reason}` }, { ...this.options, enabled: this.enabled });
     await this.journal.ready;
     if (!this.closed) { this.journal.setEnabled(this.enabled); if (!this.enabled) await this.journal.flush(); }
   }

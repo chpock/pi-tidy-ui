@@ -26,7 +26,7 @@ The readable header identifies the Pi session ID, optional name/session file, cw
 
 `sessions.log` needs only a short start/end line containing time, session/run/PID, reason and the detailed journal path. It is a convenient recent overview for people, not an authoritative registry. A missing end line does not prove a crash or a clean shutdown. Reload/switch ends a run, not necessarily the persisted Pi session.
 
-`/tidy-ui logs` shows current identity, both paths, enabled/failed state and drop/write-error counters from memory. `logs on/off` controls capture for the current session; `logs snapshot` writes existing state/counters without rendering. No `logs list` implementation: people can read/tail the common journal. Default capture is on, including while master presentation is off. Nothing is printed to protocol stdout/stderr.
+`/tidy-ui` → **Status & troubleshooting → Diagnostic logs** shows current identity, both paths, enabled/failed state and drop/write-error counters from memory. **Record diagnostic logs** controls saved capture preference; **Retry recording** retries a failed writer; **Write state snapshot** writes existing state/counters without rendering or enabling capture. People can read/tail the common journal. Default capture is on, including while master presentation is off; a saved Off restores before file initialization or cleanup. See the [shared settings-menu contract](settings-menu-spec.md). Nothing is printed to protocol stdout/stderr.
 
 ## Human-readable records
 

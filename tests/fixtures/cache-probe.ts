@@ -13,6 +13,7 @@ import { initTheme, theme } from "../../node_modules/@earendil-works/pi-coding-a
 import tidyUi, { installTidyUi, terminalAppearanceTracking } from "../../src/index.ts";
 import { TerminalColors, terminalColorExit } from "../../src/terminal-colors.ts";
 import { InteractiveMode } from "../../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/interactive-mode.js";
+import { menuPage, setAppearance } from "../helpers/menu-driver.ts";
 import { CustomEditor, Theme, getSelectListTheme, createWriteToolDefinition, SessionManager, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 initTheme("dark", false);
@@ -194,22 +195,23 @@ try {
       extensionWidgetsAbove: new Map(), extensionWidgetsBelow: new Map() });
     for (const child of [new Container(), new Container(), footerHost.statusContainer, aboveFooter, footerInput, belowFooter, footerContainer]) footerRoot.addChild(child);
     const manager = SessionManager.inMemory("/tmp");
-    const footerContext = { mode: "tui", cwd: "/tmp", ui: { ...footerHost.createExtensionUIContext(), notify() {} }, sessionManager: manager,
+    const footerContext = { mode: "tui", hasUI: true, cwd: "/tmp", ui: { ...footerHost.createExtensionUIContext(), notify() {} }, sessionManager: manager,
       getContextUsage: () => undefined, isIdle: () => true } as unknown as ExtensionContext;
     const handlers = new Map<string, Function[]>(); let footerCommand: Function;
     tidyUi({ on(name: string, callback: Function) { handlers.set(name, [...(handlers.get(name) ?? []), callback]); },
       registerFlag() {}, getFlag() {}, getThinkingLevel: () => "off", getSettings: () => ({}),
       registerCommand(name: string, options: { handler: Function }) { if (name === "tidy-ui") footerCommand = options.handler; },
-    } as unknown as ExtensionAPI, { logging: { root: join(logDirectory, "footer") }, syntax: () => ({ standaloneVersion: "gc",
+    } as unknown as ExtensionAPI, { logging: { root: join(logDirectory, "footer") },
+      settings: { async load() { return { ok: true, syntaxTheme: { kind: 'pi' } }; }, async update() { return { ok: true }; } }, syntax: () => ({ standaloneVersion: "gc",
       settings: { async load() { return { ok: true, syntaxTheme: { kind: "pi" } }; }, async update() { return { ok: true }; } },
       provider: { async tryShared() { return undefined; }, async acquireOwned() { throw Error("isolated unavailable fixture"); } } }) });
     for (const callback of handlers.get("session_start") ?? []) await callback({ reason: "startup" }, footerContext);
-    await footerCommand!("logs snapshot", footerContext);
+    await menuPage(footerCommand! as any, footerContext, ['Status & troubleshooting', 'Diagnostic logs', 'Write state snapshot']);
     const replaceFirstFooter = async () => {
       const first = footerHost.customFooter;
       first.render(80); const reference = new WeakRef(first);
-      await footerCommand!("off", footerContext); assert.equal(footerContainer.children[0], nativeFooter);
-      await footerCommand!("on", footerContext); assert.notEqual(footerHost.customFooter, first);
+      await setAppearance(footerCommand! as any, footerContext, false); assert.equal(footerContainer.children[0], nativeFooter);
+      await setAppearance(footerCommand! as any, footerContext, true); assert.notEqual(footerHost.customFooter, first);
       assert.ok(footerHost.customFooter.render(80)[0].includes("CH—"));
       return reference;
     };

@@ -3,7 +3,10 @@ import { Box, Container, Editor, Markdown, Spacer, TruncatedText, colorToRgb, vi
 import { isAbsolute, resolve } from "node:path";
 import { createRequire } from "node:module";
 import { SessionLogging } from "./session-logging.ts";
-import { readableDiagnosticText, type JournalOptions } from "./debug-log.ts";
+import { ExtensionSettings, type SyntaxTheme } from './settings.ts';
+import { TidyMenu, type TidyMenuOwner, type TidyMenuAction } from './tidy-menu.ts';
+import type { SyntaxMenuOutcome } from './occipital/menu.ts';
+import { type JournalOptions } from "./debug-log.ts";
 import { diagnose, type DiagnosticFields, type DiagnosticSink } from "./diagnostics.ts";
 import { stripVTControlCharacters } from "node:util";
 import { renderBashCard, bashFailurePhase } from "./bash-card.ts";
@@ -1342,7 +1345,8 @@ export function installTidyUi(tui: LiveTui, getTheme: () => Palette, options: Ti
 
 export interface TidyUiRuntimeOptions {
   /** Isolated embedding/test roots; false explicitly disables automatic journals. */
-  logging?: false | Omit<JournalOptions, "warn">;
+  logging?: false | Omit<JournalOptions, "warn" | "enabled">;
+  settings?: Pick<ExtensionSettings, 'load' | 'update'>;
   /** Existing provider/settings bindings for controlled SDK embeddings. */
   syntax?: (ctx: ExtensionContext) => SyntaxRuntimeOptions;
 }
@@ -1361,7 +1365,28 @@ export default function tidyUi(pi: ExtensionAPI, options: TidyUiRuntimeOptions =
   for (const flag of retiredBudgetFlags) pi.registerFlag(flag, { type: "string", description: "Deprecated and ignored: layouts are retained per component without eviction limits" });
   let warnedBudgetFlags = false;
   let controller: TidyUiController | undefined;
-  let enabled = true, colorsEnabled = true;
+  let enabled = true, colorsEnabled = true, loggingEnabled = true;
+  let selectedTheme: SyntaxTheme = { kind: 'pi' };
+  const settings = options.settings ?? new ExtensionSettings();
+  let preferencesReady: Promise<void> | undefined;
+  let preferencesIssue: string | undefined;
+  let lifecycle = 0;
+  let saveAbort = new AbortController();
+  let activeMenu: TidyMenu | undefined;
+  function loadPreferences(): Promise<void> {
+    return preferencesReady ??= (async () => {
+      try {
+        const loaded = await settings.load();
+        enabled = loaded.appearanceEnabled ?? true; colorsEnabled = loaded.terminalColorsEnabled ?? true;
+        syntaxEnabled = loaded.nativeHighlightingEnabled ?? true; loggingEnabled = loaded.loggingEnabled ?? true;
+        selectedTheme = loaded.syntaxTheme;
+        if (!loaded.ok) preferencesIssue = loaded.issue.message;
+      } catch { preferencesIssue = 'Settings could not be read; using defaults.'; }
+    })();
+  }
+  function reportPreferencesIssue(ctx: ExtensionContext) {
+    if (preferencesIssue && ctx.hasUI) { ctx.ui.notify(`pi-tidy-ui: ${preferencesIssue}`, 'warning'); preferencesIssue = undefined; }
+  }
   let liveContext: ExtensionContext | undefined;
   let syntax: SyntaxRuntime | undefined, syntaxEnabled = true;
   // Only primitive IDs for the current assistant stream; never retain message bodies/history.
@@ -1377,7 +1402,7 @@ export default function tidyUi(pi: ExtensionAPI, options: TidyUiRuntimeOptions =
     loggingContext = { current: ctx };
     logging = new SessionLogging({ session, sessionFile: ctx.sessionManager.getSessionFile(), cwd: ctx.cwd,
       extension: extensionVersion, pi: VERSION, reason, mode: ctx.mode, provider: ctx.model?.provider, theme: ctx.ui.theme.name },
-      { ...options.logging, warn: loggingNotice(new WeakRef(loggingContext)) });
+      { ...options.logging, enabled: loggingEnabled, warn: loggingNotice(new WeakRef(loggingContext)) });
     loggingDebug = new WeakRef(logging);
   }
   function logSnapshot() {
@@ -1397,20 +1422,18 @@ export default function tidyUi(pi: ExtensionAPI, options: TidyUiRuntimeOptions =
       jobs: stats.unsettledJobs, closes: stats.pendingCloses, bytes: stats.transientBytes, bookkeepingBytes: stats.bookkeepingBytes }); }
     if (colors) diagnose(sink, "INFO", "terminal-colors", "Snapshot of existing terminal-color counters", { ...colors.status(), ...colors.stats() });
   }
-  function loggingStatus(ctx: ExtensionContext) {
-    const current = logging?.status();
-    ctx.ui.notify(current ? `pi-tidy-ui logs: ${current.capture ? current.state : "off"}\nSession: ${readableDiagnosticText(current.session)}; name: ${readableDiagnosticText(current.name ?? "unknown")}; run: ${current.run}\nDetailed: ${readableDiagnosticText(current.path)}\nOverview: ${readableDiagnosticText(current.commonPath)}\nRecords: ${current.records}; writes: ${current.writes}; dropped: ${current.dropped}; write errors: ${current.writeErrors}${current.failure ? `\nFailure: ${current.failure}` : ""}`
-      : "pi-tidy-ui logs: unavailable in this embedding", "info");
-  }
   function ensureSyntax(ctx: ExtensionContext) {
     syntaxContext.current = ctx;
     syntax ??= new SyntaxRuntime({ ...(options.syntax ? options.syntax(ctx) : createSyntaxOptions(ctx, undefined, logging?.sink)),
+      settings, initialTheme: selectedTheme,
       diagnostic: logging?.sink, enabled: syntaxEnabled,
       enabledChanged: value => { syntaxEnabled = value; }, notify: syntaxNotice(new WeakRef(syntaxContext)) });
     return syntax;
   }
   function stopSyntax() {
-    const previous = syntax; syntax = undefined;
+    const previous = syntax;
+    if (previous) selectedTheme = previous.snapshot().selected;
+    syntax = undefined;
     return previous?.dispose();
   }
   let colors: TerminalColors | undefined;
@@ -1617,7 +1640,16 @@ export default function tidyUi(pi: ExtensionAPI, options: TidyUiRuntimeOptions =
   };
   pi.on("tool_execution_end", refreshDirectory);
   pi.on("agent_end", (event, ctx) => { liveBashCalls.clear(); refreshDirectory(event, ctx); });
-  pi.on("session_start", (event, ctx) => { liveBashCalls.clear(); footerName = undefined; startLogging(ctx, event.reason); start(ctx); });
+  pi.on('session_start', async (event, ctx) => {
+    activeMenu?.close(); activeMenu = undefined;
+    const current = ++lifecycle;
+    saveAbort.abort(); saveAbort = new AbortController();
+    liveBashCalls.clear(); footerName = undefined;
+    await loadPreferences();
+    if (current !== lifecycle) return;
+    reportPreferencesIssue(ctx);
+    startLogging(ctx, event.reason); start(ctx);
+  });
   pi.on("session_info_changed", (event) => {
     // Async handlers may deliver old notifications last; reread current saved metadata once.
     footerName = undefined;
@@ -1625,6 +1657,7 @@ export default function tidyUi(pi: ExtensionAPI, options: TidyUiRuntimeOptions =
     logging?.nameChanged(event.name);
   });
   pi.on("session_shutdown", async (event, ctx) => {
+    ++lifecycle; saveAbort.abort(); activeMenu?.close(); activeMenu = undefined;
     liveBashCalls.clear(); footerName = undefined;
     liveContext = ctx; logSnapshot(); pendingFooter = undefined; stopColors(); restoreFooter(); controller?.restore(); controller = undefined;
     const stopped = stopSyntax(); liveContext = undefined; syntaxContext.current = undefined;
@@ -1633,75 +1666,135 @@ export default function tidyUi(pi: ExtensionAPI, options: TidyUiRuntimeOptions =
     if (loggingContext) loggingContext.current = undefined; loggingContext = undefined;
     await previous?.close(event.reason);
   });
-  pi.registerCommand("tidy-ui", {
-       description: "Control presentation, syntax highlighting, terminal colors and diagnostics: on, off, status, syntax, colors, cache, logs",
-    handler: async (args, ctx) => {
-      liveContext = ctx; syntaxContext.current = ctx;
-      const command = args.trim() || "status";
-      const words = command.split(/\s+/u);
-      if (loggingContext) loggingContext.current = ctx;
-      if (words[0] === "logs") {
-        const action = words[1] ?? "status";
-        if (words.length > 2 || !["on", "off", "status", "snapshot"].includes(action)) { ctx.ui.notify("Usage: /tidy-ui logs [on|off|snapshot]", "warning"); return; }
-        if (action === "on" || action === "off") await logging?.setEnabled(action === "on");
-        else if (action === "snapshot") {
-          const current = logging;
-          if (!current?.status().capture) { ctx.ui.notify("pi-tidy-ui logs: snapshot not written; capture is off or unavailable", "info"); return; }
-          logSnapshot(); await current.flush();
-          const status = current.status();
-          ctx.ui.notify(status.state === "active" ? "pi-tidy-ui logs: snapshot written" : `pi-tidy-ui logs: snapshot not written; ${status.failure ?? status.state}`, status.state === "active" ? "info" : "warning"); return;
+  function menuOwner(ctx: ExtensionContext, epoch: number): TidyMenuOwner {
+    const current = () => lifecycle === epoch && !saveAbort.signal.aborted;
+    const retired: SyntaxMenuOutcome = { ok: false, message: 'This settings action belongs to a closed runtime.' };
+    async function act(action: TidyMenuAction): Promise<SyntaxMenuOutcome & { cache?: string[] }> {
+      if (!current()) return retired;
+      diagnose(logging?.sink, 'INFO', 'runtime', 'Settings menu action requested', { action: action.kind });
+      if (action.kind === 'switch') {
+        // Queue confirmations in order, before cleanup can outlive this popup.
+        const saving = settings.update({ [action.key]: action.value }, { signal: saveAbort.signal }).catch(() => undefined);
+        switch (action.key) {
+          case 'appearanceEnabled':
+            enabled = action.value;
+            if (enabled) start(ctx);
+            else { pendingFooter = undefined; stopColors(); restoreFooter(); controller?.restore(); await stopSyntax(); }
+            break;
+          case 'terminalColorsEnabled':
+            colorsEnabled = action.value;
+            if (!colorsEnabled) { colors?.observe(); if (colorExit) process.off('exit', colorExit); colorExit = undefined; }
+            else if (colors) {
+              if (!colorExit) { colorExit = terminalColorExit(new WeakRef(colors)); process.on('exit', colorExit); }
+              colors.observe(true);
+            } else startColors(ctx);
+            break;
+          case 'nativeHighlightingEnabled':
+            syntaxEnabled = action.value; await syntax?.setEnabled(action.value); break;
+          case 'loggingEnabled':
+            loggingEnabled = action.value; await logging?.setEnabled(action.value); break;
         }
-        loggingStatus(ctx); return;
+        const outcome = await saving;
+        if (!current()) return retired;
+        if (!outcome) return { ok: false, message: 'Applied for now, but settings could not be saved.' };
+        if (!outcome.ok) return { ok: false, message: `Applied for now, but not saved: ${outcome.issue.message}` };
+        if (action.key === 'loggingEnabled' && action.value && logging?.status().state === 'failed')
+          return { ok: false, message: 'Preference saved, but recording failed. See Diagnostic logs to retry.' };
+        return { ok: true };
       }
-      const operation = ["syntax", "colors", "cache", "on", "off", "status"].includes(words[0]!) ? words[0] : "unknown";
-      diagnose(logging?.sink, "INFO", "runtime", "Control command requested", { operation });
-      if (words[0] === "syntax") {
-        if (words.length !== 1) { ctx.ui.notify("Usage: /tidy-ui syntax", "warning"); return; }
-        if (ctx.mode !== "tui" || !ctx.hasUI) { ctx.ui.notify("Syntax menu is available only in terminal mode with UI.", "error"); return; }
-        await ensureSyntax(ctx).menu(ctx); return;
+      if (action.kind === 'theme') {
+        const runtime = ensureSyntax(ctx);
+        selectedTheme = action.choice;
+        const outcome = await runtime.selectTheme(action.choice);
+        if (!current() || syntax !== runtime) return retired;
+        return outcome.ok ? outcome : { ok: false, message: `Theme applied for now, but not saved: ${outcome.message}` };
       }
-      if (words[0] === "colors") {
-        const action = words[1] ?? "status";
-        if (words.length > 2 || !["on", "off", "status"].includes(action)) {
-          ctx.ui.notify("Usage: /tidy-ui colors on|off|status", "warning"); return;
-        }
-        if (action === "off") {
-          diagnose(logging?.sink, "INFO", "terminal-colors", "Local terminal-default setting disabled; remaining cards retain projection policy");
-          colorsEnabled = false; colors?.observe();
-          if (colorExit) process.off("exit", colorExit); colorExit = undefined;
-        } else if (action === "on") {
-          diagnose(logging?.sink, "INFO", "terminal-colors", "Local terminal-default setting enabled");
-          colorsEnabled = true;
-          if (colors) {
-            if (!colorExit) { colorExit = terminalColorExit(new WeakRef(colors)); process.on("exit", colorExit); }
-            colors.observe(true);
-          } else startColors(ctx);
-        }
-        const state = !enabled ? "off (pi-tidy-ui off)" : !colorsEnabled ? "off" : ctx.mode !== "tui" ? "unavailable outside terminal mode" : colors?.status().state ?? "starting";
-        ctx.ui.notify(`pi-tidy-ui colors: ${state}`, "info"); return;
+      if (action.kind === 'refreshThemes') {
+        const runtime = syntax;
+        if (!runtime) return { ok: false, message: 'The highlighting service is not running.' };
+        const outcome = await runtime.refreshThemes();
+        return current() && syntax === runtime ? outcome : retired;
       }
-      if (words[0] === "cache") {
-        if (!controller || ctx.mode !== "tui") { ctx.ui.notify("pi-tidy-ui cache: unavailable outside an initialized terminal runtime", "info"); return; }
-        if (words.length === 2 && words[1] === "clear") { controller.clearCache(); ownedFooter?.clear(); }
-        else if (words[1] === "limit" || (words[1] === "cards" && words[2] === "limit")) {
-          ctx.ui.notify("pi-tidy-ui: cache limits have been removed; layouts are retained per component. Use /tidy-ui cache [clear]", "warning"); return;
-        } else if (words.length !== 1) {
-          ctx.ui.notify("Usage: /tidy-ui cache [clear]", "warning"); return;
-        }
+      if (action.kind === 'reapplyAppearance') {
+        if (!enabled) return { ok: false, message: 'Turn on Tidy UI appearance first.' };
+        start(ctx);
+      } else if (action.kind === 'reapplyColors') {
+        if (!enabled || !colorsEnabled) return { ok: false, message: 'Turn on appearance and terminal color matching first.' };
+        if (colors) colors.observe(true); else startColors(ctx);
+      } else if (action.kind === 'clearCache') {
+        if (!controller?.active) return { ok: false, message: 'There are no active Tidy UI layouts to clear.' };
+        controller.clearCache(); ownedFooter?.clear();
+        return { ok: true, cache: owner.cacheDetails() };
+      } else if (action.kind === 'retryLogging') {
+        if (!loggingEnabled || !logging) return { ok: false, message: 'Turn on diagnostic recording first.' };
+        await logging.setEnabled(true);
+        if (logging.status().state !== 'active') return { ok: false, message: 'Recording could not be started. See the log status for details.' };
+      } else if (action.kind === 'snapshotLogs') {
+        const log = logging;
+        if (!log?.status().capture || log.status().state !== 'active')
+          return { ok: false, message: 'Snapshot not written: diagnostic recording is off or unavailable.' };
+        logSnapshot(); await log.flush();
+        if (!current() || logging !== log) return retired;
+        if (log.status().state !== 'active') return { ok: false, message: 'The diagnostic snapshot could not be written.' };
+      }
+      return current() ? { ok: true } : retired;
+    }
+    const owner: TidyMenuOwner = {
+      snapshot() {
+        const color = colors?.status().state;
+        const terminalColors = !enabled ? 'Inactive while Tidy UI appearance is off' : !colorsEnabled ? 'Off' :
+          color === 'automatic theme' || color === 'system theme' ? 'Controlled by Pi’s automatic/system theme' :
+          color === 'on' ? 'Matching Pi theme' : color === 'no source' ? 'No file-backed Pi theme available' :
+          color === 'source error' ? 'Theme could not be read; last valid colors retained' : color ?? 'Not started';
+        const snapshot = syntax?.snapshot();
+        return { appearanceEnabled: enabled, terminalColorsEnabled: colorsEnabled, nativeHighlightingEnabled: syntaxEnabled, loggingEnabled,
+          selected: snapshot?.selected ?? selectedTheme, syntax: snapshot, logs: logging?.status(), terminalColors,
+          appearance: !enabled ? 'Off; using Pi’s interface' : !controller?.active ? controller?.reason ?? 'Not active' :
+            controller.editorActive ? 'Active' : 'Cards active; input styling not applied' };
+      },
+      async prepareThemes() { if (current()) await ensureSyntax(ctx).prepareThemes(); },
+      act,
+      cacheDetails() {
+        if (!controller) return ['No active display cache.'];
         const stats = controller.cacheStats();
-        const footerLayout = ownedFooter?.retainedMemory() ?? { retainedBytes: 0, stringBytes: 0, overheadBytes: 0, entries: 0, rows: 0 };
-        ctx.ui.notify(`pi-tidy-ui cache: ${JSON.stringify({ ...stats, footerLayout,
-          presentationRetainedBytes: stats.retainedBytes + footerLayout.retainedBytes,
-          presentationEntries: stats.entries + footerLayout.entries, presentationRows: stats.rows + footerLayout.rows,
-          memoryScope: "estimated pi-tidy-ui retained transcript, queued-message and footer layouts; excludes native caches, source/signature data and transient rendering",
-          processHeapUsedBytes: process.memoryUsage().heapUsed, processMemoryScope: "whole Pi process, not pi-tidy-ui" })}`, "info");
-        return;
-      }
-      if (command === "off") { enabled = false; pendingFooter = undefined; stopColors(); restoreFooter(); controller?.restore(); await stopSyntax(); }
-      else if (command === "on") { enabled = true; start(ctx); }
-      else if (command !== "status") { ctx.ui.notify("Usage: /tidy-ui on|off|status|syntax|colors on|off|status|cache [clear]|logs [on|off|snapshot]", "warning"); return; }
-      const status = controller?.active ? "on" : ctx.mode !== "tui" ? "unavailable outside terminal mode" : controller?.reason ?? "off";
-      ctx.ui.notify(`pi-tidy-ui: ${status}`, "info");
+        const footer = ownedFooter?.retainedMemory() ?? { retainedBytes: 0, entries: 0, rows: 0 };
+        const diagnostic = { ...stats, footerLayout: footer,
+          presentationRetainedBytes: stats.retainedBytes + footer.retainedBytes, presentationEntries: stats.entries + footer.entries,
+          presentationRows: stats.rows + footer.rows, memoryScope: 'estimated pi-tidy-ui retained UTF-16 strings plus structural overhead; excludes Pi caches, Markdown/editor and temporary rendering',
+          processHeapUsedBytes: process.memoryUsage().heapUsed, processMemoryScope: 'whole Pi process, not pi-tidy-ui' };
+        return [`Saved layouts: ${stats.entries + footer.entries}; rows: ${stats.rows + footer.rows}`,
+          `Estimated retained memory: ${stats.retainedBytes + footer.retainedBytes} bytes`,
+          `Hits: ${stats.hits}; misses: ${stats.misses}; builds: ${stats.builds}; releases: ${stats.releases}; collected: ${stats.collected}`,
+          ...LAYOUT_KINDS.map(kind => `${kind}: ${JSON.stringify(stats.byKind[kind])}`),
+          `Footer: ${JSON.stringify(footer)}`,
+          'Scope: Tidy UI display layouts only; excludes Pi caches, syntax sources and temporary rendering.',
+          `Whole Pi process heap: ${diagnostic.processHeapUsedBytes} bytes (not Tidy UI memory)`,
+          'Diagnostic JSON:', JSON.stringify(diagnostic).replaceAll(' ', '\\u0020'), 'End diagnostic JSON'];
+      },
+    };
+    return owner;
+  }
+  pi.registerCommand('tidy-ui', {
+    description: 'Open Tidy UI appearance settings, status and troubleshooting',
+    handler: async (args, ctx) => {
+      if (args.trim()) { ctx.ui.notify('Usage: /tidy-ui — open the settings menu; command arguments are no longer supported.', 'warning'); return; }
+      if (ctx.mode !== 'tui' || !ctx.hasUI) { ctx.ui.notify('pi-tidy-ui: menu is available only in terminal mode with UI.', 'info'); return; }
+      const epoch = lifecycle;
+      await loadPreferences();
+      if (epoch !== lifecycle) return;
+      reportPreferencesIssue(ctx);
+      liveContext = ctx; syntaxContext.current = ctx;
+      if (loggingContext) loggingContext.current = ctx;
+      activeMenu?.close();
+      let opened: TidyMenu | undefined;
+      try {
+        await ctx.ui.custom<void>((tui, theme, _keys, done) => {
+          if (epoch !== lifecycle) { done(); return { render: () => [], invalidate() {} }; }
+          const menu = new TidyMenu(menuOwner(ctx, epoch), theme, () => tui.requestRender(), () => done(), () => tui.terminal.rows);
+          opened = activeMenu = menu; return menu;
+        }, { overlay: true, overlayOptions: { anchor: 'center', width: 72, maxHeight: '100%', margin: 0 } });
+      } catch { if (epoch === lifecycle) ctx.ui.notify('pi-tidy-ui: Settings menu could not be opened.', 'error'); }
+      finally { opened?.dispose(); if (activeMenu === opened) activeMenu = undefined; }
     },
   });
 }

@@ -66,31 +66,22 @@ Daemon state is disposable. Replies must match provider/source/profile generatio
 
 ### Ownership exception
 
-Temporary hidden/expanded/unsupported presentation and session-native-off retain the same adapter's canonical work evidence. Complete adapter removal/reinstallation, including master off/on or reload, disposes its consumer and may allocate fresh source keys. An occasional repeated highlight while old work remains unsettled is explicitly accepted there; no cross-adapter owner registry or delayed installation is introduced. Normal cleanup, weak collection and rejection of late old-owner colors still apply.
+Temporary hidden/expanded/unsupported presentation and native highlighting off retain the same adapter's canonical work evidence. Complete adapter removal/reinstallation, including master off/on or reload, disposes its consumer and may allocate fresh source keys. An occasional repeated highlight while old work remains unsettled is explicitly accepted there; no cross-adapter owner registry or delayed installation is introduced. Normal cleanup, weak collection and rejection of late old-owner colors still apply.
 
 ## Menu and preferences
 
-`/tidy-ui syntax` opens one public Pi management menu:
+Bare `/tidy-ui` opens the shared [settings popup](settings-menu-spec.md):
 
-- **Theme:** Pi palette plus the active daemon's catalogue; show selected and effective themes separately. Listing is not a reload. A public scrolling `SelectList` keeps the selected row visible in larger catalogues.
-- **Reload themes:** explicitly reload the active daemon catalogue. No watcher, update polling, daemon restart, file upload or provider selector.
-- **Service status:** cached provider/lifecycle, daemon/protocol/standalone versions, selected/effective theme and bounded last issue. No source text or new source work.
-- **Enable / Disable for this session:** native-only activation. Disable closes owned resources without stopping a shared module. It persists across master pi-tidy-ui off/on, but a fresh extension runtime is enabled again.
-- **Close / Back:** no preference change or save. Retired menu epochs cannot publish late selections/actions.
+- **Code color theme:** Follow Pi plus the eligible daemon catalogue, searched by label or stable ID. A scrolling public `SelectList` keeps the selected row visible. Typing/navigation/cancel do not apply previews; explicit confirmation applies once and returns to the first page. Selected/effective differences are explained only when needed.
+- **Refresh theme list:** explicitly reloads the active daemon catalogue. Listing/status is not a reload. No watcher, update polling, daemon restart, file upload or provider selector.
+- **Status & troubleshooting → Highlighting service details:** cached provider/lifecycle, daemon/protocol/standalone versions, selected/effective theme and bounded last issue. No source text, discovery or new source work.
+- **Use Occipital highlighting:** native-only preference, restored across reload and master off/on. Disable closes owned resources without stopping a shared module. The preference is saved alongside appearance, terminal colors and diagnostic capture.
 
-Opening/status/cancelling cannot enable a disabled provider. Pi palette remains selectable without a live catalogue. Errors are Pi UI notifications, not conversation/model messages.
+Opening/status/cancelling cannot enable a disabled provider. Follow Pi remains selectable without a live catalogue. Preference preparation has an explicit completion boundary. Closing confirmed pending work is not rollback, but retired runtime/syntax owners cannot publish late actions. Feedback is UI-only, never a conversation/model message.
 
-Only `syntaxTheme` is persisted through the common settings reader/writer:
+`syntaxTheme` remains `{ "kind": "pi" }` or `{ "kind": "occipital", "id": "<catalogue ID>" }` in `join(getAgentDir(), "extensions", "pi-tidy-ui", "config.json")`. Pi resolves the agent directory and its `PI_CODING_AGENT_DIR` override. Old theme-only files remain valid. Only this theme choice and the four boolean preferences persist; no provider, retry, lease, source or expanded theme data is saved.
 
-```json
-{ "syntaxTheme": { "kind": "pi" } }
-```
-
-or `{ "syntaxTheme": { "kind": "occipital", "id": "<catalogue ID>" } }`.
-
-The file is `join(getAgentDir(), "extensions", "pi-tidy-ui", "config.json")`; Pi resolves the agent directory and its `PI_CODING_AGENT_DIR` override. This settings path is unchanged by the completed extension/package/command naming refactor. No enablement, provider, retry, lease, source or expanded theme data is saved.
-
-Missing configuration defaults to Pi palette without writing. Invalid/unreadable files and failed/cancelled saves report bounded errors rather than rewriting them or claiming success. Updating the one known field preserves unrelated keys, serializes writes per client and replaces a complete file. Across clients, the last published choice becomes the default for future launches; already-running clients keep their own preference. No settings watcher, database, migration or cross-process lock service is added.
+Missing configuration defaults to Follow Pi and enabled switches without writing. Invalid/unreadable files and failed/cancelled saves report bounded errors rather than rewriting them or claiming success. Updates preserve unrelated fields and share one serialized writer within the installed extension. Across independent processes, the last published choice becomes the default for future launches; already-running instances keep their own preferences. No settings watcher, database, migration or cross-process lock service is added.
 
 An independent selected theme remains fixed across Pi theme changes. If unavailable on the current daemon, retain its saved ID, use the Pi-palette profile, and show one error for that unresolved episode. A later compatible catalogue/provider restores it on current demand. Theme definitions remain daemon-owned.
 

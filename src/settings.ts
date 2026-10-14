@@ -4,7 +4,9 @@ import { basename, dirname, join } from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 
 export type SyntaxTheme = { kind: "pi" } | { kind: "occipital"; id: string };
-export type SettingsPatch = { syntaxTheme: SyntaxTheme };
+export const SWITCH_KEYS = ['appearanceEnabled', 'terminalColorsEnabled', 'nativeHighlightingEnabled', 'loggingEnabled'] as const;
+export type SavedSwitches = Record<(typeof SWITCH_KEYS)[number], boolean>;
+export type SettingsPatch = Partial<SavedSwitches & { syntaxTheme: SyntaxTheme }>;
 export const SETTINGS_FILE_MAX_BYTES = 64 * 1024;
 const THEME_ID_MAX_BYTES = 64;
 // The supported Node runtime has these APIs; ES2023 project typings do not.
@@ -20,6 +22,7 @@ const ISSUE_MESSAGES = {
   "invalid-root": "Settings must contain a JSON object.",
   "numeric-preservation-unavailable": "Settings numbers could not be preserved; the file was kept.",
   "invalid-theme": "Settings contain an invalid syntax theme preference.",
+  "invalid-switch": "Settings contain a nonboolean switch preference.",
   "too-large": "Settings exceed the file size limit.",
   "read-failed": "Settings could not be read.",
   "invalid-patch": "Settings update contains an invalid preference or field.",
@@ -28,9 +31,9 @@ const ISSUE_MESSAGES = {
 } as const;
 
 export type SettingsIssue = { code: keyof typeof ISSUE_MESSAGES; message: string };
-export type SettingsLoadResult =
+export type SettingsLoadResult = Partial<SavedSwitches> & (
   | { ok: true; syntaxTheme: SyntaxTheme }
-  | { ok: false; syntaxTheme: SyntaxTheme; issue: SettingsIssue };
+  | { ok: false; syntaxTheme: SyntaxTheme; issue: SettingsIssue });
 export type SettingsSaveResult = { ok: true } | { ok: false; issue: SettingsIssue };
 export type SettingsLocation = { agentDir: string; file?: never } | { file: string; agentDir?: never };
 
@@ -104,6 +107,8 @@ async function readDocument(file: string): Promise<DocumentResult> {
     if (Object.hasOwn(document, "syntaxTheme") && !syntaxTheme(document.syntaxTheme)) {
       return { ok: false, issue: issue("invalid-theme") };
     }
+    if (SWITCH_KEYS.some(key => Object.hasOwn(document, key) && typeof (document as Record<string, unknown>)[key] !== 'boolean'))
+      return { ok: false, issue: issue('invalid-switch') };
     return { ok: true, document };
   } catch {
     return { ok: false, issue: issue("read-failed") };
@@ -112,7 +117,7 @@ async function readDocument(file: string): Promise<DocumentResult> {
   }
 }
 
-/** Theme-only settings boundary; live selections belong to the caller, not this store. */
+/** Validated user preferences; live application belongs to the caller, not this store. */
 export class ExtensionSettings {
   readonly file: string;
   private writes: Promise<void> = Promise.resolve();
@@ -124,7 +129,8 @@ export class ExtensionSettings {
   async load(): Promise<SettingsLoadResult> {
     const result = await readDocument(this.file);
     if (!result.ok) return { ok: false, syntaxTheme: { kind: "pi" }, issue: result.issue };
-    return { ok: true, syntaxTheme: Object.hasOwn(result.document, "syntaxTheme") ?
+    const switches = Object.fromEntries(SWITCH_KEYS.filter(key => Object.hasOwn(result.document, key)).map(key => [key, result.document[key]])) as Partial<SavedSwitches>;
+    return { ok: true, ...switches, syntaxTheme: Object.hasOwn(result.document, "syntaxTheme") ?
       syntaxTheme(result.document.syntaxTheme)! : { kind: "pi" } };
   }
 
@@ -132,15 +138,24 @@ export class ExtensionSettings {
     const signal = options?.signal;
     if (signal?.aborted) return Promise.resolve({ ok: false, issue: issue("cancelled") });
     // Snapshot before queuing so later caller mutations cannot alter the saved choice.
-    const choice = object(patch) && Object.keys(patch).length === 1 && Object.hasOwn(patch, "syntaxTheme") ?
-      syntaxTheme(patch.syntaxTheme) : undefined;
-    if (!choice) return Promise.resolve({ ok: false, issue: issue("invalid-patch") });
-    const operation = this.writes.then(() => this.save(choice, signal));
+    if (!object(patch) || Object.keys(patch).length === 0) return Promise.resolve({ ok: false, issue: issue('invalid-patch') });
+    const copy: SettingsPatch = {};
+    for (const key of Object.keys(patch)) {
+      const value: unknown = patch[key as keyof SettingsPatch];
+      if (key === 'syntaxTheme') {
+        const choice = syntaxTheme(value);
+        if (!choice) return Promise.resolve({ ok: false, issue: issue('invalid-patch') });
+        copy.syntaxTheme = choice;
+      } else if ((SWITCH_KEYS as readonly string[]).includes(key) && typeof value === 'boolean') {
+        copy[key as keyof SavedSwitches] = value;
+      } else return Promise.resolve({ ok: false, issue: issue('invalid-patch') });
+    }
+    const operation = this.writes.then(() => this.save(copy, signal));
     this.writes = operation.then(() => {}, () => {});
     return operation;
   }
 
-  private async save(choice: SyntaxTheme, signal?: AbortSignal): Promise<SettingsSaveResult> {
+  private async save(patch: SettingsPatch, signal?: AbortSignal): Promise<SettingsSaveResult> {
     if (signal?.aborted) return { ok: false, issue: issue("cancelled") };
     const latest = await readDocument(this.file);
     if (signal?.aborted) return { ok: false, issue: issue("cancelled") };
@@ -148,7 +163,7 @@ export class ExtensionSettings {
     let contents: string;
     try {
       // Object spread creates own data properties, including JSON's __proto__ key.
-      contents = JSON.stringify({ ...latest.document, syntaxTheme: choice }) + "\n";
+      contents = JSON.stringify({ ...latest.document, ...patch }) + "\n";
     } catch {
       return { ok: false, issue: issue("write-failed") };
     }

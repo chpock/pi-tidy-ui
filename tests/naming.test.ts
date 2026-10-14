@@ -22,31 +22,27 @@ test('entry exposes the canonical TidyUi installer and default function', () => 
   assert.equal(tidyUi.name, 'tidyUi');
 });
 
-test('entry registers only the tidy-ui command and flags, with branded diagnostics and usage', async () => {
+test('entry registers only the menu command and flags; retired arguments never act or read settings', async () => {
   const commands = new Map<string, { handler(args: string, ctx: ExtensionContext): Promise<void> }>();
-  const flags: string[] = [], notices: [string, string][] = [];
+  const flags: string[] = [], notices: [string, string][] = []; let reads = 0, writes = 0;
   const pi = {
     registerCommand: (name: string, command: { handler(args: string, ctx: ExtensionContext): Promise<void> }) => commands.set(name, command),
-    registerFlag: (name: string) => flags.push(name),
-    on() {},
+    registerFlag: (name: string) => flags.push(name), on() {},
   } as unknown as ExtensionAPI;
-  tidyUi(pi);
+  tidyUi(pi, { settings: { async load() { reads++; return { ok: true, syntaxTheme: { kind: 'pi' } }; },
+    async update() { writes++; return { ok: true }; } } });
   assert.deepEqual([...commands.keys()], ['tidy-ui']);
   assert.deepEqual(flags, ['tidy-ui-card', 'tidy-ui-compact', 'tidy-ui-cache-mb', 'tidy-ui-card-cache-mb']);
   const ctx = { mode: 'rpc', hasUI: false, ui: { notify: (message: string, type: string) => notices.push([message, type]) } } as unknown as ExtensionContext;
   const command = commands.get('tidy-ui')!;
-  await command.handler('status', ctx);
-  assert.deepEqual(notices.pop(), ['pi-tidy-ui: unavailable outside terminal mode', 'info']);
-  await command.handler('colors status', ctx);
-  assert.deepEqual(notices.pop(), ['pi-tidy-ui colors: unavailable outside terminal mode', 'info']);
-  await command.handler('cache', ctx);
-  assert.deepEqual(notices.pop(), ['pi-tidy-ui cache: unavailable outside an initialized terminal runtime', 'info']);
-  await command.handler('syntax extra', ctx);
-  assert.deepEqual(notices.pop(), ['Usage: /tidy-ui syntax', 'warning']);
-  await command.handler('colors extra', ctx);
-  assert.deepEqual(notices.pop(), ['Usage: /tidy-ui colors on|off|status', 'warning']);
-  await command.handler('unknown', ctx);
-  assert.deepEqual(notices.pop(), ['Usage: /tidy-ui on|off|status|syntax|colors on|off|status|cache [clear]|logs [on|off|snapshot]', 'warning']);
+  await command.handler('', ctx);
+  assert.deepEqual(notices.pop(), ['pi-tidy-ui: menu is available only in terminal mode with UI.', 'info']);
+  for (const argument of ['on', 'off', 'status', 'syntax', 'colors off', 'cache clear', 'logs on', 'unknown']) {
+    await command.handler(argument, ctx);
+    const [message, type] = notices.pop()!;
+    assert.match(message, /^Usage: \/tidy-ui.*arguments are no longer supported/); assert.equal(type, 'warning');
+  }
+  assert.equal(reads, 0); assert.equal(writes, 0);
 });
 
 
