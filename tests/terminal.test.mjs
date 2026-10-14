@@ -4679,9 +4679,11 @@ test('footer session name fills spare columns without repacking statuses and res
       await footerObserve(live, 'saved-name', { action: 'name', sessionName: 'Saved session title' });
       await footerObserve(live, 'saved-clear-statuses', 'clear');
       const saved = await footerObserve(live, 'saved'), bytes = readFileSync(saved.session);
-      await live.appearance(false); await live.command('/reload');
+      let starts = live.events().filter(event => event.type === 'start').length;
+      await live.appearance(false); await live.command('/reload'); await live.event('start', starts + 1); await live.settle();
       assert.equal((await footerObserve(live, 'saved-off-reload')).owner, 'FooterComponent', 'reload preserves saved appearance Off');
-      await live.appearance(true); await live.command('/reload');
+      starts = live.events().filter(event => event.type === 'start').length;
+      await live.appearance(true); await live.command('/reload'); await live.event('start', starts + 1); await live.settle();
       const reloaded = await footerObserve(live, 'reloaded'); footerPhysical(reloaded);
       assert.deepEqual(reloaded.rows, saved.rows);
       const warm = await footerObserve(live, 'warm');
