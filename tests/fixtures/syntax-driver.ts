@@ -26,7 +26,7 @@ export default function syntaxDriver(pi: ExtensionAPI) {
     mkdirSync(preferences, { recursive: true }); writeFileSync(join(preferences, 'config.json'), process.env.TIDY_UI_TEST_SYNTAX_CONFIG);
   }
   const transports: StdioTransport[] = [], sharedTransports: SharedTransport[] = [];
-  const counts = { constructions: 0, acquisitions: 0, downloads: 0, piCaptures: 0, piBridges: 0, describeReplies: 0, refreshReplies: 0, sharedAttempts: 0, heldReplies: 0, deliveredReplies: 0, heldBashReplies: 0 };
+  const counts = { constructions: 0, acquisitions: 0, downloads: 0, piCaptures: 0, piBridges: 0, describeReplies: 0, refreshReplies: 0, sharedAttempts: 0, heldReplies: 0, deliveredReplies: 0, heldBashReplies: 0, orderDispatches: 0 };
   let pendingHeldReplies = 0;
   let runtime: WeakRef<SyntaxRuntime> | undefined, client: WeakRef<SyntaxClient> | undefined, controller = 0;
   let offset = 0;
@@ -100,7 +100,15 @@ export default function syntaxDriver(pi: ExtensionAPI) {
         const request = transport.request.bind(transport), close = transport.close.bind(transport);
         transport.close = () => { const settled = close(); closes.push(settled); return settled; };
         transport.request = async (payload, opts) => {
+          const ordinal = payload.op === 'highlight' && process.env.TIDY_UI_TEST_SYNTAX_ORDER_GATE === '1' ? ++counts.orderDispatches : 0;
+          if (ordinal) record({ type: 'syntax_order_dispatch', ordinal, payload });
           const reply = await request(payload, opts);
+          if (ordinal) {
+            pendingHeldReplies++; record({ type: 'syntax_order_reply_held', ordinal });
+            try {
+              while (!existsSync(join(output, `syntax-order-go-${ordinal}`))) await pause(20, undefined, { signal: opts?.signal });
+            } finally { pendingHeldReplies--; }
+          }
           if (payload.op === 'describe') counts.describeReplies++;
           if (payload.op === 'stream.append' && process.env.TIDY_UI_TEST_BASH_REPLY_GATE === '1') {
             const ordinal = ++counts.heldBashReplies; pendingHeldReplies++;

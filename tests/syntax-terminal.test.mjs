@@ -810,3 +810,73 @@ for (const mode of ['fullscreen', 'regular']) test(`occipital CLI: ${mode} onlin
         recoveryDispatches: recovered.source.dispatches - started.source.dispatches, redundantPreparedBytes: 0, warmNativeDelta: 0, piBridges: 0 }));
     } finally { await terminal.close(); await stock.close(); terminal.dispose(); stock.dispose(); await rm(directory, { recursive: true, force: true }); }
   });
+
+
+for (const mode of ['fullscreen', 'regular']) test(`occipital CLI: ${mode} restored Bash backlog colors newest cards before older cards`,
+  { skip: !binary, timeout: 120000 }, async () => {
+    const directory = await mkdtemp(resolve('.test-artifacts/order-session-'));
+    const manager = SessionManager.create(directory, join(directory, 'sessions'));
+    manager.appendModelChange('tidy-ui-offline', 'scripted'); manager.appendThinkingLevelChange('off');
+    const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
+    const commands = Array.from({ length: 8 }, (_, i) => `printf 'ORDER_CARD_${i}\\n'`);
+    for (let i = 0; i < commands.length; i++) {
+      manager.appendMessage({ role: 'user', content: [{ type: 'text', text: `saved card ${i}` }], timestamp: Date.now() });
+      manager.appendMessage({ role: 'assistant', content: [{ type: 'toolCall', id: `saved-order-${i}`, name: 'bash', arguments: { command: commands[i] } }],
+        api: 'openai-completions', provider: 'tidy-ui-offline', model: 'scripted', usage, stopReason: i === 0 ? 'error' : 'toolUse', timestamp: Date.now(),
+        ...(i === 0 ? { errorMessage: 'WebSocket closed 1000' } : {}) });
+      if (i) manager.appendMessage({ role: 'toolResult', toolCallId: `saved-order-${i}`, toolName: 'bash', content: [{ type: 'text', text: `saved result ${i}` }],
+        details: { exit_code: 0 }, isError: false, timestamp: Date.now() });
+    }
+    const session = manager.getSessionFile(), bytes = readFileSync(session);
+    const terminal = new PiTerminal(`backlog-order-${mode}`, { mode, session, extensions: [fixture],
+      extraEnv: { ...descriptor, TIDY_UI_TEST_SYNTAX_ACQUIRE_GATE: '1', TIDY_UI_TEST_SYNTAX_ORDER_GATE: '1' } });
+    const stock = new PiTerminal(`backlog-order-stock-${mode}`, { mode, session, extraEnv: descriptor });
+    const raw = dump => dump.tools.map(({ name, args, content, details, isError, argsComplete, executionStarted, partial }) =>
+      ({ name, args, content, details, isError, argsComplete, executionStarted, partial }));
+    const color = (dump, i, role) => {
+      const marker = `ORDER_CARD_${i}`, y = dump.screen.findIndex(row => row.includes(marker));
+      assert.ok(y >= 0, `physically visible ${marker}`);
+      const match = dump.summaryStyles[role].match(/38;2;(\d+);(\d+);(\d+)m/); assert.ok(match);
+      assert.equal(dump.cells[y][dump.screen[y].indexOf(marker)].fg, Number(match[1]) * 65536 + Number(match[2]) * 256 + Number(match[3]), marker);
+    };
+    try {
+      await terminal.ready(); await terminal.event('syntax_acquire_gate'); await stock.ready();
+      await terminal.resize(100, 160); await stock.resize(100, 160);
+      const early = await terminal.capture('backlog-order-pending'), baseline = await stock.capture('backlog-order-stock');
+      assert.equal(early.tools.length, commands.length); assert.deepEqual(raw(early), raw(baseline));
+      writeFileSync(join(terminal.output, 'syntax-acquire-go'), 'go');
+      await terminal.event('syntax_order_reply_held', 2);
+      assert.deepEqual(terminal.events().filter(e => e.type === 'syntax_order_dispatch').map(e => e.payload.sources[0].text), commands.slice(-2).reverse());
+      for (let batch = 0; batch < commands.length / 2; batch++) {
+        const from = batch * 2;
+        await terminal.event('syntax_order_reply_held', from + 2);
+        const held = await stats(terminal, `backlog-order-held-${batch}`);
+        assert.equal(held.source.globalUnsettledJobs, 2); assert.equal(held.counts.orderDispatches, from + 2);
+        for (const ordinal of [from + 1, from + 2]) writeFileSync(join(terminal.output, `syntax-order-go-${ordinal}`), 'go');
+        const accepted = await settledStats(terminal, `backlog-order-accepted-${batch}`, s => s.source.decodedBytes ===
+          commands.slice(commands.length - from - 2).reduce((sum, text) => sum + Buffer.byteLength(text), 0));
+        if (!batch) {
+          const first = await terminal.capture('backlog-order-newest-first');
+          color(first, 7, 'syntaxString'); color(first, 6, 'syntaxString');
+          for (let i = 0; i < 6; i++) color(first, i, 'toolTitle');
+          assert.deepEqual(raw(first), raw(early)); assert.deepEqual(readFileSync(session), bytes);
+        }
+        if (batch === commands.length / 2 - 1) assert.equal(accepted.source.globalUnsettledJobs, 0);
+      }
+      const colored = await terminal.capture('backlog-order-complete'), final = await stats(terminal, 'backlog-order-final');
+      const dispatches = terminal.events().filter(e => e.type === 'syntax_order_dispatch');
+      assert.deepEqual(dispatches.map(e => e.payload.sources[0].text), commands.toReversed());
+      for (let i = 0; i < commands.length; i++) color(colored, i, 'syntaxString');
+      assert.equal(final.source.dispatches, commands.length); assert.equal(final.counts.piBridges, 0); assert.equal(final.source.remoteLeases, 0);
+      assert.equal(final.source.preparedBytes, commands.reduce((sum, text) => sum + Buffer.byteLength(text), 0));
+      for (const width of [60, 100]) { await terminal.resize(width); await terminal.capture(`backlog-order-warm-${width}`); }
+      assert.deepEqual(work(await stats(terminal, 'backlog-order-warm-final')), work(final));
+      assert.deepEqual(raw(colored), raw(baseline)); assert.deepEqual(readFileSync(session), bytes); assert.equal(traffic(terminal).length, 0);
+      terminal.send('\x04');
+      await until(() => terminal.exited, 'backlog-order graceful Pi exit');
+      assert.equal(terminal.exited.code, 0);
+      await finish(terminal);
+      console.log(JSON.stringify({ backlogOrder: terminal.output, stock: stock.output, node: final.node, mode, cards: commands.length,
+        order: dispatches.map(e => e.payload.sources[0].text), warmNativeDelta: 0, calls: 0, results: 0 }));
+    } finally { await terminal.close(); await stock.close(); terminal.dispose(); stock.dispose(); await rm(directory, { recursive: true, force: true }); }
+  });

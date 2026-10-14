@@ -162,7 +162,9 @@ test('cards queued and off-held work veto duplicate Pi; keyed no-start notice pe
   const f = fixture(true), owner: Owner = { input: written('x') }, peer: Owner = { input: written('y') };
   f.cards.useful(owner, 1); f.cards.useful(peer, 1); await settled();
   assert.equal(f.env.classifications.length, 0); assert.equal(f.calls.length, 2);
-  f.env.invalidated.length = 0; fault(f, 0); await settled();
+  f.env.invalidated.length = 0;
+  const refused = f.calls.findIndex(call => (call.request.sources as { text: string }[])[0]!.text === 'x');
+  fault(f, refused); await settled();
   assert.deepEqual(f.env.classifications.map(x => x.text), ['x']);
   assert.deepEqual(f.env.invalidated, [owner]);
   f.env.enabled = false; f.sources.setEnabled(false); f.cards.metadataChanged(); await settled();
@@ -274,7 +276,8 @@ test('cards deferred obsolete source reply never paints replacement and only cur
   f.cards.useful(owner, 1); f.cards.useful(peer, 1); await settled();
   owner.input = bash('y', true); f.cards.useful(owner, 2); await settled();
   f.env.invalidated.length = 0;
-  answer(f, 0, 'x\n', false); await settled();
+  const obsolete = f.calls.findIndex(call => call.request.op === 'stream.open');
+  answer(f, obsolete, 'x\n', false); await settled();
   assert.equal(f.cards.bash(owner, 10, theme, 0x40000000), undefined);
   assert.equal(f.env.classifications.length, 0);
   const close = f.calls.find(call => call.request.op === 'stream.close');
@@ -340,16 +343,18 @@ test('cards LF display path and unsupported wire hints preserve full file glyphs
   const owner: Owner = { input: written('x', path, 'type\nscript') }, peer: Owner = { input: written('y', 'p.ts') };
   f.cards.useful(owner, 1); f.cards.useful(peer, 1); await settled();
   assert.equal(f.env.reads, 2); assert.equal(f.calls.length, 2); assert.equal(f.env.classifications.length, 0);
-  const submitted = (f.calls[0]!.request.sources as { hint: Record<string, string>; text: string }[])[0]!;
+  const ownerCall = f.calls.findIndex(call => (call.request.sources as { text: string }[])[0]!.text === 'x');
+  const peerCall = f.calls.findIndex(call => (call.request.sources as { text: string }[])[0]!.text === 'y');
+  const submitted = (f.calls[ownerCall]!.request.sources as { hint: Record<string, string>; text: string }[])[0]!;
   assert.deepEqual(submitted.hint, {}); assert.equal(submitted.text, 'x');
-  const other = (f.calls[1]!.request.sources as { hint: Record<string, string>; text: string }[])[0]!;
+  const other = (f.calls[peerCall]!.request.sources as { hint: Record<string, string>; text: string }[])[0]!;
   assert.deepEqual(other.hint, { language: 'typescript', path: 'p.ts' }); assert.equal(other.text, 'y');
   const projection = f.cards.file(owner, theme, 0x40000000)!;
   assert.equal(projection.display.path, path); assert.equal(projection.display.lines[0]!.kind, ' ');
   assert.ok('text' in projection.display.lines[0]! && projection.display.lines[0].text === 'x');
   const baseline = renderFileCard((owner.input as Extract<CardSourceInput, { kind: 'file' }>).node, undefined, 60, theme)!;
   assert.deepEqual(renderPreparedFileCard(projection.display, undefined, 60, theme).rows, baseline.rows);
-  answer(f, 0, 'x', true); answer(f, 1, 'y', true); await settled();
+  answer(f, ownerCall, 'x', true); answer(f, peerCall, 'y', true); await settled();
   assert.equal(stripVTControlCharacters(f.cards.file(owner, theme, 0x40000000)!.styledRows.get(0)!), 'x');
   assert.equal(stripVTControlCharacters(f.cards.file(peer, theme, 0x40000000)!.styledRows.get(0)!), 'y');
 });
@@ -689,11 +694,10 @@ for (const reentrant of [false, true]) test(`cards online wait: preparation yiel
 
 test('cards online wait: yielded backlog cannot retain an unprepared owner or revive a disposed consumer', { skip: !global.gc }, async () => {
   const f = fixture(), first: Owner = { input: bash('first', true) }, second: Owner = { input: bash('second', true) }, peer: Owner = { input: bash('peer', true) };
-  f.cards.useful(first, 1); f.cards.useful(second, 1);
   function make() { const owner: Owner = { input: bash('unprepared collected', true) }; f.cards.useful(owner, 1); return new WeakRef(owner); }
-  const weak = make(); f.cards.useful(peer, 1);
+  const weak = make(); f.cards.useful(first, 1); f.cards.useful(second, 1); f.cards.useful(peer, 1);
   await settled(); assert.equal(f.env.reads, 2);
-  global.gc!(); await settled(); assert.equal(weak.deref(), undefined, 'yield callback and pending tickets do not own the third card');
+  global.gc!(); await settled(); assert.equal(weak.deref(), undefined, 'yield callback and pending tickets do not own the oldest waiting card');
   assert.equal(f.env.reads, 3, 'the collected card is never prepared');
   f.env.ready = true; f.cards.metadataChanged(); await settled();
   for (let i = 0; i < 3; i++) { assert.ok(f.calls[i]); answer(f, i, (f.calls[i]!.request.sources as { text: string }[])[0]!.text, true); await settled(); }
@@ -715,7 +719,7 @@ for (const count of [1, 2]) test(`cards online wait: asynchronous local-refusal 
   assert.equal(f.env.reads, count, 'the host callback precedes the fallback batch queued by actual controller notices');
   assert.equal(f.env.classifications.length, 0); assert.equal(f.calls.length, 0);
   await settled();
-  assert.equal(f.env.reads, count * 2); assert.deepEqual(f.env.classifications.map(c => c.text), ['x', 'y'].slice(0, count));
+  assert.equal(f.env.reads, count * 2); assert.deepEqual(f.env.classifications.map(c => c.text).sort(), ['x', 'y'].slice(0, count));
   assert.equal(f.sources.stats().piSourceRecords, count);
   const counts = [f.env.reads, f.env.classifications.length, f.env.notices.length];
   for (let i = 0; i < 10; i++) await settled();
@@ -762,4 +766,59 @@ test('cards online wait: recovery without new demand does not reparse the last c
   assert.equal(f.calls[1]!.request.op, 'highlight');
   answer(f, 1, 'echo changed', true); await settled();
   assert.ok(f.cards.bash(owner, 30, theme, 0)); assert.equal(f.env.classifications.length, 0);
+});
+
+
+for (const episode of ['ready provider', 'startup', 'connection reset'] as const) {
+  test(`cards backlog order: newest cards dispatch first during ${episode}`, async () => {
+    const f = fixture(episode === 'ready provider');
+    if (episode === 'connection reset') f.env.generation = 2;
+    const owners = Array.from({ length: 8 }, (_, i): Owner => ({ input: bash(`echo order ${i}`, true) }));
+    for (const owner of owners) f.cards.useful(owner, 1);
+    if (!f.env.ready) {
+      for (let i = 0; i < 8; i++) await settled();
+      assert.equal(f.calls.length, 0);
+      // A revision/visit of the oldest card is not a move to the end of history.
+      owners[0]!.input = bash('echo oldest changed', true);
+      f.cards.record(owners[0]!, 2, true); f.cards.useful(owners[0]!, 2); await settled();
+      f.env.ready = true; f.cards.metadataChanged();
+    }
+    await settled();
+    const expected = owners.map(owner => (owner.input as Extract<CardSourceInput, { kind: 'bash' }>).args.command as string).reverse();
+    for (let i = 0; i < owners.length; i++) {
+      assert.ok(f.calls[i], 'every waiting card reaches the existing dispatcher');
+      assert.equal((f.calls[i]!.request.sources as { text: string }[])[0]!.text, expected[i], 'native dispatch follows reverse card order, not retry insertion order');
+      assert.ok(f.sources.stats().unsettledJobs <= 2);
+      answer(f, i, expected[i]!, true); await settled();
+    }
+    assert.equal(f.calls.length, owners.length);
+    const counts = [f.env.reads, f.calls.length, f.sources.stats().preparedBytes];
+    for (const owner of owners) f.cards.useful(owner, owner === owners[0] && episode !== 'ready provider' ? 2 : 1);
+    f.cards.metadataChanged(); await settled();
+    assert.deepEqual([f.env.reads, f.calls.length, f.sources.stats().preparedBytes], counts);
+  });
+}
+
+test('cards backlog order: old retries and removal between yielded batches preserve newest-first preparation', async () => {
+  const f = fixture(), owners = Array.from({ length: 8 }, (_, i): Owner => ({ input: bash(`echo queued ${i}`, true) }));
+  for (const owner of owners) f.cards.useful(owner, 1);
+  await settled();
+  assert.equal(f.cards.identities(owners[7]!)[0]?.version, 1);
+  assert.equal(f.cards.identities(owners[6]!)[0]?.version, 1);
+  assert.deepEqual(f.cards.identities(owners[0]!), [], 'the oldest card waits after the first batch');
+  f.cards.remove(owners[4]!);
+  owners[0]!.input = bash('echo queued oldest changed', true); f.cards.record(owners[0]!, 2, true);
+  await settled();
+  assert.equal(f.cards.identities(owners[5]!)[0]?.version, 1);
+  assert.equal(f.cards.identities(owners[3]!)[0]?.version, 1);
+  assert.deepEqual(f.cards.identities(owners[0]!), []);
+  for (let i = 0; i < 4; i++) await settled();
+  assert.equal(f.env.reads, 7); assert.equal(f.calls.length, 0);
+  f.env.ready = true; f.cards.metadataChanged(); await settled();
+  const expected = ['echo queued 7', 'echo queued 6', 'echo queued 5', 'echo queued 3', 'echo queued 2', 'echo queued 1', 'echo queued oldest changed'];
+  for (let i = 0; i < expected.length; i++) {
+    assert.equal((f.calls[i]!.request.sources as { text: string }[])[0]!.text, expected[i]);
+    answer(f, i, expected[i]!, true); await settled();
+  }
+  assert.equal(f.calls.length, expected.length);
 });

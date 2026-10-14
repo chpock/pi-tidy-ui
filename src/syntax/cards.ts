@@ -29,7 +29,7 @@ export interface CardSourceHost<Owner extends object> {
 type Slot = SyntaxIdentity & { rows?: readonly number[]; side?: 'old' | 'next'; outcome: SyntaxWorkResult['outcome']; awaitingProvider?: true; paintDecision?: string };
 type State = { revision: number; requested?: number; processed?: number; version: number; slots: Slot[];
   display?: FileDisplayCard; kind?: 'file' | 'bash'; record?: RecordTicket; paused?: boolean; frozen?: boolean; paintedStamp?: number };
-type RecordTicket = { id: number; owner: WeakRef<object>; state: WeakRef<State>; keys: Set<string>; bytes: number };
+type RecordTicket = { id: number; owner: WeakRef<object>; state: WeakRef<State>; keys: Set<string>; bytes: number; queued?: true };
 type Release = { consumer: WeakRef<CardSources<object>>; sources: WeakRef<SourceController>; ticket: RecordTicket };
 let sequence = 0;
 const collected = new FinalizationRegistry<Release>(release => {
@@ -56,7 +56,7 @@ export class CardSources<Owner extends object> {
   private readonly states = new WeakMap<Owner, State>();
   private readonly records = new Map<number, RecordTicket>();
   private readonly keys = new Map<string, RecordTicket>();
-  private readonly pending = new Set<RecordTicket>();
+  private readonly pending: RecordTicket[] = [];
   private latest?: { ticket: RecordTicket; revision: number };
   private bytes = 0;
   private readonly maxBytes: number;
@@ -199,7 +199,7 @@ export class CardSources<Owner extends object> {
     const state = this.states.get(owner);
     if (!state || state.frozen || this.disposed) return;
     state.frozen = true; state.paused = false;
-    if (state.record) this.pending.delete(state.record);
+    if (state.record) this.unqueue(state.record);
     if (this.latest?.ticket === state.record) this.latest = undefined;
     for (const slot of state.slots) this.client.sources.freeze(slot.key);
     this.log(owner, 'Argument formation interrupted; native work retired while validated presentation remains charged', { revision: state.revision });
@@ -216,7 +216,7 @@ export class CardSources<Owner extends object> {
     if (!state) return;
     if (!state.paused) this.log(owner, 'Source presentation paused; this does not prove native work stopped', { revision: state.revision });
     state.paused = true;
-    if (state.record) this.pending.delete(state.record);
+    if (state.record) this.unqueue(state.record);
   }
   remove(owner: Owner): void {
     const state = this.states.get(owner); this.states.delete(owner);
@@ -225,14 +225,15 @@ export class CardSources<Owner extends object> {
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true; this.latest = undefined;
+    for (const ticket of this.pending) ticket.queued = undefined;
+    this.pending.length = 0;
     for (const ticket of this.records.values()) this.release(ticket);
-    this.pending.clear();
   }
   /** Internal weak finalizer delivery, also used by explicit removal. */
   release(ticket: RecordTicket): void {
     if (!this.records.delete(ticket.id)) return;
     this.log(ticket.owner.deref() as Owner | undefined, 'Source owner released', { ticket: ticket.id, sources: ticket.keys.size });
-    collected.unregister(ticket); this.pending.delete(ticket);
+    collected.unregister(ticket); this.unqueue(ticket);
     if (this.latest?.ticket === ticket) this.latest = undefined;
     for (const key of ticket.keys) { this.keys.delete(key); this.client.sources.remove(key); }
     this.bytes -= ticket.bytes; ticket.keys.clear();
@@ -245,9 +246,9 @@ export class CardSources<Owner extends object> {
     // Keep reentrant enqueue from scheduling a microtask that skips the host yield.
     this.scheduled = true;
     const pending: RecordTicket[] = [];
-    for (const ticket of this.pending) {
-      this.pending.delete(ticket); pending.push(ticket);
-      if (pending.length === CONTROLLER_LIMITS.jobs) break;
+    while (this.pending.length && pending.length < CONTROLLER_LIMITS.jobs) {
+      const ticket = this.pending.pop()!;
+      ticket.queued = undefined; pending.push(ticket);
     }
     if (!pending.length) { this.scheduled = false; return; }
     let changed = false;
@@ -363,9 +364,25 @@ export class CardSources<Owner extends object> {
   private current(owner: Owner, state: State, ticket: RecordTicket): boolean {
     return !this.disposed && !state.paused && !state.frozen && this.states.get(owner) === state && this.records.get(ticket.id) === ticket;
   }
+  // Stable card order, not retry order. New tickets append; batches pop newest first.
+  private pendingIndex(id: number): number {
+    let left = 0, right = this.pending.length;
+    while (left < right) {
+      const middle = (left + right) >>> 1;
+      if (this.pending[middle]!.id < id) left = middle + 1;
+      else right = middle;
+    }
+    return left;
+  }
+  private unqueue(ticket: RecordTicket): void {
+    if (!ticket.queued) return;
+    this.pending.splice(this.pendingIndex(ticket.id), 1); ticket.queued = undefined;
+  }
   private enqueue(ticket: RecordTicket): void {
     if (!this.records.has(ticket.id)) return;
-    this.pending.add(ticket);
+    if (!ticket.queued) {
+      this.pending.splice(this.pendingIndex(ticket.id), 0, ticket); ticket.queued = true;
+    }
     if (!this.scheduled) { this.scheduled = true; queueMicrotask(continuation(this.owner)); }
   }
   private metadataIdentity(snapshot = this.client.snapshot()): string {
