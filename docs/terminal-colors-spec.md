@@ -4,15 +4,9 @@
 
 pi-tidy-ui can synchronize the terminal's default background and foreground with a **fixed, file-backed Pi theme**. This affects the shared terminal, not just a card. It is independently implemented in `src/terminal-colors.ts`; `src/index.ts` owns the host integration.
 
-The feature starts enabled with pi-tidy-ui:
+The feature defaults to On. Bare `/tidy-ui` exposes **Match terminal colors to Pi** and, under **Status & troubleshooting**, the current effective state and **Reapply terminal colors**. See the [saved-preference contract](settings-menu-spec.md).
 
-```text
-/tidy-ui colors status
-/tidy-ui colors off
-/tidy-ui colors on
-```
-
-Local off releases applied defaults but leaves cards, input styling and the footer eligible. It stops theme-source reads/application, not the one-shot default-RGB sampling needed to paint remaining cards correctly after a release. Global `/tidy-ui off` releases defaults and removes the observer. Global on respects the local toggle; reload creates a fresh enabled runtime. Toggles are not written to Pi settings. Explicit colors on retries synchronization even if the native theme identity is unchanged.
+Local off releases applied defaults but leaves cards, input styling and the footer eligible. It stops theme-source reads/application, not the one-shot default-RGB sampling needed to paint remaining cards correctly after a release. Appearance Off releases defaults and removes the observer. Appearance On respects the local toggle; reload restores both saved preferences before activation. Toggles are stored in the extension config, not Pi settings. Explicit **Reapply terminal colors** retries an enabled preference even if the native theme identity is unchanged; it never enables a disabled preference.
 
 Foreign editor/footer ownership does not itself disable terminal synchronization. Disable the old standalone `theme-background` extension manually before using this feature. Only one terminal-default writer is supported; pi-tidy-ui cannot coordinate arbitrary competing writers.
 

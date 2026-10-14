@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict';
 import { afterEach, test } from 'node:test';
 import { setImmediate as turn } from 'node:timers/promises';
-import type { ExtensionContext } from '@earendil-works/pi-coding-agent';
 import { SyntaxRuntime } from '../src/syntax/runtime.ts';
 import type { ProviderTransport } from '../src/occipital/provider.ts';
 import type { TransportEnd } from '../src/occipital/transport-end.ts';
@@ -85,10 +84,6 @@ function demand(runtime: SyntaxRuntime, key = 'one') {
   const p = runtime.snapshot().effective!;
   assert.ok(p); return { key, version: 1, text: 'x', complete: true, profile: p.id, fingerprint: p.fingerprint };
 }
-function context(select: (title: string, choices: string[]) => Promise<string | undefined>, mode = 'tui') {
-  const notices: string[] = [];
-  return { ctx: { mode, hasUI: mode === 'tui', ui: { select, notify: (message: string) => notices.push(message) } } as unknown as ExtensionContext, notices };
-}
 
 test('runtime construction and warm metadata/palette inspection do not restore settings or start providers', async () => {
   const f = fixture(), theme = { colors: {}, fg() { throw Error('palette must not sample tokens'); } };
@@ -142,8 +137,8 @@ test('native off/on preserves the client lifetime but a retained old source veto
 });
 
 test('master-off menu status and native enable never start a provider without an active presentation', async () => {
-  const f = fixture(false), menu = context(async () => 'Close');
-  await f.runtime.menu(menu.ctx); await f.runtime.setEnabled(true); await settled();
+  const f = fixture(false);
+  await f.runtime.prepareThemes(); await f.runtime.setEnabled(true); await settled();
   assert.equal(f.runtime.snapshot().enabled, true); assert.equal(f.runtime.snapshot().provider.availability, 'disabled');
   assert.equal(f.store.loads, 1); assert.equal(f.shared(), 0); assert.equal(f.owned(), 0);
   assert.deepEqual(f.changes, [true]); assert.equal(f.store.writes.length, 0);
@@ -156,21 +151,18 @@ test('native-off remembered by a fresh presentation client does not start provid
   assert.equal(f.runtime.snapshot().enabled, false); assert.equal(f.store.writes.length, 0);
 });
 
-test('unsupported menu modes perform no settings reads, selectors or provider startup', async () => {
-  for (const mode of ['print', 'json', 'rpc']) {
-    const f = fixture(), menu = context(async () => { throw Error('unexpected selector'); }, mode);
-    await f.runtime.menu(menu.ctx); await settled();
-    assert.equal(menu.notices.length, 1); assert.equal(f.store.loads, 0); assert.equal(f.shared(), 0); assert.equal(f.owned(), 0);
-  }
+test('explicit preference preparation waits for saved theme without starting a provider', async () => {
+  const f = fixture(false), loaded = deferred<SettingsLoadResult>(); f.store.loadResult = loaded.promise;
+  const preparing = f.runtime.prepareThemes(); await settled();
+  assert.equal(f.store.loads, 1); assert.equal(f.shared(), 0); assert.equal(f.owned(), 0);
+  loaded.resolve({ ok: true, syntaxTheme: { kind: 'occipital', id: 'saved' } }); await preparing;
+  assert.deepEqual(f.runtime.snapshot().selected, { kind: 'occipital', id: 'saved' });
+  assert.equal(f.store.writes.length, 0);
 });
 
-test('disposal invalidates a pending menu before its action can mutate or reopen retired state', async () => {
-  const f = fixture(), action = deferred<string | undefined>(); let selectors = 0;
-  const menu = context(async () => { selectors++; return action.promise; });
-  const opened = f.runtime.menu(menu.ctx); await settled();
-  assert.equal(selectors, 1); await f.runtime.dispose(); action.resolve('Enable for this session'); await opened;
-  assert.equal(selectors, 1); assert.equal(f.shared(), 0); assert.equal(f.store.writes.length, 0);
-  assert.deepEqual(f.changes, []); assert.deepEqual(menu.notices, []);
+test('retired runtime preference preparation is inert', async () => {
+  const f = fixture(); await f.runtime.dispose(); await f.runtime.prepareThemes();
+  assert.equal(f.store.loads, 0); assert.equal(f.shared(), 0); assert.equal(f.store.writes.length, 0);
 });
 
 test('disposal aborts an already delegated settings save, with no late UI or presentation resurrection', async () => {

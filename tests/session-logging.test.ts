@@ -70,3 +70,29 @@ test('session logging explicit retry preserves run-bound observers and never ret
   const text = await fs.readFile(scope.status().path, 'utf8');
   assert.match(text, /Existing owner uses resumed capture/); assert.doesNotMatch(text, /PRIVATE_ERROR_PAYLOAD/);
 });
+
+test('session logging: saved off creates no journal, cleanup, or timer before explicit enable', async t => {
+  const { root, identity } = await fixture(t);
+  const unused = join(root, 'not-created');
+  const scope = new SessionLogging(identity, { root: unused, enabled: false });
+  t.after(() => scope.close('quit'));
+  await scope.ready();
+  scope.sink('INFO', 'runtime', 'Must not be recorded'); await scope.flush();
+  assert.equal(scope.status().capture, false);
+  assert.equal(scope.status().records, 0); assert.equal(scope.status().writes, 0); assert.equal(scope.status().scans, 0);
+  assert.equal(scope.status().timer, false);
+  await assert.rejects(fs.stat(unused), { code: 'ENOENT' });
+  await scope.setEnabled(true);
+  assert.equal(scope.status().capture, true); assert.equal(scope.status().state, 'active');
+  scope.sink('INFO', 'runtime', 'Now enabled'); await scope.flush();
+  const text = await fs.readFile(scope.status().path, 'utf8');
+  assert.match(text, /Now enabled/); assert.doesNotMatch(text, /Must not be recorded/);
+});
+
+test('session logging: closing an initially disabled run never writes lifecycle records', async t => {
+  const { root, identity } = await fixture(t), unused = join(root, 'never-created');
+  const scope = new SessionLogging(identity, { root: unused, enabled: false });
+  await scope.close('reload');
+  assert.equal(scope.status().state, 'closed');
+  await assert.rejects(fs.stat(unused), { code: 'ENOENT' });
+});

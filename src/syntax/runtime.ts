@@ -1,7 +1,6 @@
 import { diagnose } from '../diagnostics.ts';
-import type { ExtensionContext } from '@earendil-works/pi-coding-agent';
 import { SyntaxClient, type SyntaxClientOptions } from '../occipital/client.ts';
-import { openSyntaxMenu, type SyntaxMenuOwner } from '../occipital/menu.ts';
+import { type SyntaxMenuOwner } from '../occipital/menu.ts';
 import type { SyntaxTheme } from '../settings.ts';
 
 interface Presentation {
@@ -20,7 +19,6 @@ function activation(owner: WeakRef<SyntaxRuntime>) { return () => owner.deref()?
 function startupFailure(owner: WeakRef<SyntaxRuntime>) {
   return () => owner.deref()?.reportStartupFailure();
 }
-function menuCurrent(owner: WeakRef<SyntaxRuntime>, epoch: number) { return () => owner.deref()?.current(epoch) ?? false; }
 
 /** One extension runtime's existing client and public menu. Source ownership stays
  * with CardSources; this is not a second source store or a cross-adapter registry. */
@@ -73,14 +71,9 @@ export class SyntaxRuntime implements SyntaxMenuOwner {
     }
     return this.client.setEnabled(enabled && this.presentation?.deref()?.active === true);
   }
+  prepareThemes() { return this.disposed ? Promise.resolve() : this.client.restorePreference(); }
   selectTheme(choice: SyntaxTheme) { return this.client.selectTheme(choice); }
   refreshThemes() { return this.client.refreshThemes(); }
-  async menu(ctx: Pick<ExtensionContext, 'mode' | 'hasUI' | 'ui'>): Promise<void> {
-    if (this.disposed) return;
-    diagnose(this.options.diagnostic, 'INFO', 'syntax', 'Syntax menu opened', { presentation: !!this.presentation?.deref()?.active });
-    if (ctx.mode === 'tui' && ctx.hasUI) this.start();
-    await openSyntaxMenu(ctx, this, menuCurrent(this.owner, ++this.epoch));
-  }
   dispose(): Promise<void> {
     if (!this.disposed) { diagnose(this.options.diagnostic, 'INFO', 'syntax', 'Syntax runtime disposing; current source owners are retired'); this.disposed = true; ++this.epoch; this.presentation = undefined; this.paletteColors = undefined; }
     return this.client.dispose();
@@ -95,7 +88,6 @@ export class SyntaxRuntime implements SyntaxMenuOwner {
     const presentation = !this.disposed && this.presentation?.deref();
     if (presentation && presentation.active) presentation.syntaxSourceChanged(keys);
   }
-  current(epoch: number): boolean { return !this.disposed && this.epoch === epoch; }
   activate(): void {
     this.scheduled = false;
     if (this.disposed || !this.presentation?.deref()?.active) return;

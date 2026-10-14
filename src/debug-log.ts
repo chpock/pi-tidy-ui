@@ -15,6 +15,8 @@ export interface JournalIdentity {
 }
 export interface JournalOptions {
   root?: string;
+  /** A saved Off must not create files or run retention before explicit enable. */
+  enabled?: boolean;
   /** Small limits and controlled I/O are for isolated functional tests. */
   limits?: Partial<Limits>; io?: typeof fs; now?: () => number; alive?: (pid: number) => boolean;
   warn?: (message: string) => void;
@@ -86,7 +88,7 @@ export async function cleanupJournals(root: string, options: { now?: number; kee
 }
 
 export class TextJournal {
-  readonly ready: Promise<void>;
+  ready: Promise<void>;
   readonly sink: DiagnosticSink;
   readonly run: string;
   private readonly fileId = randomUUID();
@@ -111,7 +113,7 @@ export class TextJournal {
   private rotations = 0;
   private scans = 0;
   private commonFailed = false;
-  private state: "starting" | "active" | "failed" | "closed" = "starting";
+  private state: "off" | "starting" | "active" | "failed" | "closed" = "starting";
   private timer: ReturnType<typeof setTimeout> | undefined;
   private pump: Promise<void> | undefined;
   private closing: Promise<void> | undefined;
@@ -138,7 +140,9 @@ export class TextJournal {
       `    Platform: ${process.platform}/${process.arch}; mode=${readableDiagnosticText(identity.mode ?? "unknown")}; provider=${readableDiagnosticText(identity.provider ?? "unknown")}; theme=${readableDiagnosticText(identity.theme ?? "unknown")}\n`, Math.min(16 * 1024, this.limits.fileBytes));
     this.nextCleanup = this.now() + this.limits.cleanupIntervalMs;
     this.sink = (level, area, explanation, details) => this.record(level, area, explanation, details);
-    this.ready = this.initialize();
+    this.enabled = options.enabled ?? true;
+    if (!this.enabled) this.state = 'off';
+    this.ready = this.enabled ? this.initialize() : Promise.resolve();
   }
 
   private async initialize(): Promise<void> {
@@ -172,7 +176,7 @@ export class TextJournal {
     this.queue = []; this.pendingBytes = 0; this.omitted = 0; this.cancelTimer();
     const handle = this.handle; this.handle = undefined;
     this.failedClose = handle?.close().catch(() => undefined);
-    this.notice(`[pi-tidy-ui] Debug logging stopped (${this.failure}). Use /tidy-ui logs for details or logs on to retry.`);
+    this.notice(`[pi-tidy-ui] Debug logging stopped (${this.failure}). Open /tidy-ui → Status & troubleshooting → Diagnostic logs for details or to retry.`);
   }
   private cancelTimer(): void { if (this.timer) clearTimeout(this.timer); this.timer = undefined; }
   private schedule(): void {
@@ -273,7 +277,7 @@ export class TextJournal {
       await handle.writeFile(row);
     } catch (error) {
       this.commonFailed = true; this.writeErrors++;
-      this.notice(`[pi-tidy-ui] Common session journal unavailable (${diagnosticError(error)}); detailed logging is independent. Use /tidy-ui logs for its path.`);
+      this.notice(`[pi-tidy-ui] Common session journal unavailable (${diagnosticError(error)}); detailed logging is independent. Open /tidy-ui → Status & troubleshooting → Diagnostic logs for its path.`);
     } finally { await handle?.close().catch(() => undefined); }
   }
   close(reason: string): Promise<void> {
@@ -303,7 +307,10 @@ export class TextJournal {
   }
   setEnabled(enabled: boolean): void {
     if (!this.accepting || this.enabled === enabled) return;
-    if (enabled) this.enabled = true;
+    if (enabled) {
+      this.enabled = true;
+      if (this.state === 'off') { this.state = 'starting'; this.ready = this.initialize(); }
+    }
     this.record("INFO", "logging", enabled ? "Diagnostic capture resumed" : "Diagnostic capture disabled");
     this.enabled = enabled;
     if (!enabled) void this.flush();

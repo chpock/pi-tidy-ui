@@ -16,7 +16,7 @@ import { editorGeometry } from "../src/editor-card.ts";
 import { measureFileCard, renderFileCard } from "../src/file-card.ts";
 import { generateDiffString, generateUnifiedPatch } from "../node_modules/@earendil-works/pi-coding-agent/dist/core/tools/edit-diff.js";
 import type { CardTheme } from "../src/card-theme.ts";
-import { RenderCache } from "../src/render-cache.ts";
+import { LAYOUT_KINDS, RenderCache } from "../src/render-cache.ts";
 import { awaitFixture } from "./fixtures/await-fixture.ts";
 import { renderEditorStatus, directoryStatus } from "../src/editor-status.ts";
 import { IdleStatus, StatusIndicator } from "../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/components/status-indicator.js";
@@ -30,6 +30,7 @@ import { sliceByColumn } from "@earendil-works/pi-tui";
 import { stripVTControlCharacters } from "node:util";
 import { colorToHex, rgbColor } from "@earendil-works/pi-tui";
 import { resolveTerminalDefaults, parseThemeDefaults, TerminalColors } from "../src/terminal-colors.ts";
+import { menuPage, setAppearance, setColors, withMenu } from "./helpers/menu-driver.ts";
 
 const plain = (line: string) => line.replace(/\x1b\[[0-9;]*m/g, "");
 class Root extends Container {
@@ -201,7 +202,7 @@ test("completion marker constant can restore success and failure symbols without
   const switchLine = "const SHOW_COMPLETION_MARKERS = false;";
   assert.ok(source.includes(switchLine), "one source constant controls final markers and defaults to false");
   const enabled = source.replace(switchLine, "const SHOW_COMPLETION_MARKERS = true;")
-    .replace(/from "([^"]+)"/gu, (_match, specifier: string) =>
+    .replace(/from (["'])([^"']+)\1/gu, (_match, _quote: string, specifier: string) =>
       `from ${JSON.stringify(specifier.startsWith(".") ? new URL(specifier, sourceUrl).href : import.meta.resolve(specifier))}`);
   const temporary = mkdtempSync(join(tmpdir(), "tidy-ui-completion-markers-"));
   let controller: ReturnType<typeof installTidyUi> | undefined;
@@ -395,16 +396,16 @@ test("extension off and shutdown cancel active clocks; non-TUI loading starts no
   };
   const h = extensionHarness("tui"), tool = new Tool(); tool.result = undefined; h.root.addChild(tool);
   try {
-    h.events.get("session_start")!({}, h.ctx); h.root.render(80); assert.equal(animations().length, 1);
-    await h.commands.get("tidy-ui")!.handler("off", h.ctx); assert.equal(animationStops(), 1);
+    await h.events.get("session_start")!({}, h.ctx); h.root.render(80); assert.equal(animations().length, 1);
+    await setAppearance(h.commands.get('tidy-ui')!.handler, h.ctx, false); assert.equal(animationStops(), 1);
     const off = h.root.requests; t.mock.timers.tick(10000); assert.equal(h.root.requests, off);
-    await h.commands.get("tidy-ui")!.handler("on", h.ctx); h.root.render(80); assert.equal(animations().length, 2);
+    await setAppearance(h.commands.get('tidy-ui')!.handler, h.ctx, true); h.root.render(80); assert.equal(animations().length, 2);
     h.events.get("session_shutdown")!({}, h.ctx); assert.equal(animationStops(), 2);
     const closed = h.root.requests; t.mock.timers.tick(10000); assert.equal(h.root.requests, closed);
     for (const mode of ["print", "json", "rpc"] as const) {
       const starts = intervals.mock.calls.length;
       const other = extensionHarness(mode); other.root.addChild(tool);
-      other.events.get("session_start")!({}, other.ctx); other.root.render(80); other.events.get("session_shutdown")!({}, other.ctx);
+      await other.events.get("session_start")!({}, other.ctx); other.root.render(80); other.events.get("session_shutdown")!({}, other.ctx);
       assert.equal(intervals.mock.calls.length, starts, `${mode} installs no timers`);
     }
   } finally { h.events.get("session_shutdown")!({}, h.ctx); }
@@ -594,7 +595,7 @@ function extensionHarness(mode: "tui" | "print" | "json" | "rpc" = "tui", flagVa
     getSettings: () => ({}),
     getThinkingLevel: () => "off",
   } as unknown as ExtensionAPI;
-  const ctx = { mode, isIdle: () => true, ui: {
+  const ctx = { mode, hasUI: mode === 'tui', isIdle: () => true, ui: {
     theme: color,
     notify: (text: string) => notices.push(text),
     getEditorComponent: () => undefined,
@@ -604,7 +605,7 @@ function extensionHarness(mode: "tui" | "print" | "json" | "rpc" = "tui", flagVa
       else { widgetComponents.delete(name); widgetPlacements.delete(name); }
     },
   } } as unknown as ExtensionContext;
-  tidyUi(api, { logging: false, syntax: fixtureSyntaxOptions });
+  tidyUi(api, { logging: false, settings: fixtureSyntaxOptions().settings, syntax: fixtureSyntaxOptions });
   return { root, ctx, events, commands, flags, widgets, notices, widgetComponents, widgetPlacements };
 }
 
@@ -612,20 +613,20 @@ test("extension lifecycle removes the temporary widget, restores on shutdown, an
   const h = extensionHarness();
   const before = Container.prototype.addChild;
   try {
-    h.events.get("session_start")!({}, h.ctx);
+    await h.events.get("session_start")!({}, h.ctx);
     const installed = Container.prototype.addChild;
     assert.notEqual(installed, before);
-    h.events.get("session_start")!({}, h.ctx);
+    await h.events.get("session_start")!({}, h.ctx);
     assert.equal(Container.prototype.addChild, installed);
     assert.deepEqual(h.widgets, ["pi-tidy-ui-terminal-colors", "pi-tidy-ui-capture", "pi-tidy-ui-capture", "pi-tidy-ui-editor-status"]);
     assert.deepEqual(h.widgetPlacements.get("pi-tidy-ui-terminal-colors"), { placement: "belowEditor" });
     assert.deepEqual(h.widgetComponents.get("pi-tidy-ui-terminal-colors")!.render(80), [], "colors observation adds no layout rows");
     assert.deepEqual(h.widgetPlacements.get("pi-tidy-ui-editor-status"), { placement: "belowEditor" });
     assert.deepEqual([...h.flags.keys()], ["tidy-ui-card", "tidy-ui-compact", "tidy-ui-cache-mb", "tidy-ui-card-cache-mb"]);
-    await h.commands.get("tidy-ui")!.handler("off", h.ctx);
+    await setAppearance(h.commands.get('tidy-ui')!.handler, h.ctx, false);
     assert.equal(Container.prototype.addChild, before);
     assert.equal(h.widgetComponents.size, 0, "off removes the persistent status widget");
-    await h.commands.get("tidy-ui")!.handler("on", h.ctx);
+    await setAppearance(h.commands.get('tidy-ui')!.handler, h.ctx, true);
     assert.notEqual(Container.prototype.addChild, before);
     assert.match(h.root.render(80).at(-1)!, /read a\.txt/);
     await h.commands.get("tidy-ui")!.handler("invalid", h.ctx);
@@ -636,14 +637,14 @@ test("extension lifecycle removes the temporary widget, restores on shutdown, an
 
 test("off persists across session replacements but a reload creates a fresh enabled runtime", async () => {
   const h = extensionHarness(); const before = Container.prototype.addChild;
-  h.events.get("session_start")!({}, h.ctx);
-  await h.commands.get("tidy-ui")!.handler("off", h.ctx);
+  await h.events.get("session_start")!({}, h.ctx);
+  await setAppearance(h.commands.get('tidy-ui')!.handler, h.ctx, false);
   h.events.get("session_shutdown")!({}, h.ctx);
-  h.events.get("session_start")!({}, h.ctx);
+  await h.events.get("session_start")!({}, h.ctx);
   assert.equal(Container.prototype.addChild, before);
   const fresh = extensionHarness();
   try {
-    fresh.events.get("session_start")!({}, fresh.ctx);
+    await fresh.events.get("session_start")!({}, fresh.ctx);
     assert.notEqual(Container.prototype.addChild, before);
   } finally { fresh.events.get("session_shutdown")!({}, fresh.ctx); }
 });
@@ -652,11 +653,11 @@ test("print, JSON and RPC modes install no UI hooks or widgets", async () => {
   const before = Container.prototype.addChild;
   for (const mode of ["print", "json", "rpc"] as const) {
     const h = extensionHarness(mode);
-    h.events.get("session_start")!({}, h.ctx);
-    await h.commands.get("tidy-ui")!.handler("on", h.ctx);
+    await h.events.get("session_start")!({}, h.ctx);
+    await h.commands.get('tidy-ui')!.handler('', h.ctx);
     assert.equal(h.widgets.length, 0);
     assert.equal(Container.prototype.addChild, before);
-    assert.match(h.notices.at(-1)!, /unavailable outside terminal mode/);
+    assert.match(h.notices.at(-1)!, /available only in terminal mode/);
     h.events.get("session_shutdown")!({}, h.ctx);
   }
 });
@@ -2050,24 +2051,26 @@ test("new theme and expansion/structure changes do not leave stale cache geometr
 test("optional layout diagnostics distinguish retained estimates from whole-process heap and reject retired controls", async () => {
   const h = extensionHarness("tui", { "tidy-ui-cache-mb": "0.01" });
   const command = h.commands.get("tidy-ui")!.handler;
-  const stats = () => JSON.parse(h.notices.at(-1)!.replace("pi-tidy-ui cache: ", ""));
+  let cacheText = '';
+  const readCache = async () => { cacheText = await menuPage(command, h.ctx, ['Status & troubleshooting', 'Display cache']); };
+  const stats = () => cacheMenuStats(cacheText);
   try {
-    h.events.get("session_start")!({}, h.ctx); h.root.render(80);
+    await h.events.get("session_start")!({}, h.ctx); h.root.render(80);
     assert.ok(h.notices.some(text => /tidy-ui-cache-mb is ignored/u.test(text)));
-    await command("cache", h.ctx);
+    await readCache();
     const first = stats(); assert.ok(first.entries > 0); assert.ok(first.processHeapUsedBytes > 0);
     assert.equal(first.retainedBytes, first.stringBytes + first.overheadBytes);
     assert.equal(first.presentationRetainedBytes, first.retainedBytes + first.footerLayout.retainedBytes);
-    assert.match(first.memoryScope, /estimated pi-tidy-ui retained/u);
-    assert.match(first.processMemoryScope, /whole Pi process, not pi-tidy-ui/u);
-    assert.equal("limitBytes" in first, false);
+    assert.match(cacheText, /Tidy UI display layouts only/u);
+    assert.match(cacheText, /Whole Pi process heap:.*not Tidy UI memory/u);
+    assert.doesNotMatch(cacheText, /limitBytes/u);
     for (const invalid of ["cache limit 0", "cache limit -1", "cache cards limit 0", "cache wrong", "cache limit 1 extra"] ) {
       await command(invalid, h.ctx); assert.match(h.notices.at(-1)!, /limits have been removed|Usage:/);
     }
-    await command("cache", h.ctx); assert.equal(stats().retainedBytes, first.retainedBytes);
-    await command("cache clear", h.ctx); assert.equal(stats().entries, 0); assert.equal(stats().retainedBytes, 0);
-    h.root.render(80); await command("off", h.ctx); await command("on", h.ctx); h.root.render(80);
-    await command("cache", h.ctx); assert.equal(stats().entries, first.entries);
+    await readCache(); assert.equal(stats().retainedBytes, first.retainedBytes);
+    cacheText = await menuPage(command, h.ctx, ['Status & troubleshooting', 'Display cache', 'Clear saved layouts']); assert.equal(stats().entries, 0); assert.equal(stats().retainedBytes, 0);
+    h.root.render(80); await setAppearance(command, h.ctx, false); await setAppearance(command, h.ctx, true); h.root.render(80);
+    await readCache(); assert.equal(stats().entries, first.entries);
     assert.equal(h.notices.filter(text => /tidy-ui-cache-mb is ignored/u.test(text)).length, 1, "legacy warning is runtime-local, not repeated on every frame/on");
   } finally { h.events.get("session_shutdown")!({}, h.ctx); }
 });
@@ -3187,19 +3190,21 @@ test("layout diagnostics preserve group attribution and ignore retired launch bu
   const h = extensionHarness("tui", { "tidy-ui-cache-mb": "0.1", "tidy-ui-card-cache-mb": "128" });
   h.root.addChild(bashTool("card"));
   const command = h.commands.get("tidy-ui")!.handler;
-  const stats = () => JSON.parse(h.notices.at(-1)!.replace("pi-tidy-ui cache: ", ""));
+  let cacheText = '';
+  const readCache = async () => { cacheText = await menuPage(command, h.ctx, ['Status & troubleshooting', 'Display cache']); };
+  const stats = () => cacheMenuStats(cacheText);
   try {
-    h.events.get("session_start")!({}, h.ctx); h.root.render(80); await command("cache", h.ctx);
+    await h.events.get("session_start")!({}, h.ctx); h.root.render(80); await readCache();
     assert.equal(stats().ordinary.entries, 1); assert.equal(stats().cards.entries, 1);
     assert.equal(stats().byKind.summary.entries, 1); assert.equal(stats().byKind.bash.entries, 1);
     for (const retired of ["cache cards limit 129", "cache cards limit -1", "cache cards limit NaN", "cache cards limit 0"] ) {
-      await command(retired, h.ctx); assert.match(h.notices.at(-1)!, /limits have been removed/);
+      await command(retired, h.ctx); assert.match(h.notices.at(-1)!, /Usage:/);
     }
-    await command("cache", h.ctx); assert.equal(stats().entries, 2);
-    await command("off", h.ctx); await command("on", h.ctx); h.root.render(80); await command("cache", h.ctx);
+    await readCache(); assert.equal(stats().entries, 2);
+    await setAppearance(command, h.ctx, false); await setAppearance(command, h.ctx, true); h.root.render(80); await readCache();
     assert.equal(stats().entries, 2);
     assert.equal(h.notices.filter(text => /tidy-ui-card-cache-mb is ignored/u.test(text)).length, 1);
-    await command("cache clear", h.ctx); assert.equal(stats().entries, 0);
+    cacheText = await menuPage(command, h.ctx, ['Status & troubleshooting', 'Display cache', 'Clear saved layouts']); assert.equal(stats().entries, 0);
   } finally { h.events.get("session_shutdown")!({}, h.ctx); }
 });
 
@@ -4120,15 +4125,15 @@ test("editor status public widget reads fresh session metadata and is removed on
     getEditorComponent: () => host.editorComponentFactory });
   const first = Object.assign(h.ctx, { model: { name: "First Name", provider: "literal-provider-id" }, thinkingLevel: "high" });
   try {
-    h.events.get("session_start")!({}, first); editor.render(100);
+    await h.events.get("session_start")!({}, first); editor.render(100);
     const widget = h.widgetComponents.get("pi-tidy-ui-editor-status")!;
     assert.match(widget.render(100).map(editorPlain).join("\n"), /First Name \(literal-provider-id\) • high • Idle/u);
     const next = { ...first, model: { name: "Second Name", provider: "other-id" }, thinkingLevel: "off" } as unknown as ExtensionContext;
-    h.events.get("session_start")!({}, next); editor.render(100);
+    await h.events.get("session_start")!({}, next); editor.render(100);
     assert.equal(h.widgetComponents.get("pi-tidy-ui-editor-status"), widget, "no stacked widget on session events");
     assert.match(widget.render(100).map(editorPlain).join("\n"), /Second Name \(other-id\) • off • Idle/u);
-    await h.commands.get("tidy-ui")!.handler("off", next); assert.equal(h.widgetComponents.size, 0);
-    await h.commands.get("tidy-ui")!.handler("on", next); editor.render(100);
+    await setAppearance(h.commands.get('tidy-ui')!.handler, next, false); assert.equal(h.widgetComponents.size, 0);
+    await setAppearance(h.commands.get('tidy-ui')!.handler, next, true); editor.render(100);
     assert.match(h.widgetComponents.get("pi-tidy-ui-editor-status")!.render(100).map(editorPlain).join("\n"), /Second Name/u);
   } finally { h.events.get("session_shutdown")!({}, h.ctx); }
   assert.equal(h.widgetComponents.size, 0);
@@ -4788,21 +4793,21 @@ async function footerSetup(foreignEditor = false, selectorAtStartup = false) {
   const pi = { on(name: string, fn: Function) { handlers.set(name, [...(handlers.get(name) ?? []), fn]); return () => {}; },
     registerFlag() {}, getFlag() {}, getThinkingLevel: () => "off", getSettings: () => ({ compaction: { enabled: auto } }),
     registerCommand(name: string, options: { handler: Function }) { if (name === "tidy-ui") command = options.handler; } };
-  const ctx = { mode: "tui", cwd: "/footer-probe", ui: { ...host.createExtensionUIContext(), notify() {} }, model, sessionManager: manager,
+  const ctx = { mode: "tui", hasUI: true, cwd: "/footer-probe", ui: { ...host.createExtensionUIContext(), notify() {} }, model, sessionManager: manager,
     modelRegistry: { isUsingOAuth: () => { authReads++; return subscription; }, getProvider: () => { authReads++; return { auth: { oauth: { isSubscription: true } } }; } },
     getContextUsage: readContext, isIdle: () => true };
-  const emit = (name: string, event: unknown = {}) => { for (const fn of handlers.get(name) ?? []) fn(event, ctx); };
+  const emit = (name: string, event: unknown = {}) => Promise.all((handlers.get(name) ?? []).map(fn => fn(event, ctx)));
   const append = (input = 11000000, output = 1500000, cacheRead = 243000000, cacheWrite = 0, cost = 61.761) => manager.appendMessage({
     role: "assistant", content: [{ type: "text", text: "FOOTER_USAGE" }], api: "openai-responses", provider: model.provider,
     model: model.id, timestamp: 1, stopReason: "stop", usage: { input, output, cacheRead, cacheWrite, totalTokens: input + output + cacheRead + cacheWrite,
       cost: { input: cost, output: 0, cacheRead: 0, cacheWrite: 0, total: cost } } });
   if (foreignEditor) ctx.ui.setEditorComponent(footerForeignEditor);
   if (selectorAtStartup) { input.clear(); input.addChild(new Text("NATIVE_RELOAD_BOX", 0, 0)); }
-  append(); tidyUi(pi as unknown as ExtensionAPI, { logging: false, syntax: fixtureSyntaxOptions }); emit("session_start");
+  append(); tidyUi(pi as unknown as ExtensionAPI, { logging: false, settings: fixtureSyntaxOptions().settings, syntax: fixtureSyntaxOptions }); await emit('session_start');
   return { root, host, footer, native, ctx, manager, statuses, append, emit, editor, input,
     render: (width = 140) => footer.children[0]!.render(width), counts: () => ({ scans, contextReads }), authReads: () => authReads,
     context(value: typeof context) { context = value; }, auto(value: boolean) { auto = value; }, subscription(value: boolean) { subscription = value; },
-    control: (action: string) => command!(action, ctx), close: () => emit("session_shutdown") };
+    control: (action: string) => setAppearance(command! as any, ctx as unknown as ExtensionContext, action === 'on'), close: () => emit("session_shutdown") };
 }
 
 test("footer uses structured native usage with requested ordering and no cwd/model", async () => {
@@ -5426,7 +5431,7 @@ test("terminal appearance SDK contract preserves native methods and flags, follo
   assert.equal(terminalAppearanceTracking(new Proxy({}, { get() { throw new Error("future host"); } })), undefined);
 });
 
-test("terminal defaults extension commands honor local/master lifetime without saving settings or stacking exit listeners", async () => {
+test("terminal defaults menu honors local/master lifetime without stacking exit listeners", async () => {
   const h = extensionHarness(), fixture = terminalColorFixture();
   const directory = mkdtempSync(join(tmpdir(), "tidy-ui-colors-")), path = join(directory, "theme.json");
   writeFileSync(path, '{"colors":{"text":"#eeeeee"},"export":{"pageBg":"#123456"}}');
@@ -5435,11 +5440,14 @@ test("terminal defaults extension commands honor local/master lifetime without s
   Object.assign(h.root, { terminal: { write(data: string) { fixture.packets.push(data); } } });
   const listeners = process.listenerCount("exit"), nativeToolRender = Tool.prototype.render;
   try {
-    h.events.get("session_start")!({}, h.ctx); await terminalMicrotasks();
+    await h.events.get("session_start")!({}, h.ctx); await terminalMicrotasks();
     assert.equal(fixture.packets.length, 1); assert.equal(process.listenerCount("exit"), listeners + 1);
-    h.events.get("session_start")!({}, h.ctx); await terminalMicrotasks();
+    await h.events.get("session_start")!({}, h.ctx); await terminalMicrotasks();
     assert.equal(fixture.packets.length, 1); assert.equal(process.listenerCount("exit"), listeners + 1);
-    const control = (command: string) => h.commands.get("tidy-ui")!.handler(command, h.ctx);
+    const command = h.commands.get('tidy-ui')!.handler;
+    const control = (operation: string) => operation === 'colors on' || operation === 'colors off'
+      ? setColors(command, h.ctx, operation === 'colors on') : operation === 'on' || operation === 'off'
+      ? setAppearance(command, h.ctx, operation === 'on') : command(operation, h.ctx);
     await control("colors off"); assert.equal(fixture.packets.at(-1), "\x1b]111\x07\x1b]110\x07");
     assert.equal(process.listenerCount("exit"), listeners); assert.notEqual(Tool.prototype.render, nativeToolRender);
     await control("off"); await control("on"); await terminalMicrotasks(); assert.equal(fixture.packets.length, 2, "master on preserves the local off choice");
@@ -5447,7 +5455,7 @@ test("terminal defaults extension commands honor local/master lifetime without s
     h.root.terminalColorSchemeNotificationsEnabled = true;
     const observer = h.widgetComponents.get("pi-tidy-ui-terminal-colors")!;
     observer.render(80); assert.equal(fixture.packets.length, 4); assert.equal(fixture.packets.at(-1), "\x1b]111\x07\x1b]110\x07");
-    await control("colors status"); assert.match(h.notices.at(-1)!, /automatic/u);
+    assert.match(await menuPage(command, h.ctx, ['Status & troubleshooting']), /automatic/u);
     await control("colors invalid"); assert.match(h.notices.at(-1)!, /Usage/u);
     assert.deepEqual(observer.render(80), []);
   } finally { h.events.get("session_shutdown")!({}, h.ctx); fixture.view.dispose(); rmSync(directory, { recursive: true, force: true }); }
@@ -5531,3 +5539,18 @@ test('Git diagnostics: expected absent reftable is quiet while refresh and watch
     assert.equal(gitDiagnostics().watchers, before.watchers + 2); assert.equal(source.branch(cwd), 'first');
   } finally { source.dispose(); rmSync(cwd, { recursive: true, force: true }); }
 });
+
+function cacheMenuStats(text: string) {
+  const byKind = Object.fromEntries(LAYOUT_KINDS.map(kind => {
+    const json = text.split('\n').find(row => row.startsWith(`${kind}: `))?.slice(kind.length + 2);
+    assert.ok(json, `missing ${kind} visible cache detail`); return [kind, JSON.parse(json)];
+  }));
+  const footer = JSON.parse(text.split('\n').find(row => row.startsWith('Footer: '))!.slice(8));
+  const presentationEntries = Number(/Saved layouts: (\d+)/u.exec(text)![1]);
+  const presentationRetainedBytes = Number(/Estimated retained memory: (\d+)/u.exec(text)![1]);
+  return { byKind, entries: presentationEntries - footer.entries, retainedBytes: presentationRetainedBytes - footer.retainedBytes,
+    stringBytes: Object.values(byKind).reduce((sum, value) => sum + value.stringBytes, 0),
+    overheadBytes: Object.values(byKind).reduce((sum, value) => sum + value.overheadBytes, 0),
+    presentationRetainedBytes, footerLayout: footer, processHeapUsedBytes: Number(/Whole Pi process heap: (\d+)/u.exec(text)![1]),
+    ordinary: { entries: byKind.summary.entries }, cards: { entries: byKind.bash.entries + byKind.edit.entries + byKind.write.entries } };
+}

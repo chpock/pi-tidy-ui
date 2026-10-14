@@ -51,7 +51,7 @@ Pi loads the TypeScript source directly. No build, fork, copying into `~/.pi`, o
 - Ctrl+O remains Pi's global expansion control. In fullscreen mode, completed summaries/edit/write panels expand on click and expandable Bash panels toggle; exterior margins/separators are not targets. Card clicks do not interrupt active selection. Regular mode uses terminal-owned mouse handling, so use Ctrl+O there.
 - One public session footer shows a ten-report cache-use gauge and the latest CH percentage first, followed by current context usage, then right-aligned extension statuses. It highlights disabled native auto-compaction rather than annotating the normal enabled state. Each complete status, including our statistics, stays on one row; whole producer statuses move to later rows when needed, and a status wider than a full row is ellipsized. Cumulative counters/cost remain implemented behind disabled source flags. See [reading the footer](#reading-the-footer) and the [footer contract](docs/footer-spec.md).
 - Fixed file-backed themes can set terminal defaults from `export.pageBg` and `colors.text`, including variable chains and native color formats. Missing/empty values release only our channels; source errors retain the last valid complete targets. Auto/system modes suspend application and release defaults before Pi queries its profile. A zero-row observer follows native theme/hot-reload updates without polling. RGB calculations use a local concrete projection rather than modifying Pi's Theme. See the [terminal-color contract](docs/terminal-colors-spec.md).
-- Bash commands and edit/write sources can use asynchronous Occipital syntax classification outside rendering. `/tidy-ui syntax` selects Pi palette or an independent daemon theme, reloads its catalogue, shows service status and enables/disables native highlighting for this session. Only the theme preference is saved. Without native availability, Bash retains whole-command title coloring and files retain cached Pi highlighting. Source version `0.0.0` uses only `occipital` (`occipital.exe`) beside the extension; a missing local build produces a `[pi-tidy-ui]` warning and fallback, never a shared/downloaded engine. Published packages fix exact native optional dependencies and SHA-256 download metadata during release preparation. They prefer a compatible user-managed shared service; otherwise they use the verified installed/cache/download payload (GNU Linux requires glibc 2.28+). Rust and an external Subconscious installation are not required for published standalone use. See [delivery](docs/releases.md#extension-delivery). See the [syntax contract](docs/syntax-highlighting-spec.md).
+- Bash commands and edit/write sources can use asynchronous Occipital syntax classification outside rendering. `/tidy-ui` opens appearance settings, a code-theme picker and nested troubleshooting tools. The theme and all four switches are saved automatically. Without native availability, Bash retains whole-command title coloring and files retain cached Pi highlighting. Source version `0.0.0` uses only `occipital` (`occipital.exe`) beside the extension; a missing local build produces a `[pi-tidy-ui]` warning and fallback, never a shared/downloaded engine. Published packages fix exact native optional dependencies and SHA-256 download metadata during release preparation. They prefer a compatible user-managed shared service; otherwise they use the verified installed/cache/download payload (GNU Linux requires glibc 2.28+). Rust and an external Subconscious installation are not required for published standalone use. See [delivery](docs/releases.md#extension-delivery). See the [syntax contract](docs/syntax-highlighting-spec.md).
 - Colors otherwise follow the active Pi theme and layouts follow the actual viewport width. An explicitly selected independent syntax theme remains fixed across Pi-theme changes. Tool execution, model-facing results and saved session data are unchanged.
 
 Exact formatting, metadata, geometry and safeguards are defined in the [specifications](#documentation).
@@ -78,42 +78,35 @@ The three `FOOTER_FIELDS` source flags in `src/footer.ts` default to `false`: `t
 
 ### Controls
 
-```text
-/tidy-ui status
-/tidy-ui off
-/tidy-ui on
-/tidy-ui colors status
-/tidy-ui colors off
-/tidy-ui colors on
-/tidy-ui cache
-/tidy-ui cache clear
-/tidy-ui syntax
-/tidy-ui logs
-/tidy-ui logs snapshot
-/tidy-ui logs off
-/tidy-ui logs on
-```
+Run **`/tidy-ui`** to open a centered settings popup:
+
+- **Tidy UI appearance** — turn styling on or off.
+- **Code color theme** — choose Follow Pi or an independent code theme; type to search.
+- **Match terminal colors to Pi** — synchronize terminal defaults when Pi's theme permits it.
+- **Status & troubleshooting** — actual state, reapply controls, native highlighting, logs and display-cache tools.
+
+Arrow keys navigate; Enter selects; Escape goes back or closes. The first Enter opens the theme picker, not an on/off toggle. Appearance Off leaves the menu and logging usable. Old command arguments are no longer supported. See the [menu contract](docs/settings-menu-spec.md).
 
 Each transcript/queued-message component owns its latest prepared presentation through weak component state, much like Pi's `Text` retains its latest rendered rows. There is **no entry-count or byte-limit eviction**: an unchanged attached component reuses its rows regardless of transcript age or the size of other presentations. Width/Output-padding/theme and relevant state changes replace its previous layout, not accumulate variants. The execution spinner changes only its prefix, using Pi's existing document frames whenever available. One shared, unreferenced 100 ms timeout requests a fallback frame only after document visits fall silent; it stops when no compact calls are executing. See the [host-driven animation design](docs/architecture.md#host-driven-spinner-and-fallback).
 
 Removing a component/subtree through native `Container.removeChild` or `clear` releases its presentation immediately, even if another caller still holds the component. Otherwise component collection also releases its weakly owned layout. Accounting retains only weak references/numbers, with eventual finalizer cleanup and on-demand snapshots; it cannot keep components or rendered strings alive. Detached/replaced layouts do not accumulate.
 
-`/tidy-ui cache` reports:
+**Status & troubleshooting → Display cache** reports:
 - Transcript/queued totals and `byKind` breakdown for `summary`, `bash`, `edit`, `write`, `user` and `queued`: retained-byte estimates, strings/overhead, saved entries and visual rows.
 - Queued-card rows include full preparation and up to five possible ellipsized endings per item; height-only changes select rows without rebuilding. They belong to `ordinary` and release with the native queued item, not with the persistent pending container.
 - The `ordinary` and `cards` accounting groups (not bounded pools), plus hits, misses, builds, releases and GC-only `collected` accounting cleanups.
 - `footerLayout` and combined `presentationRetainedBytes`, `presentationEntries` and `presentationRows`. The main editor retains no pi-tidy-ui row cache.
 - Whole-Pi `processHeapUsedBytes`, explicitly **not** pi-tidy-ui attribution.
 
-`/tidy-ui cache clear` releases transcript, queued-message and footer layouts; the next requested frame rebuilds them on demand. The former `cache limit` commands warn without changing retention. Legacy `--tidy-ui-cache-mb` / `--tidy-ui-card-cache-mb` flags are recognized only to warn that they are ignored, preserving launch compatibility without silently reintroducing limits. These commands write no settings.
+**Clear saved layouts** releases transcript, queued-message and footer layouts; the next requested frame rebuilds them on demand. The displayed receipt records the completed clear before that repaint. Legacy `--tidy-ui-cache-mb` / `--tidy-ui-card-cache-mb` flags are recognized only to warn that they are ignored, preserving launch compatibility without silently reintroducing limits. Cache actions write no settings.
 
 Estimates are not exact V8 heap measurements: native caches, raw/signature data and transient rendering are excluded, and strings may be shared. Memory necessarily grows with the current **live retained transcript and queue**, but no detached-owner or width/state history is intentionally retained. No fixed total-process memory bound is claimed. See the [cache contract](docs/render-cache-spec.md).
 
-`/tidy-ui colors off` stops terminal-default application and theme reads without disabling cards. Remaining presentation can make a one-shot profile RGB query after releasing colors. On retries the current source; global on respects local off. Reload enables the feature again. Releases restore terminal **profile defaults**, not another application's prior dynamic override. Disable the old standalone `theme-background` extension manually: concurrent default-color writers are unsupported.
+Turning **Match terminal colors to Pi** off stops terminal-default application and theme reads without disabling cards. Remaining presentation can make a one-shot profile RGB query after releasing colors. **Reapply terminal colors** retries the current enabled preference; appearance On respects the local switch. Reload restores the saved preference. Releases restore terminal **profile defaults**, not another application's prior dynamic override. Disable the old standalone `theme-background` extension manually: concurrent default-color writers are unsupported.
 
-Diagnostic capture is on by default, including while presentation is off. `/tidy-ui logs` shows private human-readable journal paths and counters; `logs snapshot` records existing state without rendering. Capture can be stopped or explicitly retried with `logs off/on`. No conversation, command or source bodies are logged. See [diagnostic journals](docs/debug-logging-spec.md) for batching, cleanup and accepted loss limits.
+Diagnostic capture is on by default, including while presentation is off. **Status & troubleshooting → Diagnostic logs** shows private human-readable journal paths and counters; **Write state snapshot** records existing state without rendering. **Record diagnostic logs** controls capture; **Retry recording** explicitly retries a failed writer. No conversation, command or source bodies are logged. See [diagnostic journals](docs/debug-logging-spec.md) for batching, cleanup and accepted loss limits.
 
-Controls apply to the current extension runtime only. Disabling restores the original presentation methods, including the editor, without transferring its draft; re-enabling covers existing and future components. Reload creates a fresh enabled runtime.
+The code theme, appearance, terminal-color matching, native highlighting and log-recording switches are saved in `getAgentDir()/extensions/pi-tidy-ui/config.json` (normally `~/.pi/agent/extensions/pi-tidy-ui/config.json`). They restore before activation on reload and future launches. Missing switches default to On; old theme-only files remain valid. Changes apply immediately; a failed save is reported without undoing the live choice. Disabling appearance restores original presentation methods, including the editor, without transferring its draft; re-enabling covers existing and future components.
 
 Use exact, case-sensitive tool names to customize the presentation for one invocation:
 

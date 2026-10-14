@@ -488,3 +488,40 @@ test("settings cancellation: a rename already requested by a live owner is the c
   assert.deepEqual(await save, { ok: true }); assert.equal(publications, 1);
   assert.deepEqual(await store.load(), { ok: true, syntaxTheme: theme('committed') }); await noTemporaryFiles(file);
 });
+
+const switchKeys = ['appearanceEnabled', 'terminalColorsEnabled', 'nativeHighlightingEnabled', 'loggingEnabled'] as const;
+
+test('settings: all appearance and diagnostic switches persist together with theme and future fields', async t => {
+  const { store, file, seed } = await fixture(t);
+  await seed('{"future":{"keep":true},"syntaxTheme":{"kind":"occipital","id":"saved"}}');
+  const switches = Object.fromEntries(switchKeys.map(key => [key, false]));
+  assert.deepEqual(await store.update(switches), { ok: true });
+  assert.deepEqual(await new ExtensionSettings({ file }).load(), { ok: true, syntaxTheme: theme('saved'), ...switches });
+  await store.update({ terminalColorsEnabled: true });
+  await store.update({ syntaxTheme: pi });
+  assert.deepEqual(await new ExtensionSettings({ file }).load(), { ok: true, syntaxTheme: pi, ...switches, terminalColorsEnabled: true });
+  assert.deepEqual(JSON.parse(await fs.readFile(file, 'utf8')).future, { keep: true });
+  await noTemporaryFiles(file);
+});
+
+for (const key of switchKeys) test(`settings: ${key} rejects nonboolean file and patch values without rewriting`, async t => {
+  const { store, file, seed } = await fixture(t);
+  for (const value of [null, 0, 'false', [], {}]) {
+    const original = JSON.stringify({ [key]: value }); await seed(original);
+    safeFailure(await store.load(), 'invalid-switch');
+    assert.equal((await store.update({ syntaxTheme: pi })).ok, false);
+    assert.equal(await fs.readFile(file, 'utf8'), original);
+  }
+  await seed('{}');
+  safeFailure(await store.update({ [key]: 'false' } as any), 'invalid-patch');
+  assert.equal(await fs.readFile(file, 'utf8'), '{}');
+});
+
+test('settings: serialized mixed switch and theme patches preserve one another', async t => {
+  const { store, file } = await fixture(t);
+  const outcomes = await Promise.all([store.update({ appearanceEnabled: false }), store.update({ syntaxTheme: theme('mixed') }),
+    store.update({ loggingEnabled: false }), store.update({ terminalColorsEnabled: false, nativeHighlightingEnabled: false })]);
+  assert.ok(outcomes.every(result => result.ok));
+  assert.deepEqual(await new ExtensionSettings({ file }).load(), { ok: true, syntaxTheme: theme('mixed'),
+    appearanceEnabled: false, terminalColorsEnabled: false, nativeHighlightingEnabled: false, loggingEnabled: false });
+});
