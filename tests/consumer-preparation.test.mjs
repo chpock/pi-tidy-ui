@@ -1,14 +1,14 @@
 import './fixtures/test-guard.mjs';
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { access, mkdtemp, rm } from 'node:fs/promises';
+import { access, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { pathToFileURL } from 'node:url';
 import test from 'node:test';
 import { childEnv, readInputs } from '../scripts/test/context.mjs';
-import { prepareConsumerClosure, rewriteConsumerLock, seedConsumerLock } from './fixtures/consumer-preparation.mjs';
+import { prepareConsumerClosure, rewriteConsumerLock, seedConsumerLock, verifyConsumerReplay } from './fixtures/consumer-preparation.mjs';
 
 const run = promisify(execFile);
 
@@ -59,4 +59,24 @@ test('consumer seed uses exact prepared host lock identities and rejects missing
   assert.equal(lock.packages['node_modules/fixture'].resolved, entry.resolved); assert.equal(lock.name, 'source');
   assert.throws(() => seedConsumerLock(lock, [], manifest, 'http://127.0.0.1:4321'), /lock archive missing/);
   assert.throws(() => seedConsumerLock(lock, [{ ...records[0], integrity: 'changed' }], manifest, 'http://127.0.0.1:4321'), /integrity changed/);
+});
+
+
+test('consumer preparation replays both optional modes through clean ci without changing the locked graph', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'tidy-consumer-replay-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const path = join(root, 'package-lock.json'), lock = { lockfileVersion: 3, packages: { '': { name: 'fixture' }, 'node_modules/fixture': { version: '1.0.0' } } };
+  await writeFile(path, JSON.stringify(lock));
+  const requests = [], registry = 'http://127.0.0.1:4321';
+  const npm = async (args, url) => { requests.push({ args, url }); };
+  for (const installed of [true, false]) await verifyConsumerReplay(npm, root, installed, registry);
+  assert.deepEqual(requests, [true, false].map(installed => ({
+    args: ['ci', '--prefix', root, '--ignore-scripts', '--no-audit', '--no-fund', ...(installed ? [] : ['--omit=optional'])], url: registry,
+  })));
+  assert.deepEqual(JSON.parse(await readFile(path, 'utf8')), lock);
+  const failure = new Error('required ci metadata unavailable');
+  await assert.rejects(verifyConsumerReplay(async () => { throw failure; }, root, true, registry), error => error === failure);
+  await assert.rejects(verifyConsumerReplay(async () => {
+    await writeFile(path, JSON.stringify({ ...lock, packages: {} }));
+  }, root, true, registry), /preserve the frozen graph/);
 });

@@ -57,6 +57,12 @@ export function rewriteConsumerLock(lock, sourceRegistry, registryURL) {
   return projected;
 }
 
+export async function verifyConsumerReplay(npm, consumer, installed, registryURL) {
+  const lock = JSON.parse(await readFile(join(consumer, 'package-lock.json'), 'utf8'));
+  await npm(['ci', '--prefix', consumer, '--ignore-scripts', '--no-audit', '--no-fund', ...(installed ? [] : ['--omit=optional'])], registryURL);
+  assert.deepEqual(JSON.parse(await readFile(join(consumer, 'package-lock.json'), 'utf8')), lock, 'Clean consumer replay must preserve the frozen graph');
+}
+
 async function stageConsumerPackages(inputs, root, pack) {
   const native = validateNative(inputs), repo = inputs.pi.root, target = native.target;
   assert.ok(native.version !== '0.0.0', 'Consumer requires a version-stamped same-source helper');
@@ -179,7 +185,6 @@ export async function prepareConsumerClosure(inputs, { offline = false } = {}) {
         expectedLock = rewriteConsumerLock(JSON.parse(lockBytes.toString('utf8')), receipt.registryURL, registry.url);
         await writeFile(join(consumer, 'package.json'), manifestBytes);
         await writeFile(join(consumer, 'package-lock.json'), JSON.stringify(expectedLock));
-        await npm(['ci', '--prefix', consumer, '--ignore-scripts', '--no-audit', '--no-fund', ...(installed ? [] : ['--omit=optional'])], registry.url);
       } else {
         const bytes = await readFile(inputs.pi.lock);
         assert.equal(sha256(bytes), inputs.pi.lockSha256, 'Selected host lock changed');
@@ -190,6 +195,8 @@ export async function prepareConsumerClosure(inputs, { offline = false } = {}) {
         await writeFile(join(consumer, 'package-lock.json'), JSON.stringify(seeded));
         await npm(['install', '--prefix', consumer, '--ignore-scripts', '--no-audit', '--no-fund', ...(installed ? [] : ['--omit=optional'])], registry.url);
       }
+      // A fresh ci can request metadata that install did not need; record it before freezing.
+      await verifyConsumerReplay(npm, consumer, installed, registry.url);
       registry.assertNoRejectedRequests();
       const lockBytes = await readFile(join(consumer, 'package-lock.json')), manifestBytes = await readFile(join(consumer, 'package.json'));
       const lock = JSON.parse(lockBytes.toString('utf8'));

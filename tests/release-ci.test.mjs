@@ -704,3 +704,39 @@ test('actual CI diagnostics retention follows neutral descriptors and excludes r
   assert.deepEqual(await readdir(join(root,'terminal-captures')),['terminal-syntax']);
   assert.equal(await readFile(join(root,'terminal-captures/terminal-syntax/capture.txt'),'utf8'),'physical capture');
 });
+
+
+test('CI MSVC discovery passes quoted batch paths verbatim and retains only declared build variables', { skip: process.platform === 'win32' }, async t => {
+  const inputs = readInputs(), root = await mkdtemp(join(process.env.TIDY_TEST_ROOT, 'tidy-msvc-command-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  await mkdir(join(root, 'native-environment'));
+  const log = join(root, 'calls.json'), hook = join(root, 'discovery-probe.mjs');
+  await writeFile(hook, `import child from 'node:child_process';
+import {writeFileSync} from 'node:fs';
+import {syncBuiltinESMExports} from 'node:module';
+const calls=[];
+child.execFileSync=(command,args,options)=>{
+ calls.push({command,args,options});writeFileSync(${JSON.stringify(log)},JSON.stringify(calls));
+ if(command.endsWith('vswhere.exe')) return 'C:\\\\Provisioned Tools\\\\Visual Studio\\r\\n';
+ return 'VCToolsInstallDir=C:\\\\VC\\r\\nWindowsSdkDir=C:\\\\SDK\\r\\nWindowsSDKVersion=10.0.0\\\\\\r\\nINCLUDE=declared-include\\r\\nLIB=declared-lib\\r\\nLIBPATH=declared-libpath\\r\\nPATH=ambient-path-poison\\r\\nNODE_OPTIONS=ambient-startup-poison\\r\\n';
+};
+syncBuiltinESMExports();
+`);
+  const workflow = await readFile(join(repo, '.github/workflows/occipital.yml'), 'utf8');
+  const script = shellStep(workflowStep(workflow, 'Prepare explicit build-only MSVC context'));
+  for (const [RUST_TARGET, cpu] of [['x86_64-pc-windows-msvc', 'x64'], ['aarch64-pc-windows-msvc', 'x64_arm64']]) {
+    execFileSync(toolPath('bash'), ['-e', '-o', 'pipefail', '-c', script], {
+      cwd: repo, env: childEnv(join(root, 'caller'), { RUNNER_TEMP: root, RUST_ROOT: join(root, 'rust'), RUST_TARGET, NODE_OPTIONS: `--import=${hook}` }, inputs), stdio: 'pipe',
+    });
+    const calls = JSON.parse(await readFile(log, 'utf8'));
+    assert.equal(calls.length, 2);
+    assert.equal(calls[1].options.windowsVerbatimArguments, true, 'cmd.exe needs its quoted command string without Node argv escaping');
+    assert.deepEqual(calls[1].args.slice(0, 3), ['/d', '/s', '/c']);
+    assert.ok(calls[1].args[3].startsWith('""C:\\Provisioned Tools\\Visual Studio'));
+    assert.ok(calls[1].args[3].endsWith(`" ${cpu} >nul && set"`));
+    const environment = JSON.parse(await readFile(join(root, 'native-environment/msvc.json'), 'utf8'));
+    assert.deepEqual(Object.keys(environment).sort(), ['INCLUDE', 'LIB', 'LIBPATH', 'PATH']);
+    assert.equal(environment.INCLUDE, 'declared-include'); assert.equal(environment.LIB, 'declared-lib');
+    assert.equal(environment.PATH.includes('ambient-path-poison'), false);
+  }
+});

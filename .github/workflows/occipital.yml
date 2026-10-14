@@ -167,7 +167,7 @@ jobs:
           const vswhere = 'C:\\Program Files (x86)\\Microsoft Visual Studio\\Installer\\vswhere.exe';
           const installation = execFileSync(vswhere, ['-latest', '-products', '*', '-requires', 'Microsoft.VisualStudio.Component.VC.Tools.x86.x64', '-property', 'installationPath'], {encoding:'utf8'}).trim();
           const cpu = process.env.RUST_TARGET.startsWith('aarch64-') ? 'arm64' : 'x64';
-          const output = execFileSync(join(system, 'System32/cmd.exe'), ['/d', '/s', '/c', `""${join(installation, 'VC/Auxiliary/Build/vcvarsall.bat')}" ${cpu === 'arm64' ? 'x64_arm64' : 'x64'} >nul && set"`], {encoding:'utf8'});
+          const output = execFileSync(join(system, 'System32/cmd.exe'), ['/d', '/s', '/c', `""${join(installation, 'VC/Auxiliary/Build/vcvarsall.bat')}" ${cpu === 'arm64' ? 'x64_arm64' : 'x64'} >nul && set"`], {encoding:'utf8', windowsVerbatimArguments:true});
           const vars = Object.fromEntries(output.split(/\r?\n/).filter(row=>row.includes('=')).map(row=>[row.slice(0,row.indexOf('=')),row.slice(row.indexOf('=')+1)]));
           const environment = {PATH: [join(vars.VCToolsInstallDir, 'bin/Hostx64', cpu), join(vars.WindowsSdkDir, 'bin', vars.WindowsSDKVersion.replace(/[\\/]+$/, ''), 'x64'), join(system,'System32'), 'C:\\Program Files\\Git\\usr\\bin', join(process.env.RUST_ROOT,'bin')].join(';'), INCLUDE:vars.INCLUDE, LIB:vars.LIB, LIBPATH:vars.LIBPATH};
           if (Object.values(environment).some(value=>!value)) throw new Error('Incomplete provisioned MSVC environment');
