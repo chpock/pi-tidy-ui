@@ -481,3 +481,37 @@ test('preparation records canonical runtime and dependency paths when the reques
   assert.equal(dirname(inputs.runRoot), realpathSync(f.runParent), 'canonicalization must not relocate the requested runtime parent');
   assert.equal(inputs.pi.root, realpathSync(inputs.pi.root));
 });
+
+test('archive preparation reads real root manifests from LF and CRLF tar listings without accepting nested manifests', { skip: process.platform === 'win32' }, t => {
+  const original = readInputs();
+  for (const format of ['lf', 'crlf', 'nested-crlf']) {
+    const f = preparationFixture(t), staging = join(f.root, 'staging');
+    const member = format === 'nested-crlf' ? 'package/nested' : 'package';
+    mkdirSync(join(staging, member), { recursive: true });
+    const manifest = { name: 'tidy-archive-fixture', version: '1.0.0' };
+    writeFileSync(join(staging, member, 'package.json'), JSON.stringify(manifest));
+    const archive = join(f.root, 'fixture.tgz'), environment = childEnv(join(f.root, 'packing'), {}, original);
+    execFileSync(original.tools.tar, ['-czf', archive, '-C', staging, 'package'], { env: environment });
+    const bytes = readFileSync(archive), integrity = 'sha512-' + createHash('sha512').update(bytes).digest('base64');
+    const resolved = 'https://registry.npmjs.org/tidy-archive-fixture/-/tidy-archive-fixture-1.0.0.tgz';
+    writeFileSync(join(f.checkout, 'package-lock.json'), JSON.stringify({ packages: { 'node_modules/tidy-archive-fixture': { resolved, integrity } } }));
+    const archiveDirectory = join(f.output, 'archives'); mkdirSync(archiveDirectory, { recursive: true });
+    writeFileSync(join(archiveDirectory, createHash('sha256').update(resolved + '\0' + integrity).digest('hex') + '.tgz'), bytes);
+    const tar = join(f.root, 'tar-wrapper'), script = tar + '.mjs';
+    writeFileSync(script, `import {execFileSync} from 'node:child_process';\nconst args = process.argv.slice(2), bytes = execFileSync(${JSON.stringify(original.tools.tar)}, args);\nprocess.stdout.write(args[0] === '-tzf' && ${JSON.stringify(format)} !== 'lf' ? bytes.toString().replace(/\\r?\\n/g, '\\r\\n') : bytes);\n`);
+    const quote = value => "'" + value.replaceAll("'", "'\\''") + "'";
+    writeFileSync(tar, `#!/bin/sh\nexec ${quote(original.node.path)} ${quote(script)} "$@"\n`, { mode: 0o755 });
+    const toolsPath = join(f.root, 'tools.json'), tools = JSON.parse(readFileSync(toolsPath));
+    writeFileSync(toolsPath, JSON.stringify({ ...tools, tar }));
+    const result = f.invoke(['--archives']);
+    if (format === 'nested-crlf') {
+      assert.notEqual(result.status, 0);
+      assert.match(result.stderr, /Prepared npm archive lacks a root package\.json/);
+    } else {
+      assert.equal(result.status, 0, format + '\n' + result.stderr);
+      const registry = JSON.parse(readFileSync(join(f.output, 'registry.json')));
+      assert.equal(registry.packages.length, 1);
+      assert.deepEqual(registry.packages[0].manifest, manifest);
+    }
+  }
+});

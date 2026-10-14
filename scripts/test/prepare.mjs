@@ -102,7 +102,7 @@ async function archiveGraph(inputs, dependencies, offline = false) {
     const [algorithm, expected] = entry.integrity.split('-');
     if (!['sha512', 'sha256', 'sha1'].includes(algorithm) || createHash(algorithm).update(readFileSync(path)).digest('base64') !== expected) throw new Error('Prepared npm archive integrity mismatch');
     const options = { env: childEnv(join(inputs.preparation, 'environment'), {}, inputs), maxBuffer: 16 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'] };
-    const members = execFileSync(inputs.tools.tar, ['-tzf', path], options).toString().split('\n');
+    const members = execFileSync(inputs.tools.tar, ['-tzf', path], options).toString().split(/\r?\n/);
     const manifestPath = members.find(name => /^(?:\.\/)?[^/]+\/package\.json$/.test(name));
     if (!manifestPath) throw new Error('Prepared npm archive lacks a root package.json');
     const manifest = JSON.parse(execFileSync(inputs.tools.tar, ['-xOzf', path, manifestPath], options).toString());
