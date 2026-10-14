@@ -4617,8 +4617,14 @@ test('footer session name fills spare columns without repacking statuses and res
       assert.deepEqual(live.events().filter(e => trafficKinds.includes(e.type)), native.events().filter(e => trafficKinds.includes(e.type)));
       assert.equal(live.events().filter(e => e.type === 'call').length, 1);
       assert.equal(live.events().filter(e => e.type === 'result').length, 1);
+      await live.command('/resume');
+      assert.ok(live.screen().some(row => /› .*run future/u.test(row)), 'actual native resume picker uses the first user message without an explicit name');
+      live.captureScreen('native-resume-first-message', {});
+      live.send('\x1b'); await live.settle();
       let empty = await footerObserve(live, 'empty'); footerPhysical(empty);
-      const stats = plain(empty.rows[0]), statsWidth = visibleWidth(stats);
+      const fallback = ' • run future';
+      assert.ok(plain(empty.rows[0]).endsWith(fallback), 'default footer label matches the real native resume picker');
+      const stats = plain(empty.rows[0]).slice(0, -fallback.length), statsWidth = visibleWidth(stats);
       const changed = await footerObserve(live, 'named', { action: 'name', sessionName: 'SESSION' });
       assert.equal(plain(changed.rows[0]), stats + ' • SESSION'); footerPhysical(changed);
       for (const key of ['scans', 'contextReads', 'aggregations', 'entries']) assert.equal(changed.counters[key], empty.counters[key], 'rename updates no usage/context work');
@@ -4696,7 +4702,25 @@ test('footer session name fills spare columns without repacking statuses and res
       assert.deepEqual(resumed.rows, saved.rows);
       assert.deepEqual(readFileSync(saved.session), bytes);
       assert.equal(replay.events().filter(e => trafficKinds.includes(e.type)).length, 0, 'replay executes zero tools/results/model requests');
-      observations.push({ mode, renameBefore: empty.counters, renameAfter: changed.counters, warm: warm.counters, replay: resumed.counters });
+      const beforeClear = await footerObserve(live, 'before-fallback-clear');
+      const fallbackSaved = await footerObserve(live, 'fallback-clear', { action: 'name', sessionName: '' });
+      assert.equal(plain(fallbackSaved.rows[0]), stats + fallback); footerPhysical(fallbackSaved);
+      for (const key of ['scans', 'contextReads', 'aggregations', 'entries', 'titleLookups', 'titleEntries']) assert.equal(fallbackSaved.counters[key], beforeClear.counters[key], 'clearing uses cached first-message title, not another history/context scan');
+      const fallbackBytes = readFileSync(fallbackSaved.session);
+      starts = live.events().filter(event => event.type === 'start').length;
+      await live.command('/reload'); await live.event('start', starts + 1); await live.settle();
+      const fallbackReloaded = await footerObserve(live, 'fallback-reloaded'); footerPhysical(fallbackReloaded);
+      assert.deepEqual(fallbackReloaded.rows, fallbackSaved.rows);
+      assert.deepEqual(readFileSync(fallbackSaved.session), fallbackBytes);
+      const fallbackReplay = new PiTerminal(`footer-fallback-replay-${mode}`, { ...options, extraEnv: { ...options.extraEnv, TIDY_UI_TEST_FOOTER_PRESENTATION: '1' }, session: fallbackSaved.session, workspace: live.work });
+      terminals.push(fallbackReplay); await fallbackReplay.ready();
+      const fallbackResumed = await footerObserve(fallbackReplay, 'restored-fallback'); footerPhysical(fallbackResumed);
+      assert.deepEqual(fallbackResumed.rows, fallbackSaved.rows);
+      const fallbackWarm = await footerObserve(fallbackReplay, 'fallback-warm');
+      for (let i = 0; i < 4; i++) assert.deepEqual((await footerObserve(fallbackReplay, `fallback-warm-${i}`)).counters, fallbackWarm.counters);
+      assert.deepEqual(readFileSync(fallbackSaved.session), fallbackBytes);
+      assert.equal(fallbackReplay.events().filter(e => trafficKinds.includes(e.type)).length, 0, 'default-title replay executes no tools/results/model requests');
+      observations.push({ mode, renameBefore: empty.counters, renameAfter: changed.counters, warm: warm.counters, replay: resumed.counters, clearBefore: beforeClear.counters, fallback: fallbackSaved.counters, fallbackReplay: fallbackResumed.counters, fallbackWarm: fallbackWarm.counters });
     }
     writeFileSync(join(artifacts, 'footer-name-counters.json'), JSON.stringify(observations, null, 2));
   } finally { for (const terminal of terminals) { await terminal.close(); terminal.dispose(); } }
@@ -4725,7 +4749,7 @@ test('footer cache history tracks every real request including equal CH, cold ze
     assert.ok(text.startsWith(value.text), 'ten saved reports and latest CH precede current context');
     const suffix = text.slice(value.text.length);
     if (dump.context) assert.match(suffix, /^ • (?:\d+(?:\.\d+)?[kM]|\?)\/\d+(?:\.\d+)?[kM]/u, 'context follows the cache block');
-    else assert.ok(suffix === '' || suffix === ' • (auto off)', 'no trailing separator without context or auto-off');
+    else assert.equal(suffix, ' • (no messages)', 'native no-message title is the only suffix before first traffic without context');
     assert.equal(dump.rows.length, 1, 'statistics is one status, never internally wrapped');
     const x = text.indexOf('['), refs = Object.fromEntries(await Promise.all(Object.entries(dump.styles).map(async ([role, style]) => [role, await referenceCell(style)])));
     for (let i = 0; i < 10; i++) {
@@ -4762,7 +4786,9 @@ test('footer cache history tracks every real request including equal CH, cold ze
       for (const width of [24, 60, 100]) {
         await live.resize(width); const narrow = await footerObserve(live, `history-width-${width}`); footerPhysical(narrow);
         assert.equal(narrow.rows.length, 1, 'our complete status is never internally wrapped');
-        const text = plain(narrow.rows[0]); assert.equal(text.endsWith('…'), width === 24);
+        const text = plain(narrow.rows[0]);
+        if (width === 24) assert.ok(text.endsWith('…'), 'statistics tail is clipped at narrow width');
+        else assert.match(text, / • \d+(?:\.\d+)?[kM]\/\d+(?:\.\d+)?[kM] \([\d.]+%\)/u, 'statistics context remains complete even when the optional title is clipped');
         assert.ok(text.startsWith(cachePrefix), 'narrow clipping keeps the full cache block from the preceding saved-report snapshot before the context tail');
       }
       await live.appearance(false); await live.appearance(true); dump = await footerObserve(live, 'history-on', 'accounting');

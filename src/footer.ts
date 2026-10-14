@@ -26,7 +26,7 @@ export interface FooterData {
   sessionName?: string;
 }
 interface FooterTheme { fg(color: ThemeColor, text: string): string }
-const counters = { aggregations: 0, entries: 0, layouts: 0 };
+const counters = { aggregations: 0, entries: 0, layouts: 0, titleLookups: 0, titleEntries: 0 };
 /** Numeric test observations only; never retains a session/component. */
 export const footerDiagnostics = () => ({ ...counters });
 
@@ -35,6 +35,19 @@ function cacheRate(usage: Pick<FooterUsage, "input" | "cacheRead" | "cacheWrite"
   if (!usage || ![usage.input, usage.cacheRead, usage.cacheWrite].every(n => Number.isFinite(n) && n >= 0)) return undefined;
   const prompt = usage.input + usage.cacheRead + usage.cacheWrite;
   return prompt > 0 && Number.isFinite(prompt) ? usage.cacheRead / prompt * 100 : undefined;
+}
+
+/** Match /resume's first nonempty raw user text, including abandoned branches. */
+export function footerFirstMessage(entries: readonly SessionEntry[]): string | undefined {
+  counters.titleLookups++;
+  for (const entry of entries) {
+    counters.titleEntries++;
+    if (entry.type !== "message" || entry.message.role !== "user") continue;
+    const content = entry.message.content;
+    const text = typeof content === "string" ? content : content.filter(block => block.type === "text").map(block => block.text).join(" ");
+    if (text) return text;
+  }
+  return undefined;
 }
 
 /** Match native cumulative accounting; retain ten primary reports, not ten distinct percentages. */

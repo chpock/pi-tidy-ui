@@ -17,7 +17,7 @@ import { EDITOR_TOP, EDITOR_BOTTOM, renderEditorCard, type EditorLayout } from "
 import { cardGeometry, insidePanel } from "./card-frame.ts";
 import { renderEditorStatus, type EditorStatusInfo } from "./editor-status.ts";
 import { GitBranchSource, gitDiagnostics } from "./git-branch.ts";
-import { FOOTER_FIELDS, FooterView, footerUsage, type FooterData } from "./footer.ts";
+import { FOOTER_FIELDS, FooterView, footerFirstMessage, footerUsage, type FooterData } from "./footer.ts";
 import { TerminalColors, terminalColorExit } from "./terminal-colors.ts";
 import type { CardTheme } from "./card-theme.ts";
 import { RenderCache, LAYOUT_KINDS, MEMORY_FIELDS, type LayoutKind, type LayoutMemory, type CacheEntry, type CacheStats } from "./render-cache.ts";
@@ -1523,11 +1523,13 @@ export default function tidyUi(pi: ExtensionAPI, options: TidyUiRuntimeOptions =
     ctx.ui.setFooter((_tui, _theme, data) => {
       footerRender = new WeakRef(_tui);
       let snapshot: FooterData | undefined;
+      let firstMessage: string | undefined;
       let stamp: { epoch: number; session: string; leaf: string | null; model: ExtensionContext["model"] } | undefined;
       const view = new FooterView(() => {
         const current = liveContext!;
         const manager = current.sessionManager, session = manager.getSessionId(), leaf = manager.getLeafId(), model = current.model;
         if (footerName?.session !== session) footerName = { session, value: manager.getSessionName() };
+        if (stamp?.session !== session) firstMessage = undefined;
         if (stamp?.session === session && stamp.leaf !== leaf) {
           // Metadata-only appends move the leaf but do not change usage/context.
           let entry = manager.getLeafEntry();
@@ -1536,21 +1538,25 @@ export default function tidyUi(pi: ExtensionAPI, options: TidyUiRuntimeOptions =
             entry = entry.parentId ? manager.getEntry(entry.parentId) : undefined;
           }
         }
-        const sessionName = footerName.value;
         const auto = pi.getSettings().compaction?.enabled ?? true;
         const subscription = FOOTER_FIELDS.cost && !!model && (model.provider === "kimi-coding" ||
           (current.modelRegistry.isUsingOAuth(model) && current.modelRegistry.getProvider(model.provider)?.auth.oauth?.isSubscription === true));
         if (!snapshot || !stamp || stamp.epoch !== footerEpoch || stamp.session !== session || stamp.leaf !== leaf || stamp.model !== model) {
-          snapshot = { usage: footerUsage(manager.getEntries()), context: current.getContextUsage(), auto, subscription, sessionName };
+          const entries = manager.getEntries();
+          firstMessage ??= footerFirstMessage(entries);
+          snapshot = { usage: footerUsage(entries), context: current.getContextUsage(), auto, subscription, sessionName: footerName.value ?? firstMessage ?? "(no messages)" };
           diagnose(diagnostic, "DEBUG", "footer", "Footer usage snapshot refreshed by existing semantic boundary", { epoch: footerEpoch, session, model: model?.name, provider: model?.provider, auto });
           stamp = { epoch: footerEpoch, session, leaf, model };
-        } else if (snapshot.auto !== auto || snapshot.subscription !== subscription || snapshot.sessionName !== sessionName)
-          snapshot = { ...snapshot, auto, subscription, sessionName };
+        } else {
+          const sessionName = footerName.value ?? firstMessage ?? "(no messages)";
+          if (snapshot.auto !== auto || snapshot.subscription !== subscription || snapshot.sessionName !== sessionName)
+            snapshot = { ...snapshot, auto, subscription, sessionName };
+        }
         return snapshot;
       }, () => data.getExtensionStatuses(), () => liveContext!.ui.theme, footerActive, diagnostic);
       ownedFooter = view;
       return Object.assign(view, { dispose() {
-        view.clear(); snapshot = undefined; stamp = undefined;
+        view.clear(); snapshot = undefined; stamp = undefined; firstMessage = undefined;
         diagnose(diagnostic, "INFO", "footer", "Public footer disposal observed; no replacement of a later owner");
         if (ownedFooter === view) { ownedFooter = undefined; footerRender = undefined; }
       } });

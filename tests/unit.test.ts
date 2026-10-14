@@ -4874,6 +4874,44 @@ test("footer warm frames avoid session scans and context reads across status wid
   } finally { f.close(); }
 });
 
+test("footer session title follows native resume fallback through first message rename clear and raw branches", async () => {
+  const { footerDiagnostics } = await import("../src/footer.ts");
+  const f = await footerSetup();
+  try {
+    f.statuses.clear();
+    const title = () => f.render().map(stripVTControlCharacters).join(" ");
+    assert.ok(title().endsWith(" • (no messages)"));
+    f.manager.appendMessage({ role: "user", content: [{ type: "image", data: "", mimeType: "image/png" }], timestamp: 1 });
+    await f.emit("message_end"); assert.ok(title().endsWith(" • (no messages)"));
+    f.manager.appendMessage({ role: "user", content: [{ type: "text", text: "First" }, { type: "image", data: "", mimeType: "image/png" }, { type: "text", text: "session message" }], timestamp: 2 });
+    await f.emit("message_end"); assert.ok(title().endsWith(" • First session message"));
+    const first = f.manager.getLeafId()!, found = footerDiagnostics();
+    f.manager.appendMessage({ role: "user", content: "A later message is not the title", timestamp: 3 });
+    await f.emit("message_end"); assert.ok(title().endsWith(" • First session message"));
+    assert.equal(footerDiagnostics().titleLookups, found.titleLookups, "first raw text is stable under later appends");
+    assert.equal(footerDiagnostics().titleEntries, found.titleEntries);
+    const before = f.counts(), names = f.nameReads();
+    f.manager.appendSessionInfo("Explicit title"); await f.emit("session_info_changed", { name: "Explicit title" });
+    assert.ok(title().endsWith(" • Explicit title"));
+    f.manager.appendSessionInfo(""); await f.emit("session_info_changed", { name: undefined });
+    assert.ok(title().endsWith(" • First session message"));
+    assert.deepEqual(f.counts(), before, "rename/clear uses cached fallback without rereading history/context");
+    assert.equal(f.nameReads(), names + 2);
+    const row = f.render(); for (let i = 0; i < 20; i++) assert.equal(f.render(), row);
+    f.render(80); f.statuses.set("extra", "EXTRA"); f.render(140); f.statuses.clear();
+    assert.deepEqual(f.counts(), before); assert.equal(f.nameReads(), names + 2);
+    assert.equal(footerDiagnostics().titleLookups, found.titleLookups);
+    assert.equal(footerDiagnostics().titleEntries, found.titleEntries);
+    f.manager.resetLeaf(); await f.emit("session_tree");
+    assert.ok(title().endsWith(" • First session message"), "resume uses first raw user text even outside current branch");
+    f.manager.createBranchedSession(first); await f.emit("session_start", { reason: "fork" });
+    assert.ok(title().endsWith(" • First session message"), "fork uses its retained file entries");
+    await f.control("off"); await f.control("on"); assert.ok(title().endsWith(" • First session message"));
+    await f.emit("session_start", { reason: "reload" }); assert.ok(title().endsWith(" • First session message"));
+    f.manager.newSession(); await f.emit("session_start", { reason: "new" }); assert.ok(title().endsWith(" • (no messages)"));
+  } finally { f.close(); }
+});
+
 test("footer session names refresh independently of usage and retain warm layouts", async () => {
   const { footerDiagnostics } = await import("../src/footer.ts");
   const f = await footerSetup();
