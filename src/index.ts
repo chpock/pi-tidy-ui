@@ -6,7 +6,7 @@ import { SessionLogging } from "./session-logging.ts";
 import { readableDiagnosticText, type JournalOptions } from "./debug-log.ts";
 import { diagnose, type DiagnosticFields, type DiagnosticSink } from "./diagnostics.ts";
 import { stripVTControlCharacters } from "node:util";
-import { renderBashCard } from "./bash-card.ts";
+import { renderBashCard, bashFailurePhase } from "./bash-card.ts";
 import { filePath, measureFileCard, renderFileCard, renderPreparedFileCard } from "./file-card.ts";
 import { renderUserCard } from "./user-card.ts";
 import { prepareQueuedCard, projectQueuedCards, type QueuedCard } from "./queued-card.ts";
@@ -46,7 +46,7 @@ interface ToolNode extends Component {
   isPartial: boolean;
   executionStarted: boolean;
   argsComplete: boolean;
-  result?: { content: { type: string; text?: string }[]; isError?: boolean; details?: unknown };
+  result?: { content: { type: string; text?: string }[]; isError?: boolean; details?: unknown; role?: unknown };
   markExecutionStarted(): void;
   updateArgs(args: unknown): void;
   updateResult(result: unknown, partial?: boolean): void;
@@ -100,6 +100,8 @@ export interface TidyUiOptions {
     /** Established cheap Pi palette generation, never color sampling or theme inference. */
     palette(): number;
     classify?: PiClassifier;
+    /** Public streaming-event identity; absent embedders conservatively treat formation errors as live. */
+    isLiveCall?(toolCallId: string): boolean;
   };
   cards?: readonly string[];
   compact?: readonly string[];
@@ -268,6 +270,18 @@ export function installTidyUi(tui: LiveTui, getTheme: () => Palette, options: Ti
     marks.set(area, { choice, width, rows, geometry });
     diagnose(options.diagnostic, "DEBUG", area, choice, { width, rows, ...fields });
   }
+  let lifecycleCallbacks = 0, lifecyclePhaseChanges = 0;
+  function nativePhase(node: ToolNode, operation: string): void {
+    lifecycleCallbacks++;
+    if (!options.diagnostic) return;
+    const phase = String(Number(node.isPartial) | Number(node.argsComplete) << 1 | Number(node.executionStarted) << 2
+      | Number(node.expanded) << 3 | Number(!!node.result) << 4 | Number(node.result?.isError === true) << 5);
+    if (decisions.get(node)?.get('tool-phase')?.geometry === phase) return;
+    lifecyclePhaseChanges++;
+    decision(node, 'tool-phase', 'Native tool phase changed; repeated same-phase callbacks counted only', 0, 0,
+      { call: node.toolCallId, tool: node.toolName, operation, partial: node.isPartial, complete: node.argsComplete,
+        executing: node.executionStarted, expanded: node.expanded, result: !!node.result, error: node.result?.isError === true }, phase);
+  }
   function toolDecision(node: ToolNode, choice: string, width: number, rows: number): void {
     if (options.diagnostic) decision(node, "tool", choice, width, rows, { call: node.toolCallId, tool: node.toolName,
       expanded: node.expanded, hidden: node.hideComponent, partial: node.isPartial, complete: node.argsComplete });
@@ -389,7 +403,7 @@ export function installTidyUi(tui: LiveTui, getTheme: () => Palette, options: Ti
   }>();
   const refresh = () => { tui.invalidate(); tui.requestRender(); };
   // Native argument identity only, not prepared/encoded source or a reader cache.
-  type SyntaxState = { revision: number; identity: unknown[]; palette: number; authorized: boolean };
+  type SyntaxState = { revision: number; identity: unknown[]; palette: number; authorized: boolean; live: boolean };
   let syntaxStates = new WeakMap<ToolNode, SyntaxState>();
   const syntax = options.syntax && new CardSources<ToolNode>(options.syntax.client, {
     diagnostic: options.diagnostic, identify: node => ({ call: node.toolCallId, tool: node.toolName }),
@@ -399,19 +413,29 @@ export function installTidyUi(tui: LiveTui, getTheme: () => Palette, options: Ti
     requestRender: () => { if (active) tui.requestRender(); },
   });
   const primitiveIdentity = (value: unknown) => value !== null && (typeof value === "object" || typeof value === "function") ? typeof value : value;
+  function liveBashSource(node: ToolNode): boolean {
+    return syntaxStates.get(node)?.live ?? options.syntax?.isLiveCall?.(node.toolCallId) ?? true;
+  }
+  function bashInputComplete(node: ToolNode): boolean {
+    return node.argsComplete || !node.isPartial && node.result?.role === 'toolResult'
+      || abandonedBashSource(node) && !liveBashSource(node);
+  }
   function sourceIdentity(node: ToolNode): unknown[] {
-    if (node.toolName === "bash") return [node.toolName, primitiveIdentity(node.args.command), node.argsComplete];
+    if (node.toolName === "bash") return [node.toolName, primitiveIdentity(node.args.command), bashInputComplete(node)];
     const details = node.result?.details as { diff?: unknown; patch?: unknown; truncated?: unknown; noOp?: unknown } | undefined;
     return [node.toolName, filePath(node.args), node.toolName === "write" ? primitiveIdentity(node.args.content) : undefined,
       !!node.result, node.isPartial, node.result?.isError === true, primitiveIdentity(details?.diff), primitiveIdentity(details?.patch),
       primitiveIdentity(details?.truncated), primitiveIdentity(details?.noOp)];
   }
   function abandonedBashSource(node: ToolNode): boolean {
-    return node.toolName === "bash" && !node.argsComplete && !node.isPartial && node.result?.isError === true;
+    return node.toolName === "bash" && !node.isPartial && node.result?.isError === true && bashFailurePhase(node) === 'formation';
+  }
+  function interruptedLiveBash(node: ToolNode): boolean {
+    return abandonedBashSource(node) && liveBashSource(node);
   }
   function syntaxEligible(node: ToolNode): boolean {
     if (!active || !attached(node) || node.hideComponent || node.result?.content.some(part => part.type === "image")) return false;
-    if (node.toolName === "bash") return !abandonedBashSource(node) && !overrides.has("bash") && !nativeOverrides.has("bash") &&
+    if (node.toolName === "bash") return !interruptedLiveBash(node) && !overrides.has("bash") && !nativeOverrides.has("bash") &&
       typeof node.args.command === "string" && bashDirectory(node) !== null;
     return fileSucceeded(node) && !node.expanded && !overrides.has(node.toolName) && !nativeOverrides.has(node.toolName) && !!filePath(node.args);
   }
@@ -420,14 +444,16 @@ export function installTidyUi(tui: LiveTui, getTheme: () => Palette, options: Ti
     const identity = sourceIdentity(node), palette = options.syntax!.palette();
     let state = syntaxStates.get(node);
     if (!state) {
-      state = { revision: 1, identity, palette, authorized: false }; syntaxStates.set(node, state);
+      state = { revision: 1, identity, palette, authorized: false, live: liveBashSource(node) }; syntaxStates.set(node, state);
       syntax.record(node, state.revision, false);
     } else if (state.palette !== palette || identity.some((value, index) => value !== state!.identity[index])) {
+      const displayChanged = node.toolName !== 'bash' || state.palette !== palette || identity[1] !== state.identity[1];
       state.identity = identity; state.palette = palette; state.revision++;
-      forget(node);
-      syntax.record(node, state.revision, node.toolName === "bash" ? node.argsComplete : fileSucceeded(node));
+      if (displayChanged) forget(node);
+      syntax.record(node, state.revision, node.toolName === "bash" ? bashInputComplete(node) : fileSucceeded(node));
     }
-    if (!syntaxEligible(node)) pauseSyntax(node);
+    if (interruptedLiveBash(node)) { state.authorized = false; syntax.freeze(node); }
+    else if (!syntaxEligible(node)) pauseSyntax(node);
     return state;
   }
   function pauseSyntax(node: ToolNode): void {
@@ -447,7 +473,7 @@ export function installTidyUi(tui: LiveTui, getTheme: () => Palette, options: Ti
     if (!state?.authorized || !syntaxEligible(node)) { pauseSyntax(node); return undefined; }
     // A source/palette event during the deferred boundary replaces its pending ticket.
     if (previous !== state.revision) syntax!.useful(node, state.revision);
-    if (node.toolName === "bash") return { kind: "bash", args: node.args, complete: node.argsComplete, language: "bash", palette: state.palette };
+    if (node.toolName === "bash") return { kind: "bash", args: node.args, complete: bashInputComplete(node), language: "bash", palette: state.palette };
     return { kind: "file", node, language: getLanguageFromPath(filePath(node.args)!), palette: state.palette };
   }
   function syntaxNeutral(theme: Palette): number {
@@ -463,7 +489,10 @@ export function installTidyUi(tui: LiveTui, getTheme: () => Palette, options: Ti
       kind === "bash" ? node.args.command : undefined, kind === "bash" ? node.args.description : undefined,
       kind === "bash" ? node.args.workdir : undefined, directory,
       kind === "edit" || kind === "write" ? theme.colors : undefined,
-      kind === "edit" || kind === "write" ? theme.style : undefined, kind === "edit" || kind === "write" ? theme.bg : undefined];
+      kind === "edit" || kind === "write" ? theme.style : undefined, kind === "edit" || kind === "write" ? theme.bg : undefined,
+      kind === 'bash' ? syntax?.displayStamp(node) : undefined,
+      kind === 'bash' ? theme.colors : undefined,
+      kind === 'bash' && node.result?.isError ? bashFailurePhase(node) : undefined];
   }
   function memo<T extends Layout>(node: ToolNode, kind: LayoutKind, width: number, theme: Palette, directory: string | undefined, padding: number, build: () => T): T {
     const signature = layoutSignature(node, kind, width, theme, directory, padding);
@@ -484,8 +513,11 @@ export function installTidyUi(tui: LiveTui, getTheme: () => Palette, options: Ti
   const bashLayout = (node: ToolNode, width: number) => {
     const theme = getTheme(), directory = bashDirectory(node) ?? undefined, padding = outputPadding();
     return memo(node, "bash", width, theme, directory, padding, () => {
-      const commandRows = syntax?.bash(node, cardGeometry(width, padding).contentWidth, theme, 0);
-      const layout = renderBashCard(node, directory, width, theme, padding, commandRows);
+      let commandRows = false;
+      const layout = renderBashCard(node, directory, width, theme, padding, syntax && (command => {
+        const rows = syntax.bash(node, cardGeometry(width, padding).contentWidth, theme, 0, command);
+        commandRows = rows !== undefined; return rows;
+      }));
       decision(node, "syntax", commandRows ? "Bash card uses prepared command projection; selected coverage is recorded by the syntax owner" : "Whole Bash command uses toolTitle; Pi classification is intentionally disabled", width, layout.rows.length,
         { call: node.toolCallId, tool: node.toolName, selected: commandRows ? "prepared-native" : "toolTitle" });
       return layout;
@@ -548,6 +580,8 @@ export function installTidyUi(tui: LiveTui, getTheme: () => Palette, options: Ti
         })) as Record<LayoutKind, LayoutMemory> };
     },
     logSnapshot() {
+      diagnose(options.diagnostic, 'INFO', 'tool', 'Native lifecycle callback counters; these are not source dispatches',
+        { callbacks: lifecycleCallbacks, phaseChanges: lifecyclePhaseChanges });
       diagnose(options.diagnostic, "INFO", "animation", "Snapshot of owned fallback animation; native Pi clock is not intercepted",
         { wakes: spinnerWakes, requests: spinnerRequests, participants: animated.size, timer: spinnerTimer !== undefined, pending: spinnerPending });
     },
@@ -863,16 +897,14 @@ export function installTidyUi(tui: LiveTui, getTheme: () => Palette, options: Ti
         throw new Error("Tool cache invalidation methods cannot be wrapped");
       const wrapper = function (this: ToolNode, ...args: unknown[]) {
         // Bash keys include every displayed argument; unrelated/same argument updates reuse its body.
-        if (name !== "markExecutionStarted" && !(name === "updateArgs" && this.toolName === "bash" && !overrides.has("bash")) &&
+        if (name !== "markExecutionStarted" && !((name === "updateArgs" || name === 'setArgsComplete') && this.toolName === "bash" && !overrides.has("bash")) &&
           !(name === "setExpanded" && args[0] === this.expanded)) forget(this, name);
         const result = method.apply(this, args);
-        if (name !== "invalidate") diagnose(options.diagnostic, "DEBUG", "tool", "Native tool lifecycle operation completed", {
-          call: this.toolCallId, tool: this.toolName, operation: name, partial: this.isPartial, complete: this.argsComplete,
-          executing: this.executionStarted, expanded: this.expanded, result: !!this.result, error: this.result?.isError === true });
+        if (name !== "invalidate") nativePhase(this, name);
         observeSyntax(this);
-        if (syntax && name === "updateResult" && abandonedBashSource(this)) {
-          // Terminal argument errors retire ownership; they do not finalize arguments.
-          syntax.remove(this);
+        if (syntax && name === "updateResult" && interruptedLiveBash(this)) {
+          // Terminal formation retires native work, not the still-displayed presentation.
+          syntax.freeze(this);
           options.syntax!.client.sources.flush();
         }
         if (!executing(this) || !attached(this)) removeAnimation(this);
@@ -1332,6 +1364,8 @@ export default function tidyUi(pi: ExtensionAPI, options: TidyUiRuntimeOptions =
   let enabled = true, colorsEnabled = true;
   let liveContext: ExtensionContext | undefined;
   let syntax: SyntaxRuntime | undefined, syntaxEnabled = true;
+  // Only primitive IDs for the current assistant stream; never retain message bodies/history.
+  const liveBashCalls = new Set<string>();
   const syntaxContext: SyntaxContext = {};
   let logging: SessionLogging | undefined, loggingContext: SyntaxContext | undefined;
   function startLogging(ctx: ExtensionContext, reason: string) {
@@ -1509,7 +1543,7 @@ export default function tidyUi(pi: ExtensionAPI, options: TidyUiRuntimeOptions =
       const sourceRuntime = ensureSyntax(ctx);
       controller = installTidyUi(tui, palette, {
         diagnostic: logging?.sink,
-        syntax: { client: sourceRuntime, palette: () => sourceRuntime.palette(liveContext!.ui.theme) },
+        syntax: { client: sourceRuntime, palette: () => sourceRuntime.palette(liveContext!.ui.theme), isLiveCall: id => liveBashCalls.has(id) },
         cards: names("tidy-ui-card"), compact: names("tidy-ui-compact"),
         outputPad: () => pi.getSettings().outputPad ?? 1,
         nativeEditor: () => liveContext?.ui.getEditorComponent() === undefined,
@@ -1549,6 +1583,14 @@ export default function tidyUi(pi: ExtensionAPI, options: TidyUiRuntimeOptions =
       event: typeof kind === "string" && ["session_tree", "session_compact", "model_select", "message_end", "turn_end", "agent_end", "tool_execution_end"].includes(kind) ? kind : "unspecified",
       model: ctx.model?.name, provider: ctx.model?.provider, thinking: ctx.thinkingLevel });
   };
+  pi.on("message_start", (event) => { if (event.message.role === 'assistant') liveBashCalls.clear(); });
+  pi.on("message_update", (event, ctx) => {
+    if (ctx.mode !== 'tui') return;
+    const delta = event.assistantMessageEvent;
+    if (delta.type !== 'toolcall_start' && delta.type !== 'toolcall_delta' && delta.type !== 'toolcall_end') return;
+    const call = delta.partial.content[delta.contentIndex];
+    if (call?.type === 'toolCall' && call.name === 'bash') liveBashCalls.add(call.id);
+  });
   pi.on("session_tree", refreshFooter);
   pi.on("session_compact", refreshFooter);
   pi.on("model_select", refreshFooter);
@@ -1560,10 +1602,11 @@ export default function tidyUi(pi: ExtensionAPI, options: TidyUiRuntimeOptions =
     directorySource?.refresh(true);
   };
   pi.on("tool_execution_end", refreshDirectory);
-  pi.on("agent_end", refreshDirectory);
-  pi.on("session_start", (event, ctx) => { startLogging(ctx, event.reason); start(ctx); });
+  pi.on("agent_end", (event, ctx) => { liveBashCalls.clear(); refreshDirectory(event, ctx); });
+  pi.on("session_start", (event, ctx) => { liveBashCalls.clear(); startLogging(ctx, event.reason); start(ctx); });
   pi.on("session_info_changed", (event, _ctx) => { logging?.nameChanged(event.name); });
   pi.on("session_shutdown", async (event, ctx) => {
+    liveBashCalls.clear();
     liveContext = ctx; logSnapshot(); pendingFooter = undefined; stopColors(); restoreFooter(); controller?.restore(); controller = undefined;
     const stopped = stopSyntax(); liveContext = undefined; syntaxContext.current = undefined;
     await stopped;

@@ -104,7 +104,11 @@ export class GitBranchSource {
           watcher.close(); this.watched.delete(path); counters.watchers--; this.filesystem(true);
         });
         this.watched.set(path, watcher); counters.watchers++;
-      } catch (error) { diagnose(this.options.diagnostic, 'DEBUG', 'git', 'Git metadata watch unavailable; completed-operation refresh remains', { path, code: diagnosticError(error) }); }
+      } catch (error) {
+        const code = diagnosticError(error);
+        if (role !== 'reftable' || code !== 'ENOENT') diagnose(this.options.diagnostic, 'DEBUG', 'git',
+          'Git metadata watch unavailable; completed-operation refresh remains', { path, code });
+      }
 
     }
   }

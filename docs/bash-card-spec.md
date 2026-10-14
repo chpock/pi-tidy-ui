@@ -27,7 +27,7 @@ Hard-wrap printable text by terminal cell width, preserving spaces rather than u
 
 Display-only sanitization removes terminal escape/control sequences, bidi controls and zero-width spaces; retain Unicode joining marks used by graphemes (including emoji ZWJ sequences); normalize CRLF and standalone CR to logical line breaks. Preserve other printable characters, newlines and indentation. Incoming ANSI colors are not executed or retained: use the agreed semantic foregrounds. Arguments, result content and stored data are never changed.
 
-Optional native command syntax follows the [syntax contract](syntax-highlighting-spec.md). Logical command preparation and gradual/final classification occur outside render, before display sanitization/tab expansion. Valid structured foregrounds use Pi palette or the selected independent daemon theme; command geometry and full text remain unchanged. Without usable native colors, retain the existing entire-command `toolTitle` color, never invoke Pi's highlighter for Bash. Output/comments/footer retain their existing semantic colors and are not syntax sources. Argument completion is independent of process completion.
+Optional native command syntax follows the [syntax contract](syntax-highlighting-spec.md). Logical command preparation and gradual/final classification occur outside render, before display sanitization/tab expansion. Valid structured foregrounds use Pi palette or the selected independent daemon theme; command geometry and full text remain unchanged. For streaming/corrections, the [Bash streaming contract](bash-streaming-contract.md) preserves historical matching-prefix styles, including provisional ones, without treating them as current-source parsing proof. Its compatibility check is folded into cold display projection; new glyphs use `toolTitle` with the whole-grapheme first-scalar exception. Without a compatible native basis, retain the existing entire-command `toolTitle` color, never invoke Pi's highlighter for Bash. Output/comments/footer retain their existing semantic colors and are not syntax sources. Argument completion is independent of process completion.
 
 ## 4. Output and streaming
 
@@ -53,11 +53,13 @@ Only after a final result:
 
 - Section 4's exact timeout block matches: `[exit code: 124; error: command timed out]`, taking precedence over the generic error label.
 - Otherwise, nonzero known code, no error flag: `[exit code: N]`.
-- `result.isError === true`, zero/unknown code: `[error: execution failed]`.
-- Both: `[exit code: N; error: execution failed]`.
+- `result.isError === true`, known execution/result phase, zero/unknown code: `[error: execution failed]`.
+- Known interrupted argument formation: `[error: incomplete tool call]`.
+- Error with unknown lifecycle phase: `[error: tool call failed]`.
+- Nonzero numeric code and error flag: `[exit code: N; error: execution failed]`.
 - Zero/unknown code and no error flag: omit the footer.
 
-Except for section 4's exact timeout-pair convention, the error label is intentionally generic: the tool API has no separate reliable error-message field. Do not invent a timeout duration from command arguments. Actual diagnostics remain unchanged in the output section except for section 4's two exact terminal-block removals. Insert exactly one empty content row before a present footer, even if there is no output. Wrap the complete footer when needed; never include it in the output preview count. Partial updates produce no completion footer.
+Use public positive execution evidence or a persisted `role: toolResult` before considering incomplete argument flags. Reconstructed Pi components default those flags to false, so they cannot contradict a saved tool result; saved results also establish finite input for replay syntax. Restored interrupted calls likewise have finite saved display text, even though their Bash arguments remain incomplete; one native classification does not execute them or change this label. With no such execution/result evidence, explicit incomplete arguments identify formation failure; absent lifecycle information stays unknown. These phase labels do not infer the error's underlying cause: the tool API has no separate reliable cause field. Do not invent a timeout duration from command arguments. Actual diagnostics remain unchanged in the output section except for section 4's two exact terminal-block removals. Insert exactly one empty content row before a present footer, even if there is no output. Wrap the complete footer when needed; never include it in the output preview count. Partial updates produce no completion footer.
 
 ## 6. Theme roles and interaction
 

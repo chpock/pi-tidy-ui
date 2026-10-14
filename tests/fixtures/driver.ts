@@ -456,7 +456,7 @@ export default function terminalDriver(pi: ExtensionAPI) {
         const user: any = context.messages[last];
         const prompt = typeof user?.content === "string" ? user.content :
           user?.content?.filter((c: any) => c.type === "text").map((c: any) => c.text).join("");
-        const scenario = prompt === "run syntax-cards" ? "syntax-cards" : prompt?.includes("run write-stock") ? "write-stock" : prompt?.includes("run write-shapes") ? "write-shapes" : prompt?.includes("run edit-performance") ? "edit-performance" : prompt?.includes("run edit-cards") ? "edit-cards" : prompt?.includes("run user-card") ? "user-card" : prompt === "run cache-performance" ? "cache-performance" : prompt?.includes("bash-width") ? "bash-width" : prompt?.includes("bash-stream") ? "bash-stream" : prompt?.includes("bash-real") ? "bash-real" :
+        const scenario = prompt === "run bash-prefix-contract" ? "bash-prefix-contract" : prompt === "run syntax-cards" ? "syntax-cards" : prompt?.includes("run write-stock") ? "write-stock" : prompt?.includes("run write-shapes") ? "write-shapes" : prompt?.includes("run edit-performance") ? "edit-performance" : prompt?.includes("run edit-cards") ? "edit-cards" : prompt?.includes("run user-card") ? "user-card" : prompt === "run cache-performance" ? "cache-performance" : prompt?.includes("bash-width") ? "bash-width" : prompt?.includes("bash-stream") ? "bash-stream" : prompt?.includes("bash-real") ? "bash-real" :
           prompt?.includes("bash-shape-timeout-stream") ? "bash-shape-timeout-stream" : prompt?.includes("bash-shape-timeouts") ? "bash-shape-timeouts" :
           prompt?.includes("bash-shape-exception-stream") ? "bash-shape-exception-stream" : prompt?.includes("bash-shape-exceptions") ? "bash-shape-exceptions" :
           prompt?.includes("bash-shape-stream") ? "bash-shape-stream" : prompt?.includes("bash-shapes") ? "bash-shapes" :
@@ -473,7 +473,9 @@ export default function terminalDriver(pi: ExtensionAPI) {
         if (scenario === "write-shapes" && !writeShape) throw new Error("write-shapes requires explicit isolated opt-in");
         if (writeShape && scenario !== "write-shapes") throw new Error("write-shape opt-in is isolated from all other scenarios");
         if (scenario.startsWith("footer-") && process.env.TIDY_UI_TEST_FOOTER_HISTORY !== "1") throw new Error("footer-history requests require explicit isolated opt-in");
-        const calls: Pick<ToolCall, "name" | "arguments">[] = scenario === "syntax-cards" ? [
+        const calls: Pick<ToolCall, "name" | "arguments">[] = scenario === "bash-prefix-contract" ? [
+          { name: "bash", arguments: { command: ": 'STABLE_text é界 tail'" } },
+        ] : scenario === "syntax-cards" ? [
           { name: "bash", arguments: { command: "printf 'SYNTAX_OUTPUT\\n'\ntouch \"$TIDY_UI_TEST_OUTPUT/syntax-shell-ready\"\nwhile [ ! -f \"$TIDY_UI_TEST_OUTPUT/syntax-shell-final\" ]; do sleep 0.025; done" } },
           { name: "write", arguments: { path: "syntax.ts", content: "const x=1;\n" } },
           { name: "edit", arguments: { path: "syntax.ts", oldText: "const x=1;", newText: "const x=2;" } },
@@ -524,7 +526,15 @@ export default function terminalDriver(pi: ExtensionAPI) {
           message.content.push({ ...call, arguments: {} });
           stream.push({ type: "toolcall_start", contentIndex: 0, partial: message });
           await wait(60);
-          if (scenario === "syntax-cards" && step === 0) {
+          if (scenario === "bash-prefix-contract" && step === 0) {
+            const prefixes = [": 'STABLE_text e", ": 'STABLE_text é界", String(call.arguments.command)];
+            for (const [phase, prefix] of prefixes.entries()) {
+              message.content[0] = { ...call, arguments: { command: prefix } };
+              stream.push({ type: "toolcall_delta", contentIndex: 0, delta: JSON.stringify({ command: prefix }), partial: message });
+              record({ type: "bash_contract_prefix", phase, bytes: Buffer.byteLength(prefix) });
+              await gate(`bash-contract-go-${phase}`, options?.signal);
+            }
+          } else if (scenario === "syntax-cards" && step === 0) {
             const command = String(call.arguments.command), first = command.indexOf("\n") + 1, second = command.indexOf("\n", first) + 1;
             const prefixes = [command.slice(0, 1), command.slice(0, first), command.slice(0, first + 1),
               command.slice(0, second) + "wihle [", command.slice(0, second) + "while ["];

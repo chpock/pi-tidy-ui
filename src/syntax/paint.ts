@@ -22,10 +22,12 @@ function styled(text: string, paint: Paint, theme: CardTheme, neutral: 'toolOutp
   const fg = 'rgb' in style ? rgbColor(...style.rgb) : indexedColor(style.index);
   return theme.style ? theme.style(text, { fg, ...attributes }) : theme.fg(neutral, text);
 }
-function utf8Length(text: string): number {
+export type HistoricalBashCoverage = { matchedBytes: number; styledBytes: number };
+type Prefix = { text: string; matching: boolean; owns: boolean; matchedBytes: number; styledBytes: number };
+function utf8Length(text: string, prefix?: Prefix, offset = 0): number {
   let bytes = 0;
   for (let index = 0; index < text.length; index++) {
-    const code = text.charCodeAt(index);
+    const first = index, before = bytes, code = text.charCodeAt(index);
     if (code < 0x80) bytes++;
     else if (code < 0x800) bytes += 2;
     else if (code >= 0xd800 && code <= 0xdbff) {
@@ -34,6 +36,13 @@ function utf8Length(text: string): number {
       bytes += 4;
     } else if (code >= 0xdc00 && code <= 0xdfff) return NaN;
     else bytes += 3;
+    if (prefix) {
+      const matches = prefix.matching && prefix.text.charCodeAt(offset + first) === code
+        && (index === first || prefix.text.charCodeAt(offset + index) === text.charCodeAt(index));
+      if (first === 0) prefix.owns = matches;
+      prefix.matching = matches;
+      if (matches) prefix.matchedBytes += bytes - before;
+    }
   }
   return bytes;
 }
@@ -41,7 +50,8 @@ function utf8Length(text: string): number {
 /** Terminal projection only: no classifier, request, source normalization or
  * full-source UTF8 buffer. First-scalar color owns an entire displayed grapheme.
  * Contiguous unmodified units are sliced as one span, not retained per glyph. */
-function project(text: string, theme: CardTheme, read: RangeReader, commandWidth?: number): string[] | undefined {
+function project(text: string, theme: CardTheme, read: RangeReader, commandWidth?: number, basis?: string, coverage?: HistoricalBashCoverage): string[] | undefined {
+  const prefix: Prefix | undefined = basis === undefined ? undefined : { text: basis, matching: true, owns: false, matchedBytes: 0, styledBytes: 0 };
   const command = commandWidth !== undefined, neutral = command ? 'toolTitle' : 'toolOutput';
   const rows: string[] = [];
   let row: string[] = [], fragments: string[] = [], active: Paint | undefined;
@@ -73,8 +83,10 @@ function project(text: string, theme: CardTheme, read: RangeReader, commandWidth
   let next = iterator.next(), byte = 0, covered = 0, invalid = false;
   const consume = (paint: number) => {
     const { segment, index } = next.value!;
-    const bytes = utf8Length(segment);
+    const bytes = utf8Length(segment, prefix, index);
     if (!Number.isFinite(bytes)) { invalid = true; return; }
+    if (prefix && !prefix.owns) paint = 0;
+    if (prefix && paint !== 0 && segment !== '\n') prefix.styledBytes += bytes;
     if (segment === '\n') flushRow();
     else if (segment === '\t') {
       const spaces = (command ? 8 : 4) - columns % (command ? 8 : 4);
@@ -91,12 +103,13 @@ function project(text: string, theme: CardTheme, read: RangeReader, commandWidth
       invalid = true; return;
     }
     covered = end;
-    while (!next.done && byte < end && !invalid) consume(paint);
-    if (next.done && end > byte) invalid = true;
+    while (!next.done && byte < end && !invalid && (!prefix || prefix.matching)) consume(paint);
+    if (!prefix && next.done && end > byte) invalid = true;
   });
   if (!available || invalid) return undefined;
-  while (!next.done && !invalid) consume(0); // Changed tail has no borrowed provisional colors.
+  while (!next.done && !invalid) consume(0); // Remaining current graphemes have no selected historical style.
   if (invalid) return undefined;
+  if (coverage && prefix) { coverage.matchedBytes = prefix.matchedBytes; coverage.styledBytes = prefix.styledBytes; }
   flushRow();
   return rows;
 }
@@ -110,4 +123,11 @@ export function paintFileSource(text: string, theme: CardTheme, ranges: RangeRea
 export function paintBashCommand(text: string, width: number, theme: CardTheme, ranges: RangeReader): string[] | undefined {
   if (width <= 0) return [];
   return project(text, theme, ranges, width);
+}
+
+/** Historical colors are presentation only. Scalar-prefix proof runs inside the
+ * existing cold grapheme/byte walk; a current grapheme inherits its first scalar's style. */
+export function paintHistoricalBashCommand(text: string, basis: string, width: number, theme: CardTheme, ranges: RangeReader, coverage?: HistoricalBashCoverage): string[] | undefined {
+  if (width <= 0) return [];
+  return project(text, theme, ranges, width, basis, coverage);
 }

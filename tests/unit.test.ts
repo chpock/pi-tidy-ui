@@ -4791,7 +4791,7 @@ async function footerSetup(foreignEditor = false, selectorAtStartup = false) {
   const ctx = { mode: "tui", cwd: "/footer-probe", ui: { ...host.createExtensionUIContext(), notify() {} }, model, sessionManager: manager,
     modelRegistry: { isUsingOAuth: () => { authReads++; return subscription; }, getProvider: () => { authReads++; return { auth: { oauth: { isSubscription: true } } }; } },
     getContextUsage: readContext, isIdle: () => true };
-  const emit = (name: string) => { for (const fn of handlers.get(name) ?? []) fn({}, ctx); };
+  const emit = (name: string, event: unknown = {}) => { for (const fn of handlers.get(name) ?? []) fn(event, ctx); };
   const append = (input = 11000000, output = 1500000, cacheRead = 243000000, cacheWrite = 0, cost = 61.761) => manager.appendMessage({
     role: "assistant", content: [{ type: "text", text: "FOOTER_USAGE" }], api: "openai-responses", provider: model.provider,
     model: model.id, timestamp: 1, stopReason: "stop", usage: { input, output, cacheRead, cacheWrite, totalTokens: input + output + cacheRead + cacheWrite,
@@ -5095,7 +5095,12 @@ test("footer auto-off annotation unknown marks and bracket colors remain semanti
 test("footer report updates reconstruct across off-on without counting streaming or warm renders", async () => {
   const f = await footerSetup();
   try {
-    const first = f.render(); f.emit("message_update"); assert.equal(f.render(), first);
+    const first = f.render(), leaf = f.manager.getLeafEntry();
+    assert.ok(leaf?.type === 'message' && leaf.message.role === 'assistant');
+    const message = leaf.message;
+    f.emit("message_update", { type: 'message_update', message,
+      assistantMessageEvent: { type: 'text_delta', contentIndex: 0, delta: 'FOOTER_USAGE', partial: message } });
+    assert.equal(f.render(), first);
     const before = f.counts();
     for (let i = 0; i < 20; i++) { f.append(900, 10, 100, 0, 0); f.emit("message_end"); f.render(); }
     let row = f.render().map(stripVTControlCharacters).join(" "); assert.ok(row.includes("[▇▇▇▇▇▇▇▇▇▇] CH10.0%"));
@@ -5509,4 +5514,20 @@ test("terminal defaults local off keeps presentation RGB fresh without applying 
   fixture.snapshot.enabled = true; fixture.view.observe(); await terminalMicrotasks();
   assert.equal(fixture.view.status().state, "on"); assert.equal(fixture.view.stats().sourceReads, 2);
   fixture.view.dispose();
+});
+
+test('Git diagnostics: expected absent reftable is quiet while refresh and watch rebinding remain intact', async () => {
+  const { GitBranchSource, gitDiagnostics } = await import('../src/git-branch.ts');
+  const before = gitDiagnostics();
+  const cwd = mkdtempSync(join(tmpdir(), 'tidy-ui-git-diagnostics-')), records: { explanation: string; fields: unknown }[] = [];
+  const source = new GitBranchSource(() => {}, { diagnostic: (_level, _area, explanation, fields) => records.push({ explanation, fields }) });
+  try {
+    assert.equal(spawnSync('git', ['-C', cwd, 'init', '-b', 'first']).status, 0);
+    source.setDirectory(cwd); await awaitFixture(source.settled());
+    for (let i = 0; i < 3; i++) { source.refresh(true); await awaitFixture(source.settled()); }
+    assert.equal(records.filter(record => record.explanation.includes('watch unavailable')).length, 0);
+    assert.equal(records.filter(record => record.explanation === 'Asynchronous Git refresh started').length, 4);
+    assert.equal(gitDiagnostics().discoveries, before.discoveries + 4);
+    assert.equal(gitDiagnostics().watchers, before.watchers + 2); assert.equal(source.branch(cwd), 'first');
+  } finally { source.dispose(); rmSync(cwd, { recursive: true, force: true }); }
 });

@@ -956,3 +956,18 @@ test('late fulfilled owned close is an old-generation stop receipt, never availa
   assert.equal(broker.snapshot().availability, 'disabled'); assert.equal(broker.stats().successfulClassifications, 0);
   await broker.dispose(); released(broker, clock);
 });
+
+test('provider diagnostics: candidate callback is not represented as a shared discovery or connection', async () => {
+  const clock = new Clock(), owned = new Transport(), records: { explanation: string; fields?: Record<string, unknown> }[] = [];
+  let sharedCallbacks = 0;
+  const broker = new ProviderBroker({ clock, diagnostic: (_level, _area, explanation, fields) => records.push({ explanation, fields }),
+    tryShared: async () => { sharedCallbacks++; return undefined; }, acquireOwned: async () => owned });
+  try {
+    await broker.start();
+    const callbacks = records.filter(record => record.explanation.includes('candidate callback started'));
+    assert.deepEqual(callbacks.map(record => [record.fields?.candidate, record.fields?.stage]), [['shared', 'factory'], ['owned', 'factory']]);
+    assert.ok(callbacks.every(record => record.explanation.includes('not proof of discovery or connection')));
+    assert.equal(sharedCallbacks, 1); assert.equal(broker.stats().sharedAttempts, 1);
+    assert.equal(broker.snapshot().kind, 'owned'); assert.equal(broker.stats().probesScheduled, 0);
+  } finally { await broker.dispose(); released(broker, clock); }
+});

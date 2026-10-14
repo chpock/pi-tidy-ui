@@ -11,6 +11,7 @@ import { Container } from '@earendil-works/pi-tui';
 import { createWriteToolDefinition, ToolExecutionComponent, type ExtensionAPI, type ExtensionContext } from '@earendil-works/pi-coding-agent';
 import tidyUi, { debugLoggingDiagnostics } from '../src/index.ts';
 import { SourceController } from '../src/occipital/controller.ts';
+import { CardSources, type CardSourceHost } from '../src/syntax/cards.ts';
 
 const dist = dirname(fileURLToPath(import.meta.resolve('@earendil-works/pi-coding-agent')));
 const themes = await import(pathToFileURL(resolve(dist, 'modes/interactive/theme/theme.js')).href);
@@ -208,4 +209,52 @@ test('logging review H3: explicit snapshot includes existing Git and owned fallb
     await h.events.get('session_shutdown')!({ type: 'session_shutdown', reason: 'quit' }, h.ctx);
     await fs.rm(root, { recursive: true, force: true });
   }
+});
+
+test('entry public streaming identities separate quick live abort from restored terminal cards without history lookup', async () => {
+  const h = fixture(), observed: { text: string; complete: boolean }[] = [];
+  const drain = CardSources.prototype.drain;
+  CardSources.prototype.drain = function () {
+    const host = Reflect.get(this, 'host') as CardSourceHost<object>, read = host.read;
+    host.read = owner => { const input = read(owner);
+      if (input?.kind === 'bash') observed.push({ text: String(input.args.command), complete: input.complete });
+      return input;
+    };
+    try { return drain.call(this); } finally { host.read = read; }
+  };
+  const tool = (id: string, text: string) => {
+    const node = new ToolExecutionComponent('bash', id, { command: text }, undefined, undefined,
+      h.root as unknown as ConstructorParameters<typeof ToolExecutionComponent>[5], '/tmp');
+    h.root.addChild(node); return node;
+  };
+  const abort = (node: ToolExecutionComponent) => node.updateResult({ content: [{ type: 'text', text: 'Operation aborted' }], isError: true }, false);
+  const stream = async (id: string, kind: string) => {
+    const message = { role: 'assistant', content: [{ type: 'toolCall', id, name: 'bash', arguments: { command: ": 'live" } }] };
+    await h.events.get('message_start')!({ type: 'message_start', message }, h.ctx);
+    await h.events.get('message_update')!({ type: 'message_update', message,
+      assistantMessageEvent: { type: kind, contentIndex: 0, partial: message } }, h.ctx);
+  };
+  try {
+    h.start(); await settled();
+    const restored = tool('restored', ": 'saved"); abort(restored);
+    h.root.render(80); await settled();
+    assert.deepEqual(observed, [{ text: ": 'saved", complete: true }]);
+    const baseline = observed.length;
+    for (const kind of ['toolcall_start', 'toolcall_delta', 'toolcall_end']) {
+      await stream(`live-${kind}`, kind);
+      const live = tool(`live-${kind}`, ": 'live");
+      await h.events.get('message_end')!({ type: 'message_end', message: { role: 'assistant', stopReason: 'aborted' } }, h.ctx);
+      abort(live); h.root.render(80); await settled();
+      assert.equal(observed.length, baseline, 'quick live abort starts no classifier, even before its first useful frame');
+      await h.events.get('agent_end')!({ type: 'agent_end' }, h.ctx);
+      h.root.removeChild(live);
+      const reopened = tool(`live-${kind}`, ": 'reopened"); abort(reopened);
+      h.root.render(80); await settled();
+      assert.deepEqual(observed.at(-1), { text: ": 'reopened", complete: true }, 'agent-end releases only primitive live IDs; same ID/new owner is static');
+      h.root.removeChild(reopened); observed.length = baseline;
+    }
+    for (let i = 0; i < 100; i++) h.root.render(80);
+    await settled(); assert.equal(observed.length, baseline);
+    assert.equal(Reflect.get(restored, 'argsComplete'), false); assert.equal(Reflect.get(restored, 'executionStarted'), false);
+  } finally { CardSources.prototype.drain = drain; }
 });

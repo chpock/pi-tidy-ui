@@ -10,7 +10,9 @@ interface BashPresentation {
   args: Record<string, unknown>;
   expanded: boolean;
   isPartial: boolean;
-  result?: { content: { type: string; text?: string }[]; isError?: boolean; details?: unknown };
+  argsComplete?: boolean;
+  executionStarted?: boolean;
+  result?: { content: { type: string; text?: string }[]; isError?: boolean; details?: unknown; role?: unknown };
 }
 
 /** Logical parser input only: no prompt, synthetic metadata or execution output. */
@@ -22,8 +24,15 @@ function exitCode(node: BashPresentation): number | undefined {
   return typeof code === "number" && Number.isFinite(code) && Number.isInteger(code) ? code : undefined;
 }
 
+/** Reconstructed SDK components default both lifecycle flags to false. A persisted
+ * toolResult is positive execution-result evidence; those defaults must not turn it into a formation failure. */
+export function bashFailurePhase(node: BashPresentation): 'formation' | 'execution' | undefined {
+  if (node.executionStarted === true || node.result?.role === 'toolResult' || exitCode(node) !== undefined) return 'execution';
+  return node.argsComplete === false ? 'formation' : undefined;
+}
+
 /** Content policy is independent of both the host's tool class and the shared shell. */
-export function renderBashCard(node: BashPresentation, directory: string | undefined, width: number, theme: CardTheme, outputPad = 1, commandRows?: readonly string[]) {
+export function renderBashCard(node: BashPresentation, directory: string | undefined, width: number, theme: CardTheme, outputPad = 1, commandRows?: readonly string[] | ((text: string) => readonly string[] | undefined)) {
   const geometry = cardGeometry(width, outputPad), available = geometry.contentWidth;
   if (!available) return { rows: [] as string[], geometry, expandable: false };
   const body: string[] = [];
@@ -32,9 +41,12 @@ export function renderBashCard(node: BashPresentation, directory: string | undef
   if (description) body.push(...styled(`# ${description}`, "muted"));
   if (directory) body.push(...styled(`# Running in ${blockText(directory).replace(/[\n\t]/gu, " ")}`, "muted"));
   if (body.length) body.push("");
-  // Projected rows already include the prompt and viewport-aware tab stops.
-  if (commandRows) body.push(...commandRows);
-  else blockText(node.args.command as string).split("\n").forEach((line, index) => {
+  // Current display is normalized once. The optional projector borrows colors,
+  // never parser authority, and includes prompt and viewport-aware tab stops.
+  const command = blockText(node.args.command as string);
+  const projected = typeof commandRows === 'function' ? commandRows(command) : commandRows;
+  if (projected) body.push(...projected);
+  else command.split("\n").forEach((line, index) => {
     let prompt = index === 0 ? 2 : 0;
     for (const row of terminalRows(index === 0 ? `$ ${line}` : line, available)) {
       const count = Math.min(prompt, row.length);
@@ -53,7 +65,9 @@ export function renderBashCard(node: BashPresentation, directory: string | undef
   const timeout = final && code === 124 && last >= 3 && output[last - 1] === "[exit code: 124]"
     && output[last - 2] === "[command timed out]" && !output[last - 3].trim();
   const fields = error ? [code !== undefined && code !== 0 ? `exit code: ${code}` : "",
-    timeout ? "error: command timed out" : node.result?.isError === true ? "error: execution failed" : ""].filter(Boolean) : [];
+    timeout ? "error: command timed out" : node.result?.isError === true
+      ? bashFailurePhase(node) === 'formation' ? "error: incomplete tool call"
+         : bashFailurePhase(node) === 'execution' ? "error: execution failed" : "error: tool call failed" : ""].filter(Boolean) : [];
   const footer = fields.length ? `[${fields.join("; ")}]` : "";
   // Remove at most one exact separated terminal block, before wrapping/cutoff.
   // Do not rescan a newly exposed suffix or remove either kind during streaming.

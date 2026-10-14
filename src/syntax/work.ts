@@ -7,7 +7,7 @@ import { piRangeReader, type PiRowReader } from './pi.ts';
 export type SyntaxDemand = Omit<SourceDemand, 'profile' | 'fingerprint'> & { palette: number; fallback?: 'pi' | 'neutral' };
 export type SyntaxIdentity = Pick<SyntaxDemand, 'key' | 'version' | 'language' | 'complete' | 'palette' | 'fallback'>;
 export type PiClassifier = (text: string, info: { language?: string; path?: string }) => readonly string[];
-export type SyntaxWorkResult = { outcome: 'native' | 'pi' | 'neutral' | 'waiting' | 'refused' | 'failed' | 'stale'; failure?: PiFailure };
+export type SyntaxWorkResult = { outcome: 'native' | 'pi' | 'neutral' | 'waiting' | 'refused' | 'failed' | 'stale'; failure?: PiFailure; awaitingProvider?: true };
 export interface SyntaxResolution extends SyntaxIdentity {
   owner: WeakRef<SourceController>;
   nativeExact: boolean;
@@ -87,7 +87,8 @@ export function requestSyntax(client: Client, demand: SyntaxDemand, classify: Pi
   const native = sources.borrowSource(key);
   if (native?.version === version && native.language === language && native.text === text && sources.status(key)?.exact)
     return { outcome: 'native' };
-  if (demand.fallback === 'neutral') return { outcome: sources.workStatus(key).fallbackEligible ? 'neutral' : 'waiting' };
+  if (demand.fallback === 'neutral') return { outcome: sources.workStatus(key).fallbackEligible ? 'neutral' : 'waiting',
+    ...(metadata.enabled && (metadata.provider.availability !== 'ready' || !metadata.effective) ? { awaitingProvider: true as const } : {}) };
   const cached = sources.borrowPiSource(key);
   if (cached?.version === version && cached.language === language) {
     if (sources.hasPiBridge(key, version, palette)) return { outcome: 'pi' };

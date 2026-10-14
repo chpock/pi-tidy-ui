@@ -26,7 +26,7 @@ export default function syntaxDriver(pi: ExtensionAPI) {
     mkdirSync(preferences, { recursive: true }); writeFileSync(join(preferences, 'config.json'), process.env.TIDY_UI_TEST_SYNTAX_CONFIG);
   }
   const transports: StdioTransport[] = [], sharedTransports: SharedTransport[] = [];
-  const counts = { constructions: 0, acquisitions: 0, downloads: 0, piCaptures: 0, piBridges: 0, describeReplies: 0, refreshReplies: 0, sharedAttempts: 0, heldReplies: 0, deliveredReplies: 0 };
+  const counts = { constructions: 0, acquisitions: 0, downloads: 0, piCaptures: 0, piBridges: 0, describeReplies: 0, refreshReplies: 0, sharedAttempts: 0, heldReplies: 0, deliveredReplies: 0, heldBashReplies: 0 };
   let pendingHeldReplies = 0;
   let runtime: WeakRef<SyntaxRuntime> | undefined, client: WeakRef<SyntaxClient> | undefined, controller = 0;
   let offset = 0;
@@ -102,6 +102,13 @@ export default function syntaxDriver(pi: ExtensionAPI) {
         transport.request = async (payload, opts) => {
           const reply = await request(payload, opts);
           if (payload.op === 'describe') counts.describeReplies++;
+          if (payload.op === 'stream.append' && process.env.TIDY_UI_TEST_BASH_REPLY_GATE === '1') {
+            const ordinal = ++counts.heldBashReplies; pendingHeldReplies++;
+            record({ type: 'bash_contract_reply_held', ordinal, payload, reply });
+            try {
+              while (!existsSync(join(output, `bash-reply-go-${ordinal}`))) await pause(20, undefined, { signal: opts?.signal });
+            } finally { pendingHeldReplies--; }
+          }
           if (payload.op === 'highlight' && process.env.TIDY_UI_TEST_SYNTAX_REPLY_GATE === '1') {
             counts.heldReplies++; pendingHeldReplies++;
             record({ type: 'syntax_reply_held', payload, reply });

@@ -5,7 +5,8 @@ import { displayFileCard, prepareFileCard, type FileDisplayCard } from '../file-
 import type { SyntaxClient } from '../occipital/client.ts';
 import { CONTROLLER_LIMITS, type SourceController } from '../occipital/controller.ts';
 import { RETENTION_LIMITS } from '../occipital/retention.ts';
-import { paintBashSyntax, paintFileSyntax, requestSyntax, resolveSyntax,
+import { paintHistoricalBashCommand, type HistoricalBashCoverage } from './paint.ts';
+import { paintFileSyntax, requestSyntax, resolveSyntax,
   type PiClassifier, type SyntaxIdentity, type SyntaxResolution, type SyntaxWorkResult } from './work.ts';
 
 export type CardSourceInput = { palette: number; language?: string } & (
@@ -25,9 +26,9 @@ export interface CardSourceHost<Owner extends object> {
   /** Primitive call identity, never source/argument/result bodies. */
   identify?(owner: Owner): DiagnosticFields;
 }
-type Slot = SyntaxIdentity & { rows?: readonly number[]; side?: 'old' | 'next'; outcome: SyntaxWorkResult['outcome']; paintDecision?: string };
+type Slot = SyntaxIdentity & { rows?: readonly number[]; side?: 'old' | 'next'; outcome: SyntaxWorkResult['outcome']; awaitingProvider?: true; paintDecision?: string };
 type State = { revision: number; requested?: number; processed?: number; version: number; slots: Slot[];
-  display?: FileDisplayCard; kind?: 'file' | 'bash'; record?: RecordTicket; paused?: boolean };
+  display?: FileDisplayCard; kind?: 'file' | 'bash'; record?: RecordTicket; paused?: boolean; frozen?: boolean; paintedStamp?: number };
 type RecordTicket = { id: number; owner: WeakRef<object>; state: WeakRef<State>; keys: Set<string>; bytes: number };
 type Release = { consumer: WeakRef<CardSources<object>>; sources: WeakRef<SourceController>; ticket: RecordTicket };
 let sequence = 0;
@@ -62,6 +63,7 @@ export class CardSources<Owner extends object> {
   private scheduled = false;
   private disposed = false;
   private metadata: string;
+  private displayProfile?: { id: string; fingerprint: string; selection: string };
 
   constructor(client: Pick<SyntaxClient, 'sources' | 'snapshot'>, host: CardSourceHost<Owner>,
     options: { maxBookkeepingBytes?: number } = {}) {
@@ -78,7 +80,7 @@ export class CardSources<Owner extends object> {
     if (this.disposed) return;
     const state = this.states.get(owner);
     if (!state) { this.states.set(owner, { revision, version: 0, slots: [] }); return; }
-    if (state.revision === revision) return;
+    if (state.frozen || state.revision === revision) return;
     state.revision = revision;
     if (this.latest && this.latest.ticket === state.record) this.latest.revision = revision;
     if (complete && state.record && !state.paused) this.enqueue(state.record);
@@ -90,6 +92,7 @@ export class CardSources<Owner extends object> {
   useful(owner: Owner, revision: number): void {
     if (this.disposed) return;
     let state = this.states.get(owner);
+    if (state?.frozen) return;
     if (!state?.paused && state?.revision === revision && (state.processed === revision || state.requested === revision)) return;
     if (!state) { state = { revision, version: 0, slots: [] }; this.states.set(owner, state); }
     else state.revision = revision;
@@ -105,15 +108,23 @@ export class CardSources<Owner extends object> {
     this.enqueue(state.record);
   }
 
-  /** Wire to SyntaxClient.onChange. A real metadata transition upgrades at most
-   * the latest still-current useful demand, never all prepared transcript cards. */
+  /** Wire to SyntaxClient.onChange. Readiness resumes all availability-deferred
+   * Bash demand through existing weak tickets, not a transcript/owner scan. */
   metadataChanged(): void {
     if (this.disposed) return;
-    const identity = this.metadataIdentity();
+    const snapshot = this.client.snapshot(), identity = this.metadataIdentity(snapshot);
     if (identity === this.metadata) return;
     this.metadata = identity;
+    const available = snapshot.enabled && snapshot.provider.availability === 'ready' && !!snapshot.effective;
     const latest = this.latest, state = latest?.ticket.state.deref();
-    if (latest && !state?.paused && state?.revision === latest.revision) this.enqueue(latest.ticket);
+    // Availability loss is not new demand for an already processed Bash revision.
+    if (latest && !state?.paused && !state?.frozen && state?.revision === latest.revision
+      && (available || state.kind !== 'bash' || state.processed !== state.revision)) this.enqueue(latest.ticket);
+    if (available) for (const ticket of this.records.values()) {
+      const state = ticket.state.deref();
+      if (!state || !ticket.owner.deref()) { this.release(ticket); continue; }
+      if (!state.paused && !state.frozen && state.kind === 'bash' && state.slots.some(slot => slot.awaitingProvider)) this.enqueue(ticket);
+    }
   }
 
   /** Wire to onSourceChange. Notices invalidate only keyed owners. Canonical
@@ -127,14 +138,17 @@ export class CardSources<Owner extends object> {
     for (const ticket of affected) {
       const owner = ticket.owner.deref() as Owner | undefined, state = ticket.state.deref();
       if (!owner || !state) { this.release(ticket); continue; }
-      if (state.paused || state.processed !== state.revision) continue;
+      if (state.kind === 'bash') {
+        if (this.bashStamp(state) !== (state.paintedStamp ?? 0)) { this.host.invalidate(owner); changed = true; }
+        if (state.paused || state.frozen || state.processed !== state.revision) continue;
+      } else if (state.paused || state.processed !== state.revision) continue;
       const needsWork = state.slots.some(slot => {
         const work = this.client.sources.workStatus(slot.key);
         return work.profileRetryAllowed || slot.outcome === 'waiting' &&
           resolveSyntax(this.client.sources, slot, 0x40000000).needsPi;
       });
       if (needsWork) this.enqueue(ticket);
-      else { this.host.invalidate(owner); changed = true; }
+      else if (state.kind !== 'bash') { this.host.invalidate(owner); changed = true; }
     }
     if (changed && !this.disposed) this.host.requestRender();
   }
@@ -156,13 +170,39 @@ export class CardSources<Owner extends object> {
     }
     return { display: state.display, styledRows };
   }
-  bash(owner: Owner, width: number, theme: CardTheme, neutralStyle: number): string[] | undefined {
+  bash(owner: Owner, width: number, theme: CardTheme, _neutralStyle: number, text?: string): string[] | undefined {
     const state = this.states.get(owner), slot = state?.slots[0];
-    if (this.disposed || state?.paused || state?.processed !== state?.revision || state?.kind !== 'bash' || !slot) return undefined;
-    const resolution = resolveSyntax(this.client.sources, slot, neutralStyle);
-    const rows = paintBashSyntax(this.client.sources, resolution, width, theme);
-    this.paintDecision(owner, slot, resolution, rows !== undefined);
+    if (state) state.paintedStamp = 0;
+    if (this.disposed || state?.kind !== 'bash' || !slot) return undefined;
+    const basis = this.client.sources.displayBasis(slot.key), profile = this.displayProfile;
+    if (!basis || basis.language !== 'bash' || basis.profile !== profile?.id || basis.fingerprint !== profile.fingerprint) return undefined;
+    const current = text ?? (state.processed === state.revision ? this.client.sources.borrowSource(slot.key)?.text : undefined);
+    if (current === undefined) return undefined;
+    let rows: string[] | undefined;
+    const coverage = this.host.diagnostic ? { matchedBytes: 0, styledBytes: 0 } : undefined;
+    const available = basis.visit((previous, read) => { rows = paintHistoricalBashCommand(current, previous, width, theme, read, coverage); });
+    if (!available) return undefined;
+    if (rows) state.paintedStamp = basis.stamp;
+    this.logBashPaint(owner, state, slot, rows !== undefined, basis.version, coverage);
     return rows;
+  }
+  private bashStamp(state: State): number {
+    const key = state.slots[0]?.key;
+    if (!key || !this.displayProfile) return 0;
+    return this.client.sources.displayStamp(key, this.displayProfile.id, this.displayProfile.fingerprint, 'bash');
+  }
+  displayStamp(owner: Owner): number {
+    const state = this.states.get(owner);
+    return state?.kind === 'bash' ? this.bashStamp(state) : 0;
+  }
+  freeze(owner: Owner): void {
+    const state = this.states.get(owner);
+    if (!state || state.frozen || this.disposed) return;
+    state.frozen = true; state.paused = false;
+    if (state.record) this.pending.delete(state.record);
+    if (this.latest?.ticket === state.record) this.latest = undefined;
+    for (const slot of state.slots) this.client.sources.freeze(slot.key);
+    this.log(owner, 'Argument formation interrupted; native work retired while validated presentation remains charged', { revision: state.revision });
   }
   /** Primitive diagnostic/cache-key copy; no pool payload or reader escapes. */
   identities(owner: Owner): SyntaxIdentity[] {
@@ -199,11 +239,17 @@ export class CardSources<Owner extends object> {
     const state = ticket.state.deref();
     if (state) { state.slots = []; state.display = undefined; state.record = undefined; }
   }
-  /** Internal microtask entry: source preparation and work are outside render. */
+  /** Internal scheduled entry: source preparation and work are outside render. */
   drain(): void {
-    this.scheduled = false;
-    if (this.disposed) return;
-    const pending = [...this.pending]; this.pending.clear();
+    if (this.disposed) { this.scheduled = false; return; }
+    // Keep reentrant enqueue from scheduling a microtask that skips the host yield.
+    this.scheduled = true;
+    const pending: RecordTicket[] = [];
+    for (const ticket of this.pending) {
+      this.pending.delete(ticket); pending.push(ticket);
+      if (pending.length === CONTROLLER_LIMITS.jobs) break;
+    }
+    if (!pending.length) { this.scheduled = false; return; }
     let changed = false;
     for (const ticket of pending) {
       const owner = ticket.owner.deref() as Owner | undefined, state = ticket.state.deref();
@@ -243,9 +289,10 @@ export class CardSources<Owner extends object> {
           if (this.bytes + bytes > this.maxBytes) continue;
           ticket.keys.add(key); this.keys.set(key, ticket); ticket.bytes += bytes; this.bytes += bytes;
         }
-        slot.outcome = requestSyntax(this.client, { ...slot, text: demand.text, path }, this.host.classify).outcome;
+        const work = requestSyntax(this.client, { ...slot, text: demand.text, path }, this.host.classify);
+        slot.outcome = work.outcome; slot.awaitingProvider = work.awaitingProvider;
         this.log(owner, 'Syntax work evaluated', { source: key, version: slot.version, units: demand.text.length,
-          language: language ?? 'unknown', palette: slot.palette, outcome: slot.outcome });
+          language: language ?? 'unknown', palette: slot.palette, outcome: slot.outcome, awaitingProvider: !!slot.awaitingProvider });
         if (!this.current(owner, state, ticket) || state.revision !== revision) break;
       }
       if (!this.current(owner, state, ticket)) {
@@ -262,13 +309,17 @@ export class CardSources<Owner extends object> {
       state.slots = slots; state.display = prepared ? displayFileCard(prepared) : undefined;
       state.kind = input.kind; state.processed = revision;
       // A prepared neutral Bash fallback is identical to its already painted command.
-      if (input.kind !== 'bash' || slots.some(slot => slot.outcome !== 'neutral')) {
+      if (input.kind !== 'bash' || this.bashStamp(state) !== (state.paintedStamp ?? 0)) {
         this.host.invalidate(owner); changed = true;
       }
     }
     if (changed && !this.disposed) this.host.requestRender();
     // Existing controller dispatcher/credit/retry machinery remains the sole owner.
     if (!this.disposed) this.client.sources.flush();
+    // Flush can queue notifications before pending is populated again. Keep the
+    // barrier through a host turn; an empty continuation stops immediately.
+    this.scheduled = !this.disposed;
+    if (this.scheduled) setImmediate(continuation(this.owner));
   }
 
   private log(owner: Owner | undefined, explanation: string, fields: DiagnosticFields): void {
@@ -296,19 +347,32 @@ export class CardSources<Owner extends object> {
         : 'Native work is queued, unsettled or uncertain; full text shown without duplicate Pi classification',
     };
     this.log(owner, explanations[selected], { source: slot.key, version: slot.version, palette: slot.palette, selected,
-      execution: resolution.execution, fallbackEligible: resolution.fallbackEligible, committedBytes: resolution.committedBytes, outcome: slot.outcome });
+      execution: resolution.execution, fallbackEligible: resolution.fallbackEligible, committedBytes: resolution.committedBytes, demandOutcome: slot.outcome });
+  }
+  private logBashPaint(owner: Owner, state: State, slot: Slot, applied: boolean, basisVersion: number, coverage?: HistoricalBashCoverage): void {
+    if (!this.host.diagnostic) return;
+    const selected = applied ? coverage?.styledBytes ? state.frozen ? 'frozen-native-prefix' : 'historical-native-prefix' : 'neutral-retained' : 'toolTitle';
+    const marker = `${selected}:${state.paintedStamp}:${slot.palette}:${coverage?.matchedBytes}:${coverage?.styledBytes}`;
+    if (slot.paintDecision === marker) return;
+    slot.paintDecision = marker;
+    this.log(owner, coverage?.styledBytes ? 'Bash displays current text with compatible historical-prefix styles; these are not parser authority'
+      : 'Compatible Bash display basis supplies no inherited glyph styles; current text uses toolTitle', {
+      source: slot.key, revision: state.revision, version: slot.version, basisVersion, palette: slot.palette, selected,
+      displayStamp: state.paintedStamp, matchedBytes: coverage?.matchedBytes ?? 0, styledBytes: coverage?.styledBytes ?? 0, demandOutcome: slot.outcome });
   }
   private current(owner: Owner, state: State, ticket: RecordTicket): boolean {
-    return !this.disposed && !state.paused && this.states.get(owner) === state && this.records.get(ticket.id) === ticket;
+    return !this.disposed && !state.paused && !state.frozen && this.states.get(owner) === state && this.records.get(ticket.id) === ticket;
   }
   private enqueue(ticket: RecordTicket): void {
     if (!this.records.has(ticket.id)) return;
     this.pending.add(ticket);
     if (!this.scheduled) { this.scheduled = true; queueMicrotask(continuation(this.owner)); }
   }
-  private metadataIdentity(): string {
-    const snapshot = this.client.snapshot();
-    return JSON.stringify([snapshot.enabled, snapshot.provider.availability, snapshot.provider.generation,
+  private metadataIdentity(snapshot = this.client.snapshot()): string {
+    const selection = snapshot.selected.kind === 'pi' ? 'pi' : `occipital:${snapshot.selected.id}`;
+    if (!snapshot.enabled || this.displayProfile?.selection !== selection || snapshot.provider.availability === 'ready') this.displayProfile = undefined;
+    if (snapshot.enabled && snapshot.effective) this.displayProfile = { id: snapshot.effective.id, fingerprint: snapshot.effective.fingerprint, selection };
+    return JSON.stringify([snapshot.enabled, snapshot.provider.availability, snapshot.provider.generation, selection,
       snapshot.effective?.id, snapshot.effective?.fingerprint]);
   }
 }

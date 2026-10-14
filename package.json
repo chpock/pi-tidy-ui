@@ -14,6 +14,7 @@
     "docs/releases.md",
     "docs/tool-summary-spec.md",
     "docs/bash-card-spec.md",
+    "docs/bash-streaming-contract.md",
     "docs/edit-card-spec.md",
     "docs/write-card-spec.md",
     "docs/card-frame-spec.md",

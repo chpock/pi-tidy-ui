@@ -159,6 +159,7 @@ The installed-package smoke test is version-audited and explicitly skips unavail
 - [Architecture](docs/architecture.md) — modules, host integration, lifecycle, data and ownership boundaries.
 - [Tool summary specification](docs/tool-summary-spec.md) — arguments, status, wrapping and compact input.
 - [Bash card specification](docs/bash-card-spec.md) — command/output/footer semantics and expansion.
+- [Bash streaming contract](docs/bash-streaming-contract.md) — current text, historical prefix colors, native-work retirement and display-effect invalidation.
 - [Edit card specification](docs/edit-card-spec.md) — persisted metadata, syntax, diff format and lifecycle.
 - [Write card specification](docs/write-card-spec.md) — source classification, numbered plain/diff bodies and fallbacks.
 - [Shared frame specification](docs/card-frame-spec.md) — geometry, paint, user/queued cards, main input and click bounds.

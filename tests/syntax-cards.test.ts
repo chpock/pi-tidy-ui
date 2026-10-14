@@ -36,12 +36,12 @@ const fixtures: { cards: CardSources<Owner>; sources: SourceController; calls: {
 function fixture(ready = false, retention?: { maxBytes: number }, maxBookkeepingBytes?: number, controllerOptions: ControllerOptions = {},
   classify?: (text: string, hints: { language?: string; path?: string }) => readonly string[]) {
   const calls: { request: Record<string, unknown>; resolve(value: unknown): void }[] = [];
-  const env = { ready, enabled: true, reads: 0, classifications: [] as { text: string; language?: string; path?: string }[],
+  const env = { ready, generation: 1, enabled: true, reads: 0, classifications: [] as { text: string; language?: string; path?: string }[],
     invalidated: [] as Owner[], redraws: 0, failClassification: false, notices: [] as string[][] };
   const provider = {
-    snapshot(): ProviderSnapshot { return { generation: 1, availability: env.ready ? 'ready' : 'initializing',
-      reason: env.ready ? 'ready' : 'initializing', initialShared: false, kind: 'owned', description: env.ready ? description : undefined }; },
-    isReady(g: number) { return env.ready && g === 1; }, classificationAccepted(g: number) { return this.isReady(g); },
+    snapshot(): ProviderSnapshot { return { generation: env.generation, availability: env.ready ? 'ready' : env.generation === 1 ? 'initializing' : 'unavailable',
+      reason: env.ready ? 'ready' : env.generation === 1 ? 'initializing' : 'transport_closed', initialShared: false, kind: 'owned', description: env.ready ? description : undefined }; },
+    isReady(g: number) { return env.ready && g === env.generation; }, classificationAccepted(g: number) { return this.isReady(g); },
     request(_g: number, request: Record<string, unknown>) { return new Promise<unknown>(resolve => calls.push({ request, resolve })); }
   };
   let cards: CardSources<Owner>;
@@ -300,7 +300,7 @@ test('cards metadata upgrade follows recorded latest revision but rejects a reti
   owner.input = bash('ab'); f.cards.record(owner, 2, false); await settled();
   f.env.ready = true; f.cards.metadataChanged(); await settled();
   assert.equal((f.calls[0]!.request.sources as { text: string }[])[0]!.text, 'ab');
-  f.env.ready = false; owner.input = undefined; f.cards.metadataChanged(); await settled();
+  f.env.ready = false; owner.input = undefined; f.cards.record(owner, 3, true); f.cards.metadataChanged(); await settled();
   assert.deepEqual(f.cards.identities(owner), []);
   f.env.ready = true; f.cards.metadataChanged(); await settled(); assert.equal(f.calls.length, 1);
 });
@@ -357,6 +357,8 @@ test('cards LF display path and unsupported wire hints preserve full file glyphs
 test('cards actual canonical local refusal notice enables exactly one FILE Pi fallback without manual retry', async () => {
   const f = fixture(true, undefined, undefined, { maxTransientBytes: 128 }), owner: Owner = { input: written('x', 'a.sh', 'bash') };
   f.cards.useful(owner, 1); await settled();
+  assert.equal(f.env.classifications.length, 0, 'the asynchronous fallback respects the host-turn barrier');
+  await settled();
   const key = f.cards.identities(owner)[0]!.key;
   assert.deepEqual(f.env.notices, [[key]]); assert.equal(f.calls.length, 0);
   assert.equal(f.sources.workStatus(key).fallbackEligible, true);
@@ -560,3 +562,204 @@ for (const invalid of ['patch', 'content', 'command'] as const) {
     assert.deepEqual([f.env.reads, f.calls.length, f.env.classifications.length], warm);
   });
 }
+
+
+for (const episode of ['startup', 'connection reset'] as const) {
+  test(`cards online wait: all demanded Bash cards resume after ${episode}, coalescing latest text`, async () => {
+    const f = fixture(); if (episode === 'connection reset') f.env.generation = 2;
+    const first: Owner = { input: bash('echo first', true) }, second: Owner = { input: bash('echo second', true) };
+    f.cards.useful(first, 1); f.cards.useful(second, 1); await settled();
+    first.input = bash('echo changed', true); f.cards.record(first, 2, true); await settled();
+    second.input = bash('echo last', true); f.cards.record(second, 2, true); await settled();
+    assert.equal(f.calls.length, 0); assert.equal(f.env.classifications.length, 0);
+    f.env.ready = true; f.cards.metadataChanged(); await settled();
+    assert.deepEqual(f.calls.map(c => (c.request.sources as { text: string }[])[0]!.text).sort(), ['echo changed', 'echo last']);
+    assert.ok(f.calls.every(c => c.request.op === 'highlight'));
+    for (let i = 0; i < f.calls.length; i++) answer(f, i, (f.calls[i]!.request.sources as { text: string }[])[0]!.text, true);
+    await settled();
+    assert.ok(f.cards.bash(first, 30, theme, 0x40000000)); assert.ok(f.cards.bash(second, 30, theme, 0x40000000));
+    const warm = [f.env.reads, f.calls.length, f.env.redraws];
+    for (let i = 0; i < 10; i++) { f.cards.metadataChanged(); f.cards.useful(first, 2); f.cards.useful(second, 2); }
+    await settled(); assert.deepEqual([f.env.reads, f.calls.length, f.env.redraws], warm);
+  });
+}
+
+test('cards online wait: reset admits new Bash demand without repeating completed coloring or FILE fallback', async () => {
+  const f = fixture(true), ready: Owner = { input: bash('echo ready', true) };
+  f.cards.useful(ready, 1); await settled(); answer(f, 0, 'echo ready', true); await settled();
+  f.env.generation++; f.env.ready = false; f.cards.metadataChanged(); await settled();
+  const first: Owner = { input: bash('echo pending one', true) }, second: Owner = { input: bash('echo pending two', true) };
+  const fallback: Owner = { input: written('const x = 1') };
+  f.cards.useful(first, 1); f.cards.useful(second, 1); f.cards.useful(fallback, 1);
+  await settled(); await settled(); // Three owners require two preparation turns.
+  assert.equal(f.calls.length, 1); assert.equal(f.env.classifications.length, 1);
+  f.env.ready = true; f.cards.metadataChanged(); await settled();
+  // The existing latest-file native upgrade remains bounded; Pi is still cached.
+  for (let i = 1; i < 4; i++) {
+    assert.ok(f.calls[i], 'all pending Bash demand and the existing latest file upgrade get credit');
+    const text = (f.calls[i]!.request.sources as { text: string }[])[0]!.text;
+    answer(f, i, text, true); await settled();
+  }
+  assert.deepEqual(f.calls.slice(1).map(c => (c.request.sources as { text: string }[])[0]!.text).sort(), ['const x = 1', 'echo pending one', 'echo pending two']);
+  assert.equal(f.env.classifications.length, 1); assert.equal(f.calls.length, 4);
+  f.cards.useful(ready, 1); await settled(); assert.equal(f.calls.length, 4);
+});
+
+test('cards online wait: ready scan skips removed, frozen, unrequested and paused owners; pause can resume', async () => {
+  const f = fixture(), removed: Owner = { input: bash('removed', true) }, frozen: Owner = { input: bash('frozen') };
+  const unseen: Owner = { input: bash('unseen', true) }, paused: Owner = { input: bash('paused', true) }, live: Owner = { input: bash('live', true) };
+  for (const owner of [removed, frozen, paused, live]) f.cards.useful(owner, 1);
+  f.cards.record(unseen, 1, false); await settled();
+  f.cards.remove(removed); f.cards.freeze(frozen); f.cards.pause(paused);
+  f.env.ready = true; f.cards.metadataChanged(); await settled();
+  assert.deepEqual(f.calls.map(c => (c.request.sources as { text: string }[])[0]!.text), ['live']);
+  answer(f, 0, 'live', true); await settled();
+  f.cards.useful(paused, 1); await settled();
+  assert.deepEqual(f.calls.map(c => (c.request.sources as { text: string }[])[0]!.text), ['live', 'paused']);
+  assert.equal(f.env.classifications.length, 0);
+});
+
+test('cards online wait: retained wait flag cannot keep a collected first owner alive', { skip: typeof global.gc !== 'function' }, async () => {
+  const f = fixture();
+  function make() { const owner: Owner = { input: bash('echo collected', true) }; f.cards.useful(owner, 1); return new WeakRef(owner); }
+  const weak = make(); await settled();
+  const peer: Owner = { input: bash('echo peer', true) }; f.cards.useful(peer, 1); await settled();
+  for (let i = 0; i < 100; i++) { global.gc!(); await settled(); if (!weak.deref()) break; await settled(); }
+  assert.equal(weak.deref(), undefined, 'waiting state and registry have no strong first-owner reference');
+  f.env.ready = true; f.cards.metadataChanged(); await settled();
+  assert.deepEqual(f.calls.map(c => (c.request.sources as { text: string }[])[0]!.text), ['echo peer']);
+  assert.equal(f.sources.stats().sourceRecords, 1, 'only the live peer has a native source');
+});
+
+test('cards online wait: readiness keeps bookkeeping refusal instead of creating an unbounded queue', async () => {
+  const f = fixture(false, undefined, 4096), admitted: Owner = { input: bash('admitted', true) }, refused: Owner = { input: bash('refused', true) };
+  f.cards.useful(admitted, 1); await settled(); f.cards.useful(refused, 1); await settled();
+  f.env.ready = true; f.cards.metadataChanged(); await settled();
+  assert.deepEqual(f.calls.map(c => (c.request.sources as { text: string }[])[0]!.text), ['admitted']);
+  answer(f, 0, 'admitted', true); await settled();
+  const reads = f.env.reads;
+  for (let i = 0; i < 10; i++) { f.cards.metadataChanged(); f.cards.useful(admitted, 1); f.cards.useful(refused, 1); }
+  await settled(); assert.equal(f.calls.length, 1); assert.equal(f.env.reads, reads);
+});
+
+
+for (const count of [1, 4, 8]) test(`cards online wait: ${count} awaiting owners use existing two-job credit and finish once`, async () => {
+  const f = fixture(), owners = Array.from({ length: count }, (_, index): Owner => ({ input: bash(`echo pending ${index}`, true) }));
+  for (const owner of owners) f.cards.useful(owner, 1);
+  await settled(); assert.equal(f.calls.length, 0);
+  f.env.ready = true; f.cards.metadataChanged(); await settled();
+  assert.equal(f.calls.length, Math.min(count, 2), 'readiness does not bypass per-route credit');
+  for (let index = 0; index < count; index++) {
+    assert.ok(f.calls[index], 'controller credit wake reaches every admitted waiting source');
+    const text = (f.calls[index]!.request.sources as { text: string }[])[0]!.text;
+    answer(f, index, text, true); await settled();
+    assert.ok(f.sources.stats().unsettledJobs <= 2);
+  }
+  assert.equal(f.calls.length, count); assert.equal(f.sources.stats().unsettledJobs, 0);
+  const warm = [f.env.reads, f.calls.length];
+  for (const owner of owners) { assert.ok(f.cards.bash(owner, 40, theme, 0)); f.cards.useful(owner, 1); }
+  f.cards.metadataChanged(); await settled(); assert.deepEqual([f.env.reads, f.calls.length], warm);
+});
+
+
+for (const reentrant of [false, true]) test(`cards online wait: preparation yields after two owners${reentrant ? ' even with reentrant demand' : ''}`, async () => {
+  const f = fixture(), owners = Array.from({ length: 8 }, (_, i): Owner => ({ input: bash(`echo batch ${i}`, true) }));
+  for (const owner of owners) f.cards.useful(owner, 1);
+  for (let i = 0; i < 8; i++) await settled();
+  assert.equal(f.env.reads, 8); const before = f.env.reads;
+  const extra: Owner = { input: bash('echo reentrant', true) };
+  const observe = f.sources.observe.bind(f.sources); let added = false;
+  if (reentrant) f.sources.observe = demand => {
+    if (!added) { added = true; f.cards.useful(extra, 1); }
+    return observe(demand);
+  };
+  f.env.ready = true; f.cards.metadataChanged();
+  await settled();
+  assert.equal(f.env.reads - before, 2, 'a pre-existing event-loop callback runs before any third preparation');
+  assert.equal(f.calls.length, 2); assert.equal(f.sources.stats().unsettledJobs, 2);
+  await settled(); assert.equal(f.env.reads - before, 4, 'next two prepare in a separate turn');
+  assert.equal(f.calls.length, 2, 'held jobs still own both RPC credits');
+  const count = 8 + Number(reentrant);
+  for (let i = 0; i < count; i++) {
+    assert.ok(f.calls[i]); answer(f, i, (f.calls[i]!.request.sources as { text: string }[])[0]!.text, true); await settled();
+  }
+  assert.equal(f.calls.length, count); assert.equal(f.sources.stats().unsettledJobs, 0);
+});
+
+
+test('cards online wait: yielded backlog cannot retain an unprepared owner or revive a disposed consumer', { skip: !global.gc }, async () => {
+  const f = fixture(), first: Owner = { input: bash('first', true) }, second: Owner = { input: bash('second', true) }, peer: Owner = { input: bash('peer', true) };
+  f.cards.useful(first, 1); f.cards.useful(second, 1);
+  function make() { const owner: Owner = { input: bash('unprepared collected', true) }; f.cards.useful(owner, 1); return new WeakRef(owner); }
+  const weak = make(); f.cards.useful(peer, 1);
+  await settled(); assert.equal(f.env.reads, 2);
+  global.gc!(); await settled(); assert.equal(weak.deref(), undefined, 'yield callback and pending tickets do not own the third card');
+  assert.equal(f.env.reads, 3, 'the collected card is never prepared');
+  f.env.ready = true; f.cards.metadataChanged(); await settled();
+  for (let i = 0; i < 3; i++) { assert.ok(f.calls[i]); answer(f, i, (f.calls[i]!.request.sources as { text: string }[])[0]!.text, true); await settled(); }
+  assert.deepEqual(f.calls.map(c => (c.request.sources as { text: string }[])[0]!.text).sort(), ['first', 'peer', 'second']);
+  const stopped = fixture(), owners = Array.from({ length: 6 }, (_, i): Owner => ({ input: bash(`disposed ${i}`, true) }));
+  for (const owner of owners) stopped.cards.useful(owner, 1);
+  await settled(); assert.equal(stopped.env.reads, 2); stopped.cards.dispose();
+  stopped.env.ready = true; stopped.cards.metadataChanged();
+  for (let i = 0; i < 3; i++) await settled();
+  assert.equal(stopped.env.reads, 2); assert.equal(stopped.calls.length, 0);
+});
+
+
+for (const count of [1, 2]) test(`cards online wait: asynchronous local-refusal notices cannot bypass the host yield (${count} owners)`, async () => {
+  const f = fixture(true, undefined, undefined, { maxTransientBytes: 128 });
+  const owners: Owner[] = [{ input: written('x', 'a.sh', 'bash') }, { input: written('y', 'b.sh', 'bash') }].slice(0, count);
+  for (const owner of owners) f.cards.useful(owner, 1);
+  await settled();
+  assert.equal(f.env.reads, count, 'the host callback precedes the fallback batch queued by actual controller notices');
+  assert.equal(f.env.classifications.length, 0); assert.equal(f.calls.length, 0);
+  await settled();
+  assert.equal(f.env.reads, count * 2); assert.deepEqual(f.env.classifications.map(c => c.text), ['x', 'y'].slice(0, count));
+  assert.equal(f.sources.stats().piSourceRecords, count);
+  const counts = [f.env.reads, f.env.classifications.length, f.env.notices.length];
+  for (let i = 0; i < 10; i++) await settled();
+  assert.deepEqual([f.env.reads, f.env.classifications.length, f.env.notices.length], counts, 'an empty continuation stops; no polling');
+});
+
+test('cards online wait: metadata loss never relabels an unchanged local refusal as deferred demand', async () => {
+  const f = fixture(true, undefined, undefined, { maxTransientBytes: 128 });
+  const observations = new Map<string, number>(), observe = f.sources.observe.bind(f.sources);
+  f.sources.observe = demand => { observations.set(demand.key, (observations.get(demand.key) ?? 0) + 1); return observe(demand); };
+  const refused: Owner = { input: bash('echo refused', true) };
+  f.cards.useful(refused, 1); await settled(); await settled();
+  const key = f.cards.identities(refused)[0]!.key;
+  assert.equal(observations.get(key), 1); assert.equal(f.sources.workStatus(key).execution, 'not_started');
+  assert.equal(f.sources.status(key)!.protective, true); assert.equal(f.calls.length, 0);
+  f.env.generation++; f.env.ready = false; f.cards.metadataChanged(); await settled(); await settled();
+  const deferred: Owner = { input: bash('echo deferred', true) }; f.cards.useful(deferred, 1); await settled();
+  const deferredKey = f.cards.identities(deferred)[0]!.key;
+  f.env.ready = true; f.cards.metadataChanged(); await settled(); await settled();
+  assert.equal(observations.get(key), 1, 'an unchanged refused revision is not part of the readiness scan');
+  assert.equal(observations.get(deferredKey), 1, 'the genuinely availability-deferred revision is admitted');
+  f.env.generation++; f.env.ready = false; f.cards.metadataChanged(); await settled();
+  refused.input = bash('echo changed', true); f.cards.record(refused, 2, true); await settled();
+  const peer: Owner = { input: bash('echo peer', true) }; f.cards.useful(peer, 1); await settled();
+  f.env.ready = true; f.cards.metadataChanged(); await settled(); await settled();
+  assert.equal(observations.get(key), 2, 'a changed refused source is new demand and is not forgotten');
+  assert.equal(f.calls.length, 0); assert.equal(f.env.classifications.length, 0);
+});
+
+
+test('cards online wait: recovery without new demand does not reparse the last current static Bash source', async () => {
+  const f = fixture(true), owner: Owner = { input: bash('echo current', true) };
+  f.cards.metadataChanged(); f.cards.useful(owner, 1); await settled();
+  answer(f, 0, 'echo current', true); await settled(); await settled();
+  assert.ok(f.cards.bash(owner, 30, theme, 0));
+  const before = [f.calls.length, f.sources.stats().dispatches, f.sources.stats().preparedBytes];
+  f.env.generation++; f.env.ready = false; f.cards.metadataChanged(); await settled(); await settled();
+  f.env.ready = true; f.cards.metadataChanged(); await settled(); await settled();
+  assert.deepEqual([f.calls.length, f.sources.stats().dispatches, f.sources.stats().preparedBytes], before,
+    'provider readiness alone is not a new parser demand for validated compatible current text');
+  assert.ok(f.cards.bash(owner, 30, theme, 0));
+  owner.input = bash('echo changed', true); f.cards.record(owner, 2, true); await settled();
+  assert.equal(f.calls.length, 2, 'real source change still resynchronizes to the replacement provider');
+  assert.equal(f.calls[1]!.request.op, 'highlight');
+  answer(f, 1, 'echo changed', true); await settled();
+  assert.ok(f.cards.bash(owner, 30, theme, 0)); assert.equal(f.env.classifications.length, 0);
+});

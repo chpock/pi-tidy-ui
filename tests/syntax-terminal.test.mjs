@@ -7,6 +7,7 @@ import { cp, mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { stripVTControlCharacters } from 'node:util';
 import test, { after } from 'node:test';
+import { SessionManager } from '@earendil-works/pi-coding-agent';
 import { stageExtensionPackage } from '../scripts/release/extension-release.mjs';
 import { PiTerminal } from './terminal.test.mjs';
 import { sharedSyntaxHost, themeDefinition, reaped } from './fixtures/shared-syntax-host.mjs';
@@ -447,8 +448,10 @@ for (const mode of ['fullscreen', 'regular']) test(`occipital CLI: ${mode} gradu
       assert.ok(body(neutral)[0].lines.some(row => /^ ┃/.test(row)), 'neutral control really installs the existing pi-tidy-ui card');
       assert.deepEqual(body(aborted), body(neutral), 'native syntax preserves the existing pi-tidy-ui frame and abort presentation');
       assert.ok(body(aborted)[0].lines.some(row => row.includes("printf 'SYNTAX_OUTPUT\\n'")));
-      const before = await stats(live, 'abort-warm-before');
-      assert.equal(before.source.sourceRecords, 0, 'terminal argument abort retires its source, not merely its useful presentation');
+      assert.ok(body(aborted)[0].lines.some(row => row.includes('[error: incomplete tool call]')));
+       const before = await stats(live, 'abort-warm-before');
+      assert.equal(before.source.sourceRecords, 1, 'terminal argument abort retains one display-only source record');
+       assert.ok(before.source.retention.retainedBytes > 0, 'retained colors remain budgeted until owner removal/off');
       assert.equal(before.source.remoteLeases, 0); assert.equal(before.source.pendingCloses, 0);
       assert.equal(before.source.dispatches, 3, 'two native prefix requests plus one best-effort close');
       for (const width of [40, 100]) { await live.resize(width); await live.capture(`abort-width-${width}`); }
@@ -647,3 +650,163 @@ for (const mode of ['regular', 'fullscreen']) for (const native of [false, true]
         await terminal.close(); await stock.close(); await replay?.close(); replay?.dispose(); terminal.dispose(); stock.dispose();
       }
     });
+
+for (const mode of ['fullscreen', 'regular']) test(`occipital CLI: ${mode} historical Bash tail stays colored across held append, new grapheme and abort`,
+  { skip: !binary, timeout: 90000 }, async () => {
+    const live = new PiTerminal(`bash-prefix-${mode}`, { mode, extensions: [fixture], extraEnv: { ...descriptor, TIDY_UI_TEST_BASH_REPLY_GATE: '1' } });
+    const stock = new PiTerminal(`bash-prefix-stock-${mode}`, { mode, tidyUi: false, extraEnv: descriptor });
+    let replay;
+    const fg = (dump, role) => { const match = dump.summaryStyles[role].match(/38;2;(\d+);(\d+);(\d+)m/); assert.ok(match); return Number(match[1]) * 65536 + Number(match[2]) * 256 + Number(match[3]); };
+    const cells = dump => {
+      const y = dump.screen.findLastIndex(row => row.includes('STABLE_text e')); assert.ok(y >= 0, 'latest Bash text is physically visible');
+      const x = dump.screen[y].indexOf('STABLE_text e');
+      return { prefix: dump.cells[y][x], last: dump.cells[y][x + 'STABLE_text '.length], next: dump.cells[y][x + 'STABLE_text '.length + 1] };
+    };
+    try {
+      for (const terminal of [live, stock]) {
+        await terminal.ready(); if (terminal === live) await syntaxReady(terminal);
+        terminal.send('run bash-prefix-contract\r'); await terminal.event('bash_contract_prefix');
+        await terminal.capture('pointer-prefix-initial', { animated: true });
+        if (terminal === live) {
+          const ready = await settledStats(live, 'prefix-native', s => nativeReady(s) && s.source.tailCalls === 1);
+          assert.equal(ready.source.committedLineCalls, 0); assert.equal(ready.source.committedLineBytes, 0);
+          const shown = await live.capture('pointer-prefix-colored', { animated: true });
+          assert.equal(cells(shown).prefix.fg, fg(shown, 'syntaxString'));
+        }
+        writeFileSync(join(terminal.output, 'bash-contract-go-0'), 'go'); await terminal.event('bash_contract_prefix', 2);
+        if (terminal === live) await live.event('bash_contract_reply_held');
+        const appended = await terminal.capture('pointer-prefix-held', { animated: true });
+        assert.equal(appended.tools[0].args.command, ": 'STABLE_text é界");
+        assert.equal(appended.tools[0].argsComplete, false); assert.equal(appended.tools[0].executionStarted, false);
+        if (terminal === live) {
+          const vector = cells(appended);
+          assert.equal(vector.prefix.fg, fg(appended, 'syntaxString')); assert.equal(vector.last.text, 'é');
+          assert.equal(vector.last.fg, fg(appended, 'syntaxString'), 'new combining mark inherits the matching first scalar');
+          assert.equal(vector.next.text, '界'); assert.equal(vector.next.fg, fg(appended, 'toolTitle'), 'entire new wide glyph is neutral');
+          const before = await stats(live, 'prefix-held-before');
+          assert.equal(before.pendingHeldReplies, 1); assert.equal(before.source.dispatches, 2); assert.equal(before.source.tailCalls, 1);
+          for (let i = 0; i < 3; i++) {
+            const hot = await live.capture(`pointer-prefix-held-warm-${i}`, { animated: true });
+            assert.equal(cells(hot).prefix.fg, fg(hot, 'syntaxString'));
+          }
+          const after = await stats(live, 'prefix-held-after'); assert.deepEqual(work(after), work(before)); assert.equal(after.counts.piBridges, 0);
+        }
+        writeFileSync(join(terminal.output, 'bash-contract-go-1'), 'go'); await terminal.event('bash_contract_prefix', 3);
+        await terminal.capture('pointer-prefix-coalesced', { animated: true });
+        terminal.send('\x1b'); await terminal.event('agent_end'); await terminal.settle();
+      }
+      await settledStats(live, 'prefix-aborted-settled', s => s.source.globalUnsettledJobs === 0 && s.source.remoteLeases === 0 && s.pendingHeldReplies === 0);
+      const aborted = await live.capture('pointer-prefix-aborted'), baseline = await stock.capture('pointer-prefix-aborted');
+      assert.equal(cells(aborted).prefix.fg, fg(aborted, 'syntaxString'));
+      assert.ok(body(aborted)[0].lines.some(row => row.includes('[error: incomplete tool call]')));
+      assert.deepEqual(traffic(live), traffic(stock)); assert.deepEqual(persisted(aborted), persisted(baseline));
+      const raw = dump => dump.tools.map(({ name, args, content, details, structuredContent, isError, argsComplete, executionStarted, partial }) =>
+        ({ name, args, content, details, structuredContent, isError, argsComplete, executionStarted, partial }));
+      assert.deepEqual(raw(aborted), raw(baseline)); assert.equal(traffic(live).filter(e => e.type === 'call' || e.type === 'result').length, 0);
+      const before = await stats(live, 'prefix-frozen-before');
+      assert.equal(before.source.sourceRecords, 1); assert.equal(before.source.dispatches, 3); assert.equal(before.counts.heldBashReplies, 1);
+      for (const width of [60, 100]) {
+        await live.resize(width); const resized = await live.capture(`pointer-prefix-frozen-${width}`);
+        assert.equal(cells(resized).prefix.fg, fg(resized, 'syntaxString'));
+      }
+      const after = await stats(live, 'prefix-frozen-after'); assert.deepEqual(work(after), work(before)); assert.equal(after.counts.piBridges, 0);
+      await finish(live);
+      const sessionBytes = readFileSync(aborted.session);
+      replay = new PiTerminal(`bash-prefix-replay-${mode}`, { mode, session: aborted.session, extensions: [fixture], extraEnv: descriptor });
+      await replay.ready(); await syntaxReady(replay);
+       const replayStats = await settledStats(replay, 'prefix-replay-colored', s => nativeReady(s) && s.source.dispatches === 1 && s.source.decodedBytes > 0);
+       const replayed = await replay.capture('pointer-prefix-replayed');
+       assert.equal(cells(replayed).prefix.fg, fg(replayed, 'syntaxString'), 'restored incomplete call is freshly colored as static saved text');
+      assert.deepEqual(body(replayed), body(aborted), 'replay changes no latest command glyphs or incomplete-call geometry');
+      assert.deepEqual(raw(replayed), raw(aborted));
+      assert.equal(traffic(replay).length, 0, 'replay performs no model or tool work');
+      assert.deepEqual(readFileSync(aborted.session), sessionBytes);
+       assert.equal(replayStats.source.dispatches, 1, 'one finite new-owner classification, not a continuing abandoned stream');
+       assert.equal(replayStats.source.remoteLeases, 0); assert.equal(replayStats.counts.piBridges, 0);
+       for (const width of [60, 100]) {
+         await replay.resize(width);
+         const warmReplay = await replay.capture(`pointer-prefix-replayed-warm-${width}`);
+         assert.equal(cells(warmReplay).prefix.fg, fg(warmReplay, 'syntaxString'));
+       }
+       const replayAfter = await stats(replay, 'prefix-replay-warm'); assert.deepEqual(work(replayAfter), work(replayStats));
+       assert.equal(traffic(replay).length, 0); assert.deepEqual(readFileSync(aborted.session), sessionBytes);
+      await finish(replay);
+      console.log(JSON.stringify({ historicalBash: live.output, stock: stock.output, replay: replay.output, node: after.node, mode, heldReplies: 1,
+        committedLineCalls: 0, tailCalls: after.source.tailCalls, warmNativeDelta: 0, calls: 0, results: 0, coloredAfterAbort: true, restoredDispatches: replayAfter.source.dispatches, coloredAfterReopen: true }));
+    } finally { await live.close(); await stock.close(); await replay?.close(); live.dispose(); stock.dispose(); replay?.dispose(); }
+  });
+
+
+for (const mode of ['fullscreen', 'regular']) test(`occipital CLI: ${mode} online wait resumes both restored and connection-loss Bash demands`,
+  { skip: !binary, timeout: 120000 }, async () => {
+    const directory = await mkdtemp(resolve('.test-artifacts/online-wait-session-'));
+    const manager = SessionManager.create(directory, join(directory, 'sessions'));
+    manager.appendModelChange('tidy-ui-offline', 'scripted'); manager.appendThinkingLevelChange('off');
+    const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
+    const savedFirst = ": 'ONLINE_WAIT_FIRST", savedSecond = "printf 'ONLINE_WAIT_SECOND\\n'";
+    const assistant = (id, command, stopReason) => ({ role: 'assistant', content: [{ type: 'toolCall', id, name: 'bash', arguments: { command } }],
+      api: 'openai-completions', provider: 'tidy-ui-offline', model: 'scripted', usage, stopReason, timestamp: Date.now(),
+      ...(stopReason === 'error' ? { errorMessage: 'WebSocket closed 1000' } : {}) });
+    manager.appendMessage({ role: 'user', content: [{ type: 'text', text: 'saved interrupted call' }], timestamp: Date.now() });
+    manager.appendMessage(assistant('saved-first', savedFirst, 'error'));
+    manager.appendMessage({ role: 'user', content: [{ type: 'text', text: 'saved successful call' }], timestamp: Date.now() });
+    manager.appendMessage(assistant('saved-second', savedSecond, 'toolUse'));
+    manager.appendMessage({ role: 'toolResult', toolCallId: 'saved-second', toolName: 'bash', content: [{ type: 'text', text: 'saved second result' }], details: { exit_code: 0 }, isError: false, timestamp: Date.now() });
+    const session = manager.getSessionFile(), original = readFileSync(session);
+    const terminal = new PiTerminal(`online-wait-${mode}`, { mode, session, extensions: [fixture],
+      extraEnv: { ...descriptor, TIDY_UI_TEST_SYNTAX_ACQUIRE_GATE: '1' } });
+    const stock = new PiTerminal(`online-wait-stock-${mode}`, { mode, session, extraEnv: descriptor });
+    const raw = dump => dump.tools.map(({ name, args, content, details, isError, argsComplete, executionStarted, partial }) =>
+      ({ name, args, content, details, isError, argsComplete, executionStarted, partial }));
+    const rgb = (dump, role) => { const match = dump.summaryStyles[role].match(/38;2;(\d+);(\d+);(\d+)m/); assert.ok(match); return Number(match[1]) * 65536 + Number(match[2]) * 256 + Number(match[3]); };
+    const color = (dump, marker, role) => {
+      const y = dump.screen.findIndex(row => row.includes(marker)); assert.ok(y >= 0, `physically visible ${marker}`);
+      assert.equal(dump.cells[y][dump.screen[y].indexOf(marker)].fg, rgb(dump, role), marker);
+    };
+    try {
+      await terminal.ready(); await terminal.event('syntax_acquire_gate'); await stock.ready();
+      const early = await terminal.capture('online-wait-before-start'), baseline = await stock.capture('online-wait-stock-restored');
+      assert.deepEqual(raw(early), raw(baseline)); assert.equal(early.tools.length, 2);
+      assert.equal(early.tools[0].argsComplete, false); assert.equal(early.tools[0].executionStarted, false);
+      color(early, 'ONLINE_WAIT_FIRST', 'toolTitle'); color(early, 'ONLINE_WAIT_SECOND', 'toolTitle');
+      const before = await stats(terminal, 'online-wait-start-deferred');
+      assert.notEqual(before.client.provider.availability, 'ready'); assert.equal(before.counts.describeReplies, 0); assert.equal(before.source.dispatches, 0);
+      writeFileSync(join(terminal.output, 'syntax-acquire-go'), 'go');
+      const started = await settledStats(terminal, 'online-wait-start-colored', s => nativeReady(s) && s.source.dispatches === 2 && s.source.decodedBytes > 0);
+      const colored = await terminal.capture('online-wait-start-colored');
+      color(colored, 'ONLINE_WAIT_FIRST', 'syntaxString'); color(colored, 'ONLINE_WAIT_SECOND', 'syntaxString');
+      assert.deepEqual(raw(colored), raw(early)); assert.deepEqual(readFileSync(session), original); assert.equal(traffic(terminal).length, 0);
+      assert.equal(started.source.preparedBytes, Buffer.byteLength(savedFirst) + Buffer.byteLength(savedSecond));
+      assert.equal(started.counts.piBridges, 0); assert.equal(started.source.remoteLeases, 0);
+      rmSync(join(terminal.output, 'syntax-acquire-go')); process.kill(started.transports[0].pid, 'SIGKILL');
+      await terminal.event('syntax_acquire_gate', 2);
+      const lost = await stats(terminal, 'online-wait-recovery-deferred');
+      assert.notEqual(lost.client.provider.availability, 'ready'); assert.equal(lost.counts.acquisitions, 2);
+      assert.deepEqual(work(lost), work(started));
+      // Two real short Bash calls while the same client waits for its owned replacement.
+      for (let round = 0; round < 2; round++) for (const current of [terminal, stock]) {
+        current.send('run user-card\r'); await current.event('agent_end', round + 1); await current.settle();
+      }
+      const pending = await terminal.capture('online-wait-recovery-pending'), stockAfter = await stock.capture('online-wait-stock-after');
+      assert.deepEqual(raw(pending), raw(stockAfter)); assert.deepEqual(traffic(terminal), traffic(stock));
+      assert.deepEqual(persisted(pending), persisted(stockAfter));
+      const demanded = pending.tools.filter(tool => tool.name === 'bash').slice(2); assert.equal(demanded.length, 2);
+      const paused = await stats(terminal, 'online-wait-recovery-demanded'); assert.deepEqual(work(paused), work(started));
+      writeFileSync(join(terminal.output, 'syntax-acquire-go'), 'go');
+      const recovered = await settledStats(terminal, 'online-wait-recovered', s => nativeReady(s) && s.source.dispatches === 4 && s.source.sourceRecords === 4);
+      const restored = await terminal.capture('online-wait-recovered');
+      color(restored, 'ONLINE_WAIT_FIRST', 'syntaxString'); color(restored, 'ONLINE_WAIT_SECOND', 'syntaxString');
+      const rows = restored.screen.flatMap((row, y) => row.includes('printf') && row.includes('USER_BASH_OUTPUT') ? [y] : []);
+      assert.equal(rows.length, 2, 'both recovery-deferred command strings, not their output rows, are visible');
+      for (const y of rows) assert.equal(restored.cells[y][restored.screen[y].indexOf('USER_BASH_OUTPUT')].fg, rgb(restored, 'syntaxString'));
+      assert.equal(recovered.source.preparedBytes, started.source.preparedBytes + demanded.reduce((sum, tool) => sum + Buffer.byteLength(tool.args.command), 0), 'no already-colored saved command is classified again');
+      assert.equal(recovered.counts.piBridges, 0); assert.equal(recovered.counts.acquisitions, 2); assert.equal(recovered.source.remoteLeases, 0);
+      const persistedBytes = readFileSync(session);
+      for (const width of [60, 100, 100]) { await terminal.resize(width); await terminal.capture(`online-wait-warm-${width}-${Date.now()}`); }
+      assert.deepEqual(work(await stats(terminal, 'online-wait-warm-final')), work(recovered));
+      assert.deepEqual(readFileSync(session), persistedBytes); assert.deepEqual(raw(restored), raw(pending)); assert.deepEqual(traffic(terminal), traffic(stock));
+      await finish(terminal);
+      console.log(JSON.stringify({ onlineWait: terminal.output, stock: stock.output, node: recovered.node, mode, restoredDispatches: 2,
+        recoveryDispatches: recovered.source.dispatches - started.source.dispatches, redundantPreparedBytes: 0, warmNativeDelta: 0, piBridges: 0 }));
+    } finally { await terminal.close(); await stock.close(); terminal.dispose(); stock.dispose(); await rm(directory, { recursive: true, force: true }); }
+  });

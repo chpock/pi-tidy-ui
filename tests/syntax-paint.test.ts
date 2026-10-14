@@ -7,7 +7,7 @@ import { initTheme } from '@earendil-works/pi-coding-agent';
 import { theme } from '../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js';
 import { indexedColor, rgbColor } from '@earendil-works/pi-tui';
 import xterm from '@xterm/headless';
-import { paintFileSource, paintBashCommand, type RangeReader } from '../src/syntax/paint.ts';
+import { paintFileSource, paintBashCommand, paintHistoricalBashCommand, type RangeReader } from '../src/syntax/paint.ts';
 import { renderBashCard } from '../src/bash-card.ts';
 import { cardGeometry, frameRows } from '../src/card-frame.ts';
 import { toolCardPaint } from '../src/card-theme.ts';
@@ -125,4 +125,45 @@ test('malformed/gapped canonical coverage cannot produce a partly trusted painte
   for (const entries of [[[1, 2, 2]], [[0, 4, 2]], [[0, 1, 2], [2, 3, 3]], [[0, 1, 10]]]) {
     assert.equal(paintFileSource('abc', theme, ranges(entries as [number, number, number][])), undefined);
   }
+});
+
+test('historical Bash keeps only matching scalar-prefix colors, not equal suffix islands', () => {
+  const basis = 'echo abc xyz', current = 'echo abd xyz';
+  const rows = paintHistoricalBashCommand(current, basis, 60, theme, all(basis, 2))!;
+  assert.deepEqual(plain(rows), ['$ ' + current]);
+  assert.equal(rows[0], theme.fg('dim', '$ ') + theme.fg('syntaxKeyword', 'echo ab') + theme.fg('toolTitle', 'd xyz'));
+  assert.equal(paintHistoricalBashCommand('echo ab', basis, 60, theme, all(basis, 2))![0],
+    theme.fg('dim', '$ ') + theme.fg('syntaxKeyword', 'echo ab'), 'Current text can truncate a longer basis');
+  const replaced = paintHistoricalBashCommand('😃!', '😀!', 60, theme, all('😀!', 2))!;
+  assert.equal(replaced[0], theme.fg('dim', '$ ') + theme.fg('toolTitle', '😃!'), 'Equal high-surrogate halves are not scalar proof');
+});
+
+test('historical Bash appended combining and joined scalars inherit the whole current grapheme first-scalar style', () => {
+  for (const [basis, joined] of [['e', 'e\u0301'], ['👩', '👩‍💻'], ['👩', '👩‍👩‍👧‍👦']]) {
+    const current = joined + ' new';
+    const rows = paintHistoricalBashCommand(current, basis!, 60, theme, all(basis!, 3))!;
+    assert.deepEqual(plain(rows), ['$ ' + current]);
+    assert.equal(rows[0], theme.fg('dim', '$ ') + theme.fg('syntaxString', joined!) + theme.fg('toolTitle', ' new'));
+    assert.ok(rows[0]!.includes(joined!), 'No ANSI may split an indivisible displayed grapheme');
+  }
+});
+
+test('historical Bash tabs, newline changes and narrow widths keep complete current glyphs with no suffix transfer', () => {
+  const basis = 'echo\t界\nold', current = 'echo\t界\nnew 👩‍💻';
+  for (const width of [1, 3, 8, 24, 60]) {
+    const actual = paintHistoricalBashCommand(current, basis, width, theme, all(basis, 2))!;
+    const expected = paintBashCommand(current, width, theme, all(current))!;
+    assert.deepEqual(plain(actual), plain(expected));
+    assert.ok(!actual.join('').includes(theme.fg('syntaxKeyword', 'new')));
+  }
+});
+
+test('historical prefix: coverage distinguishes a matching basis from inherited styled glyphs', () => {
+  const coverage = { matchedBytes: -1, styledBytes: -1 };
+  paintHistoricalBashCommand('aa new', 'aa', 100, theme, all('aa', 0), coverage);
+  assert.deepEqual(coverage, { matchedBytes: 2, styledBytes: 0 });
+  paintHistoricalBashCommand('bb', 'aa', 100, theme, all('aa', 2), coverage);
+  assert.deepEqual(coverage, { matchedBytes: 0, styledBytes: 0 });
+  paintHistoricalBashCommand('e\u0301 tail', 'e', 100, theme, all('e', 2), coverage);
+  assert.deepEqual(coverage, { matchedBytes: 1, styledBytes: 3 }, 'whole current grapheme inherits first matching scalar style, but appended scalars are not claimed as matched');
 });

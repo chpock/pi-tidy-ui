@@ -165,6 +165,15 @@ export class RetentionPool {
     return { version: source.version, text: source.text, utf8Bytes: source.utf8Bytes };
   }
 
+  /** Work retirement releases a waiting target but leaves its already charged basis. */
+  retainBasis(generation: number): void {
+    const entry = this.#entries.get(generation);
+    if (!entry) return;
+    entry.latest = undefined;
+    if (entry.bridge?.version !== entry.basis.version) entry.bridge = undefined;
+    this.#reaccount(entry);
+  }
+
   visitSnapshots(generation: number, consume: (kind: 'basis' | 'latest', version: number, text: string) => void): boolean {
     const entry = this.#entries.get(generation);
     if (!entry) return false;
@@ -208,7 +217,7 @@ export class RetentionPool {
     this.#touch(entry);
     const ranges = entry.ranges?.stats();
     return { key: entry.key, generation, ...account(entry), basisVersion: entry.basis.version,
-      latestVersion: entry.latest?.version, revision: ranges?.revision ?? 0,
+       latestVersion: entry.latest?.version, revision: ranges?.revision ?? 0, displayRevision: ranges?.displayRevision ?? 0,
       sourceVersion: ranges?.sourceVersion, sourceBytes: ranges?.sourceBytes ?? 0,
       committedBytes: ranges?.committedBytes ?? 0, complete: ranges?.complete ?? false,
       committedChunks: ranges?.committedChunks ?? 0, bridgeVersion: entry.bridge?.version };

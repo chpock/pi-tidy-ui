@@ -39,8 +39,14 @@ export type PiFailure = 'threw' | 'invalid_rows';
 export interface SourceWorkStatus {
   version?: number; execution: Execution; fallbackEligible: boolean; profileRetryAllowed: boolean;
 }
+export type DisplayRangeReader = (consume: (start: number, end: number, packedStyle: number) => void) => boolean;
+export interface SourceDisplayBasis {
+  generation: number; version: number; stamp: number; language?: string; profile: string; fingerprint: string;
+  visit(consume: (text: string, read: DisplayRangeReader) => void): boolean;
+}
 type SourceState = {
-  id: number; key: string; generation?: number; previous?: number; committedUnits: number;
+  id: number; key: string; generation?: number; previous?: number; previousCoverage?: boolean; committedUnits: number;
+  displayStamp: number; frozen?: boolean;
   // Earliest observed version with this same text/identity. This aliases local
   // coverage only; pool/remote acknowledgement versions remain unchanged.
   version: number; contentVersion: number; language?: string; path?: string; profile: string; fingerprint: string; complete: boolean;
@@ -90,6 +96,12 @@ function completion(owner: WeakRef<SourceController>, job: Job) {
 }
 function continuation(owner: WeakRef<SourceController>) { return () => owner.deref()?.flush(); }
 function notice(owner: WeakRef<SourceController>, epoch: number) { return () => owner.deref()?.notifyChange(epoch); }
+function displayVisit(owner: WeakRef<SourceController>, key: string, id: number, generation: number, version: number, stamp: number) {
+  return (consume: (text: string, read: DisplayRangeReader) => void) => owner.deref()?.visitDisplayBasis(key, id, generation, version, stamp, consume) ?? false;
+}
+function displayRanges(owner: WeakRef<SourceController>, key: string, id: number, generation: number, version: number, stamp: number): DisplayRangeReader {
+  return consume => owner.deref()?.visitDisplayRanges(key, id, generation, version, stamp, consume) ?? false;
+}
 function identifier(value: unknown, cap = 64): value is string {
   return typeof value === 'string' && value.length > 0 && value.length <= cap
     && Buffer.byteLength(value) <= cap && !/[\p{Cc}\p{Cs}]/u.test(value);
@@ -125,6 +137,7 @@ export class SourceController {
   private sequence = 0;
   private wireSequence = 0;
   private stateSequence = 0;
+  private displaySequence = 0;
   private enabled = true;
   private disposed = false;
   private scheduled = false;
@@ -172,6 +185,7 @@ export class SourceController {
       || typeof text !== 'string' || text.length > RETENTION_LIMITS.maxSourceUnits || typeof complete !== 'boolean') throw new Error('invalid source demand');
     const provider = this.provider.snapshot().generation;
     let state = this.states.get(key);
+    if (state?.frozen) return false;
     if (state?.retired) {
       // Held jobs still veto fallback by key; unknown retired work stays
       // protective even when its native payload/lease has been removed.
@@ -189,7 +203,7 @@ export class SourceController {
     if (!state) {
       const bytes = stateBytes(demand); if (!this.charge(bytes)) return false;
       state = { id: ++this.stateSequence, key, version, contentVersion: version, language, path, profile, fingerprint, complete, provider,
-        dirty: false, committedUnits: 0, execution: 'not_started', blocked: false, uncertain: false,
+        dirty: false, committedUnits: 0, displayStamp: 0, execution: 'not_started', blocked: false, uncertain: false,
          restarts: 0, retryUsed: false, retryPending: false, empty: !text.length, bytes,
          profileRefusal: 0, profileReady: false, profileRetryUsed: false };
       this.states.set(key, state);
@@ -215,6 +229,11 @@ export class SourceController {
     if (retryProfile) state.profileRetryUsed = true;
     const profileWait = state.profileRefusal > 0;
     if (identityChange || formationChange || rewrite) {
+      if (!identityChange && state.language === 'bash' && state.generation !== undefined) {
+        state.blocked = (state.uncertain && !providerChange) || profileWait;
+        this.restart(state, provider, providerChange, { version, text });
+        return state.generation !== undefined;
+      }
       this.dropData(state); state.language = language; state.path = path; state.profile = profile; state.fingerprint = fingerprint;
       state.blocked = (state.uncertain && !providerChange) || profileWait; state.provider = provider;
       if (providerChange) { state.uncertain = false; state.restarts = 0; }
@@ -247,6 +266,49 @@ export class SourceController {
     if (!source || source.version !== state.version) return undefined;
     return { ...source, generation, language: state.language, path: state.path,
       profile: state.profile, fingerprint: state.fingerprint, complete: state.complete };
+  }
+
+  /** Historical display reads are not current-source proof. Persistent views keep only weak ownership and primitives. */
+  displayBasis(key: string): SourceDisplayBasis | undefined {
+    const state = this.states.get(key);
+    if (this.disposed || !this.enabled || !state || !state.displayStamp) return undefined;
+    const generation = this.displayGeneration(state);
+    if (generation === undefined) return undefined;
+    const version = this.pool.status(generation)?.sourceVersion;
+    if (version === undefined) return undefined;
+    return { generation, version, stamp: state.displayStamp, language: state.language, profile: state.profile, fingerprint: state.fingerprint,
+      visit: displayVisit(this.owner, key, state.id, generation, version, state.displayStamp) };
+  }
+  displayStamp(key: string, profile?: string, fingerprint?: string, language?: string): number {
+    const state = this.states.get(key);
+    return !this.disposed && this.enabled && state && (profile === undefined || state.profile === profile && state.fingerprint === fingerprint && state.language === language)
+      ? state.displayStamp : 0;
+  }
+  private displayGeneration(state: SourceState): number | undefined {
+    return state.generation !== undefined && this.pool.status(state.generation)?.sourceVersion !== undefined ? state.generation : state.previous;
+  }
+  private currentDisplay(key: string, id: number, generation: number, version: number, stamp: number): boolean {
+    const state = this.states.get(key);
+    return !this.disposed && this.enabled && state?.id === id && state.displayStamp === stamp
+      && this.displayGeneration(state) === generation && this.pool.status(generation)?.sourceVersion === version;
+  }
+  /** Internal weak-view delivery; source text never escapes as a stored field. */
+  visitDisplayBasis(key: string, id: number, generation: number, version: number, stamp: number,
+    consume: (text: string, read: DisplayRangeReader) => void): boolean {
+    if (!this.currentDisplay(key, id, generation, version, stamp)) return false;
+    const basis = this.pool.borrowSnapshot(generation, 'basis');
+    if (!basis || basis.version !== version) return false;
+    consume(basis.text, displayRanges(this.owner, key, id, generation, version, stamp));
+    return this.currentDisplay(key, id, generation, version, stamp);
+  }
+  visitDisplayRanges(key: string, id: number, generation: number, version: number, stamp: number,
+    consume: (start: number, end: number, style: number) => void): boolean {
+    if (!this.currentDisplay(key, id, generation, version, stamp)) return false;
+    const available = this.pool.visitRanges(generation, (start, end, style) => {
+      const state = this.states.get(key);
+      if (state?.id === id && state.displayStamp === stamp && (state.generation === generation || state.previous === generation)) consume(start, end, style);
+    });
+    return available && this.currentDisplay(key, id, generation, version, stamp);
   }
 
   /** Exact Pi fallback snapshots share the native result pool but do not require
@@ -390,7 +452,7 @@ export class SourceController {
       && this.provider.isReady(state.provider);
     const execution = pending ? 'unsettled' : state?.sharedUnknown || state?.ownedUnknown !== undefined
       ? state?.execution === 'started' ? 'started' : 'unknown' : state?.execution ?? 'not_started';
-    return { version: state?.version, execution, fallbackEligible: !this.disposed && !pending && !queued && !state?.uncertain
+    return { version: state?.version, execution, fallbackEligible: !this.disposed && !state?.frozen && !pending && !queued && !state?.uncertain
         && (execution === 'not_started' || execution === 'acknowledged'),
       profileRetryAllowed: !!state && !state.retired && this.enabled && !this.disposed && state.profileReady
         && this.provider.isReady(state.provider) };
@@ -414,7 +476,7 @@ export class SourceController {
   status(key: string) {
     const state = this.states.get(key); if (!state || state.retired) return undefined;
     const current = state.generation === undefined ? undefined : this.pool.status(state.generation);
-    const result = current?.sourceVersion !== undefined ? current : state.previous === undefined ? undefined : this.pool.status(state.previous);
+    const result = current?.sourceVersion !== undefined ? current : !state.previousCoverage || state.previous === undefined ? undefined : this.pool.status(state.previous);
     const exact = state.empty || this.matchesContent(state, result?.sourceVersion);
     // Waiting/retired demand is not execution proof: a still-held source job,
     // including a removed/reused key, remains the physical attempt authority.
@@ -429,7 +491,7 @@ export class SourceController {
   visitRanges(key: string, consume: (start: number, end: number, packedStyle: number) => void): boolean {
     const state = this.states.get(key); if (!state) return false;
     const current = state.generation === undefined ? undefined : this.pool.status(state.generation);
-    const generation = current?.sourceVersion !== undefined ? state.generation : state.previous;
+    const generation = current?.sourceVersion !== undefined ? state.generation : state.previousCoverage ? state.previous : undefined;
     if (generation === undefined) return state.empty;
     const status = this.pool.status(generation); if (!status) return false;
     const limit = this.matchesContent(state, status.sourceVersion) ? status.sourceBytes : status.committedBytes;
@@ -465,6 +527,20 @@ export class SourceController {
     if (!this.enabled || this.disposed || !state || state.retired || state.uncertain || state.retryUsed || state.restarts > CONTROLLER_LIMITS.restarts) return false;
     state.retryUsed = true; state.retryPending = true; return true;
   }
+  /** Abandon native work while keeping one charged validated presentation. Only owner removal can admit a fresh incarnation. */
+  freeze(key: string): void {
+    const state = this.states.get(key);
+    if (!state || state.frozen || this.disposed) return;
+    const generation = this.displayGeneration(state), current = state.generation, previous = state.previous;
+    this.retire(state);
+    state.generation = undefined; state.previous = generation; state.previousCoverage = false;
+    state.frozen = true; state.retired = true; state.dirty = false; state.profileReady = false; state.profileRefusal = 0;
+    if (current !== undefined && current !== generation) this.receipts(this.pool.remove(current));
+    if (previous !== undefined && previous !== generation) this.receipts(this.pool.remove(previous));
+    if (generation !== undefined) this.pool.retainBasis(generation);
+    else state.displayStamp = 0;
+    this.changed(key); this.schedule();
+  }
   remove(key: string): void {
     this.removePiSource(key);
     this.noticeKeys.delete(key);
@@ -477,7 +553,7 @@ export class SourceController {
     if (!enabled) { this.profileNeed = undefined; waiters.delete(this.owner);
       for (const [key, state] of this.states) {
         this.dropData(state);
-        if (this.busy(key) || state.uncertain || state.sharedUnknown || state.ownedUnknown !== undefined) {
+        if (state.frozen || this.busy(key) || state.uncertain || state.sharedUnknown || state.ownedUnknown !== undefined) {
           state.retired = true; state.dirty = false; state.profileReady = false; state.profileRefusal = 0;
         } else { this.states.delete(key); this.charge(-state.bytes); }
       }
@@ -522,27 +598,31 @@ export class SourceController {
     state.generation = result.generation; state.committedUnits = 0;
     state.dirty = !state.empty && !state.blocked; return true;
   }
-  private restart(state: SourceState, provider: number, providerChange: boolean): void {
+  private restart(state: SourceState, provider: number, providerChange: boolean, target?: Pick<SourceDemand, 'version' | 'text'>): void {
     if (state.generation === undefined) return;
-    const latest = this.pool.borrowSnapshot(state.generation); if (!latest) return;
+    const latest = target ?? this.pool.borrowSnapshot(state.generation); if (!latest) return;
+    const uncertain = !!target && state.uncertain && !providerChange, execution = state.execution;
+    const blocked = !!target && state.blocked;
     const oldGeneration = state.generation, previous = state.previous;
     const retained = this.pool.status(oldGeneration)?.sourceVersion !== undefined ? oldGeneration : previous;
+    const previousCoverage = !target && (retained === oldGeneration || state.previousCoverage);
     this.retire(state);
     // Detach the obsolete parser basis before admission receipts. Releasing its
     // empty entry must not also release a compatible independently held result.
-    state.generation = undefined; state.previous = retained; state.provider = provider;
+    state.generation = undefined; state.previous = retained; state.previousCoverage = previousCoverage; state.provider = provider;
+    if (retained !== undefined) this.pool.retainBasis(retained);
     if (oldGeneration !== retained) this.receipts(this.pool.remove(oldGeneration));
     if (previous !== undefined && previous !== retained) this.receipts(this.pool.remove(previous));
     const result = this.pool.admit(this.wireKey(), latest.version, latest.text); this.receipts(result.released);
     if (providerChange) state.restarts = 0;
-    state.execution = 'not_started'; state.uncertain = false;
+    state.execution = uncertain ? execution : 'not_started'; state.uncertain = uncertain;
     if (!result.accepted) { state.blocked = true; state.dirty = false; return; }
-    state.generation = result.generation; state.committedUnits = 0; state.blocked = false;
+    state.generation = result.generation; state.committedUnits = 0; state.blocked = uncertain || blocked;
     // Admission may have evicted that result. Decide reuse only after receipts;
     // otherwise this affected source owes one recovery, not a render retry loop.
     const preserved = state.previous === undefined ? undefined : this.pool.status(state.previous);
     const exactCompleted = providerChange && state.complete && preserved?.complete && this.matchesContent(state, preserved.sourceVersion);
-    state.dirty = !state.empty && !exactCompleted;
+    state.dirty = !state.empty && !exactCompleted && !state.blocked;
   }
   private retire(state: SourceState): void {
     for (const job of this.jobs.values()) if (job.stateId === state.id && job.generation === state.generation) job.abort.abort(sourceRetired);
@@ -555,6 +635,7 @@ export class SourceController {
   private dropData(state: SourceState): void {
     this.retire(state);
     const current = state.generation, previous = state.previous; state.generation = undefined; state.previous = undefined;
+    state.previousCoverage = false; state.displayStamp = 0;
     if (current !== undefined) this.receipts(this.pool.remove(current));
     if (previous !== undefined) this.receipts(this.pool.remove(previous));
   }
@@ -570,10 +651,16 @@ export class SourceController {
       const pi = this.piGenerations.get(receipt.generation);
       if (pi) { this.piGenerations.delete(receipt.generation); pi.generation = undefined; pi.palette = undefined; continue; }
       for (const state of this.states.values()) {
-        if (state.previous === receipt.generation) state.previous = undefined;
+        if (state.previous === receipt.generation) {
+          state.previous = undefined; state.previousCoverage = false;
+          if (state.generation === undefined || this.pool.status(state.generation)?.sourceVersion === undefined) {
+            state.displayStamp = 0; this.changed(state.key);
+          }
+        }
         if (state.generation !== receipt.generation) continue;
         if (state.lease) this.close({ key: receipt.key, ownerKey: state.key, generation: receipt.generation, lease: state.lease, provider: state.provider });
         state.lease = undefined; this.retire(state); state.generation = undefined; state.blocked = true; state.dirty = false;
+        state.displayStamp = 0; this.changed(state.key);
         if (state.previous !== undefined) { const previous = state.previous; state.previous = undefined; this.receipts(this.pool.remove(previous)); }
         break;
       }
@@ -727,13 +814,15 @@ export class SourceController {
       // Validation plus current source/provider authority proves useful native
       // work, even if local byte pressure subsequently discards its colors.
       this.provider.classificationAccepted(job.provider);
+      const priorDisplay = this.pool.status(job.generation)?.displayRevision ?? 0;
       const result = this.pool.installChunk(job.generation, chunk, source.capture); this.receipts(result.released);
       if (!result.accepted || state.generation !== job.generation) {
         this.log('WARN', 'Validated native colors refused by local storage', { source: job.key, job: job.id, provider: job.provider, version: source.expected.source_version });
         if (source.open && chunk.lease && !chunk.complete) this.close({ key: chunk.key, ownerKey: job.key, generation: chunk.generation, lease: chunk.lease, provider: job.provider });
         return;
       }
-      if (state.previous !== undefined) { this.receipts(this.pool.remove(state.previous)); state.previous = undefined; }
+      if (!state.displayStamp || priorDisplay !== this.pool.status(job.generation)?.displayRevision) state.displayStamp = ++this.displaySequence;
+      if (state.previous !== undefined) { this.receipts(this.pool.remove(state.previous)); state.previous = undefined; state.previousCoverage = false; }
       state.committedUnits = chunk.complete ? source.capture.text.length : source.replaceUnits + source.expected.replacementText.lastIndexOf('\n') + 1;
       state.lease = chunk.complete ? undefined : chunk.lease; state.execution = 'acknowledged';
       this.counters.committedLineCalls += chunk.counters.committed_line_calls; this.counters.committedLineBytes += chunk.counters.committed_line_bytes;
@@ -778,7 +867,7 @@ export class SourceController {
       if (current?.id === job.stateId && (changed || permission.execution !== next.execution
         || permission.fallbackEligible !== next.fallbackEligible)) {
         if (permission.execution !== next.execution || permission.fallbackEligible !== next.fallbackEligible)
-          this.log('DEBUG', next.fallbackEligible ? 'Pi fallback permitted by settled source authority' : 'Source authority prohibits a duplicate Pi classifier',
+          this.log('DEBUG', next.fallbackEligible ? 'Fallback permission available; not a fallback invocation (no Pi fallback for Bash)' : 'Source authority prohibits duplicate fallback classification',
             { source: job.key, version: current.version, execution: next.execution, fallbackEligible: next.fallbackEligible });
         this.changed(job.key);
       }

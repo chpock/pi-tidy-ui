@@ -15,6 +15,7 @@ export class RangeAccumulator {
   private tail:Block|undefined;
   private identity:Identity|undefined;
   private revision=0;
+  private displayRevision=0;
   private version=0;
   private sourceBytes=0;
   private committedBytes=0;
@@ -47,6 +48,7 @@ export class RangeAccumulator {
     // No owned range allocation occurs before the complete retention check.
     // Without required coverage, this incarnation cannot consume another suffix.
     if(required>availableBytes){this.invalidate();return false;}
+    const changed=!identity||end!==this.sourceBytes||!sameTail(this.tail,chunk.runs,from,end);
     const committed=commitLength?{start:from,runs:clip(chunk.runs,from,to,commitLength)}:undefined;
     const tail=tailLength?{start:to,runs:clip(chunk.runs,to,end,tailLength)}:undefined;
     if(committed){this.blocks.push(committed);this.prefixBytes+=committed.runs.byteLength;}
@@ -54,6 +56,7 @@ export class RangeAccumulator {
     if(!identity)this.identity={key:chunk.key,generation:chunk.generation,profile:chunk.profile,fingerprint:chunk.fingerprint,lease:chunk.lease};
     this.revision=chunk.revision;this.version=chunk.source_version;this.sourceBytes=end;
     this.committedBytes=to;this.complete=chunk.complete;
+    if(changed)this.displayRevision++;
     return true;
   }
 
@@ -66,11 +69,11 @@ export class RangeAccumulator {
     const tailBytes=this.tail?.runs.byteLength??0;
     return {retainedBytes:this.identity?RECORD_ALLOWANCE+(this.blocks.length+(this.tail?1:0))*BLOCK_ALLOWANCE+this.prefixBytes+tailBytes:0,
       rangeBytes:this.prefixBytes+tailBytes,tailBytes,committedChunks:this.blocks.length,prefixCopiedBytes:0,
-      revision:this.revision,sourceVersion:this.version,sourceBytes:this.sourceBytes,committedBytes:this.committedBytes,complete:this.complete};
+      revision:this.revision,displayRevision:this.displayRevision,sourceVersion:this.version,sourceBytes:this.sourceBytes,committedBytes:this.committedBytes,complete:this.complete};
   }
   invalidate():void {
     this.blocks=[];this.tail=undefined;this.identity=undefined;this.prefixBytes=0;
-    this.revision=0;this.version=0;this.sourceBytes=0;this.committedBytes=0;this.complete=false;this.invalid=true;
+    this.revision=0;this.displayRevision=0;this.version=0;this.sourceBytes=0;this.committedBytes=0;this.complete=false;this.invalid=true;
   }
 }
 function clippedLength(runs:Uint32Array,from:number,to:number):number {
@@ -87,4 +90,18 @@ function clip(runs:Uint32Array,from:number,to:number,length:number):Uint32Array 
 function visitBlock(block:Block,consume:(start:number,end:number,packedStyle:number)=>void):void {
   let start=block.start;
   for(let i=0;i<block.runs.length;i+=2){const end=block.runs[i]!;consume(start,end,block.runs[i+1]!);start=end;}
+}
+
+// Only the acknowledged provisional suffix can change; committed blocks are not walked.
+function sameTail(tail:Block|undefined,runs:Uint32Array,from:number,to:number):boolean {
+  let old=0,next=0,position=from;
+  while(position<to){
+    if(!tail||tail.runs[old+1]!==runs[next+1])return false;
+    const end=Math.min(tail.runs[old]!,runs[next]!);
+    if(!Number.isFinite(end)||end<=position)return false;
+    position=end;
+    if(tail.runs[old]===end)old+=2;
+    if(runs[next]===end)next+=2;
+  }
+  return true;
 }

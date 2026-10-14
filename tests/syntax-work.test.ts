@@ -495,7 +495,8 @@ for (const mode of ['initializing', 'unavailable', 'off'] as const) {
     }
     let pi = 0;
     const identity = { ...demand('x'), fallback: 'neutral' as const };
-    assert.equal(requestSyntax(client, identity, () => { pi++; return ['x']; }).outcome, 'neutral');
+    const result = requestSyntax(client, identity, () => { pi++; return ['x']; });
+    assert.equal(result.outcome, 'neutral'); assert.equal(result.awaitingProvider, mode === 'off' ? undefined : true);
     const resolution = resolveSyntax(sources, identity, 0x40000000);
     assert.equal(resolution.needsPi, false); assert.equal(resolution.pi, undefined);
     assert.equal(paintBashSyntax(sources, resolution, 12, markedTheme), undefined);

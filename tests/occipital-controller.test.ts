@@ -8,7 +8,7 @@ import { RequestFailure } from '../src/occipital/request-failure.ts';
 import type { ProviderSnapshot } from '../src/occipital/provider.ts';
 import { StdioTransport } from '../src/occipital/stdio.ts';
 import { ProviderBroker } from '../src/occipital/provider.ts';
-import { RetentionPool } from '../src/occipital/retention.ts';
+import { RetentionPool, RETENTION_LIMITS } from '../src/occipital/retention.ts';
 import { awaitFixture } from './fixtures/await-fixture.ts';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -1240,4 +1240,193 @@ test('local native admission after credit wake reports refusal and preserves its
   controller.flush(); await settle(); assert.equal(notices.filter(key => key === 'waiting').length, 1);
   host.answer(1); await settle();
   assert.equal(controller.status('busy-peer')?.exact, true);
+});
+
+function displaySnapshot(controller: SourceController, key = 'source') {
+  const basis = controller.displayBasis(key);
+  if (!basis) return undefined;
+  let text: string | undefined;
+  const spans: number[][] = [];
+  const available = basis.visit((value, read) => {
+    text = value;
+    assert.equal(read((start, end, style) => spans.push([start, end, style])), true);
+  });
+  return available ? { version: basis.version, generation: basis.generation, stamp: basis.stamp, text, spans } : undefined;
+}
+
+test('display basis: acknowledged full provisional colors stay paired with their own text during an append', async () => {
+  const { host, controller: c } = fixture();
+  c.observe(demand('a\nt')); c.flush(); host.answer(0); await settle();
+  const initial = displaySnapshot(c)!;
+  assert.equal(initial.text, 'a\nt'); assert.equal(initial.version, 1);
+  assert.deepEqual(initial.spans, [[0, 2, 2], [2, 3, 2]]);
+  assert.ok(initial.stamp > 0);
+  const before = c.stats();
+  c.observe(demand('a\ntx', 2));
+  assert.deepEqual(displaySnapshot(c), initial, 'Historical display never pairs old ranges with the newest text');
+  assert.deepEqual(ranges(c), [[0, 2, 2]], 'Current-source authority remains limited to the committed prefix');
+  assert.equal(c.borrowSource('source')!.text, 'a\ntx');
+  for (let i = 0; i < 100; i++) { assert.equal(c.displayStamp('source'), initial.stamp); displaySnapshot(c); }
+  assert.equal(host.calls.length, 1); assert.equal(c.stats().preparedBytes, before.preparedBytes);
+  c.flush(); host.answer(1); await settle();
+  assert.equal(displaySnapshot(c)!.text, 'a\ntx');
+  assert.notEqual(c.displayStamp('source'), initial.stamp, 'Coloring additional bytes is a display effect');
+});
+
+test('display basis: completion-only acknowledgement preserves display stamp but settles authority and lease', async () => {
+  const { host, controller: c } = fixture();
+  c.observe(demand('a\nt')); c.flush(); host.answer(0); await settle();
+  const initial = displaySnapshot(c)!;
+  c.observe(demand('a\nt', 2, true)); c.flush();
+  assert.equal(host.calls[1]!.request.append, '');
+  assert.equal(c.displayStamp('source'), initial.stamp);
+  host.answer(1); await settle();
+  const final = displaySnapshot(c)!;
+  assert.equal(final.stamp, initial.stamp); assert.equal(final.text, initial.text);
+  assert.equal(final.version, 2); assert.equal(c.status('source')!.exact, true);
+  assert.equal(c.stats().remoteLeases, 0); assert.equal(c.stats().globalUnsettledJobs, 0);
+});
+
+test('display basis: source rewrites retain one charged historical basis without asserting current coverage', async () => {
+  const { host, controller: c } = fixture();
+  c.observe(demand('echo red')); c.flush(); host.answer(0); await settle();
+  const initial = displaySnapshot(c)!;
+  c.observe(demand('echo blue', 2));
+  assert.deepEqual(displaySnapshot(c), initial);
+  assert.deepEqual(ranges(c), [], 'A rewritten parser stream has no proven committed-prefix coverage');
+  assert.equal(c.status('source')!.exact, false);
+  assert.equal(c.stats().retention.entries, 2);
+  c.observe(demand('echo green', 3));
+  assert.deepEqual(displaySnapshot(c), initial);
+  assert.equal(c.stats().retention.entries, 2, 'Repeated replacement retains only one historical basis and one target');
+  assert.equal(c.borrowSource('source')!.text, 'echo green');
+  c.flush(); host.answer(1); await settle();
+  host.answer(2); await settle();
+  assert.equal(displaySnapshot(c)!.text, 'echo green');
+  assert.equal(c.stats().retention.entries, 1);
+  c.observe({ ...demand('echo green', 3), language: 'rust' });
+  assert.equal(c.displayBasis('source'), undefined, 'Incompatible language cannot retain historical styles');
+  assert.equal(c.displayStamp('source'), 0);
+});
+
+test('display basis: frozen formation retains charged colors, closes work and ignores a late append', async () => {
+  const { host, controller: c } = fixture();
+  c.observe(demand('a\nt')); c.flush(); host.answer(0); await settle();
+  const initial = displaySnapshot(c)!, retained = c.stats().retention.snapshotBytes;
+  c.observe(demand('a\ntxy', 2)); c.flush();
+  const physical = c.stats().globalTransientBytes;
+  c.freeze('source');
+  assert.equal(host.calls[1]!.signal!.aborted, true);
+  assert.equal(c.stats().globalTransientBytes, physical, 'Abort is not actual settlement');
+  assert.deepEqual(displaySnapshot(c), initial);
+  assert.equal(c.borrowSource('source'), undefined);
+  assert.equal(c.workStatus('source').fallbackEligible, false, 'Frozen presentation admits no new parser');
+  assert.equal(c.stats().retention.snapshotBytes, retained, 'Discard waiting text without leaking frozen basis credit');
+  assert.equal(c.observe(demand('resurrection', 3)), false);
+  host.answer(1); await settle();
+  assert.deepEqual(displaySnapshot(c), initial, 'Late colors cannot replace the frozen presentation');
+  assert.equal(host.calls[2]!.request.op, 'stream.close');
+  host.answer(2); await settle();
+  assert.equal(c.stats().remoteLeases, 0); assert.equal(c.stats().globalUnsettledJobs, 0);
+  assert.deepEqual(host.acceptedClassifications, [host.generation], 'Stale reply does not reset useful native-work budget');
+  const borrowed = c.displayBasis('source')!;
+  c.remove('source');
+  assert.equal(c.stats().retention.retainedBytes, 0);
+  assert.equal(borrowed.visit(() => assert.fail('Removed basis must not be visited')), false);
+});
+
+test('display basis: a frozen unanswered open closes its late lease while a neighboring source progresses', async () => {
+  const { host, controller: c } = fixture();
+  c.observe(demand('held')); c.flush(); c.freeze('source');
+  assert.equal(c.stats().globalUnsettledJobs, 1); assert.equal(c.displayBasis('source'), undefined);
+  c.observe(demand('peer', 1, true, 'peer')); c.flush();
+  host.answer(1); await settle();
+  assert.equal(c.status('peer')!.exact, true);
+  host.answer(0); await settle();
+  assert.equal(c.displayBasis('source'), undefined);
+  assert.equal(host.calls[2]!.request.op, 'stream.close');
+  host.answer(2); await settle();
+  assert.equal(c.stats().remoteLeases, 0); assert.equal(c.stats().globalUnsettledJobs, 0);
+  assert.equal(host.calls.length, 3);
+  assert.equal(c.observe(demand('held', 2)), false);
+});
+
+test('display basis: zero parser-call counters cannot conceal changed validated styles', async () => {
+  const { host, controller: c } = fixture();
+  c.observe(demand('x')); c.flush(); host.answer(0); await settle();
+  const initial = c.displayStamp('source');
+  const ordinaryAnswer = host.calls[1]; assert.equal(ordinaryAnswer, undefined);
+  c.observe(demand('x', 2, true)); c.flush();
+  const resolve = host.calls[1]!.resolve;
+  host.calls[1]!.resolve = (raw: any) => {
+    raw.body.sources[0].styles = [{ role: 'syntaxString' }];
+    resolve(raw);
+  };
+  host.answer(1); host.calls[1]!.resolve = resolve; await settle();
+  assert.equal(c.stats().tailCalls, 0); assert.equal(c.stats().committedLineCalls, 0);
+  assert.notEqual(c.displayStamp('source'), initial);
+  assert.deepEqual(displaySnapshot(c)!.spans, [[0, 1, 3]]);
+});
+
+async function detachedDisplayOwner(host: Host) {
+  const controller = new SourceController(host);
+  controller.observe(demand('owned display', 1, true)); controller.flush(); host.answer(0); await settle();
+  controller.freeze('source');
+  return { owner: new WeakRef(controller), pool: new WeakRef((controller as unknown as { pool: object }).pool), view: controller.displayBasis('source')! };
+}
+
+test('display basis: a persistent view does not retain the first frozen owner or its pool', { skip: !global.gc }, async () => {
+  const first = await detachedDisplayOwner(new Host());
+  const { controller: active } = fixture(); active.observe(demand('active', 1, true));
+  assert.ok(first.view);
+  for (let i = 0; i < 60; i++) { await turn(); global.gc!(); await turn(); }
+  assert.equal(first.owner.deref(), undefined); assert.equal(first.pool.deref(), undefined);
+  assert.equal(first.view.visit(() => assert.fail('Collected display owner must not be visited')), false);
+  assert.equal(active.stats().sourceRecords, 1);
+});
+
+test('display basis: frozen colors can be evicted without native re-admission and off drops charged payload', async () => {
+  const { host, controller: c } = fixture({ retention: { maxBytes: 4096 } });
+  c.observe(demand('echo one')); c.flush(); host.answer(0); await settle();
+  const view = c.displayBasis('source')!; assert.ok(view);
+  c.freeze('source'); c.flush(); host.answer(1); await settle();
+  // The pool stores a controller-issued wire key, not the external 'peer' key.
+  // Keep key/range headroom so peer admission is deterministic across controller IDs.
+  const peerUnits = Math.floor((4096 - RETENTION_LIMITS.entryAllowance - RETENTION_LIMITS.stringAllowance - 2 * RETENTION_LIMITS.maxKeyUnits - 512) / 2);
+  assert.equal(c.observe(demand('x'.repeat(peerUnits), 1, true, 'peer')), true);
+  assert.equal(c.displayBasis('source'), undefined); assert.equal(c.displayStamp('source'), 0);
+  assert.equal(view.visit(() => assert.fail('Evicted view cannot deliver')), false);
+  const calls = host.calls.length;
+  assert.equal(c.observe(demand('echo two', 2)), false); c.flush();
+  assert.equal(host.calls.length, calls + 1, 'Only the admitted peer starts work');
+  host.answer(calls); await settle();
+  c.setEnabled(false); assert.equal(c.stats().retention.retainedBytes, 0);
+  c.setEnabled(true); assert.equal(c.observe(demand('echo two', 3)), false, 'Off/on cannot thaw a terminal source owner');
+  c.remove('source'); assert.equal(c.observe(demand('echo two', 1)), true, 'Full owner/key removal permits a new incarnation');
+});
+
+test('display basis: retaining rewrite colors does not clear unresolved same-provider authority', async () => {
+  const { host, controller: c } = fixture();
+  c.observe(demand('echo old')); c.flush(); host.answer(0); await settle();
+  const initial = c.displayStamp('source');
+  c.observe(demand('echo older', 2)); c.flush(); host.calls[1]!.reject(new Error('uncertain RPC')); await settle();
+  assert.equal(c.workStatus('source').execution, 'unknown');
+  c.observe(demand('echo rewrite', 3)); c.flush();
+  assert.equal(c.displayStamp('source'), initial);
+  assert.equal(c.workStatus('source').fallbackEligible, false);
+  assert.equal(c.workStatus('source').execution, 'unknown');
+  assert.equal(host.calls.filter(call => call.request.op === 'stream.open' || call.request.op === 'stream.append').length, 2);
+});
+
+test('stream review F2: rewrite then provider recovery never promotes historical colors into committed coverage', async () => {
+  const { host, controller: c } = fixture();
+  c.observe(demand('if', 1, true)); c.flush(); host.answer(0); await settle();
+  c.observe(demand('zz', 2, true)); c.flush();
+  assert.deepEqual(ranges(c), []); assert.equal(c.status('source')?.exact, false);
+  host.generation++; c.observe(demand('zz', 2, true)); c.flush();
+  assert.deepEqual(ranges(c), [], 'recovery cannot make the old keyword apply to corrected text');
+  assert.equal(c.status('source')?.exact, false); assert.equal(c.workStatus('source').fallbackEligible, false);
+  let historical = '';
+  assert.equal(c.displayBasis('source')?.visit(text => { historical = text; }), true);
+  assert.equal(historical, 'if');
 });

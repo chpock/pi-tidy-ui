@@ -8,6 +8,7 @@ import { Box, Container, Text } from '@earendil-works/pi-tui';
 import { VERSION, highlightCode, getLanguageFromPath, createEditToolDefinition } from '@earendil-works/pi-coding-agent';
 import { installTidyUi, type TidyUiController, type TidyUiOptions } from '../src/index.ts';
 import { SourceController } from '../src/occipital/controller.ts';
+import { RETENTION_LIMITS } from '../src/occipital/retention.ts';
 import type { SyntaxClient } from '../src/occipital/client.ts';
 import type { ProviderSnapshot } from '../src/occipital/provider.ts';
 import { OCCIPITAL_LIMITS } from '../src/occipital/limits.ts';
@@ -39,29 +40,31 @@ const description: Description = {
 class UI extends Container { requests = 0; requestRender() { this.requests++; } }
 const fixtures: { adapter: TidyUiController; sources: SourceController;
   calls: { request: Record<string, unknown>; resolve(value: unknown): void }[] }[] = [];
-function fixture(ready = false, useDefaultClassifier = false, options: Pick<TidyUiOptions, 'cards' | 'compact' | 'diagnostic'> = {}) {
+function fixture(ready = false, useDefaultClassifier = false, options: Pick<TidyUiOptions, 'cards' | 'compact' | 'diagnostic'> = {}, retention?: { maxBytes: number }) {
   const ui = new UI();
-  const env = { ready, enabled: true, palette: 1, padding: 1, depth: 0, boldPi: false, plainPi: false, pi: [] as string[], observes: 0, captures: 0, reads: 0, keys: [] as string[], capturedKeys: [] as string[] };
+  const liveCalls = new Set<string>();
+  const env = { liveCalls, ready, enabled: true, generation: 1, selected: { kind: 'pi' } as ReturnType<SyntaxClient['snapshot']>['selected'], palette: 1, padding: 1, depth: 0, boldPi: false, plainPi: false, pi: [] as string[], observes: 0, captures: 0, reads: 0, keys: [] as string[], capturedKeys: [] as string[], committed: new Map<string, number>() };
   const calls: { request: Record<string, unknown>; resolve(value: unknown): void }[] = [];
   const provider = {
-    snapshot(): ProviderSnapshot { return { generation: 1, availability: env.ready ? 'ready' : 'initializing',
+    snapshot(): ProviderSnapshot { return { generation: env.generation, availability: env.ready ? 'ready' : 'initializing',
       reason: env.ready ? 'ready' : 'initializing', initialShared: false, kind: 'owned', description: env.ready ? description : undefined }; },
-    isReady(g: number) { return env.ready && g === 1; }, classificationAccepted(g: number) { return this.isReady(g); },
+    isReady(g: number) { return env.ready && g === env.generation; }, classificationAccepted(g: number) { return this.isReady(g); },
     request(_g: number, request: Record<string, unknown>) {
       assert.equal(env.depth, 0, 'no dispatch in render');
       return new Promise<unknown>(resolve => calls.push({ request, resolve }));
     }
   };
   let adapter: TidyUiController, toolIdentity = 0;
-  const sources = new SourceController(provider, { diagnostic: options.diagnostic, onChange: keys => adapter.syntaxSourceChanged(keys) });
+  const sources = new SourceController(provider, { retention, diagnostic: options.diagnostic, onChange: keys => adapter.syntaxSourceChanged(keys) });
   const observe = sources.observe.bind(sources), capture = sources.capturePiSource.bind(sources);
   sources.observe = (...args) => { assert.equal(env.depth, 0, 'no native source preparation in render'); env.observes++; env.keys.push(args[0].key); return observe(...args); };
   sources.capturePiSource = (...args) => { assert.equal(env.depth, 0, 'no Pi source preparation in render'); env.captures++; env.capturedKeys.push(args[0]); return capture(...args); };
   const client: Pick<SyntaxClient, 'sources' | 'snapshot'> = { sources, snapshot: () => {
     assert.equal(env.depth, 0, 'no work metadata read in render'); env.reads++;
-    return { enabled: env.enabled, provider: provider.snapshot(), standaloneVersion: 'test', selected: { kind: 'pi' }, effective: env.ready ? profile : undefined };
+    return { enabled: env.enabled, provider: provider.snapshot(), standaloneVersion: 'test', selected: env.selected, effective: env.ready ? profile : undefined };
   } };
   const presentationOptions: TidyUiOptions = { ...options, outputPad: () => env.padding, syntax: { client,
+    isLiveCall: id => liveCalls.has(id),
     palette: () => env.palette, classify: useDefaultClassifier ? undefined : (text, info) => {
       assert.equal(env.depth, 0, 'no Pi call in render'); env.pi.push(text);
       const rows = env.plainPi ? text.split('\n') : highlightCode(text, info.language);
@@ -80,8 +83,10 @@ function fixture(ready = false, useDefaultClassifier = false, options: Pick<Tidy
     document(width = 60): string[] {
       env.depth++; try { return ui.render(width); } finally { env.depth--; }
     },
-    tool(name: string, args: Record<string, unknown>, definition?: unknown) {
-      const tool = new ToolExecutionComponent(name, `host-${name}-${++toolIdentity}`, args, undefined, definition, ui, '/tmp');
+    tool(name: string, args: Record<string, unknown>, definition?: unknown, restored = false) {
+      const id = `host-${name}-${++toolIdentity}`;
+      if (!restored) liveCalls.add(id);
+      const tool = new ToolExecutionComponent(name, id, args, undefined, definition, ui, '/tmp');
       ui.addChild(tool); return tool;
     } };
   fixtures.push(value); return value;
@@ -106,7 +111,8 @@ function written(f: ReturnType<typeof fixture>, content: string, path = 'a.ts') 
 function answer(f: ReturnType<typeof fixture>, index: number, text: string, complete = true, committedBytes?: number) {
   const call = f.calls[index]!, r = call.request;
   const source = r.op === 'stream.append' ? r : (r.sources as Record<string, unknown>[])[0]!;
-  const bytes = Buffer.byteLength(text), from = r.op === 'stream.append' ? r.base_bytes as number : 0;
+  const bytes = Buffer.byteLength(text), from = r.op === 'stream.append' ? f.env.committed.get(source.key as string)! : 0;
+  f.env.committed.set(source.key as string, committedBytes ?? bytes);
   call.resolve({ v: PROTOCOL_VERSION, ticket: r.ticket, instance: 'daemon', assets: 'assets', status: 'ok', body: {
     kind: 'source', sources: [{ key: source.key, generation: source.generation, source_version: source.source_version,
       profile: source.profile, fingerprint: source.fingerprint, revision: r.op === 'stream.append' ? (r.base_revision as number) + 1 : 1,
@@ -408,6 +414,8 @@ test('P1 injected stock edit is the actual stock self-shell Box and skips all na
     f.render(tool); await settled();
     assert.deepEqual(f.env.pi, ['x', 'y']);
     assert.deepEqual(watch.counts(), [1, 1, 2, 0, 2, 3, 0]);
+    await settled(); // Finish the one-shot host-yield barrier before warm measurements.
+    assert.deepEqual(watch.counts(), [1, 2, 2, 0, 2, 3, 0]);
     const before = watch.counts().slice(1);
     for (const width of [24, 60, 121]) f.render(tool, width);
     tool.handleMouse({ type: 'move', width: 60, height: 8, x: 0, y: 0 });
@@ -472,7 +480,7 @@ for (const held of [false, true]) test(`host incomplete Bash terminal error reti
   tool.updateResult({ content: [{ type: 'text', text: 'Operation aborted' }], isError: true }, false);
   assert.equal(tool.getRenderContext().argsComplete, false, 'abort does not simulate argument finalization');
   assert.equal(tool.executionStarted, false);
-  assert.equal(f.sources.stats().sourceRecords, 1, 'only the completed peer source remains');
+  assert.equal(f.sources.stats().sourceRecords, 2, 'the retired source keeps one budgeted display/work-authority record beside the peer');
   if (held) {
     assert.equal(f.calls.length, 2); assert.equal(f.sources.stats().unsettledJobs, 1, 'cancel is not physical completion');
     answer(f, 0, 'x\n', false);
@@ -482,13 +490,14 @@ for (const held of [false, true]) test(`host incomplete Bash terminal error reti
   close.resolve({ v: PROTOCOL_VERSION, ticket: close.request.ticket, instance: 'daemon', assets: 'assets', status: 'ok', body: { kind: 'closed' } });
   await settled();
   assert.equal(f.sources.stats().remoteLeases, 0); assert.equal(f.sources.stats().pendingCloses, 0);
-  assert.equal(f.sources.stats().unsettledJobs, 0); assert.equal(f.sources.stats().retention.entries, 1);
+  assert.equal(f.sources.stats().unsettledJobs, 0); assert.equal(f.sources.stats().retention.entries, held ? 1 : 2,
+    'settled colors remain charged; an aborted pending result cannot publish late colors');
   assert.deepEqual(f.render(peer), peerRows); assert.equal(f.adapter.cacheStats().builds, peerBuilds, 'peer layout remains warm');
   const before = counts(f);
   for (const width of [24, 60, 100]) f.render(tool, width);
   f.document(); tool.invalidate(); f.render(tool); await settled();
   assert.deepEqual(counts(f), before, 'aborted source is not reopened by rows or invalidation');
-  assert.equal(f.env.pi.length, 0); assert.equal(f.sources.stats().sourceRecords, 1);
+  assert.equal(f.env.pi.length, 0); assert.equal(f.sources.stats().sourceRecords, 2);
 });
 
 test('host partial Bash errors do not retire forming args and completed argument errors preserve cached syntax', async () => {
@@ -544,7 +553,7 @@ test('logging actual SDK final paint separates cached plain Pi, waiting file, na
   answer(f, 0, shell, false); answer(f, 1, 'const PRIVATE_HELD_BODY = 18;'); await settled();
   const native = f.render(heldFile); assert.deepEqual(plain(native), plain(waiting)); assert.notDeepEqual(native, waiting);
   f.document(); await journal.flush(); body = await fs.readFile(journal.status().path, 'utf8');
-  assert.match(body, /call=host-write.*selected=exact-native/); assert.match(body, /call=host-bash.*selected=exact-native/);
+  assert.match(body, /call=host-write.*selected=exact-native/); assert.match(body, /call=host-bash.*selected=historical-native-prefix/);
   const workBeforeWidth = counts(f);
   for (const width of [60, 60, 100, 100, 60]) f.document(width);
   await settled(); await journal.flush(); assert.deepEqual(counts(f), workBeforeWidth);
@@ -590,20 +599,280 @@ test('logging keeps primitive decisions only; active first SDK installer still c
 });
 
 
-test('logging review P1: held no-newline Bash append has zero stable native prefix and truthful neutral projection', async () => {
+test('logging stream contract: held no-newline Bash retains historical provisional colors without claiming current-source proof', async () => {
   const records: { explanation: string; fields?: DiagnosticFields }[] = [];
   const f = fixture(true, false, { diagnostic: (_level, _area, explanation, fields) => records.push({ explanation, fields }) });
   const bash = f.tool('bash', { command: 'echo a' }); f.render(bash); await settled();
   assert.equal(f.calls.length, 1); answer(f, 0, 'echo a', false, 0); await settled(); f.render(bash);
   bash.updateArgs({ command: 'echo ab' }); f.render(bash); await settled(); const rows = f.render(bash);
   assert.equal(f.calls.length, 2); assert.equal(f.sources.status(f.env.keys.at(-1)!)?.committedBytes, 0);
-  assert.ok(rows.join('\n').includes(themes.theme.fg('toolTitle', 'echo ab')), 'the entire command uses its neutral role');
+  assert.ok(rows.join('\n').includes(themes.theme.fg('syntaxKeyword', 'echo a')), 'historical provisional colors survive the append');
+  assert.ok(rows.join('\n').includes(themes.theme.fg('toolTitle', 'b')), 'new characters are neutral');
   assert.equal(f.env.pi.length, 0);
-  const painted = records.findLast(record => record.fields?.selected === 'neutral-retained');
-  assert.ok(painted, 'successful projection must not claim a colored prefix when committed bytes are zero');
-  assert.match(painted.explanation, /no committed prefix.*neutral/);
+  const painted = records.findLast(record => record.fields?.selected === 'historical-native-prefix');
+  assert.ok(painted, 'historical provisional colors are distinct from current-source proof');
+  assert.match(painted.explanation, /historical-prefix.*not parser authority/);
   const before = counts(f), builds = f.adapter.cacheStats().builds, length = records.length;
   for (let i = 0; i < 100; i++) assert.deepEqual(f.render(bash), rows);
   assert.deepEqual(counts(f), before); assert.equal(f.adapter.cacheStats().builds, builds); assert.equal(records.length, length);
   assert.equal(records.some(record => record.explanation.includes('prepared native coloring')), false);
+});
+
+test('stream contract: first changed frame keeps the provisional prefix and preparation/wait adds no identical rebuild', async () => {
+  const f = fixture(true), base = 'echo "old', current = `${base} new`;
+  const tool = f.tool('bash', { command: base });
+  f.render(tool); const coldBuilds = f.adapter.cacheStats().builds, coldRequests = f.ui.requests;
+  await settled();
+  f.render(tool);
+  assert.equal(f.adapter.cacheStats().builds, coldBuilds, 'Waiting preparation does not rebuild its identical neutral command');
+  assert.equal(f.ui.requests, coldRequests, 'Waiting preparation adds no adapter request');
+  answer(f, 0, base, false, 0); await settled(); f.render(tool);
+  tool.updateArgs({ command: current });
+  const first = f.render(tool);
+  assert.ok(first.join('').includes(themes.theme.fg('syntaxKeyword', base)), 'Colors survive on the first frame before deferred source preparation');
+  assert.ok(first.join('').includes(themes.theme.fg('toolTitle', ' new')), 'Latest appended text is visible immediately and initially neutral');
+  const builds = f.adapter.cacheStats().builds, requests = f.ui.requests;
+  await settled();
+  assert.deepEqual(f.render(tool), first);
+  assert.equal(f.adapter.cacheStats().builds, builds, 'Held native reply/preparation cannot rebuild unchanged painted rows');
+  assert.equal(f.ui.requests, requests);
+  assert.equal(f.calls.length, 2); assert.equal(f.calls[1]!.request.op, 'stream.append');
+  const before = counts(f);
+  for (let i = 0; i < 100; i++) assert.deepEqual(f.render(tool), first);
+  await settled(); assert.deepEqual(counts(f), before); assert.equal(f.adapter.cacheStats().builds, builds);
+  assert.equal(f.env.pi.length, 0);
+});
+
+test('stream contract: equal-text finalization completes native authority without a body rebuild or adapter redraw', async () => {
+  const diagnostics: unknown[] = [];
+  const f = fixture(true, false, { diagnostic: (...event) => diagnostics.push(event) }), text = 'echo done', tool = f.tool('bash', { command: text });
+  f.render(tool); await settled(); answer(f, 0, text, false, 0); await settled();
+  const painted = f.render(tool), builds = f.adapter.cacheStats().builds;
+  const originalRequests = f.ui.requests; tool.setArgsComplete();
+  assert.equal(f.ui.requests, originalRequests + 1, 'Original public completion setter still owns its redraw');
+  assert.deepEqual(f.render(tool), painted);
+  await settled(); assert.equal(f.calls[1]!.request.append, ''); assert.equal(f.calls[1]!.request.final, true);
+  const requests = f.ui.requests; answer(f, 1, text, true); await settled();
+  assert.deepEqual(f.render(tool), painted);
+  assert.equal(f.adapter.cacheStats().builds, builds, 'Lifecycle completion without display effect retains the body');
+  assert.equal(f.ui.requests, requests, 'Native completion notice without display effect adds no adapter redraw');
+  assert.equal(f.sources.stats().unsettledJobs, 0); assert.equal(f.sources.stats().remoteLeases, 0, JSON.stringify(diagnostics));
+  assert.equal(f.env.pi.length, 0);
+});
+
+test('stream contract: aborted still-displayed command retains colors without reopening native work', async () => {
+  const f = fixture(true), text = 'echo "unfinished', tool = f.tool('bash', { command: text });
+  f.render(tool); await settled(); answer(f, 0, text, false, 0); await settled(); f.render(tool);
+  const rawArgs = JSON.stringify(tool.args);
+  tool.updateResult({ content: [{ type: 'text', text: 'WebSocket closed 1000' }], isError: true }, false);
+  const rows = f.render(tool);
+  assert.ok(rows.join('').includes(themes.theme.fg('syntaxKeyword', text)), 'Formation failure does not erase retained colors');
+  assert.ok(plain(rows).join('\n').includes('[error: incomplete tool call]'));
+  assert.equal(plain(rows).join('\n').includes('execution failed'), false);
+  assert.equal(JSON.stringify(tool.args), rawArgs); assert.equal(tool.executionStarted, false); assert.equal(tool.argsComplete, false);
+  assert.equal(f.calls[1]!.request.op, 'stream.close');
+  const r = f.calls[1]!.request;
+  f.calls[1]!.resolve({ v: PROTOCOL_VERSION, ticket: r.ticket, instance: 'daemon', assets: 'assets', status: 'ok', body: { kind: 'closed' } });
+  await settled();
+  const before = counts(f), builds = f.adapter.cacheStats().builds;
+  for (const width of [60, 0, 60, 24, 100]) {
+    if (width === 0) { assert.deepEqual(f.render(tool, width), []); continue; }
+    assert.ok(f.render(tool, width).join('').includes(themes.theme.fg('syntaxKeyword', text)));
+    await settled();
+  }
+  assert.deepEqual(counts(f), before); assert.equal(f.sources.stats().remoteLeases, 0);
+  f.render(tool, 100); const warmBuilds = f.adapter.cacheStats().builds;
+  f.render(tool, 100); assert.equal(f.adapter.cacheStats().builds, warmBuilds);
+  assert.ok(warmBuilds > builds, 'Only changed width rebuilt the display');
+  f.ui.removeChild(tool); assert.equal(f.sources.stats().sourceRecords, 0); assert.equal(f.sources.stats().retention.retainedBytes, 0);
+});
+
+test('stream contract: formation, live execution, persisted execution and unknown failure labels use phase evidence', () => {
+  const error = { content: [{ type: 'text', text: 'unchanged producer diagnostic' }], isError: true };
+  const f = fixture(), forming = f.tool('bash', { command: 'echo unfinished' });
+  forming.updateResult(error, false);
+  assert.ok(plain(f.render(forming)).join('\n').includes('[error: incomplete tool call]'));
+  const executing = f.tool('bash', { command: 'echo failed' }); executing.markExecutionStarted(); executing.updateResult(error, false);
+  assert.ok(plain(f.render(executing)).join('\n').includes('[error: execution failed]'), 'positive execution evidence takes precedence over a default incomplete flag');
+  const replay = f.tool('bash', { command: 'echo failed' }); replay.updateResult({ ...error, role: 'toolResult' }, false);
+  assert.ok(plain(f.render(replay)).join('\n').includes('[error: execution failed]'), 'reconstructed SDK flags cannot overwrite a persisted execution result');
+  const unknown = renderBashCard({ args: { command: 'echo unknown' }, expanded: false, isPartial: false, result: error }, undefined, 100, themes.theme);
+  assert.ok(plain(unknown.rows).join('\n').includes('[error: tool call failed]'));
+  assert.equal(JSON.stringify(forming.result), JSON.stringify(error)); assert.equal(JSON.stringify(executing.result), JSON.stringify(error));
+});
+
+test('stream contract: identical lifecycle callbacks are counted but not logged per callback', async () => {
+  const records: { area: string; explanation: string; fields?: DiagnosticFields }[] = [];
+  const f = fixture(false, false, { diagnostic: (_level, area, explanation, fields) => records.push({ area, explanation, fields }) });
+  const tool = f.tool('bash', { command: 'echo same' }); tool.updateArgs({ command: 'echo same' }); f.render(tool); await settled();
+  const length = records.length, before = counts(f), builds = f.adapter.cacheStats().builds;
+  for (let i = 0; i < 100; i++) { tool.updateArgs({ command: 'echo same' }); f.render(tool); }
+  await settled();
+  assert.equal(records.length, length, 'unchanged source and phase add no lifecycle or decision records');
+  assert.deepEqual(counts(f), before); assert.equal(f.adapter.cacheStats().builds, builds);
+  f.adapter.logSnapshot();
+  const summary = records.findLast(record => record.explanation.includes('Native lifecycle callback counters'));
+  assert.ok(summary); assert.equal(summary.fields?.callbacks, 101); assert.equal(summary.fields?.phaseChanges, 1);
+  tool.markExecutionStarted();
+  assert.equal(records.filter(record => record.explanation.includes('Native tool phase changed')).length, 2);
+});
+
+test('stream contract: persisted execution error is a finite replay source, not abandoned argument formation', async () => {
+  const f = fixture(true), text = 'echo saved failure', tool = f.tool('bash', { command: text });
+  tool.updateResult({ role: 'toolResult', content: [{ type: 'text', text: 'saved diagnostic' }], isError: true }, false);
+  f.render(tool); await settled();
+  assert.equal(f.calls.length, 1); assert.equal(f.calls[0]!.request.op, 'highlight');
+  answer(f, 0, text, true); await settled();
+  assert.equal(f.sources.stats().remoteLeases, 0); assert.equal(f.sources.stats().unsettledJobs, 0);
+  assert.equal(f.sources.status(f.env.keys[0]!)?.exact, true);
+  assert.ok(plain(f.render(tool)).join('\n').includes('[error: execution failed]'));
+});
+
+for (const frozen of [false, true]) test(`stream review F1: ${frozen ? 'frozen' : 'active'} Bash keeps compatible colors through metadata absence but rejects off/selection changes`, async () => {
+  const f = fixture(true), text = 'echo prefix', tool = f.tool('bash', { command: text });
+  f.render(tool); await settled(); answer(f, 0, text, false, 0); await settled(); f.render(tool);
+  if (frozen) {
+    tool.updateResult({ content: [{ type: 'text', text: 'upstream interrupted' }], isError: true }, false);
+    f.render(tool); await settled(); const request = f.calls[1]!.request;
+    f.calls[1]!.resolve({ v: PROTOCOL_VERSION, ticket: request.ticket, instance: 'daemon', assets: 'assets', status: 'ok', body: { kind: 'closed' } });
+    await settled();
+  }
+  const before = f.calls.length, stamp = f.sources.displayStamp(f.env.keys[0]!);
+  f.env.ready = false; f.adapter.syntaxMetadataChanged();
+  assert.ok(f.render(tool).join('').includes(themes.theme.fg('syntaxKeyword', text)), 'first metadata-loss frame retains styles');
+  await settled(); assert.ok(f.render(tool).join('').includes(themes.theme.fg('syntaxKeyword', text)));
+  f.env.ready = true; f.adapter.syntaxMetadataChanged(); await settled();
+  assert.ok(f.render(tool, 100).join('').includes(themes.theme.fg('syntaxKeyword', text)));
+  assert.equal(f.calls.length, before); assert.equal(f.sources.displayStamp(f.env.keys[0]!), stamp); assert.equal(f.env.pi.length, 0);
+  f.env.ready = false; f.env.selected = { kind: 'occipital', id: 'different' }; f.adapter.syntaxMetadataChanged();
+  assert.equal(f.render(tool).join('').includes(themes.theme.fg('syntaxKeyword', text)), false, 'changed preference cannot borrow previous profile');
+  f.env.ready = true; f.env.selected = { kind: 'pi' }; f.adapter.syntaxMetadataChanged(); await settled();
+  assert.ok(f.render(tool).join('').includes(themes.theme.fg('syntaxKeyword', text)));
+  f.env.enabled = false; f.sources.setEnabled(false); f.adapter.syntaxMetadataChanged();
+  assert.equal(f.render(tool).join('').includes(themes.theme.fg('syntaxKeyword', text)), false);
+  assert.equal(f.sources.stats().retention.retainedBytes, 0);
+});
+
+test('stream review F2: shell-file correction then provider recovery cannot paint display-only history as current coverage', async () => {
+  const f = fixture(true), tool = written(f, 'if', 'a.sh');
+  f.render(tool); await settled(); answer(f, 0, 'if', true); await settled(); f.render(tool);
+  tool.updateArgs({ path: 'a.sh', content: 'zz' }); f.render(tool); await settled();
+  assert.equal(f.calls.length, 2); f.env.generation = 2; f.adapter.syntaxMetadataChanged(); await settled();
+  const rows = f.render(tool);
+  assert.equal(rows.join('').includes(themes.theme.fg('syntaxKeyword', 'zz')), false);
+  assert.equal(f.env.pi.length, 0, 'unsettled native work still forbids duplicate Pi parsing');
+  assert.ok(plain(rows).join('\n').includes('zz'), 'the complete latest shell-file text remains visible');
+});
+
+test('stream review F3: frozen native display survives zero width without thawing work', async () => {
+  const f = fixture(true), text = 'echo retained', tool = f.tool('bash', { command: text });
+  f.render(tool); await settled(); answer(f, 0, text, false, 0); await settled(); f.render(tool);
+  tool.updateResult({ content: [{ type: 'text', text: 'interrupted' }], isError: true }, false); f.render(tool);
+  const request = f.calls[1]!.request;
+  f.calls[1]!.resolve({ v: PROTOCOL_VERSION, ticket: request.ticket, instance: 'daemon', assets: 'assets', status: 'ok', body: { kind: 'closed' } }); await settled();
+  const before = counts(f), stamp = f.sources.displayStamp(f.env.keys[0]!);
+  assert.deepEqual(f.render(tool, 0), []);
+  assert.ok(f.render(tool, 60).join('').includes(themes.theme.fg('syntaxKeyword', text)));
+  await settled(); assert.ok(f.render(tool, 60).join('').includes(themes.theme.fg('syntaxKeyword', text)));
+  assert.equal(f.sources.displayStamp(f.env.keys[0]!), stamp); assert.deepEqual(counts(f), before);
+  assert.equal(f.sources.stats().remoteLeases, 0);
+});
+
+test('stream review F5: restored frozen Bash processes actual display eviction while work remains paused', async () => {
+  const maxBytes = 4096, f = fixture(true, false, {}, { maxBytes }), text = 'echo retained', tool = f.tool('bash', { command: text });
+  f.render(tool); await settled(); answer(f, 0, text, false, 0); await settled(); f.render(tool);
+  const key = f.env.keys[0]!;
+  tool.updateResult({ content: [{ type: 'text', text: 'interrupted' }], isError: true }, false); f.render(tool);
+  const request = f.calls[1]!.request;
+  f.calls[1]!.resolve({ v: PROTOCOL_VERSION, ticket: request.ticket, instance: 'daemon', assets: 'assets', status: 'ok', body: { kind: 'closed' } }); await settled();
+  f.render(tool, 0); assert.ok(f.render(tool, 60).join('').includes(themes.theme.fg('syntaxKeyword', text)));
+  const requests = f.ui.requests, releases = f.adapter.cacheStats().releases, calls = f.calls.length;
+  const peerUnits = Math.floor((maxBytes - RETENTION_LIMITS.entryAllowance - RETENTION_LIMITS.stringAllowance - 2 * RETENTION_LIMITS.maxKeyUnits - 512) / 2);
+  assert.equal(f.sources.observe({ key: 'pressure-peer', version: 1, text: 'x'.repeat(peerUnits), language: 'bash', profile: profile.id, fingerprint: profile.fingerprint, complete: true }), true);
+  assert.equal(f.sources.displayBasis(key), undefined, 'genuine pool pressure released the frozen basis');
+  f.sources.flush(); await settled();
+  assert.equal(f.ui.requests, requests + 1, 'display loss requests repaint before a manual render can mask the missed notification');
+  assert.equal(f.adapter.cacheStats().releases, releases + 1, 'the frozen owner body is invalidated by the display effect');
+  assert.equal(f.calls.length, calls + 1); assert.equal(f.calls.at(-1)!.request.op, 'highlight', 'only the unrelated peer is admitted');
+  const rows = f.render(tool, 60); assert.equal(rows.join('').includes(themes.theme.fg('syntaxKeyword', text)), false);
+  assert.ok(rows.join('').includes(themes.theme.fg('toolTitle', text)));
+  await settled(); assert.equal(f.calls.length, calls + 1); assert.equal(f.env.pi.length, 0); assert.equal(f.sources.stats().remoteLeases, 0);
+});
+
+for (const beforeAttach of [false, true]) test(`host restored interrupted Bash classifies once without execution (${beforeAttach ? 'prebuilt' : 'attached then finalized'})`, async () => {
+  const f = fixture(true), text = ": 'saved unfinished", args = { command: text };
+  let tool: InstanceType<typeof ToolExecutionComponent>;
+  if (beforeAttach) {
+    tool = new ToolExecutionComponent('bash', 'restored-bash', args, undefined, undefined, f.ui, '/tmp');
+    tool.updateResult({ content: [{ type: 'text', text: 'WebSocket closed 1000' }], isError: true }, false);
+    f.ui.addChild(tool);
+  } else {
+    tool = f.tool('bash', args, undefined, true);
+    tool.updateResult({ content: [{ type: 'text', text: 'WebSocket closed 1000' }], isError: true }, false);
+  }
+  const raw = JSON.stringify([tool.args, tool.result, tool.getRenderContext()]);
+  const cold = f.render(tool); assert.ok(plain(cold).some(row => row.includes('[error: incomplete tool call]')));
+  await settled(); assert.equal(f.calls.length, 1, 'one new-owner static coloring request, not resurrected live work');
+  assert.equal(f.calls[0]!.request.op, 'highlight', 'the saved snapshot is finite, not complete Bash arguments');
+  const submitted = (f.calls[0]!.request.sources as Record<string, unknown>[])[0]!;
+  assert.equal(submitted.text, text);
+  answer(f, 0, text); await settled();
+  assert.ok(f.render(tool).join('').includes(themes.theme.fg('syntaxKeyword', text)));
+  assert.equal(f.sources.stats().remoteLeases, 0);
+  const before = counts(f);
+  for (const width of [24, 60, 100, 60]) { f.render(tool, width); f.document(width); }
+  for (let i = 0; i < 100; i++) f.render(tool);
+  await settled(); assert.deepEqual(counts(f), before); assert.deepEqual(f.env.pi, []);
+  assert.equal(JSON.stringify([tool.args, tool.result, tool.getRenderContext()]), raw);
+  assert.equal(tool.argsComplete, false); assert.equal(tool.executionStarted, false);
+});
+
+test('host live formation abort before its first frame admits no static recoloring', async () => {
+  const f = fixture(true), tool = f.tool('bash', { command: ": 'still live" });
+  tool.updateResult({ content: [{ type: 'text', text: 'Operation aborted' }], isError: true }, false);
+  f.render(tool); await settled(); assert.equal(f.calls.length, 0); assert.equal(f.env.observes, 0);
+  for (const width of [60, 24, 100]) f.render(tool, width);
+  await settled(); assert.equal(f.calls.length, 0); assert.deepEqual(f.env.pi, []);
+});
+
+test('host restored interrupted Bash waits for provider readiness once, never invokes Pi', async () => {
+  const f = fixture(false), text = ": 'saved", tool = f.tool('bash', { command: text }, undefined, true);
+  tool.updateResult({ content: [{ type: 'text', text: 'Operation aborted' }], isError: true }, false);
+  const cold = f.render(tool); await settled(); assert.equal(f.calls.length, 0); assert.equal(f.env.pi.length, 0);
+  f.env.ready = true; f.adapter.syntaxMetadataChanged(); await settled();
+  assert.equal(f.calls.length, 1); assert.equal(f.calls[0]!.request.op, 'highlight'); answer(f, 0, text); await settled();
+  const warm = f.render(tool); assert.deepEqual(plain(warm), plain(cold)); assert.notDeepEqual(warm, cold);
+  assert.equal(f.sources.stats().remoteLeases, 0); const before = counts(f);
+  for (let i = 0; i < 100; i++) f.render(tool);
+  await settled(); assert.deepEqual(counts(f), before); assert.deepEqual(f.env.pi, []);
+});
+
+
+for (const episode of ['startup', 'reconnection'] as const) test(`host online wait: both restored Bash cards color after late ${episode}`, async () => {
+  const f = fixture(false); if (episode === 'reconnection') f.env.generation++;
+  const firstText = ": 'saved unfinished", secondText = 'echo saved success';
+  const first = f.tool('bash', { command: firstText }, undefined, true);
+  first.updateResult({ content: [{ type: 'text', text: 'WebSocket closed 1000' }], isError: true }, false);
+  const second = f.tool('bash', { command: secondText }, undefined, true);
+  second.setArgsComplete(); second.updateResult({ content: [{ type: 'text', text: 'saved success' }], isError: false }, false);
+  const raw = JSON.stringify([first.args, first.result, first.getRenderContext(), second.args, second.result, second.getRenderContext()]);
+  const cold = [f.render(first), f.render(second)]; await settled();
+  assert.equal(f.calls.length, 0); assert.deepEqual(f.env.pi, []);
+  f.env.ready = true; f.adapter.syntaxMetadataChanged(); await settled();
+  assert.equal(f.calls.length, 2, 'non-last restored demand is not forgotten');
+  for (let i = 0; i < 2; i++) {
+    assert.equal(f.calls[i]!.request.op, 'highlight');
+    answer(f, i, (f.calls[i]!.request.sources as { text: string }[])[0]!.text);
+  }
+  await settled();
+  const colored = [f.render(first), f.render(second)];
+  assert.deepEqual(colored.map(plain), cold.map(plain));
+  assert.ok(colored[0]!.join('').includes(themes.theme.fg('syntaxKeyword', firstText)));
+  assert.ok(colored[1]!.join('').includes(themes.theme.fg('syntaxKeyword', secondText)));
+  const before = counts(f);
+  for (const width of [24, 60, 100, 60]) f.document(width);
+  for (let i = 0; i < 100; i++) { f.render(first); f.render(second); }
+  await settled(); assert.deepEqual(counts(f), before); assert.deepEqual(f.env.pi, []);
+  assert.equal(JSON.stringify([first.args, first.result, first.getRenderContext(), second.args, second.result, second.getRenderContext()]), raw);
+  assert.equal(first.argsComplete, false); assert.equal(first.executionStarted, false); assert.equal(f.sources.stats().remoteLeases, 0);
 });

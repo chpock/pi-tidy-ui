@@ -87,3 +87,15 @@ test('range bookkeeping accepts the global allowance without allocating its adve
   assert.equal(value.stats().retainedBytes,1040);
   assert.deepEqual(spans(value),[[0,2,2],[2,5,3]]);
 });
+
+test('display effect compares normalized touched spans, not completion metadata or parser counters', () => {
+  const value = new RangeAccumulator(); value.apply(chunk());
+  const initial = value.stats().displayRevision;
+  value.apply(chunk({ revision: 2, replace_from: 2, committed_bytes: 5, complete: true,
+    runs: new Uint32Array([3, 3, 5, 3]), counters: { committed_line_calls: 0, committed_line_bytes: 0, tail_calls: 0, tail_bytes: 0 } }));
+  assert.equal(value.stats().displayRevision, initial, 'Adjacent equal style spans and finalized tail have identical effect');
+  const changed = new RangeAccumulator(); changed.apply(chunk());
+  changed.apply(chunk({ revision: 2, replace_from: 2, committed_bytes: 5, complete: true,
+    runs: new Uint32Array([5, 4]), counters: { committed_line_calls: 0, committed_line_bytes: 0, tail_calls: 0, tail_bytes: 0 } }));
+  assert.notEqual(changed.stats().displayRevision, initial, 'Zero work counters do not prove style equality');
+});

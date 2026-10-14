@@ -408,7 +408,7 @@ export class ProviderBroker {
     } catch (error) { this.metric('closeFailures', 1); this.log('Provider cleanup failed; not exit proof', { code: diagnosticError(error) }); return false; }
   }
   private async candidate(kind: Kind, epoch: number): Promise<Candidate | undefined> {
-    this.log('Provider selection attempt started', { candidate: kind });
+    this.log('Provider candidate callback started; not proof of discovery or connection', { candidate: kind, stage: 'factory' });
     const signal = this.cancellation.signal;
     const attempt = new AbortController();
     const cancel = () => attempt.abort(); signal.addEventListener('abort', cancel, { once: true }); this.metric('abortListeners', 1);

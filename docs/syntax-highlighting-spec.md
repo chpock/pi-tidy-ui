@@ -6,25 +6,27 @@ This contract describes pi-tidy-ui's implemented Occipital consumer and local/ge
 
 - Native classification applies only to pi-tidy-ui's Bash command and successful edit/write source bodies. Bash output, ordinary summaries, Markdown, user messages, the editor and native delegated cards are outside this feature.
 - Bash argument updates prepare the latest command outside `render`. Pi's `setArgsComplete` finalizes the input independently of tool execution: a still-running Bash process does not require an unfinished syntax lease. Persisted completed calls use one-shot classification.
-- A final native error while Bash arguments are still incomplete retires that source and attempts lease closure outside `render`, without pretending that arguments completed or a tool executed. Late replies cannot restore it; warm frames cannot reopen it. Partial error output and execution errors after argument completion do not abandon the source.
+- A final live formation error retires native work and attempts lease closure outside `render`, without pretending that arguments completed or a tool executed. One already validated, budgeted display basis remains while its card owner lives; cancelled late replies cannot replace it and warm frames cannot reopen the retired work. A new restored terminal card, including an interrupted call, admits one finite native classification of its available saved text; source finiteness does not mean complete Bash arguments or tool execution. Public current-assistant tool-call IDs identify live ownership without history scans or retained messages, including abort before a useful frame; unknown embedding origin stays conservative. Warm/repeated/geometry-only visits reuse that static result. Positive execution/persisted `toolResult` evidence takes precedence over reconstructed incomplete flags. Partial error output and execution errors do not abandon the source.
 - Edit/write use validated supplied source/diff data. Old/new sides are separate logical sources; a missing diff region starts a new parser context. No file reread or invented continuity across omitted context is permitted.
 - Parsing sees logical source before tab expansion and terminal normalization. Painting projects structured ranges onto existing display text, with unchanged glyphs, wrapping, gutters, context, tint, padding and mouse bounds. Existing ANSI style isolation remains authoritative.
 - Classification does not modify tool arguments/results, execute tools, send model requests or alter saved conversation entries.
 
 ## Rendering and fallback
 
-Preparation, encoding, requests and classification occur outside terminal rendering. Rendering borrows already validated ranges or an exact prepared fallback; it never waits for a daemon. Keyed coalesced source notices invalidate only affected owners, without traversing transcript history to discover changes.
+Preparation, encoding, requests and classification occur outside terminal rendering. Rendering borrows already validated ranges or an exact prepared fallback; it never waits for a daemon. Keyed coalesced source notices carry work authority independently of display effects. A Bash card is invalidated only when its compatible display stamp changes, without traversing transcript history. Waiting/no-coverage preparation and equal-text finalization with identical styles do not rebuild or request a redraw.
 
 The canonical `SourceController.workStatus` determines whether Pi classification is allowed. Queued, running or uncertain daemon work blocks a duplicate Pi parser within the same installed adapter. Missing state, cancellation, timeouts and provider absence are not evidence that parsing never started or has physically finished.
 
 | Situation | Presentation |
 |---|---|
 | Current validated native ranges | Use the current selected/effective profile |
-| Growing command with reusable committed colors | Reuse the proven prefix; display every remaining character |
+| Growing/corrected Bash command with a compatible display basis | Reuse colors of the matching scalar prefix, including provisional styles; display every current character |
 | Native work not started or unavailable, Bash | Existing whole-command `toolTitle` foreground; **never call Pi's highlighter** |
 | Native work not started or unavailable, file source | Pi's public highlighter once for the useful exact source/palette; retain the result |
-| Native work queued/running/uncertain | Valid retained colors/proven prefix, otherwise complete uncolored text |
+| Native work queued/running/uncertain | Compatible historical Bash prefix or file committed-prefix/exact fallback; otherwise full text in its neutral color |
 | Source/result cannot be retained or admitted | Complete text, with only any valid reusable classification |
+
+The [Bash streaming contract](bash-streaming-contract.md) supersedes the former complete-line-only Bash display rule. Historical colors are presentation data, not proof of current parsing, current parser state or permission for a second classifier. Scalar-prefix verification is folded into the existing cold display/grapheme walk; new glyphs after the mismatch are `toolTitle`, with the explicit whole-grapheme first-scalar exception. No source normalization, range copying, verification walk or work scheduling is added to a warm body hit. File exact-fallback and parser incrementality rules are unchanged.
 
 Pi fallback preserves public foregrounds and bold/faint/italic/underline semantics, including SGR `22` clearing both bold and faint. File backgrounds remain pi-tidy-ui-owned. Faint is local Pi projection data; the daemon's independent-theme wire contract retains its three font bits.
 
@@ -49,6 +51,10 @@ An eligible interactive adapter starts asynchronous selection automatically. Pri
 1. Try a user-managed compatible Subconscious internal service using the public SDK/discovery contract. A connection file alone is not proof that Occipital is available.
 2. If none is usable, resolve the extension-declared **exact** owned Occipital release for the actual OS/architecture/ABI. Verify the installed payload or exact cache bytes; otherwise acquire that declared artifact. Never substitute a newer cached version or query a latest release.
 3. If neither provider is obtainable, keep the ordinary fallback described above. Native availability does not gate tool execution or input.
+
+Initial startup and connection-loss recovery use the same availability-wait path. A useful Bash demand postponed while the enabled provider/effective profile is unavailable marks the existing weak card/source state. Readiness revisits all such demands, not only the latest card, with the owner's latest text. Metadata-only loss does not reevaluate an unchanged processed Bash revision or turn its prior refusal into an availability wait; a real source change can create new demand. No extra strong owner/text queue or conversation-history scan is used. Already-current native coloring is not reparsed, and the existing bounded latest-file native upgrade/retained Pi fallback policy is unchanged. Paused owners wait for a new useful visit; frozen live aborts, removed/collected owners and bookkeeping refusals are not revived by readiness.
+
+Card preparation processes at most two owners per batch, using the existing job limit, and yields to the event loop before more work. The continuation holds only the weak consumer; synchronous or asynchronously queued demand cannot schedule an unbounded preparation microtask chain. The host-turn barrier survives a momentarily empty pending set after dispatch; the one-shot stops without rescheduling if no work arrives. Existing controller/provider/global job and byte credits still govern native dispatch. No polling, new payload queue or time budget; one large preparation is not preemptible.
 
 The extension and Occipital versions/releases are independent. Compatible shared-service versions need not equal the standalone pin. Owned processes have one client owner and are closed/reaped on retirement; shared clients close only their own route/connection and never terminate the shared module or peers.
 
