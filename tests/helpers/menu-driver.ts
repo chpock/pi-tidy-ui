@@ -30,7 +30,14 @@ export async function withMenu(handler: (args: string, ctx: ExtensionContext) =>
       .map(row => row.startsWith('│') ? row.slice(1, -1).trimEnd() : row).join('\n');
   };
   const settle = async () => {
-    for (let i = 0; i < 100; i++) { await turn(); if (!/Applying…|Loading saved code theme…/u.test(text())) return; }
+    for (let i = 0; i < 100; i++) {
+      await turn(); const rendered = text();
+      if (!rendered) return;
+      // Settings actions are silent; wait for actual completion, not removed UI text.
+      const busy = Reflect.get(component!, 'busy');
+      assert.equal(typeof busy, 'boolean', 'SDK probe must observe the real pending-action flag');
+      if (!busy && !/Loading saved code theme…/u.test(rendered)) return;
+    }
     assert.fail('Popup action did not settle');
   };
   const key = async (data: string) => { text(); component!.handleInput?.(data); await settle(); text(); };

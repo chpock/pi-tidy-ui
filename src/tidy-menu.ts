@@ -120,13 +120,13 @@ export class TidyMenu implements Component {
   }
   private async perform(action: TidyMenuAction): Promise<void> {
     if (this.closed || this.busy) return;
-    this.busy = true; this.notice = 'Applying…'; this.noticeError = false; this.requestRender();
+    this.busy = true; this.notice = ''; this.noticeError = false; this.requestRender();
     try {
       const outcome = await this.owner.act(action);
       if (this.closed) return;
       if (action.kind === 'clearCache' && outcome.cache) this.cache = outcome.cache;
       if (action.kind === 'theme' && this.page === 'themes') { this.page = 'root'; this.detailOffset = 0; }
-      this.feedback(outcome.ok ? action.kind === 'theme' || action.kind === 'switch' ? 'Applied and saved.' : 'Done.' : outcome.message, !outcome.ok);
+      this.feedback(outcome.ok ? action.kind === 'theme' || action.kind === 'switch' ? '' : 'Done.' : outcome.message, !outcome.ok);
     } catch { this.feedback('This action could not be completed.', true); }
     finally { this.busy = false; if (!this.closed) this.requestRender(); }
   }
@@ -231,30 +231,35 @@ export class TidyMenu implements Component {
   render(width: number): string[] {
     if (this.closed || width <= 0) return [];
     const height = Math.max(1, Math.floor(this.height()));
-    const framed = width >= 8 && height >= 5;
-    const innerWidth = Math.max(1, width - (framed ? 2 : 0));
-    const room = height - (framed ? 2 : 0);
     const state = this.owner.snapshot();
     this.items = this.pageItems(state);
-    const heading = room >= 7 ? [this.theme.fg('accent', this.theme.bold(title[this.page]))] : [];
-    const searchRows = this.page === 'themes' && !this.themeLoading && !this.themeLoadFailed && room >= 7 ? 1 : 0;
-    const hints = room >= 9 ? [this.theme.fg('dim', this.page === 'root' ? '↑↓ Navigate · Enter Select · Esc Close' : '↑↓ Navigate · Enter Select · Esc Back')] : [];
-    const scope = room >= 12 && this.page === 'root' ? [this.theme.fg('dim', 'Choices are saved automatically.')] : [];
-    const notice = this.notice && room >= 5 ? wrapTextWithAnsi(safe(this.notice), innerWidth).slice(0, 2)
+    const details = this.summary(state);
+    const searchRows = this.page === 'themes' && !this.themeLoading && !this.themeLoadFailed && height >= 6 ? 1 : 0;
+    // In tiny terminals keep the selectable row and details before adding chrome.
+    const noticeHeight = this.notice ? Math.min(2, wrapTextWithAnsi(safe(this.notice), Math.max(1, width - (width >= 8 ? 2 : 0))).length) : 0;
+    const sections = height >= 10 + Number(details.length > 0) + searchRows + noticeHeight;
+    const framed = width >= 8 && sections;
+    const innerWidth = Math.max(1, width - (framed ? 2 : 0));
+    const room = height - (framed ? 2 : 0);
+    const rule = this.theme.fg('border', '─'.repeat(innerWidth));
+    const heading = sections ? [this.theme.fg('accent', this.theme.bold(title[this.page])), rule] : [];
+    const helpHeight = height >= 4 ? 3 : 0;
+    const fixed = heading.length + searchRows + (sections ? 2 : 0) + helpHeight;
+    const noticeRoom = Math.max(0, room - fixed - 1 - Number(details.length > 0));
+    const notice = this.notice ? wrapTextWithAnsi(safe(this.notice), innerWidth).slice(0, Math.min(2, noticeRoom))
       .map(line => this.theme.fg(this.noticeError ? 'error' : 'muted', line)) : [];
-    const help = this.items.find(item => item.value === this.selected[this.page])?.help ?? '';
-    const helpLines = room >= 12 && !notice.length ? wrapTextWithAnsi(help, innerWidth).slice(0, 2).map(line => this.theme.fg('muted', line)) : [];
-    const fixed = heading.length + searchRows + hints.length + scope.length + notice.length + helpLines.length;
-    const summaries = this.summary(state).flatMap(line => wrapTextWithAnsi(line, innerWidth));
-    const summaryRoom = Math.min(summaries.length, Math.max(room - fixed >= 3 ? 1 : 0,
-      room - fixed - Math.min(this.items.length + 1, this.page === 'support' ? 9 : 4) - (this.page === 'support' ? 3 : 0)));
+    const summaries = details.flatMap(line => wrapTextWithAnsi(line, innerWidth));
+    const available = room - fixed - notice.length;
+    const summaryRoom = Math.min(summaries.length, Math.max(available >= 2 ? 1 : 0,
+      available - Math.min(this.items.length + 1, this.page === 'support' ? 9 : 4) - (this.page === 'support' ? 3 : 0)));
     this.detailHeight = summaryRoom;
     this.frameInset = framed ? 1 : 0;
     this.detailLines = summaries;
     this.detailOffset = Math.min(this.detailOffset, Math.max(0, summaries.length - Math.max(1, summaryRoom)));
     const summary = summaries.slice(this.detailOffset, this.detailOffset + summaryRoom).map(line => this.theme.fg('muted', line));
-    const groupRoom = this.page === 'support' && room - fixed - summary.length >= 8 ? 3 : 0;
-    const maxVisible = Math.max(1, room - fixed - summary.length - groupRoom - 1);
+    const groupRoom = this.page === 'support' && available - summary.length >= 8 ? 3 : 0;
+    const listRoom = Math.max(1, available - summary.length - groupRoom);
+    const maxVisible = Math.max(1, listRoom - 1);
     const formatted = this.items.map(item => {
       const value = item.valueText ?? '';
       const labelMinimum = Math.min(visibleWidth(item.label), Math.max(1, innerWidth - 8));
@@ -280,7 +285,7 @@ export class TidyMenu implements Component {
     const body = [...heading, ...summary];
     this.search.focused = this.focused && this.page === 'themes';
     if (searchRows) body.push(truncateToWidth(`Search: ${this.search.render(Math.max(1, innerWidth - 8))[0] ?? ''}`, innerWidth));
-    const rows = this.list.render(innerWidth + 2);
+    const rows = this.list.render(innerWidth + 2).slice(0, listRoom);
     this.listHeight = rows.length;
     this.bodyWidth = innerWidth;
     this.mouseRows.clear();
@@ -295,14 +300,21 @@ export class TidyMenu implements Component {
       this.mouseRows.set(body.length, index);
       body.push(row);
     });
-    body.push(...notice, ...helpLines, ...scope, ...hints);
-    if (summaries.length > summaryRoom && room >= 12 && this.page !== 'root') {
-      if (body.length >= room) body[body.length - 1] = this.theme.fg('dim', 'PgUp/PgDn details · Esc Back');
-      else body.push(this.theme.fg('dim', 'PgUp/PgDn details · Esc Back'));
+    body.push(...notice);
+    if (helpHeight) {
+      const help = this.items.find(item => item.value === this.list!.getSelectedItem()?.value)?.help ?? '';
+      const wrapped = wrapTextWithAnsi(help, innerWidth);
+      const second = wrapped.length > 2 ? truncateToWidth(wrapped[1] ?? '', innerWidth - 1, '') + '…' : wrapped[1] ?? '';
+      body.push('', this.theme.fg('muted', wrapped[0] ?? ''), this.theme.fg('muted', second));
+    }
+    if (sections) {
+      const navigation = this.page === 'root' ? '↑↓ Navigate · Enter Select · Esc Close' : '↑↓ Navigate · Enter Select · Esc Back';
+      body.push(rule, this.theme.fg('dim', (summaries.length > summaryRoom ? 'PgUp/PgDn details · ' : '') + navigation));
     }
     const border = (text: string) => this.theme.fg('border', text);
     if (!framed) return body.slice(0, height).map(row => truncateToWidth(row, width));
-    return [border(`╭${'─'.repeat(innerWidth)}╮`), ...body.slice(0, room).map(row => border('│') + truncateToWidth(row, innerWidth, '…', true) + border('│')),
+    return [border(`╭${'─'.repeat(innerWidth)}╮`), ...body.slice(0, room).map((row, index) => index === 1 || index === body.length - 2 ? border(`├${'─'.repeat(innerWidth)}┤`)
+        : border('│') + truncateToWidth(row, innerWidth, '…', true) + border('│')),
       border(`╰${'─'.repeat(innerWidth)}╯`)];
   }
   handleInput(data: string): void {

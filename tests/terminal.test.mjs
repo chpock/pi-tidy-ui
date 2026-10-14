@@ -191,12 +191,14 @@ export class PiTerminal {
   }
   tidyRows() {
     const width = Math.min(72, this.term.cols), left = Math.floor((this.term.cols - width) / 2);
-    return this.screen().map(row => row.slice(left, left + width)).map(row => row.startsWith('│') ? row.slice(1, -1).trimEnd() : this.term.rows < 5 ? row.trimEnd() : '');
+    const rows = this.screen().map(row => row.slice(left, left + width));
+    const framed = rows.some(row => /^╭─+╮$/u.test(row));
+    return rows.map(row => row.startsWith('│') ? row.slice(1, -1).trimEnd() : !framed ? row.trimEnd() : '');
   }
   tidyHeading(title) { return this.tidyRows().some(row => row === title || row.length >= 4 && row.endsWith('…') && title.startsWith(row.slice(0, -1))); }
   async openTidyMenu() {
     this.send('/tidy-ui\r');
-    await until(() => this.tidyHeading('Tidy UI') || this.term.rows < 5 && this.tidyRows().some(row => row.startsWith('→ Code color theme')), 'public Tidy UI popup');
+    await until(() => this.tidyHeading('Tidy UI') || this.tidyRows().some(row => row.startsWith('→ Code color theme')), 'public Tidy UI popup');
   }
   async selectTidyItem(label, activate = true) {
     const selected = () => this.tidyRows().findIndex(row => row.startsWith('→ '));
@@ -221,14 +223,16 @@ export class PiTerminal {
         }, `popup page ${label}`);
         else await until(() => {
           const rows = this.tidyRows();
-          const feedback = rows.some(line => /Applied and saved\.|Done\.|Status refreshed\.|Cache statistics refreshed\./u.test(line));
-          const changed = !/\s(?:On|Off)$/u.test(before) || rows.find(line => line.startsWith('→ ')) !== before;
-          if (this.term.rows < 5) {
-            const switches = { 'Tidy UI appearance': 'appearanceEnabled', 'Match terminal colors to Pi': 'terminalColorsEnabled' };
-            const key = switches[label];
-            if (key && changed) { try { return JSON.parse(readFileSync(join(this.agent, 'extensions/pi-tidy-ui/config.json'), 'utf8'))[key] === before.endsWith('Off'); } catch { return false; } }
+          const switches = { 'Tidy UI appearance': 'appearanceEnabled', 'Match terminal colors to Pi': 'terminalColorsEnabled',
+            'Use Occipital highlighting': 'nativeHighlightingEnabled', 'Record diagnostic logs': 'loggingEnabled' };
+          const key = switches[label];
+          if (key) {
+            if (rows.find(line => line.startsWith('→ ')) === before) return false;
+            try { return JSON.parse(readFileSync(join(this.agent, 'extensions/pi-tidy-ui/config.json'), 'utf8'))[key] === before.endsWith('Off'); }
+            catch { return false; }
           }
-          return feedback && changed;
+          if (this.tidyHeading('Tidy UI')) return rows.some(line => line.startsWith('→ Code color theme'));
+          return rows.some(line => /Done\.|Status refreshed\.|Cache statistics refreshed\./u.test(line));
         }, `popup action ${label}`);
         return;
       }
@@ -239,8 +243,12 @@ export class PiTerminal {
     assert.fail(`Public popup item not found: ${label}`);
   }
   async closeTidyMenu() {
+    const width = Math.min(72, this.term.cols), left = Math.floor((this.term.cols - width) / 2);
+    const hasFrame = () => this.screen().some(row => /^╭─+╮$/u.test(row.slice(left, left + width)));
+    const framed = hasFrame(), selected = this.tidyRows().find(row => row.startsWith('→ '));
     this.send('\x03');
-    await until(() => !this.tidyRows().some(row => row.startsWith('→ ')), 'popup closed');
+    // The restored transcript may itself contain native → read summaries.
+    await until(() => framed ? !hasFrame() : !this.tidyRows().includes(selected), 'popup closed');
   }
   async tidyPage(path = []) {
     await this.openTidyMenu();
@@ -285,7 +293,7 @@ export class PiTerminal {
       if (clear && refreshAfterClear) await this.selectTidyItem('Refresh statistics');
       let combined = [], previous = [];
       for (let i = 0; i < 100; i++) {
-        const rows = this.tidyRows(), start = rows.indexOf('Display cache') + 1;
+        const rows = this.tidyRows(), start = rows.indexOf('Display cache') + 2;
         const end = rows.findIndex(row => /^(?:→ |  )(?:Refresh statistics|Clear saved layouts|Back)/u.test(row));
         assert.ok(start > 0 && end > start, `public cache detail region is visible: ${JSON.stringify(rows)}`);
         const current = rows.slice(start, end);
@@ -5494,15 +5502,47 @@ for (const mode of ['regular', 'fullscreen']) test(`real CLI: settings popup nav
       const original = await live.capture('settings-original'), sessionBytes = readFileSync(original.session), originalEvents = dataEvents(live);
       assert.deepEqual(['call', 'result', 'model_context'].map(type => originalEvents.filter(event => event.type === type).length), [2, 2, 3]);
       const path = join(live.agent, 'extensions/pi-tidy-ui/config.json'), before = readFileSync(path);
+      let layoutCapture = 0;
+      const checkLayout = heading => {
+        const dump = live.captureScreen(`settings-layout-${++layoutCapture}`, {}), width = Math.min(72, live.term.cols);
+        const left = Math.floor((live.term.cols - width) / 2), rows = dump.screen.map(row => row.slice(left, left + width));
+        const top = rows.findIndex(row => /^╭─+╮$/u.test(row)), bottom = rows.findIndex(row => /^╰─+╯$/u.test(row));
+        assert.ok(top >= 0 && bottom > top, 'the actual terminal paints the full popup frame');
+        const frame = rows.slice(top, bottom + 1), dividers = frame.flatMap((row, index) => /^├─+┤$/u.test(row) ? [index] : []);
+        assert.equal(frame[1].slice(1, -1).trim(), heading);
+        assert.deepEqual(dividers, [2, frame.length - 3]);
+        assert.equal(frame.at(-6).slice(1, -1).trim(), '', 'a physical blank row separates the list and description');
+        const help = frame.slice(-5, -3).map(row => row.slice(1, -1).trimEnd());
+        assert.equal(help.length, 2); assert.ok(help[0].trim());
+        assert.match(frame.at(-2), width >= 70 ? /↑↓ Navigate.*Enter Select.*Esc (?:Close|Back)/u : /↑↓ Navigate/u);
+        assert.doesNotMatch(frame.join('\n'), /Choices are saved automatically|Applying|Saving|Applied and saved/u);
+        assert.ok(dump.cells[top + 1][left + 1].bold, 'the real heading is bold');
+        const border = dump.cells[top][left + 1];
+        for (const y of dividers) for (let x = 1; x < width - 1; x++) {
+          const cell = dump.cells[top + y][left + x];
+          assert.equal(cell.text, '─'); assert.equal(cell.fg, border.fg); assert.equal(cell.fgMode, border.fgMode);
+        }
+        return help;
+      };
       await live.resize(100, 30); await live.openTidyMenu();
+      checkLayout('Tidy UI');
       live.captureScreen('settings-root', { root: live.tidyRows() });
       assert.ok(live.tidyRows().some(row => row.startsWith('→ Code color theme')), 'initial Enter is navigation, not a toggle');
       assert.ok(!live.tidyRows().some(row => /Occipital|cache|logs/u.test(row)), 'technical controls are nested');
       live.send('\r'); await until(() => live.tidyHeading('Code color theme') && live.tidyRows().some(row => row.includes('Follow Pi theme')), 'first Enter opens theme picker');
+      checkLayout('Code color theme');
       live.send('zz_no_such_theme');
       await until(() => live.tidyRows().some(row => row.includes('Search:') && row.includes('zz_no_such_theme')) && !live.tidyRows().some(row => row.includes('Follow Pi theme')), 'search filters theme choices');
+      checkLayout('Code color theme');
       live.captureScreen('settings-theme-filter', {});
       live.send('\x1b'); await until(() => live.tidyHeading('Tidy UI') && live.tidyRows().some(row => row.startsWith('→ Code color theme')), 'Escape returns to the root');
+      await live.resize(24, 12);
+      await until(() => live.tidyHeading('Tidy UI') && live.tidyRows().some(row => row.startsWith('→ Code color')), 'narrow popup redraw');
+      assert.ok(checkLayout('Tidy UI')[1].endsWith('…'), 'the real narrow description ellipsizes its second row');
+      await live.resize(100, 30);
+      await until(() => live.tidyRows().some(row => row.startsWith('→ Code color theme') && row.includes('Follow Pi')), 'wide popup redraw');
+      await live.selectTidyItem('Close', false);
+      assert.equal(checkLayout('Tidy UI')[1], '', 'the second physical description row remains reserved for a short command');
       await live.closeTidyMenu(); assert.deepEqual(readFileSync(path), before, 'opening, searching and cancelling never writes settings');
       await live.tidyPage(['Code color theme', 'Follow Pi theme']);
       if (mode === 'fullscreen') {
@@ -5544,4 +5584,18 @@ for (const mode of ['regular', 'fullscreen']) test(`real CLI: settings popup nav
       assert.equal(readdirSync(replay.temp, { recursive: true }).filter(file => file.endsWith('.log')).length, 0, 'reading status does not enable logging');
       assert.deepEqual(readFileSync(original.session), sessionBytes);
     } finally { for (const terminal of terminals.reverse()) { await terminal.close(); terminal.dispose(); } }
+  });
+
+for (const framed of [true, false]) test(`CLI popup closure distinguishes its own rows from native read arrows (${framed ? 'framed' : 'compact'})`,
+  { timeout: 1000 }, async () => {
+    const terminal = Object.create(PiTerminal.prototype);
+    terminal.term = { cols: 24, rows: framed ? 12 : 3 };
+    let closed = false, sends = 0;
+    const selected = '→ Tidy UI appearan… On';
+    terminal.screen = () => closed ? ['→ read a.txt'] : framed
+      ? ['╭──────────────────────╮', `│${selected.padEnd(22)}│`, '╰──────────────────────╯'] : [selected];
+    terminal.send = data => { assert.equal(data, '\x03'); sends++; closed = true; };
+    assert.ok(terminal.tidyRows().some(row => row === selected));
+    await terminal.closeTidyMenu();
+    assert.equal(sends, 1); assert.deepEqual(terminal.tidyRows(), ['→ read a.txt']);
   });

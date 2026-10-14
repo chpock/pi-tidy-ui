@@ -12,7 +12,7 @@ The first page contains:
 - **Status & troubleshooting** — actual appearance/color/highlighting state and less frequent controls.
 - **Close**.
 
-The theme row is initially selected, so the first Enter navigates rather than toggles. The selected row has a short explanation. Arrow keys navigate, Enter confirms, Escape returns one page or closes from the first page; Ctrl+C closes. Fullscreen mouse clicks activate content rows, not borders. Narrow/short layouts retain keyboard access; Page Up/Down scroll detail text without skipping hidden rows. All pages occupy the same overlay, independent of the presentation adapter or syntax-provider generation. The native editor is not replaced or transferred.
+The theme row is initially selected, so the first Enter navigates rather than toggles. Header and bottom navigation are separate sections divided from the body by horizontal rules. After the menu, one empty row precedes exactly two reserved description rows for the selected item. Short descriptions leave the second row empty; longer ones end the second row with an ellipsis. Very short terminals omit the frame/header/navigation before giving up description space; below four rows only the compact list/details fit. Arrow keys navigate, Enter confirms, Escape returns one page or closes from the first page; Ctrl+C closes. Fullscreen mouse clicks activate content rows, not borders. Narrow/short layouts retain keyboard access; Page Up/Down scroll detail text without skipping hidden rows. All pages occupy the same overlay, independent of the presentation adapter or syntax-provider generation. The native editor is not replaced or transferred.
 
 Appearance Off leaves the menu and independent logging usable. On/Off values show preferences, not availability. Actual limitations are explained separately; automatic/system Pi themes retain native control of terminal colors.
 
@@ -22,7 +22,7 @@ The searchable, scrollable list offers **Follow Pi theme**, then eligible native
 
 Opening waits for preference readiness, not a delay or provider-readiness guess. Root/status inspection never constructs syntax or starts a provider. Opening the picker may prepare preferences but does not enable appearance/native highlighting. Unavailable native catalogues are explained; Follow Pi remains selectable, and a missing saved ID is retained rather than fabricated as a choice.
 
-Typing, navigation and Escape do not apply previews or save. Explicit confirmation applies and saves once, then returns to the first page with feedback. A failed save keeps the live selection and says it was applied but not saved. Closing during confirmed work is not rollback; late work cannot reopen a closed popup. Selected/effective differences are explained without duplicating equal values.
+Typing, navigation and Escape do not apply previews or save. Explicit confirmation applies and saves once, then returns to the first page without a progress or success message. A failed save keeps the live selection and says it was applied but not saved. Closing during confirmed work is not rollback; late work cannot reopen a closed popup. Selected/effective differences are explained without duplicating equal values.
 
 ## Troubleshooting
 
@@ -33,7 +33,7 @@ Typing, navigation and Escape do not apply previews or save. Explicit confirmati
 - **Display cache** shows frozen-on-request details, per-kind counters and diagnostic JSON. **Refresh statistics** reads existing counters. **Clear saved layouts** releases only presentation data and captures its receipt synchronously, before a scheduled native repaint can rebuild layouts. Subsequent frames rebuild on demand; neither conversation nor native syntax data is cleared.
 - **Refresh status** only reads current state. It does not reload themes, parse sources, retry a service, or enable a feature.
 
-Reversible changes, snapshots and display-cache clearing have no confirmation dialog. Menu-action feedback stays inside the popup; independent background runtime warnings retain their normal notification path.
+Reversible changes, snapshots and display-cache clearing have no confirmation dialog. Preference changes do not show automatic-save reminders, progress text or saved-success messages. Errors and explicit diagnostic-action results stay inside the popup without replacing its two description rows; independent background runtime warnings retain their normal notification path.
 
 ## Persistence
 

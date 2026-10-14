@@ -324,7 +324,8 @@ test('entry one overlay survives native generation changes and master off/on, us
     assert.match(menu.text(), /Tidy UI appearance\s+Off/);
     await menu.select('Tidy UI appearance'); assert.match(menu.text(), /Tidy UI appearance\s+On/);
     await menu.select('Code color theme'); await menu.select('Follow Pi theme');
-    assert.match(menu.text(), /Applied and saved/);
+    assert.match(menu.text(), /Code color theme\s+Follow Pi/);
+    assert.doesNotMatch(menu.text(), /Applying|Applied and saved|Choices are saved automatically/);
   });
   assert.equal(mounts, 1); assert.equal(h.counts.constructed, 2); assert.equal(h.counts.saves, 4);
   assert.equal(h.counts.load, 1); assert.equal(h.counts.shared, 1);

@@ -239,3 +239,124 @@ for (const height of [5, 6]) for (const page of ['cache', 'logs'])
     await f.key('\r');
     assert.ok(f.render().some(row => row.includes('Appearance: Active')), 'Back returns to support');
   });
+
+function helpRows(rows: string[]): string[] {
+  const divider = rows.findLastIndex(row => /^├─+┤$/u.test(row));
+  const body = divider < 0 ? rows : rows.slice(0, divider).map(row => row.startsWith('│') ? row.slice(1, -1).trimEnd() : row);
+  assert.equal(body.at(-3)?.trim(), '', 'one blank row precedes the two reserved description rows');
+  return body.slice(-2).map(row => row.trimEnd());
+}
+
+test('header and navigation occupy their own separated sections on every page', async () => {
+  const f = fixture();
+  const check = (heading: string) => {
+    const rows = f.render(), dividers = rows.flatMap((row, index) => /^├─+┤$/u.test(row) ? [index] : []);
+    assert.equal(rows[1]?.slice(1, -1).trim(), heading);
+    assert.deepEqual(dividers, [2, rows.length - 3]);
+    assert.match(rows.at(-2)!, /↑↓ Navigate.*Enter Select.*Esc (?:Close|Back)/u);
+    assert.equal(helpRows(rows).length, 2);
+  };
+  check('Tidy UI');
+  await f.select('Code color theme'); check('Code color theme'); await f.key('\x1b');
+  await f.select('Status & troubleshooting'); check('Status & troubleshooting');
+  for (const page of ['Highlighting service details', 'Diagnostic logs', 'Display cache']) {
+    await f.select(page); check(page); await f.key('\x1b');
+  }
+});
+
+for (const [width, height] of [[70, 24], [24, 12], [24, 5]]) test(`description always reserves two rows, pads and ellipsizes at ${width}x${height}`, async () => {
+  const f = fixture(width, height);
+  const initial = helpRows(f.render());
+  assert.match(initial.join(' '), /Colors for Bash/u);
+  if (width === 24) assert.ok(initial[1]!.endsWith('…'), 'a third wrapped line is indicated by an ellipsis');
+  await f.key('\x1b[B'); await f.key('\x1b[B'); await f.key('\x1b[B');
+  const close = helpRows(f.render());
+  assert.match(close.join(' '), /Close this panel/u);
+  if (width === 70) assert.equal(close[1], '', 'short descriptions retain an empty second row');
+  assert.equal(f.calls.length, 0);
+});
+
+test('new pages describe their initially selected item before any selection movement', async () => {
+  const f = fixture(); await f.select('Status & troubleshooting');
+  assert.match(helpRows(f.render()).join(' '), /Retry styling/u);
+  await f.select('Display cache');
+  assert.match(helpRows(f.render()).join(' '), /Read current cache counters/u);
+});
+
+test('settings changes are silent before, during and after saving; errors do not replace description rows', async () => {
+  const f = fixture(); let finish!: (value: { ok: true }) => void;
+  const quiet = () => assert.doesNotMatch(f.render().join('\n'), /Choices are saved automatically|Saving|Applying|Applied and saved/u);
+  quiet();
+  f.perform = action => {
+    if (action.kind === 'switch') f.state[action.key] = action.value;
+    return new Promise(resolve => { finish = resolve; });
+  };
+  await f.select('Match terminal colors to Pi'); quiet();
+  const pendingHelp = helpRows(f.render()); const pendingHeight = f.render().length;
+  assert.match(f.render().join('\n'), /Match terminal colors to Pi.*Off/u);
+  await f.key('\r');
+  finish({ ok: true }); await turn(); quiet();
+  assert.equal(f.render().length, pendingHeight, 'saving does not resize the panel');
+  assert.deepEqual(helpRows(f.render()), pendingHelp);
+  f.perform = async () => ({ ok: false, message: 'SAVE_FAILURE' });
+  await f.key('\r');
+  assert.match(f.render().join('\n'), /SAVE_FAILURE/u);
+  assert.deepEqual(helpRows(f.render()), pendingHelp, 'error feedback cannot consume the description slot');
+});
+
+test('clicking separators, description, blank row or navigation cannot activate a setting', () => {
+  const f = fixture(), rows = f.render();
+  const positions = [2, rows.length - 6, rows.length - 5, rows.length - 4, rows.length - 3, rows.length - 2];
+  for (const y of positions) for (const type of ['press', 'click'] as const) f.menu.handleMouse({
+    type, button: 'left', x: 4, y, screenX: 4, screenY: y, width: 70, height: rows.length, shift: false, alt: false, ctrl: false,
+  });
+  assert.equal(f.calls.length, 0);
+  assert.ok(f.render().some(row => row.includes('→ Code color theme')));
+});
+
+test('description slots survive every short-height transition without clipping list or navigation', async () => {
+  for (let height = 4; height <= 16; height++) {
+    const f = fixture(24, height);
+    const check = () => {
+      const rows = f.render(); assert.ok(rows.length <= height, `height ${height}`);
+      assert.ok(rows.every(row => visibleWidth(row) <= 24));
+      assert.equal(helpRows(rows).length, 2);
+      assert.ok(rows.some(row => row.includes('→ ')), `the selected item stays visible at height ${height}`);
+    };
+    check(); await f.key('\x1b[B'); await f.key('\x1b[B'); await f.key('\r'); check();
+    await f.key('\x1b[B'); await f.key('\x1b[B'); await f.key('\x1b[B'); await f.key('\r'); check();
+    await f.key('\x1b'); check();
+    assert.equal(f.calls.length, 0);
+  }
+});
+
+for (const height of [10, 11, 12]) test(`save errors remain readable beside both description rows at height ${height}`, async () => {
+  const f = fixture(24, height);
+  f.perform = async action => { f.calls.push(action); return { ok: false, message: 'Settings were applied but not saved.' }; };
+  f.render(); await f.key('\x1b[B'); await f.key('\r');
+  assert.deepEqual(f.calls, [{ kind: 'switch', key: 'terminalColorsEnabled', value: false }]);
+  assert.match(f.render().join('\n'), /not saved\./u);
+  assert.match(helpRows(f.render()).join(' '), /Match terminal/u);
+  assert.ok(f.render().length <= height);
+});
+
+for (const page of ['support', 'logs']) test(`short ${page} page drops chrome before losing an action failure`, async () => {
+  const f = fixture(70, 11);
+  await f.select('Status & troubleshooting');
+  if (page === 'logs') await f.select('Diagnostic logs');
+  f.perform = async () => ({ ok: false, message: 'SAVE_FAILURE' });
+  await f.key('\r');
+  assert.match(f.render().join('\n'), /SAVE_FAILURE/u);
+  assert.equal(helpRows(f.render()).length, 2);
+  assert.ok(f.render().length <= 11);
+});
+
+test('a one-row failure retains chrome when all sections still fit', async () => {
+  const f = fixture(70, 11); f.perform = async () => ({ ok: false, message: 'SAVE_FAILURE' });
+  await f.select('Match terminal colors to Pi');
+  const rows = f.render();
+  assert.equal(rows.filter(row => /^├─+┤$/u.test(row)).length, 2);
+  assert.match(rows.join('\n'), /SAVE_FAILURE/u);
+  assert.equal(helpRows(rows).length, 2);
+  assert.ok(rows.length <= 11);
+});
