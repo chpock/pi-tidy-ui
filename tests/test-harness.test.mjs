@@ -469,3 +469,15 @@ test('runner rejects newly introduced ancestor Cargo or Git configuration as set
     assert.equal(existsSync(marker), false); assert.deepEqual(readdirSync(f.inputs.runRoot), ['project']);
   }
 });
+
+
+test('preparation records canonical runtime and dependency paths when the requested parent is a symlink', { skip: process.platform === 'win32' }, t => {
+  const f = preparationFixture(t), alias = join(f.root, 'runtime-alias');
+  symlinkSync(f.runParent, alias);
+  const result = f.invoke(['--run-root', alias]);
+  assert.equal(result.error, undefined); assert.equal(result.status, 0, result.stderr);
+  const inputs = JSON.parse(readFileSync(join(f.output, 'inputs.json'), 'utf8'));
+  assert.equal(inputs.runRoot, realpathSync(inputs.runRoot), 'npm must see one physical root, not separate alias/real locations');
+  assert.equal(dirname(inputs.runRoot), realpathSync(f.runParent), 'canonicalization must not relocate the requested runtime parent');
+  assert.equal(inputs.pi.root, realpathSync(inputs.pi.root));
+});

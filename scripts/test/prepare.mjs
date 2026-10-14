@@ -145,7 +145,7 @@ export async function prepare(options) {
   validateNeutralRunRoot(runParent);
   inputs.node.version = execFileSync(node, ['--version'], { env: environment, encoding: 'utf8' }).trim();
   const source = sourceIdentity(root, tools, environment);
-  inputs.runRoot = mkdtempSync(join(runParent, 'tt-'));
+  inputs.runRoot = mkdtempSync(join(realpathSync(runParent), 'tt-'));
   try {
     if (realpathSync(inputs.runRoot) === realpathSync(root) || realpathSync(inputs.runRoot).startsWith(realpathSync(root) + (process.platform === 'win32' ? '\\' : '/'))) throw new Error('Test runtime root must be outside the tested checkout');
     const tree = join(inputs.runRoot, 'project');

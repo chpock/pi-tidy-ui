@@ -575,7 +575,10 @@ fn fixture_children_drop_unrelated_environment() {
                 assert!(std::env::var_os(name).is_none(), "inherited {name}");
             }
             let root = PathBuf::from(std::env::var_os("TIDY_TEST_ROOT").unwrap());
-            assert_eq!(std::env::current_dir().unwrap(), root);
+            assert_eq!(
+                std::env::current_dir().unwrap().canonicalize().unwrap(),
+                root
+            );
             for (name, directory) in [
                 ("HOME", "home"),
                 ("XDG_CONFIG_HOME", "config"),
