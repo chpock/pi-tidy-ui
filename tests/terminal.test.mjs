@@ -1,262 +1,22 @@
+import './fixtures/test-guard.mjs';
 // Real bundled CLI tests. Every capture is produced during this test run.
 import assert from 'node:assert/strict';
-import { spawn, spawnSync } from 'node:child_process';
-import { once } from 'node:events';
+import { spawnSync } from 'node:child_process';
 import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, copyFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { createInterface } from 'node:readline';
+import { join, resolve } from 'node:path';
 import { stripVTControlCharacters } from 'node:util';
 import test from 'node:test';
 import xterm from '@xterm/headless';
 import { getInstalledIntegrationProfile } from './fixtures/integration-profile.mjs';
+import { editorPaint } from './fixtures/editor-paint.ts';
 import { sliceByColumn, visibleWidth } from '@earendil-works/pi-tui';
 
+import { PiTerminal, root, extension, fixtures, artifacts, sleep, plain, lines, byName, toolLines, assertFits, until } from './fixtures/terminal-harness.mjs';
+import { childEnv, readInputs, toolPath } from '../scripts/test/context.mjs';
+export { PiTerminal } from './fixtures/terminal-harness.mjs';
+
 const { Terminal } = xterm;
-const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const cli = process.env.PI_TEST_CLI || 'pi';
-const extension = join(root, 'tests/fixtures/presentation-driver.ts');
-const fixtures = join(root, 'tests/fixtures');
-const artifacts = join(root, '.test-artifacts', `terminal-${Date.now()}-${process.pid}`);
-mkdirSync(artifacts, { recursive: true });
-const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
-const plain = (line) => stripVTControlCharacters(line).trimEnd();
-const lines = (tool) => tool.lines.map(plain).filter((line) => line.trim());
-const byName = (dump, name) => dump.tools.filter((tool) => tool.name === name);
-const nativeTiming = (value) => value.replace(/Took \d+(?:\.\d+)?s/g, 'Took <runtime>s');
-const toolLines = (dump) => dump.tools.map(({ name, lines }) => ({ name, lines: lines.map(nativeTiming) }));
-async function assertFits(rows, width) {
-  const terminal = new Terminal({ cols: width, rows: 4, allowProposedApi: true });
-  try {
-    for (const row of rows) {
-      assert.ok(!/[\r\n]/.test(row), 'component row cannot contain a line break');
-      terminal.reset();
-      await new Promise((done) => terminal.write(row, done));
-      assert.equal(terminal.buffer.active.cursorY, 0, `row must not wrap at ${width} columns`);
-    }
-  } finally { terminal.dispose(); }
-}
-
-async function until(check, label, timeout = 12000) {
-  const end = Date.now() + timeout;
-  do {
-    const result = await check();
-    if (result) return result;
-    await sleep(30);
-  } while (Date.now() < end);
-  throw new Error(`Timed out: ${label}; artifacts: ${artifacts}`);
-}
-
-export class PiTerminal {
-  // The integration-profile helper may supply additional isolated settings, environment and explicit extensions.
-  constructor(name, { tidyUi = false, mode = 'fullscreen', session, flags = [],
-    agentSettings = {}, extraEnv = {}, extensions = [], workspace, profileFactory } = {}) {
-    this.output = join(artifacts, name);
-    mkdirSync(this.output);
-    this.temp = mkdtempSync(join(tmpdir(), 'pi-tidy-ui-terminal-'));
-    this.work = workspace || join(this.temp, 'work');
-    this.agent = join(this.temp, 'agent');
-    mkdirSync(this.work, { recursive: true }); mkdirSync(this.agent);
-    this.profile = profileFactory?.({ homeDir: this.temp, agentDir: this.agent, workDir: this.work,
-      provider: 'tidy-ui-offline', model: 'scripted' });
-    for (const file of this.profile?.configFiles || []) {
-      const path = resolve(file.path);
-      assert.ok(path.startsWith(this.temp + '/'), 'profile config must remain inside the fresh test home');
-      mkdirSync(dirname(path), { recursive: true });
-      writeFileSync(path, file.content);
-    }
-    if (this.profile) writeFileSync(join(this.output, 'integration-profile.json'), JSON.stringify(this.profile, null, 2));
-    if (!session) rmSync(join(this.work, 'written.txt'), { force: true });
-    writeFileSync(join(this.work, 'a.txt'), 'READ_A_CONTENT\n');
-    writeFileSync(join(this.work, 'b.txt'), 'READ_B_CONTENT\n');
-    if (!session) {
-      writeFileSync(join(this.work, 'write-empty.ts'), '');
-      writeFileSync(join(this.work, 'write-cleared.ts'), 'const old = 1;\n');
-      mkdirSync(join(this.work, 'write-directory'), { recursive: true });
-      rmSync(join(this.work, 'write-stock.ts'), { force: true });
-    }
-    if (!session) {
-      if (extraEnv.TIDY_UI_TEST_EDIT_PERFORMANCE === '1') writeFileSync(join(this.work, 'edit-minified.ts'), 'x+=1;'.repeat(3200) + '\n');
-      writeFileSync(join(this.work, 'edit-example.ts'), 'export const before = 10;\n' +
-        Array.from({ length: 18 }, (_, i) => `const context${i} = ${i};`).join('\n') +
-        '\nconst label = "old";\nexport function greet(name: string) { return "hello"; }\n/* syntax comment\ncontinued comment */\nconst multiline = `first\ncontinued template\nend`;\n');
-      writeFileSync(join(this.work, 'edit-direction.ts'), 'const retained = 1;\nconst removeOnly = 2;\nconst directionTail = 3;\n');
-      writeFileSync(join(this.work, 'edit-long.ts'), 'const before = "' + 'before 界é '.repeat(14) + '";\nconst tail = 40;\n');
-      writeFileSync(join(this.work, 'index.html'), '<!doctype html>\n<html>\n<head>\n  <meta charset="utf-8">\n' +
-        '  <meta name="viewport" content="width=device-width, initial-scale=1">\n  <meta name="theme-color" content="#0b1020">\n  <title>Neon Blocks — Tetris</title>\n' +
-        '  <style>\n    :root { --bg: #0b1020; }\n    body { background: radial-gradient(ellipse at 50% 8%, #202b52 0, #10172c 38%, var(--bg) 75%); }\n    .app { width: min(100%, 760px); }\n  </style>\n</head>\n<body>\n  <main class="app">\n</body>\n</html>\n');
-    }
-    writeFileSync(join(this.work, 'abcdefghijklm'), 'BOUNDARY_READ_CONTENT\n');
-    mkdirSync(join(this.work, 'long-directory'), { recursive: true });
-    writeFileSync(join(this.work, 'long-directory', 'r'.repeat(180) + '.txt'), 'LONG_READ_CONTENT\n');
-    writeFileSync(join(this.work, 'pixel.png'), Buffer.from(
-      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==', 'base64'));
-    writeFileSync(join(this.agent, 'settings.json'), JSON.stringify({
-      theme: 'dark', quietStartup: true, ...this.profile?.settings, ...agentSettings,
-      enableAnalytics: false, enableInstallTelemetry: false,
-    }));
-    this.term = new Terminal({ cols: 100, rows: 80, scrollback: 3000, allowProposedApi: true });
-    this.raw = [];
-    this.pointerInputs = [];
-    this.queue = Promise.resolve();
-    this.lastOutput = Date.now();
-    this.resizeSequence = 0;
-    const args = ['-ns', '-np', '-nc', '-na', '--offline', '-e', join(fixtures, 'driver.ts')];
-    if (!this.profile) args.unshift('-ne', '--no-themes');
-    for (const path of extensions) args.push('-e', resolve(path));
-    if (tidyUi) args.push('-e', extension);
-    args.push('--model', 'tidy-ui-offline/scripted', '--tui-mode', mode, ...flags);
-    if (session) args.push('--session', session);
-    const env = this.profile ? { ...this.profile.env, TIDY_UI_TEST_OUTPUT: this.output, TIDY_UI_TEST_PROFILE: 'installed' } : {
-      ...extraEnv,
-      PATH: process.env.PATH, HOME: this.temp, XDG_CONFIG_HOME: join(this.temp, 'config'),
-      XDG_CACHE_HOME: join(this.temp, 'cache'), XDG_DATA_HOME: join(this.temp, 'data'),
-      TERM: 'xterm-256color', COLORTERM: 'truecolor', LANG: 'C.UTF-8',
-      PI_CODING_AGENT_DIR: this.agent, TIDY_UI_TEST_OUTPUT: this.output,
-      PI_OFFLINE: '1', PI_SKIP_VERSION_CHECK: '1', PI_TELEMETRY: '0',
-    };
-    Object.assign(env, { TMPDIR: this.temp, TMP: this.temp, TEMP: this.temp });
-    this.child = spawn('python3', [join(fixtures, 'pty_bridge.py'), '100', '80', this.work, cli, ...args],
-      { env, stdio: ['pipe', 'pipe', 'pipe'] });
-    this.child.on('error', (error) => { this.error = error; });
-    this.child.stdin.on('error', (error) => { if (!this.closing) this.error = error; });
-    this.stderr = '';
-    this.child.stderr.on('data', (data) => { this.stderr += data; });
-    this.child.on('exit', (code, signal) => { this.exited = { code, signal }; });
-    this.rl = createInterface({ input: this.child.stdout });
-    this.rl.on('line', (line) => {
-      try {
-        const frame = JSON.parse(line);
-        if (frame.error) this.error = new Error(frame.error);
-        if (frame.resized) this.ptySize = { id: frame.id, width: frame.resized[0], height: frame.resized[1] };
-        if (frame.data) {
-          const data = Buffer.from(frame.data, 'base64');
-          this.raw.push(data);
-          this.lastOutput = Date.now();
-          this.queue = this.queue.then(() => new Promise((done) => this.term.write(data, done)));
-        }
-        if (frame.exit !== undefined && !this.closing) this.error = new Error(`Pi exited: ${frame.exit}`);
-      } catch (error) { this.error = error; }
-    });
-    // Let the terminal emulator answer native cursor/device queries, just as a terminal would.
-    this.term.onData((data) => this.send(data));
-    writeFileSync(join(this.output, 'invocation.json'), JSON.stringify({ cli, args, mode, work: this.work }, null, 2));
-  }
-  send(data) {
-    if (!this.closing && this.child.stdin.writable) {
-      this.lastOutput = Date.now();
-      if (/\x1b\[<|\x1b\[[IO]/u.test(data)) this.pointerInputs.push(data);
-      this.child.stdin.write(JSON.stringify({ input: Buffer.from(data).toString('base64') }) + '\n');
-    }
-  }
-  health() {
-    if (this.error || this.exited) throw this.error || new Error(`Bridge exited ${JSON.stringify(this.exited)}: ${this.stderr}`);
-  }
-  events() {
-    this.health();
-    try {
-      // A live read may end inside the producer's newline-delimited record.
-      return readFileSync(join(this.output, 'events.jsonl'), 'utf8').split('\n').slice(0, -1).filter(Boolean).map(JSON.parse);
-    } catch (error) { if (error.code === 'ENOENT') return []; throw error; }
-  }
-  async event(type, count = 1) {
-    return until(() => this.events().filter((event) => event.type === type).length >= count, `${type} #${count}`);
-  }
-  async ready() {
-    await this.event('start');
-    assert.equal(this.events().find((event) => event.type === 'start').sharedContainer, true);
-    await this.settle();
-  }
-  async settle(animated = false) {
-    if (animated) {
-      // A running Pi spinner deliberately never becomes idle. Sample after a render interval.
-      await sleep(220); this.health();
-    } else {
-      await until(() => { this.health(); return Date.now() - this.lastOutput >= 160; }, 'terminal idle');
-    }
-    await this.queue;
-  }
-  async command(command) {
-    this.send(command + '\r');
-    await this.settle();
-  }
-  screen() {
-    const buffer = this.term.buffer.active;
-    return Array.from({ length: this.term.rows }, (_, y) => buffer.getLine(buffer.viewportY + y)?.translateToString(true) || '');
-  }
-  async capture(name, { animated = false } = {}) {
-    this.send(`/tidy-ui-dump ${name}\r`);
-    const dump = await until(() => {
-      this.health();
-      try { return JSON.parse(readFileSync(join(this.output, `${name}.json`), 'utf8')); }
-      catch (error) { if (error.code === 'ENOENT' || error instanceof SyntaxError) return false; throw error; }
-    }, `live capture ${name}`);
-    await this.settle(animated);
-    this.session = dump.session;
-    return this.captureScreen(name, dump);
-  }
-  captureScreen(name, dump) {
-    const screen = this.screen();
-    writeFileSync(join(this.output, `${name}.screen.txt`), screen.join('\n'));
-    writeFileSync(join(this.output, 'terminal.ansi'), Buffer.concat(this.raw));
-    const buffer = this.term.buffer.active;
-    const cells = screen.map((_, y) => Array.from({ length: this.term.cols }, (_, x) => {
-      const cell = buffer.getLine(buffer.viewportY + y)?.getCell(x);
-      return cell ? { text: cell.getChars(), width: cell.getWidth(),
-        fg: cell.getFgColor(), fgMode: cell.getFgColorMode(), dim: cell.isDim(), bold: cell.isBold(),
-        italic: cell.isItalic(), underline: cell.isUnderline(), inverse: !!cell.isInverse(), bg: cell.getBgColor(), bgMode: cell.getBgColorMode() } : null;
-    }));
-    writeFileSync(join(this.output, `${name}.screen.json`), JSON.stringify(cells));
-    return { ...dump, screen, cells };
-  }
-  async run(scenario = 'suite') {
-    const count = this.events().filter((e) => e.type === 'agent_end').length;
-    this.send(`run ${scenario}\r`);
-    await this.event('agent_end', count + 1);
-    await this.settle();
-    assert.ok(this.screen().some((line) => line.includes(`TERMINAL_DONE_${scenario}`)));
-  }
-  async resize(cols, rows = 80, animated = false) {
-    const id = ++this.resizeSequence;
-    this.term.resize(cols, rows);
-    this.child.stdin.write(JSON.stringify({ resize: [cols, rows], id }) + '\n');
-    await until(() => {
-      this.health();
-      return this.ptySize?.id === id && this.ptySize.width === cols && this.ptySize.height === rows;
-    }, `PTY resize ${id}: ${cols}x${rows}`);
-    // ioctl completion precedes Node's SIGWINCH/TTY refresh. Read the driver's
-    // actual host observation, never infer dimensions from quiet output.
-    // Identical sizes need no new resize event, but still require the fresh receipt above.
-    await until(() => {
-      const size = this.events().findLast(event => event.type === 'terminal_size');
-      return size?.width === cols && size.height === rows;
-    }, `Pi geometry ${id}: ${cols}x${rows}`);
-    await this.settle(animated);
-  }
-  async close() {
-    if (this.closing) return;
-    this.closing = true;
-    writeFileSync(join(this.output, 'terminal.ansi'), Buffer.concat(this.raw));
-    writeFileSync(join(this.output, 'bridge.stderr'), this.stderr);
-    writeFileSync(join(this.output, 'pointer-inputs.json'), JSON.stringify(this.pointerInputs, null, 2));
-    if (this.session && existsSync(this.session)) copyFileSync(this.session, join(this.output, 'session.jsonl'));
-    if (existsSync(join(this.work, 'written.txt')))
-      copyFileSync(join(this.work, 'written.txt'), join(this.output, 'written.txt'));
-    if (!this.exited) {
-      const done = once(this.child, 'exit');
-      this.child.stdin.end('{"stop":true}\n');
-      const timer = setTimeout(() => this.child.kill('SIGTERM'), 2500);
-      let deadline;
-      try { await Promise.race([done, new Promise((_, reject) => {
-        deadline = setTimeout(() => reject(new Error('Bridge cleanup timeout')), 5500);
-      })]); }
-      finally { clearTimeout(timer); clearTimeout(deadline); }
-    }
-    this.rl.close(); this.term.dispose();
-  }
-  dispose() { rmSync(this.temp, { recursive: true, force: true }); }
-}
 
 function journalReader(t) {
   const output = mkdtempSync(join(tmpdir(), 'pi-tidy-ui-journal-'));
@@ -441,7 +201,6 @@ async function errorSummaryColors(dump, tool) {
   } finally { reference.dispose(); }
 }
 
-const stockOnly = process.env.TIDY_UI_TERMINAL_STOCK_ONLY === '1';
 const leadingBlanks = (tool) => tool.lines.findIndex((row) => plain(row).trim());
 function nativeAfterMultiline(tool, control) {
   const expected = leadingBlanks(control) === 0 ? ['', ...control.lines] : control.lines;
@@ -576,8 +335,8 @@ test('real CLI: delayed PTY resize confirms Pi geometry before width height and 
   });
 
 test('real CLI: pi-tidy-ui policy, input, lifecycle and same-session stock replay',
-  { skip: stockOnly, timeout: 180000 }, async () => {
-    assert.ok(existsSync(extension), 'Implement src/index.ts first; use TIDY_UI_TERMINAL_STOCK_ONLY=1 for transport validation');
+  { timeout: 180000 }, async () => {
+    assert.ok(existsSync(extension), 'Required presentation-driver fixture is missing');
     const terminals = [];
     const start = async (name, options) => {
       const terminal = new PiTerminal(name, options); terminals.push(terminal);
@@ -680,7 +439,7 @@ test('real CLI: pi-tidy-ui policy, input, lifecycle and same-session stock repla
   });
 
 test('real CLI: complete multiline summaries, adaptive separation, continuation clicks and replay',
-  { skip: stockOnly, timeout: 180000 }, async (t) => {
+  { timeout: 180000 }, async (t) => {
     const terminals = [];
     const start = async (name, options = {}) => {
       const terminal = new PiTerminal(name, options); terminals.push(terminal);
@@ -830,7 +589,7 @@ test('real CLI: complete multiline summaries, adaptive separation, continuation 
   });
 
 test('real CLI: comma wrap points preserve array members and index lists in live and replay output',
-  { skip: stockOnly, timeout: 120000 }, async () => {
+  { timeout: 120000 }, async () => {
     const terminals = [];
     const start = async (name, options = {}) => {
       const terminal = new PiTerminal(name, options); terminals.push(terminal);
@@ -921,7 +680,7 @@ test('real CLI: comma wrap points preserve array members and index lists in live
   });
 
 test('real CLI: long-word summaries fill preceding space and prefer bounded punctuation cuts',
-  { skip: stockOnly, timeout: 240000 }, async (t) => {
+  { timeout: 240000 }, async (t) => {
     for (const mode of ['fullscreen', 'regular']) await t.test(mode, async () => {
       const terminals = [];
       const start = async (name, options = {}) => {
@@ -1005,7 +764,7 @@ test('real CLI: long-word summaries fill preceding space and prefer bounded punc
   });
 
 test('real CLI: failed summaries are wholly error-colored, hide bodies and final badges, and expose native errors on click',
-  { skip: stockOnly, timeout: 120000 }, async () => {
+  { timeout: 120000 }, async () => {
     const terminals = [];
     const start = async (name, options = {}) => {
       const terminal = new PiTerminal(name, options); terminals.push(terminal);
@@ -1094,7 +853,7 @@ test('real CLI: failed summaries are wholly error-colored, hide bodies and final
   });
 
 test('real CLI: width-21 colored-segment boundary preserves content and exact indentation',
-  { skip: stockOnly, timeout: 60000 }, async () => {
+  { timeout: 60000 }, async () => {
     const terminals = [];
     const start = async (name, options = {}) => {
       const terminal = new PiTerminal(name, options); terminals.push(terminal); await terminal.ready(); return terminal;
@@ -1163,7 +922,7 @@ test('real CLI: width-21 colored-segment boundary preserves content and exact in
   });
 
 for (const mode of ['regular', 'fullscreen']) test(`real CLI: spinner shares Working frames and falls back only during host silence (${mode})`,
-  { skip: stockOnly, timeout: 180000 }, async () => {
+  { timeout: 180000 }, async () => {
     const terminals = [];
     const start = async (name, options = {}) => {
       const terminal = new PiTerminal(`${name}-${mode}`, { ...options, mode, extraEnv: { TIDY_UI_TEST_SPINNER_DIAGNOSTICS: '1' } });
@@ -1314,7 +1073,7 @@ for (const mode of ['regular', 'fullscreen']) test(`real CLI: spinner shares Wor
   });
 
 test('real CLI: gated pending/streaming, image/hidden fallback and exact-name flags',
-  { skip: stockOnly, timeout: 120000 }, async (t) => {
+  { timeout: 120000 }, async (t) => {
     assert.ok(existsSync(extension), 'src/index.ts is required for the implementation gate');
     const terminals = [];
     const start = async (name, options) => {
@@ -1377,29 +1136,20 @@ test('real CLI: gated pending/streaming, image/hidden fallback and exact-name fl
 
 
 test('real CLI: installed-profile registrations and real local task renderers',
-  { skip: stockOnly, timeout: 120000 }, async (t) => {
+  { timeout: 120000 }, async (t) => {
     const terminals = [];
     const start = async (name, options = {}) => {
       const terminal = new PiTerminal(name, { profileFactory: getInstalledIntegrationProfile, ...options });
       terminals.push(terminal); await terminal.ready(); return terminal;
     };
-    // Probe the audited installed sources without importing them or creating host configuration.
-    let profile;
-    try {
-      profile = getInstalledIntegrationProfile({ homeDir: join(tmpdir(), `tidy-ui-profile-probe-${process.pid}`),
-        agentDir: join(tmpdir(), `tidy-ui-profile-probe-${process.pid}`, 'agent'),
-        workDir: join(tmpdir(), `tidy-ui-profile-probe-${process.pid}`, 'work') });
-    } catch (error) {
-      if (error.code === 'ENOENT') { t.skip(`Installed-profile source is absent: ${error.path}`); return; }
-      throw error;
-    }
+    const profile = getInstalledIntegrationProfile({ homeDir: join(tmpdir(), `tidy-ui-profile-probe-${process.pid}`),
+      agentDir: join(tmpdir(), `tidy-ui-profile-probe-${process.pid}`, 'agent'),
+      workDir: join(tmpdir(), `tidy-ui-profile-probe-${process.pid}`, 'work') });
+    mkdirSync(artifacts, { recursive: true });
     writeFileSync(join(artifacts, 'integration-profile-probe.json'), JSON.stringify(profile, null, 2));
     const includedNames = new Set(profile.inventory.filter((entry) => profile.packages.some((pkg) => pkg.source === entry.source))
       .map((entry) => entry.name));
-    if (!includedNames.has('@tintinweb/pi-tasks')) {
-      t.skip(`Audited configured pi-tasks is required for safe local execution. Exclusions: ${profile.exclusions.map((e) => `${e.name || e.source}: ${e.reason}`).join('; ')}`);
-      return;
-    }
+    assert.ok(includedNames.has('@tintinweb/pi-tasks'), 'locked real local task integration is required');
     const registrationGroups = {
       '@tintinweb/pi-subagents': ['Agent'],
       '@tintinweb/pi-tasks': ['TaskCreate', 'TaskList', 'TaskExecute'],
@@ -1669,7 +1419,7 @@ async function panelCells(dump, index, needle, { error = false } = {}) {
 // border glyphs: input is now a user panel and never a transcript/tool frame.
 function physicalEditor(dump) {
   assert.ok(dump.editor, 'actual public stock editor is recorded');
-  const expected = dump.editor.lines.map(row => plain(row.replaceAll('\x1b_pi:c\x07', '')));
+  const expected = editorPaint(dump.editor.lines).map(plain);
   const top = dump.screen.findLastIndex((_row, start) => expected.every((row, offset) => dump.screen[start + offset]?.trimEnd() === row));
   assert.ok(top >= 0, 'complete actual editor block is physically visible');
   return { top, bottom: top + expected.length - 1 };
@@ -1836,7 +1586,7 @@ async function bashPointerChecks(live, initial) {
 }
 
  test('real CLI: built-in bash full commands, preview, resize, theme and same-session controls',
-  { skip: stockOnly, timeout: 120000 }, async () => {
+  { timeout: 120000 }, async () => {
     const terminals = [];
     const start = async (name, options = {}) => {
       const terminal = new PiTerminal(name, options); terminals.push(terminal);
@@ -1972,7 +1722,7 @@ async function bashPointerChecks(live, initial) {
   });
 
  test('real CLI: gated actual built-in bash streaming and argument pending',
-  { skip: stockOnly, timeout: 60000 }, async () => {
+  { timeout: 60000 }, async () => {
     const live = new PiTerminal('bash-stream', { tidyUi: true });
     try {
       await live.ready(); await live.resize(100, 120);
@@ -2013,7 +1763,7 @@ async function bashPointerChecks(live, initial) {
   });
 
  test('real CLI: isolated opt-in representative bash metadata, comments and output boundaries',
-  { skip: stockOnly, timeout: 90000 }, async () => {
+  { timeout: 90000 }, async () => {
     const terminals = [];
     const start = async (name, options = {}) => {
       const terminal = new PiTerminal(name, { tidyUi: true, extraEnv: { TIDY_UI_TEST_BASH_SHAPE: '1' }, ...options });
@@ -2097,7 +1847,7 @@ async function bashPointerChecks(live, initial) {
   });
 
 test('real CLI: isolated bash presentation exceptions preserve exact traffic',
-  { skip: stockOnly, timeout: 150000 }, async () => {
+  { timeout: 150000 }, async () => {
     const terminals = [];
     const start = async (name, options = {}) => {
       const terminal = new PiTerminal(name, { tidyUi: true, extraEnv: { TIDY_UI_TEST_BASH_SHAPE: '1' }, ...options });
@@ -2261,7 +2011,7 @@ test('real CLI: isolated bash presentation exceptions preserve exact traffic',
   });
 
 test('real CLI: isolated bash presentation exceptions partial-to-final gate',
-  { skip: stockOnly, timeout: 60000 }, async () => {
+  { timeout: 60000 }, async () => {
     const terminals = [];
     const start = async (name, options = {}) => {
       const terminal = new PiTerminal(name, { tidyUi: true, extraEnv: { TIDY_UI_TEST_BASH_SHAPE: '1' }, ...options });
@@ -2418,7 +2168,7 @@ async function actualCommandCells(dump, commands, { mode, scrollbar }) {
   return observations;
 }
 
-test('real CLI: actual-screen complete command width regression', { skip: stockOnly, timeout: 120000 }, async () => {
+test('real CLI: actual-screen complete command width regression', { timeout: 120000 }, async () => {
   const terminals = [], captures = [];
   const originalPython = "python3 -c \"from pathlib import Path; import re; s=Path('index.html').read_text(); m=re.search(r'<script>(.*?)</script>', s, re.S); assert m; Path('/tmp/neon-blocks-check.js').write_text(m.group(1))\" && node --check /tmp/neon-blocks-check.js";
   const commands = ["printf '" + 'LONGWORD'.repeat(30) + "'", originalPython.replaceAll('/tmp/neon-blocks-check.js', 'neon-blocks-check.js')];
@@ -2477,7 +2227,7 @@ test('real CLI: actual-screen complete command width regression', { skip: stockO
 // Observable work counters come only from actual /tidy-ui notifications in the live tree.
 // pointer-cache-* deliberately avoids the pre-existing alternate-width dump probes.
 test('real CLI: component-owned layout work counters and released retained memory',
-  { skip: stockOnly, timeout: 120000 }, async () => {
+  { timeout: 120000 }, async () => {
     const terminals = [], snapshots = [];
     const start = async (name, options = {}, resizeTall = true) => {
       const terminal = new PiTerminal(name, options); terminals.push(terminal);
@@ -2727,7 +2477,7 @@ test('real CLI: component-owned layout work counters and released retained memor
 
 // Actual user-message renderer, no synthetic message components or source-text renderer replacement.
 test('real CLI: user cards share Bash geometry with customMessageLabel and preserve native Markdown',
-  { skip: stockOnly, timeout: 120000 }, async () => {
+  { timeout: 120000 }, async () => {
     const terminals = [], extraEnv = { TIDY_UI_TEST_USER_CARDS: '1' };
     const source = 'run user-card\n\nUSER_CARD_PLAIN\n\n**bold** and `inline`\n\n7. seven\n8. eight\n\n> quote\n\n```ts\nconst userValue = 7;\n```\n\n[link](https://example.org) \\*literal\\* 文字 👩‍💻\n\nUSER_CARD_END';
     const start = async (name, options = {}) => {
@@ -2869,7 +2619,7 @@ test('real CLI: user cards share Bash geometry with customMessageLabel and prese
   });
 
 test('real CLI: OpenCode-style edit syntax, numbered unified/split format, errors and exact replay',
-  { skip: stockOnly, timeout: 180000 }, async () => {
+  { timeout: 180000 }, async () => {
     const terminals = [];
     const start = async (name, options = {}) => {
       const terminal = new PiTerminal(name, { extraEnv: { TIDY_UI_TEST_EDIT_CARDS: '1' }, ...options });
@@ -3137,7 +2887,7 @@ test('real CLI: OpenCode-style edit syntax, numbered unified/split format, error
 
 
 test('real CLI: minified edit keeps linear ANSI size, warm work, exact traffic and replay',
-  { skip: stockOnly, timeout: 180000 }, async () => {
+  { timeout: 180000 }, async () => {
     const terminals = [], snapshots = [];
     const start = async (name, options = {}) => {
       const terminal = new PiTerminal(name, { extraEnv: { TIDY_UI_TEST_EDIT_PERFORMANCE: '1' }, ...options });
@@ -3219,7 +2969,7 @@ test('real CLI: minified edit keeps linear ANSI size, warm work, exact traffic a
 
 
 test('real CLI: bounded argument previews, path-only edits and visible payloads preserve native data and replay',
-  { skip: stockOnly, timeout: 180000 }, async () => {
+  { timeout: 180000 }, async () => {
     const terminals = [], flags = ['--tidy-ui-compact', 'write'];
     const start = async (name, options = {}) => {
       const terminal = new PiTerminal(name, options); terminals.push(terminal);
@@ -3317,7 +3067,7 @@ test('real CLI: bounded argument previews, path-only edits and visible payloads 
 
 
 for (const shape of [false, true]) test(`real CLI: write cards ${shape ? 'representative saved diff shapes' : 'actual stock writes'} and lifecycle/native/replay`,
-  { skip: stockOnly, timeout: 180000 }, async () => {
+  { timeout: 180000 }, async () => {
     const terminals = [], captures = [], count = shape ? 11 : 5;
     const scenario = shape ? 'write-shapes' : 'write-stock';
     const extraEnv = { TIDY_UI_TEST_WRITE_CARDS: '1', ...(shape ? { TIDY_UI_TEST_WRITE_SHAPE: '1' } : {}) };
@@ -3504,7 +3254,7 @@ for (const shape of [false, true]) test(`real CLI: write cards ${shape ? 'repres
   });
 
 
-test('main editor user-card styling preserves real draft input, cursor, menus and lifecycle', { skip: stockOnly }, async () => {
+test('main editor user-card styling preserves real draft input, cursor, menus and lifecycle', {}, async () => {
   const terminals = [];
   const observe = async (terminal, name, action = 'snapshot') => {
     writeFileSync(join(terminal.output, 'editor-request.json'), JSON.stringify({ name, action }));
@@ -3535,9 +3285,10 @@ test('main editor user-card styling preserves real draft input, cursor, menus an
     }
     assert.equal(cells[1].fg, stripe.fg); assert.equal(cells[1].bgMode, 0);
     assert.equal(cells[0].bgMode, 0); assert.equal(cells.at(-1).bgMode, 0);
-    const matching = dump.rows.findIndex(row => plain(row).includes(needle));
+    const painted = editorPaint(dump.rows);
+    const matching = painted.findIndex(row => plain(row).includes(needle));
     assert.equal(dump.rows.filter(row => row.includes('\x1b_pi:c')).length, 1, 'native hardware-cursor marker is retained');
-    assert.equal(dump.screen[y].trimEnd(), plain(dump.rows[matching].replaceAll('\x1b_pi:c\x07', '')), 'physical row equals actual component paint (cursor marker is zero-column metadata)');
+    assert.equal(dump.screen[y].trimEnd(), plain(painted[matching]), 'physical row equals actual component paint (cursor marker is zero-column metadata)');
     await assertFits(dump.rows, dump.width);
   };
   try {
@@ -3607,7 +3358,7 @@ test('main editor user-card styling preserves real draft input, cursor, menus an
 });
 
 
-test('belowEditor metadata and separate native status preserve physical half-block paint, menus and active lifecycle', { skip: stockOnly }, async () => {
+test('belowEditor metadata and separate native status preserve physical half-block paint, menus and active lifecycle', {}, async () => {
   const terminals = [];
   const observe = async (terminal, name, action = 'snapshot') => {
     writeFileSync(join(terminal.output, 'editor-request.json'), JSON.stringify({ name, action }));
@@ -3640,7 +3391,7 @@ test('belowEditor metadata and separate native status preserve physical half-blo
     assert.ok(inputY >= 1);
     if (dump.statusPresent) nativeActivity(dump, inputY - 1);
     else assert.ok(!dump.screen.some(row => row.includes('Working A─B ───')));
-    const nativeRows = dump.rows.map(row => plain(row.replaceAll('\x1b_pi:c\x07', '')));
+    const nativeRows = editorPaint(dump.rows).map(plain);
     assert.deepEqual(dump.screen.slice(inputY - 1, inputY - 1 + nativeRows.length).map(row => row.trimEnd()), nativeRows,
       'native editor and menu occupy their unchanged contiguous rows');
     assert.deepEqual(dump.screen.slice(inputY - 1 + nativeRows.length, inputY - 1 + nativeRows.length + dump.footerRows.length).map(row => row.trimEnd()),
@@ -3773,7 +3524,7 @@ test('belowEditor metadata and separate native status preserve physical half-blo
 });
 
 
-test('belowEditor clipping leaves activity in Pi separate container without changing native Working ownership', { skip: stockOnly }, async () => {
+test('belowEditor clipping leaves activity in Pi separate container without changing native Working ownership', {}, async () => {
   const terminal = new PiTerminal('editor-status-height-four', { mode: 'fullscreen', agentSettings: { editorPaddingX: 1 }, extensions: [join(fixtures, 'editor-driver.ts')] });
   const observe = async (name, action) => {
     writeFileSync(join(terminal.output, 'editor-request.json'), JSON.stringify({ name, action })); terminal.send('\x1b\x04');
@@ -3812,7 +3563,7 @@ test('belowEditor clipping leaves activity in Pi separate container without chan
 });
 
 
-test('editor padding settings move the complete input panel live in both terminal modes', { skip: stockOnly }, async () => {
+test('editor padding settings move the complete input panel live in both terminal modes', {}, async () => {
   const terminals = [];
   const observe = async (terminal, name) => {
     writeFileSync(join(terminal.output, 'editor-request.json'), JSON.stringify({ name }));
@@ -3893,7 +3644,7 @@ test('editor padding settings move the complete input panel live in both termina
 });
 
 
-test('aboveEditor widget separator stays immediately before input and follows zero height in real native layouts', { skip: stockOnly }, async () => {
+test('aboveEditor widget separator stays immediately before input and follows zero height in real native layouts', {}, async () => {
   const terminals = [];
   const observe = async (terminal, name, action = 'snapshot') => {
     writeFileSync(join(terminal.output, 'editor-request.json'), JSON.stringify({ name, action }));
@@ -4019,7 +3770,7 @@ test('aboveEditor widget separator stays immediately before input and follows ze
 
 // A real separately loaded extension owns this editor through setEditorComponent.
 // Compare its complete input region with a process that never loads pi-tidy-ui.
-test('foreign editor extension retains native input, widgets, mouse and replay in both load orders', { skip: stockOnly, timeout: 240000 }, async () => {
+test('foreign editor extension retains native input, widgets, mouse and replay in both load orders', { timeout: 240000 }, async () => {
   const terminals = [], coverage = [], workspace = mkdtempSync(join(tmpdir(), 'tidy-ui-foreign-work-'));
   const ownerExtension = join(fixtures, 'foreign-editor.ts');
   const observe = async (terminal, name, action = 'snapshot') => {
@@ -4047,7 +3798,7 @@ test('foreign editor extension retains native input, widgets, mouse and replay i
     assert.notEqual(dump.rows[0], '', 'no pi-tidy-ui upper-widget separator');
     const top = dump.screen.findIndex(row => row === 'FOREIGN_UPPER_ROW');
     assert.ok(top >= 0, 'real upper widget is painted');
-    const rows = dump.rows.map(row => plain(row.replaceAll('\x1b_pi:c\x07', '')));
+    const rows = editorPaint(dump.rows).map(plain);
     const physical = dump.screen.slice(top + 1, top + 1 + rows.length).map(plain);
     if (!dump.idle && dump.embedWorkingStatus) {
       // Native clock ticks between the packet and the physical-screen sample.
@@ -4231,7 +3982,7 @@ test('foreign editor extension retains native input, widgets, mouse and replay i
 });
 
 
-test('right-aligned cwd and live Git branch preserve colors padding and zero hot-frame queries', { skip: stockOnly }, async () => {
+test('right-aligned cwd and live Git branch preserve colors padding and zero hot-frame queries', {}, async () => {
   const terminals = [], base = mkdtempSync(join(tmpdir(), 'tidy-ui-cwd-cli-'));
   const observe = async (terminal, name, action = 'snapshot') => {
     writeFileSync(join(terminal.output, 'editor-request.json'), JSON.stringify({ name, action })); terminal.send('\x1b\x04');
@@ -4273,7 +4024,7 @@ test('right-aligned cwd and live Git branch preserve colors padding and zero hot
     for (const mode of ['fullscreen', 'regular']) {
       const repo = join(base, mode), name = 'important-界é', workspace = join(repo, 'parent', name);
       mkdirSync(workspace, { recursive: true });
-      const git = (...args) => { const result = spawnSync('git', ['-C', repo, ...args], { encoding: 'utf8' }); assert.equal(result.status, 0, result.stderr); };
+      const git = (...args) => { const result = spawnSync(toolPath('git'), ['-C', repo, ...args], { encoding: 'utf8', env: childEnv(base) }); assert.equal(result.status, 0, result.stderr); };
       let branch = 'feature/input-status'; git('init', '-b', branch);
       const terminal = new PiTerminal(`cwd-${mode}`, { mode, workspace, agentSettings: { editorPaddingX: 1 }, extensions: [join(fixtures, 'editor-driver.ts')] });
       terminals.push(terminal); await terminal.ready(); await terminal.resize(220);
@@ -4331,7 +4082,7 @@ test('right-aligned cwd and live Git branch preserve colors padding and zero hot
       const homeTerminal = new PiTerminal(`cwd-home-${mode}`, { mode, agentSettings: { editorPaddingX: 1 },
         extensions: [join(fixtures, 'editor-driver.ts')] });
       terminals.push(homeTerminal);
-      assert.equal(spawnSync('git', ['-C', homeTerminal.work, 'init', '-b', 'home-main']).status, 0);
+      assert.equal(spawnSync(toolPath('git'), ['-C', homeTerminal.work, 'init', '-b', 'home-main'], { env: childEnv(homeTerminal.temp) }).status, 0);
       await homeTerminal.ready(); await homeTerminal.resize(220);
       const homeCheck = async (name, action = 'snapshot', full = true) => {
         const value = await observe(homeTerminal, name, action);
@@ -4379,7 +4130,7 @@ function footerPhysical(dump) {
   return starts.at(-1);
 }
 
-test('footer whole-status fitting colors native data warm counters ownership and replay in both modes', { skip: stockOnly }, async () => {
+test('footer whole-status fitting colors native data warm counters ownership and replay in both modes', {}, async () => {
   const terminals = [], observations = [];
   try {
     for (const mode of ['regular', 'fullscreen']) {
@@ -4468,7 +4219,7 @@ test('footer whole-status fitting colors native data warm counters ownership and
   } finally { for (const terminal of terminals) { await terminal.close(); terminal.dispose(); } }
 });
 
-test('footer cache history tracks every real request including equal CH, cold zero, unknown, colors and replay', { skip: stockOnly, timeout: 180000 }, async () => {
+test('footer cache history tracks every real request including equal CH, cold zero, unknown, colors and replay', { timeout: 180000 }, async () => {
   const terminals = [];
   const options = { extraEnv: { TIDY_UI_TEST_FOOTER: '1', TIDY_UI_TEST_FOOTER_HISTORY: '1' }, extensions: [join(fixtures, 'footer-driver.ts')] };
   const reports = dump => dump.entries.filter(e => e.type === 'message' && e.message.role === 'assistant').map(e => {
@@ -4553,7 +4304,7 @@ test('footer cache history tracks every real request including equal CH, cold ze
   } finally { for (const terminal of terminals) { await terminal.close(); terminal.dispose(); } }
 });
 
-test('footer animated Working and short-height clipping do not rescan session or replace native activity', { skip: stockOnly }, async () => {
+test('footer animated Working and short-height clipping do not rescan session or replace native activity', {}, async () => {
   const terminals = [];
   try {
     for (const mode of ['regular', 'fullscreen']) {
@@ -4587,7 +4338,7 @@ test('footer animated Working and short-height clipping do not rescan session or
 });
 
 
-test('Output padding settings update summaries and all transcript cards live with native and replay controls', { skip: stockOnly, timeout: 180000 }, async () => {
+test('Output padding settings update summaries and all transcript cards live with native and replay controls', { timeout: 180000 }, async () => {
   const terminals = [], extraEnv = { TIDY_UI_TEST_USER_CARDS: '1' };
   const start = async (name, options) => {
     const terminal = new PiTerminal(name, { extraEnv, agentSettings: { outputPad: 0, editorPaddingX: 2 }, ...options });
@@ -4701,7 +4452,7 @@ test('Output padding settings update summaries and all transcript cards live wit
 });
 
 
-test('Output padding project override stays consistent after native user padding changes', { skip: stockOnly, timeout: 60000 }, async () => {
+test('Output padding project override stays consistent after native user padding changes', { timeout: 60000 }, async () => {
   for (const mode of ['fullscreen', 'regular']) {
     const live = new PiTerminal(`output-padding-project-${mode}`, {
       tidyUi: true, mode, extraEnv: { TIDY_UI_TEST_USER_CARDS: '1' },
@@ -4952,7 +4703,7 @@ test('terminal colors: initially automatic and first production late load stay i
 });
 
 for (const mode of ['regular', 'fullscreen']) test(`real CLI: isolated bash timeout tails preserve exact traffic (${mode})`,
-  { skip: stockOnly, timeout: 180000 }, async () => {
+  { timeout: 180000 }, async () => {
     const terminals = [], footer = '[exit code: 124; error: command timed out]';
     const start = async (name, options = {}) => {
       const terminal = new PiTerminal('bash-timeout-' + mode + '-' + name,
@@ -5122,7 +4873,7 @@ for (const mode of ['regular', 'fullscreen']) test(`real CLI: isolated bash time
   });
 
 for (const mode of ['regular', 'fullscreen']) test(`real CLI: queued cards adaptive height, native dequeue/delivery and replay (${mode})`,
-  { skip: stockOnly, timeout: 180000 }, async () => {
+  { timeout: 180000 }, async () => {
     const terminals = [];
     const messages = [Array.from({ length: 8 }, (_, i) => `QUEUE_FIRST_${i + 1}`).join('\n'),
       Array.from({ length: 8 }, (_, i) => `QUEUE_SECOND_${i + 1}`).join('\n'), 'QUEUE_FOLLOW_1\nQUEUE_FOLLOW_2'];
@@ -5338,4 +5089,38 @@ test('edit replay comparison: accepts exact cold foreground including wrapped so
   const eagerChanged = { ...actual, tools: actual.tools.map(tool => ({ ...tool, lines: tool.lines.slice() })) };
   eagerChanged.tools[0].lines[0] = '\x1b[31mother\x1b[39m';
   assert.throws(() => compareEditReplayColors(eagerChanged, expected, uncolored), 'non-HTML color changes are never accepted');
+});
+
+test('terminal harness uses the prepared CLI despite an ambient CLI override', { timeout: 30000 }, t => {
+  const inputs = readInputs(), root = mkdtempSync(join(tmpdir(), 'tidy-selected-cli-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const result = spawnSync(inputs.node.path, ['--input-type=module', '-e', `
+    const { PiTerminal } = await import(${JSON.stringify(new URL('./fixtures/terminal-harness.mjs', import.meta.url).href)});
+    const terminal = new PiTerminal('harness-selected-cli');
+    try {
+      await terminal.ready();
+      const dump = await terminal.capture('selected-cli');
+      console.log(JSON.stringify({ starts: terminal.events().filter(event => event.type === 'start').length, tools: dump.tools.length }));
+    } finally { await terminal.close(); terminal.dispose(); }
+  `], { cwd: inputs.pi.root, env: childEnv(root, { PI_TEST_CLI: '/must-not-be-executed/ambient-pi' }),
+    encoding: 'utf8', timeout: 25000 });
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout), { starts: 1, tools: 0 });
+});
+
+test('Python PTY startup ignores site customizers while still running the actual selected CLI', { timeout: 30000 }, async t => {
+  const root = mkdtempSync(join(tmpdir(), 'tidy-python-startup-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const marker = join(root, 'site-ran');
+  writeFileSync(join(root, 'sitecustomize.py'), `from pathlib import Path\nPath(${JSON.stringify(marker)}).write_text('active')\n`);
+  const control = spawnSync(toolPath('python3'), ['-c', 'print("python-control")'],
+    { env: childEnv(join(root, 'control'), { PYTHONPATH: root }), encoding: 'utf8', timeout: 15000 });
+  assert.equal(control.status, 0); assert.equal(existsSync(marker), true, 'positive control must load the customizer');
+  rmSync(marker);
+  const terminal = new PiTerminal('harness-python-startup', { extraEnv: { PYTHONPATH: root } });
+  try {
+    await terminal.ready();
+    assert.equal(existsSync(marker), false, 'PTY must not load Python startup customization');
+    assert.equal(terminal.events().filter(event => event.type === 'start').length, 1);
+  } finally { await terminal.close(); terminal.dispose(); }
 });

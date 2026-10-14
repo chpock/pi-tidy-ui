@@ -1,3 +1,4 @@
+import './fixtures/test-guard.mjs';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';

@@ -1,4 +1,5 @@
 // Isolated actual-SDK ownership control. Only deadline dispatch is held for GC.
+import './test-guard.mjs';
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";

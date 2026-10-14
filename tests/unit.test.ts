@@ -1,3 +1,4 @@
+import './fixtures/test-guard.mjs';
 import assert from "node:assert/strict";
 import test from "node:test";
 import { spawnSync } from "node:child_process";
@@ -18,6 +19,7 @@ import { generateDiffString, generateUnifiedPatch } from "../node_modules/@earen
 import type { CardTheme } from "../src/card-theme.ts";
 import { RenderCache } from "../src/render-cache.ts";
 import { awaitFixture } from "./fixtures/await-fixture.ts";
+import { editorPaint, editorPlain } from "./fixtures/editor-paint.ts";
 import { renderEditorStatus, directoryStatus } from "../src/editor-status.ts";
 import { IdleStatus, StatusIndicator } from "../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/components/status-indicator.js";
 import { InteractiveMode } from "../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/interactive-mode.js";
@@ -351,7 +353,7 @@ test("spinner attachment follows stable TUI renderer replacement without probes,
   const noop = () => {};
   const terminal: Terminal = { columns: 80, rows: 20, kittyProtocolActive: false, start: noop, stop: noop,
     drainInput: async () => {}, write: noop, moveBy: noop, hideCursor: noop, showCursor: noop,
-    clearLine: noop, clearFromCursor: noop, clearScreen: noop, setTitle: noop, setProgress: noop };
+    clearLine: noop, clearFromCursor: noop, clearScreen: noop, setTitle: noop, setProgress: noop, ...{ setProgramStatus: noop } };
   const roots = [new TuiAltScreen(terminal, false), new TuiMainScreen(terminal, false)], requests = [0, 0];
   const documents = roots.map(() => new Container()); roots[0]!.addChild(documents[0]!);
   roots.forEach((root, index) => { root.requestRender = () => { requests[index]!++; }; });
@@ -1776,7 +1778,7 @@ test("actual fullscreen keeps native input identity and consumption throughout p
   const noop = () => {};
   const terminal: Terminal = { columns: 80, rows: 20, kittyProtocolActive: false,
     start: noop, stop: noop, drainInput: async () => {}, write: noop, moveBy: noop, hideCursor: noop,
-    showCursor: noop, clearLine: noop, clearFromCursor: noop, clearScreen: noop, setTitle: noop, setProgress: noop };
+    showCursor: noop, clearLine: noop, clearFromCursor: noop, clearScreen: noop, setTitle: noop, setProgress: noop, ...{ setProgramStatus: noop } };
   const root = new TuiAltScreen(terminal, false); root.requestRender = noop;
   const input = root as unknown as { handleTerminalInput(data: string): void; handleViewportInput(data: string): unknown };
   const native = input.handleViewportInput, descriptor = Object.getOwnPropertyDescriptor(root, "handleViewportInput");
@@ -1850,7 +1852,7 @@ test("renderer replacement preserves cards and clicks without touching any nativ
     const noop = () => {};
     const terminal: Terminal = { columns: 80, rows: 20, kittyProtocolActive: false,
       start: noop, stop: noop, drainInput: async () => {}, write: noop, moveBy: noop, hideCursor: noop,
-      showCursor: noop, clearLine: noop, clearFromCursor: noop, clearScreen: noop, setTitle: noop, setProgress: noop };
+      showCursor: noop, clearLine: noop, clearFromCursor: noop, clearScreen: noop, setTitle: noop, setProgress: noop, ...{ setProgramStatus: noop } };
     const roots = fullscreenFirst ? [new TuiAltScreen(terminal, false), new TuiMainScreen(terminal, false), new TuiAltScreen(terminal, false)]
       : [new TuiMainScreen(terminal, false), new TuiAltScreen(terminal, false), new TuiMainScreen(terminal, false), new TuiAltScreen(terminal, false)];
     for (const root of roots) root.requestRender = noop;
@@ -3655,7 +3657,6 @@ function editorSetup(paddingX = 0) {
   editor.focused = true; root.addChild(editor);
   return { root, editor, theme, keybindings };
 }
-const editorPlain = (row: string) => stripVTControlCharacters(row.replaceAll(CURSOR_MARKER, ""));
 
 test("editor card uses configured exterior geometry without exchanging native state or caching input", () => {
   const nativeRender = Editor.prototype.render;
@@ -3865,7 +3866,7 @@ test("editor card foreground and padding retain user paint after the native inve
       const controller = installTidyUi(root, () => nativeTheme);
       try {
         const rows = editor.render(24);
-        terminal.reset(); await new Promise<void>(resolve => terminal.write(rows.join("\r\n"), resolve));
+        terminal.reset(); await new Promise<void>(resolve => terminal.write(editorPaint(rows).join("\r\n"), resolve));
         const bg = colorToRgb(nativeTheme.colors.userMessageBg), fg = colorToRgb(nativeTheme.colors.userMessageText);
         const line = terminal.buffer.active.getLine(1)!;
         for (let x = 3; x < 22; x++) {
@@ -3904,7 +3905,7 @@ test("editor full-line cursor inverse never paints exterior margins or subsequen
   const { root, editor } = editorSetup(1); editor.setText("x".repeat(editorGeometry(24, 1).contentWidth));
   const controller = installTidyUi(root, () => nativeTheme);
   try {
-    await new Promise<void>(resolve => terminal.write(editor.render(24).join("\r\n"), resolve));
+    await new Promise<void>(resolve => terminal.write(editorPaint(editor.render(24)).join("\r\n"), resolve));
     const line = terminal.buffer.active.getLine(1)!;
     assert.ok(line.getCell(22)!.isInverse(), "end cursor occupies internal right padding");
     assert.equal(line.getCell(23)!.isInverse(), 0, "exterior right margin must not inherit inverse cursor");
@@ -5408,7 +5409,7 @@ test("terminal appearance SDK contract preserves native methods and flags, follo
   const noop = () => {};
   const terminal: Terminal = { columns: 80, rows: 20, kittyProtocolActive: false, start: noop, stop: noop,
     drainInput: async () => {}, write: noop, moveBy: noop, hideCursor: noop, showCursor: noop,
-    clearLine: noop, clearFromCursor: noop, clearScreen: noop, setTitle: noop, setProgress: noop };
+    clearLine: noop, clearFromCursor: noop, clearScreen: noop, setTitle: noop, setProgress: noop, ...{ setProgramStatus: noop } };
   const roots = [new TuiAltScreen(terminal, false), new TuiMainScreen(terminal, false)];
   let current = roots[0]!;
   const reference = new Proxy({}, { get: (_target, key) => Reflect.get(current, key, current),

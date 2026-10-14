@@ -1,4 +1,7 @@
 //! Real worker/catalogue controls; no alternate parser or filesystem catalogue.
+#[allow(dead_code)]
+mod support;
+
 use occipital::{
     actor::{ActorPool, Route},
     catalogue::Catalogue,
@@ -8,31 +11,17 @@ use occipital::{
     profile::Profile,
 };
 use serde_json::{json, Value};
-use std::{
-    fs,
-    path::PathBuf,
-    sync::atomic::{AtomicU64, Ordering},
-};
+use std::fs;
 
-struct Temp(PathBuf);
+struct Temp(support::CaseDir);
 impl Temp {
     fn new() -> Self {
-        static NEXT: AtomicU64 = AtomicU64::new(0);
-        let path = std::env::temp_dir().join(format!(
-            "occipital-control-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
-        fs::create_dir_all(path.join("themes")).unwrap();
+        let path = support::CaseDir::new("control");
+        fs::create_dir(path.join("themes")).unwrap();
         Self(path)
     }
     fn catalogue(&self) -> Catalogue {
         Catalogue::new(Some(self.0.join("config.json")))
-    }
-}
-impl Drop for Temp {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
     }
 }
 async fn metadata(authority: &Authority, route: &Route, op: &str, ticket: &str) -> Value {

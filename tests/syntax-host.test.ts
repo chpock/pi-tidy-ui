@@ -1,3 +1,4 @@
+import './fixtures/test-guard.mjs';
 import assert from 'node:assert/strict';
 import { afterEach, test } from 'node:test';
 import { setImmediate as turn } from 'node:timers/promises';

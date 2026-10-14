@@ -1,6 +1,12 @@
+import './fixtures/test-guard.mjs';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
+import { spawnSync } from 'node:child_process';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { childEnv, readInputs } from '../scripts/test/context.mjs';
 import { awaitFixture } from './fixtures/await-fixture.ts';
 
 test('fixture waiter preserves values and original rejection without delaying settlement', async () => {
@@ -26,4 +32,16 @@ test('native interval cleared inside its callback runs once across supported Nod
   const interval = setInterval(() => { calls++; clearInterval(interval); }, 5);
   try { await delay(30); assert.equal(calls, 1); }
   finally { clearInterval(interval); }
+});
+
+test('test entry requires actual GC exposure instead of silently skipping ownership coverage', t => {
+  const inputs = readInputs(), root = mkdtempSync(join(tmpdir(), 'tidy-gc-entry-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  for (const exposed of [false, true]) {
+    const result = spawnSync(inputs.node.path, [...(exposed ? ['--expose-gc'] : []), '--input-type=module', '-e',
+      `await import(${JSON.stringify(new URL('./fixtures/test-guard.mjs', import.meta.url).href)}); console.log('GC_READY');`],
+    { env: childEnv(join(root, String(exposed)), { TIDY_TEST_CONTEXT_READY: '1' }, inputs), encoding: 'utf8' });
+    if (exposed) { assert.equal(result.status, 0, result.stderr); assert.equal(result.stdout, 'GC_READY\n'); }
+    else { assert.notEqual(result.status, 0); assert.match(result.stderr, /GC ownership checks require --expose-gc/); }
+  }
 });

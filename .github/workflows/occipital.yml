@@ -33,8 +33,25 @@ jobs:
         env:
           EXPECTED_NODE: ${{ matrix.node }}
         run: node -e 'if (process.version !== "v" + process.env.EXPECTED_NODE) throw new Error(process.version)'
+      - name: Prepare enforced Linux network isolation
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap
+          if ! /usr/bin/bwrap --unshare-user --unshare-net --ro-bind / / -- /usr/bin/true; then
+            sudo tee /etc/apparmor.d/tidy-test-bwrap >/dev/null <<'PROFILE'
+          abi <abi/4.0>,
+          include <tunables/global>
+          profile tidy-test-bwrap /usr/bin/bwrap flags=(unconfined) {
+            userns,
+          }
+          PROFILE
+            sudo apparmor_parser -r /etc/apparmor.d/tidy-test-bwrap
+          fi
+          /usr/bin/bwrap --unshare-user --unshare-net --ro-bind / / -- /usr/bin/true
       - name: Inert packaging and exact-tag/commit artifact checks
-        run: npm run test:native-release
+        run: |
+          node scripts/test/prepare.mjs --pi-version 1.0.0 --output "$RUNNER_TEMP/release-inputs"
+          node scripts/test/run.mjs --inputs "$RUNNER_TEMP/release-inputs/inputs.json" --suite native-release --network-isolated
 
   build:
     needs: packaging-fixtures
@@ -67,7 +84,10 @@ jobs:
             rust: aarch64-pc-windows-msvc
             executable: occipital.exe
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 45
+    timeout-minutes: 60
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target
+      RUSTUP_AUTO_INSTALL: '0'
     defaults:
       run:
         shell: bash
@@ -90,21 +110,107 @@ jobs:
       - name: Install Windows executable inspection tool
         if: startsWith(matrix.target, 'windows-')
         run: rustup component add llvm-tools-preview
-      # Match the nearest native release's embedded version even on branch CI:
-      # otherwise version text alone makes an unchanged binary's checksum differ.
+      - name: Declare pinned compiler and hosted setup Cargo artifact store
+        run: |
+          node --input-type=module <<'JS'
+          import {execFileSync} from 'node:child_process';
+          import {appendFileSync, lstatSync, mkdirSync, realpathSync} from 'node:fs';
+          import {userInfo} from 'node:os';
+          import {dirname, isAbsolute, join, relative, resolve, sep} from 'node:path';
+          if (process.env.GITHUB_ACTIONS !== 'true' || process.env.RUNNER_ENVIRONMENT !== 'github-hosted') throw new Error('Setup Cargo store requires disposable hosted CI');
+          // rust-toolchain declares CARGO_HOME via GITHUB_ENV, including the native Windows default.
+          // Keep that exact build-visible path: dependency source paths can survive release stripping.
+          const home = process.env.CARGO_HOME, setupHome = process.platform === 'win32' ? process.env.USERPROFILE : process.env.HOME, temp = process.env.RUNNER_TEMP;
+          for (const path of [home, setupHome, temp, process.env.GITHUB_ENV]) {
+            if (!path || !isAbsolute(path) || /[\r\n]/.test(path) || (process.platform === 'win32' && !/^[A-Za-z]:[\\/]/.test(path))) throw new Error('Missing or unsafe native setup store path');
+          }
+          const inside = (root, path) => { const suffix = relative(root, path); return suffix && suffix !== '..' && !suffix.startsWith('..' + sep) && !isAbsolute(suffix); };
+          const store = resolve(home), profile = resolve(setupHome), temporary = resolve(temp);
+          const root = relative(join(profile,'.cargo'), store) === '' ? profile : inside(temporary,store) ? temporary : undefined;
+          if (!root) throw new Error('Setup Cargo store is outside allowed tool-setup roots');
+          if (process.platform === 'win32' && relative(realpathSync(userInfo().homedir),realpathSync(profile)) !== '') throw new Error('Setup profile is not owned by the hosted account');
+          const ownedDirectory = path => {
+            const info = lstatSync(path);
+            if (dirname(path) === path || !info.isDirectory() || info.isSymbolicLink() || (process.platform !== 'win32' && (info.uid !== process.getuid() || (info.mode & 0o022)))) throw new Error('Setup Cargo store is not an owned safe directory');
+          };
+          ownedDirectory(temporary);
+          for (let path = root;;) {
+            ownedDirectory(path);
+            if (relative(path,store) === '') break;
+            path = join(path, relative(path,store).split(sep)[0]);
+          }
+          for (const name of ['config.toml','config','credentials.toml','credentials']) {
+            if (lstatSync(join(store,name), {throwIfNoEntry:false})) throw new Error('Setup Cargo store contains unexpected configuration or credentials');
+          }
+          mkdirSync(join(temp,'native-environment'), {recursive:true});
+          const compiler = execFileSync('rustc',['--print','sysroot'], {encoding:'utf8'}).trim();
+          appendFileSync(process.env.GITHUB_ENV, `CARGO_HOME=${home}\nRUST_ROOT=${compiler}\nNODE=${process.execPath}\n`);
+          JS
+      - uses: actions/cache@v4
+        if: ${{ !inputs.clean-build }}
+        with:
+          path: |
+            ${{ env.CARGO_HOME }}/registry
+            ${{ env.CARGO_HOME }}/git
+            target
+          key: hermetic-native-v1-${{ matrix.target }}-${{ inputs.version }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', '.cargo/config.toml') }}
+      - name: Prepare explicit build-only MSVC context
+        if: startsWith(matrix.target, 'windows-')
+        env:
+          RUST_TARGET: ${{ matrix.rust }}
+        run: |
+          node --input-type=module <<'JS'
+          import {execFileSync} from 'node:child_process';
+          import {writeFileSync} from 'node:fs';
+          import {join} from 'node:path';
+          const system = 'C:\\Windows';
+          const vswhere = 'C:\\Program Files (x86)\\Microsoft Visual Studio\\Installer\\vswhere.exe';
+          const installation = execFileSync(vswhere, ['-latest', '-products', '*', '-requires', 'Microsoft.VisualStudio.Component.VC.Tools.x86.x64', '-property', 'installationPath'], {encoding:'utf8'}).trim();
+          const cpu = process.env.RUST_TARGET.startsWith('aarch64-') ? 'arm64' : 'x64';
+          const output = execFileSync(join(system, 'System32/cmd.exe'), ['/d', '/s', '/c', `""${join(installation, 'VC/Auxiliary/Build/vcvarsall.bat')}" ${cpu === 'arm64' ? 'x64_arm64' : 'x64'} >nul && set"`], {encoding:'utf8'});
+          const vars = Object.fromEntries(output.split(/\r?\n/).filter(row=>row.includes('=')).map(row=>[row.slice(0,row.indexOf('=')),row.slice(row.indexOf('=')+1)]));
+          const environment = {PATH: [join(vars.VCToolsInstallDir, 'bin/Hostx64', cpu), join(vars.WindowsSdkDir, 'bin', vars.WindowsSDKVersion.replace(/[\\/]+$/, ''), 'x64'), join(system,'System32'), 'C:\\Program Files\\Git\\usr\\bin', join(process.env.RUST_ROOT,'bin')].join(';'), INCLUDE:vars.INCLUDE, LIB:vars.LIB, LIBPATH:vars.LIBPATH};
+          if (Object.values(environment).some(value=>!value)) throw new Error('Incomplete provisioned MSVC environment');
+          writeFileSync(join(process.env.RUNNER_TEMP, 'native-environment/msvc.json'), JSON.stringify(environment));
+          JS
+      - name: Declare provisioned Windows runtime tools
+        if: startsWith(matrix.target, 'windows-')
+        run: |
+          node --input-type=module <<'JS'
+          import {writeFileSync, existsSync} from 'node:fs';
+          import {dirname, join} from 'node:path';
+          const tools = {git:'C:/Program Files/Git/cmd/git.exe', bash:'C:/Program Files/Git/bin/bash.exe', tar:'C:/Windows/System32/tar.exe', npm:join(dirname(process.execPath),'node_modules/npm/bin/npm-cli.js')};
+          if(Object.values(tools).some(path=>!existsSync(path))) throw new Error('Missing provisioned Windows runtime tool');
+          writeFileSync(join(process.env.RUNNER_TEMP,'runtime-tools.json'),JSON.stringify(tools));
+          JS
+      - name: Prepare neutral native source snapshot
+        run: |
+          tools_args=()
+          if [[ -f "$RUNNER_TEMP/runtime-tools.json" ]]; then tools_args=(--tools "$RUNNER_TEMP/runtime-tools.json" --rust-environment "$RUNNER_TEMP/native-environment/msvc.json"); fi
+          node scripts/test/prepare.mjs --pi-version 1.0.0 --rust-root "$RUST_ROOT" --cargo-cache "$CARGO_HOME" \
+            "${tools_args[@]}" --output "$RUNNER_TEMP/native-build-inputs"
+          # shellcheck disable=SC2016
+          node --input-type=module -e 'import {readFileSync,appendFileSync} from "node:fs"; import {join} from "node:path"; const inputs=JSON.parse(readFileSync(join(process.env.RUNNER_TEMP,"native-build-inputs/inputs.json"))); appendFileSync(process.env.GITHUB_ENV,`NATIVE_SOURCE=${inputs.pi.root}\n`);'
+      - name: Fetch locked native dependencies with owned config
+        run: |
+          node --input-type=module <<'JS'
+          import {spawnSync} from 'node:child_process';
+          import {childEnv} from './scripts/test/context.mjs';
+          import {readFileSync, existsSync} from 'node:fs';
+          import {join, delimiter} from 'node:path';
+          const root = process.env.RUST_ROOT, home = process.env.CARGO_HOME, state = join(process.env.RUNNER_TEMP,'native-environment');
+          const msvc = join(state,'msvc.json');
+          const build = existsSync(msvc) ? JSON.parse(readFileSync(msvc)) : {};
+          const inputs = JSON.parse(readFileSync(join(process.env.RUNNER_TEMP,'native-build-inputs/inputs.json')));
+          const env = childEnv(join(inputs.runRoot,'native-runtime'), {...build, PATH:[join(root,'bin'),build.PATH,inputs.tools.path ?? inputs.tools.bin].filter(Boolean).join(delimiter), CARGO_HOME:home, CARGO_TARGET_DIR:process.env.CARGO_TARGET_DIR, RUSTC:join(root,'bin',process.platform==='win32'?'rustc.exe':'rustc'), RUSTUP_AUTO_INSTALL:'0', RUSTUP_TOOLCHAIN:root}, inputs);
+          const result = spawnSync(join(root,'bin',process.platform==='win32'?'cargo.exe':'cargo'), ['fetch','--locked'], {cwd:process.env.NATIVE_SOURCE,env,stdio:'inherit'});
+          if(result.status!==0) process.exit(result.status ?? 1);
+          JS
+      # Stamp only the neutral snapshot; commit-only artifact admission retains a clean checkout.
       - name: Stamp daemon before compilation
         env:
           DAEMON_VERSION: ${{ inputs.version }}
-        run: node scripts/release/version.mjs --daemon-version "$DAEMON_VERSION"
-      - uses: Swatinem/rust-cache@v2
-        # The opt-in clean control proves hashes without restored compiler outputs.
-        # Ordinary CI retains dependency caching and every native acceptance check.
-        if: ${{ !inputs.clean-build }}
-        with:
-          key: ${{ startsWith(matrix.target, 'linux-') && 'glibc-2.28' || '' }}
-      - run: cargo fmt --all --check
-      - name: Fetch every locked build/target dependency for the notice inventory
-        run: cargo fetch --locked
+        run: node --input-type=module -e 'import {stampDaemonVersion} from "./scripts/release/version.mjs"; await stampDaemonVersion(process.env.NATIVE_SOURCE, process.env.DAEMON_VERSION);'
       # Repeated system-package installation was measurable CI overhead. Cache only
       # the public tooling image; compiler outputs and all native checks remain separate.
       # Scope it by architecture and recipe/base digest: packages refresh on recipe
@@ -125,104 +231,202 @@ jobs:
         if: startsWith(matrix.target, 'linux-')
         env:
           RUST_TARGET: ${{ matrix.rust }}
-        run: bash scripts/release/linux-gnu.sh "$RUST_TARGET"
+        run: bash "$NATIVE_SOURCE/scripts/release/linux-gnu.sh" "$RUST_TARGET"
       - name: Export GNU tooling image on cache miss
         if: ${{ startsWith(matrix.target, 'linux-') && steps.gnu-image-cache.outputs.cache-hit != 'true' }}
         env:
           IMAGE_ARCHIVE: ${{ runner.temp }}/occipital-gnu-image.tar
           IMAGE_ARCH: ${{ matrix.target == 'linux-x64-gnu' && 'amd64' || 'arm64' }}
         run: docker save --output "$IMAGE_ARCHIVE" "occipital-gnu228-$IMAGE_ARCH"
-      - name: Native correctness, pipe protocol and parser-affinity doctest
+      - name: Offline native correctness, strict lint and release build
         if: ${{ !startsWith(matrix.target, 'linux-') }}
         env:
           RUST_TARGET: ${{ matrix.rust }}
-        run: cargo test --workspace --locked --target "$RUST_TARGET"
-      - name: Strict native lint
-        if: ${{ !startsWith(matrix.target, 'linux-') }}
-        env:
-          RUST_TARGET: ${{ matrix.rust }}
-        run: cargo clippy --workspace --all-targets --locked --target "$RUST_TARGET" -- -D warnings
-      - name: Build release executable
-        if: ${{ !startsWith(matrix.target, 'linux-') }}
-        env:
-          RUST_TARGET: ${{ matrix.rust }}
-        run: cargo build --release --locked -p occipital --target "$RUST_TARGET"
-      - name: Real release-binary protocol, UTF8 colors, append counters and cleanup
-        if: ${{ !startsWith(matrix.target, 'linux-') }}
-        env:
-          RUST_TARGET: ${{ matrix.rust }}
-          EXECUTABLE: ${{ matrix.executable }}
         run: |
-          export OCCIPITAL_TEST_BIN="$GITHUB_WORKSPACE/target/$RUST_TARGET/release/$EXECUTABLE"
-          node --test --test-name-pattern="^actual owned helper preserves compact UTF8 highlighting and incremental work counters$" tests/occipital-native.test.ts
+          node --input-type=module <<'JS'
+          import {spawnSync} from 'node:child_process';
+          import {childEnv} from './scripts/test/context.mjs';
+          import {readFileSync, existsSync} from 'node:fs';
+          import {join, delimiter} from 'node:path';
+          const root = process.env.RUST_ROOT, state = join(process.env.RUNNER_TEMP,'native-environment');
+          const inputs = JSON.parse(readFileSync(join(process.env.RUNNER_TEMP,'native-build-inputs/inputs.json')));
+          const msvc = join(state,'msvc.json'), build = existsSync(msvc) ? JSON.parse(readFileSync(msvc)) : {};
+          const env = childEnv(join(inputs.runRoot,'native-runtime'), {...build, PATH:[join(root,'bin'),build.PATH,inputs.tools.path ?? inputs.tools.bin].filter(Boolean).join(delimiter), CARGO_HOME:process.env.CARGO_HOME, CARGO_TARGET_DIR:process.env.CARGO_TARGET_DIR, CARGO_NET_OFFLINE:'true', RUSTC:join(root,'bin',process.platform==='win32'?'rustc.exe':'rustc'), RUSTUP_AUTO_INSTALL:'0', RUSTUP_TOOLCHAIN:root}, inputs);
+          const cargo = join(root,'bin',process.platform==='win32'?'cargo.exe':'cargo'), target = process.env.RUST_TARGET;
+          for (const args of [['fmt','--all','--check'], ['test','--workspace','--locked','--offline','--target',target], ['clippy','--workspace','--all-targets','--locked','--offline','--target',target,'--','-D','warnings'], ['build','--release','--locked','--offline','-p','occipital','--target',target]]) {
+            const result = spawnSync(cargo,args,{cwd:process.env.NATIVE_SOURCE,env,stdio:'inherit'}); if(result.status!==0) process.exit(result.status ?? 1);
+          }
+          JS
       - name: Version smoke, pinned-source notices, hashes and native package staging
         env:
           TARGET: ${{ matrix.target }}
           RUST_TARGET: ${{ matrix.rust }}
           EXECUTABLE: ${{ matrix.executable }}
         run: |
-          SOURCE_COMMIT="$(git rev-parse HEAD)"
-          export SOURCE_COMMIT
-          node scripts/release/native-ci.mjs stage "$TARGET" "target/$RUST_TARGET/release/$EXECUTABLE" "$RUNNER_TEMP/occipital-native-artifact"
-      # Reuse downloaded package bodies across commits and Node versions, not installed
-      # trees: clean consumers and Occipital's cold-download checks must still run.
-      - name: Installed npm package cache
-        if: ${{ !startsWith(inputs.release-ref, 'refs/tags/occipital-v') }}
-        uses: actions/cache@v4
-        with:
-          path: ${{ runner.temp }}/occipital-npm-cache/_cacache
-          key: installed-npm-v1-${{ matrix.target }}-${{ hashFiles('package-lock.json') }}
-          restore-keys: installed-npm-v1-${{ matrix.target }}-
-      # HTTP-free x64 installs were still slow in system temp (C:); paired C:/D:
-      # trials showed much faster unpacking/cleanup in runner temp (D:). Use the
-      # runner's directory without assuming a second drive or changing antivirus;
-      # the current single-volume ARM64 runner has no measured cross-drive gain.
-      # A larger Node I/O pool did not resolve unpack costs; retain the default four.
-      - name: Installed adopted pin on Node 22.19.0
-        if: ${{ !startsWith(inputs.release-ref, 'refs/tags/occipital-v') }}
+          node --input-type=module <<'JS'
+          import {readFileSync} from 'node:fs';
+          import {join, delimiter} from 'node:path';
+          import {childEnv} from './scripts/test/context.mjs';
+          import {stageCI} from './scripts/release/native-ci.mjs';
+          const inputs = JSON.parse(readFileSync(join(process.env.RUNNER_TEMP,'native-build-inputs/inputs.json')));
+          const root = process.env.NATIVE_SOURCE, target = process.env.TARGET;
+          const binary = join(process.env.CARGO_TARGET_DIR,process.env.RUST_TARGET,'release',process.env.EXECUTABLE);
+          const output = join(process.env.RUNNER_TEMP,'occipital-native-artifact'), repository = process.env.GITHUB_REPOSITORY;
+          const env = childEnv(join(inputs.runRoot,'staging'), {...inputs.rust.environment,
+            PATH:[join(inputs.rust.root,'bin'),inputs.rust.environment?.PATH,inputs.tools.path ?? inputs.tools.bin].filter(Boolean).join(delimiter),
+            CARGO_HOME:process.env.CARGO_HOME, RUSTC:inputs.rust.rustc, RUSTUP_AUTO_INSTALL:'0', RUSTUP_TOOLCHAIN:inputs.rust.root, CARGO_NET_OFFLINE:'true'}, inputs);
+          for (const key of Object.keys(process.env)) delete process.env[key];
+          Object.assign(process.env,env);
+          await stageCI({root,target,binary,output,repository,commit:inputs.source.commit});
+          JS
+      - name: Verify original source identity after neutral staging
+        run: |
+          node --input-type=module <<'JS'
+          import {readFileSync} from 'node:fs';
+          import {join} from 'node:path';
+          import {childEnv} from './scripts/test/context.mjs';
+          import {sourceIdentity} from './scripts/test/prepare.mjs';
+          const inputs = JSON.parse(readFileSync(join(process.env.RUNNER_TEMP,'native-build-inputs/inputs.json')));
+          const source = sourceIdentity(inputs.source.root,inputs.tools,childEnv(join(inputs.runRoot,'identity'),{},inputs));
+          if (source.commit !== inputs.source.commit || source.tree !== inputs.source.tree) throw new Error('Native build modified the tested checkout');
+          JS
+      - name: Prepare enforced Linux network isolation
+        if: startsWith(matrix.target, 'linux-')
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap
+          if ! /usr/bin/bwrap --unshare-user --unshare-net --ro-bind / / -- /usr/bin/true; then
+            sudo tee /etc/apparmor.d/tidy-test-bwrap >/dev/null <<'PROFILE'
+          abi <abi/4.0>,
+          include <tunables/global>
+          profile tidy-test-bwrap /usr/bin/bwrap flags=(unconfined) {
+            userns,
+          }
+          PROFILE
+            sudo apparmor_parser -r /etc/apparmor.d/tidy-test-bwrap
+          fi
+          /usr/bin/bwrap --unshare-user --unshare-net --ro-bind / / -- /usr/bin/true
+      - name: Same-commit clean consumer and actual helper on Node 22.19.0
         timeout-minutes: 15
         env:
           EXPECTED_NODE: '22.19.0'
           TARGET: ${{ matrix.target }}
           RUST_TARGET: ${{ matrix.rust }}
-          npm_config_cache: ${{ runner.temp }}/occipital-npm-cache
-          UV_THREADPOOL_SIZE: '4'
+          RELEASE_REF: ${{ inputs.release-ref }}
         run: |
-          if [[ "$TARGET" == windows-* ]]; then
-            TEMP="$RUNNER_TEMP" TMP="$RUNNER_TEMP" npm run test:installed-native
-          elif [[ "$TARGET" == linux-* ]]; then
-            bash scripts/release/installed-linux-gnu.sh "$RUST_TARGET"
+          NODE="$(node -p 'process.execPath')"
+          PREPARATION="$RUNNER_TEMP/consumer-22.19.0"
+          ARTIFACT="$RUNNER_TEMP/occipital-native-artifact"
+          tools_args=()
+          if [[ "$TARGET" == windows-* ]]; then tools_args=(--tools "$RUNNER_TEMP/runtime-tools.json" --rust-environment "$RUNNER_TEMP/native-environment/msvc.json"); fi
+          node scripts/test/prepare.mjs --pi-version 1.0.0 --archives --native-artifact "$ARTIFACT" --rust-root "$RUST_ROOT" --cargo-cache "$CARGO_HOME" "${tools_args[@]}" --output "$PREPARATION"
+          isolation_args=()
+          if [[ "$TARGET" == linux-* ]]; then isolation_args=(--network-isolated); fi
+          node scripts/test/run.mjs --inputs "$PREPARATION/inputs.json" --suite rust-harness "${isolation_args[@]}"
+          if [[ "$TARGET" == linux-* ]]; then
+            NODE="$NODE" bash scripts/release/installed-linux-gnu.sh "$RUST_TARGET" native "$PREPARATION" "$ARTIFACT"
+            NODE="$NODE" bash scripts/release/installed-linux-gnu.sh "$RUST_TARGET" consumer "$PREPARATION" "$ARTIFACT"
           else
-            npm run test:installed-native
+            node scripts/test/run.mjs --inputs "$PREPARATION/inputs.json" --suite native --files occipital-native.test.ts --pattern '^actual owned helper preserves compact UTF8 highlighting and incremental work counters$'
+            node scripts/test/run.mjs --inputs "$PREPARATION/inputs.json" --suite consumer
+          fi
+      - name: Published delivery on Node 22.19.0 (pi-tidy-ui release only)
+        if: startsWith(inputs.release-ref, 'refs/tags/pi-tidy-ui-v')
+        timeout-minutes: 15
+        env:
+          EXPECTED_NODE: '22.19.0'
+          TARGET: ${{ matrix.target }}
+          RUST_TARGET: ${{ matrix.rust }}
+          RELEASE_REF: ${{ inputs.release-ref }}
+        run: |
+          PREPARATION="$RUNNER_TEMP/consumer-22.19.0"
+          ARTIFACT="$RUNNER_TEMP/occipital-native-artifact"
+          if [[ "$TARGET" == linux-* ]]; then
+            NODE="$(node -p 'process.execPath')" bash scripts/release/installed-linux-gnu.sh "$RUST_TARGET" published-consumer "$PREPARATION" "$ARTIFACT" "$RELEASE_REF"
+          else
+            node scripts/test/run.mjs --inputs "$PREPARATION/inputs.json" --suite published-consumer --release-ref "$RELEASE_REF"
           fi
       - uses: actions/setup-node@v4
-        if: ${{ !startsWith(inputs.release-ref, 'refs/tags/occipital-v') }}
         with:
           node-version: '26.7.0'
-      - name: Installed adopted pin on Node 26.7.0
-        if: ${{ !startsWith(inputs.release-ref, 'refs/tags/occipital-v') }}
+      - name: Declare provisioned Windows runtime tools
+        if: startsWith(matrix.target, 'windows-')
+        run: |
+          node --input-type=module <<'JS'
+          import {writeFileSync, existsSync} from 'node:fs';
+          import {dirname, join} from 'node:path';
+          const tools = {git:'C:/Program Files/Git/cmd/git.exe', bash:'C:/Program Files/Git/bin/bash.exe', tar:'C:/Windows/System32/tar.exe', npm:join(dirname(process.execPath),'node_modules/npm/bin/npm-cli.js')};
+          if(Object.values(tools).some(path=>!existsSync(path))) throw new Error('Missing provisioned Windows runtime tool');
+          writeFileSync(join(process.env.RUNNER_TEMP,'runtime-tools.json'),JSON.stringify(tools));
+          JS
+      - name: Same-commit clean consumer and actual helper on Node 26.7.0
         timeout-minutes: 15
         env:
           EXPECTED_NODE: '26.7.0'
           TARGET: ${{ matrix.target }}
           RUST_TARGET: ${{ matrix.rust }}
-          npm_config_cache: ${{ runner.temp }}/occipital-npm-cache
-          UV_THREADPOOL_SIZE: '4'
+          RELEASE_REF: ${{ inputs.release-ref }}
         run: |
-          if [[ "$TARGET" == windows-* ]]; then
-            TEMP="$RUNNER_TEMP" TMP="$RUNNER_TEMP" npm run test:installed-native
-          elif [[ "$TARGET" == linux-* ]]; then
-            bash scripts/release/installed-linux-gnu.sh "$RUST_TARGET"
+          NODE="$(node -p 'process.execPath')"
+          PREPARATION="$RUNNER_TEMP/consumer-26.7.0"
+          ARTIFACT="$RUNNER_TEMP/occipital-native-artifact"
+          tools_args=()
+          if [[ "$TARGET" == windows-* ]]; then tools_args=(--tools "$RUNNER_TEMP/runtime-tools.json" --rust-environment "$RUNNER_TEMP/native-environment/msvc.json"); fi
+          node scripts/test/prepare.mjs --pi-version 1.0.0 --archives --native-artifact "$ARTIFACT" --rust-root "$RUST_ROOT" --cargo-cache "$CARGO_HOME" "${tools_args[@]}" --output "$PREPARATION"
+          isolation_args=()
+          if [[ "$TARGET" == linux-* ]]; then isolation_args=(--network-isolated); fi
+          node scripts/test/run.mjs --inputs "$PREPARATION/inputs.json" --suite rust-harness "${isolation_args[@]}"
+          if [[ "$TARGET" == linux-* ]]; then
+            NODE="$NODE" bash scripts/release/installed-linux-gnu.sh "$RUST_TARGET" native "$PREPARATION" "$ARTIFACT"
+            NODE="$NODE" bash scripts/release/installed-linux-gnu.sh "$RUST_TARGET" consumer "$PREPARATION" "$ARTIFACT"
           else
-            npm run test:installed-native
+            node scripts/test/run.mjs --inputs "$PREPARATION/inputs.json" --suite native --files occipital-native.test.ts --pattern '^actual owned helper preserves compact UTF8 highlighting and incremental work counters$'
+            node scripts/test/run.mjs --inputs "$PREPARATION/inputs.json" --suite consumer
           fi
-      # Keep safe success metrics too: a cache hit alone did not explain slow installs.
-      - name: Installed npm preparation diagnostics
-        if: ${{ always() && !startsWith(inputs.release-ref, 'refs/tags/occipital-v') }}
+      - name: Published delivery on Node 26.7.0 (pi-tidy-ui release only)
+        if: startsWith(inputs.release-ref, 'refs/tags/pi-tidy-ui-v')
+        timeout-minutes: 15
+        env:
+          EXPECTED_NODE: '26.7.0'
+          TARGET: ${{ matrix.target }}
+          RUST_TARGET: ${{ matrix.rust }}
+          RELEASE_REF: ${{ inputs.release-ref }}
+        run: |
+          PREPARATION="$RUNNER_TEMP/consumer-26.7.0"
+          ARTIFACT="$RUNNER_TEMP/occipital-native-artifact"
+          if [[ "$TARGET" == linux-* ]]; then
+            NODE="$(node -p 'process.execPath')" bash scripts/release/installed-linux-gnu.sh "$RUST_TARGET" published-consumer "$PREPARATION" "$ARTIFACT" "$RELEASE_REF"
+          else
+            node scripts/test/run.mjs --inputs "$PREPARATION/inputs.json" --suite published-consumer --release-ref "$RELEASE_REF"
+          fi
+      - name: Retain only safe consumer diagnostics from neutral sources
+        if: always()
+        run: |
+          node --input-type=module <<'JS'
+          import {cpSync,existsSync,mkdirSync,readFileSync,readdirSync} from 'node:fs';
+          import {join} from 'node:path';
+          for (const version of ['22.19.0','26.7.0']) {
+            const preparation = join(process.env.RUNNER_TEMP,'consumer-' + version), receipt = join(preparation,'inputs.json');
+            if (!existsSync(receipt)) continue;
+            const inputs = JSON.parse(readFileSync(receipt)), reports = join(inputs.pi.root,'.test-artifacts');
+            if (!existsSync(reports)) continue;
+            for (const directory of readdirSync(reports,{withFileTypes:true})) {
+              if (!directory.isDirectory() || !/^installed-preparation-[\w-]+$/.test(directory.name)) continue;
+              for (const file of ['fixture.json','npm.json']) {
+                const source = join(reports,directory.name,file); if (!existsSync(source)) continue;
+                const output = join(preparation,'diagnostics',directory.name); mkdirSync(output,{recursive:true}); cpSync(source,join(output,file));
+              }
+            }
+          }
+          JS
+      - name: Safe consumer preparation diagnostics
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: installed-preparation-${{ matrix.target }}
-          path: .test-artifacts/installed-preparation-*/
+          path: |
+            ${{ runner.temp }}/consumer-*/diagnostics/installed-preparation-*/
+            ${{ runner.temp }}/consumer-*/gnu/diagnostics/installed-preparation-*/
           include-hidden-files: true
           if-no-files-found: ignore
           retention-days: 14

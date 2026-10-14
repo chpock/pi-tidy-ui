@@ -1,4 +1,5 @@
 // Actual SDK eager transcript/GC proof. No live Pi, settings, model or tool execution.
+import './test-guard.mjs';
 import assert from "node:assert/strict";
 import { Container, ScrollView } from "@earendil-works/pi-tui";
 import { ToolExecutionComponent } from "@earendil-works/pi-coding-agent";

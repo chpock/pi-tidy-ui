@@ -1,6 +1,8 @@
+import './fixtures/test-guard.mjs';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import childProcess from 'node:child_process';
+import { childEnv, readInputs, validateNative } from '../scripts/test/context.mjs';
 import { syncBuiltinESMExports } from 'node:module';
 import { createHash } from 'node:crypto';
 import { createReadStream } from 'node:fs';
@@ -75,13 +77,13 @@ test('cancellation at last acquisition continuation refuses spawn and preserves 
   assert.equal(fetches, 1); assert.equal(f.spawns(), 0); assert.equal(release.sha256, createHash('sha256').update(bytes).digest('hex'));
 });
 
-const binary = process.env.OCCIPITAL_TEST_BIN;
-test('real exact helper: zero acquisition requests; repeated owners wait actual public close settlement', { skip: !binary }, async t => {
+const binary = validateNative(readInputs()).path;
+test('real exact helper: zero acquisition requests; repeated owners wait actual public close settlement', {}, async t => {
   const f = await setup(t), installedPath = binary!;
   const hash = createHash('sha256'); for await (const chunk of createReadStream(installedPath)) hash.update(chunk);
   const nativeRelease = Object.freeze({ ...release, sha256: hash.digest('hex'), maxBytes: (await stat(installedPath)).size });
   let fetches = 0;
-  const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^(SUBC_|CK_|CORTEXKIT_|PI_)/i.test(key)));
+  const env = childEnv(f.cacheDir);
   Object.assign(env, { HOME: f.cacheDir, XDG_CONFIG_HOME: join(f.cacheDir, 'config'), XDG_DATA_HOME: join(f.cacheDir, 'data'), XDG_CACHE_HOME: join(f.cacheDir, 'cache'), XDG_RUNTIME_DIR: join(f.cacheDir, 'run') });
   const options = { cacheDir: f.cacheDir, release: nativeRelease, installedPath, env, cwd: f.cacheDir, requestDeadlineMs: 3000, terminateGraceMs: 30,
     fetcher: async () => { fetches++; throw new Error('must not fetch installed helper'); } };

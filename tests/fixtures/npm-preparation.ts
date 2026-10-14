@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
 import { mkdir, mkdtemp, readdir, readFile, writeFile } from 'node:fs/promises';
-import { join, win32 } from 'node:path';
+import { isAbsolute, join, win32 } from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { promisify } from 'node:util';
 
@@ -80,12 +80,17 @@ export function summarizeNpmLog(text: string): Event[] {
 }
 
 export async function runNpmPreparation(args: string[], options: {
-  cwd: string; npmPath: string; logsRoot: string; reportsRoot: string;
+  cwd: string; nodePath: string; nodeVersion: string; npmPath: string; env: NodeJS.ProcessEnv; logsRoot: string; reportsRoot: string;
 }) {
+  if (typeof options.nodePath !== 'string' || !isAbsolute(options.nodePath) ||
+    typeof options.npmPath !== 'string' || !isAbsolute(options.npmPath) || !options.env ||
+    typeof options.nodeVersion !== 'string' || !/^v\d+\.\d+\.\d+(?:-[\da-z.-]+)?$/i.test(options.nodeVersion)) {
+    throw new Error('Explicit Node, npm CLI and child environment are required');
+  }
   await mkdir(options.logsRoot, { recursive: true });
   const logs = await mkdtemp(join(options.logsRoot, 'command-'));
   const started = performance.now();
-  const configuredThreads = Number(process.env.UV_THREADPOOL_SIZE);
+  const configuredThreads = Number(options.env.UV_THREADPOOL_SIZE);
   const configuredThreadpoolSize = Number.isSafeInteger(configuredThreads) && configuredThreads > 0 ? configuredThreads : null;
   async function save(failed?: { code?: unknown; killed?: boolean; signal?: unknown }) {
     const elapsedMs = Math.round(performance.now() - started);
@@ -103,7 +108,7 @@ export async function runNpmPreparation(args: string[], options: {
     await mkdir(options.reportsRoot, { recursive: true });
     const report = await mkdtemp(join(options.reportsRoot, 'installed-preparation-'));
     await writeFile(join(report, 'npm.json'), JSON.stringify({
-      node: process.version, platform: process.platform, arch: process.arch,
+      node: options.nodeVersion, parentNode: process.version, platform: process.platform, arch: process.arch,
       operation: args[0] === 'pack' ? 'pack' : 'install', elapsedMs, configuredThreadpoolSize,
       temporaryDrive: summarizeTemporaryDrive(logs),
       exitCode: failed ? typeof failed.code === 'number' ? failed.code : null : 0,
@@ -114,8 +119,8 @@ export async function runNpmPreparation(args: string[], options: {
   }
   let result;
   try {
-    result = await run(process.execPath, [options.npmPath, ...args, '--timing', `--logs-dir=${logs}`], {
-      cwd: options.cwd, timeout: 300000, maxBuffer: 1024 * 1024,
+    result = await run(options.nodePath, [options.npmPath, ...args, '--timing', `--logs-dir=${logs}`], {
+      cwd: options.cwd, env: options.env, timeout: 300000, maxBuffer: 1024 * 1024,
     });
   } catch (error) {
     try { await save(error as { code?: unknown; killed?: boolean; signal?: unknown }); }

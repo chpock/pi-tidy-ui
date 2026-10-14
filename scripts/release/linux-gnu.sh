@@ -12,10 +12,13 @@ if [[ "$(uname -m)" != "$architecture" ]]; then
   exit 1
 fi
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-rust_sysroot="$(rustc --print sysroot)"
-node_path="$(node -p 'if (process.version !== "v22.19.0") throw new Error("GNU gate requires official Node 22.19.0"); process.execPath')"
+rust_sysroot="${RUST_ROOT:?Supply the absolute pinned Rust sysroot}"
+cargo_home="${CARGO_HOME:?Supply an explicit owned Cargo artifact home}"
+node_path="${NODE:?Supply the absolute official Node executable}"
+[[ "$rust_sysroot" == /* && "$cargo_home" == /* && "$node_path" == /* ]] || { printf 'GNU tool/store paths must be absolute\n' >&2; exit 1; }
+[[ ! -f "$cargo_home/config" && ! -f "$cargo_home/config.toml" ]] || { printf 'Cargo home must contain artifacts only, not user config\n' >&2; exit 1; }
+"$node_path" -e 'if (process.version !== "v22.19.0") throw new Error("GNU gate requires official Node 22.19.0")'
 node_root="$(cd "$(dirname "$node_path")/.." && pwd)"
-cargo_home="$(cd "${CARGO_HOME:-$HOME/.cargo}" && pwd)"
 target_dir="${CARGO_TARGET_DIR:-$root/target}"
 mkdir -p "$target_dir"
 target_dir="$(cd "$target_dir" && pwd)"
@@ -35,7 +38,7 @@ docker run --rm --platform "linux/$docker_arch" --network=none --user "$(id -u):
   -v "$node_root:$node_root:ro" -v "$cargo_home:$cargo_home" -v "$target_dir:$target_dir" \
   --workdir "$root" --env HOME=/tmp/occipital-gnu-home \
   --env CARGO_HOME="$cargo_home" --env CARGO_TARGET_DIR="$target_dir" --env CARGO_NET_OFFLINE=true \
-  --env RUSTUP_TOOLCHAIN="$rust_sysroot" \
+   --env RUST_ROOT="$rust_sysroot" --env RUSTUP_TOOLCHAIN="$rust_sysroot" --env RUSTUP_AUTO_INSTALL=0 --env NODE="$node_path" \
   --env PATH="$rust_sysroot/bin:$node_root/bin:/usr/bin:/bin" \
   --env RUST_TARGET="$RUST_TARGET" --env EXPECTED_ARCHITECTURE="$architecture" \
   "$image" bash -euo pipefail -c '
@@ -45,5 +48,5 @@ docker run --rm --platform "linux/$docker_arch" --network=none --user "$(id -u):
     getconf GNU_LIBC_VERSION
     rustc --version
     node --version
-    exec make _gnu-native RUST_TARGET="$RUST_TARGET"
+    exec make _gnu-native RUST_TARGET="$RUST_TARGET" RUST_ROOT="$RUST_ROOT" NODE="$NODE"
   '

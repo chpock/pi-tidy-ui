@@ -1,3 +1,4 @@
+import './fixtures/test-guard.mjs';
 import assert from "node:assert/strict";
 import * as fs from "node:fs/promises";
 import { dirname, join } from "node:path";
@@ -290,7 +291,7 @@ test("debug log: unsafe journal roots and common-file links never write outside 
   await trailing.ready; await trailing.close("quit");
   assert.equal(trailing.status().state, "failed");
   assert.deepEqual(await fs.readdir(outside), []);
-  const unsafe = join(root, "unsafe"); await fs.mkdir(unsafe, { mode: 0o755 });
+  const unsafe = join(root, "unsafe"); await fs.mkdir(unsafe, { mode: 0o755 }); await fs.chmod(unsafe, 0o755);
   const permissions = new TextJournal(identity, { root: unsafe });
   await permissions.ready; await permissions.close("quit");
   assert.equal(permissions.status().failure, "start journal: EACCES");

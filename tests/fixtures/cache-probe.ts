@@ -1,4 +1,5 @@
 // Isolated actual-SDK work/ownership oracle; no real tools or user settings are touched.
+import './test-guard.mjs';
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";

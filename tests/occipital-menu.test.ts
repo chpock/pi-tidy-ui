@@ -1,9 +1,8 @@
+import './fixtures/test-guard.mjs';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { setImmediate as turn } from 'node:timers/promises';
 import { readFile } from 'node:fs/promises';
-import { pathToFileURL, fileURLToPath } from 'node:url';
-import { transpileModule, ModuleKind, ScriptTarget, readConfigFile, parseJsonConfigFileContent, sys, createProgram, getPreEmitDiagnostics, flattenDiagnosticMessageText } from 'typescript';
 import { ExtensionSelectorComponent, initTheme, Theme, type ExtensionContext } from '@earendil-works/pi-coding-agent';
 import { getKeybindings, stripTerminalSequences, visibleWidth, type Component, type TUI } from '@earendil-works/pi-tui';
 import type { SyntaxTheme } from '../src/settings.ts';
@@ -13,43 +12,10 @@ import { openSyntaxMenu, type SyntaxMenuOwner, type SyntaxMenuSnapshot, type Syn
 initTheme('dark', false);
 const foregroundTokens = 'accent border borderAccent borderMuted success error warning muted dim text thinkingText scrollbarTrack scrollbarThumb searchMatchText userMessageText customMessageText customMessageLabel toolTitle toolOutput mdHeading mdLink mdLinkUrl mdCode mdCodeBlock mdCodeBlockBorder mdQuote mdQuoteBorder mdHr mdListBullet toolDiffAdded toolDiffRemoved toolDiffContext syntaxComment syntaxKeyword syntaxFunction syntaxVariable syntaxString syntaxNumber syntaxType syntaxOperator syntaxPunctuation thinkingOff thinkingMinimal thinkingLow thinkingMedium thinkingHigh thinkingXhigh thinkingMax bashMode'.split(' ');
 const backgroundTokens = 'selectedBg searchMatchBg userMessageBg customMessageBg toolPendingBg toolSuccessBg toolErrorBg'.split(' ');
-let ThemeClass = Theme;
-let keys = getKeybindings;
-let menuEntrypoint = openSyntaxMenu;
-// Optional second-host contract run: compile the unchanged production module and
-// resolve only its public TUI import against that host. No dependency/file edits.
-if (process.env.PI_MENU_TEST_SDK_ROOT) {
-  const root = process.env.PI_MENU_TEST_SDK_ROOT;
-  const codingManifest = JSON.parse(await readFile(`${root}/package.json`, 'utf8'));
-  const tuiManifest = JSON.parse(await readFile(`${root}/../pi-tui/package.json`, 'utf8'));
-  assert.equal(codingManifest.version, process.env.PI_MENU_TEST_SDK_VERSION);
-  assert.equal(tuiManifest.version, process.env.PI_MENU_TEST_SDK_VERSION);
-  const config = parseJsonConfigFileContent(readConfigFile('tsconfig.json', sys.readFile).config, sys, process.cwd());
-  const program = createProgram([fileURLToPath(new URL('../src/occipital/menu.ts', import.meta.url))], {
-    ...config.options,
-    paths: {
-      '@earendil-works/pi-coding-agent': [`${root}/${codingManifest.types}`],
-      '@earendil-works/pi-tui': [`${root}/../pi-tui/${tuiManifest.main.replace(/\.js$/, '.d.ts')}`],
-    },
-  });
-  const diagnostics = getPreEmitDiagnostics(program);
-  assert.deepEqual(diagnostics.map(diagnostic => flattenDiagnosticMessageText(diagnostic.messageText, '\n')), []);
-  console.log(`Public SDK ${codingManifest.version} menu strict type diagnostics: ${diagnostics.length}`);
-  const coding = await import(pathToFileURL(`${root}/${codingManifest.exports['.'].import}`).href) as typeof import('@earendil-works/pi-coding-agent');
-  const tuiUrl = pathToFileURL(`${root}/../pi-tui/${tuiManifest.main}`).href;
-  const tui = await import(tuiUrl) as typeof import('@earendil-works/pi-tui');
-  for (const name of ['SelectList', 'truncateToWidth', 'visibleWidth', 'getKeybindings']) assert.equal(typeof tui[name as keyof typeof tui], 'function');
-  ThemeClass = coding.Theme; keys = tui.getKeybindings;
-  const source = await readFile(new URL('../src/occipital/menu.ts', import.meta.url), 'utf8');
-  const compiled = transpileModule(source, { compilerOptions: { module: ModuleKind.ESNext, target: ScriptTarget.ES2023 } }).outputText
-    .replace("'@earendil-works/pi-tui'", JSON.stringify(tuiUrl))
-    .replace("'./protocol.ts'", JSON.stringify(new URL('../src/occipital/protocol.ts', import.meta.url).href));
-  menuEntrypoint = (await import(`data:text/javascript;base64,${Buffer.from(compiled).toString('base64')}`)).openSyntaxMenu;
-} else {
-  const manifest = JSON.parse(await readFile(new URL('../package.json', import.meta.resolve('@earendil-works/pi-coding-agent')), 'utf8'));
-  assert.equal(manifest.version, '1.0.0');
-}
-const dialogTheme = new ThemeClass(Object.fromEntries(foregroundTokens.map(key => [key, '#66aaff'])) as ConstructorParameters<typeof Theme>[0],
+const inputs = JSON.parse(await readFile(process.env.TIDY_TEST_INPUTS!, 'utf8'));
+const manifest = JSON.parse(await readFile(new URL('../package.json', import.meta.resolve('@earendil-works/pi-coding-agent')), 'utf8'));
+assert.equal(manifest.version, inputs.pi.version);
+const dialogTheme = new Theme(Object.fromEntries(foregroundTokens.map(key => [key, '#66aaff'])) as ConstructorParameters<typeof Theme>[0],
   Object.fromEntries(backgroundTokens.map(key => [key, '#333333'])) as ConstructorParameters<typeof Theme>[1], 'truecolor');
 type DialogComponent = Component & { dispose?(): void };
 type CustomFactory<T> = (tui: TUI, theme: Theme, keybindings: Parameters<Parameters<ExtensionContext['ui']['custom']>[0]>[2], done: (result: T) => void) => DialogComponent | Promise<DialogComponent>;
@@ -136,7 +102,7 @@ class PublicUI implements Pick<ExtensionContext['ui'], 'select' | 'notify' | 'cu
     let completions = 0;
     const done = (value: T) => { completions++; reply.resolve(value); component?.dispose?.(); };
     component = await factory({ terminal: this.terminal, requestRender: () => { this.renderRequests++; } } as unknown as TUI,
-      dialogTheme, keys() as unknown as Parameters<CustomFactory<T>>[2], done);
+      dialogTheme, getKeybindings() as unknown as Parameters<CustomFactory<T>>[2], done);
     const title = component.render(this.terminal.columns).map(stripTerminalSequences).join('\n');
     // Discover choices through rendered selected rows and public key input, not
     // production test hooks or private SelectList fields. One wrap restores index.
@@ -159,7 +125,7 @@ function setup(mode: ExtensionContext['mode'] = 'tui', hasUI = true) {
   const generation = owner.generation;
   const current = () => owner.alive && owner.generation === generation;
   const ctx = { mode, hasUI, ui: ui as unknown as ExtensionContext['ui'] };
-  return { owner, ui, current, open: () => menuEntrypoint(ctx, owner, current) };
+  return { owner, ui, current, open: () => openSyntaxMenu(ctx, owner, current) };
 }
 async function answer(s: ReturnType<typeof setup>, index: number, choice?: string) {
   // Assertions stay outside the UI/owner promises caught by the menu.

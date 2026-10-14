@@ -1,3 +1,4 @@
+import './fixtures/test-guard.mjs';
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';

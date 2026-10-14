@@ -1,3 +1,4 @@
+import './fixtures/test-guard.mjs';
 import assert from "node:assert/strict";
 import test from "node:test";
 import { spawnSync } from "node:child_process";

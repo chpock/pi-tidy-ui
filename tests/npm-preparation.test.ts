@@ -1,3 +1,4 @@
+import './fixtures/test-guard.mjs';
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { copyFile, mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
@@ -102,7 +103,7 @@ console.log(${JSON.stringify(failure ? secret : '[{"filename":"fixture.tgz"}]')}
 console.error(${JSON.stringify(secret)});
 process.exitCode = ${failure ? 17 : 0};
 `);
-  return { temporary, reportsRoot, options: { cwd: root, npmPath, logsRoot: join(temporary, 'npm-logs'), reportsRoot } };
+  return { temporary, reportsRoot, options: { cwd: root, nodePath: process.execPath, nodeVersion: process.version, npmPath, env: { UV_THREADPOOL_SIZE: process.env.UV_THREADPOOL_SIZE }, logsRoot: join(temporary, 'npm-logs'), reportsRoot } };
 }
 
 test('failed real preparation child preserves original failure and safe diagnostic after consumer cleanup', async t => {
@@ -176,7 +177,7 @@ test('partial timing JSON is reported as incomplete without leaking bytes or los
   }
 });
 
-test('actual installed fixture retains npm child and capture failures when its final report also fails', async t => {
+test('published delivery fixture retains npm child and capture failures when its final report also fails', async t => {
   const root = await mkdtemp(join(tmpdir(), 'tidy-npm-outer-failure-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   const repo = resolve(import.meta.dirname, '..');
@@ -187,25 +188,31 @@ test('actual installed fixture retains npm child and capture failures when its f
   const fixtures = join(root, 'tests/fixtures'), native = join(root, 'src/occipital');
   await mkdir(fixtures, { recursive: true }); await mkdir(native, { recursive: true });
   const aliasType = process.platform === 'win32' ? 'junction' : 'dir';
-  await symlink(join(repo, 'scripts'), join(root, 'scripts'), aliasType);
+  await mkdir(join(root, 'scripts/test'), { recursive: true });
+  await symlink(join(repo, 'scripts/release'), join(root, 'scripts/release'), aliasType);
   await symlink(join(repo, 'packages'), join(root, 'packages'), aliasType);
   await writeFile(join(root, 'package.json'), '{"name":"pi-tidy-ui","version":"0.0.0","type":"module","files":["src","LICENSE"]}');
   await copyFile(join(repo, 'LICENSE'), join(root, 'LICENSE'));
-  for (const name of ['installed-occipital.mjs', 'npm-preparation.ts']) await copyFile(join(repo, 'tests/fixtures', name), join(fixtures, name));
+  for (const name of ['published-occipital.mjs', 'npm-preparation.ts']) await copyFile(join(repo, 'tests/fixtures', name), join(fixtures, name));
   for (const name of ['native.ts', 'version.ts']) await copyFile(join(repo, 'src/occipital', name), join(native, name));
   await copyFile(join(repo, 'src/occipital/release.ts'), join(native, 'release.ts'));
-  const git = (args: string[]) => promisify(execFile)('git', args, { cwd: root, timeout: 10000 });
+  const { readInputs, childEnv } = await import('../scripts/test/context.mjs');
+  const declared = readInputs(), gitEnv = childEnv(root, {}, declared);
+  const git = (args: string[]) => promisify(execFile)(declared.tools.git, args, { cwd: root, timeout: 10000, env: gitEnv });
   await git(['init', '-q']); await git(['config', 'user.email', 'fixture@example.invalid']); await git(['config', 'user.name', 'Fixture']);
-  await git(['add', '.']); await git(['commit', '-qm', 'fixture: selected release']); await git(['tag', 'occipital-v1.0.0']);
+  await git(['add', '.']); await git(['commit', '-qm', 'fixture: selected release']); await git(['tag', 'occipital-v1.0.0']); await git(['tag', 'pi-tidy-ui-v1.0.0']);
+  const commit = (await git(['rev-parse', 'HEAD'])).stdout.trim();
   await writeFile(join(root, '.test-artifacts'), 'block reports');
   const fakeNpm = join(root, 'fake-npm.mjs');
   await writeFile(fakeNpm, `console.error(${JSON.stringify(secret)}); process.exitCode=17;`);
+  await writeFile(join(root, 'scripts/test/context.mjs'), `export function readInputs() { return ${JSON.stringify({ source: { root, commit }, node: { path: process.execPath, version: process.version }, tools: { npm: fakeNpm, git: declared.tools.git } })}; }
+export function childEnv() { return ${JSON.stringify(gitEnv)}; }`);
   const wrapper = join(root, 'verify.mjs');
   await writeFile(wrapper, `import assert from 'node:assert/strict';
 let fetches=0; globalThis.fetch=async()=>{fetches++;return new Response(${JSON.stringify(JSON.stringify({ version: '1.0.0', artifacts }))})};
 process.env.npm_execpath=${JSON.stringify(fakeNpm)};
-process.env.EXPECTED_NODE=process.version.slice(1);
-await assert.rejects(import(${JSON.stringify(pathToFileURL(join(fixtures, 'installed-occipital.mjs')).href)}),error=>{
+process.env.TIDY_TEST_RELEASE_REF='refs/tags/pi-tidy-ui-v1.0.0';
+await assert.rejects(import(${JSON.stringify(pathToFileURL(join(fixtures, 'published-occipital.mjs')).href)}),error=>{
   assert.ok(error instanceof AggregateError, 'final reporting must not replace the npm failure');
   assert.equal(error.errors.length,2);
   const original=error.errors[0]; assert.ok(original instanceof AggregateError);
@@ -216,7 +223,7 @@ await assert.rejects(import(${JSON.stringify(pathToFileURL(join(fixtures, 'insta
 });
 assert.equal(fetches,1);
 console.log('original failure preserved');`);
-  const result = await promisify(execFile)(process.execPath, [wrapper], { timeout: 10000 });
+  const result = await promisify(execFile)(process.execPath, [wrapper], { timeout: 10000, env: gitEnv });
   assert.equal(result.stdout, 'original failure preserved\n');
 });
 
@@ -231,4 +238,40 @@ test('missing npm log stays explicit and capture I/O failure preserves both erro
     assert.ok(error instanceof AggregateError); assert.equal(error.errors.length, 2);
     assert.equal(error.errors[0].code, 17); return true;
   });
+});
+
+
+test('npm preparation requires explicit executables and environment without ambient fallback', async t => {
+  const f = await fixture(t, false);
+  for (const options of [{ ...f.options, nodePath: '' }, { ...f.options, npmPath: 'npm' },
+    { ...f.options, env: undefined as unknown as NodeJS.ProcessEnv }, { ...f.options, nodeVersion: '' },
+    { ...f.options, nodeVersion: secret }]) {
+    await assert.rejects(runNpmPreparation(['pack'], options), /Explicit Node, npm CLI and child environment are required/);
+  }
+});
+
+test('npm preparation starts the supplied Node with only its supplied child environment', async t => {
+  const f = await fixture(t, false), original = process.env.TIDY_AMBIENT_NPM_SENTINEL;
+  process.env.TIDY_AMBIENT_NPM_SENTINEL = secret;
+  t.after(() => { if (original === undefined) delete process.env.TIDY_AMBIENT_NPM_SENTINEL; else process.env.TIDY_AMBIENT_NPM_SENTINEL = original; });
+  await writeFile(f.options.npmPath, `console.log(JSON.stringify({ node: process.execPath, supplied: process.env.TIDY_CHILD_MARKER,
+    ambient: process.env.TIDY_AMBIENT_NPM_SENTINEL ?? null, options: process.env.NODE_OPTIONS ?? null }));`);
+  const result = await runNpmPreparation(['pack'], { ...f.options, env: { TIDY_CHILD_MARKER: 'fixture' } });
+  assert.deepEqual(JSON.parse(result.stdout), { node: process.execPath, supplied: 'fixture', ambient: null, options: null });
+});
+
+
+test('npm diagnostics identify the verified selected child runtime independently of the parent', async t => {
+  const f = await fixture(t, false), descriptor = Object.getOwnPropertyDescriptor(process, 'version')!;
+  const selectedVersion = process.version;
+  await writeFile(f.options.npmPath, 'console.log(process.version);');
+  Object.defineProperty(process, 'version', { ...descriptor, value: 'v0.0.0-fixture-parent' });
+  try {
+    const result = await runNpmPreparation(['pack'], { ...f.options, nodeVersion: selectedVersion });
+    assert.equal(result.stdout.trim(), selectedVersion, 'Executing child must match the declared identity');
+    const [directory] = await readdir(f.reportsRoot);
+    const report = JSON.parse(await readFile(join(f.reportsRoot, directory!, 'npm.json'), 'utf8'));
+    assert.equal(report.node, selectedVersion);
+    assert.equal(report.parentNode, 'v0.0.0-fixture-parent');
+  } finally { Object.defineProperty(process, 'version', descriptor); }
 });

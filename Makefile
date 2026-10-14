@@ -3,38 +3,78 @@ SHELL := sh
 
 NODE ?= node
 NPM ?= npm
-CARGO ?= cargo
-RUSTC ?= rustc
+INPUTS ?=
+PI_VERSION ?= 1.0.0
+PREPARE_OUTPUT ?= $(CURDIR)/.test-artifacts/harness/$(PI_VERSION)
+RUST_ROOT ?=
+CARGO_HOME ?=
 CARGO_TARGET_DIR ?= $(CURDIR)/target
-RUST_TARGET ?= $(CARGO_BUILD_TARGET)
+RUST_TARGET ?=
 EXE := $(if $(filter Windows_NT,$(OS)),.exe,)
-TARGET_ARGS = $(if $(strip $(RUST_TARGET)),--target "$(RUST_TARGET)",)
+CARGO = $(RUST_ROOT)/bin/cargo$(EXE)
+RUSTC = $(RUST_ROOT)/bin/rustc$(EXE)
 NATIVE_BIN = $(CARGO_TARGET_DIR)/$(if $(strip $(RUST_TARGET)),$(RUST_TARGET)/,)release/occipital$(EXE)
-OCCIPITAL_TEST_BIN ?= $(CURDIR)/occipital$(EXE)
-export CARGO_TARGET_DIR RUSTC TEST_FILES TEST_PATTERN
-export RUSTUP_AUTO_INSTALL := 0
+export TEST_FILES TEST_PATTERN
+RUN = "$(NODE)" scripts/test/run.mjs --inputs "$(INPUTS)"
+RUST_ENV = env -i PATH="$(RUST_ROOT)/bin:/usr/bin:/bin" HOME="$(CARGO_HOME)/test-home" CARGO_HOME="$(CARGO_HOME)" CARGO_TARGET_DIR="$(CARGO_TARGET_DIR)" CARGO_NET_OFFLINE=true RUSTC="$(RUSTC)" RUSTUP_TOOLCHAIN="$(RUST_ROOT)" RUSTUP_AUTO_INSTALL=0 TIDY_TEST_ROOT="$(CARGO_HOME)/test-root" TIDY_TEST_GETCONF=/usr/bin/getconf LANG=C.UTF-8 LC_ALL=C.UTF-8 TZ=UTC
 
-.PHONY: help deps build native-build native-toolchain check check-native test test-gc test-focus test-rust test-native test-syntax test-terminal test-release test-installed pack-check helper-check native-smoke _native-lint _gnu-native
+# Cargo also discovers ancestor .cargo/config independently of CARGO_HOME.
+# Copy one verified native snapshot into a neutral external tree for every direct gate.
+define NATIVE_RUN
+$(RUST_ENV) "$(NODE)" --input-type=module -e ' \
+  import {existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync} from "node:fs"; \
+  import {join} from "node:path"; \
+  import {spawnSync} from "node:child_process"; \
+  import {materializeSource, snapshotIdentity} from "./scripts/test/prepare.mjs"; \
+  import {verifyLinuxRuntime} from "./scripts/release/native-ci.mjs"; \
+  const [phase, target, cargo, binary] = process.argv.slice(1), source = process.cwd(); \
+  const files = ["Cargo.toml", "Cargo.lock", "rust-toolchain.toml"].filter(name => existsSync(join(source, name))); \
+  const collect = directory => { if (!existsSync(join(source, directory))) return; for (const name of readdirSync(join(source, directory))) { const path = directory + "/" + name; if (statSync(join(source, path)).isDirectory()) collect(path); else if (statSync(join(source, path)).isFile()) files.push(path); } }; \
+  collect("crates"); collect(".cargo"); files.sort(); \
+  const expected = snapshotIdentity(source, files).nativeTree, work = mkdtempSync("/tmp/tt-native-"); \
+  let status = 0; \
+  try { \
+    if (materializeSource(source, work, files).nativeTree !== expected) throw new Error("Native source changed during materialization"); \
+    const testRoot = join(work, "test-root"), home = join(work, "home"); mkdirSync(testRoot); mkdirSync(home); \
+    const env = {...process.env, HOME: home, TIDY_TEST_ROOT: testRoot, TMPDIR: testRoot, TMP: testRoot, TEMP: testRoot}; \
+    const targets = target ? ["--target", target] : []; \
+    const build = ["build", "--release", "--locked", "--offline", "-p", "occipital", ...targets]; \
+    const lint = ["clippy", "--workspace", "--all-targets", "--locked", "--offline", ...targets, "--", "-D", "warnings"]; \
+    const phases = phase === "gnu" ? [["fmt", "--all", "--check"], ["test", "--workspace", "--locked", "--offline", ...targets], ["test", "--locked", "--offline", "-p", "occipital", "--example", "engine_probe", ...targets, "allocator_diagnostic_tracks_the_actual_glibc_api"], lint, build] : [phase === "lint" ? lint : build]; \
+    for (const args of phases) { const result = spawnSync(cargo, args, {cwd: work, env, stdio: "inherit"}); if (result.status !== 0) { status = result.status ?? 1; break; } } \
+    if (status === 0 && phase === "gnu") await verifyLinuxRuntime(binary); \
+  } finally { rmSync(work, {recursive: true, force: true}); } \
+  process.exitCode = status; \
+' -- "$(1)" "$(RUST_TARGET)" "$(CARGO)" "$(NATIVE_BIN)"
+endef
+
+.PHONY: help deps build native-build native-toolchain inputs-check check check-native test test-gc test-focus test-rust test-rust-harness test-native test-syntax test-terminal test-release test-installed test-published pack-check native-smoke _native-lint _gnu-native
 
 help:
 	@printf '%-22s %s\n' \
-	  'deps' 'Install locked npm development dependencies, without scripts' \
-	  'build' 'Build release Occipital and copy it beside the extension (no TS bundling)' \
-	  'check' 'Strict TypeScript check' \
-	  'check-native' 'Rust formatting and strict Clippy checks' \
-	  'test' 'Ordinary unit/SDK suite (npm test; GC/native cases may skip)' \
-	  'test-gc' 'Full unit/SDK suite with forced GC and CI truecolor environment' \
-	  'test-focus' 'Selected TEST_FILES, optional TEST_PATTERN, with GC' \
-	  'test-rust' 'Rust workspace tests and doctests' \
-	  'test-native' 'Full unit/SDK/GC suite with a required existing Occipital helper' \
-	  'test-syntax' 'Short physical syntax CLI suite; requires a helper' \
-	  'test-terminal' 'Expensive full physical CLI/replay; final UI verification' \
+	  'deps' 'Prepare the exact PI_VERSION dependency graph (no implicit native build)' \
+	  'build' 'Offline pinned native build; requires explicit RUST_ROOT and owned CARGO_HOME' \
+	  'check' 'Strict selected-host TypeScript check; requires absolute INPUTS' \
+	  'check-native' 'Prepared offline Rust formatting and strict Clippy checks' \
+	  'test' 'Required same-source unit/SDK/GC coverage from prepared INPUTS' \
+	  'test-gc' 'Alias for the same mandatory GC-enabled unit suite' \
+	  'test-focus' 'Comma-separated TEST_FILES basenames and optional TEST_PATTERN' \
+	  'test-rust' 'Prepared offline workspace tests and doctests' \
+	  'test-rust-harness' 'Actual pinned Cargo ancestor-configuration isolation control' \
+	  'test-native' 'Required same-source native helper controls' \
+	  'test-syntax' 'Physical syntax CLI with required prepared real shared host' \
+	  'test-terminal' 'Full physical CLI/replay with locked integration inputs' \
 	  'test-release' 'Inert packaging/version/release regressions' \
-	  'test-installed' 'Networked clean npm install/download/cache/cleanup control' \
-	  'pack-check' 'Inspect development npm archive contents, without creating/publishing it'
+	  'test-installed' 'Offline-fixture same-commit clean npm consumer' \
+	  'test-published' 'External delivery verification ONLY for explicit pi-tidy-ui RELEASE_REF' \
+	  'pack-check' 'Inspect development npm archive without publishing'
 
 deps:
-	"$(NPM)" ci --ignore-scripts
+	"$(NODE)" scripts/test/prepare.mjs --pi-version "$(PI_VERSION)" --output "$(PREPARE_OUTPUT)"
+
+inputs-check:
+	@case "$(INPUTS)" in /*|[A-Za-z]:/*|[A-Za-z]:\\*) ;; *) printf 'Supply INPUTS=/absolute/path/inputs.json from explicit preparation.\n' >&2; exit 1 ;; esac
+	@test -f "$(INPUTS)" || { printf 'Prepared INPUTS not found: %s\n' "$(INPUTS)" >&2; exit 1; }
 
 build: native-build
 	cp "$(NATIVE_BIN)" "occipital$(EXE)"
@@ -42,70 +82,65 @@ build: native-build
 
 native-toolchain:
 	@set -eu; \
+	  case "$(RUST_ROOT):$(CARGO_HOME)" in /*:/*) ;; *) printf 'Supply absolute RUST_ROOT and owned CARGO_HOME.\n' >&2; exit 1 ;; esac; \
+	  test -d "$(CARGO_HOME)"; test ! -f "$(CARGO_HOME)/config"; test ! -f "$(CARGO_HOME)/config.toml"; \
+	  mkdir -p "$(CARGO_HOME)/test-home" "$(CARGO_HOME)/test-root"; \
 	  expected="$$("$(NODE)" --input-type=module -e 'import {rustToolchain} from "./scripts/release/version.mjs"; console.log(await rustToolchain(process.cwd()));')"; \
 	  for tool in "$(CARGO)" "$(RUSTC)"; do \
-	    actual="$$("$$tool" --version)"; \
-	    case "$$actual" in *" $$expected "*) ;; \
-	      *) printf 'Expected Rust %s from rust-toolchain.toml; found %s. Select the pinned toolchain on PATH.\n' "$$expected" "$$actual" >&2; exit 1 ;; \
-	    esac; \
+	    actual="$$( $(RUST_ENV) "$$tool" --version)"; \
+	    case "$$actual" in *" $$expected "*) ;; *) printf 'Expected Rust %s; found %s.\n' "$$expected" "$$actual" >&2; exit 1 ;; esac; \
 	  done
 
 native-build: native-toolchain
-	"$(CARGO)" build --release --locked -p occipital $(TARGET_ARGS)
+	$(call NATIVE_RUN,build)
 
-check:
-	"$(NPM)" run check
+check: inputs-check
+	$(RUN) --suite check
 
-check-native: native-toolchain
-	"$(CARGO)" fmt --all --check
-	$(MAKE) _native-lint
+check-native: inputs-check
+	$(RUN) --suite rust-check
 
-_native-lint:
-	"$(CARGO)" clippy --workspace --all-targets --locked $(TARGET_ARGS) -- -D warnings
+_native-lint: native-toolchain
+	$(call NATIVE_RUN,lint)
 
-test:
-	"$(NPM)" test
+test test-gc: inputs-check
+	$(RUN) --suite unit
 
-test-gc:
-	TERM=xterm-256color COLORTERM=truecolor "$(NODE)" --expose-gc --test --test-concurrency=2 tests/*.test.ts
+test-focus: inputs-check
+	@test -n "$(TEST_FILES)" || { printf 'Set comma-separated TEST_FILES basenames; TEST_PATTERN is optional.\n' >&2; exit 1; }
+	$(RUN) --suite unit --files "$$TEST_FILES" $(if $(strip $(TEST_PATTERN)),--pattern "$$TEST_PATTERN",)
 
-test-focus:
-	@test -n "$$TEST_FILES" || { printf 'Set TEST_FILES to the affected test files; TEST_PATTERN is optional.\n' >&2; exit 1; }
-	TERM=xterm-256color COLORTERM=truecolor "$(NODE)" --expose-gc --test --test-concurrency=1 $(if $(strip $(TEST_PATTERN)),--test-name-pattern="$$TEST_PATTERN",) $$TEST_FILES
+test-rust: inputs-check
+	$(RUN) --suite rust
 
-test-rust: native-toolchain
-	"$(CARGO)" test --workspace --locked $(TARGET_ARGS)
+test-rust-harness: inputs-check
+	$(RUN) --suite rust-harness
 
-helper-check:
-	@test -x "$(OCCIPITAL_TEST_BIN)" || { printf 'Occipital helper not executable: %s. Run make build or set OCCIPITAL_TEST_BIN to an absolute path.\n' "$(OCCIPITAL_TEST_BIN)" >&2; exit 1; }
+test-native: inputs-check
+	$(RUN) --suite native
 
-test-native: helper-check
-	OCCIPITAL_TEST_BIN="$(OCCIPITAL_TEST_BIN)" $(MAKE) test-gc
+test-syntax: inputs-check
+	$(RUN) --suite syntax-terminal
 
-test-syntax: helper-check
-	OCCIPITAL_TEST_BIN="$(OCCIPITAL_TEST_BIN)" "$(NPM)" run test:syntax-terminal
+test-terminal: inputs-check
+	$(RUN) --suite terminal
 
-test-terminal:
-	"$(NPM)" run test:terminal
+test-release: inputs-check
+	$(RUN) --suite native-release
 
-test-release:
-	"$(NPM)" run test:native-release
+test-installed: inputs-check
+	$(RUN) --suite consumer
 
-test-installed:
-	"$(NPM)" run test:installed-native
+test-published: inputs-check
+	$(RUN) --suite published-consumer --release-ref "$(RELEASE_REF)"
 
 pack-check:
 	"$(NPM)" pack --dry-run --ignore-scripts
 
-native-smoke: helper-check
-	OCCIPITAL_TEST_BIN="$(OCCIPITAL_TEST_BIN)" "$(NODE)" --test --test-name-pattern='^actual owned helper preserves compact UTF8 highlighting and incremental work counters$$' tests/occipital-native.test.ts
+native-smoke: inputs-check
+	$(RUN) --suite native --files occipital-native.test.ts --pattern '^actual owned helper preserves compact UTF8 highlighting and incremental work counters$$'
 
-# linux-gnu.sh owns native architecture/glibc assertions, SDK mounts and network isolation.
-# Separate recursive invocations keep these dependent phases ordered even under make -j.
+# The GNU wrapper supplies pinned tool paths and owned stores inside network=none.
+# Staging and prepared actual-helper smoke follow this gate in CI; no published input.
 _gnu-native: native-toolchain
-	$(MAKE) test-rust
-	"$(CARGO)" test --locked -p occipital --example engine_probe $(TARGET_ARGS) allocator_diagnostic_tracks_the_actual_glibc_api
-	$(MAKE) _native-lint
-	$(MAKE) native-build
-	OCCIPITAL_TEST_BIN="$(NATIVE_BIN)" "$(NODE)" --input-type=module -e 'import {verifyLinuxRuntime} from "./scripts/release/native-ci.mjs"; await verifyLinuxRuntime(process.env.OCCIPITAL_TEST_BIN);'
-	$(MAKE) native-smoke OCCIPITAL_TEST_BIN="$(NATIVE_BIN)"
+	$(call NATIVE_RUN,gnu)

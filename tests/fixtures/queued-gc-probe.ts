@@ -1,3 +1,4 @@
+import './test-guard.mjs';
 import assert from "node:assert/strict";
 import { Container, Spacer, TruncatedText } from "@earendil-works/pi-tui";
 import { initTheme, theme } from "../../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js";
