@@ -748,6 +748,7 @@ test('real CLI: pi-tidy-ui policy, input, lifecycle and same-session stock repla
       await live.appearance(true); compact(await live.capture('enabled-twice'));
       const starts = live.events().filter((e) => e.type === 'start').length;
       await live.command('/reload'); await live.event('start', starts + 1);
+      await until(() => live.screen().some(row => row.includes('Reloaded keybindings, extensions,')), 'native reload completion before command capture');
       compact(await live.capture('reloaded'));
       await live.run('future');
       const future = await live.capture('future-after-reload');
