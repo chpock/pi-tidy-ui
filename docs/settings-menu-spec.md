@@ -12,7 +12,7 @@ The first page contains:
 
 - **Tidy UI appearance** — requested styling for eligible cards, messages, input and footer.
 - **Code color theme** — opens the theme picker; it does not change Pi's overall theme.
-- **Match terminal colors to Pi** — requested terminal-default synchronization, separate from card styling.
+- **Set terminal colors from Pi theme** — apply Pi's theme to the terminal background and default text color, separate from card styling.
 - **Status & troubleshooting** — actual appearance/color/highlighting state and less frequent controls.
 - **Close**.
 

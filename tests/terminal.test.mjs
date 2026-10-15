@@ -265,7 +265,7 @@ export class PiTerminal {
         else await until(async () => {
           await this.refreshTidyBounds();
           const rows = this.tidyRows();
-          const switches = { 'Tidy UI appearance': 'appearanceEnabled', 'Match terminal colors to Pi': 'terminalColorsEnabled',
+          const switches = { 'Tidy UI appearance': 'appearanceEnabled', 'Set terminal colors from Pi theme': 'terminalColorsEnabled',
             'Use Occipital highlighting': 'nativeHighlightingEnabled', 'Record diagnostic logs': 'loggingEnabled' };
           const key = switches[label];
           if (key) {
@@ -319,8 +319,8 @@ export class PiTerminal {
     if (alreadyOpen) await until(() => this.tidyHeading('Tidy UI'), 'shortcut opened terminal-color settings');
     else await this.openTidyMenu();
     try {
-      const row = await this.selectTidyItem('Match terminal colors to Pi', false);
-      if (row.endsWith(enabled ? 'Off' : 'On')) await this.selectTidyItem('Match terminal colors to Pi');
+      const row = await this.selectTidyItem('Set terminal colors from Pi theme', false);
+      if (row.endsWith(enabled ? 'Off' : 'On')) await this.selectTidyItem('Set terminal colors from Pi theme');
       else if (enabled) { await this.selectTidyItem('Status & troubleshooting'); await this.selectTidyItem('Reapply terminal colors'); }
     } finally { await this.closeTidyMenu(); }
   }
@@ -5718,12 +5718,12 @@ for (const mode of ['regular', 'fullscreen']) test(`real CLI: settings popup nav
       const checkRootColumns = (narrow = false, expectedColumn) => {
         const dump = live.captureScreen(`settings-columns-${++layoutCapture}`, {}), bounds = live.tidyFrame();
         assert.ok(bounds);
-        const items = ['Tidy', 'Code color', 'Match', 'Status', 'Close'].map(label => {
+        const items = ['Tidy', 'Code color', 'Set', 'Status', 'Close'].map(label => {
           const y = live.tidyRows().findIndex(row => /^(?:→ |  )/u.test(row) && row.slice(2).startsWith(label));
           if (narrow && y < 0) return undefined;
           assert.ok(y >= 0, `root item is painted: ${label}`);
           return { y, text: sliceByColumn(dump.screen[y], bounds.left + 1, bounds.width - 2),
-            value: label === 'Code color' ? narrow ? 'Fo…' : 'Follow Pi' : ['Tidy', 'Match'].includes(label) ? 'On' : undefined };
+            value: label === 'Code color' ? narrow ? 'Fo…' : 'Follow Pi' : ['Tidy', 'Set'].includes(label) ? 'On' : undefined };
         }).filter(Boolean);
         const anchor = items.find(item => item.value);
         const column = expectedColumn ?? (anchor ? anchor.text.indexOf(anchor.value) : -1);
@@ -5744,8 +5744,8 @@ for (const mode of ['regular', 'fullscreen']) test(`real CLI: settings popup nav
       await live.resize(100, 30); await live.openTidyMenu();
       checkLayout('Tidy UI'); checkRootColumns();
       const rootWidth = live.tidyFrame().width;
-      assert.ok(rootWidth < 50, 'ordinary settings size to their content, not a fixed 72-column window');
-      for (const label of ['Tidy UI appearance', 'Match terminal colors to Pi', 'Status & troubleshooting', 'Close', 'Code color theme']) {
+      assert.ok(rootWidth < 72, 'ordinary settings size to their content, not a fixed 72-column window');
+      for (const label of ['Tidy UI appearance', 'Set terminal colors from Pi theme', 'Status & troubleshooting', 'Close', 'Code color theme']) {
         await live.selectTidyItem(label, false); checkLayout('Tidy UI'); checkRootColumns();
         assert.equal(live.tidyFrame().width, rootWidth, 'moving selection/changing descriptions never resizes the page');
       }
@@ -5772,7 +5772,7 @@ for (const mode of ['regular', 'fullscreen']) test(`real CLI: settings popup nav
       await until(() => live.tidyFrame()?.width === 24 && live.tidyHeading('Tidy UI') && live.tidyRows().some(row => row.startsWith('→ Code color')), 'narrow popup redraw');
       assert.ok(checkLayout('Tidy UI')[1].endsWith('…'), 'the real narrow description ellipsizes its second row');
       const narrowColumn = checkRootColumns(true);
-      for (const label of ['Match terminal colors to Pi', 'Status & troubleshooting', 'Close', 'Code color theme']) {
+      for (const label of ['Set terminal colors from Pi theme', 'Status & troubleshooting', 'Close', 'Code color theme']) {
         await live.selectTidyItem(label, false); checkRootColumns(true, narrowColumn);
       }
       await live.selectTidyItem('Status & troubleshooting'); await live.selectTidyItem('Display cache');
@@ -5790,13 +5790,13 @@ for (const mode of ['regular', 'fullscreen']) test(`real CLI: settings popup nav
       await live.tidyPage(['Code color theme', 'Follow Pi theme']);
       if (mode === 'fullscreen') {
         await live.openTidyMenu();
-        const bounds = live.tidyFrame(), y = live.tidyRows().findIndex(row => row.includes('Match terminal colors to Pi'));
+        const bounds = live.tidyFrame(), y = live.tidyRows().findIndex(row => row.includes('Set terminal colors from Pi theme'));
         assert.ok(bounds && y >= 0);
         const click = x => live.send(`\x1b[<0;${x + 1};${y + 1}M\x1b[<0;${x + 1};${y + 1}m`);
         const savedBeforePointer = readFileSync(path);
         for (const x of [bounds.left - 1, bounds.left, bounds.left + bounds.width - 1, bounds.left + bounds.width]) click(x);
         live.send('\x1b[B');
-        await until(() => live.tidyRows().some(row => row.startsWith('→ Match terminal colors to Pi')), 'keyboard acknowledgement after border/outside mouse input');
+        await until(() => live.tidyRows().some(row => row.startsWith('→ Set terminal colors from Pi theme')), 'keyboard acknowledgement after border/outside mouse input');
         assert.deepEqual(readFileSync(path), savedBeforePointer, 'neither frame nor outside columns change persistent settings');
         click(bounds.left + 4);
         await until(() => JSON.parse(readFileSync(path, 'utf8')).terminalColorsEnabled === false, 'normalized mouse toggles exactly the clicked setting');
@@ -5818,7 +5818,7 @@ for (const mode of ['regular', 'fullscreen']) test(`real CLI: settings popup nav
       assert.deepEqual(toolLines(reloaded), toolLines(nativeHistory), 'saved Off restores exact native history rows, not just the visible switch');
       const rootRows = await live.tidyPage();
       assert.ok(rootRows.some(row => /Tidy UI appearance\s+Off$/u.test(row)));
-      assert.ok(rootRows.some(row => /Match terminal colors to Pi\s+Off$/u.test(row)));
+      assert.ok(rootRows.some(row => /Set terminal colors from Pi theme\s+Off$/u.test(row)));
       const support = await live.tidyPage(['Status & troubleshooting']);
       assert.ok(support.some(row => /Use Occipital highlighting\s+Off$/u.test(row)));
       assert.ok((await live.tidyPage(['Status & troubleshooting', 'Diagnostic logs'])).some(row => row === 'Recording: Off'));
@@ -5866,23 +5866,23 @@ for (const mode of ['regular', 'fullscreen']) test(`real CLI: compact settings p
       await terminal.ready(); await terminal.resize(100, 5); await terminal.openTidyMenu();
       assert.equal(terminal.tidyFrame(), undefined, 'short layouts really have no frame/header');
       const root = terminal.menuBounds;
-      assert.ok(root && root.width < 50); assert.equal(root.col, Math.floor((100 - root.width) / 2));
+      assert.ok(root && root.width < 72); assert.equal(root.col, Math.floor((100 - root.width) / 2));
       await terminal.selectTidyItem('Code color theme'); await terminal.selectTidyItem('Follow Pi theme');
       const file = join(terminal.agent, 'extensions/pi-tidy-ui/config.json');
       assert.deepEqual(JSON.parse(readFileSync(file, 'utf8')).syntaxTheme, { kind: 'pi' });
       assert.equal(terminal.menuBounds.width, root.width, 'theme confirmation returns to the compact root');
-      await terminal.selectTidyItem('Match terminal colors to Pi');
+      await terminal.selectTidyItem('Set terminal colors from Pi theme');
       await terminal.selectTidyItem('Status & troubleshooting');
       assert.notEqual(terminal.menuBounds.width, root.width, 'compact page transitions resize the same native overlay');
       await terminal.selectTidyItem('Use Occipital highlighting');
       terminal.send('\x1b[27u');
       await until(async () => { await terminal.refreshTidyBounds(); return terminal.tidyRows().some(row => row.startsWith('→ Status & troubleshooting')); }, 'compact Escape returns without losing selection');
-      await terminal.selectTidyItem('Match terminal colors to Pi', false);
+      await terminal.selectTidyItem('Set terminal colors from Pi theme', false);
       if (mode === 'fullscreen') {
-        const y = terminal.tidyRows().findIndex(row => row.startsWith('→ Match terminal colors to Pi')), bounds = terminal.menuBounds;
+        const y = terminal.tidyRows().findIndex(row => row.startsWith('→ Set terminal colors from Pi theme')), bounds = terminal.menuBounds;
         terminal.send(`\x1b[<0;${bounds.col + 5};${y + 1}M\x1b[<0;${bounds.col + 5};${y + 1}m`);
         await until(() => JSON.parse(readFileSync(file, 'utf8')).terminalColorsEnabled === false, 'compact pointer hits the actual centered setting');
-      } else await terminal.selectTidyItem('Match terminal colors to Pi');
+      } else await terminal.selectTidyItem('Set terminal colors from Pi theme');
       assert.equal(JSON.parse(readFileSync(file, 'utf8')).terminalColorsEnabled, false);
       assert.equal(JSON.parse(readFileSync(file, 'utf8')).nativeHighlightingEnabled, true);
       assert.equal(terminal.events().filter(event => ['call', 'result', 'model_context'].includes(event.type)).length, 0);

@@ -279,7 +279,7 @@ test('entry persists every switch and theme through the popup; a fresh runtime r
   try {
     await first.start(); await settled();
     await first.page('Status & troubleshooting', 'Use Occipital highlighting');
-    await first.page('Match terminal colors to Pi');
+    await first.page('Set terminal colors from Pi theme');
     await first.recording(false); await first.appearance(false);
     await first.page('Code color theme', 'Follow Pi theme');
     assert.deepEqual(JSON.parse(await fs.readFile(file, 'utf8')), { syntaxTheme: { kind: 'pi' },
@@ -292,7 +292,7 @@ test('entry persists every switch and theme through the popup; a fresh runtime r
     const log = debugLoggingDiagnostics()!;
     assert.equal(log.capture, false); assert.equal(log.writes, 0); assert.equal(log.scans, 0); assert.equal(log.timer, false);
     await assert.rejects(fs.stat(nextRoot), { code: 'ENOENT' });
-    await next.page(); assert.match(next.view, /Tidy UI appearance\s+Off/); assert.match(next.view, /Match terminal colors to Pi\s+Off/);
+    await next.page(); assert.match(next.view, /Tidy UI appearance\s+Off/); assert.match(next.view, /Set terminal colors from Pi theme\s+Off/);
     await next.page('Status & troubleshooting'); assert.match(next.view, /Use Occipital highlighting\s+Off/);
     assert.equal(next.counts.constructed, 0);
     await next.page('Code color theme'); assert.equal(next.counts.constructed, 1); assert.equal(next.counts.shared, 0);
@@ -340,7 +340,7 @@ test('entry shutdown aborts a pending switch save and closes the overlay; late c
   });
   await h.start();
   await withMenu((_args, _ctx) => h.command(''), h.ctx, async menu => {
-    const changing = menu.select('Match terminal colors to Pi'); await turn();
+    const changing = menu.select('Set terminal colors from Pi theme'); await turn();
     assert.equal(signal?.aborted, false);
     await h.stop(); assert.equal(signal?.aborted, true);
     const before = { ...h.counts }, notices = [...h.notices];
@@ -399,7 +399,7 @@ test('entry gives the same overlay live per-page sizing without remounts or pref
   const h = fixture(); await h.start(); await settled(); const before = { ...h.counts };
   let mounts = 0;
   await withMenu(async args => { mounts++; await h.command(args); }, h.ctx, async menu => {
-    const root = menu.width(); assert.ok(root < 50);
+    const root = menu.width(); assert.ok(root < 72);
     for (let i = 0; i < 10; i++) { await menu.key('\x1b[B'); assert.equal(menu.width(), root); }
     await menu.select('Status & troubleshooting'); const support = menu.width();
     assert.notEqual(support, root, 'one live options object exposes the new page width');

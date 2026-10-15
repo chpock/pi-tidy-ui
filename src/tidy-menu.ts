@@ -181,7 +181,7 @@ export class TidyMenu implements Component {
       case 'root': return [
         item('appearance', 'Tidy UI appearance', 'Style cards, messages, input and footer. Diagnostic logs are independent.', onOff(state.appearanceEnabled)),
         item('themes', 'Code color theme', 'Colors for Bash commands and file previews; does not change Pi’s overall theme.', selectedLabel(state), true),
-        item('colors', 'Match terminal colors to Pi', 'Match terminal background and default text to Pi’s theme. Automatic themes remain controlled by Pi.', onOff(state.terminalColorsEnabled)),
+        item('colors', 'Set terminal colors from Pi theme', 'Set background and default text color from Pi’s theme. Pi controls automatic themes.', onOff(state.terminalColorsEnabled)),
         item('support', 'Status & troubleshooting', 'Check what is active, resolve display problems, or collect diagnostics.', undefined, true),
         item('close', 'Close', 'Close this panel without changing anything.'),
       ];

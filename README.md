@@ -82,7 +82,7 @@ Run **`/tidy-ui`** to open a centered settings popup:
 
 - **Tidy UI appearance** — turn styling on or off.
 - **Code color theme** — choose Follow Pi or an independent code theme; type to search.
-- **Match terminal colors to Pi** — synchronize terminal defaults when Pi's theme permits it.
+- **Set terminal colors from Pi theme** — apply Pi's theme to the terminal background and default text color when eligible.
 - **Status & troubleshooting** — actual state, reapply controls, native highlighting, logs and display-cache tools.
 
 Arrow keys navigate; Enter selects; Escape goes back or closes. The first Enter opens the theme picker, not an on/off toggle. Appearance Off leaves the menu and logging usable. Old command arguments are no longer supported. See the [menu contract](docs/settings-menu-spec.md).
@@ -102,7 +102,7 @@ Removing a component/subtree through native `Container.removeChild` or `clear` r
 
 Estimates are not exact V8 heap measurements: native caches, raw/signature data and transient rendering are excluded, and strings may be shared. Memory necessarily grows with the current **live retained transcript and queue**, but no detached-owner or width/state history is intentionally retained. No fixed total-process memory bound is claimed. See the [cache contract](docs/render-cache-spec.md).
 
-Turning **Match terminal colors to Pi** off stops terminal-default application and theme reads without disabling cards. Remaining presentation can make a one-shot profile RGB query after releasing colors. **Reapply terminal colors** retries the current enabled preference; appearance On respects the local switch. Reload restores the saved preference. Releases restore terminal **profile defaults**, not another application's prior dynamic override. Disable the old standalone `theme-background` extension manually: concurrent default-color writers are unsupported.
+Turning **Set terminal colors from Pi theme** off stops terminal-default application and theme reads without disabling cards. Remaining presentation can make a one-shot profile RGB query after releasing colors. **Reapply terminal colors** retries the current enabled preference; appearance On respects the local switch. Reload restores the saved preference. Releases restore terminal **profile defaults**, not another application's prior dynamic override. Disable the old standalone `theme-background` extension manually: concurrent default-color writers are unsupported.
 
 Diagnostic capture is on by default, including while presentation is off. **Status & troubleshooting → Diagnostic logs** shows private human-readable journal paths and counters; **Write state snapshot** records existing state without rendering. **Record diagnostic logs** controls capture; **Retry recording** explicitly retries a failed writer. No conversation, command or source bodies are logged. See [diagnostic journals](docs/debug-logging-spec.md) for batching, cleanup and accepted loss limits.
 

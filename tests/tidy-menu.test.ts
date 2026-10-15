@@ -38,12 +38,29 @@ test('menu root exposes ordinary appearance choices only; first Enter navigates,
   const f = fixture();
   assert.match(f.render().join('\n'), /Tidy UI appearance.*On/);
   assert.match(f.render().join('\n'), /Code color theme.*Follow Pi/);
-  assert.match(f.render().join('\n'), /Match terminal colors to Pi.*On/);
+  assert.match(f.render().join('\n'), /Set terminal colors from Pi theme.*On/);
   assert.doesNotMatch(f.render().join('\n'), /cache|Diagnostic logs|Occipital|shared|owned/i);
   await f.key('\r'); assert.equal(f.prepared, 1); assert.equal(f.calls.length, 0);
   assert.match(f.render().join('\n'), /Follow Pi theme/);
   await f.key('\x1b'); assert.match(f.render().join('\n'), /Tidy UI appearance/);
   assert.equal(f.cacheReads, 0);
+});
+
+test('terminal-color setting describes applying Pi defaults independently of effective status', async () => {
+  const f = fixture();
+  f.state.terminalColors = 'Automatic Pi theme: native control';
+  f.render(); await f.key('\x1b[B');
+  assert.match(f.render().join('\n'), /→ Set terminal colors from Pi theme\s+On/u);
+  const help = helpRows(f.menu.render(f.menu.preferredWidth()).map(plain)).join(' ');
+  assert.match(help, /Set background and default text color from Pi’s theme\./u);
+  assert.match(help, /Pi controls automatic themes\./u);
+  assert.equal(f.calls.length, 0, 'reading the preference does not apply colors');
+  await f.key('\r');
+  assert.deepEqual(f.calls, [{ kind: 'switch', key: 'terminalColorsEnabled', value: false }]);
+  assert.equal(f.state.appearanceEnabled, true);
+  assert.equal(f.state.nativeHighlightingEnabled, true);
+  await f.select('Status & troubleshooting');
+  assert.match(f.render().join('\n'), /Terminal colors: Automatic Pi theme: native control/u);
 });
 
 test('master off changes appearance without closing the root or disabling logs; navigation retains selection', async () => {
@@ -81,7 +98,7 @@ test('clear receipt stays at zero when a native repaint rebuilds layouts before 
 
 test('inline failure is bounded and remains visible after the operation; no raw error text', async () => {
   const f = fixture(); f.perform = async () => { throw new Error('PRIVATE_URL_TOKEN'); };
-  await f.select('Match terminal colors to Pi');
+  await f.select('Set terminal colors from Pi theme');
   assert.match(f.render().join('\n'), /could not be completed/i);
   assert.doesNotMatch(f.render().join('\n'), /PRIVATE_URL_TOKEN/);
 });
@@ -89,7 +106,7 @@ test('inline failure is bounded and remains visible after the operation; no raw 
 test('closing pending menu work ignores late completion and input', async () => {
   const f = fixture(); let settle!: (value: { ok: true }) => void;
   f.perform = () => new Promise(resolve => { settle = resolve; });
-  await f.select('Match terminal colors to Pi'); await f.key('\x1b');
+  await f.select('Set terminal colors from Pi theme'); await f.key('\x1b');
   assert.equal(f.closed, 1); settle({ ok: true }); await turn();
   await f.key('\r'); assert.equal(f.closed, 1); assert.equal(f.calls.length, 0);
 });
@@ -291,9 +308,9 @@ test('settings changes are silent before, during and after saving; errors do not
     if (action.kind === 'switch') f.state[action.key] = action.value;
     return new Promise(resolve => { finish = resolve; });
   };
-  await f.select('Match terminal colors to Pi'); quiet();
+  await f.select('Set terminal colors from Pi theme'); quiet();
   const pendingHelp = helpRows(f.render()); const pendingHeight = f.render().length;
-  assert.match(f.render().join('\n'), /Match terminal colors to Pi.*Off/u);
+  assert.match(f.render().join('\n'), /Set terminal colors from Pi theme.*Off/u);
   await f.key('\r');
   finish({ ok: true }); await turn(); quiet();
   assert.equal(f.render().length, pendingHeight, 'saving does not resize the panel');
@@ -336,7 +353,7 @@ for (const height of [10, 11, 12]) test(`save errors remain readable beside both
   f.render(); await f.key('\x1b[B'); await f.key('\r');
   assert.deepEqual(f.calls, [{ kind: 'switch', key: 'terminalColorsEnabled', value: false }]);
   assert.match(f.render().join('\n'), /not saved\./u);
-  assert.match(helpRows(f.render()).join(' '), /Match terminal/u);
+  assert.match(helpRows(f.render()).join(' '), /Set background/u);
   assert.ok(f.render().length <= height);
 });
 
@@ -353,7 +370,7 @@ for (const page of ['support', 'logs']) test(`short ${page} page drops chrome be
 
 test('a one-row failure retains chrome when all sections still fit', async () => {
   const f = fixture(70, 11); f.perform = async () => ({ ok: false, message: 'SAVE_FAILURE' });
-  await f.select('Match terminal colors to Pi');
+  await f.select('Set terminal colors from Pi theme');
   const rows = f.render();
   assert.equal(rows.filter(row => /^├─+┤$/u.test(row)).length, 2);
   assert.match(rows.join('\n'), /SAVE_FAILURE/u);
@@ -364,9 +381,9 @@ test('a one-row failure retains chrome when all sections still fit', async () =>
 test('preferred width fits root labels, values and navigation without stretching for descriptions', async () => {
   const f = fixture();
   const width = f.menu.preferredWidth();
-  assert.ok(width < 50, 'ordinary settings must not occupy the old 72-column panel');
+  assert.ok(width < 72, 'ordinary settings fit their labels and values below the page-width ceiling');
   const rows = f.menu.render(width).map(plain);
-  for (const label of ['Tidy UI appearance', 'Code color theme', 'Match terminal colors to Pi', 'Status & troubleshooting', 'Close'])
+  for (const label of ['Tidy UI appearance', 'Code color theme', 'Set terminal colors from Pi theme', 'Status & troubleshooting', 'Close'])
     assert.ok(rows.some(row => row.includes(label)), `complete label: ${label}`);
   assert.match(rows.join('\n'), /↑↓ Navigate · Enter Select · Esc Close/u);
   assert.equal(helpRows(rows).length, 2, 'description space is fixed even when the text now fits in full');
@@ -376,7 +393,7 @@ test('preferred width fits root labels, values and navigation without stretching
     assert.equal(f.menu.preferredWidth(), width, 'selection and its description do not resize the page');
   }
   f.perform = async () => ({ ok: false, message: 'SAVE_FAILURE '.repeat(100) });
-  await f.select('Match terminal colors to Pi');
+  await f.select('Set terminal colors from Pi theme');
   assert.equal(f.menu.preferredWidth(), width, 'error text wraps instead of widening the page');
   assert.equal(f.prepared, 0); assert.equal(f.cacheReads, 0);
 });
@@ -434,14 +451,14 @@ test('narrow detail pages keep Back and paging discoverable inside the actual fr
   assert.ok(f.render().every(row => visibleWidth(row) <= 24));
 });
 
-const rootLabels = ['Tidy UI appearance', 'Code color theme', 'Match terminal colors to Pi', 'Status & troubleshooting', 'Close'];
+const rootLabels = ['Tidy UI appearance', 'Code color theme', 'Set terminal colors from Pi theme', 'Status & troubleshooting', 'Close'];
 const cellOf = (row: string, text: string) => {
   const index = row.indexOf(text); assert.ok(index >= 0, `missing ${JSON.stringify(text)} in ${JSON.stringify(row)}`);
   return visibleWidth(row.slice(0, index));
 };
 function rootRows(f: ReturnType<typeof fixture>, width = f.menu.preferredWidth()) {
   const rows = f.menu.render(width).map(plain);
-  return ['Tidy', 'Code color', 'Match', 'Status', 'Close'].map(label => {
+  return ['Tidy', 'Code color', 'Set', 'Status', 'Close'].map(label => {
     const row = rows.find(row => /^│[→ ] /u.test(row) && row.slice(3).startsWith(label));
     assert.ok(row, `missing root item ${label}: ${rows.join('\n')}`); return row;
   });

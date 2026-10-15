@@ -79,8 +79,8 @@ export async function setAppearance(handler: Parameters<typeof withMenu>[0], ctx
 
 export async function setColors(handler: Parameters<typeof withMenu>[0], ctx: ExtensionContext, enabled: boolean): Promise<string> {
   return withMenu(handler, ctx, async menu => {
-    const value = menu.text().split('\n').find(row => /Match terminal colors to Pi/u.test(row))!;
-    if (value.trimEnd().endsWith(enabled ? 'Off' : 'On')) await menu.select('Match terminal colors to Pi');
+    const value = menu.text().split('\n').find(row => /Set terminal colors from Pi theme/u.test(row))!;
+    if (value.trimEnd().endsWith(enabled ? 'Off' : 'On')) await menu.select('Set terminal colors from Pi theme');
     else if (enabled) { await menu.select('Status & troubleshooting'); await menu.select('Reapply terminal colors'); }
   });
 }

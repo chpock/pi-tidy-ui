@@ -4,7 +4,7 @@
 
 pi-tidy-ui can synchronize the terminal's default background and foreground with a **fixed, file-backed Pi theme**. This affects the shared terminal, not just a card. It is independently implemented in `src/terminal-colors.ts`; `src/index.ts` owns the host integration.
 
-The feature defaults to On. Bare `/tidy-ui` exposes **Match terminal colors to Pi** and, under **Status & troubleshooting**, the current effective state and **Reapply terminal colors**. See the [saved-preference contract](settings-menu-spec.md).
+The feature defaults to On. Bare `/tidy-ui` exposes **Set terminal colors from Pi theme**: On/Off requests application of Pi's theme to the terminal background and default text color, rather than reporting whether colors match. **Status & troubleshooting** shows the current effective state and **Reapply terminal colors**. See the [saved-preference contract](settings-menu-spec.md).
 
 Local off releases applied defaults but leaves cards, input styling and the footer eligible. It stops theme-source reads/application, not the one-shot default-RGB sampling needed to paint remaining cards correctly after a release. Appearance Off releases defaults and removes the observer. Appearance On respects the local toggle; reload restores both saved preferences before activation. Toggles are stored in the extension config, not Pi settings. Explicit **Reapply terminal colors** retries an enabled preference even if the native theme identity is unchanged; it never enables a disabled preference.
 
