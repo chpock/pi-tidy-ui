@@ -5691,12 +5691,38 @@ for (const mode of ['regular', 'fullscreen']) test(`real CLI: settings popup nav
         }
         return help;
       };
+      const checkRootColumns = (narrow = false, expectedColumn) => {
+        const dump = live.captureScreen(`settings-columns-${++layoutCapture}`, {}), bounds = live.tidyFrame();
+        assert.ok(bounds);
+        const items = ['Tidy', 'Code color', 'Match', 'Status', 'Close'].map(label => {
+          const y = live.tidyRows().findIndex(row => /^(?:→ |  )/u.test(row) && row.slice(2).startsWith(label));
+          if (narrow && y < 0) return undefined;
+          assert.ok(y >= 0, `root item is painted: ${label}`);
+          return { y, text: sliceByColumn(dump.screen[y], bounds.left + 1, bounds.width - 2),
+            value: label === 'Code color' ? narrow ? 'Fo…' : 'Follow Pi' : ['Tidy', 'Match'].includes(label) ? 'On' : undefined };
+        }).filter(Boolean);
+        const anchor = items.find(item => item.value);
+        const column = expectedColumn ?? (anchor ? anchor.text.indexOf(anchor.value) : -1);
+        assert.ok(column >= 0);
+        for (const { y, text, value } of items) {
+          if (value) {
+            assert.equal(text.indexOf(value), column, 'all visible values keep the common start through selection and scrolling');
+            assert.equal(dump.cells[y][bounds.left + 1 + column].text, value[0]);
+          }
+          const label = text.slice(2).split(/ {2,}/u)[0].trimEnd();
+          assert.ok(2 + visibleWidth(label) + 2 <= column, 'every label ends before the shared value column');
+          if (!text.includes('›')) continue;
+          assert.equal(text.lastIndexOf('›'), bounds.width - 3);
+          assert.equal(dump.cells[y][bounds.left + bounds.width - 2].text, '›', 'native physical arrow cell matches the separate column');
+        }
+        return column;
+      };
       await live.resize(100, 30); await live.openTidyMenu();
-      checkLayout('Tidy UI');
+      checkLayout('Tidy UI'); checkRootColumns();
       const rootWidth = live.tidyFrame().width;
       assert.ok(rootWidth < 50, 'ordinary settings size to their content, not a fixed 72-column window');
       for (const label of ['Tidy UI appearance', 'Match terminal colors to Pi', 'Status & troubleshooting', 'Close', 'Code color theme']) {
-        await live.selectTidyItem(label, false); checkLayout('Tidy UI');
+        await live.selectTidyItem(label, false); checkLayout('Tidy UI'); checkRootColumns();
         assert.equal(live.tidyFrame().width, rootWidth, 'moving selection/changing descriptions never resizes the page');
       }
       await live.resize(140, 30);
@@ -5721,6 +5747,10 @@ for (const mode of ['regular', 'fullscreen']) test(`real CLI: settings popup nav
       await live.resize(24, 12);
       await until(() => live.tidyFrame()?.width === 24 && live.tidyHeading('Tidy UI') && live.tidyRows().some(row => row.startsWith('→ Code color')), 'narrow popup redraw');
       assert.ok(checkLayout('Tidy UI')[1].endsWith('…'), 'the real narrow description ellipsizes its second row');
+      const narrowColumn = checkRootColumns(true);
+      for (const label of ['Match terminal colors to Pi', 'Status & troubleshooting', 'Close', 'Code color theme']) {
+        await live.selectTidyItem(label, false); checkRootColumns(true, narrowColumn);
+      }
       await live.selectTidyItem('Status & troubleshooting'); await live.selectTidyItem('Display cache');
       assert.ok(live.tidyRows().some(row => /Esc Back.*PgUp\/PgDn/u.test(row)), 'real 24-column detail navigation retains Back and paging keys');
       live.captureScreen('settings-narrow-details', {});

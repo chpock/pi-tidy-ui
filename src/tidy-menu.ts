@@ -25,7 +25,20 @@ export interface TidyMenuOwner {
   cacheDetails(): string[];
 }
 type Page = 'root' | 'themes' | 'support' | 'service' | 'logs' | 'cache';
-interface Item extends SelectItem { valueText?: string; help: string }
+interface Item extends SelectItem { valueText?: string; submenu?: boolean; help: string }
+const columnGap = 2;
+function itemColumns(items: Item[], width = Infinity) {
+  let label = 0, value = 0;
+  for (const item of items) { label = Math.max(label, visibleWidth(item.label)); value = Math.max(value, visibleWidth(item.valueText ?? '')); }
+  const available = Math.max(1, width - 2);
+  const arrow = items.some(item => item.submenu) && available >= 4 ? columnGap + 1 : 0;
+  if (value && available - arrow >= columnGap + 2) {
+    // Preserve On/Off before allocating extra space to longer values in narrow terminals.
+    label = Math.min(label, Math.max(1, available - arrow - columnGap - Math.min(value, 3)));
+    value = Math.min(value, Math.max(0, available - arrow - columnGap - label));
+  } else { label = Math.min(label, Math.max(1, available - arrow)); value = 0; }
+  return { label, value, arrow };
+}
 const title: Record<Page, string> = { root: 'Tidy UI', themes: 'Code color theme', support: 'Status & troubleshooting',
   service: 'Highlighting service details', logs: 'Diagnostic logs', cache: 'Display cache' };
 const onOff = (value: boolean) => value ? 'On' : 'Off';
@@ -157,19 +170,19 @@ export class TidyMenu implements Component {
   preferredWidth(): number {
     if (this.closed) return 1;
     const items = this.pageItems(this.owner.snapshot(), false);
-    let content = Math.max(visibleWidth(title[this.page]), visibleWidth(this.navigation()));
-    for (const item of items) content = Math.max(content, 2 + visibleWidth(item.label) + (item.valueText ? 1 + visibleWidth(item.valueText) : 0));
-    return Math.min(72, content + 2);
+    const columns = itemColumns(items);
+    const content = 2 + columns.label + (columns.value ? columnGap + columns.value : 0) + columns.arrow;
+    return Math.min(72, Math.max(content, visibleWidth(title[this.page]), visibleWidth(this.navigation())) + 2);
   }
   private pageItems(state: TidyMenuSnapshot, filtered = true): Item[] {
     const back: Item = { value: 'back', label: 'Back', help: 'Return to the previous page.' };
-    const item = (value: string, label: string, help: string, valueText?: string): Item => ({ value, label, help, valueText });
+    const item = (value: string, label: string, help: string, valueText?: string, submenu = false): Item => ({ value, label, help, valueText, submenu });
     switch (this.page) {
       case 'root': return [
         item('appearance', 'Tidy UI appearance', 'Style cards, messages, input and footer. Diagnostic logs are independent.', onOff(state.appearanceEnabled)),
-        item('themes', 'Code color theme', 'Colors for Bash commands and file previews; does not change Pi’s overall theme.', `${selectedLabel(state)} ›`),
+        item('themes', 'Code color theme', 'Colors for Bash commands and file previews; does not change Pi’s overall theme.', selectedLabel(state), true),
         item('colors', 'Match terminal colors to Pi', 'Match terminal background and default text to Pi’s theme. Automatic themes remain controlled by Pi.', onOff(state.terminalColorsEnabled)),
-        item('support', 'Status & troubleshooting', 'Check what is active, resolve display problems, or collect diagnostics.', '›'),
+        item('support', 'Status & troubleshooting', 'Check what is active, resolve display problems, or collect diagnostics.', undefined, true),
         item('close', 'Close', 'Close this panel without changing anything.'),
       ];
       case 'themes': {
@@ -188,9 +201,9 @@ export class TidyMenu implements Component {
         item('reapplyAppearance', 'Reapply Tidy UI appearance', 'Retry styling without switching it off first. Does not change your saved preference.'),
         item('reapplyColors', 'Reapply terminal colors', 'Retry the current color preference. Does not turn synchronization on if it is off.'),
         item('native', 'Use Occipital highlighting', 'Native code colors. Off keeps Pi fallback for files and one color for Bash commands.', onOff(state.nativeHighlightingEnabled)),
-        item('service', 'Highlighting service details', 'Versions, connection, selected and effective code colors.', '›'),
-        item('logs', 'Diagnostic logs', 'Capture, paths, errors, and a snapshot of the current state.', '›'),
-        item('cache', 'Display cache', 'Statistics and cleanup of saved display layouts, not conversation or syntax data.', '›'),
+        item('service', 'Highlighting service details', 'Versions, connection, selected and effective code colors.', undefined, true),
+        item('logs', 'Diagnostic logs', 'Capture, paths, errors, and a snapshot of the current state.', undefined, true),
+        item('cache', 'Display cache', 'Statistics and cleanup of saved display layouts, not conversation or syntax data.', undefined, true),
         item('refresh-status', 'Refresh status', 'Read current state only; never starts a service or highlights code.'), back,
       ];
       case 'logs': return [item('logging', 'Record diagnostic logs', 'Capture extension diagnostics independently of appearance.', onOff(state.loggingEnabled)),
@@ -270,15 +283,12 @@ export class TidyMenu implements Component {
     const groupRoom = this.page === 'support' && available - summary.length >= 8 ? 3 : 0;
     const listRoom = Math.max(1, available - summary.length - groupRoom);
     const maxVisible = Math.max(1, listRoom - 1);
+    const columns = itemColumns(this.pageItems(state, false), innerWidth);
     const formatted = this.items.map(item => {
-      const value = item.valueText ?? '';
-      const labelMinimum = Math.min(visibleWidth(item.label), Math.max(1, innerWidth - 8));
-      const valueWidth = Math.min(visibleWidth(value), Math.max(0, innerWidth - labelMinimum - 3));
-      const labelWidth = Math.max(1, innerWidth - 2 - (valueWidth ? valueWidth + 1 : 0));
-      const label = truncateToWidth(item.label, labelWidth, '…');
-      const valueText = value.endsWith(' ›') && valueWidth >= 2
-        ? truncateToWidth(value.slice(0, -2), valueWidth - 2, '…') + ' ›' : truncateToWidth(value, valueWidth, '…');
-      return { value: item.value, label: label + (valueWidth ? ' '.repeat(Math.max(1, labelWidth - visibleWidth(label) + 1)) + valueText : '') };
+      let label = truncateToWidth(item.label, columns.label, '…');
+      if (columns.value) label += ' '.repeat(columns.label - visibleWidth(label) + columnGap) + truncateToWidth(item.valueText ?? '', columns.value, '…');
+      if (item.submenu && columns.arrow) label += ' '.repeat(innerWidth - 2 - visibleWidth(label) - 1) + '›';
+      return { value: item.value, label };
     });
     const key = JSON.stringify([this.page, innerWidth, maxVisible, formatted]);
     if (!this.list || this.listKey !== key) {

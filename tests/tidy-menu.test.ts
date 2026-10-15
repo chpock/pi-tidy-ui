@@ -369,7 +369,8 @@ test('preferred width fits root labels, values and navigation without stretching
   for (const label of ['Tidy UI appearance', 'Code color theme', 'Match terminal colors to Pi', 'Status & troubleshooting', 'Close'])
     assert.ok(rows.some(row => row.includes(label)), `complete label: ${label}`);
   assert.match(rows.join('\n'), /↑↓ Navigate · Enter Select · Esc Close/u);
-  assert.ok(helpRows(rows)[1]!.endsWith('…'), 'the long description stays inside its two rows');
+  assert.equal(helpRows(rows).length, 2, 'description space is fixed even when the text now fits in full');
+  assert.ok(rows.every(row => visibleWidth(row) <= width));
   for (let i = 0; i < 15; i++) {
     await f.key('\x1b[B');
     assert.equal(f.menu.preferredWidth(), width, 'selection and its description do not resize the page');
@@ -431,4 +432,90 @@ test('narrow detail pages keep Back and paging discoverable inside the actual fr
   assert.match(f.render().at(-2)!, /Esc Back.*PgUp\/PgDn/u);
   assert.equal(helpRows(f.render()).length, 2);
   assert.ok(f.render().every(row => visibleWidth(row) <= 24));
+});
+
+const rootLabels = ['Tidy UI appearance', 'Code color theme', 'Match terminal colors to Pi', 'Status & troubleshooting', 'Close'];
+const cellOf = (row: string, text: string) => {
+  const index = row.indexOf(text); assert.ok(index >= 0, `missing ${JSON.stringify(text)} in ${JSON.stringify(row)}`);
+  return visibleWidth(row.slice(0, index));
+};
+function rootRows(f: ReturnType<typeof fixture>, width = f.menu.preferredWidth()) {
+  const rows = f.menu.render(width).map(plain);
+  return ['Tidy', 'Code color', 'Match', 'Status', 'Close'].map(label => {
+    const row = rows.find(row => /^│[→ ] /u.test(row) && row.slice(3).startsWith(label));
+    assert.ok(row, `missing root item ${label}: ${rows.join('\n')}`); return row;
+  });
+}
+
+test('root reserves common left-aligned value and separate rightmost submenu columns', async () => {
+  const f = fixture(); f.state.appearanceEnabled = false;
+  const width = f.menu.preferredWidth(), rows = rootRows(f);
+  const valueColumn = cellOf(rows[0]!, 'Off');
+  assert.equal(cellOf(rows[1]!, 'Follow Pi'), valueColumn, 'long and short values start in one column');
+  assert.equal(cellOf(rows[2]!, 'On'), valueColumn);
+  for (let i = 0; i < rootLabels.length; i++) {
+    assert.ok(rows[i]!.includes(rootLabels[i]!), 'preferred width fits every label in full');
+    assert.ok(cellOf(rows[i]!, rootLabels[i]!) + visibleWidth(rootLabels[i]!) + 2 <= valueColumn,
+      'no label enters the value column, including labels on rows with no value');
+  }
+  const arrow = cellOf(rows[1]!, '›');
+  assert.equal(arrow, width - 2); assert.equal(cellOf(rows[3]!, '›'), arrow);
+  assert.ok(valueColumn + visibleWidth('Follow Pi') + 2 <= arrow, 'submenu indicator is not part of the value');
+  for (let i = 0; i < 10; i++) { await f.key('\x1b[B'); assert.equal(f.menu.preferredWidth(), width); }
+  assert.equal(f.calls.length, 0); assert.equal(f.prepared, 0);
+});
+
+for (const width of [24, 30, 40, 45, 72]) test(`shared root columns stay disjoint when clamped to ${width} columns`, () => {
+  const f = fixture(); f.state.appearanceEnabled = false;
+  const rows = rootRows(f, width), valueColumn = cellOf(rows[0]!, 'Off');
+  assert.equal(cellOf(rows[2]!, 'On'), valueColumn);
+  const themeValue = rows[1]!.slice(rows[1]!.indexOf('Code color')).split(/ {2,}/u)[1]!;
+  assert.ok(themeValue); assert.equal(cellOf(rows[1]!, themeValue), valueColumn);
+  for (const row of rows) {
+    const label = row.slice(3).split(/ {2,}/u)[0]!.replace(/\s+│$/u, '').trimEnd();
+    assert.ok(3 + visibleWidth(label) + 2 <= valueColumn, `label stays outside values: ${row}`);
+    assert.ok(visibleWidth(row) <= width);
+  }
+  assert.equal(cellOf(rows[1]!, '›'), width - 2); assert.equal(cellOf(rows[3]!, '›'), width - 2);
+});
+
+test('support actions share the toggle label column and a distinct submenu indicator column', async () => {
+  const f = fixture(); await f.select('Status & troubleshooting');
+  const width = f.menu.preferredWidth(), rows = f.menu.render(width).map(plain);
+  const labels = ['Reapply Tidy UI appearance', 'Reapply terminal colors', 'Use Occipital highlighting', 'Highlighting service details',
+    'Diagnostic logs', 'Display cache', 'Refresh status', 'Back'];
+  const nativeRow = rows.find(row => row.includes('Use Occipital highlighting'))!;
+  const valueColumn = cellOf(nativeRow, 'On');
+  for (const label of labels) {
+    const row = rows.find(row => /^│[→ ] /u.test(row) && row.includes(label)); assert.ok(row);
+    assert.ok(cellOf(row, label) + visibleWidth(label) + 2 <= valueColumn);
+    if (row.includes('›')) assert.equal(cellOf(row, '›'), width - 2);
+  }
+});
+
+test('theme marker never intrudes on catalogue labels and stays aligned when the longest label is filtered out', async () => {
+  const f = fixture(), profiles = native(f);
+  profiles[48]!.label = 'A long complete catalogue label without a marker';
+  f.state.selected = { kind: 'occipital', id: profiles[0]!.id };
+  await f.select('Code color theme');
+  const width = f.menu.preferredWidth();
+  const selectedRow = () => f.menu.render(width).map(plain).find(row => /^│[→ ] /u.test(row) && row.includes('Theme 00'))!;
+  const column = cellOf(selectedRow(), 'Selected');
+  assert.ok(3 + visibleWidth(profiles[48]!.label) + 2 <= column, 'offscreen long labels cannot enter the marker column');
+  await f.key('opaque-0');
+  assert.equal(f.menu.preferredWidth(), width); assert.equal(cellOf(selectedRow(), 'Selected'), column);
+  assert.equal(f.calls.length, 0);
+});
+
+test('Unicode and literal arrows inside theme values do not become layout separators', () => {
+  const f = fixture(), profiles = native(f, 1);
+  profiles[0]!.label = '界e\u0301 › value'; f.state.selected = { kind: 'occipital', id: profiles[0]!.id };
+  const rows = rootRows(f), valueColumn = cellOf(rows[0]!, 'On');
+  assert.equal(cellOf(rows[1]!, profiles[0]!.label), valueColumn);
+  assert.equal(visibleWidth(rows[1]!.slice(0, rows[1]!.lastIndexOf('›'))), f.menu.preferredWidth() - 2);
+  profiles[0]!.label = '界'.repeat(100);
+  assert.equal(f.menu.preferredWidth(), 72);
+  const capped = rootRows(f);
+  assert.equal(cellOf(capped[1]!, '界'), cellOf(capped[0]!, 'On'));
+  assert.ok(capped[1]!.includes('…')); assert.ok(capped.every(row => visibleWidth(row) === 72));
 });

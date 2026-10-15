@@ -4,6 +4,8 @@
 
 Bare `/tidy-ui` opens one centered popup in Pi terminal mode. Each page fits its header, full item labels and values, selection gutter and basic navigation, using terminal-column widths. The preferred width is capped at 72 columns and Pi clamps it to the available terminal width; 72 is not a fixed window size. Descriptions, diagnostic details and error text wrap within that width rather than widening the popup. Theme sizing considers the full available catalogue, not just visible or filtered choices. Page/content changes can resize the same overlay; arrow movement, help changes, detail scrolling and search do not. Resizing the terminal preserves the preferred width when space permits and recenters the actual overlay, including its mouse bounds. Paged detail views use a compact navigation line when needed to retain the paging and back keys.
 
+Menu items share a label column and a left-aligned value column, separated by two spaces. Submenu arrows occupy their own rightmost column, not the value text. Preferred width combines the widest label and the widest value across the full page, plus these gutters and indicators; it is not the longest individual row. Filtering and scrolling do not recompute column positions from a visible subset. Under the width ceiling or a narrow terminal, labels and values are ellipsized against shared boundaries rather than intruding on each other's columns. On/Off remains complete when enough room exists for a label, value and gutters; extremely small layouts keep compact keyboard access without promising every field fits.
+
 Command arguments are no longer supported: they report usage and perform no action. Print/JSON/RPC modes do not open a menu.
 
 The first page contains:
