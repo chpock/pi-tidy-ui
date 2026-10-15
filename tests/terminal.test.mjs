@@ -48,6 +48,14 @@ async function until(check, label, timeout = 12000) {
   throw new Error(`Timed out: ${label}; artifacts: ${artifacts}`);
 }
 
+function observeRenderFrames(term, state) {
+  state.rendering = false; state.completedRenders = 0;
+  for (const [final, rendering] of [['h', true], ['l', false]]) term.parser.registerCsiHandler({ prefix: '?', final }, params => {
+    if (params.includes(2026)) { state.rendering = rendering; if (!rendering) state.completedRenders++; }
+    return false;
+  });
+}
+
 export class PiTerminal {
   // The integration-profile helper may supply additional isolated settings, environment and explicit extensions.
   constructor(name, { tidyUi = false, mode = 'fullscreen', session, flags = [],
@@ -102,6 +110,7 @@ export class PiTerminal {
       enableAnalytics: false, enableInstallTelemetry: false,
     }));
     this.term = new Terminal({ cols: 100, rows: 80, scrollback: 3000, allowProposedApi: true });
+    observeRenderFrames(this.term, this);
     this.raw = [];
     this.pointerInputs = [];
     this.queue = Promise.resolve();
@@ -219,6 +228,12 @@ export class PiTerminal {
       ? sliceByColumn(row, frame.left + 1, frame.width - 2).trimEnd() : '');
   }
   tidyHeading(title) { return this.tidyRows().some(row => row === title || row.length >= 4 && row.endsWith('…') && title.startsWith(row.slice(0, -1))); }
+  async completeTidyRows() {
+    return until(async () => {
+      await this.queue;
+      return !this.rendering && this.tidyRows();
+    }, 'complete synchronized popup frame');
+  }
   async openTidyMenu() {
     this.send('/tidy-ui\r');
     await until(async () => { await this.refreshTidyBounds(); return this.tidyHeading('Tidy UI') || this.tidyRows().some(row => row.startsWith('→ Code color theme')); }, 'public Tidy UI popup');
@@ -327,24 +342,30 @@ export class PiTerminal {
         await until(() => this.tidyRows().some(row => row.startsWith('Saved layouts: 0;')), 'zero-layout clear receipt in public popup');
       }
       if (clear && refreshAfterClear) await this.selectTidyItem('Refresh statistics');
-      let combined = [], previous = [];
+      let combined = [], previous = []; const observations = [];
       // The frozen snapshot is finite; stop at its marker or fail on a stalled viewport.
       for (;;) {
-        const rows = this.tidyRows(), start = rows.indexOf('Display cache') + 2;
+        const rows = await this.completeTidyRows(), start = rows.indexOf('Display cache') + 2;
         const end = rows.findIndex(row => /^(?:→ |  )(?:Refresh statistics|Clear saved layouts|Back)/u.test(row));
         assert.ok(start > 0 && end > start, `public cache detail region is visible: ${JSON.stringify(rows)}`);
         const current = rows.slice(start, end);
         let overlap = Math.min(previous.length, current.length);
         while (overlap && JSON.stringify(previous.slice(-overlap)) !== JSON.stringify(current.slice(0, overlap))) overlap--;
         combined.push(...current.slice(overlap)); previous = current;
+        observations.push({ current, overlap, rendering: this.rendering, completedRenders: this.completedRenders, chunks: this.raw?.length });
         const begin = combined.indexOf('Diagnostic JSON:'), finish = combined.indexOf('End diagnostic JSON');
         if (begin >= 0 && finish > begin) {
-          const result = JSON.parse(combined.slice(begin + 1, finish).join(''));
+          let result;
+          try { result = JSON.parse(combined.slice(begin + 1, finish).join('')); }
+          catch (error) {
+            writeFileSync(join(this.output, 'cache-json-parse-failure.json'), JSON.stringify({ combined, observations }, null, 2));
+            this.captureScreen('cache-json-parse-failure', {}); throw error;
+          }
           if (clear) this.captureScreen('tidy-cache-cleared', { cacheSnapshot: result });
           beforeClose?.(result); return result;
         }
         this.send('\x1b[6~');
-        await until(() => JSON.stringify(this.tidyRows().slice(start, end)) !== JSON.stringify(current), 'scroll public cache details');
+        await until(async () => JSON.stringify((await this.completeTidyRows()).slice(start, end)) !== JSON.stringify(current), 'scroll public cache details');
       }
     } finally { await this.closeTidyMenu(); }
   }
@@ -2848,7 +2869,10 @@ test('real CLI: component-owned layout work counters and released retained memor
       await live.appearance(false); const offAgain = await live.capture('pointer-cache-off-again');
       assert.deepEqual(offAgain.tools.map((tool) => tool.lines), nativeRows, 'same live native bodies are restored byte-for-byte');
       // Compare reconstructed native bodies with reconstructed native control; neither has unpersisted live durations.
-      await live.command('/reload'); await live.appearance(false);
+      const beforeReload = live.events().filter(event => event.type === 'start').length;
+      await live.command('/reload'); await live.event('start', beforeReload + 1);
+      await until(() => live.screen().some(row => row.includes('Reloaded keybindings, extensions,')), 'cache test native reload completion');
+      await live.appearance(false);
       const reloadedNative = await live.capture('pointer-cache-reloaded-native');
       assert.deepEqual(reloadedNative.tools.map((tool) => tool.lines), control.tools.map((tool) => tool.lines),
         'native history after reload matches same-session stock replay byte-for-byte without normalization');
@@ -5878,4 +5902,37 @@ test('CLI cache JSON reader follows more than 100 public detail pages without tr
   assert.deepEqual(await terminal.cacheSnapshot(), expected);
   assert.ok(offset > 100); assert.equal(closed, 1);
   assert.deepEqual(selected, ['Status & troubleshooting', 'Display cache']);
+});
+
+test('CLI cache JSON reader waits for synchronized render completion instead of parsing a half-painted viewport', async () => {
+  const terminal = Object.create(PiTerminal.prototype);
+  terminal.term = new Terminal({ cols: 39, rows: 12, allowProposedApi: true });
+  observeRenderFrames(terminal.term, terminal);
+  terminal.queue = Promise.resolve();
+  const write = text => terminal.queue = new Promise(done => terminal.term.write(text, done));
+  const body = text => '│' + text.padEnd(37) + '│';
+  const rows = ['╭' + '─'.repeat(37) + '╮', body('Display cache'), '├' + '─'.repeat(37) + '┤',
+    body('Diagnostic JSON:'), body('{"answer":1}{"stale":2}'), body('End diagnostic JSON'), body('→ Refresh statistics'),
+    body(''), body('Read current cache counters.'), '├' + '─'.repeat(37) + '┤', body('Esc Back · PgUp/PgDn'), '╰' + '─'.repeat(37) + '╯'];
+  terminal.openTidyMenu = terminal.selectTidyItem = terminal.closeTidyMenu = async () => {};
+  let unsafeReads = 0, closed = 0, outcome;
+  terminal.closeTidyMenu = async () => { closed++; };
+  terminal.captureScreen = () => {};
+  terminal.tidyRows = () => { if (terminal.rendering) unsafeReads++; return PiTerminal.prototype.tidyRows.call(terminal); };
+  await write('\x1b[?2026h\x1b[H' + rows.join('\r\n'));
+  assert.equal(terminal.rendering, true, 'the actual emulator has parsed Begin Synchronized Output but not End');
+  const pending = terminal.cacheSnapshot().then(value => { outcome = { value }; }, error => { outcome = { error }; });
+  try {
+    await new Promise(setImmediate);
+    assert.equal(unsafeReads, 0, 'a syntactically invalid intermediate viewport must not be consumed as JSON');
+    assert.equal(outcome, undefined, 'the reader remains pending rather than accepting or rejecting partial output');
+    await write('\x1b[5;2H' + '{"answer":1}'.padEnd(37) + '\x1b[?2026l');
+    await pending;
+    if (outcome.error) throw outcome.error;
+    assert.deepEqual(outcome.value, { answer: 1 });
+    assert.equal(unsafeReads, 0); assert.equal(terminal.completedRenders, 1); assert.equal(closed, 1);
+  } finally {
+    if (terminal.rendering) await write('\x1b[?2026l');
+    await pending; terminal.term.dispose();
+  }
 });
