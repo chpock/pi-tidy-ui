@@ -8,7 +8,7 @@ import test from 'node:test';
 const run = promisify(execFile);
 
 test('shared optional-import fixture owns its transport across real SDK load and GC', { skip: !global.gc }, async () => {
-  const preload = fileURLToPath(new URL('./fixtures/shared-import-gc.ts', import.meta.url));
+  const preload = new URL('./fixtures/shared-import-gc.ts', import.meta.url).href;
   const target = fileURLToPath(new URL('./occipital-shared.test.ts', import.meta.url));
   const env = { ...process.env };
   delete env.NODE_TEST_CONTEXT;

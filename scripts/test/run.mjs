@@ -2,6 +2,7 @@ import { execFileSync, spawn } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
 import { childEnv, digest, readInputs, toolPath, validateHost, validateNative } from './context.mjs';
 import { snapshotIdentity, sourceIdentity, validateNeutralRunRoot } from './prepare.mjs';
@@ -99,7 +100,7 @@ export async function execute({ inputs: path, suite = 'unit', files, pattern, sk
     if (suite === 'terminal' && !inputs.integration) throw new Error('terminal requires the prepared locked integration profile');
     if (suite === 'rust-harness' && !inputs.rust) throw new Error('rust-harness requires the prepared pinned Rust toolchain');
     let command = inputs.node.path;
-    let args = ['--import', join(inputs.pi.root, 'scripts/test/bootstrap.mjs')];
+    let args = ['--import', pathToFileURL(join(inputs.pi.root, 'scripts/test/bootstrap.mjs')).href];
     if (suite === 'check') args.push(join(inputs.pi.root, 'node_modules/typescript/bin/tsc'), '--noEmit');
     else if (['rust', 'rust-check', 'rust-allocator'].includes(suite)) {
       if (!inputs.rust) throw new Error('Rust execution requires prepared pinned toolchain and offline dependency home');

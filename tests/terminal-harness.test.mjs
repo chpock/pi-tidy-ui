@@ -4,7 +4,7 @@ import { spawnSync } from 'node:child_process';
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import test from 'node:test';
 import { readInputs, childEnv } from '../scripts/test/context.mjs';
 import { PiTerminal, assertFits } from './fixtures/terminal-harness.mjs';
@@ -46,7 +46,7 @@ test('syntax terminal missing native input fails instead of silently skipping', 
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const path = join(root, 'inputs.json');
   writeFileSync(path, JSON.stringify({ ...inputs, native: undefined }));
-  const result = spawnSync(inputs.node.path, ['--expose-gc', '--import', join(inputs.pi.root, 'scripts/test/bootstrap.mjs'), '--test', fileURLToPath(new URL('./syntax-terminal.test.mjs', import.meta.url))],
+  const result = spawnSync(inputs.node.path, ['--expose-gc', '--import', pathToFileURL(join(inputs.pi.root, 'scripts/test/bootstrap.mjs')).href, '--test', fileURLToPath(new URL('./syntax-terminal.test.mjs', import.meta.url))],
     { cwd: inputs.pi.root, env: childEnv(root, { TIDY_TEST_INPUTS: path, TIDY_TEST_CONTEXT_READY: '1' }), encoding: 'utf8', timeout: 15000 });
   assert.notEqual(result.status, 0);
   assert.match(result.stdout + result.stderr, /Missing required same-source Occipital build/);

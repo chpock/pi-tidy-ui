@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto';
 import { access, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import test from 'node:test';
 import { startLocalRegistry } from './fixtures/local-registry.mjs';
 
@@ -87,7 +88,7 @@ test('actual npm installs prepared closure with optional present/absent using on
   const poisonBytes = `cache=${poisonCache}\nregistry=http://127.0.0.1:9\n`;
   await writeFile(poisonConfig, poisonBytes);
   await writeFile(poisonStartup, 'throw new Error("ambient Node startup must not execute");');
-  const pollution = { npm_config_cache: poisonCache, npm_config_userconfig: poisonConfig, NODE_OPTIONS: `--import=${poisonStartup}` };
+  const pollution = { npm_config_cache: poisonCache, npm_config_userconfig: poisonConfig, NODE_OPTIONS: `--import=${pathToFileURL(poisonStartup).href}` };
   const original = Object.fromEntries(Object.keys(pollution).map(key => [key, process.env[key]]));
   Object.assign(process.env, pollution);
   t.after(() => { for (const [key, value] of Object.entries(original)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; } });

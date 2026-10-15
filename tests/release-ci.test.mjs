@@ -6,6 +6,7 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { mkdtemp, mkdir, readFile, rm, writeFile, cp, readdir, chmod, lstat, readlink, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { childEnv, readInputs, toolPath } from '../scripts/test/context.mjs';
 import { selectSuite } from '../scripts/test/run.mjs';
 import { releaseRef, stampVersion } from '../scripts/release/version.mjs';
@@ -613,7 +614,7 @@ test('actual CI setup store admission preserves declared Cargo paths and refuses
   const workflow = await readFile(join(repo,'.github/workflows/occipital.yml'),'utf8');
   const declaration = shellStep(workflowStep(workflow,'Declare pinned compiler and hosted setup Cargo artifact store'));
   const fetch = shellStep(workflowStep(workflow,'Fetch locked native dependencies with owned config'));
-  const base = childEnv(join(root,'caller'),{HOME:profile,USERPROFILE:profile,RUNNER_TEMP:temp,GITHUB_ENV:receipt,GITHUB_ACTIONS:'true',RUNNER_ENVIRONMENT:'github-hosted',CARGO_HOME:store,PATH:join(rust,'bin') + ':' + inputs.tools.bin,NODE_OPTIONS:`--import=${monitor}`,RUSTUP_TOOLCHAIN:'ambient-toolchain-poison'},inputs);
+  const base = childEnv(join(root,'caller'),{HOME:profile,USERPROFILE:profile,RUNNER_TEMP:temp,GITHUB_ENV:receipt,GITHUB_ACTIONS:'true',RUNNER_ENVIRONMENT:'github-hosted',CARGO_HOME:store,PATH:join(rust,'bin') + ':' + inputs.tools.bin,NODE_OPTIONS:`--import=${pathToFileURL(monitor).href}`,RUSTUP_TOOLCHAIN:'ambient-toolchain-poison'},inputs);
   const run = async (extra = {}) => {
     await rm(log,{force:true}); await writeFile(receipt,'');
     return spawnSync(toolPath('bash'),['-e','-o','pipefail','-c',declaration],{cwd:repo,env:{...base,...extra},encoding:'utf8',timeout:10000});
@@ -726,7 +727,7 @@ syncBuiltinESMExports();
   const script = shellStep(workflowStep(workflow, 'Prepare explicit build-only MSVC context'));
   for (const [RUST_TARGET, cpu] of [['x86_64-pc-windows-msvc', 'x64'], ['aarch64-pc-windows-msvc', 'x64_arm64']]) {
     execFileSync(toolPath('bash'), ['-e', '-o', 'pipefail', '-c', script], {
-      cwd: repo, env: childEnv(join(root, 'caller'), { RUNNER_TEMP: root, RUST_ROOT: join(root, 'rust'), RUST_TARGET, NODE_OPTIONS: `--import=${hook}` }, inputs), stdio: 'pipe',
+      cwd: repo, env: childEnv(join(root, 'caller'), { RUNNER_TEMP: root, RUST_ROOT: join(root, 'rust'), RUST_TARGET, NODE_OPTIONS: `--import=${pathToFileURL(hook).href}` }, inputs), stdio: 'pipe',
     });
     const calls = JSON.parse(await readFile(log, 'utf8'));
     assert.equal(calls.length, 2);

@@ -184,7 +184,7 @@ function repository(t, files) {
   return { root, checkout, env, tools: parent.tools };
 }
 
-function admissionFixture(t, probe = 'import {test} from "node:test"; test("intentional assertion", () => { throw new Error("intentional product assertion"); });') {
+function admissionFixture(t, probe = 'import {test} from "node:test"; test("intentional assertion", () => { throw new Error("intentional product assertion"); });', runtimeName = 'runtime') {
   const value = repository(t, {
     '.gitignore': 'node_modules/\n', 'package.json': '{"type":"module"}', 'package-lock.json': '{}',
     'scripts/test/bootstrap.mjs': readFileSync(new URL('../scripts/test/bootstrap.mjs', import.meta.url)),
@@ -192,7 +192,7 @@ function admissionFixture(t, probe = 'import {test} from "node:test"; test("inte
     'tests/probe.test.mjs': probe,
   });
   const { root, checkout, tools, env } = value, original = readInputs();
-  const source = sourceIdentity(checkout, tools, env), runRoot = join(root, 'runtime'), tree = join(runRoot, 'project');
+  const source = sourceIdentity(checkout, tools, env), runRoot = join(root, runtimeName), tree = join(runRoot, 'project');
   materializeSource(checkout, tree, source.files);
   const coding = join(tree, 'node_modules/@earendil-works/pi-coding-agent'), tui = join(tree, 'node_modules/@earendil-works/pi-tui');
   for (const directory of [coding, tui]) mkdirSync(directory, { recursive: true });
@@ -227,6 +227,14 @@ test('repeated materialization removes tracked deletions and removed untracked n
   assert.equal(existsSync(join(tree, 'tests/deleted.test.mjs')), false);
   assert.equal(existsSync(join(tree, 'crates/occipital/build.rs')), false);
   assert.equal(existsSync(join(native, 'crates/occipital/build.rs')), false);
+});
+
+test('bootstrap loads the owned project from paths containing URL-reserved characters', async t => {
+  const f = admissionFixture(t, 'import {test} from "node:test"; import {writeFileSync} from "node:fs"; test("owned project loaded", () => { writeFileSync("probe-counter", "hit"); });', 'runtime # 100% bootstrap');
+  const report = await f.execute();
+  assert.equal(report.status, 'passed'); assert.equal(report.counts.pass, 1);
+  assert.equal(readFileSync(join(f.inputs.pi.root, 'probe-counter'), 'utf8'), 'hit');
+  assert.equal(existsSync(report.runDirectory), false);
 });
 
 test('host admission failure still writes an explicit safe setup report', async t => {
