@@ -151,7 +151,17 @@ export class TidyMenu implements Component {
     if (['refreshThemes', 'reapplyAppearance', 'reapplyColors', 'clearCache', 'retryLogging', 'snapshotLogs'].includes(value))
       void this.perform({ kind: value as Exclude<TidyMenuAction, { key: unknown } | { choice: unknown }>['kind'] });
   }
-  private pageItems(state: TidyMenuSnapshot): Item[] {
+  private navigation(): string {
+    return this.page === 'root' ? '↑↓ Navigate · Enter Select · Esc Close' : '↑↓ Navigate · Enter Select · Esc Back';
+  }
+  preferredWidth(): number {
+    if (this.closed) return 1;
+    const items = this.pageItems(this.owner.snapshot(), false);
+    let content = Math.max(visibleWidth(title[this.page]), visibleWidth(this.navigation()));
+    for (const item of items) content = Math.max(content, 2 + visibleWidth(item.label) + (item.valueText ? 1 + visibleWidth(item.valueText) : 0));
+    return Math.min(72, content + 2);
+  }
+  private pageItems(state: TidyMenuSnapshot, filtered = true): Item[] {
     const back: Item = { value: 'back', label: 'Back', help: 'Return to the previous page.' };
     const item = (value: string, label: string, help: string, valueText?: string): Item => ({ value, label, help, valueText });
     switch (this.page) {
@@ -164,7 +174,7 @@ export class TidyMenu implements Component {
       ];
       case 'themes': {
         if (this.themeLoading || this.themeLoadFailed) return [back];
-        const query = this.search.getValue().toLocaleLowerCase();
+        const query = filtered ? this.search.getValue().toLocaleLowerCase() : '';
         const profiles = themesUnavailable(state) ? [] : state.syntax?.provider.description?.profiles.filter(profile => profile.id !== 'pi') ?? [];
         const labels = profileLabels(profiles);
         const choices = [item('theme:pi', 'Follow Pi theme', 'Use Pi’s code colors.', state.selected.kind === 'pi' ? 'Selected' : undefined),
@@ -308,8 +318,11 @@ export class TidyMenu implements Component {
       body.push('', this.theme.fg('muted', wrapped[0] ?? ''), this.theme.fg('muted', second));
     }
     if (sections) {
-      const navigation = this.page === 'root' ? '↑↓ Navigate · Enter Select · Esc Close' : '↑↓ Navigate · Enter Select · Esc Back';
-      body.push(rule, this.theme.fg('dim', (summaries.length > summaryRoom ? 'PgUp/PgDn details · ' : '') + navigation));
+      const paged = summaries.length > summaryRoom;
+      let navigation = (paged ? 'PgUp/PgDn details · ' : '') + this.navigation();
+      if (paged && visibleWidth(navigation) > innerWidth) navigation = '↑↓ · Enter · Esc Back · PgUp/PgDn';
+      if (paged && visibleWidth(navigation) > innerWidth) navigation = 'Esc Back · PgUp/PgDn';
+      body.push(rule, this.theme.fg('dim', navigation));
     }
     const border = (text: string) => this.theme.fg('border', text);
     if (!framed) return body.slice(0, height).map(row => truncateToWidth(row, width));

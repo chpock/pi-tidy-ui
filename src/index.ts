@@ -1798,7 +1798,7 @@ export default function tidyUi(pi: ExtensionAPI, options: TidyUiRuntimeOptions =
           if (epoch !== lifecycle) { done(); return { render: () => [], invalidate() {} }; }
           const menu = new TidyMenu(menuOwner(ctx, epoch), theme, () => tui.requestRender(), () => done(), () => tui.terminal.rows);
           opened = activeMenu = menu; return menu;
-        }, { overlay: true, overlayOptions: { anchor: 'center', width: 72, maxHeight: '100%', margin: 0 } });
+        }, { overlay: true, overlayOptions: { anchor: 'center', get width() { return opened?.preferredWidth() ?? 1; }, maxHeight: '100%', margin: 0 } });
       } catch { if (epoch === lifecycle) ctx.ui.notify('pi-tidy-ui: Settings menu could not be opened.', 'error'); }
       finally { opened?.dispose(); if (activeMenu === opened) activeMenu = undefined; }
     },

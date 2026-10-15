@@ -1,11 +1,12 @@
 import assert from 'node:assert/strict';
 import { setImmediate as turn } from 'node:timers/promises';
 import { stripVTControlCharacters } from 'node:util';
-import type { Component } from '@earendil-works/pi-tui';
+import type { Component, OverlayOptions } from '@earendil-works/pi-tui';
 import type { ExtensionContext } from '@earendil-works/pi-coding-agent';
 
 export interface MenuDriver {
   text(): string;
+  width(): number;
   key(data: string): Promise<void>;
   input(data: string): void;
   select(label: string): Promise<void>;
@@ -15,12 +16,14 @@ export async function withMenu(handler: (args: string, ctx: ExtensionContext) =>
   drive: (menu: MenuDriver) => Promise<void> = async () => {}): Promise<string> {
   const descriptor = Object.getOwnPropertyDescriptor(ctx.ui, 'custom');
   let component: Component | undefined, finish: (() => void) | undefined;
+  let overlayOptions: OverlayOptions | undefined;
   const theme = { fg: ctx.ui.theme.fg.bind(ctx.ui.theme), bold: ctx.ui.theme.bold?.bind(ctx.ui.theme) ?? ((text: string) => text) };
-  Object.defineProperty(ctx.ui, 'custom', { configurable: true, value: (factory: Function, options: { overlay?: boolean }) => {
+  Object.defineProperty(ctx.ui, 'custom', { configurable: true, value: (factory: Function, options: { overlay?: boolean; overlayOptions?: OverlayOptions | (() => OverlayOptions) }) => {
     assert.equal(options.overlay, true);
     return new Promise<void>(resolve => {
       finish = resolve;
       component = factory({ terminal: { rows: 400 }, requestRender() {} }, theme, {}, resolve);
+      overlayOptions = typeof options.overlayOptions === 'function' ? options.overlayOptions() : options.overlayOptions;
     });
   } });
   const opened = handler('', ctx);
@@ -44,7 +47,10 @@ export async function withMenu(handler: (args: string, ctx: ExtensionContext) =>
   try {
     for (let i = 0; i < 100 && !component; i++) await turn();
     await settle();
-    await drive({ text, key, input(data) { text(); component!.handleInput?.(data); }, async select(label: string) {
+    await drive({ text, key, width() {
+      assert.equal(typeof overlayOptions?.width, 'number');
+      return overlayOptions!.width as number;
+    }, input(data) { text(); component!.handleInput?.(data); }, async select(label: string) {
       for (let i = 0; i < 100; i++) {
         if (text().split('\n').some(row => row.startsWith('→ ') && row.slice(2).startsWith(label))) { await key('\r'); return; }
         await key('\x1b[B');

@@ -360,3 +360,75 @@ test('a one-row failure retains chrome when all sections still fit', async () =>
   assert.equal(helpRows(rows).length, 2);
   assert.ok(rows.length <= 11);
 });
+
+test('preferred width fits root labels, values and navigation without stretching for descriptions', async () => {
+  const f = fixture();
+  const width = f.menu.preferredWidth();
+  assert.ok(width < 50, 'ordinary settings must not occupy the old 72-column panel');
+  const rows = f.menu.render(width).map(plain);
+  for (const label of ['Tidy UI appearance', 'Code color theme', 'Match terminal colors to Pi', 'Status & troubleshooting', 'Close'])
+    assert.ok(rows.some(row => row.includes(label)), `complete label: ${label}`);
+  assert.match(rows.join('\n'), /↑↓ Navigate · Enter Select · Esc Close/u);
+  assert.ok(helpRows(rows)[1]!.endsWith('…'), 'the long description stays inside its two rows');
+  for (let i = 0; i < 15; i++) {
+    await f.key('\x1b[B');
+    assert.equal(f.menu.preferredWidth(), width, 'selection and its description do not resize the page');
+  }
+  f.perform = async () => ({ ok: false, message: 'SAVE_FAILURE '.repeat(100) });
+  await f.select('Match terminal colors to Pi');
+  assert.equal(f.menu.preferredWidth(), width, 'error text wraps instead of widening the page');
+  assert.equal(f.prepared, 0); assert.equal(f.cacheReads, 0);
+});
+
+test('different pages fit their own full catalogue, never just the visible or searched choices', async () => {
+  const f = fixture(); const profiles = native(f);
+  profiles[48]!.label = 'An unusually long but perfectly ordinary native theme';
+  const root = f.menu.preferredWidth();
+  await f.select('Code color theme');
+  const themes = f.menu.preferredWidth();
+  assert.ok(themes > root && themes < 72, 'the long offscreen label determines the picker width');
+  for (let i = 0; i < 20; i++) { await f.key('\x1b[B'); assert.equal(f.menu.preferredWidth(), themes); }
+  await f.key('opaque-37'); assert.equal(f.menu.preferredWidth(), themes, 'filtering does not shrink the picker');
+  assert.ok(f.render().some(row => row.includes('→ Theme 37')));
+  await f.key('\x1b'); assert.equal(f.menu.preferredWidth(), root);
+  await f.select('Status & troubleshooting'); await f.select('Display cache');
+  assert.ok(f.menu.preferredWidth() < themes, 'cache actions need not inherit the picker width');
+  assert.equal(f.calls.length, 0, 'measuring/navigating/filtering has no preference action');
+});
+
+test('preferred width measures terminal columns for Unicode values and caps pathological labels', () => {
+  const f = fixture(); const profiles = native(f, 1);
+  profiles[0]!.label = '界'.repeat(14); f.state.selected = { kind: 'occipital', id: profiles[0]!.id };
+  const width = f.menu.preferredWidth();
+  assert.ok(width >= visibleWidth(`→ Code color theme ${profiles[0]!.label} ›`) + 2);
+  assert.ok(f.menu.render(width).map(plain).some(row => row.includes(profiles[0]!.label)), 'a wide Unicode value is not cut at its JS string length');
+  profiles[0]!.label = '界'.repeat(1000);
+  assert.equal(f.menu.preferredWidth(), 72, '72 is a ceiling, not a fixed or unbounded page width');
+  for (const columns of [1, 6, 24, 40, 100]) {
+    const available = Math.min(columns, f.menu.preferredWidth()), rows = f.menu.render(available);
+    assert.ok(rows.every(row => visibleWidth(row) <= columns));
+  }
+});
+
+test('long diagnostic paths, IDs and detail scrolling do not widen a page or hide paging keys', async () => {
+  const f = fixture();
+  await f.select('Status & troubleshooting'); await f.select('Display cache');
+  const width = f.menu.preferredWidth();
+  f.owner.cacheDetails = () => ['PATH_' + '/long-directory'.repeat(200)];
+  await f.select('Refresh statistics');
+  assert.equal(f.menu.preferredWidth(), width);
+  const rows = f.menu.render(width).map(plain);
+  assert.match(rows.at(-2)!, /↑↓.*Enter.*Esc.*PgUp\/PgDn/u);
+  assert.equal(helpRows(rows).length, 2);
+  await f.key('\x1b[6~'); assert.equal(f.menu.preferredWidth(), width);
+});
+
+test('narrow detail pages keep Back and paging discoverable inside the actual frame', async () => {
+  const f = fixture(24, 12); f.owner.cacheDetails = () => Array.from({ length: 30 }, (_, i) => `Cache detail ${i}`);
+  f.render(); await f.key('\x1b[B'); await f.key('\x1b[B'); await f.key('\r');
+  for (let i = 0; i < 5; i++) await f.key('\x1b[B');
+  await f.key('\r');
+  assert.match(f.render().at(-2)!, /Esc Back.*PgUp\/PgDn/u);
+  assert.equal(helpRows(f.render()).length, 2);
+  assert.ok(f.render().every(row => visibleWidth(row) <= 24));
+});

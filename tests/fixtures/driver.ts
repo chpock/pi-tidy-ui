@@ -1,7 +1,7 @@
 // Offline real-CLI fixture: built-ins stay real unless the isolated bash-shape opt-in is set.
 import { CustomEditor, ToolExecutionComponent, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { createAssistantMessageEventStream, Type, type ToolCall } from "@earendil-works/pi-ai";
-import { Container, Text } from "@earendil-works/pi-tui";
+import { Container, Text, matchesKey, type TUI, type OverlayHandle } from "@earendil-works/pi-tui";
 import { appendFileSync, existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { stripVTControlCharacters } from "node:util";
@@ -22,6 +22,24 @@ function observeNativeRenders(counts: Record<string, number>) {
   ToolExecutionComponent.prototype.render = observed;
 }
 
+// Opt-in geometry probe: use the host rectangle even when the popup has no border.
+function observeMenuGeometry(tui: TUI, record: (event: object) => void): () => void {
+  let handle: OverlayHandle | undefined;
+  const descriptor = Object.getOwnPropertyDescriptor(tui, 'showOverlay'), original = tui.showOverlay;
+  function show(this: TUI, ...args: Parameters<TUI['showOverlay']>) { return handle = original.apply(this, args); }
+  tui.showOverlay = show;
+  const remove = tui.addInputListener(data => {
+    if (!matchesKey(data, 'ctrl+alt+g')) return;
+    record({ type: 'menu_bounds', bounds: handle?.getBounds() ?? null });
+    return { consume: true };
+  });
+  return () => {
+    remove(); handle = undefined;
+    if (tui.showOverlay !== show) return;
+    if (descriptor) Object.defineProperty(tui, 'showOverlay', descriptor); else Reflect.deleteProperty(tui, 'showOverlay');
+  };
+}
+
 export default function terminalDriver(pi: ExtensionAPI) {
   const output = process.env.TIDY_UI_TEST_OUTPUT!;
   let tui: any;
@@ -29,7 +47,8 @@ export default function terminalDriver(pi: ExtensionAPI) {
   const wait = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
   // Observe host geometry only: no draft access, command injection or render request.
   const observeTerminalSize = () => record({ type: "terminal_size", width: process.stdout.columns, height: process.stdout.rows });
-  pi.on("session_shutdown", () => { process.stdout.off("resize", observeTerminalSize); });
+  let stopMenuGeometry: (() => void) | undefined;
+  pi.on("session_shutdown", () => { process.stdout.off("resize", observeTerminalSize); stopMenuGeometry?.(); stopMenuGeometry = undefined; });
   // Opt-in UI-clock observations only: real timers/render requests, no model/session mutation.
   const editPerformance = process.env.TIDY_UI_TEST_EDIT_PERFORMANCE === "1";
   const editDiagnostics = process.env.TIDY_UI_TEST_EDIT_CARDS === "1" || editPerformance;
@@ -580,6 +599,7 @@ export default function terminalDriver(pi: ExtensionAPI) {
     observeTerminalSize();
     ctx.ui.setWidget("terminal-driver", (liveTui) => {
       tui = liveTui;
+      if (process.env.TIDY_UI_TEST_MENU_GEOMETRY === '1') { stopMenuGeometry?.(); stopMenuGeometry = observeMenuGeometry(liveTui, record); }
       if (spinnerDiagnostics) {
         nativeRequest = tui.requestRender;
         tui.requestRender = () => { if (insideSpinnerTick) spinnerStats.requests++; nativeRequest!(); };

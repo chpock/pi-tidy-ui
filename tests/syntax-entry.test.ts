@@ -394,3 +394,19 @@ test('latest confirmed switch wins across popup reopening while older cleanup is
     assert.match(restored.view, /Tidy UI appearance\s+On/);
   } finally { release(); SyntaxRuntime.prototype.dispose = original; await fs.rm(directory, { recursive: true, force: true }); }
 });
+
+test('entry gives the same overlay live per-page sizing without remounts or preference/provider side effects', async () => {
+  const h = fixture(); await h.start(); await settled(); const before = { ...h.counts };
+  let mounts = 0;
+  await withMenu(async args => { mounts++; await h.command(args); }, h.ctx, async menu => {
+    const root = menu.width(); assert.ok(root < 50);
+    for (let i = 0; i < 10; i++) { await menu.key('\x1b[B'); assert.equal(menu.width(), root); }
+    await menu.select('Status & troubleshooting'); const support = menu.width();
+    assert.notEqual(support, root, 'one live options object exposes the new page width');
+    await menu.select('Highlighting service details');
+    assert.ok(menu.width() < 50);
+    await menu.key('\x1b'); assert.equal(menu.width(), support);
+    await menu.key('\x1b'); assert.equal(menu.width(), root);
+  });
+  assert.equal(mounts, 1); assert.deepEqual(h.counts, before);
+});
