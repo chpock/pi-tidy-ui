@@ -1,9 +1,11 @@
 //! Actual executable, framed pipes and native Syntect state.
+mod support;
+
 use occipital::{frame, profile::Profile, reply::REPLY_BYTES, request::REQUEST_BYTES};
 use serde_json::{json, Value};
 use std::{
     io::Write,
-    process::{Child, ChildStdin, Command, Stdio},
+    process::{Child, ChildStdin, Stdio},
     sync::mpsc::{self, Receiver},
     thread::JoinHandle,
     time::Duration,
@@ -13,11 +15,13 @@ struct Helper {
     input: Option<ChildStdin>,
     replies: Receiver<Value>,
     reader: Option<JoinHandle<()>>,
+    _root: support::CaseDir,
 }
 impl Helper {
     fn new() -> Self {
-        let root = std::env::temp_dir().join(format!("occipital-stdio-{}", std::process::id()));
-        let mut child = Command::new(env!("CARGO_BIN_EXE_occipital"))
+        let root = support::CaseDir::new("stdio");
+        let mut child = root
+            .command(env!("CARGO_BIN_EXE_occipital"))
             .args(["--stdio", "--config"])
             .arg(root.join("missing/config.json"))
             .stdin(Stdio::piped())
@@ -38,6 +42,7 @@ impl Helper {
             input,
             replies,
             reader: Some(reader),
+            _root: root,
         }
     }
     fn send(&mut self, value: Value) {

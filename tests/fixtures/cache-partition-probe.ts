@@ -1,4 +1,5 @@
 // Actual SDK mixed transcript: no execution, file edits, model requests or settings changes.
+import './test-guard.mjs';
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";

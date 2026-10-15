@@ -1,8 +1,10 @@
+import './fixtures/test-guard.mjs';
 import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
+import { childEnv, readInputs, validateNative } from '../scripts/test/context.mjs';
 import { StdioTransport } from '../src/occipital/stdio.ts';
 import { decodeDescription, decodeSources, PROTOCOL_VERSION } from '../src/occipital/protocol.ts';
 
@@ -17,12 +19,12 @@ type Reply = {
   error?: { code: string; execution: string };
   body?: { sources?: Source[]; profiles?: Profile[]; category_version?: number; runtime?: { leases: number } };
 };
-const binary = process.env.OCCIPITAL_TEST_BIN;
+const binary = validateNative(readInputs()).path;
 
 async function fixture() {
   const root = await mkdtemp(join(tmpdir(), 'occipital-native-client-'));
   for (const name of ['home', 'config', 'data', 'cache', 'run']) await mkdir(join(root, name));
-  const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^(SUBC_|CK_|CORTEXKIT_|PI_)/i.test(key)));
+  const env = childEnv(root);
   Object.assign(env, { HOME: join(root, 'home'), XDG_CONFIG_HOME: join(root, 'config'), XDG_DATA_HOME: join(root, 'data'), XDG_CACHE_HOME: join(root, 'cache'), XDG_RUNTIME_DIR: join(root, 'run') });
   const transport = new StdioTransport({ command: binary!, args: ['--stdio', '--config', join(root, 'config', 'config.json')], env, cwd: root, requestDeadlineMs: 10_000, terminateGraceMs: 100 });
   let sequence = 0;
@@ -86,7 +88,7 @@ function patched(previous: Source, next: Source): number[] {
 
 // An explicit compiled product binary is required: fixture helpers cannot satisfy
 // these controls. The ordinary JS-only gate does not require a Rust toolchain.
-test('actual owned helper preserves compact UTF8 highlighting and incremental work counters', { skip: !binary }, async () => {
+test('actual owned helper preserves compact UTF8 highlighting and incremental work counters', {}, async () => {
   const f = await fixture();
   try {
     const descriptor = await f.call({ op: 'describe' });
@@ -128,7 +130,7 @@ test('actual owned helper preserves compact UTF8 highlighting and incremental wo
   } finally { await f.close(); }
 });
 
-test('actual owned helper validates whole batches before work and supports independent native profiles', { skip: !binary }, async () => {
+test('actual owned helper validates whole batches before work and supports independent native profiles', {}, async () => {
   const f = await fixture();
   try {
     const descriptor = await f.call({ op: 'describe' });
@@ -159,7 +161,7 @@ test('actual owned helper validates whole batches before work and supports indep
   } finally { await f.close(); }
 });
 
-test('actual current helper commits a no-newline tail on one-shot and empty final append without reparsing it', {skip:!binary},async()=> {
+test('actual current helper commits a no-newline tail on one-shot and empty final append without reparsing it', {},async()=> {
   const f=await fixture();
   try {
     const raw=await f.call({op:'describe'}),descriptor=decodeDescription(raw,raw.ticket);
@@ -179,7 +181,7 @@ test('actual current helper commits a no-newline tail on one-shot and empty fina
   } finally {await f.close();}
 });
 
- test('actual owned helper honors the 64 KiB window, zero-reparse tail growth and native Plain coverage', {skip:!binary},async()=> {
+ test('actual owned helper honors the 64 KiB window, zero-reparse tail growth and native Plain coverage', {},async()=> {
    const f=await fixture();
    try {
      const raw=await f.call({op:'describe'}),descriptor=decodeDescription(raw,raw.ticket);
@@ -224,7 +226,7 @@ test('actual current helper commits a no-newline tail on one-shot and empty fina
    } finally {await f.close();}
  });
 
-test('actual owned helper accepts above-old-ceiling source and keeps saturated growth work at zero', {skip:!binary},async()=> {
+test('actual owned helper accepts above-old-ceiling source and keeps saturated growth work at zero', {},async()=> {
   const f=await fixture();
   try {
     const raw=await f.call({op:'describe'}),descriptor=decodeDescription(raw,raw.ticket);

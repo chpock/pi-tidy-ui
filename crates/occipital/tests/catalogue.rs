@@ -1,22 +1,17 @@
+mod support;
+
 use occipital::catalogue::{
     Catalogue, Diagnostic, MAX_CONFIG_BYTES, MAX_CUSTOM_THEMES, MAX_DIRECTORY_ENTRIES,
     MAX_THEME_BYTES,
 };
 use std::{fs, path::PathBuf, sync::Arc};
 
-struct Fixture(PathBuf);
+struct Fixture(support::CaseDir);
 impl Fixture {
     fn new() -> Self {
-        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../target-catalogue")
-            .join(format!(
-                "occipital-catalogue-{}-{}",
-                std::process::id(),
-                NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-            ));
-        fs::create_dir_all(root.join("themes")).unwrap();
-        Self(fs::canonicalize(root).unwrap())
+        let root = support::CaseDir::new("catalogue");
+        fs::create_dir(root.join("themes")).unwrap();
+        Self(root)
     }
     fn config(&self, text: &str) {
         fs::write(self.0.join("config.json"), text).unwrap();
@@ -26,11 +21,6 @@ impl Fixture {
     }
     fn catalogue(&self) -> Catalogue {
         Catalogue::new(Some(self.0.join("config.json")))
-    }
-}
-impl Drop for Fixture {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
     }
 }
 fn theme(color: &str) -> Vec<u8> {
@@ -53,7 +43,7 @@ fn default_explicit_and_relative_roots_and_unresolved_os_root() {
         theme("#223344"),
     )
     .unwrap();
-    let default = Catalogue::from_os_root(Some(f.0.clone()));
+    let default = Catalogue::from_os_root(Some(f.0.to_path_buf()));
     assert_eq!(
         default.config_path(),
         Some(f.0.join("occipital/config.json").as_path())
@@ -274,7 +264,9 @@ fn cumulative_attempts_bound_changing_failures_without_syntect_interning() {
 fn rejected_scope_depth_never_reaches_syntect_loader() {
     // Isolate the actual public atom counter from all other tests/bundled loads.
     if std::env::var_os("OCCIPITAL_CATALOGUE_ATOM_PROBE").is_none() {
-        let output = std::process::Command::new(std::env::current_exe().unwrap())
+        let root = support::CaseDir::new("catalogue-atom");
+        let output = root
+            .command(std::env::current_exe().unwrap())
             .args([
                 "--exact",
                 "rejected_scope_depth_never_reaches_syntect_loader",
@@ -333,12 +325,13 @@ fn native_platform_resolver_obeys_xdg_config_home() {
         theme("#123456"),
     )
     .unwrap();
-    let output = std::process::Command::new(std::env::current_exe().unwrap())
-        .args(["--exact", "native_platform_resolver_obeys_xdg_config_home"])
-        .env("XDG_CONFIG_HOME", &f.0)
-        .env("OCCIPITAL_CATALOGUE_ROOT_PROBE", &f.0)
-        .output()
-        .unwrap();
+    let output =
+        f.0.command(std::env::current_exe().unwrap())
+            .args(["--exact", "native_platform_resolver_obeys_xdg_config_home"])
+            .env("XDG_CONFIG_HOME", f.0.as_os_str())
+            .env("OCCIPITAL_CATALOGUE_ROOT_PROBE", f.0.as_os_str())
+            .output()
+            .unwrap();
     assert!(
         output.status.success(),
         "{}",
@@ -352,13 +345,14 @@ fn native_platform_resolver_obeys_xdg_config_home() {
         theme("#123456"),
     )
     .unwrap();
-    let output = std::process::Command::new(std::env::current_exe().unwrap())
-        .args(["--exact", "native_platform_resolver_obeys_xdg_config_home"])
-        .env_remove("XDG_CONFIG_HOME")
-        .env("HOME", &home)
-        .env("OCCIPITAL_CATALOGUE_ROOT_PROBE", &config)
-        .output()
-        .unwrap();
+    let output =
+        f.0.command(std::env::current_exe().unwrap())
+            .args(["--exact", "native_platform_resolver_obeys_xdg_config_home"])
+            .env_remove("XDG_CONFIG_HOME")
+            .env("HOME", &home)
+            .env("OCCIPITAL_CATALOGUE_ROOT_PROBE", &config)
+            .output()
+            .unwrap();
     assert!(
         output.status.success(),
         "{}",
@@ -522,4 +516,137 @@ fn read_failed_config_retains_loaded_profiles_and_snapshot() {
     assert_eq!(c.refresh().err(), Some(Diagnostic::ConfigRead));
     assert!(Arc::ptr_eq(&first, &c.snapshot()));
     assert_eq!(c.admission_counters().attempts, 1);
+}
+
+#[test]
+fn fixture_roots_are_unique_and_owned() {
+    const PROBE: &str = "OCCIPITAL_FIXTURE_PARENT_CASE";
+    if let Some(parent) = std::env::var_os(PROBE) {
+        let root = support::CaseDir::new("isolation");
+        assert_ne!(root.as_ref(), std::path::Path::new(&parent));
+        assert_eq!(
+            fs::read(std::path::Path::new(&parent).join("sentinel")).unwrap(),
+            b"parent"
+        );
+        fs::write(root.join("sentinel"), b"child").unwrap();
+        return;
+    }
+    let sandbox = support::CaseDir::new("isolation-regression");
+    let roots: Vec<_> = std::thread::scope(|scope| {
+        let jobs: Vec<_> = (0..8)
+            .map(|_| scope.spawn(|| support::CaseDir::new("isolation")))
+            .collect();
+        jobs.into_iter().map(|job| job.join().unwrap()).collect()
+    });
+    let paths: std::collections::HashSet<_> = roots.iter().map(|root| root.as_ref()).collect();
+    assert_eq!(paths.len(), 8);
+    for root in &roots {
+        assert_eq!(root.parent(), sandbox.parent());
+        fs::write(root.join("sentinel"), b"parent").unwrap();
+    }
+    let output = sandbox
+        .command(std::env::current_exe().unwrap())
+        .args(["--exact", "fixture_roots_are_unique_and_owned"])
+        .env("TIDY_TEST_ROOT", roots[0].parent().unwrap())
+        .env(PROBE, roots[0].as_os_str())
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    for root in &roots {
+        assert_eq!(fs::read(root.join("sentinel")).unwrap(), b"parent");
+    }
+    let released = roots[0].to_path_buf();
+    drop(roots);
+    assert!(!released.exists());
+}
+
+#[test]
+fn fixture_children_drop_unrelated_environment() {
+    const PROBE: &str = "OCCIPITAL_FIXTURE_ENV_PROBE";
+    match std::env::var(PROBE).as_deref() {
+        Ok("leaf") => {
+            for name in [
+                "OCCIPITAL_UNRELATED_SECRET",
+                "NODE_OPTIONS",
+                "PATH",
+                "OCCIPITAL_CATALOGUE_ATOM_PROBE",
+                "OCCIPITAL_CATALOGUE_ROOT_PROBE",
+            ] {
+                assert!(std::env::var_os(name).is_none(), "inherited {name}");
+            }
+            let root = PathBuf::from(std::env::var_os("TIDY_TEST_ROOT").unwrap());
+            assert_eq!(
+                std::env::current_dir().unwrap().canonicalize().unwrap(),
+                root
+            );
+            for (name, directory) in [
+                ("HOME", "home"),
+                ("XDG_CONFIG_HOME", "config"),
+                ("TMPDIR", "tmp"),
+            ] {
+                assert_eq!(
+                    PathBuf::from(std::env::var_os(name).unwrap()),
+                    root.join(directory)
+                );
+            }
+        }
+        Ok("poisoned") => {
+            assert_eq!(
+                std::env::var("OCCIPITAL_UNRELATED_SECRET").unwrap(),
+                "poison"
+            );
+            let root = support::CaseDir::new("env-clean-child");
+            let output = root
+                .command(std::env::current_exe().unwrap())
+                .args(["--exact", "fixture_children_drop_unrelated_environment"])
+                .env(PROBE, "leaf")
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "{output:?}");
+        }
+        _ => {
+            let root = support::CaseDir::new("env-poison-control");
+            let output = root
+                .command(std::env::current_exe().unwrap())
+                .args(["--exact", "fixture_children_drop_unrelated_environment"])
+                .env(PROBE, "poisoned")
+                .env("OCCIPITAL_UNRELATED_SECRET", "poison")
+                .env("NODE_OPTIONS", "poison")
+                .env("PATH", root.as_os_str())
+                .env("HOME", "unrelated-home")
+                .env("XDG_CONFIG_HOME", "unrelated-config")
+                .env("TMPDIR", "unrelated-temp")
+                .env("OCCIPITAL_CATALOGUE_ATOM_PROBE", "unrelated")
+                .env("OCCIPITAL_CATALOGUE_ROOT_PROBE", "unrelated")
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "{output:?}");
+        }
+    }
+}
+
+#[test]
+fn fixture_context_is_required_without_fallback() {
+    if std::env::var_os("OCCIPITAL_FIXTURE_CONTEXT_PROBE").is_some() {
+        let _root = support::CaseDir::new("must-fail");
+        panic!("invalid context was accepted");
+    }
+    let root = support::CaseDir::new("missing-context-control");
+    for invalid in [None, Some("relative-root")] {
+        let mut command = root.command(std::env::current_exe().unwrap());
+        command
+            .args(["--exact", "fixture_context_is_required_without_fallback"])
+            .env("OCCIPITAL_FIXTURE_CONTEXT_PROBE", "1");
+        if let Some(value) = invalid {
+            command.env("TIDY_TEST_ROOT", value);
+        } else {
+            command.env_remove("TIDY_TEST_ROOT");
+        }
+        let output = command.output().unwrap();
+        assert!(!output.status.success());
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains("TIDY_TEST_ROOT"),
+            "{output:?}"
+        );
+    }
 }

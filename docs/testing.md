@@ -1,98 +1,129 @@
 # Testing and coverage
 
-This is the maintained guide to reproducing pi-tidy-ui checks, not a journal of past runs. Use a repository checkout with its development dependencies; the npm package contains runtime code/documentation, not test fixtures. Visual behavior is specified in the [presentation contracts](../README.md#documentation); integration boundaries are described in [architecture](architecture.md).
+This is the maintained guide to reproducing pi-tidy-ui checks, not a journal of past runs. Use a repository checkout; the npm package contains runtime code/documentation, not the harness or fixtures. Visual behavior is specified in the [presentation contracts](../README.md#documentation); integration boundaries are described in [architecture](architecture.md).
 
 ## Requirements and commands
 
-- Node.js >=22.19.0, as declared in `package.json`.
-- Pinned development host packages installed from the lockfile.
-- For terminal tests: a POSIX environment, Python 3 with PTY support, and the real Pi CLI. `PI_TEST_CLI` can select an alternative CLI executable.
-- No model credentials are required. The terminal driver uses an offline scripted provider.
+- Node.js >=22.19.0. CI selects exact Node 22.19.0 and 26.7.0.
+- An explicitly prepared Pi dependency graph. The compatibility matrix selects exact Pi 1.0.0 and 1.2.0, not `latest` or an installed CLI. CLI, SDK, TUI, AI/core, extension imports, type checks and child probes must use the selected coherent graph; Pi-family package version strings need not all be equal.
+- For native preparation: provisioned Rust **1.99.0**, including rustfmt and Clippy, and platform compiler/linker prerequisites. User Cargo configuration is not an input.
+- For physical CLI tests: POSIX, declared Python 3 with PTY support and the prepared CLI. Python runs with `-I -S`, excluding environment/user/global site startup customizers. No model credentials are needed: the driver uses an offline scripted provider.
+- For syntax/shared CLI tests: the same-source Occipital artifact and an explicit Subconscious host executable. This third-party prerequisite is not published Occipital and is not an installed service.
 
-From the repository root:
+### Prepare inputs, then execute
+
+Preparation owns dependency resolution, allowed public-network acquisition and native building. It records source commit/tree identity, native-source `nativeTree`, exact Node executable/version, selected Pi packages/lock, declared tools and required artifact hashes in `inputs.json`. It materializes a test tree with its own dependency graph without changing repository manifests/lockfiles or user installations. Preparation uses owned npm/Cargo stores and clean configuration, not user credentials, proxies, `.npmrc`, Cargo config or incidental caches. Unsupported Node engines fail preparation rather than merely warning. Prepared source copies, including Cargo's working directory, live outside the checkout and its ancestor configuration search; the original checkout is not rewritten.
+
+`npm run test:prepare -- ...` invokes the same preparer. Its default output is `.test-artifacts/harness/1.0.0` (or the selected Pi version); explicit separate outputs avoid mixing host/runtime inputs. For example, with the pinned Rust sysroot and shared host already provisioned:
 
 ```sh
-npm ci --ignore-scripts
-npm run check
-npm test
-npm run test:native-release
-npm pack --dry-run
+node scripts/test/prepare.mjs --pi-version 1.0.0 \
+  --rust-root /absolute/path/to/rust-1.99.0 --build-native \
+  --integration --archives --shared-host /absolute/path/to/ck-subc \
+  --output /absolute/path/to/prepared-pi-1.0.0 \
+  --run-root /absolute/path/to/runtime-parent
+
+npm run check -- --inputs /absolute/path/to/prepared-pi-1.0.0/inputs.json
+npm test -- --inputs /absolute/path/to/prepared-pi-1.0.0/inputs.json
+npm run test:native-release -- --inputs /absolute/path/to/prepared-pi-1.0.0/inputs.json
+npm run test:rust-check -- --inputs /absolute/path/to/prepared-pi-1.0.0/inputs.json
 ```
 
-`check` is the authoritative strict project TypeScript gate. Unit tests include actual-SDK component/ownership probes as well as deterministic presenter cases. The terminal runner uses `--test-concurrency=1` because its controls drive real CLI processes. Packaging must include every runtime module and maintained document linked from the README, without bundling host libraries or tests.
+Use separate output directories for each Node/Pi selection. To reuse the verified current-source helper in a second host graph:
+
+```sh
+node scripts/test/prepare.mjs --pi-version 1.2.0 \
+  --native-inputs /absolute/path/to/prepared-pi-1.0.0/inputs.json \
+  --integration --archives --shared-host /absolute/path/to/ck-subc \
+  --output /absolute/path/to/prepared-pi-1.2.0
+npm run check -- --inputs /absolute/path/to/prepared-pi-1.2.0/inputs.json
+npm test -- --inputs /absolute/path/to/prepared-pi-1.2.0/inputs.json
+```
+
+Repeat Pi-sensitive SDK/type/CLI coverage for both selected hosts and runtimes; A → B → A controls detect cross-version contamination. These examples select checks, not a claim of full compatibility acceptance. Refresh preparation after source edits: execution rejects a changed tested commit/tree.
+
+| Preparation option | Meaning |
+| --- | --- |
+| `--node ABSOLUTE_EXECUTABLE` | Record and use that actual Node executable/version, including children |
+| `--tools FILE` | JSON of explicit absolute prerequisite tool paths, including the npm CLI JavaScript entry when needed |
+| `--offline --npm-cache DIRECTORY` | Use explicitly supplied npm content cache, with no public dependency fetch; non-baseline offline preparation also requires its previously resolved exact manifest/lock in the output directory |
+| `--registry-inputs INPUTS_JSON` | Reuse a prepared consumer closure only after matching its source snapshot, selected host/runtime and archive/document/lock integrity; required for offline `--archives` |
+| `--native-inputs INPUTS_JSON` | Reuse a recorded helper only after matching tested commit, `nativeTree`, size and hash |
+| `--native-artifact DIRECTORY` | Admit a staged current-commit CI artifact; modified local native sources require a new `--build-native` instead |
+| `--rust-root SYSROOT --build-native` | Fetch locked dependencies during preparation, stamp the selected daemon version in a disposable native source tree, then build offline with the pinned compiler |
+| `--cargo-cache DIRECTORY` | Copy declared Cargo registry/Git artifacts into the owned Cargo home, not user configuration |
+| `--integration` | Prepare the locked, audited third-party profile for full terminal coverage |
+| `--archives` | Prepare the integrity-checked transitive npm archive closure for the local consumer fixture |
+| `--shared-host EXECUTABLE` | Record the explicit isolated shared host and its hash |
+| `--run-root DIRECTORY` | Parent for disposable execution roots; must be outside the tested checkout, with no ancestor `.git` or `.cargo/config[.toml]` (default is the fixed system temporary parent, not inherited TMPDIR/HOME) |
+
+Preparation without native options can support `check` or inert release fixtures; it does not satisfy unit/native/syntax/consumer prerequisites. Every ordinary executed Occipital helper must match the tested commit and native source snapshot, not just `--version`. There is no published-binary fallback. A cached artifact is usable only when its recorded source and bytes still match.
+
+Execution starts a fresh sanitized process tree **before** importing host/production modules, with owned HOME, agent/config/session/temp/cache roots outside the tested checkout and controlled tool PATH. Node startup controls, credentials, proxy settings, user Git/npm configuration and service-discovery state are not inherited. This guarantee concerns the spawned test tree, not the caller's already-running shell/npm process. The bootstrap validates actual Node identity, host manifests, CLI location and SDK/TUI class identity. Direct `node --test` or fixture invocation without the harness context is not a supported shortcut.
+
+Reports retain selected files and explicit filters, top-level test names/statuses, counts, runtime/host/source identities and setup/harness/product failure classification. Ordinary run directories are disposed after success/failure. On POSIX, interruption terminates the test process group, including descendants; Windows uses explicitly declared `taskkill /T`. Native build inputs and prepared dependency stores remain available for subsequent runs. Failed preparation removes only its newly allocated runtime tree; earlier successful inputs and explicit caches remain available. Runtime ancestry is checked again before execution, so later parent Git/Cargo configuration cannot become an undeclared test input. Physical selected-CLI/Python-startup controls belong to the terminal profile, not the portable unit suite.
+
+`npm run test:rust-harness -- --inputs /absolute/path/to/prepared/inputs.json` requires the pinned Rust input and proves with real Cargo that a poisoned ancestor config is effective in the positive control but absent from the neutral materialization. This is distinct from the workspace's product tests.
+
+On Linux, append `--network-isolated` to `scripts/test/run.mjs` (or through npm's `--`) to use declared bubblewrap with a real network namespace, for example `npm run test:harness -- --inputs /absolute/path/to/prepared/inputs.json --network-isolated`. Local fixture endpoints remain real; public egress is denied for children too. `test:harness` checks trusted connection-file ancestry, exactly one successful local HTTP request and a public socket failure of `ENETUNREACH`. This is not a `fetch` mock. Elsewhere the built-in flag fails explicitly: equivalent OS/container enforcement requires platform-specific verification. Prepared-local inputs and sanitized environments alone do not establish OS-enforced egress isolation; current non-Linux CI has that verification gap.
 
 ## Make shortcuts
 
-The checkout includes a GNU Make/POSIX-shell entry point. `make` prints help and performs no installation, compilation or tests. The existing npm commands remain available; the GNU baseline image already includes make.
+GNU Make/POSIX-shell entry points route checks to the same runner. `make` prints help only. Supply absolute `INPUTS`; there is no helper discovery or implicit preparation during test execution.
 
 | Target | Scope |
 | --- | --- |
-| `make deps` | Install lockfile development dependencies with scripts disabled |
-| `make build` | Locked release-mode Occipital build for the local host; copy `occipital`/`occipital.exe` beside the extension |
-| `make check` | Strict TypeScript |
-| `make check-native` | Rust format check and strict all-targets Clippy |
-| `make test` | Ordinary unit/SDK suite; GC/native cases can skip |
-| `make test-gc` | Full unit/SDK suite with `--expose-gc`, truecolor and concurrency 2, matching the CI mode |
-| `make test-focus` | Selected files and optional name pattern; GC/truecolor enabled, concurrency 1 |
-| `make test-rust` | Rust workspace tests and doctests |
-| `make test-native` | Full unit/SDK/GC suite with an existing required helper, including native-gated cases |
-| `make test-syntax` | Short physical syntax CLI suite with an existing required helper |
-| `make test-terminal` | Expensive full physical CLI/replay suite for final UI checks |
-| `make test-release` | Inert packaging/release regressions, including executable Make/GNU-wrapper controls |
-| `make test-installed` | Separate **networked** clean consumer, exact npm installation/acquisition/cache/cleanup check |
-| `make pack-check` | Development-package dry run; no archive or publication |
+| `make deps PI_VERSION=1.0.0 PREPARE_OUTPUT=...` | Prepare exact host dependencies; no implicit native build |
+| `make build RUST_ROOT=... CARGO_HOME=...` | Explicit offline locked local release build and colocated copy; requires pinned sysroot and owned prefilled Cargo home with no user config |
+| `make check INPUTS=...` | Strict selected-host TypeScript |
+| `make check-native INPUTS=...` | Offline Rust fmt, then strict all-targets Clippy |
+| `make test INPUTS=...`, `make test-gc INPUTS=...` | Same unit/SDK suite with mandatory GC and same-source native inputs |
+| `make test-focus INPUTS=... TEST_FILES=... TEST_PATTERN=...` | Selected comma-separated test basenames and optional regex; GC/truecolor retained |
+| `make test-rust INPUTS=...` | Offline workspace tests and doctests |
+| `make test-rust-harness INPUTS=...` | Real pinned Cargo ancestry/isolation control |
+| `make test-native INPUTS=...` | Real same-source helper controls |
+| `make test-syntax INPUTS=...` | Short physical syntax CLI; required prepared shared host |
+| `make test-terminal INPUTS=...` | Expensive full physical CLI/replay; required locked integration profile |
+| `make test-release INPUTS=...` | Inert packaging/release regressions |
+| `make test-installed INPUTS=...` | Same-source clean consumer with prepared archives and fixture-local registry/download |
+| `make test-published INPUTS=... RELEASE_REF=refs/tags/pi-tidy-ui-vVERSION` | Explicit external published-delivery verification, extension releases only |
+| `make pack-check` | Development-package dry run, no publication |
 
-The extension has no TypeScript bundling step. `make build` does not stamp versions, install packages, download a release, start a service or prepare a published extension. It requires the compiler pinned by `rust-toolchain.toml`, disables Rustup automatic installation (`RUSTUP_AUTO_INSTALL=0`) and fails on a different Cargo/rustc version rather than silently building with it; select an installed toolchain on `PATH` (or set `CARGO`/`RUSTC`). Cargo may fetch missing locked build dependencies. `CARGO_TARGET_DIR` selects the build directory; `RUST_TARGET` can explicitly select the local host triple. Native calibration examples are not run by these shortcuts.
-
-Examples:
+The extension has no TypeScript bundling step. `make build` does not select/stamp a release, download inputs, install tools or start services; it disables Rustup automatic installation and checks Cargo/rustc against `rust-toolchain.toml`. `CARGO_TARGET_DIR` selects its build directory and `RUST_TARGET` an explicit target triple. A merely present colocated helper is not test provenance; use prepared native inputs. Native calibration examples are not implicit prerequisites.
 
 ```sh
-make check
-make test-focus TEST_FILES='tests/unit.test.ts' TEST_PATTERN='^bash timeout'
-make test-focus TEST_FILES='tests/syntax-work.test.ts tests/syntax-host.test.ts'
-make test-release
-make build
-make test-native
-make test-syntax
-# Final UI verification, not each edit:
-make test-terminal
+make check INPUTS=/absolute/path/to/prepared/inputs.json
+make test-focus INPUTS=/absolute/path/to/prepared/inputs.json \
+  TEST_FILES='unit.test.ts' TEST_PATTERN='^bash timeout'
+make test-focus INPUTS=/absolute/path/to/prepared/inputs.json \
+  TEST_FILES='syntax-work.test.ts,syntax-host.test.ts'
+make test-release INPUTS=/absolute/path/to/prepared/inputs.json
 ```
 
-`test-native` and `test-syntax` default to the colocated helper; `OCCIPITAL_TEST_BIN=/absolute/path/to/occipital` selects another existing executable. They refuse a missing helper instead of returning a green all-skipped native run, and never build implicitly. `test-gc` alone does not establish native acceptance. Shared syntax cases still need an explicit isolated `OCCIPITAL_TEST_SHARED_HOST`; these shortcuts do not discover or start user services. `test-focus` requires `TEST_FILES`; whitespace-separated paths/globs select files, and `TEST_PATTERN` is forwarded as one regex argument. Use the runner's existing `--test-skip-pattern` directly for explicit exclusions, as described below. `NODE`/`NPM` select existing executables, not a runtime installer; select the matching runtime on `PATH` for npm-spawned checks.
-
-`tests/makefile.test.ts` executes the actual Makefile and GNU wrapper in disposable trees with inert tool executors, asserting arguments, phase order, outputs, failure propagation and the real ABI admission function. These are orchestration controls, not a claim that they compiled Rust or passed the physical CLI. These executable fixtures require POSIX and GNU Make; an unavailable environment is an explicit skip. The real native baseline gate remains separate.
+`tests/makefile.test.ts` executes the actual Makefile and GNU wrapper in disposable trees with inert executors, asserting arguments, phase order, outputs, failure propagation and real ABI admission. These are orchestration controls, not actual Rust/CLI acceptance. POSIX/GNU Make applicability is reported separately; platform inapplicability is not missing-input acceptance. `NODE`/`NPM` select existing executables, not runtime installers.
 
 ## Test selection and cadence
 
-During the edit–test–fix loop, run strict types and affected unit/SDK cases; run Rust checks when native behavior is affected. `npm test` is the full unit/SDK suite, and `test:native-release` is an inexpensive inert packaging/release suite. For explicit full ownership/GC coverage with the truecolor environment used by CI:
+During the edit–test–fix loop, run strict selected-host types and affected cases through the runner; run offline Rust checks when native behavior is affected. `npm test` is the broad unit/SDK/GC suite; `test:native-release` is the inexpensive inert packaging/release suite, including the Make orchestration checks. These profiles are disjoint, so Pi-independent release/Make cases are not multiplied across selected Pi versions. GC and truecolor are supplied by construction, not an optional environment profile. The test-entry guard requires an actual `global.gc`, so a missing launch flag fails instead of silently dropping ownership checks. Missing required native/shared/integration inputs fail setup rather than yielding green skips.
 
 ```sh
-TERM=xterm-256color COLORTERM=truecolor node --expose-gc --test --test-concurrency=2 tests/*.test.ts
+node scripts/test/run.mjs --inputs /absolute/path/to/prepared/inputs.json \
+  --suite unit --files unit.test.ts --pattern '^bash timeout'
+node scripts/test/run.mjs --inputs /absolute/path/to/prepared/inputs.json \
+  --suite unit --files queued-cards.test.ts,spinner-scheduler.test.ts
+node scripts/test/run.mjs --inputs /absolute/path/to/prepared/inputs.json \
+  --suite terminal --pattern '^footer '
+node scripts/test/run.mjs --inputs /absolute/path/to/prepared/inputs.json \
+  --suite terminal --pattern '^main editor user-card|^belowEditor|^editor padding|^aboveEditor widget|^foreign editor extension'
 ```
 
-The broad `npm run test:terminal` suite is time-expensive. Reserve a full run for final verification after UI/integration work is complete, not each edit or commit. Focused physical CLI cases may be used during development to reproduce or verify a concrete defect. Documentation-only work does not require the full CLI suite; workflow-only work uses workflow lint and `test:native-release`. After later edits, rerun the affected checks whose results could have been invalidated rather than automatically repeating the whole terminal suite.
+`--files` accepts comma-separated basenames relative to `tests/` (or `fixtures/` for selected fixture entries), not shell globs or whitespace-separated checkout paths. `--pattern` selects test names; `--skip` forwards an explicit skip regex. Prefer `--skip` for exclusions: a negative name pattern can match a parent test and include the supposedly excluded child. Focused/excluded coverage must be reported, not called a full run. CLI suites use concurrency 1; other Node suites use concurrency 2 and `--expose-gc`.
 
-The shorter `test:syntax-terminal` checks real syntax integration and may run when that behavior is affected, with an explicit helper as described [below](#syntaxnative-checks). Ordinary PR/`main` CI and branch manual dispatch retain this suite on both supported CI Node runtimes; the full `test:terminal` suite runs only for `pi-tidy-ui-v*` release refs, including manual dispatch of such a tag. Occipital tags keep their independent native checks and skip extension CLI tests. A green ordinary CI run does not establish full physical UI acceptance; the local final run and extension-tag CI provide that coverage.
+The full `npm run test:terminal -- --inputs ...` suite is time-expensive. Reserve it for final verification after UI/integration work is complete, not each edit or commit. Focused physical cases may reproduce a concrete defect. Documentation-only work does not require the full CLI suite; workflow-only work uses workflow lint and inert release regressions. After later edits, rerun affected checks whose results could be invalidated, not automatically every terminal case.
 
-For a focused CLI check, without claiming the unrelated full CLI suite was rerun:
+The shorter `npm run test:syntax-terminal -- --inputs ...` remains in ordinary PR/`main` and branch-dispatch CI on both Node × Pi selections. Full terminal coverage runs in CI only on validated `pi-tidy-ui-v*` extension release refs, including dispatch of such a tag. Occipital tags keep native/current-consumer checks but skip unrelated extension CLI checks. A green ordinary CI run does not establish full physical UI acceptance. Published Occipital verification is extension-release-only: never main/PR, an Occipital release or a future daily compatibility run. No daily workflow or moving-version resolver is implemented.
 
-```sh
-node --test --test-name-pattern='OpenCode-style edit syntax' --test-concurrency=1 tests/terminal.test.mjs
-node --test --test-name-pattern='write cards' --test-concurrency=1 tests/terminal.test.mjs
-node --test --test-name-pattern='^bash timeout' tests/unit.test.ts
-node --test --test-name-pattern='^real CLI: isolated bash timeout|^real CLI: isolated bash presentation exceptions' --test-concurrency=1 tests/terminal.test.mjs
-node --test --test-name-pattern='^footer ' --test-concurrency=1 tests/terminal.test.mjs
-node --test --test-name-pattern='^terminal colors:' --test-concurrency=1 tests/terminal.test.mjs
-node --test --test-name-pattern='^Output padding settings' --test-concurrency=1 tests/terminal.test.mjs
-node --test tests/queued-cards.test.ts
-node --test --test-name-pattern='^real CLI: queued cards' --test-concurrency=1 tests/terminal.test.mjs
-node --test tests/spinner-scheduler.test.ts
-node --test --test-name-pattern='^real CLI: spinner' --test-concurrency=1 tests/terminal.test.mjs
-node --test --test-name-pattern='^main editor user-card|^belowEditor|^editor padding|^aboveEditor widget|^foreign editor extension' --test-concurrency=1 tests/terminal.test.mjs
-node --test --test-name-pattern='long-word summaries|comma wrap points|width-21 colored-segment boundary|complete multiline summaries' --test-concurrency=1 tests/terminal.test.mjs
-```
-
-Test names, scenario switches and audited package versions live in the test sources; do not maintain a second version inventory or fixed historical test total here.
+Test names, scenarios and audited third-party versions live in sources/locked fixtures; do not duplicate a historical run total here.
 
 ## Test layers
 
@@ -104,9 +135,9 @@ Test names, scenario switches and audited package versions live in the test sour
 | `tests/component-layouts.test.ts`, `tests/fixtures/component-layout-probe.ts` | Count/byte-pressure warm scans, actual-SDK native removal/clear while removed owners remain held, weak rendered-data/accounting GC and exact presentation-kind arithmetic |
 | `tests/fixtures/cache-probe.ts` | Actual-SDK viewport work and first-installer collection with an active adapter, including an active execution clock, retained write-source rows and the stock input editor |
 | `tests/fixtures/cache-partition-probe.ts` | Actual-SDK mixed transcript, ordinary/card accounting, isolated card replacement and detached-edit collection |
-| `tests/terminal.test.mjs` | Real bundled CLI execution, physical terminal cells, keyboard/mouse, controls and same-session replay; generic presentation controls inject unavailable syntax transports to stay offline |
+| `tests/terminal.test.mjs` | Real selected CLI execution, physical terminal cells, keyboard/mouse, controls and same-session replay; generic presentation controls inject unavailable syntax transports to stay offline |
 | `tests/tidy-menu.test.ts`, `tests/syntax-entry.test.ts` | Settings popup keyboard/mouse/search, narrow/short details, saved switches, startup ordering, failed saves, async closure and ordered confirmations across pending cleanup |
-| `tests/occipital-*.test.ts`, `tests/settings.test.ts` | Typed client/protocol, immutable ranges, byte accounting, transport/provider lifecycle, theme/preferences/menu and exact acquisition; real helper controls require `OCCIPITAL_TEST_BIN` |
+| `tests/occipital-*.test.ts`, `tests/settings.test.ts` | Typed client/protocol, immutable ranges, byte accounting, transport/provider lifecycle, theme/preferences/menu and exact acquisition; real helper controls require verified prepared native inputs |
 | `tests/debug-log.test.ts`, `tests/session-logging.test.ts` | Real-file bounded text/batching/partial-write/rotation/retention/error controls, concurrent child-process lifecycle writers and run-bound off/on/retry/late-callback attribution |
 | `tests/syntax-*.test.ts` | Logical source/tab/diff-gap boundaries, paint/work/card/host/runtime contracts, canonical duplicate-work protection and weak ownership |
 | `tests/syntax-terminal.test.mjs`, `tests/fixtures/syntax-driver.ts` | Real CLI/helper, genuinely gated gradual/corrected arguments, args completion, source RGB, warm/resize counts, off/on/replay, theme selection/restoration and controlled asynchronous readiness |
@@ -119,48 +150,55 @@ Test names, scenario switches and audited package versions live in the test sour
 | `tests/fixtures/footer-driver.ts` | Public footer/status controls, real side-usage records, scripted primary-request histories and native history/context spies; one loader graph with production pi-tidy-ui for actual presenter counters |
 | `tests/fixtures/terminal-colors-driver.ts` | One loader graph with production pi-tidy-ui; draft-safe native color/mode snapshots and public-query controls |
 | `tests/fixtures/foreign-editor.ts` | Separately loaded extension owning the editor through the real public factory; native/pi-tidy-ui region and input comparisons, both load orders and late takeover |
-| `tests/fixtures/pty_bridge.py` | Real pseudo-terminal transport used by the CLI harness |
-| `tests/fixtures/integration-profile.mjs` | Version-audited, isolated installed-extension profile with explicit exclusions |
+| `tests/fixtures/pty_bridge.py`, `tests/fixtures/terminal-harness.mjs` | Real pseudo-terminal transport and reusable physical-cell/resize/replay support; importing support registers no tests |
+| `tests/test-harness.test.mjs` | Environment/startup/host/source/runtime-root authority, missing-input/report cleanup, release-only public selection and actual Linux network-namespace controls |
+| `tests/fixtures/integration-profile.mjs` | Locked, audited test-owned third-party profile with explicit exclusions |
 
 The unit runner invokes the SDK cache probes in separate Node processes with `--expose-gc`. Forced GC and diagnostic instrumentations are test-only; none run in the extension.
 
 ## Syntax/native checks
 
-With an existing locally built helper, use its **absolute** path. Physical syntax controls run a disposable real-version copy of the extension/driver in one module graph, injecting an exact test artifact and verified cache rather than a runtime mode flag. Source version `0.0.0` retains its strict local-only rule:
+Physical syntax controls use a disposable real-version extension/driver in one selected module graph, injecting the prepared same-source artifact and verified cache, not a production runtime-mode flag. Source version `0.0.0` retains its strict local-only rule.
 
 ```sh
-OCCIPITAL_TEST_BIN=/absolute/path/to/occipital node --test tests/occipital-native.test.ts
-OCCIPITAL_TEST_BIN=/absolute/path/to/occipital npm run test:syntax-terminal
-npm run test:native-release
-npm run test:installed-native
-node --expose-gc --test tests/syntax-work.test.ts tests/syntax-host.test.ts tests/syntax-runtime.test.ts
+npm run test:native -- --inputs /absolute/path/to/prepared/inputs.json
+npm run test:syntax-terminal -- --inputs /absolute/path/to/prepared/inputs.json
+npm run test:installed-native -- --inputs /absolute/path/to/prepared/inputs.json
+node scripts/test/run.mjs --inputs /absolute/path/to/prepared/inputs.json \
+  --suite unit --files syntax-work.test.ts,syntax-host.test.ts,syntax-runtime.test.ts
 ```
 
-`test:syntax-terminal` selects only `occipital CLI:` cases: its reusable terminal harness imports the broad CLI registrations, which otherwise also run. The shared UI cases additionally require an explicitly supplied isolated `OCCIPITAL_TEST_SHARED_HOST`; without it they skip rather than touching an installed service. Structured-style coverage checks actual RGB/bold/italic/underline cells in write/old/new sources, unified/split frames and unchanged diff backgrounds; width and Pi dark/light changes retain the independent theme without new classification.
+`syntax-terminal` registers only its own physical syntax cases. The shared `tests/fixtures/terminal-harness.mjs` support registers no tests; importing it does not run the broad terminal suite. Native/shared inputs are mandatory. Structured-style coverage checks actual RGB/bold/italic/underline cells in write/old/new sources, unified/split frames and unchanged diff backgrounds; width and Pi dark/light changes retain the independent theme without new classification.
 
-`test:installed-native` is a separate networked clean-install control, not part of the ordinary unit or inert release suites. It stages a real-version extension using the nearest completed public release, packs it, installs peers into a temporary consumer outside checkout ancestry, and uses normal bootstrap with an isolated HOME/agent/config and empty executable PATH. Exact native optional dependencies must install automatically from npm and produce zero bootstrap downloads; no local native tarball is supplied. A separate `--omit=optional` consumer excludes both native payload and shared SDK and must make one exact public-artifact download, then zero warm HTTP. It checks real SDK import failure, compiled helper version, UTF-8 colors, three incremental dispatches, no repeated warm work and process reaping. No Rust build, service installation or npm publication is performed. The six native CI runners execute it on both Node versions outside Occipital release tags; run it through npm so its package-preparation commands use the same actual Node executable. GNU runners use `bash scripts/release/installed-linux-gnu.sh RUST-TARGET` with the selected official Node distribution to run the unchanged consumer in glibc 2.28, including its real public acquisition. The image supplies the official Node25+ `libatomic` runtime prerequisite and Git for test-package preparation by ancestry; neither is a new Occipital runtime dependency. Native runner checkouts include full history/tags. This networked installed-client check has no compiler or payload override and is separate from the offline native build gate. It is not physical terminal coverage or a minimum-kernel/macOS/Windows guarantee.
+CI provisions official **Subconscious 0.20.83**, asset `ck-subc-linux-x64.zip`, with SHA-256 `c905fd8c5eba045c38fb61dd0c6c0ffc8254ae2cb0be50ef1017cde5470e62c4`. Preparation records the extracted executable hash. The fixture launches it with no arguments and a private XDG `cortexkit/subc.jsonc`, runtime/connection files and the current-source Occipital module; it neither discovers nor installs a user service. The real shared discovery/loss/owned-return control checks three calls, three results, four model contexts and `peerWarmDelta: 0`, including actual owned-helper reaping. Linux bubblewrap permits trusted connection-file ancestry; supplied-host presence alone is not shared acceptance.
 
-Every npm preparation writes `.test-artifacts/installed-preparation-*/npm.json`, retained by non-daemon CI uploads on success and failure. It records only known progress stages, numeric HTTP status/duration, content-cache hit/miss/revalidation enums, document-versus-tarball categories, allowlisted npm phase timers, aggregated unpack-node counts/durations, numeric configured I/O pool size (or null when unset/invalid), the temporary Windows drive letter (or null for other/UNC paths) and child exit/signal fields. The consumer also records total, npm preparation and temporary-tree cleanup times in `fixture.json` after cleanup, without changing its four native acceptance observations. Raw debug/timing files remain in the owned temporary directory and are removed during cleanup; commands, URLs, package/path identifiers, environment, stdout/stderr and opaque error text are not copied into artifacts. npm's own redaction is not a secrecy guarantee. Empty `debugLogs` or `timings` lists explicitly mean that file was unavailable; `invalidTimings` counts incomplete/malformed timing JSON. `reify:unpack` includes fetching as well as unpacking; summed per-node durations overlap and are not wall time. Windows installed checks set child `TEMP`/`TMP` to the runner's temporary directory, without relocating the checkout or changing npm cache selection. A paired research run on x64 measured clean installation on that runner's `D:` much faster than system `C:` with the same dependencies/cache and reversed order on both Node versions; ARM64's runner directory is still on `C:`, so no cross-drive speedup is claimed there. Every platform retains one full fixture per Node, a fresh isolated consumer and cold native cache; no antivirus settings change.
+### Current-source consumer and external delivery
 
-Registry cache-hit messages exclude a fetch for that response; pacote also reports cache-read attempts for package content before the stream finishes, so a later miss/corruption can still fall back to HTTP. Package-spec hits retain `resource: unknown` rather than guessing a URL category. Revalidation still uses the network; neither cache restoration nor an HTTP 200 alone proves saved work or explains a stall. Each preparation command has a five-minute timeout and each CI installed step has fifteen minutes; native deadlines and acceptance assertions remain unchanged.
+`test:installed-native` / `--suite consumer` is the ordinary clean-consumer interface. Prepare `--archives` plus the verified current-source native input first. Its required contract is real npm installation from integrity-checked prepared archives through a fixture-local registry/download server, in consumers outside checkout ancestry. Both the optional native npm payload and the raw download endpoint must contain the **same tested commit/nativeTree bytes**. Public release selection or fetching missing transitive packages during this lane violates the ordinary-test boundary.
 
-All six native CI platforms restore the npm `_cacache` before both installed Node checks, keyed by platform and the root lockfile with a same-platform fallback. A successful job saves it for later commits; a first cache miss still downloads dependencies. GNU containers bind the configured host cache using `npm_config_cache`; local runs without that setting retain their isolated container cache. No `node_modules`, raw npm logs or Occipital binary cache is retained. Clean installation and unpacking still happen on every run; npm's package cache does not remove the required cold native download or warm native-cache assertions.
+Retain both consumers: optional dependencies install automatically with zero bootstrap downloads; `--omit=optional` excludes native payload and shared SDK, requires real SDK import failure, one exact cold fixture-native download and zero warm HTTP. Normal bootstrap must prove compiled version, UTF-8 colors, three incremental dispatches, unchanged committed-prefix work, no repeated warm work, retention/timer cleanup and process reaping. A local registry is not proof of public npm publication; source/hash admission is not a substitute for actually running these controls.
 
-A missing helper explicitly skips native cases; a skip is not native acceptance. GC-only cases may skip without `--expose-gc` and must be run explicitly for ownership claims. Synthetic tests awaiting weakly owned transport initialization must retain the transport through the test lifecycle, for example `t.after(() => transport.close())`: awaiting its notification alone does not retain its owner. Abandoned-owner GC controls deliberately omit that ownership. `tests/shared-fixture-ownership.test.ts` exercises the actual optional-import case under forced GC without changing production timers or callbacks. Assert `process.version` before minimum-Node gates and use that executable directly; do not assume an npm/npx wrapper selected it. `PI_TEST_EXPECT_NODE` makes the physical syntax fixture assert the observed child runtime.
+`test:installed-native:published` / `--suite published-consumer --release-ref refs/tags/pi-tidy-ui-vVERSION` preserves genuinely networked public npm/GitHub delivery verification separately. The tag must identify the tested commit. It uses the nearest completed public Occipital release and exact native npm family, with the corresponding public cold download/warm-cache controls. It runs **only for extension release tags**, never ordinary main/PR, Occipital releases or future daily compatibility checks, and is not hermetic acceptance. See [release workflows](releases.md#workflow-relationship).
+
+GNU CI builds offline in glibc 2.28 from a verified neutral source copy, stamps only that copy, stages the exact current executable separately, and verifies the original checkout is unchanged before admitting that staged artifact for actual-helper smoke and the current consumer on each Node runtime. `scripts/release/installed-linux-gnu.sh` takes explicit target, suite, preparation directory and artifact directory. Linked worktrees additionally mount their exact Git common directory read-only, so source/tag authority does not depend on an inaccessible host path. Ordinary clone metadata remains inside the checkout mount; `native`/`consumer` run with Docker `--network=none`, while `published-consumer` requires the extension release ref and deliberately allows public networking. The image's Git and Node runtime prerequisites are not new Occipital runtime dependencies. Container execution proves neither an older kernel nor macOS/Windows behavior.
+
+Npm diagnostics retain only the safe projection in `.test-artifacts/installed-preparation-*/npm.json` and consumer `fixture.json`: known progress stages, numeric HTTP status/duration, cache enums, allowlisted timers, aggregate unpack counts/durations, numeric I/O-pool size, temporary drive letter and child exit/signal fields. Raw logs/timing files remain in owned temporary directories and are removed; commands, URLs, package/path identifiers, environment, stdout/stderr and opaque error text are not copied to CI artifacts. Empty log/timing lists mean unavailable data, not acceptance. Overlapping `reify:unpack` durations include fetching and are not wall time; cache messages or HTTP 200 alone do not prove saved work. Prepared npm cache reuse never replaces a fresh consumer or cold/warm native assertions. Native consumer CI steps allow fifteen minutes per Node; npm commands have their own five-minute bound.
+
+Missing required helper or GC capability is a setup failure. Synthetic tests awaiting weakly owned transport initialization must retain that transport through the lifecycle, for example `t.after(() => transport.close())`: awaiting its notification alone does not retain its owner. Abandoned-owner GC controls deliberately omit that ownership. `tests/shared-fixture-ownership.test.ts` exercises the actual optional-import case under mandatory forced GC without changing production timers/callbacks. The prepared executable/version and child runtime receipts are authoritative, not an npm/npx wrapper's assumed selection.
 
 Await fresh public provider/effective-profile state and settled source counters before reference captures; terminal silence is not asynchronous readiness. The acquisition-gate regression keeps Pi quiet before actual helper publication. Diagnostic source ownership follows the current public `SyntaxRuntime.attach`, including a native-disabled reinstall, rather than the last native classification. Track legitimate source-correction/profile/recovery restarts separately from ordinary appends. Bridge-install counts alone do not measure thrown/invalid Pi-classifier invocations; focused work tests cover those paths directly.
 
-The native crate has separate Rust correctness/format/lint checks. Its calibration examples and large-input cases are **not** an implicit prerequisite for each UI check. Scope tests to affected behavior, honor operator restrictions on new traffic/measurements, and name any excluded required coverage in the working report instead of calling a partial run the full suite. Use `--test-skip-pattern` for exclusions: a negative `--test-name-pattern` can match a parent test and thereby include the supposedly excluded child. `tests/test-filtering.test.ts` checks actual top-level and nested body non-execution on the current Node executable.
+The native crate has separate Rust correctness/format/lint checks. Its calibration examples and large-input cases are **not** an implicit prerequisite for each UI check. Scope tests to affected behavior, honor operator restrictions on new traffic/measurements, and name any excluded required coverage in the working report instead of calling a partial run the full suite. Use the runner's `--skip` for exclusions: a negative `--pattern` can match a parent test and thereby include the supposedly excluded child. `tests/test-filtering.test.ts` checks actual top-level and nested body non-execution on the current Node executable.
 
 Local release preparation scripts accept explicit inputs and produce staged artifacts/metadata; `test:native-release` also covers inert tag stamping, exact-commit all-platform artifact assembly and manual native npm publication. `tests/npm-release.test.mjs` checks exact source-run authority, public-release equality, all-six manifest/byte admission, real inert tarball packing, array/object npm metadata, no-overwrite registry preflight and per-package receipts. Publication tests inject the npm executor, exact-version/archive fetcher and fixture-only OIDC environment: they assert explicit `--provenance`, stopping on generation failure, and npm-only `+build` rejection before output/packing/registry access while preserving GitHub SemVer support. They do not upload anything or establish actual trusted-publisher/provenance acceptance. `tests/extension-release.test.mjs` exercises real tiny Git histories/current artifact families, all-six current/public/npm admission, generated optional-dependency/metadata agreement, immutable source manifests/lockfile and tarball contents. Failed selected releases/bytes/npm identities stop preparation without choosing older releases. The preparation scripts do not publish. The [CI and release workflows](releases.md) compile versioned native artifacts and reuse them for an Occipital-only GitHub release; defining the matrix does not establish actual platform support or authorize inserting unavailable packages/URLs into production. GNU jobs additionally use the [native glibc 2.28 gate](releases.md#local-checks): full Rust checks/lint, required ELF symbol versions and the actual helper control all run inside the older userspace on each native architecture. No memory/source calibration modes run there; the diagnostic example explicitly reports unavailable pre-2.33 allocator information rather than requiring a newer libc. Container testing does not prove an older kernel's behavior. Third-party source notices, source/binary/toolchain provenance, actual per-target builds/ABI/installation and verified published exact artifacts remain distinct G5 gates. See the [syntax contract](syntax-highlighting-spec.md#delivery-status-and-verification).
 
 ## CLI isolation and evidence
 
-Each CLI run starts with a fresh temporary HOME, agent directory, settings, workspace and session. It loads the offline driver and exercises actual built-in tools, not replacements presented as native execution. Representative metadata fixtures are separate explicit opt-ins. Native, pi-tidy-ui, off/on, reload and replay controls use the same supplied data and owned workspaces. Child processes use isolated settings and do not inherit model credentials. The installed-profile helper inspects the local package inventory, but tests do not modify user settings, publish packages or change user installations.
+Each CLI run starts with a fresh temporary HOME, agent directory, settings, workspace and session. It loads the offline driver and exercises actual built-in tools, not replacements presented as native execution. Representative metadata fixtures are separate explicit opt-ins. Native, pi-tidy-ui, off/on, reload and replay controls use the same supplied data and owned workspaces. Child processes use isolated settings and do not inherit model credentials. The integration-profile helper reads only locked prepared packages, never the user's installed inventory; tests do not modify user settings, publish packages or change user installations.
 
 Python transports actual PTY output into `@xterm/headless`. Physical-screen assertions inspect terminal cells, including foreground/background/attributes and cursor width, not only calls to `component.render(width)`. The terminal emulator answers native cursor/device queries. Resize waits with a bounded deadline for a fresh, matching PTY ioctl receipt and the fixture's observed Node TTY width/height, not a fixed sleep or quiet output; unchanged dimensions still require a fresh receipt. The observer samples geometry on native resize/session-start events, adds no render requests or draft commands and removes its listener on shutdown. A controlled regression delays ioctl and pauses Pi after ioctl acknowledgement, checking width-only, height-only, identical-size and repeated-target transitions in both modes. Input exercises real keyboard sequences and normalized mouse clicks/selection; no production pointer observer is introduced.
 
-The harness writes fresh evidence under `.test-artifacts/terminal-<timestamp>-<pid>/`. Live `events.jsonl` reads consume only newline-terminated records: an unfinished tail remains pending, while malformed completed JSON still fails immediately. The `CLI event journal:` controls exercise these reads with tiny inputs. CI failure uploads explicitly include this hidden directory, scoped to terminal captures. Captures include invocations, dumps, terminal output/screens, tool events, model contexts, sessions and coverage/counter packets. Standalone experiments and review reports also belong under ignored `.test-artifacts/`. Record the tested source baseline, exact command, executed versus skipped coverage, findings and unresolved limits there. Do not append run histories or local agent-session paths to project specifications.
+After input/host validation, the runner writes machine-readable source/host/Node/selection/network/status reports under the preparation directory's `runs/`, including failures during suite setup, and removes disposable runtime roots in `finally`. Physical captures remain under the materialized project's `.test-artifacts/terminal-<timestamp>-<pid>/`. Live `events.jsonl` reads consume only newline-terminated records: an unfinished tail remains pending, while malformed completed JSON still fails immediately. The `CLI event journal:` controls exercise these reads with tiny inputs. CI failure uploads explicitly include this hidden directory, scoped to terminal captures. Captures include invocations, dumps, terminal output/screens, tool events, model contexts, sessions and coverage/counter packets. Standalone experiments and review reports also belong under ignored `.test-artifacts/`. Record the tested source baseline, exact command, executed versus skipped coverage, findings and unresolved limits there. Do not append run histories or local agent-session paths to project specifications.
 
 ## Strict control comparisons
 
@@ -220,7 +258,7 @@ The real CLI spinner scenario runs in both regular and fullscreen modes. During 
 
 ## Installed-extension profile and limits
 
-The installed-profile test reads the allowlist/version audit in `integration-profile.mjs`. An unavailable or mismatched safe profile is an explicit skip, not a passing integration. Its sanitized environment and temporary configuration preserve real registration while disabling networked/secondary model work and unrelated background services. Fresh HOME is required as well as the isolated agent directory because some packages read `homedir()` directly.
+The integration test reads the audited manifest/lock in `tests/fixtures/integration-profile/` through `integration-profile.mjs` and requires `--integration` preparation. A missing or mismatched package is a setup failure, not a skip; the developer's installed extensions do not select coverage. Its sanitized environment and temporary configuration preserve real registration while disabling networked/secondary model work and unrelated background services. Fresh HOME is required as well as the isolated agent directory because some packages read `homedir()` directly.
 
 In that profile, local task tools have real execution/renderer coverage. Agent, web, ask and Magic Context integrations have registration-only coverage; registration does not prove their renderer ran. AFT is excluded because startup schedules auto-build/refresh/warmup work; keep-awake is excluded because it starts an OS sleep inhibitor. Deterministic AFT-shaped diff/diagnostic/exit metadata tests do not execute installed AFT or subscribe to its LSP.
 

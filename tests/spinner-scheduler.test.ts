@@ -1,4 +1,5 @@
 // Actual-SDK components; a deterministic host models completed document visits, not terminal presentation.
+import './fixtures/test-guard.mjs';
 import assert from "node:assert/strict";
 import test, { type TestContext } from "node:test";
 import { stripVTControlCharacters as plain } from "node:util";

@@ -1,40 +1,29 @@
 // Read-only profile builder. It never imports extensions, installs packages, or writes settings.
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
-import { homedir } from "node:os";
+import { fileURLToPath } from "node:url";
+import { isDeepStrictEqual } from "node:util";
+import { readInputs } from "../../scripts/test/context.mjs";
 
-// Audited against the installed entry points, not npm metadata. A changed version
+// Audited against package entry points, not npm metadata. A changed version
 // must be reviewed again before the smoke test loads it with OS-level permissions.
-const AUDITED = {
-  "@victor-software-house/pi-curated-themes": "0.2.1",
-  "@cortexkit/pi-magic-context": "0.44.4",
-  "@cortexkit/aft-pi": "0.58.2",
-  "pi-hide-providers": "0.1.22",
-  "pi-web-access": "0.35.0",
-  "@tintinweb/pi-subagents": "0.19.0",
-  "@tintinweb/pi-tasks": "0.9.0",
-  "@juicesharp/rpiv-ask-user-question": "2.12.0",
-  "@raidou/pi-notify": "0.7.4",
-  "@pedro_klein/pi-caffeinate": "0.2.0",
-  "@pedro_klein/pi-adhd": "0.2.0",
-  "pi-context-view": "0.6.0",
-  "pi-powerline-footer": "0.19.1",
-};
+const manifestPath = fileURLToPath(new URL('./integration-profile/package.json', import.meta.url));
+const AUDITED = JSON.parse(readFileSync(manifestPath, 'utf8')).dependencies;
 
 const EXCLUDED = {
   "@cortexkit/aft-pi":
     "The factory eagerly starts the persistent Rust bridge and can download a binary, ONNX runtime, or LSP servers. indexes.semantic=false and lsp.auto_install=false do not disable eager bridge startup. The only startup bypass is MAGIC_CONTEXT_PI_SUBAGENT, a delegated-worker identity, not a general offline switch; this primary-session test does not impersonate a worker. AFT loader/renderer coexistence is therefore NOT covered.",
   "@pedro_klein/pi-caffeinate":
-    "agent_start unconditionally spawns caffeinate or systemd-inhibit/sleep infinity. The installed extension has no supported disable setting or flag; even the offline fixture provider emits agent_start.",
+    "agent_start unconditionally spawns caffeinate or systemd-inhibit/sleep infinity. The audited extension has no supported disable setting or flag; even the offline fixture provider emits agent_start.",
 };
 
 /**
- * Return data for a real-CLI smoke test using the user's installed package sources.
+ * Return data for a real-CLI smoke test using the locked prepared package sources.
  *
  * The caller must supply fresh, test-owned homeDir, agentDir and workDir, write
  * settings to agentDir/settings.json and materialize configFiles BEFORE starting
- * Pi, and pass env as the COMPLETE child environment (do not merge process.env).
- * This helper itself writes nothing. Local source directories remain read-only.
+ * Pi, and pass env through childEnv (never merge process.env).
+ * This helper itself writes nothing. Prepared source directories remain read-only.
  * The caller owns the offline provider, PTY, tool-execution guard and cleanup.
  * PI_OFFLINE suppresses host automatic network activity, NOT extension tool calls.
  * Never execute Agent/TaskExecute, web search/fetch, /btw, /note <text>, or model
@@ -45,50 +34,43 @@ export function getInstalledIntegrationProfile({
   homeDir,
   agentDir,
   workDir,
-  sourceAgentDir = process.env.TIDY_UI_SOURCE_AGENT_DIR || join(homedir(), ".pi", "agent"),
   provider = "tidy-ui-offline",
   model = "scripted",
 } = {}) {
-  for (const [name, path] of Object.entries({ homeDir, agentDir, workDir, sourceAgentDir })) {
+  for (const [name, path] of Object.entries({ homeDir, agentDir, workDir })) {
     if (typeof path !== "string" || !isAbsolute(path)) throw new Error(`${name} must be an absolute path`);
   }
-  const source = resolve(sourceAgentDir);
+  const integration = readInputs().integration;
+  if (!integration) throw new Error('Required locked integration profile is missing from prepared inputs');
+  if (!isAbsolute(integration.root) || !isAbsolute(integration.manifest)) {
+    throw new Error('Prepared integration paths must be absolute');
+  }
+  const preparedManifest = JSON.parse(readFileSync(integration.manifest, 'utf8'));
+  if (!isDeepStrictEqual(preparedManifest, JSON.parse(readFileSync(manifestPath, 'utf8')))) {
+    throw new Error('Prepared integration manifest does not match the audited locked profile');
+  }
+  const source = resolve(integration.root);
   for (const path of [homeDir, agentDir, workDir]) {
     const isolated = resolve(path);
     if (isolated === source || isolated.startsWith(`${source}/`) || source.startsWith(`${isolated}/`)) {
-      throw new Error("Integration directories must not overlap the user's source agent directory");
+      throw new Error('Integration directories must not overlap the prepared package directory');
     }
   }
-  const settingsPath = join(source, "settings.json");
-  const declared = JSON.parse(readFileSync(settingsPath, "utf8")).packages ?? [];
   const inventory = [];
-  const exclusions = [];
+  const exclusions = Object.entries(EXCLUDED).map(([name, reason]) => ({ name, reason }));
   const packages = [];
-  for (const declaration of declared) {
-    const spec = typeof declaration === "string" ? declaration : declaration.source;
-    const match = /^npm:((?:@[^/]+\/)?[^@]+)(?:@.+)?$/.exec(spec ?? "");
-    if (!match) {
-      exclusions.push({ source: spec, reason: "Not an audited installed npm package source; no installation or remote resolution is allowed." });
-      continue;
+  for (const [name, version] of Object.entries(AUDITED)) {
+    const directory = join(source, 'node_modules', name);
+    const packageManifest = join(directory, 'package.json');
+    if (!existsSync(packageManifest) || !statSync(directory).isDirectory()) {
+      throw new Error(`Required integration package is missing: ${name}@${version}`);
     }
-    const name = match[1];
-    const directory = join(source, "npm", "node_modules", name);
-    const manifestPath = join(directory, "package.json");
-    if (!existsSync(manifestPath) || !statSync(directory).isDirectory()) {
-      exclusions.push({ name, reason: "No existing local installed package directory/manifest." });
-      continue;
+    const manifest = JSON.parse(readFileSync(packageManifest, 'utf8'));
+    if (manifest.name !== name || manifest.version !== version) {
+      throw new Error(`Required integration package does not match audited identity: ${name}@${version}`);
     }
-    const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
-    inventory.push({ name, version: manifest.version, source: directory, resources: manifest.pi ?? {} });
-    const reason = manifest.name !== name ? "Installed manifest name does not match the configured package."
-      : AUDITED[name] !== manifest.version ? "Installed version has not been reviewed for startup side effects."
-      : EXCLUDED[name];
-    if (reason) {
-      exclusions.push({ name, version: manifest.version, source: directory, reason });
-      continue;
-    }
-    // Load the real manifest's extensions/themes, not copied entry points.
-    // Skill/prompt content is intentionally irrelevant to this renderer smoke test.
+    inventory.push({ name, version, source: directory, resources: manifest.pi ?? {} });
+    // Load real package resources, not copied entry points or registration mocks.
     packages.push({ source: directory, skills: [], prompts: [] });
   }
 
@@ -158,11 +140,9 @@ export function getInstalledIntegrationProfile({
   const env = {
     // Deliberately do not carry API keys, OAuth tokens, proxy configuration,
     // NODE_OPTIONS, parent subagent markers, TMUX or display/notification sockets.
-    PATH: process.env.PATH ?? "/usr/local/bin:/usr/bin:/bin",
     LANG: "C.UTF-8",
     TERM: "xterm-256color",
     COLORTERM: "truecolor",
-    SHELL: "/bin/bash",
     HOME: homeDir,
     USERPROFILE: homeDir,
     XDG_CONFIG_HOME: configHome,

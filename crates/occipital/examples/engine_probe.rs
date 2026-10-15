@@ -432,9 +432,16 @@ fn main() {
 }
 
 #[cfg(all(test, target_os = "linux", target_env = "gnu"))]
+#[path = "../tests/support/mod.rs"]
+mod support;
+
+#[cfg(all(test, target_os = "linux", target_env = "gnu"))]
 #[test]
 fn allocator_diagnostic_tracks_the_actual_glibc_api() {
-    let output = std::process::Command::new("getconf")
+    let root = support::CaseDir::new("allocator");
+    let getconf = std::env::var_os("TIDY_TEST_GETCONF").expect("TIDY_TEST_GETCONF is required");
+    let output = root
+        .command(getconf)
         .arg("GNU_LIBC_VERSION")
         .output()
         .expect("read actual GNU libc version");

@@ -1,3 +1,4 @@
+import './fixtures/test-guard.mjs';
 import assert from 'node:assert/strict';
 import { afterEach, test } from 'node:test';
 import * as fs from 'node:fs/promises';
@@ -211,14 +212,28 @@ test('entry logging failure and disabled snapshot are truthful, isolate presenta
 });
 
 
-test('logging review H3: explicit snapshot includes existing Git and owned fallback-animation aggregates', async () => {
-  const root = await fs.mkdtemp(join(tmpdir(), 'tidy-log-snapshot-')), h = fixture('tui', { root });
+test('logging review H3: explicit snapshot includes existing Git and owned fallback-animation aggregates', async t => {
+  let release!: () => void;
+  const opening = new Promise<void>(resolve => { release = resolve; });
+  const root = await fs.mkdtemp(join(tmpdir(), 'tidy-log-snapshot-'));
+  const h = fixture('tui', { root, io: { ...fs, async open(...args: Parameters<typeof fs.open>) {
+    await opening; return fs.open(...args);
+  } } });
   try {
-    await h.start(); await h.page('Status & troubleshooting', 'Diagnostic logs', 'Write state snapshot'); const status = debugLoggingDiagnostics()!;
+    await h.start(); assert.equal(debugLoggingDiagnostics()!.state, 'starting');
+    await h.page('Status & troubleshooting', 'Diagnostic logs', 'Write state snapshot');
+    assert.match(h.view, /Snapshot not written.*unavailable/u);
+    assert.equal(debugLoggingDiagnostics()!.state, 'starting');
+    release();
+    await t.waitFor(() => assert.equal(debugLoggingDiagnostics()!.state, 'active'));
+    await h.page('Status & troubleshooting', 'Diagnostic logs', 'Write state snapshot');
+    assert.match(h.view, /Done\./u);
+    const status = debugLoggingDiagnostics()!;
     const text = await fs.readFile(status.path, 'utf8');
     assert.match(text, /\[git\].*Snapshot.*queries=/);
     assert.match(text, /\[animation\].*Snapshot.*wakes=0.*requests=0/);
   } finally {
+    release();
     await h.events.get('session_shutdown')!({ type: 'session_shutdown', reason: 'quit' }, h.ctx);
     await fs.rm(root, { recursive: true, force: true });
   }

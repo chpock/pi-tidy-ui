@@ -1,3 +1,4 @@
+import './fixtures/test-guard.mjs';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { execFileSync } from 'node:child_process';
@@ -94,10 +95,15 @@ test('CI fetches tag history, pins Rust from one file and consumes the resolved 
   assert.match(native, /dtolnay\/rust-toolchain@master/);
   assert.doesNotMatch(native, /rust-toolchain@stable/);
   assert.match(native, /toolchain: \$\{\{ steps\.toolchain\.outputs\.version \}\}/);
-  assert.match(native, /version\.mjs --daemon-version "\$DAEMON_VERSION"/);
+  assert.match(native, /stampDaemonVersion\(process\.env\.NATIVE_SOURCE, process\.env\.DAEMON_VERSION\)/);
+  assert.doesNotMatch(native, /version\.mjs --daemon-version/);
   assert.doesNotMatch(ci, /occipital-v0\.0\.0-linux-x64-gnu/);
-  assert.match(ci, /OCCIPITAL_TEST_BIN: .*needs\.version\.outputs\.daemon_version/);
+  assert.match(ci, /name: occipital-v\$\{\{ needs\.version\.outputs\.daemon_version \}\}-linux-x64-gnu/);
+  assert.match(ci, /--native-artifact "\$GITHUB_WORKSPACE\/\.test-artifacts\/ci-native"/);
   assert.match(ci, /clean-native-build:\n[\s\S]*?type: boolean\n        default: false/);
   assert.match(ci, /clean-build: \$\{\{ inputs\.clean-native-build \|\| false \}\}/);
-  assert.match(native, /Swatinem\/rust-cache@v2\n(?:        #[^\n]*\n)*        if: \$\{\{ !inputs\.clean-build \}\}/);
+  assert.match(native, /actions\/cache@v4\n        if: \$\{\{ !inputs\.clean-build \}\}/);
+  assert.match(native, /\$\{\{ env\.CARGO_HOME \}\}\/registry/);
+  assert.match(native, /\$\{\{ env\.CARGO_HOME \}\}\/git/);
+  assert.doesNotMatch(native, /\$\{\{ runner\.temp \}\}\/occipital-cargo/);
 });

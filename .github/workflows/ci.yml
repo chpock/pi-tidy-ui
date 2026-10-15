@@ -52,7 +52,7 @@ jobs:
       clean-build: ${{ inputs.clean-native-build || false }}
 
   extension:
-    needs: version
+    needs: [version, native]
     if: needs.version.outputs.product != 'occipital'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -60,6 +60,7 @@ jobs:
       fail-fast: false
       matrix:
         node: ['22.19.0', '26.7.0']
+        pi: ['1.0.0', '1.2.0']
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -70,16 +71,39 @@ jobs:
         env:
           EXPECTED_NODE: ${{ matrix.node }}
         run: node -e 'if (process.version !== "v" + process.env.EXPECTED_NODE) throw new Error(process.version)'
-      - run: npm ci
-      - run: npm run check
+      - uses: actions/download-artifact@v4
+        with:
+          name: occipital-v${{ needs.version.outputs.daemon_version }}-linux-x64-gnu
+          path: .test-artifacts/ci-native
+      - name: Prepare enforced Linux network isolation
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap
+          if ! /usr/bin/bwrap --unshare-user --unshare-net --ro-bind / / -- /usr/bin/true; then
+            sudo tee /etc/apparmor.d/tidy-test-bwrap >/dev/null <<'PROFILE'
+          abi <abi/4.0>,
+          include <tunables/global>
+          profile tidy-test-bwrap /usr/bin/bwrap flags=(unconfined) {
+            userns,
+          }
+          PROFILE
+            sudo apparmor_parser -r /etc/apparmor.d/tidy-test-bwrap
+          fi
+          /usr/bin/bwrap --unshare-user --unshare-net --ro-bind / / -- /usr/bin/true
+      - name: Prepare selected host and this commit's native artifact
+        env:
+          PI_VERSION: ${{ matrix.pi }}
+        run: |
+          chmod +x .test-artifacts/ci-native/packages/linux-x64-gnu/occipital
+          node scripts/test/prepare.mjs --pi-version "$PI_VERSION" --integration --native-artifact "$GITHUB_WORKSPACE/.test-artifacts/ci-native" --output "$RUNNER_TEMP/extension-inputs"
+      - name: Strict selected-host types
+        run: node scripts/test/run.mjs --inputs "$RUNNER_TEMP/extension-inputs/inputs.json" --suite check --network-isolated
       - name: Unit, actual-SDK and GC regressions
         timeout-minutes: 5
-        env:
-          TERM: xterm-256color
-          COLORTERM: truecolor
-        run: node --expose-gc --test --test-concurrency=2 tests/*.test.ts
+        run: node scripts/test/run.mjs --inputs "$RUNNER_TEMP/extension-inputs/inputs.json" --suite unit --network-isolated
       - name: Inert native packaging and release regressions
-        run: npm run test:native-release
+        if: matrix.pi == '1.0.0'
+        run: node scripts/test/run.mjs --inputs "$RUNNER_TEMP/extension-inputs/inputs.json" --suite native-release --network-isolated
       # Real release packages are generated only after all platform/CLI and delivery gates.
       - name: Pack development extension without publishing
         if: needs.version.outputs.product != 'pi-tidy-ui'
@@ -87,7 +111,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: needs.version.outputs.product != 'pi-tidy-ui'
         with:
-          name: extension-${{ needs.version.outputs.version }}-node-${{ matrix.node }}
+          name: extension-${{ needs.version.outputs.version }}-node-${{ matrix.node }}-pi-${{ matrix.pi }}
           path: pi-tidy-ui-*.tgz
           if-no-files-found: error
 
@@ -100,33 +124,74 @@ jobs:
       fail-fast: false
       matrix:
         node: ['22.19.0', '26.7.0']
+        pi: ['1.0.0', '1.2.0']
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node }}
           cache: npm
-      - run: npm ci
       - uses: actions/download-artifact@v4
         with:
           name: occipital-v${{ needs.version.outputs.daemon_version }}-linux-x64-gnu
           path: .test-artifacts/ci-native
-      - name: Restore raw executable permissions
+      - name: Prepare enforced Linux network isolation
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap
+          if ! /usr/bin/bwrap --unshare-user --unshare-net --ro-bind / / -- /usr/bin/true; then
+            sudo tee /etc/apparmor.d/tidy-test-bwrap >/dev/null <<'PROFILE'
+          abi <abi/4.0>,
+          include <tunables/global>
+          profile tidy-test-bwrap /usr/bin/bwrap flags=(unconfined) {
+            userns,
+          }
+          PROFILE
+            sudo apparmor_parser -r /etc/apparmor.d/tidy-test-bwrap
+          fi
+          /usr/bin/bwrap --unshare-user --unshare-net --ro-bind / / -- /usr/bin/true
+      - name: Prepare fixed isolated Subconscious host prerequisite
+        run: |
+          mkdir -p "$RUNNER_TEMP/shared-host"
+          curl --fail --location --output "$RUNNER_TEMP/shared-host/host.zip" \
+            https://github.com/cortexkit/subconscious/releases/download/subc-core-v0.20.83/ck-subc-linux-x64.zip
+          printf '%s  %s\n' c905fd8c5eba045c38fb61dd0c6c0ffc8254ae2cb0be50ef1017cde5470e62c4 "$RUNNER_TEMP/shared-host/host.zip" | sha256sum --check
+          unzip -j "$RUNNER_TEMP/shared-host/host.zip" ck-subc -d "$RUNNER_TEMP/shared-host"
+          chmod 700 "$RUNNER_TEMP/shared-host/ck-subc"
+      - name: Prepare selected host, locked integration and same-commit native inputs
         env:
-          DAEMON_VERSION: ${{ needs.version.outputs.daemon_version }}
-        run: chmod +x ".test-artifacts/ci-native/assets/occipital-v$DAEMON_VERSION-linux-x64-gnu"
+          PI_VERSION: ${{ matrix.pi }}
+        run: |
+          chmod +x .test-artifacts/ci-native/packages/linux-x64-gnu/occipital
+          node scripts/test/prepare.mjs --pi-version "$PI_VERSION" --integration \
+            --native-artifact "$GITHUB_WORKSPACE/.test-artifacts/ci-native" \
+            --shared-host "$RUNNER_TEMP/shared-host/ck-subc" --output "$RUNNER_TEMP/terminal-inputs"
       - name: Full physical CLI and replay (extension release only)
         if: needs.version.outputs.product == 'pi-tidy-ui'
-        run: npm run test:terminal
+        run: node scripts/test/run.mjs --inputs "$RUNNER_TEMP/terminal-inputs/inputs.json" --suite terminal --network-isolated
       - name: Physical syntax CLI and replay using this commit's native artifact
-        env:
-          OCCIPITAL_TEST_BIN: .test-artifacts/ci-native/assets/occipital-v${{ needs.version.outputs.daemon_version }}-linux-x64-gnu
-        run: npm run test:syntax-terminal
+        run: node scripts/test/run.mjs --inputs "$RUNNER_TEMP/terminal-inputs/inputs.json" --suite syntax-terminal --network-isolated
+      - name: Retain selected physical terminal captures from neutral source
+        if: failure()
+        run: |
+          node --input-type=module <<'JS'
+          import {cpSync,existsSync,mkdirSync,readFileSync,readdirSync} from 'node:fs';
+          import {join} from 'node:path';
+          const receipt = join(process.env.RUNNER_TEMP,'terminal-inputs/inputs.json');
+          if (existsSync(receipt)) {
+            const inputs = JSON.parse(readFileSync(receipt)), captures = join(inputs.pi.root,'.test-artifacts');
+            if (existsSync(captures)) for (const directory of readdirSync(captures,{withFileTypes:true})) {
+              if (!directory.isDirectory() || !/^terminal-[\w-]+$/.test(directory.name)) continue;
+              const output = join(process.env.RUNNER_TEMP,'terminal-captures'); mkdirSync(output,{recursive:true});
+              cpSync(join(captures,directory.name),join(output,directory.name),{recursive:true});
+            }
+          }
+          JS
       - uses: actions/upload-artifact@v4
         if: failure()
         with:
-          name: terminal-failure-node-${{ matrix.node }}
-          path: .test-artifacts/terminal-*/
+          name: terminal-failure-node-${{ matrix.node }}-pi-${{ matrix.pi }}
+          path: ${{ runner.temp }}/terminal-captures/terminal-*/
           include-hidden-files: true
           if-no-files-found: ignore
 

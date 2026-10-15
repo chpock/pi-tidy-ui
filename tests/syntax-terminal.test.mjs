@@ -1,3 +1,4 @@
+import './fixtures/test-guard.mjs';
 // Physical CLI checks with small real built-in calls and a controlled local artifact.
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
@@ -9,10 +10,16 @@ import { stripVTControlCharacters } from 'node:util';
 import test, { after } from 'node:test';
 import { SessionManager } from '@earendil-works/pi-coding-agent';
 import { stageExtensionPackage } from '../scripts/release/extension-release.mjs';
-import { PiTerminal } from './terminal.test.mjs';
+import { PiTerminal } from './fixtures/terminal-harness.mjs';
+import { readInputs, childEnv, validateNative } from '../scripts/test/context.mjs';
 import { sharedSyntaxHost, themeDefinition, reaped } from './fixtures/shared-syntax-host.mjs';
 
-const binary = process.env.OCCIPITAL_TEST_BIN;
+const inputs = readInputs();
+const binary = validateNative(inputs).path;
+function requiredSharedHost() {
+  if (!inputs.sharedHost?.path) throw new Error('Shared syntax terminal profile requires a prepared shared host');
+  return inputs.sharedHost.path;
+}
 let fixture = resolve('tests/fixtures/syntax-driver.ts'), loggingFixture = resolve('tests/fixtures/logging-driver.ts');
 if (binary) {
   await mkdir(resolve('.test-artifacts'), { recursive: true });
@@ -27,8 +34,9 @@ if (binary) {
   loggingFixture = join(source, 'tests/fixtures/logging-driver.ts');
   for (const name of ['logging-driver.ts', 'presentation-driver.ts']) await cp(resolve('tests/fixtures', name), join(source, 'tests/fixtures', name));
 }
-const helperVersion = binary ? execFileSync(resolve(binary), ['--version'], { encoding: 'utf8', timeout: 30000 }).trim().match(/^occipital (\S+)$/)?.[1] : undefined;
-if (binary && !helperVersion) throw new Error('Unexpected local artifact version output');
+const helperVersion = binary ? execFileSync(resolve(binary), ['--version'], { encoding: 'utf8', timeout: 30000, env: childEnv(resolve('.test-artifacts/syntax-version')) }).trim().match(/^occipital (\S+)$/)?.[1] : undefined;
+if (!helperVersion) throw new Error('Unexpected local artifact version output');
+assert.equal(helperVersion, inputs.native.version, 'actual helper matches the prepared native identity');
 const descriptor = binary ? { TIDY_UI_TEST_OCCIPITAL_BIN: resolve(binary), TIDY_UI_TEST_OCCIPITAL_VERSION: helperVersion,
   TIDY_UI_TEST_OCCIPITAL_SHA: createHash('sha256').update(readFileSync(binary)).digest('hex'),
   TIDY_UI_TEST_OCCIPITAL_BYTES: String(statSync(binary).size), TIDY_UI_TEST_SYNTAX_CARDS: '1' } : undefined;
@@ -83,7 +91,7 @@ const nativeReady = snapshot => snapshot.client?.provider.availability === 'read
   && snapshot.source?.globalUnsettledJobs === 0;
 async function syntaxReady(terminal) {
   const ready = await settledStats(terminal, 'startup', nativeReady);
-  assert.equal(ready.node, process.env.PI_TEST_EXPECT_NODE ?? process.version);
+  assert.equal(ready.node, inputs.node.version);
   assert.equal(ready.counts.describeReplies, 1); assert.equal(ready.counts.downloads, 0);
   return ready;
 }
@@ -130,7 +138,7 @@ async function scenario(terminal, native, awaitClassification = true) {
   return terminal.capture('syntax-final');
 }
 for (const mode of ['fullscreen', 'regular']) test(`occipital CLI: actual ${mode} startup, args completion, warm/resize/off and exact traffic replay`,
-  { skip: !binary, timeout: 120000 }, async () => {
+  { timeout: 120000 }, async () => {
     const terminals = [], create = (name, options) => { const t = new PiTerminal(`syntax-${mode}-${name}`, { mode, ...options }); terminals.push(t); return t; };
     try {
       const native = create('native', { tidyUi: false, extraEnv: descriptor, extensions: [fixture] });
@@ -178,7 +186,7 @@ for (const mode of ['fullscreen', 'regular']) test(`occipital CLI: actual ${mode
   });
 
 test('occipital CLI: real theme picker, explicit RGB, persisted selection and fresh default enablement',
-  { skip: !binary, timeout: 90000 }, async () => {
+  { timeout: 90000 }, async () => {
     const native = new PiTerminal('syntax-theme-native', { mode: 'fullscreen', extraEnv: descriptor, extensions: [fixture] });
     let replay;
     try {
@@ -211,7 +219,7 @@ test('occipital CLI: real theme picker, explicit RGB, persisted selection and fr
 
 
 test('occipital CLI: provider readiness waits for the actual acquired/publication state, not terminal silence',
-  { skip: !binary, timeout: 30000 }, async () => {
+  { timeout: 30000 }, async () => {
     const terminal = new PiTerminal('syntax-acquisition-gated', { mode: 'fullscreen', extensions: [fixture],
       extraEnv: { ...descriptor, TIDY_UI_TEST_SYNTAX_ACQUIRE_GATE: '1' } });
     try {
@@ -226,7 +234,7 @@ test('occipital CLI: provider readiness waits for the actual acquired/publicatio
   });
 
 for (const mode of ['fullscreen', 'regular']) test(`occipital CLI: ${mode} input and tool progress with held real file replies and no duplicate Pi classification`,
-  { skip: !binary, timeout: 120000 }, async () => {
+  { timeout: 120000 }, async () => {
     const terminal = new PiTerminal(`syntax-held-${mode}`, { mode, tidyUi: false, extensions: [fixture],
       extraEnv: { ...descriptor, TIDY_UI_TEST_SYNTAX_REPLY_GATE: '1' } });
     const stock = new PiTerminal(`syntax-held-${mode}-stock`, { mode, tidyUi: false,
@@ -241,7 +249,7 @@ for (const mode of ['fullscreen', 'regular']) test(`occipital CLI: ${mode} input
       assert.equal(Buffer.byteLength(actualReply.payload.sources[0].text), 11);
       assert.equal(actualReply.reply.status, 'ok');
       const before = await stats(terminal, 'held-before');
-      assert.equal(before.node, process.env.PI_TEST_EXPECT_NODE ?? process.version);
+      assert.equal(before.node, inputs.node.version);
       assert.equal(before.pendingHeldReplies, 1); assert.equal(before.counts.heldReplies, 1);
       assert.equal(before.counts.deliveredReplies, 0); assert.equal(before.source.globalUnsettledJobs, 1);
       assert.equal(before.counts.piCaptures, 0); assert.equal(before.counts.piBridges, 0);
@@ -326,8 +334,8 @@ async function keywordColor(terminal, color, name) {
 }
 
 test('occipital CLI: shared discovery, public refresh/status/Pi menu, actual loss and owned-to-shared return preserve peer and traffic',
-  { skip: !binary || !process.env.OCCIPITAL_TEST_SHARED_HOST, timeout: 120000 }, async () => {
-    const host = await sharedSyntaxHost(process.env.OCCIPITAL_TEST_SHARED_HOST, binary);
+  { timeout: 120000 }, async () => {
+    const host = await sharedSyntaxHost(requiredSharedHost(), binary);
     const terminal = new PiTerminal('syntax-shared-transitions', { mode: 'fullscreen', extensions: [fixture],
       extraEnv: { ...descriptor, SUBC_CONNECTION_FILE: host.alias, TIDY_UI_TEST_SYNTAX_SHARED: '1' } });
     let returnedPeer;
@@ -404,7 +412,7 @@ test('occipital CLI: shared discovery, public refresh/status/Pi menu, actual los
   });
 
 for (const mode of ['fullscreen', 'regular']) test(`occipital CLI: ${mode} gradual argument abort preserves prefix, stock traffic and warm work`,
-  { skip: !binary, timeout: 60000 }, async () => {
+  { timeout: 60000 }, async () => {
     const live = new PiTerminal(`syntax-abort-${mode}`, { mode, extensions: [fixture], extraEnv: descriptor });
     const stock = new PiTerminal(`syntax-abort-stock-${mode}`, { mode, tidyUi: false, extraEnv: descriptor });
     const fallback = new PiTerminal(`syntax-abort-fallback-${mode}`, { mode, tidyUi: true, extraEnv: descriptor });
@@ -462,8 +470,8 @@ for (const mode of ['fullscreen', 'regular']) test(`occipital CLI: ${mode} gradu
 
 
 test('occipital CLI: structured RGB and font attributes preserve both file diff sides, frames and warm work',
-  { skip: !binary || !process.env.OCCIPITAL_TEST_SHARED_HOST, timeout: 120000 }, async () => {
-    const host = await sharedSyntaxHost(process.env.OCCIPITAL_TEST_SHARED_HOST, binary);
+  { timeout: 120000 }, async () => {
+    const host = await sharedSyntaxHost(requiredSharedHost(), binary);
     const terminal = new PiTerminal('syntax-physical-styles', { mode: 'fullscreen', extensions: [fixture],
       extraEnv: { ...descriptor, SUBC_CONNECTION_FILE: host.alias, TIDY_UI_TEST_SYNTAX_SHARED: '1' } });
     const vectors = dump => {
@@ -589,7 +597,7 @@ function loggingPrivacy(text, events) {
 }
 for (const mode of ['regular', 'fullscreen']) for (const native of [false, true])
   test(`occipital CLI: logging ${mode} ${native ? 'native' : 'fallback'} truthful decisions, unchanged frames, reload and replay`,
-    { skip: native && !binary, timeout: 120000 }, async () => {
+    { timeout: 120000 }, async () => {
       const terminal = new PiTerminal(`logging-${mode}-${native ? 'native' : 'fallback'}`, { mode, extensions: [loggingFixture],
         extraEnv: { ...descriptor, TIDY_UI_TEST_LOGGING_NATIVE: native ? '1' : '0', TIDY_UI_TEST_LOGGING_CANCEL: '1', TIDY_UI_TEST_SYNTAX_CARDS: '1' } });
       const stock = new PiTerminal(`logging-${mode}-stock-${native}`, { mode, extraEnv: { TIDY_UI_TEST_SYNTAX_CARDS: '1' } });
@@ -649,7 +657,7 @@ for (const mode of ['regular', 'fullscreen']) for (const native of [false, true]
     });
 
 for (const mode of ['fullscreen', 'regular']) test(`occipital CLI: ${mode} historical Bash tail stays colored across held append, new grapheme and abort`,
-  { skip: !binary, timeout: 90000 }, async () => {
+  { timeout: 90000 }, async () => {
     const live = new PiTerminal(`bash-prefix-${mode}`, { mode, extensions: [fixture], extraEnv: { ...descriptor, TIDY_UI_TEST_BASH_REPLY_GATE: '1' } });
     const stock = new PiTerminal(`bash-prefix-stock-${mode}`, { mode, tidyUi: false, extraEnv: descriptor });
     let replay;
@@ -735,7 +743,7 @@ for (const mode of ['fullscreen', 'regular']) test(`occipital CLI: ${mode} histo
 
 
 for (const mode of ['fullscreen', 'regular']) test(`occipital CLI: ${mode} online wait resumes both restored and connection-loss Bash demands`,
-  { skip: !binary, timeout: 120000 }, async () => {
+  { timeout: 120000 }, async () => {
     const directory = await mkdtemp(resolve('.test-artifacts/online-wait-session-'));
     const manager = SessionManager.create(directory, join(directory, 'sessions'));
     manager.appendModelChange('tidy-ui-offline', 'scripted'); manager.appendThinkingLevelChange('off');
@@ -810,7 +818,7 @@ for (const mode of ['fullscreen', 'regular']) test(`occipital CLI: ${mode} onlin
 
 
 for (const mode of ['fullscreen', 'regular']) test(`occipital CLI: ${mode} restored Bash backlog colors newest cards before older cards`,
-  { skip: !binary, timeout: 120000 }, async () => {
+  { timeout: 120000 }, async () => {
     const directory = await mkdtemp(resolve('.test-artifacts/order-session-'));
     const manager = SessionManager.create(directory, join(directory, 'sessions'));
     manager.appendModelChange('tidy-ui-offline', 'scripted'); manager.appendThinkingLevelChange('off');

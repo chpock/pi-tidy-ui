@@ -1,10 +1,14 @@
+import './fixtures/test-guard.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { execFileSync } from 'node:child_process';
-import { mkdtemp, mkdir, readFile, rm, writeFile, cp, readdir } from 'node:fs/promises';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { mkdtemp, mkdir, readFile, rm, writeFile, cp, readdir, chmod, lstat, readlink, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
+import { childEnv, readInputs, toolPath } from '../scripts/test/context.mjs';
+import { selectSuite } from '../scripts/test/run.mjs';
 import { releaseRef, stampVersion } from '../scripts/release/version.mjs';
 import { assembleRelease, assetName, artifactName } from '../scripts/release/native-ci.mjs';
 import * as nativeCI from '../scripts/release/native-ci.mjs';
@@ -174,7 +178,7 @@ for (const change of ['commit', 'version', 'target', 'bytes', 'url', 'notice-gap
 
 test('Git Windows-style checkout preserves exact project and supplementary license bytes', async t => {
   const root = await source(t);
-  const git = (...args) => execFileSync('git', ['-C', root, ...args], { stdio: 'pipe' });
+  const git = (...args) => execFileSync(toolPath('git'), ['-C', root, ...args], { env: childEnv(join(root, 'git-environment')), stdio: 'pipe' });
   git('init');
   git('config', 'core.autocrlf', 'false');
   git('config', 'core.safecrlf', 'false');
@@ -208,11 +212,9 @@ test('CI release staging stays outside restored Cargo output and preserves stale
   await writeFile(join(stale, 'old-release'), 'unchanged previous release');
   const runnerTemp = join(root, 'runner-temp'); await mkdir(runnerTemp);
   const native = await readFile(join(repo, '.github/workflows/occipital.yml'), 'utf8');
-  const argument = native.match(/node scripts\/release\/native-ci\.mjs stage "\$TARGET" "target\/\$RUST_TARGET\/release\/\$EXECUTABLE" ([^\n]+)/)?.[1].trim();
-  assert.ok(argument);
-  const external = argument.match(/^"\$RUNNER_TEMP\/([^"\n]+)"$/);
-  if (!external) assert.equal(argument, 'target/native-artifact');
-  const output = external ? join(runnerTemp, external[1]) : join(root, argument);
+  const external = native.match(/const output = join\(process.env.RUNNER_TEMP,'([^']+)'\)/)?.[1];
+  assert.ok(external, 'staging directory must be external to restored compiler outputs');
+  const output = join(runnerTemp, external);
   const notice = join(root, 'NOTICE'), binary = join(root, 'tiny');
   await writeFile(notice, 'Inert fixture notice\n'); await writeFile(binary, 'new inert payload\n');
   await stageRelease({ root, output, input: { notice, artifacts: [{ target: 'linux-x64-gnu', path: binary,
@@ -255,7 +257,7 @@ test('every executable workflow job has an explicit bounded timeout, including r
   assert.deepEqual(timeouts, {
     'ci.yml/version': 5, 'ci.yml/extension': 10, 'ci.yml/terminal': 30, 'ci.yml/extension-package': 15,
     'occipital-npm-publish.yml/publish': 15, 'occipital-release.yml/publish': 10,
-    'occipital.yml/packaging-fixtures': 5, 'occipital.yml/build': 45,
+    'occipital.yml/packaging-fixtures': 5, 'occipital.yml/build': 60,
   });
   const ci = await readFile(join(directory, 'ci.yml'), 'utf8');
   assert.match(ci, /- name: Unit, actual-SDK and GC regressions\n        timeout-minutes: 5\n/);
@@ -267,11 +269,11 @@ test('CI reserves the full terminal suite for extension release refs and keeps s
   assert.ok(terminal);
   assert.match(terminal, /^    needs: \[version, native\]$/m);
   const jobCondition = terminal.match(/^    if: ([^\n]+)$/m)?.[1];
-  const full = terminal.match(/^      - name: Full physical CLI and replay \(extension release only\)\n        if: ([^\n]+)\n        run: npm run test:terminal$/m);
+  const full = terminal.match(/^      - name: Full physical CLI and replay \(extension release only\)\n        if: ([^\n]+)\n        run: node scripts\/test\/run\.mjs --inputs "\$RUNNER_TEMP\/terminal-inputs\/inputs\.json" --suite terminal --network-isolated$/m);
   assert.ok(full, 'full terminal step needs its own release guard, not a release-only job');
   assert.equal(full[1], "needs.version.outputs.product == 'pi-tidy-ui'");
-  assert.equal([...ci.matchAll(/\brun: npm run test:terminal$/gm)].length, 1, 'no unguarded duplicate full-suite invocation');
-  assert.match(terminal, /- name: Physical syntax CLI and replay using this commit's native artifact\n        env:\n          OCCIPITAL_TEST_BIN: [^\n]+\n        run: npm run test:syntax-terminal/);
+  assert.equal([...ci.matchAll(/\brun: .* --suite terminal --network-isolated$/gm)].length, 1, 'no unguarded duplicate full-suite invocation');
+  assert.match(terminal, /- name: Physical syntax CLI and replay using this commit's native artifact\n        run: .* --suite syntax-terminal --network-isolated/);
   const enabled = (condition, ref) => {
     const match = condition?.match(/^needs\.version\.outputs\.product (==|!=) '([^']+)'$/);
     assert.ok(match, 'evaluate the actual workflow product comparison');
@@ -300,7 +302,7 @@ test('CI retains the selected hidden-directory physical terminal failure capture
   const upload = terminal.match(/^      - uses: actions\/upload-artifact@v4\n([\s\S]*)/m)?.[1];
   assert.ok(upload);
   assert.match(upload, /^        if: failure\(\)$/m);
-  assert.match(upload, /^          path: \.test-artifacts\/terminal-\*\/$/m);
+  assert.match(upload, /^          path: \$\{\{ runner.temp \}\}\/terminal-captures\/terminal-\*\/$/m);
   assert.match(upload, /^          include-hidden-files: true$/m);
 });
 
@@ -313,8 +315,8 @@ test('Windows builds statically link CRT for both targets and inspect the actual
   assert.equal([...config.matchAll(/^\[/gm)].length, 2, 'no flags for unrelated targets or host-wide build override');
   const workflow = await readFile(join(repo, '.github/workflows/occipital.yml'), 'utf8');
   assert.match(workflow, /- name: Install Windows executable inspection tool\n        if: startsWith\(matrix.target, 'windows-'\)\n        run: rustup component add llvm-tools-preview/);
-  for (const command of ['test --workspace', 'clippy --workspace', 'build --release']) {
-    assert.match(workflow, new RegExp(`cargo ${command}[^\\n]*--target "\\$RUST_TARGET"`), 'target flags must not affect host build scripts/proc macros');
+  for (const command of ["['test','--workspace','--locked','--offline','--target',target]", "['clippy','--workspace','--all-targets','--locked','--offline','--target',target", "['build','--release','--locked','--offline','-p','occipital','--target',target]"]) {
+    assert.ok(workflow.includes(command), 'explicit target flags must not become global RUSTFLAGS affecting proc macros');
   }
   const script = await readFile(join(repo, 'scripts/release/native-ci.mjs'), 'utf8');
   assert.match(script, /candidateTargets\[target\]\.os === 'win32'\) await verifyWindowsRuntime\(binary\)/);
@@ -358,26 +360,6 @@ test('Windows executable inspection uses Rust host tools, checks real command ou
   }), error => error === failed);
 });
 
-test('native CI verifies the installed adopted pin on both Nodes without coupling independent daemon tags', async () => {
-  const source = await readFile(join(repo, '.github/workflows/occipital.yml'), 'utf8');
-  const workflow = source.match(/^  build:\n([\s\S]*)/m)?.[1];
-  assert.ok(workflow, 'installed acceptance must run inside the native platform matrix');
-  assert.match(workflow, /^    runs-on: \$\{\{ matrix\.runner \}\}$/m);
-  for (const version of ['22.19.0', '26.7.0']) {
-    const step = workflow.match(new RegExp(`- name: Installed adopted pin on Node ${version.replaceAll('.', '\\.') }\\n        if: ([^\\n]+)\\n        timeout-minutes: 15\\n        env:\\n          EXPECTED_NODE: '${version.replaceAll('.', '\\.') }'\\n          TARGET: \\$\\{\\{ matrix.target \\}\\}\\n          RUST_TARGET: \\$\\{\\{ matrix.rust \\}\\}\\n          npm_config_cache: \\$\\{\\{ runner.temp \\}\\}/occipital-npm-cache\\n          UV_THREADPOOL_SIZE: '4'\\\n        run: \\|\\n([\\s\\S]*?)(?=\\n      -|$)`));
-    assert.ok(step, `${version}: actual installed pin gate on every native runner`);
-    assert.equal(step[1], "${{ !startsWith(inputs.release-ref, 'refs/tags/occipital-v') }}");
-    assert.match(step[2], /if \[\[ "\$TARGET" == windows-\* \]\]; then\s+TEMP="\$RUNNER_TEMP" TMP="\$RUNNER_TEMP" npm run test:installed-native/);
-    assert.match(step[2], /elif \[\[ "\$TARGET" == linux-\* \]\]; then\s+bash scripts\/release\/installed-linux-gnu\.sh "\$RUST_TARGET"\s+else\s+npm run test:installed-native\s+fi/);
-  }
-  assert.match(workflow, /- uses: actions\/setup-node@v4\n        if: \$\{\{ !startsWith\(inputs.release-ref, 'refs\/tags\/occipital-v'\) \}\}\n        with:\n          node-version: '26\.7\.0'/);
-  const pkg = JSON.parse(await readFile(join(repo, 'package.json'), 'utf8'));
-  assert.equal(pkg.scripts['test:installed-native'], 'node tests/fixtures/installed-occipital.mjs');
-  for (const [ref, enabled] of [['refs/heads/main', true], ['refs/pull/1/merge', true], ['refs/tags/pi-tidy-ui-v0.2.0', true], ['refs/tags/occipital-v0.1.3', false]]) {
-    assert.equal(!ref.startsWith('refs/tags/occipital-v'), enabled, ref);
-  }
-});
-
 test('CI routes both tag families, reuses the same-run native matrix, and publishes only Occipital', async () => {
   const ci = await readFile(join(repo, '.github/workflows/ci.yml'), 'utf8');
   const native = await readFile(join(repo, '.github/workflows/occipital.yml'), 'utf8');
@@ -386,13 +368,12 @@ test('CI routes both tag families, reuses the same-run native matrix, and publis
   assert.match(ci, /uses: \.\/\.github\/workflows\/occipital\.yml/);
   assert.match(ci, /release-occipital:[\s\S]*needs: \[version, native\][\s\S]*refs\/tags\/occipital-v[\s\S]*uses: \.\/\.github\/workflows\/occipital-release\.yml/);
   for (const target of Object.keys(candidateTargets)) assert.ok(native.includes(`target: ${target}\n`), target);
-  assert.match(native, /Stamp daemon before compilation[\s\S]*cargo build --release --locked/);
+  assert.match(native, /Stamp daemon before compilation[\s\S]*\['build','--release','--locked','--offline'/);
   assert.match(release, /actions\/download-artifact@v4/);
   assert.doesNotMatch(release, /run-id:|cargo build|npm publish/);
   assert.match(release, /assemble native-artifacts/);
   assert.match(release, /sha256sum --check SHA256SUMS/);
 });
-
 
 test('GNU executable version-needs guard enforces glibc2.28 and distinguishes optional weak versions', () => {
   assert.equal(typeof nativeCI.linuxRuntimeVersions, 'function');
@@ -424,114 +405,16 @@ test('GNU executable inspection reads actual version needs before staging and pr
   assert.ok(source.indexOf('await verifyLinuxRuntime(binary)') < source.indexOf('await stageRelease('));
 });
 
-
 // Actual GNU wrapper/Make invocation, ordering, isolation and failure controls live in makefile.test.ts.
-
-
-test('GNU gate forwards the mounted SDK selection to Cargo-home Rustup proxies', async () => {
-  const script = await readFile(join(repo, 'scripts/release/linux-gnu.sh'), 'utf8');
-  assert.match(script, /rust_sysroot="\$\(rustc --print sysroot\)"/);
-  assert.match(script, /-v "\$rust_sysroot:\$rust_sysroot:ro"/);
-  assert.match(script, /--env RUSTUP_TOOLCHAIN="\$rust_sysroot"/);
-  assert.doesNotMatch(script, /rustup default|rustup toolchain install/);
-});
-
-
-test('GNU installed consumer verifies the public pin in glibc2.28 without compiler or payload overrides', async () => {
-  const image = await readFile(join(repo, 'scripts/release/Dockerfile.linux-gnu'), 'utf8');
-  assert.match(image, /dnf install -y[^\n]*\blibatomic\b/, 'official Node25+ runtime prerequisite must exist in the GNU test image');
-  const script = await readFile(join(repo, 'scripts/release/installed-linux-gnu.sh'), 'utf8');
-  for (const target of ['x86_64-unknown-linux-gnu', 'aarch64-unknown-linux-gnu']) assert.ok(script.includes(target));
-  assert.match(script, /uname -m/);
-  assert.match(script, /process\.execPath/);
-  assert.match(script, /process\.env\.EXPECTED_NODE/, 'do not overwrite a fixed CI Node requirement with the detected host version');
-  assert.match(script, /--user "\$\(id -u\):\$\(id -g\)"/);
-  assert.match(script, /--env EXPECTED_NODE="\$node_version"/);
-  assert.match(script, /test "\$\(getconf GNU_LIBC_VERSION\)" = "glibc 2\.28"/);
-  assert.match(script, /npm run test:installed-native/);
-  assert.doesNotMatch(script, /cargo|rustc|OCCIPITAL_TEST_BIN|RUSTUP|--network=none|\.cargo|npm publish/);
-});
-
-
-test('installed npm preparation retains successful and failed safe diagnostics without weakening independent daemon releases', async () => {
-  const workflow = await readFile(join(repo, '.github/workflows/occipital.yml'), 'utf8');
-  const upload = workflow.match(/      - name: Installed npm preparation diagnostics\n[\s\S]*?(?=      - |$)/)?.[0];
-  assert.ok(upload, 'installed preparation diagnostics upload required');
-  assert.match(upload, /always\(\) && !startsWith\(inputs\.release-ref, 'refs\/tags\/occipital-v'\)/);
-  assert.match(upload, /uses: actions\/upload-artifact@v4/);
-  assert.match(upload, /path: \.test-artifacts\/installed-preparation-\*\//);
-  assert.match(upload, /include-hidden-files: true/);
-  assert.match(upload, /if-no-files-found: ignore/);
-  assert.match(upload, /name: installed-preparation-\$\{\{ matrix\.target \}\}/);
-  const fixture = await readFile(join(repo, 'tests/fixtures/installed-occipital.mjs'), 'utf8');
-  assert.match(fixture, /runNpmPreparation/);
-  assert.match(fixture, /finally[\s\S]*await rm\(temporary, \{ recursive: true, force: true \}\)/);
-  assert.match(fixture, /fixture\.json/);
-  assert.match(fixture, /npmMs: Math\.round\(npmMs\), cleanupMs/);
-  assert.ok(fixture.indexOf('await rm(temporary') < fixture.indexOf("join(report, 'fixture.json')"));
-});
-
-
-test('all native platforms reuse only the npm content cache across both installed runtimes', async () => {
-  const workflow = await readFile(join(repo, '.github/workflows/occipital.yml'), 'utf8');
-  const step = workflow.match(/      - name: Installed npm package cache\n[\s\S]*?(?=      - |$)/)?.[0];
-  assert.ok(step, 'installed npm package cache required on the whole native matrix');
-  assert.match(step, /if: \$\{\{ !startsWith\(inputs\.release-ref, 'refs\/tags\/occipital-v'\) \}\}/);
-  assert.doesNotMatch(step, /startsWith\(matrix\.target|windows-|linux-/);
-  assert.match(step, /uses: actions\/cache@v4/);
-  assert.match(step, /path: \$\{\{ runner\.temp \}\}\/occipital-npm-cache\/_cacache/);
-  assert.match(step, /key: installed-npm-v1-\$\{\{ matrix\.target \}\}-\$\{\{ hashFiles\('package-lock\.json'\) \}\}/);
-  assert.match(step, /restore-keys: installed-npm-v1-\$\{\{ matrix\.target \}\}-/);
-  assert.doesNotMatch(step, /node_modules|_logs|\.npmrc|payload-preparation|cache\/occipital/);
-  assert.ok(workflow.indexOf(step) < workflow.indexOf('- name: Installed adopted pin on Node 22.19.0'));
-  for (const version of ['22.19.0', '26.7.0']) {
-    const installed = workflow.match(new RegExp(`      - name: Installed adopted pin on Node ${version.replaceAll('.', '\\.')}\\n[\\s\\S]*?(?=      - |$)`))?.[0];
-    assert.ok(installed);
-    assert.match(installed, /timeout-minutes: 15/);
-    assert.match(installed, /npm_config_cache: \$\{\{ runner\.temp \}\}\/occipital-npm-cache/);
-  }
-});
 
 test('installed npm preparation has five-minute headroom without changing native deadlines or output limits', async () => {
   const preparation = await readFile(join(repo, 'tests/fixtures/npm-preparation.ts'), 'utf8');
   assert.match(preparation, /timeout: 300000, maxBuffer: 1024 \* 1024/);
-  const fixture = await readFile(join(repo, 'tests/fixtures/installed-occipital.mjs'), 'utf8');
+  const fixture = await readFile(join(repo, 'tests/fixtures/published-occipital.mjs'), 'utf8');
   assert.match(fixture, /Installed source did not complete[\s\S]*\}, 10000\)/);
   assert.match(fixture, /timeout: 5000/);
   assert.match(fixture, /nativeDispatches: complete\.dispatches/);
 });
-
-test('GNU installed checks bind and forward the optional host npm cache without changing isolation', async () => {
-  const script = await readFile(join(repo, 'scripts/release/installed-linux-gnu.sh'), 'utf8');
-  assert.match(script, /npm_cache_args=\(\)/);
-  assert.match(script, /if \[\[ -n "\$\{npm_config_cache:-\}" \]\]; then/);
-  assert.match(script, /mkdir -p "\$npm_config_cache"/);
-  assert.match(script, /npm_cache="\$\(cd "\$npm_config_cache" && pwd -P\)"/);
-  assert.match(script, /npm_cache_args=\(-v "\$npm_cache:\$npm_cache" --env "npm_config_cache=\$npm_cache"\)/);
-  assert.match(script, /"\$\{npm_cache_args\[@\]\}"/);
-  assert.match(script, /--env HOME=\/tmp\/occipital-installed-home/);
-  assert.match(script, /--env EXPECTED_NODE="\$node_version"/);
-  assert.doesNotMatch(script, /node_modules|OCCIPITAL_TEST_BIN|NATIVE_RELEASE|\/cache\/occipital/);
-});
-
-
-test('installed checks select Windows runner storage without changing cache or native gates', async () => {
-  const workflow = await readFile(join(repo, '.github/workflows/occipital.yml'), 'utf8');
-  assert.doesNotMatch(workflow, /windows-temp|SYSTEM_TEMP|COMPARE_WINDOWS_VOLUMES|Set-MpPreference/);
-  for (const version of ['22.19.0', '26.7.0']) {
-    const step = workflow.split(`      - name: Installed adopted pin on Node ${version}\n`)[1]?.split('\n      - ')[0];
-    assert.ok(step);
-    assert.match(step, /timeout-minutes: 15/);
-    assert.match(step, /UV_THREADPOOL_SIZE: '4'/);
-    assert.match(step, /npm_config_cache: \$\{\{ runner.temp \}\}\/occipital-npm-cache/);
-    assert.match(step, /if \[\[ "\$TARGET" == windows-\* \]\]; then\n +TEMP="\$RUNNER_TEMP" TMP="\$RUNNER_TEMP" npm run test:installed-native/);
-    assert.match(step, /elif \[\[ "\$TARGET" == linux-\* \]\]; then\n +bash scripts\/release\/installed-linux-gnu.sh "\$RUST_TARGET"/);
-    assert.match(step, /else\n +npm run test:installed-native/);
-    assert.equal((step.match(/TEMP="\$RUNNER_TEMP" TMP="\$RUNNER_TEMP"/g) ?? []).length, 1);
-    assert.doesNotMatch(step, /for |16|--omit|--offline|--prefer-offline|--test-name-pattern/);
-  }
-});
-
 
 test('GNU tooling-image cache is recipe/platform scoped and leaves full native checks intact', async () => {
   const workflow = await readFile(join(repo, '.github/workflows/occipital.yml'), 'utf8');
@@ -549,31 +432,6 @@ test('GNU tooling-image cache is recipe/platform scoped and leaves full native c
     assert.match(helper, /cache_args\+=\(--cache-from "\$image"\)/);
     assert.match(helper, /docker build "\$\{cache_args\[@\]\}" --platform "linux\/\$docker_arch"/);
     assert.match(helper, /test "\$\(getconf GNU_LIBC_VERSION\)" = "glibc 2.28"/);
-  }
-});
-
-
-test('actual installed step overrides Windows temp for both architectures and propagates child failure', async t => {
-  const root = await mkdtemp(join(tmpdir(), 'tidy-storage-step-'));
-  t.after(() => rm(root, { recursive: true, force: true }));
-  await writeFile(join(root, 'npm'), '#!/bin/bash\n[[ "$TEMP" == "$TMP" ]] || exit 91\nprintf "%s\\n" "$TEMP"\nif [[ "${SIMULATED_FAILURE:-false}" == true ]]; then exit 17; fi\n', { mode: 0o755 });
-  const workflow = await readFile(join(repo, '.github/workflows/occipital.yml'), 'utf8');
-  for (const version of ['22.19.0', '26.7.0']) {
-    const step = workflow.split(`      - name: Installed adopted pin on Node ${version}\n`)[1]?.split('\n      - ')[0];
-    assert.ok(step);
-    const script = step.split('        run: |\n')[1]?.split('\n').map(line => line.replace(/^          /, '')).join('\n');
-    assert.ok(script);
-    const runnerRoot = join(root, 'runner with spaces');
-    const env = { ...process.env, PATH: `${root}:${process.env.PATH}`, RUNNER_TEMP: runnerRoot, TEMP: 'system-root', TMP: 'system-root' };
-    const run = extra => execFileSync('bash', ['-e', '-o', 'pipefail', '-c', script], { env: { ...env, ...extra }, encoding: 'utf8' });
-    for (const TARGET of ['windows-arm64-msvc', 'windows-x64-msvc']) {
-      assert.equal(run({ TARGET }), runnerRoot + '\n', `${version}/${TARGET}: full baseline command runs once on runner storage`);
-      assert.throws(() => run({ TARGET, SIMULATED_FAILURE: 'true' }), error => {
-        assert.equal(error.status, 17);
-        assert.equal(error.stdout, runnerRoot + '\n');
-        return true;
-      });
-    }
   }
 });
 
@@ -600,11 +458,314 @@ test('extension release tags admit all-six current/public/npm bytes before packi
   assert.equal(Object.keys(lock.packages).some(name => name.startsWith('node_modules/@kchpock/occipital-')), false);
 });
 
-test('registry-installed native preparation has full tag history and Git inside the GNU baseline', async () => {
+function workflowJob(source, name) {
+  const section = source.split(`\n  ${name}:\n`)[1];
+  assert.ok(section, `${name} job required`);
+  return section.split(/\n  [\w-]+:\n/)[0];
+}
+function workflowStep(source, name) {
+  const section = source.split(`      - name: ${name}\n`)[1];
+  assert.ok(section, `${name} step required`);
+  return section.split('\n      - ')[0];
+}
+
+test('ordinary native CI runs the same-commit clean consumer on six targets and both Nodes, including daemon tags', async () => {
+  const source = await readFile(join(repo, '.github/workflows/occipital.yml'), 'utf8'), build = workflowJob(source, 'build');
+  assert.match(build, /^    runs-on: \$\{\{ matrix.runner \}\}$/m);
+  for (const target of Object.keys(candidateTargets)) assert.ok(build.includes(`target: ${target}\n`));
+  for (const version of ['22.19.0', '26.7.0']) {
+    const step = workflowStep(build, `Same-commit clean consumer and actual helper on Node ${version}`);
+    assert.doesNotMatch(step, /^        if:/m, 'same-source acceptance must not disappear for daemon releases');
+    assert.match(step, /--archives --native-artifact "\$ARTIFACT"/);
+    assert.match(step, /--suite native --files occipital-native.test.ts/);
+    assert.match(step, /--suite consumer/);
+    assert.match(step, /installed-linux-gnu.sh "\$RUST_TARGET" native "\$PREPARATION" "\$ARTIFACT"/);
+    assert.match(step, /installed-linux-gnu.sh "\$RUST_TARGET" consumer "\$PREPARATION" "\$ARTIFACT"/);
+    assert.ok(step.indexOf(' native "') < step.indexOf(' consumer "'), 'GNU same-artifact native smoke precedes consumer');
+    assert.doesNotMatch(step, /published-consumer|published-occipital|npm run test:installed-native|npm_config_cache/);
+  }
+  assert.match(build, /Verify original source identity after neutral staging/);
+  assert.ok(build.indexOf('await stageCI(') < build.indexOf('Verify original source identity'));
+  assert.ok(build.indexOf('Verify original source identity') < build.indexOf('Same-commit clean consumer'));
+  assert.doesNotMatch(build, /git restore --/, 'stamping must not modify the authoritative checkout');
+});
+
+test('published consumer routing is positive only for extension tags and negative for main, PR, daemon and compatibility refs', async () => {
+  const native = await readFile(join(repo, '.github/workflows/occipital.yml'), 'utf8');
+  const steps = ['22.19.0', '26.7.0'].map(version => workflowStep(native, `Published delivery on Node ${version} (pi-tidy-ui release only)`));
+  for (const step of steps) {
+    assert.match(step, /^        if: startsWith\(inputs.release-ref, 'refs\/tags\/pi-tidy-ui-v'\)$/m);
+    assert.match(step, /--suite published-consumer --release-ref "\$RELEASE_REF"/);
+    assert.match(step, /installed-linux-gnu.sh "\$RUST_TARGET" published-consumer .* "\$RELEASE_REF"/);
+  }
+  for (const [ref, enabled] of [['refs/heads/main',false], ['refs/pull/1/merge',false], ['refs/heads/daily-compatibility',false], ['refs/tags/occipital-v0.1.5',false], ['refs/tags/pi-tidy-ui-v0.2.0',true]]) {
+    for (const step of steps) {
+      const prefix = step.match(/^        if: startsWith\(inputs.release-ref, '([^']+)'\)$/m)[1];
+      assert.equal(ref.startsWith(prefix), enabled, ref);
+    }
+  }
+  assert.equal((native.match(/--suite published-consumer/g) ?? []).length, 2, 'no ordinary duplicate public verifier');
+  assert.doesNotMatch(await readFile(join(repo, 'Makefile'), 'utf8'), /test-installed:[\s\S]*?--suite published-consumer(?=[\s\S]*test-published:)/);
+});
+
+test('CI selected-host SDK/types/GC and terminal coverage use coherent prepared descriptors and mandatory current artifacts', async () => {
+  const source = await readFile(join(repo, '.github/workflows/ci.yml'), 'utf8');
+  for (const name of ['extension', 'terminal']) {
+    const job = workflowJob(source, name);
+    assert.match(job, /needs: \[version, native\]/);
+    assert.match(job, /node: \['22.19.0', '26.7.0'\]/);
+    assert.match(job, /pi: \['1.0.0', '1.2.0'\]/);
+    assert.match(job, /prepare.mjs --pi-version "\$PI_VERSION"/);
+    assert.match(job, /--native-artifact "\$GITHUB_WORKSPACE\/\.test-artifacts\/ci-native"/);
+    assert.doesNotMatch(job, /node --(?:expose-gc|test)|OCCIPITAL_TEST_BIN|PI_TEST_CLI/);
+  }
+  const extension = workflowJob(source, 'extension'), terminal = workflowJob(source, 'terminal');
+  assert.equal(selectSuite(readInputs(), 'unit').includes('integration-profile.test.mjs'), true);
+  const preparation = extension.match(/^          node scripts\/test\/prepare\.mjs[^\n]+/m)?.[0];
+  assert.ok(preparation, 'unit matrix requires explicit preparation');
+  assert.match(preparation, /--integration\b/, 'unit profile tests require the locked integration inputs');
+  for (const suite of ['check','unit','native-release']) assert.match(extension, new RegExp(`--suite ${suite} --network-isolated`));
+  assert.match(terminal, /--integration/); assert.match(terminal, /--shared-host "\$RUNNER_TEMP\/shared-host\/ck-subc"/);
+  assert.match(terminal, /--suite syntax-terminal --network-isolated/);
+});
+
+test('native execution has owned Cargo configuration and mandatory offline pinned toolchain without inherited build environment', async () => {
+  const native = await readFile(join(repo, '.github/workflows/occipital.yml'), 'utf8');
+  const declaration = 'Declare pinned compiler and hosted setup Cargo artifact store';
+  assert.ok(native.indexOf(declaration) < native.indexOf('Fetch locked native dependencies with owned config'), 'store admission must precede Cargo');
+  const cache = native.match(/- uses: actions\/cache@v4\n        if: \$\{\{ !inputs.clean-build \}\}\n        with:\n          path: \|\n([\s\S]*?)          key:/)?.[1];
+  assert.ok(cache, 'native artifact cache must be scoped');
+  assert.deepEqual(cache.trim().split('\n').map(line => line.trim()), ['${{ env.CARGO_HOME }}/registry', '${{ env.CARGO_HOME }}/git', 'target']);
+  assert.match(native, /RUSTUP_AUTO_INSTALL: '0'/);
+  assert.match(native, /toolchain: \$\{\{ steps.toolchain.outputs.version \}\}/);
+  const execution = workflowStep(native, 'Offline native correctness, strict lint and release build');
+  assert.match(execution, /childEnv\(join\(inputs.runRoot,'native-runtime'\)/); assert.match(execution, /CARGO_NET_OFFLINE:'true'/);
+  assert.match(execution, /cwd:process.env.NATIVE_SOURCE/);
+  assert.doesNotMatch(execution, /\.\.\.process.env/);
+  for (const command of ['test','clippy','build']) assert.match(execution, new RegExp(`\\['${command}'[^\\n]*'--offline'`));
+  assert.match(execution, /if\(result.status!==0\) process.exit\(result.status \?\? 1\)/);
+  const script = await readFile(join(repo, 'scripts/release/linux-gnu.sh'), 'utf8');
+  assert.match(script, /RUST_ROOT:\?Supply the absolute pinned Rust sysroot/);
+  assert.match(script, /CARGO_HOME:\?Supply an explicit owned Cargo artifact home/);
+  assert.match(script, /--network=none/);
+  assert.doesNotMatch(script, /\$HOME\/\.cargo|rustup default|rustup toolchain install/);
+});
+
+test('consumer diagnostics contain only the scoped safe reports, never raw cache logs or config', async () => {
+  const source = await readFile(join(repo, '.github/workflows/occipital.yml'), 'utf8');
+  const step = workflowStep(source, 'Safe consumer preparation diagnostics');
+  assert.match(step, /if: always\(\)/); assert.match(step, /include-hidden-files: true/);
+  assert.match(step, /diagnostics\/installed-preparation-\*\//);
+  assert.doesNotMatch(step, /_logs|environment\/|cache\/|\.npmrc|inputs.json/);
+});
+
+test('actual same-commit CI commands preserve artifact selection, native-before-consumer order and fail-fast behavior on both Nodes', { skip: process.platform === 'win32' }, async t => {
+  const inputs = readInputs(), root = await mkdtemp(join(process.env.TIDY_TEST_ROOT, 'tidy-ci-command-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const bin = join(root, 'bin'), log = join(root, 'commands.jsonl'); await mkdir(bin);
+  const stub = `#!${process.execPath}
+import {appendFileSync} from 'node:fs';
+const args=process.argv.slice(2);
+if(args[0]==='-p') {console.log(process.execPath);process.exit(0);}
+appendFileSync(${JSON.stringify(log)},JSON.stringify(args)+'\\n');
+if(args.includes(process.env.FAIL_SUITE)) process.exit(17);
+`;
+  await writeFile(join(bin, 'node'), stub, { mode: 0o755 });
   const workflow = await readFile(join(repo, '.github/workflows/occipital.yml'), 'utf8');
-  const build = workflow.slice(workflow.indexOf('\n  build:'));
-  assert.match(build, /uses: actions\/checkout@v4\n        with:\n(?:          #[^\n]*\n)*          fetch-depth: 0/,
-    'the installed consumer resolves the nearest published tag, not a shallow-history guess');
-  const image = await readFile(join(repo, 'scripts/release/Dockerfile.linux-gnu'), 'utf8');
-  assert.match(image, /dnf install -y[^\n]*\bgit\b/, 'the exact same consumer selects the nearest ancestor inside glibc 2.28 too');
+  for (const version of ['22.19.0','26.7.0']) {
+    const step = workflowStep(workflow, `Same-commit clean consumer and actual helper on Node ${version}`);
+    const script = step.split('        run: |\n')[1].split('\n').map(line => line.replace(/^          /, '')).join('\n');
+    for (const TARGET of ['darwin-x64', 'windows-x64-msvc', 'windows-arm64-msvc']) {
+      for (const FAIL_SUITE of ['', 'rust-harness', 'native', 'consumer']) {
+        await rm(log, { force: true });
+        const env = childEnv(join(root,'environment'), {PATH:bin + ':' + inputs.tools.bin, RUNNER_TEMP:root, TARGET, FAIL_SUITE, RUST_ROOT:join(root,'pinned-rust'), CARGO_HOME:join(root,'owned-cargo')});
+        const result = (() => { try { execFileSync(toolPath('bash'), ['-e','-o','pipefail','-c',script], {env,cwd:root,stdio:'pipe'}); return 0; } catch(error) { return error.status; } })();
+        const calls = (await readFile(log,'utf8')).trim().split('\n').map(row=>JSON.parse(row));
+        assert.equal(result, FAIL_SUITE ? 17 : 0, `${version}/${TARGET}/${FAIL_SUITE}`);
+        assert.equal(calls[0][0], 'scripts/test/prepare.mjs');
+        assert.equal(calls[0][calls[0].indexOf('--native-artifact')+1], join(root,'occipital-native-artifact'));
+        assert.equal(calls[0].includes('--tools'), TARGET.startsWith('windows-'));
+        assert.equal(calls[0][calls[0].indexOf('--rust-root')+1], join(root,'pinned-rust'));
+        assert.equal(calls[0][calls[0].indexOf('--cargo-cache')+1], join(root,'owned-cargo'));
+        assert.equal(calls[0].includes('--rust-environment'), TARGET.startsWith('windows-'));
+        assert.deepEqual(calls.slice(1).map(args=>args[args.indexOf('--suite')+1]), FAIL_SUITE === 'rust-harness' ? ['rust-harness'] : FAIL_SUITE === 'native' ? ['rust-harness','native'] : ['rust-harness','native','consumer']);
+        for (const args of calls.slice(1)) assert.equal(args[args.indexOf('--inputs')+1], join(root,`consumer-${version}/inputs.json`));
+      }
+    }
+  }
+});
+
+function shellStep(step) {
+  return step.split('        run: |\n')[1].split('\n').map(line => line.replace(/^          /, '')).join('\n');
+}
+
+test('actual CI setup store admission preserves declared Cargo paths and refuses unsafe state before child launch', { skip: process.platform === 'win32' }, async t => {
+  const inputs = readInputs(), root = await mkdtemp(join(process.env.TIDY_TEST_ROOT,'tidy-cargo-store-'));
+  t.after(() => rm(root,{recursive:true,force:true}));
+  const profile = join(root,'setup-home'), temp = join(root,'runner-temp'), rust = join(root,'rust'), log = join(root,'children.jsonl'), receipt = join(root,'github-env');
+  const store = join(profile,'.cargo'), temporaryStore = join(temp,'setup-cargo'), outside = join(root,'unowned-store');
+  for (const path of [store,temporaryStore,outside,join(rust,'bin'),join(temp,'native-build-inputs'),join(temp,'neutral/source')]) await mkdir(path,{recursive:true});
+  await writeFile(join(temp,'native-build-inputs/inputs.json'),JSON.stringify({...inputs,runRoot:join(temp,'neutral')}));
+  await writeFile(join(rust,'bin/rustc'), `#!${process.execPath}\nimport {appendFileSync} from 'node:fs';\nappendFileSync(${JSON.stringify(log)},JSON.stringify({tool:'rustc',args:process.argv.slice(2)})+'\\n');\nconsole.log(${JSON.stringify(rust)});\n`,{mode:0o755});
+  await writeFile(join(rust,'bin/cargo'), `#!${process.execPath}\nimport {appendFileSync} from 'node:fs';\nappendFileSync(${JSON.stringify(log)},JSON.stringify({tool:'cargo',args:process.argv.slice(2),home:process.env.CARGO_HOME,toolchain:process.env.RUSTUP_TOOLCHAIN})+'\\n');\n`,{mode:0o755});
+  // Observe prohibited config/credential reads/removal, not just final bytes: inspect metadata only.
+  const monitor = join(root,'config-monitor.mjs'), forbidden = join(root,'config-accesses');
+  await writeFile(monitor, `import fs from 'node:fs';\nimport {syncBuiltinESMExports} from 'node:module';\nfor (const name of ['readFileSync','unlinkSync','rmSync','rmdirSync']) {\n const original=fs[name]; fs[name]=function(path,...args) {\n  if (/[/\\\\](?:config|credentials)(?:\\.toml)?$/.test(String(path))) {fs.appendFileSync(${JSON.stringify(forbidden)},name+'\\n');throw new Error('Unexpected config access');}\n  return original.call(this,path,...args);\n };\n}\nsyncBuiltinESMExports();\n`);
+  const workflow = await readFile(join(repo,'.github/workflows/occipital.yml'),'utf8');
+  const declaration = shellStep(workflowStep(workflow,'Declare pinned compiler and hosted setup Cargo artifact store'));
+  const fetch = shellStep(workflowStep(workflow,'Fetch locked native dependencies with owned config'));
+  const base = childEnv(join(root,'caller'),{HOME:profile,USERPROFILE:profile,RUNNER_TEMP:temp,GITHUB_ENV:receipt,GITHUB_ACTIONS:'true',RUNNER_ENVIRONMENT:'github-hosted',CARGO_HOME:store,PATH:join(rust,'bin') + ':' + inputs.tools.bin,NODE_OPTIONS:`--import=${pathToFileURL(monitor).href}`,RUSTUP_TOOLCHAIN:'ambient-toolchain-poison'},inputs);
+  const run = async (extra = {}) => {
+    await rm(log,{force:true}); await writeFile(receipt,'');
+    return spawnSync(toolPath('bash'),['-e','-o','pipefail','-c',declaration],{cwd:repo,env:{...base,...extra},encoding:'utf8',timeout:10000});
+  };
+  const reject = async (extra = {}) => {
+    const result = await run(extra);
+    assert.equal(result.error,undefined); assert.notEqual(result.status,0); assert.match(result.stderr,/Error:/);
+    assert.equal(await readFile(receipt,'utf8'),'');
+    await assert.rejects(lstat(log),{code:'ENOENT'});
+    await assert.rejects(lstat(forbidden),{code:'ENOENT'});
+  };
+  for (const CARGO_HOME of [store,temporaryStore]) {
+    const result = await run({CARGO_HOME}); assert.equal(result.status,0,result.stderr);
+    const declared = Object.fromEntries((await readFile(receipt,'utf8')).trim().split('\n').map(line=>[line.slice(0,line.indexOf('=')),line.slice(line.indexOf('=')+1)]));
+    assert.equal(declared.CARGO_HOME,CARGO_HOME,'retain the exact setup path, not a relocated cache');
+    assert.equal(declared.RUST_ROOT,rust); assert.equal(declared.NODE,process.execPath);
+    execFileSync(toolPath('bash'),['-e','-o','pipefail','-c',fetch],{cwd:repo,env:{...base,...declared,NATIVE_SOURCE:join(temp,'neutral/source'),CARGO_TARGET_DIR:join(temp,'target')},stdio:'pipe'});
+    assert.deepEqual((await readFile(log,'utf8')).trim().split('\n').map(row=>JSON.parse(row)),[{tool:'rustc',args:['--print','sysroot']},{tool:'cargo',args:['fetch','--locked'],home:CARGO_HOME,toolchain:rust}]);
+  }
+  for (const extra of [{GITHUB_ACTIONS:'false'},{RUNNER_ENVIRONMENT:'self-hosted'},{CARGO_HOME:''},{CARGO_HOME:'relative-cargo'},{CARGO_HOME:outside},{CARGO_HOME:temp},{CARGO_HOME:store + '\nPOISON=1'}]) await reject(extra);
+  for (const name of ['config.toml','config','credentials.toml','credentials']) {
+    const config = join(store,name), bytes = 'private state must not be read or deleted';
+    await writeFile(config,bytes); await chmod(config,0o000);
+    await reject(); assert.equal((await lstat(config)).mode & 0o777,0);
+    await chmod(config,0o600); assert.equal(await readFile(config,'utf8'),bytes); await rm(config);
+    const target = join(root,'absent-config-target'); await symlink(target,config);
+    await reject(); assert.equal(await readlink(config),target); await rm(config);
+    await mkdir(config); await reject(); assert.ok((await lstat(config)).isDirectory()); await rm(config,{recursive:true});
+  }
+  await chmod(store,0o777); await reject(); await chmod(store,0o700);
+  const alias = join(temp,'aliased-store'); await symlink(store,alias); await reject({CARGO_HOME:alias}); assert.equal(await readlink(alias),store);
+  const ancestor = join(temp,'aliased-parent'); await symlink(profile,ancestor); await reject({CARGO_HOME:join(ancestor,'.cargo')});
+  // POSIX ownership is real filesystem metadata, not the declared path alone.
+  if ((await lstat('/usr')).uid !== process.getuid()) await reject({HOME:'/usr',CARGO_HOME:'/usr/.cargo'});
+  else if (process.getuid() === 0) {
+    const {chown} = await import('node:fs/promises');
+    await chown(store,1,1); await reject(); await chown(store,0,0);
+  }
+});
+
+test('actual direct CI Cargo gates use the neutral source and neutral fixture root, never checkout ancestors', { skip: process.platform === 'win32' }, async t => {
+  const inputs = readInputs(), root = await mkdtemp(join(process.env.TIDY_TEST_ROOT,'tidy-direct-ci-'));
+  t.after(() => rm(root,{recursive:true,force:true}));
+  const neutral = join(root,'neutral'), source = join(neutral,'source'), rust = join(root,'rust'), log = join(root,'cargo.jsonl');
+  for (const path of [source,join(rust,'bin'),join(root,'native-environment'),join(root,'native-build-inputs')]) await mkdir(path,{recursive:true});
+  await writeFile(join(root,'native-build-inputs/inputs.json'),JSON.stringify({...inputs,runRoot:neutral}));
+  await writeFile(join(rust,'bin/cargo'), `#!${process.execPath}\nimport {appendFileSync} from 'node:fs';\nappendFileSync(${JSON.stringify(log)},JSON.stringify({args:process.argv.slice(2),cwd:process.cwd(),home:process.env.HOME,tmp:process.env.TIDY_TEST_ROOT,offline:process.env.CARGO_NET_OFFLINE,ambient:process.env.AMBIENT_POISON,toolchain:process.env.RUSTUP_TOOLCHAIN})+'\\n');\n`,{mode:0o755});
+  const workflow = await readFile(join(repo,'.github/workflows/occipital.yml'),'utf8');
+  const env = childEnv(join(root,'caller'),{RUNNER_TEMP:root,RUST_ROOT:rust,NATIVE_SOURCE:source,CARGO_HOME:join(root,'owned-cargo'),CARGO_TARGET_DIR:join(root,'target'),RUST_TARGET:'fixture-target',AMBIENT_POISON:'not-native',RUSTUP_TOOLCHAIN:'ambient-toolchain-poison'},inputs);
+  for (const name of ['Fetch locked native dependencies with owned config','Offline native correctness, strict lint and release build']) {
+    execFileSync(toolPath('bash'),['-e','-o','pipefail','-c',shellStep(workflowStep(workflow,name))],{cwd:repo,env,stdio:'pipe'});
+  }
+  const calls = (await readFile(log,'utf8')).trim().split('\n').map(row=>JSON.parse(row));
+  assert.deepEqual(calls.map(call=>call.args[0]),['fetch','fmt','test','clippy','build']);
+  for (const call of calls) {
+    assert.equal(call.cwd,source); assert.ok(call.home.startsWith(neutral + '/')); assert.ok(call.tmp.startsWith(neutral + '/')); assert.equal(call.ambient,undefined); assert.equal(call.toolchain,rust,'Cargo-home proxies must select the absolute pinned compiler root');
+    if (call.args[0] !== 'fetch') assert.equal(call.offline,'true');
+  }
+});
+
+test('actual CI version stamp changes only the neutral native snapshot, leaving source authority untouched', { skip: process.platform === 'win32' }, async t => {
+  const inputs = readInputs(), root = await source(t), neutral = join(root,'neutral');
+  await mkdir(join(neutral,'crates/occipital'),{recursive:true});
+  for (const name of ['Cargo.lock','crates/occipital/Cargo.toml']) await cp(join(root,name),join(neutral,name));
+  const before = await readFile(join(root,'Cargo.lock')), manifest = await readFile(join(root,'crates/occipital/Cargo.toml'));
+  const workflow = await readFile(join(repo,'.github/workflows/occipital.yml'),'utf8');
+  const script = workflowStep(workflow,'Stamp daemon before compilation').match(/^        run: (.*)$/m)[1];
+  execFileSync(toolPath('bash'),['-e','-o','pipefail','-c',script],{cwd:repo,env:childEnv(join(root,'caller'),{NATIVE_SOURCE:neutral,DAEMON_VERSION:'0.1.5'},inputs),stdio:'pipe'});
+  assert.deepEqual(await readFile(join(root,'Cargo.lock')),before); assert.deepEqual(await readFile(join(root,'crates/occipital/Cargo.toml')),manifest);
+  assert.equal(await daemonVersion(neutral),'0.1.5');
+});
+
+test('actual CI diagnostics retention follows neutral descriptors and excludes raw npm logs and input receipts', { skip: process.platform === 'win32' }, async t => {
+  const inputs = readInputs(), root = await mkdtemp(join(process.env.TIDY_TEST_ROOT,'tidy-captures-'));
+  t.after(() => rm(root,{recursive:true,force:true}));
+  const neutral = join(root,'neutral'), reports = join(neutral,'.test-artifacts'), safe = 'installed-preparation-safe';
+  await mkdir(join(reports,safe),{recursive:true});
+  for (const file of ['fixture.json','npm.json','raw-debug-0.log','inputs.json']) await writeFile(join(reports,safe,file),'{}');
+  await mkdir(join(root,'consumer-22.19.0')); await writeFile(join(root,'consumer-22.19.0/inputs.json'),JSON.stringify({pi:{root:neutral}}));
+  const native = await readFile(join(repo,'.github/workflows/occipital.yml'),'utf8');
+  const env = childEnv(join(root,'caller'),{RUNNER_TEMP:root},inputs);
+  execFileSync(toolPath('bash'),['-e','-o','pipefail','-c',shellStep(workflowStep(native,'Retain only safe consumer diagnostics from neutral sources'))],{cwd:repo,env,stdio:'pipe'});
+  assert.deepEqual((await readdir(join(root,'consumer-22.19.0/diagnostics',safe))).sort(),['fixture.json','npm.json']);
+  await mkdir(join(root,'terminal-inputs')); await writeFile(join(root,'terminal-inputs/inputs.json'),JSON.stringify({pi:{root:neutral}}));
+  await mkdir(join(reports,'terminal-syntax')); await writeFile(join(reports,'terminal-syntax/capture.txt'),'physical capture');
+  const ci = await readFile(join(repo,'.github/workflows/ci.yml'),'utf8');
+  execFileSync(toolPath('bash'),['-e','-o','pipefail','-c',shellStep(workflowStep(ci,'Retain selected physical terminal captures from neutral source'))],{cwd:repo,env,stdio:'pipe'});
+  assert.deepEqual(await readdir(join(root,'terminal-captures')),['terminal-syntax']);
+  assert.equal(await readFile(join(root,'terminal-captures/terminal-syntax/capture.txt'),'utf8'),'physical capture');
+});
+
+
+test('CI MSVC discovery passes quoted batch paths verbatim and retains only declared build variables', { skip: process.platform === 'win32' }, async t => {
+  const inputs = readInputs(), root = await mkdtemp(join(process.env.TIDY_TEST_ROOT, 'tidy-msvc-command-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  await mkdir(join(root, 'native-environment'));
+  const log = join(root, 'calls.json'), hook = join(root, 'discovery-probe.mjs');
+  await writeFile(hook, `import child from 'node:child_process';
+import {writeFileSync} from 'node:fs';
+import {syncBuiltinESMExports} from 'node:module';
+const calls=[];
+child.execFileSync=(command,args,options)=>{
+ calls.push({command,args,options});writeFileSync(${JSON.stringify(log)},JSON.stringify(calls));
+ if(command.endsWith('vswhere.exe')) return 'C:\\\\Provisioned Tools\\\\Visual Studio\\r\\n';
+ return 'VCToolsInstallDir=C:\\\\VC\\r\\nWindowsSdkDir=C:\\\\SDK\\r\\nWindowsSDKVersion=10.0.0\\\\\\r\\nINCLUDE=declared-include\\r\\nLIB=declared-lib\\r\\nLIBPATH=declared-libpath\\r\\nPATH=ambient-path-poison\\r\\nNODE_OPTIONS=ambient-startup-poison\\r\\n';
+};
+syncBuiltinESMExports();
+`);
+  const workflow = await readFile(join(repo, '.github/workflows/occipital.yml'), 'utf8');
+  const script = shellStep(workflowStep(workflow, 'Prepare explicit build-only MSVC context'));
+  for (const [RUST_TARGET, cpu] of [['x86_64-pc-windows-msvc', 'x64'], ['aarch64-pc-windows-msvc', 'x64_arm64']]) {
+    execFileSync(toolPath('bash'), ['-e', '-o', 'pipefail', '-c', script], {
+      cwd: repo, env: childEnv(join(root, 'caller'), { RUNNER_TEMP: root, RUST_ROOT: join(root, 'rust'), RUST_TARGET, NODE_OPTIONS: `--import=${pathToFileURL(hook).href}` }, inputs), stdio: 'pipe',
+    });
+    const calls = JSON.parse(await readFile(log, 'utf8'));
+    assert.equal(calls.length, 2);
+    assert.equal(calls[1].options.windowsVerbatimArguments, true, 'cmd.exe needs its quoted command string without Node argv escaping');
+    assert.deepEqual(calls[1].args.slice(0, 3), ['/d', '/s', '/c']);
+    assert.ok(calls[1].args[3].startsWith('""C:\\Provisioned Tools\\Visual Studio'));
+    assert.ok(calls[1].args[3].endsWith(`" ${cpu} >nul && set"`));
+    const environment = JSON.parse(await readFile(join(root, 'native-environment/msvc.json'), 'utf8'));
+    assert.deepEqual(Object.keys(environment).sort(), ['INCLUDE', 'LIB', 'LIBPATH', 'PATH']);
+    assert.equal(environment.INCLUDE, 'declared-include'); assert.equal(environment.LIB, 'declared-lib');
+    assert.equal(environment.PATH.includes('ambient-path-poison'), false);
+  }
+});
+
+test('actual Windows CI checkout policy survives isolated Git configuration without changing source bytes or accepting edits', { skip: process.platform === 'win32' }, async t => {
+  const inputs = readInputs(), root = await source(t), checkout = join(root, 'checkout');
+  const env = childEnv(join(root, 'git-environment'), {}, inputs);
+  const git = (cwd, args, extra = {}) => execFileSync(toolPath('git'), ['-C', cwd, ...args], { env: { ...env, ...extra }, encoding: 'utf8' });
+  git(root, ['init', '--quiet']);
+  git(root, ['add', 'Cargo.lock', 'crates/occipital/Cargo.toml']);
+  git(root, ['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '--quiet', '-m', 'fixture']);
+  git(root, ['clone', '--quiet', '--no-checkout', root, checkout]);
+  const system = join(root, 'checkout-system.gitconfig');
+  await writeFile(system, '[core]\nautocrlf = true\n');
+  git(checkout, ['checkout', '--quiet', '--force', 'HEAD'], { GIT_CONFIG_NOSYSTEM: '0', GIT_CONFIG_SYSTEM: system });
+  const files = ['Cargo.lock', 'crates/occipital/Cargo.toml'];
+  const before = await Promise.all(files.map(file => readFile(join(checkout, file))));
+  for (const bytes of before) assert.ok(bytes.includes('\r\n'), 'positive control represents a real Windows CRLF checkout');
+  const status = () => git(checkout, ['status', '--porcelain', '--', 'crates', 'Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', '.cargo']);
+  assert.notEqual(status().trim(), '', 'removing inherited Git policy reproduces the false dirty-source rejection');
+  const workflow = await readFile(join(repo, '.github/workflows/occipital.yml'), 'utf8');
+  const step = workflowStep(workflow, 'Declare Windows checkout line-ending semantics');
+  assert.match(step, /^        if: runner\.os == 'Windows'$/m, 'the declaration must not alter non-Windows Git semantics');
+  execFileSync(toolPath('bash'), ['-e', '-o', 'pipefail', '-c', shellStep(step)], { cwd: checkout, env, stdio: 'pipe' });
+  assert.equal(status().trim(), '', 'strict same-commit admission must see the unchanged checkout as clean');
+  for (let index = 0; index < files.length; index++) assert.deepEqual(await readFile(join(checkout, files[index])), before[index], 'declaration must not rewrite source or change native build inputs');
+  assert.equal(await readFile(system, 'utf8'), '[core]\nautocrlf = true\n', 'do not rewrite inherited system configuration');
+  assert.equal(await readFile(env.GIT_CONFIG_GLOBAL, 'utf8'), '', 'do not rewrite inherited global configuration');
+  await writeFile(join(checkout, 'crates/occipital/Cargo.toml'), before[1].toString() + '# actual source edit\r\n');
+  assert.match(status(), /crates\/occipital\/Cargo\.toml/, 'genuine native edits still fail strict commit-only admission');
 });

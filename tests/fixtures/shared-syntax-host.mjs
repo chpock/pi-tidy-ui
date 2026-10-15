@@ -5,6 +5,7 @@ import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { setTimeout as pause } from 'node:timers/promises';
+import { childEnv } from '../../scripts/test/context.mjs';
 import { SyntaxClient } from '../../src/occipital/client.ts';
 import { createSharedFactory } from '../../src/occipital/factories.ts';
 import { ExtensionSettings } from '../../src/settings.ts';
@@ -23,24 +24,22 @@ export async function reaped(pid) {
 export const themeDefinition = color => `<plist><dict><key>settings</key><array><dict><key>settings</key><dict><key>foreground</key><string>${color}</string></dict></dict></array></dict></plist>`;
 export async function sharedSyntaxHost(hostBinary, helperBinary) {
   const root = await mkdtemp(join(tmpdir(), 'occipital-cli-shared-'));
-  const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^(SUBC_|CK_|CORTEXKIT_|PI_)/i.test(key)));
-  for (const [key, name] of Object.entries({ HOME: 'home', XDG_CONFIG_HOME: 'config', XDG_DATA_HOME: 'data', XDG_CACHE_HOME: 'cache', XDG_RUNTIME_DIR: 'run' })) {
-    env[key] = join(root, name); await mkdir(env[key], { mode: 0o700 });
-  }
-  const runtime = join(root, 'runtime'), themes = join(root, 'themes'), config = join(root, 'occipital.json');
-  await mkdir(runtime, { mode: 0o700 }); await mkdir(themes, { mode: 0o700 });
+  const env = childEnv(root, { SUBC_CGROUP_PLACEMENT: 'disabled' });
+  const runtime = env.XDG_RUNTIME_DIR, themes = join(root, 'themes'), config = join(root, 'occipital.json');
+  await mkdir(themes, { mode: 0o700 });
   const themeFile = join(themes, 'cli-shared.tmTheme');
   await writeFile(themeFile, themeDefinition('#223344'));
   await writeFile(config, JSON.stringify({ themeDirectories: ['themes'] }));
   const wrapper = join(root, 'module'), quote = value => "'" + value.replaceAll("'", "'\\''") + "'";
   await writeFile(wrapper, `#!/bin/sh\nexec ${quote(resolve(helperBinary))} --config ${quote(config)} "$@"\n`);
   await chmod(wrapper, 0o700);
-  await writeFile(join(runtime, 'config.json'), JSON.stringify({ version: 1, modules: { occipital: { program: wrapper, reserved: true } } }), { mode: 0o600 });
-  const host = spawn(resolve(hostBinary), ['host', runtime], { cwd: root, env, stdio: ['ignore', 'pipe', 'pipe'] });
+  const daemonConfig = join(env.XDG_CONFIG_HOME, 'cortexkit'); await mkdir(daemonConfig, { mode: 0o700 });
+  await writeFile(join(daemonConfig, 'subc.jsonc'), JSON.stringify({ version: 1, modules: { occipital: { program: wrapper, reserved: true } } }), { mode: 0o600 });
+  const host = spawn(resolve(hostBinary), [], { cwd: root, env, stdio: ['ignore', 'pipe', 'pipe'] });
   let stderr = '', failure;
   host.on('error', error => { failure = error; }); host.stdout.resume(); host.stderr.on('data', chunk => { stderr = (stderr + chunk).slice(-8192); });
   const hostExit = new Promise(resolve => host.once('close', (code, signal) => resolve({ code, signal })));
-  const connection = join(runtime, 'connection.json'), alias = join(root, 'pi-connection.json');
+  const connection = join(runtime, 'subc-connection.json'), alias = join(root, 'pi-connection.json');
   const clients = [], pids = new Set();
   const close = async () => {
     for (const client of clients) await client.dispose();
