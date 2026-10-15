@@ -57,10 +57,21 @@ export function rewriteConsumerLock(lock, sourceRegistry, registryURL) {
   return projected;
 }
 
+export async function installConsumer(npm, consumer, installed, registryURL) {
+  await npm(['install', '--ignore-scripts', '--no-audit', '--no-fund', ...(installed ? [] : ['--omit=optional'])], registryURL, consumer);
+}
+
 export async function verifyConsumerReplay(npm, consumer, installed, registryURL) {
   const lock = JSON.parse(await readFile(join(consumer, 'package-lock.json'), 'utf8'));
-  await npm(['ci', '--prefix', consumer, '--ignore-scripts', '--no-audit', '--no-fund', ...(installed ? [] : ['--omit=optional'])], registryURL);
+  await npm(['ci', '--ignore-scripts', '--no-audit', '--no-fund', ...(installed ? [] : ['--omit=optional'])], registryURL, consumer);
   assert.deepEqual(JSON.parse(await readFile(join(consumer, 'package-lock.json'), 'utf8')), lock, 'Clean consumer replay must preserve the frozen graph');
+}
+
+export function readConsumerArchiveManifest(inputs, root, path) {
+  const options = { env: childEnv(root, {}, inputs), maxBuffer: 16 * 1024 * 1024 };
+  const members = execFileSync(inputs.tools.tar, ['-tzf', path], options).toString().split(/\r?\n/).filter(name => /^(?:\.\/)?[^/]+\/package\.json$/.test(name));
+  assert.equal(members.length, 1, 'Prepared archive must have exactly one root manifest');
+  return JSON.parse(execFileSync(inputs.tools.tar, ['-xOzf', path, members[0]], options).toString());
 }
 
 async function stageConsumerPackages(inputs, root, pack) {
@@ -121,11 +132,10 @@ export async function prepareConsumerClosure(inputs, { offline = false } = {}) {
   await mkdir(temporaryRoot, { recursive: true });
   const root = await mkdtemp(join(temporaryRoot, 'tidy-consumer-preparation-'));
   let registry, preparationError, npmVersion, commands = 0;
-  const npm = async (args, url = 'http://127.0.0.1:9') => runNpmPreparation([...args, `--registry=${url}`, '--fetch-retries=0',
+  const npm = async (args, url = 'http://127.0.0.1:9', cwd = root) => runNpmPreparation([...args, `--registry=${url}`, '--fetch-retries=0',
     ...['@earendil-works', '@cortexkit', '@kchpock'].map(scope => `--${scope}:registry=${url}`)], {
-    cwd: root, nodePath: inputs.node.path, nodeVersion: inputs.node.version, npmPath: inputs.tools.npm,
-    env: childEnv(join(root, `command-${commands++}`), { npm_config_offline: 'false', npm_config_registry: url,
-      ...(process.platform === 'win32' ? { npm_config_loglevel: 'verbose' } : {}) }, inputs),
+    cwd, nodePath: inputs.node.path, nodeVersion: inputs.node.version, npmPath: inputs.tools.npm,
+    env: childEnv(join(root, `command-${commands++}`), { npm_config_offline: 'false', npm_config_registry: url }, inputs),
     logsRoot: join(root, 'logs'), reportsRoot: join(output, 'diagnostics') });
   try {
     npmVersion = execFileSync(inputs.node.path, [inputs.tools.npm, '--version'], { env: childEnv(root, {}, inputs), encoding: 'utf8' }).trim();
@@ -163,10 +173,7 @@ export async function prepareConsumerClosure(inputs, { offline = false } = {}) {
       assert.ok(reply.ok, 'Required public preparation archive unavailable');
       const bytes = Buffer.from(await reply.arrayBuffer()), path = join(archives, sha256(bytes) + '.tgz');
       await writeFile(path, bytes);
-      const options = { env: childEnv(root, {}, inputs), maxBuffer: 16 * 1024 * 1024 };
-      const members = execFileSync(inputs.tools.tar, ['-tzf', path], options).toString().split('\n').filter(name => /^(?:\.\/)?[^/]+\/package\.json$/.test(name));
-      assert.equal(members.length, 1, 'Prepared archive must have exactly one root manifest');
-      const manifest = JSON.parse(execFileSync(inputs.tools.tar, ['-xOzf', path, members[0]], options).toString());
+       const manifest = readConsumerArchiveManifest(inputs, root, path);
       assert.equal(manifest.name, request.name); assert.equal(manifest.version, request.version);
       const record = { name: request.name, version: request.version, path, integrity: request.manifest.dist.integrity,
         manifest: request.manifest, sourceURL: request.sourceURL };
@@ -194,7 +201,7 @@ export async function prepareConsumerClosure(inputs, { offline = false } = {}) {
         const seeded = seedConsumerLock(JSON.parse(bytes.toString('utf8')), packages, manifest, registry.url);
         await writeFile(join(consumer, 'package.json'), JSON.stringify(manifest));
         await writeFile(join(consumer, 'package-lock.json'), JSON.stringify(seeded));
-        await npm(['install', '--prefix', consumer, '--ignore-scripts', '--no-audit', '--no-fund', ...(installed ? [] : ['--omit=optional'])], registry.url);
+        await installConsumer(npm, consumer, installed, registry.url);
       }
       // A fresh ci can request metadata that install did not need; record it before freezing.
       await verifyConsumerReplay(npm, consumer, installed, registry.url);

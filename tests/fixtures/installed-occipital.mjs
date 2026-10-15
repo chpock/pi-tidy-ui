@@ -36,7 +36,7 @@ function restoreEnv() {
   for (const key of Object.keys(process.env)) if (!Object.hasOwn(originalEnv, key)) delete process.env[key];
   Object.assign(process.env, originalEnv);
 }
-const npm = async (args, registryURL = 'http://127.0.0.1:9') => {
+const npm = async (args, registryURL = 'http://127.0.0.1:9', cwd = temporary) => {
   const before = performance.now(), configRoot = join(temporary, `npm-${npmCommands++}`);
   await mkdir(configRoot);
   const userconfig = join(configRoot, 'user.npmrc'), globalconfig = join(configRoot, 'global.npmrc');
@@ -46,7 +46,7 @@ const npm = async (args, registryURL = 'http://127.0.0.1:9') => {
   const scopes = new Set(['@kchpock', ...inputs.registry.packages.filter(item => item.name.startsWith('@')).map(item => item.name.split('/')[0])]);
   try {
     return await runNpmPreparation([...args, `--registry=${registryURL}`, ...[...scopes].map(scope => `--${scope}:registry=${registryURL}`)], {
-      cwd: temporary, nodePath: inputs.node.path, nodeVersion: inputs.node.version, npmPath: inputs.tools.npm, env,
+      cwd, nodePath: inputs.node.path, nodeVersion: inputs.node.version, npmPath: inputs.tools.npm, env,
       logsRoot: join(temporary, 'npm-logs'), reportsRoot: join(repo, '.test-artifacts') });
   } finally { npmMs += performance.now() - before; }
 };
@@ -87,7 +87,7 @@ try {
     const expectedLock = rewriteConsumerLock(preparedLock, receipt.registryURL, registry.url);
     await writeFile(join(consumer, 'package.json'), await readHashed(receipt.manifestPath, receipt.manifestSha256));
     await writeFile(join(consumer, 'package-lock.json'), JSON.stringify(expectedLock));
-    await npm(['ci', '--ignore-scripts', '--no-audit', '--no-fund', ...(installed ? [] : ['--omit=optional']), '--prefix', consumer], registry.url);
+    await npm(['ci', '--ignore-scripts', '--no-audit', '--no-fund', ...(installed ? [] : ['--omit=optional'])], registry.url, consumer);
     registry.assertNoRejectedRequests();
     const lockBytes = await readFile(join(consumer, 'package-lock.json'));
     const consumerLockSha256 = createHash('sha256').update(lockBytes).digest('hex'), lock = JSON.parse(lockBytes.toString('utf8'));

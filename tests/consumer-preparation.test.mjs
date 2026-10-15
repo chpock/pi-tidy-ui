@@ -1,14 +1,15 @@
 import './fixtures/test-guard.mjs';
 import assert from 'node:assert/strict';
-import { execFile } from 'node:child_process';
-import { access, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { execFile, execFileSync } from 'node:child_process';
+import { access, copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { pathToFileURL } from 'node:url';
 import test from 'node:test';
-import { childEnv, readInputs } from '../scripts/test/context.mjs';
-import { prepareConsumerClosure, rewriteConsumerLock, seedConsumerLock, verifyConsumerReplay } from './fixtures/consumer-preparation.mjs';
+import { childEnv, readInputs, toolPath } from '../scripts/test/context.mjs';
+import { installConsumer, prepareConsumerClosure, readConsumerArchiveManifest, rewriteConsumerLock, seedConsumerLock, verifyConsumerReplay } from './fixtures/consumer-preparation.mjs';
+import { runNpmPreparation } from './fixtures/npm-preparation.ts';
 
 const run = promisify(execFile);
 
@@ -68,10 +69,10 @@ test('consumer preparation replays both optional modes through clean ci without 
   const path = join(root, 'package-lock.json'), lock = { lockfileVersion: 3, packages: { '': { name: 'fixture' }, 'node_modules/fixture': { version: '1.0.0' } } };
   await writeFile(path, JSON.stringify(lock));
   const requests = [], registry = 'http://127.0.0.1:4321';
-  const npm = async (args, url) => { requests.push({ args, url }); };
+  const npm = async (args, url, cwd) => { requests.push({ args, url, cwd }); };
   for (const installed of [true, false]) await verifyConsumerReplay(npm, root, installed, registry);
   assert.deepEqual(requests, [true, false].map(installed => ({
-    args: ['ci', '--prefix', root, '--ignore-scripts', '--no-audit', '--no-fund', ...(installed ? [] : ['--omit=optional'])], url: registry,
+    args: ['ci', '--ignore-scripts', '--no-audit', '--no-fund', ...(installed ? [] : ['--omit=optional'])], url: registry, cwd: root,
   })));
   assert.deepEqual(JSON.parse(await readFile(path, 'utf8')), lock);
   const failure = new Error('required ci metadata unavailable');
@@ -79,4 +80,64 @@ test('consumer preparation replays both optional modes through clean ci without 
   await assert.rejects(verifyConsumerReplay(async () => {
     await writeFile(path, JSON.stringify({ ...lock, packages: {} }));
   }, root, true, registry), /preserve the frozen graph/);
+});
+
+test('consumer preparation extracts unchanged real archives from LF and CRLF listings and rejects non-root or ambiguous manifests', { skip: process.platform === 'win32' }, async t => {
+  const inputs = readInputs(), root = await mkdtemp(join(process.env.TIDY_TEST_ROOT, 'tidy-consumer-tar-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const executable = join(root, "Node Runtime's bin", 'node');
+  await mkdir(join(root, "Node Runtime's bin")); await copyFile(inputs.node.path, executable);
+  const script = join(root, "tar wrapper's code.mjs"), wrapper = join(root, 'tar-crlf');
+  await writeFile(script, `import {execFileSync} from 'node:child_process';\nconst args=process.argv.slice(2), bytes=execFileSync(${JSON.stringify(toolPath('tar'))},args);\nprocess.stdout.write(args[0]==='-tzf'?bytes.toString().replace(/\\r?\\n/g,'\\r\\n'):bytes);\n`);
+  const quote = value => "'" + value.replaceAll("'", "'\\''") + "'";
+  await writeFile(wrapper, `#!/bin/sh\nexec ${quote(executable)} ${quote(script)} "$@"\n`, { mode: 0o755 });
+  for (const [name, members, valid] of [
+    ['root', ['package/package.json'], true],
+    ['dot-root', ['./package/package.json'], true],
+    ['nested', ['package/nested/package.json'], false],
+    ['ambiguous', ['first/package.json', 'second/package.json'], false],
+  ]) {
+    const source = join(root, name); await mkdir(source);
+    const manifest = { name: 'archive-fixture', version: '1.2.3' };
+    for (const member of members) {
+      const directory = join(source, member, '..'); await mkdir(directory, { recursive: true });
+      await writeFile(join(source, member), JSON.stringify(manifest));
+    }
+    const archive = join(root, name + '.tgz');
+    execFileSync(toolPath('tar'), ['-czf', archive, '-C', source, ...members], { env: childEnv(join(root, 'environment'), {}, inputs) });
+    const bytes = await readFile(archive);
+    for (const tar of [toolPath('tar'), wrapper]) {
+      const selected = { ...inputs, tools: { ...inputs.tools, tar } };
+      if (valid) assert.deepEqual(readConsumerArchiveManifest(selected, join(root, 'environment'), archive), manifest);
+      else assert.throws(() => readConsumerArchiveManifest(selected, join(root, 'environment'), archive), /exactly one root manifest/);
+      assert.deepEqual(await readFile(archive), bytes, 'listing conversion must not rewrite archive bytes');
+    }
+  }
+});
+
+test('consumer npm installs from its own cwd without the Windows prefix self-install branch', async t => {
+  const inputs = readInputs(), root = await mkdtemp(join(process.env.TIDY_TEST_ROOT, 'tidy-consumer-npm-cwd-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const npmPath = join(root, 'windows-layout.cjs');
+  // Use the actual selected npm; only its global-directory layout models Windows on POSIX.
+  await writeFile(npmPath, `const {createRequire}=require('node:module'),{join}=require('node:path');\nconst cli=${JSON.stringify(inputs.tools.npm)},load=createRequire(cli),Npm=load('../lib/npm.js');\nObject.defineProperty(Npm.prototype,'globalDir',{get(){return join(this.globalPrefix,'node_modules')}});\nprocess.argv[1]=cli;load(cli);\n`);
+  let commands = 0;
+  const npm = async (args, url, cwd = root) => runNpmPreparation([...args, `--registry=${url}`], {
+    cwd, nodePath: inputs.node.path, nodeVersion: inputs.node.version, npmPath,
+    env: childEnv(join(root, `command-${commands++}`), { npm_config_registry: url }, inputs),
+    logsRoot: join(root, 'logs'), reportsRoot: join(root, 'reports'),
+  });
+  for (const installed of [true, false]) {
+    const consumer = join(root, installed ? 'present' : 'absent'); await mkdir(consumer);
+    const manifest = { name: 'cwd-consumer', version: '0.0.0', private: true };
+    await writeFile(join(consumer, 'package.json'), JSON.stringify(manifest));
+    await installConsumer(npm, consumer, installed, 'http://127.0.0.1:9');
+    await verifyConsumerReplay(npm, consumer, installed, 'http://127.0.0.1:9');
+    assert.deepEqual(JSON.parse(await readFile(join(consumer, 'package.json'), 'utf8')), manifest, 'do not install the consumer or its parent as a dependency');
+    const lock = JSON.parse(await readFile(join(consumer, 'package-lock.json'), 'utf8'));
+    assert.deepEqual(Object.keys(lock.packages), [''], 'only the consumer root belongs in this empty locked graph');
+    assert.equal(lock.packages[''].name, manifest.name);
+    await assert.rejects(access(join(root, 'package.json')), { code: 'ENOENT' });
+    await assert.rejects(access(join(root, 'node_modules')), { code: 'ENOENT' });
+  }
 });
