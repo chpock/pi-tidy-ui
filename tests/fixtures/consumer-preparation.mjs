@@ -124,7 +124,8 @@ export async function prepareConsumerClosure(inputs, { offline = false } = {}) {
   const npm = async (args, url = 'http://127.0.0.1:9') => runNpmPreparation([...args, `--registry=${url}`, '--fetch-retries=0',
     ...['@earendil-works', '@cortexkit', '@kchpock'].map(scope => `--${scope}:registry=${url}`)], {
     cwd: root, nodePath: inputs.node.path, nodeVersion: inputs.node.version, npmPath: inputs.tools.npm,
-    env: childEnv(join(root, `command-${commands++}`), { npm_config_offline: 'false', npm_config_registry: url }, inputs),
+    env: childEnv(join(root, `command-${commands++}`), { npm_config_offline: 'false', npm_config_registry: url,
+      ...(process.platform === 'win32' ? { npm_config_loglevel: 'verbose' } : {}) }, inputs),
     logsRoot: join(root, 'logs'), reportsRoot: join(output, 'diagnostics') });
   try {
     npmVersion = execFileSync(inputs.node.path, [inputs.tools.npm, '--version'], { env: childEnv(root, {}, inputs), encoding: 'utf8' }).trim();
