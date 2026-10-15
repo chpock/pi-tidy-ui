@@ -81,7 +81,7 @@ The three `FOOTER_FIELDS` source flags in `src/footer.ts` default to `false`: `t
 Run **`/tidy-ui`** to open a centered settings popup:
 
 - **Tidy UI appearance** — turn styling on or off.
-- **Code color theme** — choose Follow Pi or an independent code theme; type to search.
+- **Code color theme** — preview Follow Pi or an independent code theme with arrows or search; Enter confirms, cancelling restores the previous choice.
 - **Set terminal colors from Pi theme** — apply Pi's theme to the terminal background and default text color when eligible.
 - **Status & troubleshooting** — actual state, reapply controls, native highlighting, logs and display-cache tools.
 
@@ -106,7 +106,7 @@ Turning **Set terminal colors from Pi theme** off stops terminal-default applica
 
 Diagnostic capture is on by default, including while presentation is off. **Status & troubleshooting → Diagnostic logs** shows private human-readable journal paths and counters; **Write state snapshot** records existing state without rendering. **Record diagnostic logs** controls capture; **Retry recording** explicitly retries a failed writer. No conversation, command or source bodies are logged. See [diagnostic journals](docs/debug-logging-spec.md) for batching, cleanup and accepted loss limits.
 
-The code theme, appearance, terminal-color matching, native highlighting and log-recording switches are saved in `getAgentDir()/extensions/pi-tidy-ui/config.json` (normally `~/.pi/agent/extensions/pi-tidy-ui/config.json`). They restore before activation on reload and future launches. Missing switches default to On; old theme-only files remain valid. Changes apply immediately; a failed save is reported without undoing the live choice. Disabling appearance restores original presentation methods, including the editor, without transferring its draft; re-enabling covers existing and future components.
+The code theme, appearance, terminal-color matching, native highlighting and log-recording switches are saved in `getAgentDir()/extensions/pi-tidy-ui/config.json` (normally `~/.pi/agent/extensions/pi-tidy-ui/config.json`). They restore before activation on reload and future launches. Missing switches default to On; old theme-only files remain valid. Theme previews are temporary until confirmed; other changes apply immediately. A failed save is reported without undoing the live choice. Disabling appearance restores original presentation methods, including the editor, without transferring its draft; re-enabling covers existing and future components.
 
 Use exact, case-sensitive tool names to customize the presentation for one invocation:
 

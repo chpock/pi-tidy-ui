@@ -425,3 +425,27 @@ test('entry gives the same overlay live per-page sizing without remounts or pref
   });
   assert.equal(mounts, 1); assert.deepEqual(h.counts, before);
 });
+
+
+test('entry discards an unconfirmed theme preview when a session shuts down and constructs its next runtime', async () => {
+  let saves = 0;
+  const original = { kind: 'occipital' as const, id: 'saved-independent-theme' };
+  const h = fixture('tui', false, { load: async () => ({ ok: true, syntaxTheme: original }),
+    update: async () => { saves++; return { ok: true }; } });
+  await h.start(); await settled();
+  await withMenu(h.command, h.ctx, async menu => {
+    await menu.select('Code color theme');
+    assert.match(menu.text(), /Selected: saved-independent-theme/);
+    // The missing native choice is intentionally not fabricated as a row.
+    await menu.key('\x1b[A'); await menu.key('\x1b[B');
+    assert.match(menu.text(), /Selected: Follow Pi/);
+    assert.equal(saves, 0);
+    await h.stop();
+  });
+  await h.start({ type: 'session_start', reason: 'resume' }); await settled();
+  await withMenu(h.command, h.ctx, async menu => {
+    await menu.select('Code color theme');
+    assert.match(menu.text(), /Selected: saved-independent-theme/);
+  });
+  assert.equal(saves, 0);
+});

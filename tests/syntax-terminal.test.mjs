@@ -153,8 +153,14 @@ for (const mode of ['fullscreen', 'regular']) test(`occipital CLI: actual ${mode
       const menu = await stats(native, 'menu-cancel'); assert.deepEqual(work(menu), work(baseline)); assert.equal(menu.counts.acquisitions, 1);
       const pid = baseline.transports[0].pid;
       await native.openTidyMenu(); await native.selectTidyItem('Status & troubleshooting');
-      await native.selectTidyItem('Use Occipital highlighting'); native.captureScreen('syntax-menu-off', {});
-      assert.ok(native.tidyRows().some(row => /Use Occipital highlighting\s+Off/u.test(row)), 'same real overlay survives native disable: ' + native.output);
+      await native.selectTidyItem('Use Occipital highlighting');
+      // Configuration can be written before the synchronized terminal frame ends.
+      const disabledRows = await until(async () => {
+        const rows = await native.completeTidyRows();
+        return rows.some(row => /Use Occipital highlighting\s+Off/u.test(row)) ? rows : false;
+      }, 'complete same overlay after native disable');
+      native.captureScreen('syntax-menu-off', {});
+      assert.ok(disabledRows.some(row => /Use Occipital highlighting\s+Off/u.test(row)), 'same real overlay survives native disable: ' + native.output);
       await native.closeTidyMenu();
       const disabled = await stats(native, 'native-off'); assert.ok(disabled.transports.every(t => t.childState === 'exited'));
       await native.appearance(false); const off = await stats(native, 'master-off');
@@ -312,7 +318,10 @@ async function chooseTheme(terminal, index) {
   const profiles = snapshot.client.provider.description.profiles.filter(profile => profile.id !== 'pi');
   const label = index === 0 ? 'Follow Pi theme' : profiles[index - 1].label;
   await terminal.openTidyMenu(); await terminal.selectTidyItem('Code color theme');
-  assert.ok(terminal.tidyRows().some(row => row.includes('Follow Pi')), 'public searchable theme picker installed');
+  assert.ok(terminal.tidyRows().some(row => row.includes('Search:')), 'public searchable theme picker installed');
+  // One complete search avoids exercising every intervening preview in controls
+  // whose counters are specifically about a single selected profile change.
+  terminal.send(label); await until(() => terminal.tidyRows().some(row => row.startsWith('→ ') && row.includes(label)), 'searched theme selected');
   await terminal.selectTidyItem(label); await terminal.closeTidyMenu();
 }
 async function peerSource(client) {
@@ -887,8 +896,31 @@ for (const mode of ['fullscreen', 'regular']) test(`occipital CLI: ${mode} resto
   });
 
 
-for (const mode of ['fullscreen', 'regular']) test(`occipital CLI: ${mode} theme switch recolors every Bash/write/edit card without zero-width capture`,
-  { skip: !binary, timeout: 120000 }, async () => {
+const themeMarkers = ['THEME_BASH_0', 'THEME_BASH_1', 'const THEME_OLD', 'const THEME_NEW', 'const THEME_WRITE'];
+function themeForegrounds(dump) {
+  return themeMarkers.map(marker => {
+    const y = dump.screen.findIndex(row => row.includes(marker)); assert.ok(y >= 0, `physically visible ${marker}`);
+    return dump.cells[y][dump.screen[y].indexOf(marker)].fg;
+  });
+}
+function expectedThemeColors(terminal, phase, dump) {
+  const replies = terminal.events().filter(event => event.type === 'syntax_theme_reply' && event.phase === phase);
+  return themeMarkers.map(marker => {
+    const pair = replies.flatMap(event => event.payload.sources.map((source, i) => ({ text: source.text, reply: event.reply.body.sources[i] })))
+      .find(source => source.text.includes(marker)); assert.ok(pair, `native reply for ${phase} ${marker}`);
+    const offset = Buffer.byteLength(pair.text.slice(0, pair.text.indexOf(marker)));
+    let end = 0, style;
+    for (let i = 0; i < pair.reply.runs.length; i += 2) {
+      end += pair.reply.runs[i]; if (offset < end) { style = pair.reply.styles[pair.reply.runs[i + 1]]; break; }
+    }
+    assert.ok(style, `native token style for ${marker}`);
+    if (style.rgb) return style.rgb[0] * 65536 + style.rgb[1] * 256 + style.rgb[2];
+    const sgr = dump.summaryStyles[style.role === 'plain' ? 'toolOutput' : style.role]; assert.ok(sgr);
+    const rgb = sgr.match(/38;2;(\d+);(\d+);(\d+)m/); assert.ok(rgb);
+    return Number(rgb[1]) * 65536 + Number(rgb[2]) * 256 + Number(rgb[3]);
+  });
+}
+async function savedThemeSession() {
     const directory = await mkdtemp(resolve('.test-artifacts/theme-session-'));
     const manager = SessionManager.create(directory, join(directory, 'sessions'));
     manager.appendModelChange('tidy-ui-offline', 'scripted'); manager.appendThinkingLevelChange('off');
@@ -906,31 +938,18 @@ for (const mode of ['fullscreen', 'regular']) test(`occipital CLI: ${mode} theme
       manager.appendMessage({ role: 'toolResult', toolCallId: `theme-${i}`, toolName: card.name, content: [{ type: 'text', text: `saved result ${i}` }],
         details: card.details, isError: false, timestamp: Date.now() });
     }
-    const session = manager.getSessionFile(), bytes = readFileSync(session);
+    const session = manager.getSessionFile();
+    return { directory, cards, session, bytes: readFileSync(session) };
+}
+
+for (const mode of ['fullscreen', 'regular']) test(`occipital CLI: ${mode} theme switch recolors every Bash/write/edit card without zero-width capture`,
+  { skip: !binary, timeout: 120000 }, async () => {
+    const { directory, cards, session, bytes } = await savedThemeSession();
     const terminal = new PiTerminal(`theme-all-cards-${mode}`, { mode, session, extensions: [fixture],
       extraEnv: { ...descriptor, TIDY_UI_TEST_THEME_OBSERVE: '1' } });
     const raw = dump => dump.tools.map(({ name, args, content, details, isError, argsComplete, executionStarted, partial }) =>
       ({ name, args, content, details, isError, argsComplete, executionStarted, partial }));
-    const markers = ['THEME_BASH_0', 'THEME_BASH_1', 'const THEME_OLD', 'const THEME_NEW', 'const THEME_WRITE'];
-    const foregrounds = dump => markers.map(marker => {
-      const y = dump.screen.findIndex(row => row.includes(marker)); assert.ok(y >= 0, `physically visible ${marker}`);
-      return dump.cells[y][dump.screen[y].indexOf(marker)].fg;
-    });
-    const expected = (phase, dump) => markers.map(marker => {
-      const replies = terminal.events().filter(event => event.type === 'syntax_theme_reply' && event.phase === phase);
-      const pair = replies.flatMap(event => event.payload.sources.map((source, i) => ({ text: source.text, reply: event.reply.body.sources[i] })))
-        .find(source => source.text.includes(marker)); assert.ok(pair, `native reply for ${phase} ${marker}`);
-      const offset = Buffer.byteLength(pair.text.slice(0, pair.text.indexOf(marker)));
-      let end = 0, style;
-      for (let i = 0; i < pair.reply.runs.length; i += 2) {
-        end += pair.reply.runs[i]; if (offset < end) { style = pair.reply.styles[pair.reply.runs[i + 1]]; break; }
-      }
-      assert.ok(style, `native token style for ${marker}`);
-      if (style.rgb) return style.rgb[0] * 65536 + style.rgb[1] * 256 + style.rgb[2];
-      const sgr = dump.summaryStyles[style.role === 'plain' ? 'toolOutput' : style.role]; assert.ok(sgr);
-      const rgb = sgr.match(/38;2;(\d+);(\d+);(\d+)m/); assert.ok(rgb);
-      return Number(rgb[1]) * 65536 + Number(rgb[2]) * 256 + Number(rgb[3]);
-    });
+    const foregrounds = themeForegrounds, expected = (phase, dump) => expectedThemeColors(terminal, phase, dump);
     try {
       await terminal.ready(); await terminal.resize(100, 160);
       await settledStats(terminal, 'all-theme-initial', s => nativeReady(s) && terminal.events().filter(event => event.type === 'syntax_theme_reply' && event.phase === 'initial'
@@ -969,4 +988,114 @@ for (const mode of ['fullscreen', 'regular']) test(`occipital CLI: ${mode} theme
       terminal.send('\x04'); await until(() => terminal.exited, 'all-theme graceful Pi exit'); assert.equal(terminal.exited.code, 0);
       await finish(terminal);
     } finally { await terminal.close(); terminal.dispose(); await rm(directory, { recursive: true, force: true }); }
+  });
+
+
+for (const mode of ['fullscreen', 'regular']) test(`occipital CLI: ${mode} theme preview is visible before confirmation and rollback rejects late colors`,
+  { timeout: 120000 }, async () => {
+    const { directory, session, bytes } = await savedThemeSession();
+    const originalConfig = '{"syntaxTheme":{"kind":"pi"},"unknown":{"untouched":true}}\n';
+    const terminal = new PiTerminal(`theme-preview-${mode}`, { mode, session, extensions: [fixture], extraEnv: {
+      ...descriptor, TIDY_UI_TEST_THEME_OBSERVE: '1', TIDY_UI_TEST_THEME_PREVIEW: '1', TIDY_UI_TEST_SYNTAX_CONFIG: originalConfig } });
+    const config = join(terminal.agent, 'extensions/pi-tidy-ui/config.json');
+    const phase = name => writeFileSync(join(terminal.output, 'syntax-theme-phase'), name);
+    const observe = async name => {
+      writeFileSync(join(terminal.output, 'syntax-preview-request'), name); terminal.send('\x1b\x10');
+      return until(() => {
+        terminal.health();
+        try { return JSON.parse(readFileSync(join(terminal.output, `syntax-preview-${name}.json`), 'utf8')); }
+        catch (error) { if (error.code === 'ENOENT') return false; throw error; }
+      }, `draft-safe preview counters ${name}`);
+    };
+    let observation = 0;
+    const ready = async (name, id) => until(async () => {
+      const current = await observe(`${name}-${observation++}`);
+      return nativeReady(current) && current.client.effective.id === id ? current : false;
+    }, `settled preview ${name}`);
+    const search = async label => {
+      terminal.send(label);
+      await until(() => terminal.tidyRows().some(row => row.startsWith('→ ') && row.includes(label)), `preview highlighted ${label}`);
+    };
+    let baseline;
+    const colors = async (name, wanted) => until(async () => {
+      await terminal.queue;
+      const painted = terminal.captureScreen(name, baseline);
+      return themeForegrounds(painted).every((color, i) => color === wanted(painted)[i]) ? painted : false;
+    }, `physical preview colors ${name}`);
+    const raw = dump => dump.tools.map(({ name, args, content, details, isError, argsComplete, executionStarted, partial }) =>
+      ({ name, args, content, details, isError, argsComplete, executionStarted, partial }));
+    try {
+      await terminal.ready(); await terminal.resize(100, 180);
+      const initial = await syntaxReady(terminal);
+      baseline = await terminal.capture('physical-preview-baseline'); themeForegrounds(baseline);
+      assert.ok(baseline.tools.every(tool => !('tinyLines' in tool)));
+      const profiles = initial.client.provider.description.profiles;
+      const mocha = profiles.find(profile => profile.label === 'Catppuccin Mocha'), latte = profiles.find(profile => profile.label === 'Catppuccin Latte');
+      assert.ok(mocha && latte); assert.equal(initial.counts.themeSaves, 0);
+      await terminal.openTidyMenu(); await terminal.selectTidyItem('Code color theme');
+      phase('preview-mocha'); await search(mocha.label);
+      const preview = await ready('mocha', mocha.id);
+      assert.equal(preview.counts.themeSaves, 0); assert.equal(readFileSync(config, 'utf8'), originalConfig);
+      assert.equal(preview.source.dispatches, initial.source.dispatches + 5);
+      const painted = await colors('preview-before-enter', dump => expectedThemeColors(terminal, 'preview-mocha', dump));
+      assert.notDeepEqual(themeForegrounds(painted), themeForegrounds(baseline), 'colors actually change while the unconfirmed list remains open');
+      assert.ok(terminal.tidyHeading('Code color theme'));
+      for (const width of [100, 90, 100]) { await terminal.resize(width, 180); await observe(`preview-warm-${width}-${observation++}`); }
+      const warm = await observe('preview-warm-final'); assert.deepEqual(work(warm), work(preview));
+      assert.equal(warm.counts.themeSaves, 0); assert.equal(warm.counts.piBridges, initial.counts.piBridges);
+      phase('cancel-pi'); terminal.send('\x1b');
+      await until(() => terminal.tidyHeading('Tidy UI'), 'Escape restores the root page');
+      const cancelled = await ready('cancel-pi', 'pi');
+      assert.equal(cancelled.counts.themeSaves, 0); assert.equal(readFileSync(config, 'utf8'), originalConfig);
+      await colors('preview-cancelled', () => themeForegrounds(baseline));
+      await terminal.closeTidyMenu();
+      const afterCancel = await terminal.capture('physical-preview-after-cancel');
+      assert.deepEqual(raw(afterCancel), raw(baseline)); assert.deepEqual(body(afterCancel), body(baseline));
+
+      await terminal.openTidyMenu(); await terminal.selectTidyItem('Code color theme');
+      phase('preview-latte'); await search(latte.label);
+      const lattePreview = await ready('latte', latte.id);
+      assert.equal(lattePreview.counts.themeSaves, 0); assert.equal(readFileSync(config, 'utf8'), originalConfig);
+      const lattePaint = await colors('preview-latte-before-enter', dump => expectedThemeColors(terminal, 'preview-latte', dump));
+      await terminal.selectTidyItem(latte.label);
+      const confirmed = await ready('confirmed', latte.id); assert.equal(confirmed.counts.themeSaves, 1);
+      assert.deepEqual(work(confirmed), work(lattePreview), 'confirming the settled preview does not parse it again');
+      const confirmedConfig = readFileSync(config, 'utf8');
+      assert.deepEqual(JSON.parse(confirmedConfig), { syntaxTheme: { kind: 'occipital', id: latte.id }, unknown: { untouched: true } });
+      await terminal.closeTidyMenu();
+
+      await terminal.openTidyMenu(); await terminal.selectTidyItem('Code color theme');
+      phase('second-preview'); await search(mocha.label); await ready('second-preview', mocha.id);
+      phase('back-to-latte'); await terminal.selectTidyItem('Back');
+      const back = await ready('back', latte.id);
+      assert.equal(back.counts.themeSaves, 1); assert.equal(readFileSync(config, 'utf8'), confirmedConfig);
+      await colors('preview-back-to-confirmed', () => themeForegrounds(lattePaint));
+      await terminal.closeTidyMenu();
+
+      await terminal.openTidyMenu(); await terminal.selectTidyItem('Code color theme');
+      phase('held-preview'); await search(mocha.label); await terminal.event('syntax_preview_reply_held', 2);
+      const held = await observe('held'); assert.equal(held.source.globalUnsettledJobs, 2);
+      phase('late-rollback'); await terminal.closeTidyMenu();
+      const rollback = await observe('late-rollback');
+      assert.equal(rollback.client.effective.id, latte.id); assert.equal(rollback.counts.themeSaves, 1);
+      writeFileSync(join(terminal.output, 'syntax-preview-go'), 'go');
+      const late = await ready('after-late', latte.id);
+      assert.equal(late.source.staleReplies, rollback.source.staleReplies + 2, 'both held replies are retired after rollback');
+      await colors('preview-after-late-replies', () => themeForegrounds(lattePaint));
+      const final = await terminal.capture('physical-preview-final');
+      assert.deepEqual(raw(final), raw(baseline)); assert.deepEqual(body(final), body(baseline));
+      assert.deepEqual(readFileSync(session), bytes); assert.equal(traffic(terminal).length, 0);
+      assert.equal(readFileSync(config, 'utf8'), confirmedConfig); assert.equal(late.counts.themeSaves, 1);
+      const finalWork = work(late);
+      for (const [i, width] of [100, 90, 100].entries()) { await terminal.resize(width, 180); await terminal.capture(`physical-preview-final-warm-${i}`); }
+      const last = await observe('final-warm'); assert.deepEqual(work(last), finalWork);
+      assert.ok(terminal.events().filter(event => event.type === 'syntax_theme_dispatch').every(event => event.jobs <= 2));
+      console.log(JSON.stringify({ themePreview: terminal.output, mode, node: last.node, pi: inputs.pi.version,
+        previewSaves: preview.counts.themeSaves, confirmedSaves: last.counts.themeSaves, heldReplies: 2, warmDelta: 0 }));
+      terminal.send('\x04'); await until(() => terminal.exited, 'preview graceful Pi exit'); assert.equal(terminal.exited.code, 0);
+      await finish(terminal);
+    } finally {
+      writeFileSync(join(terminal.output, 'syntax-preview-go'), 'go');
+      await terminal.close(); terminal.dispose(); await rm(directory, { recursive: true, force: true });
+    }
   });

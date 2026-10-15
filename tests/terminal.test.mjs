@@ -5534,3 +5534,73 @@ test('CLI cache JSON reader waits for synchronized render completion instead of 
     await pending; terminal.term.dispose();
   }
 });
+
+
+test('CLI scenario completion waits for the final complete frame after agent_end and output silence', async () => {
+  const terminal = Object.create(PiTerminal.prototype);
+  terminal.term = new Terminal({ cols: 60, rows: 4, allowProposedApi: true });
+  observeRenderFrames(terminal.term, terminal);
+  terminal.queue = Promise.resolve();
+  const write = text => terminal.queue = new Promise(done => terminal.term.write(text, done));
+  terminal.events = () => [];
+  terminal.send = data => { assert.equal(data, 'run delayed-frame\r'); };
+  terminal.event = async (name, count) => { assert.equal(name, 'agent_end'); assert.equal(count, 1); };
+  let checks = 0, observeProvisional;
+  const provisionalCheck = new Promise(resolve => { observeProvisional = resolve; });
+  terminal.health = () => { checks++; if (terminal.rendering) observeProvisional(); };
+  terminal.settle = async () => { await write('Working'); };
+  let unsafeReads = 0, outcome;
+  terminal.screen = () => { if (terminal.rendering) unsafeReads++; return PiTerminal.prototype.screen.call(terminal); };
+  const pending = terminal.run('delayed-frame').then(() => { outcome = { passed: true }; }, error => { outcome = { error }; });
+  try {
+    await new Promise(setImmediate);
+    assert.equal(outcome, undefined, 'agent_end and a quiet terminal do not prove that final output has rendered');
+    const initialChecks = checks;
+    await write('\x1b[?2026h\x1b[HTERMINAL_DONE_delayed-frame');
+    await provisionalCheck; await new Promise(setImmediate);
+    assert.ok(checks > initialChecks, 'a readiness iteration has observed the provisional marker frame');
+    assert.equal(outcome, undefined, 'even the marker is provisional until its synchronized frame ends');
+    await write('\x1b[?2026l');
+    await pending;
+    if (outcome.error) throw outcome.error;
+    assert.equal(outcome.passed, true); assert.equal(unsafeReads, 0);
+  } finally {
+    if (terminal.rendering) await write('\x1b[?2026l');
+    await pending; terminal.term.dispose();
+  }
+});
+
+
+test('CLI reload command waits for fresh native completion rather than an old status or output silence', { timeout: 2000 }, async () => {
+  const terminal = Object.create(PiTerminal.prototype);
+  terminal.term = new Terminal({ cols: 100, rows: 5, allowProposedApi: true });
+  observeRenderFrames(terminal.term, terminal);
+  terminal.raw = []; terminal.queue = Promise.resolve();
+  const write = text => {
+    terminal.raw.push(Buffer.from(text));
+    return terminal.queue = new Promise(done => terminal.term.write(text, done));
+  };
+  const done = 'Reloaded keybindings, extensions, skills, prompts, themes, and context files';
+  const loading = 'Reloading keybindings, extensions, skills, prompts, themes, and context files...';
+  await write(`\x1b[?2026h${done}\x1b[?2026l`);
+  let sends = 0, outcome, observeProvisional, observedQuiet;
+  const provisionalCheck = new Promise(resolve => { observeProvisional = resolve; });
+  const quiet = new Promise(resolve => { observedQuiet = resolve; });
+  terminal.send = data => { assert.equal(data, '/reload\r'); sends++; };
+  terminal.health = () => { if (terminal.rendering) observeProvisional(); };
+  terminal.settle = async () => { await write(`\x1b[?2026h\x1b[H${done}\r\n${loading}\x1b[?2026l`); observedQuiet(); };
+  const pending = terminal.command('/reload').then(() => { outcome = { passed: true }; }, error => { outcome = { error }; });
+  try {
+    await quiet; await new Promise(setImmediate);
+    assert.equal(outcome, undefined, 'quiet output and a previous success status do not establish current reload completion');
+    await write(`\x1b[?2026h\x1b[H${done}`);
+    await provisionalCheck; await new Promise(setImmediate);
+    assert.equal(outcome, undefined, 'the fresh native completion remains provisional until the frame ends');
+    await write('\x1b[?2026l'); await pending;
+    if (outcome.error) throw outcome.error;
+    assert.equal(outcome.passed, true); assert.equal(sends, 1, 'no retry of the reload action');
+  } finally {
+    if (terminal.rendering) await write('\x1b[?2026l');
+    await pending; terminal.term.dispose();
+  }
+});

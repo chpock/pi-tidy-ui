@@ -96,12 +96,9 @@ export class SyntaxClient implements SyntaxMenuOwner {
   async selectTheme(choice: SyntaxTheme): Promise<SyntaxMenuOutcome> {
     if (this.disposed) return { ok: false, message: SAVE_FAILED };
     const selected = copyTheme(choice);
-    if (selected.kind !== this.selected.kind || selected.kind === 'occipital' && this.selected.kind === 'occipital' && selected.id !== this.selected.id)
-      this.missingEpisode = false;
-    ++this.preferenceRevision; this.preferenceKnown = true; this.selected = selected;
+    this.applyTheme(selected);
     this.log('Syntax theme selected; applying before persistence', { choice: selected.kind, theme: selected.kind === 'occipital' ? selected.id : 'Pi', revision: this.preferenceRevision });
     this.cancelSave(); const save = new AbortController(); this.save = save;
-    this.reconcile();
     try {
       const result = await this.settings.update({ syntaxTheme: copyTheme(selected) }, { signal: save.signal });
       if (this.disposed || save.signal.aborted || this.save !== save) { this.log('Theme save result ignored; request cancelled or retired'); return { ok: false, message: SAVE_FAILED }; }
@@ -112,6 +109,20 @@ export class SyntaxClient implements SyntaxMenuOwner {
       if (!this.disposed && !save.signal.aborted && this.save === save) this.issue(SAVE_FAILED);
       return { ok: false, message: SAVE_FAILED };
     } finally { if (this.save === save) this.save = undefined; }
+  }
+
+  /** Session-local application only; an earlier confirmed save remains independent. */
+  previewTheme(choice: SyntaxTheme): void {
+    if (this.disposed || this.preferenceKnown && choice.kind === this.selected.kind &&
+      (choice.kind === 'pi' || this.selected.kind === 'occipital' && choice.id === this.selected.id)) return;
+    this.applyTheme(copyTheme(choice));
+    this.log('Syntax theme preview applied without persistence', { choice: choice.kind, theme: choice.kind === 'occipital' ? choice.id : 'Pi', revision: this.preferenceRevision });
+  }
+  private applyTheme(selected: SyntaxTheme): void {
+    if (selected.kind !== this.selected.kind || selected.kind === 'occipital' && this.selected.kind === 'occipital' && selected.id !== this.selected.id)
+      this.missingEpisode = false;
+    ++this.preferenceRevision; this.preferenceKnown = true; this.selected = selected;
+    this.reconcile();
   }
 
   refreshThemes(): Promise<SyntaxMenuOutcome> {

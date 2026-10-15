@@ -21,6 +21,8 @@ export interface TidyMenuOwner {
   /** Cached state only. Opening the root/status never constructs or starts syntax. */
   snapshot(): TidyMenuSnapshot;
   prepareThemes(): Promise<void>;
+  /** Apply cached selection synchronously, without persisting or starting a provider. */
+  previewTheme(choice: SyntaxTheme): void;
   act(action: TidyMenuAction): Promise<SyntaxMenuOutcome & { cache?: string[] }>;
   cacheDetails(): string[];
 }
@@ -76,6 +78,8 @@ export class TidyMenu implements Component {
   private noticeError = false;
   private themeLoading = false;
   private themeLoadFailed = false;
+  private themeVisit = 0;
+  private originalTheme?: SyntaxTheme;
   private cache: string[] = [];
   private detailOffset = 0;
   private listHeight = 0;
@@ -98,13 +102,14 @@ export class TidyMenu implements Component {
     this.dispose(); this.done();
   }
   dispose(): void {
-    this.closed = true;
+    this.closed = true; this.restoreTheme();
     if (this.list) { this.list.onSelect = undefined; this.list.onCancel = undefined; this.list.onSelectionChange = undefined; }
     this.list = undefined;
   }
   invalidate(): void { this.listKey = ''; this.search.invalidate(); }
   private back(): void {
     if (this.page === 'root') { this.close(); return; }
+    if (this.page === 'themes') this.restoreTheme();
     this.page = this.page === 'themes' || this.page === 'support' ? 'root' : 'support';
     this.listKey = ''; this.detailOffset = 0; this.notice = ''; this.requestRender();
   }
@@ -112,20 +117,36 @@ export class TidyMenu implements Component {
     this.page = page; this.listKey = ''; this.notice = ''; this.detailOffset = 0;
     if (page === 'cache') this.cache = this.owner.cacheDetails();
     if (page === 'themes') {
-      this.themeLoading = true; this.themeLoadFailed = false;
+      const visit = ++this.themeVisit;
+      this.themeLoading = true; this.themeLoadFailed = false; this.search.setValue('');
       void this.owner.prepareThemes().then(() => {
-        if (!this.closed) {
+        if (!this.closed && this.page === 'themes' && visit === this.themeVisit) {
           this.themeLoading = false;
-          if (!this.selected.themes) { const choice = this.owner.snapshot().selected;
-            this.selected.themes = choice.kind === 'pi' ? 'theme:pi' : `profile:${choice.id}`; }
+          const choice = this.owner.snapshot().selected; this.originalTheme = { ...choice };
+          this.selected.themes = choice.kind === 'pi' ? 'theme:pi' : `profile:${choice.id}`;
           this.listKey = ''; this.requestRender();
         }
       }, () => {
-        if (!this.closed) { this.themeLoading = false; this.themeLoadFailed = true;
+        if (!this.closed && this.page === 'themes' && visit === this.themeVisit) { this.themeLoading = false; this.themeLoadFailed = true;
           this.feedback('Saved code theme could not be loaded.', true); }
       });
     }
     this.requestRender();
+  }
+  private restoreTheme(): void {
+    const original = this.originalTheme; this.originalTheme = undefined; ++this.themeVisit;
+    if (original) this.owner.previewTheme(original);
+  }
+  private previewTheme(value: string): void {
+    if (this.closed || this.busy || this.page !== 'themes' || !this.originalTheme) return;
+    const state = this.owner.snapshot();
+    const profile = !themesUnavailable(state) && state.syntax?.provider.description?.profiles.find(profile => `profile:${profile.id}` === value);
+    const choice: SyntaxTheme | undefined = value === 'theme:pi' ? { kind: 'pi' } : profile ? { kind: 'occipital', id: profile.id } : undefined;
+    if (choice) this.owner.previewTheme(choice);
+  }
+  private confirmTheme(choice: SyntaxTheme): void {
+    this.originalTheme = undefined; ++this.themeVisit;
+    void this.perform({ kind: 'theme', choice });
   }
   private feedback(message: string, error = false): void {
     if (this.closed) return;
@@ -155,10 +176,10 @@ export class TidyMenu implements Component {
     if (value === 'refresh-status') { this.listKey = ''; this.feedback('Status refreshed.'); return; }
     if (value === 'refresh-cache') { this.cache = this.owner.cacheDetails(); this.feedback('Cache statistics refreshed.'); return; }
     if (value === 'refreshThemes' && themesUnavailable(state)) { this.feedback(themesUnavailable(state)!, true); return; }
-    if (value === 'theme:pi') { void this.perform({ kind: 'theme', choice: { kind: 'pi' } }); return; }
+    if (value === 'theme:pi') { this.confirmTheme({ kind: 'pi' }); return; }
     if (value.startsWith('profile:')) {
       const profile = !themesUnavailable(state) && state.syntax?.provider.description?.profiles.find(profile => `profile:${profile.id}` === value);
-      if (profile) void this.perform({ kind: 'theme', choice: { kind: 'occipital', id: profile.id } });
+      if (profile) this.confirmTheme({ kind: 'occipital', id: profile.id });
       return;
     }
     if (['refreshThemes', 'reapplyAppearance', 'reapplyColors', 'clearCache', 'retryLogging', 'snapshotLogs'].includes(value))
@@ -191,7 +212,7 @@ export class TidyMenu implements Component {
         const profiles = themesUnavailable(state) ? [] : state.syntax?.provider.description?.profiles.filter(profile => profile.id !== 'pi') ?? [];
         const labels = profileLabels(profiles);
         const choices = [item('theme:pi', 'Follow Pi theme', 'Use Pi’s code colors.', state.selected.kind === 'pi' ? 'Selected' : undefined),
-          ...profiles.map((profile, index) => item(`profile:${profile.id}`, labels[index]!, 'Apply and save this code color theme.',
+          ...profiles.map((profile, index) => item(`profile:${profile.id}`, labels[index]!, 'Preview this theme. Enter saves; Esc restores the previous theme.',
             state.selected.kind === 'occipital' && state.selected.id === profile.id ? 'Selected' : undefined))];
         return [...choices.filter(choice => choice.label.toLocaleLowerCase().includes(query) ||
           choice.value.startsWith('profile:') && choice.value.slice(8).toLocaleLowerCase().includes(query)),
@@ -352,8 +373,16 @@ export class TidyMenu implements Component {
     if (!this.list) return;
     if (this.page === 'themes' && !this.themeLoading && !this.themeLoadFailed && !kb.matches(data, 'tui.select.up') &&
       !kb.matches(data, 'tui.select.down') && !kb.matches(data, 'tui.select.confirm')) {
-      this.search.handleInput(data); this.selected.themes = undefined; this.listKey = '';
-    } else this.list.handleInput(data);
+      const before = this.search.getValue(); this.search.handleInput(data);
+      if (this.search.getValue() !== before) {
+        const first = this.pageItems(this.owner.snapshot())[0]?.value;
+        this.selected.themes = first; this.listKey = '';
+        if (first) this.previewTheme(first);
+      }
+    } else {
+      this.list.handleInput(data);
+      const value = this.list.getSelectedItem()?.value; if (value) this.previewTheme(value);
+    }
     if (!this.closed) this.requestRender();
   }
   handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
@@ -365,7 +394,15 @@ export class TidyMenu implements Component {
     const page = this.page, list = this.list;
     const result = list.handleMouse({ ...event, x: event.x - this.frameInset,
       y: row ?? 0, width: this.bodyWidth + 2, height: this.listHeight });
-    if (result) { if (this.page === page) this.selected[page] = list.getSelectedItem()?.value; this.requestRender(); }
+    if (result) {
+      if (this.page === page) {
+        const value = list.getSelectedItem()?.value; this.selected[page] = value;
+        // Press/click is one confirmation gesture; preview must not replace the
+        // native list (and its pressed-row identity) between those two events.
+        if (event.type === 'wheel' && value) this.previewTheme(value);
+      }
+      this.requestRender();
+    }
     return result;
   }
 }

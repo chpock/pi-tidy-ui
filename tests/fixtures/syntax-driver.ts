@@ -12,6 +12,8 @@ import type { SharedTransport } from '../../src/occipital/shared.ts';
 import type { ProviderClock } from '../../src/occipital/provider.ts';
 import { SyntaxClient } from '../../src/occipital/client.ts';
 import { SyntaxRuntime } from '../../src/syntax/runtime.ts';
+import { ExtensionSettings } from '../../src/settings.ts';
+import { matchesKey } from '@earendil-works/pi-tui';
 
 export default function syntaxDriver(pi: ExtensionAPI) {
   const output = process.env.TIDY_UI_TEST_OUTPUT!, binary = process.env.TIDY_UI_TEST_OCCIPITAL_BIN!;
@@ -26,7 +28,7 @@ export default function syntaxDriver(pi: ExtensionAPI) {
     mkdirSync(preferences, { recursive: true }); writeFileSync(join(preferences, 'config.json'), process.env.TIDY_UI_TEST_SYNTAX_CONFIG);
   }
   const transports: StdioTransport[] = [], sharedTransports: SharedTransport[] = [];
-  const counts = { constructions: 0, acquisitions: 0, downloads: 0, piCaptures: 0, piBridges: 0, describeReplies: 0, refreshReplies: 0, sharedAttempts: 0, heldReplies: 0, deliveredReplies: 0, heldBashReplies: 0, orderDispatches: 0 };
+  const counts = { constructions: 0, acquisitions: 0, downloads: 0, piCaptures: 0, piBridges: 0, describeReplies: 0, refreshReplies: 0, sharedAttempts: 0, heldReplies: 0, deliveredReplies: 0, heldBashReplies: 0, orderDispatches: 0, themeSaves: 0 };
   let pendingHeldReplies = 0;
   let runtime: WeakRef<SyntaxRuntime> | undefined, client: WeakRef<SyntaxClient> | undefined, controller = 0;
   let offset = 0;
@@ -40,6 +42,14 @@ export default function syntaxDriver(pi: ExtensionAPI) {
     },
   };
   const closes: Promise<void>[] = [];
+  let stopPreviewProbe: (() => void) | undefined;
+  const updateSettings = ExtensionSettings.prototype.update;
+  if (process.env.TIDY_UI_TEST_THEME_PREVIEW === '1') {
+    ExtensionSettings.prototype.update = function (...args) {
+      if (args[0].syntaxTheme) counts.themeSaves++;
+      return updateSettings.apply(this, args);
+    };
+  }
   const attached = SyntaxRuntime.prototype.attach, captured = SourceController.prototype.capturePiSource,
     bridged = SourceController.prototype.installPiBridge, fetch = globalThis.fetch;
   const brokerStats = () => client?.deref()?.broker.stats();
@@ -62,6 +72,20 @@ export default function syntaxDriver(pi: ExtensionAPI) {
   const record = (event: object) => appendFileSync(join(output, 'events.jsonl'), JSON.stringify(event) + '\n');
   const uiNotices = new Map<ExtensionContext['ui'], ExtensionContext['ui']['notify']>();
   pi.on('session_start', (_event, ctx) => {
+    if (process.env.TIDY_UI_TEST_THEME_PREVIEW === '1') {
+      ctx.ui.setWidget('syntax-preview-probe', tui => {
+        stopPreviewProbe?.();
+        stopPreviewProbe = tui.addInputListener(data => {
+          if (!matchesKey(data, 'ctrl+alt+p')) return;
+          const name = readFileSync(join(output, 'syntax-preview-request'), 'utf8');
+          if (!/^[a-z0-9-]+$/.test(name)) throw new Error('Invalid preview capture name');
+          writeFileSync(join(output, `syntax-preview-${name}.json`), JSON.stringify(snapshot(), null, 2));
+          return { consume: true };
+        });
+        return { render: () => [], invalidate() {} };
+      });
+      ctx.ui.setWidget('syntax-preview-probe', undefined);
+    }
     if (uiNotices.has(ctx.ui)) return;
     const notify = ctx.ui.notify; uiNotices.set(ctx.ui, notify);
     ctx.ui.notify = (message, level) => {
@@ -107,6 +131,12 @@ export default function syntaxDriver(pi: ExtensionAPI) {
           if (phase) record({ type: 'syntax_theme_dispatch', phase, payload, jobs: runtime?.deref()?.sources.stats().globalUnsettledJobs });
           const reply = await request(payload, opts);
           if (phase) record({ type: 'syntax_theme_reply', phase, payload, reply });
+          if (phase === 'held-preview' && process.env.TIDY_UI_TEST_THEME_PREVIEW === '1') {
+            record({ type: 'syntax_preview_reply_held', payload });
+            // A fulfilled native result is deliberately delivered after rollback,
+            // even if its former controller authority was cancelled meanwhile.
+            while (!existsSync(join(output, 'syntax-preview-go'))) await pause(20);
+          }
           if (ordinal) {
             pendingHeldReplies++; record({ type: 'syntax_order_reply_held', ordinal });
             try {
@@ -156,6 +186,8 @@ export default function syntaxDriver(pi: ExtensionAPI) {
       SyntaxRuntime.prototype.attach = attached; SourceController.prototype.capturePiSource = captured;
       SourceController.prototype.installPiBridge = bridged;
       SyntaxClient.prototype.snapshot = clientSnapshot; globalThis.fetch = fetch;
+      if (process.env.TIDY_UI_TEST_THEME_PREVIEW === '1') ExtensionSettings.prototype.update = updateSettings;
+      stopPreviewProbe?.(); stopPreviewProbe = undefined;
       for (const [ui, notify] of uiNotices) ui.notify = notify; uiNotices.clear();
       for (const timer of timers.keys()) clearTimeout(timer); timers.clear();
     }

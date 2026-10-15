@@ -467,3 +467,64 @@ test('canonical client receives a fully validated retired shared outcome without
     assert.equal(f.c.sources.status('one'), undefined); assert.equal(peer.calls.length, 2);
   }
 });
+
+
+test('theme preview applies immediately, copies the choice, coalesces notices and never persists', async () => {
+  const f = fixture(); await f.c.start(); await settle();
+  const choice: SyntaxTheme = { kind: 'occipital', id: native.id };
+  f.c.previewTheme(choice); choice.id = 'mutated';
+  assert.deepEqual(f.c.snapshot().selected, { kind: 'occipital', id: native.id });
+  assert.equal(f.c.snapshot().effective?.id, native.id);
+  f.c.previewTheme({ kind: 'pi' }); f.c.previewTheme({ kind: 'occipital', id: native.id }); f.c.previewTheme({ kind: 'pi' });
+  await settle(); assert.equal(f.c.snapshot().effective?.id, pi.id);
+  assert.equal(f.store.writes.length, 0); assert.deepEqual(f.peer.calls.map(call => call.request.op), ['describe']);
+  const before = f.notices();
+  for (let i = 0; i < 100; i++) f.c.previewTheme({ kind: 'pi' });
+  await settle(); assert.equal(f.notices(), before, 'unchanged previews are not new metadata demand');
+  assert.equal((await f.c.selectTheme({ kind: 'pi' })).ok, true);
+  assert.deepEqual(f.store.writes.map(write => write.choice), [{ kind: 'pi' }]);
+});
+
+test('theme preview cannot cancel an earlier confirmation or be overwritten by its late save result', async () => {
+  const held = deferred<SettingsSaveResult>(), store = new Store(); store.saveResult = held.promise;
+  const f = fixture({}, store); await f.c.start();
+  const confirming = f.c.selectTheme({ kind: 'occipital', id: native.id });
+  f.c.previewTheme({ kind: 'pi' });
+  assert.equal(store.writes[0]!.signal!.aborted, false);
+  held.resolve({ ok: true }); assert.equal((await confirming).ok, true);
+  assert.deepEqual(f.c.snapshot().selected, { kind: 'pi' });
+  f.c.previewTheme({ kind: 'occipital', id: native.id });
+  assert.equal(f.c.snapshot().effective?.id, native.id); assert.equal(store.writes.length, 1);
+});
+
+test('theme preview and rollback remain current after a late preference load or catalogue response', async () => {
+  const restored = deferred<SettingsLoadResult>(), store = new Store(); store.loadResult = restored.promise;
+  const f = fixture({}, store); const starting = f.c.start(); await settle();
+  f.c.previewTheme({ kind: 'occipital', id: native.id }); f.c.previewTheme({ kind: 'pi' });
+  restored.resolve({ ok: true, syntaxTheme: { kind: 'occipital', id: native.id } }); await starting;
+  assert.equal(f.c.snapshot().effective?.id, pi.id);
+  f.peer.holdMetadata = true; const refresh = f.c.refreshThemes(); await settle();
+  assert.equal(f.peer.calls.at(-1)!.request.op, 'themes.refresh');
+  f.c.previewTheme({ kind: 'occipital', id: native.id }); f.c.previewTheme({ kind: 'pi' });
+  f.peer.answerMetadata(f.peer.calls.length - 1); assert.equal((await refresh).ok, true);
+  assert.equal(f.c.snapshot().effective?.id, pi.id); assert.equal(store.writes.length, 0);
+});
+
+test('theme preview and rollback leave the real settings bytes intact; only confirmation writes', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'theme-preview-')), file = join(directory, 'config.json');
+  try {
+    const original = '{"syntaxTheme":{"kind":"pi"},"unknown":{"preserved":true}}\n'; await writeFile(file, original);
+    const store = new ExtensionSettings({ file }); let writes = 0;
+    const f = fixture({ settings: { load: () => store.load(), update: (...args) => { writes++; return store.update(...args); } } });
+    await f.c.start();
+    f.c.previewTheme({ kind: 'occipital', id: native.id }); f.c.previewTheme({ kind: 'pi' });
+    assert.equal(writes, 0); assert.equal(await readFile(file, 'utf8'), original);
+    f.c.previewTheme({ kind: 'occipital', id: native.id });
+    assert.equal((await f.c.selectTheme({ kind: 'occipital', id: native.id })).ok, true);
+    assert.equal(writes, 1);
+    assert.deepEqual(JSON.parse(await readFile(file, 'utf8')), { syntaxTheme: { kind: 'occipital', id: native.id }, unknown: { preserved: true } });
+    await f.c.dispose(); const selected = f.c.snapshot().selected;
+    f.c.previewTheme({ kind: 'pi' });
+    assert.deepEqual(f.c.snapshot().selected, selected); assert.equal(writes, 1);
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});

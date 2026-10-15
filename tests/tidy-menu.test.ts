@@ -9,6 +9,7 @@ import { TidyMenu, profileLabels, type TidyMenuOwner, type TidyMenuSnapshot, typ
 const colors = { fg: (_: string, text: string) => text, bold: (text: string) => text };
 function fixture(width = 70, height = 24) {
   const calls: TidyMenuAction[] = [];
+  const previews: TidyMenuSnapshot['selected'][] = [];
   const state: TidyMenuSnapshot = { appearanceEnabled: true, terminalColorsEnabled: true, nativeHighlightingEnabled: true, loggingEnabled: true,
     selected: { kind: 'pi' }, appearance: 'Active', terminalColors: 'Following Pi theme', syntax: undefined };
   let prepared = 0, cacheReads = 0, closed = 0;
@@ -20,6 +21,7 @@ function fixture(width = 70, height = 24) {
     return { ok: true };
   };
   const owner: TidyMenuOwner = { snapshot: () => state, prepareThemes: async () => { prepared++; },
+    previewTheme(choice) { const copy = structuredClone(choice); previews.push(copy); state.selected = copy; },
     act: action => perform(action), cacheDetails: () => { cacheReads++; return ['Cached layouts: 2', 'Estimated memory: 1 KiB']; } };
   const menu = new TidyMenu(owner, colors as any, () => {}, () => { closed++; }, () => height);
   const render = () => menu.render(width).map(plain);
@@ -31,7 +33,7 @@ function fixture(width = 70, height = 24) {
     }
     assert.fail(`Missing selected item ${label}: ${render().join('\n')}`);
   };
-  return { menu, owner, state, calls, render, key, select, get closed() { return closed; },
+  return { menu, owner, state, calls, previews, render, key, select, get closed() { return closed; },
     get prepared() { return prepared; }, get cacheReads() { return cacheReads; }, set perform(next: typeof perform) { perform = next; } };
 }
 
@@ -150,14 +152,17 @@ for (const [width, height] of [[70, 24], [24, 12], [24, 5], [24, 2], [24, 1]]) t
    assert.ok(f.render().some(row => row.includes('→ Code color')), `confirmation returns to the main page with its theme entry selected: ${f.render().join('\n')}`);
 });
 
-test('theme picker restores chosen identity, supports search, and never applies on navigation/cancel', async () => {
+test('theme picker previews highlighted search results, then restores its entry choice without saving', async () => {
   const f = fixture(); native(f); f.state.selected = { kind: 'occipital', id: 'opaque-37' };
   f.render(); await f.key('\r');
   assert.ok(f.render().some(row => row.includes('→ Theme 37')));
   await f.key('Theme 12');
   assert.ok(f.render().some(row => row.includes('→ Theme 12')));
+  assert.deepEqual(f.state.selected, { kind: 'occipital', id: 'opaque-12' });
+  assert.deepEqual(f.previews, [{ kind: 'occipital', id: 'opaque-12' }]);
   assert.equal(f.calls.length, 0);
   await f.key('\x1b'); assert.equal(f.calls.length, 0);
+  assert.deepEqual(f.state.selected, { kind: 'occipital', id: 'opaque-37' });
 });
 
 for (const availability of ['disabled', 'initializing', 'transitioning', 'unavailable', 'disposed'] as const)
@@ -208,7 +213,7 @@ test('status and Refresh do not prepare themes, read cache, or claim a protocol 
   assert.equal(f.prepared, 0); assert.equal(f.cacheReads, 0); assert.equal(f.calls.length, 0);
 });
 
-test('theme search matches stable IDs without applying on typing; confirmation returns to root once', async () => {
+test('theme search previews stable IDs without saving; confirmation returns to root once', async () => {
   const f = fixture(); native(f); f.render(); await f.key('\r');
   await f.key('opaque-37');
   assert.ok(f.render().some(row => row.includes('→ Theme 37')));
@@ -223,6 +228,7 @@ test('theme mouse confirmation returns to the main page and saves exactly the cl
   const rows = f.render(), y = rows.findIndex(row => row.includes('Theme 00'));
   const event = { button: 'left' as const, x: 4, y, screenX: 4, screenY: y, width: 70, height: rows.length, shift: false, alt: false, ctrl: false };
   f.menu.handleMouse({ ...event, type: 'press' }); f.render();
+  assert.deepEqual(f.state.selected, { kind: 'pi' }); assert.equal(f.previews.length, 0); assert.equal(f.calls.length, 0);
   f.menu.handleMouse({ ...event, type: 'click' }); await turn();
   assert.deepEqual(f.calls, [{ kind: 'theme', choice: { kind: 'occipital', id: 'opaque-0' } }]);
   assert.ok(f.render().some(row => row.includes('Tidy UI appearance')));
@@ -536,4 +542,105 @@ test('Unicode and literal arrows inside theme values do not become layout separa
   const capped = rootRows(f);
   assert.equal(cellOf(capped[1]!, '界'), cellOf(capped[0]!, 'On'));
   assert.ok(capped[1]!.includes('…')); assert.ok(capped.every(row => visibleWidth(row) === 72));
+});
+
+
+for (const exit of ['escape', 'back', 'ctrl+c', 'close', 'dispose'] as const) {
+  test(`theme preview: ${exit} restores the entry theme without persisting or repeating on dispose`, async () => {
+    const f = fixture(); native(f, 3);
+    f.render(); await f.key('\r');
+    assert.equal(f.previews.length, 0, 'opening is not a theme change');
+    await f.key('\x1b[B');
+    assert.deepEqual(f.state.selected, { kind: 'occipital', id: 'opaque-0' });
+    assert.equal(f.calls.length, 0);
+    const before = f.previews.length;
+    for (let i = 0; i < 30; i++) f.render();
+    assert.equal(f.previews.length, before, 'rendering cannot initiate preview work');
+    if (exit === 'escape') await f.key('\x1b');
+    else if (exit === 'back') await f.select('Back');
+    else if (exit === 'ctrl+c') await f.key('\x03');
+    else if (exit === 'close') f.menu.close();
+    else f.menu.dispose();
+    assert.deepEqual(f.state.selected, { kind: 'pi' });
+    assert.equal(f.calls.length, 0);
+    const restored = f.previews.length;
+    f.menu.dispose(); f.menu.dispose();
+    assert.equal(f.previews.length, restored, 'rollback is idempotent');
+  });
+}
+
+test('theme preview: confirming promotes the preview; the next visit has its own rollback point', async () => {
+  const f = fixture(); native(f, 3); f.render(); await f.key('\r');
+  await f.key('\x1b[B'); await f.key('\r');
+  assert.deepEqual(f.calls, [{ kind: 'theme', choice: { kind: 'occipital', id: 'opaque-0' } }]);
+  assert.deepEqual(f.state.selected, { kind: 'occipital', id: 'opaque-0' });
+  const before = f.previews.length;
+  await f.key('\r'); assert.equal(f.previews.length, before);
+  assert.ok(f.render().some(row => row.includes('→ Theme 00')));
+  await f.key('\x1b[B');
+  assert.deepEqual(f.state.selected, { kind: 'occipital', id: 'opaque-1' });
+  await f.key('\x1b'); f.menu.close();
+  assert.deepEqual(f.state.selected, { kind: 'occipital', id: 'opaque-0' });
+  assert.equal(f.calls.length, 1);
+});
+
+test('theme preview: closing during confirmed persistence is not rollback and late completion cannot reopen', async () => {
+  const f = fixture(); native(f, 3); f.render(); await f.key('\r'); await f.key('\x1b[B');
+  let resolve!: (value: { ok: true }) => void;
+  f.perform = action => { f.calls.push(action); return new Promise(done => { resolve = done; }); };
+  await f.key('\r');
+  assert.equal(f.calls.length, 1); assert.deepEqual(f.state.selected, { kind: 'occipital', id: 'opaque-0' });
+  const before = f.previews.length;
+  await f.key('\x1b[B'); await f.key('\x03');
+  assert.equal(f.closed, 1); assert.equal(f.previews.length, before);
+  resolve({ ok: true }); await turn();
+  assert.deepEqual(f.state.selected, { kind: 'occipital', id: 'opaque-0' });
+  assert.deepEqual(f.render(), []); assert.equal(f.previews.length, before);
+});
+
+test('theme preview: failed confirmation keeps the live choice and does not silently revert on close', async () => {
+  const f = fixture(); native(f, 1); f.render(); await f.key('\r'); await f.key('\x1b[B');
+  f.perform = async action => { f.calls.push(action); return { ok: false, message: 'Applied but not saved.' }; };
+  await f.key('\r'); assert.match(f.render().join('\n'), /Applied but not saved/);
+  f.menu.close();
+  assert.deepEqual(f.state.selected, { kind: 'occipital', id: 'opaque-0' }); assert.equal(f.calls.length, 1);
+});
+
+test('theme preview: empty search results and action rows do not become theme choices', async () => {
+  const f = fixture(); native(f, 2); f.render(); await f.key('\r'); await f.key('opaque-1');
+  assert.deepEqual(f.state.selected, { kind: 'occipital', id: 'opaque-1' });
+  const before = f.previews.length;
+  await f.key('not-a-theme'); assert.equal(f.previews.length, before);
+  await f.key('\x1b[B'); assert.equal(f.previews.length, before);
+  await f.key('\x1b'); assert.deepEqual(f.state.selected, { kind: 'pi' }); assert.equal(f.calls.length, 0);
+});
+
+test('theme preview: loading from a cancelled visit cannot establish a later visit rollback point', async () => {
+  const f = fixture(); native(f, 3); const pending: (() => void)[] = [];
+  f.owner.prepareThemes = () => new Promise<void>(resolve => { pending.push(resolve); });
+  f.render(); await f.key('\r'); await f.key('\x1b');
+  f.state.selected = { kind: 'occipital', id: 'opaque-1' };
+  await f.key('\r'); pending[1]!(); await turn(); f.render();
+  await f.key('\x1b[B'); assert.deepEqual(f.state.selected, { kind: 'occipital', id: 'opaque-2' });
+  pending[0]!(); await turn(); f.render();
+  await f.key('\x1b'); assert.deepEqual(f.state.selected, { kind: 'occipital', id: 'opaque-1' });
+  assert.equal(f.calls.length, 0);
+});
+
+test('theme preview: rapid arrow input keeps only the latest selection and cancellation restores the entry choice', async () => {
+  const f = fixture(); native(f, 12); f.render(); await f.key('\r');
+  for (let i = 0; i < 8; ++i) f.menu.handleInput('\x1b[B');
+  assert.deepEqual(f.state.selected, { kind: 'occipital', id: 'opaque-7' });
+  assert.equal(f.calls.length, 0);
+  await f.key('\x1b');
+  assert.deepEqual(f.state.selected, { kind: 'pi' }); assert.equal(f.calls.length, 0);
+});
+
+test('theme preview: native wheel selection previews without confirming or persisting', async () => {
+  const f = fixture(); native(f, 4); f.render(); await f.key('\r');
+  const rows = f.render(), y = rows.findIndex(row => row.includes('Follow Pi theme'));
+  f.menu.handleMouse({ type: 'wheel', button: 'none', wheelDelta: 1, x: 4, y, screenX: 4, screenY: y,
+    width: 70, height: rows.length, shift: false, alt: false, ctrl: false });
+  assert.deepEqual(f.state.selected, { kind: 'occipital', id: 'opaque-0' }); assert.equal(f.calls.length, 0);
+  await f.key('\x1b'); assert.deepEqual(f.state.selected, { kind: 'pi' });
 });

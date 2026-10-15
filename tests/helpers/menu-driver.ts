@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { setImmediate as turn } from 'node:timers/promises';
+import { setImmediate as turn, setTimeout as pause } from 'node:timers/promises';
 import { stripVTControlCharacters } from 'node:util';
 import type { Component, OverlayOptions } from '@earendil-works/pi-tui';
 import type { ExtensionContext } from '@earendil-works/pi-coding-agent';
@@ -33,14 +33,17 @@ export async function withMenu(handler: (args: string, ctx: ExtensionContext) =>
       .map(row => row.startsWith('│') ? row.slice(1, -1).trimEnd() : row).join('\n');
   };
   const settle = async () => {
-    for (let i = 0; i < 100; i++) {
+    // A pending filesystem action is not bounded by a count of event-loop turns.
+    const deadline = Date.now() + 5000;
+    do {
       await turn(); const rendered = text();
       if (!rendered) return;
       // Settings actions are silent; wait for actual completion, not removed UI text.
       const busy = Reflect.get(component!, 'busy');
       assert.equal(typeof busy, 'boolean', 'SDK probe must observe the real pending-action flag');
       if (!busy && !/Loading saved code theme…/u.test(rendered)) return;
-    }
+      await pause(5);
+    } while (Date.now() < deadline);
     assert.fail('Popup action did not settle');
   };
   const key = async (data: string) => { text(); component!.handleInput?.(data); await settle(); text(); };

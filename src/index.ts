@@ -1366,6 +1366,7 @@ export default function tidyUi(pi: ExtensionAPI, options: TidyUiRuntimeOptions =
   let warnedBudgetFlags = false;
   let controller: TidyUiController | undefined;
   let enabled = true, colorsEnabled = true, loggingEnabled = true;
+  // Only confirmed choices survive runtime replacement; menu previews are client-local.
   let selectedTheme: SyntaxTheme = { kind: 'pi' };
   const settings = options.settings ?? new ExtensionSettings();
   let preferencesReady: Promise<void> | undefined;
@@ -1432,7 +1433,6 @@ export default function tidyUi(pi: ExtensionAPI, options: TidyUiRuntimeOptions =
   }
   function stopSyntax() {
     const previous = syntax;
-    if (previous) selectedTheme = previous.snapshot().selected;
     syntax = undefined;
     return previous?.dispose();
   }
@@ -1759,6 +1759,7 @@ export default function tidyUi(pi: ExtensionAPI, options: TidyUiRuntimeOptions =
             controller.editorActive ? 'Active' : 'Cards active; input styling not applied' };
       },
       async prepareThemes() { if (current()) await ensureSyntax(ctx).prepareThemes(); },
+      previewTheme(choice) { if (current()) syntax?.previewTheme(choice); },
       act,
       cacheDetails() {
         if (!controller) return ['No active display cache.'];

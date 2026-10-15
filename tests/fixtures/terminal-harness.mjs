@@ -195,8 +195,17 @@ export class PiTerminal {
     await this.queue;
   }
   async command(command) {
+    const offset = command === '/reload' ? this.raw.length : 0;
     this.send(command + '\r');
     await this.settle();
+    if (command === '/reload') await until(async () => {
+      this.health(); const parsed = this.queue; await parsed;
+      if (parsed !== this.queue || this.rendering) return false;
+      // session_start precedes shortcut rebinding; require the new native completion, not an old status.
+      const output = Buffer.concat(this.raw.slice(offset)).toString('utf8');
+      const loading = output.lastIndexOf('Reloading');
+      return loading >= 0 && output.lastIndexOf('Reloaded') > loading;
+    }, 'interactive reload completion');
   }
   screen() {
     const buffer = this.term.buffer.active;
@@ -402,7 +411,10 @@ export class PiTerminal {
     this.send(`run ${scenario}\r`);
     await this.event('agent_end', count + 1);
     await this.settle();
-    assert.ok(this.screen().some((line) => line.includes(`TERMINAL_DONE_${scenario}`)));
+    await until(async () => {
+      this.health(); await this.queue;
+      return !this.rendering && this.screen().some(line => line.includes(`TERMINAL_DONE_${scenario}`));
+    }, `completed scenario frame: ${scenario}`);
   }
   async resize(cols, rows = 80, animated = false) {
     const id = ++this.resizeSequence;
