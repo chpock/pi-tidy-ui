@@ -7,7 +7,7 @@ import { PiTerminal, extension, artifacts, plain, lines, byName, toolLines } fro
 import { closeTerminals } from './fixtures/terminal-cleanup.mjs';
 import { referenceCell, persisted } from './fixtures/main-cli-support.mjs';
 
-for (const mode of ['regular', 'fullscreen']) test(`real CLI: spinner shares Working frames and falls back only during host silence (${mode})`,
+for (const mode of ['regular', 'fullscreen']) test(`real CLI: spinner shares Working frames with a document-inactivity fallback (${mode})`,
   { timeout: 180000 }, async () => {
     const terminals = [];
     const start = async (name, options = {}) => {
@@ -17,14 +17,19 @@ for (const mode of ['regular', 'fullscreen']) test(`real CLI: spinner shares Wor
     const busyCapture = (terminal, name) => terminal.capture(name, { sampleAnimation: true });
     const normalTraffic = (terminal) => terminal.events().filter((event) => ['call', 'result', 'model_context'].includes(event.type));
     const runningRow = terminal => terminal.screen().find(row => /^ [⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] tidy_ui_stream \[query="gated"\]$/u.test(row));
-    const physicalFrames = async terminal => {
-      const distinct = new Set();
+    const physicalFrames = async (terminal, animatedWorking = true) => {
+      const distinct = new Set(), working = new Set();
       for (let i = 0; i < 5; i++) {
         await terminal.observeAnimation(); const row = runningRow(terminal);
         assert.ok(row, 'a real PTY frame, without any diagnostic render, contains the running glyph');
         distinct.add(row[1]);
+        const native = terminal.screen().map(row => row.match(/^\s*([⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏●]) Working\s*$/u)).find(Boolean);
+        assert.ok(native, 'the physical screen retains native Working'); working.add(native[1]);
       }
-      assert.ok(distinct.size >= 2, 'physical first cell really animates'); return [...distinct];
+      assert.ok(distinct.size >= 2, 'physical first cell really animates');
+      if (animatedWorking) assert.ok(working.size >= 2, 'native Working itself physically animates, including after restoration');
+      else assert.deepEqual([...working], ['●'], 'public static Working configuration stops only native animation');
+      return { tool: [...distinct], working: [...working] };
     };
     const assertBusy = async (dump) => {
       const tool = byName(dump, 'tidy_ui_stream')[0];
@@ -74,8 +79,8 @@ for (const mode of ['regular', 'fullscreen']) test(`real CLI: spinner shares Wor
       const hostFrames = await physicalFrames(live);
       const hotStats = await live.cacheSnapshot();
       const hot = await busyCapture(live, 'working-hot'); await assertBusy(hot);
-      assert.equal(hot.spinnerStats.ticks, 0, 'regular native Working frames never let fallback fire');
-      assert.equal(hot.spinnerStats.requests, 0, 'pi-tidy-ui adds zero UI requests while native Working supplies frames');
+       assert.equal(hot.spinnerStats.requests, hot.spinnerStats.ticks,
+         'any expired document-inactivity deadline requests exactly one frame, even with native Working enabled');
       assert.ok(hot.spinnerStats.starts > warm.spinnerStats.starts, 'real host document visits rearm the one-shot deadline');
       assert.equal(hotStats.builds, builds, 'host-driven animation builds no custom body');
       assert.deepEqual(readFileSync(warm.session), bytesRunning);
@@ -85,7 +90,7 @@ for (const mode of ['regular', 'fullscreen']) test(`real CLI: spinner shares Wor
       await live.event('spinner_tick_checkpoint');
       const fallbackWarmStats = await live.cacheSnapshot();
       const fallbackWarm = await busyCapture(live, 'fallback-warm'); await assertBusy(fallbackWarm);
-      const fallbackFrames = await physicalFrames(live);
+       const fallbackFrames = await physicalFrames(live, false);
       await live.event('spinner_tick_checkpoint', 2);
       const fallbackHotStats = await live.cacheSnapshot();
       const fallbackHot = await busyCapture(live, 'fallback-hot'); await assertBusy(fallbackHot);
@@ -97,11 +102,16 @@ for (const mode of ['regular', 'fullscreen']) test(`real CLI: spinner shares Wor
       assert.equal(fallbackHot.spinnerWork.invalidations, hot.spinnerWork.invalidations, 'fallback requests no native tool invalidation');
       assert.deepEqual(readFileSync(warm.session), bytesRunning);
       live.send('/tidy-ui-spinner-working animated\r'); await live.event('spinner_working', 2); await live.observeAnimation();
-      const sharedAgain = await busyCapture(live, 'working-restored'); await assertBusy(sharedAgain);
-      await physicalFrames(live);
-      const sharedHot = await busyCapture(live, 'working-restored-hot'); await assertBusy(sharedHot);
-      assert.equal(sharedHot.spinnerStats.ticks, sharedAgain.spinnerStats.ticks, 'restoring Working suppresses fallback again');
-      assert.equal(sharedHot.spinnerStats.requests, sharedAgain.spinnerStats.requests);
+       const sharedAgainStats = await live.cacheSnapshot();
+       const sharedAgain = await busyCapture(live, 'working-restored'); await assertBusy(sharedAgain);
+       const restoredFrames = await physicalFrames(live);
+       const sharedHotStats = await live.cacheSnapshot();
+       const sharedHot = await busyCapture(live, 'working-restored-hot'); await assertBusy(sharedHot);
+       assert.ok(sharedHot.spinnerStats.starts > sharedAgain.spinnerStats.starts, 'resumed host document visits rearm the deadline');
+       assert.equal(sharedHot.spinnerStats.requests - sharedAgain.spinnerStats.requests,
+         sharedHot.spinnerStats.ticks - sharedAgain.spinnerStats.ticks, 'Working restoration still permits one request per expired deadline');
+       assert.equal(sharedHotStats.builds, sharedAgainStats.builds, 'restored native animation and any fallback rebuild no custom body');
+       assert.equal(sharedHot.spinnerWork.invalidations, sharedAgain.spinnerWork.invalidations, 'restored animation adds no tool invalidation');
       assert.deepEqual(readFileSync(warm.session), bytesRunning);
       await live.appearance(false);
       const off = await busyCapture(live, 'off'); assert.equal(off.spinnerStats.active, 0);
@@ -155,9 +165,11 @@ for (const mode of ['regular', 'fullscreen']) test(`real CLI: spinner shares Wor
         mode, normalCalls: 2, normalResults: 2, normalModelContexts: 3, buildsBefore: builds, buildsAfter: fallbackHotStats.builds,
         sharedClock: hot.spinnerStats, fallbackClock: fallbackHot.spinnerStats, sharedAgain: sharedHot.spinnerStats,
         stoppedClock: complete.spinnerStats, abortedClock: aborted.spinnerStats,
-        hostPhysicalFrames: hostFrames, fallbackPhysicalFrames: fallbackFrames, idleRequestsAdded: 0, idleTicksAdded: 0,
-        controls: ['native partial/complete', 'pre-execution zero clocks', 'Working reuse with zero extra requests', 'static Working fallback',
-          'restored Working suppression', 'hot cached animation', 'off/on while running', 'completion idle', 'reload', 'same-session replay', 'native cancellation traffic'],
+        hostPhysicalFrames: hostFrames.tool, fallbackPhysicalFrames: fallbackFrames.tool,
+        nativeWorkingFrames: hostFrames.working, staticWorkingFrames: fallbackFrames.working, restoredWorkingFrames: restoredFrames.working,
+        idleRequestsAdded: 0, idleTicksAdded: 0,
+        controls: ['native partial/complete', 'pre-execution zero clocks', 'native Working movement with one request per expired deadline', 'static Working fallback',
+          'restored native Working movement', 'hot cached animation', 'off/on while running', 'completion idle', 'reload', 'same-session replay', 'native cancellation traffic'],
       }, null, 2));
     } finally { await closeTerminals(terminals.reverse()); }
   });

@@ -66,6 +66,29 @@ test("a fallback waits for the requested document visit and rearms relative to i
   assert.equal(f.root.requests, pending + 1, "a resumed document visit restores fallback");
 });
 
+test("a native request awaiting document completion permits one fallback, then timely host visits suppress it again", t => {
+  const f = fixture(t, 2); f.tools.forEach(node => node.markExecutionStarted()); f.render();
+  const requests = f.root.requests, builds = f.controller.cacheStats().builds;
+  t.mock.timers.tick(80); f.root.requestRender();
+  t.mock.timers.tick(19); assert.equal(f.root.requests, requests + 1, "only the native request before the deadline");
+  t.mock.timers.tick(1); assert.equal(f.root.requests, requests + 2, "a requested but unfinished native frame does not cancel fallback");
+  const allocated = f.deadlines.mock.calls.length;
+  t.mock.timers.tick(1000);
+  assert.equal(f.root.requests, requests + 2, "exactly one fallback request while document completion is pending");
+  assert.equal(f.deadlines.mock.calls.length, allocated, "no new deadline while awaiting completion");
+  assert.equal(f.controller.cacheStats().builds, builds);
+  f.render();
+  assert.equal(f.deadlines.mock.calls.length, allocated + 1, "successful completion rearms one deadline");
+  const seen = new Set<string>();
+  for (let i = 0; i < 12; i++) {
+    t.mock.timers.tick(80); f.root.requestRender(); const rows = f.render(); seen.add(rows[0]![1]!);
+    assert.equal(f.root.requests, requests + 3 + i, "timely completed host visits add only the native requests");
+    assert.equal(rows[0]![1], rows[1]![1], "parallel compact tools retain one phase");
+    assert.equal(f.controller.cacheStats().builds, builds, "delay and recovery reuse the same bodies");
+  }
+  assert.ok(seen.size >= 8, "native-driven prefix animation resumes without fallback");
+});
+
 test("requests, direct tool visits and unrelated containers do not acknowledge the document deadline", t => {
   const f = fixture(t); f.tools[0]!.markExecutionStarted(); f.render();
   const unrelated = new Container(); unrelated.addChild({ render: () => ["unrelated"], invalidate() {} });
