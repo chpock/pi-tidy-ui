@@ -43,11 +43,11 @@ const fixtures: { adapter: TidyUiController; sources: SourceController;
 function fixture(ready = false, useDefaultClassifier = false, options: Pick<TidyUiOptions, 'cards' | 'compact' | 'diagnostic'> = {}, retention?: { maxBytes: number }) {
   const ui = new UI();
   const liveCalls = new Set<string>();
-  const env = { liveCalls, ready, enabled: true, generation: 1, selected: { kind: 'pi' } as ReturnType<SyntaxClient['snapshot']>['selected'], palette: 1, padding: 1, depth: 0, boldPi: false, plainPi: false, pi: [] as string[], observes: 0, captures: 0, reads: 0, keys: [] as string[], capturedKeys: [] as string[], committed: new Map<string, number>() };
+  const env = { liveCalls, ready, enabled: true, generation: 1, profile: { ...profile }, selected: { kind: 'pi' } as ReturnType<SyntaxClient['snapshot']>['selected'], palette: 1, padding: 1, depth: 0, boldPi: false, plainPi: false, pi: [] as string[], observes: 0, captures: 0, reads: 0, keys: [] as string[], capturedKeys: [] as string[], committed: new Map<string, number>() };
   const calls: { request: Record<string, unknown>; resolve(value: unknown): void }[] = [];
   const provider = {
     snapshot(): ProviderSnapshot { return { generation: env.generation, availability: env.ready ? 'ready' : 'initializing',
-      reason: env.ready ? 'ready' : 'initializing', initialShared: false, kind: 'owned', description: env.ready ? description : undefined }; },
+      reason: env.ready ? 'ready' : 'initializing', initialShared: false, kind: 'owned', description: env.ready ? { ...description, profiles: env.profile.id === 'pi' ? [env.profile] : [profile, env.profile] } : undefined }; },
     isReady(g: number) { return env.ready && g === env.generation; }, classificationAccepted(g: number) { return this.isReady(g); },
     request(_g: number, request: Record<string, unknown>) {
       assert.equal(env.depth, 0, 'no dispatch in render');
@@ -61,7 +61,7 @@ function fixture(ready = false, useDefaultClassifier = false, options: Pick<Tidy
   sources.capturePiSource = (...args) => { assert.equal(env.depth, 0, 'no Pi source preparation in render'); env.captures++; env.capturedKeys.push(args[0]); return capture(...args); };
   const client: Pick<SyntaxClient, 'sources' | 'snapshot'> = { sources, snapshot: () => {
     assert.equal(env.depth, 0, 'no work metadata read in render'); env.reads++;
-    return { enabled: env.enabled, provider: provider.snapshot(), standaloneVersion: 'test', selected: env.selected, effective: env.ready ? profile : undefined };
+    return { enabled: env.enabled, provider: provider.snapshot(), standaloneVersion: 'test', selected: env.selected, effective: env.ready ? env.profile : undefined };
   } };
   const presentationOptions: TidyUiOptions = { ...options, outputPad: () => env.padding, syntax: { client,
     isLiveCall: id => liveCalls.has(id),
@@ -117,7 +117,7 @@ function answer(f: ReturnType<typeof fixture>, index: number, text: string, comp
     kind: 'source', sources: [{ key: source.key, generation: source.generation, source_version: source.source_version,
       profile: source.profile, fingerprint: source.fingerprint, revision: r.op === 'stream.append' ? (r.base_revision as number) + 1 : 1,
       replace_from: from, source_bytes: bytes, committed_bytes: committedBytes ?? bytes, complete,
-      ...(r.op !== 'highlight' ? { lease: 'lease' } : {}), styles: [{ role: 'syntaxKeyword' }], runs: bytes > from ? [bytes - from, 0] : [],
+      ...(r.op !== 'highlight' ? { lease: 'lease' } : {}), styles: source.profile === 'pi' ? [{ role: 'syntaxKeyword' }] : [{ rgb: [17, 34, 51], attributes: 0 }], runs: bytes > from ? [bytes - from, 0] : [],
       counters: { committed_line_calls: 0, committed_line_bytes: 0, tail_calls: 0, tail_bytes: 0 } }]
   } });
 }
@@ -875,4 +875,29 @@ for (const episode of ['startup', 'reconnection'] as const) test(`host online wa
   await settled(); assert.deepEqual(counts(f), before); assert.deepEqual(f.env.pi, []);
   assert.equal(JSON.stringify([first.args, first.result, first.getRenderContext(), second.args, second.result, second.getRenderContext()]), raw);
   assert.equal(first.argsComplete, false); assert.equal(first.executionStarted, false); assert.equal(f.sources.stats().remoteLeases, 0);
+});
+
+
+for (const kind of ['write', 'edit'] as const) test(`host ${kind} theme stamp invalidates old native rows before deferred preparation at unchanged width`, async () => {
+  const f = fixture(true);
+  const tools = Array.from({ length: 4 }, (_, i) => {
+    if (kind === 'write') return written(f, `const host${i}=1;`);
+    const tool = f.tool('edit', { path: `host${i}.ts`, oldText: `const old${i}=1;`, newText: `const next${i}=2;` });
+    tool.updateResult({ content: [{ type: 'text', text: 'edited' }], details: { diff: `-1 const old${i}=1;\n+1 const next${i}=2;` }, isError: false }, false);
+    return tool;
+  });
+  f.document(); await settled();
+  for (let i = 0; i < tools.length * (kind === 'edit' ? 2 : 1); i++) {
+    const call = f.calls[i]; assert.ok(call);
+    answer(f, i, (call.request.sources as { text: string }[])[0]!.text); await settled();
+  }
+  const first = tools[0]!, before = f.render(first);
+  f.env.profile = { id: 'syntect:host', label: 'Host', fingerprint: 'b'.repeat(64) };
+  f.env.selected = { kind: 'occipital', id: f.env.profile.id }; f.adapter.syntaxMetadataChanged();
+  const countsBefore = counts(f), immediate = f.render(first);
+  assert.deepEqual(plain(immediate), plain(before));
+  assert.notDeepEqual(immediate, before, 'old native colors disappear on the first same-width frame, before preparation yields');
+  assert.deepEqual(counts(f), countsBefore, 'cache invalidation itself does no metadata/native/Pi work in render');
+  const afterFrame = f.adapter.cacheStats().builds;
+  f.render(first); assert.equal(f.adapter.cacheStats().builds, afterFrame, 'new neutral frame stays cached while native work waits');
 });

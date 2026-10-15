@@ -877,3 +877,88 @@ for (const mode of ['fullscreen', 'regular']) test(`occipital CLI: ${mode} resto
         order: dispatches.map(e => e.payload.sources[0].text), warmNativeDelta: 0, calls: 0, results: 0 }));
     } finally { await terminal.close(); await stock.close(); terminal.dispose(); stock.dispose(); await rm(directory, { recursive: true, force: true }); }
   });
+
+
+for (const mode of ['fullscreen', 'regular']) test(`occipital CLI: ${mode} theme switch recolors every Bash/write/edit card without zero-width capture`,
+  { skip: !binary, timeout: 120000 }, async () => {
+    const directory = await mkdtemp(resolve('.test-artifacts/theme-session-'));
+    const manager = SessionManager.create(directory, join(directory, 'sessions'));
+    manager.appendModelChange('tidy-ui-offline', 'scripted'); manager.appendThinkingLevelChange('off');
+    const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
+    const cards = [
+      { name: 'bash', arguments: { command: "printf 'THEME_BASH_0\\n'" }, details: { exit_code: 0 } },
+      { name: 'bash', arguments: { command: "printf 'THEME_BASH_1\\n'" }, details: { exit_code: 0 } },
+      { name: 'edit', arguments: { path: 'theme-edit.ts', oldText: 'const THEME_OLD=1;', newText: 'const THEME_NEW=2;' }, details: { diff: '-1 const THEME_OLD=1;\n+1 const THEME_NEW=2;' } },
+      { name: 'write', arguments: { path: 'theme-write.ts', content: 'const THEME_WRITE=3;' }, details: {} },
+    ];
+    for (const [i, card] of cards.entries()) {
+      manager.appendMessage({ role: 'user', content: [{ type: 'text', text: `saved theme card ${i}` }], timestamp: Date.now() });
+      manager.appendMessage({ role: 'assistant', content: [{ type: 'toolCall', id: `theme-${i}`, name: card.name, arguments: card.arguments }],
+        api: 'openai-completions', provider: 'tidy-ui-offline', model: 'scripted', usage, stopReason: 'toolUse', timestamp: Date.now() });
+      manager.appendMessage({ role: 'toolResult', toolCallId: `theme-${i}`, toolName: card.name, content: [{ type: 'text', text: `saved result ${i}` }],
+        details: card.details, isError: false, timestamp: Date.now() });
+    }
+    const session = manager.getSessionFile(), bytes = readFileSync(session);
+    const terminal = new PiTerminal(`theme-all-cards-${mode}`, { mode, session, extensions: [fixture],
+      extraEnv: { ...descriptor, TIDY_UI_TEST_THEME_OBSERVE: '1' } });
+    const raw = dump => dump.tools.map(({ name, args, content, details, isError, argsComplete, executionStarted, partial }) =>
+      ({ name, args, content, details, isError, argsComplete, executionStarted, partial }));
+    const markers = ['THEME_BASH_0', 'THEME_BASH_1', 'const THEME_OLD', 'const THEME_NEW', 'const THEME_WRITE'];
+    const foregrounds = dump => markers.map(marker => {
+      const y = dump.screen.findIndex(row => row.includes(marker)); assert.ok(y >= 0, `physically visible ${marker}`);
+      return dump.cells[y][dump.screen[y].indexOf(marker)].fg;
+    });
+    const expected = (phase, dump) => markers.map(marker => {
+      const replies = terminal.events().filter(event => event.type === 'syntax_theme_reply' && event.phase === phase);
+      const pair = replies.flatMap(event => event.payload.sources.map((source, i) => ({ text: source.text, reply: event.reply.body.sources[i] })))
+        .find(source => source.text.includes(marker)); assert.ok(pair, `native reply for ${phase} ${marker}`);
+      const offset = Buffer.byteLength(pair.text.slice(0, pair.text.indexOf(marker)));
+      let end = 0, style;
+      for (let i = 0; i < pair.reply.runs.length; i += 2) {
+        end += pair.reply.runs[i]; if (offset < end) { style = pair.reply.styles[pair.reply.runs[i + 1]]; break; }
+      }
+      assert.ok(style, `native token style for ${marker}`);
+      if (style.rgb) return style.rgb[0] * 65536 + style.rgb[1] * 256 + style.rgb[2];
+      const sgr = dump.summaryStyles[style.role === 'plain' ? 'toolOutput' : style.role]; assert.ok(sgr);
+      const rgb = sgr.match(/38;2;(\d+);(\d+);(\d+)m/); assert.ok(rgb);
+      return Number(rgb[1]) * 65536 + Number(rgb[2]) * 256 + Number(rgb[3]);
+    });
+    try {
+      await terminal.ready(); await terminal.resize(100, 160);
+      await settledStats(terminal, 'all-theme-initial', s => nativeReady(s) && terminal.events().filter(event => event.type === 'syntax_theme_reply' && event.phase === 'initial'
+        && event.payload.sources[0].hint.language === 'bash').length === 2);
+      const baseline = await terminal.capture('physical-theme-baseline');
+      assert.equal(baseline.tools.length, cards.length); assert.ok(baseline.tools.every(tool => !('tinyLines' in tool)));
+      foregrounds(baseline);
+      for (const [phase, label] of [['mocha', 'Catppuccin Mocha'], ['latte', 'Catppuccin Latte'], ['pi', null]]) {
+        const before = await stats(terminal, `all-theme-before-${phase}`);
+        const profiles = before.client.provider.description.profiles.filter(profile => profile.id !== 'pi');
+        const index = label === null ? 0 : profiles.findIndex(profile => profile.label === label) + 1;
+        assert.ok(label === null || index > 0, `bundled theme ${label} exists`);
+        writeFileSync(join(terminal.output, 'syntax-theme-phase'), phase);
+        await chooseTheme(terminal, index);
+        const after = await settledStats(terminal, `all-theme-${phase}`, s => nativeReady(s) && s.source.dispatches >= before.source.dispatches + 5);
+        assert.equal(after.node, process.env.PI_TEST_EXPECT_NODE ?? process.version);
+        const dispatches = terminal.events().filter(event => event.type === 'syntax_theme_dispatch' && event.phase === phase);
+        assert.equal(dispatches.length, 5, 'one finite native request per saved logical source, including both diff sides');
+        assert.ok(dispatches.every(event => event.jobs <= 2), 'theme refresh uses the existing physical-credit limit');
+        let painted;
+        await until(async () => {
+          painted = await terminal.capture(`physical-theme-${phase}`);
+          return foregrounds(painted).every((color, i) => color === expected(phase, painted)[i]);
+        }, `all mixed-card physical colors for ${phase}`);
+        assert.deepEqual(raw(painted), raw(baseline)); assert.deepEqual(body(painted), body(baseline));
+        assert.deepEqual(readFileSync(session), bytes); assert.equal(traffic(terminal).length, 0);
+        for (const width of [100, 90, 100]) {
+          await terminal.resize(width, 160); await terminal.capture(`physical-theme-warm-${phase}-${width}`);
+        }
+        const warm = await stats(terminal, `all-theme-warm-${phase}`);
+        assert.deepEqual(work(warm), work(after)); assert.equal(warm.counts.piBridges, before.counts.piBridges);
+        assert.equal(terminal.events().filter(event => event.type === 'syntax_theme_dispatch' && event.phase === phase).length, 5);
+        console.log(JSON.stringify({ allCardTheme: terminal.output, mode, phase, node: after.node,
+          sources: dispatches.map(event => event.payload.sources[0].text), colors: foregrounds(painted), warmDelta: 0 }));
+      }
+      terminal.send('\x04'); await until(() => terminal.exited, 'all-theme graceful Pi exit'); assert.equal(terminal.exited.code, 0);
+      await finish(terminal);
+    } finally { await terminal.close(); terminal.dispose(); await rm(directory, { recursive: true, force: true }); }
+  });

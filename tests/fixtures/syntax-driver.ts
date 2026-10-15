@@ -1,6 +1,6 @@
 // Copied with the source into a real-version fixture package; only controlled helper bytes are seeded.
 import { getAgentDir, type ExtensionAPI, type ExtensionContext } from '@earendil-works/pi-coding-agent';
-import { appendFileSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { copyFile, mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { setTimeout as pause } from 'node:timers/promises';
@@ -102,7 +102,11 @@ export default function syntaxDriver(pi: ExtensionAPI) {
         transport.request = async (payload, opts) => {
           const ordinal = payload.op === 'highlight' && process.env.TIDY_UI_TEST_SYNTAX_ORDER_GATE === '1' ? ++counts.orderDispatches : 0;
           if (ordinal) record({ type: 'syntax_order_dispatch', ordinal, payload });
+          const phase = process.env.TIDY_UI_TEST_THEME_OBSERVE === '1' && payload.op === 'highlight'
+            ? (existsSync(join(output, 'syntax-theme-phase')) ? readFileSync(join(output, 'syntax-theme-phase'), 'utf8') : 'initial') : undefined;
+          if (phase) record({ type: 'syntax_theme_dispatch', phase, payload, jobs: runtime?.deref()?.sources.stats().globalUnsettledJobs });
           const reply = await request(payload, opts);
+          if (phase) record({ type: 'syntax_theme_reply', phase, payload, reply });
           if (ordinal) {
             pendingHeldReplies++; record({ type: 'syntax_order_reply_held', ordinal });
             try {

@@ -777,8 +777,8 @@ export default function terminalDriver(pi: ExtensionAPI) {
           ...(process.env.TIDY_UI_TEST_SYNTAX_CARDS === "1" ? { argsComplete: node.getRenderContext().argsComplete } : {}),
           ...(spinnerDiagnostics ? { before: parents.get(node)?.children.slice(Math.max(0, parents.get(node).children.indexOf(node) - 3), parents.get(node).children.indexOf(node))
             .map((previous: any) => ({ kind: previous.constructor.name, name: previous.toolName, lines: previous.render(width).map(stripVTControlCharacters) })) } : {}),
-          // Pointer/clock-work captures inspect only actual viewport paint; alternate widths intentionally rebuild layouts and width zero stops/restarts animation.
-          ...(name.startsWith("pointer-") || spinnerDiagnostics || editDiagnostics || writeDiagnostics ? {} : { narrowLines: node.render(24),
+          // Physical/clock-work captures stay at the actual width; zero-width probes can pause and resume source preparation.
+          ...(name.startsWith("physical-") || name.startsWith("pointer-") || spinnerDiagnostics || editDiagnostics || writeDiagnostics ? {} : { narrowLines: node.render(24),
             tinyLines: Object.fromEntries([0, 1, 2, 3, 4, 5, 6, 7, 8].map((size) => [size, node.render(size)])) }) })),
         document: parents.get(tools[0])?.render(width),
         branch: ctx.sessionManager.getBranch(),

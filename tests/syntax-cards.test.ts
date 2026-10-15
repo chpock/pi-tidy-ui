@@ -4,6 +4,7 @@ import { setImmediate as turn } from 'node:timers/promises';
 import { CardSources, type CardSourceInput } from '../src/syntax/cards.ts';
 import { SourceController, type ControllerOptions } from '../src/occipital/controller.ts';
 import type { SyntaxClient } from '../src/occipital/client.ts';
+import type { SyntaxTheme } from '../src/settings.ts';
 import type { ProviderSnapshot } from '../src/occipital/provider.ts';
 import { OCCIPITAL_LIMITS } from '../src/occipital/limits.ts';
 import { PROTOCOL_VERSION, type Description } from '../src/occipital/protocol.ts';
@@ -36,18 +37,18 @@ const fixtures: { cards: CardSources<Owner>; sources: SourceController; calls: {
 function fixture(ready = false, retention?: { maxBytes: number }, maxBookkeepingBytes?: number, controllerOptions: ControllerOptions = {},
   classify?: (text: string, hints: { language?: string; path?: string }) => readonly string[]) {
   const calls: { request: Record<string, unknown>; resolve(value: unknown): void }[] = [];
-  const env = { ready, generation: 1, enabled: true, reads: 0, classifications: [] as { text: string; language?: string; path?: string }[],
+  const env = { ready, generation: 1, enabled: true, selected: { kind: 'pi' } as SyntaxTheme, profile: { ...profile }, reads: 0, classifications: [] as { text: string; language?: string; path?: string }[],
     invalidated: [] as Owner[], redraws: 0, failClassification: false, notices: [] as string[][] };
   const provider = {
     snapshot(): ProviderSnapshot { return { generation: env.generation, availability: env.ready ? 'ready' : env.generation === 1 ? 'initializing' : 'unavailable',
-      reason: env.ready ? 'ready' : env.generation === 1 ? 'initializing' : 'transport_closed', initialShared: false, kind: 'owned', description: env.ready ? description : undefined }; },
+      reason: env.ready ? 'ready' : env.generation === 1 ? 'initializing' : 'transport_closed', initialShared: false, kind: 'owned', description: env.ready ? { ...description, profiles: env.profile.id === 'pi' ? [env.profile] : [profile, env.profile] } : undefined }; },
     isReady(g: number) { return env.ready && g === env.generation; }, classificationAccepted(g: number) { return this.isReady(g); },
     request(_g: number, request: Record<string, unknown>) { return new Promise<unknown>(resolve => calls.push({ request, resolve })); }
   };
   let cards: CardSources<Owner>;
   const sources = new SourceController(provider, { ...controllerOptions, retention, onChange: keys => { env.notices.push([...keys]); cards.sourceChanged(keys); } });
   const client: Pick<SyntaxClient, 'sources' | 'snapshot'> = { sources, snapshot: () => ({ enabled: env.enabled,
-    provider: provider.snapshot(), standaloneVersion: 'test', selected: { kind: 'pi' }, effective: env.ready ? profile : undefined }) };
+    provider: provider.snapshot(), standaloneVersion: 'test', selected: env.selected, effective: env.ready ? env.profile : undefined }) };
   cards = new CardSources(client, { read: owner => { env.reads++; return owner.input; },
     classify: (text, info) => { env.classifications.push({ text, ...info }); if (env.failClassification) throw new Error('classifier failed'); return classify ? classify(text, info) : text.split('\n'); },
     invalidate: owner => env.invalidated.push(owner), requestRender: () => { env.redraws++; } }, { maxBookkeepingBytes });
@@ -248,7 +249,7 @@ function answer(f: ReturnType<typeof fixture>, index: number, text: string, comp
     kind: 'source', sources: [{ key: source.key, generation: source.generation, source_version: source.source_version,
       profile: source.profile, fingerprint: source.fingerprint, revision: r.op === 'stream.append' ? (r.base_revision as number) + 1 : 1,
       replace_from: from, source_bytes: bytes, committed_bytes: bytes, complete,
-      ...(r.op !== 'highlight' ? { lease: 'lease' } : {}), styles: [{ role: 'syntaxKeyword' }], runs: bytes > from ? [bytes - from, 0] : [],
+      ...(r.op !== 'highlight' ? { lease: 'lease' } : {}), styles: source.profile === 'pi' ? [{ role: 'syntaxKeyword' }] : [{ rgb: [17, 34, 51], attributes: 0 }], runs: bytes > from ? [bytes - from, 0] : [],
       counters: { committed_line_calls: 0, committed_line_bytes: 0, tail_calls: 0, tail_bytes: 0 } }]
   } });
 }
@@ -821,4 +822,144 @@ test('cards backlog order: old retries and removal between yielded batches prese
     answer(f, i, expected[i]!, true); await settled();
   }
   assert.equal(f.calls.length, expected.length);
+});
+
+
+const nextProfile = { id: 'syntect:test', label: 'Test theme', fingerprint: 'b'.repeat(64) };
+function selectProfile(f: ReturnType<typeof fixture>, target = nextProfile) {
+  f.env.profile = { ...target }; f.env.selected = target.id === 'pi' ? { kind: 'pi' } : { kind: 'occipital', id: target.id };
+  f.cards.metadataChanged();
+}
+async function answerPending(f: ReturnType<typeof fixture>, from: number, count: number) {
+  for (let i = from; i < from + count; i++) {
+    for (let turns = 0; !f.calls[i] && turns < 30; turns++) await settled();
+    assert.ok(f.calls[i], `native job ${i} must be submitted`);
+    const request = f.calls[i]!.request;
+    assert.equal(request.op, 'highlight');
+    answer(f, i, (request.sources as { text: string }[])[0]!.text, true); await settled();
+    assert.ok(f.sources.stats().globalUnsettledJobs <= 2);
+  }
+}
+
+for (const kind of ['bash', 'write', 'edit', 'mixed'] as const) {
+  test(`cards theme change: every warm ${kind} owner adopts the new effective profile newest first`, async () => {
+    const f = fixture(true);
+    const edit = (i: number): CardSourceInput => ({ kind: 'file', palette: 1, language: 'typescript', node: {
+      toolName: 'edit', args: { path: `edit${i}.ts` }, isPartial: false,
+      result: { details: { diff: `-1 const old${i}=1;\n+1 const next${i}=2;` } }
+    } });
+    const kinds = kind === 'mixed' ? ['bash', 'write', 'edit', 'bash', 'write'] : Array(4).fill(kind);
+    const owners = kinds.map((k, i): Owner => ({ input: k === 'bash' ? bash(`echo ${i}`, true) : k === 'write' ? written(`const x${i}=1;`) : edit(i) }));
+    const jobs = kinds.reduce((n, k) => n + (k === 'edit' ? 2 : 1), 0);
+    for (const owner of owners) f.cards.useful(owner, 1);
+    await answerPending(f, 0, jobs);
+    const versions = owners.map(owner => f.cards.identities(owner).map(slot => slot.version));
+    const reads = f.env.reads;
+    selectProfile(f);
+    // Existing file ranges must not masquerade as the newly selected theme before admission.
+    for (const [i, owner] of owners.entries()) if (kinds[i] !== 'bash')
+      assert.equal(f.cards.file(owner, theme, 0x40000000)?.styledRows.size, 0, 'old native profile is not painted as current');
+    await answerPending(f, jobs, jobs);
+    assert.equal(f.calls.length, 2 * jobs); assert.equal(f.env.classifications.length, 0);
+    for (const owner of owners) for (const slot of f.cards.identities(owner)) assert.equal(f.sources.status(slot.key)?.exact, true);
+    const dispatched = f.calls.slice(jobs).map(call => (call.request.sources as { text: string; profile: string; fingerprint: string }[])[0]!);
+    const expected = owners.toReversed().flatMap(owner => { const i = owners.indexOf(owner); return kinds[i] === 'bash' ? [`echo ${i}`]
+      : kinds[i] === 'write' ? [`const x${i}=1;`] : [`const old${i}=1;`, `const next${i}=2;`]; });
+    assert.deepEqual(dispatched.map(source => source.text), expected);
+    assert.ok(dispatched.every(source => source.profile === nextProfile.id && source.fingerprint === nextProfile.fingerprint));
+    assert.deepEqual(owners.map(owner => f.cards.identities(owner).map(slot => slot.version)), versions, 'theme does not fabricate text revisions');
+    assert.equal(f.env.reads - reads, owners.length, 'each already demanded owner is prepared once for the new theme');
+    const counts = [f.env.reads, f.calls.length, f.env.classifications.length];
+    for (let i = 0; i < 10; i++) { for (const owner of owners) f.cards.useful(owner, 1); f.cards.metadataChanged(); }
+    await settled(); assert.deepEqual([f.env.reads, f.calls.length, f.env.classifications.length], counts);
+  });
+}
+
+test('cards theme change: same ID fingerprint refresh and return to Pi update all demanded owners once', async () => {
+  const f = fixture(true), owners: Owner[] = [{ input: bash('one', true) }, { input: written('two') }, { input: bash('three', true) }];
+  for (const owner of owners) f.cards.useful(owner, 1);
+  await answerPending(f, 0, 3); selectProfile(f); await answerPending(f, 3, 3);
+  selectProfile(f, { ...nextProfile, fingerprint: 'c'.repeat(64) }); await answerPending(f, 6, 3);
+  assert.ok(f.calls.slice(6).every(call => (call.request.sources as { fingerprint: string }[])[0]!.fingerprint === 'c'.repeat(64)));
+  selectProfile(f, profile); await answerPending(f, 9, 3);
+  assert.ok(f.calls.slice(9).every(call => (call.request.sources as { profile: string }[])[0]!.profile === 'pi'));
+  assert.equal(f.env.classifications.length, 0);
+});
+
+test('cards theme change: selection while unavailable survives until ready without repeating FILE Pi fallback', async () => {
+  const f = fixture(), owners: Owner[] = [{ input: bash('one', true) }, { input: written('two') }, { input: written('three') }];
+  for (const owner of owners) f.cards.useful(owner, 1);
+  for (let i = 0; i < 4; i++) await settled();
+  assert.equal(f.env.classifications.length, 2);
+  selectProfile(f);
+  for (let i = 0; i < 4; i++) { for (const owner of owners) f.cards.useful(owner, 1); await settled(); }
+  assert.equal(f.env.classifications.length, 2); assert.equal(f.calls.length, 0);
+  f.env.ready = true; f.cards.metadataChanged(); await answerPending(f, 0, 3);
+  assert.ok(f.calls.every(call => (call.request.sources as { profile: string }[])[0]!.profile === nextProfile.id));
+  assert.equal(f.env.classifications.length, 2);
+});
+
+test('cards theme change: paused demand resumes on use, removed and frozen live owners never restart', async () => {
+  const f = fixture(true), owners: Owner[] = ['removed', 'frozen', 'paused', 'active'].map(text => ({ input: bash(text, true) }));
+  for (const owner of owners) f.cards.useful(owner, 1);
+  await answerPending(f, 0, 4);
+  f.cards.remove(owners[0]!); f.cards.freeze(owners[1]!); f.cards.pause(owners[2]!);
+  selectProfile(f); await answerPending(f, 4, 1);
+  assert.equal((f.calls[4]!.request.sources as { text: string }[])[0]!.text, 'active');
+  for (let i = 0; i < 4; i++) await settled(); assert.equal(f.calls.length, 5);
+  f.cards.useful(owners[2]!, 1); await answerPending(f, 5, 1);
+  assert.equal((f.calls[5]!.request.sources as { text: string }[])[0]!.text, 'paused');
+  f.cards.useful(owners[1]!, 1); await settled(); assert.equal(f.calls.length, 6);
+});
+
+
+test('cards theme change: accumulated profile work preserves two-owner host yields and coalesces rapid choices', async () => {
+  const f = fixture(true), owners = Array.from({ length: 8 }, (_, i): Owner => ({ input: bash(`echo theme ${i}`, true) }));
+  for (const owner of owners) f.cards.useful(owner, 1);
+  await answerPending(f, 0, 8);
+  const reads = f.env.reads;
+  selectProfile(f); selectProfile(f, { ...nextProfile, fingerprint: 'c'.repeat(64) });
+  for (const owner of owners) f.cards.useful(owner, 1);
+  await settled(); assert.equal(f.env.reads - reads, 2, 'only two owners are prepared before the host turn');
+  assert.equal(f.calls.length, 10); assert.equal(f.sources.stats().globalUnsettledJobs, 2);
+  await answerPending(f, 8, 8);
+  assert.equal(f.env.reads - reads, owners.length);
+  assert.ok(f.calls.slice(8).every(call => (call.request.sources as { fingerprint: string }[])[0]!.fingerprint === 'c'.repeat(64)));
+});
+
+test('cards theme change: waiting profile demand cannot retain a collected first owner', { skip: !global.gc }, async () => {
+  const f = fixture(true), first = await firstOwner(f, bash('gone', true));
+  answer(f, 0, 'gone', true); await settled();
+  const peer: Owner = { input: bash('peer', true) }; f.cards.useful(peer, 1); await answerPending(f, 1, 1);
+  f.env.invalidated.length = 0;
+  f.env.ready = false; selectProfile(f);
+  for (let i = 0; i < 60; i++) { await settled(); global.gc!(); await settled(); if (!first.weak.deref()) break; }
+  assert.equal(first.weak.deref(), undefined); assert.equal(f.sources.borrowSource(first.key), undefined);
+  f.env.ready = true; f.cards.metadataChanged(); await answerPending(f, 2, 1);
+  assert.equal((f.calls[2]!.request.sources as { text: string }[])[0]!.text, 'peer'); assert.equal(f.calls.length, 3);
+});
+
+
+test('cards theme revision: native-only file gets one permitted Pi fallback for an offline incompatible selection', async () => {
+  const f = fixture(true), owner: Owner = { input: written('const x=1;') };
+  f.cards.useful(owner, 1); await settled(); answer(f, 0, 'const x=1;', true); await settled();
+  assert.equal(f.env.classifications.length, 0);
+  f.env.ready = false; f.cards.metadataChanged(); f.cards.useful(owner, 1); await settled();
+  assert.equal(f.env.classifications.length, 0, 'same-profile outage preserves compatible retained native coloring');
+  f.env.profile = { id: 'syntect:offline', label: 'Offline', fingerprint: 'c'.repeat(64) };
+  f.env.selected = { kind: 'occipital', id: f.env.profile.id }; f.cards.metadataChanged();
+  f.cards.useful(owner, 1); await settled();
+  assert.equal(f.env.classifications.length, 1, 'incompatible retained native data cannot veto permitted file fallback');
+  const key = f.cards.identities(owner)[0]!.key;
+  assert.equal(f.sources.hasPiBridge(key, 1, 1), true);
+  for (let i = 0; i < 5; i++) f.cards.useful(owner, 1);
+  await settled(); assert.equal(f.env.classifications.length, 1); assert.equal(f.calls.length, 1);
+});
+
+test('cards requested theme: ticket refusal remains memoized after capacity frees on the same text revision', async () => {
+  const f = fixture(false, undefined, 1024), owner: Owner = { input: bash('first', true) }, refused: Owner = { input: bash('refused', true) };
+  f.cards.useful(owner, 1); f.cards.useful(refused, 1); f.cards.remove(owner);
+  f.cards.useful(refused, 1); await settled();
+  assert.equal(f.env.reads, 0, 'a warm visit is not permission to retry refused bookkeeping');
+  f.cards.useful(refused, 2); await settled(); assert.equal(f.env.reads, 1, 'new source revision permits fresh demand');
 });

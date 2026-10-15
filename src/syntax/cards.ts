@@ -27,7 +27,7 @@ export interface CardSourceHost<Owner extends object> {
   identify?(owner: Owner): DiagnosticFields;
 }
 type Slot = SyntaxIdentity & { rows?: readonly number[]; side?: 'old' | 'next'; outcome: SyntaxWorkResult['outcome']; awaitingProvider?: true; paintDecision?: string };
-type State = { revision: number; requested?: number; processed?: number; version: number; slots: Slot[];
+type State = { revision: number; requested?: number; processed?: number; requestedTheme?: number; preparedTheme?: number; awaitingTheme?: true; version: number; slots: Slot[];
   display?: FileDisplayCard; kind?: 'file' | 'bash'; record?: RecordTicket; paused?: boolean; frozen?: boolean; paintedStamp?: number };
 type RecordTicket = { id: number; owner: WeakRef<object>; state: WeakRef<State>; keys: Set<string>; bytes: number; queued?: true };
 type Release = { consumer: WeakRef<CardSources<object>>; sources: WeakRef<SourceController>; ticket: RecordTicket };
@@ -63,6 +63,9 @@ export class CardSources<Owner extends object> {
   private scheduled = false;
   private disposed = false;
   private metadata: string;
+  private selection?: string;
+  private effectiveTheme?: string;
+  private themeRevision = 0;
   private displayProfile?: { id: string; fingerprint: string; selection: string };
 
   constructor(client: Pick<SyntaxClient, 'sources' | 'snapshot'>, host: CardSourceHost<Owner>,
@@ -86,18 +89,19 @@ export class CardSources<Owner extends object> {
     if (complete && state.record && !state.paused) this.enqueue(state.record);
   }
 
-  /** Explicit genuinely useful intermediate/final demand. Equal processed or
-   * pending revisions are warm visits: no source work or request scheduling.
+  /** Explicit genuinely useful intermediate/final demand. Equal text/theme
+   * revisions already processed or pending are warm visits: no source work.
    * Bash fallback always remains the legacy whole-command toolTitle style. */
   useful(owner: Owner, revision: number): void {
     if (this.disposed) return;
     let state = this.states.get(owner);
     if (state?.frozen) return;
-    if (!state?.paused && state?.revision === revision && (state.processed === revision || state.requested === revision)) return;
+    if (!state?.paused && state?.revision === revision && (state.processed === revision && state.preparedTheme === this.themeRevision
+      || state.requested === revision && state.requestedTheme === this.themeRevision)) return;
     if (!state) { state = { revision, version: 0, slots: [] }; this.states.set(owner, state); }
     else state.revision = revision;
     state.paused = false;
-    state.requested = revision;
+    state.requested = revision; state.requestedTheme = this.themeRevision;
     if (!state.record) {
       if (this.bytes + RETENTION_LIMITS.entryAllowance > this.maxBytes) return;
       const ticket: RecordTicket = { id: ++sequence, owner: new WeakRef(owner), state: new WeakRef(state), keys: new Set(), bytes: RETENTION_LIMITS.entryAllowance };
@@ -108,11 +112,13 @@ export class CardSources<Owner extends object> {
     this.enqueue(state.record);
   }
 
-  /** Wire to SyntaxClient.onChange. Readiness resumes all availability-deferred
-   * Bash demand through existing weak tickets, not a transcript/owner scan. */
+  /** Wire to SyntaxClient.onChange. Theme edits renew retained useful demand;
+   * readiness alone resumes only deferred work, through existing weak tickets. */
   metadataChanged(): void {
     if (this.disposed) return;
+    const previousTheme = this.themeRevision;
     const snapshot = this.client.snapshot(), identity = this.metadataIdentity(snapshot);
+    const themeChanged = previousTheme !== this.themeRevision;
     if (identity === this.metadata) return;
     this.metadata = identity;
     const available = snapshot.enabled && snapshot.provider.availability === 'ready' && !!snapshot.effective;
@@ -120,10 +126,12 @@ export class CardSources<Owner extends object> {
     // Availability loss is not new demand for an already processed Bash revision.
     if (latest && !state?.paused && !state?.frozen && state?.revision === latest.revision
       && (available || state.kind !== 'bash' || state.processed !== state.revision)) this.enqueue(latest.ticket);
-    if (available) for (const ticket of this.records.values()) {
+    if (available || themeChanged) for (const ticket of this.records.values()) {
       const state = ticket.state.deref();
       if (!state || !ticket.owner.deref()) { this.release(ticket); continue; }
-      if (!state.paused && !state.frozen && state.kind === 'bash' && state.slots.some(slot => slot.awaitingProvider)) this.enqueue(ticket);
+      if (themeChanged && !state.frozen) state.awaitingTheme = true;
+      if (available && !state.paused && !state.frozen && (state.awaitingTheme
+        || state.kind === 'bash' && state.slots.some(slot => slot.awaitingProvider))) this.enqueue(ticket);
     }
   }
 
@@ -145,7 +153,7 @@ export class CardSources<Owner extends object> {
       const needsWork = state.slots.some(slot => {
         const work = this.client.sources.workStatus(slot.key);
         return work.profileRetryAllowed || slot.outcome === 'waiting' &&
-          resolveSyntax(this.client.sources, slot, 0x40000000).needsPi;
+          resolveSyntax(this.client.sources, slot, 0x40000000, this.displayProfile ?? null).needsPi;
       });
       if (needsWork) this.enqueue(ticket);
       else if (state.kind !== 'bash') { this.host.invalidate(owner); changed = true; }
@@ -160,7 +168,7 @@ export class CardSources<Owner extends object> {
     if (this.disposed || state?.paused || state?.processed !== state?.revision || !state?.display) return undefined;
     const styledRows = new Map<number, string>();
     for (const slot of state.slots) {
-      const resolution = resolveSyntax(this.client.sources, slot, neutralStyle);
+      const resolution = resolveSyntax(this.client.sources, slot, neutralStyle, this.displayProfile ?? null);
       const rows = paintFileSyntax(this.client.sources, resolution, theme);
       this.paintDecision(owner, slot, resolution, rows !== undefined);
       if (!rows) continue;
@@ -193,7 +201,7 @@ export class CardSources<Owner extends object> {
   }
   displayStamp(owner: Owner): number {
     const state = this.states.get(owner);
-    return state?.kind === 'bash' ? this.bashStamp(state) : 0;
+    return state?.kind === 'bash' ? this.bashStamp(state) : state?.kind === 'file' ? this.themeRevision : 0;
   }
   freeze(owner: Owner): void {
     const state = this.states.get(owner);
@@ -256,8 +264,8 @@ export class CardSources<Owner extends object> {
       const owner = ticket.owner.deref() as Owner | undefined, state = ticket.state.deref();
       if (!owner || !state) { this.release(ticket); continue; }
       if (!this.current(owner, state, ticket)) continue;
-      const revision = state.revision, input = this.host.read(owner);
-      if (!this.current(owner, state, ticket) || state.revision !== revision) continue;
+      const revision = state.revision, themeRevision = this.themeRevision, input = this.host.read(owner);
+      if (!this.current(owner, state, ticket) || state.revision !== revision || this.themeRevision !== themeRevision) continue;
       if (!input) { this.remove(owner); this.host.invalidate(owner); changed = true; continue; }
       const prepared = input.kind === 'file' && !input.node.result?.isError ? prepareFileCard(input.node) : undefined;
       const command = input.kind === 'bash' ? bashCommandSource(input.args) : undefined;
@@ -290,11 +298,11 @@ export class CardSources<Owner extends object> {
           if (this.bytes + bytes > this.maxBytes) continue;
           ticket.keys.add(key); this.keys.set(key, ticket); ticket.bytes += bytes; this.bytes += bytes;
         }
-        const work = requestSyntax(this.client, { ...slot, text: demand.text, path }, this.host.classify);
+        const work = requestSyntax(this.client, { ...slot, text: demand.text, path, nativeProfile: this.displayProfile ?? null }, this.host.classify);
         slot.outcome = work.outcome; slot.awaitingProvider = work.awaitingProvider;
         this.log(owner, 'Syntax work evaluated', { source: key, version: slot.version, units: demand.text.length,
           language: language ?? 'unknown', palette: slot.palette, outcome: slot.outcome, awaitingProvider: !!slot.awaitingProvider });
-        if (!this.current(owner, state, ticket) || state.revision !== revision) break;
+        if (!this.current(owner, state, ticket) || state.revision !== revision || this.themeRevision !== themeRevision) break;
       }
       if (!this.current(owner, state, ticket)) {
         // A classifier/host may synchronously remove its owner before publication.
@@ -302,13 +310,17 @@ export class CardSources<Owner extends object> {
           for (const slot of slots) this.client.sources.remove(slot.key);
         continue;
       }
-      if (state.revision !== revision) continue;
+      if (state.revision !== revision || this.themeRevision !== themeRevision) continue;
       for (const key of ticket.keys) if (!slots.some(slot => slot.key === key)) {
         ticket.keys.delete(key); this.keys.delete(key); this.client.sources.remove(key);
         const bytes = keyBytes(key); ticket.bytes -= bytes; this.bytes -= bytes;
       }
       state.slots = slots; state.display = prepared ? displayFileCard(prepared) : undefined;
-      state.kind = input.kind; state.processed = revision;
+      state.kind = input.kind; state.processed = revision; state.preparedTheme = themeRevision;
+      if (state.awaitingTheme) {
+        const metadata = this.client.snapshot();
+        if (metadata.enabled && metadata.provider.availability === 'ready' && metadata.effective) state.awaitingTheme = undefined;
+      }
       // A prepared neutral Bash fallback is identical to its already painted command.
       if (input.kind !== 'bash' || this.bashStamp(state) !== (state.paintedStamp ?? 0)) {
         this.host.invalidate(owner); changed = true;
@@ -380,6 +392,8 @@ export class CardSources<Owner extends object> {
   }
   private enqueue(ticket: RecordTicket): void {
     if (!this.records.has(ticket.id)) return;
+    const state = ticket.state.deref();
+    if (state) state.requestedTheme = this.themeRevision;
     if (!ticket.queued) {
       this.pending.splice(this.pendingIndex(ticket.id), 0, ticket); ticket.queued = true;
     }
@@ -387,6 +401,15 @@ export class CardSources<Owner extends object> {
   }
   private metadataIdentity(snapshot = this.client.snapshot()): string {
     const selection = snapshot.selected.kind === 'pi' ? 'pi' : `occipital:${snapshot.selected.id}`;
+    if (this.selection !== undefined && this.selection !== selection) { this.themeRevision++; this.effectiveTheme = undefined; }
+    this.selection = selection;
+    if (snapshot.enabled && snapshot.effective) {
+      const effective = JSON.stringify([snapshot.effective.id, snapshot.effective.fingerprint]);
+      // First publication is availability, not a user theme change. Preserve the
+      // last identity across outages/off so recovery of the same theme is warm.
+      if (this.effectiveTheme !== undefined && this.effectiveTheme !== effective) this.themeRevision++;
+      this.effectiveTheme = effective;
+    }
     if (!snapshot.enabled || this.displayProfile?.selection !== selection || snapshot.provider.availability === 'ready') this.displayProfile = undefined;
     if (snapshot.enabled && snapshot.effective) this.displayProfile = { id: snapshot.effective.id, fingerprint: snapshot.effective.fingerprint, selection };
     return JSON.stringify([snapshot.enabled, snapshot.provider.availability, snapshot.provider.generation, selection,

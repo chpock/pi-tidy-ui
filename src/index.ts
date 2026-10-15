@@ -493,7 +493,7 @@ export function installTidyUi(tui: LiveTui, getTheme: () => Palette, options: Ti
       kind === "bash" ? node.args.workdir : undefined, directory,
       kind === "edit" || kind === "write" ? theme.colors : undefined,
       kind === "edit" || kind === "write" ? theme.style : undefined, kind === "edit" || kind === "write" ? theme.bg : undefined,
-      kind === 'bash' ? syntax?.displayStamp(node) : undefined,
+      kind === 'bash' || kind === 'edit' || kind === 'write' ? syntax?.displayStamp(node) : undefined,
       kind === 'bash' ? theme.colors : undefined,
       kind === 'bash' && node.result?.isError ? bashFailurePhase(node) : undefined];
   }

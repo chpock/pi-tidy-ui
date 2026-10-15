@@ -4,7 +4,12 @@ import type { PiFailure, SourceController, SourceDemand, SourceWorkStatus } from
 import { paintBashCommand, paintFileSource, type RangeReader } from './paint.ts';
 import { piRangeReader, type PiRowReader } from './pi.ts';
 
-export type SyntaxDemand = Omit<SourceDemand, 'profile' | 'fingerprint'> & { palette: number; fallback?: 'pi' | 'neutral' };
+type NativeProfile = { id: string; fingerprint: string };
+export type SyntaxDemand = Omit<SourceDemand, 'profile' | 'fingerprint'> & {
+  palette: number; fallback?: 'pi' | 'neutral';
+  // Retain known display eligibility across missing metadata; null forbids native reuse.
+  nativeProfile?: NativeProfile | null;
+};
 export type SyntaxIdentity = Pick<SyntaxDemand, 'key' | 'version' | 'language' | 'complete' | 'palette' | 'fallback'>;
 export type PiClassifier = (text: string, info: { language?: string; path?: string }) => readonly string[];
 export type SyntaxWorkResult = { outcome: 'native' | 'pi' | 'neutral' | 'waiting' | 'refused' | 'failed' | 'stale'; failure?: PiFailure; awaitingProvider?: true };
@@ -70,6 +75,8 @@ function classificationRows(lines: readonly string[]): PiRowReader {
   };
 }
 const ignoreRange = () => {};
+const compatibleProfile = (source: { profile: string; fingerprint: string }, profile?: NativeProfile | null) =>
+  profile === undefined || profile !== null && source.profile === profile.id && source.fingerprint === profile.fingerprint;
 
 /** Explicit useful/coalesced demand, outside render. Caller prepares text and
  * selects the public Pi language; path is informational, not another cache key.
@@ -85,7 +92,8 @@ export function requestSyntax(client: Client, demand: SyntaxDemand, classify: Pi
       return { outcome: sources.workStatus(key).fallbackEligible ? 'refused' : 'waiting' };
   }
   const native = sources.borrowSource(key);
-  if (native?.version === version && native.language === language && native.text === text && sources.status(key)?.exact)
+  if (native?.version === version && native.language === language && native.text === text
+    && compatibleProfile(native, demand.nativeProfile === undefined ? metadata.effective : demand.nativeProfile) && sources.status(key)?.exact)
     return { outcome: 'native' };
   if (demand.fallback === 'neutral') return { outcome: sources.workStatus(key).fallbackEligible ? 'neutral' : 'waiting',
     ...(metadata.enabled && (metadata.provider.availability !== 'ready' || !metadata.effective) ? { awaitingProvider: true as const } : {}) };
@@ -127,11 +135,12 @@ export function requestSyntax(client: Client, demand: SyntaxDemand, classify: Pi
  * resubmission command; caller owns processed/refused demand tickets. Typed
  * profile retry permission is exposed, never consumed by a blind observe here.
  * Readers' callbacks are provisional until their final true result. */
-export function resolveSyntax(sources: SourceController, identity: SyntaxIdentity, neutralStyle: number): SyntaxResolution {
+export function resolveSyntax(sources: SourceController, identity: SyntaxIdentity, neutralStyle: number,
+  profile?: NativeProfile | null): SyntaxResolution {
   const { key, version, language, complete, palette, fallback } = identity;
   const allowPi = fallback !== 'neutral';
   const work = sources.workStatus(key), native = sources.borrowSource(key), pi = allowPi ? sources.borrowPiSource(key) : undefined;
-  const currentNative = native?.version === version && native.language === language ? native : undefined;
+  const currentNative = native?.version === version && native.language === language && compatibleProfile(native, profile) ? native : undefined;
   const status = currentNative ? sources.status(key) : undefined;
   const nativeExact = !!status?.exact;
   const matchingPi = pi?.version === version && pi.language === language ? pi : undefined;
