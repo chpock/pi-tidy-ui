@@ -740,3 +740,31 @@ syncBuiltinESMExports();
     assert.equal(environment.PATH.includes('ambient-path-poison'), false);
   }
 });
+
+test('actual Windows CI checkout policy survives isolated Git configuration without changing source bytes or accepting edits', { skip: process.platform === 'win32' }, async t => {
+  const inputs = readInputs(), root = await source(t), checkout = join(root, 'checkout');
+  const env = childEnv(join(root, 'git-environment'), {}, inputs);
+  const git = (cwd, args, extra = {}) => execFileSync(toolPath('git'), ['-C', cwd, ...args], { env: { ...env, ...extra }, encoding: 'utf8' });
+  git(root, ['init', '--quiet']);
+  git(root, ['add', 'Cargo.lock', 'crates/occipital/Cargo.toml']);
+  git(root, ['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '--quiet', '-m', 'fixture']);
+  git(root, ['clone', '--quiet', '--no-checkout', root, checkout]);
+  const system = join(root, 'checkout-system.gitconfig');
+  await writeFile(system, '[core]\nautocrlf = true\n');
+  git(checkout, ['checkout', '--quiet', '--force', 'HEAD'], { GIT_CONFIG_NOSYSTEM: '0', GIT_CONFIG_SYSTEM: system });
+  const files = ['Cargo.lock', 'crates/occipital/Cargo.toml'];
+  const before = await Promise.all(files.map(file => readFile(join(checkout, file))));
+  for (const bytes of before) assert.ok(bytes.includes('\r\n'), 'positive control represents a real Windows CRLF checkout');
+  const status = () => git(checkout, ['status', '--porcelain', '--', 'crates', 'Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', '.cargo']);
+  assert.notEqual(status().trim(), '', 'removing inherited Git policy reproduces the false dirty-source rejection');
+  const workflow = await readFile(join(repo, '.github/workflows/occipital.yml'), 'utf8');
+  const step = workflowStep(workflow, 'Declare Windows checkout line-ending semantics');
+  assert.match(step, /^        if: runner\.os == 'Windows'$/m, 'the declaration must not alter non-Windows Git semantics');
+  execFileSync(toolPath('bash'), ['-e', '-o', 'pipefail', '-c', shellStep(step)], { cwd: checkout, env, stdio: 'pipe' });
+  assert.equal(status().trim(), '', 'strict same-commit admission must see the unchanged checkout as clean');
+  for (let index = 0; index < files.length; index++) assert.deepEqual(await readFile(join(checkout, files[index])), before[index], 'declaration must not rewrite source or change native build inputs');
+  assert.equal(await readFile(system, 'utf8'), '[core]\nautocrlf = true\n', 'do not rewrite inherited system configuration');
+  assert.equal(await readFile(env.GIT_CONFIG_GLOBAL, 'utf8'), '', 'do not rewrite inherited global configuration');
+  await writeFile(join(checkout, 'crates/occipital/Cargo.toml'), before[1].toString() + '# actual source edit\r\n');
+  assert.match(status(), /crates\/occipital\/Cargo\.toml/, 'genuine native edits still fail strict commit-only admission');
+});

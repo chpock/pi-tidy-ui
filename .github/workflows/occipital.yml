@@ -96,6 +96,10 @@ jobs:
         with:
           # Installed package preparation also selects the nearest reachable daemon tag.
           fetch-depth: 0
+      - name: Declare Windows checkout line-ending semantics
+        if: runner.os == 'Windows'
+        run: |
+          git config --local core.autocrlf true
       - uses: actions/setup-node@v4
         with:
           node-version: '22.19.0'
