@@ -2,7 +2,8 @@
 // observes drafts through a shortcut, never by submitting a capture command.
 import { CustomEditor, type ExtensionAPI, type RegisteredCommand } from "@earendil-works/pi-coding-agent";
 import { Editor } from "@earendil-works/pi-tui";
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
+import { writeDiagnosticJson } from './terminal-output.ts';
 import { join } from "node:path";
 import { homedir } from "node:os";
 import tidyUi from "./presentation-driver.ts";
@@ -77,7 +78,7 @@ export default function editorDriver(pi: ExtensionAPI) {
       const indicator = tui.children[2]?.children.find((node: any) => typeof node.kind === "string") ??
         (editor as any).workingStatusIndicator; // Test-only native ownership observation.
       if (indicator && !identities.has(indicator)) identities.set(indicator, ++nextIdentity);
-      writeFileSync(join(output, `${name}.json`), JSON.stringify({ width, rows, before, after: state(),
+      writeDiagnosticJson(output, name, { width, rows, before, after: state(),
         widgetCallsBeforeEditor, widgetCallsAfterEditor, upperRegistered, upperRows,
         statusIdentity: indicator ? identities.get(indicator) : undefined, statusPresent: !!indicator,
         embedWorkingStatus: editor.embedWorkingStatus,
@@ -98,7 +99,7 @@ export default function editorDriver(pi: ExtensionAPI) {
           parent: ctx.ui.theme.fg("dim", "X"), directory: ctx.ui.theme.fg("mdLinkUrl", "X"), branch: ctx.ui.theme.fg("text", "X"),
           colon: ctx.ui.theme.fg("muted", "X"), separator: ctx.ui.theme.fg("dim", "X"), activity: ctx.ui.theme.fg("accent", "X"), idle: ctx.ui.theme.fg("muted", "X"),
           thinking: ctx.ui.theme.getThinkingBorderColor(ctx.thinkingLevel ?? pi.getThinkingLevel())("X") },
-      }, null, 2));
+      }, 2);
       tui.requestRender();
     },
   });

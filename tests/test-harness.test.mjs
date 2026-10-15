@@ -1,5 +1,7 @@
 import './fixtures/test-guard.mjs';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import { syncBuiltinESMExports } from 'node:module';
 import { test } from 'node:test';
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -10,7 +12,8 @@ import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { setTimeout as delay } from 'node:timers/promises';
 import { childEnv, validateNative, validateHost, readInputs } from '../scripts/test/context.mjs';
 import { execute, isolatedCommand, selectSuite } from '../scripts/test/run.mjs';
-import { materializeSource, materializeTools, snapshotIdentity, sourceIdentity, validateNeutralRunRoot } from '../scripts/test/prepare.mjs';
+import { resolveSelection, testEntries } from '../scripts/test/catalog.mjs';
+import { dependencyIdentity, materializeSource, materializeTools, refreshInputs, snapshotIdentity, sourceIdentity, validateNeutralRunRoot } from '../scripts/test/prepare.mjs';
 
 function fixture(t) {
   const root = mkdtempSync(join(tmpdir(), 'tidy-harness-'));
@@ -110,8 +113,10 @@ test('missing run context cannot fall back to a configured Pi installation', t =
 test('suite selection accounts for every test file without environment-gated omissions', () => {
   const inputs = readInputs();
   const all = readdirSync(join(inputs.pi.root, 'tests')).filter(name => /\.test\.(?:ts|mjs)$/.test(name)).sort();
-  const selected = new Set(['unit', 'native-release', 'terminal', 'syntax-terminal', 'rust-harness'].flatMap(suite => selectSuite(inputs, suite)));
-  assert.deepEqual([...selected].sort(), all);
+  const plans = ['unit', 'native-release', 'terminal', 'syntax-terminal', 'rust-harness'].map(suite => resolveSelection(inputs.pi.root, { suite }));
+  const selected = new Set(plans.flatMap(plan => plan.files)), excluded = new Set(plans.flatMap(plan => plan.excluded.map(entry => entry.file)));
+  assert.deepEqual([...new Set([...selected, ...excluded])].sort(), all);
+  for (const file of excluded) assert.ok(!selected.has(file), 'explicitly out-of-platform controls are not executed');
   const release = new Set(selectSuite(inputs, 'native-release'));
   assert.deepEqual(selectSuite(inputs, 'unit').filter(file => release.has(file)), [], 'Pi-independent release/Make checks run only in their declared profile');
 });
@@ -189,11 +194,13 @@ function admissionFixture(t, probe = 'import {test} from "node:test"; test("inte
     '.gitignore': 'node_modules/\n', 'package.json': '{"type":"module"}', 'package-lock.json': '{}',
     'scripts/test/bootstrap.mjs': readFileSync(new URL('../scripts/test/bootstrap.mjs', import.meta.url)),
     'scripts/test/context.mjs': readFileSync(new URL('../scripts/test/context.mjs', import.meta.url)),
-    'tests/probe.test.mjs': probe,
+    ...Object.fromEntries(testEntries.map(({ file }) => ['tests/' + file, ''])),
+    'tests/test-fixtures.test.ts': probe,
   });
   const { root, checkout, tools, env } = value, original = readInputs();
   const source = sourceIdentity(checkout, tools, env), runRoot = join(root, runtimeName), tree = join(runRoot, 'project');
   materializeSource(checkout, tree, source.files);
+  writeFileSync(join(runRoot, 'source-files.json'), JSON.stringify(source.files));
   const coding = join(tree, 'node_modules/@earendil-works/pi-coding-agent'), tui = join(tree, 'node_modules/@earendil-works/pi-tui');
   for (const directory of [coding, tui]) mkdirSync(directory, { recursive: true });
   const version = original.pi.version;
@@ -210,7 +217,7 @@ function admissionFixture(t, probe = 'import {test} from "node:test"; test("inte
     pi: { root: tree, cli: join(coding, 'cli.js'), version, packages, lock, lockSha256: createHash('sha256').update(readFileSync(lock)).digest('hex') } };
   const path = join(root, 'inputs.json'), output = join(root, 'report.json');
   const save = () => writeFileSync(path, JSON.stringify(inputs)); save();
-  return { ...value, inputs, path, output, coding, save, execute: () => execute({ inputs: path, output, suite: 'harness', files: 'probe.test.mjs' }) };
+  return { ...value, inputs, path, output, coding, save, execute: () => execute({ inputs: path, output, suite: 'harness', files: 'test-fixtures.test.ts' }) };
 }
 
 test('repeated materialization removes tracked deletions and removed untracked native build inputs', t => {
@@ -253,7 +260,7 @@ test('missing runtime root still writes an explicit setup report', async t => {
 });
 
 test('staged source corruption cannot execute under an unchanged original source identity', async t => {
-  const f = admissionFixture(t); writeFileSync(join(f.inputs.pi.root, 'tests/probe.test.mjs'), 'throw new Error("stale source");');
+  const f = admissionFixture(t); writeFileSync(join(f.inputs.pi.root, 'tests/test-fixtures.test.ts'), 'throw new Error("stale source");');
   await assert.rejects(f.execute(), /source snapshot differs/);
   const report = JSON.parse(readFileSync(f.output));
   assert.equal(report.reason, 'source-snapshot'); assert.equal(existsSync(report.runDirectory), false);
@@ -289,7 +296,7 @@ test('SIGTERM stops a running test and its descendant before removing owned case
     });
   `);
   const runner = spawn(f.inputs.node.path, [fileURLToPath(new URL('../scripts/test/run.mjs', import.meta.url)),
-    '--inputs', f.path, '--suite', 'harness', '--files', 'probe.test.mjs', '--output', f.output],
+    '--inputs', f.path, '--suite', 'harness', '--files', 'test-fixtures.test.ts', '--output', f.output],
     { env: childEnv(join(f.root, 'outer'), {}, f.inputs), stdio: 'ignore' });
   let pid;
   const alive = value => { try { process.kill(value, 0); return true; } catch (error) { if (error.code === 'ESRCH') return false; throw error; } };
@@ -351,7 +358,7 @@ test('clean and poisoned callers execute the same coverage without loading ambie
   const runner = fileURLToPath(new URL('../scripts/test/run.mjs', import.meta.url));
   const run = async (name, env) => {
     const output = join(f.root, name + '.json');
-    const child = spawn(f.inputs.node.path, [runner, '--inputs', f.path, '--suite', 'harness', '--files', 'probe.test.mjs', '--output', output], { env, stdio: 'ignore' });
+    const child = spawn(f.inputs.node.path, [runner, '--inputs', f.path, '--suite', 'harness', '--files', 'test-fixtures.test.ts', '--output', output], { env, stdio: 'ignore' });
     const code = await new Promise((yes, no) => { child.once('error', no); child.once('close', yes); });
     assert.equal(code, 0, name);
     return JSON.parse(readFileSync(output));
@@ -383,7 +390,7 @@ test('every Node test entry rejects direct execution without bootstrap even when
   for (const file of readdirSync(directory).filter(name => /\.test\.(?:ts|mjs)$/.test(name))) {
     const contents = readFileSync(join(directory, file), 'utf8');
     for (const source of [contents, '// Comment header\r\n' + contents.replace(/\r?\n/g, '\r\n')]) {
-      assert.equal(source.match(/^import[^\r\n]*/m)?.[0], "import './fixtures/test-guard.mjs';", file);
+      assert.match(source.match(/^import[^\r\n]*/m)?.[0] ?? '', /^import\s+(['"])\.\/fixtures\/test-guard\.mjs\1;?$/, file);
     }
   }
   const { root } = fixture(t), inputs = readInputs();
@@ -468,13 +475,13 @@ test('first offline alternate-host preparation removes only its new runtime root
 test('runner rejects newly introduced ancestor Cargo or Git configuration as setup failure without starting a child', async t => {
   for (const name of ['.cargo/config.toml', '.cargo/config', '.git']) {
     const f = admissionFixture(t, "import {writeFileSync} from 'node:fs'; writeFileSync('child-started', 'started');");
-    const marker = join(f.inputs.pi.root, 'child-started');
+    const marker = join(f.inputs.pi.root, 'child-started'), retained = readdirSync(f.inputs.runRoot);
     mkdirSync(dirname(join(f.root, name)), { recursive: true }); writeFileSync(join(f.root, name), 'fixture poison');
     await assert.rejects(f.execute(), /neutral ancestry/);
     const report = JSON.parse(readFileSync(f.output));
     assert.equal(report.status, 'setup-failed'); assert.equal(report.reason, 'runtime-root-neutrality');
     assert.equal(report.runDirectory, undefined); assert.equal(report.steps, undefined); assert.deepEqual(report.counts, {});
-    assert.equal(existsSync(marker), false); assert.deepEqual(readdirSync(f.inputs.runRoot), ['project']);
+    assert.equal(existsSync(marker), false); assert.deepEqual(readdirSync(f.inputs.runRoot), retained);
   }
 });
 
@@ -522,4 +529,42 @@ test('archive preparation reads real root manifests from LF and CRLF tar listing
       assert.deepEqual(registry.packages[0].manifest, manifest);
     }
   }
+});
+
+test('failed replacement preparation cannot hide a deleted source from the surviving runtime refresh',t=>{
+  const f=preparationFixture(t);mkdirSync(join(f.checkout,'src'));writeFileSync(join(f.checkout,'src/removed.ts'),'export const removed = true;\n');
+  const success=f.invoke();assert.equal(success.status,0,success.stderr);
+  const path=join(f.output,'inputs.json'),before=JSON.parse(readFileSync(path,'utf8')),stale=join(before.pi.root,'src/removed.ts');
+  assert.equal(existsSync(stale),true);rmSync(join(f.checkout,'src/removed.ts'));
+  const failure=f.invoke(['--pi-version','1.2.0']);assert.notEqual(failure.status,0);assert.match(failure.stderr,/previously resolved/);
+  assert.equal(existsSync(stale),true,'failed replacement leaves the previous successful runtime intact');
+  const refreshed=refreshInputs(path);assert.equal(refreshed.pi.root,before.pi.root);
+  assert.equal(existsSync(stale),false,'refresh must remove the deleted module rather than accept an unlisted stale import');
+});
+
+test('runner refuses an interrupted-refresh inventory before any child, then accepts successful recovery', async t => {
+  const probe = 'import {test} from "node:test"; import {writeFileSync,readFileSync} from "node:fs"; import {join} from "node:path"; writeFileSync(join(JSON.parse(readFileSync(process.env.TIDY_TEST_INPUTS)).runRoot,"child-started"),"started"); test("recovered source",()=>{});';
+  const f = admissionFixture(t, probe), tree = f.inputs.pi.root, hash = file => createHash('sha256').update(readFileSync(file)).digest('hex');
+  f.inputs.install = { platform: process.platform, arch: process.arch, manifest: hash(join(f.checkout, 'package.json')), lock: hash(join(f.checkout, 'package-lock.json')), modules: dependencyIdentity(join(tree, 'node_modules')) };
+  f.save(); writeFileSync(join(f.inputs.runRoot, 'source-files.json'), JSON.stringify(sourceIdentity(f.checkout, f.tools, f.env).files));
+  mkdirSync(join(f.checkout, 'src')); const addition = join(f.checkout, 'src/card-extension-extra.ts'), last = join(f.checkout, 'z-added.ts');
+  writeFileSync(addition, 'export const abandoned: string = 123;'); writeFileSync(last, 'last addition');
+  const copy = fs.cpSync;
+  fs.cpSync = (source, ...args) => { if (source === last) throw new Error('controlled final-copy interruption'); return copy(source, ...args); }; syncBuiltinESMExports();
+  try { assert.throws(() => refreshInputs(f.path), /controlled final-copy interruption/); } finally { fs.cpSync = copy; syncBuiltinESMExports(); }
+  rmSync(addition); rmSync(last);
+  assert.equal(existsSync(join(tree, 'src/card-extension-extra.ts')), true);
+  await assert.rejects(f.execute(), /Prepared source refresh is incomplete/);
+  const rejected = JSON.parse(readFileSync(f.output, 'utf8')); assert.equal(rejected.status, 'setup-failed'); assert.equal(rejected.reason, 'source-snapshot');
+  assert.equal(existsSync(join(f.inputs.runRoot, 'child-started')), false, 'stale additional source must never be launched');
+  refreshInputs(f.path); assert.equal(existsSync(join(tree, 'src/card-extension-extra.ts')), false);
+  const recovered = await f.execute(); assert.equal(recovered.status, 'passed'); assert.equal(recovered.counts.pass, 1);
+  assert.equal(existsSync(join(f.inputs.runRoot, 'child-started')), true);
+});
+
+test('legacy unsealed descriptors keep byte-checked execution but cannot enter source refresh', async t => {
+  const f = admissionFixture(t, 'import {test} from "node:test"; test("legacy descriptor",()=>{});');
+  delete f.inputs.install; f.save(); rmSync(join(f.inputs.runRoot, 'source-files.json'));
+  assert.throws(() => refreshInputs(f.path), /sealed owned host graph/);
+  const report = await f.execute(); assert.equal(report.status, 'passed'); assert.equal(report.counts.pass, 1);
 });

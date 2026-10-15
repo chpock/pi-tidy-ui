@@ -4,7 +4,9 @@ import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
-import { childEnv, digest, readInputs, toolPath, validateHost, validateNative } from './context.mjs';
+import { childEnv, readInputs, toolPath, validateHost, validateRequirements } from './context.mjs';
+import { resolveSelection } from './catalog.mjs';
+export { selectSuite } from './catalog.mjs';
 import { snapshotIdentity, sourceIdentity, validateNeutralRunRoot } from './prepare.mjs';
 
 export function isolatedCommand(command, args, inputs) {
@@ -28,32 +30,12 @@ export function isolatedCommand(command, args, inputs) {
   return { command: toolPath('bwrap', inputs), args: [...mounts, '--proc', '/proc', '--dev', '/dev', '--die-with-parent', '--', command, ...args] };
 }
 
-const rustHarnessFiles = ['rust-harness.test.mjs'];
-const releaseFiles = ['native-release.test.mjs', 'release-ci.test.mjs', 'release-version.test.mjs', 'npm-release.test.mjs', 'extension-release.test.mjs', 'makefile.test.ts'];
 
-export function selectSuite(inputs, suite) {
-  const tests = readdirSync(join(inputs.pi.root, 'tests')).filter(name => /\.test\.(?:ts|mjs)$/.test(name)).sort();
-  switch (suite) {
-    case 'unit': return tests.filter(name => !releaseFiles.includes(name) && !rustHarnessFiles.includes(name) && !['terminal.test.mjs', 'syntax-terminal.test.mjs'].includes(name));
-    case 'native-release': return releaseFiles;
-    case 'native': return ['occipital-native.test.ts', 'occipital-factories.test.ts'];
-    case 'terminal': return ['terminal.test.mjs'];
-    case 'syntax-terminal': return ['syntax-terminal.test.mjs'];
-    case 'harness': return ['test-harness.test.mjs'];
-    case 'rust-harness': return rustHarnessFiles;
-    case 'consumer': return ['fixtures/installed-occipital.mjs'];
-    case 'published-consumer': return ['fixtures/published-occipital.mjs'];
-    case 'check': return [];
-    case 'rust': case 'rust-check': case 'rust-allocator': return [];
-    default: throw new Error(`Unknown test suite: ${suite}`);
-  }
-}
-
-export async function execute({ inputs: path, suite = 'unit', files, pattern, skip, 'network-isolated': networkIsolated = false, 'release-ref': releaseRef, 'rust-test': rustTests = [], output }) {
+export async function execute({ inputs: path, suite = 'unit', files, groups, layer, pattern, skip, 'network-isolated': networkIsolated = false, 'release-ref': releaseRef, 'rust-test': rustTests = [], output }) {
   process.umask(0o077);
   const inputPath = resolve(path ?? join(import.meta.dirname, '../../.test-artifacts/harness/1.0.0/inputs.json'));
   const reportPath = output ? resolve(output) : join(dirname(inputPath), 'runs', suite + '-' + randomUUID(), 'report.json');
-  const report = { schema: 1, suite, selected: [], selection: { files: files ?? null, pattern: pattern ?? null, skip: skip ?? null, rustTests }, cases: [], network: networkIsolated ? 'os-isolated' : 'prepared-fixtures', status: 'setup-failed', reason: 'inputs', counts: {} };
+  const report = { schema: 1, suite, selected: [], selection: { files: files ?? null, groups: groups ?? null, layer: layer ?? null, pattern: pattern ?? null, skip: skip ?? null, rustTests }, cases: [], network: networkIsolated ? 'os-isolated' : 'prepared-fixtures', status: 'setup-failed', reason: 'inputs', counts: {} };
   let directory;
   try {
     const inputs = readInputs(inputPath);
@@ -74,6 +56,10 @@ export async function execute({ inputs: path, suite = 'unit', files, pattern, sk
     const source = sourceIdentity(inputs.source.root, inputs.tools, env);
     if (source.commit !== inputs.source.commit || source.tree !== inputs.source.tree) throw new Error('Tested sources changed since preparation; refresh test:prepare inputs');
     report.reason = 'source-snapshot';
+    if (inputs.install) {
+      const inventory = JSON.parse(readFileSync(join(inputs.runRoot, 'source-files.json'), 'utf8'));
+      if (!Array.isArray(inventory) || inventory.length !== source.files.length || inventory.some((name, index) => source.files[index] !== name)) throw new Error('Prepared source refresh is incomplete; refresh test:prepare before execution');
+    }
     if (snapshotIdentity(inputs.pi.root, source.files).tree !== inputs.source.tree) throw new Error('Prepared source snapshot differs from tested sources; refresh test:prepare');
     report.reason = 'suite-inputs';
     if (process.platform === 'win32') toolPath('taskkill', inputs);
@@ -84,21 +70,13 @@ export async function execute({ inputs: path, suite = 'unit', files, pattern, sk
       report.network = 'public-release';
       env.TIDY_TEST_RELEASE_REF = releaseRef;
     }
-    const selected = files ? files.split(',') : selectSuite(inputs, suite);
-    for (const file of selected) if (!/^(?:fixtures\/)?[\w.-]+\.(?:ts|mjs)$/.test(file) || !existsSync(join(inputs.pi.root, 'tests', file))) throw new Error('Invalid selected test file');
+    const selection = resolveSelection(inputs.pi.root, { suite, files, groups, layer });
+    const selected = selection.files;
     report.selected = selected;
-    const needsNative = ['unit', 'native', 'syntax-terminal', 'consumer'].includes(suite);
-    if (needsNative) {
-      env.OCCIPITAL_TEST_BIN = validateNative(inputs).path;
-      report.native = { commit: inputs.native.commit, nativeTree: inputs.native.nativeTree, sha256: inputs.native.sha256 };
-    }
-    if (suite === 'syntax-terminal') {
-      if (!inputs.sharedHost) throw new Error('syntax-terminal requires --shared-host prepared input; shared coverage cannot be skipped');
-      if (digest(readFileSync(inputs.sharedHost.path)) !== inputs.sharedHost.sha256) throw new Error('Prepared shared host changed');
-      env.OCCIPITAL_TEST_SHARED_HOST = inputs.sharedHost.path;
-    }
-    if (suite === 'terminal' && !inputs.integration) throw new Error('terminal requires the prepared locked integration profile');
-    if (suite === 'rust-harness' && !inputs.rust) throw new Error('rust-harness requires the prepared pinned Rust toolchain');
+    report.requirements = selection.requirements;
+    report.platformExclusions = selection.excluded;
+    Object.assign(env, validateRequirements(inputs, selection.requirements));
+    if (selection.requirements.includes('native')) report.native = { commit: inputs.native.commit, nativeTree: inputs.native.nativeTree, sha256: inputs.native.sha256 };
     let command = inputs.node.path;
     let args = ['--import', pathToFileURL(join(inputs.pi.root, 'scripts/test/bootstrap.mjs')).href];
     if (suite === 'check') args.push(join(inputs.pi.root, 'node_modules/typescript/bin/tsc'), '--noEmit');
@@ -116,7 +94,7 @@ export async function execute({ inputs: path, suite = 'unit', files, pattern, sk
     } else if (suite === 'consumer' || suite === 'published-consumer') args.push(join(inputs.pi.root, 'tests', selected[0]));
     else {
       args.push('--expose-gc', '--test', '--test-reporter=tap');
-      args.push('--test-concurrency=' + (suite === 'terminal' || suite === 'syntax-terminal' ? '1' : '2'));
+      args.push('--test-concurrency=' + (selection.layers.includes('cli') ? '1' : '2'));
       if (pattern) args.push('--test-name-pattern=' + pattern);
       if (skip) args.push('--test-skip-pattern=' + skip);
       args.push(...selected.map(file => join(inputs.pi.root, 'tests', file)));
@@ -185,7 +163,7 @@ export async function execute({ inputs: path, suite = 'unit', files, pattern, sk
 
 if (process.argv[1] && existsSync(process.argv[1]) && realpathSync(process.argv[1]) === resolve(import.meta.filename)) {
   const { values } = parseArgs({ options: {
-    inputs: { type: 'string' }, suite: { type: 'string' }, files: { type: 'string' }, pattern: { type: 'string' }, skip: { type: 'string' },
+    inputs: { type: 'string' }, suite: { type: 'string' }, files: { type: 'string' }, groups: { type: 'string' }, layer: { type: 'string' }, pattern: { type: 'string' }, skip: { type: 'string' },
     'network-isolated': { type: 'boolean' }, 'release-ref': { type: 'string' }, 'rust-test': { type: 'string', multiple: true }, output: { type: 'string' },
   } });
   const report = await execute(values); if (report.status !== 'passed') process.exitCode = 1;

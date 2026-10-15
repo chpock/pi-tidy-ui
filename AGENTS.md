@@ -18,7 +18,7 @@ Subagents may be used when implementing tasks. Delegation is permitted, not requ
 
 ## Testing
 
-- During the edit–test–fix loop, use `npm run check` and affected `node --test` cases; enable `--expose-gc` for ownership checks. `npm test` runs the full unit/SDK suite; `npm run test:native-release` runs inexpensive packaging/release regressions.
-- Reserve the time-expensive full `npm run test:terminal` for final verification after UI/integration work is finished, not each edit or commit. Focused CLI cases may reproduce or verify a concrete defect. Documentation-only changes do not require the full CLI suite.
-- For affected syntax integration, the shorter `OCCIPITAL_TEST_BIN=/absolute/path/to/occipital npm run test:syntax-terminal` may run during development and remains in ordinary CI. Full `test:terminal` runs in CI only on extension release tags.
-- When choosing test files, CLI scenarios, native checks or runtime/GC setup, read [docs/testing.md](docs/testing.md). Report required checks that failed or were not run; skips are not acceptance.
+- Before selecting checks, read [docs/testing.md](docs/testing.md) for prepared inputs, contract groups, real integration requirements and GC setup.
+- During the edit–test–fix loop, refresh the prepared source snapshot and run the affected `test:group` checks. Before feature delivery, use `test:feature` for the common product baseline plus affected real integrations. Include preparation in the practical 2–3-minute target; report justified overruns instead of reducing coverage.
+- Reserve full unit/CLI unions and version/platform matrices for changes whose contract impact requires them, including broad harness, compatibility or release work. Ordinary feature acceptance does not require unrelated full suites.
+- Selected native/shared/profile checks require their real prepared inputs. Report required checks that failed or were not run; skips are not acceptance.

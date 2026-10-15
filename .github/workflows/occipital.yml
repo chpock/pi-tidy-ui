@@ -9,6 +9,15 @@ on:
       version:
         required: true
         type: string
+      source-ref:
+        type: string
+        default: ''
+      targets:
+        type: string
+        default: all
+      consumers:
+        type: boolean
+        default: true
       clean-build:
         type: boolean
         default: false
@@ -17,7 +26,30 @@ permissions:
   contents: read
 
 jobs:
+  targets:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      matrix: ${{ steps.targets.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source-ref || github.sha }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.19.0'
+      - id: targets
+        env:
+          TARGETS: ${{ inputs.targets }}
+          RELEASE_REF: ${{ inputs.release-ref }}
+        run: |
+          node --input-type=module <<'JS'
+          import {appendFileSync} from 'node:fs';
+          import {nativeTargets} from './scripts/test/ci-scope.mjs';
+          appendFileSync(process.env.GITHUB_OUTPUT, 'matrix=' + JSON.stringify(nativeTargets(process.env.TARGETS,process.env.RELEASE_REF)) + '\n');
+          JS
   packaging-fixtures:
+    if: inputs.consumers || startsWith(inputs.release-ref, 'refs/tags/')
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     strategy:
@@ -26,6 +58,8 @@ jobs:
         node: ['22.19.0', '26.7.0']
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source-ref || github.sha }}
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node }}
@@ -54,35 +88,11 @@ jobs:
           node scripts/test/run.mjs --inputs "$RUNNER_TEMP/release-inputs/inputs.json" --suite native-release --network-isolated
 
   build:
-    needs: packaging-fixtures
+    needs: targets
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - target: linux-x64-gnu
-            runner: ubuntu-24.04
-            rust: x86_64-unknown-linux-gnu
-            executable: occipital
-          - target: linux-arm64-gnu
-            runner: ubuntu-24.04-arm
-            rust: aarch64-unknown-linux-gnu
-            executable: occipital
-          - target: darwin-x64
-            runner: macos-15-intel
-            rust: x86_64-apple-darwin
-            executable: occipital
-          - target: darwin-arm64
-            runner: macos-14
-            rust: aarch64-apple-darwin
-            executable: occipital
-          - target: windows-x64-msvc
-            runner: windows-2022
-            rust: x86_64-pc-windows-msvc
-            executable: occipital.exe
-          - target: windows-arm64-msvc
-            runner: windows-11-arm
-            rust: aarch64-pc-windows-msvc
-            executable: occipital.exe
+        include: ${{ fromJSON(needs.targets.outputs.matrix) }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
     env:
@@ -94,6 +104,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ inputs.source-ref || github.sha }}
           # Installed package preparation also selects the nearest reachable daemon tag.
           fetch-depth: 0
       - name: Declare Windows checkout line-ending semantics
@@ -311,6 +322,7 @@ jobs:
           fi
           /usr/bin/bwrap --unshare-user --unshare-net --ro-bind / / -- /usr/bin/true
       - name: Same-commit clean consumer and actual helper on Node 22.19.0
+        if: inputs.consumers || startsWith(inputs.release-ref, 'refs/tags/')
         timeout-minutes: 15
         env:
           EXPECTED_NODE: '22.19.0'
@@ -351,10 +363,11 @@ jobs:
             node scripts/test/run.mjs --inputs "$PREPARATION/inputs.json" --suite published-consumer --release-ref "$RELEASE_REF"
           fi
       - uses: actions/setup-node@v4
+        if: inputs.consumers || startsWith(inputs.release-ref, 'refs/tags/')
         with:
           node-version: '26.7.0'
       - name: Declare provisioned Windows runtime tools
-        if: startsWith(matrix.target, 'windows-')
+        if: startsWith(matrix.target, 'windows-') && (inputs.consumers || startsWith(inputs.release-ref, 'refs/tags/'))
         run: |
           node --input-type=module <<'JS'
           import {writeFileSync, existsSync} from 'node:fs';
@@ -364,6 +377,7 @@ jobs:
           writeFileSync(join(process.env.RUNNER_TEMP,'runtime-tools.json'),JSON.stringify(tools));
           JS
       - name: Same-commit clean consumer and actual helper on Node 26.7.0
+        if: inputs.consumers || startsWith(inputs.release-ref, 'refs/tags/')
         timeout-minutes: 15
         env:
           EXPECTED_NODE: '26.7.0'

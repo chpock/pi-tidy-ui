@@ -25,6 +25,25 @@ def main():
         os.chdir(cwd)
         os.execvpe(command[0], command, os.environ)
     alive = True
+    status = None
+    master_open = True
+    drained_bytes = 0
+    escalations = 0
+
+    def read_output(shutdown=False):
+        nonlocal master_open, drained_bytes
+        try:
+            data = os.read(master, 65536)
+        except OSError as error:
+            if error.errno != errno.EIO:
+                raise
+            data = b""
+        if data:
+            emit({"data": base64.b64encode(data).decode("ascii")})
+            if shutdown:
+                drained_bytes += len(data)
+        else:
+            master_open = False
 
     def resize(columns, lines):
         fcntl.ioctl(master, termios.TIOCSWINSZ, struct.pack("HHHH", lines, columns, 0, 0))
@@ -45,15 +64,8 @@ def main():
         while time.monotonic() < deadline:
             readers, _, _ = select.select([master, sys.stdin.fileno()], [], [], 0.1)
             if master in readers:
-                try:
-                    data = os.read(master, 65536)
-                except OSError as error:
-                    if error.errno != errno.EIO:
-                        raise
-                    data = b""
-                if data:
-                    emit({"data": base64.b64encode(data).decode("ascii")})
-                else:
+                read_output()
+                if not master_open:
                     break
             if sys.stdin.fileno() in readers:
                 data = os.read(sys.stdin.fileno(), 65536)
@@ -88,8 +100,7 @@ def main():
             exited, status = os.waitpid(pid, os.WNOHANG)
             if exited:
                 alive = False
-                emit({"exit": os.waitstatus_to_exitcode(status)})
-                return
+                break
         if time.monotonic() >= deadline:
             emit({"error": "PTY lifetime exceeded 180 seconds"})
     except InterruptedError:
@@ -106,14 +117,39 @@ def main():
                 exited, status = os.waitpid(pid, os.WNOHANG)
                 if exited:
                     alive = False
-                    emit({"exit": os.waitstatus_to_exitcode(status)})
                     break
-                time.sleep(0.02)
+                # Shutdown writers must not block on a full PTY while we wait.
+                # Stdin is deliberately excluded, including after its EOF.
+                if master_open:
+                    readers, _, _ = select.select([master], [], [], min(0.02, max(0, end - time.monotonic())))
+                    if readers:
+                        read_output(shutdown=True)
+                else:
+                    time.sleep(min(0.02, max(0, end - time.monotonic())))
             if alive:
-                os.killpg(pid, signal.SIGKILL)
+                try:
+                    os.killpg(pid, signal.SIGKILL)
+                    escalations += 1
+                except ProcessLookupError:
+                    pass
                 _, status = os.waitpid(pid, 0)
+        try:
+            # Reaping can precede the last readable terminal packet. Do not wait
+            # for a descendant holding the slave, or drain an endless writer forever.
+            tail_end = time.monotonic() + 2
+            while master_open:
+                readers, _, _ = select.select([master], [], [], 0)
+                if not readers:
+                    break
+                if time.monotonic() >= tail_end:
+                    emit({"error": "PTY tail drain exceeded 2 seconds"})
+                    break
+                read_output(shutdown=True)
+            if status is not None:
                 emit({"exit": os.waitstatus_to_exitcode(status)})
-        os.close(master)
+            emit({"shutdown": {"drainedBytes": drained_bytes, "escalations": escalations}})
+        finally:
+            os.close(master)
 
 
 if __name__ == "__main__":

@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { setTimeout as pause } from 'node:timers/promises';
 import { childEnv } from '../../scripts/test/context.mjs';
+import { runCleanupSteps } from './terminal-cleanup.mjs';
 import { SyntaxClient } from '../../src/occipital/client.ts';
 import { createSharedFactory } from '../../src/occipital/factories.ts';
 import { ExtensionSettings } from '../../src/settings.ts';
@@ -41,13 +42,15 @@ export async function sharedSyntaxHost(hostBinary, helperBinary) {
   const hostExit = new Promise(resolve => host.once('close', (code, signal) => resolve({ code, signal })));
   const connection = join(runtime, 'subc-connection.json'), alias = join(root, 'pi-connection.json');
   const clients = [], pids = new Set();
-  const close = async () => {
-    for (const client of clients) await client.dispose();
-    if (host.exitCode === null && host.signalCode === null) host.kill('SIGKILL');
-    await hostExit;
-    for (const pid of pids) await reaped(pid);
-    await rm(root, { recursive: true, force: true });
-  };
+  const close = () => runCleanupSteps(
+    ...clients.map(client => () => client.dispose()),
+    async () => {
+      if (host.exitCode === null && host.signalCode === null) host.kill('SIGKILL');
+      await hostExit;
+    },
+    ...Array.from(pids, pid => () => reaped(pid)),
+    () => rm(root, { recursive: true, force: true }),
+  );
   try {
     await until(async () => {
       if (failure) throw failure;

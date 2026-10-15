@@ -1,6 +1,7 @@
 // Real CLI footer/data controls; no production monkey-patches or model credentials.
 import { AgentSession, SessionManager, CustomEditor, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { existsSync, readFileSync, watch, writeFileSync } from "node:fs";
+import { writeDiagnosticJson } from './terminal-output.ts';
 import { stripVTControlCharacters } from "node:util";
 import { join } from "node:path";
 import { footerDiagnostics } from "../../src/footer.ts";
@@ -91,11 +92,11 @@ export default function footerDriver(pi: ExtensionAPI) {
       if (indicator && !identities.has(indicator)) identities.set(indicator, ++nextIdentity);
       const record = action === "accounting" ? { entries: ctx.sessionManager.getEntries(), context: ctx.getContextUsage(),
         settings: pi.getSettings(), model: ctx.model } : {};
-      writeFileSync(join(output, `${name}.json`), JSON.stringify({ width, rows, owner: footer.constructor.name,
+      writeDiagnosticJson(output, name, { width, rows, owner: footer.constructor.name,
         counters: { ...observed, ...footerDiagnostics() }, statuses: [...statuses], foreignDisposals, nameActionReads,
         session: ctx.sessionManager.getSessionFile(), idle: ctx.isIdle(), ...record,
         nativeStatusRows: tui.children[2].render(width), statusIdentity: indicator ? identities.get(indicator) : undefined,
-        styles: Object.fromEntries((["text", "muted", "dim", "success", "warning", "error"] as const).map(role => [role, ctx.ui.theme.fg(role, "X")])) }, null, 2));
+        styles: Object.fromEntries((["text", "muted", "dim", "success", "warning", "error"] as const).map(role => [role, ctx.ui.theme.fg(role, "X")])) }, 2);
       tui.requestRender();
     },
   });

@@ -1,0 +1,163 @@
+import './fixtures/test-guard.mjs';
+import assert from 'node:assert/strict';
+import { readFileSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import test from 'node:test';
+import { fixtures, artifacts, byName, until } from './fixtures/terminal-harness.mjs';
+import { closeTerminals, closeTerminalsInParallel } from './fixtures/terminal-cleanup.mjs';
+import { colorTerminal, colorTraffic, persisted, selectDarkDark } from './fixtures/main-cli-support.mjs';
+
+test('terminal colors: independent channels, hot reload, source errors, RGB projection, native traffic and replay in both modes', async () => {
+  for (const mode of ['fullscreen', 'regular']) {
+    const live = colorTerminal(`colors-live-${mode}`, mode), native = colorTerminal(`colors-native-${mode}`, mode, { native: true, workspace: live.terminal.work });
+    let replay;
+    try {
+      await Promise.all([live.terminal.ready(), native.terminal.ready()]);
+      await until(() => live.owned.background === '#123456' && live.owned.foreground === '#eeeeee', 'initial explicit terminal colors');
+      const initial = await live.capture('initial'), control = await native.capture('initial');
+      assert.equal(initial.diagnostic.status.state, 'on'); assert.equal(initial.automatic, false);
+      assert.equal(initial.nativeBackground, '#0a0b0c', 'Pi concrete defaults stay native/stale, not mutated');
+      assert.equal(control.nativeBackground, '#0a0b0c'); assert.equal(initial.publicPrototypesUnchanged, true);
+      assert.deepEqual(native.owned, {}); assert.equal(initial.belowRows.length, 2);
+      const edgeRow = initial.cells.find(row => row.some(cell => cell?.text === '╹'));
+      assert.ok(edgeRow); assert.ok(edgeRow.some(cell => cell?.text === '▀' && cell.fg === 0x123456 && cell.fgMode === 0x3000000), 'input edge uses requested default RGB');
+      const warm = await live.capture('warm', 'warm');
+      assert.deepEqual(warm.diagnostic.counters, initial.diagnostic.counters, '50 real renders do zero file/query/projection/output work');
+      assert.deepEqual(warm.before, warm.after); assert.deepEqual(warm.editorRows, initial.editorRows);
+      const foreign = await live.capture('foreign', 'foreign-query');
+      assert.deepEqual(foreign.report.foreground, { r: 238, g: 238, b: 238 }); assert.deepEqual(foreign.report.background, { r: 18, g: 52, b: 86 });
+      assert.deepEqual(foreign.diagnostic.counters, warm.diagnostic.counters); assert.equal(foreign.publicPrototypesUnchanged, true);
+      live.source.theme.vars.surface = '#654321'; writeFileSync(live.source.path, '\uFEFF' + JSON.stringify(live.source.theme));
+      await until(() => live.owned.background === '#654321', 'BOM/export-only same-name native hot reload');
+      const hot = await live.capture('hot');
+      assert.equal(hot.theme, initial.theme); assert.equal(hot.diagnostic.counters.sourceReads, initial.diagnostic.counters.sourceReads + 1);
+      assert.equal(hot.diagnostic.counters.sets, initial.diagnostic.counters.sets + 1); assert.deepEqual(hot.before, hot.after);
+      live.source.theme.colors.text = '#abcdef'; live.source.theme.export.pageBg = 'missing-terminal-var';
+      writeFileSync(live.source.path, JSON.stringify(live.source.theme));
+      let errorIndex = 0;
+      const failure = await until(async () => { const snap = await live.capture(`error-${++errorIndex}`); return snap.diagnostic.status.state === 'source error' && snap; }, 'accepted source failure');
+      assert.deepEqual(live.owned, { background: '#654321', foreground: '#eeeeee' }, 'whole prior valid snapshot, no partial foreground publication');
+      assert.equal(failure.diagnostic.counters.warnings, 1);
+      await live.capture('retry', 'colors on');
+      const retried = await live.capture('retried'); assert.equal(retried.diagnostic.counters.warnings, 1);
+      assert.equal(retried.diagnostic.counters.sourceReads, failure.diagnostic.counters.sourceReads + 1);
+      live.source.theme.colors.text = ''; live.source.theme.export.pageBg = '';
+      writeFileSync(live.source.path, JSON.stringify(live.source.theme));
+      await until(() => Object.keys(live.owned).length === 0, 'valid empty values release both owned channels');
+      const empty = await live.capture('empty'); assert.equal(empty.diagnostic.status.state, 'on');
+      assert.equal(empty.diagnostic.counters.releases, retried.diagnostic.counters.releases + 2);
+      live.source.theme.colors.text = 'ink'; live.source.theme.vars.ink = 0;
+      writeFileSync(live.source.path, JSON.stringify(live.source.theme));
+      await until(() => live.owned.foreground === '#000000', 'numeric zero is explicit foreground, not empty'); assert.equal(live.owned.background, undefined);
+      live.source.theme.colors.text = '#eeeeee'; live.source.theme.export.pageBg = 'surfaceAlias'; live.source.theme.vars.surface = '#123456';
+      writeFileSync(live.source.path, JSON.stringify(live.source.theme));
+      await until(() => live.owned.background === '#123456' && live.owned.foreground === '#eeeeee', 'restore baseline theme');
+      const enabled = await live.capture('enabled'); await live.capture('local-off', 'colors off');
+      assert.deepEqual(live.owned, {});
+      const localOff = await live.capture('local-off-stable');
+      assert.deepEqual(localOff.editorRows, enabled.editorRows, 'colors off leaves the editor geometry/styling installed');
+      await live.capture('master-off', 'off'); await live.capture('master-on', 'on'); assert.deepEqual(live.owned, {}, 'master on preserves local off');
+      await live.capture('local-on', 'colors on'); await until(() => live.owned.background === '#123456', 'local on');
+      await live.terminal.command('/reload'); await live.terminal.event('start', 2);
+      await until(() => live.terminal.screen().some(row => row.includes('Reloaded keybindings, extensions,')), 'native reload completion before color shortcut capture');
+      const reloaded = await live.capture('reloaded'); assert.equal(reloaded.diagnostic.status.state, 'on'); assert.equal(reloaded.publicPrototypesUnchanged, true);
+      await live.capture('post-reload-off', 'colors off');
+      const released = await live.capture('post-reload-off-stable');
+      assert.ok(released.cells.some(row => row.some(cell => cell?.text === '▀' && cell.fg === 0x0a0b0c)), 'local off repairs the input edge after native reload cached our former default');
+      await live.capture('post-reload-on', 'colors on'); await until(() => live.owned.background === '#123456', 'reapply after release projection check');
+      // Same cwd keeps genuine ENOENT payloads equal; sequential writers avoid sharing an execution race.
+      await native.terminal.run('suite'); await live.terminal.run('suite');
+      const result = await live.terminal.capture('traffic'), nativeResult = await native.terminal.capture('traffic');
+      assert.deepEqual(colorTraffic(live.terminal), colorTraffic(native.terminal));
+      assert.deepEqual(persisted(result), persisted(nativeResult));
+      const edit = byName(result, 'edit')[0]; assert.ok(edit.lines.some(row => row.includes('\x1b[48;2;15;52;72m') && row.includes('WRITE_AFTER')), 'diff Multiply code tint uses actual requested background');
+      assert.ok(result.cells.some(row => row.some(cell => cell?.text === 'W' && cell.bg === 0x0f3448)), 'the controlled physical screen contains the new tint');
+      live.source.theme.export.pageBg = ''; writeFileSync(live.source.path, JSON.stringify(live.source.theme));
+      await until(() => live.owned.background === undefined, 'unowned background on existing diff');
+      await live.capture('unowned-warm', 'warm');
+      live.profile.background = '#f0f0f0'; await live.capture('unowned-refresh', 'colors on');
+      await until(() => live.terminal.captureScreen('unowned-physical', {}).cells.some(row => row.some(cell => cell?.text === 'W' && cell.bg === 0xcaf0ca)), 'late reported defaults repaint existing physical diff without a native theme change');
+      live.source.theme.export.pageBg = 'surfaceAlias'; writeFileSync(live.source.path, JSON.stringify(live.source.theme));
+      await until(() => live.owned.background === '#123456', 'restore requested replay background');
+      const bytes = readFileSync(result.session, 'utf8');
+      replay = colorTerminal(`colors-replay-${mode}`, mode, { session: result.session, workspace: live.terminal.work });
+      await replay.terminal.ready(); await until(() => replay.owned.background === '#123456', 'replay applies fixed theme');
+      const restored = await replay.terminal.capture('replay');
+      assert.deepEqual(persisted(restored), persisted(result)); assert.equal(readFileSync(result.session, 'utf8'), bytes, 'presentation and replay do not rewrite session bytes');
+      for (const type of ['call', 'result', 'model_context', 'provider_error']) assert.equal(replay.terminal.events().filter(event => event.type === type).length, 0);
+      assert.ok(byName(restored, 'edit')[0].lines.some(row => row.includes('\x1b[48;2;15;52;72m') && row.includes('WRITE_AFTER')));
+      writeFileSync(join(live.terminal.output, 'color-evidence.json'), JSON.stringify({ initial, hot, failure, empty, protocol: live.protocol }, null, 2));
+      await live.terminal.quit();
+      assert.deepEqual(live.owned, {}, 'normal shutdown restores only our applied defaults');
+    } finally {
+      await closeTerminalsInParallel([live.terminal, native.terminal, ...(replay ? [replay.terminal] : [])]);
+    }
+  }
+});
+
+test('terminal colors: trusted project override, native fixed-to-auto ordering, reload and renderer switch stay inactive', async () => {
+  for (const mode of ['fullscreen', 'regular']) {
+    const live = colorTerminal(`colors-auto-${mode}`, mode, { project: true });
+    try {
+      await live.terminal.ready();
+      const before = await live.capture('before'); assert.equal(before.diagnostic.status.state, 'on');
+      assert.ok(Object.keys(live.owned).length > 0, 'positive fixed-theme activation');
+      live.protocol.length = 0; await selectDarkDark(live.terminal);
+      const after = await live.capture('auto'); assert.equal(after.configured, 'dark'); assert.equal(after.theme, 'dark'); assert.equal(after.automatic, true);
+      assert.equal(after.diagnostic.status.state, 'automatic theme'); assert.deepEqual(live.owned, {});
+      const firstQuery = live.protocol.findIndex(event => event.query);
+      assert.ok(firstQuery >= 0); assert.ok(live.protocol.findIndex(event => event.reset === 'background') < firstQuery);
+      assert.ok(live.protocol.filter(event => event.query).every(event => event.value === live.profile[event.query]), 'Pi only sees profile defaults');
+      const stable = await live.capture('auto-warm', 'warm'); assert.deepEqual(stable.diagnostic.counters, after.diagnostic.counters);
+      const scopeStart = live.protocol.length;
+      await live.terminal.command('/reload'); await live.terminal.event('start', 2); await live.terminal.settle();
+      const reloaded = await live.capture('auto-reloaded');
+      assert.equal(reloaded.automatic, true); assert.equal(reloaded.diagnostic.counters.sourceReads, 0);
+      assert.equal(reloaded.diagnostic.counters.sets, 0); assert.equal(reloaded.diagnostic.counters.releases, 0); assert.equal(reloaded.diagnostic.counters.reports, 0);
+      await live.terminal.command('/settings'); live.terminal.send('TUI mode'); await live.terminal.settle(); live.terminal.send('\r'); await live.terminal.settle(); live.terminal.send('\x1b'); await live.terminal.settle();
+      const swapped = await live.capture('auto-swapped'); assert.equal(swapped.automatic, true);
+      assert.equal(swapped.diagnostic.counters.sourceReads, 0); assert.equal(swapped.diagnostic.counters.sets, 0);
+      assert.equal(swapped.diagnostic.counters.releases, 0); assert.equal(swapped.diagnostic.counters.reports, 0);
+      assert.ok(live.protocol.slice(scopeStart).every(event => !event.set && !event.reset), 'no transient activation during reload or renderer replacement');
+      for (const type of ['call', 'result', 'model_context', 'provider_error']) assert.equal(live.terminal.events().filter(event => event.type === type).length, 0);
+    } finally { await closeTerminals([live.terminal]); }
+  }
+});
+
+test('terminal colors: initially automatic and first production late load stay inactive without prior observation', async () => {
+  const inactive = async (live, label) => {
+    const packet = await live.capture(label);
+    assert.equal(packet.automatic, true, 'real native automatic tracking is positively active');
+    assert.equal(packet.diagnostic.status.state, 'automatic theme');
+    for (const field of ['sourceReads', 'reports', 'sets', 'releases', 'packets', 'warnings', 'projections', 'staleReplies']) assert.equal(packet.diagnostic.counters[field], 0, `${label} ${field}`);
+    assert.deepEqual(live.protocol.filter(event => event.set || event.reset), [], 'no transient applications or resets');
+    assert.equal(live.terminal.events().filter(event => ['call', 'result', 'model_context', 'provider_error'].includes(event.type)).length, 0);
+    const before = packet.diagnostic.counters, warm = await live.capture(`${label}-warm`, 'warm');
+    assert.deepEqual(warm.diagnostic.counters, before, 'warm native frames add no feature work');
+    return packet;
+  };
+  for (const mode of ['fullscreen', 'regular']) {
+    const cold = colorTerminal(`colors-cold-auto-${mode}`, mode, { automatic: true });
+    try { await cold.terminal.ready(); await inactive(cold, 'cold-auto'); }
+    finally { await closeTerminals([cold.terminal]); }
+    for (const project of [false, true]) {
+      const loader = join(artifacts, `colors-first-late-${mode}-${project}.ts`);
+      const importDriver = `import driver from ${JSON.stringify(join(fixtures, 'terminal-colors-driver.ts'))};\n`;
+      writeFileSync(loader, importDriver + 'export default async function(pi) { process.env.TIDY_UI_TEST_COLORS_NATIVE = "1"; await driver(pi); }\n');
+      const late = colorTerminal(`colors-first-late-${mode}-${project}`, mode, { automatic: !project, project, driver: loader });
+      try {
+        await late.terminal.ready();
+        const noFeature = await late.capture('before-first-load'); assert.equal(noFeature.diagnostic, undefined);
+        assert.deepEqual(late.protocol.filter(event => event.set || event.reset), []);
+        if (project) await selectDarkDark(late.terminal);
+        const nativeAuto = await late.capture('native-auto-before-load');
+        assert.equal(nativeAuto.automatic, true); assert.equal(nativeAuto.configured, project ? 'dark' : 'dark/dark');
+        // Introduce the production import/factory for the first time, not a re-enabled warm observer.
+        writeFileSync(loader, importDriver + 'export default async function(pi) { delete process.env.TIDY_UI_TEST_COLORS_NATIVE; await driver(pi); }\n');
+        await late.terminal.command('/reload'); await late.terminal.event('start', 2);
+        const first = await inactive(late, 'first-production-load');
+        assert.equal(first.configured, project ? 'dark' : 'dark/dark', 'hidden project divergence remains real');
+      } finally { await closeTerminals([late.terminal]); }
+    }
+  }
+});

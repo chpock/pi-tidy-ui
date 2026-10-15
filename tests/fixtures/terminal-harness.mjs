@@ -1,16 +1,18 @@
 // Reusable physical terminal support. Importing this module registers no tests.
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { once } from 'node:events';
+import { EventEmitter, once } from 'node:events';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, copyFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createInterface } from 'node:readline';
 import { stripVTControlCharacters } from 'node:util';
 import xterm from '@xterm/headless';
 import { sliceByColumn, visibleWidth } from '@earendil-works/pi-tui';
 import { readInputs, childEnv, toolPath } from '../../scripts/test/context.mjs';
+import { planTerminalObserver } from './terminal-observer-plan.mjs';
+import { terminalCodeCache } from './terminal-code-cache.mjs';
 
 const { Terminal } = xterm;
 export const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
@@ -23,17 +25,7 @@ export const lines = (tool) => tool.lines.map(plain).filter((line) => line.trim(
 export const byName = (dump, name) => dump.tools.filter((tool) => tool.name === name);
 export const nativeTiming = (value) => value.replace(/Took \d+(?:\.\d+)?s/g, 'Took <runtime>s');
 export const toolLines = (dump) => dump.tools.map(({ name, lines }) => ({ name, lines: lines.map(nativeTiming) }));
-export async function assertFits(rows, width) {
-  const terminal = new Terminal({ cols: width, rows: 4, allowProposedApi: true });
-  try {
-    for (const row of rows) {
-      assert.ok(!/[\r\n]/.test(row), 'component row cannot contain a line break');
-      terminal.reset();
-      await new Promise((done) => terminal.write(row, done));
-      assert.equal(terminal.buffer.active.cursorY, 0, `row must not wrap at ${width} columns`);
-    }
-  } finally { terminal.dispose(); }
-}
+export { assertFits } from './terminal-rows.mjs';
 
 export async function until(check, label, timeout = 12000) {
   const end = Date.now() + timeout;
@@ -50,6 +42,23 @@ export function observeRenderFrames(term, state) {
   for (const [final, rendering] of [['h', true], ['l', false]]) term.parser.registerCsiHandler({ prefix: '?', final }, params => {
     if (params.includes(2026)) { state.rendering = rendering; if (!rendering) state.completedRenders++; }
     return false;
+  });
+}
+
+export function observeNativeReceipts(term, state) {
+  state.nativeReceipts = new Map();
+  state.nativeProgress = new EventEmitter();
+  state.nativeSequence = 0;
+  return term.parser.registerOscHandler(777, data => {
+    if (!data.startsWith('tidy-test;')) return false;
+    try {
+      const packet = JSON.parse(Buffer.from(data.slice('tidy-test;'.length), 'base64').toString());
+      if (packet.type === 'error') state.error = new Error(packet.message);
+      if (packet.type === 'frame' && state.rendering) state.error = new Error('Native frame fence arrived inside synchronized output');
+      if (packet.type !== 'journal' && packet.type !== 'diagnostic') state.nativeReceipts.set(`${packet.type}:${packet.id ?? 0}`, packet);
+    } catch (error) { state.error = error; }
+    state.nativeProgress.emit('progress');
+    return true;
   });
 }
 
@@ -114,6 +123,7 @@ export class PiTerminal {
     }));
     this.term = new Terminal({ cols: 100, rows: 80, scrollback: 3000, allowProposedApi: true });
     observeRenderFrames(this.term, this);
+    observeNativeReceipts(this.term, this);
     this.raw = [];
     this.pointerInputs = [];
     this.queue = Promise.resolve();
@@ -125,24 +135,33 @@ export class PiTerminal {
     if (tidyUi) args.push('-e', extension);
     args.push('--model', 'tidy-ui-offline/scripted', '--tui-mode', mode, ...flags);
     if (session) args.push('--session', session);
+    const observerPlan = join(this.output, 'native-observer.json');
+    writeFileSync(observerPlan, JSON.stringify(planTerminalObserver(inputs), null, 2));
     const env = childEnv(this.temp, {
       HOME: this.temp, USERPROFILE: this.temp,
       ...this.profile?.env, ...extraEnv,
       TERM: 'xterm-256color', COLORTERM: 'truecolor', LANG: 'C.UTF-8',
       PI_CODING_AGENT_DIR: this.agent, TIDY_UI_TEST_OUTPUT: this.output,
+      TIDY_UI_TEST_OBSERVER_PLAN: observerPlan,
       PI_OFFLINE: '1', PI_SKIP_VERSION_CHECK: '1', PI_TELEMETRY: '0',
       ...(this.profile ? { TIDY_UI_TEST_PROFILE: 'installed' } : {}),
     });
-    const command = [inputs.node.path, inputs.pi.cli, ...args];
+    this.codeCache = terminalCodeCache(this.temp);
+    env.NODE_COMPILE_CACHE = this.codeCache.node;
+    const command = [inputs.node.path, '--import', pathToFileURL(join(fixtures, 'terminal-preload.mjs')).href, inputs.pi.cli, ...args];
     this.child = spawn(python, ['-I', '-S', join(fixtures, 'pty_bridge.py'), '100', '80', this.work, ...command],
       { env, stdio: ['pipe', 'pipe', 'pipe'] });
-    this.child.on('error', (error) => { this.error = error; });
-    this.child.stdin.on('error', (error) => { if (!this.closing) this.error = error; });
+    this.child.on('error', (error) => { this.error = error; this.nativeProgress.emit('progress'); });
+    this.child.stdin.on('error', (error) => {
+      if (!this.closing) { this.error = error; this.nativeProgress.emit('progress'); }
+    });
     this.stderr = '';
     this.child.stderr.on('data', (data) => { this.stderr += data; });
-    this.child.on('exit', (code, signal) => { this.exited = { code, signal }; });
+    this.child.on('exit', (code, signal) => { this.exited = { code, signal }; this.nativeProgress.emit('progress'); });
+    this.child.on('close', () => { this.closed = true; this.nativeProgress.emit('progress'); });
     this.rl = createInterface({ input: this.child.stdout });
     this.rl.on('line', (line) => {
+      let forwardedData = false;
       try {
         const frame = JSON.parse(line);
         if (frame.error) this.error = new Error(frame.error);
@@ -151,14 +170,21 @@ export class PiTerminal {
           const data = Buffer.from(frame.data, 'base64');
           this.raw.push(data);
           this.lastOutput = Date.now();
-          this.queue = this.queue.then(() => new Promise((done) => this.term.write(data, done)));
+          // Native parsing is FIFO: the newest callback also drains all earlier chunks.
+          this.queue = new Promise((done) => this.term.write(data, done));
+          forwardedData = true;
         }
-        if (frame.exit !== undefined && !this.closing) this.error = new Error(`Pi exited: ${frame.exit}`);
+        if (frame.exit !== undefined) {
+          this.piExit = frame.exit;
+          if (!this.closing && frame.exit !== this.expectedPiExit) this.error = new Error(`Pi exited: ${frame.exit}`);
+        }
+        if (frame.shutdown) this.shutdown = frame.shutdown;
       } catch (error) { this.error = error; }
+      if (!forwardedData || this.error) this.nativeProgress.emit('progress');
     });
     // Let the terminal emulator answer native cursor/device queries, just as a terminal would.
     this.term.onData((data) => this.send(data));
-    writeFileSync(join(this.output, 'invocation.json'), JSON.stringify({ command, mode, work: this.work }, null, 2));
+    writeFileSync(join(this.output, 'invocation.json'), JSON.stringify({ command, mode, work: this.work, codeCache: this.codeCache }, null, 2));
   }
   send(data) {
     if (!this.closing && this.child.stdin.writable) {
@@ -178,26 +204,60 @@ export class PiTerminal {
     } catch (error) { if (error.code === 'ENOENT') return []; throw error; }
   }
   async event(type, count = 1) {
-    return until(() => this.events().filter((event) => event.type === type).length >= count, `${type} #${count}`);
+    return this.waitForProgress(() => this.events().filter((event) => event.type === type).length >= count, `${type} #${count}`);
   }
   async ready() {
     await this.event('start');
     assert.equal(this.events().find((event) => event.type === 'start').sharedContainer, true);
+    await this.nativeReceipt('ready');
     await this.settle();
   }
-  async settle(animated = false) {
-    if (animated) {
-      // A running Pi spinner deliberately never becomes idle. Sample after a render interval.
-      await sleep(220); this.health();
-    } else {
-      await until(() => { this.health(); return Date.now() - this.lastOutput >= 160; }, 'terminal idle');
-    }
+  waitForProgress(predicate, label) {
+    return new Promise((resolve, reject) => {
+      const cleanup = () => { clearTimeout(deadline); this.nativeProgress.off('progress', check); };
+      const check = () => {
+        try {
+          const value = predicate();
+          if (!value) return;
+          cleanup(); resolve(value);
+        } catch (error) { cleanup(); reject(error); }
+      };
+      const deadline = setTimeout(() => {
+        cleanup(); reject(new Error(`Timed out: ${label}; artifacts: ${this.output}`));
+      }, 12000);
+      this.nativeProgress.on('progress', check);
+      check();
+    });
+  }
+  async nativeReceipt(type, id = 0) {
+    const key = `${type}:${id}`;
+    return this.waitForProgress(() => {
+      this.health();
+      const packet = this.nativeReceipts.get(key);
+      if (packet) this.nativeReceipts.delete(key);
+      return packet;
+    }, `native ${key}`);
+  }
+  async nativeFence(id = ++this.nativeSequence, kind = 0) {
+    this.send(`\x1b[?997;${id};${kind}n`);
+    const receipt = await this.nativeReceipt('frame', id);
+    assert.ok(receipt.generation >= (this.nativeGeneration ?? 0), 'stale native renderer receipt');
+    this.nativeGeneration = receipt.generation;
     await this.queue;
+    return receipt;
+  }
+  async settle() { await this.nativeFence(); }
+  async observeAnimation() {
+    await sleep(220); this.health();
+    await this.nativeFence();
   }
   async command(command) {
     const offset = command === '/reload' ? this.raw.length : 0;
+    const id = ++this.nativeSequence;
+    this.send(`\x1b[?997;${id};1n`);
+    await this.nativeReceipt('armed', id);
     this.send(command + '\r');
-    await this.settle();
+    await this.nativeFence(id, 2);
     if (command === '/reload') await until(async () => {
       this.health(); const parsed = this.queue; await parsed;
       if (parsed !== this.queue || this.rendering) return false;
@@ -206,6 +266,17 @@ export class PiTerminal {
       const loading = output.lastIndexOf('Reloading');
       return loading >= 0 && output.lastIndexOf('Reloaded') > loading;
     }, 'interactive reload completion');
+  }
+  async waitForScreen(predicate, label) {
+    return until(async () => { await this.settle(); return predicate(this.screen()); }, label);
+  }
+  async clearDraft() {
+    const receipt = await this.nativeFence();
+    assert.equal(typeof receipt.clearAfter, 'number', 'native clear-key policy must be observable');
+    const remaining = receipt.clearAfter - Date.now();
+    if (remaining > 0) await sleep(remaining);
+    this.send('\x03');
+    await this.settle();
   }
   screen() {
     const buffer = this.term.buffer.active;
@@ -223,9 +294,11 @@ export class PiTerminal {
     return undefined;
   }
   async refreshTidyBounds() {
+    await this.settle();
     if (!this.observeMenuBounds) return;
     const count = this.events().filter(event => event.type === 'menu_bounds').length;
     this.send('\x1b\x07'); await this.event('menu_bounds', count + 1);
+    await this.settle();
     this.menuBounds = this.events().filter(event => event.type === 'menu_bounds').at(-1).bounds ?? undefined;
   }
   tidyRows() {
@@ -381,15 +454,18 @@ export class PiTerminal {
       }
     } finally { await this.closeTidyMenu(); }
   }
-  async capture(name, { animated = false } = {}) {
-    this.send(`/tidy-ui-dump ${name}\r`);
+  async capture(name, { sampleAnimation = false } = {}) {
+    await this.command(`/tidy-ui-dump ${name}`);
     const dump = await until(() => {
       this.health();
       try { return JSON.parse(readFileSync(join(this.output, `${name}.json`), 'utf8')); }
       catch (error) { if (error.code === 'ENOENT' || error instanceof SyntaxError) return false; throw error; }
     }, `live capture ${name}`);
-    await this.settle(animated);
     this.session = dump.session;
+    return this.captureCompleteScreen(name, dump, sampleAnimation);
+  }
+  async captureCompleteScreen(name, dump, sampleAnimation = false) {
+    if (sampleAnimation) await this.observeAnimation(); else await this.settle();
     return this.captureScreen(name, dump);
   }
   captureScreen(name, dump) {
@@ -416,22 +492,34 @@ export class PiTerminal {
       return !this.rendering && this.screen().some(line => line.includes(`TERMINAL_DONE_${scenario}`));
     }, `completed scenario frame: ${scenario}`);
   }
-  async resize(cols, rows = 80, animated = false) {
+  async resize(cols, rows = 80, sampleAnimation = false) {
     const id = ++this.resizeSequence;
     this.term.resize(cols, rows);
     this.child.stdin.write(JSON.stringify({ resize: [cols, rows], id }) + '\n');
-    await until(() => {
+    await this.waitForProgress(() => {
       this.health();
       return this.ptySize?.id === id && this.ptySize.width === cols && this.ptySize.height === rows;
     }, `PTY resize ${id}: ${cols}x${rows}`);
     // ioctl completion precedes Node's SIGWINCH/TTY refresh. Read the driver's
     // actual host observation, never infer dimensions from quiet output.
     // Identical sizes need no new resize event, but still require the fresh receipt above.
-    await until(() => {
+    await this.waitForProgress(() => {
       const size = this.events().findLast(event => event.type === 'terminal_size');
       return size?.width === cols && size.height === rows;
     }, `Pi geometry ${id}: ${cols}x${rows}`);
-    await this.settle(animated);
+    if (sampleAnimation) await this.observeAnimation(); else await this.settle();
+  }
+  async quit(input = '/quit\r') {
+    this.health();
+    this.expectedPiExit = 0;
+    this.send(input);
+    await this.waitForProgress(() => {
+      if (this.error) throw this.error;
+      return this.closed;
+    }, 'normal Pi exit');
+    await this.queue;
+    assert.equal(this.piExit, 0, 'normal quit requires the actual Pi exit receipt');
+    assert.deepEqual(this.exited, { code: 0, signal: null }, 'normal quit requires successful bridge closure');
   }
   async close() {
     if (this.closing) return;
@@ -442,9 +530,9 @@ export class PiTerminal {
     if (this.session && existsSync(this.session)) copyFileSync(this.session, join(this.output, 'session.jsonl'));
     if (existsSync(join(this.work, 'written.txt')))
       copyFileSync(join(this.work, 'written.txt'), join(this.output, 'written.txt'));
-    if (!this.exited) {
-      const done = once(this.child, 'exit');
-      this.child.stdin.end('{"stop":true}\n');
+    if (!this.closed) {
+      const done = once(this.child, 'close');
+      if (!this.exited) this.child.stdin.end('{"stop":true}\n');
       const timer = setTimeout(() => this.child.kill('SIGTERM'), 2500);
       let deadline;
       try { await Promise.race([done, new Promise((_, reject) => {
@@ -452,7 +540,11 @@ export class PiTerminal {
       })]); }
       finally { clearTimeout(timer); clearTimeout(deadline); }
     }
+    await this.queue;
+    writeFileSync(join(this.output, 'terminal.ansi'), Buffer.concat(this.raw));
+    if (this.shutdown) writeFileSync(join(this.output, 'shutdown.json'), JSON.stringify(this.shutdown));
     this.rl.close(); this.term.dispose();
+    if (this.error) throw this.error;
   }
   dispose() { rmSync(this.temp, { recursive: true, force: true }); }
 }

@@ -9,6 +9,7 @@ import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { childEnv, readInputs, toolPath } from '../scripts/test/context.mjs';
 import { selectSuite } from '../scripts/test/run.mjs';
+import { nativeTargets } from '../scripts/test/ci-scope.mjs';
 import { releaseRef, stampVersion } from '../scripts/release/version.mjs';
 import { assembleRelease, assetName, artifactName } from '../scripts/release/native-ci.mjs';
 import * as nativeCI from '../scripts/release/native-ci.mjs';
@@ -255,44 +256,30 @@ test('every executable workflow job has an explicit bounded timeout, including r
     }
   }
   assert.deepEqual(timeouts, {
-    'ci.yml/version': 5, 'ci.yml/extension': 10, 'ci.yml/terminal': 30, 'ci.yml/extension-package': 15,
+    'ci.yml/version': 5, 'ci.yml/scope': 5, 'ci.yml/scope-decision': 5, 'ci.yml/baseline': 10, 'ci.yml/affected': 30,
+    'ci.yml/extension': 10, 'ci.yml/terminal': 30, 'ci.yml/extension-package': 15,
     'occipital-npm-publish.yml/publish': 15, 'occipital-release.yml/publish': 10,
-    'occipital.yml/packaging-fixtures': 5, 'occipital.yml/build': 60,
+    'occipital.yml/targets': 5, 'occipital.yml/packaging-fixtures': 5, 'occipital.yml/build': 60,
   });
   const ci = await readFile(join(directory, 'ci.yml'), 'utf8');
   assert.match(ci, /- name: Unit, actual-SDK and GC regressions\n        timeout-minutes: 5\n/);
 });
 
-test('CI reserves the full terminal suite for extension release refs and keeps syntax CLI in ordinary runs', async () => {
+test('full compatibility owns the full terminal union; ordinary acceptance consumes affected scope', async () => {
   const ci = await readFile(join(repo, '.github/workflows/ci.yml'), 'utf8');
-  const terminal = ci.match(/^  terminal:\n([\s\S]*?)(?=^  \w[\w-]*:|$(?![\s\S]))/m)?.[1];
-  assert.ok(terminal);
-  assert.match(terminal, /^    needs: \[version, native\]$/m);
-  const jobCondition = terminal.match(/^    if: ([^\n]+)$/m)?.[1];
-  const full = terminal.match(/^      - name: Full physical CLI and replay \(extension release only\)\n        if: ([^\n]+)\n        run: node scripts\/test\/run\.mjs --inputs "\$RUNNER_TEMP\/terminal-inputs\/inputs\.json" --suite terminal --network-isolated$/m);
-  assert.ok(full, 'full terminal step needs its own release guard, not a release-only job');
-  assert.equal(full[1], "needs.version.outputs.product == 'pi-tidy-ui'");
-  assert.equal([...ci.matchAll(/\brun: .* --suite terminal --network-isolated$/gm)].length, 1, 'no unguarded duplicate full-suite invocation');
-  assert.match(terminal, /- name: Physical syntax CLI and replay using this commit's native artifact\n        run: .* --suite syntax-terminal --network-isolated/);
-  const enabled = (condition, ref) => {
-    const match = condition?.match(/^needs\.version\.outputs\.product (==|!=) '([^']+)'$/);
-    assert.ok(match, 'evaluate the actual workflow product comparison');
-    const same = (releaseRef(ref).product ?? '') === match[2];
-    return match[1] === '==' ? same : !same;
-  };
-  for (const [ref, syntax, complete] of [
-    ['refs/heads/main', true, false],
-    ['refs/heads/feature/ui', true, false],
-    ['refs/heads/pi-tidy-ui-v0.2.0', true, false],
-    ['refs/pull/1/merge', true, false],
-    ['refs/tags/pi-tidy-ui-v0.2.0', true, true],
-    ['refs/tags/pi-tidy-ui-v0.2.0-rc.1+build.2', true, true],
-    ['refs/tags/occipital-v0.1.2', false, false],
-  ]) {
-    const job = enabled(jobCondition, ref);
-    assert.equal(job, syntax, `${ref}: short syntax CLI eligibility`);
-    assert.equal(job && enabled(full[1], ref), complete, `${ref}: full terminal eligibility`);
-  }
+  const terminal = workflowJob(ci, 'terminal'), baseline = workflowJob(ci, 'baseline'), affected = workflowJob(ci, 'affected');
+  assert.match(terminal, /^    if: needs.scope.outputs.full == 'true' && needs.version.outputs.product != 'occipital'$/m);
+  assert.match(terminal, /--suite terminal --network-isolated/);
+  assert.match(terminal, /--suite syntax-terminal --network-isolated/);
+  assert.match(baseline, /^    needs: \[version, scope\]$/m, 'ordinary common checks cannot wait on native platforms');
+  assert.match(baseline, /feature\.mjs .*--features "\$FEATURES"/);
+  assert.match(baseline, /FEATURES:.*baselineFeatures/);
+  assert.match(affected, /needs.scope.outputs.status == 'ready'/);
+  assert.match(affected, /--features "\$FEATURES" --affected-only/);
+  assert.match(affected, /CHECK_TYPES: \$\{\{ matrix\.pi != '1\.0\.0' && needs\.version\.outputs\.product != 'occipital' \}\}/);
+  assert.match(affected, /if \[\[ "\$CHECK_TYPES" == true \]\]; then args\+=\(--check-types\); fi/);
+  assert.match(affected, /--affected-only "\$\{args\[@\]\}"/);
+  assert.match(affected, /matrix: \$\{\{ fromJSON\(needs.scope.outputs.profiles\) \}\}/);
 });
 
 test('CI retains the selected hidden-directory physical terminal failure captures', async () => {
@@ -366,8 +353,9 @@ test('CI routes both tag families, reuses the same-run native matrix, and publis
   const release = await readFile(join(repo, '.github/workflows/occipital-release.yml'), 'utf8');
   assert.match(ci, /tags: \['pi-tidy-ui-v\*', 'occipital-v\*'\]/);
   assert.match(ci, /uses: \.\/\.github\/workflows\/occipital\.yml/);
-  assert.match(ci, /release-occipital:[\s\S]*needs: \[version, native\][\s\S]*refs\/tags\/occipital-v[\s\S]*uses: \.\/\.github\/workflows\/occipital-release\.yml/);
-  for (const target of Object.keys(candidateTargets)) assert.ok(native.includes(`target: ${target}\n`), target);
+  assert.match(ci, /release-occipital:[\s\S]*needs: \[version, native, affected\][\s\S]*refs\/tags\/occipital-v[\s\S]*uses: \.\/\.github\/workflows\/occipital-release\.yml/);
+  assert.deepEqual(nativeTargets().map(value => value.target).sort(), Object.keys(candidateTargets).sort());
+  assert.match(native, /fromJSON\(needs.targets.outputs.matrix\)/);
   assert.match(native, /Stamp daemon before compilation[\s\S]*\['build','--release','--locked','--offline'/);
   assert.match(release, /actions\/download-artifact@v4/);
   assert.doesNotMatch(release, /run-id:|cargo build|npm publish/);
@@ -469,13 +457,16 @@ function workflowStep(source, name) {
   return section.split('\n      - ')[0];
 }
 
-test('ordinary native CI runs the same-commit clean consumer on six targets and both Nodes, including daemon tags', async () => {
+test('full native CI retains same-commit consumers on six targets and both Nodes, including daemon tags', async () => {
   const source = await readFile(join(repo, '.github/workflows/occipital.yml'), 'utf8'), build = workflowJob(source, 'build');
   assert.match(build, /^    runs-on: \$\{\{ matrix.runner \}\}$/m);
-  for (const target of Object.keys(candidateTargets)) assert.ok(build.includes(`target: ${target}\n`));
+  assert.match(source, /      targets:\n        type: string\n        default: all/);
+  assert.match(source, /      consumers:\n        type: boolean\n        default: true/);
+  assert.deepEqual(nativeTargets().map(value => value.target).sort(), Object.keys(candidateTargets).sort());
+  assert.match(build, /fromJSON\(needs.targets.outputs.matrix\)/);
   for (const version of ['22.19.0', '26.7.0']) {
     const step = workflowStep(build, `Same-commit clean consumer and actual helper on Node ${version}`);
-    assert.doesNotMatch(step, /^        if:/m, 'same-source acceptance must not disappear for daemon releases');
+    assert.match(step, /^        if: inputs.consumers \|\| startsWith\(inputs.release-ref, 'refs\/tags\/'\)$/m, 'host-only can omit consumers but release callers cannot');
     assert.match(step, /--archives --native-artifact "\$ARTIFACT"/);
     assert.match(step, /--suite native --files occipital-native.test.ts/);
     assert.match(step, /--suite consumer/);
@@ -508,25 +499,32 @@ test('published consumer routing is positive only for extension tags and negativ
   assert.doesNotMatch(await readFile(join(repo, 'Makefile'), 'utf8'), /test-installed:[\s\S]*?--suite published-consumer(?=[\s\S]*test-published:)/);
 });
 
-test('CI selected-host SDK/types/GC and terminal coverage use coherent prepared descriptors and mandatory current artifacts', async () => {
+test('CI uses coherent prepared descriptors, catalogue capabilities and current-source native artifacts', async () => {
   const source = await readFile(join(repo, '.github/workflows/ci.yml'), 'utf8');
   for (const name of ['extension', 'terminal']) {
     const job = workflowJob(source, name);
-    assert.match(job, /needs: \[version, native\]/);
+    assert.match(job, /needs: \[version, native, scope\]/);
     assert.match(job, /node: \['22.19.0', '26.7.0'\]/);
     assert.match(job, /pi: \['1.0.0', '1.2.0'\]/);
     assert.match(job, /prepare.mjs --pi-version "\$PI_VERSION"/);
     assert.match(job, /--native-artifact "\$GITHUB_WORKSPACE\/\.test-artifacts\/ci-native"/);
     assert.doesNotMatch(job, /node --(?:expose-gc|test)|OCCIPITAL_TEST_BIN|PI_TEST_CLI/);
   }
-  const extension = workflowJob(source, 'extension'), terminal = workflowJob(source, 'terminal');
+  const scope = workflowJob(source,'scope'), native = workflowJob(source,'native');
+  assert.match(scope,/pull_request.base.sha \|\| github.sha/);
+  assert.match(scope,/persist-credentials: false/);
+  assert.match(scope,/githubScope\(/);
+  assert.match(scope,/featurePlan/);
+  assert.doesNotMatch(source,/pull_request_target|secrets\./);
+  assert.match(native,/source-ref: \$\{\{ needs.scope.outputs.head \}\}/);
+  assert.match(native,/targets: \$\{\{ fromJSON\(needs.scope.outputs.scope\).platforms \}\}/);
+  assert.match(native,/consumers: \$\{\{ fromJSON\(needs.scope.outputs.scope\).consumers \}\}/);
+  const affected = workflowJob(source,'affected');
+  for (const capability of ['native','shared','integration']) assert.ok(affected.includes(`scope.capabilities.${capability}`));
+  const extension = workflowJob(source,'extension'), terminal = workflowJob(source,'terminal');
   assert.equal(selectSuite(readInputs(), 'unit').includes('integration-profile.test.mjs'), true);
-  const preparation = extension.match(/^          node scripts\/test\/prepare\.mjs[^\n]+/m)?.[0];
-  assert.ok(preparation, 'unit matrix requires explicit preparation');
-  assert.match(preparation, /--integration\b/, 'unit profile tests require the locked integration inputs');
   for (const suite of ['check','unit','native-release']) assert.match(extension, new RegExp(`--suite ${suite} --network-isolated`));
   assert.match(terminal, /--integration/); assert.match(terminal, /--shared-host "\$RUNNER_TEMP\/shared-host\/ck-subc"/);
-  assert.match(terminal, /--suite syntax-terminal --network-isolated/);
 });
 
 test('native execution has owned Cargo configuration and mandatory offline pinned toolchain without inherited build environment', async () => {
@@ -768,4 +766,26 @@ test('actual Windows CI checkout policy survives isolated Git configuration with
   assert.equal(await readFile(env.GIT_CONFIG_GLOBAL, 'utf8'), '', 'do not rewrite inherited global configuration');
   await writeFile(join(checkout, 'crates/occipital/Cargo.toml'), before[1].toString() + '# actual source edit\r\n');
   assert.match(status(), /crates\/occipital\/Cargo\.toml/, 'genuine native edits still fail strict commit-only admission');
+});
+
+test('ordinary CI caches only content-addressed npm inputs in the actual owned preparation root', async () => {
+  const ci = await readFile(join(repo, '.github/workflows/ci.yml'), 'utf8');
+  for (const name of ['baseline', 'affected']) {
+    const job = workflowJob(ci, name);
+    assert.match(job, /uses: actions\/cache@v4/);
+    assert.match(job, /path: \$\{\{ runner\.temp \}\}\/scoped-inputs\/environment\/cache\/npm\/_cacache/);
+    assert.doesNotMatch(job, /^\s+cache: npm$/m, 'ambient ~/.npm is not an input to the isolated preparer');
+    assert.match(job, /(?:--output "\$RUNNER_TEMP\/scoped-inputs"|process\.env\.RUNNER_TEMP \+ '\/scoped-inputs')/);
+  }
+});
+
+test('current-source full union checks out the exact approved HEAD rather than a PR merge revision', async () => {
+  const ci=await readFile(join(repo,'.github/workflows/ci.yml'),'utf8');
+  for(const name of ['extension','terminal']){
+    const job=workflowJob(ci,name),checkout=job.match(/^      - uses: actions\/checkout@v4(?:\n(?!      - )[^\n]*)*/m)?.[0];
+    assert.ok(checkout,`${name}: explicit checkout configuration`);
+    assert.match(checkout,/          ref: \$\{\{ needs\.scope\.outputs\.head \}\}/,`${name}: current-source union must not silently switch to a synthetic merge`);
+    assert.match(checkout,/          fetch-depth: 0/);
+  }
+  assert.match(workflowJob(ci,'native'),/source-ref: \$\{\{ needs\.scope\.outputs\.head \}\}/);
 });

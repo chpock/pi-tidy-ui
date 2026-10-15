@@ -82,3 +82,25 @@ export function validateHost(inputs, runtime = true) {
     if (manifest.name !== entry.name || manifest.version !== entry.version || digest(readFileSync(entry.path)) !== entry.sha256) throw new Error('Prepared Pi host graph changed');
   }
 }
+
+export function validateRequirements(inputs, requirements) {
+  const env = {};
+  for (const requirement of requirements) {
+    if (requirement === 'native') env.OCCIPITAL_TEST_BIN = validateNative(inputs).path;
+    else if (requirement === 'shared') {
+      const host = inputs.sharedHost;
+      if (!host || !isAbsolute(host.path)) throw new Error('Selected shared tests require the prepared --shared-host input');
+      if (digest(readFileSync(host.path)) !== host.sha256) throw new Error('Prepared shared host changed');
+      env.OCCIPITAL_TEST_SHARED_HOST = host.path;
+    } else if (requirement === 'integration') {
+      const profile = inputs.integration;
+      if (!profile || !isAbsolute(profile.root) || !isAbsolute(profile.manifest)) throw new Error('Selected profile tests require the prepared locked integration profile');
+      if (digest(readFileSync(join(profile.root, 'package-lock.json'))) !== profile.lockSha256) throw new Error('Prepared integration lock changed');
+    } else if (requirement === 'registry') {
+      if (!inputs.registry) throw new Error('Selected consumer tests require prepared registry archives');
+    } else if (requirement === 'rust') {
+      if (!inputs.rust) throw new Error('Selected Rust tests require the prepared pinned Rust toolchain');
+    } else throw new Error('Unknown test requirement: ' + requirement);
+  }
+  return env;
+}

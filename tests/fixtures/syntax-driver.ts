@@ -1,6 +1,7 @@
 // Copied with the source into a real-version fixture package; only controlled helper bytes are seeded.
 import { getAgentDir, type ExtensionAPI, type ExtensionContext } from '@earendil-works/pi-coding-agent';
-import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { createEventRecorder } from './terminal-output.ts';
 import { copyFile, mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { setTimeout as pause } from 'node:timers/promises';
@@ -69,7 +70,7 @@ export default function syntaxDriver(pi: ExtensionAPI) {
     return { node: process.version, controller, counts: { ...counts }, pendingHeldReplies, client: currentClient, broker: brokerStats(),
       source: current?.sources.stats(), transports: transports.map(t => t.stats()), sharedTransports: sharedTransports.map(t => t.stats()) };
   };
-  const record = (event: object) => appendFileSync(join(output, 'events.jsonl'), JSON.stringify(event) + '\n');
+  const record = createEventRecorder(output);
   const uiNotices = new Map<ExtensionContext['ui'], ExtensionContext['ui']['notify']>();
   pi.on('session_start', (_event, ctx) => {
     if (process.env.TIDY_UI_TEST_THEME_PREVIEW === '1') {

@@ -1,5 +1,4 @@
-import { appendFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { createEventRecorder } from './terminal-output.ts';
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import type { TUI } from '@earendil-works/pi-tui';
 import { debugLoggingDiagnostics } from '../../src/index.ts';
@@ -13,7 +12,7 @@ export default function loggingDriver(pi: ExtensionAPI) {
   else presentationDriver(pi);
   const output = process.env.TIDY_UI_TEST_OUTPUT!;
   let tui: TUI | undefined, sequence = 0, pending = 0;
-  const record = (event: unknown) => appendFileSync(join(output, 'events.jsonl'), JSON.stringify(event) + '\n');
+  const record = createEventRecorder(output);
   pi.on('session_start', (_event, ctx) => {
     ctx.ui.setWidget('logging-test-probe', live => {
       tui = live;

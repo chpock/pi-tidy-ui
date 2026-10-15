@@ -5,6 +5,7 @@ import { matchesKey, truncateToWidth, type TuiMouseEvent } from "@earendil-works
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { gitDiagnostics } from "../../src/git-branch.ts";
+import { writeDiagnosticJson } from './terminal-output.ts';
 
 export default function foreignEditorExtension(pi: ExtensionAPI) {
   const output = process.env.TIDY_UI_TEST_OUTPUT!;
@@ -75,7 +76,7 @@ export default function foreignEditorExtension(pi: ExtensionAPI) {
       if (tui.children.length !== 7) throw new Error("Native managed layout changed; update the integration contract");
       const aboveRows = tui.children[3].render(width), belowRows = tui.children[5].render(width);
       const nativeStatusRows = tui.children[2].render(width);
-      writeFileSync(join(output, `${name}.json`), JSON.stringify({ width, rows, aboveRows, belowRows, nativeStatusRows, embedWorkingStatus,
+      writeDiagnosticJson(output, name, { width, rows, aboveRows, belowRows, nativeStatusRows, embedWorkingStatus,
         git: gitDiagnostics(), footerRows: tui.children[6].render(width), footerOwner: tui.children[6].children[0]?.constructor?.name,
         before, after: state(editor), identity, factoryOwned: !!factory && ctx.ui.getEditorComponent() === factory,
         custom: editor instanceof ForeignEditor, mode: editor instanceof ForeignEditor ? editor.mode : undefined,
@@ -84,7 +85,7 @@ export default function foreignEditorExtension(pi: ExtensionAPI) {
           editor.handleInput === ForeignEditor.prototype.handleInput && editor.handleMouse === ForeignEditor.prototype.handleMouse,
         padding: editor.getPaddingX(), menu: editor.isShowingAutocomplete(), idle: ctx.isIdle(),
         session: ctx.sessionManager.getSessionFile(),
-      }, null, 2));
+      }, 2);
       tui.requestRender();
     },
   });

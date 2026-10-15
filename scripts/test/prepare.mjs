@@ -1,11 +1,11 @@
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, readlinkSync, lstatSync, rmdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { delimiter, dirname, isAbsolute, join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import { fileURLToPath } from 'node:url';
-import { childEnv, digest, validateNative } from './context.mjs';
+import { childEnv, digest, readInputs, validateHost, validateNative } from './context.mjs';
 
 const project = resolve(import.meta.dirname, '../..');
 const json = path => JSON.parse(readFileSync(path, 'utf8'));
@@ -126,7 +126,67 @@ export function validateNeutralRunRoot(root) {
   }
 }
 
+export function materializeDependencies(source, destination) {
+  rmSync(destination, { recursive: true, force: true });
+  cpSync(source, destination, { recursive: true, dereference: false, verbatimSymlinks: true });
+}
+
+export function dependencyIdentity(root) {
+  const hash = createHash('sha256'), boundary = realpathSync(root) + (process.platform === 'win32' ? '\\' : '/');
+  const visit = (directory, relative = '') => {
+    for (const name of readdirSync(directory).sort()) {
+      const path = join(directory, name), key = relative + name, info = lstatSync(path);
+      if (info.isSymbolicLink()) {
+        if (!realpathSync(path).startsWith(boundary)) throw new Error('Dependency link escapes its owned host graph');
+        hash.update('link\0' + key + '\0' + readlinkSync(path) + '\0');
+      }
+      else if (info.isDirectory()) { hash.update('dir\0' + key + '\0'); visit(path, key + '/'); }
+      else if (info.isFile()) hash.update('file\0' + key + '\0' + (info.mode & 0o111) + '\0').update(readFileSync(path)).update('\0');
+      else throw new Error('Unexpected dependency input type');
+    }
+  };
+  visit(root); return hash.digest('hex');
+}
+
+export function refreshInputs(inputPath) {
+  const started = performance.now(), inputs = readInputs(inputPath), seal = inputs.install;
+  process.umask(0o077);
+  if (!seal) throw new Error('Source refresh requires a sealed owned host graph; prepare this profile once');
+  validateHost(inputs, false);
+  validateNeutralRunRoot(inputs.runRoot);
+  const root = inputs.source.root, tree = realpathSync(inputs.pi.root);
+  if (tree !== join(realpathSync(inputs.runRoot), 'project') || tree === realpathSync(root)) throw new Error('Source refresh requires its neutral owned runtime snapshot');
+  if (seal.platform !== process.platform || seal.arch !== process.arch || seal.manifest !== digest(readFileSync(join(root, 'package.json'))) || seal.lock !== digest(readFileSync(join(root, 'package-lock.json')))) throw new Error('Source refresh host/dependency inputs changed; run test:prepare');
+  if (dependencyIdentity(join(tree, 'node_modules')) !== seal.modules) throw new Error('Owned host dependency bytes changed; run test:prepare');
+  const environment = childEnv(join(inputs.preparation, 'refresh-environment'), {}, inputs);
+  if (execFileSync(inputs.node.path, ['--version'], { env: environment, encoding: 'utf8' }).trim() !== inputs.node.version) throw new Error('Source refresh Node runtime changed');
+  const source = sourceIdentity(root, inputs.tools, environment), previous = json(join(inputs.runRoot, 'source-files.json'));
+  for (const name of previous) if (typeof name !== 'string' || isAbsolute(name) || name.split(/[\\/\\\\]/).includes('..') || /^(?:node_modules)(?:[\\/\\\\]|$)/.test(name)) throw new Error('Invalid owned source inventory');
+  let copies = 0;
+  if (source.commit !== inputs.source.commit || source.tree !== inputs.source.tree ||
+      previous.length !== source.files.length || previous.some((name, index) => source.files[index] !== name)) {
+    // Retain attempted additions too: a failed copy must not hide them from the next cleanup.
+    save(join(inputs.runRoot, 'source-files.json'), [...new Set([...previous, ...source.files])]);
+    for (const name of previous) {
+      rmSync(join(tree, name), { force: true });
+      for (let directory = dirname(join(tree, name)); directory !== tree; directory = dirname(directory)) {
+        try { rmdirSync(directory); } catch (error) { if (error.code === 'ENOENT') continue; if (error.code === 'ENOTEMPTY') break; throw error; }
+      }
+    }
+    for (const name of source.files) { mkdirSync(dirname(join(tree, name)), { recursive: true }); cpSync(join(root, name), join(tree, name), { dereference: true }); copies++; }
+  }
+  if (snapshotIdentity(tree, source.files).tree !== source.tree) throw new Error('Refreshed source snapshot differs from tested source');
+  const { files, ...identity } = source;
+  inputs.source = identity;
+  inputs.preparationStats = { kind: 'refresh', elapsedMs: performance.now() - started, dependencyInstalls: 0, dependencyCopies: 0, sourceCopies: copies };
+  save(join(inputs.runRoot, 'source-files.json'), files);
+  save(inputPath, inputs);
+  return inputs;
+}
+
 export async function prepare(options) {
+  if (options['refresh-inputs']) return refreshInputs(resolve(options['refresh-inputs']));
+  const started = performance.now();
   process.umask(0o077);
   const root = resolve(options.root ?? project), output = resolve(options.output ?? join(root, '.test-artifacts/harness', options['pi-version'] ?? '1.0.0'));
   const version = options['pi-version'] ?? json(join(root, 'package.json')).devDependencies['@earendil-works/pi-coding-agent'];
@@ -151,7 +211,7 @@ export async function prepare(options) {
     const tree = join(inputs.runRoot, 'project');
     const materialized = materializeSource(root, tree, source.files);
     if (materialized.tree !== source.tree) throw new Error('Materialized source snapshot differs from the tested source');
-    save(join(output, 'source-files.json'), source.files);
+    save(join(inputs.runRoot, 'source-files.json'), source.files);
     const { files, ...identity } = source; inputs.source = identity;
     const deps = join(output, 'dependencies'); mkdirSync(deps, { recursive: true });
     const manifest = json(join(root, 'package.json'));
@@ -176,8 +236,7 @@ export async function prepare(options) {
       writeFileSync(join(deps, 'package.json'), text);
     }
     run(inputs, deps, node, [tools.npm, existsSync(join(deps, 'package-lock.json')) ? 'ci' : 'install', '--ignore-scripts', '--no-audit', '--no-fund'], { npm_config_offline: options.offline ? 'true' : 'false' });
-    rmSync(join(tree, 'node_modules'), { recursive: true, force: true });
-    cpSync(join(deps, 'node_modules'), join(tree, 'node_modules'), { recursive: true, dereference: false });
+    materializeDependencies(join(deps, 'node_modules'), join(tree, 'node_modules'));
     const codingRoot = join(tree, 'node_modules/@earendil-works/pi-coding-agent');
     const coding = json(join(codingRoot, 'package.json'));
     const cli = typeof coding.bin === 'string' ? coding.bin : coding.bin.pi;
@@ -267,6 +326,9 @@ export async function prepare(options) {
       }
       save(join(output, 'registry.json'), inputs.registry);
     }
+    inputs.install = { manifest: digest(readFileSync(join(root, 'package.json'))), lock: digest(readFileSync(join(root, 'package-lock.json'))),
+      platform: process.platform, arch: process.arch, modules: dependencyIdentity(join(tree, 'node_modules')) };
+    inputs.preparationStats = { kind: 'prepare', elapsedMs: performance.now() - started, dependencyInstalls: 1, dependencyCopies: 1, sourceCopies: source.files.length };
     const path = join(output, 'inputs.json'); save(path, inputs);
     console.log(path);
     return { ...inputs, inputsPath: path };
@@ -278,7 +340,7 @@ export async function prepare(options) {
 
 if (process.argv[1] && existsSync(process.argv[1]) && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const { values } = parseArgs({ options: {
-    root: { type: 'string' }, 'run-root': { type: 'string' }, output: { type: 'string' }, 'pi-version': { type: 'string' }, node: { type: 'string' }, tools: { type: 'string' },
+    'refresh-inputs': { type: 'string' }, root: { type: 'string' }, 'run-root': { type: 'string' }, output: { type: 'string' }, 'pi-version': { type: 'string' }, node: { type: 'string' }, tools: { type: 'string' },
     'system-root': { type: 'string' }, offline: { type: 'boolean' }, 'npm-cache': { type: 'string' }, 'registry-inputs': { type: 'string' }, 'cargo-cache': { type: 'string' }, 'rust-environment': { type: 'string' }, archives: { type: 'boolean' }, integration: { type: 'boolean' }, 'native-inputs': { type: 'string' }, 'native-artifact': { type: 'string' }, 'build-native': { type: 'boolean' }, 'rust-root': { type: 'string' }, 'shared-host': { type: 'string' },
   } });
   await prepare(values);

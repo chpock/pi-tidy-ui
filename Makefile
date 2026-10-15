@@ -4,6 +4,7 @@ SHELL := sh
 NODE ?= node
 NPM ?= npm
 INPUTS ?=
+FEATURES ?=
 PI_VERSION ?= 1.0.0
 PREPARE_OUTPUT ?= $(CURDIR)/.test-artifacts/harness/$(PI_VERSION)
 RUST_ROOT ?=
@@ -48,7 +49,7 @@ $(RUST_ENV) "$(NODE)" --input-type=module -e ' \
 ' -- "$(1)" "$(RUST_TARGET)" "$(CARGO)" "$(NATIVE_BIN)"
 endef
 
-.PHONY: help deps build native-build native-toolchain inputs-check check check-native test test-gc test-focus test-rust test-rust-harness test-native test-syntax test-terminal test-release test-installed test-published pack-check native-smoke _native-lint _gnu-native
+.PHONY: help deps build native-build native-toolchain inputs-check check check-native test test-gc test-focus test-feature test-product test-rust test-rust-harness test-native test-syntax test-terminal test-release test-installed test-published pack-check native-smoke _native-lint _gnu-native
 
 help:
 	@printf '%-22s %s\n' \
@@ -59,6 +60,8 @@ help:
 	  'test' 'Required same-source unit/SDK/GC coverage from prepared INPUTS' \
 	  'test-gc' 'Alias for the same mandatory GC-enabled unit suite' \
 	  'test-focus' 'Comma-separated TEST_FILES basenames and optional TEST_PATTERN' \
+	  'test-feature' 'Types + product baseline + FEATURES comma-list and actual affected CLI; refresh owned source' \
+	  'test-product' 'Common product SDK/logic/GC without native/shared/profile inputs' \
 	  'test-rust' 'Prepared offline workspace tests and doctests' \
 	  'test-rust-harness' 'Actual pinned Cargo ancestor-configuration isolation control' \
 	  'test-native' 'Required same-source native helper controls' \
@@ -109,6 +112,12 @@ test test-gc: inputs-check
 test-focus: inputs-check
 	@test -n "$(TEST_FILES)" || { printf 'Set comma-separated TEST_FILES basenames; TEST_PATTERN is optional.\n' >&2; exit 1; }
 	$(RUN) --suite unit --files "$$TEST_FILES" $(if $(strip $(TEST_PATTERN)),--pattern "$$TEST_PATTERN",)
+
+test-feature: inputs-check
+	"$(NODE)" scripts/test/feature.mjs --inputs "$(INPUTS)" --features "$(FEATURES)" --refresh
+
+test-product: inputs-check
+	$(RUN) --suite product
 
 test-rust: inputs-check
 	$(RUN) --suite rust

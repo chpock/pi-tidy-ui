@@ -1,7 +1,8 @@
 // Real-CLI color/state observations. All production code shares one module graph.
 import { CustomEditor, type ExtensionAPI, type RegisteredCommand } from "@earendil-works/pi-coding-agent";
 import { colorToHex } from "@earendil-works/pi-tui";
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
+import { writeDiagnosticJson } from './terminal-output.ts';
 import { join } from "node:path";
 
 export default async function colorDriver(pi: ExtensionAPI) {
@@ -50,13 +51,13 @@ export default async function colorDriver(pi: ExtensionAPI) {
       } else if (action === "warm") for (let frame = 0; frame < 50; frame++) tui.render(width);
       else if (action !== "snapshot") throw new Error("Unknown color observation action");
       const rows = tui.render(width);
-      writeFileSync(join(output, `${name}.json`), JSON.stringify({ before, after: state(), rows,
+      writeDiagnosticJson(output, name, { before, after: state(), rows,
         editorRows: editor?.render(width), belowRows: tui.children[5]?.render(width),
         theme: ctx.ui.theme.name, sourcePath: ctx.ui.theme.sourcePath, configured: pi.getSettings().theme,
         automatic: appearanceTracking(tui), diagnostic: diagnostics?.(),
         report, publicPrototypesUnchanged: query === Object.getPrototypeOf(tui).queryTerminalColors && notify === Object.getPrototypeOf(tui).setTerminalColorSchemeNotifications && scheme === Object.getPrototypeOf(tui).onTerminalColorSchemeChange,
         nativeBackground: colorToHex(ctx.ui.theme.colors.userMessageBg), nativeForeground: colorToHex(ctx.ui.theme.colors.text),
-        session: ctx.sessionManager.getSessionFile() }));
+        session: ctx.sessionManager.getSessionFile() });
     },
   });
 }

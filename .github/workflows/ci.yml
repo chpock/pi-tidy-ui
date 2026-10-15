@@ -7,6 +7,34 @@ on:
   pull_request:
   workflow_dispatch:
     inputs:
+      full:
+        description: 'Full supported compatibility and six-platform acceptance (cannot narrow releases)'
+        type: boolean
+        default: true
+      add-features:
+        description: 'Additive comma-separated contract groups'
+        type: string
+      scope-head:
+        description: 'Exact tested HEAD for authorized manual feature scope'
+        type: string
+      base-sha:
+        description: 'Exact base commit for manual feature scope'
+        type: string
+      features:
+        description: 'Reviewed manual feature groups (full=false only)'
+        type: string
+      rationale:
+        description: 'Reviewed contract rationale for manual feature scope'
+        type: string
+      compatibility:
+        description: 'Add affected Pi/Node profiles; never subtract conservative obligations'
+        type: choice
+        default: baseline
+        options: [baseline, pi, node, all]
+      execute-conservative:
+        description: 'Authorize the conservative union with a budget exception'
+        type: boolean
+        default: false
       clean-native-build:
         description: 'Build every native target without restoring Cargo outputs (reproducibility control)'
         type: boolean
@@ -31,6 +59,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           # The nearest daemon version comes from ancestry, not registry/latest.
           fetch-depth: 0
       - uses: actions/setup-node@v4
@@ -43,17 +72,214 @@ jobs:
       - name: Validate workflows
         uses: docker://rhysd/actionlint:1.7.12
 
+  scope:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      scope: ${{ steps.scope.outputs.scope }}
+      status: ${{ steps.scope.outputs.status }}
+      full: ${{ steps.scope.outputs.full }}
+      head: ${{ steps.scope.outputs.head }}
+      features: ${{ steps.scope.outputs.features }}
+      profiles: ${{ steps.scope.outputs.profiles }}
+    steps:
+      # For PR metadata, execute only the trusted base router, never PR code.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.19.0'
+      - name: Fetch diff objects without executing changed code
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before || inputs.base-sha }}
+        run: |
+          git fetch --no-tags origin "$HEAD_SHA"
+          if [[ -n "$BASE_SHA" && "$BASE_SHA" != 0000000000000000000000000000000000000000 ]]; then git fetch --no-tags origin "$BASE_SHA"; fi
+      - uses: actions/github-script@v7
+        id: scope
+        env:
+          SCOPE_INPUTS: ${{ toJSON(inputs) }}
+        with:
+          script: |
+            const {githubScope} = await import(`${process.env.GITHUB_WORKSPACE}/scripts/test/ci-scope.mjs`);
+            const {featurePlan} = await import(`${process.env.GITHUB_WORKSPACE}/scripts/test/catalog.mjs`);
+            const {writeFileSync} = await import('node:fs');
+            const result = await githubScope({api:(route,params)=>github.request(route,params),eventName:context.eventName,payload:context.payload,ref:context.ref,commit:context.sha,actor:context.actor,inputs:JSON.parse(process.env.SCOPE_INPUTS),featurePlan});
+            writeFileSync('ci-scope.json',JSON.stringify(result,null,2) + '\n');
+            core.setOutput('scope',JSON.stringify(result));
+            for (const key of ['status','full','head']) core.setOutput(key,String(result[key]));
+            core.setOutput('features',result.features.join(','));
+            core.setOutput('profiles',JSON.stringify({include:result.affectedProfiles}));
+            await core.summary.addHeading('Contract scope').addCodeBlock(JSON.stringify(result,null,2),'json').write();
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ci-scope
+          path: ci-scope.json
+          if-no-files-found: error
+
+  scope-decision:
+    needs: scope
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Require a resolved scope before expensive acceptance
+        env:
+          STATUS: ${{ needs.scope.outputs.status }}
+        run: test "$STATUS" = ready
+
+  baseline:
+    needs: [version, scope]
+    if: needs.scope.outputs.full != 'true' && needs.version.outputs.product != 'occipital'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.scope.outputs.head }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.19.0'
+      - uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/scoped-inputs/environment/cache/npm/_cacache
+          key: hermetic-npm-inputs-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('package-lock.json') }}
+      - name: Prepare enforced Linux network isolation
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap
+          if ! /usr/bin/bwrap --unshare-user --unshare-net --ro-bind / / -- /usr/bin/true; then
+            sudo tee /etc/apparmor.d/tidy-test-bwrap >/dev/null <<'PROFILE'
+          abi <abi/4.0>,
+          include <tunables/global>
+          profile tidy-test-bwrap /usr/bin/bwrap flags=(unconfined) {
+            userns,
+          }
+          PROFILE
+            sudo apparmor_parser -r /etc/apparmor.d/tidy-test-bwrap
+          fi
+          /usr/bin/bwrap --unshare-user --unshare-net --ro-bind / / -- /usr/bin/true
+      - name: Prepare only baseline capabilities
+        run: node scripts/test/prepare.mjs --pi-version 1.0.0 --output "$RUNNER_TEMP/scoped-inputs"
+      - name: Types, product SDK and physical smoke without native dependencies
+        env:
+          FEATURES: ${{ join(fromJSON(needs.scope.outputs.scope).baselineFeatures, ',') }}
+        run: node scripts/test/feature.mjs --inputs "$RUNNER_TEMP/scoped-inputs/inputs.json" --features "$FEATURES" --output "$RUNNER_TEMP/baseline-receipts" --network-isolated
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: baseline-receipts
+          path: ${{ runner.temp }}/baseline-receipts/*.json
+          if-no-files-found: ignore
+
+  affected:
+    needs: [version, scope, native]
+    if: >-
+      always() && needs.version.result == 'success' && needs.scope.result == 'success' &&
+      needs.scope.outputs.status == 'ready' && fromJSON(needs.scope.outputs.scope).runAffected &&
+      (needs.native.result == 'success' || needs.native.result == 'skipped')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.scope.outputs.profiles) }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.scope.outputs.head }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      - uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/scoped-inputs/environment/cache/npm/_cacache
+          key: hermetic-npm-inputs-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('package-lock.json') }}
+      - uses: actions/download-artifact@v4
+        if: fromJSON(needs.scope.outputs.scope).capabilities.native
+        with:
+          name: occipital-v${{ needs.version.outputs.daemon_version }}-linux-x64-gnu
+          path: .test-artifacts/ci-native
+      - name: Admit executable mode for selected current-source helper
+        if: fromJSON(needs.scope.outputs.scope).capabilities.native
+        run: chmod +x .test-artifacts/ci-native/packages/linux-x64-gnu/occipital
+      - name: Prepare enforced Linux network isolation
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap
+          if ! /usr/bin/bwrap --unshare-user --unshare-net --ro-bind / / -- /usr/bin/true; then
+            sudo tee /etc/apparmor.d/tidy-test-bwrap >/dev/null <<'PROFILE'
+          abi <abi/4.0>,
+          include <tunables/global>
+          profile tidy-test-bwrap /usr/bin/bwrap flags=(unconfined) {
+            userns,
+          }
+          PROFILE
+            sudo apparmor_parser -r /etc/apparmor.d/tidy-test-bwrap
+          fi
+          /usr/bin/bwrap --unshare-user --unshare-net --ro-bind / / -- /usr/bin/true
+      - name: Prepare fixed isolated Subconscious host prerequisite
+        if: fromJSON(needs.scope.outputs.scope).capabilities.shared
+        run: |
+          mkdir -p "$RUNNER_TEMP/shared-host"
+          curl --fail --location --output "$RUNNER_TEMP/shared-host/host.zip" \
+            https://github.com/cortexkit/subconscious/releases/download/subc-core-v0.20.83/ck-subc-linux-x64.zip
+          printf '%s  %s\n' c905fd8c5eba045c38fb61dd0c6c0ffc8254ae2cb0be50ef1017cde5470e62c4 "$RUNNER_TEMP/shared-host/host.zip" | sha256sum --check
+          unzip -j "$RUNNER_TEMP/shared-host/host.zip" ck-subc -d "$RUNNER_TEMP/shared-host"
+          chmod 700 "$RUNNER_TEMP/shared-host/ck-subc"
+      - name: Prepare selected capabilities from the scope record
+        env:
+          SCOPE: ${{ needs.scope.outputs.scope }}
+          PI_VERSION: ${{ matrix.pi }}
+        run: |
+          node --input-type=module <<'JS'
+          import {spawnSync} from 'node:child_process';
+          const scope = JSON.parse(process.env.SCOPE), args = ['scripts/test/prepare.mjs','--pi-version',process.env.PI_VERSION,'--output',process.env.RUNNER_TEMP + '/scoped-inputs'];
+          if (scope.capabilities.native) args.push('--native-artifact',process.env.GITHUB_WORKSPACE + '/.test-artifacts/ci-native');
+          if (scope.capabilities.shared) args.push('--shared-host',process.env.RUNNER_TEMP + '/shared-host/ck-subc');
+          if (scope.capabilities.integration) args.push('--integration');
+          // Registry/Rust/platform obligations run in the reusable native workflow.
+          const result = spawnSync(process.execPath,args,{stdio:'inherit'}); process.exit(result.status ?? 1);
+          JS
+      - name: Affected contracts on required host and runtime profiles
+        env:
+          FEATURES: ${{ needs.scope.outputs.features }}
+          CHECK_TYPES: ${{ matrix.pi != '1.0.0' && needs.version.outputs.product != 'occipital' }}
+        run: |
+          args=()
+          if [[ "$CHECK_TYPES" == true ]]; then args+=(--check-types); fi
+          node scripts/test/feature.mjs --inputs "$RUNNER_TEMP/scoped-inputs/inputs.json" --features "$FEATURES" --affected-only "${args[@]}" --output "$RUNNER_TEMP/affected-receipts" --network-isolated
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: affected-node-${{ matrix.node }}-pi-${{ matrix.pi }}
+          path: ${{ runner.temp }}/affected-receipts/*.json
+          if-no-files-found: ignore
+
   native:
-    needs: version
+    needs: [version, scope]
+    if: needs.scope.outputs.status == 'ready' && fromJSON(needs.scope.outputs.scope).capabilities.native
     uses: ./.github/workflows/occipital.yml
     with:
       release-ref: ${{ github.ref }}
       version: ${{ needs.version.outputs.daemon_version }}
       clean-build: ${{ inputs.clean-native-build || false }}
+      source-ref: ${{ needs.scope.outputs.head }}
+      targets: ${{ fromJSON(needs.scope.outputs.scope).platforms }}
+      consumers: ${{ fromJSON(needs.scope.outputs.scope).consumers }}
 
   extension:
-    needs: [version, native]
-    if: needs.version.outputs.product != 'occipital'
+    needs: [version, native, scope]
+    if: needs.scope.outputs.full == 'true' && needs.version.outputs.product != 'occipital'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     strategy:
@@ -63,6 +289,10 @@ jobs:
         pi: ['1.0.0', '1.2.0']
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.scope.outputs.head }}
+          fetch-depth: 0
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node }}
@@ -116,8 +346,8 @@ jobs:
           if-no-files-found: error
 
   terminal:
-    needs: [version, native]
-    if: needs.version.outputs.product != 'occipital'
+    needs: [version, native, scope]
+    if: needs.scope.outputs.full == 'true' && needs.version.outputs.product != 'occipital'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     strategy:
@@ -127,6 +357,10 @@ jobs:
         pi: ['1.0.0', '1.2.0']
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.scope.outputs.head }}
+          fetch-depth: 0
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node }}
@@ -166,8 +400,7 @@ jobs:
           node scripts/test/prepare.mjs --pi-version "$PI_VERSION" --integration \
             --native-artifact "$GITHUB_WORKSPACE/.test-artifacts/ci-native" \
             --shared-host "$RUNNER_TEMP/shared-host/ck-subc" --output "$RUNNER_TEMP/terminal-inputs"
-      - name: Full physical CLI and replay (extension release only)
-        if: needs.version.outputs.product == 'pi-tidy-ui'
+      - name: Full physical CLI and replay (full compatibility or extension release)
         run: node scripts/test/run.mjs --inputs "$RUNNER_TEMP/terminal-inputs/inputs.json" --suite terminal --network-isolated
       - name: Physical syntax CLI and replay using this commit's native artifact
         run: node scripts/test/run.mjs --inputs "$RUNNER_TEMP/terminal-inputs/inputs.json" --suite syntax-terminal --network-isolated
@@ -196,7 +429,7 @@ jobs:
           if-no-files-found: ignore
 
   release-occipital:
-    needs: [version, native]
+    needs: [version, native, affected]
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/occipital-v')
     permissions:
       contents: write

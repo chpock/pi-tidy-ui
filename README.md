@@ -129,17 +129,18 @@ The extension is inactive in print, JSON, and RPC modes. Component restyling app
 
 ## Development
 
+For ordinary feature work, prepare one selected Pi graph and run the affected contracts (replace `footer` with your feature):
+
 ```sh
-make deps
-make check
-make test
+npm run test:prepare -- --pi-version 1.0.0
+npm run test:feature -- --features footer --refresh
 # Optional local syntax helper, copied beside the extension:
 make build
 ```
 
-`make` lists shortcuts and performs no work by default. Useful modes include `make test-gc`, `make test-focus TEST_FILES='tests/unit.test.ts' TEST_PATTERN='^bash timeout'`, `make test-release` and `make test-syntax`. The latter requires an existing helper; `make build` needs the pinned Rust toolchain. npm commands remain available. See [Make shortcuts](docs/testing.md#make-shortcuts) for scopes, requirements and networked checks.
+`make` lists shortcuts and performs no work by default. Useful modes include `make test-gc`, `make test-focus TEST_FILES='bash.sdk.test.ts' TEST_PATTERN='^bash timeout'`, `make test-release` and `make test-syntax`. The latter requires an existing helper; `make build` needs the pinned Rust toolchain. npm commands remain available. See [Make shortcuts](docs/testing.md#make-shortcuts) for scopes, requirements and networked checks.
 
-Reserve the full `npm run test:terminal` for final UI/integration verification, not each edit or commit. See the [testing cadence](docs/testing.md#test-selection-and-cadence) for focused checks and the shorter syntax CLI suite.
+Reserve the full `npm run test:terminal` for broad UI/integration verification, not every localized feature or edit. See the [testing cadence](docs/testing.md#test-selection-and-cadence) for focused checks and the shorter syntax CLI suite.
 
 Development copies of host packages are pinned for reproducible tests; runtime imports are wildcard peer dependencies supplied by Pi. There is no bundling step. Repository versions are `0.0.0`; CI substitutes independent `pi-tidy-ui-vSEMVER` and `occipital-vSEMVER` tag versions. See [CI and releases](docs/releases.md).
 

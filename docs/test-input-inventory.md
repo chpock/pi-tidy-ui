@@ -1,8 +1,14 @@
 # Test input and coverage inventory
 
-Baseline audit: `b8bf644435db17d586ba2bc6f93ef64cb900c6bd`. This is the migration map for `test-harness-plan.md`, not a passing-test report. Source inspection distinguishes fixture-controlled configuration tests from ambient-input leaks.
+Baseline hermeticity audit: `b8bf644435db17d586ba2bc6f93ef64cb900c6bd`. The historical tables below trace the original migration, not current suite membership or a passing-test report. Current membership and capability requirements are explicit in [scripts/test/catalog.mjs](../scripts/test/catalog.mjs); use [testing.md](testing.md) and the [contract map](test-organization-map.md) for current commands and case destinations. Source inspection distinguishes fixture-controlled configuration tests from ambient-input leaks.
 
-## Node suites (every baseline test file)
+## Current capability boundaries
+
+`product` and most UI/card/fallback-logging groups need only the selected SDK/CLI and declared tools. Actual helper node tests and owned native CLI explicitly require `native`; shared CLI additionally requires `shared`; only installed-profile entries require `integration`. Consumer scripts require `native,registry`; Rust commands and the Rust harness require pinned `rust`. Fixed consumer/type/Rust entries cannot be replaced by `--files`. Legacy complete aliases remain available, but `unit` no longer determines prerequisites for a focused selection. Missing prerequisites are setup failures, not skips.
+
+Source-only refresh validates the owned graph and copies no dependency files; changed manifests/lockfiles, graph bytes, Node/host or native provenance require appropriate preparation. Full/manual/release and affected host/runtime/platform acceptance remain separate from the ordinary feature path. No scheduled daily compatibility workflow is introduced.
+
+## Historical Node suites (every baseline test file)
 
 | Tests (`tests/`, suffix `.test.ts` unless shown) | Reads / commands / resources | Target isolation and retained gate |
 | --- | --- | --- |

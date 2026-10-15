@@ -2,7 +2,8 @@
 import { CustomEditor, ToolExecutionComponent, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { createAssistantMessageEventStream, Type, type ToolCall } from "@earendil-works/pi-ai";
 import { Container, Text, matchesKey, type TUI, type OverlayHandle } from "@earendil-works/pi-tui";
-import { appendFileSync, existsSync, writeFileSync } from "node:fs";
+import { existsSync, writeFileSync } from "node:fs";
+import { createEventRecorder } from './terminal-output.ts';
 import { join } from "node:path";
 import { stripVTControlCharacters } from "node:util";
 
@@ -43,7 +44,7 @@ function observeMenuGeometry(tui: TUI, record: (event: object) => void): () => v
 export default function terminalDriver(pi: ExtensionAPI) {
   const output = process.env.TIDY_UI_TEST_OUTPUT!;
   let tui: any;
-  const record = (event: object) => appendFileSync(join(output, "events.jsonl"), JSON.stringify(event) + "\n");
+  const record = createEventRecorder(output);
   const wait = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
   // Observe host geometry only: no draft access, command injection or render request.
   const observeTerminalSize = () => record({ type: "terminal_size", width: process.stdout.columns, height: process.stdout.rows });
@@ -429,8 +430,9 @@ export default function terminalDriver(pi: ExtensionAPI) {
     { name: "edit", arguments: { path: "edit-direction.ts", oldText: "const retained = 1;\n", newText: "const retained = 1;\nconst addOnly = 4;\n" } },
     { name: "edit", arguments: { path: "edit-direction.ts", oldText: "const removeOnly = 2;\n", newText: "" } },
   ];
+  // Keep full long-line rendering coverage without stress-testing Pi's word-diff algorithm.
   const editPerformanceSuite: Pick<ToolCall, "name" | "arguments">[] = [
-    { name: "edit", arguments: { path: "edit-minified.ts", oldText: "x+=1;".repeat(3200), newText: "x+=2;".repeat(3200) } },
+    { name: "edit", arguments: { path: "edit-minified.ts", oldText: "x+=1;".repeat(3200), newText: "x+=1;".repeat(3199) + "x+=2;" } },
     { name: "read", arguments: { path: "a.txt", offset: 1, limit: 1 } },
   ];
   const suite: Pick<ToolCall, "name" | "arguments">[] = [
