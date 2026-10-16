@@ -252,20 +252,13 @@ export class PiTerminal {
     await this.nativeFence();
   }
   async command(command) {
-    const offset = command === '/reload' ? this.raw.length : 0;
     const id = ++this.nativeSequence;
     this.send(`\x1b[?997;${id};1n`);
     await this.nativeReceipt('armed', id);
     this.send(command + '\r');
+    // The native submit promise includes reload and shortcut rebinding. Its
+    // unchanged completion-status cells need not produce fresh terminal bytes.
     await this.nativeFence(id, 2);
-    if (command === '/reload') await until(async () => {
-      this.health(); const parsed = this.queue; await parsed;
-      if (parsed !== this.queue || this.rendering) return false;
-      // session_start precedes shortcut rebinding; require the new native completion, not an old status.
-      const output = Buffer.concat(this.raw.slice(offset)).toString('utf8');
-      const loading = output.lastIndexOf('Reloading');
-      return loading >= 0 && output.lastIndexOf('Reloaded') > loading;
-    }, 'interactive reload completion');
   }
   async waitForScreen(predicate, label) {
     return until(async () => { await this.settle(); return predicate(this.screen()); }, label);

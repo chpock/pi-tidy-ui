@@ -219,7 +219,7 @@ test('CLI scenario completion waits for the final complete frame after agent_end
 });
 
 
-test('CLI reload command waits for fresh native completion rather than an old status or output silence', { timeout: 2000 }, async () => {
+test('CLI reload command waits for native completion and its parsed frame, not reprinted status bytes', { timeout: 2000 }, async t => {
   const terminal = Object.create(PiTerminal.prototype);
   terminal.term = new Terminal({ cols: 100, rows: 5, allowProposedApi: true });
   observeRenderFrames(terminal.term, terminal);
@@ -231,31 +231,38 @@ test('CLI reload command waits for fresh native completion rather than an old st
   const done = 'Reloaded keybindings, extensions, skills, prompts, themes, and context files';
   const loading = 'Reloading keybindings, extensions, skills, prompts, themes, and context files...';
   await write(`\x1b[?2026h${done}\x1b[?2026l`);
-  let sends = 0, outcome, observeProvisional, observedQuiet;
-  const provisionalCheck = new Promise(resolve => { observeProvisional = resolve; });
+  let sends = 0, outcome, finishNative, finishFrame, observedQuiet;
+  const nativeDone = new Promise(resolve => { finishNative = resolve; });
+  const frameDone = new Promise(resolve => { finishFrame = resolve; });
   const quiet = new Promise(resolve => { observedQuiet = resolve; });
+  // Keep the former raw-byte predicate a fast counterexample.
+  let clock = 0; t.mock.method(Date, 'now', () => clock += 12001);
   terminal.nativeSequence = 0;
   terminal.send = data => {
     if (data === '/reload\r') sends++;
     else assert.equal(data, '\x1b[?997;1;1n');
   };
   terminal.nativeReceipt = async (type, id) => { assert.equal(type, 'armed'); assert.equal(id, 1); };
-  terminal.health = () => { if (terminal.rendering) observeProvisional(); };
   terminal.nativeFence = async (id, kind) => {
     assert.equal(id, 1); assert.equal(kind, 2);
     await write(`\x1b[?2026h\x1b[H${done}\r\n${loading}\x1b[?2026l`); observedQuiet();
+    await nativeDone; await frameDone; await terminal.queue;
   };
   const pending = terminal.command('/reload').then(() => { outcome = { passed: true }; }, error => { outcome = { error }; });
   try {
     await quiet; await new Promise(setImmediate);
     assert.equal(outcome, undefined, 'quiet output and a previous success status do not establish current reload completion');
-    await write(`\x1b[?2026h\x1b[H${done}`);
-    await provisionalCheck; await new Promise(setImmediate);
-    assert.equal(outcome, undefined, 'the fresh native completion remains provisional until the frame ends');
-    await write('\x1b[?2026l'); await pending;
+    finishNative();
+    await write('\x1b[?2026h\x1b[2;1H\x1b[2K');
+    await new Promise(setImmediate);
+    assert.equal(outcome, undefined, 'native completion still requires the parsed end of its frame');
+    await write('\x1b[?2026l'); finishFrame(); await pending;
+    assert.ok(terminal.screen().some(row => row.includes(done)));
+    assert.ok(!terminal.screen().some(row => row.includes(loading)));
     if (outcome.error) throw outcome.error;
     assert.equal(outcome.passed, true); assert.equal(sends, 1, 'no retry of the reload action');
   } finally {
+    finishNative(); finishFrame();
     if (terminal.rendering) await write('\x1b[?2026l');
     await pending; terminal.term.dispose();
   }

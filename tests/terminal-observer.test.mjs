@@ -13,7 +13,7 @@ import { installTerminalObserver } from './fixtures/terminal-observer.mjs';
 import { PiTerminal, observeNativeReceipts, observeRenderFrames } from './fixtures/terminal-harness.mjs';
 import xterm from '@xterm/headless';
 
-function fixture(t) {
+function fixture(t, paint = () => 'NATIVE_FRAME') {
   class Mode {
     constructor() {
       this.pendingUserInputs = [];
@@ -52,7 +52,7 @@ function fixture(t) {
         this.renderRequested = false;
         this.renderTimer = undefined;
         this.immediateRenderScheduled = false;
-        this.terminal.write('\x1b[?2026hNATIVE_FRAME\x1b[?2026l');
+        this.terminal.write(`\x1b[?2026h${paint()}\x1b[?2026l`);
       },
     };
   }
@@ -398,4 +398,45 @@ test('physical color captures wait for the complete frame and its parsed receipt
   assert.ifError(result.error);
   assert.equal(result.dump.screen[0], 'THEME_BASH_0');
   assert.equal(result.dump.cells[0][0].fg, 0x010203);
+});
+
+
+test('reload completion follows the native submit promise when an unchanged status is not repainted', async t => {
+  let phase = 'initial', release;
+  const gate = new Promise(resolve => { release = resolve; });
+  const h = fixture(t, () => phase === 'initial'
+    ? '\x1b[HReloaded keybindings'
+    : phase === 'loading' ? '\x1b[2;1HReloading keybindings' : '\x1b[2;1H\x1b[2K');
+  const host = Object.create(PiTerminal.prototype);
+  host.term = new xterm.Terminal({ cols: 80, rows: 24, allowProposedApi: true });
+  host.raw = []; host.queue = Promise.resolve();
+  t.after(() => host.term.dispose());
+  observeRenderFrames(host.term, host); observeNativeReceipts(host.term, host);
+  const write = h.first.terminal.write;
+  h.first.terminal.write = data => {
+    write(data); host.raw.push(Buffer.from(data));
+    host.queue = new Promise(resolve => host.term.write(data, resolve));
+  };
+  host.send = data => {
+    if (data === '/reload\r') h.mode.defaultEditor.onSubmit('/reload');
+    else h.first.listener(data);
+  };
+  h.mode.direct = async text => {
+    assert.equal(text, '/reload'); phase = 'loading'; h.first.doRender();
+    await gate; phase = 'complete'; h.first.doRender();
+  };
+  h.first.doRender(); h.mode.getUserInput(); await host.queue;
+  const offset = host.raw.length;
+  let settled = false;
+  // Expire the former byte-polling predicate without a twelve-second unit test.
+  let clock = 0; t.mock.method(Date, 'now', () => clock += 12001);
+  const completed = host.command('/reload');
+  completed.then(() => { settled = true; }, () => { settled = true; });
+  await t.waitFor(() => assert.equal(phase, 'loading')); await host.queue;
+  assert.equal(settled, false, 'a mounted reload box cannot acknowledge the pending native command');
+  assert.ok(host.screen().some(row => row.includes('Reloading keybindings')));
+  release(); await completed;
+  assert.ok(host.screen().some(row => row.includes('Reloaded keybindings')));
+  assert.ok(!host.screen().some(row => row.includes('Reloading keybindings')));
+  assert.ok(!Buffer.concat(host.raw.slice(offset)).toString().includes('Reloaded'), 'the completed frame reuses the already visible status cells');
 });
