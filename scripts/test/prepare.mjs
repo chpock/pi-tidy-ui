@@ -194,6 +194,16 @@ export async function prepare(options) {
   const node = realpathSync(options.node ?? process.execPath), tools = systemTools(node, options.tools ? json(resolve(options.tools)) : {});
   mkdirSync(output, { recursive: true });
   const inputs = { schema: 1, preparation: output, node: { path: node, version: '' }, tools: materializeTools(output, node, tools) };
+  const phases = {};
+  let phaseStarted = started;
+  const checkpoint = name => {
+    phases[name] = performance.now() - phaseStarted;
+    if (options.archives) save(join(output, 'consumer/diagnostics/installed-preparation-runtime/fixture.json'), {
+      phases, elapsedMs: performance.now() - started, offline: options.offline === true,
+      archiveRecords: inputs.registry?.packages.length ?? 0,
+    });
+    phaseStarted = performance.now();
+  };
   if (process.platform === 'win32') inputs.systemRoot = options['system-root'] ?? 'C:\\Windows';
   const environment = childEnv(join(output, 'environment'), {}, inputs);
   if (options['npm-cache']) {
@@ -213,6 +223,7 @@ export async function prepare(options) {
     if (materialized.tree !== source.tree) throw new Error('Materialized source snapshot differs from the tested source');
     save(join(inputs.runRoot, 'source-files.json'), source.files);
     const { files, ...identity } = source; inputs.source = identity;
+    checkpoint('sourceAndSetup');
     const deps = join(output, 'dependencies'); mkdirSync(deps, { recursive: true });
     const manifest = json(join(root, 'package.json'));
     const baseline = manifest.devDependencies['@earendil-works/pi-coding-agent'];
@@ -236,7 +247,9 @@ export async function prepare(options) {
       writeFileSync(join(deps, 'package.json'), text);
     }
     run(inputs, deps, node, [tools.npm, existsSync(join(deps, 'package-lock.json')) ? 'ci' : 'install', '--ignore-scripts', '--no-audit', '--no-fund'], { npm_config_offline: options.offline ? 'true' : 'false' });
+    checkpoint('hostInstall');
     materializeDependencies(join(deps, 'node_modules'), join(tree, 'node_modules'));
+    checkpoint('dependencyCopy');
     const codingRoot = join(tree, 'node_modules/@earendil-works/pi-coding-agent');
     const coding = json(join(codingRoot, 'package.json'));
     const cli = typeof coding.bin === 'string' ? coding.bin : coding.bin.pi;
@@ -251,6 +264,7 @@ export async function prepare(options) {
         : options.offline && existsSync(join(output, 'registry.json')) ? json(join(output, 'registry.json')) : undefined;
       inputs.registry = previous ?? await archiveGraph(inputs, deps, options.offline);
     }
+    checkpoint('archiveInputs');
     if (options.integration) {
       const directory = join(output, 'integration'); mkdirSync(directory, { recursive: true });
       for (const name of ['package.json', 'package-lock.json']) cpSync(join(root, 'tests/fixtures/integration-profile', name), join(directory, name));
@@ -258,6 +272,7 @@ export async function prepare(options) {
       inputs.integration = { root: directory, manifest: join(directory, 'package.json'),
         lockSha256: digest(readFileSync(join(directory, 'package-lock.json'))) };
     }
+    checkpoint('integrationInputs');
     if (options['native-artifact']) {
       const directory = resolve(options['native-artifact']);
       const info = json(join(directory, 'build-info.json')), release = json(join(directory, 'native-release.staged.json'));
@@ -319,6 +334,7 @@ export async function prepare(options) {
       const target = Object.keys(candidateTargets).find(key => candidateTargets[key].os === process.platform && candidateTargets[key].cpu === process.arch);
       inputs.native = { path, bytes: bytes.length, sha256: digest(bytes), version: daemon.version, target, commit: source.commit, nativeTree: source.nativeTree };
     }
+    checkpoint('nativeAndRustInputs');
     if (options.archives) {
       if (inputs.native) {
         const { prepareConsumerClosure } = await import('../../tests/fixtures/consumer-preparation.mjs');
@@ -326,9 +342,11 @@ export async function prepare(options) {
       }
       save(join(output, 'registry.json'), inputs.registry);
     }
+    checkpoint('consumerAcquisition');
     inputs.install = { manifest: digest(readFileSync(join(root, 'package.json'))), lock: digest(readFileSync(join(root, 'package-lock.json'))),
       platform: process.platform, arch: process.arch, modules: dependencyIdentity(join(tree, 'node_modules')) };
-    inputs.preparationStats = { kind: 'prepare', elapsedMs: performance.now() - started, dependencyInstalls: 1, dependencyCopies: 1, sourceCopies: source.files.length };
+    checkpoint('dependencySeal');
+    inputs.preparationStats = { kind: 'prepare', elapsedMs: performance.now() - started, dependencyInstalls: 1, dependencyCopies: 1, sourceCopies: source.files.length, phases };
     const path = join(output, 'inputs.json'); save(path, inputs);
     console.log(path);
     return { ...inputs, inputsPath: path };

@@ -2,6 +2,7 @@ import './fixtures/test-guard.mjs';
 import assert from 'node:assert/strict';
 import { execFile, execFileSync } from 'node:child_process';
 import { access, copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
@@ -10,6 +11,7 @@ import test from 'node:test';
 import { childEnv, readInputs, toolPath } from '../scripts/test/context.mjs';
 import { installConsumer, prepareConsumerClosure, readConsumerArchiveManifest, rewriteConsumerLock, seedConsumerLock, verifyConsumerReplay } from './fixtures/consumer-preparation.mjs';
 import { runNpmPreparation } from './fixtures/npm-preparation.ts';
+import { startLocalRegistry } from './fixtures/local-registry.mjs';
 
 const run = promisify(execFile);
 
@@ -140,4 +142,86 @@ test('consumer npm installs from its own cwd without the Windows prefix self-ins
     await assert.rejects(access(join(root, 'package.json')), { code: 'ENOENT' });
     await assert.rejects(access(join(root, 'node_modules')), { code: 'ENOENT' });
   }
+});
+
+
+test('consumer acquisition preserves clean-ci graphs and peers without materializing preparation consumers', async t => {
+  const inputs = readInputs(), root = await mkdtemp(join(tmpdir(),'tidy-metadata-consumer-'));
+  t.after(() => rm(root,{recursive:true,force:true}));
+  const packages = [];
+  for (const [short, extras] of [['peer', {}], ['core', {peerDependencies:{'@fixture/peer':'^1.0.0'}}],
+    ['optional', {os:[process.platform],cpu:[process.arch]}]]) {
+    const directory = join(root,short), manifest = {name:`@fixture/${short}`,version:'1.0.0',...extras};
+    await mkdir(join(directory,'package'),{recursive:true});
+    await writeFile(join(directory,'package/package.json'),JSON.stringify(manifest));
+    await writeFile(join(directory,'package/marker.txt'),short);
+    const path = join(root,short+'.tgz');
+    execFileSync(toolPath('tar'),['-czf',path,'-C',directory,'package'],{env:childEnv(join(root,'tar'),{},inputs)});
+    const bytes = await readFile(path);
+    packages.push({name:manifest.name,version:manifest.version,manifest,path,synthetic:true,
+      integrity:'sha512-'+createHash('sha512').update(bytes).digest('base64')});
+  }
+  const recording = await startLocalRegistry({packages});
+  t.after(() => recording.close());
+  let commands = 0;
+  const observations = [];
+  const npm = async (args,url,cwd) => {
+    const command = commands++, wrapper = join(root,`npm-${command}.cjs`), observation = join(root,`work-${command}.json`);
+    await writeFile(wrapper,`const {createRequire}=require('node:module'),fs=require('node:fs'),fsp=require('node:fs/promises'),path=require('node:path');
+const cli=${JSON.stringify(inputs.tools.npm)},load=createRequire(cli),pacote=load('pacote'),extract=pacote.extract;
+let extracts=0,materializedDirectories=0;
+const inside=value=>{const p=path.resolve(String(value)),base=path.join(process.cwd(),'node_modules');return p===base||p.startsWith(base+path.sep)};
+pacote.extract=async function(...args){const result=await extract.apply(this,args);extracts++;return result};
+const mkdir=fs.mkdir,mkdirSync=fs.mkdirSync,mkdirAsync=fsp.mkdir;
+fs.mkdir=function(...args){const callback=args.pop();return mkdir.call(this,...args,function(error,...rest){if(!error&&inside(args[0]))materializedDirectories++;callback(error,...rest)})};
+fs.mkdirSync=function(...args){const result=mkdirSync.apply(this,args);if(inside(args[0]))materializedDirectories++;return result};
+fsp.mkdir=async function(...args){const result=await mkdirAsync.apply(this,args);if(inside(args[0]))materializedDirectories++;return result};
+process.on('exit',()=>fs.writeFileSync(${JSON.stringify(observation)},JSON.stringify({extracts,materializedDirectories})));
+process.argv[1]=cli;load(cli);
+`);
+    const result = await runNpmPreparation([...args,`--registry=${url}`],{
+      cwd,nodePath:inputs.node.path,nodeVersion:inputs.node.version,npmPath:wrapper,
+      env:childEnv(join(root,`command-${command}`),{npm_config_offline:'false',npm_config_registry:url,npm_config_fetch_retries:'0'},inputs),
+      logsRoot:join(root,'logs'),reportsRoot:join(root,'reports'),
+    });
+    observations.push(JSON.parse(await readFile(observation,'utf8')));
+    return result;
+  };
+  const manifest = {name:'metadata-consumer',version:'0.0.0',private:true,
+    dependencies:{'@fixture/core':'1.0.0'},optionalDependencies:{'@fixture/optional':'1.0.0'}};
+  const create = async name => {const consumer=join(root,name);await mkdir(consumer);await writeFile(join(consumer,'package.json'),JSON.stringify(manifest));return consumer;};
+  for (const installed of [true,false]) {
+    const original = await create(`original-${installed}`);
+    await npm(['install','--ignore-scripts','--no-audit','--no-fund',...(installed?[]:['--omit=optional'])],recording.url,original);
+    await verifyConsumerReplay(npm,original,installed,recording.url);
+    const baseline = JSON.parse(await readFile(join(original,'package-lock.json'),'utf8'));
+    assert.ok(observations.at(-1).extracts>0,'positive control observes actual package extraction');
+    assert.ok(observations.at(-1).materializedDirectories>0,'positive control observes consumer file-tree creation');
+    const candidate = await create(`candidate-${installed}`);
+    await installConsumer(npm,candidate,installed,recording.url);
+    assert.deepEqual(observations.at(-1),{extracts:0,materializedDirectories:0});
+    await assert.rejects(access(join(candidate,'node_modules')),{code:'ENOENT'});
+    await verifyConsumerReplay(npm,candidate,installed,recording.url,{dryRun:true});
+    assert.deepEqual(observations.at(-1),{extracts:0,materializedDirectories:0});
+    await assert.rejects(access(join(candidate,'node_modules')),{code:'ENOENT'});
+    assert.deepEqual(JSON.parse(await readFile(join(candidate,'package-lock.json'),'utf8')),baseline,'all graph and peer fields match actual-install acquisition');
+    const inconsistent = await create(`inconsistent-${installed}`), invalidLock = structuredClone(baseline);
+    delete invalidLock.packages['node_modules/@fixture/core'];
+    await writeFile(join(inconsistent,'package-lock.json'),JSON.stringify(invalidLock));
+    await assert.rejects(verifyConsumerReplay(npm,inconsistent,installed,recording.url,{dryRun:true}),{code:1});
+    await assert.rejects(access(join(inconsistent,'node_modules')),{code:'ENOENT'});
+    const frozen = await startLocalRegistry({packages});
+    try {
+      const actual = await create(`actual-${installed}`), lock = rewriteConsumerLock(baseline,recording.url,frozen.url);
+      await writeFile(join(actual,'package-lock.json'),JSON.stringify(lock));
+      await verifyConsumerReplay(npm,actual,installed,frozen.url);
+      assert.equal(await readFile(join(actual,'node_modules/@fixture/core/marker.txt'),'utf8'),'core');
+      assert.equal(await readFile(join(actual,'node_modules/@fixture/peer/marker.txt'),'utf8'),'peer');
+      if(installed) assert.equal(await readFile(join(actual,'node_modules/@fixture/optional/marker.txt'),'utf8'),'optional');
+      else await assert.rejects(access(join(actual,'node_modules/@fixture/optional')),{code:'ENOENT'});
+      assert.ok(observations.at(-1).extracts>0);
+      frozen.assertNoRejectedRequests();
+    } finally {await frozen.close();}
+  }
+  recording.assertNoRejectedRequests();
 });

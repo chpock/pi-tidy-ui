@@ -1,7 +1,7 @@
 import './fixtures/test-guard.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {changedPaths, githubScope, groups, nativeTargets, parseScope, resolveScope, reviewedScopes} from '../scripts/test/ci-scope.mjs';
+import {changedPaths, githubScope, groups, nativePlan, nativeTargets, parseScope, resolveScope, reviewedScopes} from '../scripts/test/ci-scope.mjs';
 import { featurePlan as cataloguePlan, testEntries } from '../scripts/test/catalog.mjs';
 
 const head = 'a'.repeat(40), base = 'b'.repeat(40), prior = 'c'.repeat(40);
@@ -232,4 +232,49 @@ test('conservative catalogue evolution selects new HEAD owners through fixed uni
   assert.equal(approved.capabilities.integration,true);assert.equal(approved.publishedConsumer,false);
   const footer=scope(['src/footer.ts']);assert.equal(footer.full,false);assert.deepEqual(footer.features,['footer']);
   const stale=scope(paths,{decisions:[decision([],{executeConservative:true,head:prior})]});assert.equal(stale.status,'scope-decision-required');
+});
+
+
+test('explicit Windows diagnostic is maintainer- and exact-HEAD-bound without claiming feature or release acceptance', async () => {
+  const payload = {repository:{owner:{login:'owner'},name:'repo'}};
+  const inputs = {full:false,'windows-only':true,'scope-head':head};
+  const make = options => githubScope({eventName:'workflow_dispatch',payload,ref:'refs/heads/windows-performance',commit:head,actor:'writer',inputs,featurePlan,
+    git:()=>assert.fail('Windows diagnostic has no changed-feature scope'),api:async (route,args)=>{
+      assert.ok(route.endsWith('/permission'));assert.equal(args.username,'writer');return {data:{permission:'write'}};
+    },...options});
+  const result = await make();
+  assert.equal(result.selection,'windows-consumer-diagnostic'); assert.equal(result.platforms,'windows-only');
+  assert.equal(result.full,false); assert.equal(result.publishedConsumer,false); assert.equal(result.release,false);
+  assert.deepEqual(result.features,[]); assert.deepEqual(result.affectedProfiles,[]); assert.equal(result.runAffected,false);
+  assert.deepEqual(result.profiles,[{node:'22.19.0',pi:'1.0.0'},{node:'26.7.0',pi:'1.0.0'}]);
+  assert.equal(result.capabilities.native,true); assert.equal(result.consumers,true); assert.equal(result.authority.kind,'dispatch');
+  assert.match(result.productExclusion,/not.*acceptance/);
+  await assert.rejects(make({inputs:{...inputs,'scope-head':prior}}),/exact tested HEAD/);
+  await assert.rejects(make({api:async()=>({data:{permission:'read'}})}),/maintainer authority/);
+  await assert.rejects(make({inputs:{...inputs,full:true}}),/full=false/);
+  for(const ref of ['refs/tags/pi-tidy-ui-v0.2.0','refs/tags/occipital-v0.1.6','refs/pull/7/merge']) await assert.rejects(make({ref}),/branch/);
+  for(const extra of [{features:'footer'},{'add-features':'native'},{compatibility:'all'},{'execute-conservative':true}]) {
+    await assert.rejects(make({inputs:{...inputs,...extra}}),/cannot combine/);
+  }
+  const push = await make({eventName:'push',payload:{...payload,before:base},git:()=>'src/bash-card.ts\0'});
+  assert.notEqual(push.selection,'windows-consumer-diagnostic'); assert.deepEqual(push.features,['bash']);
+});
+
+test('manual Windows target subset cannot narrow either release family',()=>{
+  assert.deepEqual(nativeTargets('windows-only','refs/heads/windows-performance').map(row=>row.target),['windows-x64-msvc','windows-arm64-msvc']);
+  for(const ref of ['refs/tags/pi-tidy-ui-v0.2.0','refs/tags/occipital-v0.1.6']) assert.equal(nativeTargets('windows-only',ref).length,6);
+  for(const ref of ['', 'refs/pull/7/merge']) assert.throws(()=>nativeTargets('windows-only',ref),/branch/);
+});
+
+
+test('native job plan omits only unrelated packaging from a branch Windows diagnostic',()=>{
+  const branch = 'refs/heads/windows-performance';
+  assert.equal(nativePlan('windows-only',branch,true).packaging,false);
+  assert.equal(nativePlan('all',branch,true).packaging,true);
+  assert.equal(nativePlan('all',branch,false).packaging,false);
+  assert.equal(nativePlan('host-only',branch,true).packaging,true);
+  for(const ref of ['refs/tags/pi-tidy-ui-v0.2.0','refs/tags/occipital-v0.1.6']) for(const mode of ['all','host-only','windows-only']) {
+    const plan = nativePlan(mode,ref,false);assert.equal(plan.packaging,true);assert.equal(plan.matrix.length,6);
+  }
+  assert.throws(()=>nativePlan('all',branch,'false'),/boolean/);
 });

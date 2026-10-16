@@ -143,7 +143,7 @@ export function resolveScope({ paths, head, ref, full = false, additions = [], d
 }
 
 export function nativeTargets(mode = 'all', ref = '') {
-  if (!['all','host-only'].includes(mode)) throw new Error('Unknown native target scope');
+  if (!['all','host-only','windows-only'].includes(mode)) throw new Error('Unknown native target scope');
   const targets = [
     {target:'linux-x64-gnu',runner:'ubuntu-24.04',rust:'x86_64-unknown-linux-gnu',executable:'occipital'},
     {target:'linux-arm64-gnu',runner:'ubuntu-24.04-arm',rust:'aarch64-unknown-linux-gnu',executable:'occipital'},
@@ -152,7 +152,17 @@ export function nativeTargets(mode = 'all', ref = '') {
     {target:'windows-x64-msvc',runner:'windows-2022',rust:'x86_64-pc-windows-msvc',executable:'occipital.exe'},
     {target:'windows-arm64-msvc',runner:'windows-11-arm',rust:'aarch64-pc-windows-msvc',executable:'occipital.exe'},
   ];
-  return mode === 'all' || /^refs\/tags\/(pi-tidy-ui|occipital)-v/.test(ref) ? targets : targets.slice(0,1);
+  if (mode === 'all' || /^refs\/tags\/(pi-tidy-ui|occipital)-v/.test(ref)) return targets;
+  if (mode === 'windows-only') {
+    if (!/^refs\/heads\/.+/.test(ref)) throw new Error('Windows diagnostic requires a branch ref');
+    return targets.filter(row => row.target.startsWith('windows-'));
+  }
+  return targets.slice(0,1);
+}
+
+export function nativePlan(mode = 'all', ref = '', consumers = true) {
+  if (typeof consumers !== 'boolean') throw new Error('Native consumer selection must be boolean');
+  return {matrix:nativeTargets(mode,ref),packaging:ref.startsWith('refs/tags/') || consumers && mode !== 'windows-only'};
 }
 
 export function changedPaths(base, head, git = (args) => execFileSync('git', args, {encoding:'utf8', maxBuffer:8 * 1024 * 1024}), pullRequest = false) {
@@ -166,13 +176,26 @@ export function changedPaths(base, head, git = (args) => execFileSync('git', arg
 export async function githubScope({ api, eventName, payload, ref, commit, actor, inputs = {}, featurePlan, git }) {
   const pr = payload.pull_request;
   const head = requireSHA(pr?.head.sha ?? commit);
+  const {owner, name:repo} = payload.repository;
+  const ownerName = typeof owner === 'string' ? owner : owner.login;
+  if (eventName === 'workflow_dispatch' && (inputs['windows-only'] === true || inputs['windows-only'] === 'true')) {
+    if (!/^refs\/heads\/.+/.test(ref)) throw new Error('Windows diagnostic requires a branch ref');
+    if (inputs.full !== false && inputs.full !== 'false') throw new Error('Windows diagnostic requires full=false');
+    if (inputs['scope-head'] !== head) throw new Error('Windows diagnostic requires exact tested HEAD');
+    if (inputs.features || inputs['add-features'] || inputs.compatibility && inputs.compatibility !== 'baseline' || inputs['execute-conservative'] === true || inputs['execute-conservative'] === 'true') throw new Error('Windows diagnostic cannot combine feature or compatibility selections');
+    const rationale = 'Explicit manual Windows consumer diagnostic; not full feature, compatibility or release acceptance.';
+    const [decision] = await reviewedScopes({api,owner:ownerName,repo,actor,manual:{head,features:[],rationale}});
+    if (!decision) throw new Error('Windows diagnostic requires maintainer authority');
+    return {...resolveScope({paths:[],head,ref,featurePlan}),selection:'windows-consumer-diagnostic',base:null,
+      capabilities:{native:true,shared:false,integration:false,registry:true,rust:true},platforms:'windows-only',consumers:true,
+      profiles:nodes.map(node=>({node,pi:pis[0]})),rationale,authority:decision.authority,
+      productExclusion:'This diagnostic does not perform product SDK/CLI, Linux/macOS, packaging or release acceptance.'};
+  }
   const full = /^refs\/tags\/(pi-tidy-ui|occipital)-v/.test(ref) || eventName === 'workflow_dispatch' && inputs.full !== false && inputs.full !== 'false';
   if (eventName === 'workflow_dispatch' && !full && inputs['scope-head'] !== head) throw new Error('Manual feature scope requires exact tested HEAD');
   const base = full ? undefined : requireSHA(pr?.base.sha ?? (eventName === 'push' ? payload.before : inputs['base-sha']));
   const manual = eventName === 'workflow_dispatch' && !full ? parseScope('```ci-scope\n' + JSON.stringify({head:inputs['scope-head'],features:inputs.features ? inputs.features.split(',') : [],rationale:inputs.rationale,compatibility:inputs.compatibility,executeConservative:inputs['execute-conservative'] === true || inputs['execute-conservative'] === 'true'}) + '\n```') : undefined;
   if (eventName === 'workflow_dispatch' && !full && !manual) throw new Error('Manual feature scope requires valid groups and rationale');
-  const {owner, name:repo} = payload.repository;
-  const ownerName = typeof owner === 'string' ? owner : owner.login;
   const decisions = full ? [] : await reviewedScopes({api,owner:ownerName,repo,pullNumber:pr?.number,actor,manual});
   if (manual && !decisions.length) throw new Error('Manual feature scope requires maintainer authority');
   const additions = inputs['add-features'] ? names(inputs['add-features'].split(',')) : [];

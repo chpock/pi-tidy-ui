@@ -275,3 +275,15 @@ test('npm diagnostics identify the verified selected child runtime independently
     assert.equal(report.parentNode, 'v0.0.0-fixture-parent');
   } finally { Object.defineProperty(process, 'version', descriptor); }
 });
+
+
+test('safe preparation mode projection distinguishes acquisition and preflight without retaining arguments', async t => {
+  for (const [args, mode] of [[['install','--package-lock-only',secret],'lock-only'],[['ci','--dry-run',secret],'dry-run'],[['ci',secret],'standard']] as const) {
+    const f = await fixture(t,false);
+    await runNpmPreparation([...args],f.options);
+    const [directory] = await readdir(f.reportsRoot);
+    const bytes = await readFile(join(f.reportsRoot,directory!,'npm.json'),'utf8');
+    assert.equal(JSON.parse(bytes).mode,mode);
+    assert.doesNotMatch(bytes,/PRIVATE_AUTH_MARKER|private|https|registry|npmrc|stdout|stderr|cmd|environment/);
+  }
+});

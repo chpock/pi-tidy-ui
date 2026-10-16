@@ -13,6 +13,7 @@ on:
         type: string
         default: ''
       targets:
+        description: 'all, host-only, or branch-only windows-only consumer diagnostic'
         type: string
         default: all
       consumers:
@@ -31,6 +32,7 @@ jobs:
     timeout-minutes: 5
     outputs:
       matrix: ${{ steps.targets.outputs.matrix }}
+      packaging: ${{ steps.targets.outputs.packaging }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -42,14 +44,17 @@ jobs:
         env:
           TARGETS: ${{ inputs.targets }}
           RELEASE_REF: ${{ inputs.release-ref }}
+          CONSUMERS: ${{ inputs.consumers }}
         run: |
           node --input-type=module <<'JS'
           import {appendFileSync} from 'node:fs';
-          import {nativeTargets} from './scripts/test/ci-scope.mjs';
-          appendFileSync(process.env.GITHUB_OUTPUT, 'matrix=' + JSON.stringify(nativeTargets(process.env.TARGETS,process.env.RELEASE_REF)) + '\n');
+          import {nativePlan} from './scripts/test/ci-scope.mjs';
+          const plan = nativePlan(process.env.TARGETS,process.env.RELEASE_REF,process.env.CONSUMERS === 'true');
+          appendFileSync(process.env.GITHUB_OUTPUT, 'matrix=' + JSON.stringify(plan.matrix) + '\npackaging=' + plan.packaging + '\n');
           JS
   packaging-fixtures:
-    if: inputs.consumers || startsWith(inputs.release-ref, 'refs/tags/')
+    needs: targets
+    if: needs.targets.outputs.packaging == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     strategy:
@@ -334,7 +339,7 @@ jobs:
           PREPARATION="$RUNNER_TEMP/consumer-22.19.0"
           ARTIFACT="$RUNNER_TEMP/occipital-native-artifact"
           tools_args=()
-          if [[ "$TARGET" == windows-* ]]; then tools_args=(--tools "$RUNNER_TEMP/runtime-tools.json" --rust-environment "$RUNNER_TEMP/native-environment/msvc.json"); fi
+          if [[ "$TARGET" == windows-* ]]; then tools_args=(--run-root "$RUNNER_TEMP" --tools "$RUNNER_TEMP/runtime-tools.json" --rust-environment "$RUNNER_TEMP/native-environment/msvc.json"); fi
           node scripts/test/prepare.mjs --pi-version 1.0.0 --archives --native-artifact "$ARTIFACT" --rust-root "$RUST_ROOT" --cargo-cache "$CARGO_HOME" "${tools_args[@]}" --output "$PREPARATION"
           isolation_args=()
           if [[ "$TARGET" == linux-* ]]; then isolation_args=(--network-isolated); fi
@@ -389,7 +394,7 @@ jobs:
           PREPARATION="$RUNNER_TEMP/consumer-26.7.0"
           ARTIFACT="$RUNNER_TEMP/occipital-native-artifact"
           tools_args=()
-          if [[ "$TARGET" == windows-* ]]; then tools_args=(--tools "$RUNNER_TEMP/runtime-tools.json" --rust-environment "$RUNNER_TEMP/native-environment/msvc.json"); fi
+          if [[ "$TARGET" == windows-* ]]; then tools_args=(--run-root "$RUNNER_TEMP" --tools "$RUNNER_TEMP/runtime-tools.json" --rust-environment "$RUNNER_TEMP/native-environment/msvc.json"); fi
           node scripts/test/prepare.mjs --pi-version 1.0.0 --archives --native-artifact "$ARTIFACT" --rust-root "$RUST_ROOT" --cargo-cache "$CARGO_HOME" "${tools_args[@]}" --output "$PREPARATION"
           isolation_args=()
           if [[ "$TARGET" == linux-* ]]; then isolation_args=(--network-isolated); fi
@@ -421,21 +426,9 @@ jobs:
         if: always()
         run: |
           node --input-type=module <<'JS'
-          import {cpSync,existsSync,mkdirSync,readFileSync,readdirSync} from 'node:fs';
           import {join} from 'node:path';
-          for (const version of ['22.19.0','26.7.0']) {
-            const preparation = join(process.env.RUNNER_TEMP,'consumer-' + version), receipt = join(preparation,'inputs.json');
-            if (!existsSync(receipt)) continue;
-            const inputs = JSON.parse(readFileSync(receipt)), reports = join(inputs.pi.root,'.test-artifacts');
-            if (!existsSync(reports)) continue;
-            for (const directory of readdirSync(reports,{withFileTypes:true})) {
-              if (!directory.isDirectory() || !/^installed-preparation-[\w-]+$/.test(directory.name)) continue;
-              for (const file of ['fixture.json','npm.json']) {
-                const source = join(reports,directory.name,file); if (!existsSync(source)) continue;
-                const output = join(preparation,'diagnostics',directory.name); mkdirSync(output,{recursive:true}); cpSync(source,join(output,file));
-              }
-            }
-          }
+          import {collectConsumerDiagnostics} from './scripts/test/consumer-diagnostics.mjs';
+          for (const version of ['22.19.0','26.7.0']) collectConsumerDiagnostics(join(process.env.RUNNER_TEMP,'consumer-' + version));
           JS
       - name: Safe consumer preparation diagnostics
         if: always()

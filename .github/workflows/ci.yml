@@ -35,6 +35,10 @@ on:
         description: 'Authorize the conservative union with a budget exception'
         type: boolean
         default: false
+      windows-only:
+        description: 'Manual Windows consumer diagnostic only (requires full=false and exact scope-head; never release acceptance)'
+        type: boolean
+        default: false
       clean-native-build:
         description: 'Build every native target without restoring Cargo outputs (reproducibility control)'
         type: boolean
@@ -136,7 +140,7 @@ jobs:
 
   baseline:
     needs: [version, scope]
-    if: needs.scope.outputs.full != 'true' && needs.version.outputs.product != 'occipital'
+    if: needs.scope.outputs.full != 'true' && fromJSON(needs.scope.outputs.scope).selection != 'windows-consumer-diagnostic' && needs.version.outputs.product != 'occipital'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:

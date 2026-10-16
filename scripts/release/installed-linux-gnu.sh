@@ -65,19 +65,9 @@ docker run --rm --platform "linux/$docker_arch" "${network_args[@]}" --user "$(i
     getconf GNU_LIBC_VERSION
     retain_diagnostics() {
       "$NODE" --input-type=module << "JS"
-      import {cpSync,existsSync,mkdirSync,readFileSync,readdirSync} from "node:fs";
       import {join} from "node:path";
-      const preparation = join(process.env.PREPARATION,"gnu"), receipt = join(preparation,"inputs.json");
-      if (existsSync(receipt)) {
-        const inputs = JSON.parse(readFileSync(receipt)), reports = join(inputs.pi.root,".test-artifacts");
-        if (existsSync(reports)) for (const directory of readdirSync(reports,{withFileTypes:true})) {
-          if (!directory.isDirectory() || !/^installed-preparation-[\w-]+$/.test(directory.name)) continue;
-          for (const file of ["fixture.json","npm.json"]) {
-            const source = join(reports,directory.name,file); if (!existsSync(source)) continue;
-            const output = join(preparation,"diagnostics",directory.name); mkdirSync(output,{recursive:true}); cpSync(source,join(output,file));
-          }
-        }
-      }
+      import {collectConsumerDiagnostics} from "./scripts/test/consumer-diagnostics.mjs";
+      collectConsumerDiagnostics(join(process.env.PREPARATION,"gnu"));
 JS
     }
     trap retain_diagnostics EXIT
