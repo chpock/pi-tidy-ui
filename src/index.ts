@@ -1519,7 +1519,11 @@ export default function tidyUi(pi: ExtensionAPI, options: TidyUiRuntimeOptions =
           terminal.write(data);
         },
         query: late => reference.deref()?.queryTerminalColors({ timeoutMs: 100, onLateReply: late }) ?? Promise.resolve({}),
-        changed: () => reference.deref()?.requestRender(),
+        changed: force => {
+          // A forced request resets TUI diff state, so wait until observer rendering returns.
+          if (force) queueMicrotask(() => { if (colors === view) reference.deref()?.requestRender(true); });
+          else reference.deref()?.requestRender();
+        },
         warn: message => liveContext?.ui.notify(`pi-tidy-ui colors: ${message}`, "warning"),
       });
       colors = view; terminalColorDebug = new WeakRef(view);

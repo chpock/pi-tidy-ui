@@ -232,3 +232,44 @@ for (const mode of ['fullscreen', 'regular']) {
     } finally { await closeTerminals([live.terminal]); }
   });
 }
+
+for (const mode of ['fullscreen', 'regular']) test(`terminal repaint: on/off redraws unchanged visible rows (${mode})`, async () => {
+  const live = colorTerminal(`colors-repaint-${mode}`, mode);
+  const marker = 'UNCHANGED_TERMINAL_BACKGROUND_PROBE';
+  try {
+    await live.terminal.ready();
+    await live.capture('probe', 'repaint-probe');
+    const initial = await live.capture('baseline');
+    assert.ok(live.terminal.screen().some(row => row.includes(marker)));
+    let previous = initial;
+    for (const enabled of [false, true]) {
+      await live.terminal.openTidyMenu();
+      const boundary = live.terminal.raw.length;
+      await live.terminal.selectTidyItem('Set terminal colors from Pi theme');
+      await live.terminal.settle();
+      const output = Buffer.concat(live.terminal.raw.slice(boundary)).toString('utf8');
+      assert.ok(output.includes(marker), 'unchanged visible row is physically rewritten without waiting for unrelated updates');
+      await live.terminal.closeTidyMenu();
+      const current = await live.capture(enabled ? 'on' : 'off');
+      assert.ok(current.fullRedraws > previous.fullRedraws, 'native TUI performed a full redraw');
+      assert.deepEqual(live.owned, enabled ? { background: '#123456', foreground: '#eeeeee' } : {});
+      assert.deepEqual(current.before, current.after);
+      previous = current;
+    }
+    const warm = await live.capture('warm', 'warm');
+    assert.equal(warm.fullRedraws, previous.fullRedraws, 'unchanged frames do not force new redraws');
+    assert.deepEqual(warm.diagnostic.counters, previous.diagnostic.counters);
+    assert.equal(live.terminal.events().filter(e => ['call', 'result', 'model_context'].includes(e.type)).length, 0);
+  } finally { await closeTerminals([live.terminal]); }
+});
+
+test('terminal repaint: regular render-time suspension keeps physical rows in place', async () => {
+  const live = colorTerminal('colors-repaint-reentrant', 'regular');
+  try {
+    await live.terminal.ready(); await live.capture('probe', 'repaint-probe');
+    const before = live.terminal.screen();
+    await live.capture('foreign-render', 'foreign-render-enable');
+    assert.deepEqual(live.owned, {}, 'cooperating native appearance tracking releases applied defaults');
+    assert.deepEqual(live.terminal.screen(), before, 'render-time suspension does not append, duplicate or shift the UI');
+  } finally { await closeTerminals([live.terminal]); }
+});

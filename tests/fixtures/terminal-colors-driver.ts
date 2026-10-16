@@ -52,18 +52,24 @@ export default async function colorDriver(pi: ExtensionAPI) {
       const state = () => editor ? { text: editor.getText(), expanded: editor.getExpandedText(), cursor: editor.getCursor() } : undefined;
       const before = state();
       let report;
+      if (action === 'foreign-render-enable') {
+        tui.setTerminalColorSchemeNotifications(true); tui.requestRender();
+        writeDiagnosticJson(output, name, { before, after: state() });
+        return; // Do not manually render: eligibility must be discovered inside the native frame.
+      }
       if (["on", "off", "colors on", "colors off", "colors status"].includes(action)) await control!('', ctx as never);
       else if (action === "theme") { const result = ctx.ui.setTheme(theme); if (!result.success) throw new Error(result.error); }
       else if (action === "foreign-query") report = await tui.queryTerminalColors({ timeoutMs: 100 });
       else if (action === "foreign-enable" || action === "foreign-disable") {
         tui.setTerminalColorSchemeNotifications(action === "foreign-enable"); tui.invalidate();
-      } else if (action === "warm") for (let frame = 0; frame < 50; frame++) tui.render(width);
+      } else if (action === 'repaint-probe') ctx.ui.setWidget('terminal-colors-repaint-probe', ['UNCHANGED_TERMINAL_BACKGROUND_PROBE']);
+      else if (action === "warm") for (let frame = 0; frame < 50; frame++) tui.render(width);
       else if (action !== "snapshot") throw new Error("Unknown color observation action");
       const rows = tui.render(width);
       writeDiagnosticJson(output, name, { before, after: state(), rows,
         editorRows: editor?.render(width), belowRows: tui.children[5]?.render(width),
         theme: ctx.ui.theme.name, sourcePath: ctx.ui.theme.sourcePath, configured: pi.getSettings().theme,
-        automatic: appearanceTracking(tui), diagnostic: diagnostics?.(),
+        automatic: appearanceTracking(tui), diagnostic: diagnostics?.(), fullRedraws: tui.fullRedraws,
         report, publicPrototypesUnchanged: query === Object.getPrototypeOf(tui).queryTerminalColors && notify === Object.getPrototypeOf(tui).setTerminalColorSchemeNotifications && scheme === Object.getPrototypeOf(tui).onTerminalColorSchemeChange,
         nativeBackground: colorToHex(ctx.ui.theme.colors.userMessageBg), nativeForeground: colorToHex(ctx.ui.theme.colors.text),
         session: ctx.sessionManager.getSessionFile() });

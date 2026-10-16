@@ -37,12 +37,12 @@ function terminalColorFixture(query?: ConstructorParameters<typeof TerminalColor
   };
   const snapshot = { enabled: true, automatic: false as boolean | undefined, configured: "fixture" as string | undefined, theme };
   let content = '{"colors":{"text":"#eeeeee"},"export":{"pageBg":"#123456"}}';
-  const packets: string[] = [], warnings: string[] = [];
+  const packets: string[] = [], warnings: string[] = [], renders: boolean[] = [];
   let reads = 0, changes = 0;
   const view = new TerminalColors({ snapshot: () => snapshot, source: () => undefined, query, defaults,
     read(path) { assert.equal(path, "/fixture.json"); reads++; return content; },
-    write: data => { packets.push(data); }, warn: message => { warnings.push(message); }, changed: () => { changes++; } });
-  return { view, snapshot, packets, warnings, get reads() { return reads; }, get changes() { return changes; }, setContent(value: string) { content = value; } };
+    write: data => { packets.push(data); }, warn: message => { warnings.push(message); }, changed: (force = false) => { changes++; renders.push(force); } });
+  return { view, snapshot, packets, warnings, renders, get reads() { return reads; }, get changes() { return changes; }, setContent(value: string) { content = value; } };
 }
 
 const terminalMicrotasks = async () => { await new Promise<void>(done => setImmediate(done)); };
@@ -289,4 +289,44 @@ test('terminal defaults process cleanup survives absent successor without retain
   `], { encoding: 'utf8', timeout: 10000 });
   assert.equal(child.status, 0, child.stderr);
   assert.equal(child.stdout, '\x1b]11;#123456\x07\x1b]10;#eeeeee\x07OWNER_COLLECTED\x1b]111\x07\x1b]110\x07');
+});
+
+test('terminal repaint: changed OSC channels force one frame, unchanged targets and RGB reports do not', async () => {
+  const f = terminalColorFixture(async () => ({ background: { r: 10, g: 11, b: 12 } }));
+  Object.assign(f.snapshot, { presenting: true });
+  try {
+    f.view.observe(); await terminalMicrotasks();
+    assert.deepEqual(f.renders, [true], 'one combined fg/bg packet needs one forced frame');
+    for (let i = 0; i < 50; i++) f.view.observe();
+    f.view.observe(true); await terminalMicrotasks();
+    assert.deepEqual(f.renders, [true], 'same-value retry and warm frames do not force redraw');
+    f.snapshot.enabled = false; f.view.observe();
+    assert.deepEqual(f.renders, [true, true], 'release redraw is requested after the synchronous reset');
+    assert.equal(f.packets.at(-1), '\x1b]111\x07\x1b]110\x07');
+    await terminalMicrotasks();
+    assert.deepEqual(f.renders, [true, true, false], 'profile RGB repair only requests an ordinary frame');
+    f.view.observe(); await terminalMicrotasks();
+    assert.equal(f.renders.length, 3);
+  } finally { f.view.dispose(); }
+});
+
+test('terminal repaint: production host forwards forced mode without invalidating the component tree', async () => {
+  const h = extensionHarness(), f = terminalColorFixture();
+  const directory = mkdtempSync(join(tmpdir(), 'tidy-ui-repaint-')), path = join(directory, 'theme.json');
+  writeFileSync(path, '{"colors":{"text":"#eeeeee"},"export":{"pageBg":"#123456"}}');
+  f.snapshot.theme.sourcePath = path;
+  Object.assign(h.ctx.ui, { theme: f.snapshot.theme });
+  Object.assign(h.root, { terminal: { write: (data: string) => f.packets.push(data) } });
+  const requests: boolean[] = [], request = h.root.requestRender, invalidate = h.root.invalidate;
+  let invalidations = 0;
+  h.root.requestRender = (force = false) => { requests.push(force); request.call(h.root); };
+  h.root.invalidate = () => { invalidations++; invalidate.call(h.root); };
+  try {
+    await h.events.get('session_start')!({}, h.ctx); await terminalMicrotasks();
+    assert.equal(requests.filter(Boolean).length, 1);
+    const before = invalidations;
+    await setColors(h.commands.get('tidy-ui')!.handler, h.ctx, false); await terminalMicrotasks();
+    assert.equal(requests.filter(Boolean).length, 2);
+    assert.equal(invalidations, before, 'terminal repaint does not globally invalidate component caches');
+  } finally { await h.events.get('session_shutdown')!({}, h.ctx); f.view.dispose(); rmSync(directory, { recursive: true, force: true }); }
 });

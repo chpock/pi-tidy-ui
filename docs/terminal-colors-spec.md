@@ -36,7 +36,7 @@ An unreadable/malformed source retains the last valid **complete** terminal-targ
 
 ## Channel ownership and lifetime
 
-Normalize valid targets to RGB hex. OSC 11/10 set background/foreground; OSC 111/110 release them. Deduplicate independently: changing background does not resend foreground; initially absent channels emit no reset. Compose changed channels in one terminal write. Do not alter cursor colors or the ANSI palette.
+Normalize valid targets to RGB hex. OSC 11/10 set background/foreground; OSC 111/110 release them. Deduplicate independently: changing background does not resend foreground; initially absent channels emit no reset. Compose changed channels in one terminal write. A changed packet during live synchronization queues one public `tui.requestRender(true)` after the current render stack, guarded against a retired observer, so unchanged visible rows are repainted immediately; ordinary diff rendering cannot observe OSC-only changes. Same-value targets, warm frames and RGB-only reports do not force redraws, and this does not globally invalidate component caches or restart syntax work. In regular mode Pi's forced redraw also clears terminal scrollback and re-emits history; fullscreen repaints the viewport. Disposal/process-exit cleanup adds no repaint. Do not alter cursor colors or the ANSI palette.
 
 A release restores **profile defaults**, not a saved earlier application's dynamic override. Appearance Off, terminal-color Off and normal Pi quit release applied channels. Repeated release/disposal is idempotent.
 
@@ -63,7 +63,7 @@ See [testing](testing.md) for commands and evidence discipline. Require:
 - Resolver/channel first-red cases, independent releases, atomic source-error retention and numeric zero.
 - Actual SDK positive mode/SGR/observer gates and missing/wrong-type/throwing-field rejection; future host contract drift must fail tests instead of silently accepting inactive coverage.
 - Real fixed → automatic ordering under project overrides, initially automatic and late loading, reload and both renderer modes; no transient application.
-- Controlled actual OSC set/reset/report traffic, hot reload/BOM, local/global toggles and normal exit.
+- Controlled actual OSC set/reset/report traffic, hot reload/BOM, local/global toggles and normal exit; on/off must physically rewrite an unchanged visible marker in both modes, with no forced redraw on unchanged targets/warm frames or RGB-only reports.
 - Session/reload handoff with zero reset/reapply for unchanged targets, inherited automatic-mode release, no-successor native UI and owner-free process-exit cleanup.
 - Physical diff/edge colors with stale native defaults, including local off after reload and late unowned-default reports on an already-rendered diff.
 - Exact warm read/query/output/projection counters and retired-controller/UI GC with an active pending report.

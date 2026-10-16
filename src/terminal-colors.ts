@@ -47,7 +47,8 @@ export interface TerminalColorHost {
   write(data: string): void;
   read?(path: string): string;
   query?(late: (colors: ReportedColors) => void): Promise<ReportedColors>;
-  changed?(): void;
+  /** Force terminal repaint only after a changed OSC packet, not RGB-only reports. */
+  changed?(force?: boolean): void;
   warn?(message: string): void;
 }
 const backgroundRoles = new Set(["selectedBg", "searchMatchBg", "userMessageBg", "customMessageBg", "toolPendingBg", "toolSuccessBg", "toolErrorBg"]);
@@ -170,7 +171,7 @@ export class TerminalColors {
     this.generation++; this.revision = undefined; this.sourceIdentity = undefined; this.reported = {}; this.paletteStamp = undefined; this.projected = undefined;
     this.state = reason;
     diagnose(this.host.diagnostic, 'INFO', 'terminal-colors', 'Terminal-default application suspended', { reason, generation: this.generation });
-    try { if (this.apply({})) this.host.changed?.(); }
+    try { if (this.apply({})) this.host.changed?.(true); }
     catch (error) { this.warn(`Could not release terminal colors: ${String(error)}`, 'Could not release terminal colors', error); }
     if (reason === "unsupported host") this.warn("Terminal colors unavailable: Pi's appearance flag is missing or incompatible");
   }
@@ -233,7 +234,7 @@ export class TerminalColors {
           const changed = this.apply({});
           this.sourceIdentity = undefined; this.reported = {}; this.paletteStamp = undefined; this.projected = undefined; this.state = "no source";
           diagnose(this.host.diagnostic, 'INFO', 'terminal-colors', 'No file-backed theme source; terminal defaults remain native', { generation, theme: name });
-          if (changed) { this.host.changed?.(); this.queryDefaults(this.host.snapshot().theme, generation, revision); }
+          if (changed) { this.host.changed?.(true); this.queryDefaults(this.host.snapshot().theme, generation, revision); }
           return;
         }
         this.sourceIdentity = { revision, path: source };
@@ -245,7 +246,7 @@ export class TerminalColors {
         this.reported = {}; this.paletteStamp = undefined; this.projected = undefined;
         this.state = "on"; this.failure = undefined;
         diagnose(this.host.diagnostic, 'INFO', 'terminal-colors', 'Fixed-theme terminal defaults resolved', { generation, theme: name, ...desired });
-        if (changed) this.host.changed?.();
+        if (changed) this.host.changed?.(true);
         this.queryDefaults(this.host.snapshot().theme, generation, revision);
       } catch (error) { if (this.current(generation, revision)) { this.state = "source error"; this.warn(`Could not read terminal theme colors: ${String(error)}`, 'Theme-default resolution failed; last valid applied colors retained', error); } }
     });
