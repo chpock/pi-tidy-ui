@@ -175,7 +175,7 @@ test('GNU published consumer is an explicit extension-release-only networked run
 test('GNU wrapper retains only safe neutral-source diagnostics before the container exits, including failed suites', { skip }, async t => {
   const f = await fixture(t), source = join(f.root,'neutral-source'), reports = join(source,'.test-artifacts/installed-preparation-safe');
   await mkdir(reports,{recursive:true}); await mkdir(join(f.root,'gnu'));
-  await writeFile(join(f.root,'gnu/inputs.json'),JSON.stringify({pi:{root:source}}));
+  await writeFile(join(f.root,'gnu/inputs.json'),JSON.stringify({pi:{root:join(f.root,'sdk')},source:{root:source}}));
   for (const file of ['fixture.json','npm.json','raw-debug-0.log','inputs.json']) await writeFile(join(reports,file),'{}');
   let result = f.installed('consumer'); assert.equal(result.status,0,result.stderr);
   const output = join(f.root,'gnu/diagnostics/installed-preparation-safe');

@@ -460,7 +460,9 @@ function workflowStep(source, name) {
 test('full native CI retains same-commit consumers on six targets and both Nodes, including daemon tags', async () => {
   const source = await readFile(join(repo, '.github/workflows/occipital.yml'), 'utf8'), build = workflowJob(source, 'build');
   assert.match(build, /^    runs-on: \$\{\{ matrix.runner \}\}$/m);
-  assert.match(source, /      targets:\n        type: string\n        default: all/);
+  const targets = source.match(/^      targets:\n((?:        .*\n)+)/m)[1];
+  assert.match(targets, /^        type: string$/m);
+  assert.match(targets, /^        default: all$/m);
   assert.match(source, /      consumers:\n        type: boolean\n        default: true/);
   assert.deepEqual(nativeTargets().map(value => value.target).sort(), Object.keys(candidateTargets).sort());
   assert.match(build, /fromJSON\(needs.targets.outputs.matrix\)/);
@@ -558,7 +560,7 @@ test('consumer diagnostics contain only the scoped safe reports, never raw cache
 });
 
 test('actual same-commit CI commands preserve artifact selection, native-before-consumer order and fail-fast behavior on both Nodes', { skip: process.platform === 'win32' }, async t => {
-  const inputs = readInputs(), root = await mkdtemp(join(process.env.TIDY_TEST_ROOT, 'tidy-ci-command-'));
+  const inputs = readInputs(), root = await mkdtemp(join(process.env.TIDY_TEST_ROOT, 'tidy ci command-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   const bin = join(root, 'bin'), log = join(root, 'commands.jsonl'); await mkdir(bin);
   const stub = `#!${process.execPath}
@@ -583,6 +585,8 @@ if(args.includes(process.env.FAIL_SUITE)) process.exit(17);
         assert.equal(calls[0][0], 'scripts/test/prepare.mjs');
         assert.equal(calls[0][calls[0].indexOf('--native-artifact')+1], join(root,'occipital-native-artifact'));
         assert.equal(calls[0].includes('--tools'), TARGET.startsWith('windows-'));
+        assert.equal(calls[0].includes('--run-root'), TARGET.startsWith('windows-'));
+        if (TARGET.startsWith('windows-')) assert.equal(calls[0][calls[0].indexOf('--run-root')+1], root, 'consumer execution must use explicit runner storage, not the system temporary default');
         assert.equal(calls[0][calls[0].indexOf('--rust-root')+1], join(root,'pinned-rust'));
         assert.equal(calls[0][calls[0].indexOf('--cargo-cache')+1], join(root,'owned-cargo'));
         assert.equal(calls[0].includes('--rust-environment'), TARGET.startsWith('windows-'));
@@ -591,6 +595,13 @@ if(args.includes(process.env.FAIL_SUITE)) process.exit(17);
       }
     }
   }
+  await rm(log,{force:true}); await writeFile(join(root,'runtime-tools.json'),'{}');
+  execFileSync(toolPath('bash'),['-e','-o','pipefail','-c',shellStep(workflowStep(workflow,'Prepare neutral native source snapshot'))],{
+    cwd:root,env:childEnv(join(root,'native-environment'),{PATH:bin+':'+inputs.tools.bin,RUNNER_TEMP:root,RUST_ROOT:join(root,'pinned-rust'),CARGO_HOME:join(root,'owned-cargo')},inputs),stdio:'pipe',
+  });
+  const nativeCalls = (await readFile(log,'utf8')).trim().split('\n').map(row=>JSON.parse(row)).filter(args=>args[0]==='scripts/test/prepare.mjs');
+  assert.equal(nativeCalls.length,1); assert.equal(nativeCalls[0].includes('--tools'),true);
+  assert.equal(nativeCalls[0].includes('--run-root'),false,'consumer storage policy must not relocate native compilation');
 });
 
 function shellStep(step) {
@@ -688,15 +699,15 @@ test('actual CI version stamp changes only the neutral native snapshot, leaving 
 test('actual CI diagnostics retention follows neutral descriptors and excludes raw npm logs and input receipts', { skip: process.platform === 'win32' }, async t => {
   const inputs = readInputs(), root = await mkdtemp(join(process.env.TIDY_TEST_ROOT,'tidy-captures-'));
   t.after(() => rm(root,{recursive:true,force:true}));
-  const neutral = join(root,'neutral'), reports = join(neutral,'.test-artifacts'), safe = 'installed-preparation-safe';
+  const neutral = join(root,'neutral'), source = join(root,'source'), reports = join(source,'.test-artifacts'), safe = 'installed-preparation-safe';
   await mkdir(join(reports,safe),{recursive:true});
   for (const file of ['fixture.json','npm.json','raw-debug-0.log','inputs.json']) await writeFile(join(reports,safe,file),'{}');
-  await mkdir(join(root,'consumer-22.19.0')); await writeFile(join(root,'consumer-22.19.0/inputs.json'),JSON.stringify({pi:{root:neutral}}));
+  await mkdir(join(root,'consumer-22.19.0')); await writeFile(join(root,'consumer-22.19.0/inputs.json'),JSON.stringify({pi:{root:neutral},source:{root:source}}));
   const native = await readFile(join(repo,'.github/workflows/occipital.yml'),'utf8');
   const env = childEnv(join(root,'caller'),{RUNNER_TEMP:root},inputs);
   execFileSync(toolPath('bash'),['-e','-o','pipefail','-c',shellStep(workflowStep(native,'Retain only safe consumer diagnostics from neutral sources'))],{cwd:repo,env,stdio:'pipe'});
   assert.deepEqual((await readdir(join(root,'consumer-22.19.0/diagnostics',safe))).sort(),['fixture.json','npm.json']);
-  await mkdir(join(root,'terminal-inputs')); await writeFile(join(root,'terminal-inputs/inputs.json'),JSON.stringify({pi:{root:neutral}}));
+  await mkdir(join(root,'terminal-inputs')); await writeFile(join(root,'terminal-inputs/inputs.json'),JSON.stringify({pi:{root:source}}));
   await mkdir(join(reports,'terminal-syntax')); await writeFile(join(reports,'terminal-syntax/capture.txt'),'physical capture');
   const ci = await readFile(join(repo,'.github/workflows/ci.yml'),'utf8');
   execFileSync(toolPath('bash'),['-e','-o','pipefail','-c',shellStep(workflowStep(ci,'Retain selected physical terminal captures from neutral source'))],{cwd:repo,env,stdio:'pipe'});
@@ -788,4 +799,49 @@ test('current-source full union checks out the exact approved HEAD rather than a
     assert.match(checkout,/          fetch-depth: 0/);
   }
   assert.match(workflowJob(ci,'native'),/source-ref: \$\{\{ needs\.scope\.outputs\.head \}\}/);
+});
+
+
+test('CI retains safe preparation reports even when npm failed before publishing inputs', { skip: process.platform === 'win32' }, async t => {
+  const inputs = readInputs(), root = await mkdtemp(join(process.env.TIDY_TEST_ROOT,'tidy-preparation-captures-'));
+  t.after(() => rm(root,{recursive:true,force:true}));
+  const preparation = join(root,'consumer-26.7.0'), name = 'installed-preparation-before-inputs';
+  const reports = join(preparation,'consumer/diagnostics',name);
+  await mkdir(reports,{recursive:true});
+  for (const file of ['npm.json','fixture.json','raw-debug-0.log','inputs.json']) await writeFile(join(reports,file),'{}');
+  await mkdir(join(preparation,'consumer/diagnostics','private-cache'));
+  await writeFile(join(preparation,'consumer/diagnostics/private-cache','npm.json'),'private');
+  const workflow = await readFile(join(repo,'.github/workflows/occipital.yml'),'utf8');
+  execFileSync(toolPath('bash'),['-e','-o','pipefail','-c',shellStep(workflowStep(workflow,'Retain only safe consumer diagnostics from neutral sources'))], {
+    cwd:repo,env:childEnv(join(root,'caller'),{RUNNER_TEMP:root},inputs),stdio:'pipe',
+  });
+  assert.deepEqual(await readdir(join(preparation,'diagnostics')),[name]);
+  assert.deepEqual((await readdir(join(preparation,'diagnostics',name))).sort(),['fixture.json','npm.json']);
+  await assert.rejects(lstat(join(preparation,'inputs.json')),{code:'ENOENT'});
+});
+
+
+test('actual native target step emits a Windows-only diagnostic but keeps complete release plans', async t => {
+  const inputs = readInputs(), root = await mkdtemp(join(process.env.TIDY_TEST_ROOT,'tidy-native-plan-'));
+  t.after(() => rm(root,{recursive:true,force:true}));
+  const source = await readFile(join(repo,'.github/workflows/occipital.yml'),'utf8');
+  const step = source.match(/      - id: targets\n[\s\S]*?(?=\n  packaging-fixtures:)/)[0];
+  for(const [TARGETS, RELEASE_REF, CONSUMERS, count, packaging] of [
+    ['windows-only','refs/heads/windows-performance','true',2,false],
+    ['all','refs/heads/main','true',6,true],['all','refs/heads/main','false',6,false],
+    ['host-only','refs/heads/main','true',1,true],
+    ['windows-only','refs/tags/pi-tidy-ui-v0.2.0','false',6,true],
+    ['windows-only','refs/tags/occipital-v0.1.6','false',6,true],
+  ]) {
+    const output = join(root,'github-output'); await writeFile(output,'');
+    execFileSync(toolPath('bash'),['-e','-o','pipefail','-c',shellStep(step)],{
+      cwd:repo,env:childEnv(join(root,'environment'),{TARGETS,RELEASE_REF,CONSUMERS,GITHUB_OUTPUT:output},inputs),stdio:'pipe',
+    });
+    const record = Object.fromEntries((await readFile(output,'utf8')).trim().split('\n').map(line=>[line.slice(0,line.indexOf('=')),line.slice(line.indexOf('=')+1)]));
+    const matrix = JSON.parse(record.matrix);assert.equal(matrix.length,count);assert.equal(record.packaging,String(packaging));
+    if(count===2) assert.deepEqual(matrix.map(row=>row.target),['windows-x64-msvc','windows-arm64-msvc']);
+  }
+  assert.match(workflowJob(source,'packaging-fixtures'),/needs: targets\n    if: needs.targets.outputs.packaging == 'true'/);
+  const ci = await readFile(join(repo,'.github/workflows/ci.yml'),'utf8');
+  assert.match(workflowJob(ci,'baseline'),/selection != 'windows-consumer-diagnostic'/);
 });

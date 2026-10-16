@@ -119,6 +119,10 @@ pi -e ./src/index.ts --tidy-ui-compact write
 
 ## Compatibility
 
+Supported platforms: **GNU Linux x64/ARM64 (glibc 2.28+), macOS x64/ARM64, and Windows x64**. The installed Pi/Node host's OS and CPU requirements also apply.
+
+**Windows ARM64 is temporarily unsupported for the entire pi-tidy-ui extension**, not only native syntax highlighting. Installation or startup on that host is not a support guarantee. The reason is disproportionate hosted verification cost, not a demonstrated functional incompatibility. See [platform policy, measurements and transition status](docs/releases.md#supported-platforms). Existing published artifacts are unchanged.
+
 The supported/tested host is **Pi 1.0.0**. One adapter obtains the stable TUI reference through a public widget factory and narrowly wraps private component rendering, normalized tool clicks, UI updates, stock-editor presentation and child attachment/removal. Native methods still execute; no tool execution or raw input is intercepted. Host libraries are not bundled or privately imported. See [architecture](docs/architecture.md) for the integration and ownership boundaries.
 
 This is intentionally a compatibility-sensitive integration. If a required component contract cannot be established, pi-tidy-ui warns and retains native rendering. Optional queue-card and upper-widget shape guards instead leave the affected block native. Runtime restoration does not overwrite hooks subsequently replaced by another extension. Arbitrary extensions wrapping the same private methods and future Pi versions are not guaranteed compatible; run the terminal checks after upgrading.

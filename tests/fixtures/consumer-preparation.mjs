@@ -58,12 +58,12 @@ export function rewriteConsumerLock(lock, sourceRegistry, registryURL) {
 }
 
 export async function installConsumer(npm, consumer, installed, registryURL) {
-  await npm(['install', '--ignore-scripts', '--no-audit', '--no-fund', ...(installed ? [] : ['--omit=optional'])], registryURL, consumer);
+  await npm(['install', '--package-lock-only', '--ignore-scripts', '--no-audit', '--no-fund', ...(installed ? [] : ['--omit=optional'])], registryURL, consumer);
 }
 
-export async function verifyConsumerReplay(npm, consumer, installed, registryURL) {
+export async function verifyConsumerReplay(npm, consumer, installed, registryURL, { dryRun = false } = {}) {
   const lock = JSON.parse(await readFile(join(consumer, 'package-lock.json'), 'utf8'));
-  await npm(['ci', '--ignore-scripts', '--no-audit', '--no-fund', ...(installed ? [] : ['--omit=optional'])], registryURL, consumer);
+  await npm(['ci', ...(dryRun ? ['--dry-run'] : []), '--ignore-scripts', '--no-audit', '--no-fund', ...(installed ? [] : ['--omit=optional'])], registryURL, consumer);
   assert.deepEqual(JSON.parse(await readFile(join(consumer, 'package-lock.json'), 'utf8')), lock, 'Clean consumer replay must preserve the frozen graph');
 }
 
@@ -116,12 +116,12 @@ async function stageConsumerPackages(inputs, root, pack) {
  */
 export async function prepareConsumerClosure(inputs, { offline = false } = {}) {
   assert.ok(isAbsolute(inputs.preparation), 'Consumer preparation needs an owned absolute preparation root');
-  const native = validateNative(inputs);
   assert.match(inputs.source.commit, /^[a-f0-9]{40}$/);
   assert.match(inputs.source.tree, /^[a-f0-9]{64}$/);
   assert.match(inputs.source.nativeTree, /^[a-f0-9]{64}$/);
   assert.ok(inputs.registry?.packages?.length, 'Prepare baseline archive inputs before consumer closure');
   if (offline && !inputs.registry.consumer) throw new Error('Offline consumer preparation requires an explicit previously frozen consumer registry');
+  const native = validateNative(inputs);
   const packages = inputs.registry.packages.filter(record => { assert.equal(typeof record?.name, 'string'); return !synthetic(record.name); });
   const documents = [...(inputs.registry.documents ?? [])];
   const output = join(inputs.preparation, 'consumer'); await mkdir(output, { recursive: true });
@@ -203,8 +203,8 @@ export async function prepareConsumerClosure(inputs, { offline = false } = {}) {
         await writeFile(join(consumer, 'package-lock.json'), JSON.stringify(seeded));
         await installConsumer(npm, consumer, installed, registry.url);
       }
-      // A fresh ci can request metadata that install did not need; record it before freezing.
-      await verifyConsumerReplay(npm, consumer, installed, registry.url);
+      // Keep ci's independent graph/peer validation; only execution materializes online consumers.
+      await verifyConsumerReplay(npm, consumer, installed, registry.url, { dryRun: !offline });
       registry.assertNoRejectedRequests();
       const lockBytes = await readFile(join(consumer, 'package-lock.json')), manifestBytes = await readFile(join(consumer, 'package.json'));
       const lock = JSON.parse(lockBytes.toString('utf8'));
@@ -219,8 +219,14 @@ export async function prepareConsumerClosure(inputs, { offline = false } = {}) {
         for (const [location, entry] of Object.entries(lock.packages)) {
           if (location.endsWith(`node_modules/${record.name}`)) assert.equal(entry.version, record.version, 'Nested selected host identity drifted');
         }
-        const manifest = JSON.parse(await readFile(join(consumer, 'node_modules', record.name, 'package.json'), 'utf8'));
-        assert.equal(manifest.name, record.name); assert.equal(manifest.version, record.version, 'Consumer must retain selected host identity');
+        assert.equal(lock.packages[`node_modules/${record.name}`]?.version, record.version, 'Consumer lock must retain selected host identity');
+        const archive = packages.find(entry => entry.name === record.name && entry.version === record.version);
+        assert.ok(archive, 'Selected host archive must be prepared');
+        assert.equal(archive.manifest.name, record.name); assert.equal(archive.manifest.version, record.version);
+        if (offline) {
+          const manifest = JSON.parse(await readFile(join(consumer, 'node_modules', record.name, 'package.json'), 'utf8'));
+          assert.equal(manifest.name, record.name); assert.equal(manifest.version, record.version, 'Consumer must retain selected host identity');
+        }
       }
       if (!offline) {
         const path = join(locksRoot, sha256(lockBytes) + '.json'), manifestPath = join(locksRoot, sha256(manifestBytes) + '.manifest.json');

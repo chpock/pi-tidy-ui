@@ -109,7 +109,9 @@ export async function runNpmPreparation(args: string[], options: {
     const report = await mkdtemp(join(options.reportsRoot, 'installed-preparation-'));
     await writeFile(join(report, 'npm.json'), JSON.stringify({
       node: options.nodeVersion, parentNode: process.version, platform: process.platform, arch: process.arch,
-      operation: args[0] === 'pack' ? 'pack' : 'install', elapsedMs, configuredThreadpoolSize,
+      operation: args[0] === 'pack' ? 'pack' : 'install',
+      mode: args.includes('--package-lock-only') ? 'lock-only' : args.includes('--dry-run') ? 'dry-run' : 'standard',
+      elapsedMs, configuredThreadpoolSize,
       temporaryDrive: summarizeTemporaryDrive(logs),
       exitCode: failed ? typeof failed.code === 'number' ? failed.code : null : 0,
       errno: typeof failed?.code === 'string' && errno.has(failed.code) ? failed.code : null,
