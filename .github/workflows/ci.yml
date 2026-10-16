@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
     inputs:
       full:
-        description: 'Full supported compatibility and six-platform acceptance (cannot narrow releases)'
+        description: 'Full supported compatibility and enabled-platform acceptance (cannot narrow releases)'
         type: boolean
         default: true
       add-features:
@@ -61,18 +61,28 @@ jobs:
       daemon_version: ${{ steps.version.outputs.daemon_version }}
       daemon_tag: ${{ steps.version.outputs.daemon_tag }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7.0.1
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           # The nearest daemon version comes from ancestry, not registry/latest.
           fetch-depth: 0
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7.1.0
         with:
+          package-manager-cache: false
           node-version: '22.19.0'
       - id: version
         env:
           RELEASE_REF: ${{ github.ref }}
         run: node scripts/release/version.mjs --resolve "$RELEASE_REF"
+      - name: Validate automatic native npm version before building
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/occipital-v')
+        env:
+          RELEASE_REF: ${{ github.ref }}
+        run: |
+          node --input-type=module <<'JS'
+          import {npmReleaseTag} from './scripts/release/version.mjs';
+          npmReleaseTag(process.env.RELEASE_REF.slice('refs/tags/'.length));
+          JS
       - name: Validate workflows
         uses: docker://rhysd/actionlint:1.7.12
 
@@ -91,13 +101,14 @@ jobs:
       profiles: ${{ steps.scope.outputs.profiles }}
     steps:
       # For PR metadata, execute only the trusted base router, never PR code.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7.0.1
         with:
           ref: ${{ github.event.pull_request.base.sha || github.sha }}
           fetch-depth: 0
           persist-credentials: false
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7.1.0
         with:
+          package-manager-cache: false
           node-version: '22.19.0'
       - name: Fetch diff objects without executing changed code
         env:
@@ -106,7 +117,7 @@ jobs:
         run: |
           git fetch --no-tags origin "$HEAD_SHA"
           if [[ -n "$BASE_SHA" && "$BASE_SHA" != 0000000000000000000000000000000000000000 ]]; then git fetch --no-tags origin "$BASE_SHA"; fi
-      - uses: actions/github-script@v7
+      - uses: actions/github-script@v9.0.0
         id: scope
         env:
           SCOPE_INPUTS: ${{ toJSON(inputs) }}
@@ -114,19 +125,12 @@ jobs:
           script: |
             const {githubScope} = await import(`${process.env.GITHUB_WORKSPACE}/scripts/test/ci-scope.mjs`);
             const {featurePlan} = await import(`${process.env.GITHUB_WORKSPACE}/scripts/test/catalog.mjs`);
-            const {writeFileSync} = await import('node:fs');
             const result = await githubScope({api:(route,params)=>github.request(route,params),eventName:context.eventName,payload:context.payload,ref:context.ref,commit:context.sha,actor:context.actor,inputs:JSON.parse(process.env.SCOPE_INPUTS),featurePlan});
-            writeFileSync('ci-scope.json',JSON.stringify(result,null,2) + '\n');
             core.setOutput('scope',JSON.stringify(result));
             for (const key of ['status','full','head']) core.setOutput(key,String(result[key]));
             core.setOutput('features',result.features.join(','));
             core.setOutput('profiles',JSON.stringify({include:result.affectedProfiles}));
-            await core.summary.addHeading('Contract scope').addCodeBlock(JSON.stringify(result,null,2),'json').write();
-      - uses: actions/upload-artifact@v4
-        with:
-          name: ci-scope
-          path: ci-scope.json
-          if-no-files-found: error
+            console.log('Contract scope: ' + JSON.stringify(result));
 
   scope-decision:
     needs: scope
@@ -144,15 +148,16 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7.0.1
         with:
           ref: ${{ needs.scope.outputs.head }}
           fetch-depth: 0
           persist-credentials: false
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7.1.0
         with:
+          package-manager-cache: false
           node-version: '22.19.0'
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6.1.0
         with:
           path: ${{ runner.temp }}/scoped-inputs/environment/cache/npm/_cacache
           key: hermetic-npm-inputs-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('package-lock.json') }}
@@ -177,38 +182,33 @@ jobs:
         env:
           FEATURES: ${{ join(fromJSON(needs.scope.outputs.scope).baselineFeatures, ',') }}
         run: node scripts/test/feature.mjs --inputs "$RUNNER_TEMP/scoped-inputs/inputs.json" --features "$FEATURES" --output "$RUNNER_TEMP/baseline-receipts" --network-isolated
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: baseline-receipts
-          path: ${{ runner.temp }}/baseline-receipts/*.json
-          if-no-files-found: ignore
 
   affected:
-    needs: [version, scope, native]
+    needs: [version, scope, native-linux]
     if: >-
       always() && needs.version.result == 'success' && needs.scope.result == 'success' &&
       needs.scope.outputs.status == 'ready' && fromJSON(needs.scope.outputs.scope).runAffected &&
-      (needs.native.result == 'success' || needs.native.result == 'skipped')
+      (needs.native-linux.result == 'success' || needs.native-linux.result == 'skipped')
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.scope.outputs.profiles) }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7.0.1
         with:
           ref: ${{ needs.scope.outputs.head }}
           fetch-depth: 0
           persist-credentials: false
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7.1.0
         with:
+          package-manager-cache: false
           node-version: ${{ matrix.node }}
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6.1.0
         with:
           path: ${{ runner.temp }}/scoped-inputs/environment/cache/npm/_cacache
-          key: hermetic-npm-inputs-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('package-lock.json') }}
-      - uses: actions/download-artifact@v4
+          key: hermetic-npm-inputs-${{ runner.os }}-${{ runner.arch }}-affected-pi-${{ matrix.pi }}-integration-${{ fromJSON(needs.scope.outputs.scope).capabilities.integration }}-shared-${{ fromJSON(needs.scope.outputs.scope).capabilities.shared }}-${{ hashFiles('package-lock.json', 'tests/fixtures/integration-profile/package-lock.json') }}
+      - uses: actions/download-artifact@v8.0.2
         if: fromJSON(needs.scope.outputs.scope).capabilities.native
         with:
           name: occipital-v${{ needs.version.outputs.daemon_version }}-linux-x64-gnu
@@ -262,27 +262,81 @@ jobs:
           args=()
           if [[ "$CHECK_TYPES" == true ]]; then args+=(--check-types); fi
           node scripts/test/feature.mjs --inputs "$RUNNER_TEMP/scoped-inputs/inputs.json" --features "$FEATURES" --affected-only "${args[@]}" --output "$RUNNER_TEMP/affected-receipts" --network-isolated
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: affected-node-${{ matrix.node }}-pi-${{ matrix.pi }}
-          path: ${{ runner.temp }}/affected-receipts/*.json
-          if-no-files-found: ignore
 
-  native:
+  native-plan:
     needs: [version, scope]
     if: needs.scope.outputs.status == 'ready' && fromJSON(needs.scope.outputs.scope).capabilities.native
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      host: ${{ steps.plan.outputs.host }}
+      remaining: ${{ steps.plan.outputs.remaining }}
+      host-consumers: ${{ steps.plan.outputs.hostConsumers }}
+      targets: ${{ steps.plan.outputs.targets }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          ref: ${{ needs.scope.outputs.head }}
+          persist-credentials: false
+      - uses: actions/setup-node@v7.1.0
+        with:
+          package-manager-cache: false
+          node-version: '22.19.0'
+      - id: plan
+        env:
+          TARGET_SCOPE: ${{ fromJSON(needs.scope.outputs.scope).platforms }}
+          RELEASE_REF: ${{ github.ref }}
+          CONSUMERS: ${{ fromJSON(needs.scope.outputs.scope).consumers }}
+          WINDOWS_ARM64: ${{ vars.CI_WINDOWS_ARM64 || 'false' }}
+        run: |
+          node --input-type=module <<'JS'
+          import {appendFileSync} from 'node:fs';
+          import {nativePlan} from './scripts/test/ci-scope.mjs';
+          if (!['true','false'].includes(process.env.WINDOWS_ARM64)) throw new Error('CI_WINDOWS_ARM64 must be true or false');
+          const plan = nativePlan(process.env.TARGET_SCOPE,process.env.RELEASE_REF,process.env.CONSUMERS === 'true',{windowsArm64:process.env.WINDOWS_ARM64 === 'true'});
+          for (const key of ['host','remaining','hostConsumers','targets']) appendFileSync(process.env.GITHUB_OUTPUT,key + '=' + JSON.stringify(plan[key]) + '\n');
+          console.log('Selected native obligations: ' + JSON.stringify(plan));
+          JS
+
+  native-linux:
+    needs: [version, scope, native-plan]
+    if: needs.native-plan.outputs.host != '[]'
     uses: ./.github/workflows/occipital.yml
     with:
       release-ref: ${{ github.ref }}
       version: ${{ needs.version.outputs.daemon_version }}
-      clean-build: ${{ inputs.clean-native-build || false }}
       source-ref: ${{ needs.scope.outputs.head }}
-      targets: ${{ fromJSON(needs.scope.outputs.scope).platforms }}
-      consumers: ${{ fromJSON(needs.scope.outputs.scope).consumers }}
+      clean-build: ${{ inputs.clean-native-build || false }}
+      platforms: ${{ needs.native-plan.outputs.host }}
+
+  native-platforms:
+    needs: [version, scope, native-plan]
+    if: needs.native-plan.outputs.remaining != '[]'
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.native-plan.outputs.remaining) }}
+    uses: ./.github/workflows/occipital-platform.yml
+    with:
+      release-ref: ${{ github.ref }}
+      version: ${{ needs.version.outputs.daemon_version }}
+      source-ref: ${{ needs.scope.outputs.head }}
+      clean-build: ${{ inputs.clean-native-build || false }}
+      platform: ${{ toJSON(matrix) }}
+      consumer-platforms: ${{ toJSON(matrix.consumerMatrix) }}
+
+  consumer-linux:
+    needs: [version, scope, native-plan, native-linux]
+    if: needs.native-plan.outputs.host-consumers != '[]'
+    uses: ./.github/workflows/occipital-consumer.yml
+    with:
+      release-ref: ${{ github.ref }}
+      version: ${{ needs.version.outputs.daemon_version }}
+      source-ref: ${{ needs.scope.outputs.head }}
+      platforms: ${{ needs.native-plan.outputs.host-consumers }}
 
   extension:
-    needs: [version, native, scope]
+    needs: [version, native-linux, scope]
     if: needs.scope.outputs.full == 'true' && needs.version.outputs.product != 'occipital'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -292,20 +346,24 @@ jobs:
         node: ['22.19.0', '26.7.0']
         pi: ['1.0.0', '1.2.0']
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7.0.1
         with:
           ref: ${{ needs.scope.outputs.head }}
           fetch-depth: 0
           persist-credentials: false
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7.1.0
         with:
+          package-manager-cache: false
           node-version: ${{ matrix.node }}
-          cache: npm
+      - uses: actions/cache@v6.1.0
+        with:
+          path: ${{ runner.temp }}/extension-inputs/environment/cache/npm/_cacache
+          key: hermetic-npm-inputs-${{ runner.os }}-${{ runner.arch }}-pi-${{ matrix.pi }}-${{ hashFiles('package-lock.json', 'tests/fixtures/integration-profile/package-lock.json') }}
       - name: Assert selected Node runtime
         env:
           EXPECTED_NODE: ${{ matrix.node }}
         run: node -e 'if (process.version !== "v" + process.env.EXPECTED_NODE) throw new Error(process.version)'
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8.0.2
         with:
           name: occipital-v${{ needs.version.outputs.daemon_version }}-linux-x64-gnu
           path: .test-artifacts/ci-native
@@ -338,19 +396,9 @@ jobs:
       - name: Inert native packaging and release regressions
         if: matrix.pi == '1.0.0'
         run: node scripts/test/run.mjs --inputs "$RUNNER_TEMP/extension-inputs/inputs.json" --suite native-release --network-isolated
-      # Real release packages are generated only after all platform/CLI and delivery gates.
-      - name: Pack development extension without publishing
-        if: needs.version.outputs.product != 'pi-tidy-ui'
-        run: npm pack --ignore-scripts
-      - uses: actions/upload-artifact@v4
-        if: needs.version.outputs.product != 'pi-tidy-ui'
-        with:
-          name: extension-${{ needs.version.outputs.version }}-node-${{ matrix.node }}-pi-${{ matrix.pi }}
-          path: pi-tidy-ui-*.tgz
-          if-no-files-found: error
 
   terminal:
-    needs: [version, native, scope]
+    needs: [version, native-linux, scope]
     if: needs.scope.outputs.full == 'true' && needs.version.outputs.product != 'occipital'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -360,16 +408,20 @@ jobs:
         node: ['22.19.0', '26.7.0']
         pi: ['1.0.0', '1.2.0']
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7.0.1
         with:
           ref: ${{ needs.scope.outputs.head }}
           fetch-depth: 0
           persist-credentials: false
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7.1.0
         with:
+          package-manager-cache: false
           node-version: ${{ matrix.node }}
-          cache: npm
-      - uses: actions/download-artifact@v4
+      - uses: actions/cache@v6.1.0
+        with:
+          path: ${{ runner.temp }}/terminal-inputs/environment/cache/npm/_cacache
+          key: hermetic-npm-inputs-${{ runner.os }}-${{ runner.arch }}-pi-${{ matrix.pi }}-${{ hashFiles('package-lock.json', 'tests/fixtures/integration-profile/package-lock.json') }}
+      - uses: actions/download-artifact@v8.0.2
         with:
           name: occipital-v${{ needs.version.outputs.daemon_version }}-linux-x64-gnu
           path: .test-artifacts/ci-native
@@ -408,41 +460,31 @@ jobs:
         run: node scripts/test/run.mjs --inputs "$RUNNER_TEMP/terminal-inputs/inputs.json" --suite terminal --network-isolated
       - name: Physical syntax CLI and replay using this commit's native artifact
         run: node scripts/test/run.mjs --inputs "$RUNNER_TEMP/terminal-inputs/inputs.json" --suite syntax-terminal --network-isolated
-      - name: Retain selected physical terminal captures from neutral source
-        if: failure()
-        run: |
-          node --input-type=module <<'JS'
-          import {cpSync,existsSync,mkdirSync,readFileSync,readdirSync} from 'node:fs';
-          import {join} from 'node:path';
-          const receipt = join(process.env.RUNNER_TEMP,'terminal-inputs/inputs.json');
-          if (existsSync(receipt)) {
-            const inputs = JSON.parse(readFileSync(receipt)), captures = join(inputs.pi.root,'.test-artifacts');
-            if (existsSync(captures)) for (const directory of readdirSync(captures,{withFileTypes:true})) {
-              if (!directory.isDirectory() || !/^terminal-[\w-]+$/.test(directory.name)) continue;
-              const output = join(process.env.RUNNER_TEMP,'terminal-captures'); mkdirSync(output,{recursive:true});
-              cpSync(join(captures,directory.name),join(output,directory.name),{recursive:true});
-            }
-          }
-          JS
-      - uses: actions/upload-artifact@v4
-        if: failure()
-        with:
-          name: terminal-failure-node-${{ matrix.node }}-pi-${{ matrix.pi }}
-          path: ${{ runner.temp }}/terminal-captures/terminal-*/
-          include-hidden-files: true
-          if-no-files-found: ignore
 
   release-occipital:
-    needs: [version, native, affected]
+    needs: [version, scope, native-plan, native-linux, native-platforms, consumer-linux, affected]
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/occipital-v')
     permissions:
       contents: write
     uses: ./.github/workflows/occipital-release.yml
     with:
       tag: ${{ github.ref_name }}
+      targets: ${{ needs.native-plan.outputs.targets }}
+
+  publish-occipital-npm:
+    needs: [scope, native-plan, release-occipital]
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/occipital-v')
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/occipital-npm-publish.yml
+    with:
+      tag: ${{ github.ref_name }}
+      source-ref: ${{ needs.scope.outputs.head }}
+      targets: ${{ needs.native-plan.outputs.targets }}
 
   extension-package:
-    needs: [version, native, extension, terminal]
+    needs: [version, native-plan, native-linux, native-platforms, consumer-linux, extension, terminal]
     if: needs.version.outputs.product == 'pi-tidy-ui'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -451,14 +493,16 @@ jobs:
       RELEASE_REF: ${{ github.ref }}
       DAEMON_TAG: ${{ needs.version.outputs.daemon_tag }}
       SOURCE_COMMIT: ${{ github.sha }}
+      NATIVE_TARGETS: ${{ needs.native-plan.outputs.targets }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 0
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7.1.0
         with:
+          package-manager-cache: false
           node-version: '26.7.0'
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8.0.2
         with:
           pattern: occipital-v${{ needs.version.outputs.daemon_version }}-*
           path: .test-artifacts/extension-release/native-ci
@@ -469,20 +513,15 @@ jobs:
           gh release download "$DAEMON_TAG" --repo "$GITHUB_REPOSITORY" --dir .test-artifacts/extension-release/public
       # Identical native input is not inferred from Git paths: compare all six raw binaries.
       # A changed daemon is normal on branches, but must be released before this extension tag.
-      - name: Admit current native bytes, public release and all six npm payloads
+      - name: Admit current native bytes, public release and required npm payloads
         run: |
           node scripts/release/extension-release.mjs "$RELEASE_REF" \
             .test-artifacts/extension-release/native-ci .test-artifacts/extension-release/public \
-            .test-artifacts/extension-release/prepared
+            .test-artifacts/extension-release/prepared "$NATIVE_TARGETS"
       - name: Pack the admitted extension without publishing
         run: |
           npm pack ./.test-artifacts/extension-release/prepared/extension --ignore-scripts \
             --pack-destination .test-artifacts/extension-release/prepared
-      - uses: actions/upload-artifact@v4
-        with:
-          name: extension-${{ needs.version.outputs.version }}-release
-          path: |
-            .test-artifacts/extension-release/prepared/pi-tidy-ui-*.tgz
-            .test-artifacts/extension-release/prepared/plan.json
-          include-hidden-files: true
-          if-no-files-found: error
+      # Future extension npm publication: intentionally disabled.
+      # - name: Publish the admitted pi-tidy-ui package
+      #   run: npm publish .test-artifacts/extension-release/prepared/pi-tidy-ui-*.tgz --access public --provenance --ignore-scripts

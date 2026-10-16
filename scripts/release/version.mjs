@@ -102,3 +102,10 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
   if (process.env.GITHUB_OUTPUT) await appendFile(process.env.GITHUB_OUTPUT, Object.entries(output).map(([key, value]) => `${key}=${value}\n`).join(''));
   console.log(JSON.stringify(output));
 }
+
+export function npmReleaseTag(tag) {
+  const release=releaseRef('refs/tags/'+tag);
+  if(release.product!=='occipital')throw Error('Expected an Occipital release tag');
+  if(release.version.includes('+'))throw Error('npm publication does not preserve SemVer build metadata');
+  return release;
+}

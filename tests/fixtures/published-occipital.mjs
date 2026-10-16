@@ -9,6 +9,7 @@ import { pathToFileURL } from 'node:url';
 import { readInputs, childEnv } from '../../scripts/test/context.mjs';
 import { releaseRef } from '../../scripts/release/version.mjs';
 import { candidateTargets } from '../../scripts/release/native-release.mjs';
+import {enabledTargets} from '../../scripts/release/platforms.mjs';
 import { publishedDeclaration, stageExtensionPackage } from '../../scripts/release/extension-release.mjs';
 import { runNpmPreparation, summarizeTemporaryDrive } from './npm-preparation.ts';
 
@@ -20,6 +21,7 @@ assert.equal(process.version, inputs.node.version);
 const glibc = process.platform !== 'linux' || typeof process.report.getReport().header.glibcVersionRuntime === 'string';
 const target = Object.keys(candidateTargets).find(key => candidateTargets[key].os === process.platform && candidateTargets[key].cpu === process.arch && glibc);
 assert.ok(target, 'Supported native platform required');
+const targets=enabledTargets({windowsArm64:target === 'windows-arm64-msvc'});
 const started = performance.now();
 const configuredThreads = Number(process.env.UV_THREADPOOL_SIZE);
 const configuredThreadpoolSize = Number.isSafeInteger(configuredThreads) && configuredThreads > 0 ? configuredThreads : null;
@@ -54,10 +56,10 @@ try {
   const root = await realpath(await mkdtemp(join(alias, 'consumer-')));
   pack = join(root, 'pack');
   await mkdir(pack);
-  const NATIVE_RELEASE = await publishedDeclaration(repo), artifact = NATIVE_RELEASE.artifacts.find(item => item.target === target);
+  const NATIVE_RELEASE = await publishedDeclaration(repo,'HEAD',targets), artifact = NATIVE_RELEASE.artifacts.find(item => item.target === target);
   assert.ok(artifact);
   const extension = join(root, 'extension');
-  await stageExtensionPackage({ root: repo, output: extension, version: '0.0.0-installed', release: NATIVE_RELEASE });
+  await stageExtensionPackage({ root: repo, output: extension, version: '0.0.0-installed', release: NATIVE_RELEASE, targets });
   const executable = candidateTargets[target].executable, nativeName = `@kchpock/occipital-${target}`;
   const extensionPack = await packed(extension);
   const peers = Object.fromEntries(inputs.pi.packages.map(record => [record.name, record.version]));

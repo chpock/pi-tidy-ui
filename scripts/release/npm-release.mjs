@@ -7,7 +7,8 @@ import { pathToFileURL } from 'node:url';
 import { isDeepStrictEqual } from 'node:util';
 import { candidateTargets } from './native-release.mjs';
 import { artifactName, assembleRelease } from './native-ci.mjs';
-import { releaseRef } from './version.mjs';
+import { releaseRef, npmReleaseTag } from './version.mjs';
+import { enabledTargets, validateTargets } from './platforms.mjs';
 
 const run = promisify(execFile), npm = process.platform === 'win32' ? 'npm.cmd' : 'npm';
 const registry = '--registry=https://registry.npmjs.org';
@@ -24,25 +25,6 @@ function singleVersion(text) {
   if (value.length !== 1) throw new Error('Expected exactly one npm version record');
   return value[0];
 }
-function npmReleaseTag(tag) {
-  const release = releaseRef('refs/tags/' + tag);
-  if (release.product !== 'occipital') throw new Error('Expected an Occipital release tag');
-  if (release.version.includes('+')) throw new Error('npm publication does not preserve SemVer build metadata');
-  return release;
-}
-function releaseInput(tag, runId) {
-  const release = npmReleaseTag(tag);
-  if (!/^[1-9]\d*$/.test(runId) || !Number.isSafeInteger(Number(runId))) throw new Error('Expected an explicit numeric source CI run ID');
-  return release;
-}
-export function validateSourceRun(value, { tag, runId, repository, commit }) {
-  const release = releaseInput(tag, runId);
-  if (!/^[a-f0-9]{40}$/.test(commit) || value.id !== Number(runId) || value.path !== '.github/workflows/ci.yml'
-    || value.event !== 'push' || value.status !== 'completed' || value.conclusion !== 'success'
-    || value.repository?.full_name !== repository || value.head_repository?.full_name !== repository
-    || value.head_branch !== tag || value.head_sha !== commit) throw new Error('Source CI run is not the exact successful release-tag build');
-  return release;
-}
 export function validatePublicRelease(value, tag) {
   const release = npmReleaseTag(tag);
   if (value.tag_name !== tag || value.draft !== false || value.prerelease !== release.prerelease) {
@@ -50,16 +32,18 @@ export function validatePublicRelease(value, tag) {
   }
 }
 
-export async function prepareNpmRelease({ directory, publicDirectory, tag, repository, commit, output, execute = run }) {
+export async function prepareNpmRelease({ directory, publicDirectory, tag, repository, commit, output, targets = enabledTargets(), execute = run }) {
+  targets = validateTargets(targets);
   const release = npmReleaseTag(tag);
   await mkdir(output);
   const checked = join(output, 'checked-release');
-  const metadata = await assembleRelease({ directory, tag, repository, commit, output: checked });
+  const metadata = await assembleRelease({ directory, tag, repository, commit, output: checked, targets });
   for (const name of await readdir(checked)) {
     if (!(await readFile(join(checked, name))).equals(await readFile(join(publicDirectory, name)))) throw new Error(`Public release differs from source CI: ${name}`);
   }
   const inputs = [];
-  for (const [target, platform] of Object.entries(candidateTargets)) {
+  for (const target of targets) {
+    const platform = candidateTargets[target];
     const source = join(directory, artifactName(release.version, target), 'packages', target), manifest = await json(join(source, 'package.json'));
     const expected = { name: `@kchpock/occipital-${target}`, version: release.version, os: [platform.os], cpu: [platform.cpu],
       libc: platform.libc ? [platform.libc] : undefined, files: [platform.executable, 'LICENSE', 'NOTICE'], exports: { './package.json': './package.json' },
@@ -81,7 +65,7 @@ export async function prepareNpmRelease({ directory, publicDirectory, tag, repos
     }
     inputs.push({ target, source, manifest, files, executable: platform.executable });
   }
-  // Admit the complete family before npm can pack or publish anything.
+  // Admit every selected package before npm can pack or publish anything.
   const tarballs = join(output, 'tarballs'); await mkdir(tarballs);
   const plan = { tag, version: release.version, prerelease: release.prerelease, repository, commit, packages: [] };
   for (const item of inputs) {
@@ -128,20 +112,27 @@ async function verifyPublicArchive(row, fetcher) {
   if (size !== expected || 'sha512-' + hash.digest('base64') !== row.integrity) throw new Error(`Public registry archive differs: ${row.name}`);
 }
 
-export async function publishNpmRelease({ planPath, env = process.env, execute = run, fetcher = fetch }) {
-  if (env.GITHUB_ACTIONS !== 'true' || env.GITHUB_REPOSITORY !== 'chpock/pi-tidy-ui' || env.GITHUB_REF !== 'refs/heads/main'
-    || env.GITHUB_WORKFLOW_REF !== 'chpock/pi-tidy-ui/.github/workflows/occipital-npm-publish.yml@refs/heads/main'
-    || !env.ACTIONS_ID_TOKEN_REQUEST_URL || !env.ACTIONS_ID_TOKEN_REQUEST_TOKEN) throw new Error('Publication requires the manual main-branch OIDC workflow, not local npm credentials');
+export async function publishNpmRelease({ planPath, env = process.env, targets = enabledTargets(), execute = run, fetcher = fetch, report = value => console.log(JSON.stringify(value)) }) {
+  targets = validateTargets(targets);
   const plan = await json(planPath), release = npmReleaseTag(plan.tag);
+  const ref = `refs/tags/${plan.tag}`;
+  if (env.GITHUB_ACTIONS !== 'true' || env.GITHUB_REPOSITORY !== 'chpock/pi-tidy-ui' || env.GITHUB_EVENT_NAME !== 'push' || env.GITHUB_REF !== ref
+    || !/^[a-f0-9]{40}$/.test(plan.commit) || env.GITHUB_SHA !== plan.commit || env.GITHUB_WORKFLOW_SHA !== plan.commit
+    || env.GITHUB_WORKFLOW_REF !== `chpock/pi-tidy-ui/.github/workflows/ci.yml@${ref}`
+    || !env.ACTIONS_ID_TOKEN_REQUEST_URL || !env.ACTIONS_ID_TOKEN_REQUEST_TOKEN) throw new Error('Publication requires the exact push-tag CI caller and OIDC, not local npm credentials');
+  // npm trusted publishing matches the caller workflow; reusable calls retain its identity.
   if (plan.repository !== env.GITHUB_REPOSITORY || plan.version !== release.version || plan.prerelease !== release.prerelease
-    || !isDeepStrictEqual(plan.packages.map(row => row.target), Object.keys(candidateTargets))) throw new Error('Unexpected native publication plan');
+    || !isDeepStrictEqual(plan.packages.map(row => row.target), targets)) throw new Error('Unexpected native publication plan');
   for (const row of plan.packages) {
     if (row.name !== `@kchpock/occipital-${row.target}` || row.version !== release.version || integrity(await readFile(row.tarball)) !== row.integrity) {
       throw new Error('Native tarball identity/integrity changed after preparation');
     }
   }
   const receipts = { version: plan.version, commit: plan.commit, packages: [] }, receiptPath = join(dirname(planPath), 'receipts.json');
-  const save = () => writeFile(receiptPath, JSON.stringify(receipts, null, 2) + '\n');
+  const save = async () => {
+    await writeFile(receiptPath, JSON.stringify(receipts, null, 2) + '\n');
+    report(receipts);
+  };
   for (const row of plan.packages) {
     let existing;
     try { existing = singleVersion((await execute(npm, ['view', `${row.name}@${row.version}`, '--json', registry], { env, timeout: 60000, maxBuffer: 1024 * 1024 })).stdout); }
@@ -173,12 +164,11 @@ export async function publishNpmRelease({ planPath, env = process.env, execute =
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   const [mode, ...args] = process.argv.slice(2), repository = process.env.GITHUB_REPOSITORY;
-  if (mode === 'validate-input' && args.length === 2) {
-    const release = releaseInput(args[0], args[1]);
+  if (mode === 'validate-input' && args.length === 1) {
+    const release = npmReleaseTag(args[0]);
     if (process.env.GITHUB_OUTPUT) await import('node:fs/promises').then(fs => fs.appendFile(process.env.GITHUB_OUTPUT, `version=${release.version}\n`));
-  } else if (mode === 'check-run' && args.length === 4) validateSourceRun(await json(args[0]), { tag: args[1], runId: args[2], commit: args[3], repository });
-  else if (mode === 'check-release' && args.length === 2) validatePublicRelease(await json(args[0]), args[1]);
-  else if (mode === 'prepare' && args.length === 5) await prepareNpmRelease({ directory: resolve(args[0]), publicDirectory: resolve(args[1]), tag: args[2], commit: args[3], output: resolve(args[4]), repository });
-  else if (mode === 'publish' && args.length === 1) console.log(JSON.stringify(await publishNpmRelease({ planPath: resolve(args[0]) })));
-  else throw new Error('Usage: npm-release.mjs validate-input TAG RUN-ID | check-run JSON TAG RUN-ID COMMIT | check-release JSON TAG | prepare ARTIFACTS PUBLIC-ASSETS TAG COMMIT NEW-DIR | publish PLAN');
+  } else if (mode === 'check-release' && args.length === 2) validatePublicRelease(await json(args[0]), args[1]);
+  else if (mode === 'prepare' && (args.length === 5 || args.length === 6)) await prepareNpmRelease({ directory: resolve(args[0]), publicDirectory: resolve(args[1]), tag: args[2], commit: args[3], output: resolve(args[4]), repository, targets: args[5] === undefined ? undefined : JSON.parse(args[5]) });
+  else if (mode === 'publish' && (args.length === 1 || args.length === 2)) await publishNpmRelease({ planPath: resolve(args[0]), targets: args[1] === undefined ? undefined : JSON.parse(args[1]) });
+  else throw new Error('Usage: npm-release.mjs validate-input TAG | check-release JSON TAG | prepare ARTIFACTS PUBLIC-ASSETS TAG COMMIT NEW-DIR [TARGETS-JSON] | publish PLAN [TARGETS-JSON]');
 }

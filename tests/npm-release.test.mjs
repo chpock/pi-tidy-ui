@@ -7,19 +7,17 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { candidateTargets, stageRelease } from '../scripts/release/native-release.mjs';
 import { assembleRelease, artifactName, assetName } from '../scripts/release/native-ci.mjs';
+import { enabledTargets } from '../scripts/release/platforms.mjs';
 import { releaseRef } from '../scripts/release/version.mjs';
 
 const repo = resolve(import.meta.dirname, '..'), repository = 'chpock/pi-tidy-ui', commit = 'a'.repeat(40);
 const json = async path => JSON.parse(await readFile(path, 'utf8'));
 const publisher = () => import('../scripts/release/npm-release.mjs');
-const host = { GITHUB_ACTIONS: 'true', GITHUB_REPOSITORY: repository, GITHUB_REF: 'refs/heads/main',
-  GITHUB_WORKFLOW_REF: `${repository}/.github/workflows/occipital-npm-publish.yml@refs/heads/main`,
+const host = { GITHUB_ACTIONS: 'true', GITHUB_REPOSITORY: repository, GITHUB_EVENT_NAME: 'push', GITHUB_REF: 'refs/tags/occipital-v0.1.5',
+  GITHUB_SHA: commit, GITHUB_WORKFLOW_SHA: commit,
+  GITHUB_WORKFLOW_REF: `${repository}/.github/workflows/ci.yml@refs/tags/occipital-v0.1.5`,
   ACTIONS_ID_TOKEN_REQUEST_URL: 'https://example.invalid/oidc', ACTIONS_ID_TOKEN_REQUEST_TOKEN: 'fixture-only' };
-function sourceRun(tag = 'occipital-v0.1.5') {
-  return { id: 123, path: '.github/workflows/ci.yml', event: 'push', status: 'completed', conclusion: 'success',
-    repository: { full_name: repository }, head_repository: { full_name: repository }, head_branch: tag, head_sha: commit };
-}
-async function fixture(t, version = '0.1.5') {
+async function fixture(t, version = '0.1.5', targets = enabledTargets()) {
   const root = await mkdtemp(join(tmpdir(), 'occipital-npm-release-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   await mkdir(join(root, 'crates/occipital'), { recursive: true });
@@ -30,32 +28,20 @@ async function fixture(t, version = '0.1.5') {
   await writeFile(binary, 'Inert native fixture, never executed.\n');
   await writeFile(notice, 'Exact inert notice ☃\r\n'); await mkdir(directory);
   const tag = 'occipital-v' + version;
-  for (const target of Object.keys(candidateTargets)) {
+  for (const target of targets) {
     const output = join(directory, artifactName(version, target));
-    await stageRelease({ root, output, input: { notice, artifacts: [{ target, path: binary,
+    await stageRelease({ root, output, targets: [target], input: { notice, artifacts: [{ target, path: binary,
       url: `https://github.com/${repository}/releases/download/${encodeURIComponent(tag)}/${encodeURIComponent(assetName(version, target))}` }] } });
     await writeFile(join(output, 'build-info.json'), JSON.stringify({ commit, version, target }));
     await mkdir(join(output, 'notices'));
     await writeFile(join(output, 'notices/notice-sources.json'), JSON.stringify({ inventory: [{ name: 'fixture' }], gaps: [] }));
   }
   const publicDirectory = join(root, 'public');
-  await assembleRelease({ directory, tag, repository, commit, output: publicDirectory });
-  return { root, directory, publicDirectory, tag, version, repository, commit, output: join(root, 'prepared') };
+  await assembleRelease({ directory, tag, repository, commit, output: publicDirectory, targets });
+  return { root, directory, publicDirectory, tag, version, repository, commit, targets, output: join(root, 'prepared') };
 }
 
-test('manual npm source requires the exact successful push-tag CI run, not a PR/main/latest substitute', async () => {
-  const { validateSourceRun } = await publisher(), expected = { runId: '123', tag: 'occipital-v0.1.5', repository, commit };
-  assert.equal(validateSourceRun(sourceRun(), expected).version, '0.1.5');
-  const mutations = [r => { r.id++; }, r => { r.path = '.github/workflows/other.yml'; }, r => { r.event = 'pull_request'; },
-    r => { r.conclusion = 'failure'; }, r => { r.status = 'in_progress'; }, r => { r.head_branch = 'main'; },
-    r => { r.head_sha = 'b'.repeat(40); }, r => { r.repository.full_name = 'stranger/repo'; },
-    r => { r.head_repository.full_name = 'stranger/repo'; }];
-  for (const mutate of mutations) { const value = sourceRun(); mutate(value); assert.throws(() => validateSourceRun(value, expected)); }
-  for (const runId of ['0', '-1', '123/../../', '123\n', '9007199254740992']) assert.throws(() => validateSourceRun(sourceRun(), { ...expected, runId }));
-  assert.throws(() => validateSourceRun(sourceRun('pi-tidy-ui-v0.1.5'), { ...expected, tag: 'pi-tidy-ui-v0.1.5' }));
-});
-
-test('manual npm publication requires a published matching GitHub release, not a draft or wrong prerelease', async () => {
+test('automatic npm publication requires a published matching GitHub release, not a draft or wrong prerelease', async () => {
   const { validatePublicRelease } = await publisher();
   const valid = { tag_name: 'occipital-v0.1.5', draft: false, prerelease: false };
   validatePublicRelease(valid, valid.tag_name);
@@ -69,10 +55,10 @@ test('native templates carry the canonical repository required by npm trusted-pu
   }
 });
 
-test('npm preparation packs all six real inert packages with unchanged bytes/notices and restored executable modes', async t => {
+test('npm preparation packs the default five real inert packages with unchanged bytes/notices and restored executable modes', async t => {
   const f = await fixture(t), { prepareNpmRelease } = await publisher();
   const plan = await prepareNpmRelease(f);
-  assert.equal(plan.version, '0.1.5'); assert.equal(plan.commit, commit); assert.equal(plan.packages.length, 6);
+  assert.equal(plan.version, '0.1.5'); assert.equal(plan.commit, commit); assert.equal(plan.packages.length, 5);
   assert.deepEqual(plan, await json(join(f.output, 'plan.json')));
   for (const entry of plan.packages) {
     assert.equal(entry.name, `@kchpock/occipital-${entry.target}`); assert.equal(entry.version, f.version);
@@ -121,16 +107,18 @@ function registryFetcher(plan, { corrupt = false, missing = false } = {}) {
   };
 }
 
-test('publication requires this manual main-branch OIDC workflow and never uses local npm login', async t => {
+test('publication requires the exact automatic push-tag CI OIDC caller and never uses local npm login', async t => {
   const { f } = await planned(t), { publishNpmRelease } = await publisher(); let calls = 0;
-  for (const env of [{}, { ...host, GITHUB_REF: 'refs/heads/other' }, { ...host, ACTIONS_ID_TOKEN_REQUEST_TOKEN: '' },
+  for (const env of [{}, { ...host, GITHUB_REF: 'refs/heads/other' }, { ...host, ACTIONS_ID_TOKEN_REQUEST_TOKEN: '' }, { ...host, ACTIONS_ID_TOKEN_REQUEST_URL: '' },
+    { ...host, GITHUB_REF: 'refs/heads/main' }, { ...host, GITHUB_EVENT_NAME: 'pull_request' }, { ...host, GITHUB_EVENT_NAME: 'workflow_dispatch' },
+    { ...host, GITHUB_SHA: 'b'.repeat(40) }, { ...host, GITHUB_WORKFLOW_SHA: 'b'.repeat(40) },
     { ...host, GITHUB_WORKFLOW_REF: `${repository}/.github/workflows/other.yml@refs/heads/main` }]) {
     await assert.rejects(publishNpmRelease({ planPath: join(f.output, 'plan.json'), env, execute: async () => { calls++; } }));
   }
   assert.equal(calls, 0);
 });
 
-test('all-six registry preflight rejects a late mismatch/auth failure without any partial publication', async t => {
+test('all-selected registry preflight rejects a late mismatch/auth failure without any partial publication', async t => {
   const { f, plan } = await planned(t), { publishNpmRelease } = await publisher();
   for (const failure of ['different', 'unauthorized', 'null', 'multiple']) {
     const calls = [];
@@ -144,7 +132,7 @@ test('all-six registry preflight rejects a late mismatch/auth failure without an
       }
       throw absent();
     } }));
-    assert.equal(calls.length, 6); assert.equal(calls.filter(args => args[0] === 'publish').length, 0);
+    assert.equal(calls.length, 5); assert.equal(calls.filter(args => args[0] === 'publish').length, 0);
   }
 });
 
@@ -163,16 +151,16 @@ test('existing byte-identical packages are skipped and unpublished packages get 
     const row = plan.packages.find(row => row.tarball === args[1]);
     return { stdout: JSON.stringify({ [row.name]: { name: row.name, version: row.version, integrity: row.integrity } }) };
   } });
-  assert.deepEqual(calls.slice(0, 6).map(args => args[0]), Array(6).fill('view'));
-  assert.equal(calls.filter(args => args[0] === 'publish').length, 3);
-  assert.deepEqual(result.packages.map(row => row.outcome), ['already-published', 'published', 'already-published', 'published', 'already-published', 'published']);
-  assert.equal(result.packages.filter(row => row.registryByteVerified).length, 6);
+  assert.deepEqual(calls.slice(0, 5).map(args => args[0]), Array(5).fill('view'));
+  assert.equal(calls.filter(args => args[0] === 'publish').length, 2);
+  assert.deepEqual(result.packages.map(row => row.outcome), ['already-published', 'published', 'already-published', 'published', 'already-published']);
+  assert.equal(result.packages.filter(row => row.registryByteVerified).length, 5);
 });
 
 test('prerelease publication uses next rather than replacing stable latest', async t => {
   const { f } = await planned(t, '0.1.5-rc.1'), { publishNpmRelease } = await publisher();
   const path = join(f.output, 'plan.json'), value = await json(path);
-  await publishNpmRelease({ planPath: path, env: host, fetcher: registryFetcher(value), execute: async (_npm, args) => {
+  await publishNpmRelease({ planPath: path, env: { ...host, GITHUB_REF: 'refs/tags/' + value.tag, GITHUB_WORKFLOW_REF: `${repository}/.github/workflows/ci.yml@refs/tags/${value.tag}` }, fetcher: registryFetcher(value), execute: async (_npm, args) => {
     if (args[0] === 'view') throw absent();
     assert.ok(args.includes('--tag=next'));
     const row = value.packages.find(row => row.tarball === args[1]);
@@ -180,16 +168,18 @@ test('prerelease publication uses next rather than replacing stable latest', asy
   } });
 });
 
-test('manual npm workflow never rebuilds, auto-dispatches, approves stages or publishes the extension', async () => {
-  const workflow = await readFile(join(repo, '.github/workflows/occipital-npm-publish.yml'), 'utf8');
-  assert.match(workflow, /^  workflow_dispatch:/m); assert.doesNotMatch(workflow, /^  (?:push|release|workflow_run|workflow_call):/m);
-  assert.match(workflow, /id-token: write/); assert.match(workflow, /actions: read/);
-  assert.match(workflow, /github\.ref == 'refs\/heads\/main'/);
-  assert.match(workflow, /run-id: \$\{\{ inputs\.run-id \}\}/);
-  assert.match(workflow, /npm@12\.0\.2/); assert.match(workflow, /npm-release\.mjs check-run/);
-  assert.match(workflow, /npm-release\.mjs prepare/); assert.match(workflow, /npm-release\.mjs publish/);
-  assert.doesNotMatch(workflow, /cargo |npm ci|NODE_AUTH_TOKEN|NPM_TOKEN|stage approve|--force|--provenance=false/);
-  assert.match(workflow, /cancel-in-progress: false/);
+test('explicit Windows ARM64 opt-in packs and publishes all six same-run packages', async t => {
+  const targets = enabledTargets({ windowsArm64: true }), f = await fixture(t, '0.1.5', targets);
+  const { prepareNpmRelease, publishNpmRelease } = await publisher(), plan = await prepareNpmRelease(f);
+  assert.deepEqual(plan.packages.map(row => row.target), targets);
+  let uploads = 0;
+  const result = await publishNpmRelease({ planPath: join(f.output, 'plan.json'), targets, env: host, report: () => {}, fetcher: registryFetcher(plan), execute: async (_, args) => {
+    if (args[0] === 'view') throw absent();
+    uploads++;
+    const row = plan.packages.find(row => row.tarball === args[1]);
+    return { stdout: JSON.stringify([{ name: row.name, version: row.version, integrity: row.integrity }]) };
+  } });
+  assert.equal(uploads, 6); assert.equal(result.packages.filter(row => row.registryByteVerified).length, 6);
 });
 
 
@@ -206,7 +196,7 @@ test('an interrupted publication preserves per-package outcomes and never contin
   await assert.rejects(publishNpmRelease({ planPath: join(f.output, 'plan.json'), env: host, execute }), /Injected uncertain/);
   assert.equal(uploads, 2);
   const receipts = await json(join(f.output, 'receipts.json'));
-  assert.deepEqual(receipts.packages.map(row => row.outcome), ['published', 'unconfirmed', 'not-started', 'not-started', 'not-started', 'not-started']);
+  assert.deepEqual(receipts.packages.map(row => row.outcome), ['published', 'unconfirmed', 'not-started', 'not-started', 'not-started']);
 });
 
 test('public tarball corruption is refused even when registry metadata reports the expected integrity', async t => {
@@ -224,13 +214,12 @@ test('public tarball corruption is refused even when registry metadata reports t
 });
 
 
-test('npm source and public-release checks reject build metadata without narrowing GitHub SemVer', async () => {
-  const { validateSourceRun, validatePublicRelease } = await publisher();
+test('npm public-release checks reject build metadata without narrowing GitHub SemVer', async () => {
+  const { validatePublicRelease } = await publisher();
   for (const version of ['0.1.5+build.1', '0.1.5-rc.1+build.2']) {
     const tag = 'occipital-v' + version;
     const release = releaseRef('refs/tags/' + tag);
     assert.equal(release.version, version);
-    assert.throws(() => validateSourceRun(sourceRun(tag), { tag, runId: '123', repository, commit }), /build metadata/);
     assert.throws(() => validatePublicRelease({ tag_name: tag, draft: false, prerelease: release.prerelease }, tag), /build metadata/);
   }
 });
@@ -240,7 +229,7 @@ test('npm CLI rejects build metadata before writing workflow output', async t =>
   t.after(() => rm(root, { recursive: true, force: true }));
   const output = join(root, 'github-output');
   for (const tag of ['occipital-v0.1.5+build.1', 'occipital-v0.1.5-rc.1+build.2']) {
-    assert.throws(() => execFileSync(process.execPath, [join(repo, 'scripts/release/npm-release.mjs'), 'validate-input', tag, '123'], {
+    assert.throws(() => execFileSync(process.execPath, [join(repo, 'scripts/release/npm-release.mjs'), 'validate-input', tag], {
       env: { ...process.env, GITHUB_OUTPUT: output }, timeout: 10000, stdio: 'pipe',
     }), error => error.status === 1 && /build metadata/.test(error.stderr.toString()));
     await assert.rejects(readFile(output), { code: 'ENOENT' });
@@ -280,7 +269,7 @@ test('provenance generation failure stops the native family without a fallback u
   } }), /Injected provenance generation failure/);
   assert.equal(attempts, 1);
   const receipts = await json(join(f.output, 'receipts.json'));
-  assert.deepEqual(receipts.packages.map(row => row.outcome), ['unconfirmed', 'not-started', 'not-started', 'not-started', 'not-started', 'not-started']);
+  assert.deepEqual(receipts.packages.map(row => row.outcome), ['unconfirmed', 'not-started', 'not-started', 'not-started', 'not-started']);
 });
 
 test('post-publication verification reads exact version and raw archive, never package-version resolution or a second publish', async t => {
@@ -294,10 +283,10 @@ test('post-publication verification reads exact version and raw archive, never p
   };
   const result = await publishNpmRelease({ planPath: join(f.output, 'plan.json'), env: host, execute,
     fetcher: async (url, options) => { requests.push(String(url)); assert.ok(options.signal); assert.equal(options.redirect, 'error'); return fetcher(url); } });
-  assert.equal(calls.length, 6); assert.equal(requests.length, 12);
-  assert.equal(requests.filter(url => url.endsWith('/0.1.5')).length, 6);
-  assert.equal(requests.filter(url => url.includes('/archive/')).length, 6);
-  assert.equal(result.packages.filter(row => row.registryByteVerified).length, 6);
+  assert.equal(calls.length, 5); assert.equal(requests.length, 10);
+  assert.equal(requests.filter(url => url.endsWith('/0.1.5')).length, 5);
+  assert.equal(requests.filter(url => url.includes('/archive/')).length, 5);
+  assert.equal(result.packages.filter(row => row.registryByteVerified).length, 5);
   requests.length = 0;
   await assert.rejects(publishNpmRelease({ planPath: join(f.output, 'plan.json'), env: host, execute,
     fetcher: async url => { requests.push(url); return new Response('{}', { status: 404 }); } }), /HTTP 404/);
@@ -327,4 +316,47 @@ test('public verification cancels HTTP-error and oversized bodies without replac
     assert.equal(cancelled, 1, kind);
     assert.equal((await json(join(f.output, 'receipts.json'))).packages.some(item => item.registryByteVerified), false);
   }
+});
+
+test('npm target boundaries reject unknown, duplicate, empty and incomplete publication plans before registry access', async t => {
+  const f = await fixture(t), { prepareNpmRelease, publishNpmRelease } = await publisher();
+  for (const targets of [[], ['unknown'], ['linux-x64-gnu', 'linux-x64-gnu']]) {
+    await assert.rejects(prepareNpmRelease({ ...f, targets }));
+    await assert.rejects(publishNpmRelease({ planPath: 'absent-plan', targets }));
+    await assert.rejects(stat(f.output), { code: 'ENOENT' });
+  }
+  const plan = await prepareNpmRelease(f), path = join(f.output, 'plan.json');
+  for (const packages of [plan.packages.slice(1), [...plan.packages, plan.packages[0]], [{ ...plan.packages[0], target: 'unknown' }, ...plan.packages.slice(1)]]) {
+    await writeFile(path, JSON.stringify({ ...plan, packages }));
+    let calls = 0;
+    await assert.rejects(publishNpmRelease({ planPath: path, env: host, execute: async () => { calls++; } }));
+    assert.equal(calls, 0);
+  }
+});
+
+test('publication prints only safe structured receipts, including uncertain partial failure', async t => {
+  const { f, plan } = await planned(t), { publishNpmRelease } = await publisher(), reports = [];
+  let attempts = 0;
+  await assert.rejects(publishNpmRelease({ planPath: join(f.output, 'plan.json'), env: host,
+    report: value => reports.push(JSON.parse(JSON.stringify(value))), execute: async (_, args) => {
+      if (args[0] === 'view') throw absent();
+      attempts++;
+      if (attempts === 2) throw new Error('secret opaque error text');
+      const row = plan.packages.find(row => row.tarball === args[1]);
+      return { stdout: JSON.stringify([{ name: row.name, version: row.version, integrity: row.integrity }]) };
+    } }), /secret opaque/);
+  const final = reports.at(-1);
+  assert.deepEqual(final, await json(join(f.output, 'receipts.json')));
+  assert.deepEqual(Object.keys(final).sort(), ['commit', 'packages', 'version']);
+  for (const row of final.packages) assert.deepEqual(Object.keys(row).sort(), ['integrity', 'name', 'outcome', 'version']);
+  assert.deepEqual(final.packages.map(row => row.outcome), ['published', 'unconfirmed', 'not-started', 'not-started', 'not-started']);
+  assert.doesNotMatch(JSON.stringify(reports), /secret|https:|fixture-only|tarball|npm publish/);
+});
+
+test('npm preparation refuses a missing selected CI artifact before packing any package', async t => {
+  const f = await fixture(t), { prepareNpmRelease } = await publisher();
+  await rm(join(f.directory, artifactName(f.version, 'windows-x64-msvc')), { recursive: true });
+  let calls = 0;
+  await assert.rejects(prepareNpmRelease({ ...f, execute: async () => { calls++; } }), { code: 'ENOENT' });
+  assert.equal(calls, 0);
 });

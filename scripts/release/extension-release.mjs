@@ -5,6 +5,7 @@ import { execFile } from 'node:child_process';
 import { promisify, isDeepStrictEqual } from 'node:util';
 import { createHash } from 'node:crypto';
 import { candidateTargets } from './native-release.mjs';
+import { enabledTargets, validateTargets } from './platforms.mjs';
 import { assetName, assembleRelease } from './native-ci.mjs';
 import { releaseRef, nearestDaemonTag } from './version.mjs';
 import { validatePublicRelease } from './npm-release.mjs';
@@ -15,14 +16,16 @@ const json = async path => JSON.parse(await readFile(path, 'utf8'));
 const integrity = bytes => 'sha512-' + createHash('sha512').update(bytes).digest('base64');
 
 const repository = 'chpock/pi-tidy-ui';
-function checkedDeclaration(input) {
+function checkedDeclaration(input, targets = enabledTargets()) {
+  targets = validateTargets(targets);
   const version = input?.version;
   if (typeof version !== 'string') throw new Error('Expected a publishable Occipital version');
   const parsed = releaseRef(`refs/tags/occipital-v${version}`);
   if (parsed.product !== 'occipital' || version === '0.0.0' || version.includes('+')) throw new Error('Expected a publishable Occipital version');
-  const targets = Object.keys(candidateTargets);
-  if (!Array.isArray(input.artifacts) || input.artifacts.length !== targets.length) throw new Error('Expected one complete six-platform native family');
-  const artifacts = targets.map(target => {
+  if (!Array.isArray(input.artifacts)) throw new Error('Expected native artifact declarations');
+  const declared = validateTargets(input.artifacts.map(record => record?.target));
+  if (targets.some(target => !declared.includes(target))) throw new Error('Missing selected native target');
+  const artifacts = Object.keys(candidateTargets).filter(target => declared.includes(target)).map(target => {
     const records = input.artifacts.filter(record => record?.target === target);
     if (records.length !== 1) throw new Error('Expected one artifact per native target');
     const record = records[0], suffix = candidateTargets[target].executable.endsWith('.exe') ? '.exe' : '';
@@ -35,11 +38,13 @@ function checkedDeclaration(input) {
 }
 
 /** Stage only package inputs. Production callers first use prepareExtensionRelease's release/raw-hash admission. */
-export async function stageExtensionPackage({ root, output, version, release }) {
+export async function stageExtensionPackage({ root, output, version, release, targets = enabledTargets() }) {
+  targets = validateTargets(targets);
   if (typeof version !== 'string') throw new Error('Expected a real npm extension version');
   const extension = releaseRef(`refs/tags/pi-tidy-ui-v${version}`);
   if (extension.product !== 'pi-tidy-ui' || version === '0.0.0' || version.includes('+')) throw new Error('Expected a real npm extension version');
-  const metadata = checkedDeclaration(release);
+  const declared = checkedDeclaration(release, targets);
+  const metadata = { version: declared.version, artifacts: declared.artifacts.filter(record => targets.includes(record.target)) };
   const source = JSON.parse(await readFile(join(root, 'package.json'), 'utf8'));
   if (source.version !== '0.0.0' || !source.name || !Array.isArray(source.files)) throw new Error('Expected the unmodified development package manifest');
   for (const field of ['dependencies', 'optionalDependencies', 'devDependencies']) {
@@ -52,7 +57,7 @@ export async function stageExtensionPackage({ root, output, version, release }) 
   await mkdir(output);
   for (const path of source.files) await cp(join(root, path), join(output, path), { recursive: true });
   const manifest = { ...source, version, optionalDependencies: { ...source.optionalDependencies } };
-  for (const target of Object.keys(candidateTargets)) manifest.optionalDependencies[`@kchpock/occipital-${target}`] = metadata.version;
+  for (const target of targets) manifest.optionalDependencies[`@kchpock/occipital-${target}`] = metadata.version;
   await writeFile(join(output, 'package.json'), JSON.stringify(manifest, null, 2) + '\n');
   await writeFile(join(output, 'src/occipital/release.ts'), template.replace(marker,
     `export const NATIVE_RELEASE: NativeReleaseDeclaration | undefined = ${JSON.stringify(metadata, null, 2)};`));
@@ -60,14 +65,15 @@ export async function stageExtensionPackage({ root, output, version, release }) 
 }
 
 // Installed-consumer checks exercise the selected public release without a source pin or payload override.
-export async function publishedDeclaration(root, revision = 'HEAD') {
+export async function publishedDeclaration(root, revision = 'HEAD', targets = enabledTargets()) {
+  targets = validateTargets(targets);
   const daemon = await nearestDaemonTag(root, revision);
   const url = `https://github.com/${repository}/releases/download/${daemon.tag}/native-release.json`;
   const reply = await fetch(url, { signal: AbortSignal.timeout(30000) });
   if (!reply.ok) throw new Error(`Selected Occipital release metadata unavailable: HTTP ${reply.status}`);
-  const declaration = checkedDeclaration(await reply.json());
+  const declaration = checkedDeclaration(await reply.json(), targets);
   if (declaration.version !== daemon.version) throw new Error('Selected Occipital release metadata version differs');
-  return declaration;
+  return { version: declaration.version, artifacts: declaration.artifacts.filter(record => targets.includes(record.target)) };
 }
 
 function singleRecord(text, packed = false) {
@@ -95,7 +101,8 @@ function checkedRegistryRecord(record, target, version) {
 }
 
 /** Release-only gate. Ordinary CI and independent daemon releases may legitimately produce changed native bytes. */
-export async function prepareExtensionRelease({ root, ref, commit, directory, publicDirectory, output, execute = run }) {
+export async function prepareExtensionRelease({ root, ref, commit, directory, publicDirectory, output, targets = enabledTargets(), execute = run }) {
+  targets = validateTargets(targets);
   const extension = releaseRef(ref);
   if (extension.product !== 'pi-tidy-ui' || extension.version === '0.0.0' || extension.version.includes('+')) throw new Error('Expected a real npm extension release ref');
   const git = args => run('git', args, { cwd: root, timeout: 30000, maxBuffer: 65536 });
@@ -104,24 +111,27 @@ export async function prepareExtensionRelease({ root, ref, commit, directory, pu
   if (!/^[a-f0-9]{40}$/.test(commit) || exact !== commit || head !== commit) throw new Error('Expected the exact checked-out extension release commit');
   const daemon = await nearestDaemonTag(root, ref);
   const published = await json(join(publicDirectory, 'release.json')); validatePublicRelease(published, daemon.tag);
-  const declaration = checkedDeclaration(await json(join(publicDirectory, 'native-release.json')));
+  const declaration = checkedDeclaration(await json(join(publicDirectory, 'native-release.json')), targets);
   if (declaration.version !== daemon.version) throw new Error('Selected native release metadata version differs');
   for (const record of declaration.artifacts) {
     const assets = published.assets?.filter(asset => asset.name === assetName(declaration.version, record.target));
     if (assets?.length !== 1 || assets[0].state !== 'uploaded' || assets[0].size !== record.maxBytes) throw new Error('Selected native release assets are incomplete');
+    const bytes = await readFile(join(publicDirectory, assetName(declaration.version, record.target)));
+    if (bytes.length !== record.maxBytes || createHash('sha256').update(bytes).digest('hex') !== record.sha256) throw new Error(`Public native bytes differ from declaration: ${record.target}`);
   }
   await mkdir(output);
   const checked = join(output, 'checked-native');
-  const current = await assembleRelease({ directory, tag: daemon.tag, repository, commit, output: checked });
-  if (!isDeepStrictEqual(checkedDeclaration(current), declaration)) throw new Error('Current CI native bytes differ; publish the matching Occipital release first');
-  for (const record of declaration.artifacts) {
+  const current = await assembleRelease({ directory, tag: daemon.tag, repository, commit, output: checked, targets });
+  const selected = { version: declaration.version, artifacts: declaration.artifacts.filter(record => targets.includes(record.target)) };
+  if (!isDeepStrictEqual(checkedDeclaration(current, targets), selected)) throw new Error('Current CI native bytes differ; publish the matching Occipital release first');
+  for (const record of selected.artifacts) {
     const name = assetName(declaration.version, record.target);
     const [a, b] = await Promise.all([checked, publicDirectory].map(path => readFile(join(path, name))));
     if (!a.equals(b)) throw new Error(`Public native bytes differ from current CI: ${record.target}`);
   }
   // Admit every published npm identity before packing any archive; never choose an older release on failure.
   const records = [];
-  for (const target of Object.keys(candidateTargets)) {
+  for (const { target } of declaration.artifacts) {
     const name = `@kchpock/occipital-${target}`, spec = `${name}@${daemon.version}`;
     const { stdout } = await execute(npm, ['view', spec, ...publicRegistry, '--json'], { timeout: 300000, maxBuffer: 1024 * 1024 });
     records.push({ target, spec, record: checkedRegistryRecord(singleRecord(stdout), target, daemon.version) });
@@ -148,16 +158,16 @@ export async function prepareExtensionRelease({ root, ref, commit, directory, pu
     }
   }
   const packageDirectory = join(output, 'extension');
-  await stageExtensionPackage({ root, output: packageDirectory, version: extension.version, release: declaration });
-  const plan = { ref, commit, version: extension.version, daemonTag: daemon.tag, release: declaration, packageDirectory };
+  await stageExtensionPackage({ root, output: packageDirectory, version: extension.version, release: declaration, targets });
+  const plan = { ref, commit, version: extension.version, daemonTag: daemon.tag, release: selected, packageDirectory };
   await writeFile(join(output, 'plan.json'), JSON.stringify(plan, null, 2) + '\n');
   return plan;
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
-  const [ref, directory, publicDirectory, output, ...extra] = process.argv.slice(2);
-  if (!ref || !directory || !publicDirectory || !output || extra.length) throw new Error('Usage: extension-release.mjs EXTENSION-REF CI-ARTIFACTS PUBLIC-ASSETS NEW-OUTPUT');
+  const [ref, directory, publicDirectory, output, targetsJSON, ...extra] = process.argv.slice(2);
+  if (!ref || !directory || !publicDirectory || !output || extra.length) throw new Error('Usage: extension-release.mjs EXTENSION-REF CI-ARTIFACTS PUBLIC-ASSETS NEW-OUTPUT [TARGETS-JSON]');
   const root = resolve(import.meta.dirname, '../..');
   console.log(JSON.stringify(await prepareExtensionRelease({ root, ref, commit: process.env.SOURCE_COMMIT,
-    directory: resolve(directory), publicDirectory: resolve(publicDirectory), output: resolve(output) })));
+    directory: resolve(directory), publicDirectory: resolve(publicDirectory), output: resolve(output), targets: targetsJSON === undefined ? undefined : JSON.parse(targetsJSON) })));
 }

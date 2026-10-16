@@ -6,6 +6,7 @@ import { isAbsolute, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { childEnv, validateNative } from '../../scripts/test/context.mjs';
 import { candidateTargets, stageRelease } from '../../scripts/release/native-release.mjs';
+import {enabledTargets} from '../../scripts/release/platforms.mjs';
 import { stageExtensionPackage } from '../../scripts/release/extension-release.mjs';
 import { stampDaemonVersion } from '../../scripts/release/version.mjs';
 import { startLocalRegistry } from './local-registry.mjs';
@@ -76,6 +77,7 @@ export function readConsumerArchiveManifest(inputs, root, path) {
 
 async function stageConsumerPackages(inputs, root, pack) {
   const native = validateNative(inputs), repo = inputs.pi.root, target = native.target;
+  const targets = enabledTargets({windowsArm64:target === 'windows-arm64-msvc'});
   assert.ok(native.version !== '0.0.0', 'Consumer requires a version-stamped same-source helper');
   assert.ok(candidateTargets[target], 'Known native target is required');
   const stagingRoot = join(root, 'native-input');
@@ -89,12 +91,12 @@ async function stageConsumerPackages(inputs, root, pack) {
   await writeFile(notice, 'Test-only same-source consumer fixture; not a publication or license-admission artifact.\n');
   const sourceURL = id => `https://github.com/chpock/pi-tidy-ui/releases/download/occipital-v${native.version}/occipital-v${native.version}-${id}${candidateTargets[id].os === 'win32' ? '.exe' : ''}`;
   const nativeOutput = join(root, 'native');
-  const staged = await stageRelease({ root: stagingRoot, output: nativeOutput,
+  const staged = await stageRelease({ root: stagingRoot, output: nativeOutput, targets,
     input: { notice, artifacts: [{ target, path: native.path, url: sourceURL(target) }] } });
-  const artifact = staged.artifacts[0], nativeRelease = { version: native.version, artifacts: Object.keys(candidateTargets).map(id =>
+  const artifact = staged.artifacts[0], nativeRelease = { version: native.version, artifacts: targets.map(id =>
     ({ ...artifact, target: id, url: sourceURL(id) })) };
   const packages = [];
-  for (const id of Object.keys(candidateTargets)) {
+  for (const id of targets) {
     let directory = join(nativeOutput, 'packages', id);
     if (id !== target) {
       // Nonhost optional metadata tests npm platform filtering, not cross-platform execution.
@@ -105,7 +107,7 @@ async function stageConsumerPackages(inputs, root, pack) {
     packages.push(await pack(directory));
   }
   const extension = join(root, 'extension'), extensionVersion = '0.0.0-installed';
-  await stageExtensionPackage({ root: repo, output: extension, version: extensionVersion, release: nativeRelease });
+  await stageExtensionPackage({ root: repo, output: extension, version: extensionVersion, release: nativeRelease, targets });
   packages.push(await pack(extension));
   return { packages, nativeRelease, extensionVersion };
 }
@@ -203,8 +205,8 @@ export async function prepareConsumerClosure(inputs, { offline = false } = {}) {
         await writeFile(join(consumer, 'package-lock.json'), JSON.stringify(seeded));
         await installConsumer(npm, consumer, installed, registry.url);
       }
-      // Keep ci's independent graph/peer validation; only execution materializes online consumers.
-      await verifyConsumerReplay(npm, consumer, installed, registry.url, { dryRun: !offline });
+      // Preparation validates the graph and archive closure; actual consumers prove installation.
+      await verifyConsumerReplay(npm, consumer, installed, registry.url, { dryRun: true });
       registry.assertNoRejectedRequests();
       const lockBytes = await readFile(join(consumer, 'package-lock.json')), manifestBytes = await readFile(join(consumer, 'package.json'));
       const lock = JSON.parse(lockBytes.toString('utf8'));
@@ -223,10 +225,6 @@ export async function prepareConsumerClosure(inputs, { offline = false } = {}) {
         const archive = packages.find(entry => entry.name === record.name && entry.version === record.version);
         assert.ok(archive, 'Selected host archive must be prepared');
         assert.equal(archive.manifest.name, record.name); assert.equal(archive.manifest.version, record.version);
-        if (offline) {
-          const manifest = JSON.parse(await readFile(join(consumer, 'node_modules', record.name, 'package.json'), 'utf8'));
-          assert.equal(manifest.name, record.name); assert.equal(manifest.version, record.version, 'Consumer must retain selected host identity');
-        }
       }
       if (!offline) {
         const path = join(locksRoot, sha256(lockBytes) + '.json'), manifestPath = join(locksRoot, sha256(manifestBytes) + '.manifest.json');

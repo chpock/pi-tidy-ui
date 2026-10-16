@@ -102,7 +102,7 @@ test('CI fetches tag history, pins Rust from one file and consumes the resolved 
   assert.match(ci, /--native-artifact "\$GITHUB_WORKSPACE\/\.test-artifacts\/ci-native"/);
   assert.match(ci, /clean-native-build:\n[\s\S]*?type: boolean\n        default: false/);
   assert.match(ci, /clean-build: \$\{\{ inputs\.clean-native-build \|\| false \}\}/);
-  assert.match(native, /actions\/cache@v4\n        if: \$\{\{ !inputs\.clean-build \}\}/);
+  assert.match(native, /actions\/cache@v\d+(?:\.\d+){0,2}\n        if: \$\{\{ !inputs\.clean-build \}\}/);
   assert.match(native, /\$\{\{ env\.CARGO_HOME \}\}\/registry/);
   assert.match(native, /\$\{\{ env\.CARGO_HOME \}\}\/git/);
   assert.doesNotMatch(native, /\$\{\{ runner\.temp \}\}\/occipital-cargo/);

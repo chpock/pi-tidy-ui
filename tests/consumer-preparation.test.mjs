@@ -1,7 +1,9 @@
 import './fixtures/test-guard.mjs';
 import assert from 'node:assert/strict';
-import { execFile, execFileSync } from 'node:child_process';
-import { access, copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import childProcess, { execFile, execFileSync } from 'node:child_process';
+import fs from 'node:fs';
+import {syncBuiltinESMExports} from 'node:module';
+import { access, copyFile, cp, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -224,4 +226,82 @@ process.argv[1]=cli;load(cli);
     } finally {await frozen.close();}
   }
   recording.assertNoRejectedRequests();
+});
+
+
+test('complete offline closure is preflight-only while default replay still installs both fresh optionality consumers', async t=>{
+  const inputs=readInputs(),root=await mkdtemp(join(tmpdir(),'tidy-offline-preflight-'));
+  t.after(()=>rm(root,{recursive:true,force:true}));
+  const repo=join(root,'inert-source'),archives=join(root,'archives'),runs=join(root,'runtime');
+  for(const path of [archives,runs,join(repo,'src/occipital'),join(repo,'crates/occipital')])await mkdir(path,{recursive:true});
+  for(const file of ['Cargo.lock','crates/occipital/Cargo.toml','src/occipital/release.ts','LICENSE'])await copyFile(join(inputs.pi.root,file),join(repo,file));
+  await cp(join(inputs.pi.root,'packages'),join(repo,'packages'),{recursive:true});
+  const peers=inputs.pi.packages.map(({name,version})=>({name,version})),dependencies=Object.fromEntries(peers.map(row=>[row.name,row.version]));
+  await writeFile(join(repo,'package.json'),JSON.stringify({name:'pi-tidy-ui',version:'0.0.0',files:['src'],peerDependencies:dependencies}));
+  const packages=[],documents=[],hostLock={name:'inert-host',version:'0.0.0',lockfileVersion:3,packages:{'':{name:'inert-host',version:'0.0.0',dependencies}}};
+  const hash=bytes=>createHash('sha256').update(bytes).digest('hex');
+  for(const[index,record]of peers.entries()){
+    const directory=join(root,'inert-package-'+index);await mkdir(join(directory,'package'),{recursive:true});
+    await writeFile(join(directory,'package/package.json'),JSON.stringify(record));
+    const path=join(archives,index+'.tgz');execFileSync(toolPath('tar'),['-czf',path,'-C',directory,'package'],{env:childEnv(join(root,'tar'),{},inputs)});
+    const bytes=await readFile(path),integrity='sha512-'+createHash('sha512').update(bytes).digest('base64');
+    const sourceURL='https://registry.npmjs.org/inert/'+index+'.tgz';
+    packages.push({...record,path,integrity,manifest:record,sourceURL});hostLock.packages['node_modules/'+record.name]={version:record.version,integrity,resolved:sourceURL};
+    const document={name:record.name,versions:{[record.version]:{...record,dist:{integrity,tarball:sourceURL}}}},documentPath=join(archives,index+'.json');
+    const documentBytes=Buffer.from(JSON.stringify(document));await writeFile(documentPath,documentBytes);documents.push({name:record.name,path:documentPath,sha256:hash(documentBytes)});
+  }
+  const lock=join(root,'host-lock.json');await writeFile(lock,JSON.stringify(hostLock));
+  const nativePath=join(root,'inert-version-only'),nativeBytes=Buffer.from('This unit fixture cannot classify source or replace real helper acceptance.');await writeFile(nativePath,nativeBytes);
+  const target=process.platform==='linux'?'linux-'+process.arch+'-gnu':process.platform==='darwin'?'darwin-'+process.arch:'windows-'+process.arch+'-msvc';
+  const base={...inputs,preparation:join(root,'online'),runRoot:runs,pi:{...inputs.pi,root:repo,lock,lockSha256:hash(await readFile(lock)),packages:peers},
+    native:{path:nativePath,bytes:nativeBytes.length,sha256:hash(nativeBytes),version:'0.1.5',target,commit:inputs.source.commit,nativeTree:inputs.source.nativeTree},registry:{packages,documents}};
+  const originalExec=childProcess.execFileSync,originalRm=fs.promises.rm,materialized=[];
+  childProcess.execFileSync=function(command,args,...rest){
+    if(command!==nativePath)return originalExec.call(this,command,args,...rest);
+    assert.deepEqual(args,['--version'],'the inert native fixture must never execute real helper work');assert.equal(rest[0].encoding,'utf8');return 'occipital 0.1.5\n';
+  };
+  fs.promises.rm=async function(path,...rest){
+    if(String(path).startsWith(join(runs,'tidy-consumer-preparation-')))materialized.push(['present','absent'].filter(name=>fs.existsSync(join(path,name,'node_modules'))).length);
+    return originalRm.call(this,path,...rest);
+  };
+  syncBuiltinESMExports();
+  let registry;
+  try{
+    const frozen=await prepareConsumerClosure(base);
+    const immutable=await Promise.all(frozen.consumer.locks.map(async record=>({record,lock:await readFile(record.path),manifest:await readFile(record.manifestPath)})));
+    materialized.length=0;
+    const offline={...base,preparation:join(root,'offline'),registry:frozen};
+    assert.deepEqual(await prepareConsumerClosure(offline,{offline:true}),frozen);
+    assert.deepEqual(materialized,[0],'offline closure must not materialize either consumer tree');
+    const reports=join(offline.preparation,'consumer/diagnostics'),npmReports=[];
+    for(const directory of await readdir(reports)){
+      const file=join(reports,directory,'npm.json');if(fs.existsSync(file))npmReports.push(JSON.parse(await readFile(file,'utf8')));
+    }
+    assert.equal(npmReports.length,2);assert.ok(npmReports.every(report=>report.mode==='dry-run'&&report.exitCode===0));
+    assert.ok(npmReports.every(report=>report.timings.every(timing=>timing.reifyNodes.count===0)));
+    for(const item of immutable){assert.deepEqual(await readFile(item.record.path),item.lock);assert.deepEqual(await readFile(item.record.manifestPath),item.manifest);}
+    const attempt=async(name,patch)=>prepareConsumerClosure({...offline,...patch,preparation:join(root,name)},{offline:true});
+    await assert.rejects(attempt('wrong-source',{source:{...base.source,tree:'0'.repeat(64)}}),/Frozen offline consumer closure is incomplete/);
+    await assert.rejects(attempt('missing-lock',{registry:{...frozen,consumer:{...frozen.consumer,locks:frozen.consumer.locks.slice(0,1)}}}),/Frozen offline consumer closure is incomplete/);
+    const nonhost=frozen.packages.find(row=>row.name.startsWith('@kchpock/occipital-')&&row.name!=='@kchpock/occipital-'+target);assert.ok(nonhost);
+    await assert.rejects(attempt('missing-nonhost',{registry:{...frozen,packages:frozen.packages.filter(row=>row!==nonhost)}}),/Frozen offline consumer closure is incomplete/);
+    const corrupt=join(root,'corrupt.tgz');await writeFile(corrupt,'not the admitted archive bytes');
+    await assert.rejects(attempt('corrupt-archive',{registry:{...frozen,packages:frozen.packages.map((row,index)=>index?row:{...row,path:corrupt})}}),/Frozen offline consumer closure is incomplete/);
+    const badLock=JSON.parse(immutable[0].lock.toString());delete badLock.packages['node_modules/'+peers[0].name];
+    const badPath=join(root,'bad-lock.json');await writeFile(badPath,JSON.stringify(badLock));
+    await assert.rejects(attempt('invalid-lock',{registry:{...frozen,consumer:{...frozen.consumer,locks:[{...frozen.consumer.locks[0],path:badPath,sha256:hash(await readFile(badPath))},frozen.consumer.locks[1]]}}}),/Frozen offline consumer closure is incomplete/);
+    registry=await startLocalRegistry({packages:frozen.packages,documents:frozen.documents});
+    let commands=0;
+    for(const installed of [true,false]){
+      const consumer=join(root,installed?'real-present':'real-absent');await mkdir(consumer);
+      const receipt=frozen.consumer.locks.find(row=>row.installed===installed);
+      await writeFile(join(consumer,'package.json'),await readFile(receipt.manifestPath));
+      await writeFile(join(consumer,'package-lock.json'),JSON.stringify(rewriteConsumerLock(JSON.parse(await readFile(receipt.path,'utf8')),receipt.registryURL,registry.url)));
+      const npm=(args,url,cwd)=>runNpmPreparation([...args,'--registry='+url],{cwd,nodePath:inputs.node.path,nodeVersion:inputs.node.version,npmPath:inputs.tools.npm,
+        env:childEnv(join(root,'real-command-'+commands++),{npm_config_offline:'false',npm_config_registry:url},inputs),logsRoot:join(root,'real-logs'),reportsRoot:join(root,'real-reports')});
+      await verifyConsumerReplay(npm,consumer,installed,registry.url);
+      for(const peer of peers)assert.equal(JSON.parse(await readFile(join(consumer,'node_modules',peer.name,'package.json'),'utf8')).version,peer.version);
+    }
+    assert.equal(commands,2);registry.assertNoRejectedRequests();
+  }finally{await registry?.close();childProcess.execFileSync=originalExec;fs.promises.rm=originalRm;syncBuiltinESMExports();}
 });

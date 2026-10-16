@@ -2,6 +2,7 @@
 // The catalogue, rather than this table, owns test membership and capabilities.
 import { execFileSync } from 'node:child_process';
 import { featureNames, testEntries } from './catalog.mjs';
+import { platforms, enabledTargets } from '../release/platforms.mjs';
 
 export const groups = featureNames;
 const product = groups.filter(name => !['native','shared','profile','harness','delivery'].includes(name));
@@ -132,7 +133,7 @@ export function resolveScope({ paths, head, ref, full = false, additions = [], d
     runAffected: features.length > 0 && affectedProfiles.length > 0 && (!full || releaseKind === 'daemon'),
     capabilities:Object.fromEntries(['native','shared','integration','registry','rust'].map(name => [name,requirements.includes(name)])),
     platforms:selectedPlatform ? 'all' : 'host-only', consumers:selectedPlatform,
-    profiles, rationale:currentUnion ? 'Approved conservative catalogue evolution; execute current-source fixed unions. ' + decision.rationale : full ? releaseKind === 'daemon' ? 'Full independent daemon release: native/delivery on both Nodes and all six targets.' : 'Full compatibility/extension-release union cannot be narrowed.' : decision?.rationale ?? 'Conservative path defaults; paths are not proof of semantic impact.',
+    profiles, rationale:currentUnion ? 'Approved conservative catalogue evolution; execute current-source fixed unions. ' + decision.rationale : full ? releaseKind === 'daemon' ? 'Full independent daemon release: native/delivery on both Nodes and all enabled targets.' : 'Full compatibility/extension-release union cannot be narrowed.' : decision?.rationale ?? 'Conservative path defaults; paths are not proof of semantic impact.',
     productExclusion:releaseKind === 'daemon' ? 'Extension SDK/CLI and public extension-delivery checks are not daemon-release obligations.' : null,
     routes:paths.map((path,index) => ({path,features:rules[index].features,reviewRequired:rules[index].hotspot === true})),
     ignoredDecisions:decisions.filter(value => value.head !== head).map(value => ({head:value.head,authority:value.authority,reason:'stale-head'})),
@@ -142,16 +143,10 @@ export function resolveScope({ paths, head, ref, full = false, additions = [], d
   };
 }
 
-export function nativeTargets(mode = 'all', ref = '') {
+export function nativeTargets(mode = 'all', ref = '', options = {}) {
   if (!['all','host-only','windows-only'].includes(mode)) throw new Error('Unknown native target scope');
-  const targets = [
-    {target:'linux-x64-gnu',runner:'ubuntu-24.04',rust:'x86_64-unknown-linux-gnu',executable:'occipital'},
-    {target:'linux-arm64-gnu',runner:'ubuntu-24.04-arm',rust:'aarch64-unknown-linux-gnu',executable:'occipital'},
-    {target:'darwin-x64',runner:'macos-15-intel',rust:'x86_64-apple-darwin',executable:'occipital'},
-    {target:'darwin-arm64',runner:'macos-14',rust:'aarch64-apple-darwin',executable:'occipital'},
-    {target:'windows-x64-msvc',runner:'windows-2022',rust:'x86_64-pc-windows-msvc',executable:'occipital.exe'},
-    {target:'windows-arm64-msvc',runner:'windows-11-arm',rust:'aarch64-pc-windows-msvc',executable:'occipital.exe'},
-  ];
+  const enabled = new Set(enabledTargets(options));
+  const targets = platforms.filter(row => enabled.has(row.target)).map(({target,runner,rust,executable}) => ({target,runner,rust,executable}));
   if (mode === 'all' || /^refs\/tags\/(pi-tidy-ui|occipital)-v/.test(ref)) return targets;
   if (mode === 'windows-only') {
     if (!/^refs\/heads\/.+/.test(ref)) throw new Error('Windows diagnostic requires a branch ref');
@@ -160,9 +155,14 @@ export function nativeTargets(mode = 'all', ref = '') {
   return targets.slice(0,1);
 }
 
-export function nativePlan(mode = 'all', ref = '', consumers = true) {
+export function nativePlan(mode = 'all', ref = '', consumers = true, options = {}) {
   if (typeof consumers !== 'boolean') throw new Error('Native consumer selection must be boolean');
-  return {matrix:nativeTargets(mode,ref),packaging:ref.startsWith('refs/tags/') || consumers && mode !== 'windows-only'};
+  const matrix = nativeTargets(mode,ref,options);
+  const host = matrix.filter(row => row.target === 'linux-x64-gnu');
+  const others = matrix.filter(row => row.target !== 'linux-x64-gnu');
+  const expand = rows => consumers || ref.startsWith('refs/tags/') ? rows.flatMap(row => nodes.map(node => ({...row,node}))) : [];
+  const remaining = others.map(row => ({...row,consumerMatrix:expand([row])}));
+  return {matrix,host,remaining,hostConsumers:expand(host),targets:matrix.map(row=>row.target)};
 }
 
 export function changedPaths(base, head, git = (args) => execFileSync('git', args, {encoding:'utf8', maxBuffer:8 * 1024 * 1024}), pullRequest = false) {

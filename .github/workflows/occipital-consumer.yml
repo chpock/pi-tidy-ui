@@ -1,0 +1,126 @@
+name: Occipital native consumers
+
+on:
+  workflow_call:
+    inputs:
+      release-ref:
+        required: true
+        type: string
+      version:
+        required: true
+        type: string
+      source-ref:
+        required: true
+        type: string
+      platforms:
+        description: Selected target by Node matrix
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  consumer:
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(inputs.platforms) }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 25
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          ref: ${{ inputs.source-ref }}
+          fetch-depth: 0
+      - name: Declare Windows checkout line-ending semantics
+        if: runner.os == 'Windows'
+        run: git config --local core.autocrlf true
+      - uses: actions/setup-node@v7.1.0
+        with:
+          package-manager-cache: false
+          node-version: ${{ matrix.node }}
+      - name: Assert selected Node runtime
+        env:
+          EXPECTED_NODE: ${{ matrix.node }}
+        run: node -e 'if (process.version !== "v" + process.env.EXPECTED_NODE) throw new Error(process.version)'
+      - name: Declare provisioned Windows runtime tools
+        if: startsWith(matrix.target, 'windows-')
+        run: |
+          node --input-type=module <<'JS'
+          import {writeFileSync, existsSync} from 'node:fs';
+          import {dirname, join} from 'node:path';
+          const tools = {git:'C:/Program Files/Git/cmd/git.exe', bash:'C:/Program Files/Git/bin/bash.exe', tar:'C:/Windows/System32/tar.exe', npm:join(dirname(process.execPath),'node_modules/npm/bin/npm-cli.js')};
+          if(Object.values(tools).some(path=>!existsSync(path))) throw new Error('Missing provisioned Windows runtime tool');
+          writeFileSync(join(process.env.RUNNER_TEMP,'runtime-tools.json'),JSON.stringify(tools));
+          JS
+      - uses: actions/cache@v6.1.0
+        with:
+          path: ${{ runner.temp }}/consumer-inputs/environment/cache/npm/_cacache
+          key: hermetic-consumer-npm-v1-${{ matrix.target }}-${{ hashFiles('package-lock.json') }}
+      - uses: actions/download-artifact@v8.0.2
+        with:
+          name: occipital-v${{ inputs.version }}-${{ matrix.target }}
+          path: ${{ runner.temp }}/occipital-native-artifact
+      - name: Restore executable permissions lost by artifact transfer
+        if: runner.os != 'Windows'
+        run: chmod +x "$RUNNER_TEMP/occipital-native-artifact/packages/${{ matrix.target }}/occipital"
+      - name: GNU tooling image cache
+        id: gnu-image-cache
+        if: startsWith(matrix.target, 'linux-')
+        uses: actions/cache@v6.1.0
+        with:
+          path: ${{ runner.temp }}/occipital-gnu-image.tar
+          key: gnu-tooling-v1-${{ matrix.target }}-${{ hashFiles('scripts/release/Dockerfile.linux-gnu') }}
+      - name: Restore GNU tooling image
+        if: ${{ startsWith(matrix.target, 'linux-') && steps.gnu-image-cache.outputs.cache-hit == 'true' }}
+        env:
+          IMAGE_ARCHIVE: ${{ runner.temp }}/occipital-gnu-image.tar
+        run: docker load --input "$IMAGE_ARCHIVE"
+      - name: Same-commit clean consumer and actual helper
+        timeout-minutes: 15
+        env:
+          EXPECTED_NODE: ${{ matrix.node }}
+          TARGET: ${{ matrix.target }}
+          RUST_TARGET: ${{ matrix.rust }}
+          RELEASE_REF: ${{ inputs.release-ref }}
+        run: |
+          NODE="$(node -p 'process.execPath')"
+          PREPARATION="$RUNNER_TEMP/consumer-inputs"
+          ARTIFACT="$RUNNER_TEMP/occipital-native-artifact"
+          tools_args=()
+          if [[ "$TARGET" == windows-* ]]; then tools_args=(--run-root "$RUNNER_TEMP" --tools "$RUNNER_TEMP/runtime-tools.json"); fi
+          node scripts/test/prepare.mjs --pi-version 1.0.0 --archives --native-artifact "$ARTIFACT" "${tools_args[@]}" --output "$PREPARATION"
+          if [[ "$TARGET" == linux-* ]]; then
+            NODE="$NODE" bash scripts/release/installed-linux-gnu.sh "$RUST_TARGET" native-consumer "$PREPARATION" "$ARTIFACT"
+          else
+            node scripts/test/run.mjs --inputs "$PREPARATION/inputs.json" --suite native --files occipital-native.test.ts --pattern '^actual owned helper preserves compact UTF8 highlighting and incremental work counters$'
+            node scripts/test/run.mjs --inputs "$PREPARATION/inputs.json" --suite consumer
+          fi
+      - name: Published delivery (pi-tidy-ui release only)
+        if: startsWith(inputs.release-ref, 'refs/tags/pi-tidy-ui-v')
+        timeout-minutes: 15
+        env:
+          EXPECTED_NODE: ${{ matrix.node }}
+          TARGET: ${{ matrix.target }}
+          RUST_TARGET: ${{ matrix.rust }}
+          RELEASE_REF: ${{ inputs.release-ref }}
+        run: |
+          PREPARATION="$RUNNER_TEMP/consumer-inputs"
+          ARTIFACT="$RUNNER_TEMP/occipital-native-artifact"
+          if [[ "$TARGET" == linux-* ]]; then
+            NODE="$(node -p 'process.execPath')" bash scripts/release/installed-linux-gnu.sh "$RUST_TARGET" published-consumer "$PREPARATION" "$ARTIFACT" "$RELEASE_REF"
+          else
+            node scripts/test/run.mjs --inputs "$PREPARATION/inputs.json" --suite published-consumer --release-ref "$RELEASE_REF"
+          fi
+      - name: Print safe consumer diagnostics
+        if: always()
+        run: |
+          node --input-type=module <<'JS'
+          import {join} from 'node:path';
+          import {printConsumerDiagnostics} from './scripts/test/consumer-diagnostics.mjs';
+          printConsumerDiagnostics(join(process.env.RUNNER_TEMP,'consumer-inputs'));
+          JS

@@ -3,6 +3,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {changedPaths, githubScope, groups, nativePlan, nativeTargets, parseScope, resolveScope, reviewedScopes} from '../scripts/test/ci-scope.mjs';
 import { featurePlan as cataloguePlan, testEntries } from '../scripts/test/catalog.mjs';
+import {enabledTargets,platforms} from '../scripts/release/platforms.mjs';
 
 const head = 'a'.repeat(40), base = 'b'.repeat(40), prior = 'c'.repeat(40);
 // A small injected catalogue makes routing tests independent of SDK/file discovery.
@@ -151,10 +152,15 @@ test('PR HEAD and merge base, not synthetic merge SHA, identify tested paths', a
   assert.throws(() => changedPaths('--injected',head,()=>assert.fail()),/exact commit SHA/);
 });
 
-test('native workflow defaults to all six targets; host-only cannot narrow release tags', () => {
-  assert.equal(nativeTargets().length,6); assert.deepEqual(nativeTargets('host-only').map(value=>value.target),['linux-x64-gnu']);
-  for (const ref of ['refs/tags/pi-tidy-ui-v0.2.0','refs/tags/occipital-v0.1.6']) assert.equal(nativeTargets('host-only',ref).length,6);
+test('native workflow selects enabled platforms; release tags cannot narrow their required results', () => {
+  assert.deepEqual(nativeTargets().map(row=>row.target),enabledTargets());
+  assert.deepEqual(nativeTargets('host-only').map(value=>value.target),['linux-x64-gnu']);
+  for (const windowsArm64 of [false,true]) {
+    const options={windowsArm64}, selected=enabledTargets(options);
+    for(const ref of ['refs/tags/pi-tidy-ui-v0.2.0','refs/tags/occipital-v0.1.6']) for(const mode of ['all','host-only','windows-only']) assert.deepEqual(nativeTargets(mode,ref,options).map(row=>row.target),selected);
+  }
   assert.throws(() => nativeTargets('none'),/Unknown native target/);
+  assert.throws(() => nativeTargets('all','',{windowsArm64:'true'}),/boolean/);
 });
 
 test('metadata lookup failures cannot manufacture authorized scope or hide unresolved work', async () => {
@@ -261,20 +267,31 @@ test('explicit Windows diagnostic is maintainer- and exact-HEAD-bound without cl
 });
 
 test('manual Windows target subset cannot narrow either release family',()=>{
-  assert.deepEqual(nativeTargets('windows-only','refs/heads/windows-performance').map(row=>row.target),['windows-x64-msvc','windows-arm64-msvc']);
-  for(const ref of ['refs/tags/pi-tidy-ui-v0.2.0','refs/tags/occipital-v0.1.6']) assert.equal(nativeTargets('windows-only',ref).length,6);
+  assert.deepEqual(nativeTargets('windows-only','refs/heads/windows-performance').map(row=>row.target),['windows-x64-msvc']);
+  assert.deepEqual(nativeTargets('windows-only','refs/heads/windows-performance',{windowsArm64:true}).map(row=>row.target),['windows-x64-msvc','windows-arm64-msvc']);
+  for(const ref of ['refs/tags/pi-tidy-ui-v0.2.0','refs/tags/occipital-v0.1.6']) assert.deepEqual(nativeTargets('windows-only',ref).map(row=>row.target),enabledTargets());
   for(const ref of ['', 'refs/pull/7/merge']) assert.throws(()=>nativeTargets('windows-only',ref),/branch/);
 });
 
 
-test('native job plan omits only unrelated packaging from a branch Windows diagnostic',()=>{
-  const branch = 'refs/heads/windows-performance';
-  assert.equal(nativePlan('windows-only',branch,true).packaging,false);
-  assert.equal(nativePlan('all',branch,true).packaging,true);
-  assert.equal(nativePlan('all',branch,false).packaging,false);
-  assert.equal(nativePlan('host-only',branch,true).packaging,true);
-  for(const ref of ['refs/tags/pi-tidy-ui-v0.2.0','refs/tags/occipital-v0.1.6']) for(const mode of ['all','host-only','windows-only']) {
-    const plan = nativePlan(mode,ref,false);assert.equal(plan.packaging,true);assert.equal(plan.matrix.length,6);
+test('native planner compiles once per enabled target and fans out both Nodes after each producer',()=>{
+  const branch='refs/heads/main';
+  for(const windowsArm64 of [false,true]) {
+    const plan=nativePlan('all',branch,true,{windowsArm64});
+    assert.deepEqual(plan.targets,enabledTargets({windowsArm64}));
+    assert.deepEqual(plan.host.map(row=>row.target),['linux-x64-gnu']);
+    assert.deepEqual([...plan.host,...plan.remaining].map(row=>row.target),plan.targets);
+    const consumers=[...plan.hostConsumers,...plan.remaining.flatMap(row=>row.consumerMatrix)];
+    for(const target of plan.targets) assert.deepEqual(consumers.filter(row=>row.target===target).map(row=>row.node),['22.19.0','26.7.0']);
+    assert.ok(!plan.remaining.some(row=>row.target==='linux-x64-gnu'));
+    assert.equal(plan.targets.includes('windows-arm64-msvc'),windowsArm64);
+  }
+  const disabled=platforms.find(row=>row.target==='windows-arm64-msvc');assert.equal(disabled.enabled,false);assert.equal(disabled.runner,'windows-11-arm');
+  const hostOnly=nativePlan('host-only',branch,false);assert.deepEqual(hostOnly.hostConsumers,[]);assert.deepEqual(hostOnly.remaining,[]);
+  const windows=nativePlan('windows-only',branch,true);assert.deepEqual(windows.host,[]);assert.deepEqual(windows.hostConsumers,[]);
+  for(const ref of ['refs/tags/pi-tidy-ui-v0.2.0','refs/tags/occipital-v0.1.6']) {
+    const release=nativePlan('host-only',ref,false);assert.deepEqual(release.targets,enabledTargets());
+    assert.equal(release.hostConsumers.length,2);assert.ok(release.remaining.every(row=>row.consumerMatrix.length===2));
   }
   assert.throws(()=>nativePlan('all',branch,'false'),/boolean/);
 });
