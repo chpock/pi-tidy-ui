@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
 import fs from "node:fs/promises";
+import nativeFs from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
@@ -577,13 +578,78 @@ test('settings watch: atomic peer saves apply repeatedly without rewriting or id
 });
 
 test('settings watch: first save is observed even when the configuration directory did not exist', { timeout: 10000 }, async t => {
+  const events: Record<string, unknown>[] = []; let completed = false, omitted = 0;
+  const started = performance.now();
+  const record = (event: Record<string, unknown>) => {
+    if (events.length < 256) events.push({ ms: Math.round(performance.now() - started), ...event }); else omitted++;
+  };
+  t.after(() => { if (!completed) t.diagnostic(JSON.stringify({ settingsWatch: events, omitted })); });
   const { store, file, root } = await fixture(t); await store.load();
+  const realWatch = nativeFs.watch, realStat = fs.stat;
+  const role = (path: unknown) => path === root ? 'root' : path === dirname(file) ? 'configuration' : path === dirname(dirname(file)) ? 'parent' : 'other';
+  const code = (error: unknown) => ['ENOENT','ENOTDIR','EACCES','EPERM'].includes((error as NodeJS.ErrnoException).code ?? '') ? (error as NodeJS.ErrnoException).code : 'other';
+  t.mock.method(nativeFs, 'watch', (path: string, options: unknown, callback: (...args: any[]) => void) => {
+    const target = role(path); record({ operation: 'subscribe', target });
+    try {
+      const watcher = Reflect.apply(realWatch, nativeFs, [path, options, (event: string, name: string | null) => {
+        record({ operation: 'event', target, event, name: name === null ? 'none' : ['extensions','pi-tidy-ui','config.json'].includes(String(name)) ? String(name) : 'other' });
+        callback(event, name);
+      }]);
+      record({ operation: 'subscribed', target });
+      watcher.on('error', (error: Error) => record({ operation: 'watch-error', target, code: code(error) }));
+      return watcher;
+    } catch (error) { record({ operation: 'subscribe-failed', target, code: code(error) }); throw error; }
+  });
+  t.mock.method(fs, 'stat', async (...args: Parameters<typeof fs.stat>) => {
+    try { const stat = await realStat(...args); if (args[0] === file) record({ operation: 'stat', outcome: 'present' }); return stat; }
+    catch (error) { if (args[0] === file) record({ operation: 'stat', outcome: code(error) }); throw error; }
+  });
   let resolve!: (value: SettingsLoadResult) => void;
   const changed = new Promise<SettingsLoadResult>(done => { resolve = done; });
-  const stop = watchSettings(store, resolve); t.after(stop);
+  const stop = watchSettings(store, value => { record({ operation: 'notification', ok: value.ok }); resolve(value); }); t.after(stop);
   assert.deepEqual(await fs.readdir(root), [], 'watching must not create config directories or files');
-  await new ExtensionSettings({ file }).update({ syntaxTheme: theme('first') });
+  const saved = await new ExtensionSettings({ file }).update({ syntaxTheme: theme('first') });
+  record({ operation: 'save-completed', ok: saved.ok }); assert.deepEqual(saved, { ok: true });
+  assert.deepEqual(await changed, { ok: true, syntaxTheme: theme('first') }); completed = true;
+});
+
+test('settings watch: creating a directory between the missing-child check and ancestor subscription cannot lose the first save', { timeout: 10000 }, async t => {
+  let completed = false, gapCreated = false, rootWatching = false, notifications = 0;
+  const attempts: { target: string; outcome: string }[] = [];
+  t.after(() => { if (!completed) t.diagnostic(JSON.stringify({ gapCreated, rootWatching, notifications, attempts })); });
+  const { store, file, root } = await fixture(t); await store.load();
+  const directory = dirname(file), parent = dirname(directory), realWatch = nativeFs.watch, realStat = fs.stat;
+  let missing!: () => void, notify!: (value: SettingsLoadResult) => void;
+  const observedMissing = new Promise<void>(resolve => { missing = resolve; });
+  const changed = new Promise<SettingsLoadResult>(resolve => { notify = resolve; });
+  t.mock.method(nativeFs, 'watch', (path: string, ...args: any[]) => {
+    const target = path === directory ? 'configuration' : path === parent ? 'parent' : path === root ? 'root' : 'other';
+    try {
+      const watcher = Reflect.apply(realWatch, nativeFs, [path, ...args]);
+      attempts.push({ target, outcome: 'subscribed' });
+      if (path === root) rootWatching = true;
+      return watcher;
+    } catch (error) {
+      attempts.push({ target, outcome: (error as NodeJS.ErrnoException).code === 'ENOENT' ? 'missing' : 'error' });
+      if (rootWatching && !gapCreated && path === directory && (error as NodeJS.ErrnoException).code === 'ENOENT') {
+        nativeFs.mkdirSync(directory); gapCreated = true;
+      }
+      throw error;
+    }
+  });
+  t.mock.method(fs, 'stat', async (...args: Parameters<typeof fs.stat>) => {
+    try { return await realStat(...args); }
+    catch (error) {
+      if (gapCreated && args[0] === file && (error as NodeJS.ErrnoException).code === 'ENOENT') missing();
+      throw error;
+    }
+  });
+  const stop = watchSettings(store, value => { notifications++; notify(value); }); t.after(stop);
+  await fs.mkdir(parent); await observedMissing;
+  assert.equal(gapCreated, true, 'the real directory is created inside the failed-watch/ancestor-watch window');
+  assert.deepEqual(await new ExtensionSettings({ file }).update({ syntaxTheme: theme('first') }), { ok: true });
   assert.deepEqual(await changed, { ok: true, syntaxTheme: theme('first') });
+  completed = true;
 });
 
 test('settings policy: process-local values survive module reload but not a new process', async t => {

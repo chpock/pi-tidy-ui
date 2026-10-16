@@ -166,23 +166,35 @@ export class ExtensionSettings {
       dirty = true;
       if (!running && !scheduled) { scheduled = setImmediate(check); scheduled.unref(); }
     };
+    const subscribe = (target: string) => {
+      const child = relative(target, this.file).split(sep)[0]!;
+      const next = nativeFs.watch(target, { persistent: false }, (_event, name) => {
+        if (name !== null && String(name) !== child && String(name) !== basename(target)) return;
+        if (target !== dirname(this.file) || name === null || String(name) === basename(target)) rearm = true;
+        schedule();
+      });
+      next.on('error', () => { rearm = true; schedule(); });
+      const previous = watcher; watcher = next; directory = target;
+      previous?.close();
+    };
     const arm = () => {
-      watcher?.close(); watcher = undefined; rearm = false;
+      rearm = false;
       let target = dirname(this.file);
       for (;;) {
-        try {
-          const child = relative(target, this.file).split(sep)[0]!;
-          watcher = nativeFs.watch(target, { persistent: false }, (_event, name) => {
-            if (name !== null && String(name) !== child && String(name) !== basename(target)) return;
-            if (target !== dirname(this.file) || name === null || String(name) === basename(target)) rearm = true;
-            schedule();
-          });
-          directory = target;
-          watcher.on('error', () => { rearm = true; schedule(); });
-          return;
-        } catch (error) {
+        try { subscribe(target); break; }
+        catch (error) {
           const code = (error as NodeJS.ErrnoException).code;
           if ((code === 'ENOENT' || code === 'ENOTDIR') && dirname(target) !== target) { target = dirname(target); continue; }
+          publish({ ok: false, syntaxTheme: { kind: 'pi' }, issue: issue('watch-failed') }); return;
+        }
+      }
+      // Cover mkdir between the failed child watch and the ancestor subscription.
+      while (directory !== dirname(this.file)) {
+        const child = join(directory, relative(directory, dirname(this.file)).split(sep)[0]!);
+        try { subscribe(child); }
+        catch (error) {
+          const code = (error as NodeJS.ErrnoException).code;
+          if (code === 'ENOENT' || code === 'ENOTDIR') return;
           publish({ ok: false, syntaxTheme: { kind: 'pi' }, issue: issue('watch-failed') }); return;
         }
       }
