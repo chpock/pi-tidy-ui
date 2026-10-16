@@ -732,3 +732,106 @@ for (const mode of ['regular', 'fullscreen']) test(`real CLI: isolated bash time
       }, null, 2));
     } finally { await closeTerminals(terminals.reverse()); }
   });
+
+for (const mode of ['regular', 'fullscreen']) test(`real CLI: AFT-shaped reminder sections preserve footer, colors and replay (${mode})`,
+  { timeout: 120000 }, async () => {
+    const terminals = [];
+    const start = async (name, options = {}) => {
+      const terminal = new PiTerminal(`bash-reminder-${mode}-${name}`, { tidyUi: true, mode,
+        extraEnv: { TIDY_UI_TEST_BASH_SHAPE: '1' }, ...options });
+      terminals.push(terminal); await terminal.ready(); await terminal.resize(100, 200); return terminal;
+    };
+    const names = ['reminder-inline', 'reminder-timeout', 'reminder-long', 'reminder-cap'];
+    const note = text => `<system-reminder>\n${text}\n</system-reminder>`;
+    const longRows = Array.from({ length: 11 }, (_, i) => `NOTICE_ROW_${String(i + 1).padStart(2, '0')}`);
+    const notices = [note('Repeated call notice'), [note('Completed task'), note('Still running task'), note('Pattern matched')].join('\n'),
+      note(longRows.join('\n')), note('Other task failed')];
+    const raw = [
+      { name: 'bash', content: [{ type: 'text', text: 'INLINE_BODY\n\n[exit code: 7]\n\n' + notices[0] }], details: { exit_code: 7 }, isError: false },
+      { name: 'bash', content: [{ type: 'text', text: 'TIMEOUT_BODY\n\n[command timed out]\n[exit code: 124]' }, { type: 'text', text: notices[1] }], details: { exit_code: 124 }, isError: false },
+      { name: 'bash', content: [{ type: 'text', text: notices[2] }], details: { exit_code: 0 }, isError: false },
+      { name: 'bash', content: [{ type: 'text', text: 'CAPPED_BODY\n\n[exit code: 7]\nshown 10 of 20 lines (cap)\n\n' + notices[3] }], details: { exit_code: 7 }, isError: false },
+    ];
+    const body = tool => {
+      const rows = tool.lines.map(stripVTControlCharacters), top = rows.findIndex(line => line.includes('┃'));
+      return rows.slice(top + 1, -1).map(line => line.slice(3, -2).trimEnd());
+    };
+    const expected = expanded => [
+      ['$ shape reminder-inline', '', 'INLINE_BODY', '', '[exit code: 7]', '', ...notices[0].split('\n')],
+      ['$ shape reminder-timeout', '', 'TIMEOUT_BODY', '', '[exit code: 124; error: command timed out]', '', ...notices[1].split('\n')],
+      ['$ shape reminder-long', '', ...(expanded ? notices[2].split('\n') : ['<system-reminder>', ...longRows.slice(0, 9), '… (Click to expand)'])],
+      ['$ shape reminder-cap', '', 'CAPPED_BODY', '', '[exit code: 7]', 'shown 10 of 20 lines (cap)', '', '[exit code: 7]', '', ...notices[3].split('\n')],
+    ];
+    const samples = [];
+    const physical = async dump => {
+      const muted = await referenceCell(dump.summaryStyles.muted), panel = await referenceCell(dump.backgroundStyles.toolPendingBg);
+      const border = await referenceCell(dump.frameStyles.border);
+      let checked = 0;
+      for (const [i, tool] of dump.tools.entries()) {
+        const rows = tool.lines.map(stripVTControlCharacters); if (!rows[0]) rows.shift();
+        const y = dump.screen.findIndex((_, index) => rows.every((row, offset) => dump.screen[index + offset]?.padEnd(dump.width) === row));
+        assert.ok(y >= 0, `${names[i]} entire frame is on the physical screen`);
+        const first = rows.findIndex(row => row.includes('<system-reminder>')); assert.ok(first > 0);
+        for (let offset = first; offset < rows.length - 1; offset++) {
+          const text = rows[offset].slice(3, -2).trimEnd();
+          if (text.includes('Click')) continue;
+          for (let x = 3; x < 3 + text.length; x++) {
+            const cell = dump.cells[y + offset][x];
+            assert.deepEqual({ fg: cell.fg, fgMode: cell.fgMode, dim: cell.dim },
+              { fg: muted.fg, fgMode: muted.fgMode, dim: muted.dim });
+            assert.deepEqual({ bg: cell.bg, bgMode: cell.bgMode }, { bg: panel.bg, bgMode: panel.bgMode }); checked++;
+          }
+        }
+        if (i === 2) {
+          const stripe = dump.cells[y + first][1];
+          assert.deepEqual({ fg: stripe.fg, fgMode: stripe.fgMode }, { fg: border.fg, fgMode: border.fgMode }, 'reminder content cannot turn successful card into error');
+        }
+      }
+      assert.ok(checked > 100); samples.push({ width: dump.width, checked });
+    };
+    try {
+      const live = await start('live'); await live.run('bash-shape-reminders');
+      const wide = await live.capture('wide'), bytes = readFileSync(wide.session, 'utf8');
+      assert.deepEqual(wide.tools.map(body), expected(false)); await physical(wide);
+      const observed = traffic(live, 4);
+      assert.deepEqual(observed.filter(event => event.type === 'result').map(({ type, ...value }) => value), raw);
+      assert.deepEqual(observed.filter(event => event.type === 'call').map(event => event.input), names.map(fixtureCase => ({ command: 'shape ' + fixtureCase, fixtureCase })));
+      observed.filter(event => event.type === 'model_context').forEach((event, i) => assert.deepEqual(event.results, raw.slice(0, i)));
+      assert.deepEqual(persisted(wide).filter(entry => entry.role === 'toolResult'), raw.map(({ name, ...value }) => ({ role: 'toolResult', toolName: name, ...value })));
+      const identity = dump => {
+        assert.deepEqual(persisted(dump), persisted(wide));
+        assert.deepEqual(dump.tools.map(({ content, details, isError }) => ({ content, details, isError })), raw.map(({ name, ...value }) => value));
+        assert.equal(readFileSync(dump.session, 'utf8'), bytes);
+      };
+      // Ctrl+O is native in both modes; fullscreen also exercises the same expansion via a notice-row click.
+      if (mode === 'fullscreen') await mouseAt(live, wide, 'NOTICE_ROW_01');
+      else { live.send('\x0f'); await live.settle(); }
+      const expanded = await live.capture('expanded'); identity(expanded); await physical(expanded);
+      assert.deepEqual(body(expanded.tools[2]), expected(true)[2]);
+      if (mode === 'fullscreen') await mouseAt(live, expanded, 'NOTICE_ROW_11');
+      else { live.send('\x0f'); await live.settle(); }
+      for (const theme of ['light', 'dark']) {
+        await live.command('/tidy-ui-theme ' + theme); const dump = await live.capture(theme);
+        identity(dump); assert.deepEqual(dump.tools.map(body), expected(false)); await physical(dump);
+      }
+      await live.resize(24, 300); const narrow = await live.capture('narrow'); identity(narrow); await physical(narrow);
+      for (const tool of narrow.tools) await assertFits(tool.lines, 24);
+      await live.resize(100, 200);
+      const starts = live.events().filter(event => event.type === 'start').length;
+      await live.command('/reload'); await live.event('start', starts + 1);
+      const reloaded = await live.capture('reloaded'); identity(reloaded); assert.deepEqual(reloaded.tools.map(body), expected(false));
+      const native = await start('native', { tidyUi: false, session: wide.session, workspace: live.work });
+      const stock = await native.capture('stock'); identity(stock);
+      await live.appearance(false); const off = await live.capture('off'); identity(off);
+      assert.deepEqual(off.tools.map(tool => tool.lines), stock.tools.map(tool => tool.lines));
+      await live.appearance(true); const on = await live.capture('on'); identity(on); assert.deepEqual(on.tools.map(body), expected(false));
+      const replay = await start('replay', { session: wide.session, workspace: live.work });
+      const restored = await replay.capture('restored'); identity(restored); await physical(restored);
+      assert.deepEqual(restored.tools.map(body), expected(false));
+      for (const history of [native, replay]) for (const type of ['call', 'result', 'model_context', 'provider_error'])
+        assert.equal(history.events().filter(event => event.type === type).length, 0);
+      assert.deepEqual(traffic(live, 4), observed);
+      writeFileSync(join(artifacts, `bash-reminder-${mode}-coverage.json`), JSON.stringify({ installedAFT: false, mode,
+        calls: 4, results: 4, contexts: 5, samples, cases: names, replayCalls: 0 }, null, 2));
+    } finally { await closeTerminals(terminals.reverse()); }
+  });

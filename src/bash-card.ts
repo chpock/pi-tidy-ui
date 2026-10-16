@@ -31,6 +31,65 @@ export function bashFailurePhase(node: BashPresentation): 'formation' | 'executi
   return node.argsComplete === false ? 'formation' : undefined;
 }
 
+/** Return only a complete, nonnested reminder suffix within one content block. */
+function reminderSuffix(rows: readonly string[], first: number, last: number): number {
+  let depth = 0, nested = false, open = last, start = last, previousEnd = -1;
+  for (let index = first; index < last; index++) {
+    const row = rows[index];
+    if (row === '<system-reminder>') {
+      if (depth++ === 0) { open = index; nested = false; }
+      else nested = true;
+    } else if (row === '</system-reminder>') {
+      if (depth === 0) { start = last; previousEnd = -1; }
+      else if (--depth === 0) {
+        if (nested || open !== first && open !== previousEnd && rows[open - 1]!.trim()) {
+          start = last; previousEnd = -1;
+        } else {
+          if (start === last) start = open;
+          previousEnd = index + 1;
+        }
+      }
+    } else if (depth === 0 && start !== last && row!.trim()) {
+      start = last; previousEnd = -1;
+    }
+  }
+  return depth === 0 ? start : last;
+}
+
+function resultRows(node: BashPresentation, final: boolean) {
+  const parts = node.result?.content.filter(part => part.type === 'text').map(part => part.text ?? '') ?? [];
+  const normalized = blockText(parts.join('\n')), rows = normalized.split('\n');
+  let end = rows.length;
+  while (end && !rows[end - 1]!.trim()) end--;
+  let reminder = end, cursor = end;
+  if (!final || rows[end - 1] !== '</system-reminder>') return { rows, reminder, end };
+  const boundaries = [0];
+  if (parts.length <= 1) boundaries.push(rows.length);
+  else {
+    const chunks = parts.map((part, index) => blockText(part + (index < parts.length - 1 ? '\n' : '')));
+    // Keep the original joined normalization (including CR + separator LF). A
+    // cross-part control sequence can erase boundaries: then leave the tail ordinary.
+    if (chunks.some((chunk, index) => index < chunks.length - 1 && !chunk.endsWith('\n'))
+      || chunks.join('') !== normalized) return { rows, reminder, end };
+    for (let index = 0; index < chunks.length; index++)
+      boundaries.push(boundaries[index]! + chunks[index]!.split('\n').length - (index < chunks.length - 1 ? 1 : 0));
+  }
+  for (let block = boundaries.length - 2; block >= 0; block--) {
+    const first = boundaries[block]!;
+    let last = Math.min(boundaries[block + 1]!, cursor);
+    while (last > first && !rows[last - 1]!.trim()) last--;
+    if (last <= first) { cursor = first; continue; }
+    const start = reminderSuffix(rows, first, last);
+    if (start === last) break;
+    reminder = start;
+    let prefix = start;
+    while (prefix > first && !rows[prefix - 1]!.trim()) prefix--;
+    if (prefix !== first) break;
+    cursor = first;
+  }
+  return { rows, reminder, end };
+}
+
 /** Content policy is independent of both the host's tool class and the shared shell. */
 export function renderBashCard(node: BashPresentation, directory: string | undefined, width: number, theme: CardTheme, outputPad = 1, commandRows?: readonly string[] | ((text: string) => readonly string[] | undefined)) {
   const geometry = cardGeometry(width, outputPad), available = geometry.contentWidth;
@@ -56,8 +115,8 @@ export function renderBashCard(node: BashPresentation, directory: string | undef
   });
   const code = exitCode(node), final = !!node.result && !node.isPartial;
   const error = final && (node.result?.isError === true || (code !== undefined && code !== 0));
-  const output = blockText(node.result?.content.filter((part) => part.type === "text").map((part) => part.text ?? "").join("\n") ?? "").split("\n");
-  let first = 0, last = output.length;
+  const { rows: output, reminder, end } = resultRows(node, final);
+  let first = 0, last = reminder;
   while (last > first && !output[last - 1].trim()) last--;
   // AFT does not persist its timeout reason. This is an approved display-only
   // exception, not producer detection or proof of process status: an identical
@@ -75,19 +134,21 @@ export function renderBashCard(node: BashPresentation, directory: string | undef
   else if (footer && code !== undefined && code !== 0 && last >= 2 && output[last - 1] === footer && !output[last - 2].trim()) last--;
   while (last > first && !output[last - 1].trim()) last--;
   while (first < last && !output[first].trim()) first++;
-  const outputRows: string[] = [], limit = node.expanded ? Infinity : 11;
-  for (let index = first; index < last && outputRows.length < limit; index++)
-    outputRows.push(...terminalRows(output[index], available, limit - outputRows.length));
-  const overflow = outputRows.length > 10;
-  const expandable = overflow || (node.expanded && outputRows.length > 0);
-  const previewOverflow = overflow && !node.expanded;
-  const displayed = node.expanded ? outputRows : outputRows.slice(0, 10);
-  if (previewOverflow) while (displayed.length && !displayed[displayed.length - 1].trim()) displayed.pop();
-  if (displayed.length || previewOverflow) body.push("");
-  body.push(...displayed.map((row) => theme.fg("toolOutput", row)));
-  // Pi's truncator inserts full SGR resets even for plain text; keep this
-  // synthetic hint plain until styling, so it cannot reset the enclosing panel.
-  if (previewOverflow) body.push(theme.fg("dim", stripVTControlCharacters(truncateToWidth("… (Click to expand)", available))));
-  if (footer) body.push("", ...styled(footer, "error"));
-  return { rows: frameRows(geometry, body, toolCardPaint(theme, error)), geometry, expandable };
+  const section = (first: number, last: number, role: ThemeColor) => {
+    const rows: string[] = [], limit = node.expanded ? Infinity : 11;
+    for (let index = first; index < last && rows.length < limit; index++)
+      for (const row of terminalRows(output[index]!, available, limit - rows.length)) rows.push(row);
+    const overflow = rows.length > 10, previewOverflow = overflow && !node.expanded;
+    const displayed = node.expanded ? rows : rows.slice(0, 10);
+    if (previewOverflow) while (displayed.length && !displayed[displayed.length - 1]!.trim()) displayed.pop();
+    if (displayed.length || previewOverflow) body.push('');
+    for (const row of displayed) body.push(theme.fg(role, row));
+    // Pi's truncator inserts SGR resets even for plain text; style only afterwards.
+    if (previewOverflow) body.push(theme.fg('dim', stripVTControlCharacters(truncateToWidth('… (Click to expand)', available))));
+    return overflow || node.expanded && rows.length > 0;
+  };
+  const outputExpandable = section(first, last, 'toolOutput');
+  if (footer) body.push('', ...styled(footer, 'error'));
+  const reminderExpandable = section(reminder, end, 'muted');
+  return { rows: frameRows(geometry, body, toolCardPaint(theme, error)), geometry, expandable: outputExpandable || reminderExpandable };
 }

@@ -224,6 +224,12 @@ export default function terminalDriver(pi: ExtensionAPI) {
         case "timeout-preview": return result(row(9) + "\n\n[command timed out]\n[exit code: 124]", 124);
         case "timeout-deep": return result(row(11) + "\n\n[command timed out]\n[exit code: 124]", 124);
         case "timeout-indent": return result("BODY\n\n [command timed out]\n[exit code: 124]", 124);
+        // AFT-shaped reminders exercise presentation only, never the installed AFT runtime.
+        case "reminder-inline": return result("INLINE_BODY\n\n[exit code: 7]\n\n<system-reminder>\nRepeated call notice\n</system-reminder>", 7);
+        case "reminder-timeout": return { content: [...text("TIMEOUT_BODY\n\n[command timed out]\n[exit code: 124]"),
+          ...text("<system-reminder>\nCompleted task\n</system-reminder>\n<system-reminder>\nStill running task\n</system-reminder>\n<system-reminder>\nPattern matched\n</system-reminder>")], details: { exit_code: 124 } };
+        case "reminder-long": return result("<system-reminder>\n" + Array.from({ length: 11 }, (_, i) => `NOTICE_ROW_${String(i + 1).padStart(2, '0')}`).join('\n') + "\n</system-reminder>", 0);
+        case "reminder-cap": return result("CAPPED_BODY\n\n[exit code: 7]\nshown 10 of 20 lines (cap)\n\n<system-reminder>\nOther task failed\n</system-reminder>", 7);
         case "timeout-stream": {
           const value = row(9) + "\n\n[command timed out]\n[exit code: 124]";
           onUpdate?.(result(value, 124));
@@ -480,7 +486,7 @@ export default function terminalDriver(pi: ExtensionAPI) {
         const scenario = prompt === "run bash-prefix-contract" ? "bash-prefix-contract" : prompt === "run syntax-cards" ? "syntax-cards" : prompt?.includes("run write-stock") ? "write-stock" : prompt?.includes("run write-shapes") ? "write-shapes" : prompt?.includes("run edit-performance") ? "edit-performance" : prompt?.includes("run edit-cards") ? "edit-cards" : prompt?.includes("run user-card") ? "user-card" : prompt === "run cache-performance" ? "cache-performance" : prompt?.includes("bash-width") ? "bash-width" : prompt?.includes("bash-stream") ? "bash-stream" : prompt?.includes("bash-real") ? "bash-real" :
           prompt?.includes("bash-shape-timeout-stream") ? "bash-shape-timeout-stream" : prompt?.includes("bash-shape-timeouts") ? "bash-shape-timeouts" :
           prompt?.includes("bash-shape-exception-stream") ? "bash-shape-exception-stream" : prompt?.includes("bash-shape-exceptions") ? "bash-shape-exceptions" :
-          prompt?.includes("bash-shape-stream") ? "bash-shape-stream" : prompt?.includes("bash-shapes") ? "bash-shapes" :
+          prompt?.includes("bash-shape-reminders") ? "bash-shape-reminders" : prompt?.includes("bash-shape-stream") ? "bash-shape-stream" : prompt?.includes("bash-shapes") ? "bash-shapes" :
           prompt?.includes("long-word-wrap") ? "long-word-wrap" : prompt?.includes("bounded-summaries") ? "bounded-summaries" : prompt?.includes("compact-errors") ? "compact-errors" : prompt?.includes("comma-wrap") ? "comma-wrap" : prompt?.includes("boundary") ? "boundary" : prompt?.includes("multiline") ? "multiline" : prompt?.includes("integration") ? "integration" :
           prompt?.includes("pending") ? "pending" : prompt?.includes("fallback") ? "fallback" :
           prompt === "run footer-cold" ? "footer-cold" : prompt === "run footer-history" ? "footer-history" : prompt === "run footer-varied" ? "footer-varied" :
@@ -505,6 +511,7 @@ export default function terminalDriver(pi: ExtensionAPI) {
           { name: "bash", arguments: { command: "printf 'USER_BASH_OUTPUT\\n'" } },
           { name: "read", arguments: { path: "a.txt" } },
         ] : scenario === "cache-performance" ? cacheSuite : scenario === "bash-width" ? bashWidth : scenario === "bash-real" ? bashReal : scenario === "bash-shapes" ? bashShapes :
+          scenario === "bash-shape-reminders" ? ['reminder-inline', 'reminder-timeout', 'reminder-long', 'reminder-cap'].map(fixtureCase => ({ name: 'bash', arguments: { command: 'shape ' + fixtureCase, fixtureCase } })) :
           scenario === "bash-shape-timeouts" ? bashTimeouts :
           scenario === "bash-shape-timeout-stream" ? [{ name: "bash", arguments: { command: "shape timeout-stream", fixtureCase: "timeout-stream" } }] :
           scenario === "bash-shape-exceptions" ? bashExceptions :
