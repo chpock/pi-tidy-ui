@@ -68,7 +68,7 @@ for (const mode of ['regular', 'fullscreen']) test(`real CLI: queued cards adapt
       for (const row of dump.rows.map(plain)) {
         if (!row.includes('┃')) continue;
         const value = row.slice(3);
-        if (value.startsWith('QUEUED · ')) { bodies.push(current.filter(Boolean)); current = []; }
+        if (value.startsWith(' QUEUED · ')) { bodies.push(current.filter(Boolean)); current = []; }
         else current.push(value);
       }
       return bodies;
@@ -84,6 +84,12 @@ for (const mode of ['regular', 'fullscreen']) test(`real CLI: queued cards adapt
         const row = expected[y], x = row.indexOf('QUEUED · '); if (x < 0) continue;
         const stripe = dump.cells[first + y][1], badge = dump.cells[first + y][x], panel = dump.cells[first + y][2];
         assert.equal(badge.bg, stripe.fg); assert.equal(badge.bgMode, stripe.fgMode);
+        const label = row.includes('QUEUED · Steering') ? 'QUEUED · Steering' : 'QUEUED · Follow-up';
+        for (const column of [x - 1, x + label.length]) {
+          const padding = dump.cells[first + y][column];
+          assert.equal(padding.text, ' ');
+          assert.equal(padding.bg, badge.bg); assert.equal(padding.bgMode, badge.bgMode);
+        }
         assert.equal(badge.fg, panel.bg); assert.equal(badge.fgMode, panel.bgMode);
         for (const column of [0, dump.width - 1]) assert.equal(dump.cells[first + y][column].bgMode, 0);
       }

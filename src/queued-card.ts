@@ -17,7 +17,7 @@ export function prepareQueuedCard(text: string, mode: "Steering" | "Follow-up", 
   const paint = { border: (value: string) => theme.fg("customMessageLabel", value),
     panel: (value: string) => theme.bg ? theme.bg("userMessageBg", value) : value };
   const body = blockText(text).split("\n").flatMap(line => terminalRows(line, available));
-  const label = `QUEUED · ${mode}`;
+  const label = ` QUEUED · ${mode} `;
   const badge = (value: string) => theme.style && theme.colors?.customMessageLabel && theme.colors.userMessageBg
     ? theme.style(value, { bg: theme.colors.customMessageLabel, fg: theme.colors.userMessageBg })
     : theme.fg("customMessageLabel", `\x1b[7m${value}\x1b[27m`);

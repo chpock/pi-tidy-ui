@@ -43,7 +43,7 @@ function content(rows: string[], width = 100, padding = 1): string[] {
 function bodies(rows: string[], width = 100, padding = 1): string[][] {
   const result: string[][] = []; let body: string[] = [];
   for (const row of content(rows, width, padding)) {
-    if (row.startsWith("QUEUED · ")) { result.push(body.filter(Boolean)); body = []; }
+    if (row.startsWith(" QUEUED · ")) { result.push(body.filter(Boolean)); body = []; }
     else body.push(row);
   }
   return result;
@@ -59,8 +59,8 @@ test("queued cards use actual native queue construction and preserve full text, 
   const controller = installTidyUi(root, () => theme);
   try {
     const rows = content(pending.render(100));
-    assert.deepEqual(rows, ["", "FIRST", "  indentation", "", "**plain, not Markdown**", "", "QUEUED · Steering", "",
-      "", "COMPACTION", "", "QUEUED · Steering", "", "", "SECOND", "", "QUEUED · Follow-up (Alt+Up to edit all queued messages)", ""]);
+    assert.deepEqual(rows, ["", "FIRST", "  indentation", "", "**plain, not Markdown**", "", " QUEUED · Steering", "",
+      "", "COMPACTION", "", " QUEUED · Steering", "", "", "SECOND", "", " QUEUED · Follow-up  (Alt+Up to edit all queued messages)", ""]);
     assert.equal(plain(pending.render(100)).filter(row => row.includes("edit all queued messages")).length, 1);
     assert.ok(!plain(pending.render(100)).some(row => row.includes("↳")));
     assert.deepEqual(pending.children, children, "render never exchanges native queue components");
@@ -141,13 +141,13 @@ test("queued cards wrap metadata without hiding it, follow native remapped keys 
   const controller = installTidyUi(root, () => theme, { outputPad: () => padding });
   try {
     const rows = pending.render(100);
-    assert.ok(content(rows).includes("QUEUED · Steering (Ctrl+Alt+E to edit all queued messages)"));
+    assert.ok(content(rows).includes(" QUEUED · Steering  (Ctrl+Alt+E to edit all queued messages)"));
     assert.ok(!rows.join("").includes("\x1b]52"));
     for (const pad of [0, 1]) for (const width of [100, 30, 10, 6, 2, 1, 0]) {
       padding = pad; const rendered = pending.render(width);
       assert.ok(rendered.every(row => visibleWidth(row) <= width), `width ${width}, padding ${pad}`);
       if (!width) { assert.deepEqual(rendered, []); continue; }
-      const label = "QUEUED · Steering (Ctrl+Alt+E to edit all queued messages)", geometry = cardGeometry(width, pad);
+      const label = " QUEUED · Steering  (Ctrl+Alt+E to edit all queued messages)", geometry = cardGeometry(width, pad);
       const count = Math.ceil(visibleWidth(label) / geometry.contentWidth);
       const text = rendered.slice(-1 - count, -1).map(row => stripVTControlCharacters(row).slice(geometry.contentX, geometry.contentX + geometry.contentWidth)).join("");
       assert.equal(text.slice(0, label.length), label, `complete metadata at width ${width}`);
@@ -172,6 +172,12 @@ test("queued-card badge background matches the user stripe and hint follows dim 
         const cell = (y: number, x: number) => terminal.buffer.active.getLine(y)!.getCell(x)!;
         const stripe = cell(index, 1), badge = cell(index, bare[index]!.indexOf("QUEUED"));
         assert.equal(badge.getBgColor(), stripe.getFgColor()); assert.equal(badge.getBgColorMode(), stripe.getFgColorMode());
+        const start = bare[index]!.indexOf('QUEUED'), label = 'QUEUED · Steering';
+        for (const column of [start - 1, start + label.length]) {
+          assert.equal(cell(index, column).getChars(), ' ', 'badge has one empty cell on each side');
+          assert.equal(cell(index, column).getBgColor(), badge.getBgColor(), 'padding belongs to the badge background');
+          assert.equal(cell(index, column).getBgColorMode(), badge.getBgColorMode());
+        }
         const body = cell(bare.findIndex(row => row.includes("BODY")), 3);
         assert.equal(badge.getFgColor(), body.getBgColor()); assert.equal(badge.getFgColorMode(), body.getBgColorMode());
         const opening = bare[index]!.indexOf("("), closing = bare[index]!.lastIndexOf(")");
