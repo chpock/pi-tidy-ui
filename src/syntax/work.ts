@@ -1,13 +1,13 @@
 import type { CardTheme } from '../card-theme.ts';
 import type { SyntaxClient } from '../occipital/client.ts';
-import type { PiFailure, SourceController, SourceDemand, SourceWorkStatus } from '../occipital/controller.ts';
+import type { PiFailure, SourceController, SourceDemand, SourceDisplayBasis, SourceWorkStatus } from '../occipital/controller.ts';
 import { paintBashCommand, paintFileSource, type RangeReader } from './paint.ts';
 import { piRangeReader, type PiRowReader } from './pi.ts';
 
 type NativeProfile = { id: string; fingerprint: string };
 export type SyntaxDemand = Omit<SourceDemand, 'profile' | 'fingerprint'> & {
   palette: number; fallback?: 'pi' | 'neutral';
-  // Retain known display eligibility across missing metadata; null forbids native reuse.
+  // Current-profile classification authority; retained presentation is independent.
   nativeProfile?: NativeProfile | null;
 };
 export type SyntaxIdentity = Pick<SyntaxDemand, 'key' | 'version' | 'language' | 'complete' | 'palette' | 'fallback'>;
@@ -25,6 +25,7 @@ export interface SyntaxResolution extends SyntaxIdentity {
   nativeGeneration?: number;
   piGeneration?: number;
   native?: RangeReader;
+  display?: SourceDisplayBasis;
   pi?: RangeReader;
 }
 type Client = Pick<SyntaxClient, 'sources' | 'snapshot'>;
@@ -95,6 +96,11 @@ export function requestSyntax(client: Client, demand: SyntaxDemand, classify: Pi
   if (native?.version === version && native.language === language && native.text === text
     && compatibleProfile(native, demand.nativeProfile === undefined ? metadata.effective : demand.nativeProfile) && sources.status(key)?.exact)
     return { outcome: 'native' };
+  const display = sources.displayBasis(key);
+  if (complete && display?.complete && display.exactVersion === version && display.language === language) {
+    let sameText = false;
+    if (display.visit(previous => { sameText = previous === text; }) && sameText) return { outcome: 'waiting' };
+  }
   if (demand.fallback === 'neutral') return { outcome: sources.workStatus(key).fallbackEligible ? 'neutral' : 'waiting',
     ...(metadata.enabled && (metadata.provider.availability !== 'ready' || !metadata.effective) ? { awaitingProvider: true as const } : {}) };
   const cached = sources.borrowPiSource(key);
@@ -143,6 +149,8 @@ export function resolveSyntax(sources: SourceController, identity: SyntaxIdentit
   const currentNative = native?.version === version && native.language === language && compatibleProfile(native, profile) ? native : undefined;
   const status = currentNative ? sources.status(key) : undefined;
   const nativeExact = !!status?.exact;
+  const basis = complete ? sources.displayBasis(key) : undefined;
+  const display = basis?.complete && basis.exactVersion === version && basis.language === language ? basis : undefined;
   const matchingPi = pi?.version === version && pi.language === language ? pi : undefined;
   const currentPi = matchingPi && sources.hasPiBridge(key, version, palette) ? matchingPi : undefined;
   const failure = matchingPi && sources.piFailure(key, version, palette);
@@ -150,9 +158,9 @@ export function resolveSyntax(sources: SourceController, identity: SyntaxIdentit
   return { key, version, language, complete, palette, fallback, owner, nativeExact,
     execution: work.execution, fallbackEligible: work.fallbackEligible, piStyled: currentPi?.styleDirectives, committedBytes: status?.committedBytes,
     needsPi: allowPi && (work.version === undefined || work.version <= version) && (pi === undefined || pi.version <= version)
-      && !nativeExact && !currentPi && work.fallbackEligible && !failure,
+      && !nativeExact && !display && !currentPi && work.fallbackEligible && !failure,
     profileRetryAllowed: work.version === version && work.profileRetryAllowed,
-    nativeGeneration: currentNative?.generation, piGeneration: currentPi?.generation,
+    nativeGeneration: currentNative?.generation, piGeneration: currentPi?.generation, display,
     native: currentNative && (status?.classificationVersion !== undefined || nativeExact)
       ? nativeReader(owner, key, currentNative.generation, version, language) : undefined,
     pi: currentPi ? piReader(owner, key, currentPi.generation, version, palette, neutralStyle, language) : undefined };
@@ -167,6 +175,10 @@ function paint(sources: SourceController, resolution: SyntaxResolution, theme: C
     if (!source) return undefined;
     const rows = project(source.text, theme, resolution.native);
     return nativeCurrent(sources, key, nativeGeneration, version, language) ? rows : undefined;
+  }
+  if (resolution.display) {
+    let rows: string[] | undefined;
+    if (resolution.display.visit((text, read) => { rows = project(text, theme, read); })) return rows;
   }
   if (resolution.pi && piGeneration !== undefined) {
     const source = piCurrent(sources, key, piGeneration, version, language);

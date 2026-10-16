@@ -96,14 +96,14 @@ async function settled() { await turn(); }
 const plain = (rows: string[]) => rows.map(stripVTControlCharacters);
 function counts(f: ReturnType<typeof fixture>) { return [f.env.pi.length, f.env.observes, f.env.captures, f.env.reads, f.calls.length]; }
 function watchConsumer(f: ReturnType<typeof fixture>) {
-  const useful = CardSources.prototype.useful, drain = CardSources.prototype.drain;
+  const useful = CardSources.prototype.useful, prepare = CardSources.prototype.prepare;
   let demands = 0, preparationVisits = 0;
   CardSources.prototype.useful = function (...args) { demands++; return useful.apply(this, args); };
-  CardSources.prototype.drain = function () {
-    preparationVisits++; assert.equal(f.env.depth, 0, 'no preparation visit in render'); return drain.call(this);
+  CardSources.prototype.prepare = function (ticket) {
+    preparationVisits++; assert.equal(f.env.depth, 0, 'no preparation visit in render'); return prepare.call(this, ticket);
   };
   return { counts: () => [demands, preparationVisits, ...counts(f)],
-    restore() { CardSources.prototype.useful = useful; CardSources.prototype.drain = drain; } };
+    restore() { CardSources.prototype.useful = useful; CardSources.prototype.prepare = prepare; } };
 }
 function written(f: ReturnType<typeof fixture>, content: string, path = 'a.ts') {
   const tool = f.tool('write', { path, content });
@@ -416,7 +416,7 @@ test('P1 injected stock edit is the actual stock self-shell Box and skips all na
     assert.deepEqual(f.env.pi, ['x', 'y']);
     assert.deepEqual(watch.counts(), [1, 1, 2, 0, 2, 3, 0]);
     await settled(); // Finish the one-shot host-yield barrier before warm measurements.
-    assert.deepEqual(watch.counts(), [1, 2, 2, 0, 2, 3, 0]);
+    assert.deepEqual(watch.counts(), [1, 1, 2, 0, 2, 3, 0], 'an empty controller continuation does not revisit card preparation');
     const before = watch.counts().slice(1);
     for (const width of [24, 60, 121]) f.render(tool, width);
     tool.handleMouse({ type: 'move', width: 60, height: 8, x: 0, y: 0 });
@@ -729,7 +729,7 @@ test('stream contract: persisted execution error is a finite replay source, not 
   assert.ok(plain(f.render(tool)).join('\n').includes('[error: execution failed]'));
 });
 
-for (const frozen of [false, true]) test(`stream review F1: ${frozen ? 'frozen' : 'active'} Bash keeps compatible colors through metadata absence but rejects off/selection changes`, async () => {
+for (const frozen of [false, true]) test(`stream review F1: ${frozen ? 'frozen' : 'active'} Bash keeps ready colors through metadata loss and theme previews but releases on off`, async () => {
   const f = fixture(true), text = 'echo prefix', tool = f.tool('bash', { command: text });
   f.render(tool); await settled(); answer(f, 0, text, false, 0); await settled(); f.render(tool);
   if (frozen) {
@@ -746,7 +746,7 @@ for (const frozen of [false, true]) test(`stream review F1: ${frozen ? 'frozen' 
   assert.ok(f.render(tool, 100).join('').includes(themes.theme.fg('syntaxKeyword', text)));
   assert.equal(f.calls.length, before); assert.equal(f.sources.displayStamp(f.env.keys[0]!), stamp); assert.equal(f.env.pi.length, 0);
   f.env.ready = false; f.env.selected = { kind: 'occipital', id: 'different' }; f.adapter.syntaxMetadataChanged();
-  assert.equal(f.render(tool).join('').includes(themes.theme.fg('syntaxKeyword', text)), false, 'changed preference cannot borrow previous profile');
+  assert.equal(f.render(tool).join('').includes(themes.theme.fg('syntaxKeyword', text)), true, 'pending preference does not erase the last ready display');
   f.env.ready = true; f.env.selected = { kind: 'pi' }; f.adapter.syntaxMetadataChanged(); await settled();
   assert.ok(f.render(tool).join('').includes(themes.theme.fg('syntaxKeyword', text)));
   f.env.enabled = false; f.sources.setEnabled(false); f.adapter.syntaxMetadataChanged();
@@ -879,7 +879,7 @@ for (const episode of ['startup', 'reconnection'] as const) test(`host online wa
 });
 
 
-for (const kind of ['write', 'edit'] as const) test(`host ${kind} theme stamp invalidates old native rows before deferred preparation at unchanged width`, async () => {
+for (const kind of ['write', 'edit'] as const) test(`host ${kind} theme switch retains ready native rows before and during deferred preparation at unchanged width`, async () => {
   const f = fixture(true);
   const tools = Array.from({ length: 4 }, (_, i) => {
     if (kind === 'write') return written(f, `const host${i}=1;`);
@@ -897,8 +897,36 @@ for (const kind of ['write', 'edit'] as const) test(`host ${kind} theme stamp in
   f.env.selected = { kind: 'occipital', id: f.env.profile.id }; f.adapter.syntaxMetadataChanged();
   const countsBefore = counts(f), immediate = f.render(first);
   assert.deepEqual(plain(immediate), plain(before));
-  assert.notDeepEqual(immediate, before, 'old native colors disappear on the first same-width frame, before preparation yields');
+  assert.deepEqual(immediate, before, 'the first same-width frame keeps its last ready colors');
   assert.deepEqual(counts(f), countsBefore, 'cache invalidation itself does no metadata/native/Pi work in render');
   const afterFrame = f.adapter.cacheStats().builds;
-  f.render(first); assert.equal(f.adapter.cacheStats().builds, afterFrame, 'new neutral frame stays cached while native work waits');
+  f.render(first); assert.equal(f.adapter.cacheStats().builds, afterFrame, 'ready display stays cached while new native work waits');
+  await settled(); await settled();
+  assert.deepEqual(f.render(first), before, 'deferred admission cannot replace ready colors with a neutral frame');
+  assert.equal(f.env.pi.length, 0);
+});
+
+for (const kind of ['write', 'edit'] as const) test(`theme burst: ${kind} restores cached Pi colors after native expansion`, async () => {
+  const f = fixture();
+  const tool = kind === 'write' ? written(f, 'const n = 1') : f.tool('edit', { path: 'a.ts', oldText: 'const n = 1', newText: 'const n = 2' });
+  if (kind === 'edit') tool.updateResult({ content: [{ type: 'text', text: 'saved' }], details: { diff: '-1 const n = 1\n+1 const n = 2' }, isError: false }, false);
+  f.render(tool); await settled();
+  const before = f.render(tool), classifications = f.env.pi.length;
+  tool.setExpanded(true); f.render(tool); tool.setExpanded(false); f.render(tool); await settled();
+  assert.deepEqual(f.render(tool), before, 'a resumed file must replace a temporarily plain cached layout even when the stored colors are unchanged');
+  assert.equal(f.env.pi.length, classifications, 'restoring a layout cannot repeat Pi classification');
+});
+
+for (const kind of ['write', 'edit'] as const) test(`theme burst: ${kind} restores retained native colors while both unrelated jobs remain held`, async () => {
+  const f = fixture(true);
+  const tool = kind === 'write' ? written(f, 'const n = 1') : f.tool('edit', { path: 'a.ts', oldText: 'const n = 1', newText: 'const n = 2' });
+  if (kind === 'edit') tool.updateResult({ content: [{ type: 'text', text: 'saved' }], details: { diff: '-1 const n = 1\n+1 const n = 2' }, isError: false }, false);
+  f.render(tool); await settled();
+  for (let i = 0; i < f.calls.length; i++) answer(f, i, (f.calls[i]!.request.sources as { text: string }[])[0]!.text, true);
+  await settled(); const before = f.render(tool);
+  f.render(f.tool('bash', { command: 'echo held B' })); f.render(f.tool('bash', { command: 'echo held C' })); await settled();
+  assert.equal(f.sources.stats().globalUnsettledJobs, 2); const dispatched = f.calls.length, pi = f.env.pi.length;
+  tool.setExpanded(true); f.render(tool); tool.setExpanded(false); f.render(tool); await settled(); await settled();
+  assert.deepEqual(f.render(tool), before, 'local restoration cannot wait for unrelated native credit');
+  assert.equal(f.calls.length, dispatched); assert.equal(f.env.pi.length, pi); assert.equal(f.sources.stats().globalUnsettledJobs, 2);
 });

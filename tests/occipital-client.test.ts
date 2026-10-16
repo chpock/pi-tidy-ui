@@ -313,7 +313,8 @@ test('explicit preference before start is not overwritten by startup restore; kn
 test('stale source reply after current preference demand cannot publish or reset classification crash budget', async () => {
   const f = fixture(); await f.c.start(); f.c.sources.observe(demand(f.c)); f.c.sources.flush();
   const old = f.peer.calls[1]!; await f.c.selectTheme({ kind: 'occipital', id: native.id });
-  f.c.sources.observe(demand(f.c)); f.c.sources.flush(); assert.equal(old.options?.signal?.aborted, true);
+  f.c.sources.observe(demand(f.c)); f.c.sources.flush(); assert.equal(old.options?.signal?.aborted, false, 'profile-only supersession preserves physical settlement');
+  assert.equal(old.options?.acceptRetired, true, 'canonical terminal evidence passes through the broker');
   f.peer.answerSource(1); await settle(); assert.equal(f.c.sources.stats().staleReplies, 1);
   assert.equal(f.c.broker.stats().successfulClassifications, 0); assert.equal(f.c.sources.status('one')?.classificationVersion, undefined);
   assert.equal(f.peer.calls[2]!.request.sources[0].profile, native.id); f.peer.answerSource(2); await settle();
@@ -402,13 +403,13 @@ test('metadata and UI never reset owned crash chain; deliberate off/on alone per
 test('client forwards coalesced source keys without turning metadata/theme changes into source notifications', async () => {
   const packets: string[][] = [];
   const { c, peer } = fixture({ onSourceChange: (keys: readonly string[]) => { packets.push([...keys]); } });
-  await c.start(); await settle(); assert.deepEqual(packets, []);
+  await c.start(); await settle(); assert.equal(packets.length, 0);
   c.sources.observe(demand(c, 'one')); c.sources.observe(demand(c, 'two')); c.sources.flush();
   assert.equal(peer.calls.length, 3); peer.answerSource(1); peer.answerSource(2); await settle();
-  assert.deepEqual(packets, [['one', 'two']]);
+  assert.deepEqual(packets.map(keys => keys.toSorted()), [['one', 'two']]);
   const before = c.sources.stats();
   await c.refreshThemes(); await c.selectTheme({ kind: 'occipital', id: native.id }); await settle();
-  assert.deepEqual(packets, [['one', 'two']]);
+  assert.deepEqual(packets.map(keys => keys.toSorted()), [['one', 'two']]);
   assert.equal(c.sources.stats().dispatches, before.dispatches);
   assert.equal(c.sources.stats().preparedBytes, before.preparedBytes);
 });

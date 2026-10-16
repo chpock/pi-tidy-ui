@@ -496,3 +496,19 @@ test('wait-only does not change unexpected SDK failure before the catalogue dead
   f.calls[1].result.reject(new Error('not a local timeout'));
   await Promise.all(rejected); assert.equal(await p.ended, 'uncertain'); empty(p);
 });
+
+for (const outcome of ['ok', 'not_started', 'started'] as const) test(`canonical aborted shared request preserves terminal ${outcome} evidence`, async () => {
+  const f = fixture(), p = f.transport(); await f.ready(p);
+  try {
+    const abort = new AbortController(), options = { signal: abort.signal, acceptRetired: true };
+    const pending = p.request(request('retired'), options);
+    let settled = false; void pending.then(() => { settled = true; }, () => { settled = true; });
+    abort.abort(); await tick();
+    assert.equal(settled, false); assert.equal(p.stats().unsettledData, 1);
+    const terminal = outcome === 'ok' ? reply('retired') : { v: 2, ticket: 'retired', instance: 'instance', assets: 'assets',
+      status: 'error', error: { code: 'cancelled', execution: outcome } };
+    f.calls[0].result.resolve(terminal);
+    assert.deepEqual(await pending, terminal, 'terminal evidence must reach the canonical decoder, not become transport uncertainty');
+    assert.equal(p.stats().unsettledData, 0); assert.equal(p.stats().dataReservedBytes, 0);
+  } finally { await p.close(); empty(p); }
+});

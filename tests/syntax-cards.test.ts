@@ -434,7 +434,9 @@ test('cards actual credit wake local refusal notice triggers one FILE fallback, 
   assert.equal(f.env.notices.length, 0); assert.equal(f.env.classifications.length, 0); assert.equal(f.calls.length, 0);
   fault(active, 0); await settled();
   const key = f.cards.identities(owner)[0]!.key;
-  assert.deepEqual(f.env.notices, [[key]]); assert.deepEqual(f.env.classifications.map(x => x.text), ['x']);
+  assert.deepEqual(f.env.notices, [[key]]);
+  await settled(); // First admission began only after global credit; its fallback is a yielded second pass.
+  assert.deepEqual(f.env.classifications.map(x => x.text), ['x']);
   assert.equal(f.calls.length, 0); assert.equal(f.sources.stats().piSourceRecords, 1);
   assert.equal(f.cards.file(owner, theme, 0x40000000)!.styledRows.size, 1);
 });
@@ -684,7 +686,7 @@ for (const reentrant of [false, true]) test(`cards online wait: preparation yiel
   await settled();
   assert.equal(f.env.reads - before, 2, 'a pre-existing event-loop callback runs before any third preparation');
   assert.equal(f.calls.length, 2); assert.equal(f.sources.stats().unsettledJobs, 2);
-  await settled(); assert.equal(f.env.reads - before, 4, 'next two prepare in a separate turn');
+    await settled(); assert.equal(f.env.reads - before, 2, 'native backpressure leaves all remaining owner preparation lazy');
   assert.equal(f.calls.length, 2, 'held jobs still own both RPC credits');
   const count = 8 + Number(reentrant);
   for (let i = 0; i < count; i++) {
@@ -856,10 +858,10 @@ for (const kind of ['bash', 'write', 'edit', 'mixed'] as const) {
     await answerPending(f, 0, jobs);
     const versions = owners.map(owner => f.cards.identities(owner).map(slot => slot.version));
     const reads = f.env.reads;
+    const retainedRows = owners.map((owner, i) => kinds[i] === 'bash' ? undefined : [...f.cards.file(owner, theme, 0x40000000)!.styledRows]);
     selectProfile(f);
-    // Existing file ranges must not masquerade as the newly selected theme before admission.
     for (const [i, owner] of owners.entries()) if (kinds[i] !== 'bash')
-      assert.equal(f.cards.file(owner, theme, 0x40000000)?.styledRows.size, 0, 'old native profile is not painted as current');
+      assert.deepEqual([...f.cards.file(owner, theme, 0x40000000)!.styledRows], retainedRows[i], 'last ready display remains until new colors arrive');
     await answerPending(f, jobs, jobs);
     assert.equal(f.calls.length, 2 * jobs); assert.equal(f.env.classifications.length, 0);
     for (const owner of owners) for (const slot of f.cards.identities(owner)) assert.equal(f.sources.status(slot.key)?.exact, true);
@@ -941,7 +943,7 @@ test('cards theme change: waiting profile demand cannot retain a collected first
 });
 
 
-test('cards theme revision: native-only file gets one permitted Pi fallback for an offline incompatible selection', async () => {
+test('cards theme revision: offline incompatible selection preserves ready file colors without useless Pi fallback', async () => {
   const f = fixture(true), owner: Owner = { input: written('const x=1;') };
   f.cards.useful(owner, 1); await settled(); answer(f, 0, 'const x=1;', true); await settled();
   assert.equal(f.env.classifications.length, 0);
@@ -950,11 +952,12 @@ test('cards theme revision: native-only file gets one permitted Pi fallback for 
   f.env.profile = { id: 'syntect:offline', label: 'Offline', fingerprint: 'c'.repeat(64) };
   f.env.selected = { kind: 'occipital', id: f.env.profile.id }; f.cards.metadataChanged();
   f.cards.useful(owner, 1); await settled();
-  assert.equal(f.env.classifications.length, 1, 'incompatible retained native data cannot veto permitted file fallback');
+  assert.equal(f.env.classifications.length, 0, 'old display is useful without claiming the offline requested profile was classified');
   const key = f.cards.identities(owner)[0]!.key;
-  assert.equal(f.sources.hasPiBridge(key, 1, 1), true);
+  assert.equal(f.sources.hasPiBridge(key, 1, 1), false);
+  assert.ok(f.cards.file(owner, theme, 0x40000000)!.styledRows.size);
   for (let i = 0; i < 5; i++) f.cards.useful(owner, 1);
-  await settled(); assert.equal(f.env.classifications.length, 1); assert.equal(f.calls.length, 1);
+  await settled(); assert.equal(f.env.classifications.length, 0); assert.equal(f.calls.length, 1);
 });
 
 test('cards requested theme: ticket refusal remains memoized after capacity frees on the same text revision', async () => {
@@ -963,4 +966,207 @@ test('cards requested theme: ticket refusal remains memoized after capacity free
   f.cards.useful(refused, 1); await settled();
   assert.equal(f.env.reads, 0, 'a warm visit is not permission to retry refused bookkeeping');
   f.cards.useful(refused, 2); await settled(); assert.equal(f.env.reads, 1, 'new source revision permits fresh demand');
+});
+
+for (const rapid of [false, true]) test(`cards LIFO: sequential live history keeps recent work first${rapid ? ' across held obsolete theme replies' : ''}`, async () => {
+  const f = fixture(true), owners = Array.from({ length: 8 }, (_, i): Owner => ({ input: bash(`echo live ${i}`, true) }));
+  // A live conversation creates and settles each source before the next card arrives.
+  for (let i = 0; i < owners.length; i++) { f.cards.useful(owners[i]!, 1); await answerPending(f, i, 1); }
+  const first = f.calls.length;
+  selectProfile(f);
+  for (let i = 0; i < 12; i++) await settled();
+  assert.equal(f.calls.length, first + 2, 'only the two physical slots may start');
+  let start = first;
+  if (rapid) {
+    selectProfile(f, { ...nextProfile, fingerprint: 'c'.repeat(64) });
+    for (let i = 0; i < 12; i++) await settled();
+    assert.equal(f.calls.length, first + 2, 'local replacement cannot release unsettled physical jobs');
+    for (let i = first; i < first + 2; i++) answer(f, i, (f.calls[i]!.request.sources as { text: string }[])[0]!.text, true);
+    start += 2;
+  }
+  await answerPending(f, start, owners.length);
+  const requests = f.calls.slice(start).map(c => (c.request.sources as { text: string; fingerprint: string }[])[0]!);
+  assert.deepEqual(requests.map(s => s.text), owners.toReversed().map(o => (o.input as Extract<CardSourceInput, { kind: 'bash' }>).args.command),
+    'selection follows the current LIFO backlog, not the lifetime insertion order of native states');
+  assert.ok(requests.every(s => s.fingerprint === (rapid ? 'c' : 'b').repeat(64)));
+  assert.equal(f.sources.stats().globalUnsettledJobs, 0);
+  const counts = [f.env.reads, f.calls.length, f.sources.stats().preparedBytes];
+  for (const owner of owners) f.cards.useful(owner, 1);
+  f.cards.metadataChanged(); await settled();
+  assert.deepEqual([f.env.reads, f.calls.length, f.sources.stats().preparedBytes], counts);
+});
+
+test('cards LIFO: a ready recent result is published while the other recent source remains held', async () => {
+  const f = fixture(true), owners = Array.from({ length: 4 }, (_, i): Owner => ({ input: bash(`echo independent ${i}`, true) }));
+  for (let i = 0; i < owners.length; i++) { f.cards.useful(owners[i]!, 1); await answerPending(f, i, 1); }
+  selectProfile(f); await settled();
+  const recent = f.calls.slice(4).findIndex(c => (c.request.sources as { text: string }[])[0]!.text === 'echo independent 3') + 4;
+  assert.ok(recent >= 4 && f.calls[recent]);
+  answer(f, recent, 'echo independent 3', true); await settled();
+  assert.ok(f.cards.bash(owners[3]!, 40, theme, 0), 'accepted colors do not wait for another card to finish');
+  assert.equal(f.calls.length, 7, 'the released slot admits more work while the other request is still held');
+  for (let i = 4; i < 8; i++) if (i !== recent) {
+    for (let turns = 0; !f.calls[i] && turns < 30; turns++) await settled();
+    answer(f, i, (f.calls[i]!.request.sources as { text: string }[])[0]!.text, true); await settled();
+  }
+});
+
+test('cards LIFO: sequential multi-source edit keeps its native segments together ahead of older cards', async () => {
+  const f = fixture(true), owners: Owner[] = [{ input: bash('older', true) }, { input: written('const middle=1;') },
+    { input: { kind: 'file', palette: 1, language: 'typescript', node: { toolName: 'edit', args: { path: 'latest.ts' }, isPartial: false,
+      result: { details: { diff: '-1 const before=1;\n+1 const after=2;' } } } } }];
+  for (const owner of owners) { const from = f.calls.length; f.cards.useful(owner, 1); await answerPending(f, from, owner === owners[2] ? 2 : 1); }
+  selectProfile(f); await settled();
+  assert.deepEqual(f.calls.slice(4).map(c => (c.request.sources as { text: string }[])[0]!.text), ['const before=1;', 'const after=2;']);
+  f.cards.remove(owners[1]!);
+  await answerPending(f, 4, 3);
+  assert.equal((f.calls[6]!.request.sources as { text: string }[])[0]!.text, 'older');
+  assert.equal(f.calls.length, 7);
+});
+
+test('cards LIFO: held native slots do not delay an unrelated file Pi fallback while native is off', async () => {
+  const f = fixture(true), held: Owner[] = [{ input: bash('held one', true) }, { input: bash('held two', true) }];
+  for (const owner of held) f.cards.useful(owner, 1);
+  await settled(); assert.equal(f.sources.stats().globalUnsettledJobs, 2);
+  f.env.enabled = false; f.sources.setEnabled(false); f.cards.metadataChanged();
+  const fileOwner: Owner = { input: written('const offline=1;') };
+  f.cards.useful(fileOwner, 1); await settled();
+  assert.deepEqual(f.env.classifications.map(c => c.text), ['const offline=1;']);
+  assert.equal(f.sources.stats().globalUnsettledJobs, 2, 'preparation never guesses that cancelled native jobs stopped');
+});
+
+for (const kind of ['bash', 'write', 'edit'] as const) {
+  const input = (): CardSourceInput => kind === 'bash' ? bash('echo colors', true) : kind === 'write' ? written('const colors=1;') : {
+    kind: 'file', palette: 1, language: 'typescript', node: { toolName: 'edit', args: { path: 'colors.ts' }, isPartial: false,
+      result: { details: { diff: '-1 const before=1;\n+1 const after=2;' } } } };
+  test(`cards theme display: ${kind} keeps ready colors before and after new-profile preparation`, async () => {
+    const f = fixture(true), owner: Owner = { input: input() }, count = kind === 'edit' ? 2 : 1;
+    const draw = () => kind === 'bash' ? f.cards.bash(owner, 60, theme, 0)?.join('\n') : [...(f.cards.file(owner, theme, 0)?.styledRows.values() ?? [])].join('\n');
+    f.cards.useful(owner, 1); await answerPending(f, 0, count);
+    const before = draw(); assert.ok(before);
+    selectProfile(f);
+    assert.equal(draw(), before, 'selection alone cannot erase the last ready display');
+    await settled(); assert.equal(draw(), before, 'old colors remain while the new result is held');
+    assert.equal(f.env.classifications.length, 0);
+    for (const slot of f.cards.identities(owner)) assert.equal(f.sources.status(slot.key)?.exact, false, 'old display is not current-profile classification');
+    await answerPending(f, count, count);
+    assert.notEqual(draw(), before, 'accepted new colors replace the old display');
+    const counts = [f.calls.length, f.env.classifications.length, f.sources.stats().preparedBytes];
+    for (let i = 0; i < 10; i++) { f.cards.useful(owner, 1); draw(); }
+    await settled(); assert.deepEqual([f.calls.length, f.env.classifications.length, f.sources.stats().preparedBytes], counts);
+  });
+  test(`cards theme display: ${kind} rollback reuses its ready profile and rejects late preview colors`, async () => {
+    const f = fixture(true), owner: Owner = { input: input() }, count = kind === 'edit' ? 2 : 1;
+    const draw = () => kind === 'bash' ? f.cards.bash(owner, 60, theme, 0)?.join('\n') : [...(f.cards.file(owner, theme, 0)?.styledRows.values() ?? [])].join('\n');
+    f.cards.useful(owner, 1); await answerPending(f, 0, count);
+    const before = draw(); assert.ok(before);
+    selectProfile(f); await settled();
+    const dispatched = f.calls.length; assert.equal(dispatched, count * 2);
+    selectProfile(f, profile); await settled();
+    assert.equal(draw(), before); assert.equal(f.calls.length, dispatched, 'no replacement parse of the retained original profile');
+    await answerPending(f, count, count);
+    assert.equal(draw(), before); assert.equal(f.calls.length, dispatched, 'stale preview cannot invalidate a ready rollback');
+    assert.equal(f.env.classifications.length, 0);
+    for (const slot of f.cards.identities(owner)) assert.equal(f.sources.status(slot.key)?.exact, true);
+  });
+}
+
+test('cards theme display: a failed or offline selection keeps ready native file colors without Pi reclassification', async () => {
+  const f = fixture(true), owner: Owner = { input: written('const retained=1;') };
+  f.cards.useful(owner, 1); await answerPending(f, 0, 1);
+  const before = [...f.cards.file(owner, theme, 0)!.styledRows];
+  selectProfile(f); await settled(); fault(f, 1); await settled();
+  assert.deepEqual([...f.cards.file(owner, theme, 0)!.styledRows], before); assert.equal(f.env.classifications.length, 0);
+  f.env.ready = false; selectProfile(f, { ...nextProfile, id: 'syntect:offline' });
+  f.cards.useful(owner, 1); await settled();
+  assert.deepEqual([...f.cards.file(owner, theme, 0)!.styledRows], before); assert.equal(f.env.classifications.length, 0);
+});
+
+for (const kind of ['write', 'edit'] as const) for (const offline of [false, true]) test(`cards theme display alias: ${kind} retains equal-text colors across ${offline ? 'offline' : 'held'} theme change`, async () => {
+  const f = fixture(true), input: CardSourceInput = kind === 'write' ? written('const alias=1;') : {
+    kind: 'file', palette: 1, language: 'typescript', node: { toolName: 'edit', args: { path: 'alias.ts' }, isPartial: false,
+      result: { details: { diff: '-1 const oldAlias=1;\n+1 const newAlias=2;' } } } };
+  const owner: Owner = { input }, count = kind === 'edit' ? 2 : 1;
+  f.cards.useful(owner, 1); await answerPending(f, 0, count);
+  const before = [...f.cards.file(owner, theme, 0)!.styledRows];
+  owner.input = { ...input, palette: 2 }; f.cards.useful(owner, 2); await settled();
+  assert.equal(f.cards.identities(owner)[0]!.version, 2); assert.equal(f.calls.length, count);
+  if (offline) f.env.ready = false;
+  selectProfile(f);
+  assert.deepEqual([...f.cards.file(owner, theme, 0)!.styledRows], before, 'classification version aliases preserve display too');
+  await settled();
+  assert.deepEqual([...f.cards.file(owner, theme, 0)!.styledRows], before);
+  assert.equal(f.env.classifications.length, 0);
+});
+
+for (const kind of ['bash', 'write', 'edit'] as const) test(`cards theme display race: ${kind} rejects an obsolete reply before rollback preparation yields`, async () => {
+  const f = fixture(true), count = kind === 'edit' ? 2 : 1, owner: Owner = { input: kind === 'bash' ? bash('echo raced', true)
+    : kind === 'write' ? written('const raced=1;') : { kind: 'file', palette: 1, language: 'typescript', node: {
+      toolName: 'edit', args: { path: 'race.ts' }, isPartial: false, result: { details: { diff: '-1 const oldRace=1;\n+1 const newRace=2;' } } } } };
+  const draw = () => kind === 'bash' ? f.cards.bash(owner, 60, theme, 0)?.join('\n') : [...f.cards.file(owner, theme, 0)!.styledRows];
+  f.cards.useful(owner, 1); await answerPending(f, 0, count); const before = draw();
+  selectProfile(f); await Promise.resolve(); assert.equal(f.calls.length, count * 2);
+  selectProfile(f, profile);
+  for (let i = count; i < count * 2; i++) answer(f, i, (f.calls[i]!.request.sources as { text: string }[])[0]!.text, true);
+  for (let i = 0; i < 5; i++) await Promise.resolve();
+  assert.deepEqual(draw(), before, 'reply cannot publish between selection rollback and deferred preparation');
+  await settled(); assert.deepEqual(draw(), before); assert.equal(f.calls.length, count * 2);
+});
+
+test('theme burst: full native credit leaves source preparation lazy across 100 desired profiles', async () => {
+  const f = fixture(true), owners = Array.from({ length: 20 }, (_, i): Owner => ({ input: bash(`echo ${i}`, true) }));
+  for (const owner of owners) f.cards.useful(owner, 1);
+  for (let i = 0; i < 12; i++) await settled();
+  assert.equal(f.calls.length, 2);
+  assert.equal(f.env.reads, 2, 'native backpressure must stop heavy source construction, not only RPC');
+  for (let i = 0; i < 100; i++) {
+    f.env.selected = { kind: 'occipital', id: `theme-${i}` };
+    f.env.profile = { id: `theme-${i}`, label: `Theme ${i}`, fingerprint: (i % 2 ? 'b' : 'c').repeat(64) };
+    f.cards.metadataChanged(); await settled();
+  }
+  assert.equal(f.env.reads, 2, 'intermediate profiles replace metadata without rereading any busy or waiting source');
+  assert.equal(f.calls.length, 2); assert.equal(f.env.classifications.length, 0);
+  for (let i = 0; i < owners.length + 2; i++) {
+    assert.ok(f.calls[i], 'every latest-profile demand eventually receives credit');
+    const source = (f.calls[i]!.request.sources as { text: string; profile: string }[])[0]!;
+    if (i >= 2) assert.equal(source.profile, 'theme-99', 'no obsolete intermediate profile is dispatched');
+    answer(f, i, source.text, true); await settled();
+  }
+  assert.equal(f.env.reads, owners.length + 2);
+  assert.equal(f.calls.length, owners.length + 2); assert.equal(f.sources.stats().globalUnsettledJobs, 0);
+  for (const owner of owners) {
+    const key = f.cards.identities(owner)[0]!.key;
+    assert.equal(f.sources.displayBasis(key)?.profile, 'theme-99'); assert.equal(f.sources.status(key)?.protective, false);
+  }
+});
+
+test('theme burst: unchanged retained file colors do not invalidate layouts while another profile is pending', async () => {
+  const f = fixture(true), owner: Owner = { input: written('const x=1') };
+  f.cards.useful(owner, 1); await settled(); answer(f, 0, 'const x=1', true); await settled();
+  const before = [f.cards.displayStamp(owner), f.env.invalidated.length, f.env.redraws];
+  f.env.selected = { kind: 'occipital', id: 'B' }; f.env.profile = { id: 'B', label: 'B', fingerprint: 'b'.repeat(64) };
+  f.cards.metadataChanged(); await settled();
+  assert.equal(f.calls.length, 2);
+  assert.deepEqual([f.cards.displayStamp(owner), f.env.invalidated.length, f.env.redraws], before,
+    'desired-theme/preparation changes alone must not repaint the same retained file colors');
+  answer(f, 1, 'const x=1', true); await settled();
+  assert.notEqual(f.cards.displayStamp(owner), before[0], 'actual replacement colors invalidate their file layout');
+});
+
+
+test('theme burst: a blocked newer theme cannot delay an older local palette revision', async () => {
+  const f = fixture(true), older: Owner = { input: written('const a=1') }, newer: Owner = { input: written('const b=2') };
+  f.cards.useful(older, 1); f.cards.useful(newer, 1); await settled();
+  for (let i = 0; i < 2; i++) answer(f, i, (f.calls[i]!.request.sources as { text: string }[])[0]!.text, true);
+  await settled();
+  f.env.selected = { kind: 'occipital', id: 'B' }; f.env.profile = { id: 'B', label: 'B', fingerprint: 'b'.repeat(64) };
+  f.cards.metadataChanged(); await settled(); assert.equal(f.calls.length, 4);
+  f.env.selected = { kind: 'occipital', id: 'C' }; f.env.profile = { id: 'C', label: 'C', fingerprint: 'c'.repeat(64) };
+  f.cards.metadataChanged(); await settled();
+  const reads = f.env.reads;
+  older.input = { ...older.input!, palette: 2 }; f.cards.useful(older, 2);
+  await settled(); await settled();
+  assert.equal(f.env.reads, reads + 1, 'credit-free current display preparation progresses past newer blocked work');
+  assert.equal(f.calls.length, 4); assert.equal(f.sources.stats().globalUnsettledJobs, 2);
+  assert.ok(f.cards.file(older, theme, 0x40000000)?.styledRows.size, 'retained exact display remains usable for the equal-text revision');
 });

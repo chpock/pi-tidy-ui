@@ -506,3 +506,22 @@ test('wait-only is refused on stdio source calls without weakening ordinary dead
   await assert.rejects(p.request(data('source', 'x'), { waitOnly: true }), (e: unknown) => e instanceof RequestFailure && e.execution === 'not_started' && /control/.test(e.message));
   assert.equal(p.stats().unsettledData, 0); await p.close(); empty(p);
 });
+
+for (const outcome of ['ok', 'not_started', 'started'] as const) test(`canonical aborted stdio request preserves terminal ${outcome} evidence`, async t => {
+  const p = peer('hold'); t.after(() => p.close());
+  const abort = new AbortController(), options = { signal: abort.signal, acceptRetired: true };
+  const pending = p.request({ ...data('retired', 'original'), ...(outcome === 'ok' ? {} : { fixtureExecution: outcome }) }, options);
+  let settled = false; void pending.then(() => { settled = true; }, () => { settled = true; });
+  abort.abort();
+  const inspection = await p.request(control('inspection'));
+  assert.deepEqual(body(inspection).cancelled, ['retired']);
+  assert.equal(settled, false, 'cancellation alone cannot settle or release the physical request');
+  assert.equal(p.stats().unsettledData, 1);
+  await p.request(control('release'));
+  const result = await pending as Record<string, any>;
+  assert.equal(result.status, outcome === 'ok' ? 'ok' : 'error');
+  if (outcome === 'ok') assert.equal(result.body.text, 'original');
+  else assert.deepEqual(result.error, { code: 'cancelled', execution: outcome });
+  assert.equal(p.stats().unsettledData, 0); assert.equal(p.stats().retainedBytes, 0);
+  await p.close(); empty(p);
+});

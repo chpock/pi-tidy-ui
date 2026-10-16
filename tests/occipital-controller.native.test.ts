@@ -1,7 +1,7 @@
 import './fixtures/test-guard.mjs';
 import assert from 'node:assert/strict';
 import { afterEach, test } from 'node:test';
-import { setImmediate as turn } from 'node:timers/promises';
+import { setImmediate as turn, setTimeout as delay } from 'node:timers/promises';
 import { SourceController, CONTROLLER_LIMITS, sourceReservation, type SourceDemand } from '../src/occipital/controller.ts';
 import { decodeSources, PROTOCOL_VERSION, type Description } from '../src/occipital/protocol.ts';
 import { OCCIPITAL_LIMITS } from '../src/occipital/limits.ts';
@@ -11,7 +11,10 @@ import { StdioTransport } from '../src/occipital/stdio.ts';
 import { ProviderBroker } from '../src/occipital/provider.ts';
 import { RetentionPool, RETENTION_LIMITS } from '../src/occipital/retention.ts';
 import { awaitFixture } from './fixtures/await-fixture.ts';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { fileURLToPath } from 'node:url';
+import { SyntaxClient } from '../src/occipital/client.ts';
+import { CardSources, type CardSourceInput } from '../src/syntax/cards.ts';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -130,5 +133,68 @@ test('real owned exits stop after two restarts; a validated six-byte classificat
     c.dispose(); await awaitFixture(broker.dispose());
     for (const pipe of pipes) await awaitFixture(pipe.close());
     await rm(root, {recursive:true,force:true});
+  }
+});
+
+test('theme burst: 100 ten-millisecond previews converge through genuinely unsettled product stdio replies', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'occipital-theme-burst-'));
+  const report = join(root, 'gate.json');
+  const env = { ...process.env, HOME: root, XDG_CONFIG_HOME: root, XDG_DATA_HOME: root, XDG_CACHE_HOME: root, XDG_RUNTIME_DIR: root };
+  const pipe = new StdioTransport({ command: process.execPath,
+    args: [fileURLToPath(new URL('./fixtures/occipital-reply-gate.mjs', import.meta.url)), binary, report], env, cwd: root,
+    requestDeadlineMs: 10000, terminateGraceMs: 100 });
+  type Owner = { input: CardSourceInput };
+  let cards: CardSources<Owner> | undefined, reads = 0, saves = 0, piCalls = 0;
+  const client = new SyntaxClient({ standaloneVersion: 'test', settings: {
+    load: async () => ({ ok: true as const, syntaxTheme: { kind: 'pi' as const } }),
+    update: async () => { saves++; return { ok: true as const }; }
+  }, provider: { tryShared: async () => undefined, acquireOwned: async () => pipe },
+    onChange: () => cards?.metadataChanged(), onSourceChange: keys => cards?.sourceChanged(keys) });
+  const owners = Array.from({ length: 20 }, (_, i): Owner => ({ input: i % 2 ? {
+    kind: 'file', palette: 1, language: 'typescript', node: { toolName: 'write', args: { path: `source-${i}.ts`, content: `const x${i} = 1;\n` }, result: {}, isPartial: false }
+  } : { kind: 'bash', args: { command: `echo source-${i}` }, palette: 1, language: 'bash', complete: true } }));
+  async function until(predicate: () => boolean | Promise<boolean>) {
+    await awaitFixture((async () => { while (!await predicate()) await delay(2); })(), 10000);
+  }
+  async function gate() { return JSON.parse(await readFile(report, 'utf8')) as { data: { profile: string; key: string }[]; cancelled: number; held: number; peakHeld: number }; }
+  try {
+    await awaitFixture(client.start());
+    cards = new CardSources(client, { read: owner => { reads++; return owner.input; }, classify: () => { piCalls++; return ['']; }, invalidate() {}, requestRender() {} });
+    for (const owner of owners) cards.useful(owner, 1);
+    await until(() => owners.every(owner => { const key = cards!.identities(owner)[0]?.key; return key && client.sources.status(key)?.exact; }));
+    const baseline = client.sources.stats(), baselineReads = reads;
+    const profiles = client.snapshot().provider.description!.profiles.filter(profile => profile.id !== 'pi');
+    assert.ok(profiles.length >= 2);
+    await pipe.request({ v: PROTOCOL_VERSION, op: 'describe', ticket: 'gate-arm' });
+    client.previewTheme({ kind: 'occipital', id: profiles[0]!.id });
+    await until(async () => (await gate()).held === 2);
+    assert.equal(pipe.stats().unsettledData, 2, 'actual transport promises, not post-transport callbacks, are held');
+    const heldReads = reads, heldBytes = client.sources.stats().preparedBytes;
+    for (let i = 1; i < 100; i++) {
+      await delay(10);
+      client.previewTheme({ kind: 'occipital', id: profiles[i % 2]!.id });
+    }
+    await settle();
+    assert.equal(reads, heldReads); assert.equal(client.sources.stats().preparedBytes, heldBytes);
+    assert.equal(pipe.stats().unsettledData, 2); assert.equal((await gate()).cancelled, 0);
+    for (const owner of owners) assert.equal(client.sources.displayBasis(cards.identities(owner)[0]!.key)?.profile, 'pi');
+    await pipe.request({ v: PROTOCOL_VERSION, op: 'describe', ticket: 'gate-release' });
+    const final = profiles[1]!;
+    await until(() => owners.every(owner => client.sources.displayBasis(cards!.identities(owner)[0]!.key)?.profile === final.id));
+    await until(() => client.sources.stats().unsettledJobs === 0);
+    const observed = await gate(), updates = observed.data.slice(baseline.dispatches);
+    assert.equal(updates.length, owners.length + 2);
+    assert.ok(updates.slice(2).every(request => request.profile === final.id));
+    assert.equal(reads - baselineReads, owners.length + 2);
+    assert.equal(observed.cancelled, 0); assert.equal(observed.peakHeld, 2);
+    assert.equal(saves, 0); assert.equal(piCalls, 0); assert.equal(client.sources.stats().peakJobs, 2);
+    assert.ok(client.sources.stats().retention.retainedBytes < baseline.retention.retainedBytes * 3);
+    const warm = client.sources.stats(); for (let i = 0; i < 20; i++) { for (const owner of owners) cards.useful(owner, 1); client.sources.flush(); }
+    assert.deepEqual(client.sources.stats(), warm); assert.equal(reads, baselineReads + owners.length + 2);
+  } finally {
+    cards?.dispose(); await awaitFixture(client.dispose()); await awaitFixture(pipe.close());
+    assert.equal(pipe.stats().retainedBytes, 0); assert.equal(pipe.stats().liveTimers, 0);
+    assert.equal(client.sources.stats().bookkeepingBytes, 0); assert.equal(client.sources.stats().globalUnsettledJobs, 0);
+    await rm(root, { recursive: true, force: true });
   }
 });

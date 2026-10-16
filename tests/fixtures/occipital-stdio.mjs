@@ -24,6 +24,8 @@ function packet(value) {
   return Buffer.concat([header, body]);
 }
 function reply(request) {
+  if (request.fixtureExecution) return { v: 2, ticket: request.ticket, instance: 'fixture-instance', assets: 'fixture-assets',
+    status: 'error', error: { code: 'cancelled', execution: request.fixtureExecution } };
   return {
     v: 2, ticket: request.ticket, instance: 'fixture-instance', assets: 'fixture-assets', status: 'ok',
     body: {

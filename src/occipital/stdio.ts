@@ -32,6 +32,8 @@ export interface StdioOptions {
 }
 export interface StdioRequestOptions {
   signal?: AbortSignal; deadlineMs?: number;
+  /** Deliver terminal evidence to its canonical owner even after local cancellation. */
+  acceptRetired?: boolean;
   /** Published-provider metadata only: expire the waiter, not the process. */
   waitOnly?: boolean;
 }
@@ -53,6 +55,7 @@ export interface StdioStats {
 interface Pending {
   control: boolean;
   waitOnly: boolean;
+  acceptRetired: boolean;
   credit: number;
   aborted: boolean;
   handedToWrite: boolean;
@@ -238,7 +241,7 @@ export class StdioTransport {
       return new Promise((resolve, reject) => {
         const timer = setTimeout(() => this.expire(ticket), deadline);
         timer.unref();
-        const call: Pending = { control, waitOnly: options.waitOnly === true, credit, timer, aborted: false, handedToWrite: false, resolve, reject, signal: options.signal };
+        const call: Pending = { control, waitOnly: options.waitOnly === true, acceptRetired: options.acceptRetired === true, credit, timer, aborted: false, handedToWrite: false, resolve, reject, signal: options.signal };
         this.pending.set(ticket, call);
         if (options.signal) {
           call.onAbort = () => this.cancel(ticket, call);
@@ -396,7 +399,7 @@ export class StdioTransport {
     // A late response makes an unsent cancellation unnecessary. Do not leave
     // settled-call frames queued outside the active-call credit reservation.
     this.outgoing = this.outgoing.filter(frame => !(frame.cancel && frame.ticket === reply.ticket));
-    if (call.aborted) call.reject(new StdioError('stdio aborted after settlement'));
+    if (call.aborted && !call.acceptRetired) call.reject(new StdioError('stdio aborted after settlement'));
     else call.resolve(reply);
   }
 

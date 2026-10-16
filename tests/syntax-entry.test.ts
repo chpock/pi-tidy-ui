@@ -241,14 +241,14 @@ test('logging review H3: explicit snapshot includes existing Git and owned fallb
 
 test('entry public streaming identities separate quick live abort from restored terminal cards without history lookup', async () => {
   const h = fixture(), observed: { text: string; complete: boolean }[] = [];
-  const drain = CardSources.prototype.drain;
-  CardSources.prototype.drain = function () {
+  const prepare = CardSources.prototype.prepare;
+  CardSources.prototype.prepare = function (ticket) {
     const host = Reflect.get(this, 'host') as CardSourceHost<object>, read = host.read;
     host.read = owner => { const input = read(owner);
       if (input?.kind === 'bash') observed.push({ text: String(input.args.command), complete: input.complete });
       return input;
     };
-    try { return drain.call(this); } finally { host.read = read; }
+    try { return prepare.call(this, ticket); } finally { host.read = read; }
   };
   const tool = (id: string, text: string) => {
     const node = new ToolExecutionComponent('bash', id, { command: text }, undefined, undefined,
@@ -284,7 +284,7 @@ test('entry public streaming identities separate quick live abort from restored 
     for (let i = 0; i < 100; i++) h.root.render(80);
     await settled(); assert.equal(observed.length, baseline);
     assert.equal(Reflect.get(restored, 'argsComplete'), false); assert.equal(Reflect.get(restored, 'executionStarted'), false);
-  } finally { CardSources.prototype.drain = drain; }
+  } finally { CardSources.prototype.prepare = prepare; }
 });
 
 test('entry persists every switch and theme through the popup; a fresh runtime restores Off before any provider or log IO', async () => {

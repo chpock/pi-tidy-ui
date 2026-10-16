@@ -42,6 +42,8 @@ export interface SharedOptions {
 }
 export interface SharedRequestOptions {
   signal?: AbortSignal; deadlineMs?: number;
+  /** Deliver terminal evidence to its canonical owner even after local cancellation. */
+  acceptRetired?: boolean;
   /** Published-provider metadata only: expire the waiter, not the connection. */
   waitOnly?: boolean;
 }
@@ -64,6 +66,7 @@ interface Connection { client: SharedClient; closed: boolean }
 interface Pending {
   control: boolean;
   waitOnly: boolean;
+  acceptRetired: boolean;
   waitExpired: boolean;
   bytes: number;
   credit: number;
@@ -257,7 +260,7 @@ export class SharedTransport {
       if (!control && stats.dataReservedBytes + credit > this.dataReservation) throw new SharedError('shared byte capacity');
       this.serializations = Math.min(Number.MAX_SAFE_INTEGER, this.serializations + 1);
       this.serializedBytes = Math.min(Number.MAX_SAFE_INTEGER, this.serializedBytes + bytes.byteLength);
-      return SharedTransport.dispatch(new WeakRef(this), this.connection.client, this.route, ticket, bytes, control, credit, deadlineMs, options.signal, options.waitOnly === true);
+      return SharedTransport.dispatch(new WeakRef(this), this.connection.client, this.route, ticket, bytes, control, credit, deadlineMs, options.signal, options.waitOnly === true, options.acceptRetired === true);
     } catch (error) {
       const message=error instanceof SharedError?error.message:'shared invalid request JSON';
       return Promise.reject(new SharedError(message,'not_started'));
@@ -307,9 +310,9 @@ export class SharedTransport {
   // Factory scope contains no caller request/source; drop the temporary byte alias
   // after the public SDK has taken it. SDK-owned copies remain outside our counters.
   private static dispatch(owner: WeakRef<SharedTransport>, client: SharedClient, route: SharedRouteHandle, ticket: string,
-    bytes: Uint8Array | undefined, control: boolean, credit: number, deadlineMs: number, signal?: AbortSignal, waitOnly = false): Promise<unknown> {
+    bytes: Uint8Array | undefined, control: boolean, credit: number, deadlineMs: number, signal?: AbortSignal, waitOnly = false, acceptRetired = false): Promise<unknown> {
     return new Promise((resolve, reject) => {
-      const call: Pending = { control, waitOnly, waitExpired: false, bytes: bytes!.byteLength, credit, aborted: false, resolve, reject, signal };
+      const call: Pending = { control, waitOnly, acceptRetired, waitExpired: false, bytes: bytes!.byteLength, credit, aborted: false, resolve, reject, signal };
       call.timer = SharedTransport.requestTimer(owner, ticket, deadlineMs);
       call.timer.unref(); owner.deref()!.pending.set(ticket, call);
       if (signal) {
@@ -389,7 +392,7 @@ export class SharedTransport {
       this.retire(new SharedError('shared invalid reply correlation/header/outcome')); return;
     }
     this.pending.delete(ticket); release(call);
-    if (call.aborted) call.reject(new SharedError('shared aborted after settlement')); else call.resolve(reply);
+    if (call.aborted && !call.acceptRetired) call.reject(new SharedError('shared aborted after settlement')); else call.resolve(reply);
   }
   private static async initialize(owner: WeakRef<SharedTransport>, loader: () => Promise<SharedSdk>, connectionFile: string, identity: SharedIdentity, timeout: number) {
     let connection: Connection | undefined;

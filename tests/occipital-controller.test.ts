@@ -54,7 +54,7 @@ class Host {
     if (!complete) this.streams.set(s.key, { text, revision, committed: committed_bytes, lease });
     const result = { key: s.key, generation: s.generation, source_version: s.source_version, profile: s.profile, fingerprint: s.fingerprint,
       revision, replace_from, source_bytes, committed_bytes, complete, ...(r.op !== 'highlight' ? { lease } : {}),
-      styles: [{ role: 'syntaxKeyword' }], runs: source_bytes > replace_from ? [source_bytes - replace_from, 0] : [],
+      styles: [s.profile === 'pi' ? { role: 'syntaxKeyword' } : { rgb: [80, 120, 160], attributes: 0 }], runs: source_bytes > replace_from ? [source_bytes - replace_from, 0] : [],
       counters: { committed_line_calls: 0, committed_line_bytes: 0, tail_calls: 0, tail_bytes: 0 } };
     c.resolve({ v: PROTOCOL_VERSION, ticket: r.ticket, instance: description.instance, assets: description.assets, status: 'ok', body: { kind: 'source', sources: [result] } });
   }
@@ -103,7 +103,7 @@ test('observe is inert; explicit flush coalesces latest; warmed observations do 
 
 test('two unsettled captures, latest replacement, older useful acknowledgement then only suffix', async () => {
   const { host, controller: c } = fixture();
-  c.observe(demand('a\nt', 1)); c.observe(demand('b\n', 1, true, 'second')); c.flush();
+  c.observe(demand('a\nt', 1)); c.flush(); c.observe(demand('b\n', 1, true, 'second')); c.flush();
   assert.equal(host.calls.length, 2); const held = c.stats().transientBytes; assert.ok(held > 0 && held <= CONTROLLER_LIMITS.transientBytes);
   assert.equal(c.stats().captures, 2); assert.equal(c.stats().peakJobs, 2);
   c.observe(demand('a\ntx', 2)); c.observe(demand('a\ntxy', 3));
@@ -112,9 +112,11 @@ test('two unsettled captures, latest replacement, older useful acknowledgement t
   assert.equal(c.status('source')!.acknowledgedVersion, 1); assert.equal(c.status('source')!.exact, false);
   assert.deepEqual(host.acceptedClassifications, [host.generation], 'older useful parser acknowledgement is validated native success');
   assert.deepEqual(ranges(c), [[0, 2, 2]]);
-  assert.equal(host.calls[2]!.request.op, 'stream.append'); assert.equal(host.calls[2]!.request.append, 'xy');
-  assert.equal(host.calls[2]!.request.base_revision, 1); assert.equal(host.calls[2]!.request.source_version, 3);
-  host.answer(1); await settle(); host.answer(2); await settle(); host.answer(3); await settle();
+  assert.equal(host.calls[2]!.request.sources[0].text, 'third', 'newer source uses the free slot without waiting for older work');
+  host.answer(1); await settle();
+  assert.equal(host.calls[3]!.request.op, 'stream.append'); assert.equal(host.calls[3]!.request.append, 'xy');
+  assert.equal(host.calls[3]!.request.base_revision, 1); assert.equal(host.calls[3]!.request.source_version, 3);
+  host.answer(2); await settle(); host.answer(3); await settle();
   assert.equal(c.stats().transientBytes, 0); assert.equal(c.stats().unsettledJobs, 0);
   assert.equal(c.stats().retention.prefixCopiedBytes, 0); assert.equal(c.stats().preparedBytes, 12);
 });
@@ -216,7 +218,7 @@ test('remote stream leases remain bounded; empty sources never launch parse work
   host.description.limits.leases_per_route = 4;
   for (let i = 0; i < 5; i++) { c.observe(demand(`x${i}`, 1, false, `s${i}`)); c.flush(); }
   for (let i = 0; i < 4; i++) { host.answer(i); await settle(); }
-  assert.equal(host.calls.length, 4); assert.equal(c.stats().remoteLeases, 4); assert.equal(c.status('s4')!.execution, 'not_started');
+  assert.equal(host.calls.length, 4); assert.equal(c.stats().remoteLeases, 4); assert.equal(c.status('s2')!.execution, 'not_started');
   c.remove('s0'); c.flush(); assert.equal(host.calls[4]!.request.op, 'stream.close'); host.answer(4); await settle();
   assert.equal(host.calls[5]!.request.op, 'stream.open'); assert.equal(c.stats().remoteLeases, 4);
 });
@@ -454,7 +456,7 @@ test('default source usefulness deadline is five minutes and no-start preserves 
 
 test('typed local no-start releases only that opening reservation, never guesses loss or clears an earlier unknown', async () => {
   const { host, controller: c } = fixture(); host.description.limits.leases_per_route = 1;
-  c.observe(demand('first')); c.observe(demand('second', 1, false, 'second')); c.flush(); assert.equal(host.calls.length, 1);
+  c.observe(demand('first')); c.flush(); c.observe(demand('second', 1, false, 'second')); c.flush(); assert.equal(host.calls.length, 1);
   host.calls[0]!.reject(new RequestFailure('local refusal', 'not_started')); await settle();
   assert.equal(host.calls.length, 2); assert.equal(c.stats().remoteLeases, 1); host.answer(1); await settle();
   c.observe(demand('first changed', 2)); c.remove('second'); c.flush(); host.answer(2); await settle();
@@ -753,7 +755,7 @@ test('profile refusal requests metadata once, then waits for a current full-sour
 });
 test('profile refusal metadata acknowledgment cannot erase a newer pending refusal', async () => {
   const { host, controller: c } = fixture();
-  c.observe(demand('a', 1, true, 'one')); c.observe(demand('b', 1, true, 'two')); c.flush();
+  c.observe(demand('a', 1, true, 'one')); c.flush(); c.observe(demand('b', 1, true, 'two')); c.flush();
   host.fault(0, 'theme_unavailable'); await settle(); const first = c.profileReconciliationNeeded(); assert.ok(first);
   host.fault(1, 'profile_changed'); await settle(); const second = c.profileReconciliationNeeded(); assert.ok(second);
   assert.ok(second.sequence > first.sequence);
@@ -800,12 +802,12 @@ test('source observer identifies only changed keys and coalesces two current com
   const observed: string[][] = [];
   const { host, controller } = fixture({ onChange: (keys: readonly string[] = []) => { observed.push([...keys]); } });
   controller.observe(demand('a', 1, true, 'a')); controller.observe(demand('b', 1, true, 'b')); controller.flush();
-  assert.deepEqual(observed, []);
+  assert.equal(observed.length, 0);
   host.answer(0); host.answer(1); await settle();
-  assert.deepEqual(observed, [['a', 'b']]);
+  assert.deepEqual(observed.map(keys => keys.toSorted()), [['a', 'b']]);
   const before = controller.stats();
   controller.observe(demand('a', 1, true, 'a')); controller.flush(); await settle();
-  assert.deepEqual(observed, [['a', 'b']]); assert.deepEqual(controller.stats(), before);
+  assert.deepEqual(observed.map(keys => keys.toSorted()), [['a', 'b']]); assert.deepEqual(controller.stats(), before);
 });
 
 test('queued keyed notification removes a retired source without losing its current sibling', async () => {
@@ -1032,11 +1034,11 @@ test('canonical correction F1: native capacity wait forbids Pi until its queued 
   const { host, controller: c } = fixture();
   for (const key of ['first', 'second', 'third']) c.observe(demand('x', 1, true, key));
   c.flush(); assert.equal(host.calls.length, 2); assert.equal(c.stats().captures, 2);
-  assert.equal(c.workStatus('third').fallbackEligible, false);
+  assert.equal(c.workStatus('first').fallbackEligible, false);
   host.answer(0); await settle();
   assert.equal(host.calls.length, 3); assert.equal(host.calls[2]!.request.sources[0].text, 'x');
-  assert.equal(c.workStatus('third').fallbackEligible, false);
-  host.fault(2, 'busy'); await settle(); assert.equal(c.workStatus('third').fallbackEligible, true);
+  assert.equal(c.workStatus('first').fallbackEligible, false);
+  host.fault(2, 'busy'); await settle(); assert.equal(c.workStatus('first').fallbackEligible, true);
   host.answer(1); await settle();
 });
 
@@ -1122,8 +1124,8 @@ for (const guard of ['transient', 'source-limit', 'profile-limit'] as const) {
 test('local native admission after credit wake reports refusal and preserves its validated peer', async () => {
   const notices: string[] = [];
   const { host, controller } = fixture({ onChange: keys => { notices.push(...keys); } });
-  controller.observe(demand('x', 1, true, 'peer'));
-  controller.observe(demand('x', 1, true, 'busy-peer'));
+  controller.observe(demand('x', 1, true, 'peer')); controller.flush();
+  controller.observe(demand('x', 1, true, 'busy-peer')); controller.flush();
   controller.observe(demand('xy', 1, true, 'waiting'));
   controller.flush(); assert.equal(host.calls.length, 2);
   assert.equal(controller.workStatus('waiting').fallbackEligible, false);
@@ -1326,4 +1328,168 @@ test('stream review F2: rewrite then provider recovery never promotes historical
   let historical = '';
   assert.equal(c.displayBasis('source')?.visit(text => { historical = text; }), true);
   assert.equal(historical, 'if');
+});
+
+test('LIFO registry: standalone sources start newest first without serializing completion', async () => {
+  const { host, controller: c } = fixture();
+  for (let i = 0; i < 5; i++) c.observe(demand(`source ${i}`, 1, true, `source-${i}`));
+  c.flush(); assert.deepEqual(host.calls.map(call => call.request.sources[0].text), ['source 4', 'source 3']);
+  host.answer(1); await settle();
+  assert.equal(c.status('source-3')?.exact, true); assert.equal(c.status('source-4')?.exact, false);
+  assert.equal(host.calls[2]!.request.sources[0].text, 'source 2');
+  for (const i of [0, 2, 3, 4]) { host.answer(i); await settle(); }
+  assert.deepEqual(host.calls.map(call => call.request.sources[0].text), ['source 4', 'source 3', 'source 2', 'source 1', 'source 0']);
+  assert.equal(c.stats().unsettledJobs, 0);
+});
+
+test('LIFO registry: preparation records obey capacity, retirement and native-off fallback lifetime', async () => {
+  const limited = fixture({ maxBookkeepingBytes: 128 });
+  assert.equal(limited.controller.registerPreparation({ keys: new Set(), prepare() { assert.fail('refused preparation'); } }), undefined);
+  assert.equal(limited.controller.stats().bookkeepingBytes, 128);
+  const { controller: c } = fixture();
+  let visits = 0;
+  const preparation = { keys: new Set<string>(), prepare() { visits++; } };
+  const group = c.registerPreparation(preparation)!; assert.ok(group);
+  c.setEnabled(false); c.queuePreparation(group); await settle(); assert.equal(visits, 1, 'local work remains eligible with native off');
+  c.queuePreparation(group); c.unregisterPreparation(group); await settle(); assert.equal(visits, 1);
+  assert.equal(c.stats().bookkeepingBytes, 128);
+  const retired = c.registerPreparation(preparation)!;
+  c.queuePreparation(retired); c.dispose(); await settle();
+  assert.equal(visits, 1); assert.equal(c.stats().bookkeepingBytes, 0);
+});
+
+test('theme display: requested identity never relabels retained colors and rollback reuses only a matching finite result', async () => {
+  const { host, controller: c } = fixture(), originalDescription = host.description;
+  const a = demand('echo retained', 1, true);
+  c.observe(a); c.flush(); host.answer(0); await settle();
+  const display = displaySnapshot(c)!;
+  const b = { ...a, fingerprint: 'b'.repeat(64) };
+  host.description = { ...originalDescription, profiles: [{ id: 'pi', label: 'Pi', fingerprint: b.fingerprint }] };
+  c.observe(b); c.flush(); assert.equal(host.calls.length, 2);
+  assert.equal(c.borrowSource('source')?.fingerprint, b.fingerprint);
+  assert.equal(c.displayBasis('source')?.fingerprint, a.fingerprint);
+  assert.deepEqual(displaySnapshot(c), display);
+  assert.equal(c.status('source')?.exact, false); assert.deepEqual(ranges(c), [], 'display is not current-profile parser coverage');
+  const prepared = c.stats().preparedBytes;
+  host.description = originalDescription; c.observe(a); c.flush();
+  assert.equal(c.status('source')?.exact, true); assert.deepEqual(displaySnapshot(c), display);
+  assert.equal(host.calls.length, 2); assert.equal(c.stats().preparedBytes, prepared);
+  assert.equal(c.workStatus('source').execution, 'unsettled', 'cached display never releases the held obsolete physical job');
+  host.answer(1); await settle();
+  assert.deepEqual(displaySnapshot(c), display); assert.equal(host.calls.length, 2);
+  assert.equal(c.stats().staleReplies, 1); assert.equal(c.stats().retention.entries, 1);
+});
+
+test('theme display: repeated pending profiles retain one basis and actual identity changes still discard it', async () => {
+  const { host, controller: c } = fixture(), a = demand('echo retained', 1, true);
+  c.observe(a); c.flush(); host.answer(0); await settle();
+  const initial = displaySnapshot(c)!;
+  for (const byte of ['b', 'c', 'd', 'e']) {
+    const next = { ...a, fingerprint: byte.repeat(64) };
+    host.description = { ...host.description, profiles: [{ id: 'pi', label: 'Pi', fingerprint: next.fingerprint }] };
+    c.observe(next);
+    assert.deepEqual(displaySnapshot(c), initial);
+    assert.equal(c.stats().retention.entries, 2, 'one retained basis and one current demand, not a theme history cache');
+  }
+  c.observe({ ...a, version: 2, language: 'python' });
+  assert.equal(c.displayBasis('source'), undefined, 'different language is a genuine display invalidation');
+});
+
+test('theme display: a retained provisional result is never reused as a completed rollback classification', async () => {
+  const { host, controller: c } = fixture(), original = demand('echo partial');
+  c.observe(original); c.flush(); host.answer(0); await settle();
+  const display = displaySnapshot(c)!; assert.equal(c.displayBasis('source')!.complete, false);
+  c.observe({ ...original, profile: 'preview', fingerprint: 'b'.repeat(64) });
+  c.observe({ ...original, complete: true });
+  assert.deepEqual(displaySnapshot(c), display); assert.equal(c.status('source')!.exact, false);
+  c.flush(); host.answer(1); await settle();
+  assert.equal(host.calls[2]!.request.op, 'highlight', 'finite text still needs final classification, not the old incomplete lease');
+  host.answer(2); await settle(); assert.equal(c.status('source')!.exact, true);
+});
+
+for (const alreadyPending of [false, true]) test(`theme display recovery: old-profile basis never satisfies new provider ${alreadyPending ? 'after' : 'during'} selection`, async () => {
+  const { host, controller: c } = fixture(), original = demand('echo recovery', 1, true);
+  c.observe(original); c.flush(); host.answer(0); await settle(); const display = displaySnapshot(c)!;
+  const next = { ...original, fingerprint: 'b'.repeat(64) };
+  host.description = { ...host.description, profiles: [{ id: 'pi', label: 'Pi', fingerprint: next.fingerprint }] };
+  if (alreadyPending) { c.observe(next); c.flush(); assert.equal(host.calls.length, 2); }
+  host.generation++; c.observe(next); c.flush();
+  if (alreadyPending) { host.answer(1); await settle(); }
+  const fresh = alreadyPending ? 2 : 1;
+  assert.equal(host.calls.length, fresh + 1, 'new provider must classify the requested profile once');
+  assert.deepEqual(displaySnapshot(c), display); assert.equal(c.status('source')?.exact, false);
+  host.answer(fresh); await settle();
+  assert.equal(c.displayBasis('source')!.fingerprint, next.fingerprint); assert.equal(c.status('source')!.exact, true);
+});
+
+test('theme burst: superseding a profile leaves already-dispatched work to settle normally', async () => {
+  const { host, controller: c } = fixture();
+  host.description.profiles = [...description.profiles, { id: 'B', label: 'B', fingerprint: 'b'.repeat(64) }, { id: 'C', label: 'C', fingerprint: 'c'.repeat(64) }];
+  const source = demand('echo original', 1, true);
+  c.observe(source); c.flush(); host.answer(0); await settle();
+  c.observe({ ...source, profile: 'B', fingerprint: 'b'.repeat(64) }); c.flush();
+  c.observe({ ...source, profile: 'C', fingerprint: 'c'.repeat(64) }); c.flush();
+  assert.equal(host.calls[1]!.signal?.aborted, false, 'a newer theme invalidates publication without cancelling physical execution');
+  assert.equal(c.displayBasis('source')!.profile, 'pi');
+  host.answer(1); await settle();
+  assert.equal(c.workStatus('source').execution, 'unsettled', 'latest profile progresses after obsolete work really settles');
+  assert.equal(host.calls[2]!.request.sources[0].profile, 'C');
+  host.answer(2); await settle();
+  assert.equal(c.displayBasis('source')!.profile, 'C'); assert.equal(c.status('source')!.protective, false);
+});
+
+test('theme burst: yielded preparation visits a linear number of weak registry entries', async () => {
+  const { host, controller: c } = fixture(); host.ready = false;
+  const tasks: { keys: Set<string>; prepare(): void }[] = [];
+  let prepared = 0, visits = 0;
+  for (let i = 0; i < 32; i++) {
+    const task = { keys: new Set<string>(), prepare() { prepared++; } }; tasks.push(task);
+    const group = c.registerPreparation(task)!;
+    const deref = group.preparation.deref.bind(group.preparation);
+    group.preparation.deref = () => { visits++; return deref(); };
+    c.queuePreparation(group);
+  }
+  for (let i = 0; i < 32; i++) await settle();
+  assert.equal(prepared, tasks.length);
+  assert.ok(visits <= 4 * tasks.length, `one preparation wave visited ${visits} entries for ${tasks.length} owners`);
+  assert.equal(host.calls.length, 0);
+});
+
+test('theme burst: two same-turn settlements cannot strand a newer coalesced source', async () => {
+  const { host, controller: c } = fixture();
+  c.observe(demand('old a', 1, true, 'a')); c.flush(); c.observe(demand('old b', 1, true, 'b')); c.flush();
+  c.observe(demand('new a', 2, true, 'a')); c.observe(demand('new b', 2, true, 'b')); c.flush();
+  host.answer(1); host.answer(0); await settle();
+  assert.deepEqual(host.calls.slice(2).map(call => call.request.sources[0].text).sort(), ['new a', 'new b']);
+});
+
+test('theme burst: byte backpressure defers repeated group preparation with one physical job', async () => {
+  const { host, controller: c } = fixture({ maxTransientBytes: 40000 });
+  host.description.limits.request_bytes = 1024; host.description.limits.reply_bytes = 1024;
+  let prepared = 0;
+  const tasks = Array.from({ length: 8 }, (_, i) => ({ keys: new Set([`byte-${i}`]), prepare() {
+    prepared++; c.observe(demand('one', 1, true, `byte-${i}`));
+  } }));
+  for (const task of tasks) c.queuePreparation(c.registerPreparation(task)!);
+  for (let i = 0; i < 4; i++) await settle();
+  assert.equal(host.calls.length, 1); assert.equal(prepared, 2, 'one bounded look-ahead discovers the byte refusal');
+  for (let i = 0; i < 100; i++) { c.refreshPreparations(); await settle(); }
+  assert.equal(host.calls.length, 1); assert.equal(prepared, 2, 'metadata cannot bypass exhausted byte credit');
+});
+
+for (const action of ['remove', 'freeze', 'off', 'rewrite'] as const) test(`theme burst: ${action} still cancels a physically preserved older-profile job`, async () => {
+  const { host, controller: c } = fixture();
+  host.description.profiles = [...description.profiles, { id: 'B', label: 'B', fingerprint: 'b'.repeat(64) }];
+  const source = demand('echo old', 1, true);
+  c.observe(source); c.flush();
+  c.observe({ ...source, profile: 'B', fingerprint: 'b'.repeat(64) }); c.flush();
+  assert.equal(host.calls[0]!.signal?.aborted, false);
+  if (action === 'remove') c.remove('source');
+  else if (action === 'freeze') c.freeze('source');
+  else if (action === 'off') c.setEnabled(false);
+  else c.observe({ ...source, profile: 'B', fingerprint: 'b'.repeat(64), text: 'corrected', version: 2 });
+  assert.equal(host.calls[0]!.signal?.aborted, true, 'lifecycle cancellation owns every pending generation of this incarnation');
+  assert.equal(c.stats().globalUnsettledJobs, 1, 'cancel delivery is not physical settlement');
+  host.answer(0); await settle();
+  assert.equal(c.displayBasis('source'), undefined, 'obsolete completion cannot restore retired display');
 });

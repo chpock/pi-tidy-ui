@@ -128,11 +128,18 @@ for (const mode of ['fullscreen', 'regular']) test(`occipital CLI: ${mode} theme
       await terminal.openTidyMenu(); await terminal.selectTidyItem('Code color theme');
       phase('held-preview'); await search(mocha.label); await terminal.event('syntax_preview_reply_held', 2);
       const held = await observe('held'); assert.equal(held.source.globalUnsettledJobs, 2);
+      await colors('preview-held-keeps-last-colors', () => themeForegrounds(lattePaint));
       phase('late-rollback'); await terminal.closeTidyMenu();
       const rollback = await observe('late-rollback');
       assert.equal(rollback.client.effective.id, latte.id); assert.equal(rollback.counts.themeSaves, 1);
       writeFileSync(join(terminal.output, 'syntax-preview-go'), 'go');
-      const late = await ready('after-late', latte.id, 'late-rollback');
+      const late = await until(async () => {
+        const snapshot = await observe(`after-late-${observation++}`);
+        return snapshot.client.effective.id === latte.id && snapshot.source.globalUnsettledJobs === 0
+          && snapshot.source.staleReplies === rollback.source.staleReplies + 2 ? snapshot : false;
+      }, 'held replies retire without replacing the cached rollback');
+      assert.equal(late.source.dispatches, held.source.dispatches, 'rollback to the retained Latte result sends no replacement classifications');
+      assert.equal(late.source.preparedBytes, held.source.preparedBytes, 'rollback encodes no duplicate source');
       assert.equal(late.source.staleReplies, rollback.source.staleReplies + 2, 'both held replies are retired after rollback');
       await colors('preview-after-late-replies', () => themeForegrounds(lattePaint));
       const final = await terminal.capture('physical-preview-final');

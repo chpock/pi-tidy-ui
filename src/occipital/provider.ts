@@ -19,7 +19,7 @@ export interface ProviderTransport {
    * cannot rewrite its first origin. Neither signal proves a source did not run. */
   readonly ended: Promise<TransportEnd>;
   readonly endReason: TransportEnd | undefined;
-  request(request: Record<string, unknown>, options?: { signal?: AbortSignal; deadlineMs?: number; waitOnly?: boolean }): Promise<unknown>;
+  request(request: Record<string, unknown>, options?: { signal?: AbortSignal; deadlineMs?: number; waitOnly?: boolean; acceptRetired?: boolean }): Promise<unknown>;
   /** Shared: only this dedicated route/connection. Owned: resolves after child exit. */
   close(): Promise<void>;
 }
@@ -314,7 +314,7 @@ export class ProviderBroker {
     if (typeof request.ticket === 'string' && request.ticket.startsWith('broker:')) return Promise.reject(new RequestFailure('occipital reserved ticket', 'not_started'));
     this.metric('sourceDispatches', 1);
     const observers = sourceObservers(new WeakRef(this), generation, options?.acceptRetired === true);
-    try { return this.active!.transport.request(request, options && { signal: options.signal, deadlineMs: options.deadlineMs }).then(observers.accept, observers.reject); }
+    try { return this.active!.transport.request(request, options && { signal: options.signal, deadlineMs: options.deadlineMs, acceptRetired: options.acceptRetired }).then(observers.accept, observers.reject); }
     catch (error) { return Promise.reject(error instanceof RequestFailure ? error : new RequestFailure('occipital request outcome unknown')); }
   }
   /** Source-free control on the already selected provider. Catalogue publication

@@ -481,3 +481,43 @@ for (const mode of ['fullscreen', 'regular']) test(`occipital CLI: ${mode} theme
       await finish(terminal);
     } finally { await runCleanupSteps(() => closeTerminals([terminal]), () => rm(directory, { recursive: true, force: true })); }
   });
+
+for (const mode of ['fullscreen', 'regular']) test(`occipital CLI: ${mode} live history theme backlog starts with the latest edit card`,
+  { timeout: 120000 }, async () => {
+    const terminal = new PiTerminal(`lifo-live-theme-${mode}`, { mode, extensions: [fixture],
+      extraEnv: { ...descriptor, TIDY_UI_TEST_THEME_OBSERVE: '1', TIDY_UI_TEST_THEME_PREVIEW: '1' } });
+    try {
+      const shown = await scenario(terminal, true);
+      await terminal.resize(100, 160);
+      const before = await stats(terminal, 'lifo-before'), sessionBytes = readFileSync(shown.session), originalTraffic = traffic(terminal);
+      const mocha = before.client.provider.description.profiles.find(p => p.label === 'Catppuccin Mocha'); assert.ok(mocha);
+      await terminal.openTidyMenu(); await terminal.selectTidyItem('Code color theme');
+      writeFileSync(join(terminal.output, 'syntax-theme-phase'), 'held-preview'); terminal.send(mocha.label);
+      await terminal.event('syntax_preview_reply_held', 2);
+      const first = terminal.events().filter(e => e.type === 'syntax_theme_dispatch' && e.phase === 'held-preview');
+      assert.deepEqual(first.map(e => e.payload.sources[0].text.trim()).toSorted(), ['const x=1;', 'const x=2;'],
+        'both slots serve the latest edit, not the older write/Bash sources admitted first during live execution');
+      writeFileSync(join(terminal.output, 'syntax-preview-go'), 'go');
+      await terminal.selectTidyItem(mocha.label); await terminal.closeTidyMenu();
+      const accepted = await settledStats(terminal, 'lifo-accepted', s => nativeReady(s) && s.client.effective.id === mocha.id);
+      assert.equal(accepted.source.dispatches, before.source.dispatches + 4);
+      const reply = terminal.events().find(e => e.type === 'syntax_theme_reply' && e.phase === 'held-preview' && e.payload.sources[0].text.includes('const x=2;')).reply.body.sources[0];
+      const rgb = reply.styles[reply.runs[1]].rgb; assert.ok(rgb);
+      const expected = rgb[0] * 65536 + rgb[1] * 256 + rgb[2];
+      await until(async () => {
+        const dump = await terminal.captureCompleteScreen('physical-lifo-visible', shown);
+        const y = dump.screen.findIndex(row => row.includes('const x=2;'));
+        return y >= 0 && dump.cells[y][dump.screen[y].indexOf('const x=2;')].fg === expected;
+      }, 'latest edit has its actual native preview color');
+      const settled = await stats(terminal, 'lifo-confirmed'); assert.deepEqual(work(settled), work(accepted));
+      for (const width of [90, 100]) { await terminal.resize(width, 160); await terminal.capture(`physical-lifo-warm-${width}`); }
+      const warm = await stats(terminal, 'lifo-warm'); assert.deepEqual(work(warm), work(settled));
+      assert.deepEqual(traffic(terminal), originalTraffic); assert.deepEqual(readFileSync(shown.session), sessionBytes);
+      const final = await terminal.capture('physical-lifo-final'); assert.deepEqual(persisted(final), persisted(shown));
+      assertSyntaxStockReference(await stockReference(mode), { traffic: originalTraffic, persisted: persisted(shown) });
+      console.log(JSON.stringify({ unifiedLifo: terminal.output, mode, node: warm.node, firstSources: first.map(e => e.payload.sources[0].text), warmDelta: 0 }));
+      await terminal.quit('\x04'); await finish(terminal);
+    } finally {
+      writeFileSync(join(terminal.output, 'syntax-preview-go'), 'go'); await closeTerminals([terminal]);
+    }
+  });
