@@ -26,8 +26,8 @@ test('localized presentation routes do not acquire unrelated services or all pla
   assert.deepEqual(scope(['src/bash-card.ts']).profiles,[{node:'22.19.0',pi:'1.0.0'}]);
 });
 
-test('host/runtime dependence expands affected groups without dependency version changes', () => {
-  assert.deepEqual(scope(['src/editor-card.ts']).profiles,[{node:'22.19.0',pi:'1.0.0'},{node:'22.19.0',pi:'1.2.0'}]);
+test('host/runtime dependence selects a symbolic latest role without resolving dependencies', () => {
+  assert.deepEqual(scope(['src/editor-card.ts']).profiles,[{node:'22.19.0',pi:'1.0.0'},{node:'22.19.0',pi:'latest'}]);
   assert.deepEqual(scope(['src/git-branch.ts']).profiles,[{node:'22.19.0',pi:'1.0.0'},{node:'26.7.0',pi:'1.0.0'}]);
   assert.equal(scope(['src/syntax/work.ts']).profiles.length,4);
   const narrowed = scope(['src/index.ts'],{decisions:[decision(['footer'])]});

@@ -7,7 +7,7 @@ Current [platform support](releases.md#supported-platforms) is GNU Linux x64/ARM
 ## Requirements and commands
 
 - Node.js >=22.19.0. CI selects exact Node 22.19.0 and 26.7.0.
-- An explicitly prepared Pi dependency graph. The compatibility matrix selects exact Pi 1.0.0 and 1.2.0, not `latest` or an installed CLI. CLI, SDK, TUI, AI/core, extension imports, type checks and child probes must use the selected coherent graph; Pi-family package version strings need not all be equal.
+- An explicitly prepared Pi dependency graph. The compatibility matrix selects minimum Pi 1.0.0 and the exact version resolved once from npm's public `latest` dist-tag at workflow scope selection, never an independently moving tag or an installed CLI. CLI, SDK, TUI, AI/core, extension imports, type checks and child probes must use the selected coherent graph; Pi-family package version strings need not all be equal.
 - For native preparation: provisioned Rust **1.99.0**, including rustfmt and Clippy, and platform compiler/linker prerequisites. User Cargo configuration is not an input.
 - For physical CLI tests: POSIX, declared Python 3 with PTY support and the prepared CLI. Python runs with `-I -S`, excluding environment/user/global site startup customizers. No model credentials are needed: the driver uses an offline scripted provider.
 - For actual native/owned-syntax CLI tests: a verified same-source Occipital artifact. Only selected shared tests additionally require an explicit Subconscious host executable. Only selected installed-profile tests require `--integration`. Neither prerequisite is imposed by unrelated footer/editor/card tests.
@@ -53,15 +53,15 @@ npm run test:native-release -- --inputs /absolute/path/to/prepared-pi-1.0.0/inpu
 npm run test:rust-check -- --inputs /absolute/path/to/prepared-pi-1.0.0/inputs.json
 ```
 
-Use separate output directories for each Node/Pi selection. To reuse the verified current-source helper in a second host graph:
+Use separate output directories for each Node/Pi selection. To reuse the verified current-source helper in a second host graph, set `PI_VERSION` to the exact alternate version recorded by CI (not a tag/range):
 
 ```sh
-node scripts/test/prepare.mjs --pi-version 1.2.0 \
+node scripts/test/prepare.mjs --pi-version "$PI_VERSION" \
   --native-inputs /absolute/path/to/prepared-pi-1.0.0/inputs.json \
   --integration --archives --shared-host /absolute/path/to/ck-subc \
-  --output /absolute/path/to/prepared-pi-1.2.0
-npm run check -- --inputs /absolute/path/to/prepared-pi-1.2.0/inputs.json
-npm test -- --inputs /absolute/path/to/prepared-pi-1.2.0/inputs.json
+  --output /absolute/path/to/prepared-pi-alternate
+npm run check -- --inputs /absolute/path/to/prepared-pi-alternate/inputs.json
+npm test -- --inputs /absolute/path/to/prepared-pi-alternate/inputs.json
 ```
 
 Run the expanded Pi/Node matrix when host/runtime contracts change and for full compatibility/release acceptance, not after each ordinary feature edit. A → B → A controls detect cross-version contamination. These examples select checks, not a claim of full compatibility acceptance. Execution rejects a changed tested commit/tree; source-only refresh is described below.
@@ -147,7 +147,7 @@ The catalogue assigns every executable entry one owner, layer and actual prerequ
 
 The full `npm run test:terminal -- --inputs ...` suite is time-expensive. Reserve it for final verification after UI/integration work is complete, not each edit or commit. Focused physical cases may reproduce a concrete defect. Documentation-only work does not require the full CLI suite; workflow-only work uses workflow lint and inert release regressions. After later edits, rerun affected checks whose results could be invalidated, not automatically every terminal case.
 
-Ordinary PR/push CI uses the baseline graph and affected contracts. For presentation changes needing no additional service, one job performs common + affected acceptance, without duplicate preparation or a native-workflow barrier. Actual native/shared/profile work retains its prerequisites and a separate affected job when necessary; extra host/runtime profiles run only their affected contracts. Full manual/extension-release checks retain all four Node × Pi graphs and use the [configured platform catalogue](releases.md#implementation-and-historical-release-boundary): five platforms by default, with the existing Windows ARM64 path enabled only by `CI_WINDOWS_ARM64=true`. Each platform builds once and immediately unlocks its two parallel Node consumers; Linux SDK/CLI jobs wait only for the Linux x64 producer. Independent Occipital releases run the full native/delivery node groups on both Nodes plus platform/Rust/consumer gates, without unrelated UI tests. Published Occipital admission remains extension-release-only. No daily workflow or moving-version resolver is implemented.
+Ordinary PR/push CI uses the baseline graph and affected contracts. For presentation changes needing no additional service, one job performs common + affected acceptance, without duplicate preparation or a native-workflow barrier. Actual native/shared/profile work retains its prerequisites and a separate affected job when necessary; extra host/runtime profiles run only their affected contracts. Full manual/extension-release checks select both Nodes × minimum/resolved-latest Pi graphs (four by default, two when latest equals minimum) and use the [configured platform catalogue](releases.md#implementation-and-historical-release-boundary): five platforms by default, with the existing Windows ARM64 path enabled only by `CI_WINDOWS_ARM64=true`. Each platform builds once and immediately unlocks its two parallel Node consumers; Linux SDK/CLI jobs wait only for the Linux x64 producer. Independent Occipital releases run the full native/delivery node groups on both Nodes plus platform/Rust/consumer gates, without unrelated UI tests. Published Occipital admission remains extension-release-only. No daily workflow is implemented.
 
 For a reviewed cross-cutting PR, a maintainer comment/review can contain this block (replace the example SHA with the actual tested HEAD):
 
@@ -158,6 +158,8 @@ For a reviewed cross-cutting PR, a maintainer comment/review can contain this bl
 ````
 
 `compatibility: "pi"|"node"|"all"` adds affected compatibility profiles when host/runtime dependence changes; it cannot remove conservative requirements. Manual `full=false` dispatch additionally requires `scope-head`, `base-sha`, groups and rationale from an authorized maintainer. Full/manual-release unions cannot be narrowed.
+
+When a ready selection schedules a non-minimum Pi profile, the scope job reads the public `@earendil-works/pi-coding-agent/latest` metadata once. It validates the package identity and exact npm version (at least 1.0.0), then pins every SDK/CLI/affected profile to that same selection. Invalid/unavailable metadata fails scope without an older-version fallback. Equal minimum/latest profiles collapse, including affected work already covered by the baseline job. Minimum-only feature work, independent daemon releases and native consumers do not resolve the tag; native/platform consumer graphs remain minimum-only. The trusted-base PR router is still the only executed router: the caller also replaces legacy non-minimum pins from older base plans, without importing PR code. The scope output and job log record the exact choices; prepared descriptors bind the coherent selected dependency graph to tested sources. Individual job retries reuse the existing scope output; new workflows resolve afresh, without caching a moving tag.
 
 Native jobs compile each enabled platform once and unlock its two Node consumer jobs independently. Linux x64 production also unlocks product SDK/CLI jobs without waiting for other platforms or native consumer jobs. GNU native smoke and current-source consumers share one offline preparation per Node, but keep separate runner processes and fresh optionality installations. Packaging regressions are not duplicated in native producer jobs. The real pinned Cargo ancestor-wrapper control runs once per native producer, not once per Node; Linux keeps its enforced network namespace. Node consumer jobs do not provision Rust/MSVC, and use Docker isolation directly for GNU execution. Release publication waits for every required build and consumer branch.
 

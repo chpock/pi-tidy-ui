@@ -9,7 +9,9 @@ import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { childEnv, readInputs, toolPath } from '../scripts/test/context.mjs';
 import { selectSuite } from '../scripts/test/run.mjs';
-import { nativeTargets, nativePlan } from '../scripts/test/ci-scope.mjs';
+import { githubScope, nativeTargets, nativePlan } from '../scripts/test/ci-scope.mjs';
+import { featurePlan } from '../scripts/test/catalog.mjs';
+import { parseVersion } from '../src/occipital/version.ts';
 import {enabledTargets} from '../scripts/release/platforms.mjs';
 import { releaseRef, stampVersion } from '../scripts/release/version.mjs';
 import { assembleRelease, assetName, artifactName } from '../scripts/release/native-ci.mjs';
@@ -531,8 +533,7 @@ test('CI uses coherent prepared descriptors, catalogue capabilities and current-
   for (const name of ['extension', 'terminal']) {
     const job = workflowJob(source, name);
     assert.match(job, /needs: \[version, native-linux, scope\]/);
-    assert.match(job, /node: \['22.19.0', '26.7.0'\]/);
-    assert.match(job, /pi: \['1.0.0', '1.2.0'\]/);
+    assert.match(job, /matrix: \$\{\{ fromJSON\(needs.scope.outputs.compatibility_profiles\) \}\}/);
     assert.match(job, /prepare.mjs --pi-version "\$PI_VERSION"/);
     assert.match(job, /--native-artifact "\$GITHUB_WORKSPACE\/\.test-artifacts\/ci-native"/);
     assert.doesNotMatch(job, /node --(?:expose-gc|test)|OCCIPITAL_TEST_BIN|PI_TEST_CLI/);
@@ -963,4 +964,121 @@ test('maintained JavaScript actions use reviewed Node24 releases without changin
     assert.doesNotMatch(source,/FORCE_JAVASCRIPT_ACTIONS_TO_NODE|ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION/,'do not hide warnings by forcing an unsupported runtime');
   }
   assert.deepEqual([...seen].sort(),Object.keys(versions).sort());
+});
+
+// Execute the workflow's actual JavaScript, substituting only external metadata and
+// trusted imports. No registry access or changed-source checkout is performed.
+async function executeScopeScript({paths = [], inputs = {full:true}, legacy = false, response, fetchError, plan} = {}) {
+  const workflow = await readFile(join(repo,'.github/workflows/ci.yml'),'utf8');
+  const script = workflowJob(workflow,'scope').split('          script: |\n')[1]
+    .split('\n').map(line=>line.replace(/^            /,'')).join('\n');
+  assert.ok(script, 'scope JavaScript is required');
+  const outputs = {}, calls = [], imports = [], logs = [];
+  const context = {eventName:'workflow_dispatch',payload:{repository:{owner:{login:'owner'},name:'repo'}},ref:'refs/heads/main',sha:commit,actor:'maintainer'};
+  const process = {env:{GITHUB_WORKSPACE:'/trusted-base',SCOPE_INPUTS:JSON.stringify(inputs)}};
+  const loadTrusted = async path => {
+    imports.push(path);
+    if (path === '/trusted-base/scripts/test/ci-scope.mjs') return {githubScope:async options => {
+      const result = plan ?? await githubScope({...options,git:()=>paths.join('\0')});
+      if (!legacy) return result;
+      return {...result,...Object.fromEntries(['profiles','affectedProfiles'].map(key=>[key,result[key].map(row=>({...row,pi:row.pi === 'latest' ? '1.2.0' : row.pi}))]))};
+    }};
+    if (path === '/trusted-base/scripts/test/catalog.mjs') return {featurePlan};
+    if (path === '/trusted-base/src/occipital/version.ts') return {parseVersion};
+    assert.fail('Untrusted or new import: '+path);
+  };
+  const fetch = async (url,options) => {
+    calls.push([url,options]);
+    assert.equal(url,'https://registry.npmjs.org/@earendil-works%2Fpi-coding-agent/latest');
+    assert.equal(options.redirect,'error'); assert.ok(options.signal instanceof AbortSignal);
+    if (fetchError) throw fetchError;
+    return response ?? Response.json({name:'@earendil-works/pi-coding-agent',version:'1.7.3'});
+  };
+  const run = new (Object.getPrototypeOf(async function(){}).constructor)('github','context','core','process','fetch','loadTrusted','console',script.replace(/\bimport\(/g,'loadTrusted('));
+  let error;
+  try { await run({request:async route=>{assert.ok(route.endsWith('/permission'));return {data:{permission:'write'}};}},context,{setOutput:(key,value)=>{outputs[key]=value;}},process,fetch,loadTrusted,{log:value=>logs.push(value)}); }
+  catch (failure) { error = failure; }
+  return {outputs,calls,imports,logs,error};
+}
+
+test('scope resolves latest once and shares exact full SDK/CLI profiles, including trusted legacy plans',async()=>{
+  for (const legacy of [false,true]) {
+    const run = await executeScopeScript({legacy}); assert.ifError(run.error);
+    assert.equal(run.calls.length,1);
+    const scope = JSON.parse(run.outputs.scope);
+    const expected = ['22.19.0','26.7.0'].flatMap(node=>['1.0.0','1.7.3'].map(pi=>({node,pi})));
+    assert.deepEqual(scope.profiles,expected);
+    assert.deepEqual(JSON.parse(run.outputs.compatibility_profiles),{include:expected});
+    assert.deepEqual(JSON.parse(run.outputs.profiles),{include:expected});
+    assert.deepEqual(scope.piSelection,{minimum:'1.0.0',latest:'1.7.3'});
+    assert.ok(run.logs.some(value=>value.includes('1.7.3')));
+    assert.equal(scope.head,commit);
+  }
+});
+
+test('scope latest equal to minimum collapses full and already-covered affected profiles',async()=>{
+  const response = () => Response.json({name:'@earendil-works/pi-coding-agent',version:'1.0.0'});
+  for (const legacy of [false,true]) {
+    const full = await executeScopeScript({legacy,response:response()}); assert.ifError(full.error);
+    assert.equal(full.calls.length,1);
+    assert.deepEqual(JSON.parse(full.outputs.compatibility_profiles).include,['22.19.0','26.7.0'].map(node=>({node,pi:'1.0.0'})));
+    const affected = await executeScopeScript({legacy,response:response(),paths:['src/editor-card.ts'],inputs:{full:false,'scope-head':commit,'base-sha':'b'.repeat(40),features:'editor,activity',rationale:'Editor compatibility.'}});
+    assert.ifError(affected.error); assert.equal(affected.calls.length,1);
+    const scope = JSON.parse(affected.outputs.scope);
+    assert.deepEqual(scope.affectedProfiles,[]); assert.equal(scope.runAffected,false);
+    assert.deepEqual(scope.profiles,[{node:'22.19.0',pi:'1.0.0'}]);
+    const native = await executeScopeScript({legacy,response:response(),paths:['src/syntax/work.ts'],inputs:{full:false,'scope-head':commit,'base-sha':'b'.repeat(40),features:'syntax',rationale:'Source compatibility.'}});
+    assert.ifError(native.error); assert.equal(native.calls.length,1);
+    assert.deepEqual(JSON.parse(native.outputs.profiles).include,['22.19.0','26.7.0'].map(node=>({node,pi:'1.0.0'})),'native-dependent affected work is not covered by the native-free baseline');
+    assert.equal(JSON.parse(native.outputs.scope).runAffected,true);
+  }
+});
+
+test('scope pins every affected profile while preserving baseline coverage and both Node obligations',async()=>{
+  const inputs = {full:false,'scope-head':commit,'base-sha':'b'.repeat(40),features:'footer',rationale:'Footer compatibility.',compatibility:'all'};
+  for (const legacy of [false,true]) {
+    const run = await executeScopeScript({legacy,inputs,paths:['src/footer.ts']}); assert.ifError(run.error);
+    assert.equal(run.calls.length,1);
+    assert.deepEqual(JSON.parse(run.outputs.profiles).include,[{node:'22.19.0',pi:'1.7.3'},{node:'26.7.0',pi:'1.0.0'},{node:'26.7.0',pi:'1.7.3'}]);
+    const collapsed = await executeScopeScript({legacy,inputs,paths:['src/footer.ts'],response:Response.json({name:'@earendil-works/pi-coding-agent',version:'1.0.0'})});
+    assert.ifError(collapsed.error);
+    assert.deepEqual(JSON.parse(collapsed.outputs.profiles).include,[{node:'26.7.0',pi:'1.0.0'}]);
+    assert.equal(JSON.parse(collapsed.outputs.scope).runAffected,true);
+  }
+});
+
+test('scope does not fetch latest for minimum-only, native-only, diagnostic or unresolved selections',async()=>{
+  const featureInputs = {full:false,'scope-head':commit,'base-sha':'b'.repeat(40),features:'footer',rationale:'Footer only.'};
+  const cases = [
+    {inputs:featureInputs,paths:['src/footer.ts']},
+    {inputs:{...featureInputs,features:'native'},paths:['src/occipital/controller.ts']},
+    {inputs:{full:false,'windows-only':true,'scope-head':commit}},
+    {plan:{status:'ready',full:true,releaseKind:'daemon',features:['native','delivery'],profiles:[{node:'22.19.0',pi:'1.0.0'},{node:'26.7.0',pi:'1.0.0'}],affectedProfiles:[{node:'22.19.0',pi:'1.0.0'},{node:'26.7.0',pi:'1.0.0'}],runAffected:true}},
+    {plan:{status:'scope-decision-required',full:false,features:['footer'],profiles:[{node:'22.19.0',pi:'latest'}],affectedProfiles:[{node:'22.19.0',pi:'latest'}],runAffected:true}},
+  ];
+  for (const options of cases) {
+    const run = await executeScopeScript({...options,fetchError:new Error('Registry must not be used')});
+    assert.ifError(run.error); assert.equal(run.calls.length,0);
+    assert.equal(JSON.parse(run.outputs.scope).piSelection.latest,null);
+  }
+});
+
+test('scope fails closed before outputs for unavailable, HTTP, identity or exact-version metadata failures',async()=>{
+  const cases = [
+    {fetchError:new Error('Unavailable registry')},
+    {response:new Response('unavailable',{status:503})},
+    {response:new Response('redirect',{status:302})},
+    {response:new Response('{')},
+    ...[null,{}, {name:'wrong',version:'1.7.3'}, {name:'@earendil-works/pi-coding-agent',version:7},
+      ...['latest','^1.7.3','v1.7.3','01.7.3','1.7','1.7.3\n','1.7.3+build','1.7.3-01','0.99.0','1.0.0-rc.1'].map(version=>({name:'@earendil-works/pi-coding-agent',version}))]
+      .map(value=>({response:Response.json(value)})),
+  ];
+  for (const options of cases) {
+    const run = await executeScopeScript(options);
+    assert.ok(run.error,'invalid metadata must fail'); assert.equal(run.calls.length,1); assert.deepEqual(run.outputs,{});
+  }
+  for (const version of ['1.0.1-rc.1','2.0.0']) {
+    const run = await executeScopeScript({response:Response.json({name:'@earendil-works/pi-coding-agent',version})});
+    assert.ifError(run.error); assert.equal(JSON.parse(run.outputs.scope).piSelection.latest,version);
+  }
 });

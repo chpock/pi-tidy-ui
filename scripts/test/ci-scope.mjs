@@ -7,7 +7,8 @@ import { platforms, enabledTargets } from '../release/platforms.mjs';
 export const groups = featureNames;
 const product = groups.filter(name => !['native','shared','profile','harness','delivery'].includes(name));
 const ui = ['summaries','bash','edit','write','user','queued','editor','footer','layout','activity'];
-const nodes = ['22.19.0','26.7.0'], pis = ['1.0.0','1.2.0'];
+// The workflow pins the logical latest role once, after trusted-base routing.
+const nodes = ['22.19.0','26.7.0'], pis = ['1.0.0','latest'];
 const unique = values => [...new Set(values)];
 const sha = value => typeof value === 'string' && /^[a-f0-9]{40}$/.test(value);
 const requireSHA = value => { if (!sha(value)) throw new Error('Expected exact commit SHA'); return value; };

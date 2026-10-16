@@ -99,6 +99,7 @@ jobs:
       head: ${{ steps.scope.outputs.head }}
       features: ${{ steps.scope.outputs.features }}
       profiles: ${{ steps.scope.outputs.profiles }}
+      compatibility_profiles: ${{ steps.scope.outputs.compatibility_profiles }}
     steps:
       # For PR metadata, execute only the trusted base router, never PR code.
       - uses: actions/checkout@v7.0.1
@@ -126,6 +127,33 @@ jobs:
             const {githubScope} = await import(`${process.env.GITHUB_WORKSPACE}/scripts/test/ci-scope.mjs`);
             const {featurePlan} = await import(`${process.env.GITHUB_WORKSPACE}/scripts/test/catalog.mjs`);
             const result = await githubScope({api:(route,params)=>github.request(route,params),eventName:context.eventName,payload:context.payload,ref:context.ref,commit:context.sha,actor:context.actor,inputs:JSON.parse(process.env.SCOPE_INPUTS),featurePlan});
+            const minimum = '1.0.0';
+            const needsLatest = result.status === 'ready' &&
+              (result.full && result.releaseKind !== 'daemon' || result.runAffected && result.affectedProfiles.some(profile => profile.pi !== minimum));
+            let latest = null;
+            if (needsLatest) {
+              const {parseVersion} = await import(`${process.env.GITHUB_WORKSPACE}/src/occipital/version.ts`);
+              const response = await fetch('https://registry.npmjs.org/@earendil-works%2Fpi-coding-agent/latest', {redirect:'error',signal:AbortSignal.timeout(30000)});
+              if (!response.ok) throw new Error('Pi latest metadata HTTP status ' + response.status);
+              const metadata = await response.json();
+              if (metadata?.name !== '@earendil-works/pi-coding-agent') throw new Error('Unexpected Pi latest package identity');
+              const parsed = parseVersion(metadata.version);
+              if (!parsed || metadata.version.includes('+')) throw new Error('Expected an exact npm Pi version');
+              const [major,minor,patch] = metadata.version.split('-')[0].split('.').map(BigInt);
+              if (major < 1n || major === 1n && minor === 0n && patch === 0n && parsed.prerelease) throw new Error('Pi latest is below minimum 1.0.0');
+              latest = metadata.version;
+              // Migrate non-minimum profiles from older trusted-base routers too.
+              const baselineCovered = !result.full && !result.affectedProfiles.some(profile => profile.node === '22.19.0' && profile.pi === minimum);
+              const pin = profiles => [...new Map(profiles.map(profile => {
+                const pinned = {...profile,pi:profile.pi === minimum ? minimum : latest};
+                return [pinned.node + '/' + pinned.pi,pinned];
+              })).values()];
+              result.profiles = pin(result.profiles);
+              result.affectedProfiles = pin(result.affectedProfiles).filter(profile => !(baselineCovered && profile.node === '22.19.0' && profile.pi === minimum));
+              result.runAffected &&= result.affectedProfiles.length > 0;
+            }
+            result.piSelection = {minimum,latest};
+            core.setOutput('compatibility_profiles',JSON.stringify({include:result.profiles}));
             core.setOutput('scope',JSON.stringify(result));
             for (const key of ['status','full','head']) core.setOutput(key,String(result[key]));
             core.setOutput('features',result.features.join(','));
@@ -342,9 +370,7 @@ jobs:
     timeout-minutes: 10
     strategy:
       fail-fast: false
-      matrix:
-        node: ['22.19.0', '26.7.0']
-        pi: ['1.0.0', '1.2.0']
+      matrix: ${{ fromJSON(needs.scope.outputs.compatibility_profiles) }}
     steps:
       - uses: actions/checkout@v7.0.1
         with:
@@ -404,9 +430,7 @@ jobs:
     timeout-minutes: 30
     strategy:
       fail-fast: false
-      matrix:
-        node: ['22.19.0', '26.7.0']
-        pi: ['1.0.0', '1.2.0']
+      matrix: ${{ fromJSON(needs.scope.outputs.compatibility_profiles) }}
     steps:
       - uses: actions/checkout@v7.0.1
         with:
