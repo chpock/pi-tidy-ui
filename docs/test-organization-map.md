@@ -1,15 +1,14 @@
 # Existing test coverage and dependency map
 
-Status: **baseline audit plus approved migration map**. The inventory below preserves original case IDs, filenames and measured costs for traceability; those historical filenames are not current entry points. Current ownership/prerequisites live in the explicit [catalogue](../scripts/test/catalog.mjs), the [approved organization](test-organization-plan.md) and [execution guide](testing.md).
+Status: **historical baseline audit; superseded for CI and per-file membership policy**. The inventory below preserves original case IDs, filenames and measured costs for traceability; historical filenames and line numbers are not current entry points. The earlier approved affected-CI/file-catalogue approach was subsequently rejected. Current commands, recursive structural discovery and fixed event obligations live in [testing.md](testing.md), backed by the [structural catalogue](../scripts/test/catalog.mjs). The [historical plan](test-organization-plan.md) records the supersession; this map is not a test-registration list or CI routing authority.
 
 ## Current entry points
 
-- SDK declarations now live in domain `*.sdk.test.ts` files; shared SDK support registers no tests.
-- Main physical cases now live in domain `*.cli.test.mjs` files, with the original T02/T04 as `smoke`. T24 argument-preview coverage has one physical owner and is selected by both summaries and edit contracts.
-- Syntax cases are separated into owned, shared, menu, fallback logging and native logging CLI files. **S04 is a real Pi acquisition-gate case**, not a synthetic helper; the initial audit classification below is corrected.
-- Real-helper node controls are `occipital-native.test.ts`, `occipital-controller.native.test.ts` and `occipital-factories.native.test.ts`; the remaining controller/factory logic no longer acquires that capability. The POSIX fake-executable control has explicit platform applicability, not a missing-input skip.
-- The installed third-party profile case is `integration-profile.compat.test.mjs`; schema/profile fixture controls remain independent of installation. Shared CLI cases alone additionally require the supplied host.
-- New catalogue/feature/routing regressions exercise selected prerequisites, source refresh and reviewed CI scope. Every root test and the two fixed consumer entries must be owned; discovery validates ownership rather than assigning unknown tests to a catch-all unit suite.
+Use the execution guide's [five-root folder table](testing.md#test-layers), not the baseline filenames below, to locate current tests: `product/`, `integration/`, `cli/`, `harness/` and `native-build/`. The runner reads every `.test.ts` / `.test.mjs` recursively from those folders; new files need no list edit. Fixture/helper/support directories register no tests, and the two consumer scripts remain explicit fixed interfaces. Local unique-basename/structural-path filters and feature groups never narrow CI.
+
+All ordinary main pushes, PRs and manual runs execute the complete enabled-platform/Node/Pi obligations. Latest-only nightly and both tag families have their own fixed obligations; there is no source-impact routing or reviewed scope policy. See [fixed CI obligations](testing.md#fixed-ci-obligations).
+
+Retained audit corrections: **S04 is a real Pi acquisition-gate case**, not a synthetic helper, and **S07 and S10** both require the real shared host. The real-helper and installed-profile capability boundaries are now structural roles, not filename conventions.
 
 ## Baseline scope and evidence
 
@@ -17,7 +16,7 @@ Audited on 2026-10-15, against HEAD `5d97a8b` **plus the uncommitted optimized h
 
 The inventory accounts for:
 
-- **65 root `*.test.ts` / `*.test.mjs` entries:** 56 discovered by today's broad `unit`, six by `native-release`, one by `rust-harness`, and two physical-CLI entries.
+- **65 root `*.test.ts` / `*.test.mjs` entries at that baseline:** 56 discovered by its broad `unit`, six by `native-release`, one by `rust-harness`, and two physical-CLI entries.
 - Two additional consumer script entries, not ordinary Node test files.
 - All 17 Rust integration targets, inline Rust tests, the allocator control, and CI-only build/ABI/consumer gates.
 - All 49 main-terminal parent cases and 24 syntax-terminal cases. Main reports 56 tests because seven nested controls remain attached to their parent cases.
@@ -38,9 +37,9 @@ Saved timing analysis: `.test-artifacts/test-organization/existing-costs.json`, 
 | `C` | Local consumer installation, prepared package archives/metadata, loopback registry and npm. |
 | `X` | Authorized published-release validation requiring public network access. |
 
-Requirements describe the **test body**, not today's oversized runner envelope. All existing Node entries additionally pass through the selected-host hermetic bootstrap and GC guard. Thus `N` is not permission to run bare ambient `node --test` today. Files labelled `N` can still indirectly load SDK imports through `src/index.ts` or the bootstrap; only the absence of daemon/PTY requirements is asserted.
+Requirements describe the **audited test body**, not its then-oversized runner envelope. All existing Node entries additionally pass through the selected-host hermetic bootstrap and GC guard. Thus `N` was not permission to run bare ambient `node --test`; current execution still requires its prepared runner. Files labelled `N` can still indirectly load SDK imports through `src/index.ts` or the bootstrap; only the absence of daemon/PTY requirements is asserted.
 
-## Measured cost and current selection
+## Historical measured cost and selection
 
 | Existing execution | Accepted local observation | Important qualification |
 |---|---:|---|
@@ -51,9 +50,9 @@ Requirements describe the **test body**, not today's oversized runner envelope. 
 | Syntax terminal | 24 passing; 63.19–70.47 s | Real daemon controls, two actual shared-host cases, some fallback-only observation cases; all 24 parents actually launch Pi. |
 | Rust build/check/tests, consumers, clean preparation | No comparable end-to-end cost established here | Must be measured separately, including cold/warm stores and artifact acquisition. |
 
-### Structural coupling in the current harness
+### Structural coupling in the audited harness
 
-Source: `scripts/test/run.mjs:31–47,87–101`, `scripts/test/prepare.mjs:147–200,202–268`, `scripts/test/bootstrap.mjs:8–14`.
+Historical source: `scripts/test/run.mjs:31–47,87–101`, `scripts/test/prepare.mjs:147–200,202–268`, `scripts/test/bootstrap.mjs:8–14`.
 
 1. `unit` is discovery by exclusion, not a declared functional group. It requires `validateNative()` even when `--files` selects only a footer test.
 2. `terminal` requires `inputs.integration` even for a physical editor/footer test that never loads the third-party profile.
@@ -63,19 +62,19 @@ Source: `scripts/test/run.mjs:31–47,87–101`, `scripts/test/prepare.mjs:147�
 6. Preparation always materializes a new neutral snapshot, runs owned `npm ci/install`, and copies the dependency tree. Integration packages, archives, Rust inputs and helper builds are optional flags, but callers frequently request unrelated capabilities together. A source edit requires refreshing the snapshot; a name filter does not avoid that preparation.
 7. Generic physical presentation deliberately denies native acquisition through `tests/fixtures/presentation-driver.ts`. Main-terminal geometry/streaming/replay assertions do not thereby prove real daemon integration; the separate syntax cases do.
 
-### Current CI cost is not just test duration
+### Historical CI cost was not just test duration
 
-`.github/workflows/ci.yml` currently calls the reusable **six-platform** native workflow on ordinary pushes/PRs. Both four-profile extension/SDK jobs and four-profile syntax jobs wait for that reusable workflow (`native`, `extension.needs`, `terminal.needs`). The reusable workflow includes same-commit consumers on both Node versions on every target. Each extension matrix job prepares `--integration`; two repeat the inert release suite and all four pack the development extension.
+At the audit baseline, `.github/workflows/ci.yml` called the reusable **six-platform** native workflow on ordinary pushes/PRs. Both four-profile extension/SDK jobs and four-profile syntax jobs wait for that reusable workflow (`native`, `extension.needs`, `terminal.needs`). The reusable workflow includes same-commit consumers on both Node versions on every target. Each extension matrix job prepares `--integration`; two repeat the inert release suite and all four pack the development extension.
 
-The full main-terminal entry is already extension-release-only. Therefore changing only that trigger would not remove ordinary CI's six native builds, consumer matrix, repeated preparation, or dependency barriers. Runner wall time, the critical path, charged runner-minutes, and preparation time are different measurements. No remote run of the proposed organization exists.
+At that baseline, the full main-terminal entry was already extension-release-only. Changing only that trigger could not remove the six native builds, consumer matrix, repeated preparation or dependency barriers. Runner wall time, critical path, charged runner-minutes and preparation time were distinct measurements. This historical audit did not establish hosted acceptance of a replacement graph.
 
 ## Complete Node entry-file inventory
 
-Paths in these tables are relative to `tests/`. “When affected” identifies contracts, not a filename-only change detector. Cross-domain closure rules are in the proposal.
+Paths in these tables are relative to the **historical** `tests/` root. “When affected” records local contract reasoning from the audit, not current CI selection. Original names, counts and source anchors are retained as evidence, not a normative discovery registry.
 
 ### UI, cards and shared feature contracts
 
-| Current file | Protected contract; actual requirement | When affected |
+| Historical file | Protected contract; actual requirement | When affected |
 |---|---|---|
 | `unit.test.ts` | 243 parent declarations spanning cards, lifecycle, layout/GC, editor/status, real Git, footer and terminal colors; `S`, some real Git/Node subprocesses, no Rust daemon | Split by the ranges below; do not run all physical domains merely because this file is named unit. |
 | `component-layouts.test.ts` | Component-owned caches, ordinary/large retained layouts, no eviction, detached owners/GC; actual SDK and large allocations, `S` | Render-cache ownership/accounting and adapter lifetime. |
@@ -93,7 +92,7 @@ Paths in these tables are relative to `tests/`. “When affected” identifies c
 
 Ranges are audit anchors, not stable selector APIs. A moved test keeps its assertions and lifecycle sequence, including tests whose names mention another domain.
 
-| Current lines (approximately) | Proposed functional owner | Extra obligations |
+| Historical lines (approximately) | Proposed functional owner at audit | Extra obligations |
 |---|---|---|
 | 104–229,416–1200 | Summary/argument formatting, policy, Unicode and mouse geometry | Native safeguard delegation and exact failure paint. |
 | 230–415,508–666 | Activity/adapter lifecycle | Global install/off/shutdown/foreign-owner integration; some ranges overlap the summaries above because concerns are interleaved. |
@@ -117,7 +116,7 @@ These are coverage areas, **not permission to select only an approximate line ra
 
 Most files below do not require `O`. Controlled transports and real Pi SDK objects serve different contracts from actual daemon execution and must not be conflated.
 
-| Current file | Protected contract; actual requirement | When affected / separation needed |
+| Historical file | Protected contract; actual requirement | When affected / separation needed |
 |---|---|---|
 | `occipital-bootstrap.test.ts` | Provider-option construction and host lifecycle/fallback with controlled factories, `S` | Extension/native discovery boundary and configuration. |
 | `occipital-client.test.ts` | Client lifecycle, retained profiles, menu actions/preview/rollback, no duplicate source work; controlled transport, `S` | Client state machine, settings/theme contract, teardown. |
@@ -153,7 +152,7 @@ Important anchors: real binary calls in `occipital-native.test.ts:22–29`, `occ
 
 ### Harness, delivery and compatibility entries
 
-| Current file | Protected contract; actual requirement | When affected |
+| Historical file | Protected contract; actual requirement | When affected |
 |---|---|---|
 | `consumer-preparation.test.mjs` | Consumer metadata/lock rewrite, npm replay and platform/CRLF/path behavior; local npm/tar fixtures, `N/C`-preparation logic | Registry capture and consumer preparation; not actual daemon parsing. |
 | `installed-consumer.test.mjs` | Safe npm consumer reports, versions and observation boundaries, `N` | Consumer diagnostics. The actual install/execute entry is listed separately below. |
@@ -177,7 +176,7 @@ Important anchors: real binary calls in `occipital-native.test.ts:22–29`, `occ
 | `native-release.test.mjs` | Templates, checksums/notices, exact inert bytes, local npm pack/admission, no publication; `N` | Native artifact packaging, not engine parsing. |
 | `npm-release.test.mjs` | Native package metadata, archive contents, npm identity and safe publication preparation; inert/local inputs, `N` | npm native delivery and policy. |
 | `extension-release.test.mjs` | Generated-only six dependency pins, exact artifact admission/refusal, packing and source immutability; inert fixtures/local npm/Git, `N` | Extension package/release assembly. No public validation implied by synthetic gates. |
-| `release-ci.test.mjs` | Workflow routing, version/staging/ABI/Windows import tools, checked outputs and stop-on-failure; controlled tools/real small commands, `N` | CI/release contracts. Current tests intentionally enforce old ordinary-run syntax/native policy; update only after policy approval. |
+| `release-ci.test.mjs` | Workflow routing, version/staging/ABI/Windows import tools, checked outputs and stop-on-failure; controlled tools/real small commands, `N` | CI/release contracts. At the audit baseline these tests enforced the then-current syntax/native policy; current policy is in the execution guide. |
 | `release-version.test.mjs` | Real Git topology/nearest-tag selection and independent product stamping; `N` | Version ancestry and stamp rules. |
 | `makefile.test.ts` | Actual Make/Docker wrapper routing with controlled tools, safe env and failure propagation; `N` | Build/test entry points. This is not the real GNU container acceptance. |
 
@@ -188,12 +187,12 @@ Important anchors: real binary calls in `occipital-native.test.ts:22–29`, `occ
 | `tests/fixtures/installed-occipital.mjs` (`consumer`) | `O/C`: actually install from owned archives/loopback registry, resolve selected SDK and native package, exercise real helper, fallback/cache/hash/install-script boundaries. Version/commit/nativeTree/npm/Node authority is mandatory. |
 | `tests/fixtures/published-occipital.mjs` (`published-consumer`) | `X`: exact extension release ref, public npm/GitHub artifacts and admission; remains extension-release-only, never ordinary tests or daemon release substitution. |
 | GNU container checks | `R/O`: actual glibc 2.28 toolchain/container, tests, allocator, lint, release build, ABI inspection and local consumers. Wrapper unit checks are not substitutes. |
-| Six target builds | Linux/macOS/Windows × x64/ARM64; actual compile, target-specific imports/ABI/reproducibility/staging and both-Node consumer behavior. Not necessary for a localized footer formatter edit. |
+| Historical six target builds | Linux/macOS/Windows × x64/ARM64 at the audit baseline; actual compile, imports/ABI/reproducibility/staging and both-Node consumers. Current ordinary CI requires all five enabled targets regardless of a localized diff; local feature work is separate. |
 | Workflow lint / package / release jobs | Current `.github/workflows/ci.yml` and release workflows. Static policy regressions and actual hosted execution provide different evidence. No publish is authorized by this documentation proposal. |
 
 ## Main physical-CLI case map
 
-T identifiers refer to **current TAP order** in the accepted Pi 1.0 / Node 26 main run, not invented test names. Each label below abbreviates the actual unique case; the full names are in the saved timing analysis. Times are case durations, not projected savings. All these cases require `P`; only T13 loads `I` itself. Exact traffic/persistence/replay, physical colors and geometry remain required wherever the original case asserts them.
+T identifiers refer to **historical TAP order** in the accepted Pi 1.0 / Node 26 main run, not invented test names. Each label below abbreviates the actual unique case; the full names are in the saved timing analysis. Times are case durations, not projected savings. All these cases require `P`; only T13 loads `I` itself. Exact traffic/persistence/replay, physical colors and geometry remain required wherever the original case asserts them.
 
 | ID | Existing protected integration | Seconds | Functional owner / special coupling |
 |---|---|---:|---|
@@ -251,7 +250,7 @@ T12's seven nested controls remain: live width-zero rows; widths 1–5 glyphs; f
 
 ## Syntax physical-CLI case map
 
-S identifiers follow TAP order in the accepted Pi 1.0 / Node 26 syntax run. The current file validates `O/H` before any case; this table separates actual case needs. Generic stock references remain immutable per mode; feature-bearing processes and replay remain independent.
+S identifiers follow TAP order in the accepted Pi 1.0 / Node 26 syntax run. The audited file validated `O/H` before any case; this table separates actual case needs. Generic stock references remain immutable per mode; feature-bearing processes and replay remain independent.
 
 | ID | Existing protected integration | Seconds | Actual additional dependency / owner |
 |---|---|---:|---|
@@ -308,11 +307,11 @@ All paths below are under `crates/occipital/`. Rust logic tests need `R` but usu
 
 Inline tests also exist in `src/{admission,engine,main,reply,request,scheduler,shared}.rs`. The separate `examples/engine_probe.rs` allocator test validates the actual glibc allocator API; it is not replaced by a platform-independent unit. `rust-check` runs fmt plus strict Clippy/all-targets; `rust` is offline workspace tests (optionally selected integration targets); `rust-allocator` is the named allocator control. Release builds/ABI and consumer checks are additional, not implied by `cargo test`.
 
-## Selection conclusions from the map
+## Historical local-selection conclusions
 
 - Keep fast syntax/controller/transport contracts available without a Rust build; do **not** remove syntax from ordinary cheap testing merely because it has an Occipital prefix.
 - Keep actual daemon, shared, file/RGB and wire controls mandatory whenever their contracts change. Moving them is not replacing them with mocks.
 - Separate live Pi from daemon: footer/editor/card geometry often needs `P` but no `O/H/I`; a Rust engine unit needs `R` but no Pi.
 - Separate package-policy fixtures from real consumer installs and from public-release admission.
 - Preserve ownership, cross-feature geometry, theme/settings and lifecycle closure; a single source filename cannot always identify that closure.
-- The proposal must fix preparation/admission **and** file organization; otherwise a focused footer command still pays for unrelated native/profile inputs.
+- The proposal identified preparation/admission **and** organization as the local cost seam, not filename changes alone. Current structural discovery replaces explicit membership lists; these historical conclusions do not select CI coverage.

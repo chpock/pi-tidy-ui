@@ -161,7 +161,7 @@ jobs:
             "${tools_args[@]}" --output "$RUNNER_TEMP/native-build-inputs"
           # shellcheck disable=SC2016
           node --input-type=module -e 'import {readFileSync,appendFileSync} from "node:fs"; import {join} from "node:path"; const inputs=JSON.parse(readFileSync(join(process.env.RUNNER_TEMP,"native-build-inputs/inputs.json"))); appendFileSync(process.env.GITHUB_ENV,`NATIVE_SOURCE=${inputs.project}\n`);'
-      - name: Pinned Cargo ancestry control once per native platform
+      - name: All native-build controls before source stamping
         env:
           TARGET: ${{ matrix.target }}
         run: |

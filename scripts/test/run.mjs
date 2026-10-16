@@ -31,11 +31,11 @@ export function isolatedCommand(command, args, inputs) {
 }
 
 
-export async function execute({ inputs: path, suite = 'unit', files, groups, layer, pattern, skip, 'network-isolated': networkIsolated = false, 'release-ref': releaseRef, 'rust-test': rustTests = [], output }) {
+export async function execute({ inputs: path, suite = 'unit', files, groups, layer, pattern, skip, shard, 'network-isolated': networkIsolated = false, 'release-ref': releaseRef, 'rust-test': rustTests = [], output }) {
   process.umask(0o077);
   const inputPath = resolve(path ?? join(import.meta.dirname, '../../.test-artifacts/harness/1.0.0/inputs.json'));
   const reportPath = output ? resolve(output) : join(dirname(inputPath), 'runs', suite + '-' + randomUUID(), 'report.json');
-  const report = { schema: 1, suite, selected: [], selection: { files: files ?? null, groups: groups ?? null, layer: layer ?? null, pattern: pattern ?? null, skip: skip ?? null, rustTests }, cases: [], network: networkIsolated ? 'os-isolated' : 'prepared-fixtures', status: 'setup-failed', reason: 'inputs', counts: {} };
+  const report = { schema: 1, suite, selected: [], selection: { files: files ?? null, groups: groups ?? null, layer: layer ?? null, pattern: pattern ?? null, skip: skip ?? null, shard: shard ?? null, rustTests }, cases: [], network: networkIsolated ? 'os-isolated' : 'prepared-fixtures', status: 'setup-failed', reason: 'inputs', counts: {} };
   let directory;
   try {
     const inputs = readInputs(inputPath);
@@ -70,11 +70,16 @@ export async function execute({ inputs: path, suite = 'unit', files, groups, lay
       report.network = 'public-release';
       env.TIDY_TEST_RELEASE_REF = releaseRef;
     }
-    const selection = resolveSelection(inputs.pi.root, { suite, files, groups, layer });
+    const selection = resolveSelection(inputs.pi.root, { suite, files, groups, layer, shard, pattern, skip });
     const selected = selection.files;
     report.selected = selected;
+    if (selection.shard) {
+      report.completeSelection = selection.completeSelection;
+      report.shard = { ...selection.shard, selected };
+    }
     report.requirements = selection.requirements;
     report.platformExclusions = selection.excluded;
+    if (selected.some(file => file.startsWith('native-build/'))) throw new Error('Native-build controls require scripts/test/native-harness.mjs, not the Pi runner');
     Object.assign(env, validateRequirements(inputs, selection.requirements));
     if (selection.requirements.includes('native')) report.native = { commit: inputs.native.commit, nativeTree: inputs.native.nativeTree, sha256: inputs.native.sha256 };
     let command = inputs.node.path;
@@ -163,7 +168,7 @@ export async function execute({ inputs: path, suite = 'unit', files, groups, lay
 
 if (process.argv[1] && existsSync(process.argv[1]) && realpathSync(process.argv[1]) === resolve(import.meta.filename)) {
   const { values } = parseArgs({ options: {
-    inputs: { type: 'string' }, suite: { type: 'string' }, files: { type: 'string' }, groups: { type: 'string' }, layer: { type: 'string' }, pattern: { type: 'string' }, skip: { type: 'string' },
+    inputs: { type: 'string' }, suite: { type: 'string' }, files: { type: 'string' }, groups: { type: 'string' }, layer: { type: 'string' }, pattern: { type: 'string' }, skip: { type: 'string' }, shard: { type: 'string' },
     'network-isolated': { type: 'boolean' }, 'release-ref': { type: 'string' }, 'rust-test': { type: 'string', multiple: true }, output: { type: 'string' },
   } });
   const report = await execute(values); if (report.status !== 'passed') process.exitCode = 1;

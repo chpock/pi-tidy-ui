@@ -1,0 +1,140 @@
+name: Complete prepared checks
+
+on:
+  workflow_call:
+    inputs:
+      layer:
+        required: true
+        type: string
+      source-ref:
+        required: true
+        type: string
+      node:
+        required: true
+        type: string
+      pi:
+        required: true
+        type: string
+      daemon-version:
+        required: true
+        type: string
+      nightly:
+        type: boolean
+        default: false
+      shard:
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    runs-on: ubuntu-24.04
+    timeout-minutes: ${{ inputs.layer == 'cli' && 30 || 10 }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          ref: ${{ inputs.source-ref }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v7.1.0
+        with:
+          package-manager-cache: false
+          node-version: ${{ inputs.node }}
+      - name: Admit fixed check role and structural prerequisites
+        id: selection
+        env:
+          CHECK_LAYER: ${{ inputs.layer }}
+          PI_VERSION: ${{ inputs.pi }}
+          EXPECTED_NODE: ${{ inputs.node }}
+          NIGHTLY: ${{ inputs.nightly }}
+          CLI_SHARD: ${{ inputs.shard }}
+        run: |
+          node --input-type=module <<'JS'
+          import {appendFileSync} from 'node:fs';
+          import {resolveSelection} from './scripts/test/catalog.mjs';
+          const layer = process.env.CHECK_LAYER, nightly = process.env.NIGHTLY === 'true';
+          if (!['node','cli','delivery','daemon'].includes(layer)) throw new Error('Unknown fixed check layer');
+          if (process.version !== 'v' + process.env.EXPECTED_NODE) throw new Error('Unexpected selected Node runtime');
+          if (layer !== 'cli' && process.env.CLI_SHARD) throw new Error('Only complete CLI execution supports shards');
+          if (layer === 'cli' && !process.env.CLI_SHARD) throw new Error('CLI execution requires its planned shard');
+          if (['delivery','daemon'].includes(layer) && (nightly || process.env.PI_VERSION !== '1.0.0')) throw new Error('Delivery checks run once per Node on the minimum Pi, never nightly');
+          const suite = layer === 'cli' ? 'cli' : layer === 'delivery' ? 'native-release' : layer === 'daemon' ? 'daemon-regression' : nightly ? 'compatibility' : 'unit';
+          const selection = resolveSelection(process.cwd(), {suite, ...(layer === 'cli' ? {shard:process.env.CLI_SHARD} : {})});
+          for (const [key,value] of Object.entries({suite, ...Object.fromEntries(['native','integration','shared'].map(key => [key,selection.requirements.includes(key)]))})) {
+            appendFileSync(process.env.GITHUB_OUTPUT,key + '=' + String(value) + '\n');
+          }
+          console.log(JSON.stringify({suite,shard:selection.shard ?? null,selected:selection.files,completeSelection:selection.completeSelection ?? selection.files,requirements:selection.requirements}));
+          JS
+      - uses: actions/cache@v6.1.0
+        with:
+          path: ${{ runner.temp }}/check-inputs/environment/cache/npm/_cacache
+          key: hermetic-npm-inputs-${{ runner.os }}-${{ runner.arch }}-pi-${{ inputs.pi }}-integration-${{ steps.selection.outputs.integration }}-${{ hashFiles('package-lock.json', 'tests/fixtures/integration-profile/package-lock.json') }}
+      - uses: actions/download-artifact@v8.0.2
+        if: steps.selection.outputs.native == 'true'
+        with:
+          name: occipital-v${{ inputs.daemon-version }}-linux-x64-gnu
+          path: .test-artifacts/ci-native
+      - name: Admit executable mode for this commit's helper
+        if: steps.selection.outputs.native == 'true'
+        run: chmod +x .test-artifacts/ci-native/packages/linux-x64-gnu/occipital
+      - name: Prepare enforced Linux network isolation
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap
+          if ! /usr/bin/bwrap --unshare-user --unshare-net --ro-bind / / -- /usr/bin/true; then
+            sudo tee /etc/apparmor.d/tidy-test-bwrap >/dev/null <<'PROFILE'
+          abi <abi/4.0>,
+          include <tunables/global>
+          profile tidy-test-bwrap /usr/bin/bwrap flags=(unconfined) {
+            userns,
+          }
+          PROFILE
+            sudo apparmor_parser -r /etc/apparmor.d/tidy-test-bwrap
+          fi
+          /usr/bin/bwrap --unshare-user --unshare-net --ro-bind / / -- /usr/bin/true
+      - name: Prepare fixed isolated Subconscious host prerequisite
+        if: steps.selection.outputs.shared == 'true'
+        run: |
+          mkdir -p "$RUNNER_TEMP/shared-host"
+          curl --fail --location --output "$RUNNER_TEMP/shared-host/host.zip" \
+            https://github.com/cortexkit/subconscious/releases/download/subc-core-v0.20.83/ck-subc-linux-x64.zip
+          printf '%s  %s\n' c905fd8c5eba045c38fb61dd0c6c0ffc8254ae2cb0be50ef1017cde5470e62c4 "$RUNNER_TEMP/shared-host/host.zip" | sha256sum --check
+          unzip -j "$RUNNER_TEMP/shared-host/host.zip" ck-subc -d "$RUNNER_TEMP/shared-host"
+          chmod 700 "$RUNNER_TEMP/shared-host/ck-subc"
+      - name: Prepare exact host and required execution inputs
+        env:
+          PI_VERSION: ${{ inputs.pi }}
+          NATIVE: ${{ steps.selection.outputs.native }}
+          INTEGRATION: ${{ steps.selection.outputs.integration }}
+          SHARED: ${{ steps.selection.outputs.shared }}
+        run: |
+          args=()
+          if [[ "$NATIVE" == true ]]; then args+=(--native-artifact "$GITHUB_WORKSPACE/.test-artifacts/ci-native"); fi
+          if [[ "$INTEGRATION" == true ]]; then args+=(--integration); fi
+          if [[ "$SHARED" == true ]]; then args+=(--shared-host "$RUNNER_TEMP/shared-host/ck-subc"); fi
+          node scripts/test/prepare.mjs --pi-version "$PI_VERSION" "${args[@]}" --output "$RUNNER_TEMP/check-inputs"
+      - name: Strict selected-host types
+        if: inputs.layer == 'node'
+        run: node scripts/test/run.mjs --inputs "$RUNNER_TEMP/check-inputs/inputs.json" --suite check --network-isolated
+      - name: Complete Node, actual-SDK and GC checks
+        if: inputs.layer == 'node'
+        timeout-minutes: 5
+        env:
+          CHECK_SUITE: ${{ steps.selection.outputs.suite }}
+        run: node scripts/test/run.mjs --inputs "$RUNNER_TEMP/check-inputs/inputs.json" --suite "$CHECK_SUITE" --network-isolated
+      - name: Complete inert delivery and packaging checks
+        if: inputs.layer == 'delivery'
+        run: node scripts/test/run.mjs --inputs "$RUNNER_TEMP/check-inputs/inputs.json" --suite native-release --network-isolated
+      - name: Complete daemon native and npm-graph regressions
+        if: inputs.layer == 'daemon'
+        run: node scripts/test/run.mjs --inputs "$RUNNER_TEMP/check-inputs/inputs.json" --suite daemon-regression --network-isolated
+      - name: Complete physical CLI partition
+        if: inputs.layer == 'cli'
+        env:
+          CLI_SHARD: ${{ inputs.shard }}
+        run: node scripts/test/run.mjs --inputs "$RUNNER_TEMP/check-inputs/inputs.json" --suite cli --shard "$CLI_SHARD" --network-isolated

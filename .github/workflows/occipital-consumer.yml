@@ -101,7 +101,7 @@ jobs:
             node scripts/test/run.mjs --inputs "$PREPARATION/inputs.json" --suite consumer
           fi
       - name: Published delivery (pi-tidy-ui release only)
-        if: startsWith(inputs.release-ref, 'refs/tags/pi-tidy-ui-v')
+        if: github.event_name == 'push' && startsWith(inputs.release-ref, 'refs/tags/pi-tidy-ui-v')
         timeout-minutes: 15
         env:
           EXPECTED_NODE: ${{ matrix.node }}

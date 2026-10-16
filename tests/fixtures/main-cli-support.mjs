@@ -674,6 +674,9 @@ function colorProfile(agentDir, project = false, workDir) {
   theme.name = 'terminal-colors'; theme.appearance = 'dark';
   theme.colors.userMessageBg = ''; theme.colors.toolPendingBg = '';
   theme.colors.toolDiffAdded = '#00ff00'; theme.colors.toolDiffRemoved = '#ff0000'; theme.colors.text = '#eeeeee';
+  // Pin diff inputs: this control tests terminal defaults, not changes to Pi's bundled palette.
+  theme.colors.toolSuccessBg = '#2d4935'; theme.colors.toolErrorBg = '#492d35'; theme.colors.toolOutput = '#eeeeee';
+  for (const role of Object.keys(theme.colors)) if (role.startsWith('syntax')) theme.colors[role] = '#eeeeee';
   theme.vars.surface = '#123456'; theme.vars.surfaceAlias = 'surface'; theme.export = { ...theme.export, pageBg: 'surfaceAlias' };
   mkdirSync(join(agentDir, 'themes'), { recursive: true });
   const path = join(agentDir, 'themes', `${theme.name}.json`);

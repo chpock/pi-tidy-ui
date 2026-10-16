@@ -63,7 +63,7 @@ help:
 	  'test-feature' 'Types + product baseline + FEATURES comma-list and actual affected CLI; refresh owned source' \
 	  'test-product' 'Common product SDK/logic/GC without native/shared/profile inputs' \
 	  'test-rust' 'Prepared offline workspace tests and doctests' \
-	  'test-rust-harness' 'Actual pinned Cargo ancestor-configuration isolation control' \
+	  'test-rust-harness' 'All native-build controls; INPUTS must be from prepare-native.mjs' \
 	  'test-native' 'Required same-source native helper controls' \
 	  'test-syntax' 'Physical syntax CLI with required prepared real shared host' \
 	  'test-terminal' 'Full physical CLI/replay with locked integration inputs' \
@@ -123,7 +123,7 @@ test-rust: inputs-check
 	$(RUN) --suite rust
 
 test-rust-harness: inputs-check
-	$(RUN) --suite rust-harness
+	"$(NODE)" scripts/test/native-harness.mjs --inputs "$(INPUTS)"
 
 test-native: inputs-check
 	$(RUN) --suite native

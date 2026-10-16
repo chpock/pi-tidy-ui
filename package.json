@@ -48,7 +48,7 @@
     "test:installed-native": "node scripts/test/run.mjs --suite consumer",
     "test:installed-native:published": "node scripts/test/run.mjs --suite published-consumer",
     "test:rust": "node scripts/test/run.mjs --suite rust",
-    "test:rust-harness": "node scripts/test/run.mjs --suite rust-harness",
+    "test:rust-harness": "node scripts/test/native-harness.mjs",
     "test:rust-check": "node scripts/test/run.mjs --suite rust-check",
     "test:rust-allocator": "node scripts/test/run.mjs --suite rust-allocator"
   },
