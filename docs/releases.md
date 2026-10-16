@@ -2,6 +2,45 @@
 
 The extension and Occipital have independent release versions. Repository manifests use `0.0.0`: root `package.json`/`package-lock.json`, and the Occipital Cargo manifest/lock entry. Native npm templates retain their substitution marker until staging.
 
+## Supported platforms
+
+The current support policy covers five OS/architecture combinations:
+
+| Operating system | Architecture |
+| --- | --- |
+| GNU Linux, glibc 2.28+ | x64 |
+| GNU Linux, glibc 2.28+ | ARM64 |
+| macOS | x64 |
+| macOS | ARM64 |
+| Windows | x64 |
+
+The installed Pi/Node host's OS, kernel and CPU requirements also apply; a successful hosted runner is not proof of a minimum OS version.
+
+**Windows ARM64 is temporarily unsupported for the entire pi-tidy-ui extension**, not just Occipital or syntax highlighting. An existing package or native binary that installs or runs there does not establish current support. This policy does not by itself introduce an installation/startup block or change already-published packages.
+
+### Why Windows ARM64 support is suspended
+
+After correcting redundant consumer preparation and Windows temporary-storage placement, the [Windows-only verification run](https://github.com/chpock/pi-tidy-ui/actions/runs/38832045793) at commit [`f547aff`](https://github.com/chpock/pi-tidy-ui/commit/f547aff6a8af72d8220bae358bc8c5ee9e0d949f) passed all retained functional checks but measured:
+
+| Current-source helper/consumer step, including preparation | Node 22.19.0 | Node 26.7.0 |
+| --- | ---: | ---: |
+| Windows x64 | 1:12 | 1:18 |
+| Windows ARM64 | 9:12 | 8:43 |
+
+These are step wall times, **excluding earlier native compilation**, not whole-workflow or billing figures. They are observations from one hosted run, not a universal Windows/ARM performance ratio. The earlier x64 steps took 14:13 each; those avoidable harness costs were fixed before making this support decision.
+
+On ARM64, the selected-host dependency installation plus the two mandatory independent consumer installations alone took **6:27–6:52 per Node profile**. The two consumer installations accounted for 4:13–4:16 of that subtotal. Removing the remaining copy/archive overhead cannot alone meet the practical 2–3-minute verification target. The target allows justified variation; roughly nine minutes on each runtime is not a small variation. Both Nodes ran natively as ARM64, not through x64 emulation. Real optional-package/omission, cold/warm download, incremental classification and process-cleanup controls were preserved; no timeout was raised.
+
+The residual cost is concentrated in installation fetching/unpacking on the hosted ARM64 environment. The measurements do **not** isolate a particular filesystem, scanner, CPU or GitHub runner defect. This is a temporary cost-based support decision, not evidence that the extension is functionally broken on ARM64. Reconsider it when real hosted installation performance improves; re-enablement requires the unchanged functional/cleanup controls and acceptable complete verification time on both Node profiles, not merely new runner release notes or a successful smoke test.
+
+### Implementation and historical release boundary
+
+**The support-policy change is decided; the five-target CI/delivery transition is not implemented yet.** Current workflows and release tooling still enumerate the legacy six-target family, and the manual Windows diagnostic can still exercise ARM64. Their presence or a passing diagnostic does not reinstate support. Descriptions of six-target tooling and verification below refer to that existing implementation or historical evidence, not six currently supported platforms.
+
+Published Occipital `0.1.5` and earlier artifacts/tags remain immutable, including their Windows ARM64 binaries. Do not delete a member, accept an incomplete historical family, substitute stale ARM64 bytes or relax raw-byte/commit admission. Before publishing under the changed support policy, align CI, generated native dependencies and release-family validation together. The future-family transition and any installation/startup behavior change require their own explicit implementation; this documentation update does not perform them.
+
+## Version and publication routing
+
 | Ref | CI version substitution | Publication |
 | --- | --- | --- |
 | Branch / pull request | Extension remains `0.0.0`; daemon uses the nearest reachable `occipital-v*` version | None |
@@ -38,13 +77,13 @@ Manual CI dispatch has an optional `clean-native-build` control, default `false`
 
 Preparation owns networking, locked dependency resolution, toolchain provisioning and current-source artifact admission. Execution uses `scripts/test/run.mjs --inputs ABSOLUTE_INPUTS --suite NAME`, a fresh sanitized process tree and owned runtime/config/cache roots outside checkout ancestry. Source edits invalidate the descriptor. Required native, GC, shared-host and integration inputs fail setup instead of selecting skips. npm/Make route to this same interface; see [testing commands](testing.md#requirements-and-commands).
 
-The shorter `syntax-terminal` suite remains in ordinary PR/`main` and branch-dispatch CI for every Node × Pi selection. The expensive full `terminal` suite runs in CI only for validated `pi-tidy-ui-v*` extension release refs, including dispatch of such a tag. Both are required on extension tags; CI does not publish the extension. Local full terminal verification remains a final UI/integration gate, not each edit. Occipital tags skip unrelated extension checks, not native/current-consumer coverage. No future daily compatibility workflow, moving-version resolver or automatic lockfile update is implemented. Future compatibility execution must likewise use current-source Occipital, even when testing published Pi.
+Ordinary PR/`main` CI runs the common baseline plus affected contracts from its resolved scope; it does not multiply every feature by the full native and Node × Pi matrices. Full manual compatibility and extension-release acceptance run both complete physical `terminal` and `syntax-terminal` suites on all four Node × Pi selections. Both are required on extension tags; CI does not publish the extension. Local full terminal verification remains a final UI/integration gate, not each edit. Occipital tags skip unrelated extension checks, not native/current-consumer coverage. No future daily compatibility workflow, moving-version resolver or automatic lockfile update is implemented. Future compatibility execution must likewise use current-source Occipital, even when testing published Pi.
 
 Linux extension/terminal/inert-fixture jobs invoke `--network-isolated` with declared bubblewrap. The harness regression verifies actual local HTTP (one request), denied public socket connection (`ENETUNREACH`) and trusted connection-file ancestry. This restriction covers the spawned process tree, not just a JavaScript fetch function. Native GNU execution uses Docker `--network=none`. Non-Linux native CI uses prepared-local inputs and sanitized environments, but currently lacks equivalent OS-level egress-enforcement validation; do not infer equal enforced isolation or passing platform acceptance from the workflow matrix.
 
 Shared syntax CLI coverage requires the explicitly provisioned official **Subconscious 0.20.83** host. Linux x64 preparation downloads `ck-subc-linux-x64.zip` and verifies SHA-256 `c905fd8c5eba045c38fb61dd0c6c0ffc8254ae2cb0be50ef1017cde5470e62c4` before admitting the extracted executable hash. This is a third-party prerequisite, **not published Occipital**. The fixture runs it with no arguments, private XDG configuration/runtime/connection files and the same-source Occipital module, never an installed service. Shared discovery, actual loss and owned-to-shared return retain strict traffic/peer counters and process reaping; host provisioning alone does not prove those controls passed.
 
-The reusable `.github/workflows/occipital.yml` runs inert packaging/version controls and native Rust correctness, pipe protocol, parser-affinity doctests, formatting and strict Clippy. It builds on six native platforms: GNU Linux x64/arm64, macOS x64/arm64 and Windows MSVC x64/arm64. Provision Rust **1.99.0** plus rustfmt/Clippy and locked Cargo dependencies before execution, using owned artifact stores without user Cargo config. Declared Rust test/build commands execute offline; `rust-check` orders fmt before Clippy. Version stamping affects only the verified neutral source copy before compilation. After staging, CI verifies that the original checkout is unchanged before commit-only artifact admission.
+The reusable `.github/workflows/occipital.yml` runs inert packaging/version controls and native Rust correctness, pipe protocol, parser-affinity doctests, formatting and strict Clippy. Its current legacy matrix still builds six native targets: GNU Linux x64/arm64, macOS x64/arm64 and Windows MSVC x64/arm64. Windows ARM64 is no longer a supported pi-tidy-ui platform; removal from mandatory CI and future delivery remains pending under the [transition boundary](#implementation-and-historical-release-boundary). Provision Rust **1.99.0** plus rustfmt/Clippy and locked Cargo dependencies before execution, using owned artifact stores without user Cargo config. Declared Rust test/build commands execute offline; `rust-check` orders fmt before Clippy. Version stamping affects only the verified neutral source copy before compilation. After staging, CI verifies that the original checkout is unchanged before commit-only artifact admission.
 
 GNU jobs run format/correctness/allocator/Clippy checks, locked release build and ELF glibc admission inside pinned multiarch AlmaLinux 8 userspace, asserting glibc 2.28 and native architecture. `scripts/release/linux-gnu.sh` receives an explicit provisioned Rust sysroot, official Node 22.19.0 and owned fetched Cargo artifacts. Compilation/testing is network-disabled; `_gnu-native` is an internal ordered gate, not a standalone host-baseline command. **Staging is separate:** CI stages version/source/notices/hash metadata for the exact executable, verifies that neutral-copy stamping left the original checkout unchanged, prepares the staged current-commit artifact, then runs actual-helper smoke and the current consumer on each Node version. No published helper is used for this smoke. Required ELF symbol versions above 2.28 fail admission; optional weak versions do not create a loader prerequisite. Both native architectures must pass before release acceptance. Published `0.1.4` uses this baseline; earlier `0.1.3` GNU binaries still require glibc 2.34 and remain immutable. A source-policy change cannot upgrade their bytes. Containers prove userspace compatibility, not an older kernel.
 
