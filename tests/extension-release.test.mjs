@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { enabledTargets } from '../scripts/release/platforms.mjs';
 import { candidateTargets } from '../scripts/release/native-release.mjs';
 import { stageExtensionPackage } from '../scripts/release/extension-release.mjs';
 import * as extensionRelease from '../scripts/release/extension-release.mjs';
@@ -27,18 +28,19 @@ async function fixture(t) {
   return { root, manifest, output: join(root, 'disposable-package') };
 }
 
-test('extension staging generates six exact native dependencies and matching metadata without touching source manifests or lock', async t => {
+test('extension staging projects historical six declarations to five exact native dependencies and matching metadata without touching source manifests or lock', async t => {
   const f = await fixture(t), paths = ['package.json', 'package-lock.json', 'src/occipital/release.ts'];
   const before = await Promise.all(paths.map(path => readFile(join(f.root, path))));
   await stageExtensionPackage({ root: f.root, output: f.output, version: '0.2.0', release });
   const manifest = JSON.parse(await readFile(join(f.output, 'package.json'), 'utf8'));
   assert.equal(manifest.name, f.manifest.name); assert.equal(manifest.version, '0.2.0');
   assert.equal(manifest.optionalDependencies['@cortexkit/subc-client'], '0.21.1');
-  for (const target of Object.keys(candidateTargets)) assert.equal(manifest.optionalDependencies[`@kchpock/occipital-${target}`], release.version);
-  assert.equal(Object.keys(manifest.optionalDependencies).length, 7);
+  for (const target of enabledTargets()) assert.equal(manifest.optionalDependencies[`@kchpock/occipital-${target}`], release.version);
+  assert.equal(Object.keys(manifest.optionalDependencies).length, 6);
   const declaration = await readFile(join(f.output, 'src/occipital/release.ts'), 'utf8');
   const value = declaration.match(/export const NATIVE_RELEASE[^=]*= ([\s\S]*);\s*$/)?.[1];
-  assert.ok(value); assert.deepEqual(JSON.parse(value), release);
+  assert.ok(value); assert.deepEqual(JSON.parse(value), { ...release, artifacts: release.artifacts.filter(record => record.target !== 'windows-arm64-msvc') });
+  assert.equal(manifest.optionalDependencies['@kchpock/occipital-windows-arm64-msvc'], undefined);
   for (let i = 0; i < paths.length; i++) assert.deepEqual(await readFile(join(f.root, paths[i])), before[i]);
   await assert.rejects(stat(join(f.output, 'package-lock.json')), { code: 'ENOENT' });
   await assert.rejects(stageExtensionPackage({ root: f.root, output: f.output, version: '0.2.0', release }), { code: 'EEXIST' });
@@ -54,7 +56,7 @@ test('extension staging refuses development or npm-normalized versions before cr
 
 test('extension staging admits one complete canonical native family, not partial or mismatched metadata', async t => {
   const f = await fixture(t);
-  const mutations = [r => r.artifacts.pop(), r => r.artifacts.push(r.artifacts[0]), r => r.artifacts[0].target = 'unsupported',
+  const mutations = [r => r.artifacts.shift(), r => r.artifacts.push(r.artifacts[0]), r => r.artifacts[0].target = 'unsupported',
     r => r.artifacts[0].url = r.artifacts[1].url, r => r.artifacts[0].sha256 = 'invalid', r => r.artifacts[0].maxBytes = 0,
     r => r.version = '0.1.4+build.1'];
   for (const mutate of mutations) {
@@ -88,13 +90,13 @@ async function preparedFamily(t) {
   await writeFile(binary, 'inert exact native bytes\n'); await writeFile(notice, 'Fixture notice\n');
   for (const target of Object.keys(candidateTargets)) {
     const output = join(directory, artifactName(version, target));
-    await stageRelease({ root: f.root, output, input: { notice, artifacts: [{ target, path: binary,
+    await stageRelease({ root: f.root, output, targets: [target], input: { notice, artifacts: [{ target, path: binary,
       url: `https://github.com/chpock/pi-tidy-ui/releases/download/${tag}/${assetName(version, target)}` }] } });
     await writeFile(join(output, 'build-info.json'), JSON.stringify({ commit, version, target }));
     await mkdir(join(output, 'notices')); await writeFile(join(output, 'notices/notice-sources.json'), '{"gaps":[],"inventory":[{"name":"fixture"}]}');
   }
   const publicDirectory = join(f.root, 'public');
-  await assembleRelease({ directory, tag, repository: 'chpock/pi-tidy-ui', commit, output: publicDirectory });
+  await assembleRelease({ directory, tag, repository: 'chpock/pi-tidy-ui', commit, output: publicDirectory, targets: enabledTargets({ windowsArm64: true }) });
   const assets = await Promise.all((await readdir(publicDirectory)).map(async name => ({ name, state: 'uploaded', size: (await stat(join(publicDirectory, name))).size })));
   await writeFile(join(publicDirectory, 'release.json'), JSON.stringify({ tag_name: tag, draft: false, prerelease: false, assets }));
   const registry = new Map(), archiveRoot = join(f.root, 'registry'); await mkdir(archiveRoot);
@@ -120,22 +122,25 @@ async function preparedFamily(t) {
   return { ...f, version, tag, ref, commit, directory, publicDirectory, registry, calls, execute };
 }
 
-test('extension release preparation binds exact tag history, all-six raw CI/public/npm bytes and generated-only pins', async t => {
+test('extension release preparation binds exact tag history, selected current CI and historical six public/npm bytes and generated-only pins', async t => {
   assert.equal(typeof extensionRelease.prepareExtensionRelease, 'function');
   const f = await preparedFamily(t), before = await readFile(join(f.root, 'package-lock.json'));
+  await rm(join(f.directory, artifactName(f.version, 'windows-arm64-msvc')), { recursive: true });
   const result = await extensionRelease.prepareExtensionRelease(f);
   assert.equal(result.daemonTag, f.tag); assert.equal(result.version, '0.2.0');
   assert.equal(f.calls.filter(call => call.args[0] === 'view').length, 6);
   assert.equal(f.calls.filter(call => call.args[0] === 'pack').length, 6);
   assert.deepEqual(await readFile(join(f.root, 'package-lock.json')), before);
   const manifest = JSON.parse(await readFile(join(result.packageDirectory, 'package.json')));
-  for (const target of Object.keys(candidateTargets)) assert.equal(manifest.optionalDependencies[`@kchpock/occipital-${target}`], '0.1.4');
+  for (const target of enabledTargets()) assert.equal(manifest.optionalDependencies[`@kchpock/occipital-${target}`], '0.1.4');
+  assert.equal(manifest.optionalDependencies['@kchpock/occipital-windows-arm64-msvc'], undefined);
+  assert.equal(result.release.artifacts.length, 5);
 });
 
 test('changed native bytes refuse extension publication before registry access or package creation', async t => {
   assert.equal(typeof extensionRelease.prepareExtensionRelease, 'function');
-  const f = await preparedFamily(t), root = join(f.directory, artifactName(f.version, 'windows-arm64-msvc'));
-  const file = join(root, 'assets', assetName(f.version, 'windows-arm64-msvc')), bytes = await readFile(file); bytes[0] ^= 1;
+  const f = await preparedFamily(t), root = join(f.directory, artifactName(f.version, 'windows-x64-msvc'));
+  const file = join(root, 'assets', assetName(f.version, 'windows-x64-msvc')), bytes = await readFile(file); bytes[0] ^= 1;
   await writeFile(file, bytes);
   const path = join(root, 'native-release.staged.json'), metadata = JSON.parse(await readFile(path));
   metadata.artifacts[0].sha256 = createHash('sha256').update(bytes).digest('hex'); await writeFile(path, JSON.stringify(metadata));
@@ -188,4 +193,43 @@ test('public native admission explicitly overrides a conflicting scoped npm regi
   await extensionRelease.prepareExtensionRelease({ ...f, execute });
   assert.equal(f.calls.filter(call => call.args[0] === 'view').length, 6);
   assert.equal(f.calls.filter(call => call.args[0] === 'pack').length, 6);
+});
+
+test('explicit Windows ARM64 opt-in retains six extension pins and requires its current bytes', async t => {
+  const f = await preparedFamily(t), targets = enabledTargets({ windowsArm64: true });
+  const result = await extensionRelease.prepareExtensionRelease({ ...f, targets });
+  const manifest = JSON.parse(await readFile(join(result.packageDirectory, 'package.json')));
+  assert.equal(manifest.optionalDependencies['@kchpock/occipital-windows-arm64-msvc'], f.version);
+  assert.equal(result.release.artifacts.length, 6);
+  await rm(join(f.directory, artifactName(f.version, 'windows-arm64-msvc')), { recursive: true });
+  await assert.rejects(extensionRelease.prepareExtensionRelease({ ...f, targets, output: join(f.root, 'missing-arm') }), { code: 'ENOENT' });
+});
+
+test('disabled historical declaration still validates its public raw bytes and npm payload', async t => {
+  const f = await preparedFamily(t), target = 'windows-arm64-msvc';
+  const path = join(f.publicDirectory, assetName(f.version, target)), bytes = await readFile(path);
+  await writeFile(path, Buffer.alloc(bytes.length, 0));
+  await assert.rejects(extensionRelease.prepareExtensionRelease(f), /Public native bytes differ/);
+  assert.equal(f.calls.length, 0);
+  await writeFile(path, bytes);
+  const item = f.registry.get(`@kchpock/occipital-${target}@${f.version}`);
+  const packageRoot = join(f.root, 'registry', target);
+  await writeFile(join(packageRoot, 'package', candidateTargets[target].executable), Buffer.alloc(bytes.length, 0));
+  await run('tar', ['-czf', item.archive, '-C', packageRoot, 'package']);
+  item.manifest.dist.integrity = item.packed.integrity = 'sha512-' + createHash('sha512').update(await readFile(item.archive)).digest('base64');
+  await assert.rejects(extensionRelease.prepareExtensionRelease(f), /npm executable differs/);
+  await assert.rejects(stat(join(f.output, 'extension')), { code: 'ENOENT' });
+});
+
+test('extension target configuration and malformed disabled declarations fail before staging', async t => {
+  const f = await fixture(t);
+  for (const targets of [[], ['unknown'], ['linux-x64-gnu', 'linux-x64-gnu']]) {
+    await assert.rejects(stageExtensionPackage({ ...f, version: '0.2.0', release, targets }));
+    await assert.rejects(extensionRelease.prepareExtensionRelease({ ...f, targets }));
+    await assert.rejects(stat(f.output), { code: 'ENOENT' });
+  }
+  const malformed = structuredClone(release);
+  malformed.artifacts.find(record => record.target === 'windows-arm64-msvc').sha256 = 'invalid';
+  await assert.rejects(stageExtensionPackage({ ...f, version: '0.2.0', release: malformed }));
+  await assert.rejects(stat(f.output), { code: 'ENOENT' });
 });

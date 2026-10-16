@@ -19,6 +19,14 @@ async function fixture(t: test.TestContext) {
     await cp(join(repo, file), join(root, file), { recursive: true });
   }
   const bin = join(root, 'bin'), log = join(root, 'commands.jsonl'), control = join(root, 'control.json');
+  // The parent-owned API prints its safe projection; the wrapper must never copy reports.
+  await writeFile(join(root, 'scripts/test/consumer-diagnostics.mjs'), `
+import {appendFileSync} from 'node:fs';
+export function printConsumerDiagnostics(preparation) {
+  appendFileSync(${JSON.stringify(log)}, JSON.stringify({tool:'consumer-diagnostics',preparation})+'\\n');
+  console.log(JSON.stringify({phaseDurationsMs:{lock:17},archiveRecords:2}));
+}
+`);
   await mkdir(bin); await mkdir(join(root, 'cargo-home')); await writeFile(join(root, 'inputs.json'), '{}');
   await writeFile(control, '{}');
   await mkdir(join(root, '.cargo')); await writeFile(join(root, '.cargo/config.toml'), '[build]\nincremental = false\n');
@@ -62,7 +70,7 @@ if(tool==='cargo' && args[0]==='build') {
   const entries = async () => { try { return (await readFile(log, 'utf8')).trim().split('\n').filter(Boolean).map(line => JSON.parse(line)); } catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []; throw error; } };
   const set = (value: object) => writeFile(control, JSON.stringify(value));
   const gnu = (target: string) => spawnSync(bash, ['scripts/release/linux-gnu.sh', target], { cwd: root, env, encoding: 'utf8' });
-  const installed = (suite: string, ref = '') => spawnSync(bash, ['scripts/release/installed-linux-gnu.sh', 'x86_64-unknown-linux-gnu', suite, root, join(root, 'artifact'), ref], { cwd: root, env, encoding: 'utf8' });
+  const installed = (suite: string, ref = '', target = 'x86_64-unknown-linux-gnu') => spawnSync(bash, ['scripts/release/installed-linux-gnu.sh', target, suite, root, join(root, 'artifact'), ref], { cwd: root, env, encoding: 'utf8' });
   return { root, env, run, entries, set, gnu, installed };
 }
 
@@ -158,7 +166,51 @@ test('GNU native smoke and consumer use offline container-local preparation, not
     assert.equal(calls[0].args[calls[0].args.indexOf('--registry-inputs')+1], join(f.root,'inputs.json'), 'frozen registry metadata/locks, not cache alone, must survive offline replay');
     assert.deepEqual(calls[1].args.slice(0, 5), ['scripts/test/run.mjs', '--inputs', join(f.root, 'gnu/inputs.json'), '--suite', suite]);
     await rm(join(f.root, 'commands.jsonl')); await f.set({ fail: 'scripts/test/prepare.mjs' });
-    assert.notEqual(f.installed(suite).status, 0); assert.equal((await f.entries()).some(e => e.args[0] === 'scripts/test/run.mjs'), false);
+    assert.notEqual(f.installed(suite).status, 0); assert.equal((await f.entries()).some(e => e.tool === 'node' && e.args[0] === 'scripts/test/run.mjs'), false);
+  }
+});
+
+test('GNU native-consumer shares one complete offline preparation per Node but runs ordered separate runners', { skip }, async t => {
+  const preparations = new Set<string>();
+  for (const version of ['22.19.0', '26.7.0']) {
+    for (const [target, arch, platform] of [['x86_64-unknown-linux-gnu', 'x86_64', 'linux/amd64'], ['aarch64-unknown-linux-gnu', 'aarch64', 'linux/arm64']]) {
+      const f = await fixture(t); f.env.EXPECTED_NODE = version; await f.set({ arch });
+      const result = f.installed('native-consumer', '', target); assert.equal(result.status, 0, result.stderr);
+      const entries = await f.entries(), containers = entries.filter(e => e.tool === 'docker' && e.args[0] === 'run');
+      assert.equal(containers.length, 1);
+      const container = containers[0]; assert.ok(container.args.includes('--network=none'));
+      assert.equal(container.args[container.args.indexOf('--platform')+1], platform);
+      for (const mount of [`${f.root}:${f.root}`, `${f.root}:${f.root}:ro`, `${join(f.root,'artifact')}:${join(f.root,'artifact')}:ro`]) assert.ok(container.args.includes(mount));
+      const preparation = join(f.root, 'gnu'), calls = entries.filter(e => e.tool === 'node');
+      assert.equal(preparations.has(preparation), false, 'Node/architecture lanes must not reuse prepared state'); preparations.add(preparation);
+      assert.deepEqual(calls.map(e => e.args), [
+        ['scripts/test/prepare.mjs', '--pi-version', '1.0.0', '--offline', '--archives',
+          '--registry-inputs', join(f.root,'inputs.json'), '--npm-cache', join(f.root,'environment/cache/npm'),
+          '--native-artifact', join(f.root,'artifact'), '--output', preparation],
+        ['scripts/test/run.mjs', '--inputs', join(preparation,'inputs.json'), '--suite', 'native', '--files', 'occipital-native.test.ts',
+          '--pattern', '^actual owned helper preserves compact UTF8 highlighting and incremental work counters$'],
+        ['scripts/test/run.mjs', '--inputs', join(preparation,'inputs.json'), '--suite', 'consumer'],
+      ]);
+      assert.deepEqual(entries.at(-1), { tool: 'consumer-diagnostics', preparation });
+    }
+  }
+});
+
+test('GNU native-consumer stops at failed preparation or native runner before consumer execution', { skip }, async t => {
+  for (const [fail, suites] of [['scripts/test/prepare.mjs', []], ['native', ['native']], ['consumer', ['native', 'consumer']]] as [string, string[]][]) {
+    const f = await fixture(t); await f.set({ fail }); const result = f.installed('native-consumer');
+    assert.equal(result.status, 71, result.stderr);
+    const entries = await f.entries(), calls = entries.filter(e => e.tool === 'node');
+    assert.equal(calls.filter(e => e.args[0] === 'scripts/test/prepare.mjs').length, 1);
+    assert.deepEqual(calls.filter(e => e.args[0] === 'scripts/test/run.mjs').map(e => e.args[e.args.indexOf('--suite')+1]), suites);
+    assert.deepEqual(entries.at(-1), { tool: 'consumer-diagnostics', preparation: join(f.root,'gnu') });
+  }
+});
+
+test('GNU native-consumer rejects unsupported suite, nonnative architecture and wrong userspace', { skip }, async t => {
+  for (const [suite, control] of [['native,consumer', {}], ['native-consumer', {arch:'aarch64'}], ['native-consumer', {baseline:'2.34'}]] as [string, object][]) {
+    const f = await fixture(t); await f.set(control); assert.notEqual(f.installed(suite).status, 0);
+    assert.equal((await f.entries()).some(e => e.tool === 'node'), false);
   }
 });
 
@@ -168,21 +220,25 @@ test('GNU published consumer is an explicit extension-release-only networked run
   assert.deepEqual(await f.entries(), []);
   const ref = 'refs/tags/pi-tidy-ui-v0.2.0', result = f.installed('published-consumer', ref); assert.equal(result.status, 0, result.stderr);
   const entries = await f.entries(); assert.equal(entries.find(e => e.tool === 'docker' && e.args[0] === 'run').args.includes('--network=none'), false);
-  const calls = entries.filter(e => e.tool === 'node'); assert.equal(calls[0].args.includes('--native-artifact'), false);
-  assert.deepEqual(calls[1].args.slice(-4), ['--suite', 'published-consumer', '--release-ref', ref]);
+  const calls = entries.filter(e => e.tool === 'node'); assert.equal(calls.length, 2); assert.equal(calls[0].args[0], 'scripts/test/prepare.mjs'); assert.equal(calls[0].args.includes('--native-artifact'), false);
+  assert.deepEqual(calls[1].args, ['scripts/test/run.mjs', '--inputs', join(f.root,'gnu/inputs.json'), '--suite', 'published-consumer', '--release-ref', ref]);
 });
 
-test('GNU wrapper retains only safe neutral-source diagnostics before the container exits, including failed suites', { skip }, async t => {
-  const f = await fixture(t), source = join(f.root,'neutral-source'), reports = join(source,'.test-artifacts/installed-preparation-safe');
-  await mkdir(reports,{recursive:true}); await mkdir(join(f.root,'gnu'));
-  await writeFile(join(f.root,'gnu/inputs.json'),JSON.stringify({pi:{root:join(f.root,'sdk')},source:{root:source}}));
-  for (const file of ['fixture.json','npm.json','raw-debug-0.log','inputs.json']) await writeFile(join(reports,file),'{}');
-  let result = f.installed('consumer'); assert.equal(result.status,0,result.stderr);
-  const output = join(f.root,'gnu/diagnostics/installed-preparation-safe');
-  assert.deepEqual((await readdir(output)).sort(),['fixture.json','npm.json']);
-  await f.set({fail:'scripts/test/run.mjs'}); await writeFile(join(reports,'fixture.json'),'{"status":"failed"}');
-  result = f.installed('consumer'); assert.notEqual(result.status,0,'retention must not turn a failed suite green');
-  assert.equal(await readFile(join(output,'fixture.json'),'utf8'),'{"status":"failed"}');
+test('GNU wrapper prints the safe diagnostics API on success and error without copying artifacts', { skip }, async t => {
+  for (const fail of [undefined, 'scripts/test/prepare.mjs', 'native', 'consumer']) {
+    const f = await fixture(t), source = join(f.root,'neutral-source'), reports = join(source,'.test-artifacts/installed-preparation-safe');
+    await mkdir(reports,{recursive:true}); await mkdir(join(f.root,'gnu'));
+    if (fail !== 'scripts/test/prepare.mjs') await writeFile(join(f.root,'gnu/inputs.json'),JSON.stringify({pi:{root:join(f.root,'sdk')},source:{root:source}}));
+    const unsafe = 'opaque-secret https://private.invalid/package HOME=/operator/home';
+    for (const file of ['fixture.json','npm.json','raw-debug-0.log','inputs.json']) await writeFile(join(reports,file),JSON.stringify({error:unsafe}));
+    await f.set({ fail }); const result = f.installed('native-consumer');
+    assert.equal(result.status, fail ? 71 : 0, result.stderr);
+    assert.match(result.stdout, /\{"phaseDurationsMs":\{"lock":17\},"archiveRecords":2\}/);
+    assert.equal((result.stdout + result.stderr).includes(unsafe), false);
+    assert.deepEqual((await f.entries()).at(-1), { tool: 'consumer-diagnostics', preparation: join(f.root,'gnu') });
+    assert.deepEqual(await readdir(join(f.root,'gnu')), fail === 'scripts/test/prepare.mjs' ? [] : ['inputs.json'], 'no diagnostic artifact is retained');
+    assert.deepEqual((await readdir(reports)).sort(), ['fixture.json','inputs.json','npm.json','raw-debug-0.log']);
+  }
 });
 
 test('GNU consumer retains linked-worktree source metadata through an explicit read-only mount', { skip }, async t => {
@@ -192,11 +248,14 @@ test('GNU consumer retains linked-worktree source metadata through an explicit r
   await writeFile(join(f.root, '.git'), `gitdir: ${gitDir}\n`);
   await writeFile(join(gitDir, 'commondir'), '../..\n');
   f.env.GIT_DIR = '/ambient-must-not-select-source-metadata';
-  const result = f.installed('consumer'); assert.equal(result.status, 0, result.stderr);
-  const docker = (await f.entries()).find(entry => entry.tool === 'docker' && entry.args[0] === 'run');
-  assert.ok(docker);
   const canonical = await realpath(common);
-  assert.equal(docker.args.includes(`${canonical}:${canonical}:ro`), true);
-  assert.equal(docker.args.includes('--network=none'), true);
-  assert.equal(await readFile(join(f.root, '.git'), 'utf8'), `gitdir: ${gitDir}\n`);
+  for (const suite of ['consumer', 'native-consumer']) {
+    const result = f.installed(suite); assert.equal(result.status, 0, result.stderr);
+    const docker = (await f.entries()).find(entry => entry.tool === 'docker' && entry.args[0] === 'run');
+    assert.ok(docker);
+    assert.equal(docker.args.includes(`${canonical}:${canonical}:ro`), true);
+    assert.equal(docker.args.includes('--network=none'), true);
+    assert.equal(await readFile(join(f.root, '.git'), 'utf8'), `gitdir: ${gitDir}\n`);
+    await rm(join(f.root, 'commands.jsonl'));
+  }
 });

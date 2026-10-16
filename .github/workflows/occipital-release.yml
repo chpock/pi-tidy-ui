@@ -8,6 +8,9 @@ on:
       tag:
         required: true
         type: string
+      targets:
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -18,9 +21,10 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-node@v7.1.0
         with:
+          package-manager-cache: false
           node-version: '22.19.0'
       - name: Validate exact event tag
         id: version
@@ -29,29 +33,22 @@ jobs:
         run: |
           test "$TAG" = "$GITHUB_REF_NAME"
           node scripts/release/version.mjs --resolve "refs/tags/$TAG"
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8.0.2
         with:
           pattern: occipital-v${{ steps.version.outputs.version }}-*
           path: native-artifacts
       - name: Validate all platform bytes, notices, versions and source commit
         env:
           TAG: ${{ inputs.tag }}
+          NATIVE_TARGETS: ${{ inputs.targets }}
         run: |
           SOURCE_COMMIT="$(git rev-parse HEAD)"
           export SOURCE_COMMIT
-          node scripts/release/native-ci.mjs assemble native-artifacts "$TAG" release-assets
+          node scripts/release/native-ci.mjs assemble native-artifacts "$TAG" release-assets "$NATIVE_TARGETS"
           cd release-assets
           sha256sum --check SHA256SUMS
-      - name: Create draft with all assets, then publish
+      - name: Publish admitted assets or verify an identical completed release
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ inputs.tag }}
-          PRERELEASE: ${{ steps.version.outputs.prerelease }}
-        run: |
-          flags=()
-          if [ "$PRERELEASE" = true ]; then flags+=(--prerelease); fi
-          gh release create "$TAG" release-assets/* --repo "$GITHUB_REPOSITORY" \
-            --verify-tag --draft --title "Occipital ${TAG#occipital-v}" \
-            --notes "Occipital-only release. Raw executables, one common third-party NOTICE covering all platforms, LICENSE, SHA256SUMS and exact native-release.json metadata. No extension or npm publication." \
-            "${flags[@]}"
-          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false
+        run: node scripts/release/native-ci.mjs publish "$TAG" release-assets

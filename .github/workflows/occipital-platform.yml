@@ -1,0 +1,48 @@
+name: Occipital platform pipeline
+
+on:
+  workflow_call:
+    inputs:
+      release-ref:
+        required: true
+        type: string
+      version:
+        required: true
+        type: string
+      source-ref:
+        required: true
+        type: string
+      platform:
+        description: One selected platform record from the CI planner
+        required: true
+        type: string
+      consumer-platforms:
+        description: Both selected Node profiles for this platform
+        required: true
+        type: string
+      clean-build:
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    uses: ./.github/workflows/occipital.yml
+    with:
+      release-ref: ${{ inputs.release-ref }}
+      version: ${{ inputs.version }}
+      source-ref: ${{ inputs.source-ref }}
+      platforms: ${{ format('[{0}]', inputs.platform) }}
+      clean-build: ${{ inputs.clean-build }}
+
+  consumers:
+    needs: build
+    if: inputs.consumer-platforms != '[]'
+    uses: ./.github/workflows/occipital-consumer.yml
+    with:
+      release-ref: ${{ inputs.release-ref }}
+      version: ${{ inputs.version }}
+      source-ref: ${{ inputs.source-ref }}
+      platforms: ${{ inputs.consumer-platforms }}

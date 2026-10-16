@@ -4,16 +4,8 @@ import { chmod, copyFile, mkdir, readFile, stat, writeFile } from 'node:fs/promi
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { parseVersion } from '../../src/occipital/version.ts';
-
-// Candidate package identities only; these are not claims of tested platform support.
-export const candidateTargets = Object.freeze({
-  'linux-x64-gnu': { os: 'linux', cpu: 'x64', libc: 'glibc', executable: 'occipital' },
-  'linux-arm64-gnu': { os: 'linux', cpu: 'arm64', libc: 'glibc', executable: 'occipital' },
-  'darwin-x64': { os: 'darwin', cpu: 'x64', executable: 'occipital' },
-  'darwin-arm64': { os: 'darwin', cpu: 'arm64', executable: 'occipital' },
-  'windows-x64-msvc': { os: 'win32', cpu: 'x64', executable: 'occipital.exe' },
-  'windows-arm64-msvc': { os: 'win32', cpu: 'arm64', executable: 'occipital.exe' },
-});
+import { candidateTargets, enabledTargets, validateTargets } from './platforms.mjs';
+export { candidateTargets } from './platforms.mjs';
 const maxExecutableBytes = 64 * 1024 * 1024; // Existing acquireNative boundary.
 
 export async function daemonVersion(root) {
@@ -52,18 +44,19 @@ function artifactURL(value) {
  * Input paths and URLs are operator-supplied staging inputs, not runtime overrides.
  * A supplied NOTICE must be reviewed separately; file presence is not legal approval.
  */
-export async function stageRelease({ root, input, output }) {
+export async function stageRelease({ root, input, output, targets = enabledTargets() }) {
+  targets = validateTargets(targets);
   const version = await daemonVersion(root);
   if (!input || !Array.isArray(input.artifacts) || !input.artifacts.length || typeof input.notice !== 'string') {
     throw new Error('Expected {notice:path, artifacts:[{target,path,url}]}');
   }
+  const supplied = validateTargets(input.artifacts.map(artifact => artifact?.target));
+  if (supplied.some(target => !targets.includes(target))) throw new Error('Native staging input is not a selected target');
   const license = await readFile(join(root, 'LICENSE'));
   const notice = await readFile(input.notice);
   if (!license.toString('utf8').trim() || !notice.toString('utf8').trim()) throw new Error('LICENSE and reviewed NOTICE input must be nonempty');
-  const seen = new Set(), prepared = [];
+  const prepared = [];
   for (const artifact of input.artifacts) {
-    if (!artifact || !Object.hasOwn(candidateTargets, artifact.target) || seen.has(artifact.target)) throw new Error('Unknown or duplicate candidate target (musl is not a GNU target)');
-    seen.add(artifact.target);
     const target = candidateTargets[artifact.target];
     const url = artifactURL(artifact.url);
     const digest = await executableDigest(artifact.path);
@@ -99,7 +92,7 @@ export async function stageRelease({ root, input, output }) {
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
-  const [inputPath, output, ...extra] = process.argv.slice(2);
-  if (!inputPath || !output || extra.length) throw new Error('Usage: node scripts/release/native-release.mjs INPUT.json NEW-STAGING-DIRECTORY');
-  await stageRelease({ root: resolve(import.meta.dirname, '../..'), input: JSON.parse(await readFile(inputPath, 'utf8')), output: resolve(output) });
+  const [inputPath, output, targetsJSON, ...extra] = process.argv.slice(2);
+  if (!inputPath || !output || extra.length) throw new Error('Usage: node scripts/release/native-release.mjs INPUT.json NEW-STAGING-DIRECTORY [TARGETS-JSON]');
+  await stageRelease({ root: resolve(import.meta.dirname, '../..'), input: JSON.parse(await readFile(inputPath, 'utf8')), output: resolve(output), targets: targetsJSON === undefined ? undefined : JSON.parse(targetsJSON) });
 }

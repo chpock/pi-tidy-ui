@@ -22,6 +22,7 @@ add('profile', 'integration-profile.compat.test.mjs', { requirements: ['integrat
 add('harness', 'integration-profile.test.mjs menu-driver.test.ts pty-bridge.test.mjs syntax-observation.test.mjs syntax-stock-reference.test.mjs terminal-cleanup.test.mjs terminal-code-cache.test.mjs terminal-harness.test.mjs terminal-helper.test.mjs terminal-observer.test.mjs terminal-output.test.mjs terminal-progress.test.mjs terminal-rows.test.mjs test-filtering.test.ts test-fixtures.test.ts test-harness.test.mjs test-catalog.test.mjs test-feature.test.mjs ci-scope.test.mjs');
 add('delivery', 'consumer-preparation.test.mjs installed-consumer.test.mjs local-registry.test.mjs npm-preparation.test.ts');
 add('delivery', 'native-release.test.mjs release-ci.test.mjs release-version.test.mjs npm-release.test.mjs extension-release.test.mjs makefile.test.ts', { suites: ['native-release'] });
+add('delivery', 'native-preparation.test.mjs consumer-diagnostics.test.mjs', { suites: ['native-release'], also: ['harness'] });
 add('harness', 'rust-harness.test.mjs', { requirements: ['rust'], suites: ['rust-harness'] });
 add('lifecycle', 'smoke.cli.test.mjs', { layer: 'cli', suites: ['terminal', 'smoke'] });
 for (const owner of ['harness','summaries','bash','edit','write','user','queued','editor','footer','layout','activity','settings','terminal-colors']) add(owner, `${owner}.cli.test.mjs`, { layer: 'cli', suites: ['terminal'] });

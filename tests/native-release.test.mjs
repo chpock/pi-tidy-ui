@@ -10,6 +10,8 @@ import { join, resolve } from 'node:path';
 import { createRequire } from 'node:module';
 import { candidateTargets, daemonVersion, stageRelease } from '../scripts/release/native-release.mjs';
 import { decodeAcknowledgements, prepareNotices } from '../scripts/release/native-notices.mjs';
+import { enabledTargets } from '../scripts/release/platforms.mjs';
+import { assembleRelease, artifactName, assetName } from '../scripts/release/native-ci.mjs';
 import { deflateSync } from 'node:zlib';
 
 const root = resolve(import.meta.dirname, '..');
@@ -47,7 +49,7 @@ test('six candidate templates have exact npm OS/CPU/ABI metadata, without musl o
 
 test('staging hashes executable bytes, publishes raw download input, and preserves independent exact version', async t => {
   const f = await fixture(t), output = join(f.directory, 'stage');
-  const metadata = await stageRelease({ root, input: inputFor(f), output });
+  const metadata = await stageRelease({ root, targets: ['linux-x64-gnu'], input: inputFor(f), output });
   const bytes = await readFile(f.binary), hash = createHash('sha256').update(bytes).digest('hex');
   assert.deepEqual(metadata, { version: '0.0.0', artifacts: [{ target: 'linux-x64-gnu', sha256: hash,
     url: inputFor(f).artifacts[0].url, maxBytes: bytes.length }] });
@@ -86,7 +88,7 @@ test('Windows payload uses .exe and stages only supplied targets, never the full
   const f = await fixture(t), input = inputFor(f);
   input.artifacts[0].target = 'windows-arm64-msvc';
   const output = join(f.directory, 'windows');
-  await stageRelease({ root, input, output });
+  await stageRelease({ root, targets: ['windows-arm64-msvc'], input, output });
   assert.deepEqual(await readdir(join(output, 'packages')), ['windows-arm64-msvc']);
   assert.deepEqual((await readdir(join(output, 'packages/windows-arm64-msvc'))).sort(), ['LICENSE', 'NOTICE', 'occipital.exe', 'package.json']);
 });
@@ -106,24 +108,24 @@ test('invalid/duplicate/musl targets, unsafe URL, missing/empty notices, empty a
   for (const [i, change] of changes.entries()) {
     const input = inputFor(f), output = join(f.directory, `invalid-${i}`);
     change(input);
-    await assert.rejects(stageRelease({ root, input, output }));
+    await assert.rejects(stageRelease({ root, targets: ['linux-x64-gnu'], input, output }));
     await assert.rejects(stat(output), { code: 'ENOENT' });
   }
   await writeFile(f.notice, '');
-  await assert.rejects(stageRelease({ root, input: inputFor(f), output: join(f.directory, 'empty-notice') }));
+  await assert.rejects(stageRelease({ root, targets: ['linux-x64-gnu'], input: inputFor(f), output: join(f.directory, 'empty-notice') }));
   await writeFile(f.notice, 'fixture');
   await writeFile(f.binary, '');
-  await assert.rejects(stageRelease({ root, input: inputFor(f), output: join(f.directory, 'empty') }));
+  await assert.rejects(stageRelease({ root, targets: ['linux-x64-gnu'], input: inputFor(f), output: join(f.directory, 'empty') }));
   const { open } = await import('node:fs/promises');
   const file = await open(f.binary, 'w');
   await file.truncate(64 * 1024 * 1024 + 1); await file.close();
-  await assert.rejects(stageRelease({ root, input: inputFor(f), output: join(f.directory, 'oversized') }));
+  await assert.rejects(stageRelease({ root, targets: ['linux-x64-gnu'], input: inputFor(f), output: join(f.directory, 'oversized') }));
 });
 
 test('existing staging directory is not overwritten', async t => {
   const f = await fixture(t), output = join(f.directory, 'occupied');
   await mkdir(output); await writeFile(join(output, 'keep'), 'keep');
-  await assert.rejects(stageRelease({ root, input: inputFor(f), output }));
+  await assert.rejects(stageRelease({ root, targets: ['linux-x64-gnu'], input: inputFor(f), output }));
   assert.equal(await readFile(join(output, 'keep'), 'utf8'), 'keep');
 });
 
@@ -147,13 +149,13 @@ test('extension-only version changes reuse an unchanged daemon release; daemon c
   const cargo = join(sourceRoot, 'crates/occipital/Cargo.toml');
   await writeFile(cargo, '[package]\nname = "occipital"\nversion = "0.1.0"\n\n[dependencies]\n');
   await writeFile(join(sourceRoot, 'package.json'), '{"name":"pi-tidy-ui","version":"99.0.0"}');
-  const first = await stageRelease({ root: sourceRoot, input: inputFor(f), output: join(f.directory, 'independent-1') });
+  const first = await stageRelease({ root: sourceRoot, targets: ['linux-x64-gnu'], input: inputFor(f), output: join(f.directory, 'independent-1') });
   await writeFile(join(sourceRoot, 'package.json'), '{"name":"pi-tidy-ui","version":"100.0.0"}');
-  const second = await stageRelease({ root: sourceRoot, input: inputFor(f), output: join(f.directory, 'independent-2') });
+  const second = await stageRelease({ root: sourceRoot, targets: ['linux-x64-gnu'], input: inputFor(f), output: join(f.directory, 'independent-2') });
   assert.deepEqual(first, second);
   await writeFile(cargo, '[package]\nname = "occipital"\nversion = "0.2.0"\n');
   const input = inputFor(f); input.artifacts[0].url = 'https://example.invalid/proposed/occipital-v0.2.0-linux-x64-gnu';
-  const changed = await stageRelease({ root: sourceRoot, input, output: join(f.directory, 'independent-3') });
+  const changed = await stageRelease({ root: sourceRoot, targets: ['linux-x64-gnu'], input, output: join(f.directory, 'independent-3') });
   assert.equal(changed.version, '0.2.0');
   assert.equal(JSON.parse(await readFile(join(f.directory, 'independent-3/packages/linux-x64-gnu/package.json'))).version, '0.2.0');
   assert.equal(JSON.parse(await readFile(join(sourceRoot, 'package.json'))).version, '100.0.0');
@@ -179,4 +181,51 @@ test('notice preparation copies source texts exactly and reports unsourced depen
   }] });
   assert.deepEqual(supplemented.gaps, []); assert.equal(supplemented.inventory.length, 2);
   assert.equal(supplemented.inventory[1].source, 'https://example.invalid/pinned-commit/LICENSE');
+});
+
+for (const windowsArm64 of [false, true]) {
+  test(`native assembly requires exactly selected same-build bytes (Windows ARM64 ${windowsArm64 ? 'on' : 'off'})`, async t => {
+    const f = await fixture(t), targets = enabledTargets({ windowsArm64 }), directory = join(f.directory, 'artifacts');
+    const repository = 'chpock/pi-tidy-ui', commit = 'a'.repeat(40), version = await daemonVersion(root), tag = `occipital-v${version}`;
+    await mkdir(directory);
+    const input = { notice: f.notice, artifacts: targets.map(target => ({ target, path: f.binary,
+      url: `https://github.com/${repository}/releases/download/${tag}/${assetName(version, target)}` })) };
+    const staged = join(f.directory, 'all-staged');
+    const metadata = await stageRelease({ root, input, output: staged, ...(windowsArm64 ? { targets } : {}) });
+    assert.deepEqual(metadata.artifacts.map(record => record.target), targets);
+    assert.equal(targets.length, windowsArm64 ? 6 : 5);
+    for (const target of targets) {
+      const output = join(directory, artifactName(version, target));
+      await stageRelease({ root, output, targets: [target], input: { notice: f.notice, artifacts: input.artifacts.filter(record => record.target === target) } });
+      await writeFile(join(output, 'build-info.json'), JSON.stringify({ target, version, commit }));
+      await mkdir(join(output, 'notices'));
+      await writeFile(join(output, 'notices/notice-sources.json'), '{"gaps":[],"inventory":[{"name":"fixture"}]}');
+    }
+    const output = join(f.directory, 'assembled');
+    const assembled = await assembleRelease({ directory, tag, repository, commit, output, ...(windowsArm64 ? { targets } : {}) });
+    assert.deepEqual(assembled, metadata);
+    for (const target of targets) assert.deepEqual(await readFile(join(output, assetName(version, target))), await readFile(f.binary));
+    const last = targets.at(-1), artifactRoot = join(directory, artifactName(version, last));
+    for (const change of ['commit', 'version', 'notice', 'hash', 'missing']) {
+      const infoPath = join(artifactRoot, 'build-info.json'), noticePath = join(artifactRoot, 'notices/notice-sources.json');
+      const binaryPath = join(artifactRoot, 'assets', assetName(version, last));
+      const before = await Promise.all([infoPath, noticePath, binaryPath].map(path => readFile(path)));
+      if (change === 'commit' || change === 'version') await writeFile(infoPath, JSON.stringify({ target: last, version, commit, [change]: change === 'commit' ? 'b'.repeat(40) : '9.9.9' }));
+      if (change === 'notice') await writeFile(noticePath, '{"gaps":["missing"],"inventory":[{}]}');
+      if (change === 'hash') await writeFile(binaryPath, 'changed source bytes');
+      if (change === 'missing') await rm(infoPath);
+      await assert.rejects(assembleRelease({ directory, tag, repository, commit, targets, output: join(f.directory, `reject-${change}`) }));
+      for (const [i, path] of [infoPath, noticePath, binaryPath].entries()) await writeFile(path, before[i]);
+    }
+  });
+}
+
+test('native staging rejects unknown, duplicate, empty and unselected target inputs before output', async t => {
+  const f = await fixture(t);
+  for (const [i, targets] of [[], ['unknown'], ['linux-x64-gnu', 'linux-x64-gnu'], ['windows-x64-msvc']].entries()) {
+    const output = join(f.directory, `targets-${i}`);
+    await assert.rejects(stageRelease({ root, input: inputFor(f), targets, output }));
+    if (i < 3) await assert.rejects(assembleRelease({ directory: f.directory, tag: 'occipital-v0.0.0', repository: 'chpock/pi-tidy-ui', commit: 'a'.repeat(40), targets, output }));
+    await assert.rejects(stat(output), { code: 'ENOENT' });
+  }
 });

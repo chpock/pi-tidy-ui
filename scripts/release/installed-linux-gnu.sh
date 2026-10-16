@@ -2,7 +2,7 @@
 set -euo pipefail
 
 rust_target="${1:?Expected native GNU Rust target}"
-suite="${2:?Expected native, consumer or published-consumer suite}"
+suite="${2:?Expected native, consumer, native-consumer or published-consumer suite}"
 preparation="${3:?Supply absolute host preparation directory}"
 artifact="${4:?Supply absolute same-commit staged native artifact directory}"
 release_ref="${5:-}"
@@ -12,7 +12,7 @@ case "$rust_target" in
   *) printf 'Unsupported GNU target: %s\n' "$rust_target" >&2; exit 1 ;;
 esac
 case "$suite" in
-  native|consumer) network_args=(--network=none) ;;
+  native|consumer|native-consumer) network_args=(--network=none) ;;
   published-consumer)
     case "$release_ref" in refs/tags/pi-tidy-ui-v*) ;; *) printf 'Published verification requires an explicit pi-tidy-ui release ref\n' >&2; exit 1 ;; esac
     network_args=() ;;
@@ -63,22 +63,24 @@ docker run --rm --platform "linux/$docker_arch" "${network_args[@]}" --user "$(i
     test "$(uname -m)" = "$EXPECTED_ARCHITECTURE"
     test "$(getconf GNU_LIBC_VERSION)" = "glibc 2.28"
     getconf GNU_LIBC_VERSION
-    retain_diagnostics() {
+    print_diagnostics() {
       "$NODE" --input-type=module << "JS"
       import {join} from "node:path";
-      import {collectConsumerDiagnostics} from "./scripts/test/consumer-diagnostics.mjs";
-      collectConsumerDiagnostics(join(process.env.PREPARATION,"gnu"));
+      import {printConsumerDiagnostics} from "./scripts/test/consumer-diagnostics.mjs";
+      printConsumerDiagnostics(join(process.env.PREPARATION,"gnu"));
 JS
     }
-    trap retain_diagnostics EXIT
+    trap print_diagnostics EXIT
     native_args=()
     if [[ "$SUITE" != published-consumer ]]; then native_args=(--native-artifact "$ARTIFACT"); fi
     "$NODE" scripts/test/prepare.mjs --pi-version 1.0.0 --offline --archives \
       --registry-inputs "$PREPARATION/inputs.json" --npm-cache "$PREPARATION/environment/cache/npm" "${native_args[@]}" --output "$PREPARATION/gnu"
     case "$SUITE" in
-      native) "$NODE" scripts/test/run.mjs --inputs "$PREPARATION/gnu/inputs.json" --suite native --files occipital-native.test.ts \
+      native|native-consumer) "$NODE" scripts/test/run.mjs --inputs "$PREPARATION/gnu/inputs.json" --suite native --files occipital-native.test.ts \
         --pattern "^actual owned helper preserves compact UTF8 highlighting and incremental work counters$" ;;
-      consumer) "$NODE" scripts/test/run.mjs --inputs "$PREPARATION/gnu/inputs.json" --suite consumer ;;
+    esac
+    case "$SUITE" in
+      consumer|native-consumer) "$NODE" scripts/test/run.mjs --inputs "$PREPARATION/gnu/inputs.json" --suite consumer ;;
       published-consumer) "$NODE" scripts/test/run.mjs --inputs "$PREPARATION/gnu/inputs.json" --suite published-consumer --release-ref "$RELEASE_REF" ;;
     esac
   '
