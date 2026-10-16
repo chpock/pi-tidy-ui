@@ -6,13 +6,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import xterm from "@xterm/headless";
-import { visibleWidth, parseColor, colorToRgb } from "@earendil-works/pi-tui";
+import { visibleWidth, parseColor, colorToRgb, rgbColor, colorToOklch } from "@earendil-works/pi-tui";
 import { ToolExecutionComponent as NativeToolExecution, createEditToolDefinition, highlightCode, getLanguageFromPath } from "@earendil-works/pi-coding-agent";
 import { cardGeometry } from "../src/card-frame.ts";
 import { measureFileCard, renderFileCard } from "../src/file-card.ts";
 import { generateDiffString, generateUnifiedPatch } from "../node_modules/@earendil-works/pi-coding-agent/dist/core/tools/edit-diff.js";
 import type { CardTheme } from "../src/card-theme.ts";
-import { initTheme, theme as nativeTheme } from "../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js";
+import { initTheme, loadThemeFromPath, setThemeInstance, theme as nativeTheme } from "../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js";
 import { Root, Text, Tool, color, editDiff, installTidyUi, mouse, plain, setup, spinnerFrames, type TuiMouseEvent } from "./fixtures/sdk-contract-support.ts";
 
 test("edit cards reproduce OpenCode numbered unified/split diff and cache warm frames", () => {
@@ -239,21 +239,13 @@ test("edit syntax colors survive changed-row backgrounds, gutters and wrapped sp
       assert.notEqual(number.getBgColor(), newNumber.getBgColor(), "removed and added rows have different backgrounds");
       assert.equal(number.getBgColorMode(), 0x3000000, "changed code has a concrete tinted background");
       assert.equal(keyword.getBgColor(), number.getBgColor(), "background covers all syntax spans");
-      const base = colorToRgb(nativeTheme.colors.toolPendingBg);
-      const expectedBackground = (role: "toolDiffRemoved" | "toolDiffAdded", alpha: number) => {
-        const overlay = colorToRgb(nativeTheme.colors[role]);
-        const channels = (["r", "g", "b"] as const).map((channel) => Math.round(base[channel] * (1 - alpha + alpha * overlay[channel] / 255)));
-        for (const [index, channel] of (["r", "g", "b"] as const).entries()) {
-          assert.ok(channels[index]! <= base[channel], `${role}: Multiply never brightens the ${channel} channel`);
-        }
-        return (channels[0]! << 16) | (channels[1]! << 8) | channels[2]!;
-      };
       for (const [role, code, sign] of [["toolDiffRemoved", number, "-"], ["toolDiffAdded", newNumber, "+"]] as const) {
-        assert.equal(code.getBgColor(), expectedBackground(role, 0.16), `${role}: code uses 16% sRGB Multiply`);
-        assert.equal(codeCell(sign).getBgColor(), expectedBackground(role, 0.26), `${role}: number/sign gutter uses 26% sRGB Multiply`);
+        assert.notEqual(code.getBgColor(), codeCell(sign).getBgColor(), `${role}: code and number/sign gutter are independent surfaces`);
+        const foreground = colorToRgb(nativeTheme.colors[role]);
+        assert.equal(codeCell(sign).getFgColor(), foreground.r << 16 | foreground.g << 8 | foreground.b, 'diff sign retains its theme color');
         assert.equal(codeCell(sign).getBgColorMode(), 0x3000000, "gutter has a concrete tinted background");
         const lineNumber = terminal.buffer.active.getLine(0)!.getCell(text.indexOf(sign) - 2)!;
-        assert.equal(lineNumber.getBgColor(), expectedBackground(role, 0.26), `${role}: line number uses the same 26% Multiply as its sign`);
+        assert.equal(lineNumber.getBgColor(), codeCell(sign).getBgColor(), `${role}: line number and sign share one gutter surface`);
       }
       const reference = highlightCode(before, "typescript")[0]!;
       terminal.reset(); await new Promise<void>((done) => terminal.write(reference, done));
@@ -329,36 +321,28 @@ test("edit diff has exactly one neutral panel padding cell on both sides", async
   } finally { terminal.dispose(); }
 });
 
-test("edit Multiply preserves black/white limits and never brightens RGB or indexed colors", async () => {
-  initTheme("dark");
-  const node = { args: { path: "example.ts" }, isPartial: false,
-    result: { details: { diff: '-1 const old = 1;\n+1 const next = 2;' } } };
-  const terminal = new xterm.Terminal({ cols: 140, rows: 30, allowProposedApi: true });
-  try {
-    for (const [background, added, removed] of [["#000000", "#00ff00", "#ff0000"], ["#ffffff", "#ffffff", 0], ["#08090a", 10, 9]] as const) {
-      const colors = { toolPendingBg: parseColor(background), toolDiffAdded: parseColor(added), toolDiffRemoved: parseColor(removed) };
-      const paint: CardTheme = { colors, fg: nativeTheme.fg.bind(nativeTheme), style: nativeTheme.style.bind(nativeTheme),
-        bg: (_role, text) => nativeTheme.style(text, { bg: colors.toolPendingBg }) };
-      const base = colorToRgb(colors.toolPendingBg);
-      for (const width of [100, 140]) {
-        const rows = renderFileCard(node, undefined, width, paint)!.rows;
-        for (const [word, sign, role] of [["old", "-", "toolDiffRemoved"], ["next", "+", "toolDiffAdded"]] as const) {
-          const row = rows.find((value) => plain(value).includes(`const ${word} =`))!;
-          terminal.reset(); await new Promise<void>((done) => terminal.write(row, done));
-          const text = plain(row), overlay = colorToRgb(colors[role]);
-          for (const [column, alpha] of [[text.indexOf(`const ${word}`), 0.16], [text.indexOf(sign), 0.26]] as const) {
-            const cell = terminal.buffer.active.getLine(0)!.getCell(column)!;
-            assert.equal(cell.getBgColorMode(), 0x3000000);
-            const channels = [cell.getBgColor() >>> 16, (cell.getBgColor() >>> 8) & 255, cell.getBgColor() & 255];
-            for (const [index, channel] of (["r", "g", "b"] as const).entries()) {
-              assert.equal(channels[index], Math.round(base[channel] * (1 - alpha + alpha * overlay[channel] / 255)));
-              assert.ok(channels[index]! <= base[channel], "Multiply cannot brighten any channel, including black/white limits");
-            }
-          }
-        }
-      }
+test('edit adaptive palette bounds saturated/neutral, black/white and indexed inputs', async () => {
+  initTheme('dark');
+  for (const [background, semantic, foreground] of [
+    ['#000000', '#00ff00', '#ffffff'], ['#ffffff', '#ff00ff', '#000000'],
+    ['#08090a', 10, '#dddddd'], [8, 9, '#ffffff'], ['#283840', '#ff00ff', '#ffffff'],
+    ['#ff0000', '#00ffff', '#ffffff'], ['#00ff00', '#ff00ff', '#000000'], ['#0000ff', '#ffff00', '#ffffff'],
+  ] as const) {
+    const colors: NonNullable<CardTheme['colors']> = { toolPendingBg: parseColor(background), toolSuccessBg: parseColor(semantic),
+      toolErrorBg: parseColor(semantic), toolOutput: parseColor(foreground), dim: parseColor(foreground),
+      toolDiffAdded: parseColor(foreground), toolDiffRemoved: parseColor(foreground) };
+    const paint: CardTheme = { colors, fg: (role, text) => nativeTheme.style(text, { fg: colors[role] }), style: nativeTheme.style.bind(nativeTheme),
+      bg: (_role, text) => nativeTheme.style(text, { bg: colors.toolPendingBg }) };
+    const base = colorToOklch(colors.toolPendingBg!), baseAngle = base.h * Math.PI / 180;
+    for (const width of [100, 140]) for (const surface of await paletteCells(paint, width)) {
+      const actual = colorToOklch(rgbColor(surface.code.r, surface.code.g, surface.code.b)), angle = actual.h * Math.PI / 180;
+      assert.ok(Math.abs(actual.l - base.l) < 0.03, 'code lightness stays near its panel, including gamut edges');
+      assert.ok(Math.hypot(actual.c * Math.cos(angle) - base.c * Math.cos(baseAngle), actual.c * Math.sin(angle) - base.c * Math.sin(baseAngle)) < 0.024,
+        'strong semantic panels cannot become saturated diff fills');
+      const ink = colorToRgb(colors.toolOutput!);
+      for (const region of [surface.code, surface.gutter]) assert.ok(paletteContrast(ink, region) >= Math.min(4.5, paletteContrast(ink, colorToRgb(colors.toolPendingBg!))));
     }
-  } finally { terminal.dispose(); }
+  }
 });
 
 test("edit metadata formats preserve numbered contexts, multiple hunks and no-newline code", () => {
@@ -529,9 +513,10 @@ test("edit minified wrapping has linear grapheme work and bounded ANSI output", 
   }
 });
 
-test("edit Multiply colors are calculated once per render, not once per fragment", () => {
+test("edit adaptive colors are calculated once per build, not once per fragment", () => {
   const backgrounds = new Set<unknown>();
   const theme: CardTheme = { ...color, colors: { toolPendingBg: parseColor("#303840"),
+    toolSuccessBg: parseColor('#304a38'), toolErrorBg: parseColor('#4a3038'), dim: parseColor('#b0b0b0'),
     toolDiffAdded: parseColor("#28c870"), toolDiffRemoved: parseColor("#dc3850") },
     style: (text, options) => { backgrounds.add(options.bg); return text; } };
   const patch = `@@ -1,12 +1,12 @@\n${Array.from({ length: 12 }, () => "-" + "before ".repeat(25)).join("\n")}\n${Array.from({ length: 12 }, () => "+" + "after ".repeat(25)).join("\n")}\n`;
@@ -799,4 +784,78 @@ test("stock edit visibility proof rejects same-name custom renderers and is chec
     node.render(140);
     assert.ok(native.mock.calls.length > mixed, "both functions must match, not merely the call renderer");
   } finally { controller.restore(); }
+});
+
+function paletteRgb(value: number) { return { r: value >>> 16, g: value >>> 8 & 255, b: value & 255 }; }
+function paletteLuminance(rgb: { r: number; g: number; b: number }): number {
+  const channels = [rgb.r, rgb.g, rgb.b].map(value => value / 255).map(value => value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4);
+  return channels[0]! * 0.2126 + channels[1]! * 0.7152 + channels[2]! * 0.0722;
+}
+function paletteContrast(a: { r: number; g: number; b: number }, b: { r: number; g: number; b: number }): number {
+  const x = paletteLuminance(a), y = paletteLuminance(b);
+  return (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05);
+}
+async function paletteCells(paint: CardTheme = nativeTheme, width = 140) {
+  const terminal = new xterm.Terminal({ cols: width, rows: 16, allowProposedApi: true });
+  try {
+    const layout = renderFileCard({ args: { path: 'palette.ts' }, isPartial: false,
+      result: { details: { diff: '-1 const old = 1;\n+1 const next = 2;' } } }, undefined, width, paint)!;
+    await new Promise<void>(done => terminal.write(layout.rows.join('\r\n'), done));
+    return [['old', '-'], ['next', '+']].map(([word, sign]) => {
+      const y = layout.rows.findIndex(row => plain(row).includes(`const ${word}`)), row = plain(layout.rows[y]!);
+      const line = terminal.buffer.active.getLine(y)!;
+      const code = line.getCell(row.indexOf(`const ${word}`))!, gutter = line.getCell(row.indexOf(sign!))!;
+      assert.equal(code.getBgColorMode(), 0x3000000); assert.equal(gutter.getBgColorMode(), 0x3000000);
+      return { code: paletteRgb(code.getBgColor()), gutter: paletteRgb(gutter.getBgColor()), sign: gutter.getFgColor() };
+    });
+  } finally { terminal.dispose(); }
+}
+
+test('edit adaptive palette: builtin dark/light preserve code and gutter contrast', async () => {
+  for (const mode of ['dark', 'light']) {
+    initTheme(mode);
+    const base = colorToRgb(nativeTheme.colors.toolPendingBg);
+    const inks = Object.entries(nativeTheme.colors).filter(([role]) => role === 'toolOutput' || role.startsWith('syntax'));
+    const surfaces = await paletteCells();
+    for (const [i, surface] of surfaces.entries()) {
+      for (const [role, color] of inks) {
+        const ink = colorToRgb(color);
+        assert.ok(paletteContrast(ink, surface.code) + 1e-9 >= Math.min(4.5, paletteContrast(ink, base)), `${mode} ${role}: code preserves readable or existing contrast`);
+      }
+      for (const [role, minimum] of [['dim', 3], [i === 0 ? 'toolDiffRemoved' : 'toolDiffAdded', 4.5]] as const) {
+        const ink = colorToRgb(nativeTheme.colors[role]);
+        assert.ok(paletteContrast(ink, surface.gutter) + 1e-9 >= Math.min(minimum, paletteContrast(ink, base)), `${mode} ${role}: gutter must not degrade low-contrast theme ink`);
+      }
+      assert.notDeepEqual(surface.code, surface.gutter, `${mode}: number area remains distinct from code`);
+    }
+  }
+});
+
+test('edit adaptive palette: Gruvbox keeps neutral additions and the authored muted deletion hue', async () => {
+  setThemeInstance(loadThemeFromPath(new URL('./fixtures/gruvbox-dark-hard.json', import.meta.url).pathname));
+  try {
+    const [removed, added] = await paletteCells();
+    const lab = (rgb: { r: number; g: number; b: number }) => colorToOklch(rgbColor(rgb.r, rgb.g, rgb.b));
+    assert.ok(lab(added!.code).c < 0.006, 'neutral success background does not acquire green/yellow pigment from the bright sign');
+    const expectedHue = colorToOklch(nativeTheme.colors.toolErrorBg).h, actualHue = lab(removed!.code).h;
+    assert.ok(Math.abs((actualHue - expectedHue + 540) % 360 - 180) < 15, 'deletion follows semantic background, not orange-shifted Multiply');
+    assert.ok(lab(removed!.code).c > 0.008, 'the red surface is still meaningfully distinct from neutral context');
+    for (const [surface, role] of [[removed!, 'toolDiffRemoved'], [added!, 'toolDiffAdded']] as const) {
+      const ink = colorToRgb(nativeTheme.colors[role]);
+      assert.equal(surface.sign, ink.r << 16 | ink.g << 8 | ink.b, 'existing sign colors are unchanged');
+      assert.ok(paletteLuminance(surface.gutter) < paletteLuminance(surface.code), 'dark Gruvbox number area is subtly deeper');
+    }
+  } finally { initTheme('dark'); }
+});
+
+test('edit adaptive palette: neutral or absent semantic backgrounds do not invent pigment', async () => {
+  initTheme('dark');
+  for (const missing of [false, true]) {
+    const base = parseColor('#303234');
+    const colors = { toolPendingBg: base, ...(!missing ? { toolSuccessBg: base, toolErrorBg: base } : {}),
+      toolDiffAdded: parseColor('#00ff00'), toolDiffRemoved: parseColor('#ff0000') };
+    const paint: CardTheme = { colors, fg: nativeTheme.fg.bind(nativeTheme), style: nativeTheme.style.bind(nativeTheme),
+      bg: (_role, text) => nativeTheme.style(text, { bg: base }) };
+    for (const surface of await paletteCells(paint)) assert.deepEqual(surface.code, colorToRgb(base));
+  }
 });

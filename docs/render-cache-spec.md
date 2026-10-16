@@ -77,7 +77,7 @@ Bare `/tidy-ui` → **Status & troubleshooting → Display cache** offers diagno
 
 Appearance/status controls use the [settings popup](settings-menu-spec.md); policy flags and inactive non-TUI presentation remain unchanged. Memory control does not cap model/tool data or claim to free host-owned/native rendering memory. Cache clear does not itself recursively invalidate native tool contents.
 
-Successful file cards show all available changes/source without a Bash-like preview or compact-text cap. Plain write bodies share the linear wrapping/highlighting path but calculate no Multiply colors. Validation-only write measurement checks source availability and metadata without materializing code, admitting another body or retaining classification. Missing diff uses submitted content; producer-side omissions cannot be recovered. See the [write contract](write-card-spec.md).
+Successful file cards show all available changes/source without a Bash-like preview or compact-text cap. Plain write bodies share the linear wrapping/highlighting path but calculate no diff palette. Validation-only write measurement checks source availability and metadata without materializing code, admitting another body or retaining classification. Missing diff uses submitted content; producer-side omissions cannot be recovered. See the [write contract](write-card-spec.md).
 
 ## Output preview
 

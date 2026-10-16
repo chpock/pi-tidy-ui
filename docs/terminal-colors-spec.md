@@ -48,7 +48,7 @@ Queued jobs and initial/late query responses validate generation, eligibility an
 
 ## Concrete RGB for rendering
 
-Changing terminal defaults does not automatically refresh Pi's cached `Theme.colors`. pi-tidy-ui therefore maintains one latest local concrete-color projection for its RGB arithmetic, including diff Multiply tints and the input half-block. It does **not** mutate Pi's Theme, semantic methods or global theme/color state.
+Changing terminal defaults does not automatically refresh Pi's cached `Theme.colors`. pi-tidy-ui therefore maintains one latest local concrete-color projection for its RGB arithmetic, including derived diff backgrounds and the input half-block. It does **not** mutate Pi's Theme, semantic methods or global theme/color state.
 
 Known requested RGB is authoritative for a channel we apply. For unowned default-token channels, use actual public terminal reports when available. Merge independently arriving channels within the same generation. Default-token classification uses public ANSI methods and SGR operations, never numeric components inside RGB/indexed sequences. Preserve explicit and unfamiliar semantic tokens.
 

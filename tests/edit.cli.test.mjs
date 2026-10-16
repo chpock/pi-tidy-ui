@@ -1,6 +1,6 @@
 import './fixtures/test-guard.mjs';
 import assert from 'node:assert/strict';
-import { readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import test from 'node:test';
 import { PiTerminal, artifacts, plain, lines, toolLines, assertFits } from './fixtures/terminal-harness.mjs';
@@ -8,11 +8,29 @@ import { replayBlockStart, compareEditReplayColors } from './fixtures/edit-repla
 import { closeTerminals } from './fixtures/terminal-cleanup.mjs';
 import { Terminal, compactContent, persisted } from './fixtures/main-cli-support.mjs';
 
+const rgb = value => [value >>> 16, value >>> 8 & 255, value & 255];
+const hex = value => '#' + value.toString(16).padStart(6, '0');
+const luminance = value => rgb(value).map(channel => channel / 255).map(channel => channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4)
+  .reduce((sum, channel, i) => sum + channel * [0.2126, 0.7152, 0.0722][i], 0);
+const contrast = (a, b) => (Math.max(luminance(a), luminance(b)) + 0.05) / (Math.min(luminance(a), luminance(b)) + 0.05);
+function paletteSwatch(name, rows, cells) {
+  const escape = text => text.replace(/[<>&"]/g, character => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;' })[character]);
+  const width = cells[0].length * 10, height = rows.length * 24;
+  const fragments = [`<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">`];
+  for (const [y, line] of cells.entries()) for (const [x, cell] of line.entries()) {
+    if (cell.bgMode) fragments.push(`<rect x="${x * 10}" y="${y * 24}" width="10" height="24" fill="${hex(cell.bg)}"/>`);
+    if (cell.text.trim()) fragments.push(`<text x="${x * 10}" y="${y * 24 + 18}" fill="${hex(cell.fg)}" font-family="DejaVu Sans Mono,monospace" font-size="16">${escape(cell.text)}</text>`);
+  }
+  fragments.push('</svg>'); writeFileSync(join(artifacts, `diff-palette-${name}.svg`), fragments.join(''));
+}
+
 test('real CLI: OpenCode-style edit syntax, numbered unified/split format, errors and exact replay',
   { timeout: 180000 }, async () => {
     const terminals = [];
     const start = async (name, options = {}) => {
       const terminal = new PiTerminal(name, { extraEnv: { TIDY_UI_TEST_EDIT_CARDS: '1' }, ...options });
+      mkdirSync(join(terminal.agent, 'themes'), { recursive: true });
+      writeFileSync(join(terminal.agent, 'themes/gruvbox-dark-hard.json'), readFileSync(new URL('./fixtures/gruvbox-dark-hard.json', import.meta.url)));
       terminals.push(terminal); await terminal.ready(); await terminal.resize(100, 160); return terminal;
     };
     const run = async (terminal) => {
@@ -48,7 +66,7 @@ test('real CLI: OpenCode-style edit syntax, numbered unified/split format, error
     };
     const replayColors = async (actual, expected) =>
       compareEditReplayColors(actual, expected, await fg(actual, 'mdCodeBlock'));
-    const check = async (dump, split) => {
+    const check = async (dump, split, evidence) => {
       assert.equal(dump.tools.length, 7);
       const first = dump.tools[0], second = dump.tools[1];
       const rows = lines(first);
@@ -88,22 +106,31 @@ test('real CLI: OpenCode-style edit syntax, numbered unified/split format, error
       const oldSign = await syntax(oldRow, '-', 'toolDiffRemoved'), newSign = await syntax(newRow, '+', 'toolDiffAdded');
       const titleRow = rows.findIndex((row) => row.includes('← Edited edit-example.ts'));
       const panel = dump.cells[matched + titleRow][2];
-      assert.equal(panel.bgMode, 0x3000000, 'physical panel supplies the RGB base for Multiply');
+      assert.equal(panel.bgMode, 0x3000000, 'physical panel supplies a concrete neutral base');
       assert.equal(dump.cells[matched + oldRow][2].bg, panel.bg, 'one neutral left padding cell before diff');
       assert.equal(dump.cells[matched + oldRow][3].bg, oldSign.bg, 'changed gutter begins at content origin without an extra diff inset');
       assert.notEqual(oldSign.bg, panel.bg);
       assert.notEqual(dump.cells[matched + oldRow][dump.width - 3].bg, panel.bg, 'changed diff fills the last content cell');
       assert.equal(dump.cells[matched + oldRow][dump.width - 2].bg, panel.bg, 'one neutral right padding cell after diff');
-      const rgb = (value) => [value >>> 16, (value >>> 8) & 255, value & 255];
+      const dim = await fg(dump, 'dim'), metrics = [];
       for (const [code, sign] of [[oldNumber, oldSign], [newNumber, newSign]]) {
-        assert.equal(sign.fgMode, 0x3000000, 'diff role supplies a concrete RGB overlay');
-        const base = rgb(panel.bg), overlay = rgb(sign.fg);
-        for (const [cell, alpha] of [[code, 0.16], [sign, 0.26]]) {
-          assert.equal(cell.bgMode, 0x3000000);
-          const expected = base.map((channel, index) => Math.round(channel * (1 - alpha + alpha * overlay[index] / 255)));
-          assert.deepEqual(rgb(cell.bg), expected, 'physical edit backgrounds use exact 16%/26% Multiply');
-          assert.ok(rgb(cell.bg).every((channel, index) => channel <= base[index]), 'no physical background channel is brighter than the panel');
+        assert.equal(sign.fgMode, 0x3000000, 'sign keeps its original concrete foreground');
+        assert.equal(code.bgMode, 0x3000000); assert.equal(sign.bgMode, 0x3000000);
+        assert.notEqual(code.bg, sign.bg, 'code and number/sign area are separate backgrounds');
+        for (const role of ['toolOutput', 'syntaxKeyword', 'syntaxNumber', 'syntaxString', 'syntaxComment', 'syntaxFunction', 'syntaxType']) {
+          const ink = await fg(dump, role);
+          assert.ok(contrast(ink.fg, code.bg) + 1e-9 >= Math.min(4.5, contrast(ink.fg, panel.bg)), `${role}: physical code contrast is readable or no worse than its theme`);
         }
+        assert.ok(contrast(dim.fg, sign.bg) + 1e-9 >= Math.min(3, contrast(dim.fg, panel.bg)), 'number contrast is preserved');
+        assert.ok(contrast(sign.fg, sign.bg) + 1e-9 >= Math.min(4.5, contrast(sign.fg, panel.bg)), 'sign contrast is preserved');
+        metrics.push({ code: hex(code.bg), gutter: hex(sign.bg), sign: hex(sign.fg), number: hex(dim.fg),
+          numberContrast: contrast(dim.fg, sign.bg), signContrast: contrast(sign.fg, sign.bg), syntaxNumberContrast: contrast(code.fg, code.bg) });
+      }
+      if (evidence) {
+        writeFileSync(join(artifacts, `diff-palette-${evidence}.json`), JSON.stringify({ panel: hex(panel.bg), surfaces: metrics }, null, 2));
+        const context = rows.findIndex(row => row.includes('const context0 ='));
+        const selected = [...new Set([oldRow, newRow, context])];
+        paletteSwatch(evidence, selected, selected.map(row => dump.cells[matched + row].slice(3, dump.width - 2)));
       }
       for (const tool of [first, second, ...dump.tools.slice(4)]) {
         await assertFits(tool.lines, dump.width);
@@ -188,14 +215,15 @@ test('real CLI: OpenCode-style edit syntax, numbered unified/split format, error
       assert.doesNotMatch(lines(pending.tools[0]).join(''), /┃|← Edited/);
       assert.match(lines(running.tools[0]).join(''), /^[\s]*[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] edit edit-example.ts/);
       assert.doesNotMatch(lines(running.tools[0]).join(''), /┃|← Edited/);
-      const wide = await live.capture('unified'); await check(wide, false);
+      const wide = await live.capture('unified'); await check(wide, false, 'dark-fullscreen');
       assert.equal(wide.nativeRenderCalls.edit ?? 0, 0, 'five cards and two failed summaries never build discarded native rows');
       assert.deepEqual(traffic(live), traffic(stock), '7 actual calls/results and 8 provider contexts are identical');
       assert.deepEqual(persisted(wide), persisted(native), 'the renderer never changes persisted diff/proposal/error bytes');
       const sessionBytes = readFileSync(wide.session);
       await live.resize(140, 160); const split = await live.capture('split'); await check(split, true);
       await live.resize(141, 160); await check(await live.capture('split-odd'), true);
-      await live.command('/tidy-ui-theme light'); await check(await live.capture('split-light'), true);
+      await live.command('/tidy-ui-theme light'); await check(await live.capture('split-light'), true, 'light-fullscreen');
+      await live.command('/tidy-ui-theme gruvbox-dark-hard'); await check(await live.capture('split-gruvbox'), true, 'gruvbox-fullscreen');
       await live.resize(24, 160); const narrow = await live.capture('narrow');
       for (const tool of narrow.tools) await assertFits(tool.lines, 24);
       await live.resize(100, 160); await live.command('/tidy-ui-theme dark');
@@ -237,7 +265,7 @@ test('real CLI: OpenCode-style edit syntax, numbered unified/split format, error
       await live.close();
       for (const mode of ['fullscreen', 'regular']) {
         const replay = await start(`edit-replay-${mode}`, { tidyUi: true, session: wide.session, workspace: stock.work, mode });
-        const resumed = await replay.capture('replayed'); await check(resumed, false);
+        const resumed = await replay.capture('replayed'); await check(resumed, false, `dark-${mode}`);
         await replayColors(resumed, wide); assert.deepEqual(persisted(resumed), persisted(wide));
         const htmlBlock = resumed.tools[4].lines.map(plain), htmlStart = replayBlockStart(resumed, htmlBlock);
         const codeRow = htmlBlock.findIndex(line => /^\s*┃\s+\d+ [ +\-] /.test(line));
@@ -252,6 +280,12 @@ test('real CLI: OpenCode-style edit syntax, numbered unified/split format, error
         }
         assert.equal(resumed.nativeRenderCalls.edit ?? 0, 0, `${mode} replay uses the native-free custom path`);
         assert.deepEqual(toolLines(await replay.capture('replayed-warm')), toolLines(resumed), 'warm replay does not replace the accepted exact fallback');
+        for (const theme of ['light', 'gruvbox-dark-hard']) {
+          await replay.command(`/tidy-ui-theme ${theme}`);
+          const changed = await replay.capture(`palette-${theme}`);
+          await check(changed, false, `${theme === 'light' ? 'light' : 'gruvbox'}-${mode}`);
+          assert.deepEqual(persisted(changed), persisted(wide), 'palette changes leave source/session data intact');
+        }
       }
       // Native live calls have an async preview; native replay does not recompute it.
       // Compare the explicit override with unpatched Pi replaying the identical session.
@@ -263,7 +297,7 @@ test('real CLI: OpenCode-style edit syntax, numbered unified/split format, error
       for (const tool of (await compactEdit.capture('compact-override')).tools) compactContent(tool);
       writeFileSync(join(artifacts, 'edit-coverage.json'), JSON.stringify({ calls: 7, results: 7, modelContexts: 8,
         oneSidedUnified: ['addition-only', 'removal-only'],
-        checkedSyntaxCells, checkedPanelCells, widths: [24, 100, 140, 141], modes: ['fullscreen', 'regular'], themes: ['dark', 'light'],
+        checkedSyntaxCells, checkedPanelCells, widths: [24, 100, 140, 141], modes: ['fullscreen', 'regular'], themes: ['dark', 'light', 'gruvbox-dark-hard'],
         format: 'Ordinary compact edit while arguments stream/execute; wholly error-colored failed summaries; final successes use Bash-aligned Edited diff cards with context3 and symmetric padding',
         identity: 'exact traffic, persisted metadata and unchanged session bytes',
         cache: 'zero extra warm-frame builds; no alternate-width diagnostic probes',

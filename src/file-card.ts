@@ -1,8 +1,9 @@
 import { isAbsolute, relative } from "node:path";
 import { stripVTControlCharacters } from "node:util";
-import { colorToRgb, rgbColor, stripTerminalSequences, visibleWidth, wrapTextWithAnsi, type Color } from "@earendil-works/pi-tui";
+import { stripTerminalSequences, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { cardGeometry, frameRows } from "./card-frame.ts";
 import { toolCardPaint, type CardTheme } from "./card-theme.ts";
+import { diffPalette, type DiffPalette } from "./diff-palette.ts";
 
 interface FilePresentation {
   toolName?: string;
@@ -308,25 +309,10 @@ function highlight(lines: DiffLine[], path: string, paint: CardTheme, highlighte
     });
   }
 }
-type DiffTints = Partial<Record<"toolDiffAdded" | "toolDiffRemoved", { code: Color; gutter: Color }>>;
-function diffTints(theme: CardTheme): DiffTints {
-  const tints: DiffTints = {};
-  if (!theme.colors?.toolPendingBg || !theme.style) return tints;
-  const base = colorToRgb(theme.colors.toolPendingBg);
-  for (const role of ["toolDiffAdded", "toolDiffRemoved"] as const) {
-    const color = theme.colors[role];
-    if (!color) continue;
-    const overlay = colorToRgb(color);
-    const blend = (alpha: number) => {
-      // Opacity-weighted Multiply in sRGB; round only after blending, never brighten the panel.
-      const channel = (key: "r" | "g" | "b") => Math.round(base[key] * (1 - alpha + alpha * overlay[key] / 255));
-      return rgbColor(channel("r"), channel("g"), channel("b"));
-    };
-    tints[role] = { code: blend(0.16), gutter: blend(0.26) };
-  }
-  return tints;
+function diffTints(theme: CardTheme): DiffPalette {
+  return theme.colors && theme.style ? diffPalette(theme.colors) : {};
 }
-function cell(line: DisplayLine | undefined, side: "old" | "next", width: number, digits: number, theme: CardTheme, tints: DiffTints, plain = false): string[] {
+function cell(line: DisplayLine | undefined, side: "old" | "next", width: number, digits: number, theme: CardTheme, tints: DiffPalette, plain = false): string[] {
   if (!line) return [" ".repeat(width)];
   if (line.kind === "gap") return [theme.fg("dim", "…") + " ".repeat(width - 1)];
   const gutterSize = digits + (plain ? 2 : 4);
