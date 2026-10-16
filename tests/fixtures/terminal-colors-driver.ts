@@ -20,7 +20,7 @@ export default async function colorDriver(pi: ExtensionAPI) {
     const module = await import("../../src/index.ts");
     diagnostics = module.terminalColorDiagnostics; appearanceTracking = module.terminalAppearanceTracking;
     const { default: presentationDriver } = await import("./presentation-driver.ts");
-    presentationDriver({ ...pi, registerCommand(name, options) {
+    await presentationDriver({ ...pi, registerCommand(name, options) {
       if (name === "tidy-ui") control = options.handler;
       pi.registerCommand(name, options);
     } });
@@ -32,6 +32,15 @@ export default async function colorDriver(pi: ExtensionAPI) {
       return { render: () => [], invalidate() {} };
     });
     ctx.ui.setWidget("terminal-colors-probe", undefined);
+  });
+  pi.registerCommand('tidy-ui-transition', {
+    description: 'Exercise public session replacement for isolated transition controls',
+    handler: async (kind, ctx) => {
+      const request = JSON.parse(readFileSync(join(output, 'transition-request.json'), 'utf8'));
+      if (kind === 'resume' && typeof request.session === 'string') await ctx.switchSession(request.session);
+      else if (kind === 'fork' && typeof request.entry === 'string') await ctx.fork(request.entry);
+      else throw new Error('Invalid transition fixture request');
+    },
   });
   pi.registerShortcut("ctrl+alt+b", {
     description: "Capture terminal-colors runtime without a submitted capture message",

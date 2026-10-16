@@ -246,7 +246,7 @@ test("optional layout diagnostics distinguish retained estimates from whole-proc
     h.root.render(80); await setAppearance(command, h.ctx, false); await setAppearance(command, h.ctx, true); h.root.render(80);
     await readCache(); assert.equal(stats().entries, first.entries);
     assert.equal(h.notices.filter(text => /tidy-ui-cache-mb is ignored/u.test(text)).length, 1, "legacy warning is runtime-local, not repeated on every frame/on");
-  } finally { h.events.get("session_shutdown")!({}, h.ctx); }
+  } finally { await h.events.get("session_shutdown")!({}, h.ctx); }
 });
 
 test("actual SDK viewport caches work and permits detached tool collection with active adapter", () => {
@@ -428,7 +428,7 @@ test("layout diagnostics preserve group attribution and ignore retired launch bu
     assert.equal(stats().entries, 2);
     assert.equal(h.notices.filter(text => /tidy-ui-card-cache-mb is ignored/u.test(text)).length, 1);
     cacheText = await menuPage(command, h.ctx, ['Status & troubleshooting', 'Display cache', 'Clear saved layouts']); assert.equal(stats().entries, 0);
-  } finally { h.events.get("session_shutdown")!({}, h.ctx); }
+  } finally { await h.events.get("session_shutdown")!({}, h.ctx); }
 });
 
 test("actual SDK mixed card working set stays warm and never evicts ordinary layouts", () => {

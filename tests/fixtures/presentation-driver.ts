@@ -5,7 +5,7 @@ import tidyUi from '../../src/index.ts';
 import { createSyntaxOptions } from '../../src/occipital/bootstrap.ts';
 
 export default function presentationDriver(pi: ExtensionAPI) {
-  tidyUi(pi, { syntax(ctx) {
+  return tidyUi(pi, { syntax(ctx) {
     const options = createSyntaxOptions(ctx);
     return { ...options, provider: {
       async tryShared() { return undefined; },

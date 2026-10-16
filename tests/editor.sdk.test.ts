@@ -483,7 +483,7 @@ test("editor status public widget reads fresh session metadata and is removed on
     await setAppearance(h.commands.get('tidy-ui')!.handler, next, false); assert.equal(h.widgetComponents.size, 0);
     await setAppearance(h.commands.get('tidy-ui')!.handler, next, true); editor.render(100);
     assert.match(h.widgetComponents.get("pi-tidy-ui-editor-status")!.render(100).map(editorPlain).join("\n"), /Second Name/u);
-  } finally { h.events.get("session_shutdown")!({}, h.ctx); }
+  } finally { await h.events.get("session_shutdown")!({}, h.ctx); }
   assert.equal(h.widgetComponents.size, 0);
 });
 

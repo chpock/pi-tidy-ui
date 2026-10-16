@@ -161,3 +161,74 @@ test('terminal colors: initially automatic and first production late load stay i
     }
   }
 });
+
+for (const mode of ['fullscreen', 'regular']) {
+  test(`session transitions: terminal defaults survive new, resume, fork and reload without reset/reapply (${mode})`, async () => {
+    const live = colorTerminal(`colors-transitions-${mode}`, mode);
+    try {
+      await live.terminal.ready(); await live.terminal.run('suite');
+      const initial = await live.terminal.capture('original-session'), bytes = readFileSync(initial.session);
+      const calls = colorTraffic(live.terminal), expected = { background: '#123456', foreground: '#eeeeee' };
+      assert.deepEqual(live.owned, expected);
+      const boundary = live.protocol.length;
+      const move = async (kind, data) => {
+        await live.terminal.clearDraft();
+        const count = live.terminal.events().filter(e => e.type === 'start').length;
+        writeFileSync(join(live.terminal.output, 'transition-request.json'), JSON.stringify(data ?? {}));
+        await live.terminal.command(kind === 'new' ? '/new' : kind === 'reload' ? '/reload' : `/tidy-ui-transition ${kind}`);
+        await live.terminal.event('start', count + 1);
+        const packet = await live.capture(`after-${kind}-${count}`);
+        assert.equal(packet.diagnostic.status.state, 'on'); assert.deepEqual(live.owned, expected);
+        assert.deepEqual(live.protocol.slice(boundary).filter(e => e.set || e.reset), [], `${kind}: no color flash or duplicate OSC set`);
+      };
+      await move('new'); await move('resume', { session: initial.session });
+      const restored = await live.terminal.capture('resumed-session');
+      assert.deepEqual(persisted(restored), persisted(initial));
+      const user = initial.branch.find(e => e.type === 'message' && e.message.role === 'user'); assert.ok(user);
+      await move('fork', { entry: user.id });
+      await move('reload');
+      assert.deepEqual(colorTraffic(live.terminal), calls, 'session transitions never execute saved tools/model requests');
+      assert.deepEqual(readFileSync(initial.session), bytes, 'original saved history is not rewritten');
+      await live.terminal.quit(); assert.deepEqual(live.owned, {}, 'quit releases both channels');
+    } finally { await closeTerminals([live.terminal]); }
+  });
+
+  test(`session transitions: a reload into automatic mode releases inherited colors before native queries (${mode})`, async () => {
+    const live = colorTerminal(`colors-transition-auto-${mode}`, mode);
+    try {
+      await live.terminal.ready(); await live.capture('fixed-before-handoff');
+      assert.deepEqual(live.owned, { background: '#123456', foreground: '#eeeeee' });
+      const boundary = live.protocol.length, settingsFile = join(live.terminal.agent, 'settings.json');
+      const settings = JSON.parse(readFileSync(settingsFile, 'utf8')); settings.theme = 'dark/dark';
+      writeFileSync(settingsFile, JSON.stringify(settings));
+      await live.terminal.command('/reload');
+      const automatic = await live.capture('automatic-after-handoff');
+      assert.equal(automatic.automatic, true); assert.deepEqual(live.owned, {});
+      const protocol = live.protocol.slice(boundary), query = protocol.findIndex(e => e.query);
+      assert.ok(query >= 0); assert.ok(protocol.findIndex(e => e.reset === 'background') < query);
+      assert.ok(protocol.filter(e => e.query).every(e => e.value === live.profile[e.query]), 'auto selection sees profile defaults, not outgoing overrides');
+      await live.terminal.quit(); assert.deepEqual(live.owned, {});
+    } finally { await closeTerminals([live.terminal]); }
+  });
+
+  test(`session transitions: disabling the extension on reload leaves native UI and process-exit color cleanup (${mode})`, async () => {
+    const loader = join(artifacts, `colors-unload-${mode}.ts`), imported = `import driver from ${JSON.stringify(join(fixtures, 'terminal-colors-driver.ts'))};\n`;
+    writeFileSync(loader, imported + 'export default async function(pi) { await driver(pi); }\n');
+    const live = colorTerminal(`colors-unload-${mode}`, mode, { driver: loader });
+    try {
+      await live.terminal.ready(); await live.terminal.run('suite');
+      const before = await live.terminal.capture('before-unload'), boundary = live.protocol.length;
+      assert.ok(byName(before, 'read').some(t => t.lines.some(row => row.includes('→'))));
+      writeFileSync(loader, imported + 'export default async function(pi) { process.env.TIDY_UI_TEST_COLORS_NATIVE = "1"; await driver(pi); }\n');
+      await live.terminal.command('/reload'); await live.terminal.event('start', 2);
+      live.terminal.send('\x0f'); await live.terminal.settle();
+      const after = await live.terminal.capture('after-unload'), color = await live.capture('unloaded-colors');
+      assert.equal(color.diagnostic, undefined, 'no successor tidy-ui is loaded');
+      assert.ok(byName(after, 'read').some(t => t.lines.join('\n').includes('READ_A_CONTENT')), 'stock Pi can render its original tools');
+      assert.deepEqual(persisted(after), persisted(before));
+      assert.deepEqual(live.protocol.slice(boundary).filter(e => e.set || e.reset), []);
+      assert.deepEqual(live.owned, { background: '#123456', foreground: '#eeeeee' });
+      await live.terminal.quit(); assert.deepEqual(live.owned, {}, 'owner-free exit cleanup runs without a successor');
+    } finally { await closeTerminals([live.terminal]); }
+  });
+}

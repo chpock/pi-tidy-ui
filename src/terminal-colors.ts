@@ -1,10 +1,28 @@
 import { diagnose, diagnosticError, type DiagnosticSink } from './diagnostics.ts';
-import { readFileSync } from "node:fs";
+import { readFileSync, writeSync } from "node:fs";
 import { colorToHex, mixColors, parseColor, rgbColor, type TerminalColors as ReportedColors } from "@earendil-works/pi-tui";
 import type { ThemeBg, ThemeColor } from "@earendil-works/pi-coding-agent";
 import type { CardTheme } from "./card-theme.ts";
 
 export interface DefaultColors { foreground?: string; background?: string }
+const defaultsKey = Symbol.for('pi-tidy-ui.terminal-defaults');
+/** Only applied channel values survive runtime replacement, never a UI/session owner. */
+export function processTerminalDefaults(): DefaultColors {
+  const state = globalThis as typeof globalThis & { [defaultsKey]?: DefaultColors };
+  if (!state[defaultsKey]) {
+    const defaults: DefaultColors = {};
+    state[defaultsKey] = defaults;
+    process.once('exit', defaultColorCleanup(defaults));
+  }
+  return state[defaultsKey];
+}
+function defaultColorCleanup(defaults: DefaultColors): () => void {
+  return () => {
+    const packet = (defaults.background === undefined ? '' : '\x1b]111\x07') + (defaults.foreground === undefined ? '' : '\x1b]110\x07');
+    try { if (packet) writeSync(1, packet); } catch { /* Best effort if stdout is already closed. */ }
+    delete defaults.background; delete defaults.foreground;
+  };
+}
 export interface ColorTheme extends CardTheme {
   readonly name?: string;
   readonly sourcePath?: string;
@@ -22,6 +40,8 @@ export interface ColorSnapshot {
 }
 export interface TerminalColorHost {
   diagnostic?: DiagnosticSink;
+  /** Applied process defaults, or an isolated store for an embedded terminal. */
+  defaults?: DefaultColors;
   snapshot(): ColorSnapshot;
   source(name?: string): string | undefined;
   write(data: string): void;
@@ -115,7 +135,7 @@ export class TerminalColors {
   private projected: CardTheme | undefined;
   private counters = { sourceReads: 0, sets: 0, releases: 0, packets: 0, reports: 0, staleReplies: 0, projections: 0, warnings: 0 };
   private host: TerminalColorHost;
-  constructor(host: TerminalColorHost) { this.host = host; }
+  constructor(host: TerminalColorHost) { this.host = host; this.applied = { ...host.defaults }; }
   stats() { return { ...this.counters }; }
   status() { return { state: this.state, ...this.applied }; }
   private warn(message: string, explanation = 'Terminal color warning; raw error text excluded', error?: unknown) {
@@ -137,6 +157,12 @@ export class TerminalColors {
       diagnose(this.host.diagnostic, 'INFO', 'terminal-colors', 'Terminal-default changes written; raw OSC packet excluded', { sets, releases, foreground: next.foreground, background: next.background });
     }
     this.applied = { ...next };
+    if (this.host.defaults) {
+      for (const key of ['foreground', 'background'] as const) {
+        if (next[key] === undefined) delete this.host.defaults[key];
+        else this.host.defaults[key] = next[key];
+      }
+    }
     return !!packet;
   }
   private block(reason: string) {
@@ -244,12 +270,12 @@ export class TerminalColors {
     diagnose(this.host.diagnostic, 'DEBUG', 'terminal-colors', 'Cached local card palette projection rebuilt; native Pi theme unchanged', { state: this.state, projected: !!colors });
     return this.projected;
   }
-  dispose(): void {
+  dispose({ preserveDefaults = false } = {}): void {
     if (this.disposed) return;
     this.disposed = true; this.generation++; this.revision = undefined; this.sourceIdentity = undefined; this.reported = {}; this.paletteStamp = undefined; this.projected = undefined;
-    try { this.apply({}); } catch { /* Best effort once the terminal is gone. */ }
+    if (!preserveDefaults) try { this.apply({}); } catch { /* Best effort once the terminal is gone. */ }
     this.state = "off";
-    diagnose(this.host.diagnostic, 'INFO', 'terminal-colors', 'Terminal-color owner disposed; defaults released best-effort');
+    diagnose(this.host.diagnostic, 'INFO', 'terminal-colors', 'Terminal-color observer disposed', { preserveDefaults });
   }
 }
 

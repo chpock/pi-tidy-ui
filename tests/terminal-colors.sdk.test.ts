@@ -4,10 +4,11 @@ import test from "node:test";
 import { writeFileSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { spawnSync } from "node:child_process";
 import { parseColor, TuiAltScreen, TuiMainScreen, type Terminal } from "@earendil-works/pi-tui";
 import { terminalAppearanceTracking } from "../src/index.ts";
 import { colorToHex, rgbColor } from "@earendil-works/pi-tui";
-import { resolveTerminalDefaults, parseThemeDefaults, TerminalColors } from "../src/terminal-colors.ts";
+import { resolveTerminalDefaults, parseThemeDefaults, TerminalColors, type DefaultColors } from "../src/terminal-colors.ts";
 import { menuPage, setAppearance, setColors } from "./helpers/menu-driver.ts";
 import { Tool, extensionHarness } from "./fixtures/sdk-contract-support.ts";
 
@@ -26,7 +27,7 @@ test("terminal defaults resolve independent explicit values, own vars, zero, BOM
   assert.throws(() => parseThemeDefaults("broken"));
 });
 
-function terminalColorFixture(query?: ConstructorParameters<typeof TerminalColors>[0]["query"]) {
+function terminalColorFixture(query?: ConstructorParameters<typeof TerminalColors>[0]["query"], defaults?: DefaultColors) {
   const theme = {
     name: "fixture", sourcePath: "/fixture.json", fg: (_role: string, text: string) => text,
     bg: (_role: string, text: string) => text, style: (text: string) => text,
@@ -38,7 +39,7 @@ function terminalColorFixture(query?: ConstructorParameters<typeof TerminalColor
   let content = '{"colors":{"text":"#eeeeee"},"export":{"pageBg":"#123456"}}';
   const packets: string[] = [], warnings: string[] = [];
   let reads = 0, changes = 0;
-  const view = new TerminalColors({ snapshot: () => snapshot, source: () => undefined, query,
+  const view = new TerminalColors({ snapshot: () => snapshot, source: () => undefined, query, defaults,
     read(path) { assert.equal(path, "/fixture.json"); reads++; return content; },
     write: data => { packets.push(data); }, warn: message => { warnings.push(message); }, changed: () => { changes++; } });
   return { view, snapshot, packets, warnings, get reads() { return reads; }, get changes() { return changes; }, setContent(value: string) { content = value; } };
@@ -142,7 +143,7 @@ test("terminal appearance SDK contract preserves native methods and flags, follo
   assert.equal(terminalAppearanceTracking(new Proxy({}, { get() { throw new Error("future host"); } })), undefined);
 });
 
-test("terminal defaults menu honors local/master lifetime without stacking exit listeners", async () => {
+test("terminal defaults menu honors local/master lifetime without session-bound exit listeners", async () => {
   const h = extensionHarness(), fixture = terminalColorFixture();
   const directory = mkdtempSync(join(tmpdir(), "tidy-ui-colors-")), path = join(directory, "theme.json");
   writeFileSync(path, '{"colors":{"text":"#eeeeee"},"export":{"pageBg":"#123456"}}');
@@ -152,9 +153,9 @@ test("terminal defaults menu honors local/master lifetime without stacking exit 
   const listeners = process.listenerCount("exit"), nativeToolRender = Tool.prototype.render;
   try {
     await h.events.get("session_start")!({}, h.ctx); await terminalMicrotasks();
-    assert.equal(fixture.packets.length, 1); assert.equal(process.listenerCount("exit"), listeners + 1);
+    assert.equal(fixture.packets.length, 1); assert.equal(process.listenerCount("exit"), listeners);
     await h.events.get("session_start")!({}, h.ctx); await terminalMicrotasks();
-    assert.equal(fixture.packets.length, 1); assert.equal(process.listenerCount("exit"), listeners + 1);
+    assert.equal(fixture.packets.length, 1); assert.equal(process.listenerCount("exit"), listeners);
     const command = h.commands.get('tidy-ui')!.handler;
     const control = (operation: string) => operation === 'colors on' || operation === 'colors off'
       ? setColors(command, h.ctx, operation === 'colors on') : operation === 'on' || operation === 'off'
@@ -169,7 +170,7 @@ test("terminal defaults menu honors local/master lifetime without stacking exit 
     assert.match(await menuPage(command, h.ctx, ['Status & troubleshooting']), /automatic/u);
     await control("colors invalid"); assert.match(h.notices.at(-1)!, /Usage/u);
     assert.deepEqual(observer.render(80), []);
-  } finally { h.events.get("session_shutdown")!({}, h.ctx); fixture.view.dispose(); rmSync(directory, { recursive: true, force: true }); }
+  } finally { await h.events.get("session_shutdown")!({}, h.ctx); fixture.view.dispose(); rmSync(directory, { recursive: true, force: true }); }
   assert.equal(process.listenerCount("exit"), listeners);
 });
 
@@ -230,4 +231,62 @@ test("terminal defaults local off keeps presentation RGB fresh without applying 
   fixture.snapshot.enabled = true; fixture.view.observe(); await terminalMicrotasks();
   assert.equal(fixture.view.status().state, "on"); assert.equal(fixture.view.stats().sourceReads, 2);
   fixture.view.dispose();
+});
+
+test('terminal defaults handoff keeps applied channels without reset/reapply and rejects outgoing work', async () => {
+  const defaults: DefaultColors = {}, first = terminalColorFixture(undefined, defaults);
+  first.view.observe(); await terminalMicrotasks();
+  assert.deepEqual(defaults, { foreground: '#eeeeee', background: '#123456' });
+  first.view.observe(true); first.view.dispose({ preserveDefaults: true });
+  await terminalMicrotasks();
+  assert.equal(first.packets.length, 1, 'shutdown does not release terminal defaults');
+  const next = terminalColorFixture(undefined, defaults);
+  try {
+    next.view.observe(); await terminalMicrotasks();
+    assert.deepEqual(next.packets, [], 'unchanged inherited defaults need no writes');
+    assert.equal(next.view.stats().sets, 0);
+    first.view.dispose(); assert.equal(first.packets.length, 1, 'disposed predecessor cannot release a new owner');
+    next.setContent('{"colors":{"text":"#abcdef"},"export":{"pageBg":"#123456"}}');
+    next.view.observe(true); await terminalMicrotasks();
+    assert.deepEqual(next.packets, ['\x1b]10;#abcdef\x07']);
+    next.snapshot.enabled = false; next.view.observe();
+    assert.equal(next.packets.at(-1), '\x1b]111\x07\x1b]110\x07');
+    assert.equal(defaults.foreground, undefined); assert.equal(defaults.background, undefined);
+  } finally { first.view.dispose(); next.view.dispose(); }
+});
+
+test('terminal defaults handoff releases inherited channels before automatic-mode queries', async () => {
+  const defaults: DefaultColors = { foreground: '#eeeeee', background: '#123456' };
+  const next = terminalColorFixture(undefined, defaults);
+  try {
+    next.snapshot.automatic = true; next.view.observe();
+    assert.deepEqual(next.packets, ['\x1b]111\x07\x1b]110\x07']);
+    assert.equal(next.reads, 0); await terminalMicrotasks(); assert.equal(next.reads, 0);
+    assert.equal(defaults.foreground, undefined); assert.equal(defaults.background, undefined);
+  } finally { next.view.dispose(); }
+});
+
+test('terminal defaults process cleanup survives absent successor without retaining its observer', () => {
+  const module = new URL('../src/terminal-colors.ts', import.meta.url).href;
+  const guard = new URL('./fixtures/test-guard.mjs', import.meta.url).href;
+  const child = spawnSync(process.execPath, ['--expose-gc', '--input-type=module', '-e', `
+    await import(${JSON.stringify(guard)});
+    const a = await import(${JSON.stringify(module)});
+    const count = process.listenerCount('exit'), defaults = a.processTerminalDefaults();
+    const b = await import(${JSON.stringify(module + '?replacement')});
+    if (b.processTerminalDefaults() !== defaults || process.listenerCount('exit') !== count + 1) throw Error('stacked process cleanup');
+    const theme = { name:'fixed', sourcePath:'/fixture', fg:(_,s)=>s };
+    let view = new a.TerminalColors({ defaults, snapshot: () => ({ enabled: true, automatic: false, theme }),
+      source:()=>undefined, read:()=>'{"colors":{"text":"#eeeeee"},"export":{"pageBg":"#123456"}}', write:s=>process.stdout.write(s) });
+    view.observe(); await new Promise(setImmediate);
+    if (defaults.background !== '#123456' || defaults.foreground !== '#eeeeee') throw Error('defaults were not applied');
+    view.dispose({ preserveDefaults: true });
+    const weak = new WeakRef(view); view = null;
+    let collected = false;
+    for (let i=0; i<100; i++) { await new Promise(setImmediate); global.gc(); await new Promise(setImmediate); if (!weak.deref()) { collected=true; break; } }
+    if (!collected) throw Error('process cleanup retained observer');
+    process.stdout.write('OWNER_COLLECTED');
+  `], { encoding: 'utf8', timeout: 10000 });
+  assert.equal(child.status, 0, child.stderr);
+  assert.equal(child.stdout, '\x1b]11;#123456\x07\x1b]10;#eeeeee\x07OWNER_COLLECTED\x1b]111\x07\x1b]110\x07');
 });

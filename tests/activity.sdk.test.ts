@@ -180,13 +180,13 @@ test("extension off and shutdown cancel active clocks; non-TUI loading starts no
     await setAppearance(h.commands.get('tidy-ui')!.handler, h.ctx, false); assert.equal(animationStops(), 1);
     const off = h.root.requests; t.mock.timers.tick(10000); assert.equal(h.root.requests, off);
     await setAppearance(h.commands.get('tidy-ui')!.handler, h.ctx, true); h.root.render(80); assert.equal(animations().length, 2);
-    h.events.get("session_shutdown")!({}, h.ctx); assert.equal(animationStops(), 2);
+    await h.events.get("session_shutdown")!({}, h.ctx); assert.equal(animationStops(), 2);
     const closed = h.root.requests; t.mock.timers.tick(10000); assert.equal(h.root.requests, closed);
     for (const mode of ["print", "json", "rpc"] as const) {
       const starts = intervals.mock.calls.length;
       const other = extensionHarness(mode); other.root.addChild(tool);
-      await other.events.get("session_start")!({}, other.ctx); other.root.render(80); other.events.get("session_shutdown")!({}, other.ctx);
+      await other.events.get("session_start")!({}, other.ctx); other.root.render(80); await other.events.get("session_shutdown")!({}, other.ctx);
       assert.equal(intervals.mock.calls.length, starts, `${mode} installs no timers`);
     }
-  } finally { h.events.get("session_shutdown")!({}, h.ctx); }
+  } finally { await h.events.get("session_shutdown")!({}, h.ctx); }
 });

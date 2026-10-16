@@ -18,7 +18,7 @@ import { cardGeometry, insidePanel } from "./card-frame.ts";
 import { renderEditorStatus, type EditorStatusInfo } from "./editor-status.ts";
 import { GitBranchSource, gitDiagnostics } from "./git-branch.ts";
 import { FOOTER_FIELDS, FooterView, footerFirstMessage, footerUsage, type FooterData } from "./footer.ts";
-import { TerminalColors, terminalColorExit } from "./terminal-colors.ts";
+import { TerminalColors, processTerminalDefaults, type DefaultColors } from "./terminal-colors.ts";
 import type { CardTheme } from "./card-theme.ts";
 import { RenderCache, LAYOUT_KINDS, MEMORY_FIELDS, type LayoutKind, type LayoutMemory, type CacheEntry, type CacheStats } from "./render-cache.ts";
 import { argumentParts, summaryName } from "./summary-args.ts";
@@ -126,7 +126,9 @@ export interface TidyUiController {
   readonly editorStatusActive: boolean;
   /** Recognized input ownership, including temporary native selector detachment. */
   readonly editorActive: boolean;
-  restore(): void;
+  /** Stop new presentation work while existing layouts remain usable until restore. */
+  quiesce(): void;
+  restore(options?: { repaint?: boolean }): void;
   renderEditorStatus(width: number, info: EditorStatusInfo): string[];
   cacheStats(): TidyUiCacheStats;
   /** Explicit diagnostic command only; does not render or advance a clock. */
@@ -294,6 +296,7 @@ export function installTidyUi(tui: LiveTui, getTheme: () => Palette, options: Ti
   // One plain snapshot per normal transcript pass; direct component visits read live settings.
   let passOutputPad: number | undefined;
   const outputPadding = () => passOutputPad ?? (options.outputPad?.() === 0 ? 0 : 1);
+  let quiescing = false;
   const animated = new Set<WeakRef<ToolNode>>();
   let animationRefs = new WeakMap<ToolNode, WeakRef<ToolNode>>();
   let spinnerTimer: ReturnType<typeof setTimeout> | undefined;
@@ -338,7 +341,7 @@ export function installTidyUi(tui: LiveTui, getTheme: () => Palette, options: Ti
     if (!animated.size) stopSpinner();
   }
   function armSpinner() {
-    if (!active || !animated.size || spinnerPending) return;
+    if (!active || quiescing || !animated.size || spinnerPending) return;
     if (spinnerTimer !== undefined) clearTimeout(spinnerTimer);
     const generation = ++spinnerGeneration;
     // Native Working already drives whole-document frames. This is a fallback
@@ -375,7 +378,7 @@ export function installTidyUi(tui: LiveTui, getTheme: () => Palette, options: Ti
     // may start participation, but cannot acknowledge/postpone an existing frame.
     if (passSpinnerTime === undefined && spinnerTimer === undefined) armSpinner();
   }
-  let states = new WeakMap<ToolNode, { signature: unknown[]; entry: CacheEntry<Layout>; pool: RenderCache }>();
+  let states = new WeakMap<ToolNode, { signature: unknown[]; entry: CacheEntry<Layout>; pool: RenderCache; gap?: number }>();
   const forget = (node: ToolNode, cause = "source or lifecycle changed") => { const state = states.get(node); state?.pool.drop(state.entry); states.delete(node);
     if (state) diagnose(options.diagnostic, "DEBUG", "cache", "Tool layout invalidated", { call: node.toolCallId, tool: node.toolName, cause }); };
   let userStates = new WeakMap<UserNode, { signature: unknown[]; entry: CacheEntry<Layout> }>();
@@ -443,7 +446,7 @@ export function installTidyUi(tui: LiveTui, getTheme: () => Palette, options: Ti
     return fileSucceeded(node) && !node.expanded && !overrides.has(node.toolName) && !nativeOverrides.has(node.toolName) && !!filePath(node.args);
   }
   function observeSyntax(node: ToolNode): SyntaxState | undefined {
-    if (!syntax || (node.toolName !== "bash" && node.toolName !== "edit" && node.toolName !== "write")) return undefined;
+    if (quiescing || !syntax || (node.toolName !== "bash" && node.toolName !== "edit" && node.toolName !== "write")) return undefined;
     const identity = sourceIdentity(node), palette = options.syntax!.palette();
     let state = syntaxStates.get(node);
     if (!state) {
@@ -604,9 +607,12 @@ export function installTidyUi(tui: LiveTui, getTheme: () => Palette, options: Ti
       catch { fail("pi-tidy-ui could not render editor status; native rendering restored"); return []; }
     },
     clearCache,
-    syntaxSourceChanged(keys) { if (active) syntax?.sourceChanged(keys); },
-    syntaxMetadataChanged() { if (active) syntax?.metadataChanged(); },
-    restore() {
+    syntaxSourceChanged(keys) { if (active && !quiescing) syntax?.sourceChanged(keys); },
+    syntaxMetadataChanged() { if (active && !quiescing) syntax?.metadataChanged(); },
+    quiesce() {
+      quiescing = true; stopSpinner(); animated.clear(); animationRefs = new WeakMap();
+    },
+    restore({ repaint = true } = {}) {
       if (!active && !patches.size && !userPatches.size && !editorPatches.size) {
         syntax?.dispose(); syntaxStates = new WeakMap(); return;
       }
@@ -661,7 +667,7 @@ export function installTidyUi(tui: LiveTui, getTheme: () => Palette, options: Ti
       }
       editorPatches.clear(); editorStates = new WeakMap(); editorPasses = new WeakMap(); statusEditor = undefined;
       options.editorStatusRestored?.();
-      refresh();
+      if (repaint) refresh();
     },
   };
   const fail = (message: string) => {
@@ -798,6 +804,23 @@ export function installTidyUi(tui: LiveTui, getTheme: () => Palette, options: Ti
     const previous = previousLayout(node, width);
     return previous?.tool && previous.height > 1 ? 1 : 0;
   }
+  function presentedRows(node: ToolNode, rows: string[], offset: number): string[] {
+    const state = states.get(node);
+    if (state) state.gap = offset;
+    return offset ? ['', ...rows] : rows;
+  }
+  function cleanupRows(node: ToolNode, width: number): string[] | undefined {
+    // No source borrowing during disposal. Native update wrappers invalidate these
+    // layouts; Bash's raw argument keys also guard its deliberately retained fast path.
+    const state = states.get(node);
+    if (!state || state.gap === undefined || width < 1 || state.signature[1] !== width || node.hideComponent
+      || state.signature[6] !== node.result || state.signature[7] !== node.expanded || state.signature[8] !== node.isPartial) return;
+    const bash = state.signature[0] === 'bash';
+    if (bash ? state.signature[12] !== node.args.command || state.signature[13] !== node.args.description || state.signature[14] !== node.args.workdir : state.signature[5] !== node.args) return;
+    if (!nativeVisible(node, width)) return [];
+    const layout = state.pool.get(state.entry);
+    return layout && !layout.native ? presentedRows(node, layout.rows, state.gap) : undefined;
+  }
   function install(node: ToolNode) {
     if (!compatible(node)) { fail("Tool component contract is incompatible; native rendering retained"); return; }
     patchPrototype(Object.getPrototypeOf(node) as object);
@@ -815,6 +838,7 @@ export function installTidyUi(tui: LiveTui, getTheme: () => Palette, options: Ti
     const originalMouse = mouse.value as Mouse;
     const patchedRender: Render = function (width) {
       try {
+        if (quiescing) return cleanupRows(this, width) ?? originalRender.call(this, width);
         observeSyntax(this);
         if (bashCard(this, width)) {
           removeAnimation(this);
@@ -822,7 +846,7 @@ export function installTidyUi(tui: LiveTui, getTheme: () => Palette, options: Ti
           toolDecision(this, rows.length ? "Bash card selected" : "Bash card returned no rows", width, rows.length);
           if (!rows.length) { pauseSyntax(this); return rows; }
           usefulSyntax(this);
-          return previousLayout(this, width) ? ["", ...rows] : rows;
+          return presentedRows(this, rows, previousLayout(this, width) ? 1 : 0);
         }
         if (fileCard(this, width)) {
           removeAnimation(this);
@@ -831,7 +855,7 @@ export function installTidyUi(tui: LiveTui, getTheme: () => Palette, options: Ti
           if (layout.framed && !layout.native && layout.rows.length) usefulSyntax(this);
           else pauseSyntax(this);
           const offset = layout.native ? nativeGap(this, width, layout.rows) : layout.framed ? (previousLayout(this, width) ? 1 : 0) : gap(this, width);
-          return offset ? [""].concat(layout.rows) : layout.rows;
+          return presentedRows(this, layout.rows, offset);
         }
         pauseSyntax(this);
         if (!eligible(this)) {
@@ -844,11 +868,13 @@ export function installTidyUi(tui: LiveTui, getTheme: () => Palette, options: Ti
         if (!nativeVisible(this, width)) { toolDecision(this, "Native self-shell returned no visible rows", width, 0); removeAnimation(this); return []; }
         const offset = gap(this, width), rows = paintSummary(this, width);
         toolDecision(this, "Compact tool summary selected", width, rows.length);
-        return offset ? ["", ...rows] : rows;
+        return presentedRows(this, rows, offset);
       }
       catch { fail("pi-tidy-ui could not render this component; native rendering restored"); return originalRender.call(this, width); }
     };
     const patchedMouse: Mouse = function (event) {
+      if (!active) return originalMouse.call(this, event);
+      if (quiescing) return undefined;
       observeSyntax(this);
       if (event.width > 0 && bashCard(this, event.width)) {
         if (event.type !== "click" || event.button !== "left" || tui.hasActiveSelection?.()) return undefined;
@@ -905,7 +931,7 @@ export function installTidyUi(tui: LiveTui, getTheme: () => Palette, options: Ti
         const result = method.apply(this, args);
         if (name !== "invalidate") nativePhase(this, name);
         observeSyntax(this);
-        if (syntax && name === "updateResult" && interruptedLiveBash(this)) {
+        if (!quiescing && syntax && name === "updateResult" && interruptedLiveBash(this)) {
           // Terminal formation retires native work, not the still-displayed presentation.
           syntax.freeze(this);
           options.syntax!.client.sources.flush();
@@ -1349,6 +1375,8 @@ export interface TidyUiRuntimeOptions {
   settings?: Pick<ExtensionSettings, 'load' | 'update'> & Partial<Pick<ExtensionSettings, 'watch'>>;
   /** An isolated process-memory owner for SDK embeddings. */
   localPreferences?: LocalPreferences;
+  /** Isolated applied-color ownership for SDK terminals; production uses process memory. */
+  terminalDefaults?: DefaultColors;
   /** Existing provider/settings bindings for controlled SDK embeddings. */
   syntax?: (ctx: ExtensionContext) => SyntaxRuntimeOptions;
 }
@@ -1372,7 +1400,7 @@ export default function tidyUi(pi: ExtensionAPI, options: TidyUiRuntimeOptions =
   // Only confirmed choices survive runtime replacement; menu previews are client-local.
   let selectedTheme: SyntaxTheme = { kind: 'pi' };
   const settings = options.settings ?? new ExtensionSettings();
-  let preferencesReady: Promise<void> | undefined;
+  let preferencesReady: Promise<void> | undefined, preferencesLoaded = false;
   let preferencesIssue: string | undefined;
   let lifecycle = 0;
   let saveAbort = new AbortController();
@@ -1388,6 +1416,7 @@ export default function tidyUi(pi: ExtensionAPI, options: TidyUiRuntimeOptions =
         selectedTheme = loaded.syntaxTheme;
         if (!loaded.ok) preferencesIssue = lastSettingsIssue = loaded.issue.message;
       } catch { preferencesIssue = 'Settings could not be read; using defaults.'; }
+      finally { preferencesLoaded = true; }
     })();
   }
   function applySavedPreferences(loaded: SettingsLoadResult, ctx: ExtensionContext, epoch: number) {
@@ -1463,14 +1492,11 @@ export default function tidyUi(pi: ExtensionAPI, options: TidyUiRuntimeOptions =
     return previous?.dispose();
   }
   let colors: TerminalColors | undefined;
-  let colorExit: (() => void) | undefined;
   const colorWidget = "pi-tidy-ui-terminal-colors";
-  function stopColors() {
+  function stopColors(preserveDefaults = false) {
     const previous = colors; colors = undefined;
-    if (previous) diagnose(logging?.sink, "INFO", "terminal-colors", "Terminal-color observer removed from public widget and exit listener");
-    if (colorExit) process.off("exit", colorExit);
-    colorExit = undefined;
-    previous?.dispose();
+    if (previous) diagnose(logging?.sink, "INFO", "terminal-colors", "Terminal-color observer removed from public widget", { preserveDefaults });
+    previous?.dispose({ preserveDefaults });
     if (previous) liveContext?.ui.setWidget(colorWidget, undefined);
   }
   function startColors(ctx: ExtensionContext) {
@@ -1479,6 +1505,7 @@ export default function tidyUi(pi: ExtensionAPI, options: TidyUiRuntimeOptions =
     ctx.ui.setWidget(colorWidget, tui => {
       const reference = new WeakRef(tui);
       const view = new TerminalColors({
+        defaults: options.terminalDefaults ?? processTerminalDefaults(),
         diagnostic: logging?.sink,
         snapshot() {
           const current = liveContext!;
@@ -1496,18 +1523,15 @@ export default function tidyUi(pi: ExtensionAPI, options: TidyUiRuntimeOptions =
         warn: message => liveContext?.ui.notify(`pi-tidy-ui colors: ${message}`, "warning"),
       });
       colors = view; terminalColorDebug = new WeakRef(view);
-      if (colorsEnabled) { colorExit = terminalColorExit(new WeakRef(view)); process.on("exit", colorExit); }
       view.observe();
       return { render() { if (colors === view) view.observe(); return []; }, invalidate() { if (colors === view) view.observe(); } };
     }, { placement: "belowEditor" });
   }
   function applyTerminalPreference(value: boolean, ctx: ExtensionContext) {
     colorsEnabled = value;
-    if (!value) { colors?.observe(); if (colorExit) process.off('exit', colorExit); colorExit = undefined; }
-    else if (colors) {
-      if (!colorExit) { colorExit = terminalColorExit(new WeakRef(colors)); process.on('exit', colorExit); }
-      colors.observe(true);
-    } else startColors(ctx);
+    if (!value) colors?.observe();
+    else if (colors) colors.observe(true);
+    else startColors(ctx);
   }
   const palette = () => colors?.palette(liveContext!.ui.theme) ?? liveContext!.ui.theme;
   let directorySource: GitBranchSource | undefined;
@@ -1685,7 +1709,7 @@ export default function tidyUi(pi: ExtensionAPI, options: TidyUiRuntimeOptions =
     const current = ++lifecycle;
     saveAbort.abort(); saveAbort = new AbortController();
     liveBashCalls.clear(); footerName = undefined;
-    await loadPreferences();
+    if (!preferencesLoaded) await loadPreferences();
     if (current !== lifecycle) return;
     reportPreferencesIssue(ctx);
     startLogging(ctx, event.reason); start(ctx);
@@ -1700,12 +1724,24 @@ export default function tidyUi(pi: ExtensionAPI, options: TidyUiRuntimeOptions =
   pi.on("session_shutdown", async (event, ctx) => {
     ++lifecycle; saveAbort.abort(); unwatchSettings?.(); unwatchSettings = undefined; activeMenu?.close(); activeMenu = undefined;
     liveBashCalls.clear(); footerName = undefined;
-    liveContext = ctx; logSnapshot(); pendingFooter = undefined; stopColors(); restoreFooter(); controller?.restore(); controller = undefined;
-    const stopped = stopSyntax(); liveContext = undefined; syntaxContext.current = undefined;
-    await stopped;
-    const previous = logging; logging = undefined;
-    if (loggingContext) loggingContext.current = undefined; loggingContext = undefined;
-    await previous?.close(event.reason);
+    liveContext = ctx; logSnapshot(); pendingFooter = undefined;
+    controller?.quiesce();
+    try { await stopSyntax(); }
+    finally {
+      try { await logging?.close(event.reason); }
+      finally {
+        logging = undefined;
+        if (loggingContext) loggingContext.current = undefined; loggingContext = undefined;
+        try { stopColors(event.reason !== 'quit'); }
+        finally {
+          try { restoreFooter(); }
+          finally {
+            try { controller?.restore({ repaint: false }); }
+            finally { controller = undefined; liveContext = undefined; syntaxContext.current = undefined; }
+          }
+        }
+      }
+    }
   });
   function menuOwner(ctx: ExtensionContext, epoch: number): TidyMenuOwner {
     const current = () => lifecycle === epoch && !saveAbort.signal.aborted;
@@ -1835,4 +1871,6 @@ export default function tidyUi(pi: ExtensionAPI, options: TidyUiRuntimeOptions =
       finally { opened?.dispose(); if (activeMenu === opened) activeMenu = undefined; }
     },
   });
+  // Pi awaits the factory; startup can attach presentation without another I/O gap.
+  return loadPreferences();
 }

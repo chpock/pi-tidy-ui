@@ -23,15 +23,16 @@ test('entry exposes the canonical TidyUi installer and default function', () => 
   assert.equal(tidyUi.name, 'tidyUi');
 });
 
-test('entry registers only the menu command and flags; retired arguments never act or read settings', async () => {
+test('entry registers only the menu command and flags; retired arguments do no work beyond factory preload', async () => {
   const commands = new Map<string, { handler(args: string, ctx: ExtensionContext): Promise<void> }>();
   const flags: string[] = [], notices: [string, string][] = []; let reads = 0, writes = 0;
   const pi = {
     registerCommand: (name: string, command: { handler(args: string, ctx: ExtensionContext): Promise<void> }) => commands.set(name, command),
     registerFlag: (name: string) => flags.push(name), on() {},
   } as unknown as ExtensionAPI;
-  tidyUi(pi, { settings: { async load() { reads++; return { ok: true, syntaxTheme: { kind: 'pi' } }; },
+  await tidyUi(pi, { settings: { async load() { reads++; return { ok: true, syntaxTheme: { kind: 'pi' } }; },
     async update() { writes++; return { ok: true }; } } });
+  assert.equal(reads, 1, 'the awaited factory preloads preferences once');
   assert.deepEqual([...commands.keys()], ['tidy-ui']);
   assert.deepEqual(flags, ['tidy-ui-card', 'tidy-ui-compact', 'tidy-ui-cache-mb', 'tidy-ui-card-cache-mb']);
   const ctx = { mode: 'rpc', hasUI: false, ui: { notify: (message: string, type: string) => notices.push([message, type]) } } as unknown as ExtensionContext;
@@ -43,7 +44,7 @@ test('entry registers only the menu command and flags; retired arguments never a
     const [message, type] = notices.pop()!;
     assert.match(message, /^Usage: \/tidy-ui.*arguments are no longer supported/); assert.equal(type, 'warning');
   }
-  assert.equal(reads, 0); assert.equal(writes, 0);
+  assert.equal(reads, 1); assert.equal(writes, 0);
 });
 
 

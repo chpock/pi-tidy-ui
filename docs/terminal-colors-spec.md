@@ -6,7 +6,7 @@ pi-tidy-ui can synchronize the terminal's default background and foreground with
 
 The feature defaults to On. Bare `/tidy-ui` exposes **Set terminal colors from Pi theme**: On/Off requests application of Pi's theme to the terminal background and default text color, rather than reporting whether colors match. **Status & troubleshooting** shows the current effective state and **Reapply terminal colors**. See the [saved-preference contract](settings-menu-spec.md).
 
-Local off releases applied defaults but leaves cards, input styling and the footer eligible. It stops theme-source reads/application, not the one-shot default-RGB sampling needed to paint remaining cards correctly after a release. Appearance Off releases defaults and removes the observer. Appearance On respects the local toggle; reload restores both saved preferences before activation. Toggles are stored in the extension config, not Pi settings. Explicit **Reapply terminal colors** retries an enabled preference even if the native theme identity is unchanged; it never enables a disabled preference.
+Local off releases applied defaults but leaves cards, input styling and the footer eligible. It stops theme-source reads/application, not the one-shot default-RGB sampling needed to paint remaining cards correctly after a release. Appearance Off releases defaults and removes the observer. Appearance On respects the terminal-color preference; reload restores it before activation. Terminal/native preferences are saved in the extension config, not Pi settings; appearance is process-local. Explicit **Reapply terminal colors** retries an enabled preference even if the native theme identity is unchanged; it never enables a disabled preference.
 
 Foreign editor/footer ownership does not itself disable terminal synchronization. Disable the old standalone `theme-background` extension manually before using this feature. Only one terminal-default writer is supported; pi-tidy-ui cannot coordinate arbitrary competing writers.
 
@@ -38,9 +38,13 @@ An unreadable/malformed source retains the last valid **complete** terminal-targ
 
 Normalize valid targets to RGB hex. OSC 11/10 set background/foreground; OSC 111/110 release them. Deduplicate independently: changing background does not resend foreground; initially absent channels emit no reset. Compose changed channels in one terminal write. Do not alter cursor colors or the ANSI palette.
 
-A release restores **profile defaults**, not a saved earlier application's dynamic override. Normal shutdown and a weak process-exit fallback release applied channels; SIGKILL, transport failure and terminals without OSC support cannot guarantee restoration. Repeated shutdown/disposal is idempotent. Runtime off/shutdown remove our widget and exit listener. Local off retains the zero-row RGB observer but removes the unnecessary application exit listener; enabling again installs at most one.
+A release restores **profile defaults**, not a saved earlier application's dynamic override. Appearance Off, terminal-color Off and normal Pi quit release applied channels. Repeated release/disposal is idempotent.
 
-Queued jobs and initial/late query responses validate generation, eligibility and public theme revision. Old jobs cannot apply defaults or change a later presentation. Report/exit callbacks use separately constructed weak-only closures; even a never-resolving report must not keep a retired controller or its UI owner alive.
+Terminal defaults belong to the process, not the session. `/new`, `/resume`, `/fork` and `/reload` dispose the outgoing observer and its queued callbacks without resetting applied channels. A successor observer adopts the two applied RGB values, reconciles the current preference/theme and writes only changed channels; automatic mode, Off and valid empty/no-file targets still release them. No old UI, source/client, theme, widget or session is retained. `/tree` does not dispose the extension runtime.
+
+One process-wide exit listener retains only the two primitive applied-channel values and synchronously releases remaining channels through stdout. It does not keep the extension runtime alive, replace process shutdown, or depend on another extension load. If tidy-ui is removed from configuration or successor loading fails, its UI hooks remain unloaded and the existing terminal colors stay until process exit. SDK embeddings can supply an isolated applied-color store. SIGKILL, transport failure and terminals without OSC support cannot guarantee restoration. The listener is shared across reloads, with no polling, per-session listener or timer.
+
+Queued jobs and initial/late query responses validate generation, eligibility and public theme revision. Old jobs cannot apply defaults or change a later presentation. Report callbacks use separately constructed weak-only closures; even a never-resolving report must not keep a retired controller or its UI owner alive. Process-exit cleanup owns only channel values, never an observer.
 
 ## Concrete RGB for rendering
 
@@ -60,6 +64,7 @@ See [testing](testing.md) for commands and evidence discipline. Require:
 - Actual SDK positive mode/SGR/observer gates and missing/wrong-type/throwing-field rejection; future host contract drift must fail tests instead of silently accepting inactive coverage.
 - Real fixed → automatic ordering under project overrides, initially automatic and late loading, reload and both renderer modes; no transient application.
 - Controlled actual OSC set/reset/report traffic, hot reload/BOM, local/global toggles and normal exit.
+- Session/reload handoff with zero reset/reapply for unchanged targets, inherited automatic-mode release, no-successor native UI and owner-free process-exit cleanup.
 - Physical diff/edge colors with stale native defaults, including local off after reload and late unowned-default reports on an already-rendered diff.
 - Exact warm read/query/output/projection counters and retired-controller/UI GC with an active pending report.
 - Native no-feature tool/model comparison, exact persisted content and same-session replay with zero new execution.

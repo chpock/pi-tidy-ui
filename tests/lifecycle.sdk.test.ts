@@ -109,7 +109,7 @@ test("extension lifecycle removes the temporary widget, restores on shutdown, an
     assert.match(h.root.render(80).at(-1)!, /read a\.txt/);
     await h.commands.get("tidy-ui")!.handler("invalid", h.ctx);
     assert.match(h.notices.at(-1)!, /Usage:/);
-  } finally { h.events.get("session_shutdown")!({}, h.ctx); }
+  } finally { await h.events.get("session_shutdown")!({}, h.ctx); }
   assert.equal(Container.prototype.addChild, before);
 });
 
@@ -117,14 +117,14 @@ test("off persists across session replacements but a fresh process-memory owner 
   const h = extensionHarness(); const before = Container.prototype.addChild;
   await h.events.get("session_start")!({}, h.ctx);
   await setAppearance(h.commands.get('tidy-ui')!.handler, h.ctx, false);
-  h.events.get("session_shutdown")!({}, h.ctx);
+  await h.events.get("session_shutdown")!({}, h.ctx);
   await h.events.get("session_start")!({}, h.ctx);
   assert.equal(Container.prototype.addChild, before);
   const fresh = extensionHarness();
   try {
     await fresh.events.get("session_start")!({}, fresh.ctx);
     assert.notEqual(Container.prototype.addChild, before);
-  } finally { fresh.events.get("session_shutdown")!({}, fresh.ctx); }
+  } finally { await fresh.events.get("session_shutdown")!({}, fresh.ctx); }
 });
 
 test("print, JSON and RPC modes install no UI hooks or widgets", async () => {
@@ -136,7 +136,7 @@ test("print, JSON and RPC modes install no UI hooks or widgets", async () => {
     assert.equal(h.widgets.length, 0);
     assert.equal(Container.prototype.addChild, before);
     assert.match(h.notices.at(-1)!, /available only in terminal mode/);
-    h.events.get("session_shutdown")!({}, h.ctx);
+    await h.events.get("session_shutdown")!({}, h.ctx);
   }
 });
 
@@ -297,4 +297,32 @@ test("renderer replacement preserves cards and clicks without touching any nativ
     } finally { controller.restore(); }
     for (let index = 0; index < roots.length; index++) assert.equal(Reflect.get(roots[index]!, "handleViewportInput"), inputs[index]);
   }
+});
+
+test('shutdown cleanup preserves later mouse delegation after restoring native ownership', () => {
+  const tool = new Tool(), native = Tool.prototype.handleMouse;
+  const h = setup([tool]), saved = Tool.prototype.handleMouse;
+  const later = function (this: Tool, event: TuiMouseEvent) { return saved.call(this, event); };
+  Tool.prototype.handleMouse = later;
+  try {
+    h.controller.quiesce(); h.controller.restore();
+    assert.equal(Tool.prototype.handleMouse, later);
+    assert.equal(tool.handleMouse(mouse(2))?.handled, true);
+    assert.equal(tool.expanded, true);
+  } finally { h.controller.restore(); Tool.prototype.handleMouse = native; }
+});
+
+test('shutdown cleanup keeps unknown native self-shell visibility authoritative', () => {
+  class SelfTool extends Tool {
+    visible = true;
+    getRenderShell() { return 'self'; }
+    render(width: number) { return this.visible ? super.render(width) : []; }
+    handleMouse(event: TuiMouseEvent) { return super.handleMouse(event); }
+  }
+  const tool = new SelfTool('custom'), h = setup([tool]);
+  try {
+    assert.ok(tool.render(80).length > 0); h.controller.quiesce();
+    tool.visible = false;
+    assert.deepEqual(tool.render(80), []);
+  } finally { h.controller.restore(); }
 });

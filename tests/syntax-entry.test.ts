@@ -39,7 +39,7 @@ function fixture(mode = 'tui', logging: false | Omit<JournalOptions, 'warn' | 'e
   const pi = { on: (name: string, callback: (event: unknown, ctx: ExtensionContext) => unknown) => events.set(name, callback),
     registerCommand: (name: string, command: { handler(args: string, ctx: ExtensionContext): Promise<void> }) => commands.set(name, command),
     registerFlag() {}, getFlag() {}, getSettings: () => ({}), getThinkingLevel: () => 'off' } as unknown as ExtensionAPI;
-  tidyUi(pi, { logging, settings: store, localPreferences, syntax: () => {
+  tidyUi(pi, { logging, settings: store, localPreferences, terminalDefaults: {}, syntax: () => {
     counts.constructed++;
     return { standaloneVersion: 'fixture',
       provider: { async tryShared() { counts.shared++; return undefined; }, async acquireOwned() { counts.owned++; throw Error('fixture unavailable'); } } };
@@ -57,7 +57,7 @@ async function settled() { for (let i = 0; i < 5; i++) await turn(); }
 afterEach(async () => { for (const cleanup of cleanups.splice(0)) await cleanup(); });
 
 test('entry starts syntax only asynchronously after eligible interactive adapter attachment', async () => {
-  const h = fixture(); assert.deepEqual(h.counts, { constructed: 0, load: 0, saves: 0, shared: 0, owned: 0 });
+  const h = fixture(); assert.deepEqual(h.counts, { constructed: 0, load: 1, saves: 0, shared: 0, owned: 0 });
   const starting = h.start(); assert.equal(h.counts.constructed, 0); assert.equal(h.counts.shared, 0); assert.equal(h.counts.load, 1);
   await starting; assert.equal(h.counts.constructed, 1);
   await settled(); assert.equal(h.counts.load, 1); assert.equal(h.counts.shared, 1); assert.equal(h.counts.owned, 1);
@@ -502,4 +502,52 @@ test('settings sync: entry preserves an unconfirmed preview and Esc uses the lat
     await menu.key('\x1b'); assert.match(menu.text(), /peer-B/);
   });
   assert.equal(saves, 0);
+});
+
+test('entry shutdown keeps prepared card presentation during cleanup and fully unhooks before return', async () => {
+  const h = fixture();
+  const tool = new ToolExecutionComponent('write', 'shutdown-write', { path: 'tiny.ts', content: 'const x=1;' }, undefined,
+    createWriteToolDefinition('/tmp'), h.root as unknown as ConstructorParameters<typeof ToolExecutionComponent>[5], '/tmp');
+  tool.setArgsComplete(); tool.updateResult({ content: [{ type: 'text', text: 'written' }], isError: false }, false); h.root.addChild(tool);
+  const native = ToolExecutionComponent.prototype.render;
+  await h.start(); h.root.render(80); await settled(); const before = h.root.render(80);
+  assert.notEqual(ToolExecutionComponent.prototype.render, native);
+  const dispose = SyntaxRuntime.prototype.dispose;
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  SyntaxRuntime.prototype.dispose = function () { const stopped = dispose.call(this); return Promise.all([stopped, gate]).then(() => {}); };
+  const stopping = h.events.get('session_shutdown')!({ type: 'session_shutdown', reason: 'reload' }, h.ctx) as Promise<void>;
+  try {
+    await settled();
+    assert.notEqual(ToolExecutionComponent.prototype.render, native, 'only our own hooks remain until cleanup finishes');
+    assert.deepEqual(h.root.render(80), before, 'unchanged prepared content does not switch to native while cleanup waits');
+    const progress = { render: () => ['CLEANUP_PROGRESS'], invalidate() {} }; h.root.addChild(progress);
+    assert.ok(h.root.render(80).some(row => row.includes('CLEANUP_PROGRESS')), 'normal host updates remain visible');
+    tool.updateResult({ content: [{ type: 'text', text: 'CLEANUP_ERROR' }], isError: true }, false);
+    assert.ok(h.root.render(80).some(row => row.includes('CLEANUP_ERROR')), 'changed content is never hidden by old rows');
+  } finally { release(); await stopping; SyntaxRuntime.prototype.dispose = dispose; }
+  assert.equal(ToolExecutionComponent.prototype.render, native, 'no visual hooks survive shutdown return');
+});
+
+test('entry shutdown restores hooks and closes the journal even if source cleanup fails', async () => {
+  const directory = await fs.mkdtemp(join(tmpdir(), 'tidy-shutdown-error-')), h = fixture('tui', { root: directory });
+  const native = ToolExecutionComponent.prototype.render, dispose = SyntaxRuntime.prototype.dispose;
+  const tool = new ToolExecutionComponent('write', 'shutdown-error', { path: 'tiny.ts', content: 'const x=1;' }, undefined,
+    createWriteToolDefinition('/tmp'), h.root as unknown as ConstructorParameters<typeof ToolExecutionComponent>[5], '/tmp');
+  tool.setArgsComplete(); tool.updateResult({ content: [{ type: 'text', text: 'written' }], isError: false }, false); h.root.addChild(tool);
+  await h.start(); await settled(); const failure = Error('source cleanup failed');
+  SyntaxRuntime.prototype.dispose = function () { return dispose.call(this).then(() => { throw failure; }); };
+  try {
+    await assert.rejects(h.events.get('session_shutdown')!({ type: 'session_shutdown', reason: 'reload' }, h.ctx) as Promise<void>, error => error === failure);
+    assert.equal(ToolExecutionComponent.prototype.render, native);
+    assert.equal((await fs.readdir(directory)).filter(name => name.endsWith('.closed.log')).length, 1);
+  } finally { SyntaxRuntime.prototype.dispose = dispose; await h.stop(); await fs.rm(directory, { recursive: true, force: true }); }
+});
+
+test('entry preloads preferences before startup and attaches without another asynchronous gap', async () => {
+  const h = fixture(); await settled();
+  assert.equal(h.counts.load, 1); assert.equal(h.counts.constructed, 0);
+  const starting = h.start();
+  assert.equal(h.counts.constructed, 1, 'loaded factory preferences do not defer UI attachment until another turn');
+  await starting; assert.equal(h.counts.load, 1);
 });
