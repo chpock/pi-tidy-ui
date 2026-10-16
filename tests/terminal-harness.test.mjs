@@ -70,3 +70,13 @@ test('editor comparison uses selected Pi composition and preserves native cursor
     assert.equal(line.getCell(6).getFgColor(), 4);
   } finally { terminal.dispose(); }
 });
+
+for (const label of ['Tidy UI appearance', 'Record diagnostic logs']) test(`settings policy: CLI local switch ${label} never waits for a config field`, async t => {
+  let clock = 0, row = `→ ${label}  On`;
+  t.mock.method(Date, 'now', () => clock += 2000);
+  const host = { async refreshTidyBounds() {}, tidyRows: () => [row], screen: () => [row], tidyHeading: () => false,
+    send(key) { assert.equal(key, '\r'); row = `→ ${label}  Off`; },
+    get agent() { throw Error('Local switches have no saved field to observe.'); } };
+  await PiTerminal.prototype.selectTidyItem.call(host, label);
+  assert.equal(row, `→ ${label}  Off`);
+});

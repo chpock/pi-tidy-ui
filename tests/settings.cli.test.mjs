@@ -1,6 +1,6 @@
 import './fixtures/test-guard.mjs';
 import assert from 'node:assert/strict';
-import { mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync, symlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { stripVTControlCharacters } from 'node:util';
 import test from 'node:test';
@@ -157,7 +157,7 @@ test('Output padding project override stays consistent after native user padding
   }
 });
 
-for (const mode of ['regular', 'fullscreen']) test(`real CLI: settings popup navigation, saved switches, reload and fresh-process replay (${mode})`,
+for (const mode of ['regular', 'fullscreen']) test(`real CLI: settings popup navigation, shared preferences, local reload and fresh-process replay (${mode})`,
   { timeout: 120000 }, async () => {
     const terminals = [], initialSettings = { unrelated: { retained: 42 } };
     const dataEvents = terminal => terminal.events().filter(event => ['call', 'result', 'model_context'].includes(event.type));
@@ -280,7 +280,7 @@ for (const mode of ['regular', 'fullscreen']) test(`real CLI: settings popup nav
       await live.tidyPage(['Status & troubleshooting', 'Use Occipital highlighting']);
       await live.diagnosticLogging(false); await live.appearance(false);
       const saved = { ...initialSettings, syntaxTheme: { kind: 'pi' }, terminalColorsEnabled: false,
-        nativeHighlightingEnabled: false, loggingEnabled: false, appearanceEnabled: false };
+        nativeHighlightingEnabled: false };
       assert.deepEqual(JSON.parse(readFileSync(path, 'utf8')), saved);
       const off = await live.capture('settings-all-off');
       assert.notDeepEqual(toolLines(off), toolLines(original), 'appearance Off removes the enabled card presentation');
@@ -290,7 +290,7 @@ for (const mode of ['regular', 'fullscreen']) test(`real CLI: settings popup nav
       const starts = live.events().filter(event => event.type === 'start').length;
       await live.command('/reload'); await live.event('start', starts + 1);
       const reloaded = await live.capture('settings-restored-off');
-      assert.deepEqual(toolLines(reloaded), toolLines(nativeHistory), 'saved Off restores exact native history rows, not just the visible switch');
+      assert.deepEqual(toolLines(reloaded), toolLines(nativeHistory), 'process-local Off survives real reload and restores exact native history rows');
       const rootRows = await live.tidyPage();
       assert.ok(rootRows.some(row => /Tidy UI appearance\s+Off$/u.test(row)));
       assert.ok(rootRows.some(row => /Set terminal colors from Pi theme\s+Off$/u.test(row)));
@@ -301,19 +301,18 @@ for (const mode of ['regular', 'fullscreen']) test(`real CLI: settings popup nav
       const replay = new PiTerminal(`settings-replay-${mode}`, { tidyUi: true, mode, session: original.session, workspace: live.work, tidyUiSettings: saved,
         extraEnv: { TIDY_UI_TEST_MENU_GEOMETRY: '1' } }); terminals.push(replay);
       await replay.ready(); const restored = await replay.capture('settings-fresh-process');
-      assert.deepEqual(toolLines(restored), toolLines(nativeHistory)); assert.deepEqual(restored.branch, original.branch);
+      assert.deepEqual(toolLines(restored), toolLines(original)); assert.deepEqual(restored.branch, original.branch);
       assert.equal(dataEvents(replay).length, 0, 'saved history executes no tool or model request');
-      assert.equal(readdirSync(replay.temp, { recursive: true }).filter(file => file.endsWith('.log')).length, 0, 'disabled logging creates no files at startup');
-      assert.ok((await replay.tidyPage(['Status & troubleshooting', 'Diagnostic logs'])).some(row => row === 'No log file created.'));
-      assert.equal(readdirSync(replay.temp, { recursive: true }).filter(file => file.endsWith('.log')).length, 0, 'reading status does not enable logging');
+      assert.ok((await replay.tidyPage(['Status & troubleshooting', 'Diagnostic logs'])).some(row => row === 'Recording: On'),
+        'new processes start recording independently of the previous process-local Off');
       assert.deepEqual(readFileSync(original.session), sessionBytes);
       const compactEvents = dataEvents(replay), file = join(replay.agent, 'extensions/pi-tidy-ui/config.json');
-      assert.deepEqual(JSON.parse(readFileSync(file, 'utf8')), saved, 'compact replay starts with all four switches Off and unrelated settings intact');
+      assert.deepEqual(JSON.parse(readFileSync(file, 'utf8')), saved, 'fresh replay retains shared preferences and unrelated settings only');
       const compactRoot = await replay.tidyPage();
-      assert.ok(compactRoot.some(row => /Tidy UI appearance\s+Off$/u.test(row)));
+      assert.ok(compactRoot.some(row => /Tidy UI appearance\s+On$/u.test(row)));
       assert.ok(compactRoot.some(row => /Set terminal colors from Pi theme\s+Off$/u.test(row)));
       assert.ok((await replay.tidyPage(['Status & troubleshooting'])).some(row => /Use Occipital highlighting\s+Off$/u.test(row)));
-      assert.ok((await replay.tidyPage(['Status & troubleshooting', 'Diagnostic logs'])).some(row => row === 'Recording: Off'));
+      assert.ok((await replay.tidyPage(['Status & troubleshooting', 'Diagnostic logs'])).some(row => row === 'Recording: On'));
       const terminal = replay;
       try {
         await terminal.resize(100, 5); await terminal.openTidyMenu();
@@ -345,3 +344,47 @@ for (const mode of ['regular', 'fullscreen']) test(`real CLI: settings popup nav
       } finally { terminal.captureScreen('compact-final', {}); }
     } finally { await closeTerminals(terminals.reverse()); }
   });
+
+for (const mode of ['regular', 'fullscreen']) test(`settings sync: two real Pi processes share confirmed preferences but keep local flags (${mode})`, { timeout: 90000 }, async () => {
+  const terminals = [];
+  const live = new PiTerminal(`settings-sync-writer-${mode}`, { tidyUi: true, mode,
+    tidyUiSettings: { syntaxTheme: { kind: 'occipital', id: 'saved-A' }, nativeHighlightingEnabled: false, future: true } });
+  terminals.push(live);
+  try {
+    await live.ready(); await live.run('user-card');
+    const initial = await live.capture('settings-sync-initial'), bytes = readFileSync(initial.session), data = traffic(live, 2);
+    const file = join(live.agent, 'extensions/pi-tidy-ui/config.json'), original = readFileSync(file);
+    const peer = new PiTerminal(`settings-sync-reader-${mode}`, { tidyUi: true, mode,
+      profileFactory({ agentDir }) {
+        mkdirSync(join(agentDir, 'extensions'), { recursive: true });
+        symlinkSync(join(live.agent, 'extensions/pi-tidy-ui'), join(agentDir, 'extensions/pi-tidy-ui'), 'dir');
+      } });
+    terminals.push(peer); await peer.ready(); await peer.openTidyMenu();
+    assert.ok(peer.tidyRows().some(row => /Tidy UI appearance\s+On$/u.test(row)));
+    assert.ok(peer.tidyRows().some(row => /Code color theme.*saved-A/u.test(row)));
+    await live.appearance(false); await live.diagnosticLogging(false);
+    assert.deepEqual(readFileSync(file), original, 'local choices never publish into the shared file');
+    const starts = live.events().filter(event => event.type === 'start').length;
+    await live.command('/reload'); await live.event('start', starts + 1);
+    assert.ok((await live.tidyPage()).some(row => /Tidy UI appearance\s+Off$/u.test(row)));
+    assert.ok((await live.tidyPage(['Status & troubleshooting', 'Diagnostic logs'])).some(row => row === 'Recording: Off'));
+    assert.ok(peer.tidyRows().some(row => /Tidy UI appearance\s+On$/u.test(row)));
+    await live.terminalColors(false);
+    await until(() => peer.tidyRows().some(row => /Set terminal colors from Pi theme\s+Off$/u.test(row)), 'peer applies saved terminal preference with no keyboard input');
+    await live.tidyPage(['Code color theme', 'Follow Pi theme']);
+    await until(() => peer.tidyRows().some(row => /Code color theme.*Follow Pi/u.test(row)), 'peer applies confirmed theme with no keyboard input');
+    await live.openTidyMenu(); await live.selectTidyItem('Status & troubleshooting');
+    assert.ok(live.tidyRows().some(row => /Use Occipital highlighting\s+Off$/u.test(row)));
+    await peer.selectTidyItem('Status & troubleshooting'); await peer.selectTidyItem('Use Occipital highlighting'); await peer.closeTidyMenu();
+    await until(() => JSON.parse(readFileSync(file, 'utf8')).nativeHighlightingEnabled === true, 'peer native preference is published');
+    await until(async () => {
+      await live.refreshTidyBounds(); return live.tidyRows().some(row => /Use Occipital highlighting\s+On$/u.test(row));
+    }, 'local appearance Off does not stop shared preference monitoring');
+    await live.closeTidyMenu();
+    assert.ok((await live.tidyPage()).some(row => /Tidy UI appearance\s+Off$/u.test(row)));
+    assert.ok((await peer.tidyPage(['Status & troubleshooting', 'Diagnostic logs'])).some(row => row === 'Recording: On'));
+    assert.deepEqual(JSON.parse(readFileSync(file, 'utf8')), { syntaxTheme: { kind: 'pi' }, nativeHighlightingEnabled: true, terminalColorsEnabled: false, future: true });
+    assert.deepEqual(traffic(live, 2), data); assert.deepEqual(readFileSync(initial.session), bytes);
+    assert.equal(peer.events().filter(event => ['call', 'result', 'model_context'].includes(event.type)).length, 0);
+  } finally { await closeTerminals(terminals.reverse()); }
+});

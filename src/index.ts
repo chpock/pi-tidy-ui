@@ -3,7 +3,7 @@ import { Box, Container, Editor, Markdown, Spacer, TruncatedText, colorToRgb, vi
 import { isAbsolute, resolve } from "node:path";
 import { createRequire } from "node:module";
 import { SessionLogging } from "./session-logging.ts";
-import { ExtensionSettings, type SyntaxTheme } from './settings.ts';
+import { ExtensionSettings, processPreferences, type LocalPreferences, type SettingsLoadResult, type SyntaxTheme } from './settings.ts';
 import { TidyMenu, type TidyMenuOwner, type TidyMenuAction } from './tidy-menu.ts';
 import type { SyntaxMenuOutcome } from './occipital/menu.ts';
 import { type JournalOptions } from "./debug-log.ts";
@@ -1346,7 +1346,9 @@ export function installTidyUi(tui: LiveTui, getTheme: () => Palette, options: Ti
 export interface TidyUiRuntimeOptions {
   /** Isolated embedding/test roots; false explicitly disables automatic journals. */
   logging?: false | Omit<JournalOptions, "warn" | "enabled">;
-  settings?: Pick<ExtensionSettings, 'load' | 'update'>;
+  settings?: Pick<ExtensionSettings, 'load' | 'update'> & Partial<Pick<ExtensionSettings, 'watch'>>;
+  /** An isolated process-memory owner for SDK embeddings. */
+  localPreferences?: LocalPreferences;
   /** Existing provider/settings bindings for controlled SDK embeddings. */
   syntax?: (ctx: ExtensionContext) => SyntaxRuntimeOptions;
 }
@@ -1365,7 +1367,8 @@ export default function tidyUi(pi: ExtensionAPI, options: TidyUiRuntimeOptions =
   for (const flag of retiredBudgetFlags) pi.registerFlag(flag, { type: "string", description: "Deprecated and ignored: layouts are retained per component without eviction limits" });
   let warnedBudgetFlags = false;
   let controller: TidyUiController | undefined;
-  let enabled = true, colorsEnabled = true, loggingEnabled = true;
+  const local = options.localPreferences ?? processPreferences();
+  let enabled = local.appearanceEnabled, colorsEnabled = true, loggingEnabled = local.loggingEnabled;
   // Only confirmed choices survive runtime replacement; menu previews are client-local.
   let selectedTheme: SyntaxTheme = { kind: 'pi' };
   const settings = options.settings ?? new ExtensionSettings();
@@ -1374,16 +1377,39 @@ export default function tidyUi(pi: ExtensionAPI, options: TidyUiRuntimeOptions =
   let lifecycle = 0;
   let saveAbort = new AbortController();
   let activeMenu: TidyMenu | undefined;
+  let unwatchSettings: (() => void) | undefined;
+  let lastSettingsIssue: string | undefined;
   function loadPreferences(): Promise<void> {
     return preferencesReady ??= (async () => {
       try {
         const loaded = await settings.load();
-        enabled = loaded.appearanceEnabled ?? true; colorsEnabled = loaded.terminalColorsEnabled ?? true;
-        syntaxEnabled = loaded.nativeHighlightingEnabled ?? true; loggingEnabled = loaded.loggingEnabled ?? true;
+        colorsEnabled = loaded.terminalColorsEnabled ?? true;
+        syntaxEnabled = loaded.nativeHighlightingEnabled ?? true;
         selectedTheme = loaded.syntaxTheme;
-        if (!loaded.ok) preferencesIssue = loaded.issue.message;
+        if (!loaded.ok) preferencesIssue = lastSettingsIssue = loaded.issue.message;
       } catch { preferencesIssue = 'Settings could not be read; using defaults.'; }
     })();
+  }
+  function applySavedPreferences(loaded: SettingsLoadResult, ctx: ExtensionContext, epoch: number) {
+    if (epoch !== lifecycle || saveAbort.signal.aborted) return;
+    if (!loaded.ok) {
+      if (lastSettingsIssue !== loaded.issue.message && ctx.hasUI) ctx.ui.notify(`pi-tidy-ui: ${loaded.issue.message}`, 'warning');
+      lastSettingsIssue = loaded.issue.message; return;
+    }
+    lastSettingsIssue = undefined;
+    const choice = loaded.syntaxTheme;
+    const themeChanged = choice.kind !== selectedTheme.kind || choice.kind === 'occipital' && selectedTheme.kind === 'occipital' && choice.id !== selectedTheme.id;
+    const colorsChanged = colorsEnabled !== (loaded.terminalColorsEnabled ?? true);
+    const nativeChanged = syntaxEnabled !== (loaded.nativeHighlightingEnabled ?? true);
+    if (!themeChanged && !colorsChanged && !nativeChanged) return;
+    selectedTheme = { ...choice }; syntaxEnabled = loaded.nativeHighlightingEnabled ?? true;
+    if (colorsChanged) applyTerminalPreference(loaded.terminalColorsEnabled ?? true, ctx);
+    const previewing = activeMenu?.preferencesChanged(selectedTheme);
+    if (themeChanged && !previewing) syntax?.applySavedTheme(selectedTheme);
+    if (nativeChanged) {
+      void syntax?.setEnabled(syntaxEnabled).catch(() => { if (epoch === lifecycle && ctx.hasUI) ctx.ui.notify('pi-tidy-ui: Native highlighting preference could not be applied.', 'warning'); });
+    }
+    diagnose(logging?.sink, 'INFO', 'runtime', 'Shared preferences refreshed without writing configuration', { themeChanged, colorsChanged, nativeChanged });
   }
   function reportPreferencesIssue(ctx: ExtensionContext) {
     if (preferencesIssue && ctx.hasUI) { ctx.ui.notify(`pi-tidy-ui: ${preferencesIssue}`, 'warning'); preferencesIssue = undefined; }
@@ -1474,6 +1500,14 @@ export default function tidyUi(pi: ExtensionAPI, options: TidyUiRuntimeOptions =
       view.observe();
       return { render() { if (colors === view) view.observe(); return []; }, invalidate() { if (colors === view) view.observe(); } };
     }, { placement: "belowEditor" });
+  }
+  function applyTerminalPreference(value: boolean, ctx: ExtensionContext) {
+    colorsEnabled = value;
+    if (!value) { colors?.observe(); if (colorExit) process.off('exit', colorExit); colorExit = undefined; }
+    else if (colors) {
+      if (!colorExit) { colorExit = terminalColorExit(new WeakRef(colors)); process.on('exit', colorExit); }
+      colors.observe(true);
+    } else startColors(ctx);
   }
   const palette = () => colors?.palette(liveContext!.ui.theme) ?? liveContext!.ui.theme;
   let directorySource: GitBranchSource | undefined;
@@ -1655,6 +1689,7 @@ export default function tidyUi(pi: ExtensionAPI, options: TidyUiRuntimeOptions =
     if (current !== lifecycle) return;
     reportPreferencesIssue(ctx);
     startLogging(ctx, event.reason); start(ctx);
+    unwatchSettings?.(); unwatchSettings = settings.watch?.(loaded => applySavedPreferences(loaded, ctx, current));
   });
   pi.on("session_info_changed", (event) => {
     // Async handlers may deliver old notifications last; reread current saved metadata once.
@@ -1663,7 +1698,7 @@ export default function tidyUi(pi: ExtensionAPI, options: TidyUiRuntimeOptions =
     logging?.nameChanged(event.name);
   });
   pi.on("session_shutdown", async (event, ctx) => {
-    ++lifecycle; saveAbort.abort(); activeMenu?.close(); activeMenu = undefined;
+    ++lifecycle; saveAbort.abort(); unwatchSettings?.(); unwatchSettings = undefined; activeMenu?.close(); activeMenu = undefined;
     liveBashCalls.clear(); footerName = undefined;
     liveContext = ctx; logSnapshot(); pendingFooter = undefined; stopColors(); restoreFooter(); controller?.restore(); controller = undefined;
     const stopped = stopSyntax(); liveContext = undefined; syntaxContext.current = undefined;
@@ -1680,32 +1715,28 @@ export default function tidyUi(pi: ExtensionAPI, options: TidyUiRuntimeOptions =
       diagnose(logging?.sink, 'INFO', 'runtime', 'Settings menu action requested', { action: action.kind });
       if (action.kind === 'switch') {
         // Queue confirmations in order, before cleanup can outlive this popup.
-        const saving = settings.update({ [action.key]: action.value }, { signal: saveAbort.signal }).catch(() => undefined);
+        const persistent = action.key === 'terminalColorsEnabled' || action.key === 'nativeHighlightingEnabled';
+        const saving = persistent ? settings.update({ [action.key]: action.value }, { signal: saveAbort.signal }).catch(() => undefined) : undefined;
         switch (action.key) {
           case 'appearanceEnabled':
-            enabled = action.value;
+            enabled = local.appearanceEnabled = action.value;
             if (enabled) start(ctx);
             else { pendingFooter = undefined; stopColors(); restoreFooter(); controller?.restore(); await stopSyntax(); }
             break;
           case 'terminalColorsEnabled':
-            colorsEnabled = action.value;
-            if (!colorsEnabled) { colors?.observe(); if (colorExit) process.off('exit', colorExit); colorExit = undefined; }
-            else if (colors) {
-              if (!colorExit) { colorExit = terminalColorExit(new WeakRef(colors)); process.on('exit', colorExit); }
-              colors.observe(true);
-            } else startColors(ctx);
+            applyTerminalPreference(action.value, ctx);
             break;
           case 'nativeHighlightingEnabled':
             syntaxEnabled = action.value; await syntax?.setEnabled(action.value); break;
           case 'loggingEnabled':
-            loggingEnabled = action.value; await logging?.setEnabled(action.value); break;
+            loggingEnabled = local.loggingEnabled = action.value; await logging?.setEnabled(action.value); break;
         }
         const outcome = await saving;
         if (!current()) return retired;
-        if (!outcome) return { ok: false, message: 'Applied for now, but settings could not be saved.' };
-        if (!outcome.ok) return { ok: false, message: `Applied for now, but not saved: ${outcome.issue.message}` };
+        if (persistent && !outcome) return { ok: false, message: 'Applied for now, but settings could not be saved.' };
+        if (outcome && !outcome.ok) return { ok: false, message: `Applied for now, but not saved: ${outcome.issue.message}` };
         if (action.key === 'loggingEnabled' && action.value && logging?.status().state === 'failed')
-          return { ok: false, message: 'Preference saved, but recording failed. See Diagnostic logs to retry.' };
+          return { ok: false, message: 'Recording failed. See Diagnostic logs to retry.' };
         return { ok: true };
       }
       if (action.kind === 'theme') {

@@ -113,7 +113,7 @@ test("extension lifecycle removes the temporary widget, restores on shutdown, an
   assert.equal(Container.prototype.addChild, before);
 });
 
-test("off persists across session replacements but a reload creates a fresh enabled runtime", async () => {
+test("off persists across session replacements but a fresh process-memory owner starts enabled", async () => {
   const h = extensionHarness(); const before = Container.prototype.addChild;
   await h.events.get("session_start")!({}, h.ctx);
   await setAppearance(h.commands.get('tidy-ui')!.handler, h.ctx, false);

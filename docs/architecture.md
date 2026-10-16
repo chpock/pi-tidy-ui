@@ -26,7 +26,7 @@ For user-facing behavior and controls, start with the [README](../README.md). Ex
 | `src/syntax/` | Card-source consumer, native/Pi work gating, ANSI/structured-range projection and interactive runtime/menu binding; preparation outside render |
 | `src/occipital/` | UI-independent bounded client, canonical source controller/retention, provider recovery, JSON codec, stdio/shared factories and exact native acquisition |
 | `src/debug-log.ts`, `src/session-logging.ts`, `src/diagnostics.ts` | Bounded human-readable journals, run-bound observers and safe primitive error/decision reporting; independent from presentation ownership |
-| `src/settings.ts` | Theme-only preferences at the public Pi agent directory, validation and serialized complete-file writes |
+| `src/settings.ts` | Shared theme/terminal/native preferences, metadata-gated directory events, serialized complete-file writes, and two process-only reload flags |
 | `crates/occipital/` | Independent native service: Syntect/two-face engine, worker/scheduler/ingress/protocol, stdio/shared frontends and daemon-owned catalogue |
 | `scripts/release/`, `packages/native/` | Preparation-only payload staging/notices/templates; not published availability or platform-support evidence |
 

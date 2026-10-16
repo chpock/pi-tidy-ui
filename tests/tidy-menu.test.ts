@@ -644,3 +644,15 @@ test('theme preview: native wheel selection previews without confirming or persi
   assert.deepEqual(f.state.selected, { kind: 'occipital', id: 'opaque-0' }); assert.equal(f.calls.length, 0);
   await f.key('\x1b'); assert.deepEqual(f.state.selected, { kind: 'pi' });
 });
+
+for (const finish of ['escape', 'confirm'] as const) test(`settings sync: external confirmation preserves local preview until ${finish}`, async () => {
+  const f = fixture(); native(f, 3); await f.select('Code color theme'); await f.key('\x1b[B');
+  const preview = { kind: 'occipital' as const, id: 'opaque-0' }, external = { kind: 'occipital' as const, id: 'opaque-2' };
+  assert.deepEqual(f.state.selected, preview);
+  const change = Reflect.get(f.menu, 'preferencesChanged'); assert.equal(typeof change, 'function');
+  assert.equal(change.call(f.menu, external), true, 'host must not apply the external theme over a local preview');
+  assert.deepEqual(f.state.selected, preview); assert.equal(f.calls.length, 0);
+  await f.key(finish === 'escape' ? '\x1b' : '\r');
+  assert.deepEqual(f.state.selected, finish === 'escape' ? external : preview);
+  assert.deepEqual(f.calls, finish === 'escape' ? [] : [{ kind: 'theme', choice: preview }]);
+});

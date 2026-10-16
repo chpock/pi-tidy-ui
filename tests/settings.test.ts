@@ -6,7 +6,7 @@ import fs from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
-import { ExtensionSettings, SETTINGS_FILE_MAX_BYTES, type SyntaxTheme } from "../src/settings.ts";
+import { ExtensionSettings, SETTINGS_FILE_MAX_BYTES, type SyntaxTheme, type SettingsLoadResult } from "../src/settings.ts";
 
 const pi: SyntaxTheme = { kind: "pi" };
 const theme = (id: string): SyntaxTheme => ({ kind: "occipital", id });
@@ -490,9 +490,9 @@ test("settings cancellation: a rename already requested by a live owner is the c
   assert.deepEqual(await store.load(), { ok: true, syntaxTheme: theme('committed') }); await noTemporaryFiles(file);
 });
 
-const switchKeys = ['appearanceEnabled', 'terminalColorsEnabled', 'nativeHighlightingEnabled', 'loggingEnabled'] as const;
+const switchKeys = ['terminalColorsEnabled', 'nativeHighlightingEnabled'] as const;
 
-test('settings: all appearance and diagnostic switches persist together with theme and future fields', async t => {
+test('settings: shared switches persist together with theme and future fields', async t => {
   const { store, file, seed } = await fixture(t);
   await seed('{"future":{"keep":true},"syntaxTheme":{"kind":"occipital","id":"saved"}}');
   const switches = Object.fromEntries(switchKeys.map(key => [key, false]));
@@ -520,9 +520,81 @@ for (const key of switchKeys) test(`settings: ${key} rejects nonboolean file and
 
 test('settings: serialized mixed switch and theme patches preserve one another', async t => {
   const { store, file } = await fixture(t);
-  const outcomes = await Promise.all([store.update({ appearanceEnabled: false }), store.update({ syntaxTheme: theme('mixed') }),
-    store.update({ loggingEnabled: false }), store.update({ terminalColorsEnabled: false, nativeHighlightingEnabled: false })]);
+  const outcomes = await Promise.all([store.update({ nativeHighlightingEnabled: true }), store.update({ syntaxTheme: theme('mixed') }),
+    store.update({ terminalColorsEnabled: false }), store.update({ nativeHighlightingEnabled: false })]);
   assert.ok(outcomes.every(result => result.ok));
   assert.deepEqual(await new ExtensionSettings({ file }).load(), { ok: true, syntaxTheme: theme('mixed'),
-    appearanceEnabled: false, terminalColorsEnabled: false, nativeHighlightingEnabled: false, loggingEnabled: false });
+    terminalColorsEnabled: false, nativeHighlightingEnabled: false });
+});
+
+// Local switches must never be restored from, or published into, shared settings.
+test('settings policy: legacy process-local flags are ignored and removed by the next explicit save', async t => {
+  const { store, file, seed } = await fixture(t);
+  await seed('{"appearanceEnabled":false,"loggingEnabled":"obsolete","terminalColorsEnabled":false,"future":true}');
+  assert.deepEqual(await store.load(), { ok: true, syntaxTheme: pi, terminalColorsEnabled: false });
+  assert.deepEqual(await store.update({ syntaxTheme: theme('chosen') }), { ok: true });
+  assert.deepEqual(JSON.parse(await fs.readFile(file, 'utf8')), { terminalColorsEnabled: false, future: true, syntaxTheme: theme('chosen') });
+});
+
+for (const key of ['appearanceEnabled', 'loggingEnabled']) test(`settings policy: ${key} cannot enter the persistence queue`, async t => {
+  const { store, root } = await fixture(t);
+  safeFailure(await store.update({ [key]: false } as any), 'invalid-patch');
+  assert.deepEqual(await fs.readdir(root), []);
+});
+
+function watchSettings(store: ExtensionSettings, changed: (value: Awaited<ReturnType<ExtensionSettings['load']>>) => void): () => void {
+  const watch = Reflect.get(store, 'watch');
+  assert.equal(typeof watch, 'function', 'settings must expose event-driven subscription');
+  return watch.call(store, changed);
+}
+async function turns(count = 12) { for (let i = 0; i < count; i++) await new Promise<void>(resolve => setImmediate(resolve)); }
+
+test('settings watch: atomic peer saves apply repeatedly without rewriting or idle filesystem work', { timeout: 10000 }, async t => {
+  const { store, file, seed } = await fixture(t); await seed('{}'); await store.load();
+  const changes: SettingsLoadResult[] = [];
+  let resolveChange!: () => void;
+  const changed = () => new Promise<void>(resolve => { resolveChange = resolve; });
+  const stop = watchSettings(store, value => { changes.push(value); resolveChange?.(); }); t.after(stop);
+  const realStat = fs.stat, realOpen = fs.open; let checks = 0, reads = 0, writes = 0;
+  t.mock.method(fs, 'stat', (...args: Parameters<typeof fs.stat>) => { checks++; return realStat(...args); });
+  t.mock.method(fs, 'open', (...args: Parameters<typeof fs.open>) => {
+    if (args[0] === file && args[1] === 'r') reads++;
+    if (args[1] === 'wx') writes++;
+    return realOpen(...args);
+  });
+  await turns(); const idle = [checks, reads, writes]; await turns(100);
+  assert.deepEqual([checks, reads, writes], idle, 'an idle subscriber performs no periodic stat/read/write');
+  await fs.writeFile(join(dirname(file), 'unrelated.tmp'), 'ignored'); await turns();
+  assert.deepEqual([checks, reads, writes], idle, 'unrelated directory traffic is ignored before stat');
+  const peer = new ExtensionSettings({ file });
+  for (const id of ['A', 'B', 'C']) {
+    const notification = changed(); await peer.update({ syntaxTheme: theme(id) }); await notification;
+    assert.deepEqual(changes.at(-1), { ok: true, syntaxTheme: theme(id) });
+  }
+  assert.equal(writes, 3, 'subscribers never write settings back');
+  const frozen = changes.length; stop(); await peer.update({ syntaxTheme: pi }); await turns();
+  assert.equal(changes.length, frozen, 'disposed subscriptions cannot publish');
+});
+
+test('settings watch: first save is observed even when the configuration directory did not exist', { timeout: 10000 }, async t => {
+  const { store, file, root } = await fixture(t); await store.load();
+  let resolve!: (value: SettingsLoadResult) => void;
+  const changed = new Promise<SettingsLoadResult>(done => { resolve = done; });
+  const stop = watchSettings(store, resolve); t.after(stop);
+  assert.deepEqual(await fs.readdir(root), [], 'watching must not create config directories or files');
+  await new ExtensionSettings({ file }).update({ syntaxTheme: theme('first') });
+  assert.deepEqual(await changed, { ok: true, syntaxTheme: theme('first') });
+});
+
+test('settings policy: process-local values survive module reload but not a new process', async t => {
+  const original = await import('../src/settings.ts');
+  const get = Reflect.get(original, 'processPreferences'); assert.equal(typeof get, 'function');
+  const state = get(); const before = { ...state }; t.after(() => Object.assign(state, before));
+  state.appearanceEnabled = false; state.loggingEnabled = false;
+  const reloaded = await import(new URL('../src/settings.ts?reload-policy', import.meta.url).href);
+  assert.deepEqual(Reflect.get(reloaded, 'processPreferences')(), { appearanceEnabled: false, loggingEnabled: false });
+  const script = `import { processPreferences } from ${JSON.stringify(new URL('../src/settings.ts', import.meta.url).href)}; console.log(JSON.stringify(processPreferences()));`;
+  const next = spawnSync(process.execPath, ['--input-type=module', '--eval', script], { env: { ...process.env }, encoding: 'utf8' });
+  assert.equal(next.status, 0, next.stderr);
+  assert.deepEqual(JSON.parse(next.stdout), { appearanceEnabled: true, loggingEnabled: true });
 });

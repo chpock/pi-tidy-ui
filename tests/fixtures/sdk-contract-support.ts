@@ -109,7 +109,8 @@ export function extensionHarness(mode: "tui" | "print" | "json" | "rpc" = "tui",
       else { widgetComponents.delete(name); widgetPlacements.delete(name); }
     },
   } } as unknown as ExtensionContext;
-  tidyUi(api, { logging: false, settings: fixtureSyntaxOptions().settings, syntax: fixtureSyntaxOptions });
+  tidyUi(api, { logging: false, localPreferences: { appearanceEnabled: true, loggingEnabled: true },
+    settings: fixtureSyntaxOptions().settings, syntax: fixtureSyntaxOptions });
   return { root, ctx, events, commands, flags, widgets, notices, widgetComponents, widgetPlacements };
 }
 

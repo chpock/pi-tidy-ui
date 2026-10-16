@@ -344,7 +344,8 @@ async function footerSetup(foreignEditor = false, selectorAtStartup = false) {
       cost: { input: cost, output: 0, cacheRead: 0, cacheWrite: 0, total: cost } } });
   if (foreignEditor) ctx.ui.setEditorComponent(footerForeignEditor);
   if (selectorAtStartup) { input.clear(); input.addChild(new Text("NATIVE_RELOAD_BOX", 0, 0)); }
-  append(); tidyUi(pi as unknown as ExtensionAPI, { logging: false, settings: fixtureSyntaxOptions().settings, syntax: fixtureSyntaxOptions }); await emit('session_start');
+  append(); tidyUi(pi as unknown as ExtensionAPI, { logging: false, localPreferences: { appearanceEnabled: true, loggingEnabled: true },
+    settings: fixtureSyntaxOptions().settings, syntax: fixtureSyntaxOptions }); await emit('session_start');
   return { root, host, footer, native, ctx, manager, statuses, append, emit, editor, input,
     render: (width = 140) => footer.children[0]!.render(width), counts: () => ({ scans, contextReads }), authReads: () => authReads,
     nameReads: () => nameReads,
@@ -526,7 +527,7 @@ test("footer session name restores through off-on reload and new-session boundar
     f.manager.appendSessionInfo("Saved session title"); f.emit("session_info_changed", { name: "Saved session title" });
     const named = f.render().map(stripVTControlCharacters);
     await f.control("off"); await f.emit("session_start", { reason: "reload" });
-    assert.equal(f.footer.children[0], f.native, "reload preserves the saved appearance-off preference");
+    assert.equal(f.footer.children[0], f.native, "reload preserves the process-local appearance-off preference");
     await f.control("on"); assert.deepEqual(f.render().map(stripVTControlCharacters), named);
     await f.emit("session_start", { reason: "reload" }); assert.deepEqual(f.render().map(stripVTControlCharacters), named);
     f.manager.newSession(); await f.emit("session_start", { reason: "new" });

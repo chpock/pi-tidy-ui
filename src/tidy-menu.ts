@@ -2,15 +2,15 @@ import type { Theme } from '@earendil-works/pi-coding-agent';
 import { Input, SelectList, getKeybindings, matchesKey, truncateToWidth, visibleWidth, wrapTextWithAnsi,
   type Component, type SelectItem, type TuiMouseEvent, type TuiMouseEventResult } from '@earendil-works/pi-tui';
 import { readableDiagnosticText } from './debug-log.ts';
-import type { SavedSwitches, SyntaxTheme } from './settings.ts';
+import type { Switches, SyntaxTheme } from './settings.ts';
 import type { SyntaxMenuOutcome, SyntaxMenuSnapshot } from './occipital/menu.ts';
 import type { SessionLogging } from './session-logging.ts';
 import { PROTOCOL_VERSION } from './occipital/protocol.ts';
 
-export type TidyMenuAction = { kind: 'switch'; key: keyof SavedSwitches; value: boolean }
+export type TidyMenuAction = { kind: 'switch'; key: keyof Switches; value: boolean }
   | { kind: 'theme'; choice: SyntaxTheme }
   | { kind: 'refreshThemes' | 'reapplyAppearance' | 'reapplyColors' | 'clearCache' | 'retryLogging' | 'snapshotLogs' };
-export interface TidyMenuSnapshot extends SavedSwitches {
+export interface TidyMenuSnapshot extends Switches {
   selected: SyntaxTheme;
   appearance: string;
   terminalColors: string;
@@ -80,6 +80,7 @@ export class TidyMenu implements Component {
   private themeLoadFailed = false;
   private themeVisit = 0;
   private originalTheme?: SyntaxTheme;
+  private themePreviewed = false;
   private cache: string[] = [];
   private detailOffset = 0;
   private listHeight = 0;
@@ -107,6 +108,14 @@ export class TidyMenu implements Component {
     this.list = undefined;
   }
   invalidate(): void { this.listKey = ''; this.search.invalidate(); }
+  /** Confirmed external state changes the rollback point, not an active preview. */
+  preferencesChanged(choice: SyntaxTheme): boolean {
+    if (this.closed) return false;
+    const preview = this.page === 'themes' && !!this.originalTheme && this.themePreviewed;
+    if (this.page === 'themes' && this.originalTheme) this.originalTheme = { ...choice };
+    this.listKey = ''; this.requestRender();
+    return preview;
+  }
   private back(): void {
     if (this.page === 'root') { this.close(); return; }
     if (this.page === 'themes') this.restoreTheme();
@@ -117,7 +126,7 @@ export class TidyMenu implements Component {
     this.page = page; this.listKey = ''; this.notice = ''; this.detailOffset = 0;
     if (page === 'cache') this.cache = this.owner.cacheDetails();
     if (page === 'themes') {
-      const visit = ++this.themeVisit;
+      const visit = ++this.themeVisit; this.themePreviewed = false;
       this.themeLoading = true; this.themeLoadFailed = false; this.search.setValue('');
       void this.owner.prepareThemes().then(() => {
         if (!this.closed && this.page === 'themes' && visit === this.themeVisit) {
@@ -134,7 +143,7 @@ export class TidyMenu implements Component {
     this.requestRender();
   }
   private restoreTheme(): void {
-    const original = this.originalTheme; this.originalTheme = undefined; ++this.themeVisit;
+    const original = this.originalTheme; this.originalTheme = undefined; this.themePreviewed = false; ++this.themeVisit;
     if (original) this.owner.previewTheme(original);
   }
   private previewTheme(value: string): void {
@@ -142,10 +151,10 @@ export class TidyMenu implements Component {
     const state = this.owner.snapshot();
     const profile = !themesUnavailable(state) && state.syntax?.provider.description?.profiles.find(profile => `profile:${profile.id}` === value);
     const choice: SyntaxTheme | undefined = value === 'theme:pi' ? { kind: 'pi' } : profile ? { kind: 'occipital', id: profile.id } : undefined;
-    if (choice) this.owner.previewTheme(choice);
+    if (choice) { this.themePreviewed = true; this.owner.previewTheme(choice); }
   }
   private confirmTheme(choice: SyntaxTheme): void {
-    this.originalTheme = undefined; ++this.themeVisit;
+    this.originalTheme = undefined; this.themePreviewed = false; ++this.themeVisit;
     void this.perform({ kind: 'theme', choice });
   }
   private feedback(message: string, error = false): void {
@@ -170,7 +179,7 @@ export class TidyMenu implements Component {
     if (value === 'back') { this.back(); return; }
     if (value === 'close') { this.close(); return; }
     if (['themes', 'support', 'service', 'logs', 'cache'].includes(value)) { this.open(value as Page); return; }
-    const switches: Record<string, keyof SavedSwitches> = { appearance: 'appearanceEnabled', colors: 'terminalColorsEnabled', native: 'nativeHighlightingEnabled', logging: 'loggingEnabled' };
+    const switches: Record<string, keyof Switches> = { appearance: 'appearanceEnabled', colors: 'terminalColorsEnabled', native: 'nativeHighlightingEnabled', logging: 'loggingEnabled' };
     const key = switches[value];
     if (key) { void this.perform({ kind: 'switch', key, value: !state[key] }); return; }
     if (value === 'refresh-status') { this.listKey = ''; this.feedback('Status refreshed.'); return; }
@@ -219,7 +228,7 @@ export class TidyMenu implements Component {
           item('refreshThemes', 'Refresh theme list', 'Reload available native themes explicitly.'), back];
       }
       case 'support': return [
-        item('reapplyAppearance', 'Reapply Tidy UI appearance', 'Retry styling without switching it off first. Does not change your saved preference.'),
+        item('reapplyAppearance', 'Reapply Tidy UI appearance', 'Retry styling without switching it off first. Does not change your current preference.'),
         item('reapplyColors', 'Reapply terminal colors', 'Retry the current color preference. Does not turn synchronization on if it is off.'),
         item('native', 'Use Occipital highlighting', 'Native code colors. Off keeps Pi fallback for files and one color for Bash commands.', onOff(state.nativeHighlightingEnabled)),
         item('service', 'Highlighting service details', 'Versions, connection, selected and effective code colors.', undefined, true),

@@ -118,6 +118,12 @@ export class SyntaxClient implements SyntaxMenuOwner {
     this.applyTheme(copyTheme(choice));
     this.log('Syntax theme preview applied without persistence', { choice: choice.kind, theme: choice.kind === 'occipital' ? choice.id : 'Pi', revision: this.preferenceRevision });
   }
+  /** Apply a confirmed shared preference without writing it back. */
+  applySavedTheme(choice: SyntaxTheme): void {
+    if (this.disposed) return;
+    this.applyTheme(copyTheme(choice));
+    this.log('Confirmed syntax preference applied from settings without persistence', { choice: choice.kind, theme: choice.kind === 'occipital' ? choice.id : 'Pi' });
+  }
   private applyTheme(selected: SyntaxTheme): void {
     if (selected.kind !== this.selected.kind || selected.kind === 'occipital' && this.selected.kind === 'occipital' && selected.id !== this.selected.id)
       this.missingEpisode = false;

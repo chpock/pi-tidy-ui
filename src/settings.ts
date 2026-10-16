@@ -1,11 +1,20 @@
 import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
-import { basename, dirname, join } from "node:path";
+import nativeFs, { type BigIntStats, type FSWatcher } from "node:fs";
+import { basename, dirname, join, relative, sep } from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 
 export type SyntaxTheme = { kind: "pi" } | { kind: "occipital"; id: string };
-export const SWITCH_KEYS = ['appearanceEnabled', 'terminalColorsEnabled', 'nativeHighlightingEnabled', 'loggingEnabled'] as const;
+export const SWITCH_KEYS = ['terminalColorsEnabled', 'nativeHighlightingEnabled'] as const;
 export type SavedSwitches = Record<(typeof SWITCH_KEYS)[number], boolean>;
+export type LocalPreferences = { appearanceEnabled: boolean; loggingEnabled: boolean };
+export type Switches = SavedSwitches & LocalPreferences;
+const localKey = Symbol.for('pi-tidy-ui.process-preferences');
+/** Only primitive values outlive module reload; no runtime owners live here. */
+export function processPreferences(): LocalPreferences {
+  const processState = globalThis as typeof globalThis & { [localKey]?: LocalPreferences };
+  return processState[localKey] ??= { appearanceEnabled: true, loggingEnabled: true };
+}
 export type SettingsPatch = Partial<SavedSwitches & { syntaxTheme: SyntaxTheme }>;
 export const SETTINGS_FILE_MAX_BYTES = 64 * 1024;
 const THEME_ID_MAX_BYTES = 64;
@@ -28,6 +37,7 @@ const ISSUE_MESSAGES = {
   "invalid-patch": "Settings update contains an invalid preference or field.",
   "write-failed": "Settings could not be saved; the previous file was kept.",
   "cancelled": "Settings update was cancelled; the previous file was kept.",
+  "watch-failed": "Settings changes could not be monitored; reload Pi to retry.",
 } as const;
 
 export type SettingsIssue = { code: keyof typeof ISSUE_MESSAGES; message: string };
@@ -37,7 +47,10 @@ export type SettingsLoadResult = Partial<SavedSwitches> & (
 export type SettingsSaveResult = { ok: true } | { ok: false; issue: SettingsIssue };
 export type SettingsLocation = { agentDir: string; file?: never } | { file: string; agentDir?: never };
 
-type DocumentResult = { ok: true; document: Record<string, unknown> } | { ok: false; issue: SettingsIssue };
+type DocumentResult = ({ ok: true; document: Record<string, unknown> } | { ok: false; issue: SettingsIssue }) & { stamp?: string };
+function metadata(stat: BigIntStats): string {
+  return `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}`;
+}
 
 function issue(code: SettingsIssue["code"]): SettingsIssue {
   // Never include file contents, caller IDs, paths or platform error strings.
@@ -67,10 +80,10 @@ async function readDocument(file: string): Promise<DocumentResult> {
     try {
       handle = await fs.open(file, "r");
     } catch (error) {
-      if (object(error) && error.code === "ENOENT") return { ok: true, document: {} };
+      if (object(error) && error.code === "ENOENT") return { ok: true, document: {}, stamp: 'missing' };
       return { ok: false, issue: issue("read-failed") };
     }
-    const stat = await handle.stat();
+    const stat = await handle.stat({ bigint: true });
     if (!stat.isFile()) return { ok: false, issue: issue("read-failed") };
     if (stat.size > SETTINGS_FILE_MAX_BYTES) return { ok: false, issue: issue("too-large") };
     // Read at most one byte beyond the limit, even if the file grows after stat.
@@ -109,7 +122,7 @@ async function readDocument(file: string): Promise<DocumentResult> {
     }
     if (SWITCH_KEYS.some(key => Object.hasOwn(document, key) && typeof (document as Record<string, unknown>)[key] !== 'boolean'))
       return { ok: false, issue: issue('invalid-switch') };
-    return { ok: true, document };
+    return { ok: true, document, stamp: metadata(stat) };
   } catch {
     return { ok: false, issue: issue("read-failed") };
   } finally {
@@ -121,17 +134,87 @@ async function readDocument(file: string): Promise<DocumentResult> {
 export class ExtensionSettings {
   readonly file: string;
   private writes: Promise<void> = Promise.resolve();
+  private writeRevision = 0;
+  private lastStamp?: string;
 
   constructor(location?: SettingsLocation) {
     this.file = location?.file ?? join(location?.agentDir ?? getAgentDir(), "extensions", "pi-tidy-ui", "config.json");
   }
 
-  async load(): Promise<SettingsLoadResult> {
+  private async read(): Promise<{ value: SettingsLoadResult; stamp?: string }> {
     const result = await readDocument(this.file);
-    if (!result.ok) return { ok: false, syntaxTheme: { kind: "pi" }, issue: result.issue };
+    if (!result.ok) return { value: { ok: false, syntaxTheme: { kind: 'pi' }, issue: result.issue } };
     const switches = Object.fromEntries(SWITCH_KEYS.filter(key => Object.hasOwn(result.document, key)).map(key => [key, result.document[key]])) as Partial<SavedSwitches>;
-    return { ok: true, ...switches, syntaxTheme: Object.hasOwn(result.document, "syntaxTheme") ?
-      syntaxTheme(result.document.syntaxTheme)! : { kind: "pi" } };
+    return { stamp: result.stamp, value: { ok: true, ...switches, syntaxTheme: Object.hasOwn(result.document, 'syntaxTheme') ?
+      syntaxTheme(result.document.syntaxTheme)! : { kind: 'pi' } } };
+  }
+  async load(): Promise<SettingsLoadResult> {
+    const result = await this.read(); this.lastStamp = result.stamp; return result.value;
+  }
+
+  /** Subscribe only while a runtime is active. Renames are observed on the directory,
+   * or its nearest existing ancestor until the configuration is first created. */
+  watch(changed: (value: SettingsLoadResult) => void): () => void {
+    let closed = false, running = false, dirty = false, rearm = true;
+    let watcher: FSWatcher | undefined, scheduled: NodeJS.Immediate | undefined;
+    let directory = '', stamp = this.lastStamp;
+    const publish = (value: SettingsLoadResult) => {
+      if (!closed) { try { changed(value); } catch { /* Observers do not own the filesystem subscription. */ } }
+    };
+    const schedule = () => {
+      if (closed) return;
+      dirty = true;
+      if (!running && !scheduled) { scheduled = setImmediate(check); scheduled.unref(); }
+    };
+    const arm = () => {
+      watcher?.close(); watcher = undefined; rearm = false;
+      let target = dirname(this.file);
+      for (;;) {
+        try {
+          const child = relative(target, this.file).split(sep)[0]!;
+          watcher = nativeFs.watch(target, { persistent: false }, (_event, name) => {
+            if (name !== null && String(name) !== child && String(name) !== basename(target)) return;
+            if (target !== dirname(this.file) || name === null || String(name) === basename(target)) rearm = true;
+            schedule();
+          });
+          directory = target;
+          watcher.on('error', () => { rearm = true; schedule(); });
+          return;
+        } catch (error) {
+          const code = (error as NodeJS.ErrnoException).code;
+          if ((code === 'ENOENT' || code === 'ENOTDIR') && dirname(target) !== target) { target = dirname(target); continue; }
+          publish({ ok: false, syntaxTheme: { kind: 'pi' }, issue: issue('watch-failed') }); return;
+        }
+      }
+    };
+    const check = async () => {
+      scheduled = undefined; if (closed) return;
+      running = true;
+      try {
+        do {
+          dirty = false;
+          if (rearm || !directory) arm();
+          const writes = this.writes; await writes;
+          if (closed) return;
+          if (writes !== this.writes) { dirty = true; continue; }
+          const revision = this.writeRevision;
+          let next: string;
+          try { next = metadata(await fs.stat(this.file, { bigint: true })); }
+          catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; next = 'missing'; }
+          if (closed) return;
+          if (revision !== this.writeRevision) { dirty = true; continue; }
+          if (next === stamp) continue;
+          const loaded = await this.read();
+          if (closed) return;
+          if (revision !== this.writeRevision) { dirty = true; continue; }
+          stamp = loaded.stamp ?? next; this.lastStamp = stamp;
+          publish(loaded.value);
+        } while (dirty && !closed);
+      } catch { publish({ ok: false, syntaxTheme: { kind: 'pi' }, issue: issue('read-failed') }); }
+      finally { running = false; if (dirty) schedule(); }
+    };
+    arm(); schedule();
+    return () => { closed = true; if (scheduled) clearImmediate(scheduled); scheduled = undefined; watcher?.close(); watcher = undefined; };
   }
 
   update(patch: SettingsPatch, options?: { signal?: AbortSignal }): Promise<SettingsSaveResult> {
@@ -150,6 +233,7 @@ export class ExtensionSettings {
         copy[key as keyof SavedSwitches] = value;
       } else return Promise.resolve({ ok: false, issue: issue('invalid-patch') });
     }
+    this.writeRevision++;
     const operation = this.writes.then(() => this.save(copy, signal));
     this.writes = operation.then(() => {}, () => {});
     return operation;
@@ -163,7 +247,9 @@ export class ExtensionSettings {
     let contents: string;
     try {
       // Object spread creates own data properties, including JSON's __proto__ key.
-      contents = JSON.stringify({ ...latest.document, ...patch }) + "\n";
+      const document: Record<string, unknown> = { ...latest.document, ...patch };
+      delete document.appearanceEnabled; delete document.loggingEnabled;
+      contents = JSON.stringify(document) + "\n";
     } catch {
       return { ok: false, issue: issue("write-failed") };
     }

@@ -28,7 +28,7 @@ Opening waits for preference readiness, not a delay or provider-readiness guess.
 
 Arrow/wheel navigation and search preview the highlighted theme immediately, without saving. Opening the list alone does not change the theme. Enter or a completed mouse click confirms and saves once, then returns to the first page without a progress or success message. A mouse press preserves the native pending-click identity; hover does not preview. Empty search results and action rows are not themes.
 
-Escape, Back, Ctrl+C or disposal without confirmation restores the choice from entry to that particular theme-list visit, not from the first opening of the whole popup. Reopening the list after a confirmation creates a new rollback point. Deferred preference readiness from a cancelled visit cannot establish a later visit's rollback point. A failed save keeps the live selection and says it was applied but not saved. Closing during confirmed work is not rollback; late work cannot reopen a closed popup. Selected/effective differences are explained without duplicating equal values.
+Escape, Back, Ctrl+C or disposal without confirmation restores the confirmed choice from entry to that particular theme-list visit, not from the first opening of the whole popup. An external confirmation during a local preview updates this rollback choice without interrupting the preview: Escape applies the latest external choice, Enter saves the local selection. Reopening the list after a confirmation creates a new rollback point. Deferred preference readiness from a cancelled visit cannot establish a later visit's rollback point. A failed save keeps the live selection and says it was applied but not saved. Closing during confirmed work is not rollback; late work cannot reopen a closed popup. Selected/effective differences are explained without duplicating equal values.
 
 Preview and rollback use the ordinary retained-owner theme revision and bounded newest-first preparation. Fast navigation coalesces to the latest demand; already-dispatched work is still accounted, but late results cannot restore a superseded preview. Coloring a large history remains gradual. Preview never cancels a previous confirmed save, and completing that save cannot overwrite the current preview. Unconfirmed choices are client-local and do not survive runtime/session retirement.
 
@@ -56,17 +56,25 @@ Pi resolves the agent directory, including `PI_CODING_AGENT_DIR`. This is neithe
 ```json
 {
   "syntaxTheme": { "kind": "pi" },
-  "appearanceEnabled": true,
   "terminalColorsEnabled": true,
-  "nativeHighlightingEnabled": true,
-  "loggingEnabled": true
+  "nativeHighlightingEnabled": true
 }
 ```
 
-An independent theme uses `{ "kind": "occipital", "id": "<catalogue ID>" }`. Old theme-only files remain valid. Missing switches default to On, and a missing theme defaults to Follow Pi; reading defaults does not write a file. Saved choices load before presentation, providers, terminal-color application or logging starts. Initially disabled logging creates no journal, overview, retention scan or cleanup operation.
+An independent theme uses `{ "kind": "occipital", "id": "<catalogue ID>" }`. Old theme-only files remain valid. Missing persisted switches default to On, and a missing theme defaults to Follow Pi; reading defaults does not write a file. Shared choices load before presentation, providers and terminal-color application start.
 
-Confirmed choices apply and save automatically; there is no Save button. Theme-list navigation is temporary until confirmation and does not write settings. All switch/theme writes use the same `ExtensionSettings` writer, reread the latest document, preserve unknown fields and replace a complete JSON file through a private temporary file and rename. Switch confirmations enter that queue before asynchronous transport/writer cleanup: dismissing and reopening a popup cannot let an older completion overwrite a newer confirmation. Saves fail visibly without undoing the live choice. Invalid/unreadable files are not silently overwritten.
+**Tidy UI appearance** and **Record diagnostic logs** are local to the running Pi process. Their two boolean values live under a private `globalThis` symbol, with no component/session references or filesystem flag. They survive `/reload` and opening another session in the same process; a new process starts both On. Local Off is restored before presentation or journal initialization, so disabled capture creates no journal, overview, retention scan or cleanup operation. Legacy `appearanceEnabled`/`loggingEnabled` file fields are ignored and removed on the next explicit persistent save, not by a startup migration.
 
-Shutdown/session retirement cancels unpublished pending saves; a rename already requested is the commit boundary. Disposed syntax owners cannot publish late theme selections. No file watcher, database, migration, cross-process locking or propagation into already running independent instances is added.
+Confirmed themes and the two shared switches apply and save automatically; there is no Save button. Theme-list navigation is temporary until Enter/completed-click confirmation and never writes settings. Local switches do not enter the persistence queue. Shared writes use the same `ExtensionSettings` writer, reread the latest document, preserve unknown fields and replace a complete JSON file through a private temporary file and rename. Confirmations enter that queue before asynchronous transport cleanup: dismissing and reopening a popup cannot let an older completion overwrite a newer confirmation. Saves fail visibly without undoing the live choice. Invalid/unreadable files are not silently overwritten.
 
-Only the theme choice and four switches persist. Cache counters, provider state, recovery budgets, log paths/identities and reapply/refresh/snapshot/clear actions remain runtime state. Reload and fresh processes restore preferences rather than enabling everything again.
+Shutdown/session retirement cancels unpublished pending saves; a rename already requested is the commit boundary. Disposed syntax owners cannot publish late theme selections.
+
+## Changes from another Pi
+
+An active runtime watches the configuration directory, not the replaceable file. If it does not exist yet, watch the nearest existing ancestor until the directory is created; watching alone creates no files/directories. Relevant filesystem events coalesce into a one-shot check of device/inode, size and modification/change timestamps. Read and validate JSON only when these metadata change. Unrelated filenames are filtered before stat. There is no periodic stat/read/hash, polling interval or watcher timer in idle Pi;100 idle instances perform no recurring configuration I/O.
+
+Valid external settings apply to the running theme, terminal-default preference and native-highlighting preference without writing them back. Only changed known values trigger application; local appearance/logging remain untouched. A local unconfirmed preview stays visible as described above. A malformed/unreadable update retains the last live values and reports a bounded warning; deletion applies missing-file defaults. A failed native watch reports its failure rather than silently falling back to polling. Native event delivery depends on the filesystem/OS; a reload retries monitoring.
+
+Each runtime closes its watcher and pending one-shot work on shutdown/reload; retired reads cannot publish. Reads wait for locally queued writes and discard a result superseded by a newer local write. Independent writers retain the existing last-actual-publication policy; concurrent distinct patches are not a transactionally merged database. No cross-process locks, database or sidecar/index files are added.
+
+Only the confirmed theme and two shared switches persist. Cache counters, provider state, recovery budgets, log paths/identities and reapply/refresh/snapshot/clear actions remain runtime state.

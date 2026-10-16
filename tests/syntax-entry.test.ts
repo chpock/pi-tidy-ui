@@ -15,7 +15,7 @@ import { SourceController } from '../src/occipital/controller.ts';
 import { CardSources, type CardSourceHost } from '../src/syntax/cards.ts';
 import { SyntaxRuntime } from '../src/syntax/runtime.ts';
 import { menuPage, withMenu, setAppearance, setLogging } from './helpers/menu-driver.ts';
-import { ExtensionSettings, type SettingsLoadResult, type SettingsPatch } from '../src/settings.ts';
+import { ExtensionSettings, type SettingsLoadResult, type SettingsPatch, type LocalPreferences } from '../src/settings.ts';
 
 const dist = dirname(fileURLToPath(import.meta.resolve('@earendil-works/pi-coding-agent')));
 const themes = await import(pathToFileURL(resolve(dist, 'modes/interactive/theme/theme.js')).href);
@@ -23,7 +23,8 @@ themes.initTheme('dark', false);
 class UI extends Container { requests = 0; requestRender() { this.requests++; } }
 const cleanups: (() => Promise<void>)[] = [];
 function fixture(mode = 'tui', logging: false | Omit<JournalOptions, 'warn' | 'enabled'> = false,
-  settings?: Pick<ExtensionSettings, 'load' | 'update'>) {
+  settings?: Pick<ExtensionSettings, 'load' | 'update'> & Partial<Pick<ExtensionSettings, 'watch'>>,
+  localPreferences: LocalPreferences = { appearanceEnabled: true, loggingEnabled: true }) {
   const root = new UI(), events = new Map<string, (event: unknown, ctx: ExtensionContext) => unknown>();
   const commands = new Map<string, { handler(args: string, ctx: ExtensionContext): Promise<void> }>();
   const counts = { constructed: 0, load: 0, saves: 0, shared: 0, owned: 0 }, notices: string[] = [];
@@ -38,7 +39,7 @@ function fixture(mode = 'tui', logging: false | Omit<JournalOptions, 'warn' | 'e
   const pi = { on: (name: string, callback: (event: unknown, ctx: ExtensionContext) => unknown) => events.set(name, callback),
     registerCommand: (name: string, command: { handler(args: string, ctx: ExtensionContext): Promise<void> }) => commands.set(name, command),
     registerFlag() {}, getFlag() {}, getSettings: () => ({}), getThinkingLevel: () => 'off' } as unknown as ExtensionAPI;
-  tidyUi(pi, { logging, settings: store, syntax: () => {
+  tidyUi(pi, { logging, settings: store, localPreferences, syntax: () => {
     counts.constructed++;
     return { standaloneVersion: 'fixture',
       provider: { async tryShared() { counts.shared++; return undefined; }, async acquireOwned() { counts.owned++; throw Error('fixture unavailable'); } } };
@@ -78,7 +79,7 @@ test('entry native disable is saved and survives master off/on without provider 
   await h.appearance(false); const before = { ...h.counts };
   await h.appearance(true); await settled();
   assert.equal(h.counts.constructed, before.constructed + 1); assert.equal(h.counts.load, before.load);
-  assert.equal(h.counts.shared, before.shared); assert.equal(h.counts.owned, before.owned); assert.equal(h.counts.saves, 3);
+  assert.equal(h.counts.shared, before.shared); assert.equal(h.counts.owned, before.owned); assert.equal(h.counts.saves, 1);
 });
 
 test('entry root/status while master-off never construct syntax; theme page never starts a provider', async () => {
@@ -201,10 +202,10 @@ test('entry logging failure and disabled snapshot are truthful, isolate presenta
     assert.equal(h.notices.filter(message => message.includes('Debug logging stopped')).length, 1);
     assert.equal(h.notices.some(message => message.includes('PRIVATE_DISK_ERROR_BODY')), false);
     for (let i = 0; i < 50; i++) h.root.render(80);
-    await settled(); assert.deepEqual(h.counts, { ...before, saves: before.saves + 2 }); assert.equal(debugLoggingDiagnostics()!.writes, failed.writes);
+    await settled(); assert.deepEqual(h.counts, before); assert.equal(debugLoggingDiagnostics()!.writes, failed.writes);
     refuse = false; await h.recording(true); await h.page('Status & troubleshooting', 'Diagnostic logs', 'Write state snapshot');
     assert.equal(debugLoggingDiagnostics()!.state, 'active'); assert.equal(debugLoggingDiagnostics()!.run, initial.run);
-    assert.notEqual(debugLoggingDiagnostics()!.path, initial.path); assert.deepEqual(h.counts, { ...before, saves: before.saves + 2 });
+    assert.notEqual(debugLoggingDiagnostics()!.path, initial.path); assert.deepEqual(h.counts, before);
   } finally {
     await h.events.get('session_shutdown')!({ type: 'session_shutdown', reason: 'quit' }, h.ctx);
     await fs.rm(root, { recursive: true, force: true });
@@ -287,10 +288,11 @@ test('entry public streaming identities separate quick live abort from restored 
   } finally { CardSources.prototype.prepare = prepare; }
 });
 
-test('entry persists every switch and theme through the popup; a fresh runtime restores Off before any provider or log IO', async () => {
+test('entry persists shared preferences; a same-process runtime restores local Off before any provider or log IO', async () => {
   const directory = await fs.mkdtemp(join(tmpdir(), 'tidy-preferences-entry-'));
   const file = join(directory, 'config.json'), store = new ExtensionSettings({ file });
-  const first = fixture('tui', { root: join(directory, 'first-logs') }, store);
+  const local = { appearanceEnabled: true, loggingEnabled: true };
+  const first = fixture('tui', { root: join(directory, 'first-logs') }, store, local);
   try {
     await first.start(); await settled();
     await first.page('Status & troubleshooting', 'Use Occipital highlighting');
@@ -298,10 +300,10 @@ test('entry persists every switch and theme through the popup; a fresh runtime r
     await first.recording(false); await first.appearance(false);
     await first.page('Code color theme', 'Follow Pi theme');
     assert.deepEqual(JSON.parse(await fs.readFile(file, 'utf8')), { syntaxTheme: { kind: 'pi' },
-      appearanceEnabled: false, terminalColorsEnabled: false, nativeHighlightingEnabled: false, loggingEnabled: false });
+      terminalColorsEnabled: false, nativeHighlightingEnabled: false });
     await first.stop();
     const nextRoot = join(directory, 'restored-logs');
-    const next = fixture('tui', { root: nextRoot }, new ExtensionSettings({ file }));
+    const next = fixture('tui', { root: nextRoot }, new ExtensionSettings({ file }), local);
     await next.start(); await settled();
     assert.equal(next.counts.constructed, 0); assert.equal(next.counts.shared, 0); assert.equal(next.counts.owned, 0);
     const log = debugLoggingDiagnostics()!;
@@ -320,14 +322,14 @@ test('entry persists every switch and theme through the popup; a fresh runtime r
 
 test('entry failed switch persistence reports applied-but-unsaved without undoing the live choice', async () => {
   let saves = 0;
-  const store = { async load(): Promise<SettingsLoadResult> { return { ok: true, syntaxTheme: { kind: 'pi' }, appearanceEnabled: false }; },
+  const store = { async load(): Promise<SettingsLoadResult> { return { ok: true, syntaxTheme: { kind: 'pi' }, terminalColorsEnabled: false }; },
     async update() { saves++; return { ok: false as const, issue: { code: 'write-failed' as const, message: 'Settings could not be saved.' } }; } };
   const h = fixture('tui', false, store); await h.start();
-  await h.appearance(true);
-  assert.match(h.view, /Tidy UI appearance\s+On/); assert.match(h.view, /Applied for now, but not saved/);
+  await h.page('Set terminal colors from Pi theme');
+  assert.match(h.view, /Set terminal colors from Pi theme\s+On/); assert.match(h.view, /Applied for now, but not saved/);
   assert.equal(saves, 1); await h.stop();
   const fresh = fixture('tui', false, store); await fresh.start(); await fresh.page();
-  assert.match(fresh.view, /Tidy UI appearance\s+Off/); assert.equal(fresh.counts.constructed, 0);
+  assert.match(fresh.view, /Set terminal colors from Pi theme\s+Off/); assert.equal(fresh.counts.constructed, 1);
 });
 
 test('entry one overlay survives native generation changes and master off/on, using the new syntax owner afterward', async () => {
@@ -342,7 +344,7 @@ test('entry one overlay survives native generation changes and master off/on, us
     assert.match(menu.text(), /Code color theme\s+Follow Pi/);
     assert.doesNotMatch(menu.text(), /Applying|Applied and saved|Choices are saved automatically/);
   });
-  assert.equal(mounts, 1); assert.equal(h.counts.constructed, 2); assert.equal(h.counts.saves, 4);
+  assert.equal(mounts, 1); assert.equal(h.counts.constructed, 2); assert.equal(h.counts.saves, 2);
   assert.equal(h.counts.load, 1); assert.equal(h.counts.shared, 1);
 });
 
@@ -350,7 +352,7 @@ test('entry shutdown aborts a pending switch save and closes the overlay; late c
   let release!: (value: { ok: true }) => void, signal: AbortSignal | undefined;
   const saving = new Promise<{ ok: true }>(resolve => { release = resolve; });
   const h = fixture('tui', false, {
-    async load() { return { ok: true, syntaxTheme: { kind: 'pi' }, appearanceEnabled: false }; },
+    async load() { return { ok: true, syntaxTheme: { kind: 'pi' }, terminalColorsEnabled: false }; },
     update(_patch, options) { signal = options?.signal; return saving; },
   });
   await h.start();
@@ -378,7 +380,7 @@ test('entry a retired pending initial load cannot install UI, open logs, start p
   } finally { await h.stop(); await fs.rm(directory, { recursive: true, force: true }); }
 });
 
-test('latest confirmed switch wins across popup reopening while older cleanup is pending', async () => {
+test('latest local appearance choice wins across popup reopening while older cleanup is pending without config writes', async () => {
   const directory = await fs.mkdtemp(join(tmpdir(), 'tidy-switch-order-'));
   const disk = new ExtensionSettings({ file: join(directory, 'config.json') });
   const saves: Promise<unknown>[] = [];
@@ -400,10 +402,10 @@ test('latest confirmed switch wins across popup reopening while older cleanup is
       await menu.key('\x1b[A'); menu.input('\r'); await disposing; menu.input('\x03');
     });
     await h.appearance(true);
-    assert.equal((await disk.load()).appearanceEnabled, true, 'new confirmation is saved while older cleanup remains held');
+    assert.equal(saves.length, 0, 'local confirmation never enters the config writer while older cleanup remains held');
     release(); await settled(); await Promise.all(saves);
-    assert.equal(saves.length, 2, 'one save per explicit confirmation, no cleanup-time rewrite');
-    assert.equal((await disk.load()).appearanceEnabled, true, 'older completion cannot overwrite the newer preference');
+    assert.equal(saves.length, 0, 'neither confirmation nor cleanup writes a local preference');
+    await assert.rejects(fs.stat(disk.file), { code: 'ENOENT' });
     await h.page(); assert.match(h.view, /Tidy UI appearance\s+On/);
     const restored = fixture('tui', false, store); await restored.start(); await restored.page();
     assert.match(restored.view, /Tidy UI appearance\s+On/);
@@ -446,6 +448,58 @@ test('entry discards an unconfirmed theme preview when a session shuts down and 
   await withMenu(h.command, h.ctx, async menu => {
     await menu.select('Code color theme');
     assert.match(menu.text(), /Selected: saved-independent-theme/);
+  });
+  assert.equal(saves, 0);
+});
+
+test('settings policy: appearance and diagnostic recording are process-local actions without config writes', async () => {
+  const h = fixture(); await h.start();
+  await h.appearance(false); await h.recording(false);
+  assert.equal(h.counts.saves, 0);
+  await h.page(); assert.match(h.view, /Tidy UI appearance\s+Off/);
+  await h.page('Status & troubleshooting', 'Diagnostic logs'); assert.match(h.view, /Record diagnostic logs\s+Off/);
+});
+
+test('settings sync: external shared fields apply without saves, local flags stay local, and retired callbacks cannot act', async () => {
+  let changed!: (value: SettingsLoadResult) => void, stops = 0, saves = 0;
+  const h = fixture('tui', false, { load: async () => ({ ok: true, syntaxTheme: { kind: 'pi' } }),
+    async update() { saves++; return { ok: true }; }, watch(callback) { changed = callback; return () => { stops++; }; } });
+  await h.start(); await h.appearance(false); await h.recording(false);
+  changed({ ok: true, syntaxTheme: { kind: 'occipital', id: 'peer-B' }, terminalColorsEnabled: false, nativeHighlightingEnabled: false });
+  await h.page(); assert.match(h.view, /Tidy UI appearance\s+Off/); assert.match(h.view, /Set terminal colors from Pi theme\s+Off/); assert.match(h.view, /peer-B/);
+  await h.page('Status & troubleshooting'); assert.match(h.view, /Use Occipital highlighting\s+Off/);
+  await h.page('Status & troubleshooting', 'Diagnostic logs'); assert.match(h.view, /Record diagnostic logs\s+Off/);
+  changed({ ok: false, syntaxTheme: { kind: 'pi' }, issue: { code: 'invalid-json', message: 'Settings contain invalid JSON or UTF-8.' } });
+  await h.page(); assert.match(h.view, /peer-B/); assert.equal(saves, 0);
+  await h.stop(); assert.equal(stops, 1); const counts = { ...h.counts }, warnings = [...h.notices];
+  changed({ ok: true, syntaxTheme: { kind: 'pi' }, nativeHighlightingEnabled: true }); await settled();
+  assert.deepEqual(h.counts, counts); assert.deepEqual(h.notices, warnings); assert.equal(saves, 0);
+});
+
+test('settings policy: reload restores local flags from process memory while a fresh process owner starts On', async () => {
+  const memory = { appearanceEnabled: true, loggingEnabled: true };
+  const first = fixture('tui', false, undefined, memory); await first.start();
+  await first.appearance(false); await first.recording(false); await first.stop();
+  const reloaded = fixture('tui', false, undefined, memory); await reloaded.start(); await reloaded.page();
+  assert.match(reloaded.view, /Tidy UI appearance\s+Off/); assert.equal(reloaded.counts.constructed, 0);
+  await reloaded.page('Status & troubleshooting', 'Diagnostic logs'); assert.match(reloaded.view, /Record diagnostic logs\s+Off/);
+  assert.equal(first.counts.saves + reloaded.counts.saves, 0); await reloaded.stop();
+  const fresh = fixture(); await fresh.start(); await fresh.page();
+  assert.match(fresh.view, /Tidy UI appearance\s+On/);
+  await fresh.page('Status & troubleshooting', 'Diagnostic logs'); assert.match(fresh.view, /Record diagnostic logs\s+On/);
+});
+
+test('settings sync: entry preserves an unconfirmed preview and Esc uses the latest peer confirmation without writes', async () => {
+  let changed!: (value: SettingsLoadResult) => void, saves = 0;
+  const h = fixture('tui', false, { load: async () => ({ ok: true, syntaxTheme: { kind: 'occipital', id: 'saved-A' } }),
+    async update() { saves++; return { ok: true }; }, watch(callback) { changed = callback; return () => {}; } });
+  await h.start();
+  await withMenu(h.command, h.ctx, async menu => {
+    await menu.select('Code color theme'); await menu.key('\x1b[A'); await menu.key('\x1b[B');
+    assert.match(menu.text(), /Selected: Follow Pi/);
+    changed({ ok: true, syntaxTheme: { kind: 'occipital', id: 'peer-B' } }); await settled();
+    assert.match(menu.text(), /Selected: Follow Pi/); assert.equal(saves, 0);
+    await menu.key('\x1b'); assert.match(menu.text(), /peer-B/);
   });
   assert.equal(saves, 0);
 });

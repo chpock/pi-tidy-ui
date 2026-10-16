@@ -354,7 +354,9 @@ export class PiTerminal {
             'Use Occipital highlighting': 'nativeHighlightingEnabled', 'Record diagnostic logs': 'loggingEnabled' };
           const key = switches[label];
           if (key) {
-            if (rows.find(line => line.startsWith('→ ')) === before) return false;
+            const selected = rows.find(line => line.startsWith('→ '));
+            if (selected === before) return false;
+            if (key === 'appearanceEnabled' || key === 'loggingEnabled') return selected?.endsWith(before.endsWith('Off') ? 'On' : 'Off') && !rows.includes('Applying…');
             try { return JSON.parse(readFileSync(join(this.agent, 'extensions/pi-tidy-ui/config.json'), 'utf8'))[key] === before.endsWith('Off'); }
             catch { return false; }
           }
