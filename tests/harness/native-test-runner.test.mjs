@@ -205,13 +205,17 @@ function outputMarker(child, marker) {
   });
 }
 
-test('native runner interruption waits for real POSIX suite shutdown before cleanup and failure report', { ...posix, timeout: 30000 }, async t => {
+for(const duplicateSignal of [false,true])test(duplicateSignal?'native runner interruption fixture survives a pending second SIGTERM while recording shutdown':'native runner interruption waits for real POSIX suite shutdown before cleanup and failure report', { ...posix, timeout: 30000 }, async t => {
   const f = fixture(t), stopped = join(f.root, 'native-worker-stopped');
   f.put('tests/native-build/interrupt.test.mjs', guard + `
-import {writeFileSync} from 'node:fs';
+import {writeFileSync,openSync,writeSync,closeSync} from 'node:fs';
 import {test} from 'node:test';
 test('interruptible real Node worker', async () => new Promise(() => {
-  process.once('SIGTERM', () => { writeFileSync(${JSON.stringify(stopped)}, 'SIGTERM'); process.exit(0); });
+  // Group cleanup may deliver another SIGTERM after the test coordinator closes.
+  process.on('SIGTERM', () => {
+    ${duplicateSignal?`const fd=openSync(${JSON.stringify(stopped)},'w');process.kill(process.pid,'SIGTERM');writeSync(fd,'SIGTERM');closeSync(fd);`:`writeFileSync(${JSON.stringify(stopped)},'SIGTERM');`}
+    process.exit(0);
+  });
   setInterval(() => {}, 1000);
   console.log('NATIVE_INTERRUPT_READY');
 }));\n`);
@@ -226,8 +230,8 @@ test('interruptible real Node worker', async () => new Promise(() => {
     runner.kill('SIGTERM');
     const [code, signal] = await closed;
     assert.equal(code, 1); assert.equal(signal, null);
-    assert.equal(readFileSync(stopped, 'utf8'), 'SIGTERM', 'the actual native test worker received tree termination');
     const report = JSON.parse(readFileSync(prepared.output));
+    assert.equal(readFileSync(stopped, 'utf8'), 'SIGTERM', 'the actual native test worker received tree termination: '+JSON.stringify({exitCode:report.exitCode,signal:report.signal,interruption:report.interruption}));
     assert.equal(report.status, 'failed'); assert.equal(report.reason, 'interrupted');
     assert.equal(report.interruption, 'SIGTERM');
     assertClean(report);

@@ -924,6 +924,8 @@ test('ordinary macOS CI Cargo diagnostics preserve default compilation, argument
   await nativeDescriptor(inputs,root,neutral,rust);await writeFile(join(rust,'bin/rustc'),'inert unused compiler');
   const workflow=await readFile(join(repo,'.github/workflows/occipital.yml'),'utf8');
   const gate=shellStep(workflowStep(workflow,'Offline native correctness, strict lint and release build'));
+  const ps=join(root,'ps');await writeFile(ps,`#!${process.execPath}\nconsole.log('10 88.5 /usr/libexec/PerfPowerServices');`,{mode:0o755});
+  const descriptor=join(root,'native-build-inputs/inputs.json'),native=JSON.parse(await readFile(descriptor,'utf8'));native.tools.ps=ps;await writeFile(descriptor,JSON.stringify(native));
   for(const platform of ['darwin','linux'])for(const fail of [false,true]){
     const script=gate.replace("node --input-type=module <<'JS'\n",`node --input-type=module <<'JS'\nObject.defineProperty(process,'platform',{value:${JSON.stringify(platform)}});\n`);
     assert.notEqual(script,gate);
@@ -942,7 +944,9 @@ if(${fail}&&process.argv[2]==='build'){console.error('error: deliberate native f
     const summaries=result.stdout.trim().split('\n').filter(line=>line.startsWith('Cargo summary: ')).map(line=>JSON.parse(line.slice('Cargo summary: '.length)));
     assert.equal(summaries.length,platform==='darwin'?4:0);if(platform==='darwin')assert.equal(summaries.at(-1).exitCode,fail?17:0);
     assert.ok(summaries.every(row=>row.sourceChanged===1));assert.doesNotMatch(result.stdout+result.stderr,/PRIVATE_CARGO_PATH/);
-    if(platform==='darwin')assert.match(result.stderr,/Native gate resources: elapsed=[\d.]+ user=[\d.]+ system=[\d.]+ seconds/);
+     const hostLoads=result.stdout.split('\n').filter(line=>line.startsWith('Native host load: ')).map(line=>JSON.parse(line.slice('Native host load: '.length)));
+     assert.deepEqual(hostLoads.map(row=>row.phase),platform==='darwin'?['before','after']:[]);assert.ok(hostLoads.every(row=>row.available&&row.groups.power.cpuPercent===88.5));
+     if(platform==='darwin')assert.match(result.stderr,/Native gate resources: elapsed=[\d.]+ user=[\d.]+ system=[\d.]+ seconds/);
     else assert.doesNotMatch(result.stderr,/Native gate resources:/);
     if(fail)assert.match(result.stderr,/deliberate native failure/);
   }

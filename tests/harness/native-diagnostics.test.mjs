@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { childEnv, readInputs } from '../../scripts/test/context.mjs';
-import { cargoLogProjection, runNativeCommand, summarizeNativeCache } from '../../scripts/test/native-diagnostics.mjs';
+import { cargoLogProjection, nativeHostLoad, runNativeCommand, summarizeNativeCache } from '../../scripts/test/native-diagnostics.mjs';
 
 function fixture(t) {
   const root = mkdtempSync(join(tmpdir(),'native-diagnostics-'));
@@ -73,4 +73,27 @@ console.error('error: fixture compiler failed');process.exitCode=17;`);
     const signaled=await runNativeCommand(process.execPath,[script],{cwd:root,env:childEnv(join(root,'environment'),{},inputs),phase:'test',writeSummary:value=>summaries.push(value)});
     assert.deepEqual(signaled,{status:null,signal:'SIGTERM'});assert.equal(summaries.at(-1).signal,'SIGTERM');
   }
+});
+
+
+test('native diagnostics: host snapshots expose only fixed numeric process groups, never identities', {skip:process.platform==='win32'},t=>{
+  const root=fixture(t),tool=join(root,'ps'),env=childEnv(root,{},readInputs());
+  const rows=`${process.pid} 8.5 /private/node\n11 72.5 /usr/libexec/PerfPowerServices\n12 4.0 /private/rustc\n13 8.25 /private/mdworker_shared\n14 5 /private/syspolicyd\n15 3 /private/occipital\n16 2 /private/node\n17 1 /private/kernel_task\n18 99 /SECRET_PROCESS_PATH/PRIVATE_MARKER\n19 1 /private/ps\n`;
+  writeFileSync(tool,`#!${process.execPath}\nimport assert from 'node:assert/strict';assert.deepEqual(process.argv.slice(2),['-A','-ww','-o','pid=,pcpu=,comm=']);process.stderr.write('PRIVATE_DIAGNOSTIC_ERROR');process.stdout.write(${JSON.stringify(rows)});`,{mode:0o755});
+  const result=nativeHostLoad(tool,env,'before');
+  assert.equal(result.available,true);assert.equal(result.phase,'before');assert.ok(result.cpuCount>0);assert.equal(result.load.length,3);
+  for(const [role,cpu] of Object.entries({compiler:4,native:3,power:72.5,indexing:8.25,security:5,kernel:1,runner:2,diagnostic:9.5,other:99}))assert.deepEqual(result.groups[role],{processes:role==='diagnostic'?2:1,cpuPercent:cpu});
+  assert.doesNotMatch(JSON.stringify(result),/PRIVATE|SECRET|private|PerfPowerServices|rustc|pid/);
+});
+
+test('native diagnostics: unavailable process snapshots are explicit without leaking failures', {skip:process.platform==='win32'},t=>{
+  const root=fixture(t),tool=join(root,'ps'),env=childEnv(root,{},readInputs());
+  assert.equal(nativeHostLoad(undefined,env,'after').reason,'missing-tool');
+  assert.throws(()=>nativeHostLoad(tool,env,'invalid'),/Unknown native host snapshot phase/);
+  for(const source of ['console.log("PRIVATE_INVALID_ROW")','console.log("10 "+"9".repeat(400)+" /PRIVATE_PATH")']){
+    writeFileSync(tool,`#!${process.execPath}\n${source}`,{mode:0o755});
+    const result=nativeHostLoad(tool,env,'after');assert.equal(result.available,false);assert.equal(result.reason,'parse-failed');assert.doesNotMatch(JSON.stringify(result),/PRIVATE/);
+  }
+  writeFileSync(tool,`#!${process.execPath}\nconsole.error('PRIVATE_FAILED_COMMAND');process.exit(23);`,{mode:0o755});
+  const result=nativeHostLoad(tool,env,'after');assert.equal(result.available,false);assert.equal(result.exitCode,23);assert.equal(result.reason,'process-failed');assert.doesNotMatch(JSON.stringify(result),/PRIVATE/);
 });

@@ -236,6 +236,19 @@ jobs:
         run: |
           TIMEFORMAT=
           if [[ "${RUNNER_OS:-}" == macOS ]]; then
+            native_load() {
+              node --input-type=module - "$1" <<'LOAD'
+          import {join} from 'node:path';
+          import {childEnv} from './scripts/test/context.mjs';
+          import {readNativeInputs} from './scripts/test/prepare-native.mjs';
+          import {nativeHostLoad} from './scripts/test/native-diagnostics.mjs';
+          const inputs=readNativeInputs(join(process.env.RUNNER_TEMP,'native-build-inputs/inputs.json'));
+          const env=childEnv(join(inputs.runRoot,'host-diagnostics'),{},inputs);
+          console.log('Native host load: '+JSON.stringify(nativeHostLoad(inputs.tools.ps,env,process.argv[2])));
+          LOAD
+            }
+            native_load before
+            trap 'native_load after' EXIT
             TIMEFORMAT='Native gate resources: elapsed=%R user=%U system=%S seconds'
           fi
           time node --input-type=module <<'JS'
