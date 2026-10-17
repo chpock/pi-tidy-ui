@@ -78,7 +78,11 @@ function run(inputs, root, command, args, extra = {}) {
   return execFileSync(command, args, { cwd: root, env: childEnv(join(inputs.preparation, 'environment'), extra, inputs), stdio: 'inherit' });
 }
 
-async function archiveGraph(inputs, dependencies, offline = false) {
+export async function archiveGraph(inputs, dependencies, offline = false, work = {}) {
+  Object.assign(work, {archiveCacheHits:0, archiveCacheMisses:0, archiveRequests:0, archiveBytes:0,
+    archiveTarCommands:0, archiveCacheMs:0, archiveFetchMs:0, archiveTarMs:0});
+  const cache = join(inputs.preparation, 'environment/cache/npm/_cacache');
+  let cacache;
   const lock = json(join(dependencies, 'package-lock.json')), directory = join(inputs.preparation, 'archives');
   mkdirSync(directory, { recursive: true });
   const records = new Map();
@@ -88,27 +92,47 @@ async function archiveGraph(inputs, dependencies, offline = false) {
     const identity = entry.resolved + '\0' + entry.integrity;
     if (records.has(identity)) continue;
     const path = join(directory, digest(Buffer.from(identity)) + '.tgz');
+    let cached = false;
     if (!existsSync(path)) {
-      if (offline) {
-        const cacache = createRequire(inputs.tools.npm)('cacache');
-        const cache = join(inputs.preparation, 'environment/cache/npm/_cacache');
-        writeFileSync(path, await cacache.get.byDigest(cache, entry.integrity));
-      } else {
-        const response = await fetch(entry.resolved, { signal: AbortSignal.timeout(120000) });
-        if (!response.ok) throw new Error(`Prepared package acquisition failed: HTTP ${response.status}`);
-        writeFileSync(path, Buffer.from(await response.arrayBuffer()));
+      cacache ??= createRequire(inputs.tools.npm)('cacache');
+      const started = performance.now();
+      let bytes;
+      try {
+        bytes = await cacache.get.byDigest(cache, entry.integrity);
+        work.archiveCacheHits++; cached = true;
+      } catch (error) {
+        if (error.code !== 'ENOENT') throw error;
+        work.archiveCacheMisses++;
+        if (offline) throw error;
+      } finally { work.archiveCacheMs += performance.now() - started; }
+      if (!cached) {
+        const started = performance.now();
+        work.archiveRequests++;
+        try {
+          const response = await fetch(entry.resolved, { signal: AbortSignal.timeout(120000) });
+          if (!response.ok) throw new Error(`Prepared package acquisition failed: HTTP ${response.status}`);
+          bytes = Buffer.from(await response.arrayBuffer());
+        } finally { work.archiveFetchMs += performance.now() - started; }
       }
+      writeFileSync(path, bytes);
     }
-    const [algorithm, expected] = entry.integrity.split('-');
-    if (!['sha512', 'sha256', 'sha1'].includes(algorithm) || createHash(algorithm).update(readFileSync(path)).digest('base64') !== expected) throw new Error('Prepared npm archive integrity mismatch');
+    const bytes = readFileSync(path), [algorithm, expected] = entry.integrity.split('-');
+    if (!['sha512', 'sha256', 'sha1'].includes(algorithm) || createHash(algorithm).update(bytes).digest('base64') !== expected) throw new Error('Prepared npm archive integrity mismatch');
+    work.archiveBytes += bytes.length;
     const options = { env: childEnv(join(inputs.preparation, 'environment'), {}, inputs), maxBuffer: 16 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'] };
-    const members = execFileSync(inputs.tools.tar, ['-tzf', path], options).toString().split(/\r?\n/);
-    const manifestPath = members.find(name => /^(?:\.\/)?[^/]+\/package\.json$/.test(name));
-    if (!manifestPath) throw new Error('Prepared npm archive lacks a root package.json');
-    const manifest = JSON.parse(execFileSync(inputs.tools.tar, ['-xOzf', path, manifestPath], options).toString());
-    if (!offline) {
-      const cacache = createRequire(inputs.tools.npm)('cacache');
-      await cacache.put(join(inputs.preparation, 'environment/cache/npm/_cacache'), 'tidy-prepared:' + identity, readFileSync(path), { algorithms: [algorithm] });
+    const started = performance.now();
+    let manifest;
+    try {
+      work.archiveTarCommands++;
+      const members = execFileSync(inputs.tools.tar, ['-tzf', path], options).toString().split(/\r?\n/);
+      const manifestPath = members.find(name => /^(?:\.\/)?[^/]+\/package\.json$/.test(name));
+      if (!manifestPath) throw new Error('Prepared npm archive lacks a root package.json');
+      work.archiveTarCommands++;
+      manifest = JSON.parse(execFileSync(inputs.tools.tar, ['-xOzf', path, manifestPath], options).toString());
+    } finally { work.archiveTarMs += performance.now() - started; }
+    if (!offline && !cached) {
+      cacache ??= createRequire(inputs.tools.npm)('cacache');
+      await cacache.put(cache, 'tidy-prepared:' + identity, bytes, { algorithms: [algorithm] });
     }
     records.set(identity, { name: manifest.name, version: manifest.version, path, integrity: entry.integrity, manifest });
   }
@@ -194,13 +218,13 @@ export async function prepare(options) {
   const node = realpathSync(options.node ?? process.execPath), tools = systemTools(node, options.tools ? json(resolve(options.tools)) : {});
   mkdirSync(output, { recursive: true });
   const inputs = { schema: 1, preparation: output, node: { path: node, version: '' }, tools: materializeTools(output, node, tools) };
-  const phases = {};
+  const phases = {}, archiveWork = {};
   let phaseStarted = started;
   const checkpoint = name => {
     phases[name] = performance.now() - phaseStarted;
     if (options.archives) save(join(output, 'consumer/diagnostics/installed-preparation-runtime/fixture.json'), {
       phases, elapsedMs: performance.now() - started, offline: options.offline === true,
-      archiveRecords: inputs.registry?.packages.length ?? 0,
+      archiveRecords: inputs.registry?.packages.length ?? 0, ...archiveWork,
     });
     phaseStarted = performance.now();
   };
@@ -262,7 +286,7 @@ export async function prepare(options) {
     if (options.archives) {
       const previous = options['registry-inputs'] ? json(resolve(options['registry-inputs'])).registry
         : options.offline && existsSync(join(output, 'registry.json')) ? json(join(output, 'registry.json')) : undefined;
-      inputs.registry = previous ?? await archiveGraph(inputs, deps, options.offline);
+      inputs.registry = previous ?? await archiveGraph(inputs, deps, options.offline, archiveWork);
     }
     checkpoint('archiveInputs');
     if (options.integration) {

@@ -8,7 +8,7 @@ const oneOf = (value, allowed) => allowed.includes(value) ? value : undefined;
 
 export function projectConsumerDiagnostics(value, kind) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Invalid consumer diagnostic object');
-  const result = {kind,...numeric(value,['elapsedMs','npmMs','cleanupMs','archiveRecords','configuredThreadpoolSize','exitCode','invalidTimings'])};
+  const result = {kind,...numeric(value,['elapsedMs','npmMs','cleanupMs','archiveRecords','configuredThreadpoolSize','exitCode','invalidTimings','archiveCacheHits','archiveCacheMisses','archiveRequests','archiveBytes','archiveTarCommands','archiveCacheMs','archiveFetchMs','archiveTarMs'])};
   if (typeof value.node === 'string' && /^v\d+\.\d+\.\d+$/.test(value.node)) result.node = value.node;
   for (const key of ['completed','offline','killed']) if (typeof value[key] === 'boolean') result[key] = value[key];
   const operation = oneOf(value.operation,['pack','install']), mode = oneOf(value.mode,['standard','lock-only','dry-run']);

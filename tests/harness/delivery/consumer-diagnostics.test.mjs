@@ -49,3 +49,10 @@ test('missing diagnostic data is explicitly unavailable rather than a successful
   const {root}=fixture(t),lines=[];printConsumerDiagnostics(root,line=>lines.push(line));
   assert.deepEqual(lines,['Consumer summary: no completed diagnostic reports are available.']);
 });
+
+test('consumer summaries preserve archive work counters but never cache identities or raw failure details',()=>{
+  const counters={archiveCacheHits:155,archiveCacheMisses:1,archiveRequests:1,archiveBytes:100,archiveTarCommands:310,archiveCacheMs:2.5,archiveFetchMs:4.2,archiveTarMs:7};
+  const result=projectConsumerDiagnostics({...counters,archivePaths:['SECRET'],archiveError:'SECRET',cacheKeys:['SECRET']},'fixture');
+  assert.deepEqual(result,{kind:'fixture',...counters});
+  assert.deepEqual(projectConsumerDiagnostics({archiveRequests:-1,archiveCacheHits:'SECRET',archiveCacheMs:Infinity},'fixture'),{kind:'fixture'});
+});

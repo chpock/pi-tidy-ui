@@ -108,6 +108,13 @@ jobs:
           key: hermetic-native-v2-${{ matrix.target }}-${{ inputs.version }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', '.cargo/config.toml') }}-${{ hashFiles('Cargo.toml', 'crates/**') }}
           restore-keys: |
             hermetic-native-v2-${{ matrix.target }}-${{ inputs.version }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', '.cargo/config.toml') }}-
+      - name: Summarize restored macOS native cache
+        if: runner.os == 'macOS'
+        run: |
+          node --input-type=module <<'JS'
+          import {summarizeNativeCache} from './scripts/test/native-diagnostics.mjs';
+          console.log('Native cache summary: '+JSON.stringify(summarizeNativeCache(process.env.CARGO_HOME,process.env.CARGO_TARGET_DIR)));
+          JS
       - name: Prepare explicit build-only MSVC context
         if: startsWith(matrix.target, 'windows-')
         env:
@@ -232,8 +239,12 @@ jobs:
           const msvc = join(state,'msvc.json'), build = existsSync(msvc) ? JSON.parse(readFileSync(msvc)) : {};
           const env = childEnv(join(inputs.runRoot,'native-runtime'), {...build, PATH:[join(root,'bin'),build.PATH,inputs.tools.path ?? inputs.tools.bin].filter(Boolean).join(delimiter), CARGO_HOME:process.env.CARGO_HOME, CARGO_TARGET_DIR:process.env.CARGO_TARGET_DIR, CARGO_NET_OFFLINE:'true', RUSTC:join(root,'bin',process.platform==='win32'?'rustc.exe':'rustc'), RUSTUP_AUTO_INSTALL:'0', RUSTUP_TOOLCHAIN:root}, inputs);
           const cargo = join(root,'bin',process.platform==='win32'?'cargo.exe':'cargo'), target = process.env.RUST_TARGET;
+          const {runNativeCommand} = await import('./scripts/test/native-diagnostics.mjs');
           for (const args of [['fmt','--all','--check'], ['test','--workspace','--locked','--offline','--target',target], ['clippy','--workspace','--all-targets','--locked','--offline','--target',target,'--','-D','warnings'], ['build','--release','--locked','--offline','-p','occipital','--target',target]]) {
-            const result = spawnSync(cargo,args,{cwd:process.env.NATIVE_SOURCE,env,stdio:'inherit'}); if(result.status!==0) process.exit(result.status ?? 1);
+            const result = process.platform === 'darwin'
+              ? await runNativeCommand(cargo,args,{cwd:process.env.NATIVE_SOURCE,env,phase:args[0]})
+              : spawnSync(cargo,args,{cwd:process.env.NATIVE_SOURCE,env,stdio:'inherit'});
+            if(result.status!==0) process.exit(result.status ?? 1);
           }
           JS
       - name: Version smoke, pinned-source notices, hashes and native package staging
