@@ -271,7 +271,8 @@ test('every executable workflow job has an explicit bounded timeout, including r
     }
   }
   assert.deepEqual(timeouts, {
-    'ci-checks.yml/checks': [10, 30], 'ci.yml/metadata': 5, 'ci.yml/result': 5, 'ci.yml/extension-package': 15,
+    'ci-checks.yml/checks': [10, 30], 'ci.yml/metadata': 5, 'ci.yml/result': 5,
+    'native-performance.yml/metadata': 5, 'ci.yml/extension-package': 15,
     'occipital-npm-publish.yml/publish': 15, 'occipital-release.yml/publish': 10,
     'occipital.yml/build': 60, 'occipital-consumer.yml/consumer': 25,
   });
@@ -915,7 +916,7 @@ test('maintained JavaScript actions use reviewed Node24 releases without changin
   assert.deepEqual([...seen].sort(),Object.keys(versions).sort());
 });
 
-test('macOS CI Cargo diagnostics and nonincremental gates preserve arguments, isolation and failure status', {skip:process.platform==='win32'}, async t=>{
+test('ordinary macOS CI Cargo diagnostics preserve default compilation, arguments, isolation and failure status', {skip:process.platform==='win32'}, async t=>{
   const inputs=readInputs(), root=await mkdtemp(join(process.env.TIDY_TEST_ROOT,'mac-cargo-gates-'));
   t.after(()=>rm(root,{recursive:true,force:true}));
   const neutral=join(root,'neutral'), source=join(neutral,'project'),rust=join(root,'rust'),log=join(root,'calls.jsonl');
@@ -937,7 +938,7 @@ if(${fail}&&process.argv[2]==='build'){console.error('error: deliberate native f
     assert.equal(result.status,fail?17:0,result.stderr);
     const calls=(await readFile(log,'utf8')).trim().split('\n').map(row=>JSON.parse(row));
     assert.deepEqual(calls.map(row=>row.args),[['fmt','--all','--check'],['test','--workspace','--locked','--offline','--target','fixture-target'],['clippy','--workspace','--all-targets','--locked','--offline','--target','fixture-target','--','-D','warnings'],['build','--release','--locked','--offline','-p','occipital','--target','fixture-target']]);
-    for(const call of calls){assert.equal(call.trace,platform==='darwin'?'cargo::compiler::fingerprint=info':undefined);assert.equal(call.ambient,undefined);assert.equal(call.toolchain,rust);assert.equal(call.loader,platform==='darwin'?join(rust,'lib'):undefined);assert.equal(call.sdk,undefined);assert.equal(call.incremental,platform==='darwin'?'0':undefined);}
+    for(const call of calls){assert.equal(call.trace,platform==='darwin'?'cargo::compiler::fingerprint=info':undefined);assert.equal(call.ambient,undefined);assert.equal(call.toolchain,rust);assert.equal(call.loader,platform==='darwin'?join(rust,'lib'):undefined);assert.equal(call.sdk,undefined);assert.equal(call.incremental,undefined);}
     const summaries=result.stdout.trim().split('\n').filter(line=>line.startsWith('Cargo summary: ')).map(line=>JSON.parse(line.slice('Cargo summary: '.length)));
     assert.equal(summaries.length,platform==='darwin'?4:0);if(platform==='darwin')assert.equal(summaries.at(-1).exitCode,fail?17:0);
     assert.ok(summaries.every(row=>row.sourceChanged===1));assert.doesNotMatch(result.stdout+result.stderr,/PRIVATE_CARGO_PATH/);
@@ -945,4 +946,87 @@ if(${fail}&&process.argv[2]==='build'){console.error('error: deliberate native f
     else assert.doesNotMatch(result.stderr,/Native gate resources:/);
     if(fail)assert.match(result.stderr,/deliberate native failure/);
   }
+});
+
+
+test('Intel comparison executes both full native arms at the same paths and rejects invalid results (inert Cargo)',{skip:process.platform==='win32'},async t=>{
+  const inputs=readInputs(),root=await mkdtemp(join(process.env.TIDY_TEST_ROOT,'intel-comparison-'));
+  t.after(()=>rm(root,{recursive:true,force:true}));
+  const neutral=join(root,'neutral'),project=join(neutral,'project'),rust=join(root,'rust'),log=join(root,'calls.jsonl');
+  await nativeDescriptor(inputs,root,neutral,rust);
+  await mkdir(join(root,'scripts/test'),{recursive:true});await mkdir(join(rust,'bin'),{recursive:true});
+  await writeFile(join(rust,'bin/rustc'),'inert unused compiler');
+  await writeFile(join(neutral,'source-files.json'),JSON.stringify(['Cargo.toml']));
+  for(const name of ['context','prepare-native','prepare','native-diagnostics'])await writeFile(join(root,'scripts/test',name+'.mjs'),`export * from ${JSON.stringify(pathToFileURL(join(repo,'scripts/test',name+'.mjs')).href)};`);
+  await writeFile(join(root,'scripts/test/native-comparison.mjs'),`Object.defineProperty(process,'platform',{value:'darwin'});\n`+await readFile(join(repo,'scripts/test/native-comparison.mjs'),'utf8'));
+  const workflow=await readFile(join(repo,'.github/workflows/occipital.yml'),'utf8');
+  const script=shellStep(workflowStep(workflow,'Same-runner Intel incremental comparison'));
+  const env=childEnv(join(root,'caller'),{RUNNER_TEMP:root,RUNNER_OS:'macOS',CARGO_HOME:join(root,'cargo-home'),CARGO_TARGET_DIR:join(root,'target'),RUST_TARGET:'x86_64-apple-darwin',CARGO_INCREMENTAL:'ambient-poison',SDKROOT:'ambient-sdk'},inputs);
+  for(const scenario of ['pass','compiler-failure','cleanup-failure','release-mismatch','dependency-rebuild','source-mutation'])await t.test(scenario,async()=>{
+    for(const path of [log,join(neutral,'native-comparison.json'),join(root,'target')])await rm(path,{recursive:true,force:true});
+    await writeFile(join(project,'Cargo.toml'),'inert native source\n');
+    await writeFile(join(rust,'bin/cargo'),`#!${process.execPath}
+import {appendFileSync,mkdirSync,writeFileSync,rmSync} from 'node:fs';
+import {join} from 'node:path';
+const args=process.argv.slice(2),disabled=process.env.CARGO_INCREMENTAL==='0',kind=${JSON.stringify(scenario)},target=args[args.indexOf('--target')+1];
+appendFileSync(${JSON.stringify(log)},JSON.stringify({args,cwd:process.cwd(),target:process.env.CARGO_TARGET_DIR,home:process.env.CARGO_HOME,incremental:process.env.CARGO_INCREMENTAL,sdk:process.env.SDKROOT})+'\\n');
+const profile=join(process.env.CARGO_TARGET_DIR,target??'unused',args.includes('--release')?'release':'debug');
+if(args[0]==='clean'){
+ if(kind==='cleanup-failure'&&disabled)process.exit(19);
+ rmSync(profile,{recursive:true,force:true});
+}else if(args[0]==='test'){
+ console.log('test result: ok. 155 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out');
+ if(kind==='dependency-rebuild')console.error('   Compiling external_fixture v1.0.0');
+ if(!disabled){mkdirSync(join(profile,'incremental'),{recursive:true});writeFileSync(join(profile,'incremental/state'),'inert state');}
+}else if(args[0]==='build'){
+ if(kind==='compiler-failure')process.exit(17);
+ mkdirSync(profile,{recursive:true});writeFileSync(join(profile,'occipital'),kind==='release-mismatch'&&disabled?'different':'identical');
+ if(kind==='source-mutation'&&disabled)writeFileSync('Cargo.toml','unexpected changed source');
+}
+`,{mode:0o755});
+    const result=spawnSync(toolPath('bash'),['-e','-o','pipefail','-c',script],{cwd:root,env,encoding:'utf8'});
+    const callText=await readFile(log,'utf8').catch(()=>assert.fail(result.stderr||'No Cargo invocation recorded'));
+    const calls=callText.trim().split('\n').map(row=>JSON.parse(row));
+    assert.ok(calls.every(call=>call.cwd===project&&call.target===env.CARGO_TARGET_DIR&&call.home===env.CARGO_HOME&&call.sdk===undefined));
+    assert.ok(calls.every(call=>call.incremental===undefined||call.incremental==='0'));
+    if(scenario==='pass'){
+      assert.equal(result.status,0,result.stderr);assert.equal(calls.length,12);
+      const expected=[['clean','--locked','--offline','-p','occipital','--target',env.RUST_TARGET],['clean','--locked','--offline','-p','occipital','--target',env.RUST_TARGET,'--release'],['fmt','--all','--check'],['test','--workspace','--locked','--offline','--target',env.RUST_TARGET],['clippy','--workspace','--all-targets','--locked','--offline','--target',env.RUST_TARGET,'--','-D','warnings'],['build','--release','--locked','--offline','-p','occipital','--target',env.RUST_TARGET]];
+      assert.deepEqual(calls.map(row=>row.args),[...expected,...expected]);
+      assert.ok(calls.slice(0,6).every(call=>call.incremental===undefined));assert.ok(calls.slice(6).every(call=>call.incremental==='0'));
+      const records=result.stdout.split('\n').filter(line=>line.startsWith('Native comparison result: ')).map(line=>JSON.parse(line.slice('Native comparison result: '.length)));
+      assert.deepEqual(records.map(row=>row.mode),['default','disabled']);assert.equal(records[0].sha256,records[1].sha256);assert.equal(records[0].sourceTree,records[1].sourceTree);
+      assert.ok(records[0].incremental.bytes>0);assert.equal(records[1].incremental.bytes,0);assert.ok(records.every(row=>row.phases.length===4&&row.phases.every(phase=>phase.exitCode===0&&phase.dependencyCompileNotices===0)));
+      assert.equal((result.stdout.match(/155 passed/g)??[]).length,2);assert.doesNotMatch(result.stdout,new RegExp(root.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')));
+      for(const mode of ['default','disabled'])assert.match(result.stderr,new RegExp('Native comparison resources \\('+mode+'\\): elapsed=[\\d.]+ user=[\\d.]+ system=[\\d.]+ seconds'));
+    }else{
+      assert.notEqual(result.status,0);if(scenario==='compiler-failure')assert.equal(result.status,17);if(scenario==='cleanup-failure')assert.equal(result.status,19);
+      if(scenario==='release-mismatch')assert.match(result.stderr,/Incremental policy changed release bytes/);
+      if(scenario==='dependency-rebuild')assert.match(result.stderr,/Comparison requires a warm dependency cache/);
+      if(scenario==='source-mutation')assert.match(result.stderr,/Native tests changed the comparison source/);
+      assert.ok(!result.stdout.includes('Native comparison result: {"mode":"disabled"'));
+    }
+  });
+  const wrongPlatform=spawnSync(toolPath('bash'),['-e','-o','pipefail','-c',script],{cwd:root,env:{...env,RUNNER_OS:'Linux'},encoding:'utf8'});
+  assert.notEqual(wrongPlatform.status,0);assert.match(wrongPlatform.stderr,/existing Intel macOS producer/);
+});
+
+test('native performance dispatch is a separate exact-source Intel diagnostic, without publication or artifact uploads',async()=>{
+  const driver=await readFile(join(repo,'.github/workflows/native-performance.yml'),'utf8');
+  assert.match(driver,/^  workflow_dispatch:$/m);assert.doesNotMatch(driver,/^  (?:push|pull_request|schedule):/m);
+  assert.match(driver,/^  contents: read$/m);assert.doesNotMatch(driver,/id-token:|secrets:|publish|upload-artifact/);
+  assert.match(driver,/diagnostic-incremental-comparison: true/);assert.match(driver,/source-ref: \$\{\{ github.sha \}\}/);
+  assert.match(driver,/uses: \.\/\.github\/workflows\/occipital.yml/);
+  const step=shellStep(workflowStep(workflowJob(driver,'metadata'),'Select existing Intel target'));
+  const root=await mkdtemp(join(process.env.TIDY_TEST_ROOT,'intel-driver-'));try{
+    const output=join(root,'output');await writeFile(output,'');
+    const result=spawnSync(toolPath('bash'),['-e','-o','pipefail','-c',step],{cwd:repo,env:childEnv(root,{GITHUB_OUTPUT:output},readInputs()),encoding:'utf8'});
+    assert.equal(result.status,0,result.stderr);const platforms=JSON.parse((await readFile(output,'utf8')).trim().slice('platforms='.length));
+    assert.equal(platforms.length,1);assert.equal(platforms[0].target,'darwin-x64');assert.equal(platforms[0].runner,'macos-15-intel');
+  }finally{await rm(root,{recursive:true,force:true});}
+  const producer=await readFile(join(repo,'.github/workflows/occipital.yml'),'utf8');
+  const transfer=workflowStep(producer,"Transfer this commit's native inputs to dependent jobs");
+  assert.match(transfer,/if: \$\{\{ !inputs.diagnostic-incremental-comparison \}\}/);
+  const ordinary=workflowStep(producer,'Offline native correctness, strict lint and release build');
+  assert.match(ordinary,/!inputs.diagnostic-incremental-comparison/);
 });

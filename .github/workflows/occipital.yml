@@ -19,6 +19,10 @@ on:
       clean-build:
         type: boolean
         default: false
+      diagnostic-incremental-comparison:
+        description: Compare both incremental modes on one Intel runner instead of the ordinary gate
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -226,7 +230,7 @@ jobs:
           IMAGE_ARCH: ${{ matrix.target == 'linux-x64-gnu' && 'amd64' || 'arm64' }}
         run: docker save --output "$IMAGE_ARCHIVE" "occipital-gnu228-$IMAGE_ARCH"
       - name: Offline native correctness, strict lint and release build
-        if: ${{ !startsWith(matrix.target, 'linux-') }}
+        if: ${{ !startsWith(matrix.target, 'linux-') && !inputs.diagnostic-incremental-comparison }}
         env:
           RUST_TARGET: ${{ matrix.rust }}
         run: |
@@ -243,7 +247,7 @@ jobs:
           const root = process.env.RUST_ROOT, state = join(process.env.RUNNER_TEMP,'native-environment');
           const inputs = readNativeInputs(join(process.env.RUNNER_TEMP,'native-build-inputs/inputs.json'));
           const msvc = join(state,'msvc.json'), build = existsSync(msvc) ? JSON.parse(readFileSync(msvc)) : {};
-          const env = childEnv(join(inputs.runRoot,'native-runtime'), {...build, ...rustLoaderEnvironment(root), ...(process.platform === 'darwin' ? {CARGO_INCREMENTAL:'0'} : {}), PATH:[join(root,'bin'),build.PATH,inputs.tools.path ?? inputs.tools.bin].filter(Boolean).join(delimiter), CARGO_HOME:process.env.CARGO_HOME, CARGO_TARGET_DIR:process.env.CARGO_TARGET_DIR, CARGO_NET_OFFLINE:'true', RUSTC:join(root,'bin',process.platform==='win32'?'rustc.exe':'rustc'), RUSTUP_AUTO_INSTALL:'0', RUSTUP_TOOLCHAIN:root}, inputs);
+          const env = childEnv(join(inputs.runRoot,'native-runtime'), {...build, ...rustLoaderEnvironment(root), PATH:[join(root,'bin'),build.PATH,inputs.tools.path ?? inputs.tools.bin].filter(Boolean).join(delimiter), CARGO_HOME:process.env.CARGO_HOME, CARGO_TARGET_DIR:process.env.CARGO_TARGET_DIR, CARGO_NET_OFFLINE:'true', RUSTC:join(root,'bin',process.platform==='win32'?'rustc.exe':'rustc'), RUSTUP_AUTO_INSTALL:'0', RUSTUP_TOOLCHAIN:root}, inputs);
           const cargo = join(root,'bin',process.platform==='win32'?'cargo.exe':'cargo'), target = process.env.RUST_TARGET;
           const {runNativeCommand} = await import('./scripts/test/native-diagnostics.mjs');
           for (const args of [['fmt','--all','--check'], ['test','--workspace','--locked','--offline','--target',target], ['clippy','--workspace','--all-targets','--locked','--offline','--target',target,'--','-D','warnings'], ['build','--release','--locked','--offline','-p','occipital','--target',target]]) {
@@ -253,6 +257,20 @@ jobs:
             if(result.status!==0) process.exit(result.status ?? 1);
           }
           JS
+      - name: Same-runner Intel incremental comparison
+        if: inputs.diagnostic-incremental-comparison
+        env:
+          RUST_TARGET: ${{ matrix.rust }}
+        run: |
+          if [[ "$RUNNER_OS" != macOS || "$RUST_TARGET" != x86_64-apple-darwin ]]; then
+            echo 'The diagnostic requires the existing Intel macOS producer' >&2
+            exit 1
+          fi
+          for mode in default disabled; do
+            node scripts/test/native-comparison.mjs "$mode" --prepare
+            TIMEFORMAT="Native comparison resources ($mode): elapsed=%3R user=%3U system=%3S seconds"
+            time node scripts/test/native-comparison.mjs "$mode"
+          done
       - name: Version smoke, pinned-source notices, hashes and native package staging
         env:
           TARGET: ${{ matrix.target }}
@@ -315,6 +333,7 @@ jobs:
           if (source.commit !== inputs.source.commit || source.tree !== inputs.source.tree) throw new Error('Native build modified the tested checkout');
           JS
       - name: Transfer this commit's native inputs to dependent jobs
+        if: ${{ !inputs.diagnostic-incremental-comparison }}
         uses: actions/upload-artifact@v7.0.2
         with:
           name: occipital-v${{ inputs.version }}-${{ matrix.target }}
