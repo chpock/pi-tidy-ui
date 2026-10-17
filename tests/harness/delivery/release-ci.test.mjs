@@ -467,7 +467,7 @@ function workflowStep(source, name) {
   return section.split('\n      - ')[0];
 }
 
-test('each platform compiles once and its two Node consumers can start without waiting for other platforms',async()=>{
+test('each platform compiles once and its event-selected consumers can start without waiting for other platforms',async()=>{
   const ci=await readFile(join(repo,'.github/workflows/ci.yml'),'utf8');
   const producer=await readFile(join(repo,'.github/workflows/occipital.yml'),'utf8');
   const platform=await readFile(join(repo,'.github/workflows/occipital-platform.yml'),'utf8');
@@ -498,7 +498,7 @@ test('each platform compiles once and its two Node consumers can start without w
     const plan=(await buildCIPlan({eventName:'push',ref,sha:commit,windowsArm64,fetchLatest:async()=>Response.json({name:'@earendil-works/pi-coding-agent',version:'1.3.0'})})).native;
     for(const target of plan.targets){
       const rows=target==='linux-x64-gnu'?plan.hostConsumers:plan.remaining.find(row=>row.target===target).consumerMatrix;
-      assert.deepEqual(rows.map(row=>row.node),['22.19.0','26.7.0']);
+      assert.deepEqual(rows.map(row=>row.node),ref==='refs/heads/main'?['22.19.0']:['22.19.0','26.7.0']);
     }
   }
 });

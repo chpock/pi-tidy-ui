@@ -14,10 +14,10 @@ const response = version => Response.json({ name:packageName, version });
 const plan = (extra = {}) => buildCIPlan({ ...options, fetchLatest:async () => response('1.7.3'), ...extra });
 const success = result => Object.fromEntries(Object.entries(result.requiredBranches).map(([key, required]) => [key, required ? 'success' : 'skipped']));
 const productProfiles = pis => NODE_VERSIONS.flatMap(node => pis.map(pi => ({node,pi})));
-const cliProfiles = profiles => profiles.flatMap(profile => Array.from({length:CLI_SHARDS}, (_, index) => ({...profile,shard:`${index + 1}/${CLI_SHARDS}`})));
+const cliProfiles = profiles => profiles.flatMap(profile => Array.from({length:CLI_SHARDS}, (_, index) => ({...profile,coverage:'complete',shard:`${index + 1}/${CLI_SHARDS}`})));
 const branches = ['nativeHost','nativeRemaining','nativeHostConsumers','sdk','cli','delivery','daemonRegressions','publishedConsumer','preparedPack','daemonRelease','daemonNpm'];
 
-test('fixed main push, PR and manual events have the same complete obligations and exact source authority', async () => {
+test('fixed main push, PR and manual events have the same approved obligations and exact source authority', async () => {
   assert.equal(MINIMUM_PI,'1.0.0');
   assert.deepEqual(NODE_VERSIONS,['22.19.0','26.7.0']);
   assert.equal(CLI_SHARDS,4);
@@ -32,7 +32,12 @@ test('fixed main push, PR and manual events have the same complete obligations a
     assert.equal(result.sourceRef,sha);
     assert.equal(result.sdkSuite,'unit');
     assert.deepEqual(result.profiles,productProfiles([MINIMUM_PI,'1.7.3']));
-    assert.deepEqual(result.cliProfiles,cliProfiles(result.profiles));
+    assert.deepEqual(result.cliProfiles,[
+      {node:NODE_VERSIONS[0],pi:MINIMUM_PI,coverage:'compatibility'},
+      ...cliProfiles([{node:NODE_VERSIONS[0],pi:'1.7.3'}]),
+      {node:NODE_VERSIONS[1],pi:MINIMUM_PI,coverage:'compatibility'},
+      {node:NODE_VERSIONS[1],pi:'1.7.3',coverage:'compatibility'},
+    ]);
     assert.deepEqual(result.deliveryProfiles,productProfiles([MINIMUM_PI]));
     assert.equal(result.delivery,true);
     assert.equal(result.release,false);
@@ -81,7 +86,10 @@ test('equal minimum/latest collapses SDK profiles and every CLI shard, but night
     const result = await plan({...event,fetchLatest:async () => { calls++; return response(MINIMUM_PI); }});
     assert.equal(calls,1);
     assert.deepEqual(result.profiles,productProfiles([MINIMUM_PI]));
-    assert.deepEqual(result.cliProfiles,cliProfiles(result.profiles));
+    assert.deepEqual(result.cliProfiles,event.eventName === 'schedule' ? cliProfiles(result.profiles) : [
+      ...cliProfiles([{node:NODE_VERSIONS[0],pi:MINIMUM_PI}]),
+      {node:NODE_VERSIONS[1],pi:MINIMUM_PI,coverage:'compatibility'},
+    ]);
     assert.equal(result.piSelection.latest,MINIMUM_PI);
   }
 });
@@ -104,7 +112,7 @@ test('nightly is exclusively latest SDK/profile and every physical CLI shard wit
   });
 });
 
-test('enabled central platforms all build once and all consumers include both Nodes, including Windows ARM64 toggle', async () => {
+test('enabled platforms build once; ordinary consumers use minimum Node and releases retain both Nodes', async () => {
   for (const windowsArm64 of [false,true]) {
     for (const ref of ['refs/heads/main','refs/tags/occipital-v0.2.0','refs/tags/pi-tidy-ui-v0.3.0']) {
       const result = await plan({windowsArm64,ref});
@@ -114,7 +122,8 @@ test('enabled central platforms all build once and all consumers include both No
       assert.deepEqual(result.native.host.map(row => row.target),['linux-x64-gnu']);
       assert.deepEqual(result.native.remaining.map(row => row.target),targets.filter(target => target !== 'linux-x64-gnu'));
       const consumers = [...result.native.hostConsumers,...result.native.remaining.flatMap(row => row.consumerMatrix)];
-      assert.deepEqual(consumers.map(row => `${row.target}/${row.node}`).sort(),targets.flatMap(target => NODE_VERSIONS.map(node => `${target}/${node}`)).sort());
+      const nodes = ref === 'refs/heads/main' ? [NODE_VERSIONS[0]] : NODE_VERSIONS;
+      assert.deepEqual(consumers.map(row => `${row.target}/${row.node}`).sort(),targets.flatMap(target => nodes.map(node => `${target}/${node}`)).sort());
       for (const row of result.native.matrix) {
         assert.ok(Object.hasOwn(candidateTargets,row.target));
         const platform = platforms.find(platform => platform.target === row.target);
@@ -257,4 +266,26 @@ test('daemon publication requires full native and Pi-graph packaging regressions
     assert.equal(validateCIResults(result,statuses),false,'daemon regression '+status+' cannot authorize publication');
   }
   assert.equal(validateCIResults(result,success(result)),true);
+});
+
+
+test('ordinary budget has one complete reference, three compatibility profiles and one consumer per target',async()=>{
+  for(const windowsArm64 of [false,true]){
+    const result=await plan({windowsArm64});
+    const full=result.cliProfiles.filter(row=>row.coverage==='complete');
+    const compatibility=result.cliProfiles.filter(row=>row.coverage==='compatibility');
+    assert.deepEqual(full.map(({node,pi})=>({node,pi})),Array.from({length:4},()=>({node:NODE_VERSIONS[0],pi:'1.7.3'})));
+    assert.deepEqual(full.map(row=>row.shard),['1/4','2/4','3/4','4/4']);
+    assert.equal(compatibility.length,3);assert.ok(compatibility.every(row=>!Object.hasOwn(row,'shard')));
+    assert.equal(new Set(compatibility.map(row=>row.node+'/'+row.pi)).size,3);
+    const consumers=[...result.native.hostConsumers,...result.native.remaining.flatMap(row=>row.consumerMatrix)];
+    assert.equal(consumers.length,result.native.targets.length);
+    assert.ok(consumers.every(row=>row.node===NODE_VERSIONS[0]));
+    const jobs=2+result.native.matrix.length+consumers.length+result.profiles.length+result.cliProfiles.length+result.deliveryProfiles.length;
+    assert.equal(jobs,windowsArm64?27:25);
+    for(const status of ['failure','cancelled','skipped',undefined]){
+      const statuses=success(result);if(status===undefined)delete statuses.cli;else statuses.cli=status;
+      assert.equal(validateCIResults(result,statuses),false,'compatibility failure cannot be waived by a later source');
+    }
+  }
 });

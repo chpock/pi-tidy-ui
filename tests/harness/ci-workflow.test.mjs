@@ -36,7 +36,8 @@ test('every ordinary push and PR runs fixed complete profiles without diff routi
   assert.doesNotMatch(branch,/--files|--groups|--pattern|--skip|scope|affected/);
  }
  assert.match(job(source,'sdk'),/needs: \[metadata, native-linux\]/);assert.match(job(source,'cli'),/needs: \[metadata, native-linux\]/);
- assert.match(job(source,'cli'),/shard: \$\{\{ matrix.shard \}\}/);
+ assert.match(job(source,'cli'),/shard: \$\{\{ matrix.shard \|\| '' \}\}/);
+  assert.match(job(source,'cli'),/cli-coverage: \$\{\{ matrix.coverage \}\}/);
  assert.match(job(source,'delivery'),/needs: metadata/,'inert delivery must not wait for unrelated compilers');
 });
 
@@ -44,14 +45,16 @@ test('actual metadata step pins one latest, records exact source and emits compl
  const root=fixture(t),output=join(root,'outputs'),trace=join(root,'fetches'),preload=join(root,'fetch.mjs');
  writeFileSync(preload,`import {appendFileSync} from 'node:fs';globalThis.fetch=async(url,options)=>{if(url!=='https://registry.npmjs.org/@earendil-works%2Fpi-coding-agent/latest'||options.redirect!=='error')throw new Error('Unexpected metadata request');appendFileSync(process.env.FETCH_TRACE,'fetch\\n');return Response.json({name:'@earendil-works/pi-coding-agent',version:'1.3.0'});};`);
  const script=javascript(step(ci(),'Plan the complete fixed event obligations'));
- for(const eventName of ['push','schedule']){
+ for(const [eventName,ref] of [['push','refs/heads/main'],['schedule','refs/heads/main'],['push','refs/tags/pi-tidy-ui-v0.3.0'],['workflow_dispatch','refs/tags/pi-tidy-ui-v0.3.0']]){
   writeFileSync(output,'');writeFileSync(trace,'');
-  const result=executeScript(root,script,{EVENT_NAME:eventName,EVENT_REF:'refs/heads/main',SOURCE_SHA:commit,WINDOWS_ARM64:'false',GITHUB_OUTPUT:output,FETCH_TRACE:trace},preload);
+  const result=executeScript(root,script,{EVENT_NAME:eventName,EVENT_REF:ref,SOURCE_SHA:commit,WINDOWS_ARM64:'false',GITHUB_OUTPUT:output,FETCH_TRACE:trace},preload);
   assert.equal(result.status,0,result.stdout+result.stderr);assert.equal(readFileSync(trace,'utf8'),'fetch\n');
   const outputs=Object.fromEntries(readFileSync(output,'utf8').trim().split('\n').map(line=>{const at=line.indexOf('=');return [line.slice(0,at),line.slice(at+1)];}));
   const plan=JSON.parse(outputs.plan),profiles=JSON.parse(outputs.profiles).include,shards=JSON.parse(outputs.cli_profiles).include;
   assert.equal(outputs.source,commit);assert.equal(plan.sourceRef,commit);assert.deepEqual(profiles,plan.profiles);
-  assert.deepEqual(shards,plan.cliProfiles);assert.equal(plan.piSelection.latest,'1.3.0');assert.equal(shards.length,profiles.length*4);
+  assert.deepEqual(shards,plan.cliProfiles);assert.equal(plan.piSelection.latest,'1.3.0');
+  assert.equal(shards.length,plan.kind==='ordinary'?7:profiles.length*4);
+  assert.equal(shards.filter(row=>row.coverage==='compatibility').length,plan.kind==='ordinary'?3:0);
   assert.deepEqual(JSON.parse(outputs.targets),plan.native.targets);
   if(eventName==='schedule'){assert.deepEqual([...new Set(profiles.map(row=>row.pi))],['1.3.0']);assert.deepEqual(JSON.parse(outputs.host_consumers),[]);assert.deepEqual(JSON.parse(outputs.delivery_profiles).include,[]);assert.deepEqual(JSON.parse(outputs.remaining),[]);}
   else{assert.equal(profiles.length,4);assert.equal(JSON.parse(outputs.remaining).length,4);}
@@ -100,8 +103,7 @@ test('actual daemon result and publication dependencies require the complete nat
 test('complete role uses discovered requirements and fixed suites; CLI cannot narrow its planned partition',()=>{
  const source=readFileSync(join(repo,'.github/workflows/ci-checks.yml'),'utf8');
  assert.match(source,/resolveSelection\(process.cwd\(\), \{suite,/);assert.match(source,/selection.requirements.includes\(key\)/);
- assert.match(source,/suite = layer === 'cli' \? 'cli' : layer === 'delivery' \? 'native-release' : layer === 'daemon' \? 'daemon-regression' : nightly \? 'compatibility' : 'unit'/);
- assert.match(source,/--suite cli --shard "\$CLI_SHARD" --network-isolated/);
+ assert.match(source,/--suite "\$CLI_SUITE"/);
  assert.doesNotMatch(source,/--files|--groups|--pattern|--skip|--affected-only|test:feature|upload-artifact/);
  assert.match(source,/Strict selected-host types\n        if: inputs.layer == 'node'/);
  assert.match(source,/--pi-version "\$PI_VERSION"/);assert.match(source,/--integration/);assert.match(source,/--shared-host/);assert.match(source,/--native-artifact/);
@@ -136,7 +138,7 @@ test('actual metadata step preserves explicit ARM64 opt-in and rejects invalid i
  const enabled=execute({});assert.equal(enabled.status,0,enabled.stdout+enabled.stderr);assert.equal(readFileSync(trace,'utf8'),'fetch\n');
  const outputs=Object.fromEntries(readFileSync(output,'utf8').trim().split('\n').map(line=>{const at=line.indexOf('=');return [line.slice(0,at),line.slice(at+1)];}));
  const remaining=JSON.parse(outputs.remaining),targets=JSON.parse(outputs.targets),arm=remaining.find(row=>row.target==='windows-arm64-msvc');
- assert.equal(targets.length,6);assert.equal(remaining.length,5);assert.ok(arm);assert.deepEqual(arm.consumerMatrix.map(row=>row.node),['22.19.0','26.7.0']);
+ assert.equal(targets.length,6);assert.equal(remaining.length,5);assert.ok(arm);assert.deepEqual(arm.consumerMatrix.map(row=>row.node),['22.19.0']);
  assert.deepEqual(JSON.parse(outputs.plan).native.targets,targets);
  const cases=[
   ...['typo','TRUE','1',''].map(value=>({extra:{WINDOWS_ARM64:value},fetches:'',error:/CI_WINDOWS_ARM64 must be true or false/})),
@@ -149,5 +151,48 @@ test('actual metadata step preserves explicit ARM64 opt-in and rejects invalid i
  for(const {extra,fetches='fetch\n',error}of cases){
   const result=execute(extra);assert.equal(result.error,undefined);assert.notEqual(result.status,0,JSON.stringify(extra));
   assert.match(result.stderr,error);assert.equal(readFileSync(output,'utf8'),'','failure must not publish a partial plan');assert.equal(readFileSync(trace,'utf8'),fetches);
+ }
+});
+
+
+test('actual reusable selection admits complete CLI shards or one fixed compatibility invocation, without narrowing',t=>{
+ const root=fixture(t),source=readFileSync(join(repo,'.github/workflows/ci-checks.yml'),'utf8');
+ const script=javascript(step(source,'Admit fixed check role and structural prerequisites'));
+ const output=join(root,'selection-output'),nodeVersion=readInputs().node.version.slice(1);
+ const execute=extra=>{
+  writeFileSync(output,'');
+  return executeScript(root,script,{CHECK_LAYER:'cli',PI_VERSION:'1.3.0',EXPECTED_NODE:nodeVersion,NIGHTLY:'false',CLI_COVERAGE:'compatibility',CLI_SHARD:'',GITHUB_OUTPUT:output,...extra});
+ };
+ for(const [coverage,shard,suite]of [['complete','1/4','cli'],['compatibility','','cli-compatibility']]){
+  const result=execute({CLI_COVERAGE:coverage,CLI_SHARD:shard});
+  assert.equal(result.status,0,result.stdout+result.stderr);
+  const outputs=Object.fromEntries(readFileSync(output,'utf8').trim().split('\n').map(line=>line.split('=')));
+  assert.equal(outputs.suite,suite);
+  const receipt=JSON.parse(result.stdout.trim());
+  assert.equal(receipt.coverage,coverage);
+  assert.ok(receipt.selected.length>0);assert.ok(receipt.completeSelection.length>receipt.selected.length);
+  if(coverage==='compatibility'){
+   assert.equal(receipt.shard,null);assert.deepEqual(receipt.requirements,[]);
+   assert.ok(receipt.selected.every(file=>file.startsWith('cli/editor/')||file.startsWith('cli/lifecycle/smoke/')));
+   for(const requirement of ['native','shared','integration'])assert.equal(outputs[requirement],'false');
+  }else assert.deepEqual(receipt.shard,{index:1,total:4});
+ }
+ for(const extra of [{CLI_COVERAGE:''},{CLI_COVERAGE:'unknown'},{CLI_COVERAGE:'complete'},{CLI_SHARD:'1/4'},{NIGHTLY:'true'},{CHECK_LAYER:'node'},{CHECK_LAYER:'node',CLI_COVERAGE:'',CLI_SHARD:'1/4'}]){
+  const result=execute(extra);assert.notEqual(result.status,0,JSON.stringify(extra));
+  assert.equal(readFileSync(output,'utf8'),'','invalid role must not publish partial selection');
+ }
+ const nightly=execute({NIGHTLY:'true',CLI_COVERAGE:'complete',CLI_SHARD:'1/4'});assert.equal(nightly.status,0,nightly.stderr);
+});
+
+test('actual physical role command invokes the selected suite once and propagates failure',t=>{
+ const root=fixture(t),source=readFileSync(join(repo,'.github/workflows/ci-checks.yml'),'utf8');
+ const body=step(source,'Run fixed physical CLI coverage').split('        run: |\n')[1];assert.ok(body);
+ const script=body.split('\n').map(line=>line.replace(/^          /,'')).join('\n');
+ const inputs=readInputs(),trace=join(root,'arguments');
+ const run=(suite,shard='',status='0')=>spawnSync(inputs.tools.bash,['-c',`set -e\nnode(){ printf '%s\\n' "$@" > "$TRACE"; return "$CHILD_STATUS"; }\n${script}`],{cwd:repo,env:childEnv(root,{TRACE:trace,CHILD_STATUS:status,CLI_SUITE:suite,CLI_SHARD:shard,RUNNER_TEMP:root},inputs),encoding:'utf8',timeout:15000});
+ for(const [suite,shard]of [['cli','1/4'],['cli-compatibility','']]){
+  assert.equal(run(suite,shard).status,0);
+  assert.deepEqual(readFileSync(trace,'utf8').trim().split('\n'),['scripts/test/run.mjs','--inputs',join(root,'check-inputs/inputs.json'),'--suite',suite,...(shard?['--shard',shard]:[]),'--network-isolated']);
+  assert.equal(run(suite,shard,'17').status,17);
  }
 });

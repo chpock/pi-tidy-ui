@@ -35,12 +35,14 @@ function triggerKind(eventName, ref) {
   return tag[1] === 'occipital' ? 'occipital-release' : 'extension-release';
 }
 
-function nativePlan(nightly, windowsArm64) {
+function nativePlan(kind, windowsArm64) {
+  const nightly = kind === 'nightly';
+  const consumerNodes = kind === 'ordinary' ? [NODE_VERSIONS[0]] : NODE_VERSIONS;
   const enabled = new Set(enabledTargets({windowsArm64}));
   const matrix = platforms.filter(row => enabled.has(row.target) && (!nightly || row.target === 'linux-x64-gnu'))
     .map(({target,runner,rust,executable}) => ({target,runner,rust,executable}));
   const host = matrix.filter(row => row.target === 'linux-x64-gnu');
-  const expand = rows => nightly ? [] : rows.flatMap(row => NODE_VERSIONS.map(node => ({...row,node})));
+  const expand = rows => nightly ? [] : rows.flatMap(row => consumerNodes.map(node => ({...row,node})));
   const remaining = matrix.filter(row => row.target !== 'linux-x64-gnu').map(row => ({...row,consumerMatrix:expand([row])}));
   return {matrix,host,remaining,hostConsumers:expand(host),targets:matrix.map(row => row.target)};
 }
@@ -69,11 +71,14 @@ export async function buildCIPlan(options) {
     resolvedAt = new Date().toISOString();
   }
   const profiles = daemon ? [] : profilesFor(nightly ? [latest] : [...new Set([MINIMUM_PI,latest])]);
-  const native = nativePlan(nightly,windowsArm64);
+  const native = nativePlan(kind,windowsArm64);
+  const cliProfiles = profiles.flatMap(profile => kind === 'ordinary' && (profile.node !== NODE_VERSIONS[0] || profile.pi !== latest)
+    ? [{...profile,coverage:'compatibility'}]
+    : Array.from({length:CLI_SHARDS}, (_, index) => ({...profile,coverage:'complete',shard:`${index + 1}/${CLI_SHARDS}`})));
   return {
     kind,sourceRef:sha,piSelection:{minimum:MINIMUM_PI,latest,resolvedAt},
     profiles,sdkSuite:daemon ? null : nightly ? 'compatibility' : 'unit',
-    cliProfiles:profiles.flatMap(profile => Array.from({length:CLI_SHARDS}, (_, index) => ({...profile,shard:`${index + 1}/${CLI_SHARDS}`}))),
+    cliProfiles,
     native,delivery:!nightly,deliveryProfiles:nightly ? [] : profilesFor([MINIMUM_PI]),
     daemonRegressionProfiles:daemon ? profilesFor([MINIMUM_PI]) : [],
     release:daemon || extension,publishedConsumer:extension,preparedPack:extension,daemonRelease:daemon,daemonNpm:daemon,

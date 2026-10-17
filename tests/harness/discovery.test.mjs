@@ -123,3 +123,58 @@ test('tests outside structural categories fail instead of silently disappearing'
   add('unclassified/new.test.mjs');
   assert.throws(() => discoverEntries(root), /Unknown test category/);
 });
+
+
+test('physical compatibility includes every nested editor/smoke test, not unrelated CLI or similarly named folders', t => {
+  const {root,add} = fixture(t);
+  const expected = ['cli/editor/a.test.mjs','cli/editor/nested/b.test.ts','cli/lifecycle/smoke/c.test.mjs','cli/lifecycle/smoke/nested/d.test.mjs'];
+  for (const file of [...expected,'cli/bash/other.test.mjs','cli/editorial/other.test.ts','cli/lifecycle/other/smoke/other.test.mjs','product/editor/sdk.test.ts','cli/editor/fixtures/not-a-test.test.mjs']) add(file);
+  const before = resolveSelection(root,{suite:'cli'});
+  const selected = resolveSelection(root,{suite:'cli-compatibility'});
+  assert.deepEqual(selected.files,expected);
+  assert.deepEqual(selected.completeSelection,before.files);
+  assert.deepEqual(selected.requirements,[]);
+  assert.deepEqual(selected.layers,['cli']);
+  assert.equal(selected.coverage,'compatibility');
+  add('cli/editor/nested/added.test.mjs');add('cli/lifecycle/smoke/added.test.ts');
+  const next = resolveSelection(root,{suite:'cli-compatibility'});
+  assert.deepEqual(next.files,[...expected,'cli/editor/nested/added.test.mjs','cli/lifecycle/smoke/added.test.ts'].sort());
+  assert.equal(new Set(next.files).size,next.files.length);
+  assert.ok(before.files.every(file=>resolveSelection(root,{suite:'cli'}).files.includes(file)));
+});
+
+test('physical compatibility rejects every narrowing argument and empty structural coverage', t => {
+  const {root,add} = fixture(t);
+  add('cli/bash/unrelated.test.mjs');
+  assert.throws(()=>resolveSelection(root,{suite:'cli-compatibility'}),/Empty test selection/);
+  add('cli/editor/eligible.test.mjs');
+  for (const extra of [{files:'eligible.test.mjs'},{groups:'editor'},{layer:'cli'},{pattern:''},{pattern:'eligible'},{skip:''},{skip:'never'},{shard:'1/1'}]) {
+    assert.throws(()=>resolveSelection(root,{suite:'cli-compatibility',...extra}),/compatibility.*(?:complete|fixed|filter|narrow|shard)/i);
+  }
+});
+
+test('physical compatibility runner records the full-suite boundary and propagates controlled child assertion failure', async t => {
+  const {root,add} = fixture(t), inputs = readInputs();
+  const guard = pathToFileURL(join(inputs.pi.root,'tests/fixtures/test-guard.mjs')).href;
+  add('cli/editor/failure.test.mjs',`import ${JSON.stringify(guard)};import test from 'node:test';test('compatibility child fails',()=>{throw Error('COMPATIBILITY_FAILURE_CONTROL');});`);
+  const selected = resolveSelection(inputs.pi.root,{suite:'cli-compatibility'});
+  const output = join(root,'report.json'), spawn = childProcess.spawn;
+  let starts = 0;
+  childProcess.spawn = (command,args,options) => {
+    starts++;
+    assert.equal(command,inputs.node.path);
+    assert.deepEqual(args.slice(-selected.files.length),selected.files.map(file=>join(inputs.pi.root,'tests',file)));
+    return spawn(command,[...args.slice(0,-selected.files.length),join(root,'tests/cli/editor/failure.test.mjs')],options);
+  };
+  syncBuiltinESMExports();
+  try {
+    const result = await execute({inputs:inputs.inputsPath,suite:'cli-compatibility',output});
+    assert.equal(starts,1);
+    assert.equal(result.status,'failed');assert.equal(result.exitCode,1);
+    assert.deepEqual(result.selected,selected.files);
+    assert.equal(result.coverage,'compatibility');
+    assert.deepEqual(result.completeSelection,resolveSelection(inputs.pi.root,{suite:'cli'}).files);
+    assert.equal(result.counts.fail,1);assert.equal(result.counts.skipped,0);
+    assert.equal(result.cases.some(item=>item.name==='compatibility child fails'&&item.status==='failed'),true);
+  } finally { childProcess.spawn=spawn;syncBuiltinESMExports(); }
+});

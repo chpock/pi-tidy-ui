@@ -88,9 +88,10 @@ export function featurePlan(features, { root = defaultRoot, baseline = true, pla
 export function resolveSelection(root, { suite = 'unit', groups, files, layer, platform = process.platform, shard, pattern, skip } = {}) {
   const entries = discoverEntries(root), byFile = new Map(entries.map(entry => [entry.file, entry]));
   const fixedSuites = ['check', 'rust', 'rust-check', 'rust-allocator', 'consumer', 'published-consumer'];
-  const suites = new Set(['unit', 'product', 'compatibility', 'cli', 'groups', 'harness', 'native', 'native-release', 'daemon-regression', 'terminal', 'syntax-terminal', 'smoke', 'rust-harness', ...fixedSuites]);
+  const suites = new Set(['unit', 'product', 'compatibility', 'cli', 'cli-compatibility', 'groups', 'harness', 'native', 'native-release', 'daemon-regression', 'terminal', 'syntax-terminal', 'smoke', 'rust-harness', ...fixedSuites]);
   if (!suites.has(suite)) throw new Error('Unknown test suite: ' + suite);
   if (layer !== undefined && !['node', 'cli'].includes(layer)) throw new Error('Unknown test layer');
+  if (suite === 'cli-compatibility' && [files, groups, layer, pattern, skip, shard].some(value => value !== undefined)) throw new Error('Physical compatibility requires its fixed complete selection without filters or shards');
   if (groups !== undefined && files !== undefined) throw new Error('Use groups or files, not both');
   if (fixedSuites.includes(suite) && [groups, files, layer].some(value => value !== undefined)) throw new Error('This suite has a fixed entry, not a file/group selection');
   let partition = null;
@@ -116,6 +117,7 @@ export function resolveSelection(root, { suite = 'unit', groups, files, layer, p
   else if (suite === 'unit') selected = entries.filter(entry => entry.layer === 'node' && !entry.delivery && entry.category !== 'native-build').map(entry => entry.file);
   else if (suite === 'compatibility') selected = entries.filter(entry => ['product', 'integration'].includes(entry.category) || entry.category === 'harness' && entry.file.split('/').includes('packaging')).map(entry => entry.file);
   else if (suite === 'daemon-regression') selected = entries.filter(entry => entry.category === 'integration' && entry.file.split('/')[1] === 'native' || entry.category === 'harness' && entry.file.split('/').includes('packaging')).map(entry => entry.file);
+  else if (suite === 'cli-compatibility') selected = entries.filter(entry => entry.layer === 'cli' && (entry.file.startsWith('cli/editor/') || entry.file.startsWith('cli/lifecycle/smoke/'))).map(entry => entry.file);
   else if (suite === 'cli') selected = entries.filter(entry => entry.layer === 'cli').map(entry => entry.file);
   else if (['check', 'rust', 'rust-check', 'rust-allocator'].includes(suite)) selected = [];
   else if (suite === 'harness') selected = entries.filter(entry => entry.category === 'harness').map(entry => entry.file);
@@ -133,13 +135,16 @@ export function resolveSelection(root, { suite = 'unit', groups, files, layer, p
   });
   if (!selected.length && !['check', 'rust', 'rust-check', 'rust-allocator'].includes(suite)) throw new Error('Empty test selection');
   if (selected.some(file => byFile.get(file).layer === 'script') && (selected.length !== 1 || !['consumer', 'published-consumer'].includes(suite))) throw new Error('Consumer scripts require their explicit authorized suite');
-  const completeSelection = [...selected];
+  const completeSelection = suite === 'cli-compatibility'
+    ? entries.filter(entry => entry.layer === 'cli' && (!entry.platforms || entry.platforms.includes(platform))).map(entry => entry.file)
+    : [...selected];
   if (partition) {
     selected = selected.filter((_, index) => index % partition.total === partition.index - 1);
     if (!selected.length) throw new Error('Empty CLI shard');
   }
   const stageRequirements = ['rust', 'rust-check', 'rust-allocator'].includes(suite) ? ['rust'] : [];
   return { files: selected, requirements: union([...requirementsFor(selected, byFile), ...stageRequirements]), layers: union(selected.map(file => byFile.get(file).layer)), excluded,
+    ...(suite === 'cli-compatibility' ? { coverage: 'compatibility', completeSelection } : {}),
     ...(partition ? { completeSelection, shard: partition } : {}) };
 }
 export function selectSuite(inputs, suite) { return resolveSelection(inputs.pi.root, { suite }).files; }

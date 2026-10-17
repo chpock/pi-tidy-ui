@@ -24,6 +24,9 @@ on:
       shard:
         type: string
         default: ''
+      cli-coverage:
+        type: string
+        default: ''
 
 permissions:
   contents: read
@@ -53,6 +56,7 @@ jobs:
           EXPECTED_NODE: ${{ inputs.node }}
           NIGHTLY: ${{ inputs.nightly }}
           CLI_SHARD: ${{ inputs.shard }}
+          CLI_COVERAGE: ${{ inputs.cli-coverage }}
         run: |
           node --input-type=module <<'JS'
           import {appendFileSync} from 'node:fs';
@@ -60,15 +64,20 @@ jobs:
           const layer = process.env.CHECK_LAYER, nightly = process.env.NIGHTLY === 'true';
           if (!['node','cli','delivery','daemon'].includes(layer)) throw new Error('Unknown fixed check layer');
           if (process.version !== 'v' + process.env.EXPECTED_NODE) throw new Error('Unexpected selected Node runtime');
-          if (layer !== 'cli' && process.env.CLI_SHARD) throw new Error('Only complete CLI execution supports shards');
-          if (layer === 'cli' && !process.env.CLI_SHARD) throw new Error('CLI execution requires its planned shard');
+          const coverage = process.env.CLI_COVERAGE, shard = process.env.CLI_SHARD;
+          if (layer !== 'cli' && (shard || coverage)) throw new Error('Only CLI execution accepts coverage or shards');
+          if (layer === 'cli') {
+            if (!['complete','compatibility'].includes(coverage)) throw new Error('CLI execution requires its planned coverage');
+            if (coverage === 'complete' && !shard) throw new Error('Complete CLI requires its planned shard');
+            if (coverage === 'compatibility' && (shard || nightly)) throw new Error('Physical compatibility is unsharded and cannot replace nightly complete coverage');
+          }
           if (['delivery','daemon'].includes(layer) && (nightly || process.env.PI_VERSION !== '1.0.0')) throw new Error('Delivery checks run once per Node on the minimum Pi, never nightly');
-          const suite = layer === 'cli' ? 'cli' : layer === 'delivery' ? 'native-release' : layer === 'daemon' ? 'daemon-regression' : nightly ? 'compatibility' : 'unit';
-          const selection = resolveSelection(process.cwd(), {suite, ...(layer === 'cli' ? {shard:process.env.CLI_SHARD} : {})});
+          const suite = layer === 'cli' ? coverage === 'compatibility' ? 'cli-compatibility' : 'cli' : layer === 'delivery' ? 'native-release' : layer === 'daemon' ? 'daemon-regression' : nightly ? 'compatibility' : 'unit';
+          const selection = resolveSelection(process.cwd(), {suite, ...(shard ? {shard} : {})});
           for (const [key,value] of Object.entries({suite, ...Object.fromEntries(['native','integration','shared'].map(key => [key,selection.requirements.includes(key)]))})) {
             appendFileSync(process.env.GITHUB_OUTPUT,key + '=' + String(value) + '\n');
           }
-          console.log(JSON.stringify({suite,shard:selection.shard ?? null,selected:selection.files,completeSelection:selection.completeSelection ?? selection.files,requirements:selection.requirements}));
+          console.log(JSON.stringify({suite,node:process.version,pi:process.env.PI_VERSION,coverage:layer === 'cli' ? coverage : null,shard:selection.shard ?? null,selected:selection.files,completeSelection:selection.completeSelection ?? selection.files,requirements:selection.requirements}));
           JS
       - uses: actions/cache@v6.1.0
         with:
@@ -133,8 +142,12 @@ jobs:
       - name: Complete daemon native and npm-graph regressions
         if: inputs.layer == 'daemon'
         run: node scripts/test/run.mjs --inputs "$RUNNER_TEMP/check-inputs/inputs.json" --suite daemon-regression --network-isolated
-      - name: Complete physical CLI partition
+      - name: Run fixed physical CLI coverage
         if: inputs.layer == 'cli'
         env:
+          CLI_SUITE: ${{ steps.selection.outputs.suite }}
           CLI_SHARD: ${{ inputs.shard }}
-        run: node scripts/test/run.mjs --inputs "$RUNNER_TEMP/check-inputs/inputs.json" --suite cli --shard "$CLI_SHARD" --network-isolated
+        run: |
+          args=()
+          if [[ -n "$CLI_SHARD" ]]; then args+=(--shard "$CLI_SHARD"); fi
+          node scripts/test/run.mjs --inputs "$RUNNER_TEMP/check-inputs/inputs.json" --suite "$CLI_SUITE" "${args[@]}" --network-isolated

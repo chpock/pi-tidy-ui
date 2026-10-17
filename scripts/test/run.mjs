@@ -73,8 +73,9 @@ export async function execute({ inputs: path, suite = 'unit', files, groups, lay
     const selection = resolveSelection(inputs.pi.root, { suite, files, groups, layer, shard, pattern, skip });
     const selected = selection.files;
     report.selected = selected;
+    if (selection.completeSelection) report.completeSelection = selection.completeSelection;
+    if (selection.coverage) report.coverage = selection.coverage;
     if (selection.shard) {
-      report.completeSelection = selection.completeSelection;
       report.shard = { ...selection.shard, selected };
     }
     report.requirements = selection.requirements;

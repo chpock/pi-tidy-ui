@@ -17,7 +17,7 @@ on:
         required: true
         type: string
       consumer-platforms:
-        description: Both selected Node profiles for this platform
+        description: Event-selected Node consumer profiles for this platform
         required: true
         type: string
       clean-build:

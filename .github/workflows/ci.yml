@@ -160,7 +160,7 @@ jobs:
       nightly: ${{ needs.metadata.outputs.kind == 'nightly' }}
 
   cli:
-    name: ${{ github.event_name == 'schedule' && 'Nightly' || 'Complete' }} CLI Node ${{ matrix.node }} Pi ${{ matrix.pi }} shard ${{ matrix.shard }}
+    name: ${{ github.event_name == 'schedule' && 'Nightly complete' || matrix.coverage == 'complete' && 'Complete' || 'Physical compatibility' }} CLI Node ${{ matrix.node }} Pi ${{ matrix.pi }} ${{ matrix.shard || '' }}
     needs: [metadata, native-linux]
     if: fromJSON(needs.metadata.outputs.plan).requiredBranches.cli
     strategy:
@@ -174,7 +174,8 @@ jobs:
       pi: ${{ matrix.pi }}
       daemon-version: ${{ needs.metadata.outputs.daemon_version }}
       nightly: ${{ needs.metadata.outputs.kind == 'nightly' }}
-      shard: ${{ matrix.shard }}
+      shard: ${{ matrix.shard || '' }}
+      cli-coverage: ${{ matrix.coverage }}
 
   daemon-regressions:
     name: Daemon regressions Node ${{ matrix.node }}
