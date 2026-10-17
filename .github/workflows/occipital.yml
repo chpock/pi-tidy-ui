@@ -19,10 +19,6 @@ on:
       clean-build:
         type: boolean
         default: false
-      diagnostic-incremental-comparison:
-        description: Compare both incremental modes on one Intel runner instead of the ordinary gate
-        type: boolean
-        default: false
 
 permissions:
   contents: read
@@ -230,25 +226,12 @@ jobs:
           IMAGE_ARCH: ${{ matrix.target == 'linux-x64-gnu' && 'amd64' || 'arm64' }}
         run: docker save --output "$IMAGE_ARCHIVE" "occipital-gnu228-$IMAGE_ARCH"
       - name: Offline native correctness, strict lint and release build
-        if: ${{ !startsWith(matrix.target, 'linux-') && !inputs.diagnostic-incremental-comparison }}
+        if: ${{ !startsWith(matrix.target, 'linux-') }}
         env:
           RUST_TARGET: ${{ matrix.rust }}
         run: |
           TIMEFORMAT=
           if [[ "${RUNNER_OS:-}" == macOS ]]; then
-            native_load() {
-              node --input-type=module - "$1" <<'LOAD'
-          import {join} from 'node:path';
-          import {childEnv} from './scripts/test/context.mjs';
-          import {readNativeInputs} from './scripts/test/prepare-native.mjs';
-          import {nativeHostLoad} from './scripts/test/native-diagnostics.mjs';
-          const inputs=readNativeInputs(join(process.env.RUNNER_TEMP,'native-build-inputs/inputs.json'));
-          const env=childEnv(join(inputs.runRoot,'host-diagnostics'),{},inputs);
-          console.log('Native host load: '+JSON.stringify(nativeHostLoad(inputs.tools.ps,env,process.argv[2])));
-          LOAD
-            }
-            native_load before
-            trap 'native_load after' EXIT
             TIMEFORMAT='Native gate resources: elapsed=%R user=%U system=%S seconds'
           fi
           time node --input-type=module <<'JS'
@@ -270,20 +253,6 @@ jobs:
             if(result.status!==0) process.exit(result.status ?? 1);
           }
           JS
-      - name: Same-runner Intel incremental comparison
-        if: inputs.diagnostic-incremental-comparison
-        env:
-          RUST_TARGET: ${{ matrix.rust }}
-        run: |
-          if [[ "$RUNNER_OS" != macOS || "$RUST_TARGET" != x86_64-apple-darwin ]]; then
-            echo 'The diagnostic requires the existing Intel macOS producer' >&2
-            exit 1
-          fi
-          for mode in default disabled; do
-            node scripts/test/native-comparison.mjs "$mode" --prepare
-            TIMEFORMAT="Native comparison resources ($mode): elapsed=%3R user=%3U system=%3S seconds"
-            time node scripts/test/native-comparison.mjs "$mode"
-          done
       - name: Version smoke, pinned-source notices, hashes and native package staging
         env:
           TARGET: ${{ matrix.target }}
@@ -346,7 +315,6 @@ jobs:
           if (source.commit !== inputs.source.commit || source.tree !== inputs.source.tree) throw new Error('Native build modified the tested checkout');
           JS
       - name: Transfer this commit's native inputs to dependent jobs
-        if: ${{ !inputs.diagnostic-incremental-comparison }}
         uses: actions/upload-artifact@v7.0.2
         with:
           name: occipital-v${{ inputs.version }}-${{ matrix.target }}

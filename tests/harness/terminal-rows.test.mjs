@@ -8,6 +8,8 @@ import { EventEmitter } from 'node:events';
 import { PassThrough, Writable } from 'node:stream';
 import { PiTerminal } from '../fixtures/terminal-harness.mjs';
 import { assertFits } from '../fixtures/terminal-rows.mjs';
+import { editorPaint } from '../fixtures/editor-paint.ts';
+import * as native from '@earendil-works/pi-tui';
 
 const { Terminal } = xterm;
 function sample(terminal) {
@@ -22,8 +24,13 @@ function sample(terminal) {
 
 async function withWrites(run) {
   const original = Terminal.prototype.write;
-  const observed = { pending: 0, maximum: 0, callbacks: 0, values: [], states: [] };
+  const observed = { pending: 0, maximum: 0, callbacks: 0, values: [], states: [], errors: [] };
+  const configured = new WeakSet();
   Terminal.prototype.write = function (data, done) {
+    if (!configured.has(this)) {
+      configured.add(this);
+      this.options.logger = { ...console, error(...args) { observed.errors.push(args); console.error(...args); } };
+    }
     observed.values.push(data);
     observed.pending++; observed.maximum = Math.max(observed.maximum, observed.pending);
     return original.call(this, data, () => {
@@ -85,6 +92,38 @@ test('all row boundaries are validated before queueing, including a later invali
   });
   await assertFits([], 8);
   await assertFits(['', '', ''], 8);
+});
+
+function nativeCursor(text) {
+  return typeof native.renderFakeCursor === 'function' ? native.renderFakeCursor(text) : `\x1b[7m${text}\x1b[27m`;
+}
+
+test('row validation composes native cursor metadata before measuring terminal cells', async () => {
+  const rows = ['\x1b[31mAB\x1b[0m' + native.CURSOR_MARKER + nativeCursor('界') + '\x1b[34mCD\x1b[0m',
+    'AB' + native.CURSOR_MARKER + nativeCursor('C') + 'DE'];
+  const before = [...rows], reference = new Terminal({ cols: 6, rows: 4, allowProposedApi: true }), expected = [];
+  try {
+    for (const row of editorPaint(rows)) {
+      reference.reset();
+      await new Promise(resolve => reference.write(row, resolve));
+      expected.push(sample(reference));
+    }
+  } finally { reference.dispose(); }
+  await withWrites(async observed => {
+    await assertFits(rows, 6);
+    assert.deepEqual(observed.errors, [], 'valid composed cursor paint never enters an APC parser error');
+    assert.deepEqual(observed.states, expected, 'measure complete native-composed text, attributes and cursor');
+    assert.equal(observed.states[0].cells[0][2][0], '界');
+    assert.equal(observed.states[0].cells[0][2][1], 2);
+    assert.deepEqual(rows, before, 'validation must not change raw component rows');
+  });
+});
+
+test('native cursor metadata cannot hide ASCII or wide-glyph row overflow', async () => {
+  for (const [row,width] of [['ABC' + native.CURSOR_MARKER + nativeCursor('D') + 'EF',5],
+    ['AB' + native.CURSOR_MARKER + nativeCursor('界') + 'CD',5]]) {
+    await assert.rejects(assertFits([row], width), /row must not wrap/, 'every visible cell counts after native cursor composition');
+  }
 });
 
 test('PTY chunks use the native parser queue and retain split UTF-8, styles, frame and receipt order', async () => {
