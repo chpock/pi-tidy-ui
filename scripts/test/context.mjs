@@ -59,6 +59,11 @@ export function childEnv(root, extra = {}, inputs = readInputs()) {
   return Object.fromEntries(Object.entries({ ...env, ...extra }).filter(([, value]) => value !== undefined).map(([key, value]) => [key, String(value)]));
 }
 
+// Direct toolchain execution needs the loader setup normally supplied by rustup.
+export function rustLoaderEnvironment(root, platform = process.platform) {
+  return platform === 'darwin' ? { DYLD_FALLBACK_LIBRARY_PATH: join(root, 'lib') } : {};
+}
+
 export function validateNative(inputs) {
   const artifact = inputs.native;
   if (!artifact) throw new Error('Missing required same-source Occipital build; prepare native inputs first');

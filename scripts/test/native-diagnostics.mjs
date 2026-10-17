@@ -32,7 +32,7 @@ export function summarizeNativeCache(home, target) {
 }
 
 export function cargoLogProjection(writeError) {
-  const counts = {messages:0,dirtyUnits:0,fingerprintErrors:0,sourceChanged:0,missingFile:0,dependencyChanged:0,compilerChanged:0,flagsChanged:0,featuresChanged:0,environmentChanged:0,otherDirty:0};
+  const counts = {messages:0,dirtyUnits:0,fingerprintErrors:0,sourceChanged:0,missingFile:0,dependencyChanged:0,compilerChanged:0,flagsChanged:0,featuresChanged:0,environmentChanged:0,otherDirty:0,workspaceCompileNotices:0,dependencyCompileNotices:0};
   let causes = false;
   return {counts, line(raw) {
     const plain = raw.replace(/\x1b\[[0-9;]*m/g,''), marker = plain.match(/^\s*\d+(?:\.\d+)?s\s+(?:TRACE|DEBUG|INFO|WARN|ERROR)\b.*?\bcargo::(?:core::)?compiler::fingerprint:\s*(.*)/);
@@ -45,7 +45,7 @@ export function cargoLogProjection(writeError) {
       if (message.startsWith('dirty:')) {
         const name = /StaleItem\(ChangedFile\b/.test(message) ? 'sourceChanged'
           : /\bMissingFile\b/.test(message) ? 'missingFile'
-          : /\b(?:UnitDependencyInfoChanged|DepFingerprintChanged|DependencyChanged)\b/.test(message) ? 'dependencyChanged'
+          : /\b(?:UnitDependencyInfoChanged|DepFingerprintChanged|DependencyChanged|StaleDepFingerprint)\b/.test(message) ? 'dependencyChanged'
           : /\bRustcChanged\b/.test(message) ? 'compilerChanged'
           : /\bRustflagsChanged\b/.test(message) ? 'flagsChanged'
           : /\bFeaturesChanged\b/.test(message) ? 'featuresChanged'
@@ -55,7 +55,10 @@ export function cargoLogProjection(writeError) {
       return;
     }
     if (causes && (!plain.trim() || plain==='Caused by:' || /^\s/.test(plain) && !/^\s*(?:Compiling|Checking|Finished|Fresh|Updating|Downloading|Downloaded|Locking|Running|Doc-tests|Blocking|warning:|error:)/.test(plain))) return;
-    causes = false; writeError(raw+'\n');
+    causes = false;
+    const compiling=plain.match(/^\s*(?:Compiling|Checking)\s+([a-zA-Z0-9_-]+)\s+v\d/);
+    if(compiling) counts[compiling[1]==='occipital'?'workspaceCompileNotices':'dependencyCompileNotices']++;
+    writeError(raw+'\n');
   }};
 }
 

@@ -99,14 +99,16 @@ jobs:
           appendFileSync(process.env.GITHUB_ENV, `CARGO_HOME=${home}\nRUST_ROOT=${compiler}\nNODE=${process.execPath}\n`);
           JS
       - uses: actions/cache@v6.1.0
+        id: native-cache
         if: ${{ !inputs.clean-build }}
         with:
           path: |
             ${{ env.CARGO_HOME }}/registry
             ${{ env.CARGO_HOME }}/git
             target
-          key: hermetic-native-v2-${{ matrix.target }}-${{ inputs.version }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', '.cargo/config.toml') }}-${{ hashFiles('Cargo.toml', 'crates/**') }}
+          key: hermetic-native-${{ runner.os == 'macOS' && 'v3-dependencies' || 'v2' }}-${{ matrix.target }}-${{ inputs.version }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', '.cargo/config.toml') }}-${{ hashFiles('Cargo.toml', 'crates/**') }}
           restore-keys: |
+            hermetic-native-${{ runner.os == 'macOS' && 'v3-dependencies' || 'v2' }}-${{ matrix.target }}-${{ inputs.version }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', '.cargo/config.toml') }}-
             hermetic-native-v2-${{ matrix.target }}-${{ inputs.version }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', '.cargo/config.toml') }}-
       - name: Summarize restored macOS native cache
         if: runner.os == 'macOS'
@@ -179,7 +181,7 @@ jobs:
         run: |
           node --input-type=module <<'JS'
           import {spawnSync} from 'node:child_process';
-          import {childEnv} from './scripts/test/context.mjs';
+          import {childEnv,rustLoaderEnvironment} from './scripts/test/context.mjs';
           import {readNativeInputs} from './scripts/test/prepare-native.mjs';
           import {readFileSync, existsSync} from 'node:fs';
           import {join, delimiter} from 'node:path';
@@ -187,7 +189,7 @@ jobs:
           const msvc = join(state,'msvc.json');
           const build = existsSync(msvc) ? JSON.parse(readFileSync(msvc)) : {};
           const inputs = readNativeInputs(join(process.env.RUNNER_TEMP,'native-build-inputs/inputs.json'));
-          const env = childEnv(join(inputs.runRoot,'native-runtime'), {...build, PATH:[join(root,'bin'),build.PATH,inputs.tools.path ?? inputs.tools.bin].filter(Boolean).join(delimiter), CARGO_HOME:home, CARGO_TARGET_DIR:process.env.CARGO_TARGET_DIR, RUSTC:join(root,'bin',process.platform==='win32'?'rustc.exe':'rustc'), RUSTUP_AUTO_INSTALL:'0', RUSTUP_TOOLCHAIN:root}, inputs);
+          const env = childEnv(join(inputs.runRoot,'native-runtime'), {...build, ...rustLoaderEnvironment(root), PATH:[join(root,'bin'),build.PATH,inputs.tools.path ?? inputs.tools.bin].filter(Boolean).join(delimiter), CARGO_HOME:home, CARGO_TARGET_DIR:process.env.CARGO_TARGET_DIR, RUSTC:join(root,'bin',process.platform==='win32'?'rustc.exe':'rustc'), RUSTUP_AUTO_INSTALL:'0', RUSTUP_TOOLCHAIN:root}, inputs);
           const result = spawnSync(join(root,'bin',process.platform==='win32'?'cargo.exe':'cargo'), ['fetch','--locked'], {cwd:process.env.NATIVE_SOURCE,env,stdio:'inherit'});
           if(result.status!==0) process.exit(result.status ?? 1);
           JS
@@ -230,14 +232,14 @@ jobs:
         run: |
           node --input-type=module <<'JS'
           import {spawnSync} from 'node:child_process';
-          import {childEnv} from './scripts/test/context.mjs';
+          import {childEnv,rustLoaderEnvironment} from './scripts/test/context.mjs';
           import {readNativeInputs} from './scripts/test/prepare-native.mjs';
           import {readFileSync, existsSync} from 'node:fs';
           import {join, delimiter} from 'node:path';
           const root = process.env.RUST_ROOT, state = join(process.env.RUNNER_TEMP,'native-environment');
           const inputs = readNativeInputs(join(process.env.RUNNER_TEMP,'native-build-inputs/inputs.json'));
           const msvc = join(state,'msvc.json'), build = existsSync(msvc) ? JSON.parse(readFileSync(msvc)) : {};
-          const env = childEnv(join(inputs.runRoot,'native-runtime'), {...build, PATH:[join(root,'bin'),build.PATH,inputs.tools.path ?? inputs.tools.bin].filter(Boolean).join(delimiter), CARGO_HOME:process.env.CARGO_HOME, CARGO_TARGET_DIR:process.env.CARGO_TARGET_DIR, CARGO_NET_OFFLINE:'true', RUSTC:join(root,'bin',process.platform==='win32'?'rustc.exe':'rustc'), RUSTUP_AUTO_INSTALL:'0', RUSTUP_TOOLCHAIN:root}, inputs);
+          const env = childEnv(join(inputs.runRoot,'native-runtime'), {...build, ...rustLoaderEnvironment(root), PATH:[join(root,'bin'),build.PATH,inputs.tools.path ?? inputs.tools.bin].filter(Boolean).join(delimiter), CARGO_HOME:process.env.CARGO_HOME, CARGO_TARGET_DIR:process.env.CARGO_TARGET_DIR, CARGO_NET_OFFLINE:'true', RUSTC:join(root,'bin',process.platform==='win32'?'rustc.exe':'rustc'), RUSTUP_AUTO_INSTALL:'0', RUSTUP_TOOLCHAIN:root}, inputs);
           const cargo = join(root,'bin',process.platform==='win32'?'cargo.exe':'cargo'), target = process.env.RUST_TARGET;
           const {runNativeCommand} = await import('./scripts/test/native-diagnostics.mjs');
           for (const args of [['fmt','--all','--check'], ['test','--workspace','--locked','--offline','--target',target], ['clippy','--workspace','--all-targets','--locked','--offline','--target',target,'--','-D','warnings'], ['build','--release','--locked','--offline','-p','occipital','--target',target]]) {
@@ -256,14 +258,14 @@ jobs:
           node --input-type=module <<'JS'
           import {readFileSync} from 'node:fs';
           import {join, delimiter} from 'node:path';
-          import {childEnv} from './scripts/test/context.mjs';
+          import {childEnv,rustLoaderEnvironment} from './scripts/test/context.mjs';
           import {readNativeInputs} from './scripts/test/prepare-native.mjs';
           import {stageCI} from './scripts/release/native-ci.mjs';
           const inputs = readNativeInputs(join(process.env.RUNNER_TEMP,'native-build-inputs/inputs.json'));
           const root = process.env.NATIVE_SOURCE, target = process.env.TARGET;
           const binary = join(process.env.CARGO_TARGET_DIR,process.env.RUST_TARGET,'release',process.env.EXECUTABLE);
           const output = join(process.env.RUNNER_TEMP,'occipital-native-artifact'), repository = process.env.GITHUB_REPOSITORY;
-          const env = childEnv(join(inputs.runRoot,'staging'), {...inputs.rust.environment,
+          const env = childEnv(join(inputs.runRoot,'staging'), {...inputs.rust.environment, ...rustLoaderEnvironment(inputs.rust.root),
             PATH:[join(inputs.rust.root,'bin'),inputs.rust.environment?.PATH,inputs.tools.path ?? inputs.tools.bin].filter(Boolean).join(delimiter),
             CARGO_HOME:process.env.CARGO_HOME, RUSTC:inputs.rust.rustc, RUSTUP_AUTO_INSTALL:'0', RUSTUP_TOOLCHAIN:inputs.rust.root, CARGO_NET_OFFLINE:'true'}, inputs);
           for (const key of Object.keys(process.env)) delete process.env[key];
@@ -273,12 +275,35 @@ jobs:
           console.log(JSON.stringify({target,version:staged.version,commit:inputs.source.commit,nativeTree:inputs.source.nativeTree,
             bytes:staged.artifacts[0].maxBytes,sha256:staged.artifacts[0].sha256}));
           JS
+      - name: Keep reusable macOS dependencies without workspace cache outputs
+        if: ${{ runner.os == 'macOS' && !inputs.clean-build && steps.native-cache.outputs.cache-hit != 'true' }}
+        env:
+          RUST_TARGET: ${{ matrix.rust }}
+        run: |
+          node --input-type=module <<'JS'
+          import {spawnSync} from 'node:child_process';
+          import {join,delimiter} from 'node:path';
+          import {childEnv,rustLoaderEnvironment} from './scripts/test/context.mjs';
+          import {readNativeInputs} from './scripts/test/prepare-native.mjs';
+          import {summarizeNativeCache} from './scripts/test/native-diagnostics.mjs';
+          const inputs=readNativeInputs(join(process.env.RUNNER_TEMP,'native-build-inputs/inputs.json'));
+          const home=process.env.CARGO_HOME,target=process.env.CARGO_TARGET_DIR,root=inputs.rust.root;
+          const env=childEnv(join(inputs.runRoot,'cache-cleanup'),{...rustLoaderEnvironment(root),
+            PATH:join(root,'bin')+delimiter+inputs.tools.path,CARGO_HOME:home,CARGO_TARGET_DIR:target,
+            CARGO_NET_OFFLINE:'true',RUSTC:inputs.rust.rustc,RUSTUP_TOOLCHAIN:root,RUSTUP_AUTO_INSTALL:'0'},inputs);
+          const before=summarizeNativeCache(home,target);
+          for(const profile of [[],['--release']]){
+            const result=spawnSync(inputs.rust.cargo,['clean','--offline','--package','occipital','--target',process.env.RUST_TARGET,...profile],{cwd:process.env.NATIVE_SOURCE,env,stdio:'inherit'});
+            if(result.status!==0)process.exit(result.status??1);
+          }
+          console.log('Native dependency cache summary: '+JSON.stringify({before,after:summarizeNativeCache(home,target)}));
+          JS
       - name: Verify original source identity after neutral staging
         run: |
           node --input-type=module <<'JS'
           import {readFileSync} from 'node:fs';
           import {join} from 'node:path';
-          import {childEnv} from './scripts/test/context.mjs';
+          import {childEnv,rustLoaderEnvironment} from './scripts/test/context.mjs';
           import {readNativeInputs} from './scripts/test/prepare-native.mjs';
           import {sourceIdentity} from './scripts/test/prepare.mjs';
           const inputs = readNativeInputs(join(process.env.RUNNER_TEMP,'native-build-inputs/inputs.json'));

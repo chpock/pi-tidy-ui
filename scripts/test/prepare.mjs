@@ -5,7 +5,7 @@ import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, 
 import { delimiter, dirname, isAbsolute, join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import { fileURLToPath } from 'node:url';
-import { childEnv, digest, readInputs, validateHost, validateNative } from './context.mjs';
+import { childEnv, digest, readInputs, rustLoaderEnvironment, validateHost, validateNative } from './context.mjs';
 
 const project = resolve(import.meta.dirname, '../..');
 const json = path => JSON.parse(readFileSync(path, 'utf8'));
@@ -15,7 +15,7 @@ const quote = value => "'" + value.replaceAll("'", "'\\''") + "'";
 export function systemTools(node, supplied = {}) {
   const dirs = process.platform === 'win32' ? [dirname(node), 'C:\\Windows\\System32', 'C:\\Program Files\\Git\\bin', 'C:\\Program Files\\Git\\usr\\bin'] : ['/usr/bin', '/bin', '/usr/local/bin'];
   const tools = {};
-  for (const name of ['git', 'bash', 'python3', 'make', 'tar', 'gzip', 'getconf', 'dirname', 'id', 'bwrap', 'cc', 'ar', 'as', 'ld', 'ranlib', 'strip', 'objcopy', 'objdump', 'readelf', 'sh', 'cp', 'chmod', 'uname', 'mkdir', 'rm', 'printf', 'sleep', 'cat', 'head', 'wc', 'touch', 'true', 'false', 'env', 'ls', 'sed', 'grep', 'find', 'date', 'timeout', 'taskkill', 'tee', 'seq', 'tr', 'sort', 'cut', 'stty', 'tput', 'dd', 'du', 'rmdir', 'readlink']) {
+  for (const name of ['git', 'bash', 'python3', 'make', 'tar', 'gzip', 'getconf', 'dirname', 'id', 'bwrap', 'cc', 'ar', 'as', 'ld', 'ranlib', 'strip', 'xcrun', 'objcopy', 'objdump', 'readelf', 'sh', 'cp', 'chmod', 'uname', 'mkdir', 'rm', 'printf', 'sleep', 'cat', 'head', 'wc', 'touch', 'true', 'false', 'env', 'ls', 'sed', 'grep', 'find', 'date', 'timeout', 'taskkill', 'tee', 'seq', 'tr', 'sort', 'cut', 'stty', 'tput', 'dd', 'du', 'rmdir', 'readlink']) {
     const path = supplied[name] ?? dirs.map(directory => join(directory, name + (process.platform === 'win32' ? '.exe' : ''))).find(existsSync);
     if (path) tools[name] = realpathSync(path);
   }
@@ -333,7 +333,7 @@ export async function prepare(options) {
       }
       const expected = readFileSync(join(root, 'rust-toolchain.toml'), 'utf8').match(/channel\s*=\s*"([^"]+)"/)?.[1];
       for (const tool of [inputs.rust.cargo, inputs.rust.rustc]) {
-        if (!execFileSync(tool, ['--version'], { env: environment, encoding: 'utf8' }).includes(` ${expected} `)) throw new Error('Prepared Rust toolchain version mismatch');
+        if (!execFileSync(tool, ['--version'], { env: { ...environment, ...rustLoaderEnvironment(rustRoot) }, encoding: 'utf8' }).includes(` ${expected} `)) throw new Error('Prepared Rust toolchain version mismatch');
       }
     }
     if (options['build-native']) {
@@ -347,7 +347,7 @@ export async function prepare(options) {
         { env: environment, encoding: 'utf8' }));
       const { stampDaemonVersion } = await import('../release/version.mjs');
       await stampDaemonVersion(nativeSource, daemon.version);
-      const rustEnv = { ...inputs.rust.environment, CARGO_HOME: inputs.rust.home, CARGO_TARGET_DIR: inputs.rust.target, RUSTC: inputs.rust.rustc, RUSTUP_AUTO_INSTALL: '0' };
+      const rustEnv = { ...inputs.rust.environment, ...rustLoaderEnvironment(inputs.rust.root), CARGO_HOME: inputs.rust.home, CARGO_TARGET_DIR: inputs.rust.target, RUSTC: inputs.rust.rustc, RUSTUP_AUTO_INSTALL: '0' };
       run(inputs, nativeSource, inputs.rust.cargo, ['fetch', '--locked', ...(options.offline ? ['--offline'] : [])], rustEnv);
       run(inputs, nativeSource, inputs.rust.cargo, ['build', '--release', '--locked', '--offline', '-p', 'occipital'], rustEnv);
       const path = join(inputs.rust.target, 'release', process.platform === 'win32' ? 'occipital.exe' : 'occipital');

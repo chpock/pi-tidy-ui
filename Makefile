@@ -28,6 +28,7 @@ $(RUST_ENV) "$(NODE)" --input-type=module -e ' \
   import {spawnSync} from "node:child_process"; \
   import {materializeSource, snapshotIdentity} from "./scripts/test/prepare.mjs"; \
   import {verifyLinuxRuntime} from "./scripts/release/native-ci.mjs"; \
+  import {rustLoaderEnvironment} from "./scripts/test/context.mjs"; \
   const [phase, target, cargo, binary] = process.argv.slice(1), source = process.cwd(); \
   const files = ["Cargo.toml", "Cargo.lock", "rust-toolchain.toml"].filter(name => existsSync(join(source, name))); \
   const collect = directory => { if (!existsSync(join(source, directory))) return; for (const name of readdirSync(join(source, directory))) { const path = directory + "/" + name; if (statSync(join(source, path)).isDirectory()) collect(path); else if (statSync(join(source, path)).isFile()) files.push(path); } }; \
@@ -37,7 +38,7 @@ $(RUST_ENV) "$(NODE)" --input-type=module -e ' \
   try { \
     if (materializeSource(source, work, files).nativeTree !== expected) throw new Error("Native source changed during materialization"); \
     const testRoot = join(work, "test-root"), home = join(work, "home"); mkdirSync(testRoot); mkdirSync(home); \
-    const env = {...process.env, HOME: home, TIDY_TEST_ROOT: testRoot, TMPDIR: testRoot, TMP: testRoot, TEMP: testRoot}; \
+    const env = {...process.env, ...rustLoaderEnvironment(process.env.RUSTUP_TOOLCHAIN), HOME: home, TIDY_TEST_ROOT: testRoot, TMPDIR: testRoot, TMP: testRoot, TEMP: testRoot}; \
     const targets = target ? ["--target", target] : []; \
     const build = ["build", "--release", "--locked", "--offline", "-p", "occipital", ...targets]; \
     const lint = ["clippy", "--workspace", "--all-targets", "--locked", "--offline", ...targets, "--", "-D", "warnings"]; \

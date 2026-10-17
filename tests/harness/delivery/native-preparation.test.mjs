@@ -250,3 +250,49 @@ test('native preparation CLI writes a native-only descriptor using explicit sour
   assert.equal(readNativeInputs(result.stdout.trim()).kind, 'native-build');
   assert.equal(fs.existsSync(f.npmMarker), false);
 });
+
+
+test('macOS dependency cache cleanup executes package-only debug and release clean after staging, preserving dependencies', t => {
+  const f=fixture(t);observe(t,f);const inputs=prepareNative(f.options);
+  const repo=join(import.meta.dirname,'../../..'),workflow=fs.readFileSync(join(repo,'.github/workflows/occipital.yml'),'utf8');
+  const scripts=[...workflow.matchAll(/node --input-type=module <<'JS'\r?\n([\s\S]*?)\r?\n\s+JS/g)].map(match=>match[1].replace(/^          /gm,''));
+  const entries=scripts.filter(script=>script.includes('Native dependency cache summary:'));
+  assert.equal(entries.length,1);
+  assert.ok(workflow.indexOf('Keep reusable macOS dependencies')>workflow.indexOf('Version smoke, pinned-source notices'));
+  const cleanup=workflow.slice(workflow.indexOf('      - name: Keep reusable macOS dependencies'),workflow.indexOf('      - name: Verify original source identity'));
+  assert.match(cleanup,/runner\.os == 'macOS' && !inputs\.clean-build && steps\.native-cache\.outputs\.cache-hit != 'true'/);
+  assert.match(workflow,/runner\.os == 'macOS' && 'v3-dependencies' \|\| 'v2'/);
+  const home=join(f.root,'hosted-cargo'),target=join(f.root,'target'),log=join(f.root,'clean.jsonl');
+  for(const [name,text]of [['hosted-cargo/registry/input','dependency'],['target/debug/deps/dependency.rlib','cached-dependency'],['target/debug/workspace','debug'],['target/release/workspace','release'],['staged/occipital','verified-binary']]){
+    fs.mkdirSync(dirname(join(f.root,name)),{recursive:true});fs.writeFileSync(join(f.root,name),text);
+  }
+  fs.mkdirSync(join(f.root,'native-build-inputs'));save(join(f.root,'native-build-inputs/inputs.json'),inputs);
+  const imports=entries[0].replace(/from '(\.\/scripts\/test\/[^']+)'/g,(_all,name)=>`from ${JSON.stringify(pathToFileURL(join(repo,name)).href)}`);
+  const source=imports.replace("import {spawnSync} from 'node:child_process';",`import {appendFileSync,rmSync} from 'node:fs';
+const spawnSync=(command,args,options)=>{
+  appendFileSync(${JSON.stringify(log)},JSON.stringify({command,args,cwd:options.cwd,home:options.env.CARGO_HOME,target:options.env.CARGO_TARGET_DIR,toolchain:options.env.RUSTUP_TOOLCHAIN,ambient:options.env.AMBIENT_POISON})+'\\n');
+  const profile=args.includes('--release')?'release':'debug';
+  if(process.env.FAIL_CLEAN===profile)return {status:71};
+  rmSync(${JSON.stringify(target)}+'/'+profile+'/workspace',{force:true});return {status:0};
+};`);
+  assert.notEqual(source,imports,'Execute the actual workflow body through the subprocess seam');
+  const env=childEnv(join(f.root,'workflow-environment'),{RUNNER_TEMP:f.root,NATIVE_SOURCE:inputs.project,CARGO_HOME:home,CARGO_TARGET_DIR:target,RUST_TARGET:'x86_64-apple-darwin',AMBIENT_POISON:'must-not-reach-clean'},readInputs());
+  const run=extra=>childProcess.spawnSync(process.execPath,['--input-type=module','-e',source],{cwd:repo,env:{...env,...extra},encoding:'utf8'});
+  const result=run({});assert.equal(result.status,0,result.stderr);
+  const calls=fs.readFileSync(log,'utf8').trim().split('\n').map(line=>JSON.parse(line));assert.equal(calls.length,2);
+  for(const [index,call]of calls.entries()){
+    assert.equal(call.command,inputs.rust.cargo);assert.equal(call.cwd,inputs.project);assert.equal(call.toolchain,inputs.rust.root);assert.equal(call.ambient,undefined);
+    assert.deepEqual(call.args,['clean','--offline','--package','occipital','--target','x86_64-apple-darwin',...(index?['--release']:[])]);
+    assert.equal(call.home,home);assert.equal(call.target,target);
+  }
+  assert.equal(fs.readFileSync(join(target,'debug/deps/dependency.rlib'),'utf8'),'cached-dependency');
+  assert.equal(fs.readFileSync(join(home,'registry/input'),'utf8'),'dependency');
+  assert.equal(fs.readFileSync(join(f.root,'staged/occipital'),'utf8'),'verified-binary');
+  assert.equal(fs.existsSync(join(target,'debug/workspace')),false);assert.equal(fs.existsSync(join(target,'release/workspace')),false);
+  assert.match(result.stdout,/Native dependency cache summary:/);
+  for(const profile of ['debug','release']){
+    fs.writeFileSync(log,'');const failed=run({FAIL_CLEAN:profile});assert.equal(failed.status,71,failed.stderr);
+    const seen=fs.readFileSync(log,'utf8').trim().split('\n');assert.equal(seen.length,profile==='debug'?1:2);
+    assert.doesNotMatch(failed.stdout,/Native dependency cache summary:/);
+  }
+});

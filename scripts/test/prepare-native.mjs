@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync,
 import { isAbsolute, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
-import { childEnv } from './context.mjs';
+import { childEnv, rustLoaderEnvironment } from './context.mjs';
 import { materializeSource, materializeTools, sourceIdentity, systemTools, validateNeutralRunRoot } from './prepare.mjs';
 
 const project = resolve(import.meta.dirname, '../..');
@@ -98,7 +98,7 @@ export function prepareNative(options = {}) {
   if (!actual || difference !== -1 && actual[difference] < minimum[difference]) {
     throw new Error('Prepared Node runtime does not satisfy repository engine minimum');
   }
-  const rustEnv = childEnv(join(preparation, 'environment'), { ...rustEnvironment, CARGO_HOME: inputs.rust.home,
+  const rustEnv = childEnv(join(preparation, 'environment'), { ...rustEnvironment, ...rustLoaderEnvironment(rustRoot), CARGO_HOME: inputs.rust.home,
     CARGO_TARGET_DIR: inputs.rust.target, RUSTC: rustc, RUSTUP_AUTO_INSTALL: '0' }, inputs);
   for (const [name, path] of [['cargo', cargo], ['rustc', rustc]]) {
     const observed = execFileSync(path, ['--version'], { cwd: runParent, env: rustEnv, encoding: 'utf8' }).trim();

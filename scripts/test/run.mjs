@@ -4,7 +4,7 @@ import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
-import { childEnv, readInputs, toolPath, validateHost, validateRequirements } from './context.mjs';
+import { childEnv, readInputs, rustLoaderEnvironment, toolPath, validateHost, validateRequirements } from './context.mjs';
 import { resolveSelection } from './catalog.mjs';
 export { selectSuite } from './catalog.mjs';
 import { snapshotIdentity, sourceIdentity, validateNeutralRunRoot } from './prepare.mjs';
@@ -89,7 +89,7 @@ export async function execute({ inputs: path, suite = 'unit', files, groups, lay
     else if (['rust', 'rust-check', 'rust-allocator'].includes(suite)) {
       if (!inputs.rust) throw new Error('Rust execution requires prepared pinned toolchain and offline dependency home');
       command = inputs.rust.cargo;
-      Object.assign(env, { ...inputs.rust.environment, CARGO_HOME: inputs.rust.home, CARGO_TARGET_DIR: inputs.rust.target,
+      Object.assign(env, { ...inputs.rust.environment, ...rustLoaderEnvironment(inputs.rust.root), CARGO_HOME: inputs.rust.home, CARGO_TARGET_DIR: inputs.rust.target,
         CARGO_NET_OFFLINE: 'true', RUSTC: inputs.rust.rustc, RUSTUP_AUTO_INSTALL: '0', PATH: join(inputs.rust.root, 'bin') + (process.platform === 'win32' ? ';' : ':') + (inputs.rust.environment?.PATH ?? env.PATH) });
       if (suite === 'rust') {
         if (rustTests.some(name => !/^[a-zA-Z0-9_-]+$/.test(name))) throw new Error('Invalid Rust test target');

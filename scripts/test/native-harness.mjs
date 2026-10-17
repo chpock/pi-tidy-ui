@@ -6,7 +6,7 @@ import {tmpdir} from 'node:os';
 import {delimiter,dirname,join,resolve,sep} from 'node:path';
 import {pathToFileURL} from 'node:url';
 import {parseArgs} from 'node:util';
-import {childEnv,toolPath} from './context.mjs';
+import {childEnv,rustLoaderEnvironment,toolPath} from './context.mjs';
 import {materializeSource} from './prepare.mjs';
 import {admitNativeTests,ownedNativePath} from './native-bootstrap.mjs';
 import {readNativeInputs} from './prepare-native.mjs';
@@ -27,7 +27,7 @@ export function checkCargoAncestry(inputs) {
     writeFileSync(join(checkout,'Cargo.toml'),'[package]\nname = "harness-probe"\nversion = "0.0.0"\nedition = "2024"\n');
     writeFileSync(join(checkout,'Cargo.lock'),'version = 4\n[[package]]\nname = "harness-probe"\nversion = "0.0.0"\n');
     writeFileSync(join(checkout,'src/lib.rs'),'pub fn probe() -> u32 { 42 }\n');
-    const env=childEnv(join(root,'environment'),{...inputs.rust.environment,CARGO_HOME:join(root,'cargo-home'),
+    const env=childEnv(join(root,'environment'),{...inputs.rust.environment,...rustLoaderEnvironment(inputs.rust.root),CARGO_HOME:join(root,'cargo-home'),
       CARGO_TARGET_DIR:join(root,'target'),CARGO_NET_OFFLINE:'true',RUSTC:inputs.rust.rustc,RUSTUP_AUTO_INSTALL:'0',
       PATH:dirname(inputs.rust.rustc)+delimiter+(inputs.rust.environment?.PATH??inputs.tools.bin),TIDY_RUST_WRAPPER_COUNTER:counter},inputs);
     const check=cwd=>spawnSync(inputs.rust.cargo,['check','--locked','--offline'],{cwd,env,encoding:'utf8',timeout:30000});

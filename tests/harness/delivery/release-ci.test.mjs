@@ -542,8 +542,11 @@ test('native execution has owned Cargo configuration and mandatory offline pinne
   const native = await readFile(join(repo, '.github/workflows/occipital.yml'), 'utf8');
   const declaration = 'Declare pinned compiler and hosted setup Cargo artifact store';
   assert.ok(native.indexOf(declaration) < native.indexOf('Fetch locked native dependencies with owned config'), 'store admission must precede Cargo');
-  const cache = native.match(/- uses: actions\/cache@v\d+(?:\.\d+){0,2}\n        if: \$\{\{ !inputs.clean-build \}\}\n        with:\n          path: \|\n([\s\S]*?)          key:/)?.[1];
-  assert.ok(cache, 'native artifact cache must be scoped');
+  const cacheStep = native.split(/^      - /m).find(step => /^uses: actions\/cache@v\d+(?:\.\d+){0,2}\n/.test(step) && /^          key: hermetic-native-/m.test(step));
+  assert.ok(cacheStep, 'native artifact cache must be scoped');
+  assert.match(cacheStep, /^        if: \$\{\{ !inputs.clean-build \}\}$/m);
+  const cache = cacheStep.match(/^          path: \|\n([\s\S]*?)(?=^          [a-z-]+:)/m)?.[1];
+  assert.ok(cache);
   assert.deepEqual(cache.trim().split('\n').map(line => line.trim()), ['${{ env.CARGO_HOME }}/registry', '${{ env.CARGO_HOME }}/git', 'target']);
   assert.match(native, /RUSTUP_AUTO_INSTALL: '0'/);
   assert.match(native, /toolchain: \$\{\{ steps.toolchain.outputs.version \}\}/);
@@ -880,7 +883,7 @@ test('actual producer staging logs admitted file fields when stageCI resolves wi
   const native={kind:'native-build',node:inputs.node,tools:inputs.tools,runRoot:join(root,'native-run'),preparation:descriptor,
     source:{commit:'b'.repeat(40),nativeTree:'a'.repeat(64)},rust:{root:join(root,'inert-rust'),rustc:join(root,'inert-rust/bin/rustc'),environment:{}}};
   await writeFile(join(descriptor,'inputs.json'),JSON.stringify(native));
-  await writeFile(join(root,'scripts/test/context.mjs'),`export {childEnv} from ${JSON.stringify(pathToFileURL(join(repo,'scripts/test/context.mjs')).href)};`);
+  await writeFile(join(root,'scripts/test/context.mjs'),`export {childEnv,rustLoaderEnvironment} from ${JSON.stringify(pathToFileURL(join(repo,'scripts/test/context.mjs')).href)};`);
   await writeFile(join(root,'scripts/test/prepare-native.mjs'),`import {readFileSync} from 'node:fs';export const readNativeInputs=path=>JSON.parse(readFileSync(path));`);
   const staged={version:'0.2.0',artifacts:[{target:'linux-x64-gnu',maxBytes:123,sha256:'c'.repeat(64),url:'https://not-a-log-field.invalid/private'}]};
   const workflow=await readFile(join(repo,'.github/workflows/occipital.yml'),'utf8'),script=shellStep(workflowStep(workflow,'Version smoke, pinned-source notices, hashes and native package staging'));
@@ -926,7 +929,7 @@ test('macOS CI Cargo diagnostics preserve real gate arguments, sanitized environ
     await rm(log,{force:true});
     await writeFile(join(rust,'bin/cargo'),`#!${process.execPath}
 import {appendFileSync} from 'node:fs';
-appendFileSync(${JSON.stringify(log)},JSON.stringify({args:process.argv.slice(2),trace:process.env.CARGO_LOG,ambient:process.env.AMBIENT_POISON,toolchain:process.env.RUSTUP_TOOLCHAIN})+'\\n');
+appendFileSync(${JSON.stringify(log)},JSON.stringify({args:process.argv.slice(2),trace:process.env.CARGO_LOG,ambient:process.env.AMBIENT_POISON,toolchain:process.env.RUSTUP_TOOLCHAIN,loader:process.env.DYLD_FALLBACK_LIBRARY_PATH,sdk:process.env.SDKROOT})+'\\n');
 console.error('0.001s INFO cargo::compiler::fingerprint: dirty: FsStatusOutdated(StaleItem(ChangedFile { stale: "PRIVATE_CARGO_PATH" }))');
 if(${fail}&&process.argv[2]==='build'){console.error('error: deliberate native failure');process.exitCode=17;}
 `,{mode:0o755});
@@ -934,7 +937,7 @@ if(${fail}&&process.argv[2]==='build'){console.error('error: deliberate native f
     assert.equal(result.status,fail?17:0,result.stderr);
     const calls=(await readFile(log,'utf8')).trim().split('\n').map(row=>JSON.parse(row));
     assert.deepEqual(calls.map(row=>row.args[0]),['fmt','test','clippy','build']);
-    for(const call of calls){assert.equal(call.trace,'cargo::compiler::fingerprint=info');assert.equal(call.ambient,undefined);assert.equal(call.toolchain,rust);}
+    for(const call of calls){assert.equal(call.trace,'cargo::compiler::fingerprint=info');assert.equal(call.ambient,undefined);assert.equal(call.toolchain,rust);assert.equal(call.loader,join(rust,'lib'));assert.equal(call.sdk,undefined);}
     const summaries=result.stdout.trim().split('\n').filter(line=>line.startsWith('Cargo summary: ')).map(line=>JSON.parse(line.slice('Cargo summary: '.length)));
     assert.equal(summaries.length,4);assert.equal(summaries.at(-1).exitCode,fail?17:0);
     assert.ok(summaries.every(row=>row.sourceChanged===1));assert.doesNotMatch(result.stdout+result.stderr,/PRIVATE_CARGO_PATH/);

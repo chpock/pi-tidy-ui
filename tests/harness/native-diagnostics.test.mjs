@@ -44,6 +44,18 @@ test('native diagnostics: Cargo reasons are fixed counters, while real compiler 
   assert.doesNotMatch(JSON.stringify(projection.counts),/PRIVATE_MARKER|source.rs/);
 });
 
+test('native diagnostics: pinned Cargo stale dependency fingerprints count as dependency changes', () => {
+  let errors=''; const projection=cargoLogProjection(value=>{errors+=value;});
+  projection.line('   Compiling occipital v0.1.5');
+  projection.line('    Checking serde v1.0.0');
+  assert.equal(projection.counts.workspaceCompileNotices,1);assert.equal(projection.counts.dependencyCompileNotices,1);
+  projection.line('0.008706673s INFO prepare_target{package_id=PRIVATE_MARKER}: cargo::compiler::fingerprint:     dirty: FsStatusOutdated(StaleDepFingerprint { unit: UnitIndex(4) })');
+  assert.equal(projection.counts.dependencyChanged,1);
+  assert.equal(projection.counts.otherDirty,0);
+  assert.match(errors,/Compiling occipital/);assert.match(errors,/Checking serde/);
+  assert.doesNotMatch(errors,/PRIVATE_MARKER|StaleDepFingerprint/);
+});
+
 test('native diagnostics: command status/signal and stderr survive explicit sanitized Cargo logging', async t => {
   const root = fixture(t), script = join(root,'fixture.mjs'), inputs = readInputs(), summaries = []; let errors = '';
   writeFileSync(script,`if(process.env.CARGO_LOG!=='cargo::compiler::fingerprint=info')throw Error('missing explicit trace');

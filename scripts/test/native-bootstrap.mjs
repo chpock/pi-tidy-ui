@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import { lstatSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { delimiter, join, sep } from 'node:path';
-import { childEnv } from './context.mjs';
+import { childEnv, rustLoaderEnvironment } from './context.mjs';
 import { readNativeInputs } from './prepare-native.mjs';
 import { snapshotIdentity, sourceIdentity } from './prepare.mjs';
 
@@ -50,7 +50,7 @@ export function admitNativeTests(path, environmentRoot, runtime = false) {
   if (!minimum || !actual || difference !== -1 && actual[difference] < minimum[difference]) throw new Error('Native test Node runtime does not satisfy repository engine minimum');
   const expected = readFileSync(join(inputs.project, 'rust-toolchain.toml'), 'utf8').match(/^\s*channel\s*=\s*"(\d+\.\d+\.\d+)"\s*$/m)?.[1];
   if (!expected) throw new Error('Native tests require an exact repository Rust pin');
-  const rustEnv = childEnv(environmentRoot, { ...inputs.rust.environment, CARGO_HOME: inputs.rust.home,
+  const rustEnv = childEnv(environmentRoot, { ...inputs.rust.environment, ...rustLoaderEnvironment(inputs.rust.root), CARGO_HOME: inputs.rust.home,
     CARGO_TARGET_DIR: inputs.rust.target, CARGO_NET_OFFLINE: 'true', RUSTC: inputs.rust.rustc, RUSTUP_AUTO_INSTALL: '0',
     PATH: join(inputs.rust.root, 'bin') + delimiter + (inputs.rust.environment?.PATH ?? env.PATH) }, inputs);
   for (const [name, executable] of [['cargo', inputs.rust.cargo], ['rustc', inputs.rust.rustc]]) {
