@@ -15,7 +15,7 @@ const quote = value => "'" + value.replaceAll("'", "'\\''") + "'";
 export function systemTools(node, supplied = {}) {
   const dirs = process.platform === 'win32' ? [dirname(node), 'C:\\Windows\\System32', 'C:\\Program Files\\Git\\bin', 'C:\\Program Files\\Git\\usr\\bin'] : ['/usr/bin', '/bin', '/usr/local/bin'];
   const tools = {};
-  for (const name of ['git', 'bash', 'python3', 'make', 'tar', 'gzip', 'getconf', 'dirname', 'id', 'bwrap', 'cc', 'ar', 'as', 'ld', 'ranlib', 'strip', 'xcrun', 'objcopy', 'objdump', 'readelf', 'sh', 'cp', 'chmod', 'uname', 'mkdir', 'rm', 'printf', 'sleep', 'cat', 'head', 'wc', 'touch', 'true', 'false', 'env', 'ls', 'sed', 'grep', 'find', 'date', 'timeout', 'taskkill', 'tee', 'seq', 'tr', 'sort', 'cut', 'stty', 'tput', 'dd', 'du', 'rmdir', 'readlink']) {
+  for (const name of ['git', 'bash', 'python3', 'make', 'tar', 'gzip', 'getconf', 'dirname', 'id', 'bwrap', 'cc', 'ar', 'as', 'ld', 'ranlib', 'strip', 'xcrun', 'dsymutil', 'objcopy', 'objdump', 'readelf', 'sh', 'cp', 'chmod', 'uname', 'mkdir', 'rm', 'printf', 'sleep', 'cat', 'head', 'wc', 'touch', 'true', 'false', 'env', 'ls', 'sed', 'grep', 'find', 'date', 'timeout', 'taskkill', 'tee', 'seq', 'tr', 'sort', 'cut', 'stty', 'tput', 'dd', 'du', 'rmdir', 'readlink']) {
     const path = supplied[name] ?? dirs.map(directory => join(directory, name + (process.platform === 'win32' ? '.exe' : ''))).find(existsSync);
     if (path) tools[name] = realpathSync(path);
   }

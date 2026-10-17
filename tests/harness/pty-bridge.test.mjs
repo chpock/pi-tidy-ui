@@ -29,19 +29,24 @@ def terminate(*_):
     else:
         write(payload)
         os._exit(37)
-signal.signal(signal.SIGTERM, terminate)
+# Queue shutdown before readiness; pause can miss a deferred Python handler.
+signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGTERM})
 write(b'READY\\n')
 assert os.read(0, 1) == b'G'
 if mode == 'natural':
     write(payload)
     os._exit(37)
 write(b'ARMED\\n')
+if mode == 'pending':
+    os.kill(os.getpid(), signal.SIGTERM)
 while True:
-    signal.pause()
+    signal.sigwait({signal.SIGTERM})
+    terminate()
 `;
 
-function assertBytes(actual, expected) {
-  assert.equal(actual.length, expected.length, 'forwarded PTY byte count');
+function assertBytes(actual, expected, frames = []) {
+  const status=frames.filter(frame=>frame.exit!==undefined||frame.shutdown).map(({exit,shutdown})=>({exit,shutdown}));
+  assert.equal(actual.length, expected.length, 'forwarded PTY byte count; shutdown='+JSON.stringify(status));
   const sha256 = bytes => createHash('sha256').update(bytes).digest('hex');
   assert.equal(sha256(actual), sha256(expected), 'forwarded PTY bytes must be unchanged');
 }
@@ -107,7 +112,7 @@ async function startBridge(t, mode) {
   await waitFor(() => frames.some(frame => frame.ready) && output().equals(Buffer.from('READY\n')), 'child startup gate');
   const pid = frames.find(frame => frame.ready).ready;
   send({ input: Buffer.from('G').toString('base64') });
-  if (mode !== 'natural') await waitFor(() => output().equals(Buffer.from('READY\nARMED\n')), 'armed signal handler');
+  if (!['natural','pending'].includes(mode)) await waitFor(() => output().equals(Buffer.from('READY\nARMED\n')), 'armed shutdown receiver');
   return {
     child, frames, output, send,
     async finish() {
@@ -127,12 +132,20 @@ for (const trigger of ['stop message', 'stdin EOF', 'bridge SIGTERM']) {
     else if (trigger === 'stdin EOF') bridge.child.stdin.end();
     else bridge.child.kill('SIGTERM');
     await bridge.finish();
-    assertBytes(bridge.output(), Buffer.concat([Buffer.from('READY\nARMED\n'), payload]));
+    assertBytes(bridge.output(), Buffer.concat([Buffer.from('READY\nARMED\n'), payload]),bridge.frames);
     assert.deepEqual(bridge.frames.filter(frame => frame.exit !== undefined), [{ exit: 37 }]);
     assert.deepEqual(bridge.frames.filter(frame => frame.shutdown), [{ shutdown: { drainedBytes: payload.length, escalations: 0 } }]);
     assert.ok(bridge.frames.at(-2).exit !== undefined, 'terminal bytes must be forwarded before final exit status');
   });
 }
+
+test('PTY child consumes a shutdown already pending before its signal wait', { skip: posixOnly, timeout: 12000 }, async t => {
+  const bridge=await startBridge(t,'pending');
+  await bridge.finish();
+  assertBytes(bridge.output(),Buffer.concat([Buffer.from('READY\nARMED\n'),payload]),bridge.frames);
+  assert.deepEqual(bridge.frames.filter(frame=>frame.exit!==undefined),[{exit:37}]);
+  assert.equal(bridge.frames.at(-1).shutdown.escalations,0);
+});
 
 test('PTY bridge preserves the two-second grace and escalates an unresponsive child', { skip: posixOnly, timeout: 12000 }, async t => {
   const bridge = await startBridge(t, 'ignore');
@@ -148,7 +161,7 @@ test('PTY bridge preserves the two-second grace and escalates an unresponsive ch
 test('PTY bridge drains terminal tail bytes before reporting a natural child exit', { skip: posixOnly, timeout: 12000 }, async t => {
   const bridge = await startBridge(t, 'natural');
   await bridge.finish();
-  assertBytes(bridge.output(), Buffer.concat([Buffer.from('READY\n'), payload]));
+  assertBytes(bridge.output(), Buffer.concat([Buffer.from('READY\n'), payload]),bridge.frames);
   assert.deepEqual(bridge.frames.filter(frame => frame.exit !== undefined), [{ exit: 37 }]);
   assert.equal(bridge.frames.at(-2).exit, 37);
   assert.equal(bridge.frames.at(-1).shutdown.escalations, 0);

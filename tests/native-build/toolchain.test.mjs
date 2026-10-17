@@ -27,6 +27,7 @@ test('native toolchain: owned macOS SDK discovery and real LLVM stripping work w
     return result;
   };
   assert.ok(inputs.tools.xcrun,'The native tool inventory must declare xcrun');
+  assert.ok(inputs.tools.dsymutil,'The native tool inventory must declare dsymutil for debug linking');
   const sdk=run('xcrun',['--sdk','macosx','--show-sdk-path']).stdout.trim();
   assert.ok(isAbsolute(sdk)&&statSync(sdk).isDirectory(),'Declared xcrun discovers the provisioned SDK');
   const host=run(inputs.rust.rustc,['-vV']).stdout.match(/^host:\s*(\S+)$/m)?.[1];assert.ok(host);
