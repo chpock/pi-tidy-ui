@@ -230,7 +230,11 @@ jobs:
         env:
           RUST_TARGET: ${{ matrix.rust }}
         run: |
-          node --input-type=module <<'JS'
+          TIMEFORMAT=
+          if [[ "${RUNNER_OS:-}" == macOS ]]; then
+            TIMEFORMAT='Native gate resources: elapsed=%R user=%U system=%S seconds'
+          fi
+          time node --input-type=module <<'JS'
           import {spawnSync} from 'node:child_process';
           import {childEnv,rustLoaderEnvironment} from './scripts/test/context.mjs';
           import {readNativeInputs} from './scripts/test/prepare-native.mjs';
@@ -239,7 +243,7 @@ jobs:
           const root = process.env.RUST_ROOT, state = join(process.env.RUNNER_TEMP,'native-environment');
           const inputs = readNativeInputs(join(process.env.RUNNER_TEMP,'native-build-inputs/inputs.json'));
           const msvc = join(state,'msvc.json'), build = existsSync(msvc) ? JSON.parse(readFileSync(msvc)) : {};
-          const env = childEnv(join(inputs.runRoot,'native-runtime'), {...build, ...rustLoaderEnvironment(root), PATH:[join(root,'bin'),build.PATH,inputs.tools.path ?? inputs.tools.bin].filter(Boolean).join(delimiter), CARGO_HOME:process.env.CARGO_HOME, CARGO_TARGET_DIR:process.env.CARGO_TARGET_DIR, CARGO_NET_OFFLINE:'true', RUSTC:join(root,'bin',process.platform==='win32'?'rustc.exe':'rustc'), RUSTUP_AUTO_INSTALL:'0', RUSTUP_TOOLCHAIN:root}, inputs);
+          const env = childEnv(join(inputs.runRoot,'native-runtime'), {...build, ...rustLoaderEnvironment(root), ...(process.platform === 'darwin' ? {CARGO_INCREMENTAL:'0'} : {}), PATH:[join(root,'bin'),build.PATH,inputs.tools.path ?? inputs.tools.bin].filter(Boolean).join(delimiter), CARGO_HOME:process.env.CARGO_HOME, CARGO_TARGET_DIR:process.env.CARGO_TARGET_DIR, CARGO_NET_OFFLINE:'true', RUSTC:join(root,'bin',process.platform==='win32'?'rustc.exe':'rustc'), RUSTUP_AUTO_INSTALL:'0', RUSTUP_TOOLCHAIN:root}, inputs);
           const cargo = join(root,'bin',process.platform==='win32'?'cargo.exe':'cargo'), target = process.env.RUST_TARGET;
           const {runNativeCommand} = await import('./scripts/test/native-diagnostics.mjs');
           for (const args of [['fmt','--all','--check'], ['test','--workspace','--locked','--offline','--target',target], ['clippy','--workspace','--all-targets','--locked','--offline','--target',target,'--','-D','warnings'], ['build','--release','--locked','--offline','-p','occipital','--target',target]]) {

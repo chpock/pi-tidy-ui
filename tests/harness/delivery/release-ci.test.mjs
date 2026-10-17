@@ -915,32 +915,34 @@ test('maintained JavaScript actions use reviewed Node24 releases without changin
   assert.deepEqual([...seen].sort(),Object.keys(versions).sort());
 });
 
-test('macOS CI Cargo diagnostics preserve real gate arguments, sanitized environment and failure status', {skip:process.platform==='win32'}, async t=>{
+test('macOS CI Cargo diagnostics and nonincremental gates preserve arguments, isolation and failure status', {skip:process.platform==='win32'}, async t=>{
   const inputs=readInputs(), root=await mkdtemp(join(process.env.TIDY_TEST_ROOT,'mac-cargo-gates-'));
   t.after(()=>rm(root,{recursive:true,force:true}));
   const neutral=join(root,'neutral'), source=join(neutral,'project'),rust=join(root,'rust'),log=join(root,'calls.jsonl');
   for(const path of [source,join(rust,'bin'),join(root,'native-environment'),join(root,'native-build-inputs')])await mkdir(path,{recursive:true});
   await nativeDescriptor(inputs,root,neutral,rust);await writeFile(join(rust,'bin/rustc'),'inert unused compiler');
   const workflow=await readFile(join(repo,'.github/workflows/occipital.yml'),'utf8');
-  const script=shellStep(workflowStep(workflow,'Offline native correctness, strict lint and release build'))
-    .replace("node --input-type=module <<'JS'\n","node --input-type=module <<'JS'\nObject.defineProperty(process,'platform',{value:'darwin'});\n");
-  assert.match(script,/Object.defineProperty/);
-  for(const fail of [false,true]){
+  const gate=shellStep(workflowStep(workflow,'Offline native correctness, strict lint and release build'));
+  for(const platform of ['darwin','linux'])for(const fail of [false,true]){
+    const script=gate.replace("node --input-type=module <<'JS'\n",`node --input-type=module <<'JS'\nObject.defineProperty(process,'platform',{value:${JSON.stringify(platform)}});\n`);
+    assert.notEqual(script,gate);
     await rm(log,{force:true});
     await writeFile(join(rust,'bin/cargo'),`#!${process.execPath}
 import {appendFileSync} from 'node:fs';
-appendFileSync(${JSON.stringify(log)},JSON.stringify({args:process.argv.slice(2),trace:process.env.CARGO_LOG,ambient:process.env.AMBIENT_POISON,toolchain:process.env.RUSTUP_TOOLCHAIN,loader:process.env.DYLD_FALLBACK_LIBRARY_PATH,sdk:process.env.SDKROOT})+'\\n');
-console.error('0.001s INFO cargo::compiler::fingerprint: dirty: FsStatusOutdated(StaleItem(ChangedFile { stale: "PRIVATE_CARGO_PATH" }))');
+appendFileSync(${JSON.stringify(log)},JSON.stringify({args:process.argv.slice(2),trace:process.env.CARGO_LOG,ambient:process.env.AMBIENT_POISON,toolchain:process.env.RUSTUP_TOOLCHAIN,loader:process.env.DYLD_FALLBACK_LIBRARY_PATH,sdk:process.env.SDKROOT,incremental:process.env.CARGO_INCREMENTAL})+'\\n');
+if(process.env.CARGO_LOG)console.error('0.001s INFO cargo::compiler::fingerprint: dirty: FsStatusOutdated(StaleItem(ChangedFile { stale: "PRIVATE_CARGO_PATH" }))');
 if(${fail}&&process.argv[2]==='build'){console.error('error: deliberate native failure');process.exitCode=17;}
 `,{mode:0o755});
-    const result=spawnSync(toolPath('bash'),['-e','-o','pipefail','-c',script],{cwd:repo,env:childEnv(join(root,'caller'),{RUNNER_TEMP:root,RUST_ROOT:rust,NATIVE_SOURCE:source,CARGO_HOME:join(root,'cargo'),CARGO_TARGET_DIR:join(root,'target'),RUST_TARGET:'fixture-target',AMBIENT_POISON:'private'},inputs),encoding:'utf8'});
+    const result=spawnSync(toolPath('bash'),['-e','-o','pipefail','-c',script],{cwd:repo,env:childEnv(join(root,'caller'),{RUNNER_TEMP:root,RUST_ROOT:rust,NATIVE_SOURCE:source,CARGO_HOME:join(root,'cargo'),CARGO_TARGET_DIR:join(root,'target'),RUST_TARGET:'fixture-target',AMBIENT_POISON:'private',CARGO_INCREMENTAL:'ambient-poison',RUNNER_OS:platform==='darwin'?'macOS':'Linux'},inputs),encoding:'utf8'});
     assert.equal(result.status,fail?17:0,result.stderr);
     const calls=(await readFile(log,'utf8')).trim().split('\n').map(row=>JSON.parse(row));
-    assert.deepEqual(calls.map(row=>row.args[0]),['fmt','test','clippy','build']);
-    for(const call of calls){assert.equal(call.trace,'cargo::compiler::fingerprint=info');assert.equal(call.ambient,undefined);assert.equal(call.toolchain,rust);assert.equal(call.loader,join(rust,'lib'));assert.equal(call.sdk,undefined);}
+    assert.deepEqual(calls.map(row=>row.args),[['fmt','--all','--check'],['test','--workspace','--locked','--offline','--target','fixture-target'],['clippy','--workspace','--all-targets','--locked','--offline','--target','fixture-target','--','-D','warnings'],['build','--release','--locked','--offline','-p','occipital','--target','fixture-target']]);
+    for(const call of calls){assert.equal(call.trace,platform==='darwin'?'cargo::compiler::fingerprint=info':undefined);assert.equal(call.ambient,undefined);assert.equal(call.toolchain,rust);assert.equal(call.loader,platform==='darwin'?join(rust,'lib'):undefined);assert.equal(call.sdk,undefined);assert.equal(call.incremental,platform==='darwin'?'0':undefined);}
     const summaries=result.stdout.trim().split('\n').filter(line=>line.startsWith('Cargo summary: ')).map(line=>JSON.parse(line.slice('Cargo summary: '.length)));
-    assert.equal(summaries.length,4);assert.equal(summaries.at(-1).exitCode,fail?17:0);
+    assert.equal(summaries.length,platform==='darwin'?4:0);if(platform==='darwin')assert.equal(summaries.at(-1).exitCode,fail?17:0);
     assert.ok(summaries.every(row=>row.sourceChanged===1));assert.doesNotMatch(result.stdout+result.stderr,/PRIVATE_CARGO_PATH/);
+    if(platform==='darwin')assert.match(result.stderr,/Native gate resources: elapsed=[\d.]+ user=[\d.]+ system=[\d.]+ seconds/);
+    else assert.doesNotMatch(result.stderr,/Native gate resources:/);
     if(fail)assert.match(result.stderr,/deliberate native failure/);
   }
 });
