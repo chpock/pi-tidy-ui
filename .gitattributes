@@ -1,3 +1,6 @@
 # Release notices must retain their original bytes on every checkout.
 /LICENSE -text
 /scripts/release/notices/*.txt -text
+
+# Keep JSON text diffs and identical LF bytes, including hashed protocol fixtures.
+*.json text eol=lf

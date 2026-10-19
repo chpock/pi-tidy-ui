@@ -123,6 +123,8 @@ GNU Make/POSIX-shell entry points route checks to the same runner. `make` prints
 | `make test-published INPUTS=... RELEASE_REF=refs/tags/pi-tidy-ui-vVERSION` | Explicit external published-delivery verification, extension releases only |
 | `make pack-check` | Development-package dry run, no publication |
 
+Neutral native snapshots and `nativeTree` cover the Rust workspace, pinned Cargo/toolchain/config files and shared `protocol/` inputs. The protocol JSON vectors are compiled into Rust tests with `include_str!`; they must survive GNU/Make snapshot creation and changes to them invalidate native input provenance even when `.rs` files are unchanged. This does not add Pi or `node_modules` to native inputs. Repository JSON uses `*.json text eol=lf`: Git retains text diffs while Windows checkouts preserve the same LF bytes required by raw-hashed native palette fixtures.
+
 The extension has no TypeScript bundling step. `make build` does not select/stamp a release, download inputs, install tools or start services; it disables Rustup automatic installation and checks Cargo/rustc against `rust-toolchain.toml`. `CARGO_TARGET_DIR` selects its build directory and `RUST_TARGET` an explicit target triple. A merely present colocated helper is not test provenance; use prepared native inputs. Native calibration examples are not implicit prerequisites.
 
 ```sh
