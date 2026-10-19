@@ -6,245 +6,171 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { childEnv, readInputs, validateNative } from '../../../scripts/test/context.mjs';
 import { StdioTransport } from '../../../src/occipital/stdio.ts';
-import { decodeDescription, decodeSources, PROTOCOL_VERSION } from '../../../src/occipital/protocol.ts';
+import { HIGHLIGHT_LIMITS } from '../../../src/occipital/limits.ts';
+import { decodeSemanticDescription, decodeSemanticSourceReply, decodeSemanticStyleReply, SEMANTIC_PROTOCOL_VERSION as VERSION } from '../../../src/occipital/semantic-protocol.ts';
+import type { SemanticChunk } from '../../../src/occipital/semantic-source.ts';
+import { createPiRuleDefinition } from '../../../src/syntax/pi-rules.ts';
+import { fingerprintRules, fingerprintNative } from '../../../src/occipital/style-rules.ts';
 
-type Source = {
-  key: string; lease: string | null; revision: number; source_bytes: number;
-  replace_from: number; complete: boolean; styles: unknown[]; runs: number[];
-  counters: Record<string, number>;
-};
-type Profile = { id: string; fingerprint: string };
-type Reply = {
-  v: number; ticket: string; instance: string; assets: string; status: string;
-  error?: { code: string; execution: string };
-  body?: { sources?: Source[]; profiles?: Profile[]; category_version?: number; runtime?: { leases: number } };
-};
 const binary = validateNative(readInputs()).path;
-
 async function fixture() {
   const root = await mkdtemp(join(tmpdir(), 'occipital-native-client-'));
   for (const name of ['home', 'config', 'data', 'cache', 'run']) await mkdir(join(root, name));
   const env = childEnv(root);
   Object.assign(env, { HOME: join(root, 'home'), XDG_CONFIG_HOME: join(root, 'config'), XDG_DATA_HOME: join(root, 'data'), XDG_CACHE_HOME: join(root, 'cache'), XDG_RUNTIME_DIR: join(root, 'run') });
-  const transport = new StdioTransport({ command: binary!, args: ['--stdio', '--config', join(root, 'config', 'config.json')], env, cwd: root, requestDeadlineMs: 10_000, terminateGraceMs: 100 });
+  const transport = new StdioTransport({ command: binary, args: ['--stdio', '--config', join(root, 'config', 'config.json')], env, cwd: root, requestDeadlineMs: 10_000, terminateGraceMs: 100 });
   let sequence = 0;
-  async function call(request: Record<string, unknown>): Promise<Reply> {
-    const ticket = `call-${++sequence}`;
-    const reply = await transport.request({ ...request, v: PROTOCOL_VERSION, ticket }) as Reply;
-    assert.equal(reply.ticket, ticket);
-    assert.equal(reply.v, PROTOCOL_VERSION);
-    return reply;
+  async function call(request: Record<string, unknown>): Promise<any> {
+    const ticket = `call-${++sequence}`, reply = await transport.request({ ...request, v: VERSION, ticket }) as any;
+    assert.equal(reply.ticket, ticket); assert.equal(reply.v, VERSION); return reply;
+  }
+  const raw = await call({ op: 'describe' }), descriptor = decodeSemanticDescription(raw, raw.ticket);
+  function decode(reply: any, text: string, version = 1, previous?: SemanticChunk, complete = true): SemanticChunk {
+    return decodeSemanticSourceReply(reply, reply.ticket, descriptor, [{ key: 'code', generation: 1, source_version: version,
+      revision: previous ? previous.revision + 1 : 1, source_bytes: Buffer.byteLength(text), replace_from: previous?.committed_bytes ?? 0, complete,
+      ...(previous?.lease ? { lease: previous.lease } : {}), replacementText: Buffer.from(text).subarray(previous?.committed_bytes ?? 0).toString('utf8') }], 64 << 20).sources[0]!;
+  }
+  async function source(text: string, language = 'bash', complete = true) {
+    const reply = await call({ op: complete ? 'highlight' : 'stream.open', instance: descriptor.instance, admission: 'bounded_queue', queue_wait_ms: 1000,
+      sources: [{ key: 'code', generation: 1, source_version: 1, hint: { language }, text }] });
+    assert.equal(reply.status, 'ok'); return decode(reply, text, 1, undefined, complete);
+  }
+  async function append(previous: SemanticChunk, delta: string, complete: boolean) {
+    return call({ op: 'stream.append', instance: descriptor.instance, admission: 'bounded_queue', queue_wait_ms: 1000, key: 'code', lease: previous.lease,
+      generation: 1, source_version: previous.source_version + 1, base_revision: previous.revision, base_bytes: previous.source_bytes, append: delta, final: complete });
   }
   async function close() {
-    await transport.close();
-    const state = transport.stats();
-    assert.equal(state.childState, 'exited');
-    assert.equal(state.unsettledData, 0); assert.equal(state.unsettledControl, 0);
-    assert.equal(state.retainedBytes, 0); assert.equal(state.liveTimers, 0);
-    assert.equal(state.abortListeners, 0); assert.equal(state.ownedListeners, 0);
+    await transport.close(); const state = transport.stats();
+    assert.equal(state.childState, 'exited'); assert.equal(state.unsettledData, 0); assert.equal(state.unsettledControl, 0);
+    assert.equal(state.retainedBytes, 0); assert.equal(state.liveTimers, 0); assert.equal(state.abortListeners, 0); assert.equal(state.ownedListeners, 0);
     await rm(root, { recursive: true, force: true });
   }
-  return { transport, call, close };
+  return { transport, descriptor, call, decode, source, append, close };
 }
-
-function request(instance: string, profile: Profile, op: string, text: string) {
-  return { op, instance, admission: 'bounded_queue', queue_wait_ms: 1000,
-    sources: [{ key: 'code', generation: 1, source_version: 1, profile: profile.id,
-      fingerprint: profile.fingerprint, hint: { language: 'bash' }, text }] };
-}
-function append(instance: string, profile: Profile, previous: Source, suffix: string, final: boolean) {
-  return { op: 'stream.append', instance, admission: 'bounded_queue', queue_wait_ms: 1000,
-    key: 'code', lease: previous.lease, generation: 1, source_version: 2,
-    base_revision: previous.revision, base_bytes: previous.source_bytes,
-    profile: profile.id, fingerprint: profile.fingerprint, append: suffix, final };
-}
-function canonical(source: Source): Source {
-  let end=source.replace_from;
-  const runs:number[]=[];
-  for(let i=0;i<source.runs.length;i+=2) {end+=source.runs[i]!;runs.push(end,source.runs[i+1]!);}
-  assert.equal(end,source.source_bytes);
-  return {...source,runs};
-}
-function lengths(runs: readonly number[]): number[] {
-  let previous=0;
-  const result:number[]=[];
-  for(let i=0;i<runs.length;i+=2) {result.push(runs[i]!-previous,runs[i+1]!);previous=runs[i]!;}
+// Compare actual scope stacks, never reply-local context IDs. Coalesce equivalent
+// adjacent spans so independent finite/stream response factoring is irrelevant.
+type Span = [number, string];
+function spans(chunk: SemanticChunk): Span[] {
+  const result: Span[] = [];
+  for (let i = 0; i < chunk.runs.length; i += 2) {
+    const id = chunk.runs[i + 1]!, value = id ? JSON.stringify([...chunk.contexts[id - 1]!]) : 'unclassified';
+    if (result.at(-1)?.[1] === value) result[result.length - 1]![0] = chunk.runs[i]!;
+    else result.push([chunk.runs[i]!, value]);
+  }
   return result;
 }
-function patched(previous: Source, next: Source): number[] {
-  const result: number[] = [];
-  let start = 0;
-  for (let i = 0; i < previous.runs.length && start < next.replace_from; i += 2) {
-    result.push(Math.min(previous.runs[i]!, next.replace_from), previous.runs[i + 1]!);
-    start = previous.runs[i]!;
-  }
-  for (let i = 0; i < next.runs.length; i += 2) {
-    const end = next.runs[i]!, style = next.runs[i + 1]!;
-    if (result.length && result[result.length - 1] === style) result[result.length - 2] = end;
-    else result.push(end, style);
+function patched(previous: Span[], next: SemanticChunk): Span[] {
+  const result = previous.filter((_row, index) => !index || previous[index - 1]![0] < next.replace_from).map(([end, value]): Span => [Math.min(end, next.replace_from), value]);
+  if (!next.replace_from) result.length = 0;
+  for (const row of spans(next)) {
+    if (result.at(-1)?.[1] === row[1]) result[result.length - 1]![0] = row[0]; else result.push(row);
   }
   return result;
 }
 
-// An explicit compiled product binary is required: fixture helpers cannot satisfy
-// these controls. The ordinary JS-only gate does not require a Rust toolchain.
-test('actual owned helper preserves compact UTF8 highlighting and incremental work counters', {}, async () => {
+test('actual owned helper preserves compact UTF8 highlighting and incremental work counters', async () => {
   const f = await fixture();
   try {
-    const descriptor = await f.call({ op: 'describe' });
-    assert.equal(descriptor.status, 'ok');
-    assert.equal(descriptor.body!.category_version, 1);
-    const negotiated = decodeDescription(descriptor, descriptor.ticket);
-    const profile = descriptor.body!.profiles!.find(value => value.id === 'pi')!;
-    const prefix = "echo α\necho '";
-    const suffix = "value'\n";
-    const opened = await f.call(request(descriptor.instance, profile, 'stream.open', prefix));
-    assert.equal(opened.status, 'ok');
-    const first = opened.body!.sources![0]!;
-    const firstDecoded = decodeSources(opened, opened.ticket, negotiated, [{key:'code',generation:1,source_version:1,profile:profile.id,fingerprint:profile.fingerprint,revision:1,source_bytes:Buffer.byteLength(prefix),replace_from:0,complete:false,replacementText:prefix}])[0]!;
-    assert.equal(first.counters.committed_line_calls, 1);
-    assert.equal(first.counters.tail_calls, 1);
-    assert.equal(first.source_bytes, Buffer.byteLength(prefix));
-    const appended = await f.call(append(descriptor.instance, profile, first, suffix, true));
-    assert.equal(appended.status, 'ok');
-    const final = appended.body!.sources![0]!;
-    const finalDecoded = decodeSources(appended, appended.ticket, negotiated, [{key:'code',generation:1,source_version:2,profile:profile.id,fingerprint:profile.fingerprint,revision:2,source_bytes:Buffer.byteLength(prefix+suffix),replace_from:firstDecoded.committed_bytes,complete:true,lease:firstDecoded.lease!,replacementText:"echo '"+suffix}])[0]!;
-    assert.equal(final.counters.committed_line_calls, 1);
-    assert.equal(final.counters.tail_calls, 0);
-    assert.equal(final.replace_from, Buffer.byteLength('echo α\n'));
-    assert.equal(final.source_bytes, Buffer.byteLength(prefix + suffix));
-    assert.equal(final.complete, true);
-    const shot = await f.call(request(descriptor.instance, profile, 'highlight', prefix + suffix));
-    assert.equal(shot.status, 'ok');
-    const complete = shot.body!.sources![0]!;
-    const shotDecoded = decodeSources(shot, shot.ticket, negotiated, [{key:'code',generation:1,source_version:1,profile:profile.id,fingerprint:profile.fingerprint,revision:1,source_bytes:Buffer.byteLength(prefix+suffix),replace_from:0,complete:true,replacementText:prefix+suffix}])[0]!;
-    assert.deepEqual([...shotDecoded.runs], patched({...first,runs:[...firstDecoded.runs]}, {...final,runs:[...finalDecoded.runs]}));
-    assert.equal(complete.counters.committed_line_calls, 2);
-    assert.deepEqual(complete.styles, final.styles);
-    assert.deepEqual(complete.runs, lengths(patched(canonical(first), canonical(final))));
-    const stale = await f.call(append(descriptor.instance, profile, first, 'x', false));
-    assert.equal(stale.status, 'error');
-    assert.equal(stale.error!.code, 'restart_required');
-    assert.equal(stale.error!.execution, 'not_started');
+    const prefix = "echo α\necho '", suffix = "value'\n", first = await f.source(prefix, 'bash', false);
+    assert.equal(first.counters.committed_line_calls, 1); assert.equal(first.counters.tail_calls, 1); assert.equal(first.source_bytes, Buffer.byteLength(prefix));
+    const reply = await f.append(first, suffix, true); assert.equal(reply.status, 'ok');
+    const final = f.decode(reply, prefix + suffix, 2, first);
+    assert.equal(final.counters.committed_line_calls, 1); assert.equal(final.counters.tail_calls, 0); assert.equal(final.replace_from, Buffer.byteLength('echo α\n'));
+    assert.equal(final.source_bytes, Buffer.byteLength(prefix + suffix)); assert.equal(final.complete, true);
+    const shot = await f.source(prefix + suffix);
+    assert.deepEqual(spans(shot), patched(spans(first), final)); assert.equal(shot.counters.committed_line_calls, 2);
+    const stale = await f.append(first, 'x', false);
+    assert.equal(stale.status, 'error'); assert.equal(stale.error.code, 'restart_required'); assert.equal(stale.error.execution, 'not_started');
     assert.equal(f.transport.stats().spawnCount, 1);
   } finally { await f.close(); }
 });
 
-test('actual owned helper validates whole batches before work and supports independent native profiles', {}, async () => {
+test('actual owned helper validates whole batches before work and supports independent native profiles', async () => {
   const f = await fixture();
   try {
-    const descriptor = await f.call({ op: 'describe' });
-    const pi = descriptor.body!.profiles!.find(value => value.id === 'pi')!;
-    const native = descriptor.body!.profiles!.find(value => value.id === 'syntect:Nord')!;
-    const text = 'echo "literal"\n';
-    const plain = await f.call(request(descriptor.instance, pi, 'highlight', text));
-    const colored = await f.call(request(descriptor.instance, native, 'highlight', text));
-    assert.equal(plain.status, 'ok'); assert.equal(colored.status, 'ok');
-    const negotiated = decodeDescription(descriptor, descriptor.ticket);
-    for (const [reply,profile] of [[plain,pi],[colored,native]] as const) {
-      const chunks = decodeSources(reply,reply.ticket,negotiated,[{key:'code',generation:1,source_version:1,profile:profile.id,fingerprint:profile.fingerprint,revision:1,source_bytes:Buffer.byteLength(text),replace_from:0,complete:true,replacementText:text}]);
-      assert.equal(chunks[0]!.runs[chunks[0]!.runs.length-2],Buffer.byteLength(text));
+    const parsed = await f.source('echo "literal"\n'), contexts = parsed.contexts.map(context => [0, ...context]);
+    const native = f.descriptor.profiles.find(value => value.id === 'syntect:Nord')!; assert.ok(native);
+    const definition = createPiRuleDefinition();
+    const resolved = [];
+    for (const rules of [{ kind: 'client', definition }, { kind: 'native', id: native.id, fingerprint: native.fingerprint }]) {
+      const reply = await f.call({ op: 'styles.resolve', instance: f.descriptor.instance, vocabulary: f.descriptor.vocabulary.fingerprint,
+        admission: 'bounded_queue', queue_wait_ms: 1000, rules, contexts });
+      const mode = rules.kind === 'native' ? 'native' : 'client';
+      const result = decodeSemanticStyleReply(reply, reply.ticket, f.descriptor, { vocabulary: f.descriptor.vocabulary.fingerprint,
+        rules: mode === 'native' ? fingerprintNative(native.fingerprint, 'rules') : fingerprintRules(definition), mode,
+        bindingSlots: mode === 'native' ? 0 : definition.binding_slots, paletteFingerprint: mode === 'native' ? fingerprintNative(native.fingerprint, 'palette') : null }, contexts.length, 64 << 20);
+      assert.equal(result.indices.length, contexts.length); resolved.push(result.styles);
     }
-    assert.notDeepEqual(plain.body!.sources![0]!.styles, colored.body!.sources![0]!.styles);
-    const batch = request(descriptor.instance, pi, 'stream.open', text);
-    batch.sources.push({ ...batch.sources[0]!, key: 'second', fingerprint: 'wrong' });
-    const rejected = await f.call(batch);
-    assert.equal(rejected.status, 'error');
-    assert.equal(rejected.error!.execution, 'not_started');
-    assert.equal(Object.hasOwn(rejected, 'body'), false);
-    const after = await f.call({ op: 'describe' });
-    assert.equal(after.body!.runtime!.leases, 0);
-    const largeLine = await f.call(request(descriptor.instance, pi, 'highlight', 'x'.repeat(8193)));
-    assert.equal(largeLine.status, 'ok');
-    assert.equal(largeLine.body!.sources![0]!.source_bytes, 8193);
-    assert.equal(largeLine.body!.sources![0]!.counters.tail_bytes, 8193);
+    assert.notDeepEqual(resolved[0], resolved[1]);
+    const rejected = await f.call({ op: 'stream.open', instance: f.descriptor.instance, admission: 'bounded_queue', queue_wait_ms: 1000,
+      sources: [{ key: 'first', generation: 1, source_version: 1, text: 'echo x' }, { key: 'second', generation: 0, source_version: 1, text: 'echo y' }] });
+    assert.equal(rejected.status, 'error'); assert.equal(rejected.error.execution, 'not_started'); assert.equal(Object.hasOwn(rejected, 'body'), false);
+    assert.equal((await f.call({ op: 'describe' })).body.runtime.leases, 0);
+    const large = await f.source('x'.repeat(8193)); assert.equal(large.source_bytes, 8193); assert.equal(large.counters.tail_bytes, 8193);
   } finally { await f.close(); }
 });
 
-test('actual current helper commits a no-newline tail on one-shot and empty final append without reparsing it', {},async()=> {
-  const f=await fixture();
+test('actual current helper commits a no-newline tail on one-shot and empty final append without reparsing it', async () => {
+  const f = await fixture();
   try {
-    const raw=await f.call({op:'describe'}),descriptor=decodeDescription(raw,raw.ticket);
-    const profile=descriptor.profiles.find(value=>value.id==='pi')!;
-    const text='echo é\nprintf x',bytes=Buffer.byteLength(text);
-    const opened=await f.call(request(raw.instance,profile,'stream.open',text));
-    const first=decodeSources(opened,opened.ticket,descriptor,[{key:'code',generation:1,source_version:1,revision:1,source_bytes:bytes,replace_from:0,complete:false,profile:profile.id,fingerprint:profile.fingerprint,replacementText:text}])[0]!;
-    assert.equal(first.committed_bytes,Buffer.byteLength('echo é\n'));
-    const ended=await f.call(append(raw.instance,profile,opened.body!.sources![0]!,'',true));
-    const final=decodeSources(ended,ended.ticket,descriptor,[{key:'code',generation:1,source_version:2,revision:2,source_bytes:bytes,replace_from:first.committed_bytes,complete:true,profile:profile.id,fingerprint:profile.fingerprint,lease:first.lease!,replacementText:'printf x'}])[0]!;
-    assert.equal(final.committed_bytes,bytes);assert.equal(final.lease,first.lease);
-    assert.equal(final.counters.committed_line_calls,0);assert.equal(final.counters.tail_calls,0);
-    const shot=await f.call(request(raw.instance,profile,'highlight',text));
-    const one=decodeSources(shot,shot.ticket,descriptor,[{key:'code',generation:1,source_version:1,revision:1,source_bytes:bytes,replace_from:0,complete:true,profile:profile.id,fingerprint:profile.fingerprint,replacementText:text}])[0]!;
-    assert.equal(one.committed_bytes,bytes);assert.equal(one.lease,undefined);
-    assert.deepEqual([...one.runs],patched({...opened.body!.sources![0]!,runs:[...first.runs]},{...ended.body!.sources![0]!,runs:[...final.runs]}));
-  } finally {await f.close();}
+    const text = 'echo é\nprintf x', bytes = Buffer.byteLength(text), first = await f.source(text, 'bash', false);
+    assert.equal(first.committed_bytes, Buffer.byteLength('echo é\n'));
+    const final = f.decode(await f.append(first, '', true), text, 2, first);
+    assert.equal(final.committed_bytes, bytes); assert.equal(final.lease, first.lease); assert.equal(final.counters.committed_line_calls, 0); assert.equal(final.counters.tail_calls, 0);
+    const shot = await f.source(text); assert.equal(shot.committed_bytes, bytes); assert.equal(shot.lease, undefined);
+    assert.deepEqual(spans(shot), patched(spans(first), final));
+  } finally { await f.close(); }
 });
 
- test('actual owned helper honors the 64 KiB window, zero-reparse tail growth and native Plain coverage', {},async()=> {
-   const f=await fixture();
-   try {
-     const raw=await f.call({op:'describe'}),descriptor=decodeDescription(raw,raw.ticket);
-     assert.equal(descriptor.limits.line_bytes,65536);
-     assert.match(descriptor.assets,/line-prefix\/65536\/v1/);
-     for(const id of ['pi','syntect:Nord']) {
-       const profile=descriptor.profiles.find(value=>value.id===id)!;
-       let text='/*'+'a'.repeat(65534);
-       const opening=request(raw.instance,profile,'stream.open',text);
-       opening.sources[0]!.hint.language='typescript';
-       const opened=await f.call(opening);
-       assert.equal(opened.status,'ok');
-       let prior=opened.body!.sources![0]!;
-       let decoded=decodeSources(opened,opened.ticket,descriptor,[{key:'code',generation:1,source_version:1,revision:1,source_bytes:65536,replace_from:0,complete:false,profile:id,fingerprint:profile.fingerprint,replacementText:text}])[0]!;
-       assert.equal(decoded.counters.tail_calls,1);assert.equal(decoded.counters.tail_bytes,65536);
-       let accumulated=[...decoded.runs],version=1;
-       for(const [delta,complete] of [['*/',false],['\nconst later = 1;\n',true]] as const) {
-         text+=delta;++version;
-         const reply=await f.call({...append(raw.instance,profile,prior,delta,complete),source_version:version});
-         assert.equal(reply.status,'ok');
-         const next=decodeSources(reply,reply.ticket,descriptor,[{key:'code',generation:1,source_version:version,revision:decoded.revision+1,source_bytes:Buffer.byteLength(text),replace_from:decoded.committed_bytes,complete,lease:decoded.lease!,profile:id,fingerprint:profile.fingerprint,replacementText:text}])[0]!;
-         accumulated=patched({...prior,runs:accumulated},{...reply.body!.sources![0]!,runs:[...next.runs]});
-         assert.equal(next.counters.tail_calls,0);assert.equal(next.counters.tail_bytes,0);
-         assert.equal(next.counters.committed_line_calls,complete?1:0);
-         assert.equal(next.counters.committed_line_bytes,complete?Buffer.byteLength('const later = 1;\n'):0);
-         assert.equal(next.source_bytes,Buffer.byteLength(text));
-         prior=reply.body!.sources![0]!;decoded=next;
-       }
-       const whole=request(raw.instance,profile,'highlight',text);
-       whole.sources[0]!.hint.language='typescript';
-       const reply=await f.call(whole);
-       const shot=decodeSources(reply,reply.ticket,descriptor,[{key:'code',generation:1,source_version:1,revision:1,source_bytes:Buffer.byteLength(text),replace_from:0,complete:true,profile:id,fingerprint:profile.fingerprint,replacementText:text}])[0]!;
-       assert.deepEqual([...shot.runs],accumulated);
-       // Packed Plain is zero, distinct from both the Pi comment role and native RGB.
-       const plainIndex=[...shot.runs].findIndex((value,index)=>index%2===1&&value===0);
-       assert.notEqual(plainIndex,-1);
-       assert.equal(shot.runs[plainIndex-3],65536);
-       const after=await f.call({op:'describe'});
-       assert.equal(after.body!.runtime!.leases,0);
-     }
-     assert.equal(f.transport.stats().spawnCount,1);
-   } finally {await f.close();}
- });
-
-test('actual owned helper accepts above-old-ceiling source and keeps saturated growth work at zero', {},async()=> {
-  const f=await fixture();
+test('actual owned helper refuses growth past cumulative coverage and still finalizes its at-limit tail without reparsing', async () => {
+  const f = await fixture();
   try {
-    const raw=await f.call({op:'describe'}),descriptor=decodeDescription(raw,raw.ticket);
-    assert.equal(descriptor.limits.source_bytes,64<<20);
-    assert.equal(descriptor.limits.request_bytes,64<<20);
-    assert.equal(descriptor.limits.runs,(64<<20)/4);
-    assert.equal(descriptor.limits.styles,4105);
-    const profile=descriptor.profiles.find(value=>value.id==='pi')!,text='a'.repeat((1<<20)+1);
-    const opening=request(raw.instance,profile,'stream.open',text); opening.sources[0]!.hint.language='text';
-    const opened=await f.call(opening); assert.equal(opened.status,'ok');
-    const first=decodeSources(opened,opened.ticket,descriptor,[{key:'code',generation:1,source_version:1,revision:1,source_bytes:text.length,replace_from:0,complete:false,profile:profile.id,fingerprint:profile.fingerprint,replacementText:text}])[0]!;
-    assert.equal(first.counters.tail_bytes,65536); assert.equal(first.runs.at(-2),text.length);
-    const ended=await f.call(append(raw.instance,profile,opened.body!.sources![0]!,'tail',true));
-    assert.equal(ended.status,'ok');
-    const final=decodeSources(ended,ended.ticket,descriptor,[{key:'code',generation:1,source_version:2,revision:2,source_bytes:text.length+4,replace_from:0,complete:true,lease:first.lease!,profile:profile.id,fingerprint:profile.fingerprint,replacementText:text+'tail'}])[0]!;
-    assert.equal(final.counters.tail_calls,0); assert.equal(final.counters.committed_line_calls,0);
-    assert.equal(final.runs.at(-2),text.length+4);
-    const after=await f.call({op:'describe'}); assert.equal(after.body!.runtime!.leases,0);
-    assert.equal(f.transport.stats().spawnCount,1);
-  } finally {await f.close();}
+    assert.equal(f.descriptor.limits.line_bytes, 65536);
+    const text = '/*' + 'a'.repeat(HIGHLIGHT_LIMITS.sourceBytes - 2), prior = await f.source(text, 'typescript', false);
+    assert.equal(prior.source_bytes, HIGHLIGHT_LIMITS.sourceBytes);
+    assert.equal(prior.counters.tail_calls, 1);
+    assert.equal(prior.counters.tail_bytes, Math.min(HIGHLIGHT_LIMITS.sourceBytes, f.descriptor.limits.line_bytes));
+    assert.ok(prior.lease);
+    const sampledLeases: number[] = [];
+    for (const delta of ['*/', '\nconst later = 1;\n']) {
+      const rejected = await f.append(prior, delta, false);
+      assert.equal(rejected.status, 'error'); assert.deepEqual(rejected.error, { code: 'source_limit', execution: 'not_started' });
+      assert.equal(Object.hasOwn(rejected, 'body'), false);
+      // describe reads an asynchronously sampled actor counter. The final append
+      // below, using the unchanged lease/revision, is the actual survival proof.
+      sampledLeases.push((await f.call({ op: 'describe' })).body.runtime.leases);
+    }
+    const final = f.decode(await f.append(prior, '', true), text, 2, prior);
+    assert.equal(final.source_bytes, HIGHLIGHT_LIMITS.sourceBytes);
+    assert.equal(final.committed_bytes, HIGHLIGHT_LIMITS.sourceBytes);
+    assert.equal(final.counters.tail_calls, 0); assert.equal(final.counters.tail_bytes, 0);
+    assert.equal(final.counters.committed_line_calls, 0); assert.equal(final.counters.committed_line_bytes, 0);
+    assert.equal(final.lease, prior.lease, 'both no-start refusals preserve the exact parser lease and revision');
+    console.log(JSON.stringify({ boundaryRefusal: { sampledLeases, sameLeaseFinalized: final.lease === prior.lease,
+      finalTailCalls: final.counters.tail_calls, finalCommittedCalls: final.counters.committed_line_calls } }));
+    assert.deepEqual(spans(await f.source(text, 'typescript')), patched(spans(prior), final));
+    assert.equal((await f.call({ op: 'describe' })).body.runtime.leases, 0); assert.equal(f.transport.stats().spawnCount, 1);
+  } finally { await f.close(); }
+});
+
+test('actual owned helper advertises bounded DATA and refuses byte or line overflow without losing later boundary admission', async () => {
+  const f = await fixture();
+  try {
+    assert.equal(f.descriptor.limits.source_bytes, HIGHLIGHT_LIMITS.sourceBytes);
+    assert.equal(f.descriptor.limits.request_bytes, HIGHLIGHT_LIMITS.dataWireBytes);
+    assert.equal(f.descriptor.limits.reply_bytes, HIGHLIGHT_LIMITS.dataWireBytes);
+    for (const text of ['a'.repeat(HIGHLIGHT_LIMITS.sourceBytes + 1), '\n'.repeat(HIGHLIGHT_LIMITS.sourceLines + 1)]) {
+      const rejected = await f.call({ op: 'stream.open', instance: f.descriptor.instance, admission: 'bounded_queue', queue_wait_ms: 1000,
+        sources: [{ key: 'code', generation: 1, source_version: 1, hint: { language: 'text' }, text }] });
+      assert.equal(rejected.status, 'error'); assert.deepEqual(rejected.error, { code: 'source_limit', execution: 'not_started' });
+      assert.equal(Object.hasOwn(rejected, 'body'), false);
+      assert.equal((await f.call({ op: 'describe' })).body.runtime.leases, 0, 'refused text must not acquire a lease');
+    }
+    for (const text of ['a'.repeat(HIGHLIGHT_LIMITS.sourceBytes), '\n'.repeat(HIGHLIGHT_LIMITS.sourceLines)]) {
+      const accepted = await f.source(text, 'text');
+      assert.equal(accepted.source_bytes, Buffer.byteLength(text)); assert.equal(accepted.committed_bytes, Buffer.byteLength(text));
+      assert.equal(accepted.runs.at(-2), Buffer.byteLength(text)); assert.equal(accepted.lease, undefined);
+    }
+    assert.equal((await f.call({ op: 'describe' })).body.runtime.leases, 0); assert.equal(f.transport.stats().spawnCount, 1);
+  } finally { await f.close(); }
 });

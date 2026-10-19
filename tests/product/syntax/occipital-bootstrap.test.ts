@@ -8,15 +8,17 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createSyntaxOptions, nativePackageName, nativeTarget } from '../../../src/occipital/bootstrap.ts';
 import type { ExtensionContext } from '@earendil-works/pi-coding-agent';
+import { RuntimeHealth } from '../../../src/runtime-health.ts';
+import { setImmediate as turn } from 'node:timers/promises';
 import { NATIVE_RELEASE, type NativeReleaseDeclaration } from '../../../src/occipital/release.ts';
 
-async function isolatedDevelopment(t: import('node:test').TestContext) {
+async function isolatedDevelopment(t: import('node:test').TestContext, version = '0.0.0') {
   const repo = dirname(dirname(dirname(dirname(fileURLToPath(import.meta.url)))));
   await mkdir(join(repo, '.test-artifacts'), { recursive: true });
   const root = await mkdtemp(join(repo, '.test-artifacts/bootstrap-local-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   await cp(join(repo, 'src'), join(root, 'src'), { recursive: true });
-  await writeFile(join(root, 'package.json'), '{"version":"0.0.0","type":"module"}');
+  await writeFile(join(root, 'package.json'), JSON.stringify({ version, type: 'module' }));
   const { pathToFileURL } = await import('node:url');
   return { root, bootstrap: await import(pathToFileURL(join(root, 'src/occipital/bootstrap.ts')).href) };
 }
@@ -153,3 +155,25 @@ test('published bootstrap exact installed metadata hands verified payload to own
       await rm(directory, { recursive: true, force: true });
     }
   });
+
+for (const mode of ['unsupported', 'undeclared', 'missing-artifact'] as const) test(`published bootstrap health: ${mode} distinguishes optional platform absence from broken package delivery`, async t => {
+  const { root, bootstrap } = await isolatedDevelopment(t, '0.2.0');
+  const { SyntaxClient } = await import((await import('node:url')).pathToFileURL(join(root, 'src/occipital/client.ts')).href);
+  const notices: string[] = [], health = new RuntimeHealth(message => notices.push(message));
+  const release: NativeReleaseDeclaration | undefined = mode === 'undeclared' ? undefined : { version: '0.1.0', artifacts: [] };
+  const options = bootstrap.createSyntaxOptions(ctx, release, health.sink(() => {}));
+  const client = new SyntaxClient({ ...options, initialTheme: { kind: 'pi' }, provider: { ...options.provider, tryShared: async () => undefined } });
+  t.after(async () => { await client.dispose(); health.dispose(); });
+  const platform = Object.getOwnPropertyDescriptor(process, 'platform')!, fetch = globalThis.fetch;
+  let downloads = 0; globalThis.fetch = async () => { downloads++; throw Error('No network in delivery classification control'); };
+  try {
+    // Exercise the actual runtimeTarget branch, not a mock throwing a similar message.
+    if (mode === 'unsupported') Object.defineProperty(process, 'platform', { ...platform, value: 'freebsd' });
+    await client.start(); await turn(); await turn();
+    assert.equal(client.snapshot().provider.availability, 'unavailable'); assert.equal(downloads, 0);
+    const expected = mode === 'unsupported' || !hostTarget ? 0 : 1;
+    assert.equal(health.snapshot().errors, expected); assert.equal(health.snapshot().active, expected); assert.equal(notices.length, expected);
+    if (expected) assert.equal(health.snapshot().last?.code, 'startup_failed');
+    await client.setEnabled(false); assert.equal(health.snapshot().active, 0);
+  } finally { Object.defineProperty(process, 'platform', platform); globalThis.fetch = fetch; }
+});

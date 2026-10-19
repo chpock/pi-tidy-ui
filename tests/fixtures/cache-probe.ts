@@ -37,31 +37,35 @@ const logDirectory = mkdtempSync(join(tmpdir(), "tidy-ui-gc-logging-"));
 const journal = new TextJournal({ session: "sdk-owners", cwd: "/tmp", reason: "test", extension: "0.0.0", pi: "sdk" }, { root: logDirectory });
 await journal.ready;
 const diagnostic = journal.sink;
+segments = 0; enabled = true;
 const controller = installTidyUi(root as never, () => theme, { diagnostic });
+enabled = false; const preparedSegments = segments;
 const observations: object[] = [];
-function frame(label: string, width = 80) {
+function frame(label: string, width = 80, height = 24) {
   segments = 0; enabled = true;
-  const result = renderLayoutFrame(viewport, width, 24, () => {});
+  const result = renderLayoutFrame(viewport, width, height, () => {});
   enabled = false;
   const observed = { label, segments, visibleRows: result.lines.length, ...controller.cacheStats() };
   observations.push(observed); return observed;
 }
 try {
-   const cold = frame("cold"); assert.equal(cold.segments, 88); assert.equal(cold.builds, 8);
+   const cold = frame("cold"); assert.ok(preparedSegments > 0 && preparedSegments <= 8 * 11, 'collapsed owners measure only logical preview prefixes before the first frame'); assert.equal(cold.segments, 0); assert.equal(cold.builds, 8);
   for (const label of ["unchanged-1", "unchanged-2", "scroll"]) {
     if (label === "scroll") viewport.scrollBy(1);
     const same = frame(label); assert.equal(same.segments, 0); assert.equal(same.builds, 8); assert.equal(same.visibleRows, 24);
   }
+  const heightOnly = frame('height-only', 80, 12);
+  assert.equal(heightOnly.segments, 0); assert.equal(heightOnly.builds, 8); assert.equal(heightOnly.visibleRows, 12);
   tools[3]!.updateResult({ content: [{ type: "text", text: output }], isError: false });
-  const changed = frame("one-result"); assert.equal(changed.segments, 11); assert.equal(changed.builds, 9);
-  const resized = frame("resize", 81); assert.equal(resized.segments, 88); assert.equal(resized.builds, 17);
+  const changed = frame("one-result"); assert.equal(changed.segments, 0); assert.equal(changed.builds, 8, 'identical output is not a source or service effect');
+  const resized = frame("resize", 81); assert.equal(resized.segments, 0); assert.equal(resized.builds, 16);
   assert.equal(frame("same-resize", 81).segments, 0);
   tools[0]!.setExpanded(true);
-  const expanded = frame("expand", 81); assert.equal(expanded.segments, 1000); assert.equal(expanded.builds, 18);
+  const expanded = frame("expand", 81); assert.equal(expanded.segments, 0); assert.equal(expanded.builds, 17);
   assert.equal(frame("same-expand", 81).segments, 0);
-  tools[0]!.setExpanded(false); assert.equal(frame("collapse", 81).segments, 11);
+  tools[0]!.setExpanded(false); assert.equal(frame("collapse", 81).segments, 0);
   controller.clearCache(); assert.equal(controller.cacheStats().retainedBytes, 0);
-  const cleared = frame("clear-cold", 81); assert.equal(cleared.segments, 88); assert.equal(cleared.entries, 8);
+  const cleared = frame("clear-cold", 81); assert.equal(cleared.segments, 0); assert.equal(cleared.entries, 8);
   assert.equal(frame("clear-warm", 81).segments, 0);
   // Remove the first installer and release its representation immediately, before GC.
   // Refresh host mouse layout, which independently owns references to formerly rendered children.
@@ -150,17 +154,19 @@ try {
    let writeNode: ToolExecutionComponent | undefined = new ToolExecutionComponent("write", "first-write-installer",
      { path: "example.txt", content: "WRITE_CACHE_PROBE_" + "x".repeat(2000) }, undefined, createWriteToolDefinition("/tmp"), writeRoot as never, "/tmp");
    writeNode.updateResult({ content: [{ type: "text", text: "STOCK_WRITE_RESULT" }], isError: false }); writeRoot.addChild(writeNode);
-   const writeController = installTidyUi(writeRoot as never, () => theme, { diagnostic });
+    segments = 0; enabled = true;
+    const writeController = installTidyUi(writeRoot as never, () => theme, { diagnostic });
+    enabled = false; const writePreparedSegments = segments;
    const writeFrame = () => { segments = 0; enabled = true; renderLayoutFrame(writeViewport, 80, 24, () => {}); enabled = false; return segments; };
    try {
-     assert.equal(writeFrame(), 1); const cold = writeController.cacheStats();
+     assert.equal(writePreparedSegments, 1); assert.equal(writeFrame(), 0); const cold = writeController.cacheStats();
      assert.equal(cold.cards.entries, 1); assert.equal(cold.ordinary.entries, 0);
      assert.equal(writeFrame(), 0); assert.equal(writeController.cacheStats().builds, cold.builds);
      const reference = new WeakRef(writeNode); writeRoot.removeChild(writeNode); writeNode = undefined;
      assert.equal(writeController.cacheStats().entries, 0); writeFrame();
      for (let i = 0; i < 12; i++) { await new Promise<void>(resolve => setImmediate(resolve)); globalThis.gc!(); }
      assert.equal(reference.deref(), undefined, "active write hooks and retained code rows do not own the first write installer");
-     observations.push({ firstWriteInstallerCollected: true, writeColdSegments: 1, writeWarmSegments: 0, ...writeController.cacheStats() });
+     observations.push({ firstWriteInstallerCollected: true, writePreparedSegments: 1, writeColdSegments: 0, writeWarmSegments: 0, ...writeController.cacheStats() });
    } finally { writeController.restore(); }
     const editorRoot = Object.assign(new Root(), { terminal: { rows: 24 } });
     let editor: CustomEditor | undefined = new CustomEditor(editorRoot as never,

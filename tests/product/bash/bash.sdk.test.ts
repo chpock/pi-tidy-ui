@@ -4,6 +4,9 @@ import test from "node:test";
 import xterm from "@xterm/headless";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import type { CardTheme } from "../../../src/card-theme.ts";
+import { hostCells, hasHostInk } from '../../fixtures/host-cells.ts';
+import { cardInputTheme } from '../../fixtures/sdk-contract-support.ts';
+import { getThemeByName } from '../../../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js';
 import { Root, Text, Tool, bashTool, installTidyUi, mouse, plain, setup, type TuiMouseEvent } from "../../fixtures/sdk-contract-support.ts";
 
 // Bash cards are a separate presentation, not a specialization of describeArgs.
@@ -21,11 +24,11 @@ test("bash cards retain whole commands with no continuation alignment", () => {
   const { controller } = setup([tool]);
   try {
     assert.deepEqual(bashBody(tool), ["$ python3 - <<'PY'", "  print('hello')", "PY"]);
-    tool.args.command = "abcdefghijabcdefghij";
+    tool.updateArgs({ ...tool.args, command: "abcdefghijabcdefghij" });
     assert.deepEqual(bashBody(tool, 12), ["$ abcde", "fghijab", "cdefghi", "j"]);
-    tool.args.command = "a  b\n\n c";
+    tool.updateArgs({ ...tool.args, command: "a  b\n\n c" });
     assert.deepEqual(bashBody(tool), ["$ a  b", "", " c"]);
-    tool.args.command = source.command;
+    tool.updateArgs({ ...tool.args, command: source.command });
     assert.deepEqual(tool.args, source);
     assert.deepEqual(tool.render(0), []);
   } finally { controller.restore(); }
@@ -33,19 +36,19 @@ test("bash cards retain whole commands with no continuation alignment", () => {
 
 test("bash comments are optional, normalized and separated once from the command", () => {
   const tool = bashTool("pwd");
-  tool.args.description = "Check\n\tdirectory"; tool.args.workdir = "sub/../elsewhere";
+  tool.updateArgs({ ...tool.args, description: "Check\n\tdirectory" }); tool.updateArgs({ ...tool.args, workdir: "sub/../elsewhere" });
   const source = structuredClone(tool.args);
   const { controller } = setup([tool]);
   try {
     assert.deepEqual(bashBody(tool), ["# Check directory", "# Running in /project/elsewhere", "", "$ pwd"]);
     assert.deepEqual(tool.args, source);
     for (const workdir of [".", "/project", "sub/..", ""]) {
-      tool.args.workdir = workdir;
+      tool.updateArgs({ ...tool.args, workdir: workdir });
       assert.deepEqual(bashBody(tool), ["# Check directory", "", "$ pwd"]);
     }
-    delete tool.args.description; delete tool.args.workdir;
+    delete tool.args.description; delete tool.args.workdir; tool.updateArgs({ ...tool.args });
     assert.deepEqual(bashBody(tool), ["$ pwd"]);
-    tool.args.description = " \n ";
+    tool.updateArgs({ ...tool.args, description: " \n " });
     assert.deepEqual(bashBody(tool), ["$ pwd"]);
   } finally { controller.restore(); }
 });
@@ -55,14 +58,14 @@ test("bash output trims only blank edges and preserves literal service-looking t
   const { controller } = setup([tool]);
   try {
     for (const text of ["", "\n \t\n", "\x1b[31m\n\x1b[0m"]) {
-      tool.result = { content: [{ type: "text", text }] };
+      tool.updateResult({ content: [{ type: "text", text }] }, tool.isPartial);
       assert.deepEqual(bashBody(tool), ["$ echo hello"]);
     }
-    tool.result = { content: [{ type: "text", text: "\n  \nalpha\n\n  beta  \n \n" }] };
+    tool.updateResult({ content: [{ type: "text", text: "\n  \nalpha\n\n  beta  \n \n" }] }, tool.isPartial);
     const before = structuredClone(tool.result);
     assert.deepEqual(bashBody(tool), ["$ echo hello", "", "alpha", "", "  beta"]);
     assert.deepEqual(tool.result, before);
-    tool.result = { content: [{ type: "text", text: "(no output)\nBackground task started: xyz\n[exit code: 7]" }], details: { exit_code: 0, task_id: "xyz" } };
+    tool.updateResult({ content: [{ type: "text", text: "(no output)\nBackground task started: xyz\n[exit code: 7]" }], details: { exit_code: 0, task_id: "xyz" } }, tool.isPartial);
     assert.deepEqual(bashBody(tool), ["$ echo hello", "", "(no output)", "Background task started: xyz", "[exit code: 7]"]);
   } finally { controller.restore(); }
 });
@@ -71,13 +74,13 @@ test("bash preview is the first ten visual rows and expands only available text"
   const tool = bashTool("true");
   const { controller } = setup([tool]);
   try {
-    tool.result = { content: [{ type: "text", text: "X".repeat(190) }] };
+    tool.updateResult({ content: [{ type: "text", text: "X".repeat(190) }] }, tool.isPartial);
     assert.deepEqual(bashBody(tool, 24), ["$ true", "", ...Array(10).fill("X".repeat(19))]);
-    tool.result = { content: [{ type: "text", text: "X".repeat(191) }], details: { truncated: true, output_path: "/DO_NOT_READ" } };
+    tool.updateResult({ content: [{ type: "text", text: "X".repeat(191) }], details: { truncated: true, output_path: "/DO_NOT_READ" } }, tool.isPartial);
     assert.deepEqual(bashBody(tool, 24), ["$ true", "", ...Array(10).fill("X".repeat(19)), "… (Click to expand)"]);
     tool.setExpanded(true);
     assert.deepEqual(bashBody(tool, 24), ["$ true", "", ...Array(10).fill("X".repeat(19)), "X"]);
-    assert.equal(tool.result.content[0].text, "X".repeat(191));
+    assert.equal(tool.result!.content[0].text, "X".repeat(191));
   } finally { controller.restore(); }
 });
 
@@ -209,7 +212,7 @@ test("bash timeout filtering precedes visual cutoff and preserves partial-to-fin
   } finally { controller.restore(); }
 });
 
-test("bash timeout footer wraps entirely in the error role without recoloring command output", () => {
+test("bash timeout footer wraps entirely in the error role without recoloring command output", async () => {
   const root = new Root(), tool = bashTool("run"); root.addChild(tool);
   tool.updateResult({ content: [{ type: "text", text: "BODY\n\n[command timed out]\n[exit code: 124]" }], details: { exit_code: 124 }, isError: true });
   const fg: [string, string][] = [], bg: string[] = [];
@@ -222,11 +225,10 @@ test("bash timeout footer wraps entirely in the error role without recoloring co
       fg.length = 0; bg.length = 0;
       const lines = tool.render(width);
       assert.ok(lines.every((line) => visibleWidth(line) <= width));
-      assert.equal(fg.filter(([role, text]) => role === "error" && text !== "┃").map(([, text]) => text).join(""),
-        "[exit code: 124; error: command timed out]");
-      assert.deepEqual(fg.filter(([role]) => role === "toolOutput").map(([, text]) => text), ["BODY"]);
-      assert.ok(fg.some(([role, text]) => role === "error" && text === "┃"), "error stripe remains metadata-derived");
-      assert.deepEqual([...new Set(bg)], ["toolPendingBg"]);
+      assert.equal(await hasHostInk(lines, cardInputTheme, 'error', '[exit code: 124; error: command timed out]'), true);
+      assert.equal(await hasHostInk(lines, cardInputTheme, 'toolOutput', 'BODY'), true);
+      assert.equal(await hasHostInk(lines, cardInputTheme, 'error', '┃'), true, 'error stripe remains metadata-derived');
+      assert.deepEqual([fg.length, bg.length], [0, 0], 'literal custom-card paint never calls legacy formatters');
     }
   } finally { controller.restore(); }
 });
@@ -277,13 +279,13 @@ test("bash exit/error status uses persisted numeric metadata and flags, never ou
   const { controller } = setup([tool]);
   try {
     for (const [exit_code, isError, footer] of cases) {
-      tool.result = { content: [], details: { exit_code }, isError, structuredContent: { exit_code: 123 } };
+      tool.updateResult({ content: [], details: { exit_code }, isError, structuredContent: { exit_code: 123 } }, tool.isPartial);
       assert.deepEqual(bashBody(tool), ["$ false", ...(footer ? ["", footer] : [])]);
     }
-    tool.result = { content: [{ type: "text", text: "Command exited with code 9" }] };
+    tool.updateResult({ content: [{ type: "text", text: "Command exited with code 9" }] }, tool.isPartial);
     assert.deepEqual(bashBody(tool), ["$ false", "", "Command exited with code 9"]);
-    tool.isPartial = true;
-    tool.result = { content: [], details: { exit_code: 9 }, isError: true };
+    tool.updateResult(tool.result, true);
+    tool.updateResult({ content: [], details: { exit_code: 9 }, isError: true }, tool.isPartial);
     assert.deepEqual(bashBody(tool), ["$ false"]);
   } finally { controller.restore(); }
 });
@@ -306,7 +308,7 @@ test("bash streaming replaces snapshots and keeps custom presentation after Ctrl
 });
 
 test("bash whole-panel clicks toggle during streaming without capturing wheel or secondary events", () => {
-  const tool = bashTool("run"); tool.args.description = "Description"; tool.args.workdir = "sub";
+  const tool = bashTool("run"); tool.updateArgs({ ...tool.args, description: "Description" }); tool.updateArgs({ ...tool.args, workdir: "sub" });
   tool.updateResult({ content: [{ type: "text", text: Array.from({ length: 11 }, (_, i) => `LINE_${i}`).join("\n") }], details: { exit_code: 4 } }, true);
   const { root, controller } = setup([new Text("User", 0, 0), tool]);
   try {
@@ -339,35 +341,29 @@ test("bash whole-panel clicks toggle during streaming without capturing wheel or
   } finally { controller.restore(); }
 });
 
-test("bash foregrounds and neutral panel follow live theme while Unicode geometry stays safe", () => {
+test("bash foregrounds and neutral panel follow live theme while Unicode geometry stays safe", async () => {
   const root = new Root(), tool = bashTool("printf '\t界é👩‍💻'\n\tsecond"); root.addChild(tool);
-  tool.args.description = "Describe"; tool.args.workdir = "sub";
-  tool.result = { content: [{ type: "text", text: "\x1b]0;BAD\x07\x1b[31mOUTPUT\x1b[0m\r\n  é\u202e" }] };
-  const fg: [string, string][] = [], bg: string[] = [];
-  let theme = "A";
-  const controller = installTidyUi(root, () => ({
-    fg: (role, text) => { fg.push([role, text]); return text; },
-    bg: (role: string, text: string) => { bg.push(`${theme}:${role}`); return text; },
-  }));
+  tool.updateArgs({ ...tool.args, description: 'Describe', workdir: 'sub' });
+  tool.updateResult({ content: [{ type: 'text', text: '\x1b]0;BAD\x07\x1b[31mOUTPUT\x1b[0m\r\n  é\u202e' }] });
+  let input = getThemeByName('dark')!;
+  const controller = installTidyUi(root, () => input, { piInput: () => ({ theme: input, mode: input.getColorMode() }) });
   try {
-    for (let width = 1; width <= 40; width++) {
-      for (const row of tool.render(width)) {
-        assert.ok(visibleWidth(row) <= width, `${width}: ${JSON.stringify(row)}`);
-        assert.doesNotMatch(row.replace(/^\x1b\[49m/u, ""), /[\x00-\x1f\x7f-\x9f\u202e]/u,
-          "only the frame's trusted leading background reset is permitted");
-      }
+    for (let width = 1; width <= 40; width++) for (const row of tool.render(width)) {
+      assert.ok(visibleWidth(row) <= width, `${width}: ${JSON.stringify(row)}`);
+      assert.doesNotMatch(plain(row), /[\x00-\x1f\x7f-\x9f\u202e]/u, 'only generated SGR is permitted');
     }
-    fg.length = 0; bg.length = 0; tool.render(80);
-    assert.ok(fg.some(([role, text]) => role === "dim" && text === "$ "));
-    assert.ok(fg.some(([role, text]) => role === "toolTitle" && text.includes("printf")));
-    assert.ok(fg.some(([role, text]) => role === "muted" && text.includes("Describe")));
-    assert.ok(fg.some(([role, text]) => role === "toolOutput" && text === "OUTPUT"));
-    assert.deepEqual([...new Set(bg)], ["A:toolPendingBg"]);
-    theme = "B"; tool.isPartial = true; bg.length = 0; tool.render(80);
-    assert.deepEqual([...new Set(bg)], ["B:toolPendingBg"]);
-    tool.isPartial = false; tool.result.details = { exit_code: 3 }; bg.length = 0; tool.render(80);
-    assert.deepEqual([...new Set(bg)], ["B:toolPendingBg"]);
-    assert.ok(fg.some(([role, text]) => role === "error" && text.includes("exit code: 3")));
+    const rows = tool.render(80);
+    assert.equal(await hasHostInk(rows, input, 'toolTitle', 'printf'), true);
+    assert.equal(await hasHostInk(rows, input, 'muted', 'Describe'), true);
+    assert.equal(await hasHostInk(rows, input, 'toolOutput', 'OUTPUT'), true);
+    const dark = await hostCells(rows);
+    input = getThemeByName('light')!; tool.render(80);
+    for (let turn = 0; turn < 4; turn++) await new Promise<void>(resolve => setImmediate(resolve));
+    const light = await hostCells(tool.render(80)); assert.notDeepEqual(light, dark);
+    assert.equal(light[0]![3]!.bg, (await hostCells([input.bg('toolPendingBg', ' ')]))[0]![0]!.bg);
+    tool.updateResult(tool.result, true); tool.render(80);
+    tool.updateResult({ ...tool.result!, details: { exit_code: 3 } }, false);
+    assert.equal(await hasHostInk(tool.render(80), input, 'error', 'exit code: 3'), true);
   } finally { controller.restore(); }
 });
 
@@ -377,13 +373,13 @@ test("bash policy preserves explicit native/compact overrides and image safeguar
     const { controller } = setup([tool], options);
     try { assert.match(tool.render(80).join(""), expected); } finally { controller.restore(); }
   }
-  const image = bashTool(); image.result = { content: [{ type: "image" }] };
+  const image = bashTool(); image.updateResult({ content: [{ type: "image" }] }, image.isPartial);
   const { controller, original } = setup([image]);
   try { assert.deepEqual(image.render(80), original.call(image, 80)); } finally { controller.restore(); }
 });
 
 test("bash exterior margins are not expansion targets and hidden self cards stay hidden", () => {
-  const tool = bashTool(); tool.result = { content: [{ type: "text", text: Array(11).fill("LINE").join("\n") }] };
+  const tool = bashTool(); tool.updateResult({ content: [{ type: "text", text: Array(11).fill("LINE").join("\n") }] }, tool.isPartial);
   const { controller } = setup([tool]);
   try {
     const y = tool.render(80).map(plain).findIndex((row) => row.includes("LINE"));
@@ -391,7 +387,7 @@ test("bash exterior margins are not expansion targets and hidden self cards stay
     assert.equal(tool.expanded, false);
     assert.ok(tool.handleMouse({ ...mouse(y), x: 2 })?.handled);
     for (let width = 1; width <= 24; width++) for (const row of tool.render(width)) assert.ok(visibleWidth(row) <= width);
-    tool.expanded = false;
+    tool.setExpanded(false);
     for (let width = 1; width <= 24; width++) for (const row of tool.render(width)) assert.ok(visibleWidth(row) <= width);
   } finally { controller.restore(); }
   class HiddenBash extends Tool {
@@ -407,7 +403,7 @@ test("bash exterior margins are not expansion targets and hidden self cards stay
 
 test("bash keeps Unicode joining sequences intact instead of deleting their joining marks", () => {
   const tool = bashTool("echo 👩‍💻");
-  tool.result = { content: [{ type: "text", text: "👩‍💻 é" }] };
+  tool.updateResult({ content: [{ type: "text", text: "👩‍💻 é" }] }, tool.isPartial);
   const { controller } = setup([tool]);
   try {
     assert.deepEqual(bashBody(tool), ["$ echo 👩‍💻", "", "👩‍💻 é"]);
@@ -417,8 +413,8 @@ test("bash keeps Unicode joining sequences intact instead of deleting their join
 
 test("bash removes every Unicode bidi control, including Arabic letter marks, without changing inputs", () => {
   const tool = bashTool("printf '\u061c123'");
-  tool.args.description = "Check\u061c directory"; tool.args.workdir = "sub\u061c";
-  tool.result = { content: [{ type: "text", text: "\u061c" }] };
+  tool.updateArgs({ ...tool.args, description: "Check\u061c directory" }); tool.updateArgs({ ...tool.args, workdir: "sub\u061c" });
+  tool.updateResult({ content: [{ type: "text", text: "\u061c" }] }, tool.isPartial);
   const before = structuredClone({ args: tool.args, result: tool.result });
   const { controller } = setup([tool]);
   try {
@@ -426,13 +422,13 @@ test("bash removes every Unicode bidi control, including Arabic letter marks, wi
     assert.ok(rows.every((row) => !/\p{Bidi_Control}/u.test(row)));
     assert.deepEqual(bashBody(tool), ["# Check directory", "# Running in /project/sub", "", "$ printf '123'"]);
     assert.deepEqual({ args: tool.args, result: tool.result }, before);
-    tool.args.description = "\u061c"; delete tool.args.workdir;
+    tool.updateArgs({ ...tool.args, description: "\u061c" }); delete tool.args.workdir; tool.updateArgs({ ...tool.args });
     assert.deepEqual(bashBody(tool), ["$ printf '123'"]);
   } finally { controller.restore(); }
 });
 
 test("OpenCode-style bash shell has external margins and a shared content origin", () => {
-  const tool = bashTool("echo ok"); tool.result = { content: [{ type: "text", text: "ok" }] };
+  const tool = bashTool("echo ok"); tool.updateResult({ content: [{ type: "text", text: "ok" }] }, tool.isPartial);
   const { controller } = setup([tool]);
   try {
     const row = (content: string) => " ┃ " + content.padEnd(75) + "  ";
@@ -446,7 +442,7 @@ test("OpenCode-style bash shell has external margins and a shared content origin
 });
 
 test("the whole expandable panel is clickable but margins, selection and drags are not", () => {
-  const tool = bashTool(); tool.result = { content: [{ type: "text", text: Array(11).fill("OUT").join("\n") }] };
+  const tool = bashTool(); tool.updateResult({ content: [{ type: "text", text: Array(11).fill("OUT").join("\n") }] }, tool.isPartial);
   const { root, controller } = setup([new Text("Before", 0, 0), tool]);
   try {
     for (const x of [0, 79]) assert.equal(tool.handleMouse({ ...mouse(1), x }), undefined);
@@ -467,7 +463,7 @@ test("the whole expandable panel is clickable but margins, selection and drags a
 
 test("narrow truncated bash hints cannot reset the panel background or dim foreground", async () => {
   const root = new Root(), tool = bashTool(); root.addChild(tool);
-  tool.result = { content: [{ type: "text", text: Array(11).fill("OUT").join("\n") }] };
+  tool.updateResult({ content: [{ type: "text", text: Array(11).fill("OUT").join("\n") }] }, tool.isPartial);
   const theme: CardTheme = {
     fg: (_role, text) => `\x1b[38;2;180;180;180m${text}\x1b[39m`,
     bg: (_role, text) => `\x1b[48;2;32;32;32m${text}\x1b[49m`,
@@ -482,13 +478,13 @@ test("narrow truncated bash hints cannot reset the panel background or dim foreg
       for (let x = 0; x < 22; x++) {
         const cell = terminal.buffer.active.getLine(y)!.getCell(x)!;
         if (x <= 1 || x >= 21) assert.equal(cell.getBgColorMode(), 0, "exterior and stripe keep default background");
-        else assert.equal(cell.getBgColor(), 0x202020, `painted panel cell (${x},${y})`);
+        else assert.equal(cell.getBgColor(), (await hostCells([cardInputTheme.bg('toolPendingBg', ' ')]))[0]![0]!.bg, `painted panel cell (${x},${y})`);
       }
     }
     const hint = rows.findIndex((row) => plain(row).includes("… (Click"));
     assert.ok(hint >= 0);
     for (let x = 3; x < 3 + visibleWidth(plain(rows[hint]!).slice(3, -2).trimEnd()); x++) {
-      assert.equal(terminal.buffer.active.getLine(hint)!.getCell(x)!.getFgColor(), 0xb4b4b4, "entire hint retains semantic foreground");
+      assert.equal(terminal.buffer.active.getLine(hint)!.getCell(x)!.getFgColor(), (await hostCells([cardInputTheme.fg('dim', 'x')]))[0]![0]!.fg, "entire hint retains semantic foreground");
     }
   } finally { controller.restore(); terminal.dispose(); }
 });
@@ -583,7 +579,7 @@ test('bash reminders: detaching notices does not relax footer guards or interpre
   } finally { controller.restore(); }
 });
 
-test('bash reminders: muted role and other-task errors never determine the command status', () => {
+test('bash reminders: muted role and other-task errors never determine the command status', async () => {
   const root = new Root(), tool = bashTool('true'); root.addChild(tool);
   const fg: [string, string][] = [], bg: string[] = [];
   const theme: CardTheme = { fg: (role, text) => { fg.push([role, text]); return text; }, bg: (role, text) => { bg.push(role); return text; } };
@@ -592,10 +588,10 @@ test('bash reminders: muted role and other-task errors never determine the comma
   try {
     tool.updateResult({ content: [{ type: 'text', text: 'OK' }, { type: 'text', text: note }], details: { exit_code: 0 } });
     assert.deepEqual(bashBody(tool, 100), ['$ true', '', 'OK', '', ...note.split('\n')]);
-    assert.deepEqual(fg.filter(([role]) => role === 'muted').map(([, text]) => text), note.split('\n'));
-    assert.ok(!fg.some(([role]) => role === 'error'));
-    assert.ok(fg.some(([role, text]) => role === 'borderMuted' && text === '┃'));
-    assert.deepEqual([...new Set(bg)], ['toolPendingBg']);
+    for (const line of note.split('\n')) assert.equal(await hasHostInk(tool.render(100), cardInputTheme, 'muted', line), true);
+    assert.equal(await hasHostInk(tool.render(100), cardInputTheme, 'error', '┃'), false);
+    assert.equal(await hasHostInk(tool.render(100), cardInputTheme, 'borderMuted', '┃'), true);
+    assert.deepEqual([fg.length, bg.length], [0, 0]);
     const warm = controller.cacheStats(); fg.length = 0;
     for (let i = 0; i < 100; i++) tool.render(100);
     assert.equal(controller.cacheStats().builds, warm.builds); assert.equal(fg.length, 0, 'warm frames do not parse, wrap or recolor');
@@ -630,18 +626,23 @@ test('bash reminders: independent ten-row previews share expansion, including re
   } finally { controller.restore(); }
 });
 
-test('bash reminders: partial snapshots remain ordinary until final and notice updates replace old text', () => {
+test('bash reminders: partial snapshots remain ordinary until final and notice updates replace old text', async () => {
   const root = new Root(), tool = bashTool('false'); root.addChild(tool);
-  const fg: [string, string][] = [], controller = installTidyUi(root, () => ({ fg: (role, text) => { fg.push([role, text]); return text; } }));
+  const fg: [string, string][] = [];
+  const input = { colors: { ...cardInputTheme.colors, muted: cardInputTheme.colors.error },
+    getFgAnsi: (role: Parameters<typeof cardInputTheme.getFgAnsi>[0]) => cardInputTheme.getFgAnsi(role === 'muted' ? 'error' : role),
+    getBgAnsi: (role: Parameters<typeof cardInputTheme.getBgAnsi>[0]) => cardInputTheme.getBgAnsi(role) };
+  const controller = installTidyUi(root, () => ({ fg: (role, text) => { fg.push([role, text]); return text; } }),
+    { piInput: () => ({ theme: input, mode: cardInputTheme.getColorMode() }) });
   const note = reminder('NOTICE'), result = { content: [{ type: 'text', text: `BODY\n\n[exit code: 7]\n\n${note}` }], details: { exit_code: 7 } };
   const before = structuredClone(result);
   try {
     tool.updateResult(result, true); tool.setExpanded(true);
     assert.deepEqual(bashBody(tool, 100), ['$ false', '', ...result.content[0]!.text.split('\n')]);
-    assert.ok(!fg.some(([role]) => role === 'muted'));
+    assert.equal(await hasHostInk(tool.render(100), cardInputTheme, 'error', 'NOTICE'), false);
     fg.length = 0; tool.updateResult(result);
     assert.deepEqual(bashBody(tool, 100), ['$ false', '', 'BODY', '', '[exit code: 7]', '', ...note.split('\n')]);
-    assert.ok(fg.some(([role]) => role === 'muted')); assert.deepEqual(result, before);
+    assert.equal(await hasHostInk(tool.render(100), cardInputTheme, 'error', 'NOTICE'), true); assert.deepEqual(result, before);
     tool.updateResult({ ...result, content: [{ type: 'text', text: 'NEW BODY' }, { type: 'text', text: reminder('NEW NOTICE') }] });
     assert.deepEqual(bashBody(tool, 100), ['$ false', '', 'NEW BODY', '', '[exit code: 7]', '', ...reminder('NEW NOTICE').split('\n')]);
     tool.updateResult({ content: [{ type: 'text', text: 'NO NOTICE' }] });

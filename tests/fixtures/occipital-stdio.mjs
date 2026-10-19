@@ -1,6 +1,8 @@
 // Transport-only adversarial peer. This is not a native highlighting fixture.
 import { createHash } from 'node:crypto';
 import { closeSync } from 'node:fs';
+import { HIGHLIGHT_LIMITS } from '../../src/occipital/limits.ts';
+const dataBytes = HIGHLIGHT_LIMITS.dataWireBytes;
 
 const mode = process.argv[2] ?? 'echo';
 const replyControlCharacter = String.fromCodePoint(0x85);
@@ -24,10 +26,10 @@ function packet(value) {
   return Buffer.concat([header, body]);
 }
 function reply(request) {
-  if (request.fixtureExecution) return { v: 2, ticket: request.ticket, instance: 'fixture-instance', assets: 'fixture-assets',
+  if (request.fixtureExecution) return { v: 3, ticket: request.ticket, instance: 'fixture-instance', assets: 'fixture-assets',
     status: 'error', error: { code: 'cancelled', execution: request.fixtureExecution } };
   return {
-    v: 2, ticket: request.ticket, instance: 'fixture-instance', assets: 'fixture-assets', status: 'ok',
+    v: 3, ticket: request.ticket, instance: 'fixture-instance', assets: 'fixture-assets', status: 'ok',
     body: {
       pid: process.pid, sequence: ++sequence, cancelled: [...cancelled],
       ...(mode === 'context' ? { cwd: process.cwd(), env: process.env.OCCIPITAL_TEST_VALUE, argument: process.argv[3] } : {}),
@@ -40,10 +42,11 @@ function reply(request) {
 function send(request) { process.stdout.write(packet(reply(request))); }
 function onRequest(request) {
   if ('cancel' in request) {
-    if (request.v !== 2 || Object.keys(request).length !== 2) process.exit(3);
+    if (request.v !== 3 || Object.keys(request).length !== 2) process.exit(3);
     cancelled.push(request.cancel);
     return;
   }
+  if (request.v !== 3) process.exit(3);
   applicationFrames++;
   if (mode === 'wait-only-catalogue') {
     if (request.op === 'describe' || request.op === 'themes.refresh') {
@@ -64,7 +67,7 @@ function onRequest(request) {
     let index = 0;
     const premature = setInterval(() => {
       const ticket = mode === 'premature' ? `b${index}` : 'held';
-      process.stdout.write(packet({ v: 2, ticket, instance: 'fixture-instance', assets: 'fixture-assets', status: 'ok',
+      process.stdout.write(packet({ v: 3, ticket, instance: 'fixture-instance', assets: 'fixture-assets', status: 'ok',
         body: { ...counters, repliesEmitted: ++index } }));
       if (index === (mode === 'premature' ? 9 : 1)) clearInterval(premature);
     }, 150);
@@ -129,7 +132,7 @@ function onRequest(request) {
   }
   if (mode === 'reply-max' || mode === 'control-max') {
     valid.body = { text: '' };
-    const cap = mode === 'reply-max' ? 2 * 1024 * 1024 : 32768;
+    const cap = mode === 'reply-max' ? dataBytes : 32768;
     valid.body.text = 'x'.repeat(cap - Buffer.byteLength(JSON.stringify(valid)));
     process.stdout.write(packet(valid));
     return;
@@ -142,7 +145,7 @@ function onRequest(request) {
   }
   switch (mode) {
     case 'zero': process.stdout.write(Buffer.alloc(4)); break;
-    case 'oversize': { const b = Buffer.alloc(4); b.writeUInt32BE(2 * 1024 * 1024 + 1); process.stdout.write(b); break; }
+    case 'oversize': { const b = Buffer.alloc(4); b.writeUInt32BE(dataBytes + 1); process.stdout.write(b); break; }
     case 'truncated-header': process.stdout.end(Buffer.from([0, 0])); break;
     case 'truncated-body': process.stdout.end(Buffer.from([0, 0, 0, 8, 123])); break;
     case 'eof': process.stdout.end(); break;
@@ -150,7 +153,7 @@ function onRequest(request) {
     case 'json': process.stdout.write(Buffer.from([0, 0, 0, 1, 123])); break;
     case 'unknown': process.stdout.write(packet({ ...valid, ticket: 'unknown' })); break;
     case 'duplicate': process.stdout.write(Buffer.concat([packet(valid), packet(valid)])); break;
-    case 'version': process.stdout.write(packet({ ...valid, v: 1 })); break;
+    case 'version': process.stdout.write(packet({ ...valid, v: 2 })); break;
     case 'instance': process.stdout.write(packet({ ...valid, instance: '' })); break;
     case 'assets': process.stdout.write(packet({ ...valid, assets: 3 })); break;
     case 'status': process.stdout.write(packet({ ...valid, status: 'maybe' })); break;
@@ -161,7 +164,7 @@ function onRequest(request) {
     case 'error-body': process.stdout.write(packet({ ...valid, status: 'error', error: { code: 'busy', execution: 'maybe' } })); break;
     case 'control-oversize': process.stdout.write(packet({ ...valid, body: { text: 'x'.repeat(32768) } })); break;
     case 'changed-instance': process.stdout.write(packet({ ...valid, instance: sequence === 1 ? 'first-instance' : 'other-instance' })); break;
-    case 'application-error': process.stdout.write(packet({ v: 2, ticket: request.ticket, instance: 'fixture-instance', assets: 'fixture-assets', status: 'error', error: { code: 'busy', execution: 'not_started' } })); break;
+    case 'application-error': process.stdout.write(packet({ v: 3, ticket: request.ticket, instance: 'fixture-instance', assets: 'fixture-assets', status: 'error', error: { code: 'busy', execution: 'not_started' } })); break;
     default: send(request);
   }
 }

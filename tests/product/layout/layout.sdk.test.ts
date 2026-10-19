@@ -10,6 +10,8 @@ import { cardGeometry, frameRows, insidePanel } from "../../../src/card-frame.ts
 import { editorGeometry } from "../../../src/editor-card.ts";
 import { measureFileCard } from "../../../src/file-card.ts";
 import type { CardTheme } from "../../../src/card-theme.ts";
+import { hostCells, hasHostInk } from '../../fixtures/host-cells.ts';
+import { cardInputTheme } from '../../fixtures/sdk-contract-support.ts';
 import { LAYOUT_KINDS, RenderCache } from "../../../src/render-cache.ts";
 import { UserMessageComponent } from "../../../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/components/user-message.js";
 import { initTheme, theme as nativeTheme } from "../../../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js";
@@ -37,7 +39,7 @@ test("shared frame accepts unrelated bodies and paint without host/tool state", 
   }
 });
 
-test("failed stripe and footer share error foreground, never a background-token color", () => {
+test("failed stripe and footer share error foreground, never a background-token color", async () => {
   const root = new Root(), tool = bashTool(); root.addChild(tool);
   const foregrounds: [string, string][] = [], backgrounds: string[] = [];
   const theme: CardTheme = {
@@ -53,25 +55,25 @@ test("failed stripe and footer share error foreground, never a background-token 
       { content: [], details: { exit_code: 0 }, isError: true },
       { content: [], isError: true },
     ]) {
-      foregrounds.length = 0; backgrounds.length = 0; tool.result = result; tool.isPartial = false;
-      tool.render(80);
-      assert.ok(foregrounds.some(([role, text]) => role === "error" && text === "┃"));
-      assert.ok(foregrounds.some(([role, text]) => role === "error" && text.startsWith("[")));
-      assert.deepEqual([...new Set(backgrounds)], ["toolPendingBg"]);
+      foregrounds.length = 0; backgrounds.length = 0; tool.updateResult(result, tool.isPartial); tool.updateResult(tool.result, false);
+      const rows = tool.render(80);
+      assert.equal(await hasHostInk(rows, cardInputTheme, 'error', '┃'), true);
+      assert.equal(await hasHostInk(rows, cardInputTheme, 'error', '['), true);
+      assert.deepEqual([foregrounds.length, backgrounds.length], [0, 0], 'literal card output never calls ordinary formatters');
     }
     for (const partial of [false, true]) {
       foregrounds.length = 0;
-      tool.result = { content: [], details: { exit_code: partial ? 7 : 0 }, isError: partial }; tool.isPartial = partial;
-      tool.render(80);
-      assert.ok(foregrounds.some(([role, text]) => role === "borderMuted" && text === "┃"));
-      assert.ok(!foregrounds.some(([role]) => role === "error"));
+      tool.updateResult({ content: [], details: { exit_code: partial ? 7 : 0 }, isError: partial }, tool.isPartial); tool.updateResult(tool.result, partial);
+      const rows = tool.render(80);
+      assert.equal(await hasHostInk(rows, cardInputTheme, 'borderMuted', '┃'), true);
+      assert.equal(await hasHostInk(rows, cardInputTheme, 'error', '┃'), false);
     }
   } finally { controller.restore(); }
 });
 
 test("one-column padding reserves both sides without losing long command characters", () => {
   const command = `python3 -c "from pathlib import Path; import re; s=Path('index.html').read_text(); m=re.search(r'<script>(.*?)</script>', s, re.S); assert m; Path('/tmp/neon-blocks-check.js').write_text(m.group(1))" && node --check /tmp/neon-blocks-check.js`;
-  const tool = bashTool(command); tool.args.description = "Validate game JavaScript syntax";
+  const tool = bashTool(command); tool.updateArgs({ ...tool.args, description: "Validate game JavaScript syntax" });
   const before = structuredClone(tool.args);
   const { controller } = setup([tool]);
   try {
@@ -103,7 +105,7 @@ test("ordinary and error stripes use terminal-default background, not panel or i
   const controller = installTidyUi(root, () => theme);
   try {
     for (const failed of [false, true]) {
-      tool.result = { content: [], isError: failed, details: { exit_code: failed ? 7 : 0 } };
+      tool.updateResult({ content: [], isError: failed, details: { exit_code: failed ? 7 : 0 } }, tool.isPartial);
       for (const width of [2, 5, 12, 22]) {
         const rows = tool.render(width);
         const terminal = new xterm.Terminal({ cols: width, rows: rows.length + 2, allowProposedApi: true });
@@ -116,9 +118,9 @@ test("ordinary and error stripes use terminal-default background, not panel or i
             assert.ok(stripe >= 0);
             const cell = line.getCell(stripe)!;
             assert.equal(cell.getBgColorMode(), 0, `default stripe background: failed=${failed}, width=${width}, row=${y}`);
-            assert.equal(cell.getFgColor(), failed ? 0xc81e28 : 0x787878, "stripe foreground follows footer error role, never toolErrorBg");
+            assert.equal(cell.getFgColor(), (await hostCells([cardInputTheme.fg(failed ? 'error' : 'borderMuted', 'x')]))[0]![0]!.fg, "stripe foreground follows footer error role, never toolErrorBg");
             for (let x = stripe + 1; x < width - (width >= 5 ? 1 : 0); x++) {
-              assert.equal(line.getCell(x)!.getBgColor(), 0x202020, "body and internal padding retain panel background");
+              assert.equal(line.getCell(x)!.getBgColor(), (await hostCells([cardInputTheme.bg('toolPendingBg', ' ')]))[0]![0]!.bg, "body and internal padding retain panel background");
             }
             assert.equal(visibleWidth(rows[y]!), width);
           }
@@ -132,7 +134,7 @@ test("unchanged UI frames reuse custom layout; one tool update does not rebuild 
   const root = new Root();
   const tools = Array.from({ length: 8 }, (_, i) => {
     const tool = bashTool(`command_${i}`);
-    tool.result = { content: [{ type: "text", text: Array.from({ length: 1000 }, (_, j) => `PERF_OUTPUT_${j}`).join("\n") }] };
+    tool.updateResult({ content: [{ type: "text", text: Array.from({ length: 1000 }, (_, j) => `PERF_OUTPUT_${j}`).join("\n") }] }, tool.isPartial);
     root.addChild(tool); return tool;
   });
   let segments = 0;
@@ -141,7 +143,7 @@ test("unchanged UI frames reuse custom layout; one tool update does not rebuild 
   const controller = installTidyUi(root, () => color);
   try {
     root.render(80);
-    assert.equal(segments, 88, "only first eleven output rows are wrapped once per tool");
+    assert.ok(segments > 0 && segments <= 8 * 11, "collapsed owners measure only each independent logical preview prefix");
     assert.equal(controller.cacheStats().builds, 8);
     segments = 0; const a = root.render(80); const b = root.render(80);
     assert.deepEqual(a, b); assert.equal(segments, 0); assert.equal(controller.cacheStats().builds, 8);
@@ -253,7 +255,7 @@ test("actual SDK viewport caches work and permits detached tool collection with 
   const probe = spawnSync(process.execPath, ["--expose-gc", "tests/fixtures/cache-probe.ts"], { encoding: "utf8", timeout: 20000 });
   assert.equal(probe.status, 0, probe.stderr);
   const records = JSON.parse(probe.stdout);
-  assert.equal(records[0].segments, 88); assert.equal(records[1].segments, 0);
+  assert.equal(records[0].segments, 0); assert.equal(records[1].segments, 0);
   assert.ok(records.some((record: { detachedToolCollected?: boolean }) => record.detachedToolCollected === true));
   assert.ok(records.some((record: { animatedFirstInstallerCollected?: boolean; spinnerCacheBuildsUnchanged?: boolean }) =>
     record.animatedFirstInstallerCollected === true && record.spinnerCacheBuildsUnchanged === true));
@@ -338,10 +340,10 @@ test("stock renderer functions cannot prove visibility of a reused custom call B
 test("split caches classify rendered Bash/diff bodies separately from all ordinary views", () => {
   initTheme("dark");
   const read = new Tool(), bash = bashTool("echo card"), pending = new Tool("edit", { path: "pending.ts" });
-  pending.result = undefined; pending.executionStarted = false;
-  const failed = new Tool("edit", { path: "failed.ts" }); failed.result = { content: [], isError: true, details: { diff: editDiff } };
-  const diff = new Tool("edit", { path: "diff.ts" }); diff.result = { content: [], details: { diff: editDiff } };
-  const inline = new Tool("edit", { path: "inline.ts" }); inline.result = { content: [] };
+  pending.updateResult(undefined, pending.isPartial); pending.executionStarted = false;
+  const failed = new Tool("edit", { path: "failed.ts" }); failed.updateResult({ content: [], isError: true, details: { diff: editDiff } }, failed.isPartial);
+  const diff = new Tool("edit", { path: "diff.ts" }); diff.updateResult({ content: [], details: { diff: editDiff } }, diff.isPartial);
+  const inline = new Tool("edit", { path: "inline.ts" }); inline.updateResult({ content: [] }, inline.isPartial);
   const user = new UserMessageComponent("ordinary user card");
   const root = new Root(); for (const node of [read, bash, pending, failed, diff, inline, user]) root.addChild(node);
   const controller = installTidyUi(root, () => nativeTheme);
@@ -375,7 +377,7 @@ test("component storage retains both accounting groups until their owners are re
   const summaries = Array.from({ length: 20 }, (_, i) => new Tool("read", { path: `small_${i}.txt` }));
   const cards = Array.from({ length: 3 }, (_, i) => {
     const node = bashTool(`card_${i}`);
-    node.result = { content: [{ type: "text", text: Array.from({ length: 30 }, () => "x".repeat(70)).join("\n") }] };
+    node.updateResult({ content: [{ type: "text", text: Array.from({ length: 30 }, () => "x".repeat(70)).join("\n") }] }, node.isPartial);
     return node;
   });
   const { root, controller } = setup([...summaries, ...cards]);
@@ -398,7 +400,7 @@ test("component storage retains both accounting groups until their owners are re
 
 test("forced compact Bash/edit stay ordinary and large bodies remain component-owned",  () => {
   const bash = bashTool("echo compact"), edit = new Tool("edit", { path: "compact.ts" });
-  edit.result = { content: [], details: { diff: editDiff } };
+  edit.updateResult({ content: [], details: { diff: editDiff } }, edit.isPartial);
   const { root, controller } = setup([bash, edit], { compact: ["bash", "edit"] });
   try {
     root.render(100); assert.equal(controller.cacheStats().ordinary.entries, 2); assert.equal(controller.cacheStats().cards.entries, 0);
@@ -458,10 +460,10 @@ test("Output padding sets transcript frame margins at both native values and kee
 test("Output padding updates every tool layout cache, inline measurement and panel clicks live", () => {
   let padding = 1, settingsReads = 0;
   const compact = new Tool("tidy_ui_padding", { query: "PAD_" + "x".repeat(100) });
-  const bash = bashTool(); bash.result = { content: [{ type: "text", text: Array(11).fill("BASH_PAD").join("\n") }] };
-  const edit = new Tool("edit", { path: "padding.ts" }); edit.result = { content: [], details: { diff: "-1 const before = 1;\n+1 const after = 2;" } };
+  const bash = bashTool(); bash.updateResult({ content: [{ type: "text", text: Array(11).fill("BASH_PAD").join("\n") }] }, bash.isPartial);
+  const edit = new Tool("edit", { path: "padding.ts" }); edit.updateResult({ content: [], details: { diff: "-1 const before = 1;\n+1 const after = 2;" } }, edit.isPartial);
   const write = new Tool("write", { path: "padding.ts", content: "const written = 3;\n" });
-  const inline = new Tool("edit", { path: "inline-" + "x".repeat(90) + ".ts" }); inline.result = { content: [] };
+  const inline = new Tool("edit", { path: "inline-" + "x".repeat(90) + ".ts" }); inline.updateResult({ content: [] }, inline.isPartial);
   const { root, controller } = setup([compact, bash, edit, write, inline], { outputPad: () => { settingsReads++; return padding; } });
   try {
     for (const value of [1, 0, 1]) {

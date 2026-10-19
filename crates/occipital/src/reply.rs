@@ -1,26 +1,8 @@
 //! Shared JSON replies; adapters hand these exact encoded bytes to their transport.
-use crate::protocol::{Chunk, Fault, ASSETS, PROTOCOL_VERSION};
+use crate::protocol::Fault;
 use serde::Serialize;
 
 pub const REPLY_BYTES: usize = crate::limits::WIRE_BYTES;
-
-#[derive(Debug, Serialize)]
-pub struct SourceReply {
-    pub key: String,
-    pub generation: u32,
-    pub source_version: u32,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub lease: Option<String>,
-    pub complete: bool,
-    #[serde(flatten)]
-    pub chunk: Chunk,
-}
-#[derive(Debug, Serialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum SourceBody {
-    Source { sources: Vec<SourceReply> },
-    Closed,
-}
 
 #[derive(Clone, Copy, Debug, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -61,44 +43,49 @@ pub struct Reply<'a, T> {
     pub outcome: Outcome<T>,
 }
 impl<'a, T: Serialize> Reply<'a, T> {
-    pub fn ok(ticket: &'a str, instance: &'a str, body: T) -> Self {
-        Self {
-            v: PROTOCOL_VERSION,
-            ticket,
-            instance,
-            assets: ASSETS,
-            outcome: Outcome::Ok { body },
-        }
-    }
-    pub fn error(ticket: &'a str, instance: &'a str, fault: Fault) -> Self {
-        Self {
-            v: PROTOCOL_VERSION,
-            ticket,
-            instance,
-            assets: ASSETS,
-            outcome: Outcome::Error {
-                error: fault.into(),
-            },
-        }
-    }
     /// The bounded writer rejects during encoding, not after a giant Vec is built.
     pub fn encode(&self) -> Result<Vec<u8>, Fault> {
         self.encode_with_cap(REPLY_BYTES)
     }
     pub(crate) fn encode_with_cap(&self, cap: usize) -> Result<Vec<u8>, Fault> {
+        self.encode_bounded(cap, None)
+    }
+    /// The owner retains this credit alongside the encoded buffer until transport
+    /// settlement. Growth adds actual buffer capacity, not a whole reply ceiling.
+    pub fn encode_with_credit(
+        &self,
+        credit: &mut crate::credit::Credit,
+        cap: usize,
+    ) -> Result<Vec<u8>, Fault> {
+        self.encode_bounded(cap.min(REPLY_BYTES), Some(credit))
+    }
+    fn encode_bounded(
+        &self,
+        cap: usize,
+        credit: Option<&mut crate::credit::Credit>,
+    ) -> Result<Vec<u8>, Fault> {
+        let base = credit.as_ref().map_or(0, |credit| credit.bytes());
         let mut writer = LimitedWriter {
             bytes: Vec::new(),
             cap,
+            credit,
+            base,
+            failure: "reply_limit",
         };
-        serde_json::to_writer(&mut writer, self).map_err(|_| Fault::started("reply_limit"))?;
+        if serde_json::to_writer(&mut writer, self).is_err() {
+            return Err(Fault::started(writer.failure));
+        }
         Ok(writer.bytes)
     }
 }
-struct LimitedWriter {
+struct LimitedWriter<'a> {
     bytes: Vec<u8>,
     cap: usize,
+    credit: Option<&'a mut crate::credit::Credit>,
+    base: usize,
+    failure: &'static str,
 }
-impl std::io::Write for LimitedWriter {
+impl std::io::Write for LimitedWriter<'_> {
     fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
         if bytes.len() > self.cap.saturating_sub(self.bytes.len()) {
             return Err(std::io::Error::other("reply byte limit"));
@@ -108,6 +95,13 @@ impl std::io::Write for LimitedWriter {
             let capacity = needed
                 .max(self.bytes.capacity().saturating_mul(2))
                 .min(self.cap);
+            if let Some(credit) = &mut self.credit {
+                let total = self.base.checked_add(capacity);
+                if total.is_none_or(|total| credit.resize(total).is_err()) {
+                    self.failure = "data_limit";
+                    return Err(std::io::Error::other("reply allocation credit"));
+                }
+            }
             self.bytes.reserve_exact(capacity - self.bytes.len());
         }
         self.bytes.extend_from_slice(bytes);
@@ -120,7 +114,6 @@ impl std::io::Write for LimitedWriter {
 
 #[cfg(test)]
 mod bounded_encoding_tests {
-    use super::*;
     use serde_json::json;
 
     #[test]
@@ -128,15 +121,16 @@ mod bounded_encoding_tests {
         // Exercise the production writer with a scaled cap, not a 64 MiB corpus.
         let cap = 2048;
         for text in ["a".repeat(cap), "\u{0}".repeat(cap / 6)] {
-            let error = Reply::ok("ticket", "instance", json!({"text":text}))
+            let error = crate::semantic_reply::ok("ticket", "instance", json!({"text":text}))
                 .encode_with_cap(cap)
                 .unwrap_err();
             assert_eq!(error.code, "reply_limit");
             assert!(error.started);
         }
-        let bytes = Reply::ok("ticket", "instance", json!({"text":"a".repeat(cap-512)}))
-            .encode_with_cap(cap)
-            .unwrap();
+        let bytes =
+            crate::semantic_reply::ok("ticket", "instance", json!({"text":"a".repeat(cap-512)}))
+                .encode_with_cap(cap)
+                .unwrap();
         assert!(bytes.len() <= cap);
     }
 }

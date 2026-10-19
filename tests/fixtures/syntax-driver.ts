@@ -15,6 +15,7 @@ import { SyntaxClient } from '../../src/occipital/client.ts';
 import { SyntaxRuntime } from '../../src/syntax/runtime.ts';
 import { ExtensionSettings } from '../../src/settings.ts';
 import { matchesKey } from '@earendil-works/pi-tui';
+import { observeSyntaxLocalWork, observeSyntaxCards } from './syntax-local-work.ts';
 
 export default function syntaxDriver(pi: ExtensionAPI) {
   const output = process.env.TIDY_UI_TEST_OUTPUT!, binary = process.env.TIDY_UI_TEST_OCCIPITAL_BIN!;
@@ -28,9 +29,13 @@ export default function syntaxDriver(pi: ExtensionAPI) {
     const preferences = join(getAgentDir(), 'extensions', 'pi-tidy-ui');
     mkdirSync(preferences, { recursive: true }); writeFileSync(join(preferences, 'config.json'), process.env.TIDY_UI_TEST_SYNTAX_CONFIG);
   }
+  const record = createEventRecorder(output);
+  const localWork = observeSyntaxLocalWork();
+  const cardObservations = process.env.TIDY_UI_TEST_CARD_OBSERVE === '1' ? observeSyntaxCards(event => record({ ...event,
+    phase: existsSync(join(output, 'syntax-theme-phase')) ? readFileSync(join(output, 'syntax-theme-phase'), 'utf8') : 'initial' })) : undefined;
   const transports: StdioTransport[] = [], sharedTransports: SharedTransport[] = [];
-  const counts = { constructions: 0, acquisitions: 0, downloads: 0, piCaptures: 0, piBridges: 0, describeReplies: 0, refreshReplies: 0, sharedAttempts: 0, heldReplies: 0, deliveredReplies: 0, heldBashReplies: 0, orderDispatches: 0, themeSaves: 0 };
-  let pendingHeldReplies = 0;
+  const counts = { constructions: 0, acquisitions: 0, downloads: 0, piCaptures: 0, piBridges: 0, describeReplies: 0, refreshReplies: 0, sharedAttempts: 0, heldReplies: 0, deliveredReplies: 0, heldBashReplies: 0, orderDispatches: 0, themeSaves: 0, sourceRequests: 0, styleRequests: 0, closeRequests: 0, heldStyleReplies: 0, deliveredStyleReplies: 0 };
+  let pendingHeldReplies = 0, healthFaultPending = process.env.TIDY_UI_TEST_RUNTIME_HEALTH === '1';
   let runtime: WeakRef<SyntaxRuntime> | undefined, client: WeakRef<SyntaxClient> | undefined, controller = 0;
   let offset = 0;
   const timers = new Map<ReturnType<typeof setTimeout>, { at: number; callback(): void }>();
@@ -52,7 +57,7 @@ export default function syntaxDriver(pi: ExtensionAPI) {
     };
   }
   const attached = SyntaxRuntime.prototype.attach, captured = SourceController.prototype.capturePiSource,
-    bridged = SourceController.prototype.installPiBridge, fetch = globalThis.fetch;
+    bridged = SourceController.prototype.adoptPiFlat, fetch = globalThis.fetch;
   const brokerStats = () => client?.deref()?.broker.stats();
   const clientSnapshot = SyntaxClient.prototype.snapshot;
   SyntaxClient.prototype.snapshot = function () { client = new WeakRef(this); return clientSnapshot.call(this); };
@@ -60,17 +65,21 @@ export default function syntaxDriver(pi: ExtensionAPI) {
     if (runtime?.deref() !== this) { runtime = new WeakRef(this); controller++; }
     return attached.apply(this, args);
   };
-  SourceController.prototype.capturePiSource = function (...args) { counts.piCaptures++; return captured.apply(this, args); };
-  SourceController.prototype.installPiBridge = function (...args) { counts.piBridges++; return bridged.apply(this, args); };
+  SourceController.prototype.capturePiSource = function (...args) {
+    counts.piCaptures++;
+    const accepted = captured.apply(this, args);
+    if (process.env.TIDY_UI_TEST_HIGHLIGHTING_LIMITS === '1') record({ type: 'highlighting_limits_pi_capture', key: args[0], version: args[1], text: args[2], language: args[3], accepted });
+    return accepted;
+  };
+  SourceController.prototype.adoptPiFlat = function (...args) { counts.piBridges++; return bridged.apply(this, args); };
   globalThis.fetch = async () => { counts.downloads++; throw new Error('No network in the syntax fixture'); };
   const snapshot = () => {
     const current = runtime?.deref();
     client = undefined;
     const currentClient = current?.snapshot();
-    return { node: process.version, controller, counts: { ...counts }, pendingHeldReplies, client: currentClient, broker: brokerStats(),
+    return { node: process.version, controller, counts: { ...counts }, localWork: localWork.snapshot(), pendingHeldReplies, client: currentClient, broker: brokerStats(),
       source: current?.sources.stats(), transports: transports.map(t => t.stats()), sharedTransports: sharedTransports.map(t => t.stats()) };
   };
-  const record = createEventRecorder(output);
   const uiNotices = new Map<ExtensionContext['ui'], ExtensionContext['ui']['notify']>();
   pi.on('session_start', (_event, ctx) => {
     if (process.env.TIDY_UI_TEST_THEME_PREVIEW === '1') {
@@ -90,11 +99,11 @@ export default function syntaxDriver(pi: ExtensionAPI) {
     if (uiNotices.has(ctx.ui)) return;
     const notify = ctx.ui.notify; uiNotices.set(ctx.ui, notify);
     ctx.ui.notify = (message, level) => {
-      if (message.startsWith('Syntax')) record({ type: 'syntax_notify', message, level });
+      if (message.startsWith('Syntax') || (process.env.TIDY_UI_TEST_RUNTIME_HEALTH === '1' || process.env.TIDY_UI_TEST_EMPTY_BASH === '1') && message.startsWith('pi-tidy-ui:')) record({ type: 'syntax_notify', message, level });
       notify.call(ctx.ui, message, level);
     };
   });
-  tidyUi(pi, { syntax(ctx: ExtensionContext) {
+  tidyUi(pi, { logging: process.env.TIDY_UI_TEST_RUNTIME_HEALTH === '1' ? false : undefined, syntax(ctx: ExtensionContext) {
     counts.constructions++;
     const options = createSyntaxOptions(ctx, release), acquire = options.provider.acquireOwned;
     return { ...options, provider: { ...(process.env.TIDY_UI_TEST_SYNTAX_SHARED === '1' ? { clock } : {}),
@@ -127,16 +136,31 @@ export default function syntaxDriver(pi: ExtensionAPI) {
         transport.request = async (payload, opts) => {
           const ordinal = payload.op === 'highlight' && process.env.TIDY_UI_TEST_SYNTAX_ORDER_GATE === '1' ? ++counts.orderDispatches : 0;
           if (ordinal) record({ type: 'syntax_order_dispatch', ordinal, payload });
-          const phase = process.env.TIDY_UI_TEST_THEME_OBSERVE === '1' && payload.op === 'highlight'
+          const kind = payload.op === 'highlight' || payload.op === 'stream.open' || payload.op === 'stream.append' ? 'source'
+            : payload.op === 'styles.resolve' ? 'style' : payload.op === 'stream.close' ? 'close' : undefined;
+          const phase = process.env.TIDY_UI_TEST_THEME_OBSERVE === '1'
             ? (existsSync(join(output, 'syntax-theme-phase')) ? readFileSync(join(output, 'syntax-theme-phase'), 'utf8') : 'initial') : undefined;
-          if (phase) record({ type: 'syntax_theme_dispatch', phase, payload, jobs: runtime?.deref()?.sources.stats().globalUnsettledJobs });
-          const reply = await request(payload, opts);
-          if (phase) record({ type: 'syntax_theme_reply', phase, payload, reply });
-          if (phase === 'held-preview' && process.env.TIDY_UI_TEST_THEME_PREVIEW === '1') {
-            record({ type: 'syntax_preview_reply_held', payload });
+          if (kind) {
+            if (kind === 'source') counts.sourceRequests++; else if (kind === 'style') counts.styleRequests++; else counts.closeRequests++;
+            record({ type: 'syntax_native_dispatch', kind, phase, payload, jobs: runtime?.deref()?.sources.stats().globalUnsettledJobs });
+          }
+          if (phase && kind === 'source') record({ type: 'syntax_theme_dispatch', phase, payload, jobs: runtime?.deref()?.sources.stats().globalUnsettledJobs });
+          let reply = await request(payload, opts);
+          if (healthFaultPending && kind === 'source' && Array.isArray(payload.sources)
+            && payload.sources.some(source => source.text.includes('THEME_WRITE'))) {
+            healthFaultPending = false; reply = {}; record({ type: 'runtime_health_invalid_reply' });
+          }
+          if (kind) record({ type: 'syntax_native_reply', kind, phase, payload, reply });
+          if (phase && kind === 'source') record({ type: 'syntax_theme_reply', phase, payload, reply });
+          if (kind === 'style' && phase === 'held-preview' && process.env.TIDY_UI_TEST_THEME_PREVIEW === '1') {
+            counts.heldStyleReplies++; pendingHeldReplies++;
+            record({ type: 'syntax_preview_reply_held', payload, reply });
             // A fulfilled native result is deliberately delivered after rollback,
             // even if its former controller authority was cancelled meanwhile.
-            while (!existsSync(join(output, 'syntax-preview-go'))) await pause(20);
+            try {
+              while (!existsSync(join(output, 'syntax-preview-go'))) await pause(20);
+              counts.deliveredStyleReplies++;
+            } finally { pendingHeldReplies--; }
           }
           if (ordinal) {
             pendingHeldReplies++; record({ type: 'syntax_order_reply_held', ordinal });
@@ -184,8 +208,9 @@ export default function syntaxDriver(pi: ExtensionAPI) {
       await Promise.all(closes);
       writeFileSync(join(output, 'syntax-shutdown.json'), JSON.stringify(snapshot(), null, 2));
     } finally {
+      cardObservations?.restore(); localWork.restore();
       SyntaxRuntime.prototype.attach = attached; SourceController.prototype.capturePiSource = captured;
-      SourceController.prototype.installPiBridge = bridged;
+      SourceController.prototype.adoptPiFlat = bridged;
       SyntaxClient.prototype.snapshot = clientSnapshot; globalThis.fetch = fetch;
       if (process.env.TIDY_UI_TEST_THEME_PREVIEW === '1') ExtensionSettings.prototype.update = updateSettings;
       stopPreviewProbe?.(); stopPreviewProbe = undefined;

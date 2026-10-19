@@ -1,14 +1,11 @@
-//! Immutable native profiles; Pi roles never carry the client's mutable theme colors.
-use crate::protocol::{Fault, Role, WireStyle, ASSETS};
+//! Immutable admitted native theme definitions.
+use crate::protocol::Fault;
 use sha2::{Digest, Sha256};
 use std::{
     collections::HashMap,
     sync::{Arc, Mutex, OnceLock},
 };
-use syntect::{
-    highlighting::{Color, Highlighter, Style, Theme},
-    parsing::{Scope, ScopeStack},
-};
+use syntect::highlighting::Theme;
 use two_face::theme::{EmbeddedLazyThemeSet, LazyThemeSet};
 
 #[derive(Clone)]
@@ -17,10 +14,17 @@ pub struct Profile {
     pub fingerprint: String,
     pub theme: Option<Arc<Theme>>,
 }
+// Keep bundled definition fingerprints stable across the internal v2 removal.
+pub(crate) const ASSETS: &str =
+    "syntect/5.3.0:two-face/0.5.2+bat-0.26.1:roles/v1:line-prefix/65536/v1";
 static THEMES: OnceLock<LazyThemeSet> = OnceLock::new();
 static PROFILES: OnceLock<Mutex<HashMap<String, Arc<Profile>>>> = OnceLock::new();
 
 impl Profile {
+    /// Native definition view.
+    pub fn native_theme(&self) -> Option<&Theme> {
+        self.theme.as_deref()
+    }
     pub fn resolve(name: &str) -> Result<Arc<Self>, Fault> {
         if name.len() > 128 || name.chars().any(char::is_control) {
             return Err(Fault::not_started("profile_unavailable"));
@@ -32,9 +36,7 @@ impl Profile {
         if let Some(profile) = cache.get(name) {
             return Ok(profile.clone());
         }
-        let theme = if name == "pi" {
-            None
-        } else {
+        let theme = {
             let native = name
                 .strip_prefix("syntect:")
                 .ok_or(Fault::not_started("profile_unavailable"))?;
@@ -43,7 +45,7 @@ impl Profile {
                 .get(native)
                 .ok_or(Fault::not_started("profile_unavailable"))?;
             validate_theme(theme)?;
-            Some(Arc::new(theme.clone()))
+            Arc::new(theme.clone())
         };
         let profile = Arc::new(Self {
             name: name.into(),
@@ -51,7 +53,7 @@ impl Profile {
                 "{:x}",
                 Sha256::digest(format!("{ASSETS}:{name}").as_bytes())
             ),
-            theme,
+            theme: Some(theme),
         });
         cache.insert(name.into(), profile.clone());
         Ok(profile)
@@ -76,7 +78,7 @@ impl Profile {
     }
 }
 
-/// Bound selector preparation. Theme backgrounds never replace pi-tidy-ui's panel/diff paint.
+/// Bound native selector preparation.
 /// Foreground conversion follows the bat0.26.1 conventions used by the bundled assets.
 pub const THEME_SELECTORS: usize = 512;
 pub const THEME_PATHS: usize = 4096;
@@ -107,95 +109,4 @@ pub(crate) fn validate_theme(theme: &Theme) -> Result<(), Fault> {
         }
     }
     Ok(())
-}
-
-pub fn native_style(style: Style) -> Result<WireStyle, Fault> {
-    let Color { r, g, b, a } = style.foreground;
-    let attributes = style.font_style.bits();
-    Ok(match a {
-        0 => WireStyle::Indexed {
-            index: r,
-            attributes,
-        },
-        1 => WireStyle::TerminalDefault {
-            terminal_default: true,
-            attributes,
-        },
-        _ => WireStyle::Rgb {
-            rgb: [r, g, b],
-            attributes,
-        },
-    })
-}
-
-pub fn pi_styles() -> Vec<WireStyle> {
-    [
-        Role::Plain,
-        Role::SyntaxComment,
-        Role::SyntaxKeyword,
-        Role::SyntaxString,
-        Role::SyntaxNumber,
-        Role::SyntaxType,
-        Role::SyntaxFunction,
-        Role::SyntaxVariable,
-        Role::SyntaxOperator,
-        Role::SyntaxPunctuation,
-    ]
-    .into_iter()
-    .map(|role| WireStyle::Pi { role })
-    .collect()
-}
-
-/// Prefix scopes are interned once. No per-token scope-string construction or regex matching.
-pub fn category(stack: &ScopeStack) -> Role {
-    static RULES: OnceLock<Vec<(Scope, Role)>> = OnceLock::new();
-    let rules = RULES.get_or_init(|| {
-        [
-            ("punctuation.definition.string", Role::SyntaxString),
-            ("punctuation.definition.comment", Role::SyntaxComment),
-            ("constant.character.escape", Role::SyntaxString),
-            ("keyword.operator", Role::SyntaxOperator),
-            ("storage.type.function", Role::SyntaxKeyword),
-            ("support.function.builtin", Role::SyntaxType),
-            ("comment", Role::SyntaxComment),
-            ("string", Role::SyntaxString),
-            ("constant.numeric", Role::SyntaxNumber),
-            ("constant.language", Role::SyntaxNumber),
-            ("constant.character", Role::SyntaxNumber),
-            ("entity.name.function", Role::SyntaxFunction),
-            ("support.function", Role::SyntaxFunction),
-            ("entity.name.type", Role::SyntaxType),
-            ("entity.name.class", Role::SyntaxType),
-            ("support.type", Role::SyntaxType),
-            ("support.class", Role::SyntaxType),
-            ("storage.type.primitive", Role::SyntaxType),
-            ("storage.type", Role::SyntaxKeyword),
-            ("variable", Role::SyntaxVariable),
-            ("entity.other.attribute-name", Role::SyntaxVariable),
-            ("keyword", Role::SyntaxKeyword),
-            ("storage.modifier", Role::SyntaxKeyword),
-            ("entity.name.tag", Role::SyntaxPunctuation),
-            ("punctuation", Role::SyntaxPunctuation),
-            ("meta.preprocessor", Role::SyntaxKeyword),
-            ("meta.annotation", Role::SyntaxKeyword),
-        ]
-        .into_iter()
-        .map(|(scope, role)| (Scope::new(scope).expect("static role scope"), role))
-        .collect()
-    });
-    for scope in stack.as_slice().iter().rev() {
-        if let Some((_, role)) = rules.iter().find(|(prefix, _)| prefix.is_prefix_of(*scope)) {
-            return *role;
-        }
-    }
-    Role::Plain
-}
-
-pub fn default_style(profile: &Profile) -> WireStyle {
-    profile
-        .theme
-        .as_ref()
-        .map_or(WireStyle::Pi { role: Role::Plain }, |theme| {
-            native_style(Highlighter::new(theme).get_default()).expect("validated theme foreground")
-        })
 }

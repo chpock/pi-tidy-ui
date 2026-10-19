@@ -8,7 +8,7 @@ import { Container, Root, Text, Tool, bashTool, color, extensionHarness, install
 
 test("native rich overrides, image, hidden and expanded tools delegate exactly", () => {
   const tools = ["bash", "powershell", "write", "edit"].map((name) => new Tool(name));
-  const image = new Tool(); image.result = { content: [{ type: "image" }] };
+  const image = new Tool(); image.updateResult({ content: [{ type: "image" }] }, image.isPartial);
   const expanded = new Tool(); expanded.expanded = true;
   const hidden = new Tool(); hidden.hideComponent = true;
   const { controller, original } = setup([...tools, image, expanded, hidden], { cards: ["edit"] });
@@ -106,7 +106,7 @@ test("extension lifecycle removes the temporary widget, restores on shutdown, an
     assert.equal(h.widgetComponents.size, 0, "off removes the persistent status widget");
     await setAppearance(h.commands.get('tidy-ui')!.handler, h.ctx, true);
     assert.notEqual(Container.prototype.addChild, before);
-    assert.match(h.root.render(80).at(-1)!, /read a\.txt/);
+    assert.match(plain(h.root.render(80).at(-1)!), /read a\.txt/);
     await h.commands.get("tidy-ui")!.handler("invalid", h.ctx);
     assert.match(h.notices.at(-1)!, /Usage:/);
   } finally { await h.events.get("session_shutdown")!({}, h.ctx); }
@@ -161,7 +161,7 @@ test("empty self-rendered tools remain hidden even when hideComponent is false a
 
 test("card motion and focus keep neutral paint without replacing native input or requesting render", () => {
   const root = new Root(), tool = bashTool(); root.addChild(tool);
-  tool.result = { content: [{ type: "text", text: Array(11).fill("OUT").join("\n") }] };
+  tool.updateResult({ content: [{ type: "text", text: Array(11).fill("OUT").join("\n") }] }, tool.isPartial);
   const native = root.handleViewportInput, descriptor = Object.getOwnPropertyDescriptor(root, "handleViewportInput");
   const listeners = [...root.listeners], symbols = Object.getOwnPropertySymbols(root);
   const styles: Parameters<NonNullable<CardTheme["style"]>>[1][] = [];
@@ -186,7 +186,7 @@ test("card motion and focus keep neutral paint without replacing native input or
     }
     assert.equal(root.requests, requests, "pointer events do not request pi-tidy-ui redraws");
     assert.equal(tool.expanded, false); assert.deepEqual(styles, []);
-    assert.deepEqual([...new Set(backgrounds)], ["toolPendingBg"]);
+    assert.deepEqual(backgrounds, [], 'literal card cells never call ordinary background formatters');
     controller.restore();
     assert.equal(root.handleViewportInput, native); assert.deepEqual([...root.listeners], listeners);
     assert.deepEqual(Object.getOwnPropertyDescriptor(root, "handleViewportInput"), descriptor);
@@ -276,7 +276,7 @@ test("renderer replacement preserves cards and clicks without touching any nativ
     const inputs = roots.map((root) => Reflect.get(root, "handleViewportInput"));
     const descriptors = roots.map((root) => Object.getOwnPropertyDescriptor(root, "handleViewportInput"));
     const symbols = roots.map((root) => Object.getOwnPropertySymbols(root));
-    const tool = bashTool(); tool.result = { content: [{ type: "text", text: Array(11).fill("OUT").join("\n") }] };
+    const tool = bashTool(); tool.updateResult({ content: [{ type: "text", text: Array(11).fill("OUT").join("\n") }] }, tool.isPartial);
     current.addChild(tool);
     const controller = installTidyUi(reference, () => color);
     try {

@@ -4,25 +4,27 @@ import test from 'node:test';
 import type { SyntaxTheme } from '../../../src/settings.ts';
 import type { ProfileDescription } from '../../../src/occipital/protocol.ts';
 import { resolveTheme } from '../../../src/occipital/profiles.ts';
+import { createPiRuleDefinition } from '../../../src/syntax/pi-rules.ts';
+import { fingerprintRules } from '../../../src/occipital/style-rules.ts';
 
-const pi = { id: 'pi', label: 'Pi palette', fingerprint: 'a'.repeat(64) };
+const pi = { id: 'pi', label: 'Pi palette', fingerprint: fingerprintRules(createPiRuleDefinition()) };
 const native = { id: 'custom:opaque-17', label: 'Independent theme', fingerprint: 'b'.repeat(64) };
 
-test('resolveTheme: default Pi selection uses the exact pi profile, not catalogue order or label', () => {
+test('resolveTheme: default Pi selection uses local declarations, not catalogue order or label', () => {
   const impostor = { id: 'bundled:Pi', label: 'Pi palette', fingerprint: 'c'.repeat(64) };
-  assert.deepEqual(resolveTheme({ kind: 'pi' }, [impostor, native, pi]), {
+  assert.deepEqual(resolveTheme({ kind: 'pi' }, [impostor, native]), {
     selected: { kind: 'pi' }, effective: pi, missing: false,
   });
 });
 
 test('resolveTheme: present independent selection uses its exact ID and current fingerprint', () => {
   const selected: SyntaxTheme = { kind: 'occipital', id: native.id };
-  assert.deepEqual(resolveTheme(selected, [pi, native]), { selected, effective: native, missing: false });
+  assert.deepEqual(resolveTheme(selected, [native]), { selected, effective: native, missing: false });
 });
 
 test('resolveTheme: absent independent selection falls back to pi without resetting the preference', () => {
   const selected: SyntaxTheme = { kind: 'occipital', id: native.id };
-  assert.deepEqual(resolveTheme(selected, [pi]), { selected, effective: pi, missing: true });
+  assert.deepEqual(resolveTheme(selected, []), { selected, effective: pi, missing: true });
   assert.deepEqual(selected, { kind: 'occipital', id: native.id });
 });
 
@@ -30,14 +32,14 @@ for (const selected of [{ kind: 'pi' }, { kind: 'occipital', id: native.id }] as
   test(`resolveTheme: unready provider preserves ${selected.kind} selection without reporting a missing theme`, () => {
     const result = resolveTheme(selected, undefined);
     assert.deepEqual(result.selected, selected);
-    assert.equal(result.effective, undefined);
+    assert.deepEqual(result.effective, selected.kind === 'pi' ? pi : undefined);
     assert.equal(result.missing, false);
   });
 }
 
 test('resolveTheme: opaque IDs are exact; labels, prefixes and case do not identify a theme', () => {
   const arbitrary = { id: 'x/Theme:%2F#17', label: 'pi', fingerprint: 'c'.repeat(64) };
-  const profiles: readonly ProfileDescription[] = [arbitrary, { ...native, label: arbitrary.id }, pi];
+  const profiles: readonly ProfileDescription[] = [arbitrary, { ...native, label: arbitrary.id }];
   const selected: SyntaxTheme = { kind: 'occipital', id: arbitrary.id };
   assert.deepEqual(resolveTheme(selected, profiles), { selected, effective: arbitrary, missing: false });
   for (const id of ['PI', 'x/theme:%2F#17', 'x/Theme:', native.label, 'Pi palette']) {
@@ -50,8 +52,8 @@ test('resolveTheme: opaque IDs are exact; labels, prefixes and case do not ident
 test('resolveTheme: later catalogue availability restores the saved independent selection', () => {
   const selected: SyntaxTheme = { kind: 'occipital', id: native.id };
   const unready = resolveTheme(selected, undefined);
-  const missing = resolveTheme(selected, [pi]);
-  const available = resolveTheme(missing.selected, [pi, native]);
+  const missing = resolveTheme(selected, []);
+  const available = resolveTheme(missing.selected, [native]);
   assert.deepEqual(unready.selected, selected);
   assert.deepEqual(missing, { selected, effective: pi, missing: true });
   assert.deepEqual(available, { selected, effective: native, missing: false });
@@ -59,9 +61,9 @@ test('resolveTheme: later catalogue availability restores the saved independent 
 
 test('resolveTheme: same-ID fingerprint replacement takes effect without changing the preference or old result', () => {
   const selected: SyntaxTheme = { kind: 'occipital', id: native.id };
-  const before = resolveTheme(selected, [pi, native]);
+  const before = resolveTheme(selected, [native]);
   const replacement = { ...native, fingerprint: 'd'.repeat(64) };
-  const after = resolveTheme(selected, [pi, replacement]);
+  const after = resolveTheme(selected, [replacement]);
   assert.deepEqual(before, { selected, effective: native, missing: false });
   assert.deepEqual(after, { selected, effective: replacement, missing: false });
   assert.notEqual(after.effective!.fingerprint, before.effective!.fingerprint);
@@ -70,16 +72,16 @@ test('resolveTheme: same-ID fingerprint replacement takes effect without changin
 test('resolveTheme: unchanged or unrelated refresh preserves effective identity for both selections', () => {
   const unrelated = { id: 'bundled:other', label: native.label, fingerprint: 'c'.repeat(64) };
   for (const selected of [{ kind: 'pi' }, { kind: 'occipital', id: native.id }] as const) {
-    const before = resolveTheme(selected, [pi, native, unrelated]);
-    assert.deepEqual(resolveTheme(selected, [pi, native, unrelated]), before);
-    assert.deepEqual(resolveTheme(selected, [{ ...unrelated, fingerprint: 'e'.repeat(64) }, native, pi]), before);
+    const before = resolveTheme(selected, [native, unrelated]);
+    assert.deepEqual(resolveTheme(selected, [native, unrelated]), before);
+    assert.deepEqual(resolveTheme(selected, [{ ...unrelated, fingerprint: 'e'.repeat(64) }, native]), before);
   }
 });
 
 test('resolveTheme: frozen caller inputs are read-only and snapshots contain only contract primitives', () => {
   const selected = Object.freeze({ kind: 'occipital', id: native.id, extra: { caller: true } } as const);
   const profile = Object.freeze({ ...native, extra: { caller: true } });
-  const profiles = Object.freeze([Object.freeze({ ...pi }), profile]);
+  const profiles = Object.freeze([profile]);
   const result = resolveTheme(selected, profiles);
   assert.deepEqual(result, { selected: { kind: 'occipital', id: native.id }, effective: native, missing: false });
   assert.notStrictEqual(result.selected, selected);
@@ -89,12 +91,12 @@ test('resolveTheme: frozen caller inputs are read-only and snapshots contain onl
 test('resolveTheme: mutations cannot cross ownership boundaries in either direction, including fallback and unready', () => {
   for (const mode of ['native', 'fallback', 'unready', 'pi'] as const) {
     const selected: SyntaxTheme = mode === 'pi' ? { kind: 'pi' } : { kind: 'occipital', id: native.id };
-    const profile = { ...(mode === 'native' ? native : pi) };
+    const profile = { ...native, id: mode === 'native' ? native.id : 'bundled:unrelated' };
     const profiles = mode === 'unready' ? undefined : [profile];
     const result = resolveTheme(selected, profiles);
     const expected = {
       selected: mode === 'pi' ? { kind: 'pi' } : { kind: 'occipital', id: native.id },
-      effective: mode === 'unready' ? undefined : { ...profile },
+      effective: mode === 'unready' ? undefined : mode === 'native' ? { ...profile } : { ...pi },
       missing: mode === 'fallback',
     };
     selected.kind = 'pi';
@@ -112,7 +114,7 @@ test('resolveTheme: mutations cannot cross ownership boundaries in either direct
     assert.equal(selected.kind, 'pi');
     if ('id' in selected) assert.equal(selected.id, native.id);
     assert.deepEqual(profile, { id: 'caller-changed', label: 'caller-changed', fingerprint: 'f'.repeat(64) });
-    const again = resolveTheme({ kind: 'occipital', id: native.id }, [pi, native]);
+    const again = resolveTheme({ kind: 'occipital', id: native.id }, [native]);
     assert.deepEqual(again, { selected: { kind: 'occipital', id: native.id }, effective: native, missing: false });
   }
 });

@@ -1,4 +1,4 @@
-import { diagnose, diagnosticError, type DiagnosticSink } from './diagnostics.ts';
+import { diagnose, diagnosticError, reportRuntime, type DiagnosticSink } from './diagnostics.ts';
 import { readFileSync, writeSync } from "node:fs";
 import { colorToHex, mixColors, parseColor, rgbColor, type TerminalColors as ReportedColors } from "@earendil-works/pi-tui";
 import type { ThemeBg, ThemeColor } from "@earendil-works/pi-coding-agent";
@@ -142,8 +142,9 @@ export class TerminalColors {
   private warn(message: string, explanation = 'Terminal color warning; raw error text excluded', error?: unknown) {
     if (message === this.failure) return;
     this.failure = message; this.counters.warnings++;
-    diagnose(this.host.diagnostic, 'WARN', 'terminal-colors', explanation, { state: this.state, code: error === undefined ? undefined : diagnosticError(error) });
-    this.host.warn?.(message);
+    diagnose(this.host.diagnostic, 'ERROR', 'terminal-colors', explanation, { state: this.state, code: error === undefined ? undefined : diagnosticError(error) });
+    reportRuntime(this.host.diagnostic, { kind: 'failure', scope: this, operation: 'colors', area: 'terminal-colors', code: error === undefined ? 'unsupported_host' : diagnosticError(error) });
+    if (!this.host.diagnostic?.runtime) this.host.warn?.(message);
   }
   private apply(next: DefaultColors): boolean {
     let packet = "", sets = 0, releases = 0;
@@ -171,7 +172,12 @@ export class TerminalColors {
     this.generation++; this.revision = undefined; this.sourceIdentity = undefined; this.reported = {}; this.paletteStamp = undefined; this.projected = undefined;
     this.state = reason;
     diagnose(this.host.diagnostic, 'INFO', 'terminal-colors', 'Terminal-default application suspended', { reason, generation: this.generation });
-    try { if (this.apply({})) this.host.changed?.(true); }
+    try {
+      if (this.apply({})) this.host.changed?.(true);
+      if (reason !== 'unsupported host') {
+        reportRuntime(this.host.diagnostic, { kind: 'released', scope: this, operation: 'colors' }); this.failure = undefined;
+      }
+    }
     catch (error) { this.warn(`Could not release terminal colors: ${String(error)}`, 'Could not release terminal colors', error); }
     if (reason === "unsupported host") this.warn("Terminal colors unavailable: Pi's appearance flag is missing or incompatible");
   }
@@ -233,6 +239,8 @@ export class TerminalColors {
         if (!source) {
           const changed = this.apply({});
           this.sourceIdentity = undefined; this.reported = {}; this.paletteStamp = undefined; this.projected = undefined; this.state = "no source";
+          this.failure = undefined;
+          reportRuntime(this.host.diagnostic, { kind: 'released', scope: this, operation: 'colors' });
           diagnose(this.host.diagnostic, 'INFO', 'terminal-colors', 'No file-backed theme source; terminal defaults remain native', { generation, theme: name });
           if (changed) { this.host.changed?.(true); this.queryDefaults(this.host.snapshot().theme, generation, revision); }
           return;
@@ -245,6 +253,7 @@ export class TerminalColors {
         const changed = this.apply(desired);
         this.reported = {}; this.paletteStamp = undefined; this.projected = undefined;
         this.state = "on"; this.failure = undefined;
+        reportRuntime(this.host.diagnostic, { kind: 'recovered', scope: this, operation: 'colors' });
         diagnose(this.host.diagnostic, 'INFO', 'terminal-colors', 'Fixed-theme terminal defaults resolved', { generation, theme: name, ...desired });
         if (changed) this.host.changed?.(true);
         this.queryDefaults(this.host.snapshot().theme, generation, revision);
@@ -263,7 +272,8 @@ export class TerminalColors {
       if (!kind || !value || !original) continue;
       let concrete = parseColor(value);
       if (kind.dim && background) concrete = mixColors(concrete, parseColor(background), 0.5, "srgb");
-      if (colorToHex(concrete) === colorToHex(original)) continue;
+      // A known background remains a projection even when Pi's fallback guess matches.
+      if (!kind.background && colorToHex(concrete) === colorToHex(original)) continue;
       colors ??= { ...theme.colors };
       (colors as Record<string, typeof concrete>)[role] = concrete;
     }
@@ -276,6 +286,7 @@ export class TerminalColors {
     this.disposed = true; this.generation++; this.revision = undefined; this.sourceIdentity = undefined; this.reported = {}; this.paletteStamp = undefined; this.projected = undefined;
     if (!preserveDefaults) try { this.apply({}); } catch { /* Best effort once the terminal is gone. */ }
     this.state = "off";
+    reportRuntime(this.host.diagnostic, { kind: 'released', scope: this, operation: '*' });
     diagnose(this.host.diagnostic, 'INFO', 'terminal-colors', 'Terminal-color observer disposed', { preserveDefaults });
   }
 }

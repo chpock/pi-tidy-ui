@@ -90,7 +90,6 @@ try {
     syncBuiltinESMExports();
     const { createSyntaxOptions } = await load('occipital/bootstrap.ts');
     const { SyntaxClient } = await load('occipital/client.ts');
-    const { unpackStyle } = await load('occipital/protocol.ts');
     assert.deepEqual((await load('occipital/release.ts')).NATIVE_RELEASE, NATIVE_RELEASE);
     for (const phase of ['cold', 'warm']) {
       const beforeUrls = urls.length, beforeDownloads = downloads, beforeStarts = starts.length;
@@ -99,6 +98,9 @@ try {
       await client.start(); await client.start();
       const snapshot = client.snapshot();
       assert.equal(snapshot.standaloneVersion, NATIVE_RELEASE.version); assert.equal(snapshot.provider.kind, 'owned'); assert.equal(snapshot.provider.availability, 'ready');
+      const nativeProfile = snapshot.provider.description.profiles.find(profile => profile.id === 'syntect:Nord'); assert.ok(nativeProfile);
+      client.previewTheme({ kind: 'occipital', id: nativeProfile.id });
+      client.sources.setStyleSelection({ kind: 'native', id: nativeProfile.id, fingerprint: nativeProfile.fingerprint });
       const expectedPath = installed ? join(consumer, 'node_modules', nativeName, executable)
         : join(home, 'agent/cache/occipital', NATIVE_RELEASE.version, target, executable);
       assert.equal(starts.length, beforeStarts + 1); assert.equal(starts.at(-1), expectedPath);
@@ -110,7 +112,7 @@ try {
         const profile = client.snapshot().effective; assert.ok(profile);
         assert.equal(client.sources.observe({ key: 'tiny', version, text, complete, path: 'tiny.ts', profile: profile.id, fingerprint: profile.fingerprint }), true);
         client.sources.flush();
-        const ready = () => client.sources.status('tiny')?.exact && client.sources.status('tiny')?.classificationVersion === version && client.sources.stats().unsettledJobs === 0;
+        const ready = () => client.sources.status('tiny')?.exact && client.sources.displayBasis('tiny')?.version === version && client.sources.stats().unsettledJobs === 0;
         if (!ready()) await new Promise((yes, no) => {
           const timer = setTimeout(() => { wake = undefined; no(Error('Installed source did not complete')); }, 10000);
           wake = () => { if (ready()) { clearTimeout(timer); wake = undefined; yes(); } }; wake();
@@ -120,13 +122,22 @@ try {
       const prefix = 'let n="界";\n', first = await classified(1, prefix, false), tail = await classified(2, prefix + '//x', false);
       assert.equal(tail.committedLineCalls, first.committedLineCalls); assert.equal(tail.committedLineBytes, first.committedLineBytes);
       assert.equal(tail.tailCalls, first.tailCalls + 1);
+      assert.equal(first.dispatches - first.styleDispatches, 1); assert.equal(tail.dispatches - tail.styleDispatches, 2);
+      assert.equal(first.styleDispatches, 1, 'initial contexts need native styles');
+      assert.equal(tail.styleDispatches, first.styleDispatches + 1, 'the new comment context needs native styles');
       const complete = await classified(3, prefix + '//x\n', true);
-      assert.equal(complete.dispatches, 3); assert.equal(complete.committedLineCalls, tail.committedLineCalls + 1);
+      assert.equal(complete.dispatches - complete.styleDispatches, 3);
+      assert.equal(complete.styleDispatches, tail.styleDispatches, 'committing the same comment context reuses its styles');
+      assert.equal(complete.committedLineCalls, tail.committedLineCalls + 1);
       assert.equal(complete.committedLineBytes, tail.committedLineBytes + Buffer.byteLength('//x\n'));
-      const roles = [];
-      assert.equal(client.sources.visitRanges('tiny', (_start, _end, packed) => roles.push(unpackStyle(packed).role)), true); assert.ok(roles.includes('syntaxComment'));
+      const styles = [];
+      assert.equal(client.sources.visitRanges('tiny', (start, end, style) => { if (end > Buffer.byteLength(prefix)) styles.push(style); }), true);
+      assert.ok(styles.length > 0); assert.ok(styles.every(style => style.foreground.kind === 'rgb'), 'actual Nord comment uses literal native colors');
       for (let i = 0; i < 20; i++) await classified(3, prefix + '//x\n', true);
-      assert.equal(client.sources.stats().dispatches, complete.dispatches); assert.equal(client.sources.stats().preparedBytes, complete.preparedBytes);
+      const warm = client.sources.stats(), warmSourceDispatches = (warm.dispatches - warm.styleDispatches) - (complete.dispatches - complete.styleDispatches),
+        warmStyleDispatches = warm.styleDispatches - complete.styleDispatches;
+      assert.equal(warmSourceDispatches, 0); assert.equal(warmStyleDispatches, 0);
+      assert.equal(warm.dispatches, complete.dispatches); assert.equal(warm.preparedBytes, complete.preparedBytes);
       const pid = snapshot.provider.description.runtime.pid;
       await client.dispose();
       assert.equal(client.sources.stats().retention.retainedBytes, 0); assert.equal(client.sources.stats().unsettledJobs, 0);
@@ -134,7 +145,11 @@ try {
       assert.throws(() => process.kill(pid, 0), { code: 'ESRCH' }); client = undefined;
       console.log(JSON.stringify({ node: process.version, target, version: NATIVE_RELEASE.version, installed, phase,
         nativeDownloads: downloads - beforeDownloads, httpRequests: urls.length - beforeUrls, nativeDispatches: complete.dispatches,
-        prefixReparsed: false, warmDispatches: 0, executable: expectedPath, sdkAbsent: !installed, processReaped: true }));
+        sourceDispatches: complete.dispatches - complete.styleDispatches, styleDispatches: complete.styleDispatches,
+        sourceProgression: [first, tail, complete].map(stats => stats.dispatches - stats.styleDispatches),
+        styleProgression: [first, tail, complete].map(stats => stats.styleDispatches),
+        prefixReparsed: false, warmDispatches: warm.dispatches - complete.dispatches, warmSourceDispatches, warmStyleDispatches,
+        executable: expectedPath, sdkAbsent: !installed, processReaped: true }));
     }
     globalThis.fetch = originalFetch; childProcess.spawn = originalSpawn; syncBuiltinESMExports();
     restoreEnv();

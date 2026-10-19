@@ -8,12 +8,14 @@ import type { JournalOptions } from '../../../src/debug-log.ts';
 import { setImmediate as turn } from 'node:timers/promises';
 import { dirname, resolve } from 'node:path';
 import { pathToFileURL, fileURLToPath } from 'node:url';
-import { Container } from '@earendil-works/pi-tui';
-import { createWriteToolDefinition, ToolExecutionComponent, type ExtensionAPI, type ExtensionContext } from '@earendil-works/pi-coding-agent';
+import { Container, colorToHex } from '@earendil-works/pi-tui';
+import { Theme, createWriteToolDefinition, ToolExecutionComponent, type ExtensionAPI, type ExtensionContext } from '@earendil-works/pi-coding-agent';
 import tidyUi, { debugLoggingDiagnostics } from '../../../src/index.ts';
 import { SourceController } from '../../../src/occipital/controller.ts';
-import { CardSources, type CardSourceHost } from '../../../src/syntax/cards.ts';
+import { CardSources, type CardDisplayInput } from '../../../src/syntax/cards.ts';
 import { SyntaxRuntime } from '../../../src/syntax/runtime.ts';
+import { ExpectedOwnedUnavailable } from '../../../src/occipital/owned-startup.ts';
+import { samplePiCardPalette } from '../../../src/syntax/pi-palette.ts';
 import { menuPage, withMenu, setAppearance, setLogging } from '../../helpers/menu-driver.ts';
 import { ExtensionSettings, type SettingsLoadResult, type SettingsPatch, type LocalPreferences } from '../../../src/settings.ts';
 
@@ -42,7 +44,7 @@ function fixture(mode = 'tui', logging: false | Omit<JournalOptions, 'warn' | 'e
   tidyUi(pi, { logging, settings: store, localPreferences, terminalDefaults: {}, syntax: () => {
     counts.constructed++;
     return { standaloneVersion: 'fixture',
-      provider: { async tryShared() { counts.shared++; return undefined; }, async acquireOwned() { counts.owned++; throw Error('fixture unavailable'); } } };
+      provider: { async tryShared() { counts.shared++; return undefined; }, async acquireOwned() { counts.owned++; throw new ExpectedOwnedUnavailable(); } } };
   } });
   const command = (args: string) => commands.get('tidy-ui')!.handler(args, ctx);
   const stop = async () => { await events.get('session_shutdown')!({ type: 'session_shutdown', reason: 'quit' }, ctx); await settled(); };
@@ -96,9 +98,9 @@ test('entry uses prepared file path and preserves actual SDK args/results on war
     createWriteToolDefinition('/tmp'), h.root as unknown as ConstructorParameters<typeof ToolExecutionComponent>[5], '/tmp');
   tool.setArgsComplete(); tool.updateResult({ content: [{ type: 'text', text: 'written' }], isError: false }, false); h.root.addChild(tool);
   const args = JSON.stringify(Reflect.get(tool, 'args')), result = JSON.stringify(Reflect.get(tool, 'result'));
-  const original = SourceController.prototype.installPiBridge;
+  const original = SourceController.prototype.adoptPiFlat;
   let stores = 0, inRender = false, storesInRender = 0;
-  SourceController.prototype.installPiBridge = function (...parameters) {
+  SourceController.prototype.adoptPiFlat = function (...parameters) {
     stores++; if (inRender) storesInRender++;
     return original.apply(this, parameters);
   };
@@ -109,9 +111,64 @@ test('entry uses prepared file path and preserves actual SDK args/results on war
     for (const width of [80, 60, 100, 80]) render(width);
     await settled(); assert.deepEqual(h.counts, before); assert.equal(stores, 1); assert.equal(storesInRender, 0);
     assert.equal(JSON.stringify(Reflect.get(tool, 'args')), args); assert.equal(JSON.stringify(Reflect.get(tool, 'result')), result);
-  } finally { SourceController.prototype.installPiBridge = original; }
+  } finally { SourceController.prototype.adoptPiFlat = original; }
 });
 
+
+test('entry projects trusted terminal backgrounds into prepared Pi input without replacing public foreground bindings', async () => {
+  const directory = await fs.mkdtemp(join(tmpdir(), 'tidy-entry-colors-')), path = join(directory, 'theme.json');
+  const backgrounds = new Set(['selectedBg', 'searchMatchBg', 'userMessageBg', 'customMessageBg', 'toolPendingBg', 'toolSuccessBg', 'toolErrorBg']);
+  const fg: Record<string, string> = {}, bg: Record<string, string> = {}, stock: Theme = themes.getThemeByName('dark')!;
+  for (const [role, color] of Object.entries(stock.colors))
+    (backgrounds.has(role) ? bg : fg)[role] = colorToHex(color);
+  Object.assign(fg, { text: '', toolOutput: '#eeeeee', dim: '', muted: '', toolDiffAdded: '#00ff00', toolDiffRemoved: '#ff0000' });
+  for (const role of Object.keys(fg)) if (role.startsWith('syntax')) fg[role] = '#eeeeee';
+  Object.assign(bg, { toolPendingBg: '', toolSuccessBg: '#2d4935', toolErrorBg: '#492d35' });
+  themes.setTerminalColors({ foreground: { r: 229, g: 229, b: 231 }, background: { r: 10, g: 11, b: 12 } });
+  const original = SyntaxRuntime.prototype.preparePiInput;
+  try {
+    for (const [background, mode] of [['#123456', 'truecolor'], ['#0a0b0c', 'truecolor'], ['#123456', '256color']] as const) {
+      await fs.writeFile(path, JSON.stringify({ colors: { text: '#eeeeee' }, export: { pageBg: background } }));
+      const h = fixture(), theme = new Theme(fg as never, bg as never, mode, { name: 'entry-colors', sourcePath: path, dim: ['dim', 'muted'] });
+      Object.assign(h.ctx.ui, { theme });
+      Object.assign(h.root, { terminalColorSchemeNotificationsEnabled: false, terminal: { write() {} } });
+      const nativeColors = theme.colors, nativePrefix = theme.getBgAnsi('toolPendingBg');
+      const tool = new ToolExecutionComponent('write', 'entry-colors-write', { path: 'tiny.txt', content: 'TRUSTED_COLOR' }, undefined,
+        createWriteToolDefinition('/tmp'), h.root as never, '/tmp');
+      tool.setArgsComplete(); tool.updateResult({ content: [{ type: 'text', text: 'written' }], isError: false }, false); h.root.addChild(tool);
+      const samples: { roles: ReturnType<typeof samplePiCardPalette>; mode: string; foregrounds: string[] }[] = [];
+      SyntaxRuntime.prototype.preparePiInput = function (input, mode, funding) {
+        samples.push({ roles: samplePiCardPalette(input), mode, foregrounds: (['toolOutput', 'dim', 'muted'] as const).map(role => input.getFgAnsi(role)) });
+        return original.call(this, input, mode, funding);
+      };
+      try {
+        await h.start(); await settled(); h.root.render(80); await settled();
+        const rows = h.root.render(80);
+        assert.ok(rows.some(row => row.includes('TRUSTED_COLOR'))); assert.ok(samples.length > 0);
+        const sample = samples.at(-1)!;
+        const explicit = new Theme(fg as never, { ...bg, toolPendingBg: background } as never, mode, { dim: ['dim', 'muted'] });
+        const expected = samplePiCardPalette(explicit);
+        assert.deepEqual(sample.roles.panel.background, expected.panel.background, 'known default must not be mistaken for an unknown terminal default');
+        assert.equal(sample.roles.panel.background.kind, mode === 'truecolor' ? 'rgb' : 'indexed');
+        if (mode === '256color') assert.ok(rows.every(row => !/\x1b\[(?:38|48);2;/.test(row)), 'current public mode also governs projected background output');
+        assert.equal(sample.roles.prompt.foreground.kind, 'terminal-default');
+        assert.equal(sample.roles.prompt.attributes, 8, 'raw faint must not be reapplied to an already blended RGB');
+        assert.equal(sample.mode, theme.getColorMode());
+        assert.deepEqual(sample.foregrounds, (['toolOutput', 'dim', 'muted'] as const).map(role => theme.getFgAnsi(role)));
+        assert.deepEqual(sample.roles.addedCode.background, expected.addedCode.background, 'known equal-default and explicit background derive the same tint');
+        if (background === '#123456' && mode === 'truecolor') assert.deepEqual(sample.roles.addedCode.background, { kind: 'rgb', r: 27, g: 60, b: 84 });
+        const before = samples.length;
+        for (const width of [80, 60, 100, 80]) h.root.render(width);
+        await settled(); assert.equal(samples.length, before, 'warm/resize never resample the public Pi bindings');
+        assert.equal(theme.colors, nativeColors); assert.equal(theme.getBgAnsi('toolPendingBg'), nativePrefix);
+        assert.equal(nativePrefix, '\x1b[49m'); assert.equal(colorToHex(theme.colors.toolPendingBg), '#0a0b0c');
+      } finally { await h.stop(); }
+    }
+  } finally {
+    SyntaxRuntime.prototype.preparePiInput = original; themes.setTerminalColors({});
+    await fs.rm(directory, { recursive: true, force: true });
+  }
+});
 
 test('entry logging controls use public session metadata, remain alive while presentation is off, and contain no bodies', async () => {
   const directory = await fs.mkdtemp(join(tmpdir(), 'tidy-entry-log-'));
@@ -244,12 +301,10 @@ test('entry public streaming identities separate quick live abort from restored 
   const h = fixture(), observed: { text: string; complete: boolean }[] = [];
   const prepare = CardSources.prototype.prepare;
   CardSources.prototype.prepare = function (ticket) {
-    const host = Reflect.get(this, 'host') as CardSourceHost<object>, read = host.read;
-    host.read = owner => { const input = read(owner);
-      if (input?.kind === 'bash') observed.push({ text: String(input.args.command), complete: input.complete });
-      return input;
-    };
-    try { return prepare.call(this, ticket); } finally { host.read = read; }
+    const state = Reflect.get(ticket, 'state') as WeakRef<{ input?: CardDisplayInput }>;
+    const input = state.deref()?.input;
+    if (input?.kind === 'bash') observed.push({ text: String(input.args.command), complete: input.complete });
+    return prepare.call(this, ticket);
   };
   const tool = (id: string, text: string) => {
     const node = new ToolExecutionComponent('bash', id, { command: text }, undefined, undefined,
@@ -550,4 +605,39 @@ test('entry preloads preferences before startup and attaches without another asy
   const starting = h.start();
   assert.equal(h.counts.constructed, 1, 'loaded factory preferences do not defer UI attachment until another turn');
   await starting; assert.equal(h.counts.load, 1);
+});
+
+test('runtime health entry: settings errors are visible with recording unavailable, recover on valid read, and reset for a new session', async () => {
+  let changed!: (value: SettingsLoadResult) => void;
+  const h = fixture('tui', false, { async load() { return { ok: true, syntaxTheme: { kind: 'pi' }, terminalColorsEnabled: false }; },
+    async update() { return { ok: true }; }, watch(callback) { changed = callback; return () => {}; } });
+  await h.start(); await settled();
+  const before = h.notices.length;
+  const bad: SettingsLoadResult = { ok: false, syntaxTheme: { kind: 'pi' }, issue: { code: 'invalid-json', message: 'PRIVATE_CONFIG_DETAIL' } };
+  changed(bad); changed(bad); await settled();
+  assert.equal(h.notices.length, before + 1); assert.doesNotMatch(h.notices.at(-1)!, /PRIVATE_CONFIG_DETAIL/);
+  await h.page('Status & troubleshooting'); assert.match(h.view, /Runtime errors: 1; active: 1/);
+  await h.page('Status & troubleshooting', 'Diagnostic logs'); assert.match(h.view, /Runtime errors: 1; active: 1/);
+  assert.match(h.view, /Diagnostic logging is unavailable/);
+  changed({ ok: true, syntaxTheme: { kind: 'pi' }, terminalColorsEnabled: false }); await settled();
+  await h.page('Status & troubleshooting'); assert.match(h.view, /Runtime errors: 1; active: 0/); assert.match(h.view, /recovered/);
+  await h.stop();
+  const after = h.notices.length; changed(bad); await settled(); assert.equal(h.notices.length, after, 'old watcher cannot report after shutdown');
+  await h.start({ type: 'session_start', reason: 'resume' }); await settled();
+  await h.page('Status & troubleshooting'); assert.match(h.view, /Runtime errors: 0; active: 0/);
+});
+
+test('runtime health entry: explicit appearance Off and reinstallation retire the old failed owner without GC', async () => {
+  const h = fixture('tui', false, { async load() { return { ok: true, syntaxTheme: { kind: 'pi' }, terminalColorsEnabled: false }; }, async update() { return { ok: true }; } });
+  const foreign = Object.assign(new Container(), { toolCallId: 'incompatible', toolName: 'bash' });
+  h.root.addChild(foreign); await h.start(); await settled();
+  await h.page('Status & troubleshooting'); assert.match(h.view, /Runtime errors: 1; active: 1/);
+  await h.appearance(false); await h.page('Status & troubleshooting');
+  assert.match(h.view, /Runtime errors: 1; active: 0/); assert.match(h.view, /owner removed/);
+  h.root.removeChild(foreign); await h.appearance(true); await settled();
+  await h.page('Status & troubleshooting'); assert.match(h.view, /Runtime errors: 1; active: 0/);
+  h.root.addChild(foreign); await settled();
+  await h.page('Status & troubleshooting'); assert.match(h.view, /Runtime errors: 2; active: 1/);
+  h.root.removeChild(foreign); await h.page('Status & troubleshooting', 'Reapply Tidy UI appearance'); await settled();
+  await h.page('Status & troubleshooting'); assert.match(h.view, /Runtime errors: 2; active: 0/); assert.match(h.view, /owner removed/);
 });

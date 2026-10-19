@@ -730,6 +730,9 @@ test('foreign editor extension retains native input, widgets, mouse and replay i
       }
       assert.deepEqual(readFileSync(liveTraffic.session), bytes);
       coverage.push({ mode, order, runtimeTakeover: deferred, embeddedWorking: embedded, calls: 2, results: 2, modelContexts: 3, replayNewTraffic: 0 });
+      // Independent combinations must not accumulate live Pi processes and threads.
+      await closeTerminals(terminals.slice().reverse());
+      terminals.length = 0;
     }
     writeFileSync(join(artifacts, 'foreign-editor-coverage.json'), JSON.stringify({ installedPowerlineExecuted: false, coverage }, null, 2));
   } finally { await runCleanupSteps(() => closeTerminals(terminals.reverse()), () => rmSync(workspace, { recursive: true, force: true })); }

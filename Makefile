@@ -32,7 +32,7 @@ $(RUST_ENV) "$(NODE)" --input-type=module -e ' \
   const [phase, target, cargo, binary] = process.argv.slice(1), source = process.cwd(); \
   const files = ["Cargo.toml", "Cargo.lock", "rust-toolchain.toml"].filter(name => existsSync(join(source, name))); \
   const collect = directory => { if (!existsSync(join(source, directory))) return; for (const name of readdirSync(join(source, directory))) { const path = directory + "/" + name; if (statSync(join(source, path)).isDirectory()) collect(path); else if (statSync(join(source, path)).isFile()) files.push(path); } }; \
-  collect("crates"); collect(".cargo"); files.sort(); \
+  collect("crates"); collect("protocol"); collect(".cargo"); files.sort(); \
   const expected = snapshotIdentity(source, files).nativeTree, work = mkdtempSync("/tmp/tt-native-"); \
   let status = 0; \
   try { \

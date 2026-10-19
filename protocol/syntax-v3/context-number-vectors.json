@@ -1,0 +1,11 @@
+{
+  "revision": 1,
+  "cases": [
+    { "name": "fractional-scope-rounded-by-approximate-parser", "raw": "[[0,15.9999999999999991]]", "error": "unknown_scope" },
+    { "name": "fractional-prefix-rounded-by-approximate-parser", "raw": "[[0,1],[0.99999999999999991]]", "error": "invalid_context" },
+    { "name": "integer-exponents", "raw": "[[0e0,1.0],[1e0,2]]", "value": [[1],[1,2]] },
+    { "name": "correctly-rounded-integer-scope", "raw": "[[0,15.9999999999999999]]", "value": [[16]] },
+    { "name": "underflow-prefix", "raw": "[[1e-400,1]]", "value": [[1]] },
+    { "name": "nonfinite-scope", "raw": "[[0,1e309]]", "error": "unknown_scope" }
+  ]
+}

@@ -3,26 +3,32 @@ import assert from 'node:assert/strict';
 import { afterEach, test } from 'node:test';
 import { setImmediate as turn } from 'node:timers/promises';
 import { SourceController, CONTROLLER_LIMITS, sourceReservation, type SourceDemand } from '../../../src/occipital/controller.ts';
-import { decodeSources, PROTOCOL_VERSION, type Description } from '../../../src/occipital/protocol.ts';
-import { OCCIPITAL_LIMITS } from '../../../src/occipital/limits.ts';
+import { decodeSemanticDescription, SEMANTIC_PROTOCOL_VERSION as PROTOCOL_VERSION } from '../../../src/occipital/semantic-protocol.ts';
+import { semanticDescriptor } from '../../fixtures/semantic-provider.ts';
+import { SemanticRetentionPool } from '../../../src/occipital/semantic-retention.ts';
+import { CARD_ROLES } from '../../../src/occipital/semantic-codec.ts';
+import { fingerprintNative } from '../../../src/occipital/style-rules.ts';
+import type { ConcreteStyle } from '../../../src/syntax/style-materialization.ts';
+import { HIGHLIGHT_LIMITS, OCCIPITAL_LIMITS } from '../../../src/occipital/limits.ts';
 import { RequestFailure } from '../../../src/occipital/request-failure.ts';
 import type { ProviderSnapshot } from '../../../src/occipital/provider.ts';
-import { StdioTransport } from '../../../src/occipital/stdio.ts';
 import { ProviderBroker } from '../../../src/occipital/provider.ts';
-import { RetentionPool, RETENTION_LIMITS } from '../../../src/occipital/retention.ts';
 import { awaitFixture } from '../../fixtures/await-fixture.ts';
-import { mkdtemp, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { RenderCache } from '../../../src/render-cache.ts';
+import { RuntimeHealth } from '../../../src/runtime-health.ts';
+import { measure, reflow, type MeasuredRowLayout } from '../../../src/syntax/measured-rows.ts';
+import { paintFlat, type FlatPaintRows } from '../../../src/syntax/flat-paint.ts';
+import type { DataCleanupReceipt } from '../../../src/occipital/data-budget.ts';
+
+function frameCleanup(layout: DataCleanupReceipt, paint: DataCleanupReceipt): DataCleanupReceipt {
+  return { release() { layout.release(); paint.release(); } };
+}
+function paintRows(painted: FlatPaintRows) {
+  const rows: string[] = []; assert.equal(painted.visitRows((_index, text) => rows.push(text)), true); return rows;
+}
 
 const fingerprint = 'a'.repeat(64);
-const description: Description = { instance: 'daemon', assets: 'assets', backend_version: 'test', catalogue_revision: 0,
-  profiles: [{ id: 'pi', label: 'Pi', fingerprint }], diagnostic: null,
-  limits: { request_bytes: OCCIPITAL_LIMITS.wireBytes, reply_bytes: OCCIPITAL_LIMITS.wireBytes, control_request_bytes: 4096, control_reply_bytes: 32768,
-    source_bytes: OCCIPITAL_LIMITS.sourceBytes, line_bytes: 65536, batch_sources: 8, queue_wait_ms: 1000, state_pool_bytes: OCCIPITAL_LIMITS.retainedBytes,
-    leases: 4096, leases_per_route: 512, runs: OCCIPITAL_LIMITS.runs, styles: OCCIPITAL_LIMITS.styles, idle_ms: 300000, age_ms: 3600000,
-    quantum_ms: 2, data_per_route: 2, control_per_route: 1, routes: 8, workers: 2 },
-  runtime: { pid: 1, routes: 1, leases: 0, data_bytes: 0, data_jobs: 0, queued: 0, control_bytes: 0, control_jobs: 0 } };
+const description = decodeSemanticDescription(semanticDescriptor('describe', 'daemon'), 'describe');
 const fixtureHosts = new Set<Host>();
 const fixtureControllers = new Set<SourceController>();
 type Call = { request: Record<string, any>; signal?: AbortSignal; deadlineMs?: number; resolve: (value: unknown) => void; reject: (error: unknown) => void };
@@ -30,7 +36,7 @@ class Host {
   constructor() { fixtureHosts.add(this); }
   generation = 1;
   ready = true;
-  description = { ...description, limits: { ...description.limits } };
+  description = { ...description, profiles: [...description.profiles], limits: { ...description.limits } };
   calls: Call[] = [];
   acceptedClassifications: number[] = [];
   classificationAccepted(generation: number) { this.acceptedClassifications.push(generation); return this.isReady(generation); }
@@ -52,11 +58,23 @@ class Host {
     const committed_bytes = complete ? source_bytes : Buffer.byteLength(text.slice(0, text.lastIndexOf('\n') + 1));
     const lease = prior?.lease ?? `lease-${index}`;
     if (!complete) this.streams.set(s.key, { text, revision, committed: committed_bytes, lease });
-    const result = { key: s.key, generation: s.generation, source_version: s.source_version, profile: s.profile, fingerprint: s.fingerprint,
+    else this.streams.delete(s.key);
+    const result = { key: s.key, generation: s.generation, source_version: s.source_version,
       revision, replace_from, source_bytes, committed_bytes, complete, ...(r.op !== 'highlight' ? { lease } : {}),
-      styles: [s.profile === 'pi' ? { role: 'syntaxKeyword' } : { rgb: [80, 120, 160], attributes: 0 }], runs: source_bytes > replace_from ? [source_bytes - replace_from, 0] : [],
+      contexts: source_bytes > replace_from ? [[0, 1]] : [], runs: source_bytes > replace_from ? [source_bytes - replace_from, 1] : [],
       counters: { committed_line_calls: 0, committed_line_bytes: 0, tail_calls: 0, tail_bytes: 0 } };
-    c.resolve({ v: PROTOCOL_VERSION, ticket: r.ticket, instance: description.instance, assets: description.assets, status: 'ok', body: { kind: 'source', sources: [result] } });
+    c.resolve({ v: PROTOCOL_VERSION, ticket: r.ticket, instance: description.instance, assets: description.assets, status: 'ok', body: { kind: 'source', vocabulary: this.description.vocabulary.fingerprint, sources: [result] } });
+  }
+  style(index: number, red = 80) {
+    const call = this.calls[index]!, r = call.request;
+    assert.equal(r.op, 'styles.resolve');
+    const style = { foreground: { kind: 'rgb', r: red, g: 120, b: 160 },
+      background: { kind: 'rgb', r: 10, g: 20, b: 30 }, attributes: 0, attribute_mask: 15 };
+    call.resolve({ v: PROTOCOL_VERSION, ticket: r.ticket, instance: description.instance, assets: description.assets,
+      status: 'ok', body: { kind: 'styles', vocabulary: r.vocabulary,
+        rules: fingerprintNative(r.rules.fingerprint, 'rules'), styles: [style], indices: r.contexts.map(() => 1),
+        palette: { revision: 1, fingerprint: fingerprintNative(r.rules.fingerprint, 'palette'),
+          slots: CARD_ROLES.map(() => 1), origins: CARD_ROLES.map(() => 0) } } });
   }
   fault(index: number, code: string, execution = 'not_started') {
     const r = this.calls[index]!.request;
@@ -71,8 +89,21 @@ function fixture(options: ConstructorParameters<typeof SourceController>[1] = { 
   fixtureControllers.add(controller);
   return { host, controller };
 }
+// Source-only controls inspect canonical semantics, never claim these are ready colors.
+function semanticPool(controller: SourceController): SemanticRetentionPool {
+  const pool = Reflect.get(controller, 'pool'); assert.ok(pool instanceof SemanticRetentionPool); return pool;
+}
 function ranges(controller: SourceController, key = 'source') {
-  const rows: number[][] = []; controller.visitRanges(key, (a, b, s) => rows.push([a, b, s])); return rows;
+  const pool = semanticPool(controller), status = controller.status(key);
+  if (!status?.classificationVersion) return [];
+  const states = Reflect.get(controller, 'states'); assert.ok(states instanceof Map);
+  const state = states.get(key), current = status.generation === undefined ? undefined : pool.status(status.generation);
+  const generation = current?.sourceVersion === undefined ? state?.previous : status.generation;
+  if (typeof generation !== 'number') return [];
+  const limit = status.exact ? pool.status(generation)!.sourceBytes : status.committedBytes;
+  const rows: (number | boolean)[][] = [];
+  pool.visitRanges(generation, (a, b, context) => { if (a < limit) rows.push([a, Math.min(b, limit), context !== undefined]); });
+  return rows;
 }
 async function settle() { await turn(); }
 afterEach(async () => {
@@ -111,7 +142,7 @@ test('two unsettled captures, latest replacement, older useful acknowledgement t
   host.answer(0); await settle();
   assert.equal(c.status('source')!.acknowledgedVersion, 1); assert.equal(c.status('source')!.exact, false);
   assert.deepEqual(host.acceptedClassifications, [host.generation], 'older useful parser acknowledgement is validated native success');
-  assert.deepEqual(ranges(c), [[0, 2, 2]]);
+  assert.deepEqual(ranges(c), [[0, 2, true]]);
   assert.equal(host.calls[2]!.request.sources[0].text, 'third', 'newer source uses the free slot without waiting for older work');
   host.answer(1); await settle();
   assert.equal(host.calls[3]!.request.op, 'stream.append'); assert.equal(host.calls[3]!.request.append, 'xy');
@@ -130,7 +161,7 @@ test('empty final suffix is dispatched once and commits tail without invented by
   c.observe(demand('a\nt', 1, true)); c.flush(); assert.equal(host.calls.length, 2);
 });
 
-test('restart_required preserves independently valid colors and retries latest once with fresh identity', async () => {
+test('restart_required preserves independently valid semantics and retries latest once with fresh identity', async () => {
   const { host, controller: c } = fixture(); c.observe(demand('a\nt')); c.flush(); host.answer(0); await settle();
   c.observe(demand('a\ntx', 2)); c.flush(); host.fault(1, 'restart_required'); await settle();
   assert.equal(host.calls[2]!.request.op, 'stream.close'); host.answer(2); await settle();
@@ -138,7 +169,7 @@ test('restart_required preserves independently valid colors and retries latest o
   assert.equal(restarted.op, 'stream.open'); assert.equal(restarted.sources[0].text, 'a\ntx');
   assert.notEqual(restarted.sources[0].generation, host.calls[0]!.request.sources[0].generation);
   assert.notEqual(restarted.sources[0].key, host.calls[0]!.request.sources[0].key);
-  assert.deepEqual(ranges(c), [[0, 2, 2]]); assert.equal(c.status('source')!.acknowledgedVersion, undefined);
+  assert.deepEqual(ranges(c), [[0, 2, true]]); assert.equal(c.status('source')!.acknowledgedVersion, undefined);
   host.fault(3, 'restart_required'); await settle();
   assert.equal(c.status('source')!.execution, 'not_started'); assert.equal(c.status('source')!.protective, true);
   for (let v = 3; v < 10; v++) { c.observe(demand('a\ntx'.padEnd(v + 3, 'x'), v)); c.flush(); }
@@ -157,7 +188,7 @@ test('no-start refusal never loops unchanged work; untyped rejection stays unkno
   host.answer(2); await settle(); assert.equal(c.status('source')!.exact, true);
 });
 
-test('rewrite/language/profile retire generations; stale replies do not revive entries or free early slots', async () => {
+test('rewrite/language retire generations; theme selection preserves parser generation and lease', async () => {
   const { host, controller: c } = fixture(); c.observe(demand('before')); c.flush(); const held = c.stats().transientBytes;
   c.observe(demand('after', 2)); c.flush();
   assert.equal(host.calls[0]!.signal!.aborted, true); assert.equal(host.calls.length, 1); assert.equal(c.stats().transientBytes, held);
@@ -166,8 +197,10 @@ test('rewrite/language/profile retire generations; stale replies do not revive e
   host.answer(2); await settle(); c.observe({ ...demand('after', 2), language: 'rust' }); c.flush();
   assert.deepEqual(ranges(c), []); assert.equal(host.calls[3]!.request.op, 'stream.close');
   host.answer(3); await settle(); host.answer(4); await settle();
-  c.observe({ ...demand('after', 2), profile: 'missing' }); c.flush(); host.answer(5); await settle();
-  assert.equal(c.status('source')!.protective, true); assert.deepEqual(ranges(c), []);
+  const generation = c.status('source')!.generation;
+  c.observe({ ...demand('after', 2), language: 'rust', profile: 'missing' }); c.flush();
+  assert.equal(host.calls.length, 5); assert.equal(c.status('source')!.generation, generation);
+  assert.equal(c.status('source')!.exact, true); assert.equal(c.status('source')!.protective, false);
 });
 
 test('provider epoch change rejects late acknowledgement and allows only newly observed demand replay', async () => {
@@ -177,11 +210,17 @@ test('provider epoch change rejects late acknowledgement and allows only newly o
 });
 
 test('pool pressure retires evicted leases, rejects late suffix, then caller re-admits fresh full source', async () => {
-  const { host, controller: c } = fixture({ deadlineMs: 1000, retention: { maxBytes: 3300 } });
-  c.observe(demand('a\nt')); c.flush(); host.answer(0); await settle(); c.observe(demand('a\ntx', 2)); c.flush();
-  c.observe(demand('second', 1, true, 'second')); c.observe(demand('third', 1, true, 'third')); c.flush();
+  const { host, controller: c } = fixture({ deadlineMs: 1000, retention: { maxBytes: 8192 } });
+  c.observe(demand('a\nt')); c.flush(); host.answer(0); await settle();
+  assert.equal(c.status('source')!.classificationVersion, 1); assert.equal(c.stats().remoteLeases, 1);
+  assert.equal(host.calls.length, 1); assert.ok(c.stats().retention.rangeBytes > 0);
+  assert.ok(c.stats().retention.retainedBytes > 3300 && c.stats().retention.retainedBytes <= 8192);
+  c.observe(demand('a\ntx', 2)); c.flush(); assert.equal(host.calls[1]!.request.op, 'stream.append');
+  c.observe(demand('p'.repeat(3000), 1, true, 'pressure')); c.flush();
   assert.equal(c.status('source')!.generation, undefined); assert.equal(host.calls[1]!.signal!.aborted, true);
+  assert.ok(c.stats().retention.retainedBytes <= 8192);
   host.answer(1); await settle();
+  assert.deepEqual(ranges(c), [], 'late suffix cannot reinstall an evicted incarnation');
   for (let i = 2; i < host.calls.length; i++) { host.answer(i); await settle(); }
   assert.equal(c.observe(demand('a\ntx', 2)), false); c.flush();
   c.retryEvicted('source'); c.observe(demand('a\ntx', 2, true)); c.flush(); const last = host.calls.at(-1)!;
@@ -245,7 +284,7 @@ test('first discarded controller collects while externally held request and seco
 
 
 test('borrowed snapshot accessor reuses cached byte length and cannot mutate pool records', () => {
-  const pool = new RetentionPool(); const generation = pool.admit('snapshot', 1, '😀').generation!;
+  const pool = new SemanticRetentionPool(); const generation = pool.admit('snapshot', 1, '😀').generation!;
   const first = pool.borrowSnapshot(generation)!; assert.deepEqual(first, { version: 1, text: '😀', utf8Bytes: 4 });
   (first as { text: string }).text = 'changed'; assert.equal(pool.borrowSnapshot(generation)!.text, '😀');
   pool.replaceSnapshot(generation, 2, '😀é'); assert.equal(pool.borrowSnapshot(generation)!.utf8Bytes, 6);
@@ -254,11 +293,13 @@ test('borrowed snapshot accessor reuses cached byte length and cannot mutate poo
 });
 
 test('unknown obsolete outcome blocks replacement and survives eviction/re-admission on same provider', async () => {
-  const { host, controller: c } = fixture({ deadlineMs: 1000, retention: { maxBytes: 2200 } });
+  const { host, controller: c } = fixture({ deadlineMs: 1000, retention: { maxBytes: 4096 } });
   c.observe(demand('first')); c.flush(); c.observe(demand('rewrite', 2)); c.flush(); assert.equal(host.calls.length, 1);
   host.calls[0]!.reject(new Error('untyped rejection after abort')); await settle();
   assert.equal(host.calls.length, 1); assert.equal(c.status('source')!.execution, 'unknown');
-  c.observe(demand('other', 1, true, 'other')); c.flush(); host.answer(1); await settle();
+  c.observe(demand('o'.repeat(1300), 1, true, 'other')); c.flush();
+  assert.equal(c.status('source')!.generation, undefined, 'pressure actually evicts the uncertain replacement');
+  host.answer(1); await settle();
   c.retryEvicted('source'); c.observe(demand('rewrite', 3)); c.flush(); assert.equal(host.calls.length, 2);
   assert.equal(c.status('source')!.fallbackEligible, false);
   host.generation++; c.observe(demand('rewrite', 3)); c.flush(); host.answer(2); await settle();
@@ -284,16 +325,18 @@ test('provider replay retains exact classifications but does not transfer old pa
 });
 
 test('previous recovery result obeys pool pressure and reset retry budget survives evictions', async () => {
-  const { host, controller: c } = fixture({ deadlineMs: 1000, retention: { maxBytes: 5500 } });
-  c.observe(demand('a\nt')); c.flush(); host.answer(0); await settle(); c.observe(demand('a\ntx', 2)); c.flush();
-  host.fault(1, 'restart_required'); await settle(); host.answer(2); await settle();
-  assert.deepEqual(ranges(c), [[0, 2, 2]]); assert.equal(c.stats().retention.entries, 2);
-  c.observe(demand('second', 1, true, 'second')); c.observe(demand('a\ntxy', 3));
-  c.observe(demand('third', 1, true, 'third')); c.flush();
-  assert.deepEqual(ranges(c), []); assert.ok(c.stats().retention.entries <= 3);
+  const { host, controller: c } = fixture({ deadlineMs: 1000, retention: { maxBytes: 8192 } });
+  c.observe(demand('a\nt')); c.flush(); host.answer(0); await settle();
+  assert.equal(c.status('source')!.classificationVersion, 1); assert.ok(c.stats().retention.rangeBytes > 0);
+  c.observe(demand('a\ntx', 2)); c.flush(); host.fault(1, 'restart_required'); await settle(); host.answer(2); await settle();
+  assert.deepEqual(ranges(c), [[0, 2, true]]); assert.equal(c.stats().retention.entries, 2);
+  assert.equal(host.calls[3]!.request.op, 'stream.open');
+  assert.equal(c.borrowSource('source')!.text, 'a\ntx', 'keep the current target newer than its borrowed historical basis');
+  c.observe(demand('p'.repeat(2000), 1, true, 'pressure')); c.flush();
+  assert.deepEqual(ranges(c), []); assert.equal(host.calls[3]!.signal!.aborted, false, 'evicting historical semantics does not cancel the retained current parser');
+  assert.ok(c.stats().retention.retainedBytes <= 8192);
+  assert.notEqual(c.status('source')!.generation, undefined, 'only historical semantics were evicted');
   host.fault(3, 'restart_required'); await settle();
-  assert.equal(c.status('source')!.protective, true);
-  c.observe(demand('fourth', 1, true, 'fourth')); c.observe(demand('fifth', 1, true, 'fifth')); c.flush();
   c.retryEvicted('source'); c.observe(demand('a\ntxyz', 4)); c.flush();
   assert.notEqual(c.status('source')?.execution, 'unsettled'); assert.equal(c.stats().restarts, 1);
 });
@@ -308,13 +351,13 @@ test('disable drops demand, keeps unsettled accounting, and re-enable requires f
 
 
 test('byte credit can serialize two admitted sources without preparing the waiting source early', async () => {
-  const { host, controller: c } = fixture({ deadlineMs: 1000, maxTransientBytes: 40000 });
+  const { host, controller: c } = fixture({ deadlineMs: 1000, maxTransientBytes: 50000, retention: { maxBytes: 8192 } });
   host.description.limits.request_bytes = 1024; host.description.limits.reply_bytes = 1024;
   c.observe(demand('one', 1, true)); c.observe(demand('two', 1, true, 'two')); c.flush();
-  assert.equal(host.calls.length, 1); assert.equal(c.stats().preparedBytes, 3); assert.equal(c.stats().transientBytes, 38365);
+  assert.equal(host.calls.length, 1); assert.equal(c.stats().preparedBytes, 3); assert.equal(c.stats().transientBytes, 46101);
   c.flush(); assert.equal(host.calls.length, 1); assert.equal(c.stats().preparedBytes, 3);
   host.answer(0); await settle(); assert.equal(host.calls.length, 2); assert.equal(c.stats().preparedBytes, 6);
-  assert.equal(c.stats().transientBytes, 38365); host.answer(1); await settle();
+  assert.equal(c.stats().transientBytes, 46101); host.answer(1); await settle();
   assert.equal(c.stats().transientBytes, 0); assert.equal(c.stats().peakJobs, 1);
 });
 
@@ -327,35 +370,85 @@ test('bad decoded reply and explicit started fault cannot enable fallback or unc
   }
 });
 
-test('provider startup/read paths stay inert, readiness flushes queued demand, absence preserves exact colors', async () => {
+test('provider startup/read paths stay inert, readiness flushes queued demand, absence preserves exact semantics', async () => {
   const { host, controller: c } = fixture(); host.ready = false; c.observe(demand('echo x', 1, true));
   for (let i = 0; i < 20; i++) { c.status('source'); ranges(c); c.flush(); }
   assert.equal(host.calls.length, 0); assert.equal(c.stats().preparedBytes, 0);
   assert.equal(c.status('source')!.availability, 'initializing'); assert.equal(c.status('source')!.execution, 'not_started');
-  host.ready = true; c.flush(); host.answer(0); await settle(); const painted = ranges(c);
+  host.ready = true; c.flush(); host.answer(0); await settle(); const parsed = ranges(c);
+  const generation = c.status('source')!.generation, prepared = c.stats().preparedBytes;
   host.ready = false; host.generation++; assert.equal(c.status('source')!.acknowledgedVersion, undefined);
-  assert.equal(c.status('source')!.exact, true); assert.deepEqual(ranges(c), painted); c.flush(); assert.equal(host.calls.length, 1);
-  c.observe(demand('echo x', 1, true)); host.ready = true; c.flush();
-  assert.equal(host.calls.length, 1); assert.deepEqual(ranges(c), painted);
+  assert.equal(c.status('source')!.exact, true); assert.deepEqual(ranges(c), parsed); c.flush(); assert.equal(host.calls.length, 1);
+  c.observe(demand('echo x', 1, true)); c.flush(); assert.equal(host.calls.length, 1);
+  host.ready = true; c.flush(); await settle();
+  assert.equal(host.calls.length, 1, 'compatible completed annotations do not need a ready presentation to prevent source replay');
+  assert.equal(c.stats().preparedBytes, prepared); assert.equal(c.status('source')!.generation, generation);
+  assert.deepEqual(ranges(c), parsed); assert.equal(c.displayBasis('source'), undefined);
+  assert.equal(c.status('source')!.acknowledgedVersion, undefined, 'the new provider has not parsed this source');
+  assert.deepEqual(host.acceptedClassifications, [1]);
+  const before = c.stats();
+  for (let i = 0; i < 30; i++) { c.observe(demand('echo x', 1, true)); c.flush(); }
+  assert.deepEqual(c.stats(), before);
+});
+
+for (const change of ['assets', 'vocabulary', 'incomplete'] as const) test(`provider recovery: ${change} does not reuse incompatible or unfinished source coverage`, async () => {
+  const { host, controller: c } = fixture(); const complete = change !== 'incomplete';
+  const source = demand('echo x', 1, complete); c.observe(source); c.flush(); host.answer(0); await settle();
+  const generation = c.status('source')!.generation, bytes = c.stats().preparedBytes;
+  assert.equal(c.status('source')!.classificationVersion, 1);
+  host.ready = false; host.generation++; c.observe(source); c.flush();
+  if (change === 'assets') host.description = { ...host.description, assets: 'different-assets' };
+  if (change === 'vocabulary') host.description = { ...host.description,
+    vocabulary: { ...host.description.vocabulary, fingerprint: 'f'.repeat(64) } };
+  host.ready = true; c.flush(); await settle();
+  assert.equal(host.calls.length, 2, 'incompatible assets or unfinished parser state require one fresh source request');
+  assert.equal(host.calls[1]!.request.op, complete ? 'highlight' : 'stream.open');
+  assert.notEqual(c.status('source')!.generation, generation);
+  assert.equal(c.stats().preparedBytes, bytes * 2);
   assert.equal(c.status('source')!.acknowledgedVersion, undefined);
+  assert.equal(c.displayBasis('source'), undefined);
 });
 
-test('mismatched profile identities refuse before source encoding or RPC', () => {
-  for (const d of [{ ...demand('echo x', 1, true), fingerprint: 'b'.repeat(64) }]) {
-    const { host, controller: c } = fixture(); c.observe(d); c.flush(); assert.equal(host.calls.length, 0);
-    assert.equal(c.stats().preparedBytes, 0); assert.equal(c.stats().transientBytes, 0);
-    assert.equal(c.status('source')!.execution, 'not_started'); assert.equal(c.status('source')!.protective, true);
-    c.observe(d); c.flush(); assert.equal(host.calls.length, 0);
-  }
+test('provider recovery: compatible complete semantics become local at full physical credit', async () => {
+  const { host, controller: c } = fixture(); const source = demand('echo x', 1, true);
+  c.observe(source); c.flush(); host.answer(0); await settle(); const generation = c.status('source')!.generation;
+  host.ready = false; host.generation++; c.observe(source);
+  c.observe(demand('one', 1, true, 'one')); c.observe(demand('two', 1, true, 'two'));
+  host.ready = true; c.flush(); await settle();
+  assert.equal(host.calls.length, 3); assert.equal(c.stats().unsettledJobs, 2);
+  assert.equal(c.status('source')!.generation, generation, 'semantic reuse is local work, not capacity waiting');
+  assert.equal(c.stats().preparedBytes, 12); assert.equal(c.status('source')!.acknowledgedVersion, undefined);
+  assert.equal(c.displayBasis('source'), undefined);
+  host.answer(1); host.answer(2); await settle();
+  assert.equal(host.calls.length, 3, 'credit wake must not start a deferred duplicate parser');
+  assert.equal(c.stats().unsettledJobs, 0); assert.deepEqual(host.acceptedClassifications, [1, 2, 2]);
 });
 
+test('mismatched desired profile does not block theme-independent parsing or become ready color evidence', async () => {
+  const { host, controller: c } = fixture();
+  c.observe({ ...demand('echo x', 1, true), profile: 'missing', fingerprint: 'b'.repeat(64) }); c.flush();
+  assert.equal(host.calls.length, 1); assert.equal(c.stats().preparedBytes, 6);
+  assert.equal(Object.hasOwn(host.calls[0]!.request.sources[0], 'profile'), false);
+  host.answer(0); await settle();
+  assert.equal(c.status('source')!.exact, true); assert.equal(c.displayBasis('source'), undefined);
+  assert.equal(c.workStatus('source').fallbackEligible, false, 'pending styles are not Pi classifier permission');
+});
 
-test('current temporary family admits two32MiB fact sets without allocating those sources', () => {
-  const l = OCCIPITAL_LIMITS;
-  const full = 7*l.sourceBytes + 4*l.wireBytes + 24*l.runs + 128*l.styles + 32768 + 1024;
-  const two32 = 2*(7*(32*1024*1024) + 4*l.wireBytes + 24*l.runs + 128*l.styles + 32768 + 1024);
+test('current temporary family holds two full64KiB source jobs with independent2MiB decoded reservations', async () => {
+  const l = HIGHLIGHT_LIMITS, { host, controller: c } = fixture();
+  const full = 7*l.sourceBytes + 4*l.dataWireBytes + l.decodedBytes + 32768 + 1024;
   assert.equal(CONTROLLER_LIMITS.transientBytes, 2*full);
-  assert.ok(two32 <= CONTROLLER_LIMITS.transientBytes);
+  const text = 'x'.repeat(l.sourceBytes);
+  assert.equal(c.observe(demand(text, 1, true, 'a')), true);
+  assert.equal(c.observe(demand(text, 1, true, 'b')), true); c.flush();
+  assert.equal(host.calls.length, 2); assert.equal(c.stats().unsettledJobs, 2);
+  assert.equal(c.stats().transientBytes, 2*full);
+  assert.equal(c.observe(demand('waiting', 1, true, 'third')), true); c.flush();
+  assert.equal(host.calls.length, 2, 'queued source cannot reuse either held physical slot');
+  host.answer(0); await settle(); c.flush();
+  assert.equal(host.calls.length, 3); assert.equal(c.stats().unsettledJobs, 2);
+  host.answer(1); host.answer(2); await settle();
+  assert.equal(c.stats().unsettledJobs, 0); assert.equal(c.stats().transientBytes, 0);
 });
 
 test('warm visits never traverse full source via prefix comparisons or UTF8 measurement', async () => {
@@ -406,7 +499,7 @@ test('working-set pressure never evicts and resends on identical visits; explici
 
 test('unretainable result keeps a primitive refusal without repeated source measurements or dispatch', async () => {
   const { host, controller: c } = fixture({ retention: { maxBytes: 1500 } }); const d = demand('unretainable result', 1, true);
-  c.observe(d); c.flush(); host.answer(0); await settle(); assert.equal(c.status(d.key)!.generation, undefined);
+  c.observe(d); c.flush(); host.answer(0); await settle(); assert.equal(c.status(d.key)!.classificationVersion, undefined); assert.equal(c.workStatus(d.key).execution, 'acknowledged');
   assert.deepEqual(host.acceptedClassifications, [host.generation], 'local retention pressure does not undo validated native success');
   const before = c.stats(), byteLength = Buffer.byteLength; let scans = 0;
   Buffer.byteLength = ((value: any, ...args: any[]) => { if (value === d.text) scans++; return (byteLength as any)(value, ...args); }) as typeof Buffer.byteLength;
@@ -424,13 +517,13 @@ test('bookkeeping has byte admission, deterministic removal and no separate sour
   assert.ok(c.stats().bookkeepingBytes <= 1400); c.dispose(); assert.equal(c.stats().bookkeepingBytes, 0);
 });
 
-test('full raw path hint and over64KiB logical line are transmitted without local line rejection', async () => {
-  const { host, controller: c } = fixture(); const text = 'x'.repeat(65537);
+test('full raw path hint and exact64KiB logical line are transmitted without truncation', async () => {
+  const { host, controller: c } = fixture(); const text = 'x'.repeat(HIGHLIGHT_LIMITS.sourceBytes);
   const d = { ...demand(text, 1, true), language: undefined, path: '/raw/source/example.json' };
   c.observe(d); assert.equal(host.calls.length, 0); c.flush();
   assert.deepEqual(host.calls[0]!.request.sources[0].hint, { path: d.path });
   assert.equal(host.calls[0]!.request.sources[0].text, text); host.answer(0); await settle();
-  assert.equal(c.status('source')!.exact, true); assert.equal(c.stats().preparedBytes, 65537);
+  assert.equal(c.status('source')!.exact, true); assert.equal(c.stats().preparedBytes, HIGHLIGHT_LIMITS.sourceBytes);
   c.observe({ ...d, path: '/raw/source/example.rs' }); c.flush();
   assert.notEqual(host.calls[1]!.request.sources[0].generation, host.calls[0]!.request.sources[0].generation);
   assert.deepEqual(ranges(c), []); host.answer(1); await settle();
@@ -467,16 +560,16 @@ test('typed local no-start releases only that opening reservation, never guesses
 
 test('reservation arithmetic uses tiny positions/facts rather than source allocation and rejects invalid arithmetic', () => {
   assert.equal(sourceReservation({ captureUnits: 32*1024*1024, replacementUnits: 3, inputUnits: 3, replacementBytes: 3,
-    frameBytes: OCCIPITAL_LIMITS.wireBytes, runs: OCCIPITAL_LIMITS.runs, styles: OCCIPITAL_LIMITS.styles }),
-    2*(32*1024*1024 + 3 + 3) + 3 + 4*OCCIPITAL_LIMITS.wireBytes + 24*3 + 128*3 + 33792);
-  assert.throws(() => sourceReservation({ captureUnits: -1, replacementUnits: 0, inputUnits: 0, replacementBytes: 0, frameBytes: 0, runs: 0, styles: 0 }));
+    frameBytes: OCCIPITAL_LIMITS.wireBytes, decodedBytes: OCCIPITAL_LIMITS.retainedBytes }),
+    2*(32*1024*1024 + 3 + 3) + 3 + 4*OCCIPITAL_LIMITS.wireBytes + OCCIPITAL_LIMITS.retainedBytes + 33792);
+  assert.throws(() => sourceReservation({ captureUnits: -1, replacementUnits: 0, inputUnits: 0, replacementBytes: 0, frameBytes: 0, decodedBytes: 0 }));
 });
 
 
 test('completed tail never masquerades as stable prefix after provider replay and changed finite text', async () => {
   const { host, controller: c } = fixture(); c.observe(demand('if', 1, true)); c.flush(); host.answer(0); await settle();
   host.generation++; c.observe(demand('if', 1, true)); c.flush(); assert.equal(host.calls.length, 1);
-  assert.deepEqual(ranges(c), [[0, 2, 2]]);
+  assert.deepEqual(ranges(c), [[0, 2, true]]);
   c.observe(demand('iffy', 2, true)); c.flush(); assert.deepEqual(ranges(c), []);
   host.answer(1); await settle(); assert.equal(c.status('source')!.exact, true);
 });
@@ -517,9 +610,7 @@ test('review F2: real broker retire/publish preserves completed aliases without 
     const ended = new Promise<'closed'>(resolve => { resolveEnd = resolve; });
     return { ended, get endReason() { return endReason; }, request: (r: Record<string, unknown>, options?: { signal?: AbortSignal; deadlineMs?: number }) => r.op === 'describe'
       ? Promise.resolve({ v: PROTOCOL_VERSION, ticket: r.ticket, instance: description.instance, assets: description.assets, status: 'ok',
-        body: { ...description, kind: 'descriptor', protocol_version: PROTOCOL_VERSION, category_version: 1,
-          capability: 'syntax-highlight/v2', service: 'syntax', operations: ['describe', 'themes.refresh', 'highlight', 'stream.open', 'stream.append', 'stream.close'],
-          modes: ['one_shot', 'growing'], admission: ['try_now', 'bounded_queue'] } })
+        body: semanticDescriptor(r.ticket, description.instance).body })
       : host.request(0, r, options), close: async () => { closes++; endReason = 'closed'; resolveEnd('closed'); } };
   }
   const broker = new ProviderBroker({ tryShared: async () => undefined, acquireOwned: async () => {
@@ -528,7 +619,7 @@ test('review F2: real broker retire/publish preserves completed aliases without 
   const c = new SourceController(broker); fixtureControllers.add(c);
   try {
     await awaitFixture(broker.start()); const d = demand('echo x', 1, true); c.observe(d); c.flush(); first.answer(0); await settle();
-    c.observe({ ...d, version: 2 }); const original = ranges(c); assert.deepEqual(original, [[0, 6, 2]]);
+    c.observe({ ...d, version: 2 }); const original = ranges(c); assert.deepEqual(original, [[0, 6, true]]);
     const generation = broker.snapshot().generation, loss = broker.provenLoss(generation);
     assert.equal(broker.snapshot().availability, 'transitioning'); assert.equal(broker.snapshot().generation, generation + 1);
     c.observe({ ...d, version: 2 }); c.flush(); assert.deepEqual(ranges(c), original);
@@ -554,7 +645,7 @@ test('review F3: identical newer waiting text preserves one owed suffix after us
   c.observe(demand('a\ntx', 2)); c.observe(demand('a\ntx', 3)); host.answer(0); await settle();
   assert.equal(host.calls.length, 2); assert.equal(host.calls[1]!.request.append, 'x');
   assert.equal(host.calls[1]!.request.source_version, 3); assert.equal(host.calls[1]!.request.base_revision, 1);
-  assert.deepEqual(ranges(c), [[0, 2, 2]]); assert.equal(c.status('source')!.acknowledgedVersion, 1);
+  assert.deepEqual(ranges(c), [[0, 2, true]]); assert.equal(c.status('source')!.acknowledgedVersion, 1);
   host.answer(1); await settle(); assert.equal(c.status('source')!.exact, true); assert.equal(c.stats().preparedBytes, 4);
   assert.equal(c.stats().retention.prefixCopiedBytes, 0);
 });
@@ -570,7 +661,7 @@ test('review F3: classified identical aliases retain full tail but never invent 
       assert.equal(host.calls.length, 1); assert.equal(c.stats().preparedBytes, bytes);
     }
     if (!complete) {
-      c.observe(demand('a\ntx', 5)); c.flush(); assert.deepEqual(ranges(c), [[0, 2, 2]]);
+      c.observe(demand('a\ntx', 5)); c.flush(); assert.deepEqual(ranges(c), [[0, 2, true]]);
       assert.equal(host.calls[1]!.request.append, 'x'); assert.equal(host.calls[1]!.request.base_revision, 1);
       assert.equal(host.calls[1]!.request.source_version, 5); host.answer(1); await settle();
       assert.equal(c.status('source')!.acknowledgedVersion, 5); assert.equal(c.status('source')!.exact, true);
@@ -581,7 +672,7 @@ test('review F3: classified identical aliases retain full tail but never invent 
 
 test('review F3: repeated equal content while in flight aliases its real acknowledgement without a redundant append', async () => {
   const { host, controller: c } = fixture(); c.observe(demand('a\nt')); c.flush(); c.observe(demand('a\nt', 2));
-  host.answer(0); await settle(); assert.equal(host.calls.length, 1); assert.deepEqual(ranges(c), [[0, 2, 2], [2, 3, 2]]);
+  host.answer(0); await settle(); assert.equal(host.calls.length, 1); assert.deepEqual(ranges(c), [[0, 2, true], [2, 3, true]]);
   assert.equal(c.status('source')!.exact, true); assert.equal(c.status('source')!.acknowledgedVersion, 1);
   c.observe(demand('a\nt', 3, true)); c.flush(); assert.equal(host.calls[1]!.request.append, '');
   assert.equal(host.calls[1]!.request.source_version, 3); assert.equal(host.calls[1]!.request.base_revision, 1);
@@ -598,7 +689,7 @@ test('review F3: equal version aliases cannot retry identical authoritative no-s
   assert.equal(host.calls.length, 1); assert.equal(c.stats().preparedBytes, 3);
 });
 
-test('source changes notify once after two useful settlements, expose installed colors/zero credits, and never on warm reads', async () => {
+test('source changes notify once after two useful settlements, expose installed semantics/zero credits, and never on warm reads', async () => {
   let notices = 0; const snapshots: boolean[] = [], credits: number[][] = [];
   const { host, controller } = fixture({ onChange: () => {
     notices++; snapshots.push(controller.status('a')!.exact && controller.status('b')!.exact);
@@ -666,7 +757,8 @@ function observedOwner(host: Host, onChange: () => void) {
   controller.observe(demand('first', 1, true)); controller.flush();
   return new WeakRef(controller);
 }
-test('first source owner collects with its production notice externally held and another source owner active', { skip: !global.gc }, async () => {
+test('first source owner collects with its production notice externally held and another source owner active', async () => {
+  assert.equal(typeof global.gc, 'function');
   let notices = 0; const firstHost = new Host(), first = observedOwner(firstHost, () => { notices++; });
   const second = fixture(); second.controller.observe(demand('still pending', 1, false, 'second')); second.controller.flush();
   const original = globalThis.queueMicrotask, queued: (() => void)[] = [];
@@ -711,17 +803,17 @@ test('classification success is emitted only after full source validation, never
   host.answer(1); await settle(); assert.deepEqual(host.acceptedClassifications, [host.generation]);
 });
 
-for (const outcome of ['malformed','wrong_coverage','wrong_profile','wrong_revision','not_started','started','unknown','stale_provider','removed','disabled'] as const)
+for (const outcome of ['malformed','wrong_coverage','wrong_vocabulary','wrong_revision','not_started','started','unknown','stale_provider','removed','disabled'] as const)
   test(`classification success is not emitted for ${outcome} source outcome`, async () => {
     const {host, controller:c} = fixture(); c.observe(demand('hello', 1, true)); c.flush();
     if (outcome==='malformed') host.calls[0]!.resolve({});
-    else if (outcome==='wrong_coverage' || outcome==='wrong_profile' || outcome==='wrong_revision') {
+    else if (outcome==='wrong_coverage' || outcome==='wrong_vocabulary' || outcome==='wrong_revision') {
       const call = host.calls[0]!, resolve = call.resolve;
       call.resolve = (raw: any) => {
         call.resolve = resolve; // Do not intercept the common afterEach's later empty settlement.
         const chunk = raw.body.sources[0];
         if (outcome==='wrong_coverage') chunk.runs = [1, 0];
-        if (outcome==='wrong_profile') chunk.fingerprint = 'b'.repeat(64);
+        if (outcome==='wrong_vocabulary') raw.body.vocabulary = 'b'.repeat(64);
         if (outcome==='wrong_revision') chunk.revision++;
         resolve(raw);
       };
@@ -739,64 +831,62 @@ for (const outcome of ['malformed','wrong_coverage','wrong_profile','wrong_revis
   });
 
 
-test('profile refusal requests metadata once, then waits for a current full-source demand before restarting', async () => {
-  const { host, controller: c } = fixture(), d = demand('echo x', 1, true);
-  c.observe(d); c.flush(); const first = host.calls[0]!.request.sources[0];
-  host.fault(0, 'profile_changed'); await settle();
-  const notice = c.profileReconciliationNeeded(); assert.ok(notice); assert.equal(notice.generation, host.generation);
-  assert.equal(c.status('source')!.fallbackEligible, true);
-  c.acknowledgeProfiles(notice.generation, notice.sequence); c.flush(); await settle();
-  assert.equal(host.calls.length, 1); assert.equal(c.profileReconciliationNeeded(), undefined);
-  c.observe(d); c.flush(); assert.equal(host.calls.length, 2);
-  const next = host.calls[1]!.request;
-  assert.equal(next.op, 'highlight'); assert.equal(next.sources[0].text, d.text);
-  assert.notEqual(next.sources[0].key, first.key); assert.notEqual(next.sources[0].generation, first.generation);
-  host.answer(1); await settle(); assert.equal(c.status('source')!.exact, true);
-});
-test('profile refusal metadata acknowledgment cannot erase a newer pending refusal', async () => {
-  const { host, controller: c } = fixture();
-  c.observe(demand('a', 1, true, 'one')); c.flush(); c.observe(demand('b', 1, true, 'two')); c.flush();
-  host.fault(0, 'theme_unavailable'); await settle(); const first = c.profileReconciliationNeeded(); assert.ok(first);
-  host.fault(1, 'profile_changed'); await settle(); const second = c.profileReconciliationNeeded(); assert.ok(second);
-  assert.ok(second.sequence > first.sequence);
-  c.acknowledgeProfiles(first.generation, first.sequence); assert.deepEqual(c.profileReconciliationNeeded(), second);
-  c.observe(demand('a', 1, true, 'one')); c.flush(); assert.equal(host.calls.length, 3);
-  c.observe(demand('b', 1, true, 'two')); c.flush(); assert.equal(host.calls.length, 3);
-  c.acknowledgeProfiles(second.generation, second.sequence); c.observe(demand('b', 1, true, 'two')); c.flush();
-  assert.equal(host.calls.length, 4); assert.equal(c.profileReconciliationNeeded(), undefined);
-  host.answer(2); host.answer(3); await settle();
-});
-test('repeated profile refusal of unchanged demand stops after one metadata-admitted source restart', async () => {
-  const { host, controller: c } = fixture(), d = demand('abc', 1, true);
-  c.observe(d); c.flush(); host.fault(0, 'theme_unavailable'); await settle();
+test('style refusal requests metadata once; reconciliation never restarts a parser', async () => {
+  const { host, controller: c } = await pendingStyle();
+  host.fault(1, 'profile_changed'); await settle();
   const notice = c.profileReconciliationNeeded(); assert.ok(notice);
-  c.acknowledgeProfiles(notice.generation, notice.sequence); c.observe(d); c.flush();
-  host.fault(1, 'theme_unavailable'); await settle(); assert.equal(c.profileReconciliationNeeded(), undefined);
-  for (let i = 0; i < 20; i++) { c.observe(d); c.flush(); }
-  assert.equal(host.calls.length, 2); assert.equal(c.status('source')!.execution, 'not_started');
-  assert.equal(c.status('source')!.fallbackEligible, true);
-  c.observe(demand('abcd', 2, true)); c.flush(); host.fault(2, 'profile_changed'); await settle();
-  assert.ok(c.profileReconciliationNeeded());
+  assert.equal(notice.generation, host.generation); assert.equal(c.status('source')!.exact, true);
+  assert.equal(c.workStatus('source').fallbackEligible, false);
+  c.acknowledgeProfiles(notice.generation, notice.sequence); c.observe(demand('echo x', 1, true)); c.flush(); await settle();
+  assert.equal(c.profileReconciliationNeeded(), undefined); assert.equal(host.calls.length, 2);
+  assert.equal(c.stats().preparedBytes, 6); assert.equal(c.stats().styleRejections, 1);
 });
-for (const outcome of ['busy', 'started', 'invalid_header', 'stale', 'removed'] as const) test(`profile metadata demand excludes ${outcome} source outcome`, async () => {
-  const { host, controller: c } = fixture(); c.observe(demand('abc', 1, true)); c.flush();
+test('style refusal metadata acknowledgment cannot erase a newer pending refusal', async () => {
+  const { host, controller: c } = await pendingStyle();
+  host.fault(1, 'profile_unavailable'); await settle(); const first = c.profileReconciliationNeeded(); assert.ok(first);
+  selectNative(c, 'next', 'b'.repeat(64)); await settle(); host.fault(2, 'profile_changed'); await settle();
+  const second = c.profileReconciliationNeeded(); assert.ok(second); assert.ok(second.sequence > first.sequence);
+  c.acknowledgeProfiles(first.generation, first.sequence); assert.deepEqual(c.profileReconciliationNeeded(), second);
+  c.acknowledgeProfiles(second.generation, second.sequence); c.flush();
+  assert.equal(c.profileReconciliationNeeded(), undefined); assert.equal(host.calls.length, 3);
+  assert.equal(c.stats().preparedBytes, 6); assert.equal(host.acceptedClassifications.length, 1);
+});
+test('repeated unavailable styles stop unchanged work without reopening source or clearing uncertainty', async () => {
+  const { host, controller: c } = await pendingStyle(false);
+  c.observe(demand('echo xy', 2)); c.flush(); host.calls[2]!.reject(new RequestFailure('unknown source append')); await settle();
+  host.fault(1, 'profile_unavailable'); await settle(); const notice = c.profileReconciliationNeeded(); assert.ok(notice);
+  c.acknowledgeProfiles(notice.generation, notice.sequence);
+  for (let i = 0; i < 20; i++) { c.observe(demand('echo xy', 2)); c.flush(); }
+  assert.equal(host.calls.length, 3); assert.equal(c.workStatus('source').execution, 'unknown');
+  assert.equal(c.workStatus('source').fallbackEligible, false); assert.equal(c.stats().restarts, 0);
+});
+for (const outcome of ['busy', 'started', 'invalid_header', 'stale', 'removed'] as const) test(`style metadata demand excludes ${outcome} resolver outcome`, async () => {
+  const { host, controller: c } = await pendingStyle();
   if (outcome === 'stale') host.generation++;
   if (outcome === 'removed') c.remove('source');
-  if (outcome === 'invalid_header') host.calls[0]!.resolve({ v: 2, ticket: 'wrong', instance: 'daemon', assets: 'assets', status: 'error', error: { code: 'profile_changed', execution: 'not_started' } });
-  else host.fault(0, outcome === 'busy' ? 'busy' : 'profile_changed', outcome === 'started' ? 'started' : 'not_started');
-  await settle(); assert.equal(c.profileReconciliationNeeded(), undefined); assert.equal(host.calls.length, 1);
+  if (outcome === 'invalid_header') host.calls[1]!.resolve({ v: 2, ticket: 'wrong', instance: 'daemon', assets: 'assets', status: 'error', error: { code: 'profile_changed', execution: 'not_started' } });
+  else host.fault(1, outcome === 'busy' ? 'busy' : 'profile_changed', outcome === 'started' ? 'started' : 'not_started');
+  await settle();
+  // Even a style computation that started has not executed source work. A valid
+  // definition fault still requests catalogue reconciliation independently.
+  assert.equal(!!c.profileReconciliationNeeded(), outcome === 'started');
+  assert.equal(host.calls.length, 2); assert.equal(c.stats().restarts, 0);
+  assert.equal(host.acceptedClassifications.length, 1);
 });
-test('profile acknowledgment is inert after provider change, off and disposal', async () => {
-  const { host, controller: c } = fixture(); c.observe(demand('x', 1, true)); c.flush(); host.fault(0, 'profile_changed'); await settle();
-  const notice = c.profileReconciliationNeeded(); assert.ok(notice);
-  host.generation++; c.acknowledgeProfiles(notice.generation, notice.sequence);
-  assert.equal(c.profileReconciliationNeeded(), undefined); assert.equal(host.calls.length, 1);
-  c.setEnabled(false); c.acknowledgeProfiles(host.generation, notice.sequence); assert.equal(c.profileReconciliationNeeded(), undefined);
-  c.setEnabled(true); c.observe(demand('x', 1, true)); c.flush(); host.fault(1, 'profile_changed'); await settle();
-  const next = c.profileReconciliationNeeded(); assert.ok(next);
-  c.dispose(); c.acknowledgeProfiles(next.generation, next.sequence); assert.equal(c.profileReconciliationNeeded(), undefined);
+test('style metadata acknowledgment is inert after provider change, off and disposal', async () => {
+  for (const transition of ['provider', 'off', 'dispose'] as const) {
+    const { host, controller: c } = await pendingStyle(); host.fault(1, 'profile_changed'); await settle();
+    const notice = c.profileReconciliationNeeded(); assert.ok(notice, `${transition} starts with its own pending reconciliation`);
+    const calls = host.calls.length, prepared = c.stats().preparedBytes;
+    if (transition === 'provider') host.generation++;
+    else if (transition === 'off') c.setEnabled(false);
+    else c.dispose();
+    assert.equal(c.profileReconciliationNeeded(), undefined);
+    c.acknowledgeProfiles(notice.generation, notice.sequence); c.flush(); await settle();
+    assert.equal(c.profileReconciliationNeeded(), undefined); assert.equal(host.calls.length, calls);
+    assert.equal(c.stats().preparedBytes, prepared);
+  }
 });
-
 
 test('source observer identifies only changed keys and coalesces two current completions', async () => {
   const observed: string[][] = [];
@@ -891,18 +981,13 @@ test('canonical retired settlement distinguishes validated completion, no-start,
   }
 });
 
-test('canonical profile retry permission is current, readable, consumed once and never dispatches on read', async () => {
-  const { host, controller: c } = fixture(); const d = demand('x', 1, true);
-  c.observe(d); c.flush(); host.fault(0, 'profile_changed'); await settle();
+test('canonical style reconciliation never grants parser retry permission', async () => {
+  const { host, controller: c } = await pendingStyle(); host.fault(1, 'profile_changed'); await settle();
+  const need = c.profileReconciliationNeeded(); assert.ok(need);
   assert.equal(c.workStatus('source').profileRetryAllowed, false);
-  const need = c.profileReconciliationNeeded()!;
   c.acknowledgeProfiles(need.generation, need.sequence);
-  assert.equal(c.workStatus('source').profileRetryAllowed, true);
-  assert.equal(host.calls.length, 1);
-  c.observe(d); assert.equal(c.workStatus('source').profileRetryAllowed, false); c.flush();
-  host.fault(1, 'profile_changed'); await settle();
-  c.acknowledgeProfiles(need.generation, need.sequence);
-  assert.equal(c.workStatus('source').profileRetryAllowed, false);
+  for (let i = 0; i < 100; i++) assert.equal(c.workStatus('source').profileRetryAllowed, false);
+  assert.equal(host.calls.length, 2); assert.equal(c.status('source')!.acknowledgedVersion, 1);
   c.setEnabled(false); assert.equal(c.workStatus('source').profileRetryAllowed, false);
 });
 
@@ -1106,17 +1191,20 @@ test('canonical correction F2 guards retain old unknown evidence until exact own
   }
 });
 
-for (const guard of ['transient', 'source-limit', 'profile-limit'] as const) {
-  test(`local native admission ${guard} reports one terminal keyed permission transition`, async () => {
+for (const guard of ['transient', 'source-limit', 'missing-theme'] as const) {
+  test(`local native admission ${guard} keeps source permission independent of desired theme`, async () => {
     const notices: string[][] = [];
     const { host, controller } = fixture({ ...(guard === 'transient' ? { maxTransientBytes: 128 } : {}), onChange: keys => { notices.push([...keys]); } });
     controller.observe(demand('xy', 1, true));
     if (guard === 'source-limit') host.description.limits.source_bytes = 1;
-    if (guard === 'profile-limit') host.description.profiles = [{ ...description.profiles[0]!, id: 'new-profile' }];
+    if (guard === 'missing-theme') host.description.profiles = [{ ...description.profiles[0]!, id: 'new-profile' }];
     assert.equal(controller.workStatus('source').fallbackEligible, false);
     controller.flush(); await settle();
-    assert.equal(controller.workStatus('source').fallbackEligible, true);
-    assert.deepEqual(notices, [['source']]); assert.equal(host.calls.length, 0);
+    assert.equal(controller.workStatus('source').fallbackEligible, guard !== 'missing-theme');
+    if (guard === 'missing-theme') {
+      assert.deepEqual(notices, []); assert.equal(host.calls.length, 1); host.answer(0); await settle();
+      assert.equal(controller.status('source')!.exact, true); assert.equal(controller.displayBasis('source'), undefined);
+    } else { assert.deepEqual(notices, [['source']]); assert.equal(host.calls.length, 0); }
     controller.flush(); await settle();
     assert.deepEqual(notices, [['source']]);
   });
@@ -1141,96 +1229,98 @@ test('local native admission after credit wake reports refusal and preserves its
   assert.equal(controller.status('busy-peer')?.exact, true);
 });
 
+async function pendingStyle(complete = true) {
+  const result = fixture(); selectNative(result.controller);
+  result.controller.observe(demand('echo x', 1, complete)); result.controller.flush(); result.host.answer(0); await settle();
+  assert.equal(result.host.calls[1]!.request.op, 'styles.resolve');
+  return result;
+}
+function selectNative(c: SourceController, id = 'native', selectedFingerprint = fingerprint) {
+  assert.equal(c.setStyleSelection({ kind: 'native', id, fingerprint: selectedFingerprint }), true);
+}
+async function paint(c: SourceController, host: Host, sourceIndex: number, red = 80) {
+  host.answer(sourceIndex); await settle();
+  const index = host.calls.length - 1;
+  if (host.calls[index]!.request.op === 'styles.resolve') { host.style(index, red); await settle(); }
+  assert.ok(c.displayBasis('source'), 'display checks require an independently validated STYLE result');
+}
+
 function displaySnapshot(controller: SourceController, key = 'source') {
   const basis = controller.displayBasis(key);
   if (!basis) return undefined;
   let text: string | undefined;
-  const spans: number[][] = [];
+  const spans: { start: number; end: number; style: ConcreteStyle }[] = [];
   const available = basis.visit((value, read) => {
     text = value;
-    assert.equal(read((start, end, style) => spans.push([start, end, style])), true);
+    assert.equal(read((start, end, style) => spans.push({ start, end, style })), true);
   });
   return available ? { version: basis.version, generation: basis.generation, stamp: basis.stamp, text, spans } : undefined;
 }
 
 test('display basis: acknowledged full provisional colors stay paired with their own text during an append', async () => {
-  const { host, controller: c } = fixture();
-  c.observe(demand('a\nt')); c.flush(); host.answer(0); await settle();
-  const initial = displaySnapshot(c)!;
-  assert.equal(initial.text, 'a\nt'); assert.equal(initial.version, 1);
-  assert.deepEqual(initial.spans, [[0, 2, 2], [2, 3, 2]]);
-  assert.ok(initial.stamp > 0);
-  const before = c.stats();
-  c.observe(demand('a\ntx', 2));
-  assert.deepEqual(displaySnapshot(c), initial, 'Historical display never pairs old ranges with the newest text');
-  assert.deepEqual(ranges(c), [[0, 2, 2]], 'Current-source authority remains limited to the committed prefix');
+  const { host, controller: c } = fixture(); selectNative(c);
+  c.observe(demand('a\nt')); c.flush(); await paint(c, host, 0);
+  const initial = displaySnapshot(c)!; assert.equal(initial.text, 'a\nt'); assert.equal(initial.version, 1);
+  assert.deepEqual(initial.spans.map(({ start, end }) => [start, end]), [[0, 2], [2, 3]]);
+  assert.ok(initial.spans.every(({ style }) => style.foreground.kind === 'rgb' && style.foreground.r === 80));
+  const before = c.stats(); c.observe(demand('a\ntx', 2));
+  assert.deepEqual(displaySnapshot(c), initial); assert.deepEqual(ranges(c), [[0, 2, true]]);
   assert.equal(c.borrowSource('source')!.text, 'a\ntx');
   for (let i = 0; i < 100; i++) { assert.equal(c.displayStamp('source'), initial.stamp); displaySnapshot(c); }
-  assert.equal(host.calls.length, 1); assert.equal(c.stats().preparedBytes, before.preparedBytes);
-  c.flush(); host.answer(1); await settle();
-  assert.equal(displaySnapshot(c)!.text, 'a\ntx');
-  assert.notEqual(c.displayStamp('source'), initial.stamp, 'Coloring additional bytes is a display effect');
+  assert.equal(host.calls.length, 2); assert.equal(c.stats().preparedBytes, before.preparedBytes);
+  c.flush(); await paint(c, host, 2);
+  assert.equal(displaySnapshot(c)!.text, 'a\ntx'); assert.notEqual(c.displayStamp('source'), initial.stamp);
+  assert.equal(host.calls.length, 3, 'existing context style is reused after append');
 });
 
-test('display basis: completion-only acknowledgement preserves display stamp but settles authority and lease', async () => {
-  const { host, controller: c } = fixture();
-  c.observe(demand('a\nt')); c.flush(); host.answer(0); await settle();
-  const initial = displaySnapshot(c)!;
-  c.observe(demand('a\nt', 2, true)); c.flush();
-  assert.equal(host.calls[1]!.request.append, '');
-  assert.equal(c.displayStamp('source'), initial.stamp);
-  host.answer(1); await settle();
-  const final = displaySnapshot(c)!;
-  assert.equal(final.stamp, initial.stamp); assert.equal(final.text, initial.text);
-  assert.equal(final.version, 2); assert.equal(c.status('source')!.exact, true);
-  assert.equal(c.stats().remoteLeases, 0); assert.equal(c.stats().globalUnsettledJobs, 0);
+test('display basis: completion-only acknowledgement preserves paint effect but settles authority and lease', async () => {
+  const { host, controller: c } = fixture(); selectNative(c);
+  c.observe(demand('a\nt')); c.flush(); await paint(c, host, 0);
+  const initial = displaySnapshot(c)!, paintStamp = c.displayBasis('source')!.paintStamp;
+  c.observe(demand('a\nt', 2, true)); c.flush(); assert.equal(host.calls[2]!.request.append, '');
+  host.answer(2); await settle(); const final = displaySnapshot(c)!;
+  assert.equal(final.text, initial.text); assert.deepEqual(final.spans, initial.spans);
+  assert.equal(c.displayBasis('source')!.paintStamp, paintStamp);
+  assert.equal(final.version, 1, 'unchanged paint keeps its own semantic capture version');
+  assert.equal(c.status('source')!.acknowledgedVersion, 2); assert.equal(c.status('source')!.exact, true);
+  assert.equal(c.stats().remoteLeases, 0); assert.equal(c.stats().globalUnsettledJobs, 0); assert.equal(host.calls.length, 3);
 });
 
 test('display basis: source rewrites retain one charged historical basis without asserting current coverage', async () => {
-  const { host, controller: c } = fixture();
-  c.observe(demand('echo red')); c.flush(); host.answer(0); await settle();
-  const initial = displaySnapshot(c)!;
-  c.observe(demand('echo blue', 2));
-  assert.deepEqual(displaySnapshot(c), initial);
-  assert.deepEqual(ranges(c), [], 'A rewritten parser stream has no proven committed-prefix coverage');
-  assert.equal(c.status('source')!.exact, false);
-  assert.equal(c.stats().retention.entries, 2);
-  c.observe(demand('echo green', 3));
-  assert.deepEqual(displaySnapshot(c), initial);
-  assert.equal(c.stats().retention.entries, 2, 'Repeated replacement retains only one historical basis and one target');
-  assert.equal(c.borrowSource('source')!.text, 'echo green');
-  c.flush(); host.answer(1); await settle();
-  host.answer(2); await settle();
-  assert.equal(displaySnapshot(c)!.text, 'echo green');
-  assert.equal(c.stats().retention.entries, 1);
-  c.observe({ ...demand('echo green', 3), language: 'rust' });
-  assert.equal(c.displayBasis('source'), undefined, 'Incompatible language cannot retain historical styles');
-  assert.equal(c.displayStamp('source'), 0);
+  const { host, controller: c } = fixture(); selectNative(c);
+  c.observe(demand('echo red')); c.flush(); await paint(c, host, 0); const initial = displaySnapshot(c)!;
+  c.observe(demand('echo blue', 2)); assert.deepEqual(displaySnapshot(c), initial);
+  assert.deepEqual(ranges(c), []); assert.equal(c.status('source')!.exact, false); assert.equal(c.stats().retention.entries, 2);
+  c.observe(demand('echo green', 3)); assert.deepEqual(displaySnapshot(c), initial); assert.equal(c.stats().retention.entries, 2);
+  assert.equal(c.borrowSource('source')!.text, 'echo green'); c.flush();
+  assert.equal(host.calls[2]!.request.op, 'stream.close'); host.answer(2); await settle();
+  await paint(c, host, 3); assert.equal(displaySnapshot(c)!.text, 'echo green'); assert.equal(c.stats().retention.entries, 1);
+  c.observe({ ...demand('echo green', 3), language: 'rust' }); assert.equal(c.displayBasis('source'), undefined); assert.equal(c.displayStamp('source'), 0);
 });
 
 test('display basis: frozen formation retains charged colors, closes work and ignores a late append', async () => {
-  const { host, controller: c } = fixture();
-  c.observe(demand('a\nt')); c.flush(); host.answer(0); await settle();
+  const { host, controller: c } = fixture(); selectNative(c);
+  c.observe(demand('a\nt')); c.flush(); await paint(c, host, 0);
   const initial = displaySnapshot(c)!, retained = c.stats().retention.snapshotBytes;
   c.observe(demand('a\ntxy', 2)); c.flush();
   const physical = c.stats().globalTransientBytes;
   c.freeze('source');
-  assert.equal(host.calls[1]!.signal!.aborted, true);
+  assert.equal(host.calls[2]!.signal!.aborted, true);
   assert.equal(c.stats().globalTransientBytes, physical, 'Abort is not actual settlement');
   assert.deepEqual(displaySnapshot(c), initial);
   assert.equal(c.borrowSource('source'), undefined);
   assert.equal(c.workStatus('source').fallbackEligible, false, 'Frozen presentation admits no new parser');
   assert.equal(c.stats().retention.snapshotBytes, retained, 'Discard waiting text without leaking frozen basis credit');
   assert.equal(c.observe(demand('resurrection', 3)), false);
-  host.answer(1); await settle();
-  assert.deepEqual(displaySnapshot(c), initial, 'Late colors cannot replace the frozen presentation');
-  assert.equal(host.calls[2]!.request.op, 'stream.close');
   host.answer(2); await settle();
+  assert.deepEqual(displaySnapshot(c), initial, 'Late colors cannot replace the frozen presentation');
+  assert.equal(host.calls[3]!.request.op, 'stream.close');
+  host.answer(3); await settle();
   assert.equal(c.stats().remoteLeases, 0); assert.equal(c.stats().globalUnsettledJobs, 0);
   assert.deepEqual(host.acceptedClassifications, [host.generation], 'Stale reply does not reset useful native-work budget');
   const borrowed = c.displayBasis('source')!;
   c.remove('source');
-  assert.equal(c.stats().retention.retainedBytes, 0);
+  assert.equal(c.stats().retention.entries, 0); assert.equal(c.stats().retention.contexts, 0); assert.equal(c.stats().retention.styles, 0);
   assert.equal(borrowed.visit(() => assert.fail('Removed basis must not be visited')), false);
 });
 
@@ -1251,30 +1341,25 @@ test('display basis: a frozen unanswered open closes its late lease while a neig
 });
 
 test('display basis: zero parser-call counters cannot conceal changed validated styles', async () => {
-  const { host, controller: c } = fixture();
-  c.observe(demand('x')); c.flush(); host.answer(0); await settle();
-  const initial = c.displayStamp('source');
-  const ordinaryAnswer = host.calls[1]; assert.equal(ordinaryAnswer, undefined);
-  c.observe(demand('x', 2, true)); c.flush();
-  const resolve = host.calls[1]!.resolve;
-  host.calls[1]!.resolve = (raw: any) => {
-    raw.body.sources[0].styles = [{ role: 'syntaxString' }];
-    resolve(raw);
-  };
-  host.answer(1); host.calls[1]!.resolve = resolve; await settle();
-  assert.equal(c.stats().tailCalls, 0); assert.equal(c.stats().committedLineCalls, 0);
+  const { host, controller: c } = fixture(); selectNative(c);
+  c.observe(demand('x')); c.flush(); await paint(c, host, 0); const initial = c.displayStamp('source');
+  const parsed = c.stats().preparedBytes; selectNative(c, 'second', 'b'.repeat(64)); await settle();
+  assert.equal(host.calls[2]!.request.op, 'styles.resolve'); host.style(2, 190); await settle();
+  assert.equal(c.stats().tailCalls, 0); assert.equal(c.stats().committedLineCalls, 0); assert.equal(c.stats().preparedBytes, parsed);
   assert.notEqual(c.displayStamp('source'), initial);
-  assert.deepEqual(displaySnapshot(c)!.spans, [[0, 1, 3]]);
+  assert.ok(displaySnapshot(c)!.spans.every(({ style }) => style.foreground.kind === 'rgb' && style.foreground.r === 190));
+  assert.equal(host.acceptedClassifications.length, 1);
 });
 
 async function detachedDisplayOwner(host: Host) {
   const controller = new SourceController(host);
-  controller.observe(demand('owned display', 1, true)); controller.flush(); host.answer(0); await settle();
+  selectNative(controller); controller.observe(demand('owned display', 1, true)); controller.flush(); await paint(controller, host, 0);
   controller.freeze('source');
   return { owner: new WeakRef(controller), pool: new WeakRef((controller as unknown as { pool: object }).pool), view: controller.displayBasis('source')! };
 }
 
-test('display basis: a persistent view does not retain the first frozen owner or its pool', { skip: !global.gc }, async () => {
+test('display basis: a persistent view does not retain the first frozen owner or its pool', async () => {
+  assert.equal(typeof global.gc, 'function');
   const first = await detachedDisplayOwner(new Host());
   const { controller: active } = fixture(); active.observe(demand('active', 1, true));
   assert.ok(first.view);
@@ -1285,41 +1370,37 @@ test('display basis: a persistent view does not retain the first frozen owner or
 });
 
 test('display basis: frozen colors can be evicted without native re-admission and off drops charged payload', async () => {
-  const { host, controller: c } = fixture({ retention: { maxBytes: 4096 } });
-  c.observe(demand('echo one')); c.flush(); host.answer(0); await settle();
-  const view = c.displayBasis('source')!; assert.ok(view);
-  c.freeze('source'); c.flush(); host.answer(1); await settle();
-  // The pool stores a controller-issued wire key, not the external 'peer' key.
-  // Keep key/range headroom so peer admission is deterministic across controller IDs.
-  const peerUnits = Math.floor((4096 - RETENTION_LIMITS.entryAllowance - RETENTION_LIMITS.stringAllowance - 2 * RETENTION_LIMITS.maxKeyUnits - 512) / 2);
-  assert.equal(c.observe(demand('x'.repeat(peerUnits), 1, true, 'peer')), true);
+  const { host, controller: c } = fixture({ retention: { maxBytes: 65536 } }); selectNative(c);
+  c.observe(demand('echo one')); c.flush(); await paint(c, host, 0);
+  const view = c.displayBasis('source')!; assert.ok(view); assert.ok(c.stats().retention.displayBytes > 0);
+  assert.ok(c.stats().retention.retainedBytes > 4096 && c.stats().retention.retainedBytes < 65536);
+  c.freeze('source'); c.flush(); assert.equal(host.calls[2]!.request.op, 'stream.close'); host.answer(2); await settle();
+  assert.equal(c.observe(demand('x'.repeat(22000), 1, true, 'peer')), true);
   assert.equal(c.displayBasis('source'), undefined); assert.equal(c.displayStamp('source'), 0);
   assert.equal(view.visit(() => assert.fail('Evicted view cannot deliver')), false);
+  assert.ok(c.stats().retention.retainedBytes <= 65536);
   const calls = host.calls.length;
-  assert.equal(c.observe(demand('echo two', 2)), false); c.flush();
-  assert.equal(host.calls.length, calls + 1, 'Only the admitted peer starts work');
-  host.answer(calls); await settle();
-  c.setEnabled(false); assert.equal(c.stats().retention.retainedBytes, 0);
-  c.setEnabled(true); assert.equal(c.observe(demand('echo two', 3)), false, 'Off/on cannot thaw a terminal source owner');
-  c.remove('source'); assert.equal(c.observe(demand('echo two', 1)), true, 'Full owner/key removal permits a new incarnation');
+  assert.equal(c.observe(demand('echo two', 2)), false); c.flush(); assert.equal(host.calls.length, calls + 1);
+  assert.equal(host.calls[calls]!.request.op, 'highlight'); host.answer(calls); await settle();
+  c.setEnabled(false); assert.equal(c.stats().retention.entries, 0); assert.equal(c.stats().retention.styles, 0);
+  c.setEnabled(true); assert.equal(c.observe(demand('echo two', 3)), false);
+  c.remove('source'); assert.equal(c.observe(demand('echo two', 1)), true);
 });
 
 test('display basis: retaining rewrite colors does not clear unresolved same-provider authority', async () => {
-  const { host, controller: c } = fixture();
-  c.observe(demand('echo old')); c.flush(); host.answer(0); await settle();
-  const initial = c.displayStamp('source');
-  c.observe(demand('echo older', 2)); c.flush(); host.calls[1]!.reject(new Error('uncertain RPC')); await settle();
+  const { host, controller: c } = fixture(); selectNative(c);
+  c.observe(demand('echo old')); c.flush(); await paint(c, host, 0); const initial = c.displayStamp('source');
+  c.observe(demand('echo older', 2)); c.flush(); host.calls[2]!.reject(new Error('uncertain RPC')); await settle();
+  assert.equal(c.workStatus('source').execution, 'unknown'); c.observe(demand('echo rewrite', 3)); c.flush();
+  assert.equal(c.displayStamp('source'), initial); assert.equal(c.workStatus('source').fallbackEligible, false);
   assert.equal(c.workStatus('source').execution, 'unknown');
-  c.observe(demand('echo rewrite', 3)); c.flush();
-  assert.equal(c.displayStamp('source'), initial);
-  assert.equal(c.workStatus('source').fallbackEligible, false);
-  assert.equal(c.workStatus('source').execution, 'unknown');
-  assert.equal(host.calls.filter(call => call.request.op === 'stream.open' || call.request.op === 'stream.append').length, 2);
+  assert.deepEqual(host.calls.map(call => call.request.op), ['stream.open', 'styles.resolve', 'stream.append', 'stream.close']);
+  host.answer(3); await settle(); assert.equal(c.workStatus('source').execution, 'unknown');
 });
 
 test('stream review F2: rewrite then provider recovery never promotes historical colors into committed coverage', async () => {
-  const { host, controller: c } = fixture();
-  c.observe(demand('if', 1, true)); c.flush(); host.answer(0); await settle();
+  const { host, controller: c } = fixture(); selectNative(c);
+  c.observe(demand('if', 1, true)); c.flush(); await paint(c, host, 0);
   c.observe(demand('zz', 2, true)); c.flush();
   assert.deepEqual(ranges(c), []); assert.equal(c.status('source')?.exact, false);
   host.generation++; c.observe(demand('zz', 2, true)); c.flush();
@@ -1358,88 +1439,71 @@ test('LIFO registry: preparation records obey capacity, retirement and native-of
   assert.equal(visits, 1); assert.equal(c.stats().bookkeepingBytes, 0);
 });
 
-test('theme display: requested identity never relabels retained colors and rollback reuses only a matching finite result', async () => {
-  const { host, controller: c } = fixture(), originalDescription = host.description;
-  const a = demand('echo retained', 1, true);
-  c.observe(a); c.flush(); host.answer(0); await settle();
-  const display = displaySnapshot(c)!;
-  const b = { ...a, fingerprint: 'b'.repeat(64) };
-  host.description = { ...originalDescription, profiles: [{ id: 'pi', label: 'Pi', fingerprint: b.fingerprint }] };
-  c.observe(b); c.flush(); assert.equal(host.calls.length, 2);
-  assert.equal(c.borrowSource('source')?.fingerprint, b.fingerprint);
-  assert.equal(c.displayBasis('source')?.fingerprint, a.fingerprint);
-  assert.deepEqual(displaySnapshot(c), display);
-  assert.equal(c.status('source')?.exact, false); assert.deepEqual(ranges(c), [], 'display is not current-profile parser coverage');
-  const prepared = c.stats().preparedBytes;
-  host.description = originalDescription; c.observe(a); c.flush();
-  assert.equal(c.status('source')?.exact, true); assert.deepEqual(displaySnapshot(c), display);
-  assert.equal(host.calls.length, 2); assert.equal(c.stats().preparedBytes, prepared);
-  assert.equal(c.workStatus('source').execution, 'unsettled', 'cached display never releases the held obsolete physical job');
-  host.answer(1); await settle();
-  assert.deepEqual(displaySnapshot(c), display); assert.equal(host.calls.length, 2);
-  assert.equal(c.stats().staleReplies, 1); assert.equal(c.stats().retention.entries, 1);
+test('theme display: requested identity never relabels retained colors; rollback reuses matching styles without parsing', async () => {
+  const { host, controller: c } = fixture(); selectNative(c); const a = demand('echo retained', 1, true);
+  c.observe(a); c.flush(); await paint(c, host, 0); const display = displaySnapshot(c)!, prepared = c.stats().preparedBytes;
+  selectNative(c, 'B', 'b'.repeat(64)); c.observe({ ...a, profile: 'B', fingerprint: 'b'.repeat(64) }); c.flush();
+  assert.equal(host.calls[2]!.request.op, 'styles.resolve'); assert.equal(c.borrowSource('source')!.profile, 'B');
+  assert.equal(c.displayBasis('source')!.profile, 'native'); assert.deepEqual(displaySnapshot(c), display);
+  assert.equal(c.status('source')!.exact, true, 'semantic completion is independent of desired palette');
+  selectNative(c); c.observe(a); c.flush(); await settle();
+  assert.deepEqual(displaySnapshot(c)!.spans, display.spans); assert.equal(host.calls.length, 3); assert.equal(c.stats().preparedBytes, prepared);
+  assert.equal(c.stats().unsettledJobs, 1, 'cached rollback never releases held obsolete STYLE credit');
+  host.style(2, 170); await settle(); assert.deepEqual(displaySnapshot(c)!.spans, display.spans);
+  assert.equal(c.displayBasis('source')!.profile, 'native'); assert.equal(host.acceptedClassifications.length, 1);
 });
 
-test('theme display: repeated pending profiles retain one basis and actual identity changes still discard it', async () => {
-  const { host, controller: c } = fixture(), a = demand('echo retained', 1, true);
-  c.observe(a); c.flush(); host.answer(0); await settle();
-  const initial = displaySnapshot(c)!;
+test('theme display: repeated pending palettes retain one semantic basis; actual language changes discard it', async () => {
+  const { host, controller: c } = fixture(); selectNative(c); const a = demand('echo retained', 1, true);
+  c.observe(a); c.flush(); await paint(c, host, 0); const initial = displaySnapshot(c)!, generation = c.status('source')!.generation;
   for (const byte of ['b', 'c', 'd', 'e']) {
-    const next = { ...a, fingerprint: byte.repeat(64) };
-    host.description = { ...host.description, profiles: [{ id: 'pi', label: 'Pi', fingerprint: next.fingerprint }] };
-    c.observe(next);
-    assert.deepEqual(displaySnapshot(c), initial);
-    assert.equal(c.stats().retention.entries, 2, 'one retained basis and one current demand, not a theme history cache');
+    selectNative(c, byte, byte.repeat(64)); c.observe({ ...a, profile: byte, fingerprint: byte.repeat(64) });
+    assert.deepEqual(displaySnapshot(c), initial); assert.equal(c.status('source')!.generation, generation);
+    assert.equal(c.stats().retention.entries, 1, 'no parser or source history for theme selection');
   }
-  c.observe({ ...a, version: 2, language: 'python' });
-  assert.equal(c.displayBasis('source'), undefined, 'different language is a genuine display invalidation');
+  c.observe({ ...a, version: 2, language: 'python' }); assert.equal(c.displayBasis('source'), undefined);
 });
 
-test('theme display: a retained provisional result is never reused as a completed rollback classification', async () => {
-  const { host, controller: c } = fixture(), original = demand('echo partial');
-  c.observe(original); c.flush(); host.answer(0); await settle();
-  const display = displaySnapshot(c)!; assert.equal(c.displayBasis('source')!.complete, false);
-  c.observe({ ...original, profile: 'preview', fingerprint: 'b'.repeat(64) });
-  c.observe({ ...original, complete: true });
-  assert.deepEqual(displaySnapshot(c), display); assert.equal(c.status('source')!.exact, false);
-  c.flush(); host.answer(1); await settle();
-  assert.equal(host.calls[2]!.request.op, 'highlight', 'finite text still needs final classification, not the old incomplete lease');
-  host.answer(2); await settle(); assert.equal(c.status('source')!.exact, true);
+test('theme display: provisional rollback keeps parser lease; completion still needs one empty final append', async () => {
+  const { host, controller: c } = fixture(); selectNative(c); const original = demand('echo partial');
+  c.observe(original); c.flush(); await paint(c, host, 0); assert.equal(c.displayBasis('source')!.complete, false);
+  const generation = c.status('source')!.generation;
+  selectNative(c, 'preview', 'b'.repeat(64)); selectNative(c);
+  c.observe({ ...original, complete: true }); c.flush();
+  assert.equal(c.status('source')!.generation, generation); assert.equal(host.calls[2]!.request.op, 'stream.append');
+  assert.equal(host.calls[2]!.request.append, ''); assert.equal(host.calls[2]!.request.final, true);
+  host.answer(2); await settle(); assert.equal(c.status('source')!.exact, true); assert.equal(c.stats().remoteLeases, 0);
+  assert.equal(host.calls.length, 3); assert.equal(host.acceptedClassifications.length, 2);
 });
 
-for (const alreadyPending of [false, true]) test(`theme display recovery: old-profile basis never satisfies new provider ${alreadyPending ? 'after' : 'during'} selection`, async () => {
-  const { host, controller: c } = fixture(), original = demand('echo recovery', 1, true);
-  c.observe(original); c.flush(); host.answer(0); await settle(); const display = displaySnapshot(c)!;
-  const next = { ...original, fingerprint: 'b'.repeat(64) };
-  host.description = { ...host.description, profiles: [{ id: 'pi', label: 'Pi', fingerprint: next.fingerprint }] };
-  if (alreadyPending) { c.observe(next); c.flush(); assert.equal(host.calls.length, 2); }
-  host.generation++; c.observe(next); c.flush();
-  if (alreadyPending) { host.answer(1); await settle(); }
-  const fresh = alreadyPending ? 2 : 1;
-  assert.equal(host.calls.length, fresh + 1, 'new provider must classify the requested profile once');
-  assert.deepEqual(displaySnapshot(c), display); assert.equal(c.status('source')?.exact, false);
-  host.answer(fresh); await settle();
-  assert.equal(c.displayBasis('source')!.fingerprint, next.fingerprint); assert.equal(c.status('source')!.exact, true);
+for (const alreadyPending of [false, true]) test(`theme display recovery: compatible provider resolves requested styles without source replay ${alreadyPending ? 'after' : 'during'} selection`, async () => {
+  const { host, controller: c } = fixture(); selectNative(c); const original = demand('echo recovery', 1, true);
+  c.observe(original); c.flush(); await paint(c, host, 0); const display = displaySnapshot(c)!;
+  selectNative(c, 'B', 'b'.repeat(64));
+  if (alreadyPending) { c.flush(); assert.equal(host.calls.length, 3); }
+  host.generation++; c.observe({ ...original, profile: 'B', fingerprint: 'b'.repeat(64) }); c.flush();
+  assert.equal(c.status('source')!.exact, true); assert.equal(c.status('source')!.acknowledgedVersion, undefined);
+  assert.deepEqual(displaySnapshot(c), display); assert.equal(c.stats().preparedBytes, 13);
+  if (alreadyPending) { host.style(2, 130); await settle(); }
+  const styles = host.calls.map((call, index) => ({ call, index })).filter(({ call }) => call.request.op === 'styles.resolve' && call.request.rules.id === 'B');
+  for (const { index } of styles) { host.style(index, 130); await settle(); }
+  assert.equal(c.displayBasis('source')!.profile, 'B'); assert.equal(c.displayBasis('source')!.fingerprint, 'b'.repeat(64));
+  assert.equal(host.calls.filter(call => call.request.op === 'highlight').length, 1);
 });
 
-test('theme burst: superseding a profile leaves already-dispatched work to settle normally', async () => {
-  const { host, controller: c } = fixture();
-  host.description.profiles = [...description.profiles, { id: 'B', label: 'B', fingerprint: 'b'.repeat(64) }, { id: 'C', label: 'C', fingerprint: 'c'.repeat(64) }];
-  const source = demand('echo original', 1, true);
-  c.observe(source); c.flush(); host.answer(0); await settle();
-  c.observe({ ...source, profile: 'B', fingerprint: 'b'.repeat(64) }); c.flush();
-  c.observe({ ...source, profile: 'C', fingerprint: 'c'.repeat(64) }); c.flush();
-  assert.equal(host.calls[1]!.signal?.aborted, false, 'a newer theme invalidates publication without cancelling physical execution');
-  assert.equal(c.displayBasis('source')!.profile, 'pi');
-  host.answer(1); await settle();
-  assert.equal(c.workStatus('source').execution, 'unsettled', 'latest profile progresses after obsolete work really settles');
-  assert.equal(host.calls[2]!.request.sources[0].profile, 'C');
-  host.answer(2); await settle();
-  assert.equal(c.displayBasis('source')!.profile, 'C'); assert.equal(c.status('source')!.protective, false);
+test('theme burst: superseding styles leaves already-dispatched work to settle normally without parser replay', async () => {
+  const { host, controller: c } = fixture(); selectNative(c); const source = demand('echo original', 1, true);
+  c.observe(source); c.flush(); await paint(c, host, 0);
+  selectNative(c, 'B', 'b'.repeat(64)); await settle(); selectNative(c, 'C', 'c'.repeat(64)); await settle();
+  assert.equal(host.calls[2]!.signal!.aborted, false); assert.equal(c.displayBasis('source')!.profile, 'native');
+  host.style(2, 140); await settle(); assert.equal(host.calls[3]!.request.rules.id, 'C');
+  assert.equal(c.workStatus('source').execution, 'acknowledged'); assert.equal(c.stats().preparedBytes, 13);
+  host.style(3, 180); await settle(); assert.equal(c.displayBasis('source')!.profile, 'C');
+  assert.equal(host.calls.length, 4); assert.equal(host.acceptedClassifications.length, 1);
 });
 
 test('theme burst: yielded preparation visits a linear number of weak registry entries', async () => {
-  const { host, controller: c } = fixture(); host.ready = false;
+  const { host, controller: c } = fixture(); selectNative(c); host.ready = false;
   const tasks: { keys: Set<string>; prepare(): void }[] = [];
   let prepared = 0, visits = 0;
   for (let i = 0; i < 32; i++) {
@@ -1456,7 +1520,7 @@ test('theme burst: yielded preparation visits a linear number of weak registry e
 });
 
 test('theme burst: two same-turn settlements cannot strand a newer coalesced source', async () => {
-  const { host, controller: c } = fixture();
+  const { host, controller: c } = fixture(); selectNative(c);
   c.observe(demand('old a', 1, true, 'a')); c.flush(); c.observe(demand('old b', 1, true, 'b')); c.flush();
   c.observe(demand('new a', 2, true, 'a')); c.observe(demand('new b', 2, true, 'b')); c.flush();
   host.answer(1); host.answer(0); await settle();
@@ -1464,7 +1528,7 @@ test('theme burst: two same-turn settlements cannot strand a newer coalesced sou
 });
 
 test('theme burst: byte backpressure defers repeated group preparation with one physical job', async () => {
-  const { host, controller: c } = fixture({ maxTransientBytes: 40000 });
+  const { host, controller: c } = fixture({ maxTransientBytes: 50000, retention: { maxBytes: 8192 } });
   host.description.limits.request_bytes = 1024; host.description.limits.reply_bytes = 1024;
   let prepared = 0;
   const tasks = Array.from({ length: 8 }, (_, i) => ({ keys: new Set([`byte-${i}`]), prepare() {
@@ -1477,8 +1541,8 @@ test('theme burst: byte backpressure defers repeated group preparation with one 
   assert.equal(host.calls.length, 1); assert.equal(prepared, 2, 'metadata cannot bypass exhausted byte credit');
 });
 
-for (const action of ['remove', 'freeze', 'off', 'rewrite'] as const) test(`theme burst: ${action} still cancels a physically preserved older-profile job`, async () => {
-  const { host, controller: c } = fixture();
+for (const action of ['remove', 'freeze', 'off', 'rewrite'] as const) test(`theme selection: ${action} still cancels a held parser despite a changed desired palette`, async () => {
+  const { host, controller: c } = fixture(); selectNative(c);
   host.description.profiles = [...description.profiles, { id: 'B', label: 'B', fingerprint: 'b'.repeat(64) }];
   const source = demand('echo old', 1, true);
   c.observe(source); c.flush();
@@ -1492,4 +1556,333 @@ for (const action of ['remove', 'freeze', 'off', 'rewrite'] as const) test(`them
   assert.equal(c.stats().globalUnsettledJobs, 1, 'cancel delivery is not physical settlement');
   host.answer(0); await settle();
   assert.equal(c.displayBasis('source'), undefined, 'obsolete completion cannot restore retired display');
+});
+
+for (const code of ['profile_changed', 'profile_unavailable'] as const) test(`native definition refusal notifies source metadata demand: ${code}`, async () => {
+  const packets: { keys: readonly string[]; groups: readonly number[] }[] = [];
+  const { host, controller: c } = fixture({ onChange(keys, groups = []) { packets.push({ keys, groups }); } });
+  selectNative(c); c.observe(demand('echo x', 1, true)); c.flush(); host.answer(0); await settle();
+  assert.equal(host.calls[1]!.request.op, 'styles.resolve'); packets.length = 0;
+  const prepared = c.stats().preparedBytes, classifications = host.acceptedClassifications.length;
+  host.fault(1, code); await settle();
+  const need = c.profileReconciliationNeeded(); assert.ok(need, 'a native STYLE definition fault must request fresh catalogue metadata');
+  assert.deepEqual(packets, [{ keys: ['source'], groups: [] }], 'the client must be woken by one targeted coalesced notice');
+  assert.equal(c.status('source')!.exact, true); assert.equal(c.status('source')!.acknowledgedVersion, 1);
+  assert.equal(c.workStatus('source').profileRetryAllowed, false); assert.equal(c.workStatus('source').fallbackEligible, false);
+  c.acknowledgeProfiles(need.generation, need.sequence); packets.length = 0;
+  for (let i = 0; i < 100; i++) { c.observe(demand('echo x', 1, true)); c.flush(); }
+  await settle(); assert.equal(host.calls.length, 2); assert.deepEqual(packets, []);
+  selectNative(c, 'replacement', 'b'.repeat(64)); await settle();
+  assert.equal(host.calls[2]!.request.op, 'styles.resolve'); host.style(2); await settle();
+  assert.ok(c.displayBasis('source')); assert.equal(c.stats().preparedBytes, prepared);
+  assert.equal(host.acceptedClassifications.length, classifications); assert.equal(c.stats().restarts, 0);
+  assert.deepEqual(host.calls.map(call => call.request.op), ['highlight', 'styles.resolve', 'styles.resolve']);
+});
+
+test('unknown STYLE error codes do not invent a catalogue need or source retry', async () => {
+  for (const code of ['busy', 'theme_unavailable']) {
+    const packets: string[][] = [];
+    const { host, controller: c } = fixture({ onChange(keys) { packets.push([...keys]); } });
+    selectNative(c); c.observe(demand('echo x', 1, true)); c.flush(); host.answer(0); await settle();
+    packets.length = 0; host.fault(1, code); await settle();
+    assert.equal(c.profileReconciliationNeeded(), undefined); assert.deepEqual(packets, []);
+    assert.equal(c.workStatus('source').profileRetryAllowed, false); assert.equal(c.status('source')!.exact, true);
+    c.flush(); await settle(); assert.equal(host.calls.length, 2); assert.equal(host.acceptedClassifications.length, 1);
+  }
+});
+
+test('geometry funding: useful group generations survive pressure; admission is not source authority', async () => {
+  const { host, controller: c } = fixture({ retention: { maxBytes: 65536 } });
+  const preparation = { keys: new Set(['source']), prepare() { c.observe(demand('echo useful', 1, true)); } };
+  const group = c.registerPreparation(preparation)!;
+  c.queuePreparation(group, true); c.flush(); host.answer(0); await settle();
+  const pool = semanticPool(c), own = c.status('source')!.generation!;
+  assert.equal(pool.status(own)!.sourceVersion, 1);
+  const neighbor = pool.admit('pressure-victim', 1, 'n'.repeat(4000)); assert.equal(neighbor.accepted, true);
+  const funding = c.geometryFunding(group)!;
+  assert.equal(funding.budget, pool.budget);
+  const counts = c.stats(), calls = host.calls.length;
+  const remaining = pool.budget.limit - pool.budget.stats().retainedBytes;
+  const grant = funding.grant(remaining + 1); assert.ok(grant, 'evictable neighbor must fund the operation');
+  assert.equal(grant.budget, pool.budget); assert.equal(pool.status(neighbor.generation!), undefined);
+  assert.equal(pool.status(own)!.sourceVersion, 1, 'useful source remains resident without copying a protected-generation list');
+  grant.close(); assert.equal(pool.budget.stats().outstandingPeakBytes, 0);
+  await settle(); assert.equal(host.calls.length, calls); assert.equal(c.stats().preparedBytes, counts.preparedBytes);
+  assert.equal(c.stats().piSourceRecords, counts.piSourceRecords); assert.equal(c.workStatus('source').fallbackEligible, false);
+  c.unregisterPreparation(group); assert.equal(funding.grant(0), undefined, 'released group cannot mint new grants');
+  const successor = c.registerPreparation(preparation)!; assert.notEqual(successor, group);
+  assert.equal(funding.grant(0), undefined, 'new membership cannot revive the old operation handle');
+  void preparation;
+});
+
+test('geometry funding: native Off preserves funded geometry; explicit removal and disposal close only new admission', () => {
+  const { controller: c } = fixture();
+  const preparation = { keys: new Set<string>(), prepare() {} }, group = c.registerPreparation(preparation)!;
+  const funding = c.geometryFunding(group)!;
+  assert.equal(c.geometryFunding({ ...group }), undefined, 'structural identity is insufficient');
+  const grant = funding.grant(128)!; const retained = grant.consume(128); grant.close();
+  c.setEnabled(false);
+  const off = funding.grant(64); assert.ok(off, 'native Off is not presentation shutdown'); off.close();
+  assert.equal(funding.budget.stats().retainedBytes, 128);
+  c.dispose(); assert.equal(funding.grant(1), undefined); assert.equal(funding.budget.stats().retainedBytes, 128);
+  retained.release(); assert.equal(funding.budget.stats().retainedBytes, 0); void preparation;
+});
+
+for (const settleFirst of [false, true]) test(`geometry funding: source/style pressure cancels only after render, credit waits for outcome (${settleFirst})`, async () => {
+  const { host, controller: c } = fixture({ retention: { maxBytes: 65536 } });
+  selectNative(c); c.observe(demand('echo A', 1, true)); c.flush(); await paint(c, host, 0);
+  const previous = c.displayBasis('source')!;
+  selectNative(c, 'next', 'b'.repeat(64)); await settle();
+  assert.equal(host.calls[2]!.request.op, 'styles.resolve');
+  c.observe(demand('echo other', 1, true, 'other')); c.flush();
+  assert.equal(host.calls[3]!.request.op, 'highlight');
+  let renderDepth = 0, duringRender = 0; const cancellations: number[] = [];
+  let drained!: () => void; const cancellation = new Promise<void>(resolve => { drained = resolve; });
+  for (const index of [2, 3]) host.calls[index]!.signal!.addEventListener('abort', () => {
+    if (renderDepth) duringRender++; cancellations.push(index);
+    if (cancellations.length === (settleFirst ? 1 : 2)) drained();
+  }, { once: true });
+  const funding = c.geometryFunding()!, before = c.stats();
+  renderDepth++; try {
+    assert.equal(funding.grant(funding.budget.limit), undefined, 'held physical captures prevent whole-budget admission');
+    assert.equal(previous.role('panel'), undefined); assert.equal(c.stats().retention.entries, 0);
+    c.flush(); assert.equal(duringRender, 0, 'transport cancellation would encode/write synchronously here');
+    assert.deepEqual(cancellations, [], 'a synchronous flush cannot drain render-pressure cancellation');
+    assert.equal(c.stats().globalUnsettledJobs, before.globalUnsettledJobs); assert.equal(host.calls.length, 4);
+  } finally { renderDepth--; }
+  if (settleFirst) host.answer(3);
+  await awaitFixture(cancellation);
+  assert.deepEqual(cancellations, settleFirst ? [2] : [2, 3]);
+  assert.equal(c.stats().globalUnsettledJobs, settleFirst ? 1 : 2, 'abort alone is never settlement evidence');
+  if (!settleFirst) host.answer(3); host.style(2); await settle();
+  assert.equal(c.stats().globalUnsettledJobs, 0); assert.equal(c.displayBasis('source'), undefined);
+  assert.equal(c.stats().preparedBytes, before.preparedBytes); assert.equal(host.calls.length, 4);
+});
+
+for (const action of ['off', 'remove', 'dispose'] as const) test(`geometry funding: explicit ${action} drains retired job synchronously without waiting for the render continuation`, async () => {
+  const { host, controller: c } = fixture({ retention: { maxBytes: 65536 } });
+  c.observe(demand('held', 1, true)); c.flush();
+  let cancelled = 0; host.calls[0]!.signal!.addEventListener('abort', () => { cancelled++; }, { once: true });
+  const funding = c.geometryFunding()!, grant = funding.grant(funding.budget.limit);
+  assert.ok(grant, 'SOURCE request credit is separate from released logical data'); grant.close();
+  assert.equal(cancelled, 0); assert.equal(c.stats().globalUnsettledJobs, 1);
+  if (action === 'off') c.setEnabled(false); else if (action === 'remove') c.remove('source'); else c.dispose();
+  assert.equal(cancelled, 1); assert.equal(c.stats().globalUnsettledJobs, 1); host.answer(0); await settle();
+  assert.equal(c.stats().globalUnsettledJobs, 0); assert.equal(cancelled, 1);
+});
+
+function detachedGeometryFunding(host: Host) {
+  const controller = new SourceController(host);
+  return { weak: new WeakRef(controller), funding: controller.geometryFunding()! };
+}
+test('geometry funding: retained funding capability has no strong controller or source owner', async () => {
+  assert.equal(typeof global.gc, 'function');
+  const probe = detachedGeometryFunding(new Host());
+  for (let i = 0; i < 80; i++) { await turn(); global.gc!(); await turn(); if (!probe.weak.deref()) break; }
+  assert.equal(probe.weak.deref(), undefined); assert.equal(probe.funding.grant(0), undefined);
+});
+
+async function abandonedGeometryPreparation(controller: SourceController, kind: 'empty' | 'source' | 'palette') {
+  let preparation: { keys: Set<string>; prepare(): void } | undefined = {
+    keys: new Set(kind === 'source' ? ['source'] : []),
+    prepare() { if (kind === 'source') controller.observe(demand('held group source', 1, true)); },
+  };
+  const group = controller.registerPreparation(preparation)!;
+  if (kind !== 'empty') { controller.queuePreparation(group, true); controller.flush(); }
+  // Keep the owner alive until previous cooperative continuations have finished.
+  await turn(); await turn();
+  const weak = new WeakRef(preparation); preparation = undefined;
+  return { group, weak };
+}
+for (const kind of ['empty', 'source', 'palette'] as const) test(`geometry funding: automatic ${kind} preparation GC sweep cannot drain transport cancellation inside render`, async () => {
+  assert.equal(typeof global.gc, 'function');
+  const { host, controller: c } = fixture({ retention: { maxBytes: 65536 } });
+  if (kind !== 'source') { c.observe(demand('held independent source', 1, true)); c.flush(); }
+  if (kind === 'palette') selectNative(c);
+  const abandoned = await abandonedGeometryPreparation(c, kind);
+  for (let i = 0; i < 80; i++) { await turn(); global.gc!(); await turn(); if (!abandoned.weak.deref()) break; }
+  assert.equal(abandoned.weak.deref(), undefined, 'actual owner GC is a required precondition');
+  assert.equal(host.calls[0]!.request.op, 'highlight');
+  if (kind === 'palette') assert.equal(host.calls[1]!.request.op, 'styles.resolve');
+  const jobs = kind === 'palette' ? 2 : 1;
+  assert.equal(c.stats().globalUnsettledJobs, jobs);
+  let renderDepth = 0, inside = 0, aborted = 0, done!: () => void;
+  const cancelled = new Promise<void>(resolve => { done = resolve; });
+  for (const call of host.calls) call.signal!.addEventListener('abort', () => {
+    if (renderDepth) inside++; if (++aborted === jobs) done();
+  }, { once: true });
+  c.refreshPreparations(); // Cold notification parks the actual existing cursor at the abandoned record.
+  const funding = c.geometryFunding()!, before = c.stats();
+  renderDepth++; try {
+    funding.grant(funding.budget.limit)?.close();
+    assert.equal(aborted, 0, 'geometry pressure alone defers cancellation');
+    c.flush();
+    assert.equal(inside, 0, 'automatic weak sweeping, including nested source removal, must stay transport-free');
+    assert.equal(aborted, 0); assert.equal(c.stats().globalUnsettledJobs, jobs);
+    assert.equal(c.geometryFunding(abandoned.group), undefined);
+    assert.ok(c.stats().bookkeepingBytes < before.bookkeepingBytes, 'dead registration must actually be removed');
+  } finally { renderDepth--; }
+  await awaitFixture(cancelled); assert.equal(inside, 0); assert.equal(aborted, jobs);
+  assert.equal(c.stats().globalUnsettledJobs, jobs, 'cleanup does not release physical request credit');
+  host.answer(0); if (kind === 'palette') host.style(1); await settle();
+  assert.equal(c.stats().globalUnsettledJobs, 0); assert.equal(c.displayBasis('source'), undefined);
+  assert.equal(c.stats().preparedBytes, before.preparedBytes); assert.equal(host.calls.length, jobs);
+});
+
+test('geometry funding: explicit unregister remains immediate for a retired owned source', async () => {
+  const { host, controller: c } = fixture({ retention: { maxBytes: 65536 } });
+  const preparation = { keys: new Set(['source']), prepare() { c.observe(demand('held owned source', 1, true)); } };
+  const group = c.registerPreparation(preparation)!;
+  c.queuePreparation(group, true); c.flush(); assert.equal(host.calls[0]!.request.op, 'highlight');
+  let aborted = 0; host.calls[0]!.signal!.addEventListener('abort', () => { aborted++; }, { once: true });
+  const funding = c.geometryFunding()!; funding.grant(funding.budget.limit)?.close();
+  assert.equal(c.stats().retention.entries, 0); assert.equal(aborted, 0);
+  c.unregisterPreparation(group);
+  assert.equal(aborted, 1); assert.equal(c.stats().globalUnsettledJobs, 1);
+  assert.equal(c.stats().sourceRecords, 0); assert.equal(c.geometryFunding(group), undefined);
+  host.answer(0); await settle(); assert.equal(aborted, 1); assert.equal(c.stats().globalUnsettledJobs, 0);
+  void preparation;
+});
+
+test('geometry funding: actual kernel, protected source and cache cleanup share one ledger through resize, pressure and native Off', async () => {
+  const { host, controller: c } = fixture({ retention: { maxBytes: 65536 } });
+  const text = 'echo 界\nnext', preparation = { keys: new Set(['source']), prepare() { c.observe(demand(text, 1, true)); } };
+  const group = c.registerPreparation(preparation)!;
+  c.queuePreparation(group, true); c.flush(); host.answer(0); await settle();
+  const pool = semanticPool(c), generation = c.status('source')!.generation!, funding = c.geometryFunding(group)!;
+  const cache = new RenderCache(), neutral = { open: '', close: '' };
+  assert.equal(funding.budget, pool.budget);
+  let grants = 0, peak = 0, segments = 0;
+  const grant = (bytes: number) => {
+    grants++; const result = funding.grant(bytes), stats = funding.budget.stats();
+    peak = Math.max(peak, stats.retainedBytes + stats.outstandingPeakBytes);
+    assert.ok(peak <= funding.budget.limit); return result;
+  };
+  const measured = measure(text, funding.budget, grant)!;
+  const frame = (layout: MeasuredRowLayout) => {
+    const painted = paintFlat(text, measured, layout, () => true, neutral, neutral, 0, funding.budget, grant);
+    assert.ok(painted);
+    return cache.put({ layout, painted }, paintRows(painted), 'bash', frameCleanup(layout.cleanupReceipt(), painted.cleanupReceipt()));
+  };
+  const previous = frame(reflow(measured, { mode: 'bash', width: 8 }, grant)!);
+  const oldRows = paintRows(previous.value!.painted), measurementBytes = measured.allocationBytes;
+  const before = c.stats(), calls = host.calls.length, accepted = host.acceptedClassifications.length;
+  const neighbor = pool.admit('geometry-victim', 1, 'n'.repeat(8000)); assert.equal(neighbor.accepted, true);
+  const fillingBytes = funding.budget.limit - funding.budget.stats().retainedBytes - 32;
+  assert.ok(fillingBytes > 0);
+  const raw = funding.budget.reserve(fillingBytes)!, filler = raw.consume(fillingBytes); raw.close();
+  const filled = funding.budget.stats(); peak = Math.max(peak, filled.retainedBytes + filled.outstandingPeakBytes);
+  const segment = Intl.Segmenter.prototype.segment;
+  Intl.Segmenter.prototype.segment = () => { segments++; throw new Error('resize repeated source measurement'); };
+  try {
+    assert.equal(reflow(measured, { mode: 'bash', width: 4 }), undefined, 'raw budget cannot bypass the controlled pressure precondition');
+    assert.deepEqual(paintRows(previous.value!.painted), oldRows); assert.ok(measured.isValid);
+    const layout = reflow(measured, { mode: 'bash', width: 4 }, grant); assert.ok(layout);
+    assert.equal(pool.status(neighbor.generation!), undefined, 'the controller evicts the unrelated source, not useful geometry');
+    assert.equal(pool.status(generation)!.sourceVersion, 1, 'the active source generation is protected');
+    const current = frame(layout); cache.drop(previous);
+    assert.ok(current.value!.layout.isValid && current.value!.painted.isValid && measured.isValid);
+    assert.equal(c.stats().preparedBytes, before.preparedBytes); assert.equal(c.stats().piSourceRecords, 0);
+    await settle(); assert.equal(host.calls.length, calls); assert.equal(host.acceptedClassifications.length, accepted);
+    filler.release(); c.setEnabled(false);
+    assert.ok(measured.isValid && current.value!.layout.isValid && current.value!.painted.isValid);
+    const off = funding.grant(0); assert.ok(off, 'native Off must not disable neutral presentation funding'); off.close();
+    let callbacks = 0;
+    const painted = current.value!.painted;
+    assert.equal(painted.visitRows(() => {
+      callbacks++; cache.clear();
+      assert.ok(funding.budget.stats().retainedBytes > measurementBytes, 'callback-held painted rows stay charged after cache invalidation');
+      assert.equal(funding.budget.reserve(funding.budget.limit), undefined);
+    }), false);
+    assert.equal(callbacks, 1); assert.equal(funding.budget.stats().retainedBytes, measurementBytes);
+    measured.cleanupReceipt().release(); assert.equal(funding.budget.stats().retainedBytes, 0);
+    assert.equal(host.calls.length, calls); assert.equal(host.acceptedClassifications.length, accepted);
+    assert.equal(preparation.keys.size, 1); assert.equal(segments, 0);
+    console.log(JSON.stringify({ geometryControllerCache: { grants, peak, limit: funding.budget.limit, segments,
+      nativeRequestDelta: host.calls.length - calls, sourceAcceptanceDelta: host.acceptedClassifications.length - accepted,
+      piSources: c.stats().piSourceRecords, finalBytes: funding.budget.stats().retainedBytes } }));
+  } finally { Intl.Segmenter.prototype.segment = segment; filler.release(); cache.clear(); measured.dispose(); }
+  assert.equal(funding.budget.stats().outstandingPeakBytes, 0);
+});
+
+test('runtime health: invalid SOURCE remains visible despite success of another source, without journal capture', async () => {
+  const notices: string[] = [], records: string[] = [], health = new RuntimeHealth(message => notices.push(message));
+  const { host, controller: c } = fixture({ diagnostic: health.sink(level => records.push(level)) });
+  c.observe(demand('bad', 1, true, 'a')); c.observe(demand('good', 1, true, 'b')); c.flush();
+  const a = host.calls.findIndex(call => call.request.sources?.[0]?.text === 'bad');
+  const b = host.calls.findIndex(call => call.request.sources?.[0]?.text === 'good');
+  host.calls[a]!.resolve({}); await settle();
+  assert.equal(health.snapshot().errors, 1); assert.equal(health.snapshot().active, 1);
+  assert.equal(c.workStatus('a').execution, 'unknown'); assert.ok(records.includes('ERROR'));
+  host.answer(b); await settle(); assert.equal(c.workStatus('b').execution, 'acknowledged');
+  assert.equal(health.snapshot().active, 1); assert.equal(notices.length, 1);
+  c.remove('a'); assert.equal(health.snapshot().active, 0); assert.equal(health.snapshot().last?.state, 'released');
+});
+
+test('runtime health: expected SOURCE limit refusal and explicit native Off are not runtime errors', async () => {
+  const health = new RuntimeHealth(() => {}), { host, controller: c } = fixture({ diagnostic: health.sink(() => {}) });
+  c.observe(demand('x', 1, true)); c.flush(); host.fault(0, 'source_limit'); await settle();
+  assert.equal(health.snapshot().errors, 0);
+  c.observe(demand('y', 1, true, 'pending')); c.flush(); const pending = host.calls.at(-1)!;
+  c.setEnabled(false); pending.reject(new Error('cancelled during Off')); await settle();
+  assert.equal(health.snapshot().errors, 0);
+});
+
+test('runtime health: unexpected STYLE response clears only after that owner publishes valid replacement styles', async () => {
+  const health = new RuntimeHealth(() => {}), { host, controller: c } = fixture({ diagnostic: health.sink(() => {}) });
+  selectNative(c); c.observe(demand('x', 1, true)); c.flush(); host.answer(0); await settle();
+  assert.equal(host.calls[1]!.request.op, 'styles.resolve'); host.calls[1]!.resolve({}); await settle();
+  assert.equal(health.snapshot().active, 1); assert.equal(health.snapshot().issues[0]!.operation, 'styles');
+  selectNative(c, 'replacement', 'b'.repeat(64)); c.flush(); await settle();
+  const index = host.calls.length - 1; assert.equal(host.calls[index]!.request.op, 'styles.resolve');
+  host.style(index); await settle(); assert.equal(health.snapshot().active, 0);
+  assert.equal(health.snapshot().errors, 1); assert.equal(health.snapshot().last?.state, 'recovered');
+});
+
+test('runtime health: actual encoded frame refusal keeps no-start authority without reporting an unexpected error', async () => {
+  const health = new RuntimeHealth(() => {}), { host, controller: c } = fixture({ diagnostic: health.sink(() => {}) });
+  host.description.limits.request_bytes = 1024;
+  c.observe(demand('"'.repeat(600), 1, true)); c.flush(); await settle();
+  assert.equal(host.calls.length, 0); assert.equal(c.workStatus('source').execution, 'not_started');
+  assert.equal(health.snapshot().errors, 0); assert.equal(c.stats().unsettledJobs, 0);
+});
+
+for (const rejected of [false, true]) test(`runtime health: obsolete STYLE ${rejected ? 'rejection' : 'invalid reply'} cannot reopen healthy cached rollback`, async () => {
+  const health = new RuntimeHealth(() => {}), { host, controller: c } = fixture({ diagnostic: health.sink(() => {}) });
+  selectNative(c); const a = demand('echo retained', 1, true); c.observe(a); c.flush(); await paint(c, host, 0);
+  selectNative(c, 'B', 'b'.repeat(64)); c.observe({ ...a, profile: 'B', fingerprint: 'b'.repeat(64) }); c.flush();
+  assert.equal(host.calls[2]!.request.op, 'styles.resolve');
+  selectNative(c); c.observe(a); c.flush(); await settle(); assert.equal(c.stats().unsettledJobs, 1);
+  if (rejected) host.calls[2]!.reject(new Error('PRIVATE_OLD_THEME')); else host.calls[2]!.resolve({});
+  await settle(); assert.equal(c.displayBasis('source')!.profile, 'native');
+  assert.equal(health.snapshot().errors, 0); assert.equal(health.snapshot().active, 0);
+});
+
+test('runtime health: unexpected lease-close failure belongs to the live source despite the cleanup-job sentinel', async () => {
+  const health = new RuntimeHealth(() => {}), { host, controller: c } = fixture({ diagnostic: health.sink(() => {}) });
+  c.observe(demand('x\n', 1)); c.flush(); host.answer(0); await settle();
+  c.freeze('source'); c.flush(); await settle();
+  const index = host.calls.findIndex(call => call.request.op === 'stream.close'); assert.ok(index >= 0);
+  host.calls[index]!.resolve({}); await settle();
+  assert.equal(health.snapshot().errors, 1); assert.match(health.snapshot().issues[0]!.operation, /^lease:/);
+  c.remove('source'); assert.equal(health.snapshot().active, 0); assert.equal(health.snapshot().last?.state, 'released');
+});
+
+test('runtime health: removed owners and replacement sources cannot inherit an obsolete close failure', async () => {
+  const health = new RuntimeHealth(() => {}), { host, controller: c } = fixture({ diagnostic: health.sink(() => {}) });
+  c.observe(demand('x\n', 1)); c.flush(); host.answer(0); await settle(); c.freeze('source'); c.flush(); await settle();
+  const index = host.calls.findIndex(call => call.request.op === 'stream.close'); assert.ok(index >= 0);
+  c.remove('source'); c.observe(demand('new owner', 1, true));
+  host.calls[index]!.resolve({}); await settle(); assert.equal(health.snapshot().errors, 0);
+});
+
+test('runtime health: cleanup generated by a late removed-source open cannot blame a replacement with the same key', async () => {
+  const health = new RuntimeHealth(() => {}), { host, controller: c } = fixture({ diagnostic: health.sink(() => {}) });
+  c.observe(demand('old\n', 1)); c.flush();
+  c.remove('source'); c.observe(demand('', 1, true));
+  host.answer(0); await settle(); c.flush(); await settle();
+  const index = host.calls.findIndex(call => call.request.op === 'stream.close'); assert.ok(index >= 0, 'late lease still requires cleanup');
+  host.calls[index]!.resolve({}); await settle();
+  assert.equal(health.snapshot().errors, 0); assert.equal(health.snapshot().active, 0);
+  assert.equal(c.stats().pendingCloses, 0);
 });

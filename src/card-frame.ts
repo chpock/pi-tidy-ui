@@ -49,9 +49,24 @@ export function frameRows(geometry: CardGeometry, body: readonly string[], paint
     // Child background/full resets are not a stack: reopen the panel after each one.
     // Keep the reset itself (including its foreground effects) and all child colors.
     const painted = panel.split(/(?<=\x1b\[(?:0|49)m)/u).map((part) => paint.panel(part)).join("");
-    // Reset inherited background before the stripe; only the body receives panel paint.
-    return "\x1b[49m" + " ".repeat(geometry.marginLeft) + border + painted + " ".repeat(geometry.marginRight);
+    return frameShell(geometry, border, painted);
   });
+}
+
+/** Prepared children already paint every cell with complete styles. Do not scan
+ * their ANSI or reopen a parent style across their explicit resets. */
+export function frameMeasuredRow(geometry: CardGeometry, row: string, cells: number, paint: CardPaint): string {
+  if (!Number.isSafeInteger(cells) || cells < 0 || cells > geometry.contentWidth)
+    throw new RangeError("Card content exceeds its allocated width");
+  if (!geometry.width) return "";
+  const border = geometry.borderWidth ? paint.border("┃") : "";
+  return frameShell(geometry, border, paint.panel(" ".repeat(geometry.paddingLeft)) + row +
+    paint.panel(" ".repeat(geometry.contentWidth - cells + geometry.paddingRight)));
+}
+
+function frameShell(geometry: CardGeometry, border: string, panel: string): string {
+  // Reset inherited background before the stripe; exterior space stays unpainted.
+  return "\x1b[49m" + " ".repeat(geometry.marginLeft) + border + panel + " ".repeat(geometry.marginRight);
 }
 
 /** Coordinates are component-local; callers remove any outside transcript separator. */

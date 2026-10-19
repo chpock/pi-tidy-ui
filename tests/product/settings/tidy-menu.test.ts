@@ -213,6 +213,13 @@ test('status and Refresh do not prepare themes, read cache, or claim a protocol 
   assert.equal(f.prepared, 0); assert.equal(f.cacheReads, 0); assert.equal(f.calls.length, 0);
 });
 
+test('service details report negotiated protocol 3 without acquiring a provider', async () => {
+  const f = fixture(); native(f);
+  await f.select('Status & troubleshooting'); await f.select('Highlighting service details');
+  assert.match(f.render().join('\n'), /Protocol: 3/u);
+  assert.equal(f.prepared, 0); assert.equal(f.cacheReads, 0); assert.equal(f.calls.length, 0);
+});
+
 test('theme search previews stable IDs without saving; confirmation returns to root once', async () => {
   const f = fixture(); native(f); f.render(); await f.key('\r');
   await f.key('opaque-37');
@@ -655,4 +662,30 @@ for (const finish of ['escape', 'confirm'] as const) test(`settings sync: extern
   await f.key(finish === 'escape' ? '\x1b' : '\r');
   assert.deepEqual(f.state.selected, finish === 'escape' ? external : preview);
   assert.deepEqual(f.calls, finish === 'escape' ? [] : [{ kind: 'theme', choice: preview }]);
+});
+
+test('runtime health menu: faults remain visible with logging off or unavailable and provider ready', async () => {
+  const f = fixture(110, 45); native(f);
+  f.state.loggingEnabled = false;
+  f.state.health = { errors: 3, active: 2, issues: [{ area: 'syntax', operation: 'source', code: 'invalid_source', time: '2026-10-19T08:22:52.282Z', state: 'active' }],
+    last: { area: 'syntax', operation: 'styles', code: 'invalid_header', time: '2026-10-19T08:22:53.282Z', state: 'recovered' } };
+  await f.select('Status & troubleshooting'); let text = f.render().join('\n');
+  assert.match(text, /Runtime status: Problems detected/); assert.match(text, /Runtime errors: 3; active: 2/);
+  assert.match(text, /Unresolved syntax: invalid_source/); assert.match(text, /Native service available/);
+  await f.select('Diagnostic logs'); text = f.render().join('\n');
+  assert.match(text, /Runtime errors: 3; active: 2/); assert.match(text, /Diagnostic logging is unavailable/);
+  assert.equal(f.prepared, 0); assert.equal(f.calls.length, 0);
+});
+
+test('runtime health menu: log write errors and lost records are explicitly distinct from runtime errors', async () => {
+  const f = fixture(120, 45);
+  f.state.health = { errors: 4, active: 1, issues: [] };
+  f.state.logs = { state: 'active', capture: true, records: 39370, writes: 3277, dropped: 1598, writeErrors: 0,
+    path: '/tmp/run.log', commonPath: '/tmp/sessions.log', run: 'run', session: 'session' } as NonNullable<TidyMenuSnapshot['logs']>;
+  await f.select('Status & troubleshooting'); await f.select('Diagnostic logs');
+  const text = f.render().join('\n');
+  assert.match(text, /Runtime errors: 4; active: 1/);
+  assert.match(text, /Dropped records: 1598; log write errors: 0/);
+  assert.match(text, /Some diagnostic records were lost/);
+  assert.doesNotMatch(text, /dropped: 1598; errors: 0/);
 });

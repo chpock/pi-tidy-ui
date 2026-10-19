@@ -296,3 +296,18 @@ const spawnSync=(command,args,options)=>{
     assert.doesNotMatch(failed.stdout,/Native dependency cache summary:/);
   }
 });
+
+test('native source identity binds shared protocol bytes even when Rust source is unchanged', t => {
+  const f = fixture(t); observe(t, f);
+  const relative = 'protocol/syntax-v3/vectors.json', path = join(f.checkout, relative);
+  fs.mkdirSync(dirname(path), { recursive: true }); fs.writeFileSync(path, '{"revision":1}\n');
+  const before = sourceIdentity(f.checkout, f.tools, f.environment), first = prepareNative(f.options);
+  assert.equal(fs.readFileSync(join(first.project, relative), 'utf8'), '{"revision":1}\n');
+  fs.writeFileSync(path, '{"revision":2}\n');
+  const after = sourceIdentity(f.checkout, f.tools, f.environment), second = prepareNative(f.options);
+  assert.equal(after.commit, before.commit);
+  assert.notEqual(after.nativeTree, before.nativeTree, 'a changed shared Rust test input invalidates native provenance');
+  assert.equal(second.source.nativeTree, after.nativeTree);
+  assert.equal(fs.readFileSync(join(second.project, relative), 'utf8'), '{"revision":2}\n');
+  fs.rmSync(first.runRoot, { recursive: true, force: true }); fs.rmSync(second.runRoot, { recursive: true, force: true });
+});

@@ -1,3 +1,5 @@
+import type { DataCleanupReceipt } from './occipital/data-budget.ts';
+
 /** Component state owns rendered data; this module keeps only weak accounting records. */
 export const LAYOUT_KINDS = ["summary", "bash", "edit", "write", "user", "queued"] as const;
 export type LayoutKind = typeof LAYOUT_KINDS[number];
@@ -20,6 +22,7 @@ export interface CacheEntry<T> { value?: T; bytes: number }
 interface AccountingRecord extends LayoutMemory {
   reference: WeakRef<CacheEntry<unknown>>;
   kind: LayoutKind;
+  cleanup?: DataCleanupReceipt;
 }
 const emptyMemory = (): LayoutMemory => ({ retainedBytes: 0, stringBytes: 0, overheadBytes: 0, entries: 0, rows: 0 });
 export function layoutMemory(rows: readonly string[]): LayoutMemory {
@@ -39,8 +42,7 @@ export class RenderCache {
   private builds = 0;
   private releases = 0;
   private collected = 0;
-  // Only numeric metadata and a weak entry reference are held. Layout release itself
-  // does not depend on this callback: the component's weak state is its sole owner.
+  // Detached receipts hold weak handles and numeric ownership, never layout data.
   private finalizer = new FinalizationRegistry<AccountingRecord>(record => this.releaseRecord(record, true));
 
   get<T>(entry: CacheEntry<T> | undefined): T | undefined {
@@ -50,11 +52,11 @@ export class RenderCache {
     }
     this.misses++; return undefined;
   }
-  put<T>(value: T, rows: readonly string[], kind: LayoutKind = "summary"): CacheEntry<T> {
+  put<T>(value: T, rows: readonly string[], kind: LayoutKind = "summary", cleanup?: DataCleanupReceipt): CacheEntry<T> {
     this.builds++;
     const memory = layoutMemory(rows);
     const entry: CacheEntry<T> = { value, bytes: memory.retainedBytes };
-    const record: AccountingRecord = { ...memory, kind, reference: new WeakRef(entry) };
+    const record: AccountingRecord = { ...memory, kind, reference: new WeakRef(entry), cleanup };
     this.records.add(record); this.accounting.set(entry, record);
     for (const field of MEMORY_FIELDS) {
       this.memory[field] += memory[field]; this.kinds[kind][field] += memory[field];
@@ -72,11 +74,13 @@ export class RenderCache {
   private releaseRecord(record: AccountingRecord, collected: boolean) {
     if (!this.records.delete(record)) return;
     this.finalizer.unregister(record);
+    const cleanup = record.cleanup; record.cleanup = undefined;
     for (const field of MEMORY_FIELDS) {
       this.memory[field] -= record[field]; this.kinds[record.kind][field] -= record[field];
     }
     this.releases++;
     if (collected) this.collected++;
+    cleanup?.release();
   }
   clear() {
     for (const record of this.records) {

@@ -8,7 +8,8 @@ import { SessionManager } from '@earendil-works/pi-coding-agent';
 import { PiTerminal } from './terminal-harness.mjs';
 import { closeTerminals } from './terminal-cleanup.mjs';
 import { createSyntaxStockReferences } from './syntax-stock-reference.mjs';
-import { readPendingJson, nativeReady, themePhaseReady } from './syntax-observation.mjs';
+import { readPendingJson, nativeReady, themePhaseReady, semanticStyle, semanticPhaseReady } from './syntax-observation.mjs';
+import { PI_RULE_BINDINGS } from '../../src/syntax/pi-rules.ts';
 import { childEnv, readInputs, validateNative } from '../../scripts/test/context.mjs';
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
@@ -31,6 +32,7 @@ async function prepareSyntaxPackage() {
   await mkdir(join(source, 'tests/fixtures'), { recursive: true });
   fixture = join(source, 'tests/fixtures/syntax-driver.ts');
   await cp(resolve('tests/fixtures/syntax-driver.ts'), fixture);
+  await cp(resolve('tests/fixtures/syntax-local-work.ts'), join(source, 'tests/fixtures/syntax-local-work.ts'));
   loggingFixture = join(source, 'tests/fixtures/logging-driver.ts');
   for (const name of ['logging-driver.ts', 'presentation-driver.ts', 'terminal-output.ts']) await cp(resolve('tests/fixtures', name), join(source, 'tests/fixtures', name));
   return { fixture, loggingFixture };
@@ -63,7 +65,14 @@ async function stats(terminal, name) {
   }, 'actual syntax counters ' + name);
 }
 
+async function previewStats(terminal, name) {
+  writeFileSync(join(terminal.output, 'syntax-preview-request'), name); terminal.send('\x1b\x10');
+  return until(() => { terminal.health(); return readPendingJson(join(terminal.output, `syntax-preview-${name}.json`)); }, `draft-safe syntax counters ${name}`);
+}
+
 const work = snapshot => { const s = snapshot.source; return s && { dispatches: s.dispatches,
+  sourceRequests: snapshot.counts.sourceRequests, styleRequests: snapshot.counts.styleRequests, closeRequests: snapshot.counts.closeRequests,
+  localWork: snapshot.localWork,
   committedLineCalls: s.committedLineCalls, committedLineBytes: s.committedLineBytes, tailCalls: s.tailCalls, preparedBytes: s.preparedBytes }; };
 
 function sourceColors(dump) {
@@ -245,6 +254,23 @@ async function initialThemeStats(terminal, name) {
   }, 'initial', themeMarkers.filter(marker => marker.startsWith('THEME_BASH_'))), 'initial native scene sources');
 }
 
+async function retainedNativeThemeStats(terminal, name, observe) {
+  const initial = await stats(terminal, `${name}-before`);
+  const profile = initial.client.provider.description.profiles.find(profile => profile.label === 'Catppuccin Mocha'); assert.ok(profile);
+  // Restored FILEs can initially own only Pi ANSI. Preview once to establish
+  // their FIRST native semantics before asserting no SOURCE on later themes.
+  writeFileSync(join(terminal.output, 'syntax-theme-phase'), 'native-prerequisite');
+  await terminal.openTidyMenu(); await terminal.selectTidyItem('Code color theme'); terminal.send(profile.label);
+  let observation = 0;
+  const ready = id => until(() => semanticPhaseReady(() => observe(`${name}-${observation++}`), () => terminal.events(), themeMarkers, id), 'retained native semantics for every theme marker');
+  await ready(profile.id);
+  terminal.send('\x1b'); await until(() => terminal.tidyHeading('Tidy UI'), 'prerequisite preview cancelled'); await terminal.closeTidyMenu();
+  writeFileSync(join(terminal.output, 'syntax-theme-phase'), 'initial');
+  const baseline = await ready('pi');
+  assert.equal(baseline.counts.themeSaves, 0, 'prerequisite preview never persists settings');
+  return baseline;
+}
+
 function themeForegrounds(dump) {
   return themeMarkers.map(marker => {
     const y = dump.screen.findIndex(row => row.includes(marker)); assert.ok(y >= 0, `physically visible ${marker}`);
@@ -252,21 +278,19 @@ function themeForegrounds(dump) {
   });
 }
 
-function expectedThemeColors(terminal, phase, dump) {
-  const replies = terminal.events().filter(event => event.type === 'syntax_theme_reply' && event.phase === phase);
+function expressionForeground(expression, dump, inherited = 'toolOutput') {
+  const ink = expression.foreground;
+  if (ink.kind === 'rgb') return ink.r * 65536 + ink.g * 256 + ink.b;
+  const role = ink.kind === 'binding' ? PI_RULE_BINDINGS[ink.slot] : inherited;
+  assert.ok(ink.kind === 'binding' || ink.kind === 'inherit', `explicit expected foreground ${ink.kind}`);
+  const rgb = dump.summaryStyles[role].match(/38;2;(\d+);(\d+);(\d+)m/); assert.ok(rgb, `actual Pi role ${role}`);
+  return Number(rgb[1]) * 65536 + Number(rgb[2]) * 256 + Number(rgb[3]);
+}
+function expectedThemeColors(terminal, phase, dump, profileId) {
+  assert.ok(profileId, 'explicit v3 profile identity is required');
   return themeMarkers.map(marker => {
-    const pair = replies.flatMap(event => event.payload.sources.map((source, i) => ({ text: source.text, reply: event.reply.body.sources[i] })))
-      .find(source => source.text.includes(marker)); assert.ok(pair, `native reply for ${phase} ${marker}`);
-    const offset = Buffer.byteLength(pair.text.slice(0, pair.text.indexOf(marker)));
-    let end = 0, style;
-    for (let i = 0; i < pair.reply.runs.length; i += 2) {
-      end += pair.reply.runs[i]; if (offset < end) { style = pair.reply.styles[pair.reply.runs[i + 1]]; break; }
-    }
-    assert.ok(style, `native token style for ${marker}`);
-    if (style.rgb) return style.rgb[0] * 65536 + style.rgb[1] * 256 + style.rgb[2];
-    const sgr = dump.summaryStyles[style.role === 'plain' ? 'toolOutput' : style.role]; assert.ok(sgr);
-    const rgb = sgr.match(/38;2;(\d+);(\d+);(\d+)m/); assert.ok(rgb);
-    return Number(rgb[1]) * 65536 + Number(rgb[2]) * 256 + Number(rgb[3]);
+    const style = semanticStyle(terminal.events(), marker, profileId); assert.ok(style, `actual v3 source/style for ${phase} ${marker}`);
+    return expressionForeground(style.expression, dump, marker.startsWith('THEME_BASH') ? 'toolTitle' : 'toolOutput');
   });
 }
 
@@ -292,4 +316,4 @@ async function savedThemeSession() {
     return { directory, cards, session, bytes: readFileSync(session) };
 }
 
-export { inputs, requiredSharedHost, prepareSyntaxPackage, prepareSyntaxNative, pause, until, stats, work, sourceColors, body, traffic, persisted, finish, settledStats, syntaxReady, scenario, stockReference, menuSequence, menuAction, chooseTheme, peerSource, keywordColor, loggingFrame, loggingIdle, loggerWork, loggingPrivacy, themeMarkers, initialThemeStats, themeForegrounds, expectedThemeColors, savedThemeSession };
+export { inputs, requiredSharedHost, prepareSyntaxPackage, prepareSyntaxNative, pause, until, stats, work, sourceColors, body, traffic, persisted, finish, settledStats, syntaxReady, scenario, stockReference, previewStats, menuSequence, menuAction, chooseTheme, peerSource, keywordColor, loggingFrame, loggingIdle, loggerWork, loggingPrivacy, themeMarkers, initialThemeStats, retainedNativeThemeStats, themeForegrounds, expectedThemeColors, expressionForeground, savedThemeSession };

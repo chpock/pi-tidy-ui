@@ -10,3 +10,14 @@ export const OCCIPITAL_LIMITS=Object.freeze({
   // Source-controller data policy; control/discovery deadlines remain separate.
   dataDeadlineMs:300_000,
 });
+
+// Highlighting policy. Keep the Rust defaults and shared policy fixture in sync.
+// Rationale and tuning procedure: docs/syntax-highlighting-spec.md.
+export const HIGHLIGHT_LIMITS = Object.freeze({
+  sourceBytes: 64 * 1024,
+  sourceLines: 8192,
+  piSourceBytes: 8 * 1024,
+  dataWireBytes: 512 * 1024,
+  contextWords: 65536,
+  decodedBytes: 2 * 1024 * 1024,
+});

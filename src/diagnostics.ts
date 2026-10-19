@@ -1,6 +1,19 @@
 export type DiagnosticLevel = "DEBUG" | "INFO" | "WARN" | "ERROR";
 export type DiagnosticFields = Readonly<Record<string, string | number | boolean | null | undefined>>;
-export type DiagnosticSink = (level: DiagnosticLevel, area: string, explanation: string, fields?: DiagnosticFields) => void;
+export type RuntimeArea = 'syntax' | 'appearance' | 'terminal-colors' | 'settings' | 'git';
+export type RuntimeEvent = { scope: object; operation: string } &
+  ({ kind: 'failure'; area: RuntimeArea; code: string } | { kind: 'recovered' | 'released' });
+export type DiagnosticSink = ((level: DiagnosticLevel, area: string, explanation: string, fields?: DiagnosticFields) => void) & {
+  /** Health is delivered independently of optional diagnostic-file capture. */
+  runtime?: (event: RuntimeEvent) => void;
+};
+export function reportRuntime(sink: DiagnosticSink | undefined, event: RuntimeEvent): void {
+  try { sink?.runtime?.(event); } catch { /* Observability cannot alter the operation. */ }
+}
+const expectedRefusals = new Set(['busy', 'cancelled', 'queue_expired', 'provider_changed', 'restart_required',
+  'profile_changed', 'profile_unavailable', 'theme_unavailable', 'scope_gone', 'scope_limit', 'source_limit',
+  'style_limit', 'theme_limit', 'state_limit', 'result_limit', 'frame_limit', 'reply_limit', 'route_limit', 'session_limit']);
+export function unexpectedDiagnostic(error: unknown): boolean { return !expectedRefusals.has(diagnosticError(error)); }
 
 /** Diagnostic observers never own the operation they describe. */
 export function diagnose(sink: DiagnosticSink | undefined, level: DiagnosticLevel, area: string, explanation: string, fields?: DiagnosticFields): void {

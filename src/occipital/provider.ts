@@ -1,7 +1,10 @@
-import { diagnose, diagnosticError, type DiagnosticFields, type DiagnosticSink } from '../diagnostics.ts';
-import { decodeDescription, PROTOCOL_VERSION, ProtocolError, type Description } from './protocol.ts';
+import { diagnose, diagnosticError, reportRuntime, type DiagnosticFields, type DiagnosticSink } from '../diagnostics.ts';
+import type { ReplySize } from './data-json.ts';
+import { ProtocolError } from './protocol.ts';
+import { decodeSemanticDescription as decodeDescription, SEMANTIC_PROTOCOL_VERSION as PROTOCOL_VERSION, type SemanticDescription as Description } from './semantic-protocol.ts';
 import { RequestFailure } from './request-failure.ts';
 import type { TransportEnd } from './transport-end.ts';
+import { ExpectedOwnedUnavailable } from './owned-startup.ts';
 
 /** Local engineering bounds, not native parser/usefulness deadlines. Factories must
  * bound their underlying import/connect/acquire work and dispose aborted late work.
@@ -19,7 +22,7 @@ export interface ProviderTransport {
    * cannot rewrite its first origin. Neither signal proves a source did not run. */
   readonly ended: Promise<TransportEnd>;
   readonly endReason: TransportEnd | undefined;
-  request(request: Record<string, unknown>, options?: { signal?: AbortSignal; deadlineMs?: number; waitOnly?: boolean; acceptRetired?: boolean }): Promise<unknown>;
+  request(request: Record<string, unknown>, options?: { signal?: AbortSignal; deadlineMs?: number; waitOnly?: boolean; acceptRetired?: boolean; replySize?: ReplySize }): Promise<unknown>;
   /** Shared: only this dedicated route/connection. Owned: resolves after child exit. */
   close(): Promise<void>;
 }
@@ -64,7 +67,7 @@ export interface ProviderStats {
   closesStarted: number; closesCompleted: number; closeFailures: number;
   recoveryEpisodes: number; probesScheduled: number; probesStarted: number; probesCompleted: number;
   activeProbes: number; recoveryTimers: number; liveTimers: number; abortListeners: number;
-  handoffsSucceeded: number; handoffsFailed: number; sourceDispatches: number; staleReplies: number;
+  handoffsSucceeded: number; handoffsFailed: number; sourceDispatches: number; styleDispatches: number; staleReplies: number;
 }
 interface Candidate { transport: ProviderTransport; kind: Kind; description: Description }
 interface SharedSelection {
@@ -103,16 +106,16 @@ function bounded<T>(promise: Promise<T>, clock: ProviderClock, ms: number,
   signal: AbortSignal | undefined, owner: WeakRef<ProviderBroker>, late?: (value: T) => void): Promise<T> {
   return new Promise((resolve, reject) => {
     let done = false;
-    const finish = (ok: boolean, value?: T) => {
+    const finish = (ok: boolean, value?: T, error?: unknown) => {
       if (done) { if (ok) late?.(value as T); return; }
       done = true; timer.cancel(); owner.deref()?.metric('liveTimers', -1);
       if (signal) { signal.removeEventListener('abort', abort); owner.deref()?.metric('abortListeners', -1); }
-      if (ok) resolve(value as T); else reject(new Error('occipital control unavailable'));
+      if (ok) resolve(value as T); else reject(error instanceof ExpectedOwnedUnavailable ? new ExpectedOwnedUnavailable() : new Error('occipital control unavailable'));
     };
     const abort = () => finish(false);
     const timer = clock.setTimeout(abort, ms); timer.unref(); owner.deref()?.metric('liveTimers', 1);
     if (signal) { signal.addEventListener('abort', abort, { once: true }); owner.deref()?.metric('abortListeners', 1); }
-    promise.then(value => finish(true, value), () => finish(false));
+    promise.then(value => finish(true, value), error => finish(false, undefined, error));
     if (signal?.aborted) abort();
   });
 }
@@ -214,7 +217,7 @@ export class ProviderBroker {
     closesStarted: 0, closesCompleted: 0, closeFailures: 0,
     recoveryEpisodes: 0, probesScheduled: 0, probesStarted: 0, probesCompleted: 0,
     activeProbes: 0, recoveryTimers: 0, liveTimers: 0, abortListeners: 0,
-    handoffsSucceeded: 0, handoffsFailed: 0, sourceDispatches: 0, staleReplies: 0,
+    handoffsSucceeded: 0, handoffsFailed: 0, sourceDispatches: 0, styleDispatches: 0, staleReplies: 0,
   };
   constructor(options: ProviderOptions) {
     if (options.onChange !== undefined && typeof options.onChange !== 'function'
@@ -245,6 +248,7 @@ export class ProviderBroker {
     if (this.active) this.candidates.add(this.active.transport);
     this.active = undefined; ++this.generation;
     if (!enabled) {
+      reportRuntime(this.options.diagnostic, { kind: 'released', scope: this, operation: 'startup' });
       this.availability = 'disabled'; this.reason = 'disabled'; this.changed();
       const pending = [...this.candidates].map(transport => this.close(transport));
       this.operation = Promise.all([...pending, ...this.pendingCloses]).then(ignored);
@@ -306,15 +310,15 @@ export class ProviderBroker {
    * source admission/decoder and unique tickets (reserved broker: prefix excluded).
    * Transport owns source deadlines/cancellation and its existing data allowance.
    */
-  request(generation: number, request: Record<string, unknown>, options?: { signal?: AbortSignal; deadlineMs?: number;
+  request(generation: number, request: Record<string, unknown>, options?: { signal?: AbortSignal; deadlineMs?: number; replySize?: ReplySize;
     /** Canonical source owner validates retired terminal outcomes for physical
      * permission ONLY, never stale publication or useful classification credit. */
     acceptRetired?: boolean }): Promise<unknown> {
     if (!this.isReady(generation)) return Promise.reject(new RequestFailure('occipital provider retired', 'not_started'));
     if (typeof request.ticket === 'string' && request.ticket.startsWith('broker:')) return Promise.reject(new RequestFailure('occipital reserved ticket', 'not_started'));
-    this.metric('sourceDispatches', 1);
+    this.metric(request.op === 'styles.resolve' ? 'styleDispatches' : 'sourceDispatches', 1);
     const observers = sourceObservers(new WeakRef(this), generation, options?.acceptRetired === true);
-    try { return this.active!.transport.request(request, options && { signal: options.signal, deadlineMs: options.deadlineMs, acceptRetired: options.acceptRetired }).then(observers.accept, observers.reject); }
+    try { return this.active!.transport.request(request, options && { signal: options.signal, deadlineMs: options.deadlineMs, acceptRetired: options.acceptRetired, ...(options.replySize && { replySize: options.replySize }) }).then(observers.accept, observers.reject); }
     catch (error) { return Promise.reject(error instanceof RequestFailure ? error : new RequestFailure('occipital request outcome unknown')); }
   }
   /** Source-free control on the already selected provider. Catalogue publication
@@ -337,7 +341,9 @@ export class ProviderBroker {
         throw new RequestFailure('occipital catalogue retired');
       if (!metadataFits(raw)) throw new ProtocolError('invalid_descriptor');
       const description = decodeDescription(raw, ticket), previous = active.description;
-      if (description.instance !== previous.instance || description.assets !== previous.assets) throw new ProtocolError('provider_changed');
+      if (description.instance !== previous.instance || description.assets !== previous.assets
+        || description.vocabulary.fingerprint !== previous.vocabulary.fingerprint || description.vocabulary.count !== previous.vocabulary.count)
+        throw new ProtocolError('provider_changed');
       if (description.catalogue_revision < previous.catalogue_revision || description.catalogue_revision === previous.catalogue_revision && !sameProfiles(description, previous))
         throw new ProtocolError('invalid_descriptor');
       active.description = description;
@@ -348,6 +354,7 @@ export class ProviderBroker {
   dispose(): Promise<void> {
     if (this.shutdown) return this.shutdown;
     ++this.epoch; this.cancelRecovery(); this.cancellation.abort();
+    reportRuntime(this.options.diagnostic, { kind: 'released', scope: this, operation: 'startup' });
     const transports = new Set(this.candidates); if (this.active) transports.add(this.active.transport);
     this.active = undefined; ++this.generation; this.availability = 'disposed'; this.reason = 'disposed';
     const pending = [...transports].map(transport => this.close(transport));
@@ -360,6 +367,7 @@ export class ProviderBroker {
     if (candidate.transport.endReason !== undefined) return false;
     this.candidates.delete(candidate.transport); this.counters.activeCandidates = this.candidates.size;
     this.active = candidate; ++this.generation; this.availability = 'ready'; this.reason = 'ready';
+    reportRuntime(this.options.diagnostic, { kind: 'recovered', scope: this, operation: 'startup' });
     if (candidate.kind === 'owned') this.ownedGeneration = this.generation;
     const observers = lifetimeObservers(new WeakRef(this), this.generation);
     void candidate.transport.ended.then(observers.end, observers.rejected);
@@ -435,13 +443,14 @@ export class ProviderBroker {
         selection.transferred = new WeakRef(transport); return selected;
       }
       return await this.describeCandidate(transport, kind, epoch, attempt.signal, PROVIDER_LIMITS.controlMs);
-    } catch {
+    } catch (error) {
       attempt.abort();
       this.metric('candidatesRejected', 1);
       if (transport) {
         const exited = await this.close(transport);
         if (kind === 'owned' && !exited && this.current(epoch)) this.unavailable('unproved_exit');
       }
+      if (kind === 'owned' && this.current(epoch) && !(error instanceof ExpectedOwnedUnavailable)) this.startupFailed();
       return undefined;
     } finally {
       // Even an aborted signal can retain a receiver through its reason's V8 stack.
@@ -495,13 +504,17 @@ export class ProviderBroker {
     if (initial && this.initialShared === undefined) this.initialShared = false;
     await this.takeOwned(epoch, beginEpisode);
   }
+  private startupFailed(): void {
+    diagnose(this.options.diagnostic, 'ERROR', 'occipital', 'Owned helper startup failed; exception payload is not recorded');
+    reportRuntime(this.options.diagnostic, { kind: 'failure', scope: this, operation: 'startup', area: 'syntax', code: 'startup_failed' });
+  }
   private async takeOwned(epoch: number, beginEpisode = true): Promise<void> {
     const owned = await this.candidate('owned', epoch);
     if (!this.current(epoch)) { if (owned) await this.close(owned.transport); return; }
     if (!owned) { if (this.reason !== 'unproved_exit') this.unavailable('optional_unavailable'); return; }
     if (!this.publish(owned)) {
       const exited = await this.close(owned.transport);
-      if (this.current(epoch)) this.unavailable(exited ? 'optional_unavailable' : 'unproved_exit');
+      if (this.current(epoch)) { this.startupFailed(); this.unavailable(exited ? 'optional_unavailable' : 'unproved_exit'); }
       return;
     }
     if (this.initialShared && beginEpisode) this.beginRecovery(epoch);

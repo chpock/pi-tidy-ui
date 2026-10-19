@@ -8,15 +8,15 @@ import { RequestFailure } from '../../../src/occipital/request-failure.ts';
 import { StdioTransport, STDIO_LIMITS } from '../../../src/occipital/stdio.ts';
 
 const fixture = fileURLToPath(new URL('../../fixtures/occipital-stdio.mjs', import.meta.url));
-// Keep boundary/backpressure controls scaled rather than moving 64 MiB per case.
-const fixtureDataBytes=2*1024*1024;
+// Exercise the production DATA boundary, including backpressure and late credit.
+const fixtureDataBytes=STDIO_LIMITS.requestBytes;
 const fixtureRetainedBytes=2*(2*fixtureDataBytes+STDIO_LIMITS.cancelBytes+8)
   +STDIO_LIMITS.controlRequestBytes+STDIO_LIMITS.controlReplyBytes+STDIO_LIMITS.cancelBytes+8;
 function peer(mode = 'echo', requestDeadlineMs = 3000, terminateGraceMs = 40) {
   return new StdioTransport({ command: process.execPath, args: [fixture, mode], requestDeadlineMs, terminateGraceMs, dataBytes:fixtureDataBytes });
 }
-function data(ticket: string, text = '') { return { v: 2 as const, ticket, op: 'highlight' as const, text }; }
-function control(ticket: string) { return { v: 2 as const, ticket, op: 'describe' as const }; }
+function data(ticket: string, text = '') { return { v: 3 as const, ticket, op: 'highlight' as const, text }; }
+function control(ticket: string) { return { v: 3 as const, ticket, op: 'describe' as const }; }
 function body(reply: unknown): Record<string, unknown> { return (reply as { body: Record<string, unknown> }).body; }
 async function eventually(predicate: () => boolean) {
   for (let i = 0; i < 400; i++) {
@@ -40,13 +40,16 @@ function empty(transport: StdioTransport) {
 
 for (const mode of ['reverse', 'chunks']) test(`correlates reversed ${mode} packets from one persistent subprocess`, async t => {
   const p = peer(mode); t.after(() => p.close());
-  const first = p.request(data('a', 'é\t🙂\r\n\u0000'));
-  const second = p.request(data('b', 'other'));
+  const firstSize: { ticket?: string; bytes?: number } = {}, secondSize: { ticket?: string; bytes?: number } = {};
+  const first = p.request(data('a', 'é\t🙂\r\n\u0000'), { replySize: firstSize });
+  const second = p.request(data('b', 'other'), { replySize: secondSize });
   const [a, b] = await Promise.all([first, second]);
   assert.equal(body(a).text, 'é\t🙂\r\n\u0000');
   assert.equal(body(b).text, 'other');
   assert.equal(body(a).pid, body(b).pid);
   assert.equal(body(b).sequence, 1);
+  assert.deepEqual(firstSize, { ticket: 'a', bytes: Buffer.byteLength(JSON.stringify(a)) });
+  assert.deepEqual(secondSize, { ticket: 'b', bytes: Buffer.byteLength(JSON.stringify(b)) });
   assert.equal(body(a).bytes, Buffer.byteLength('é\t🙂\r\n\u0000'));
   assert.equal(p.stats().spawnCount, 1);
   await p.close(); empty(p);
@@ -54,9 +57,9 @@ for (const mode of ['reverse', 'chunks']) test(`correlates reversed ${mode} pack
 
 test('two held data calls reserve their slots while metadata has its own lane', async t => {
   const p = peer('hold'); t.after(() => p.close());
-  const a = p.request(data('a')); const b = p.request(data('b'));
+  const a = p.request({ ...data('a'), op: 'styles.resolve' }); const b = p.request(data('b'));
   assert.equal(p.stats().unsettledData, 2);
-  assert.ok(p.stats().retainedBytes > 4 * 1024 * 1024);
+  assert.ok(p.stats().retainedBytes > 2 * fixtureDataBytes);
   await assert.rejects(p.request(data('c')), /capacity/);
   const c = p.request(control('inspect'));
   assert.equal(p.stats().unsettledControl, 1);
@@ -105,7 +108,7 @@ test('already aborted requests never reserve/write; active duplicate tickets nev
 
 test('real slow reader/backpressure bounds outbound frames and preserves content bytes', async t => {
   const p = peer('slow'); t.after(() => p.close());
-  const text = 'é🙂\n'.repeat(220000);
+  const text = 'é🙂\n'.repeat(Math.floor((fixtureDataBytes - 1024) / 8));
   const a = p.request(data('a', text)); const b = p.request(data('b', text));
   await assert.rejects(p.request(data('overflow')), /capacity/);
   assert.ok(p.stats().retainedBytes <= fixtureRetainedBytes);
@@ -127,7 +130,7 @@ test('request bounds are UTF8/escaped JSON bytes; malformed headers are local re
   for (const ticket of ['', 'x'.repeat(65), '🙂'.repeat(17), 'a\u0085b', 'a\nb', '\ud800']) {
     await assert.rejects(p.request(data(ticket)), /request/);
   }
-  await assert.rejects(p.request({ ...data('v'), v: 1 }), /request/);
+  await assert.rejects(p.request({ ...data('v'), v: 2 }), disposition('not_started'));
   await assert.rejects(p.request({ ...data('op'), op: 'cancel' }), /request/);
   await assert.rejects(p.request(data('huge', '🙂'.repeat(600000))), /limit/);
   await assert.rejects(p.request(data('escaped', '\u0000'.repeat(400000))), /limit/);
@@ -192,7 +195,7 @@ test('instance reset on a live pipe remains an application/header identity, not 
 test('typed native no-start error remains an unknown structured application reply', async t => {
   const p = peer('application-error'); t.after(() => p.close());
   const r = await p.request(data('a'));
-  assert.deepEqual(r, { v: 2, ticket: 'a', instance: 'fixture-instance', assets: 'fixture-assets', status: 'error', error: { code: 'busy', execution: 'not_started' } });
+  assert.deepEqual(r, { v: 3, ticket: 'a', instance: 'fixture-instance', assets: 'fixture-assets', status: 'error', error: { code: 'busy', execution: 'not_started' } });
   assert.equal(p.stats().childState, 'running');
 });
 
@@ -245,7 +248,7 @@ test('exact request/reply limits include UTF8 JSON bytes, not the four-byte pref
   for (const mode of ['reply-max', 'control-max']) {
     const r = peer(mode); t.after(() => r.close());
     const reply = await r.request(mode === 'reply-max' ? data('a') : control('a'));
-    assert.equal(Buffer.byteLength(JSON.stringify(reply)), mode === 'reply-max' ? 2 * 1024 * 1024 : 32768);
+    assert.equal(Buffer.byteLength(JSON.stringify(reply)), mode === 'reply-max' ? fixtureDataBytes : 32768);
   }
 });
 
@@ -267,7 +270,7 @@ test('delayed unmatched duplicate retires an otherwise live helper with no histo
 test('backpressured aborts stay bounded with an independent cancelled metadata slot', async t => {
   const p = peer('slow'); t.after(() => p.close());
   const controllers = [new AbortController(), new AbortController(), new AbortController()];
-  const text = 'x'.repeat(1900000);
+  const text = 'x'.repeat(fixtureDataBytes - 1024);
   const requests = [p.request(data('a', text), { signal: controllers[0].signal }),
     p.request(data('b', text), { signal: controllers[1].signal }),
     p.request(control('c'), { signal: controllers[2].signal })];
@@ -309,7 +312,7 @@ test('premature queued replies cannot release slots or leave uncredited frames b
   assert.equal(ready.applicationFrames, 1);
   assert.equal(ready.receivedBytes, Buffer.byteLength(JSON.stringify(control('ready'))) + 4);
   const pid = ready.pid as number;
-  const text = 'x'.repeat(1900000);
+  const text = 'x'.repeat(fixtureDataBytes - 1024);
   let settled = 0, fulfilled = 0;
   const held = p.request(data('held', text)).then(
     () => { settled++; fulfilled++; return 'resolved'; },
@@ -358,7 +361,7 @@ test('a handed-to-write reply remains valid before a paused writer callback or d
   const ready = body(await p.request(control('ready')));
   assert.equal(ready.inputPaused, true);
   assert.equal(ready.applicationFrames, 1);
-  const request = data('held', 'x'.repeat(1900000));
+  const request = data('held', 'x'.repeat(fixtureDataBytes - 1024));
   const result = p.request(request);
   await eventually(() => p.stats().backpressureEvents === 1);
   const response = body(await result);
@@ -384,14 +387,14 @@ for (const mode of ['reply-instance-control', 'reply-assets-control']) {
   });
 }
 
-test('production owned frame family carries escaped data beyond the former ceiling intact', async t => {
+test('production owned DATA family carries bounded escaped data intact', async t => {
   const p=new StdioTransport({command:process.execPath,args:[fixture,'wide-echo'],requestDeadlineMs:3000,terminateGraceMs:40});
   t.after(()=>p.close());
-  assert.equal(STDIO_LIMITS.requestBytes,64<<20);
-  const text='\u0000'.repeat(400000), request=data('ordinary-escaped',text);
-  assert.ok(Buffer.byteLength(JSON.stringify(request))>2<<20);
+  assert.equal(STDIO_LIMITS.requestBytes,fixtureDataBytes);
+   const text='\u0000'.repeat(Math.floor((fixtureDataBytes - 1024) / 6)), request=data('ordinary-escaped',text);
+   assert.ok(Buffer.byteLength(JSON.stringify(request)) <= fixtureDataBytes);
   const received=body(await p.request(request));
-  assert.equal(received.text,text); assert.equal(received.bytes,400000);
+  assert.equal(received.text,text); assert.equal(received.bytes,text.length);
   assert.equal(p.stats().spawnCount,1); assert.equal(p.stats().retainedBytes,0);
   await p.close(); empty(p);
 });
@@ -501,16 +504,16 @@ test('wait-only catalogue expiry keeps the process, source requests and control 
   t.mock.timers.reset(); await p.close(); empty(p); gone(pid);
 });
 
-test('wait-only is refused on stdio source calls without weakening ordinary deadlines', async t => {
+for (const op of ['highlight', 'styles.resolve']) test(`wait-only is refused on stdio ${op} calls without weakening ordinary deadlines`, async t => {
   const p = peer(); t.after(() => p.close());
-  await assert.rejects(p.request(data('source', 'x'), { waitOnly: true }), (e: unknown) => e instanceof RequestFailure && e.execution === 'not_started' && /control/.test(e.message));
+  await assert.rejects(p.request({ ...data('source', 'x'), op }, { waitOnly: true }), (e: unknown) => e instanceof RequestFailure && e.execution === 'not_started' && /control/.test(e.message));
   assert.equal(p.stats().unsettledData, 0); await p.close(); empty(p);
 });
 
-for (const outcome of ['ok', 'not_started', 'started'] as const) test(`canonical aborted stdio request preserves terminal ${outcome} evidence`, async t => {
+for (const op of ['highlight', 'styles.resolve']) for (const outcome of ['ok', 'not_started', 'started'] as const) test(`canonical aborted stdio ${op} request preserves terminal ${outcome} evidence`, async t => {
   const p = peer('hold'); t.after(() => p.close());
   const abort = new AbortController(), options = { signal: abort.signal, acceptRetired: true };
-  const pending = p.request({ ...data('retired', 'original'), ...(outcome === 'ok' ? {} : { fixtureExecution: outcome }) }, options);
+  const pending = p.request({ ...data('retired', 'original'), op, ...(outcome === 'ok' ? {} : { fixtureExecution: outcome }) }, options);
   let settled = false; void pending.then(() => { settled = true; }, () => { settled = true; });
   abort.abort();
   const inspection = await p.request(control('inspection'));
@@ -524,4 +527,24 @@ for (const outcome of ['ok', 'not_started', 'started'] as const) test(`canonical
   else assert.deepEqual(result.error, { code: 'cancelled', execution: outcome });
   assert.equal(p.stats().unsettledData, 0); assert.equal(p.stats().retainedBytes, 0);
   await p.close(); empty(p);
+});
+
+test('stdio volume limits: DATA preflight is 512KiB without consuming a physical slot', async t => {
+  const p = new StdioTransport({ command: process.execPath, args: [fixture, 'echo'], requestDeadlineMs: 3000, terminateGraceMs: 40 });
+  t.after(() => p.close());
+  assert.equal(STDIO_LIMITS.requestBytes, 524288); assert.equal(STDIO_LIMITS.replyBytes, 524288);
+  const huge = { ...data('too-large', 'x'.repeat(524288)), tail: Object.defineProperty({}, 'private', { enumerable: true, get() { assert.fail('preflight did not stop at limit'); } }) };
+  await assert.rejects(p.request(huge), /byte limit/);
+  assert.equal(p.stats().unsettledData, 0);
+  assert.equal(body(await p.request(data('small', 'ok'))).text, 'ok');
+});
+
+test('stdio rejects uncorrelated and oversized replies without publishing size evidence', async t => {
+  for (const mode of ['unknown', 'oversize']) {
+    const p = peer(mode); t.after(() => p.close());
+    const measured: { ticket?: string; bytes?: number } = {};
+    await assert.rejects(p.request(data('expected'), { replySize: measured }));
+    assert.deepEqual(measured, {});
+    await p.close(); empty(p);
+  }
 });

@@ -5,10 +5,12 @@ use crate::{
     control::Authority,
     frame,
     ingress::{self, ControlDelivery, Incoming, CONTROL_REQUEST_BYTES},
-    protocol::{Fault, PROTOCOL_VERSION},
-    reply::{Reply, REPLY_BYTES},
+    protocol::Fault,
+    reply::REPLY_BYTES,
     request::REQUEST_BYTES,
     scheduler::{Delivery, Ticket},
+    semantic::PROTOCOL_VERSION,
+    semantic_reply,
 };
 use serde::Deserialize;
 use std::{
@@ -69,7 +71,7 @@ fn cancellation(bytes: &[u8]) -> Option<String> {
     .then_some(value.cancel)
 }
 fn error(authority: &Authority, ticket: &str, fault: Fault) -> Result<Payload, Fault> {
-    Reply::<()>::error(ticket, authority.instance(), fault)
+    semantic_reply::error::<()>(ticket, authority.instance(), fault)
         .encode()
         .map(Payload::Error)
 }
@@ -201,7 +203,11 @@ pub async fn run(authority: Arc<Authority>, route: Route) -> Result<(), Fault> {
                 match result { Some(Ok(Ok(()))) => {}, _ => break Err(Fault::started("pipe_error")) }
             },
             bytes = inputs.recv() => {
-                let Some(bytes) = bytes else { break Ok(()); };
+                let Some(bytes) = bytes else {
+                    // Channel closure can win after read_end was polled Pending.
+                    // Only the reader result distinguishes clean EOF from a bad frame.
+                    break (&mut read_end).await.unwrap_or(Err(Fault::not_started("pipe_error")));
+                };
                 if let Some(ticket) = cancellation(&bytes) {
                     if let Some(cancel) = registry.lock().expect("pipe registry poisoned").get(&ticket) { cancel.cancel(); }
                     continue;

@@ -1,8 +1,14 @@
 import "./test-guard.mjs";
 import { Container, Text, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import { CustomEditor, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
-import tidyUi, { installTidyUi, type TidyUiOptions } from "../../src/index.ts";
+import tidyUi, { installTidyUi as installHost, type TidyUiOptions } from "../../src/index.ts";
 import type { SyntaxRuntimeOptions } from "../../src/syntax/runtime.ts";
+import { getThemeByName } from '../../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js';
+export const cardInputTheme = getThemeByName('dark')!;
+// Synthetic ordinary formatters are not Pi-input themes. Custom cards consume
+// this explicit coherent public theme, just as production supplies its facade.
+const installTidyUi: typeof installHost = (tui, theme, options = {}) => installHost(tui, theme,
+  { piInput: () => ({ theme: cardInputTheme, mode: cardInputTheme.getColorMode() }), ...options });
 
 export const plain = (line: string) => line.replace(/\x1b\[[0-9;]*m/g, "");
 
@@ -99,8 +105,9 @@ export function extensionHarness(mode: "tui" | "print" | "json" | "rpc" = "tui",
     getSettings: () => ({}),
     getThinkingLevel: () => "off",
   } as unknown as ExtensionAPI;
-  const ctx = { mode, hasUI: mode === 'tui', isIdle: () => true, ui: {
-    theme: color,
+  const ctx = { mode, hasUI: mode === 'tui', isIdle: () => true,
+    sessionManager: { getSessionId: () => 'sdk-contract-session' }, ui: {
+    theme: cardInputTheme,
     notify: (text: string) => notices.push(text),
     getEditorComponent: () => undefined,
     setWidget: (name: string, factory?: (tui: Root) => { render(width: number): string[] }, options?: unknown) => {

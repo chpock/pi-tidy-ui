@@ -6,9 +6,8 @@ use occipital::{
     actor::{ActorPool, Route},
     catalogue::Catalogue,
     control::Authority,
-    engine::Limits,
     ingress::Incoming,
-    profile::Profile,
+    semantic_engine::Limits,
 };
 use serde_json::{json, Value};
 use std::fs;
@@ -26,7 +25,7 @@ impl Temp {
 }
 async fn metadata(authority: &Authority, route: &Route, op: &str, ticket: &str) -> Value {
     let Incoming::Control(control) = route
-        .receive(serde_json::to_vec(&json!({"v":2,"ticket":ticket,"op":op})).unwrap())
+        .receive(serde_json::to_vec(&json!({"v":3,"ticket":ticket,"op":op})).unwrap())
         .ok()
         .unwrap()
     else {
@@ -40,8 +39,8 @@ async fn metadata(authority: &Authority, route: &Route, op: &str, ticket: &str) 
 fn theme(color: &str) -> String {
     format!("<?xml version=\"1.0\" encoding=\"UTF-8\"?><plist version=\"1.0\"><dict><key>name</key><string>Local</string><key>settings</key><array><dict><key>settings</key><dict><key>foreground</key><string>{color}</string></dict></dict><dict><key>scope</key><string>string</string><key>settings</key><dict><key>foreground</key><string>{color}</string></dict></dict></array></dict></plist>")
 }
-fn source(ticket: &str, op: &str, profile: &str, fingerprint: &str) -> Vec<u8> {
-    serde_json::to_vec(&json!({"v":2,"ticket":ticket,"op":op,"instance":"boot","admission":"bounded_queue","queue_wait_ms":1000,"sources":[{"key":"code","generation":1,"source_version":1,"profile":profile,"fingerprint":fingerprint,"hint":{"language":"bash"},"text":"echo 'source'\n"}]})).unwrap()
+fn source(ticket: &str, op: &str) -> Vec<u8> {
+    serde_json::to_vec(&json!({"v":3,"ticket":ticket,"op":op,"instance":"boot","admission":"bounded_queue","queue_wait_ms":1000,"sources":[{"key":"code","generation":1,"source_version":1,"hint":{"language":"bash"},"text":"echo 'source'\n"}]})).unwrap()
 }
 
 #[tokio::test]
@@ -51,25 +50,26 @@ async fn describe_negotiates_actual_profiles_and_limits_without_native_source_wo
     let pool = ActorPool::with_limits("boot".into(), 2, limits.clone()).unwrap();
     let authority = Authority::new(pool.handle(), "boot".into(), limits, temp.catalogue()).unwrap();
     let route = pool.bind().await.unwrap();
+    let baseline = pool.stats().credits.bytes;
     let value = metadata(&authority, &route, "describe", "d").await;
     assert_eq!(value["ticket"], "d");
     assert_eq!(value["instance"], "boot");
     assert_eq!(value["status"], "ok");
     assert_eq!(value["body"]["kind"], "descriptor");
-    assert_eq!(value["body"]["capability"], "syntax-highlight/v2");
+    assert_eq!(value["body"]["capability"], "syntax-highlight/v3");
     assert_eq!(value["body"]["service"], "syntax");
-    assert_eq!(value["body"]["protocol_version"], 2);
-    assert_eq!(value["body"]["category_version"], 1);
+    assert_eq!(value["body"]["protocol_version"], 3);
+    assert_eq!(value["body"]["contexts_revision"], 1);
     assert_eq!(value["body"]["modes"], json!(["one_shot", "growing"]));
     assert_eq!(
         value["body"]["admission"],
         json!(["try_now", "bounded_queue"])
     );
-    assert_eq!(value["body"]["runtime"]["data_bytes"], 0);
+    assert_eq!(value["body"]["runtime"]["data_bytes"], baseline);
     assert_eq!(value["body"]["runtime"]["data_jobs"], 0);
     assert_eq!(value["body"]["runtime"]["leases"], 0);
     assert_eq!(value["body"]["runtime"]["control_jobs"], 1);
-    assert_eq!(value["body"]["profiles"].as_array().unwrap().len(), 33);
+    assert_eq!(value["body"]["profiles"].as_array().unwrap().len(), 32);
     assert_eq!(
         value["body"]["limits"]["source_bytes"],
         occipital::limits::SOURCE_BYTES
@@ -82,16 +82,16 @@ async fn describe_negotiates_actual_profiles_and_limits_without_native_source_wo
     assert_eq!(pool.stats().leases, 0);
     assert_eq!(pool.stats().credits.jobs, 0);
     assert_eq!(pool.stats().control_credits.jobs, 0);
-    let pi = value["body"]["profiles"]
+    assert!(value["body"]["profiles"]
         .as_array()
         .unwrap()
         .iter()
-        .find(|p| p["id"] == "pi")
-        .unwrap();
-    assert_eq!(
-        pi["fingerprint"],
-        Profile::resolve("pi").unwrap().fingerprint
-    );
+        .all(|p| p["id"] != "pi"));
+    assert!(value["body"]["operations"]
+        .as_array()
+        .unwrap()
+        .contains(&json!("styles.resolve")));
+    assert_eq!(value["assets"], occipital::vocabulary::ASSET_FINGERPRINT);
     pool.shutdown().await.unwrap();
 }
 
@@ -120,24 +120,37 @@ async fn explicit_refresh_publishes_to_workers_and_preserves_last_good_on_failur
     let peer_meta = metadata(&authority, &peer, "describe", "peer").await;
     assert_eq!(peer_meta["body"]["profiles"], refreshed["body"]["profiles"]);
     for route in [&first, &peer] {
-        let mut ticket = route
-            .submit(source("s", "highlight", id, fingerprint))
-            .unwrap();
+        let mut ticket = route.submit(source("s", "highlight")).unwrap();
         let reply = ticket.take().await.unwrap();
         let parsed: Value = serde_json::from_slice(reply.bytes()).unwrap();
         assert_eq!(parsed["status"], "ok");
-        assert_eq!(parsed["body"]["sources"][0]["fingerprint"], fingerprint);
-        assert!(parsed["body"]["sources"][0]["styles"]
+        let contexts = parsed["body"]["sources"][0]["contexts"].clone();
+        assert!(parsed["body"]["sources"][0].get("styles").is_none());
+        reply.commit();
+        let request = json!({"v":3,"op":"styles.resolve","ticket":"styles","instance":"boot","admission":"bounded_queue","queue_wait_ms":1000,"vocabulary":occipital::vocabulary::FINGERPRINT,"contexts":contexts,"rules":{"kind":"native","id":id,"fingerprint":fingerprint}});
+        let mut ticket = route.submit(serde_json::to_vec(&request).unwrap()).unwrap();
+        let reply = ticket.take().await.unwrap();
+        let styles: Value = serde_json::from_slice(reply.bytes()).unwrap();
+        assert_eq!(styles["status"], "ok");
+        assert!(styles["body"]["styles"]
             .as_array()
             .unwrap()
             .iter()
-            .any(|style| style["rgb"] == json!([18, 52, 86])));
+            .any(|style| style["foreground"] == json!({"kind":"rgb","r":18,"g":52,"b":86})));
+        assert_eq!(
+            styles["body"]["palette"]["slots"].as_array().unwrap().len(),
+            26
+        );
         reply.commit();
     }
     // Compare complete descriptors only after the worker has dropped the prior
     // source requests. Runtime counters are a live snapshot, not catalogue data.
     pool.barrier().await.unwrap();
-    assert_eq!(pool.stats().credits.bytes, 0);
+    assert_eq!(pool.stats().credits.jobs, 0);
+    assert!(
+        pool.stats().credits.bytes > 0,
+        "selected immutable native definitions remain funded"
+    );
     fs::write(temp.0.join("config.json"), "{invalid confidential path}").unwrap();
     let failed = metadata(&authority, &first, "themes.refresh", "bad").await;
     assert_eq!(
@@ -165,14 +178,7 @@ async fn no_change_refresh_keeps_active_checkpoint_and_shutdown_rejects_late_con
     )
     .unwrap();
     let route = pool.bind().await.unwrap();
-    let mut ticket = route
-        .submit(source(
-            "o",
-            "stream.open",
-            "pi",
-            &Profile::resolve("pi").unwrap().fingerprint,
-        ))
-        .unwrap();
+    let mut ticket = route.submit(source("o", "stream.open")).unwrap();
     ticket.take().await.unwrap().commit();
     pool.barrier().await.unwrap();
     assert_eq!(pool.stats().leases, 1);
@@ -182,7 +188,7 @@ async fn no_change_refresh_keeps_active_checkpoint_and_shutdown_rejects_late_con
     pool.barrier().await.unwrap();
     assert_eq!(pool.stats().leases, 1);
     let Incoming::Control(late) = route
-        .receive(serde_json::to_vec(&json!({"v":2,"ticket":"late","op":"describe"})).unwrap())
+        .receive(serde_json::to_vec(&json!({"v":3,"ticket":"late","op":"describe"})).unwrap())
         .ok()
         .unwrap()
     else {

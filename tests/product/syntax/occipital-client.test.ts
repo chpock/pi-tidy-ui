@@ -5,30 +5,29 @@ import { setImmediate as turn, setTimeout as delay } from 'node:timers/promises'
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { RuntimeHealth } from '../../../src/runtime-health.ts';
+import { reportRuntime } from '../../../src/diagnostics.ts';
 import { SyntaxClient, type SyntaxClientOptions } from '../../../src/occipital/client.ts';
 import { ExtensionSettings, SETTINGS_FILE_MAX_BYTES, type SettingsLoadResult, type SettingsSaveResult, type SyntaxTheme } from '../../../src/settings.ts';
 import type { ProviderClock, ProviderTransport } from '../../../src/occipital/provider.ts';
 import type { TransportEnd } from '../../../src/occipital/transport-end.ts';
 import { SharedTransport, type SharedClient } from '../../../src/occipital/shared.ts';
+import { semanticDescriptor } from '../../fixtures/semantic-provider.ts';
+import { fingerprintRules, fingerprintNative } from '../../../src/occipital/style-rules.ts';
+import { createPiRuleDefinition } from '../../../src/syntax/pi-rules.ts';
+import { CARD_ROLES } from '../../../src/occipital/semantic-codec.ts';
 
-const pi = { id: 'pi', label: 'Pi palette', fingerprint: 'a'.repeat(64) };
+const pi = { id: 'pi', label: 'Pi palette', fingerprint: fingerprintRules(createPiRuleDefinition()) };
 const native = { id: 'custom:one', label: 'One', fingerprint: 'b'.repeat(64) };
 function deferred<T>() {
   let resolve!: (value: T) => void, reject!: (error: unknown) => void;
   const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no; });
   return { promise, resolve, reject };
 }
-function descriptor(ticket: unknown, profiles = [pi, native], revision = 0, diagnostic: string | null = null) {
-  return { v: 2, ticket, instance: 'instance', assets: 'assets', status: 'ok', body: {
-    kind: 'descriptor', backend_version: '0.1.0', protocol_version: 2, category_version: 1, assets: 'assets',
-    capability: 'syntax-highlight/v2', service: 'syntax', operations: ['describe', 'themes.refresh', 'highlight', 'stream.open', 'stream.append', 'stream.close'],
-    modes: ['one_shot', 'growing'], admission: ['try_now', 'bounded_queue'], catalogue_revision: revision, profiles, diagnostic,
-    runtime: { pid: 1, routes: 1, leases: 0, data_bytes: 0, data_jobs: 0, queued: 0, control_bytes: 0, control_jobs: 0 },
-    limits: { request_bytes: 2097152, reply_bytes: 2097152, control_request_bytes: 4096, control_reply_bytes: 32768,
-      source_bytes: 1048576, line_bytes: 65536, batch_sources: 8, queue_wait_ms: 1000, state_pool_bytes: 2097152,
-      leases: 32, leases_per_route: 4, runs: 131072, styles: 512, idle_ms: 60000, age_ms: 300000,
-      quantum_ms: 2, data_per_route: 2, control_per_route: 1, routes: 8, workers: 2 },
-  } };
+function descriptor(ticket: unknown, profiles = [native], revision = 0, diagnostic: string | null = null) {
+  const reply = semanticDescriptor(ticket, 'instance', profiles);
+  reply.body.catalogue_revision = revision; reply.body.diagnostic = diagnostic;
+  return reply;
 }
 type Call = { request: Record<string, any>; options?: Parameters<ProviderTransport['request']>[1]; resolve(value: unknown): void; reject(error: unknown): void };
 class Peer implements ProviderTransport {
@@ -36,7 +35,7 @@ class Peer implements ProviderTransport {
   ended = this.termination.promise;
   endReason: TransportEnd | undefined;
   calls: Call[] = [];
-  profiles = [pi, native]; revision = 0; diagnostic: string | null = null;
+  profiles = [native]; revision = 0; diagnostic: string | null = null;
   holdMetadata = false; closes = 0; exit = Promise.resolve();
   end(reason: TransportEnd) { if (this.endReason === undefined) { this.endReason = reason; this.termination.resolve(reason); } }
   request(request: Record<string, unknown>, options?: Call['options']) {
@@ -45,16 +44,36 @@ class Peer implements ProviderTransport {
     return pending.promise;
   }
   answerMetadata(index: number) { this.calls[index]!.resolve(descriptor(this.calls[index]!.request.ticket, this.profiles, this.revision, this.diagnostic)); }
-  fault(index: number, code = 'profile_changed') {
-    this.calls[index]!.resolve({ v: 2, ticket: this.calls[index]!.request.ticket, instance: 'instance', assets: 'assets', status: 'error', error: { code, execution: 'not_started' } });
+  fault(index: number, code: string) {
+    if (code === 'profile_changed' || code === 'profile_unavailable') assert.equal(this.calls[index]!.request.op, 'styles.resolve');
+    this.calls[index]!.resolve({ v: 3, ticket: this.calls[index]!.request.ticket, instance: 'instance', assets: 'assets', status: 'error', error: { code, execution: 'not_started' } });
   }
-  answerSource(index: number) {
+  sourceReply(index: number, context = 1) {
     const r = this.calls[index]!.request, s = r.sources[0], bytes = Buffer.byteLength(s.text);
-    this.calls[index]!.resolve({ v: 2, ticket: r.ticket, instance: 'instance', assets: 'assets', status: 'ok', body: { kind: 'source', sources: [{
-      key: s.key, generation: s.generation, source_version: s.source_version, profile: s.profile, fingerprint: s.fingerprint,
-      revision: 1, replace_from: 0, source_bytes: bytes, committed_bytes: bytes, complete: true,
-      styles: [{ role: 'plain' }], runs: [bytes, 0], counters: { committed_line_calls: 0, committed_line_bytes: 0, tail_calls: 1, tail_bytes: bytes },
-    }] } });
+    assert.equal(r.v, 3); assert.equal(r.op, 'highlight');
+    assert.equal(Object.hasOwn(s, 'profile'), false); assert.equal(Object.hasOwn(s, 'fingerprint'), false);
+    return { v: 3, ticket: r.ticket, instance: 'instance', assets: 'assets', status: 'ok', body: {
+      kind: 'source', vocabulary: descriptor(r.ticket).body.vocabulary.fingerprint, sources: [{
+        key: s.key, generation: s.generation, source_version: s.source_version,
+        revision: 1, replace_from: 0, source_bytes: bytes, committed_bytes: bytes, complete: true,
+        contexts: bytes ? [[0, context]] : [], runs: bytes ? [bytes, 1] : [],
+        counters: { committed_line_calls: 0, committed_line_bytes: 0, tail_calls: 1, tail_bytes: bytes },
+      }] } };
+  }
+  answerSource(index: number, context = 1) { this.calls[index]!.resolve(this.sourceReply(index, context)); }
+  answerStyle(index: number) {
+    const r = this.calls[index]!.request; assert.equal(r.op, 'styles.resolve');
+    assert.equal(Object.hasOwn(r, 'sources'), false); assert.equal(Object.hasOwn(r, 'text'), false);
+    const isNative = r.rules.kind === 'native';
+    const expression = isNative ? { foreground: { kind: 'rgb', r: 1, g: 2, b: 3 },
+      background: { kind: 'rgb', r: 4, g: 5, b: 6 }, attributes: 0, attribute_mask: 15 } : r.rules.definition.default;
+    this.calls[index]!.resolve({ v: 3, ticket: r.ticket, instance: 'instance', assets: 'assets', status: 'ok', body: {
+      kind: 'styles', vocabulary: r.vocabulary,
+      rules: isNative ? fingerprintNative(r.rules.fingerprint, 'rules') : fingerprintRules(r.rules.definition),
+      styles: r.contexts.length || isNative ? [expression] : [], indices: r.contexts.map(() => 1),
+      palette: isNative ? { revision: 1, fingerprint: fingerprintNative(r.rules.fingerprint, 'palette'),
+        slots: CARD_ROLES.map(() => 1), origins: CARD_ROLES.map(() => 0) } : null,
+    } });
   }
   close() { this.closes++; this.end('closed'); for (const call of this.calls) call.reject(new Error('SECRET')); return this.exit; }
 }
@@ -93,6 +112,17 @@ function fixture(extra: Partial<SyntaxClientOptions> = {}, store = new Store(), 
 function demand(c: SyntaxClient, key = 'one') {
   const profile = c.snapshot().effective!;
   return { key, version: 1, text: 'x', complete: true, profile: profile.id, fingerprint: profile.fingerprint };
+}
+
+function nativeStyles(c: Pick<SyntaxClient, 'sources'>, fingerprint = native.fingerprint) {
+  c.sources.setStyleSelection({ kind: 'native', id: native.id, fingerprint }); c.sources.flush();
+}
+async function parsedSources(f: ReturnType<typeof fixture>, keys: string[], firstContext = 1) {
+  for (const [offset, key] of keys.entries()) {
+    f.c.sources.observe(demand(f.c, key)); f.c.sources.flush();
+    const index = f.peer.calls.length - 1; assert.equal(f.peer.calls[index]!.request.op, 'highlight');
+    f.peer.answerSource(index, firstContext + offset); await settle();
+  }
 }
 
 test('constructor, snapshots, source inspection and menu captures never load, acquire or dispatch', async () => {
@@ -188,10 +218,10 @@ test('missing episode survives unready and different providers; exact restoratio
   const f = fixture({ provider: { tryShared: async () => peers[next++]!, acquireOwned: async () => new Peer() } }, store);
   await f.c.start(); assert.equal(f.errors.length, 1); assert.ok(f.errors[0]!.includes(JSON.stringify(missing))); assert.equal(f.errors[0]!.includes('\u001b'), false);
   await f.c.setEnabled(false); await f.c.setEnabled(true); assert.equal(f.errors.length, 1);
-  peers[1]!.profiles = [pi, { ...native, id: 'another' }]; peers[1]!.revision++; await f.c.refreshThemes(); assert.equal(f.errors.length, 1);
+  peers[1]!.profiles = [{ ...native, id: 'another' }]; peers[1]!.revision++; await f.c.refreshThemes(); assert.equal(f.errors.length, 1);
   await f.c.selectTheme({ kind: 'occipital', id: native.id }); assert.equal(f.errors.length, 2);
-  peers[1]!.profiles = [pi, native]; peers[1]!.revision++; await f.c.refreshThemes(); assert.equal(f.c.snapshot().effective?.id, native.id);
-  peers[1]!.profiles = [pi]; peers[1]!.revision++; await f.c.refreshThemes(); assert.equal(f.errors.length, 3);
+  peers[1]!.profiles = [native]; peers[1]!.revision++; await f.c.refreshThemes(); assert.equal(f.c.snapshot().effective?.id, native.id);
+  peers[1]!.profiles = []; peers[1]!.revision++; await f.c.refreshThemes(); assert.equal(f.errors.length, 3);
   assert.deepEqual(f.c.snapshot().selected, { kind: 'occipital', id: native.id }); assert.equal(store.writes.length, 1);
 });
 
@@ -199,7 +229,7 @@ test('refresh fingerprint, no-change, unrelated and diagnostic metadata never sw
   const f = fixture(); await f.c.start(); await f.c.selectTheme({ kind: 'occipital', id: native.id });
   const source = demand(f.c); f.c.sources.observe(source); f.c.sources.flush(); f.peer.answerSource(1); await settle();
   const stats = f.c.sources.stats(); const accepted = f.c.broker.stats().successfulClassifications;
-  for (const profiles of [[pi, native], [pi, native, { ...native, id: 'other' }], [pi, { ...native, fingerprint: 'c'.repeat(64) }]]) {
+  for (const profiles of [[native], [native, { ...native, id: 'other' }], [{ ...native, fingerprint: 'c'.repeat(64) }]]) {
     f.peer.profiles = profiles; f.peer.revision++; assert.equal((await f.c.refreshThemes()).ok, true); await settle();
     assert.deepEqual(f.c.sources.stats(), stats); assert.equal(f.c.broker.stats().successfulClassifications, accepted);
   }
@@ -208,7 +238,11 @@ test('refresh fingerprint, no-change, unrelated and diagnostic metadata never sw
   if (!outcome.ok) assert.equal(outcome.message, 'Syntax themes could not be reloaded.');
   assert.equal(f.c.snapshot().effective?.fingerprint, 'c'.repeat(64)); assert.equal(f.store.writes.length, 1);
   assert.equal(f.c.snapshot().lastIssue, 'Syntax themes could not be reloaded.'); assert.deepEqual(f.c.sources.stats(), stats);
-  f.c.sources.observe(demand(f.c)); f.c.sources.flush(); assert.equal(f.c.sources.stats().dispatches, stats.dispatches + 1);
+  f.c.sources.observe(demand(f.c)); f.c.sources.flush(); assert.equal(f.c.sources.stats().dispatches, stats.dispatches);
+  nativeStyles(f.c, 'c'.repeat(64)); const style = f.peer.calls.length - 1;
+  assert.equal(f.peer.calls[style]!.request.op, 'styles.resolve'); f.peer.answerStyle(style); await settle();
+  assert.ok(f.c.sources.displayBasis('one')); assert.equal(f.c.broker.stats().successfulClassifications, accepted);
+  assert.equal(f.c.broker.stats().styleDispatches, 1);
 });
 
 test('refresh rejection, stale revision, and late reply after off cannot replace validated profile', async () => {
@@ -216,34 +250,47 @@ test('refresh rejection, stale revision, and late reply after off cannot replace
   f.peer.revision = 1; await f.c.refreshThemes(); const profile = f.c.snapshot().effective;
   f.peer.revision = 0; assert.equal((await f.c.refreshThemes()).ok, false); assert.deepEqual(f.c.snapshot().effective, profile);
   f.peer.holdMetadata = true; const refresh = f.c.refreshThemes(); await settle(); const index = f.peer.calls.length - 1;
-  const off = f.c.setEnabled(false); f.peer.revision = 2; f.peer.profiles = [pi]; f.peer.answerMetadata(index);
+  const off = f.c.setEnabled(false); f.peer.revision = 2; f.peer.profiles = []; f.peer.answerMetadata(index);
   assert.equal((await refresh).ok, false); await off; assert.equal(f.c.snapshot().effective, undefined);
   assert.equal(f.c.snapshot().provider.availability, 'disabled'); assert.equal(f.store.writes.length, 1);
 });
 
-test('source profile notice starts one source-free describe, busy refresh refuses; only subsequent current demand retries', async () => {
-  const f = fixture(); await f.c.start(); f.peer.holdMetadata = true;
-  const source = demand(f.c); f.c.sources.observe(source); f.c.sources.flush(); f.peer.fault(1); await settle();
-  assert.deepEqual(f.peer.calls.map(c => c.request.op), ['describe', 'highlight', 'describe']);
-  assert.deepEqual(Object.keys(f.peer.calls[2]!.request).sort(), ['op', 'ticket', 'v']); assert.equal(f.peer.calls[2]!.options?.waitOnly, true);
-  assert.equal((await f.c.refreshThemes()).ok, false); assert.equal(f.peer.calls.length, 3);
-  f.peer.answerMetadata(2); await settle(); assert.equal(f.c.sources.profileReconciliationNeeded(), undefined); assert.equal(f.peer.calls.length, 3);
-  f.c.sources.flush(); await settle(); assert.equal(f.peer.calls.length, 3);
-  f.c.sources.observe(source); f.c.sources.flush(); assert.equal(f.peer.calls.length, 4); f.peer.fault(3); await settle();
-  assert.equal(f.peer.calls.length, 4, 'single retry must not become a metadata loop'); assert.equal(f.c.sources.stats().dispatches, 2);
+test('STYLE profile notice starts one source-free describe, busy refresh refuses; only new style demand retries', async () => {
+  const f = fixture(); await f.c.start(); await f.c.selectTheme({ kind: 'occipital', id: native.id });
+  await parsedSources(f, ['one']); f.peer.holdMetadata = true;
+  nativeStyles(f.c); f.peer.fault(2, 'profile_changed'); await settle();
+  assert.deepEqual(f.peer.calls.map(c => c.request.op), ['describe', 'highlight', 'styles.resolve', 'describe']);
+  assert.deepEqual(Object.keys(f.peer.calls[3]!.request).sort(), ['op', 'ticket', 'v']); assert.equal(f.peer.calls[3]!.options?.waitOnly, true);
+  assert.equal((await f.c.refreshThemes()).ok, false); assert.equal(f.peer.calls.length, 4);
+  f.peer.profiles = [{ ...native, fingerprint: 'c'.repeat(64) }]; f.peer.revision++;
+  f.peer.answerMetadata(3); await settle(); assert.equal(f.c.sources.profileReconciliationNeeded(), undefined);
+  assert.equal(f.c.snapshot().effective?.fingerprint, 'c'.repeat(64));
+  for (let i = 0; i < 20; i++) { f.c.sources.observe(demand(f.c)); f.c.sources.flush(); }
+  await settle(); assert.equal(f.peer.calls.length, 4, 'metadata acknowledgement is not style retry or source replay');
+  nativeStyles(f.c, 'c'.repeat(64)); f.peer.fault(4, 'busy'); await settle();
+  for (let i = 0; i < 20; i++) f.c.sources.flush(); await settle();
+  assert.equal(f.peer.calls.length, 5, 'new definition gets one style attempt, never a warm retry loop');
+  assert.equal(f.c.sources.stats().dispatches, 3); assert.equal(f.c.broker.stats().sourceDispatches, 1);
+  assert.equal(f.c.broker.stats().styleDispatches, 2);
+  assert.equal(f.c.broker.stats().successfulClassifications, 1);
 });
 
 test('newer refusal during describe is not swallowed; failed same need never loops, newer need tries once', async () => {
-  const f = fixture(); await f.c.start(); f.peer.holdMetadata = true;
-  f.c.sources.observe(demand(f.c, 'one')); f.c.sources.observe(demand(f.c, 'two')); f.c.sources.flush();
-  f.peer.fault(1); await settle(); assert.equal(f.peer.calls.length, 4); const firstNeed = f.c.sources.profileReconciliationNeeded()!;
-  f.peer.fault(2); await settle(); const secondNeed = f.c.sources.profileReconciliationNeeded()!; assert.ok(secondNeed.sequence > firstNeed.sequence);
-  f.peer.answerMetadata(3); await settle(); assert.equal(f.peer.calls.length, 5); assert.deepEqual(f.c.sources.profileReconciliationNeeded(), secondNeed);
-  f.peer.calls[4]!.reject(new Error('SECRET')); await settle(); const notices = f.notices();
-  f.c.sources.wake(); f.c.sources.flush(); await settle(); assert.equal(f.peer.calls.length, 5); assert.equal(f.notices(), notices);
-  f.c.sources.observe(demand(f.c, 'three')); f.c.sources.flush(); f.peer.fault(5, 'theme_unavailable'); await settle();
-  assert.equal(f.peer.calls.length, 7); f.peer.answerMetadata(6); await settle(); assert.equal(f.c.sources.profileReconciliationNeeded(), undefined);
-  assert.equal(f.c.sources.stats().dispatches, 3); assert.equal(f.c.broker.stats().successfulClassifications, 0);
+  const f = fixture(); await f.c.start(); await f.c.selectTheme({ kind: 'occipital', id: native.id });
+  await parsedSources(f, ['one', 'two']); f.peer.holdMetadata = true;
+  nativeStyles(f.c); assert.equal(f.peer.calls.length, 5);
+  f.peer.fault(3, 'profile_changed'); await settle(); assert.equal(f.peer.calls.length, 6); const firstNeed = f.c.sources.profileReconciliationNeeded()!;
+  f.peer.fault(4, 'profile_changed'); await settle(); const secondNeed = f.c.sources.profileReconciliationNeeded()!; assert.ok(secondNeed.sequence > firstNeed.sequence);
+  f.peer.answerMetadata(5); await settle(); assert.equal(f.peer.calls.length, 7); assert.deepEqual(f.c.sources.profileReconciliationNeeded(), secondNeed);
+  f.peer.calls[6]!.reject(new Error('SECRET')); await settle(); const notices = f.notices();
+  f.c.sources.wake(); f.c.sources.flush(); await settle(); assert.equal(f.peer.calls.length, 7); assert.equal(f.notices(), notices);
+  await parsedSources(f, ['three'], 3); const style = f.peer.calls.length - 1;
+  assert.equal(f.peer.calls[style]!.request.op, 'styles.resolve'); f.peer.fault(style, 'profile_unavailable'); await settle();
+  const metadata = f.peer.calls.length - 1; assert.equal(f.peer.calls[metadata]!.request.op, 'describe');
+  f.peer.answerMetadata(metadata); await settle(); assert.equal(f.c.sources.profileReconciliationNeeded(), undefined);
+  assert.equal(f.c.sources.stats().dispatches, 6); assert.equal(f.c.broker.stats().sourceDispatches, 3);
+  assert.equal(f.c.broker.stats().styleDispatches, 3);
+  assert.equal(f.c.broker.stats().successfulClassifications, 3);
 });
 
 test('external notices coalesce same-turn preferences and never observe or prepare sources', async () => {
@@ -277,7 +324,7 @@ test('actual shared waitOnly expiry retains unanswered credit; further refresh r
   const refresh = f.c.refreshThemes(); await settle(); await f.clock.advance(5000); assert.equal((await refresh).ok, false);
   assert.equal(f.transport.stats().unsettledControl, 1); assert.equal(f.c.snapshot().provider.availability, 'ready');
   assert.equal((await f.c.refreshThemes()).ok, false); assert.equal(f.calls.length, 2); assert.equal(f.transport.stats().unsettledControl, 1);
-  f.calls[1]!.pending.resolve(descriptor(f.calls[1]!.request.ticket, [pi], 1)); await settle();
+  f.calls[1]!.pending.resolve(descriptor(f.calls[1]!.request.ticket, [], 1)); await settle();
   assert.equal(f.transport.stats().unsettledControl, 0); assert.deepEqual(f.c.snapshot().effective, profile);
 });
 function detachedOwner(peer: Peer) {
@@ -292,8 +339,10 @@ test('retained production broker/source observer callbacks cannot retain first o
   assert.equal(first.weak.deref(), undefined); assert.equal(second.c.snapshot().provider.availability, 'ready');
   await first.broker.catalogue(first.broker.snapshot().generation, 'describe');
   first.sources.observe({ key: 'collected', version: 1, text: 'x', complete: true, profile: pi.id, fingerprint: pi.fingerprint });
-  first.sources.flush(); peer.fault(2); await settle();
-  assert.equal(peer.calls.length, 3, 'retained source observer must not resurrect collected client metadata work');
+  first.sources.flush(); peer.answerSource(2); await settle(); nativeStyles(first);
+  peer.fault(3, 'profile_changed'); await settle();
+  assert.equal(first.sources.profileReconciliationNeeded()?.sequence, 1);
+  assert.equal(peer.calls.length, 4, 'retained source observer must not resurrect collected client metadata work');
   assert.equal(second.c.snapshot().provider.availability, 'ready'); first.sources.dispose(); await first.broker.dispose();
 });
 
@@ -306,19 +355,43 @@ test('explicit preference before start is not overwritten by startup restore; kn
   assert.equal(f.c.sources.observe(piDemand), false); f.c.sources.flush(); assert.equal(f.peer.calls.length, 1);
   load.resolve({ ok: true, syntaxTheme: { kind: 'occipital', id: native.id } }); await start;
   f.c.sources.observe(demand(f.c)); f.c.sources.flush();
-  assert.equal(f.peer.calls[1]!.request.sources[0].profile, native.id); f.peer.answerSource(1); await settle();
-  assert.equal(f.c.broker.stats().successfulClassifications, 1);
+  assert.equal(f.c.snapshot().effective?.id, native.id);
+  assert.equal(Object.hasOwn(f.peer.calls[1]!.request.sources[0], 'profile'), false);
+  assert.equal(Object.hasOwn(f.peer.calls[1]!.request.sources[0], 'fingerprint'), false);
+  f.peer.answerSource(1); await settle(); nativeStyles(f.c); f.peer.answerStyle(2); await settle();
+  assert.ok(f.c.sources.displayBasis('one')); assert.equal(f.peer.calls[2]!.request.rules.id, native.id);
+  assert.equal(f.c.broker.stats().successfulClassifications, 1); assert.equal(f.c.broker.stats().styleDispatches, 1);
 });
 
-test('stale source reply after current preference demand cannot publish or reset classification crash budget', async () => {
+test('stale source reply after current content demand cannot publish or reset classification crash budget', async () => {
   const f = fixture(); await f.c.start(); f.c.sources.observe(demand(f.c)); f.c.sources.flush();
   const old = f.peer.calls[1]!; await f.c.selectTheme({ kind: 'occipital', id: native.id });
-  f.c.sources.observe(demand(f.c)); f.c.sources.flush(); assert.equal(old.options?.signal?.aborted, false, 'profile-only supersession preserves physical settlement');
+  f.c.sources.observe({ ...demand(f.c), version: 2, text: 'y' }); f.c.sources.flush();
+  assert.equal(old.options?.signal?.aborted, true, 'content replacement retires parser work, unlike theme-only selection');
   assert.equal(old.options?.acceptRetired, true, 'canonical terminal evidence passes through the broker');
   f.peer.answerSource(1); await settle(); assert.equal(f.c.sources.stats().staleReplies, 1);
   assert.equal(f.c.broker.stats().successfulClassifications, 0); assert.equal(f.c.sources.status('one')?.classificationVersion, undefined);
-  assert.equal(f.peer.calls[2]!.request.sources[0].profile, native.id); f.peer.answerSource(2); await settle();
+  assert.equal(Object.hasOwn(f.peer.calls[2]!.request.sources[0], 'profile'), false); f.peer.answerSource(2); await settle();
   assert.equal(f.c.sources.status('one')?.exact, true); assert.equal(f.c.broker.stats().successfulClassifications, 1);
+});
+
+test('theme-only selection accepts held SOURCE once while obsolete STYLE cannot publish the new definition', async () => {
+  const f = fixture(); await f.c.start(); f.c.sources.observe(demand(f.c)); f.c.sources.flush();
+  const source = f.peer.calls[1]!;
+  await f.c.selectTheme({ kind: 'occipital', id: native.id }); nativeStyles(f.c);
+  f.c.sources.observe(demand(f.c)); f.c.sources.flush();
+  assert.equal(f.peer.calls.length, 2); assert.equal(source.options?.signal?.aborted, false);
+  f.peer.answerSource(1); await settle(); assert.equal(f.c.sources.status('one')?.exact, true);
+  assert.equal(f.c.broker.stats().successfulClassifications, 1); assert.equal(f.peer.calls[2]!.request.op, 'styles.resolve');
+  f.peer.profiles = [{ ...native, fingerprint: 'c'.repeat(64) }]; f.peer.revision++;
+  assert.equal((await f.c.refreshThemes()).ok, true); nativeStyles(f.c, 'c'.repeat(64));
+  f.c.sources.observe(demand(f.c)); f.c.sources.flush();
+  assert.equal(f.peer.calls[2]!.options?.signal?.aborted, false, 'obsolete styles retain physical settlement');
+  f.peer.answerStyle(2); await settle(); assert.equal(f.c.sources.displayBasis('one'), undefined);
+  assert.equal(f.peer.calls[4]!.request.rules.fingerprint, 'c'.repeat(64)); f.peer.answerStyle(4); await settle();
+  assert.ok(f.c.sources.displayBasis('one')); assert.equal(f.c.sources.stats().staleReplies, 0);
+  assert.equal(f.c.broker.stats().sourceDispatches, 1); assert.equal(f.c.broker.stats().styleDispatches, 2);
+  assert.equal(f.c.broker.stats().successfulClassifications, 1); assert.equal(f.peer.calls.length, 5);
 });
 
 for (const fault of ['rejected', 'malformed', 'refused'] as const) test(`explicit ${fault} metadata keeps effective profile and reports fixed failure`, async () => {
@@ -334,15 +407,18 @@ for (const fault of ['rejected', 'malformed', 'refused'] as const) test(`explici
   assert.equal(f.c.broker.stats().successfulClassifications, 0);
 });
 
-test('same-turn source refusals coalesce one latest metadata sequence; unrelated accepted source notice cannot retry failed need', async () => {
-  const f = fixture(); await f.c.start(); f.peer.holdMetadata = true;
-  f.c.sources.observe(demand(f.c, 'one')); f.c.sources.observe(demand(f.c, 'two')); f.c.sources.flush();
-  f.peer.fault(1); f.peer.fault(2); await settle(); assert.equal(f.peer.calls.length, 4);
-  const need = f.c.sources.profileReconciliationNeeded(); assert.equal(need?.sequence, 2);
-  f.peer.calls[3]!.reject(new Error('SECRET')); await settle();
-  f.c.sources.observe(demand(f.c, 'other')); f.c.sources.flush(); f.peer.answerSource(4); await settle();
-  assert.equal(f.peer.calls.length, 5); assert.deepEqual(f.c.sources.profileReconciliationNeeded(), need);
-  assert.equal(f.c.sources.stats().preparedBytes, 3); assert.equal(f.c.broker.stats().successfulClassifications, 1);
+test('same-turn STYLE refusals coalesce one latest metadata sequence; unrelated accepted source notice cannot retry failed need', async () => {
+  const f = fixture(); await f.c.start(); await f.c.selectTheme({ kind: 'occipital', id: native.id });
+  await parsedSources(f, ['one', 'two']); f.peer.holdMetadata = true;
+  nativeStyles(f.c); f.peer.fault(3, 'profile_changed'); f.peer.fault(4, 'profile_changed'); await settle();
+  assert.equal(f.peer.calls.length, 6); const need = f.c.sources.profileReconciliationNeeded(); assert.equal(need?.sequence, 2);
+  f.peer.calls[5]!.reject(new Error('SECRET')); await settle();
+  f.c.sources.observe(demand(f.c, 'other')); f.c.sources.flush(); f.peer.answerSource(6, 3); await settle();
+  assert.equal(f.peer.calls.length, 8); assert.equal(f.peer.calls[7]!.request.op, 'styles.resolve');
+  f.peer.answerStyle(7); await settle();
+  assert.equal(f.peer.calls.length, 8); assert.deepEqual(f.c.sources.profileReconciliationNeeded(), need);
+  assert.equal(f.c.sources.stats().preparedBytes, 3); assert.equal(f.c.broker.stats().successfulClassifications, 3);
+  assert.equal(f.c.broker.stats().styleDispatches, 3);
 });
 
 function sharedPeer() {
@@ -369,7 +445,7 @@ test('first client is collectable after actual metadata caller expiry while SDK 
   try {
     for (let i = 0; i < 100; i++) { await delay(0); global.gc!(); await delay(0); if (!first.weak.deref()) break; }
     assert.equal(first.weak.deref(), undefined); assert.equal(second.c.snapshot().provider.availability, 'ready');
-    peer.calls[1]!.pending.resolve(descriptor(peer.calls[1]!.request.ticket, [pi], 1)); await settle();
+    peer.calls[1]!.pending.resolve(descriptor(peer.calls[1]!.request.ticket, [], 1)); await settle();
     assert.equal(peer.transport.stats().unsettledControl, 0); assert.equal(first.broker.snapshot().description?.catalogue_revision, 0);
     assert.equal(second.c.snapshot().provider.availability, 'ready');
   } finally { first.sources.dispose(); await first.broker.dispose(); }
@@ -417,12 +493,14 @@ test('client forwards coalesced source keys without turning metadata/theme chang
 test('a throwing source-specific client observer cannot lose generic delivery or metadata reconciliation', async () => {
   let sourceNotices = 0;
   const { c, peer, notices } = fixture({ onSourceChange: (_keys: readonly string[]) => { sourceNotices++; throw Error('external presentation'); } });
-  await c.start(); await settle(); const before = notices();
-  c.sources.observe(demand(c)); c.sources.flush(); peer.fault(1); await settle();
-  assert.equal(sourceNotices, 2, 'terminal refusal and metadata retry permission are distinct source-state changes'); assert.ok(notices() > before);
+  await c.start(); await c.selectTheme({ kind: 'occipital', id: native.id }); await settle(); const before = notices();
+  c.sources.observe(demand(c)); c.sources.flush(); peer.answerSource(1); await settle();
+  assert.equal(sourceNotices, 1); nativeStyles(c); peer.fault(2, 'profile_changed'); await settle();
+  assert.equal(sourceNotices, 2, 'semantic acceptance and style refusal are distinct targeted changes; metadata acknowledgement cannot replay parsing'); assert.ok(notices() > before);
   assert.equal(peer.calls.filter(call => call.request.op === 'describe').length, 2);
   assert.equal(c.sources.profileReconciliationNeeded(), undefined);
   const source = c.sources.stats(); assert.equal(source.globalUnsettledJobs, 0);
+  assert.equal(c.broker.stats().successfulClassifications, 1); assert.equal(c.broker.stats().styleDispatches, 1);
   await c.setEnabled(false); await settle();
   c.acceptSourceChange(['one']); await settle();
   assert.equal(sourceNotices, 2, 'retired source delivery cannot reach the external observer');
@@ -451,7 +529,7 @@ test('client forwards useful canonical permission notices while off, never guess
 });
 
 test('canonical client receives a fully validated retired shared outcome without stale publication or useful credit', async () => {
-  for (const outcome of ['complete', 'not_started', 'malformed'] as const) {
+  for (const outcome of ['complete', 'not_started', 'malformed', 'wrong_vocabulary', 'wrong_source', 'wrong_job'] as const) {
     const peer = new Peer(), packets: string[][] = [];
     peer.close = () => { peer.closes++; peer.end('closed'); return Promise.resolve(); };
     const f = fixture({ onSourceChange: keys => packets.push([...keys]) }, new Store(), peer);
@@ -459,9 +537,17 @@ test('canonical client receives a fully validated retired shared outcome without
     await f.c.setEnabled(false); await settle(); assert.equal(f.c.sources.workStatus('one').execution, 'unsettled');
     if (outcome === 'complete') peer.answerSource(1);
     else if (outcome === 'not_started') peer.fault(1, 'busy');
-    else peer.calls[1]!.resolve({ v: 2, status: 'ok' });
+    else if (outcome === 'malformed') peer.calls[1]!.resolve({ v: 3, status: 'ok' });
+    else {
+      const reply = peer.sourceReply(1);
+      if (outcome === 'wrong_vocabulary') reply.body.vocabulary = 'd'.repeat(64);
+      else if (outcome === 'wrong_source') reply.body.sources[0]!.generation++;
+      else reply.ticket = 'wrong:job';
+      peer.calls[1]!.resolve(reply);
+    }
     await settle();
-    assert.equal(f.c.sources.workStatus('one').fallbackEligible, outcome !== 'malformed');
+    assert.equal(f.c.sources.workStatus('one').fallbackEligible, outcome === 'complete' || outcome === 'not_started');
+    assert.equal(f.c.sources.stats().staleReplies, outcome === 'complete' ? 1 : 0);
     assert.deepEqual(packets, [['one']]);
     assert.equal(f.c.broker.stats().successfulClassifications, 0);
     assert.equal(f.c.sources.stats().retention.retainedBytes, 0);
@@ -528,4 +614,25 @@ test('theme preview and rollback leave the real settings bytes intact; only conf
     f.c.previewTheme({ kind: 'pi' });
     assert.deepEqual(f.c.snapshot().selected, selected); assert.equal(writes, 1);
   } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test('runtime health: actual theme-save failure is counted without capture and successful theme save recovers the shared settings operation', async () => {
+  const notices: string[] = [], health = new RuntimeHealth(message => notices.push(message));
+  const diagnostic = health.sink(() => {}), f = fixture({ diagnostic });
+  f.store.saveResult = { ok: false, issue: { code: 'write-failed', message: 'PRIVATE_SAVE_FAILURE' } };
+  assert.equal((await f.c.selectTheme({ kind: 'pi' })).ok, false); await settle();
+  assert.equal(health.snapshot().errors, 1); assert.equal(health.snapshot().active, 1); assert.equal(notices.length, 1);
+  assert.doesNotMatch(notices[0]!, /PRIVATE_SAVE_FAILURE/);
+  f.store.saveResult = { ok: true }; await f.c.selectTheme({ kind: 'pi' });
+  assert.equal(health.snapshot().active, 0); assert.equal(health.snapshot().last?.state, 'recovered');
+  reportRuntime(diagnostic, { kind: 'failure', scope: f.store, operation: 'save', area: 'settings', code: 'settings_save' });
+  await f.c.selectTheme({ kind: 'occipital', id: native.id }); assert.equal(health.snapshot().active, 0);
+});
+
+test('runtime health: a retired theme-save failure is not a runtime incident', async () => {
+  const health = new RuntimeHealth(() => {}), f = fixture({ diagnostic: health.sink(() => {}) });
+  const pending = deferred<SettingsSaveResult>(); f.store.saveResult = pending.promise;
+  const saving = f.c.selectTheme({ kind: 'pi' }); await f.c.dispose();
+  pending.resolve({ ok: false, issue: { code: 'write-failed', message: 'cancelled' } }); await saving;
+  assert.equal(health.snapshot().errors, 0);
 });

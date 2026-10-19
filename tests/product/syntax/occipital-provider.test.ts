@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
 import { RequestFailure } from '../../../src/occipital/request-failure.ts';
+import { semanticDescriptor } from '../../fixtures/semantic-provider.ts';
 import type { TransportEnd } from '../../../src/occipital/transport-end.ts';
 import { StdioTransport } from '../../../src/occipital/stdio.ts';
 import { SharedTransport, type SharedClient } from '../../../src/occipital/shared.ts';
@@ -18,9 +19,7 @@ class Clock implements ProviderClock {
   async advance(ms:number) { const end=this.time+ms;for(;;) { const next=[...this.timers].filter(([,t])=>t.at<=end).sort((a,b)=>a[1].at-b[1].at)[0];if(!next)break;this.time=next[1].at;this.timers.delete(next[0]);next[1].callback();await flush(); }this.time=end;await flush(); }
   async sleep(ms:number) { this.time+=ms;const due=[...this.timers].filter(([,t])=>t.at<=this.time);for(const [id,t] of due){this.timers.delete(id);t.callback();}await flush(); }
 }
-function descriptor(ticket:unknown,instance='instance') {
-  return {v:2,ticket,instance,assets:'assets',status:'ok',body:{kind:'descriptor',backend_version:'0.1.0',protocol_version:2,category_version:1,assets:'assets',capability:'syntax-highlight/v2',service:'syntax',operations:['describe','themes.refresh','highlight','stream.open','stream.append','stream.close'],modes:['one_shot','growing'],admission:['try_now','bounded_queue'],catalogue_revision:0,profiles:[{id:'pi',label:'Pi palette',fingerprint:'a'.repeat(64)}],diagnostic:null as string | null,runtime:{pid:1,routes:1,leases:0,data_bytes:0,data_jobs:0,queued:0,control_bytes:0,control_jobs:0},limits:{request_bytes:2097152,reply_bytes:2097152,control_request_bytes:4096,control_reply_bytes:32768,source_bytes:1048576,line_bytes:8192,batch_sources:8,queue_wait_ms:1000,state_pool_bytes:2097152,leases:32,leases_per_route:4,runs:131072,styles:512,idle_ms:60000,age_ms:300000,quantum_ms:2,data_per_route:2,control_per_route:1,routes:8,workers:2}}};
-}
+function descriptor(ticket: unknown, instance = 'instance') { return semanticDescriptor(ticket, instance); }
 class Transport implements ProviderTransport {
   private termination = deferred<TransportEnd>();
   readonly ended = this.termination.promise;
@@ -52,7 +51,7 @@ test('initial standalone has no periodic probes even after owned loss',async()=>
   const owned=new Transport(),s=setup(async()=>undefined,owned);await s.broker.start();await s.clock.advance(1200000);assert.equal(s.broker.snapshot().initialShared,false);assert.equal(s.broker.stats().sharedAttempts,1);assert.equal(s.broker.stats().probesStarted,0);await s.broker.provenLoss(s.broker.snapshot().generation);assert.equal(s.broker.stats().sharedAttempts,1);await s.broker.dispose();released(s.broker,s.clock);
 });
 for(const fault of ['denied','malformed','oversized']) test(`${fault} shared candidate is optional and cleaned before owned`,async()=>{
-  const bad=new Transport();bad.reply=async r=>fault==='denied'?{v:2,ticket:r.ticket,instance:'i',assets:'a',status:'error',error:{code:'future_error',execution:'not_started'}}:fault==='oversized'?{extra:'x'.repeat(32769)}:{};
+  const bad=new Transport();bad.reply=async r=>fault==='denied'?{v:3,ticket:r.ticket,instance:'i',assets:'a',status:'error',error:{code:'future_error',execution:'not_started'}}:fault==='oversized'?{extra:'x'.repeat(32769)}:{};
   const s=setup(async()=>bad);await s.broker.start();assert.equal(bad.closes,1);assert.equal(s.acquisitions(),1);assert.equal(s.broker.snapshot().kind,'owned');assert.equal(s.broker.snapshot().reason,'ready');await s.broker.dispose();released(s.broker,s.clock);
 });
 test('optional factory rejection does not escape startup; owned refusal leaves unavailable',async()=>{
@@ -63,18 +62,18 @@ test('proven shared loss performs exactly two bounded reconnects before takeover
   assert.equal(count,3);assert.equal(s.acquisitions(),1);assert.equal(shared.closes,1);assert.equal(s.broker.stats().reconnectAttempts,2);const late=new Transport();pending.resolve(late);await flush();assert.equal(late.closes,1);await s.broker.dispose();released(s.broker,s.clock);
 });
 test('source timeout/unknown outcome never implies actual transport loss',async()=>{
-  const shared=new Transport(),s=setup(async()=>shared);await s.broker.start();shared.reply=async()=>{throw Error('local timeout-close');};await assert.rejects(s.broker.request(s.broker.snapshot().generation,{v:2,op:'highlight',ticket:'source:1'}));assert.equal(s.acquisitions(),0);assert.equal(s.broker.stats().sharedAttempts,1);assert.equal(s.broker.snapshot().kind,'shared');await s.broker.dispose();released(s.broker,s.clock);
+  const shared=new Transport(),s=setup(async()=>shared);await s.broker.start();shared.reply=async()=>{throw Error('local timeout-close');};await assert.rejects(s.broker.request(s.broker.snapshot().generation,{v:3,op:'highlight',ticket:'source:1'}));assert.equal(s.acquisitions(),0);assert.equal(s.broker.stats().sharedAttempts,1);assert.equal(s.broker.snapshot().kind,'shared');await s.broker.dispose();released(s.broker,s.clock);
 });
 test('verified return retires generation, rejects held source and waits for owned exit',async()=>{
   const shared=new Transport(),owned=new Transport(),returned=new Transport(),exit=deferred<void>(),source=deferred<unknown>();owned.exit=exit.promise;
-  let n=0;const s=await failover(shared,owned,async()=>++n<=2?undefined:returned);const old=s.broker.snapshot().generation;owned.reply=async()=>source.promise;const request=s.broker.request(old,{v:2,op:'highlight',ticket:'source:1'});const rejected=assert.rejects(request,/retired/);
-  await s.clock.advance(60000);assert.equal(owned.closes,1);assert.equal(s.broker.snapshot().availability,'transitioning');await assert.rejects(s.broker.request(old,{v:2,op:'highlight',ticket:'source:2'}));assert.equal(returned.requests.length,1);
-  source.resolve({old:true});await rejected;exit.resolve();await flush();assert.equal(s.broker.snapshot().kind,'shared');assert.notEqual(s.broker.snapshot().generation,old);await s.broker.request(s.broker.snapshot().generation,{v:2,op:'highlight',ticket:'source:3'});assert.equal(returned.requests.length,2);assert.equal(s.broker.stats().handoffsSucceeded,1);await s.broker.dispose();released(s.broker,s.clock);
+  let n=0;const s=await failover(shared,owned,async()=>++n<=2?undefined:returned);const old=s.broker.snapshot().generation;owned.reply=async()=>source.promise;const request=s.broker.request(old,{v:3,op:'highlight',ticket:'source:1'});const rejected=assert.rejects(request,/retired/);
+  await s.clock.advance(60000);assert.equal(owned.closes,1);assert.equal(s.broker.snapshot().availability,'transitioning');await assert.rejects(s.broker.request(old,{v:3,op:'highlight',ticket:'source:2'}));assert.equal(returned.requests.length,1);
+  source.resolve({old:true});await rejected;exit.resolve();await flush();assert.equal(s.broker.snapshot().kind,'shared');assert.notEqual(s.broker.snapshot().generation,old);await s.broker.request(s.broker.snapshot().generation,{v:3,op:'highlight',ticket:'source:3'});assert.equal(returned.requests.length,2);assert.equal(s.broker.stats().handoffsSucceeded,1);await s.broker.dispose();released(s.broker,s.clock);
 });
 test('failed readiness leaves owned serving; ten probes do not extend window',async()=>{
   const bad=new Transport();bad.reply=async()=>({});let n=0;const s=await failover(new Transport(),new Transport(),async()=>++n<=2?undefined:TransportWithBadReply());
   function TransportWithBadReply() { const t=new Transport();t.reply=bad.reply;return t; }
-  for(let minute=1;minute<=10;minute++){await s.clock.advance(60000);await s.broker.request(s.broker.snapshot().generation,{v:2,op:'highlight',ticket:`s:${minute}`});assert.equal(s.broker.snapshot().kind,'owned');}
+  for(let minute=1;minute<=10;minute++){await s.clock.advance(60000);await s.broker.request(s.broker.snapshot().generation,{v:3,op:'highlight',ticket:`s:${minute}`});assert.equal(s.broker.snapshot().kind,'owned');}
   assert.equal(s.broker.stats().probesStarted,10);assert.equal(s.broker.stats().probesCompleted,10);assert.equal(s.broker.stats().handoffsSucceeded,0);await s.clock.advance(600000);assert.equal(s.broker.stats().probesStarted,10);assert.equal(s.broker.stats().recoveryTimers,0);await s.broker.dispose();released(s.broker,s.clock);
 });
 test('sleep misses slots without catch-up or extending beyond minute10',async()=>{
@@ -99,7 +98,7 @@ test('factory and control timeouts dispose late resources and all timers are unr
   const candidate=new Transport(),reply=deferred<unknown>();candidate.reply=async()=>reply.promise;const s=setup(async()=>candidate);const init=s.broker.start();await flush();await s.clock.advance(PROVIDER_LIMITS.controlMs);await init;assert.equal(candidate.closes,1);assert.equal(s.acquisitions(),1);assert.equal(s.clock.unrefs,s.clock.serial);reply.resolve(descriptor(candidate.requests[0]!.ticket));await flush();assert.equal(s.broker.snapshot().kind,'owned');await s.broker.dispose();released(s.broker,s.clock);
 });
 test('control namespace is reserved and provider incarnations have distinct tickets',async()=>{
-  const shared=new Transport(),returned=new Transport();let n=0;const s=await failover(shared,new Transport(),async()=>++n<=2?undefined:returned);await s.clock.advance(60000);assert.notEqual(shared.requests[0]!.ticket,returned.requests[0]!.ticket);await assert.rejects(s.broker.request(s.broker.snapshot().generation,{v:2,op:'highlight',ticket:'broker:forged'}),/reserved/);await s.broker.dispose();released(s.broker,s.clock);
+  const shared=new Transport(),returned=new Transport();let n=0;const s=await failover(shared,new Transport(),async()=>++n<=2?undefined:returned);await s.clock.advance(60000);assert.notEqual(shared.requests[0]!.ticket,returned.requests[0]!.ticket);await assert.rejects(s.broker.request(s.broker.snapshot().generation,{v:3,op:'highlight',ticket:'broker:forged'}),/reserved/);await s.broker.dispose();released(s.broker,s.clock);
 });
 
 test('immediate compatible reconnect stays shared without owned takeover or periodic episode',async()=>{
@@ -135,11 +134,11 @@ test('public StdioTransport fixture reap precedes returned source dispatch, with
   const first=new Transport(),returned=new Transport();let attempts=0;const clock=new Clock();
   const broker=new ProviderBroker({clock,tryShared:async()=>++attempts===1?first:attempts<=3?undefined:returned,acquireOwned:async()=>owned});t.after(()=>broker.dispose());
   await broker.start();await broker.provenLoss(broker.snapshot().generation);assert.equal(broker.snapshot().kind,'owned');const pid=owned.stats().pid;assert.equal(typeof pid,'number');
-  const generation=broker.snapshot().generation;const held=assert.rejects(broker.request(generation,{v:2,op:'highlight',ticket:'source:held'}),/retired/);
+  const generation=broker.snapshot().generation;const held=assert.rejects(broker.request(generation,{v:3,op:'highlight',ticket:'source:held'}),/retired/);
   returned.reply=async r=>{if(r.op!=='describe'){assert.equal(owned.stats().childState,'exited');assert.throws(()=>process.kill(pid!,0),{code:'ESRCH'});}return r.op==='describe'?descriptor(r.ticket):{answer:true};};
   await clock.advance(60000);
   for(let i=0;i<400&&broker.snapshot().availability!=='ready';i++)await delay(5);
-  assert.equal(broker.snapshot().kind,'shared');await held;await broker.request(broker.snapshot().generation,{v:2,op:'highlight',ticket:'source:new'});
+  assert.equal(broker.snapshot().kind,'shared');await held;await broker.request(broker.snapshot().generation,{v:3,op:'highlight',ticket:'source:new'});
   assert.equal(owned.stats().spawnCount,1);assert.equal(owned.stats().retainedBytes,0);assert.equal(owned.stats().liveTimers,0);assert.equal(owned.stats().abortListeners,0);assert.equal(owned.stats().ownedListeners,0);assert.equal(owned.stats().unsettledData,0);
   await broker.dispose();released(broker,clock);
 });
@@ -182,13 +181,13 @@ function disposition(expected: 'not_started' | 'unknown') {
 test('typed broker local refusal is no-start; discarded in-flight reply is not', async()=> {
   const shared=new Transport(),s=setup(async()=>shared);
   try {
-    await assert.rejects(s.broker.request(s.broker.snapshot().generation,{v:2,op:'highlight',ticket:'before'}),disposition('not_started'));
+    await assert.rejects(s.broker.request(s.broker.snapshot().generation,{v:3,op:'highlight',ticket:'before'}),disposition('not_started'));
     assert.equal(shared.requests.length,0);await s.broker.start();
     const generation=s.broker.snapshot().generation;
-    await assert.rejects(s.broker.request(generation,{v:2,op:'highlight',ticket:'broker:reserved'}),disposition('not_started'));
+    await assert.rejects(s.broker.request(generation,{v:3,op:'highlight',ticket:'broker:reserved'}),disposition('not_started'));
     assert.equal(shared.requests.length,1);
     const held=deferred<unknown>();shared.reply=()=>held.promise;
-    const ended=assert.rejects(s.broker.request(generation,{v:2,op:'highlight',ticket:'sent'}),disposition('unknown'));
+    const ended=assert.rejects(s.broker.request(generation,{v:3,op:'highlight',ticket:'sent'}),disposition('unknown'));
     await s.broker.dispose();held.resolve({late:true});await ended;
     assert.equal(s.broker.stats().sourceDispatches,1);
   } finally { await s.broker.dispose();released(s.broker,s.clock); }
@@ -199,11 +198,11 @@ test('broker preserves explicit local no-start but normalizes opaque transport f
   try {
     await s.broker.start();const generation=s.broker.snapshot().generation;
     shared.reply=async()=>{throw new RequestFailure('local refusal','not_started');};
-    await assert.rejects(s.broker.request(generation,{v:2,op:'highlight',ticket:'local'}),disposition('not_started'));
+    await assert.rejects(s.broker.request(generation,{v:3,op:'highlight',ticket:'local'}),disposition('not_started'));
     shared.reply=async()=>{throw Error('request capacity');};
-    await assert.rejects(s.broker.request(generation,{v:2,op:'highlight',ticket:'opaque'}),disposition('unknown'));
+    await assert.rejects(s.broker.request(generation,{v:3,op:'highlight',ticket:'opaque'}),disposition('unknown'));
     shared.request=()=>{throw Error('synchronous request capacity');};
-    await assert.rejects(s.broker.request(generation,{v:2,op:'highlight',ticket:'sync'}),disposition('unknown'));
+    await assert.rejects(s.broker.request(generation,{v:3,op:'highlight',ticket:'sync'}),disposition('unknown'));
     assert.equal(s.broker.stats().sharedAttempts,1);assert.equal(s.acquisitions(),0);
   } finally {await s.broker.dispose();released(s.broker,s.clock);}
 });
@@ -444,8 +443,8 @@ test('only current validated classification resets owned crash budget; metadata/
     await s.broker.start(); const obsolete = s.broker.snapshot().generation;
     for (let i = 0; i < 2; i++) await s.broker.provenLoss(s.broker.snapshot().generation);
     const generation = s.broker.snapshot().generation;
-    await s.broker.request(generation, {v:2,op:'describe',ticket:'source:metadata'});
-    await s.broker.request(generation, {v:2,op:'highlight',ticket:'source:unvalidated'});
+    await s.broker.request(generation, {v:3,op:'describe',ticket:'source:metadata'});
+    await s.broker.request(generation, {v:3,op:'highlight',ticket:'source:unvalidated'});
     assert.equal(s.broker.classificationAccepted(obsolete), false);
     await s.broker.provenLoss(generation);
     assert.equal(s.acquisitions(), 3); assert.equal(s.broker.snapshot().reason, 'restart_limit');
@@ -824,7 +823,7 @@ test('catalogue updates cannot retire a held source on an unchanged provider', a
   const transport = new Transport(), held = deferred<unknown>(), s = setup(async () => transport); await s.broker.start();
   const generation = s.broker.snapshot().generation;
   transport.reply = r => r.op === 'highlight' ? held.promise : Promise.resolve(catalogueReply(r.ticket));
-  const source = s.broker.request(generation, { v: 2, op: 'highlight', ticket: 'source:held' });
+  const source = s.broker.request(generation, { v: 3, op: 'highlight', ticket: 'source:held' });
   try {
     await s.broker.catalogue(generation, 'themes.refresh'); held.resolve({ old_source: true });
     assert.deepEqual(await source, { old_source: true }); assert.equal(s.broker.isReady(generation), true);
@@ -850,8 +849,8 @@ test('catalogue real shared adapter timeout preserves publication, independent d
   const broker = new ProviderBroker({ tryShared: async () => { await transport.ready; return transport; }, acquireOwned: async () => { throw Error('must not acquire'); } });
   t.after(() => broker.dispose()); await broker.start(); const previous = broker.snapshot();
   t.mock.timers.enable({ apis: ['setTimeout'] });
-  const data = broker.request(previous.generation, { v: 2, op: 'highlight', ticket: 'data', instance: previous.description!.instance, admission: 'try_now',
-    sources: [{ key: 'file:probe', generation: 1, source_version: 1, profile: 'pi', fingerprint: 'a'.repeat(64), hint: { language: 'Plain Text' }, text: 'x' }] }, { deadlineMs: 30000 });
+  const data = broker.request(previous.generation, { v: 3, op: 'highlight', ticket: 'data', instance: previous.description!.instance, admission: 'try_now',
+    sources: [{ key: 'file:probe', generation: 1, source_version: 1, hint: { language: 'Plain Text' }, text: 'x' }] }, { deadlineMs: 30000 });
   void data.catch(() => {});
   const refused = assert.rejects(broker.catalogue(previous.generation, 'themes.refresh')); await flush();
   assert.equal(transport.stats().unsettledData, 1); assert.equal(transport.stats().unsettledControl, 1);
@@ -861,7 +860,7 @@ test('catalogue real shared adapter timeout preserves publication, independent d
   assert.equal(broker.stats().ownedAttempts, 0); assert.equal(broker.stats().recoveryEpisodes, 0);
   assert.equal(broker.stats().closesStarted, 0); assert.equal(transport.stats().liveTimers, 1);
   await assert.rejects(broker.catalogue(previous.generation, 'describe'), { message: 'occipital control unavailable' }); assert.equal(calls.length, 3);
-  heldData.resolve({ v: 2, ticket: 'data', instance: 'instance', assets: 'assets', status: 'ok', body: { text: 'x' } });
+  heldData.resolve({ v: 3, ticket: 'data', instance: 'instance', assets: 'assets', status: 'ok', body: { text: 'x' } });
   assert.equal((await data as { body: { text: string } }).body.text, 'x');
   heldControl.resolve(catalogueReply(refreshTicket, 9)); await flush();
   assert.deepEqual(broker.snapshot(), previous); assert.equal(transport.stats().unsettledControl, 0);
@@ -881,8 +880,8 @@ test('catalogue real stdio timeout does not reap the helper or lose a concurrent
   const broker = new ProviderBroker({ tryShared: async () => undefined, acquireOwned: async () => transport });
   t.after(() => broker.dispose()); await broker.start(); const previous = broker.snapshot(), pid = transport.stats().pid!;
   t.mock.timers.enable({ apis: ['setTimeout'] });
-  const data = broker.request(previous.generation, { v: 2, op: 'highlight', ticket: 'data', instance: previous.description!.instance, admission: 'try_now',
-    sources: [{ key: 'file:probe', generation: 1, source_version: 1, profile: 'pi', fingerprint: 'a'.repeat(64), hint: { language: 'Plain Text' }, text: 'x' }] }, { deadlineMs: 30000 });
+  const data = broker.request(previous.generation, { v: 3, op: 'highlight', ticket: 'data', instance: previous.description!.instance, admission: 'try_now',
+    sources: [{ key: 'file:probe', generation: 1, source_version: 1, hint: { language: 'Plain Text' }, text: 'x' }] }, { deadlineMs: 30000 });
   void data.catch(() => {});
   const refused = assert.rejects(broker.catalogue(previous.generation, 'themes.refresh')); await flush();
   t.mock.timers.tick(PROVIDER_LIMITS.controlMs); await refused; await flush();

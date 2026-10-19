@@ -1,11 +1,16 @@
-//! Fair worker-local quanta. Parser jobs never leave this scheduler's owning thread.
+//! Fair worker-local quanta shared by source and style work in both transports.
 use crate::{
+    catalogue::{Catalogue, Snapshot as CatalogueSnapshot},
     credit::{Budget, Credit, Snapshot},
-    engine::Limits,
+    native_definitions::{Counters as NativeCounters, NativeDefinitions},
     protocol::Fault,
-    reply::{Reply, SourceBody, REPLY_BYTES},
-    request::{self, AdmissionMode, Operation, Request},
-    service::{Action, Job, Service},
+    runtime_request::DataRequest,
+    semantic_engine::Limits,
+    semantic_reply::{self, DataBody},
+    source_request::Admission,
+    source_service::{Action, Job as SourceJob, Service},
+    style_request::{RuleInput, StyleRequestPlan},
+    style_work::{StyleFailure, StyleWork},
 };
 use std::{
     collections::{HashMap, VecDeque},
@@ -114,9 +119,9 @@ impl Drop for Delivery {
         }
     }
 }
-/// Only owned requests/bytes cross threads; no parser state.
+/// Only owned requests/bytes cross threads; no borrowed plan or parser state.
 pub(crate) struct Submission {
-    request: Request,
+    request: DataRequest,
     deadline: u64,
     sender: oneshot::Sender<Delivery>,
     receipt: Arc<Receipt>,
@@ -124,7 +129,7 @@ pub(crate) struct Submission {
 }
 impl Submission {
     pub(crate) fn ticket_id(&self) -> &str {
-        &self.request.ticket
+        self.request.ticket()
     }
     pub(crate) fn decode(
         scope: &str,
@@ -132,38 +137,22 @@ impl Submission {
         now: u64,
         budget: &Budget,
         limits: &Limits,
+        instance: &str,
         wake: Option<Wake>,
     ) -> Result<(Self, Ticket), Fault> {
-        // Frame, decoder scratch and decoded strings coexist before raw/work admission.
         let mut credit = budget.reserve(
             Some(scope),
-            bytes.capacity().saturating_mul(4).saturating_add(4096),
+            bytes
+                .capacity()
+                .checked_mul(4)
+                .and_then(|n| n.checked_add(4096))
+                .ok_or(Fault::not_started("data_limit"))?,
         )?;
-        let decoded = request::decode(&bytes);
-        drop(bytes);
-        let request = decoded?;
-        if matches!(request.op, Operation::Describe | Operation::ThemesRefresh) {
-            return Err(Fault::not_started("invalid_request"));
-        }
-        credit.resize(reservation(limits, &request)?)?;
-        Ok(Self::pack(request, now, credit, wake))
-    }
-    fn new(
-        scope: &str,
-        request: Request,
-        now: u64,
-        budget: &Budget,
-        limits: &Limits,
-        wake: Option<Wake>,
-    ) -> Result<(Self, Ticket), Fault> {
-        request.validate()?;
-        if matches!(request.op, Operation::Describe | Operation::ThemesRefresh) {
-            return Err(Fault::not_started("invalid_request"));
-        }
-        let credit = budget.reserve(Some(scope), reservation(limits, &request)?)?;
-        Ok(Self::pack(request, now, credit, wake))
-    }
-    fn pack(request: Request, now: u64, credit: Credit, wake: Option<Wake>) -> (Self, Ticket) {
+        let request = DataRequest::decode(bytes, instance, limits.source_bytes, &mut credit)?;
+        let wait = match request.admission() {
+            Some(Admission::BoundedQueue(ms)) => ms,
+            _ => 0,
+        };
         let (sender, receiver) = oneshot::channel();
         let receipt = Arc::new(Receipt {
             state: AtomicU8::new(PENDING),
@@ -174,43 +163,68 @@ impl Submission {
             receipt: receipt.clone(),
             owns_cancellation: true,
         };
-        (
+        Ok((
             Self {
-                deadline: now.saturating_add(request.queue_wait_ms.unwrap_or(0) as u64),
                 request,
+                deadline: now.saturating_add(u64::from(wait)),
                 sender,
                 receipt,
                 credit,
             },
             ticket,
-        )
+        ))
     }
     pub(crate) fn reject(self, instance: &str, fault: Fault) {
         deliver_error(instance, self.waiting(), fault);
     }
     fn waiting(self) -> Waiting {
+        let base = self.credit.bytes();
+        let ticket = self.request.ticket().to_owned();
+        let admission = self.request.admission();
         Waiting {
-            ticket: self.request.ticket.clone(),
             request: Some(self.request),
-            deadline: self.deadline,
             job: None,
+            ticket,
+            admission,
+            deadline: self.deadline,
             sender: self.sender,
             receipt: self.receipt,
-            credit: self.credit,
+            credit: Some(self.credit),
+            base,
+            transferred: 0,
+        }
+    }
+}
+#[expect(
+    clippy::large_enum_variant,
+    reason = "Keep admitted Work headers inline without an unplanned boxed allocation"
+)]
+enum Job {
+    Source(SourceJob),
+    Styles(StyleWork),
+}
+impl Job {
+    fn started(&self) -> bool {
+        match self {
+            Self::Source(j) => j.started(),
+            Self::Styles(_) => true,
         }
     }
 }
 struct Waiting {
-    request: Option<Request>,
+    request: Option<DataRequest>,
     job: Option<Job>,
     ticket: String,
+    admission: Option<Admission>,
     deadline: u64,
     sender: oneshot::Sender<Delivery>,
     receipt: Arc<Receipt>,
-    credit: Credit,
+    credit: Option<Credit>,
+    base: usize,
+    transferred: usize,
 }
 struct Unhanded {
-    job: Job,
+    job: SourceJob,
     receipt: Arc<Receipt>,
     _credit: Credit,
 }
@@ -219,39 +233,67 @@ pub struct Scheduler {
     service: Service,
     budget: Budget,
     idle: Credit,
+    acks: Credit,
     queues: HashMap<String, VecDeque<Waiting>>,
     turns: VecDeque<String>,
     unhanded: Vec<Unhanded>,
     limits: Limits,
     wake: Option<Wake>,
+    snapshot: Arc<CatalogueSnapshot>,
+    definitions: Option<NativeDefinitions>,
 }
 impl Scheduler {
     pub fn new(instance: String, limits: Limits, budget: Budget) -> Self {
+        Self::with_snapshot(
+            instance,
+            limits,
+            budget,
+            Catalogue::from_os_root(None).snapshot(),
+        )
+    }
+    pub(crate) fn with_snapshot(
+        instance: String,
+        limits: Limits,
+        budget: Budget,
+        snapshot: Arc<CatalogueSnapshot>,
+    ) -> Self {
         let idle = budget.reserve(None, 0).expect("empty state reservation");
+        let acks = budget.reserve(None, 0).expect("empty ack metadata");
         Self {
             service: Service::new(limits.clone(), instance.clone()),
             instance,
             budget,
             idle,
+            acks,
             queues: HashMap::new(),
             turns: VecDeque::new(),
             unhanded: Vec::new(),
             limits,
             wake: None,
+            snapshot,
+            definitions: None,
         }
     }
     pub fn set_wake(&mut self, wake: Wake) {
         self.wake = Some(wake);
     }
     pub fn bind(&mut self, scope: &str) -> Result<(), Fault> {
-        self.service.bind(scope)
+        let result = self
+            .service
+            .bind(scope, &mut |n| self.idle.resize(n).is_ok());
+        self.shrink_idle();
+        result
     }
-    pub(crate) fn replace_profiles(
-        &mut self,
-        profiles: Vec<Arc<crate::profile::Profile>>,
-    ) -> Result<(), Fault> {
-        self.service.replace_profiles(profiles)?;
-        self.sync_idle()
+    pub(crate) fn publish_snapshot(&mut self, snapshot: Arc<CatalogueSnapshot>) {
+        if let Some(cache) = &mut self.definitions {
+            cache.publish(snapshot.clone());
+        }
+        self.snapshot = snapshot;
+    }
+    pub fn native_counters(&self) -> NativeCounters {
+        self.definitions
+            .as_ref()
+            .map_or_else(NativeCounters::default, NativeDefinitions::counters)
     }
     pub fn close(&mut self, scope: &str) {
         if let Some(queue) = self.queues.remove(scope) {
@@ -267,7 +309,7 @@ impl Scheduler {
             }
         }
         self.cleanup();
-        self.sync_idle().expect("closing only releases state");
+        self.shrink_idle();
     }
     pub fn stats(&self) -> Snapshot {
         self.budget.snapshot()
@@ -279,13 +321,10 @@ impl Scheduler {
         self.service
             .next_expiry()
             .into_iter()
-            .chain(self.queues.values().flat_map(|queue| {
-                queue.iter().filter_map(|waiting| {
-                    waiting
-                        .request
-                        .as_ref()
-                        .filter(|request| request.admission == Some(AdmissionMode::BoundedQueue))
-                        .map(|_| waiting.deadline)
+            .chain(self.queues.values().flat_map(|q| {
+                q.iter().filter_map(|w| match w.admission {
+                    Some(Admission::BoundedQueue(_)) if w.request.is_some() => Some(w.deadline),
+                    _ => None,
                 })
             }))
             .min()
@@ -293,9 +332,9 @@ impl Scheduler {
     fn blocked(&self, scope: &str) -> bool {
         self.queues
             .get(scope)
-            .and_then(|queue| queue.front())
-            .and_then(|waiting| waiting.request.as_ref())
-            .and_then(|request| request.lease.as_deref())
+            .and_then(|q| q.front())
+            .and_then(|w| w.request.as_ref())
+            .and_then(DataRequest::lease)
             .is_some_and(|lease| {
                 self.unhanded
                     .iter()
@@ -305,8 +344,6 @@ impl Scheduler {
     pub fn has_work(&self) -> bool {
         self.turns.iter().any(|scope| !self.blocked(scope))
     }
-    /// A frame transient is reserved before decoding, then replaced by one bounded
-    /// raw/work/result reservation. No parse or lease revision has begun here.
     pub fn submit(&mut self, scope: &str, bytes: Vec<u8>, now: u64) -> Result<Ticket, Fault> {
         let (submission, ticket) = Submission::decode(
             scope,
@@ -314,23 +351,7 @@ impl Scheduler {
             now,
             &self.budget,
             &self.limits,
-            self.wake.clone(),
-        )?;
-        self.accept(scope, submission);
-        Ok(ticket)
-    }
-    pub fn submit_request(
-        &mut self,
-        scope: &str,
-        request: Request,
-        now: u64,
-    ) -> Result<Ticket, Fault> {
-        let (submission, ticket) = Submission::new(
-            scope,
-            request,
-            now,
-            &self.budget,
-            &self.limits,
+            &self.instance,
             self.wake.clone(),
         )?;
         self.accept(scope, submission);
@@ -338,30 +359,24 @@ impl Scheduler {
     }
     pub(crate) fn accept(&mut self, scope: &str, submission: Submission) {
         let waiting = submission.waiting();
-        let queue_count: usize = self
+        let count = self
             .queues
             .values()
-            .map(|queue| {
-                queue
-                    .iter()
-                    .filter(|waiting| waiting.request.is_some())
-                    .count()
-            })
-            .sum();
-        let try_now = waiting
-            .request
-            .as_ref()
-            .is_some_and(|request| request.admission == Some(AdmissionMode::TryNow));
+            .flat_map(|q| q.iter())
+            .filter(|w| w.request.is_some())
+            .count();
         let held = waiting
             .request
             .as_ref()
-            .and_then(|request| request.lease.as_deref())
+            .and_then(DataRequest::lease)
             .is_some_and(|lease| {
                 self.unhanded
                     .iter()
                     .any(|item| item.job.owns_lease(scope, lease))
             });
-        if (try_now && (!self.turns.is_empty() || held)) || queue_count >= QUEUED {
+        if (waiting.admission == Some(Admission::TryNow) && (!self.turns.is_empty() || held))
+            || count >= QUEUED
+        {
             self.finish_error(waiting, Fault::not_started("busy"));
             return;
         }
@@ -384,34 +399,63 @@ impl Scheduler {
                 self.service.discard(item.job);
             }
         }
+        if self.unhanded.is_empty() {
+            self.unhanded = Vec::new();
+            self.acks.resize(0).expect("released ack vector");
+        }
     }
-    fn sync_idle(&mut self) -> Result<(), Fault> {
-        self.idle.resize(self.service.known_idle_state_bytes())
+    fn shrink_idle(&mut self) {
+        let bytes = self.service.known_idle_state_bytes();
+        if bytes < self.idle.bytes() {
+            self.idle.resize(bytes).expect("state shrink");
+        }
+    }
+    // New state was admitted by this physical Job. Move its NET retained growth
+    // without reserving twice; future absolute Work callbacks subtract transfers.
+    fn reconcile(&mut self, waiting: &mut Waiting) -> Result<(), Fault> {
+        let bytes = self.service.known_idle_state_bytes();
+        if bytes > self.idle.bytes() {
+            let growth = bytes - self.idle.bytes();
+            waiting
+                .credit
+                .as_mut()
+                .expect("source owns credit")
+                .transfer_to(&mut self.idle, growth)?;
+            waiting.transferred = waiting
+                .transferred
+                .checked_add(growth)
+                .ok_or(Fault::started("state_limit"))?;
+        } else {
+            self.idle.resize(bytes)?;
+        }
+        Ok(())
     }
     fn finish_error(&mut self, mut waiting: Waiting, mut fault: Fault) {
         if let Some(job) = waiting.job.take() {
             fault.started |= job.started();
-            self.service.discard(job);
+            match job {
+                Job::Source(job) => self.service.discard(job),
+                Job::Styles(work) => waiting.credit = Some(work.fail(fault).credit),
+            }
         }
+        // Preparation may leave funded Vec capacity behind even after its Work
+        // is discarded. Transfer it before reducing this job to an error envelope.
+        self.reconcile(&mut waiting)
+            .expect("retained source growth was admitted by the failing job");
         deliver_error(&self.instance, waiting, fault);
     }
-    /// One fair route turn, one kernel quantum; expiry/cancellation precede dispatch.
     pub fn tick(&mut self, now: u64) {
         self.cleanup();
         self.service.advance_clock(now);
-        self.sync_idle().expect("expiry only shrinks state");
-        // Expire all unopened requests even if another route is running.
+        self.shrink_idle();
         let scopes: Vec<_> = self.queues.keys().cloned().collect();
         for scope in scopes {
-            let mut queue = self.queues.remove(&scope).expect("queue exists");
             let mut keep = VecDeque::new();
-            while let Some(waiting) = queue.pop_front() {
+            for waiting in self.queues.remove(&scope).expect("queue exists") {
                 if waiting.receipt.state.load(Ordering::Acquire) == CANCELLED {
                     self.finish_error(waiting, Fault::not_started("cancelled"));
-                } else if waiting
-                    .request
-                    .as_ref()
-                    .is_some_and(|request| request.admission == Some(AdmissionMode::BoundedQueue))
+                } else if waiting.request.is_some()
+                    && matches!(waiting.admission, Some(Admission::BoundedQueue(_)))
                     && now >= waiting.deadline
                 {
                     self.finish_error(waiting, Fault::not_started("queue_expired"));
@@ -419,15 +463,15 @@ impl Scheduler {
                     keep.push_back(waiting);
                 }
             }
-            if !keep.is_empty() {
-                self.queues.insert(scope, keep);
+            if keep.is_empty() {
+                self.turns.retain(|t| t != &scope);
             } else {
-                self.turns.retain(|turn| turn != &scope);
+                self.queues.insert(scope, keep);
             }
         }
         let mut entitled = None;
         for _ in 0..self.turns.len() {
-            let scope = self.turns.pop_front().expect("finite turn queue");
+            let scope = self.turns.pop_front().expect("turn");
             if self.blocked(&scope) {
                 self.turns.push_back(scope);
             } else {
@@ -438,55 +482,170 @@ impl Scheduler {
         let Some(scope) = entitled else {
             return;
         };
-        let mut queue = self.queues.remove(&scope).expect("turn has queue");
-        let mut waiting = queue.pop_front().expect("nonempty turn");
-        waiting = match self.prepare(&scope, waiting) {
-            Some(waiting) => waiting,
-            None => {
-                if !queue.is_empty() {
-                    self.queues.insert(scope.clone(), queue);
-                    self.turns.push_back(scope);
+        let mut queue = self.queues.remove(&scope).expect("queue");
+        let waiting = queue.pop_front().expect("nonempty");
+        if let Some(mut waiting) = self.prepare(&scope, waiting) {
+            let job = waiting.job.take().expect("prepared work");
+            match job {
+                Job::Source(mut job) => {
+                    let base = waiting.base;
+                    let transferred = waiting.transferred;
+                    let credit = waiting.credit.as_mut().expect("source credit");
+                    let result = self.service.step(&mut job, &mut |n| {
+                        base.checked_add(n)
+                            .and_then(|n| n.checked_sub(transferred))
+                            .is_some_and(|n| credit.resize(n).is_ok())
+                    });
+                    waiting.job = Some(Job::Source(job));
+                    match result {
+                        Err(fault) => self.finish_error(waiting, fault),
+                        Ok(body) => match self.reconcile(&mut waiting) {
+                            Err(fault) => self.finish_error(waiting, fault),
+                            Ok(()) => {
+                                if let Some(body) = body {
+                                    self.finish_success(waiting, DataBody::Source(body));
+                                } else {
+                                    queue.push_front(waiting);
+                                }
+                            }
+                        },
+                    }
                 }
-                self.sync_idle().expect("immediate operation shrinks state");
-                return;
+                Job::Styles(mut work) => match work.step() {
+                    Err(fault) => {
+                        let failure = work.fail(fault);
+                        waiting.credit = Some(failure.credit);
+                        self.finish_error(waiting, failure.fault);
+                    }
+                    Ok(false) => {
+                        waiting.job = Some(Job::Styles(work));
+                        queue.push_front(waiting);
+                    }
+                    Ok(true) => match work.finish() {
+                        Ok((body, credit)) => {
+                            waiting.credit = Some(credit);
+                            self.finish_success(waiting, DataBody::Styles(body));
+                        }
+                        Err(failure) => {
+                            waiting.credit = Some(failure.credit);
+                            self.finish_error(waiting, failure.fault);
+                        }
+                    },
+                },
             }
-        };
-        let job = waiting.job.as_mut().expect("prepared work");
-        match self.service.step(job) {
-            Ok(Some(body)) => self.finish_success(waiting, body),
-            Ok(None) => queue.push_front(waiting),
-            Err(fault) => self.finish_error(waiting, fault),
         }
         if !queue.is_empty() {
             self.queues.insert(scope.clone(), queue);
             self.turns.push_back(scope);
         }
-        self.sync_idle()
-            .expect("successful completion admitted state");
+        self.shrink_idle();
     }
     fn prepare(&mut self, scope: &str, mut waiting: Waiting) -> Option<Waiting> {
         if let Some(request) = waiting.request.take() {
-            waiting.credit.started();
-            match self.service.start(scope, request) {
-                Ok(Action::Job(job)) => waiting.job = Some(job),
-                Ok(Action::Immediate(body)) => {
-                    self.finish_success(waiting, body);
-                    return None;
+            waiting.credit.as_mut().expect("queued credit").started();
+            match request {
+                DataRequest::Source(request) => {
+                    let credit = waiting.credit.as_mut().expect("source credit");
+                    let base = waiting.base;
+                    match self.service.start(scope, request, &mut |n| {
+                        base.checked_add(n)
+                            .is_some_and(|n| credit.resize(n).is_ok())
+                    }) {
+                        Ok(Action::Job(job)) => {
+                            waiting.job = Some(Job::Source(job));
+                            if let Err(fault) = self.reconcile(&mut waiting) {
+                                self.finish_error(waiting, fault);
+                                return None;
+                            }
+                        }
+                        Ok(Action::Immediate(body)) => {
+                            self.shrink_idle();
+                            self.finish_success(waiting, DataBody::Source(body));
+                            return None;
+                        }
+                        Err(fault) => {
+                            self.finish_error(waiting, fault);
+                            return None;
+                        }
+                    }
                 }
-                Err(fault) => {
-                    self.finish_error(waiting, fault);
-                    return None;
+                DataRequest::Styles { bytes, .. } => {
+                    let credit = waiting.credit.take().expect("original physical credit");
+                    match self.prepare_styles(bytes, credit) {
+                        Ok(work) => waiting.job = Some(Job::Styles(work)),
+                        Err(failure) => {
+                            waiting.credit = Some(failure.credit);
+                            self.finish_error(waiting, failure.fault);
+                            return None;
+                        }
+                    }
                 }
             }
         }
         Some(waiting)
     }
-    fn finish_success(&mut self, mut waiting: Waiting, body: SourceBody) {
-        // A match scrutinee's temporary lives through its arm. End this owned
-        // Reply's scope first so run vectors cannot outlive their reservation.
+    fn prepare_styles(
+        &mut self,
+        bytes: Vec<u8>,
+        mut credit: Credit,
+    ) -> Result<StyleWork, StyleFailure> {
+        enum Definition {
+            Native(crate::native_definitions::PreparedDefinition),
+            Client(crate::resolver::Resolver, String),
+        }
+        let preparation = (|| {
+            let raw: &serde_json::value::RawValue = serde_json::from_slice(&bytes)
+                .map_err(|_| Fault::not_started("invalid_request"))?;
+            let plan = StyleRequestPlan::inspect(raw, &self.instance, crate::limits::DATA_BYTES)?;
+            credit.resize(
+                credit
+                    .bytes()
+                    .checked_add(plan.policy_bytes)
+                    .ok_or(Fault::not_started("data_limit"))?,
+            )?;
+            // Both complete plans are admitted before either owned expansion.
+            let definition = match plan.rules {
+                RuleInput::Native { id, fingerprint } => {
+                    if self.definitions.is_none() {
+                        self.definitions = Some(NativeDefinitions::new(
+                            self.snapshot.clone(),
+                            self.budget.clone(),
+                        )?);
+                    }
+                    Definition::Native(self.definitions.as_mut().expect("cache").prepare(
+                        &id,
+                        &fingerprint,
+                        &mut credit,
+                    )?)
+                }
+                RuleInput::Client(plan) => {
+                    let fingerprint = plan.fingerprint().to_owned();
+                    Definition::Client(plan.compile(), fingerprint)
+                }
+            };
+            let mut batches = plan.contexts.materialize();
+            let contexts = batches.pop().expect("one admitted dictionary");
+            Ok((contexts, definition))
+        })();
+        let (contexts, definition) = match preparation {
+            Ok(value) => value,
+            Err(fault) => return Err(StyleFailure { fault, credit }),
+        };
+        drop(bytes);
+        match definition {
+            Definition::Native(owner) => StyleWork::native(contexts, owner, credit),
+            Definition::Client(resolver, fingerprint) => {
+                StyleWork::new(contexts, &resolver, fingerprint, None, credit)
+            }
+        }
+    }
+    fn finish_success(&mut self, waiting: Waiting, body: DataBody) {
+        self.finish_success_bounded(waiting, body, crate::limits::DATA_WIRE_BYTES);
+    }
+    fn finish_success_bounded(&mut self, mut waiting: Waiting, body: DataBody, cap: usize) {
         let encoded = {
-            let reply = Reply::ok(&waiting.ticket, &self.instance, body);
-            reply.encode()
+            let reply = semantic_reply::ok(&waiting.ticket, &self.instance, body);
+            reply.encode_with_credit(waiting.credit.as_mut().expect("finished credit"), cap)
         };
         let bytes = match encoded {
             Ok(bytes) => bytes,
@@ -495,181 +654,319 @@ impl Scheduler {
                 return;
             }
         };
-        let idle_bytes = self.service.known_idle_state_bytes();
-        let idle_growth = idle_bytes.saturating_sub(self.idle.bytes());
-        if let Some(job) = &mut waiting.job {
+        if let Some(Job::Source(mut job)) = waiting.job.take() {
             job.trim_completed();
-        }
-        let ack_bytes = waiting
-            .job
-            .as_ref()
-            .map(|job| job.acknowledgement_bytes() + std::mem::size_of::<Unhanded>())
-            .unwrap_or(0);
-        if idle_growth
-            .saturating_add(ack_bytes)
-            .saturating_add(bytes.capacity())
-            > waiting.credit.bytes()
-        {
-            drop(bytes);
-            self.finish_error(waiting, Fault::started("state_limit"));
-            return;
-        }
-        if idle_growth == 0 {
-            self.idle.resize(idle_bytes).expect("idle state shrinks");
-        } else if let Err(fault) = waiting.credit.transfer_to(&mut self.idle, idle_growth) {
-            drop(bytes);
-            self.finish_error(waiting, fault);
-            return;
-        }
-        if let Some(job) = waiting.job.take() {
-            let mut credit = self
-                .budget
-                .reserve(None, 0)
-                .expect("zero-byte metadata guard");
-            waiting
-                .credit
-                .transfer_to(&mut credit, ack_bytes)
-                .expect("checked metadata allowance");
+            let ack_bytes = job.acknowledgement_bytes() + std::mem::size_of::<Unhanded>();
+            let credit = waiting.credit.as_mut().expect("source credit");
+            // Account the ack vector's gross replacement before allocating it.
+            let growth = if self.unhanded.len() == self.unhanded.capacity() {
+                (self.unhanded.len() + 1) * std::mem::size_of::<Unhanded>()
+            } else {
+                0
+            };
+            if let Err(fault) = credit.resize(
+                credit
+                    .bytes()
+                    .checked_add(ack_bytes + growth)
+                    .expect("bounded ack headers"),
+            ) {
+                waiting.job = Some(Job::Source(job));
+                drop(bytes);
+                self.finish_error(waiting, fault);
+                return;
+            }
+            let mut ack = self.budget.reserve(None, 0).expect("zero metadata guard");
+            credit
+                .transfer_to(&mut ack, ack_bytes)
+                .expect("same budget");
+            if growth != 0 {
+                credit
+                    .transfer_to(&mut self.acks, growth)
+                    .expect("prepaid ack replacement");
+                let mut next = Vec::with_capacity(self.unhanded.len() + 1);
+                next.append(&mut self.unhanded);
+                let old = std::mem::replace(&mut self.unhanded, next);
+                drop(old);
+                self.acks
+                    .resize(self.unhanded.capacity() * std::mem::size_of::<Unhanded>())
+                    .expect("release old ack capacity");
+            }
             self.unhanded.push(Unhanded {
                 job,
                 receipt: waiting.receipt.clone(),
-                _credit: credit,
+                _credit: ack,
             });
         }
-        waiting
+        let mut credit = waiting
             .credit
+            .take()
+            .expect("delivery retains original slot");
+        credit
             .resize(bytes.capacity())
-            .expect("checked encoded allowance");
-        let delivery = Delivery {
+            .expect("encoded capacity was admitted");
+        let _ = waiting.sender.send(Delivery {
             bytes,
             receipt: waiting.receipt,
-            _credit: waiting.credit,
-        };
-        let _ = waiting.sender.send(delivery);
+            _credit: credit,
+        });
     }
 }
-
-fn reservation(limits: &Limits, request: &Request) -> Result<usize, Fault> {
-    // push() can grow only to the next power of two of the admitted run count,
-    // not twice the maximum when that maximum is already a power of two.
-    let capacity = |runs: usize| {
-        if runs == 0 {
-            0
-        } else {
-            runs.next_power_of_two()
-        }
-    };
-    let (input, runs, containers, sources, prefix_bytes) = if let Some(sources) = &request.sources {
-        (
-            sources
-                .iter()
-                .map(|source| source.text.capacity())
-                .sum::<usize>(),
-            sources
-                .iter()
-                .map(|source| source.text.len().min(limits.runs))
-                .sum::<usize>(),
-            sources
-                .iter()
-                .map(|source| capacity(source.text.len().min(limits.runs)))
-                .sum::<usize>(),
-            sources.len(),
-            sources
-                .iter()
-                .map(|source| {
-                    source
-                        .text
-                        .split_inclusive('\n')
-                        .map(|line| line.len().min(limits.line_bytes))
-                        .max()
-                        .unwrap_or(0)
-                })
-                .sum::<usize>(),
-        )
-    } else if let Some(append) = &request.append {
-        let runs = (append.len() + limits.line_bytes).min(limits.runs);
-        (
-            append.capacity() + limits.line_bytes,
-            runs,
-            capacity(runs),
-            1,
-            limits.line_bytes,
-        )
-    } else {
-        return Ok(4096);
-    };
-    controlled_bytes(input, runs, containers, sources, prefix_bytes, limits)
-}
-
-fn controlled_bytes(
-    input: usize,
-    runs: usize,
-    containers: usize,
-    sources: usize,
-    prefix_bytes: usize,
-    limits: &Limits,
-) -> Result<usize, Fault> {
-    // Bounded tail copies, tables/maps and wire styles. Private Syntect captures
-    // are a separate measured envelope, not inferred from these known payloads.
-    // A batch's complete text is known: do not reserve a full 64 KiB tail for
-    // every short-line source. Appends still allow the previous lease's prefix.
-    let state = prefix_bytes * 26 + sources * (limits.styles * 128 + 4096);
-    let structured = containers
-        .checked_mul(std::mem::size_of::<crate::protocol::Run>())
-        .ok_or(Fault::not_started("source_limit"))?;
-    let encoded =
-        (runs.saturating_mul(24) + sources * (limits.styles * 64 + 4096)).min(REPLY_BYTES);
-    input
-        .checked_add(state)
-        .and_then(|n| n.checked_add(structured))
-        .and_then(|n| n.checked_add(encoded))
-        .ok_or(Fault::not_started("source_limit"))
-}
 fn deliver_error(instance: &str, mut waiting: Waiting, fault: Fault) {
-    waiting.credit.started();
-    // Rejected snapshots are controlled payloads too: destroy before releasing.
     drop(waiting.request.take());
-    let bytes = Reply::<SourceBody>::error(&waiting.ticket, instance, fault)
-        .encode()
-        .expect("bounded error envelope");
-    waiting
+    let mut credit = waiting
         .credit
-        .resize(bytes.capacity())
-        .expect("error shrinks reservation");
-    let delivery = Delivery {
+        .take()
+        .expect("failure returns original physical credit");
+    credit.started();
+    credit
+        .resize(4096)
+        .expect("prepaid error floor survives state handoff");
+    let bytes = semantic_reply::error::<()>(&waiting.ticket, instance, fault)
+        .encode_with_cap(4096)
+        .expect("bounded fixed error envelope fits prepaid floor");
+    credit.resize(bytes.capacity()).expect("encoded allowance");
+    let _ = waiting.sender.send(Delivery {
         bytes,
         receipt: waiting.receipt,
-        _credit: waiting.credit,
-    };
-    let _ = waiting.sender.send(delivery);
+        _credit: credit,
+    });
 }
 
 #[cfg(test)]
-mod allocation_tests {
+#[allow(dead_code)]
+#[path = "../tests/support/mod.rs"]
+mod support;
+#[cfg(test)]
+mod integration_tests {
     use super::*;
-
+    use serde_json::{json, Value};
+    fn open() -> Vec<u8> {
+        serde_json::to_vec(&json!({"v":3,"op":"stream.open","ticket":"open","instance":"boot","admission":"bounded_queue","queue_wait_ms":1000,"sources":[{"key":"key","generation":1,"source_version":0,"hint":{"language":"rust"},"text":"fn x(){}\n"}]})).unwrap()
+    }
+    fn four_streams() -> (Scheduler, Budget) {
+        let budget = Budget::new(1 << 20, 2, 2);
+        let mut scheduler = Scheduler::new("boot".into(), Limits::default(), budget.clone());
+        scheduler.bind("route").unwrap();
+        for _ in 0..4 {
+            let mut ticket = scheduler.submit("route", open(), 0).unwrap();
+            loop {
+                scheduler.tick(0);
+                if let Some(reply) = ticket.try_take().unwrap() {
+                    reply.flushed();
+                    break;
+                }
+            }
+            scheduler.tick(0);
+        }
+        assert_eq!(scheduler.leases(), 4);
+        (scheduler, budget)
+    }
     #[test]
-    fn large_source_facts_fit_the_controlled_ledger_without_allocating_sources() {
-        let limits = Limits::default();
-        let charge = |bytes: usize| {
-            let runs = bytes.min(limits.runs);
-            controlled_bytes(
-                bytes,
-                runs,
-                runs.next_power_of_two(),
-                1,
-                limits.line_bytes,
-                &limits,
-            )
-            .unwrap()
+    fn every_failed_open_preparation_funds_retained_capacity_before_error_delivery() {
+        let (mut probe, _) = four_streams();
+        let (submission, _ticket) = Submission::decode(
+            "route",
+            open(),
+            0,
+            &probe.budget,
+            &probe.limits,
+            "boot",
+            None,
+        )
+        .unwrap();
+        let mut waiting = submission.waiting();
+        let DataRequest::Source(request) = waiting.request.take().unwrap() else {
+            panic!("source")
         };
-        assert_eq!(charge(10 << 20), 281_154_688);
-        assert_eq!(charge(32 << 20), 304_223_360);
-        let decode = crate::request::REQUEST_BYTES * 4 + 4096;
-        let total = charge(32 << 20) * 2 + decode;
-        assert_eq!(total, 876_886_272);
-        assert!(total < crate::limits::DATA_BYTES);
-        // Full idle continuation occupancy competes for the same global bytes.
-        assert!(total + crate::limits::STATE_BYTES > crate::limits::DATA_BYTES);
+        let mut grants = 0;
+        let Action::Job(job) = probe
+            .service
+            .start("route", request, &mut |_| {
+                grants += 1;
+                true
+            })
+            .unwrap()
+        else {
+            panic!("source")
+        };
+        probe.service.discard(job);
+        drop(waiting);
+        drop(probe);
+        for denied in 0..grants {
+            let (mut scheduler, budget) = four_streams();
+            let (submission, mut ticket) =
+                Submission::decode("route", open(), 0, &budget, &scheduler.limits, "boot", None)
+                    .unwrap();
+            let mut waiting = submission.waiting();
+            let DataRequest::Source(request) = waiting.request.take().unwrap() else {
+                panic!("source")
+            };
+            let base = waiting.base;
+            let credit = waiting.credit.as_mut().unwrap();
+            credit.started();
+            let mut calls = 0;
+            let fault = scheduler
+                .service
+                .start("route", request, &mut |n| {
+                    let allowed = calls != denied;
+                    calls += 1;
+                    allowed && credit.resize(base + n).is_ok()
+                })
+                .err()
+                .expect("reservation denied");
+            scheduler.finish_error(waiting, fault);
+            assert_eq!(scheduler.leases(), 4);
+            assert_eq!(
+                scheduler.idle.bytes(),
+                scheduler.service.known_idle_state_bytes(),
+                "denied grant {denied}"
+            );
+            let reply = ticket.try_take().unwrap().unwrap();
+            let value: Value = serde_json::from_slice(reply.bytes()).unwrap();
+            assert_eq!(value["status"], "error");
+            assert_eq!(scheduler.stats().jobs, 1);
+            reply.flushed();
+            scheduler.tick(0);
+            assert_eq!(scheduler.stats().jobs, 0);
+            assert_eq!(scheduler.stats().bytes, scheduler.idle.bytes());
+            let mut finite: Value = serde_json::from_slice(&open()).unwrap();
+            finite["op"] = json!("highlight");
+            let mut ticket = scheduler
+                .submit("route", serde_json::to_vec(&finite).unwrap(), 0)
+                .unwrap();
+            loop {
+                scheduler.tick(0);
+                if let Some(reply) = ticket.try_take().unwrap() {
+                    let value: Value = serde_json::from_slice(reply.bytes()).unwrap();
+                    assert_eq!(value["status"], "ok", "finite after denied grant {denied}");
+                    reply.flushed();
+                    break;
+                }
+            }
+            scheduler.tick(0);
+            scheduler.close("route");
+            assert_eq!(scheduler.service.known_state_bytes(), 0);
+            assert_eq!(
+                (
+                    budget.snapshot().bytes,
+                    budget.snapshot().jobs,
+                    budget.snapshot().queued
+                ),
+                (0, 0, 0)
+            );
+        }
+    }
+    #[test]
+    fn reply_limit_discards_actual_ready_source_but_keeps_the_original_slot_until_error_drain() {
+        let budget = Budget::new(1 << 20, 2, 2);
+        let mut scheduler = Scheduler::new("boot".into(), Limits::default(), budget.clone());
+        scheduler.bind("route").unwrap();
+        let bound = scheduler.stats().bytes;
+        let (submission, mut ticket) =
+            Submission::decode("route", open(), 0, &budget, &scheduler.limits, "boot", None)
+                .unwrap();
+        let mut waiting = scheduler.prepare("route", submission.waiting()).unwrap();
+        let Job::Source(mut job) = waiting.job.take().unwrap() else {
+            panic!("source")
+        };
+        let body = loop {
+            let credit = waiting.credit.as_mut().unwrap();
+            let result = scheduler
+                .service
+                .step(&mut job, &mut |n| {
+                    credit
+                        .resize(waiting.base + n - waiting.transferred)
+                        .is_ok()
+                })
+                .unwrap();
+            if let Some(body) = result {
+                break body;
+            }
+        };
+        waiting.job = Some(Job::Source(job));
+        scheduler.reconcile(&mut waiting).unwrap();
+        assert_eq!(scheduler.leases(), 1);
+        // Same bounded writer/failure/cleanup path with a scaled response cap,
+        // rather than generating an unrelated64MiB traffic campaign.
+        scheduler.finish_success_bounded(waiting, DataBody::Source(body), 128);
+        let reply = ticket.try_take().unwrap().unwrap();
+        let value: Value = serde_json::from_slice(reply.bytes()).unwrap();
+        assert_eq!(value["v"], 3);
+        assert_eq!(value["error"]["code"], "reply_limit");
+        assert_eq!(value["error"]["execution"], "started");
+        assert_eq!(scheduler.leases(), 0);
+        assert_eq!(scheduler.stats().jobs, 1);
+        assert!(scheduler.stats().bytes > bound);
+        reply.flushed();
+        scheduler.tick(0);
+        assert_eq!(scheduler.stats().jobs, 0);
+        assert_eq!(scheduler.stats().bytes, bound);
+        scheduler.close("route");
+        assert_eq!(budget.snapshot().bytes, 0);
+    }
+    #[test]
+    fn catalogue_prune_during_actual_style_cursor_keeps_definition_credit_and_source_lease() {
+        let root = support::CaseDir::new("style-prune");
+        std::fs::create_dir(root.join("themes")).unwrap();
+        let file = root.join("themes/test.tmTheme");
+        let theme = |color| {
+            format!("<plist><dict><key>settings</key><array><dict><key>settings</key><dict><key>foreground</key><string>{color}</string></dict></dict></array></dict></plist>")
+        };
+        std::fs::write(&file, theme("#112233")).unwrap();
+        let mut catalogue = Catalogue::new(Some(root.join("config.json")));
+        let old = catalogue.snapshot();
+        let selected = old
+            .descriptors()
+            .find(|d| d.id.starts_with("custom:"))
+            .unwrap();
+        let id = selected.id.clone();
+        let fingerprint = selected.fingerprint.clone();
+        let budget = Budget::new(32 << 20, 4, 2);
+        let mut scheduler =
+            Scheduler::with_snapshot("boot".into(), Limits::default(), budget.clone(), old);
+        scheduler.bind("route").unwrap();
+        let mut source = scheduler.submit("route", open(), 0).unwrap();
+        scheduler.tick(0);
+        source.try_take().unwrap().unwrap().flushed();
+        scheduler.tick(0);
+        assert_eq!(scheduler.leases(), 1);
+        let request = json!({"v":3,"op":"styles.resolve","ticket":"old-definition","instance":"boot","admission":"bounded_queue","queue_wait_ms":1000,"vocabulary":crate::vocabulary::FINGERPRINT,"contexts":vec![vec![0];1000],"rules":{"kind":"native","id":id,"fingerprint":fingerprint}});
+        let mut ticket = scheduler
+            .submit("route", serde_json::to_vec(&request).unwrap(), 0)
+            .unwrap();
+        scheduler.tick(0);
+        assert!(ticket.try_take().unwrap().is_none());
+        let owned = scheduler.native_counters().cached_definition_bytes;
+        assert!(owned > 0);
+        assert_eq!(scheduler.native_counters().compilations, 1);
+        std::fs::write(&file, theme("#445566")).unwrap();
+        catalogue.refresh().unwrap();
+        scheduler.publish_snapshot(catalogue.snapshot());
+        assert_eq!(scheduler.native_counters().entries, 0);
+        assert!(scheduler.stats().bytes >= owned);
+        assert_eq!(scheduler.leases(), 1);
+        for _ in 0..1000 {
+            scheduler.tick(0);
+        }
+        let reply = ticket.try_take().unwrap().unwrap();
+        let value: Value = serde_json::from_slice(reply.bytes()).unwrap();
+        assert_eq!(value["status"], "ok");
+        assert_eq!(
+            value["body"]["rules"],
+            crate::style_rules::fingerprint_native_rules(&fingerprint).unwrap()
+        );
+        assert_eq!(value["body"]["indices"].as_array().unwrap().len(), 1000);
+        reply.flushed();
+        scheduler.tick(0);
+        assert_eq!(
+            scheduler.stats().bytes,
+            scheduler.idle.bytes()
+                + scheduler.acks.bytes()
+                + scheduler.native_counters().metadata_bytes
+        );
+        assert_eq!(scheduler.leases(), 1);
+        scheduler.close("route");
+        drop(scheduler);
+        assert_eq!(budget.snapshot().bytes, 0);
     }
 }

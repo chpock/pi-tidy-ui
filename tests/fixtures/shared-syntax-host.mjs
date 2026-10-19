@@ -10,7 +10,7 @@ import { runCleanupSteps } from './terminal-cleanup.mjs';
 import { SyntaxClient } from '../../src/occipital/client.ts';
 import { createSharedFactory } from '../../src/occipital/factories.ts';
 import { ExtensionSettings } from '../../src/settings.ts';
-import { CAPABILITY } from '../../src/occipital/protocol.ts';
+import { SEMANTIC_CAPABILITY as CAPABILITY } from '../../src/occipital/semantic-protocol.ts';
 
 export async function until(check, label) {
   for (const end = Date.now() + 12000; Date.now() < end;) {

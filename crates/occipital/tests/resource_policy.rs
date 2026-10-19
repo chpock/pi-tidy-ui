@@ -1,12 +1,11 @@
 //! Focused admission controls, not a new large-source benchmark matrix.
 use occipital::{
     actor::ActorPool,
-    engine::{Engine, Limits},
     ingress::Incoming,
-    profile::{Profile, THEME_SELECTORS},
     protocol::SyntaxHint,
     reply::REPLY_BYTES,
     request::{REQUEST_BYTES, SOURCE_BYTES},
+    semantic_engine::{Engine, Limits, SourceChunk, Work},
 };
 use serde_json::{json, Value};
 
@@ -15,11 +14,10 @@ fn data_family_and_interval_palette_bounds_are_derived_not_example_sized() {
     let limits = Limits::default();
     assert_eq!(REQUEST_BYTES, 64 << 20);
     assert_eq!(REPLY_BYTES, REQUEST_BYTES);
-    assert_eq!(SOURCE_BYTES, REQUEST_BYTES);
+    assert_eq!(SOURCE_BYTES, 64 << 10);
     assert_eq!(limits.source_bytes, SOURCE_BYTES);
     // Positive length + style + two separators consume at least four JSON bytes.
-    assert_eq!(limits.runs, REPLY_BYTES / 4);
-    assert_eq!(limits.styles, (THEME_SELECTORS + 1) * 8 + 1);
+    assert_eq!(limits.runs, occipital::limits::DATA_WIRE_BYTES / 4);
     assert_eq!(limits.state_pool_bytes, 256 << 20);
     assert_eq!(limits.leases, 4096);
     assert_eq!(limits.per_scope, 512);
@@ -28,41 +26,52 @@ fn data_family_and_interval_palette_bounds_are_derived_not_example_sized() {
 }
 
 #[test]
-fn source_just_over_the_old_ceiling_preserves_text_and_does_not_reparse_ignored_growth() {
-    let text = "a".repeat((1 << 20) + 1);
+fn saturated_source_preserves_exact_prefix_and_empty_finalize_does_not_reparse() {
+    let text = "a".repeat(SOURCE_BYTES);
     let hint = SyntaxHint {
         language: Some("text".into()),
         path: None,
     };
     let mut engine = Engine::new(Limits::default());
-    let batch = engine.one_shot(&text, &hint, "pi").unwrap();
+    let batch = run(&mut engine, |engine| {
+        engine
+            .begin_one_shot(text.clone(), &hint, &mut |_| true)
+            .unwrap()
+    });
     assert_eq!(batch.source_bytes as usize, text.len());
     assert_eq!(batch.counters.tail_bytes, 64 << 10);
     assert_eq!(
-        batch.runs.iter().map(|run| run[1] as usize).sum::<usize>(),
+        batch.runs.iter().map(|run| run[0] as usize).sum::<usize>(),
         text.len()
     );
-    let opened = engine.open("route", "large", &text, &hint, "pi").unwrap();
-    let appended = engine
-        .append(
+    let work = engine
+        .begin_open("route", "large", text.clone(), &hint, &mut |_| true)
+        .unwrap();
+    let lease = work.lease().unwrap();
+    let opened = execute(&mut engine, work);
+    let work = engine
+        .begin_append(
             "route",
             "large",
+            lease,
             opened.revision,
             opened.source_bytes,
-            "tail",
+            String::new(),
             true,
+            &mut |_| true,
         )
         .unwrap();
-    assert_eq!(appended.source_bytes as usize, text.len() + 4);
+    let appended = execute(&mut engine, work);
+    assert_eq!(appended.source_bytes as usize, text.len());
     assert_eq!(appended.counters.tail_calls, 0);
     assert_eq!(appended.counters.committed_line_calls, 0);
     assert_eq!(
         appended
             .runs
             .iter()
-            .map(|run| run[1] as usize)
+            .map(|run| run[0] as usize)
             .sum::<usize>(),
-        text.len() + 4
+        text.len()
     );
     assert_eq!(engine.leases(), 0);
     assert_eq!(engine.retained_state_bytes(), 0);
@@ -70,9 +79,8 @@ fn source_just_over_the_old_ceiling_preserves_text_and_does_not_reparse_ignored_
 
 fn source(ticket: &str) -> Vec<u8> {
     serde_json::to_vec(
-        &json!({"v":2,"ticket":ticket,"op":"stream.open","instance":"policy",
+        &json!({"v":3,"ticket":ticket,"op":"stream.open","instance":"policy",
         "admission":"try_now","sources":[{"key":ticket,"generation":1,"source_version":0,
-        "profile":"pi","fingerprint":Profile::resolve("pi").unwrap().fingerprint,
         "hint":{"language":"text"},"text":"a"}]}),
     )
     .unwrap()
@@ -113,7 +121,7 @@ async fn all_eight_routes_can_hold_two_calls_without_a_separate_queue_count_refu
     assert_eq!(pool.stats().leases, 16);
     // Metadata remains available while every advertised data slot is occupied.
     let Incoming::Control(control) = routes[0]
-        .receive(br#"{"v":2,"ticket":"metadata","op":"describe"}"#.to_vec())
+        .receive(br#"{"v":3,"ticket":"metadata","op":"describe"}"#.to_vec())
         .unwrap()
     else {
         panic!("control")
@@ -135,4 +143,13 @@ async fn all_eight_routes_can_hold_two_calls_without_a_separate_queue_count_refu
     assert_eq!(pool.stats().credits.bytes, 0);
     assert_eq!(pool.stats().routes, 0);
     pool.shutdown().await.unwrap();
+}
+
+fn execute(engine: &mut Engine, mut work: Work) -> SourceChunk {
+    while !engine.step(&mut work, &mut |_| true).unwrap() {}
+    engine.finish(work, &mut |_| true).unwrap()
+}
+fn run(engine: &mut Engine, begin: impl FnOnce(&mut Engine) -> Work) -> SourceChunk {
+    let work = begin(engine);
+    execute(engine, work)
 }

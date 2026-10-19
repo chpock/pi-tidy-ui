@@ -42,7 +42,7 @@ if(tool==='getconf') {console.log('glibc '+(control.baseline ?? '2.28'));process
 if(tool==='node' && args.includes('--input-type=module')) {
  const r=spawnSync(${JSON.stringify(process.execPath)},args,{env:process.env,stdio:'inherit'});process.exit(r.status??1);
 }
-appendFileSync(${JSON.stringify(log)},JSON.stringify({tool,args,offline:process.env.CARGO_NET_OFFLINE,home:process.env.CARGO_HOME,testRoot:process.env.TIDY_TEST_ROOT,autoInstall:process.env.RUSTUP_AUTO_INSTALL,toolchain:process.env.RUSTUP_TOOLCHAIN,ambient:process.env.AMBIENT_POISON,cwd:process.cwd(),repoConfig:tool==='cargo' && args[0]!=='--version' ? readFileSync(join(process.cwd(),'.cargo/config.toml'),'utf8'):undefined})+'\\n');
+appendFileSync(${JSON.stringify(log)},JSON.stringify({tool,args,offline:process.env.CARGO_NET_OFFLINE,home:process.env.CARGO_HOME,testRoot:process.env.TIDY_TEST_ROOT,autoInstall:process.env.RUSTUP_AUTO_INSTALL,toolchain:process.env.RUSTUP_TOOLCHAIN,ambient:process.env.AMBIENT_POISON,cwd:process.cwd(),repoConfig:tool==='cargo' && args[0]!=='--version' ? readFileSync(join(process.cwd(),'.cargo/config.toml'),'utf8'):undefined,sharedProtocol:tool==='cargo' && args[0]!=='--version' && control.requireProtocol ? readFileSync(join(process.cwd(),'protocol/syntax-v3/vectors.json'),'utf8'):undefined})+'\\n');
 if(args[0]==='--version') {
  if(control.missing) {console.error('pinned toolchain is not installed');process.exit(69);}
  console.log(tool+' '+(control.rust??'1.99.0')+' (fixture)');process.exit(0);
@@ -132,6 +132,25 @@ test('GNU native gate orders offline fmt/tests/allocator/lint/build/ABI and stop
   await rm(join(f.root, 'commands.jsonl')); await f.set({ fail: 'clippy' });
   assert.notEqual(f.run(['-j4', '_gnu-native', 'RUST_TARGET=x86_64-unknown-linux-gnu']).status, 0);
   assert.equal((await f.entries()).some(e => e.args[0] === 'build' || e.tool === 'readelf'), false);
+});
+
+test('all neutral Make native gates preserve shared protocol inputs and their current bytes', { skip }, async t => {
+  const f = await fixture(t), directory = join(f.root, 'protocol/syntax-v3');
+  await mkdir(directory, { recursive: true }); await f.set({ requireProtocol: true });
+  for (const [index, target] of ['build', '_native-lint', '_gnu-native'].entries()) {
+    const bytes = JSON.stringify({ vector: index }) + '\n';
+    await writeFile(join(directory, 'vectors.json'), bytes);
+    const before = (await f.entries()).length;
+    const result = f.run([target, 'RUST_TARGET=x86_64-unknown-linux-gnu']);
+    assert.equal(result.status, 0, result.stderr);
+    const calls = (await f.entries()).slice(before).filter(e => e.tool === 'cargo' && e.args[0] !== '--version');
+    assert.ok(calls.length > 0);
+    for (const call of calls) {
+      assert.equal(call.sharedProtocol, bytes, 'Cargo reads the latest shared vectors from its neutral snapshot');
+      assert.equal(call.cwd.startsWith(f.root), false);
+      await assert.rejects(readFile(join(call.cwd, 'protocol/syntax-v3/vectors.json')), { code: 'ENOENT' });
+    }
+  }
 });
 
 test('GNU wrapper executes native architecture/glibc2.28 offline checks with explicit SDK mounts', { skip }, async t => {

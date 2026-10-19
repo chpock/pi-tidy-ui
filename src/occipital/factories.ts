@@ -7,6 +7,7 @@ import { PROVIDER_LIMITS, type ProviderOptions } from './provider.ts';
 import { StdioTransport } from './stdio.ts';
 import { SharedTransport, type SharedOptions } from './shared.ts';
 import { connectionCandidates } from './discovery.ts';
+import { ExpectedOwnedUnavailable } from './owned-startup.ts';
 
 export interface OwnedFactoryOptions {
   diagnostic?: DiagnosticSink;
@@ -68,7 +69,8 @@ function wait<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
     let yes: ((value: T) => void) | undefined = resolve;
     let no: ((error: Error) => void) | undefined = reject;
     const detach = () => signal.removeEventListener('abort', abort);
-    const abort = () => { const failed = no; yes = undefined; no = undefined; detach(); failed?.(unavailable()); };
+    const abort = (error?: unknown) => { const failed = no; yes = undefined; no = undefined; detach();
+      failed?.(error instanceof ExpectedOwnedUnavailable ? new ExpectedOwnedUnavailable() : unavailable()); };
     promise.then(value => { const accepted = yes; yes = undefined; no = undefined; detach(); accepted?.(value); }, abort);
     signal.addEventListener('abort', abort, { once: true });
     if (signal.aborted) abort();
@@ -121,13 +123,13 @@ export function createLocalOwnedFactory(input: LocalOwnedFactoryOptions): Provid
     try { file = await stat(options.command); }
     catch (error) {
       diagnose(options.diagnostic, 'WARN', 'occipital', 'Colocated development binary unavailable; using existing fallback policy', { code: diagnosticError(error) });
-      if (!signal.aborted && ['ENOENT', 'ENOTDIR'].includes((error as NodeJS.ErrnoException).code ?? '')) options.onMissing?.();
+      if (['ENOENT', 'ENOTDIR'].includes((error as NodeJS.ErrnoException).code ?? '')) {
+        if (!signal.aborted) options.onMissing?.();
+        throw new ExpectedOwnedUnavailable();
+      }
       throw error;
     }
-    if (!file.isFile()) {
-      if (!signal.aborted) options.onMissing?.();
-      throw unavailable();
-    }
+    if (!file.isFile()) throw unavailable();
     await access(options.command, constants.X_OK);
     return options.command;
   });
@@ -158,7 +160,7 @@ function ownedFactory(options: OwnedLaunchOptions, acquire: (signal: AbortSignal
       // Constructor is synchronous; transfer drops the acquisition abort listener.
       diagnose(options.diagnostic, 'INFO', 'occipital', 'Owned stdio transport created; broker compatibility check still pending');
       return transport;
-    } catch (error) { diagnose(options.diagnostic, 'WARN', 'occipital', 'Owned acquisition or launch attempt did not complete', { cancelled: budget.signal.aborted, code: diagnosticError(error) }); throw unavailable(); }
+    } catch (error) { diagnose(options.diagnostic, 'WARN', 'occipital', 'Owned acquisition or launch attempt did not complete', { cancelled: budget.signal.aborted, code: diagnosticError(error) }); throw error instanceof ExpectedOwnedUnavailable ? new ExpectedOwnedUnavailable() : unavailable(); }
     finally { budget.dispose(); }
   };
 }

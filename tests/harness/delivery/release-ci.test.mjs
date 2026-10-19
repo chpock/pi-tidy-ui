@@ -186,7 +186,7 @@ for (const change of ['commit', 'version', 'target', 'bytes', 'url', 'notice-gap
   });
 }
 
-test('Git Windows-style checkout preserves exact project and supplementary license bytes', async t => {
+test('Git Windows-style checkout preserves exact license bytes and LF text JSON including hashed fixtures', async t => {
   const root = await source(t);
   const git = (...args) => execFileSync(toolPath('git'), ['-C', root, ...args], { env: childEnv(join(root, 'git-environment')), stdio: 'pipe' });
   git('init');
@@ -198,20 +198,32 @@ test('Git Windows-style checkout preserves exact project and supplementary licen
   });
   await writeFile(join(root, '.gitattributes'), attributes);
   const paths = ['LICENSE', ...new Set((await json(join(repo, 'scripts/release/notices/supplements.json')))
-    .map(item => 'scripts/release/notices/' + item.file))];
+    .map(item => 'scripts/release/notices/' + item.file)),
+    'crates/occipital/tests/fixtures/native_palette_inputs.json',
+    'crates/occipital/tests/fixtures/native_palette_oracle.json'];
   const originals = new Map();
+  const ordinaryJson = 'metadata/example.json';
+  await mkdir(join(root, 'metadata'), { recursive: true });
+  originals.set(ordinaryJson, Buffer.from('{"ordinary":true}\n'));
+  await writeFile(join(root, ordinaryJson), originals.get(ordinaryJson));
   for (const path of paths) {
     const bytes = await readFile(join(repo, path)); originals.set(path, bytes);
     await mkdir(resolve(root, path, '..'), { recursive: true });
     await writeFile(join(root, path), bytes);
   }
   await writeFile(join(root, 'ordinary.txt'), 'ordinary text\n');
-  git('add', '--', '.gitattributes', 'ordinary.txt', ...paths);
+  git('add', '--', '.gitattributes', 'ordinary.txt', ordinaryJson, ...paths);
+  const jsonPaths = [ordinaryJson, ...paths.filter(path => path.endsWith('.json'))];
+  const jsonAttributes = git('check-attr', 'text', 'eol', '--', ...jsonPaths).toString('utf8').trim().split(/\r?\n/);
+  for (const path of jsonPaths) {
+    assert.ok(jsonAttributes.includes(`${path}: text: set`), `${path} must remain text`);
+    assert.ok(jsonAttributes.includes(`${path}: eol: lf`), `${path} must use LF`);
+  }
   git('config', 'core.autocrlf', 'true');
-  for (const path of [...paths, 'ordinary.txt']) await rm(join(root, path));
+  for (const path of [...paths, ordinaryJson, 'ordinary.txt']) await rm(join(root, path));
   git('checkout-index', '--all', '--force');
   assert.equal(await readFile(join(root, 'ordinary.txt'), 'utf8'), 'ordinary text\r\n', 'actual checkout conversion must be exercised');
-  for (const path of paths) assert.deepEqual(await readFile(join(root, path)), originals.get(path), path);
+  for (const [path, original] of originals) assert.ok((await readFile(join(root, path))).equals(original), path);
 });
 
 test('CI release staging stays outside restored Cargo output and preserves stale cache contents', async t => {

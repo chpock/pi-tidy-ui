@@ -1,7 +1,5 @@
 //! Actual allocator observations at payload destruction, not only end-state counters.
-use occipital::{
-    credit::Budget, engine::Limits, profile::Profile, request::decode, scheduler::Scheduler,
-};
+use occipital::{credit::Budget, scheduler::Scheduler, semantic_engine::Limits};
 use serde_json::json;
 use std::{
     alloc::{GlobalAlloc, Layout, System},
@@ -33,7 +31,7 @@ unsafe impl GlobalAlloc for ObservedAllocator {
         let ptr = unsafe { System.alloc(layout) };
         record_large_allocation(ptr, layout.size());
         if SIZE.load(Ordering::Acquire) == layout.size() {
-            TARGET.store(ptr as usize, Ordering::Release);
+            let _ = TARGET.compare_exchange(0, ptr as usize, Ordering::AcqRel, Ordering::Acquire);
         }
         ptr
     }
@@ -42,7 +40,8 @@ unsafe impl GlobalAlloc for ObservedAllocator {
         let result = unsafe { System.realloc(ptr, layout, size) };
         record_large_allocation(result, size);
         if SIZE.load(Ordering::Acquire) == size {
-            TARGET.store(result as usize, Ordering::Release);
+            let _ =
+                TARGET.compare_exchange(0, result as usize, Ordering::AcqRel, Ordering::Acquire);
         }
         result
     }
@@ -64,9 +63,6 @@ unsafe impl GlobalAlloc for ObservedAllocator {
 }
 struct Probe<'a>(&'a Budget);
 impl<'a> Probe<'a> {
-    fn pointer(budget: &'a Budget, ptr: *const u8) -> Self {
-        Self::arm(budget, ptr as usize, 0)
-    }
     fn allocation(budget: &'a Budget, size: usize) -> Self {
         Self::arm(budget, 0, size)
     }
@@ -91,12 +87,12 @@ impl Drop for Probe<'_> {
         BUDGET.store(std::ptr::null_mut(), Ordering::Release);
     }
 }
-fn request(ticket: &str, text: &str, queued: bool) -> occipital::request::Request {
-    let mut value = json!({"v":2,"ticket":ticket,"op":"stream.open","instance":"boot","admission":if queued {"bounded_queue"} else {"try_now"},"sources":[{"key":ticket,"generation":1,"source_version":1,"profile":"pi","fingerprint":Profile::resolve("pi").unwrap().fingerprint,"hint":{"language":"typescript"},"text":text}]});
+fn request(ticket: &str, text: &str, queued: bool) -> Vec<u8> {
+    let mut value = json!({"v":3,"ticket":ticket,"op":"stream.open","instance":"boot","admission":if queued {"bounded_queue"} else {"try_now"},"sources":[{"key":ticket,"generation":1,"source_version":1,"hint":{"language":"typescript"},"text":text}]});
     if queued {
         value["queue_wait_ms"] = json!(1000);
     }
-    decode(&serde_json::to_vec(&value).unwrap()).unwrap()
+    serde_json::to_vec(&value).unwrap()
 }
 #[test]
 fn rejected_source_is_destroyed_before_releasing_its_credit() {
@@ -110,14 +106,15 @@ fn rejected_source_is_destroyed_before_releasing_its_credit() {
     worker.bind("a").unwrap();
     worker.bind("b").unwrap();
     let active = worker
-        .submit_request("a", request("active", "echo x", true), 0)
+        .submit("a", request("active", "echo x", true), 0)
         .unwrap();
-    let mut rejected = request("rejected", "", false);
-    let text = "x\n".repeat(512000);
+    let text = "x".repeat(occipital::limits::SOURCE_BYTES);
     let len = text.len();
-    let probe = Probe::pointer(&budget, text.as_ptr());
-    rejected.sources.as_mut().unwrap()[0].text = text;
-    let mut ticket = worker.submit_request("b", rejected, 0).unwrap();
+    let rejected = request("rejected", &text, false);
+    // Observe the production decoder's owned source allocation, not a caller-
+    // constructed legacy Request that bypasses the active raw admission path.
+    let probe = Probe::allocation(&budget, len);
+    let mut ticket = worker.submit("b", rejected, 0).unwrap();
     let delivery = ticket.try_take().unwrap().unwrap();
     let body: serde_json::Value = serde_json::from_slice(delivery.bytes()).unwrap();
     assert_eq!(body["error"]["code"], "busy");
@@ -135,6 +132,8 @@ fn rejected_source_is_destroyed_before_releasing_its_credit() {
     delivery.commit();
     drop(active);
     worker.tick(0);
+    worker.close("a");
+    worker.close("b");
     assert_eq!(budget.snapshot().bytes, 0);
 }
 #[test]
@@ -147,12 +146,18 @@ fn structured_runs_are_destroyed_before_credit_reduces_to_encoded_bytes() {
     );
     let mut worker = Scheduler::new("boot".into(), Limits::default(), budget.clone());
     worker.bind("a").unwrap();
-    let mut source = request("large", &"const x: number = 1234;\n".repeat(9000), true);
-    source.op = occipital::request::Operation::Highlight;
-    let structured = 131072 * std::mem::size_of::<occipital::protocol::Run>();
+    let mut value: serde_json::Value = serde_json::from_slice(&request(
+        "large",
+        &"const x: number = 1234;\n".repeat(2000),
+        true,
+    ))
+    .unwrap();
+    value["op"] = json!("highlight");
+    let source = serde_json::to_vec(&value).unwrap();
+    let structured = 32768 * std::mem::size_of::<[u32; 2]>();
     let probe = Probe::allocation(&budget, structured);
-    let mut ticket = worker.submit_request("a", source, 0).unwrap();
-    for _ in 0..9000 {
+    let mut ticket = worker.submit("a", source, 0).unwrap();
+    for _ in 0..2000 {
         worker.tick(0);
     }
     let delivery = ticket.try_take().unwrap().unwrap();
@@ -178,5 +183,7 @@ fn structured_runs_are_destroyed_before_credit_reduces_to_encoded_bytes() {
     drop(probe);
     delivery.commit();
     worker.tick(0);
+    worker.close("a");
+    worker.close("b");
     assert_eq!(budget.snapshot().bytes, 0);
 }

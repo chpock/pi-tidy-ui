@@ -59,7 +59,7 @@ export function snapshotIdentity(root, files) {
     const path = join(root, name);
     const bytes = readFileSync(path);
     tree.update(name + '\0').update(bytes).update('\0');
-    if (/^(?:crates\/|Cargo\.(?:toml|lock)$|rust-toolchain\.toml$|\.cargo\/)/.test(name)) native.update(name + '\0').update(bytes).update('\0');
+    if (/^(?:crates\/|protocol\/|Cargo\.(?:toml|lock)$|rust-toolchain\.toml$|\.cargo\/)/.test(name)) native.update(name + '\0').update(bytes).update('\0');
   }
   return { tree: tree.digest('hex'), nativeTree: native.digest('hex') };
 }
@@ -301,7 +301,7 @@ export async function prepare(options) {
       const directory = resolve(options['native-artifact']);
       const info = json(join(directory, 'build-info.json')), release = json(join(directory, 'native-release.staged.json'));
       if (info.commit !== source.commit || info.version !== release.version) throw new Error('Native CI artifact source commit/version mismatch');
-      const dirty = execFileSync(tools.git, ['-C', root, 'status', '--porcelain', '--', 'crates', 'Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', '.cargo'], { env: environment, encoding: 'utf8' });
+      const dirty = execFileSync(tools.git, ['-C', root, 'status', '--porcelain', '--', 'crates', 'protocol', 'Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', '.cargo'], { env: environment, encoding: 'utf8' });
       if (dirty.trim()) throw new Error('A commit-only CI artifact cannot attest modified local native sources; use --build-native');
       const record = release.artifacts.find(entry => entry.target === info.target);
       if (!record) throw new Error('Native CI artifact lacks its target declaration');
@@ -339,7 +339,7 @@ export async function prepare(options) {
     if (options['build-native']) {
       if (!inputs.rust) throw new Error('--build-native requires explicit --rust-root with the pinned toolchain');
       const nativeSource = join(inputs.runRoot, 'native-source');
-      const nativeFiles = source.files.filter(name => /^(?:crates\/|Cargo\.(?:toml|lock)$|rust-toolchain\.toml$|\.cargo\/)/.test(name));
+      const nativeFiles = source.files.filter(name => /^(?:crates\/|protocol\/|Cargo\.(?:toml|lock)$|rust-toolchain\.toml$|\.cargo\/)/.test(name));
       if (materializeSource(root, nativeSource, nativeFiles).nativeTree !== source.nativeTree) throw new Error('Materialized native source differs from tested native source');
       const versionModule = new URL('../release/version.mjs', import.meta.url).href;
       const daemon = JSON.parse(execFileSync(node, ['--input-type=module', '-e',

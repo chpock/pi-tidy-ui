@@ -5,8 +5,7 @@
 //! Workers retain snapshot profiles only within their own in-flight/lease budgets.
 use crate::{
     admission::{Admission, Counters, Limits},
-    profile::Profile,
-    protocol::ASSETS,
+    profile::{Profile, ASSETS},
 };
 use serde::{
     de::{self, SeqAccess, Visitor},
@@ -113,8 +112,8 @@ impl Snapshot {
     }
     fn bundled() -> Self {
         let mut entries = BTreeMap::new();
-        for id in std::iter::once("pi".to_owned()).chain(Profile::bundled_names()) {
-            let label = if id == "pi" { "Pi palette" } else { &id[8..] }.to_owned();
+        for id in Profile::bundled_names() {
+            let label = id[8..].to_owned();
             let fingerprint = format!("{:x}", Sha256::digest(format!("{ASSETS}:{id}").as_bytes()));
             entries.insert(
                 id.clone(),

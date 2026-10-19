@@ -1,8 +1,8 @@
 //! Actual fixed owning-worker threads; no test parser or transport emulation.
-use occipital::{actor::ActorPool, profile::Profile};
+use occipital::{actor::ActorPool, catalogue::Catalogue};
 use serde_json::{json, Value};
 fn open(ticket: &str) -> Vec<u8> {
-    serde_json::to_vec(&json!({"v":2,"ticket":ticket,"op":"stream.open","instance":"boot","admission":"bounded_queue","queue_wait_ms":1000,"sources":[{"key":"same","generation":1,"source_version":1,"profile":"pi","fingerprint":Profile::resolve("pi").unwrap().fingerprint,"hint":{"language":"bash"},"text":"echo one"}]})).unwrap()
+    serde_json::to_vec(&json!({"v":3,"ticket":ticket,"op":"stream.open","instance":"boot","admission":"bounded_queue","queue_wait_ms":1000,"sources":[{"key":"same","generation":1,"source_version":1,"hint":{"language":"bash"},"text":"echo one"}]})).unwrap()
 }
 #[tokio::test]
 async fn eight_routes_share_fixed_workers_with_independent_colliding_keys() {
@@ -46,7 +46,7 @@ async fn worker_expiry_runs_without_new_requests_or_an_idle_poll() {
     let pool = ActorPool::with_limits(
         "boot".into(),
         1,
-        occipital::engine::Limits {
+        occipital::semantic_engine::Limits {
             // This test exercises the nearest-expiry receive, not a sub-cold-parse
             // TTL. A 10ms lease can validly expire before the first acknowledgement.
             idle_ms: 500,
@@ -68,8 +68,9 @@ async fn worker_expiry_runs_without_new_requests_or_an_idle_poll() {
     .await
     .expect("idle worker must publish lease expiry without another request");
     assert_eq!(pool.stats().leases, 0);
-    assert_eq!(pool.stats().credits.bytes, 0);
     drop(route);
+    pool.barrier().await.unwrap();
+    assert_eq!(pool.stats().credits.bytes, 0);
     pool.shutdown().await.unwrap();
 }
 #[tokio::test]
@@ -103,34 +104,36 @@ async fn shutdown_invalidates_retained_route_facades_and_late_handoff() {
 }
 
 #[tokio::test]
-async fn published_profiles_reach_both_workers_and_remove_retired_lease_authority() {
+async fn published_catalogues_reach_both_workers_without_retiring_source_leases() {
     let pool = ActorPool::new("boot".into(), 2).unwrap();
-    let theme = Profile::resolve("syntect:Catppuccin Mocha")
-        .unwrap()
-        .theme
-        .clone()
-        .unwrap();
-    let profile = Profile::native("custom:first".into(), "a".repeat(64), theme).unwrap();
-    pool.replace_profiles(vec![profile]).unwrap();
+    let snapshot = Catalogue::from_os_root(None).snapshot();
+    pool.publish_snapshot(snapshot.clone()).unwrap();
     let mut routes = Vec::new();
+    let mut saved = Vec::new();
     for _ in 0..2 {
-        routes.push(pool.bind().await.unwrap());
-    }
-    for route in &routes {
-        let mut value: Value = serde_json::from_slice(&open("custom")).unwrap();
-        value["sources"][0]["profile"] = json!("custom:first");
-        value["sources"][0]["fingerprint"] = json!("a".repeat(64));
-        let mut ticket = route.submit(serde_json::to_vec(&value).unwrap()).unwrap();
-        let ready = ticket.take().await.unwrap();
-        let body: Value = serde_json::from_slice(ready.bytes()).unwrap();
-        assert_eq!(body["status"], "ok");
-        ready.commit();
+        let route = pool.bind().await.unwrap();
+        let mut ticket = route.submit(open("source")).unwrap();
+        let delivery = ticket.take().await.unwrap();
+        let body: Value = serde_json::from_slice(delivery.bytes()).unwrap();
+        saved.push(body["body"]["sources"][0].clone());
+        delivery.commit();
+        routes.push(route);
     }
     pool.barrier().await.unwrap();
     assert_eq!(pool.stats().leases, 2);
-    pool.replace_profiles(vec![]).unwrap();
+    pool.publish_snapshot(snapshot).unwrap();
     pool.barrier().await.unwrap();
-    assert_eq!(pool.stats().leases, 0);
+    assert_eq!(pool.stats().leases, 2);
+    for (route, source) in routes.iter().zip(saved) {
+        let request = json!({"v":3,"op":"stream.append","ticket":"next","instance":"boot","admission":"bounded_queue","queue_wait_ms":1000,"key":source["key"],"generation":source["generation"],"source_version":2,"lease":source["lease"],"base_revision":source["revision"],"base_bytes":source["source_bytes"],"append":"\necho next\n","final":false});
+        let mut ticket = route.submit(serde_json::to_vec(&request).unwrap()).unwrap();
+        let reply = ticket.take().await.unwrap();
+        let value: Value = serde_json::from_slice(reply.bytes()).unwrap();
+        assert_eq!(value["status"], "ok");
+        assert_eq!(value["body"]["sources"][0]["lease"], source["lease"]);
+        assert_eq!(value["body"]["sources"][0]["revision"], 2);
+        reply.commit();
+    }
     drop(routes);
     pool.shutdown().await.unwrap();
 }
@@ -163,7 +166,11 @@ async fn retained_transport_handles_do_not_keep_the_worker_owner_alive() {
     pool.shutdown().await.unwrap();
     assert_eq!(handle.bind().await.err().unwrap().code, "scope_gone");
     assert_eq!(
-        handle.replace_profiles(Vec::new()).err().unwrap().code,
+        handle
+            .publish_snapshot(Catalogue::from_os_root(None).snapshot())
+            .err()
+            .unwrap()
+            .code,
         "scope_gone"
     );
     assert_eq!(handle.stats().err().unwrap().code, "scope_gone");

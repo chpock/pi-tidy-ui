@@ -1,28 +1,32 @@
-import { type DiagnosticFields, type DiagnosticLevel, type DiagnosticSink, diagnose, diagnosticError } from '../diagnostics.ts';
-import { decodeClosed, decodeSources, PROTOCOL_VERSION, RemoteFault, type Description, type ExpectedSource } from './protocol.ts';
-import { OCCIPITAL_LIMITS } from './limits.ts';
+import { concreteStyle, expectation, nativeRoles, prepareSelection, selectionBytes, type PreparedSelection, type StyleRoles, type StyleSelection } from './controller-styles.ts';
+import type { StagedPiProjection } from './pi-projection.ts';
+import { PiPreparation } from './semantic-retention.ts';
+export type { PiPreparation } from './semantic-retention.ts';
+import type { DataBudget, DataCharge, DataGrant } from './data-budget.ts';
+import type { ContextRef } from './context-arena.ts';
+import { CARD_ROLES, type CardRole } from './semantic-codec.ts';
+import type { SemanticCaptureGroup } from './semantic-capture.ts';
+import { decodeSemanticStyleReply, type SemanticStyleExpectation } from './semantic-protocol.ts';
+import type { CaptureSelection, ReadyDisplayUpdate } from './semantic-retention.ts';
+export type { StyleSelection } from './controller-styles.ts';
+import { type DiagnosticFields, type DiagnosticLevel, type DiagnosticSink, diagnose, diagnosticError, reportRuntime, unexpectedDiagnostic } from '../diagnostics.ts';
+import { RemoteFault } from './protocol.ts';
+import { decodeSemanticClosed as decodeClosed, decodeSemanticSourceReply, SEMANTIC_PROTOCOL_VERSION as PROTOCOL_VERSION, type SemanticDescription as Description } from './semantic-protocol.ts';
+import type { SemanticExpectation as ExpectedSource } from './semantic-source.ts';
+import type { ConcreteStyle } from '../syntax/style-materialization.ts';
+import { SemanticRetentionPool, type SemanticRelease as ReleaseReceipt } from './semantic-retention.ts';
+import { HIGHLIGHT_LIMITS, OCCIPITAL_LIMITS } from './limits.ts';
+import { dataJsonBytes, type ReplySize } from './data-json.ts';
 import { RequestFailure } from './request-failure.ts';
 import type { ProviderBroker } from './provider.ts';
-import { RetentionPool, RETENTION_LIMITS, type ReleaseReceipt } from './retention.ts';
+import { RETENTION_LIMITS } from './retention.ts';
 
-// Separate captured/codec application credit, not V8/SDK/parser heap or RSS.
-// UTF16 capture/replacement/request slices:6*S; suffix codec buffer:S;
-// encoded request, its UTF16 JSON and reply lanes:4*F; wire numeric pairs plus
-// canonical Uint32 pairs:24*R; style/bookkeeping allowances:128*T +33792.
-export function sourceReservation(facts: { captureUnits: number; replacementUnits: number; inputUnits: number;
-  replacementBytes: number; frameBytes: number; runs: number; styles: number }): number {
-  for (const value of Object.values(facts)) if (!Number.isSafeInteger(value) || value < 0) throw new Error('invalid source reservation');
-  const runs = Math.min(facts.runs, facts.replacementBytes);
-  return 2*(facts.captureUnits + facts.replacementUnits + facts.inputUnits) + facts.replacementBytes
-    + 4*facts.frameBytes + 24*runs + 128*Math.min(facts.styles, runs) + 32768 + 1024;
-}
-const fullFamily = sourceReservation({ captureUnits: OCCIPITAL_LIMITS.sourceBytes, replacementUnits: OCCIPITAL_LIMITS.sourceBytes,
-  inputUnits: OCCIPITAL_LIMITS.sourceBytes, replacementBytes: OCCIPITAL_LIMITS.sourceBytes,
-  frameBytes: OCCIPITAL_LIMITS.wireBytes, runs: OCCIPITAL_LIMITS.runs, styles: OCCIPITAL_LIMITS.styles });
-export const CONTROLLER_LIMITS = Object.freeze({ jobs: 2, transientBytes: 2*fullFamily,
-  bookkeepingBytes: OCCIPITAL_LIMITS.retainedBytes, restarts: 1 });
+import { sourceFits, sourceReservation, CONTROLLER_LIMITS } from './controller-limits.ts';
+export { sourceReservation, CONTROLLER_LIMITS } from './controller-limits.ts';
 export interface SourceDemand {
   key: string; version: number; text: string; language?: string; path?: string; profile: string; fingerprint: string; complete: boolean;
+  /** Presentation default only; never part of parser identity. */
+  neutral?: 'title' | 'code';
 }
 /** Payload-free preparation registered before expensive source construction. */
 export interface SourcePreparation {
@@ -34,19 +38,31 @@ export interface SourcePreparation {
   needsRefresh?(newest: boolean): boolean;
   requiresCredit?(): boolean;
 }
-export type SourceWorkGroup = { readonly preparation: WeakRef<SourcePreparation>; readonly keys: ReadonlySet<string> };
+export type SourceWorkGroup = { readonly id: number; readonly preparation: WeakRef<SourcePreparation>; readonly keys: ReadonlySet<string> };
+export interface GeometryFunding {
+  readonly budget: DataBudget;
+  grant(bytes: number): DataGrant | undefined;
+}
 type WorkEntry = SourceWorkGroup | SourceState;
-type WorkNode = { value: WorkEntry; pending: false | 'native' | 'local'; epoch: number; seen: number; older?: WorkNode; newer?: WorkNode };
-const groupBytes = 128;
+type StyleAttempt = { failed: boolean };
+type GroupMember = { key: string; id: number };
+type GroupSeal = { members: readonly GroupMember[]; revision: number; charge: DataCharge };
+type GroupReadyMember = GroupMember & { generation: number; version: number; stamp: number; geometryStamp: number; paintStamp: number; complete: boolean };
+type GroupHold = { charge: DataCharge; pin: DataCharge };
+type GroupReady = GroupHold & { members: ReadonlyMap<string, GroupReadyMember>; readers: number; roles: StyleRoles; stamp: number; paintStamp: number;
+  rules: string; palette: string; bindingRevision: number; profile: string; fingerprint: string };
+type WorkNode = { seal?: GroupSeal; ready?: GroupReady; attempt?: { outcome: StyleAttempt; epoch: number; revision: number; vocabulary: string }; styleRevision: number; failedEpoch?: number; failedRevision?: number; failedVocabulary?: string; failedCacheRevision?: number; value: WorkEntry; pending: false | 'native' | 'local'; epoch: number; seen: number; paused?: boolean; older?: WorkNode; newer?: WorkNode };
+// Weak registry/refusal metadata plus one targeted group-ID notice association/packet.
+const groupBytes = 1024;
 
 export interface ControllerOptions {
   diagnostic?: DiagnosticSink;
   deadlineMs?: number; admission?: 'try_now' | 'bounded_queue'; queueWaitMs?: number;
   maxTransientBytes?: number; maxBookkeepingBytes?: number;
-  retention?: ConstructorParameters<typeof RetentionPool>[0];
+  retention?: ConstructorParameters<typeof SemanticRetentionPool>[0];
   /** Coalesced asynchronous notice after accepted colors or terminal source state changes.
-   * Keys identify only still-current changed sources; no transcript scan is needed. */
-  onChange?: (keys: readonly string[]) => void;
+    * Keys and primitive group IDs target their still-owned presentation records. */
+  onChange?: (keys: readonly string[], changedGroups?: readonly number[]) => void;
 }
 type Provider = Pick<ProviderBroker, 'snapshot' | 'isReady' | 'request' | 'classificationAccepted'>;
 type Execution = 'not_started' | 'unsettled' | 'acknowledged' | 'unknown' | 'started';
@@ -54,32 +70,68 @@ export type PiFailure = 'threw' | 'invalid_rows';
 export interface SourceWorkStatus {
   version?: number; execution: Execution; fallbackEligible: boolean; profileRetryAllowed: boolean;
 }
-export type DisplayRangeReader = (consume: (start: number, end: number, packedStyle: number) => void) => boolean;
+export interface PiProjectionReader {
+  readonly generation: number; readonly version: number; readonly palette: number; readonly revision: number;
+  readonly sourceBytes: number; readonly rangeCount: number; readonly styleCount: number;
+  visitRanges(consume: (start: number, end: number, style: number) => void): boolean;
+  visitStyles(consume: (index: number, style: ConcreteStyle) => void): boolean;
+}
+export type DisplayRangeReader = (consume: (start: number, end: number, style: ConcreteStyle) => void) => boolean;
+/** Historical display coordinates only, never parser/fallback/finite-work authority. */
+export interface GroupDisplayMember {
+  readonly key: string; readonly generation: number; readonly version: number; readonly stamp: number;
+  readonly geometryStamp: number; readonly paintStamp: number; readonly complete: boolean;
+  readonly read: DisplayRangeReader;
+}
+export interface GroupDisplayBasis {
+  /** Strict reader validity and displayed effects are independent identities. */
+  readonly stamp: number; readonly paintStamp: number; readonly profile: string; readonly fingerprint: string;
+  readonly rules: string; readonly palette: string; readonly bindingRevision: number;
+  role(role: CardRole): ConcreteStyle | undefined;
+  /** Complete ready literals (roles and member tables); identities may repeat. */
+  visitStyles(consume: (style: ConcreteStyle) => void): boolean;
+  /** Provisional synchronous transaction: publish caller output only on true. */
+  visit(consume: (member: (key: string) => GroupDisplayMember | undefined) => void): boolean;
+}
 export interface SourceDisplayBasis {
   generation: number; version: number; stamp: number; language?: string; profile: string; fingerprint: string; complete: boolean; exactVersion?: number;
+  /** Separate cache identities; stamp above is weak-reader validity, not paint. */
+  geometryStamp: number; paintStamp: number;
+  /** Detached immutable literal. Retained output/copies belong to the caller's budget. */
+  role(role: CardRole): ConcreteStyle | undefined;
+  /** Adopted neutral and context literals, not a traversal of source ranges. */
+  visitStyles(consume: (style: ConcreteStyle) => void): boolean;
   visit(consume: (text: string, read: DisplayRangeReader) => void): boolean;
 }
+type StyleCoverage = { generation: number; semanticStamp: number; sourceVersion: number; vocabulary: string; invalidation: number; charge: DataCharge };
 type SourceState = {
+  coverage?: Map<string, StyleCoverage>;
+  // Two primitive role receipts fit the existing source entry allowance.
+  neutral: NonNullable<SourceDemand['neutral']>; displayNeutral?: NonNullable<SourceDemand['neutral']>;
   id: number; key: string; group?: SourceWorkGroup; generation?: number; previous?: number; previousCoverage?: boolean; committedUnits: number;
   // Last validated display identity is independent of the currently requested profile.
   // Its bounded protocol strings fit the existing per-entry bookkeeping allowance.
-  displayStamp: number; displayProfile?: string; displayFingerprint?: string; displayVersion?: number; frozen?: boolean;
+  displayStamp: number; displayEffect?: number; displayProfile?: string; displayFingerprint?: string; displayVersion?: number; frozen?: boolean;
   // Earliest observed version with this same text/identity. This aliases local
   // coverage only; pool/remote acknowledgement versions remain unchanged.
   version: number; contentVersion: number; language?: string; path?: string; profile: string; fingerprint: string; complete: boolean;
-  provider: number; dirty: boolean; lease?: string; execution: Execution; blocked: boolean;
+  provider: number; refusedProvider?: number; parsedAssets?: string; parsedProvider?: number; dirty: boolean; styleDirty: boolean; lease?: string; execution: Execution; blocked: boolean;
   uncertain: boolean; restarts: number; retryUsed: boolean; retryPending: boolean; empty: boolean; bytes: number;
   profileRefusal: number; profileReady: boolean; profileRetryUsed: boolean; retired?: boolean;
   sharedUnknown?: boolean; ownedUnknown?: number;
 };
-type PiSource = { storageKey: string; generation?: number; version: number; contentVersion: number;
-   language?: string; palette?: number; failure?: PiFailure; refused?: boolean; styleDirectives?: boolean; bytes: number };
-type Close = { key: string; ownerKey: string; generation: number; lease: string; provider: number; bytes: number };
-type Job = { id: number; provider: number; generation: number; key: string; stateId: number; ticket: string;
-  abort: AbortController; bytes: number; description: Description; reserved: boolean;
-  source?: { capture: Readonly<{ version: number; text: string }>; expected: ExpectedSource; replaceUnits: number; open: boolean };
-  close?: Close; sourceWork?: boolean; kind?: 'shared' | 'owned'; stopped?: boolean; lifetimeRef?: WeakRef<Job> };
-type Lifetime = { bytes: number; owner: WeakRef<SourceController>; jobs: Set<WeakRef<Job>> };
+type PiSource = { key: string; storageKey: string; generation?: number; version: number; contentVersion: number;
+   language?: string; palette?: number; readyPalette?: number; failure?: PiFailure; projectionRefused?: boolean; refused?: boolean; styleDirectives?: boolean; bytes: number };
+type Close = { key: string; ownerKey: string; generation: number; lease: string; provider: number; bytes: number; health?: WeakRef<SourceState> };
+type StyleMember = { key: string; id: number; generation: number };
+type StyleJob = { expected: SemanticStyleExpectation; captures?: SemanticCaptureGroup; refs: readonly ContextRef[];
+  members: readonly StyleMember[]; group?: WeakRef<SourceWorkGroup>; groupRevision?: number; node: WeakRef<WorkNode>; epoch: number; revision: number; demandRevision: number; outcome: StyleAttempt; decodedBytes: number };
+type StyleCache = { revision: number; roles?: StyleRoles; origins?: Uint8Array; charge: DataCharge };
+type Job = { id: number; provider: number; generation?: number; key?: string; stateId?: number; ticket: string; pendingRetire?: true;
+  abort: AbortController; bytes: number; description: Description; reserved: boolean; replySize: ReplySize;
+  source?: { capture: Readonly<{ version: number; text: string }>; expected: ExpectedSource; replaceUnits: number; open: boolean; decodedBytes: number };
+  style?: StyleJob; styleCharge?: DataCharge; close?: Close; sourceWork?: boolean; kind?: 'shared' | 'owned'; stopped?: boolean; lifetimeRef?: WeakRef<Job> };
+type Lifetime = { bytes: number; owner: WeakRef<SourceController>; jobs: Set<WeakRef<Job>>; charges: Set<DataCharge>; groups: Set<GroupHold>; data?: SemanticRetentionPool };
 let nextController = 0;
 const ignored = () => {};
 // A signal can outlive its owner; a receiver-created abort stack retains it.
@@ -92,9 +144,19 @@ const lifetimes = new FinalizationRegistry<Lifetime>(lifetime => {
   flight.bookkeepingBytes -= lifetime.bytes; lifetime.bytes = 0; waiters.delete(lifetime.owner);
   // At most the already reserved physical jobs. Dead owners need no reply
   // validation; keep physical credit until settlement, not their source payload.
-  for (const reference of lifetime.jobs) { const job = reference.deref(); if (job) { job.source = undefined; job.abort.abort(sourceRetired); } }
+  for (const reference of lifetime.jobs) { const job = reference.deref(); if (job) { job.source = undefined; releaseStyle(job); job.abort.abort(sourceRetired); } }
   lifetime.jobs.clear();
+  for (const hold of lifetime.groups) { hold.pin.release(); hold.charge.release(); } lifetime.groups.clear();
+  for (const charge of lifetime.charges) charge.release(); lifetime.charges.clear();
+  const data = lifetime.data; lifetime.data = undefined;
+  data?.dispose();
 });
+function releaseStyle(job: Job): void {
+  const style = job.style; job.style = undefined; style?.captures?.release();
+}
+function releaseStyleRequest(job: Job): void {
+  releaseStyle(job); job.styleCharge?.release(); job.styleCharge = undefined;
+}
 function releaseCredit(job: Job): void {
   if (!job.reserved) return;
   job.reserved = false; flight.jobs--; flight.bytes -= job.bytes;
@@ -108,10 +170,13 @@ function waitForCredit(owner: WeakRef<SourceController>): void {
   waiters.add(owner);
 }
 function completion(owner: WeakRef<SourceController>, job: Job) {
-  return { reply: (value: unknown) => { try { owner.deref()?.settle(job, value, false); } finally { releaseCredit(job); } },
-    failed: (_error: unknown) => { try { owner.deref()?.settle(job, _error, true); } finally { releaseCredit(job); } } };
+  return { reply: (value: unknown) => { try { owner.deref()?.settle(job, value, false); } finally { releaseStyleRequest(job); releaseCredit(job); } },
+    failed: (_error: unknown) => { try { owner.deref()?.settle(job, _error, true); } finally { releaseStyleRequest(job); releaseCredit(job); } } };
 }
-function continuation(owner: WeakRef<SourceController>) { return () => owner.deref()?.flush(); }
+function continuation(owner: WeakRef<SourceController>) { return () => owner.deref()?.continueWork(); }
+function geometryGrant(owner: WeakRef<SourceController>, group?: WeakRef<SourceWorkGroup>, id?: number) {
+  return (bytes: number) => owner.deref()?.grantGeometry(bytes, group?.deref(), id);
+}
 function preparationTurn(owner: WeakRef<SourceController>) { return () => owner.deref()?.resumePreparation(); }
 function notice(owner: WeakRef<SourceController>, epoch: number) { return () => owner.deref()?.notifyChange(epoch); }
 function displayVisit(owner: WeakRef<SourceController>, key: string, id: number, generation: number, version: number, stamp: number) {
@@ -119,6 +184,41 @@ function displayVisit(owner: WeakRef<SourceController>, key: string, id: number,
 }
 function displayRanges(owner: WeakRef<SourceController>, key: string, id: number, generation: number, version: number, stamp: number): DisplayRangeReader {
   return consume => owner.deref()?.visitDisplayRanges(key, id, generation, version, stamp, consume) ?? false;
+}
+function displayRole(owner: WeakRef<SourceController>, key: string, id: number, generation: number, version: number, stamp: number) {
+  return (role: CardRole) => owner.deref()?.readDisplayRole(key, id, generation, version, stamp, role);
+}
+function displayStyles(owner: WeakRef<SourceController>, key: string, id: number, generation: number, version: number, stamp: number) {
+  return (consume: (style: ConcreteStyle) => void) => owner.deref()?.visitDisplayStyles(key, id, generation, version, stamp, consume) ?? false;
+}
+function groupStyles(owner: WeakRef<SourceController>, node: WeakRef<WorkNode>, stamp: number) {
+  return (consume: (style: ConcreteStyle) => void) => owner.deref()?.visitGroupStyles(node, stamp, consume) ?? false;
+}
+function groupRole(owner: WeakRef<SourceController>, node: WeakRef<WorkNode>, stamp: number) {
+  return (role: CardRole) => owner.deref()?.readGroupRole(node, stamp, role);
+}
+function groupVisit(owner: WeakRef<SourceController>, node: WeakRef<WorkNode>, stamp: number) {
+  return (consume: (member: (key: string) => GroupDisplayMember | undefined) => void) => owner.deref()?.visitGroup(node, stamp, consume) ?? false;
+}
+function groupMember(owner: WeakRef<SourceController>, node: WeakRef<WorkNode>, stamp: number) {
+  return (key: string) => owner.deref()?.readGroupMember(node, stamp, key);
+}
+function groupRanges(owner: WeakRef<SourceController>, node: WeakRef<WorkNode>, stamp: number, key: string): DisplayRangeReader {
+  return consume => owner.deref()?.visitGroupRanges(node, stamp, key, consume) ?? false;
+}
+function piRanges(owner: WeakRef<SourceController>, key: string, version: number, palette: number, revision: number) {
+  return (consume: (start: number, end: number, style: number) => void) => owner.deref()?.visitPiRanges(key, version, palette, revision, consume) ?? false;
+}
+function piStyles(owner: WeakRef<SourceController>, key: string, version: number, palette: number, revision: number) {
+  return (consume: (index: number, style: ConcreteStyle) => void) => owner.deref()?.visitPiStyles(key, version, palette, revision, consume) ?? false;
+}
+function equalInk(a: ConcreteStyle['foreground'], b: ConcreteStyle['foreground']): boolean {
+  return a.kind === 'rgb' ? b.kind === 'rgb' && a.r === b.r && a.g === b.g && a.b === b.b
+    : a.kind === 'indexed' ? b.kind === 'indexed' && a.index === b.index : b.kind === 'terminal-default';
+}
+function equalRoles(a: StyleRoles, b: StyleRoles): boolean {
+  return CARD_ROLES.every(role => a[role].attributes === b[role].attributes && equalInk(a[role].foreground, b[role].foreground)
+    && equalInk(a[role].background, b[role].background));
 }
 function identifier(value: unknown, cap = 64): value is string {
   return typeof value === 'string' && value.length > 0 && value.length <= cap
@@ -145,13 +245,19 @@ function stateBytes(demand: SourceDemand): number {
  * Primitive record credit is bounded separately by the same generous retained-family allowance, not a count cap. */
 export class SourceController {
   private readonly provider: Provider;
-  private readonly pool: RetentionPool;
+  private readonly pool: SemanticRetentionPool;
   private readonly options: ControllerOptions;
   private readonly maxTransientBytes: number;
   private readonly maxBookkeepingBytes: number;
+  private readonly maxDecodedBytes: number;
   private readonly id = ++nextController;
   private readonly owner = new WeakRef(this);
-  private readonly lifetime: Lifetime = { bytes: 0, owner: this.owner, jobs: new Set() };
+  private readonly lifetime: Lifetime = { bytes: 0, owner: this.owner, jobs: new Set(), charges: new Set(), groups: new Set() };
+  private selection?: PreparedSelection;
+  private selectionCharge?: DataCharge;
+  private styleEpoch = 0;
+  private styleRevision = 0;
+  private readonly styleCache = new Map<string, StyleCache>();
   private sequence = 0;
   private wireSequence = 0;
   private stateSequence = 0;
@@ -162,6 +268,7 @@ export class SourceController {
   private noticeScheduled = false;
   private preparing?: SourceWorkGroup;
   private preparations = 0;
+  private groupSequence = 0;
   private yielding = false;
   private pumping = false;
   // One chronological registry selects both lazy groups and standalone sources.
@@ -178,6 +285,7 @@ export class SourceController {
   // Primitive key aliases only, prepaid by each source's existing entry allowance.
   // Explicit removal drops its slot; delivery/off release the pending packet.
   private readonly noticeKeys = new Set<string>();
+  private readonly noticeGroups = new Set<number>();
   private noticeEpoch = 0;
   private leaseProvider = -1;
   private profileSequence = 0;
@@ -191,7 +299,7 @@ export class SourceController {
   private closes: Close[] = [];
   private counters = { dispatches: 0, preparedBytes: 0, decodedBytes: 0, staleReplies: 0, restarts: 0,
     committedLineCalls: 0, committedLineBytes: 0, tailCalls: 0, tailBytes: 0, cleanupRefusals: 0,
-    peakTransientBytes: 0, peakJobs: 0 };
+    peakTransientBytes: 0, peakJobs: 0, stylePreparations: 0, styleContextVisits: 0, styleEncodes: 0, styleDispatches: 0, stylePublications: 0, styleRejections: 0 };
 
   constructor(provider: Provider, options: ControllerOptions = {}) {
     const deadlineMs = duration(options.deadlineMs ?? OCCIPITAL_LIMITS.dataDeadlineMs);
@@ -203,31 +311,199 @@ export class SourceController {
     for (const [value, cap] of [[this.maxTransientBytes, CONTROLLER_LIMITS.transientBytes], [this.maxBookkeepingBytes, CONTROLLER_LIMITS.bookkeepingBytes]]) {
       if (!Number.isSafeInteger(value) || value! < 128 || value! > cap!) throw new Error('invalid controller byte limit');
     }
+    this.maxDecodedBytes = Math.min(options.retention?.maxBytes ?? HIGHLIGHT_LIMITS.decodedBytes, HIGHLIGHT_LIMITS.decodedBytes);
     this.provider = provider;
     this.options = { deadlineMs, admission: options.admission, queueWaitMs: options.queueWaitMs, onChange: options.onChange, diagnostic: options.diagnostic };
-    this.pool = new RetentionPool(options.retention);
+    this.pool = new SemanticRetentionPool(options.retention);
+    this.lifetime.data = this.pool;
     if (!this.charge(128)) throw new Error('controller bookkeeping capacity');
     lifetimes.register(this, this.lifetime, this.lifetime);
   }
 
+  /** One desired trusted rule/binding generation; source/parser identity is unchanged. */
+  setStyleSelection(input: StyleSelection | undefined): boolean {
+    if (this.disposed) return false;
+    if (!input) {
+      this.selection = undefined; this.releaseSelection(); this.styleEpoch++; this.rewind(); return true;
+    }
+    const bytes = selectionBytes(input), reserved = this.pool.reserve(undefined, bytes); this.receipts(reserved.released);
+    if (!reserved.accepted) return false;
+    const grant = this.pool.budget.reserve(bytes); if (!grant) return false;
+    try {
+      const next = prepareSelection(input), charge = grant.consume(bytes);
+      this.releaseSelection(); this.selectionCharge = charge; this.lifetime.charges.add(charge); this.selection = next;
+      this.styleEpoch++; this.rewind(); this.schedule(); return true;
+    } finally { grant.close(); }
+  }
+  private releaseSelection(): void {
+    if (this.selectionCharge) { this.lifetime.charges.delete(this.selectionCharge); this.selectionCharge.release(); this.selectionCharge = undefined; }
+  }
+  private clearStyleCache(): void {
+    for (const [key, cache] of this.styleCache) {
+      // Pressure cannot reclaim a useful group's pin. Keep that same funded
+      // cache association discoverable instead of requesting its roles again.
+      let pinned = false;
+      for (const hold of this.lifetime.groups) if (hold.pin === cache.charge) { pinned = true; break; }
+      if (pinned) continue;
+      this.styleCache.delete(key); this.lifetime.charges.delete(cache.charge); cache.charge.release();
+    }
+    for (const state of this.states.values()) this.clearCoverage(state);
+  }
+  /** Operation-scoped funding only; not source work, fallback permission or an owner of geometry. */
+  geometryFunding(group?: SourceWorkGroup): GeometryFunding | undefined {
+    if (!this.geometryCurrent(group, group?.id)) return undefined;
+    return { budget: this.pool.budget, grant: geometryGrant(this.owner, group ? new WeakRef(group) : undefined, group?.id) };
+  }
+  private geometryCurrent(group?: SourceWorkGroup, id?: number): boolean {
+    return !this.disposed && (id === undefined || !!group && group.id === id && this.work.has(group) && !!group.preparation.deref());
+  }
+  grantGeometry(bytes: number, group?: SourceWorkGroup, id?: number): DataGrant | undefined {
+    if (!this.geometryCurrent(group, id)) return undefined;
+    const direct = this.pool.budget.reserve(bytes); if (direct) return direct;
+    const protect = group ? (generation: number) => {
+      for (const key of group.keys) {
+        const state = this.states.get(key);
+        if (state?.group === group && (state.generation === generation || state.previous === generation)) return true;
+      }
+      return false;
+    } : undefined;
+    const result = this.pool.reserve(protect, bytes); this.receipts(result.released, true);
+    return result.accepted && this.geometryCurrent(group, id) ? this.pool.budget.reserve(bytes) : undefined;
+  }
   registerPreparation(preparation: SourcePreparation): SourceWorkGroup | undefined {
     if (this.disposed || !this.charge(groupBytes)) return undefined;
-    const group = { preparation: new WeakRef(preparation), keys: preparation.keys };
+    const group = { id: ++this.groupSequence, preparation: new WeakRef(preparation), keys: preparation.keys };
     this.addWork(group); return group;
+  }
+  /** Cold, idempotent ordered membership seal after logical preparation.
+   * Call explicitly after membership edits outside prepare(); registration alone is not useful demand. */
+  updatePreparation(group: SourceWorkGroup): boolean {
+    const node = this.work.get(group);
+    if (!node || !group.preparation.deref() || !this.enabled || this.disposed) return false;
+    if (node.seal && this.sealMatches(group, node.seal)) return true;
+    this.dropGroup(node, true);
+    node.styleRevision = ++this.styleRevision;
+    let bytes = 256;
+    for (const key of group.keys) {
+      if (this.states.get(key)?.group !== group || !identifier(key)) return false;
+      bytes += 256 + 2 * key.length;
+    }
+    const grant = this.pool.budget.reserve(bytes); if (!grant) return false;
+    try {
+      const members: GroupMember[] = [];
+      for (const key of group.keys) members.push({ key, id: this.states.get(key)!.id });
+      const seal = { members, revision: node.styleRevision, charge: grant.consume(bytes) };
+      node.seal = seal; this.lifetime.charges.add(seal.charge);
+      if (this.preparing !== group) { this.rewind(); this.schedule(); } return true;
+    } finally { grant.close(); }
+  }
+  private sealMatches(group: SourceWorkGroup, seal: GroupSeal): boolean {
+    if (group.keys.size !== seal.members.length) return false;
+    let i = 0;
+    for (const key of group.keys) {
+      const member = seal.members[i++]!;
+      if (member.key !== key || this.states.get(key)?.id !== member.id) return false;
+    }
+    return true;
+  }
+  private dropGroup(node: WorkNode, seal = false): void {
+    const ready = node.ready; node.ready = undefined;
+    if (ready) { this.lifetime.groups.delete(ready); ready.pin.release(); ready.charge.release();
+      if ('preparation' in node.value) this.changedGroup(node.value.id);
+    }
+    if (seal && node.seal) { this.lifetime.charges.delete(node.seal.charge); node.seal.charge.release(); node.seal = undefined; }
+  }
+  groupPresentation(group: SourceWorkGroup): GroupDisplayBasis | undefined {
+    const node = this.work.get(group), ready = node?.ready;
+    if (!node || !ready || !this.groupCurrent(node, ready.stamp)) return undefined;
+    const weak = new WeakRef(node);
+    return { stamp: ready.stamp, paintStamp: ready.paintStamp, profile: ready.profile, fingerprint: ready.fingerprint,
+      rules: ready.rules, palette: ready.palette, bindingRevision: ready.bindingRevision,
+      role: groupRole(this.owner, weak, ready.stamp), visitStyles: groupStyles(this.owner, weak, ready.stamp),
+      visit: groupVisit(this.owner, weak, ready.stamp) };
+  }
+  private groupCurrent(node: WorkNode, stamp: number, boundary = false): boolean {
+    const entry = node.value, ready = node.ready;
+    if (this.disposed || !this.enabled || !ready || ready.stamp !== stamp || !('preparation' in entry)
+      || this.work.get(entry) !== node || !entry.preparation.deref() || !node.seal || entry.keys.size !== node.seal.members.length) return false;
+    // Trust only this exact publication during a synchronous validated borrow.
+    // Cold mutations revoke node.ready; the outer boundary still checks every source and ordered key.
+    if (ready.readers && !boundary) return true;
+    if (!this.sealMatches(entry, node.seal)) return false;
+    for (const member of ready.members.values()) {
+      if (!this.currentDisplay(member.key, member.id, member.generation, member.version, member.stamp)) return false;
+    }
+    return true;
+  }
+  readGroupRole(weak: WeakRef<WorkNode>, stamp: number, role: CardRole): ConcreteStyle | undefined {
+    const node = weak.deref();
+    // Membership/source mutations invalidate the node on their cold update path.
+    return !this.disposed && this.enabled && node?.ready?.stamp === stamp && 'preparation' in node.value
+      && !!node.value.preparation.deref() && this.work.get(node.value) === node ? node.ready.roles[role] : undefined;
+  }
+  visitGroupStyles(weak: WeakRef<WorkNode>, stamp: number, consume: (style: ConcreteStyle) => void): boolean {
+    const node = weak.deref(); if (!node || !this.groupCurrent(node, stamp)) return false;
+    const ready = node.ready!, pin = ready.pin.retain(), charge = ready.charge.retain();
+    ready.readers++;
+    try {
+      for (const role of CARD_ROLES) {
+        if (!this.readGroupRole(weak, stamp, role)) return false;
+        consume(ready.roles[role]);
+      }
+      for (const member of ready.members.values()) {
+        if (!this.readGroupRole(weak, stamp, 'code')) return false;
+        const valid = this.visitDisplayStyles(member.key, member.id, member.generation, member.version, member.stamp, style => {
+          if (this.readGroupRole(weak, stamp, 'code')) consume(style);
+        });
+        if (!valid) return false;
+      }
+      return this.groupCurrent(node, stamp, ready.readers === 1);
+    } finally { ready.readers--; pin.release(); charge.release(); }
+  }
+  visitGroup(weak: WeakRef<WorkNode>, stamp: number, consume: (member: (key: string) => GroupDisplayMember | undefined) => void): boolean {
+    const node = weak.deref(); if (!node || !this.groupCurrent(node, stamp)) return false;
+    const ready = node.ready!, pin = ready.pin.retain(), charge = ready.charge.retain();
+    ready.readers++;
+    try { consume(groupMember(this.owner, weak, stamp)); return this.groupCurrent(node, stamp, ready.readers === 1); }
+    finally { ready.readers--; pin.release(); charge.release(); }
+  }
+  readGroupMember(weak: WeakRef<WorkNode>, stamp: number, key: string): GroupDisplayMember | undefined {
+    const node = weak.deref(); if (!node || !this.groupCurrent(node, stamp)) return undefined;
+    const member = node.ready!.members.get(key);
+    return member && this.currentDisplay(key, member.id, member.generation, member.version, member.stamp) ? { key, generation: member.generation, version: member.version, stamp: member.stamp,
+      geometryStamp: member.geometryStamp, paintStamp: member.paintStamp, complete: member.complete,
+      read: groupRanges(this.owner, weak, stamp, key) } : undefined;
+  }
+  visitGroupRanges(weak: WeakRef<WorkNode>, stamp: number, key: string, consume: (start: number, end: number, style: ConcreteStyle) => void): boolean {
+    const node = weak.deref(); if (!node || !this.groupCurrent(node, stamp)) return false;
+    const ready = node.ready!, member = ready.members.get(key); if (!member) return false;
+    const pin = ready.pin.retain(), charge = ready.charge.retain();
+    ready.readers++;
+    try {
+      const valid = this.visitDisplayRanges(key, member.id, member.generation, member.version, member.stamp, (from, to, style) => {
+        if (this.groupCurrent(node, stamp)) consume(from, to, style);
+      });
+      return valid && this.groupCurrent(node, stamp, ready.readers === 1);
+    } finally { ready.readers--; pin.release(); charge.release(); }
   }
   queuePreparation(group: SourceWorkGroup, local = false): void {
     const node = this.work.get(group);
     if (!node || this.disposed) return;
-    this.setPending(node, local || node.pending === 'local' ? 'local' : 'native'); this.rewind(); this.schedule();
+    node.paused = false; this.setPending(node, local || node.pending === 'local' ? 'local' : 'native'); this.rewind(); this.schedule();
   }
   pausePreparation(group: SourceWorkGroup): void {
     const node = this.work.get(group);
-    if (node) { this.setPending(node, false); node.epoch = this.refreshEpoch; }
+    if (node) { node.paused = true; this.setPending(node, false); node.epoch = this.refreshEpoch; }
   }
   unregisterPreparation(group: SourceWorkGroup): void {
-    if (!this.removeWork(group)) return;
+    this.drainRetirements(); this.releasePreparation(group, false);
+  }
+  private releasePreparation(group: SourceWorkGroup, deferred: boolean): void {
+    if (!this.removeWork(group, deferred)) return;
+    this.noticeGroups.delete(group.id);
     this.charge(-groupBytes);
-    for (const key of group.keys) this.remove(key);
+    for (const key of group.keys) this.removeSource(key, deferred);
+    if (!this.work.size && !this.states.size) this.clearStyleCache();
   }
 
   /** One revision/cursor reset, not a sweep or a second pending queue. */
@@ -236,7 +512,7 @@ export class SourceController {
     this.refreshEpoch++; this.rewind(); this.schedule();
   }
   private addWork(value: WorkEntry): void {
-    const node: WorkNode = { value, pending: false, epoch: this.refreshEpoch, seen: -1, older: this.newest };
+    const node: WorkNode = { styleRevision: 0, value, pending: false, epoch: this.refreshEpoch, seen: -1, older: this.newest };
     if (this.newest) this.newest.newer = node;
     this.newest = node; this.work.set(value, node); this.rewind();
   }
@@ -246,9 +522,11 @@ export class SourceController {
     node.pending = pending;
     if (pending === 'local') this.localPending++;
   }
-  private removeWork(value: WorkEntry): boolean {
+  private removeWork(value: WorkEntry, deferred = false): boolean {
     const node = this.work.get(value); if (!node) return false;
-    this.setPending(node, false);
+    reportRuntime(this.options.diagnostic, { kind: 'released', scope: node, operation: '*' });
+    this.setPending(node, false); this.dropGroup(node, true);
+    for (const job of this.jobs.values()) if (job.style?.node.deref() === node) { releaseStyle(job); this.cancelJob(job, deferred); }
     if (node.older) node.older.newer = node.newer;
     if (node.newer) node.newer.older = node.older;
     else this.newest = node.older;
@@ -259,10 +537,11 @@ export class SourceController {
 
   observe(demand: SourceDemand): boolean {
     if (!this.enabled || this.disposed) return false;
-    const { key, version, text, language, path, profile, fingerprint, complete } = demand;
+    const { key, version, text, language, path, profile, fingerprint, complete, neutral = 'code' } = demand;
     if (!identifier(key) || language !== undefined && !identifier(language, 128) || path !== undefined && !identifier(path, 4096)
       || !identifier(profile) || !/^[a-f0-9]{64}$/.test(fingerprint) || !Number.isInteger(version) || version < 0 || version > 0xffffffff
-      || typeof text !== 'string' || text.length > RETENTION_LIMITS.maxSourceUnits || typeof complete !== 'boolean') throw new Error('invalid source demand');
+      || typeof text !== 'string' || text.length > RETENTION_LIMITS.maxSourceUnits || typeof complete !== 'boolean'
+      || neutral !== 'title' && neutral !== 'code') throw new Error('invalid source demand');
     const provider = this.provider.snapshot().generation;
     let state = this.states.get(key);
     if (state?.frozen) return false;
@@ -275,37 +554,81 @@ export class SourceController {
       if (!state.uncertain) state.retryPending = true;
     }
     if (state && version < state.version) throw new Error('non-monotonic source demand');
+    if (state && state.neutral !== neutral) {
+      state.neutral = neutral;
+      // Only client materialization depends on this role. Native refusal/coverage
+      // remains the same demand; a later client selection renews its own epoch.
+      if (this.selection?.input.kind === 'client') {
+        this.invalidateStyles(state, true); this.rewind(); this.schedule();
+      }
+    }
     // Caller versions identify logical text. Warm visits do not even perform a
     // prefix check or cached-source byte measurement; same-version text mutation
     // violates the caller contract (strings cannot themselves mutate).
     if (state && !state.profileReady && version === state.version && complete === state.complete && language === state.language && path === state.path
-      && profile === state.profile && fingerprint === state.fingerprint && provider === state.provider && !state.retryPending) return state.generation !== undefined;
+      && profile === state.profile && fingerprint === state.fingerprint && provider === (state.refusedProvider ?? state.provider) && !state.retryPending) return state.generation !== undefined;
+    if (state) {
+      const bytes = stateBytes(demand);
+      if (!this.charge(bytes - state.bytes)) {
+        const changed = version !== state.version || complete !== state.complete || state.empty !== !text.length
+          || !state.blocked || state.generation !== undefined || state.previous !== undefined;
+        if (changed) this.dropData(state);
+        state.version = version; state.contentVersion = version; state.complete = complete; state.empty = !text.length;
+        state.blocked = true; state.dirty = false; state.styleDirty = false;
+        // An unfunded identity cannot be memoized. Retry its small bookkeeping
+        // admission before any source scan, without repeatedly retiring old work.
+        state.retryPending = true; state.profileReady = false;
+        if (changed) this.changed(key);
+        return false;
+      }
+      state.bytes = bytes;
+    }
+    const description = this.provider.snapshot().description;
+    const fits = sourceFits(text, Math.min(HIGHLIGHT_LIMITS.sourceBytes, description?.limits.source_bytes ?? HIGHLIGHT_LIMITS.sourceBytes));
     if (!state) {
       const bytes = stateBytes(demand); if (!this.charge(bytes)) return false;
-      state = { id: ++this.stateSequence, key, version, contentVersion: version, language, path, profile, fingerprint, complete, provider,
-        dirty: false, committedUnits: 0, displayStamp: 0, execution: 'not_started', blocked: false, uncertain: false,
+      state = { id: ++this.stateSequence, key, version, contentVersion: version, language, path, profile, fingerprint, complete, provider, neutral,
+        dirty: false, styleDirty: true, committedUnits: 0, displayStamp: 0, execution: 'not_started', blocked: false, uncertain: false,
          restarts: 0, retryUsed: false, retryPending: false, empty: !text.length, bytes,
          profileRefusal: 0, profileReady: false, profileRetryUsed: false };
       if (this.preparing?.keys.has(key)) state.group = this.preparing;
       this.states.set(key, state);
       if (!state.group) this.addWork(state);
+      if (!fits) { state.blocked = true; state.styleDirty = false; state.refusedProvider = provider; return false; }
       return this.admit(state, text);
     }
+    if (!fits) {
+      this.dropData(state);
+      state.version = version; state.contentVersion = version; state.complete = complete; state.empty = !text.length;
+      state.language = language; state.path = path; state.profile = profile; state.fingerprint = fingerprint;
+      // Current refusal identity is separate from the provider that must still
+      // settle earlier source work. Its scalar fits the fixed entry allowance.
+      state.refusedProvider = provider;
+      state.blocked = true; state.dirty = false; state.styleDirty = false;
+      state.retryPending = false; state.profileReady = false; state.profileRefusal = 0;
+      // Retiring payload is not proof that an earlier physical operation never ran.
+      this.changed(key); return false;
+    }
+    state.refusedProvider = undefined;
     if (!state.group) this.rewind();
-    const nextBytes = stateBytes(demand);
-    if (!this.charge(nextBytes - state.bytes)) { this.dropData(state); state.blocked = true; state.dirty = false; return false; }
-    state.bytes = nextBytes;
     const latest = state.generation === undefined ? undefined : this.pool.borrowSnapshot(state.generation);
     const providerChange = state.provider !== provider;
-    const identityChange = language !== state.language || path !== state.path || profile !== state.profile || fingerprint !== state.fingerprint;
+    const identityChange = language !== state.language || path !== state.path;
+    const styleChange = profile !== state.profile || fingerprint !== state.fingerprint;
+    state.profile = profile; state.fingerprint = fingerprint; state.styleDirty ||= styleChange;
     const latestComplete = state.complete;
     const formationChange = state.complete && !complete;
+    // Local empty paint is not a native checkpoint. Start a fresh semantic
+    // generation before real parsing instead of borrowing its local revision.
+    const localEmptyCoverage = latest?.text.length === 0 && text.length > 0
+      && this.pool.status(state.generation!)?.sourceVersion !== undefined;
     const rewrite = !!latest && (!text.startsWith(latest.text) || !text.length && latest.text.length > 0
-      || state.complete && text !== latest.text);
+      || localEmptyCoverage || state.complete && text !== latest.text);
     const retry = state.retryPending, retryProfile = state.profileReady;
     state.retryPending = false; state.profileReady = false;
     const changed = version !== state.version || complete !== state.complete || identityChange || providerChange;
-    const noOp = !retry && !retryProfile && latest?.text === text && state.complete === complete && !identityChange && !providerChange;
+    const noOp = !retry && latest?.text === text && state.complete === complete && !identityChange && !providerChange;
+    state.styleDirty ||= retryProfile;
     if (state.displayVersion !== undefined) {
       const displayedText = latest ?? (state.previous === undefined ? undefined : this.pool.borrowSnapshot(state.previous, 'basis'));
       state.displayVersion = complete && state.displayVersion === state.version && displayedText?.text === text ? version : undefined;
@@ -315,33 +638,32 @@ export class SourceController {
     if (changed) { state.retryUsed = false; state.profileRetryUsed = false; }
     if (identityChange || providerChange || retryProfile) state.profileRefusal = 0;
     if (retryProfile) state.profileRetryUsed = true;
-    const profileWait = state.profileRefusal > 0;
     if (identityChange || formationChange || rewrite) {
       const themeOnly = language === state.language && path === state.path && !formationChange && !rewrite;
       if (themeOnly || !identityChange && state.language === 'bash' && state.generation !== undefined) {
         state.profile = profile; state.fingerprint = fingerprint;
-        state.blocked = (state.uncertain && !providerChange) || profileWait;
+        state.blocked = state.uncertain && !providerChange;
         const profileOnly = themeOnly && !providerChange && latest?.text === text && state.complete === latestComplete;
         this.restart(state, provider, providerChange, { version, text }, !profileOnly);
         return state.generation !== undefined;
       }
       this.dropData(state); state.language = language; state.path = path; state.profile = profile; state.fingerprint = fingerprint;
-      state.blocked = (state.uncertain && !providerChange) || profileWait; state.provider = provider;
+      state.blocked = state.uncertain && !providerChange; state.provider = provider;
       if (providerChange) { state.uncertain = false; state.restarts = 0; }
       if (!state.uncertain) state.execution = 'not_started';
       return this.admit(state, text);
     }
     if (!latest) {
       if (providerChange) { state.uncertain = false; state.restarts = 0; }
-      state.provider = provider; state.blocked = state.uncertain || profileWait || state.restarts > CONTROLLER_LIMITS.restarts;
+      state.provider = provider; state.blocked = state.uncertain || state.restarts > CONTROLLER_LIMITS.restarts;
       if (!state.uncertain) state.execution = 'not_started';
       return state.uncertain ? false : this.admit(state, text);
     }
     const result = this.pool.replaceSnapshot(state.generation!, version, text); this.receipts(result.released);
     if (!result.accepted || state.generation === undefined) return false;
-    if (providerChange || retryProfile) this.restart(state, provider, providerChange);
+    if (providerChange) this.restart(state, provider, providerChange);
     else {
-      state.blocked = state.uncertain || profileWait || state.restarts > CONTROLLER_LIMITS.restarts;
+      state.blocked = state.uncertain || state.restarts > CONTROLLER_LIMITS.restarts;
       state.dirty = (state.dirty || !noOp) && !state.blocked;
       if (!state.uncertain && state.dirty) state.execution = 'not_started';
     }
@@ -365,10 +687,13 @@ export class SourceController {
     if (this.disposed || !this.enabled || !state || !state.displayStamp) return undefined;
     const generation = this.displayGeneration(state);
     if (generation === undefined) return undefined;
-    const version = this.pool.status(generation)?.sourceVersion;
-    if (version === undefined) return undefined;
+    const display = this.pool.displayStatus(generation);
+    if (!display) return undefined;
+    const version = display.sourceVersion;
     return { generation, version, stamp: state.displayStamp, language: state.language, profile: state.displayProfile!, fingerprint: state.displayFingerprint!,
-      complete: this.pool.status(generation)?.complete ?? false, exactVersion: state.displayVersion,
+      complete: display.complete, exactVersion: state.displayVersion, geometryStamp: display.geometryStamp, paintStamp: display.effectStamp,
+      role: displayRole(this.owner, key, state.id, generation, version, state.displayStamp),
+      visitStyles: displayStyles(this.owner, key, state.id, generation, version, state.displayStamp),
       visit: displayVisit(this.owner, key, state.id, generation, version, state.displayStamp) };
   }
   displayStamp(key: string, profile?: string, fingerprint?: string, language?: string): number {
@@ -377,26 +702,41 @@ export class SourceController {
       ? state.displayStamp : 0;
   }
   private displayGeneration(state: SourceState): number | undefined {
-    return state.generation !== undefined && this.pool.status(state.generation)?.sourceVersion !== undefined ? state.generation : state.previous;
+    return state.generation !== undefined && this.pool.displayStatus(state.generation) !== undefined ? state.generation : state.previous;
   }
   private currentDisplay(key: string, id: number, generation: number, version: number, stamp: number): boolean {
     const state = this.states.get(key);
     return !this.disposed && this.enabled && state?.id === id && state.displayStamp === stamp
-      && this.displayGeneration(state) === generation && this.pool.status(generation)?.sourceVersion === version;
+      && this.displayGeneration(state) === generation && this.pool.displayStatus(generation)?.sourceVersion === version;
+  }
+  readDisplayRole(key: string, id: number, generation: number, version: number, stamp: number, role: CardRole): ConcreteStyle | undefined {
+    if (!this.currentDisplay(key, id, generation, version, stamp)) return undefined;
+    return this.pool.displayRole(generation, this.pool.displayStatus(generation)!.effectStamp, role);
   }
   /** Internal weak-view delivery; source text never escapes as a stored field. */
   visitDisplayBasis(key: string, id: number, generation: number, version: number, stamp: number,
     consume: (text: string, read: DisplayRangeReader) => void): boolean {
     if (!this.currentDisplay(key, id, generation, version, stamp)) return false;
-    const basis = this.pool.borrowSnapshot(generation, 'basis');
-    if (!basis || basis.version !== version) return false;
-    consume(basis.text, displayRanges(this.owner, key, id, generation, version, stamp));
-    return this.currentDisplay(key, id, generation, version, stamp);
+    const display = this.pool.displayStatus(generation)!;
+    const valid = this.pool.visitDisplayText(generation, display.effectStamp, basis => {
+      if (basis.version === version) consume(basis.text, displayRanges(this.owner, key, id, generation, version, stamp));
+    });
+    return valid && this.currentDisplay(key, id, generation, version, stamp);
+  }
+  visitDisplayStyles(key: string, id: number, generation: number, version: number, stamp: number,
+    consume: (style: ConcreteStyle) => void): boolean {
+    if (!this.currentDisplay(key, id, generation, version, stamp)) return false;
+    const effect = this.pool.displayStatus(generation)!.effectStamp;
+    const valid = this.pool.visitDisplayStyles(generation, effect, style => {
+      if (this.currentDisplay(key, id, generation, version, stamp)) consume(style);
+    });
+    return valid && this.currentDisplay(key, id, generation, version, stamp);
   }
   visitDisplayRanges(key: string, id: number, generation: number, version: number, stamp: number,
-    consume: (start: number, end: number, style: number) => void): boolean {
+    consume: (start: number, end: number, style: ConcreteStyle) => void): boolean {
     if (!this.currentDisplay(key, id, generation, version, stamp)) return false;
-    const available = this.pool.visitRanges(generation, (start, end, style) => {
+    const effect = this.pool.displayStatus(generation)!.effectStamp;
+    const available = this.pool.visitDisplay(generation, effect, (start, end, _context, style) => {
       const state = this.states.get(key);
       if (state?.id === id && state.displayStamp === stamp && (state.generation === generation || state.previous === generation)) consume(start, end, style);
     });
@@ -414,14 +754,11 @@ export class SourceController {
     if (state?.refused && version === state.version) return false;
     if (state && version === state.version && language === state.language)
       return state.generation !== undefined && !!this.pool.status(state.generation);
-    // UTF8 costs at most3 bytes per UTF16 unit. Only potentially oversized
-    // sources need an additional byte scan before touching other retained data.
-    if (text.length > OCCIPITAL_LIMITS.sourceBytes || text.length > OCCIPITAL_LIMITS.sourceBytes / 3
-      && Buffer.byteLength(text) > OCCIPITAL_LIMITS.sourceBytes) return this.refusePiSource(state, version);
+    if (!sourceFits(text, HIGHLIGHT_LIMITS.piSourceBytes)) return this.refusePiSource(state, version);
     if (!state) {
       const storageKey = this.wireKey(), bytes = RETENTION_LIMITS.entryAllowance + 2*(key.length + storageKey.length + (language?.length ?? 0));
       if (!this.charge(bytes)) return false;
-      state = { storageKey, version, contentVersion: version, language, bytes };
+      state = { key, storageKey, version, contentVersion: version, language, bytes };
       this.piSources.set(key, state);
     } else {
       const bytes = RETENTION_LIMITS.entryAllowance + 2*(key.length + state.storageKey.length + (language?.length ?? 0));
@@ -433,7 +770,7 @@ export class SourceController {
         state.version = version; return result.accepted && state.generation !== undefined;
       }
     }
-    state.version = version; state.contentVersion = version; state.language = language; state.palette = undefined; state.failure = undefined; state.refused = false;
+    state.version = version; state.contentVersion = version; state.language = language; state.palette = undefined; state.readyPalette = undefined; state.failure = undefined; state.projectionRefused = false; state.refused = false;
     if (state.generation !== undefined) this.receipts(this.pool.remove(state.generation));
     const result = this.pool.admit(state.storageKey, version, text); this.receipts(result.released);
     state.generation = result.generation;
@@ -446,23 +783,56 @@ export class SourceController {
     const source = state?.generation === undefined ? undefined : this.pool.borrowSnapshot(state.generation);
     return source && state ? { ...source, generation: state.generation!, language: state.language, styleDirectives: state.styleDirectives } : undefined;
   }
-  installPiBridge(key: string, generation: number, version: number, text: string, palette: number, lines: readonly string[], styleDirectives?: boolean): boolean {
+  /** Storage identity only. The caller must independently check workStatus. */
+  piPreparation(key: string, generation: number, version: number, palette: number): PiPreparation | undefined {
     if (!Number.isSafeInteger(palette) || palette < 0) throw new Error('invalid Pi palette revision');
     const state = this.piSources.get(key);
     if (this.disposed || !state || state.generation !== generation || state.version !== version
-      || state.palette !== undefined && palette < state.palette || state.palette === palette && state.failure !== undefined) return false;
-    const basis = this.pool.borrowSnapshot(generation, 'basis');
-    if (!basis || basis.text !== text) return false;
-    // Equal-text versions use the same basis. A newer alias must not invalidate
-    // valid Pi rows or trigger another classifier merely for a lifecycle marker.
-    const result = this.pool.installBridge(generation, basis.version, text, lines); this.receipts(result.released);
-    if (result.accepted && state.generation === generation) {
-      const changed = state.palette !== palette || state.failure !== undefined;
-      state.palette = palette; state.failure = undefined; state.styleDirectives = styleDirectives;
-      if (changed) this.log('DEBUG', styleDirectives === false ? 'Pi returned plain text; exact fallback cached' : 'Pi fallback cached; style directives are not proof of physical colors',
-        { source: key, version, generation, palette, styleDirectives, bytes: basis.utf8Bytes });
+      || state.palette !== undefined && palette < state.palette || state.palette === palette && (state.failure !== undefined || state.projectionRefused)) return undefined;
+    const released: ReleaseReceipt[] = [];
+    let result: ReturnType<SemanticRetentionPool['piPreparation']>;
+    try { result = this.pool.piPreparation(generation, version, palette, released); }
+    finally { this.receipts(released); }
+    if (!result.accepted) { this.recordPiRefusal(state, palette); return undefined; }
+    state.palette = palette; state.failure = undefined; state.projectionRefused = false;
+    return result.ticket;
+  }
+  private acceptsPiPreparation(ticket: PiPreparation): boolean {
+    if (this.disposed || !this.pool.acceptsPiPreparation(ticket)) return false;
+    const state = this.piGenerations.get(ticket.generation);
+    return !!state && state.version === ticket.version && state.palette === ticket.palette && !state.failure && !state.projectionRefused;
+  }
+  reservePiData(ticket: PiPreparation, additionalPeak: number): DataGrant | undefined {
+    if (!this.acceptsPiPreparation(ticket)) return undefined;
+    const result = this.pool.reserve(ticket.generation, additionalPeak); this.receipts(result.released);
+    if (!result.accepted || !this.acceptsPiPreparation(ticket)) {
+      if (this.acceptsPiPreparation(ticket)) this.recordPiRefusal(this.piGenerations.get(ticket.generation)!, ticket.palette);
+      return undefined;
     }
-    return result.accepted && state.generation === generation;
+    const grant = this.pool.budget.reserve(additionalPeak);
+    if (!grant) this.recordPiRefusal(this.piGenerations.get(ticket.generation)!, ticket.palette);
+    return grant;
+  }
+  /** Ownership is consumed even for stale/foreign tickets and invalid candidates. */
+  adoptPiFlat(ticket: PiPreparation, text: string, staged: StagedPiProjection, styleDirectives?: boolean): boolean {
+    if (!this.acceptsPiPreparation(ticket)) { staged.dispose(); return false; }
+    const released: ReleaseReceipt[] = [];
+    let result: ReturnType<SemanticRetentionPool['adoptPiFlat']>;
+    try { result = this.pool.adoptPiFlat(ticket, text, staged, released); }
+    finally { this.receipts(released); }
+    const state = this.piGenerations.get(ticket.generation);
+    if (!state || state.version !== ticket.version || state.palette !== ticket.palette) return false;
+    if (!result.accepted) { if (result.refused) this.recordPiRefusal(state, ticket.palette); return false; }
+    state.readyPalette = ticket.palette; state.failure = undefined; state.projectionRefused = false; state.styleDirectives = styleDirectives;
+    reportRuntime(this.options.diagnostic, { kind: 'recovered', scope: state, operation: 'pi' });
+    this.changed(state.key); return true;
+  }
+  private recordPiRefusal(state: PiSource, palette: number): void {
+    state.palette = palette; state.failure = undefined; state.projectionRefused = true;
+  }
+  piRefusal(key: string, version: number, palette: number): boolean {
+    const state = this.piSources.get(key);
+    return !this.disposed && state?.version === version && state.palette === palette && state.projectionRefused === true;
   }
   /** Exact classifier failure, distinct from source/row storage refusal. */
   piFailure(key: string, version: number, palette: number): PiFailure | undefined {
@@ -476,34 +846,53 @@ export class SourceController {
     const state = this.piSources.get(key);
     if (this.disposed || !state || state.generation !== generation || state.version !== version
       || state.palette !== undefined && palette < state.palette) return false;
-    if (this.hasPiBridge(key, version, palette)) return false;
+    if (state.palette === palette && state.projectionRefused || this.piProjectionStatus(key, version, palette)) return false;
     const changed = state.palette !== palette || state.failure !== failure;
-    state.palette = palette; state.failure = failure;
-    if (changed) this.log('WARN', 'Pi fallback classification failed; exact failure cached', { source: key, version, generation, palette, reason: failure });
+    state.palette = palette; state.failure = failure; state.projectionRefused = false;
+    if (changed) {
+      this.log('ERROR', 'Pi fallback classification failed; exact failure cached', { source: key, version, generation, palette, reason: failure });
+      reportRuntime(this.options.diagnostic, { kind: 'failure', scope: state, operation: 'pi', area: 'syntax', code: failure });
+    }
     return true;
   }
-  hasPiBridge(key: string, version: number, palette: number): boolean {
-    const state = this.piSources.get(key), generation = state?.generation;
-    if (this.disposed || !state || generation === undefined || state.version !== version || state.palette !== palette || state.failure !== undefined) return false;
-    const bridge = this.pool.bridgeVersion(generation);
-    return bridge !== undefined && bridge >= state.contentVersion && bridge <= version;
+  piProjection(key: string, version: number, palette: number): PiProjectionReader | undefined {
+    const status = this.piProjectionStatus(key, version, palette); if (!status) return undefined;
+    return Object.freeze({ ...status, version, palette,
+      visitRanges: piRanges(this.owner, key, version, palette, status.revision),
+      visitStyles: piStyles(this.owner, key, version, palette, status.revision) });
   }
-  visitPiBridge(key: string, version: number, palette: number, consume: (index: number, line: string) => void): boolean {
-    if (!this.hasPiBridge(key, version, palette)) return false;
-    const state = this.piSources.get(key)!, generation = state.generation!;
-    const current = () => this.piSources.get(key) === state && state.generation === generation && state.palette === palette && state.version === version;
-    const available = this.pool.visitBridge(generation, (index, line) => { if (current()) consume(index, line); });
-    return available && current();
+  private piProjectionStatus(key: string, version: number, palette: number) {
+    const state = this.piSources.get(key), generation = state?.generation;
+    if (this.disposed || !state || generation === undefined || state.version !== version || state.readyPalette !== palette) return undefined;
+    const status = this.pool.piProjectionStatus(generation);
+    return status && status.version >= state.contentVersion && status.version <= version ? { ...status, generation } : undefined;
+  }
+  visitPiRanges(key: string, version: number, palette: number, revision: number, consume: (start: number, end: number, style: number) => void): boolean {
+    const generation = this.piProjectionStatus(key, version, palette)?.generation;
+    if (generation === undefined || this.piProjectionStatus(key, version, palette)?.revision !== revision) return false;
+    const available = this.pool.visitPiRanges(generation, revision, (start, end, style) => {
+      if (this.piProjectionStatus(key, version, palette)?.revision === revision) consume(start, end, style);
+    });
+    return available && this.piProjectionStatus(key, version, palette)?.revision === revision;
+  }
+  visitPiStyles(key: string, version: number, palette: number, revision: number, consume: (index: number, style: ConcreteStyle) => void): boolean {
+    const generation = this.piProjectionStatus(key, version, palette)?.generation;
+    if (generation === undefined || this.piProjectionStatus(key, version, palette)?.revision !== revision) return false;
+    const available = this.pool.visitPiStyles(generation, revision, (index, style) => {
+      if (this.piProjectionStatus(key, version, palette)?.revision === revision) consume(index, style);
+    });
+    return available && this.piProjectionStatus(key, version, palette)?.revision === revision;
   }
   private refusePiSource(state: PiSource | undefined, version: number): false {
     if (state) {
-      state.version = version; state.contentVersion = version; state.palette = undefined; state.failure = undefined; state.refused = true;
+      state.version = version; state.contentVersion = version; state.palette = undefined; state.readyPalette = undefined; state.failure = undefined; state.projectionRefused = false; state.refused = true;
       if (state.generation !== undefined) this.receipts(this.pool.remove(state.generation));
     }
     return false;
   }
   removePiSource(key: string): void {
     const state = this.piSources.get(key); if (!state) return;
+    reportRuntime(this.options.diagnostic, { kind: 'released', scope: state, operation: '*' });
     this.piSources.delete(key); this.charge(-state.bytes);
     if (state.generation !== undefined) this.receipts(this.pool.remove(state.generation));
   }
@@ -525,7 +914,7 @@ export class SourceController {
       }
       const jobLimit = description ? Math.min(CONTROLLER_LIMITS.jobs, description.limits.data_per_route) : 0;
       if (description) while (this.closes.length && this.jobs.size < jobLimit) {
-        const index = this.closes.findIndex(close => !this.busy(close.ownerKey)); if (index === -1) break;
+        const index = this.closes.findIndex(close => !this.sourceBusy(close.ownerKey)); if (index === -1) break;
         const bytes = this.reservation(0, 0, 0, 0, description);
         if (!this.capacity(bytes)) { waitForCredit(this.owner); break; }
         const close = this.closes.splice(index, 1)[0]!; this.charge(-close.bytes);
@@ -536,44 +925,60 @@ export class SourceController {
       const full = () => this.creditBlocked || this.jobs.size >= jobLimit || flight.jobs >= CONTROLLER_LIMITS.jobs;
       const dispatch = (state: SourceState | undefined): boolean => {
         if (!description || !this.enabled || this.disposed || !state || state.retired || !state.dirty || state.blocked
-          || state.uncertain || state.provider !== snapshot.generation || this.busy(state.key)
-          || state.group?.preparation.deref()?.acceptsProfile?.(state.profile, state.fingerprint) === false) return false;
+          || state.uncertain || state.provider !== snapshot.generation || this.sourceBusy(state.key)) return false;
+        if (state.complete && state.parsedProvider !== state.provider && state.generation !== undefined) {
+          const data = this.pool.status(state.generation);
+          if (data?.complete && this.matchesContent(state, data.sourceVersion)) {
+            if (description.assets === state.parsedAssets && description.vocabulary.fingerprint === data.vocabulary) {
+              state.dirty = false; return false;
+            }
+            this.restart(state, state.provider, true);
+          }
+        }
         if (full()) { waitForCredit(this.owner); return true; }
         return this.prepare(state, description) === 'credit';
       };
       while (this.cursor && !this.disposed) {
+        if (this.preparations >= CONTROLLER_LIMITS.jobs) break;
         const node = this.cursor, entry = node.value, pass = this.workPass;
+        // Reuse the registry's host-turn quota even when credits are full: local
+        // cache probes may continue, but a preview cannot sweep busy history.
+        if (this.selection) this.preparations++;
         this.cursor = node.older; node.seen = pass;
         if (!('preparation' in entry)) {
+          this.prepareStyles(node, description, full());
           if (dispatch(entry)) {
-            if (this.localPending) { this.retryScan = true; continue; }
+            this.retryScan = true; if (this.localPending || this.selection) continue;
             this.cursor = node; break;
           }
           continue;
         }
         const preparation = entry.preparation.deref();
-        if (!preparation) { this.unregisterPreparation(entry); continue; }
+        if (!preparation) { this.releasePreparation(entry, true); continue; }
+        if (node.paused) continue;
+        this.prepareStyles(node, description, full());
         const refresh = node.epoch !== this.refreshEpoch;
         if (node.pending || refresh && (preparation.needsRefresh?.(node === this.newest) ?? true)) {
           const native = !!description && this.enabled && node.pending !== 'local' && (preparation.requiresCredit?.() ?? true);
           if (native && full()) {
             waitForCredit(this.owner);
-            if (this.localPending) { this.retryScan = true; continue; }
+            this.retryScan = true; if (this.localPending || this.selection) continue;
             this.cursor = node; break;
           }
           // A busy source may be skipped while a different owner uses the free slot.
           // Its actual settlement rewinds this visited entry if it still owes work.
-          if (native && [...entry.keys].some(key => this.busy(key))) continue;
-          if (this.preparations >= CONTROLLER_LIMITS.jobs) { this.cursor = node; break; }
-          this.setPending(node, false); node.epoch = this.refreshEpoch; this.preparations++;
+          if (native && [...entry.keys].some(key => this.sourceBusy(key))) continue;
+          if (!this.selection && this.preparations >= CONTROLLER_LIMITS.jobs) { this.cursor = node; break; }
+          this.setPending(node, false); node.epoch = this.refreshEpoch; if (!this.selection) this.preparations++;
           this.preparing = entry;
-          try { preparation.prepare(); } finally { this.preparing = undefined; }
+          try { preparation.prepare(); this.updatePreparation(entry); } finally { this.preparing = undefined; }
         } else node.epoch = this.refreshEpoch;
         if (!this.work.has(entry) || pass !== this.workPass || node.pending || node.epoch !== this.refreshEpoch) continue;
+        this.prepareStyles(node, description, full());
         let waiting = false;
         for (const key of entry.keys) if (dispatch(this.states.get(key))) { waiting = true; break; }
         if (waiting) {
-          if (this.localPending) { this.retryScan = true; continue; }
+          this.retryScan = true; if (this.localPending || this.selection) continue;
           this.cursor = node; break;
         }
       }
@@ -589,7 +994,7 @@ export class SourceController {
   /** Reset only after a host turn; neither direct flush nor reply microtasks may
    * bypass the two-preparation barrier. An empty continuation stops immediately. */
   resumePreparation(): void {
-    this.preparations = 0; this.yielding = false; this.scheduled = false; this.flush();
+    this.preparations = 0; this.yielding = false; this.scheduled = false; this.continueWork();
   }
 
   /** Physical source authority survives payload retirement/off. Reading never
@@ -597,8 +1002,10 @@ export class SourceController {
   workStatus(key: string): SourceWorkStatus {
     const state = this.states.get(key);
     const pending = [...this.jobs.values()].some(job => job.sourceWork && !job.stopped && job.key === key);
-    const queued = !!state && this.enabled && !state.retired && state.dirty && !state.blocked && !state.uncertain
-      && this.provider.isReady(state.provider);
+    const ready = !!state && this.enabled && !state.retired && this.provider.isReady(state.provider);
+    const queued = ready && (state.dirty && !state.blocked && !state.uncertain
+      || state.styleDirty && !state.profileRefusal && state.generation !== undefined
+        && this.pool.status(state.generation)?.sourceVersion !== undefined);
     const execution = pending ? 'unsettled' : state?.sharedUnknown || state?.ownedUnknown !== undefined
       ? state?.execution === 'started' ? 'started' : 'unknown' : state?.execution ?? 'not_started';
     return { version: state?.version, execution, fallbackEligible: !this.disposed && !state?.frozen && !pending && !queued && !state?.uncertain
@@ -611,7 +1018,7 @@ export class SourceController {
   ownedStopped(provider: number): void {
     for (const job of this.jobs.values()) if (job.provider === provider && job.sourceWork && job.kind === 'owned') {
       job.stopped = true; job.source = undefined;
-      if (this.states.get(job.key)?.id === job.stateId) this.changed(job.key);
+      if (job.key !== undefined && this.states.get(job.key)?.id === job.stateId) this.changed(job.key);
     }
     if (this.disposed) return;
     for (const state of this.states.values()) {
@@ -632,23 +1039,24 @@ export class SourceController {
     const execution = this.workStatus(key).execution;
     const provider = this.provider.snapshot();
     return { generation: state.generation, version: state.version,
-      acknowledgedVersion: provider.generation === state.provider && provider.availability === 'ready' ? current?.sourceVersion : undefined,
-      classificationVersion: result?.sourceVersion, committedBytes: result?.committedBytes ?? 0, exact,
+      acknowledgedVersion: provider.generation === state.parsedProvider && provider.availability === 'ready' ? current?.sourceVersion : undefined,
+      classificationVersion: state.empty ? undefined : result?.sourceVersion, committedBytes: result?.committedBytes ?? 0, exact,
       execution, availability: this.disposed ? 'disposed' : !this.enabled ? 'disabled' : provider.availability,
       protective: state.blocked || state.uncertain, fallbackEligible: !exact && this.workStatus(key).fallbackEligible, complete: state.complete };
   }
-  visitRanges(key: string, consume: (start: number, end: number, packedStyle: number) => void): boolean {
+  visitRanges(key: string, consume: (start: number, end: number, style: ConcreteStyle) => void): boolean {
     const state = this.states.get(key); if (!state) return false;
     const current = state.generation === undefined ? undefined : this.pool.status(state.generation);
     const generation = current?.sourceVersion !== undefined ? state.generation : state.previousCoverage ? state.previous : undefined;
     if (generation === undefined) return state.empty;
     const status = this.pool.status(generation); if (!status) return false;
     const limit = this.matchesContent(state, status.sourceVersion) ? status.sourceBytes : status.committedBytes;
-    return this.pool.visitRanges(generation, (start, end, style) => {
+    const display = this.pool.displayStatus(generation);
+    return !!display && this.pool.visitDisplay(generation, display.effectStamp, (start, end, _context, style) => {
       if (this.states.get(key) === state && start < limit) consume(start, Math.min(end, limit), style);
     });
   }
-  stats() { return { ...this.counters, unsettledJobs: this.jobs.size, captures: [...this.jobs.values()].filter(job => job.source).length,
+  stats() { return { ...this.counters, styleCaptures: [...this.jobs.values()].filter(job => job.style).length, unsettledJobs: this.jobs.size, captures: [...this.jobs.values()].filter(job => job.source).length,
     globalUnsettledJobs: flight.jobs, globalTransientBytes: flight.bytes, transientBytes: this.transientBytes, maxTransientBytes: this.maxTransientBytes,
       remoteLeases: this.remoteLeases, pendingCloses: this.closes.length, sourceRecords: this.states.size, piSourceRecords: this.piSources.size,
     guardRecords: [...this.states.values()].filter(state => state.generation === undefined || state.uncertain).length,
@@ -680,8 +1088,9 @@ export class SourceController {
   freeze(key: string): void {
     const state = this.states.get(key);
     if (!state || state.frozen || this.disposed) return;
-    const generation = this.displayGeneration(state), current = state.generation, previous = state.previous;
-    this.retire(state);
+    const current = state.generation, previous = state.previous;
+    const generation = this.displayGeneration(state) ?? (current !== undefined && this.pool.status(current)?.sourceVersion !== undefined ? current : undefined);
+    this.retire(state, true, false);
     state.generation = undefined; state.previous = generation; state.previousCoverage = false;
     state.frozen = true; state.retired = true; state.dirty = false; state.profileReady = false; state.profileRefusal = 0;
     if (current !== undefined && current !== generation) this.receipts(this.pool.remove(current));
@@ -691,33 +1100,44 @@ export class SourceController {
     this.changed(key); this.schedule();
   }
   remove(key: string): void {
+    this.drainRetirements(); this.removeSource(key, false);
+  }
+  private removeSource(key: string, deferred: boolean): void {
     this.removePiSource(key);
     this.noticeKeys.delete(key);
     const state = this.states.get(key); if (!state) return;
-    this.dropData(state); this.states.delete(key); this.removeWork(state); this.charge(-state.bytes);
+    reportRuntime(this.options.diagnostic, { kind: 'released', scope: state, operation: '*' });
+    this.dropData(state, deferred); this.states.delete(key); this.removeWork(state, deferred); this.charge(-state.bytes);
+    if (state.group) { const node = this.work.get(state.group); if (node) this.dropGroup(node, true); }
+    if (!this.states.size && ![...this.work.values()].some(node => node.seal)) this.clearStyleCache();
   }
   setEnabled(enabled: boolean): void {
     if (this.disposed || this.enabled === enabled) return;
-    this.enabled = enabled; ++this.noticeEpoch; this.noticeScheduled = false; this.noticeKeys.clear();
-    if (!enabled) { this.profileNeed = undefined; waiters.delete(this.owner);
+    if (!enabled) this.drainRetirements();
+    this.enabled = enabled; ++this.noticeEpoch; this.noticeScheduled = false; this.noticeKeys.clear(); this.noticeGroups.clear();
+    if (!enabled) { for (const node of this.work.values()) this.dropGroup(node, true);
+      for (const job of this.jobs.values()) if (job.style) { releaseStyle(job); job.abort.abort(sourceRetired); }
+      this.clearStyleCache(); this.profileNeed = undefined; waiters.delete(this.owner);
       for (const [key, state] of this.states) {
         this.dropData(state);
         if (state.frozen || this.busy(key) || state.uncertain || state.sharedUnknown || state.ownedUnknown !== undefined) {
           state.retired = true; state.dirty = false; state.profileReady = false; state.profileRefusal = 0;
-        } else { this.states.delete(key); this.removeWork(state); this.charge(-state.bytes); }
+        } else { reportRuntime(this.options.diagnostic, { kind: 'released', scope: state, operation: '*' }); this.states.delete(key); this.removeWork(state); this.charge(-state.bytes); }
       }
       for (const key of this.piSources.keys()) this.removePiSource(key); this.receipts(this.pool.clear()); this.flush(); }
   }
   dispose(): void {
     if (this.disposed) return;
-    for (const entry of this.work.keys()) if ('preparation' in entry) this.charge(-groupBytes);
+    this.drainRetirements();
+    for (const [entry, node] of this.work) { reportRuntime(this.options.diagnostic, { kind: 'released', scope: node, operation: '*' }); if ('preparation' in entry) { this.dropGroup(node, true); this.charge(-groupBytes); } }
     this.work.clear(); this.newest = undefined; this.cursor = undefined; this.localPending = 0;
     this.setEnabled(false);
     // Pi fallback may have been captured while the native controller was already off.
     for (const key of this.piSources.keys()) this.removePiSource(key);
-    this.disposed = true; ++this.noticeEpoch; this.noticeScheduled = false; this.noticeKeys.clear();
-    for (const state of this.states.values()) this.charge(-state.bytes);
+    this.disposed = true; ++this.noticeEpoch; this.noticeScheduled = false; this.noticeKeys.clear(); this.noticeGroups.clear();
+    for (const state of this.states.values()) { reportRuntime(this.options.diagnostic, { kind: 'released', scope: state, operation: '*' }); this.charge(-state.bytes); }
     this.states.clear();
+    this.lifetime.data = undefined; this.releaseSelection(); this.selection = undefined; this.clearStyleCache(); this.pool.dispose();
     // Only an unanswered open needs its existing capture to validate and close
     // a late-created lease. Removed source/color authority never returns.
     for (const job of this.jobs.values()) if (!job.source?.open) job.source = undefined;
@@ -734,6 +1154,7 @@ export class SourceController {
   private matchesContent(state: SourceState, version: number | undefined): boolean {
     return version !== undefined && version >= state.contentVersion && version <= state.version;
   }
+  private sourceBusy(key: string): boolean { return [...this.jobs.values()].some(job => (job.sourceWork || job.close) && job.key === key); }
   private busy(key: string): boolean { return [...this.jobs.values()].some(job => job.key === key); }
   private wireKey(): string { return `source:${this.id}:${++this.wireSequence}`; }
   private log(level: DiagnosticLevel, explanation: string, fields?: DiagnosticFields): void {
@@ -746,7 +1167,7 @@ export class SourceController {
       state.blocked = true; state.dirty = false; return false;
     }
     this.log('DEBUG', 'Native source admitted', { source: state.key, version: state.version, generation: result.generation, language: state.language, units: text.length });
-    state.generation = result.generation; state.committedUnits = 0;
+    state.generation = result.generation; state.committedUnits = 0; this.invalidateStyles(state);
     state.dirty = !state.empty && !state.blocked; return true;
   }
   private restart(state: SourceState, provider: number, providerChange: boolean, target?: Pick<SourceDemand, 'version' | 'text'>, cancel = true): void {
@@ -754,10 +1175,15 @@ export class SourceController {
     const latest = target ?? (oldGeneration === undefined ? undefined : this.pool.borrowSnapshot(oldGeneration)); if (!latest) return;
     const uncertain = !!target && state.uncertain && !providerChange, execution = state.execution;
     const blocked = !!target && state.blocked;
-    const retained = oldGeneration !== undefined && this.pool.status(oldGeneration)?.sourceVersion !== undefined ? oldGeneration : previous;
-    const retainedStatus = retained === undefined ? undefined : this.pool.status(retained);
-    const reuse = !!target && state.complete && retainedStatus?.complete && state.displayProfile === state.profile
-      && state.displayFingerprint === state.fingerprint && this.pool.borrowSnapshot(retained!, 'basis')?.text === latest.text;
+    const covered = oldGeneration !== undefined && this.pool.status(oldGeneration)?.sourceVersion !== undefined ? oldGeneration : previous;
+    const coveredStatus = covered === undefined ? undefined : this.pool.status(covered);
+    // Parser progress cannot replace an independently owned ready display.
+    const retained = this.displayGeneration(state) ?? covered;
+    const snapshot = this.provider.snapshot(), description = snapshot.availability === 'ready' ? snapshot.description : undefined;
+    const compatible = !!description && description.assets === state.parsedAssets
+      && description.vocabulary.fingerprint === coveredStatus?.vocabulary;
+    const reuse = state.complete && coveredStatus?.complete && (!description || compatible)
+      && this.pool.borrowSnapshot(covered!, 'basis')?.text === latest.text;
     const previousCoverage = !target && (retained === oldGeneration || state.previousCoverage);
     // Superseded profiles keep their physical credit until normal settlement.
     this.retire(state, cancel);
@@ -765,37 +1191,45 @@ export class SourceController {
     // empty entry must not also release a compatible independently held result.
     state.generation = undefined; state.previous = retained; state.previousCoverage = previousCoverage; state.provider = provider;
     if (retained !== undefined) this.pool.retainBasis(retained);
-    if (oldGeneration !== undefined && oldGeneration !== retained) this.pool.remove(oldGeneration);
-    if (previous !== undefined && previous !== retained) this.pool.remove(previous);
-    const result = reuse ? this.pool.replaceSnapshot(retained!, latest.version, latest.text)
+    if (oldGeneration !== undefined && oldGeneration !== retained && (!reuse || oldGeneration !== covered)) this.receipts(this.pool.remove(oldGeneration));
+    if (previous !== undefined && previous !== retained && (!reuse || previous !== covered)) this.receipts(this.pool.remove(previous));
+    const result = reuse ? this.pool.replaceSnapshot(covered!, latest.version, latest.text)
       : this.pool.admit(this.wireKey(), latest.version, latest.text);
     this.receipts(result.released);
     if (providerChange) state.restarts = 0;
     state.execution = uncertain ? execution : 'not_started'; state.uncertain = uncertain;
     if (!result.accepted) { state.blocked = true; state.dirty = false; return; }
-    state.generation = reuse ? retained : result.generation; state.committedUnits = 0; state.blocked = uncertain || blocked;
+    state.generation = reuse ? covered : result.generation; state.committedUnits = 0; state.blocked = uncertain || blocked;
     if (reuse) {
-      state.previous = undefined; state.previousCoverage = false;
-      state.contentVersion = retainedStatus!.sourceVersion!; state.displayVersion = state.version; state.dirty = false;
+      if (state.previous === covered) { state.previous = undefined; state.previousCoverage = false; }
+      state.contentVersion = coveredStatus!.sourceVersion!;
+      const display = this.pool.displayStatus(this.displayGeneration(state)!);
+      state.displayVersion = display?.complete && this.matchesContent(state, display.sourceVersion) ? state.version : undefined;
+      // Missing metadata defers compatibility, not ownership of valid annotations.
+      state.dirty = !compatible;
       return;
     }
-    // Admission may have evicted that result. Decide reuse only after receipts;
-    // otherwise this affected source owes one recovery, not a render retry loop.
-    const preserved = state.previous === undefined ? undefined : this.pool.status(state.previous);
-    const exactCompleted = providerChange && previousCoverage && state.complete && preserved?.complete
-      && state.displayProfile === state.profile && state.displayFingerprint === state.fingerprint && this.matchesContent(state, preserved.sourceVersion);
-    state.dirty = !state.empty && !exactCompleted && !state.blocked;
+    state.dirty = !state.empty && !state.blocked;
   }
-  private retire(state: SourceState, cancel = true): void {
-    if (cancel) for (const job of this.jobs.values()) if (job.stateId === state.id) job.abort.abort(sourceRetired);
+  private retire(state: SourceState, cancel = true, styles = true, deferred = false): void {
+    // Freeze retains the exact display view; proofs still require its actual
+    // generation/stamp/version, rather than converting current data into proof.
+    this.invalidateStyles(state, !styles);
+    if (cancel) for (const job of this.jobs.values()) {
+      const style = styles && job.style?.members.some(member => member.id === state.id);
+      if (!style && (job.style || job.stateId !== state.id)) continue;
+      this.cancelJob(job, deferred);
+      if (style) releaseStyle(job);
+    }
     if (state.lease && state.generation !== undefined) {
       const key = this.pool.status(state.generation)?.key;
-      if (key) this.close({ key, ownerKey: state.key, generation: state.generation, lease: state.lease, provider: state.provider });
+      if (key) this.close({ key, ownerKey: state.key, generation: state.generation, lease: state.lease, provider: state.provider, health: new WeakRef(state) });
     }
     state.lease = undefined;
   }
-  private dropData(state: SourceState): void {
-    this.retire(state);
+  private dropData(state: SourceState, deferred = false): void {
+    if (state.group) { const node = this.work.get(state.group); if (node) this.dropGroup(node); }
+    this.retire(state, true, true, deferred);
     const current = state.generation, previous = state.previous; state.generation = undefined; state.previous = undefined;
     state.previousCoverage = false; state.displayStamp = 0; state.displayProfile = undefined; state.displayFingerprint = undefined; state.displayVersion = undefined;
     if (current !== undefined) this.pool.remove(current);
@@ -804,33 +1238,39 @@ export class SourceController {
   private close(close: Omit<Close, 'bytes'>): void {
     if (!this.provider.isReady(close.provider) || this.closes.some(item => item.lease === close.lease)
       || [...this.jobs.values()].some(job => job.close?.lease === close.lease)) return;
-    const bytes = 256 + 2*(close.key.length + close.ownerKey.length + close.lease.length);
+    const bytes = 288 + 2*(close.key.length + close.ownerKey.length + close.lease.length);
     if (!this.charge(bytes)) { this.counters.cleanupRefusals++; return; }
     this.closes.push({ ...close, bytes });
   }
-  private receipts(receipts: readonly ReleaseReceipt[]): void {
+  private receipts(receipts: readonly ReleaseReceipt[], deferred = false): void {
     for (const receipt of receipts) {
       const pi = this.piGenerations.get(receipt.generation);
-      if (pi) { this.piGenerations.delete(receipt.generation); pi.generation = undefined; pi.palette = undefined; continue; }
+      if (pi) { this.piGenerations.delete(receipt.generation); pi.generation = undefined; pi.palette = undefined; pi.readyPalette = undefined; this.changed(pi.key); continue; }
       for (const state of this.states.values()) {
         if (state.previous === receipt.generation) {
+          const node = state.group && this.work.get(state.group);
+          const member = node?.ready?.members.get(state.key);
+          if (node && member?.id === state.id && member.generation === receipt.generation) this.dropGroup(node);
+          this.invalidateStyles(state);
           state.previous = undefined; state.previousCoverage = false;
           if (state.generation === undefined || this.pool.status(state.generation)?.sourceVersion === undefined) {
             state.displayStamp = 0; this.changed(state.key);
           }
         }
         if (state.generation !== receipt.generation) continue;
-        if (state.lease) this.close({ key: receipt.key, ownerKey: state.key, generation: receipt.generation, lease: state.lease, provider: state.provider });
-        state.lease = undefined; this.retire(state); state.generation = undefined; state.blocked = true; state.dirty = false;
-        state.displayStamp = 0; this.changed(state.key);
-        if (state.previous !== undefined) { const previous = state.previous; state.previous = undefined; this.receipts(this.pool.remove(previous)); }
+        if (state.lease) this.close({ key: receipt.key, ownerKey: state.key, generation: receipt.generation, lease: state.lease, provider: state.provider, health: new WeakRef(state) });
+        state.lease = undefined; this.retire(state, true, true, deferred); state.generation = undefined; state.blocked = true; state.dirty = false;
+        state.displayStamp = 0;
+        if (state.group) { const node = this.work.get(state.group); if (node) this.dropGroup(node); }
+        this.changed(state.key);
+        if (state.previous !== undefined) { const previous = state.previous; state.previous = undefined; this.receipts(this.pool.remove(previous), deferred); }
         break;
       }
     }
   }
   private unknown(job: Job, execution: 'unknown' | 'started'): boolean {
-    const state = this.states.get(job.key);
-    if (!this.disposed && !job.stopped && state?.id === job.stateId) {
+    const state = job.key === undefined ? undefined : this.states.get(job.key);
+    if (!this.disposed && !job.stopped && state && state.id === job.stateId) {
       // Terminal unknown has no later successful reply. Shared/unspecified work
       // has no stop receipt; owned work can be released only by its exact reap.
       if (job.kind === 'owned') state.ownedUnknown = job.provider;
@@ -840,10 +1280,387 @@ export class SourceController {
     }
     return false;
   }
+  private clearCoverage(state: SourceState): void {
+    for (const proof of state.coverage?.values() ?? []) { this.lifetime.charges.delete(proof.charge); proof.charge.release(); }
+    state.coverage = undefined;
+  }
+  private invalidateStyles(state: SourceState, preserveView = false): void {
+    if (!preserveView) this.clearCoverage(state);
+    const node = this.work.get(state.group ?? state);
+    if (node) { node.styleRevision = ++this.styleRevision; node.failedEpoch = undefined; node.failedVocabulary = undefined; node.attempt = undefined; }
+  }
+  private refuseStyles(node: WorkNode, vocabulary: string, epoch: number, revision: number): void {
+    if (this.work.get(node.value) !== node || this.styleEpoch !== epoch || node.styleRevision !== revision) return;
+    node.failedEpoch = epoch; node.failedRevision = revision; node.failedVocabulary = vocabulary;
+    node.failedCacheRevision = this.styleCache.get(this.styleKey(vocabulary, this.selection!.rules))?.revision ?? 0;
+  }
+  private styleHealthOwner(style: StyleJob, provider: number): WorkNode | undefined {
+    const node = style.node.deref();
+    return node && this.work.get(node.value) === node && this.styleEpoch === style.epoch
+      && node.styleRevision === style.revision && this.provider.isReady(provider) ? node : undefined;
+  }
+  private refuseStyleJob(style: StyleJob): void {
+    style.outcome.failed = true;
+    const node = style.node.deref();
+    if (node) this.refuseStyles(node, style.expected.vocabulary, style.epoch, style.revision);
+  }
+  private hasCoverage(member: StyleMember, vocabulary: string, rules: string): boolean {
+    const state = this.states.get(member.key);
+    if (!state || state.id !== member.id) return false;
+    const proof = state.coverage?.get(rules);
+    if (!proof) return false;
+    if (proof.invalidation !== this.pool.arena.styleInvalidationRevision) { this.clearCoverage(state); return false; }
+    const data = state.frozen ? this.pool.displayStatus(member.generation) : this.pool.status(member.generation);
+    return proof.generation === member.generation && data?.vocabulary === vocabulary && proof.vocabulary === vocabulary
+      && proof.semanticStamp === data.semanticStamp && (proof.sourceVersion === data.sourceVersion
+        || !state.frozen && this.matchesContent(state, proof.sourceVersion));
+  }
+  private rememberCoverage(member: StyleMember, vocabulary: string, rules: string, invalidation: number): void {
+    if (this.pool.arena.styleInvalidationRevision !== invalidation) return;
+    const state = this.states.get(member.key), display = this.pool.displayStatus(member.generation);
+    if (!state || state.id !== member.id || !display || this.hasCoverage(member, vocabulary, rules)) return;
+    const data = state.frozen ? display : this.pool.status(member.generation);
+    if (!data || data.vocabulary !== vocabulary || data.semanticStamp !== display.semanticStamp
+      || data.sourceVersion !== display.sourceVersion && (state.frozen || !this.matchesContent(state, display.sourceVersion))) return;
+    const old = state.coverage?.get(rules);
+    if (old) { this.lifetime.charges.delete(old.charge); old.charge.release(); state.coverage!.delete(rules); }
+    // Optional evidence never evicts source data just to accelerate a later probe.
+    // Each map association, immutable namespace/rule key and scalar identity is paid.
+    const bytes = 512 + 2 * (vocabulary.length + rules.length), grant = this.pool.budget.reserve(bytes);
+    if (!grant) return;
+    try {
+      const charge = grant.consume(bytes); this.lifetime.charges.add(charge);
+      (state.coverage ??= new Map()).set(rules, { generation: member.generation, semanticStamp: display.semanticStamp,
+        sourceVersion: display.sourceVersion, vocabulary, invalidation, charge });
+    } finally { grant.close(); }
+  }
+  private styleMembers(node: WorkNode): StyleMember[] | undefined {
+    const entry = node.value, members: StyleMember[] = [];
+    if (node.paused) return undefined;
+    if ('preparation' in entry && (!entry.preparation.deref() || !node.seal || !this.sealMatches(entry, node.seal))) return undefined;
+    for (const key of 'preparation' in entry ? entry.keys : [entry.key]) {
+      const state = this.states.get(key), generation = state?.frozen ? state.previous : state?.generation;
+      if (!state || state.retired && !state.frozen || generation === undefined) return undefined;
+      members.push({ key, id: state.id, generation });
+    }
+    return members.length || 'preparation' in entry ? members : undefined;
+  }
+  private styleReserve(generation: number | undefined, bytes: number): boolean {
+    const result = this.pool.reserve(generation, bytes); this.receipts(result.released);
+    if (result.accepted) return true;
+    this.clearStyleCache();
+    const retry = this.pool.reserve(generation, bytes); this.receipts(retry.released); return retry.accepted;
+  }
+  private styleKey(vocabulary: string, rules: string): string { return `${vocabulary}/${rules}`; }
+  private prepareStyles(node: WorkNode, description: Description | undefined, full: boolean): void {
+    const selection = this.selection;
+    if (!selection || !this.enabled || this.disposed) return;
+    // No descriptor enumeration/encoding for an uncached choice at full credits.
+    const members = this.styleMembers(node); if (!members) return;
+    const first = members[0], firstState = first && this.states.get(first.key)!;
+    const sourceVocabulary = (first && firstState?.frozen ? this.pool.displayStatus(first.generation)?.vocabulary : undefined)
+      ?? (first && this.pool.status(first.generation)?.vocabulary) ?? description?.vocabulary.fingerprint;
+    if (!sourceVocabulary && (members.length || selection.input.kind === 'native')) return;
+    const vocabulary = sourceVocabulary ?? '';
+    const cache = this.styleCache.get(this.styleKey(vocabulary, selection.rules));
+    const epoch = this.styleEpoch, revision = node.styleRevision;
+    const attempt = node.attempt;
+    if (attempt?.outcome.failed && attempt.epoch === epoch && attempt.revision === revision && attempt.vocabulary === vocabulary) {
+      this.refuseStyles(node, vocabulary, epoch, revision); node.attempt = undefined;
+    }
+    const failed = node.failedEpoch === epoch && node.failedRevision === revision && node.failedVocabulary === vocabulary;
+    if (failed && node.failedCacheRevision === (cache?.revision ?? 0)) return;
+    const refuse = () => this.refuseStyles(node, vocabulary, epoch, revision);
+    try {
+    if ('preparation' in node.value) {
+      const accepts = node.value.preparation.deref()?.acceptsProfile;
+      const preparation = node.value.preparation.deref();
+      if (accepts && preparation && !accepts.call(preparation, selection.input.kind === 'native' ? selection.input.id : 'pi',
+        selection.input.kind === 'native' ? selection.input.fingerprint : selection.rules)) return;
+    }
+    if (full && !(selection.input.kind === 'client' && members.every(member => this.states.get(member.key)?.frozen
+      ? this.pool.displayStatus(member.generation)?.sourceBytes === 0 : (this.pool.status(member.generation)?.currentContexts ?? 0) === 0))
+      && !(members.every(member => this.hasCoverage(member, vocabulary, selection.rules)) && (selection.input.kind === 'client' || !!cache?.roles))) {
+      this.retryScan = true; waitForCredit(this.owner); return;
+    }
+    for (const member of members) {
+      const state = this.states.get(member.key)!;
+      let status = this.pool.status(member.generation);
+      if (!status) return;
+      if (state.empty && status.sourceVersion === undefined) {
+        // Empty coverage is local and carries no parser acknowledgement/lease.
+        const result = this.pool.installChunk(member.generation, { key: status.key, generation: member.generation,
+          source_version: state.version, revision: 1, source_bytes: 0, replace_from: 0, committed_bytes: 0, complete: true,
+          vocabulary, contexts: [], runs: new Uint32Array(), counters: { committed_line_calls: 0, committed_line_bytes: 0, tail_calls: 0, tail_bytes: 0 } });
+        this.receipts(result.released); if (!result.accepted) { refuse(); return; }
+        status = this.pool.status(member.generation)!;
+      }
+      if (status.sourceVersion === undefined || (state.frozen ? this.pool.displayStatus(member.generation)?.vocabulary ?? status.vocabulary : status.vocabulary) !== vocabulary) return;
+    }
+    const current = (!('preparation' in node.value) || !!node.ready && node.ready.rules === selection.rules
+      && node.ready.palette === selection.palette && node.ready.bindingRevision === selection.bindingRevision
+      && this.groupCurrent(node, node.ready.stamp)) && members.every(member => {
+      const state = this.states.get(member.key)!, display = this.pool.displayStatus(member.generation), status = this.pool.status(member.generation)!;
+      return display?.rules === selection.rules && display.palette === selection.palette && display.bindingRevision === selection.bindingRevision
+        && (selection.input.kind === 'native' || state.displayNeutral === state.neutral)
+        && (state.frozen || display.semanticStamp === status.semanticStamp && this.matchesContent(state, display.sourceVersion));
+    });
+    if (current) { for (const member of members) this.states.get(member.key)!.styleDirty = false; return; }
+    this.counters.stylePreparations++;
+    const count = members.reduce((n, member) => n + (this.pool.status(member.generation)?.currentContexts ?? 0), 0);
+    const historical = members.reduce((n, member) => n + (this.states.get(member.key)?.frozen ? this.pool.status(member.generation)?.displayBytes ?? 0 : 0), 0);
+    const scratch = 2048 + members.length * 1024 + count * 1024 + historical * 4;
+    if (!this.styleReserve(members[0]?.generation, scratch)) { refuse(); return; }
+    const grant = this.pool.budget.reserve(scratch); if (!grant) { refuse(); return; }
+    let pendingCapture: SemanticCaptureGroup | undefined;
+    try {
+      const unique = new Set<ContextRef>(), captureSelections: CaptureSelection[] = [];
+      const add = (ref: ContextRef) => { this.counters.styleContextVisits++; unique.add(ref); };
+      for (const member of members) {
+        const state = this.states.get(member.key), display = this.pool.displayStatus(member.generation);
+        if (state?.frozen) {
+          if (!display) return;
+          captureSelections.push({ generation: member.generation, effectStamp: display.effectStamp });
+          if (!this.pool.visitDisplayContexts(member.generation, display.effectStamp, add)) return;
+        } else {
+          captureSelections.push(member.generation);
+          if (!this.pool.visitContexts(member.generation, add)) return;
+        }
+      }
+      const refs = [...unique], missing = refs.filter(ref => !this.pool.arena.style(vocabulary, ref, selection.rules));
+      const paletteReady = selection.input.kind === 'client' || !!cache?.roles;
+      if (!missing.length && paletteReady) { if (!this.publishStyles(members, selection, undefined, node, vocabulary)) refuse(); return; }
+      if (failed) { refuse(); return; }
+      if (full) { this.retryScan = true; waitForCredit(this.owner); return; }
+      const pending = [...this.jobs.values()].filter(job => job.style?.expected.vocabulary === vocabulary && job.style.expected.rules === selection.rules);
+      // Jobs, not subscribers, are the sole in-flight overlap index. The next
+      // ordinary credit wake revisits other owners through the same registry.
+      const overlap = pending.find(job => missing.some(ref => job.style!.refs.includes(ref)) || !missing.length && !paletteReady);
+      if (overlap) {
+        // A coalesced attempt carries only a primitive refusal receipt, never a
+        // subscriber owner, result payload or another scheduling queue.
+        const prior = overlap.style!;
+        if (prior.epoch === epoch && revision <= prior.demandRevision)
+          node.attempt = { outcome: prior.outcome, epoch, revision, vocabulary };
+        this.retryScan = true; return;
+      }
+      if (!description || description.vocabulary.fingerprint !== vocabulary || !this.provider.isReady(this.workProvider)) return;
+      let encodedPeak = 0, capturePeak = 0, encodedFits = false;
+      this.pool.arena.encode(vocabulary, missing, bytes => { encodedFits = true; encodedPeak = bytes; return false; }, HIGHLIGHT_LIMITS.contextWords);
+      if (!encodedFits) { refuse(); this.counters.styleRejections++; return; }
+      if (members.length) this.pool.captureDisplays(captureSelections, bytes => { capturePeak = bytes; return false; });
+      if (members.length && !capturePeak) { refuse(); return; }
+      const decodedBytes = Math.min(this.maxDecodedBytes, 256 * (missing.length + 26) + 4 * missing.length + 258);
+      const frameBytes = Math.min(HIGHLIGHT_LIMITS.dataWireBytes, Math.max(description.limits.request_bytes, description.limits.reply_bytes));
+      // Complete-table materialization uses every captured context, not merely
+      // the requested missing subset; the reply may arrive after parser advance.
+      const bytes = 4 * frameBytes + encodedPeak + capturePeak + decodedBytes + scratch + 32768 + 1024 + members.length * 128 + missing.length * 16;
+      if (bytes > this.maxTransientBytes) { refuse(); this.counters.styleRejections++; return; }
+      if (!this.capacity(bytes)) { this.creditBlocked = true; this.retryScan = true; waitForCredit(this.owner); return; }
+      const captured = members.length ? this.pool.captureDisplays(captureSelections, () => true) : undefined;
+      if (captured) this.receipts(captured.released);
+      if (captured && (!captured.accepted || !captured.group)) { refuse(); return; }
+      const captures = captured?.group; pendingCapture = captures;
+      const encoded = this.pool.arena.encode(vocabulary, missing, peak => this.styleReserve(members[0]?.generation, peak), HIGHLIGHT_LIMITS.contextWords);
+      if (!encoded) { captures?.release(); refuse(); return; }
+      this.counters.styleEncodes++;
+      const first = members[0], job = this.job(first?.key, first?.generation, first?.id, this.workProvider, description, bytes);
+      job.kind = this.provider.snapshot().kind;
+      job.style = { expected: expectation(selection, vocabulary), captures, refs: missing, members,
+        group: 'preparation' in node.value ? new WeakRef(node.value) : undefined, groupRevision: node.seal?.revision, node: new WeakRef(node), epoch, revision, demandRevision: this.styleRevision, outcome: { failed: false }, decodedBytes };
+      pendingCapture = undefined;
+      // The transport may hold the canonical client declaration after logical
+      // cancellation/owner GC. Its owner-free charge ends at physical settlement.
+      job.styleCharge = this.selectionCharge!.retain();
+      this.counters.styleDispatches++;
+      const admission = this.options.admission ?? 'bounded_queue';
+      this.dispatch(job, { v: PROTOCOL_VERSION, ticket: job.ticket, instance: description.instance, op: 'styles.resolve', vocabulary, contexts: encoded,
+        rules: selection.input.kind === 'native' ? { kind: 'native', id: selection.input.id, fingerprint: selection.input.fingerprint }
+          : { kind: 'client', definition: selection.input.definition }, admission,
+        ...(admission === 'bounded_queue' ? { queue_wait_ms: Math.min(this.options.queueWaitMs ?? description.limits.queue_wait_ms, description.limits.queue_wait_ms) } : {}) });
+    } finally { pendingCapture?.release(); grant.close(); }
+    } catch (error) {
+      refuse(); this.counters.styleRejections++;
+      this.log(unexpectedDiagnostic(error) ? 'ERROR' : 'WARN', 'Local style preparation refused; source execution authority is unchanged', { code: diagnosticError(error) });
+      if (unexpectedDiagnostic(error)) reportRuntime(this.options.diagnostic, { kind: 'failure', scope: node, operation: 'styles', area: 'syntax', code: diagnosticError(error) });
+    }
+  }
+  private publishStyles(members: readonly StyleMember[], selection: PreparedSelection, captures?: SemanticCaptureGroup, node?: WorkNode, vocabularyHint?: string): boolean {
+    if (!this.enabled || this.disposed || this.selection !== selection) return false;
+    const vocabulary = captures?.captures[0]?.vocabulary ?? (members[0] && this.pool.status(members[0].generation)?.vocabulary) ?? vocabularyHint;
+    if (vocabulary === undefined) return false;
+    const roles = selection.input.kind === 'client' ? selection.input.roles : this.styleCache.get(this.styleKey(vocabulary, selection.rules))?.roles;
+    if (!roles) return false;
+    const grouped = node && 'preparation' in node.value ? node : undefined;
+    if (grouped && (!grouped.seal || !('preparation' in grouped.value) || !this.sealMatches(grouped.value, grouped.seal)
+      || grouped.seal.members.length !== members.length || members.some((member, i) => member.key !== grouped.seal!.members[i]!.key || member.id !== grouped.seal!.members[i]!.id))) return false;
+    const readyBytes = 1024 + members.reduce((bytes, member) => bytes + 512 + 2 * member.key.length, 0);
+    const groupGrant = grouped ? this.pool.budget.reserve(readyBytes) : undefined;
+    if (grouped && !groupGrant) return false;
+    try {
+    const invalidation = this.pool.arena.styleInvalidationRevision;
+    const updates: (ReadyDisplayUpdate & { bindingChanged: boolean })[] = [];
+    for (let i = 0; i < members.length; i++) {
+      const member = members[i]!, state = this.states.get(member.key), capture = captures?.captures[i];
+      if (state?.id !== member.id || (state.frozen ? state.previous : state.generation) !== member.generation || state.retired && !state.frozen) return false;
+      const status = this.pool.status(member.generation), display = this.pool.displayStatus(member.generation);
+      if (!status) return false;
+      if (captures && members.length > 1 && (status.semanticStamp !== capture!.semanticStamp || status.sourceVersion !== capture!.sourceVersion)) return false;
+      const contexts: { context: ContextRef; style: ConcreteStyle }[] = [];
+      let complete = true;
+      const add = (context: ContextRef) => {
+        const expression = this.pool.arena.style(vocabulary, context, selection.rules);
+        if (!expression) complete = false;
+        else contexts.push({ context, style: concreteStyle(expression, selection, roles, state.neutral) });
+      };
+      if (capture) { if (!capture.visitContexts(add)) return false; }
+      else if (state.frozen && display) { if (!this.pool.visitDisplayContexts(member.generation, display.effectStamp, add)) return false; }
+      else if (!this.pool.visitContexts(member.generation, add)) return false;
+      if (!complete) return false;
+      // A version-only acknowledgement does not change the owned display text
+      // or scopes. Reuse that view without promoting its completion metadata.
+      const retained = display && (state.frozen || display.semanticStamp === status.semanticStamp
+        && this.matchesContent(state, display.sourceVersion));
+      updates.push({ generation: member.generation,
+        bindingChanged: !display || display.palette !== selection.palette || display.bindingRevision !== selection.bindingRevision,
+        candidate: { ...(capture ? { capture } : {}),
+        semanticStamp: capture?.semanticStamp ?? (retained ? display.semanticStamp : status.semanticStamp),
+        sourceVersion: capture?.sourceVersion ?? (retained ? display.sourceVersion : status.sourceVersion!),
+        presentation: { vocabulary, rules: selection.rules, palette: selection.palette, bindingRevision: selection.bindingRevision, roles, contexts } } });
+    }
+    const result = updates.length ? this.pool.publishDisplays(updates) : { accepted: true, released: [] }; this.receipts(result.released);
+    if (!result.accepted) return false;
+    for (let i = 0; i < members.length; i++) {
+      const member = members[i]!, state = this.states.get(member.key), display = this.pool.displayStatus(member.generation);
+      if (!state || !display) continue;
+      this.rememberCoverage(member, vocabulary, selection.rules, invalidation);
+      const effect = display.effectStamp;
+      const fingerprint = selection.input.kind === 'native' ? selection.input.fingerprint : selection.rules;
+      if (updates[i]!.bindingChanged || state.displayEffect !== effect || state.displayProfile !== (selection.input.kind === 'native' ? selection.input.id : 'pi') || state.displayFingerprint !== fingerprint) {
+        state.displayStamp = ++this.displaySequence; state.displayEffect = effect; this.changed(state.key);
+      }
+      state.displayNeutral = state.neutral;
+      state.displayProfile = selection.input.kind === 'native' ? selection.input.id : 'pi'; state.displayFingerprint = fingerprint;
+      state.displayVersion = display.complete && this.matchesContent(state, display.sourceVersion) ? state.version : undefined;
+      state.styleDirty = display.semanticStamp !== this.pool.status(member.generation)?.semanticStamp;
+    }
+    if (grouped && !this.publishGroup(grouped, members, selection, roles, vocabulary, groupGrant!, readyBytes)) return false;
+    if (grouped) for (const member of members) {
+      const state = this.states.get(member.key)!;
+      if (state.previous !== undefined && state.previous !== member.generation) {
+        const previous = state.previous; state.previous = undefined; state.previousCoverage = false;
+        this.receipts(this.pool.remove(previous));
+      }
+    }
+    if (node) reportRuntime(this.options.diagnostic, { kind: 'recovered', scope: node, operation: 'styles' });
+    this.counters.stylePublications++; return true;
+    } finally { groupGrant?.close(); }
+  }
+  private publishGroup(node: WorkNode, members: readonly StyleMember[], selection: PreparedSelection, roles: StyleRoles,
+    vocabulary: string, grant: DataGrant, bytes: number): boolean {
+    const entry = node.value;
+    if (!('preparation' in entry) || !node.seal || !this.sealMatches(entry, node.seal) || !entry.preparation.deref()) return false;
+    // The existing 512-byte/member allowance funds one ordered map association and scalar receipt.
+    // Its grant is reserved by publishStyles before this controlled collection allocation.
+    const readyMembers = new Map<string, GroupReadyMember>();
+    for (const member of members) {
+      const state = this.states.get(member.key), display = this.pool.displayStatus(member.generation);
+      if (!state || !display || state.id !== member.id || display.rules !== selection.rules || display.palette !== selection.palette
+        || display.bindingRevision !== selection.bindingRevision) return false;
+      readyMembers.set(member.key, { ...member, version: display.sourceVersion, stamp: state.displayStamp,
+        geometryStamp: display.geometryStamp, paintStamp: display.effectStamp, complete: display.complete });
+    }
+    const prior = node.ready;
+    let equal = !!prior && equalRoles(prior.roles, roles) && prior.members.size === readyMembers.size;
+    let sameStamps = equal;
+    if (equal) {
+      const previous = prior!.members.values();
+      for (const member of readyMembers.values()) {
+        const old = previous.next().value!;
+        if (old.key !== member.key || old.id !== member.id || old.generation !== member.generation
+          || old.geometryStamp !== member.geometryStamp || old.paintStamp !== member.paintStamp) { equal = false; break; }
+        if (old.stamp !== member.stamp) sameStamps = false;
+      }
+    }
+    const profile = selection.input.kind === 'native' ? selection.input.id : 'pi', fingerprint = selection.input.kind === 'native' ? selection.input.fingerprint : selection.rules;
+    const unchanged = equal && sameStamps && prior!.rules === selection.rules && prior!.palette === selection.palette && prior!.bindingRevision === selection.bindingRevision
+      && prior!.profile === profile && prior!.fingerprint === fingerprint;
+    if (unchanged) return true;
+    const pin = selection.input.kind === 'client' ? this.selectionCharge : this.styleCache.get(this.styleKey(vocabulary, selection.rules))?.charge;
+    if (!pin) return false;
+    const stamp = ++this.displaySequence;
+    const ready: GroupReady = { members: readyMembers, readers: 0, roles, rules: selection.rules, palette: selection.palette, bindingRevision: selection.bindingRevision,
+      profile, fingerprint, stamp, paintStamp: equal ? prior!.paintStamp : stamp, pin: pin.retain(), charge: grant.consume(bytes) };
+    this.dropGroup(node); node.ready = ready; this.lifetime.groups.add(ready); this.changedGroup(entry.id);
+    return true;
+  }
+  private settleStyles(job: Job, raw: unknown, rejected: boolean): void {
+    const style = job.style;
+    try {
+      if (!style || rejected || job.abort.signal.aborted || this.disposed) {
+        if (style && rejected) {
+          this.refuseStyleJob(style);
+          const node = this.styleHealthOwner(style, job.provider);
+          if (node && !job.stopped && !job.abort.signal.aborted && !this.disposed && unexpectedDiagnostic(raw)) {
+            this.log('ERROR', 'Native style request failed unexpectedly', { source: job.key, job: job.id, code: diagnosticError(raw) });
+            reportRuntime(this.options.diagnostic, { kind: 'failure', scope: node, operation: 'styles', area: 'syntax', code: diagnosticError(raw) });
+          }
+        }
+        return;
+      }
+      const decoded = decodeSemanticStyleReply(raw, job.ticket, job.description, style.expected, style.refs.length, style.decodedBytes, job.replySize);
+      const reserve = (bytes: number) => this.styleReserve(undefined, bytes);
+      if (!this.pool.arena.installStyles(style.expected.vocabulary, style.expected.rules, style.refs, decoded.styles, decoded.indices, reserve)) {
+        this.refuseStyleJob(style); return;
+      }
+      const key = this.styleKey(style.expected.vocabulary, style.expected.rules);
+      if (!this.styleCache.has(key)) {
+        const bytes = 512 + (decoded.palette ? 26 * 512 : 0);
+        if (!reserve(bytes)) { this.refuseStyleJob(style); return; }
+        const grant = this.pool.budget.reserve(bytes); if (!grant) { this.refuseStyleJob(style); return; }
+        try {
+          const cache: StyleCache = { revision: 0, charge: grant.consume(bytes), roles: decoded.palette ? nativeRoles(decoded.styles, decoded.palette.slots) : undefined,
+            origins: decoded.palette?.origins.slice() };
+          this.styleCache.set(key, cache); this.lifetime.charges.add(cache.charge);
+        } finally { grant.close(); }
+      }
+      this.styleCache.get(key)!.revision++;
+      const selected = this.selection;
+      const group = style.group?.deref(), node = group && this.work.get(group);
+      const current = this.provider.snapshot().description, preparation = group?.preparation.deref();
+      if (preparation?.acceptsProfile && selected && !preparation.acceptsProfile(selected.input.kind === 'native' ? selected.input.id : 'pi',
+        selected.input.kind === 'native' ? selected.input.fingerprint : selected.rules)) return;
+      if (!selected || style.group && (style.epoch !== this.styleEpoch || style.groupRevision !== node?.seal?.revision) || selected.rules !== style.expected.rules || selected.palette !== (style.expected.paletteFingerprint ?? selected.palette)
+        || current?.vocabulary.fingerprint !== style.expected.vocabulary || style.group && (!node || node.paused || !preparation)) return;
+      if (!this.publishStyles(style.members, selected, style.captures, node, style.expected.vocabulary)) this.refuseStyleJob(style);
+      else {
+        const owner = style.node.deref();
+        if (owner) reportRuntime(this.options.diagnostic, { kind: 'recovered', scope: owner, operation: 'styles' });
+      }
+    } catch (error) {
+      this.log(!job.stopped && !job.abort.signal.aborted && !this.disposed && unexpectedDiagnostic(error) ? 'ERROR' : 'WARN', 'Native style reply refused; source execution authority is unchanged', { source: job.key, job: job.id, provider: job.provider, code: diagnosticError(error) });
+      const node = style && this.styleHealthOwner(style, job.provider);
+      if (node && !job.stopped && !job.abort.signal.aborted && !this.disposed && unexpectedDiagnostic(error))
+        reportRuntime(this.options.diagnostic, { kind: 'failure', scope: node, operation: 'styles', area: 'syntax', code: diagnosticError(error) });
+      if (error instanceof RemoteFault && (error.code === 'profile_changed' || error.code === 'profile_unavailable') && this.provider.isReady(job.provider)) {
+        this.profileNeed = { generation: job.provider, sequence: ++this.profileSequence };
+        const group = style?.group?.deref();
+        if (style && group) {
+          if (this.work.get(group) === style.node.deref()) this.changedGroup(group.id);
+        } else if (style && !style.group) {
+          for (const member of style.members) if (this.states.get(member.key)?.id === member.id) this.changed(member.key);
+        }
+      }
+      this.counters.styleRejections++;
+      if (style) this.refuseStyleJob(style);
+    } finally {
+      this.release(job); this.rewind(); this.schedule(); this.finishLifetime();
+    }
+  }
   private reservation(captureUnits: number, replacementUnits: number, inputUnits: number, replacementBytes: number, d: Description): number {
     return sourceReservation({ captureUnits, replacementUnits, inputUnits, replacementBytes,
-      frameBytes: Math.min(OCCIPITAL_LIMITS.wireBytes, Math.max(d.limits.request_bytes, d.limits.reply_bytes)),
-      runs: Math.min(OCCIPITAL_LIMITS.runs, d.limits.runs), styles: Math.min(OCCIPITAL_LIMITS.styles, d.limits.styles) });
+      frameBytes: Math.min(HIGHLIGHT_LIMITS.dataWireBytes, Math.max(d.limits.request_bytes, d.limits.reply_bytes)),
+       decodedBytes: this.maxDecodedBytes });
   }
   private capacity(bytes: number): boolean {
     return flight.jobs < CONTROLLER_LIMITS.jobs && this.transientBytes + bytes <= this.maxTransientBytes
@@ -854,8 +1671,7 @@ export class SourceController {
     const snapshot = this.pool.borrowSnapshot(state.generation), basis = this.pool.borrowSnapshot(state.generation, 'basis');
     const status = this.pool.status(state.generation); if (!snapshot || !basis || !status) return;
     if (state.empty) { state.dirty = false; return; }
-    if (!description.profiles.some(profile => profile.id === state.profile && profile.fingerprint === state.fingerprint)
-      || snapshot.utf8Bytes > Math.min(OCCIPITAL_LIMITS.sourceBytes, description.limits.source_bytes)) {
+    if (snapshot.utf8Bytes > Math.min(HIGHLIGHT_LIMITS.sourceBytes, description.limits.source_bytes)) {
       state.blocked = true; state.dirty = false; state.execution = 'not_started'; this.changed(state.key); return;
     }
     const append = !!state.lease, open = !append && !state.complete;
@@ -870,28 +1686,29 @@ export class SourceController {
     const replacementText = snapshot.text.slice(from);
     if (!coherent(replacementText)) { this.release(job); state.dirty = false; state.execution = 'not_started'; this.changed(state.key); return; }
     const expected: ExpectedSource = { key: status.key, generation: state.generation, source_version: snapshot.version,
-      profile: state.profile, fingerprint: state.fingerprint, revision: status.revision + 1,
+       revision: status.revision + 1,
       source_bytes: snapshot.utf8Bytes, replace_from: append ? status.committedBytes : 0, complete: state.complete,
       ...(append ? { lease: state.lease! } : {}), replacementText };
     job.sourceWork = true; job.kind = this.provider.snapshot().kind;
-    job.source = { capture: { version: snapshot.version, text: snapshot.text }, expected, replaceUnits: from, open };
+    job.source = { capture: { version: snapshot.version, text: snapshot.text }, expected, replaceUnits: from, open,
+      decodedBytes: this.maxDecodedBytes };
     const admission = this.options.admission ?? 'bounded_queue';
     const common = { v: PROTOCOL_VERSION, ticket: job.ticket, instance: description.instance, admission,
       ...(admission === 'bounded_queue' ? { queue_wait_ms: Math.min(this.options.queueWaitMs ?? description.limits.queue_wait_ms, description.limits.queue_wait_ms) } : {}) };
     const request = append ? { ...common, op: 'stream.append', key: status.key, generation: state.generation, lease: state.lease,
       base_revision: status.revision, base_bytes: basis.utf8Bytes, source_version: snapshot.version,
-      profile: state.profile, fingerprint: state.fingerprint, append: snapshot.text.slice(inputFrom), final: state.complete }
+       append: snapshot.text.slice(inputFrom), final: state.complete }
       : { ...common, op: state.complete ? 'highlight' : 'stream.open', sources: [{ key: status.key,
-        generation: state.generation, source_version: snapshot.version, profile: state.profile, fingerprint: state.fingerprint,
+         generation: state.generation, source_version: snapshot.version,
         hint: { ...(state.language === undefined ? {} : { language: state.language }), ...(state.path === undefined ? {} : { path: state.path }) }, text: snapshot.text }] };
     // The transport/codec alone checks the actual encoded frame size. No JSON
     // serialization or worst-case-size rejection happens at this boundary.
     if (open) this.remoteLeases++;
     this.counters.preparedBytes += inputBytes; state.dirty = false; state.execution = 'unsettled'; this.dispatch(job, request);
   }
-  private job(key: string, generation: number, stateId: number, provider: number, description: Description, bytes: number): Job {
+  private job(key: string | undefined, generation: number | undefined, stateId: number | undefined, provider: number, description: Description, bytes: number): Job {
     const id = ++this.sequence;
-    const job: Job = { id, key, generation, stateId, provider, ticket: `controller:${this.id}:${id}`, description, bytes, abort: new AbortController(), reserved: true };
+    const job: Job = { id, key, generation, stateId, provider, ticket: `controller:${this.id}:${id}`, description, bytes, abort: new AbortController(), reserved: true, replySize: {} };
     job.lifetimeRef = new WeakRef(job); this.lifetime.jobs.add(job.lifetimeRef);
     flight.jobs++; flight.bytes += bytes; this.jobs.set(id, job); this.transientBytes += bytes;
     this.counters.peakTransientBytes = Math.max(this.counters.peakTransientBytes, this.transientBytes);
@@ -902,14 +1719,27 @@ export class SourceController {
     this.log('DEBUG', 'Native job dispatched', { source: job.key, job: job.id, generation: job.generation, provider: job.provider,
       operation: typeof request.op === 'string' ? request.op : 'unknown', version: job.source?.expected.source_version,
       sourceBytes: job.source?.expected.source_bytes, reservedBytes: job.bytes });
-    try { void this.provider.request(job.provider, request, { signal: job.abort.signal, deadlineMs: this.options.deadlineMs, acceptRetired: true })
+    try { dataJsonBytes(request, Math.min(HIGHLIGHT_LIMITS.dataWireBytes, job.description.limits.request_bytes)); }
+    catch { observers.failed(Object.assign(new RequestFailure('occipital data request byte limit', 'not_started'), { code: 'frame_limit' })); return; }
+    try { void this.provider.request(job.provider, request, { signal: job.abort.signal, deadlineMs: this.options.deadlineMs, acceptRetired: true, replySize: job.replySize })
       .then(observers.reply, observers.failed).catch(ignored); } catch (error) { observers.failed(error); }
   }
   private release(job: Job): void {
     if (this.jobs.delete(job.id)) this.transientBytes -= job.bytes;
     if (job.lifetimeRef) this.lifetime.jobs.delete(job.lifetimeRef);
-    job.source = undefined; releaseCredit(job);
+    job.source = undefined; releaseStyleRequest(job); releaseCredit(job);
   }
+  private cancelJob(job: Job, deferred: boolean): void {
+    if (deferred) { job.pendingRetire = true; this.schedule(); }
+    else { job.pendingRetire = undefined; job.abort.abort(sourceRetired); }
+  }
+  private drainRetirements(): void {
+    for (const job of this.jobs.values()) if (job.pendingRetire) {
+      job.pendingRetire = undefined; job.abort.abort(sourceRetired);
+    }
+  }
+  /** Only the scheduled continuation drains render-pressure effects. A direct flush must stay inert. */
+  continueWork(): void { this.drainRetirements(); this.flush(); }
   private schedule(): void {
     if (this.scheduled) return;
     this.scheduled = true; queueMicrotask(continuation(this.owner));
@@ -920,30 +1750,43 @@ export class SourceController {
     this.schedule();
   }
   private changed(key: string): void {
-    if (!this.options.onChange || this.disposed || !this.states.has(key)) return;
+    if (!this.options.onChange || this.disposed || !this.states.has(key) && !this.piSources.has(key)) return;
     this.noticeKeys.add(key);
     if (this.noticeScheduled) return;
     this.noticeScheduled = true; queueMicrotask(notice(this.owner, this.noticeEpoch));
   }
   /** Weak notification delivery; an obsolete off/on epoch cannot erase a newer notice. */
+  private changedGroup(id: number): void {
+    if (!this.options.onChange || this.disposed || !this.enabled) return;
+    this.noticeGroups.add(id);
+    if (this.noticeScheduled) return;
+    this.noticeScheduled = true; queueMicrotask(notice(this.owner, this.noticeEpoch));
+  }
   notifyChange(epoch: number): void {
     if (epoch !== this.noticeEpoch) return;
     this.noticeScheduled = false;
     if (this.disposed) return;
-    const keys = [...this.noticeKeys]; this.noticeKeys.clear();
-    if (!keys.length) return;
-    try { this.options.onChange?.(keys); } catch { /* Caller presentation must not disrupt source ownership. */ }
+    const keys = [...this.noticeKeys], groups = [...this.noticeGroups]; this.noticeKeys.clear(); this.noticeGroups.clear();
+    if (!keys.length && !groups.length) return;
+    try { this.options.onChange?.(keys, groups.length ? groups : undefined); } catch { /* Caller presentation must not disrupt source ownership. */ }
   }
   settle(job: Job, raw: unknown, rejected: boolean): void {
     if (!this.jobs.has(job.id)) return;
+    if (job.style || !job.source && !job.close && !job.sourceWork) { this.settleStyles(job, raw, rejected); return; }
+    if (job.key === undefined || job.generation === undefined || job.stateId === undefined) return;
     const providerCurrent = this.provider.isReady(job.provider), state = this.states.get(job.key);
+    const closeOwner = job.close?.health?.deref();
+    const healthOwner = job.close ? closeOwner && closeOwner === state ? closeOwner : undefined : state?.id === job.stateId ? state : undefined;
+    const healthOperation = job.close ? `lease:${job.close.generation}` : 'source';
     const permission = this.workStatus(job.key);
     let changed = false;
     const useful = this.enabled && !this.disposed && !job.stopped && providerCurrent && !job.abort.signal.aborted
       && state?.id === job.stateId && state.generation === job.generation && !!this.pool.status(job.generation);
     try {
       if (rejected) {
-        this.log('WARN', 'Native request rejected; cancellation or rejection is not stop proof', { source: job.key, job: job.id, provider: job.provider,
+        if (healthOwner && !job.stopped && !job.abort.signal.aborted && !this.disposed && unexpectedDiagnostic(raw))
+          reportRuntime(this.options.diagnostic, { kind: 'failure', scope: healthOwner, operation: healthOperation, area: 'syntax', code: diagnosticError(raw) });
+        this.log(!job.stopped && !job.abort.signal.aborted && !this.disposed && unexpectedDiagnostic(raw) ? 'ERROR' : 'WARN', 'Native request rejected; cancellation or rejection is not stop proof', { source: job.key, job: job.id, provider: job.provider,
           version: job.source?.expected.source_version, execution: raw instanceof RequestFailure ? raw.execution : 'unknown', code: diagnosticError(raw) });
         if (raw instanceof RequestFailure && raw.execution === 'not_started') {
           if (job.source?.open && providerCurrent && this.leaseProvider === job.provider) this.remoteLeases = Math.max(0, this.remoteLeases - 1);
@@ -960,49 +1803,62 @@ export class SourceController {
       }
       if (job.close) {
         decodeClosed(raw, job.ticket, job.description);
+        if (healthOwner) reportRuntime(this.options.diagnostic, { kind: 'recovered', scope: healthOwner, operation: healthOperation });
         this.log('DEBUG', 'Native source lease close acknowledged', { source: job.key, job: job.id, provider: job.provider });
         if (providerCurrent && this.leaseProvider === job.provider) this.remoteLeases = Math.max(0, this.remoteLeases - 1);
         return;
       }
       if (!job.source || job.stopped) return;
-      const source = job.source, chunk = decodeSources(raw, job.ticket, job.description, [source.expected])[0]!;
+      const source = job.source, chunk = decodeSemanticSourceReply(raw, job.ticket, job.description,
+        [source.expected], source.decodedBytes, job.replySize).sources[0]!;
       this.counters.decodedBytes += chunk.source_bytes - chunk.replace_from;
-      if (!useful || state?.group?.preparation.deref()?.acceptsProfile?.(source.expected.profile, source.expected.fingerprint) === false) {
+      if (!useful) {
         if (state?.id === job.stateId && state.provider === job.provider && !state.uncertain) {
           state.execution = 'acknowledged'; changed = true;
         }
         this.counters.staleReplies++;
         this.log('DEBUG', 'Validated native reply is stale; its colors rejected', { source: job.key, job: job.id, provider: job.provider, version: source.expected.source_version });
         if (source.open && chunk.lease && !chunk.complete && providerCurrent) this.close({ key: chunk.key, ownerKey: job.key,
-          generation: chunk.generation, lease: chunk.lease, provider: job.provider });
+          generation: chunk.generation, lease: chunk.lease, provider: job.provider,
+          health: state?.id === job.stateId ? new WeakRef(state) : undefined });
         return;
       }
       // Validation plus current source/provider authority proves useful native
       // work, even if local byte pressure subsequently discards its colors.
       this.provider.classificationAccepted(job.provider);
-      const priorDisplay = this.pool.status(job.generation)?.displayRevision ?? 0;
-      const result = this.pool.installChunk(job.generation, chunk, source.capture); this.receipts(result.released);
-      if (!result.accepted || state.generation !== job.generation) {
-        this.log('WARN', 'Validated native colors refused by local storage', { source: job.key, job: job.id, provider: job.provider, version: source.expected.source_version });
-        if (source.open && chunk.lease && !chunk.complete) this.close({ key: chunk.key, ownerKey: job.key, generation: chunk.generation, lease: chunk.lease, provider: job.provider });
-        return;
-      }
-      state.displayProfile = state.profile; state.displayFingerprint = state.fingerprint;
-      state.displayVersion = chunk.complete && state.complete && this.pool.borrowSnapshot(job.generation)?.text === source.capture.text ? state.version : undefined;
-      if (!state.displayStamp || priorDisplay !== this.pool.status(job.generation)?.displayRevision) state.displayStamp = ++this.displaySequence;
-      if (state.previous !== undefined) { this.pool.remove(state.previous); state.previous = undefined; state.previousCoverage = false; }
-      state.committedUnits = chunk.complete ? source.capture.text.length : source.replaceUnits + source.expected.replacementText.lastIndexOf('\n') + 1;
-      state.lease = chunk.complete ? undefined : chunk.lease; state.execution = 'acknowledged';
+      state.execution = 'acknowledged';
       this.counters.committedLineCalls += chunk.counters.committed_line_calls; this.counters.committedLineBytes += chunk.counters.committed_line_bytes;
       this.counters.tailCalls += chunk.counters.tail_calls; this.counters.tailBytes += chunk.counters.tail_bytes;
       if (chunk.complete && source.expected.lease && this.leaseProvider === job.provider) this.remoteLeases = Math.max(0, this.remoteLeases - 1);
+      const previousSemantic = this.pool.status(job.generation)?.semanticStamp;
+      const result = this.pool.installChunk(job.generation, chunk, source.capture); this.receipts(result.released);
+      if (!result.accepted || state.generation !== job.generation) {
+        this.log('WARN', 'Validated native colors refused by local storage', { source: job.key, job: job.id, provider: job.provider, version: source.expected.source_version });
+        if (chunk.lease && !chunk.complete) this.close({ key: chunk.key, ownerKey: job.key, generation: chunk.generation, lease: chunk.lease, provider: job.provider,
+          health: state?.id === job.stateId ? new WeakRef(state) : undefined });
+        state.lease = undefined; state.blocked = true; state.dirty = false; state.styleDirty = false;
+        changed = true;
+        return;
+      }
+      // Scope acknowledgement is useful independently of the desired theme. Only
+      // a complete ready presentation may replace the retained display/effect.
+      state.parsedAssets = job.description.assets; state.parsedProvider = job.provider; state.styleDirty = true;
+      this.invalidateStyles(state, previousSemantic === this.pool.status(job.generation)?.semanticStamp);
+      if (state.previous !== undefined && (!state.group || !this.pool.displayStatus(state.previous))) {
+        this.pool.remove(state.previous); state.previous = undefined; state.previousCoverage = false;
+      }
+      state.committedUnits = chunk.complete ? source.capture.text.length : source.replaceUnits + source.expected.replacementText.lastIndexOf('\n') + 1;
+      state.lease = chunk.complete ? undefined : chunk.lease; state.execution = 'acknowledged';
+      reportRuntime(this.options.diagnostic, { kind: 'recovered', scope: state, operation: 'source' });
       changed = true;
       this.log('DEBUG', 'Validated native result accepted', { source: job.key, job: job.id, provider: job.provider, version: source.expected.source_version,
         sourceBytes: chunk.source_bytes, committedBytes: chunk.committed_bytes, complete: chunk.complete,
         committedLineCalls: chunk.counters.committed_line_calls, tailCalls: chunk.counters.tail_calls });
     } catch (error) {
       const source = job.source;
-      this.log('WARN', 'Native reply refused by validation or remote admission', { source: job.key, job: job.id, provider: job.provider,
+      if (healthOwner && !job.stopped && !job.abort.signal.aborted && !this.disposed && unexpectedDiagnostic(error))
+        reportRuntime(this.options.diagnostic, { kind: 'failure', scope: healthOwner, operation: healthOperation, area: 'syntax', code: diagnosticError(error) });
+      this.log(!job.stopped && !job.abort.signal.aborted && !this.disposed && unexpectedDiagnostic(error) ? 'ERROR' : 'WARN', 'Native reply refused by validation or remote admission', { source: job.key, job: job.id, provider: job.provider,
         version: source?.expected.source_version, execution: error instanceof RemoteFault ? error.execution : 'unknown', code: diagnosticError(error) });
       if (error instanceof RemoteFault && error.execution === 'not_started') {
         if (source?.open && providerCurrent && this.leaseProvider === job.provider) this.remoteLeases = Math.max(0, this.remoteLeases - 1);
@@ -1033,7 +1889,7 @@ export class SourceController {
       this.release(job); this.schedule(); this.finishLifetime();
       const current = this.states.get(job.key), next = this.workStatus(job.key);
       const node = current && this.work.get(current.group ?? current);
-      if (node?.seen === this.workPass && (node.pending || node.epoch !== this.refreshEpoch || current?.dirty)) this.rewind();
+      if (node?.seen === this.workPass && (node.pending || node.epoch !== this.refreshEpoch || current?.dirty || current?.styleDirty)) this.rewind();
       if (current?.id === job.stateId && (changed || permission.execution !== next.execution
         || permission.fallbackEligible !== next.fallbackEligible)) {
         if (permission.execution !== next.execution || permission.fallbackEligible !== next.fallbackEligible)

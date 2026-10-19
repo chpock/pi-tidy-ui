@@ -8,6 +8,7 @@ import { ExtensionSettings } from '../settings.ts';
 import type { SyntaxRuntimeOptions } from '../syntax/runtime.ts';
 import { createLocalOwnedFactory, createOwnedFactory, createSharedFactory } from './factories.ts';
 import { OCCIPITAL_LIMITS } from './limits.ts';
+import { ExpectedOwnedUnavailable } from './owned-startup.ts';
 import { NATIVE_RELEASE, type NativeReleaseDeclaration, type NativeTarget } from './release.ts';
 
 const require = createRequire(import.meta.url);
@@ -72,9 +73,11 @@ export function createSyntaxOptions(ctx: Pick<ExtensionContext, 'cwd' | 'session
       tryShared: development ? async () => undefined : createSharedFactory({ identity, diagnostic, requestDeadlineMs: OCCIPITAL_LIMITS.dataDeadlineMs }),
       async acquireOwned(signal) {
         if (local) return local(signal);
+        const target = runtimeTarget();
+        if (!target) throw new ExpectedOwnedUnavailable();
         if (!release) throw new Error('Standalone Occipital release is not declared in this build.');
-        const target = runtimeTarget(), artifact = release.artifacts.find(item => item.target === target);
-        if (!target || !artifact) throw new Error('The declared Occipital release has no artifact for this platform/ABI.');
+        const artifact = release.artifacts.find(item => item.target === target);
+        if (!artifact) throw new Error('The declared Occipital release has no artifact for this platform/ABI.');
         const installedPath = await installedPayload(target, release.version);
         if (signal.aborted) throw new Error('Occipital acquisition was cancelled.');
         return createOwnedFactory({ diagnostic, release: { version: release.version, ...artifact }, cacheDir: join(agentDir, 'cache', 'occipital'), installedPath,
