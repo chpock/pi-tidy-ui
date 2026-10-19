@@ -3,6 +3,7 @@
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import tidyUi from '../../src/index.ts';
 import { createSyntaxOptions } from '../../src/occipital/bootstrap.ts';
+import { ExpectedOwnedUnavailable } from '../../src/occipital/owned-startup.ts';
 import { createWriteCaptureGate, observeSyntaxCards } from './syntax-local-work.ts';
 import { createEventRecorder } from './terminal-output.ts';
 
@@ -21,7 +22,7 @@ export default function presentationDriver(pi: ExtensionAPI) {
     const options = createSyntaxOptions(ctx);
     return { ...options, provider: {
       async tryShared() { return undefined; },
-      async acquireOwned() { throw Error('Native transport is unavailable in this offline presentation control.'); },
+      async acquireOwned() { throw new ExpectedOwnedUnavailable(); },
     } };
   } });
 }

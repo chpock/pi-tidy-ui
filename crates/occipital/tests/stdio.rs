@@ -4,7 +4,7 @@ mod support;
 use occipital::{frame, reply::REPLY_BYTES, request::REQUEST_BYTES};
 use serde_json::{json, Value};
 use std::{
-    io::Write,
+    io::{Read, Write},
     process::{Child, ChildStdin, Stdio},
     sync::mpsc::{self, Receiver},
     thread::JoinHandle,
@@ -211,27 +211,43 @@ fn executable_negotiates_then_retains_only_stream_state_and_ends_on_eof() {
 }
 #[test]
 fn bad_declared_pipe_length_is_rejected_before_body_and_helper_incarnations_differ() {
-    let mut first = Helper::new();
-    let mut second = Helper::new();
-    first.send(json!({"v":3,"ticket":"one","op":"describe"}));
-    second.send(json!({"v":3,"ticket":"two","op":"describe"}));
-    assert_ne!(first.recv()["instance"], second.recv()["instance"]);
-    first
-        .input
-        .as_mut()
-        .unwrap()
-        .write_all(&((REQUEST_BYTES + 1) as u32).to_be_bytes())
-        .unwrap();
-    drop(first.input.take());
-    for _ in 0..100 {
-        if let Some(status) = first.child.try_wait().unwrap() {
-            assert!(!status.success());
-            second.exit();
-            return;
+    for close_stdin in [false, true] {
+        let mut first = Helper::new();
+        let mut second = Helper::new();
+        first.send(json!({"v":3,"ticket":"one","op":"describe"}));
+        second.send(json!({"v":3,"ticket":"two","op":"describe"}));
+        assert_ne!(first.recv()["instance"], second.recv()["instance"]);
+        first
+            .input
+            .as_mut()
+            .unwrap()
+            .write_all(&((REQUEST_BYTES + 1) as u32).to_be_bytes())
+            .unwrap();
+        if close_stdin {
+            drop(first.input.take());
         }
-        std::thread::sleep(Duration::from_millis(10));
+        let mut stopped = false;
+        for _ in 0..100 {
+            if let Some(status) = first.child.try_wait().unwrap() {
+                assert!(!status.success(), "framing faults are not clean EOF");
+                let mut stderr = String::new();
+                first
+                    .child
+                    .stderr
+                    .take()
+                    .unwrap()
+                    .take(256)
+                    .read_to_string(&mut stderr)
+                    .unwrap();
+                assert_eq!(stderr.trim(), "occipital stopped: pipe_frame");
+                stopped = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(stopped, "oversize header waited for a body");
+        second.exit();
     }
-    panic!("oversize header waited for a body");
 }
 
 #[test]

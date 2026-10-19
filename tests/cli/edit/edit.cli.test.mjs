@@ -6,7 +6,7 @@ import test from 'node:test';
 import { PiTerminal, artifacts, plain, lines, toolLines, assertFits } from '../../fixtures/terminal-harness.mjs';
 import { replayBlockStart, compareEditReplayColors } from '../../fixtures/edit-replay-comparator.mjs';
 import { closeTerminals } from '../../fixtures/terminal-cleanup.mjs';
-import { Terminal, compactContent, persisted } from '../../fixtures/main-cli-support.mjs';
+import { Terminal, compactContent, persisted, referenceCell } from '../../fixtures/main-cli-support.mjs';
 import { cardGeometry } from '../../../src/card-frame.ts';
 import { compileStyleAnsi } from '../../../src/syntax/style-ansi.ts';
 
@@ -384,14 +384,28 @@ test('real CLI: minified edit keeps linear ANSI size, warm work, exact traffic a
       }
       await live.command('/tidy-ui-theme light'); check(await live.capture('pointer-minified-light'));
       await live.command('/tidy-ui-theme dark'); const dark = await live.capture('pointer-minified-dark'); check(dark);
-      const numeric = dark.cells.flat().filter((cell) => cell?.text === '2');
-      const reference = new Terminal({ cols: 4, rows: 2, allowProposedApi: true });
+      const expected = await referenceCell(dark.summaryStyles.syntaxNumber);
+      const neutral = await referenceCell(dark.summaryStyles.toolOutput);
+      // This offline presentation fixture uses Pi's bounded fallback, not native syntax.
+      const prefix = dark.tools[0].lines.find(row => plain(row).includes('1 - x+=1;'));
+      assert.ok(prefix, 'the actual removed-source prefix is present');
+      const prefixNumber = plain(prefix).indexOf('x+=1;') + 3;
+      const reference = new Terminal({ cols: dark.width, rows: 2, allowProposedApi: true });
       try {
-        await new Promise((done) => reference.write(dark.summaryStyles.syntaxNumber, done));
-        const expected = reference.buffer.active.getLine(0).getCell(0);
-        assert.ok(numeric.some((cell) => cell.fg === expected.getFgColor() && cell.fgMode === expected.getFgColorMode()),
-          'wrapped minified numbers retain native syntax foreground on the physical screen');
+        await new Promise((done) => reference.write(prefix, done));
+        const cell = reference.buffer.active.getLine(0).getCell(prefixNumber);
+        assert.equal(cell.getChars(), '1');
+        assert.equal(cell.getFgColor(), expected.fg, 'the actual card prefix retains Pi syntax foreground');
+        assert.equal(cell.getFgColorMode(), expected.fgMode);
       } finally { reference.dispose(); }
+      const suffixRow = dark.tools[0].lines.findLast(row => plain(row).includes('x+=2;'));
+      assert.ok(suffixRow, 'the edit retains its complete changed suffix');
+      const suffixY = dark.screen.findIndex(row => plain(row).trimEnd() === plain(suffixRow).trimEnd());
+      assert.ok(suffixY >= 0, 'the edit card suffix itself is physically visible, not just the following read result');
+      const suffixX = dark.screen[suffixY].indexOf('x+=2;') + 3, suffix = dark.cells[suffixY][suffixX];
+      assert.equal(suffix.text, '2');
+      assert.equal(suffix.fg, neutral.fg, 'text beyond the 8 KiB Pi prefix remains visible in neutral foreground');
+      assert.equal(suffix.fgMode, neutral.fgMode);
       assert.deepEqual(traffic(live), traffic(stock)); assert.deepEqual(readFileSync(wide.session), bytes);
       await live.close();
       for (const mode of ['fullscreen', 'regular']) {

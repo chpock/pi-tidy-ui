@@ -203,7 +203,11 @@ pub async fn run(authority: Arc<Authority>, route: Route) -> Result<(), Fault> {
                 match result { Some(Ok(Ok(()))) => {}, _ => break Err(Fault::started("pipe_error")) }
             },
             bytes = inputs.recv() => {
-                let Some(bytes) = bytes else { break Ok(()); };
+                let Some(bytes) = bytes else {
+                    // Channel closure can win after read_end was polled Pending.
+                    // Only the reader result distinguishes clean EOF from a bad frame.
+                    break (&mut read_end).await.unwrap_or(Err(Fault::not_started("pipe_error")));
+                };
                 if let Some(ticket) = cancellation(&bytes) {
                     if let Some(cancel) = registry.lock().expect("pipe registry poisoned").get(&ticket) { cancel.cancel(); }
                     continue;
