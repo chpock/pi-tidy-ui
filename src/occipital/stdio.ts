@@ -1,11 +1,12 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import type { EventEmitter } from 'node:events';
-import { PROTOCOL_VERSION } from './protocol.ts';
-import { OCCIPITAL_LIMITS } from './limits.ts';
+import type { ReplySize } from './data-json.ts';
+import { SEMANTIC_PROTOCOL_VERSION, SEMANTIC_OPERATIONS } from './semantic-protocol.ts';
+import { HIGHLIGHT_LIMITS } from './limits.ts';
 import { RequestFailure } from './request-failure.ts';
 import type { TransportEnd } from './transport-end.ts';
 
-const DATA_BYTES = OCCIPITAL_LIMITS.wireBytes;
+const DATA_BYTES = HIGHLIGHT_LIMITS.dataWireBytes;
 const CONTROL_REQUEST_BYTES = 4096;
 const CONTROL_REPLY_BYTES = 32 * 1024;
 const CANCEL_BYTES = 4096;
@@ -32,6 +33,8 @@ export interface StdioOptions {
 }
 export interface StdioRequestOptions {
   signal?: AbortSignal; deadlineMs?: number;
+  /** Call-local receipt, populated only for the correlated, admitted reply. */
+  replySize?: ReplySize;
   /** Deliver terminal evidence to its canonical owner even after local cancellation. */
   acceptRetired?: boolean;
   /** Published-provider metadata only: expire the waiter, not the process. */
@@ -53,6 +56,7 @@ export interface StdioStats {
   ownedListeners: number;
 }
 interface Pending {
+  replySize?: ReplySize;
   control: boolean;
   waitOnly: boolean;
   acceptRetired: boolean;
@@ -68,7 +72,7 @@ interface Pending {
 interface Outgoing { ticket: string; cancel: boolean; bytes: Buffer | undefined }
 class StdioError extends RequestFailure {}
 const ignoreSettlement = () => {};
-const operations = new Set(['describe', 'themes.refresh', 'highlight', 'stream.open', 'stream.append', 'stream.close']);
+const operations: ReadonlySet<string> = new Set(SEMANTIC_OPERATIONS);
 function record(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
@@ -224,7 +228,7 @@ export class StdioTransport {
     try {
       if (this.state !== 'running') throw new StdioError('stdio retired');
       const deadline = finiteDuration(options.deadlineMs ?? this.deadlineMs, 'deadline');
-      if (!record(request) || request.v !== PROTOCOL_VERSION || !identifier(request.ticket)
+      if (!record(request) || request.v !== SEMANTIC_PROTOCOL_VERSION || !identifier(request.ticket)
         || typeof request.op !== 'string' || !operations.has(request.op) || Object.hasOwn(request, 'cancel')) throw new StdioError('stdio invalid request header');
       const ticket = request.ticket;
       if (this.pending.has(ticket)) throw new StdioError('stdio active duplicate ticket');
@@ -241,7 +245,7 @@ export class StdioTransport {
       return new Promise((resolve, reject) => {
         const timer = setTimeout(() => this.expire(ticket), deadline);
         timer.unref();
-        const call: Pending = { control, waitOnly: options.waitOnly === true, acceptRetired: options.acceptRetired === true, credit, timer, aborted: false, handedToWrite: false, resolve, reject, signal: options.signal };
+        const call: Pending = { replySize: options.replySize, control, waitOnly: options.waitOnly === true, acceptRetired: options.acceptRetired === true, credit, timer, aborted: false, handedToWrite: false, resolve, reject, signal: options.signal };
         this.pending.set(ticket, call);
         if (options.signal) {
           call.onAbort = () => this.cancel(ticket, call);
@@ -271,7 +275,7 @@ export class StdioTransport {
     if (call.aborted || !this.pending.has(ticket) || this.state !== 'running') return;
     call.aborted = true; this.detachAbort(call);
     // One frame per active call, no application op and no response slot.
-    this.enqueue(encode({ v: PROTOCOL_VERSION, cancel: ticket }, CANCEL_BYTES), ticket, true);
+    this.enqueue(encode({ v: SEMANTIC_PROTOCOL_VERSION, cancel: ticket }, CANCEL_BYTES), ticket, true);
   }
 
   close(): Promise<void> {
@@ -381,7 +385,7 @@ export class StdioTransport {
     let reply: unknown;
     try { reply = JSON.parse(new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes)); }
     catch { this.retire(new StdioError('stdio invalid UTF8/JSON reply')); return; }
-    if (!record(reply) || reply.v !== PROTOCOL_VERSION || !identifier(reply.ticket) || !identifier(reply.instance)
+    if (!record(reply) || reply.v !== SEMANTIC_PROTOCOL_VERSION || !identifier(reply.ticket) || !identifier(reply.instance)
       || !identifier(reply.assets, 256) || (reply.status !== 'ok' && reply.status !== 'error')) {
       this.retire(new StdioError('stdio invalid reply header')); return;
     }
@@ -395,6 +399,7 @@ export class StdioTransport {
         || (reply.error.execution !== 'not_started' && reply.error.execution !== 'started')) {
       this.retire(new StdioError('stdio invalid reply outcome')); return;
     }
+    if (call.replySize) { call.replySize.ticket = reply.ticket; call.replySize.bytes = bytes.length; }
     this.pending.delete(reply.ticket); this.release(call);
     // A late response makes an unsent cancellation unnecessary. Do not leave
     // settled-call frames queued outside the active-call credit reservation.

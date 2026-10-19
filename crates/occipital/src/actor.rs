@@ -1,15 +1,15 @@
 //! Fixed owning threads around the same worker-local scheduler in both I/O modes.
-//! Only owned requests, immutable profiles and guarded encoded replies cross threads.
+//! Only owned requests, immutable catalogues and guarded encoded replies cross threads.
 use crate::{
+    catalogue::{Catalogue, Snapshot as CatalogueSnapshot},
     credit::{Budget, Snapshot},
-    engine::Limits,
     ingress::{self, Incoming, Prepared, Rejection, CONTROL_RESERVATION},
-    profile::Profile,
     protocol::Fault,
     scheduler::{Scheduler, Submission, Ticket, Wake},
+    semantic_engine::Limits,
 };
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     sync::{
         atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
         mpsc::{self, Receiver, RecvTimeoutError, SyncSender, TrySendError},
@@ -40,10 +40,9 @@ struct Front {
     sender: SyncSender<Message>,
     leases: Arc<AtomicUsize>,
 }
-#[derive(Default)]
-struct Profiles {
+struct Publication {
     generation: u64,
-    values: Vec<Arc<Profile>>,
+    snapshot: Arc<CatalogueSnapshot>,
 }
 struct Worker {
     instance: String,
@@ -53,7 +52,7 @@ struct Worker {
     stopped: Arc<AtomicBool>,
     receiver: Receiver<Message>,
     leases: Arc<AtomicUsize>,
-    profiles: Arc<Mutex<Profiles>>,
+    publication: Arc<Mutex<Publication>>,
 }
 struct Hub {
     fronts: Vec<Front>,
@@ -66,7 +65,7 @@ struct Hub {
     budget: Budget,
     controls: Budget,
     limits: Limits,
-    profiles: Arc<Mutex<Profiles>>,
+    publication: Arc<Mutex<Publication>>,
 }
 impl Hub {
     fn now(&self) -> u64 {
@@ -121,7 +120,7 @@ impl Route {
             let _ = sender.try_send(Message::Wake);
         });
         match ingress::prepare(
-            &self.0.scope,
+            (&self.0.scope, &hub.instance),
             bytes,
             hub.now(),
             &hub.budget,
@@ -171,6 +170,7 @@ impl Route {
             hub.now(),
             &hub.budget,
             &hub.limits,
+            &hub.instance,
             Some(wake),
         )?;
         self.dispatch(&hub, submission, ticket)
@@ -239,7 +239,14 @@ impl ActorPool {
             crate::limits::DATA_PER_ROUTE,
         );
         let stopped = Arc::new(AtomicBool::new(false));
-        let profiles = Arc::new(Mutex::new(Profiles::default()));
+        // Finite trusted scope handles are startup assets, never caller names.
+        crate::vocabulary::ScopeId::from_raw(1)
+            .expect("nonempty generated vocabulary")
+            .scope();
+        let publication = Arc::new(Mutex::new(Publication {
+            generation: 0,
+            snapshot: Catalogue::from_os_root(None).snapshot(),
+        }));
         let born = Instant::now();
         let mut fronts: Vec<Front> = Vec::new();
         let mut completions = Vec::new();
@@ -252,7 +259,7 @@ impl ActorPool {
             let worker_budget = budget.clone();
             let worker_instance = instance.clone();
             let worker_limits = limits.clone();
-            let worker_profiles = profiles.clone();
+            let worker_publication = publication.clone();
             let join = match thread::Builder::new()
                 .name(format!("occipital-worker-{index}"))
                 .spawn(move || {
@@ -264,7 +271,7 @@ impl ActorPool {
                         stopped: stop,
                         receiver,
                         leases: observed,
-                        profiles: worker_profiles,
+                        publication: worker_publication,
                     });
                     let _ = done_tx.send(());
                 }) {
@@ -292,7 +299,7 @@ impl ActorPool {
                 budget,
                 controls: Budget::new(ROUTES * CONTROL_RESERVATION, ROUTES, 1),
                 limits,
-                profiles,
+                publication,
             }),
             completions,
         })
@@ -306,9 +313,10 @@ impl ActorPool {
     }
     /// Publish one immutable definition set. Every worker reconciles the latest
     /// generation before its next dispatch; cancellation cannot leave a half-sent
-    /// per-worker update. In-flight Work keeps its immutable profile until settled.
-    pub fn replace_profiles(&self, profiles: Vec<Arc<Profile>>) -> Result<(), Fault> {
-        self.hub.replace_profiles(profiles)
+    /// per-worker update. StyleWork retains its typed immutable definition; source
+    /// leases are unaffected by catalogue publication.
+    pub fn publish_snapshot(&self, snapshot: Arc<CatalogueSnapshot>) -> Result<(), Fault> {
+        self.hub.publish_snapshot(snapshot)
     }
     pub fn stats(&self) -> PoolStats {
         self.hub.stats()
@@ -371,12 +379,17 @@ fn run(worker: Worker) {
         stopped,
         receiver,
         leases,
-        profiles,
+        publication,
     } = worker;
-    let mut profile_generation = 0;
+    let mut catalogue_generation = 0;
 
     // Construction, mutation and destruction of every !Send Work occur here.
-    let mut scheduler = Scheduler::new(instance.clone(), limits, budget);
+    let initial = publication
+        .lock()
+        .expect("publication poisoned")
+        .snapshot
+        .clone();
+    let mut scheduler = Scheduler::with_snapshot(instance.clone(), limits, budget, initial);
     let mut scopes: HashMap<String, Arc<AtomicBool>> = HashMap::new();
     loop {
         if stopped.load(Ordering::Acquire) {
@@ -384,18 +397,16 @@ fn run(worker: Worker) {
         }
         prune(&mut scopes, &mut scheduler);
         let changed = {
-            let current = profiles.lock().expect("profiles poisoned");
-            if current.generation != profile_generation {
-                Some((current.generation, current.values.clone()))
+            let current = publication.lock().expect("publication poisoned");
+            if current.generation != catalogue_generation {
+                Some((current.generation, current.snapshot.clone()))
             } else {
                 None
             }
         };
         if let Some((generation, values)) = changed {
-            scheduler
-                .replace_profiles(values)
-                .expect("validated published profiles");
-            profile_generation = generation;
+            scheduler.publish_snapshot(values);
+            catalogue_generation = generation;
         }
         if stopped.load(Ordering::Acquire) {
             break;
@@ -481,8 +492,8 @@ impl PoolHandle {
     pub async fn bind(&self) -> Result<Route, Fault> {
         self.live()?.bind().await
     }
-    pub fn replace_profiles(&self, profiles: Vec<Arc<Profile>>) -> Result<(), Fault> {
-        self.live()?.replace_profiles(profiles)
+    pub fn publish_snapshot(&self, snapshot: Arc<CatalogueSnapshot>) -> Result<(), Fault> {
+        self.live()?.publish_snapshot(snapshot)
     }
     pub fn stats(&self) -> Result<PoolStats, Fault> {
         Ok(self.live()?.stats())
@@ -532,28 +543,16 @@ impl Hub {
         }
         Ok(Route(owner))
     }
-    fn replace_profiles(&self, profiles: Vec<Arc<Profile>>) -> Result<(), Fault> {
+    fn publish_snapshot(&self, snapshot: Arc<CatalogueSnapshot>) -> Result<(), Fault> {
         if self.stopped.load(Ordering::Acquire) {
             return Err(Fault::not_started("scope_gone"));
         }
-        if profiles.len() > 16 {
-            return Err(Fault::not_started("theme_limit"));
-        }
-        let mut names = HashSet::new();
-        for profile in &profiles {
-            if !names.insert(&profile.name) {
-                return Err(Fault::not_started("theme_limit"));
-            }
-            if let Some(theme) = &profile.theme {
-                crate::profile::validate_theme(theme)?;
-            }
-        }
-        let mut current = self.profiles.lock().expect("profiles poisoned");
+        let mut current = self.publication.lock().expect("publication poisoned");
         current.generation = current
             .generation
             .checked_add(1)
             .ok_or(Fault::not_started("profile_limit"))?;
-        current.values = profiles;
+        current.snapshot = snapshot;
         drop(current);
         self.wake();
         Ok(())

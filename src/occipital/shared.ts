@@ -1,9 +1,10 @@
-import { CAPABILITY, PROTOCOL_VERSION } from './protocol.ts';
-import { OCCIPITAL_LIMITS } from './limits.ts';
+import { SEMANTIC_CAPABILITY, SEMANTIC_PROTOCOL_VERSION, SEMANTIC_OPERATIONS } from './semantic-protocol.ts';
+import { HIGHLIGHT_LIMITS } from './limits.ts';
+import { dataJsonBytes, type ReplySize } from './data-json.ts';
 import { RequestFailure } from './request-failure.ts';
 import type { TransportEnd } from './transport-end.ts';
 
-const DATA_BYTES = OCCIPITAL_LIMITS.wireBytes;
+const DATA_BYTES = HIGHLIGHT_LIMITS.dataWireBytes;
 export const SHARED_LIMITS = Object.freeze({
   dataCalls: 2, controlCalls: 1,
   requestBytes: DATA_BYTES, replyBytes: DATA_BYTES,
@@ -42,6 +43,8 @@ export interface SharedOptions {
 }
 export interface SharedRequestOptions {
   signal?: AbortSignal; deadlineMs?: number;
+  /** Call-local receipt, populated only for the correlated, admitted reply. */
+  replySize?: ReplySize;
   /** Deliver terminal evidence to its canonical owner even after local cancellation. */
   acceptRetired?: boolean;
   /** Published-provider metadata only: expire the waiter, not the connection. */
@@ -64,6 +67,7 @@ export interface SharedStats {
 }
 interface Connection { client: SharedClient; closed: boolean }
 interface Pending {
+  replySize?: ReplySize;
   control: boolean;
   waitOnly: boolean;
   acceptRetired: boolean;
@@ -78,7 +82,7 @@ interface Pending {
   reject: (error: Error) => void;
 }
 class SharedError extends RequestFailure {}
-const operations = new Set(['describe', 'themes.refresh', 'highlight', 'stream.open', 'stream.append', 'stream.close']);
+const operations: ReadonlySet<string> = new Set(SEMANTIC_OPERATIONS);
 const ignoreRejection = () => {};
 const uncertainEnd = (): TransportEnd => 'uncertain';
 function routeEnd(reason: unknown): TransportEnd {
@@ -127,52 +131,12 @@ function field(value: Record<string, unknown>, key: string): unknown {
 
 /** Count plain JSON before stringify, including escapes, without a source-sized temporary. */
 function encodeRequest(request: Record<string, unknown>, cap: number): Uint8Array {
-  let count = 0;
-  const ancestors = new Set<object>();
-  const add = (n: number) => { count += n; if (count > cap) throw new SharedError('shared request byte limit'); };
-  function string(text: string) {
-    add(2);
-    for (let i = 0; i < text.length; i++) {
-      const c = text.charCodeAt(i);
-      if (c < 32) add(c === 8 || c === 9 || c === 10 || c === 12 || c === 13 ? 2 : 6);
-      else if (c === 34 || c === 92) add(2);
-      else if (c < 128) add(1);
-      else if (c < 2048) add(2);
-      else if (c >= 0xd800 && c <= 0xdbff && i + 1 < text.length && text.charCodeAt(i + 1) >= 0xdc00 && text.charCodeAt(i + 1) <= 0xdfff) { add(4); i++; }
-      else if (c >= 0xd800 && c <= 0xdfff) throw new SharedError('shared invalid request JSON surrogate');
-      else add(3);
-    }
+  let count: number;
+  try { count = dataJsonBytes(request, cap, true); }
+  catch (error) {
+    throw new SharedError(error instanceof Error && error.message === 'data JSON byte limit'
+      ? 'shared request byte limit' : 'shared invalid request JSON');
   }
-  function visit(item: unknown, depth: number) {
-    if (depth > 64) throw new SharedError('shared invalid request JSON depth');
-    if (item === null) { add(4); return; }
-    if (typeof item === 'string') { string(item); return; }
-    if (typeof item === 'boolean') { add(item ? 4 : 5); return; }
-    if (typeof item === 'number' && Number.isFinite(item)) { add(String(item).length); return; }
-    if (typeof item !== 'object' || !item || ancestors.has(item)) throw new SharedError('shared invalid request JSON');
-    const array = Array.isArray(item), proto = Object.getPrototypeOf(item);
-    if (array ? proto !== Array.prototype : proto !== Object.prototype && proto !== null) throw new SharedError('shared invalid request JSON object');
-    // No getters, toJSON hooks, inherited hooks, sparse arrays or non-JSON values.
-    if ('toJSON' in item) throw new SharedError('shared invalid request JSON hook');
-    ancestors.add(item); add(2);
-    if (array) {
-      for (let i = 0; i < item.length; i++) {
-        const d = Object.getOwnPropertyDescriptor(item, String(i));
-        if (!d || !('value' in d)) throw new SharedError('shared invalid request JSON accessor');
-        if (i) add(1); visit(d.value, depth + 1);
-      }
-    } else {
-      let entries = 0;
-      for (const key in item) {
-        if (!Object.hasOwn(item, key)) continue;
-        const d = Object.getOwnPropertyDescriptor(item, key)!;
-        if (!('value' in d)) throw new SharedError('shared invalid request JSON accessor');
-        if (entries++) add(1); string(key); add(1); visit(d.value, depth + 1);
-      }
-    }
-    ancestors.delete(item);
-  }
-  visit(request, 0);
   const json = JSON.stringify(request);
   if (Buffer.byteLength(json) !== count) throw new SharedError('shared invalid request JSON');
   return Buffer.from(json, 'utf8');
@@ -248,7 +212,7 @@ export class SharedTransport {
       const deadlineMs = duration(options.deadlineMs ?? this.deadlineMs);
       const ticket = record(request) ? field(request, 'ticket') : undefined;
       const op = record(request) ? field(request, 'op') : undefined;
-      if (!record(request) || field(request, 'v') !== PROTOCOL_VERSION || !identifier(ticket)
+      if (!record(request) || field(request, 'v') !== SEMANTIC_PROTOCOL_VERSION || !identifier(ticket)
         || typeof op !== 'string' || !operations.has(op) || Object.hasOwn(request, 'cancel')) throw new SharedError('shared invalid request header');
       if (this.pending.has(ticket)) throw new SharedError('shared active duplicate ticket');
       if (options.signal?.aborted) throw new SharedError('shared aborted before dispatch');
@@ -260,7 +224,7 @@ export class SharedTransport {
       if (!control && stats.dataReservedBytes + credit > this.dataReservation) throw new SharedError('shared byte capacity');
       this.serializations = Math.min(Number.MAX_SAFE_INTEGER, this.serializations + 1);
       this.serializedBytes = Math.min(Number.MAX_SAFE_INTEGER, this.serializedBytes + bytes.byteLength);
-      return SharedTransport.dispatch(new WeakRef(this), this.connection.client, this.route, ticket, bytes, control, credit, deadlineMs, options.signal, options.waitOnly === true, options.acceptRetired === true);
+      return SharedTransport.dispatch(new WeakRef(this), this.connection.client, this.route, ticket, bytes, control, credit, deadlineMs, options.signal, options.waitOnly === true, options.acceptRetired === true, options.replySize);
     } catch (error) {
       const message=error instanceof SharedError?error.message:'shared invalid request JSON';
       return Promise.reject(new SharedError(message,'not_started'));
@@ -310,9 +274,9 @@ export class SharedTransport {
   // Factory scope contains no caller request/source; drop the temporary byte alias
   // after the public SDK has taken it. SDK-owned copies remain outside our counters.
   private static dispatch(owner: WeakRef<SharedTransport>, client: SharedClient, route: SharedRouteHandle, ticket: string,
-    bytes: Uint8Array | undefined, control: boolean, credit: number, deadlineMs: number, signal?: AbortSignal, waitOnly = false, acceptRetired = false): Promise<unknown> {
+    bytes: Uint8Array | undefined, control: boolean, credit: number, deadlineMs: number, signal?: AbortSignal, waitOnly = false, acceptRetired = false, replySize?: ReplySize): Promise<unknown> {
     return new Promise((resolve, reject) => {
-      const call: Pending = { control, waitOnly, acceptRetired, waitExpired: false, bytes: bytes!.byteLength, credit, aborted: false, resolve, reject, signal };
+      const call: Pending = { replySize, control, waitOnly, acceptRetired, waitExpired: false, bytes: bytes!.byteLength, credit, aborted: false, resolve, reject, signal };
       call.timer = SharedTransport.requestTimer(owner, ticket, deadlineMs);
       call.timer.unref(); owner.deref()!.pending.set(ticket, call);
       if (signal) {
@@ -384,13 +348,19 @@ export class SharedTransport {
   private settle(ticket: string, reply: unknown) {
     if (this.state !== 'ready') return;
     const call = this.pending.get(ticket);
-    if (!call || !record(reply) || reply.v !== PROTOCOL_VERSION || reply.ticket !== ticket || !identifier(reply.ticket)
+    let bytes = 0;
+    if (call) {
+      try { bytes = dataJsonBytes(reply, call.control ? SHARED_LIMITS.controlReplyBytes : this.dataBytes); }
+      catch { this.retire(new SharedError('shared reply byte limit or invalid JSON')); return; }
+    }
+    if (!call || !record(reply) || reply.v !== SEMANTIC_PROTOCOL_VERSION || reply.ticket !== ticket || !identifier(reply.ticket)
       || !identifier(reply.instance) || !identifier(reply.assets, 256) || (reply.status !== 'ok' && reply.status !== 'error')
       || (reply.status === 'ok' ? !Object.hasOwn(reply, 'body') || Object.hasOwn(reply, 'error')
         : Object.hasOwn(reply, 'body') || !record(reply.error) || !identifier(reply.error.code)
           || (reply.error.execution !== 'not_started' && reply.error.execution !== 'started'))) {
       this.retire(new SharedError('shared invalid reply correlation/header/outcome')); return;
     }
+    if (call.replySize) { call.replySize.ticket = ticket; call.replySize.bytes = bytes; }
     this.pending.delete(ticket); release(call);
     if (call.aborted && !call.acceptRetired) call.reject(new SharedError('shared aborted after settlement')); else call.resolve(reply);
   }
@@ -402,7 +372,7 @@ export class SharedTransport {
       const client = await sdk.SubcClient.connect({ connectionFile, handshakeTimeoutMs: timeout, onControlPush: SharedTransport.controlObserver(owner) });
       connection = { client, closed: false };
       if (!owner.deref()?.acceptConnection(connection)) { closeConnection(connection); return; }
-      const module = await client.resolveProvider(CAPABILITY);
+      const module = await client.resolveProvider(SEMANTIC_CAPABILITY);
       if (owner.deref()?.state !== 'initializing') { closeConnection(connection); return; }
       if (!identifier(module, 256)) throw new SharedError('shared invalid provider');
       const route = await client.routeOpen({ kind: 'internal_service', module_id: module, service_id: 'syntax' }, identity, { consumerIdentity: null });

@@ -10,6 +10,8 @@ import { terminalAppearanceTracking } from "../../../src/index.ts";
 import { colorToHex, rgbColor } from "@earendil-works/pi-tui";
 import { resolveTerminalDefaults, parseThemeDefaults, TerminalColors, type DefaultColors } from "../../../src/terminal-colors.ts";
 import { menuPage, setAppearance, setColors } from "../../helpers/menu-driver.ts";
+import { RuntimeHealth } from '../../../src/runtime-health.ts';
+import type { DiagnosticSink } from '../../../src/diagnostics.ts';
 import { Tool, extensionHarness } from "../../fixtures/sdk-contract-support.ts";
 
 test("terminal defaults resolve independent explicit values, own vars, zero, BOM and SDK color forms", () => {
@@ -27,9 +29,9 @@ test("terminal defaults resolve independent explicit values, own vars, zero, BOM
   assert.throws(() => parseThemeDefaults("broken"));
 });
 
-function terminalColorFixture(query?: ConstructorParameters<typeof TerminalColors>[0]["query"], defaults?: DefaultColors) {
+function terminalColorFixture(query?: ConstructorParameters<typeof TerminalColors>[0]["query"], defaults?: DefaultColors, diagnostic?: DiagnosticSink) {
   const theme = {
-    name: "fixture", sourcePath: "/fixture.json", fg: (_role: string, text: string) => text,
+    name: "fixture", sourcePath: "/fixture.json" as string | undefined, fg: (_role: string, text: string) => text,
     bg: (_role: string, text: string) => text, style: (text: string) => text,
     colors: { toolPendingBg: rgbColor(10, 11, 12), userMessageBg: rgbColor(10, 11, 12), toolDiffAdded: rgbColor(0, 255, 0), text: rgbColor(229, 229, 231) },
     getFgAnsi: (role: string): string => role === "text" ? "\x1b[39m" : "\x1b[38;2;0;255;0m",
@@ -39,7 +41,7 @@ function terminalColorFixture(query?: ConstructorParameters<typeof TerminalColor
   let content = '{"colors":{"text":"#eeeeee"},"export":{"pageBg":"#123456"}}';
   const packets: string[] = [], warnings: string[] = [], renders: boolean[] = [];
   let reads = 0, changes = 0;
-  const view = new TerminalColors({ snapshot: () => snapshot, source: () => undefined, query, defaults,
+  const view = new TerminalColors({ snapshot: () => snapshot, source: () => undefined, query, defaults, diagnostic,
     read(path) { assert.equal(path, "/fixture.json"); reads++; return content; },
     write: data => { packets.push(data); }, warn: message => { warnings.push(message); }, changed: (force = false) => { changes++; renders.push(force); } });
   return { view, snapshot, packets, warnings, renders, get reads() { return reads; }, get changes() { return changes; }, setContent(value: string) { content = value; } };
@@ -63,6 +65,29 @@ test("terminal defaults controller applies once, preserves native theme, and per
   await terminalMicrotasks(); assert.deepEqual(fixture.view.stats(), counters); assert.equal(fixture.reads, 1);
   fixture.view.dispose(); assert.equal(fixture.packets.at(-1), "\x1b]111\x07\x1b]110\x07");
   fixture.view.dispose(); assert.equal(fixture.packets.length, 2);
+});
+
+test('terminal defaults known equal background retains trusted projection identity across warm frames and later changes', async () => {
+  const f = terminalColorFixture();
+  f.setContent('{"colors":{"text":""},"export":{"pageBg":"#0a0b0c"}}');
+  const native = f.snapshot.theme, original = native.colors;
+  try {
+    assert.equal(f.view.palette(native), native, 'unknown defaults must not project fallback guesses');
+    f.view.observe(); await terminalMicrotasks();
+    const known = f.view.palette(native);
+    assert.notEqual(known.colors!.toolPendingBg, original.toolPendingBg, 'equal RGB still carries known background provenance');
+    assert.equal(colorToHex(known.colors!.toolPendingBg!), '#0a0b0c');
+    assert.equal(known.colors!.toolDiffAdded, original.toolDiffAdded, 'explicit native role stays owned by Pi');
+    const counters = f.view.stats();
+    for (let i = 0; i < 50; i++) { f.view.observe(); assert.equal(f.view.palette(native), known); }
+    await terminalMicrotasks(); assert.deepEqual(f.view.stats(), counters);
+    f.setContent('{"colors":{"text":""},"export":{"pageBg":"#123456"}}');
+    f.view.observe(true); await terminalMicrotasks();
+    const changed = f.view.palette(native);
+    assert.notEqual(changed, known); assert.equal(colorToHex(changed.colors!.toolPendingBg!), '#123456');
+    assert.equal(native.colors, original); assert.equal(colorToHex(original.toolPendingBg), '#0a0b0c');
+    assert.equal(native.getBgAnsi('toolPendingBg'), '\x1b[49m');
+  } finally { f.view.dispose(); }
 });
 
 test("terminal defaults auto/unknown guard releases synchronously and rejects queued work", async () => {
@@ -329,4 +354,38 @@ test('terminal repaint: production host forwards forced mode without invalidatin
     assert.equal(requests.filter(Boolean).length, 2);
     assert.equal(invalidations, before, 'terminal repaint does not globally invalidate component caches');
   } finally { await h.events.get('session_shutdown')!({}, h.ctx); f.view.dispose(); rmSync(directory, { recursive: true, force: true }); }
+});
+
+test('runtime health: terminal-color errors notify once without journal, recover on valid data, retire on Off', async () => {
+  const notices: string[] = [], health = new RuntimeHealth(message => notices.push(message));
+  const f = terminalColorFixture(undefined, undefined, health.sink(() => {}));
+  f.setContent('broken'); f.view.observe(); await terminalMicrotasks();
+  assert.equal(health.snapshot().errors, 1); assert.equal(health.snapshot().active, 1); assert.equal(notices.length, 1);
+  assert.equal(f.warnings.length, 0, 'unified health notification replaces the duplicate legacy warning');
+  f.view.observe(true); await terminalMicrotasks(); assert.equal(health.snapshot().errors, 1);
+  f.setContent('{"colors":{"text":"#eeeeee"},"export":{"pageBg":"#123456"}}');
+  f.view.observe(true); await terminalMicrotasks(); assert.equal(health.snapshot().active, 0); assert.equal(health.snapshot().last?.state, 'recovered');
+  f.setContent('broken'); f.view.observe(true); await terminalMicrotasks(); assert.equal(health.snapshot().active, 1);
+  f.snapshot.enabled = false; f.view.observe(); assert.equal(health.snapshot().active, 0); assert.equal(health.snapshot().last?.state, 'released');
+  f.view.dispose();
+});
+
+for (const target of ['no-source', 'valid-source'] as const) test(`terminal defaults: switching from broken theme to ${target} retires only its obsolete health incident`, async () => {
+  const notices: string[] = [], health = new RuntimeHealth(message => notices.push(message));
+  const f = terminalColorFixture(undefined, undefined, health.sink(() => {})), original = f.snapshot.theme;
+  try {
+    f.setContent('broken'); f.view.observe(); await terminalMicrotasks();
+    assert.equal(health.snapshot().active, 1); assert.equal(f.view.status().state, 'source error');
+    if (target === 'no-source') { f.snapshot.theme = { ...original, name: 'generated', sourcePath: undefined }; f.snapshot.configured = 'generated'; }
+    else f.setContent('{"colors":{"text":"#eeeeee"},"export":{"pageBg":"#123456"}}');
+    f.view.observe(true); await terminalMicrotasks();
+    const state = health.snapshot(); assert.equal(state.active, 0); assert.equal(state.errors, 1);
+    assert.equal(state.last?.state, target === 'no-source' ? 'released' : 'recovered');
+    const warm = f.view.stats(), reads = f.reads;
+    for (let i = 0; i < 20; i++) f.view.observe(); await terminalMicrotasks();
+    assert.deepEqual(f.view.stats(), warm); assert.equal(f.reads, reads); assert.equal(notices.length, 1);
+    f.snapshot.theme = original; f.snapshot.configured = 'fixture'; f.setContent('broken'); f.view.observe(true); await terminalMicrotasks();
+    assert.equal(health.snapshot().active, 1); assert.equal(health.snapshot().errors, 2, 'same failure after abandoning its source is a new incident');
+    assert.equal(notices.length, 2);
+  } finally { f.view.dispose(); health.dispose(); }
 });

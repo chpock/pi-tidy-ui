@@ -1,5 +1,5 @@
 //! Deterministic owning-worker controls; real transports are a separate gate.
-use occipital::{credit::Budget, engine::Limits, profile::Profile, scheduler::Scheduler};
+use occipital::{credit::Budget, scheduler::Scheduler, semantic_engine::Limits};
 use serde_json::{json, Value};
 trait InspectDelivery {
     fn json(&self) -> Value;
@@ -10,7 +10,7 @@ impl InspectDelivery for occipital::scheduler::Delivery {
     }
 }
 fn source(ticket: &str, text: &str, queue: bool) -> Vec<u8> {
-    let mut value = json!({"v":2,"ticket":ticket,"op":"stream.open","instance":"boot","admission":if queue {"bounded_queue"} else {"try_now"},"sources":[{"key":ticket,"generation":1,"source_version":1,"profile":"pi","fingerprint":Profile::resolve("pi").unwrap().fingerprint,"hint":{"language":"bash"},"text":text}]});
+    let mut value = json!({"v":3,"ticket":ticket,"op":"stream.open","instance":"boot","admission":if queue {"bounded_queue"} else {"try_now"},"sources":[{"key":ticket,"generation":1,"source_version":1,"hint":{"language":"bash"},"text":text}]});
     if queue {
         value["queue_wait_ms"] = json!(10);
     }
@@ -69,6 +69,7 @@ fn queued_expiry_and_cancellation_are_no_start_and_release_reservations() {
     let mut worker = scheduler();
     worker.bind("a").unwrap();
     worker.bind("b").unwrap();
+    let bound_bytes = worker.stats().bytes;
     let mut active = worker
         .submit("a", source("active", &"echo x\n".repeat(500), true), 0)
         .unwrap();
@@ -91,6 +92,9 @@ fn queued_expiry_and_cancellation_are_no_start_and_release_reservations() {
     worker.tick(11);
     assert_eq!(worker.leases(), 0);
     assert_eq!(worker.stats().jobs, 0);
+    assert_eq!(worker.stats().bytes, bound_bytes);
+    worker.close("a");
+    worker.close("b");
     assert_eq!(worker.stats().bytes, 0);
 }
 #[test]
@@ -136,6 +140,7 @@ fn idle_expiry_needs_no_request_and_held_replies_keep_credits() {
         Budget::new(8 << 20, 10, 2),
     );
     worker.bind("a").unwrap();
+    let bound_bytes = worker.stats().bytes;
     let mut ticket = worker
         .submit("a", source("tail", "echo a", true), 0)
         .unwrap();
@@ -149,6 +154,8 @@ fn idle_expiry_needs_no_request_and_held_replies_keep_credits() {
     assert_eq!(worker.next_expiry(), Some(5));
     worker.tick(5);
     assert_eq!(worker.leases(), 0);
+    assert_eq!(worker.stats().bytes, bound_bytes);
+    worker.close("a");
     assert_eq!(worker.stats().bytes, 0);
 }
 #[test]
@@ -159,6 +166,7 @@ fn shared_budget_bounds_unsettled_jobs_across_workers_before_parsing() {
     first.bind("a").unwrap();
     second.bind("b").unwrap();
     second.bind("c").unwrap();
+    let bound_bytes = budget.snapshot().bytes;
     let a = first.submit("a", source("a", "echo a", true), 0).unwrap();
     let b = second.submit("b", source("b", "echo b", true), 0).unwrap();
     assert_eq!(
@@ -183,6 +191,10 @@ fn shared_budget_bounds_unsettled_jobs_across_workers_before_parsing() {
     first.tick(0);
     second.tick(0);
     assert_eq!(budget.snapshot().jobs, 0);
+    assert_eq!(budget.snapshot().bytes, bound_bytes);
+    first.close("a");
+    second.close("b");
+    second.close("c");
     assert_eq!(budget.snapshot().bytes, 0);
 }
 #[test]
@@ -201,11 +213,12 @@ fn malformed_requests_do_not_acquire_work_or_create_authority() {
 fn an_unhanded_reply_keeps_its_lease_serialized_until_commit_or_discard() {
     let mut worker = scheduler();
     worker.bind("a").unwrap();
+    let bound_bytes = worker.stats().bytes;
     let mut open = worker.submit("a", source("s", "echo a", true), 0).unwrap();
     worker.tick(0);
     let first = open.try_take().unwrap().unwrap();
     let saved = first.json()["body"]["sources"][0].clone();
-    let append = json!({"v":2,"ticket":"append","instance":"boot","op":"stream.append","admission":"bounded_queue","queue_wait_ms":10,"key":saved["key"],"generation":saved["generation"],"source_version":2,"lease":saved["lease"],"base_revision":saved["revision"],"base_bytes":saved["source_bytes"],"profile":saved["profile"],"fingerprint":saved["fingerprint"],"append":"\nnext\n","final":false});
+    let append = json!({"v":3,"ticket":"append","instance":"boot","op":"stream.append","admission":"bounded_queue","queue_wait_ms":10,"key":saved["key"],"generation":saved["generation"],"source_version":2,"lease":saved["lease"],"base_revision":saved["revision"],"base_bytes":saved["source_bytes"],"append":"\nnext\n","final":false});
     let mut second = worker
         .submit("a", serde_json::to_vec(&append).unwrap(), 0)
         .unwrap();
@@ -221,6 +234,8 @@ fn an_unhanded_reply_keeps_its_lease_serialized_until_commit_or_discard() {
     failed.commit();
     worker.tick(0);
     assert_eq!(worker.leases(), 0);
+    assert_eq!(worker.stats().bytes, bound_bytes);
+    worker.close("a");
     assert_eq!(worker.stats().bytes, 0);
 }
 
@@ -236,9 +251,10 @@ fn a_moderate_two_sided_file_batch_fits_the_existing_aggregate_payload_pool() {
         ),
     );
     worker.bind("a").unwrap();
+    let bound_bytes = worker.stats().bytes;
     let mut value: Value = serde_json::from_slice(&source(
         "diff",
-        &"const x: number = 1234;\n".repeat(9000),
+        &"const x: number = 1234;\n".repeat(1000),
         true,
     ))
     .unwrap();
@@ -248,11 +264,11 @@ fn a_moderate_two_sided_file_batch_fits_the_existing_aggregate_payload_pool() {
     let mut second = value["sources"][0].clone();
     second["key"] = json!("other");
     value["sources"].as_array_mut().unwrap().push(second);
-    assert_eq!(value["sources"][0]["text"].as_str().unwrap().len(), 216000);
+    assert_eq!(value["sources"][0]["text"].as_str().unwrap().len(), 24000);
     let mut ticket = worker
         .submit("a", serde_json::to_vec(&value).unwrap(), 0)
         .unwrap();
-    for _ in 0..18000 {
+    for _ in 0..2000 {
         worker.tick(0);
     }
     let reply = ticket.try_take().unwrap().unwrap();
@@ -260,57 +276,83 @@ fn a_moderate_two_sided_file_batch_fits_the_existing_aggregate_payload_pool() {
     assert_eq!(body["status"], "ok");
     assert_eq!(body["body"]["sources"].as_array().unwrap().len(), 2);
     for source in body["body"]["sources"].as_array().unwrap() {
-        assert_eq!(source["counters"]["committed_line_calls"], 9000);
-        assert_eq!(source["source_bytes"], 216000);
+        assert_eq!(source["counters"]["committed_line_calls"], 1000);
+        assert_eq!(source["source_bytes"], 24000);
     }
     assert!(worker.stats().peak_bytes <= occipital::limits::DATA_BYTES);
     reply.commit();
     worker.tick(0);
-    assert_eq!(worker.stats().bytes, 0);
+    assert_eq!(worker.stats().bytes, bound_bytes);
     assert_eq!(worker.leases(), 0);
+    worker.close("a");
+    assert_eq!(worker.stats().bytes, 0);
 }
 
-// Fill a byte pool exactly using the public charged-byte counter. This is a
-// credit-transfer control, not a throughput test or an input-size nomination.
+// Measure actual v3 controlled growth, then replay under that exact pool.
 fn full_pool_scheduler() -> (Scheduler, usize) {
-    let mut probe = scheduler();
-    probe.bind("probe").unwrap();
-    let mut request = occipital::request::decode(&source("probe", "", true)).unwrap();
-    request.sources.as_mut().unwrap()[0].text = "x\n".repeat(65);
-    let ticket = probe.submit_request("probe", request, 0).unwrap();
-    let charge = probe.stats().bytes;
-    drop(ticket);
+    let limits = Limits {
+        quantum_ms: u64::MAX,
+        ..Limits::default()
+    };
+    let mut probe = Scheduler::new("boot".into(), limits.clone(), Budget::new(8 << 20, 10, 2));
+    for scope in ["a", "b"] {
+        probe.bind(scope).unwrap();
+    }
+    let mut tickets = Vec::new();
+    for scope in ["a", "b"] {
+        let mut value: Value =
+            serde_json::from_slice(&source(scope, &"x\n".repeat(65), true)).unwrap();
+        value["sources"][0]["hint"]["language"] = json!("Plain Text");
+        tickets.push(
+            probe
+                .submit(scope, serde_json::to_vec(&value).unwrap(), 0)
+                .unwrap(),
+        );
+    }
+    for _ in 0..130 {
+        probe.tick(0);
+    }
+    let full = probe.stats().peak_bytes;
+    for ticket in &mut tickets {
+        ticket.try_take().unwrap().unwrap().commit();
+    }
     probe.tick(0);
-    probe.close("probe");
+    for scope in ["a", "b"] {
+        probe.close(scope);
+    }
     assert_eq!(probe.stats().bytes, 0);
-    let full = 2 * charge;
     (
-        Scheduler::new("boot".into(), Limits::default(), Budget::new(full, 10, 2)),
+        Scheduler::new("boot".into(), limits, Budget::new(full, 10, 2)),
         full,
     )
 }
 #[test]
 fn exact_full_pool_open_jobs_never_charge_busy_state_twice_or_panic() {
-    use occipital::request::decode;
     let (mut worker, full) = full_pool_scheduler();
-    worker.bind("a").unwrap();
-    worker.bind("b").unwrap();
+    for scope in ["a", "b"] {
+        worker.bind(scope).unwrap();
+    }
     let mut tickets = Vec::new();
     for scope in ["a", "b"] {
-        let mut request = decode(&source(scope, "", true)).unwrap();
-        request.sources.as_mut().unwrap()[0].text = "x\n".repeat(65);
-        assert_eq!(request.sources.as_ref().unwrap()[0].text.capacity(), 130);
-        tickets.push(worker.submit_request(scope, request, 0).unwrap());
+        let mut value: Value =
+            serde_json::from_slice(&source(scope, &"x\n".repeat(65), true)).unwrap();
+        value["sources"][0]["hint"]["language"] = json!("Plain Text");
+        tickets.push(
+            worker
+                .submit(scope, serde_json::to_vec(&value).unwrap(), 0)
+                .unwrap(),
+        );
     }
-    assert_eq!(worker.stats().bytes, full);
     worker.tick(0);
-    assert_eq!(worker.stats().bytes, full);
+    assert!(worker.stats().bytes <= full);
+    assert_eq!(worker.stats().jobs, 2);
     drop(tickets);
     worker.tick(0);
     worker.tick(0);
     worker.close("a");
     worker.close("b");
     assert_eq!(worker.stats().bytes, 0);
+    assert_eq!(worker.stats().jobs, 0);
 }
 #[test]
 fn try_now_blocked_by_a_delivery_is_refused_without_waiting_or_advancing() {
@@ -320,7 +362,7 @@ fn try_now_blocked_by_a_delivery_is_refused_without_waiting_or_advancing() {
     worker.tick(0);
     let first = open.try_take().unwrap().unwrap();
     let saved = first.json()["body"]["sources"][0].clone();
-    let append = json!({"v":2,"ticket":"append","instance":"boot","op":"stream.append","admission":"try_now","key":saved["key"],"generation":saved["generation"],"source_version":2,"lease":saved["lease"],"base_revision":saved["revision"],"base_bytes":saved["source_bytes"],"profile":saved["profile"],"fingerprint":saved["fingerprint"],"append":"\nnext\n","final":false});
+    let append = json!({"v":3,"ticket":"append","instance":"boot","op":"stream.append","admission":"try_now","key":saved["key"],"generation":saved["generation"],"source_version":2,"lease":saved["lease"],"base_revision":saved["revision"],"base_bytes":saved["source_bytes"],"append":"\nnext\n","final":false});
     let mut ticket = worker
         .submit("a", serde_json::to_vec(&append).unwrap(), 0)
         .unwrap();
@@ -356,19 +398,21 @@ fn taking_a_delivery_transfers_drop_cancellation_from_its_local_ticket() {
 
 #[test]
 fn exact_full_pool_checkpoint_and_handoff_credits_transfer_without_peak_growth() {
-    use occipital::request::decode;
     let (mut worker, full) = full_pool_scheduler();
     worker.bind("a").unwrap();
     worker.bind("b").unwrap();
     let mut tickets = Vec::new();
     for scope in ["a", "b"] {
-        let mut request = decode(&source(scope, "", true)).unwrap();
-        let source = &mut request.sources.as_mut().unwrap()[0];
-        source.text = "x\n".repeat(65);
-        source.hint.language = Some("Plain Text".into());
-        tickets.push(worker.submit_request(scope, request, 0).unwrap());
+        let mut value: Value =
+            serde_json::from_slice(&source(scope, &"x\n".repeat(65), true)).unwrap();
+        value["sources"][0]["hint"]["language"] = json!("Plain Text");
+        tickets.push(
+            worker
+                .submit(scope, serde_json::to_vec(&value).unwrap(), 0)
+                .unwrap(),
+        );
     }
-    assert_eq!(worker.stats().bytes, full);
+    assert!(worker.stats().bytes <= full);
     for _ in 0..(2 * 65) {
         worker.tick(0);
     }

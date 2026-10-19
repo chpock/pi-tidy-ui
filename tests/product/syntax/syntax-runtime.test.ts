@@ -5,27 +5,19 @@ import { setImmediate as turn } from 'node:timers/promises';
 import { SyntaxRuntime } from '../../../src/syntax/runtime.ts';
 import type { ProviderTransport } from '../../../src/occipital/provider.ts';
 import type { TransportEnd } from '../../../src/occipital/transport-end.ts';
-import { OCCIPITAL_LIMITS } from '../../../src/occipital/limits.ts';
+import { semanticDescriptor } from '../../fixtures/semantic-provider.ts';
+import { CARD_ROLES, type CardRole } from '../../../src/occipital/semantic-codec.ts';
+import type { ConcreteStyle } from '../../../src/syntax/style-materialization.ts';
+import type { SourceController } from '../../../src/occipital/controller.ts';
 import type { SettingsLoadResult, SettingsSaveResult, SyntaxTheme } from '../../../src/settings.ts';
 
-const profile = { id: 'pi', label: 'Pi palette', fingerprint: 'a'.repeat(64) };
 function deferred<T>() {
   let resolve!: (value: T) => void;
   const promise = new Promise<T>(done => { resolve = done; });
   return { promise, resolve };
 }
 function descriptor(ticket: unknown) {
-  return { v: 2, ticket, instance: 'runtime', assets: 'assets', status: 'ok', body: {
-    kind: 'descriptor', backend_version: '0.1.0-test', protocol_version: 2, category_version: 1, assets: 'assets',
-    capability: 'syntax-highlight/v2', service: 'syntax', operations: ['describe', 'themes.refresh', 'highlight', 'stream.open', 'stream.append', 'stream.close'],
-    modes: ['one_shot', 'growing'], admission: ['try_now', 'bounded_queue'], catalogue_revision: 0, profiles: [profile], diagnostic: null,
-    runtime: { pid: 1, routes: 1, leases: 0, data_bytes: 0, data_jobs: 0, queued: 0, control_bytes: 0, control_jobs: 0 },
-    limits: { request_bytes: OCCIPITAL_LIMITS.wireBytes, reply_bytes: OCCIPITAL_LIMITS.wireBytes,
-      control_request_bytes: 4096, control_reply_bytes: 32768, source_bytes: OCCIPITAL_LIMITS.sourceBytes,
-      line_bytes: 65536, batch_sources: 8, queue_wait_ms: 1000, state_pool_bytes: OCCIPITAL_LIMITS.retainedBytes,
-      leases: 4096, leases_per_route: 512, runs: OCCIPITAL_LIMITS.runs, styles: OCCIPITAL_LIMITS.styles,
-      idle_ms: 300000, age_ms: 3600000, quantum_ms: 2, data_per_route: 2, control_per_route: 1, routes: 8, workers: 2 },
-  } };
+  return semanticDescriptor(ticket, 'runtime', []);
 }
 class Peer implements ProviderTransport {
   private termination = deferred<TransportEnd>();
@@ -34,6 +26,7 @@ class Peer implements ProviderTransport {
   calls: { request: Record<string, any>; reply: ReturnType<typeof deferred<unknown>> }[] = [];
   closes = 0;
   request(request: Record<string, unknown>) {
+    assert.equal(request.v, 3);
     const reply = deferred<unknown>(); this.calls.push({ request, reply });
     if (request.op === 'describe' || request.op === 'themes.refresh') reply.resolve(descriptor(request.ticket));
     return reply.promise;
@@ -41,10 +34,12 @@ class Peer implements ProviderTransport {
   answer(index: number) {
     const { request: r, reply } = this.calls[index]!, s = r.sources[0];
     const bytes = Buffer.byteLength(s.text);
-    reply.resolve({ v: 2, ticket: r.ticket, instance: 'runtime', assets: 'assets', status: 'ok', body: {
-      kind: 'source', sources: [{ key: s.key, generation: s.generation, source_version: s.source_version,
-        profile: s.profile, fingerprint: s.fingerprint, revision: 1, replace_from: 0, source_bytes: bytes,
-        committed_bytes: bytes, complete: true, styles: [{ role: 'syntaxKeyword' }], runs: [bytes, 0],
+    assert.equal(Object.hasOwn(s, 'profile'), false, 'v3 SOURCE is theme-independent');
+    assert.equal(Object.hasOwn(s, 'fingerprint'), false);
+    reply.resolve({ v: 3, ticket: r.ticket, instance: 'runtime', assets: 'assets', status: 'ok', body: {
+      kind: 'source', vocabulary: 'a'.repeat(64), sources: [{ key: s.key, generation: s.generation, source_version: s.source_version,
+        revision: 1, replace_from: 0, source_bytes: bytes,
+        committed_bytes: bytes, complete: true, contexts: [[0, 1]], runs: [bytes, 1],
         counters: { committed_line_calls: 0, committed_line_bytes: 0, tail_calls: 1, tail_bytes: bytes } }],
     } });
   }
@@ -64,9 +59,11 @@ class Store {
   }
 }
 function presentation() {
-  const calls = { metadata: 0, keys: [] as string[][] };
-  return { active: true, calls, syntaxMetadataChanged() { calls.metadata++; },
-    syntaxSourceChanged(keys: readonly string[]) { calls.keys.push([...keys]); } };
+  const calls = { metadata: 0, keys: [] as string[][], groups: [] as number[][], order: [] as string[] };
+  return { active: true, calls, syntaxMetadataChanged() { calls.metadata++; calls.order.push('metadata'); },
+    syntaxSourceChanged(keys: readonly string[], groups?: readonly number[]) {
+      calls.keys.push([...keys]); calls.groups.push([...(groups ?? [])]); calls.order.push('source');
+    } };
 }
 const runtimes = new Set<SyntaxRuntime>();
 function fixture(enabled = true) {
@@ -84,6 +81,25 @@ afterEach(async () => { for (const runtime of runtimes) await runtime.dispose();
 function demand(runtime: SyntaxRuntime, key = 'one') {
   const p = runtime.snapshot().effective!;
   assert.ok(p); return { key, version: 1, text: 'x', complete: true, profile: p.id, fingerprint: p.fingerprint };
+}
+
+const definition = { revision: 1 as const, binding_slots: 0,
+  default: { foreground: { kind: 'inherit' as const }, background: { kind: 'inherit' as const }, attributes: 0, attribute_mask: 0 }, rules: [] };
+function localSelection(revision = 1) {
+  const style: ConcreteStyle = { foreground: { kind: 'rgb', r: revision, g: 2, b: 3 }, background: { kind: 'terminal-default' }, attributes: 0 };
+  return { kind: 'client' as const, definition, bindingRevision: revision, palette: `local:${revision}`, bindings: [],
+    roles: Object.fromEntries(CARD_ROLES.map(role => [role, style])) as Record<CardRole, ConcreteStyle> };
+}
+function emptyPreparation(sources: SourceController) {
+  let preparations = 0;
+  const preparation = { keys: new Set<string>(), prepare() { preparations++; }, needsRefresh() { return false; }, requiresCredit() { return false; } };
+  const group = sources.registerPreparation(preparation)!; assert.ok(group);
+  return { preparation, group, preparations: () => preparations, publish() { sources.queuePreparation(group, true); sources.flush(); } };
+}
+function queuedGroup(sources: SourceController, id: number) {
+  const pending = sources as unknown as { noticeScheduled: boolean; noticeGroups: Set<number> };
+  assert.equal(pending.noticeScheduled, true, 'a real controller notice is scheduled before lifecycle changes');
+  assert.deepEqual([...pending.noticeGroups], [id]);
 }
 
 test('runtime construction and warm metadata/palette inspection do not restore settings or start providers', async () => {
@@ -116,7 +132,8 @@ test('source notification targets only its keyed current presentation without a 
   assert.equal(f.runtime.sources.observe(demand(f.runtime)), true); f.runtime.sources.flush(); await settled();
   assert.deepEqual(f.peers[0]!.calls.map(c => c.request.op), ['describe', 'highlight']);
   f.peers[0]!.answer(1); await settled(); await settled();
-  assert.deepEqual(view.calls.keys, [['one']]);
+  assert.deepEqual(view.calls.keys, [['one']]); assert.deepEqual(view.calls.groups, [[]]);
+  assert.equal(f.runtime.sources.status('one')?.acknowledgedVersion, 1, 'notice follows a validated v3 source reply');
   for (let i = 0; i < 20; i++) f.runtime.snapshot(); await settled();
   assert.equal(f.peers[0]!.calls.length, 2); assert.equal(f.runtime.sources.stats().globalUnsettledJobs, 0);
 });
@@ -170,7 +187,7 @@ test('disposal aborts an already delegated settings save, with no late UI or pre
   const f = fixture(), view = presentation(), save = deferred<SettingsSaveResult>();
   f.runtime.attach(view); await settled(); f.store.saveResult = save.promise;
   const selecting = f.runtime.selectTheme({ kind: 'pi' }); assert.equal(f.store.writes.length, 1);
-  await f.runtime.dispose(); const before = { metadata: view.calls.metadata, keys: [...view.calls.keys] };
+  await f.runtime.dispose(); const before = structuredClone(view.calls);
   assert.equal(f.store.writes[0]!.signal!.aborted, true); save.resolve({ ok: true });
   assert.equal((await selecting).ok, false); f.runtime.attach(view); await settled();
   assert.deepEqual(view.calls, before); assert.equal(f.shared(), 1); assert.equal(f.peers[0]!.closes, 1);
@@ -196,20 +213,28 @@ function borrowedClient() {
   const f = fixture(), view = presentation(); f.runtime.attach(view); runtimes.delete(f.runtime);
   return { reference: new WeakRef(f.runtime), client: (f.runtime as unknown as { client: import('../../../src/occipital/client.ts').SyntaxClient }).client, view };
 }
-test('first runtime is collectible while its borrowed client still has active provider callbacks', { skip: !global.gc }, async () => {
+test('first runtime is collectible while its borrowed client still has active provider callbacks', async () => {
+  assert.equal(typeof global.gc, 'function');
   const borrowed = borrowedClient(); await settled();
+  const target = emptyPreparation(borrowed.client.sources);
   try {
     assert.equal(borrowed.client.snapshot().provider.availability, 'ready');
+    borrowed.client.sources.setStyleSelection(localSelection()); target.publish(); await settled();
+    assert.deepEqual(borrowed.view.calls.groups, [[target.group.id]], 'borrowed client has exercised the real runtime callback');
     assert.equal(await collected(borrowed.reference), true);
     const before = structuredClone(borrowed.view.calls);
+    borrowed.client.sources.setStyleSelection(localSelection(2)); borrowed.client.sources.flush();
+    queuedGroup(borrowed.client.sources, target.group.id); await settled();
+    assert.equal(borrowed.client.snapshot().provider.availability, 'ready', 'the borrowed client stays active after its first runtime collects');
     await borrowed.client.setEnabled(false); await settled();
-    assert.deepEqual(borrowed.view.calls, before, 'retained weak callbacks cannot resurrect their installer');
-  } finally { await borrowed.client.dispose(); }
+    assert.deepEqual(borrowed.view.calls, before, 'retained source and metadata callbacks cannot resurrect their installer');
+  } finally { void target.preparation; await borrowed.client.dispose(); }
 });
 function temporaryTheme(runtime: SyntaxRuntime) {
   const theme = { colors: {} }; runtime.palette(theme); return new WeakRef(theme.colors);
 }
-test('palette generation does not retain the first public Pi palette object', { skip: !global.gc }, async () => {
+test('palette generation does not retain the first public Pi palette object', async () => {
+  assert.equal(typeof global.gc, 'function');
   const f = fixture(); assert.equal(await collected(temporaryTheme(f.runtime)), true);
   assert.equal(f.shared(), 0); assert.equal(f.store.loads, 0);
 });
@@ -228,4 +253,107 @@ test('actual SDK stable Theme proxy changes its palette generation on a real dar
     for (let i = 0; i < 20; i++) assert.equal(f.runtime.palette(proxy), changed);
     await settled(); assert.equal(f.shared(), 0); assert.equal(f.store.loads, 0); assert.equal(f.owned(), 0);
   } finally { themes.initTheme('dark', false); }
+});
+
+
+test('runtime v3: palette-only publication forwards only the exact useful group through the real weak client chain', async () => {
+  const f = fixture(), view = presentation(); f.runtime.attach(view); await settled();
+  const sources = f.runtime.sources;
+  assert.equal(sources.setStyleSelection(localSelection()), true); await settled();
+  const dormant = emptyPreparation(sources), target = emptyPreparation(sources);
+  try {
+    const before = structuredClone(view.calls);
+    assert.equal(sources.groupPresentation(dormant.group), undefined); assert.equal(sources.groupPresentation(target.group), undefined);
+    target.publish(); queuedGroup(sources, target.group.id);
+    assert.ok(sources.groupPresentation(target.group), 'empty sealed preparation publishes local roles before notice delivery');
+    assert.deepEqual(view.calls, before, 'the runtime does not synchronously invent notifications');
+    await settled();
+    assert.deepEqual(view.calls.keys, [[]]); assert.deepEqual(view.calls.groups, [[target.group.id]]);
+    assert.equal(sources.groupPresentation(target.group)!.role('panel')?.foreground.kind, 'rgb');
+    assert.equal(sources.groupPresentation(dormant.group), undefined); assert.equal(dormant.preparations(), 0);
+    assert.equal(target.preparations(), 1);
+    assert.equal(view.calls.metadata - before.metadata, 1, 'only the frozen client coalesced metadata notice is delivered');
+    assert.deepEqual(view.calls.order.slice(before.order.length), ['source', 'metadata']);
+    const after = structuredClone(view.calls), stats = sources.stats();
+    for (let i = 0; i < 20; i++) { f.runtime.snapshot(); sources.groupPresentation(target.group); sources.flush(); }
+    await settled(); assert.deepEqual(view.calls, after);
+    assert.deepEqual(f.peers[0]!.calls.map(c => c.request.op), ['describe'], 'no SOURCE or STYLE RPC for local empty contexts');
+    assert.equal(stats.sourceRecords, 0); assert.equal(stats.preparedBytes, 0); assert.equal(stats.remoteLeases, 0);
+    assert.equal(stats.retention.entries, 0); assert.equal(stats.globalUnsettledJobs, 0);
+    assert.equal(sources.stats().stylePreparations, stats.stylePreparations);
+    console.log(JSON.stringify({ runtimePaletteOnly: { groups: view.calls.groups, keys: view.calls.keys,
+      metadataDelta: view.calls.metadata - before.metadata, order: view.calls.order.slice(before.order.length),
+      sourceRecords: stats.sourceRecords, preparedBytes: stats.preparedBytes, rpc: f.peers[0]!.calls.map(c => c.request.op), dormantPreparations: dormant.preparations() } }));
+  } finally { void dormant.preparation; void target.preparation; }
+});
+
+test('runtime v3: a genuinely queued palette notice follows the current presentation, not a still-active former owner', async () => {
+  const f = fixture(), old = presentation(), current = presentation(); f.runtime.attach(old); await settled();
+  const target = emptyPreparation(f.runtime.sources);
+  try {
+    f.runtime.sources.setStyleSelection(localSelection()); target.publish(); queuedGroup(f.runtime.sources, target.group.id);
+    const before = structuredClone(old.calls); f.runtime.attach(current); await settled();
+    assert.equal(old.active, true); assert.deepEqual(old.calls, before);
+    assert.deepEqual(current.calls.keys, [[]]); assert.deepEqual(current.calls.groups, [[target.group.id]]);
+    assert.deepEqual(current.calls.order, ['source', 'metadata']);
+    assert.deepEqual(f.peers[0]!.calls.map(c => c.request.op), ['describe']);
+  } finally { void target.preparation; }
+});
+
+test('runtime v3: inactive presentation suppresses a real queued notice and a later current owner receives fresh local publication', async () => {
+  const f = fixture(), old = presentation(); f.runtime.attach(old); await settled();
+  const target = emptyPreparation(f.runtime.sources);
+  try {
+    f.runtime.sources.setStyleSelection(localSelection()); target.publish(); queuedGroup(f.runtime.sources, target.group.id);
+    const before = structuredClone(old.calls); old.active = false; await settled();
+    assert.deepEqual(old.calls, before);
+    const current = presentation(); f.runtime.attach(current); await settled();
+    const currentBefore = current.calls.metadata;
+    f.runtime.sources.setStyleSelection(localSelection(2)); f.runtime.sources.flush(); queuedGroup(f.runtime.sources, target.group.id);
+    await settled(); assert.deepEqual(current.calls.keys, [[]]); assert.deepEqual(current.calls.groups, [[target.group.id]]);
+    assert.equal(current.calls.metadata - currentBefore, 1); assert.deepEqual(old.calls, before);
+    assert.equal(f.runtime.sources.stats().sourceRecords, 0);
+  } finally { void target.preparation; }
+});
+
+for (const lifecycle of ['dispose', 'off/on'] as const) {
+  test(`runtime v3: ${lifecycle} suppresses an actually scheduled palette-only notice`, async () => {
+    const f = fixture(), view = presentation(); f.runtime.attach(view); await settled();
+    const target = emptyPreparation(f.runtime.sources);
+    try {
+      f.runtime.sources.setStyleSelection(localSelection()); target.publish(); queuedGroup(f.runtime.sources, target.group.id);
+      const before = structuredClone(view.calls);
+      if (lifecycle === 'dispose') {
+        await f.runtime.dispose(); await settled(); assert.deepEqual(view.calls, before);
+        f.runtime.attach(presentation()); await settled(); assert.deepEqual(view.calls, before);
+      } else {
+        await f.runtime.setEnabled(false); await f.runtime.setEnabled(true); await settled();
+        assert.deepEqual(view.calls.keys, []); assert.deepEqual(view.calls.groups, []);
+        f.runtime.sources.setStyleSelection(localSelection(2)); target.publish(); queuedGroup(f.runtime.sources, target.group.id);
+        await settled(); assert.deepEqual(view.calls.keys, [[]]); assert.deepEqual(view.calls.groups, [[target.group.id]]);
+      }
+      assert.equal(f.runtime.sources.stats().sourceRecords, 0);
+      assert.ok(f.peers.every(peer => peer.calls.every(c => c.request.op === 'describe')));
+    } finally { void target.preparation; }
+  });
+}
+
+
+test('runtime Pi input remains lazy across attachment, menu and current native selection; explicit fallback preserves selection and source authority', async () => {
+  const { DataBudget } = await import('../../../src/occipital/data-budget.ts');
+  const { getThemeByName } = await import('../../../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js');
+  const f = fixture(), view = presentation(), native = getThemeByName('dark')!;
+  let fg = 0, bg = 0;
+  const theme = { colors: native.colors, getFgAnsi(role: Parameters<typeof native.getFgAnsi>[0]) { fg++; return native.getFgAnsi(role); },
+    getBgAnsi(role: Parameters<typeof native.getBgAnsi>[0]) { bg++; return native.getBgAnsi(role); } };
+  const budget = new DataBudget(1_000_000), funding = { budget, grant: (bytes: number) => budget.reserve(bytes) };
+  f.runtime.palette(theme); f.runtime.attach(view); await settled();
+  await f.runtime.prepareThemes(); f.runtime.previewTheme({ kind: 'occipital', id: 'native-selected' });
+  for (let i = 0; i < 20; i++) { f.runtime.snapshot(); f.runtime.palette(theme); }
+  assert.deepEqual([fg, bg, budget.stats().retainedBytes], [0, 0, 0]);
+  const selected = f.runtime.snapshot().selected, stats = f.runtime.sources.stats(), calls = f.peers[0]!.calls.length;
+  const lease = f.runtime.preparePiInput(theme, 'truecolor', funding)!; assert.ok(lease); assert.ok(fg > 0 && bg > 0);
+  assert.deepEqual(f.runtime.snapshot().selected, selected); assert.deepEqual(f.runtime.sources.stats(), stats);
+  assert.equal(f.peers[0]!.calls.length, calls); assert.equal(f.store.writes.length, 0);
+  lease.cleanupReceipt().release(); assert.equal(budget.stats().retainedBytes, 0);
 });

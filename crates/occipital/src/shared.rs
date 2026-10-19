@@ -3,8 +3,9 @@ use crate::{
     actor::{PoolHandle, Route},
     control::Authority,
     ingress::{self, Incoming},
-    protocol::{Fault, CAPABILITY, SERVICE},
-    reply::Reply,
+    protocol::{Fault, SERVICE},
+    semantic::CAPABILITY,
+    semantic_reply,
 };
 use std::{
     collections::HashMap,
@@ -36,7 +37,8 @@ impl Handler {
     fn fault(&self, ticket: Option<&str>, fault: Fault) -> HandlerOutcome {
         match ticket {
             Some(ticket) => {
-                match Reply::<()>::error(ticket, self.authority.instance(), fault).encode() {
+                match semantic_reply::error::<()>(ticket, self.authority.instance(), fault).encode()
+                {
                     Ok(bytes) => HandlerOutcome::Response(bytes),
                     Err(_) => HandlerOutcome::Error {
                         code: "reply_limit".into(),
@@ -162,6 +164,7 @@ pub async fn run(authority: Arc<Authority>, pool: PoolHandle) -> Result<(), Faul
                 "stream.open".into(),
                 "stream.append".into(),
                 "stream.close".into(),
+                "styles.resolve".into(),
             ],
         }])
         .build();
@@ -179,11 +182,11 @@ pub async fn run(authority: Arc<Authority>, pool: PoolHandle) -> Result<(), Faul
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{actor::ActorPool, catalogue::Catalogue, engine::Limits, profile::Profile};
+    use crate::{actor::ActorPool, catalogue::Catalogue, semantic_engine::Limits};
     use serde_json::json;
 
     fn source(ticket: &str) -> Vec<u8> {
-        serde_json::to_vec(&json!({"v":2,"ticket":ticket,"op":"stream.open","instance":"boot","admission":"bounded_queue","queue_wait_ms":1000,"sources":[{"key":ticket,"generation":1,"source_version":1,"profile":"pi","fingerprint":Profile::resolve("pi").unwrap().fingerprint,"hint":{"language":"bash"},"text":"echo 'local fixture'"}]})).unwrap()
+        serde_json::to_vec(&json!({"v":3,"ticket":ticket,"op":"stream.open","instance":"boot","admission":"bounded_queue","queue_wait_ms":1000,"sources":[{"key":ticket,"generation":1,"source_version":1,"hint":{"language":"bash"},"text":"echo 'local fixture'"}]})).unwrap()
     }
 
     #[tokio::test]

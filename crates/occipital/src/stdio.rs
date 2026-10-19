@@ -5,10 +5,12 @@ use crate::{
     control::Authority,
     frame,
     ingress::{self, ControlDelivery, Incoming, CONTROL_REQUEST_BYTES},
-    protocol::{Fault, PROTOCOL_VERSION},
-    reply::{Reply, REPLY_BYTES},
+    protocol::Fault,
+    reply::REPLY_BYTES,
     request::REQUEST_BYTES,
     scheduler::{Delivery, Ticket},
+    semantic::PROTOCOL_VERSION,
+    semantic_reply,
 };
 use serde::Deserialize;
 use std::{
@@ -69,7 +71,7 @@ fn cancellation(bytes: &[u8]) -> Option<String> {
     .then_some(value.cancel)
 }
 fn error(authority: &Authority, ticket: &str, fault: Fault) -> Result<Payload, Fault> {
-    Reply::<()>::error(ticket, authority.instance(), fault)
+    semantic_reply::error::<()>(ticket, authority.instance(), fault)
         .encode()
         .map(Payload::Error)
 }

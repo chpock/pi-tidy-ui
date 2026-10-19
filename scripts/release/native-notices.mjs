@@ -56,7 +56,11 @@ export async function prepareNotices({ metadata, output, supplements = [] }) {
   }
   const packages = [...metadata.packages].sort((a, b) => `${a.name}@${a.version}`.localeCompare(`${b.name}@${b.version}`, 'en'));
   for (const pkg of packages) {
-    if (pkg.name === 'occipital') continue;
+    if (pkg.name === 'occipital') {
+      await add(pkg, 'ported sRGB/Oklab MIT notice', await readFile(new URL('./notices/oklab-MIT.txt', import.meta.url)),
+        '@earendil-works/pi-tui-1.0.0/dist/oklab.js');
+      continue;
+    }
     const root = dirname(pkg.manifest_path);
     const files = await licenseFiles(root);
     // r-efi's README points to AUTHORS, which contains its licenses/copyrights.

@@ -1,6 +1,7 @@
 //! One persistent owned helper, or the same engine hosted by a user-managed supervisor.
 use occipital::{
-    actor::ActorPool, catalogue::Catalogue, control::Authority, engine::Limits, protocol::Fault,
+    actor::ActorPool, catalogue::Catalogue, control::Authority, protocol::Fault,
+    semantic_engine::Limits,
 };
 use std::{path::PathBuf, sync::Arc, time::Duration};
 enum Mode {

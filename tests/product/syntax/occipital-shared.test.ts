@@ -5,6 +5,8 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { RequestFailure } from '../../../src/occipital/request-failure.ts';
 import { SharedTransport, SHARED_LIMITS, type SharedSdk, type SharedClient, type SharedRouteHandle } from '../../../src/occipital/shared.ts';
 import { awaitFixture } from '../../fixtures/await-fixture.ts';
+import { semanticDescriptor } from '../../fixtures/semantic-provider.ts';
+import { decodeSemanticDescription, decodeSemanticSourceReply } from '../../../src/occipital/semantic-protocol.ts';
 
 function deferred<T>() {
   let resolve!: (value: T) => void, reject!: (error: unknown) => void;
@@ -12,8 +14,8 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 const identity = { project_root: '/fixture/project', harness: 'fixture', session: 'session' };
-const request = (ticket: string, op = 'highlight', text = '') => ({ v: 2, ticket, op, text });
-const reply = (ticket: string) => ({ v: 2, ticket, instance: 'instance', assets: 'assets', status: 'ok', body: {} });
+const request = (ticket: string, op = 'highlight', text = '') => ({ v: 3, ticket, op, text });
+const reply = (ticket: string) => ({ v: 3, ticket, instance: 'instance', assets: 'assets', status: 'ok', body: {} });
 function fixture() {
   const route: SharedRouteHandle = Object.freeze({ channel: 7, epoch: 9 });
   const calls: { handle: SharedRouteHandle; bytes: Uint8Array; options: { binary?: boolean; timeoutMs?: number; signal?: AbortSignal }; result: ReturnType<typeof deferred<unknown>> }[] = [];
@@ -29,7 +31,7 @@ function fixture() {
   };
   const sdk: SharedSdk = { SubcClient: { connect: options => { observed.push(options.connectionFile); push = options.onControlPush; return connect.promise; } } };
   function transport(initDeadlineMs = 3000, loader: () => Promise<SharedSdk> = async () => sdk) {
-    return new SharedTransport({ connectionFile: '/fixture/connection.json', identity, initDeadlineMs, requestDeadlineMs: 3000, loadSdk: loader, dataBytes:2*1024*1024 });
+    return new SharedTransport({ connectionFile: '/fixture/connection.json', identity, initDeadlineMs, requestDeadlineMs: 3000, loadSdk: loader, dataBytes:SHARED_LIMITS.requestBytes });
   }
   async function ready(p: SharedTransport) { connect.resolve(client); catalog.resolve('occipital'); open.resolve(route); await p.ready; }
   return { route, calls, connect, catalog, open, observed, client, sdk, transport, ready, push: (value: Parameters<typeof push>[0]) => push(value), counts: () => ({ closes, routeCloses }) };
@@ -83,14 +85,15 @@ for (const code of ['capability_ambiguous', 'capability_unprovided', 'route_reje
   if (code === 'route_rejected') { f.catalog.resolve('occipital'); f.open.reject({ code, message: 'secret' }); }
   else f.catalog.reject({ code, message: 'secret' });
   await assert.rejects(p.ready, { message: 'shared initialization failed' });
-  assert.equal(f.calls.length, 0); assert.equal(f.counts().closes, 1); empty(p);
+  assert.equal(f.calls.length, 0); assert.equal(f.counts().closes, 1);
+  assert.deepEqual(f.observed.slice(0, 2), ['/fixture/connection.json', 'syntax-highlight/v3']); empty(p);
 });
 
 test('explicit public connect, sole capability and complete route identity; no init request queue', async () => {
   const f = fixture(), p = f.transport();
   await assert.rejects(p.request(request('early')), /not ready/);
   await f.ready(p);
-  assert.deepEqual(f.observed, ['/fixture/connection.json', 'syntax-highlight/v2', [{ kind: 'internal_service', module_id: 'occipital', service_id: 'syntax' }, identity, { consumerIdentity: null }]]);
+  assert.deepEqual(f.observed, ['/fixture/connection.json', 'syntax-highlight/v3', [{ kind: 'internal_service', module_id: 'occipital', service_id: 'syntax' }, identity, { consumerIdentity: null }]]);
   const a = p.request(request('a', 'highlight', 'é\t🙂\n'));
   assert.equal(f.calls[0].handle, f.route); assert.equal(f.calls[0].options.binary, false);
   assert.deepEqual(JSON.parse(Buffer.from(f.calls[0].bytes).toString()), request('a', 'highlight', 'é\t🙂\n'));
@@ -100,7 +103,7 @@ test('explicit public connect, sole capability and complete route identity; no i
 
 test('two data calls plus independent metadata; reverse settlement and no invisible queue', async () => {
   const f = fixture(), p = f.transport(); await f.ready(p);
-  const a = p.request(request('a')), b = p.request(request('b')), c = p.request(request('c', 'describe'));
+  const a = p.request(request('a', 'styles.resolve')), b = p.request(request('b')), c = p.request(request('c', 'describe'));
   assert.equal(p.stats().unsettledData, 2); assert.equal(p.stats().unsettledControl, 1);
   assert.equal(p.stats().controlReservedBytes, SHARED_LIMITS.controlReservationBytes);
   const bomb = Object.defineProperty(request('overflow'), 'text', { get() { assert.fail('capacity refusal must precede source read'); } });
@@ -120,7 +123,7 @@ test('bounded UTF8/escaped JSON preflight, no serialization hooks or SDK call on
   await assert.rejects(p.request(request('control', 'describe', 'x'.repeat(4096))), /byte limit/);
   const cycle = request('cyclic') as Record<string, unknown>; cycle.self = cycle;
   await assert.rejects(p.request(cycle), /JSON/);
-  await assert.rejects(p.request({ ...request('bad'), v: 1 }), /header/);
+  await assert.rejects(p.request({ ...request('bad'), v: 2 }), disposition('not_started'));
   await assert.rejects(p.request({ ...request('bad'), op: 'call' }), /header/);
   await assert.rejects(p.request(Object.defineProperty(request('hook'), 'toJSON', { value() { assert.fail('hook called'); } })), /JSON/);
   await assert.rejects(p.request(request('surrogate', 'highlight', '\ud800')), /JSON/);
@@ -130,10 +133,10 @@ test('bounded UTF8/escaped JSON preflight, no serialization hooks or SDK call on
 test('full data reservation does not consume metadata credit', async () => {
   const f = fixture(), p = f.transport(); await f.ready(p);
   const overhead = Buffer.byteLength(JSON.stringify(request('a')));
-  const a = p.request(request('a', 'highlight', 'x'.repeat(2*1024*1024 - overhead)));
-  const b = p.request(request('b', 'highlight', 'x'.repeat(2*1024*1024 - overhead)));
-  assert.equal(p.stats().dataReservedBytes, 8*1024*1024);
-  assert.equal(p.stats().encodedRequestBytes, 4*1024*1024);
+  const a = p.request(request('a', 'highlight', 'x'.repeat(SHARED_LIMITS.requestBytes - overhead)));
+  const b = p.request(request('b', 'highlight', 'x'.repeat(SHARED_LIMITS.requestBytes - overhead)));
+  assert.equal(p.stats().dataReservedBytes, 4*SHARED_LIMITS.requestBytes);
+  assert.equal(p.stats().encodedRequestBytes, 2*SHARED_LIMITS.requestBytes);
   const c = p.request(request('c', 'describe'));
   assert.equal(p.stats().controlReservedBytes, 65536);
   const ended = [a, b, c].map(call => assert.rejects(call, /closed/));
@@ -153,7 +156,7 @@ test('abort is best effort: SDK signal, credit and promise held until terminal s
   assert.equal(p.stats().abortListeners, 0); await p.close(); empty(p);
 });
 
-for (const malformed of [reply('other'), { ...reply('a'), v: 1 }, { ...reply('a'), instance: 'x'.repeat(65) }, { ...reply('a'), status: 'error', error: { code: 'bad', execution: 'started' } }, { ...reply('a'), error: {} }]) test('strict reply header/outcome/correlation retires entire owned connection', async () => {
+for (const malformed of [reply('other'), { ...reply('a'), v: 2 }, { ...reply('a'), instance: 'x'.repeat(65) }, { ...reply('a'), status: 'error', error: { code: 'bad', execution: 'started' } }, { ...reply('a'), error: {} }]) test('strict reply header/outcome/correlation retires entire owned connection', async () => {
   const f = fixture(), p = f.transport(); await f.ready(p);
   const a = p.request(request('a')), b = p.request(request('b'));
   const rejected = [a, b].map(call => assert.rejects(call, /reply/));
@@ -219,7 +222,7 @@ test('already aborted and active duplicate calls do not encode or dispatch; term
   const a = p.request(request('a'));
   await assert.rejects(p.request(request('a', 'describe')), /duplicate ticket/);
   assert.equal(p.stats().serializedRequests, 1); assert.equal(f.calls.length, 1);
-  const error = { v: 2, ticket: 'a', instance: 'instance', assets: 'assets', status: 'error', error: { code: 'busy', execution: 'not_started' } };
+  const error = { v: 3, ticket: 'a', instance: 'instance', assets: 'assets', status: 'error', error: { code: 'busy', execution: 'not_started' } };
   f.calls[0].result.resolve(error); assert.deepEqual(await a, error);
   assert.equal(p.stats().dataReservedBytes, 0); assert.equal(p.stats().state, 'ready');
   const b = p.request(request('b', 'themes.refresh')); f.calls[1].result.resolve(reply('b')); await b;
@@ -237,15 +240,15 @@ test('close disposes an unresolved public route cleanup without waiting or retai
   stuck.reject(new Error('/private cleanup')); await tick(); empty(p);
 });
 
-test('production JSON family admits escaped data beyond the former two-MiB ceiling', async () => {
+test('production DATA family admits bounded escaped data intact', async () => {
   const f=fixture(), p=new SharedTransport({connectionFile:'/fixture/connection.json',identity,initDeadlineMs:3000,requestDeadlineMs:3000,loadSdk:async()=>f.sdk});
   await f.ready(p);
   try {
-    assert.equal(SHARED_LIMITS.requestBytes,64<<20);
-    const text='\u0000'.repeat(400000), sent=request('ordinary-escaped','highlight',text);
+    assert.equal(SHARED_LIMITS.requestBytes,524288);
+     const text='\u0000'.repeat(Math.floor((SHARED_LIMITS.requestBytes - 1024) / 6)), sent=request('ordinary-escaped','highlight',text);
     const pending=p.request(sent);
     assert.equal(f.calls.length,1);
-    assert.ok(f.calls[0]!.bytes.byteLength>2<<20);
+    assert.ok(f.calls[0]!.bytes.byteLength <= SHARED_LIMITS.requestBytes);
     assert.deepEqual(JSON.parse(Buffer.from(f.calls[0]!.bytes).toString()),sent);
     assert.equal(p.stats().serializedRequests,1);
     f.calls[0]!.result.resolve(reply('ordinary-escaped')); await pending;
@@ -464,9 +467,9 @@ test('wait-only control cannot hide a confirmed public route loss after its wait
   await sourceRejected; assert.equal(await p.ended, 'lost'); empty(p); t.mock.timers.reset();
 });
 
-test('wait-only is rejected before dispatch on the source lane', async t => {
+for (const op of ['highlight', 'styles.resolve']) test(`wait-only is rejected before dispatch on the ${op} data lane`, async t => {
   const f = fixture(), p = f.transport(); await f.ready(p); t.after(() => p.close());
-  const result = p.request(request('source'), { waitOnly: true });
+  const result = p.request(request('source', op), { waitOnly: true });
   const refusal = assert.rejects(result, (e: unknown) => e instanceof RequestFailure && e.execution === 'not_started' && /control/.test(e.message));
   // Old code ignores the option: settle its unexpected dispatch so the red is a
   // behavioral assertion, not a hang or request-deadline race.
@@ -497,18 +500,68 @@ test('wait-only does not change unexpected SDK failure before the catalogue dead
   await Promise.all(rejected); assert.equal(await p.ended, 'uncertain'); empty(p);
 });
 
-for (const outcome of ['ok', 'not_started', 'started'] as const) test(`canonical aborted shared request preserves terminal ${outcome} evidence`, async () => {
+for (const op of ['highlight', 'styles.resolve']) for (const outcome of ['ok', 'not_started', 'started'] as const) test(`canonical aborted shared ${op} request preserves terminal ${outcome} evidence`, async () => {
   const f = fixture(), p = f.transport(); await f.ready(p);
   try {
     const abort = new AbortController(), options = { signal: abort.signal, acceptRetired: true };
-    const pending = p.request(request('retired'), options);
+    const pending = p.request(request('retired', op), options);
     let settled = false; void pending.then(() => { settled = true; }, () => { settled = true; });
     abort.abort(); await tick();
     assert.equal(settled, false); assert.equal(p.stats().unsettledData, 1);
-    const terminal = outcome === 'ok' ? reply('retired') : { v: 2, ticket: 'retired', instance: 'instance', assets: 'assets',
+    const terminal = outcome === 'ok' ? reply('retired') : { v: 3, ticket: 'retired', instance: 'instance', assets: 'assets',
       status: 'error', error: { code: 'cancelled', execution: outcome } };
     f.calls[0].result.resolve(terminal);
     assert.deepEqual(await pending, terminal, 'terminal evidence must reach the canonical decoder, not become transport uncertainty');
     assert.equal(p.stats().unsettledData, 0); assert.equal(p.stats().dataReservedBytes, 0);
   } finally { await p.close(); empty(p); }
+});
+
+test('shared volume limits: DATA preflight refuses before SDK dispatch and caps canonical parsed replies', async t => {
+  const f = fixture();
+  const p = new SharedTransport({ connectionFile: '/fixture/connection.json', identity, initDeadlineMs: 3000, requestDeadlineMs: 3000, loadSdk: async () => f.sdk });
+  t.after(() => p.close()); await f.ready(p);
+  assert.equal(SHARED_LIMITS.requestBytes, 524288); assert.equal(SHARED_LIMITS.replyBytes, 524288);
+  await assert.rejects(p.request(request('huge', 'highlight', 'x'.repeat(524288))), /byte limit/);
+  assert.equal(f.calls.length, 0);
+  const call = p.request(request('reply'));
+  const refused = assert.rejects(call, /reply byte limit/);
+  f.calls[0]!.result.resolve({ ...reply('reply'), body: { text: 'x'.repeat(524288) } });
+  await refused; assert.equal(p.endReason, 'uncertain'); empty(p);
+});
+
+test('shared reply size receipt avoids a second DATA traversal and keeps the negotiated decoder limit', async t => {
+  const f = fixture(), p = f.transport(); t.after(() => p.close()); await f.ready(p);
+  const measured: { ticket?: string; bytes?: number } = {};
+  const pending = p.request(request('receipt'), { replySize: measured });
+  const size = 4096, values = Array.from({ length: size * 2 }, (_, i) => i % 2 ? 1 + (i / 2 | 0) % 2 : 1);
+  let descriptors = 0;
+  const runs = new Proxy(values, { getOwnPropertyDescriptor(target, key) { descriptors++; return Reflect.getOwnPropertyDescriptor(target, key); } });
+  const provider = decodeSemanticDescription(semanticDescriptor('describe'), 'describe');
+  const expected = { key: 'source', generation: 1, source_version: 1, revision: 1, source_bytes: size, replace_from: 0, complete: true, replacementText: 'x'.repeat(size) };
+  const raw = { ...reply('receipt'), body: { kind: 'source', vocabulary: provider.vocabulary.fingerprint, sources: [{
+    key: 'source', generation: 1, source_version: 1, revision: 1, source_bytes: size, replace_from: 0, committed_bytes: size, complete: true,
+    contexts: [[0, 1], [0, 2]], runs, counters: { committed_line_calls: 0, committed_line_bytes: 0, tail_calls: 1, tail_bytes: size },
+  }] } };
+  f.calls[0]!.result.resolve(raw);
+  const received = await pending, ingressReads = descriptors;
+  assert.equal(measured.ticket, 'receipt'); assert.ok(measured.bytes! > 4096);
+  assert.equal(ingressReads, values.length, 'the actual shared ingress validates the DATA array once');
+  const decoded = decodeSemanticSourceReply(received, 'receipt', provider, [expected], 1 << 20, measured);
+  assert.equal(decoded.sources.length, 1);
+  assert.equal(descriptors, ingressReads, 'the decoder does not recount transport-admitted DATA');
+  assert.throws(() => decodeSemanticSourceReply(received, 'receipt', { ...provider, limits: { ...provider.limits, reply_bytes: 1024 } }, [expected], 1 << 20, measured), /byte limit/);
+  assert.equal(descriptors, ingressReads, 'smaller negotiated limit is checked from the receipt before walking values');
+  assert.throws(() => decodeSemanticSourceReply({ ...raw, body: { ...raw.body, vocabulary: 'b'.repeat(64) } }, 'receipt', provider, [expected], 1 << 20, measured));
+  assert.equal(descriptors, ingressReads, 'size evidence never bypasses structural or identity validation');
+});
+
+test('shared rejects uncorrelated and oversized replies without publishing size evidence', async t => {
+  for (const kind of ['ticket', 'oversize']) {
+    const f = fixture(), p = f.transport(); t.after(() => p.close()); await f.ready(p);
+    const measured: { ticket?: string; bytes?: number } = {};
+    const pending = p.request(request('expected'), { replySize: measured });
+    const rejected = assert.rejects(pending);
+    f.calls[0]!.result.resolve(kind === 'ticket' ? reply('other') : { ...reply('expected'), body: { text: 'x'.repeat(SHARED_LIMITS.replyBytes) } });
+    await rejected; assert.deepEqual(measured, {}); await p.close(); empty(p);
+  }
 });

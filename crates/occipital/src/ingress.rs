@@ -2,11 +2,12 @@
 //! The small control lane cannot be exhausted by two unsettled source deliveries.
 use crate::{
     credit::{Budget, Credit},
-    engine::Limits,
     protocol::Fault,
-    reply::Reply,
-    request::{self, Operation, Request},
+    request,
+    runtime_request::{self, ControlRequest, Operation},
     scheduler::{Submission, Ticket, Wake},
+    semantic_engine::Limits,
+    semantic_reply,
 };
 use serde::{de, Deserialize, Serialize};
 use serde_json::value::RawValue;
@@ -27,22 +28,22 @@ pub struct Rejection {
 }
 /// The complete typed request is credited; no control source work is performed.
 pub struct Control {
-    request: Request,
+    request: ControlRequest,
     credit: Credit,
 }
 impl Control {
-    pub fn request(&self) -> &Request {
+    pub fn request(&self) -> &ControlRequest {
         &self.request
     }
     pub fn reply<T: Serialize>(self, instance: &str, body: T) -> Result<ControlDelivery, Fault> {
         let encoded = {
-            let reply = Reply::ok(&self.request.ticket, instance, body);
+            let reply = semantic_reply::ok(&self.request.ticket, instance, body);
             reply.encode_with_cap(CONTROL_REPLY_BYTES)
         };
         self.deliver(encoded?)
     }
     pub fn error(self, instance: &str, fault: Fault) -> Result<ControlDelivery, Fault> {
-        let bytes = Reply::<()>::error(&self.request.ticket, instance, fault)
+        let bytes = semantic_reply::error::<()>(&self.request.ticket, instance, fault)
             .encode_with_cap(CONTROL_REPLY_BYTES)?;
         self.deliver(bytes)
     }
@@ -78,7 +79,7 @@ pub(crate) enum Prepared {
     Control(Control),
 }
 pub(crate) fn prepare(
-    scope: &str,
+    (scope, instance): (&str, &str),
     bytes: Vec<u8>,
     now: u64,
     data: &Budget,
@@ -103,7 +104,7 @@ pub(crate) fn prepare(
             }
             let mut credit = controls.reserve(Some(scope), CONTROL_RESERVATION)?;
             credit.started();
-            let decoded = request::decode(&bytes);
+            let decoded = runtime_request::control(&bytes);
             drop(bytes);
             let request = decoded?;
             if matches!(request.op, Operation::Describe | Operation::ThemesRefresh) {
@@ -112,7 +113,11 @@ pub(crate) fn prepare(
             // A mismatching decoded control kind is never routed into source work.
             Err(Fault::not_started("invalid_request"))
         } else {
-            let (submission, ticket) = Submission::decode(scope, bytes, now, data, limits, wake)?;
+            if bytes.len() > crate::limits::DATA_WIRE_BYTES {
+                return Err(Fault::not_started("frame_limit"));
+            }
+            let (submission, ticket) =
+                Submission::decode(scope, bytes, now, data, limits, instance, wake)?;
             Ok(Prepared::Data(submission, ticket))
         }
     })();
@@ -189,7 +194,7 @@ fn routing_header(frame: &[u8]) -> Option<(String, Operation)> {
 
 /// serde_json's ignored/raw value scanner uses a growable nesting stack rather
 /// than its typed recursion guard. Bound that stack before any routing probe.
-fn bounded_depth(frame: &[u8]) -> bool {
+pub(crate) fn bounded_depth(frame: &[u8]) -> bool {
     let (mut depth, mut quoted, mut escaped) = (0u8, false, false);
     for &byte in frame {
         if quoted {

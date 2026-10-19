@@ -1,16 +1,18 @@
 import { VERSION, CustomEditor, createEditToolDefinition, highlightCode, getLanguageFromPath, type ExtensionAPI, type ExtensionContext, type ThemeColor } from "@earendil-works/pi-coding-agent";
-import { Box, Container, Editor, Markdown, Spacer, TruncatedText, colorToRgb, visibleWidth, type Component, type TuiMouseEvent, type TuiMouseEventResult } from "@earendil-works/pi-tui";
+import { Box, Container, Editor, Markdown, Spacer, TruncatedText, backgroundAnsi, visibleWidth, type TerminalColorMode, type Component, type TuiMouseEvent, type TuiMouseEventResult } from "@earendil-works/pi-tui";
 import { isAbsolute, resolve } from "node:path";
 import { createRequire } from "node:module";
 import { SessionLogging } from "./session-logging.ts";
+import { RuntimeHealth } from './runtime-health.ts';
 import { ExtensionSettings, processPreferences, type LocalPreferences, type SettingsLoadResult, type SyntaxTheme } from './settings.ts';
 import { TidyMenu, type TidyMenuOwner, type TidyMenuAction } from './tidy-menu.ts';
 import type { SyntaxMenuOutcome } from './occipital/menu.ts';
 import { type JournalOptions } from "./debug-log.ts";
-import { diagnose, type DiagnosticFields, type DiagnosticSink } from "./diagnostics.ts";
+import { diagnose, reportRuntime, type DiagnosticFields, type DiagnosticSink } from "./diagnostics.ts";
 import { stripVTControlCharacters } from "node:util";
-import { renderBashCard, bashFailurePhase } from "./bash-card.ts";
-import { filePath, measureFileCard, renderFileCard, renderPreparedFileCard } from "./file-card.ts";
+import { bashFailurePhase } from "./bash-card.ts";
+import { filePath } from "./file-card.ts";
+import { reflow } from './syntax/measured-rows.ts';
 import { renderUserCard } from "./user-card.ts";
 import { prepareQueuedCard, projectQueuedCards, type QueuedCard } from "./queued-card.ts";
 import { EDITOR_TOP, EDITOR_BOTTOM, renderEditorCard, type EditorLayout } from "./editor-card.ts";
@@ -22,7 +24,11 @@ import { TerminalColors, processTerminalDefaults, type DefaultColors } from "./t
 import type { CardTheme } from "./card-theme.ts";
 import { RenderCache, LAYOUT_KINDS, MEMORY_FIELDS, type LayoutKind, type LayoutMemory, type CacheEntry, type CacheStats } from "./render-cache.ts";
 import { argumentParts, summaryName } from "./summary-args.ts";
-import { CardSources, type CardSourceInput } from "./syntax/cards.ts";
+import { CardSources } from "./syntax/cards.ts";
+import { layoutCard, type CardLayout, type CardRows, type BashPaintProof } from './syntax/card-layout.ts';
+import { PiInputOwner } from './syntax/pi-input-owner.ts';
+import type { PiInputTheme, PiInputLease } from './syntax/pi-input.ts';
+import { SourceController, type GeometryFunding } from './occipital/controller.ts';
 import type { PiClassifier } from "./syntax/work.ts";
 import type { SyntaxClient } from "./occipital/client.ts";
 import { createSyntaxOptions } from "./occipital/bootstrap.ts";
@@ -106,6 +112,9 @@ export interface TidyUiOptions {
     /** Public streaming-event identity; absent embedders conservatively treat formation errors as live. */
     isLiveCall?(toolCallId: string): boolean;
   };
+  /** Coherent public Pi data; projected colors and actual public ANSI getters. */
+  piInput?: () => { theme: PiInputTheme; mode: TerminalColorMode };
+  preparePiInput?: (theme: PiInputTheme, mode: TerminalColorMode, funding: GeometryFunding) => PiInputLease | undefined;
   cards?: readonly string[];
   compact?: readonly string[];
   warn?: (reason: string) => void;
@@ -135,8 +144,21 @@ export interface TidyUiController {
   logSnapshot(): void;
   clearCache(): void;
   /** Forward composed-client notices without traversing transcript history. */
-  syntaxSourceChanged(keys: readonly string[]): void;
+  syntaxSourceChanged(keys: readonly string[], groups?: readonly number[]): void;
   syntaxMetadataChanged(): void;
+}
+function preparedRelease(receipts: { geometry?: { release(): void }; output: { release(): void } }) {
+  return { release() { receipts.geometry?.release(); receipts.geometry = undefined; receipts.output.release(); } };
+}
+function localCardNotice(owner: WeakRef<TidyUiController>) {
+  return (keys: readonly string[], groups?: readonly number[]) => owner.deref()?.syntaxSourceChanged(keys, groups);
+}
+type PreparedCardController = TidyUiController & { refreshPreparedPalette(node: ToolNode): void; retireRendererClears(): void };
+function rendererClearRetirement(adapter: WeakRef<PreparedCardController>) {
+  return () => adapter.deref()?.retireRendererClears();
+}
+function paletteRefresh(owner: WeakRef<ToolNode>, adapter: WeakRef<PreparedCardController>) {
+  return () => { const node = owner.deref(), host = adapter.deref(); if (node && host?.active) host.refreshPreparedPalette(node); };
 }
 const DEFAULT_CARDS = ["bash", "powershell", "write", "edit"];
 // The public factory exposes the stable stock renderer functions; no execution or file I/O.
@@ -263,6 +285,7 @@ export function installTidyUi(tui: LiveTui, getTheme: () => Palette, options: Ti
   let active = false;
   let reason: string | undefined;
   const parents = new WeakMap<Component, { parent: Container; index: number }>();
+  let rendererClears: WeakRef<Component>[] = [], rendererClearPending = false;
   const cache = new RenderCache();
   const cardCache = new RenderCache();
   const decisions = new WeakMap<object, Map<string, { choice: string; width: number; rows: number; geometry?: string }>>();
@@ -292,6 +315,14 @@ export function installTidyUi(tui: LiveTui, getTheme: () => Palette, options: Ti
       expanded: node.expanded, hidden: node.hideComponent, partial: node.isPartial, complete: node.argsComplete });
   }
   type Layout = { rows: string[]; framed?: boolean; native?: boolean };
+  type PreparedLayout = { scene: CardLayout; output: CardRows; width: number; padding: number; expanded: boolean;
+    geometryStamp: number; paintStamp: number; publication: number; origin: 'native' | 'pi'; gap?: number };
+  let preparedStates = new WeakMap<ToolNode, CacheEntry<PreparedLayout>>();
+  const preparedPools = new WeakMap<CacheEntry<PreparedLayout>, RenderCache>();
+  function dropPrepared(node: ToolNode) {
+    const entry = preparedStates.get(node); if (entry) preparedPools.get(entry)?.drop(entry);
+    preparedStates.delete(node);
+  }
   type SummaryLayout = Layout & { prefixLength: number; prefixLeft: number; prefixSpace: boolean };
   // One plain snapshot per normal transcript pass; direct component visits read live settings.
   let passOutputPad: number | undefined;
@@ -385,7 +416,7 @@ export function installTidyUi(tui: LiveTui, getTheme: () => Palette, options: Ti
   const forgetUser = (node: UserNode) => { cache.drop(userStates.get(node)?.entry); userStates.delete(node); };
   let queuedStates = new WeakMap<Component, { signature: unknown[]; entry: CacheEntry<QueuedCard> }>();
   const forgetQueued = (node: Component) => { cache.drop(queuedStates.get(node)?.entry); queuedStates.delete(node); };
-  const clearCache = () => { cache.clear(); cardCache.clear(); states = new WeakMap(); userStates = new WeakMap(); queuedStates = new WeakMap();
+  const clearCache = () => { cache.clear(); cardCache.clear(); preparedStates = new WeakMap(); states = new WeakMap(); userStates = new WeakMap(); queuedStates = new WeakMap();
     diagnose(options.diagnostic, "INFO", "cache", "Presentation layouts cleared; native/source caches are unchanged"); };
   const cards = new Set([...DEFAULT_CARDS, ...options.cards ?? []]);
   const overrides = new Set(options.compact ?? []);
@@ -409,158 +440,227 @@ export function installTidyUi(tui: LiveTui, getTheme: () => Palette, options: Ti
   }>();
   const refresh = () => { tui.invalidate(); tui.requestRender(); };
   // Native argument identity only, not prepared/encoded source or a reader cache.
-  type SyntaxState = { revision: number; identity: unknown[]; palette: number; authorized: boolean; live: boolean };
+  type SyntaxState = { attempt: number; revision: number; sourceRevision: number; serviceRevision: number; identity: unknown[]; service: unknown[];
+    palette: number; mode: TerminalColorMode; complete: boolean; live: boolean; applied: boolean; native?: boolean; refreshPending?: boolean; prefix?: { sourceRevision: number; basis: number; bytes: number } };
   let syntaxStates = new WeakMap<ToolNode, SyntaxState>();
-  const syntax = options.syntax && new CardSources<ToolNode>(options.syntax.client, {
-    diagnostic: options.diagnostic, identify: node => ({ call: node.toolCallId, tool: node.toolName }),
-    read: readSyntax,
-    classify: options.syntax.classify ?? ((text, info) => highlightCode(text, info.language)),
-    invalidate: forget,
-    requestRender: () => { if (active) tui.requestRender(); },
-  });
-  const primitiveIdentity = (value: unknown) => value !== null && (typeof value === "object" || typeof value === "function") ? typeof value : value;
-  function liveBashSource(node: ToolNode): boolean {
-    return syntaxStates.get(node)?.live ?? options.syntax?.isLiveCall?.(node.toolCallId) ?? true;
+  let syntax: CardSources<ToolNode> | undefined;
+  let cardClient = options.syntax?.client;
+  let ownedSources: SourceController | undefined;
+  const piOwner = options.preparePiInput ? undefined : new PiInputOwner(options.diagnostic);
+  function publicInput() {
+    if (options.piInput) return options.piInput();
+    const theme = getTheme() as Palette & PiInputTheme & { getColorMode(): TerminalColorMode };
+    if (!theme.colors || typeof theme.getFgAnsi !== 'function' || typeof theme.getBgAnsi !== 'function' || typeof theme.getColorMode !== 'function')
+      throw new Error('Custom cards require coherent public Pi theme input');
+    return { theme, mode: theme.getColorMode() };
   }
+  function ensureCards(): CardSources<ToolNode> {
+    if (syntax) return syntax;
+    if (!cardClient) {
+      const snapshot = { enabled: false, selected: { kind: 'pi' } as const, standaloneVersion: extensionVersion,
+        provider: { availability: 'disabled' as const, reason: 'disabled' as const, generation: 0, initialShared: false } };
+      ownedSources = new SourceController({ snapshot: () => snapshot.provider, isReady: () => false,
+        classificationAccepted: () => { throw new Error('Disabled card provider accepted work'); },
+        request: () => { throw new Error('Disabled card provider requested work'); } },
+        { diagnostic: options.diagnostic, onChange: localCardNotice(new WeakRef(controller)) });
+      ownedSources.setEnabled(false); cardClient = { sources: ownedSources, snapshot: () => snapshot };
+    }
+    syntax = new CardSources(cardClient, {
+      diagnostic: options.diagnostic, identify: node => ({ call: node.toolCallId, tool: node.toolName }),
+      preparePiInput: funding => { const input = publicInput(); return options.preparePiInput
+        ? options.preparePiInput(input.theme, input.mode, funding) : piOwner!.prepare(input.theme, input.mode, funding); },
+      classify: options.syntax?.classify ?? ((text, info) => highlightCode(text, info.language)),
+      invalidate: node => { const state = syntaxStates.get(node); let native: boolean | undefined;
+        const accepted = syntax?.visit(node, (_display, paint) => { native = paint.origin === 'native'; });
+        if (accepted && state) state.native = native;
+        preparePrefix(node); }, requestRender: () => { if (active && !quiescing) tui.requestRender(); },
+    });
+    return syntax;
+  }
+  const primitiveIdentity = (value: unknown) => value !== null && (typeof value === 'object' || typeof value === 'function') ? typeof value : value;
+  function liveBashSource(node: ToolNode): boolean { return syntaxStates.get(node)?.live ?? options.syntax?.isLiveCall?.(node.toolCallId) ?? true; }
   function bashInputComplete(node: ToolNode): boolean {
-    return node.argsComplete || !node.isPartial && node.result?.role === 'toolResult'
-      || abandonedBashSource(node) && !liveBashSource(node);
-  }
-  function sourceIdentity(node: ToolNode): unknown[] {
-    if (node.toolName === "bash") return [node.toolName, primitiveIdentity(node.args.command), bashInputComplete(node)];
-    const details = node.result?.details as { diff?: unknown; patch?: unknown; truncated?: unknown; noOp?: unknown } | undefined;
-    return [node.toolName, filePath(node.args), node.toolName === "write" ? primitiveIdentity(node.args.content) : undefined,
-      !!node.result, node.isPartial, node.result?.isError === true, primitiveIdentity(details?.diff), primitiveIdentity(details?.patch),
-      primitiveIdentity(details?.truncated), primitiveIdentity(details?.noOp)];
+    return node.argsComplete || !node.isPartial && node.result?.role === 'toolResult' || abandonedBashSource(node) && !liveBashSource(node);
   }
   function abandonedBashSource(node: ToolNode): boolean {
-    return node.toolName === "bash" && !node.isPartial && node.result?.isError === true && bashFailurePhase(node) === 'formation';
+    return node.toolName === 'bash' && !node.isPartial && node.result?.isError === true && bashFailurePhase(node) === 'formation';
   }
-  function interruptedLiveBash(node: ToolNode): boolean {
-    return abandonedBashSource(node) && liveBashSource(node);
-  }
+  function interruptedLiveBash(node: ToolNode): boolean { return abandonedBashSource(node) && liveBashSource(node); }
   function syntaxEligible(node: ToolNode): boolean {
-    if (!active || !attached(node) || node.hideComponent || node.result?.content.some(part => part.type === "image")) return false;
-    if (node.toolName === "bash") return !interruptedLiveBash(node) && !overrides.has("bash") && !nativeOverrides.has("bash") &&
-      typeof node.args.command === "string" && bashDirectory(node) !== null;
+    if (!active || !attached(node) || node.hideComponent || node.result?.content.some(part => part.type === 'image')) return false;
+    if (node.toolName === 'bash') return !overrides.has('bash') && !nativeOverrides.has('bash') && typeof node.args.command === 'string' && bashDirectory(node) !== null;
     return fileSucceeded(node) && !node.expanded && !overrides.has(node.toolName) && !nativeOverrides.has(node.toolName) && !!filePath(node.args);
   }
+  const equalIdentity = (a: unknown[], b: unknown[]) => a.length === b.length && a.every((v, i) => v === b[i]);
   function observeSyntax(node: ToolNode): SyntaxState | undefined {
-    if (quiescing || !syntax || (node.toolName !== "bash" && node.toolName !== "edit" && node.toolName !== "write")) return undefined;
-    const identity = sourceIdentity(node), palette = options.syntax!.palette();
+    if (quiescing || !syntaxEligible(node)) { if (node.toolName !== 'bash') dropPrepared(node); pauseSyntax(node); return; }
+    const owner = ensureCards();
+    const identity = node.toolName === 'bash' ? [node.toolName, primitiveIdentity(node.args.command)] : (() => {
+      const d = node.result?.details as { diff?: unknown; patch?: unknown; truncated?: unknown; noOp?: unknown } | undefined;
+      return [node.toolName, filePath(node.args), node.toolName === 'write' ? primitiveIdentity(node.args.content) : undefined,
+        primitiveIdentity(d?.diff), primitiveIdentity(d?.patch), primitiveIdentity(d?.truncated), primitiveIdentity(d?.noOp)];
+    })();
+    const context = node.getRenderContext() as { cwd?: string };
+    const diagnostics = (node.result?.details as { diagnostics?: unknown } | undefined)?.diagnostics;
+    const diagnosticIdentity = node.toolName !== 'bash' && Array.isArray(diagnostics) ? diagnostics.flatMap(value => {
+      const diagnostic = value as { severity?: unknown; message?: unknown; line?: unknown } | null;
+      return diagnostic?.severity === 'error' && typeof diagnostic.message === 'string' ? [diagnostic.message, primitiveIdentity(diagnostic.line)] : [];
+    }) : [];
+    const service = node.toolName === 'bash' ? [node.expanded, node.args.description, node.args.workdir, bashDirectory(node), node.result?.isError,
+      node.isPartial, node.result?.isError ? node.executionStarted : undefined, node.result?.isError ? node.argsComplete : undefined,
+      (node.result?.details as { exit_code?: unknown } | undefined)?.exit_code,
+      ...(node.result?.content.flatMap(p => [p.type, p.text]) ?? [])] : [context?.cwd, ...diagnosticIdentity];
     let state = syntaxStates.get(node);
-    if (!state) {
-      state = { revision: 1, identity, palette, authorized: false, live: liveBashSource(node) }; syntaxStates.set(node, state);
-      syntax.record(node, state.revision, false);
-    } else if (state.palette !== palette || identity.some((value, index) => value !== state!.identity[index])) {
-      const displayChanged = node.toolName !== 'bash' || state.palette !== palette || identity[1] !== state.identity[1];
-      state.identity = identity; state.palette = palette; state.revision++;
-      if (displayChanged) forget(node);
-      syntax.record(node, state.revision, node.toolName === "bash" ? bashInputComplete(node) : fileSucceeded(node));
+    const input = state?.native ? { mode: state.mode } : publicInput();
+    const palette = state?.native ? state.palette : options.preparePiInput ? options.syntax!.palette() : piOwner!.palette((input as ReturnType<typeof publicInput>).theme);
+    const changed = !state || !equalIdentity(identity, state.identity), serviceChanged = !state || !equalIdentity(service, state.service);
+    if (!state) { state = { attempt: 0, revision: 0, sourceRevision: 0, serviceRevision: 0, identity: [], service: [], palette, mode: input.mode, complete: false, applied: false, live: liveBashSource(node) }; syntaxStates.set(node, state); }
+    const complete = node.toolName === 'bash' ? bashInputComplete(node) : true;
+    if (!state.applied || changed || serviceChanged || state.palette !== palette || state.mode !== input.mode || complete !== state.complete) {
+      const attempt = ++state.attempt;
+      const common = { revision: attempt, sourceRevision: changed ? attempt : state.sourceRevision,
+        serviceRevision: serviceChanged ? attempt : state.serviceRevision, palette, mode: input.mode };
+      state.applied = false;
+      const accepted = owner.updateDisplay(node, node.toolName === 'bash' ? { ...common, kind: 'bash', args: node.args, node,
+        complete, language: 'bash', directory: bashDirectory(node) ?? undefined }
+        : { ...common, kind: 'file', node, cwd: context?.cwd, language: getLanguageFromPath(filePath(node.args)!) });
+      if (syntaxStates.get(node) !== state || state.attempt !== attempt) return;
+      if (!accepted || !syntaxEligible(node)) { pauseSyntax(node); return; }
+      Object.assign(state, common, { identity, service, complete, applied: true });
+      preparePrefix(node);
     }
-    if (interruptedLiveBash(node)) { state.authorized = false; syntax.freeze(node); }
-    else if (!syntaxEligible(node)) pauseSyntax(node);
+    if (interruptedLiveBash(node)) owner.freeze(node);
     return state;
   }
-  function pauseSyntax(node: ToolNode): void {
+  function preparePrefix(node: ToolNode) {
+    const state = syntaxStates.get(node); if (!state?.applied || node.toolName !== 'bash' || !syntax) return;
+    const key = syntax.identities(node)[0]?.key; if (!key) return;
+    const basis = cardClient!.sources.displayBasis(key); if (!basis || state.prefix?.sourceRevision === state.sourceRevision && state.prefix.basis === basis.geometryStamp) return;
+    let bytes = 0, valid = false;
+    const accepted = syntax.visit(node, (display, paint) => {
+      if (display.kind !== 'bash') return;
+      valid = paint.basis(key, text => {
+        const current = display.command.text; let i = 0;
+        while (i < text.length && i < current.length) {
+          const cp = text.codePointAt(i)!; if (cp !== current.codePointAt(i)) break;
+          bytes += cp < 128 ? 1 : cp < 2048 ? 2 : cp < 65536 ? 3 : 4; i += cp > 65535 ? 2 : 1;
+        }
+      });
+    });
+    if (accepted && valid) state.prefix = { sourceRevision: state.sourceRevision, basis: basis.geometryStamp, bytes };
+  }
+  function pauseSyntax(node: ToolNode) { syntax?.pause(node); }
+  function usefulSyntax(node: ToolNode) {
     const state = syntaxStates.get(node);
-    if (state) state.authorized = false;
-    syntax?.pause(node);
+    if (state?.applied && syntaxEligible(node)) syntax?.useful(node, state.revision);
   }
-  function usefulSyntax(node: ToolNode): void {
-    const state = observeSyntax(node);
-    if (!state || !syntaxEligible(node)) return;
-    state.authorized = true;
-    syntax!.useful(node, state.revision);
+  function observePalette(node: ToolNode, origin: 'native' | 'pi') {
+    if (origin === 'native' || quiescing) return;
+    const state = syntaxStates.get(node); if (!state || state.refreshPending) return;
+    const input = publicInput(), palette = options.preparePiInput ? options.syntax!.palette() : piOwner!.palette(input.theme);
+    if (palette === state.palette && input.mode === state.mode) return;
+    state.refreshPending = true;
+    queueMicrotask(paletteRefresh(new WeakRef(node), new WeakRef(controller)));
   }
-  function readSyntax(node: ToolNode): CardSourceInput | undefined {
-    const previous = syntaxStates.get(node)?.revision;
-    const state = observeSyntax(node);
-    if (!state?.authorized || !syntaxEligible(node)) { pauseSyntax(node); return undefined; }
-    // A source/palette event during the deferred boundary replaces its pending ticket.
-    if (previous !== state.revision) syntax!.useful(node, state.revision);
-    if (node.toolName === "bash") return { kind: "bash", args: node.args, complete: bashInputComplete(node), language: "bash", palette: state.palette };
-    return { kind: "file", node, language: getLanguageFromPath(filePath(node.args)!), palette: state.palette };
-  }
-  function syntaxNeutral(theme: Palette): number {
-    const color = theme.colors?.toolOutput;
-    if (!color) return 0;
-    if (color.kind === "indexed") return (0x80000000 | color.index) >>> 0;
-    const rgb = colorToRgb(color);
-    return (0x40000000 | (rgb.r << 16) | (rgb.g << 8) | rgb.b) >>> 0;
-  }
-  function layoutSignature(node: ToolNode, kind: string, width: number, theme: Palette, directory: string | undefined, padding: number): unknown[] {
-    return [kind, width, padding, theme, theme.fg, kind === "bash" ? undefined : node.args, node.result, node.expanded, node.isPartial,
-      node.toolName, node.result?.isError, kind === "bash" ? (node.result?.details as { exit_code?: unknown } | undefined)?.exit_code : undefined,
-      kind === "bash" ? node.args.command : undefined, kind === "bash" ? node.args.description : undefined,
-      kind === "bash" ? node.args.workdir : undefined, directory,
-      kind === "edit" || kind === "write" ? theme.colors : undefined,
-      kind === "edit" || kind === "write" ? theme.style : undefined, kind === "edit" || kind === "write" ? theme.bg : undefined,
-      kind === 'bash' || kind === 'edit' || kind === 'write' ? syntax?.displayStamp(node) : undefined,
-      kind === 'bash' ? theme.colors : undefined,
-      kind === 'bash' && node.result?.isError ? bashFailurePhase(node) : undefined];
+  function refreshPalette(node: ToolNode) {
+    const state = syntaxStates.get(node); if (state) state.refreshPending = false;
+    if (active && !quiescing) { const current = observeSyntax(node); if (current) usefulSyntax(node); }
   }
   function memo<T extends Layout>(node: ToolNode, kind: LayoutKind, width: number, theme: Palette, directory: string | undefined, padding: number, build: () => T): T {
-    const signature = layoutSignature(node, kind, width, theme, directory, padding);
+    const signature = [kind, width, padding, theme, theme.fg, node.args, node.result, node.expanded, node.isPartial, directory];
     const state = states.get(node);
-    const matches = state && signature.every((value, index) => value === state.signature[index]);
-    if (matches) {
-      const value = state.pool.get(state.entry); if (value) return value as T;
-    } else { state?.pool.drop(state.entry); }
-    const value = build();
-    // Select by the materialized presentation, not tool name: inline/native file fallback is ordinary.
-    const pool = kind === "bash" || ((kind === "edit" || kind === "write") && value.framed && !value.native) ? cardCache : cache;
-    if (!matches) pool.get(undefined); // Attribute exactly one miss to the target pool.
-    states.set(node, { signature, pool, entry: pool.put(value, value.rows, kind) });
-    diagnose(options.diagnostic, "DEBUG", "cache", "Tool layout built", { call: node.toolCallId, tool: node.toolName, kind, width,
-      padding, rows: value.rows.length, framed: value.framed, native: value.native });
-    return value;
+    if (state && equalIdentity(signature, state.signature)) { const value = state.pool.get(state.entry); if (value) return value as T; }
+    state?.pool.drop(state.entry); const value = build(); cache.get(undefined);
+    states.set(node, { signature, pool: cache, entry: cache.put(value, value.rows, kind) }); return value;
   }
-  const bashLayout = (node: ToolNode, width: number) => {
-    const theme = getTheme(), directory = bashDirectory(node) ?? undefined, padding = outputPadding();
-    return memo(node, "bash", width, theme, directory, padding, () => {
-      let commandRows = false;
-      const layout = renderBashCard(node, directory, width, theme, padding, syntax && (command => {
-        const rows = syntax.bash(node, cardGeometry(width, padding).contentWidth, theme, 0, command);
-        commandRows = rows !== undefined; return rows;
-      }));
-      decision(node, "syntax", commandRows ? "Bash card uses prepared command projection; selected coverage is recorded by the syntax owner" : "Whole Bash command uses toolTitle; Pi classification is intentionally disabled", width, layout.rows.length,
-        { call: node.toolCallId, tool: node.toolName, selected: commandRows ? "prepared-native" : "toolTitle" });
-      return layout;
-    });
-  };
+  const preparedCleanup = new WeakMap<CacheEntry<PreparedLayout>, { geometry?: ReturnType<CardLayout['cleanupReceipt']>; output: ReturnType<CardRows['cleanupReceipt']> }>();
+  function preparedLayout(node: ToolNode, width: number): PreparedLayout | undefined {
+    if (!syntaxStates.get(node)?.applied) return;
+    const previousEntry = preparedStates.get(node), previous = previousEntry?.value;
+    const padding = outputPadding(), funding = cardClient?.sources.geometryFunding();
+    let scene: CardLayout | undefined, output: CardRows | undefined, candidate: PreparedLayout | undefined, adopted = false, nativeFile = false;
+    try {
+      const accepted = !!funding && !!syntax?.visit(node, (display, paint) => {
+        if (display.kind === 'file' && display.mode === undefined) { nativeFile = true; return; }
+        observePalette(node, paint.origin);
+        const sameGeometry = previous?.scene.isRetained && previous.width === width && previous.padding === padding && previous.expanded === node.expanded && previous.geometryStamp === display.geometryStamp;
+        if (sameGeometry && previous.output.isValid && previous.paintStamp === paint.paintStamp) { candidate = previous; return; }
+        scene = sameGeometry ? previous.scene : layoutCard(display, { width, outputPad: padding, expanded: node.expanded }, funding);
+        if (!scene) return;
+        let proof: BashPaintProof | undefined;
+        if (display.kind === 'bash') {
+          const key = syntax!.identities(node)[0]?.key, prefix = syntaxStates.get(node)?.prefix;
+          if (key && prefix && prefix.sourceRevision === syntaxStates.get(node)?.sourceRevision) paint.basis(key, (_text, ranges) => { proof = { ranges, eligibleBytes: prefix.bytes }; });
+        }
+        output = scene.paint(display, paint, funding, proof); if (!output) return;
+        candidate = { scene, output, width, padding, expanded: node.expanded, geometryStamp: display.geometryStamp, paintStamp: paint.paintStamp, publication: paint.publication, origin: paint.origin };
+      });
+      if (accepted && nativeFile) dropPrepared(node);
+      if (!accepted || !candidate || !active) return undefined;
+      const state = syntaxStates.get(node); if (state) state.native = candidate.origin === 'native';
+      if (candidate === previous) { preparedPools.get(previousEntry!)?.get(previousEntry); return previous; }
+      let rows: string[] | undefined; if (!candidate.output.withRows(value => { rows = value; }) || !rows) return previous;
+      const oldRelease = previousEntry && preparedCleanup.get(previousEntry);
+      const release = { geometry: candidate.scene.cleanupReceipt() as ReturnType<CardLayout['cleanupReceipt']> | undefined, output: candidate.output.cleanupReceipt() };
+      const pool = candidate.scene.framed ? cardCache : cache;
+      pool.get(undefined);
+      const entry = pool.put(candidate, rows, node.toolName as LayoutKind, preparedRelease(release));
+      if (candidate.scene === previous?.scene && oldRelease) oldRelease.geometry = undefined;
+      preparedCleanup.set(entry, release); preparedPools.set(entry, pool); dropPrepared(node); preparedStates.set(node, entry); adopted = true;
+      const identity = syntax?.identities(node)[0];
+      const basis = identity && cardClient!.sources.displayBasis(identity.key);
+      const pi = identity && cardClient!.sources.borrowPiSource(identity.key);
+      const selected = node.toolName === 'bash' ? syntaxStates.get(node)?.prefix?.bytes ? 'historical-native-prefix' : 'toolTitle'
+        : basis ? 'exact-native' : pi ? pi.styleDirectives ? 'styled-pi' : 'plain-pi' : 'waiting';
+      decision(node, 'syntax', selected === 'historical-native-prefix' ? 'Validated historical-prefix display, not parser authority'
+        : selected === 'plain-pi' ? 'Pi returned plain text; complete card palette supplies neutral ink'
+        : selected === 'waiting' ? 'Native work is queued, unsettled or uncertain; full text shown without duplicate Pi classification'
+        : 'Complete prepared card palette and source display selected', width, candidate.output.rowCount,
+        { call: node.toolCallId, tool: node.toolName, selected, origin: candidate.origin });
+      return candidate;
+    } finally { if (!adopted) { output?.dispose(); if (scene !== previous?.scene) scene?.dispose(); } }
+  }
+  function preparedRows(layout: PreparedLayout | undefined): string[] {
+    let rows: string[] | undefined; layout?.output.withRows(value => { rows = value; }); return rows ?? [];
+  }
+  const bashLayout = preparedLayout;
   const fileLayout = (node: ToolNode, width: number) => {
-    const theme = getTheme();
-    const context = node.getRenderContext() as { cwd?: unknown } | undefined;
-    const cwd = typeof context?.cwd === "string" ? context.cwd : undefined;
-    const padding = outputPadding();
-    return memo(node, node.toolName as "edit" | "write", width, theme, cwd, padding, () => {
-      const projection = syntax?.file(node, theme, syntaxNeutral(theme));
-      return (projection ? renderPreparedFileCard(projection.display, cwd, width, theme, { outputPad: padding,
-        styledRows: projection.styledRows, diagnostics: (node.result?.details as { diagnostics?: unknown } | undefined)?.diagnostics }) :
-        renderFileCard(node, cwd, width, theme,
-          !syntax && theme.colors && theme.style ? (code, path) => highlightCode(code, getLanguageFromPath(path)) : undefined, padding)) ??
-        { rows: nativeRows(node, width), framed: false, native: true };
-    });
+    const layout = preparedLayout(node, width);
+    return layout ? { geometry: layout.scene.geometry, framed: layout.scene.framed, native: false, rows: preparedRows(layout) }
+      : { rows: nativeRows(node, width), framed: false, native: true };
   };
   function fileMeasure(node: ToolNode, width: number) {
-    const theme = getTheme();
-    const context = node.getRenderContext() as { cwd?: unknown } | undefined;
-    const cwd = typeof context?.cwd === "string" ? context.cwd : undefined;
-    const padding = outputPadding();
-    const state = states.get(node), signature = layoutSignature(node, node.toolName, width, theme, cwd, padding);
-    // Read only the existing exact layout. Never admit another cache entry or retain measurement data.
-    if (state && signature.every((value, index) => value === state.signature[index])) {
-      const layout = state.pool.get(state.entry) as ReturnType<typeof renderFileCard>;
-      if (layout) return layout.native ? undefined : { framed: layout.framed, height: layout.rows.length };
-    }
-    return measureFileCard(node, cwd, width, padding);
+    if (!syntaxStates.get(node)?.applied) return;
+    const existing = preparedStates.get(node)?.value, padding = outputPadding();
+    let measurement: { framed: boolean; height: number } | undefined;
+    const accepted = syntax?.visit(node, display => {
+      if (display.kind !== 'file' || display.mode === undefined) return;
+      if (existing?.scene.isRetained && existing.width === width && existing.padding === padding && existing.geometryStamp === display.geometryStamp) {
+        measurement = { framed: existing.scene.framed, height: existing.scene.rowCount }; return;
+      }
+      // Spacing only distinguishes a frame from a one-row inline heading. No
+      // source rows need reflowing or parsing for this classification.
+      if (display.mode !== 'inline') { measurement = { framed: true, height: width > 0 ? 3 : 0 }; return; }
+      const geometry = cardGeometry(width, padding), inset = Math.min(geometry.contentX, Math.max(0, geometry.width - geometry.marginRight - 1));
+      const available = geometry.width - inset - geometry.marginRight;
+      if (available <= 0 || !display.heading) { measurement = { framed: false, height: 0 }; return; }
+      const funding = cardClient?.sources.geometryFunding(); if (!funding) return;
+      const heading = reflow(display.heading.measured, { mode: 'file', width: available }, funding.grant);
+      try { if (heading) measurement = { framed: false, height: heading.rowCount }; }
+      finally { heading?.dispose(); }
+    });
+    return accepted ? measurement : undefined;
   }
   const summaryLayout = (node: ToolNode, width: number) => {
     const theme = getTheme(), padding = outputPadding();
-    return memo(node, "summary", width, theme, undefined, padding, () => summaryRows(node, width, theme, padding));
+    return memo(node, 'summary', width, theme, undefined, padding, () => summaryRows(node, width, theme, padding));
   };
-  const controller: TidyUiController = {
+  const controller: PreparedCardController = {
+    refreshPreparedPalette: refreshPalette,
+    retireRendererClears() {
+      const detached = rendererClears; rendererClears = []; rendererClearPending = false;
+      if (active) for (const reference of detached) { const node = reference.deref(); if (node && !attached(node)) releaseTree(node); }
+    },
     get active() { return active; },
     get reason() { return reason; },
     get editorActive() {
@@ -607,19 +707,20 @@ export function installTidyUi(tui: LiveTui, getTheme: () => Palette, options: Ti
       catch { fail("pi-tidy-ui could not render editor status; native rendering restored"); return []; }
     },
     clearCache,
-    syntaxSourceChanged(keys) { if (active && !quiescing) syntax?.sourceChanged(keys); },
+    syntaxSourceChanged(keys, groups) { if (active && !quiescing) syntax?.sourceChanged(keys, groups); },
     syntaxMetadataChanged() { if (active && !quiescing) syntax?.metadataChanged(); },
     quiesce() {
       quiescing = true; stopSpinner(); animated.clear(); animationRefs = new WeakMap();
     },
     restore({ repaint = true } = {}) {
       if (!active && !patches.size && !userPatches.size && !editorPatches.size) {
-        syntax?.dispose(); syntaxStates = new WeakMap(); return;
+        syntax?.dispose(); ownedSources?.dispose(); piOwner?.dispose(); syntaxStates = new WeakMap(); return;
       }
       diagnose(options.diagnostic, "INFO", "runtime", "Presentation restoring native ownership; later owners remain untouched",
         { animationWakes: spinnerWakes, animationRequests: spinnerRequests });
       active = false;
-      syntax?.dispose(); syntaxStates = new WeakMap();
+      rendererClears = []; rendererClearPending = false;
+      syntax?.dispose(); ownedSources?.dispose(); piOwner?.dispose(); syntaxStates = new WeakMap();
       stopSpinner(); animated.clear(); animationRefs = new WeakMap();
       clearCache();
       if (Container.prototype.addChild === patchedAdd) Container.prototype.addChild = originalAdd;
@@ -673,7 +774,8 @@ export function installTidyUi(tui: LiveTui, getTheme: () => Palette, options: Ti
   const fail = (message: string) => {
     if (reason) return;
     reason = message;
-    diagnose(options.diagnostic, "WARN", "compatibility", message);
+    diagnose(options.diagnostic, "ERROR", "compatibility", message);
+    reportRuntime(options.diagnostic, { kind: 'failure', scope: controller, operation: 'appearance', area: 'appearance', code: 'unsupported_host' });
     controller.restore();
     options.warn?.(message);
   };
@@ -807,9 +909,18 @@ export function installTidyUi(tui: LiveTui, getTheme: () => Palette, options: Ti
   function presentedRows(node: ToolNode, rows: string[], offset: number): string[] {
     const state = states.get(node);
     if (state) state.gap = offset;
+    const prepared = preparedStates.get(node)?.value;
+    if (prepared) prepared.gap = offset;
     return offset ? ['', ...rows] : rows;
   }
   function cleanupRows(node: ToolNode, width: number): string[] | undefined {
+    const prepared = preparedStates.get(node)?.value;
+    if (prepared && prepared.width === width && width > 0 && prepared.gap !== undefined &&
+      prepared.scene.isValid && prepared.output.isValid && syntaxStates.get(node)?.applied && syntaxEligible(node)) {
+      if (!nativeVisible(node, width)) return [];
+      const rows = preparedRows(prepared);
+      return prepared.gap ? ['', ...rows] : rows;
+    }
     // No source borrowing during disposal. Native update wrappers invalidate these
     // layouts; Bash's raw argument keys also guard its deliberately retained fast path.
     const state = states.get(node);
@@ -839,10 +950,11 @@ export function installTidyUi(tui: LiveTui, getTheme: () => Palette, options: Ti
     const patchedRender: Render = function (width) {
       try {
         if (quiescing) return cleanupRows(this, width) ?? originalRender.call(this, width);
-        observeSyntax(this);
         if (bashCard(this, width)) {
           removeAnimation(this);
-          const rows = bashLayout(this, width).rows;
+          const layout = bashLayout(this, width);
+          if (!layout) return originalRender.call(this, width);
+          const rows = preparedRows(layout);
           toolDecision(this, rows.length ? "Bash card selected" : "Bash card returned no rows", width, rows.length);
           if (!rows.length) { pauseSyntax(this); return rows; }
           usefulSyntax(this);
@@ -875,12 +987,11 @@ export function installTidyUi(tui: LiveTui, getTheme: () => Palette, options: Ti
     const patchedMouse: Mouse = function (event) {
       if (!active) return originalMouse.call(this, event);
       if (quiescing) return undefined;
-      observeSyntax(this);
       if (event.width > 0 && bashCard(this, event.width)) {
         if (event.type !== "click" || event.button !== "left" || tui.hasActiveSelection?.()) return undefined;
         const layout = bashLayout(this, event.width);
         const offset = previousLayout(this, event.width) ? 1 : 0;
-        const hit = layout.expandable && insidePanel(layout.geometry, layout.rows.length, event.x, event.y - offset);
+        const hit = layout?.scene.expandable && insidePanel(layout.scene.geometry, layout.output.rowCount, event.x, event.y - offset);
         if (!hit) return undefined;
         this.setExpanded(!this.expanded);
         tui.requestRender();
@@ -928,13 +1039,17 @@ export function installTidyUi(tui: LiveTui, getTheme: () => Palette, options: Ti
         // Bash keys include every displayed argument; unrelated/same argument updates reuse its body.
         if (name !== "markExecutionStarted" && !((name === "updateArgs" || name === 'setArgsComplete') && this.toolName === "bash" && !overrides.has("bash")) &&
           !(name === "setExpanded" && args[0] === this.expanded)) forget(this, name);
+        if (quiescing && name !== 'markExecutionStarted') { dropPrepared(this); }
         const result = method.apply(this, args);
         if (name !== "invalidate") nativePhase(this, name);
         observeSyntax(this);
+        if (name === 'setExpanded' && this.toolName !== 'bash' && this.expanded) {
+          dropPrepared(this);
+        }
         if (!quiescing && syntax && name === "updateResult" && interruptedLiveBash(this)) {
           // Terminal formation retires native work, not the still-displayed presentation.
           syntax.freeze(this);
-          options.syntax!.client.sources.flush();
+          cardClient!.sources.flush();
         }
         if (!executing(this) || !attached(this)) removeAnimation(this);
         return result;
@@ -1330,10 +1445,14 @@ export function installTidyUi(tui: LiveTui, getTheme: () => Palette, options: Ti
   }
   function releaseTree(node: Component) {
     forgetQueued(node);
-    if (candidate(node)) { forget(node); removeAnimation(node); syntax?.remove(node); syntaxStates.delete(node); }
+    if (candidate(node)) { forget(node); dropPrepared(node); removeAnimation(node); syntax?.remove(node); syntaxStates.delete(node); }
     else if (userCandidate(node)) forgetUser(node);
     parents.delete(node);
-    if (node instanceof Container) for (const child of node.children) releaseTree(child);
+    if (node instanceof Container) for (const child of node.children) if (!attached(child)) releaseTree(child);
+  }
+  function pauseRendererTree(node: Component) {
+    if (candidate(node)) { pauseSyntax(node); removeAnimation(node); }
+    if (node instanceof Container) for (const child of node.children) pauseRendererTree(child);
   }
   function patchedRemove(this: Container, child: Component) {
     containerRemove.call(this, child);
@@ -1342,8 +1461,17 @@ export function installTidyUi(tui: LiveTui, getTheme: () => Palette, options: Ti
   }
   function patchedClear(this: Container) {
     const children = this.children;
+    // Pi clears the current renderer before moving the same tree through its stable TUI reference.
+    const renderer = tui instanceof Container && this !== tui && children === tui.children;
     containerClear.call(this);
-    for (const child of children) if (!this.children.includes(child) && !attached(child)) releaseTree(child);
+    for (const child of children) if (!this.children.includes(child) && !attached(child)) {
+      if (!renderer) releaseTree(child);
+      else { pauseRendererTree(child); rendererClears.push(new WeakRef(child)); }
+    }
+    if (rendererClears.length && !rendererClearPending) {
+      rendererClearPending = true;
+      queueMicrotask(rendererClearRetirement(new WeakRef(controller)));
+    }
   }
 
   if (!(tui instanceof Container) || typeof tui.requestRender !== "function") {
@@ -1381,6 +1509,13 @@ export interface TidyUiRuntimeOptions {
   syntax?: (ctx: ExtensionContext) => SyntaxRuntimeOptions;
 }
 interface SyntaxContext { current?: ExtensionContext }
+interface DiagnosticContext extends SyntaxContext { session: string; logging?: SessionLogging }
+function diagnosticCapture(owner: WeakRef<DiagnosticContext>): DiagnosticSink {
+  return (level, area, message, fields) => owner.deref()?.logging?.sink(level, area, message, fields);
+}
+function runtimeNotice(owner: WeakRef<DiagnosticContext>) {
+  return (message: string) => { const ctx = owner.deref()?.current; if (ctx?.hasUI) ctx.ui.notify(message, 'error'); };
+}
 function syntaxNotice(owner: WeakRef<SyntaxContext>) {
   return (message: string, type: "error") => owner.deref()?.current?.ui.notify(message, type);
 }
@@ -1422,10 +1557,12 @@ export default function tidyUi(pi: ExtensionAPI, options: TidyUiRuntimeOptions =
   function applySavedPreferences(loaded: SettingsLoadResult, ctx: ExtensionContext, epoch: number) {
     if (epoch !== lifecycle || saveAbort.signal.aborted) return;
     if (!loaded.ok) {
-      if (lastSettingsIssue !== loaded.issue.message && ctx.hasUI) ctx.ui.notify(`pi-tidy-ui: ${loaded.issue.message}`, 'warning');
+      reportRuntime(diagnostic, { kind: 'failure', scope: settings, operation: 'read', area: 'settings', code: 'settings_read' });
+      if (lastSettingsIssue !== loaded.issue.message) diagnose(diagnostic, 'ERROR', 'settings', 'Shared preferences could not be read; current preferences retained');
       lastSettingsIssue = loaded.issue.message; return;
     }
     lastSettingsIssue = undefined;
+    reportRuntime(diagnostic, { kind: 'recovered', scope: settings, operation: 'read' });
     const choice = loaded.syntaxTheme;
     const themeChanged = choice.kind !== selectedTheme.kind || choice.kind === 'occipital' && selectedTheme.kind === 'occipital' && choice.id !== selectedTheme.id;
     const colorsChanged = colorsEnabled !== (loaded.terminalColorsEnabled ?? true);
@@ -1440,8 +1577,12 @@ export default function tidyUi(pi: ExtensionAPI, options: TidyUiRuntimeOptions =
     }
     diagnose(logging?.sink, 'INFO', 'runtime', 'Shared preferences refreshed without writing configuration', { themeChanged, colorsChanged, nativeChanged });
   }
-  function reportPreferencesIssue(ctx: ExtensionContext) {
-    if (preferencesIssue && ctx.hasUI) { ctx.ui.notify(`pi-tidy-ui: ${preferencesIssue}`, 'warning'); preferencesIssue = undefined; }
+  function reportPreferencesIssue() {
+    if (preferencesIssue) {
+      reportRuntime(diagnostic, { kind: 'failure', scope: settings, operation: 'read', area: 'settings', code: 'settings_read' });
+      diagnose(diagnostic, 'ERROR', 'settings', 'Preferences could not be loaded; defaults used');
+      preferencesIssue = undefined;
+    }
   }
   let liveContext: ExtensionContext | undefined;
   let syntax: SyntaxRuntime | undefined, syntaxEnabled = true;
@@ -1449,7 +1590,16 @@ export default function tidyUi(pi: ExtensionAPI, options: TidyUiRuntimeOptions =
   const liveBashCalls = new Set<string>();
   const syntaxContext: SyntaxContext = {};
   let logging: SessionLogging | undefined, loggingContext: SyntaxContext | undefined;
+  let health: RuntimeHealth | undefined, diagnostic: DiagnosticSink | undefined, diagnosticContext: DiagnosticContext | undefined;
   function startLogging(ctx: ExtensionContext, reason: string) {
+    const identity = ctx.sessionManager.getSessionId();
+    if (diagnosticContext?.session !== identity) {
+      health?.dispose();
+      if (diagnosticContext) { diagnosticContext.current = undefined; diagnosticContext.logging = undefined; }
+      diagnosticContext = { current: ctx, session: identity };
+      const owner = new WeakRef(diagnosticContext);
+      health = new RuntimeHealth(runtimeNotice(owner)); diagnostic = health.sink(diagnosticCapture(owner));
+    } else diagnosticContext.current = ctx;
     if (options.logging === false) return;
     const session = ctx.sessionManager.getSessionId();
     if (logging?.status().session === session) { if (loggingContext) loggingContext.current = ctx; return; }
@@ -1459,6 +1609,7 @@ export default function tidyUi(pi: ExtensionAPI, options: TidyUiRuntimeOptions =
     logging = new SessionLogging({ session, sessionFile: ctx.sessionManager.getSessionFile(), cwd: ctx.cwd,
       extension: extensionVersion, pi: VERSION, reason, mode: ctx.mode, provider: ctx.model?.provider, theme: ctx.ui.theme.name },
       { ...options.logging, enabled: loggingEnabled, warn: loggingNotice(new WeakRef(loggingContext)) });
+    diagnosticContext!.logging = logging;
     loggingDebug = new WeakRef(logging);
   }
   function logSnapshot() {
@@ -1471,6 +1622,7 @@ export default function tidyUi(pi: ExtensionAPI, options: TidyUiRuntimeOptions =
     if (controller) { const stats = controller.cacheStats(); diagnose(sink, "INFO", "cache", "Snapshot of existing layout counters", {
       entries: stats.entries, rows: stats.rows, bytes: stats.retainedBytes, hits: stats.hits, misses: stats.misses, builds: stats.builds,
       releases: stats.releases, collected: stats.collected }); }
+    if (health) { const status = health.snapshot(); diagnose(sink, 'INFO', 'runtime', 'Snapshot of runtime health; distinct from log write failures', { errors: status.errors, active: status.active, code: status.last?.code, state: status.last?.state }); }
     if (syntax) { const stats = syntax.sources.stats(), snapshot = syntax.snapshot(); diagnose(sink, "INFO", "syntax", "Snapshot of existing source/provider state", {
       availability: snapshot.provider.availability, reason: snapshot.provider.reason, generation: snapshot.provider.generation,
       kind: snapshot.provider.kind, theme: snapshot.selected.kind, profile: snapshot.effective?.id,
@@ -1480,9 +1632,9 @@ export default function tidyUi(pi: ExtensionAPI, options: TidyUiRuntimeOptions =
   }
   function ensureSyntax(ctx: ExtensionContext) {
     syntaxContext.current = ctx;
-    syntax ??= new SyntaxRuntime({ ...(options.syntax ? options.syntax(ctx) : createSyntaxOptions(ctx, undefined, logging?.sink)),
+    syntax ??= new SyntaxRuntime({ ...(options.syntax ? options.syntax(ctx) : createSyntaxOptions(ctx, undefined, diagnostic)),
       settings, initialTheme: selectedTheme,
-      diagnostic: logging?.sink, enabled: syntaxEnabled,
+      diagnostic, enabled: syntaxEnabled,
       enabledChanged: value => { syntaxEnabled = value; }, notify: syntaxNotice(new WeakRef(syntaxContext)) });
     return syntax;
   }
@@ -1506,7 +1658,7 @@ export default function tidyUi(pi: ExtensionAPI, options: TidyUiRuntimeOptions =
       const reference = new WeakRef(tui);
       const view = new TerminalColors({
         defaults: options.terminalDefaults ?? processTerminalDefaults(),
-        diagnostic: logging?.sink,
+        diagnostic,
         snapshot() {
           const current = liveContext!;
           return { enabled: enabled && colorsEnabled && current?.mode === "tui", presenting: enabled && current?.mode === "tui", theme: current.ui.theme,
@@ -1646,9 +1798,15 @@ export default function tidyUi(pi: ExtensionAPI, options: TidyUiRuntimeOptions =
       if (ctx.ui.getEditorComponent() === undefined && slot instanceof Container && slot.children.length === 1)
         pendingFooter = { slot: new WeakRef(slot), owner: new WeakRef(slot.children[0]!) };
       const sourceRuntime = ensureSyntax(ctx);
+      if (controller) reportRuntime(diagnostic, { kind: 'released', scope: controller, operation: '*' });
       controller = installTidyUi(tui, palette, {
-        diagnostic: logging?.sink,
-        syntax: { client: sourceRuntime, palette: () => sourceRuntime.palette(liveContext!.ui.theme), isLiveCall: id => liveBashCalls.has(id) },
+        diagnostic,
+        syntax: { client: sourceRuntime, palette: () => sourceRuntime.palette({ colors: palette().colors! }), isLiveCall: id => liveBashCalls.has(id) },
+        piInput: () => { const theme = liveContext!.ui.theme, projected = palette().colors as PiInputTheme['colors'], mode = theme.getColorMode();
+          return { theme: { colors: projected, getFgAnsi: role => theme.getFgAnsi(role),
+            // Only the local terminal-default projection proves a concrete background.
+            getBgAnsi: role => projected[role] !== theme.colors[role] ? backgroundAnsi(projected[role], mode) : theme.getBgAnsi(role) }, mode }; },
+        preparePiInput: (theme, mode, funding) => sourceRuntime.preparePiInput(theme, mode, funding),
         cards: names("tidy-ui-card"), compact: names("tidy-ui-compact"),
         outputPad: () => pi.getSettings().outputPad ?? 1,
         nativeEditor: () => liveContext?.ui.getEditorComponent() === undefined,
@@ -1658,7 +1816,7 @@ export default function tidyUi(pi: ExtensionAPI, options: TidyUiRuntimeOptions =
           directorySource?.dispose(); directorySource = undefined;
           liveContext?.ui.setWidget(statusWidget, undefined);
         },
-        warn: (message) => { restoreFooter(); liveContext?.ui.notify(`pi-tidy-ui disabled: ${message}`, "warning"); },
+        warn: (message) => { restoreFooter(); if (!diagnostic?.runtime) liveContext?.ui.notify(`pi-tidy-ui disabled: ${message}`, "warning"); },
       });
       diagnose(logging?.sink, "INFO", "runtime", "Presentation installation finished", { active: controller.active, reason: controller.reason });
       if (controller.active) sourceRuntime.attach(controller);
@@ -1666,7 +1824,7 @@ export default function tidyUi(pi: ExtensionAPI, options: TidyUiRuntimeOptions =
     });
     ctx.ui.setWidget("pi-tidy-ui-capture", undefined);
     if (controller?.active) ctx.ui.setWidget(statusWidget, (tui) => {
-      directorySource ??= new GitBranchSource(() => tui.requestRender(), { diagnostic: logging?.sink });
+      directorySource ??= new GitBranchSource(() => tui.requestRender(), { diagnostic });
       return {
       render(width) {
         const current = liveContext;
@@ -1715,8 +1873,7 @@ export default function tidyUi(pi: ExtensionAPI, options: TidyUiRuntimeOptions =
     liveBashCalls.clear(); footerName = undefined;
     if (!preferencesLoaded) await loadPreferences();
     if (current !== lifecycle) return;
-    reportPreferencesIssue(ctx);
-    startLogging(ctx, event.reason); start(ctx);
+    startLogging(ctx, event.reason); reportPreferencesIssue(); start(ctx);
     unwatchSettings?.(); unwatchSettings = settings.watch?.(loaded => applySavedPreferences(loaded, ctx, current));
   });
   pi.on("session_info_changed", (event) => {
@@ -1728,7 +1885,7 @@ export default function tidyUi(pi: ExtensionAPI, options: TidyUiRuntimeOptions =
   pi.on("session_shutdown", async (event, ctx) => {
     ++lifecycle; saveAbort.abort(); unwatchSettings?.(); unwatchSettings = undefined; activeMenu?.close(); activeMenu = undefined;
     liveBashCalls.clear(); footerName = undefined;
-    liveContext = ctx; logSnapshot(); pendingFooter = undefined;
+    liveContext = ctx; logSnapshot(); pendingFooter = undefined; health?.dispose();
     controller?.quiesce();
     try { await stopSyntax(); }
     finally {
@@ -1741,7 +1898,9 @@ export default function tidyUi(pi: ExtensionAPI, options: TidyUiRuntimeOptions =
           try { restoreFooter(); }
           finally {
             try { controller?.restore({ repaint: false }); }
-            finally { controller = undefined; liveContext = undefined; syntaxContext.current = undefined; }
+            finally { controller = undefined; liveContext = undefined; syntaxContext.current = undefined;
+              if (diagnosticContext) { diagnosticContext.current = undefined; diagnosticContext.logging = undefined; }
+              diagnosticContext = undefined; diagnostic = undefined; health = undefined; }
           }
         }
       }
@@ -1761,7 +1920,11 @@ export default function tidyUi(pi: ExtensionAPI, options: TidyUiRuntimeOptions =
           case 'appearanceEnabled':
             enabled = local.appearanceEnabled = action.value;
             if (enabled) start(ctx);
-            else { pendingFooter = undefined; stopColors(); restoreFooter(); controller?.restore(); await stopSyntax(); }
+            else {
+              pendingFooter = undefined; stopColors(); restoreFooter();
+              if (controller) reportRuntime(diagnostic, { kind: 'released', scope: controller, operation: '*' });
+              controller?.restore(); await stopSyntax();
+            }
             break;
           case 'terminalColorsEnabled':
             applyTerminalPreference(action.value, ctx);
@@ -1773,8 +1936,12 @@ export default function tidyUi(pi: ExtensionAPI, options: TidyUiRuntimeOptions =
         }
         const outcome = await saving;
         if (!current()) return retired;
-        if (persistent && !outcome) return { ok: false, message: 'Applied for now, but settings could not be saved.' };
-        if (outcome && !outcome.ok) return { ok: false, message: `Applied for now, but not saved: ${outcome.issue.message}` };
+        if (persistent && (!outcome || !outcome.ok)) {
+          reportRuntime(diagnostic, { kind: 'failure', scope: settings, operation: 'save', area: 'settings', code: 'settings_save' });
+          diagnose(diagnostic, 'ERROR', 'settings', 'Applied preference could not be saved');
+          return { ok: false, message: outcome && !outcome.ok ? `Applied for now, but not saved: ${outcome.issue.message}` : 'Applied for now, but settings could not be saved.' };
+        }
+        if (persistent) reportRuntime(diagnostic, { kind: 'recovered', scope: settings, operation: 'save' });
         if (action.key === 'loggingEnabled' && action.value && logging?.status().state === 'failed')
           return { ok: false, message: 'Recording failed. See Diagnostic logs to retry.' };
         return { ok: true };
@@ -1825,7 +1992,7 @@ export default function tidyUi(pi: ExtensionAPI, options: TidyUiRuntimeOptions =
           color === 'source error' ? 'Theme could not be read; last valid colors retained' : color ?? 'Not started';
         const snapshot = syntax?.snapshot();
         return { appearanceEnabled: enabled, terminalColorsEnabled: colorsEnabled, nativeHighlightingEnabled: syntaxEnabled, loggingEnabled,
-          selected: snapshot?.selected ?? selectedTheme, syntax: snapshot, logs: logging?.status(), terminalColors,
+          selected: snapshot?.selected ?? selectedTheme, syntax: snapshot, logs: logging?.status(), health: health?.snapshot(), terminalColors,
           appearance: !enabled ? 'Off; using Pi’s interface' : !controller?.active ? controller?.reason ?? 'Not active' :
             controller.editorActive ? 'Active' : 'Cards active; input styling not applied' };
       },
@@ -1860,7 +2027,7 @@ export default function tidyUi(pi: ExtensionAPI, options: TidyUiRuntimeOptions =
       const epoch = lifecycle;
       await loadPreferences();
       if (epoch !== lifecycle) return;
-      reportPreferencesIssue(ctx);
+      reportPreferencesIssue();
       liveContext = ctx; syntaxContext.current = ctx;
       if (loggingContext) loggingContext.current = ctx;
       activeMenu?.close();

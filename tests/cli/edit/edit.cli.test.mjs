@@ -7,6 +7,8 @@ import { PiTerminal, artifacts, plain, lines, toolLines, assertFits } from '../.
 import { replayBlockStart, compareEditReplayColors } from '../../fixtures/edit-replay-comparator.mjs';
 import { closeTerminals } from '../../fixtures/terminal-cleanup.mjs';
 import { Terminal, compactContent, persisted } from '../../fixtures/main-cli-support.mjs';
+import { cardGeometry } from '../../../src/card-frame.ts';
+import { compileStyleAnsi } from '../../../src/syntax/style-ansi.ts';
 
 const rgb = value => [value >>> 16, value >>> 8 & 255, value & 255];
 const hex = value => '#' + value.toString(16).padStart(6, '0');
@@ -316,6 +318,11 @@ test('real CLI: minified edit keeps linear ANSI size, warm work, exact traffic a
   { timeout: 180000 }, async () => {
     const before = 'x+=1;'.repeat(3200), after = 'x+=1;'.repeat(3199) + 'x+=2;';
     const terminals = [], snapshots = [];
+    // Each source glyph or geometric padding cell can carry one complete style,
+    // independently of how many SGR fragments the renderer actually emits.
+    const completePair = compileStyleAnsi({ foreground: { kind: 'rgb', r: 255, g: 255, b: 255 },
+      background: { kind: 'rgb', r: 255, g: 255, b: 255 }, attributes: 15 }, 'truecolor');
+    const maxPair = completePair.open.length + completePair.close.length;
     const start = async (name, options = {}) => {
       const terminal = new PiTerminal(name, { extraEnv: { TIDY_UI_TEST_EDIT_PERFORMANCE: '1' }, ...options });
       terminals.push(terminal); await terminal.ready(); return terminal;
@@ -334,7 +341,11 @@ test('real CLI: minified edit keeps linear ANSI size, warm work, exact traffic a
       assert.ok(rows.some((row) => row.includes('← Edited edit-minified.ts')));
       const sourceUnits = edit.details.patch.length;
       const chars = edit.lines.reduce((sum, row) => sum + row.length, 0);
-      assert.ok(chars < sourceUnits * 20, `${chars} rendered units for ${sourceUnits} patch units`);
+      const geometry = cardGeometry(dump.width), gutter = 5;
+      const pane = stacked ? geometry.contentWidth : Math.floor((geometry.contentWidth - 3) / 2);
+      const rowBound = 4 + Math.ceil(before.length / (pane - gutter)) + Math.ceil(after.length / (pane - gutter));
+      const envelope = (before.length + after.length + rowBound * dump.width) * (maxPair + 1);
+      assert.ok(chars <= envelope, `${chars} rendered units exceed independently funded glyph/style envelope ${envelope}`);
       if (stacked) {
         const old = rows.findIndex((row) => /1 - x/.test(row)), next = rows.findIndex((row) => /1 \+ x/.test(row));
         assert.ok(old >= 0 && next > old);
@@ -344,7 +355,7 @@ test('real CLI: minified edit keeps linear ANSI size, warm work, exact traffic a
         assert.equal(code(rows.slice(next, -1)), after, 'every added source character remains');
       }
       assert.ok(dump.screen.some((row) => row.includes('x+=2;')), 'real terminal viewport contains the long diff');
-      snapshots.push({ width: dump.width, sourceUnits, renderedUnits: chars, rows: rows.length });
+      snapshots.push({ width: dump.width, sourceUnits, renderedUnits: chars, rows: rows.length, envelope });
       return chars;
     };
     const observe = async (terminal, name) => {

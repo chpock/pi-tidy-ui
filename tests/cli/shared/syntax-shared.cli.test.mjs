@@ -5,6 +5,7 @@ import test from 'node:test';
 import { PiTerminal } from '../../fixtures/terminal-harness.mjs';
 import { closeTerminals, runCleanupSteps } from '../../fixtures/terminal-cleanup.mjs';
 import { nativeReady } from '../../fixtures/syntax-observation.mjs';
+import { CARD_ROLES } from '../../../src/occipital/semantic-codec.ts';
 import { sharedSyntaxHost, themeDefinition, reaped } from '../../fixtures/shared-syntax-host.mjs';
 import { prepareSyntaxNative, requiredSharedHost, scenario, stats, traffic, persisted, menuAction, chooseTheme, settledStats, keywordColor, sourceColors, work, peerSource, finish, until, body } from '../../fixtures/syntax-cli-support.mjs';
 
@@ -100,7 +101,7 @@ test('occipital CLI: structured RGB and font attributes preserve both file diff 
         for (const [index, match] of matches.entries()) {
           const x = match.index, start = index === 0 ? 0 : matches[index - 1].index + 10;
           const end = index + 1 === matches.length ? dump.cells[y].length : matches[index + 1].index;
-          found.push({ value: match[0], keyword: dump.cells[y].slice(x, x + 5), variable: dump.cells[y][x + 6],
+          found.push({ y, x, start, end, value: match[0], keyword: dump.cells[y].slice(x, x + 5), variable: dump.cells[y][x + 6],
             number: dump.cells[y][x + 8], prefix: dump.cells[y].slice(start, x), suffix: dump.cells[y].slice(x + 10, end) });
         }
       }
@@ -110,15 +111,28 @@ test('occipital CLI: structured RGB and font attributes preserve both file diff 
       return found;
     };
     try {
-      const baseline = await scenario(terminal, true), baselineCells = vectors(baseline);
-      await terminal.resize(140); const wideBaseline = await terminal.capture('styles-wide-baseline');
-      const wideBaselineCells = vectors(wideBaseline); await terminal.resize(100);
+      const baseline = await scenario(terminal, true); vectors(baseline);
+      const baselines = new Map([[100, baseline]]);
+      for (const width of [24, 60, 140]) {
+        await terminal.resize(width); const dump = await terminal.capture(`styles-baseline-${width}`);
+        vectors(dump); baselines.set(width, dump);
+      }
+      const wideBaseline = baselines.get(140); await terminal.resize(100);
       const initial = await stats(terminal, 'styles-initial');
       assert.equal(initial.node, process.version, 'actual Pi child uses the same asserted parent runtime');
       assert.equal(initial.client.provider.kind, 'shared'); assert.equal(initial.counts.acquisitions, 0);
       const originalTraffic = traffic(terminal), originalData = persisted(baseline), originalBranch = baseline.branch;
       writeFileSync(host.themeFile, `<plist><dict><key>settings</key><array>
-        <dict><key>settings</key><dict><key>foreground</key><string>#112233</string></dict></dict>
+        <dict><key>settings</key><dict>
+          <key>foreground</key><string>#112233</string><key>background</key><string>#f8f8f8</string>
+          <key>gutter</key><string>#e8edf2</string><key>gutterForeground</key><string>#334455</string>
+          <key>accent</key><string>#445566</string></dict></dict>
+        <dict><key>scope</key><string>comment</string><key>settings</key><dict>
+          <key>foreground</key><string>#556677</string></dict></dict>
+        <dict><key>scope</key><string>markup.inserted</string><key>settings</key><dict>
+          <key>foreground</key><string>#114422</string><key>background</key><string>#e0f0e4</string></dict></dict>
+        <dict><key>scope</key><string>markup.deleted</string><key>settings</key><dict>
+          <key>foreground</key><string>#661122</string><key>background</key><string>#f0e0e4</string></dict></dict>
         <dict><key>scope</key><string>storage, keyword</string><key>settings</key><dict>
           <key>foreground</key><string>#a1b2c3</string><key>fontStyle</key><string>bold italic underline</string></dict></dict>
         <dict><key>scope</key><string>constant.numeric</string><key>settings</key><dict>
@@ -136,7 +150,6 @@ test('occipital CLI: structured RGB and font attributes preserve both file diff 
         painted = await terminal.capture(`styles-colored-${observation++}`);
         return vectors(painted).every(row => row.keyword.every(cell => cell.fg === 0xa1b2c3));
       }, 'all three actual source foregrounds');
-      const styledCells = vectors(painted);
       assert.deepEqual(body(painted), body(baseline), 'theme changes source styles, never tool glyphs or geometry');
       const assertVectors = dump => {
         for (const row of vectors(dump)) {
@@ -149,20 +162,93 @@ test('occipital CLI: structured RGB and font attributes preserve both file diff 
         }
       };
       assertVectors(painted);
-      const assertFrame = (current, previousRows) => {
-        for (const [index, row] of current.entries()) {
+      // A separate live peer supplies the public, validated native palette, not
+      // colors inferred from the terminal or Pi's obsolete whole-card baseline.
+      assert.equal((await host.initialPeer.refreshThemes()).ok, true);
+      host.initialPeer.previewTheme({ kind: 'occipital', id: custom.id });
+      host.initialPeer.sources.setStyleSelection({ kind: 'native', id: custom.id, fingerprint: custom.fingerprint });
+      await peerSource(host.initialPeer);
+      const palette = await until(() => {
+        const basis = host.initialPeer.sources.displayBasis('peer');
+        if (basis?.profile !== custom.id || basis.fingerprint !== custom.fingerprint) return false;
+        const roles = Object.fromEntries(CARD_ROLES.map(role => [role, basis.role(role)]));
+        return Object.values(roles).every(Boolean) ? roles : false;
+      }, 'independent peer native card palette');
+      const rgb = ink => { assert.equal(ink.kind, 'rgb'); return ink.r * 65536 + ink.g * 256 + ink.b; };
+      assert.equal(rgb(palette.panel.foreground), 0x112233); assert.equal(rgb(palette.panel.background), 0xf8f8f8);
+      assert.equal(rgb(palette.numbers.foreground), 0x334455); assert.equal(rgb(palette.numbers.background), 0xe8edf2);
+      assert.equal(rgb(palette.frame.foreground), 0x445566);
+      for (const role of ['addedCode', 'removedCode']) assert.notDeepEqual(palette[role].background, palette.code.background);
+      assert.notDeepEqual(palette.addedCode.background, palette.removedCode.background, 'authored diff hints produce distinct semantic surfaces');
+      for (const role of ['addedGutter', 'removedGutter']) assert.notDeepEqual(palette[role].background, palette.numbers.background);
+      const style = cell => ({ fg: cell.fg, fgMode: cell.fgMode, bg: cell.bg, bgMode: cell.bgMode,
+        bold: !!cell.bold, italic: !!cell.italic, underline: !!cell.underline, dim: !!cell.dim, inverse: !!cell.inverse });
+      const expectedStyle = role => ({ fg: rgb(palette[role].foreground), fgMode: 50331648,
+        bg: rgb(palette[role].background), bgMode: 50331648, bold: !!(palette[role].attributes & 1),
+        italic: !!(palette[role].attributes & 2), underline: !!(palette[role].attributes & 4),
+        dim: !!(palette[role].attributes & 8), inverse: false });
+      const exterior = { fg: -1, fgMode: 0, bg: -1, bgMode: 0, bold: false, italic: false, underline: false, dim: false, inverse: false };
+      const assertFrame = dump => {
+        const rows = vectors(dump), previousRows = vectors(baselines.get(dump.width));
+        for (const [index, row] of rows.entries()) {
           const previous = previousRows[index];
-          assert.deepEqual(row.prefix, previous.prefix, 'line-number/diff/frame prefix keeps every original cell style');
-          assert.deepEqual(row.suffix, previous.suffix, 'source attributes cannot leak into row suffix/frame');
-          for (const [cell, old] of [...row.keyword.map((cell, i) => [cell, previous.keyword[i]]), [row.variable, previous.variable], [row.number, previous.number]])
-            assert.deepEqual({ bg: cell.bg, bgMode: cell.bgMode }, { bg: old.bg, bgMode: old.bgMode }, 'syntax theme never replaces semantic diff background');
+          for (const part of ['prefix', 'suffix', 'keyword']) assert.deepEqual(row[part].map(({ text, width }) => ({ text, width })),
+            previous[part].map(({ text, width }) => ({ text, width })), `${part} glyphs and cell geometry stay exact`);
+          const cells = dump.cells[row.y], expected = cells.map(() => expectedStyle('padding'));
+          expected[0] = exterior; expected[cells.length - 1] = exterior;
+          expected[1] = { ...expectedStyle('frame'), bg: -1, bgMode: 0 };
+          for (const [n, segment] of rows.entries()) {
+            if (segment.y !== row.y) continue;
+            const plain = n === 0, role = plain ? 'code' : n === 1 ? 'removedCode' : 'addedCode';
+            const gutter = plain ? 'numbers' : n === 1 ? 'removedGutter' : 'addedGutter';
+            const sign = n === 1 ? 'removedSign' : 'addedSign', start = segment.x - (plain ? 3 : 5);
+            const next = rows[n + 1], end = next?.y === row.y ? next.x - 5 : cells.length - 2;
+            assert.equal(dump.screen[row.y].slice(start, segment.x), plain ? ' 1 ' : n === 1 ? ' 1 - ' : ' 1 + ');
+            for (let x = start; x < segment.x; x++) expected[x] = expectedStyle(!plain && (x === start + 2 || x === start + 3) ? sign : gutter);
+            for (let x = segment.x; x < end; x++) expected[x] = expectedStyle(role);
+            for (const offset of [0, 1, 2, 3, 4, 7]) expected[segment.x + offset] = {
+              ...expected[segment.x + offset], fg: 0xa1b2c3, bold: true, italic: true, underline: true };
+            expected[segment.x + 8] = { ...expected[segment.x + 8], fg: 0x22aa44, bold: false, italic: true, underline: false };
+          }
+          assert.deepEqual(row.prefix.map(style), expected.slice(row.start, row.x), 'selected native frame, number/sign gutters and prefix isolation');
+          assert.deepEqual(row.suffix.map(style), expected.slice(row.x + 10, row.end), 'native semantic padding and suffix attribute/background isolation');
+          assert.deepEqual(cells.map(style), expected, 'complete source row, including structural backgrounds and terminal-default exterior');
+        }
+        for (const label of ['← Wrote syntax.ts', '← Edited syntax.ts']) {
+          const heading = dump.screen.findIndex(row => row.includes(label)); assert.ok(heading >= 0);
+          let end = heading + 1;
+          while (dump.screen[end]?.[1] === '┃') end++;
+          for (let y = heading - 1; y < end; y++) {
+            const cells = dump.cells[y]; assert.equal(cells[1].text, '┃');
+            assert.deepEqual(style(cells[0]), exterior); assert.deepEqual(style(cells.at(-1)), exterior);
+            assert.deepEqual(style(cells[1]), { ...expectedStyle('frame'), bg: -1, bgMode: 0 });
+            if (rows.some(row => row.y === y)) continue;
+            const emptySource = label === '← Wrote syntax.ts' && y === rows[0].y + 1;
+            if (emptySource) assert.equal(dump.screen[y].slice(3, 6), ' 2 ', 'trailing source newline retains its numbered empty row');
+            for (let x = 2; x < cells.length - 1; x++) {
+              const role = emptySource && x >= 3 && x < 6 ? 'numbers' :
+                y === heading && x >= 3 && x < cells.length - 2 ? 'muted' : 'padding';
+              assert.deepEqual(style(cells[x]), expectedStyle(role), 'native header, empty source/panel and outer padding reset');
+            }
+          }
         }
       };
-      assertFrame(styledCells, baselineCells);
+      assertFrame(painted);
+      const negativeControls = [
+        ['wrong-card-foreground', d => { d.cells[vectors(d)[0].y][1].fg = 0xff00ff; }],
+        ['lost-diff-background', d => { const row = vectors(d)[1]; row.keyword[0].bg = rgb(palette.panel.background); }],
+        ['suffix-font-leak', d => { vectors(d)[0].suffix[0].italic = 1; }],
+        ['painted-exterior', d => { d.cells[vectors(d)[0].y].at(-1).bg = 0xf8f8f8; }],
+      ];
+      for (const [name, corrupt] of negativeControls) {
+        const invalid = structuredClone(painted); corrupt(invalid);
+        assert.throws(() => assertFrame(invalid), { code: 'ERR_ASSERTION' }, name);
+      }
+      console.log(JSON.stringify({ paletteControl: terminal.output, palette, negativeControls: negativeControls.map(([name]) => name) }));
       const before = await settledStats(terminal, 'styles-warm-before', s => nativeReady(s) && s.source.globalUnsettledJobs === 0);
       for (const width of [24, 60, 100, 140]) {
         await terminal.resize(width); const dump = await terminal.capture(`styles-width-${width}`); assertVectors(dump);
-        if (width === 140) { assertFrame(vectors(dump), wideBaselineCells); assert.deepEqual(body(dump), body(wideBaseline)); }
+        assertFrame(dump); assert.deepEqual(body(dump), body(baselines.get(width)), 'each width keeps exact pre-theme glyphs/geometry');
       }
       for (const theme of ['light', 'dark']) {
         const previousEvents = terminal.events().filter(event => event.type === 'theme').length;
@@ -170,7 +256,7 @@ test('occipital CLI: structured RGB and font attributes preserve both file diff 
         const transition = terminal.events().filter(event => event.type === 'theme')[previousEvents];
         assert.equal(transition.name, theme); assert.equal(transition.result.success, true, 'fresh requested Pi theme transition succeeds');
         const dump = await terminal.capture(`styles-${theme}`);
-        assertVectors(dump); assert.deepEqual(body(dump), body(wideBaseline), 'Pi theme changes no source glyphs/geometry');
+        assertVectors(dump); assertFrame(dump); assert.deepEqual(body(dump), body(wideBaseline), 'Pi theme changes no source glyphs/geometry');
         const themed = await stats(terminal, `styles-${theme}-stats`);
         assert.equal(themed.client.effective.id, custom.id);
         assert.deepEqual(work(themed), work(before), 'fixed native theme remains classified across Pi palette changes');

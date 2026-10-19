@@ -4,8 +4,9 @@ import { Input, SelectList, getKeybindings, matchesKey, truncateToWidth, visible
 import { readableDiagnosticText } from './debug-log.ts';
 import type { Switches, SyntaxTheme } from './settings.ts';
 import type { SyntaxMenuOutcome, SyntaxMenuSnapshot } from './occipital/menu.ts';
+import type { RuntimeHealthSnapshot } from './runtime-health.ts';
 import type { SessionLogging } from './session-logging.ts';
-import { PROTOCOL_VERSION } from './occipital/protocol.ts';
+import { SEMANTIC_PROTOCOL_VERSION as PROTOCOL_VERSION } from './occipital/semantic-protocol.ts';
 
 export type TidyMenuAction = { kind: 'switch'; key: keyof Switches; value: boolean }
   | { kind: 'theme'; choice: SyntaxTheme }
@@ -16,6 +17,7 @@ export interface TidyMenuSnapshot extends Switches {
   terminalColors: string;
   syntax?: SyntaxMenuSnapshot;
   logs?: ReturnType<SessionLogging['status']>;
+  health?: RuntimeHealthSnapshot;
 }
 export interface TidyMenuOwner {
   /** Cached state only. Opening the root/status never constructs or starts syntax. */
@@ -212,7 +214,7 @@ export class TidyMenu implements Component {
         item('appearance', 'Tidy UI appearance', 'Style cards, messages, input and footer. Diagnostic logs are independent.', onOff(state.appearanceEnabled)),
         item('themes', 'Code color theme', 'Colors for Bash commands and file previews; does not change Pi’s overall theme.', selectedLabel(state), true),
         item('colors', 'Set terminal colors from Pi theme', 'Set background and default text color from Pi’s theme. Pi controls automatic themes.', onOff(state.terminalColorsEnabled)),
-        item('support', 'Status & troubleshooting', 'Check what is active, resolve display problems, or collect diagnostics.', undefined, true),
+        item('support', 'Status & troubleshooting', 'Check what is active, resolve display problems, or collect diagnostics.', state.health?.active ? 'Issues' : undefined, true),
         item('close', 'Close', 'Close this panel without changing anything.'),
       ];
       case 'themes': {
@@ -245,8 +247,20 @@ export class TidyMenu implements Component {
       case 'service': return [back];
     }
   }
+  private healthSummary(state: TidyMenuSnapshot, syntaxOnly = false): string[] {
+    const health = state.health;
+    if (!health) return [];
+    const issues = health.issues.filter(issue => !syntaxOnly || issue.area === 'syntax');
+    const last = health.last;
+    return [
+      ...(!syntaxOnly ? [`Runtime status: ${health.active ? 'Problems detected' : 'No active runtime errors'}`,
+        `Runtime errors: ${health.errors}; active: ${health.active}`] : []),
+      ...issues.map(issue => `Unresolved ${issue.area}: ${safe(issue.code)} (${safe(issue.operation)}); ${safe(issue.time)}`),
+      ...(last && (!syntaxOnly || last.area === 'syntax') ? [`Last runtime error: ${safe(last.code)}; ${safe(last.time)}; ${last.state === 'released' ? 'owner removed; not a confirmed recovery' : last.state}`] : []),
+    ];
+  }
   private summary(state: TidyMenuSnapshot): string[] {
-    if (this.page === 'support') return [`Appearance: ${state.appearance}`, `Terminal colors: ${state.terminalColors}`,
+    if (this.page === 'support') return [...this.healthSummary(state), `Appearance: ${state.appearance}`, `Terminal colors: ${state.terminalColors}`,
       `Code colors: ${!state.appearanceEnabled ? 'Pi interface' : !state.nativeHighlightingEnabled ? 'Native highlighting off; fallback colors' : state.syntax?.provider.availability === 'ready' ? 'Native service available' : 'Fallback colors; native service unavailable'}`];
     if (this.page === 'themes') {
       if (this.themeLoading) return ['Loading saved code theme…'];
@@ -260,17 +274,19 @@ export class TidyMenu implements Component {
     }
     if (this.page === 'logs') {
       const log = state.logs;
-      return log ? [`Recording: ${log.capture ? log.state === 'failed' ? 'Failed; retry available' : 'On' : 'Off'}`,
+      return [...this.healthSummary(state), ...(log ? [`Recording: ${log.capture ? log.state === 'failed' ? 'Failed; retry available' : 'On' : 'Off'}`,
         ...(log.state === 'off' ? ['No log file created.'] : [`Journal: ${safe(log.path)}`, `Session index: ${safe(log.commonPath)}`]),
         `Run: ${safe(log.run)}; session: ${safe(log.session)}`,
         `Session name: ${safe(log.name ?? 'unknown')}`,
-        `Records: ${log.records}; writes: ${log.writes}; dropped: ${log.dropped}; errors: ${log.writeErrors}`,
-        ...(log.failure ? [`Last issue: ${safe(log.failure)}`] : [])] : ['Diagnostic logging is unavailable in this host.'];
+        `Records: ${log.records}; writes: ${log.writes}`,
+        `Dropped records: ${log.dropped}; log write errors: ${log.writeErrors}`,
+        ...(log.dropped ? ['Some diagnostic records were lost because the log buffer was full.'] : []),
+        ...(log.failure ? [`Last logging issue: ${safe(log.failure)}`] : [])] : ['Diagnostic logging is unavailable in this host.'])];
     }
     if (this.page === 'cache') return this.cache;
     if (this.page === 'service') {
       const syntax = state.syntax, provider = syntax?.provider;
-      return [`Native highlighting: ${onOff(state.nativeHighlightingEnabled)}`, `Service: ${provider ? `${provider.availability} (${provider.reason})` : 'Not started'}`,
+      return [...this.healthSummary(state, true), `Native highlighting: ${onOff(state.nativeHighlightingEnabled)}`, `Service: ${provider ? `${provider.availability} (${provider.reason})` : 'Not started'}`,
         `Provider: ${provider?.kind ?? 'none'}`, `Daemon version: ${safe(provider?.description?.backend_version ?? 'unavailable')}`,
         `Protocol: ${provider?.description ? PROTOCOL_VERSION : 'unavailable'}`,
         `Standalone version: ${safe(syntax?.standaloneVersion ?? 'not loaded')}`, `Selected theme: ${selectedLabel(state)}`,

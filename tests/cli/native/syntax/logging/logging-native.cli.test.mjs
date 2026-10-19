@@ -26,11 +26,26 @@ for (const mode of ['regular', 'fullscreen']) for (const native of [true])
         assert.equal(baseline.dropped, 0); assert.equal(baseline.writeErrors, 0);
         const originalEvents = terminal.events(), text = readFileSync(baseline.path, 'utf8'); loggingPrivacy(text, originalEvents);
         writeFileSync(join(terminal.output, 'logging-live.log'), text);
-        assert.match(text, /Session started:.*session=.*run=/); assert.match(text, /\[cache\].*Tool layout built/);
-        const bashId = shown.tools.find(tool => tool.name === 'bash').id;
-        assert.ok(text.split('\n').some(row => row.includes('[syntax]') && row.includes(`call=${bashId}`) && row.includes('source=')), 'final decision correlates the actual Bash call and source');
-        assert.match(text, native ? /Occipital classification applied/ : /Whole Bash command uses toolTitle/);
-        if (!native) assert.match(text, /Cached Pi fallback applied/);
+        assert.match(text, /Session started:.*session=.*run=/);
+        const records = text.split('\n').map(row => ({ row,
+          fields: Object.fromEntries([...row.matchAll(/(?:^| )([A-Za-z]+)=([^ ]+)/g)].map(match => [match[1], match[2]])) }));
+        assert.ok(records.some(({ row, fields }) => row.includes('[cache] Snapshot of existing layout counters') && Number(fields.builds) > 0));
+        for (const tool of shown.tools.filter(tool => ['bash', 'write', 'edit'].includes(tool.name))) {
+          const owned = records.filter(({ row, fields }) => row.includes('[syntax]') && fields.call === tool.id && fields.tool === tool.name);
+          const demands = owned.filter(({ row, fields }) => row.includes('Syntax work evaluated outside render')
+            && /^card:\d+:\d+$/.test(fields.source) && Number(fields.version) > 0 && Number(fields.units) > 0);
+          assert.ok(demands.length > 0, `${tool.name}: actual call correlates source identity/version`);
+          const selected = tool.name === 'bash' ? native ? 'historical-native-prefix' : 'toolTitle' : native ? 'exact-native' : 'styled-pi';
+          assert.ok(owned.some(({ fields }) => fields.selected === selected && fields.origin === 'pi'
+            && Number(fields.width) > 0 && Number(fields.rows) > 0), `${tool.name}: actual per-call prepared build selects ${selected}`);
+          if (native) {
+            assert.ok(demands.some(({ fields: demand }) => records.some(({ row, fields }) => row.includes('Validated native result accepted')
+              && fields.source === demand.source && fields.version === demand.version)), `${tool.name}: validated native result joins the same source/version`);
+          } else {
+            assert.ok(demands.some(({ fields }) => fields.outcome === (tool.name === 'bash' ? 'neutral' : 'pi')),
+              `${tool.name}: source demand distinguishes neutral Bash from styled Pi fallback`);
+          }
+        }
         for (let i = 0; i < 5; i++) assert.deepEqual(loggerWork(await loggingFrame(terminal)), loggerWork(baseline));
         await terminal.resize(100);
         assert.deepEqual(loggerWork(await loggingFrame(terminal)), loggerWork(baseline), 'same-size observation adds no records or I/O');

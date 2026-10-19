@@ -2,14 +2,13 @@
 //! Source work remains on the fixed worker actors; only explicit refresh reads files.
 use crate::{
     actor::PoolHandle,
-    catalogue::{Catalogue, Descriptor, Diagnostic, Snapshot},
-    engine::Limits,
-    ingress::{Control, ControlDelivery, CONTROL_REPLY_BYTES, CONTROL_REQUEST_BYTES},
-    protocol::{Fault, ASSETS, CAPABILITY, PROTOCOL_VERSION, SERVICE},
-    reply::REPLY_BYTES,
-    request::{Operation, BATCH_SOURCES, QUEUE_WAIT_MS, REQUEST_BYTES},
+    catalogue::{Catalogue, Diagnostic, Snapshot},
+    ingress::{Control, ControlDelivery},
+    protocol::Fault,
+    runtime_request::Operation,
+    semantic_description,
+    semantic_engine::Limits,
 };
-use serde::Serialize;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc, Mutex,
@@ -36,7 +35,7 @@ impl Authority {
         catalogue: Catalogue,
     ) -> Result<Self, Fault> {
         let snapshot = catalogue.snapshot();
-        pool.replace_profiles(snapshot.custom_profiles())?;
+        pool.publish_snapshot(snapshot.clone())?;
         let diagnostic = catalogue.diagnostic();
         Ok(Self {
             pool,
@@ -89,7 +88,7 @@ impl Authority {
             };
             let mut published = self.published.lock().expect("publication poisoned");
             if snapshot.revision() != published.snapshot.revision() {
-                self.pool.replace_profiles(snapshot.custom_profiles())?;
+                self.pool.publish_snapshot(snapshot.clone())?;
             }
             *published = Published {
                 snapshot,
@@ -100,116 +99,14 @@ impl Authority {
         }
         let stats = self.pool.stats()?;
         let published = self.published.lock().expect("publication poisoned");
-        let profiles: Vec<&Descriptor> = published.snapshot.descriptors().collect();
         control.reply(
             &self.instance,
-            Description {
-                kind: "descriptor",
-                backend_version: env!("CARGO_PKG_VERSION"),
-                protocol_version: PROTOCOL_VERSION,
-                category_version: 1,
-                assets: ASSETS,
-                capability: CAPABILITY,
-                service: SERVICE,
-                operations: &[
-                    "describe",
-                    "themes.refresh",
-                    "highlight",
-                    "stream.open",
-                    "stream.append",
-                    "stream.close",
-                ],
-                modes: &["one_shot", "growing"],
-                admission: &["try_now", "bounded_queue"],
-                catalogue_revision: published.snapshot.revision(),
-                profiles,
-                diagnostic: published.diagnostic.map(|value| value.to_string()),
-                runtime: RuntimeStatus {
-                    pid: std::process::id(),
-                    routes: stats.routes,
-                    leases: stats.leases,
-                    data_bytes: stats.credits.bytes,
-                    data_jobs: stats.credits.jobs,
-                    queued: stats.credits.queued,
-                    control_bytes: stats.control_credits.bytes,
-                    control_jobs: stats.control_credits.jobs,
-                },
-                limits: WireLimits {
-                    request_bytes: REQUEST_BYTES,
-                    reply_bytes: REPLY_BYTES,
-                    control_request_bytes: CONTROL_REQUEST_BYTES,
-                    control_reply_bytes: CONTROL_REPLY_BYTES,
-                    source_bytes: self.limits.source_bytes,
-                    line_bytes: self.limits.line_bytes,
-                    batch_sources: BATCH_SOURCES,
-                    queue_wait_ms: QUEUE_WAIT_MS,
-                    state_pool_bytes: self.limits.state_pool_bytes,
-                    leases: self.limits.leases,
-                    leases_per_route: self.limits.per_scope,
-                    runs: self.limits.runs,
-                    styles: self.limits.styles,
-                    idle_ms: self.limits.idle_ms,
-                    age_ms: self.limits.age_ms,
-                    quantum_ms: self.limits.quantum_ms,
-                    data_per_route: 2,
-                    control_per_route: 1,
-                    routes: 8,
-                    workers: stats.workers,
-                },
-            },
+            semantic_description::describe(
+                &published.snapshot,
+                published.diagnostic,
+                &self.limits,
+                stats,
+            ),
         )
     }
-}
-#[derive(Serialize)]
-struct Description<'a> {
-    kind: &'static str,
-    backend_version: &'static str,
-    protocol_version: u32,
-    category_version: u32,
-    assets: &'static str,
-    capability: &'static str,
-    service: &'static str,
-    operations: &'static [&'static str],
-    modes: &'static [&'static str],
-    admission: &'static [&'static str],
-    catalogue_revision: u64,
-    profiles: Vec<&'a Descriptor>,
-    diagnostic: Option<String>,
-    runtime: RuntimeStatus,
-    limits: WireLimits,
-}
-/// Current application reservations only, not process RSS or private SDK buffers.
-#[derive(Serialize)]
-struct RuntimeStatus {
-    pid: u32,
-    routes: usize,
-    leases: usize,
-    data_bytes: usize,
-    data_jobs: usize,
-    queued: usize,
-    control_bytes: usize,
-    control_jobs: usize,
-}
-#[derive(Serialize)]
-struct WireLimits {
-    request_bytes: usize,
-    reply_bytes: usize,
-    control_request_bytes: usize,
-    control_reply_bytes: usize,
-    source_bytes: usize,
-    line_bytes: usize,
-    batch_sources: usize,
-    queue_wait_ms: u32,
-    state_pool_bytes: usize,
-    leases: usize,
-    leases_per_route: usize,
-    runs: usize,
-    styles: usize,
-    idle_ms: u64,
-    age_ms: u64,
-    quantum_ms: u64,
-    data_per_route: usize,
-    control_per_route: usize,
-    routes: usize,
-    workers: usize,
 }

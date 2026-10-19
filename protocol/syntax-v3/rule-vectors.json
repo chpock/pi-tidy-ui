@@ -1,0 +1,128 @@
+{
+  "revision": 1,
+  "client": [
+    {
+      "name": "empty",
+      "definition": {
+        "revision": 1,
+        "binding_slots": 0,
+        "default": {
+          "foreground": {
+            "kind": "inherit"
+          },
+          "background": {
+            "kind": "inherit"
+          },
+          "attributes": 0,
+          "attribute_mask": 0
+        },
+        "rules": []
+      },
+      "fingerprint": "f0faec99a62e1c36d8650d50fc00c19ec7107a78b9a97bb619dc1cf87dfd94ab"
+    },
+    {
+      "name": "markdown-binding",
+      "definition": {
+        "revision": 1,
+        "binding_slots": 4,
+        "default": {
+          "foreground": {
+            "kind": "inherit"
+          },
+          "background": {
+            "kind": "inherit"
+          },
+          "attributes": 0,
+          "attribute_mask": 0
+        },
+        "rules": [
+          {
+            "path": [
+              "markup.heading"
+            ],
+            "excludes": [],
+            "foreground": {
+              "kind": "binding",
+              "slot": 2
+            },
+            "background": null,
+            "font": null
+          },
+          {
+            "path": [
+              "markup.bold"
+            ],
+            "excludes": [
+              [
+                "comment"
+              ]
+            ],
+            "foreground": null,
+            "background": null,
+            "font": {
+              "attributes": 1,
+              "attribute_mask": 1
+            }
+          }
+        ]
+      },
+      "fingerprint": "80f8ccde67af9d4ce228159fe800fbc8252bcb9c60305cfd6819c48c6cbc348e"
+    },
+    {
+      "name": "explicit-faint-clear",
+      "definition": {
+        "revision": 1,
+        "binding_slots": 4,
+        "default": {
+          "foreground": {
+            "kind": "inherit"
+          },
+          "background": {
+            "kind": "inherit"
+          },
+          "attributes": 0,
+          "attribute_mask": 0
+        },
+        "rules": [
+          {
+            "path": [
+              "markup.heading"
+            ],
+            "excludes": [],
+            "foreground": {
+              "kind": "binding",
+              "slot": 2
+            },
+            "background": null,
+            "font": {
+              "attributes": 0,
+              "attribute_mask": 8
+            }
+          },
+          {
+            "path": [
+              "markup.bold"
+            ],
+            "excludes": [
+              [
+                "comment"
+              ]
+            ],
+            "foreground": null,
+            "background": null,
+            "font": {
+              "attributes": 1,
+              "attribute_mask": 1
+            }
+          }
+        ]
+      },
+      "fingerprint": "841323c83636e1adc0cd8377d7a3c64b600d1a6da71c60ab1ed8ef449611d429"
+    }
+  ],
+  "native": {
+    "definition": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    "rules": "33b97476b38f783dbd634a0fb8663751c8769c434d6e6ce7d38858c53b5dc14c",
+    "palette": "3dff00d3286e269410c0bd4b5175b344016581e89ad6c86c4bc51b18fdf1239f"
+  }
+}

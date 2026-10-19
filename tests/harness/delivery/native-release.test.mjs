@@ -172,15 +172,24 @@ test('notice preparation copies source texts exactly and reports unsourced depen
   ] };
   const output = join(f.directory, 'notices');
   const report = await prepareNotices({ metadata, output });
-  assert.equal(report.inventory.length, 1);
+  assert.equal(report.inventory.length, 2);
+  const port = report.inventory.find(item => item.name === 'occipital');
+  const portText = await readFile(join(root, 'scripts/release/notices/oklab-MIT.txt'));
+  assert.equal(port.version, '0.1.0', 'ported source attribution follows the stamped product version');
+  assert.equal(port.sha256, createHash('sha256').update(portText).digest('hex'));
+  assert.equal(port.source, '@earendil-works/pi-tui-1.0.0/dist/oklab.js');
+  assert.ok((await readFile(join(output, 'NOTICE'), 'utf8')).includes(portText.toString('utf8')), 'copy the full supplied notice text');
   assert.equal(report.gaps.length, 1); assert.match(report.gaps[0], /unsourced 2.0.0/);
   assert.match(await readFile(join(output, 'NOTICE'), 'utf8'), /Fixture copyright and license\n/);
+  assert.match(await readFile(join(output, 'NOTICE'), 'utf8'), /Copyright \(c\) 2021 Björn Ottosson/,
+    'ported native palette code needs its non-Cargo copyright in the distributable NOTICE');
+  assert.match(await readFile(join(output, 'NOTICE'), 'utf8'), /The above copyright notice and this permission notice shall be included/);
   assert.doesNotMatch(await readFile(join(output, 'NOTICE'), 'utf8'), /Copyright.*unsourced/);
   const supplemented = await prepareNotices({ metadata, output: join(f.directory, 'supplemented'), supplements: [{
     name: 'unsourced', version: '2.0.0', file: f.notice, source: 'https://example.invalid/pinned-commit/LICENSE',
   }] });
-  assert.deepEqual(supplemented.gaps, []); assert.equal(supplemented.inventory.length, 2);
-  assert.equal(supplemented.inventory[1].source, 'https://example.invalid/pinned-commit/LICENSE');
+  assert.deepEqual(supplemented.gaps, []); assert.equal(supplemented.inventory.length, 3);
+  assert.equal(supplemented.inventory.find(item => item.name === 'unsourced').source, 'https://example.invalid/pinned-commit/LICENSE');
 });
 
 for (const windowsArm64 of [false, true]) {

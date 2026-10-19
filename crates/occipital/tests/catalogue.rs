@@ -53,8 +53,8 @@ fn default_explicit_and_relative_roots_and_unresolved_os_root() {
     f.file("explicit.tmTheme", theme("#223344"));
     let explicit = f.catalogue();
     assert_eq!(custom(&explicit.snapshot()).len(), 1);
-    assert_eq!(explicit.snapshot().descriptors().count(), 34);
-    assert!(explicit.snapshot().profile("pi").unwrap().theme.is_none());
+    assert_eq!(explicit.snapshot().descriptors().count(), 33);
+    assert!(explicit.snapshot().profile("pi").is_none());
     assert!(explicit
         .snapshot()
         .profile("syntect:Catppuccin Mocha")
@@ -62,7 +62,7 @@ fn default_explicit_and_relative_roots_and_unresolved_os_root() {
     assert!(explicit.snapshot().profile("../../secret").is_none());
     let unresolved = Catalogue::from_os_root(None);
     assert_eq!(unresolved.diagnostic(), Some(Diagnostic::RootUnavailable));
-    assert_eq!(unresolved.snapshot().descriptors().count(), 33);
+    assert_eq!(unresolved.snapshot().descriptors().count(), 32);
     assert!(unresolved.config_path().is_none());
 }
 
@@ -72,7 +72,7 @@ fn missing_defaults_and_missing_field_are_normal_but_observed_directory_loss_fai
     fs::remove_dir(f.0.join("themes")).unwrap();
     let mut c = f.catalogue();
     assert_eq!(c.diagnostic(), None);
-    assert_eq!(c.snapshot().descriptors().count(), 33);
+    assert_eq!(c.snapshot().descriptors().count(), 32);
     f.config("{}");
     assert!(c.refresh().is_ok());
     fs::create_dir(f.0.join("themes")).unwrap();
@@ -470,7 +470,7 @@ fn relative_os_root_does_not_fall_back_to_working_directory() {
     let c = Catalogue::from_os_root(Some(PathBuf::from("relative")));
     assert_eq!(c.diagnostic(), Some(Diagnostic::RootUnavailable));
     assert!(c.config_path().is_none());
-    assert_eq!(c.snapshot().descriptors().count(), 33);
+    assert_eq!(c.snapshot().descriptors().count(), 32);
 }
 
 #[test]

@@ -2,7 +2,7 @@
 import { CustomEditor, ToolExecutionComponent, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { createAssistantMessageEventStream, Type, type ToolCall } from "@earendil-works/pi-ai";
 import { Container, Text, matchesKey, type TUI, type OverlayHandle } from "@earendil-works/pi-tui";
-import { existsSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { createEventRecorder } from './terminal-output.ts';
 import { join } from "node:path";
 import { stripVTControlCharacters } from "node:util";
@@ -483,7 +483,7 @@ export default function terminalDriver(pi: ExtensionAPI) {
         const user: any = context.messages[last];
         const prompt = typeof user?.content === "string" ? user.content :
           user?.content?.filter((c: any) => c.type === "text").map((c: any) => c.text).join("");
-        const scenario = prompt === "run bash-prefix-contract" ? "bash-prefix-contract" : prompt === "run syntax-cards" ? "syntax-cards" : prompt?.includes("run write-stock") ? "write-stock" : prompt?.includes("run write-shapes") ? "write-shapes" : prompt?.includes("run edit-performance") ? "edit-performance" : prompt?.includes("run edit-cards") ? "edit-cards" : prompt?.includes("run user-card") ? "user-card" : prompt === "run cache-performance" ? "cache-performance" : prompt?.includes("bash-width") ? "bash-width" : prompt?.includes("bash-stream") ? "bash-stream" : prompt?.includes("bash-real") ? "bash-real" :
+        const scenario = prompt === 'run bash-empty-stream' ? 'bash-empty-stream' : /^run highlighting-limits-(bash|write|edit)$/.test(prompt ?? "") ? prompt.slice(4) : prompt === "run syntax-long-output" ? "syntax-long-output" : prompt === "run bash-prefix-contract" ? "bash-prefix-contract" : prompt === "run syntax-cards" ? "syntax-cards" : prompt?.includes("run write-stock") ? "write-stock" : prompt?.includes("run write-shapes") ? "write-shapes" : prompt?.includes("run edit-performance") ? "edit-performance" : prompt?.includes("run edit-cards") ? "edit-cards" : prompt?.includes("run user-card") ? "user-card" : prompt === "run cache-performance" ? "cache-performance" : prompt?.includes("bash-width") ? "bash-width" : prompt?.includes("bash-stream") ? "bash-stream" : prompt?.includes("bash-real") ? "bash-real" :
           prompt?.includes("bash-shape-timeout-stream") ? "bash-shape-timeout-stream" : prompt?.includes("bash-shape-timeouts") ? "bash-shape-timeouts" :
           prompt?.includes("bash-shape-exception-stream") ? "bash-shape-exception-stream" : prompt?.includes("bash-shape-exceptions") ? "bash-shape-exceptions" :
           prompt?.includes("bash-shape-reminders") ? "bash-shape-reminders" : prompt?.includes("bash-shape-stream") ? "bash-shape-stream" : prompt?.includes("bash-shapes") ? "bash-shapes" :
@@ -500,7 +500,10 @@ export default function terminalDriver(pi: ExtensionAPI) {
         if (scenario === "write-shapes" && !writeShape) throw new Error("write-shapes requires explicit isolated opt-in");
         if (writeShape && scenario !== "write-shapes") throw new Error("write-shape opt-in is isolated from all other scenarios");
         if (scenario.startsWith("footer-") && process.env.TIDY_UI_TEST_FOOTER_HISTORY !== "1") throw new Error("footer-history requests require explicit isolated opt-in");
-        const calls: Pick<ToolCall, "name" | "arguments">[] = scenario === "bash-prefix-contract" ? [
+        const volume = scenario.startsWith("highlighting-limits-") ? JSON.parse(readFileSync(join(output, 'highlighting-limits.json'), 'utf8')) as { calls: Pick<ToolCall, "name" | "arguments">[]; prefixes?: string[] } : undefined;
+        const calls: Pick<ToolCall, "name" | "arguments">[] = volume ? volume.calls : scenario === "syntax-long-output" ? [
+          { name: "bash", arguments: { command: "printf 'STABLE_text '; printf 'o%.0s' {1..2000}; printf '\\n\\n<system-reminder>\\nSTABLE_text '; printf 'r%.0s' {1..2000}; printf '\\n</system-reminder>\\n'" } },
+        ] : scenario === "bash-prefix-contract" ? [
           { name: "bash", arguments: { command: ": 'STABLE_text é界 tail'" } },
         ] : scenario === "syntax-cards" ? [
           { name: "bash", arguments: { command: "printf 'SYNTAX_OUTPUT\\n'\ntouch \"$TIDY_UI_TEST_OUTPUT/syntax-shell-ready\"\nwhile [ ! -f \"$TIDY_UI_TEST_OUTPUT/syntax-shell-final\" ]; do sleep 0.025; done" } },
@@ -517,6 +520,7 @@ export default function terminalDriver(pi: ExtensionAPI) {
           scenario === "bash-shape-exceptions" ? bashExceptions :
           scenario === "bash-shape-exception-stream" ? [{ name: "bash", arguments: { command: "shape exception-stream", fixtureCase: "exception-stream" } }] :
           scenario === "bash-shape-stream" ? [{ name: "bash", arguments: { command: "shape stream", description: "Streaming comment", fixtureCase: "stream" } }] :
+          scenario === 'bash-empty-stream' ? [{ name: 'bash', arguments: { command: "printf 'EMPTY_BASH_READY\\n'" } }] :
           scenario === "bash-stream" ? [{ name: "bash", arguments: { command:
             "for i in $(seq 1 12); do printf 'LIVE_ROW_%02d\\n' \"$i\"; done\n" +
             "touch \"$TIDY_UI_TEST_OUTPUT/shell-ready\"\n" +
@@ -554,7 +558,21 @@ export default function terminalDriver(pi: ExtensionAPI) {
           message.content.push({ ...call, arguments: {} });
           stream.push({ type: "toolcall_start", contentIndex: 0, partial: message });
           await wait(60);
-          if (scenario === "bash-prefix-contract" && step === 0) {
+          if (scenario === 'bash-empty-stream' && step === 0) {
+            for (const [phase, prefix] of ['', 'printf', String(call.arguments.command)].entries()) {
+              message.content[0] = { ...call, arguments: { command: prefix } };
+              stream.push({ type: 'toolcall_delta', contentIndex: 0, delta: JSON.stringify({ command: prefix }), partial: message });
+              record({ type: 'bash_empty_prefix', phase, bytes: Buffer.byteLength(prefix) });
+              await gate(`bash-empty-go-${phase}`, options?.signal);
+            }
+          } else if (volume?.prefixes && step === 0) {
+            for (const [phase, prefix] of volume.prefixes.entries()) {
+              message.content[0] = { ...call, arguments: { command: prefix } };
+              stream.push({ type: "toolcall_delta", contentIndex: 0, delta: JSON.stringify({ command: prefix }), partial: message });
+              record({ type: "highlighting_limits_prefix", phase, bytes: Buffer.byteLength(prefix) });
+              await gate(`highlighting-limits-go-${phase}`, options?.signal, 120000);
+            }
+          } else if (scenario === "bash-prefix-contract" && step === 0) {
             const prefixes = [": 'STABLE_text e", ": 'STABLE_text é界", String(call.arguments.command)];
             for (const [phase, prefix] of prefixes.entries()) {
               message.content[0] = { ...call, arguments: { command: prefix } };
@@ -758,7 +776,7 @@ export default function terminalDriver(pi: ExtensionAPI) {
         registrations: pi.getAllTools().map((tool) => tool.name),
         commands: pi.getCommands().map((command) => command.name),
         errorStyle: ctx.ui.theme.fg("error", "TERMINAL_ERROR"),
-        summaryStyles: Object.fromEntries((["dim", "toolTitle", "muted", "toolOutput", "mdCodeBlock", "error", "userMessageText", "syntaxKeyword", "syntaxNumber", "syntaxString", "syntaxComment", "syntaxFunction", "syntaxType", "toolDiffAdded", "toolDiffRemoved"] as const)
+        summaryStyles: Object.fromEntries((["dim", "toolTitle", "muted", "toolOutput", "mdCodeBlock", "error", "userMessageText", "syntaxKeyword", "syntaxNumber", "syntaxString", "syntaxComment", "syntaxFunction", "syntaxType", "syntaxVariable", "syntaxOperator", "syntaxPunctuation", "mdHeading", "mdLink", "mdLinkUrl", "mdCode", "mdQuote", "mdListBullet", "mdHr", "toolDiffAdded", "toolDiffRemoved"] as const)
           .map((role) => [role, ctx.ui.theme.fg(role, "X")])),
         backgroundStyles: Object.fromEntries((["toolPendingBg", "toolSuccessBg", "toolErrorBg", "userMessageBg"] as const)
           .map((role) => [role, ctx.ui.theme.bg(role, "X")])),
@@ -787,7 +805,7 @@ export default function terminalDriver(pi: ExtensionAPI) {
           ...(spinnerDiagnostics ? { before: parents.get(node)?.children.slice(Math.max(0, parents.get(node).children.indexOf(node) - 3), parents.get(node).children.indexOf(node))
             .map((previous: any) => ({ kind: previous.constructor.name, name: previous.toolName, lines: previous.render(width).map(stripVTControlCharacters) })) } : {}),
           // Physical/clock-work captures stay at the actual width; zero-width probes can pause and resume source preparation.
-          ...(name.startsWith("physical-") || name.startsWith("pointer-") || spinnerDiagnostics || editDiagnostics || writeDiagnostics ? {} : { narrowLines: node.render(24),
+          ...(process.env.TIDY_UI_TEST_SYNTAX_CARDS === "1" || name.startsWith("physical-") || name.startsWith("pointer-") || spinnerDiagnostics || editDiagnostics || writeDiagnostics ? {} : { narrowLines: node.render(24),
             tinyLines: Object.fromEntries([0, 1, 2, 3, 4, 5, 6, 7, 8].map((size) => [size, node.render(size)])) }) })),
         document: parents.get(tools[0])?.render(width),
         branch: ctx.sessionManager.getBranch(),

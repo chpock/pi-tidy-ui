@@ -11,10 +11,20 @@ for (const shape of [false, true]) test(`real CLI: write cards ${shape ? 'repres
   { timeout: 180000 }, async () => {
     const terminals = [], captures = [], count = shape ? 11 : 5;
     const scenario = shape ? 'write-shapes' : 'write-stock';
-    const extraEnv = { TIDY_UI_TEST_WRITE_CARDS: '1', ...(shape ? { TIDY_UI_TEST_WRITE_SHAPE: '1' } : {}) };
+    const extraEnv = { TIDY_UI_TEST_WRITE_CARDS: '1', TIDY_UI_TEST_WRITE_CAPTURE: '1', ...(shape ? { TIDY_UI_TEST_WRITE_SHAPE: '1' } : {}) };
     const start = async (name, options = {}) => {
       const terminal = new PiTerminal(`${scenario}-${name}`, { ...options, extraEnv }); terminals.push(terminal);
       await terminal.ready(); await terminal.resize(100, 240); return terminal;
+    };
+    const captureReady = async (terminal, name) => {
+      await terminal.command(`/tidy-ui-write-ready ${name}`);
+      const ready = await terminal.waitForProgress(() => terminal.events().find(event => event.type === 'write_capture_ready' && event.name === name), `prepared write sources: ${name}`);
+      const dump = await terminal.capture(name);
+      const framed = dump.tools.filter(tool => tool.name === 'write' && tool.lines.some(row => plain(row).startsWith(' ┃')));
+      assert.ok(framed.length > 0, 'settled write reference contains actual source cards');
+      assert.deepEqual(ready.calls.map(event => event.call).sort(), framed.map(tool => tool.id).sort(), 'readiness covers every current source-card call, not merely a same-path owner');
+      assert.ok(ready.calls.every(event => event.status === 'ready'));
+      return dump;
     };
     const run = async (terminal) => {
       terminal.send(`run ${scenario}\r`); await terminal.event('provider_gate');
@@ -120,7 +130,7 @@ for (const shape of [false, true]) test(`real CLI: write cards ${shape ? 'repres
         assert.match(text, tool.executionStarted ? /^ [⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] write /u : /^ ← write /u, 'only actual execution animates the leading glyph');
         assert.ok(phase.screen.some(row => tool.executionStarted ? /^ [⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] write /u.test(row) : /^ ← write /u.test(row)), 'compact lifecycle is physically painted');
       }
-      const liveFirst = await live.capture('pointer-write-wide'); await check(liveFirst);
+      const liveFirst = await captureReady(live, 'pointer-write-wide'); await check(liveFirst);
       assert.deepEqual(events(live), events(stock)); assert.deepEqual(persisted(liveFirst), persisted(nativeControl));
       if (!shape) {
         assert.equal(readFileSync(join(live.work, 'write-stock.ts'), 'utf8'), 'const overwritten = 20;\n');
@@ -134,12 +144,12 @@ for (const shape of [false, true]) test(`real CLI: write cards ${shape ? 'repres
       assert.equal(warm.builds, cold.builds, 'unchanged frames rebuild no write body');
       assert.equal(warm.cards.builds, cold.cards.builds); assert.ok(warm.cards.hits > cold.cards.hits);
       assert.equal(warm.cards.entries, shape ? 8 : 4, 'successful write frames share the existing card pool; malformed/hidden/error stay outside');
-      await live.resize(140, 240); await check(await live.capture('pointer-write-split'));
-      await live.resize(24, 320); await check(await live.capture('pointer-write-narrow'));
-      await live.resize(100, 240); const wideAgain = await live.capture('pointer-write-wide-again'); await check(wideAgain);
+      await live.resize(140, 240); await check(await captureReady(live, 'pointer-write-split'));
+      await live.resize(24, 320); await check(await captureReady(live, 'pointer-write-narrow'));
+      await live.resize(100, 240); const wideAgain = await captureReady(live, 'pointer-write-wide-again'); await check(wideAgain);
       assert.deepEqual(toolLines(wideAgain), toolLines(liveFirst));
-      await live.command('/tidy-ui-theme light'); await check(await live.capture('pointer-write-light'));
-      await live.command('/tidy-ui-theme dark'); await check(await live.capture('pointer-write-dark'));
+      await live.command('/tidy-ui-theme light'); await check(await captureReady(live, 'pointer-write-light'));
+      await live.command('/tidy-ui-theme dark'); await check(await captureReady(live, 'pointer-write-dark'));
       const beforeClick = await live.capture('pointer-write-before-click');
       const target = beforeClick.screen.findIndex(row => row.includes(`← ${labels[0]} ${beforeClick.tools[0].args.path}`));
       assert.ok(target >= 0); live.send(`\x1b[<0;3;${target + 1}M\x1b[<0;3;${target + 1}m`); await live.settle();
@@ -151,15 +161,15 @@ for (const shape of [false, true]) test(`real CLI: write cards ${shape ? 'repres
       assert.equal((await live.capture('pointer-write-click-recollapsed')).tools[0].expanded, false);
       live.send('\x0f'); await live.settle(); const expanded = await live.capture('pointer-write-expanded');
       assert.deepEqual(toolLines(expanded), toolLines(nativeExpanded));
-      live.send('\x0f'); await live.settle(); await check(await live.capture('pointer-write-recollapsed'));
+      live.send('\x0f'); await live.settle(); await check(await captureReady(live, 'pointer-write-recollapsed'));
       await live.appearance(false); assert.deepEqual(toolLines(await live.capture('pointer-write-off')), toolLines(nativeControl));
-      await live.appearance(true); await check(await live.capture('pointer-write-on'));
+      await live.appearance(true); await check(await captureReady(live, 'pointer-write-on'));
       const starts = live.events().filter(event => event.type === 'start').length;
-      await live.command('/reload'); await live.event('start', starts + 1); const reloaded = await live.capture('pointer-write-reloaded'); await check(reloaded);
+      await live.command('/reload'); await live.event('start', starts + 1); const reloaded = await captureReady(live, 'pointer-write-reloaded'); await check(reloaded);
       assert.deepEqual(events(live), events(stock)); assert.deepEqual(readFileSync(liveFirst.session), bytes);
       await live.close();
       const replay = await start('replay', { tidyUi: true, session: liveFirst.session, workspace: stock.work });
-      const resumed = await replay.capture('pointer-write-replayed'); await check(resumed);
+      const resumed = await captureReady(replay, 'pointer-write-replayed'); await check(resumed);
       assert.deepEqual(toolLines(resumed), toolLines(reloaded)); assert.deepEqual(persisted(resumed), persisted(liveFirst));
       assert.equal(replay.events().filter(event => ['call', 'result', 'model_context'].includes(event.type)).length, 0);
       const sameSessionNative = await start('native-replay', { session: liveFirst.session, workspace: stock.work });
@@ -176,7 +186,7 @@ for (const shape of [false, true]) test(`real CLI: write cards ${shape ? 'repres
         else { compactContent(tool); assert.equal(summaryText(tool), summaryExpected(`write ${tool.args.path}`)); }
       }
       const regular = await start('regular-replay', { tidyUi: true, mode: 'regular', session: liveFirst.session, workspace: stock.work });
-      const regularDump = await regular.capture('pointer-write-regular');
+      const regularDump = await captureReady(regular, 'pointer-write-regular');
       assert.deepEqual(toolLines(regularDump), toolLines(reloaded));
       sameSessionNative.send('\x0f'); await sameSessionNative.settle();
       const sameSessionExpanded = await sameSessionNative.capture('pointer-write-native-replay-expanded');

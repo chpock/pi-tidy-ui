@@ -1,11 +1,13 @@
 import '../../fixtures/test-guard.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { prepareFileCard, renderFileCard } from '../../../src/file-card.ts';
-import { bashCommandSource, renderBashCard } from '../../../src/bash-card.ts';
+import { prepareFileCard } from '../../../src/file-card.ts';
+import { fileCardFixture as renderFileCard, bashCardFixture as renderBashCard } from '../../fixtures/prepared-card.ts';
+import { bashCommandSource } from '../../../src/bash-card.ts';
 import { stripVTControlCharacters } from 'node:util';
 
-const theme = { fg: (_role: unknown, text: string) => text, bg: (_role: unknown, text: string) => text };
+import { getThemeByName } from '../../../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js';
+const theme = getThemeByName('dark')!;
 function edit(diff: string) {
   return { toolName: 'edit', args: { path: 'sample.ts' }, isPartial: false, result: { details: { diff } } };
 }
@@ -121,7 +123,7 @@ test('Bash parser source excludes prompt/description/cwd/output, keeps tabs, nor
   assert.equal(bashCommandSource({ description: 'not source' }), undefined);
   assert.equal(JSON.stringify(args), before);
   const node = { args, expanded: false, isPartial: false, result: { content: [{ type: 'text', text: 'unrelated output' }] } };
-  const rows = renderBashCard(node, args.workdir, 80, theme).rows.join('\n');
+  const rows = renderBashCard(node, args.workdir, 80, theme).rows.map(stripVTControlCharacters).join('\n');
   assert.ok(rows.includes('$ echo  "👩‍👩‍👧‍👦"'), 'existing prompt-aware tab stops remain unchanged');
   assert.ok(rows.includes('unrelated output'));
 });

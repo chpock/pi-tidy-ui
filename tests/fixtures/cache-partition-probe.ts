@@ -3,6 +3,7 @@ import './test-guard.mjs';
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { stripVTControlCharacters } from 'node:util';
 import { Container, ScrollView } from "@earendil-works/pi-tui";
 import { ToolExecutionComponent, createEditToolDefinition } from "@earendil-works/pi-coding-agent";
 import { renderLayoutFrame } from "../../node_modules/@earendil-works/pi-tui/dist/layout.js";
@@ -50,11 +51,16 @@ try {
   assert.deepEqual(frame("resize", 141).delta, { ordinaryBuilds: 200, cardBuilds: 27 });
   assert.deepEqual(frame("resize-warm", 141).delta, { ordinaryBuilds: 0, cardBuilds: 0 });
   const beforeReplacement = controller.cacheStats();
-  edits[1]!.updateResult({ content: [], details, isError: false });
-  assert.equal(controller.cacheStats().cards.entries, 26, "only the changed component releases its old representation");
+  edits[1]!.updateResult({ content: [], details: { ...details, patch: details.patch.replace('new value 1', 'replacement value 1') }, isError: false });
+  assert.equal(controller.cacheStats().cards.entries, 27, 'previous accepted representation survives until the outer visit commits');
   const replaced = frame("one-card-update", 141);
   assert.deepEqual(replaced.delta, { ordinaryBuilds: 0, cardBuilds: 1 });
   assert.equal(replaced.cards.entries, 27);
+  const replacementRows = edits[1]!.render(141).map(stripVTControlCharacters).join('\n');
+  assert.ok(replacementRows.includes('replacement value 1'), 'authoritative source replacement must be visible, not just a new cache identity');
+  assert.ok(!replacementRows.includes('value_1 = "new value 1"'), 'old effective source is replaced');
+  assert.ok(edits[2]!.render(141).map(stripVTControlCharacters).join('\n').includes('value_1 = "new value 1"'), 'shared original metadata and peer source remain unchanged');
+  assert.equal(replaced.cards.releases, beforeReplacement.cards.releases + 1, 'only the changed component releases its old representation on accepted publication');
   assert.equal(replaced.ordinary.retainedBytes, beforeReplacement.ordinary.retainedBytes);
   assert.deepEqual(frame("update-warm", 141).delta, { ordinaryBuilds: 0, cardBuilds: 0 });
   const detach = () => {

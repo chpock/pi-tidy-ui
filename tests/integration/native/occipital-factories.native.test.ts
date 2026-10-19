@@ -10,6 +10,7 @@ import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { createOwnedFactory } from '../../../src/occipital/factories.ts';
 import { StdioTransport } from '../../../src/occipital/stdio.ts';
+import { SEMANTIC_PROTOCOL_VERSION } from '../../../src/occipital/semantic-protocol.ts';
 import { awaitFixture } from '../../fixtures/await-fixture.ts';
 
 
@@ -37,7 +38,7 @@ test('real exact helper: zero acquisition requests; repeated owners wait actual 
   assert.ok(first instanceof StdioTransport); assert.equal(f.spawns(), 1); assert.equal(fetches, 0);
   assert.deepEqual(f.calls[0], [installedPath, ['--stdio'], { cwd: f.cacheDir, env, stdio: ['pipe', 'pipe', 'pipe'], shell: false }]);
   assert.equal(first.stats().unsettledControl, 0); assert.equal(first.stats().unsettledData, 0);
-  const described = await first.request({ v: 2, op: 'describe', ticket: 'fixture:first' }) as { status: string };
+  const described = await first.request({ v: SEMANTIC_PROTOCOL_VERSION, op: 'describe', ticket: 'fixture:first' }) as { status: string };
   assert.equal(described.status, 'ok');
   const realClose = first.close.bind(first), held = deferred<void>();
   t.after(() => held.resolve());
@@ -54,7 +55,7 @@ test('real exact helper: zero acquisition requests; repeated owners wait actual 
   await realClose(); held.resolve(); await closing;
   const second = await secondPending; t.after(() => second.close());
   assert.ok(second instanceof StdioTransport); assert.equal(f.spawns(), 2); assert.equal(fetches, 0);
-  const secondReply = await second.request({ v: 2, op: 'describe', ticket: 'fixture:second' }) as { status: string };
+  const secondReply = await second.request({ v: SEMANTIC_PROTOCOL_VERSION, op: 'describe', ticket: 'fixture:second' }) as { status: string };
   assert.equal(secondReply.status, 'ok'); await second.close();
   assert.equal(second.stats().childState, 'exited'); assert.equal(second.stats().ownedListeners, 0);
 });

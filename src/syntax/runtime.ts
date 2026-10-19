@@ -1,12 +1,16 @@
-import { diagnose } from '../diagnostics.ts';
+import { diagnose, reportRuntime } from '../diagnostics.ts';
 import { SyntaxClient, type SyntaxClientOptions } from '../occipital/client.ts';
 import { type SyntaxMenuOwner } from '../occipital/menu.ts';
 import type { SyntaxTheme } from '../settings.ts';
+import type { TerminalColorMode } from '@earendil-works/pi-tui';
+import type { GeometryFunding } from '../occipital/controller.ts';
+import { type PiInputTheme, type PiInputLease } from './pi-input.ts';
+import { PiInputOwner } from './pi-input-owner.ts';
 
 interface Presentation {
   readonly active: boolean;
   syntaxMetadataChanged(): void;
-  syntaxSourceChanged(keys: readonly string[]): void;
+  syntaxSourceChanged(keys: readonly string[], groups?: readonly number[]): void;
 }
 export interface SyntaxRuntimeOptions extends Omit<SyntaxClientOptions, 'onChange' | 'onSourceChange'> {
   enabled?: boolean;
@@ -14,11 +18,12 @@ export interface SyntaxRuntimeOptions extends Omit<SyntaxClientOptions, 'onChang
 }
 // Retained client callbacks cannot keep their presentation/runtime installer alive.
 function metadataNotice(owner: WeakRef<SyntaxRuntime>) { return () => owner.deref()?.metadataChanged(); }
-function sourceNotice(owner: WeakRef<SyntaxRuntime>) { return (keys: readonly string[]) => owner.deref()?.sourceChanged(keys); }
+function sourceNotice(owner: WeakRef<SyntaxRuntime>) { return (keys: readonly string[], groups?: readonly number[]) => owner.deref()?.sourceChanged(keys, groups); }
 function activation(owner: WeakRef<SyntaxRuntime>) { return () => owner.deref()?.activate(); }
 function startupFailure(owner: WeakRef<SyntaxRuntime>) {
   return () => owner.deref()?.reportStartupFailure();
 }
+function startupSuccess(owner: WeakRef<SyntaxRuntime>) { return () => owner.deref()?.reportStartupSuccess(); }
 
 /** One extension runtime's existing client and public menu. Source ownership stays
  * with CardSources; this is not a second source store or a cross-adapter registry. */
@@ -27,8 +32,7 @@ export class SyntaxRuntime implements SyntaxMenuOwner {
   private readonly options: SyntaxRuntimeOptions;
   private readonly owner = new WeakRef(this);
   private presentation?: WeakRef<Presentation>;
-  private paletteColors?: WeakRef<object>;
-  private paletteRevision = 0;
+  private readonly piInput: PiInputOwner;
   private enabled: boolean;
   private started = false;
   private scheduled = false;
@@ -36,7 +40,7 @@ export class SyntaxRuntime implements SyntaxMenuOwner {
   private epoch = 0;
 
   constructor(options: SyntaxRuntimeOptions) {
-    this.options = options; this.enabled = options.enabled ?? true;
+    this.options = options; this.piInput = new PiInputOwner(options.diagnostic); this.enabled = options.enabled ?? true;
     this.client = new SyntaxClient({ ...options, onChange: metadataNotice(this.owner), onSourceChange: sourceNotice(this.owner) });
     // Construction is resource-free. Only attach or an explicit UI menu restores
     // settings; a menu without an active adapter must never activate a provider.
@@ -51,11 +55,10 @@ export class SyntaxRuntime implements SyntaxMenuOwner {
   }
   /** The public Theme proxy is stable; its cached colors object changes on theme
    * or terminal-default changes. Never sample tokens or inspect its private target. */
-  palette(theme: { readonly colors: object }): number {
-    const colors = theme.colors;
-    if (this.paletteColors?.deref() !== colors) { this.paletteColors = new WeakRef(colors); ++this.paletteRevision;
-      diagnose(this.options.diagnostic, 'DEBUG', 'syntax', 'Public Pi palette generation changed', { palette: this.paletteRevision }); }
-    return this.paletteRevision;
+  palette(theme: { readonly colors: object }): number { return this.piInput.palette(theme); }
+  /** Data-only acquisition; leases belong to the card owner. */
+  preparePiInput(theme: PiInputTheme, mode: TerminalColorMode, funding: GeometryFunding): PiInputLease | undefined {
+    return this.disposed ? undefined : this.piInput.prepare(theme, mode, funding);
   }
   attach(presentation: Presentation): void {
     if (this.disposed || !presentation.active) return;
@@ -77,7 +80,7 @@ export class SyntaxRuntime implements SyntaxMenuOwner {
   selectTheme(choice: SyntaxTheme) { return this.client.selectTheme(choice); }
   refreshThemes() { return this.client.refreshThemes(); }
   dispose(): Promise<void> {
-    if (!this.disposed) { diagnose(this.options.diagnostic, 'INFO', 'syntax', 'Syntax runtime disposing; current source owners are retired'); this.disposed = true; ++this.epoch; this.presentation = undefined; this.paletteColors = undefined; }
+    if (!this.disposed) { reportRuntime(this.options.diagnostic, { kind: 'released', scope: this, operation: '*' }); diagnose(this.options.diagnostic, 'INFO', 'syntax', 'Syntax runtime disposing; current source owners are retired'); this.disposed = true; ++this.epoch; this.presentation = undefined; this.piInput.dispose(); }
     return this.client.dispose();
   }
 
@@ -86,9 +89,9 @@ export class SyntaxRuntime implements SyntaxMenuOwner {
     const presentation = !this.disposed && this.presentation?.deref();
     if (presentation && presentation.active) presentation.syntaxMetadataChanged();
   }
-  sourceChanged(keys: readonly string[]): void {
+  sourceChanged(keys: readonly string[], groups?: readonly number[]): void {
     const presentation = !this.disposed && this.presentation?.deref();
-    if (presentation && presentation.active) presentation.syntaxSourceChanged(keys);
+    if (presentation && presentation.active) presentation.syntaxSourceChanged(keys, groups);
   }
   activate(): void {
     this.scheduled = false;
@@ -98,11 +101,15 @@ export class SyntaxRuntime implements SyntaxMenuOwner {
   }
   reportStartupFailure(): void {
     if (!this.disposed) { diagnose(this.options.diagnostic, 'ERROR', 'syntax', 'Syntax startup failed; exception payload is not recorded');
-      this.options.notify?.('Syntax highlighting could not be started.', 'error'); }
+      reportRuntime(this.options.diagnostic, { kind: 'failure', scope: this, operation: 'startup', area: 'syntax', code: 'startup_failed' });
+      if (!this.options.diagnostic?.runtime) this.options.notify?.('Syntax highlighting could not be started.', 'error'); }
+  }
+  reportStartupSuccess(): void {
+    if (!this.disposed) reportRuntime(this.options.diagnostic, { kind: 'recovered', scope: this, operation: 'startup' });
   }
   private start(): void {
     if (this.started || this.disposed) return;
     this.started = true;
-    void this.client.start().catch(startupFailure(this.owner));
+    void this.client.start().then(startupSuccess(this.owner), startupFailure(this.owner));
   }
 }

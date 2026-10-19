@@ -1,0 +1,147 @@
+{
+  "schema": 1,
+  "vocabulary_size": 20,
+  "contexts": [
+    {
+      "name": "empty-root-nesting-repeat-pop",
+      "encoded": [[0], [0, 2], [1, 3], [2, 3], [1], [0]],
+      "decoded": [[], [2], [2, 3], [2, 3, 3], [2], []],
+      "words": 7,
+      "policy_bytes": 880
+    },
+    {
+      "name": "first-context-has-no-previous-prefix",
+      "encoded": [[1, 2]],
+      "error": "invalid_context"
+    },
+    {
+      "name": "zero-is-not-a-scope",
+      "encoded": [[0, 2], [1, 0]],
+      "error": "unknown_scope"
+    },
+    {
+      "name": "late-unknown-scope",
+      "encoded": [[0, 2], [1, 21]],
+      "error": "unknown_scope"
+    },
+    {
+      "name": "expanded-not-compressed-budget",
+      "encoded": [[0, 1, 2, 3], [3], [3]],
+      "max_bytes": 512,
+      "error": "context_limit"
+    },
+    {
+      "name": "empty-records-also-own-bytes",
+      "encoded": [[0], [0], [0]],
+      "max_bytes": 256,
+      "error": "context_limit"
+    }
+  ],
+  "styles": [
+    {
+      "name": "literal-binding-inherit-and-explicit-clear",
+      "mode": "client",
+      "binding_slots": 4,
+      "context_count": 4,
+      "body": {
+        "kind": "styles",
+        "vocabulary": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "rules": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "styles": [
+          {"foreground": {"kind": "rgb", "r": 10, "g": 20, "b": 30}, "background": {"kind": "terminal-default"}, "attributes": 0, "attribute_mask": 15},
+          {"foreground": {"kind": "binding", "slot": 2}, "background": {"kind": "inherit"}, "attributes": 0, "attribute_mask": 8},
+          {"foreground": {"kind": "inherit"}, "background": {"kind": "inherit"}, "attributes": 0, "attribute_mask": 0}
+        ],
+        "indices": [1, 2, 3, 1],
+        "palette": null
+      }
+    },
+    {
+      "name": "indexed-is-not-guessed-rgb",
+      "mode": "client",
+      "binding_slots": 0,
+      "context_count": 1,
+      "body": {
+        "kind": "styles",
+        "vocabulary": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "rules": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "styles": [{"foreground": {"kind": "indexed", "index": 255}, "background": {"kind": "terminal-default"}, "attributes": 9, "attribute_mask": 15}],
+        "indices": [1],
+        "palette": null
+      }
+    },
+    {
+      "name": "empty-source-complete-native-palette",
+      "mode": "native",
+      "binding_slots": 0,
+      "context_count": 0,
+      "body": {
+        "kind": "styles",
+        "vocabulary": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "rules": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "styles": [{"foreground": {"kind": "rgb", "r": 230, "g": 230, "b": 230}, "background": {"kind": "rgb", "r": 40, "g": 40, "b": 40}, "attributes": 0, "attribute_mask": 15}],
+        "indices": [],
+        "palette": {"revision": 1, "fingerprint": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", "slots": [1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1], "origins": [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]}
+      }
+    },
+    {
+      "name": "terminal-default-rejects-extra-color-data",
+      "mode": "client",
+      "binding_slots": 4,
+      "context_count": 1,
+      "error": "invalid_style",
+      "body": {
+        "kind": "styles",
+        "vocabulary": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "rules": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "styles": [{"foreground": {"kind": "terminal-default", "rgb": [1,2,3]}, "background": {"kind": "inherit"}, "attributes": 0, "attribute_mask": 0}],
+        "indices": [1],
+        "palette": null
+      }
+    },
+    {
+      "name": "inherit-rejects-an-extra-slot",
+      "mode": "client",
+      "binding_slots": 4,
+      "context_count": 1,
+      "error": "invalid_style",
+      "body": {
+        "kind": "styles",
+        "vocabulary": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "rules": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "styles": [{"foreground": {"kind": "inherit", "slot": 0}, "background": {"kind": "inherit"}, "attributes": 0, "attribute_mask": 0}],
+        "indices": [1],
+        "palette": null
+      }
+    },
+    {
+      "name": "nullable-palette-key-is-still-required",
+      "mode": "client",
+      "binding_slots": 0,
+      "context_count": 0,
+      "error": "invalid_style",
+      "body": {
+        "kind": "styles",
+        "vocabulary": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "rules": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "styles": [],
+        "indices": []
+      }
+    },
+    {
+      "name": "native-may-not-borrow-pi",
+      "mode": "native",
+      "binding_slots": 4,
+      "context_count": 1,
+      "error": "invalid_style",
+      "body": {
+        "kind": "styles",
+        "vocabulary": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "rules": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "styles": [{"foreground": {"kind": "binding", "slot": 0}, "background": {"kind": "terminal-default"}, "attributes": 0, "attribute_mask": 15}],
+        "indices": [1],
+        "palette": null
+      }
+    }
+  ]
+}

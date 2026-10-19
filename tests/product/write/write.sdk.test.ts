@@ -9,12 +9,14 @@ import xterm from "@xterm/headless";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { ToolExecutionComponent as NativeToolExecution, createWriteToolDefinition, createWriteTool, highlightCode, getLanguageFromPath } from "@earendil-works/pi-coding-agent";
 import { describeArgs } from "../../../src/index.ts";
+import { fileCardFixture as renderFileCard } from "../../fixtures/prepared-card.ts";
 import { cardGeometry } from "../../../src/card-frame.ts";
-import { measureFileCard, renderFileCard } from "../../../src/file-card.ts";
+import { measureFileCard } from "../../../src/file-card.ts";
 import { generateDiffString, generateUnifiedPatch } from "../../../node_modules/@earendil-works/pi-coding-agent/dist/core/tools/edit-diff.js";
-import type { CardTheme } from "../../../src/card-theme.ts";
 import { initTheme, theme as nativeTheme } from "../../../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js";
 import { Root, Tool, color, installTidyUi, mouse, plain, setup, type TuiMouseEvent } from "../../fixtures/sdk-contract-support.ts";
+
+initTheme('dark', false);
 
 // Write classification is presentation-only: Created also includes an existing empty file.
 test("write success selects Created/Edited/Replaced/Wrote from saved source, not provider identity", () => {
@@ -31,7 +33,7 @@ test("write success selects Created/Edited/Replaced/Wrote from saved source, not
   ];
   for (const [details, label, source] of cases) {
     const tool = new Tool("write", { path: "example.ts", content });
-    tool.result = { content: [{ type: "text", text: "RESULT_SENTINEL" }], details };
+    tool.updateResult({ content: [{ type: "text", text: "RESULT_SENTINEL" }], details }, tool.isPartial);
     const snapshot = structuredClone({ args: tool.args, result: tool.result });
     const { controller } = setup([tool]);
     try {
@@ -60,7 +62,7 @@ test("write lifecycle is path-only compact until final success, including propos
   t.mock.timers.enable({ apis: ["setTimeout", "Date"], now: 0 });
   t.mock.method(performance, "now", () => Date.now());
   const tool = new Tool("write", { path: "example.ts", content: "PAYLOAD_NEVER_IN_SUMMARY" });
-  tool.result = undefined; tool.executionStarted = false;
+  tool.updateResult(undefined, tool.isPartial); tool.executionStarted = false;
   const { root, controller, original } = setup([tool]);
   try {
     assert.deepEqual(tool.render(80), [" ← write example.ts"]);
@@ -108,14 +110,14 @@ test("write validates both metadata formats and classifies globally before conte
     const metadata = before === after ? [{ diff: numbered }] : [{ diff: numbered }, { patch }, { diff: patch }];
     for (const details of metadata) {
       const node = { toolName: "write", args: { path: "example.ts", content: after }, result: { details }, isPartial: false };
-      const rendered = renderFileCard(node, undefined, 140, color)!;
+      const rendered = renderFileCard(node, undefined, 140, nativeTheme)!;
       assert.match(rendered.rows.map(plain).join("\n"), new RegExp(`← ${label} example.ts`));
       assert.equal(measureFileCard(node, undefined, 140)!.framed, true);
     }
   }
   const multi = "@@ -1,1 +1,2 @@\n const retained = 1;\n+const first = 2;\n@@ -10,1 +11,0 @@\n-const erased = 10;\n";
   const node = { toolName: "write", args: { path: "example.ts" }, result: { details: { patch: multi } }, isPartial: false };
-  assert.match(renderFileCard(node, undefined, 140, color)!.rows.join(""), /← Replaced/);
+  assert.match(renderFileCard(node, undefined, 140, nativeTheme)!.rows.join(""), /← Replaced/);
   const url = new URL("../../../src/file-card.ts", import.meta.url), source = readFileSync(url, "utf8");
   const temporary = mkdtempSync(join(tmpdir(), "tidy-ui-write-context-"));
   try {
@@ -124,8 +126,10 @@ test("write validates both metadata formats and classifies globally before conte
         `from ${JSON.stringify(specifier.startsWith(".") ? new URL(specifier, url).href : import.meta.resolve(specifier))}`);
     const file = join(temporary, "file-card.ts"); writeFileSync(file, alternateSource);
     const alternate = await import(pathToFileURL(file).href);
-    const rows = alternate.renderFileCard({ ...node, result: { details: { diff: " 1 OLD_CONTEXT\n+2 ADDED" } } }, undefined, 140, color).rows.map(plain).join("\n");
-    assert.match(rows, /← Edited/); assert.match(rows, /2 \+ ADDED/); assert.doesNotMatch(rows, /OLD_CONTEXT|Created/);
+    const prepared = alternate.prepareFileCard({ ...node, result: { details: { diff: " 1 OLD_CONTEXT\n+2 ADDED" } } });
+    assert.equal(prepared.view.label, "Edited");
+    const rows = alternate.contextRows(prepared.view.lines).map((row: { text?: string }) => row.text ?? "").join("\n");
+    assert.match(rows, /ADDED/); assert.doesNotMatch(rows, /OLD_CONTEXT|Created/);
   } finally { rmSync(temporary, { recursive: true, force: true }); }
 });
 
@@ -134,14 +138,10 @@ test("write plain source preserves all rows, whitespace, Unicode and filename sy
   for (const themeName of ["dark", "light"] as const) {
     initTheme(themeName);
     for (const details of [undefined, { diff: source.split("\n").map((line, index) => `+${index + 1} ${line}`).join("\n") }]) {
-      const paints: string[] = [], highlights: string[] = [];
-      const paint: CardTheme = { ...nativeTheme,
-        fg(role, text) { paints.push(role); return nativeTheme.fg(role, text); },
-        bg(role, text) { return nativeTheme.bg(role, text); },
-        style() { return assert.fail("plain write must not compute/apply Multiply diff paint"); } };
+      const highlights: string[] = [];
       const node = { toolName: "write", args: { path: "example.ts", content: source }, result: { details }, isPartial: false };
       for (const width of [24, 80, 140]) {
-        const layout = renderFileCard(node, undefined, width, paint, (code, path) => {
+        const layout = renderFileCard(node, undefined, width, nativeTheme, (code, path) => {
           assert.equal(path, "example.ts"); highlights.push(code); return highlightCode(code, getLanguageFromPath(path));
         })!;
         assert.equal(highlights.at(-1), source, "one full resulting source stream is highlighted before wrapping");
@@ -152,15 +152,18 @@ test("write plain source preserves all rows, whitespace, Unicode and filename sy
         assert.equal(fragments.join("").replace(/ /g, "").includes('x'.repeat(1600)), true, "long code remains complete, far beyond compact/Bash budgets");
         assert.ok(rows.some(row => row.includes("TAIL_LAST")));
         assert.ok(rows.some(row => /┃ +4 +$/.test(row)), "blank source line keeps its number");
-        assert.ok(!paints.some(role => role === "toolDiffAdded" || role === "toolDiffRemoved"));
+        assert.doesNotMatch(rows.join("\n"), /\d+ [+-] /, "plain sources have numbers but no diff signs");
         assert.ok(rows.join("").includes("👩‍💻")); assert.ok(rows.join("").includes("é"));
         const terminal = new xterm.Terminal({ cols: width, rows: 1, allowProposedApi: true });
         const write = (text: string) => new Promise<void>(resolve => terminal.write("\x1b[0m\r\x1b[2K" + text, resolve));
         try {
           await write(nativeTheme.fg("syntaxComment", "X"));
           const expected = terminal.buffer.active.getLine(0)!.getCell(0)!.getFgColor();
+          await write(nativeTheme.bg("toolPendingBg", "X"));
+          const expectedBackground = terminal.buffer.active.getLine(0)!.getCell(0)!.getBgColor();
           const row = layout.rows.find(row => plain(row).includes("continued"))!;
           await write(row);
+          assert.equal(terminal.buffer.active.getLine(0)!.getCell(plain(row).indexOf("continued"))!.getBgColor(), expectedBackground, "plain write code keeps panel background, never added/removed tint");
           assert.equal(terminal.buffer.active.getLine(0)!.getCell(plain(row).indexOf("continued"))!.getFgColor(), expected,
             "native multiline comment color survives plain-source wrapping");
         } finally { terminal.dispose(); }
@@ -173,10 +176,10 @@ test("write metadata/native/compact/image/hidden guards remain authoritative in 
   const states: [Tool["result"], boolean][] = [[undefined, true], [{ content: [], details: { diff: "+1 PROPOSED" } }, true],
     [{ content: [], isError: true, details: { diff: "+1 STALE" } }, false], [{ content: [], details: { diff: "+1 FINAL" } }, false]];
   for (const [result, partial] of states) for (const guard of ["native", "expanded", "image", "hidden", "compact"]) {
-    const tool = new Tool("write", { path: "example.ts", content: "CONTENT" }); tool.result = result; tool.isPartial = partial; tool.executionStarted = false;
+    const tool = new Tool("write", { path: "example.ts", content: "CONTENT" }); tool.updateResult(result, tool.isPartial); tool.updateResult(tool.result, partial); tool.executionStarted = false;
     if (guard === "expanded") tool.expanded = true;
     if (guard === "hidden") tool.hideComponent = true;
-    if (guard === "image") tool.result = { ...result, content: [{ type: "image" }] };
+    if (guard === "image") tool.updateResult({ ...result, content: [{ type: "image" }] }, tool.isPartial);
     const { controller, original } = setup([tool], guard === "compact" ? { cards: ["write"], compact: ["write"] } : guard === "native" ? { cards: ["write"] } : {});
     try {
       if (guard === "compact") assert.deepEqual(tool.render(140), [" ← write example.ts"]);
@@ -184,7 +187,7 @@ test("write metadata/native/compact/image/hidden guards remain authoritative in 
     } finally { controller.restore(); }
   }
   for (const details of [{ patch: "@@ -1 +1 @@\n-before\n", diff: "+1 VALID_BUT_LOWER_PRIORITY" }, { diff: 1 }, { patch: null, diff: "+1 IGNORED" }, { diff: "+1missing_space" }]) {
-    const tool = new Tool("write", { path: "example.ts", content: "INPUT" }); tool.result = { content: [], details };
+    const tool = new Tool("write", { path: "example.ts", content: "INPUT" }); tool.updateResult({ content: [], details }, tool.isPartial);
     const { controller, original } = setup([tool]);
     try { assert.deepEqual(tool.render(80), original.call(tool, 80)); assert.equal(controller.cacheStats().cards.entries, 0); }
     finally { controller.restore(); }
@@ -207,7 +210,7 @@ test("write failure skips metadata/payload, uses only error paint and tears down
   t.mock.method(performance, "now", () => Date.now());
   const starts = t.mock.method(globalThis, "setTimeout"), stops = t.mock.method(globalThis, "clearTimeout");
   const tool = new Tool("write", { path: "example.ts", get content(): string { return assert.fail("failure must not read payload"); } });
-  tool.result = undefined;
+  tool.updateResult(undefined, tool.isPartial);
   const root = new Root(); root.addChild(tool); const roles: string[] = [];
   const controller = installTidyUi(root, () => ({ fg(role, text) { roles.push(role); return text; } }));
   try {
