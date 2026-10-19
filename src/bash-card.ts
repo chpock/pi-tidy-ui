@@ -50,8 +50,32 @@ function reminderSuffix(rows: readonly string[], first: number, last: number): n
   return depth === 0 ? start : last;
 }
 
-function resultRows(node: BashPresentation, final: boolean) {
+/** AFT puts its own task ID in persisted details; similar command output is not metadata. */
+function resultParts(node: BashPresentation, final: boolean): string[] {
   const parts = node.result?.content.filter(part => part.type === 'text').map(part => part.text ?? '') ?? [];
+  const task = (node.result?.details as { task_id?: unknown } | null | undefined)?.task_id;
+  if (!final || typeof task !== 'string' || !/^bash-[0-9a-f]{16}$/u.test(task)) return parts;
+  // AFT appends one annotation. Match the last raw whole row within a block,
+  // before sanitization can manufacture a match; earlier identical output stays literal.
+  for (let index = parts.length - 1; index >= 0; index--) {
+    const part = parts[index]!;
+    let row: RegExpExecArray | undefined;
+    for (const match of part.matchAll(/(^|\r\n|[\r\n])\[task (bash-[0-9a-f]{16})(?: \(job [^\s()[\]]+\))?\](?=\r\n|[\r\n]|$)/gu))
+      if (match[2] === task) row = match;
+    if (!row) continue;
+    let end = row.index + row[0].length;
+    // At block start remove the following EOL instead: the joined block separator
+    // must not turn an unseparated timeout pair into a separated one.
+    if (!row[1] && end < part.length) end += part.startsWith('\r\n', end) ? 2 : 1;
+    const text = part.slice(0, row.index) + part.slice(end);
+    parts.splice(index, 1, ...(text ? [text] : []));
+    break;
+  }
+  return parts;
+}
+
+function resultRows(node: BashPresentation, final: boolean) {
+  const parts = resultParts(node, final);
   const normalized = blockText(parts.join('\n')), rows = normalized.split('\n');
   let end = rows.length;
   while (end && !rows[end - 1]!.trim()) end--;

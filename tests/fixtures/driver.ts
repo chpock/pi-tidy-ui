@@ -174,7 +174,13 @@ export default function terminalDriver(pi: ExtensionAPI) {
       const row = (count: number) => Array.from({ length: count }, (_, i) => `SHAPE_ROW_${String(i + 1).padStart(2, "0")}`).join("\n");
       const result = (value: string, code?: unknown, isError = false) => ({ content: text(value),
         details: code === undefined ? undefined : { exit_code: code }, isError });
+      const task = (value: string, code = 0) => ({ ...result(value, code), details: { exit_code: code, task_id: 'bash-443fe78c4d7f1e35' } });
       switch (args.fixtureCase) {
+        // Exact AFT 0.60 final-result shapes, not installed AFT execution.
+        case 'task-empty': return task('[task bash-443fe78c4d7f1e35]');
+        case 'task-exit': return task('FAIL_BODY\n[task bash-0000000000000000]\n\n[exit code: 7]\n[task bash-443fe78c4d7f1e35]\n\n<system-reminder>\nNOTICE\n</system-reminder>', 7);
+        case 'task-timeout': return task('TIMEOUT_BODY\n\n[command timed out]\n[exit code: 124]\n[task bash-443fe78c4d7f1e35 (job 0192a64a-1234-7000-8000-000000000001)]', 124);
+        case 'task-cap': return task(row(10) + '\n[task bash-443fe78c4d7f1e35]\nshown 10 of 20 lines (cap)');
         case "literal": return { content: [...text("(no output)\nBackground task started: task-id-123"),
           ...text("[exit code: 99]\nCommand exited with code 77")], details: undefined };
         case "whitespace": return result(" \t\n\r\n  ");
@@ -486,7 +492,7 @@ export default function terminalDriver(pi: ExtensionAPI) {
         const scenario = prompt === 'run bash-empty-stream' ? 'bash-empty-stream' : /^run highlighting-limits-(bash|write|edit)$/.test(prompt ?? "") ? prompt.slice(4) : prompt === "run syntax-long-output" ? "syntax-long-output" : prompt === "run bash-prefix-contract" ? "bash-prefix-contract" : prompt === "run syntax-cards" ? "syntax-cards" : prompt?.includes("run write-stock") ? "write-stock" : prompt?.includes("run write-shapes") ? "write-shapes" : prompt?.includes("run edit-performance") ? "edit-performance" : prompt?.includes("run edit-cards") ? "edit-cards" : prompt?.includes("run user-card") ? "user-card" : prompt === "run cache-performance" ? "cache-performance" : prompt?.includes("bash-width") ? "bash-width" : prompt?.includes("bash-stream") ? "bash-stream" : prompt?.includes("bash-real") ? "bash-real" :
           prompt?.includes("bash-shape-timeout-stream") ? "bash-shape-timeout-stream" : prompt?.includes("bash-shape-timeouts") ? "bash-shape-timeouts" :
           prompt?.includes("bash-shape-exception-stream") ? "bash-shape-exception-stream" : prompt?.includes("bash-shape-exceptions") ? "bash-shape-exceptions" :
-          prompt?.includes("bash-shape-reminders") ? "bash-shape-reminders" : prompt?.includes("bash-shape-stream") ? "bash-shape-stream" : prompt?.includes("bash-shapes") ? "bash-shapes" :
+          prompt?.includes('bash-shape-tasks') ? 'bash-shape-tasks' : prompt?.includes("bash-shape-reminders") ? "bash-shape-reminders" : prompt?.includes("bash-shape-stream") ? "bash-shape-stream" : prompt?.includes("bash-shapes") ? "bash-shapes" :
           prompt?.includes("long-word-wrap") ? "long-word-wrap" : prompt?.includes("bounded-summaries") ? "bounded-summaries" : prompt?.includes("compact-errors") ? "compact-errors" : prompt?.includes("comma-wrap") ? "comma-wrap" : prompt?.includes("boundary") ? "boundary" : prompt?.includes("multiline") ? "multiline" : prompt?.includes("integration") ? "integration" :
           prompt?.includes("pending") ? "pending" : prompt?.includes("fallback") ? "fallback" :
           prompt === "run footer-cold" ? "footer-cold" : prompt === "run footer-history" ? "footer-history" : prompt === "run footer-varied" ? "footer-varied" :
@@ -514,6 +520,7 @@ export default function terminalDriver(pi: ExtensionAPI) {
           { name: "bash", arguments: { command: "printf 'USER_BASH_OUTPUT\\n'" } },
           { name: "read", arguments: { path: "a.txt" } },
         ] : scenario === "cache-performance" ? cacheSuite : scenario === "bash-width" ? bashWidth : scenario === "bash-real" ? bashReal : scenario === "bash-shapes" ? bashShapes :
+          scenario === 'bash-shape-tasks' ? ['task-empty', 'task-exit', 'task-timeout', 'task-cap'].map(fixtureCase => ({ name: 'bash', arguments: { command: 'shape ' + fixtureCase, fixtureCase } })) :
           scenario === "bash-shape-reminders" ? ['reminder-inline', 'reminder-timeout', 'reminder-long', 'reminder-cap'].map(fixtureCase => ({ name: 'bash', arguments: { command: 'shape ' + fixtureCase, fixtureCase } })) :
           scenario === "bash-shape-timeouts" ? bashTimeouts :
           scenario === "bash-shape-timeout-stream" ? [{ name: "bash", arguments: { command: "shape timeout-stream", fixtureCase: "timeout-stream" } }] :
