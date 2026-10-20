@@ -12,6 +12,7 @@ import xterm from '@xterm/headless';
 import { sliceByColumn, visibleWidth } from '@earendil-works/pi-tui';
 import { readInputs, childEnv, toolPath } from '../../scripts/test/context.mjs';
 import { planTerminalObserver } from './terminal-observer-plan.mjs';
+import { planPerformanceLayout } from './performance-layout-plan.mjs';
 import { terminalCodeCache } from './terminal-code-cache.mjs';
 
 const { Terminal } = xterm;
@@ -65,10 +66,13 @@ export function observeNativeReceipts(term, state) {
 export class PiTerminal {
   // The integration-profile helper may supply additional isolated settings, environment and explicit extensions.
   constructor(name, { tidyUi = false, mode = 'fullscreen', session, flags = [],
-    agentSettings = {}, extraEnv = {}, extensions = [], workspace, profileFactory, tidyUiSettings } = {}) {
+    agentSettings = {}, extraEnv = {}, extensions = [], workspace, profileFactory, tidyUiSettings, dimensions = { columns: 100, rows: 80 } } = {}) {
     const inputs = readInputs(), python = toolPath('python3');
     this.output = join(artifacts, name);
     this.observeMenuBounds = extraEnv.TIDY_UI_TEST_MENU_GEOMETRY === '1';
+    const measuring = extraEnv.TIDY_UI_TEST_PERFORMANCE === '1';
+    const { columns, rows } = dimensions;
+    assert.ok(Number.isInteger(columns) && columns >= 24 && columns <= 240 && Number.isInteger(rows) && rows >= 10 && rows <= 150, 'bounded initial terminal dimensions');
     mkdirSync(this.output, { recursive: true });
     this.temp = mkdtempSync(join(tmpdir(), 'pi-tidy-ui-terminal-'));
     this.work = workspace || join(this.temp, 'work');
@@ -121,7 +125,7 @@ export class PiTerminal {
       theme: 'dark', quietStartup: true, ...this.profile?.settings, ...agentSettings,
       enableAnalytics: false, enableInstallTelemetry: false,
     }));
-    this.term = new Terminal({ cols: 100, rows: 80, scrollback: 3000, allowProposedApi: true });
+    this.term = new Terminal({ cols: columns, rows, scrollback: measuring ? 0 : 3000, allowProposedApi: true });
     observeRenderFrames(this.term, this);
     observeNativeReceipts(this.term, this);
     this.raw = [];
@@ -136,7 +140,7 @@ export class PiTerminal {
     args.push('--model', 'tidy-ui-offline/scripted', '--tui-mode', mode, ...flags);
     if (session) args.push('--session', session);
     const observerPlan = join(this.output, 'native-observer.json');
-    writeFileSync(observerPlan, JSON.stringify(planTerminalObserver(inputs), null, 2));
+    writeFileSync(observerPlan, JSON.stringify({ ...planTerminalObserver(inputs), ...(measuring ? { layout: planPerformanceLayout(inputs) } : {}) }, null, 2));
     const env = childEnv(this.temp, {
       HOME: this.temp, USERPROFILE: this.temp,
       ...this.profile?.env, ...extraEnv,
@@ -148,15 +152,15 @@ export class PiTerminal {
     });
     this.codeCache = terminalCodeCache(this.temp);
     env.NODE_COMPILE_CACHE = this.codeCache.node;
-    const command = [inputs.node.path, '--import', pathToFileURL(join(fixtures, 'terminal-preload.mjs')).href, inputs.pi.cli, ...args];
-    this.child = spawn(python, ['-I', '-S', join(fixtures, 'pty_bridge.py'), '100', '80', this.work, ...command],
+    const command = [inputs.node.path, ...(measuring ? ['--expose-gc'] : []), '--import', pathToFileURL(join(fixtures, 'terminal-preload.mjs')).href, inputs.pi.cli, ...args];
+    this.child = spawn(python, ['-I', '-S', join(fixtures, 'pty_bridge.py'), String(columns), String(rows), this.work, ...command],
       { env, stdio: ['pipe', 'pipe', 'pipe'] });
     this.child.on('error', (error) => { this.error = error; this.nativeProgress.emit('progress'); });
     this.child.stdin.on('error', (error) => {
       if (!this.closing) { this.error = error; this.nativeProgress.emit('progress'); }
     });
     this.stderr = '';
-    this.child.stderr.on('data', (data) => { this.stderr += data; });
+    this.child.stderr.on('data', (data) => { this.stderr = measuring ? (this.stderr + data).slice(-16384) : this.stderr + data; });
     this.child.on('exit', (code, signal) => { this.exited = { code, signal }; this.nativeProgress.emit('progress'); });
     this.child.on('close', () => { this.closed = true; this.nativeProgress.emit('progress'); });
     this.rl = createInterface({ input: this.child.stdout });
@@ -168,7 +172,8 @@ export class PiTerminal {
         if (frame.resized) this.ptySize = { id: frame.id, width: frame.resized[0], height: frame.resized[1] };
         if (frame.data) {
           const data = Buffer.from(frame.data, 'base64');
-          this.raw.push(data);
+          if (measuring) this.raw[0] = data.subarray(Math.max(0, data.length - 65536));
+          else this.raw.push(data);
           this.lastOutput = Date.now();
           // Native parsing is FIFO: the newest callback also drains all earlier chunks.
           this.queue = new Promise((done) => this.term.write(data, done));

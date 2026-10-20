@@ -346,3 +346,7 @@ No full user-runtime compatibility guarantee is made. Graphical Kitty/iTerm2 ima
 Start with a failing regression for the contract being changed. Keep native/data controls strict, run the affected gates, and use an independent fresh-file review for substantive behavior/integration changes. Reviewers should read the current source and authoritative SDK/reference sources; summaries and an earlier green run are not a substitute. Record findings and final execution evidence locally, explicitly separating reviewer source inspection from parent-run compiler/tests.
 
 Maintained documentation describes the current architecture, accepted behavior and reproducible verification method. Historical run counts, superseded proposals and agent handoffs are working artifacts, not new project contracts.
+
+## Manual performance measurements
+
+[Performance testing](performance-testing.md) describes the opt-in `test:perf` command, prepared inputs, synthetic SDK/real-Pi workloads, target allocation/CPU/retention metrics, bounded process-tree peaks, profiling and saved-result comparison. Normal CI runs framework correctness controls only; it does not run benchmark batches or enforce machine-dependent performance thresholds. Never interpret cumulative allocated bytes as live heap/RSS, a sampled profile as an exact object count, or a kernel whole-tree peak as target-Pi RSS.
