@@ -5,6 +5,7 @@ import { createRequire } from "node:module";
 import { SessionLogging } from "./session-logging.ts";
 import { RuntimeHealth } from './runtime-health.ts';
 import { ExtensionSettings, processPreferences, type LocalPreferences, type SettingsLoadResult, type SyntaxTheme } from './settings.ts';
+import { bindTerminalLifecycle } from "./terminal-lifecycle.ts";
 import { TidyMenu, type TidyMenuOwner, type TidyMenuAction } from './tidy-menu.ts';
 import type { SyntaxMenuOutcome } from './occipital/menu.ts';
 import { type JournalOptions } from "./debug-log.ts";
@@ -1645,8 +1646,10 @@ export default function tidyUi(pi: ExtensionAPI, options: TidyUiRuntimeOptions =
   }
   let colors: TerminalColors | undefined;
   const colorWidget = "pi-tidy-ui-terminal-colors";
+  let detachColorLifecycle: (() => void) | undefined;
   function stopColors(preserveDefaults = false) {
     const previous = colors; colors = undefined;
+    detachColorLifecycle?.(); detachColorLifecycle = undefined;
     if (previous) diagnose(logging?.sink, "INFO", "terminal-colors", "Terminal-color observer removed from public widget", { preserveDefaults });
     previous?.dispose({ preserveDefaults });
     if (previous) liveContext?.ui.setWidget(colorWidget, undefined);
@@ -1662,7 +1665,7 @@ export default function tidyUi(pi: ExtensionAPI, options: TidyUiRuntimeOptions =
         snapshot() {
           const current = liveContext!;
           return { enabled: enabled && colorsEnabled && current?.mode === "tui", presenting: enabled && current?.mode === "tui", theme: current.ui.theme,
-            configured: pi.getSettings().theme, automatic: reference.deref() ? terminalAppearanceTracking(reference.deref()!) : undefined };
+            configured: pi.getSettings().theme, automatic: detachColorLifecycle && reference.deref() ? terminalAppearanceTracking(reference.deref()!) : undefined };
         },
         source: name => name ? liveContext?.ui.getAllThemes?.().find(item => item.name === name)?.path : undefined,
         write: data => {
@@ -1678,6 +1681,7 @@ export default function tidyUi(pi: ExtensionAPI, options: TidyUiRuntimeOptions =
         },
         warn: message => liveContext?.ui.notify(`pi-tidy-ui colors: ${message}`, "warning"),
       });
+      detachColorLifecycle = bindTerminalLifecycle(tui.terminal, ensureSyntax(ctx), view);
       colors = view; terminalColorDebug = new WeakRef(view);
       view.observe();
       return { render() { if (colors === view) view.observe(); return []; }, invalidate() { if (colors === view) view.observe(); } };
@@ -1964,7 +1968,7 @@ export default function tidyUi(pi: ExtensionAPI, options: TidyUiRuntimeOptions =
         start(ctx);
       } else if (action.kind === 'reapplyColors') {
         if (!enabled || !colorsEnabled) return { ok: false, message: 'Turn on appearance and terminal color matching first.' };
-        if (colors) colors.observe(true); else startColors(ctx);
+        if (colors) colors.reapply(); else startColors(ctx);
       } else if (action.kind === 'clearCache') {
         if (!controller?.active) return { ok: false, message: 'There are no active Tidy UI layouts to clear.' };
         controller.clearCache(); ownedFooter?.clear();

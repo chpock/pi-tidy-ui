@@ -174,7 +174,7 @@ test("terminal defaults menu honors local/master lifetime without session-bound 
   writeFileSync(path, '{"colors":{"text":"#eeeeee"},"export":{"pageBg":"#123456"}}');
   fixture.snapshot.theme.sourcePath = path;
   Object.assign(h.ctx.ui, { theme: fixture.snapshot.theme });
-  Object.assign(h.root, { terminal: { write(data: string) { fixture.packets.push(data); } } });
+  Object.assign(h.root, { terminal: { start() {}, stop() {}, write(data: string) { fixture.packets.push(data); } } });
   const listeners = process.listenerCount("exit"), nativeToolRender = Tool.prototype.render;
   try {
     await h.events.get("session_start")!({}, h.ctx); await terminalMicrotasks();
@@ -341,7 +341,7 @@ test('terminal repaint: production host forwards forced mode without invalidatin
   writeFileSync(path, '{"colors":{"text":"#eeeeee"},"export":{"pageBg":"#123456"}}');
   f.snapshot.theme.sourcePath = path;
   Object.assign(h.ctx.ui, { theme: f.snapshot.theme });
-  Object.assign(h.root, { terminal: { write: (data: string) => f.packets.push(data) } });
+  Object.assign(h.root, { terminal: { start() {}, stop() {}, write: (data: string) => f.packets.push(data) } });
   const requests: boolean[] = [], request = h.root.requestRender, invalidate = h.root.invalidate;
   let invalidations = 0;
   h.root.requestRender = (force = false) => { requests.push(force); request.call(h.root); };
@@ -388,4 +388,101 @@ for (const target of ['no-source', 'valid-source'] as const) test(`terminal defa
     assert.equal(health.snapshot().active, 1); assert.equal(health.snapshot().errors, 2, 'same failure after abandoning its source is a new incident');
     assert.equal(notices.length, 2);
   } finally { f.view.dispose(); health.dispose(); }
+});
+
+
+test('terminal ownership: suspend releases both channels, blocks queued work/replies and resume restores current targets', async () => {
+  const defaults: DefaultColors = {};
+  const f = terminalColorFixture(undefined, defaults);
+  try {
+    f.view.observe(); await terminalMicrotasks();
+    const warm = f.view.stats();
+    f.view.suspend();
+    assert.equal(f.packets.at(-1), '\x1b]111\x07\x1b]110\x07');
+    assert.deepEqual(defaults, {});
+    assert.equal(f.view.status().state, 'suspended');
+    const suspended = f.view.stats();
+    f.view.suspend(); f.view.observe(); f.view.observe(true); f.view.reapply();
+    await terminalMicrotasks(); assert.deepEqual(f.view.stats(), suspended);
+    assert.equal(f.renders.length, 1, 'releasing a stopped terminal must not request a repaint');
+    f.setContent('{"colors":{"text":"#abcdef"},"export":{"pageBg":"#654321"}}');
+    f.view.resume(); await terminalMicrotasks();
+    assert.deepEqual(defaults, { foreground: '#abcdef', background: '#654321' });
+    assert.equal(f.packets.at(-1), '\x1b]11;#654321\x07\x1b]10;#abcdef\x07');
+    assert.equal(f.view.stats().sourceReads, warm.sourceReads + 1);
+    const resumed = f.view.stats();
+    f.view.resume(); for (let i = 0; i < 20; i++) f.view.observe();
+    await terminalMicrotasks(); assert.deepEqual(f.view.stats(), resumed);
+  } finally { f.view.dispose(); }
+  const queued = terminalColorFixture();
+  queued.view.observe(); queued.view.suspend(); await terminalMicrotasks();
+  assert.equal(queued.reads, 0); assert.deepEqual(queued.packets, []);
+  queued.view.dispose(); queued.view.resume(); await terminalMicrotasks(); assert.deepEqual(queued.packets, []);
+});
+
+test('terminal ownership: resume respects Off/auto and refreshes unowned defaults instead of retaining stale reports', async () => {
+  for (const mode of ['off', 'auto', 'empty', 'broken'] as const) {
+    const f = terminalColorFixture(async () => ({ background: { r: 17, g: 34, b: 51 } }));
+    Object.assign(f.snapshot, { presenting: true });
+    try {
+      f.view.observe(); await terminalMicrotasks(); f.view.suspend();
+      const packets = f.packets.length;
+      if (mode === 'off') f.snapshot.enabled = false;
+      if (mode === 'auto') f.snapshot.automatic = true;
+      if (mode === 'empty') f.setContent('{"colors":{},"export":{}}');
+      if (mode === 'broken') f.setContent('broken');
+      f.view.resume(); await terminalMicrotasks();
+      if (mode === 'broken') {
+        assert.equal(f.view.status().state, 'source error');
+        assert.equal(f.packets.at(-1), '\x1b]11;#123456\x07\x1b]10;#eeeeee\x07', 'last complete valid targets survive a temporary yield');
+      } else {
+        assert.equal(f.packets.length, packets, 'no theme application or redundant reset while ineligible/empty');
+        if (mode === 'off' || mode === 'empty') assert.equal(colorToHex(f.view.palette(f.snapshot.theme).colors!.userMessageBg!), '#112233');
+      }
+    } finally { f.view.dispose(); }
+  }
+  let late!: (value: { background: { r: number; g: number; b: number } }) => void;
+  const f = terminalColorFixture(async callback => { late = callback; return {}; });
+  try {
+    f.setContent('{"colors":{},"export":{}}'); f.view.observe(); await terminalMicrotasks();
+    const previous = late;
+    f.view.suspend(); previous({ background: { r: 255, g: 0, b: 0 } });
+    f.view.resume(); await terminalMicrotasks();
+    previous({ background: { r: 255, g: 0, b: 0 } });
+    assert.equal(f.view.palette(f.snapshot.theme), f.snapshot.theme);
+    late({ background: { r: 1, g: 2, b: 3 } });
+    assert.equal(colorToHex(f.view.palette(f.snapshot.theme).colors!.userMessageBg!), '#010203');
+  } finally { f.view.dispose(); }
+});
+
+test('terminal ownership: explicit Reapply resends owned values but ordinary refresh still deduplicates', async () => {
+  const f = terminalColorFixture();
+  try {
+    f.setContent('{"export":{"pageBg":"#123456"}}');
+    f.view.observe(); await terminalMicrotasks();
+    f.view.observe(true); await terminalMicrotasks(); assert.equal(f.packets.length, 1);
+    f.view.reapply(); await terminalMicrotasks();
+    assert.deepEqual(f.packets, ['\x1b]11;#123456\x07', '\x1b]11;#123456\x07']);
+    assert.deepEqual(f.renders, [true, true]);
+    f.snapshot.enabled = false; f.view.observe(); const count = f.packets.length;
+    f.view.reapply(); await terminalMicrotasks(); assert.equal(f.packets.length, count);
+  } finally { f.view.dispose(); }
+});
+
+
+test('terminal ownership: broken-source resume refreshes an unowned profile background after restoring last-good foreground', async () => {
+  let reports = 0;
+  const f = terminalColorFixture(async () => ({ background: { r: ++reports, g: 34, b: 51 } }));
+  try {
+    f.setContent('{"colors":{"text":"#abcdef"}}');
+    f.view.observe(); await terminalMicrotasks();
+    assert.equal(colorToHex(f.view.palette(f.snapshot.theme).colors!.userMessageBg!), '#012233');
+    f.view.suspend(); f.setContent('broken'); f.view.resume(); await terminalMicrotasks();
+    assert.equal(f.view.status().state, 'source error');
+    assert.equal(f.packets.at(-1), '\x1b]10;#abcdef\x07');
+    assert.equal(reports, 2);
+    assert.equal(colorToHex(f.view.palette(f.snapshot.theme).colors!.userMessageBg!), '#022233');
+    const warm = f.view.stats(); f.view.observe(); await terminalMicrotasks();
+    assert.deepEqual(f.view.stats(), warm);
+  } finally { f.view.dispose(); }
 });

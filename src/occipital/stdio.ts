@@ -283,6 +283,8 @@ export class StdioTransport {
     return this.closed;
   }
 
+  get hasPendingRequests(): boolean { return this.pending.size > 0; }
+
   stats(): StdioStats {
     let data = 0, control = 0, bytes = 0, aborts = 0, timers = 0;
     for (const call of this.pending.values()) {

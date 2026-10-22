@@ -58,6 +58,7 @@ export class SyntaxClient implements SyntaxMenuOwner {
   private readonly onSourceChange?: SyntaxClientOptions['onSourceChange'];
   private provider: ProviderSnapshot;
   private enabled = true;
+  private suspended = false;
   private disposed = false;
   private menuEpoch = 0;
   private preferenceRevision = 0;
@@ -149,7 +150,7 @@ export class SyntaxClient implements SyntaxMenuOwner {
 
   refreshThemes(): Promise<SyntaxMenuOutcome> {
     if (this.disposed) return Promise.resolve({ ok: false, message: REFRESH_FAILED });
-    if (!this.enabled || this.provider.availability !== 'ready' || this.metadata) {
+    if (!this.enabled || this.suspended || this.provider.availability !== 'ready' || this.metadata) {
       this.issue(REFRESH_FAILED); return Promise.resolve({ ok: false, message: REFRESH_FAILED });
     }
     const need = this.sources.profileReconciliationNeeded();
@@ -166,6 +167,22 @@ export class SyntaxClient implements SyntaxMenuOwner {
     const operation = this.broker.setEnabled(enabled);
     this.acceptBrokerChange();
     return enabled ? Promise.all([this.restorePreference(), operation]).then(() => {}) : operation;
+  }
+
+  suspend(): void {
+    if (this.disposed || this.suspended) return;
+    this.suspended = true; ++this.menuEpoch;
+    this.sources.suspend();
+    const interrupted = this.broker.suspend();
+    if (interrupted !== undefined) this.sources.interruptProvider(interrupted);
+    this.acceptBrokerChange();
+  }
+  resume(): Promise<void> {
+    if (this.disposed || !this.suspended) return Promise.resolve();
+    this.suspended = false;
+    const operation = this.broker.resume();
+    this.sources.resume(); this.acceptBrokerChange();
+    return operation;
   }
 
   dispose(): Promise<void> {
@@ -254,7 +271,7 @@ export class SyntaxClient implements SyntaxMenuOwner {
     this.noticeScheduled = true; queueMicrotask(changeNotice(new WeakRef(this)));
   }
   private tryProfileMetadata(): void {
-    if (this.disposed || !this.enabled || !this.preferenceKnown || this.metadata) return;
+    if (this.disposed || this.suspended || !this.enabled || !this.preferenceKnown || this.metadata) return;
     const need = this.sources.profileReconciliationNeeded();
     if (!need || need.generation === this.attemptedNeed?.generation && need.sequence === this.attemptedNeed.sequence) return;
     this.attemptedNeed = need;

@@ -7,6 +7,7 @@ import os
 import pty
 import select
 import signal
+import shlex
 import struct
 import sys
 import termios
@@ -20,18 +21,29 @@ def emit(message):
 def main():
     cols, rows = int(sys.argv[1]), int(sys.argv[2])
     cwd, command = sys.argv[3], sys.argv[4:]
+    job_shell = os.environ.get("TIDY_UI_TEST_JOB_SHELL")
+    job_file = os.environ["TIDY_UI_TEST_JOB_FILE"] if job_shell else ""
+    launch = [sys.executable, "-I", "-S", __file__, "--job-child", job_file, *command]
     pid, master = pty.fork()
     if pid == 0:
         os.chdir(cwd)
+        if job_shell:
+            # A real parent shell keeps Pi's job group non-orphaned, so SIGTSTP is effective.
+            rc = job_file + ".rc"
+            with open(rc, "w") as file:
+                file.write("PS1='JOB_CONTROL> '\n")
+            os.execvpe(job_shell, [job_shell, "--noprofile", "--rcfile", rc, "-i"], os.environ)
         os.execvpe(command[0], command, os.environ)
     alive = True
     status = None
     master_open = True
     drained_bytes = 0
     escalations = 0
+    launch_pending = bool(job_shell)
+    prompt_tail = b""
 
     def read_output(shutdown=False):
-        nonlocal master_open, drained_bytes
+        nonlocal master_open, drained_bytes, launch_pending, prompt_tail
         try:
             data = os.read(master, 65536)
         except OSError as error:
@@ -40,6 +52,14 @@ def main():
             data = b""
         if data:
             emit({"data": base64.b64encode(data).decode("ascii")})
+            if launch_pending and not shutdown:
+                prompt_tail = (prompt_tail + data)[-256:]
+                if b"JOB_CONTROL> " in prompt_tail:
+                    # Bash enables job control after startup files have finished.
+                    launch_pending = False
+                    pending = (shlex.join(launch) + "\n").encode()
+                    while pending:
+                        pending = pending[os.write(master, pending):]
             if shutdown:
                 drained_bytes += len(data)
         else:
@@ -56,7 +76,9 @@ def main():
     buffer = b""
     resize(cols, rows)
     emit({"ready": pid})
-    deadline = time.monotonic() + 180
+    # Isolated opt-in for a real pause past Occipital's 300-second deadline.
+    lifetime = 360 if os.environ.get('TIDY_UI_TEST_LONG_SUSPEND') == '1' else 180
+    deadline = time.monotonic() + lifetime
     # Isolated regression opt-in: delay ioctl itself, not Pi's text or geometry.
     resize_delay = int(os.environ.get("TIDY_UI_TEST_RESIZE_DELAY_MS", "0")) / 1000
     host_hold = int(os.environ.get("TIDY_UI_TEST_RESIZE_HOLD_MS", "0")) / 1000
@@ -102,12 +124,29 @@ def main():
                 alive = False
                 break
         if time.monotonic() >= deadline:
-            emit({"error": "PTY lifetime exceeded 180 seconds"})
+            emit({"error": f"PTY lifetime exceeded {lifetime} seconds"})
     except InterruptedError:
         pass
     finally:
+        job_group = None
+        if job_shell:
+            try:
+                with open(job_file) as file:
+                    record = file.read()
+                if not record.endswith("\n") or not record[:-1].isdigit():
+                    raise ValueError("incomplete owned job group")
+                job_group = int(record)
+                if job_group <= 1 or job_group == os.getpgrp():
+                    raise ValueError("invalid owned job group")
+                os.killpg(job_group, signal.SIGCONT)
+                os.killpg(job_group, signal.SIGTERM)
+            except (FileNotFoundError, ProcessLookupError):
+                pass
+            except ValueError:
+                job_group = None
+                emit({"error": "Incomplete or invalid owned job-group record during cleanup"})
         if alive:
-            # Pi and any real bash grandchildren share this PTY process group.
+            # Without job control, Pi and its non-detached children share this group.
             try:
                 os.killpg(pid, signal.SIGTERM)
             except ProcessLookupError:
@@ -133,6 +172,11 @@ def main():
                 except ProcessLookupError:
                     pass
                 _, status = os.waitpid(pid, 0)
+        if job_group is not None:
+            try:
+                os.killpg(job_group, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
         try:
             # Reaping can precede the last readable terminal packet. Do not wait
             # for a descendant holding the slave, or drain an endless writer forever.
@@ -153,4 +197,9 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    if len(sys.argv) > 1 and sys.argv[1] == "--job-child":
+        with open(sys.argv[2], "w") as file:
+            file.write(str(os.getpgrp()) + "\n")
+        os.execvpe(sys.argv[3], sys.argv[3:], os.environ)
+    else:
+        main()

@@ -2,13 +2,14 @@ import '../fixtures/test-guard.mjs';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import { childEnv, readInputs, toolPath } from '../../scripts/test/context.mjs';
+import { parseJobGroup } from '../fixtures/job-control.mjs';
 
 const posixOnly = process.platform === 'win32' ? 'POSIX PTY prerequisite; unavailable on Windows' : false;
 const bridgePath = fileURLToPath(new URL('../fixtures/pty_bridge.py', import.meta.url));
@@ -37,6 +38,8 @@ if mode == 'natural':
     write(payload)
     os._exit(37)
 write(b'ARMED\\n')
+if mode == 'stopped':
+    os.kill(0, signal.SIGTSTP)
 if mode == 'pending':
     os.kill(os.getpid(), signal.SIGTERM)
 while True:
@@ -54,9 +57,11 @@ function assertBytes(actual, expected, frames = []) {
 async function startBridge(t, mode) {
   const inputs = readInputs(), python = toolPath('python3', inputs);
   const directory = mkdtempSync(join(tmpdir(), 'tidy-pty-bridge-'));
+  const jobControl = mode === 'stopped';
+  const jobFile = join(directory, 'job-group');
   const child = spawn(python, ['-I', '-S', bridgePath, '80', '24', directory,
     python, '-I', '-S', '-c', childSource, mode], {
-    cwd: directory, env: childEnv(directory, {}, inputs), stdio: ['pipe', 'pipe', 'pipe'],
+    cwd: directory, env: childEnv(directory, jobControl ? { TIDY_UI_TEST_JOB_SHELL: toolPath('bash', inputs), TIDY_UI_TEST_JOB_FILE: jobFile } : {}, inputs), stdio: ['pipe', 'pipe', 'pipe'],
   });
   const frames = [], bytes = [];
   let stderr = '', failure, closed = false, resolveChange;
@@ -87,6 +92,7 @@ async function startBridge(t, mode) {
     failure = new Error('PTY bridge exceeded the 8-second subprocess bound');
     const pid = frames.find(frame => frame.ready)?.ready;
     if (pid) try { process.kill(-pid, 'SIGKILL'); } catch (error) { if (error.code !== 'ESRCH') failure = error; }
+    if (jobControl && existsSync(jobFile)) try { process.kill(-parseJobGroup(readFileSync(jobFile, 'utf8')), 'SIGKILL'); } catch (error) { if (error.code !== 'ESRCH') failure = error; }
     child.kill('SIGKILL');
     notify();
   }, 8000);
@@ -109,12 +115,13 @@ async function startBridge(t, mode) {
   };
   const output = () => Buffer.concat(bytes);
   const send = message => child.stdin.write(JSON.stringify(message) + '\n');
-  await waitFor(() => frames.some(frame => frame.ready) && output().equals(Buffer.from('READY\n')), 'child startup gate');
+  await waitFor(() => frames.some(frame => frame.ready) && (jobControl ? output().includes(Buffer.from('READY\n')) : output().equals(Buffer.from('READY\n'))), 'child startup gate');
   const pid = frames.find(frame => frame.ready).ready;
   send({ input: Buffer.from('G').toString('base64') });
-  if (!['natural','pending'].includes(mode)) await waitFor(() => output().equals(Buffer.from('READY\nARMED\n')), 'armed shutdown receiver');
+  if (!['natural','pending'].includes(mode)) await waitFor(() => (jobControl ? output().includes(Buffer.from('READY\nARMED\n')) : output().equals(Buffer.from('READY\nARMED\n'))), 'armed shutdown receiver');
   return {
-    child, frames, output, send,
+    child, frames, output, send, waitFor,
+    jobPid: jobControl ? parseJobGroup(readFileSync(jobFile, 'utf8')) : undefined,
     async finish() {
       const result = await completion;
       assert.ifError(failure);
@@ -165,4 +172,25 @@ test('PTY bridge drains terminal tail bytes before reporting a natural child exi
   assert.deepEqual(bridge.frames.filter(frame => frame.exit !== undefined), [{ exit: 37 }]);
   assert.equal(bridge.frames.at(-2).exit, 37);
   assert.equal(bridge.frames.at(-1).shutdown.escalations, 0);
+});
+
+
+test('PTY bridge resumes and reaps a stopped job in a separate process group during cleanup', { skip: posixOnly, timeout: 12000 }, async t => {
+  const bridge = await startBridge(t, 'stopped');
+  await bridge.waitFor(() => bridge.output().includes(Buffer.from('Stopped')), 'Bash reports a stopped foreground job');
+  bridge.send({ stop: true });
+  await bridge.finish();
+  assert.throws(() => process.kill(bridge.jobPid, 0), { code: 'ESRCH' }, 'separate job group leader is reaped');
+  const lines = bridge.output().toString().split('shutdown:\x1b[31m界\x1b[0m').length - 1;
+  assert.equal(lines, 32768, 'resumed job drained all cleanup lines despite shell ONLCR processing');
+});
+
+
+test('job-control cleanup rejects empty, truncated and unsafe group records before invoking a signal', () => {
+  const signals = [];
+  const signal = record => signals.push(-parseJobGroup(record));
+  for (const record of ['', '\n', '0\n', '1\n', '-42\n', '123', 'NaN\n', ' 42\n', '9007199254740992\n', '12\n34\n'])
+    assert.throws(() => signal(record), /record|group/);
+  assert.deepEqual(signals, []);
+  signal('12345\n'); assert.deepEqual(signals, [-12345]);
 });

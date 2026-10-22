@@ -16,6 +16,7 @@ import { SyntaxRuntime } from '../../src/syntax/runtime.ts';
 import { ExtensionSettings } from '../../src/settings.ts';
 import { matchesKey } from '@earendil-works/pi-tui';
 import { observeSyntaxLocalWork, observeSyntaxCards, observePiPaletteWork } from './syntax-local-work.ts';
+import { syntaxSuspendProbe } from './syntax-suspend-probe.ts';
 
 export default function syntaxDriver(pi: ExtensionAPI) {
   const output = process.env.TIDY_UI_TEST_OUTPUT!, binary = process.env.TIDY_UI_TEST_OCCIPITAL_BIN!;
@@ -30,6 +31,7 @@ export default function syntaxDriver(pi: ExtensionAPI) {
     mkdirSync(preferences, { recursive: true }); writeFileSync(join(preferences, 'config.json'), process.env.TIDY_UI_TEST_SYNTAX_CONFIG);
   }
   const record = createEventRecorder(output);
+  const suspendProbe = process.env.TIDY_UI_TEST_SUSPEND_PROBE === '1' ? syntaxSuspendProbe(output, record) : undefined;
   const localWork = observeSyntaxLocalWork();
   const paletteWork = process.env.TIDY_UI_TEST_PALETTE_OBSERVE === '1' ? observePiPaletteWork() : undefined;
   const cardObservations = process.env.TIDY_UI_TEST_CARD_OBSERVE === '1' ? observeSyntaxCards(event => record({ ...event,
@@ -79,7 +81,7 @@ export default function syntaxDriver(pi: ExtensionAPI) {
     const current = runtime?.deref();
     client = undefined;
     const currentClient = current?.snapshot();
-    return { node: process.version, controller, counts: { ...counts }, localWork: { ...localWork.snapshot(), ...paletteWork?.snapshot() }, pendingHeldReplies, client: currentClient, broker: brokerStats(),
+    return { node: process.version, controller, suspend: suspendProbe?.snapshot(), counts: { ...counts }, localWork: { ...localWork.snapshot(), ...paletteWork?.snapshot() }, pendingHeldReplies, client: currentClient, broker: brokerStats(),
       source: current?.sources.stats(), transports: transports.map(t => t.stats()), sharedTransports: sharedTransports.map(t => t.stats()) };
   };
   const uiNotices = new Map<ExtensionContext['ui'], ExtensionContext['ui']['notify']>();
@@ -113,6 +115,7 @@ export default function syntaxDriver(pi: ExtensionAPI) {
         if (process.env.TIDY_UI_TEST_SYNTAX_SHARED !== '1') return undefined;
         counts.sharedAttempts++;
         return options.provider.tryShared(signal, async transport => {
+          suspendProbe?.install(transport, 'shared');
           const shared = transport as SharedTransport, request = shared.request.bind(shared);
           shared.request = async (payload, opts) => {
             const kind = process.env.TIDY_UI_TEST_PALETTE_OBSERVE !== '1' ? undefined
@@ -141,6 +144,7 @@ export default function syntaxDriver(pi: ExtensionAPI) {
         const cache = join(getAgentDir(), 'cache', 'occipital', release.version, artifact.target);
         await mkdir(cache, { recursive: true }); await copyFile(binary, join(cache, 'occipital'));
         const transport = await acquire(signal) as StdioTransport;
+        suspendProbe?.install(transport, 'owned');
         const request = transport.request.bind(transport), close = transport.close.bind(transport);
         transport.close = () => { const settled = close(); closes.push(settled); return settled; };
         transport.request = async (payload, opts) => {

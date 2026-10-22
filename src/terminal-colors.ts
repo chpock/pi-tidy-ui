@@ -125,6 +125,8 @@ function defaultRole(theme: ColorTheme, role: string): { background: boolean; di
 /** Latest rendered-color snapshot only: no timer, history scan, owner-keyed LRU or native theme mutation. */
 export class TerminalColors {
   private applied: DefaultColors = {};
+  private desired: DefaultColors = {};
+  private suspended = false;
   private reported: DefaultColors = {};
   private revision: unknown[] | undefined;
   private sourceIdentity: { revision: unknown[]; path: string } | undefined;
@@ -136,9 +138,22 @@ export class TerminalColors {
   private projected: CardTheme | undefined;
   private counters = { sourceReads: 0, sets: 0, releases: 0, packets: 0, reports: 0, staleReplies: 0, projections: 0, warnings: 0 };
   private host: TerminalColorHost;
-  constructor(host: TerminalColorHost) { this.host = host; this.applied = { ...host.defaults }; }
+  constructor(host: TerminalColorHost) { this.host = host; this.applied = { ...host.defaults }; this.desired = { ...host.defaults }; }
   stats() { return { ...this.counters }; }
-  status() { return { state: this.state, ...this.applied }; }
+  status() { return { state: this.suspended ? 'suspended' : this.state, ...this.applied }; }
+  suspend(): void {
+    if (this.disposed || this.suspended) return;
+    this.suspended = true; this.generation++; this.revision = undefined;
+    this.reported = {}; this.paletteStamp = undefined; this.projected = undefined;
+    try { this.apply({}); }
+    catch (error) { this.warn(`Could not release terminal colors: ${String(error)}`, 'Could not release terminal colors before yielding the terminal', error); }
+  }
+  resume(): void {
+    if (this.disposed || !this.suspended) return;
+    this.suspended = false;
+    this.observe(true);
+  }
+  reapply(): void { this.observe(true, true); }
   private warn(message: string, explanation = 'Terminal color warning; raw error text excluded', error?: unknown) {
     if (message === this.failure) return;
     this.failure = message; this.counters.warnings++;
@@ -146,10 +161,10 @@ export class TerminalColors {
     reportRuntime(this.host.diagnostic, { kind: 'failure', scope: this, operation: 'colors', area: 'terminal-colors', code: error === undefined ? 'unsupported_host' : diagnosticError(error) });
     if (!this.host.diagnostic?.runtime) this.host.warn?.(message);
   }
-  private apply(next: DefaultColors): boolean {
+  private apply(next: DefaultColors, resend = false): boolean {
     let packet = "", sets = 0, releases = 0;
     for (const [key, code] of [["background", 11], ["foreground", 10]] as const) {
-      if (next[key] === this.applied[key]) continue;
+      if (next[key] === this.applied[key] && !(resend && next[key] !== undefined)) continue;
       if (next[key] !== undefined) { packet += `\x1b]${code};${next[key]}\x07`; sets++; }
       else if (this.applied[key] !== undefined) { packet += `\x1b]${code + 100}\x07`; releases++; }
     }
@@ -170,7 +185,7 @@ export class TerminalColors {
   private block(reason: string) {
     if (this.state === reason && !this.revision && !this.applied.foreground && !this.applied.background) return;
     this.generation++; this.revision = undefined; this.sourceIdentity = undefined; this.reported = {}; this.paletteStamp = undefined; this.projected = undefined;
-    this.state = reason;
+    this.state = reason; this.desired = {};
     diagnose(this.host.diagnostic, 'INFO', 'terminal-colors', 'Terminal-default application suspended', { reason, generation: this.generation });
     try {
       if (this.apply({})) this.host.changed?.(true);
@@ -179,10 +194,10 @@ export class TerminalColors {
       }
     }
     catch (error) { this.warn(`Could not release terminal colors: ${String(error)}`, 'Could not release terminal colors', error); }
-    if (reason === "unsupported host") this.warn("Terminal colors unavailable: Pi's appearance flag is missing or incompatible");
+    if (reason === "unsupported host") this.warn("Terminal colors unavailable: Pi's terminal lifecycle or appearance flag is missing or incompatible");
   }
   private current(generation: number, revision: unknown[], presentationOnly = false): boolean {
-    if (this.disposed || this.generation !== generation) return false;
+    if (this.disposed || this.suspended || this.generation !== generation) return false;
     try {
       const snapshot = this.host.snapshot();
       const eligible = presentationOnly ? snapshot.presenting && !unavailable({ ...snapshot, enabled: true }) : !unavailable(snapshot);
@@ -213,8 +228,8 @@ export class TerminalColors {
     this.host.changed?.();
   }
   /** Eligibility loss is synchronous; eligible file/query work is queued outside render. */
-  observe(force = false): void {
-    if (this.disposed) return;
+  observe(force = false, resend = false): void {
+    if (this.disposed || this.suspended) return;
     let snapshot: ColorSnapshot;
     try { snapshot = this.host.snapshot(); }
     catch { this.block("unsupported host"); return; }
@@ -237,12 +252,14 @@ export class TerminalColors {
       try {
         const source = path || this.host.source(name) || (same(this.sourceIdentity?.revision, revision) ? this.sourceIdentity?.path : undefined);
         if (!source) {
+          this.desired = {};
           const changed = this.apply({});
           this.sourceIdentity = undefined; this.reported = {}; this.paletteStamp = undefined; this.projected = undefined; this.state = "no source";
           this.failure = undefined;
           reportRuntime(this.host.diagnostic, { kind: 'released', scope: this, operation: 'colors' });
           diagnose(this.host.diagnostic, 'INFO', 'terminal-colors', 'No file-backed theme source; terminal defaults remain native', { generation, theme: name });
-          if (changed) { this.host.changed?.(true); this.queryDefaults(this.host.snapshot().theme, generation, revision); }
+          if (changed) this.host.changed?.(true);
+          this.queryDefaults(this.host.snapshot().theme, generation, revision);
           return;
         }
         this.sourceIdentity = { revision, path: source };
@@ -250,18 +267,30 @@ export class TerminalColors {
         diagnose(this.host.diagnostic, 'DEBUG', 'terminal-colors', 'Reading terminal defaults from existing theme source', { generation, path: source, theme: name });
         const desired = parseThemeDefaults(this.host.read ? this.host.read(source) : readFileSync(source, "utf8"));
         if (!this.current(generation, revision)) return;
-        const changed = this.apply(desired);
+        this.desired = desired;
+        const changed = this.apply(desired, resend);
         this.reported = {}; this.paletteStamp = undefined; this.projected = undefined;
         this.state = "on"; this.failure = undefined;
         reportRuntime(this.host.diagnostic, { kind: 'recovered', scope: this, operation: 'colors' });
         diagnose(this.host.diagnostic, 'INFO', 'terminal-colors', 'Fixed-theme terminal defaults resolved', { generation, theme: name, ...desired });
         if (changed) this.host.changed?.(true);
         this.queryDefaults(this.host.snapshot().theme, generation, revision);
-      } catch (error) { if (this.current(generation, revision)) { this.state = "source error"; this.warn(`Could not read terminal theme colors: ${String(error)}`, 'Theme-default resolution failed; last valid applied colors retained', error); } }
+      } catch (error) {
+        if (this.current(generation, revision)) {
+          this.state = 'source error';
+          this.warn(`Could not read terminal theme colors: ${String(error)}`, 'Theme-default resolution failed; last valid targets retained', error);
+          // A temporary terminal yield releases the ink, not the last complete valid theme targets.
+          try {
+            if (this.apply(this.desired, resend)) this.host.changed?.(true);
+            this.queryDefaults(this.host.snapshot().theme, generation, revision);
+          }
+          catch (writeError) { this.warn(`Could not restore terminal colors: ${String(writeError)}`, 'Could not restore last valid terminal targets', writeError); }
+        }
+      }
     });
   }
   palette(theme: ColorTheme): CardTheme {
-    if (this.disposed || !["on", "source error", "off", "no source"].includes(this.state) || !theme.colors) return theme;
+    if (this.disposed || this.suspended || !["on", "source error", "off", "no source"].includes(this.state) || !theme.colors) return theme;
     const foreground = this.applied.foreground ?? this.reported.foreground, background = this.applied.background ?? this.reported.background;
     const signature = [theme.colors, theme.fg, theme.bg, theme.style, foreground, background];
     if (same(this.paletteStamp, signature)) return this.projected!;
@@ -283,7 +312,7 @@ export class TerminalColors {
   }
   dispose({ preserveDefaults = false } = {}): void {
     if (this.disposed) return;
-    this.disposed = true; this.generation++; this.revision = undefined; this.sourceIdentity = undefined; this.reported = {}; this.paletteStamp = undefined; this.projected = undefined;
+    this.disposed = true; this.suspended = false; this.desired = {}; this.generation++; this.revision = undefined; this.sourceIdentity = undefined; this.reported = {}; this.paletteStamp = undefined; this.projected = undefined;
     if (!preserveDefaults) try { this.apply({}); } catch { /* Best effort once the terminal is gone. */ }
     this.state = "off";
     reportRuntime(this.host.diagnostic, { kind: 'released', scope: this, operation: '*' });

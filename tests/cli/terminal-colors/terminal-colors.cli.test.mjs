@@ -70,13 +70,13 @@ test('terminal colors: independent channels, hot reload, source errors, RGB proj
       const result = await live.terminal.capture('traffic'), nativeResult = await native.terminal.capture('traffic');
       assert.deepEqual(colorTraffic(live.terminal), colorTraffic(native.terminal));
       assert.deepEqual(persisted(result), persisted(nativeResult));
-      const edit = byName(result, 'edit')[0]; assert.ok(edit.lines.some(row => row.includes('\x1b[48;2;27;60;84m') && row.includes('WRITE_AFTER')), 'semantic diff surface uses the actual requested background');
-      assert.ok(result.cells.some(row => row.some(cell => cell?.text === 'W' && cell.bg === 0x1b3c54)), 'the controlled physical screen contains the new tint');
+      const edit = byName(result, 'edit')[0]; assert.ok(edit.lines.some(row => row.includes('\x1b[48;2;19;53;77m') && row.includes('WRITE_AFTER')), 'semantic diff surface uses the actual requested background');
+      assert.ok(result.cells.some(row => row.some(cell => cell?.text === 'W' && cell.bg === 0x13354d)), 'the controlled physical screen contains the new tint');
       live.source.theme.export.pageBg = ''; writeFileSync(live.source.path, JSON.stringify(live.source.theme));
       await until(() => live.owned.background === undefined, 'unowned background on existing diff');
       await live.capture('unowned-warm', 'warm');
       live.profile.background = '#f0f0f0'; await live.capture('unowned-refresh', 'colors on');
-      await until(() => live.terminal.captureScreen('unowned-physical', {}).cells.some(row => row.some(cell => cell?.text === 'W' && cell.bg === 0xdfece2)), 'late reported defaults repaint existing physical diff without a native theme change');
+      await until(() => live.terminal.captureScreen('unowned-physical', {}).cells.some(row => row.some(cell => cell?.text === 'W' && cell.bg === 0xe7f4ea)), 'late reported defaults repaint existing physical diff without a native theme change');
       live.source.theme.export.pageBg = 'surfaceAlias'; writeFileSync(live.source.path, JSON.stringify(live.source.theme));
       await until(() => live.owned.background === '#123456', 'restore requested replay background');
       const bytes = readFileSync(result.session, 'utf8');
@@ -85,7 +85,7 @@ test('terminal colors: independent channels, hot reload, source errors, RGB proj
       const restored = await replay.terminal.capture('replay');
       assert.deepEqual(persisted(restored), persisted(result)); assert.equal(readFileSync(result.session, 'utf8'), bytes, 'presentation and replay do not rewrite session bytes');
       for (const type of ['call', 'result', 'model_context', 'provider_error']) assert.equal(replay.terminal.events().filter(event => event.type === type).length, 0);
-      assert.ok(byName(restored, 'edit')[0].lines.some(row => row.includes('\x1b[48;2;27;60;84m') && row.includes('WRITE_AFTER')));
+      assert.ok(byName(restored, 'edit')[0].lines.some(row => row.includes('\x1b[48;2;19;53;77m') && row.includes('WRITE_AFTER')));
       writeFileSync(join(live.terminal.output, 'color-evidence.json'), JSON.stringify({ initial, hot, failure, empty, protocol: live.protocol }, null, 2));
       await live.terminal.quit();
       assert.deepEqual(live.owned, {}, 'normal shutdown restores only our applied defaults');

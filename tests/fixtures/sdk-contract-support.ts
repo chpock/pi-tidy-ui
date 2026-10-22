@@ -15,6 +15,7 @@ export const plain = (line: string) => line.replace(/\x1b\[[0-9;]*m/g, "");
 export class Root extends Container {
   // Synthetic host mirrors the explicitly guarded native appearance flag.
   terminalColorSchemeNotificationsEnabled = false;
+  terminal = { rows: 24, start(..._args: unknown[]) {}, stop() {}, write(_data: string) {} };
   requests = 0;
   selection = false;
   listeners = new Set<(data: string) => unknown>();

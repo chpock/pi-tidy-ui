@@ -34,7 +34,7 @@ Preview and rollback use the ordinary retained-owner theme revision and bounded 
 
 ## Troubleshooting
 
-- **Reapply Tidy UI appearance** and **Reapply terminal colors** retry an already enabled preference without changing or enabling it.
+- **Reapply Tidy UI appearance** and **Reapply terminal colors** retry an already enabled preference without changing or enabling it. Terminal-color Reapply rereads the theme and resends defined OSC targets even when the remembered RGB is unchanged, so an external reset can be repaired; it does not reset absent/unowned channels. Ordinary refreshes still deduplicate. While Pi has yielded its terminal, no application occurs; native restart reconciles current eligibility and targets.
 - **Use Occipital highlighting** is the native-highlighting preference. Off stops native work and uses the syntax contract's whole-card fallback policy: missing code may remain neutral under a usable retained native palette; without one, use Follow Pi with cached file highlighting and whole-command neutral Bash. It does not stop a user-managed shared service.
 - **Highlighting service details** reports cached provider/version/theme/issue state without new classification or discovery.
 - **Diagnostic logs** shows capture, paths, identity and separately named **Runtime errors / active**, **Log write errors**, and **Dropped records**; runtime health remains available with capture Off or an unavailable/failed writer. Dropped records explicitly mean incomplete evidence, not extension errors.  **Record diagnostic logs**, **Retry recording** after failure, and **Write state snapshot** are explicit actions. Snapshot never enables recording.

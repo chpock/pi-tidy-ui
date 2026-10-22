@@ -33,6 +33,7 @@ async function prepareSyntaxPackage() {
   fixture = join(source, 'tests/fixtures/syntax-driver.ts');
   await cp(resolve('tests/fixtures/syntax-driver.ts'), fixture);
   await cp(resolve('tests/fixtures/syntax-local-work.ts'), join(source, 'tests/fixtures/syntax-local-work.ts'));
+  await cp(resolve('tests/fixtures/syntax-suspend-probe.ts'), join(source, 'tests/fixtures/syntax-suspend-probe.ts'));
   loggingFixture = join(source, 'tests/fixtures/logging-driver.ts');
   for (const name of ['logging-driver.ts', 'presentation-driver.ts', 'terminal-output.ts']) await cp(resolve('tests/fixtures', name), join(source, 'tests/fixtures', name));
   return { fixture, loggingFixture };

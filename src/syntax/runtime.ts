@@ -74,6 +74,8 @@ export class SyntaxRuntime implements SyntaxMenuOwner {
     }
     return this.client.setEnabled(enabled && this.presentation?.deref()?.active === true);
   }
+  suspend(): void { if (!this.disposed) this.client.suspend(); }
+  resume(): void { if (!this.disposed) void this.client.resume().catch(startupFailure(this.owner)); }
   prepareThemes() { return this.disposed ? Promise.resolve() : this.client.restorePreference(); }
   previewTheme(choice: SyntaxTheme) { this.client.previewTheme(choice); }
   applySavedTheme(choice: SyntaxTheme) { this.client.applySavedTheme(choice); }

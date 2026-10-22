@@ -233,6 +233,8 @@ export class SharedTransport {
 
   close(): Promise<void> { this.retire(new SharedError('shared closed'), 'closed'); return this.closed; }
 
+  get hasPendingRequests(): boolean { return this.pending.size > 0; }
+
   stats(): SharedStats {
     let data = 0, control = 0, dataBytes = 0, controlBytes = 0, encoded = 0, timers = this.initTimer ? 1 : 0, listeners = 0;
     for (const call of this.pending.values()) {

@@ -131,7 +131,7 @@ test('entry projects trusted terminal backgrounds into prepared Pi input without
       await fs.writeFile(path, JSON.stringify({ colors: { text: '#eeeeee' }, export: { pageBg: background } }));
       const h = fixture(), theme = new Theme(fg as never, bg as never, mode, { name: 'entry-colors', sourcePath: path, dim: ['dim', 'muted'] });
       Object.assign(h.ctx.ui, { theme });
-      Object.assign(h.root, { terminalColorSchemeNotificationsEnabled: false, terminal: { write() {} } });
+      Object.assign(h.root, { terminalColorSchemeNotificationsEnabled: false, terminal: { start() {}, stop() {}, write() {} } });
       const nativeColors = theme.colors, nativePrefix = theme.getBgAnsi('toolPendingBg');
       const tool = new ToolExecutionComponent('write', 'entry-colors-write', { path: 'tiny.txt', content: 'TRUSTED_COLOR' }, undefined,
         createWriteToolDefinition('/tmp'), h.root as never, '/tmp');

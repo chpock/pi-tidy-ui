@@ -971,3 +971,210 @@ test('provider diagnostics: candidate callback is not represented as a shared di
     assert.equal(broker.snapshot().kind, 'owned'); assert.equal(broker.stats().probesScheduled, 0);
   } finally { await broker.dispose(); released(broker, clock); }
 });
+
+for (const kind of ['owned', 'shared'] as const) test(`intentional suspend: ${kind} interrupts pending work and reconnects only on wake`, async () => {
+  const first = new Transport(), next = new Transport(), held = deferred<unknown>(), exit = deferred<void>();
+  const clock = new Clock(); let acquired = 0;
+  const broker = new ProviderBroker({ clock,
+    tryShared: async () => kind === 'shared' ? (++acquired === 1 ? first : next) : undefined,
+    acquireOwned: async () => ++acquired === 1 ? first : next });
+  await broker.start(); const generation = broker.snapshot().generation;
+  first.reply = () => held.promise;
+  if (kind === 'owned') first.exit = exit.promise;
+  const rejected = assert.rejects(broker.request(generation, { op: 'highlight', ticket: 'source:pending' }), /retired/);
+  broker.suspend(); broker.suspend();
+  assert.equal(first.closes, 1); assert.equal(broker.snapshot().reason, 'suspended');
+  await clock.sleep(300001); assert.equal(acquired, 1);
+  held.resolve({ old: true }); await rejected;
+  const resumed = broker.resume(); await flush();
+  if (kind === 'owned') { assert.equal(acquired, 1); exit.resolve(); }
+  await resumed; await broker.resume();
+  assert.equal(acquired, 2); assert.equal(broker.snapshot().availability, 'ready');
+  assert.notEqual(broker.snapshot().generation, generation);
+  assert.equal(broker.stats().ownedRestarts, 0, 'intentional stop is not a crash');
+  await broker.dispose(); released(broker, clock);
+});
+
+test('intentional suspend: idle transport and existing failure are not replayed', async () => {
+  const transport = new Transport(), s = setup(async () => transport); await s.broker.start();
+  const generation = s.broker.snapshot().generation;
+  s.broker.suspend();
+  await assert.rejects(s.broker.request(generation, { op: 'highlight', ticket: 'paused' }));
+  await s.broker.resume();
+  assert.equal(transport.closes, 0); assert.equal(s.broker.snapshot().generation, generation);
+  await s.broker.transportEnded(generation, 'uncertain');
+  s.broker.suspend(); await s.broker.resume();
+  assert.equal(s.broker.snapshot().reason, 'transport_uncertain'); assert.equal(s.broker.stats().sharedAttempts, 1);
+  await s.broker.dispose(); released(s.broker, s.clock);
+});
+
+test('intentional suspend: Off and disposal prevent wake acquisition', async () => {
+  for (const dispose of [false, true]) {
+    const held = deferred<ProviderTransport | undefined>(), s = setup(() => held.promise);
+    const starting = s.broker.start(); await flush(); s.broker.suspend();
+    if (dispose) await s.broker.dispose(); else await s.broker.setEnabled(false);
+    await s.broker.resume(); held.resolve(new Transport()); await starting; await flush();
+    assert.equal(s.acquisitions(), 0); assert.equal(s.broker.snapshot().availability, dispose ? 'disposed' : 'disabled');
+    await s.broker.dispose(); released(s.broker, s.clock);
+  }
+});
+
+for (const reason of ['uncertain', 'denied', 'closed'] as const) test(`intentional suspend does not recover pending ${reason} cleanup`, async () => {
+  const owned = new Transport(), exit = deferred<void>(); owned.exit = exit.promise;
+  const s = setup(async () => undefined, owned); await s.broker.start();
+  const ended = s.broker.transportEnded(s.broker.snapshot().generation, reason); await flush();
+  assert.equal(s.broker.snapshot().availability, 'transitioning');
+  s.broker.suspend(); const resumed = s.broker.resume(); exit.resolve(); await ended; await resumed;
+  assert.equal(s.acquisitions(), 1); assert.equal(s.broker.snapshot().availability, 'unavailable');
+  assert.equal(s.broker.snapshot().reason, `transport_${reason}`);
+  await s.broker.dispose(); released(s.broker, s.clock);
+});
+
+test('intentional suspend retires physical control work after its catalogue waiter expired', async t => {
+  const held = deferred<unknown>(), clock = new Clock();
+  const transport = new SharedTransport({ connectionFile: '/fixture', identity: { project_root: '/fixture', harness: 'test', session: 'suspend' },
+    initDeadlineMs: 3000, requestDeadlineMs: 30000,
+    loadSdk: async () => ({ SubcClient: { connect: async () => ({
+      resolveProvider: async () => 'occipital', routeOpen: async () => ({ channel: 7, epoch: 9 }),
+      request: (_route: unknown, bytes: Uint8Array) => { const r = JSON.parse(Buffer.from(bytes).toString());
+        return r.op === 'themes.refresh' ? held.promise : Promise.resolve(descriptor(r.ticket)); },
+      closeRoute: async () => {}, close: () => {},
+    }) } }) });
+  const next = new Transport(); let attempts = 0;
+  const broker = new ProviderBroker({ clock, tryShared: async () => ++attempts === 1 ? (await transport.ready, transport) : next,
+    acquireOwned: async () => { throw Error('unexpected owned'); } });
+  t.after(async () => { held.resolve({}); await broker.dispose(); });
+  await broker.start(); const generation = broker.snapshot().generation;
+  const refused = assert.rejects(broker.catalogue(generation, 'themes.refresh')); await flush();
+  await clock.advance(PROVIDER_LIMITS.controlMs); await refused;
+  assert.equal(transport.stats().unsettledControl, 1); assert.equal(transport.stats().unsettledData, 0);
+  broker.suspend(); await broker.resume();
+  assert.equal(attempts, 2); assert.equal(transport.stats().state, 'closed');
+  await broker.catalogue(broker.snapshot().generation, 'describe');
+});
+
+test('intentional suspend cancels initialization and rejects a late old candidate', async () => {
+  const pending = deferred<ProviderTransport | undefined>(), late = new Transport(), fresh = new Transport(); let calls = 0;
+  const s = setup(async () => ++calls === 1 ? pending.promise : fresh);
+  const initial = s.broker.start(); await flush(); s.broker.suspend(); await initial;
+  await s.clock.sleep(PROVIDER_LIMITS.controlMs + 1); assert.equal(calls, 1);
+  await s.broker.resume(); pending.resolve(late); await flush();
+  assert.equal(calls, 2); assert.equal(late.closes, 1); assert.equal(s.broker.snapshot().availability, 'ready');
+  await s.broker.dispose(); released(s.broker, s.clock);
+});
+
+test('intentional suspend keeps the existing crash budget and shared-return deadline', async () => {
+  const s = await failover(new Transport(), new Transport());
+  await s.broker.provenLoss(s.broker.snapshot().generation);
+  const budget = s.broker.stats().ownedRestarts;
+  s.broker.suspend(); await s.clock.sleep(700000); await s.broker.resume();
+  assert.equal(s.broker.stats().ownedRestarts, budget);
+  assert.equal(s.broker.stats().recoveryEpisodes, 1); assert.equal(s.broker.stats().recoveryTimers, 0);
+  await s.broker.dispose(); released(s.broker, s.clock);
+});
+
+test('intentional suspend within proven owned-loss cleanup cannot bypass exhausted crash budget', async () => {
+  const transports = [new Transport(), new Transport(), new Transport(), new Transport()], clock = new Clock(); let count = 0;
+  const broker = new ProviderBroker({ clock, tryShared: async () => undefined, acquireOwned: async () => transports[count++] });
+  await broker.start();
+  await broker.provenLoss(broker.snapshot().generation); await broker.provenLoss(broker.snapshot().generation);
+  const exit = deferred<void>(); transports[2]!.exit = exit.promise;
+  const loss = broker.provenLoss(broker.snapshot().generation); await flush();
+  broker.suspend(); const resumed = broker.resume(); exit.resolve(); await loss; await resumed;
+  assert.equal(count, 3); assert.equal(broker.snapshot().reason, 'restart_limit');
+  assert.equal(broker.stats().ownedRestarts, 2);
+  await broker.dispose(); released(broker, clock);
+});
+
+test('intentional suspend within owned-loss cleanup retains the original shared-return window', async () => {
+  const owned = new Transport(), s = await failover(new Transport(), owned);
+  await s.clock.advance(10000);
+  const exit = deferred<void>(); owned.exit = exit.promise;
+  const loss = s.broker.provenLoss(s.broker.snapshot().generation); await flush();
+  s.broker.suspend(); await s.clock.sleep(10000); const resumed = s.broker.resume(); exit.resolve(); await loss; await resumed;
+  assert.equal(s.broker.stats().ownedRestarts, 1); assert.equal(s.broker.stats().recoveryEpisodes, 1);
+  assert.equal(s.broker.stats().recoveryTimers, 1);
+  await s.clock.advance(580000); assert.equal(s.broker.stats().probesStarted, 10);
+  await s.clock.advance(60000); assert.equal(s.broker.stats().probesStarted, 10);
+  await s.broker.dispose(); released(s.broker, s.clock);
+});
+
+test('intentional suspend of healthy shared work starts the normal return window on owned takeover', async () => {
+  const shared = new Transport(), held = deferred<unknown>(); let attempts = 0;
+  const s = setup(async () => ++attempts === 1 ? shared : undefined); await s.broker.start();
+  shared.reply = () => held.promise;
+  const pending = assert.rejects(s.broker.request(s.broker.snapshot().generation, { op: 'highlight', ticket: 'pending' }));
+  s.broker.suspend(); held.resolve({}); await pending; await s.broker.resume();
+  assert.equal(s.broker.snapshot().kind, 'owned'); assert.equal(s.broker.stats().recoveryEpisodes, 1);
+  assert.equal(s.broker.stats().recoveryTimers, 1);
+  await s.broker.dispose(); released(s.broker, s.clock);
+});
+
+test('intentional suspend during a shared handoff preserves the remaining return window', async () => {
+  const owned = new Transport(), returned = new Transport(), exit = deferred<void>(); let probes = 0;
+  const s = await failover(new Transport(), owned, async () => ++probes === 3 ? returned : undefined);
+  owned.exit = exit.promise; await s.clock.advance(60000);
+  assert.equal(s.broker.snapshot().reason, 'handoff');
+  s.broker.suspend(); await s.clock.sleep(10000); const resumed = s.broker.resume(); exit.resolve(); await resumed; await flush();
+  assert.equal(returned.closes, 1); assert.equal(s.broker.snapshot().kind, 'owned');
+  assert.equal(s.broker.stats().ownedRestarts, 0); assert.equal(s.broker.stats().recoveryEpisodes, 1);
+  assert.equal(s.broker.stats().recoveryTimers, 1);
+  await s.clock.advance(530000); assert.equal(s.broker.stats().probesStarted, 10);
+  await s.clock.advance(60000); assert.equal(s.broker.stats().probesStarted, 10);
+  await s.broker.dispose(); released(s.broker, s.clock);
+});
+
+test('intentional suspend during an already-charged crash acquisition does not charge twice', async () => {
+  const pending = deferred<ProviderTransport>(), late = new Transport(), clock = new Clock(); let attempts = 0;
+  const broker = new ProviderBroker({ clock, tryShared: async () => undefined,
+    acquireOwned: async () => ++attempts === 2 ? pending.promise : new Transport() });
+  await broker.start(); const loss = broker.provenLoss(broker.snapshot().generation); await flush();
+  assert.equal(broker.stats().ownedRestarts, 1);
+  broker.suspend(); await loss; await broker.resume(); pending.resolve(late); await flush();
+  assert.equal(broker.snapshot().availability, 'ready'); assert.equal(broker.stats().ownedRestarts, 1);
+  assert.equal(late.closes, 1);
+  await broker.dispose(); released(broker, clock);
+});
+
+for (const sharedAvailable of [true, false]) test(`intentional suspend Off/on starts a fresh selection, shared=${sharedAvailable}`, async () => {
+  let fresh = false;
+  const s = await failover(new Transport(), new Transport(), async () => fresh && sharedAvailable ? new Transport() : undefined);
+  const initialShared = s.broker.snapshot().initialShared;
+  s.broker.suspend(); await s.broker.setEnabled(false); fresh = true; await s.broker.setEnabled(true);
+  await s.broker.resume();
+  assert.equal(s.broker.snapshot().kind, sharedAvailable ? 'shared' : 'owned');
+  assert.equal(s.broker.snapshot().initialShared, initialShared, 'initial discovery remains historical');
+  const probes = s.broker.stats().probesStarted;
+  await s.clock.advance(700000); assert.equal(s.broker.stats().probesStarted, probes, 'old return window does not survive Off/on');
+  await s.broker.dispose(); released(s.broker, s.clock);
+});
+
+test('intentional suspend repeated during shared reacquisition preserves its recovery origin', async () => {
+  const initial = new Transport(), reply = deferred<unknown>(), acquisition = deferred<ProviderTransport | undefined>(); let calls = 0;
+  const s = setup(async () => ++calls === 1 ? initial : calls === 2 ? acquisition.promise : undefined); await s.broker.start();
+  initial.reply = () => reply.promise;
+  const rejected = assert.rejects(s.broker.request(s.broker.snapshot().generation, { op: 'highlight', ticket: 'pending' }));
+  s.broker.suspend(); reply.resolve({}); await rejected;
+  const resumed = s.broker.resume(); await flush(); s.broker.suspend(); await resumed;
+  await s.broker.resume(); acquisition.resolve(undefined); await flush();
+  assert.equal(s.broker.snapshot().kind, 'owned'); assert.equal(s.broker.stats().recoveryEpisodes, 1);
+  assert.equal(s.broker.stats().recoveryTimers, 1); assert.equal(s.broker.stats().ownedRestarts, 0);
+  await s.broker.dispose(); released(s.broker, s.clock);
+});
+
+for (const initiallyPaused of [false, true]) test(`intentional suspend preserves fresh re-enable selection across repeated acquisition interruption, paused=${initiallyPaused}`, async () => {
+  const held = deferred<ProviderTransport | undefined>(); let attempts = 0;
+  const s = setup(async () => ++attempts === 1 ? undefined : attempts <= 3 ? held.promise : new Transport());
+  await s.broker.start(); assert.equal(s.broker.snapshot().initialShared, false);
+  if (initiallyPaused) s.broker.suspend();
+  await s.broker.setEnabled(false);
+  const enabling = s.broker.setEnabled(true);
+  let selection = initiallyPaused ? (await enabling, s.broker.resume()) : enabling;
+  await flush(); assert.equal(attempts, 2);
+  s.broker.suspend(); await selection; selection = s.broker.resume(); await flush();
+  assert.equal(attempts, 3);
+  s.broker.suspend(); await selection; await s.broker.resume(); held.resolve(undefined); await flush();
+  assert.equal(s.broker.snapshot().kind, 'shared'); assert.equal(s.broker.snapshot().initialShared, false);
+  assert.equal(s.acquisitions(), 1); assert.equal(attempts, 4);
+  await s.broker.dispose(); released(s.broker, s.clock);
+});

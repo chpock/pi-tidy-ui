@@ -66,7 +66,7 @@ export function observeNativeReceipts(term, state) {
 export class PiTerminal {
   // The integration-profile helper may supply additional isolated settings, environment and explicit extensions.
   constructor(name, { tidyUi = false, mode = 'fullscreen', session, flags = [],
-    agentSettings = {}, extraEnv = {}, extensions = [], workspace, profileFactory, tidyUiSettings, dimensions = { columns: 100, rows: 80 } } = {}) {
+    agentSettings = {}, extraEnv = {}, extensions = [], workspace, profileFactory, tidyUiSettings, jobControl = false, dimensions = { columns: 100, rows: 80 } } = {}) {
     const inputs = readInputs(), python = toolPath('python3');
     this.output = join(artifacts, name);
     this.observeMenuBounds = extraEnv.TIDY_UI_TEST_MENU_GEOMETRY === '1';
@@ -150,6 +150,10 @@ export class PiTerminal {
       PI_OFFLINE: '1', PI_SKIP_VERSION_CHECK: '1', PI_TELEMETRY: '0',
       ...(this.profile ? { TIDY_UI_TEST_PROFILE: 'installed' } : {}),
     });
+    if (jobControl) {
+      env.TIDY_UI_TEST_JOB_SHELL = toolPath('bash');
+      env.TIDY_UI_TEST_JOB_FILE = join(this.temp, 'job-group');
+    }
     this.codeCache = terminalCodeCache(this.temp);
     env.NODE_COMPILE_CACHE = this.codeCache.node;
     const command = [inputs.node.path, ...(measuring ? ['--expose-gc'] : []), '--import', pathToFileURL(join(fixtures, 'terminal-preload.mjs')).href, inputs.pi.cli, ...args];

@@ -357,3 +357,20 @@ test('runtime Pi input remains lazy across attachment, menu and current native s
   assert.equal(f.peers[0]!.calls.length, calls); assert.equal(f.store.writes.length, 0);
   lease.cleanupReceipt().release(); assert.equal(budget.stats().retainedBytes, 0);
 });
+
+test('runtime intentional suspend recovers outstanding source without destroying the source owner', async () => {
+  const f = fixture(), view = presentation(); f.runtime.attach(view); await settled();
+  const sources = f.runtime.sources, initial = demand(f.runtime);
+  sources.observe(initial); sources.flush(); await settled();
+  const first = f.peers[0]!;
+  f.runtime.suspend(); await settled();
+  assert.equal(first.closes, 1); assert.equal(f.shared(), 1); assert.equal(f.runtime.sources, sources);
+  assert.equal(f.runtime.snapshot().enabled, true); assert.equal(f.runtime.snapshot().provider.reason, 'suspended');
+  f.runtime.resume(); await settled(); await settled(); sources.flush(); await settled();
+  assert.equal(f.shared(), 2); assert.deepEqual(f.peers[1]!.calls.map(c => c.request.op), ['describe', 'highlight']);
+  f.peers[1]!.answer(1); await settled(); assert.equal(sources.status(initial.key)?.exact, true);
+  const before = f.peers[1]!.calls.length;
+  f.runtime.suspend(); f.runtime.resume(); await settled(); sources.flush();
+  assert.equal(f.shared(), 2); assert.equal(f.peers[1]!.calls.length, before);
+  assert.deepEqual(f.changes, []); assert.equal(f.store.writes.length, 0);
+});

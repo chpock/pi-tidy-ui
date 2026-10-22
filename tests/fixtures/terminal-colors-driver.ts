@@ -59,6 +59,7 @@ export default async function colorDriver(pi: ExtensionAPI) {
       }
       if (["on", "off", "colors on", "colors off", "colors status"].includes(action)) await control!('', ctx as never);
       else if (action === "theme") { const result = ctx.ui.setTheme(theme); if (!result.success) throw new Error(result.error); }
+      else if (action === 'foreign-reset') tui.terminal.write('\x1b]111\x07\x1b]110\x07');
       else if (action === "foreign-query") report = await tui.queryTerminalColors({ timeoutMs: 100 });
       else if (action === "foreign-enable" || action === "foreign-disable") {
         tui.setTerminalColorSchemeNotifications(action === "foreign-enable"); tui.invalidate();

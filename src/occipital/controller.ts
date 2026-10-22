@@ -118,7 +118,7 @@ type SourceState = {
   provider: number; refusedProvider?: number; parsedAssets?: string; parsedProvider?: number; dirty: boolean; styleDirty: boolean; lease?: string; execution: Execution; blocked: boolean;
   uncertain: boolean; restarts: number; retryUsed: boolean; retryPending: boolean; empty: boolean; bytes: number;
   profileRefusal: number; profileReady: boolean; profileRetryUsed: boolean; retired?: boolean;
-  sharedUnknown?: boolean; ownedUnknown?: number;
+  sharedUnknown?: boolean; ownedUnknown?: number; resumeProvider?: number;
 };
 type PiSource = { key: string; storageKey: string; generation?: number; version: number; contentVersion: number;
    language?: string; palette?: number; readyPalette?: number; failure?: PiFailure; projectionRefused?: boolean; refused?: boolean; styleDirectives?: boolean; bytes: number };
@@ -130,7 +130,7 @@ type StyleCache = { revision: number; roles?: StyleRoles; origins?: Uint8Array; 
 type Job = { id: number; provider: number; generation?: number; key?: string; stateId?: number; ticket: string; pendingRetire?: true;
   abort: AbortController; bytes: number; description: Description; reserved: boolean; replySize: ReplySize;
   source?: { capture: Readonly<{ version: number; text: string }>; expected: ExpectedSource; replaceUnits: number; open: boolean; decodedBytes: number };
-  style?: StyleJob; styleCharge?: DataCharge; close?: Close; sourceWork?: boolean; kind?: 'shared' | 'owned'; stopped?: boolean; lifetimeRef?: WeakRef<Job> };
+  style?: StyleJob; styleCharge?: DataCharge; close?: Close; sourceWork?: boolean; kind?: 'shared' | 'owned'; stopped?: boolean; interrupted?: boolean; lifetimeRef?: WeakRef<Job> };
 type Lifetime = { bytes: number; owner: WeakRef<SourceController>; jobs: Set<WeakRef<Job>>; charges: Set<DataCharge>; groups: Set<GroupHold>; data?: SemanticRetentionPool };
 let nextController = 0;
 const ignored = () => {};
@@ -263,6 +263,7 @@ export class SourceController {
   private stateSequence = 0;
   private displaySequence = 0;
   private enabled = true;
+  private suspended = false;
   private disposed = false;
   private scheduled = false;
   private noticeScheduled = false;
@@ -897,7 +898,25 @@ export class SourceController {
     if (state.generation !== undefined) this.receipts(this.pool.remove(state.generation));
   }
 
+  suspend(): void { if (!this.disposed) this.suspended = true; }
+  /** Exact generation deliberately retired by the broker, not a generic abort/timeout. */
+  interruptProvider(provider: number): void {
+    if (!this.suspended || this.disposed) return;
+    for (const job of this.jobs.values()) if (job.provider === provider) {
+      job.interrupted = true;
+      const state = job.key === undefined ? undefined : this.states.get(job.key);
+      if (job.sourceWork && state && state.id === job.stateId && !state.retired && !state.uncertain) state.resumeProvider = provider;
+    }
+    for (const state of this.states.values()) if (state.provider === provider && state.dirty && !state.blocked && !state.uncertain && !state.retired)
+      state.resumeProvider = provider;
+  }
+  resume(): void {
+    if (!this.suspended || this.disposed) return;
+    this.suspended = false; this.refreshPreparations(); this.rewind(); this.schedule();
+  }
+
   flush(): void {
+    if (this.suspended) { this.scheduled = false; return; }
     if (this.pumping) return;
     if (!this.yielding) this.scheduled = false;
     this.pumping = true;
@@ -924,8 +943,13 @@ export class SourceController {
       }
       const full = () => this.creditBlocked || this.jobs.size >= jobLimit || flight.jobs >= CONTROLLER_LIMITS.jobs;
       const dispatch = (state: SourceState | undefined): boolean => {
-        if (!description || !this.enabled || this.disposed || !state || state.retired || !state.dirty || state.blocked
-          || state.uncertain || state.provider !== snapshot.generation || this.sourceBusy(state.key)) return false;
+        if (!description || !this.enabled || this.disposed || !state || state.retired || state.uncertain || this.sourceBusy(state.key)) return false;
+        if (state.resumeProvider !== undefined && state.resumeProvider !== snapshot.generation) {
+          state.resumeProvider = undefined;
+          if (state.provider !== snapshot.generation) this.restart(state, snapshot.generation, true);
+          else state.dirty = !state.empty;
+        }
+        if (!state.dirty || state.blocked || state.provider !== snapshot.generation) return false;
         if (state.complete && state.parsedProvider !== state.provider && state.generation !== undefined) {
           const data = this.pool.status(state.generation);
           if (data?.complete && this.matchesContent(state, data.sourceVersion)) {
@@ -1008,7 +1032,7 @@ export class SourceController {
         && this.pool.status(state.generation)?.sourceVersion !== undefined);
     const execution = pending ? 'unsettled' : state?.sharedUnknown || state?.ownedUnknown !== undefined
       ? state?.execution === 'started' ? 'started' : 'unknown' : state?.execution ?? 'not_started';
-    return { version: state?.version, execution, fallbackEligible: !this.disposed && !state?.frozen && !pending && !queued && !state?.uncertain
+    return { version: state?.version, execution, fallbackEligible: !this.disposed && (state?.resumeProvider === undefined || this.provider.snapshot().availability === 'unavailable') && !state?.frozen && !pending && !queued && !state?.uncertain
         && (execution === 'not_started' || execution === 'acknowledged'),
       profileRetryAllowed: !!state && !state.retired && this.enabled && !this.disposed && state.profileReady
         && this.provider.isReady(state.provider) };
@@ -1119,7 +1143,7 @@ export class SourceController {
       for (const job of this.jobs.values()) if (job.style) { releaseStyle(job); job.abort.abort(sourceRetired); }
       this.clearStyleCache(); this.profileNeed = undefined; waiters.delete(this.owner);
       for (const [key, state] of this.states) {
-        this.dropData(state);
+        state.resumeProvider = undefined; this.dropData(state);
         if (state.frozen || this.busy(key) || state.uncertain || state.sharedUnknown || state.ownedUnknown !== undefined) {
           state.retired = true; state.dirty = false; state.profileReady = false; state.profileRefusal = 0;
         } else { reportRuntime(this.options.diagnostic, { kind: 'released', scope: state, operation: '*' }); this.states.delete(key); this.removeWork(state); this.charge(-state.bytes); }
@@ -1597,6 +1621,7 @@ export class SourceController {
   private settleStyles(job: Job, raw: unknown, rejected: boolean): void {
     const style = job.style;
     try {
+      if (job.interrupted) return;
       if (!style || rejected || job.abort.signal.aborted || this.disposed) {
         if (style && rejected) {
           this.refuseStyleJob(style);
@@ -1783,6 +1808,7 @@ export class SourceController {
     const useful = this.enabled && !this.disposed && !job.stopped && providerCurrent && !job.abort.signal.aborted
       && state?.id === job.stateId && state.generation === job.generation && !!this.pool.status(job.generation);
     try {
+      if (job.interrupted) return;
       if (rejected) {
         if (healthOwner && !job.stopped && !job.abort.signal.aborted && !this.disposed && unexpectedDiagnostic(raw))
           reportRuntime(this.options.diagnostic, { kind: 'failure', scope: healthOwner, operation: healthOperation, area: 'syntax', code: diagnosticError(raw) });
