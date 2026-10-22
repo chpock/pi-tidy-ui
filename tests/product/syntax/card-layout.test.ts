@@ -391,7 +391,7 @@ test('card layout: C7 group membership and indexed lookup work is linear within 
         for (const item of pending) if (!item.done) {
           item.done = true; const q = item.q, s = q.sources?.[0] ?? q;
           const body = q.op === 'styles.resolve' ? { kind: 'styles', vocabulary: q.vocabulary, rules: fingerprintNative(q.rules.fingerprint, 'rules'),
-            styles: [{ foreground: { kind: 'indexed', index: 2 }, background: { kind: 'terminal-default' }, attributes: 0, attribute_mask: 15 }], indices: q.contexts.map(() => 1),
+            styles: [{ foreground: { kind: 'indexed', index: 2 }, background: { kind: 'terminal-default' }, attributes: 0, attribute_mask: 31 }], indices: q.contexts.map(() => 1),
             palette: { revision: 1, fingerprint: fingerprintNative(q.rules.fingerprint, 'palette'), slots: CARD_ROLES.map(() => 1), origins: CARD_ROLES.map(() => 0) } }
             : { kind: 'source', vocabulary: description.vocabulary.fingerprint, sources: [{ key: s.key, generation: s.generation, source_version: s.source_version, revision: 1, source_bytes: rangeCount,
               replace_from: 0, committed_bytes: rangeCount, complete: true, contexts: rangeCount === 1 ? [[0, 1]] : [[0, 1], [0, 2]], runs: Array.from({ length: rangeCount! }, (_, i) => [1, i % 2 + 1]).flat(), counters: { committed_line_calls: 1, committed_line_bytes: rangeCount, tail_calls: 0, tail_bytes: 0 } }] };
@@ -453,7 +453,7 @@ test('card layout: actual card demand and controller lookups are linear across n
         for (const item of pending) if (!item.done) {
           item.done = true; const q = item.q, s = q.sources?.[0] ?? q, bytes = Buffer.byteLength(s.text ?? '');
           const body = q.op === 'styles.resolve' ? { kind: 'styles', vocabulary: q.vocabulary, rules: fingerprintNative(q.rules.fingerprint, 'rules'),
-            styles: [{ foreground: { kind: 'indexed', index: 2 }, background: { kind: 'terminal-default' }, attributes: 0, attribute_mask: 15 }], indices: q.contexts.map(() => 1),
+            styles: [{ foreground: { kind: 'indexed', index: 2 }, background: { kind: 'terminal-default' }, attributes: 0, attribute_mask: 31 }], indices: q.contexts.map(() => 1),
             palette: { revision: 1, fingerprint: fingerprintNative(q.rules.fingerprint, 'palette'), slots: CARD_ROLES.map(() => 1), origins: CARD_ROLES.map(() => 0) } }
             : { kind: 'source', vocabulary: description.vocabulary.fingerprint, sources: [{ key: s.key, generation: s.generation, source_version: s.source_version, revision: 1, source_bytes: bytes,
               replace_from: 0, committed_bytes: bytes, complete: true, contexts: [[0, 1]], runs: [bytes, 1], counters: { committed_line_calls: 1, committed_line_bytes: bytes, tail_calls: 0, tail_bytes: 0 } }] };

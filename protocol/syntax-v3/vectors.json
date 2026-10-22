@@ -48,7 +48,7 @@
         "vocabulary": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         "rules": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
         "styles": [
-          {"foreground": {"kind": "rgb", "r": 10, "g": 20, "b": 30}, "background": {"kind": "terminal-default"}, "attributes": 0, "attribute_mask": 15},
+          {"foreground": {"kind": "rgb", "r": 10, "g": 20, "b": 30}, "background": {"kind": "terminal-default"}, "attributes": 0, "attribute_mask": 31},
           {"foreground": {"kind": "binding", "slot": 2}, "background": {"kind": "inherit"}, "attributes": 0, "attribute_mask": 8},
           {"foreground": {"kind": "inherit"}, "background": {"kind": "inherit"}, "attributes": 0, "attribute_mask": 0}
         ],
@@ -65,7 +65,7 @@
         "kind": "styles",
         "vocabulary": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         "rules": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-        "styles": [{"foreground": {"kind": "indexed", "index": 255}, "background": {"kind": "terminal-default"}, "attributes": 9, "attribute_mask": 15}],
+        "styles": [{"foreground": {"kind": "indexed", "index": 255}, "background": {"kind": "terminal-default"}, "attributes": 9, "attribute_mask": 31}],
         "indices": [1],
         "palette": null
       }
@@ -79,7 +79,7 @@
         "kind": "styles",
         "vocabulary": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         "rules": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-        "styles": [{"foreground": {"kind": "rgb", "r": 230, "g": 230, "b": 230}, "background": {"kind": "rgb", "r": 40, "g": 40, "b": 40}, "attributes": 0, "attribute_mask": 15}],
+        "styles": [{"foreground": {"kind": "rgb", "r": 230, "g": 230, "b": 230}, "background": {"kind": "rgb", "r": 40, "g": 40, "b": 40}, "attributes": 0, "attribute_mask": 31}],
         "indices": [],
         "palette": {"revision": 1, "fingerprint": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", "slots": [1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1], "origins": [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]}
       }
@@ -138,10 +138,17 @@
         "kind": "styles",
         "vocabulary": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         "rules": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-        "styles": [{"foreground": {"kind": "binding", "slot": 0}, "background": {"kind": "terminal-default"}, "attributes": 0, "attribute_mask": 15}],
+        "styles": [{"foreground": {"kind": "binding", "slot": 0}, "background": {"kind": "terminal-default"}, "attributes": 0, "attribute_mask": 31}],
         "indices": [1],
         "palette": null
       }
-    }
+    },
+    {"name": "fifth-bit-set", "mode": "client", "binding_slots": 0, "context_count": 1, "body": {"kind": "styles", "vocabulary": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "rules": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "styles": [{"foreground": {"kind": "indexed", "index": 255}, "background": {"kind": "terminal-default"}, "attributes": 16, "attribute_mask": 16}], "indices": [1], "palette": null}},
+    {"name": "fifth-bit-clear", "mode": "client", "binding_slots": 0, "context_count": 1, "body": {"kind": "styles", "vocabulary": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "rules": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "styles": [{"foreground": {"kind": "indexed", "index": 255}, "background": {"kind": "terminal-default"}, "attributes": 0, "attribute_mask": 16}], "indices": [1], "palette": null}},
+    {"name": "all-five-bits", "mode": "client", "binding_slots": 0, "context_count": 1, "body": {"kind": "styles", "vocabulary": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "rules": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "styles": [{"foreground": {"kind": "indexed", "index": 255}, "background": {"kind": "terminal-default"}, "attributes": 31, "attribute_mask": 31}], "indices": [1], "palette": null}},
+    {"name": "attribute-out-of-mask", "mode": "client", "binding_slots": 0, "context_count": 1, "body": {"kind": "styles", "vocabulary": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "rules": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "styles": [{"foreground": {"kind": "indexed", "index": 255}, "background": {"kind": "terminal-default"}, "attributes": 16, "attribute_mask": 15}], "indices": [1], "palette": null}, "error": "invalid_style"},
+    {"name": "unknown-sixth-bit", "mode": "client", "binding_slots": 0, "context_count": 1, "body": {"kind": "styles", "vocabulary": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "rules": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "styles": [{"foreground": {"kind": "indexed", "index": 255}, "background": {"kind": "terminal-default"}, "attributes": 32, "attribute_mask": 32}], "indices": [1], "palette": null}, "error": "invalid_style"},
+    {"name": "native-must-clear-fifth-bit", "mode": "native", "binding_slots": 0, "context_count": 0, "body": {"kind": "styles", "vocabulary": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "rules": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "styles": [{"foreground": {"kind": "rgb", "r": 230, "g": 230, "b": 230}, "background": {"kind": "rgb", "r": 40, "g": 40, "b": 40}, "attributes": 0, "attribute_mask": 15}], "indices": [], "palette": {"revision": 1, "fingerprint": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", "slots": [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1], "origins": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]}}, "error": "invalid_style"},
+    {"name": "native-cannot-enable-unsupported-strike", "mode": "native", "binding_slots": 0, "context_count": 0, "body": {"kind": "styles", "vocabulary": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "rules": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "styles": [{"foreground": {"kind": "rgb", "r": 230, "g": 230, "b": 230}, "background": {"kind": "rgb", "r": 40, "g": 40, "b": 40}, "attributes": 16, "attribute_mask": 31}], "indices": [], "palette": {"revision": 1, "fingerprint": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", "slots": [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1], "origins": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]}}, "error": "invalid_style"}
   ]
 }

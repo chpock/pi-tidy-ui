@@ -8,10 +8,8 @@ import { SyntaxRuntime } from '../../../src/syntax/runtime.ts';
 import { DataBudget, DataGrant, type DataGrantFactory } from '../../../src/occipital/data-budget.ts';
 import type { GeometryFunding } from '../../../src/occipital/controller.ts';
 import { CARD_ROLES } from '../../../src/occipital/semantic-codec.ts';
-import { samplePiBindings } from '../../../src/syntax/pi-bindings.ts';
-import { samplePiCardPalette } from '../../../src/syntax/pi-palette.ts';
+import { samplePiPalette } from '../../../src/syntax/pi-palette.ts';
 import { compileStyleAnsi } from '../../../src/syntax/style-ansi.ts';
-import { PI_RULE_BINDINGS } from '../../../src/syntax/pi-rules.ts';
 
 function fixture() {
   let loads = 0, writes = 0, providers = 0;
@@ -66,7 +64,7 @@ test('Pi input: real SDK dark/light complete roles and bindings compile once per
   try {
     for (const name of ['dark', 'light']) {
       const native = getThemeByName(name)!, theme = counted(name);
-      const bindings = samplePiBindings(native), roles = samplePiCardPalette(native);
+      const { bindings, roles } = samplePiPalette(native, 'truecolor');
       const compiledRoles = Object.fromEntries(CARD_ROLES.map(role => [role, compileStyleAnsi(roles[role], 'truecolor')]));
       Object.freeze = ((value: any) => { if (value && typeof value.open === 'string' && typeof value.close === 'string') compilations++; return freeze(value); }) as typeof Object.freeze;
       const before = compilations, first = f.runtime.preparePiInput(theme, 'truecolor', f.funding)!;
@@ -209,7 +207,7 @@ test('Pi input: sampler failures refund all scratch and preserve the last useful
     for (const point of ['binding', 'palette', 'background'] as const) {
       const next = counted('light'); let fg = 0;
       assert.throws(() => f.runtime.preparePiInput({ colors: next.colors,
-        getFgAnsi(role) { if (++fg === (point === 'binding' ? 1 : PI_RULE_BINDINGS.length + 1) && point !== 'background') throw Error('sample failure'); return next.getFgAnsi(role); },
+        getFgAnsi(role) { if ((point === 'binding' && ++fg === 1) || point === 'palette' && role === 'borderMuted') throw Error('sample failure'); return next.getFgAnsi(role); },
         getBgAnsi(role) { if (point === 'background') throw Error('sample failure'); return next.getBgAnsi(role); },
       }, 'truecolor', f.funding), /sample failure/);
       assert.deepEqual(f.budget.stats(), before); assert.deepEqual(inspect(old), expected);
@@ -308,17 +306,17 @@ test('Pi input: actual SDK defaults/faint and decorated public bold/italic prefi
   try {
     const plain = f.runtime.preparePiInput(native, 'truecolor', f.funding)!;
     plain.visit(read => {
-      assert.deepEqual(read.bindings[0], { ink: { kind: 'terminal-default' }, attributes: 8, attribute_mask: 15 });
+      assert.deepEqual(read.bindings[0], { ink: { kind: 'terminal-default' }, attributes: 8, attribute_mask: 31 });
       assert.deepEqual(read.roles.reminder, { foreground: { kind: 'terminal-default' }, background: { kind: 'terminal-default' }, attributes: 8 });
-      assert.equal(read.compiledRoles.reminder.open, '\x1b[39m\x1b[49m\x1b[22;23;24m\x1b[2m');
+      assert.equal(read.compiledRoles.reminder.open, '\x1b[39m\x1b[49m\x1b[22;23;24;29m\x1b[2m');
     });
     plain.dispose();
     const styled = f.runtime.preparePiInput({ colors: native.colors, getBgAnsi: role => native.getBgAnsi(role),
       getFgAnsi: role => native.getFgAnsi(role) + '\x1b[1;3m' }, 'truecolor', f.funding)!;
     styled.visit(read => {
       assert.equal(read.bindings[0]!.attributes, 11); assert.equal(read.roles.reminder.attributes, 11);
-      assert.equal(read.compiledRoles.reminder.open, '\x1b[39m\x1b[49m\x1b[22;23;24m\x1b[1m\x1b[3m\x1b[2m');
-      assert.equal(read.compiledRoles.code.open, '\x1b[39m\x1b[49m\x1b[22;23;24m\x1b[1m\x1b[3m');
+      assert.equal(read.compiledRoles.reminder.open, '\x1b[39m\x1b[49m\x1b[22;23;24;29m\x1b[1m\x1b[3m\x1b[2m');
+      assert.equal(read.compiledRoles.code.open, '\x1b[39m\x1b[49m\x1b[22;23;24;29m\x1b[1m\x1b[3m');
     });
     styled.dispose(); assert.equal(f.budget.stats().retainedBytes, 0);
   } finally { await f.runtime.dispose(); }

@@ -18,7 +18,7 @@
         },
         "rules": []
       },
-      "fingerprint": "f0faec99a62e1c36d8650d50fc00c19ec7107a78b9a97bb619dc1cf87dfd94ab"
+      "fingerprint": "060533fb56662d209f344da7e38f0c21dce600121af65112714a017bcd6a1323"
     },
     {
       "name": "markdown-binding",
@@ -66,7 +66,7 @@
           }
         ]
       },
-      "fingerprint": "80f8ccde67af9d4ce228159fe800fbc8252bcb9c60305cfd6819c48c6cbc348e"
+      "fingerprint": "ff035eac2eb4bf2e92251df9bb1d04f854e21c7a8c671f035d78c0004f226354"
     },
     {
       "name": "explicit-faint-clear",
@@ -117,12 +117,57 @@
           }
         ]
       },
-      "fingerprint": "841323c83636e1adc0cd8377d7a3c64b600d1a6da71c60ab1ed8ef449611d429"
+      "fingerprint": "3063971d9caccdfd39754c4b9476901ef3406e673daa1c654f8cdbd375be4f1e"
+    },
+    {
+      "name": "strike-set-and-clear",
+      "definition": {
+        "revision": 1,
+        "binding_slots": 0,
+        "default": {
+          "foreground": {
+            "kind": "inherit"
+          },
+          "background": {
+            "kind": "inherit"
+          },
+          "attributes": 0,
+          "attribute_mask": 0
+        },
+        "rules": [
+          {
+            "path": [
+              "markup.strikethrough"
+            ],
+            "excludes": [],
+            "foreground": null,
+            "background": null,
+            "font": {
+              "attributes": 16,
+              "attribute_mask": 16
+            }
+          },
+          {
+            "path": [
+              "markup.strikethrough",
+              "punctuation"
+            ],
+            "excludes": [],
+            "foreground": null,
+            "background": null,
+            "font": {
+              "attributes": 0,
+              "attribute_mask": 16
+            }
+          }
+        ]
+      },
+      "fingerprint": "d8b16e7a1ac7a7926e237cc098bac1f4a3de6115647027ce7bd2829874b3f7fc"
     }
   ],
   "native": {
     "definition": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-    "rules": "33b97476b38f783dbd634a0fb8663751c8769c434d6e6ce7d38858c53b5dc14c",
-    "palette": "3dff00d3286e269410c0bd4b5175b344016581e89ad6c86c4bc51b18fdf1239f"
+    "rules": "a7109d485c65c8c90f272ed663669e28362878f04d3747f9e0a32a79a6347dbd",
+    "palette": "901c39ec6d501681c7df5b14aa97338e00b9522f1b87d85ddd6254521c03cde4"
   }
 }

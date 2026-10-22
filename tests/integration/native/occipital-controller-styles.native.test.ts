@@ -18,7 +18,7 @@ const definition = createPiRuleDefinition();
 const caller: ConcreteStyle = { foreground: { kind: 'rgb', r: 11, g: 22, b: 33 }, background: { kind: 'rgb', r: 44, g: 55, b: 66 }, attributes: 0 };
 function pi(revision: number) {
   return { kind: 'client' as const, definition, bindingRevision: revision, palette: `pi:${revision}`,
-    bindings: Array.from({ length: definition.binding_slots }, () => ({ ink: { kind: 'rgb' as const, r: revision, g: 2, b: 3 }, attributes: 0, attribute_mask: 15 })),
+    bindings: Array.from({ length: definition.binding_slots }, () => ({ ink: { kind: 'rgb' as const, r: revision, g: 2, b: 3 }, attributes: 0, attribute_mask: 31 })),
     roles: Object.fromEntries(CARD_ROLES.map(role => [role, caller])) as Record<CardRole, ConcreteStyle> };
 }
 test('actual v3 styles executor: production broker pipe helper SOURCE STYLE rollback bindings and empty native palette', async () => {
@@ -240,6 +240,49 @@ for (const kind of ['pi', 'native'] as const) test(`actual v3 empty Bash: ${kind
     const before = broker.stats(); for (let i = 0; i < 20; i++) owner.flush(); await drain(); assert.deepEqual(broker.stats(), before);
     assert.deepEqual(errors, []);
     console.log(JSON.stringify({ emptyBash: { kind, revisions, operations, colored, nativeSha256: binary.sha256, source: inputs.source } }));
+  } finally { owner.dispose(); await awaitFixture(broker.dispose()); await rm(root, { recursive: true, force: true }); }
+  assert.equal(owner.stats().retention.retainedBytes, 0); assert.equal(pipe.stats().childState, 'exited');
+});
+
+test('actual v3 font contract: Markdown strike uses trusted rules, delimiter clears and unchanged native typography', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'strike-controller-'));
+  const pipe = new StdioTransport({ command: binary.path, args: ['--stdio'], cwd: root,
+    env: { ...process.env, HOME: root, XDG_CONFIG_HOME: root, XDG_DATA_HOME: root, XDG_CACHE_HOME: root, XDG_RUNTIME_DIR: root }, requestDeadlineMs: 5000, terminateGraceMs: 100 });
+  const broker = new ProviderBroker({ async tryShared() { return undefined; }, async acquireOwned() { return pipe; } });
+  const owner = new SourceController(broker, { deadlineMs: 5000 });
+  const text = 'plain ~~strike **bold _italic_** [link](https://x) `code`~~ after\n';
+  const drain = () => awaitFixture((async () => {
+    for (let i = 0; i < 3 || owner.stats().unsettledJobs; i++) { owner.flush(); await turn(); }
+  })());
+  const read = () => {
+    const cells: { char: string; attributes: number; red: number | null }[] = [];
+    owner.displayBasis('md')?.visit((source, ranges) => ranges((from, to, style) => {
+      for (const char of source.slice(from, to)) cells.push({ char, attributes: style.attributes,
+        red: style.foreground.kind === 'rgb' ? style.foreground.r : null });
+    }));
+    return cells;
+  };
+  try {
+    await awaitFixture(broker.start()); owner.setStyleSelection(pi(7));
+    owner.observe({ key: 'md', version: 1, language: 'markdown', profile: 'pi', fingerprint: 'a'.repeat(64), text, complete: true });
+    await drain(); const cells = read(); assert.equal(cells.map(cell => cell.char).join(''), text);
+    for (const word of ['strike', 'bold', 'italic', 'link', 'https://x', 'code']) {
+      const at = text.indexOf(word), attributes = cells[at]!.attributes;
+      assert.equal(attributes & 16, 16, word);
+      if (word === 'bold') assert.equal(attributes & 1, 1);
+      if (word === 'italic') assert.equal(attributes & 3, 3);
+      if (word === 'link' || word === 'https://x') assert.equal(attributes & 4, 4);
+    }
+    for (const at of [text.indexOf('~~'), text.lastIndexOf('~~')]) {
+      assert.equal(cells[at]!.attributes & 16, 0); assert.equal(cells[at + 1]!.attributes & 16, 0);
+      assert.equal(cells[at]!.red, 11, 'strike delimiters inherit foreground rather than generic punctuation ink');
+    }
+    assert.equal(cells[text.indexOf('after')]!.attributes, 0);
+    const parsed = broker.stats().sourceDispatches;
+    const theme = broker.snapshot().description!.profiles[0]!;
+    owner.setStyleSelection({ kind: 'native', id: theme.id, fingerprint: theme.fingerprint }); await drain();
+    assert.equal(broker.stats().sourceDispatches, parsed); assert.equal(read().some(cell => (cell.attributes & 16) !== 0), false);
+    console.log(JSON.stringify({ fontContract: { sourceDispatches: parsed, styleDispatches: broker.stats().styleDispatches, sourceBytes: text.length, helperSha256: binary.sha256 } }));
   } finally { owner.dispose(); await awaitFixture(broker.dispose()); await rm(root, { recursive: true, force: true }); }
   assert.equal(owner.stats().retention.retainedBytes, 0); assert.equal(pipe.stats().childState, 'exited');
 });

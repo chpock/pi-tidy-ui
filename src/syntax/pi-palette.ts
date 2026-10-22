@@ -1,8 +1,11 @@
 import type { Theme, ThemeColor } from '@earendil-works/pi-coding-agent';
-import { colorToRgb, type Color } from '@earendil-works/pi-tui';
+import type { Color, TerminalColorMode } from '@earendil-works/pi-tui';
 import { diffPalette } from '../diff-palette.ts';
 import { CARD_ROLES, type CardRole, type LiteralInk } from '../occipital/semantic-codec.ts';
-import { samplePiPrefix } from './pi-bindings.ts';
+import { samplePiBindings, samplePiPrefix } from './pi-bindings.ts';
+import { effectiveColor, inkColor, outputInk } from './pi-color.ts';
+import { derivePiMarkerVariants, type PiDerivedMarker, type PiMarkerVariantContext } from './pi-variants.ts';
+import { PI_MARKER_BINDINGS, PI_RULE_BINDINGS, piBindingInkRole } from './pi-rules.ts';
 import type { ConcreteStyle } from './style-materialization.ts';
 
 const foregrounds = {
@@ -14,31 +17,70 @@ const foregrounds = {
   removedCode: 'toolOutput', removedGutter: 'dim', removedSign: 'toolDiffRemoved',
 } as const satisfies Record<CardRole, ThemeColor>;
 
-/** Bounded Follow Pi input adapter, once per local palette revision. Native
- * palettes never use this adapter. The caller funds/adopts its detached data. */
-export function samplePiCardPalette(theme: Pick<Theme, 'getFgAnsi' | 'getBgAnsi' | 'colors'>): Readonly<Record<CardRole, ConcreteStyle>> {
-  const panel = samplePiPrefix(theme.getBgAnsi('toolPendingBg'), 'background').ink;
-  // Terminal-default is not an RGB color. Preserve it instead of deriving tints
-  // from the color helper's fallback guess for an unknown terminal background.
-  const diff = panel.kind === 'terminal-default' ? {} : diffPalette(theme.colors);
+export type PiPaletteTheme = Pick<Theme, 'getFgAnsi' | 'getBgAnsi' | 'colors'>;
+
+/** Direct Pi inks freeze structural surfaces before optional role-derived markers.
+ * Everything returned is detached from the theme. */
+export function samplePiPalette(theme: PiPaletteTheme, mode: TerminalColorMode) {
+  const sampled = new Map<ThemeColor, ReturnType<typeof samplePiPrefix>>();
+  const baseBindings = samplePiBindings(theme, sampled);
+  const foreground = (role: ThemeColor) => {
+    let value = sampled.get(role);
+    if (!value) { value = samplePiPrefix(theme.getFgAnsi(role)); sampled.set(role, value); }
+    return value;
+  };
+  const known = (role: ThemeColor) => effectiveColor(foreground(role), theme.colors?.[role], mode);
+  const background = (role: 'toolPendingBg' | 'toolSuccessBg' | 'toolErrorBg') => {
+    const sample = samplePiPrefix(theme.getBgAnsi(role), 'background');
+    return { ink: sample.ink, color: effectiveColor(sample, theme.colors?.[role], mode) };
+  };
+  const panel = background('toolPendingBg');
   const surfaces: Partial<Record<CardRole, LiteralInk>> = {};
-  for (const [code, gutter, sign, source] of [
-    ['addedCode', 'addedGutter', 'addedSign', 'toolDiffAdded'],
-    ['removedCode', 'removedGutter', 'removedSign', 'toolDiffRemoved'],
-  ] as const) {
-    const tint = diff[source];
-    if (tint) { surfaces[code] = rgb(tint.code); surfaces[gutter] = surfaces[sign] = rgb(tint.gutter); }
+  if (panel.color) {
+    const inks = PI_RULE_BINDINGS.flatMap((role, index) => {
+      const source = piBindingInkRole(role), donor = foreground(source);
+      // Public faint colors lose indexed provenance; a composed normal font cannot make that RGB known.
+      if (donor.attributes & 8 && donor.ink.kind === 'indexed') return [];
+      const value = effectiveColor(baseBindings[index]!, theme.colors?.[source], mode);
+      return value ? [value] : [];
+    });
+    const code = known('toolOutput');
+    if (code) inks.push(code);
+    const diff = diffPalette({ panel: panel.color, codeInks: inks,
+      added: background('toolSuccessBg').color, removed: background('toolErrorBg').color,
+      numbers: known('dim'), addedSign: known('toolDiffAdded'), removedSign: known('toolDiffRemoved'), mode });
+    for (const [code, gutter, sign, source] of [
+      ['addedCode', 'addedGutter', 'addedSign', 'toolDiffAdded'],
+      ['removedCode', 'removedGutter', 'removedSign', 'toolDiffRemoved'],
+    ] as const) {
+      const tint = diff[source]!;
+      surfaces[code] = tint.code === panel.color ? panel.ink : outputInk(tint.code, mode);
+      surfaces[gutter] = surfaces[sign] = tint.gutter === panel.color ? panel.ink : outputInk(tint.gutter, mode);
+    }
   }
-  const sampled = new Map<ThemeColor, ReturnType<typeof samplePiPrefix>>(), roles = {} as Record<CardRole, ConcreteStyle>;
+  const finalSurfaces: (Color | undefined)[] = panel.color ? [panel.color,
+    surfaces.addedCode ? inkColor(surfaces.addedCode) : undefined,
+    surfaces.removedCode ? inkColor(surfaces.removedCode) : undefined] : [];
+  const frozenSurfaces = finalSurfaces.length && finalSurfaces.every((color): color is Color => color !== undefined)
+    ? Object.freeze(finalSurfaces) : undefined;
+  const variantContext = (binding: PiDerivedMarker, neighbors: readonly ThemeColor[]): PiMarkerVariantContext => {
+    const source = PI_MARKER_BINDINGS[binding].ink;
+    const parent = effectiveColor(baseBindings[PI_RULE_BINDINGS.indexOf(binding)]!, theme.colors?.[source], mode);
+    return { parent, neighbors: Object.fromEntries(neighbors.map(role => [role, known(role)])), surfaces: frozenSurfaces };
+  };
+  const variants = derivePiMarkerVariants(baseBindings, {
+    headingMarker: variantContext('headingMarker', ['mdHeading']),
+    inlineCodeDelimiter: variantContext('inlineCodeDelimiter', ['mdCode']),
+    linkDelimiter: variantContext('linkDelimiter', ['mdLink', 'mdLinkUrl', 'toolOutput']),
+  }, mode);
+  const roles = {} as Record<CardRole, ConcreteStyle>;
   for (const role of CARD_ROLES) {
-    const key = foregrounds[role];
-    let foreground = sampled.get(key);
-    if (!foreground) { foreground = samplePiPrefix(theme.getFgAnsi(key)); sampled.set(key, foreground); }
-    roles[role] = Object.freeze({ foreground: foreground.ink, background: surfaces[role] ?? panel, attributes: foreground.attributes });
+    const value = foreground(foregrounds[role]);
+    roles[role] = Object.freeze({ foreground: value.ink, background: surfaces[role] ?? panel.ink, attributes: value.attributes });
   }
-  return Object.freeze(roles);
+  return Object.freeze({ bindings: variants.bindings, roles: Object.freeze(roles), variantDecisions: variants.decisions });
 }
-function rgb(color: Color): LiteralInk {
-  const { r, g, b } = colorToRgb(color);
-  return Object.freeze({ kind: 'rgb', r, g, b });
+
+export function samplePiCardPalette(theme: PiPaletteTheme, mode: TerminalColorMode = 'truecolor'): Readonly<Record<CardRole, ConcreteStyle>> {
+  return samplePiPalette(theme, mode).roles;
 }

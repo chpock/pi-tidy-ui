@@ -4,7 +4,7 @@ import test from 'node:test';
 import { Theme } from '@earendil-works/pi-coding-agent';
 import { getThemeByName } from '../../../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js';
 import { samplePiBindings } from '../../../src/syntax/pi-bindings.ts';
-import { PI_RULE_BINDINGS, createPiRuleDefinition } from '../../../src/syntax/pi-rules.ts';
+import { PI_DIRECT_BINDINGS, createPiRuleDefinition } from '../../../src/syntax/pi-rules.ts';
 import { materializeStyle } from '../../../src/syntax/style-materialization.ts';
 import { fingerprintRules } from '../../../src/occipital/style-rules.ts';
 
@@ -23,9 +23,9 @@ function theme(mode: 'truecolor' | '256color', faint = true) {
 test('Pi bindings: sample all stable slots once through the public prefix API, not approximate theme.colors', () => {
   const native = theme('truecolor'), seen: string[] = [];
   const values = samplePiBindings({ getFgAnsi(role) { seen.push(role); return native.getFgAnsi(role); } });
-  assert.deepEqual(seen, PI_RULE_BINDINGS);
-  assert.deepEqual(values[0], { ink: { kind: 'rgb', r: 18, g: 52, b: 86 }, attributes: 8, attribute_mask: 15 });
-  assert.deepEqual(values[1], { ink: { kind: 'rgb', r: 18, g: 52, b: 86 }, attributes: 0, attribute_mask: 15 });
+  assert.deepEqual(seen, PI_DIRECT_BINDINGS);
+  assert.deepEqual(values[0], { ink: { kind: 'rgb', r: 18, g: 52, b: 86 }, attributes: 8, attribute_mask: 31 });
+  assert.deepEqual(values[1], { ink: { kind: 'rgb', r: 18, g: 52, b: 86 }, attributes: 0, attribute_mask: 31 });
   assert.deepEqual(values[3]!.ink, { kind: 'indexed', index: 6 });
   assert.deepEqual(values[12]!.ink, { kind: 'terminal-default' });
 });
@@ -61,13 +61,20 @@ test('Pi bindings: return fresh immutable values and never retain a theme owner'
 test('Pi bindings: preserve basic colors, explicit typography resets and terminal defaults', () => {
   const prefix = '\x1b[91m\x1b[1;2;3;4m\x1b[22;23m';
   const value = samplePiBindings({ getFgAnsi: () => prefix })[0]!;
-  assert.deepEqual(value, { ink: { kind: 'indexed', index: 9 }, attributes: 4, attribute_mask: 15 });
+  assert.deepEqual(value, { ink: { kind: 'indexed', index: 9 }, attributes: 4, attribute_mask: 31 });
   assert.deepEqual(samplePiBindings({ getFgAnsi: () => '\x1b[38;2;1;2;3m\x1b[0m' })[0],
-    { ink: { kind: 'terminal-default' }, attributes: 0, attribute_mask: 15 });
+    { ink: { kind: 'terminal-default' }, attributes: 0, attribute_mask: 31 });
+});
+
+test('Pi bindings: strike is independent of other selective resets and full reset', () => {
+  for (const [prefix, attributes] of [['\x1b[1;2;3;4;9;22;23;24m', 16], ['\x1b[1;9;29m', 1], ['\x1b[9;0m', 0]] as const) {
+    const value = samplePiBindings({ getFgAnsi: () => prefix })[0]!;
+    assert.equal(value.attributes, attributes); assert.equal(value.attribute_mask, 31);
+  }
 });
 
 test('Pi bindings: malformed or unrepresentable prefixes fail explicitly rather than dropping styles', () => {
-  for (const value of ['bad', '\x1b[38;2;1;2m', '\x1b[38;5;256m', '\x1b[7m', '\x1b[9m', '\x1b[48;5;2m', '\x1b[38:2:1:2:3m']) {
+  for (const value of ['bad', '\x1b[38;2;1;2m', '\x1b[38;5;256m', '\x1b[7m', '\x1b[48;5;2m', '\x1b[38:2:1:2:3m']) {
     assert.throws(() => samplePiBindings({ getFgAnsi: () => value }), /invalid Pi binding/, value);
   }
 });

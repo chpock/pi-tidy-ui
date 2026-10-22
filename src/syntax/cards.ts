@@ -342,9 +342,9 @@ export class CardSources<Owner extends object> {
     for (const slot of state.slots.values()) {
       if (slot.awaitingProvider && this.requiresCredit() || slot.fallback === 'pi' &&
         state.paint?.origin !== 'native' && (newest || slot.outcome === 'waiting') && resolveSyntax(this.client.sources, slot, this.client.snapshot().effective ?? null).needsPi) return true;
-      // Bootstrap only the newest exact Pi FILE; retained semantic SOURCE on a
-      // compatible recovery must not be reclassified.
-      if (newest && state.input?.kind === 'file' && slot.outcome === 'pi' && !this.client.sources.borrowSource(slot.key)
+      // Every eligible Pi FILE needs its first native SOURCE; retained semantic
+      // SOURCE on compatible recovery must not be reclassified.
+      if (state.input?.kind === 'file' && slot.outcome === 'pi' && !this.client.sources.borrowSource(slot.key)
         && this.client.sources.workStatus(slot.key).fallbackEligible && this.requiresCredit()) return true;
     }
     return false;

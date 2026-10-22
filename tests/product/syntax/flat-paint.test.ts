@@ -41,19 +41,19 @@ async function terminal(text: string) {
   await new Promise<void>(resolve => value.write(text, resolve)); return value;
 }
 
-test('flat paint: actual cells preserve RGB/index/default and all four font attributes without exterior leakage', async () => {
+test('flat paint: actual cells preserve RGB/index/default and all five font attributes without exterior leakage', async () => {
   const f = fixture('abc', 'file', 20);
-  const rgb = compileStyleAnsi({ foreground: { kind: 'rgb', r: 18, g: 52, b: 86 }, background: { kind: 'rgb', r: 4, g: 5, b: 6 }, attributes: 15 }, 'truecolor');
+  const rgb = compileStyleAnsi({ foreground: { kind: 'rgb', r: 18, g: 52, b: 86 }, background: { kind: 'rgb', r: 4, g: 5, b: 6 }, attributes: 31 }, 'truecolor');
   const indexed = ink(6, 5);
   const painted = f.paint(visit => { visit(0, 1, rgb); visit(1, 2, indexed); visit(2, 3, neutral); return true; })!;
   const value = await terminal('\x1b[1;2;3;4;38;5;1;48;5;2m' + readRows(painted)[0] + '.');
   try {
     const row = value.buffer.active.getLine(0)!, a = row.getCell(0)!, b = row.getCell(1)!, c = row.getCell(2)!, exterior = row.getCell(3)!;
     assert.equal(a.getFgColor(), 0x123456); assert.equal(a.getBgColor(), 0x040506); assert.ok(a.isFgRGB() && a.isBgRGB());
-    assert.ok(a.isBold() && a.isDim() && a.isItalic() && a.isUnderline());
+    assert.ok(a.isBold() && a.isDim() && a.isItalic() && a.isUnderline() && a.isStrikethrough());
     assert.equal(b.getFgColor(), 6); assert.ok(b.isFgPalette() && b.isBgDefault());
-    assert.ok(b.isBold() && b.isUnderline() && !b.isDim() && !b.isItalic());
-    for (const cell of [c, exterior]) assert.ok(cell.isFgDefault() && cell.isBgDefault() && !cell.isBold() && !cell.isDim() && !cell.isItalic() && !cell.isUnderline());
+    assert.ok(b.isBold() && b.isUnderline() && !b.isDim() && !b.isItalic() && !b.isStrikethrough());
+    for (const cell of [c, exterior]) assert.ok(cell.isFgDefault() && cell.isBgDefault() && !cell.isBold() && !cell.isDim() && !cell.isItalic() && !cell.isUnderline() && !cell.isStrikethrough());
   } finally { value.dispose(); painted.dispose(); f.dispose(); }
   assert.equal(f.budget.stats().retainedBytes, 0);
 });
@@ -354,4 +354,26 @@ test('review R2: admitted replacement padding has a positive construction contro
   try { output = f.paint()!; assert.equal(padding, 1); assert.deepEqual(plain(readRows(output)), ['� ']); }
   finally { String.prototype.repeat = repeat; output?.dispose(); f.dispose(); }
   assert.equal(f.budget.stats().retainedBytes, 0);
+});
+
+test('flat paint: strike survives reflow and scalar-prefix clipping without leaking across rows or native spans', async () => {
+  for (const mode of ['file', 'bash'] as const) for (const width of [3, 9]) for (const cutoff of [3, 8]) {
+    const f = fixture('abcdef\nZ', mode, width), strike = ink(1, 16), native = ink(2, 4);
+    const painted = f.paint(visit => { visit(0, 7, strike); visit(7, 8, native); return true; }, cutoff)!;
+    const value = new xterm.Terminal({ cols: 40, rows: 40, allowProposedApi: true });
+    try {
+      const output = readRows(painted);
+      await new Promise<void>(resolve => value.write(output.map(row => row + '.').join('\r\n'), resolve));
+      let struck = 0;
+      for (let row = 0; row < output.length; row++) for (let column = 0; column < 40; column++) {
+        const cell = value.buffer.active.getLine(row)!.getCell(column)!, char = cell.getChars();
+        const expected = 'abcdef'.includes(char) && char !== '' && char.charCodeAt(0) - 97 < cutoff;
+        assert.equal(Boolean(cell.isStrikethrough()), expected, `${mode}/${width}/${cutoff}/${row}/${column}/${char}`);
+        if (char === 'Z') assert.equal(Boolean(cell.isUnderline()), cutoff === 8);
+        if (expected) struck++;
+      }
+      assert.equal(struck, Math.min(cutoff, 6));
+    } finally { value.dispose(); painted.dispose(); f.dispose(); }
+    assert.equal(f.budget.stats().retainedBytes, 0);
+  }
 });

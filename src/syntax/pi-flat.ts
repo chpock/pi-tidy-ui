@@ -212,6 +212,8 @@ class Parse {
       const code = parameter(); if (code === undefined) return -1;
       if (code === 0) this.#reset();
       else if (code === 1 || code === 2 || code === 3 || code === 4) this.#attributes |= code === 1 ? 1 : code === 2 ? 8 : code === 3 ? 2 : 4;
+      else if (code === 9) this.#attributes |= 16;
+      else if (code === 29) this.#attributes &= ~16;
       else if (code === 22) this.#attributes &= ~(1 | 8);
       else if (code === 23) this.#attributes &= ~2;
       else if (code === 24) this.#attributes &= ~4;
@@ -257,7 +259,7 @@ function rowVisitor(owner: { current?: Parse }): (index: number, line: string) =
 
 /** Convert exactly once outside render, after the caller has obtained permission
  * for Pi classification. This function never classifies, normalizes or chooses
- * a fallback/theme. RGB/index/default and all four fonts become literal data;
+ * a fallback/theme. RGB/index/default and all five fonts become literal data;
  * token backgrounds are discarded in favor of the supplied card surface. */
 export function preparePiFlat(text: string, rows: PiRowReader, neutral: ConcreteStyle, budget: DataBudget, reserve?: ReservePiData): PiFlatPreparation {
   let operation: DataCharge | undefined, header: DataCharge | undefined, vector: DataCharge | undefined;

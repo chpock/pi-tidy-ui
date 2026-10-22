@@ -477,7 +477,7 @@ export class PiTerminal {
       const cell = buffer.getLine(buffer.viewportY + y)?.getCell(x);
       return cell ? { text: cell.getChars(), width: cell.getWidth(),
         fg: cell.getFgColor(), fgMode: cell.getFgColorMode(), dim: cell.isDim(), bold: cell.isBold(),
-        italic: cell.isItalic(), underline: cell.isUnderline(), inverse: !!cell.isInverse(), bg: cell.getBgColor(), bgMode: cell.getBgColorMode() } : null;
+        italic: cell.isItalic(), underline: cell.isUnderline(), strike: !!cell.isStrikethrough(), inverse: !!cell.isInverse(), bg: cell.getBgColor(), bgMode: cell.getBgColorMode() } : null;
     }));
     writeFileSync(join(this.output, `${name}.screen.json`), JSON.stringify(cells));
     return { ...dump, screen, cells };

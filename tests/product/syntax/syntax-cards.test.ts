@@ -69,7 +69,7 @@ function fixture(ready = false, options: ControllerOptions = {}, maxBookkeepingB
       const call = calls[i]!, q = call.request, native = q.rules.kind === 'native', definition = q.rules.definition;
       call.done = true; call.resolve({ v: 3, ticket: q.ticket, instance: 'daemon', assets: 'assets', status: 'ok', body: { kind: 'styles', vocabulary: q.vocabulary,
         rules: bad ? 'f'.repeat(64) : native ? fingerprintNative(q.rules.fingerprint, 'rules') : fingerprintRules(definition),
-        styles: q.contexts.length || native ? [{ ...(native ? literal(color) : definition.default), attribute_mask: native ? 15 : 0 }] : [], indices: q.contexts.map(() => 1),
+        styles: q.contexts.length || native ? [{ ...(native ? literal(color) : definition.default), attribute_mask: native ? 31 : 0 }] : [], indices: q.contexts.map(() => 1),
         palette: native ? { revision: 1, fingerprint: fingerprintNative(q.rules.fingerprint, 'palette'), slots: CARD_ROLES.map(() => 1), origins: CARD_ROLES.map(() => 0) } : null } });
     },
     fault(i: number, execution: 'not_started' | 'unknown' = 'not_started') { calls[i]!.done = true; calls[i]!.reject(new RequestFailure('busy', execution)); },
@@ -295,10 +295,11 @@ for (const episode of ['startup', 'connection reset']) test(`cards online wait: 
   assert.equal(f.env.classifications.length, 0);
 });
 
-test('cards online wait: ready scan skips removed frozen unrequested and paused owners', async () => {
+for (const kind of ['bash', 'file'] as const) test(`cards online wait: ready scan skips removed frozen unrequested and paused ${kind} owners`, async () => {
   const f = fixture(), live = {}, removed = {}, frozen = {}, paused = {}, unrequested = {};
-  for (const [owner, name] of [[live, 'live'], [removed, 'removed'], [frozen, 'frozen'], [paused, 'paused']] as const) f.use(owner, bash(name, true));
-  f.update(unrequested, bash('unrequested', true)); await settle(); f.cards.remove(removed); f.cards.freeze(frozen); f.cards.pause(paused);
+  const input = (text: string) => kind === 'bash' ? bash(text, true) : written(text);
+  for (const [owner, name] of [[live, 'live'], [removed, 'removed'], [frozen, 'frozen'], [paused, 'paused']] as const) f.use(owner, input(name));
+  f.update(unrequested, input('unrequested')); await settle(); f.cards.remove(removed); f.cards.freeze(frozen); f.cards.pause(paused);
   f.env.ready = true; f.cards.metadataChanged(); await settle();
   assert.deepEqual(f.calls.filter(c => c.request.op === 'highlight').map(c => c.request.sources[0].text), ['live']);
   f.cards.useful(paused, 1); await settle(); assert.ok(f.calls.some(c => c.request.sources?.[0]?.text === 'paused'));
@@ -836,31 +837,72 @@ test('card sources: neutral deferred slot registration preserves paint effect wh
 });
 
 
-test('card sources: only newest exact Pi FILE receives first native SOURCE and compatible recovery never reparses it', async () => {
-  const f = fixture(false), first = {}, newest = {};
-  f.use(first, written('const older=1;')); f.use(newest, written('const newest=2;')); await settle();
-  assert.equal(f.env.classifications.length, 2);
-  const firstKey = f.cards.identities(first)[0]!.key, newestKey = f.cards.identities(newest)[0]!.key;
-  let paint = 0;
-  inspect(f, newest, (_d, p) => { paint = p.paintStamp; });
+for (const tail of ['file', 'bash'] as const) test(`restored files: every Pi fallback receives first native SOURCE with newest ${tail}, then reuses it`, async () => {
+  const f = fixture(false), first = {}, change = {}, newest = {};
+  const inputs = [written('const older=1;'), edited('-1 const old=1;\n+1 const next=2;'),
+    tail === 'file' ? written('const newest=3;') : bash('echo tail', true)];
+  const owners = [first, change, newest];
+  owners.forEach((owner, index) => f.use(owner, inputs[index]!)); await settle();
+  const captures = tail === 'file' ? 4 : 3;
+  assert.equal(f.env.classifications.length, captures);
+  assert.equal(f.calls.length, 0, 'all file fragments first use Pi while the provider is unavailable');
+  const keys = owners.flatMap(owner => f.cards.identities(owner).map(identity => identity.key));
+  const stamps = owners.map(owner => { let stamp = 0; inspect(f, owner, (_d, p) => { stamp = p.paintStamp; }); return stamp; });
   f.env.ready = true; f.cards.metadataChanged(); await settle();
-  const calls = f.calls.filter(c => c.request.op === 'highlight');
-  assert.equal(calls.length, 1); assert.ok(f.sources.borrowSource(newestKey));
-  assert.equal(calls[0]!.request.sources[0].text, 'const newest=2;'); assert.equal(f.sources.borrowSource(firstKey), undefined);
-  assert.equal(f.env.classifications.length, 2, 'Pi classification is retained, never replayed');
-  inspect(f, newest, (_d, p) => assert.equal(p.paintStamp, paint, 'Pi remains the display while native waits'));
+  const initial = f.calls.filter(c => c.request.op === 'highlight');
+  assert.equal(initial[0]!.request.sources[0].text, tail === 'file' ? 'const newest=3;' : 'echo tail', 'existing newest-first order is preserved');
+  owners.forEach((owner, index) => inspect(f, owner, (_d, p) => assert.equal(p.paintStamp, stamps[index], 'Pi remains visible until semantic replies are complete')));
+  const expected = new Set(['const older=1;', 'const old=1;', 'const next=2;', tail === 'file' ? 'const newest=3;' : 'echo tail']);
   for (let i = 0; i < f.calls.length; i++) if (!f.calls[i]!.done) {
-    if (f.calls[i]!.request.op === 'styles.resolve') f.answerStyle(i); else f.answerSource(i, 'const newest=2;');
+    assert.ok(f.calls.filter(call => !call.done).length <= 2, 'all restored owners share the existing physical job limit');
+    if (f.calls[i]!.request.op === 'styles.resolve') f.answerStyle(i);
+    else { const text = f.calls[i]!.request.sources[0].text; assert.ok(expected.has(text)); f.answerSource(i, text); }
     await settle();
   }
-  assert.equal(f.sources.status(newestKey)?.exact, true);
-  const completed = f.calls.filter(c => c.request.op === 'highlight').length;
+  const completed = f.calls.filter(c => c.request.op === 'highlight');
+  assert.equal(completed.length, expected.size, 'every restored file fragment, not just the newest card, is parsed exactly once');
+  assert.deepEqual(new Set(completed.map(c => c.request.sources[0].text)), expected);
+  for (const key of keys) assert.equal(f.sources.status(key)?.exact, true, 'all current source owners have validated semantic coverage');
+  assert.equal(f.env.classifications.length, captures, 'native admission does not repeat Pi classification');
+  const count = f.calls.length;
+  for (let visit = 0; visit < 20; visit++) owners.forEach((owner, index) => f.cards.useful(owner, inputs[index]!.revision));
+  f.sources.refreshPreparations(); await settle();
+  assert.equal(f.calls.length, count, 'warm frames and an explicit queue refresh do not parse or restyle again');
   f.env.ready = false; f.env.generation++; f.cards.metadataChanged(); await settle();
   f.env.ready = true; f.cards.metadataChanged(); await settle();
-  assert.equal(f.calls.filter(c => c.request.op === 'highlight').length, completed, 'completed semantic source survives compatible recovery');
-  assert.equal(f.env.classifications.length, 2);
+  assert.equal(f.calls.filter(c => c.request.op === 'highlight').length, expected.size, 'compatible recovery reuses completed semantic SOURCE for every card');
+  assert.equal(f.env.classifications.length, captures);
 });
 
+
+test('restored files: a held edit fragment keeps Pi paint until atomic semantic publication', async () => {
+  const f = fixture(false), change = {}, newest = {};
+  f.use(change, edited('-1 const old=1;\n+1 const next=2;')); f.use(newest, bash('echo tail', true)); await settle();
+  const keys = f.cards.identities(change).map(identity => identity.key);
+  assert.equal(keys.length, 2); assert.equal(f.env.classifications.length, 2);
+  let before = 0; inspect(f, change, (_d, p) => { before = p.paintStamp; });
+  f.env.ready = true; f.cards.metadataChanged(); await settle();
+  const answer = async () => {
+    for (let i = 0; i < f.calls.length; i++) if (!f.calls[i]!.done) {
+      const q = f.calls[i]!.request;
+      if (q.op === 'styles.resolve') f.answerStyle(i);
+      else if (q.sources[0].text !== 'const next=2;') f.answerSource(i, q.sources[0].text);
+      await settle();
+    }
+  };
+  await answer();
+  const held = f.calls.findIndex(call => !call.done && call.request.op === 'highlight' && call.request.sources[0].text === 'const next=2;');
+  assert.ok(held >= 0, 'the second edit fragment is admitted without clicks');
+  assert.equal(f.sources.status(keys[0]!)?.exact, true, 'the other edit fragment has completed real SOURCE');
+  inspect(f, change, (_d, p) => assert.equal(p.paintStamp, before, 'a partially ready group does not replace the fallback'));
+  const count = f.calls.length;
+  f.sources.refreshPreparations(); f.cards.metadataChanged(); f.cards.useful(change, 1); await settle();
+  assert.equal(f.calls.length, count, 'refresh does not duplicate the completed or held segment');
+  assert.equal(f.env.classifications.length, 2, 'retained fallback is not recomputed');
+  f.answerSource(held, 'const next=2;'); await settle(); await answer();
+  for (const key of keys) assert.equal(f.sources.status(key)?.exact, true);
+  inspect(f, change, (_d, p) => assert.notEqual(p.paintStamp, before, 'the complete semantic group replaces Pi paint'));
+});
 
 for (const selection of ['native', 'Follow Pi'] as const) test(`C19 frozen cards recolor retained scopes after ${selection} selection without SOURCE or identity advance`, async () => {
   const f = fixture(true), owner = {}; await nativeReady(f, owner, 'x\n');

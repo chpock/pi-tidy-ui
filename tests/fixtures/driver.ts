@@ -3,6 +3,7 @@ import { CustomEditor, ToolExecutionComponent, type ExtensionAPI } from "@earend
 import { createAssistantMessageEventStream, Type, type ToolCall } from "@earendil-works/pi-ai";
 import { Container, Text, matchesKey, type TUI, type OverlayHandle } from "@earendil-works/pi-tui";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { followPiText } from "./follow-pi-source.ts";
 import { createEventRecorder } from './terminal-output.ts';
 import { join } from "node:path";
 import { stripVTControlCharacters } from "node:util";
@@ -489,7 +490,7 @@ export default function terminalDriver(pi: ExtensionAPI) {
         const user: any = context.messages[last];
         const prompt = typeof user?.content === "string" ? user.content :
           user?.content?.filter((c: any) => c.type === "text").map((c: any) => c.text).join("");
-        const scenario = prompt === 'run bash-empty-stream' ? 'bash-empty-stream' : /^run highlighting-limits-(bash|write|edit)$/.test(prompt ?? "") ? prompt.slice(4) : prompt === "run syntax-long-output" ? "syntax-long-output" : prompt === "run bash-prefix-contract" ? "bash-prefix-contract" : prompt === "run syntax-cards" ? "syntax-cards" : prompt?.includes("run write-stock") ? "write-stock" : prompt?.includes("run write-shapes") ? "write-shapes" : prompt?.includes("run edit-performance") ? "edit-performance" : prompt?.includes("run edit-cards") ? "edit-cards" : prompt?.includes("run user-card") ? "user-card" : prompt === "run cache-performance" ? "cache-performance" : prompt?.includes("bash-width") ? "bash-width" : prompt?.includes("bash-stream") ? "bash-stream" : prompt?.includes("bash-real") ? "bash-real" :
+        const scenario = prompt === 'run follow-pi-palette' ? 'follow-pi-palette' : prompt === 'run bash-empty-stream' ? 'bash-empty-stream' : /^run highlighting-limits-(bash|write|edit)$/.test(prompt ?? "") ? prompt.slice(4) : prompt === "run syntax-long-output" ? "syntax-long-output" : prompt === "run bash-prefix-contract" ? "bash-prefix-contract" : prompt === "run syntax-cards" ? "syntax-cards" : prompt?.includes("run write-stock") ? "write-stock" : prompt?.includes("run write-shapes") ? "write-shapes" : prompt?.includes("run edit-performance") ? "edit-performance" : prompt?.includes("run edit-cards") ? "edit-cards" : prompt?.includes("run user-card") ? "user-card" : prompt === "run cache-performance" ? "cache-performance" : prompt?.includes("bash-width") ? "bash-width" : prompt?.includes("bash-stream") ? "bash-stream" : prompt?.includes("bash-real") ? "bash-real" :
           prompt?.includes("bash-shape-timeout-stream") ? "bash-shape-timeout-stream" : prompt?.includes("bash-shape-timeouts") ? "bash-shape-timeouts" :
           prompt?.includes("bash-shape-exception-stream") ? "bash-shape-exception-stream" : prompt?.includes("bash-shape-exceptions") ? "bash-shape-exceptions" :
           prompt?.includes('bash-shape-tasks') ? 'bash-shape-tasks' : prompt?.includes("bash-shape-reminders") ? "bash-shape-reminders" : prompt?.includes("bash-shape-stream") ? "bash-shape-stream" : prompt?.includes("bash-shapes") ? "bash-shapes" :
@@ -507,7 +508,11 @@ export default function terminalDriver(pi: ExtensionAPI) {
         if (writeShape && scenario !== "write-shapes") throw new Error("write-shape opt-in is isolated from all other scenarios");
         if (scenario.startsWith("footer-") && process.env.TIDY_UI_TEST_FOOTER_HISTORY !== "1") throw new Error("footer-history requests require explicit isolated opt-in");
         const volume = scenario.startsWith("highlighting-limits-") ? JSON.parse(readFileSync(join(output, 'highlighting-limits.json'), 'utf8')) as { calls: Pick<ToolCall, "name" | "arguments">[]; prefixes?: string[] } : undefined;
-        const calls: Pick<ToolCall, "name" | "arguments">[] = volume ? volume.calls : scenario === "syntax-long-output" ? [
+        const calls: Pick<ToolCall, "name" | "arguments">[] = volume ? volume.calls : scenario === 'follow-pi-palette' ? [
+          { name: 'bash', arguments: { command: "printf '%s\\n' 'FOLLOW_PI_BASH'" } },
+          { name: 'write', arguments: { path: 'follow-pi.md', content: followPiText } },
+          { name: 'edit', arguments: { path: 'follow-pi.md', oldText: followPiText, newText: followPiText.replace('gone', 'fixed') } },
+        ] : scenario === "syntax-long-output" ? [
           { name: "bash", arguments: { command: "printf 'STABLE_text '; printf 'o%.0s' {1..2000}; printf '\\n\\n<system-reminder>\\nSTABLE_text '; printf 'r%.0s' {1..2000}; printf '\\n</system-reminder>\\n'" } },
         ] : scenario === "bash-prefix-contract" ? [
           { name: "bash", arguments: { command: ": 'STABLE_text é界 tail'" } },
@@ -674,6 +679,16 @@ export default function terminalDriver(pi: ExtensionAPI) {
       ctx.ui.notify(`TERMINAL_THEME ${name}`, "info");
     },
   });
+  if (process.env.TIDY_UI_TEST_PALETTE_THEMES === '1') pi.registerCommand('tidy-ui-palette-theme', {
+    description: 'Apply an explicit authored theme only in the isolated palette test',
+    handler: async (name, ctx) => {
+      const { followPiTheme } = await import('./follow-pi-themes.ts');
+      const { getTerminalColorMode } = await import('@earendil-works/pi-tui');
+      const result = ctx.ui.setTheme(followPiTheme(name, getTerminalColorMode(), ctx.ui.theme));
+      record({ type: 'palette_theme', name, mode: getTerminalColorMode(), result });
+      ctx.ui.notify(`TERMINAL_PALETTE_THEME ${name}`, 'info');
+    },
+  });
   // Native component update probe is opt-in, UI-only and never mutates model/session objects.
   if (process.env.TIDY_UI_TEST_CACHE_DIAGNOSTICS === "1") {
     const replacements = new Map<string, { node: any; original: any; replacement: any }>();
@@ -783,7 +798,7 @@ export default function terminalDriver(pi: ExtensionAPI) {
         registrations: pi.getAllTools().map((tool) => tool.name),
         commands: pi.getCommands().map((command) => command.name),
         errorStyle: ctx.ui.theme.fg("error", "TERMINAL_ERROR"),
-        summaryStyles: Object.fromEntries((["dim", "toolTitle", "muted", "toolOutput", "mdCodeBlock", "error", "userMessageText", "syntaxKeyword", "syntaxNumber", "syntaxString", "syntaxComment", "syntaxFunction", "syntaxType", "syntaxVariable", "syntaxOperator", "syntaxPunctuation", "mdHeading", "mdLink", "mdLinkUrl", "mdCode", "mdQuote", "mdListBullet", "mdHr", "toolDiffAdded", "toolDiffRemoved"] as const)
+        summaryStyles: Object.fromEntries((["dim", "toolTitle", "muted", "toolOutput", "mdCodeBlock", "error", "userMessageText", "syntaxKeyword", "syntaxNumber", "syntaxString", "syntaxComment", "syntaxFunction", "syntaxType", "syntaxVariable", "syntaxOperator", "syntaxPunctuation", "mdHeading", "mdLink", "mdLinkUrl", "mdCode", "mdQuote", "mdQuoteBorder", "mdCodeBlockBorder", "mdListBullet", "mdHr", "toolDiffAdded", "toolDiffRemoved"] as const)
           .map((role) => [role, ctx.ui.theme.fg(role, "X")])),
         backgroundStyles: Object.fromEntries((["toolPendingBg", "toolSuccessBg", "toolErrorBg", "userMessageBg"] as const)
           .map((role) => [role, ctx.ui.theme.bg(role, "X")])),

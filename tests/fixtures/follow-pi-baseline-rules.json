@@ -1,0 +1,529 @@
+{
+  "revision": 1,
+  "binding_slots": 17,
+  "default": {
+    "foreground": {
+      "kind": "inherit"
+    },
+    "background": {
+      "kind": "inherit"
+    },
+    "attributes": 0,
+    "attribute_mask": 0
+  },
+  "rules": [
+    {
+      "path": [
+        "punctuation.definition.string"
+      ],
+      "excludes": [],
+      "foreground": {
+        "kind": "binding",
+        "slot": 2
+      },
+      "background": null,
+      "font": null
+    },
+    {
+      "path": [
+        "punctuation.definition.comment"
+      ],
+      "excludes": [],
+      "foreground": {
+        "kind": "binding",
+        "slot": 0
+      },
+      "background": null,
+      "font": null
+    },
+    {
+      "path": [
+        "constant.character.escape"
+      ],
+      "excludes": [],
+      "foreground": {
+        "kind": "binding",
+        "slot": 2
+      },
+      "background": null,
+      "font": null
+    },
+    {
+      "path": [
+        "keyword.operator"
+      ],
+      "excludes": [],
+      "foreground": {
+        "kind": "binding",
+        "slot": 7
+      },
+      "background": null,
+      "font": null
+    },
+    {
+      "path": [
+        "storage.type.function"
+      ],
+      "excludes": [],
+      "foreground": {
+        "kind": "binding",
+        "slot": 1
+      },
+      "background": null,
+      "font": null
+    },
+    {
+      "path": [
+        "support.function.builtin"
+      ],
+      "excludes": [],
+      "foreground": {
+        "kind": "binding",
+        "slot": 4
+      },
+      "background": null,
+      "font": null
+    },
+    {
+      "path": [
+        "comment"
+      ],
+      "excludes": [],
+      "foreground": {
+        "kind": "binding",
+        "slot": 0
+      },
+      "background": null,
+      "font": null
+    },
+    {
+      "path": [
+        "string"
+      ],
+      "excludes": [],
+      "foreground": {
+        "kind": "binding",
+        "slot": 2
+      },
+      "background": null,
+      "font": null
+    },
+    {
+      "path": [
+        "constant.numeric"
+      ],
+      "excludes": [],
+      "foreground": {
+        "kind": "binding",
+        "slot": 3
+      },
+      "background": null,
+      "font": null
+    },
+    {
+      "path": [
+        "constant.language"
+      ],
+      "excludes": [],
+      "foreground": {
+        "kind": "binding",
+        "slot": 3
+      },
+      "background": null,
+      "font": null
+    },
+    {
+      "path": [
+        "constant.character"
+      ],
+      "excludes": [],
+      "foreground": {
+        "kind": "binding",
+        "slot": 3
+      },
+      "background": null,
+      "font": null
+    },
+    {
+      "path": [
+        "entity.name.function"
+      ],
+      "excludes": [],
+      "foreground": {
+        "kind": "binding",
+        "slot": 5
+      },
+      "background": null,
+      "font": null
+    },
+    {
+      "path": [
+        "support.function"
+      ],
+      "excludes": [],
+      "foreground": {
+        "kind": "binding",
+        "slot": 5
+      },
+      "background": null,
+      "font": null
+    },
+    {
+      "path": [
+        "entity.name.type"
+      ],
+      "excludes": [],
+      "foreground": {
+        "kind": "binding",
+        "slot": 4
+      },
+      "background": null,
+      "font": null
+    },
+    {
+      "path": [
+        "entity.name.class"
+      ],
+      "excludes": [],
+      "foreground": {
+        "kind": "binding",
+        "slot": 4
+      },
+      "background": null,
+      "font": null
+    },
+    {
+      "path": [
+        "support.type"
+      ],
+      "excludes": [],
+      "foreground": {
+        "kind": "binding",
+        "slot": 4
+      },
+      "background": null,
+      "font": null
+    },
+    {
+      "path": [
+        "support.class"
+      ],
+      "excludes": [],
+      "foreground": {
+        "kind": "binding",
+        "slot": 4
+      },
+      "background": null,
+      "font": null
+    },
+    {
+      "path": [
+        "storage.type.primitive"
+      ],
+      "excludes": [],
+      "foreground": {
+        "kind": "binding",
+        "slot": 4
+      },
+      "background": null,
+      "font": null
+    },
+    {
+      "path": [
+        "storage.type"
+      ],
+      "excludes": [],
+      "foreground": {
+        "kind": "binding",
+        "slot": 1
+      },
+      "background": null,
+      "font": null
+    },
+    {
+      "path": [
+        "variable"
+      ],
+      "excludes": [],
+      "foreground": {
+        "kind": "binding",
+        "slot": 6
+      },
+      "background": null,
+      "font": null
+    },
+    {
+      "path": [
+        "entity.other.attribute-name"
+      ],
+      "excludes": [],
+      "foreground": {
+        "kind": "binding",
+        "slot": 6
+      },
+      "background": null,
+      "font": null
+    },
+    {
+      "path": [
+        "keyword"
+      ],
+      "excludes": [],
+      "foreground": {
+        "kind": "binding",
+        "slot": 1
+      },
+      "background": null,
+      "font": null
+    },
+    {
+      "path": [
+        "storage.modifier"
+      ],
+      "excludes": [],
+      "foreground": {
+        "kind": "binding",
+        "slot": 1
+      },
+      "background": null,
+      "font": null
+    },
+    {
+      "path": [
+        "entity.name.tag"
+      ],
+      "excludes": [],
+      "foreground": {
+        "kind": "binding",
+        "slot": 8
+      },
+      "background": null,
+      "font": null
+    },
+    {
+      "path": [
+        "punctuation"
+      ],
+      "excludes": [],
+      "foreground": {
+        "kind": "binding",
+        "slot": 8
+      },
+      "background": null,
+      "font": null
+    },
+    {
+      "path": [
+        "meta.preprocessor"
+      ],
+      "excludes": [],
+      "foreground": {
+        "kind": "binding",
+        "slot": 1
+      },
+      "background": null,
+      "font": null
+    },
+    {
+      "path": [
+        "meta.annotation"
+      ],
+      "excludes": [],
+      "foreground": {
+        "kind": "binding",
+        "slot": 1
+      },
+      "background": null,
+      "font": null
+    },
+    {
+      "path": [
+        "markup.heading"
+      ],
+      "excludes": [],
+      "foreground": {
+        "kind": "binding",
+        "slot": 9
+      },
+      "background": null,
+      "font": {
+        "attributes": 1,
+        "attribute_mask": 1
+      }
+    },
+    {
+      "path": [
+        "markup.bold"
+      ],
+      "excludes": [],
+      "foreground": null,
+      "background": null,
+      "font": {
+        "attributes": 1,
+        "attribute_mask": 1
+      }
+    },
+    {
+      "path": [
+        "markup.italic"
+      ],
+      "excludes": [],
+      "foreground": null,
+      "background": null,
+      "font": {
+        "attributes": 2,
+        "attribute_mask": 2
+      }
+    },
+    {
+      "path": [
+        "markup.underline.link"
+      ],
+      "excludes": [],
+      "foreground": {
+        "kind": "binding",
+        "slot": 11
+      },
+      "background": null,
+      "font": {
+        "attributes": 4,
+        "attribute_mask": 4
+      }
+    },
+    {
+      "path": [
+        "string.other.link"
+      ],
+      "excludes": [],
+      "foreground": {
+        "kind": "binding",
+        "slot": 11
+      },
+      "background": null,
+      "font": null
+    },
+    {
+      "path": [
+        "meta.link.inline.description.markdown"
+      ],
+      "excludes": [],
+      "foreground": {
+        "kind": "binding",
+        "slot": 10
+      },
+      "background": null,
+      "font": {
+        "attributes": 4,
+        "attribute_mask": 4
+      }
+    },
+    {
+      "path": [
+        "markup.raw"
+      ],
+      "excludes": [],
+      "foreground": {
+        "kind": "binding",
+        "slot": 12
+      },
+      "background": null,
+      "font": null
+    },
+    {
+      "path": [
+        "markup.raw.block"
+      ],
+      "excludes": [],
+      "foreground": {
+        "kind": "binding",
+        "slot": 13
+      },
+      "background": null,
+      "font": null
+    },
+    {
+      "path": [
+        "markup.raw.code-fence"
+      ],
+      "excludes": [],
+      "foreground": {
+        "kind": "binding",
+        "slot": 13
+      },
+      "background": null,
+      "font": null
+    },
+    {
+      "path": [
+        "markup.quote"
+      ],
+      "excludes": [],
+      "foreground": {
+        "kind": "binding",
+        "slot": 14
+      },
+      "background": null,
+      "font": null
+    },
+    {
+      "path": [
+        "markup.list.numbered.bullet"
+      ],
+      "excludes": [],
+      "foreground": {
+        "kind": "binding",
+        "slot": 15
+      },
+      "background": null,
+      "font": null
+    },
+    {
+      "path": [
+        "markup.list.unnumbered.bullet"
+      ],
+      "excludes": [],
+      "foreground": {
+        "kind": "binding",
+        "slot": 15
+      },
+      "background": null,
+      "font": null
+    },
+    {
+      "path": [
+        "punctuation.definition.list_item"
+      ],
+      "excludes": [],
+      "foreground": {
+        "kind": "binding",
+        "slot": 15
+      },
+      "background": null,
+      "font": null
+    },
+    {
+      "path": [
+        "meta.separator"
+      ],
+      "excludes": [],
+      "foreground": {
+        "kind": "binding",
+        "slot": 16
+      },
+      "background": null,
+      "font": null
+    },
+    {
+      "path": [
+        "punctuation.definition.thematic-break"
+      ],
+      "excludes": [],
+      "foreground": {
+        "kind": "binding",
+        "slot": 16
+      },
+      "background": null,
+      "font": null
+    }
+  ]
+}

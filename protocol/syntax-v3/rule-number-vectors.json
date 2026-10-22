@@ -30,6 +30,31 @@
       "name": "nonfinite-exponent",
       "raw": "{\"revision\":1,\"binding_slots\":1e309,\"default\":{\"foreground\":{\"kind\":\"inherit\"},\"background\":{\"kind\":\"inherit\"},\"attributes\":0,\"attribute_mask\":0},\"rules\":[]}",
       "valid": false
+    },
+    {
+      "name": "fifth-bit",
+      "raw": "{\"revision\":1,\"binding_slots\":0,\"default\":{\"foreground\":{\"kind\":\"inherit\"},\"background\":{\"kind\":\"inherit\"},\"attributes\":0,\"attribute_mask\":16},\"rules\":[]}",
+      "valid": true
+    },
+    {
+      "name": "full-font-mask",
+      "raw": "{\"revision\":1,\"binding_slots\":0,\"default\":{\"foreground\":{\"kind\":\"inherit\"},\"background\":{\"kind\":\"inherit\"},\"attributes\":0,\"attribute_mask\":31},\"rules\":[]}",
+      "valid": true
+    },
+    {
+      "name": "unknown-sixth-bit",
+      "raw": "{\"revision\":1,\"binding_slots\":0,\"default\":{\"foreground\":{\"kind\":\"inherit\"},\"background\":{\"kind\":\"inherit\"},\"attributes\":0,\"attribute_mask\":32},\"rules\":[]}",
+      "valid": false
+    },
+    {
+      "name": "rounded-full-font-mask",
+      "raw": "{\"revision\":1,\"binding_slots\":0,\"default\":{\"foreground\":{\"kind\":\"inherit\"},\"background\":{\"kind\":\"inherit\"},\"attributes\":0,\"attribute_mask\":31.000000000000001},\"rules\":[]}",
+      "valid": true
+    },
+    {
+      "name": "fractional-font-mask",
+      "raw": "{\"revision\":1,\"binding_slots\":0,\"default\":{\"foreground\":{\"kind\":\"inherit\"},\"background\":{\"kind\":\"inherit\"},\"attributes\":0,\"attribute_mask\":31.000000000000004},\"rules\":[]}",
+      "valid": false
     }
   ]
 }

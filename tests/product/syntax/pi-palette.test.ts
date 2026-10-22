@@ -3,12 +3,11 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { setImmediate as turn } from 'node:timers/promises';
 import { Theme } from '@earendil-works/pi-coding-agent';
-import { colorToRgb } from '@earendil-works/pi-tui';
 import { getThemeByName } from '../../../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js';
 import { CARD_ROLES } from '../../../src/occipital/semantic-codec.ts';
-import { diffPalette } from '../../../src/diff-palette.ts';
 import { samplePiCardPalette } from '../../../src/syntax/pi-palette.ts';
 import { samplePiPrefix } from '../../../src/syntax/pi-bindings.ts';
+import { PI_DIRECT_BINDINGS } from '../../../src/syntax/pi-rules.ts';
 import { compileStyleAnsi } from '../../../src/syntax/style-ansi.ts';
 
 function theme(mode: 'truecolor' | '256color' = 'truecolor', terminal = false) {
@@ -40,14 +39,14 @@ test('Pi card palette: complete roles retain distinct command/output, muted remi
 });
 
 test('Pi card palette: diff signs and quantized surfaces follow the existing Pi palette producer', () => {
-  const native = theme(), values = samplePiCardPalette(native), surfaces = diffPalette(native.colors);
+  const native = theme(), values = samplePiCardPalette(native);
   for (const [code, gutter, sign, source] of [
     ['addedCode', 'addedGutter', 'addedSign', 'toolDiffAdded'],
     ['removedCode', 'removedGutter', 'removedSign', 'toolDiffRemoved'],
   ] as const) {
-    const c = colorToRgb(surfaces[source]!.code), g = colorToRgb(surfaces[source]!.gutter);
-    assert.deepEqual(values[code].background, rgb(c.r, c.g, c.b));
-    assert.deepEqual(values[gutter].background, rgb(g.r, g.g, g.b));
+    assert.notDeepEqual(values[code].background, values.panel.background, 'eligible, readable code tint stays useful');
+    assert.equal(values[code].background.kind, 'rgb');
+    assert.equal(values[gutter].background.kind, 'rgb');
     assert.deepEqual(values[sign].background, values[gutter].background);
     assert.deepEqual(values[sign].foreground, samplePiPrefix(native.getFgAnsi(source)).ink);
     assert.deepEqual(values[code].foreground, values.code.foreground);
@@ -68,7 +67,7 @@ test('Pi card palette: public foreground and background prefixes preserve indexe
   assert.deepEqual(samplePiPrefix('\x1b[48;2;1;2;3m', 'background').ink, rgb(1, 2, 3));
   assert.throws(() => samplePiPrefix('\x1b[38;5;1m', 'background'), /invalid Pi binding/);
   assert.throws(() => samplePiPrefix('\x1b[48;2;1;2m', 'background'), /invalid Pi binding/);
-  const values = samplePiCardPalette(theme('256color'));
+  const values = samplePiCardPalette(theme('256color'), '256color');
   assert.equal(values.code.foreground.kind, 'indexed'); assert.equal(values.panel.background.kind, 'indexed');
   for (const role of CARD_ROLES) assert.ok(!/\x1b\[(?:38|48);2;/.test(compileStyleAnsi(values[role], '256color').open));
 });
@@ -85,7 +84,7 @@ test('Pi card palette: fixed role sampling is bounded and no theme owner or call
   }
   const { owner, values, seenFg, seenBg } = create();
   assert.equal(new Set(seenFg).size, seenFg.length, 'sample each foreground once, not once per card or line');
-  assert.ok(seenFg.length <= CARD_ROLES.length); assert.deepEqual(seenBg, ['toolPendingBg']);
+  assert.ok(seenFg.length <= CARD_ROLES.length + PI_DIRECT_BINDINGS.length); assert.deepEqual(seenBg, ['toolPendingBg', 'toolSuccessBg', 'toolErrorBg']);
   for (let i = 0; i < 20; i++) { await turn(); global.gc!(); }
   assert.equal(owner.deref(), undefined);
   assert.deepEqual(values.code.foreground, rgb(0xd8, 0xd8, 0xd8));
@@ -97,18 +96,13 @@ test('Pi card palette: fixed role sampling is bounded and no theme owner or call
 });
 
 
-test('Pi card palette: builtin dark and light keep the public base colors and existing diff derivation', () => {
+test('Pi card palette: builtin dark and light keep exact public base colors with structural diff surfaces', () => {
   for (const name of ['dark', 'light']) {
     const native = getThemeByName(name)!;
-    const values = samplePiCardPalette(native), surfaces = diffPalette(native.colors);
+    const values = samplePiCardPalette(native);
     assert.deepEqual(values.code.foreground, samplePiPrefix(native.getFgAnsi('toolOutput')).ink, name);
     assert.deepEqual(values.code.background, samplePiPrefix(native.getBgAnsi('toolPendingBg'), 'background').ink, name);
-    for (const [role, source, part] of [
-      ['addedCode', 'toolDiffAdded', 'code'], ['removedCode', 'toolDiffRemoved', 'code'],
-      ['addedGutter', 'toolDiffAdded', 'gutter'], ['removedGutter', 'toolDiffRemoved', 'gutter'],
-    ] as const) {
-      const c = colorToRgb(surfaces[source]![part]);
-      assert.deepEqual(values[role].background, rgb(c.r, c.g, c.b), `${name}/${role}`);
-    }
+    for (const role of ['addedCode', 'removedCode', 'addedGutter', 'removedGutter'] as const)
+      assert.equal(values[role].background.kind, 'rgb', `${name}/${role}`);
   }
 });

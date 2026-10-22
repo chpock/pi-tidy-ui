@@ -9,7 +9,7 @@ const bounds = { vocabularySize: 20, maxBytes: 1 << 20 };
 const client: StyleIdentity = { vocabulary, rules, mode: 'client', bindingSlots: 4 };
 const native: StyleIdentity = { vocabulary, rules, mode: 'native', bindingSlots: 0 };
 const rgb = { kind: 'rgb', r: 10, g: 20, b: 30 };
-const literal = { foreground: rgb, background: { kind: 'terminal-default' }, attributes: 0, attribute_mask: 15 };
+const literal = { foreground: rgb, background: { kind: 'terminal-default' }, attributes: 0, attribute_mask: 31 };
 const binding = { foreground: { kind: 'binding', slot: 2 }, background: { kind: 'inherit' }, attributes: 0, attribute_mask: 8 };
 const body = (styles: unknown[] = [literal, binding]) => ({ kind: 'styles', vocabulary, rules, styles, indices: [1, 2, 1], palette: null });
 const error = (code: string) => (value: unknown) => value instanceof SemanticError && value.code === code;
@@ -70,7 +70,7 @@ test('semantic styles: native complete palette uses the same indexed styles as s
 });
 
 for (const style of [
-  { ...literal, attributes: 16 }, { ...literal, attribute_mask: 16 }, { ...literal, attributes: 1, attribute_mask: 0 },
+  { ...literal, attributes: 32 }, { ...literal, attribute_mask: 32 }, { ...literal, attributes: 1, attribute_mask: 0 },
   { ...literal, foreground: { ...rgb, r: 256 } }, { ...literal, foreground: { kind: 'index', index: -1 } },
   { ...literal, foreground: { kind: 'binding', slot: 4 } }, { ...literal, foreground: { kind: 'rgb', r: 1, g: 2, b: 3, a: 0 } },
   { ...literal, foreground: { kind: 'terminal-default', rgb: [1, 2, 3] } }, { ...literal, role: 'syntaxKeyword' },

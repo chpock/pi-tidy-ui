@@ -95,7 +95,7 @@ test('native v3 semantic RPC: real managed shared source/style/control routes pr
     const selected = descriptor.body.profiles.find(p => p.id.startsWith('custom:')); assert.ok(selected);
     const native = (contexts, profile = selected) => data({ vocabulary, contexts, rules: { kind: 'native', id: profile.id, fingerprint: profile.fingerprint } });
     const palette = await a.call('styles.resolve', native([])); assert.equal(palette.status, 'ok'); assert.deepEqual(palette.body.indices, []); assert.equal(palette.body.palette.slots.length, 26);
-    assert.equal(palette.body.rules, hash(`occipital-native-rules/1\0${selected.fingerprint}`)); assert.equal(palette.body.palette.fingerprint, hash(`occipital-native-palette/1\0${selected.fingerprint}`));
+    assert.equal(palette.body.rules, hash(`occipital-native-rules/2\0${selected.fingerprint}`)); assert.equal(palette.body.palette.fingerprint, hash(`occipital-native-palette/2\0${selected.fingerprint}`));
     const text = 'fn f() {\nlet s = "界';
     const opened = await a.call('stream.open', data({ sources: [source('stream', text)] })); assert.equal(opened.status, 'ok');
     const first = opened.body.sources[0]; coverage(first, text); assert.equal(first.revision, 1); assert.equal(first.counters.committed_line_calls, 1); assert.equal(opened.body.vocabulary, vocabulary);

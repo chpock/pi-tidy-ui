@@ -98,7 +98,7 @@ fn v3_source_and_style_replies_share_the_existing_bounded_envelope_and_drain_cre
         foreground: Ink::Binding { slot: 0 },
         background: Ink::Inherit {},
         attributes: 0,
-        attribute_mask: 15,
+        attribute_mask: 31,
     };
     let bodies = [
         DataBody::Source(SourceBody::Closed),

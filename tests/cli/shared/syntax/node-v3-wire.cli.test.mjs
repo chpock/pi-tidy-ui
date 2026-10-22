@@ -12,6 +12,7 @@ import { until, reaped } from '../../../fixtures/shared-syntax-host.mjs';
 import { runCleanupSteps } from '../../../fixtures/terminal-cleanup.mjs';
 import { StdioTransport } from '../../../../src/occipital/stdio.ts';
 import { SharedTransport } from '../../../../src/occipital/shared.ts';
+import { createPiRuleDefinition } from '../../../../src/syntax/pi-rules.ts';
 
 const inputs = readInputs(), binary = validateNative(inputs).path;
 function collectWhilePending() {
@@ -90,6 +91,7 @@ test('Node v3 wire: both production transports carry source, native/client style
         const descriptor = await call('describe', {}, { waitOnly: true });
         pid = descriptor.body.runtime.pid; if (shared) host.pids.add(pid);
         assert.equal(descriptor.body.capability, 'syntax-highlight/v3'); assert.equal(descriptor.body.protocol_version, 3);
+        assert.equal(descriptor.body.resolver_revision, 2); assert.equal(descriptor.body.contexts_revision, 1); assert.equal(descriptor.body.palette_revision, 1);
         const instance = descriptor.instance, vocabulary = descriptor.body.vocabulary.fingerprint;
         const data = fields => ({ instance, admission: 'bounded_queue', queue_wait_ms: 1000, ...fields });
         const profile = descriptor.body.profiles[0]; assert.ok(profile);
@@ -108,6 +110,20 @@ test('Node v3 wire: both production transports carry source, native/client style
         const generic = await call('styles.resolve', data({ vocabulary, contexts, rules: { kind: 'client', definition: declaration } }));
         assert.equal(generic.body.palette, null); assert.equal(generic.body.indices.length, contexts.length);
         assert.ok(generic.body.styles.every(style => style.foreground.kind === 'binding'));
+        assert.ok(painted.body.styles.every(style => style.attribute_mask === 31 && (style.attributes & 16) === 0));
+        const markdown = '~~strike **bold** [link](https://x)~~ after\n';
+        const md = (await call('highlight', data({ sources: [{ ...source('strike', markdown), hint: { language: 'markdown' } }] }))).body.sources[0];
+        const resolved = (await call('styles.resolve', data({ vocabulary, contexts: md.contexts, rules: { kind: 'client', definition: createPiRuleDefinition() } }))).body;
+        const fonts = []; let byte = 0;
+        for (let i = 0; i < md.runs.length; i += 2) {
+          const size = md.runs[i], context = md.runs[i + 1];
+          const style = resolved.styles[resolved.indices[context - 1] - 1];
+          for (let j = 0; j < size; j++) fonts[byte++] = style.attributes;
+        }
+        assert.equal(byte, Buffer.byteLength(markdown));
+        assert.equal(fonts[2] & 16, 16); assert.equal(fonts[markdown.indexOf('bold')] & 17, 17);
+        assert.equal(fonts[markdown.indexOf('link')] & 20, 20);
+        for (const at of [0, 1, markdown.lastIndexOf('~~'), markdown.lastIndexOf('~~') + 1, markdown.indexOf('after')]) assert.equal(fonts[at] & 16, 0);
         const opened = (await call('stream.open', data({ sources: [source('stream', 'fn f() {\n')] }))).body.sources[0];
         const appended = (await call('stream.append', data({ key: opened.key, generation: opened.generation, source_version: 1, lease: opened.lease, base_revision: opened.revision, base_bytes: opened.source_bytes, append: '}\n', final: true }))).body.sources[0];
         assert.equal(appended.revision, 2); assert.equal(appended.complete, true); assert.equal(appended.counters.committed_line_calls, 1);

@@ -11,7 +11,7 @@ const empty: RuleDefinition = { revision: 1, binding_slots: 0,
 const clone = <T>(value: T): T => structuredClone(value);
 
 test('style rule identity: empty definition has an independently specified framed preimage', () => {
-  const preimage = Buffer.from('6f636369706974616c2d636c69656e742d72756c65732f3100' + '00000000' + '00000007' + '682f682f302f30' + '00000000', 'hex');
+  const preimage = Buffer.from('6f636369706974616c2d636c69656e742d72756c65732f3200' + '00000000' + '00000007' + '682f682f302f30' + '00000000', 'hex');
   assert.equal(fingerprintRules(empty), createHash('sha256').update(preimage).digest('hex'));
 });
 
@@ -72,7 +72,7 @@ test('style rules: nullable keys, font presence, bindings and exact ink shapes a
 test('native identity: resolver and full-palette revisions are domain-separated from immutable definition content', () => {
   const definition = '0123456789abcdef'.repeat(4);
   for (const kind of ['rules', 'palette'] as const) {
-    const expected = createHash('sha256').update(`occipital-native-${kind}/1\0` + definition, 'ascii').digest('hex');
+    const expected = createHash('sha256').update(`occipital-native-${kind}/2\0` + definition, 'ascii').digest('hex');
     assert.equal(fingerprintNative(definition, kind), expected);
   }
   assert.notEqual(fingerprintNative(definition, 'rules'), fingerprintNative(definition, 'palette'));

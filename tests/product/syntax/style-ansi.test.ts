@@ -16,23 +16,24 @@ async function terminal(text: string) {
   return value;
 }
 
-test('style ANSI: all four attributes are exact, including explicit clears over inherited typography', async () => {
+test('style ANSI: all five attributes are exact, including explicit clears over inherited typography', async () => {
   let output = '';
-  for (let attributes = 0; attributes < 16; attributes++) {
+  for (let attributes = 0; attributes < 32; attributes++) {
     const compiled = compileStyleAnsi({ ...style, attributes }, 'truecolor');
-    output += '\x1b[1;2;3;4m' + compiled.open + 'x' + compiled.close + '.';
+    output += '\x1b[1;2;3;4;9m' + compiled.open + 'x' + compiled.close + '.';
   }
   const value = await terminal(output);
   try {
     const row = value.buffer.active.getLine(0)!;
-    for (let bits = 0; bits < 16; bits++) {
+    for (let bits = 0; bits < 32; bits++) {
       const cell = row.getCell(bits * 2)!;
       assert.equal(!!cell.isBold(), !!(bits & 1), `bold ${bits}`);
       assert.equal(!!cell.isItalic(), !!(bits & 2), `italic ${bits}`);
       assert.equal(!!cell.isUnderline(), !!(bits & 4), `underline ${bits}`);
       assert.equal(!!cell.isDim(), !!(bits & 8), `faint ${bits}`);
+      assert.equal(!!cell.isStrikethrough(), !!(bits & 16), `strike ${bits}`);
       const after = row.getCell(bits * 2 + 1)!;
-      assert.ok(!after.isBold() && !after.isDim() && !after.isItalic() && !after.isUnderline());
+      assert.ok(!after.isBold() && !after.isDim() && !after.isItalic() && !after.isUnderline() && !after.isStrikethrough());
       assert.ok(after.isFgDefault() && after.isBgDefault(), 'styles cannot escape their span');
     }
   } finally { value.dispose(); }

@@ -67,7 +67,7 @@ function fixture(ready = false, useDefaultClassifier = false, options: Pick<Tidy
         return Promise.resolve({ v: 3, ticket: q.ticket, instance: 'daemon', assets: 'assets', status: 'ok', body: {
           kind: 'styles', vocabulary: q.vocabulary, rules: native ? fingerprintNative(q.rules.fingerprint, 'rules') : fingerprintRules(q.rules.definition),
           styles: [{ foreground: native ? { kind: 'rgb', r: 17, g: 34, b: 51 } : { kind: 'binding', slot: 1 },
-            background: native ? { kind: 'rgb', r: 40, g: 41, b: 42 } : { kind: 'inherit' }, attributes: 0, attribute_mask: native ? 15 : 0 }], indices: q.contexts.map(() => 1),
+            background: native ? { kind: 'rgb', r: 40, g: 41, b: 42 } : { kind: 'inherit' }, attributes: 0, attribute_mask: native ? 31 : 0 }], indices: q.contexts.map(() => 1),
           palette: native ? { revision: 1, fingerprint: fingerprintNative(q.rules.fingerprint, 'palette'), slots: CARD_ROLES.map(() => 1), origins: CARD_ROLES.map(() => 0) } : null } });
       }
       return new Promise<unknown>(resolve => calls.push({ request, resolve }));
@@ -283,17 +283,21 @@ test('host Bash fallback stays full-command toolTitle with zero Pi during startu
   }
 });
 
-test('host keyed notices retire only affected layout; metadata upgrades only latest useful owner', async () => {
+test('host keyed notices retire only affected layout while metadata upgrades every useful file owner', async () => {
   const f = fixture(), a = written(f, 'a'), b = written(f, 'b');
   f.render(a); f.render(b); await settled(); f.render(a); f.render(b);
   const before = f.adapter.cacheStats();
   f.env.ready = true; f.adapter.syntaxMetadataChanged(); await settled();
-  assert.equal(f.calls.length, 1); assert.equal((f.calls[0]!.request.sources as { text: string }[])[0]!.text, 'b');
+  assert.equal(f.calls.length, 2); assert.deepEqual(f.calls.map(call => (call.request.sources as { text: string }[])[0]!.text), ['b', 'a']);
   f.render(b); const built = f.adapter.cacheStats().builds;
   answer(f, 0, 'b'); await settled();
   assert.equal(f.adapter.cacheStats().entries, before.entries, 'atomic repaint retains the accepted detached entry until replacement');
   f.render(a); assert.equal(f.adapter.cacheStats().builds, built, 'peer layout remains warm');
   f.render(b); assert.equal(f.adapter.cacheStats().builds, built + 1);
+  answer(f, 1, 'a'); await settled();
+  f.render(b); assert.equal(f.adapter.cacheStats().builds, built + 1, 'the already completed peer remains warm');
+  f.render(a); assert.equal(f.adapter.cacheStats().builds, built + 2, 'the older file publishes its own semantic result');
+  assert.equal(f.calls.length, 2, 'each file receives SOURCE once');
   assert.equal(f.env.pi.length, 2);
 });
 
@@ -641,14 +645,17 @@ test('logging actual SDK final paint separates cached plain Pi, waiting file, na
   assert.match(body, /call=host-bash.*selected=toolTitle/);
   assert.equal(body.includes(text), false); assert.equal(body.includes(shell), false); assert.equal(body.includes('text=saved'), false);
   f.env.ready = true; f.adapter.syntaxMetadataChanged(); await settled();
-  assert.equal(f.calls.length, 1); assert.equal(f.env.pi.length, 1, 'Bash starts native, never Pi');
+  assert.equal(f.calls.length, 2); assert.equal(f.env.pi.length, 1, 'Bash and the cached file start native without another Pi classification');
+  const cachedFile = f.calls.findIndex(call => call.request.op === 'highlight'); assert.ok(cachedFile >= 0);
+  answer(f, cachedFile, text); await settled();
   f.document(); const heldFile = written(f, 'const PRIVATE_HELD_BODY = 18;');
-  f.document(); await settled(); assert.equal(f.calls.length, 2);
+  f.document(); await settled(); assert.equal(f.calls.length, 3);
   const waiting = f.render(heldFile); await journal.flush();
   body = await fs.readFile(journal.status().path, 'utf8');
   assert.match(body, /Native work is queued, unsettled or uncertain; full text shown without duplicate Pi classification/);
   assert.equal(f.env.pi.length, 1); assert.equal(body.includes('PRIVATE_HELD_BODY'), false);
-  answer(f, 0, shell, false); answer(f, 1, 'const PRIVATE_HELD_BODY = 18;'); await settled();
+  const shellCall = f.calls.findIndex(call => call.request.op === 'stream.open'); assert.ok(shellCall >= 0);
+  answer(f, shellCall, shell, false); answer(f, 2, 'const PRIVATE_HELD_BODY = 18;'); await settled();
   const native = f.render(heldFile); assert.deepEqual(plain(native), plain(waiting)); assert.notDeepEqual(native, waiting);
   f.document(); await journal.flush(); body = await fs.readFile(journal.status().path, 'utf8');
   assert.match(body, /call=host-write.*selected=exact-native/); assert.match(body, /call=host-bash.*selected=historical-native-prefix/);
@@ -1284,7 +1291,7 @@ for (const selection of ['native', 'Follow Pi'] as const) test(`C19 SDK host rec
     const q = held.request;
     held.resolve({ v: 3, ticket: q.ticket, instance: 'daemon', assets: 'assets', status: 'ok', body: {
       kind: 'styles', vocabulary: q.vocabulary, rules: fingerprintNative(q.rules.fingerprint, 'rules'),
-      styles: [{ foreground: { kind: 'rgb', r: 71, g: 72, b: 73 }, background: { kind: 'rgb', r: 40, g: 41, b: 42 }, attributes: 0, attribute_mask: 15 }],
+      styles: [{ foreground: { kind: 'rgb', r: 71, g: 72, b: 73 }, background: { kind: 'rgb', r: 40, g: 41, b: 42 }, attributes: 0, attribute_mask: 31 }],
       indices: q.contexts.map(() => 1), palette: { revision: 1, fingerprint: fingerprintNative(q.rules.fingerprint, 'palette'), slots: CARD_ROLES.map(() => 1), origins: CARD_ROLES.map(() => 0) } } });
     await settled();
     const cells = (await hostCells(f.render(tool))).flat().filter(c => c.text.trim());
@@ -1308,7 +1315,7 @@ function answerPausedHostStyle(f: ReturnType<typeof fixture>) {
   const q = held.request;
   held.resolve({ v: 3, ticket: q.ticket, instance: 'daemon', assets: 'assets', status: 'ok', body: {
     kind: 'styles', vocabulary: q.vocabulary, rules: fingerprintNative(q.rules.fingerprint, 'rules'),
-    styles: [{ foreground: { kind: 'rgb', r: 71, g: 72, b: 73 }, background: { kind: 'rgb', r: 40, g: 41, b: 42 }, attributes: 0, attribute_mask: 15 }],
+    styles: [{ foreground: { kind: 'rgb', r: 71, g: 72, b: 73 }, background: { kind: 'rgb', r: 40, g: 41, b: 42 }, attributes: 0, attribute_mask: 31 }],
     indices: q.contexts.map(() => 1), palette: { revision: 1, fingerprint: fingerprintNative(q.rules.fingerprint, 'palette'), slots: CARD_ROLES.map(() => 1), origins: CARD_ROLES.map(() => 0) } } });
 }
 
@@ -1554,7 +1561,7 @@ function roundTwoStyleReply(q: Record<string, any>) {
   return { v: 3, ticket: q.ticket, instance: 'daemon', assets: 'assets', status: 'ok', body: {
     kind: 'styles', vocabulary: q.vocabulary, rules: native ? fingerprintNative(q.rules.fingerprint, 'rules') : fingerprintRules(q.rules.definition),
     styles: [{ foreground: native ? { kind: 'rgb', r: 17, g: 34, b: 51 } : { kind: 'binding', slot: 1 },
-      background: native ? { kind: 'rgb', r: 40, g: 41, b: 42 } : { kind: 'inherit' }, attributes: 0, attribute_mask: native ? 15 : 0 }], indices: q.contexts.map(() => 1),
+      background: native ? { kind: 'rgb', r: 40, g: 41, b: 42 } : { kind: 'inherit' }, attributes: 0, attribute_mask: native ? 31 : 0 }], indices: q.contexts.map(() => 1),
     palette: native ? { revision: 1, fingerprint: fingerprintNative(q.rules.fingerprint, 'palette'), slots: CARD_ROLES.map(() => 1), origins: CARD_ROLES.map(() => 0) } : null } };
 }
 

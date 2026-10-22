@@ -107,8 +107,8 @@ function inkKey(value: unknown, identity: Pick<StyleIdentity, 'mode' | 'bindingS
 }
 export function expressionKey(value: unknown, identity: Pick<StyleIdentity, 'mode' | 'bindingSlots'>): string {
   if (!object(value) || !keys(value, ['foreground', 'background', 'attributes', 'attribute_mask'])
-    || !integer(value.attributes, 0, 15) || !integer(value.attribute_mask, 0, 15)
-    || (value.attributes & ~value.attribute_mask) !== 0 || identity.mode === 'native' && value.attribute_mask !== 15) fail('invalid_style');
+    || !integer(value.attributes, 0, 31) || !integer(value.attribute_mask, 0, 31)
+    || (value.attributes & ~value.attribute_mask) !== 0 || identity.mode === 'native' && (value.attribute_mask !== 31 || (value.attributes & 16) !== 0)) fail('invalid_style');
   return `${inkKey(value.foreground, identity)}/${inkKey(value.background, identity)}/${value.attributes}/${value.attribute_mask}`;
 }
 function copyInk(value: Ink): Ink { return { ...value }; }
@@ -146,7 +146,7 @@ export function decodeStyleResult(value: unknown, identity: StyleIdentity, conte
       || !fingerprint(palette.fingerprint) || !Array.isArray(palette.slots) || palette.slots.length !== CARD_ROLES.length
       || !Array.isArray(palette.origins) || palette.origins.length !== CARD_ROLES.length) fail('invalid_palette');
     for (const id of palette.slots) {
-      if (!integer(id, 1, value.styles.length) || (value.styles[id - 1] as StyleExpression).attribute_mask !== 15) fail('invalid_palette');
+      if (!integer(id, 1, value.styles.length) || (value.styles[id - 1] as StyleExpression).attribute_mask !== 31) fail('invalid_palette');
       referenced.add(id);
     }
     for (const origin of palette.origins) if (!validOrigin(origin)) fail('invalid_palette');

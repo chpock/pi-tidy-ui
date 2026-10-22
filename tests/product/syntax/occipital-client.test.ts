@@ -66,7 +66,7 @@ class Peer implements ProviderTransport {
     assert.equal(Object.hasOwn(r, 'sources'), false); assert.equal(Object.hasOwn(r, 'text'), false);
     const isNative = r.rules.kind === 'native';
     const expression = isNative ? { foreground: { kind: 'rgb', r: 1, g: 2, b: 3 },
-      background: { kind: 'rgb', r: 4, g: 5, b: 6 }, attributes: 0, attribute_mask: 15 } : r.rules.definition.default;
+      background: { kind: 'rgb', r: 4, g: 5, b: 6 }, attributes: 0, attribute_mask: 31 } : r.rules.definition.default;
     this.calls[index]!.resolve({ v: 3, ticket: r.ticket, instance: 'instance', assets: 'assets', status: 'ok', body: {
       kind: 'styles', vocabulary: r.vocabulary,
       rules: isNative ? fingerprintNative(r.rules.fingerprint, 'rules') : fingerprintRules(r.rules.definition),

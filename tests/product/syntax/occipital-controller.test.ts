@@ -69,7 +69,7 @@ class Host {
     const call = this.calls[index]!, r = call.request;
     assert.equal(r.op, 'styles.resolve');
     const style = { foreground: { kind: 'rgb', r: red, g: 120, b: 160 },
-      background: { kind: 'rgb', r: 10, g: 20, b: 30 }, attributes: 0, attribute_mask: 15 };
+      background: { kind: 'rgb', r: 10, g: 20, b: 30 }, attributes: 0, attribute_mask: 31 };
     call.resolve({ v: PROTOCOL_VERSION, ticket: r.ticket, instance: description.instance, assets: description.assets,
       status: 'ok', body: { kind: 'styles', vocabulary: r.vocabulary,
         rules: fingerprintNative(r.rules.fingerprint, 'rules'), styles: [style], indices: r.contexts.map(() => 1),

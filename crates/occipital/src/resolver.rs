@@ -13,7 +13,8 @@ pub const BOLD: u8 = 1;
 pub const ITALIC: u8 = 2;
 pub const UNDERLINE: u8 = 4;
 pub const FAINT: u8 = 8;
-pub const ALL_ATTRIBUTES: u8 = BOLD | ITALIC | UNDERLINE | FAINT;
+pub const STRIKETHROUGH: u8 = 16;
+pub const ALL_ATTRIBUTES: u8 = BOLD | ITALIC | UNDERLINE | FAINT | STRIKETHROUGH;
 /// Public Syntect selectors multiply a zero-based u16 index by ATOM_LEN_BITS.
 pub const MAX_CONTEXT_DEPTH: usize = (u16::MAX / ATOM_LEN_BITS) as usize + 1;
 
@@ -59,12 +60,12 @@ pub struct Resolution {
     pub expression: Expression,
     pub foreground: Option<Declaration>,
     pub background: Option<Declaration>,
-    pub attributes: [Option<Declaration>; 4],
+    pub attributes: [Option<Declaration>; 5],
 }
 #[derive(Clone)]
 struct Scored {
     resolution: Resolution,
-    scores: [MatchPower; 6],
+    scores: [MatchPower; 7],
 }
 impl Scored {
     fn new(default: Expression) -> Self {
@@ -73,9 +74,9 @@ impl Scored {
                 expression: default,
                 foreground: None,
                 background: None,
-                attributes: [None; 4],
+                attributes: [None; 5],
             },
-            scores: [MatchPower(-1.0); 6],
+            scores: [MatchPower(-1.0); 7],
         }
     }
     fn apply(&mut self, rule: &Rule, index: usize, score: MatchPower) {
@@ -99,7 +100,7 @@ impl Scored {
             }
         }
         if let Some(patch) = rule.attributes {
-            for i in 0..4 {
+            for i in 0..5 {
                 let bit = 1 << i;
                 if patch.mask & bit != 0 && score > self.scores[i + 2] {
                     self.scores[i + 2] = score;

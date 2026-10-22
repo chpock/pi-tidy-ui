@@ -15,7 +15,7 @@ import { SyntaxClient } from '../../src/occipital/client.ts';
 import { SyntaxRuntime } from '../../src/syntax/runtime.ts';
 import { ExtensionSettings } from '../../src/settings.ts';
 import { matchesKey } from '@earendil-works/pi-tui';
-import { observeSyntaxLocalWork, observeSyntaxCards } from './syntax-local-work.ts';
+import { observeSyntaxLocalWork, observeSyntaxCards, observePiPaletteWork } from './syntax-local-work.ts';
 
 export default function syntaxDriver(pi: ExtensionAPI) {
   const output = process.env.TIDY_UI_TEST_OUTPUT!, binary = process.env.TIDY_UI_TEST_OCCIPITAL_BIN!;
@@ -31,6 +31,7 @@ export default function syntaxDriver(pi: ExtensionAPI) {
   }
   const record = createEventRecorder(output);
   const localWork = observeSyntaxLocalWork();
+  const paletteWork = process.env.TIDY_UI_TEST_PALETTE_OBSERVE === '1' ? observePiPaletteWork() : undefined;
   const cardObservations = process.env.TIDY_UI_TEST_CARD_OBSERVE === '1' ? observeSyntaxCards(event => record({ ...event,
     phase: existsSync(join(output, 'syntax-theme-phase')) ? readFileSync(join(output, 'syntax-theme-phase'), 'utf8') : 'initial' })) : undefined;
   const transports: StdioTransport[] = [], sharedTransports: SharedTransport[] = [];
@@ -69,6 +70,7 @@ export default function syntaxDriver(pi: ExtensionAPI) {
     counts.piCaptures++;
     const accepted = captured.apply(this, args);
     if (process.env.TIDY_UI_TEST_HIGHLIGHTING_LIMITS === '1') record({ type: 'highlighting_limits_pi_capture', key: args[0], version: args[1], text: args[2], language: args[3], accepted });
+    if (process.env.TIDY_UI_TEST_PALETTE_OBSERVE === '1') record({ type: 'follow_pi_capture', key: args[0], version: args[1], text: args[2], language: args[3], accepted });
     return accepted;
   };
   SourceController.prototype.adoptPiFlat = function (...args) { counts.piBridges++; return bridged.apply(this, args); };
@@ -77,7 +79,7 @@ export default function syntaxDriver(pi: ExtensionAPI) {
     const current = runtime?.deref();
     client = undefined;
     const currentClient = current?.snapshot();
-    return { node: process.version, controller, counts: { ...counts }, localWork: localWork.snapshot(), pendingHeldReplies, client: currentClient, broker: brokerStats(),
+    return { node: process.version, controller, counts: { ...counts }, localWork: { ...localWork.snapshot(), ...paletteWork?.snapshot() }, pendingHeldReplies, client: currentClient, broker: brokerStats(),
       source: current?.sources.stats(), transports: transports.map(t => t.stats()), sharedTransports: sharedTransports.map(t => t.stats()) };
   };
   const uiNotices = new Map<ExtensionContext['ui'], ExtensionContext['ui']['notify']>();
@@ -113,7 +115,15 @@ export default function syntaxDriver(pi: ExtensionAPI) {
         return options.provider.tryShared(signal, async transport => {
           const shared = transport as SharedTransport, request = shared.request.bind(shared);
           shared.request = async (payload, opts) => {
+            const kind = process.env.TIDY_UI_TEST_PALETTE_OBSERVE !== '1' ? undefined
+              : payload.op === 'highlight' || payload.op === 'stream.open' || payload.op === 'stream.append' ? 'source'
+              : payload.op === 'styles.resolve' ? 'style' : payload.op === 'stream.close' ? 'close' : undefined;
+            if (kind) {
+              if (kind === 'source') counts.sourceRequests++; else if (kind === 'style') counts.styleRequests++; else counts.closeRequests++;
+              record({ type: 'syntax_native_dispatch', transport: 'shared', kind, payload, jobs: runtime?.deref()?.sources.stats().globalUnsettledJobs });
+            }
             const reply = await request(payload, opts);
+            if (kind) record({ type: 'syntax_native_reply', transport: 'shared', kind, payload, reply });
             if (payload.op === 'describe') counts.describeReplies++;
             if (payload.op === 'themes.refresh') counts.refreshReplies++;
             return reply;
@@ -208,7 +218,7 @@ export default function syntaxDriver(pi: ExtensionAPI) {
       await Promise.all(closes);
       writeFileSync(join(output, 'syntax-shutdown.json'), JSON.stringify(snapshot(), null, 2));
     } finally {
-      cardObservations?.restore(); localWork.restore();
+      cardObservations?.restore(); localWork.restore(); paletteWork?.restore();
       SyntaxRuntime.prototype.attach = attached; SourceController.prototype.capturePiSource = captured;
       SourceController.prototype.adoptPiFlat = bridged;
       SyntaxClient.prototype.snapshot = clientSnapshot; globalThis.fetch = fetch;

@@ -3,7 +3,7 @@ import type { LiteralInk } from '../occipital/semantic-codec.ts';
 import type { ConcreteStyle } from './style-materialization.ts';
 
 export interface AnsiStyle { readonly open: string; readonly close: string }
-const resetFonts = '\x1b[22;23;24m';
+const resetFonts = '\x1b[22;23;24;29m';
 const close = resetFonts + '\x1b[49m\x1b[39m';
 
 /** Compile each prepared style once per palette/terminal-mode revision, outside
@@ -15,6 +15,7 @@ export function compileStyleAnsi(style: ConcreteStyle, mode: TerminalColorMode):
   if (style.attributes & 2) open += '\x1b[3m';
   if (style.attributes & 4) open += '\x1b[4m';
   if (style.attributes & 8) open += '\x1b[2m';
+  if (style.attributes & 16) open += '\x1b[9m';
   return Object.freeze({ open, close });
 }
 

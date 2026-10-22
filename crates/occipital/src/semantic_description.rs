@@ -91,7 +91,7 @@ pub fn describe<'a>(
         kind: "descriptor",
         protocol_version: PROTOCOL_VERSION,
         contexts_revision: 1,
-        resolver_revision: 1,
+        resolver_revision: 2,
         palette_revision: 1,
         vocabulary: Vocabulary {
             fingerprint: vocabulary::FINGERPRINT,

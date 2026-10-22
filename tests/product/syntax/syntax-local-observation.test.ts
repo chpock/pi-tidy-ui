@@ -1,7 +1,7 @@
 import '../../fixtures/test-guard.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { observeSyntaxLocalWork, observeSyntaxCards, createWriteCaptureGate, type WriteCaptureObservation, type SyntaxCardObservation } from '../../fixtures/syntax-local-work.ts';
+import { observeSyntaxLocalWork, observeSyntaxCards, observePiPaletteWork, createWriteCaptureGate, type WriteCaptureObservation, type SyntaxCardObservation } from '../../fixtures/syntax-local-work.ts';
 import { Container } from '@earendil-works/pi-tui';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -14,6 +14,8 @@ import { SyntaxClient } from '../../../src/occipital/client.ts';
 import { preparePiInput } from '../../../src/syntax/pi-input.ts';
 import { CARD_ROLES } from '../../../src/occipital/semantic-codec.ts';
 import { hostCells } from '../../fixtures/host-cells.ts';
+import { samplePiPalette } from '../../../src/syntax/pi-palette.ts';
+import { compileStyleAnsi } from '../../../src/syntax/style-ansi.ts';
 
 test('syntax local observations count actual source measurement, not unrelated segmentation or scalar reads', () => {
   const source = 'OBSERVED_SOURCE αβ\nsecond row', budget = new DataBudget(8 * 1024 * 1024), observer = observeSyntaxLocalWork(text => text === source);
@@ -451,4 +453,20 @@ test('syntax local observations count an actual watched Bash suffix without repe
     assert.deepEqual(observer.snapshot(), appended, 'unrelated segmentation and warm unchanged display do not count');
   } finally { observer.restore(); cards.dispose(); sources.dispose(); }
   assert.equal(sources.stats().retention.retainedBytes, 0);
+});
+
+test('palette observations distinguish actual preparation from public color reads and warm compilation', async () => {
+  const dist = dirname(fileURLToPath(import.meta.resolve('@earendil-works/pi-coding-agent')));
+  const themes = await import(pathToFileURL(resolve(dist, 'modes/interactive/theme/theme.js')).href);
+  const theme = themes.getThemeByName('dark'), observer = observePiPaletteWork();
+  try {
+    theme.getBgAnsi('toolPendingBg'); Math.hypot(1, 2, 3);
+    assert.deepEqual(observer.snapshot(), { paletteSamples: 0 });
+    const prepared = samplePiPalette(theme, 'truecolor'), cold = observer.snapshot();
+    assert.equal(cold.paletteSamples, 1);
+    for (let i = 0; i < 10; i++) compileStyleAnsi(prepared.roles.code, 'truecolor');
+    assert.deepEqual(observer.snapshot(), cold);
+    samplePiPalette(theme, 'truecolor');
+    assert.equal(observer.snapshot().paletteSamples, 2);
+  } finally { observer.restore(); }
 });

@@ -57,7 +57,7 @@ export function decodeSemanticDescription(value: unknown, ticket: string): Seman
   const envelope = decodeSemanticEnvelope(value, ticket), body = envelope.body;
   const fail = (): never => { throw new ProtocolError('invalid_descriptor'); };
   if (!object(body) || !exact(body, descriptorKeys) || body.kind !== 'descriptor' || body.protocol_version !== SEMANTIC_PROTOCOL_VERSION
-    || body.contexts_revision !== 1 || body.resolver_revision !== 1 || body.palette_revision !== 1 || body.assets !== envelope.assets
+    || body.contexts_revision !== 1 || body.resolver_revision !== 2 || body.palette_revision !== 1 || body.assets !== envelope.assets
     || body.capability !== SEMANTIC_CAPABILITY || body.service !== 'syntax' || !text(body.backend_version, 128) || !integer(body.catalogue_revision, 0, Number.MAX_SAFE_INTEGER)
     || !object(body.vocabulary) || !exact(body.vocabulary, ['fingerprint', 'count']) || !fingerprint(body.vocabulary.fingerprint) || !integer(body.vocabulary.count, 1)
     || !list(body.operations, SEMANTIC_OPERATIONS, 16) || !list(body.modes, ['one_shot', 'growing'], 4) || !list(body.admission, ['try_now', 'bounded_queue'], 4)

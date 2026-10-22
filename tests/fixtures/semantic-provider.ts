@@ -6,7 +6,7 @@ export function semanticDescriptor(ticket: unknown, instance = 'instance', profi
   { id: 'native', label: 'Native theme', fingerprint: 'a'.repeat(64) },
 ]) {
   return { v: 3, ticket, instance, assets: 'assets', status: 'ok', body: {
-    kind: 'descriptor', protocol_version: 3, contexts_revision: 1, resolver_revision: 1, palette_revision: 1,
+    kind: 'descriptor', protocol_version: 3, contexts_revision: 1, resolver_revision: 2, palette_revision: 1,
     vocabulary: { fingerprint: 'a'.repeat(64), count: 20 }, assets: 'assets', backend_version: '0.1.5', catalogue_revision: 0,
     capability: 'syntax-highlight/v3', service: 'syntax',
     operations: ['describe', 'themes.refresh', 'highlight', 'stream.open', 'stream.append', 'stream.close', 'styles.resolve'],

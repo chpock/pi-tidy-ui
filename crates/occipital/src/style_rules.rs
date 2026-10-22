@@ -223,8 +223,8 @@ fn ink(raw: &RawValue, slots: u32) -> Result<Ink, Error> {
 }
 fn font(raw: &RawValue) -> Result<AttributePatch, Error> {
     let value: Font<'_> = decode(raw)?;
-    let value_bits = unsigned(value.attributes, 15)? as u8;
-    let mask = unsigned(value.attribute_mask, 15)? as u8;
+    let value_bits = unsigned(value.attributes, 31)? as u8;
+    let mask = unsigned(value.attribute_mask, 31)? as u8;
     if value_bits & !mask != 0 {
         return Err(Error::InvalidRules);
     }
@@ -238,8 +238,8 @@ fn expression(raw: &RawValue, slots: u32) -> Result<Expression, Error> {
     let result = Expression {
         foreground: ink(value.foreground, slots)?,
         background: ink(value.background, slots)?,
-        attributes: unsigned(value.attributes, 15)? as u8,
-        attribute_mask: unsigned(value.attribute_mask, 15)? as u8,
+        attributes: unsigned(value.attributes, 31)? as u8,
+        attribute_mask: unsigned(value.attribute_mask, 31)? as u8,
     };
     result
         .validate(false, slots)
@@ -456,7 +456,7 @@ fn hash_path(hash: &mut Sha256, raw: &RawValue) -> Result<(), Error> {
 }
 fn fingerprint(definition: &Definition<'_>, slots: u32, rules: usize) -> Result<String, Error> {
     let mut hash = Sha256::new();
-    hash.update(b"occipital-client-rules/1\0");
+    hash.update(b"occipital-client-rules/2\0");
     number(&mut hash, slots as usize);
     text(
         &mut hash,
@@ -504,8 +504,8 @@ fn native_identity(domain: &[u8], definition: &str) -> Result<String, Error> {
     Ok(format!("{:x}", hash.finalize()))
 }
 pub fn fingerprint_native_rules(definition: &str) -> Result<String, Error> {
-    native_identity(b"occipital-native-rules/1", definition)
+    native_identity(b"occipital-native-rules/2", definition)
 }
 pub fn fingerprint_native_palette(definition: &str) -> Result<String, Error> {
-    native_identity(b"occipital-native-palette/1", definition)
+    native_identity(b"occipital-native-palette/2", definition)
 }

@@ -138,7 +138,7 @@ test('entry projects trusted terminal backgrounds into prepared Pi input without
       tool.setArgsComplete(); tool.updateResult({ content: [{ type: 'text', text: 'written' }], isError: false }, false); h.root.addChild(tool);
       const samples: { roles: ReturnType<typeof samplePiCardPalette>; mode: string; foregrounds: string[] }[] = [];
       SyntaxRuntime.prototype.preparePiInput = function (input, mode, funding) {
-        samples.push({ roles: samplePiCardPalette(input), mode, foregrounds: (['toolOutput', 'dim', 'muted'] as const).map(role => input.getFgAnsi(role)) });
+        samples.push({ roles: samplePiCardPalette(input, mode), mode, foregrounds: (['toolOutput', 'dim', 'muted'] as const).map(role => input.getFgAnsi(role)) });
         return original.call(this, input, mode, funding);
       };
       try {
@@ -147,7 +147,7 @@ test('entry projects trusted terminal backgrounds into prepared Pi input without
         assert.ok(rows.some(row => row.includes('TRUSTED_COLOR'))); assert.ok(samples.length > 0);
         const sample = samples.at(-1)!;
         const explicit = new Theme(fg as never, { ...bg, toolPendingBg: background } as never, mode, { dim: ['dim', 'muted'] });
-        const expected = samplePiCardPalette(explicit);
+        const expected = samplePiCardPalette(explicit, mode);
         assert.deepEqual(sample.roles.panel.background, expected.panel.background, 'known default must not be mistaken for an unknown terminal default');
         assert.equal(sample.roles.panel.background.kind, mode === 'truecolor' ? 'rgb' : 'indexed');
         if (mode === '256color') assert.ok(rows.every(row => !/\x1b\[(?:38|48);2;/.test(row)), 'current public mode also governs projected background output');
@@ -156,7 +156,10 @@ test('entry projects trusted terminal backgrounds into prepared Pi input without
         assert.equal(sample.mode, theme.getColorMode());
         assert.deepEqual(sample.foregrounds, (['toolOutput', 'dim', 'muted'] as const).map(role => theme.getFgAnsi(role)));
         assert.deepEqual(sample.roles.addedCode.background, expected.addedCode.background, 'known equal-default and explicit background derive the same tint');
-        if (background === '#123456' && mode === 'truecolor') assert.deepEqual(sample.roles.addedCode.background, { kind: 'rgb', r: 27, g: 60, b: 84 });
+        if (background === '#123456' && mode === 'truecolor') {
+          assert.deepEqual(sample.roles.panel.background, { kind: 'rgb', r: 18, g: 52, b: 86 }, 'the declared concrete background is projected exactly');
+          assert.notDeepEqual(sample.roles.addedCode.background, sample.roles.panel.background, 'known foreground constraints still admit a structural tint');
+        }
         const before = samples.length;
         for (const width of [80, 60, 100, 80]) h.root.render(width);
         await settled(); assert.equal(samples.length, before, 'warm/resize never resample the public Pi bindings');

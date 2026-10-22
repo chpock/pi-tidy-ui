@@ -58,7 +58,7 @@ fn shared_rule_vectors_and_independent_canonical_preimages_match() {
     let bytes = include_bytes!("../../../protocol/syntax-v3/rule-vectors.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
-        "ad5ffb2e3d97eef1f60c03a76901e3ae80fef857325f3a94adeaa24a9467e273"
+        "6e8abf624ac2524f0cc15fb60dbf48ccc313d736ac21ac90a739271278fe3df7"
     );
     let vectors: Vectors = serde_json::from_slice(bytes).unwrap();
     for vector in &vectors.client {
@@ -66,9 +66,9 @@ fn shared_rule_vectors_and_independent_canonical_preimages_match() {
         assert_eq!(plan.fingerprint(), vector.fingerprint, "{}", vector.name);
     }
     // Independently framed contract bytes, not production expression/path helpers.
-    let empty = b"occipital-client-rules/1\0\0\0\0\0\0\0\0\x07h/h/0/0\0\0\0\0";
+    let empty = b"occipital-client-rules/2\0\0\0\0\0\0\0\0\x07h/h/0/0\0\0\0\0";
     let markdown = concat!(
-        "occipital-client-rules/1\0",
+        "occipital-client-rules/2\0",
         "\0\0\0\x04",
         "\0\0\0\x07h/h/0/0",
         "\0\0\0\x02",
@@ -93,8 +93,8 @@ fn shared_rule_vectors_and_independent_canonical_preimages_match() {
         vectors.native.palette
     );
     for (domain, expected) in [
-        ("occipital-native-rules/1", vectors.native.rules),
-        ("occipital-native-palette/1", vectors.native.palette),
+        ("occipital-native-rules/2", vectors.native.rules),
+        ("occipital-native-palette/2", vectors.native.palette),
     ] {
         assert_eq!(
             format!(
@@ -106,7 +106,7 @@ fn shared_rule_vectors_and_independent_canonical_preimages_match() {
     }
     writeln!(
         std::io::stdout(),
-        "shared identities: 3 client + 2 native; independent preimages {} and {} bytes",
+        "shared identities: 4 client + 2 native; independent preimages {} and {} bytes",
         empty.len(),
         markdown.len()
     )
@@ -325,7 +325,7 @@ fn strict_objects_required_nullable_fields_and_nested_shapes_reject() {
     for bad in [
         json!([0, 0]),
         json!({"attributes":1,"attribute_mask":0}),
-        json!({"attributes":0,"attribute_mask":16}),
+        json!({"attributes":0,"attribute_mask":32}),
         json!({"attributes":0,"attribute_mask":0,"extra":null}),
         json!({"attributes":[],"attribute_mask":0}),
     ] {
@@ -472,7 +472,7 @@ fn each_expression_scalar_has_the_exact_canonical_key_and_framing() {
         value["binding_slots"] = json!(65536);
         value["default"] =
             json!({"foreground":fg,"background":bg,"attributes":attributes,"attribute_mask":mask});
-        let mut bytes = b"occipital-client-rules/1\0".to_vec();
+        let mut bytes = b"occipital-client-rules/2\0".to_vec();
         bytes.extend_from_slice(&65536u32.to_be_bytes());
         bytes.extend_from_slice(&(key.len() as u32).to_be_bytes());
         bytes.extend_from_slice(key.as_bytes());
@@ -518,7 +518,7 @@ fn shared_raw_number_vectors_match_binary64_integer_admission() {
     let bytes = include_bytes!("../../../protocol/syntax-v3/rule-number-vectors.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
-        "505b06b569f3b989dc67210e7e3fc087f7dd4154c6eec63c092051d17faf3c0e"
+        "120e3c12f9b60391e51d21686c175a2ca996d757f212ba85fbc2a93301fa04af"
     );
     let vectors: Numbers = serde_json::from_slice(bytes).unwrap();
     let mut mismatches = Vec::new();

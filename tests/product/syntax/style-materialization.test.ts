@@ -24,7 +24,7 @@ test('style materialization: foreground binding typography composes before expli
   assert.equal(materializeStyle(clearFaint, roles, caller).attributes, 3);
   const clearItalic = { ...heading, attribute_mask: 3 };
   assert.equal(materializeStyle(clearItalic, roles, caller).attributes, 9);
-  const reset = { ...heading, attributes: 0, attribute_mask: 15 };
+  const reset = { ...heading, attributes: 0, attribute_mask: 31 };
   assert.equal(materializeStyle(reset, roles, caller).attributes, 0);
 });
 
@@ -38,13 +38,13 @@ test('style materialization: a binding may inherit color yet explicitly set or c
 test('style materialization: background bindings supply color without changing foreground typography', () => {
   const expression: StyleExpression = { ...inherited, background: { kind: 'binding', slot: 1 } };
   assert.deepEqual(materializeStyle(expression, roles, caller), { ...caller, background: { kind: 'indexed', index: 6 } });
-  assert.deepEqual(materializeStyle(expression, [{ ...roles[0]! }, { ink: { kind: 'inherit' }, attributes: 0, attribute_mask: 15 }], caller), caller);
+  assert.deepEqual(materializeStyle(expression, [{ ...roles[0]! }, { ink: { kind: 'inherit' }, attributes: 0, attribute_mask: 31 }], caller), caller);
 });
 
 test('style materialization: native literals and complete font masks never read Pi bindings', () => {
   const forbidden = new Proxy([] as StyleBinding[], { get() { assert.fail('native style accessed Pi bindings'); } });
-  const expression: StyleExpression = { foreground: rgb(30, 40, 50), background: rgb(5, 6, 7), attributes: 4, attribute_mask: 15 };
-  assert.deepEqual(materializeStyle(expression, forbidden, caller), { foreground: rgb(30, 40, 50), background: rgb(5, 6, 7), attributes: 4 });
+  const expression: StyleExpression = { foreground: rgb(30, 40, 50), background: rgb(5, 6, 7), attributes: 4, attribute_mask: 31 };
+  assert.deepEqual(materializeStyle(expression, forbidden, { ...caller, attributes: 31 }), { foreground: rgb(30, 40, 50), background: rgb(5, 6, 7), attributes: 4 });
 });
 
 test('style materialization: explicit terminal defaults are not caller inheritance or fabricated RGB', () => {
@@ -53,7 +53,7 @@ test('style materialization: explicit terminal defaults are not caller inheritan
 });
 
 test('style materialization: syntax can use its structural row surface without altering scope colors or fonts', () => {
-  const expression: StyleExpression = { foreground: rgb(30, 40, 50), background: rgb(5, 6, 7), attributes: 3, attribute_mask: 15 };
+  const expression: StyleExpression = { foreground: rgb(30, 40, 50), background: rgb(5, 6, 7), attributes: 3, attribute_mask: 31 };
   const surface = rgb(17, 18, 19);
   const style = materializeStyle(expression, [], caller, surface);
   assert.deepEqual(style, { foreground: expression.foreground, background: surface, attributes: 3 });

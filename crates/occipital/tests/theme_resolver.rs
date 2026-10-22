@@ -19,7 +19,7 @@ fn expected(style: Style) -> Expression {
         foreground: resolver::native_ink(style.foreground),
         background: resolver::native_ink(style.background),
         attributes: resolver::native_attributes(style.font_style),
-        attribute_mask: 15,
+        attribute_mask: 31,
     }
 }
 fn base() -> Expression {
@@ -195,7 +195,7 @@ fn clear_restore_zero_width_font_replacement_and_empty_root() {
         assert_eq!(actual.expression, expected(native), "{range:?}");
         if range.start == 1 {
             assert_eq!(actual.expression.attributes, 0);
-            assert_eq!(actual.expression.attribute_mask, 15);
+            assert_eq!(actual.expression.attribute_mask, 31);
         }
         if path.is_empty() {
             assert_eq!(&actual.expression, resolver.default_expression());
@@ -567,5 +567,147 @@ fn explicit_custom_selectors_preserve_six_demonstrated_distinctions() {
     }
     for rgb in colors {
         assert!(seen.contains(&rgb), "missing {rgb:?}");
+    }
+}
+
+#[test]
+fn actual_markdown_strike_contexts() {
+    let syntaxes = two_face::syntax::extra_newlines();
+    let mut parser = ParseState::new(syntaxes.find_syntax_by_extension("md").unwrap());
+    let line = "plain ~~strike **bold _italic_** [link](https://x) `code`~~ after\n";
+    let ops = parser.parse_line(line, &syntaxes).unwrap();
+    let mut stack = ScopeStack::new();
+    let paths = contexts_for_line(&ops, line, &mut stack);
+    for name in [
+        "markup.strikethrough",
+        "punctuation.definition.strikethrough",
+    ] {
+        assert!(
+            occipital::vocabulary::ScopeId::from_name(name).is_some(),
+            "trusted {name}"
+        );
+    }
+    let resolver = Resolver::compile(
+        base(),
+        vec![
+            rule("markup.strikethrough", None, Some((16, 16))),
+            rule("punctuation.definition.strikethrough", None, Some((0, 16))),
+            rule("markup.bold", None, Some((1, 1))),
+            rule("markup.italic", None, Some((2, 2))),
+            rule(
+                "meta.link.inline.description.markdown",
+                Some(1),
+                Some((4, 4)),
+            ),
+            rule("markup.underline.link", Some(2), Some((4, 4))),
+            rule("markup.raw", Some(3), None),
+        ],
+    );
+    let mut cursor = resolver
+        .cursor(paths.iter().map(|(_, p)| p.len()).max().unwrap())
+        .unwrap();
+    let mut markers = 0;
+    for (range, path) in &paths {
+        let text = &line[range.clone()];
+        let value = cursor.resolve(path).unwrap().expression;
+        writeln!(
+            std::io::stdout(),
+            "strike-context {text:?}: {:?}; font={}/{}",
+            path.iter().map(ToString::to_string).collect::<Vec<_>>(),
+            value.attributes,
+            value.attribute_mask
+        )
+        .unwrap();
+        match text {
+            "~~" => {
+                markers += 1;
+                assert_eq!((value.attributes, value.attribute_mask), (0, 16));
+            }
+            "strike " => assert_eq!(value.attributes, 16),
+            "bold " => assert_eq!(value.attributes, 17),
+            "italic" => assert_eq!(value.attributes, 19),
+            "link" | "https://x" => assert_eq!(value.attributes, 20),
+            "code" => {
+                assert_eq!(value.attributes, 16);
+                assert_eq!(value.foreground, Ink::Binding { slot: 3 });
+            }
+            "plain " | " after\n" => assert_eq!(value.attribute_mask, 0),
+            _ => {}
+        }
+    }
+    assert_eq!(markers, 2);
+}
+
+#[test]
+fn strike_has_its_own_winner_and_preserves_other_attributes() {
+    let resolver = Resolver::compile(
+        base(),
+        vec![
+            rule("markup.strikethrough", None, Some((16, 16))),
+            rule("markup.strikethrough", None, Some((0, 16))),
+            rule("markup.bold", None, Some((1, 1))),
+            rule("markup.italic", None, Some((2, 2))),
+            rule("markup.underline", None, Some((4, 4))),
+            rule("punctuation", None, Some((0, 16))),
+        ],
+    );
+    let mut cursor = resolver.cursor(5).unwrap();
+    let path = [
+        scope("markup.strikethrough"),
+        scope("markup.bold"),
+        scope("markup.italic"),
+        scope("markup.underline"),
+    ];
+    let value = cursor.resolve(&path).unwrap();
+    assert_eq!(value.expression.attributes, 23);
+    assert_eq!(value.expression.attribute_mask, 23);
+    assert_eq!(value.attributes[4].unwrap().rule_index, 0);
+    let mut marker = path.to_vec();
+    marker.push(scope("punctuation"));
+    let cleared = cursor.resolve(&marker).unwrap();
+    assert_eq!(cleared.expression.attributes, 7);
+    assert_eq!(cleared.expression.attribute_mask, 23);
+    assert_eq!(cleared.attributes[4].unwrap().rule_index, 5);
+    assert_eq!(cursor.resolve(&path).unwrap().expression.attributes, 23);
+    assert_eq!(cursor.resolve(&[]).unwrap().expression.attributes, 0);
+}
+
+#[test]
+fn follow_pi_corpus_exposes_actual_pinned_contexts() {
+    let corpus: serde_json::Value =
+        serde_json::from_str(include_str!("fixtures/follow_pi_corpus.json")).unwrap();
+    let syntaxes = two_face::syntax::extra_newlines();
+    for case in corpus.as_array().unwrap() {
+        let name = case["syntax"].as_str().unwrap();
+        let source = case["source"].as_str().unwrap();
+        let syntax = syntaxes
+            .find_syntax_by_name(name)
+            .unwrap_or_else(|| panic!("missing {name}"));
+        let mut parser = ParseState::new(syntax);
+        let mut stack = ScopeStack::new();
+        let mut bytes = 0;
+        for line in syntect::util::LinesWithEndings::from(source) {
+            let operations = parser.parse_line(line, &syntaxes).unwrap();
+            for (range, path) in contexts_for_line(&operations, line, &mut stack) {
+                for scope in &path {
+                    assert!(occipital::vocabulary::ScopeId::from_scope(*scope).is_some());
+                }
+                let text = &line[range.clone()];
+                bytes += text.len();
+                writeln!(
+                    std::io::stdout(),
+                    "corpus-context {}",
+                    serde_json::json!({
+                        "case": case["id"], "text": text,
+                        "scopes": path.iter().map(ToString::to_string).collect::<Vec<_>>()
+                    })
+                )
+                .unwrap();
+            }
+        }
+        assert_eq!(bytes, source.len(), "{name}: complete parser coverage");
+        for check in case["checks"].as_array().unwrap() {
+            assert!(source.contains(check["text"].as_str().unwrap()));
+        }
     }
 }

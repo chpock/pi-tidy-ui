@@ -1,17 +1,30 @@
-import type { Theme } from '@earendil-works/pi-coding-agent';
+import type { Theme, ThemeColor } from '@earendil-works/pi-coding-agent';
 import type { LiteralInk } from '../occipital/semantic-codec.ts';
 import type { StyleBinding } from './style-materialization.ts';
-import { PI_RULE_BINDINGS } from './pi-rules.ts';
+import { PI_DIRECT_BINDINGS, PI_MARKER_BINDINGS, PI_RULE_BINDINGS } from './pi-rules.ts';
 
 const invalid = (): never => { throw new Error('invalid Pi binding prefix'); };
 
 /** Sample one bounded public-role set per local palette revision, never in render.
  * getFgAnsi preserves symbolic defaults and faint; theme.colors substitutes
  * terminal guesses and approximates faint with a different RGB. These bindings
- * describe each role in isolation, including its otherwise-normal typography.
+ * describe direct roles in isolation, including otherwise-normal typography;
+ * marker slots use their selected semantic source and keep the parent's typography.
  * No theme owner or source text survives in the returned immutable data. */
-export function samplePiBindings(theme: Pick<Theme, 'getFgAnsi'>): readonly StyleBinding[] {
-  return Object.freeze(PI_RULE_BINDINGS.map(role => samplePiPrefix(theme.getFgAnsi(role))));
+export function samplePiBindings(theme: Pick<Theme, 'getFgAnsi'>,
+  sampled = new Map<ThemeColor, ReturnType<typeof samplePiPrefix>>()): readonly ReturnType<typeof samplePiPrefix>[] {
+  const sample = (role: ThemeColor) => {
+    let value = sampled.get(role);
+    if (!value) { value = samplePiPrefix(theme.getFgAnsi(role)); sampled.set(role, value); }
+    return value;
+  };
+  return Object.freeze(PI_RULE_BINDINGS.map(binding => {
+    if (!(binding in PI_MARKER_BINDINGS)) return sample(binding as typeof PI_DIRECT_BINDINGS[number]);
+    const { ink, typography } = PI_MARKER_BINDINGS[binding as keyof typeof PI_MARKER_BINDINGS];
+    const parent = sample(typography);
+    // The selected semantic role supplies ink only; original parent typography stays intact.
+    return ink === typography ? parent : Object.freeze({ ...parent, ink: sample(ink).ink });
+  }));
 }
 
 export function samplePiPrefix(prefix: string, channel: 'foreground' | 'background' = 'foreground'): StyleBinding & { readonly ink: LiteralInk } {
@@ -31,6 +44,8 @@ export function samplePiPrefix(prefix: string, channel: 'foreground' | 'backgrou
       const code = parts[i]!;
       if (code === 0) { ink = { kind: 'terminal-default' }; attributes = 0; }
       else if (code === 1 || code === 2 || code === 3 || code === 4) attributes |= code === 1 ? 1 : code === 2 ? 8 : code === 3 ? 2 : 4;
+      else if (code === 9) attributes |= 16;
+      else if (code === 29) attributes &= ~16;
       else if (code === 22) attributes &= ~(1 | 8);
       else if (code === 23) attributes &= ~2;
       else if (code === 24) attributes &= ~4;
@@ -46,5 +61,5 @@ export function samplePiPrefix(prefix: string, channel: 'foreground' | 'backgrou
     }
     offset = end + 1;
   }
-  return Object.freeze({ ink: Object.freeze(ink), attributes, attribute_mask: 15 });
+  return Object.freeze({ ink: Object.freeze(ink), attributes, attribute_mask: 31 });
 }

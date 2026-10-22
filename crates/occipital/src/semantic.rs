@@ -270,10 +270,10 @@ impl Expression {
             Ink::Inherit {} => !native,
             _ => true,
         };
-        if self.attributes > 15
-            || self.attribute_mask > 15
+        if self.attributes > 31
+            || self.attribute_mask > 31
             || self.attributes & !self.attribute_mask != 0
-            || native && self.attribute_mask != 15
+            || native && (self.attribute_mask != 31 || self.attributes & 16 != 0)
             || !ink(&self.foreground)
             || !ink(&self.background)
         {

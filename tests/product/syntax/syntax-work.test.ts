@@ -59,7 +59,7 @@ class Host {
     const rules = r.rules as { fingerprint: string };
     call.resolve({ v: 3, ticket: r.ticket, instance: description.instance, assets: description.assets, status: 'ok',
       body: { kind: 'styles', vocabulary: r.vocabulary, rules: fingerprintNative(rules.fingerprint, 'rules'),
-        styles: [{ ...literal, attribute_mask: 15 }], indices: (r.contexts as unknown[]).map(() => 1),
+        styles: [{ ...literal, attribute_mask: 31 }], indices: (r.contexts as unknown[]).map(() => 1),
         palette: { revision: 1, fingerprint: fingerprintNative(rules.fingerprint, 'palette'), slots: CARD_ROLES.map(() => 1), origins: CARD_ROLES.map(() => 0) } } });
   }
   async answer(index: number, text: string, complete = true, literal?: ConcreteStyle) {

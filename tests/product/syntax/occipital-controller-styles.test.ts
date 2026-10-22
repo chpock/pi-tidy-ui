@@ -19,7 +19,7 @@ const literal = (n: number): ConcreteStyle => ({ foreground: { kind: 'rgb', r: n
 const roles = (n: number) => Object.fromEntries(CARD_ROLES.map(role => [role, literal(n)])) as Record<CardRole, ConcreteStyle>;
 const native = (n = 1) => ({ kind: 'native' as const, id: `native${n}`, fingerprint: n.toString(16).padStart(64, '0') });
 const local = (n = 1) => ({ kind: 'client' as const, definition, bindingRevision: n, palette: `local:${n}`,
-  bindings: [{ ink: literal(n).foreground, attributes: 0, attribute_mask: 15 }], roles: roles(n) });
+  bindings: [{ ink: literal(n).foreground, attributes: 0, attribute_mask: 31 }], roles: roles(n) });
 const demand = (key = 'source', text = 'echo one\n', version = 1, complete = true): SourceDemand => ({ key, text, version, complete,
   language: 'bash', profile: 'pi', fingerprint: fingerprintRules(definition) });
 class Peer {
@@ -49,7 +49,7 @@ class Peer {
   }
   style(i: number, n = 1, bad = false) {
     const request = this.calls[i]!, isNative = request.rules.kind === 'native', selected = request.rules;
-    const expression = isNative ? { ...literal(n), attribute_mask: 15 } : definition.default;
+    const expression = isNative ? { ...literal(n), attribute_mask: 31 } : definition.default;
     this.pending[i]!.resolve(this.envelope(i, { kind: 'styles', vocabulary: request.vocabulary,
       rules: bad ? 'f'.repeat(64) : isNative ? fingerprintNative(selected.fingerprint, 'rules') : fingerprintRules(selected.definition),
       styles: request.contexts.length || isNative ? [expression] : [], indices: request.contexts.map(() => 1),
@@ -699,8 +699,8 @@ test('controller source neutral: native defaults ignore role changes without Pi 
     const request = peer.calls[1]!, palette = neutralSelection().roles;
     peer.pending[1]!.resolve(peer.envelope(1, { kind: 'styles', vocabulary: request.vocabulary,
       rules: fingerprintNative(request.rules.fingerprint, 'rules'),
-      styles: [{ foreground: { kind: 'terminal-default' }, background: { kind: 'terminal-default' }, attributes: 0, attribute_mask: 15 },
-        { ...palette.title, attribute_mask: 15 }, { ...palette.code, attribute_mask: 15 }], indices: [1],
+      styles: [{ foreground: { kind: 'terminal-default' }, background: { kind: 'terminal-default' }, attributes: 0, attribute_mask: 31 },
+        { ...palette.title, attribute_mask: 31 }, { ...palette.code, attribute_mask: 31 }], indices: [1],
       palette: { revision: 1, fingerprint: fingerprintNative(request.rules.fingerprint, 'palette'),
         slots: CARD_ROLES.map(role => role === 'title' ? 2 : 3), origins: CARD_ROLES.map(() => 0) } }));
     await settled();
@@ -895,7 +895,7 @@ test('controller styles: ready-table enumeration scales with adopted contexts, n
     assert.equal(styleRequest.contexts.length, 2);
     peer.pending[1]!.resolve(peer.envelope(1, { kind: 'styles', vocabulary: styleRequest.vocabulary,
       rules: fingerprintNative(styleRequest.rules.fingerprint, 'rules'),
-      styles: [literal(7), literal(11), literal(22)].map(style => ({ ...style, attribute_mask: 15 })), indices: [2, 3],
+      styles: [literal(7), literal(11), literal(22)].map(style => ({ ...style, attribute_mask: 31 })), indices: [2, 3],
       palette: { revision: 1, fingerprint: fingerprintNative(styleRequest.rules.fingerprint, 'palette'), slots: CARD_ROLES.map(() => 1), origins: CARD_ROLES.map(() => 0) } }));
     await settled(); SemanticRanges.prototype.captureView = capture;
     const basis = owner.displayBasis('source')!, styles = new Set<ConcreteStyle>();

@@ -60,7 +60,7 @@ function validate(value: unknown): RuleDefinition {
  * explicit-null/clear distinctions are framed independently of JSON object order. */
 export function fingerprintRules(value: unknown): string {
   const definition = validate(value), identity = { mode: 'client', bindingSlots: definition.binding_slots } as const;
-  const hash = createHash('sha256').update('occipital-client-rules/1\0'), word = Buffer.allocUnsafe(4);
+  const hash = createHash('sha256').update('occipital-client-rules/2\0'), word = Buffer.allocUnsafe(4);
   const number = (n: number) => { word.writeUInt32BE(n); hash.update(word); };
   const text = (s: string) => { number(Buffer.byteLength(s)); hash.update(s, 'utf8'); };
   const path = (names: readonly string[]) => { number(names.length); for (const name of names) text(name); };
@@ -80,5 +80,5 @@ export function fingerprintRules(value: unknown): string {
 /** Definition content and interpretation revision, never Pi colors or source text. */
 export function fingerprintNative(definition: string, kind: 'rules' | 'palette'): string {
   if (!/^[a-f0-9]{64}$/.test(definition) || (kind !== 'rules' && kind !== 'palette')) reject();
-  return createHash('sha256').update(`occipital-native-${kind}/1\0`).update(definition, 'ascii').digest('hex');
+  return createHash('sha256').update(`occipital-native-${kind}/2\0`).update(definition, 'ascii').digest('hex');
 }

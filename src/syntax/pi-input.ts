@@ -3,9 +3,9 @@ import type { TerminalColorMode } from '@earendil-works/pi-tui';
 import type { GeometryFunding } from '../occipital/controller.ts';
 import { type DataBudget, type DataCharge, type DataCleanupReceipt, type DataGrantFactory } from '../occipital/data-budget.ts';
 import { CARD_ROLES, type CardRole } from '../occipital/semantic-codec.ts';
-import { samplePiBindings } from './pi-bindings.ts';
-import { samplePiCardPalette } from './pi-palette.ts';
-import { PI_RULE_BINDINGS } from './pi-rules.ts';
+import { samplePiPalette } from './pi-palette.ts';
+import { PI_MARKER_VARIANT_SCRATCH_BYTES } from './pi-variants.ts';
+import { PI_DIRECT_BINDINGS, PI_RULE_BINDINGS } from './pi-rules.ts';
 import { compileStyleAnsi, type AnsiStyle } from './style-ansi.ts';
 import type { ConcreteStyle, StyleBinding } from './style-materialization.ts';
 
@@ -23,7 +23,7 @@ const handleBytes = 256;
 const dataBytes = 512 + PI_RULE_BINDINGS.length * 256 + CARD_ROLES.length * 1024;
 // The fixed public role samplers use bounded SGR parsing/map/diff temporaries.
 // This is operation scratch, not a root-pool or response-size reservation.
-const scratchBytes = 8192;
+const scratchBytes = 8192 + PI_DIRECT_BINDINGS.length * 256 + PI_MARKER_VARIANT_SCRATCH_BYTES;
 const denied = Symbol('Pi input allocation denied');
 type SharedOwnership = { charge: DataCharge; holders: number; owners: number };
 type Store = { readonly paletteRevision: number; readonly terminalMode: TerminalColorMode; data?: InputData; ownership: SharedOwnership };
@@ -133,7 +133,7 @@ function prepare(theme: PiInputTheme, paletteRevision: number, terminalMode: Ter
   let scratch: DataCharge | undefined, charge: DataCharge | undefined, header: DataCharge | undefined;
   try {
     scratch = fund(funding.budget, scratchBytes, funding.grant); charge = fund(funding.budget, dataBytes, funding.grant); header = fund(funding.budget, handleBytes, funding.grant);
-    const bindings = samplePiBindings(theme), roles = samplePiCardPalette(theme), compiledRoles = {} as Record<CardRole, AnsiStyle>;
+    const { bindings, roles } = samplePiPalette(theme, terminalMode), compiledRoles = {} as Record<CardRole, AnsiStyle>;
     for (const role of CARD_ROLES) compiledRoles[role] = compileStyleAnsi(roles[role], terminalMode);
     const data = Object.freeze({ bindings, roles, compiledRoles: Object.freeze(compiledRoles) });
     const store: Store = { paletteRevision, terminalMode, data, ownership: { charge, holders: 1, owners: 1 } };

@@ -25,7 +25,7 @@ pub fn native_fingerprint(definition: &str, palette: bool) -> Result<String, Fau
     }
     let domain = if palette { "palette" } else { "rules" };
     let mut hash = Sha256::new();
-    hash.update(format!("occipital-native-{domain}/1\0"));
+    hash.update(format!("occipital-native-{domain}/2\0"));
     hash.update(definition.as_bytes());
     Ok(format!("{:x}", hash.finalize()))
 }

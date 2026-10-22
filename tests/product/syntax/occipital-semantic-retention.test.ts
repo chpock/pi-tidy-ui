@@ -26,7 +26,7 @@ test('semantic retention: source strings, semantic ranges and shared styles use 
   const before = pool.stats();
   assert.equal(before.contexts, 1);
   assert.equal(pool.arena.installStyles(vocabulary, rules, refs, [{ foreground: { kind: 'rgb', r: 1, g: 2, b: 3 },
-    background: { kind: 'terminal-default' }, attributes: 0, attribute_mask: 15 }], Uint32Array.of(1), bytes => pool.reserve(first, bytes).accepted), true);
+    background: { kind: 'terminal-default' }, attributes: 0, attribute_mask: 31 }], Uint32Array.of(1), bytes => pool.reserve(first, bytes).accepted), true);
   assert.equal(pool.stats().retainedBytes - before.retainedBytes, pool.stats().styleBytes);
   pool.remove(first);
   assert.equal(pool.stats().contexts, 1);

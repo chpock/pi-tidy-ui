@@ -67,6 +67,17 @@ test('Pi flat: complete fonts and resets preserve terminal defaults and neutral 
   assert.equal(budget.stats().retainedBytes, 0);
 });
 
+test('Pi flat: strike survives selective font resets and clears with 29 and 0', async () => {
+  const { preparePiFlat } = await adapter(), budget = new DataBudget(100_000);
+  const result = preparePiFlat('ABCDE', rows(['\x1b[1;2;3;4;9mA\x1b[22;23;24mB\x1b[29mC\x1b[9mD\x1b[0mE']), neutral, budget);
+  assert.equal(result.outcome, 'ready'); if (result.outcome !== 'ready') return;
+  try {
+    const values = styles(result.projection);
+    assert.deepEqual(ranges(result.projection).map(([, , style]) => values[style]!.attributes), [31, 16, 0, 16, 8]);
+  } finally { result.projection.dispose(); }
+  assert.equal(budget.stats().retainedBytes, 0);
+});
+
 test('Pi flat: bad rows and controls reject the entire candidate and do not change an old projection', async () => {
   const { preparePiFlat } = await adapter(), budget = new DataBudget(100_000);
   const old = preparePiFlat('old', rows(['old']), neutral, budget);
@@ -75,7 +86,7 @@ test('Pi flat: bad rows and controls reject the entire candidate and do not chan
   for (const reader of [rows(['a']), rows(['a', 'B']), rows(['a', 'b', '']), consume => { consume(1, 'a'); return true; }, consume => { consume(0, 'a'); consume(1, 'b'); return false; }] satisfies PiRowReader[]) {
     assert.equal(preparePiFlat('a\nb', reader, neutral, budget).outcome, 'invalid'); assert.deepEqual(budget.stats(), before);
   }
-  for (const control of ['\x1b[38;2;1;2m', '\x1b[38;5;256m', '\x1b[31;;1m', '\x1b[38:2:1:2:3m', '\x1b[7m', '\x1b[9m', '\x1b[2K', '\x1b]8;;url\x07', '\r', '\x00']) {
+  for (const control of ['\x1b[38;2;1;2m', '\x1b[38;5;256m', '\x1b[31;;1m', '\x1b[38:2:1:2:3m', '\x1b[7m', '\x1b[2K', '\x1b]8;;url\x07', '\r', '\x00']) {
     assert.equal(preparePiFlat('x', rows([control + 'x']), neutral, budget).outcome, 'invalid', JSON.stringify(control));
     assert.deepEqual(budget.stats(), before);
   }

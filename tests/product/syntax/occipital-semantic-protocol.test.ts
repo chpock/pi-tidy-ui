@@ -13,13 +13,13 @@ const limits = {
   idle_ms: 60000, age_ms: 600000, quantum_ms: 2, data_per_route: 2, control_per_route: 2, routes: 8, workers: 4,
 };
 const runtime = { pid: 123, routes: 1, leases: 0, data_bytes: 0, data_jobs: 0, queued: 0, control_bytes: 0, control_jobs: 0 };
-const descriptor = () => ({ kind: 'descriptor', protocol_version: 3, contexts_revision: 1, resolver_revision: 1, palette_revision: 1,
+const descriptor = () => ({ kind: 'descriptor', protocol_version: 3, contexts_revision: 1, resolver_revision: 2, palette_revision: 1,
   vocabulary: { fingerprint: fp, count: 20 }, assets: 'syntax-assets', backend_version: '0.1.5', catalogue_revision: 0,
   capability: 'syntax-highlight/v3', service: 'syntax', operations: ['describe', 'themes.refresh', 'highlight', 'stream.open', 'stream.append', 'stream.close', 'styles.resolve'],
   modes: ['one_shot', 'growing'], admission: ['try_now', 'bounded_queue'], profiles: [{ id: 'syntect:Theme', label: 'Theme', fingerprint: fp }], diagnostic: null, limits, runtime });
 const envelope = (body: unknown, patch: Record<string, unknown> = {}) => ({ v: 3, ticket: 'ticket', instance: 'instance', assets: 'syntax-assets', status: 'ok', body, ...patch });
 const identity = { instance: 'instance', assets: 'syntax-assets', vocabulary: { fingerprint: fp, count: 20 } };
-const expression = { foreground: { kind: 'rgb', r: 200, g: 100, b: 50 }, background: { kind: 'rgb', r: 0, g: 0, b: 0 }, attributes: 0, attribute_mask: 15 };
+const expression = { foreground: { kind: 'rgb', r: 200, g: 100, b: 50 }, background: { kind: 'rgb', r: 0, g: 0, b: 0 }, attributes: 0, attribute_mask: 31 };
 const styles = () => ({ kind: 'styles', vocabulary: fp, rules, styles: [expression], indices: [1], palette: {
   revision: 1, fingerprint: palette, slots: CARD_ROLES.map(() => 1), origins: CARD_ROLES.map(() => 0),
 } });
@@ -42,7 +42,7 @@ test('semantic protocol: a metadata-only descriptor advertises context identity 
   assert.equal(value.profiles[0]!.id, 'syntect:Theme');
   assert.ok(!Object.hasOwn(value.limits, 'styles'), 'v2 packed-color count is not a cap on full context combinations');
   assert.equal(decodeSemanticDescription(envelope({ ...raw, profiles: [] }), 'ticket').profiles.length, 0, 'Follow Pi rules need no native palette catalogue entry');
-  for (const patch of [{ protocol_version: 2 }, { contexts_revision: 0 }, { resolver_revision: 2 }, { palette_revision: 0 },
+  for (const patch of [{ protocol_version: 2 }, { contexts_revision: 0 }, { resolver_revision: 1 }, { palette_revision: 0 },
     { vocabulary: { fingerprint: 'other', count: 20 } }, { vocabulary: { fingerprint: fp, count: 0 } },
     { operations: raw.operations.filter(op => op !== 'styles.resolve') }, { profiles: [{ id: 'pi', label: 'Pi', fingerprint: fp }] },
     { limits: { ...limits, styles: 4105 } }]) assert.throws(() => decodeSemanticDescription(envelope({ ...raw, ...patch }), 'ticket'));
@@ -136,7 +136,7 @@ test('semantic protocol: descriptor metadata remains bounded, unique and detache
 test('semantic protocol: native styles support more than 512 admitted foreground/font combinations', () => {
   const count = 600, body = styles();
   body.styles = Array.from({ length: count }, (_, i) => ({ foreground: { kind: 'rgb', r: Math.floor(i / 16), g: 0, b: 0 },
-    background: { kind: 'rgb', r: 0, g: 0, b: 0 }, attributes: i % 16, attribute_mask: 15 }));
+    background: { kind: 'rgb', r: 0, g: 0, b: 0 }, attributes: i % 16, attribute_mask: 31 }));
   body.indices = Array.from({ length: count }, (_, i) => i + 1);
   const result = decodeSemanticStyleReply(envelope(body), 'ticket', identity, { vocabulary: fp, rules, mode: 'native', bindingSlots: 0, paletteFingerprint: palette }, count, 1 << 20);
   assert.equal(result.styles.length, count); assert.equal(result.indices.length, count); assert.equal(result.styles.at(-1)!.attributes, 7);

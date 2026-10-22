@@ -1,0 +1,4 @@
+export const followPiText = '## FOLLOW_PI_HEADING\n`inline` [site](https://e.test)\n~~**_gone_**~~ after `inline`\n> FOLLOW_PI_QUOTE\n\n- LIST_UNORDERED\n1. LIST_ORDERED\n- LIST_PARENT\n\n  ## NESTED_HEADING_UNSCOPED\n\n## LIST_HEADING\n\n``double`tick`` [second](https://s.test) ![alt](https://i.test)\n[ref][id]\n\n[id]: https://r.test\n';
+
+// Visual-only excerpt from the operator screenshot; T3 in the title refers to the superseded report, not current policy.
+export const followPiScreenshotText = '# Follow Pi T3 — role-specific marker policy\n\nStatus: implemented; complete selected automated acceptance, independent source/P1-closure and comparative visual reviews passed.\n\n## Authority and identity\n\nThe operator rejected T1/T2 near-invisible shades and required separate heading and list roles.\n\n## Final policy\n';

@@ -1,10 +1,11 @@
 import { CardSources } from '../../src/syntax/cards.ts';
+import { Theme } from '@earendil-works/pi-coding-agent';
 
 // Primitive source markers belonging to the selected physical scenarios.
 // UI strings containing them are excluded by the actual measurement call site.
 export const selectedSyntaxSource = (text: string) => text.startsWith("printf 'SYNTAX_OUTPUT") || text.includes('const x=')
   || text.includes('STABLE_text') || text.includes('THEME_') || text.includes('HEADER_SCOPE')
-  || text.includes('ONLINE_WAIT_') || text.includes('USER_BASH_OUTPUT') || text.includes('ORDER_CARD_');
+  || text.includes('ONLINE_WAIT_') || text.includes('USER_BASH_OUTPUT') || text.includes('ORDER_CARD_') || text.includes('FOLLOW_PI_');
 
 export function observeSyntaxLocalWork(watches: (text: string) => boolean = selectedSyntaxSource) {
   let sourceSegments = 0, sourceSegmentUnits = 0, prefixScalarReads = 0, basisDepth = 0, sourceUpdateDepth = 0;
@@ -199,5 +200,22 @@ export function createWriteCaptureGate(record: (event: WriteCaptureObservation) 
       });
     },
     close() { closed = true; current.clear(); for (const check of [...waiters]) check(); waiters.clear(); },
+  };
+}
+
+// Test-only operation counters, not timing or render-time product instrumentation.
+export function observePiPaletteWork() {
+  const background = Theme.prototype.getBgAnsi;
+  let paletteSamples = 0;
+  const observedBackground: typeof background = function(this: Theme, ...args) {
+    if (args[0] === 'toolPendingBg' && new Error().stack?.includes('pi-palette.ts')) paletteSamples++;
+    return background.apply(this, args);
+  };
+  Theme.prototype.getBgAnsi = observedBackground;
+  return {
+    snapshot: () => ({ paletteSamples }),
+    restore() {
+      if (Theme.prototype.getBgAnsi === observedBackground) Theme.prototype.getBgAnsi = background;
+    },
   };
 }

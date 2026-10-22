@@ -42,7 +42,7 @@ class Peer {
   style(i: number, n = 1, bad = false) {
     const q = this.calls[i]!, isNative = q.rules.kind === 'native';
     this.pending[i]!.resolve(this.envelope(i, { kind: 'styles', vocabulary: q.vocabulary, rules: bad ? 'f'.repeat(64) : isNative ? fingerprintNative(q.rules.fingerprint, 'rules') : fingerprintRules(q.rules.definition),
-      styles: q.contexts.length || isNative ? [{ ...(isNative ? literal(n) : definition.default), attribute_mask: isNative ? 15 : 0 }] : [], indices: q.contexts.map(() => 1),
+      styles: q.contexts.length || isNative ? [{ ...(isNative ? literal(n) : definition.default), attribute_mask: isNative ? 31 : 0 }] : [], indices: q.contexts.map(() => 1),
       palette: isNative ? { revision: 1, fingerprint: fingerprintNative(q.rules.fingerprint, 'palette'), slots: CARD_ROLES.map(() => 1), origins: CARD_ROLES.map(() => 0) } : null }));
   }
 }

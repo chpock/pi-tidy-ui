@@ -43,7 +43,7 @@ fn native_and_client_inputs_share_the_same_admitted_context_plan() {
     };
     assert_eq!(
         rules.fingerprint(),
-        "f0faec99a62e1c36d8650d50fc00c19ec7107a78b9a97bb619dc1cf87dfd94ab"
+        "060533fb56662d209f344da7e38f0c21dce600121af65112714a017bcd6a1323"
     );
 }
 
