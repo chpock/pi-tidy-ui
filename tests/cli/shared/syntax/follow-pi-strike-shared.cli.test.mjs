@@ -7,7 +7,7 @@ import { PiTerminal } from '../../../fixtures/terminal-harness.mjs';
 import { closeTerminals, runCleanupSteps } from '../../../fixtures/terminal-cleanup.mjs';
 import { sharedSyntaxHost } from '../../../fixtures/shared-syntax-host.mjs';
 import { semanticPhaseReady } from '../../../fixtures/syntax-observation.mjs';
-import { paintProof, followPiMarkers } from '../../../fixtures/follow-pi-physical.mjs';
+import { paintProof, followPiMarkers, spans } from '../../../fixtures/follow-pi-physical.mjs';
 import { prepareSyntaxNative, requiredSharedHost, stats, work, traffic, persisted, finish, until, chooseTheme, syntaxReady } from '../../../fixtures/syntax-cli-support.mjs';
 
 const { binary, fixture, descriptor } = await prepareSyntaxNative();
@@ -35,6 +35,8 @@ test('Follow Pi shared CLI: actual five-bit styles, native clear and cached Pi r
     }, 'atomic native publication in all three cards');
     const native = await terminal.capture('shared-native-full-clear');
     assert.equal(native.cells.flat().filter(cell => cell?.strike).length, 0, 'native full masks clear unsupported strike everywhere');
+    for (const text of ['BOLD_STAR', 'BOLD_UNDER']) for (const found of spans(native, text))
+      assert.ok(found.cells.every(cell => cell.fg === 0x223344 && !cell.bold), 'native authored ink/fonts replace Follow Pi accent and bold');
     const nativeStats = await stats(terminal, 'native-stable'), nativePublications = publications(terminal);
     assert.equal(nativeStats.counts.sourceRequests, before.counts.sourceRequests);
     writeFileSync(join(terminal.output, 'syntax-theme-phase'), 'pi-return'); await chooseTheme(terminal, 0);

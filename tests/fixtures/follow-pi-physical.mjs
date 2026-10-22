@@ -79,6 +79,12 @@ export function paintProof(dump, { distinct = true } = {}) {
     const begin = found.x - 5, end = found.x + text.length + 3;
     for (const x of [begin, begin + 1, end, end + 1]) assert.equal(dump.cells[found.y][x].strike, false, 'strike markers are not struck');
   }
+  for (const text of ['BOLD_STAR', 'BOLD_UNDER', 'gone', 'fixed']) for (const found of spans(dump, text)) {
+    assert.ok(found.cells.every(cell => same(cell, publicInk(dump, 'accent')) && cell.bold), `${text}: Markdown bold uses exact public accent and bold`);
+  }
+  for (const found of spans(dump, 'after')) {
+    assert.ok(found.cells.every(cell => same(cell, publicInk(dump, 'toolOutput'))), 'accent does not leak after bold');
+  }
   for (const found of spans(dump, 'after')) assert.ok(found.cells.every(cell => !cell.strike && !cell.bold && !cell.italic && !cell.underline), 'fonts do not leak after the nested span');
   for (const found of spans(dump, 'FOLLOW_PI_BASH', row => row.includes('printf'))) {
     assert.ok(found.cells.every(cell => same(cell, publicInk(dump, 'syntaxString'))));

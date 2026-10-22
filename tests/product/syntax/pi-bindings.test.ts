@@ -15,7 +15,7 @@ function theme(mode: 'truecolor' | '256color', faint = true) {
   // chosen known values, not an incomplete constructor cast.
   for (const role of Object.keys(getThemeByName('dark')!.colors))
     (backgroundRoles.has(role) ? bg : fg)[role] = backgroundRoles.has(role) ? '#101010' : '#123456';
-  fg.mdCode = ''; fg.syntaxNumber = 6;
+  fg.mdCode = ''; fg.syntaxNumber = 6; fg.accent = 2;
   return new Theme(fg as ConstructorParameters<typeof Theme>[0], bg as ConstructorParameters<typeof Theme>[1], mode,
     { dim: faint ? ['syntaxComment'] : [] });
 }
@@ -28,6 +28,7 @@ test('Pi bindings: sample all stable slots once through the public prefix API, n
   assert.deepEqual(values[1], { ink: { kind: 'rgb', r: 18, g: 52, b: 86 }, attributes: 0, attribute_mask: 31 });
   assert.deepEqual(values[3]!.ink, { kind: 'indexed', index: 6 });
   assert.deepEqual(values[12]!.ink, { kind: 'terminal-default' });
+  assert.deepEqual(values[PI_DIRECT_BINDINGS.indexOf('accent')]!.ink, { kind: 'indexed', index: 2 });
 });
 
 test('Pi bindings: preserve the actual terminal mode instead of inventing RGB for indexed colors', () => {

@@ -6,7 +6,7 @@ export const PI_DIRECT_BINDINGS = Object.freeze([
   'syntaxComment', 'syntaxKeyword', 'syntaxString', 'syntaxNumber', 'syntaxType',
   'syntaxFunction', 'syntaxVariable', 'syntaxOperator', 'syntaxPunctuation',
   'mdHeading', 'mdLink', 'mdLinkUrl', 'mdCode', 'mdCodeBlock', 'mdQuote', 'mdListBullet', 'mdHr',
-  'mdQuoteBorder', 'mdCodeBlockBorder', 'error', 'warning', 'toolDiffAdded', 'toolDiffRemoved',
+  'mdQuoteBorder', 'mdCodeBlockBorder', 'error', 'warning', 'toolDiffAdded', 'toolDiffRemoved', 'accent',
 ] as const satisfies readonly ThemeColor[]);
 const marker = (ink: ThemeColor, typography: ThemeColor = ink) => Object.freeze({ ink, typography });
 export const PI_MARKER_BINDINGS = Object.freeze({
@@ -90,6 +90,7 @@ export function createPiRuleDefinition(): RuleDefinition {
       rule(['meta.annotation'], 'syntaxKeyword'),
       rule(['markup.heading'], 'mdHeading', { attributes: 1, attribute_mask: 1 }),
       rule(['punctuation.definition.heading'], 'headingMarker'),
+      rule(['markup.bold.markdown'], 'accent'),
       rule(['markup.bold'], null, { attributes: 1, attribute_mask: 1 }),
       rule(['markup.italic'], null, { attributes: 2, attribute_mask: 2 }),
       rule(['markup.strikethrough'], null, { attributes: 16, attribute_mask: 16 }),

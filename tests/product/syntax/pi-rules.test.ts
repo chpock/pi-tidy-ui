@@ -13,7 +13,7 @@ test('Pi rules: local slots cover public syntax and Markdown colors without a pl
     'syntaxComment', 'syntaxKeyword', 'syntaxString', 'syntaxNumber', 'syntaxType',
     'syntaxFunction', 'syntaxVariable', 'syntaxOperator', 'syntaxPunctuation',
     'mdHeading', 'mdLink', 'mdLinkUrl', 'mdCode', 'mdCodeBlock', 'mdQuote', 'mdListBullet', 'mdHr',
-    'mdQuoteBorder', 'mdCodeBlockBorder', 'error', 'warning', 'toolDiffAdded', 'toolDiffRemoved',
+    'mdQuoteBorder', 'mdCodeBlockBorder', 'error', 'warning', 'toolDiffAdded', 'toolDiffRemoved', 'accent',
   ]);
   assert.deepEqual(Object.keys(PI_MARKER_BINDINGS), ['headingMarker', 'stringDelimiter', 'inlineCodeDelimiter', 'linkDelimiter']);
   assert.equal(new Set(publicRoles).size, publicRoles.length);

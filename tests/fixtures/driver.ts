@@ -798,7 +798,7 @@ export default function terminalDriver(pi: ExtensionAPI) {
         registrations: pi.getAllTools().map((tool) => tool.name),
         commands: pi.getCommands().map((command) => command.name),
         errorStyle: ctx.ui.theme.fg("error", "TERMINAL_ERROR"),
-        summaryStyles: Object.fromEntries((["dim", "toolTitle", "muted", "toolOutput", "mdCodeBlock", "error", "userMessageText", "syntaxKeyword", "syntaxNumber", "syntaxString", "syntaxComment", "syntaxFunction", "syntaxType", "syntaxVariable", "syntaxOperator", "syntaxPunctuation", "mdHeading", "mdLink", "mdLinkUrl", "mdCode", "mdQuote", "mdQuoteBorder", "mdCodeBlockBorder", "mdListBullet", "mdHr", "toolDiffAdded", "toolDiffRemoved"] as const)
+        summaryStyles: Object.fromEntries((["accent", "dim", "toolTitle", "muted", "toolOutput", "mdCodeBlock", "error", "userMessageText", "syntaxKeyword", "syntaxNumber", "syntaxString", "syntaxComment", "syntaxFunction", "syntaxType", "syntaxVariable", "syntaxOperator", "syntaxPunctuation", "mdHeading", "mdLink", "mdLinkUrl", "mdCode", "mdQuote", "mdQuoteBorder", "mdCodeBlockBorder", "mdListBullet", "mdHr", "toolDiffAdded", "toolDiffRemoved"] as const)
           .map((role) => [role, ctx.ui.theme.fg(role, "X")])),
         backgroundStyles: Object.fromEntries((["toolPendingBg", "toolSuccessBg", "toolErrorBg", "userMessageBg"] as const)
           .map((role) => [role, ctx.ui.theme.bg(role, "X")])),
