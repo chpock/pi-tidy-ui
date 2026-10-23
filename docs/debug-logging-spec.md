@@ -1,12 +1,31 @@
 # Diagnostic journals
 
-pi-tidy-ui records human-readable text journals for session lifecycle, presentation decisions and failures across the extension. Capture is enabled by default and is independent of the Tidy UI appearance switch. It does not change highlighting or UI ownership policy.
+pi-tidy-ui records human-readable text journals for session lifecycle, presentation decisions and failures across the extension. Capture is enabled by default and is independent of the Tidy UI appearance switch. It does not change highlighting or UI ownership policy. Independent detailed journals provide useful diagnostics; accepted loss of bounded buffered history or shared-overview lines is preferable to introducing locks, heartbeat registries, a database, continuous disk accounting or an audit-grade durability service.
+
+## Observation flow and owners
+
+```text
+existing subsystem decision / owner-qualified runtime event
+             |
+       diagnostics.ts
+         /        \
+optional text     RuntimeHealth
+journal sink      weak active-issue records
+   |                 |             \
+SessionLogging    status snapshot    deferred public notification
+   |
+TextJournal -> bounded records -> one asynchronous file writer
+```
+
+The text and health paths are independent. `diagnose` delivers already-selected safe metadata to an optional observer and isolates observer failure; `reportRuntime` carries an explicit owning scope/operation and failure, recovery or release event. `RuntimeHealth.sink` composes those paths rather than deriving health by parsing journal text. `SessionLogging` binds capture to one run, while `TextJournal` owns the actual buffers/files and their counters.
+
+This separation allows a failed or disabled journal to coexist with useful runtime warnings. Conversely, a healthy writer proves only that diagnostics could be written. Provider/source/controller owners decide what a successful operation or expected refusal means; the logger cannot infer it from severity or from a neighboring operation's success. [Host teardown](host-integration.md#shutdown-and-failures) retires the observers in an order that still permits outgoing syntax-cleanup records, without reattributing them to a new session.
 
 ## Reading and controls
 
 Bare `/tidy-ui` → **Status & troubleshooting → Diagnostic logs** shows current session/run, paths, capture state and counters. **Record diagnostic logs** stops or resumes capture; **Retry recording** explicitly retries a failed writer. **Write state snapshot** records existing runtime/cache/syntax/color/Git/animation counters, without enabling capture or rendering.
 
-The capture preference is [process-local](settings-menu-spec.md#persistence), independently of appearance: it is never stored in config and never changed by another Pi. Two primitive memory flags preserve capture/appearance through `/reload`; a new process starts On. Local Off is restored before journal initialization: no files, retention scan or cleanup are started. Legacy saved capture flags are ignored. There is no separate log browser, JSON journal or session-history index; read or tail the overview and detailed text files at the displayed paths. Explicit retry keeps the run identity but uses a new capture file. Turning capture off flushes pending records without disabling the extension.
+The capture preference is [process-local](settings-menu-spec.md#persistence), independently of appearance: it is never stored in config and never changed by another Pi. Two primitive memory flags preserve capture/appearance through `/reload`; a new process starts On. Local Off is restored before journal initialization: no files, retention scan or cleanup are started. Legacy saved capture flags are ignored. There is no separate log browser, JSON journal or session-history index; read or tail the overview and detailed text files at the displayed paths. Explicit retry keeps the run identity but uses a new capture file. Turning capture off flushes pending records without disabling the extension. Healthy Off/On reuses the same capture file, run identity and counters. A failed detailed writer instead needs an explicit retry that creates a new capture in the same run. Writer counters belong to that capture; runtime-health counts belong to the session runtime.
 
 The private directory is `os.tmpdir()/pi-tidy-ui-<user>`: the numeric UID on POSIX, a sanitized username on Windows. The directory contains:
 
@@ -20,7 +39,11 @@ Paths and session names are private metadata. POSIX directory/file modes are 070
 
 ## What the journal explains
 
-Records contain a timestamp, severity, area, explanation and selected primitive details. Controls/newlines are escaped and large fields or records visibly shortened. The journal does **not** contain prompts, drafts, messages, Bash commands, source text, tool argument/result bodies, wire payloads, credentials, environment dumps or arbitrary exception text. Failures use an owning operation and a recognized safe error code; unavailable causes stay `unknown`.
+Records contain a timestamp, severity, area, explanation and selected primitive details. Controls/newlines are escaped and large fields or records visibly shortened. The journal does **not** contain prompts, drafts, messages, Bash commands, source text, tool argument/result bodies, wire payloads, content-bearing cache keys, credentials, environment dumps or arbitrary exception text. Failures use an owning operation and a recognized safe error code; unavailable causes stay `unknown`.
+
+Escaping and truncation are **not semantic redaction**: producers must select approved metadata before calling the writer. An ordinary primitive string may still contain secrets or source text; the writer cannot infer that meaning. At most the first 32 named fields are considered. Field keys and area labels are limited to 64, ordinary string fields to 1,024 and explanation text to 2,048 JavaScript UTF-16 code units before escaping. Nonprimitive field values are marked omitted, not serialized. Final record-byte truncation preserves UTF-8 sequence boundaries and visibly marks shortening.
+
+`diagnosticError()` inspects only an own data-property `code` against its explicit allowlist, otherwise recognizing `TypeError`, `RangeError`, `SyntaxError` or `unknown`. It neither invokes an error's `code` getter nor copies message/stack. This descriptor-only protection applies to error-code inspection, not arbitrary accessors on producer-supplied field objects.
 
 The existing owners report:
 
@@ -29,7 +52,7 @@ The existing owners report:
 - Syntax source identity/version/language/size, native request/result/rejection/staleness/restart, provider selection/loss/recovery and theme/profile changes.
 - Terminal-color application/query/release/suspension, Git operations and failures, and fallback-animation participation. Git and animation work totals appear in explicit snapshots rather than per-tick records.
 
-Syntax records correlate the **selected projection** with the tool call and source/version: exact native classification, cached Pi fallback, file retained committed ranges, Bash historical/frozen matching-prefix styles, pending/uncertain work, plain projection or native delegation. Pi fallback records distinguish returned style directives from a valid unstyled result without another ANSI/source pass. This is not a claim about physical terminal pixels or why Pi's parser returned those styles. Bash without native coloring uses whole-command `toolTitle`, never the Pi classifier.
+Syntax records correlate the **selected projection** with the tool call and source/version: exact native classification, cached Pi fallback, file retained committed ranges, Bash historical/frozen matching-prefix styles, pending/uncertain work, plain projection or native delegation. Pi fallback records distinguish returned style directives from a valid unstyled result without another ANSI/source pass. This is not a claim about physical terminal pixels or why Pi's parser returned those styles. Unclassified Bash command text uses the ready palette's `title` style: `toolTitle` in Follow Pi, or the native palette's own derived title style when available. Bash never invokes the Pi classifier.
 
 `demandOutcome` labels the earlier demand evaluation, not current execution; historical display styles are not current-source proof. Fallback permission records are not Pi classifier invocations. Provider candidate callbacks are not evidence of shared discovery or a connection. Expected missing Git `reftable` directories do not produce repeated failure records; real watcher errors/refresh/rebinding behavior is unchanged.
 
@@ -57,6 +80,10 @@ Changing from a broken file-backed terminal theme to a theme without a file sour
 
 `src/runtime-health.ts` owns only scalar safe metadata and weak references to current failing owners; it never retains source text, exception objects, commands or UI trees. `src/diagnostics.ts` carries explicit lifecycle events alongside the existing optional journal sink. File writer counters remain in `debug-log.ts`. Status reads do not activate or reclassify syntax.
 
+Each owner/operation has one active record. Repeating the same area/code does not increment the episode count; a changed code creates a new episode and replaces that active record. The failure timestamp is the episode's first observation, not the latest repeat. Active counts cover every unresolved record, while the menu shows one current example per subsystem rather than an unbounded list of cards. Collected owners are swept on snapshot, without background polling.
+
+A deferred public notification reports an **observed episode**; recovery before delivery does not retract it. Current status, not the wording of a delayed notice, determines whether the problem remains active. Notification delivery additionally requires a current UI context.
+
 ## Batching and retention
 
 | Item | Policy |
@@ -76,10 +103,12 @@ Normally closed pairs are removable regardless of PID. Abandoned unmarked pairs 
 
 The shared overview has no lock or long-lived handle. Simultaneous processes can lose overview lines or overshoot its rotation threshold; independently owned detailed journals are unaffected. It is a convenient recent overview, not an authoritative session database or proof of clean exit.
 
-Buffer pressure drops diagnostics, counts omissions and later writes a readable omission notice. A disk/permission/write error stops the affected writer, releases pending buffers and emits one public UI warning when available; there is no automatic retry or console fallback. Overview failure does not stop a healthy detailed writer. Crashes or a slow close can lose buffered records or leave a partial last line; there is no `fsync` or audit-grade durability guarantee.
+Buffer pressure drops diagnostics, counts omissions and later writes a readable omission notice. A disk/permission/write error stops the affected writer, releases pending buffers and emits one public UI warning when available; there is no automatic retry or console fallback. Overview failure does not stop a healthy detailed writer: it increments write errors and disables further overview writes for that capture. Healthy Off/On does not reset this flag. The visible **Retry recording** action is for a failed detailed writer, not an overview-only failure. Crashes or a slow close can lose buffered records or leave a partial last line; there is no `fsync` or audit-grade durability guarantee.
 
-## Implementation and checks
+The two-second close bound limits the **caller's wait**, not the underlying filesystem operation. Admission stops immediately, but already-started writes, draining, descriptor closure, closed-name renames and the overview end line may finish later. It is not an OS-level I/O timeout or proof that every file resource settled before `close()` returned.
 
-`src/debug-log.ts` owns files, batching and retention; `src/session-logging.ts` binds observers to a run; `src/diagnostics.ts` isolates observers and classifies safe errors. Existing UI/syntax/Occipital owners emit already-computed decisions. Old callbacks cannot be reattributed to a new run.
+## Module ownership
 
-See [testing](testing.md) for executable filesystem/child-process, SDK/GC and real offline Pi live/replay controls, including active-logger warm-frame counters and strict tool/model/session comparisons. Linux/POSIX evidence does not establish Windows ACL, watcher or runtime behavior. The accepted design is recorded in the repository's `docs/debug-logging-plan.md`; working findings and execution evidence remain in ignored `.test-artifacts/`.
+`src/debug-log.ts` owns files, batching and retention; `src/session-logging.ts` binds observers to a run; `src/diagnostics.ts` isolates observers and classifies safe errors. Existing UI/syntax/Occipital owners emit already-computed decisions. Old callbacks cannot be reattributed to a new run. Session shutdown quiesces presentation, awaits syntax/helper disposal, then closes logging before restoring hooks in nested `finally` blocks. Closing the run-bound sink concurrently with syntax cleanup would discard cleanup diagnostics; this ordering preserves them without keeping the retired UI operational.
+
+See [diagnostics and runtime-health validation](testing.md#diagnostics-and-runtime-health) for filesystem, lifecycle and physical live/replay controls.

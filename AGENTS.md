@@ -16,6 +16,10 @@ Use `!` or a `BREAKING CHANGE:` footer to identify breaking changes.
 
 Subagents may be used when implementing tasks. Delegation is permitted, not required.
 
+## Documentation
+
+After **every change**, you MUST update the affected technical documentation in the same task. Use [docs/README.md](docs/README.md) to locate the canonical chapters, and keep their descriptions of behavior, internal mechanisms, contracts, limitations and design rationale consistent with the current implementation. Update affected cross-references as well. The task is not complete until these documentation updates are complete; plans, reviews and reports in `.test-artifacts` do not substitute for them.
+
 ## Testing
 
 - Before selecting checks, read [docs/testing.md](docs/testing.md) for prepared inputs, contract groups, real integration requirements and GC setup.

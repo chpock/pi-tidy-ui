@@ -1,5 +1,19 @@
 # Settings menu and saved preferences
 
+## Service and popup boundaries
+
+Three owners cooperate without sharing one lifetime:
+
+| Owner | Responsibility | Does not own |
+|---|---|---|
+| `ExtensionSettings` (`src/settings.ts`) | Validate/load the file, serialize local writes, preserve unknown data and watch external publication | Overlay state or provider startup |
+| `TidyMenu` (`src/tidy-menu.ts`) | One overlay with root/theme/support/service/log/cache pages, list/search/scroll state and the current preview rollback point | Session runtime, saved-file authority or source work |
+| Host `TidyMenuOwner` (`src/index.ts`) | Supply cached snapshots; explicitly prepare preferences, preview a choice or perform a typed action | A second settings file or independent highlight queue |
+
+The popup's `snapshot()` is read-only cached inspection. `prepareThemes()` establishes preference readiness; `previewTheme()` changes the current selection synchronously without persistence or provider activation. `act()` handles confirmed switches/themes and explicit maintenance actions. The host guards asynchronous continuations with its session epoch; the popup separately guards its own close/page/visit identity. A provider generation change therefore need not destroy navigation, while a late action cannot reopen a closed overlay.
+
+A theme travels through **preview or confirmation → selected preference → effective profile/rules → complete ready card paint**. The file stores only confirmation; the provider resolves effective availability; the work controller publishes paint only when all of a card's styles/roles are ready. These stages explain why a successful local selection or file save is not proof that every visible card has already recolored. See [provider choice and readiness](syntax/providers.md#selected-effective-and-ready-are-different-states).
+
 ## Entry and navigation
 
 Bare `/tidy-ui` opens one centered popup in Pi terminal mode. Each page fits its header, full item labels and values, selection gutter and basic navigation, using terminal-column widths. The preferred width is capped at 72 columns and Pi clamps it to the available terminal width; 72 is not a fixed window size. Descriptions, diagnostic details and error text wrap within that width rather than widening the popup. Theme sizing considers the full available catalogue, not just visible or filtered choices. Page/content changes can resize the same overlay; arrow movement, help changes, detail scrolling and search do not. Resizing the terminal preserves the preferred width when space permits and recenters the actual overlay, including its mouse bounds. Paged detail views use a compact navigation line when needed to retain the paging and back keys.
@@ -32,6 +46,8 @@ Escape, Back, Ctrl+C or disposal without confirmation restores the confirmed cho
 
 Preview and rollback use the ordinary retained-owner theme revision and bounded newest-first preparation. Fast navigation coalesces to the latest demand; already-dispatched work is still accounted, but late results cannot restore a superseded preview. Coloring a large history remains gradual. Source parsing is theme-independent: preview resolves only missing styles/palette, and already-retained styles support local rollback/revisit. Ready colors remain visible until the replacement card palette and all its source styles can publish together. Preview never cancels a previous confirmed save, and completing that save cannot overwrite the current preview. Unconfirmed choices are client-local and do not survive runtime/session retirement.
 
+A **new confirmed selection** cancels the previous client-owned theme-save request before queuing its replacement. A real native-highlighting enablement change and client disposal also cancel that outstanding save. Preview/rollback and temporary terminal suspension do not. Cancellation cannot undo a rename already requested: confirmation order controls pending publication, not retroactive file rollback.
+
 ## Troubleshooting
 
 - **Reapply Tidy UI appearance** and **Reapply terminal colors** retry an already enabled preference without changing or enabling it. Terminal-color Reapply rereads the theme and resends defined OSC targets even when the remembered RGB is unchanged, so an external reset can be repaired; it does not reset absent/unowned channels. Ordinary refreshes still deduplicate. While Pi has yielded its terminal, no application occurs; native restart reconciles current eligibility and targets.
@@ -51,7 +67,7 @@ Preferences share the existing user-level file:
 join(getAgentDir(), "extensions", "pi-tidy-ui", "config.json")
 ```
 
-Pi resolves the agent directory, including `PI_CODING_AGENT_DIR`. This is neither a project setting nor Pi's `settings.json`. The full known shape is:
+Pi resolves the agent directory, including `PI_CODING_AGENT_DIR`. This is neither a project setting nor Pi's `settings.json`. Explicit `agentDir`/`file` injection in `ExtensionSettings` is an embedding/test seam, not another production project/session override policy. The full known shape is:
 
 ```json
 {
@@ -69,9 +85,19 @@ Confirmed themes and the two shared switches apply and save automatically; there
 
 Shutdown/session retirement cancels unpublished pending saves; a rename already requested is the commit boundary. Disposed syntax owners cannot publish late theme selections.
 
+### Validation and forward-compatible data
+
+Input files and serialized replacements are capped at **64 KiB**. Reads require valid UTF-8 and a JSON object, and read no more than the cap plus one detection byte even if the file grows after stat. Malformed known fields invalidate the whole document, rather than partially salvaging preferences. Initial failure reports an error and uses Follow Pi with both shared switches enabled; an invalid subsequent external update instead retains already-live preferences.
+
+Theme objects have exactly the keys of `{ "kind": "pi" }` or `{ "kind": "occipital", "id": "..." }`. IDs are opaque, nonempty, well-formed strings of at most **64 UTF-8 bytes**, not paths. Persisted switches must be booleans.
+
+Unknown data survives a save, including own prototype-named keys and numeric JSON tokens whose values exceed JavaScript's faithful number representation. Native JSON source-token/raw-value APIs preserve overflow, large integers, decimal precision, underflow and signed zero. If a numeric token cannot be preserved with those APIs, the operation reports `numeric-preservation-unavailable` rather than rounding or rewriting it. This preserves data and numeric tokens, not original whitespace formatting.
+
+An update validates and copies its patch **before queuing**, so later caller mutation cannot change the admitted choice. Its unique temporary file is created exclusively in the same directory with mode `0600`; failure cleanup removes only that operation's own temporary file. Complete-file rename is atomic publication, not an `fsync` or power-loss durability guarantee. Independent processes remain last-actual-rename-wins; no transactional merge or lock is implied.
+
 ## Changes from another Pi
 
-An active runtime watches the configuration directory, not the replaceable file. If it does not exist yet, watch the nearest existing ancestor until the directory is created; watching alone creates no files/directories. Relevant filesystem events coalesce into a one-shot check of device/inode, size and modification/change timestamps. Read and validate JSON only when these metadata change. Unrelated filenames are filtered before stat. There is no periodic stat/read/hash, polling interval or watcher timer in idle Pi;100 idle instances perform no recurring configuration I/O.
+An active runtime watches the configuration directory, not the replaceable file. If it does not exist yet, watch the nearest existing ancestor until the directory is created; watching alone creates no files/directories. After subscribing to an ancestor, startup tries descending toward the desired directory again, closing the directory-creation window between a failed child subscription and the successful ancestor subscription without polling. Relevant filesystem events coalesce into a one-shot check of device/inode, size and modification/change timestamps. Read and validate JSON only when these metadata change. Unrelated filenames are filtered before stat. There is no periodic stat/read/hash, polling interval or watcher timer in idle Pi;100 idle instances perform no recurring configuration I/O.
 
 Valid external settings apply to the running theme, terminal-default preference and native-highlighting preference without writing them back. Only changed known values trigger application; local appearance/logging remain untouched. A local unconfirmed preview stays visible as described above. A malformed/unreadable update retains the last live values and reports a bounded warning; deletion applies missing-file defaults. A failed native watch reports its failure rather than silently falling back to polling. Native event delivery depends on the filesystem/OS; a reload retries monitoring.
 

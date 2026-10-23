@@ -12,9 +12,11 @@ Foreign editor/footer ownership does not itself disable terminal synchronization
 
 ## Eligibility and automatic themes
 
-Automatic pairs, including same-name and whitespace-separated pairs, and `system` never receive feature color applications. A configured automatic/system setting remains a conservative opt-out even after a temporary programmatic selection. The current native appearance-tracking flag also disables application: effective saved settings alone can hide a runtime automatic selection under a project override.
+Automatic pairs contain exactly one slash and two nonempty trimmed names; optional surrounding whitespace and identical names are allowed (`dark / dark`, not `dark dark`). Automatic pairs and `system` never receive feature color applications. A configured automatic/system setting remains a conservative opt-out even after a temporary programmatic selection. The current native appearance-tracking flag also disables application: effective saved settings alone can hide a runtime automatic selection under a project override.
 
-The adapter reads one guarded renderer field, `terminalColorSchemeNotificationsEnabled`, through Pi's stable TUI reference. It never writes that field or intercepts its setter, color queries, scheme subscriptions, callbacks or private ThemeController state. The field must be boolean. Missing/incompatible state disables terminal synchronization with a warning, not card rendering. A cooperating extension enabling native appearance notifications also causes conservative suspension. Arbitrary modifications of this native tracking mechanism are unsupported.
+Fixed-only application prevents a feedback loop: Pi can choose an automatic theme from reported terminal background, while our override changes that report. Keeping the override during selection could make Pi react to our output rather than the terminal profile.
+
+The adapter reads one guarded **non-public renderer field**, `terminalColorSchemeNotificationsEnabled`, through Pi's stable TUI reference. This narrowly accepted compatibility exception supplies a current snapshot that the public notification setter does not expose. Observing future setter calls cannot establish already-active automatic mode during late installation or reload; effective saved settings alone can also hide that mode under a project override. It never writes that field or intercepts its setter, color queries, scheme subscriptions, callbacks or private ThemeController state. The field must be boolean. Missing/incompatible state disables terminal synchronization with a warning, not card rendering. A cooperating extension enabling native appearance notifications also causes conservative suspension. Arbitrary modifications of this native tracking mechanism are unsupported. Reset/query/reapply sampling would change unrelated public query results; intercepting a native subscriber would miss late attachment and other query origins. Those alternatives are deliberately not used.
 
 The public zero-row `belowEditor` observer consumes normal invalidation/render visits. Eligibility loss releases owned defaults **synchronously before Pi's automatic-selection query** and invalidates queued work. Initial automatic mode, late loading, reload and renderer replacement must produce no feature metadata reads, reports, applications or resets, except the one-time release of previously applied defaults. There is no requirement to reset channels the feature never owned.
 
@@ -30,9 +32,11 @@ A fixed explicit CLI/native selection can be eligible even without a saved theme
 - Accept Pi's public hex, OKLCH, OKHSL and 0–255 numeric forms through its color parser/converter. Numeric zero is a color, not absence. Indexed values use the SDK's RGB conversion; no terminal ANSI-palette rewriting is performed.
 - Missing or empty values, including variables resolving to empty, release that channel. Invalid data is not equivalent to absence.
 
+The document and any present `vars`, `colors` and `export` sections must be non-array objects; missing sections are allowed. Recognized literal color syntax takes precedence over variable lookup, so a variable named `#abc` cannot redefine that literal. The controller's accepted source revision compares `theme.colors`, `theme.name`, `theme.sourcePath` and `theme.fg`, not just the forwarding Theme object's identity. Remembered registry paths are qualified by that complete revision; this is local observation, not a new Pi public API guarantee.
+
 File lookup/read/parse happens in queued synchronization work, outside the current render call. Reads are synchronous within that finite task, not background-thread I/O. Same-name/export-only native hot reload counts as a new accepted theme revision. Unchanged ordinary/Working frames perform no repeated source lookup/read or color report. There is no interval, extra file watcher or polling retry.
 
-An unreadable/malformed source retains the last valid **complete** terminal-target snapshot. Do not publish one channel from a partly invalid document. Warn once for a continuous error; a successful synchronization clears it. Retry on a subsequent accepted native theme revision or explicit colors on. A valid no-file/empty state, eligibility loss and off are intentional releases, not errors.
+An unreadable/malformed source retains the last valid **complete** terminal-target snapshot. Do not publish one channel from a partly invalid document. Repeated identical failure messages are suppressed; runtime health separately coalesces owner/operation/safe-code incidents, so a changed failure may be reported before recovery. Successful resolution clears the failure; intentionally abandoning the source releases its incident rather than claiming that file was repaired. Retry on an accepted theme revision, **Reapply terminal colors**, re-enabling the preference or eligible terminal restart, never by polling. A valid no-file/empty state, eligibility loss and off are intentional releases, not errors.
 
 ## Channel ownership and lifetime
 
@@ -58,29 +62,24 @@ The hooks preserve native receiver, arguments, result and thrown errors. Failed 
 
 Pi retains ownership of its mouse/input modes, cursor, native activity indicators and process signals. Its external taskbar progress restoration is a separate host issue; Toolview does not emulate it. The same lifecycle boundary deliberately interrupts outstanding Occipital work and resumes useful demand through bounded replay, independently of the terminal-colors switch; see [intentional syntax suspension](syntax-highlighting-spec.md#intentional-terminal-suspension). Retained ready cards are not invalidated. Ordinary timeout protection remains unchanged; no deadline extension or SDK timer suspension is introduced.
 
+## Repaint cost
+
+In regular mode, Pi's forced redraw clears terminal scrollback and re-emits history; fullscreen repaints its viewport. This is the accepted cost of repainting cells that an ordinary diff render considers unchanged after terminal defaults change. The saved session is not rewritten. The forced request is deferred beyond the current render stack because resetting native cursor/previous-row state inside that stack can corrupt the frame being produced.
+
 ## Concrete RGB for rendering
 
 Changing terminal defaults does not automatically refresh Pi's cached `Theme.colors`. pi-tidy-ui therefore maintains one latest local concrete-color projection for its RGB arithmetic, including derived diff backgrounds and the input half-block. It does **not** mutate Pi's Theme, semantic methods or global theme/color state.
 
 Known requested RGB is authoritative for a channel we apply. For unowned default-token channels, use actual public terminal reports when available. Merge independently arriving channels within the same generation. Default-token classification uses public ANSI methods and SGR operations, never numeric components inside RGB/indexed sequences. Preserve explicit and unfamiliar semantic tokens.
 
+Default foreground/background are recognized by SGR **39/49** in public prefixes; foreground SGR **2** identifies the faint-default case. When both channels are known, the local faint approximation is a **50% sRGB mix** with the known background. A known default background retains projected identity even if its RGB equals Pi's fallback; equal numbers do not erase provenance. An equal foreground may reuse the original color. This arithmetic does not promise identical physical faint rendering across terminals.
+
+The public color query has a **100 ms initial wait** and accepts late replies through its callback. Either or both channels may arrive, and applied targets outrank reports for owned channels. Missing/rejected reports preserve native fallback and do not start a retry loop.
+
 After local off or a release into a no-file presentation, a finite profile report can repair RGB arithmetic even if native reload cached our former override. Local-off observation never reads theme metadata or sets colors. Automatic mode adds no such reports; Pi owns its profile query and theme update. Warm frames reuse the latest projection and start no query. A missing report uses native concrete fallback: it is **not** verified current profile RGB and may remain stale. Do not invent or promise unavailable pixels.
 
 This latest numeric/projection state is outside both transcript accounting groups. It retains no tool/editor owner, source body or width history and introduces no persistent clock. Native scheme/query semantics, model requests, tool arguments/results, saved session bytes, geometry and editing state remain unchanged.
 
-## Verification contract
+## Validation reference
 
-See [testing](testing.md) for commands and evidence discipline. Require:
-
-- Resolver/channel first-red cases, independent releases, atomic source-error retention and numeric zero.
-- Actual SDK positive mode/SGR/observer gates and missing/wrong-type/throwing-field rejection; future host contract drift must fail tests instead of silently accepting inactive coverage.
-- Real fixed → automatic ordering under project overrides, initially automatic and late loading, reload and both renderer modes; no transient application.
-- Controlled actual OSC set/reset/report traffic, hot reload/BOM, local/global toggles and normal exit; on/off must physically rewrite an unchanged visible marker in both modes, with no forced redraw on unchanged targets/warm frames or RGB-only reports.
-- Session/reload handoff with zero reset/reapply for unchanged targets, inherited automatic-mode release, no-successor native UI and owner-free process-exit cleanup.
-- Real shell job-control Ctrl+Z → `fg` in both renderers: synchronous independent releases, current targets restored, Off retained, editor draft/paste/cursor and saved traffic unchanged; explicit Reapply repairs an observed foreign reset. Verify native mode restoration and zero warm work, not merely the preference state.
-- Public lifecycle hook delegation/descriptor ownership, failed native start, inactive-controller GC, stale query rejection, source errors and Off/automatic/empty transitions during suspension.
-- Physical diff/edge colors with stale native defaults, including local off after reload and late unowned-default reports on an already-rendered diff.
-- Exact warm read/query/output/projection counters and retired-controller/UI GC with an active pending report.
-- Native no-feature tool/model comparison, exact persisted content and same-session replay with zero new execution.
-
-The controlled headless terminal retains application overrides across profile changes. It proves behavior in that model, not support or identical pixels in every graphical terminal. A physical-terminal smoke test remains separate.
+See [terminal-default and lifecycle validation](testing.md#terminal-defaults-and-lifecycle) for actual OSC traffic, public-hook ownership, shell job control and physical repaint checks. Terminal support remains dependent on the host terminal; controlled headless behavior is not a guarantee of identical graphical-terminal pixels.
