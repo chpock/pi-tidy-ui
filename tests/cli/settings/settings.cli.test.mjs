@@ -161,7 +161,7 @@ test('Output padding project override stays consistent after native user padding
 
 for (const mode of ['regular', 'fullscreen']) test(`real CLI: settings popup navigation, shared preferences, local reload and fresh-process replay (${mode})`,
   { timeout: 120000 }, async () => {
-    const terminals = [], initialSettings = { unrelated: { retained: 42 } };
+    const terminals = [], initialSettings = { terminalColorsEnabled: true, unrelated: { retained: 42 } };
     const dataEvents = terminal => terminal.events().filter(event => ['call', 'result', 'model_context'].includes(event.type));
     const live = new PiTerminal(`settings-${mode}`, { tidyUi: true, mode, tidyUiSettings: initialSettings }); terminals.push(live);
     try {
@@ -353,7 +353,7 @@ for (const mode of ['regular', 'fullscreen']) test(`real CLI: settings popup nav
 for (const mode of ['regular', 'fullscreen']) test(`settings sync: two real Pi processes share confirmed preferences but keep local flags (${mode})`, { timeout: 90000 }, async () => {
   const terminals = [];
   const live = new PiTerminal(`settings-sync-writer-${mode}`, { tidyUi: true, mode,
-    tidyUiSettings: { syntaxTheme: { kind: 'occipital', id: 'saved-A' }, nativeHighlightingEnabled: false, future: true } });
+    tidyUiSettings: { syntaxTheme: { kind: 'occipital', id: 'saved-A' }, terminalColorsEnabled: true, nativeHighlightingEnabled: false, future: true } });
   terminals.push(live);
   try {
     await live.ready(); await live.run('user-card');

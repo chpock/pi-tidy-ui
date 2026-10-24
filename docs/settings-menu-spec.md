@@ -72,12 +72,12 @@ Pi resolves the agent directory, including `PI_CODING_AGENT_DIR`. This is neithe
 ```json
 {
   "syntaxTheme": { "kind": "pi" },
-  "terminalColorsEnabled": true,
+  "terminalColorsEnabled": false,
   "nativeHighlightingEnabled": true
 }
 ```
 
-An independent theme uses `{ "kind": "occipital", "id": "<catalogue ID>" }`. Old theme-only files remain valid. Missing persisted switches default to On, and a missing theme defaults to Follow Pi; reading defaults does not write a file. Shared choices load before presentation, providers and terminal-color application start.
+An independent theme uses `{ "kind": "occipital", "id": "<catalogue ID>" }`. Old theme-only files remain valid. A missing `terminalColorsEnabled` defaults to Off; a missing `nativeHighlightingEnabled` defaults to On, and a missing theme defaults to Follow Pi. Explicit saved booleans keep their values, including an existing terminal-color On; reading defaults does not write a file. Shared choices load before presentation, providers and terminal-color application start.
 
 **Tidy UI appearance** and **Record diagnostic logs** are local to the running Pi process. Their two boolean values live under a private `globalThis` symbol, with no component/session references or filesystem flag. They survive `/reload` and opening another session in the same process; a new process starts both On. Local Off is restored before presentation or journal initialization, so disabled capture creates no journal, overview, retention scan or cleanup operation. Legacy `appearanceEnabled`/`loggingEnabled` file fields are ignored and removed on the next explicit persistent save, not by a startup migration.
 
@@ -87,7 +87,7 @@ Shutdown/session retirement cancels unpublished pending saves; a rename already 
 
 ### Validation and forward-compatible data
 
-Input files and serialized replacements are capped at **64 KiB**. Reads require valid UTF-8 and a JSON object, and read no more than the cap plus one detection byte even if the file grows after stat. Malformed known fields invalidate the whole document, rather than partially salvaging preferences. Initial failure reports an error and uses Follow Pi with both shared switches enabled; an invalid subsequent external update instead retains already-live preferences.
+Input files and serialized replacements are capped at **64 KiB**. Reads require valid UTF-8 and a JSON object, and read no more than the cap plus one detection byte even if the file grows after stat. Malformed known fields invalidate the whole document, rather than partially salvaging preferences. Initial failure reports an error and uses Follow Pi with terminal-color application Off and native highlighting On; an invalid subsequent external update instead retains already-live preferences.
 
 Theme objects have exactly the keys of `{ "kind": "pi" }` or `{ "kind": "occipital", "id": "..." }`. IDs are opaque, nonempty, well-formed strings of at most **64 UTF-8 bytes**, not paths. Persisted switches must be booleans.
 

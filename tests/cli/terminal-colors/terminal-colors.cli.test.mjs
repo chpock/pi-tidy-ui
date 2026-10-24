@@ -1,11 +1,35 @@
 import '../../fixtures/test-guard.mjs';
 import assert from 'node:assert/strict';
-import { readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import test from 'node:test';
 import { fixtures, artifacts, byName, until } from '../../fixtures/terminal-harness.mjs';
 import { closeTerminals, closeTerminalsInParallel } from '../../fixtures/terminal-cleanup.mjs';
 import { colorTerminal, colorTraffic, persisted, selectDarkDark } from '../../fixtures/main-cli-support.mjs';
+
+for (const mode of ['fullscreen', 'regular']) test(`terminal colors: fresh install preserves profile defaults until explicit opt-in (${mode})`, async () => {
+  const live = colorTerminal(`colors-default-off-${mode}`, mode, { tidyUiSettings: null });
+  const file = join(live.terminal.agent, 'extensions/pi-tidy-ui/config.json');
+  try {
+    await live.terminal.ready();
+    const initial = await live.capture('default-off');
+    assert.equal(initial.diagnostic.status.state, 'off'); assert.equal(initial.diagnostic.counters.sourceReads, 0);
+    assert.deepEqual(live.owned, {}); assert.deepEqual(live.protocol.filter(event => event.set || event.reset), []);
+    assert.equal(existsSync(file), false, 'reading the opt-in default creates no configuration');
+    const rows = await live.terminal.tidyPage();
+    assert.ok(rows.some(row => /Set terminal colors from Pi theme\s+Off$/u.test(row)));
+    await live.capture('opt-in', 'colors on');
+    await until(() => live.owned.background === '#123456' && live.owned.foreground === '#eeeeee', 'explicit opt-in applies both channels');
+    assert.equal(JSON.parse(readFileSync(file, 'utf8')).terminalColorsEnabled, true);
+    await live.terminal.command('/reload'); await live.terminal.event('start', 2);
+    const reloaded = await live.capture('saved-on');
+    assert.equal(reloaded.diagnostic.status.state, 'on');
+    assert.deepEqual(live.owned, { background: '#123456', foreground: '#eeeeee' }, 'saved On survives reload');
+    await live.capture('opt-out', 'colors off'); assert.deepEqual(live.owned, {});
+    assert.equal(JSON.parse(readFileSync(file, 'utf8')).terminalColorsEnabled, false);
+    assert.equal(live.terminal.events().filter(event => ['call', 'result', 'model_context'].includes(event.type)).length, 0);
+  } finally { await closeTerminals([live.terminal]); }
+});
 
 test('terminal colors: independent channels, hot reload, source errors, RGB projection, native traffic and replay in both modes', async () => {
   for (const mode of ['fullscreen', 'regular']) {

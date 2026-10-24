@@ -1532,7 +1532,7 @@ export default function tidyUi(pi: ExtensionAPI, options: TidyUiRuntimeOptions =
   let warnedBudgetFlags = false;
   let controller: TidyUiController | undefined;
   const local = options.localPreferences ?? processPreferences();
-  let enabled = local.appearanceEnabled, colorsEnabled = true, loggingEnabled = local.loggingEnabled;
+  let enabled = local.appearanceEnabled, colorsEnabled = false, loggingEnabled = local.loggingEnabled;
   // Only confirmed choices survive runtime replacement; menu previews are client-local.
   let selectedTheme: SyntaxTheme = { kind: 'pi' };
   const settings = options.settings ?? new ExtensionSettings();
@@ -1547,7 +1547,7 @@ export default function tidyUi(pi: ExtensionAPI, options: TidyUiRuntimeOptions =
     return preferencesReady ??= (async () => {
       try {
         const loaded = await settings.load();
-        colorsEnabled = loaded.terminalColorsEnabled ?? true;
+        colorsEnabled = loaded.terminalColorsEnabled ?? false;
         syntaxEnabled = loaded.nativeHighlightingEnabled ?? true;
         selectedTheme = loaded.syntaxTheme;
         if (!loaded.ok) preferencesIssue = lastSettingsIssue = loaded.issue.message;
@@ -1566,11 +1566,11 @@ export default function tidyUi(pi: ExtensionAPI, options: TidyUiRuntimeOptions =
     reportRuntime(diagnostic, { kind: 'recovered', scope: settings, operation: 'read' });
     const choice = loaded.syntaxTheme;
     const themeChanged = choice.kind !== selectedTheme.kind || choice.kind === 'occipital' && selectedTheme.kind === 'occipital' && choice.id !== selectedTheme.id;
-    const colorsChanged = colorsEnabled !== (loaded.terminalColorsEnabled ?? true);
+    const colorsChanged = colorsEnabled !== (loaded.terminalColorsEnabled ?? false);
     const nativeChanged = syntaxEnabled !== (loaded.nativeHighlightingEnabled ?? true);
     if (!themeChanged && !colorsChanged && !nativeChanged) return;
     selectedTheme = { ...choice }; syntaxEnabled = loaded.nativeHighlightingEnabled ?? true;
-    if (colorsChanged) applyTerminalPreference(loaded.terminalColorsEnabled ?? true, ctx);
+    if (colorsChanged) applyTerminalPreference(loaded.terminalColorsEnabled ?? false, ctx);
     const previewing = activeMenu?.preferencesChanged(selectedTheme);
     if (themeChanged && !previewing) syntax?.applySavedTheme(selectedTheme);
     if (nativeChanged) {

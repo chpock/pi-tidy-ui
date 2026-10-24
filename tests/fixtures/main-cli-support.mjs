@@ -685,9 +685,10 @@ function colorProfile(agentDir, project = false, workDir) {
   return { theme, path };
 }
 
-function colorTerminal(name, mode, { native = false, project = false, automatic = false, driver = join(fixtures, 'terminal-colors-driver.ts'), session, workspace, jobControl = false } = {}) {
+function colorTerminal(name, mode, { native = false, project = false, automatic = false, driver = join(fixtures, 'terminal-colors-driver.ts'), session, workspace, jobControl = false,
+  tidyUiSettings = { terminalColorsEnabled: true } } = {}) {
   let source;
-  const terminal = new PiTerminal(name, { mode, session, workspace, jobControl, flags: project ? ['--approve'] : [],
+  const terminal = new PiTerminal(name, { mode, session, workspace, jobControl, tidyUiSettings, flags: project ? ['--approve'] : [],
     agentSettings: { theme: project ? 'dark' : automatic ? 'dark/dark' : 'terminal-colors' },
     extraEnv: native ? { TIDY_UI_TEST_COLORS_NATIVE: '1' } : {},
     extensions: [driver],

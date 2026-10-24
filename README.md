@@ -18,6 +18,7 @@ It changes the presentation, not the agent: the same tools run, the model receiv
 | Where it is looking | Compact, usually one-line summaries for reads, searches and other text-only tools |
 | What you asked and queued | Consistent message, input and Steering/Follow-up cards |
 | How prompt-cache reuse is changing | The latest cache-hit percentage, ten-request history and current context usage |
+| A terminal that matches Pi's theme | Optional background and default text-color synchronization; off until you enable it |
 
 Works with Pi's built-in tools and **[AFT](https://github.com/cortexkit/aft)**, with Rust-powered syntax highlighting.
 
@@ -101,6 +102,44 @@ The benefit is not just more colors. Parsing runs outside Pi's JavaScript render
 
 This is source highlighting, not a log highlighter: Bash output stays tool output. Unknown languages remain readable in a neutral color. Very large sources can have an uncolored remainder without losing visible text.
 
+## Match your terminal to Pi's theme
+
+A Pi theme can look right inside its panels but clash with your terminal's own background or default text color. pi-tidy-ui can make them match, so the space around cards, the input area and text using terminal defaults share a consistent base palette.
+
+> [!NOTE]
+> **Off by default.** Open **`/tidy-ui`**, select **Set terminal colors from Pi theme**, and switch it **On**. **Tidy UI appearance** must also be On. Your choice is saved for future sessions; installing the extension alone does not change your terminal colors.
+
+### Where the colors come from
+
+The extension reads the active **Pi theme's JSON file**, using exactly these two fields:
+
+| Terminal setting | Pi theme field | What changes |
+| --- | --- | --- |
+| Default background | **`export.pageBg`** | The terminal's base background, including areas without an explicitly painted background |
+| Default foreground | **`colors.text`** | The color of text that uses the terminal's default foreground |
+
+For example, a theme containing this fragment supplies a dark background and light default text:
+
+```json
+{
+  "export": { "pageBg": "#1e1e2e" },
+  "colors": { "text": "#cdd6f4" }
+}
+```
+
+Theme-variable references in these fields are resolved through the theme's `vars`, just like explicit color values. Missing or empty fields leave that channel at the terminal profile's default; if the extension previously applied that channel, it releases it. The background is not guessed from a card color or a theme's name.
+
+These are **terminal defaults**, not a recoloring of every cell: explicit syntax colors and panel backgrounds still keep their own colors. The cursor color and ANSI palette are not changed, and your terminal application's configuration is not rewritten. This setting follows Pi's overall theme—not the independent **Code color theme** you may choose for Bash/edit/write cards.
+
+### Theme changes, restoration and troubleshooting
+
+- **Fixed themes only.** Choose a fixed Pi theme to use matching. Automatic light/dark pairs and `system` remain under Pi's control, even with the switch On. Otherwise, changing the terminal background could influence the very automatic theme choice it is meant to follow.
+- **Follows theme changes.** When you switch between supported fixed Pi themes, the terminal defaults follow. If the theme file becomes unreadable or invalid, the extension keeps the last valid color pair and reports the issue instead of applying a partly broken palette.
+- **Reversible.** Switching terminal matching Off, turning Tidy UI appearance Off, or quitting Pi normally releases the colors the extension applied. This restores your **terminal profile's defaults**, not an earlier temporary override from another program. Reloads and session changes keep matching active without resetting unchanged colors.
+- **Recover an external reset.** Use **`/tidy-ui` → Status & troubleshooting → Reapply terminal colors**. It resends the enabled theme's defaults; it does not turn matching on when the switch is Off. Avoid combining multiple extensions that set terminal defaults.
+
+The feature requires a terminal that supports changing default colors. On supported POSIX terminals, **Ctrl+Z / `fg`** releases and restores the extension's terminal colors and resumes useful highlighting work without requiring a reload. Forced termination such as `SIGKILL` cannot guarantee restoration. See the [terminal-color reference](docs/terminal-colors-spec.md) for exact behavior and limitations.
+
 ## Read the cache chart
 
 A single good cache-hit percentage can hide several bad requests before it. The footer keeps the **last ten main-agent model responses** visible so you can spot a sustained loss of prompt-cache reuse before continuing an unexpectedly expensive run.
@@ -139,14 +178,12 @@ Run **`/tidy-ui`**. No configuration file editing is needed for normal use.
 | --- | --- |
 | **Tidy UI appearance** | Toggle the custom cards, messages, input and footer |
 | **Code color theme** | Search themes, preview with navigation, confirm with Enter; Escape restores the previous choice |
-| **Set terminal colors from Pi theme** | Match terminal background/default text to a supported fixed Pi theme. Enabled by default, with its own switch; active only while Tidy UI appearance is On |
+| **Set terminal colors from Pi theme** | [Match terminal defaults to Pi's theme](#match-your-terminal-to-pis-theme). Off by default; active only while Tidy UI appearance is On |
 | **Status & troubleshooting** | Inspect actual state, toggle Occipital, reapply appearance/colors, inspect or record diagnostic logs, and view or clear saved display layouts |
 
 For spacing, use Pi's **`/settings`**: **Output padding** controls transcript margins, while **Editor padding** controls the input panel. Both apply without reloading.
 
 Confirmed code themes, terminal-color and native-highlighting preferences are saved and shared across running Pi instances. Appearance and diagnostic-recording switches belong to the current Pi process: they survive `/reload`, but a new process starts them enabled. Logs are local diagnostics; the menu shows their paths and lets you turn recording off. See [what is recorded](docs/debug-logging-spec.md).
-
-Terminal-color matching leaves automatic/system themes under Pi's control. On supported POSIX terminals, **Ctrl+Z / `fg`** releases and restores the extension's terminal colors and resumes useful highlighting work without requiring a reload.
 
 ### Expand, select, or keep a tool native
 

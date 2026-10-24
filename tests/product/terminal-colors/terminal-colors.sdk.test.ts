@@ -178,10 +178,13 @@ test("terminal defaults menu honors local/master lifetime without session-bound 
   const listeners = process.listenerCount("exit"), nativeToolRender = Tool.prototype.render;
   try {
     await h.events.get("session_start")!({}, h.ctx); await terminalMicrotasks();
+    assert.equal(fixture.packets.length, 0, 'fresh settings leave both terminal defaults untouched');
+    const command = h.commands.get('tidy-ui')!.handler;
+    assert.match(await menuPage(command, h.ctx), /Set terminal colors from Pi theme\s+Off/u);
+    await setColors(command, h.ctx, true); await terminalMicrotasks();
     assert.equal(fixture.packets.length, 1); assert.equal(process.listenerCount("exit"), listeners);
     await h.events.get("session_start")!({}, h.ctx); await terminalMicrotasks();
     assert.equal(fixture.packets.length, 1); assert.equal(process.listenerCount("exit"), listeners);
-    const command = h.commands.get('tidy-ui')!.handler;
     const control = (operation: string) => operation === 'colors on' || operation === 'colors off'
       ? setColors(command, h.ctx, operation === 'colors on') : operation === 'on' || operation === 'off'
       ? setAppearance(command, h.ctx, operation === 'on') : command(operation, h.ctx);
@@ -348,6 +351,7 @@ test('terminal repaint: production host forwards forced mode without invalidatin
   h.root.invalidate = () => { invalidations++; invalidate.call(h.root); };
   try {
     await h.events.get('session_start')!({}, h.ctx); await terminalMicrotasks();
+    await setColors(h.commands.get('tidy-ui')!.handler, h.ctx, true); await terminalMicrotasks();
     assert.equal(requests.filter(Boolean).length, 1);
     const before = invalidations;
     await setColors(h.commands.get('tidy-ui')!.handler, h.ctx, false); await terminalMicrotasks();

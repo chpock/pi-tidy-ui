@@ -74,6 +74,56 @@ test('entry print/json/rpc modes restore preferences for logging but never const
   }
 });
 
+async function observeTerminalDefaults(h: ReturnType<typeof fixture>, directory: string) {
+  const path = join(directory, 'theme.json'), packets: string[] = [];
+  await fs.writeFile(path, '{"colors":{"text":"#eeeeee"},"export":{"pageBg":"#123456"}}');
+  Object.assign(h.ctx.ui, { theme: Object.assign(themes.getThemeByName('dark')!, { sourcePath: path }) });
+  Object.assign(h.root, { terminalColorSchemeNotificationsEnabled: false,
+    terminal: { start() {}, stop() {}, write(data: string) { packets.push(data); } } });
+  return packets;
+}
+
+for (const [name, contents, enabled] of [
+  ['missing configuration', undefined, false],
+  ['empty configuration', '{}', false],
+  ['legacy theme-only configuration', '{"syntaxTheme":{"kind":"pi"}}', false],
+  ['saved On', '{"terminalColorsEnabled":true}', true],
+  ['saved Off', '{"terminalColorsEnabled":false}', false],
+  ['invalid configuration', '{"terminalColorsEnabled":"true"}', false],
+] as const) test(`entry terminal colors: ${name} respects the opt-in default without writing preferences`, async () => {
+  const directory = await fs.mkdtemp(join(tmpdir(), 'tidy-colors-default-')), file = join(directory, 'config.json');
+  if (contents !== undefined) await fs.writeFile(file, contents);
+  const h = fixture('tui', false, new ExtensionSettings({ file }));
+  const packets = await observeTerminalDefaults(h, directory);
+  try {
+    await h.start(); await settled();
+    await h.page(); assert.match(h.view, new RegExp(`Set terminal colors from Pi theme\\s+${enabled ? 'On' : 'Off'}`));
+    await h.page('Status & troubleshooting'); assert.match(h.view, /Use Occipital highlighting\s+On/);
+    assert.equal(packets.some(packet => /\x1b\](?:10|11);[^?]/u.test(packet)), enabled, 'only a saved On may set terminal defaults');
+    if (!enabled) assert.equal(packets.length, 0, 'default Off must not set or reset unowned channels');
+    if (contents === undefined) await assert.rejects(fs.stat(file), { code: 'ENOENT' });
+    else assert.equal(await fs.readFile(file, 'utf8'), contents, 'loading defaults must not rewrite configuration');
+  } finally { await h.stop(); await fs.rm(directory, { recursive: true, force: true }); }
+});
+
+test('entry terminal colors: removing a shared preference releases colors without writing or disabling highlighting', async () => {
+  let changed!: (value: SettingsLoadResult) => void, saves = 0;
+  const h = fixture('tui', false, {
+    async load() { return { ok: true, syntaxTheme: { kind: 'pi' }, terminalColorsEnabled: true }; },
+    async update() { saves++; return { ok: true }; }, watch(callback) { changed = callback; return () => {}; },
+  });
+  const directory = await fs.mkdtemp(join(tmpdir(), 'tidy-colors-shared-'));
+  const packets = await observeTerminalDefaults(h, directory);
+  try {
+    await h.start(); await settled(); assert.ok(packets.some(packet => packet.includes('\x1b]11;')));
+    changed({ ok: true, syntaxTheme: { kind: 'pi' } }); await settled();
+    assert.equal(packets.at(-1), '\x1b]111\x07\x1b]110\x07');
+    await h.page(); assert.match(h.view, /Set terminal colors from Pi theme\s+Off/);
+    await h.page('Status & troubleshooting'); assert.match(h.view, /Use Occipital highlighting\s+On/);
+    assert.equal(saves, 0);
+  } finally { await h.stop(); await fs.rm(directory, { recursive: true, force: true }); }
+});
+
 test('entry native disable is saved and survives master off/on without provider reactivation or duplicate loads', async () => {
   const h = fixture(); await h.start(); await settled();
   await h.page('Status & troubleshooting', 'Use Occipital highlighting');
@@ -129,7 +179,8 @@ test('entry projects trusted terminal backgrounds into prepared Pi input without
   try {
     for (const [background, mode] of [['#123456', 'truecolor'], ['#0a0b0c', 'truecolor'], ['#123456', '256color']] as const) {
       await fs.writeFile(path, JSON.stringify({ colors: { text: '#eeeeee' }, export: { pageBg: background } }));
-      const h = fixture(), theme = new Theme(fg as never, bg as never, mode, { name: 'entry-colors', sourcePath: path, dim: ['dim', 'muted'] });
+      const h = fixture('tui', false, { async load() { return { ok: true, syntaxTheme: { kind: 'pi' }, terminalColorsEnabled: true }; },
+        async update() { return { ok: true }; } }), theme = new Theme(fg as never, bg as never, mode, { name: 'entry-colors', sourcePath: path, dim: ['dim', 'muted'] });
       Object.assign(h.ctx.ui, { theme });
       Object.assign(h.root, { terminalColorSchemeNotificationsEnabled: false, terminal: { start() {}, stop() {}, write() {} } });
       const nativeColors = theme.colors, nativePrefix = theme.getBgAnsi('toolPendingBg');
@@ -349,6 +400,7 @@ test('entry public streaming identities separate quick live abort from restored 
 test('entry persists shared preferences; a same-process runtime restores local Off before any provider or log IO', async () => {
   const directory = await fs.mkdtemp(join(tmpdir(), 'tidy-preferences-entry-'));
   const file = join(directory, 'config.json'), store = new ExtensionSettings({ file });
+  await store.update({ terminalColorsEnabled: true });
   const local = { appearanceEnabled: true, loggingEnabled: true };
   const first = fixture('tui', { root: join(directory, 'first-logs') }, store, local);
   try {
