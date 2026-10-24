@@ -71,7 +71,9 @@ Pi resolves the agent directory, including `PI_CODING_AGENT_DIR`. This is neithe
 
 ```json
 {
-  "syntaxTheme": { "kind": "pi" },
+  "syntaxTheme": {
+    "kind": "pi"
+  },
   "terminalColorsEnabled": false,
   "nativeHighlightingEnabled": true
 }
@@ -81,13 +83,13 @@ An independent theme uses `{ "kind": "occipital", "id": "<catalogue ID>" }`. Old
 
 **Tidy UI appearance** and **Record diagnostic logs** are local to the running Pi process. Their two boolean values live under a private `globalThis` symbol, with no component/session references or filesystem flag. They survive `/reload` and opening another session in the same process; a new process starts both On. Local Off is restored before presentation or journal initialization, so disabled capture creates no journal, overview, retention scan or cleanup operation. Legacy `appearanceEnabled`/`loggingEnabled` file fields are ignored and removed on the next explicit persistent save, not by a startup migration.
 
-Confirmed themes and the two shared switches apply and save automatically; there is no Save button. Theme-list navigation is temporary until Enter/completed-click confirmation and never writes settings. Local switches do not enter the persistence queue. Shared writes use the same `ExtensionSettings` writer, reread the latest document, preserve unknown fields and replace a complete JSON file through a private temporary file and rename. Confirmations enter that queue before asynchronous transport cleanup: dismissing and reopening a popup cannot let an older completion overwrite a newer confirmation. Saves fail visibly without undoing the live choice. Invalid/unreadable files are not silently overwritten.
+Confirmed themes and the two shared switches apply and save automatically; there is no Save button. Theme-list navigation is temporary until Enter/completed-click confirmation and never writes settings. Local switches do not enter the persistence queue. Shared writes use the same `ExtensionSettings` writer, reread the latest document, preserve unknown fields and replace a complete JSON file through a private temporary file and rename. Saved files use pretty JSON with two-space indentation and a final newline. Existing compact files remain readable and are reformatted only on an explicit persistent save, never just by loading or watching them. Confirmations enter that queue before asynchronous transport cleanup: dismissing and reopening a popup cannot let an older completion overwrite a newer confirmation. Saves fail visibly without undoing the live choice. Invalid/unreadable files are not silently overwritten.
 
 Shutdown/session retirement cancels unpublished pending saves; a rename already requested is the commit boundary. Disposed syntax owners cannot publish late theme selections.
 
 ### Validation and forward-compatible data
 
-Input files and serialized replacements are capped at **64 KiB**. Reads require valid UTF-8 and a JSON object, and read no more than the cap plus one detection byte even if the file grows after stat. Malformed known fields invalidate the whole document, rather than partially salvaging preferences. Initial failure reports an error and uses Follow Pi with terminal-color application Off and native highlighting On; an invalid subsequent external update instead retains already-live preferences.
+Input files and serialized replacements are capped at **64 KiB**, including indentation and the final newline in saved output. A formatted replacement over the cap is rejected without changing the previous file. Reads require valid UTF-8 and a JSON object, and read no more than the cap plus one detection byte even if the file grows after stat. Malformed known fields invalidate the whole document, rather than partially salvaging preferences. Initial failure reports an error and uses Follow Pi with terminal-color application Off and native highlighting On; an invalid subsequent external update instead retains already-live preferences.
 
 Theme objects have exactly the keys of `{ "kind": "pi" }` or `{ "kind": "occipital", "id": "..." }`. IDs are opaque, nonempty, well-formed strings of at most **64 UTF-8 bytes**, not paths. Persisted switches must be booleans.
 

@@ -261,7 +261,7 @@ export class ExtensionSettings {
       // Object spread creates own data properties, including JSON's __proto__ key.
       const document: Record<string, unknown> = { ...latest.document, ...patch };
       delete document.appearanceEnabled; delete document.loggingEnabled;
-      contents = JSON.stringify(document) + "\n";
+      contents = JSON.stringify(document, null, 2) + "\n";
     } catch {
       return { ok: false, issue: issue("write-failed") };
     }

@@ -498,7 +498,7 @@ For volume-policy changes, keep `src/occipital/limits.ts`, the Rust limits and `
 
 ### Settings and preview
 
-Cover real popup keyboard/mouse/search, clipping, scroll visibility, confirmation, per-visit rollback, late completion, persisted versus process-local switches and external-file changes during an unconfirmed preview. Preserve invalid files/unrelated settings, serialized writes and same-setting last-writer semantics; do not infer cross-process locking. Native-theme preview/rollback needs actual helper/palette integration, not only a menu stub. Opening status cannot enable a disabled provider, rewrite a session or produce model messages.
+Cover real popup keyboard/mouse/search, clipping, scroll visibility, confirmation, per-visit rollback, late completion, persisted versus process-local switches and external-file changes during an unconfirmed preview. Preserve invalid files/unrelated settings, serialized writes and same-setting last-writer semantics; do not infer cross-process locking. Assert actual saved two-space pretty JSON and its final newline, including nested unknown data and exact numeric tokens. Loading compact input must not reformat it; the 64 KiB serialized-output boundary includes formatting whitespace, and an oversized formatted replacement leaves the old file unchanged. Native-theme preview/rollback needs actual helper/palette integration, not only a menu stub. Opening status cannot enable a disabled provider, rewrite a session or produce model messages.
 
 ## Performance runs
 

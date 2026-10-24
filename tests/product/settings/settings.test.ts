@@ -46,6 +46,22 @@ test("settings: missing file and field use Pi without writes; explicit file seam
   assert.equal(await fs.readFile(file, "utf8"), original);
 });
 
+test("settings: writes two-space pretty JSON with a final newline", async (t) => {
+  const { store, file } = await fixture(t);
+  assert.deepEqual(await store.update({ syntaxTheme: pi, terminalColorsEnabled: false }), { ok: true });
+  assert.equal(await fs.readFile(file, "utf8"), `{
+  "syntaxTheme": {
+    "kind": "pi"
+  },
+  "terminalColorsEnabled": false
+}
+`);
+  assert.deepEqual(await new ExtensionSettings({ file }).load(), {
+    ok: true, syntaxTheme: pi, terminalColorsEnabled: false,
+  });
+  await noTemporaryFiles(file);
+});
+
 test("settings: round trips, opaque IDs and no extra persisted preferences", async (t) => {
   const { store, file } = await fixture(t);
   for (const choice of [theme("catalogue:dark"), theme("../opaque/🧠"), theme("é".repeat(32)), pi]) {
@@ -97,11 +113,11 @@ for (const token of ["1e400", "-1e400", "9007199254740993", "-9007199254740993",
     const { store, file, seed } = await fixture(t);
     await seed(`{"future":${token}}`);
     assert.deepEqual(await store.update({ syntaxTheme: pi }), { ok: true });
-    assert.equal(await fs.readFile(file, "utf8"), `{"future":${token},"syntaxTheme":{"kind":"pi"}}\n`);
+    assert.equal(await fs.readFile(file, "utf8"), `{\n  "future": ${token},\n  "syntaxTheme": {\n    "kind": "pi"\n  }\n}\n`);
     const fresh = new ExtensionSettings({ file });
     assert.deepEqual(await fresh.load(), { ok: true, syntaxTheme: pi });
     assert.deepEqual(await fresh.update({ syntaxTheme: theme("next") }), { ok: true });
-    assert.equal(await fs.readFile(file, "utf8"), `{"future":${token},"syntaxTheme":{"kind":"occipital","id":"next"}}\n`);
+    assert.equal(await fs.readFile(file, "utf8"), `{\n  "future": ${token},\n  "syntaxTheme": {\n    "kind": "occipital",\n    "id": "next"\n  }\n}\n`);
     await noTemporaryFiles(file);
   });
 }
@@ -111,7 +127,36 @@ test("settings: preserve nested future and prototype-named numeric tokens withou
   const original = '{"future":{"array":[1e400,9007199254740993,{"fine":0.12345678901234567890123456789,"zero":-0}]},"__proto__":{"n":-1e400},"constructor":{"prototype":{"n":-9007199254740993}},"toString":1e-400,"hasOwnProperty":-0.000e+20,"rawJSON":{"rawJSON":"not a native wrapper","number":9007199254740995}}';
   await seed(original);
   assert.deepEqual(await store.update({ syntaxTheme: pi }), { ok: true });
-  assert.equal(await fs.readFile(file, "utf8"), original.slice(0, -1) + ',"syntaxTheme":{"kind":"pi"}}\n');
+  assert.equal(await fs.readFile(file, "utf8"), `{
+  "future": {
+    "array": [
+      1e400,
+      9007199254740993,
+      {
+        "fine": 0.12345678901234567890123456789,
+        "zero": -0
+      }
+    ]
+  },
+  "__proto__": {
+    "n": -1e400
+  },
+  "constructor": {
+    "prototype": {
+      "n": -9007199254740993
+    }
+  },
+  "toString": 1e-400,
+  "hasOwnProperty": -0.000e+20,
+  "rawJSON": {
+    "rawJSON": "not a native wrapper",
+    "number": 9007199254740995
+  },
+  "syntaxTheme": {
+    "kind": "pi"
+  }
+}
+`);
   assert.deepEqual(await new ExtensionSettings({ file }).load(), { ok: true, syntaxTheme: pi });
   assert.equal(({} as { n?: unknown }).n, undefined);
   await noTemporaryFiles(file);
@@ -194,6 +239,29 @@ test("settings: byte-bounded reads/writes and exact size boundary", async (t) =>
   safeFailure(await store.update({ syntaxTheme: pi }), "too-large");
   assert.equal(await fs.readFile(file, "utf8"), exact + " ");
   await noTemporaryFiles(file);
+});
+
+test("settings: serialized size limit includes pretty-print whitespace and the final newline", async (t) => {
+  const { store, file, seed } = await fixture(t);
+  const prefix = '{\n  "future": "', suffix = '",\n  "syntaxTheme": {\n    "kind": "pi"\n  }\n}\n';
+  for (const extra of [0, 1]) {
+    const value = 'x'.repeat(SETTINGS_FILE_MAX_BYTES - Buffer.byteLength(prefix + suffix) + extra);
+    const original = JSON.stringify({ future: value });
+    await seed(original);
+    assert.ok(Buffer.byteLength(original) < SETTINGS_FILE_MAX_BYTES, 'the input itself fits');
+    assert.ok(Buffer.byteLength(JSON.stringify({ future: value, syntaxTheme: pi })) < SETTINGS_FILE_MAX_BYTES, 'compact output would fit');
+    const result = await store.update({ syntaxTheme: pi });
+    if (extra === 0) {
+      assert.deepEqual(result, { ok: true });
+      const contents = await fs.readFile(file, 'utf8');
+      assert.equal(Buffer.byteLength(contents), SETTINGS_FILE_MAX_BYTES);
+      assert.equal(contents, prefix + value + suffix);
+    } else {
+      safeFailure(result, 'too-large');
+      assert.equal(await fs.readFile(file, 'utf8'), original, 'oversized formatted output preserves the previous file');
+    }
+    await noTemporaryFiles(file);
+  }
 });
 
 test("settings: invalid UTF-8 is not silently repaired", async (t) => {
@@ -438,7 +506,7 @@ test("settings cancellation: queued obsolete choice never rereads or publishes a
   resume.release();
   assert.deepEqual(await first, { ok: true }); safeFailure(await second, 'cancelled');
   assert.equal(reads, 1); assert.equal(publications, 1);
-  assert.equal(await fs.readFile(file, 'utf8'), '{"future":1e400,"syntaxTheme":{"kind":"occipital","id":"current"}}\n');
+  assert.equal(await fs.readFile(file, 'utf8'), '{\n  "future": 1e400,\n  "syntaxTheme": {\n    "kind": "occipital",\n    "id": "current"\n  }\n}\n');
   await noTemporaryFiles(file);
 });
 
