@@ -20,7 +20,7 @@ function fixture(t) {
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const checkout = join(root, 'checkout'), original = readInputs();
   const put = (name, bytes) => { const path = join(checkout, name); mkdirSync(dirname(path), { recursive: true }); writeFileSync(path, bytes); };
-  for (const name of ['context', 'prepare', 'prepare-native', 'native-harness', 'native-bootstrap', 'native-guard', 'run', 'catalog']) {
+  for (const name of ['context', 'prepare', 'prepare-native', 'native-harness', 'native-bootstrap', 'native-guard', 'run', 'catalog', 'progress', 'progress-reporter']) {
     put(`scripts/test/${name}.mjs`, readFileSync(new URL(`../../scripts/test/${name}.mjs`, import.meta.url)));
   }
   put('tests/native-build/rust-harness.test.mjs', readFileSync(new URL('../native-build/rust-harness.test.mjs', import.meta.url)));
@@ -104,6 +104,10 @@ test('new ${extension} test automatically executes', () => {
   assert.deepEqual(readFileSync(marker, 'utf8').trim().split('\n').sort(), ['mjs', 'ts']);
   assert.equal(readFileSync(f.calls, 'utf8'), 'check\ncheck\n', 'discovery must not duplicate the existing ancestry control');
   assert.equal(report.counts.tests, 3);
+  assert.equal(report.cases.filter(item => item.kind === 'test').length, 3);
+  assert.ok(report.slowestTests.some(item => item.name === 'new mjs test automatically executes' && item.durationMs >= 0));
+  assert.equal(report.steps.length, 1);
+  assert.ok(report.steps[0].elapsedMs > 0);
   assertClean(report);
 });
 
@@ -121,6 +125,7 @@ test('native assertion failure fails runner CLI and prevents a following produce
   assert.equal(report.status, 'failed');
   assert.equal(report.reason, 'test-failure');
   assert.equal(report.counts.fail, 1);
+  assert.ok(report.cases.some(item => item.name === 'deliberate native failure' && item.status === 'failed'));
   assert.equal(readFileSync(f.calls, 'utf8'), 'check\ncheck\n');
   assertClean(report);
 });

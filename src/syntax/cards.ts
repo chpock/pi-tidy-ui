@@ -106,7 +106,7 @@ function inputBytes(input: CardDisplayInput) {
   const args = input.kind === 'bash' ? input.args : input.node.args;
   let rows = 1;
   const size = (text: string) => { for (let i = 0; i < text.length; i++) if (text.charCodeAt(i) === 10 || text.charCodeAt(i) === 13) rows++; return text.length; };
-  let units = (input.cwd?.length ?? 0) + (input.directory?.length ?? 0);
+  let units = (input.cwd?.length ?? 0) + (input.directory?.length ?? 0) + (input.language?.length ?? 0);
   for (const key of ['command', 'description', 'content', 'path', 'file_path', 'filePath']) if (typeof args[key] === 'string') units += size(args[key]);
   const result = input.kind === 'bash' ? input.node?.result : input.node.result;
   if (input.kind === 'bash') for (const part of input.node?.result?.content ?? []) units += size(part.text ?? '');
@@ -403,7 +403,7 @@ export class CardSources<Owner extends object> {
         : state.file?.view.lines.reduce((n, line) => n + (line.kind === 'gap' ? 0 : line.logical.length * 2 + 128), 0) ?? 0));
       if (!scratch) return;
       // Retained classification owns only a prefix, never the full current demand.
-      const demands = state.sourceEligible && input.kind === 'bash' && state.display.kind === 'bash' ? [{ text: state.display.command.text }]
+      const demands: { text: string; languageHint?: string }[] = state.sourceEligible && input.kind === 'bash' && state.display.kind === 'bash' ? [{ text: state.display.command.text }]
         : state.file && input.kind === 'file' && !input.node.result?.isError ? fileSources(state.file.view) : [];
       const slots = new Map<string, Slot>();
       for (let index = 0; index < demands.length; index++) {
@@ -412,7 +412,9 @@ export class CardSources<Owner extends object> {
           const bytes = keyBytes(key); if (this.bytes + bytes > this.maxBytes) continue;
           ticket.keys.add(key); this.keys.set(key, ticket); this.bytes += bytes; ticket.bytes += bytes;
         }
-        const slot: Slot = { key, version: state.version, language: wireHint(input.language, 128), complete: input.kind === 'file' || input.complete,
+        const language = input.kind === 'bash' ? wireHint(input.language, 128) : wireHint(demands[index]!.languageHint, 128);
+        const piLanguage = input.kind === 'file' ? wireHint(input.language, 128) : undefined;
+        const slot: Slot = { key, version: state.version, language, piLanguage, complete: input.kind === 'file' || input.complete,
           palette: state.pi?.paletteRevision ?? input.palette, fallback: input.kind === 'bash' ? 'neutral' : 'pi', outcome: 'refused' };
         slots.set(key, slot);
         const demand = { ...slot, text: demands[index]!.text, path: wireHint(state.file?.path, 4096), nativeProfile: this.client.snapshot().effective ?? null,
@@ -533,7 +535,7 @@ export class CardSources<Owner extends object> {
   }
   displayStamp(owner: Owner): number { return this.states.get(owner)?.paint?.paintStamp ?? 0; }
   identities(owner: Owner): SyntaxIdentity[] { const state = this.states.get(owner);
-    return state ? Array.from(state.slots.values(), ({ key, version, language, complete, palette, fallback }) => ({ key, version, language, complete, palette, fallback })) : []; }
+    return state ? Array.from(state.slots.values(), ({ key, version, language, piLanguage, complete, palette, fallback }) => ({ key, version, language, piLanguage, complete, palette, fallback })) : []; }
   freeze(owner: Owner): void { const s = this.states.get(owner); if (!s || s.frozen) return; s.frozen = true;
     for (const slot of s.slots.values()) this.client.sources.freeze(slot.key); }
   pause(owner: Owner): void { const s = this.states.get(owner); if (!s) return; s.paused = true; if (s.ticket?.work) this.client.sources.pausePreparation(s.ticket.work); }

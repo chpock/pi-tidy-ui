@@ -13,7 +13,16 @@ export function reportRuntime(sink: DiagnosticSink | undefined, event: RuntimeEv
 const expectedRefusals = new Set(['busy', 'cancelled', 'queue_expired', 'provider_changed', 'restart_required',
   'profile_changed', 'profile_unavailable', 'theme_unavailable', 'scope_gone', 'scope_limit', 'source_limit',
   'style_limit', 'theme_limit', 'state_limit', 'result_limit', 'frame_limit', 'reply_limit', 'route_limit', 'session_limit']);
-export function unexpectedDiagnostic(error: unknown): boolean { return !expectedRefusals.has(diagnosticError(error)); }
+function noStartUnknownSyntax(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false;
+  try {
+    return Object.getOwnPropertyDescriptor(error, 'code')?.value === 'unknown_syntax'
+      && Object.getOwnPropertyDescriptor(error, 'execution')?.value === 'not_started';
+  } catch { return false; }
+}
+export function unexpectedDiagnostic(error: unknown): boolean {
+  return !noStartUnknownSyntax(error) && !expectedRefusals.has(diagnosticError(error));
+}
 
 /** Diagnostic observers never own the operation they describe. */
 export function diagnose(sink: DiagnosticSink | undefined, level: DiagnosticLevel, area: string, explanation: string, fields?: DiagnosticFields): void {

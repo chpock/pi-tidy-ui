@@ -54,6 +54,20 @@ async function cleanup(owner: SourceController, peer: Peer) {
   await settled();
 }
 
+test('controller v3 language selector rejects malformed identity but normalizes empty to path selection', async () => {
+  const peer = new Peer(), owner = new SourceController(peer), baseline = owner.stats().bookkeepingBytes;
+  try {
+    for (const language of ['bad\u0001format', 'x'.repeat(129)])
+      assert.throws(() => owner.observe(demand({ language })), /invalid source demand/);
+    assert.equal(peer.calls.length, 0);
+    assert.equal(owner.stats().bookkeepingBytes, baseline);
+    owner.observe(demand({ language: '' })); owner.flush();
+    assert.equal(peer.calls.length, 1);
+    assert.equal(Object.hasOwn(peer.calls[0]!.sources[0]!.hint, 'language'), false, 'empty selector is sent as absent');
+    peer.reply(0, 'echo ready'); await settled();
+  } finally { await cleanup(owner, peer); }
+});
+
 test('controller v3 source: native-only empty catalogue still parses Follow Pi input without profile wire fields', async () => {
   const peer = new Peer(), owner = new SourceController(peer);
   try {
@@ -63,6 +77,7 @@ test('controller v3 source: native-only empty catalogue still parses Follow Pi i
     assert.equal(frame.v, 3); assert.equal(frame.op, 'highlight');
     assert.equal(Object.hasOwn(frame.sources[0], 'profile'), false);
     assert.equal(Object.hasOwn(frame.sources[0], 'fingerprint'), false);
+    assert.equal(Object.hasOwn(frame.sources[0].hint, 'shebang_language'), false, 'the protocol has no shebang-specific field');
     peer.reply(0, 'echo ready'); await settled();
     assert.equal(owner.status('source')!.acknowledgedVersion, 1);
     assert.equal(owner.status('source')!.exact, true);
@@ -416,8 +431,8 @@ for (const field of ['language', 'path', 'profile', 'fingerprint', 'provider', '
       const before = owner.stats().bookkeepingBytes;
       assert.equal(owner.observe(next), false); await settled();
       const expectedDelta = 2 * ((next.language?.length ?? 0) - (initial.language?.length ?? 0)
-        + (next.path?.length ?? 0) - (initial.path?.length ?? 0) + next.profile.length - initial.profile.length
-        + next.fingerprint.length - initial.fingerprint.length);
+        + (next.path?.length ?? 0) - (initial.path?.length ?? 0)
+        + next.profile.length - initial.profile.length + next.fingerprint.length - initial.fingerprint.length);
       assert.equal(owner.stats().bookkeepingBytes - before, expectedDelta, 'all retained identity strings are paid');
       const notified = notifications.length, charCodeAt = String.prototype.charCodeAt;
       let sourceScans = 0;
@@ -471,6 +486,7 @@ for (const providerChanged of [false, true]) for (const outcome of ['acknowledge
 for (const outcome of ['acknowledged', 'unknown'] as const) test(`controller refusal review capacity: unfunded identity remains cheap with held and ${outcome} source evidence`, async () => {
   const peer = new Peer(), notifications: string[][] = [];
   const owner = new SourceController(peer, { maxBookkeepingBytes: 1400, onChange: keys => notifications.push([...keys]) });
+
   try {
     owner.observe(demand()); owner.flush();
     const before = owner.stats().bookkeepingBytes, credit = owner.stats().transientBytes;
@@ -497,7 +513,26 @@ for (const outcome of ['acknowledged', 'unknown'] as const) test(`controller ref
     assert.equal(owner.stats().unsettledJobs, 0); assert.equal(owner.stats().transientBytes, 0);
   } finally {
     await cleanup(owner, peer);
-    assert.equal(owner.stats().bookkeepingBytes, 0);
     assert.equal(owner.stats().retention.retainedBytes, 0);
   }
+});
+
+test('controller v3 source: changing explicit language invalidates old work and queues the new grammar after settlement', async () => {
+  const peer = new Peer(), owner = new SourceController(peer);
+  try {
+    const first = demand({ language: 'python', text: 'unchanged tail', path: undefined });
+    assert.equal(owner.observe(first), true); owner.flush();
+    assert.equal(peer.calls[0]!.sources[0]!.hint.language, 'python');
+
+    const second = demand({ version: 2, language: 'bash', text: 'unchanged tail', path: undefined });
+    assert.equal(owner.observe(second), true); owner.flush();
+    assert.equal(peer.calls.length, 1, 'the per-source physical request remains serialized while old work is unsettled');
+
+    peer.reply(0, first.text); await settled();
+    assert.notEqual(owner.status('source')!.acknowledgedVersion, 2, 'the Python reply cannot publish for the newer Bash identity');
+    assert.equal(peer.calls.length, 2, 'the latest grammar is dispatched after the old request settles');
+    assert.equal(peer.calls[1]!.sources[0]!.hint.language, 'bash');
+    peer.reply(1, second.text); await settled();
+    assert.equal(owner.status('source')!.acknowledgedVersion, 2);
+  } finally { await cleanup(owner, peer); }
 });

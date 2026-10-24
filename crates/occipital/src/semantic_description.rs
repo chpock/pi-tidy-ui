@@ -28,6 +28,7 @@ pub struct Description<'a> {
     contexts_revision: u32,
     resolver_revision: u32,
     palette_revision: u32,
+    source_hint_revision: u32,
     vocabulary: Vocabulary,
     assets: &'static str,
     backend_version: &'static str,
@@ -93,6 +94,7 @@ pub fn describe<'a>(
         contexts_revision: 1,
         resolver_revision: 2,
         palette_revision: 1,
+        source_hint_revision: 2,
         vocabulary: Vocabulary {
             fingerprint: vocabulary::FINGERPRINT,
             count: vocabulary::SCOPE_COUNT,

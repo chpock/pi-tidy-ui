@@ -164,6 +164,32 @@ async function scenario(terminal, native, awaitClassification = true) {
   return terminal.capture('syntax-final');
 }
 
+async function shebangScenario(terminal) {
+  await terminal.ready(); await syntaxReady(terminal);
+  const turn = terminal.events().filter(event => event.type === 'agent_end').length;
+  terminal.send('run syntax-shebang\r'); await terminal.event('agent_end', turn + 1); await terminal.settle();
+  await settledStats(terminal, 'shebang-ready', nativeReady);
+  return terminal.capture('shebang-final');
+}
+function shebangContextColors(dump) {
+  const colors = [];
+  for (const [y, row] of dump.screen.entries()) {
+    let at = -1;
+    while ((at = row.indexOf('echo "same"', at + 1)) >= 0) colors.push(dump.cells[y][at].fg);
+  }
+  return colors;
+}
+function shebangStringColors(dump) {
+  const colors = [], role = dump.summaryStyles.syntaxString.match(/38;2;(\d+);(\d+);(\d+)m/);
+  assert.ok(role, 'Pi syntaxString role is measurable');
+  const expected = Number(role[1]) * 65536 + Number(role[2]) * 256 + Number(role[3]);
+  for (const [y, row] of dump.screen.entries()) {
+    let at = -1;
+    while ((at = row.indexOf('echo "same"', at + 1)) >= 0) colors.push(dump.cells[y][at + 6].fg);
+  }
+  return { colors, expected };
+}
+
 const stockReference = createSyntaxStockReferences(async mode => {
   const terminal = new PiTerminal(`syntax-stock-reference-${mode}`, { mode, tidyUi: false,
     extraEnv: { TIDY_UI_TEST_SYNTAX_CARDS: '1' } });
@@ -317,4 +343,4 @@ async function savedThemeSession() {
     return { directory, cards, session, bytes: readFileSync(session) };
 }
 
-export { inputs, requiredSharedHost, prepareSyntaxPackage, prepareSyntaxNative, pause, until, stats, work, sourceColors, body, traffic, persisted, finish, settledStats, syntaxReady, scenario, stockReference, previewStats, menuSequence, menuAction, chooseTheme, peerSource, keywordColor, loggingFrame, loggingIdle, loggerWork, loggingPrivacy, themeMarkers, initialThemeStats, retainedNativeThemeStats, themeForegrounds, expectedThemeColors, expressionForeground, savedThemeSession };
+export { inputs, requiredSharedHost, prepareSyntaxPackage, prepareSyntaxNative, pause, until, stats, work, sourceColors, body, traffic, persisted, finish, settledStats, syntaxReady, scenario, stockReference, previewStats, menuSequence, menuAction, chooseTheme, peerSource, keywordColor, loggingFrame, loggingIdle, loggerWork, loggingPrivacy, themeMarkers, initialThemeStats, retainedNativeThemeStats, themeForegrounds, expectedThemeColors, expressionForeground, savedThemeSession, shebangScenario, shebangContextColors, shebangStringColors };

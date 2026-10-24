@@ -50,6 +50,9 @@ test('runtime health: expected volume, queue, catalogue and cancellation refusal
   for (const code of ['source_limit', 'result_limit', 'reply_limit', 'scope_limit', 'busy', 'queue_expired', 'cancelled', 'restart_required', 'profile_changed', 'profile_unavailable'])
     assert.equal(unexpectedDiagnostic({ code }), false, code);
   for (const code of ['invalid_source', 'invalid_header', 'parser_error', 'invalid_close', 'EIO']) assert.equal(unexpectedDiagnostic({ code }), true, code);
+  assert.equal(unexpectedDiagnostic({ code: 'unknown_syntax', execution: 'not_started' }), false);
+  assert.equal(unexpectedDiagnostic({ code: 'unknown_syntax', execution: 'started' }), true);
+  assert.equal(unexpectedDiagnostic({ code: 'unknown_syntax' }), true);
   assert.equal(unexpectedDiagnostic(new TypeError('PRIVATE')), true);
 });
 

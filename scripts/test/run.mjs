@@ -1,6 +1,6 @@
 import { execFileSync, spawn } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
-import { dirname, isAbsolute, join, resolve } from 'node:path';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, realpathSync, rmSync } from 'node:fs';
+import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
@@ -8,6 +8,7 @@ import { childEnv, readInputs, rustLoaderEnvironment, toolPath, validateHost, va
 import { resolveSelection } from './catalog.mjs';
 export { selectSuite } from './catalog.mjs';
 import { snapshotIdentity, sourceIdentity, validateNeutralRunRoot } from './prepare.mjs';
+import { appendProgress, progressPaths, readProgressEvents, resetProgressFile, summarizeTestEvents, writeReport } from './progress.mjs';
 
 export function isolatedCommand(command, args, inputs) {
   if (process.platform !== 'linux') throw new Error('Built-in real egress restriction requires Linux bwrap; use an explicit platform/container restriction elsewhere');
@@ -25,17 +26,84 @@ export function isolatedCommand(command, args, inputs) {
     else if (Array.isArray(value)) value.forEach(collect);
     else if (value && typeof value === 'object') Object.values(value).forEach(collect);
   };
-  collect(inputs);
+  collect([inputs, args.map(value => value.startsWith('--test-reporter-destination=') ? value.slice('--test-reporter-destination='.length) : value)]);
   for (const path of temporary) mounts.push('--bind', path, path);
   return { command: toolPath('bwrap', inputs), args: [...mounts, '--proc', '/proc', '--dev', '/dev', '--die-with-parent', '--', command, ...args] };
 }
 
+async function executeStep({ command, args, cwd, env, inputs, networkIsolated, bootstrapStatus, report, reportPath, artifacts, suite, name }) {
+  const started = performance.now(), startedAt = new Date().toISOString();
+  const step = { name, startedAt, status: 'running', elapsedMs: null };
+  report.steps.push(step); report.status = 'running'; report.phase = 'execution'; report.currentStep = name; report.reason = 'child-start';
+  appendProgress(artifacts.events, { event: 'step-started', step: name, at: startedAt });
+  writeReport(reportPath, report);
+  let executable = command, argv = args, child, interruption;
+  const signalTree = signal => {
+    if (!child?.pid) return;
+    if (process.platform === 'win32') execFileSync(toolPath('taskkill', inputs), ['/PID', String(child.pid), '/T', '/F'], { env, stdio: 'ignore' });
+    else try { process.kill(-child.pid, signal); } catch (error) { if (error.code !== 'ESRCH') throw error; }
+  };
+  const interrupt = () => { interruption = 'SIGINT'; signalTree('SIGINT'); };
+  const terminate = () => { interruption = 'SIGTERM'; signalTree('SIGTERM'); };
+  try {
+    if (networkIsolated) {
+      const isolated = isolatedCommand(command, args, inputs);
+      executable = isolated.command; argv = isolated.args;
+    }
+    let tail = '';
+    child = spawn(executable, argv, { cwd, env, detached: process.platform !== 'win32', stdio: ['ignore', 'pipe', 'pipe'] });
+    child.stdout.on('data', bytes => {
+      process.stdout.write(bytes);
+      tail += bytes.toString();
+      const rows = tail.split('\n'); tail = rows.pop();
+      for (const row of rows) {
+        const tap = /^# (tests|pass|fail|cancelled|skipped|todo) (\d+)\s*$/.exec(row);
+        if (tap) report.counts[tap[1]] = Number(tap[2]);
+        const rustCase = suite.startsWith('rust') && /^test (.+) \.\.\. (ok|FAILED|ignored)$/.exec(row);
+        if (rustCase) report.cases.push({ name: rustCase[1], status: rustCase[2] === 'ok' ? 'passed' : rustCase[2] === 'ignored' ? 'skipped' : 'failed', kind: 'rust-test', durationMs: null });
+        const rust = suite.startsWith('rust') && /^test result: (?:ok|FAILED)\. (\d+) passed; (\d+) failed; (\d+) ignored; (\d+) measured; (\d+) filtered out;/.exec(row);
+        if (rust) for (const [key, count] of Object.entries({ pass: +rust[1], fail: +rust[2], skipped: +rust[3], measured: +rust[4], filteredOut: +rust[5], tests: +rust[1] + +rust[2] + +rust[3] })) report.counts[key] = (report.counts[key] ?? 0) + count;
+      }
+    });
+    child.stderr.on('data', bytes => process.stderr.write(bytes));
+    process.once('SIGINT', interrupt); process.once('SIGTERM', terminate);
+    const result = await new Promise((yes, no) => { child.once('error', no); child.once('close', (code, signal) => yes({ code, signal })); });
+    report.status = result.code === 0 && !interruption ? 'passed' : 'failed';
+    report.reason = interruption ? 'interrupted' : result.code === 0 ? 'passed' : 'test-failure';
+    if (interruption) report.interruption = interruption;
+    report.exitCode = result.code; report.signal = result.signal;
+    if (existsSync(bootstrapStatus)) {
+      const bootstrap = JSON.parse(readFileSync(bootstrapStatus, 'utf8'));
+      const allowed = ['bootstrap-runtime', 'bootstrap-sdk-import', 'bootstrap-class-identity'];
+      report.status = bootstrap.reason === 'bootstrap-runtime' ? 'setup-failed' : 'harness-failed';
+      report.reason = allowed.includes(bootstrap.reason) ? bootstrap.reason : 'bootstrap-status';
+    }
+    step.status = report.status; step.exitCode = result.code; step.signal = result.signal;
+  } catch (error) {
+    report.status = 'harness-failed'; report.reason = 'runner-exception';
+    step.status = 'harness-failed'; step.reason = 'runner-exception';
+    throw error;
+  } finally {
+    process.off('SIGINT', interrupt); process.off('SIGTERM', terminate);
+    if (child?.pid && process.platform !== 'win32') signalTree('SIGTERM');
+    step.finishedAt = new Date().toISOString(); step.elapsedMs = performance.now() - started;
+    report.currentStep = null;
+    appendProgress(artifacts.events, { event: 'step-complete', step: name, status: step.status, elapsedMs: step.elapsedMs, at: step.finishedAt });
+    writeReport(reportPath, report);
+  }
+  return report.status;
+}
 
 export async function execute({ inputs: path, suite = 'unit', files, groups, layer, pattern, skip, shard, 'network-isolated': networkIsolated = false, 'release-ref': releaseRef, 'rust-test': rustTests = [], output }) {
   process.umask(0o077);
   const inputPath = resolve(path ?? join(import.meta.dirname, '../../.test-artifacts/harness/1.0.0/inputs.json'));
   const reportPath = output ? resolve(output) : join(dirname(inputPath), 'runs', suite + '-' + randomUUID(), 'report.json');
-  const report = { schema: 1, suite, selected: [], selection: { files: files ?? null, groups: groups ?? null, layer: layer ?? null, pattern: pattern ?? null, skip: skip ?? null, shard: shard ?? null, rustTests }, cases: [], network: networkIsolated ? 'os-isolated' : 'prepared-fixtures', status: 'setup-failed', reason: 'inputs', counts: {} };
+  const artifacts = progressPaths(reportPath), started = performance.now(), startedAt = new Date().toISOString();
+  const report = { schema: 1, suite, selected: [], selection: { files: files ?? null, groups: groups ?? null, layer: layer ?? null, pattern: pattern ?? null, skip: skip ?? null, shard: shard ?? null, rustTests }, cases: [], network: networkIsolated ? 'os-isolated' : 'prepared-fixtures', status: 'setup-failed', phase: 'setup', reason: 'inputs', counts: {}, startedAt, elapsedMs: null, currentStep: null,
+    progress: { events: basename(artifacts.events), tests: basename(artifacts.tests) } };
+  resetProgressFile(artifacts.events); resetProgressFile(artifacts.tests);
+  appendProgress(artifacts.events, { event: 'run-started', suite, at: startedAt });
+  writeReport(reportPath, report);
   let directory;
   try {
     const inputs = readInputs(inputPath);
@@ -99,7 +167,9 @@ export async function execute({ inputs: path, suite = 'unit', files, groups, lay
       else args = ['clippy', '--workspace', '--all-targets', '--locked', '--offline', '--', '-D', 'warnings'];
     } else if (suite === 'consumer' || suite === 'published-consumer') args.push(join(inputs.pi.root, 'tests', selected[0]));
     else {
-      args.push('--expose-gc', '--test', '--test-reporter=tap');
+      args.push('--expose-gc', '--test', '--test-reporter=tap', '--test-reporter-destination=stdout',
+        `--test-reporter=${pathToFileURL(join(inputs.pi.root, 'scripts/test/progress-reporter.mjs')).href}`,
+        `--test-reporter-destination=${artifacts.tests}`);
       args.push('--test-concurrency=' + (selection.layers.includes('cli') ? '1' : '2'));
       if (pattern) args.push('--test-name-pattern=' + pattern);
       if (skip) args.push('--test-skip-pattern=' + skip);
@@ -108,61 +178,40 @@ export async function execute({ inputs: path, suite = 'unit', files, groups, lay
     const stages = suite === 'rust-check' ? [['fmt', '--all', '--', '--check'], args] : [args];
     report.steps = [];
     for (const stage of stages) {
-      let executable = command, argv = stage;
-      if (networkIsolated) {
-        const isolated = isolatedCommand(command, stage, inputs);
-        executable = isolated.command; argv = isolated.args;
-      }
-      let tail = '';
-      report.reason = 'child-start';
-      const child = spawn(executable, argv, { cwd: inputs.pi.root, env, detached: process.platform !== 'win32', stdio: ['ignore', 'pipe', 'pipe'] });
-      child.stdout.on('data', bytes => {
-        process.stdout.write(bytes);
-        tail += bytes.toString();
-        const rows = tail.split('\n'); tail = rows.pop();
-        for (const row of rows) {
-          const result = /^(ok|not ok) \d+ - (.*?)(?: # (SKIP|TODO)(?: (.*))?)?$/.exec(row);
-          if (result) report.cases.push({ name: result[2], status: result[3]?.toLowerCase() ?? (result[1] === 'ok' ? 'passed' : 'failed'), ...(result[3] ? { reason: result[4] ?? null } : {}) });
-          const tap = /^# (tests|pass|fail|cancelled|skipped|todo) (\d+)\s*$/.exec(row);
-          if (tap) report.counts[tap[1]] = Number(tap[2]);
-          const rust = suite.startsWith('rust') && /^test result: (?:ok|FAILED)\. (\d+) passed; (\d+) failed; (\d+) ignored; (\d+) measured; (\d+) filtered out;/.exec(row);
-          if (rust) for (const [key, count] of Object.entries({ pass: +rust[1], fail: +rust[2], skipped: +rust[3], measured: +rust[4], filteredOut: +rust[5], tests: +rust[1] + +rust[2] + +rust[3] })) report.counts[key] = (report.counts[key] ?? 0) + count;
-        }
-      });
-      child.stderr.on('data', bytes => process.stderr.write(bytes));
-      let interruption;
-      const signalTree = signal => {
-        if (!child.pid) return;
-        if (process.platform === 'win32') execFileSync(toolPath('taskkill', inputs), ['/PID', String(child.pid), '/T', '/F'], { env, stdio: 'ignore' });
-        else try { process.kill(-child.pid, signal); } catch (error) { if (error.code !== 'ESRCH') throw error; }
-      };
-      const interrupt = () => { interruption = 'SIGINT'; signalTree('SIGINT'); };
-      const terminate = () => { interruption = 'SIGTERM'; signalTree('SIGTERM'); };
-      process.once('SIGINT', interrupt); process.once('SIGTERM', terminate);
-      try {
-        const result = await new Promise((yes, no) => { child.once('error', no); child.once('close', (code, signal) => yes({ code, signal })); });
-        report.status = result.code === 0 && !interruption ? 'passed' : 'failed';
-        report.reason = interruption ? 'interrupted' : result.code === 0 ? 'passed' : 'test-failure';
-        if (interruption) report.interruption = interruption;
-        report.exitCode = result.code; report.signal = result.signal;
-        if (existsSync(bootstrapStatus)) {
-          const bootstrap = JSON.parse(readFileSync(bootstrapStatus, 'utf8'));
-          const allowed = ['bootstrap-runtime', 'bootstrap-sdk-import', 'bootstrap-class-identity'];
-          report.status = bootstrap.reason === 'bootstrap-runtime' ? 'setup-failed' : 'harness-failed';
-          report.reason = allowed.includes(bootstrap.reason) ? bootstrap.reason : 'bootstrap-status';
-        }
-        report.steps.push({ kind: suite === 'rust-check' ? stage[0] : suite, status: report.status, exitCode: result.code, signal: result.signal });
-        if (report.status !== 'passed') break;
-      } finally {
-        process.off('SIGINT', interrupt); process.off('SIGTERM', terminate);
-        if (process.platform !== 'win32') signalTree('SIGTERM');
-      }
+      const name = suite === 'rust-check' ? stage[0] : suite;
+      const status = await executeStep({ command, args: stage, cwd: inputs.pi.root, env, inputs, networkIsolated, bootstrapStatus, report, reportPath, artifacts, suite, name });
+      if (status !== 'passed') break;
     }
   } finally {
-    mkdirSync(dirname(reportPath), { recursive: true });
-    writeFileSync(reportPath, JSON.stringify(report, null, 2) + '\n');
-    if (directory) rmSync(directory, { recursive: true, force: true });
-    console.log('Test report: ' + reportPath);
+    try {
+      if (directory) rmSync(directory, { recursive: true, force: true });
+    } catch (error) {
+      report.status = 'harness-failed'; report.reason = 'cleanup';
+      throw error;
+    } finally {
+      let progress = { events: [], truncatedLines: 0 };
+      try { progress = readProgressEvents(artifacts.tests); }
+      catch { report.status = 'harness-failed'; report.reason = 'progress-report'; }
+      const summary = summarizeTestEvents(progress.events);
+      if (suite.startsWith('rust')) report.rustPerTestTiming = 'stable-libtest-does-not-report-individual-durations';
+      else report.cases = summary.cases;
+      report.activeTests = summary.activeTests;
+      report.slowestTests = summary.slowestTests;
+      report.slowestSuites = summary.slowestSuites;
+      report.truncatedProgressLines = progress.truncatedLines;
+      report.elapsedMs = performance.now() - started; report.finishedAt = new Date().toISOString(); report.phase = 'complete'; report.currentStep = null;
+      appendProgress(artifacts.events, { event: 'run-complete', status: report.status, elapsedMs: report.elapsedMs, at: report.finishedAt });
+      writeReport(reportPath, report);
+      console.log('Test report: ' + reportPath);
+      console.log('Test progress: ' + artifacts.events);
+      if (summary.slowestTests.length) {
+        console.log('Slowest tests:');
+        for (const item of summary.slowestTests.slice(0, 10)) {
+          const location = item.line ? `:${item.line}` : '';
+          console.log(`  ${item.durationMs?.toFixed(1) ?? '?'} ms ${item.file ?? '(unknown file)'}${location} — ${item.name}`);
+        }
+      }
+    }
   }
   return report;
 }

@@ -490,7 +490,7 @@ export default function terminalDriver(pi: ExtensionAPI) {
         const user: any = context.messages[last];
         const prompt = typeof user?.content === "string" ? user.content :
           user?.content?.filter((c: any) => c.type === "text").map((c: any) => c.text).join("");
-        const scenario = prompt === 'run follow-pi-palette' ? 'follow-pi-palette' : prompt === 'run bash-empty-stream' ? 'bash-empty-stream' : /^run highlighting-limits-(bash|write|edit)$/.test(prompt ?? "") ? prompt.slice(4) : prompt === "run syntax-long-output" ? "syntax-long-output" : prompt === "run bash-prefix-contract" ? "bash-prefix-contract" : prompt === "run syntax-cards" ? "syntax-cards" : prompt?.includes("run write-stock") ? "write-stock" : prompt?.includes("run write-shapes") ? "write-shapes" : prompt?.includes("run edit-performance") ? "edit-performance" : prompt?.includes("run edit-cards") ? "edit-cards" : prompt?.includes("run user-card") ? "user-card" : prompt === "run cache-performance" ? "cache-performance" : prompt?.includes("bash-width") ? "bash-width" : prompt?.includes("bash-stream") ? "bash-stream" : prompt?.includes("bash-real") ? "bash-real" :
+        const scenario = prompt === 'run follow-pi-palette' ? 'follow-pi-palette' : prompt === 'run bash-empty-stream' ? 'bash-empty-stream' : /^run highlighting-limits-(bash|write|edit)$/.test(prompt ?? "") ? prompt.slice(4) : prompt === "run syntax-long-output" ? "syntax-long-output" : prompt === "run bash-prefix-contract" ? "bash-prefix-contract" : prompt === "run syntax-cards" ? "syntax-cards" : prompt === "run syntax-shebang" ? "syntax-shebang" : prompt?.includes("run write-stock") ? "write-stock" : prompt?.includes("run write-shapes") ? "write-shapes" : prompt?.includes("run edit-performance") ? "edit-performance" : prompt?.includes("run edit-cards") ? "edit-cards" : prompt?.includes("run user-card") ? "user-card" : prompt === "run cache-performance" ? "cache-performance" : prompt?.includes("bash-width") ? "bash-width" : prompt?.includes("bash-stream") ? "bash-stream" : prompt?.includes("bash-real") ? "bash-real" :
           prompt?.includes("bash-shape-timeout-stream") ? "bash-shape-timeout-stream" : prompt?.includes("bash-shape-timeouts") ? "bash-shape-timeouts" :
           prompt?.includes("bash-shape-exception-stream") ? "bash-shape-exception-stream" : prompt?.includes("bash-shape-exceptions") ? "bash-shape-exceptions" :
           prompt?.includes('bash-shape-tasks') ? 'bash-shape-tasks' : prompt?.includes("bash-shape-reminders") ? "bash-shape-reminders" : prompt?.includes("bash-shape-stream") ? "bash-shape-stream" : prompt?.includes("bash-shapes") ? "bash-shapes" :
@@ -520,6 +520,13 @@ export default function terminalDriver(pi: ExtensionAPI) {
           { name: "bash", arguments: { command: "printf 'SYNTAX_OUTPUT\\n'\ntouch \"$TIDY_UI_TEST_OUTPUT/syntax-shell-ready\"\nwhile [ ! -f \"$TIDY_UI_TEST_OUTPUT/syntax-shell-final\" ]; do sleep 0.025; done" } },
           { name: "write", arguments: { path: "syntax.ts", content: "const x=1;\n" } },
           { name: "edit", arguments: { path: "syntax.ts", oldText: "const x=1;", newText: "const x=2;" } },
+        ] : scenario === "syntax-shebang" ? [
+          { name: "write", arguments: { path: "script.rb", content: `#!/usr/bin/env python3
+  echo "same" # SHEBANG_FILE_ONLY_MEASURE_7F3A
+  ` } },
+          { name: "bash", arguments: { command: "#!/usr/bin/env python3\nprintf 'BASH_NO_SHEBANG_HINT\\n'" } },
+          { name: "write", arguments: { path: "unknown-no-extension", content: "NO_SHEBANG_CONTROL\n" } },
+          { name: "edit", arguments: { path: "script.rb", oldText: "#!/usr/bin/env python3", newText: "#!/usr/bin/env bash" } },
         ] : scenario === "footer-cold" ? [] : scenario === "footer-history" || scenario === "footer-varied" ?
           Array.from({ length: scenario === "footer-history" ? 19 : 11 }, () => ({ name: "read", arguments: { path: "a.txt", offset: 1, limit: 1 } })) : scenario === "write-stock" ? writeStockSuite : scenario === "write-shapes" ? writeShapeSuite : scenario === "edit-performance" ? editPerformanceSuite : scenario === "edit-cards" ? editSuite : scenario === "user-card" ? [
           { name: "bash", arguments: { command: "printf 'USER_BASH_OUTPUT\\n'" } },

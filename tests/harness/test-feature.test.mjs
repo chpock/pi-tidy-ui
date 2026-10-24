@@ -64,6 +64,17 @@ test('affected-only stages do not duplicate baseline, and no selection is silent
   await assert.rejects(runFeature({features:'','affected-only':true,output:root}),/Empty feature/);
   await assert.rejects(runFeature({output:root}),/explicit --features/);
 });
+test('feature reports preserve a classified child setup failure when the runner throws',async t=>{
+  const output=temporary(t);
+  await assert.rejects(runFeature({inputs:readInputs().inputsPath,features:'footer',output},async({output:childPath})=>{
+    writeFileSync(childPath,JSON.stringify({status:'setup-failed',reason:'source-inputs',counts:{pass:0,fail:0},selected:[]}));
+    throw new Error('stale prepared source');
+  }),/stale prepared source/);
+  const report=JSON.parse(readFileSync(join(output,'report.json'),'utf8'));
+  assert.equal(report.status,'setup-failed');assert.equal(report.reason,'source-inputs');
+  assert.equal(report.stages[0].status,'setup-failed');assert.equal(report.stages[0].reason,'source-inputs');
+});
+
 test('failed or skipped stages cannot become feature acceptance or run later stages',async t=>{
   for(const result of [{status:'failed',counts:{fail:1}},{status:'passed',counts:{skipped:1}}]) {
     let calls=0;const output=temporary(t), report=await runFeature({inputs:readInputs().inputsPath,features:'footer',output},async()=>{calls++;return result;});

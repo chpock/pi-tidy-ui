@@ -138,3 +138,46 @@ test('preparing both file sides leaves baseline plain geometry unchanged and nev
   assert.deepEqual([80, 140].map(width => renderFileCard(node, undefined, width, theme)!.rows), before);
   assert.equal(JSON.stringify(node), original);
 });
+
+test('file preparation derives source hints only from authoritative first-line coordinates', () => {
+  const wrote = prepareFileCard(write('#!/usr/bin/env python3\nprint(1)'))!;
+  assert.deepEqual(wrote.sources, [{ side: 'next', text: '#!/usr/bin/env python3\nprint(1)', rows: [0, 1], languageHint: 'python' }]);
+
+  const changed = prepareFileCard(edit('-1 #!/usr/bin/python3\n+1 #!/usr/bin/env bash\n 2 print(1)'))!;
+  assert.deepEqual(changed.sources.map(({ side, languageHint }) => [side, languageHint]), [['old', 'python'], ['next', 'bash']]);
+
+  const oldOnly = prepareFileCard(edit('-1 #!/usr/bin/python3\n+1 ordinary text\n 2 print(1)'))!;
+  assert.deepEqual(oldOnly.sources.map(({ side, languageHint }) => [side, languageHint]), [['old', 'python'], ['next', 'python']]);
+
+  const nextOnly = prepareFileCard(edit('-1 ordinary text\n+1 #!/usr/bin/env bash\n 2 print(1)'))!;
+  assert.deepEqual(nextOnly.sources.map(({ side, languageHint }) => [side, languageHint]), [['old', 'bash'], ['next', 'bash']]);
+
+  const unrecognizedOld = prepareFileCard(
+    edit('-1 #!/usr/bin/custom-runtime\n+1 #!/usr/bin/python3\n 2 print(1)'),
+  )!;
+  assert.deepEqual(
+    unrecognizedOld.sources.map(({ side, languageHint }) => [side, languageHint]),
+    [['old', 'python'], ['next', 'python']],
+    'an unrecognized shebang is treated as an absent candidate for one-sided inheritance',
+  );
+
+  const missingOldFirst = prepareFileCard(edit('@@ -8,2 +1,2 @@\n-old line\n+#!/usr/bin/bash\n context'))!;
+  assert.deepEqual(missingOldFirst.sources.map(({ side, languageHint }) => [side, languageHint]), [['old', 'bash'], ['next', 'bash']],
+    'a detected next shebang is inherited even when old coordinate one is absent');
+
+  const later = prepareFileCard(edit('-1 #!/usr/bin/python3\n+1 #!/usr/bin/env python3\n 2 context\n ...\n-80 old tail\n+80 new tail'))!;
+  assert.ok(later.sources.length > 2, 'the first and later hunks form separate source fragments');
+  assert.ok(later.sources.every(source => source.languageHint === 'python'), 'first-line hint propagates across omitted ranges');
+  const notFirst = prepareFileCard(edit(' 8 #!/usr/bin/bash\n-9 old\n+9 new'))!;
+  assert.ok(notFirst.sources.every(source => source.languageHint === undefined), 'a later hunk row is not the file first line');
+
+  const contextual = prepareFileCard(edit(' 1 #!/usr/bin/python3\n-2 print(1)\n+2 print(2)'))!;
+  assert.deepEqual(contextual.sources.map(({ side, languageHint }) => [side, languageHint]), [['old', 'python'], ['next', 'python']],
+    'an unchanged first-line shebang is authoritative for both versions');
+  const prototypeAlias = prepareFileCard(write('#!/usr/bin/env constructor\nbody'))!;
+  assert.equal(prototypeAlias.sources[0]!.languageHint, undefined, 'inherited object properties are not interpreter aliases');
+
+  const cleaned = prepareFileCard(edit(' 1 \u001b[31m#!/usr/bin/bash\n 2 print(1)'))!;
+  assert.equal(cleaned.sources[0]!.text, '#!/usr/bin/bash\nprint(1)', 'presentation removes terminal controls');
+  assert.equal(cleaned.sources[0]!.languageHint, undefined, 'recognition precedes display cleaning');
+});

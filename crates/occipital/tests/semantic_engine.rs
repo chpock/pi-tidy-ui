@@ -768,6 +768,103 @@ fn completed_sides_never_share_parser_state() {
 }
 
 #[test]
+fn shared_shebang_vectors_resolve_as_regular_explicit_language_hints() {
+    let vectors: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../protocol/syntax-v3/source-hint-vectors.json"
+    ))
+    .unwrap();
+    assert_eq!(vectors["revision"], 2);
+    let interpreters = vectors["interpreters"].as_object().unwrap();
+    let mut engine = Engine::new(Limits::default());
+    for grammar in interpreters.keys() {
+        let hint = SyntaxHint {
+            language: Some(grammar.clone()),
+            path: None,
+        };
+        let work = engine
+            .begin_one_shot("value = 1;\n".into(), &hint, &mut |_| true)
+            .unwrap_or_else(|error| panic!("{grammar}: {error}"));
+        let _ = execute(&mut engine, work);
+    }
+    let text = "print(1)\n";
+    let explicit = SyntaxHint {
+        language: Some("bash".into()),
+        path: Some("known.py".into()),
+    };
+    let work = engine
+        .begin_one_shot(text.into(), &explicit, &mut |_| true)
+        .unwrap();
+    assert_eq!(
+        spans(&execute(&mut engine, work).0, text),
+        oracle(text, "Bourne Again Shell (bash)", 65536),
+        "explicit language outranks a recognizable path"
+    );
+    let empty = SyntaxHint {
+        language: Some(String::new()),
+        path: Some("known.py".into()),
+    };
+    let work = engine
+        .begin_one_shot(text.into(), &empty, &mut |_| true)
+        .unwrap();
+    assert_eq!(
+        spans(&execute(&mut engine, work).0, text),
+        oracle(text, "Python", 65536),
+        "empty language means select by path"
+    );
+    let no_hint = SyntaxHint {
+        language: None,
+        path: None,
+    };
+    assert_eq!(
+        engine
+            .begin_one_shot(text.into(), &no_hint, &mut |_| panic!(
+                "unknown format must not reserve"
+            ))
+            .err()
+            .unwrap(),
+        Fault::not_started("unknown_syntax")
+    );
+}
+
+#[test]
+fn explicit_language_survives_stream_open_append_finalize() {
+    let mut engine = Engine::new(Limits::default());
+    let hint = SyntaxHint {
+        language: Some("python".into()),
+        path: None,
+    };
+    let mut text = "#!/usr/bin/env python3\nprint(\"same".to_owned();
+    let work = engine
+        .begin_open("r", "language-stream", text.clone(), &hint, &mut |_| true)
+        .unwrap();
+    let lease = work.lease().unwrap();
+    let chunk = execute(&mut engine, work).0;
+    let mut accumulated = spans(&chunk, &text);
+
+    let work = engine
+        .begin_append(
+            "r",
+            "language-stream",
+            lease,
+            chunk.revision,
+            chunk.source_bytes,
+            "\")\n".into(),
+            true,
+            &mut |_| true,
+        )
+        .unwrap();
+    text.push_str("\")\n");
+    let final_chunk = execute(&mut engine, work).0;
+    patch(&mut accumulated, &final_chunk, &text);
+    assert_eq!(
+        accumulated,
+        oracle(&text, "Python", Limits::default().line_bytes)
+    );
+    assert_eq!(engine.leases(), 0);
+    assert_eq!(engine.retained_state_bytes(), 0);
+}
+
+#[test]
 fn all_bundled_grammar_entry_points_smoke_compile() {
     let mut engine = Engine::new(Limits::default());
     let names: Vec<_> = two_face::syntax::extra_newlines()

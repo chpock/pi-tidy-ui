@@ -40,7 +40,7 @@ function receipt(owner: WeakRef<{ dispose(): void }>, ledger: Ledger, children?:
   return { release() { const handle = owner.deref(); if (handle) handle.dispose(); else { for (const child of children ?? []) child.release(); ledger.release(); } } };
 }
 type RegionKind = 'command' | 'description' | 'heading' | 'output' | 'footer' | 'note' | 'diagnostic' | 'file';
-type Entry = { kind: RegionKind; index: number; role: CardRole; measured: WeakRef<MeasuredText>; layout: MeasuredRowLayout; cells: number[]; blank: boolean[] };
+type Entry = { kind: RegionKind; index: number; role: CardRole; side?: 'old' | 'next'; measured: WeakRef<MeasuredText>; layout: MeasuredRowLayout; cells: number[]; blank: boolean[] };
 type Cell = { entry: number; row: number; width: number; gutter: number; line: number; side: 'old' | 'next' };
 type SceneRow = { left: Cell; right?: Cell };
 type Scene = { kind: PreparedCard['kind']; stamp: number; geometry: CardGeometry; framed: boolean; inset: number;
@@ -122,7 +122,7 @@ export function layoutCard(display: PreparedCard, options: CardLayoutOptions, fu
     const current = scene;
     const empty = (width = available, entry = -1): Cell => ({ entry, row: 0, width, gutter: 0, line: -1, side: 'next' });
     const append = (left: Cell, right?: Cell) => { ledger.add(funding, 256); current.rows.push({ left, right }); };
-    const entry = (kind: RegionKind, index: number, role: CardRole, width: number, mode: 'file' | 'bash', prompt = false, maxRows?: number) => {
+    const entry = (kind: RegionKind, index: number, role: CardRole, width: number, mode: 'file' | 'bash', prompt = false, maxRows?: number, side?: 'old' | 'next') => {
       const locator = { kind, index }, r = region(display, locator); if (!r) throw refused;
       ledger.add(funding, 256);
       const layout = reflow(r.measured, { mode, width, prompt, maxRows }, funding.grant); if (!layout) throw refused;
@@ -146,7 +146,7 @@ export function layoutCard(display: PreparedCard, options: CardLayoutOptions, fu
         });
       }, funding.grant)) throw refused;
       const id = current.entries.length;
-      current.entries.push({ ...locator, role, measured: new WeakRef(r.measured), layout, cells, blank }); return id;
+      current.entries.push({ ...locator, role, side, measured: new WeakRef(r.measured), layout, cells, blank }); return id;
     };
     const lines = (kind: RegionKind, index: number, role: CardRole, mode: 'file' | 'bash' = 'file', prompt = false) => {
       const id = entry(kind, index, role, available, mode, prompt), e = current.entries[id]!;
@@ -199,7 +199,7 @@ export function layoutCard(display: PreparedCard, options: CardLayoutOptions, fu
           if (r.kind === 'gap') return empty(width, -3);
           const size = current.digits + (plain ? 2 : 4), gutter = size < width ? size : 0;
           const role = plain || r.kind === ' ' ? 'code' : r.kind === '+' ? 'addedCode' : 'removedCode';
-          const id = entry('file', index, role, width - gutter, 'file');
+          const id = entry('file', index, role, width - gutter, 'file', false, undefined, side);
           return { entry: id, row: 0, width, gutter, line: index, side };
         };
         const pair = (leftIndex: number, rightIndex: number) => {
@@ -262,7 +262,11 @@ export class CardRows {
 }
 type Projected = { start: number; end: number; style: AnsiStyle };
 type Projection = { index: number; start: number; end: number; ranges: Projected[] };
-function coordinate(row: FileRowDescriptor) { return row.kind === '-' ? row.oldSource : row.nextSource; }
+function coordinate(row: FileRowDescriptor, side: 'old' | 'next') {
+  if (row.kind === '-') return row.oldSource;
+  if (row.kind === '+') return row.nextSource;
+  return side === 'old' ? row.oldSource : row.nextSource;
+}
 const neutralReader: FlatRangeReader = () => true;
 function styled(style: AnsiStyle, text: string) { return style.open + text + style.close; }
 
@@ -279,7 +283,7 @@ function paintScene(scene: Scene, display: PreparedCard, paint: ReadyCardPaint, 
       // a moving cursor skips omitted context without rescanning a source per row.
       for (let i = 0; i < scene.entries.length; i++) {
         const e = scene.entries[i]!; if (e.kind !== 'file') continue;
-        const row = display.rows[e.index]!, c = coordinate(row); if (!c) continue;
+        const row = display.rows[e.index]!, c = coordinate(row, e.side ?? 'next'); if (!c) continue;
         const surface = row.kind === '+' && display.mode !== 'code' ? 'added' : row.kind === '-' && display.mode !== 'code' ? 'removed' : '';
         scratch.add(funding, 256 + (c.key.length + 1 + surface.length) * 2);
         const key = c.key + '\0' + surface;

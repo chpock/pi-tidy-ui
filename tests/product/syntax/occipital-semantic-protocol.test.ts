@@ -13,7 +13,7 @@ const limits = {
   idle_ms: 60000, age_ms: 600000, quantum_ms: 2, data_per_route: 2, control_per_route: 2, routes: 8, workers: 4,
 };
 const runtime = { pid: 123, routes: 1, leases: 0, data_bytes: 0, data_jobs: 0, queued: 0, control_bytes: 0, control_jobs: 0 };
-const descriptor = () => ({ kind: 'descriptor', protocol_version: 3, contexts_revision: 1, resolver_revision: 2, palette_revision: 1,
+const descriptor = () => ({ kind: 'descriptor', protocol_version: 3, contexts_revision: 1, resolver_revision: 2, palette_revision: 1, source_hint_revision: 2,
   vocabulary: { fingerprint: fp, count: 20 }, assets: 'syntax-assets', backend_version: '0.1.5', catalogue_revision: 0,
   capability: 'syntax-highlight/v3', service: 'syntax', operations: ['describe', 'themes.refresh', 'highlight', 'stream.open', 'stream.append', 'stream.close', 'styles.resolve'],
   modes: ['one_shot', 'growing'], admission: ['try_now', 'bounded_queue'], profiles: [{ id: 'syntect:Theme', label: 'Theme', fingerprint: fp }], diagnostic: null, limits, runtime });
@@ -42,7 +42,7 @@ test('semantic protocol: a metadata-only descriptor advertises context identity 
   assert.equal(value.profiles[0]!.id, 'syntect:Theme');
   assert.ok(!Object.hasOwn(value.limits, 'styles'), 'v2 packed-color count is not a cap on full context combinations');
   assert.equal(decodeSemanticDescription(envelope({ ...raw, profiles: [] }), 'ticket').profiles.length, 0, 'Follow Pi rules need no native palette catalogue entry');
-  for (const patch of [{ protocol_version: 2 }, { contexts_revision: 0 }, { resolver_revision: 1 }, { palette_revision: 0 },
+  for (const patch of [{ protocol_version: 2 }, { contexts_revision: 0 }, { resolver_revision: 1 }, { palette_revision: 0 }, { source_hint_revision: 0 }, { source_hint_revision: 1 },
     { vocabulary: { fingerprint: 'other', count: 20 } }, { vocabulary: { fingerprint: fp, count: 0 } },
     { operations: raw.operations.filter(op => op !== 'styles.resolve') }, { profiles: [{ id: 'pi', label: 'Pi', fingerprint: fp }] },
     { limits: { ...limits, styles: 4105 } }]) assert.throws(() => decodeSemanticDescription(envelope({ ...raw, ...patch }), 'ticket'));

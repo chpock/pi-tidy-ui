@@ -143,6 +143,47 @@ test('card layout: sparse FILE full-source byte offsets, side selection, gaps, s
   } finally { t.dispose(); out.dispose(); l.dispose(); f.dispose(); }
 });
 
+test('card layout: split diff context uses each visible side grammar and unified context uses the new grammar', async () => {
+  const f = fixture(), d = file(f, ['context', 'old', 'new'], [' ', '-', '+']); d.mode = 'diff';
+  d.rows = [
+    { ...d.rows[0]!, old: 1, next: 1, oldSource: { key: 'old', byte: 0, utf16: 0 }, nextSource: { key: 'next', byte: 0, utf16: 0 } },
+    { ...d.rows[1]!, old: 2, next: undefined, oldSource: { key: 'old', byte: 8, utf16: 8 }, nextSource: undefined },
+    { ...d.rows[2]!, old: undefined, next: 2, oldSource: undefined, nextSource: { key: 'next', byte: 8, utf16: 8 } },
+  ];
+  const old = compileStyleAnsi({ foreground: { kind: 'indexed', index: 1 }, background: { kind: 'indexed', index: 0 }, attributes: 0 }, 'truecolor');
+  const next = compileStyleAnsi({ foreground: { kind: 'indexed', index: 4 }, background: { kind: 'indexed', index: 0 }, attributes: 0 }, 'truecolor');
+  const paintWith = (calls: string[]) => {
+    const p = paint();
+    p.ranges = (key, surface) => callback => {
+      calls.push(`${key}:${surface ?? ''}`);
+      callback(0, Buffer.byteLength('context'), key === 'old' ? old : next);
+      return true;
+    };
+    return p;
+  };
+  const contextColors = async (output: CardRows, width: number) => {
+    const t = await terminal(output, width), colors: number[] = [];
+    try {
+      for (let y = 0; y < t.buffer.active.length; y++) {
+        const line = t.buffer.active.getLine(y)!;
+        for (let x = 0; x + 2 < line.length; x++) if (line.getCell(x)!.getChars() === 'c'
+          && line.getCell(x + 1)!.getChars() === 'o' && line.getCell(x + 2)!.getChars() === 'n') colors.push(line.getCell(x)!.getFgColor()!);
+      }
+      return colors;
+    } finally { t.dispose(); }
+  };
+
+  const splitCalls: string[] = [], split = layoutCard(d, { width: 140 }, f)!, splitRows = split.paint(d, paintWith(splitCalls), f)!;
+  assert.deepEqual((await contextColors(splitRows, 140)).sort(), [1, 4]);
+  assert.deepEqual(splitCalls.sort(), ['next:', 'next:added', 'old:', 'old:removed']);
+  splitRows.dispose(); split.dispose();
+
+  const unifiedCalls: string[] = [], unified = layoutCard(d, { width: 100 }, f)!, unifiedRows = unified.paint(d, paintWith(unifiedCalls), f)!;
+  assert.deepEqual(await contextColors(unifiedRows, 100), [4]);
+  assert.deepEqual(unifiedCalls.sort(), ['next:', 'next:added', 'old:removed']);
+  unifiedRows.dispose(); unified.dispose(); f.dispose();
+});
+
 test('card layout: split threshold, matching runs/hunks, continuation gutters, note and diagnostics', () => {
   const f = fixture(), d = file(f, ['before', 'after', 'left2', 'ctx', 'last'], ['-', '+', '-', ' ', '+']); d.mode = 'diff';
   d.rows = d.rows.map((r, i) => ({ ...r, hunk: i < 3 ? 1 : 2 })); d.note = f.region('No changes.'); d.diagnostics = [f.region('Error [3]: bad')];

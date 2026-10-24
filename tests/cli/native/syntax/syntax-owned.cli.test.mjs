@@ -9,8 +9,8 @@ import { CARD_ROLES } from '../../../../src/occipital/semantic-codec.ts';
 import { PiTerminal } from "../../../fixtures/terminal-harness.mjs";
 import { closeTerminals, runCleanupSteps } from "../../../fixtures/terminal-cleanup.mjs";
 import { assertSyntaxStockReference } from "../../../fixtures/syntax-stock-reference.mjs";
-import { nativeReady, semanticStyle, semanticPhaseReady } from "../../../fixtures/syntax-observation.mjs";
-import { prepareSyntaxNative, inputs, scenario, traffic, persisted, stats, sourceColors, body, work, until, finish, settledStats, stockReference, syntaxReady, savedThemeSession, themeForegrounds, expectedThemeColors, initialThemeStats, retainedNativeThemeStats, themeMarkers, previewStats, chooseTheme, expressionForeground } from "../../../fixtures/syntax-cli-support.mjs";
+import { nativeReady, semanticStyle, semanticPhaseReady, semanticSourceContext } from "../../../fixtures/syntax-observation.mjs";
+import { prepareSyntaxNative, inputs, scenario, traffic, persisted, stats, sourceColors, body, work, until, finish, settledStats, stockReference, syntaxReady, savedThemeSession, themeForegrounds, expectedThemeColors, expressionForeground, initialThemeStats, retainedNativeThemeStats, themeMarkers, previewStats, chooseTheme, shebangScenario, shebangContextColors, shebangStringColors } from "../../../fixtures/syntax-cli-support.mjs";
 
 const { binary, fixture, descriptor } = await prepareSyntaxNative();
 
@@ -68,6 +68,61 @@ for (const mode of ['fullscreen', 'regular']) test(`occipital CLI: actual ${mode
       await finish(replay);
       assertSyntaxStockReference(await stockReference(mode), { traffic: nativeTraffic, persisted: nativeData });
     } finally { await closeTerminals(terminals); }
+  });
+
+test('occipital CLI: edit shebang language selection colors split context by side and unified context by the new grammar',
+  { timeout: 90000 }, async () => {
+    const terminal = new PiTerminal('syntax-shebang-sides', { mode: 'fullscreen', dimensions: { columns: 140, rows: 120 },
+      extensions: [fixture], extraEnv: { ...descriptor, TIDY_UI_TEST_EMPTY_BASH: '1' } });
+    try {
+      const split = await shebangScenario(terminal), splitColors = shebangContextColors(split);
+      assert.equal(splitColors.length, 3, 'write source plus both physical split sides contain the shared context');
+      assert.equal(splitColors[0], splitColors[1], 'old edit context uses the Python grammar from the original write');
+      assert.notEqual(splitColors[1], splitColors[2], 'new Bash grammar changes the right-hand context paint');
+      const events = terminal.events();
+      const bashSource = events.filter(event => event.type === 'syntax_native_dispatch' && event.kind === 'source')
+        .flatMap(event => event.payload.sources ?? []).find(source => source.text.includes('BASH_NO_SHEBANG_HINT'));
+      assert.ok(bashSource, 'the Bash command is actually offered as SOURCE');
+      assert.equal(bashSource.hint.language, 'bash');
+      assert.equal(Object.hasOwn(bashSource.hint, 'shebang_language'), false, 'SOURCE carries no shebang-specific field');
+      const pythonContext = semanticSourceContext(events, 'same', 'python'), bashContext = semanticSourceContext(events, 'same', 'bash');
+      assert.ok(pythonContext, 'successful SOURCE reply contains the old Python string scope');
+      assert.ok(bashContext, 'successful SOURCE reply contains the new Bash string scope');
+      assert.notDeepEqual(pythonContext, bashContext, 'the two actual grammars classify the shared string through different contexts');
+       assert.ok(Array.isArray(pythonContext) && pythonContext.length > 0, 'Python string scopes have a nonempty protocol context path');
+       assert.ok(Array.isArray(bashContext) && bashContext.length > 0, 'Bash string scopes have a nonempty protocol context path');
+      const stringPaint = shebangStringColors(split);
+      assert.equal(stringPaint.colors.length, 3);
+      const pythonStyle = semanticStyle(events, 'same', 'pi', 'python'), bashStyle = semanticStyle(events, 'same', 'pi', 'bash');
+      assert.ok(pythonStyle, 'the Python string context has a successful resolved STYLE reply');
+      assert.ok(bashStyle, 'the Bash string context has a successful resolved STYLE reply');
+      const pythonString = expressionForeground(pythonStyle.expression, split), bashString = expressionForeground(bashStyle.expression, split);
+      assert.equal(stringPaint.colors[0], pythonString, 'write string paint matches the Python SOURCE and STYLE result');
+      assert.equal(stringPaint.colors[1], pythonString, 'old split string paint matches the Python SOURCE and STYLE result');
+      assert.equal(stringPaint.colors[2], bashString, 'new split string paint matches the Bash SOURCE and STYLE result');
+      assert.equal(pythonString, stringPaint.expected, 'Python string paint is the independently expected Pi syntax-string role');
+      assert.equal(bashString, stringPaint.expected, 'Bash string paint is the independently expected Pi syntax-string role');
+      const unknownReply = events.find(event => event.type === 'syntax_native_reply' && event.kind === 'source'
+        && event.reply.status === 'error' && event.reply.error?.code === 'unknown_syntax' && event.reply.error?.execution === 'not_started'
+        && event.payload.sources?.some(source => source.text.includes('NO_SHEBANG_CONTROL')));
+      assert.ok(unknownReply, 'the no-shebang control reaches the expected pre-parse unknown-syntax fallback');
+      assert.ok(split.screen.some(row => row.includes('NO_SHEBANG_CONTROL')), 'the no-shebang card remains presented');
+      assert.equal(events.filter(event => event.type === 'syntax_notify' && event.message.includes('unexpected error (unknown_syntax)')).length, 0,
+        'ordinary no-start fallback does not create an unexpected-error notification');
+      const before = await stats(terminal, 'shebang-before-resize');
+      assert.ok(before.localWork.shebangFileSegments > 0, 'cold measurement includes the unique shebang-file marker, not only other syntax cards');
+      await terminal.resize(100, 120);
+      const unified = await terminal.capture('shebang-unified'), unifiedColors = shebangContextColors(unified);
+      assert.equal(unifiedColors.length, 2, 'write and one unified edit context are visible');
+      assert.equal(unifiedColors[0], splitColors[0]);
+      assert.equal(unifiedColors[1], splitColors[2], 'unified context uses the new-side grammar');
+      const after = await stats(terminal, 'shebang-after-resize');
+      assert.deepEqual(work(after), work(before), 'resize reuses parsed source work');
+      assert.equal(after.localWork.shebangFileSegments, before.localWork.shebangFileSegments, 'resize repeats no shebang-file measurement');
+      assert.deepEqual(after.localWork, before.localWork, 'resize repeats no other file measurement or source-scalar reads');
+      assert.equal(after.client.provider.kind, 'owned');
+      console.log(JSON.stringify({ shebangSplit: splitColors, shebangUnified: unifiedColors, warmResizeDelta: 0 }));
+    } finally { await closeTerminals([terminal]); }
   });
 
 test('occipital CLI: provider readiness waits for the actual acquired/publication state, not terminal silence',
@@ -617,7 +672,7 @@ for (const mode of ['fullscreen', 'regular']) test(`occipital CLI: ${mode} Markd
       assert.ok(dump.tools.every(tool => !('tinyLines' in tool) && !('narrowLines' in tool)));
       assert.equal(dump.tools[0].args.content, content);
       for (const line of content.split('\n').filter(Boolean)) assert.ok(body(dump)[0].lines.some(row => row.includes(line)), `full saved source ${line}`);
-      const expectedAttributes = [1, 1, 3, 4], publicRoles = ['mdHeading', 'toolOutput', 'toolOutput', 'mdLink'];
+      const expectedAttributes = [1, 1, 3, 4], publicRoles = ['mdHeading', 'accent', 'accent', 'mdLink'];
       const vectors = markers.map((marker, i) => {
         const y = dump.screen.findIndex(row => row.includes(marker)); assert.ok(y >= 0, `physical ${marker}`);
         const cell = dump.cells[y][dump.screen[y].indexOf(marker)];

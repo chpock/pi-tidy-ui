@@ -137,3 +137,39 @@ for (const revision of [1, 3]) for (const carrier of ['shared', 'owned'] as cons
     assert.equal(transport.closes, 1);
   });
 }
+
+for (const carrier of ['shared', 'owned'] as const) {
+  test(`semantic provider: ${carrier} rejects the pre-language-selection v3 descriptor before SOURCE admission`, async t => {
+    const transport = new Transport();
+    transport.reply = async request => {
+      const raw: Record<string, any> = descriptor(request.ticket); delete raw.body.source_hint_revision; return raw;
+    };
+    const provider = new ProviderBroker({
+      tryShared: async () => carrier === 'shared' ? transport : undefined,
+      acquireOwned: async () => { if (carrier === 'owned') return transport; throw new Error('no owned candidate'); },
+    });
+    t.after(() => provider.dispose()); await provider.start();
+    assert.notEqual(provider.snapshot().availability, 'ready');
+    assert.equal(provider.stats().sourceDispatches, 0); assert.equal(provider.stats().styleDispatches, 0);
+    assert.equal(transport.calls.length, 1); assert.equal(transport.calls[0]!.request.op, 'describe');
+    assert.equal(transport.closes, 1);
+  });
+}
+
+for (const revision of [0, 1, 3]) for (const carrier of ['shared', 'owned'] as const) {
+  test(`semantic provider: ${carrier} source-hint revision ${revision} rejects before SOURCE admission`, async t => {
+    const transport = new Transport();
+    transport.reply = async request => {
+      const raw = descriptor(request.ticket); raw.body.source_hint_revision = revision; return raw;
+    };
+    const provider = new ProviderBroker({
+      tryShared: async () => carrier === 'shared' ? transport : undefined,
+      acquireOwned: async () => { if (carrier === 'owned') return transport; throw new Error('no owned candidate'); },
+    });
+    t.after(() => provider.dispose()); await provider.start();
+    assert.notEqual(provider.snapshot().availability, 'ready');
+    assert.equal(provider.stats().sourceDispatches, 0); assert.equal(provider.stats().styleDispatches, 0);
+    assert.equal(transport.calls.length, 1); assert.equal(transport.calls[0]!.request.op, 'describe');
+    assert.equal(transport.closes, 1);
+  });
+}

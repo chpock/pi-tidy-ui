@@ -41,12 +41,13 @@ fn descriptor_exposes_only_native_metadata_and_exact_generated_identities() {
         stats(),
     );
     let value = serde_json::to_value(body).unwrap();
-    assert_eq!(value.as_object().unwrap().len(), 18);
+    assert_eq!(value.as_object().unwrap().len(), 19);
     assert_eq!(value["kind"], "descriptor");
     assert_eq!(value["protocol_version"], 3);
     for field in ["contexts_revision", "palette_revision"] {
         assert_eq!(value[field], 1);
     }
+    assert_eq!(value["source_hint_revision"], 2);
     assert_eq!(
         value["vocabulary"],
         json!({"fingerprint":vocabulary::FINGERPRINT,"count":vocabulary::SCOPE_COUNT})

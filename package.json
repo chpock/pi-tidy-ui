@@ -36,6 +36,7 @@
     "docs/syntax/work.md",
     "docs/syntax/storage.md",
     "docs/syntax/prepared-cards.md",
+    "docs/syntax/shebang-hints.md",
     "docs/syntax/follow-pi.md",
     "docs/occipital/README.md",
     "docs/occipital/runtime.md",

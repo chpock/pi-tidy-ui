@@ -2,6 +2,7 @@ import { isAbsolute, relative } from "node:path";
 import { stripVTControlCharacters } from "node:util";
 import { stripTerminalSequences, visibleWidth } from "@earendil-works/pi-tui";
 import { cardGeometry } from "./card-frame.ts";
+import { shebangLanguage } from "./syntax/shebang-language.ts";
 
 interface FilePresentation {
   toolName?: string;
@@ -10,7 +11,7 @@ interface FilePresentation {
   result?: { isError?: boolean; details?: unknown };
 }
 type DisplayLine = { kind: " " | "+" | "-"; text: string; old?: number; next?: number; hunk?: number } | { kind: "gap" };
-type DiffLine = (Exclude<DisplayLine, { kind: "gap" }> & { logical: string }) | { kind: "gap" };
+type DiffLine = (Exclude<DisplayLine, { kind: "gap" }> & { logical: string; languageHint?: string }) | { kind: "gap" };
 
 // Display-only maximum on each side of a change; metadata may supply fewer rows.
 const DIFF_CONTEXT_LINES = 3;
@@ -63,8 +64,12 @@ function numberedDiff(diff: string, content = true, kinds?: Set<" " | "+" | "-">
     const kind = match[1] as " " | "+" | "-", number = Number(match[2]);
     if (!validNumber(number) || number < 1 || (kind === " " && (!validNumber(number + delta) || number + delta < 1))) return undefined;
     kinds?.add(kind);
-    if (content) result.push({ kind, ...sourceText(match[3]!, logicalOnly), old: kind !== "+" ? number : undefined,
-      next: kind === " " ? number + delta : kind === "+" ? number : undefined });
+    if (content) {
+      const old = kind !== "+" ? number : undefined, next = kind === " " ? number + delta : kind === "+" ? number : undefined;
+      const line = match[3]!;
+      const candidate = old === 1 || next === 1 ? shebangLanguage(line) : undefined;
+      result.push({ kind, ...sourceText(line, logicalOnly), old, next, ...(candidate ? { languageHint: candidate } : {}) });
+    }
     if (kind === "+") delta++;
     if (kind === "-") delta--;
   }
@@ -94,7 +99,11 @@ function unifiedDiff(diff: string, content = true, kinds?: Set<" " | "+" | "-">,
     if (kind !== "+" && --oldRemaining < 0) return undefined;
     if (kind !== "-" && --newRemaining < 0) return undefined;
     kinds?.add(kind);
-    if (content) result.push({ kind, ...sourceText(row.slice(1), logicalOnly), old: kind !== "+" ? old : undefined, next: kind !== "-" ? next : undefined, hunk: hunks });
+    if (content) {
+      const text = row.slice(1), oldLine = kind !== "+" ? old : undefined, nextLine = kind !== "-" ? next : undefined;
+      const candidate = oldLine === 1 || nextLine === 1 ? shebangLanguage(text) : undefined;
+      result.push({ kind, ...sourceText(text, logicalOnly), old: oldLine, next: nextLine, hunk: hunks, ...(candidate ? { languageHint: candidate } : {}) });
+    }
     if (kind !== "+") old++;
     if (kind !== "-") next++;
   }
@@ -136,7 +145,10 @@ function presentation(node: FilePresentation, content = true, logicalOnly = fals
     const lines: DiffLine[] = [];
     if (content && node.args.content.length) {
       let next = 1;
-      for (const text of sourceRows(node.args.content)) lines.push({ kind: " ", ...sourceText(text, logicalOnly), next: next++ });
+      for (const text of sourceRows(node.args.content)) {
+        const candidate = next === 1 ? shebangLanguage(text) : undefined;
+        lines.push({ kind: " ", ...sourceText(text, logicalOnly), next: next++, ...(candidate ? { languageHint: candidate } : {}) });
+      }
     }
     const view: SourceFileView = { label: 'Wrote', mode: 'code', lines };
     view.note = fileNote(node, view);
@@ -155,6 +167,7 @@ function presentation(node: FilePresentation, content = true, logicalOnly = fals
 export interface FileSource {
   readonly side: "old" | "next";
   readonly text: string;
+  readonly languageHint?: string;
   /** Full prepared-view indices, not visible-context or wrapped row indices. */
   readonly rows: readonly number[];
 }
@@ -180,10 +193,13 @@ export function prepareFileCard(node: FilePresentation, logicalOnly = false): Pr
 /** Join only at the useful source boundary; lifecycle owners retain logical fragments. */
 export function fileSources(view: PreparedFileCard['view']): FileSource[] {
   const sources: FileSource[] = [];
+  const first = (side: 'old' | 'next') => view.lines.find((line): line is Exclude<DiffLine, { kind: 'gap' }> => line.kind !== 'gap' && line[side] === 1)?.languageHint;
+  const oldCandidate = first('old'), nextCandidate = first('next');
   for (const side of ["old", "next"] as const) {
+    const candidate = side === 'old' ? oldCandidate ?? nextCandidate : nextCandidate ?? oldCandidate;
     let rows: number[] = [], parts: string[] = [], previous: number | undefined;
     const flush = () => {
-      if (rows.length) sources.push({ side, text: parts.join("\n"), rows });
+      if (rows.length) sources.push({ side, text: parts.join("\n"), rows, ...(candidate ? { languageHint: candidate } : {}) });
       rows = []; parts = []; previous = undefined;
     };
     for (let index = 0; index < view.lines.length; index++) {

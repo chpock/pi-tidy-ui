@@ -505,10 +505,22 @@ test('cards reentrant pause preserves exact Pi fallback evidence without a dupli
   f.use(owner, written('x')); await settle(); f.cards.useful(owner, 1); await settle(); assert.deepEqual(f.env.classifications, ['x']);
 });
 
-test('cards source path language changes retain key identity but update canonical demand', async () => {
+test('cards explicit Pi language changes retain key identity but update the classifier demand', async () => {
   const f = fixture(), owner = {}; f.use(owner, written('x')); await settle(); const key = f.cards.identities(owner)[0]!.key;
-  const input = written('y', 2, 'next.py'); input.language = 'python'; f.use(owner, input); await settle();
-  assert.equal(f.cards.identities(owner)[0]!.key, key); assert.equal(f.cards.identities(owner)[0]!.language, 'python'); assert.deepEqual(f.env.classifications, ['x', 'y']);
+  const input = written('y', 2, 'next.rb'); input.language = 'python'; f.use(owner, input); await settle();
+  assert.equal(f.cards.identities(owner)[0]!.key, key); assert.equal(f.cards.identities(owner)[0]!.language, undefined);
+  assert.equal(f.cards.identities(owner)[0]!.piLanguage, 'python'); assert.deepEqual(f.env.classifications, ['x', 'y']);
+});
+
+test('cards send a shebang-selected Occipital language without replacing path-derived Pi classification', async () => {
+  const f = fixture(true), owner = {}; f.native();
+  const input = written('#!/usr/bin/env python3\necho "same"', 1, 'script.rb'); input.language = 'ruby'; f.use(owner, input); await settle();
+  const call = f.calls.find(entry => entry.request.sources?.[0]?.text.includes('echo "same"'));
+  assert.ok(call, 'native SOURCE is admitted for the numbered file source');
+  assert.equal(call.request.sources[0].hint.language, 'python');
+  assert.equal(call.request.sources[0].hint.path, 'script.rb');
+  assert.equal(f.cards.identities(owner)[0]!.piLanguage, 'ruby', 'the path-derived Pi classifier remains independent');
+  assert.deepEqual(f.env.classifications, [], 'a ready native palette does not run the Pi classifier');
 });
 
 test('cards thrown or denied descriptor funding preserves old display and refunds new grants', () => {

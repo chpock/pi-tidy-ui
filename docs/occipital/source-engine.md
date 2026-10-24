@@ -33,9 +33,48 @@ Only when all members finish does the service return a batch body for encoding. 
 
 ## Language selection
 
-Occipital uses supplied hints, never file reads or content sniffing. An explicit non-null `language` wins over `path` (omitted/null language permits path selection): recognized aliases are normalized case-insensitively, then syntax name and extension lookup are tried. An unknown explicit language does **not** fall through to the path. Without a language, the path's basename (accepting either slash convention), then its final extension, is considered. Missing/unrecognized hints return `unknown_syntax` with `not_started`, not an implicit Plain Text parse; explicit Plain Text is recognized.
+Occipital uses supplied hints, never file reads or content sniffing. A nonempty explicit `language` wins over `path`: recognized aliases are normalized case-insensitively, then syntax name and extension lookup are tried. An unknown explicit language does **not** fall through to the path. An omitted, null or empty language permits path selection; `path` is optional, and a pathless source can still be selected by explicit language. With no usable selector/path, or when its grammar is unknown, SOURCE returns `unknown_syntax/not_started`, not an implicit Plain Text parse; Plain Text must be explicit.
 
-Aliases are `typescript`/`ts`, `javascript`/`js`, `bash`/`sh`/`shell`, `makefile`/`make`, `python`/`py`, `rust`/`rs`, `json`, and `plaintext`/`text`/`txt`, mapped to the bundled syntax names. Alias matching is case-insensitive; this does not promise case-insensitive matching for every arbitrary syntax name or extension. Wire bounds are defined in the [protocol reference](protocol.md).
+The complete explicit-language alias table is maintained here so protocol readers have one authoritative mapping:
+
+### Explicit language aliases
+
+The aliases below are matched case-insensitively and map to the exact bundled Syntect syntax name. This table describes explicit `hint.language` values, not filename extensions.
+
+| Accepted aliases | Bundled syntax |
+|---|---|
+| `typescript`, `ts` | TypeScript |
+| `javascript`, `js` | JavaScript |
+| `bash`, `sh`, `shell` | Bourne Again Shell (bash) |
+| `awk` | AWK |
+| `clojure` | Clojure |
+| `coffeescript` | CoffeeScript |
+| `elixir` | Elixir |
+| `erlang` | Erlang |
+| `groovy` | Groovy |
+| `haskell` | Haskell |
+| `java` | Java |
+| `julia` | Julia |
+| `kotlin` | Kotlin |
+| `ocaml` | OCaml |
+| `perl` | Perl |
+| `php` | PHP |
+| `powershell` | PowerShell |
+| `python`, `py` | Python |
+| `r` | R |
+| `racket` | Racket |
+| `ruby` | Ruby |
+| `rust`, `rs` | Rust |
+| `scala` | Scala |
+| `swift` | Swift |
+| `tcl` | Tcl |
+| `makefile`, `make` | Makefile |
+| `json` | JSON |
+| `plaintext`, `text`, `txt` | Plain Text |
+
+If the explicit value is not one of these aliases, Occipital still tries it as an exact syntax name and then as a syntax extension. Do not infer case-insensitive matching for those arbitrary names/extensions. `hint.path` uses filename lookup instead; wire bounds and that fallback are defined in the [protocol reference](protocol.md).
+
+A consumer may derive a canonical format from a file's first-line shebang and place it in the same `language` field. Occipital does not know the value came from a shebang, nor does it scan source text; there is no second override channel. The nonempty `hint.language` value is the sole explicit selector and wins over `path`. In Toolview's edit/write producer, a recognized shebang fills that field, so it wins over the filename extension. A caller that explicitly supplies `language: "text"` selects Plain Text; the daemon cannot distinguish that from any other explicit value. Toolview's separate Pi path classification is not sent as the Occipital selector. An unsupported explicit selector returns `unknown_syntax/not_started` rather than falling through to `path`; a malformed field is `invalid_request/not_started`. The client owns shebang recognition and alias mapping; see [shebang-derived language selection](../syntax/shebang-hints.md). Descriptor `source_hint_revision` ensures a client and helper agree on absent/null/empty language and optional-path semantics before SOURCE work is sent.
 
 ## Grammar and classified-line limits
 

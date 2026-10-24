@@ -88,15 +88,20 @@ fn measure(raw: &RawValue) -> Result<(usize, usize), Fault> {
 }
 fn hint(raw: &RawValue) -> Result<SyntaxHint, Fault> {
     let value: Hint<'_> = decode(raw)?;
-    let optional = |raw: Option<&RawValue>, cap| match raw {
-        None => Ok(None),
-        Some(raw) if raw.get() == "null" => Ok(None),
-        Some(raw) => text(raw, cap).map(|s| Some(s.into_owned())),
+    let language = match value.language {
+        None => None,
+        Some(raw) if raw.get().trim() == "null" || raw.get().trim() == "\"\"" => None,
+        Some(raw) => text(raw, 128).map(|value| {
+            let value = value.into_owned();
+            (!value.is_empty()).then_some(value)
+        })?,
     };
-    Ok(SyntaxHint {
-        language: optional(value.language, 128)?,
-        path: optional(value.path, crate::limits::PATH_HINT_BYTES)?,
-    })
+    let path = match value.path {
+        None => None,
+        Some(raw) if raw.get().trim() == "null" => None,
+        Some(raw) => Some(text(raw, crate::limits::PATH_HINT_BYTES)?.into_owned()),
+    };
+    Ok(SyntaxHint { language, path })
 }
 struct SourcePlan<'a> {
     key: Cow<'a, str>,
@@ -386,5 +391,119 @@ impl SourceRequest {
             admission: admitted,
             operation,
         })
+    }
+}
+
+#[cfg(test)]
+mod language_hint_tests {
+    use super::*;
+
+    fn raw_operation(operation: &str, hint: &str) -> Box<RawValue> {
+        serde_json::from_str(&format!(r#"{{"v":3,"op":"{operation}","ticket":"t","instance":"i","admission":"try_now","sources":[{{"key":"k","generation":1,"source_version":1,"hint":{hint},"text":"print(1)"}}]}}"#)).unwrap()
+    }
+
+    fn raw(hint: &str) -> Box<RawValue> {
+        raw_operation("highlight", hint)
+    }
+
+    fn decoded(hint: &str) -> SyntaxHint {
+        let request = SourceRequest::decode(&raw(hint), "i", usize::MAX, &mut |_| true).unwrap();
+        let SourceOperation::Finite { sources, .. } = request.operation else {
+            panic!("finite source request")
+        };
+        sources.into_iter().next().unwrap().hint
+    }
+
+    #[test]
+    fn language_hint_and_optional_path_metadata_are_accounted() {
+        fn admitted(hint: &str) -> usize {
+            let mut bytes = 0;
+            SourceRequest::decode(&raw(hint), "i", usize::MAX, &mut |amount| {
+                bytes = amount;
+                true
+            })
+            .unwrap();
+            bytes
+        }
+        let without = admitted(r#"{"language":null,"path":null}"#);
+        let with = admitted(r#"{"language":"python","path":null}"#);
+        let explicit_null = admitted(r#"{"language":null,"path":null}"#);
+        let empty = admitted(r#"{"language":"","path":null}"#);
+        assert!(with >= without + "python".len());
+        assert_eq!(explicit_null, without);
+        assert_eq!(empty, without, "empty language has absence semantics");
+    }
+
+    #[test]
+    fn shared_vectors_preserve_absent_null_empty_and_explicit_language() {
+        let vectors: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../protocol/syntax-v3/source-hint-vectors.json"
+        ))
+        .unwrap();
+        assert_eq!(vectors["revision"], 2);
+        for case in vectors["optional_hint_cases"].as_array().unwrap() {
+            let hint = serde_json::to_string(&case["hint"]).unwrap();
+            let decoded = decoded(&hint);
+            assert_eq!(decoded.language.as_deref(), case["language"].as_str());
+            assert_eq!(decoded.path.as_deref(), case["path"].as_str());
+        }
+
+        let opened_raw = raw_operation("stream.open", r#"{"language":"python"}"#);
+        let opened = SourceRequest::decode(&opened_raw, "i", usize::MAX, &mut |_| true).unwrap();
+        let SourceOperation::Finite { sources, open } = opened.operation else {
+            panic!("stream open source")
+        };
+        assert!(open);
+        assert_eq!(sources[0].hint.language.as_deref(), Some("python"));
+        assert_eq!(
+            sources[0].hint.path, None,
+            "explicit syntax works without a filename"
+        );
+    }
+
+    #[test]
+    fn empty_language_means_path_selection_but_nonempty_unknown_is_preserved() {
+        for empty in [
+            r#"{"language":"","path":"script.py"}"#,
+            r#"{"language": "", "path":"script.py"}"#,
+            r#"{"language":null,"path":"script.py"}"#,
+            r#"{"path":"script.py"}"#,
+        ] {
+            let hint = decoded(empty);
+            assert_eq!(hint.language, None);
+            assert_eq!(hint.path.as_deref(), Some("script.py"));
+        }
+        let pathless = decoded(r#"{"language":null}"#);
+        assert_eq!(pathless.language, None);
+        assert_eq!(pathless.path, None);
+        assert_eq!(
+            decoded(r#"{"language":"unmapped","path":"script.py"}"#)
+                .language
+                .as_deref(),
+            Some("unmapped")
+        );
+    }
+
+    #[test]
+    fn malformed_language_shape_is_rejected_before_source_admission() {
+        let too_long = "x".repeat(129);
+        let mut malformed = vec![
+            r#"{"language":42}"#.to_owned(),
+            r#"{"language":[]}"#.to_owned(),
+            r#"{"language":"bad\u0001format"}"#.to_owned(),
+            r#"{"shebang_language":"python"}"#.to_owned(),
+        ];
+        malformed.push(format!(r#"{{"language":"{too_long}"}}"#));
+        for hint in &malformed {
+            let mut grants = 0;
+            let error = SourceRequest::decode(&raw(hint), "i", usize::MAX, &mut |_| {
+                grants += 1;
+                true
+            })
+            .err()
+            .unwrap();
+            assert_eq!(error, Fault::not_started("invalid_request"));
+            assert_eq!(grants, 0, "invalid hint must fail before payload admission");
+        }
     }
 }

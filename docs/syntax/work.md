@@ -18,6 +18,8 @@ The source state’s `dirty` flag means SOURCE work remains to be considered. `s
 
 Equal text can acquire a newer logical version without invalidating its semantic content. `contentVersion` records the beginning of that equal-content interval. It permits local coverage reuse; it does not rewrite the remote acknowledgement version or pretend that a completion request has already settled.
 
+The syntax identity includes the selected explicit `language` (when present), `path` and source version. A changed first-line interpreter changes the explicit language and therefore invalidates source reuse even if the displayed body is unchanged. The bounded alias detector, per-side hint propagation and split/unified painting contract are described in [shebang-derived hints](shebang-hints.md). A style/theme change alone never changes this parser identity.
+
 ## One chronological registry, two separate admission questions
 
 A card registers a `SourcePreparation` before expensive demand construction. Its registration contains a weak preparation reference and the existing set of source keys. A standalone source registers on first admission. Both occupy the same linked chronological registry.

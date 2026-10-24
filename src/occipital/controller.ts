@@ -538,7 +538,8 @@ export class SourceController {
 
   observe(demand: SourceDemand): boolean {
     if (!this.enabled || this.disposed) return false;
-    const { key, version, text, language, path, profile, fingerprint, complete, neutral = 'code' } = demand;
+    const { key, version, text, path, profile, fingerprint, complete, neutral = 'code' } = demand;
+    const language = demand.language === '' ? undefined : demand.language;
     if (!identifier(key) || language !== undefined && !identifier(language, 128) || path !== undefined && !identifier(path, 4096)
       || !identifier(profile) || !/^[a-f0-9]{64}$/.test(fingerprint) || !Number.isInteger(version) || version < 0 || version > 0xffffffff
       || typeof text !== 'string' || text.length > RETENTION_LIMITS.maxSourceUnits || typeof complete !== 'boolean'
@@ -691,7 +692,8 @@ export class SourceController {
     const display = this.pool.displayStatus(generation);
     if (!display) return undefined;
     const version = display.sourceVersion;
-    return { generation, version, stamp: state.displayStamp, language: state.language, profile: state.displayProfile!, fingerprint: state.displayFingerprint!,
+    return { generation, version, stamp: state.displayStamp, language: state.language,
+      profile: state.displayProfile!, fingerprint: state.displayFingerprint!,
       complete: display.complete, exactVersion: state.displayVersion, geometryStamp: display.geometryStamp, paintStamp: display.effectStamp,
       role: displayRole(this.owner, key, state.id, generation, version, state.displayStamp),
       visitStyles: displayStyles(this.owner, key, state.id, generation, version, state.displayStamp),

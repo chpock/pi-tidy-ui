@@ -561,15 +561,19 @@ impl Engine {
         }
     }
     fn syntax(&self, hint: &SyntaxHint) -> Result<&'static SyntaxReference, Fault> {
-        if hint.language.as_ref().is_some_and(|n| n.len() > 128)
+        if hint.language.as_ref().is_some_and(|name| name.len() > 128)
             || hint
                 .path
                 .as_ref()
-                .is_some_and(|p| p.len() > crate::limits::PATH_HINT_BYTES)
+                .is_some_and(|path| path.len() > crate::limits::PATH_HINT_BYTES)
         {
             return Err(Fault::not_started("invalid_hint"));
         }
-        if let Some(language) = &hint.language {
+        if let Some(language) = hint
+            .language
+            .as_deref()
+            .filter(|language| !language.is_empty())
+        {
             let alias = [
                 ("typescript", "TypeScript"),
                 ("ts", "TypeScript"),
@@ -578,11 +582,31 @@ impl Engine {
                 ("bash", "Bourne Again Shell (bash)"),
                 ("sh", "Bourne Again Shell (bash)"),
                 ("shell", "Bourne Again Shell (bash)"),
+                ("awk", "AWK"),
+                ("clojure", "Clojure"),
+                ("coffeescript", "CoffeeScript"),
+                ("elixir", "Elixir"),
+                ("erlang", "Erlang"),
+                ("groovy", "Groovy"),
+                ("haskell", "Haskell"),
+                ("java", "Java"),
+                ("julia", "Julia"),
+                ("kotlin", "Kotlin"),
+                ("ocaml", "OCaml"),
+                ("perl", "Perl"),
+                ("php", "PHP"),
+                ("powershell", "PowerShell"),
+                ("python", "Python"),
+                ("r", "R"),
+                ("racket", "Racket"),
+                ("ruby", "Ruby"),
+                ("rust", "Rust"),
+                ("scala", "Scala"),
+                ("swift", "Swift"),
+                ("tcl", "Tcl"),
                 ("makefile", "Makefile"),
                 ("make", "Makefile"),
-                ("python", "Python"),
                 ("py", "Python"),
-                ("rust", "Rust"),
                 ("rs", "Rust"),
                 ("json", "JSON"),
                 ("plaintext", "Plain Text"),
@@ -590,8 +614,8 @@ impl Engine {
                 ("txt", "Plain Text"),
             ]
             .into_iter()
-            .find(|(alias, _)| language.eq_ignore_ascii_case(alias))
-            .map_or(language.as_str(), |(_, syntax)| syntax);
+            .find(|(name, _)| language.eq_ignore_ascii_case(name))
+            .map_or(language, |(_, syntax)| syntax);
             return self
                 .syntaxes
                 .find_syntax_by_name(alias)
@@ -600,12 +624,12 @@ impl Engine {
         }
         if let Some(path) = &hint.path {
             let name = path.rsplit(['/', '\\']).next().unwrap_or(path);
-            if let Some(s) = self.syntaxes.find_syntax_by_extension(name) {
-                return Ok(s);
+            if let Some(syntax) = self.syntaxes.find_syntax_by_extension(name) {
+                return Ok(syntax);
             }
             if let Some((_, extension)) = name.rsplit_once('.') {
-                if let Some(s) = self.syntaxes.find_syntax_by_extension(extension) {
-                    return Ok(s);
+                if let Some(syntax) = self.syntaxes.find_syntax_by_extension(extension) {
+                    return Ok(syntax);
                 }
             }
         }
@@ -1210,6 +1234,218 @@ fn apply_operations(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn run_work(engine: &mut Engine, mut work: Work) -> SourceChunk {
+        while !engine.step(&mut work, &mut |_| true).unwrap() {}
+        engine.finish(work, &mut |_| true).unwrap()
+    }
+
+    fn context_at(chunk: &SourceChunk, text: &str, marker: &str) -> Vec<u32> {
+        let byte = text[..text.find(marker).expect("marker in source")].len() as u32;
+        let mut paths: Vec<Vec<u32>> = Vec::with_capacity(chunk.contexts.len());
+        for row in &chunk.contexts {
+            let prefix = row[0] as usize;
+            let mut path = paths
+                .last()
+                .map_or_else(Vec::new, |previous| previous[..prefix].to_vec());
+            path.extend_from_slice(&row[1..]);
+            paths.push(path);
+        }
+        let mut end = chunk.replace_from;
+        for [length, context] in &chunk.runs {
+            end += *length;
+            if byte < end {
+                return paths[(*context - 1) as usize].clone();
+            }
+        }
+        panic!(
+            "no source run for marker {marker:?} at byte {byte}; replaced from {}",
+            chunk.replace_from
+        );
+    }
+
+    #[test]
+    fn explicit_language_precedes_optional_path_and_supports_pathless_text() {
+        let engine = Engine::new(Limits::default());
+        let python = engine.syntaxes.find_syntax_by_name("Python").unwrap();
+        let plain = engine.syntaxes.find_syntax_by_name("Plain Text").unwrap();
+        let rust = engine.syntaxes.find_syntax_by_name("Rust").unwrap();
+        assert!(std::ptr::eq(
+            engine
+                .syntax(&SyntaxHint {
+                    language: Some("python".into()),
+                    path: Some("script.txt".into())
+                })
+                .unwrap(),
+            python
+        ));
+        assert!(std::ptr::eq(
+            engine
+                .syntax(&SyntaxHint {
+                    language: Some("text".into()),
+                    path: Some("script.py".into())
+                })
+                .unwrap(),
+            plain
+        ));
+        assert!(std::ptr::eq(
+            engine
+                .syntax(&SyntaxHint {
+                    language: None,
+                    path: Some("module.rs".into())
+                })
+                .unwrap(),
+            rust
+        ));
+        assert!(std::ptr::eq(
+            engine
+                .syntax(&SyntaxHint {
+                    language: Some(String::new()),
+                    path: Some("script.py".into())
+                })
+                .unwrap(),
+            python
+        ));
+        assert!(std::ptr::eq(
+            engine
+                .syntax(&SyntaxHint {
+                    language: Some("AWK".into()),
+                    path: None
+                })
+                .unwrap(),
+            engine.syntaxes.find_syntax_by_name("AWK").unwrap()
+        ));
+        assert_eq!(
+            engine
+                .syntax(&SyntaxHint {
+                    language: Some("unmapped".into()),
+                    path: Some("script.py".into())
+                })
+                .unwrap_err(),
+            Fault::not_started("unknown_syntax")
+        );
+        assert_eq!(
+            engine
+                .syntax(&SyntaxHint {
+                    language: None,
+                    path: None
+                })
+                .unwrap_err(),
+            Fault::not_started("unknown_syntax")
+        );
+        assert_eq!(
+            engine
+                .syntax(&SyntaxHint {
+                    language: Some(String::new()),
+                    path: None
+                })
+                .unwrap_err(),
+            Fault::not_started("unknown_syntax")
+        );
+    }
+
+    #[test]
+    fn every_curated_interpreter_language_resolves_as_a_regular_selector() {
+        let engine = Engine::new(Limits::default());
+        for language in [
+            "awk",
+            "bash",
+            "clojure",
+            "coffeescript",
+            "elixir",
+            "erlang",
+            "groovy",
+            "haskell",
+            "java",
+            "javascript",
+            "julia",
+            "kotlin",
+            "lua",
+            "ocaml",
+            "perl",
+            "php",
+            "powershell",
+            "python",
+            "r",
+            "racket",
+            "ruby",
+            "rust",
+            "scala",
+            "swift",
+            "tcl",
+            "typescript",
+        ] {
+            assert!(
+                engine
+                    .syntax(&SyntaxHint {
+                        language: Some(language.into()),
+                        path: None
+                    })
+                    .is_ok(),
+                "{language}"
+            );
+        }
+    }
+
+    #[test]
+    fn explicit_language_parser_state_survives_open_append_and_finalize() {
+        let hint = SyntaxHint {
+            language: Some("python".into()),
+            path: None,
+        };
+        let initial = "#!/usr/bin/env python3\nvalue = '";
+        let first_append = "continued";
+        let final_append = "'\nprint(value)\n";
+        let complete = format!("{initial}{first_append}{final_append}");
+        let mut engine = Engine::new(Limits::default());
+        let opened_work = engine
+            .begin_open("test", "shebang-stream", initial.into(), &hint, &mut |_| {
+                true
+            })
+            .unwrap();
+        let lease = opened_work.lease().unwrap();
+        let opened = run_work(&mut engine, opened_work);
+        let continued_work = engine
+            .begin_append(
+                "test",
+                "shebang-stream",
+                lease,
+                opened.revision,
+                opened.source_bytes,
+                first_append.into(),
+                false,
+                &mut |_| true,
+            )
+            .unwrap();
+        let continued = run_work(&mut engine, continued_work);
+        assert!(engine.contains("test", "shebang-stream", lease));
+        let final_work = engine
+            .begin_append(
+                "test",
+                "shebang-stream",
+                lease,
+                continued.revision,
+                continued.source_bytes,
+                final_append.into(),
+                true,
+                &mut |_| true,
+            )
+            .unwrap();
+        let streamed = run_work(&mut engine, final_work);
+        assert!(!engine.contains("test", "shebang-stream", lease));
+
+        let mut one_shot_engine = Engine::new(Limits::default());
+        let one_shot_work = one_shot_engine
+            .begin_one_shot(complete.clone(), &hint, &mut |_| true)
+            .unwrap();
+        let one_shot = run_work(&mut one_shot_engine, one_shot_work);
+        assert_eq!(
+            context_at(&streamed, &complete, "print(value)"),
+            context_at(&one_shot, &complete, "print(value)"),
+            "append reuses the explicitly selected Python parser initialized at stream open",
+        );
+    }
+
     #[test]
     fn independent_actor_engines_borrow_the_same_asset_set() {
         let first = Engine::new(Limits::default());

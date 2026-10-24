@@ -13,6 +13,7 @@ export interface SemanticDescription {
   readonly vocabulary: Readonly<{ fingerprint: string; count: number }>;
   readonly backend_version: string;
   readonly catalogue_revision: number;
+  readonly source_hint_revision: number;
   readonly profiles: readonly ProfileDescription[];
   readonly diagnostic: string | null;
   readonly limits: Limits;
@@ -48,7 +49,7 @@ export function decodeSemanticEnvelope(value: unknown, ticket: string, identity?
   return { instance: value.instance, assets: value.assets, body: value.body };
 }
 
-const descriptorKeys = ['kind', 'protocol_version', 'contexts_revision', 'resolver_revision', 'palette_revision', 'vocabulary', 'assets',
+const descriptorKeys = ['kind', 'protocol_version', 'contexts_revision', 'resolver_revision', 'palette_revision', 'source_hint_revision', 'vocabulary', 'assets',
   'backend_version', 'catalogue_revision', 'capability', 'service', 'operations', 'modes', 'admission', 'profiles', 'diagnostic', 'limits', 'runtime'];
 const limitKeys = ['request_bytes', 'reply_bytes', 'control_request_bytes', 'control_reply_bytes', 'source_bytes', 'line_bytes', 'batch_sources',
   'queue_wait_ms', 'state_pool_bytes', 'leases', 'leases_per_route', 'runs', 'idle_ms', 'age_ms', 'quantum_ms', 'data_per_route', 'control_per_route', 'routes', 'workers'] as const;
@@ -57,7 +58,7 @@ export function decodeSemanticDescription(value: unknown, ticket: string): Seman
   const envelope = decodeSemanticEnvelope(value, ticket), body = envelope.body;
   const fail = (): never => { throw new ProtocolError('invalid_descriptor'); };
   if (!object(body) || !exact(body, descriptorKeys) || body.kind !== 'descriptor' || body.protocol_version !== SEMANTIC_PROTOCOL_VERSION
-    || body.contexts_revision !== 1 || body.resolver_revision !== 2 || body.palette_revision !== 1 || body.assets !== envelope.assets
+    || body.contexts_revision !== 1 || body.resolver_revision !== 2 || body.palette_revision !== 1 || body.source_hint_revision !== 2 || body.assets !== envelope.assets
     || body.capability !== SEMANTIC_CAPABILITY || body.service !== 'syntax' || !text(body.backend_version, 128) || !integer(body.catalogue_revision, 0, Number.MAX_SAFE_INTEGER)
     || !object(body.vocabulary) || !exact(body.vocabulary, ['fingerprint', 'count']) || !fingerprint(body.vocabulary.fingerprint) || !integer(body.vocabulary.count, 1)
     || !list(body.operations, SEMANTIC_OPERATIONS, 16) || !list(body.modes, ['one_shot', 'growing'], 4) || !list(body.admission, ['try_now', 'bounded_queue'], 4)
@@ -83,7 +84,7 @@ export function decodeSemanticDescription(value: unknown, ticket: string): Seman
   }
   return { instance: envelope.instance, assets: envelope.assets,
     vocabulary: { fingerprint: body.vocabulary.fingerprint, count: body.vocabulary.count },
-    backend_version: body.backend_version, catalogue_revision: body.catalogue_revision, profiles, diagnostic: body.diagnostic as string | null, limits, runtime };
+    backend_version: body.backend_version, catalogue_revision: body.catalogue_revision, source_hint_revision: body.source_hint_revision, profiles, diagnostic: body.diagnostic as string | null, limits, runtime };
 }
 
 export function decodeSemanticStyleReply(value: unknown, ticket: string, provider: Pick<SemanticDescription, 'instance' | 'assets' | 'vocabulary'> & Partial<Pick<SemanticDescription, 'limits'>>,

@@ -55,8 +55,9 @@ test('runtime roots never inherit the tested checkout repository ancestry', () =
 
 test('Linux network namespace preserves trusted filesystem ancestry and real local HTTP without public egress', { skip: process.platform !== 'linux' }, async t => {
   const { root } = fixture(t), inputs = readInputs();
+  const progressPath = join(root, 'report.tests.jsonl'); writeFileSync(progressPath, '');
   const probe = `
-    import { statSync } from 'node:fs'; import { dirname } from 'node:path';
+    import { appendFileSync, statSync } from 'node:fs'; import { dirname } from 'node:path';
     import { createServer } from 'node:http'; import { createConnection } from 'node:net';
     let trusted = true, cursor = process.env.TIDY_TEST_ROOT;
     for (;;) { const uid = statSync(cursor).uid; trusted &&= uid === 0 || uid === process.geteuid(); const parent = dirname(cursor); if (parent === cursor) break; cursor = parent; }
@@ -70,11 +71,15 @@ test('Linux network namespace preserves trusted filesystem ancestry and real loc
       socket.once('connect', () => { socket.destroy(); resolve('connected'); });
       socket.once('error', error => resolve(error.code));
     });
+    const destination = process.argv[1];
+    if (!destination?.startsWith('--test-reporter-destination=')) throw new Error('missing reporter destination argument');
+    appendFileSync(destination.slice('--test-reporter-destination='.length), 'visible');
     console.log(JSON.stringify({ trusted, requests, text, publicError }));
   `;
-  const command = isolatedCommand(inputs.node.path, ['--input-type=module', '-e', probe], inputs);
+  const command = isolatedCommand(inputs.node.path, ['--input-type=module', '-e', probe, '--', '--test-reporter-destination=' + progressPath], inputs);
   const result = JSON.parse(execFileSync(command.command, command.args, { env: childEnv(root), encoding: 'utf8', timeout: 15000 }));
   assert.deepEqual(result, { trusted: true, requests: 1, text: 'fixture', publicError: 'ENETUNREACH' });
+  assert.equal(readFileSync(progressPath, 'utf8'), 'visible', 'temporary reporter destination is mounted into the network-isolated child');
 });
 
 test('a fresh child sees only declared environment before evaluating its modules', t => {
@@ -194,6 +199,8 @@ function admissionFixture(t, probe = 'import {test} from "node:test"; test("inte
     '.gitignore': 'node_modules/\n', 'package.json': '{"type":"module"}', 'package-lock.json': '{}',
     'scripts/test/bootstrap.mjs': readFileSync(new URL('../../scripts/test/bootstrap.mjs', import.meta.url)),
     'scripts/test/context.mjs': readFileSync(new URL('../../scripts/test/context.mjs', import.meta.url)),
+    'scripts/test/progress-reporter.mjs': readFileSync(new URL('../../scripts/test/progress-reporter.mjs', import.meta.url)),
+    'scripts/test/progress.mjs': readFileSync(new URL('../../scripts/test/progress.mjs', import.meta.url)),
     ...Object.fromEntries(testEntries.map(({ file }) => ['tests/' + file, ''])),
     'tests/harness/test-fixtures.test.ts': probe,
   });

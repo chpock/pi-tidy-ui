@@ -9,11 +9,13 @@ import { highlightingPrefix } from './highlighting-prefix.ts';
 
 type NativeProfile = { id: string; fingerprint: string };
 export type SyntaxDemand = Omit<SourceDemand, 'profile' | 'fingerprint'> & {
+  /** Pi's local classifier hint; kept separate from the explicit Occipital SOURCE language selector. */
+  piLanguage?: string;
   palette: number;
   // Selected presentation identity, never parser/fallback authority.
   nativeProfile?: NativeProfile | null;
 } & ({ fallback: 'pi'; piNeutral: ConcreteStyle } | { fallback: 'neutral' });
-export type SyntaxIdentity = Pick<SyntaxDemand, 'key' | 'version' | 'language' | 'complete' | 'palette' | 'fallback'>;
+export type SyntaxIdentity = Pick<SyntaxDemand, 'key' | 'version' | 'language' | 'piLanguage' | 'complete' | 'palette' | 'fallback'>;
 export type PiClassifier = (text: string, info: { language?: string; path?: string }) => readonly string[];
 export type SyntaxWorkResult = { outcome: 'native' | 'pi' | 'neutral' | 'waiting' | 'refused' | 'failed' | 'stale'; failure?: PiFailure; awaitingProvider?: true };
 export interface SyntaxResolution extends SyntaxIdentity {
@@ -79,7 +81,7 @@ function classificationRows(lines: readonly string[], styled: { value: boolean }
  * palette readiness are independent; only workStatus authorizes a Pi attempt. */
 export function requestSyntax(client: Client, demand: SyntaxDemand, classify: PiClassifier): SyntaxWorkResult {
   const sources = client.sources, metadata = client.snapshot();
-  const { key, version, language, path, palette, neutral } = demand;
+  const { key, version, language, path, piLanguage, palette, neutral } = demand;
   const retained = sources.borrowSource(key);
   const observe = metadata.enabled && metadata.provider.availability === 'ready' && metadata.effective;
   const prefix = (observe || retained) && !(retained?.text === demand.text && demand.complete
@@ -93,9 +95,11 @@ export function requestSyntax(client: Client, demand: SyntaxDemand, classify: Pi
       return { outcome: sources.workStatus(key).fallbackEligible ? 'refused' : 'waiting' };
   }
   const native = sources.borrowSource(key);
-  const nativeExact = native?.version === version && native.language === language && native.text === nativeText && sources.status(key)?.exact;
+  const nativeExact = native?.version === version && native.language === language
+    && native.text === nativeText && sources.status(key)?.exact;
   const display = sources.displayBasis(key);
-  const exactDisplay = display?.language === language && (display?.exactVersion === version || display?.version === version);
+  const exactDisplay = !!display && display.language === language
+    && (display.exactVersion === version || display.version === version);
   if (nativeExact && exactDisplay && compatibleProfile(native!, demand.nativeProfile === undefined ? metadata.effective : demand.nativeProfile))
     return { outcome: 'native' };
   if (demand.fallback === 'neutral') return { outcome: !nativeExact && sources.workStatus(key).fallbackEligible ? 'neutral' : 'waiting',
@@ -103,17 +107,17 @@ export function requestSyntax(client: Client, demand: SyntaxDemand, classify: Pi
   const cached = sources.borrowPiSource(key);
   const text = cached?.text === demand.text && cached.utf8Bytes <= HIGHLIGHT_LIMITS.piSourceBytes ? demand.text
     : demand.text.slice(0, highlightingPrefix(demand.text, HIGHLIGHT_LIMITS.piSourceBytes).end);
-  if (cached?.version === version && cached.language === language && cached.text === text) {
+  if (cached?.version === version && cached.language === piLanguage && cached.text === text) {
     if (sources.piProjection(key, version, palette)) return { outcome: 'pi' };
     const failure = sources.piFailure(key, version, palette);
     if (failure) return { outcome: 'failed', failure };
     if (sources.piRefusal(key, version, palette)) return { outcome: 'refused' };
   }
   if (nativeExact || exactDisplay || !sources.workStatus(key).fallbackEligible) return { outcome: 'waiting' };
-  if (cached && (cached.version > version || cached.version === version && cached.language === language && cached.text !== text)) return { outcome: 'stale' };
-  if (!sources.capturePiSource(key, version, text, language)) return { outcome: 'refused' };
+  if (cached && (cached.version > version || cached.version === version && cached.language === piLanguage && cached.text !== text)) return { outcome: 'stale' };
+  if (!sources.capturePiSource(key, version, text, piLanguage)) return { outcome: 'refused' };
   const source = sources.borrowPiSource(key);
-  if (!source || source.version !== version || source.language !== language || source.text !== text) return { outcome: 'stale' };
+  if (!source || source.version !== version || source.language !== piLanguage || source.text !== text) return { outcome: 'stale' };
   if (sources.piProjection(key, version, palette)) return { outcome: 'pi' }; // Finite equal-text alias.
   const failure = sources.piFailure(key, version, palette);
   if (failure) return { outcome: 'failed', failure };
@@ -127,7 +131,7 @@ export function requestSyntax(client: Client, demand: SyntaxDemand, classify: Pi
   const denied = (): SyntaxWorkResult => ({ outcome: sources.piRefusal(key, version, palette) ? 'refused' : 'stale' });
   const reserve = (bytes: number) => sources.reservePiData(ticket, bytes);
   try {
-    try { lines = ticket.text!.length ? classify(ticket.text!, { language, path }) : []; }
+    try { lines = ticket.text!.length ? classify(ticket.text!, { language: piLanguage, path }) : []; }
     catch { return failed('threw'); }
     const bytes = ansiBytes(lines, ticket.budget.limit);
     if (bytes === undefined) return failed('invalid_rows');
@@ -151,7 +155,7 @@ export function requestSyntax(client: Client, demand: SyntaxDemand, classify: Pi
  * until its final true result, and must be discarded otherwise. */
 export function resolveSyntax(sources: SourceController, identity: SyntaxIdentity,
   profile?: NativeProfile | null): SyntaxResolution {
-  const { key, version, language, complete, palette, fallback } = identity;
+  const { key, version, language, piLanguage, complete, palette, fallback } = identity;
   const allowPi = fallback === 'pi';
   const work = sources.workStatus(key), native = sources.borrowSource(key), pi = allowPi ? sources.borrowPiSource(key) : undefined;
   const matchingNative = native?.version === version && native.language === language ? native : undefined;
@@ -160,12 +164,12 @@ export function resolveSyntax(sources: SourceController, identity: SyntaxIdentit
   const nativeExact = !!status?.exact;
   const basis = sources.displayBasis(key);
   const display = complete && basis?.complete && basis.exactVersion === version && basis.language === language ? basis : undefined;
-  const matchingPi = pi?.version === version && pi.language === language ? pi : undefined;
+  const matchingPi = pi?.version === version && pi.language === piLanguage ? pi : undefined;
   const projection = matchingPi ? sources.piProjection(key, version, palette) : undefined;
   const failure = matchingPi && sources.piFailure(key, version, palette);
   const refusal = matchingPi && sources.piRefusal(key, version, palette);
   const owner = new WeakRef(sources);
-  return { key, version, language, complete, palette, fallback, owner, nativeExact,
+  return { key, version, language, piLanguage, complete, palette, fallback, owner, nativeExact,
     execution: work.execution, fallbackEligible: work.fallbackEligible, piStyled: projection ? matchingPi?.styleDirectives : undefined, committedBytes: status?.committedBytes,
     needsPi: allowPi && (work.version === undefined || work.version <= version) && (pi === undefined || pi.version <= version)
       && !nativeExact && !display && !projection && work.fallbackEligible && !failure && !refusal,

@@ -87,8 +87,11 @@ test('generic runner records the full CLI selection and assigned shard before re
   const { root } = fixture(t), original = readInputs();
   const inputs = join(root, 'inputs.json'), output = join(root, 'report.json');
   writeFileSync(inputs, JSON.stringify({ ...original, native: undefined }));
-  const shard = [1, 2, 3, 4].map(index => index + '/4').find(shard => resolveSelection(original.pi.root, { suite: 'cli', shard }).requirements.includes('native'));
-  assert.ok(shard, 'complete CLI selection retains real native controls');
+  const shard = [1, 2, 3, 4].map(index => index + '/4').find(shard => {
+    const requirements = resolveSelection(original.pi.root, { suite: 'cli', shard }).requirements;
+    return requirements.includes('native') && !requirements.includes('integration');
+  });
+  assert.ok(shard, 'a complete CLI shard retains native controls without adding unrelated profile admission requirements');
   const selection = resolveSelection(original.pi.root, { suite: 'cli', shard });
   await assert.rejects(execute({ inputs, suite: 'cli', shard, output }), /Missing required same-source Occipital build/);
   const report = JSON.parse(readFileSync(output, 'utf8'));

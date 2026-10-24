@@ -4,13 +4,63 @@ import { existsSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import test from 'node:test';
 import { PiTerminal } from '../../fixtures/terminal-harness.mjs';
 import { closeTerminals, runCleanupSteps } from '../../fixtures/terminal-cleanup.mjs';
-import { nativeReady } from '../../fixtures/syntax-observation.mjs';
+import { nativeReady, semanticSourceContext, semanticStyle } from '../../fixtures/syntax-observation.mjs';
 import { CARD_ROLES } from '../../../src/occipital/semantic-codec.ts';
 import { sharedSyntaxHost, themeDefinition, reaped } from '../../fixtures/shared-syntax-host.mjs';
-import { prepareSyntaxNative, requiredSharedHost, scenario, stats, traffic, persisted, menuAction, chooseTheme, settledStats, keywordColor, sourceColors, work, peerSource, finish, until, body } from '../../fixtures/syntax-cli-support.mjs';
+import { prepareSyntaxNative, requiredSharedHost, scenario, stats, traffic, persisted, menuAction, chooseTheme, settledStats, keywordColor, sourceColors, work, peerSource, finish, until, body, shebangScenario, shebangContextColors, shebangStringColors, expressionForeground } from '../../fixtures/syntax-cli-support.mjs';
 
 const { binary, fixture, descriptor } = await prepareSyntaxNative();
 
+test('occipital CLI: shared shebang source hints retain side-specific split paint and new-side unified paint',
+  { timeout: 90000 }, async () => {
+    const host = await sharedSyntaxHost(requiredSharedHost(), binary);
+    const terminal = new PiTerminal('syntax-shared-shebang-sides', { mode: 'fullscreen', dimensions: { columns: 140, rows: 120 }, extensions: [fixture],
+      extraEnv: { ...descriptor, SUBC_CONNECTION_FILE: host.alias, TIDY_UI_TEST_SYNTAX_SHARED: '1',
+        TIDY_UI_TEST_EMPTY_BASH: '1', TIDY_UI_TEST_PALETTE_OBSERVE: '1' } });
+    try {
+      const split = await shebangScenario(terminal), splitColors = shebangContextColors(split);
+      assert.equal(splitColors.length, 3);
+      assert.equal(splitColors[0], splitColors[1]);
+      assert.notEqual(splitColors[1], splitColors[2]);
+      const events = terminal.events();
+      const bashSource = events.filter(event => event.type === 'syntax_native_dispatch' && event.kind === 'source')
+        .flatMap(event => event.payload.sources ?? []).find(source => source.text.includes('BASH_NO_SHEBANG_HINT'));
+      assert.ok(bashSource);
+      assert.equal(bashSource.hint.language, 'bash');
+      assert.equal(Object.hasOwn(bashSource.hint, 'shebang_language'), false, 'the generic language selector has no shebang-specific companion');
+      const pythonContext = semanticSourceContext(events, 'same', 'python'), bashContext = semanticSourceContext(events, 'same', 'bash');
+      assert.ok(pythonContext); assert.ok(bashContext); assert.notDeepEqual(pythonContext, bashContext);
+       assert.ok(Array.isArray(pythonContext) && pythonContext.length > 0, 'Python string scopes have a nonempty protocol context path');
+       assert.ok(Array.isArray(bashContext) && bashContext.length > 0, 'Bash string scopes have a nonempty protocol context path');
+      const stringPaint = shebangStringColors(split);
+      assert.equal(stringPaint.colors.length, 3);
+      const pythonStyle = semanticStyle(events, 'same', 'pi', 'python'), bashStyle = semanticStyle(events, 'same', 'pi', 'bash');
+      assert.ok(pythonStyle); assert.ok(bashStyle);
+      assert.equal(stringPaint.colors[0], expressionForeground(pythonStyle.expression, split));
+      assert.equal(stringPaint.colors[1], expressionForeground(pythonStyle.expression, split));
+      assert.equal(stringPaint.colors[2], expressionForeground(bashStyle.expression, split));
+      assert.equal(expressionForeground(pythonStyle.expression, split), stringPaint.expected);
+      assert.equal(expressionForeground(bashStyle.expression, split), stringPaint.expected);
+      const unknownReply = events.find(event => event.type === 'syntax_native_reply' && event.kind === 'source'
+        && event.reply.status === 'error' && event.reply.error?.code === 'unknown_syntax' && event.reply.error?.execution === 'not_started'
+        && event.payload.sources?.some(source => source.text.includes('NO_SHEBANG_CONTROL')));
+      assert.ok(unknownReply, 'shared no-shebang control reaches expected pre-parse fallback');
+      assert.ok(split.screen.some(row => row.includes('NO_SHEBANG_CONTROL')));
+      assert.equal(events.filter(event => event.type === 'syntax_notify' && event.message.includes('unexpected error (unknown_syntax)')).length, 0);
+      const before = await stats(terminal, 'shared-shebang-before-resize');
+       assert.ok(before.localWork.shebangFileSegments > 0, 'cold measurement includes the unique shared shebang-file marker');
+      assert.equal(before.client.provider.kind, 'shared');
+      await terminal.resize(100, 120);
+      const unified = await terminal.capture('shared-shebang-unified'), unifiedColors = shebangContextColors(unified);
+      assert.equal(unifiedColors.length, 2);
+      assert.equal(unifiedColors[0], splitColors[0]); assert.equal(unifiedColors[1], splitColors[2]);
+      const after = await stats(terminal, 'shared-shebang-after-resize');
+      assert.deepEqual(work(after), work(before));
+       assert.equal(after.localWork.shebangFileSegments, before.localWork.shebangFileSegments, 'shared resize repeats no shebang-file measurement');
+       assert.deepEqual(after.localWork, before.localWork, 'shared resize repeats no other file measurement or source-scalar reads');
+      console.log(JSON.stringify({ sharedShebangSplit: splitColors, sharedShebangUnified: unifiedColors, warmResizeDelta: 0 }));
+    } finally { await runCleanupSteps(() => closeTerminals([terminal]), () => host.close()); }
+  });
 test('occipital CLI: shared discovery, public refresh/status/Pi menu, actual loss and owned-to-shared return preserve peer and traffic',
   { timeout: 120000 }, async () => {
     const host = await sharedSyntaxHost(requiredSharedHost(), binary);

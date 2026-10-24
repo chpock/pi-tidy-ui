@@ -8,7 +8,7 @@ Controlled-allocation accounting is not an allocator/private-heap/RSS guarantee.
 
 ### Version, identities and carriers
 
-Application version is `3`, capability `syntax-highlight/v3`, service `syntax`. Required interpretation revisions are contexts `1`, resolver `2` and palette `1`; client-definition structural revision remains `1`. The consumer requires these descriptor revisions exactly before admitting SOURCE/STYLE work. Resolver revision governs the shared expression/font vocabulary, including palette-referenced styles.
+Application version is `3`, capability `syntax-highlight/v3`, service `syntax`. Required interpretation revisions are contexts `1`, resolver `2`, palette `1` and SOURCE hints `2`; client-definition structural revision remains `1`. The consumer requires these descriptor revisions exactly before admitting SOURCE/STYLE work. Resolver revision governs the shared expression/font vocabulary, including palette-referenced styles.
 
 Owned stdio carries nonempty UTF-8 JSON preceded by its four-byte unsigned big-endian byte length, excluding those four bytes. Shared mode carries the application JSON through the public Subconscious internal-service route and SDK correlation, without an embedded stdio length prefix. The consumer preserves the complete SDK route handle, including its epoch.
 
@@ -97,7 +97,7 @@ Both metadata operations return exactly:
 ```text
 {
   kind:"descriptor",protocol_version:3,
-  contexts_revision:1,resolver_revision:2,palette_revision:1,
+  contexts_revision:1,resolver_revision:2,palette_revision:1,source_hint_revision:2,
   vocabulary:{fingerprint,count},assets,backend_version,catalogue_revision,
   capability:"syntax-highlight/v3",service:"syntax",
   operations,modes,admission,profiles,diagnostic,limits,runtime
@@ -111,12 +111,15 @@ Metadata contains no source payload, whole vocabulary, style table or card palet
 | `assets` | Equals envelope `assets` |
 | `vocabulary` | Exactly `{fingerprint,count}`; valid fingerprint, integer count `1..4294967295` |
 | `backend_version` | Nonempty bounded text, at most 128 UTF-8 bytes; no semantic-version parser requirement |
+| `source_hint_revision` | Integer `2`; defines SOURCE language selection, including absent/null/empty selector behavior and optional path-only selection. A consumer requires the exact supported revision before submitting SOURCE. This is separate from resolver/style revisions.
 | `catalogue_revision` | Integer `0..9007199254740991`; publication identity, not parser revision |
 | `operations` | Unique bounded strings, at most 16; must include all seven operations above |
 | `modes` | Unique bounded strings, at most 4; must include `one_shot`, `growing` |
 | `admission` | Unique bounded strings, at most 4; must include `try_now`, `bounded_queue` |
 | `profiles` | At most 48; each exactly `{id,label,fingerprint}`, with unique bounded ID other than `pi`, label at most 128 UTF-8 bytes, valid fingerprint |
 | `diagnostic` | `null` or nonempty bounded text, at most 256 UTF-8 bytes |
+
+The SOURCE protocol has no shebang-specific field and the daemon never scans source text. A consumer may recognize an edit/write file's first-line shebang and send its selected canonical format through the ordinary `language` field. That explicit selector outranks `path`; the protocol treats it exactly like any other requested format.
 
 The current catalogue comprises 32 bundled definitions and at most 16 installed custom definitions. The 48-entry descriptor limit does not increase the separate custom-theme quota.
 
@@ -190,13 +193,13 @@ Native DATA preflight rejects structural JSON nesting beyond depth 64. That is a
 
 Highlight/open contain `sources:[{key,generation,source_version,hint,text},...]`, with exactly those five fields per source. `text` is valid Unicode and may be empty. The daemon does not reread files or silently truncate it; callers supply intended normalized text or an explicitly selected prefix.
 
-`hint` contains only optional `language` and `path`, each omitted, `null`, or nonempty bounded text. Language is at most 128 decoded UTF-8 bytes; path at most 4,096.
+`hint` is an exact object with optional `language` and `path` fields. Either may be omitted or `null`. A non-null language is a string of at most 128 decoded UTF-8 bytes; the empty string means absent and selects path-based lookup. A nonempty language is an explicit format selector. A non-null path is bounded to 4,096 UTF-8 bytes and is optional, so pathless text can be highlighted using `language` alone. Wrong field types, controls and over-limit strings are `invalid_request/not_started`; a structurally valid but unsupported format is `unknown_syntax/not_started`.
 
-1. With a **non-null language**, normalize recognized aliases case-insensitively, try the resulting syntax name, then the original language as extension. Failure does **not** fall through to path. Omitted or null language selects the path branch instead.
-2. Otherwise take the basename after either slash convention, try that whole basename as extension token, then its suffix after the last dot.
-3. Missing/unrecognized syntax returns `unknown_syntax` with `not_started`, without content sniffing or implicit Plain Text fallback.
+1. A **nonempty language** is explicit: normalize recognized aliases case-insensitively, try the resulting syntax name, then the original language as an extension. Failure does **not** fall through to `path`.
+2. If language is omitted, `null` or empty, and `path` is present, take its basename after either slash convention; try that whole basename as an extension token, then its suffix after the last dot.
+3. If there is no usable selector/path, or its grammar is unsupported, return `unknown_syntax/not_started`. Do not inspect text for a format and do not implicitly select Plain Text.
 
-Aliases are `typescript`/`ts`, `javascript`/`js`, `bash`/`sh`/`shell`, `makefile`/`make`, `python`/`py`, `rust`/`rs`, `json`, `plaintext`/`text`/`txt`. Explicit Plain Text works. Alias case normalization does not promise case-insensitivity for every arbitrary syntax name/extension.
+The complete case-insensitive explicit-language alias table is maintained in [source engine — explicit language aliases](source-engine.md#explicit-language-aliases). It maps current aliases to exact bundled syntax names. Other explicit values are still tried as an exact syntax name and then an extension; that lookup is not promised to be case-insensitive. Plain Text must be selected explicitly.
 
 Finite batches contain one to eight sources under any smaller advertised bound; open contains exactly one. Keys are unique across the complete batch regardless of generation. Consumers reject duplicate result keys and match by key, not result order. Aggregate finite/cumulative-stream coverage is 64 KiB UTF-8 and 8,192 logical lines, not per member/append. Empty text has zero lines; each LF terminates one and a nonempty unterminated tail adds one. A final LF adds no phantom line. Smaller advertised source limits and independent encoded-JSON caps remain authoritative.
 
@@ -228,6 +231,8 @@ Lease expiry is the earlier of birth plus `age_ms` and last nonempty-input progr
 | Append `final:false` | Same lease, revision `base_revision + 1`, bytes `base_bytes + UTF8(append)`, `complete:false`; continuation live |
 | Append `final:true` | Same lease echoed and revision advanced, `complete:true`, all bytes committed; continuation retired |
 | `stream.close` | Exactly `{kind:"closed"}`, no source result/revision/lease echo |
+
+`stream.open` captures each source's validated `hint` into the parser state. `stream.append` carries continuation identity and new text, not a replacement hint; the grammar selected at open therefore remains fixed for that lease. To change the grammar, the caller must retire the old continuation and open a new source identity under the new hint.
 
 Append's `replace_from` is prior **committed** bytes, not `base_bytes`: replacement includes the old provisional tail and appended text; preceding bytes are unchanged. Empty append/finalization are legal and may reuse tail results without a parser call/newline while still advancing operation revision.
 
@@ -352,4 +357,4 @@ Follow Pi sets only strike (`16/16`) for trusted `markup.strikethrough` contexts
 
 ## Validation reference
 
-In a repository checkout, `protocol/syntax-v3/` contains `vectors.json`, `context-number-vectors.json`, `rule-vectors.json`, `rule-number-vectors.json` and `highlighting-limits.json`. These define cross-language envelope, context, rule, expression, palette, fingerprint and numeric-boundary cases. They and the executable harness are checkout-only inputs, not files adjacent to this packaged reference. [Syntax and protocol validation](../testing.md#syntax-and-palette-validation) covers retained byte-credit ownership, actual SOURCE→STYLE round trips, known/new-context appends, controlled allocation overlap, two-peer isolation and metadata fairness. Those controls do not widen the protocol into private-heap/RSS, maximum-latency or dense full-card guarantees.
+In a repository checkout, `protocol/syntax-v3/` contains `vectors.json`, `context-number-vectors.json`, `rule-vectors.json`, `rule-number-vectors.json`, `highlighting-limits.json` and `source-hint-vectors.json`. These define cross-language envelope, context, rule, expression, palette, fingerprint, numeric-boundary and SOURCE language-selection/shebang cases. They and the executable harness are checkout-only inputs, not files adjacent to this packaged reference. [Syntax and protocol validation](../testing.md#syntax-and-palette-validation) covers retained byte-credit ownership, actual SOURCE→STYLE round trips, known/new-context appends, controlled allocation overlap, two-peer isolation and metadata fairness. Those controls do not widen the protocol into private-heap/RSS, maximum-latency or dense full-card guarantees.

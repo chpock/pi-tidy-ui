@@ -703,6 +703,31 @@ fn close_during_append_keeps_authority_until_actual_discard() {
 }
 
 #[test]
+fn malformed_language_hint_values_are_invalid_requests_at_the_native_boundary() {
+    let vectors: Value = serde_json::from_str(include_str!(
+        "../../../protocol/syntax-v3/source-hint-vectors.json"
+    ))
+    .unwrap();
+    for value in vectors["invalid_wire_language_values"].as_array().unwrap() {
+        let mut input = source("bad-hint", "text");
+        input["hint"]["language"] = value.clone();
+        let request = finite(vec![input], false);
+        let raw = RawValue::from_string(request.to_string()).unwrap();
+        let result = SourceRequest::decode(
+            &raw,
+            "instance",
+            occipital::limits::SOURCE_BYTES,
+            &mut |_| true,
+        );
+        assert_eq!(
+            result.err().unwrap(),
+            Fault::not_started("invalid_request"),
+            "{value}"
+        );
+    }
+}
+
+#[test]
 fn request_path_hint_budget_survives_engine_boundary() {
     let paths = [1024, 1025, 4096].map(|length| {
         let prefix = length - 7;

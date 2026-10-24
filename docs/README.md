@@ -38,6 +38,7 @@ If you are interested in **Occipital as a daemon**, start directly with its [sta
 | [Work controller](syntax/work.md) | Single weak chronological registry, SOURCE/STYLE scheduling, useful-prefix policy, fallback authority and atomic per-card publication |
 | [Storage](syntax/storage.md) | Numeric grants and shared charges, source captures/range blocks, context arena, style groups, pins, pressure and release receipts |
 | [Prepared cards](syntax/prepared-cards.md) | Prepared source slots, full display versus classification, measured geometry, coherent paint, Pi ANSI conversion and accepted borrowed visits |
+| [Shebang hints](syntax/shebang-hints.md) | Curated interpreter map, exact line-1 provenance, `env` subset, generic language selector, optional-path fallback, source identity and per-side diff painting |
 | [Follow Pi](syntax/follow-pi.md) | Complete binding and semantic-rule tables, role-specific derived colors, provenance, contrast/quantization, font composition and rationale |
 | [Color model](color-model.md) | Shared color representations/mathematics and complete, distinct Follow Pi/native diff-surface algorithms |
 
@@ -56,7 +57,7 @@ If you are interested in **Occipital as a daemon**, start directly with its [sta
 | [Assets and identities](occipital/assets.md) | Build inputs, vocabulary extraction, linked contexts, native handles versus portable IDs, hashes/revisions and compatibility consequences |
 | [Protocol reference](occipital/protocol.md) | Exact carrier framing, operations/fields, correlations, source acknowledgments, contexts/styles, errors, numeric limits and counters |
 
-The protocol reference ships with this manual. Its five conformance JSON files and executable harness remain checkout-only engineering inputs under `protocol/syntax-v3/`; the reference identifies their locations without depending on a different version of GitHub main.
+The protocol reference ships with this manual. Its six conformance JSON files and executable harness remain checkout-only engineering inputs under `protocol/syntax-v3/`; the reference identifies their locations without depending on a different version of GitHub main.
 
 ## Common services and engineering reference
 
@@ -84,6 +85,7 @@ The protocol reference ships with this manual. Its five conformance JSON files a
 | Why was memory not freed by removing a card or clearing layouts? | [Component rows](render-cache-spec.md) → [local grants/captures](syntax/storage.md) → [native delivery credit](occipital/requests-and-resources.md) |
 | How do reload, appearance Off, native Off and terminal stop differ? | [Host lifetimes](host-integration.md) → [provider transitions](syntax/providers.md) → [terminal channels](terminal-colors-spec.md) |
 | Where can I observe a failure, and what does that evidence prove? | [Extension health/journals](debug-logging-spec.md) or [daemon runtime/descriptor/counters](occipital/README.md) → the owning request/recovery contract |
+| How does an extension identify a script without a useful filename? | [Shebang provenance and aliases](syntax/shebang-hints.md) → [SOURCE grammar precedence](occipital/source-engine.md#language-selection) → [source-hint protocol revision](occipital/protocol.md#descriptor-and-metadata-operations) |
 | What must change when grammar, vocabulary or rule interpretation changes? | [Native assets/identities](occipital/assets.md) → [wire compatibility](occipital/protocol.md) → [delivery](releases.md) → [validation](testing.md) |
 
 ## Boundaries of this manual

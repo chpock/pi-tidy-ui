@@ -81,7 +81,7 @@ function fixture(ready = false, options: ConstructorParameters<typeof SourceCont
   return { host, sources, client };
 }
 function demand(text = 'x', version = 1, complete = true, key = 'source'): SyntaxDemand {
-  return { key, text, version, complete, language: 'bash', path: 'file.sh', palette: 1, fallback: 'pi', piNeutral: neutral };
+  return { key, text, version, complete, language: 'bash', piLanguage: 'bash', path: 'file.sh', palette: 1, fallback: 'pi', piNeutral: neutral };
 }
 const highlight = (text: string) => text.split('\n').map(line => `\x1b[31m${line}\x1b[39m`);
 async function settled() { for (let i = 0; i < 5; i++) await turn(); }
@@ -196,19 +196,31 @@ for (const mode of ['startup', 'off', 'unavailable'] as const) {
   });
 }
 
-test('syntax work source, selected language and palette transitions invalidate exact Pi', () => {
+test('syntax work source, Pi classifier language and palette transitions invalidate exact Pi', () => {
   const { client, sources } = fixture(); let calls = 0;
   const classify = (text: string) => { calls++; return highlight(text); };
   const original = demand('x'); requestSyntax(client, original, classify);
   const old = resolveSyntax(sources, original);
   const rewritten = demand('y', 2); requestSyntax(client, rewritten, classify);
   assert.equal(fileRows(sources, old), undefined);
-  const language = { ...rewritten, language: 'python' }; requestSyntax(client, language, classify);
+  const language = { ...rewritten, piLanguage: 'python' }; requestSyntax(client, language, classify);
   assert.equal(fileRows(sources, resolveSyntax(sources, rewritten)), undefined);
   const palette = { ...language, palette: 2 }; requestSyntax(client, palette, classify);
   assert.equal(fileRows(sources, resolveSyntax(sources, language)), undefined);
   requestSyntax(client, palette, classify); assert.equal(calls, 4);
   assert.deepEqual(fileRows(sources, resolveSyntax(sources, palette)), ['y']);
+});
+
+test('syntax work native format changes reuse unchanged Pi classification identity', () => {
+  const { client, sources } = fixture(); let calls = 0;
+  const classify = (_text: string, info: { language?: string }) => { calls++; assert.equal(info.language, 'ruby'); return highlight('x'); };
+  const pathSelected = { ...demand(), language: 'ruby', piLanguage: 'ruby' };
+  assert.equal(requestSyntax(client, pathSelected, classify).outcome, 'pi');
+  const shebangSelected = { ...pathSelected, language: 'bash' };
+  assert.equal(requestSyntax(client, shebangSelected, classify).outcome, 'pi');
+  assert.equal(calls, 1, 'a native shebang selector does not reclassify Pi fallback');
+  assert.equal(sources.borrowPiSource(shebangSelected.key)?.language, 'ruby');
+  assert.equal(resolveSyntax(sources, shebangSelected).needsPi, false);
 });
 
 test('syntax work accepts faint Pi rows and reuses the exact result', () => {
@@ -245,7 +257,7 @@ for (const failure of ['threw', 'invalid_rows'] as const) {
     const bad = () => { calls++; if (failure === 'threw') throw new Error('fixture'); return ['\x1b[8mx']; };
     assert.deepEqual(requestSyntax(client, initial, bad), { outcome: 'failed', failure });
     assert.equal(resolveSyntax(sources, initial).needsPi, false);
-    const changed = { ...initial, language: 'python' };
+    const changed = { ...initial, piLanguage: 'python' };
     const before = sources.stats();
     assert.equal(resolveSyntax(sources, changed).needsPi, true);
     assert.deepEqual(sources.stats(), before);

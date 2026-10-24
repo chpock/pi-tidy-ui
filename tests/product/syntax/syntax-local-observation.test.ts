@@ -23,9 +23,9 @@ test('syntax local observations count actual source measurement, not unrelated s
   try {
     [...new Intl.Segmenter().segment(source)]; source.codePointAt(0);
     Reflect.apply(Intl.Segmenter.prototype.segment, new Intl.Segmenter(), []);
-    assert.deepEqual(observer.snapshot(), { sourceSegments: 0, sourceSegmentUnits: 0, prefixScalarReads: 0 });
+    assert.deepEqual(observer.snapshot(), { sourceSegments: 0, sourceSegmentUnits: 0, shebangFileSegments: 0, prefixScalarReads: 0 });
     measured = measure(source, budget); assert.ok(measured);
-    const cold = observer.snapshot(); assert.deepEqual(cold, { sourceSegments: 1, sourceSegmentUnits: source.length, prefixScalarReads: 0 });
+    const cold = observer.snapshot(); assert.deepEqual(cold, { sourceSegments: 1, sourceSegmentUnits: source.length, shebangFileSegments: 0, prefixScalarReads: 0 });
     for (const width of [24, 100, 60]) { const rows = reflow(measured, { mode: 'file', width }); assert.ok(rows); rows.dispose(); }
     assert.deepEqual(observer.snapshot(), cold, 'real warm reflow needs no new source measurement');
     const duplicate = measure(source, budget); assert.ok(duplicate); duplicate.dispose();
