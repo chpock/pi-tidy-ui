@@ -92,6 +92,11 @@ The input is still **Pi's own editor**, not a replacement: paste handling, undo,
 
 The footer adds context usage, the cache chart, your session name when space allows, and statuses supplied by other extensions. It calls out disabled automatic compaction with `(auto off)`; it does not turn compaction on or manage the context itself.
 
+> [!IMPORTANT]
+> **Missing the styled input or cache footer?** If another extension replaces Pi's editor or overrides its rendering, pi-tidy-ui deliberately leaves that editor in control. Its own **input styling, model/path rows below the editor, and footer—including the cache chart—are not applied**. Tool and user-message cards continue to work; this is not a failure of the whole extension.
+>
+> To restore the full layout, disable the other extension's editor customization, then restart Pi or run **`/reload`**. If Pi's stock editor is already restored, use **`/tidy-ui` → Status & troubleshooting → Reapply Tidy UI appearance** to reinstall the footer. pi-tidy-ui does not automatically take it back from another extension.
+
 ## Richer syntax without repeated work
 
 **Occipital**, the included Rust syntax highlighter, brings language-aware colors to Bash commands and edit/write source using [Syntect](https://github.com/trishume/syntect) and [Two-Face](https://github.com/CosmicHorrorDev/two-face).
@@ -204,7 +209,7 @@ The compact override wins if a tool appears in both lists. PowerShell keeps its 
 - **Platforms:** GNU Linux x64/ARM64 with glibc 2.28+, macOS x64/ARM64, and Windows x64. Windows ARM64 is currently unsupported. Pi and Node's own host requirements also apply.
 - **Pi versions:** 1.0.0 is the minimum tested host. CI checks the minimum and latest Pi; future releases are not automatically guaranteed compatible. If the expected UI integration is unavailable, the extension warns and leaves the affected presentation native.
 - **Terminal UI only:** print, JSON and RPC modes are unchanged. This is not an HTML-export theme or an OpenCode port.
-- **Other UI extensions:** tool cards can coexist with a custom editor, but pi-tidy-ui leaves another extension's editor in control and does not install its own input styling or footer there. Multiple extensions replacing the same footer/rendering methods are not guaranteed to compose. Avoid running multiple extensions that change the terminal background.
+- **Other UI extensions:** [Custom editors disable pi-tidy-ui's input styling and footer, not its tool cards](#a-coherent-conversation-and-input-area). Multiple extensions replacing the same footer/rendering methods are not guaranteed to compose. Avoid running multiple extensions that change the terminal background.
 - **Nothing is secretly removed from the agent's view.** Compact summaries and previews affect your display, not prompts, tool arguments, results or saved sessions. Displayed secret-key masking is not a security boundary; expanded content and session files can still contain sensitive data.
 
 ## Troubleshooting and feedback
