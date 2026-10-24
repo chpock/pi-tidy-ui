@@ -1,6 +1,6 @@
 # Internal architecture and implementation
 
-This manual explains **how pi-tidy-ui is built and why its boundaries work this way**. It covers the Pi extension and the independent Occipital daemon: normal execution, data representations, ownership/lifetimes, algorithms, failure paths, limits and recorded design reasons. The repository [README](../README.md) remains the user-facing entry.
+This manual explains **how pi-tidy-ui is built and why its boundaries work this way**. It covers the Pi extension and the independent Occipital daemon: normal execution, data representations, ownership/lifetimes, algorithms, failure paths, limits and recorded design reasons. The repository [README](../README.md) is the user-facing guide: [installation](../README.md#install), [tool and conversation features](../README.md#see-the-work-without-the-noise), [the ten-request cache chart](../README.md#read-the-cache-chart), [settings](../README.md#make-it-yours) and [compatibility](../README.md#compatibility-and-boundaries). Start there for everyday use; this manual supplies the exact contracts and implementation detail.
 
 ## Start here
 

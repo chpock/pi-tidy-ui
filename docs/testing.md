@@ -1,6 +1,6 @@
 # Testing and coverage
 
-This is the maintained guide to reproducing pi-tidy-ui checks, not a journal of past runs. Use a repository checkout; the npm package contains runtime code/documentation, not the harness or fixtures. Visual behavior is specified in the [presentation contracts](../README.md#documentation); integration boundaries are described in [architecture](architecture.md).
+This is the maintained guide to reproducing pi-tidy-ui checks, not a journal of past runs. Use a repository checkout; the npm package contains runtime code/documentation, not the harness or fixtures. Visual behavior is specified in the [presentation contracts](README.md#extension-host-and-presentation); the root [user guide](../README.md) explains everyday use, and integration boundaries are described in [architecture](architecture.md).
 
 Current [platform support](releases.md#supported-platforms) is GNU Linux x64/ARM64, macOS x64/ARM64 and Windows x64. **Windows ARM64 is temporarily unsupported for the entire extension** because of disproportionate verification cost. Windows ARM64 stays in the central platform catalogue but is disabled unless repository Actions variable `CI_WINDOWS_ARM64=true`; enabling that platform or citing a historical pass does not establish restored support.
 
