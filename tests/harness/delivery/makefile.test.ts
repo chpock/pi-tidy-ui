@@ -280,3 +280,24 @@ test('GNU consumer retains linked-worktree source metadata through an explicit r
     await rm(join(f.root, 'commands.jsonl'));
   }
 });
+
+test('Make forwards one ordinary file bound and rejects JOBS for fixed entries before execution', { skip }, async t => {
+  const f = await fixture(t);
+  for (const target of ['test', 'test-gc', 'test-focus', 'test-feature', 'test-product', 'test-native', 'test-syntax', 'test-terminal', 'test-release', 'native-smoke']) {
+    const before = (await f.entries()).length;
+    const result = f.run([target, 'JOBS=3', 'FEATURES=footer', 'TEST_FILES=one.test.ts']);
+    assert.equal(result.status, 0, result.stderr);
+    const calls = (await f.entries()).slice(before);
+    assert.equal(calls.length, 1, 'Make must not allocate a second per-feature pool');
+    const index = calls[0].args.indexOf('--jobs');
+    assert.ok(index >= 0);
+    assert.equal(calls[0].args[index + 1], '3');
+  }
+  for (const target of ['check', 'check-native', 'test-rust', 'test-rust-harness', 'test-installed', 'test-published']) {
+    const before = (await f.entries()).length;
+    const result = f.run([target, 'JOBS=3']);
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /JOBS controls ordinary test files/);
+    assert.equal((await f.entries()).length, before, 'unsupported jobs fail before any fixed executor');
+  }
+});

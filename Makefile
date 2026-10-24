@@ -5,6 +5,7 @@ NODE ?= node
 NPM ?= npm
 INPUTS ?=
 FEATURES ?=
+JOBS ?=
 PI_VERSION ?= 1.0.0
 PREPARE_OUTPUT ?= $(CURDIR)/.test-artifacts/harness/$(PI_VERSION)
 RUST_ROOT ?=
@@ -17,6 +18,8 @@ RUSTC = $(RUST_ROOT)/bin/rustc$(EXE)
 NATIVE_BIN = $(CARGO_TARGET_DIR)/$(if $(strip $(RUST_TARGET)),$(RUST_TARGET)/,)release/occipital$(EXE)
 export TEST_FILES TEST_PATTERN
 RUN = "$(NODE)" scripts/test/run.mjs --inputs "$(INPUTS)"
+FILE_JOBS = $(if $(strip $(JOBS)),--jobs "$(JOBS)",)
+RUN_FILES = $(RUN) $(FILE_JOBS)
 RUST_ENV = env -i PATH="$(RUST_ROOT)/bin:/usr/bin:/bin" HOME="$(CARGO_HOME)/test-home" CARGO_HOME="$(CARGO_HOME)" CARGO_TARGET_DIR="$(CARGO_TARGET_DIR)" CARGO_NET_OFFLINE=true RUSTC="$(RUSTC)" RUSTUP_TOOLCHAIN="$(RUST_ROOT)" RUSTUP_AUTO_INSTALL=0 TIDY_TEST_ROOT="$(CARGO_HOME)/test-root" TIDY_TEST_GETCONF=/usr/bin/getconf LANG=C.UTF-8 LC_ALL=C.UTF-8 TZ=UTC
 
 # Cargo also discovers ancestor .cargo/config independently of CARGO_HOME.
@@ -50,7 +53,7 @@ $(RUST_ENV) "$(NODE)" --input-type=module -e ' \
 ' -- "$(1)" "$(RUST_TARGET)" "$(CARGO)" "$(NATIVE_BIN)"
 endef
 
-.PHONY: help deps build native-build native-toolchain inputs-check check check-native test test-gc test-focus test-feature test-product test-rust test-rust-harness test-native test-syntax test-terminal test-release test-installed test-published pack-check native-smoke _native-lint _gnu-native
+.PHONY: _fixed-jobs-check help deps build native-build native-toolchain inputs-check check check-native test test-gc test-focus test-feature test-product test-rust test-rust-harness test-native test-syntax test-terminal test-release test-installed test-published pack-check native-smoke _native-lint _gnu-native
 
 help:
 	@printf '%-22s %s\n' \
@@ -61,7 +64,7 @@ help:
 	  'test' 'Required same-source unit/SDK/GC coverage from prepared INPUTS' \
 	  'test-gc' 'Alias for the same mandatory GC-enabled unit suite' \
 	  'test-focus' 'Comma-separated TEST_FILES basenames and optional TEST_PATTERN' \
-	  'test-feature' 'Types + product baseline + FEATURES comma-list and actual affected CLI; refresh owned source' \
+	  'test-feature' 'Types + product baseline + FEATURES and actual CLI; optional JOBS file bound; refresh source' \
 	  'test-product' 'Common product SDK/logic/GC without native/shared/profile inputs' \
 	  'test-rust' 'Prepared offline workspace tests and doctests' \
 	  'test-rust-harness' 'All native-build controls; INPUTS must be from prepare-native.mjs' \
@@ -98,6 +101,11 @@ native-toolchain:
 native-build: native-toolchain
 	$(call NATIVE_RUN,build)
 
+_fixed-jobs-check:
+	@test -z "$(JOBS)" || { printf 'JOBS controls ordinary test files, not fixed type/Rust/consumer entries.\n' >&2; exit 1; }
+
+check check-native test-rust test-rust-harness test-installed test-published: _fixed-jobs-check
+
 check: inputs-check
 	$(RUN) --suite check
 
@@ -108,17 +116,17 @@ _native-lint: native-toolchain
 	$(call NATIVE_RUN,lint)
 
 test test-gc: inputs-check
-	$(RUN) --suite unit
+	$(RUN_FILES) --suite unit
 
 test-focus: inputs-check
 	@test -n "$(TEST_FILES)" || { printf 'Set comma-separated TEST_FILES basenames; TEST_PATTERN is optional.\n' >&2; exit 1; }
-	$(RUN) --suite unit --files "$$TEST_FILES" $(if $(strip $(TEST_PATTERN)),--pattern "$$TEST_PATTERN",)
+	$(RUN_FILES) --suite unit --files "$$TEST_FILES" $(if $(strip $(TEST_PATTERN)),--pattern "$$TEST_PATTERN",)
 
 test-feature: inputs-check
-	"$(NODE)" scripts/test/feature.mjs --inputs "$(INPUTS)" --features "$(FEATURES)" --refresh
+	"$(NODE)" scripts/test/feature.mjs --inputs "$(INPUTS)" --features "$(FEATURES)" --refresh $(FILE_JOBS)
 
 test-product: inputs-check
-	$(RUN) --suite product
+	$(RUN_FILES) --suite product
 
 test-rust: inputs-check
 	$(RUN) --suite rust
@@ -127,16 +135,16 @@ test-rust-harness: inputs-check
 	"$(NODE)" scripts/test/native-harness.mjs --inputs "$(INPUTS)"
 
 test-native: inputs-check
-	$(RUN) --suite native
+	$(RUN_FILES) --suite native
 
 test-syntax: inputs-check
-	$(RUN) --suite syntax-terminal
+	$(RUN_FILES) --suite syntax-terminal
 
 test-terminal: inputs-check
-	$(RUN) --suite terminal
+	$(RUN_FILES) --suite terminal
 
 test-release: inputs-check
-	$(RUN) --suite native-release
+	$(RUN_FILES) --suite native-release
 
 test-installed: inputs-check
 	$(RUN) --suite consumer
@@ -148,7 +156,7 @@ pack-check:
 	"$(NPM)" pack --dry-run --ignore-scripts
 
 native-smoke: inputs-check
-	$(RUN) --suite native --files occipital-native.test.ts --pattern '^actual owned helper preserves compact UTF8 highlighting and incremental work counters$$'
+	$(RUN_FILES) --suite native --files occipital-native.test.ts --pattern '^actual owned helper preserves compact UTF8 highlighting and incremental work counters$$'
 
 # The GNU wrapper supplies pinned tool paths and owned stores inside network=none.
 # Staging and prepared actual-helper smoke follow this gate in CI; no published input.

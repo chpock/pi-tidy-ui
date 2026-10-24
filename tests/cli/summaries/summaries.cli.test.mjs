@@ -111,6 +111,7 @@ test('real CLI: complete multiline summaries, adaptive separation, continuation 
       await live.resize(100, 120); const resizedBack = await live.capture('wide-again');
       assert.deepEqual(resizedBack.tools.map((tool) => tool.lines), wide.tools.map((tool) => tool.lines), 'wide→narrow→wide recalculates content and gaps without drift');
       stock.send('\x0f'); await stock.settle(); const nativeExpanded = await stock.capture('expanded');
+      const nativeTraffic = events(stock); await stock.close();
       live.send('\x0f'); await live.settle(); const expanded = await live.capture('expanded');
       assert.ok(expanded.tools.every((tool) => tool.expanded));
       simpleBashCards(expanded, 'MULTILINE_NATIVE_BASH');
@@ -127,7 +128,7 @@ test('real CLI: complete multiline summaries, adaptive separation, continuation 
       const reloaded = await live.capture('reloaded'); multilineLayout(reloaded);
       assert.deepEqual(persisted(reloaded), persisted(wide));
       const activity = events(live);
-      assert.deepEqual(activity, events(stock), 'UI transitions do not re-execute or rewrite model context');
+      assert.deepEqual(activity, nativeTraffic, 'UI transitions do not re-execute or rewrite model context');
       const session = reloaded.session; await live.close();
       const replay = await start('multiline-replay', { tidyUi: true, flags, session, workspace: stock.work });
       const resumed = await replay.capture('replayed'); multilineLayout(resumed);
@@ -135,8 +136,11 @@ test('real CLI: complete multiline summaries, adaptive separation, continuation 
       assert.deepEqual(persisted(resumed), persisted(wide));
       const nativeReplay = await start('multiline-native-replay', { session, workspace: stock.work });
       const native = await nativeReplay.capture('replayed');
+      await nativeReplay.close();
       await replay.appearance(false); const replayOff = await replay.capture('disabled');
       assert.deepEqual(replayOff.tools.map((tool) => tool.lines), native.tools.map((tool) => tool.lines), 'same-session off restores native rendering exactly');
+      await replay.close();
+      assert.equal(replay.closed, true, 'completed multiline replay is reaped before independent regular mode');
       const regular = await start('multiline-regular', { tidyUi: true, flags, mode: 'regular' });
       await regular.run('multiline'); const regularWide = await regular.capture('wide'); multilineLayout(regularWide);
       await regular.resize(24, 120); const regularNarrow = await regular.capture('narrow');
@@ -220,6 +224,7 @@ test('real CLI: comma wrap points preserve array members and index lists in live
       await live.resize(110, 80); const back = await live.capture('wide-again');
       assert.deepEqual(toolLines(back), toolLines(wide));
       stock.send('\x0f'); await stock.settle(); const nativeExpanded = await stock.capture('expanded');
+      const nativeTraffic = activity(stock); await stock.close();
       live.send('\x0f'); await live.settle(); const expanded = await live.capture('expanded');
       assert.ok(expanded.tools.every((tool) => tool.expanded));
       assert.deepEqual(toolLines(expanded), toolLines(nativeExpanded));
@@ -229,7 +234,7 @@ test('real CLI: comma wrap points preserve array members and index lists in live
       const starts = live.events().filter((event) => event.type === 'start').length;
       await live.command('/reload'); await live.event('start', starts + 1);
       const reloaded = await live.capture('reloaded'); await check(reloaded, 110, true);
-      assert.deepEqual(activity(live), activity(stock), 'UI-only changes do not execute tools or modify model context');
+      assert.deepEqual(activity(live), nativeTraffic, 'UI-only changes do not execute tools or modify model context');
       assert.deepEqual(readFileSync(wide.session), sessionBytes, 'UI-only changes do not rewrite the session');
       await live.close();
       const replay = await start('comma-wrap-replay', { tidyUi: true, session: wide.session, workspace: stock.work });
@@ -308,6 +313,7 @@ test('real CLI: long-word summaries fill preceding space and prefer bounded punc
         await live.command('/tidy-ui-theme light'); const light = await live.capture('light'); checkedRows += await check(light, 105);
         await live.command('/tidy-ui-theme dark');
         stock.send('\x0f'); await stock.settle(); const nativeExpanded = await stock.capture('expanded');
+        const nativeTraffic = activity(stock); await stock.close();
         live.send('\x0f'); await live.settle(); const expanded = await live.capture('expanded');
         assert.ok(expanded.tools.every(tool => tool.expanded)); assert.deepEqual(toolLines(expanded), toolLines(nativeExpanded));
         live.send('\x0f'); await live.settle(); await check(await live.capture('collapsed'), 105);
@@ -316,7 +322,7 @@ test('real CLI: long-word summaries fill preceding space and prefer bounded punc
         const starts = live.events().filter(event => event.type === 'start').length;
         await live.command('/reload'); await live.event('start', starts + 1);
         const reloaded = await live.capture('reloaded'); await check(reloaded, 105);
-        assert.deepEqual(activity(live), activity(stock)); assert.deepEqual(readFileSync(wide.session), sessionBytes);
+        assert.deepEqual(activity(live), nativeTraffic); assert.deepEqual(readFileSync(wide.session), sessionBytes);
         await live.close();
         const replay = await start('replay', { tidyUi: true, session: wide.session, workspace: stock.work });
         const resumed = await replay.capture('resumed'); await check(resumed, 105);
@@ -371,9 +377,10 @@ test('real CLI: failed summaries are wholly error-colored, hide bodies and final
       const stock = await start('compact-errors-stock');
       await stock.run('compact-errors'); const native = await stock.capture('native');
       stock.send('\x0f'); await stock.settle(); const nativeExpanded = await stock.capture('expanded');
+      const nativeTraffic = activity(stock); await stock.close();
       const live = await start('compact-errors-tidyUi', { tidyUi: true, workspace: stock.work });
       await live.run('compact-errors'); const wide = await live.capture('wide'); await check(wide, 80);
-      assert.deepEqual(activity(live), activity(stock), '4 calls/results and 5 model contexts remain exact');
+      assert.deepEqual(activity(live), nativeTraffic, '4 calls/results and 5 model contexts remain exact');
       assert.deepEqual(persisted(wide), persisted(native), 'all raw error messages and supplied arguments remain native session data');
       assert.match(byName(wide, 'tidy_ui_summary')[0].content[0].text, /ERROR_BODY_SENTINEL.*\nERROR_STACK_SENTINEL/u);
       const sessionBytes = readFileSync(wide.session);
@@ -402,7 +409,7 @@ test('real CLI: failed summaries are wholly error-colored, hide bodies and final
       const starts = live.events().filter((event) => event.type === 'start').length;
       await live.command('/reload'); await live.event('start', starts + 1);
       const reloaded = await live.capture('reloaded'); await check(reloaded, 80);
-      assert.deepEqual(activity(live), activity(stock), 'presentation/lifecycle changes do not modify execution or model context');
+      assert.deepEqual(activity(live), nativeTraffic, 'presentation/lifecycle changes do not modify execution or model context');
       assert.deepEqual(readFileSync(wide.session), sessionBytes);
       await live.close();
       const replay = await start('compact-errors-replay', { tidyUi: true, session: wide.session, workspace: stock.work });

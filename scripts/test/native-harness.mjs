@@ -12,6 +12,7 @@ import {admitNativeTests,ownedNativePath} from './native-bootstrap.mjs';
 import {readNativeInputs} from './prepare-native.mjs';
 import {isolatedCommand} from './run.mjs';
 import {appendProgress,progressPaths,readProgressEvents,resetProgressFile,summarizeTestEvents,writeReport} from './progress.mjs';
+import {readWorkerResources,resourceIntervalMs,scopeResources,summarizeWorkerResources} from './resources.mjs';
 
 export function checkCargoAncestry(inputs) {
   assert.ok(inputs.rust,'Cargo ancestry requires an explicitly prepared pinned Cargo/rustc');
@@ -109,13 +110,13 @@ export async function executeNative({ inputs: path, 'network-isolated': networkI
   const inputPath = resolve(path ?? join(import.meta.dirname, '../../.test-artifacts/native-build/inputs.json'));
   const reportPath = output ? resolve(output) : join(dirname(inputPath), 'runs', 'native-build-' + randomUUID(), 'report.json');
   const artifacts = progressPaths(reportPath), started = performance.now(), startedAt = new Date().toISOString();
-  const report = { schema: 1, suite: 'native-build', selected: [], cases: [], counts: {}, steps: [],
+  const report = { schema: 1, suite: 'native-build', jobs: 1, selected: [], cases: [], counts: {}, steps: [],
     network: networkIsolated ? 'os-isolated' : 'prepared-fixtures', status: 'setup-failed', phase: 'setup', reason: 'native-inputs',
     startedAt, elapsedMs: null, currentStep: null, progress: { events: basename(artifacts.events), tests: basename(artifacts.tests) } };
   resetProgressFile(artifacts.events); resetProgressFile(artifacts.tests);
   appendProgress(artifacts.events, { event: 'run-started', suite: 'native-build', at: startedAt });
   writeReport(reportPath, report);
-  let directory;
+  let directory, resourceDirectory;
   try {
     // Admission uses the native descriptor only. It must happen before any test import.
     const inputs = readNativeInputs(inputPath);
@@ -127,12 +128,17 @@ export async function executeNative({ inputs: path, 'network-isolated': networkI
     report.selected = discoverNativeTests(inputs.project);
     const expected = files.filter(name => /^tests\/native-build\/.*\.test\.(?:mjs|ts)$/.test(name)).map(name => name.slice('tests/'.length));
     assert.deepEqual(report.selected, expected, 'Native discovered tests must belong to the admitted source inventory');
+    resourceDirectory = mkdtempSync(join(dirname(reportPath), basename(reportPath, '.json') + '.workers-'));
+    report.resources = { schema: 1, observations: basename(resourceDirectory), aggregateBefore: scopeResources(),
+      collection: { mode: 'worker-lifetime-high-water', checkpointIntervalMs: resourceIntervalMs, descendantsIncluded: false }, files: [] };
     const windowsTaskkill = process.platform === 'win32' ? toolPath('taskkill', inputs) : undefined;
     const bootstrapStatus = join(directory, 'bootstrap-status.json');
     const env = childEnv(directory, { TIDY_NATIVE_TEST_INPUTS: inputPath, TIDY_NATIVE_TEST_CONTEXT_READY: '1',
-      TIDY_NATIVE_TEST_ENVIRONMENT: directory, TIDY_NATIVE_TEST_BOOTSTRAP_STATUS: bootstrapStatus }, inputs);
+      TIDY_NATIVE_TEST_ENVIRONMENT: directory, TIDY_NATIVE_TEST_BOOTSTRAP_STATUS: bootstrapStatus,
+      TIDY_TEST_RESOURCE_DIR: resourceDirectory, TIDY_TEST_RESOURCE_FILES: JSON.stringify(report.selected) }, inputs);
     let command = inputs.node.path;
-    let args = ['--import', pathToFileURL(join(inputs.project, 'scripts/test/native-bootstrap.mjs')).href,
+    let args = ['--import', pathToFileURL(join(inputs.project, 'scripts/test/resource-worker.mjs')).href,
+      '--import', pathToFileURL(join(inputs.project, 'scripts/test/native-bootstrap.mjs')).href,
       '--test', '--test-reporter=tap', '--test-reporter-destination=stdout',
       `--test-reporter=${pathToFileURL(join(inputs.project, 'scripts/test/progress-reporter.mjs')).href}`,
       `--test-reporter-destination=${artifacts.tests}`, '--test-concurrency=1', ...report.selected.map(file => join(inputs.project, 'tests', file))];
@@ -183,6 +189,16 @@ export async function executeNative({ inputs: path, 'network-isolated': networkI
       report.cases = summary.cases; report.activeTests = summary.activeTests;
       report.slowestTests = summary.slowestTests; report.slowestSuites = summary.slowestSuites;
       report.truncatedProgressLines = progress.truncatedLines;
+      if (resourceDirectory) {
+        report.resources.aggregateAfter = scopeResources();
+        try {
+          const records = readWorkerResources(resourceDirectory, report.selected);
+          Object.assign(report.resources, { files: records, ...summarizeWorkerResources(records) });
+        } catch {
+          report.status = 'harness-failed'; report.reason = 'resource-report';
+          report.resources.unavailableReason = 'malformed-or-unreadable-worker-observations';
+        }
+      }
       report.elapsedMs = performance.now() - started; report.finishedAt = new Date().toISOString(); report.phase = 'complete'; report.currentStep = null;
       appendProgress(artifacts.events, { event: 'run-complete', status: report.status, elapsedMs: report.elapsedMs, at: report.finishedAt });
       writeReport(reportPath, report);

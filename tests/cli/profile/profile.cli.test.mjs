@@ -67,10 +67,13 @@ test('real CLI: installed-profile registrations and real local task renderers',
       assert.equal(control.tools.length, 2);
       assert.ok(control.screen.some((line) => line.includes('created successfully')));
       assert.match(byName(control, 'TaskList')[0].content[0].text, /#1 \[pending\] TERMINAL_LOCAL_TASK/);
+      const stockActivity = activity(stock);
+      await stock.close();
+      assert.equal(stock.closed, true, 'completed stock profile is reaped before the patched profile starts');
       const live = await start('installed-tidyUi', { tidyUi: true, workspace: stock.work });
       await live.run('integration'); const compacted = await live.capture('collapsed'); assertHealthy(live, compacted);
       assert.deepEqual(compacted.extensionIssues, control.extensionIssues, 'existing package warnings are identical with and without pi-tidy-ui');
-      assert.deepEqual(activity(live), activity(stock), 'same installed-profile calls/results and model-facing contents are unchanged');
+      assert.deepEqual(activity(live), stockActivity, 'same installed-profile calls/results and model-facing contents are unchanged');
       assert.deepEqual(persisted(compacted), persisted(control));
       assert.equal(compacted.tools.length, 2);
       for (const name of ['TaskCreate', 'TaskList']) {
@@ -93,9 +96,12 @@ test('real CLI: installed-profile registrations and real local task renderers',
       assert.deepEqual(disabled.tools.map((tool) => tool.content), compacted.tools.map((tool) => tool.content), 'within-profile off preserves actual results');
       assert.deepEqual(disabled.tools.map((tool) => tool.lines), control.tools.map((tool) => tool.lines));
       assert.ok(disabled.screen.some((line) => line.includes('created successfully')));
+      await live.close();
+      assert.equal(live.closed, true, 'completed patched profile is reaped before replay');
       const replay = await start('installed-stock-replay', { session: compacted.session, workspace: stock.work });
       const nativeReplay = await replay.capture('replay'); assertHealthy(replay, nativeReplay);
       assert.deepEqual(disabled.tools.map((tool) => tool.lines), nativeReplay.tools.map((tool) => tool.lines), 'same-session installed stock renderer is restored exactly');
+      await replay.close();
       writeFileSync(join(artifacts, 'integration-coverage.json'), JSON.stringify({
         executed: ['TaskCreate', 'TaskList'], registrations: compacted.registrations,
         stockExtensionDiagnostics: control.extensionIssues, patchedExtensionDiagnostics: compacted.extensionIssues,

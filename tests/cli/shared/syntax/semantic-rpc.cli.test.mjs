@@ -8,7 +8,8 @@ import { join, resolve } from 'node:path';
 import { createHash } from 'node:crypto';
 import { setTimeout as pause } from 'node:timers/promises';
 import { SubcClient, SubcError } from '@cortexkit/subc-client';
-import { childEnv, readInputs, validateNative } from '../../../../scripts/test/context.mjs';
+import { readInputs, validateNative } from '../../../../scripts/test/context.mjs';
+import { sharedHostEnv } from '../../../fixtures/shared-host-environment.mjs';
 import { runCleanupSteps } from '../../../fixtures/terminal-cleanup.mjs';
 
 const inputs = readInputs();
@@ -35,7 +36,7 @@ async function launch() {
   assert.ok(inputs.sharedHost?.path, 'explicit prepared host required');
   assert.equal(hash(await readFile(inputs.sharedHost.path)), inputs.sharedHost.sha256);
   const root = await mkdtemp(join(tmpdir(), 'semantic-rpc-'));
-  const env = childEnv(root, { SUBC_CGROUP_PLACEMENT: 'disabled' });
+  const env = sharedHostEnv(root);
   const themes = join(root, 'themes'), config = join(root, 'occipital.json');
   await mkdir(themes, { mode: 0o700 });
   const themeFile = join(themes, 'semantic.tmTheme'); await writeFile(themeFile, theme('#223344', true));
@@ -43,7 +44,7 @@ async function launch() {
   const quote = value => `'${value.replaceAll("'", "'\\''")}'`, wrapper = join(root, 'module');
   await writeFile(wrapper, `#!/bin/sh\nexec ${quote(resolve(binary))} --config ${quote(config)} "$@"\n`); await chmod(wrapper, 0o700);
   const directory = join(env.XDG_CONFIG_HOME, 'cortexkit'); await mkdir(directory, { mode: 0o700 });
-  await writeFile(join(directory, 'subc.jsonc'), JSON.stringify({ version: 1, modules: { occipital: { program: wrapper, reserved: true } } }), { mode: 0o600 });
+  await writeFile(join(directory, 'subc.jsonc'), JSON.stringify({ version: 1, port: 0, modules: { occipital: { program: wrapper, reserved: true } } }), { mode: 0o600 });
   const host = spawn(inputs.sharedHost.path, [], { cwd: root, env, stdio: ['ignore', 'pipe', 'pipe'] });
   let failure, stderr = ''; host.on('error', error => { failure = error; }); host.stdout.resume(); host.stderr.on('data', bytes => { stderr = (stderr + bytes).slice(-8192); });
   const exit = new Promise(resolve => host.once('close', resolve));

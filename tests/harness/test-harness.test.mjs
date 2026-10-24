@@ -194,15 +194,18 @@ function repository(t, files) {
   return { root, checkout, env, tools: parent.tools };
 }
 
-function admissionFixture(t, probe = 'import {test} from "node:test"; test("intentional assertion", () => { throw new Error("intentional product assertion"); });', runtimeName = 'runtime') {
+function admissionFixture(t, probe = 'import {test} from "node:test"; test("intentional assertion", () => { throw new Error("intentional product assertion"); });', runtimeName = 'runtime', additionalFiles = {}) {
   const value = repository(t, {
     '.gitignore': 'node_modules/\n', 'package.json': '{"type":"module"}', 'package-lock.json': '{}',
     'scripts/test/bootstrap.mjs': readFileSync(new URL('../../scripts/test/bootstrap.mjs', import.meta.url)),
     'scripts/test/context.mjs': readFileSync(new URL('../../scripts/test/context.mjs', import.meta.url)),
     'scripts/test/progress-reporter.mjs': readFileSync(new URL('../../scripts/test/progress-reporter.mjs', import.meta.url)),
     'scripts/test/progress.mjs': readFileSync(new URL('../../scripts/test/progress.mjs', import.meta.url)),
+    'scripts/test/resources.mjs': readFileSync(new URL('../../scripts/test/resources.mjs', import.meta.url)),
+    'scripts/test/resource-worker.mjs': readFileSync(new URL('../../scripts/test/resource-worker.mjs', import.meta.url)),
     ...Object.fromEntries(testEntries.map(({ file }) => ['tests/' + file, ''])),
     'tests/harness/test-fixtures.test.ts': probe,
+    ...additionalFiles,
   });
   const { root, checkout, tools, env } = value, original = readInputs();
   const source = sourceIdentity(checkout, tools, env), runRoot = join(root, runtimeName), tree = join(runRoot, 'project');
@@ -224,7 +227,7 @@ function admissionFixture(t, probe = 'import {test} from "node:test"; test("inte
     pi: { root: tree, cli: join(coding, 'cli.js'), version, packages, lock, lockSha256: createHash('sha256').update(readFileSync(lock)).digest('hex') } };
   const path = join(root, 'inputs.json'), output = join(root, 'report.json');
   const save = () => writeFileSync(path, JSON.stringify(inputs)); save();
-  return { ...value, inputs, path, output, coding, save, execute: () => execute({ inputs: path, output, suite: 'harness', files: 'harness/test-fixtures.test.ts' }) };
+  return { ...value, inputs, path, output, coding, save, execute: (options = {}) => execute({ inputs: path, output, suite: 'harness', files: 'harness/test-fixtures.test.ts', ...options }) };
 }
 
 test('repeated materialization removes tracked deletions and removed untracked native build inputs', t => {
@@ -293,36 +296,299 @@ test('intentional product assertion remains distinct from setup and harness fail
   assert.equal(existsSync(report.runDirectory), false);
 });
 
-test('SIGTERM stops a running test and its descendant before removing owned case roots', { skip: process.platform === 'win32' }, async t => {
-  const f = admissionFixture(t, `
-    import {test} from 'node:test'; import {spawn} from 'node:child_process'; import {writeFileSync} from 'node:fs';
-    test('active descendant', async () => {
-      const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], {stdio:'ignore'});
-      writeFileSync('descendant.pid', String(child.pid));
-      await new Promise(() => {});
+function controlEvents(f) {
+  const path = join(f.control, 'events.jsonl');
+  return existsSync(path) ? readFileSync(path, 'utf8').trim().split('\n').filter(Boolean).map(JSON.parse) : [];
+}
+
+async function controlWait(predicate, message) {
+  const deadline = Date.now() + 10000;
+  while (!predicate()) {
+    assert.ok(Date.now() < deadline, message);
+    await delay(10);
+  }
+}
+
+function processAlive(pid) {
+  assert.ok(Number.isSafeInteger(pid) && pid > 1, 'only recorded positive process IDs may be probed');
+  try { process.kill(pid, 0); return true; }
+  catch (error) { if (error.code === 'ESRCH') return false; throw error; }
+}
+
+function runnerControlFixture(t, modes) {
+  const files = Object.entries(modes).map(([id, mode]) => [`tests/harness/control-${id}.test.mjs`, `
+    import {test} from 'node:test';
+    import {appendFileSync, existsSync} from 'node:fs';
+    import {spawn} from 'node:child_process';
+    import {once} from 'node:events';
+    import {setTimeout as delay} from 'node:timers/promises';
+    const id = ${JSON.stringify(id)}, mode = ${JSON.stringify(mode)};
+    const record = event => appendFileSync('runner-control/events.jsonl', JSON.stringify({id, pid:process.pid, ...event}) + '\\n');
+    const wait = async name => {
+      const deadline = Date.now() + 15000;
+      while (!existsSync('runner-control/' + name)) {
+        if (Date.now() >= deadline) throw new Error('fixture gate expired: ' + name);
+        await delay(10);
+      }
+    };
+    if (mode === 'startup') {
+      record({event:'startup'});
+      await wait('release-' + id);
+      process.kill(process.pid, 'SIGKILL');
+    }
+    test('controlled ' + id, async t => {
+      const allocation = Buffer.alloc(mode === 'memory' ? 32 * 1024 * 1024 : 1024, 0x61);
+      let checksum = 0;
+      for (let index = 0; index < 100000; index++) checksum = (checksum + index) | 0;
+      let child, closed, stopping = false;
+      if (mode === 'descendant') {
+        child = spawn(process.execPath, ['-e', 'setTimeout(() => process.exit(0), 20000); console.log("READY");'], {stdio:['ignore','pipe','ignore']});
+        closed = once(child, 'close');
+        await once(child.stdout, 'data');
+        const stop = async () => {
+          if (stopping) return;
+          stopping = true;
+          child.kill('SIGTERM');
+          await closed;
+          record({event:'reaped', descendant:child.pid});
+          process.exit(0);
+        };
+        process.on('SIGINT', stop); process.on('SIGTERM', stop);
+        t.after(async () => { child.kill('SIGTERM'); await closed; });
+      }
+      record({event:'start', descendant:child?.pid, root:process.env.TIDY_TEST_ROOT, bytes:allocation.length, checksum});
+      try {
+        await wait('release-' + id);
+        if (mode === 'reject') throw new Error('controlled rejection ' + id);
+        if (mode === 'cancel') {
+          const controller = new AbortController();
+          await t.test('cancelled child', {signal:controller.signal}, () => {
+            return new Promise(() => setImmediate(() => {
+              record({event:'cancellation-requested'});
+              controller.abort(new Error('controlled cancellation'));
+            }));
+          });
+        }
+      } finally {
+        const usage = process.resourceUsage();
+        record({event:'finish', bytes:allocation[0], memoryPeakBytes:usage.maxRSS * 1024, userCpuMs:usage.userCPUTime / 1000, systemCpuMs:usage.systemCPUTime / 1000});
+      }
     });
-  `);
+  `]);
+  const f = admissionFixture(t, '', 'runtime', Object.fromEntries(files));
+  f.control = join(f.inputs.pi.root, 'runner-control'); mkdirSync(f.control);
+  f.selected = files.map(([file]) => file.slice('tests/'.length)).sort();
+  f.release = id => writeFileSync(join(f.control, 'release-' + id), 'release');
+  f.releaseAll = () => { for (const id of Object.keys(modes)) f.release(id); };
+  return f;
+}
+
+function assertWorkerReports(f, report, { complete = true } = {}) {
+  assert.deepEqual(report.selected, f.selected);
+  assert.equal(report.resources.collection.descendantsIncluded, false);
+  assert.equal(report.resources.collection.mode, 'worker-lifetime-high-water');
+  assert.deepEqual(report.resources.files.map(item => item.file), f.selected);
+  for (const item of report.resources.files) {
+    assert.equal(item.scope, 'worker-process-lifetime-excluding-descendants');
+    const id = /control-(.+)\.test\.mjs$/.exec(item.file)[1];
+    const start = controlEvents(f).find(event => event.id === id && ['start', 'startup', 'bootstrap'].includes(event.event));
+    if (!complete && item.unavailableReason === 'worker-not-observed') {
+      assert.equal(start, undefined, 'a started worker must retain its initial resource observation');
+      assert.equal(item.complete, false);
+      for (const key of ['memoryPeakBytes', 'userCpuMs', 'systemCpuMs']) assert.equal(item[key], null);
+      continue;
+    }
+    assert.equal(typeof item.complete, 'boolean');
+    if (!item.complete) {
+      assert.equal(item.finishedAt, null);
+      assert.equal(item.unavailableReason, 'worker-exit-record-unavailable');
+    }
+    assert.equal(item.pid, start.pid, 'resource PID must belong to this file, not its peer or descendant');
+    assert.equal(item.memoryMethod, 'node-resourceUsage-maxRSS');
+    assert.equal(item.cpuMethod, 'node-resourceUsage-microseconds-converted-to-ms');
+    assert.ok(Number.isFinite(item.elapsedMs) && item.elapsedMs > 0);
+    for (const key of ['userCpuMs', 'systemCpuMs']) assert.ok(Number.isFinite(item[key]) && item[key] >= 0);
+    assert.ok(item.userCpuMs + item.systemCpuMs > 0);
+    if (item.memoryPeakBytes === null) assert.ok(item.unavailable.includes('memoryPeakBytes'));
+    else assert.ok(item.memoryPeakBytes > 0);
+    const finish = controlEvents(f).find(event => event.id === id && event.event === 'finish');
+    if (finish) for (const key of ['memoryPeakBytes', 'userCpuMs', 'systemCpuMs']) {
+      if (item[key] !== null) assert.ok(item[key] >= finish[key], key + ' must include the same worker body, using the declared units');
+    }
+    if (complete) {
+      assert.equal(item.complete, true);
+      assert.ok(Number.isFinite(Date.parse(item.finishedAt)));
+    }
+    const raw = JSON.parse(readFileSync(join(dirname(f.output), report.resources.observations, item.pid + '.json')));
+    for (const key of ['file', 'pid', 'complete', 'elapsedMs', 'memoryPeakBytes', 'userCpuMs', 'systemCpuMs']) assert.equal(item[key], raw[key], 'final report must preserve attributed worker observation: ' + key);
+    assert.deepEqual(item.rerun, [f.inputs.node.path, 'scripts/test/run.mjs', '--inputs', f.path, '--suite', 'groups', '--files', item.file, '--jobs', '1']);
+  }
+  for (const aggregate of [report.resources.aggregateBefore, report.resources.aggregateAfter]) {
+    assert.equal(typeof aggregate.available, 'boolean');
+    if (aggregate.available) assert.equal(aggregate.scope, 'containment-scope-lifetime-not-exclusive-to-this-run-or-stage');
+    else assert.equal(typeof aggregate.reason, 'string');
+  }
+  assert.equal(existsSync(report.runDirectory), false);
+  assert.ok(Number.isFinite(report.elapsedMs) && report.elapsedMs > 0);
+  assert.ok(report.steps.every(step => Number.isFinite(step.elapsedMs) && step.elapsedMs > 0));
+}
+
+function assertWorkerBound(f, expectedMaximum) {
+  const active = new Set(), starts = [], finishes = [];
+  let maximum = 0;
+  for (const event of controlEvents(f)) {
+    if (event.event === 'start') {
+      assert.equal(active.has(event.id), false); active.add(event.id); starts.push(event.id);
+      maximum = Math.max(maximum, active.size);
+    } else if (event.event === 'finish') {
+      assert.equal(active.delete(event.id), true); finishes.push(event.id);
+    }
+  }
+  assert.equal(maximum, expectedMaximum, 'barrier-held workers prove actual overlap and the configured bound');
+  assert.equal(active.size, 0);
+  assert.deepEqual(starts.sort(), ['a', 'b', 'c', 'd']);
+  assert.deepEqual(finishes.sort(), starts);
+}
+
+function startControlCLI(f, jobs) {
   const runner = spawn(f.inputs.node.path, [fileURLToPath(new URL('../../scripts/test/run.mjs', import.meta.url)),
-    '--inputs', f.path, '--suite', 'harness', '--files', 'harness/test-fixtures.test.ts', '--output', f.output],
-    { env: childEnv(join(f.root, 'outer'), {}, f.inputs), stdio: 'ignore' });
-  let pid;
-  const alive = value => { try { process.kill(value, 0); return true; } catch (error) { if (error.code === 'ESRCH') return false; throw error; } };
-  const waitFor = async predicate => {
-    const deadline = Date.now() + 5000;
-    while (!predicate()) { if (Date.now() >= deadline) return false; await delay(10); }
-    return true;
-  };
+    '--inputs', f.path, '--suite', 'harness', '--files', f.selected.join(','), '--jobs', String(jobs), '--output', f.output],
+    { env:childEnv(join(f.root, 'outer'), {}, f.inputs), stdio:'ignore' });
+  const closed = new Promise((resolve, reject) => { runner.once('error', reject); runner.once('close', (code, signal) => resolve({code, signal})); });
+  return { runner, closed };
+}
+
+for (const entry of ['execute', 'CLI']) for (const jobs of [1, 2]) test(`actual ${entry} jobs=${jobs} bounds held file workers and attributes final resources`, { timeout: 45000 }, async t => {
+  const f = runnerControlFixture(t, { a:'memory', b:'plain', c:'plain', d:'plain' });
+  const cli = entry === 'CLI' ? startControlCLI(f, jobs) : null;
+  const running = cli ? cli.closed.then(result => {
+    assert.equal(result.code, 0); assert.equal(result.signal, null);
+    return JSON.parse(readFileSync(f.output));
+  }) : f.execute({ files:f.selected.join(','), jobs:String(jobs) });
   try {
-    assert.equal(await waitFor(() => existsSync(join(f.inputs.pi.root, 'descendant.pid'))), true, 'real test descendant must start');
-    pid = Number(readFileSync(join(f.inputs.pi.root, 'descendant.pid'), 'utf8'));
-    runner.kill('SIGTERM');
-    assert.equal(await waitFor(() => runner.exitCode !== null || runner.signalCode !== null), true, 'runner must finish interruption');
-    assert.equal(await waitFor(() => !alive(pid)), true, 'no descendant may survive runner interruption');
+    const released = new Set();
+    if (jobs === 2) {
+      await controlWait(() => controlEvents(f).filter(event => event.event === 'start').length >= 2, 'two workers must reach the held barrier');
+      assert.equal(controlEvents(f).filter(event => event.event === 'start').length, 2);
+      for (const id of ['b', 'c', 'd']) {
+        await controlWait(() => controlEvents(f).some(event => event.id === id && event.event === 'start'), 'a held peer must not prevent the next free-slot worker');
+        f.release(id);
+        await controlWait(() => controlEvents(f).some(event => event.id === id && event.event === 'finish'), 'the peer must finish while the controlled slow case remains held');
+      }
+      assert.equal(controlEvents(f).some(event => event.id === 'a' && event.event === 'finish'), false);
+      f.release('a');
+    } else while (released.size < f.selected.length) {
+      await controlWait(() => controlEvents(f).some(event => event.event === 'start' && !released.has(event.id)), 'the next serial worker must reach its held barrier');
+      const batch = controlEvents(f).filter(event => event.event === 'start' && !released.has(event.id));
+      assert.equal(batch.length, 1);
+      for (const event of batch) { released.add(event.id); f.release(event.id); }
+    }
+    const report = await running;
+    assert.equal(report.status, 'passed'); assert.equal(report.jobs, jobs); assert.equal(report.counts.pass, 4);
+    assertWorkerBound(f, jobs); assertWorkerReports(f, report);
+    assert.equal(report.resources.intervalsComplete, true);
+    assert.equal(report.resources.maxObservedFileWorkers, jobs);
+    for (const id of ['a', 'b', 'c', 'd']) {
+      const item = report.cases.find(item => item.name === 'controlled ' + id);
+      assert.equal(item.file, 'tests/harness/control-' + id + '.test.mjs'); assert.equal(item.status, 'passed');
+      assert.ok(Number.isFinite(item.durationMs) && item.durationMs >= 0);
+      assert.ok(report.slowestTests.some(item => item.name === 'controlled ' + id));
+      assert.ok(report.resources.slowestFiles.some(item => item.file === 'harness/control-' + id + '.test.mjs'));
+    }
+    if (jobs === 2) {
+      assert.equal(report.slowestTests[0].name, 'controlled a', 'barrier-held slow case must be identifiable without a duration threshold');
+      assert.equal(report.resources.slowestFiles[0].file, 'harness/control-a.test.mjs');
+    }
+    const memory = report.resources.files.find(item => item.file === 'harness/control-a.test.mjs');
+    assert.equal(controlEvents(f).find(event => event.id === 'a' && event.event === 'start').bytes, 32 * 1024 * 1024);
+    if (memory.memoryPeakBytes !== null) assert.ok(report.resources.largestWorkers.some(item => item.file === memory.file && item.pid === memory.pid));
+  } finally { f.releaseAll(); await running; }
+});
+
+for (const mode of ['reject', 'cancel', 'startup', 'bootstrap']) test(`actual parallel execute preserves peer evidence on ${mode} failure`, { skip:mode === 'startup' && process.platform === 'win32', timeout:45000 }, async t => {
+  const f = runnerControlFixture(t, { a:'plain', b:mode });
+  if (mode === 'bootstrap') writeFileSync(join(f.coding, 'index.js'), `
+    import {Editor} from '@earendil-works/pi-tui';
+    import {appendFileSync, existsSync} from 'node:fs';
+    import {setTimeout as delay} from 'node:timers/promises';
+    export class CustomEditor extends Editor {}
+    if (process.argv[1]?.endsWith('control-b.test.mjs')) {
+      appendFileSync('runner-control/events.jsonl', JSON.stringify({event:'bootstrap', id:'b', pid:process.pid}) + '\\n');
+      const deadline = Date.now() + 15000;
+      while (!existsSync('runner-control/release-b')) {
+        if (Date.now() >= deadline) throw new Error('bootstrap fixture gate expired');
+        await delay(10);
+      }
+      throw new Error('controlled SDK bootstrap import failure');
+    }
+  `);
+  const running = f.execute({ files:f.selected.join(','), jobs:'2' });
+  try {
+    await controlWait(() => new Set(controlEvents(f).map(event => event.id)).size === 2, 'peer and failing worker must both start');
+    f.releaseAll();
+    const report = await running;
+    assert.equal(report.status, mode === 'bootstrap' ? 'harness-failed' : 'failed');
+    assert.equal(report.reason, mode === 'bootstrap' ? 'bootstrap-sdk-import' : 'test-failure');
+    assert.equal(report.jobs, 2);
+    assert.ok(report.cases.some(item => item.name === 'controlled a' && item.status === 'passed'));
+    assert.ok(report.counts.fail > 0 || report.counts.cancelled > 0);
+    assert.ok(report.cases.some(item => item.file === 'tests/harness/control-b.test.mjs' && item.status === 'failed'), 'failure evidence must remain attributed to the failing file');
+    assert.equal(report.cases.some(item => item.name === 'controlled a' && item.status === 'failed'), false);
+    if (mode === 'reject') assert.ok(report.cases.some(item => item.name === 'controlled b' && item.status === 'failed'));
+    if (mode === 'cancel') {
+      assert.ok(report.counts.cancelled > 0);
+      assert.equal(controlEvents(f).filter(event => event.id === 'b' && event.event === 'cancellation-requested').length, 1);
+    }
+    assertWorkerReports(f, report, { complete:mode !== 'startup' });
+    const failed = report.resources.files.find(item => item.file === 'harness/control-b.test.mjs');
+    if (mode === 'startup') {
+      assert.equal(failed.complete, false);
+      assert.equal(failed.unavailableReason, 'worker-exit-record-unavailable');
+      assert.equal(report.resources.intervalsComplete, false);
+    }
+    if (mode === 'bootstrap') assert.equal(controlEvents(f).some(event => event.id === 'b' && event.event === 'start'), false, 'bootstrap failure must precede the test body');
+  } finally { f.releaseAll(); await running; }
+});
+
+for (const signal of ['SIGINT', 'SIGTERM']) test(`actual run CLI ${signal} reaps two active workers' descendants and reports cleanup`, { skip:process.platform === 'win32', timeout:45000 }, async t => {
+  const f = runnerControlFixture(t, { a:'descendant', b:'descendant', c:'plain' });
+  const { runner, closed } = startControlCLI(f, 2);
+  const lifetime = setTimeout(() => runner.kill('SIGTERM'), 25000);
+  try {
+    await controlWait(() => controlEvents(f).filter(event => event.event === 'start' && event.descendant).length === 2, 'two real worker/descendant pairs must reach the live barrier');
+    const started = controlEvents(f).filter(event => event.event === 'start');
+    assert.equal(started.length, 2);
+    for (const event of started) {
+      assert.equal(processAlive(event.pid), true); assert.equal(processAlive(event.descendant), true);
+      assert.equal(existsSync(event.root), true);
+    }
+    runner.kill(signal);
+    await controlWait(() => runner.exitCode !== null || runner.signalCode !== null, 'runner must finish external interruption');
+    const result = await closed;
+    assert.equal(result.code, 1); assert.equal(result.signal, null);
+    await controlWait(() => started.every(event => !processAlive(event.pid) && !processAlive(event.descendant)), 'every active worker and actual descendant must be reaped');
     const report = JSON.parse(readFileSync(f.output));
-    assert.equal(report.status, 'failed'); assert.equal(report.reason, 'interrupted'); assert.equal(existsSync(report.runDirectory), false);
+    assert.equal(report.status, 'failed'); assert.equal(report.reason, 'interrupted'); assert.equal(report.interruption, signal);
+    assert.equal(report.jobs, 2); assertWorkerReports(f, report, {complete:false});
+    for (const event of started) {
+      const resource = report.resources.files.find(item => item.pid === event.pid);
+      assert.ok(resource, 'active worker resources remain attributed after interruption');
+      assert.equal(report.resources.files.some(item => item.pid === event.descendant), false, 'worker RSS must not be presented as descendant RSS');
+    }
+    for (const event of started) assert.equal(existsSync(event.root), false);
+    const unstarted = report.resources.files.find(item => item.file === 'harness/control-c.test.mjs');
+    assert.equal(unstarted.complete, false); assert.equal(unstarted.unavailableReason, 'worker-not-observed');
+    assert.equal(unstarted.memoryPeakBytes, null);
+    const progress = readFileSync(join(f.root, 'report.progress.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
+    assert.equal(progress.at(-1).event, 'run-complete'); assert.equal(progress.at(-1).status, 'failed');
+    assert.ok(readFileSync(join(f.root, 'report.tests.jsonl'), 'utf8').length > 0, 'interrupted worker events remain inspectable');
   } finally {
-    if (pid && alive(pid)) process.kill(pid, 'SIGKILL');
-    if (runner.exitCode === null && runner.signalCode === null) runner.kill('SIGKILL');
+    clearTimeout(lifetime); f.releaseAll();
+    for (const event of controlEvents(f)) for (const pid of [event.descendant, event.pid]) {
+      if (pid && processAlive(pid)) process.kill(pid, 'SIGKILL');
+    }
+    if (runner.exitCode === null && runner.signalCode === null) runner.kill('SIGTERM');
+    await closed;
   }
 });
 

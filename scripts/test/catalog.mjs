@@ -42,7 +42,8 @@ function entryFor(file) {
   ];
   return Object.freeze({ file, category, owner: features[0] ?? category, also: Object.freeze(features.slice(1)), features: Object.freeze(features), layer: rule.layer,
     requirements: Object.freeze([...requirements]), product: Boolean(rule.product), delivery, suites: Object.freeze(suites),
-    ...(parts.includes('posix') ? { platforms: Object.freeze(['linux', 'darwin']) } : {}) });
+    ...(parts.includes('linux') ? { platforms: Object.freeze(['linux']) }
+      : parts.includes('posix') ? { platforms: Object.freeze(['linux', 'darwin']) } : {}) });
 }
 function walk(directory, prefix = '') {
   if (!existsSync(directory)) return [];
@@ -81,9 +82,16 @@ function featureFiles(entries, features, baseline) {
 }
 export function featurePlan(features, { root = defaultRoot, baseline = true, platform = process.platform } = {}) {
   const entries = discoverEntries(root), byFile = new Map(entries.map(entry => [entry.file, entry]));
-  const selected = featureFiles(entries, features, baseline).filter(entry => entry.layer !== 'script' && entry.category !== 'native-build' && (!entry.platforms || entry.platforms.includes(platform)));
+  const excluded = [];
+  const selected = featureFiles(entries, features, baseline).filter(entry => {
+    if (entry.layer === 'script' || entry.category === 'native-build') return false;
+    if (entry.platforms && !entry.platforms.includes(platform)) {
+      excluded.push({ file: entry.file, reason: 'platform', supported: entry.platforms }); return false;
+    }
+    return true;
+  });
   const files = union(selected.map(entry => entry.file));
-  return { features: union(features), node: files.filter(file => byFile.get(file).layer === 'node'), cli: files.filter(file => byFile.get(file).layer === 'cli'), requirements: requirementsFor(files, byFile) };
+  return { features: union(features), node: files.filter(file => byFile.get(file).layer === 'node'), cli: files.filter(file => byFile.get(file).layer === 'cli'), requirements: requirementsFor(files, byFile), excluded };
 }
 export function resolveSelection(root, { suite = 'unit', groups, files, layer, platform = process.platform, shard, pattern, skip } = {}) {
   const entries = discoverEntries(root), byFile = new Map(entries.map(entry => [entry.file, entry]));

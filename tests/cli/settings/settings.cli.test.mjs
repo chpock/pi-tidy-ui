@@ -6,7 +6,7 @@ import { stripVTControlCharacters } from 'node:util';
 import test from 'node:test';
 import { sliceByColumn, visibleWidth } from '@earendil-works/pi-tui';
 import { PiTerminal, plain, byName, toolLines, assertFits, until } from '../../fixtures/terminal-harness.mjs';
-import { closeTerminals } from '../../fixtures/terminal-cleanup.mjs';
+import { closeTerminals, runCleanupSteps } from '../../fixtures/terminal-cleanup.mjs';
 import { referenceCell, allBashCards, traffic, sgrAt } from '../../fixtures/main-cli-support.mjs';
 
 test('Output padding settings update summaries and all transcript cards live with native and replay controls', { timeout: 180000 }, async () => {
@@ -118,6 +118,8 @@ test('Output padding settings update summaries and all transcript cards live wit
       for (const terminal of [native, replay]) for (const type of ['call', 'result', 'model_context', 'provider_error'])
         assert.equal(terminal.events().filter(event => event.type === type).length, 0);
       assert.deepEqual(readFileSync(first.session), bytes);
+      await runCleanupSteps(() => native.close(), () => replay.close());
+      assert.equal(native.closed && replay.closed, true, 'completed mode peers are reaped before the next mode');
     }
   } finally { await closeTerminals(terminals.reverse()); }
 });
@@ -287,6 +289,7 @@ for (const mode of ['regular', 'fullscreen']) test(`real CLI: settings popup nav
       const nativeReplay = new PiTerminal(`settings-native-replay-${mode}`, { mode, session: original.session, workspace: live.work }); terminals.push(nativeReplay);
       await nativeReplay.ready(); const nativeHistory = await nativeReplay.capture('settings-native-history');
       assert.equal(dataEvents(nativeReplay).length, 0, 'native history reference executes no tools or model requests');
+      await nativeReplay.close();
       const starts = live.events().filter(event => event.type === 'start').length;
       await live.command('/reload'); await live.event('start', starts + 1);
       const reloaded = await live.capture('settings-restored-off');
@@ -298,6 +301,8 @@ for (const mode of ['regular', 'fullscreen']) test(`real CLI: settings popup nav
       assert.ok(support.some(row => /Use Occipital highlighting\s+Off$/u.test(row)));
       assert.ok((await live.tidyPage(['Status & troubleshooting', 'Diagnostic logs'])).some(row => row === 'Recording: Off'));
       assert.deepEqual(readFileSync(original.session), sessionBytes); assert.deepEqual(dataEvents(live), originalEvents);
+      await live.close();
+      assert.equal(nativeReplay.closed && live.closed, true, 'completed references are reaped before fresh-process replay');
       const replay = new PiTerminal(`settings-replay-${mode}`, { tidyUi: true, mode, session: original.session, workspace: live.work, tidyUiSettings: saved,
         extraEnv: { TIDY_UI_TEST_MENU_GEOMETRY: '1' } }); terminals.push(replay);
       await replay.ready(); const restored = await replay.capture('settings-fresh-process');

@@ -109,6 +109,7 @@ test('main editor user-card styling preserves real draft input, cursor, menus an
       assert.equal(final.tools.length, 2); assert.equal(final.tools[0].name, 'bash');
       const user = final.branch.filter(entry => entry.type === 'message' && entry.message.role === 'user').at(-1);
       assert.deepEqual(user.message.content, [{ type: 'text', text: 'run user-card' }]);
+      await terminal.close();
     }
   } finally { await closeTerminals(terminals); }
 });
@@ -271,11 +272,15 @@ test('belowEditor metadata and separate native status preserve physical half-blo
       writeFileSync(join(terminal.output, 'height-controls.json'), JSON.stringify(heightControls, null, 2));
       await terminal.resize(100); dump = await observe(terminal, 'height-restored'); await check(dump);
       assert.deepEqual(traffic(terminal, 2), traffic(native, 2), 'height controls add no calls/results/model contexts');
+      // Keep session/workspace files for replay; only the completed processes end here.
+      await runCleanupSteps(() => native.close(), () => terminal.close());
+      assert.equal(native.closed && terminal.closed, true, 'completed bridges exit before saved replay starts');
       const replay = new PiTerminal(`editor-status-replay-${mode}`, { mode, session: terminal.session, workspace: terminal.work, agentSettings: { editorPaddingX: 1 },
         extensions: [join(fixtures, 'editor-driver.ts')] });
       terminals.push(replay); await replay.ready(); const replayDump = await observe(replay, 'replay'); await check(replayDump);
       const replayTraffic = await replay.capture('replay-traffic');
       assert.deepEqual(replayTraffic.branch, complete.branch, 'presentation adds no persisted/model content');
+      await replay.close();
     }
   } finally { await closeTerminals(terminals); }
 });
@@ -396,6 +401,7 @@ test('editor padding settings move the complete input panel live in both termina
       }
       assert.equal(terminal.events().filter(event => event.type === 'start').length, 1, 'all geometry changes happen without reload');
       assert.equal(terminal.events().filter(event => event.type === 'tool_call' || event.type === 'context').length, 0, 'settings/drafts never become model traffic');
+      await terminal.close();
     }
   } finally { await closeTerminals(terminals); }
 });
@@ -509,6 +515,7 @@ test('aboveEditor widget separator stays immediately before input and follows ze
       await terminal.clearDraft();
       assert.deepEqual(readFileSync(live.session), bytes, 'widgets and renderer/reload controls never rewrite stored traffic');
       assert.deepEqual(traffic(terminal, 2), traffic(native, 2));
+      await runCleanupSteps(() => native.close(), () => terminal.close());
       const replay = new PiTerminal(`editor-widget-gap-replay-${mode}`, { mode, session: live.session, workspace: terminal.work,
         agentSettings: { editorPaddingX: 1 }, extensions: [join(fixtures, 'editor-driver.ts')] });
       terminals.push(replay); await replay.ready();
@@ -520,6 +527,7 @@ test('aboveEditor widget separator stays immediately before input and follows ze
       assert.equal(replay.events().filter(event => ['call', 'result', 'model_context'].includes(event.type)).length, 0, 'replay executes no new tools or model requests');
       writeFileSync(join(terminal.output, 'widget-gap-controls.json'), JSON.stringify({ mode, toolCalls: 2, toolResults: 2, providerContexts: 3,
         absent: baseline.rows.length, withUpperWidget: baseline.rows.length + 1, sameDraftEditor: identity, replayExecuted: 0 }, null, 2));
+      await replay.close();
     }
   } finally { await closeTerminals(terminals); }
 });
@@ -716,10 +724,12 @@ test('foreign editor extension retains native input, widgets, mouse and replay i
       activeTools(liveReload, nativeReload);
       assert.deepEqual(traffic(live, 2), traffic(native, 2), 'reload adds no model/tool traffic');
       assert.deepEqual(readFileSync(liveTraffic.session), bytes, 'UI reload does not change saved session bytes');
+      await runCleanupSteps(() => live.close(), () => native.close());
       const replayNative = new PiTerminal(`foreign-native-replay-${prefix}`, { mode, agentSettings: { editorPaddingX: 2 }, extraEnv: { TIDY_UI_TEST_FOREIGN_EMBED: embedded ? '1' : '0' }, session: liveTraffic.session, workspace: native.work, extensions: [ownerExtension] });
+      terminals.push(replayNative);
       const replayLive = new PiTerminal(`foreign-live-replay-${prefix}`, { mode, agentSettings: { editorPaddingX: 2 }, extraEnv: { TIDY_UI_TEST_FOREIGN_EMBED: embedded ? '1' : '0' }, session: liveTraffic.session, workspace: native.work,
         extensions: order === 'foreign-first' ? [ownerExtension, extension] : [extension, ownerExtension] });
-      terminals.push(replayNative, replayLive); await replayNative.ready(); await replayLive.ready();
+      terminals.push(replayLive); await replayNative.ready(); await replayLive.ready();
       const unstyled = await observe(replayNative, 'replay'), resumed = await observe(replayLive, 'replay'); same(unstyled, resumed);
       assert.equal(resumed.footerOwner, 'FooterComponent', 'saved replay keeps footer native with the foreign editor');
       const nativeReplay = await replayNative.capture('foreign-native-replay-traffic'), liveReplay = await replayLive.capture('foreign-live-replay-traffic');

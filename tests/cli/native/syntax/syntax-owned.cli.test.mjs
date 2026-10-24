@@ -210,11 +210,13 @@ for (const mode of ['fullscreen', 'regular']) test(`occipital CLI: ${mode} input
 
 for (const mode of ['fullscreen', 'regular']) test(`occipital CLI: ${mode} gradual argument abort preserves prefix, stock traffic and warm work`,
   { timeout: 60000 }, async () => {
-    const live = new PiTerminal(`syntax-abort-${mode}`, { mode, extensions: [fixture], extraEnv: descriptor });
-    const stock = new PiTerminal(`syntax-abort-stock-${mode}`, { mode, tidyUi: false, extraEnv: descriptor });
-    const fallback = new PiTerminal(`syntax-abort-fallback-${mode}`, { mode, tidyUi: true, extraEnv: descriptor });
+    const terminals = [], create = (name, options) => {
+      const terminal = new PiTerminal(name, { mode, extraEnv: descriptor, ...options });
+      terminals.push(terminal); return terminal;
+    };
     try {
-      for (const terminal of [live, stock, fallback]) {
+      const live = create(`syntax-abort-${mode}`, { extensions: [fixture] });
+      const abort = async terminal => {
         await terminal.ready(); if (terminal === live) await syntaxReady(terminal);
         terminal.send('run syntax-cards\r');
         await terminal.event('syntax_prefix');
@@ -230,9 +232,19 @@ for (const mode of ['fullscreen', 'regular']) test(`occipital CLI: ${mode} gradu
         }
         terminal.send('\x1b'); await terminal.event('agent_end'); await terminal.settle();
         assert.equal(terminal.events().filter(e => e.type === 'provider_error').length, 1);
-      }
-      const aborted = await live.capture('aborted'), baseline = await stock.capture('aborted'), neutral = await fallback.capture('aborted');
-      assert.deepEqual(traffic(live), traffic(stock)); assert.deepEqual(traffic(fallback), traffic(stock));
+      };
+      await abort(live);
+      const stock = create(`syntax-abort-stock-${mode}`, { tidyUi: false });
+      await abort(stock);
+      const baseline = await stock.capture('aborted'), stockTraffic = traffic(stock);
+      await stock.close();
+      assert.equal(stock.closed, true, 'completed stock abort is reaped before the fallback control starts');
+      const fallback = create(`syntax-abort-fallback-${mode}`, { tidyUi: true });
+      await abort(fallback);
+      const neutral = await fallback.capture('aborted'), fallbackTraffic = traffic(fallback);
+      await fallback.close();
+      const aborted = await live.capture('aborted');
+      assert.deepEqual(traffic(live), stockTraffic); assert.deepEqual(fallbackTraffic, stockTraffic);
       assert.equal(traffic(live).filter(e => e.type === 'call').length, 0);
       assert.equal(traffic(live).filter(e => e.type === 'result').length, 0);
       assert.equal(traffic(live).filter(e => e.type === 'model_context').length, 1);
@@ -265,7 +277,7 @@ for (const mode of ['fullscreen', 'regular']) test(`occipital CLI: ${mode} gradu
       await finish(live);
       console.log(JSON.stringify({ abortCli: live.output, node: after.node, mode, bytes: 25, calls: 0, results: 0, contexts: 1,
         committedLineCalls: after.source.committedLineCalls, warmDelta: 0 }));
-    } finally { await closeTerminals([live, stock, fallback]); }
+    } finally { await closeTerminals(terminals); }
   });
 
 for (const mode of ['fullscreen', 'regular']) test(`occipital CLI: ${mode} historical Bash tail stays colored across held append, new grapheme and abort`,
@@ -322,6 +334,7 @@ for (const mode of ['fullscreen', 'regular']) test(`occipital CLI: ${mode} histo
       assert.equal(cells(aborted).prefix.fg, fg(aborted, 'syntaxString'));
       assert.ok(body(aborted)[0].lines.some(row => row.includes('[error: incomplete tool call]')));
       assert.deepEqual(traffic(live), traffic(stock)); assert.deepEqual(persisted(aborted), persisted(baseline));
+      await stock.close();
       const raw = dump => dump.tools.map(({ name, args, content, details, structuredContent, isError, argsComplete, executionStarted, partial }) =>
         ({ name, args, content, details, structuredContent, isError, argsComplete, executionStarted, partial }));
       assert.deepEqual(raw(aborted), raw(baseline)); assert.equal(traffic(live).filter(e => e.type === 'call' || e.type === 'result').length, 0);
@@ -412,9 +425,10 @@ for (const mode of ['fullscreen', 'regular']) test(`occipital CLI: ${mode} onlin
       for (let round = 0; round < 2; round++) for (const current of [terminal, stock]) {
         current.send('run user-card\r'); await current.event('agent_end', round + 1); await current.settle();
       }
-      const pending = await terminal.capture('online-wait-recovery-pending'), stockAfter = await stock.capture('online-wait-stock-after');
-      assert.deepEqual(raw(pending), raw(stockAfter)); assert.deepEqual(traffic(terminal), traffic(stock));
+      const pending = await terminal.capture('online-wait-recovery-pending'), stockAfter = await stock.capture('online-wait-stock-after'), stockTraffic = traffic(stock);
+      assert.deepEqual(raw(pending), raw(stockAfter)); assert.deepEqual(traffic(terminal), stockTraffic);
       assert.deepEqual(persisted(pending), persisted(stockAfter));
+      await stock.close();
       const demanded = pending.tools.filter(tool => tool.name === 'bash').slice(2); assert.equal(demanded.length, 2);
       const paused = await stats(terminal, 'online-wait-recovery-demanded');
       const { localWork: demandedLocal, ...pausedNative } = work(paused), { localWork: originalLocal, ...originalNative } = work(started);
@@ -434,7 +448,7 @@ for (const mode of ['fullscreen', 'regular']) test(`occipital CLI: ${mode} onlin
       const persistedBytes = readFileSync(session);
       for (const width of [60, 100, 100]) { await terminal.resize(width); await terminal.capture(`online-wait-warm-${width}-${Date.now()}`); }
       assert.deepEqual(work(await stats(terminal, 'online-wait-warm-final')), work(recovered));
-      assert.deepEqual(readFileSync(session), persistedBytes); assert.deepEqual(raw(restored), raw(pending)); assert.deepEqual(traffic(terminal), traffic(stock));
+      assert.deepEqual(readFileSync(session), persistedBytes); assert.deepEqual(raw(restored), raw(pending)); assert.deepEqual(traffic(terminal), stockTraffic);
       await finish(terminal);
       console.log(JSON.stringify({ onlineWait: terminal.output, stock: stock.output, node: recovered.node, mode, restoredSourceRequests: started.counts.sourceRequests,
         recoverySourceRequests: recovered.counts.sourceRequests - started.counts.sourceRequests, recoveryStyleRequests: recovered.counts.styleRequests - started.counts.styleRequests, redundantPreparedBytes: 0, warmNativeDelta: 0, piBridges: 0 }));
@@ -474,6 +488,7 @@ for (const mode of ['fullscreen', 'regular']) test(`occipital CLI: ${mode} resto
       await terminal.resize(100, 160); await stock.resize(100, 160);
       const early = await terminal.capture('backlog-order-pending'), baseline = await stock.capture('backlog-order-stock');
       assert.equal(early.tools.length, commands.length); assert.deepEqual(raw(early), raw(baseline));
+      await stock.close();
       writeFileSync(join(terminal.output, 'syntax-acquire-go'), 'go');
       await terminal.event('syntax_order_reply_held', 2);
       assert.deepEqual(terminal.events().filter(e => e.type === 'syntax_order_dispatch').map(e => e.payload.sources[0].text), commands.slice(-2).reverse());

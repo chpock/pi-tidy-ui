@@ -136,11 +136,14 @@ test('real CLI: user cards share Bash geometry with customMessageLabel and prese
       const reloaded = await live.capture('pointer-user-reloaded'); await check(reloaded, native);
       assert.deepEqual(reloaded.users, wide.users); assert.deepEqual(observed(live), activity);
       assert.deepEqual(readFileSync(wide.session), sessionBytes, 'all UI probes preserve exact session bytes');
+      await stock.close(); await live.close();
       for (const mode of ['fullscreen', 'regular']) {
         const replay = await start(`user-replay-${mode}`, { tidyUi: true, session: wide.session, workspace: live.work, mode });
         const resumed = await replay.capture(`pointer-user-replayed-${mode}`); await check(resumed, native);
         assert.deepEqual(resumed.users, reloaded.users); assert.deepEqual(resumed.branch, reloaded.branch);
         for (const type of ['call', 'result', 'model_context']) assert.equal(replay.events().filter((event) => event.type === type).length, 0);
+        await replay.close();
+        assert.equal(replay.closed, true, 'completed user replay is reaped before the next mode');
       }
       writeFileSync(join(artifacts, 'user-card-coverage.json'), JSON.stringify({ calls: 2, results: 2, modelContexts: 3,
         actualNativeMarkdown: true, transformsPreserved: true, userSourceBytesUnchanged: true,

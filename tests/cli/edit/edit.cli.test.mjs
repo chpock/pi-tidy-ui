@@ -31,9 +31,10 @@ test('real CLI: OpenCode-style edit syntax, numbered unified/split format, error
     const terminals = [];
     const start = async (name, options = {}) => {
       const terminal = new PiTerminal(name, { extraEnv: { TIDY_UI_TEST_EDIT_CARDS: '1' }, ...options });
+      terminals.push(terminal);
       mkdirSync(join(terminal.agent, 'themes'), { recursive: true });
       writeFileSync(join(terminal.agent, 'themes/gruvbox-dark-hard.json'), readFileSync(new URL('../../fixtures/gruvbox-dark-hard.json', import.meta.url)));
-      terminals.push(terminal); await terminal.ready(); await terminal.resize(100, 160); return terminal;
+      await terminal.ready(); await terminal.resize(100, 160); return terminal;
     };
     const run = async (terminal) => {
       const turn = terminal.events().filter((event) => event.type === 'agent_end').length;
@@ -219,7 +220,10 @@ test('real CLI: OpenCode-style edit syntax, numbered unified/split format, error
       assert.doesNotMatch(lines(running.tools[0]).join(''), /┃|← Edited/);
       const wide = await live.capture('unified'); await check(wide, false, 'dark-fullscreen');
       assert.equal(wide.nativeRenderCalls.edit ?? 0, 0, 'five cards and two failed summaries never build discarded native rows');
-      assert.deepEqual(traffic(live), traffic(stock), '7 actual calls/results and 8 provider contexts are identical');
+      const nativeTraffic = traffic(stock);
+      assert.deepEqual(traffic(live), nativeTraffic, '7 actual calls/results and 8 provider contexts are identical');
+      // Captures and traffic are detached; only the shared workspace must survive for replay.
+      await stock.close();
       assert.deepEqual(persisted(wide), persisted(native), 'the renderer never changes persisted diff/proposal/error bytes');
       const sessionBytes = readFileSync(wide.session);
       await live.resize(140, 160); const split = await live.capture('split'); await check(split, true);
@@ -263,7 +267,7 @@ test('real CLI: OpenCode-style edit syntax, numbered unified/split format, error
        assert.equal(warmAgainStats.builds, warmStats.builds, 'warm CLI frames do not rebuild/re-highlight edit layouts');
        for (const frame of [warm, warmAgain]) assert.equal(frame.nativeRenderCalls.edit ?? 0, reloaded.nativeRenderCalls.edit ?? 0,
          'both warm observations add exactly zero native renders to the post-reload baseline');
-      assert.deepEqual(traffic(live), traffic(stock)); assert.deepEqual(readFileSync(wide.session), sessionBytes);
+      assert.deepEqual(traffic(live), nativeTraffic); assert.deepEqual(readFileSync(wide.session), sessionBytes);
       await live.close();
       for (const mode of ['fullscreen', 'regular']) {
         const replay = await start(`edit-replay-${mode}`, { tidyUi: true, session: wide.session, workspace: stock.work, mode });
@@ -288,13 +292,17 @@ test('real CLI: OpenCode-style edit syntax, numbered unified/split format, error
           await check(changed, false, `${theme === 'light' ? 'light' : 'gruvbox'}-${mode}`);
           assert.deepEqual(persisted(changed), persisted(wide), 'palette changes leave source/session data intact');
         }
+        await replay.close();
+        assert.equal(replay.closed, true, 'the completed replay bridge is reaped before the next independent mode');
       }
       // Native live calls have an async preview; native replay does not recompute it.
       // Compare the explicit override with unpatched Pi replaying the identical session.
       const stockReplay = await start('edit-stock-replay', { session: wide.session, workspace: stock.work });
       const nativeReplayed = await stockReplay.capture('native-replay');
+      await stockReplay.close();
       const optedOut = await start('edit-native-override', { tidyUi: true, session: wide.session, workspace: stock.work, flags: ['--tidy-ui-card', 'edit'] });
       assert.deepEqual(toolLines(await optedOut.capture('native-override')), toolLines(nativeReplayed));
+      await optedOut.close();
       const compactEdit = await start('edit-compact-override', { tidyUi: true, session: wide.session, workspace: stock.work, flags: ['--tidy-ui-compact', 'edit'] });
       for (const tool of (await compactEdit.capture('compact-override')).tools) compactContent(tool);
       writeFileSync(join(artifacts, 'edit-coverage.json'), JSON.stringify({ calls: 7, results: 7, modelContexts: 8,
@@ -372,7 +380,9 @@ test('real CLI: minified edit keeps linear ANSI size, warm work, exact traffic a
       const native = await stock.capture('native-minified');
       const live = await start('minified-live', { tidyUi: true, workspace: stock.work }); await live.run('edit-performance');
       const wide = await live.capture('pointer-minified-wide'); check(wide);
-      assert.deepEqual(traffic(live), traffic(stock)); assert.deepEqual(persisted(wide), persisted(native));
+      const nativeTraffic = traffic(stock);
+      assert.deepEqual(traffic(live), nativeTraffic); assert.deepEqual(persisted(wide), persisted(native));
+      await stock.close();
       const bytes = readFileSync(wide.session);
       const warm = await observe(live, 'warm'); check(warm.dump);
       const again = await observe(live, 'again'); check(again.dump);
@@ -406,13 +416,15 @@ test('real CLI: minified edit keeps linear ANSI size, warm work, exact traffic a
       assert.equal(suffix.text, '2');
       assert.equal(suffix.fg, neutral.fg, 'text beyond the 8 KiB Pi prefix remains visible in neutral foreground');
       assert.equal(suffix.fgMode, neutral.fgMode);
-      assert.deepEqual(traffic(live), traffic(stock)); assert.deepEqual(readFileSync(wide.session), bytes);
+      assert.deepEqual(traffic(live), nativeTraffic); assert.deepEqual(readFileSync(wide.session), bytes);
       await live.close();
       for (const mode of ['fullscreen', 'regular']) {
         const replay = await start(`minified-replay-${mode}`, { tidyUi: true, session: wide.session, workspace: stock.work, mode });
         const resumed = await replay.capture('pointer-minified-replayed'); check(resumed);
         assert.deepEqual(toolLines(resumed), toolLines(wide)); assert.deepEqual(persisted(resumed), persisted(wide));
         assert.equal(replay.events().filter((event) => ['call', 'result', 'model_context'].includes(event.type)).length, 0);
+        await replay.close();
+        assert.equal(replay.closed, true, 'the completed replay bridge is reaped before the next independent mode');
       }
       writeFileSync(join(artifacts, 'edit-performance-coverage.json'), JSON.stringify({ calls: 2, results: 2, modelContexts: 3,
         componentOwnedRetention: true, warmBuildsBefore: warm.stats.builds, warmBuildsAfter: again.stats.builds,

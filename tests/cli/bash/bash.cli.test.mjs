@@ -97,6 +97,9 @@ test('real CLI: built-in bash full commands, preview, resize, theme and same-ses
       assert.deepEqual(persisted(native), persisted(wide), 'same-session native control receives identical actual tool results and command arguments');
       assert.deepEqual(native.tools.map((tool) => tool.content), wide.tools.map((tool) => tool.content));
       assert.ok(native.tools[0].lines.some((row) => row.includes('$ cat')));
+      stock.send('\x0f'); await stock.settle(); const nativeExpanded = await stock.capture('expanded');
+      // Later native comparisons use detached captures; keep the shared workspace until final cleanup.
+      await stock.close();
       await live.appearance(false); const off = await live.capture('off');
       assert.ok(off.tools.every((tool) => tool.lines.some((row) => row.includes('Took'))), 'live native timing is displayed but not persisted by Pi');
       assert.deepEqual(off.tools.map((tool) => tool.content), native.tools.map((tool) => tool.content));
@@ -119,16 +122,18 @@ test('real CLI: built-in bash full commands, preview, resize, theme and same-ses
       await replay.appearance(false); const replayOff = await replay.capture('off');
       assert.deepEqual(replayOff.tools.map((tool) => tool.lines), native.tools.map((tool) => tool.lines), 'same-session native replay restored exactly without unpersisted live duration');
       await replay.appearance(true); allBashCards(await replay.capture('on'));
+      await replay.close();
       const card = await start('bash-real-card', { tidyUi: true, session, workspace: live.work, flags: ['--tidy-ui-card', 'bash'] });
       const nativeCard = await card.capture('card');
       assert.deepEqual(nativeCard.tools.map((tool) => tool.lines), native.tools.map((tool) => tool.lines));
+      await card.close();
       const compactOverride = await start('bash-real-compact', { tidyUi: true, session, workspace: live.work,
         flags: ['--tidy-ui-card', 'bash', '--tidy-ui-compact', 'bash'] });
       const compacted = await compactOverride.capture('compact');
       for (const tool of compacted.tools) compactContent(tool);
       compactOverride.send('\x0f'); await compactOverride.settle(); const overrideExpanded = await compactOverride.capture('expanded');
-      stock.send('\x0f'); await stock.settle(); const nativeExpanded = await stock.capture('expanded');
       assert.deepEqual(overrideExpanded.tools.map((tool) => tool.lines), nativeExpanded.tools.map((tool) => tool.lines), 'explicit compact opt-out uses native expanded cards');
+      await compactOverride.close();
       const regular = await start('bash-real-regular', { tidyUi: true, mode: 'regular', session, workspace: live.work });
       allBashCards(await regular.capture('collapsed'));
       await regular.resize(24, 150); allBashCards(await regular.capture('narrow'));
@@ -225,6 +230,7 @@ test('real CLI: isolated opt-in representative bash metadata, comments and outpu
       live.send('\x0f'); await live.settle();
       const native = await start('bash-shapes-native', { tidyUi: false, session: wide.session, workspace: live.work });
       const control = await native.capture('native'); assert.deepEqual(persisted(control), persisted(wide));
+      await native.close();
       await live.appearance(false); const off = await live.capture('off');
       assert.deepEqual(off.tools.map((tool) => tool.content), control.tools.map((tool) => tool.content));
       await live.appearance(true); allBashCards(await live.capture('on'));
@@ -232,6 +238,7 @@ test('real CLI: isolated opt-in representative bash metadata, comments and outpu
       assert.deepEqual(offAgain.tools.map((tool) => tool.lines), off.tools.map((tool) => tool.lines), 'same live native fixture rendering restored exactly');
       await live.appearance(true);
       const observed = traffic(live, 14);
+      await live.close();
       const replay = await start('bash-shapes-replay', { session: wide.session, workspace: live.work });
       const resumed = await replay.capture('replay'); allBashCards(resumed);
       assert.deepEqual(resumed.tools.map((tool) => tool.lines), wide.tools.map((tool) => tool.lines), 'details footer is stable live/replay; transient structuredContent intentionally ignored');
@@ -239,6 +246,7 @@ test('real CLI: isolated opt-in representative bash metadata, comments and outpu
       await replay.appearance(false); const replayOff = await replay.capture('off');
       assert.deepEqual(replayOff.tools.map((tool) => tool.lines), control.tools.map((tool) => tool.lines), 'same-session fixture native replay restored exactly');
       await replay.appearance(true);
+      await replay.close();
       // Independent invocation for partial/final replacement, never an installed AFT execution.
       const stream = await start('bash-shape-stream'); stream.send('run bash-shape-stream\r'); await stream.event('shape_gate');
       let partial = await stream.capture('partial-one'); allBashCards(partial, { partial: true });
@@ -410,19 +418,22 @@ test('real CLI: isolated bash presentation exceptions preserve exact traffic',
       const control = await native.capture('native'); identity(control, wide, sessionBytes);
       await live.appearance(false); const reloadedOff = await live.capture('reloaded-off'); identity(reloadedOff, wide, sessionBytes);
       assert.deepEqual(reloadedOff.tools.map((tool) => tool.lines), control.tools.map((tool) => tool.lines), 'reloaded native output matches stock history byte-for-byte');
+      const nativeEvents = native.events();
+      assert.deepEqual(traffic(live, 20), observed, 'resize/theme/Ctrl+O/off/on/reload never rerun tool or provider');
+      await native.close(); await live.close();
       const replay = await start('bash-shape-exceptions-replay', { session: wide.session, workspace: live.work });
       const resumed = await replay.capture('replay'); allBashCards(resumed); identity(resumed, wide, sessionBytes);
       assert.deepEqual(resumed.tools.map((tool) => tool.lines), wide.tools.map((tool) => tool.lines));
       await replay.appearance(false); const replayOff = await replay.capture('off'); identity(replayOff, wide, sessionBytes);
       assert.deepEqual(replayOff.tools.map((tool) => tool.lines), control.tools.map((tool) => tool.lines), 'disabled same-session replay restores exact native rendering');
-      for (const terminal of [native, replay]) for (const type of ['call', 'result', 'model_context', 'provider_error'])
-        assert.equal(terminal.events().filter((event) => event.type === type).length, 0, `history ${type} count remains zero`);
-      assert.deepEqual(traffic(live, 20), observed, 'resize/theme/Ctrl+O/off/on/reload never rerun tool or provider');
+      const replayEvents = replay.events();
+      for (const events of [nativeEvents, replayEvents]) for (const type of ['call', 'result', 'model_context', 'provider_error'])
+        assert.equal(events.filter((event) => event.type === type).length, 0, `history ${type} count remains zero`);
       assert.equal(readFileSync(wide.session, 'utf8'), sessionBytes);
       writeFileSync(join(artifacts, 'bash-shape-exceptions-coverage.json'), JSON.stringify({ installedAFT: false,
         optIn: 'TIDY_UI_TEST_BASH_SHAPE=1', calls: observed.filter((event) => event.type === 'call').length,
         results: observed.filter((event) => event.type === 'result').length, modelContexts: observed.filter((event) => event.type === 'model_context').length,
-        historyCalls: [native, replay].reduce((sum, terminal) => sum + terminal.events().filter((event) => event.type === 'call').length, 0),
+        historyCalls: [nativeEvents, replayEvents].reduce((sum, events) => sum + events.filter((event) => event.type === 'call').length, 0),
         cases: cases.map(([name]) => name), widths: [100, 24, 100], themes: ['dark', 'light', 'dark'],
         checked: ['exact metadata-only terminal suffix', 'no-gap/mismatch/error-only/string/unknown/success literals retained',
           'one trailing block only', 'unwrapped footer comparison at narrow width', 'preview end blanks removed without backfill',
@@ -488,13 +499,14 @@ test('real CLI: isolated bash presentation exceptions partial-to-final gate',
       assert.equal(updates.length, 1); assert.deepEqual(updates[0].partialResult, original, 'one exact partial snapshot, not concatenated output');
       assert.deepEqual(persisted(final).filter((entry) => entry.role === 'toolResult'), [{ role: 'toolResult', toolName: 'bash', ...original }]);
       const sessionBytes = readFileSync(final.session, 'utf8');
+      assert.deepEqual(traffic(live, 1), observed);
+      await live.close();
       const replay = await start('bash-shape-exception-stream-replay', { session: final.session, workspace: live.work });
       const resumed = await replay.capture('replay'); allBashCards(resumed); rawIdentity(resumed);
       assert.deepEqual(resumed.tools.map((tool) => tool.lines), collapsed.tools.map((tool) => tool.lines));
       assert.deepEqual(resumed.branch, final.branch); assert.deepEqual(persisted(resumed), persisted(final));
       assert.equal(readFileSync(final.session, 'utf8'), sessionBytes, 'history did not rewrite original result');
       for (const type of ['call', 'result', 'model_context', 'provider_error']) assert.equal(replay.events().filter((event) => event.type === type).length, 0);
-      assert.deepEqual(traffic(live, 1), observed);
       writeFileSync(join(artifacts, 'bash-shape-exception-stream-coverage.json'), JSON.stringify({ installedAFT: false,
         optIn: 'TIDY_UI_TEST_BASH_SHAPE=1', calls: observed.filter((event) => event.type === 'call').length,
         results: observed.filter((event) => event.type === 'result').length, modelContexts: observed.filter((event) => event.type === 'model_context').length,
@@ -552,6 +564,7 @@ test('real CLI: actual-screen complete command width regression', { timeout: 120
       for (const type of ['call', 'result', 'model_context', 'provider_error'])
         assert.equal(replay.events().filter((event) => event.type === type).length, 0, `replay ${type} counter stays zero`);
       await replay.close();
+      assert.equal(replay.closed, true, 'the completed replay bridge is reaped before the next independent mode');
     }
     writeFileSync(join(artifacts, 'actual-command-width-coverage.json'), JSON.stringify({
       originalPythonTextOnly: originalPython, executedCommands: commands,
@@ -685,14 +698,18 @@ for (const mode of ['regular', 'fullscreen']) test(`real CLI: isolated bash time
       const control = await native.capture('native'); identity(control, wide, bytes);
       await live.appearance(false); const reloadedOff = await live.capture('reloaded-off'); identity(reloadedOff, wide, bytes);
       assert.deepEqual(reloadedOff.tools.map((value) => value.lines), control.tools.map((value) => value.lines), 'off restores exact native history');
+      const nativeEvents = native.events();
+      assert.deepEqual(traffic(live, cases.length), observed);
+      await native.close(); await live.close();
       const replay = await start('replay', { session: wide.session, workspace: live.work });
       const resumed = await replay.capture('replay'); allBashCards(resumed); identity(resumed, wide, bytes); wideChecks(resumed); await timeoutCells(resumed, 'replay');
       assert.deepEqual(resumed.tools.map((value) => value.lines), wide.tools.map((value) => value.lines));
       await replay.appearance(false); const replayOff = await replay.capture('off'); identity(replayOff, wide, bytes);
       assert.deepEqual(replayOff.tools.map((value) => value.lines), control.tools.map((value) => value.lines));
-      for (const terminal of [native, replay]) for (const type of ['call', 'result', 'model_context', 'provider_error'])
-        assert.equal(terminal.events().filter((event) => event.type === type).length, 0, `history ${type} remains zero`);
-      assert.deepEqual(traffic(live, cases.length), observed);
+      const replayEvents = replay.events();
+      for (const events of [nativeEvents, replayEvents]) for (const type of ['call', 'result', 'model_context', 'provider_error'])
+        assert.equal(events.filter((event) => event.type === type).length, 0, `history ${type} remains zero`);
+      await replay.close();
 
       const stream = await start('stream'); stream.send('run bash-shape-timeout-stream\r'); await stream.event('shape_timeout_gate');
       const raw = row(9).join('\n') + '\n\n[command timed out]\n[exit code: 124]';
@@ -825,12 +842,15 @@ for (const mode of ['regular', 'fullscreen']) test(`real CLI: AFT-shaped reminde
       await live.appearance(false); const off = await live.capture('off'); identity(off);
       assert.deepEqual(off.tools.map(tool => tool.lines), stock.tools.map(tool => tool.lines));
       await live.appearance(true); const on = await live.capture('on'); identity(on); assert.deepEqual(on.tools.map(body), expected(false));
+      const nativeEvents = native.events();
+      assert.deepEqual(traffic(live, 4), observed);
+      await native.close(); await live.close();
       const replay = await start('replay', { session: wide.session, workspace: live.work });
       const restored = await replay.capture('restored'); identity(restored); await physical(restored);
       assert.deepEqual(restored.tools.map(body), expected(false));
-      for (const history of [native, replay]) for (const type of ['call', 'result', 'model_context', 'provider_error'])
-        assert.equal(history.events().filter(event => event.type === type).length, 0);
-      assert.deepEqual(traffic(live, 4), observed);
+      const replayEvents = replay.events();
+      for (const events of [nativeEvents, replayEvents]) for (const type of ['call', 'result', 'model_context', 'provider_error'])
+        assert.equal(events.filter(event => event.type === type).length, 0);
       writeFileSync(join(artifacts, `bash-reminder-${mode}-coverage.json`), JSON.stringify({ installedAFT: false, mode,
         calls: 4, results: 4, contexts: 5, samples, cases: names, replayCalls: 0 }, null, 2));
     } finally { await closeTerminals(terminals.reverse()); }

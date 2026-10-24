@@ -122,6 +122,8 @@ for (const shape of [false, true]) test(`real CLI: write cards ${shape ? 'repres
       darkPanel = nativeControl.backgroundStyles.toolPendingBg;
       stock.send('\x0f'); await stock.settle(); const nativeExpanded = await stock.capture('pointer-write-native-expanded');
       stock.send('\x0f'); await stock.settle();
+      const nativeTraffic = events(stock);
+      if (!shape) await stock.close();
       const live = await start('tidy-ui', { tidyUi: true, workspace: stock.work }); const phases = await run(live);
       for (const phase of [phases.pending, phases.running]) {
         const tool = phase.tools[0], text = lines(tool).join('\n');
@@ -131,7 +133,7 @@ for (const shape of [false, true]) test(`real CLI: write cards ${shape ? 'repres
         assert.ok(phase.screen.some(row => tool.executionStarted ? /^ [⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] write /u.test(row) : /^ ← write /u.test(row)), 'compact lifecycle is physically painted');
       }
       const liveFirst = await captureReady(live, 'pointer-write-wide'); await check(liveFirst);
-      assert.deepEqual(events(live), events(stock)); assert.deepEqual(persisted(liveFirst), persisted(nativeControl));
+      assert.deepEqual(events(live), shape ? events(stock) : nativeTraffic); assert.deepEqual(persisted(liveFirst), persisted(nativeControl));
       if (!shape) {
         assert.equal(readFileSync(join(live.work, 'write-stock.ts'), 'utf8'), 'const overwritten = 20;\n');
         assert.equal(readFileSync(join(live.work, 'write-empty.ts'), 'utf8'), 'const filled = 21;\n');
@@ -166,30 +168,36 @@ for (const shape of [false, true]) test(`real CLI: write cards ${shape ? 'repres
       await live.appearance(true); await check(await captureReady(live, 'pointer-write-on'));
       const starts = live.events().filter(event => event.type === 'start').length;
       await live.command('/reload'); await live.event('start', starts + 1); const reloaded = await captureReady(live, 'pointer-write-reloaded'); await check(reloaded);
-      assert.deepEqual(events(live), events(stock)); assert.deepEqual(readFileSync(liveFirst.session), bytes);
+      assert.deepEqual(events(live), shape ? events(stock) : nativeTraffic); assert.deepEqual(readFileSync(liveFirst.session), bytes);
       await live.close();
+      const sameSessionNative = await start('native-replay', { session: liveFirst.session, workspace: stock.work });
+      const nativeReplay = await sameSessionNative.capture('pointer-write-native-replay');
+      sameSessionNative.send('\x0f'); await sameSessionNative.settle();
+      const sameSessionExpanded = await sameSessionNative.capture('pointer-write-native-replay-expanded');
+      await sameSessionNative.close();
+      assert.equal(sameSessionNative.closed, true, 'native replay is reaped before independent write variants');
       const replay = await start('replay', { tidyUi: true, session: liveFirst.session, workspace: stock.work });
       const resumed = await captureReady(replay, 'pointer-write-replayed'); await check(resumed);
       assert.deepEqual(toolLines(resumed), toolLines(reloaded)); assert.deepEqual(persisted(resumed), persisted(liveFirst));
       assert.equal(replay.events().filter(event => ['call', 'result', 'model_context'].includes(event.type)).length, 0);
-      const sameSessionNative = await start('native-replay', { session: liveFirst.session, workspace: stock.work });
-      const nativeReplay = await sameSessionNative.capture('pointer-write-native-replay');
       await replay.appearance(false); assert.deepEqual(toolLines(await replay.capture('pointer-write-replay-off')), toolLines(nativeReplay));
+      await replay.close();
       const explicit = await start('native-override', { tidyUi: true, flags: ['--tidy-ui-card', 'write'], session: liveFirst.session, workspace: stock.work });
       const explicitNative = await explicit.capture('pointer-write-explicit-native');
       assert.deepEqual(toolLines({ tools: byName(explicitNative, 'write') }), toolLines({ tools: byName(nativeReplay, 'write') }), 'write-only native override preserves every write row');
       if (shape) compactContent(byName(explicitNative, 'read')[0]);
+      await explicit.close();
       const compactReplay = await start('compact', { tidyUi: true, flags: ['--tidy-ui-card', 'write', '--tidy-ui-compact', 'write'], session: liveFirst.session, workspace: stock.work });
       const forced = await compactReplay.capture('pointer-write-forced-compact');
       for (const tool of byName(forced, 'write')) {
         if (tool.args.fixtureCase === 'hidden') assert.deepEqual(tool.lines, []);
         else { compactContent(tool); assert.equal(summaryText(tool), summaryExpected(`write ${tool.args.path}`)); }
       }
+      await compactReplay.close();
       const regular = await start('regular-replay', { tidyUi: true, mode: 'regular', session: liveFirst.session, workspace: stock.work });
       const regularDump = await captureReady(regular, 'pointer-write-regular');
+      if (shape) await stock.close();
       assert.deepEqual(toolLines(regularDump), toolLines(reloaded));
-      sameSessionNative.send('\x0f'); await sameSessionNative.settle();
-      const sameSessionExpanded = await sameSessionNative.capture('pointer-write-native-replay-expanded');
       regular.send('\x0f'); await regular.settle();
       assert.deepEqual(toolLines(await regular.capture('pointer-write-regular-expanded')), toolLines(sameSessionExpanded));
       assert.deepEqual(readFileSync(liveFirst.session), bytes);

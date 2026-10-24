@@ -60,6 +60,8 @@ for (const mode of ['fullscreen', 'regular']) test(`occipital C21: ${mode} live 
       const bytes = readFileSync(baseline.session), originalTraffic = traffic(live), piVector = commandVector(live, baseline, 'pi');
       assert.deepEqual(originalTraffic, traffic(stock)); assert.deepEqual(persisted(baseline), persisted(reference)); assert.deepEqual(raw(baseline), raw(reference));
       assert.deepEqual(assistants(baseline), assistants(reference)); assert.equal(assistants(baseline)[0].stopReason, 'aborted');
+      await stock.close();
+      assert.equal(stock.closed, true, 'completed stock abort is reaped before native theme work');
       assert.equal(originalTraffic.filter(e => e.type === 'call' || e.type === 'result').length, 0);
       assert.equal(originalTraffic.filter(e => e.type === 'model_context').length, 1);
       assert.equal(baseline.tools[0].args.command, ": 'STABLE_text e");
@@ -138,6 +140,7 @@ for (const mode of ['fullscreen', 'regular']) test(`occipital C21: ${mode} built
       assert.deepEqual(originalTraffic, traffic(stock)); assert.deepEqual(persisted(collapsed), persisted(reference)); assert.deepEqual(raw(collapsed), raw(reference));
       assert.equal(originalTraffic.filter(e => e.type === 'call').length, 1); assert.equal(originalTraffic.filter(e => e.type === 'result').length, 1);
       assert.equal(originalTraffic.filter(e => e.type === 'model_context').length, 2);
+      await stock.close();
       const cold = await stats(live, 'long-cold'); assert.equal(cold.node, inputs.node.version); assert.ok(cold.localWork.sourceSegments > 0);
       for (const width of [60, 100]) { await live.resize(width, 160); longCard(await live.capture(`physical-long-preview-${width}`), false); }
       assert.deepEqual(work(await stats(live, 'long-preview-warm')), work(cold));

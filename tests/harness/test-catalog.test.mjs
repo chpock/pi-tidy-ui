@@ -4,8 +4,10 @@ import test from 'node:test';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { spawnSync } from 'node:child_process';
+import { pathToFileURL } from 'node:url';
 import { featurePlan, resolveSelection, testEntries, validateCatalogue } from '../../scripts/test/catalog.mjs';
-import { readInputs, validateRequirements } from '../../scripts/test/context.mjs';
+import { childEnv, readInputs, validateRequirements } from '../../scripts/test/context.mjs';
 import { execute } from '../../scripts/test/run.mjs';
 function fixture(t) {
   const root = mkdtempSync(join(tmpdir(), 'catalog-'));
@@ -38,7 +40,7 @@ test('unknown empty and consumer selection cannot masquerade as passing feature 
   for(const options of [{suite:'groups'}, {groups:''}, {groups:'unknown'}, {files:''}, {files:'../x.test.mjs'}, {layer:'wrong'}]) assert.throws(()=>resolveSelection(root,options));
   assert.throws(()=>resolveSelection(root,{files:'fixtures/published-occipital.mjs'}),/explicit authorized suite/);
   assert.throws(()=>featurePlan(['unknown']),/Unknown feature/);
-  assert.deepEqual(featurePlan([], {baseline:false}),{features:[],node:[],cli:[],requirements:[]});
+  assert.deepEqual(featurePlan([], {baseline:false}),{features:[],node:[],cli:[],requirements:[],excluded:[]});
 });
 test('platform scope is recorded, never advertised as an executed POSIX control', t=>{
   const root=fixture(t), windows=resolveSelection(root,{suite:'unit',platform:'win32'});
@@ -81,4 +83,140 @@ test('fixed tool/consumer entries cannot be replaced by file selection or an unk
   assert.ok(featurePlan(['edit'],{baseline:false}).cli.includes('cli/summaries/edit/argument-previews.cli.test.mjs'));
   const summary=featurePlan(['summaries','edit'],{baseline:false}).cli;
   assert.equal(summary.filter(file=>file==='cli/summaries/edit/argument-previews.cli.test.mjs').length,1,'coupled boundaries share a single physical test owner');
+});
+
+const suspendEntries = ['owned', 'shared'].flatMap(kind => ['fullscreen', 'regular'].map(mode => ({
+  kind, mode, file: `cli/${kind === 'owned' ? 'native' : 'shared'}/syntax/linux/occipital-suspend-${kind}-${mode}.cli.test.mjs`,
+})));
+const suspendFiles = suspendEntries.map(entry => entry.file).sort();
+const selectedSuspend = files => files.filter(file => file.includes('occipital-suspend'));
+
+test('suspend discovery preserves all transport/mode cases and narrows service prerequisites', () => {
+  const root = readInputs().pi.root;
+  assert.deepEqual(selectedSuspend(testEntries.map(entry => entry.file)), suspendFiles);
+  for (const { kind, file } of suspendEntries) {
+    const selected = resolveSelection(root, { files: file, platform: 'linux' });
+    assert.deepEqual(selected.files, [file]);
+    assert.deepEqual(selected.requirements, kind === 'owned' ? ['native'] : ['native', 'shared']);
+  }
+  for (const [group, kind] of [['native', 'owned'], ['shared', 'shared']]) {
+    const expected = suspendEntries.filter(entry => entry.kind === kind).map(entry => entry.file).sort();
+    assert.deepEqual(selectedSuspend(resolveSelection(root, { groups: group, layer: 'cli', platform: 'linux' }).files), expected);
+    const plan = featurePlan([group], { root, baseline: false, platform: 'linux' });
+    assert.deepEqual(selectedSuspend(plan.cli), expected);
+    assert.deepEqual(plan.requirements, kind === 'owned' ? ['native'] : ['native', 'shared']);
+  }
+  for (const options of [{ groups: 'syntax', layer: 'cli' }, { suite: 'syntax-terminal' }, { suite: 'cli' }]) {
+    assert.deepEqual(selectedSuspend(resolveSelection(root, { ...options, platform: 'linux' }).files), suspendFiles);
+  }
+  const syntaxFeature = featurePlan(['syntax'], { root, baseline: false, platform: 'linux' });
+  assert.deepEqual(selectedSuspend(syntaxFeature.cli), suspendFiles);
+  assert.deepEqual(syntaxFeature.excluded, []);
+  const nativeAlias = resolveSelection(root, { suite: 'native', platform: 'linux' });
+  assert.equal(nativeAlias.files.some(file => file.startsWith('cli/')), false, 'native suite remains the Node/integration alias');
+  const shards = [1, 2, 3, 4].flatMap(index => selectedSuspend(resolveSelection(root, { suite: 'cli', shard: `${index}/4`, platform: 'linux' }).files));
+  assert.deepEqual(shards.sort(), suspendFiles, 'complete CLI shards discover each suspend entry once');
+});
+
+test('Linux-only suspend selection fails explicitly or reports automatic platform exclusion', () => {
+  const root = readInputs().pi.root;
+  for (const platform of ['darwin', 'win32']) {
+    for (const { file } of suspendEntries) {
+      for (const files of [file, file.split('/').at(-1)]) assert.throws(() => resolveSelection(root, { files, platform }), /platform scope/);
+    }
+    for (const options of [{ suite: 'cli' }, { suite: 'syntax-terminal' }, { groups: 'syntax', layer: 'cli' }, { groups: 'native', layer: 'cli' }, { groups: 'shared', layer: 'cli' }]) {
+      const selection = resolveSelection(root, { ...options, platform });
+      const expected = options.groups === 'native' ? suspendEntries.filter(entry => entry.kind === 'owned').map(entry => entry.file).sort()
+        : options.groups === 'shared' ? suspendEntries.filter(entry => entry.kind === 'shared').map(entry => entry.file).sort() : suspendFiles;
+      assert.deepEqual(selectedSuspend(selection.files), []);
+      assert.deepEqual(selection.excluded.filter(entry => entry.file.includes('occipital-suspend')), expected.map(file => ({ file, reason: 'platform', supported: ['linux'] })));
+    }
+    for (const [group, kind] of [['syntax', undefined], ['native', 'owned'], ['shared', 'shared']]) {
+      const plan = featurePlan([group], { root, baseline: false, platform });
+      const expected = suspendEntries.filter(entry => kind === undefined || entry.kind === kind).map(entry => entry.file).sort();
+      assert.deepEqual(selectedSuspend(plan.cli), []);
+      assert.deepEqual(plan.excluded.filter(entry => entry.file.includes('occipital-suspend')), expected.map(file => ({ file, reason: 'platform', supported: ['linux'] })));
+    }
+  }
+});
+
+test('suspend support import registers no tests and requires no native/shared preparation', t => {
+  const inputs = readInputs(), root = mkdtempSync(join(tmpdir(), 'suspend-import-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const path = join(root, 'inputs.json');
+  writeFileSync(path, JSON.stringify({ ...inputs, native: undefined, sharedHost: undefined }));
+  const result = spawnSync(inputs.node.path, ['--input-type=module', '-e',
+    `await import(${JSON.stringify(new URL('../fixtures/occipital-suspend.mjs', import.meta.url).href)}); console.log('SUSPEND_IMPORTED');`],
+  { cwd: inputs.pi.root, env: childEnv(root, { TIDY_TEST_INPUTS: path }), encoding: 'utf8', timeout: 15000 });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, 'SUSPEND_IMPORTED\n', 'support imports must not register cases, hooks or prepare physical resources');
+});
+
+test('suspend entries register exactly twelve serial semantic cases with unchanged bounds', t => {
+  const inputs = readInputs(), root = mkdtempSync(join(tmpdir(), 'suspend-registration-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  // Execute the real entry modules, replacing only physical preparation/case execution and the test registrar.
+  const probe = `
+    import assert from 'node:assert/strict';
+    import { registerHooks } from 'node:module';
+    const supportURL = ${JSON.stringify(new URL('../fixtures/occipital-suspend.mjs', import.meta.url).href)};
+    const support = await import(supportURL);
+    assert.deepEqual(support.suspendOperations, ['SOURCE', 'STYLE', 'APPEND']);
+    const entries = ${JSON.stringify(suspendEntries.map(entry => ({ ...entry, url: pathToFileURL(join(inputs.pi.root, 'tests', entry.file)).href })))};
+    const entryURLs = new Set(entries.map(entry => entry.url));
+    globalThis.suspendProbe = { operations: support.suspendOperations, suites: [], cases: [], active: 0, maxActive: 0, prepared: 0, runs: [] };
+    const sources = {
+      'suspend-probe:test': \`export default function test(name, options, body) {
+        const state = globalThis.suspendProbe;
+        state.suites.push({name, options});
+        const run = body({test: async (name, options, body) => {
+          state.cases.push({name, options}); await body();
+        }});
+        state.runs.push(run); return run;
+      }\`,
+      'suspend-probe:support': \`const state = globalThis.suspendProbe;
+        export const suspendOperations = state.operations;
+        export async function prepareSyntaxNative() { state.prepared++; return {prepared: state.prepared}; }
+        export async function runSuspendCase(selection, prepared) {
+          assertPrepared(prepared);
+          state.active++; state.maxActive = Math.max(state.maxActive, state.active);
+          state.cases.at(-1).selection = selection;
+          await new Promise(resolve => setImmediate(resolve)); state.active--;
+        }
+        function assertPrepared(prepared) { if (prepared.prepared !== state.prepared) throw Error('case lost its file preparation'); }
+      \`,
+    };
+    registerHooks({
+      resolve(specifier, context, nextResolve) {
+        if (entryURLs.has(context.parentURL)) {
+          if (specifier === 'node:test') return {url: 'suspend-probe:test', shortCircuit: true};
+          if (new URL(specifier, context.parentURL).href === supportURL) return {url: 'suspend-probe:support', shortCircuit: true};
+        }
+        return nextResolve(specifier, context);
+      },
+      load(url, context, nextLoad) {
+        return sources[url] ? {format: 'module', source: sources[url], shortCircuit: true} : nextLoad(url, context);
+      },
+    });
+    for (const entry of entries) {
+      await import(entry.url);
+      await Promise.all(globalThis.suspendProbe.runs);
+    }
+    const {suites, cases, maxActive, prepared} = globalThis.suspendProbe;
+    console.log(JSON.stringify({suites, cases, maxActive, prepared}));
+  `;
+  const result = spawnSync(inputs.node.path, ['--expose-gc', '--input-type=module', '-e', probe],
+    { cwd: inputs.pi.root, env: childEnv(root, { TIDY_TEST_CONTEXT_READY: '1' }), encoding: 'utf8', timeout: 15000 });
+  assert.equal(result.status, 0, result.stderr);
+  const observed = JSON.parse(result.stdout);
+  assert.equal(observed.prepared, 4);
+  assert.equal(observed.suites.length, 4);
+  assert.equal(observed.suites.every(suite => suite.options.timeout === 180000), true);
+  assert.equal(observed.maxActive, 1, 'operations within each entry must not overlap');
+  assert.equal(observed.suites.some(suite => suite.options.skip || suite.options.concurrency), false);
+  const expected = suspendEntries.flatMap(({ kind, mode }) => ['SOURCE', 'STYLE', 'APPEND'].map(operation => ({
+    name: `Occipital pending ${operation}: ${kind}, ${mode} past deadline during Ctrl+Z`,
+    options: { timeout: 45000 }, selection: { kind, mode, operation },
+  })));
+  assert.deepEqual(observed.cases, expected);
 });

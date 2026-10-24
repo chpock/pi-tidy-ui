@@ -5,9 +5,9 @@ import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import { toolPath } from '../../../scripts/test/context.mjs';
 
-const modulePath = fileURLToPath(new URL('../../../scripts/test/performance/scope.py', import.meta.url));
+const modulePath = fileURLToPath(new URL('../../../scripts/test/scope_core.py', import.meta.url));
 function python(body) {
-  const child = spawnSync(toolPath('python3'), ['-I', '-S', '-c', `
+  const child = spawnSync(toolPath('python3'), ['-B', '-I', '-S', '-c', `
 import importlib.util, json, os, pathlib, tempfile, types
 spec = importlib.util.spec_from_file_location('scope', ${JSON.stringify(modulePath)})
 scope = importlib.util.module_from_spec(spec)
@@ -280,5 +280,18 @@ for environment in [{}, {'HOME': '/owned', 'SAFE': 'explicit'}]:
         assert 'SCOPE_SECRET' not in launches[0][1]['env']
         assert 'NODE_OPTIONS' not in launches[0][1]['env']
         assert json.loads((state / 'result.json').read_text())['exitCode'] == 0
+`);
+});
+
+test('direct shared-core controls do not write bytecode into a cold copied source', () => {
+  python(`
+assert scope.sys.dont_write_bytecode
+with tempfile.TemporaryDirectory() as directory:
+    target = pathlib.Path(directory) / 'scope_core.py'
+    target.write_bytes(pathlib.Path(${JSON.stringify(modulePath)}).read_bytes())
+    cold_spec = importlib.util.spec_from_file_location('cold_scope', target)
+    cold_scope = importlib.util.module_from_spec(cold_spec)
+    cold_spec.loader.exec_module(cold_scope)
+    assert sorted(path.name for path in pathlib.Path(directory).iterdir()) == ['scope_core.py']
 `);
 });

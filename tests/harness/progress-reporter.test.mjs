@@ -102,20 +102,21 @@ test('actual Node test runner writes one progress record when each test starts a
 
 test('forced process termination preserves a started test event for the unfinished case', { skip: process.platform === 'win32' }, async t => {
   const root = temporary(t), testFile = join(root, 'held.test.mjs'), progress = join(root, 'held.tests.jsonl');
-  writeFileSync(testFile, `import test from 'node:test';\ntest('held process case', async () => { await new Promise(() => {}); });\n`);
+  writeFileSync(testFile, `import test from 'node:test';\ntest('held process case', async () => { await new Promise(() => { setInterval(() => {}, 1000); }); });\n`);
   const env = { ...process.env };
   delete env.NODE_TEST_CONTEXT;
   const child = spawn(process.execPath, [
     '--test', '--test-reporter=tap', '--test-reporter-destination=stdout',
     `--test-reporter=${reporterPath}`, `--test-reporter-destination=${progress}`, testFile,
-  ], { stdio: 'ignore', env });
+  ], { stdio: 'ignore', env, detached: true });
+  const killTree = () => {
+    if (child.pid) try { process.kill(-child.pid, 'SIGKILL'); } catch (error) { if (error.code !== 'ESRCH') throw error; }
+  };
   let exited = false;
   child.once('exit', () => { exited = true; });
   t.after(async () => {
-    if (!exited) {
-      child.kill('SIGKILL');
-      await once(child, 'exit');
-    }
+    killTree();
+    if (!exited) await once(child, 'exit');
   });
 
   const deadline = Date.now() + 10_000;
@@ -130,7 +131,7 @@ test('forced process termination preserves a started test event for the unfinish
     await delay(10);
   }
   assert.ok(started, 'the reporter should persist the test-start event before the process is killed');
-  child.kill('SIGKILL');
+  killTree();
   const [code, signal] = await once(child, 'exit');
   assert.equal(code, null);
   assert.equal(signal, 'SIGKILL');

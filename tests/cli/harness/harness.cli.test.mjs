@@ -1,66 +1,35 @@
 import '../../fixtures/test-guard.mjs';
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { spawn, spawnSync } from 'node:child_process';
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
 import test from 'node:test';
-import { PiTerminal, root, fixtures, artifacts, plain, assertFits } from '../../fixtures/terminal-harness.mjs';
+import { PiTerminal, assertFits } from '../../fixtures/terminal-harness.mjs';
 import { closeTerminals } from '../../fixtures/terminal-cleanup.mjs';
 import { childEnv, readInputs, toolPath } from '../../../scripts/test/context.mjs';
 
 test('CLI compilation caches reuse code, not sessions, and reject changed source with a warm loader', { timeout: 60000 }, async t => {
   const probe = mkdtempSync(join(tmpdir(), 'pi-compile-probe-'));
-  t.after(() => rmSync(probe, { recursive: true, force: true }));
-  const extension = join(probe, 'cached-extension.ts'), records = join(probe, 'executions.jsonl');
-  const source = label => `import { appendFileSync } from 'node:fs';
-let evaluations: number = 0;
-export default function probe() {
-  evaluations++;
-  appendFileSync(${JSON.stringify(records)}, JSON.stringify({ label: ${JSON.stringify(label)}, evaluations, pid: process.pid, home: process.env.HOME }) + '\\n');
-}\n`;
-  const histories = [];
-  assert.equal(Buffer.byteLength(source('FIRST')), Buffer.byteLength(source('OTHER')));
-  for (const [index, label] of ['FIRST', 'FIRST', 'OTHER'].entries()) {
-    if (index !== 1) writeFileSync(extension, source(label));
-    const terminal = new PiTerminal(`compile-cache-${index}`, { tidyUi: true, extensions: [extension],
-      extraEnv: { NODE_DEBUG_NATIVE: 'COMPILE_CACHE', JITI_DEBUG: '1' } });
-    try {
-      await terminal.ready();
-      await terminal.run('user-card');
-      const dump = await terminal.capture('cache-physical-proof');
-      assert.equal(dump.tools.length, 2);
-      assert.equal(terminal.events().filter(event => event.type === 'call').length, 2);
-      assert.equal(terminal.events().filter(event => event.type === 'result').length, 2);
-      const log = plain(Buffer.concat(terminal.raw).toString());
-      const cacheMessages = log.split(/\r?\n/u).filter(line => line.includes('[jiti] [cache]') && line.includes(extension));
-      assert.ok(cacheMessages.some(line => line.includes(index === 1 ? '[hit]' : '[miss]')), JSON.stringify(cacheMessages));
-      const history = readFileSync(records, 'utf8').trim().split('\n').map(line => JSON.parse(line));
-      assert.deepEqual(history.map(entry => entry.label), ['FIRST', 'FIRST', 'OTHER'].slice(0, index + 1));
-      assert.ok(history.every(entry => entry.evaluations === 1), 'every process must evaluate the extension afresh');
-      assert.equal(new Set(history.map(entry => entry.pid)).size, index + 1);
-      assert.equal(new Set(history.map(entry => entry.home)).size, index + 1);
-      histories.push({ label, cacheMessages, history });
-      if (index === 1) {
-        const plan = JSON.parse(readFileSync(join(terminal.output, 'native-observer.json'), 'utf8'));
-        const accepted = [`cache for ${plan.module}`, `V8 code cache for ESM ${plan.module}`]
-          .some(message => log.includes(`[compile cache] ${message} was accepted, keeping the in-memory entry`));
-        assert.ok(accepted, 'native CLI bytecode must actually be reused');
-        const badPlan = join(probe, 'invalid-observer.json');
-        writeFileSync(badPlan, JSON.stringify({ ...plan, sha256: '0'.repeat(64) }));
-        const inputs = readInputs();
-        const rejected = spawnSync(inputs.node.path, ['--import', pathToFileURL(join(fixtures, 'terminal-preload.mjs')).href, inputs.pi.cli, '--version'], {
-          cwd: root, env: childEnv(join(probe, 'hash-rejection'), { NODE_COMPILE_CACHE: terminal.codeCache.node,
-            TIDY_UI_TEST_OBSERVER_PLAN: badPlan }, inputs), encoding: 'utf8', timeout: 12000,
-        });
-        assert.equal(rejected.error, undefined);
-        assert.notEqual(rejected.status, 0, 'a warm compilation cache must not bypass selected-source validation');
-        assert.match(rejected.stderr, /Selected Pi changed after terminal observer planning/u);
-      }
-    } finally { await closeTerminals([terminal]); }
-  }
-  writeFileSync(join(artifacts, 'compilation-cache-proof.json'), JSON.stringify(histories, null, 2));
+  // A child-owned TMPDIR isolates the cold control from other files using the runner cache.
+  const child = spawn(readInputs().node.path, [
+    fileURLToPath(new URL('../../fixtures/compilation-cache-control.mjs', import.meta.url)), probe], {
+    env: childEnv(join(probe, 'suite')), stdio: ['ignore', 'ignore', 'pipe'], timeout: 45000,
+  });
+  let stderr = '', startupError;
+  child.stderr.on('data', data => { stderr += data; });
+  child.on('error', error => { startupError = error.message; });
+  const completed = new Promise(resolve => child.once('close', (code, signal) => resolve({ code, signal })));
+  t.after(async () => {
+    if (child.exitCode === null && !child.killed) child.kill();
+    await completed;
+    rmSync(probe, { recursive: true, force: true });
+  });
+  const result = await completed;
+  assert.equal(startupError, undefined);
+  assert.equal(result.code, 0, stderr);
+  assert.equal(result.signal, null);
 });
 
 test('real CLI: delayed PTY resize confirms Pi geometry before width height and identical-size captures',

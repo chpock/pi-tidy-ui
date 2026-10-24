@@ -148,6 +148,8 @@ for (const mode of ['regular', 'fullscreen']) test(`real CLI: spinner shares Wor
       const resumed = await replay.capture('replay'); assert.equal(resumed.spinnerStats.starts, 0); assert.equal(resumed.spinnerStats.ticks, 0);
       assert.deepEqual(toolLines(resumed), toolLines(reloaded)); assert.deepEqual(persisted(resumed), persisted(native));
       assert.deepEqual(readFileSync(complete.session), bytes);
+      await replay.close();
+      assert.equal(replay.closed, true, 'completed spinner replay is reaped before live cancellation controls');
       for (const terminal of [stock, live]) {
         rmSync(join(terminal.output, 'provider-go')); rmSync(join(terminal.output, 'tool-go'));
         terminal.send('run pending-abort\r'); await terminal.event('provider_gate', 2);
@@ -202,8 +204,10 @@ test('real CLI: gated pending/streaming, image/hidden fallback and exact-name fl
       await live.run('future');
       await live.run('fallback'); const fallback = await live.capture('fallback');
       assert.ok(byName(fallback, 'read').at(-1).content.some((c) => c.type === 'image'), 'real image read produced an image result');
+      await live.close();
       const native = await start('fallback-stock-replay', { session: fallback.session });
       const stock = await native.capture('fallback');
+      await native.close();
       await t.test('image fallback matches same-session stock replay', () => {
         assert.deepEqual(byName(fallback, 'read').at(-1).lines, byName(stock, 'read').at(-1).lines, 'image rendering stays native');
         assert.ok(fallback.screen.some((line) => line.includes('pixel.png')));
@@ -218,6 +222,8 @@ test('real CLI: gated pending/streaming, image/hidden fallback and exact-name fl
       const cards = await card.capture('cards');
       for (const name of ['tidy_ui_unknown', 'tidy_ui_stream'])
         assert.deepEqual(byName(cards, name)[0].lines, byName(stock, name)[0].lines, `comma-separated card flag: ${name}`);
+      await card.close();
+      assert.equal(card.closed, true, 'completed card variant is reaped before independent flag overrides');
       const override = await start('flag-override', { tidyUi: true,
         flags: ['--tidy-ui-card', 'tidy_ui_stream,tidy_ui_hidden,read', '--tidy-ui-compact', 'tidy_ui_stream,tidy_ui_hidden,read'], session: fallback.session });
       const overrides = await override.capture('override');
@@ -226,6 +232,7 @@ test('real CLI: gated pending/streaming, image/hidden fallback and exact-name fl
         assert.equal(lines(byName(overrides, 'tidy_ui_hidden')[0]).length, 0, 'hidden safeguard wins over flags');
       });
       assert.deepEqual(byName(overrides, 'read').at(-1).lines, byName(stock, 'read').at(-1).lines, 'image safeguard wins over flags');
+      await override.close();
       const exact = await start('flag-exact', { tidyUi: true,
         flags: ['--tidy-ui-card', 'tidy_ui_strea,READ'], session: fallback.session });
       const exactDump = await exact.capture('exact');

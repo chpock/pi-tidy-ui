@@ -20,7 +20,7 @@ function fixture(t) {
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const checkout = join(root, 'checkout'), original = readInputs();
   const put = (name, bytes) => { const path = join(checkout, name); mkdirSync(dirname(path), { recursive: true }); writeFileSync(path, bytes); };
-  for (const name of ['context', 'prepare', 'prepare-native', 'native-harness', 'native-bootstrap', 'native-guard', 'run', 'catalog', 'progress', 'progress-reporter']) {
+  for (const name of ['context', 'prepare', 'prepare-native', 'native-harness', 'native-bootstrap', 'native-guard', 'run', 'catalog', 'progress', 'progress-reporter', 'resources', 'resource-worker']) {
     put(`scripts/test/${name}.mjs`, readFileSync(new URL(`../../scripts/test/${name}.mjs`, import.meta.url)));
   }
   put('tests/native-build/rust-harness.test.mjs', readFileSync(new URL('../native-build/rust-harness.test.mjs', import.meta.url)));
@@ -71,6 +71,18 @@ test('native runner autoexecutes added nested mjs and ts tests with no registry 
   const first = await executeNative({ inputs: initial.path, output: initial.output });
   assert.equal(first.status, 'passed');
   assert.deepEqual(first.selected, ['native-build/rust-harness.test.mjs']);
+  assert.equal(first.resources.collection.descendantsIncluded, false);
+  assert.equal(first.resources.maxObservedFileWorkers, 1);
+  assert.equal(first.resources.intervalsComplete, true);
+  assert.equal(first.resources.files.length, 1);
+  const resource = first.resources.files[0];
+  assert.equal(resource.file, 'native-build/rust-harness.test.mjs');
+  assert.equal(resource.scope, 'worker-process-lifetime-excluding-descendants');
+  assert.equal(resource.complete, true);
+  assert.ok(Number.isFinite(resource.elapsedMs) && resource.elapsedMs > 0);
+  for (const key of ['userCpuMs', 'systemCpuMs']) assert.ok(Number.isFinite(resource[key]) && resource[key] >= 0);
+  if (resource.memoryPeakBytes === null) assert.ok(resource.unavailable.includes('memoryPeakBytes'));
+  else assert.ok(resource.memoryPeakBytes > 0);
   assert.equal(readFileSync(f.calls, 'utf8'), 'check\ncheck\n', 'one ancestry control executes poisoned and neutral Cargo exactly once each');
   assertClean(first);
   writeFileSync(f.calls, '');

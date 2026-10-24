@@ -9,9 +9,10 @@ import { colorTerminal, colorTraffic, persisted, selectDarkDark } from '../../fi
 
 test('terminal colors: independent channels, hot reload, source errors, RGB projection, native traffic and replay in both modes', async () => {
   for (const mode of ['fullscreen', 'regular']) {
-    const live = colorTerminal(`colors-live-${mode}`, mode), native = colorTerminal(`colors-native-${mode}`, mode, { native: true, workspace: live.terminal.work });
-    let replay;
+    const live = colorTerminal(`colors-live-${mode}`, mode), terminals = [live.terminal];
     try {
+      const native = colorTerminal(`colors-native-${mode}`, mode, { native: true, workspace: live.terminal.work });
+      terminals.push(native.terminal);
       await Promise.all([live.terminal.ready(), native.terminal.ready()]);
       await until(() => live.owned.background === '#123456' && live.owned.foreground === '#eeeeee', 'initial explicit terminal colors');
       const initial = await live.capture('initial'), control = await native.capture('initial');
@@ -69,6 +70,7 @@ test('terminal colors: independent channels, hot reload, source errors, RGB proj
       await native.terminal.run('suite'); await live.terminal.run('suite');
       const result = await live.terminal.capture('traffic'), nativeResult = await native.terminal.capture('traffic');
       assert.deepEqual(colorTraffic(live.terminal), colorTraffic(native.terminal));
+      await native.terminal.close();
       assert.deepEqual(persisted(result), persisted(nativeResult));
       const edit = byName(result, 'edit')[0]; assert.ok(edit.lines.some(row => row.includes('\x1b[48;2;19;53;77m') && row.includes('WRITE_AFTER')), 'semantic diff surface uses the actual requested background');
       assert.ok(result.cells.some(row => row.some(cell => cell?.text === 'W' && cell.bg === 0x13354d)), 'the controlled physical screen contains the new tint');
@@ -80,17 +82,20 @@ test('terminal colors: independent channels, hot reload, source errors, RGB proj
       live.source.theme.export.pageBg = 'surfaceAlias'; writeFileSync(live.source.path, JSON.stringify(live.source.theme));
       await until(() => live.owned.background === '#123456', 'restore requested replay background');
       const bytes = readFileSync(result.session, 'utf8');
-      replay = colorTerminal(`colors-replay-${mode}`, mode, { session: result.session, workspace: live.terminal.work });
+      writeFileSync(join(live.terminal.output, 'color-evidence.json'), JSON.stringify({ initial, hot, failure, empty, protocol: live.protocol }, null, 2));
+      await live.terminal.quit();
+      assert.deepEqual(live.owned, {}, 'normal shutdown restores only our applied defaults');
+      await live.terminal.close();
+      assert.equal(native.terminal.closed && live.terminal.closed, true, 'completed color controls are reaped before replay');
+      const replay = colorTerminal(`colors-replay-${mode}`, mode, { session: result.session, workspace: live.terminal.work });
+      terminals.push(replay.terminal);
       await replay.terminal.ready(); await until(() => replay.owned.background === '#123456', 'replay applies fixed theme');
       const restored = await replay.terminal.capture('replay');
       assert.deepEqual(persisted(restored), persisted(result)); assert.equal(readFileSync(result.session, 'utf8'), bytes, 'presentation and replay do not rewrite session bytes');
       for (const type of ['call', 'result', 'model_context', 'provider_error']) assert.equal(replay.terminal.events().filter(event => event.type === type).length, 0);
       assert.ok(byName(restored, 'edit')[0].lines.some(row => row.includes('\x1b[48;2;19;53;77m') && row.includes('WRITE_AFTER')));
-      writeFileSync(join(live.terminal.output, 'color-evidence.json'), JSON.stringify({ initial, hot, failure, empty, protocol: live.protocol }, null, 2));
-      await live.terminal.quit();
-      assert.deepEqual(live.owned, {}, 'normal shutdown restores only our applied defaults');
     } finally {
-      await closeTerminalsInParallel([live.terminal, native.terminal, ...(replay ? [replay.terminal] : [])]);
+      await closeTerminalsInParallel(terminals);
     }
   }
 });

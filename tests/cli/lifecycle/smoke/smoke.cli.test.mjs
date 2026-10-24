@@ -52,11 +52,12 @@ test('real CLI: pi-tidy-ui policy, input, lifecycle and same-session stock repla
       const stock = await start('comparison-stock', {});
       await stock.run(); const control = await stock.capture('collapsed');
       stock.send('\x0f'); await stock.settle(); const controlExpanded = await stock.capture('expanded');
+      const nativeExecution = execution(stock); await stock.close();
       const live = await start('tidy-ui-fullscreen', { tidyUi: true, workspace: stock.work });
       await live.run(); const collapsed = await live.capture('collapsed'); compact(collapsed);
       await semanticColors(collapsed);
       simpleBashCards(collapsed);
-      assert.deepEqual(execution(live), execution(stock), 'real calls, results, and provider-visible results stay unchanged');
+      assert.deepEqual(execution(live), nativeExecution, 'real calls, results, and provider-visible results stay unchanged');
       assert.deepEqual(persisted(collapsed), persisted(control), 'persisted tool messages stay unchanged');
       assert.equal(readFileSync(join(live.work, 'written.txt'), 'utf8'), 'WRITE_AFTER\n');
       // Only cross-run live bash runtime text is normalized; same-process and replay checks below are exact.
@@ -131,10 +132,13 @@ test('real CLI: pi-tidy-ui policy, input, lifecycle and same-session stock repla
       const resumed = await replay.capture('collapsed'); compact(resumed); simpleBashCards(resumed);
       const nativeReplay = await start('stock-replay', { session, workspace: stock.work });
       const native = await nativeReplay.capture('collapsed');
+      await nativeReplay.close();
       assert.deepEqual(byName(resumed, 'write')[0].lines, byName(beforeReplay, 'write')[0].lines, 'same-session Wrote replay retains the exact input-source card');
       assert.deepEqual(resumed.tools.map(({ name, content }) => ({ name, content })), beforeReplay.tools.map(({ name, content }) => ({ name, content })));
       await replay.appearance(false); const disabledReplay = await replay.capture('disabled');
       assert.deepEqual(disabledReplay.tools.map((t) => t.lines), native.tools.map((t) => t.lines), 'disable restores exact same-session stock rendering');
+      await replay.close();
+      assert.equal(replay.closed, true, 'completed fullscreen smoke replay is reaped before independent regular mode');
       const regular = await start('tidy-ui-regular', { tidyUi: true, mode: 'regular' });
       await regular.run(); compact(await regular.capture('collapsed'));
       regular.send('\x0f'); await regular.settle(); const regularExpanded = await regular.capture('expanded');

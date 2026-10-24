@@ -21,6 +21,21 @@ Actual launch currently requires Linux, unified cgroup v2 and working systemd us
 
 The orchestrator supplies a **120-second** scope limit and fixes affinity to the first two CPUs allowed to its launcher, or the smaller available set. The inner process establishes limits/affinity; the outer owner independently checks the cgroup and CPU set before releasing the measured target. Both stdout and stderr are drained, but at most **1 MiB combined** is forwarded, with truncation recorded. These limits and affinity are measurement conditions, not incidental runner details.
 
+The maintained `scripts/test/performance/scope.py` entry loads the shared guard mechanism in `scripts/test/scope_core.py` by an explicit trusted path, retaining Python `-I -S` isolation. Its direct CLI accepts at most **300 seconds**; the benchmark orchestrator continues to select **120 seconds**. Both entries disable bytecode writes before loading the shared module so launching a guard does not modify an admitted source snapshot. Direct core-import controls also use Python `-B` and verify cold copied sources remain bytecode-free. Extraction does not change the benchmark receipt schema, environment replacement, output cap, cleanup or fixed affinity. Collector hashes include these files, so old and new collector receipts are not relabeled as comparable.
+
+The ordinary [`scripts/test/safe-run.py`](../scripts/test/safe-run.py) entry uses the same verification/handshake/cleanup with a **300-second default**, an explicit **600-second maximum**, the same aggregate memory/PID envelope and **no affinity pinning** (it preserves the launcher's allowed CPU set). It encloses the whole runner, not each worker separately. For example, from the checkout after preparation:
+
+```sh
+/usr/bin/python3 -I -S scripts/test/safe-run.py \
+  --label harness --receipt /absolute/new-scope-receipt.json -- \
+  /absolute/prepared/node scripts/test/run.mjs --inputs /absolute/prepared/inputs.json \
+  --suite groups --groups harness --layer node
+```
+
+The receipt parent must exist and the receipt path must be absolute and new. The target gets no inherited application environment: by default it receives only `TIDY_TEST_SCOPE_RECEIPT`, an absolute path to the running/final receipt. Optional `--env-file /absolute/private.json` supplies a complete string map (owned regular non-symlink file, mode `0600`, at most 1 MiB); the guard overwrites that one receipt variable with the actual path. Use an absolute executable and explicit `--inputs`; the prepared runner constructs its own application environment. User bus credentials remain only with the outer scope owner, not with the test/application tree. Benchmark targets continue to receive exactly their supplied environment, without this ordinary-only variable.
+
+Before releasing the ordinary target, the outer owner checkpoints `schema: 1`, `outcome: running`, `unit`, `cgroup` (unified `/proc/PID/cgroup` membership), exact `limits` and effective `cpus` to that receipt. A runner can read `TIDY_TEST_SCOPE_RECEIPT` to locate `/sys/fs/cgroup` plus the membership path after `0::`, and independently compare its own membership and kernel limits before collecting active-scope observations. The locator alone is not proof of containment for a nested runner, and it need not be forwarded into sanitized application environments. The final receipt retains `preCleanup`, `finalLifetime`, limit events, target exit/signal, elapsed time, bounded-output accounting and cleanup/failure fields; unavailable final counters stay explicit. A killed outer owner can leave the last running checkpoint rather than a final successful result. Receipt data never includes commands, environment values or output bodies.
+
 Disposable runner/trial trees are removed on success and failure after required results are preserved. Cleanup failure is recorded and cannot silently pass or replace an earlier primary failure. Durable evidence stays in the requested output directory.
 
 The output directory must be new. `results.json` is checkpointed after each repetition; failed/interrupted outcomes and guard receipts remain evidence, not successful samples. No results are uploaded automatically. Raw local profiles can contain source paths; keep them private unless intentionally reviewed for sharing.

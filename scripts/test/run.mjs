@@ -9,6 +9,18 @@ import { resolveSelection } from './catalog.mjs';
 export { selectSuite } from './catalog.mjs';
 import { snapshotIdentity, sourceIdentity, validateNeutralRunRoot } from './prepare.mjs';
 import { appendProgress, progressPaths, readProgressEvents, resetProgressFile, summarizeTestEvents, writeReport } from './progress.mjs';
+import { focusedRerun, readWorkerResources, resourceIntervalMs, scopeResources, summarizeWorkerResources } from './resources.mjs';
+
+export function fileJobs(value, suite, _layers) {
+  const ordinary = !['check', 'rust', 'rust-check', 'rust-allocator', 'consumer', 'published-consumer', 'rust-harness'].includes(suite);
+  if (!ordinary) {
+    if (value !== undefined) throw new Error('This fixed entry does not support file jobs');
+    return null;
+  }
+  if (value === undefined) return 2;
+  if (!/^[1-9]\d*$/.test(String(value)) || !Number.isSafeInteger(Number(value))) throw new Error('File jobs must be a positive safe integer');
+  return Number(value);
+}
 
 export function isolatedCommand(command, args, inputs) {
   if (process.platform !== 'linux') throw new Error('Built-in real egress restriction requires Linux bwrap; use an explicit platform/container restriction elsewhere');
@@ -33,7 +45,7 @@ export function isolatedCommand(command, args, inputs) {
 
 async function executeStep({ command, args, cwd, env, inputs, networkIsolated, bootstrapStatus, report, reportPath, artifacts, suite, name }) {
   const started = performance.now(), startedAt = new Date().toISOString();
-  const step = { name, startedAt, status: 'running', elapsedMs: null };
+  const step = { name, startedAt, status: 'running', elapsedMs: null, resources: { scopeBefore: scopeResources() } };
   report.steps.push(step); report.status = 'running'; report.phase = 'execution'; report.currentStep = name; report.reason = 'child-start';
   appendProgress(artifacts.events, { event: 'step-started', step: name, at: startedAt });
   writeReport(reportPath, report);
@@ -87,6 +99,7 @@ async function executeStep({ command, args, cwd, env, inputs, networkIsolated, b
     process.off('SIGINT', interrupt); process.off('SIGTERM', terminate);
     if (child?.pid && process.platform !== 'win32') signalTree('SIGTERM');
     step.finishedAt = new Date().toISOString(); step.elapsedMs = performance.now() - started;
+    step.resources.scopeAfter = scopeResources();
     report.currentStep = null;
     appendProgress(artifacts.events, { event: 'step-complete', step: name, status: step.status, elapsedMs: step.elapsedMs, at: step.finishedAt });
     writeReport(reportPath, report);
@@ -94,19 +107,20 @@ async function executeStep({ command, args, cwd, env, inputs, networkIsolated, b
   return report.status;
 }
 
-export async function execute({ inputs: path, suite = 'unit', files, groups, layer, pattern, skip, shard, 'network-isolated': networkIsolated = false, 'release-ref': releaseRef, 'rust-test': rustTests = [], output }) {
+export async function execute({ inputs: path, suite = 'unit', files, groups, layer, pattern, skip, shard, jobs, 'network-isolated': networkIsolated = false, 'release-ref': releaseRef, 'rust-test': rustTests = [], output }) {
   process.umask(0o077);
   const inputPath = resolve(path ?? join(import.meta.dirname, '../../.test-artifacts/harness/1.0.0/inputs.json'));
   const reportPath = output ? resolve(output) : join(dirname(inputPath), 'runs', suite + '-' + randomUUID(), 'report.json');
   const artifacts = progressPaths(reportPath), started = performance.now(), startedAt = new Date().toISOString();
-  const report = { schema: 1, suite, selected: [], selection: { files: files ?? null, groups: groups ?? null, layer: layer ?? null, pattern: pattern ?? null, skip: skip ?? null, shard: shard ?? null, rustTests }, cases: [], network: networkIsolated ? 'os-isolated' : 'prepared-fixtures', status: 'setup-failed', phase: 'setup', reason: 'inputs', counts: {}, startedAt, elapsedMs: null, currentStep: null,
+  const report = { schema: 1, suite, selected: [], selection: { files: files ?? null, groups: groups ?? null, layer: layer ?? null, pattern: pattern ?? null, skip: skip ?? null, shard: shard ?? null, jobs: jobs ?? null, rustTests }, cases: [], network: networkIsolated ? 'os-isolated' : 'prepared-fixtures', status: 'setup-failed', phase: 'setup', reason: 'inputs', counts: {}, startedAt, elapsedMs: null, currentStep: null,
     progress: { events: basename(artifacts.events), tests: basename(artifacts.tests) } };
   resetProgressFile(artifacts.events); resetProgressFile(artifacts.tests);
   appendProgress(artifacts.events, { event: 'run-started', suite, at: startedAt });
   writeReport(reportPath, report);
-  let directory;
+  let directory, resourceDirectory, admittedInputs;
   try {
     const inputs = readInputs(inputPath);
+    admittedInputs = inputs;
     mkdirSync(join(inputs.preparation, 'runs'), { recursive: true });
     report.reason = 'host-inputs';
     validateHost(inputs, false);
@@ -148,6 +162,16 @@ export async function execute({ inputs: path, suite = 'unit', files, groups, lay
     }
     report.requirements = selection.requirements;
     report.platformExclusions = selection.excluded;
+    report.reason = 'file-jobs';
+    report.jobs = fileJobs(jobs, suite, selection.layers);
+    report.resources = { schema: 1, aggregateBefore: scopeResources(), files: [] };
+    if (report.jobs !== null) {
+      resourceDirectory = mkdtempSync(join(dirname(reportPath), basename(reportPath, '.json') + '.workers-'));
+      report.resources.observations = basename(resourceDirectory);
+      report.resources.collection = { mode: 'worker-lifetime-high-water', checkpointIntervalMs: resourceIntervalMs, descendantsIncluded: false };
+      env.TIDY_TEST_RESOURCE_DIR = resourceDirectory;
+      env.TIDY_TEST_RESOURCE_FILES = JSON.stringify(selected);
+    }
     if (selected.some(file => file.startsWith('native-build/'))) throw new Error('Native-build controls require scripts/test/native-harness.mjs, not the Pi runner');
     Object.assign(env, validateRequirements(inputs, selection.requirements));
     if (selection.requirements.includes('native')) report.native = { commit: inputs.native.commit, nativeTree: inputs.native.nativeTree, sha256: inputs.native.sha256 };
@@ -167,10 +191,11 @@ export async function execute({ inputs: path, suite = 'unit', files, groups, lay
       else args = ['clippy', '--workspace', '--all-targets', '--locked', '--offline', '--', '-D', 'warnings'];
     } else if (suite === 'consumer' || suite === 'published-consumer') args.push(join(inputs.pi.root, 'tests', selected[0]));
     else {
+      args.unshift('--import', pathToFileURL(join(inputs.pi.root, 'scripts/test/resource-worker.mjs')).href);
       args.push('--expose-gc', '--test', '--test-reporter=tap', '--test-reporter-destination=stdout',
         `--test-reporter=${pathToFileURL(join(inputs.pi.root, 'scripts/test/progress-reporter.mjs')).href}`,
         `--test-reporter-destination=${artifacts.tests}`);
-      args.push('--test-concurrency=' + (selection.layers.includes('cli') ? '1' : '2'));
+      args.push('--test-concurrency=' + report.jobs);
       if (pattern) args.push('--test-name-pattern=' + pattern);
       if (skip) args.push('--test-skip-pattern=' + skip);
       args.push(...selected.map(file => join(inputs.pi.root, 'tests', file)));
@@ -199,11 +224,29 @@ export async function execute({ inputs: path, suite = 'unit', files, groups, lay
       report.slowestTests = summary.slowestTests;
       report.slowestSuites = summary.slowestSuites;
       report.truncatedProgressLines = progress.truncatedLines;
+      if (report.resources) {
+        report.resources.aggregateAfter = scopeResources();
+        if (resourceDirectory) {
+          try {
+            const records = readWorkerResources(resourceDirectory, report.selected).map(record => ({
+              ...record, rerun: focusedRerun(admittedInputs.node.path, inputPath, record.file, { pattern, skip, networkIsolated }),
+            }));
+            Object.assign(report.resources, { files: records, ...summarizeWorkerResources(records) });
+          } catch {
+            report.status = 'harness-failed'; report.reason = 'resource-report';
+            report.resources.unavailableReason = 'malformed-or-unreadable-worker-observations';
+          }
+        }
+      }
       report.elapsedMs = performance.now() - started; report.finishedAt = new Date().toISOString(); report.phase = 'complete'; report.currentStep = null;
       appendProgress(artifacts.events, { event: 'run-complete', status: report.status, elapsedMs: report.elapsedMs, at: report.finishedAt });
       writeReport(reportPath, report);
       console.log('Test report: ' + reportPath);
       console.log('Test progress: ' + artifacts.events);
+      if (report.resources?.largestWorkers?.length) {
+        console.log('Largest test-file workers (process max RSS; excludes descendants):');
+        for (const item of report.resources.largestWorkers.slice(0, 10)) console.log(`  ${(item.memoryPeakBytes / 1048576).toFixed(1)} MiB ${item.file}${item.complete ? '' : ' (partial)'}`);
+      }
       if (summary.slowestTests.length) {
         console.log('Slowest tests:');
         for (const item of summary.slowestTests.slice(0, 10)) {
@@ -218,7 +261,7 @@ export async function execute({ inputs: path, suite = 'unit', files, groups, lay
 
 if (process.argv[1] && existsSync(process.argv[1]) && realpathSync(process.argv[1]) === resolve(import.meta.filename)) {
   const { values } = parseArgs({ options: {
-    inputs: { type: 'string' }, suite: { type: 'string' }, files: { type: 'string' }, groups: { type: 'string' }, layer: { type: 'string' }, pattern: { type: 'string' }, skip: { type: 'string' }, shard: { type: 'string' },
+    inputs: { type: 'string' }, suite: { type: 'string' }, files: { type: 'string' }, groups: { type: 'string' }, layer: { type: 'string' }, pattern: { type: 'string' }, skip: { type: 'string' }, shard: { type: 'string' }, jobs: { type: 'string' },
     'network-isolated': { type: 'boolean' }, 'release-ref': { type: 'string' }, 'rust-test': { type: 'string', multiple: true }, output: { type: 'string' },
   } });
   const report = await execute(values); if (report.status !== 'passed') process.exitCode = 1;

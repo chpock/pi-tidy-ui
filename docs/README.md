@@ -68,7 +68,7 @@ The protocol reference ships with this manual. Its six conformance JSON files an
 | [Diagnostics and health](debug-logging-spec.md) | Independent observation/health/journal owners, safe metadata, bounded writer, retention, incidents, recovery and explicit controls |
 | [Delivery and releases](releases.md) | CI graph, supported targets, source versus released versions, native-byte admission, staging, notices and publication boundaries |
 | [Performance framework](performance-testing.md) | Workload/input identities, subprocess containment, metrics, diagnostics, comparison and artifact semantics |
-| [Testing](testing.md) | Complete retained procedures: prepared inputs, group/feature selection, real integrations, containment and affected contract checks |
+| [Testing](testing.md) | Fresh-clone provisioning, prepared inputs, bounded file jobs, diagnostic duration/RAM results, real integrations, containment and affected contract checks |
 
 ## Find an explanation by question
 

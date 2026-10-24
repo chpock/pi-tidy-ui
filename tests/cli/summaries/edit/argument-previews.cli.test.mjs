@@ -54,9 +54,10 @@ test('real CLI: bounded argument previews, path-only edits and visible payloads 
       const stock = await start('bounded-stock');
       await stock.run('bounded-summaries'); const native = await stock.capture('native');
       stock.send('\x0f'); await stock.settle(); const nativeExpanded = await stock.capture('expanded');
+      const nativeTraffic = activity(stock); await stock.close();
       const live = await start('bounded-tidyUi', { tidyUi: true, flags, workspace: stock.work });
       await live.run('bounded-summaries'); const wide = await live.capture('wide'); await check(wide);
-      assert.deepEqual(activity(live), activity(stock), '7 actual calls/results and 8 model contexts remain exact');
+      assert.deepEqual(activity(live), nativeTraffic, '7 actual calls/results and 8 model contexts remain exact');
       assert.deepEqual(persisted(wide), persisted(native));
       assert.equal(readFileSync(join(live.work, 'bounded-write.txt'), 'utf8'), 'WRITE_BODY_' + 'w'.repeat(1000));
       assert.equal(wide.tools[0].args.query.length, 1013, 'original unabridged string remains in component arguments');
@@ -80,7 +81,7 @@ test('real CLI: bounded argument previews, path-only edits and visible payloads 
       const starts = live.events().filter(event => event.type === 'start').length;
       await live.command('/reload'); await live.event('start', starts + 1);
       const reloaded = await live.capture('reloaded'); await check(reloaded);
-      assert.deepEqual(activity(live), activity(stock));
+      assert.deepEqual(activity(live), nativeTraffic);
       assert.deepEqual(readFileSync(wide.session), bytes, 'UI operations leave session bytes untouched');
       await live.close();
       const replay = await start('bounded-replay', { tidyUi: true, flags, session: wide.session, workspace: stock.work });
@@ -90,8 +91,11 @@ test('real CLI: bounded argument previews, path-only edits and visible payloads 
       assert.equal(replay.events().filter(event => ['call', 'result', 'model_context'].includes(event.type)).length, 0);
       const nativeReplay = await start('bounded-native-replay', { session: wide.session, workspace: stock.work });
       const sameSessionNative = await nativeReplay.capture('replayed');
+      await nativeReplay.close();
       await replay.appearance(false);
       assert.deepEqual(toolLines(await replay.capture('off')), toolLines(sameSessionNative), 'same-session native control includes unchanged edit details');
+      await replay.close();
+      assert.equal(replay.closed, true, 'bounded-summary replay is reaped with borrowed session files retained');
       assert.deepEqual(readFileSync(wide.session), bytes);
       writeFileSync(join(artifacts, 'bounded-summary-coverage.json'), JSON.stringify({
         calls: 7, results: 7, modelContexts: 8, widths: [24, 100], valueLimit: 256, summaryLimit: 1024, checkedErrorCells,

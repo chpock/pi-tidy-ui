@@ -160,6 +160,8 @@ test('highlighting volume CLI: saturated live Bash finalizes its real lease befo
     }
     for (const terminal of [live, stock]) { await terminal.event('agent_end'); await terminal.settle(); }
     const final = await live.capture('bash-final'), reference = await stock.capture('bash-stock-final'); exactTraffic(live, stock, final, reference);
+    await stock.close();
+    assert.equal(stock.closed, true, 'completed stock prefix control is reaped before native warm checks');
     assert.equal(final.tools[0].content[0].text, 'VOLUME_OK\n'); boundedRequests(live);
     const before = await stats(live, 'bash-final-before'); await live.observeAnimation();
     assert.deepEqual(work(await stats(live, 'bash-final-after')), work(before));
@@ -189,6 +191,7 @@ for (const kind of ['write', 'edit']) for (const policy of ['native', 'pi']) tes
     const state = await settledStats(live, 'file-ready', s => policy === 'native' ? nativeReady(s)
       && !!semanticStyle(live.events(), 'def VOLUME_PREFIX', live.profile) : s.counts.piBridges > 0 && s.source.globalUnsettledJobs === 0);
     const shown = await live.capture('file-full'), reference = await stock.capture('file-stock'); exactTraffic(live, stock, shown, reference);
+    await stock.close();
     assert.equal(readFileSync(join(live.work, 'limits.py'), 'utf8'), fileSource);
     assert.equal(readFileSync(join(stock.work, 'limits.py'), 'utf8'), fileSource);
     exactFile(shown, fileSource, kind);
@@ -240,6 +243,7 @@ test('highlighting volume CLI: genuinely native-disabled Bash never invokes Pi a
     const stock = await start('volume-bash-off-stock', false, plan, terminals);
     for (const terminal of [live, stock]) await terminal.run('highlighting-limits-bash');
     const shown = await live.capture('bash-disabled-full'), reference = await stock.capture('bash-disabled-stock'); exactTraffic(live, stock, shown, reference);
+    await stock.close();
     assert.equal(shown.tools[0].args.command, corrected); assert.equal(shown.tools[0].content[0].text, 'VOLUME_OK\n'); exactBash(shown, corrected);
     const prefix = cell(shown, '# VOLUME_CORRECT'), suffix = cell(shown, '# VOLUME_NATIVE_SUFFIX');
     assert.deepEqual(vector(prefix), vector(suffix)); assert.equal(prefix.fg, ansiRgb(shown.summaryStyles.toolTitle));

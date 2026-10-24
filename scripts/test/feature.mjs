@@ -4,7 +4,7 @@ import { parseArgs } from 'node:util';
 import { featurePlan, validateCatalogue } from './catalog.mjs';
 import { readInputs, validateRequirements } from './context.mjs';
 import { refreshInputs } from './prepare.mjs';
-import { execute } from './run.mjs';
+import { execute, fileJobs } from './run.mjs';
 import { appendProgress, resetProgressFile, writeReport } from './progress.mjs';
 
 function classifiedChildFailure(path) {
@@ -25,17 +25,19 @@ export async function runFeature(options, run = execute) {
   const reportPath = join(output, 'report.json'), progressPath = join(output, 'progress.jsonl');
   const startedAt = new Date().toISOString();
   const report = { schema: 1, purpose: options['affected-only'] ? 'affected-only' : 'feature-completion', features: [...new Set(names)].sort(),
-    selected: { node: [], cli: [] }, requirements: [], status: 'setup-failed', phase: 'setup', currentStage: null, stages: [], startedAt, elapsedMs: null,
+    selection: { jobs: options.jobs ?? null }, selected: { node: [], cli: [] }, requirements: [], platformExclusions: [], status: 'setup-failed', phase: 'setup', currentStage: null, stages: [], startedAt, elapsedMs: null,
     progress: basename(progressPath) };
   mkdirSync(output, { recursive: true }); resetProgressFile(progressPath);
   appendProgress(progressPath, { event: 'feature-started', at: startedAt }); writeReport(reportPath, report);
   try {
+    if (options.jobs !== undefined) fileJobs(options.jobs, 'groups', ['node']);
     let inputs = readInputs(inputPath);
     if (options.refresh) inputs = refreshInputs(inputPath);
     validateCatalogue(inputs.pi.root);
     const plan = featurePlan(names, { root: inputs.pi.root, baseline: !options['affected-only'] });
     if (!plan.node.length && !plan.cli.length) throw new Error('Empty feature selection');
     report.selected = { node: plan.node, cli: plan.cli }; report.requirements = plan.requirements;
+    report.platformExclusions = plan.excluded;
     report.source = inputs.source; report.pi = inputs.pi.version; report.node = inputs.node.version;
     report.preparation = inputs.preparationStats ?? null;
     validateRequirements(inputs, plan.requirements);
@@ -53,11 +55,14 @@ export async function runFeature(options, run = execute) {
       appendProgress(progressPath, { event: 'stage-started', stage: stage.name, at: stageStartedAt }); writeReport(reportPath, report);
       let result;
       try {
-        result = await run({ inputs: inputPath, suite: stage.suite, files: stage.files, 'network-isolated': options['network-isolated'], output: file });
+        result = await run({ inputs: inputPath, suite: stage.suite, files: stage.files,
+          ...(stage.suite !== 'check' && options.jobs !== undefined ? { jobs: options.jobs } : {}),
+          'network-isolated': options['network-isolated'], output: file });
       } catch (error) {
         const child = classifiedChildFailure(file);
         stageReport.status = child?.status ?? 'harness-failed'; stageReport.reason = child?.reason ?? 'runner-exception';
         stageReport.counts = child?.counts; stageReport.selected = child?.selected;
+        stageReport.jobs = child?.jobs ?? null; stageReport.resources = child?.resources ?? null;
         stageReport.elapsedMs = performance.now() - begin;
         stageReport.finishedAt = new Date().toISOString(); report.status = stageReport.status; report.reason = stageReport.reason; report.currentStage = null;
         appendProgress(progressPath, { event: 'stage-complete', stage: stage.name, status: stageReport.status, reason: stageReport.reason, elapsedMs: stageReport.elapsedMs, at: stageReport.finishedAt });
@@ -66,6 +71,7 @@ export async function runFeature(options, run = execute) {
       }
       stageReport.elapsedMs = performance.now() - begin; stageReport.finishedAt = new Date().toISOString();
       stageReport.status = result.status; stageReport.counts = result.counts; stageReport.selected = result.selected;
+      stageReport.jobs = result.jobs ?? null; stageReport.resources = result.resources ?? null;
       report.currentStage = null;
       if (result.status !== 'passed' || (result.counts?.skipped ?? 0) > 0 || (result.counts?.todo ?? 0) > 0) {
         report.status = result.status === 'passed' ? 'incomplete' : result.status;
@@ -93,7 +99,7 @@ export async function runFeature(options, run = execute) {
 
 if (process.argv[1] && existsSync(process.argv[1]) && realpathSync(process.argv[1]) === resolve(import.meta.filename)) {
   const { values } = parseArgs({ options: {
-    inputs: { type: 'string' }, features: { type: 'string' }, output: { type: 'string' }, refresh: { type: 'boolean' },
+    inputs: { type: 'string' }, features: { type: 'string' }, output: { type: 'string' }, refresh: { type: 'boolean' }, jobs: { type: 'string' },
     'affected-only': { type: 'boolean' }, 'check-types': { type: 'boolean' }, 'network-isolated': { type: 'boolean' },
   } });
   const result = await runFeature(values); if (result.status !== 'passed') process.exitCode = 1;

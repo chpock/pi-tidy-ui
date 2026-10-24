@@ -1,17 +1,17 @@
-import '../../../fixtures/test-guard.mjs';
+// Physical suspend scenario support. Importing this module registers no tests or resources.
 import assert from 'node:assert/strict';
-import test from 'node:test';
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
-import { PiTerminal } from '../../../fixtures/terminal-harness.mjs';
-import { closeTerminals, runCleanupSteps } from '../../../fixtures/terminal-cleanup.mjs';
-import { sharedSyntaxHost } from '../../../fixtures/shared-syntax-host.mjs';
-import { prepareSyntaxNative, requiredSharedHost, stats, until, syntaxReady, settledStats, traffic, persisted, work } from '../../../fixtures/syntax-cli-support.mjs';
-import { semanticPhaseReady, nativeReady } from '../../../fixtures/syntax-observation.mjs';
-import { followPiMarkers, paintProof } from '../../../fixtures/follow-pi-physical.mjs';
+import { PiTerminal } from './terminal-harness.mjs';
+import { closeTerminals, runCleanupSteps } from './terminal-cleanup.mjs';
+import { sharedSyntaxHost } from './shared-syntax-host.mjs';
+import { prepareSyntaxNative, requiredSharedHost, stats, until, syntaxReady, settledStats, traffic, persisted, work } from './syntax-cli-support.mjs';
+import { semanticPhaseReady, nativeReady } from './syntax-observation.mjs';
+import { followPiMarkers, paintProof } from './follow-pi-physical.mjs';
 
-const { binary, fixture, descriptor } = await prepareSyntaxNative();
+export { prepareSyntaxNative };
+export const suspendOperations = Object.freeze(['SOURCE', 'STYLE', 'APPEND']);
 const deadlineMs = 4000;
 const quote = value => `'${value.replaceAll("'", "'\\''")}'`;
 function bashProof(dump) {
@@ -26,11 +26,16 @@ async function suspend(t) {
   t.send(`jobs -s -p > ${quote(stopped)}\r`);
   await until(() => existsSync(stopped) && /^[1-9]\d*\s*$/.test(readFileSync(stopped, 'utf8')), 'shell reports stopped Pi job');
 }
-test('Occipital deliberate suspend recovery (Linux stopped-helper evidence)', { timeout: 180000, skip: process.platform !== 'linux' }, async suite => {
-for (const kind of ['owned', 'shared']) for (const mode of ['fullscreen', 'regular']) for (const operation of ['SOURCE', 'STYLE', 'APPEND']) {
-  await suite.test(`Occipital pending ${operation}: ${kind}, ${mode} past deadline during Ctrl+Z`, { timeout: 45000 }, async () => {
+export async function runSuspendCase({ kind, mode, operation }, { binary, fixture, descriptor }) {
     const host = kind === 'shared' ? await sharedSyntaxHost(requiredSharedHost(), binary) : undefined;
     let t, helperPid, helperStopped = false;
+    const lifecycle = [];
+    const recordLifecycle = type => {
+      const event = { type, kind, mode, operation, timestampMs: Date.now(), monotonicNs: process.hrtime.bigint().toString() };
+      lifecycle.push(event);
+      appendFileSync(join(t.output, 'suspend-lifecycle.jsonl'), JSON.stringify(event) + '\n');
+      return event;
+    };
     try {
       t = new PiTerminal(`pending-${kind}-${mode}-${operation}`, { mode, jobControl: true, tidyUi: false, extensions: [fixture],
       extraEnv: { ...descriptor, TIDY_UI_TEST_SUSPEND_PROBE: '1', TIDY_UI_TEST_SUSPEND_DEADLINE_MS: String(deadlineMs),
@@ -63,12 +68,21 @@ for (const kind of ['owned', 'shared']) for (const mode of ['fullscreen', 'regul
       assert.ok(transport.unsettledData > 0); assert.ok(transport.liveTimers > 0);
        {
         await suspend(t);
+        const stopped = recordLifecycle('pi-stopped');
         if (host) {
           process.kill(helperPid, 'SIGCONT'); helperStopped = false;
           assert.equal((await host.initialPeer.refreshThemes()).ok, true, 'real shared helper and independent peer progress while Pi remains stopped');
         }
-        await delay(deadlineMs + 500);
+        const minimumNs = BigInt(deadlineMs + 500) * 1_000_000n;
+        const stoppedUntil = process.hrtime.bigint() + minimumNs;
+        // A nominal Node timer can wake slightly early; retain the actual minimum.
+        for (let remaining = stoppedUntil - process.hrtime.bigint(); remaining > 0n; remaining = stoppedUntil - process.hrtime.bigint()) {
+          await delay(Number((remaining + 999_999n) / 1_000_000n));
+        }
+        const resume = recordLifecycle('pi-resume-requested');
+        assert.ok(BigInt(resume.monotonicNs) - BigInt(stopped.monotonicNs) >= minimumNs, 'Pi remains actually stopped for the complete 4.5-second window');
         t.send('fg\r'); await t.settle(); helperStopped = false;
+        recordLifecycle('pi-resumed');
        }
        if (operation === 'APPEND') {
          await settledStats(t, 'resumed-tail', s => nativeReady(s) && s.counts.sourceRequests >= 3);
@@ -103,7 +117,7 @@ for (const kind of ['owned', 'shared']) for (const mode of ['fullscreen', 'regul
        assert.equal(idle.client.provider.generation, next.client.provider.generation, 'idle provider is retained');
        assert.deepEqual(work(idle), work(next), 'ready cards reuse sources, styles, palettes and geometry after idle suspend');
        paintProof(await t.capture('idle-resume'));
-      const report = { kind, mode, operation, configuredDeadlineMs: deadlineMs, pending, after, next,
+      const report = { kind, mode, operation, configuredDeadlineMs: deadlineMs, lifecycle, pending, after, next,
         newSourceRequests: next.counts.sourceRequests - sourceBefore,
         firstStrikeCells: first.cells.flat().filter(c => c.strike).length, nextStrikeCells: nextCards.cells.flat().filter(c => c.strike).length,
         traffic: traffic(t), persisted: persisted(nextCards), events: t.events().filter(e => e.type.startsWith('suspend_transport_')) };
@@ -114,6 +128,4 @@ for (const kind of ['owned', 'shared']) for (const mode of ['fullscreen', 'regul
     } finally { await runCleanupSteps(() => {
       if (helperStopped) { try { process.kill(helperPid, 'SIGCONT'); } catch (error) { if (error.code !== 'ESRCH') throw error; } }
     }, () => closeTerminals(t ? [t] : []), async () => { if (host) await host.close(); }); }
-  });
 }
-});

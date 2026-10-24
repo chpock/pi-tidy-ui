@@ -5,7 +5,7 @@ import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { setTimeout as pause } from 'node:timers/promises';
-import { childEnv } from '../../scripts/test/context.mjs';
+import { sharedHostEnv } from './shared-host-environment.mjs';
 import { runCleanupSteps } from './terminal-cleanup.mjs';
 import { SyntaxClient } from '../../src/occipital/client.ts';
 import { createSharedFactory } from '../../src/occipital/factories.ts';
@@ -25,7 +25,7 @@ export async function reaped(pid) {
 export const themeDefinition = color => `<plist><dict><key>settings</key><array><dict><key>settings</key><dict><key>foreground</key><string>${color}</string></dict></dict></array></dict></plist>`;
 export async function sharedSyntaxHost(hostBinary, helperBinary) {
   const root = await mkdtemp(join(tmpdir(), 'occipital-cli-shared-'));
-  const env = childEnv(root, { SUBC_CGROUP_PLACEMENT: 'disabled' });
+  const env = sharedHostEnv(root);
   const runtime = env.XDG_RUNTIME_DIR, themes = join(root, 'themes'), config = join(root, 'occipital.json');
   await mkdir(themes, { mode: 0o700 });
   const themeFile = join(themes, 'cli-shared.tmTheme');
@@ -35,7 +35,7 @@ export async function sharedSyntaxHost(hostBinary, helperBinary) {
   await writeFile(wrapper, `#!/bin/sh\nexec ${quote(resolve(helperBinary))} --config ${quote(config)} "$@"\n`);
   await chmod(wrapper, 0o700);
   const daemonConfig = join(env.XDG_CONFIG_HOME, 'cortexkit'); await mkdir(daemonConfig, { mode: 0o700 });
-  await writeFile(join(daemonConfig, 'subc.jsonc'), JSON.stringify({ version: 1, modules: { occipital: { program: wrapper, reserved: true } } }), { mode: 0o600 });
+  await writeFile(join(daemonConfig, 'subc.jsonc'), JSON.stringify({ version: 1, port: 0, modules: { occipital: { program: wrapper, reserved: true } } }), { mode: 0o600 });
   const host = spawn(resolve(hostBinary), [], { cwd: root, env, stdio: ['ignore', 'pipe', 'pipe'] });
   let stderr = '', failure;
   host.on('error', error => { failure = error; }); host.stdout.resume(); host.stderr.on('data', chunk => { stderr = (stderr + chunk).slice(-8192); });

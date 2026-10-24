@@ -98,12 +98,14 @@ test('right-aligned cwd and live Git branch preserve colors padding and zero hot
       native.send('run pending\r'); await native.event('provider_gate'); writeFileSync(join(native.output, 'provider-go'), 'go'); await native.event('tool_gate');
       writeFileSync(join(native.output, 'tool-go'), 'go'); await native.event('agent_end');
       assert.deepEqual(traffic(terminal, 2), traffic(native, 2), 'cwd/status presentation leaves model traffic unchanged');
+      await native.close();
       const replay = new PiTerminal(`cwd-replay-${mode}`, { mode, workspace, session: terminal.session,
         agentSettings: { editorPaddingX: 1 }, extensions: [join(fixtures, 'editor-driver.ts')] });
       terminals.push(replay); await replay.ready(); await replay.resize(220);
       await branchPublished(replay, branch);
       const replayDump = await observe(replay, 'replay'); await check(replayDump, { full: true, branch, name });
       const persisted = await replay.capture('replay-traffic'); assert.deepEqual(persisted.branch, complete.branch);
+      await replay.close();
       rmSync(join(repo, '.git'), { recursive: true }); await terminal.settle();
       let removed = 0;
       dump = await until(async () => {
@@ -113,6 +115,7 @@ test('right-aligned cwd and live Git branch preserve colors padding and zero hot
       await check(dump, { full: true, name });
       assert.ok(!dump.screen.some(row => row.endsWith(':' + branch)), 'no stale branch after repository removal');
       writeFileSync(join(terminal.output, 'git-counters.json'), JSON.stringify({ warm: baseline, busy: busy, final: dump.git }, null, 2));
+      await terminal.close();
 
       const homeTerminal = new PiTerminal(`cwd-home-${mode}`, { mode, agentSettings: { editorPaddingX: 1 },
         extensions: [join(fixtures, 'editor-driver.ts')] });
@@ -142,6 +145,7 @@ test('right-aligned cwd and live Git branch preserve colors padding and zero hot
       assert.equal(homeTerminal.events().filter(event => ['call', 'result', 'model_context'].includes(event.type)).length, 0);
       writeFileSync(join(homeTerminal.output, 'home-cwd-coverage.json'), JSON.stringify({ cwd: homeTerminal.work, home: homeTerminal.temp,
         displayedCwd: '~/work', warm: homeBaseline, final: (await homeCheck('home-final')).git, traffic: 0 }, null, 2));
+      await homeTerminal.close();
     }
   } finally { await runCleanupSteps(() => closeTerminals(terminals), () => rmSync(base, { recursive: true, force: true })); }
 });
@@ -154,6 +158,8 @@ test('footer whole-status fitting colors native data warm counters ownership and
       const native = new PiTerminal(`footer-native-${mode}`, options); terminals.push(native); await native.ready();
       await native.run('future'); const nativeTraffic = await native.capture('traffic');
       const control = await footerObserve(native, 'accounting', 'accounting'); assert.equal(control.owner, 'FooterComponent');
+      const nativeEvents = native.events().filter(e => ['call', 'result', 'model_context'].includes(e.type));
+      await native.close();
       const live = new PiTerminal(`footer-live-${mode}`, { ...options, extraEnv: { ...options.extraEnv, TIDY_UI_TEST_FOOTER_PRESENTATION: '1' }, workspace: native.work }); terminals.push(live); await live.ready();
       await live.run('future'); const liveTraffic = await live.capture('traffic');
       const packet = await footerObserve(live, 'accounting', 'accounting');
@@ -162,7 +168,7 @@ test('footer whole-status fitting colors native data warm counters ownership and
       assert.deepEqual(usage(packet), usage(control), 'identical actual persisted usage for native and pi-tidy-ui');
       assert.deepEqual(packet.context, control.context, 'same native current context estimate');
       assert.deepEqual(persisted(liveTraffic), persisted(nativeTraffic));
-      assert.deepEqual(live.events().filter(e => ['call', 'result', 'model_context'].includes(e.type)), native.events().filter(e => ['call', 'result', 'model_context'].includes(e.type)));
+      assert.deepEqual(live.events().filter(e => ['call', 'result', 'model_context'].includes(e.type)), nativeEvents);
       assert.equal(live.events().filter(e => e.type === 'call').length, 1); assert.equal(live.events().filter(e => e.type === 'result').length, 1);
       const bytes = readFileSync(packet.session);
       let dump = await footerObserve(live, 'statuses', 'statuses'); footerPhysical(dump);
@@ -225,11 +231,15 @@ test('footer whole-status fitting colors native data warm counters ownership and
       assert.deepEqual(usage(dump), usage(packet), 'reload never duplicates fixture side usage'); footerPhysical(dump);
       const warm = await footerObserve(live, 'warm');
       for (let i = 0; i < 8; i++) { const next = await footerObserve(live, `warm-${i}`); assert.deepEqual(next.counters, warm.counters, 'warm frames reuse stats/context/layout with zero scans'); }
+      // close() reaps the process without deleting the session/workspace needed by replay.
+      await live.close();
+      assert.equal(native.closed && live.closed, true, 'completed bridges exit before saved replay starts');
       const replay = new PiTerminal(`footer-replay-${mode}`, { ...options, extraEnv: { ...options.extraEnv, TIDY_UI_TEST_FOOTER_PRESENTATION: '1' }, session: packet.session, workspace: live.work }); terminals.push(replay); await replay.ready();
       const resumed = await footerObserve(replay, 'accounting', 'accounting'); footerPhysical(resumed);
       assert.deepEqual(usage(resumed), usage(packet)); assert.deepEqual(resumed.rows, dump.rows, 'same usage/context presentation in live reload and saved replay');
       assert.equal(replay.events().filter(e => ['call', 'result', 'model_context'].includes(e.type)).length, 0, 'replay executes no tools or provider requests');
       observations.push({ mode, warm: warm.counters, nativeContext: control.context, replayContext: resumed.context });
+      await replay.close();
     }
     writeFileSync(join(artifacts, 'footer-counters.json'), JSON.stringify(observations, null, 2));
   } finally { await closeTerminals(terminals); }
@@ -243,12 +253,14 @@ test('footer session name fills spare columns without repacking statuses and res
       const native = new PiTerminal(`footer-name-native-${mode}`, options); terminals.push(native); await native.ready();
       await native.run('future'); const nativeTraffic = await native.capture('traffic');
       const nativeName = await footerObserve(native, 'named', { action: 'name', sessionName: 'SESSION' });
+      const trafficKinds = ['call', 'result', 'model_context'];
+      const nativeEvents = native.events().filter(e => trafficKinds.includes(e.type));
+      await native.close();
       const live = new PiTerminal(`footer-name-live-${mode}`, { ...options, extraEnv: { ...options.extraEnv, TIDY_UI_TEST_FOOTER_PRESENTATION: '1' }, workspace: native.work });
       terminals.push(live); await live.ready(); await live.run('future');
       const traffic = await live.capture('traffic');
       assert.deepEqual(persisted(traffic), persisted(nativeTraffic));
-      const trafficKinds = ['call', 'result', 'model_context'];
-      assert.deepEqual(live.events().filter(e => trafficKinds.includes(e.type)), native.events().filter(e => trafficKinds.includes(e.type)));
+      assert.deepEqual(live.events().filter(e => trafficKinds.includes(e.type)), nativeEvents);
       assert.equal(live.events().filter(e => e.type === 'call').length, 1);
       assert.equal(live.events().filter(e => e.type === 'result').length, 1);
       await live.command('/resume');
@@ -337,6 +349,7 @@ test('footer session name fills spare columns without repacking statuses and res
       assert.deepEqual(resumed.rows, saved.rows);
       assert.deepEqual(readFileSync(saved.session), bytes);
       assert.equal(replay.events().filter(e => trafficKinds.includes(e.type)).length, 0, 'replay executes zero tools/results/model requests');
+      await replay.close();
       const beforeClear = await footerObserve(live, 'before-fallback-clear');
       const fallbackSaved = await footerObserve(live, 'fallback-clear', { action: 'name', sessionName: '' });
       assert.equal(plain(fallbackSaved.rows[0]), stats + fallback); footerPhysical(fallbackSaved);
@@ -347,6 +360,7 @@ test('footer session name fills spare columns without repacking statuses and res
       const fallbackReloaded = await footerObserve(live, 'fallback-reloaded'); footerPhysical(fallbackReloaded);
       assert.deepEqual(fallbackReloaded.rows, fallbackSaved.rows);
       assert.deepEqual(readFileSync(fallbackSaved.session), fallbackBytes);
+      await live.close();
       const fallbackReplay = new PiTerminal(`footer-fallback-replay-${mode}`, { ...options, extraEnv: { ...options.extraEnv, TIDY_UI_TEST_FOOTER_PRESENTATION: '1' }, session: fallbackSaved.session, workspace: live.work });
       terminals.push(fallbackReplay); await fallbackReplay.ready();
       const fallbackResumed = await footerObserve(fallbackReplay, 'restored-fallback'); footerPhysical(fallbackResumed);
@@ -355,6 +369,7 @@ test('footer session name fills spare columns without repacking statuses and res
       for (let i = 0; i < 4; i++) assert.deepEqual((await footerObserve(fallbackReplay, `fallback-warm-${i}`)).counters, fallbackWarm.counters);
       assert.deepEqual(readFileSync(fallbackSaved.session), fallbackBytes);
       assert.equal(fallbackReplay.events().filter(e => trafficKinds.includes(e.type)).length, 0, 'default-title replay executes no tools/results/model requests');
+      await fallbackReplay.close();
       observations.push({ mode, renameBefore: empty.counters, renameAfter: changed.counters, warm: warm.counters, replay: resumed.counters, clearBefore: beforeClear.counters, fallback: fallbackSaved.counters, fallbackReplay: fallbackResumed.counters, fallbackWarm: fallbackWarm.counters });
     }
     writeFileSync(join(artifacts, 'footer-name-counters.json'), JSON.stringify(observations, null, 2));
@@ -440,10 +455,12 @@ test('footer cache history tracks every real request including equal CH, cold ze
       assert.equal(requests(live).filter(e => e.type === 'result').length, 30);
       const nativeData = await footerObserve(native, 'history-native-usage', 'accounting');
       assert.deepEqual(reports(dump), reports(nativeData));
+      await runCleanupSteps(() => live.close(), () => native.close());
       const replay = new PiTerminal(`footer-history-replay-${mode}`, { ...options, mode, session: file, workspace: live.work,
         extraEnv: { ...options.extraEnv, TIDY_UI_TEST_FOOTER_PRESENTATION: '1' } }); terminals.push(replay); await replay.ready();
       const resumed = await footerObserve(replay, 'history-resumed', 'accounting'); assert.deepEqual(resumed.rows, initialRows);
       assert.deepEqual(reports(resumed), reports(dump)); await check(resumed); assert.equal(requests(replay).length, 0);
+      await replay.close();
     }
   } finally { await closeTerminals(terminals); }
 });
@@ -470,6 +487,7 @@ test('footer animated Working and short-height clipping do not rescan session or
         await control.resize(100, 4, true); const nativeClip = await footerObserve(control, 'native-clipped', 'snapshot', true);
         assert.equal(nativeClip.statusIdentity, before.statusIdentity); assert.ok(nativeClip.nativeStatusRows.some(row => plain(row).includes('Working')));
         assert.equal(clipped.screen.some(row => row.includes('Working')), nativeClip.screen.some(row => row.includes('Working')), 'low-height visibility matches Pi own separate-status dock allocation');
+        await control.close();
         await terminal.resize(100, 80, true); const restored = await footerObserve(terminal, 'height-restored', 'snapshot', true); footerPhysical(restored);
         assert.equal(restored.statusIdentity, baseline.statusIdentity); assert.ok(restored.screen.some(row => row.includes('Working')));
       }
@@ -477,6 +495,7 @@ test('footer animated Working and short-height clipping do not rescan session or
       writeFileSync(join(terminal.output, 'tool-go'), 'go'); await terminal.event('agent_end'); await terminal.settle();
       const done = await footerObserve(terminal, 'done', 'accounting'); assert.equal(done.idle, true); footerPhysical(done);
       assert.ok(done.rows.map(plain).join('\n').includes('CH86.4%')); assert.ok(done.counters.aggregations > baseline.counters.aggregations);
+      await terminal.close();
     }
   } finally { await closeTerminals(terminals); }
 });

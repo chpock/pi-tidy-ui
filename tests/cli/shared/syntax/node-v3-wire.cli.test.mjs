@@ -7,7 +7,8 @@ import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SubcClient } from '@cortexkit/subc-client';
-import { childEnv, readInputs, validateNative } from '../../../../scripts/test/context.mjs';
+import { readInputs, validateNative } from '../../../../scripts/test/context.mjs';
+import { sharedHostEnv } from '../../../fixtures/shared-host-environment.mjs';
 import { until, reaped } from '../../../fixtures/shared-syntax-host.mjs';
 import { runCleanupSteps } from '../../../fixtures/terminal-cleanup.mjs';
 import { StdioTransport } from '../../../../src/occipital/stdio.ts';
@@ -26,11 +27,11 @@ async function launch() {
   assert.ok(inputs.sharedHost?.path, 'explicit prepared shared host required');
   assert.equal(createHash('sha256').update(await readFile(inputs.sharedHost.path)).digest('hex'), inputs.sharedHost.sha256);
   const root = await mkdtemp(join(tmpdir(), 'node-v3-wire-'));
-  const env = childEnv(root, { SUBC_CGROUP_PLACEMENT: 'disabled' });
+  const env = sharedHostEnv(root);
   const quote = value => `'${value.replaceAll("'", "'\\''")}'`, wrapper = join(root, 'module');
   await writeFile(wrapper, `#!/bin/sh\nexec ${quote(binary)} "$@"\n`); await chmod(wrapper, 0o700);
   const config = join(env.XDG_CONFIG_HOME, 'cortexkit'); await mkdir(config, { mode: 0o700 });
-  await writeFile(join(config, 'subc.jsonc'), JSON.stringify({ version: 1, modules: { occipital: { program: wrapper, reserved: true } } }), { mode: 0o600 });
+  await writeFile(join(config, 'subc.jsonc'), JSON.stringify({ version: 1, port: 0, modules: { occipital: { program: wrapper, reserved: true } } }), { mode: 0o600 });
   const host = spawn(inputs.sharedHost.path, [], { cwd: root, env, stdio: ['ignore', 'pipe', 'pipe'] });
   let failure; host.on('error', error => { failure = error; }); host.stdout.resume(); host.stderr.resume();
   const exit = new Promise(resolve => host.once('close', resolve));

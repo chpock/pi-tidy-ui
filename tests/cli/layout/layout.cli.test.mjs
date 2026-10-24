@@ -198,6 +198,7 @@ test('real CLI: component-owned layout work counters and released retained memor
       assert.deepEqual(control.branch, wide.branch); identity(control, wide);
       for (const type of ['call', 'result', 'model_context', 'provider_error'])
         assert.equal(native.events().filter((event) => event.type === type).length, 0, `native replay emits no ${type}`);
+      await native.close();
       await live.appearance(false); const off = await observe(live, 'off');
       assert.equal(off.stats.entries, 0); assert.equal(off.stats.retainedBytes, 0);
       const nativeRows = off.dump.tools.map((tool) => tool.lines);
@@ -236,6 +237,8 @@ test('real CLI: component-owned layout work counters and released retained memor
       const replayWarm = await observe(replay, 'replay-warm'); delta(replayCold.stats, replayWarm.stats, 0, 'actual same-session replay warm frames');
       for (const type of ['call', 'result', 'model_context', 'provider_error'])
         assert.equal(replay.events().filter((event) => event.type === type).length, 0, `pi-tidy-ui replay emits no ${type}`);
+      await replay.close();
+      assert.equal(replay.closed, true, 'fullscreen layout replay is reaped before the independent regular mode');
       const regular = await start('cache-performance-regular-replay', { tidyUi: true, mode: 'regular', session, workspace: live.work });
       const regularBase = await observe(regular, 'regular-base'); identity(regularBase.dump, wide);
       assert.equal(regularBase.stats.entries, 11);

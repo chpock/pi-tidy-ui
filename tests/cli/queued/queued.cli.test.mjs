@@ -153,6 +153,8 @@ for (const mode of ['regular', 'fullscreen']) test(`real CLI: queued cards adapt
       const traffic = contexts(terminal), stored = saved(terminal);
       await terminal.command('/reload'); await terminal.event('start', 2);
       dump = await observe(terminal, 'reload', 'snapshot'); assert.deepEqual(dump.rows, []); assert.deepEqual(contexts(terminal), traffic);
+      await terminal.close();
+      assert.equal(terminal.closed, true, 'completed delivery owner is reaped before native delivery');
       const native = await start('native', true, { workspace: terminal.work });
       native.send('run queued-cards\r'); await native.event('queued_gate'); await enqueue(native);
       const stock = await observe(native, 'queued-native'); assert.deepEqual(stock.rows, stock.nativeRows); assert.equal(stock.raw.length, 4);
@@ -161,9 +163,12 @@ for (const mode of ['regular', 'fullscreen']) test(`real CLI: queued cards adapt
       const timed = values => values.map(event => ({ ...event, messages: event.messages.map(withoutTiming) }));
       assert.deepEqual(timed(contexts(native)), timed(traffic), 'exact provider input messages match native delivery apart from wall-clock metadata');
       assert.deepEqual(saved(native), stored, 'saved message data equal apart from timestamps and assistant durationMs');
+      await native.close();
+      assert.equal(native.closed, true, 'completed native delivery is reaped before replay');
       const replay = await start('replay', false, { session: terminal.session, workspace: terminal.work });
       const replayDump = await observe(replay, 'replay', 'snapshot'); assert.deepEqual(replayDump.rows, []); assert.equal(replayDump.pending, false);
       assert.equal(replay.events().filter(event => event.type === 'queued_context').length, 0);
       assert.deepEqual(saved(replay), stored, 'replay adds neither queue rows nor model requests');
+      await replay.close();
     } finally { await runCleanupSteps(...terminals.map(terminal => () => terminal.close()), ...terminals.map(terminal => () => terminal.dispose())); }
   });
