@@ -80,7 +80,7 @@ export function createSyntaxOptions(ctx: Pick<ExtensionContext, 'cwd' | 'session
         if (!artifact) throw new Error('The declared Occipital release has no artifact for this platform/ABI.');
         const installedPath = await installedPayload(target, release.version);
         if (signal.aborted) throw new Error('Occipital acquisition was cancelled.');
-        return createOwnedFactory({ diagnostic, release: { version: release.version, ...artifact }, cacheDir: join(agentDir, 'cache', 'occipital'), installedPath,
+        return createOwnedFactory({ diagnostic, release: { version: release.version, ...artifact }, cacheDir: join(agentDir, 'extensions', 'pi-tidy-ui', 'occipital'), installedPath,
           requestDeadlineMs: OCCIPITAL_LIMITS.dataDeadlineMs, terminateGraceMs: 1000, cwd })(signal);
       },
     },

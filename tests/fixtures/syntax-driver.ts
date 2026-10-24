@@ -141,7 +141,7 @@ export default function syntaxDriver(pi: ExtensionAPI) {
           while (!existsSync(join(output, 'syntax-acquire-go'))) await pause(20, undefined, { signal });
         }
         // Only test-controlled bytes are seeded; the real bootstrap then verifies them.
-        const cache = join(getAgentDir(), 'cache', 'occipital', release.version, artifact.target);
+        const cache = join(getAgentDir(), 'extensions', 'pi-tidy-ui', 'occipital', release.version, artifact.target);
         await mkdir(cache, { recursive: true }); await copyFile(binary, join(cache, 'occipital'));
         const transport = await acquire(signal) as StdioTransport;
         suspendProbe?.install(transport, 'owned');

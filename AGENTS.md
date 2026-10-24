@@ -20,6 +20,8 @@ Subagents may be used when implementing tasks. Delegation is permitted, not requ
 
 After **every change**, you MUST update the affected technical documentation in the same task. Use [docs/README.md](docs/README.md) to locate the canonical chapters, and keep their descriptions of behavior, internal mechanisms, contracts, limitations and design rationale consistent with the current implementation. Update affected cross-references as well. The task is not complete until these documentation updates are complete; plans, reviews and reports in `.test-artifacts` do not substitute for them.
 
+Every task-completion response to the operator MUST explicitly identify the documentation updated, or state that documentation was unchanged.
+
 ## Testing
 
 - Before selecting checks, read [docs/testing.md](docs/testing.md) for prepared inputs, contract groups, real integration requirements and GC setup.

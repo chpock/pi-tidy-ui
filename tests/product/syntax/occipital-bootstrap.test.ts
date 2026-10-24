@@ -2,7 +2,7 @@ import '../../fixtures/test-guard.mjs';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { createHash } from 'node:crypto';
-import { chmod, cp, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { chmod, cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -103,6 +103,44 @@ test('bootstrap constructs without source, preferences, SDK import or provider w
 
 const hostTarget = nativeTarget(process.platform, process.arch,
   process.platform === 'linux' && typeof (process.report.getReport() as { header?: { glibcVersionRuntime?: unknown } }).header?.glibcVersionRuntime === 'string');
+
+test('published bootstrap stores downloads beside extension settings and reuses them across owners',
+  { skip: !hostTarget || process.platform === 'win32' }, async t => {
+    const { root, bootstrap } = await isolatedDevelopment(t, '0.2.0'), agent = join(root, 'agent');
+    const version = '0.1.0', url = 'https://example.invalid/controlled-download';
+    const body = `#!${process.execPath}\nsetInterval(() => {}, 1000000);\n`;
+    const release: NativeReleaseDeclaration = { version, artifacts: [{ target: hostTarget!, url,
+      sha256: createHash('sha256').update(body).digest('hex'), maxBytes: Buffer.byteLength(body) }] };
+    const settingsDirectory = join(agent, 'extensions', 'pi-tidy-ui');
+    const legacy = join(agent, 'cache', 'occipital', version, hostTarget!, 'occipital');
+    const expected = join(settingsDirectory, 'occipital', version, hostTarget!, 'occipital');
+    await mkdir(dirname(legacy), { recursive: true }); await writeFile(legacy, body); await chmod(legacy, 0o700);
+    await mkdir(settingsDirectory, { recursive: true });
+    const config = '{"unrelated":"preserve"}\n'; await writeFile(join(settingsDirectory, 'config.json'), config);
+    const oldAgent = process.env.PI_CODING_AGENT_DIR, oldFetch = globalThis.fetch;
+    let downloads = 0;
+    process.env.PI_CODING_AGENT_DIR = agent;
+    globalThis.fetch = async input => { assert.equal(String(input), url); downloads++; return new Response(body); };
+    try {
+      for (const phase of ['cold', 'warm']) {
+        const options = bootstrap.createSyntaxOptions({ ...ctx, cwd: root }, release);
+        const transport = await options.provider.acquireOwned(new AbortController().signal);
+        t.after(() => transport.close());
+        const pid = transport.stats().pid;
+        try {
+          assert.equal(transport.stats().childState, 'running'); assert.ok(pid);
+          assert.equal(downloads, 1, `${phase}: one cold download, no warm download or legacy-cache reuse`);
+          assert.equal(await readFile(expected, 'utf8'), body);
+        } finally { await transport.close(); }
+        assert.throws(() => process.kill(pid!, 0), { code: 'ESRCH' });
+      }
+      assert.equal(await readFile(legacy, 'utf8'), body);
+      assert.equal(await readFile(join(settingsDirectory, 'config.json'), 'utf8'), config);
+    } finally {
+      globalThis.fetch = oldFetch;
+      if (oldAgent === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = oldAgent;
+    }
+  });
 
 test('published bootstrap exact installed metadata hands verified payload to owned factory; invalid metadata never starts it',
   { skip: !hostTarget || process.platform === 'win32' }, async () => {

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import childProcess from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { createRequire, syncBuiltinESMExports } from 'node:module';
-import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, realpath, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { isAbsolute, join, sep } from 'node:path';
 import { performance } from 'node:perf_hooks';
@@ -142,6 +142,9 @@ try {
     const { SyntaxClient } = await load('occipital/client.ts');
     assert.deepEqual((await load('occipital/release.ts')).NATIVE_RELEASE, NATIVE_RELEASE);
     for (const phase of ['cold', 'warm']) {
+      const obsolete = join(home, 'agent/extensions/pi-tidy-ui/occipital', `0.0.0-obsolete-${phase}`);
+      await mkdir(join(obsolete, target), { recursive: true });
+      await writeFile(join(obsolete, target, executable), 'obsolete download fixture');
       const beforeUrls = urls.length, beforeDownloads = downloads, beforeStarts = starts.length, beforeHTTPDownloads = registry.counts().downloads;
       client = new SyntaxClient({ ...createSyntaxOptions({ cwd: home, sessionManager: { getSessionId: () => 'installed-native' } }), onChange: () => wake?.() });
       assert.equal(urls.length, beforeUrls); assert.equal(starts.length, beforeStarts);
@@ -152,13 +155,14 @@ try {
       client.previewTheme({ kind: 'occipital', id: nativeProfile.id });
       client.sources.setStyleSelection({ kind: 'native', id: nativeProfile.id, fingerprint: nativeProfile.fingerprint });
       const expectedPath = installed ? join(consumer, 'node_modules', nativeName, executable)
-        : join(home, 'agent/cache/occipital', NATIVE_RELEASE.version, target, executable);
+        : join(home, 'agent/extensions/pi-tidy-ui/occipital', NATIVE_RELEASE.version, target, executable);
       assert.equal(starts.length, beforeStarts + 1); assert.equal(starts.at(-1), expectedPath);
       assert.equal(childProcess.execFileSync(expectedPath, ['--version'], { encoding: 'utf8', timeout: 5000, env: process.env }).trim(), `occipital ${NATIVE_RELEASE.version}`);
       const expectedDownloads = !installed && phase === 'cold' ? 1 : 0;
       assert.equal(downloads - beforeDownloads, expectedDownloads);
       assert.equal(registry.counts().downloads - beforeHTTPDownloads, expectedDownloads);
       assert.deepEqual(await executableDigest(expectedPath), { sha256: native.sha256, maxBytes: native.bytes });
+      await assert.rejects(stat(obsolete), { code: 'ENOENT' });
       registry.assertNoRejectedRequests();
       if (expectedDownloads) assert.equal(urls[beforeUrls], artifact.url); else assert.equal(urls.length, beforeUrls);
       async function classified(version, text, complete) {
@@ -203,7 +207,7 @@ try {
         sourceProgression: [first, tail, complete].map(stats => stats.dispatches - stats.styleDispatches),
         styleProgression: [first, tail, complete].map(stats => stats.styleDispatches),
         prefixReparsed: false, warmDispatches: warm.dispatches - complete.dispatches, warmSourceDispatches, warmStyleDispatches,
-        executable: expectedPath, sdkAbsent: !installed, processReaped: true }));
+        executable: expectedPath, prunedVersions: 1, sdkAbsent: !installed, processReaped: true }));
     }
     globalThis.fetch = originalFetch; childProcess.spawn = originalSpawn; syncBuiltinESMExports();
     restoreEnv();

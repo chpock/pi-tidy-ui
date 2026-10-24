@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { access, open, mkdir, chmod, link, rename, unlink } from 'node:fs/promises';
+import { access, open, mkdir, chmod, link, rename, unlink, readdir, rm, stat } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { isAbsolute, parse, resolve, sep } from 'node:path';
 
@@ -80,10 +80,30 @@ async function responseFor(release: NativeRelease, fetcher: typeof fetch, signal
   throw new NativeDeliveryError('Occipital artifact redirect limit.');
 }
 
+async function pruneVersions(cacheDir: string, keep: string, signal: AbortSignal): Promise<void> {
+  if (signal.aborted) return;
+  const entries = await readdir(cacheDir, { withFileTypes: true }).catch(() => []);
+  for (const entry of entries) {
+    if (signal.aborted) return;
+    if (!entry.isDirectory() || entry.name === keep || entry.name.length > 64 || !parseVersion(entry.name)) continue;
+    const directory = appendPath(cacheDir, entry.name);
+    if (entry.name.toLowerCase() === keep.toLowerCase()) {
+      // Case-preserving filesystems can enumerate another spelling of the selected directory.
+      const selected = await stat(appendPath(cacheDir, keep), { bigint: true }).catch(() => undefined);
+      const candidate = await stat(directory, { bigint: true }).catch(() => undefined);
+      if (!selected || !candidate || (selected.dev === candidate.dev && selected.ino === candidate.ino)) continue;
+    }
+    if (signal.aborted) return;
+    // Disposable storage: locked or inaccessible versions are retried on the next acquisition.
+    await rm(directory, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
 /**
  * Resolve exactly one caller-declared release; no discovery/latest lookup or process launch.
  * Cache publication is complete-file only. Concurrent cold clients may independently
  * download the same immutable artifact; no shared lock or stale-lock service is needed.
+ * Successful acquisition best-effort prunes other downloaded versions, without tracking users.
  * The caller supplies trusted release metadata, not a user-selected download override.
  */
 export async function acquireNative(options: { cacheDir: string; release: NativeRelease; installedPath?: string; signal?: AbortSignal; fetcher?: typeof fetch }): Promise<NativeAcquisition> {
@@ -104,12 +124,16 @@ export async function acquireNative(options: { cacheDir: string; release: Native
       }
       catch { signal.throwIfAborted(); /* An unusable payload may use exact delivery. */ }
       signal.throwIfAborted();
-      if (installed) return { path: installedPath, downloaded: false };
+      if (installed) {
+        await pruneVersions(cacheDir, release.version, signal);
+        return { path: installedPath, downloaded: false };
+      }
     }
     const directory = appendPath(appendPath(cacheDir, release.version), release.target);
     const path = appendPath(directory, release.target.startsWith('windows-') ? 'occipital.exe' : 'occipital');
     if (await exact(path, release, signal)) {
       await chmod(path, 0o700); signal.throwIfAborted();
+      await pruneVersions(cacheDir, release.version, signal);
       return { path, downloaded: false };
     }
     await mkdir(directory, { recursive: true, mode: 0o700 });
@@ -150,6 +174,7 @@ export async function acquireNative(options: { cacheDir: string; release: Native
         if (!await exact(path, release, signal)) await rename(temporary, path);
       }
     }
+    await pruneVersions(cacheDir, release.version, signal);
     return { path, downloaded: true };
   } catch (error) {
     // Do not forward filesystem/URL/body strings into Pi diagnostics.

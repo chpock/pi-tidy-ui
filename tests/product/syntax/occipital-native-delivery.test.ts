@@ -2,6 +2,8 @@ import '../../fixtures/test-guard.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
+import fs from 'node:fs/promises';
+import { syncBuiltinESMExports } from 'node:module';
 import { chmod, mkdtemp, mkdir, readFile, readdir, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -20,8 +22,14 @@ async function fixture(t: any) {
   return cacheDir;
 }
 const response = () => new Response(bytes, { headers: { 'content-length': String(bytes.length) } });
+async function seedVersion(cacheDir: string, version: string, target = release.target) {
+  const path = join(cacheDir, version, target, target.startsWith('windows-') ? 'occipital.exe' : 'occipital');
+  await mkdir(dirname(path), { recursive: true });
+  await writeFile(path, bytes);
+  return path;
+}
 
-test('exact cache hit adds zero downloads and distinct versions never replace older artifacts', async t => {
+test('retention keeps the exact current version through upgrade and rollback with explicit download counts', async t => {
   const cacheDir = await fixture(t); let downloads = 0;
   const fetcher: typeof fetch = async () => { downloads++; return response(); };
   const first = await acquireNative({ cacheDir, release, fetcher });
@@ -30,11 +38,18 @@ test('exact cache hit adds zero downloads and distinct versions never replace ol
   assert.equal(warm.path, first.path); assert.equal(warm.downloaded, false); assert.equal(downloads, 1);
   const other = await acquireNative({ cacheDir, release: { ...release, version: '0.2.0-fixture' }, fetcher });
   assert.notEqual(other.path, first.path); assert.equal(downloads, 2);
-  assert.deepEqual(new Uint8Array(await readFile(first.path)), bytes);
+  await assert.rejects(stat(dirname(dirname(first.path))), { code: 'ENOENT' });
+  assert.deepEqual(new Uint8Array(await readFile(other.path)), bytes);
+  const rollback = await acquireNative({ cacheDir, release, fetcher });
+  assert.equal(rollback.path, first.path); assert.equal(rollback.downloaded, true); assert.equal(downloads, 3);
+  await assert.rejects(stat(dirname(dirname(other.path))), { code: 'ENOENT' });
+  assert.equal((await acquireNative({ cacheDir, release, fetcher })).downloaded, false);
+  assert.equal(downloads, 3);
 });
 
-test('checksum, empty, declared/streamed size and interrupted transfer never publish a partial artifact', async t => {
+test('checksum, empty, size and interrupted failures preserve previous versions and never publish partial bytes', async t => {
   const cacheDir = await fixture(t);
+  const previous = await acquireNative({ cacheDir, release, fetcher: async () => response() });
   const cases: [string, typeof fetch][] = [
     ['checksum', async () => new Response('wrong')],
     ['empty', async () => new Response(new Uint8Array())],
@@ -46,6 +61,7 @@ test('checksum, empty, declared/streamed size and interrupted transfer never pub
     const version = `0.1.0-${kind}`;
     await assert.rejects(acquireNative({ cacheDir, release: { ...release, version }, fetcher }), NativeDeliveryError);
     assert.deepEqual(await readdir(join(cacheDir, version, release.target)), [], kind);
+    assert.deepEqual(new Uint8Array(await readFile(previous.path)), bytes, kind);
   }
 });
 
@@ -132,13 +148,16 @@ test('cancellation during a pending real transfer removes the observed partial t
 });
 
 
-test('explicit trusted installed payload is verified exactly before cache/download with no metadata mutation', async t => {
+test('explicit trusted installed payload prunes old downloads without download or metadata mutation', async t => {
   const cacheDir = await fixture(t), installedPath = join(cacheDir, 'installed-payload'); let downloads = 0;
+  const obsolete = await seedVersion(cacheDir, '0.0.9');
   await writeFile(installedPath, bytes); await chmod(installedPath, 0o700);
   const trusted = Object.freeze({ ...release });
   const result = await acquireNative({ cacheDir, release: trusted, installedPath, fetcher: async () => { downloads++; return response(); } });
   assert.deepEqual(result, { path: installedPath, downloaded: false });
   assert.equal(downloads, 0); assert.deepEqual(trusted, release);
+  await assert.rejects(stat(dirname(dirname(obsolete))), { code: 'ENOENT' });
+  assert.deepEqual(new Uint8Array(await readFile(installedPath)), bytes);
 });
 
 test('wrong digest, over-bound and missing installed payload use only the exact declared cache/download', async t => {
@@ -232,4 +251,111 @@ test('absolute anchoring preserves symlink parent traversal for installed payloa
     assert.equal(installedOptions.installedPath, 'alias/../payload'); assert.equal(cacheOptions.cacheDir, 'alias/../cache');
     assert.deepEqual(await readFile(installed), executableBytes); assert.equal((await stat(installed)).mode & 0o777, 0o755);
   } finally { process.chdir(previousCwd); }
+});
+
+
+test('retention on a warm hit removes only other bounded version directories and preserves every current target', async t => {
+  const root = await fixture(t), cacheDir = join(root, 'occipital'); let downloads = 0;
+  const options = { cacheDir, release, fetcher: async () => { downloads++; return response(); } };
+  const current = await acquireNative(options);
+  const otherTarget = await seedVersion(cacheDir, release.version, 'windows-x64');
+  const obsolete = await seedVersion(cacheDir, '0.0.9');
+  const unknown = await seedVersion(cacheDir, 'not-a-version');
+  const oversized = await seedVersion(cacheDir, `1.0.0-${'x'.repeat(64)}`);
+  const external = await seedVersion(join(root, 'external'), '0.0.8');
+  const legacy = await seedVersion(join(root, 'cache', 'occipital'), '0.0.7');
+  const config = join(root, 'config.json'), dev = join(root, 'source', 'occipital');
+  await writeFile(config, '{"unchanged":true}'); await mkdir(dirname(dev)); await writeFile(dev, bytes);
+  const versionFile = join(cacheDir, '8.0.0'); await writeFile(versionFile, bytes);
+  await symlink(dirname(dirname(external)), join(cacheDir, '0.0.8'), process.platform === 'win32' ? 'junction' : 'dir');
+  assert.equal((await acquireNative(options)).path, current.path);
+  assert.equal(downloads, 1);
+  await assert.rejects(stat(dirname(dirname(obsolete))), { code: 'ENOENT' });
+  for (const path of [current.path, otherTarget, unknown, oversized, external, legacy, dev, versionFile]) {
+    assert.deepEqual(new Uint8Array(await readFile(path)), bytes);
+  }
+  assert.equal(await readFile(config, 'utf8'), '{"unchanged":true}');
+  assert.equal((await fs.lstat(join(cacheDir, '0.0.8'))).isSymbolicLink(), true);
+});
+
+test('retention ignores a blocked deletion, removes other versions and retries on the next warm hit', async t => {
+  const cacheDir = await fixture(t); let downloads = 0, refused = 0, blocked = true;
+  const options = { cacheDir, release, fetcher: async () => { downloads++; return response(); } };
+  const current = await acquireNative(options);
+  const locked = await seedVersion(cacheDir, '0.0.8'), obsolete = await seedVersion(cacheDir, '0.0.9');
+  const lockedDirectory = dirname(dirname(locked)), realRm = fs.rm;
+  t.mock.method(fs, 'rm', async (...args: Parameters<typeof fs.rm>) => {
+    if (args[0] === lockedDirectory) {
+      refused++;
+      if (blocked) throw Object.assign(new Error('fixture locked executable'), { code: 'EPERM' });
+    }
+    return realRm(...args);
+  });
+  syncBuiltinESMExports();
+  t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
+  assert.equal((await acquireNative(options)).path, current.path);
+  assert.equal(refused, 1); assert.equal(downloads, 1);
+  assert.deepEqual(new Uint8Array(await readFile(locked)), bytes);
+  await assert.rejects(stat(dirname(dirname(obsolete))), { code: 'ENOENT' });
+  blocked = false;
+  assert.equal((await acquireNative(options)).downloaded, false);
+  assert.equal(refused, 2); assert.equal(downloads, 1);
+  await assert.rejects(stat(lockedDirectory), { code: 'ENOENT' });
+  assert.deepEqual(new Uint8Array(await readFile(current.path)), bytes);
+});
+
+test('retention ignores enumeration failure and retries after a later successful acquisition', async t => {
+  const cacheDir = await fixture(t); let downloads = 0, scans = 0;
+  const options = { cacheDir, release, fetcher: async () => { downloads++; return response(); } };
+  const current = await acquireNative(options), obsolete = await seedVersion(cacheDir, '0.0.9');
+  const scan = t.mock.method(fs, 'readdir', async () => {
+    scans++;
+    throw Object.assign(new Error('fixture unreadable download root'), { code: 'EACCES' });
+  });
+  syncBuiltinESMExports();
+  t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
+  assert.equal((await acquireNative(options)).path, current.path);
+  assert.equal(scans, 1); assert.equal(downloads, 1);
+  assert.deepEqual(new Uint8Array(await readFile(obsolete)), bytes);
+  scan.mock.restore(); syncBuiltinESMExports();
+  assert.equal((await acquireNative(options)).downloaded, false);
+  assert.equal(downloads, 1);
+  await assert.rejects(stat(dirname(dirname(obsolete))), { code: 'ENOENT' });
+});
+
+
+test('retention preserves the current directory when filesystem enumeration uses different letter case', async t => {
+  const cacheDir = await fixture(t), selected = { ...release, version: '1.0.0-rc' };
+  const options = { cacheDir, release: selected, fetcher: async () => response() };
+  const current = await acquireNative(options), directory = dirname(dirname(current.path)), alias = join(cacheDir, '1.0.0-RC');
+  const realReaddir = fs.readdir, realStat = fs.stat, realRm = fs.rm;
+  let aliasRemovals = 0;
+  t.mock.method(fs, 'readdir', async (path: Parameters<typeof fs.readdir>[0], options: { withFileTypes: true }) => {
+    const entries = await realReaddir(path, options);
+    if (path === cacheDir) for (const entry of entries) if (entry.name === selected.version) entry.name = '1.0.0-RC';
+    return entries;
+  });
+  t.mock.method(fs, 'stat', (...args: Parameters<typeof fs.stat>) => {
+    if (args[0] === alias) args[0] = directory;
+    return realStat(...args);
+  });
+  t.mock.method(fs, 'rm', (...args: Parameters<typeof fs.rm>) => {
+    if (args[0] === alias) { aliasRemovals++; args[0] = directory; }
+    return realRm(...args);
+  });
+  syncBuiltinESMExports();
+  t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
+  assert.equal((await acquireNative(options)).path, current.path);
+  assert.equal(aliasRemovals, 0);
+  assert.deepEqual(new Uint8Array(await readFile(current.path)), bytes);
+});
+
+test('retention removes distinct differently-cased versions but preserves a real case-insensitive alias', async t => {
+  const cacheDir = await fixture(t), selected = { ...release, version: '1.0.0-rc' };
+  const previous = await seedVersion(cacheDir, '1.0.0-RC'), selectedDirectory = join(cacheDir, selected.version);
+  const aliases = await stat(selectedDirectory).then(() => true, error => { if (error.code !== 'ENOENT') throw error; return false; });
+  const current = await acquireNative({ cacheDir, release: selected, fetcher: async () => response() });
+  assert.deepEqual(new Uint8Array(await readFile(current.path)), bytes);
+  if (aliases) assert.deepEqual(new Uint8Array(await readFile(previous)), bytes);
+  else await assert.rejects(stat(dirname(dirname(previous))), { code: 'ENOENT' });
 });

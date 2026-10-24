@@ -102,7 +102,7 @@ try {
       client.previewTheme({ kind: 'occipital', id: nativeProfile.id });
       client.sources.setStyleSelection({ kind: 'native', id: nativeProfile.id, fingerprint: nativeProfile.fingerprint });
       const expectedPath = installed ? join(consumer, 'node_modules', nativeName, executable)
-        : join(home, 'agent/cache/occipital', NATIVE_RELEASE.version, target, executable);
+        : join(home, 'agent/extensions/pi-tidy-ui/occipital', NATIVE_RELEASE.version, target, executable);
       assert.equal(starts.length, beforeStarts + 1); assert.equal(starts.at(-1), expectedPath);
       assert.equal(childProcess.execFileSync(expectedPath, ['--version'], { encoding: 'utf8', timeout: 5000, env: process.env }).trim(), `occipital ${NATIVE_RELEASE.version}`);
       const expectedDownloads = !installed && phase === 'cold' ? 1 : 0;
