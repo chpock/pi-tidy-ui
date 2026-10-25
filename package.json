@@ -1,11 +1,31 @@
 {
   "name": "pi-tidy-ui",
   "version": "0.0.0",
-  "description": "An alternative presentation for Pi tools: concise summaries and native rich cards",
+  "description": "Compact UI for the Pi coding agent: rich tool cards, Rust-powered syntax highlighting, and prompt-cache usage history.",
+  "author": {
+    "name": "Kostiantyn Kushnir",
+    "url": "https://github.com/chpock"
+  },
   "type": "module",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/chpock/pi-tidy-ui.git"
+  },
+  "homepage": "https://github.com/chpock/pi-tidy-ui#readme",
+  "bugs": {
+    "url": "https://github.com/chpock/pi-tidy-ui/issues"
+  },
   "keywords": [
-    "pi-package"
+    "pi-package",
+    "pi-extension",
+    "pi-coding-agent",
+    "coding-agent",
+    "terminal-ui",
+    "tui",
+    "tool-cards",
+    "syntax-highlighting",
+    "aft"
   ],
   "files": [
     "src",
@@ -13,7 +33,9 @@
     "docs/architecture.md",
     "docs/testing.md",
     "docs/performance-testing.md",
+    "docs/screenshots.md",
     "docs/releases.md",
+    "docs/assets/pi-tidy-ui.png",
     "docs/tool-summary-spec.md",
     "docs/bash-card-spec.md",
     "docs/bash-streaming-contract.md",
@@ -50,6 +72,7 @@
     "LICENSE"
   ],
   "pi": {
+    "image": "https://raw.githubusercontent.com/chpock/pi-tidy-ui/main/docs/assets/pi-tidy-ui.png",
     "extensions": [
       "./src/index.ts"
     ]
@@ -60,6 +83,7 @@
     "test": "node scripts/test/run.mjs --suite unit",
     "test:feature": "node scripts/test/feature.mjs",
     "test:perf": "node scripts/test/performance/run.mjs",
+    "screenshot": "node scripts/screenshot/run.mjs",
     "test:product": "node scripts/test/run.mjs --suite product",
     "test:group": "node scripts/test/run.mjs --suite groups",
     "test:smoke": "node scripts/test/run.mjs --suite smoke",

@@ -217,6 +217,9 @@ jobs:
   extension-package:
     needs: [metadata, native-linux, native-platforms, consumer-linux, delivery, sdk, cli]
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/pi-tidy-ui-v')
+    permissions:
+      contents: read
+      id-token: write
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     env:
@@ -233,6 +236,9 @@ jobs:
         with:
           package-manager-cache: false
           node-version: '26.7.0'
+      - name: Install exact trusted-publishing npm CLI
+        timeout-minutes: 5
+        run: npm install --global npm@12.0.2 --ignore-scripts --no-audit --no-fund
       - uses: actions/download-artifact@v8.0.2
         with:
           pattern: occipital-v${{ needs.metadata.outputs.daemon_version }}-*
@@ -249,13 +255,10 @@ jobs:
           node scripts/release/extension-release.mjs "$RELEASE_REF" \
             .test-artifacts/extension-release/native-ci .test-artifacts/extension-release/public \
             .test-artifacts/extension-release/prepared "$NATIVE_TARGETS"
-      - name: Pack the admitted extension without publishing
-        run: |
-          npm pack ./.test-artifacts/extension-release/prepared/extension --ignore-scripts \
-            --pack-destination .test-artifacts/extension-release/prepared
-      # Future extension npm publication: intentionally disabled.
-      # - name: Publish the admitted pi-tidy-ui package
-      #   run: npm publish .test-artifacts/extension-release/prepared/pi-tidy-ui-*.tgz --access public --provenance --ignore-scripts
+      - name: Pack the admitted extension and record exact archive integrity
+        run: node scripts/release/extension-publication.mjs pack .test-artifacts/extension-release/prepared/plan.json
+      - name: Publish pi-tidy-ui using OIDC and verify public registry bytes
+        run: node scripts/release/extension-publication.mjs publish .test-artifacts/extension-release/prepared/publication.json
 
   result:
     name: ${{ github.event_name == 'schedule' && 'Nightly latest-Pi result' || 'Complete CI result' }}

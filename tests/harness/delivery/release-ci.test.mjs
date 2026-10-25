@@ -446,7 +446,7 @@ test('GNU tooling-image cache is recipe/platform scoped and leaves full native c
   }
 });
 
-test('extension release retains exact admission and packing, but npm publication is a commented placeholder without stored tarballs',async()=>{
+test('extension release retains every admission gate and publishes only the recorded archive through job-local OIDC without uploads',async()=>{
   const ci=await readFile(join(repo,'.github/workflows/ci.yml'),'utf8'),publication=workflowJob(ci,'extension-package');
   const gates=publication.match(/^    needs: \[([^\n]+)\]/m)[1].split(', ');
   for(const gate of ['metadata','native-linux','native-platforms','consumer-linux','delivery','sdk','cli'])assert.ok(gates.includes(gate),gate);
@@ -455,16 +455,25 @@ test('extension release retains exact admission and packing, but npm publication
   assert.match(publication,/gh api .*releases\/tags\/\$DAEMON_TAG/);assert.match(publication,/gh release download "\$DAEMON_TAG"/);
   assert.match(publication,/node scripts\/release\/extension-release\.mjs "\$RELEASE_REF"/);
   assert.match(publication,/prepared "\$NATIVE_TARGETS"/);
-  assert.ok(publication.indexOf('extension-release.mjs')<publication.indexOf('npm pack'));
-  assert.match(publication,/npm pack .*\/extension --ignore-scripts/);
-  assert.match(publication,/^      #   run: npm publish .*--provenance/m);
+  assert.match(publication,/^    permissions:\n      contents: read\n      id-token: write$/m);
+  assert.match(publication,/node-version: '26\.7\.0'/);
+  assert.match(publication,/npm install --global npm@12\.0\.2 --ignore-scripts/);
+  const pack='node scripts/release/extension-publication.mjs pack .test-artifacts/extension-release/prepared/plan.json';
+  const publish='node scripts/release/extension-publication.mjs publish .test-artifacts/extension-release/prepared/publication.json';
   const executable=publication.split('\n').filter(line=>!/^\s*#/.test(line)).join('\n');
-  assert.doesNotMatch(executable,/npm publish|contents: write|id-token: write|upload-artifact|gh release create/);
+  assert.ok(executable.includes(pack),'pack the admitted preparation plan, not a package glob');
+  assert.ok(executable.includes(publish),'publish only the integrity-bound publication record');
+  assert.ok(executable.indexOf('extension-release.mjs')<executable.indexOf(pack));
+  assert.ok(executable.indexOf('npm@12.0.2')<executable.indexOf(pack));
+  assert.ok(executable.indexOf(pack)<executable.indexOf(publish));
+  assert.doesNotMatch(executable,/run: npm publish|contents: write|upload-artifact|gh release create|NODE_AUTH_TOKEN|NPM_TOKEN|npm (?:login|adduser|stage)|secrets\./);
+  assert.equal((executable.match(/extension-publication\.mjs publish /g)||[]).length,1);
   assert.doesNotMatch(workflowJob(ci,'sdk'),/npm pack/,'same-source consumer preparation already packs the extension; product jobs must not duplicate it');
   const checks = await readFile(join(repo,'.github/workflows/ci-checks.yml'),'utf8');
   assert.doesNotMatch(checks,/npm pack/,'delegating SDK execution must not move duplicate packing into its reusable workflow');
   const manifest=await json(join(repo,'package.json')),lock=await json(join(repo,'package-lock.json'));
   assert.equal(manifest.version,'0.0.0');
+  assert.deepEqual(manifest.repository,{type:'git',url:`git+https://github.com/${repository}.git`});
   assert.equal(Object.keys(manifest.optionalDependencies).some(name=>name.startsWith('@kchpock/occipital-')),false);
   assert.equal(Object.keys(lock.packages).some(name=>name.startsWith('node_modules/@kchpock/occipital-')),false);
 });

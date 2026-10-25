@@ -66,7 +66,7 @@ export function observeNativeReceipts(term, state) {
 export class PiTerminal {
   // The integration-profile helper may supply additional isolated settings, environment and explicit extensions.
   constructor(name, { tidyUi = false, mode = 'fullscreen', session, flags = [],
-    agentSettings = {}, extraEnv = {}, extensions = [], workspace, profileFactory, tidyUiSettings, jobControl = false, dimensions = { columns: 100, rows: 80 } } = {}) {
+    agentSettings = {}, extraEnv = {}, extensions = [], workspace, profileFactory, tidyUiSettings, jobControl = false, seedFixtures = true, dimensions = { columns: 100, rows: 80 } } = {}) {
     const inputs = readInputs(), python = toolPath('python3');
     this.output = join(artifacts, name);
     this.observeMenuBounds = extraEnv.TIDY_UI_TEST_MENU_GEOMETRY === '1';
@@ -96,31 +96,33 @@ export class PiTerminal {
       writeFileSync(path, file.content);
     }
     if (this.profile) writeFileSync(join(this.output, 'integration-profile.json'), JSON.stringify(this.profile, null, 2));
-    if (!session) rmSync(join(this.work, 'written.txt'), { force: true });
-    writeFileSync(join(this.work, 'a.txt'), 'READ_A_CONTENT\n');
-    writeFileSync(join(this.work, 'b.txt'), 'READ_B_CONTENT\n');
-    if (!session) {
-      writeFileSync(join(this.work, 'write-empty.ts'), '');
-      writeFileSync(join(this.work, 'write-cleared.ts'), 'const old = 1;\n');
-      mkdirSync(join(this.work, 'write-directory'), { recursive: true });
-      rmSync(join(this.work, 'write-stock.ts'), { force: true });
+    if (seedFixtures) {
+      if (!session) rmSync(join(this.work, 'written.txt'), { force: true });
+      writeFileSync(join(this.work, 'a.txt'), 'READ_A_CONTENT\n');
+      writeFileSync(join(this.work, 'b.txt'), 'READ_B_CONTENT\n');
+      if (!session) {
+        writeFileSync(join(this.work, 'write-empty.ts'), '');
+        writeFileSync(join(this.work, 'write-cleared.ts'), 'const old = 1;\n');
+        mkdirSync(join(this.work, 'write-directory'), { recursive: true });
+        rmSync(join(this.work, 'write-stock.ts'), { force: true });
+      }
+      if (!session) {
+        if (extraEnv.TIDY_UI_TEST_EDIT_PERFORMANCE === '1') writeFileSync(join(this.work, 'edit-minified.ts'), 'x+=1;'.repeat(3200) + '\n');
+        writeFileSync(join(this.work, 'edit-example.ts'), 'export const before = 10;\n' +
+          Array.from({ length: 18 }, (_, i) => `const context${i} = ${i};`).join('\n') +
+          '\nconst label = "old";\nexport function greet(name: string) { return "hello"; }\n/* syntax comment\ncontinued comment */\nconst multiline = `first\ncontinued template\nend`;\n');
+        writeFileSync(join(this.work, 'edit-direction.ts'), 'const retained = 1;\nconst removeOnly = 2;\nconst directionTail = 3;\n');
+        writeFileSync(join(this.work, 'edit-long.ts'), 'const before = "' + 'before 界é '.repeat(14) + '";\nconst tail = 40;\n');
+        writeFileSync(join(this.work, 'index.html'), '<!doctype html>\n<html>\n<head>\n  <meta charset="utf-8">\n' +
+          '  <meta name="viewport" content="width=device-width, initial-scale=1">\n  <meta name="theme-color" content="#0b1020">\n  <title>Neon Blocks — Tetris</title>\n' +
+          '  <style>\n    :root { --bg: #0b1020; }\n    body { background: radial-gradient(ellipse at 50% 8%, #202b52 0, #10172c 38%, var(--bg) 75%); }\n    .app { width: min(100%, 760px); }\n  </style>\n</head>\n<body>\n  <main class="app">\n</body>\n</html>\n');
+      }
+      writeFileSync(join(this.work, 'abcdefghijklm'), 'BOUNDARY_READ_CONTENT\n');
+      mkdirSync(join(this.work, 'long-directory'), { recursive: true });
+      writeFileSync(join(this.work, 'long-directory', 'r'.repeat(180) + '.txt'), 'LONG_READ_CONTENT\n');
+      writeFileSync(join(this.work, 'pixel.png'), Buffer.from(
+        'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==', 'base64'));
     }
-    if (!session) {
-      if (extraEnv.TIDY_UI_TEST_EDIT_PERFORMANCE === '1') writeFileSync(join(this.work, 'edit-minified.ts'), 'x+=1;'.repeat(3200) + '\n');
-      writeFileSync(join(this.work, 'edit-example.ts'), 'export const before = 10;\n' +
-        Array.from({ length: 18 }, (_, i) => `const context${i} = ${i};`).join('\n') +
-        '\nconst label = "old";\nexport function greet(name: string) { return "hello"; }\n/* syntax comment\ncontinued comment */\nconst multiline = `first\ncontinued template\nend`;\n');
-      writeFileSync(join(this.work, 'edit-direction.ts'), 'const retained = 1;\nconst removeOnly = 2;\nconst directionTail = 3;\n');
-      writeFileSync(join(this.work, 'edit-long.ts'), 'const before = "' + 'before 界é '.repeat(14) + '";\nconst tail = 40;\n');
-      writeFileSync(join(this.work, 'index.html'), '<!doctype html>\n<html>\n<head>\n  <meta charset="utf-8">\n' +
-        '  <meta name="viewport" content="width=device-width, initial-scale=1">\n  <meta name="theme-color" content="#0b1020">\n  <title>Neon Blocks — Tetris</title>\n' +
-        '  <style>\n    :root { --bg: #0b1020; }\n    body { background: radial-gradient(ellipse at 50% 8%, #202b52 0, #10172c 38%, var(--bg) 75%); }\n    .app { width: min(100%, 760px); }\n  </style>\n</head>\n<body>\n  <main class="app">\n</body>\n</html>\n');
-    }
-    writeFileSync(join(this.work, 'abcdefghijklm'), 'BOUNDARY_READ_CONTENT\n');
-    mkdirSync(join(this.work, 'long-directory'), { recursive: true });
-    writeFileSync(join(this.work, 'long-directory', 'r'.repeat(180) + '.txt'), 'LONG_READ_CONTENT\n');
-    writeFileSync(join(this.work, 'pixel.png'), Buffer.from(
-      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==', 'base64'));
     writeFileSync(join(this.agent, 'settings.json'), JSON.stringify({
       theme: 'dark', quietStartup: true, ...this.profile?.settings, ...agentSettings,
       enableAnalytics: false, enableInstallTelemetry: false,

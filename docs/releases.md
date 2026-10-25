@@ -35,12 +35,14 @@ Published artifacts/tags remain immutable, including existing Windows ARM64 bina
 | Ref | CI version substitution | Publication |
 | --- | --- | --- |
 | Branch / pull request | Extension remains `0.0.0`; daemon uses the nearest reachable `occipital-v*` version | None |
-| `pi-tidy-ui-v0.2.0` | Extension release version; daemon uses the nearest reachable `occipital-v*` version | Admitted npm tarball prepared and checked; npm publication remains a commented placeholder |
+| `pi-tidy-ui-v0.2.0` | Extension release version; daemon uses the nearest reachable `occipital-v*` version | Admitted npm tarball published through OIDC with required provenance and exact public-byte verification |
 | `occipital-v0.1.0` | Only the daemon Cargo manifest/lock entry, **before compilation** | Occipital GitHub Release, followed automatically by native npm publication |
 
 Tags must contain a complete SemVer version. Prerelease tags such as `occipital-v0.1.0-rc.1` produce prereleases. CI substitutions affect disposable checkouts, not repository commits or dependency versions. The npm package is named `pi-tidy-ui` and the command is `/tidy-ui`; tags select versions without changing these identities.
 
 ## Extension delivery
+
+The source `package.json` maintains the npm listing description, search keywords, author attribution and repository/homepage/issue links; release staging preserves those fields. Keep `pi-package` among the keywords so the package is eligible for Pi's package gallery. The root README supplies the user-facing npm package page, including its opening work-in-progress notice. Its preview and `pi.image` use the same public PNG at `docs/assets/pi-tidy-ui.png`, which is also included in the package's `files` list and preserved by release staging. The selected preview represents an actual offline Pi session rendered by native foot; model identity and cache/context figures are sample data, not measured provider traffic or performance evidence. Its tracked generation inputs and checkout-only command are described in [README screenshots](screenshots.md); publication does not regenerate it. Author attribution uses the maintainer's name and public GitHub URL; an email address is not required.
 
 The operator selected the extension's **own package version** as the only local/published discriminator: exactly `0.0.0` is development; a real release version uses the published-package contract. This does not compare the extension version with the daemon version. `0.0.0` is reserved for development, not a production extension release. No `.git`/path/install-method heuristic, environment override or extra mode flag is required.
 
@@ -72,7 +74,7 @@ Every ordinary `main` push, PR and manual dispatch runs **all enabled native pla
 
 Nightly runs only exact-latest Pi compatibility on both Nodes: types, all `product/` and `integration/` tests plus Pi-sensitive `harness/packaging`, and the complete four-shard CLI union. Its Linux x64 Pi-free native producer supplies a same-source helper prerequisite, not a native-delivery matrix. There are no minimum-Pi profiles, native consumer jobs, other-OS builds or inert/public delivery jobs in nightly. It has distinct concurrency and a `Nightly latest-Pi result` check, separate from `Complete CI result`. The required final result is green only when every planned branch/matrix succeeds; failure, cancellation or required skips cannot be hidden by nonapplicable branches or a later commit. GitHub's schedule is best-effort, not an execution-time guarantee.
 
-Occipital push tags retain both-Node/minimum-Pi consumers on every enabled platform, once-per-Node/minimum-Pi inert delivery, and a mandatory **daemon-regressions** branch on both Nodes/minimum Pi: all `integration/native` and Pi-sensitive `harness/packaging`. Publication waits for these checks as well as platform gates; unrelated UI/CLI profiles and latest resolution are omitted. Extension push tags retain the complete Node/SDK/types and full CLI matrix, both-Node/minimum-Pi consumers on every enabled platform, public native admission/consumers and extension packing, not actual extension npm publication. The ordinary runner-budget reductions do not narrow either release kind. Manual/scheduled execution cannot confer push-tag publication authority. See the [fixed CI obligations](testing.md#fixed-ci-obligations). No automatic lockfile update is introduced, and the graph does not grant publication authority to a local run.
+Occipital push tags retain both-Node/minimum-Pi consumers on every enabled platform, once-per-Node/minimum-Pi inert delivery, and a mandatory **daemon-regressions** branch on both Nodes/minimum Pi: all `integration/native` and Pi-sensitive `harness/packaging`. Publication waits for these checks as well as platform gates; unrelated UI/CLI profiles and latest resolution are omitted. Extension push tags retain the complete Node/SDK/types and full CLI matrix, both-Node/minimum-Pi consumers on every enabled platform, public native admission/consumers and admitted extension packing/publication. The ordinary runner-budget reductions do not narrow either release kind. Manual/scheduled execution cannot confer push-tag publication authority. See the [fixed CI obligations](testing.md#fixed-ci-obligations). No automatic lockfile update is introduced, and the graph does not grant publication authority to a local run.
 
 Linux extension/terminal/inert-fixture jobs invoke `--network-isolated` with declared bubblewrap. The isolated tree permits required loopback traffic but denies public egress and uses trusted connection-file ancestry. This restriction covers the spawned process tree, not just a JavaScript fetch function. Native GNU execution uses Docker `--network=none`. Non-Linux native CI uses prepared-local inputs and sanitized environments, but currently lacks equivalent OS-level egress-enforcement validation; do not infer equal enforced isolation or passing platform acceptance from the workflow matrix.
 
@@ -112,7 +114,7 @@ Every runner job has an explicit `timeout-minutes`; matrix entries each receive 
 | Each complete physical CLI partition or unsharded physical compatibility profile | 30 |
 | GitHub Release assembly and publication | 10 |
 | Automatic native npm publication | 15 |
-| Extension release admission and generated package | 15 |
+| Extension release admission, packing and npm publication | 15 |
 
 The unit/SDK/GC step also has a five-minute limit within its ten-minute job. Current-source and extension-release-only published-consumer steps have fifteen minutes each within the twenty-five-minute platform/Node consumer job; npm commands have a five-minute bound, not relaxed native source/classification deadlines. Time limits are configured bounds, not evidence that required jobs passed. Expiry stops the process or cancels the job; it does not bypass assertions or trigger a successful retry. Job execution timeouts do not bound waiting for a runner. Interrupted release publication can leave a draft; the existing inspection/no-overwrite rule below still applies.
 
@@ -139,7 +141,7 @@ Creating/pushing a tag is a separate operator action. The tag-triggered workflow
 
 ## Extension release preparation
 
-On an extension tag, `extension-package` runs only after native, unit/SDK and physical CLI gates. It fetches the selected completed public release, compares current executables for every enabled platform and validates the declared public registry payloads, and stages the package only after every check passes. Changed bytes, missing assets, incomplete npm versions or a malformed nearest tag fail instead of choosing an older release. It packs an admitted tarball but does not upload it or grant npm publication permission. The future npm publish command is present only as a comment; no extension GitHub Release is created. The command takes explicit current/public artifact directories:
+On an extension push tag, `extension-package` runs only after native, unit/SDK and physical CLI gates. It fetches the selected completed public release, compares current executables for every enabled platform and validates the declared public registry payloads, and stages the package only after every check passes. Changed bytes, missing assets, incomplete npm versions or a malformed nearest tag fail instead of choosing an older release. The same job packs and publishes exactly that admitted archive through OIDC with mandatory provenance; `Complete CI result` requires this job, including public-byte verification, to succeed. No extension GitHub Release, new workflow, extra build or Actions upload is introduced. Local preparation alone does not publish or grant authority. The preparation command takes explicit current/public artifact directories:
 
 ```sh
 SOURCE_COMMIT=FULL_EXTENSION_COMMIT node scripts/release/extension-release.mjs \
@@ -147,6 +149,29 @@ SOURCE_COMMIT=FULL_EXTENSION_COMMIT node scripts/release/extension-release.mjs \
 ```
 
 `PUBLIC_ASSETS` includes the public release assets and `release.json` from the GitHub API. `CI_ARTIFACTS` contains every enabled platform's same-commit `occipital-vVERSION-TARGET` directories. The ref must resolve to the checked-out source commit. The generated package directory and `plan.json` are disposable release artifacts, not source files.
+
+### Extension npm publication
+
+`scripts/release/extension-publication.mjs` separates archive preparation from the authorized mutation:
+
+```sh
+# Packs locally; no registry publication.
+node scripts/release/extension-publication.mjs pack NEW_OUTPUT/plan.json
+# CI-only: exact extension push-tag/OIDC caller required.
+node scripts/release/extension-publication.mjs publish NEW_OUTPUT/publication.json
+```
+
+Packing checks the admitted manifest's package name/version and canonical Git repository, runs `npm pack --ignore-scripts --json` in that package directory, and records the resulting archive's actual SHA-512 in `publication.json`. Its sibling `tarballs/` directory must be new. The preparation plan and staged manifest remain unchanged; no archive glob selects a different file. `0.0.0` is reserved for development and npm-incompatible SemVer `+build` metadata is refused. Stable versions use npm's normal implicit `latest` rules; prereleases explicitly use `next`.
+
+Publication requires `GITHUB_ACTIONS=true`, this repository, a `push` event, the exact `pi-tidy-ui-v*` ref, matching source/workflow SHA and caller `chpock/pi-tidy-ui/.github/workflows/ci.yml@REF`, plus both Actions OIDC request fields. Branches, PRs, manual dispatch and ordinary local npm login do not satisfy this entry-point contract. The job grants only `contents: read` and `id-token: write` and installs npm **12.0.2** on Node **26.7.0**. It publishes the recorded archive with explicit `--provenance`, `--access=public`, `--ignore-scripts` and the public npm registry; no token secret, local-login fallback or provenance bypass is configured.
+
+Configure the `pi-tidy-ui` package's trusted publisher with GitHub owner **chpock**, repository **pi-tidy-ui**, workflow **ci.yml**, direct `npm publish` allowed and no environment name. npm requires an existing package for that configuration. For a first release, an explicitly authorized minimal staged bootstrap can establish the package using a different reserved prerelease version, without publishing the extension code. Do not approve/install that bootstrap or reuse its occupied version for the real release. This is a separate one-time maintainer action, not something CI creates or approves. A staged real release also cannot be bypassed by direct publication; inspect it and use the appropriate separately authorized owner action.
+
+Before upload, the publisher rehashes the local archive and reads the exact registry version. Only structured `E404` means absence; conflicting name/version/integrity or other lookup failures stop without upload. A matching existing version skips upload but still verifies the exact public version record and raw streamed archive through the existing [bounded registry verifier](#automatic-native-npm-publication). This is immutable retry behavior, not overwrite or a second publish. No delay/retry or alternate registry is used to mask missing or mismatched public bytes.
+
+Job-local `receipts.json` and safe log projections contain only package name, version, source commit, archive integrity, outcome and—after successful public verification—`registryByteVerified: true`. Outcomes are `not-started`, `unconfirmed`, `published` or `already-published`. `published` means npm returned the matching successful response, not that final registry verification passed. Upload/provenance failure, interruption or an invalid response leaves publication unconfirmed; an upload may already have reached npm. Inspect registry state before an explicit same-artifact rerun. Verification failure fails the job even after upload; no automatic repair, forced publication or success claim follows. No raw npm output, credentials, URLs, environment, archive paths or publication receipts are uploaded as Actions artifacts.
+
+These checks implement release routing, not proof of actual trusted-publisher authentication or public installability. Those require the authorized tag run and [external consumer verification](testing.md#current-source-consumer-and-external-delivery). This workflow does not create/push tags, commit version changes, publish Occipital or regenerate the README screenshot.
 
 ### Exact native npm admission
 

@@ -1,8 +1,18 @@
 # pi-tidy-ui
 
+> [!WARNING]
+> **Work in progress.** This extension is not finished and is under active development.
+
 **Follow what your agent changes—not every file it reads.**
 
 An [extension for Pi](https://pi.dev) that gives commands, code changes and new files room to breathe, while keeping reading and exploration compact. Inspired by [OpenCode](https://opencode.ai), built for Pi's terminal workflow.
+
+![pi-tidy-ui with compact tool calls, split and unified edit diffs, highlighted Bash with exit code 1, and cache history](https://raw.githubusercontent.com/chpock/pi-tidy-ui/main/docs/assets/pi-tidy-ui.png)
+
+*Offline Pi session with pi-tidy-ui, rendered by foot. Model identity, context usage and cache figures are demonstration data.*
+
+> [!NOTE]
+> **Screenshot theme:** [gruvbox-dark-hard](https://github.com/chpock/dotfiles/blob/master/.pi/agent/themes/gruvbox-dark-hard.json), a custom Pi theme **not installed with this extension**. By default, pi-tidy-ui follows your current Pi theme, so your colors may differ. To match these colors, use this theme in Pi and enable **Set terminal colors from Pi theme** in **`/tidy-ui`**.
 
 When you supervise a coding agent, not every tool call deserves the same attention. A sequence of file reads can fill the screen while the command you want to inspect or the diff you need to review stays folded away. pi-tidy-ui changes that balance: **less space for investigation, more visibility for execution and changes**, with richer syntax highlighting and a short history of prompt-cache reuse.
 

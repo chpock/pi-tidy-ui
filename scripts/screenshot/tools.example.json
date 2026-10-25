@@ -1,0 +1,8 @@
+{
+  "foot": "/usr/bin/foot",
+  "grim": "/usr/bin/grim",
+  "hyprctl": "/usr/bin/hyprctl",
+  "fc-match": "/usr/bin/fc-match",
+  "rg": "/usr/bin/rg",
+  "fd": "/usr/bin/fd"
+}

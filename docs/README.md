@@ -66,8 +66,9 @@ The protocol reference ships with this manual. Its six conformance JSON files an
 | [Settings and menu](settings-menu-spec.md) | Popup/service boundaries, preview/confirmation, file/token validation, serialized rename, cross-process watches and local versus persisted switches |
 | [Terminal defaults](terminal-colors-spec.md) | Fixed/automatic source eligibility, desired/applied OSC channels, concrete RGB projection, source failure, stop/start and process-exit ownership |
 | [Diagnostics and health](debug-logging-spec.md) | Independent observation/health/journal owners, safe metadata, bounded writer, retention, incidents, recovery and explicit controls |
-| [Delivery and releases](releases.md) | CI graph, supported targets, source versus released versions, native-byte admission, staging, notices and publication boundaries |
+| [Delivery and releases](releases.md) | CI graph, supported targets, version/native-byte admission, staging, notices and exact-tag OIDC/provenance npm publication |
 | [Performance framework](performance-testing.md) | Workload/input identities, subprocess containment, metrics, diagnostics, comparison and artifact semantics |
+| [README screenshots](screenshots.md) | Tracked offline demo, immutable Working frame, real Git workspace and terminal colors, actual foot/grim PNG capture on Hyprland, signal cleanup, prerequisites and explicit preview replacement |
 | [Testing](testing.md) | Fresh-clone provisioning, prepared inputs, bounded file jobs, diagnostic duration/RAM results, real integrations, containment and affected contract checks |
 
 ## Find an explanation by question

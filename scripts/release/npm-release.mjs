@@ -85,7 +85,7 @@ export async function prepareNpmRelease({ directory, publicDirectory, tag, repos
   return plan;
 }
 
-async function verifyPublicArchive(row, fetcher) {
+export async function verifyPublicArchive(row, fetcher) {
   // Verify the immutable version/archive directly: npm pack re-resolves the version
   // through package-wide metadata and returned ETARGET after a successful publication.
   const metadata = await fetcher(`https://registry.npmjs.org/${encodeURIComponent(row.name)}/${row.version}`, { signal: AbortSignal.timeout(60000), redirect: 'error' });
