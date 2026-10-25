@@ -6,6 +6,8 @@ import { createSyntaxOptions } from '../../src/occipital/bootstrap.ts';
 import { ExpectedOwnedUnavailable } from '../../src/occipital/owned-startup.ts';
 import { createWriteCaptureGate, observeSyntaxCards } from './syntax-local-work.ts';
 import { createEventRecorder } from './terminal-output.ts';
+import { randomUUID } from 'node:crypto';
+import { join } from 'node:path';
 
 export default function presentationDriver(pi: ExtensionAPI) {
   if (process.env.TIDY_UI_TEST_WRITE_CAPTURE === '1') {
@@ -18,7 +20,10 @@ export default function presentationDriver(pi: ExtensionAPI) {
       handler: async name => { const calls = await gate.wait(); record({ type: 'write_capture_ready', name, calls }); },
     });
   }
-  return tidyUi(pi, { syntax(ctx) {
+  const output = process.env.TIDY_UI_TEST_OUTPUT!;
+  const record = process.env.TIDY_UI_TEST_EDIT_CARDS === '1' ? createEventRecorder(output) : undefined, epoch = record ? randomUUID() : undefined;
+  return tidyUi(pi, { logging: record ? { root: join(output, 'logs') } : undefined,
+    cardPreparation: record ? event => record({ type: 'card_preparation', ...event, update: `${epoch}:${event.update}` }) : undefined, syntax(ctx) {
     const options = createSyntaxOptions(ctx);
     return { ...options, provider: {
       async tryShared() { return undefined; },

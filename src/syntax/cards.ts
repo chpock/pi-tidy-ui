@@ -23,6 +23,10 @@ export type CardDisplayInput = CardSourceInput & {
   revision: number; sourceRevision: number; serviceRevision: number; mode: TerminalColorMode;
   cwd?: string; directory?: string;
 };
+export type CardPreparation = { readonly update: string; readonly revision: number; readonly palette: number; readonly sourceEligible: boolean } & (
+  { readonly phase: 'updated' } |
+  { readonly phase: 'prepared'; readonly applied: boolean; readonly refused: number; readonly publication: number; readonly outcomes: readonly SyntaxWorkResult['outcome'][] }
+);
 export interface CardSourceHost<Owner extends object> {
   /** Cold acquisition only. The returned lease becomes this owner's responsibility. */
   preparePiInput(funding: GeometryFunding): PiInputLease | undefined;
@@ -31,6 +35,8 @@ export interface CardSourceHost<Owner extends object> {
   requestRender(): void;
   diagnostic?: DiagnosticSink;
   identify?(owner: Owner): DiagnosticFields;
+  /** Observes accepted inputs and actual preparation completion; never requests work. */
+  preparation?(owner: Owner, receipt: CardPreparation): void;
 }
 export interface PreparedRegion { readonly text: string; readonly measured: MeasuredText }
 export interface PreparedBashRegions {
@@ -272,6 +278,7 @@ export class CardSources<Owner extends object> {
       if (!this.owned(owner, state, ticket) || state.mutation !== mutation) return false;
       this.refreshPaint(owner, state);
       if (state.useful && !state.paused && !state.frozen && input.kind === 'bash' && input.complete && (sourceChanged || completed)) this.enqueue(ticket, true);
+      if (this.owned(owner, state, ticket) && state.input === input) this.observePreparation(owner, state, 'updated');
       return true;
     } catch (error) { if (error !== refused) throw error; return false; }
     finally {
@@ -406,10 +413,11 @@ export class CardSources<Owner extends object> {
       const demands: { text: string; languageHint?: string }[] = state.sourceEligible && input.kind === 'bash' && state.display.kind === 'bash' ? [{ text: state.display.command.text }]
         : state.file && input.kind === 'file' && !input.node.result?.isError ? fileSources(state.file.view) : [];
       const slots = new Map<string, Slot>();
+      let refused = 0;
       for (let index = 0; index < demands.length; index++) {
         const key = `card:${ticket.id}:${index}`;
         if (!ticket.keys.has(key)) {
-          const bytes = keyBytes(key); if (this.bytes + bytes > this.maxBytes) continue;
+          const bytes = keyBytes(key); if (this.bytes + bytes > this.maxBytes) { refused++; continue; }
           ticket.keys.add(key); this.keys.set(key, ticket); this.bytes += bytes; ticket.bytes += bytes;
         }
         const language = input.kind === 'bash' ? wireHint(input.language, 128) : wireHint(demands[index]!.languageHint, 128);
@@ -437,13 +445,14 @@ export class CardSources<Owner extends object> {
         ticket.keys.delete(key); this.keys.delete(key); this.client.sources.remove(key); const bytes = keyBytes(key); ticket.bytes -= bytes; this.bytes -= bytes;
       }
       state.slots = slots; state.processed = state.sourceRevision; state.preparedTheme = this.themeRevision; state.preparedPalette = state.pi?.paletteRevision;
-      this.client.sources.updatePreparation(ticket.work); this.refreshPaint(owner, state);
+      this.client.sources.updatePreparation(ticket.work); const applied = this.refreshPaint(owner, state);
       this.log(owner, 'Prepared source demand evaluated outside render', { sources: slots.size, version: state.version, revision: state.revision });
+      if (this.current(owner, state, ticket) && state.mutation === mutation) this.observePreparation(owner, state, 'prepared', applied, refused);
     } finally { scratch?.release(); }
   }
-  private refreshPaint(owner: Owner, state: State): void {
-    const ticket = state.ticket, input = state.input; if (!ticket?.work || !input) return;
-    const funding = this.client.sources.geometryFunding(ticket.work); if (!funding) return;
+  private refreshPaint(owner: Owner, state: State): boolean {
+    const ticket = state.ticket, input = state.input; if (!ticket?.work || !input) return false;
+    const funding = this.client.sources.geometryFunding(ticket.work); if (!funding) return false;
     const group = this.client.sources.groupPresentation(ticket.work);
     const isNative = group ? group.palette !== this.piSelection : state.paint?.origin === 'native' && this.client.snapshot().enabled;
     const publication = group?.stamp ?? -(state.pi?.paletteRevision ?? 0);
@@ -454,7 +463,7 @@ export class CardSources<Owner extends object> {
       return p ? `${p.generation}/${p.revision}/${p.palette}` : '';
     }).filter(Boolean).join(',')}`;
     const token = `${publication}:${effects}`;
-    if (state.paintToken === token) return;
+    if (state.paintToken === token) return true;
     const previous = state.paint, mutation = state.mutation;
     previous?.charge.retain();
     let scratch: DataCharge | undefined, charge: DataCharge | undefined;
@@ -485,17 +494,17 @@ export class CardSources<Owner extends object> {
         origin: isNative ? 'native' : 'pi', mode: input.mode, piTokens };
     };
     try {
-      scratch = fund(funding, 4096); if (!scratch) return;
+      scratch = fund(funding, 4096); if (!scratch) return false;
       if (group) {
         const roles = {} as Record<CardRole, ConcreteStyle>;
-        for (const role of CARD_ROLES) { const style = group.role(role); if (!style) return; roles[role] = style; }
+        for (const role of CARD_ROLES) { const style = group.role(role); if (!style) return false; roles[role] = style; }
         compile(roles, consume => group.visitStyles(consume));
       } else if (isNative && previous) compile(previous.literals, consume => { for (const role of CARD_ROLES) consume(previous.literals[role]); return true; });
       else if (state.pi) state.pi.visit(read => {
         compile(read.roles, consume => { for (const role of CARD_ROLES) consume(read.roles[role]);
           for (const slot of state.slots.values()) { const projection = this.client.sources.piProjection(slot.key, slot.version, slot.palette); if (projection && !projection.visitStyles((_i, style) => consume(style))) return false; } return read.isValid; }, read.compiledRoles);
       }, funding.grant);
-      if (!next || !this.owned(owner, state, ticket) || state.mutation !== mutation || state.input !== input || state.paint !== previous) return;
+      if (!next || !this.owned(owner, state, ticket) || state.mutation !== mutation || state.input !== input || state.paint !== previous) return false;
       const receipt = chargeReceipt(next.charge); state.paintReceipt?.release();
       const oldReceipt = state.paintReceipt; if (oldReceipt) ticket.receipts.delete(oldReceipt);
       state.paintReceipt = receipt; ticket.receipts.add(receipt); state.paint = next; state.paintToken = token; state.paintEffects = effects; state.paintSignature = signature; charge = undefined;
@@ -503,6 +512,7 @@ export class CardSources<Owner extends object> {
         const piReceipt = state.pi.cleanupReceipt(); state.pi = undefined; ticket.receipts.delete(piReceipt); piReceipt.release();
       }
       if (previous && previous.paintStamp !== next.paintStamp && !state.paused) this.invalidatePrepared(owner);
+      return true;
     } finally {
       try {
         if (state.paint === previous && this.owned(owner, state, ticket)) this.retireStaleReaders(owner, state);
@@ -553,6 +563,16 @@ export class CardSources<Owner extends object> {
   private enqueue(ticket: RecordTicket, local = false): void { if (ticket.work && this.records.has(ticket.id)) this.client.sources.queuePreparation(ticket.work, local); }
   private invalidatePrepared(owner: Owner): void { this.host.invalidate(owner); if (!this.disposed && !this.renderScheduled) { this.renderScheduled = true; queueMicrotask(renderNotice(this.owner)); } }
   renderPrepared(): void { this.renderScheduled = false; if (!this.disposed) this.host.requestRender(); }
+  private observePreparation(owner: Owner, state: State, phase: CardPreparation['phase'], applied = false, refused = 0): void {
+    if (!this.host.preparation || !state.input || !state.ticket) return;
+    const input = state.input, update = `${state.ticket.id}:${state.sourceRevision}:${input.palette}`;
+    const sourceEligible = state.sourceEligible === true;
+    const receipt: CardPreparation = phase === 'updated' ? { phase, update, revision: input.revision, palette: input.palette, sourceEligible }
+      : { phase, update, revision: input.revision, palette: input.palette, sourceEligible, applied, refused, publication: state.paint?.publication ?? 0,
+        outcomes: Array.from(state.slots.values(), slot => slot.outcome) };
+    try { this.host.preparation(owner, receipt); }
+    catch { this.log(owner, 'Card preparation observer failed', {}); }
+  }
   private log(owner: Owner, explanation: string, fields: DiagnosticFields): void {
     if (this.host.diagnostic) try { diagnose(this.host.diagnostic, 'DEBUG', 'syntax', explanation, { ...this.host.identify?.(owner), ...fields }); } catch { /* Observers do not own work. */ }
   }

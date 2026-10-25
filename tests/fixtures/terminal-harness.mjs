@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { EventEmitter, once } from 'node:events';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, copyFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, copyFileSync, openSync, closeSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -14,6 +14,7 @@ import { readInputs, childEnv, toolPath } from '../../scripts/test/context.mjs';
 import { planTerminalObserver } from './terminal-observer-plan.mjs';
 import { planPerformanceLayout } from './performance-layout-plan.mjs';
 import { terminalCodeCache } from './terminal-code-cache.mjs';
+import { selectPreparations, completedPreparations } from './card-preparation.mjs';
 
 const { Terminal } = xterm;
 export const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
@@ -46,8 +47,22 @@ export function observeRenderFrames(term, state) {
   });
 }
 
+export function detachTerminalScreen(term) {
+  const buffer = term.buffer.active;
+  const screen = Array.from({ length: term.rows }, (_, y) => buffer.getLine(buffer.viewportY + y)?.translateToString(true) ?? '');
+  const cells = screen.map((_, y) => Array.from({ length: term.cols }, (_, x) => {
+    const cell = buffer.getLine(buffer.viewportY + y)?.getCell(x);
+    return cell ? { text: cell.getChars(), width: cell.getWidth(), fg: cell.getFgColor(), fgMode: cell.getFgColorMode(),
+      dim: cell.isDim(), bold: cell.isBold(), italic: cell.isItalic(), underline: cell.isUnderline(), strike: !!cell.isStrikethrough(),
+      inverse: !!cell.isInverse(), bg: cell.getBgColor(), bgMode: cell.getBgColorMode() } : null;
+  }));
+  return { screen, cells, width: term.cols, rows: term.rows, viewportY: buffer.viewportY, baseY: buffer.baseY };
+}
+
 export function observeNativeReceipts(term, state) {
   state.nativeReceipts = new Map();
+  state.nativeSnapshots = new WeakMap();
+  state.snapshotCopies = 0;
   state.nativeProgress = new EventEmitter();
   state.nativeSequence = 0;
   return term.parser.registerOscHandler(777, data => {
@@ -55,7 +70,8 @@ export function observeNativeReceipts(term, state) {
     try {
       const packet = JSON.parse(Buffer.from(data.slice('tidy-test;'.length), 'base64').toString());
       if (packet.type === 'error') state.error = new Error(packet.message);
-      if (packet.type === 'frame' && state.rendering) state.error = new Error('Native frame fence arrived inside synchronized output');
+      if (['frame', 'capture'].includes(packet.type) && state.rendering) state.error = new Error('Native frame fence arrived inside synchronized output');
+      if (packet.type === 'capture' && !state.error) { state.nativeSnapshots.set(packet, detachTerminalScreen(term)); state.snapshotCopies++; }
       if (packet.type !== 'journal' && packet.type !== 'diagnostic') state.nativeReceipts.set(`${packet.type}:${packet.id ?? 0}`, packet);
     } catch (error) { state.error = error; }
     state.nativeProgress.emit('progress');
@@ -223,38 +239,43 @@ export class PiTerminal {
     await this.nativeReceipt('ready');
     await this.settle();
   }
-  waitForProgress(predicate, label) {
+  waitForProgress(predicate, label, signal) {
     return new Promise((resolve, reject) => {
-      const cleanup = () => { clearTimeout(deadline); this.nativeProgress.off('progress', check); };
+      let deadline;
+      const abort = () => { cleanup(); reject(signal.reason); };
+      const cleanup = () => { clearTimeout(deadline); this.nativeProgress.off('progress', check); signal?.removeEventListener('abort', abort); };
       const check = () => {
         try {
+          signal?.throwIfAborted();
           const value = predicate();
           if (!value) return;
           cleanup(); resolve(value);
         } catch (error) { cleanup(); reject(error); }
       };
-      const deadline = setTimeout(() => {
+      if (signal) signal.addEventListener('abort', abort, { once: true });
+      else deadline = setTimeout(() => {
         cleanup(); reject(new Error(`Timed out: ${label}; artifacts: ${this.output}`));
       }, 12000);
       this.nativeProgress.on('progress', check);
       check();
     });
   }
-  async nativeReceipt(type, id = 0) {
+  async nativeReceipt(type, id = 0, signal) {
     const key = `${type}:${id}`;
     return this.waitForProgress(() => {
       this.health();
       const packet = this.nativeReceipts.get(key);
       if (packet) this.nativeReceipts.delete(key);
       return packet;
-    }, `native ${key}`);
+    }, `native ${key}`, signal);
   }
-  async nativeFence(id = ++this.nativeSequence, kind = 0) {
+  async nativeFence(id = ++this.nativeSequence, kind = 0, signal) {
+    signal?.throwIfAborted();
     this.send(`\x1b[?997;${id};${kind}n`);
-    const receipt = await this.nativeReceipt('frame', id);
+    const receipt = await this.nativeReceipt(kind === 3 ? 'capture' : 'frame', id, signal);
+    signal?.throwIfAborted();
     assert.ok(receipt.generation >= (this.nativeGeneration ?? 0), 'stale native renderer receipt');
     this.nativeGeneration = receipt.generation;
-    await this.queue;
     return receipt;
   }
   async settle() { await this.nativeFence(); }
@@ -262,14 +283,15 @@ export class PiTerminal {
     await sleep(220); this.health();
     await this.nativeFence();
   }
-  async command(command) {
+  async command(command, signal) {
+    signal?.throwIfAborted();
     const id = ++this.nativeSequence;
     this.send(`\x1b[?997;${id};1n`);
-    await this.nativeReceipt('armed', id);
+    await this.nativeReceipt('armed', id, signal);
     this.send(command + '\r');
     // The native submit promise includes reload and shortcut rebinding. Its
     // unchanged completion-status cells need not produce fresh terminal bytes.
-    await this.nativeFence(id, 2);
+    await this.nativeFence(id, 2, signal);
   }
   async waitForScreen(predicate, label) {
     return until(async () => { await this.settle(); return predicate(this.screen()); }, label);
@@ -460,7 +482,58 @@ export class PiTerminal {
       }
     } finally { await this.closeTidyMenu(); }
   }
-  async capture(name, { sampleAnimation = false } = {}) {
+  async capturePrepared(name, prepared) {
+    const start = performance.now(), stages = [], controller = new AbortController();
+    let failure;
+    const timeout = Object.assign(new Error(`Capture deadline exceeded: ${name}`), { code: 'CAPTURE_TIMEOUT' });
+    const watchdog = setTimeout(() => controller.abort(timeout), 12000);
+    const stage = label => {
+      stages.push({ stage: label, elapsedMs: performance.now() - start });
+      this.nativeProgress.emit('capture-stage', label);
+      if (performance.now() - start >= 12000) throw timeout;
+      controller.signal.throwIfAborted();
+    };
+    try {
+      stage('input-frame');
+      const initial = await this.nativeFence(++this.nativeSequence, 0, controller.signal);
+      const selection = selectPreparations(this.events(), prepared);
+      stage('preparation-event');
+      await this.waitForProgress(() => completedPreparations(this.events(), selection), 'selected card preparation', controller.signal);
+      stage('component-dump');
+      await this.command(`/tidy-ui-dump ${name}`, controller.signal);
+      const dump = JSON.parse(readFileSync(join(this.output, `${name}.json`), 'utf8'));
+      stage('physical-capture');
+      const receipt = await this.nativeFence(++this.nativeSequence, 3, controller.signal);
+      assert.equal(receipt.generation, initial.generation, 'renderer changed during capture');
+      assert.ok(completedPreparations(this.events(), selection), 'the selected preparation must still be current');
+      const snapshot = this.nativeSnapshots.get(receipt);
+      assert.ok(snapshot, 'missing receipt-bound capture');
+      assert.equal(snapshot.width, receipt.columns); assert.equal(snapshot.rows, receipt.rows);
+      stage('persist');
+      this.session = dump.session;
+      const result = this.captureScreen(name, dump, snapshot);
+      stage('complete');
+      return result;
+    } catch (error) {
+      failure = error;
+      console.error('Prepared capture failed:', JSON.stringify({ stages, elapsedMs: performance.now() - start, snapshotCopies: this.snapshotCopies }));
+      throw error;
+    } finally {
+      clearTimeout(watchdog);
+      try { writeFileSync(join(this.output, `${name}.capture-trace.json`), JSON.stringify(stages, null, 2)); }
+      catch (error) { if (failure) throw new AggregateError([failure, error], 'Capture failed and its diagnostics could not be saved'); throw error; }
+      if (!failure) {
+        const elapsed = performance.now() - start;
+        if (elapsed >= 12000) throw timeout;
+        if (elapsed > 1000) console.warn(`Slow prepared capture: ${Math.round(elapsed)}ms; expected <=1000ms`);
+      }
+    }
+  }
+  async capture(name, { sampleAnimation = false, prepared } = {}) {
+    if (prepared) {
+      assert.equal(sampleAnimation, false, 'prepared-source capture does not use the legacy animation window');
+      return this.capturePrepared(name, prepared);
+    }
     await this.command(`/tidy-ui-dump ${name}`);
     const dump = await until(() => {
       this.health();
@@ -471,21 +544,23 @@ export class PiTerminal {
     return this.captureCompleteScreen(name, dump, sampleAnimation);
   }
   async captureCompleteScreen(name, dump, sampleAnimation = false) {
-    if (sampleAnimation) await this.observeAnimation(); else await this.settle();
-    return this.captureScreen(name, dump);
+    if (sampleAnimation) await this.observeAnimation();
+    const receipt = await this.nativeFence(++this.nativeSequence, 3);
+    const snapshot = this.nativeSnapshots.get(receipt);
+    assert.ok(snapshot, 'an explicit capture must retain its receipt-bound cells');
+    assert.equal(snapshot.width, receipt.columns); assert.equal(snapshot.rows, receipt.rows);
+    return this.captureScreen(name, dump, snapshot);
   }
-  captureScreen(name, dump) {
-    const screen = this.screen();
+  captureScreen(name, dump, snapshot = detachTerminalScreen(this.term)) {
+    const { screen, cells } = snapshot;
     writeFileSync(join(this.output, `${name}.screen.txt`), screen.join('\n'));
     writeFileSync(join(this.output, 'terminal.ansi'), Buffer.concat(this.raw));
-    const buffer = this.term.buffer.active;
-    const cells = screen.map((_, y) => Array.from({ length: this.term.cols }, (_, x) => {
-      const cell = buffer.getLine(buffer.viewportY + y)?.getCell(x);
-      return cell ? { text: cell.getChars(), width: cell.getWidth(),
-        fg: cell.getFgColor(), fgMode: cell.getFgColorMode(), dim: cell.isDim(), bold: cell.isBold(),
-        italic: cell.isItalic(), underline: cell.isUnderline(), strike: !!cell.isStrikethrough(), inverse: !!cell.isInverse(), bg: cell.getBgColor(), bgMode: cell.getBgColorMode() } : null;
-    }));
-    writeFileSync(join(this.output, `${name}.screen.json`), JSON.stringify(cells));
+    const fd = openSync(join(this.output, `${name}.screen.json`), 'w');
+    try {
+      writeFileSync(fd, '[');
+      for (let index = 0; index < cells.length; index++) writeFileSync(fd, `${index ? ',' : ''}${JSON.stringify(cells[index])}`);
+      writeFileSync(fd, ']');
+    } finally { closeSync(fd); }
     return { ...dump, screen, cells };
   }
   async run(scenario = 'suite') {

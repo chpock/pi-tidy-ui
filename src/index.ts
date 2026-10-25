@@ -25,7 +25,7 @@ import { TerminalColors, processTerminalDefaults, type DefaultColors } from "./t
 import type { CardTheme } from "./card-theme.ts";
 import { RenderCache, LAYOUT_KINDS, MEMORY_FIELDS, type LayoutKind, type LayoutMemory, type CacheEntry, type CacheStats } from "./render-cache.ts";
 import { argumentParts, summaryName } from "./summary-args.ts";
-import { CardSources } from "./syntax/cards.ts";
+import { CardSources, type CardPreparation } from "./syntax/cards.ts";
 import { layoutCard, type CardLayout, type CardRows, type BashPaintProof } from './syntax/card-layout.ts';
 import { PiInputOwner } from './syntax/pi-input-owner.ts';
 import type { PiInputTheme, PiInputLease } from './syntax/pi-input.ts';
@@ -104,6 +104,7 @@ type Mouse = (this: ToolNode, event: TuiMouseEvent) => TuiMouseEventResult | und
 
 export interface TidyUiOptions {
   diagnostic?: DiagnosticSink;
+  cardPreparation?: (event: CardPreparation & { call: string; tool: string }) => void;
   /** Optional composed client; lifecycle/startup remains the caller's responsibility. */
   syntax?: {
     client: Pick<SyntaxClient, "sources" | "snapshot">;
@@ -468,6 +469,7 @@ export function installTidyUi(tui: LiveTui, getTheme: () => Palette, options: Ti
     }
     syntax = new CardSources(cardClient, {
       diagnostic: options.diagnostic, identify: node => ({ call: node.toolCallId, tool: node.toolName }),
+      preparation: options.cardPreparation ? (node, receipt) => options.cardPreparation?.({ ...receipt, call: node.toolCallId, tool: node.toolName }) : undefined,
       preparePiInput: funding => { const input = publicInput(); return options.preparePiInput
         ? options.preparePiInput(input.theme, input.mode, funding) : piOwner!.prepare(input.theme, input.mode, funding); },
       classify: options.syntax?.classify ?? ((text, info) => highlightCode(text, info.language)),
@@ -1499,6 +1501,7 @@ export function installTidyUi(tui: LiveTui, getTheme: () => Palette, options: Ti
 }
 
 export interface TidyUiRuntimeOptions {
+  cardPreparation?: TidyUiOptions['cardPreparation'];
   /** Isolated embedding/test roots; false explicitly disables automatic journals. */
   logging?: false | Omit<JournalOptions, "warn" | "enabled">;
   settings?: Pick<ExtensionSettings, 'load' | 'update'> & Partial<Pick<ExtensionSettings, 'watch'>>;
@@ -1804,7 +1807,7 @@ export default function tidyUi(pi: ExtensionAPI, options: TidyUiRuntimeOptions =
       const sourceRuntime = ensureSyntax(ctx);
       if (controller) reportRuntime(diagnostic, { kind: 'released', scope: controller, operation: '*' });
       controller = installTidyUi(tui, palette, {
-        diagnostic,
+        diagnostic, cardPreparation: options.cardPreparation,
         syntax: { client: sourceRuntime, palette: () => sourceRuntime.palette({ colors: palette().colors! }), isLiveCall: id => liveBashCalls.has(id) },
         piInput: () => { const theme = liveContext!.ui.theme, projected = palette().colors as PiInputTheme['colors'], mode = theme.getColorMode();
           return { theme: { colors: projected, getFgAnsi: role => theme.getFgAnsi(role),

@@ -4,7 +4,7 @@ import { afterEach, test } from 'node:test';
 import { setImmediate as turn } from 'node:timers/promises';
 import { highlightCode } from '@earendil-works/pi-coding-agent';
 import { getThemeByName } from '../../../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js';
-import { CardSources, type CardDisplayInput, type PreparedCard, type ReadyCardPaint } from '../../../src/syntax/cards.ts';
+import { CardSources, type CardDisplayInput, type CardPreparation, type PreparedCard, type ReadyCardPaint } from '../../../src/syntax/cards.ts';
 import { SourceController, type ControllerOptions } from '../../../src/occipital/controller.ts';
 import { decodeSemanticDescription } from '../../../src/occipital/semantic-protocol.ts';
 import { fingerprintNative, fingerprintRules } from '../../../src/occipital/style-rules.ts';
@@ -35,7 +35,8 @@ const fixtures: { cards: CardSources<Owner>; sources: SourceController; runtime:
 function fixture(ready = false, options: ControllerOptions = {}, maxBookkeepingBytes?: number) {
   const env = { ready, enabled: true, generation: 1, vocabulary: 'a'.repeat(64), selected: { kind: 'pi' } as SyntaxTheme, profile: { ...profile },
     classifications: [] as string[], invalidated: [] as Owner[], renders: 0, acquisitions: 0, samples: 0, failClassification: false,
-    poison: false, beforeClassify: undefined as (() => void) | undefined, notices: [] as { keys: string[]; groups: number[] }[] };
+    poison: false, beforeClassify: undefined as (() => void) | undefined, notices: [] as { keys: string[]; groups: number[] }[],
+    preparations: [] as CardPreparation[], prepared: undefined as ((owner: Owner, receipt: Extract<CardPreparation, { phase: 'prepared' }>) => void) | undefined };
   const calls: { request: Frame; resolve(value: unknown): void; reject(error: unknown): void; done?: boolean }[] = [];
   const description = decodeSemanticDescription(semanticDescriptor('describe', 'daemon'), 'describe');
   const provider = { snapshot: () => ({ generation: env.generation, availability: env.ready ? 'ready' as const : 'initializing' as const,
@@ -54,7 +55,8 @@ function fixture(ready = false, options: ControllerOptions = {}, maxBookkeepingB
     effective: env.selected.kind === 'pi' ? { id: 'pi', label: 'Pi', fingerprint: fingerprintRules(createPiRuleDefinition()) } : env.ready ? env.profile : undefined, standaloneVersion: 'test' }) }, {
     preparePiInput: funding => { env.acquisitions++; return runtime.preparePiInput(sampled, 'truecolor', funding); },
     classify: text => { env.classifications.push(text); env.beforeClassify?.(); if (env.failClassification) throw Error('classification failed'); return highlightCode(text, 'typescript'); },
-    invalidate: owner => env.invalidated.push(owner), requestRender: () => { env.renders++; } }, { maxBookkeepingBytes });
+    invalidate: owner => env.invalidated.push(owner), requestRender: () => { env.renders++; },
+    preparation: (owner, receipt) => { env.preparations.push(receipt); if (receipt.phase === 'prepared') env.prepared?.(owner, receipt); } }, { maxBookkeepingBytes });
   const f = { env, calls, sources, cards, runtime, update(owner: Owner, input: CardDisplayInput) { owner.input = input; return cards.updateDisplay(owner, input); },
     use(owner: Owner, input: CardDisplayInput) { assert.equal(this.update(owner, input), true); cards.useful(owner, input.revision); },
     answerSource(i: number, text: string, context = 1, revision = 1, from = 0) {
@@ -1149,4 +1151,103 @@ test('cards saturated file pending Off veto, bounded fallback/recovery, freeze a
   // separately requires zero total retention after controller disposal.
   console.log(JSON.stringify({ saturatedLifetime: true, pendingOff: 1, nativePrefixBytes: prefix.length,
     piPrefixBytes: f.env.classifications[0]!.length, recovered: true, collected: true, peerRemoved: true }));
+});
+
+test('card preparation completion follows actual classification and applied paint', { timeout: 2000 }, async () => {
+  const f = fixture(), owner = {}, input = written('const completion = 7;');
+  let signals = 0, watchdog: ReturnType<typeof setTimeout>;
+  const completed = new Promise<void>((resolve, reject) => {
+    watchdog = setTimeout(() => reject(new Error('Card preparation completion was not emitted')), 1000);
+    f.env.beforeClassify = () => assert.equal(signals, 0, 'no completion signal while classification is running');
+    f.env.prepared = (actual, receipt) => {
+      try {
+        signals++;
+        assert.equal(actual === owner, true);
+        assert.equal(receipt.revision, input.revision);
+        assert.equal(receipt.palette, input.palette);
+        assert.deepEqual(receipt.outcomes, ['pi']);
+        assert.equal(receipt.applied, true);
+        assert.equal(f.env.classifications.length, 1);
+        inspect(f, owner, (display, paint) => {
+          assert.equal(display.revision, input.revision);
+          assert.equal(paint.publication, receipt.publication);
+          assert.ok(paint.publication > 0);
+          assert.equal(display.kind, 'file');
+          if (display.kind === 'file') assert.equal(typeof paint.ranges(display.rows[0]!.nextSource!.key), 'function');
+        });
+        resolve();
+      } catch (error) { reject(error); }
+    };
+  });
+  try {
+    f.use(owner, input);
+    await completed;
+    assert.equal(signals, 1);
+    assert.deepEqual(f.env.preparations.map(receipt => receipt.phase), ['updated', 'prepared']);
+    assert.equal(f.env.preparations[0]!.update, f.env.preparations[1]!.update);
+    const service = { ...input, revision: 2, serviceRevision: 2 };
+    assert.equal(f.update(owner, service), true);
+    assert.equal(f.env.preparations.at(-1)!.update, f.env.preparations[0]!.update, 'service-only changes reuse completed source work');
+  } finally { clearTimeout(watchdog!); }
+});
+
+test('replaced preparation does not report completion for the obsolete update', { timeout: 2000 }, async () => {
+  const f = fixture(), owner = {}, first = written('const before = 1;'), next = written('const after = 2;', 2);
+  const revisions: number[] = [];
+  let watchdog: ReturnType<typeof setTimeout>;
+  const completed = new Promise<void>((resolve, reject) => {
+    watchdog = setTimeout(() => reject(new Error('Replacement preparation completion was not emitted')), 1000);
+    f.env.prepared = (actual, receipt) => {
+      try {
+        assert.equal(actual === owner, true);
+        revisions.push(receipt.revision);
+        if (receipt.revision === next.revision) resolve();
+      } catch (error) { reject(error); }
+    };
+  });
+  try {
+    f.env.beforeClassify = () => { f.env.beforeClassify = undefined; f.use(owner, next); };
+    f.use(owner, first);
+    await completed;
+    assert.deepEqual(revisions, [next.revision]);
+  } finally { clearTimeout(watchdog!); }
+});
+
+test('preparation completion distinguishes classification from failed paint application', { timeout: 2000 }, async () => {
+  const f = fixture(), owner = {}, input = written('const denied = 3;');
+  const funding = f.sources.geometryFunding.bind(f.sources);
+  let deny = false, watchdog: ReturnType<typeof setTimeout>;
+  f.sources.geometryFunding = (...args) => deny ? undefined : funding(...args);
+  f.env.beforeClassify = () => { deny = true; };
+  const completed = new Promise<Extract<CardPreparation, { phase: 'prepared' }>>((resolve, reject) => {
+    watchdog = setTimeout(() => reject(new Error('Denied paint preparation was not reported')), 1000);
+    f.env.prepared = (_owner, receipt) => resolve(receipt);
+  });
+  try {
+    f.use(owner, input);
+    const receipt = await completed;
+    assert.equal(f.env.classifications.length, 1);
+    assert.deepEqual(receipt.outcomes, ['pi']);
+    assert.ok(receipt.publication > 0, 'retained neutral paint is not proof of applying the new classification');
+    assert.equal(receipt.applied, false, 'a classified source alone must not acknowledge applied paint');
+  } finally { clearTimeout(watchdog!); }
+});
+
+for (const partial of [false, true]) test(`preparation reports refused source admissions (partial=${partial})`, { timeout: 2000 }, async () => {
+  const allowance = RETENTION_LIMITS.entryAllowance;
+  const f = fixture(false, {}, partial ? allowance * 2 + 64 : allowance), owner = {};
+  const input = partial ? edited('-1 const before = 1;\n+1 const after = 2;') : written('const omitted = 1;');
+  let watchdog: ReturnType<typeof setTimeout>;
+  const completed = new Promise<Extract<CardPreparation, { phase: 'prepared' }>>((resolve, reject) => {
+    watchdog = setTimeout(() => reject(new Error('Refused preparation was not reported')), 1000);
+    f.env.prepared = (_owner, receipt) => resolve(receipt);
+  });
+  try {
+    f.use(owner, input);
+    const receipt = await completed;
+    assert.equal(f.cards.identities(owner).length, partial ? 1 : 0);
+    assert.equal(f.env.classifications.length, partial ? 1 : 0);
+    assert.ok(receipt.publication > 0, 'retained neutral/partial paint is allowed, but cannot prove all demanded source work');
+    assert.equal(receipt.refused, 1);
+  } finally { clearTimeout(watchdog!); }
 });

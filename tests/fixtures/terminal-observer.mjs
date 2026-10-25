@@ -1,4 +1,4 @@
-const protocol = /\x1b\[\?997;(\d+);([012])n/g;
+const protocol = /\x1b\[\?997;(\d+);([0123])n/g;
 
 export function installTerminalObserver(InteractiveMode, { restorable = false, interruptWindow = 500 } = {}) {
   const prototype = InteractiveMode.prototype;
@@ -83,7 +83,7 @@ export function installTerminalObserver(InteractiveMode, { restorable = false, i
         value.operations.delete(request.id);
         value.submissions = value.submissions.filter(entry => entry !== operation);
       }
-      emit(value, { type: 'frame', id: request.id, generation: value.generation, frames: current.frames,
+      emit(value, { type: request.kind === 3 ? 'capture' : 'frame', id: request.id, generation: value.generation, frames: current.frames,
         columns: current.tui.terminal.columns, rows: current.tui.terminal.rows,
         clearAfter: value.mode.lastSigintTime + interruptWindow + 1 });
     }

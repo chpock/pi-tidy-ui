@@ -36,6 +36,7 @@ test('real CLI: OpenCode-style edit syntax, numbered unified/split format, error
       writeFileSync(join(terminal.agent, 'themes/gruvbox-dark-hard.json'), readFileSync(new URL('../../fixtures/gruvbox-dark-hard.json', import.meta.url)));
       await terminal.ready(); await terminal.resize(100, 160); return terminal;
     };
+    const preparedCapture = (terminal, name) => terminal.capture(name, { prepared: { tool: 'edit', count: 5 } });
     const run = async (terminal) => {
       const turn = terminal.events().filter((event) => event.type === 'agent_end').length;
       terminal.send('run edit-cards\r'); await terminal.event('provider_gate');
@@ -218,7 +219,7 @@ test('real CLI: OpenCode-style edit syntax, numbered unified/split format, error
       assert.doesNotMatch(lines(pending.tools[0]).join(''), /┃|← Edited/);
       assert.match(lines(running.tools[0]).join(''), /^[\s]*[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] edit edit-example.ts/);
       assert.doesNotMatch(lines(running.tools[0]).join(''), /┃|← Edited/);
-      const wide = await live.capture('unified'); await check(wide, false, 'dark-fullscreen');
+      const wide = await preparedCapture(live, 'unified'); await check(wide, false, 'dark-fullscreen');
       assert.equal(wide.nativeRenderCalls.edit ?? 0, 0, 'five cards and two failed summaries never build discarded native rows');
       const nativeTraffic = traffic(stock);
       assert.deepEqual(traffic(live), nativeTraffic, '7 actual calls/results and 8 provider contexts are identical');
@@ -226,21 +227,21 @@ test('real CLI: OpenCode-style edit syntax, numbered unified/split format, error
       await stock.close();
       assert.deepEqual(persisted(wide), persisted(native), 'the renderer never changes persisted diff/proposal/error bytes');
       const sessionBytes = readFileSync(wide.session);
-      await live.resize(140, 160); const split = await live.capture('split'); await check(split, true);
-      await live.resize(141, 160); await check(await live.capture('split-odd'), true);
-      await live.command('/tidy-ui-theme light'); await check(await live.capture('split-light'), true, 'light-fullscreen');
-      await live.command('/tidy-ui-theme gruvbox-dark-hard'); await check(await live.capture('split-gruvbox'), true, 'gruvbox-fullscreen');
-      await live.resize(24, 160); const narrow = await live.capture('narrow');
+      await live.resize(140, 160); const split = await preparedCapture(live, 'split'); await check(split, true);
+      await live.resize(141, 160); await check(await preparedCapture(live, 'split-odd'), true);
+      await live.command('/tidy-ui-theme light'); await check(await preparedCapture(live, 'split-light'), true, 'light-fullscreen');
+      await live.command('/tidy-ui-theme gruvbox-dark-hard'); await check(await preparedCapture(live, 'split-gruvbox'), true, 'gruvbox-fullscreen');
+      await live.resize(24, 160); const narrow = await preparedCapture(live, 'narrow');
       for (const tool of narrow.tools) await assertFits(tool.lines, 24);
       await live.resize(100, 160); await live.command('/tidy-ui-theme dark');
-      const unified = await live.capture('unified-again'); await check(unified, false);
+      const unified = await preparedCapture(live, 'unified-again'); await check(unified, false);
       assert.equal(unified.nativeRenderCalls.edit ?? 0, 0, 'resize/theme changes do not reinstate native visibility work');
       assert.deepEqual(toolLines(unified), toolLines(wide), 'resize/theme round trip retains complete code and styling');
       live.send('\x0f'); await live.settle(); const expanded = await live.capture('expanded');
       assert.deepEqual(toolLines(expanded), toolLines(nativeExpanded), 'Ctrl+O exposes the unchanged full native presentation');
       assert.ok(expanded.nativeRenderCalls.edit > 0, 'expansion still visits the actual native renderer');
       live.send('\x0f'); await live.settle();
-      const successful = await live.capture('before-successful-click');
+      const successful = await preparedCapture(live, 'before-successful-click');
       const successY = successful.screen.findIndex((row) => row.includes('← Edited edit-example.ts') && row.includes('┃'));
       assert.ok(successY >= 0);
       live.send(`\x1b[<0;8;${successY + 1}M\x1b[<0;8;${successY + 1}m`); await live.settle();
@@ -249,7 +250,7 @@ test('real CLI: OpenCode-style edit syntax, numbered unified/split format, error
       assert.equal(successClicked.tools[1].expanded, false);
       assert.deepEqual(successClicked.tools[0].lines, nativeExpanded.tools[0].lines);
       live.send('\x0f'); await live.settle(); live.send('\x0f'); await live.settle();
-      const failed = await live.capture('before-failed-click');
+      const failed = await preparedCapture(live, 'before-failed-click');
       const failedRows = lines(failed.tools[2]);
       const y = failed.screen.map(plain).findIndex((row, index) => row === failedRows[0] && failedRows.every((value, offset) => plain(failed.screen[index + offset] ?? '') === value));
       assert.ok(y >= 0);
@@ -259,11 +260,11 @@ test('real CLI: OpenCode-style edit syntax, numbered unified/split format, error
       // Ctrl+O is still the host's global expansion toggle.
       live.send('\x0f'); await live.settle(); live.send('\x0f'); await live.settle();
       await live.appearance(false); assert.deepEqual(toolLines(await live.capture('off')), toolLines(native));
-      await live.appearance(true); await check(await live.capture('on'), false);
+      await live.appearance(true); await check(await preparedCapture(live, 'on'), false);
       const starts = live.events().filter((event) => event.type === 'start').length;
-      await live.command('/reload'); await live.event('start', starts + 1); const reloaded = await live.capture('reload'); await check(reloaded, false);
-       const warmStats = await live.cacheSnapshot(); const warm = await live.capture('warm');
-       const warmAgainStats = await live.cacheSnapshot(); const warmAgain = await live.capture('warm-again');
+      await live.command('/reload'); await live.event('start', starts + 1); const reloaded = await preparedCapture(live, 'reload'); await check(reloaded, false);
+       const warmStats = await live.cacheSnapshot(); const warm = await preparedCapture(live, 'warm');
+       const warmAgainStats = await live.cacheSnapshot(); const warmAgain = await preparedCapture(live, 'warm-again');
        assert.equal(warmAgainStats.builds, warmStats.builds, 'warm CLI frames do not rebuild/re-highlight edit layouts');
        for (const frame of [warm, warmAgain]) assert.equal(frame.nativeRenderCalls.edit ?? 0, reloaded.nativeRenderCalls.edit ?? 0,
          'both warm observations add exactly zero native renders to the post-reload baseline');
@@ -271,7 +272,7 @@ test('real CLI: OpenCode-style edit syntax, numbered unified/split format, error
       await live.close();
       for (const mode of ['fullscreen', 'regular']) {
         const replay = await start(`edit-replay-${mode}`, { tidyUi: true, session: wide.session, workspace: stock.work, mode });
-        const resumed = await replay.capture('replayed'); await check(resumed, false, `dark-${mode}`);
+        const resumed = await preparedCapture(replay, 'replayed'); await check(resumed, false, `dark-${mode}`);
         await replayColors(resumed, wide); assert.deepEqual(persisted(resumed), persisted(wide));
         const htmlBlock = resumed.tools[4].lines.map(plain), htmlStart = replayBlockStart(resumed, htmlBlock);
         const codeRow = htmlBlock.findIndex(line => /^\s*┃\s+\d+ [ +\-] /.test(line));
@@ -285,10 +286,10 @@ test('real CLI: OpenCode-style edit syntax, numbered unified/split format, error
           await assert.rejects(() => replayColors(damaged, wide), `comparison detects ${field} corruption at column ${column}`);
         }
         assert.equal(resumed.nativeRenderCalls.edit ?? 0, 0, `${mode} replay uses the native-free custom path`);
-        assert.deepEqual(toolLines(await replay.capture('replayed-warm')), toolLines(resumed), 'warm replay does not replace the accepted exact fallback');
+        assert.deepEqual(toolLines(await preparedCapture(replay, 'replayed-warm')), toolLines(resumed), 'warm replay does not replace the accepted exact fallback');
         for (const theme of ['light', 'gruvbox-dark-hard']) {
           await replay.command(`/tidy-ui-theme ${theme}`);
-          const changed = await replay.capture(`palette-${theme}`);
+          const changed = await preparedCapture(replay, `palette-${theme}`);
           await check(changed, false, `${theme === 'light' ? 'light' : 'gruvbox'}-${mode}`);
           assert.deepEqual(persisted(changed), persisted(wide), 'palette changes leave source/session data intact');
         }

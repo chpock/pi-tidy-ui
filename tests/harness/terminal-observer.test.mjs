@@ -1,7 +1,7 @@
 import '../fixtures/test-guard.mjs';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { EventEmitter } from 'node:events';
 import test from 'node:test';
@@ -10,7 +10,7 @@ import { pathToFileURL } from 'node:url';
 import { readInputs } from '../../scripts/test/context.mjs';
 import { planTerminalObserver } from '../fixtures/terminal-observer-plan.mjs';
 import { installTerminalObserver } from '../fixtures/terminal-observer.mjs';
-import { PiTerminal, observeNativeReceipts, observeRenderFrames } from '../fixtures/terminal-harness.mjs';
+import { PiTerminal, observeNativeReceipts, observeRenderFrames, detachTerminalScreen } from '../fixtures/terminal-harness.mjs';
 import xterm from '@xterm/headless';
 
 function fixture(t, paint = () => 'NATIVE_FRAME') {
@@ -37,7 +37,7 @@ function fixture(t, paint = () => 'NATIVE_FRAME') {
   }
   const restore = installTerminalObserver(Mode, { restorable: true });
   t.after(restore);
-  const packets = [], writes = [];
+  const packets = [], writes = [], packetEvents = new EventEmitter();
   function renderer() {
     return {
       renderRequested: false, renderTimer: undefined, immediateRenderScheduled: false, stopped: false,
@@ -45,7 +45,7 @@ function fixture(t, paint = () => 'NATIVE_FRAME') {
       terminal: { columns: 80, rows: 24, write(data) {
         writes.push(data);
         const match = /^\x1b\]777;tidy-test;([^\x07]+)\x07$/.exec(data);
-        if (match) packets.push(JSON.parse(Buffer.from(match[1], 'base64').toString()));
+        if (match) { packets.push(JSON.parse(Buffer.from(match[1], 'base64').toString())); packetEvents.emit('progress'); }
       } },
       addInputListener(listener) { this.listener = listener; return () => { this.listener = undefined; }; },
       doRender() {
@@ -60,7 +60,7 @@ function fixture(t, paint = () => 'NATIVE_FRAME') {
   mode.mountInteractiveTui(first);
   mode.setupEditorSubmitHandler();
   first.doRender();
-  return { mode, first, packets, writes, renderer,
+  return { mode, first, packets, writes, renderer, packetEvents,
     input(id, kind = 0, tui = mode.renderer) { return tui.listener(`\x1b[?997;${id};${kind}n`); },
     async packet(id, type = 'frame') {
       await t.waitFor(() => assert.ok(packets.some(packet => packet.id === id && packet.type === type)));
@@ -379,7 +379,7 @@ test('physical color captures wait for the complete frame and its parsed receipt
   observeNativeReceipts(h.term, h);
   const write = data => h.queue = new Promise(resolve => h.term.write(data, resolve));
   let request;
-  h.send = data => { request = Number(/^\x1b\[\?997;(\d+);0n$/.exec(data)?.[1]); assert.ok(request); };
+  h.send = data => { request = Number(/^\x1b\[\?997;(\d+);3n$/.exec(data)?.[1]); assert.ok(request); };
   await write('\x1b[?2026h\x1b[2J\x1b[H');
   let finished = false;
   const pending = h.captureCompleteScreen('preview', {}).then(
@@ -392,7 +392,7 @@ test('physical color captures wait for the complete frame and its parsed receipt
   await write('\x1b[?2026l');
   await turn();
   assert.equal(finished, false, 'frame completion still precedes the ordered physical receipt');
-  const packet = { type: 'frame', id: request, generation: 1, frames: 1 };
+  const packet = { type: 'capture', id: request, generation: 1, frames: 1, columns: 20, rows: 3 };
   await write(`\x1b]777;tidy-test;${Buffer.from(JSON.stringify(packet)).toString('base64')}\x07`);
   const result = await pending;
   assert.ifError(result.error);
@@ -439,4 +439,122 @@ test('reload completion follows the native submit promise when an unchanged stat
   assert.ok(host.screen().some(row => row.includes('Reloaded keybindings')));
   assert.ok(!host.screen().some(row => row.includes('Reloading keybindings')));
   assert.ok(!Buffer.concat(host.raw.slice(offset)).toString().includes('Reloaded'), 'the completed frame reuses the already visible status cells');
+});
+
+for (const split of [false, true]) test(`capture receipt retains its own cells before later output (split=${split})`, { timeout: 2000 }, async () => {
+  const term = new xterm.Terminal({ cols: 12, rows: 2, allowProposedApi: true }), state = {};
+  observeRenderFrames(term, state);
+  const observer = observeNativeReceipts(term, state);
+  const packet = { type: 'capture', id: 91, generation: 1, frames: 1, columns: 12, rows: 2 };
+  const marker = `\x1b]777;tidy-test;${Buffer.from(JSON.stringify(packet)).toString('base64')}\x07`;
+  const write = data => new Promise(resolve => term.write(data, resolve));
+  try {
+    if (split) {
+      await write(`FRAME_A${marker.slice(0, -1)}`);
+      await write(`${marker.slice(-1)}\rFRAME_B`);
+    } else await write(`FRAME_A${marker}\rFRAME_B`);
+    const received = state.nativeReceipts.get('capture:91'), snapshot = state.nativeSnapshots?.get(received);
+    assert.equal(term.buffer.active.getLine(0).translateToString(true), 'FRAME_B');
+    assert.equal(snapshot?.screen[0], 'FRAME_A', 'snapshot belongs to the receipt, not subsequently parsed bytes');
+    assert.equal(snapshot.cells[0][6].text, 'A');
+  } finally { observer.dispose(); term.dispose(); }
+});
+
+test('explicit native capture observes the current frame without requesting another render', { timeout: 2000 }, async t => {
+  const h = fixture(t);
+  h.mode.getUserInput();
+  const receipt = PiTerminal.prototype.waitForProgress.call({ nativeProgress: h.packetEvents },
+    () => h.packets.find(packet => packet.type === 'capture' && packet.id === 92), 'capture receipt');
+  h.input(92, 3);
+  assert.equal((await receipt).frames, 1);
+  assert.equal(h.writes.filter(value => value.includes('NATIVE_FRAME')).length, 1);
+});
+
+test('frame acknowledgements read zero cells; an explicit capture copies cells exactly once', { timeout: 2000 }, async () => {
+  const term = new xterm.Terminal({ cols: 12, rows: 2, allowProposedApi: true }), state = {};
+  const observer = observeNativeReceipts(term, state);
+  const prototype = Object.getPrototypeOf(term.buffer.active.getLine(0)), original = prototype.getCell;
+  let reads = 0;
+  prototype.getCell = function (...args) { reads++; return Reflect.apply(original, this, args); };
+  const write = data => new Promise(resolve => term.write(data, resolve));
+  const marker = type => `\x1b]777;tidy-test;${Buffer.from(JSON.stringify({ type, id: 93 })).toString('base64')}\x07`;
+  try {
+    await write(marker('frame'));
+    assert.equal(reads, 0);
+    assert.equal(state.snapshotCopies, 0);
+    await write(marker('capture'));
+    assert.equal(reads, 24);
+    assert.equal(state.snapshotCopies, 1);
+    assert.equal(state.nativeSnapshots.get(state.nativeReceipts.get('capture:93')).cells.length, 2);
+  } finally { prototype.getCell = original; observer.dispose(); term.dispose(); }
+});
+
+test('capture progress obeys the caller watchdog and removes its event listener', { timeout: 2000 }, async () => {
+  const state = { nativeProgress: new EventEmitter() }, controller = new AbortController();
+  const reason = new Error('controlled watchdog');
+  const pending = PiTerminal.prototype.waitForProgress.call(state, () => false, 'held completion', controller.signal);
+  assert.equal(state.nativeProgress.listenerCount('progress'), 1);
+  controller.abort(reason);
+  await assert.rejects(pending, error => error === reason);
+  assert.equal(state.nativeProgress.listenerCount('progress'), 0);
+});
+
+test('persisted capture preserves every cell attribute and surfaces an unwritable cell destination', { timeout: 2000 }, async () => {
+  const output = mkdtempSync(join(tmpdir(), 'terminal-screen-')), term = new xterm.Terminal({ cols: 12, rows: 2, allowProposedApi: true });
+  try {
+    await new Promise(resolve => term.write('\x1b[38;2;1;2;3m\x1b[48;2;4;5;6m\x1b[1;2;3;4;7;9mA', resolve));
+    const snapshot = detachTerminalScreen(term), state = { output, raw: [] };
+    const capture = PiTerminal.prototype.captureScreen.call(state, 'cells', {}, snapshot);
+    assert.deepEqual(JSON.parse(readFileSync(join(output, 'cells.screen.json'), 'utf8')), capture.cells);
+    for (const attribute of ['bold', 'dim', 'italic', 'underline', 'strike', 'inverse']) assert.ok(capture.cells[0][0][attribute], attribute);
+    assert.equal(capture.cells[0][0].text, 'A');
+    mkdirSync(join(output, 'denied.screen.json'));
+    assert.throws(() => PiTerminal.prototype.captureScreen.call(state, 'denied', {}, snapshot));
+  } finally { term.dispose(); rmSync(output, { recursive: true, force: true }); }
+});
+
+test('prepared capture spends one watchdog budget across stages rather than resetting it', { timeout: 2000 }, async t => {
+  const output = mkdtempSync(join(tmpdir(), 'prepared-deadline-'));
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const timeout = globalThis.setTimeout;
+  const timer = t.mock.method(globalThis, 'setTimeout', (...args) => timeout(...args));
+  t.mock.method(console, 'error', () => {});
+  let captures = 0, signal;
+  const state = { output, nativeSequence: 0, nativeProgress: new EventEmitter(), snapshotCopies: 0,
+    nativeFence: async (_id, kind, currentSignal) => {
+      captures++; signal = currentSignal; assert.equal(kind, 0); t.mock.timers.tick(11999); return { generation: 1 };
+    },
+    events: () => [{ type: 'card_preparation', tool: 'edit', call: 'a', update: 'one', phase: 'updated', sourceEligible: true },
+      { type: 'card_preparation', call: 'a', update: 'one', phase: 'prepared', applied: true, refused: 0, publication: 1, outcomes: ['pi'] }],
+    waitForProgress: PiTerminal.prototype.waitForProgress,
+    command: async (_command, currentSignal) => {
+      assert.equal(currentSignal === signal, true); t.mock.timers.tick(1); currentSignal.throwIfAborted();
+    } };
+  try {
+    await assert.rejects(() => PiTerminal.prototype.capturePrepared.call(state, 'deadline', { tool: 'edit', count: 1 }),
+      error => error.code === 'CAPTURE_TIMEOUT');
+    assert.equal(timer.mock.callCount(), 1);
+    assert.equal(captures, 1, 'only the input acknowledgement occurs; no physical capture after expiry');
+    assert.equal(state.nativeProgress.listenerCount('progress'), 0);
+    assert.equal(existsSync(join(output, 'deadline.screen.json')), false);
+  } finally { rmSync(output, { recursive: true, force: true }); }
+});
+
+test('a parsed native receipt does not wait for unrelated following parser work', { timeout: 2000 }, async () => {
+  const state = Object.create(PiTerminal.prototype), term = new xterm.Terminal({ cols: 12, rows: 2, allowProposedApi: true });
+  state.term = term; observeRenderFrames(term, state); const observer = observeNativeReceipts(term, state);
+  let release, watchdog, released = false;
+  state.queue = new Promise(resolve => { release = () => { released = true; resolve(); }; });
+  state.send = () => {
+    const packet = { type: 'frame', id: 94, generation: 1, frames: 1, columns: 12, rows: 2 };
+    term.write(`\x1b]777;tidy-test;${Buffer.from(JSON.stringify(packet)).toString('base64')}\x07`);
+  };
+  try {
+    const receipt = await Promise.race([state.nativeFence(94), new Promise((_, reject) => {
+      watchdog = setTimeout(() => reject(new Error('Native receipt unnecessarily waited for later parser work')), 1000);
+    })]);
+    assert.equal(receipt.id, 94);
+    assert.equal(released, false, 'no release of later bytes is needed for the already parsed receipt');
+    assert.equal(state.snapshotCopies, 0);
+  } finally { clearTimeout(watchdog); release(); observer.dispose(); term.dispose(); }
 });

@@ -10,6 +10,8 @@
 
 `useful` is a different operation. It marks a prepared revision as worth processing and queues the existing ticket. It does not normalize the source or classify it on the render stack. `prepare`, later invoked through the controller’s registry, constructs source demands and reconciles styles/fallback.
 
+An optional `CardSourceHost.preparation(owner, receipt)` observation reports accepted input (`updated`) and the end of the real preparation (`prepared`), after source evaluation and paint application attempts. The opaque `update` identity couples the concrete owner ticket, supplied source revision and Pi palette; output-only changes reuse that source-work identity. The completion includes actual paint publication, per-source outcomes, a count of source demands refused by the existing bookkeeping-admission branch, and the paint operation's `applied` result. That boolean comes from the existing compilation/adoption branch (including an already matching paint token), not a separate readiness predicate; refused funding cannot impersonate successful application merely because older neutral paint remains. Successful Pi classification is synchronous within this operation; a `waiting` native outcome is not completion of SOURCE/STYLE RPC work. Replaced or retired preparations do not acknowledge the obsolete update. `TidyUiOptions.cardPreparation` and `TidyUiRuntimeOptions.cardPreparation` forward these detached receipts with the tool-call ID/name, not the component. The hook observes existing work only, adds no scheduling or readiness store, and its exceptions cannot disrupt card ownership.
+
 The record uses several existing identities:
 
 | Identity | What changes it |
