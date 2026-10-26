@@ -446,8 +446,9 @@ for (const mode of ['fullscreen', 'regular']) test(`occipital CLI: ${mode} onlin
       assert.equal(recovered.source.preparedBytes, started.source.preparedBytes + demanded.reduce((sum, tool) => sum + Buffer.byteLength(tool.args.command), 0), 'no already-colored saved command is classified again');
       assert.equal(recovered.counts.piBridges, 0); assert.equal(recovered.counts.acquisitions, 2); assert.equal(recovered.source.remoteLeases, 0);
       const persistedBytes = readFileSync(session);
+      const warm = await stats(terminal, 'online-wait-warm-baseline');
       for (const width of [60, 100, 100]) { await terminal.resize(width); await terminal.capture(`online-wait-warm-${width}-${Date.now()}`); }
-      assert.deepEqual(work(await stats(terminal, 'online-wait-warm-final')), work(recovered));
+      assert.deepEqual(work(await stats(terminal, 'online-wait-warm-final')), work(warm));
       assert.deepEqual(readFileSync(session), persistedBytes); assert.deepEqual(raw(restored), raw(pending)); assert.deepEqual(traffic(terminal), stockTraffic);
       await finish(terminal);
       console.log(JSON.stringify({ onlineWait: terminal.output, stock: stock.output, node: recovered.node, mode, restoredSourceRequests: started.counts.sourceRequests,

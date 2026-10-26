@@ -20,6 +20,7 @@ import { fingerprintNative, fingerprintRules } from '../../../src/occipital/styl
 import { createPiRuleDefinition } from '../../../src/syntax/pi-rules.ts';
 import { CARD_ROLES } from '../../../src/occipital/semantic-codec.ts';
 import { CardSources } from '../../../src/syntax/cards.ts';
+import { observeSyntaxLocalWork } from '../../fixtures/syntax-local-work.ts';
 import { CardLayout } from '../../../src/syntax/card-layout.ts';
 import { DataCharge } from '../../../src/occipital/data-budget.ts';
 import { bashCardFixture as renderBashCard } from '../../fixtures/prepared-card.ts';
@@ -1617,4 +1618,42 @@ for (const interrupt of [true, false]) test(`syntax host: previously requested S
   let shown = ''; after.visit(text => { shown = text; }); assert.equal(shown, 'echo a b');
   assert.ok(await hasHostInk(f.render(tool), themes.theme, 'syntaxKeyword', 'echo a b'), 'the actual card paints the newly completed result, including after interruption');
   if (interrupt) { const requests = f.calls.length; for (let i = 0; i < 5; i++) f.render(tool); await settled(); assert.equal(f.calls.length, requests, 'interruption never resumes SOURCE or lease work'); }
+});
+
+
+test('host native completion precedes delayed Bash prefix adoption; only adopted frames are warm', { timeout: 12000 }, async t => {
+  let requested!: () => void, delivered!: () => void;
+  const sourceRequested = new Promise<void>(resolve => { requested = resolve; });
+  const notificationHeld = new Promise<void>(resolve => { delivered = resolve; });
+  const f = fixture(true, false, { diagnostic: (_level, _area, explanation, fields) => {
+    if (explanation === 'Native job dispatched' && fields?.operation === 'highlight') requested();
+  } });
+  const command = "printf 'USER_BASH_OUTPUT\\n'", tool = f.tool('bash', { command }, undefined, true);
+  tool.setArgsComplete(); tool.updateResult({ content: [{ type: 'text', text: 'USER_BASH_OUTPUT' }], isError: false }, false);
+  const observer = observeSyntaxLocalWork(), notify = f.sources.notifyChange;
+  let release: (() => void) | undefined, held = false;
+  t.mock.method(f.sources, 'notifyChange', function(this: SourceController, epoch: number) {
+    // Retain one real presentation notification after native SOURCE/STYLE settle.
+    if (!held && f.env.styleRequests.length > 0 && this.stats().globalUnsettledJobs === 0) {
+      held = true; release = () => notify.call(this, epoch); delivered(); return;
+    }
+    return notify.call(this, epoch);
+  });
+  try {
+    f.render(tool); await sourceRequested;
+    assert.equal(f.calls.length, 1); answer(f, 0, command);
+    await notificationHeld;
+    assert.equal(f.sources.stats().globalUnsettledJobs, 0, 'the old backend-only readiness condition has completed');
+    const early = observer.snapshot(), source = sourceCounts(f);
+    assert.equal(early.prefixScalarReads, 0, 'the real local completion is still held');
+    assert.ok(release); const resume = release; release = undefined; resume();
+    const adopted = observer.snapshot();
+    assert.equal(adopted.prefixScalarReads - early.prefixScalarReads, 2 * command.length,
+      'one first proof reads both identical ASCII strings once, explaining a possible +54 after an early baseline');
+    assert.ok(await hasHostInk(f.render(tool), themes.theme, 'syntaxKeyword', command));
+    for (const width of [60, 100, 100]) f.document(width);
+    assert.deepEqual(observer.snapshot(), adopted, 'actual width-only frames repeat no adopted prefix proof');
+    assert.deepEqual(sourceCounts(f), source, 'adoption and warm frames admit no new source or Pi work');
+    console.log(JSON.stringify({ delayedPrefixAdoption: { early, adopted, nativeJobs: 0, proofCalls: 1 } }));
+  } finally { release?.(); observer.restore(); }
 });
