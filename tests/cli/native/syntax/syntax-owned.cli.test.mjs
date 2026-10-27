@@ -4,13 +4,14 @@ import { existsSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import test from 'node:test';
+import { setImmediate as hostTurn } from 'node:timers/promises';
 import { SessionManager } from '@earendil-works/pi-coding-agent';
 import { CARD_ROLES } from '../../../../src/occipital/semantic-codec.ts';
 import { PiTerminal } from "../../../fixtures/terminal-harness.mjs";
 import { closeTerminals, runCleanupSteps } from "../../../fixtures/terminal-cleanup.mjs";
 import { assertSyntaxStockReference } from "../../../fixtures/syntax-stock-reference.mjs";
 import { nativeReady, semanticStyle, semanticPhaseReady, semanticSourceContext } from "../../../fixtures/syntax-observation.mjs";
-import { prepareSyntaxNative, inputs, scenario, traffic, persisted, stats, sourceColors, body, work, until, finish, settledStats, stockReference, syntaxReady, savedThemeSession, themeForegrounds, expectedThemeColors, expressionForeground, initialThemeStats, retainedNativeThemeStats, themeMarkers, previewStats, chooseTheme, shebangScenario, shebangContextColors, shebangStringColors } from "../../../fixtures/syntax-cli-support.mjs";
+import { prepareSyntaxNative, inputs, scenario, traffic, persisted, stats, sourceColors, body, work, until, finish, settledStats, intermediateStats, captureThenRenderDiagnostics, stockReference, syntaxReady, savedThemeSession, themeForegrounds, expectedThemeColors, expressionForeground, initialThemeStats, retainedNativeThemeStats, themeMarkers, previewStats, chooseTheme, shebangScenario, shebangContextColors, shebangStringColors } from "../../../fixtures/syntax-cli-support.mjs";
 
 const { binary, fixture, descriptor } = await prepareSyntaxNative();
 
@@ -19,7 +20,8 @@ for (const mode of ['fullscreen', 'regular']) test(`occipital CLI: actual ${mode
     const terminals = [], create = (name, options) => { const t = new PiTerminal(`syntax-${mode}-${name}`, { mode, ...options }); terminals.push(t); return t; };
     try {
       const native = create('native', { tidyUi: false, extraEnv: descriptor, extensions: [fixture] });
-      const shown = await scenario(native, true), nativeTraffic = traffic(native), nativeData = persisted(shown), baseline = await stats(native, 'warm-before');
+      const shown = await scenario(native, true), nativeTraffic = traffic(native), nativeData = persisted(shown), baseline = shown.sample;
+      assert.deepEqual(work(await settledStats(native, 'warm-before')), work(baseline), 'explicit component diagnostics cannot complete additional cold adoption work');
       sourceColors(shown);
       assert.ok(baseline.localWork.sourceSegments > 0, 'cold source measurement is observable');
       assert.ok(baseline.localWork.prefixScalarReads > 0, 'cold historical scalar proof is observable');
@@ -27,10 +29,10 @@ for (const mode of ['fullscreen', 'regular']) test(`occipital CLI: actual ${mode
       assert.equal(baseline.counts.acquisitions, 1); assert.equal(baseline.counts.piBridges, 0); assert.equal(baseline.source.globalUnsettledJobs, 0);
       assert.ok(baseline.source.dispatches >= 4); assert.match(body(shown).map(t => t.lines.join('\n')).join('\n'), /const x=2;/);
       for (const width of [60, 100]) { await native.resize(width); await native.capture(`syntax-width-${width}`); }
-      const warmed = await stats(native, 'warm-after'); assert.deepEqual(work(warmed), work(baseline)); assert.equal(warmed.counts.piBridges, 0);
+      const warmed = await settledStats(native, 'warm-after'); assert.deepEqual(work(warmed), work(baseline)); assert.equal(warmed.counts.piBridges, 0);
       assert.deepEqual(body(await native.capture('syntax-back-wide')), body(shown));
       await native.openTidyMenu(); await native.selectTidyItem('Code color theme'); await native.closeTidyMenu();
-      const menu = await stats(native, 'menu-cancel'); assert.deepEqual(work(menu), work(baseline)); assert.equal(menu.counts.acquisitions, 1);
+      const menu = await settledStats(native, 'menu-cancel'); assert.deepEqual(work(menu), work(baseline)); assert.equal(menu.counts.acquisitions, 1);
       const pid = baseline.transports[0].pid;
       await native.openTidyMenu(); await native.selectTidyItem('Status & troubleshooting');
       await native.selectTidyItem('Use Occipital highlighting');
@@ -42,26 +44,28 @@ for (const mode of ['fullscreen', 'regular']) test(`occipital CLI: actual ${mode
       native.captureScreen('syntax-menu-off', {});
       assert.ok(disabledRows.some(row => /Use Occipital highlighting\s+Off/u.test(row)), 'same real overlay survives native disable: ' + native.output);
       await native.closeTidyMenu();
-      const disabled = await stats(native, 'native-off'); assert.ok(disabled.transports.every(t => t.childState === 'exited'));
+      const disabled = await settledStats(native, 'native-off'); assert.ok(disabled.transports.every(t => t.childState === 'exited'));
       await native.appearance(false); const off = await stats(native, 'master-off');
       assert.ok(off.transports.every(t => t.childState === 'exited' && t.retainedBytes === 0 && t.liveTimers === 0));
       assert.throws(() => process.kill(pid, 0), { code: 'ESRCH' });
-      await native.appearance(true); const reenabled = await native.capture('syntax-reenabled');
+      await native.appearance(true); const reenabled = await captureThenRenderDiagnostics(native, 'syntax-reenabled');
       assert.deepEqual(body(reenabled), body(shown));
-      const afterOn = await stats(native, 'master-on'); assert.equal(afterOn.counts.acquisitions, 1, 'session-native-off survives full adapter reinstall');
+      const afterOn = await settledStats(native, 'master-on'); assert.equal(afterOn.counts.acquisitions, 1, 'session-native-off survives full adapter reinstall');
       assert.ok(afterOn.source.piSourceRecords > 0, 'post-reinstall diagnostics describe the current fallback owner, not the disposed native controller');
       assert.ok(afterOn.controller > baseline.controller, 'a genuinely new attached owner is measured');
       assert.equal(afterOn.client.enabled, false);
       const session = shown.session, workspace = native.work; await finish(native);
       const replay = create('replay', { session, workspace, extraEnv: descriptor, extensions: [fixture] });
-      await replay.ready(); await settledStats(replay, 'replay-settled', s => nativeReady(s) && s.source.dispatches > 0);
-      const replayed = await replay.capture('syntax-replay');
+      await replay.ready();
+      const replayed = await captureThenRenderDiagnostics(replay, 'syntax-replay'), replayStats = replayed.sample;
+      assert.ok(nativeReady(replayStats) && replayStats.source.dispatches > 0, 'native source work accepted after asynchronous replay startup');
       assert.deepEqual(persisted(replayed), nativeData); assert.deepEqual(body(replayed), body(shown));
       assert.equal(replay.events().filter(e => ['call', 'result', 'model_context'].includes(e.type)).length, 0);
-      const replayStats = await stats(replay, 'replay'); assert.equal(replayStats.source.globalUnsettledJobs, 0);
+      assert.deepEqual(work(await settledStats(replay, 'replay')), work(replayStats), 'replay component diagnostics do not warm the natural baseline');
+      assert.equal(replayStats.source.globalUnsettledJobs, 0);
       assert.ok(replayStats.source.dispatches > 0, 'native source work accepted after asynchronous replay startup');
       // Completed replay files may use exact Pi fallback before the helper is ready.
-      await replay.capture('syntax-replay-warm'); const replayWarm = await stats(replay, 'replay-warm');
+      await replay.capture('syntax-replay-warm'); const replayWarm = await settledStats(replay, 'replay-warm');
       assert.deepEqual(work(replayWarm), work(replayStats)); assert.equal(replayWarm.counts.piBridges, replayStats.counts.piBridges);
       console.log(JSON.stringify({ mode, native: native.output, replay: replay.output, nativeWork: work(baseline), replayWork: work(replayStats),
         coldReplayPiBridges: replayStats.counts.piBridges, warmNativeDelta: 0, warmReplayDelta: 0 }));
@@ -109,14 +113,14 @@ test('occipital CLI: edit shebang language selection colors split context by sid
       assert.ok(split.screen.some(row => row.includes('NO_SHEBANG_CONTROL')), 'the no-shebang card remains presented');
       assert.equal(events.filter(event => event.type === 'syntax_notify' && event.message.includes('unexpected error (unknown_syntax)')).length, 0,
         'ordinary no-start fallback does not create an unexpected-error notification');
-      const before = await stats(terminal, 'shebang-before-resize');
+      const before = split.sample;
       assert.ok(before.localWork.shebangFileSegments > 0, 'cold measurement includes the unique shebang-file marker, not only other syntax cards');
       await terminal.resize(100, 120);
-      const unified = await terminal.capture('shebang-unified'), unifiedColors = shebangContextColors(unified);
+      const unified = await captureThenRenderDiagnostics(terminal, 'shebang-unified'), unifiedColors = shebangContextColors(unified);
       assert.equal(unifiedColors.length, 2, 'write and one unified edit context are visible');
       assert.equal(unifiedColors[0], splitColors[0]);
       assert.equal(unifiedColors[1], splitColors[2], 'unified context uses the new-side grammar');
-      const after = await stats(terminal, 'shebang-after-resize');
+      const after = await settledStats(terminal, 'shebang-after-resize');
       assert.deepEqual(work(after), work(before), 'resize reuses parsed source work');
       assert.equal(after.localWork.shebangFileSegments, before.localWork.shebangFileSegments, 'resize repeats no shebang-file measurement');
       assert.deepEqual(after.localWork, before.localWork, 'resize repeats no other file measurement or source-scalar reads');
@@ -132,8 +136,11 @@ test('occipital CLI: provider readiness waits for the actual acquired/publicatio
     try {
       await terminal.ready(); await terminal.event('syntax_acquire_gate');
       const early = await stats(terminal, 'gated-early'); assert.equal(early.counts.describeReplies, 0);
-      const waiting = syntaxReady(terminal).then(() => undefined, error => error);
-      await until(() => existsSync(`${terminal.output}/syntax-stats-startup-0.json`), 'fresh early provider observation');
+      let completed = false;
+      const waiting = syntaxReady(terminal).then(() => { completed = true; }, error => { completed = true; return error; });
+      await hostTurn(); await terminal.settle();
+      assert.equal(completed, false, 'a later ordinary receipt cannot finish the held provider observation');
+      assert.equal([...terminal.nativeRequests.values()].filter(request => request.type === 'capture').length, 1, 'the pending capture remains correlated');
       writeFileSync(`${terminal.output}/syntax-acquire-go`, 'go');
       const failure = await waiting; if (failure) throw failure;
       await finish(terminal);
@@ -189,7 +196,7 @@ for (const mode of ['fullscreen', 'regular']) test(`occipital CLI: ${mode} input
       const done = await settledStats(terminal, 'delivered', nativeReady);
       assert.equal(done.pendingHeldReplies, 0); assert.equal(done.counts.deliveredReplies, done.counts.heldReplies);
       assert.equal(done.counts.piCaptures, 0); assert.equal(done.counts.piBridges, 0);
-      const colored = await terminal.capture('delivered-colors'); sourceColors(colored);
+      const colored = await captureThenRenderDiagnostics(terminal, 'delivered-colors'); sourceColors(colored);
       assert.deepEqual(colored.branch, held.branch, 'classification delivery changes no saved session data');
       const reference = await stockReference(mode);
       assertSyntaxStockReference(reference, { traffic: traffic(terminal), persisted: persisted(held) });
@@ -243,7 +250,7 @@ for (const mode of ['fullscreen', 'regular']) test(`occipital CLI: ${mode} gradu
       await abort(fallback);
       const neutral = await fallback.capture('aborted'), fallbackTraffic = traffic(fallback);
       await fallback.close();
-      const aborted = await live.capture('aborted');
+      const aborted = await captureThenRenderDiagnostics(live, 'aborted');
       assert.deepEqual(traffic(live), stockTraffic); assert.deepEqual(fallbackTraffic, stockTraffic);
       assert.equal(traffic(live).filter(e => e.type === 'call').length, 0);
       assert.equal(traffic(live).filter(e => e.type === 'result').length, 0);
@@ -262,7 +269,7 @@ for (const mode of ['fullscreen', 'regular']) test(`occipital CLI: ${mode} gradu
       assert.deepEqual(body(aborted), body(neutral), 'native syntax preserves the existing pi-tidy-ui frame and abort presentation');
       assert.ok(body(aborted)[0].lines.some(row => row.includes("printf 'SYNTAX_OUTPUT\\n'")));
       assert.ok(body(aborted)[0].lines.some(row => row.includes('[error: incomplete tool call]')));
-       const before = await stats(live, 'abort-warm-before');
+       const before = aborted.sample;
       assert.equal(before.source.sourceRecords, 1, 'terminal argument abort retains one display-only source record');
        assert.ok(before.source.retention.retainedBytes > 0, 'retained colors remain budgeted until owner removal/off');
       assert.equal(before.source.remoteLeases, 0); assert.equal(before.source.pendingCloses, 0);
@@ -271,7 +278,7 @@ for (const mode of ['fullscreen', 'regular']) test(`occipital CLI: ${mode} gradu
       assert.ok(before.counts.styleRequests > 0, 'real v3 STYLE matching is counted separately');
       assert.equal(before.source.dispatches, before.counts.sourceRequests + before.counts.styleRequests + before.counts.closeRequests);
       for (const width of [40, 100]) { await live.resize(width); await live.capture(`abort-width-${width}`); }
-      const after = await stats(live, 'abort-warm-after');
+      const after = await settledStats(live, 'abort-warm-after');
       assert.deepEqual(work(after), work(before)); assert.equal(after.counts.piBridges, 0);
       assert.equal(after.source.globalUnsettledJobs, 0);
       await finish(live);
@@ -330,7 +337,7 @@ for (const mode of ['fullscreen', 'regular']) test(`occipital CLI: ${mode} histo
         terminal.send('\x1b'); await terminal.event('agent_end'); await terminal.settle();
       }
       await settledStats(live, 'prefix-aborted-settled', s => s.source.globalUnsettledJobs === 0 && s.source.remoteLeases === 0 && s.pendingHeldReplies === 0);
-      const aborted = await live.capture('pointer-prefix-aborted'), baseline = await stock.capture('pointer-prefix-aborted');
+      const aborted = await captureThenRenderDiagnostics(live, 'pointer-prefix-aborted'), baseline = await stock.capture('pointer-prefix-aborted');
       assert.equal(cells(aborted).prefix.fg, fg(aborted, 'syntaxString'));
       assert.ok(body(aborted)[0].lines.some(row => row.includes('[error: incomplete tool call]')));
       assert.deepEqual(traffic(live), traffic(stock)); assert.deepEqual(persisted(aborted), persisted(baseline));
@@ -338,19 +345,19 @@ for (const mode of ['fullscreen', 'regular']) test(`occipital CLI: ${mode} histo
       const raw = dump => dump.tools.map(({ name, args, content, details, structuredContent, isError, argsComplete, executionStarted, partial }) =>
         ({ name, args, content, details, structuredContent, isError, argsComplete, executionStarted, partial }));
       assert.deepEqual(raw(aborted), raw(baseline)); assert.equal(traffic(live).filter(e => e.type === 'call' || e.type === 'result').length, 0);
-      const before = await stats(live, 'prefix-frozen-before');
+      const before = aborted.sample;
       assert.equal(before.source.sourceRecords, 1); assert.equal(before.counts.sourceRequests, 2); assert.equal(before.counts.closeRequests, 1); assert.equal(before.counts.heldBashReplies, 1);
       for (const width of [60, 100]) {
         await live.resize(width); const resized = await live.capture(`pointer-prefix-frozen-${width}`);
         assert.equal(cells(resized).prefix.fg, fg(resized, 'syntaxString'));
       }
-      const after = await stats(live, 'prefix-frozen-after'); assert.deepEqual(work(after), work(before)); assert.equal(after.counts.piBridges, 0);
+      const after = await settledStats(live, 'prefix-frozen-after'); assert.deepEqual(work(after), work(before)); assert.equal(after.counts.piBridges, 0);
       await finish(live);
       const sessionBytes = readFileSync(aborted.session);
       replay = new PiTerminal(`bash-prefix-replay-${mode}`, { mode, session: aborted.session, extensions: [fixture], extraEnv: descriptor });
       await replay.ready(); await syntaxReady(replay);
        const replayStats = await settledStats(replay, 'prefix-replay-colored', s => nativeReady(s) && s.counts.sourceRequests === 1 && s.source.decodedBytes > 0);
-       const replayed = await replay.capture('pointer-prefix-replayed');
+       const replayed = await captureThenRenderDiagnostics(replay, 'pointer-prefix-replayed');
        assert.equal(cells(replayed).prefix.fg, fg(replayed, 'syntaxString'), 'restored incomplete call is freshly colored as static saved text');
       assert.deepEqual(body(replayed), body(aborted), 'replay changes no latest command glyphs or incomplete-call geometry');
       assert.deepEqual(raw(replayed), raw(aborted));
@@ -359,13 +366,13 @@ for (const mode of ['fullscreen', 'regular']) test(`occipital CLI: ${mode} histo
        assert.equal(replayStats.counts.sourceRequests, 1, 'one finite new-owner SOURCE, not a continuing abandoned stream');
         assert.ok(replayStats.counts.styleRequests > 0); assert.equal(replayStats.counts.closeRequests, 0);
        assert.equal(replayStats.source.remoteLeases, 0); assert.equal(replayStats.counts.piBridges, 0);
-        const replayMaterialized = await stats(replay, 'prefix-replay-materialized');
+        const replayMaterialized = replayed.sample;
         for (const width of [60, 100]) {
           await replay.resize(width);
          const warmReplay = await replay.capture(`pointer-prefix-replayed-warm-${width}`);
          assert.equal(cells(warmReplay).prefix.fg, fg(warmReplay, 'syntaxString'));
        }
-       const replayAfter = await stats(replay, 'prefix-replay-warm'); assert.deepEqual(work(replayAfter), work(replayMaterialized));
+       const replayAfter = await settledStats(replay, 'prefix-replay-warm'); assert.deepEqual(work(replayAfter), work(replayMaterialized));
        assert.equal(traffic(replay).length, 0); assert.deepEqual(readFileSync(aborted.session), sessionBytes);
       await finish(replay);
       console.log(JSON.stringify({ historicalBash: live.output, stock: stock.output, replay: replay.output, node: after.node, mode, heldReplies: 1,
@@ -411,7 +418,7 @@ for (const mode of ['fullscreen', 'regular']) test(`occipital CLI: ${mode} onlin
       writeFileSync(join(terminal.output, 'syntax-acquire-go'), 'go');
       const started = await settledStats(terminal, 'online-wait-start-colored', s => nativeReady(s) && s.counts.sourceRequests === 2 && s.source.decodedBytes > 0
         && ['ONLINE_WAIT_FIRST', 'ONLINE_WAIT_SECOND'].every(marker => semanticStyle(terminal.events(), marker, 'pi')));
-      const colored = await terminal.capture('online-wait-start-colored');
+      const colored = await captureThenRenderDiagnostics(terminal, 'online-wait-start-colored');
       color(colored, 'ONLINE_WAIT_FIRST', 'syntaxString'); color(colored, 'ONLINE_WAIT_SECOND', 'syntaxString');
       assert.deepEqual(raw(colored), raw(early)); assert.deepEqual(readFileSync(session), original); assert.equal(traffic(terminal).length, 0);
       assert.equal(started.source.preparedBytes, Buffer.byteLength(savedFirst) + Buffer.byteLength(savedSecond));
@@ -438,7 +445,7 @@ for (const mode of ['fullscreen', 'regular']) test(`occipital CLI: ${mode} onlin
       writeFileSync(join(terminal.output, 'syntax-acquire-go'), 'go');
       const recovered = await settledStats(terminal, 'online-wait-recovered', s => nativeReady(s) && s.counts.sourceRequests === 4 && s.source.sourceRecords === 4
         && semanticStyle(terminal.events(), 'USER_BASH_OUTPUT', 'pi'));
-      const restored = await terminal.capture('online-wait-recovered');
+      const restored = await captureThenRenderDiagnostics(terminal, 'online-wait-recovered');
       color(restored, 'ONLINE_WAIT_FIRST', 'syntaxString'); color(restored, 'ONLINE_WAIT_SECOND', 'syntaxString');
       const rows = restored.screen.flatMap((row, y) => row.includes('printf') && row.includes('USER_BASH_OUTPUT') ? [y] : []);
       assert.equal(rows.length, 2, 'both recovery-deferred command strings, not their output rows, are visible');
@@ -446,9 +453,9 @@ for (const mode of ['fullscreen', 'regular']) test(`occipital CLI: ${mode} onlin
       assert.equal(recovered.source.preparedBytes, started.source.preparedBytes + demanded.reduce((sum, tool) => sum + Buffer.byteLength(tool.args.command), 0), 'no already-colored saved command is classified again');
       assert.equal(recovered.counts.piBridges, 0); assert.equal(recovered.counts.acquisitions, 2); assert.equal(recovered.source.remoteLeases, 0);
       const persistedBytes = readFileSync(session);
-      const warm = await stats(terminal, 'online-wait-warm-baseline');
+      const warm = restored.sample;
       for (const width of [60, 100, 100]) { await terminal.resize(width); await terminal.capture(`online-wait-warm-${width}-${Date.now()}`); }
-      assert.deepEqual(work(await stats(terminal, 'online-wait-warm-final')), work(warm));
+      assert.deepEqual(work(await settledStats(terminal, 'online-wait-warm-final')), work(warm));
       assert.deepEqual(readFileSync(session), persistedBytes); assert.deepEqual(raw(restored), raw(pending)); assert.deepEqual(traffic(terminal), stockTraffic);
       await finish(terminal);
       console.log(JSON.stringify({ onlineWait: terminal.output, stock: stock.output, node: recovered.node, mode, restoredSourceRequests: started.counts.sourceRequests,
@@ -499,7 +506,8 @@ for (const mode of ['fullscreen', 'regular']) test(`occipital CLI: ${mode} resto
         const held = await stats(terminal, `backlog-order-held-${batch}`);
         assert.equal(held.source.globalUnsettledJobs, 2); assert.equal(held.counts.orderDispatches, from + 2);
         for (const ordinal of [from + 1, from + 2]) writeFileSync(join(terminal.output, `syntax-order-go-${ordinal}`), 'go');
-        const accepted = await settledStats(terminal, `backlog-order-accepted-${batch}`, s => s.source.decodedBytes ===
+        const observe = batch === commands.length / 2 - 1 ? settledStats : intermediateStats;
+        const accepted = await observe(terminal, `backlog-order-accepted-${batch}`, s => s.source.decodedBytes ===
           commands.slice(commands.length - from - 2).reduce((sum, text) => sum + Buffer.byteLength(text), 0));
         if (!batch) {
           const first = await terminal.capture('backlog-order-newest-first');
@@ -509,7 +517,7 @@ for (const mode of ['fullscreen', 'regular']) test(`occipital CLI: ${mode} resto
         }
         if (batch === commands.length / 2 - 1) assert.equal(accepted.source.globalUnsettledJobs, 0);
       }
-      const colored = await terminal.capture('backlog-order-complete'), final = await stats(terminal, 'backlog-order-final');
+      const colored = await captureThenRenderDiagnostics(terminal, 'backlog-order-complete'), final = colored.sample;
       const dispatches = terminal.events().filter(e => e.type === 'syntax_order_dispatch');
       assert.deepEqual(dispatches.map(e => e.payload.sources[0].text), commands.toReversed());
       for (let i = 0; i < commands.length; i++) color(colored, i, 'syntaxString');
@@ -519,7 +527,7 @@ for (const mode of ['fullscreen', 'regular']) test(`occipital CLI: ${mode} resto
       assert.equal(final.counts.piBridges, 0); assert.equal(final.source.remoteLeases, 0);
       assert.equal(final.source.preparedBytes, commands.reduce((sum, text) => sum + Buffer.byteLength(text), 0));
       for (const width of [60, 100]) { await terminal.resize(width); await terminal.capture(`backlog-order-warm-${width}`); }
-      assert.deepEqual(work(await stats(terminal, 'backlog-order-warm-final')), work(final));
+      assert.deepEqual(work(await settledStats(terminal, 'backlog-order-warm-final')), work(final));
       assert.deepEqual(raw(colored), raw(baseline)); assert.deepEqual(readFileSync(session), bytes); assert.equal(traffic(terminal).length, 0);
       await terminal.quit('\x04');
       await finish(terminal);
@@ -540,21 +548,20 @@ for (const mode of ['fullscreen', 'regular']) test(`occipital CLI: ${mode} theme
     try {
       await terminal.ready(); await terminal.resize(100, 160);
       await initialThemeStats(terminal, 'all-theme-initial');
-      await retainedNativeThemeStats(terminal, 'all-native-prerequisite', name => previewStats(terminal, name));
-      const baseline = await terminal.capture('physical-theme-baseline');
+      await retainedNativeThemeStats(terminal, 'all-native-prerequisite');
+      const baseline = await captureThenRenderDiagnostics(terminal, 'physical-theme-baseline');
       assert.equal(baseline.tools.length, cards.length); assert.ok(baseline.tools.every(tool => !('tinyLines' in tool)));
       foregrounds(baseline);
       for (const [phase, label] of [['mocha', 'Catppuccin Mocha'], ['latte', 'Catppuccin Latte'], ['pi', null]]) {
-        const before = await stats(terminal, `all-theme-before-${phase}`);
+        const before = await settledStats(terminal, `all-theme-before-${phase}`);
         const profiles = before.client.provider.description.profiles.filter(profile => profile.id !== 'pi');
         const index = label === null ? 0 : profiles.findIndex(profile => profile.label === label) + 1;
         assert.ok(label === null || index > 0, `bundled theme ${label} exists`);
         writeFileSync(join(terminal.output, 'syntax-theme-phase'), phase);
         await chooseTheme(terminal, index);
         const profileId = label === null ? 'pi' : profiles[index - 1].id;
-        let observations = 0;
-        const after = await until(() => semanticPhaseReady(() => stats(terminal, `all-theme-${phase}-${observations++}`),
-          () => terminal.events(), themeMarkers, profileId), `all retained native semantics styled for ${phase}`);
+        const after = await settledStats(terminal, `all-theme-${phase}`);
+        assert.ok(await semanticPhaseReady(() => after, () => terminal.events(), themeMarkers, profileId), `all retained native semantics styled for ${phase}`);
         assert.equal(after.node, process.env.PI_TEST_EXPECT_NODE ?? process.version);
         assert.equal(after.counts.sourceRequests, before.counts.sourceRequests, 'theme selection reparses no retained SOURCE, including either edit side');
         assert.equal(after.source.preparedBytes, before.source.preparedBytes);
@@ -562,11 +569,8 @@ for (const mode of ['fullscreen', 'regular']) test(`occipital CLI: ${mode} theme
         assert.ok(dispatches.every(event => event.kind === 'style' && event.jobs <= 2), 'only source-free STYLE work may use physical credits');
         if (phase !== 'latte') assert.equal(after.counts.styleRequests, before.counts.styleRequests, 'prerequisite Mocha and original Pi styles are cached');
         else assert.ok(after.counts.styleRequests > before.counts.styleRequests, 'uncached Latte performs actual STYLE work');
-        let painted;
-        await until(async () => {
-          painted = await terminal.capture(`physical-theme-${phase}`);
-          return foregrounds(painted).every((color, i) => color === expectedThemeColors(terminal, phase, painted, profileId)[i]);
-        }, `all mixed-card physical colors for ${phase}`);
+        const painted = await captureThenRenderDiagnostics(terminal, `physical-theme-${phase}`);
+        assert.deepEqual(foregrounds(painted), expectedThemeColors(terminal, phase, painted, profileId), `all mixed-card physical colors for ${phase}`);
         const vectors = themeMarkers.map((marker, i) => {
           const y = painted.screen.findIndex(row => row.includes(marker)), cell = painted.cells[y][painted.screen[y].indexOf(marker)];
           const resolved = semanticStyle(terminal.events(), marker, profileId), expression = resolved.expression;
@@ -586,11 +590,11 @@ for (const mode of ['fullscreen', 'regular']) test(`occipital CLI: ${mode} theme
         });
         assert.deepEqual(raw(painted), raw(baseline)); assert.deepEqual(body(painted), body(baseline));
         assert.deepEqual(readFileSync(session), bytes); assert.equal(traffic(terminal).length, 0);
-        const materialized = await stats(terminal, `all-theme-painted-${phase}`);
+        const materialized = painted.sample;
         for (const width of [100, 90, 100]) {
           await terminal.resize(width, 160); await terminal.capture(`physical-theme-warm-${phase}-${width}`);
         }
-        const warm = await stats(terminal, `all-theme-warm-${phase}`);
+        const warm = await settledStats(terminal, `all-theme-warm-${phase}`);
         assert.deepEqual(work(warm), work(materialized)); assert.equal(warm.counts.piBridges, before.counts.piBridges);
         assert.equal(terminal.events().filter(event => event.type === 'syntax_native_dispatch' && event.phase === phase).length, dispatches.length);
         console.log(JSON.stringify({ allCardTheme: terminal.output, mode, phase, node: after.node,
@@ -609,7 +613,7 @@ for (const mode of ['fullscreen', 'regular']) test(`occipital CLI: ${mode} live 
     try {
       const shown = await scenario(terminal, true);
       await terminal.resize(100, 160);
-      const before = await stats(terminal, 'lifo-before'), sessionBytes = readFileSync(shown.session), originalTraffic = traffic(terminal);
+      const before = await settledStats(terminal, 'lifo-before'), sessionBytes = readFileSync(shown.session), originalTraffic = traffic(terminal);
       const mocha = before.client.provider.description.profiles.find(p => p.label === 'Catppuccin Mocha'); assert.ok(mocha);
       await terminal.openTidyMenu(); await terminal.selectTidyItem('Code color theme');
       writeFileSync(join(terminal.output, 'syntax-theme-phase'), 'held-preview'); terminal.send(mocha.label);
@@ -632,29 +636,28 @@ for (const mode of ['fullscreen', 'regular']) test(`occipital CLI: ${mode} live 
       }
       writeFileSync(join(terminal.output, 'syntax-preview-go'), 'go');
       await terminal.selectTidyItem(mocha.label); await terminal.closeTidyMenu();
-      let observations = 0;
-      const accepted = await until(() => semanticPhaseReady(() => stats(terminal, `lifo-accepted-${observations++}`),
-        () => terminal.events(), ['SYNTAX_OUTPUT', 'const x=1;', 'const x=2;'], mocha.id), 'all current live sources have real new-theme styles');
+      const accepted = await settledStats(terminal, 'lifo-accepted');
+      assert.ok(await semanticPhaseReady(() => accepted, () => terminal.events(), ['SYNTAX_OUTPUT', 'const x=1;', 'const x=2;'], mocha.id),
+        'all current live sources have real new-theme styles');
       assert.equal(accepted.counts.sourceRequests, before.counts.sourceRequests, 'new theme reuses every retained SOURCE');
       assert.equal(accepted.source.preparedBytes, before.source.preparedBytes);
       assert.ok(accepted.counts.styleRequests > before.counts.styleRequests);
       assert.ok(terminal.events().filter(e => e.type === 'syntax_native_dispatch' && e.phase === 'held-preview').every(e => e.kind === 'style' && e.jobs <= 2));
-      await until(async () => {
-        const dump = await terminal.captureCompleteScreen('physical-lifo-visible', shown);
-        return ['const x=1;', 'const x=2;'].every(marker => {
-          const y = dump.screen.findLastIndex(row => row.includes(marker)), style = semanticStyle(terminal.events(), marker, mocha.id);
-          return y >= 0 && style && dump.cells[y][dump.screen[y].indexOf(marker)].fg === expressionForeground(style.expression, dump);
-        });
-      }, 'latest edit has its actual native preview color');
+      const dump = { ...shown, ...await terminal.captureSettled('physical-lifo-visible') };
+      for (const marker of ['const x=1;', 'const x=2;']) {
+        const y = dump.screen.findLastIndex(row => row.includes(marker)), style = semanticStyle(terminal.events(), marker, mocha.id);
+        assert.ok(y >= 0 && style, 'latest edit has its actual native preview color');
+        assert.equal(dump.cells[y][dump.screen[y].indexOf(marker)].fg, expressionForeground(style.expression, dump));
+      }
       const publication = terminal.events().findLast(e => e.type === 'syntax_card_publication' && e.phase === 'held-preview' && e.id === prepared[0].id && e.kind === 'edit');
       assert.ok(publication && publication.origin === 'native' && publication.paintStamp !== oldPublication.paintStamp && publication.publication !== oldPublication.publication,
         'the newest edit owns a validated changed native publication after the real STYLE replies');
-      const settled = await stats(terminal, 'lifo-confirmed');
+      const settled = await settledStats(terminal, 'lifo-confirmed');
       assert.equal(settled.counts.sourceRequests, before.counts.sourceRequests);
       for (const width of [90, 100]) { await terminal.resize(width, 160); await terminal.capture(`physical-lifo-warm-${width}`); }
-      const warm = await stats(terminal, 'lifo-warm'); assert.deepEqual(work(warm), work(settled));
+      const warm = await settledStats(terminal, 'lifo-warm'); assert.deepEqual(work(warm), work(settled));
       assert.deepEqual(traffic(terminal), originalTraffic); assert.deepEqual(readFileSync(shown.session), sessionBytes);
-      const final = await terminal.capture('physical-lifo-final'); assert.deepEqual(persisted(final), persisted(shown));
+      const final = await captureThenRenderDiagnostics(terminal, 'physical-lifo-final'); assert.deepEqual(persisted(final), persisted(shown));
       assertSyntaxStockReference(await stockReference(mode), { traffic: originalTraffic, persisted: persisted(shown) });
       console.log(JSON.stringify({ unifiedLifo: terminal.output, mode, node: warm.node, firstPreparation: prepared[0], oldPublication, publication,
         sourceDelta: settled.counts.sourceRequests - before.counts.sourceRequests, styleDelta: settled.counts.styleRequests - before.counts.styleRequests, warmDelta: 0 }));
@@ -682,7 +685,11 @@ for (const mode of ['fullscreen', 'regular']) test(`occipital CLI: ${mode} Markd
     const raw = dump => dump.tools.map(({ name, args, content, details, isError, argsComplete, executionStarted, partial }) =>
       ({ name, args, content, details, isError, argsComplete, executionStarted, partial }));
     let observation = 0;
-    const ready = profile => until(() => semanticPhaseReady(() => stats(terminal, `markdown-${observation++}`), () => terminal.events(), markers, profile), 'actual Markdown SOURCE and STYLE readiness');
+    const ready = async profile => {
+      const current = await settledStats(terminal, `markdown-${observation++}`);
+      assert.ok(await semanticPhaseReady(() => current, () => terminal.events(), markers, profile), 'actual Markdown SOURCE and STYLE readiness');
+      return current;
+    };
     const ink = value => { assert.equal(value.kind, 'rgb'); return value.r * 65536 + value.g * 256 + value.b; };
     const verify = (dump, profile) => {
       assert.ok(dump.tools.every(tool => !('tinyLines' in tool) && !('narrowLines' in tool)));
@@ -712,7 +719,7 @@ for (const mode of ['fullscreen', 'regular']) test(`occipital CLI: ${mode} Markd
     };
     try {
       await terminal.ready(); await terminal.resize(100, 80); await syntaxReady(terminal);
-      const initial = await ready('pi'), baseline = await terminal.capture('physical-markdown-pi'); const piVectors = verify(baseline, 'pi');
+      const initial = await ready('pi'), baseline = await captureThenRenderDiagnostics(terminal, 'physical-markdown-pi'); const piVectors = verify(baseline, 'pi');
       assert.ok(initial.localWork.sourceSegments > 0, 'actual Markdown source measurement has a positive cold baseline');
       assert.equal(initial.localWork.prefixScalarReads, 0, 'FILE rendering performs no historical Bash scalar proof');
       assert.equal(initial.counts.sourceRequests, 1, 'one legitimate first native SOURCE after possible Pi-only fallback');
@@ -721,11 +728,11 @@ for (const mode of ['fullscreen', 'regular']) test(`occipital CLI: ${mode} Markd
       await chooseTheme(terminal, index + 1); const changed = await ready(profiles[index].id);
       assert.equal(changed.counts.sourceRequests, initial.counts.sourceRequests); assert.equal(changed.source.preparedBytes, initial.source.preparedBytes);
       assert.ok(changed.counts.styleRequests > initial.counts.styleRequests, 'uncached native palette resolves existing contexts with STYLE');
-      const native = await terminal.capture('physical-markdown-native'), nativeVectors = verify(native, profiles[index].id);
+      const native = await captureThenRenderDiagnostics(terminal, 'physical-markdown-native'), nativeVectors = verify(native, profiles[index].id);
       assert.deepEqual(raw(native), raw(baseline)); assert.deepEqual(body(native), body(baseline)); assert.notDeepEqual(nativeVectors, piVectors);
-      const materialized = await stats(terminal, 'markdown-materialized');
+      const materialized = native.sample;
       for (const width of [60, 100]) { await terminal.resize(width, 80); const warm = await terminal.capture(`physical-markdown-warm-${width}`); verify(warm, profiles[index].id); }
-      assert.deepEqual(work(await stats(terminal, 'markdown-warm')), work(materialized));
+      assert.deepEqual(work(await settledStats(terminal, 'markdown-warm')), work(materialized));
       await finish(terminal);
       console.log(JSON.stringify({ markdown: terminal.output, mode, node: changed.node, sourceRequests: changed.counts.sourceRequests, styleRequests: changed.counts.styleRequests,
         closeRequests: changed.counts.closeRequests, piVectors, nativeVectors, modelRequests: 0, tools: 0, sessionBytesUnchanged: true }));

@@ -42,6 +42,23 @@ function brokerDiagnostic(owner: WeakRef<SyntaxClient>, diagnostic?: DiagnosticS
 function brokerObserver(owner: WeakRef<SyntaxClient>) { return () => owner.deref()?.acceptBrokerChange(); }
 function ownedStopObserver(owner: WeakRef<SyntaxClient>) { return (generation: number) => owner.deref()?.sources.ownedStopped(generation); }
 function sourceObserver(owner: WeakRef<SyntaxClient>) { return (keys: readonly string[], groups?: readonly number[]) => owner.deref()?.acceptSourceChange(keys, groups); }
+type CompletionPart = 'sources' | 'provider' | 'restore' | 'startup' | 'catalogue';
+type ClientCompletion = { promise: Promise<boolean>; resolve(value: boolean): void };
+type CompletionState = { current?: ClientCompletion;
+  parts: Partial<Record<CompletionPart, { promise: Promise<unknown>; done: boolean }>> };
+function clientCompletion(): ClientCompletion {
+  let resolve!: ClientCompletion['resolve'];
+  const promise = new Promise<boolean>(done => { resolve = done; });
+  return { promise, resolve };
+}
+const clientCancelled = Promise.resolve(false);
+function completionNotice(owner: WeakRef<SyntaxClient>, state: CompletionState, part: CompletionPart, promise: Promise<unknown>) {
+  return (result: unknown) => {
+    const client = owner.deref();
+    if (client) client.completionSettled(part, promise, result !== false);
+    else { const current = state.current; state.current = undefined; state.parts = {}; current?.resolve(false); }
+  };
+}
 function changeNotice(owner: WeakRef<SyntaxClient>) { return () => owner.deref()?.deliverChange(); }
 function menuCapture(owner: WeakRef<SyntaxClient>, epoch: number) { return () => owner.deref()?.menuCurrent(epoch) ?? false; }
 
@@ -71,9 +88,11 @@ export class SyntaxClient implements SyntaxMenuOwner {
   private startup?: Promise<void>;
   private shutdown?: Promise<void>;
   private save?: AbortController;
-  private metadata?: { epoch: number; generation: number };
+  private metadata?: { epoch: number; generation: number; operation?: Promise<SyntaxMenuOutcome> };
   private attemptedNeed?: ProfileNeed;
   private noticeScheduled = false;
+  private delivering = false;
+  private readonly completion: CompletionState = { parts: {} };
   private startupIssue = false;
 
   constructor(options: SyntaxClientOptions) {
@@ -94,6 +113,42 @@ export class SyntaxClient implements SyntaxMenuOwner {
     if (this.disposed) return this.shutdown ?? Promise.resolve();
     if (!this.startup) this.startup = Promise.all([this.restorePreference(), this.broker.start()]).then(() => {});
     return this.startup;
+  }
+
+  /** Observe existing producers through delivered presentation continuations, not successful highlighting. */
+  whenSettled(): Promise<boolean> {
+    if (this.disposed || this.suspended) return clientCancelled;
+    if (this.completion.current) return this.completion.current.promise;
+    const completion = clientCompletion(); this.completion.current = completion;
+    this.checkCompletion(); return completion.promise;
+  }
+  private watchCompletion(part: CompletionPart, promise: Promise<unknown> | undefined): void {
+    const state = this.completion;
+    if (!promise) { delete state.parts[part]; return; }
+    if (state.parts[part]?.promise === promise) return;
+    state.parts[part] = { promise, done: false };
+    const done = completionNotice(new WeakRef(this), state, part, promise);
+    void promise.then(done, done);
+  }
+  /** Producer slots outlive cancelled observations so an unchanged pending Promise gets only one observer. */
+  completionSettled(part: CompletionPart, promise: Promise<unknown>, settled: boolean): void {
+    const current = this.completion.parts[part]; if (current?.promise !== promise) return;
+    current.done = true;
+    if (!settled) { this.cancelCompletion(); return; }
+    this.checkCompletion();
+  }
+  private checkCompletion(): void {
+    const state = this.completion, completion = state.current; if (!completion) return;
+    this.watchCompletion('sources', this.sources.whenSettled());
+    this.watchCompletion('provider', this.broker.whenSettled());
+    this.watchCompletion('restore', this.restore);
+    this.watchCompletion('startup', this.startup);
+    this.watchCompletion('catalogue', this.metadata?.operation);
+    if (this.noticeScheduled || this.delivering || Object.values(state.parts).some(part => !part.done)) return;
+    state.current = undefined; completion.resolve(true);
+  }
+  private cancelCompletion(): void {
+    const completion = this.completion.current; this.completion.current = undefined; completion?.resolve(false);
   }
 
   snapshot(): SyntaxMenuSnapshot {
@@ -161,7 +216,7 @@ export class SyntaxClient implements SyntaxMenuOwner {
   setEnabled(enabled: boolean): Promise<void> {
     if (this.disposed) return this.shutdown ?? Promise.resolve();
     if (this.enabled === enabled) return Promise.resolve();
-    this.enabled = enabled; ++this.menuEpoch; this.cancelSave();
+    this.cancelCompletion(); this.enabled = enabled; ++this.menuEpoch; this.cancelSave();
     this.log('Native highlighting session activation changed', { enabled });
     this.sources.setEnabled(enabled && this.preferenceKnown);
     const operation = this.broker.setEnabled(enabled);
@@ -171,7 +226,7 @@ export class SyntaxClient implements SyntaxMenuOwner {
 
   suspend(): void {
     if (this.disposed || this.suspended) return;
-    this.suspended = true; ++this.menuEpoch;
+    this.cancelCompletion(); this.suspended = true; ++this.menuEpoch;
     this.sources.suspend();
     const interrupted = this.broker.suspend();
     if (interrupted !== undefined) this.sources.interruptProvider(interrupted);
@@ -187,7 +242,7 @@ export class SyntaxClient implements SyntaxMenuOwner {
 
   dispose(): Promise<void> {
     if (this.shutdown) return this.shutdown;
-    this.disposed = true; ++this.menuEpoch; this.cancelSave(); this.sources.dispose();
+    this.cancelCompletion(); this.completion.parts = {}; this.disposed = true; ++this.menuEpoch; this.cancelSave(); this.sources.dispose();
     this.shutdown = this.broker.dispose(); this.provider = this.broker.snapshot(); this.effective = undefined;
     return this.shutdown;
   }
@@ -223,7 +278,9 @@ export class SyntaxClient implements SyntaxMenuOwner {
   deliverChange(): void {
     this.noticeScheduled = false;
     if (this.disposed) return;
+    this.delivering = true;
     try { this.onChange?.(); } catch { /* Presentation cannot disturb ownership. */ }
+    finally { this.delivering = false; this.checkCompletion(); }
   }
 
   restorePreference(): Promise<void> {
@@ -277,8 +334,13 @@ export class SyntaxClient implements SyntaxMenuOwner {
     this.attemptedNeed = need;
     void this.readCatalogue('describe', need);
   }
-  private async readCatalogue(op: 'describe' | 'themes.refresh', need?: ProfileNeed): Promise<SyntaxMenuOutcome> {
-    const attempt = { epoch: this.menuEpoch, generation: this.provider.generation }; this.metadata = attempt;
+  private readCatalogue(op: 'describe' | 'themes.refresh', need?: ProfileNeed): Promise<SyntaxMenuOutcome> {
+    const attempt: NonNullable<SyntaxClient['metadata']> = { epoch: this.menuEpoch, generation: this.provider.generation };
+    this.metadata = attempt;
+    const operation = this.readCatalogueAttempt(attempt, op, need); attempt.operation = operation;
+    this.checkCompletion(); return operation;
+  }
+  private async readCatalogueAttempt(attempt: NonNullable<SyntaxClient['metadata']>, op: 'describe' | 'themes.refresh', need?: ProfileNeed): Promise<SyntaxMenuOutcome> {
     this.log('Provider catalogue read started; this is not source classification', { operation: op, generation: attempt.generation });
     try {
       const description = await this.broker.catalogue(attempt.generation, op);

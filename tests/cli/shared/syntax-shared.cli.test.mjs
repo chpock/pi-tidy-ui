@@ -7,7 +7,7 @@ import { closeTerminals, runCleanupSteps } from '../../fixtures/terminal-cleanup
 import { nativeReady, semanticSourceContext, semanticStyle } from '../../fixtures/syntax-observation.mjs';
 import { CARD_ROLES } from '../../../src/occipital/semantic-codec.ts';
 import { sharedSyntaxHost, themeDefinition, reaped } from '../../fixtures/shared-syntax-host.mjs';
-import { prepareSyntaxNative, requiredSharedHost, scenario, stats, traffic, persisted, menuAction, chooseTheme, settledStats, keywordColor, sourceColors, work, peerSource, finish, until, body, shebangScenario, shebangContextColors, shebangStringColors, expressionForeground } from '../../fixtures/syntax-cli-support.mjs';
+import { prepareSyntaxNative, requiredSharedHost, scenario, stats, traffic, persisted, menuAction, chooseTheme, settledStats, captureThenRenderDiagnostics, keywordColor, sourceColors, work, peerSource, finish, body, shebangScenario, shebangContextColors, shebangStringColors, expressionForeground } from '../../fixtures/syntax-cli-support.mjs';
 
 const { binary, fixture, descriptor } = await prepareSyntaxNative();
 
@@ -47,14 +47,14 @@ test('occipital CLI: shared shebang source hints retain side-specific split pain
       assert.ok(unknownReply, 'shared no-shebang control reaches expected pre-parse fallback');
       assert.ok(split.screen.some(row => row.includes('NO_SHEBANG_CONTROL')));
       assert.equal(events.filter(event => event.type === 'syntax_notify' && event.message.includes('unexpected error (unknown_syntax)')).length, 0);
-      const before = await stats(terminal, 'shared-shebang-before-resize');
+      const before = split.sample;
        assert.ok(before.localWork.shebangFileSegments > 0, 'cold measurement includes the unique shared shebang-file marker');
       assert.equal(before.client.provider.kind, 'shared');
       await terminal.resize(100, 120);
-      const unified = await terminal.capture('shared-shebang-unified'), unifiedColors = shebangContextColors(unified);
+      const unified = await captureThenRenderDiagnostics(terminal, 'shared-shebang-unified'), unifiedColors = shebangContextColors(unified);
       assert.equal(unifiedColors.length, 2);
       assert.equal(unifiedColors[0], splitColors[0]); assert.equal(unifiedColors[1], splitColors[2]);
-      const after = await stats(terminal, 'shared-shebang-after-resize');
+      const after = await settledStats(terminal, 'shared-shebang-after-resize');
       assert.deepEqual(work(after), work(before));
        assert.equal(after.localWork.shebangFileSegments, before.localWork.shebangFileSegments, 'shared resize repeats no shebang-file measurement');
        assert.deepEqual(after.localWork, before.localWork, 'shared resize repeats no other file measurement or source-scalar reads');
@@ -68,7 +68,7 @@ test('occipital CLI: shared discovery, public refresh/status/Pi menu, actual los
       extraEnv: { ...descriptor, SUBC_CONNECTION_FILE: host.alias, TIDY_UI_TEST_SYNTAX_SHARED: '1' } });
     let returnedPeer;
     try {
-      const initial = await scenario(terminal, true), original = await stats(terminal, 'shared-initial');
+      const initial = await scenario(terminal, true), original = initial.sample;
       assert.equal(original.client.provider.kind, 'shared'); assert.equal(original.counts.acquisitions, 0);
       const oldPid = original.client.provider.description.runtime.pid;
       assert.equal(oldPid, host.initialPeer.snapshot().provider.description.runtime.pid);
@@ -92,15 +92,16 @@ test('occipital CLI: shared discovery, public refresh/status/Pi menu, actual los
       const errors = terminal.events().filter(event => event.type === 'syntax_notify' && event.level === 'error');
       assert.equal(errors.length, 1, 'one bounded UI issue for the unavailable selected theme');
       assert.deepEqual(JSON.parse(readFileSync(`${terminal.agent}/extensions/pi-tidy-ui/config.json`, 'utf8')), selected);
-      sourceColors(await terminal.capture('shared-missing-pi'));
-      const absentWarm = await stats(terminal, 'missing-before'); await terminal.capture('missing-warm');
-      assert.deepEqual(work(await stats(terminal, 'missing-after')), work(absentWarm));
+      sourceColors(await captureThenRenderDiagnostics(terminal, 'shared-missing-pi'));
+      const absentWarm = await settledStats(terminal, 'missing-before'); await terminal.capture('missing-warm');
+      assert.deepEqual(work(await settledStats(terminal, 'missing-after')), work(absentWarm));
       assert.equal(terminal.events().filter(event => event.type === 'syntax_notify' && event.level === 'error').length, 1);
       writeFileSync(host.themeFile, themeDefinition('#667788'));
       await menuAction(terminal, 'refresh'); await terminal.closeTidyMenu();
       await settledStats(terminal, 'shared-restored', s => nativeReady(s) && s.client.effective.id === custom.id);
       await keywordColor(terminal, 0x667788, 'shared-restored');
       rmSync(host.alias); process.kill(oldPid, 'SIGKILL');
+      await terminal.event('syntax_acquired');
       const owned = await settledStats(terminal, 'owned-after-loss', s => nativeReady(s) && s.client.provider.kind === 'owned');
       assert.equal(owned.broker.reconnectAttempts, 2); assert.equal(owned.counts.acquisitions, 1);
       assert.equal(owned.client.provider.initialShared, true); assert.equal(owned.broker.recoveryTimers, 1);
@@ -121,14 +122,14 @@ test('occipital CLI: shared discovery, public refresh/status/Pi menu, actual los
       await reaped(owned.transports[0].pid); await keywordColor(terminal, 0x667788, 'shared-returned');
       await chooseTheme(terminal, 0);
       const pi = await settledStats(terminal, 'shared-pi-selected', s => nativeReady(s) && s.client.effective.id === 'pi');
-      assert.equal(pi.client.selected.kind, 'pi'); sourceColors(await terminal.capture('shared-pi-selected'));
-      const before = await stats(terminal, 'shared-warm-before');
+      assert.equal(pi.client.selected.kind, 'pi'); sourceColors(await captureThenRenderDiagnostics(terminal, 'shared-pi-selected'));
+      const before = await settledStats(terminal, 'shared-warm-before');
       for (const width of [40, 100]) { await terminal.resize(width); await terminal.capture(`shared-width-${width}`); }
-      const after = await stats(terminal, 'shared-warm-after'); assert.deepEqual(work(after), work(before));
+      const after = await settledStats(terminal, 'shared-warm-after'); assert.deepEqual(work(after), work(before));
       assert.equal((await returnedPeer.refreshThemes()).ok, true, 'live peer receives an actual control reply after handoff');
       await peerSource(returnedPeer); assert.equal(returnedPeer.sources.stats().dispatches, peerBefore.dispatches);
       assert.equal(missingNotices().length, 2, 'return and warm frames do not repeat an unavailable-theme issue');
-      const final = await terminal.capture('shared-final');
+      const final = await captureThenRenderDiagnostics(terminal, 'shared-final');
       assert.deepEqual(traffic(terminal), initialTraffic); assert.deepEqual(persisted(final), initialData);
       assert.deepEqual(final.branch, initialBranch, 'UI status/errors never become model or session records');
       await finish(terminal); process.kill(newPid, 0);
@@ -168,7 +169,7 @@ test('occipital CLI: structured RGB and font attributes preserve both file diff 
         vectors(dump); baselines.set(width, dump);
       }
       const wideBaseline = baselines.get(140); await terminal.resize(100);
-      const initial = await stats(terminal, 'styles-initial');
+      const initial = await settledStats(terminal, 'styles-initial');
       assert.equal(initial.node, process.version, 'actual Pi child uses the same asserted parent runtime');
       assert.equal(initial.client.provider.kind, 'shared'); assert.equal(initial.counts.acquisitions, 0);
       const originalTraffic = traffic(terminal), originalData = persisted(baseline), originalBranch = baseline.branch;
@@ -189,17 +190,14 @@ test('occipital CLI: structured RGB and font attributes preserve both file diff 
           <key>foreground</key><string>#22aa44</string><key>fontStyle</key><string>italic</string></dict></dict>
         </array></dict></plist>`);
       await menuAction(terminal, 'refresh'); await terminal.closeTidyMenu();
-      const refreshed = await stats(terminal, 'styles-refreshed');
+      const refreshed = await settledStats(terminal, 'styles-refreshed');
       assert.equal(refreshed.counts.refreshReplies, 1);
       const custom = refreshed.client.provider.description.profiles.find(profile => profile.label === 'cli-shared'); assert.ok(custom);
       const index = refreshed.client.provider.description.profiles.filter(profile => profile.id !== 'pi').findIndex(profile => profile.id === custom.id) + 1;
       await chooseTheme(terminal, index);
       await settledStats(terminal, 'styles-selected', s => nativeReady(s) && s.client.effective.id === custom.id);
-      let painted, observation = 0;
-      await until(async () => {
-        painted = await terminal.capture(`styles-colored-${observation++}`);
-        return vectors(painted).every(row => row.keyword.every(cell => cell.fg === 0xa1b2c3));
-      }, 'all three actual source foregrounds');
+      const painted = await captureThenRenderDiagnostics(terminal, 'styles-colored');
+      assert.ok(vectors(painted).every(row => row.keyword.every(cell => cell.fg === 0xa1b2c3)), 'all three actual source foregrounds');
       assert.deepEqual(body(painted), body(baseline), 'theme changes source styles, never tool glyphs or geometry');
       const assertVectors = dump => {
         for (const row of vectors(dump)) {
@@ -218,12 +216,10 @@ test('occipital CLI: structured RGB and font attributes preserve both file diff 
       host.initialPeer.previewTheme({ kind: 'occipital', id: custom.id });
       host.initialPeer.sources.setStyleSelection({ kind: 'native', id: custom.id, fingerprint: custom.fingerprint });
       await peerSource(host.initialPeer);
-      const palette = await until(() => {
-        const basis = host.initialPeer.sources.displayBasis('peer');
-        if (basis?.profile !== custom.id || basis.fingerprint !== custom.fingerprint) return false;
-        const roles = Object.fromEntries(CARD_ROLES.map(role => [role, basis.role(role)]));
-        return Object.values(roles).every(Boolean) ? roles : false;
-      }, 'independent peer native card palette');
+      const basis = host.initialPeer.sources.displayBasis('peer');
+      assert.equal(basis?.profile, custom.id); assert.equal(basis.fingerprint, custom.fingerprint);
+      const palette = Object.fromEntries(CARD_ROLES.map(role => [role, basis.role(role)]));
+      assert.ok(Object.values(palette).every(Boolean), 'independent peer native card palette');
       const rgb = ink => { assert.equal(ink.kind, 'rgb'); return ink.r * 65536 + ink.g * 256 + ink.b; };
       assert.equal(rgb(palette.panel.foreground), 0x112233); assert.equal(rgb(palette.panel.background), 0xf8f8f8);
       assert.equal(rgb(palette.numbers.foreground), 0x334455); assert.equal(rgb(palette.numbers.background), 0xe8edf2);
@@ -305,13 +301,13 @@ test('occipital CLI: structured RGB and font attributes preserve both file diff 
         await terminal.command(`/tidy-ui-theme ${theme}`); await terminal.event('theme', previousEvents + 1);
         const transition = terminal.events().filter(event => event.type === 'theme')[previousEvents];
         assert.equal(transition.name, theme); assert.equal(transition.result.success, true, 'fresh requested Pi theme transition succeeds');
-        const dump = await terminal.capture(`styles-${theme}`);
+        const dump = await captureThenRenderDiagnostics(terminal, `styles-${theme}`);
         assertVectors(dump); assertFrame(dump); assert.deepEqual(body(dump), body(wideBaseline), 'Pi theme changes no source glyphs/geometry');
-        const themed = await stats(terminal, `styles-${theme}-stats`);
+        const themed = dump.sample;
         assert.equal(themed.client.effective.id, custom.id);
         assert.deepEqual(work(themed), work(before), 'fixed native theme remains classified across Pi palette changes');
       }
-      const final = await terminal.capture('styles-warm'); const after = await stats(terminal, 'styles-warm-after');
+      const final = await captureThenRenderDiagnostics(terminal, 'styles-warm'); const after = final.sample;
       assert.equal(after.node, process.version);
       assert.deepEqual(work(after), work(before), 'width changes and warm frames do no new source work');
       assert.equal(before.counts.piBridges, 0); assert.equal(after.counts.piBridges, 0);

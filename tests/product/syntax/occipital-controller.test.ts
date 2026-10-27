@@ -1990,3 +1990,305 @@ for (const kind of ['owned', 'shared'] as const) test(`intentional suspend faile
   assert.equal(c.workStatus('source').fallbackEligible, kind === 'owned', 'terminal failure permits only already-proven fallback');
   assert.equal(host.calls.length, 1);
 });
+
+
+test('completion boundary: yielded preparation and its reentrant queue drain without native jobs', { timeout: 12000 }, async t => {
+  const { controller: c, host } = fixture(); host.ready = false;
+  const visits: number[] = [];
+  const tail = { keys: new Set<string>(), prepare() { visits.push(3); }, requiresCredit() { return false; } };
+  const tailGroup = c.registerPreparation(tail)!;
+  const tasks = Array.from({ length: 3 }, (_, index) => ({ keys: new Set<string>(), requiresCredit() { return false; }, prepare() {
+    visits.push(index); if (index === 0) c.queuePreparation(tailGroup, true);
+  } }));
+  let retained!: () => void;
+  const yielding = new Promise<void>(resolve => { retained = resolve; });
+  const resume = c.resumePreparation;
+  let release: (() => void) | undefined, held = false, completed = false;
+  t.mock.method(c, 'resumePreparation', function(this: SourceController) {
+    if (!held) { held = true; release = () => resume.call(this); retained(); return; }
+    return resume.call(this);
+  });
+  try {
+    for (const task of tasks) c.queuePreparation(c.registerPreparation(task)!, true);
+    await yielding;
+    assert.deepEqual(visits, [2, 1], 'normal two-owner quota yielded with preparation still queued');
+    assert.equal(c.stats().unsettledJobs, 0);
+    const completion = c.whenSettled(); void completion.then(() => { completed = true; });
+    await turn(); assert.equal(completed, false, 'queued continuation, not native jobs, owns completion');
+    assert.deepEqual(visits, [2, 1], 'observation must not flush or resume held work');
+    assert.ok(release); const next = release; release = undefined; next();
+    assert.equal(await awaitFixture(completion), true);
+    assert.deepEqual(visits, [2, 1, 0, 3], 'reentrant preparation is included without another explicit flush');
+    assert.equal(host.calls.length, 0);
+  } finally { release?.(); }
+});
+
+for (const action of ['suspend', 'dispose', 'off'] as const) test(`completion boundary: ${action} cancels the current wait without claiming held RPC success`, async () => {
+  const { controller: c, host } = fixture();
+  c.observe(demand('held', 1, true)); c.flush();
+  const completion = c.whenSettled();
+  if (action === 'off') c.setEnabled(false); else c[action]();
+  assert.equal(await awaitFixture(completion), false);
+  assert.equal(c.stats().unsettledJobs, 1, 'observation cancellation does not refund physical credit');
+  host.answer(0); await settle();
+  assert.equal(c.stats().unsettledJobs, 0);
+});
+
+
+test('completion boundary: Native Off still awaits queued local preparation', { timeout: 12000 }, async () => {
+  const { controller: c, host } = fixture(); c.setEnabled(false);
+  let prepared = 0;
+  const tasks = Array.from({ length: 3 }, () => ({ keys: new Set<string>(), requiresCredit() { return false; }, prepare() { prepared++; } }));
+  for (const task of tasks) c.queuePreparation(c.registerPreparation(task)!, true);
+  assert.equal(await awaitFixture(c.whenSettled()), true);
+  assert.equal(prepared, 3); assert.equal(host.calls.length, 0);
+});
+
+function detachedCompletionOwner(host: Host) {
+  const controller = new SourceController(host, { deadlineMs: 1000 });
+  controller.observe(demand('held completion', 1, true)); controller.flush();
+  return { weak: new WeakRef(controller), completion: controller.whenSettled() };
+}
+test('completion boundary: pending observation does not retain an abandoned source owner or refund its held RPC', { timeout: 12000 }, async () => {
+  assert.equal(typeof global.gc, 'function');
+  const host = new Host(), first = detachedCompletionOwner(host);
+  const second = new SourceController(host, { deadlineMs: 1000 });
+  try {
+    second.observe(demand('active peer', 1, true)); second.flush();
+    for (let i = 0; i < 60; i++) { await turn(); global.gc!(); await turn(); if (!first.weak.deref()) break; }
+    assert.equal(first.weak.deref() === undefined, true);
+    assert.equal(await awaitFixture(first.completion), false, 'existing owner finalization cancels the shared observation');
+    assert.equal(second.stats().globalUnsettledJobs, 2, 'collection does not manufacture physical settlement');
+    host.answer(0); host.answer(1); await settle();
+    assert.equal(second.stats().globalUnsettledJobs, 0);
+  } finally { second.dispose(); for (let i = 0; i < host.calls.length; i++) host.answer(i); await settle(); }
+});
+
+
+for (const idleSibling of [false, true]) for (const withdrawal of ['unregister', 'pause'] as const) test(`completion boundary: ${withdrawal} of the sole credit-blocked preparation${idleSibling ? ' with an unpaused idle sibling' : ''} does not await another controller`, { timeout: 12000 }, async () => {
+  const busy = fixture(), waiting = fixture();
+  busy.controller.observe(demand('held a', 1, true, 'a')); busy.controller.observe(demand('held b', 1, true, 'b')); busy.controller.flush();
+  let prepared = 0;
+  const idle = { keys: new Set<string>(), requiresCredit() { return true; }, needsRefresh() { return false; }, prepare() { assert.fail('an idle sibling is not queued preparation'); } };
+  if (idleSibling) waiting.controller.registerPreparation(idle);
+  const preparation = { keys: new Set<string>(), requiresCredit() { return true; }, needsRefresh() { return false; }, prepare() { prepared++; } };
+  const group = waiting.controller.registerPreparation(preparation)!;
+  try {
+    waiting.controller.queuePreparation(group); await turn();
+    assert.equal(busy.controller.stats().globalUnsettledJobs, 2); assert.equal(waiting.controller.stats().unsettledJobs, 0);
+    const completion = waiting.controller.whenSettled();
+    if (withdrawal === 'pause') waiting.controller.pausePreparation(group); else waiting.controller.unregisterPreparation(group);
+    assert.equal(await awaitFixture(completion), true, 'withdrawn work must finish while unrelated physical jobs remain held');
+    assert.equal(prepared, 0); assert.equal(waiting.host.calls.length, 0);
+    assert.equal(busy.controller.stats().globalUnsettledJobs, 2, 'observation cannot refund or settle the peer jobs');
+  } finally { busy.host.answer(0); busy.host.answer(1); await settle(); }
+});
+
+test('completion boundary: withdrawing one credit-blocked preparation cannot hide another queued preparation', { timeout: 12000 }, async () => {
+  const busy = fixture(), waiting = fixture();
+  busy.controller.observe(demand('held a', 1, true, 'a')); busy.controller.observe(demand('held b', 1, true, 'b')); busy.controller.flush();
+  let prepared = 0;
+  const remaining = { keys: new Set<string>(), requiresCredit() { return true; }, needsRefresh() { return false; }, prepare() { prepared++; } };
+  const withdrawn = { keys: new Set<string>(), requiresCredit() { return true; }, needsRefresh() { return false; }, prepare() { assert.fail('withdrawn preparation cannot run'); } };
+  const keep = waiting.controller.registerPreparation(remaining)!, remove = waiting.controller.registerPreparation(withdrawn)!;
+  try {
+    waiting.controller.queuePreparation(keep); waiting.controller.queuePreparation(remove); await turn();
+    const completion = waiting.controller.whenSettled(); let completed = false;
+    void completion.then(() => { completed = true; });
+    waiting.controller.unregisterPreparation(remove); await turn();
+    assert.equal(completed, false, 'the other genuinely queued preparation still owns completion'); assert.equal(prepared, 0);
+    busy.host.answer(0); busy.host.answer(1);
+    assert.equal(await awaitFixture(completion), true); assert.equal(prepared, 1);
+  } finally { busy.host.answer(0); busy.host.answer(1); await settle(); }
+});
+
+
+for (const withdrawal of ['remove', 'freeze', 'refuse', 'empty'] as const) test(`completion boundary: SOURCE ${withdrawal} withdraws queued work without refunding peer credit`, { timeout: 12000 }, async () => {
+  const busy = fixture(), waiting = fixture();
+  busy.controller.observe(demand('held a', 1, true, 'a')); busy.controller.observe(demand('held b', 1, true, 'b')); busy.controller.flush();
+  waiting.controller.observe(demand('withdrawn source', 1, true)); waiting.controller.flush();
+  const completion = waiting.controller.whenSettled();
+  try {
+    if (withdrawal === 'remove' || withdrawal === 'freeze') waiting.controller[withdrawal]('source');
+    else waiting.controller.observe(demand(withdrawal === 'empty' ? '' : 'x'.repeat(HIGHLIGHT_LIMITS.sourceBytes + 1), 2, true));
+    assert.equal(await awaitFixture(completion), true);
+    assert.equal(waiting.host.calls.length, 0); assert.equal(waiting.controller.stats().unsettledJobs, 0);
+    assert.equal(busy.controller.stats().globalUnsettledJobs, 2);
+    if (withdrawal === 'freeze') assert.equal(waiting.controller.workStatus('source').fallbackEligible, false, 'reconciliation cannot strengthen frozen fallback authority');
+  } finally { busy.host.answer(0); busy.host.answer(1); await settle(); }
+});
+
+test('completion boundary: withdrawing desired STYLE does not wait on unrelated native jobs', { timeout: 12000 }, async () => {
+  const busy = fixture(), waiting = fixture();
+  busy.controller.observe(demand('held a', 1, true, 'a')); busy.controller.observe(demand('held b', 1, true, 'b')); busy.controller.flush();
+  const preparation = { keys: new Set<string>(), requiresCredit() { return false; }, needsRefresh() { return false; }, prepare() { assert.fail('palette-only demand does not queue preparation'); } };
+  const group = waiting.controller.registerPreparation(preparation)!;
+  waiting.controller.updatePreparation(group); waiting.controller.setStyleSelection({ kind: 'native', id: 'pi', fingerprint });
+  try {
+    await turn();
+    const completion = waiting.controller.whenSettled(); waiting.controller.setStyleSelection(undefined);
+    assert.equal(await awaitFixture(completion), true);
+    assert.equal(waiting.host.calls.length, 0); assert.equal(busy.controller.stats().globalUnsettledJobs, 2);
+  } finally { busy.host.answer(0); busy.host.answer(1); await settle(); }
+});
+
+for (const withdrawal of ['pause', 'unregister', 'remove', 'freeze', 'style'] as const) test(`completion boundary: repeated no-op ${withdrawal} cannot reconcile another queued registration`, { timeout: 12000 }, async t => {
+  const busy = fixture(), waiting = fixture(), c = waiting.controller;
+  busy.controller.observe(demand('held a', 1, true, 'a')); busy.controller.observe(demand('held b', 1, true, 'b')); busy.controller.flush();
+  let prepared = 0, wakes = 0;
+  const remaining = { keys: new Set<string>(), requiresCredit() { return true; }, needsRefresh() { return false; }, prepare() { prepared++; } };
+  c.queuePreparation(c.registerPreparation(remaining)!);
+  const withdrawn = { keys: new Set<string>(), requiresCredit() { return true; }, needsRefresh() { return false; }, prepare() { assert.fail('withdrawn preparation cannot run'); } };
+  const group = c.registerPreparation(withdrawn)!;
+  if (withdrawal === 'pause' || withdrawal === 'unregister') c.queuePreparation(group);
+  else if (withdrawal === 'style') { c.updatePreparation(group); c.setStyleSelection({ kind: 'native', id: 'pi', fingerprint }); }
+  else c.observe(demand('withdrawn source', 1, true));
+  const wake = c.wake;
+  t.mock.method(c, 'wake', function(this: SourceController) { wakes++; return wake.call(this); });
+  const withdraw = () => {
+    if (withdrawal === 'pause') c.pausePreparation(group);
+    else if (withdrawal === 'unregister') c.unregisterPreparation(group);
+    else if (withdrawal === 'style') c.setStyleSelection(undefined);
+    else c[withdrawal]('source');
+  };
+  try {
+    await turn(); const completion = c.whenSettled(); let completed = false;
+    void completion.then(() => { completed = true; });
+    withdraw(); assert.equal(wakes, 1, 'one real withdrawal starts ordinary reconciliation');
+    await turn(); assert.equal(completed, false); assert.equal(prepared, 0);
+    for (let i = 0; i < 20; i++) withdraw();
+    await turn(); assert.equal(wakes, 1, 'no-op withdrawal must not requeue a still-blocked controller');
+    assert.equal(completed, false); assert.equal(waiting.host.calls.length, 0);
+    assert.equal(busy.controller.stats().globalUnsettledJobs, 2);
+    busy.host.answer(0); busy.host.answer(1);
+    assert.equal(await awaitFixture(completion), true); assert.equal(prepared, 1);
+  } finally { busy.host.answer(0); busy.host.answer(1); await settle(); }
+});
+
+
+test('completion boundary: preparation release reconciles only after all member sources are removed', { timeout: 12000 }, async t => {
+  const busy = fixture(), waiting = fixture(), c = waiting.controller;
+  busy.controller.observe(demand('held a', 1, true, 'a')); busy.controller.observe(demand('held b', 1, true, 'b')); busy.controller.flush();
+  const preparation = { keys: new Set(['first', 'second']), requiresCredit() { return false; }, needsRefresh() { return false; }, prepare() {
+    c.observe(demand('first', 1, true, 'first')); c.observe(demand('second', 1, true, 'second'));
+  } };
+  const group = c.registerPreparation(preparation)!; c.queuePreparation(group, true); await turn();
+  const completion = c.whenSettled(), bytes = c.stats().globalTransientBytes, wake = c.wake; let wakes = 0;
+  t.mock.method(c, 'wake', function(this: SourceController) {
+    wakes++; assert.equal(this.workStatus('first').version, undefined); assert.equal(this.workStatus('second').version, undefined);
+    return wake.call(this);
+  });
+  try {
+    c.unregisterPreparation(group); assert.equal(await awaitFixture(completion), true);
+    assert.equal(wakes, 1); assert.equal(c.stats().sourceRecords, 0); assert.equal(waiting.host.calls.length, 0);
+    assert.equal(c.stats().globalTransientBytes, bytes); assert.equal(c.stats().globalUnsettledJobs, 2);
+  } finally { busy.host.answer(0); busy.host.answer(1); await settle(); }
+});
+
+test('completion boundary: withdrawal reconciliation preserves LIFO and the ordinary host-turn quota', { timeout: 12000 }, async t => {
+  const busy = fixture(), waiting = fixture(), c = waiting.controller;
+  busy.controller.observe(demand('held a', 1, true, 'a')); busy.controller.observe(demand('held b', 1, true, 'b')); busy.controller.flush();
+  const visits: number[] = [];
+  const tasks = Array.from({ length: 5 }, (_, index) => ({ keys: new Set<string>(), requiresCredit() { return true; }, needsRefresh() { return false; }, prepare() { visits.push(index); } }));
+  for (const task of tasks) c.queuePreparation(c.registerPreparation(task)!);
+  c.observe(demand('withdrawn newest', 1, true)); await turn();
+  let held!: () => void, release: (() => void) | undefined;
+  const yielding = new Promise<void>(resolve => { held = resolve; }), resume = c.resumePreparation;
+  t.mock.method(c, 'resumePreparation', function(this: SourceController) {
+    if (!release) { release = () => resume.call(this); held(); return; }
+    return resume.call(this);
+  });
+  try {
+    const completion = c.whenSettled(); let completed = false; void completion.then(() => { completed = true; });
+    c.remove('source'); await turn();
+    assert.deepEqual(visits, []); assert.equal(c.stats().globalUnsettledJobs, 2); assert.equal(waiting.host.calls.length, 0);
+    busy.host.answer(0); busy.host.answer(1); await awaitFixture(yielding);
+    assert.deepEqual(visits, [4, 3]); assert.equal(completed, false, 'withdrawal cannot bypass the actual two-owner continuation');
+    assert.ok(release); release(); assert.equal(await awaitFixture(completion), true);
+    assert.deepEqual(visits, [4, 3, 2, 1, 0]); assert.equal(waiting.host.calls.length, 0);
+  } finally { release?.(); busy.host.answer(0); busy.host.answer(1); await settle(); }
+});
+
+test('completion boundary: SOURCE freeze re-registers genuinely blocked retained STYLE work', { timeout: 12000 }, async t => {
+  const waiting = await pendingStyle(); waiting.host.style(1); await settle();
+  const busy = fixture(), c = waiting.controller;
+  busy.controller.observe(demand('held a', 1, true, 'a')); busy.controller.observe(demand('held b', 1, true, 'b')); busy.controller.flush();
+  let dispatched!: () => void; const styling = new Promise<void>(resolve => { dispatched = resolve; });
+  const request = waiting.host.request;
+  t.mock.method(waiting.host, 'request', function(this: Host, ...args: Parameters<Host['request']>) {
+    const result = request.apply(this, args); if (args[1].op === 'styles.resolve') dispatched(); return result;
+  });
+  selectNative(c, 'replacement', 'b'.repeat(64)); await turn();
+  const completion = c.whenSettled(); let completed = false; void completion.then(() => { completed = true; });
+  try {
+    c.freeze('source'); await turn();
+    assert.equal(completed, false); assert.equal(waiting.host.calls.length, 2); assert.equal(c.stats().globalUnsettledJobs, 2);
+    busy.host.answer(0); busy.host.answer(1); await awaitFixture(styling);
+    assert.equal(waiting.host.calls.length, 3); assert.equal(waiting.host.calls[2]!.request.op, 'styles.resolve');
+    waiting.host.style(2); assert.equal(await awaitFixture(completion), true);
+    assert.equal(c.workStatus('source').fallbackEligible, false); assert.equal(waiting.host.calls.filter(call => call.request.op === 'highlight').length, 1);
+  } finally { busy.host.answer(0); busy.host.answer(1); await settle(); }
+});
+
+
+for (const queuedSibling of [false, true]) test(`completion boundary: another card's geometry eviction withdraws SOURCE${queuedSibling ? ' but preserves queued preparation' : ''}`, { timeout: 12000 }, async () => {
+  const busy = fixture(), waiting = fixture(), c = waiting.controller;
+  busy.controller.observe(demand('held a', 1, true, 'a')); busy.controller.observe(demand('held b', 1, true, 'b')); busy.controller.flush();
+  c.observe(demand('never admitted', 1, true)); c.flush();
+  let prepared = 0;
+  const remaining = { keys: new Set<string>(), requiresCredit() { return true; }, needsRefresh() { return false; }, prepare() { prepared++; } };
+  if (queuedSibling) c.queuePreparation(c.registerPreparation(remaining)!);
+  const other = { keys: new Set<string>(), needsRefresh() { return false; }, prepare() { assert.fail('geometry funding is not a preparation demand'); } };
+  const group = c.registerPreparation(other)!, funding = c.geometryFunding(group)!;
+  await turn(); const completion = c.whenSettled(), bytes = c.stats().globalTransientBytes;
+  let completed = false; void completion.then(() => { completed = true; });
+  try {
+    funding.grant(funding.budget.limit)?.close();
+    assert.equal(c.status('source')!.generation, undefined, 'another card normal funding consumes a real SOURCE eviction receipt');
+    assert.equal(c.stats().globalTransientBytes, bytes); assert.equal(c.stats().globalUnsettledJobs, 2);
+    assert.equal(waiting.host.calls.length, 0);
+    if (queuedSibling) {
+      await turn(); assert.equal(completed, false); assert.equal(prepared, 0);
+      busy.host.answer(0); busy.host.answer(1);
+    }
+    assert.equal(await awaitFixture(completion), true); assert.equal(prepared, queuedSibling ? 1 : 0);
+  } finally { busy.host.answer(0); busy.host.answer(1); await settle(); }
+});
+
+test('completion boundary: another card evicts the last frozen STYLE basis without releasing peer credit', { timeout: 12000 }, async () => {
+  const waiting = await pendingStyle(); waiting.host.style(1); await settle(); const c = waiting.controller;
+  c.freeze('source'); assert.equal(await awaitFixture(c.whenSettled()), true); assert.ok(c.displayBasis('source'));
+  const busy = fixture(); busy.controller.observe(demand('held a', 1, true, 'a')); busy.controller.observe(demand('held b', 1, true, 'b')); busy.controller.flush();
+  const other = { keys: new Set<string>(), needsRefresh() { return false; }, prepare() { assert.fail('geometry funding is not a preparation demand'); } };
+  const funding = c.geometryFunding(c.registerPreparation(other)!)!;
+  selectNative(c, 'replacement', 'b'.repeat(64)); await turn();
+  const completion = c.whenSettled(), bytes = c.stats().globalTransientBytes;
+  try {
+    funding.grant(funding.budget.limit)?.close();
+    assert.equal(c.displayBasis('source'), undefined, 'the real release receipt detached the previous frozen basis');
+    assert.equal(await awaitFixture(completion), true);
+    assert.equal(c.workStatus('source').fallbackEligible, false); assert.equal(waiting.host.calls.length, 2);
+    assert.equal(c.stats().globalUnsettledJobs, 2); assert.equal(c.stats().globalTransientBytes, bytes);
+  } finally { busy.host.answer(0); busy.host.answer(1); await settle(); }
+});
+
+test('completion boundary: retention withdrawal preserves a genuinely queued lease close', { timeout: 12000 }, async t => {
+  const waiting = fixture(), c = waiting.controller;
+  c.observe(demand('echo first\n', 1, false)); c.flush(); waiting.host.answer(0); await settle();
+  const busy = fixture(); busy.controller.observe(demand('held a', 1, true, 'a')); busy.controller.observe(demand('held b', 1, true, 'b')); busy.controller.flush();
+  c.observe(demand('echo first\necho next', 2, false)); c.flush();
+  let closed!: () => void; const closing = new Promise<void>(resolve => { closed = resolve; }), request = waiting.host.request;
+  t.mock.method(waiting.host, 'request', function(this: Host, ...args: Parameters<Host['request']>) {
+    const result = request.apply(this, args); if (args[1].op === 'stream.close') closed(); return result;
+  });
+  const completion = c.whenSettled(); let completed = false; void completion.then(() => { completed = true; });
+  const funding = c.geometryFunding()!;
+  try {
+    funding.grant(funding.budget.limit)?.close(); await turn();
+    assert.equal(c.status('source')!.generation, undefined); assert.equal(completed, false, 'an actual queued close is still owned work');
+    assert.equal(waiting.host.calls.length, 1); assert.equal(c.stats().globalUnsettledJobs, 2);
+    busy.host.answer(0); busy.host.answer(1); await awaitFixture(closing);
+    assert.equal(waiting.host.calls.length, 2); assert.equal(waiting.host.calls[1]!.request.op, 'stream.close');
+    waiting.host.answer(1); assert.equal(await awaitFixture(completion), true);
+  } finally { busy.host.answer(0); busy.host.answer(1); for (let i = 1; i < waiting.host.calls.length; i++) waiting.host.answer(i); await settle(); }
+});

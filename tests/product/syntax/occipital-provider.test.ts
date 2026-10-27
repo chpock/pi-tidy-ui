@@ -1178,3 +1178,82 @@ for (const initiallyPaused of [false, true]) test(`intentional suspend preserves
   assert.equal(s.acquisitions(), 1); assert.equal(attempts, 4);
   await s.broker.dispose(); released(s.broker, s.clock);
 });
+
+
+test('completion boundary: provider observation starts nothing and waits through held startup delivery', { timeout: 12000 }, async t => {
+  const candidate = deferred<ProviderTransport | undefined>(), shared = new Transport(), clock = new Clock();
+  let attempts = 0, notices = 0, completed = false;
+  const broker = new ProviderBroker({ clock, tryShared: () => { attempts++; return candidate.promise; },
+    acquireOwned: async () => { assert.fail('unexpected owned acquisition'); }, onChange() { notices++; } });
+  let release: (() => void) | undefined;
+  const notify = broker.notifyChange;
+  t.mock.method(broker, 'notifyChange', function(this: ProviderBroker) { release = () => notify.call(this); });
+  try {
+    assert.equal(await broker.whenSettled(), true); assert.equal(attempts, 0, 'observing an unstarted owner cannot activate it');
+    const start = broker.start(), completion = broker.whenSettled();
+    assert.equal(broker.whenSettled() === completion, true);
+    void completion.then(() => { completed = true; });
+    await flush(); assert.equal(attempts, 1); assert.equal(completed, false);
+    candidate.resolve(shared); await start; await flush();
+    assert.equal(broker.snapshot().availability, 'ready'); assert.equal(notices, 0);
+    assert.equal(completed, false, 'published availability is not delivered availability');
+    assert.ok(release); release(); assert.equal(await completion, true); assert.equal(notices, 1);
+    assert.equal(attempts, 1); assert.equal(clock.time, 0);
+  } finally { candidate.resolve(shared); release?.(); await broker.dispose(); released(broker, clock); }
+});
+
+test('completion boundary: active shared-return probe is awaited but its future timer is not advanced', { timeout: 12000 }, async () => {
+  const held = deferred<ProviderTransport | undefined>(); let probes = 0;
+  const s = await failover(new Transport(), new Transport(), async () => ++probes <= 2 ? undefined : held.promise);
+  try {
+    const scheduled = s.broker.stats().probesScheduled;
+    assert.equal(await s.broker.whenSettled(), true);
+    assert.equal(s.broker.stats().probesStarted, 0); assert.equal(s.broker.stats().recoveryTimers, 1);
+    assert.equal(s.broker.stats().probesScheduled, scheduled); assert.equal(s.clock.time, 0);
+    await s.clock.advance(PROVIDER_LIMITS.recoveryIntervalMs);
+    assert.equal(s.broker.stats().activeProbes, 1);
+    let completed = false; const completion = s.broker.whenSettled();
+    void completion.then(() => { completed = true; });
+    await flush(); assert.equal(completed, false);
+    held.resolve(undefined); await flush();
+    assert.equal(await completion, true); assert.equal(s.broker.stats().probesCompleted, 1);
+    assert.equal(s.broker.stats().recoveryTimers, 1, 'a later scheduled probe cannot prevent current completion');
+    assert.equal(s.clock.time, PROVIDER_LIMITS.recoveryIntervalMs);
+  } finally { held.resolve(undefined); await s.broker.dispose(); released(s.broker, s.clock); }
+});
+
+test('completion boundary: cancelled provider observation cannot acknowledge its successor from an old factory', { timeout: 12000 }, async () => {
+  const first = deferred<ProviderTransport | undefined>(), next = deferred<ProviderTransport | undefined>();
+  let attempts = 0; const s = setup(() => ++attempts === 1 ? first.promise : next.promise);
+  const old = new Transport(), replacement = new Transport();
+  try {
+    const start = s.broker.start(), completion = s.broker.whenSettled(); await flush();
+    await s.broker.setEnabled(false); assert.equal(await completion, false); await start;
+    const enabling = s.broker.setEnabled(true), successor = s.broker.whenSettled();
+    let completed = false; void successor.then(() => { completed = true; });
+    await flush(); assert.equal(attempts, 2);
+    first.resolve(old); await flush();
+    assert.equal(old.closes, 1); assert.equal(completed, false, 'late cancelled work cannot settle the replacement wait');
+    next.resolve(replacement); await enabling;
+    assert.equal(await successor, true); assert.equal(s.broker.snapshot().kind, 'shared');
+  } finally { first.resolve(old); next.resolve(replacement); await s.broker.dispose(); released(s.broker, s.clock); }
+});
+
+
+test('completion boundary: delivered provider notification can start recovery beyond the startup Promise', { timeout: 12000 }, async () => {
+  const next = deferred<ProviderTransport | undefined>(), first = new Transport(), replacement = new Transport(), clock = new Clock();
+  let attempts = 0, recovery: Promise<void> | undefined;
+  const broker = new ProviderBroker({ clock, tryShared: () => ++attempts === 1 ? Promise.resolve(first) : next.promise,
+    acquireOwned: async () => { assert.fail('unexpected owned acquisition'); },
+    onChange() { if (!recovery && broker.snapshot().availability === 'ready') recovery = broker.provenLoss(broker.snapshot().generation); } });
+  try {
+    const start = broker.start(), completion = broker.whenSettled(); let completed = false;
+    void completion.then(() => { completed = true; });
+    await start; await flush();
+    assert.equal(attempts, 2); assert.equal(broker.snapshot().availability, 'transitioning');
+    assert.equal(completed, false, 'finishing the original Promise cannot hide work started by its delivered notice');
+    next.resolve(replacement); await recovery;
+    assert.equal(await completion, true); assert.equal(broker.snapshot().kind, 'shared');
+    assert.equal(broker.stats().reconnectAttempts, 1);
+  } finally { next.resolve(replacement); await broker.dispose(); released(broker, clock); }
+});

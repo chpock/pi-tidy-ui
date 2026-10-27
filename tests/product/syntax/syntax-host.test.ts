@@ -1657,3 +1657,39 @@ test('host native completion precedes delayed Bash prefix adoption; only adopted
     console.log(JSON.stringify({ delayedPrefixAdoption: { early, adopted, nativeJobs: 0, proofCalls: 1 } }));
   } finally { release?.(); observer.restore(); }
 });
+
+
+test('completion boundary: held native notification includes actual Bash prefix adoption', { timeout: 12000 }, async t => {
+  let requested!: () => void, held!: () => void;
+  const sourceRequested = new Promise<void>(resolve => { requested = resolve; });
+  const notificationHeld = new Promise<void>(resolve => { held = resolve; });
+  const f = fixture(true, false, { diagnostic: (_level, _area, explanation, fields) => {
+    if (explanation === 'Native job dispatched' && fields?.operation === 'highlight') requested();
+  } });
+  const command = "printf 'SETTLED_BASH_OUTPUT\\n'", tool = f.tool('bash', { command }, undefined, true);
+  tool.setArgsComplete(); tool.updateResult({ content: [{ type: 'text', text: 'SETTLED_BASH_OUTPUT' }], isError: false }, false);
+  const observer = observeSyntaxLocalWork(text => text.includes('SETTLED_BASH_OUTPUT')), notify = f.sources.notifyChange;
+  let release: (() => void) | undefined, retained = false, completed = false;
+  t.mock.method(f.sources, 'notifyChange', function(this: SourceController, epoch: number) {
+    if (!retained && f.env.styleRequests.length > 0 && this.stats().globalUnsettledJobs === 0) {
+      retained = true; release = () => notify.call(this, epoch); held(); return;
+    }
+    return notify.call(this, epoch);
+  });
+  try {
+    f.render(tool); await sourceRequested;
+    const completion = f.sources.whenSettled();
+    assert.equal(f.sources.whenSettled() === completion, true, 'one shared pending completion per owner');
+    void completion.then(() => { completed = true; });
+    answer(f, 0, command); await notificationHeld; await turn();
+    assert.equal(f.sources.stats().globalUnsettledJobs, 0);
+    assert.equal(observer.snapshot().prefixScalarReads, 0, 'application remains held after native settlement');
+    assert.equal(completed, false, 'zero native jobs cannot acknowledge pending delivery');
+    assert.ok(release); const resume = release; release = undefined; resume();
+    assert.equal(await completion, true);
+    assert.equal(observer.snapshot().prefixScalarReads, 2 * command.length, 'completion follows the actual first prefix proof');
+    assert.ok(await hasHostInk(f.render(tool), themes.theme, 'syntaxKeyword', command));
+    const warm = observer.snapshot(); f.document(100); f.document(60);
+    assert.deepEqual(observer.snapshot(), warm);
+  } finally { release?.(); observer.restore(); }
+});

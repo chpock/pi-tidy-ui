@@ -11,6 +11,7 @@ import type { ConcreteStyle } from '../../../src/syntax/style-materialization.ts
 import type { SemanticRetentionPool } from '../../../src/occipital/semantic-retention.ts';
 import { semanticDescriptor } from '../../fixtures/semantic-provider.ts';
 import { SemanticRanges } from '../../../src/occipital/semantic-ranges.ts';
+import { awaitFixture } from '../../fixtures/await-fixture.ts';
 
 type Frame = Record<string, any>;
 const definition = { revision: 1 as const, binding_slots: 1, default: { foreground: { kind: 'binding' as const, slot: 0 },
@@ -315,11 +316,15 @@ test('controller styles: cached frozen presentations rebind offline and keep the
     owner.setStyleSelection(native()); owner.observe(demand()); owner.flush(); peer.source(0, 'echo one\n'); await settled(); peer.style(1, 11); await settled();
     owner.setStyleSelection(local()); await settled(); peer.style(2); await settled(); owner.freeze('source');
     peer.ready = false; owner.setStyleSelection(native()); await settled(); assert.deepEqual(color(owner), [11]);
+    assert.equal(await awaitFixture(owner.whenSettled()), true);
     owner.setStyleSelection(local(9)); await settled(); assert.deepEqual(color(owner), [9]); assert.equal(peer.calls.length, 3);
+    assert.equal(await awaitFixture(owner.whenSettled()), true);
     const replacement = semanticDescriptor('describe', 'replacement', []); replacement.body.vocabulary.fingerprint = 'd'.repeat(64);
     peer.description = decodeSemanticDescription(replacement, 'describe'); peer.ready = true; peer.generation++;
     owner.setStyleSelection(native(2)); await settled(); assert.equal(peer.calls.length, 3, 'foreign old context IDs never reach the new vocabulary'); assert.deepEqual(color(owner), [9]);
+    assert.equal(await awaitFixture(owner.whenSettled()), true);
     owner.setStyleSelection(native()); await settled(); assert.deepEqual(color(owner), [11]); assert.equal(peer.calls.length, 3);
+    assert.equal(await awaitFixture(owner.whenSettled()), true);
     assert.equal(owner.workStatus('source').fallbackEligible, false); assert.equal(peer.useful, 1);
   } finally { await cleanup(owner, peer); }
 });
@@ -1078,4 +1083,108 @@ test('controller styles: empty paint does not authorize revision two from a fres
     assert.equal(owner.workStatus('source').fallbackEligible, false, 'wrong native revision remains an unknown physical outcome');
     const count = peer.calls.length; owner.flush(); await settled(); assert.equal(peer.calls.length, count);
   } finally { await cleanup(owner, peer); }
+});
+
+
+for (const selected of ['client', 'native'] as const) test(`completion boundary: clean SOURCE generation replacement reconsiders ${selected} STYLE credit`, { timeout: 12000 }, async t => {
+  const peer = new Peer(), owner = new SourceController(peer), busyPeer = new Peer(), busyOwner = new SourceController(busyPeer);
+  let dispatched!: () => void; const styling = new Promise<void>(resolve => { dispatched = resolve; });
+  try {
+    owner.observe(demand()); owner.flush(); peer.source(0, 'echo one\n'); await settled();
+    assert.equal(owner.status('source')?.acknowledgedVersion, 1);
+    const generation = owner.status('source')!.generation; assert.ok(generation);
+    busyOwner.observe(demand('a', 'echo a\n')); busyOwner.observe(demand('b', 'echo b\n')); busyOwner.flush();
+    const request = peer.request;
+    t.mock.method(peer, 'request', function(this: Peer, ...args: Parameters<Peer['request']>) {
+      const result = request.apply(this, args); if (args[1].op === 'styles.resolve') dispatched(); return result;
+    });
+    owner.setStyleSelection(selected === 'client' ? local() : native()); await settled();
+    assert.equal(peer.calls.length, 1, 'SOURCE is parsed; only STYLE is awaiting the peer-owned credit');
+    const completion = owner.whenSettled(); let completed = false; void completion.then(() => { completed = true; });
+    owner.observe(demand('source', '', 2));
+    const replacement = owner.status('source')!.generation;
+    assert.ok(replacement); assert.notEqual(replacement, generation, 'the empty replacement owns a different live generation, not undefined');
+    if (selected === 'client') {
+      assert.equal(await awaitFixture(completion), true);
+      assert.equal(peer.calls.length, 1, 'empty client styles publish locally without SOURCE/STYLE requests');
+      assert.ok(owner.displayBasis('source')); assert.equal(owner.stats().globalUnsettledJobs, 2);
+    } else {
+      await settled(); assert.equal(completed, false, 'an empty source still needs the missing native palette');
+      assert.equal(peer.calls.length, 1); assert.equal(owner.stats().globalUnsettledJobs, 2);
+      busyOwner.dispose(); for (const pending of busyPeer.pending) pending.reject(new RequestFailure('cleanup', 'not_started'));
+      await awaitFixture(styling); assert.equal(peer.calls.length, 2); assert.equal(peer.calls[1]!.op, 'styles.resolve');
+      peer.style(1); assert.equal(await awaitFixture(completion), true); assert.ok(owner.displayBasis('source'));
+    }
+  } finally {
+    busyOwner.dispose(); for (const pending of busyPeer.pending) pending.reject(new RequestFailure('cleanup', 'not_started'));
+    await settled(); await cleanup(owner, peer);
+  }
+});
+
+
+for (const selected of ['cached-client', 'uncached-native'] as const) test(`completion boundary: STYLE replacement reconsiders ${selected} credit without waking identical selections`, { timeout: 12000 }, async t => {
+  const peer = new Peer(), owner = new SourceController(peer), busyPeer = new Peer(), busyOwner = new SourceController(busyPeer);
+  let dispatched!: () => void, wakes = 0; const styling = new Promise<void>(resolve => { dispatched = resolve; });
+  try {
+    owner.setStyleSelection(local()); owner.observe(demand()); owner.flush(); peer.source(0, 'echo one\n'); await settled();
+    peer.style(1); assert.equal(await awaitFixture(owner.whenSettled()), true);
+    busyOwner.observe(demand('a', 'echo a\n')); busyOwner.observe(demand('b', 'echo b\n')); busyOwner.flush();
+    owner.setStyleSelection(native(2)); await settled();
+    const completion = owner.whenSettled(); let completed = false; void completion.then(() => { completed = true; });
+    const wake = owner.wake, request = peer.request;
+    t.mock.method(owner, 'wake', function(this: SourceController) { wakes++; return wake.call(this); });
+    t.mock.method(peer, 'request', function(this: Peer, ...args: Parameters<Peer['request']>) {
+      const result = request.apply(this, args); if (args[1].op === 'styles.resolve') dispatched(); return result;
+    });
+    for (let i = 0; i < 20; i++) owner.setStyleSelection(native(2));
+    await settled(); assert.equal(wakes, 0, 'identical effective selection does not withdraw credit interest'); assert.equal(completed, false);
+    owner.setStyleSelection(selected === 'cached-client' ? local(2) : native(3));
+    if (selected === 'cached-client') {
+      assert.equal(await awaitFixture(completion), true); assert.deepEqual(color(owner), [2]);
+      assert.equal(wakes, 1, 'real desired-STYLE replacement reconciles its old interest once');
+      assert.equal(peer.calls.length, 2); assert.equal(owner.stats().globalUnsettledJobs, 2);
+    } else {
+      await settled(); assert.equal(completed, false); assert.equal(peer.calls.length, 2);
+      for (let i = 0; i < 20; i++) owner.setStyleSelection(native(3));
+      await settled(); assert.equal(wakes, 1); assert.equal(completed, false);
+      busyOwner.dispose(); for (const pending of busyPeer.pending) pending.reject(new RequestFailure('cleanup', 'not_started'));
+      await awaitFixture(styling); assert.equal(peer.calls.length, 3); assert.equal(peer.calls[2]!.op, 'styles.resolve');
+      peer.style(2, 3); assert.equal(await awaitFixture(completion), true); assert.deepEqual(color(owner), [3]);
+    }
+  } finally {
+    busyOwner.dispose(); for (const pending of busyPeer.pending) pending.reject(new RequestFailure('cleanup', 'not_started'));
+    await settled(); await cleanup(owner, peer);
+  }
+});
+
+
+for (const transition of ['unavailable', 'replaced'] as const) test(`completion boundary: STYLE checks the current provider after reentrant profile acceptance (${transition})`, async () => {
+  const peer = new Peer(), owner = new SourceController(peer), card = group(owner, ['source']);
+  const original = peer.description;
+  let changed = false;
+  try {
+    owner.setStyleSelection(native()); owner.flush(); peer.source(0, 'echo one\n'); await settled(); peer.style(1, 11); await settled();
+    const before = owner.stats();
+    card.preparation.acceptsProfile = () => {
+      if (!changed) {
+        changed = true;
+        if (transition === 'unavailable') peer.ready = false;
+        else {
+          const descriptor = semanticDescriptor('describe', 'replacement', []); descriptor.body.vocabulary.fingerprint = 'd'.repeat(64);
+          peer.description = decodeSemanticDescription(descriptor, 'describe'); peer.generation++;
+        }
+      }
+      return true;
+    };
+    owner.setStyleSelection(native(2)); await settled();
+    assert.equal(changed, true); assert.ok(owner.stats().styleContextVisits > before.styleContextVisits, 'the normal context path reached late validation');
+    assert.equal(peer.calls.length, 2); assert.equal(owner.stats().styleEncodes, before.styleEncodes);
+    assert.equal(owner.stats().unsettledJobs, 0); assert.equal(owner.stats().globalTransientBytes, 0);
+    assert.equal(await awaitFixture(owner.whenSettled()), true); assert.deepEqual(color(owner), [11]);
+    delete card.preparation.acceptsProfile;
+    peer.description = original; peer.ready = true; owner.refreshPreparations(); await settled();
+    assert.equal(peer.calls.length, 3); assert.equal(peer.calls[2]!.op, 'styles.resolve'); assert.equal(peer.calls[2]!.vocabulary, original.vocabulary.fingerprint);
+    peer.style(2, 22); assert.equal(await awaitFixture(owner.whenSettled()), true);
+    assert.deepEqual(color(owner), [22]); assert.equal(peer.useful, 1, 'resumed STYLE must not reparse the source');
+  } finally { void card.preparation; await cleanup(owner, peer); }
 });

@@ -177,7 +177,10 @@ export async function execute({ inputs: path, suite = 'unit', files, groups, lay
     if (selection.requirements.includes('native')) report.native = { commit: inputs.native.commit, nativeTree: inputs.native.nativeTree, sha256: inputs.native.sha256 };
     let command = inputs.node.path;
     let args = ['--import', pathToFileURL(join(inputs.pi.root, 'scripts/test/bootstrap.mjs')).href];
-    if (suite === 'check') args.push(join(inputs.pi.root, 'node_modules/typescript/bin/tsc'), '--noEmit');
+    if (suite === 'check') {
+      args.unshift('--max-old-space-size=1024');
+      args.push(join(inputs.pi.root, 'node_modules/typescript/bin/tsc'), '--noEmit');
+    }
     else if (['rust', 'rust-check', 'rust-allocator'].includes(suite)) {
       if (!inputs.rust) throw new Error('Rust execution requires prepared pinned toolchain and offline dependency home');
       command = inputs.rust.cargo;

@@ -61,6 +61,7 @@ export function detachTerminalScreen(term) {
 
 export function observeNativeReceipts(term, state) {
   state.nativeReceipts = new Map();
+  state.nativeRequests = new Map();
   state.nativeSnapshots = new WeakMap();
   state.snapshotCopies = 0;
   state.nativeProgress = new EventEmitter();
@@ -69,9 +70,13 @@ export function observeNativeReceipts(term, state) {
     if (!data.startsWith('tidy-test;')) return false;
     try {
       const packet = JSON.parse(Buffer.from(data.slice('tidy-test;'.length), 'base64').toString());
+      const request = state.nativeRequests.get(packet.id);
+      if (state.exited || ['armed', 'frame', 'capture'].includes(packet.type) && request?.type !== packet.type
+        || packet.type === 'cancelled' && request?.type !== 'capture'
+        || packet.type === 'error' && packet.id !== undefined && !request) return true;
       if (packet.type === 'error') state.error = new Error(packet.message);
       if (['frame', 'capture'].includes(packet.type) && state.rendering) state.error = new Error('Native frame fence arrived inside synchronized output');
-      if (packet.type === 'capture' && !state.error) { state.nativeSnapshots.set(packet, detachTerminalScreen(term)); state.snapshotCopies++; }
+      if (packet.type === 'capture' && request.screen !== false && !state.error) { state.nativeSnapshots.set(packet, detachTerminalScreen(term)); state.snapshotCopies++; }
       if (packet.type !== 'journal' && packet.type !== 'diagnostic') state.nativeReceipts.set(`${packet.type}:${packet.id ?? 0}`, packet);
     } catch (error) { state.error = error; }
     state.nativeProgress.emit('progress');
@@ -183,7 +188,9 @@ export class PiTerminal {
     });
     this.stderr = '';
     this.child.stderr.on('data', (data) => { this.stderr = measuring ? (this.stderr + data).slice(-16384) : this.stderr + data; });
-    this.child.on('exit', (code, signal) => { this.exited = { code, signal }; this.nativeProgress.emit('progress'); });
+    this.child.on('exit', (code, signal) => {
+      this.exited = { code, signal }; this.nativeRequests.clear(); this.nativeReceipts.clear(); this.nativeProgress.emit('progress');
+    });
     this.child.on('close', () => { this.closed = true; this.nativeProgress.emit('progress'); });
     this.rl = createInterface({ input: this.child.stdout });
     this.rl.on('line', (line) => {
@@ -260,19 +267,30 @@ export class PiTerminal {
       check();
     });
   }
-  async nativeReceipt(type, id = 0, signal) {
-    const key = `${type}:${id}`;
-    return this.waitForProgress(() => {
-      this.health();
-      const packet = this.nativeReceipts.get(key);
-      if (packet) this.nativeReceipts.delete(key);
-      return packet;
-    }, `native ${key}`, signal);
-  }
-  async nativeFence(id = ++this.nativeSequence, kind = 0, signal) {
+  async nativeReceipt(type, id = 0, signal, screen = true) {
     signal?.throwIfAborted();
+    const key = `${type}:${id}`, request = { type, screen };
+    this.nativeRequests.set(id, request);
+    const retire = () => {
+      if (this.nativeRequests.get(id) !== request) return;
+      this.nativeRequests.delete(id);
+      this.nativeReceipts.delete(key); this.nativeReceipts.delete(`cancelled:${id}`);
+    };
+    signal?.addEventListener('abort', retire, { once: true });
+    try {
+      return await this.waitForProgress(() => {
+        this.health();
+        const cancelled = this.nativeReceipts.get(`cancelled:${id}`);
+        if (type !== 'cancelled' && cancelled) throw Object.assign(new Error(cancelled.message), { code: 'CAPTURE_CANCELLED' });
+        return this.nativeReceipts.get(key);
+      }, `native ${key}`, signal);
+    } finally { signal?.removeEventListener('abort', retire); retire(); }
+  }
+  async nativeFence(id = ++this.nativeSequence, kind = 0, signal, screen = true) {
+    signal?.throwIfAborted();
+    const pending = this.nativeReceipt(kind === 3 || kind === 4 ? 'capture' : 'frame', id, signal, screen);
     this.send(`\x1b[?997;${id};${kind}n`);
-    const receipt = await this.nativeReceipt(kind === 3 ? 'capture' : 'frame', id, signal);
+    const receipt = await pending;
     signal?.throwIfAborted();
     assert.ok(receipt.generation >= (this.nativeGeneration ?? 0), 'stale native renderer receipt');
     this.nativeGeneration = receipt.generation;
@@ -286,8 +304,9 @@ export class PiTerminal {
   async command(command, signal) {
     signal?.throwIfAborted();
     const id = ++this.nativeSequence;
+    const armed = this.nativeReceipt('armed', id, signal);
     this.send(`\x1b[?997;${id};1n`);
-    await this.nativeReceipt('armed', id, signal);
+    await armed;
     this.send(command + '\r');
     // The native submit promise includes reload and shortcut rebinding. Its
     // unchanged completion-status cells need not produce fresh terminal bytes.
@@ -481,6 +500,41 @@ export class PiTerminal {
         await until(async () => JSON.stringify((await this.completeTidyRows()).slice(start, end)) !== JSON.stringify(current), 'scroll public cache details');
       }
     } finally { await this.closeTidyMenu(); }
+  }
+  async captureSettled(name, { action, signal, screen = true } = {}) {
+    const controller = new AbortController();
+    const abort = () => controller.abort(signal.reason);
+    const timeout = Object.assign(new Error(`Capture deadline exceeded: ${name}`), { code: 'CAPTURE_TIMEOUT' });
+    const watchdog = setTimeout(() => controller.abort(timeout), 12000);
+    signal?.addEventListener('abort', abort, { once: true });
+    if (signal?.aborted) abort();
+    let id, received = false, failure;
+    const lifecycle = this.waitForProgress(() => { this.health(); return false; }, 'settled capture lifecycle', controller.signal);
+    void lifecycle.catch(() => {});
+    try {
+      controller.signal.throwIfAborted();
+      await Promise.race([action?.(controller.signal), lifecycle]);
+      controller.signal.throwIfAborted();
+      id = ++this.nativeSequence;
+      const receipt = await Promise.race([this.nativeFence(id, 4, controller.signal, screen), lifecycle]);
+      controller.signal.throwIfAborted();
+      received = true;
+      const result = { sample: receipt.sample, receipt: {
+        id: receipt.id, generation: receipt.generation, frames: receipt.frames,
+      } };
+      if (screen === false) return result;
+      const snapshot = this.nativeSnapshots.get(receipt);
+      assert.ok(snapshot, 'missing settled receipt-bound capture');
+      assert.equal(snapshot.width, receipt.columns); assert.equal(snapshot.rows, receipt.rows);
+      return this.captureScreen(name, result, snapshot);
+    } catch (error) { failure = error; throw error; }
+    finally {
+      clearTimeout(watchdog); signal?.removeEventListener('abort', abort);
+      controller.abort(failure ?? new Error('Capture completed'));
+      if (id !== undefined && !received && failure?.code !== 'CAPTURE_CANCELLED' && !this.exited) {
+        this.send(`\x1b[?997;${id};5n`);
+      }
+    }
   }
   async capturePrepared(name, prepared) {
     const start = performance.now(), stages = [], controller = new AbortController();

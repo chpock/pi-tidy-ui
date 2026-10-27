@@ -8,7 +8,7 @@ import { PiTerminal } from '../../../fixtures/terminal-harness.mjs';
 import { closeTerminals } from '../../../fixtures/terminal-cleanup.mjs';
 import { semanticPhaseReady } from '../../../fixtures/syntax-observation.mjs';
 import { paintProof, publications, delimiterCells, followPiMarkers, spans, publicInk } from '../../../fixtures/follow-pi-physical.mjs';
-import { prepareSyntaxNative, stats, work, traffic, persisted, body, finish, until, syntaxReady } from '../../../fixtures/syntax-cli-support.mjs';
+import { prepareSyntaxNative, settledStats, captureThenRenderDiagnostics, work, traffic, persisted, body, finish, syntaxReady } from '../../../fixtures/syntax-cli-support.mjs';
 
 const { fixture, descriptor } = await prepareSyntaxNative();
 const same = (a, b) => a.fg === b.fg && a.fgMode === b.fgMode;
@@ -67,21 +67,21 @@ for (const mode of ['fullscreen', 'regular']) for (const output of ['truecolor',
       TIDY_UI_TEST_SYNTAX_CONFIG: JSON.stringify({ syntaxTheme: { kind: 'pi' } }) } });
   try {
     await terminal.ready(); await syntaxReady(terminal); terminal.send('run follow-pi-palette\r'); await terminal.event('agent_end');
-    await until(() => semanticPhaseReady(() => stats(terminal, 'matrix-ready'), () => terminal.events(), followPiMarkers, 'pi'), 'complete actual source/style matrix');
-    const original = await terminal.capture('matrix-original'), cold = await stats(terminal, 'matrix-cold');
+    const original = await captureThenRenderDiagnostics(terminal, 'matrix-original'), cold = original.sample;
+    assert.ok(await semanticPhaseReady(() => cold, () => terminal.events(), followPiMarkers, 'pi'), 'complete actual source/style matrix');
     const originalTraffic = traffic(terminal), originalData = persisted(original), cases = [];
     for (const name of ['dark', 'light', 'gruvbox', 'saturated', 'monochrome', 'low-contrast', 'terminal-default', 'mixed-foreground', 'faint', 'faint-donor', 'faint-parent']) {
       const prior = publications(terminal); assert.equal(prior.size, 3);
       writeFileSync(join(terminal.output, 'syntax-theme-phase'), name);
       await terminal.command(name === 'dark' || name === 'light' ? `/tidy-ui-theme ${name}` : `/tidy-ui-palette-theme ${name}`);
-      if (name !== 'dark') await until(() => {
+      const before = await settledStats(terminal, `${name}-before-widths`), cells = [];
+      if (name !== 'dark') {
         const current = publications(terminal);
-        return [...prior].every(([id]) => current.get(id)?.phase === name)
-          && [...prior].some(([id, old]) => current.get(id).paintStamp !== old.paintStamp);
-      }, `complete ${name} publication`);
-      const before = await stats(terminal, `${name}-before-widths`), cells = [];
+        assert.ok([...prior].every(([id]) => current.get(id)?.phase === name)
+          && [...prior].some(([id, old]) => current.get(id).paintStamp !== old.paintStamp), `complete ${name} publication`);
+      }
       for (const width of [60, 140]) {
-        await terminal.resize(width); const shown = await terminal.capture(`matrix-${name}-${width}`);
+        await terminal.resize(width); const shown = await captureThenRenderDiagnostics(terminal, `matrix-${name}-${width}`);
         paintProof(shown, { distinct: ['dark', 'light', 'gruvbox', 'saturated'].includes(name) });
         cells.push({ width, probes: policyProof(shown, name) });
         if (name === 'faint-donor' || name === 'faint-parent') for (const text of ['FOLLOW_PI_HEADING', 'site']) for (const found of spans(shown, text)) {
@@ -98,7 +98,7 @@ for (const mode of ['fullscreen', 'regular']) for (const output of ['truecolor',
         if (output === '256color' && name !== 'terminal-default') assert.ok(headings.every(found => found.cells.every(cell => cell.fgMode === 2 << 24)), 'public capability override actually emits indexed colors');
         assert.deepEqual(persisted(shown), originalData); assert.deepEqual(traffic(terminal), originalTraffic);
       }
-      await terminal.observeAnimation(); const warm = await stats(terminal, `${name}-warm`);
+      await terminal.observeAnimation(); const warm = await settledStats(terminal, `${name}-warm`);
       assert.deepEqual(work(warm), work(before), 'warm frames and real unified/split reflow add zero palette/parser/style/measurement/scalar work');
       assert.equal(warm.counts.sourceRequests, cold.counts.sourceRequests); assert.equal(warm.counts.styleRequests, cold.counts.styleRequests);
       assert.equal(warm.localWork.sourceSegments, cold.localWork.sourceSegments); assert.equal(warm.localWork.prefixScalarReads, cold.localWork.prefixScalarReads);
@@ -107,7 +107,7 @@ for (const mode of ['fullscreen', 'regular']) for (const output of ['truecolor',
     }
     writeFileSync(join(terminal.output, 'palette-matrix.json'), JSON.stringify({ mode, output, cases, limitations: 'Indexed numeric checks use the conventional palette model. Unknown/default/authored-indexed inputs are preserved, not certified readable.' }, null, 2));
     await terminal.resize(100);
-    assert.deepEqual(body(await terminal.capture('matrix-final')), body(original), 'all source glyphs, gutters and payload text survive the full palette matrix');
+    assert.deepEqual(body(await captureThenRenderDiagnostics(terminal, 'matrix-final')), body(original), 'all source glyphs, gutters and payload text survive the full palette matrix');
     console.log(JSON.stringify({ followPiMatrix: { mode, output, path: terminal.output, cases: cases.length,
       numericallyEvaluatedAuthoredCells: cases.flatMap(c => c.cells.flatMap(w => w.probes)).filter(p => p.evaluated).length,
       sourceReparseDelta: 0, styleResolveDelta: 0, warmDelta: 0 } }));

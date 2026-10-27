@@ -6,7 +6,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { PiTerminal } from './terminal-harness.mjs';
 import { closeTerminals, runCleanupSteps } from './terminal-cleanup.mjs';
 import { sharedSyntaxHost } from './shared-syntax-host.mjs';
-import { prepareSyntaxNative, requiredSharedHost, stats, until, syntaxReady, settledStats, traffic, persisted, work } from './syntax-cli-support.mjs';
+import { prepareSyntaxNative, requiredSharedHost, until, syntaxReady, settledStats, intermediateStats, captureThenRenderDiagnostics, traffic, persisted, work } from './syntax-cli-support.mjs';
 import { semanticPhaseReady, nativeReady } from './syntax-observation.mjs';
 import { followPiMarkers, paintProof } from './follow-pi-physical.mjs';
 
@@ -53,7 +53,7 @@ export async function runSuspendCase({ kind, mode, operation }, { binary, fixtur
        writeFileSync(join(t.output, 'suspend-arm'), 'go');
         if (operation === 'APPEND') {
           t.send('run bash-prefix-contract\r'); await t.event('bash_contract_prefix');
-          await settledStats(t, 'first-tail', nativeReady); bashProof(await t.capture('first-tail'));
+          await settledStats(t, 'first-tail', nativeReady); bashProof(await captureThenRenderDiagnostics(t, 'first-tail'));
           writeFileSync(join(t.output, 'bash-contract-go-0'), 'go'); await t.event('bash_contract_prefix', 2);
         } else t.send('run follow-pi-palette\r');
         if (operation !== 'SOURCE') {
@@ -61,7 +61,7 @@ export async function runSuspendCase({ kind, mode, operation }, { binary, fixtur
          writeFileSync(join(t.output, 'suspend-dispatch'), 'go');
        }
        await t.event('suspend_transport_pending');
-      const pending = await settledStats(t, 'actual-pending', s => s.suspend?.outcome === 'pending' && s.source.globalUnsettledJobs > 0);
+      const pending = await intermediateStats(t, 'actual-pending', s => s.suspend?.outcome === 'pending' && s.source.globalUnsettledJobs > 0);
        assert.ok(pending.source.globalUnsettledJobs > 0);
        if (operation === 'STYLE') assert.ok(pending.source.styleCaptures > 0);
       const transport = kind === 'owned' ? pending.transports.at(-1) : pending.sharedTransports.at(-1);
@@ -86,7 +86,7 @@ export async function runSuspendCase({ kind, mode, operation }, { binary, fixtur
        }
        if (operation === 'APPEND') {
          await settledStats(t, 'resumed-tail', s => nativeReady(s) && s.counts.sourceRequests >= 3);
-         bashProof(await t.capture('resumed-tail'));
+         bashProof(await captureThenRenderDiagnostics(t, 'resumed-tail'));
          const opens = t.events().filter(e => e.type === 'syntax_native_dispatch' && e.payload.op === 'stream.open');
          assert.equal(opens.length, 2, 'interrupted incremental work reopens exactly once');
          assert.equal(opens[1].payload.sources[0].text, ": 'STABLE_text é界");
@@ -94,29 +94,31 @@ export async function runSuspendCase({ kind, mode, operation }, { binary, fixtur
          writeFileSync(join(t.output, 'bash-contract-go-1'), 'go'); await t.event('bash_contract_prefix', 3);
          writeFileSync(join(t.output, 'bash-contract-go-2'), 'go');
        }
-       await t.event('agent_end'); await t.observeAnimation();
-        const after = operation === 'APPEND' ? await settledStats(t, 'recovered', nativeReady)
-          : await until(() => semanticPhaseReady(() => stats(t, 'recovered'), () => t.events(), followPiMarkers, 'pi'), 'current cards recover SOURCE/STYLE automatically');
+       await t.event('agent_end');
+        const restored = await captureThenRenderDiagnostics(t, 'restored-colors'), after = restored.sample;
+        if (operation === 'APPEND') assert.ok(nativeReady(after), 'current append work recovered');
+        else assert.ok(await semanticPhaseReady(() => after, () => t.events(), followPiMarkers, 'pi'), 'current cards recover SOURCE/STYLE automatically');
+        await t.observeAnimation();
        assert.equal(after.suspend.outcome, 'rejected'); assert.equal(after.suspend.expirations, 0, 'deliberate close clears the old request timer');
        assert.equal(after.client.provider.availability, 'ready');
        assert.notEqual(after.client.provider.generation, startup.client.provider.generation);
        if (kind === 'owned') assert.notEqual(after.client.provider.description.runtime.pid, helperPid);
        else assert.equal(after.client.provider.description.runtime.pid, helperPid);
-        const restored = await t.capture('restored-colors');
         if (operation === 'APPEND') bashProof(restored); else paintProof(restored);
-      const first = await t.capture('first-cards'), sourceBefore = after.counts.sourceRequests;
+      const first = await captureThenRenderDiagnostics(t, 'first-cards'), sourceBefore = after.counts.sourceRequests;
       const ends = t.events().filter(e => e.type === 'agent_end').length;
-      t.send('run follow-pi-palette\r'); await t.event('agent_end', ends + 1); await t.observeAnimation();
-       const next = await until(() => semanticPhaseReady(() => stats(t, 'new-cards'), () => t.events(), followPiMarkers, 'pi'), 'new cards use restored provider');
-       const nextCards = await t.capture('new-cards'); paintProof(nextCards);
+      t.send('run follow-pi-palette\r'); await t.event('agent_end', ends + 1);
+        const nextCards = await captureThenRenderDiagnostics(t, 'new-cards'), next = nextCards.sample;
+        assert.ok(await semanticPhaseReady(() => next, () => t.events(), followPiMarkers, 'pi'), 'new cards use restored provider');
+        paintProof(nextCards); await t.observeAnimation();
        assert.ok(next.counts.sourceRequests > sourceBefore);
        await t.resize(90); await t.resize(100); await t.observeAnimation();
-       assert.deepEqual(work(await stats(t, 'warm')), work(next), 'warm frames and reflow do not replay or recompute');
+       assert.deepEqual(work(await settledStats(t, 'warm')), work(next), 'warm frames and reflow do not replay or recompute');
        await suspend(t); t.send('fg\r'); await t.settle();
-       const idle = await stats(t, 'idle-resume');
+       const idle = await settledStats(t, 'idle-resume');
        assert.equal(idle.client.provider.generation, next.client.provider.generation, 'idle provider is retained');
        assert.deepEqual(work(idle), work(next), 'ready cards reuse sources, styles, palettes and geometry after idle suspend');
-       paintProof(await t.capture('idle-resume'));
+       paintProof(await captureThenRenderDiagnostics(t, 'idle-resume'));
       const report = { kind, mode, operation, configuredDeadlineMs: deadlineMs, lifecycle, pending, after, next,
         newSourceRequests: next.counts.sourceRequests - sourceBefore,
         firstStrikeCells: first.cells.flat().filter(c => c.strike).length, nextStrikeCells: nextCards.cells.flat().filter(c => c.strike).length,

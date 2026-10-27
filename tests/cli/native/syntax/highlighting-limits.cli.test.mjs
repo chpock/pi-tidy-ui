@@ -9,7 +9,7 @@ import { PiTerminal } from '../../../fixtures/terminal-harness.mjs';
 import { closeTerminals } from '../../../fixtures/terminal-cleanup.mjs';
 import { syntaxToolData as raw } from '../../../fixtures/syntax-tool-data.mjs';
 import { nativeReady, semanticStyle } from '../../../fixtures/syntax-observation.mjs';
-import { prepareSyntaxNative, inputs, syntaxReady, stats, settledStats, traffic, persisted, finish, chooseTheme, expressionForeground, work } from '../../../fixtures/syntax-cli-support.mjs';
+import { prepareSyntaxNative, inputs, syntaxReady, settledStats, captureThenRenderDiagnostics, traffic, persisted, finish, chooseTheme, expressionForeground, work } from '../../../fixtures/syntax-cli-support.mjs';
 
 const { fixture, descriptor } = await prepareSyntaxNative();
 const nativeBytes = 65536, piBytes = 8192;
@@ -96,7 +96,7 @@ async function start(name, native, plan, terminals) {
   return terminal;
 }
 async function selectNative(terminal) {
-  const s = await stats(terminal, 'profiles');
+  const s = await settledStats(terminal, 'profiles');
   const profiles = s.client.provider.description.profiles.filter(p => p.id !== 'pi');
   const index = profiles.findIndex(p => p.label === 'Catppuccin Mocha'); assert.ok(index >= 0);
   terminal.profile = profiles[index].id; await chooseTheme(terminal, index + 1);
@@ -159,12 +159,12 @@ test('highlighting volume CLI: saturated live Bash finalizes its real lease befo
       for (const terminal of [live, stock]) writeFileSync(join(terminal.output, `highlighting-limits-go-${phase}`), 'go');
     }
     for (const terminal of [live, stock]) { await terminal.event('agent_end'); await terminal.settle(); }
-    const final = await live.capture('bash-final'), reference = await stock.capture('bash-stock-final'); exactTraffic(live, stock, final, reference);
+    const final = await captureThenRenderDiagnostics(live, 'bash-final'), reference = await stock.capture('bash-stock-final'); exactTraffic(live, stock, final, reference);
     await stock.close();
     assert.equal(stock.closed, true, 'completed stock prefix control is reaped before native warm checks');
     assert.equal(final.tools[0].content[0].text, 'VOLUME_OK\n'); boundedRequests(live);
-    const before = await stats(live, 'bash-final-before'); await live.observeAnimation();
-    assert.deepEqual(work(await stats(live, 'bash-final-after')), work(before));
+    const before = final.sample; await live.observeAnimation();
+    assert.deepEqual(work(await settledStats(live, 'bash-final-after')), work(before));
     assert.equal(before.counts.piCaptures, 0); assert.equal(before.source.remoteLeases, 0);
     console.log(JSON.stringify({ volume: 'bash', output: live.output, stock: stock.output, node: before.node, prefixBytes: nativeBytes,
       fullBytes: Buffer.byteLength(corrected), counts: before.counts, source: before.source }));
@@ -180,7 +180,7 @@ for (const kind of ['write', 'edit']) for (const policy of ['native', 'pi']) tes
     if (policy === 'native') await selectNative(live);
     else {
       await live.openTidyMenu(); await live.selectTidyItem('Status & troubleshooting'); await live.selectTidyItem('Use Occipital highlighting'); await live.closeTidyMenu();
-      const off = await stats(live, 'genuine-native-off'); assert.equal(off.client.enabled, false);
+      const off = await settledStats(live, 'genuine-native-off'); assert.equal(off.client.enabled, false);
       assert.ok(off.transports.every(t => t.childState === 'exited' && t.retainedBytes === 0 && t.liveTimers === 0));
     }
     const stock = await start(`volume-${kind}-${policy}-stock`, false, plan, terminals);
@@ -190,7 +190,7 @@ for (const kind of ['write', 'edit']) for (const policy of ['native', 'pi']) tes
     }
     const state = await settledStats(live, 'file-ready', s => policy === 'native' ? nativeReady(s)
       && !!semanticStyle(live.events(), 'def VOLUME_PREFIX', live.profile) : s.counts.piBridges > 0 && s.source.globalUnsettledJobs === 0);
-    const shown = await live.capture('file-full'), reference = await stock.capture('file-stock'); exactTraffic(live, stock, shown, reference);
+    const shown = await captureThenRenderDiagnostics(live, 'file-full'), reference = await stock.capture('file-stock'); exactTraffic(live, stock, shown, reference);
     await stock.close();
     assert.equal(readFileSync(join(live.work, 'limits.py'), 'utf8'), fileSource);
     assert.equal(readFileSync(join(stock.work, 'limits.py'), 'utf8'), fileSource);
@@ -214,16 +214,17 @@ for (const kind of ['write', 'edit']) for (const policy of ['native', 'pi']) tes
       assert.deepEqual([!!prefix.bold, !!prefix.italic, !!prefix.underline, !!prefix.dim, prefix.inverse], [false, false, false, false, false]);
       assert.notEqual(prefix.fg, neutral.fg);
     }
-    const saved = readFileSync(shown.session), originalTraffic = traffic(live), before = await stats(live, 'file-warm-before');
-    await live.observeAnimation(); let after = await stats(live, 'file-warm-after'); assert.deepEqual(work(after), work(before));
+    const saved = readFileSync(shown.session), originalTraffic = traffic(live), before = shown.sample;
+    await live.observeAnimation(); let after = await settledStats(live, 'file-warm-after'); assert.deepEqual(work(after), work(before));
     if (kind === 'write' && policy === 'native') {
       const pid = after.transports.at(-1).pid; process.kill(pid, 'SIGKILL');
+      await live.event('syntax_acquired', 2);
       after = await settledStats(live, 'bounded-owned-recovery', s => nativeReady(s) && s.counts.acquisitions === 2 && s.counts.describeReplies === 2);
       assert.throws(() => process.kill(pid, 0), { code: 'ESRCH' });
       assert.notEqual(after.transports.at(-1).pid, pid);
       assert.deepEqual(work(after), work(before), 'actual helper recovery reuses the already validated bounded source/styles');
       assert.equal(after.counts.piCaptures, 0);
-      const recovered = await live.capture('bounded-recovered'); exactFile(recovered, fileSource, kind);
+      const recovered = await captureThenRenderDiagnostics(live, 'bounded-recovered'); exactFile(recovered, fileSource, kind);
       nativeCells(live, recovered, 'def VOLUME_PREFIX', 'def VOLUME_NATIVE_SUFFIX'); assert.deepEqual(raw(recovered), raw(shown));
     }
     assert.deepEqual(readFileSync(shown.session), saved); assert.deepEqual(traffic(live), originalTraffic);
@@ -239,15 +240,15 @@ test('highlighting volume CLI: genuinely native-disabled Bash never invokes Pi a
   try {
     const live = await start('volume-bash-off', true, plan, terminals);
     await live.openTidyMenu(); await live.selectTidyItem('Status & troubleshooting'); await live.selectTidyItem('Use Occipital highlighting'); await live.closeTidyMenu();
-    const before = await stats(live, 'bash-disabled'); assert.equal(before.client.enabled, false);
+    const before = await settledStats(live, 'bash-disabled'); assert.equal(before.client.enabled, false);
     const stock = await start('volume-bash-off-stock', false, plan, terminals);
     for (const terminal of [live, stock]) await terminal.run('highlighting-limits-bash');
-    const shown = await live.capture('bash-disabled-full'), reference = await stock.capture('bash-disabled-stock'); exactTraffic(live, stock, shown, reference);
+    const shown = await captureThenRenderDiagnostics(live, 'bash-disabled-full'), reference = await stock.capture('bash-disabled-stock'); exactTraffic(live, stock, shown, reference);
     await stock.close();
     assert.equal(shown.tools[0].args.command, corrected); assert.equal(shown.tools[0].content[0].text, 'VOLUME_OK\n'); exactBash(shown, corrected);
     const prefix = cell(shown, '# VOLUME_CORRECT'), suffix = cell(shown, '# VOLUME_NATIVE_SUFFIX');
     assert.deepEqual(vector(prefix), vector(suffix)); assert.equal(prefix.fg, ansiRgb(shown.summaryStyles.toolTitle));
-    const after = await stats(live, 'bash-disabled-final'); assert.equal(after.counts.piCaptures, 0); assert.equal(after.counts.piBridges, 0);
+    const after = shown.sample; assert.equal(after.counts.piCaptures, 0); assert.equal(after.counts.piBridges, 0);
     assert.equal(after.counts.sourceRequests, 0); assert.equal(after.counts.styleRequests, before.counts.styleRequests);
     assert.equal(after.source.preparedBytes, 0); assert.equal(after.source.remoteLeases, 0);
     console.log(JSON.stringify({ volume: 'bash-disabled', output: live.output, stock: stock.output, node: after.node, counts: after.counts, source: after.source }));

@@ -636,3 +636,98 @@ test('runtime health: a retired theme-save failure is not a runtime incident', a
   pending.resolve({ ok: false, issue: { code: 'write-failed', message: 'cancelled' } }); await saving;
   assert.equal(health.snapshot().errors, 0);
 });
+
+
+test('completion boundary: client observes held preference restoration without initiating startup', { timeout: 12000 }, async () => {
+  const load = deferred<SettingsLoadResult>(), store = new Store(); store.loadResult = load.promise;
+  const f = fixture({}, store);
+  try {
+    assert.equal(await f.c.whenSettled(), true); assert.equal(store.loads, 0); assert.equal(f.sharedAttempts(), 0);
+    const start = f.c.start(), completion = f.c.whenSettled();
+    let completed = false; void completion.then(() => { completed = true; });
+    await f.c.broker.start(); await settle();
+    assert.equal(f.c.snapshot().provider.availability, 'ready'); assert.equal(completed, false);
+    load.resolve(store.restored); await start;
+    assert.equal(await completion, true); assert.equal(f.c.snapshot().effective?.id, 'pi');
+    assert.equal(f.peer.calls.length, 1);
+  } finally { load.resolve(store.restored); }
+});
+
+for (const action of ['suspend', 'dispose', 'off'] as const) test(`completion boundary: client ${action} explicitly cancels held catalogue observation`, { timeout: 12000 }, async () => {
+  const f = fixture(); await f.c.start(); f.peer.holdMetadata = true;
+  const refresh = f.c.refreshThemes(); await settle();
+  const completion = f.c.whenSettled();
+  if (action === 'off') await f.c.setEnabled(false); else await f.c[action]();
+  assert.equal(await completion, false); assert.equal((await refresh).ok, false);
+});
+
+async function detachedWaitingClient(peer: Peer) {
+  const client = new SyntaxClient({ provider: { tryShared: async () => peer, acquireOwned: async () => new Peer() }, standaloneVersion: '0.2.0', settings: new Store() });
+  await client.start(); client.sources.observe(demand(client)); client.sources.flush();
+  return { weak: new WeakRef(client), sources: client.sources, broker: client.broker, completion: client.whenSettled() };
+}
+test('completion boundary: source/provider completion callbacks do not retain their first client', { timeout: 12000 }, async () => {
+  assert.equal(typeof global.gc, 'function');
+  const peer = new Peer(), first = await detachedWaitingClient(peer), second = fixture(); await second.c.start();
+  try {
+    assert.equal(first.sources.stats().unsettledJobs, 1);
+    for (let i = 0; i < 100; i++) { await delay(0); global.gc!(); await delay(0); if (!first.weak.deref()) break; }
+    assert.equal(first.weak.deref() === undefined, true);
+    peer.answerSource(1); await settle();
+    assert.equal(await first.completion, false, 'an abandoned client cannot acknowledge an operation from retained producer callbacks');
+    assert.equal(second.c.snapshot().provider.availability, 'ready');
+  } finally { first.sources.dispose(); await first.broker.dispose(); }
+});
+
+
+test('completion boundary: cancelled waits reuse observers of unchanged pending startup and restore Promises', { timeout: 12000 }, async t => {
+  const load = deferred<SettingsLoadResult>(), store = new Store(); store.loadResult = load.promise;
+  const f = fixture({}, store), start = f.c.start();
+  const restore = Reflect.get(f.c, 'restore') as Promise<void>;
+  function subscriptions(promise: Promise<void>) {
+    let count = 0; const then = promise.then.bind(promise);
+    t.mock.method(promise, 'then', (...args: Parameters<Promise<void>['then']>) => { count++; return then(...args); });
+    return () => count;
+  }
+  const restoreSubscriptions = subscriptions(restore), startupSubscriptions = subscriptions(start);
+  try {
+    await f.c.broker.start();
+    for (let cycle = 0; cycle < 3; cycle++) {
+      const completion = f.c.whenSettled(); await settle();
+      f.c.suspend(); assert.equal(await completion, false); await f.c.resume();
+    }
+    const completion = f.c.whenSettled(); let completed = false;
+    void completion.then(() => { completed = true; }); await settle();
+    assert.equal(completed, false);
+    assert.equal(restoreSubscriptions(), 1, 'one observer per unchanged producer, not one per cancelled wait');
+    assert.equal(startupSubscriptions(), 1);
+    load.resolve(store.restored); assert.equal(await completion, true);
+  } finally { load.resolve(store.restored); await start; }
+});
+
+
+test('completion boundary: cancelled source callbacks cannot cancel a successor client observation', { timeout: 12000 }, async t => {
+  const load = deferred<SettingsLoadResult>(), store = new Store(); store.loadResult = load.promise;
+  const f = fixture({}, store), start = f.c.start();
+  let release: (() => void) | undefined, held!: () => void;
+  const yielding = new Promise<void>(resolve => { held = resolve; });
+  const resume = f.c.sources.resumePreparation;
+  t.mock.method(f.c.sources, 'resumePreparation', function(this: typeof f.c.sources) {
+    if (!release) { release = () => resume.call(this); held(); return; }
+    return resume.call(this);
+  });
+  let visits = 0;
+  const tasks = Array.from({ length: 3 }, () => ({ keys: new Set<string>(), requiresCredit() { return false; }, needsRefresh() { return false; }, prepare() { visits++; } }));
+  try {
+    await f.c.broker.start();
+    for (const task of tasks) f.c.sources.queuePreparation(f.c.sources.registerPreparation(task)!, true);
+    await yielding;
+    const old = f.c.whenSettled(); f.c.suspend();
+    const resumed = f.c.resume(), successor = f.c.whenSettled();
+    let completed = false; void successor.then(() => { completed = true; });
+    assert.equal(await old, false); await resumed; await settle();
+    assert.equal(completed, false, 'old source cancellation must not cancel or resolve the successor');
+    assert.ok(release); release();
+    load.resolve(store.restored); assert.equal(await successor, true); assert.equal(visits, 3);
+  } finally { release?.(); load.resolve(store.restored); await start; }
+});

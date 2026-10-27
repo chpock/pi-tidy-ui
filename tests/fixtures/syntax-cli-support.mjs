@@ -34,6 +34,7 @@ async function prepareSyntaxPackage() {
   await cp(resolve('tests/fixtures/syntax-driver.ts'), fixture);
   await cp(resolve('tests/fixtures/syntax-local-work.ts'), join(source, 'tests/fixtures/syntax-local-work.ts'));
   await cp(resolve('tests/fixtures/syntax-suspend-probe.ts'), join(source, 'tests/fixtures/syntax-suspend-probe.ts'));
+  await cp(resolve('tests/fixtures/terminal-capture.mjs'), join(source, 'tests/fixtures/terminal-capture.mjs'));
   loggingFixture = join(source, 'tests/fixtures/logging-driver.ts');
   for (const name of ['logging-driver.ts', 'presentation-driver.ts', 'terminal-output.ts']) await cp(resolve('tests/fixtures', name), join(source, 'tests/fixtures', name));
   return { fixture, loggingFixture };
@@ -106,12 +107,27 @@ async function finish(terminal) {
   assert.equal(snapshot.source?.globalUnsettledJobs ?? 0, 0);
 }
 
-async function settledStats(terminal, name, condition) {
+async function intermediateStats(terminal, name, condition) {
   let observation = 0;
   return until(async () => {
     const current = await stats(terminal, `${name}-${observation++}`);
     return condition(current) ? current : false;
   }, name);
+}
+
+async function settledStats(terminal, name, condition = () => true) {
+  const { sample } = await terminal.captureSettled(name, { screen: false });
+  assert.ok(condition(sample), `${name}: completed syntax result`);
+  return sample;
+}
+
+async function captureThenRenderDiagnostics(terminal, name) {
+  // Component rendering must not warm away work owed by the natural frame.
+  const capture = await terminal.captureSettled(name);
+  await terminal.command(`/tidy-ui-dump ${name}`);
+  const diagnostic = JSON.parse(readFileSync(join(terminal.output, `${name}.json`), 'utf8'));
+  terminal.session = diagnostic.session;
+  return { ...diagnostic, ...capture };
 }
 
 async function syntaxReady(terminal) {
@@ -121,7 +137,7 @@ async function syntaxReady(terminal) {
   return ready;
 }
 
-async function scenario(terminal, native, awaitClassification = true) {
+async function scenario(terminal, native, awaitClassification = true, { ownedFallback = false } = {}) {
   await terminal.ready();
   if (native) await syntaxReady(terminal);
   terminal.send('run syntax-cards\r');
@@ -160,16 +176,19 @@ async function scenario(terminal, native, awaitClassification = true) {
   const calls = terminal.events().filter(e => e.type === 'call'), results = terminal.events().filter(e => e.type === 'result');
   assert.deepEqual(calls.map(e => e.name), ['bash', 'write', 'edit']); assert.equal(results.length, 3);
   assert.equal(terminal.events().filter(e => e.type === 'model_context').length, 4);
-  if (native && awaitClassification) await settledStats(terminal, 'final-settled', nativeReady);
-  return terminal.capture('syntax-final');
+  if (!awaitClassification || !native && !ownedFallback) return terminal.capture('syntax-final');
+  const result = await captureThenRenderDiagnostics(terminal, 'syntax-final');
+  if (native) assert.ok(nativeReady(result.sample), 'completed native scenario');
+  return result;
 }
 
 async function shebangScenario(terminal) {
   await terminal.ready(); await syntaxReady(terminal);
   const turn = terminal.events().filter(event => event.type === 'agent_end').length;
   terminal.send('run syntax-shebang\r'); await terminal.event('agent_end', turn + 1); await terminal.settle();
-  await settledStats(terminal, 'shebang-ready', nativeReady);
-  return terminal.capture('shebang-final');
+  const result = await captureThenRenderDiagnostics(terminal, 'shebang-final');
+  assert.ok(nativeReady(result.sample), 'completed native shebang scenario');
+  return result;
 }
 function shebangContextColors(dump) {
   const colors = [];
@@ -230,17 +249,17 @@ async function peerSource(client) {
   assert.equal(client.sources.observe({ key: 'peer', version: 1, text: 'echo peer\n', language: 'bash', complete: true,
     profile: profile.id, fingerprint: profile.fingerprint }), true);
   await client.sources.flush();
-  await until(() => client.sources.status('peer')?.exact, 'actual peer classification');
+  assert.equal(await client.whenSettled(), true, 'actual peer work and delivery completed');
+  assert.ok(client.sources.status('peer')?.exact, 'actual peer classification');
 }
 
 async function keywordColor(terminal, color, name) {
-  let observation = 0;
-  return until(async () => {
-    const dump = await terminal.capture(`${name}-${observation++}`);
-    const y = dump.screen.findIndex(row => row.includes('const x=2;'));
-    const x = y < 0 ? -1 : dump.screen[y].indexOf('const x=2;');
-    return x >= 0 && dump.cells[y][x].fg === color ? dump : false;
-  }, 'actual source foreground ' + color.toString(16));
+  const dump = await captureThenRenderDiagnostics(terminal, name);
+  const y = dump.screen.findIndex(row => row.includes('const x=2;'));
+  assert.ok(y >= 0, 'the completed source is physically visible');
+  const x = dump.screen[y].indexOf('const x=2;');
+  assert.equal(dump.cells[y][x].fg, color, 'actual source foreground ' + color.toString(16));
+  return dump;
 }
 
 async function loggingFrame(terminal) {
@@ -275,21 +294,24 @@ function loggingPrivacy(text, events) {
 const themeMarkers = ['THEME_BASH_0', 'THEME_BASH_1', 'const THEME_OLD', 'const THEME_NEW', 'const THEME_WRITE'];
 
 async function initialThemeStats(terminal, name) {
-  let observation = 0;
-  return until(() => themePhaseReady(() => stats(terminal, `${name}-${observation++}`), () => {
-    terminal.health(); return terminal.events();
-  }, 'initial', themeMarkers.filter(marker => marker.startsWith('THEME_BASH_'))), 'initial native scene sources');
+  const current = await settledStats(terminal, name);
+  assert.ok(await themePhaseReady(() => current, () => terminal.events(), 'initial', themeMarkers.filter(marker => marker.startsWith('THEME_BASH_'))),
+    'initial native scene sources');
+  return current;
 }
 
-async function retainedNativeThemeStats(terminal, name, observe) {
-  const initial = await stats(terminal, `${name}-before`);
+async function retainedNativeThemeStats(terminal, name) {
+  const initial = await settledStats(terminal, `${name}-before`);
   const profile = initial.client.provider.description.profiles.find(profile => profile.label === 'Catppuccin Mocha'); assert.ok(profile);
   // Restored FILEs can initially own only Pi ANSI. Preview once to establish
   // their FIRST native semantics before asserting no SOURCE on later themes.
   writeFileSync(join(terminal.output, 'syntax-theme-phase'), 'native-prerequisite');
   await terminal.openTidyMenu(); await terminal.selectTidyItem('Code color theme'); terminal.send(profile.label);
-  let observation = 0;
-  const ready = id => until(() => semanticPhaseReady(() => observe(`${name}-${observation++}`), () => terminal.events(), themeMarkers, id), 'retained native semantics for every theme marker');
+  const ready = async id => {
+    const current = await settledStats(terminal, `${name}-${id}`);
+    assert.ok(await semanticPhaseReady(() => current, () => terminal.events(), themeMarkers, id), 'retained native semantics for every theme marker');
+    return current;
+  };
   await ready(profile.id);
   terminal.send('\x1b'); await until(() => terminal.tidyHeading('Tidy UI'), 'prerequisite preview cancelled'); await terminal.closeTidyMenu();
   writeFileSync(join(terminal.output, 'syntax-theme-phase'), 'initial');
@@ -343,4 +365,4 @@ async function savedThemeSession() {
     return { directory, cards, session, bytes: readFileSync(session) };
 }
 
-export { inputs, requiredSharedHost, prepareSyntaxPackage, prepareSyntaxNative, pause, until, stats, work, sourceColors, body, traffic, persisted, finish, settledStats, syntaxReady, scenario, stockReference, previewStats, menuSequence, menuAction, chooseTheme, peerSource, keywordColor, loggingFrame, loggingIdle, loggerWork, loggingPrivacy, themeMarkers, initialThemeStats, retainedNativeThemeStats, themeForegrounds, expectedThemeColors, expressionForeground, savedThemeSession, shebangScenario, shebangContextColors, shebangStringColors };
+export { inputs, requiredSharedHost, prepareSyntaxPackage, prepareSyntaxNative, pause, until, stats, work, sourceColors, body, traffic, persisted, finish, settledStats, intermediateStats, captureThenRenderDiagnostics, syntaxReady, scenario, stockReference, previewStats, menuSequence, menuAction, chooseTheme, peerSource, keywordColor, loggingFrame, loggingIdle, loggerWork, loggingPrivacy, themeMarkers, initialThemeStats, retainedNativeThemeStats, themeForegrounds, expectedThemeColors, expressionForeground, savedThemeSession, shebangScenario, shebangContextColors, shebangStringColors };

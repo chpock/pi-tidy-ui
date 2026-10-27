@@ -17,6 +17,7 @@ import { ExtensionSettings } from '../../src/settings.ts';
 import { matchesKey } from '@earendil-works/pi-tui';
 import { observeSyntaxLocalWork, observeSyntaxCards, observePiPaletteWork } from './syntax-local-work.ts';
 import { syntaxSuspendProbe } from './syntax-suspend-probe.ts';
+import { registerCaptureProducer } from './terminal-capture.mjs';
 
 export default function syntaxDriver(pi: ExtensionAPI) {
   const output = process.env.TIDY_UI_TEST_OUTPUT!, binary = process.env.TIDY_UI_TEST_OCCIPITAL_BIN!;
@@ -40,6 +41,7 @@ export default function syntaxDriver(pi: ExtensionAPI) {
   const counts = { constructions: 0, acquisitions: 0, downloads: 0, piCaptures: 0, piBridges: 0, describeReplies: 0, refreshReplies: 0, sharedAttempts: 0, heldReplies: 0, deliveredReplies: 0, heldBashReplies: 0, orderDispatches: 0, themeSaves: 0, sourceRequests: 0, styleRequests: 0, closeRequests: 0, heldStyleReplies: 0, deliveredStyleReplies: 0 };
   let pendingHeldReplies = 0, healthFaultPending = process.env.TIDY_UI_TEST_RUNTIME_HEALTH === '1';
   let runtime: WeakRef<SyntaxRuntime> | undefined, client: WeakRef<SyntaxClient> | undefined, controller = 0;
+  let captureClient: WeakRef<SyntaxClient> | undefined, stopCapture: (() => void) | undefined;
   let offset = 0;
   const timers = new Map<ReturnType<typeof setTimeout>, { at: number; callback(): void }>();
   const clock: ProviderClock = {
@@ -62,10 +64,24 @@ export default function syntaxDriver(pi: ExtensionAPI) {
   const attached = SyntaxRuntime.prototype.attach, captured = SourceController.prototype.capturePiSource,
     bridged = SourceController.prototype.adoptPiFlat, fetch = globalThis.fetch;
   const brokerStats = () => client?.deref()?.broker.stats();
-  const clientSnapshot = SyntaxClient.prototype.snapshot;
-  SyntaxClient.prototype.snapshot = function () { client = new WeakRef(this); return clientSnapshot.call(this); };
+  const clientSnapshot = SyntaxClient.prototype.snapshot, clientStart = SyntaxClient.prototype.start;
+  SyntaxClient.prototype.snapshot = function () {
+    client = new WeakRef(this);
+    return clientSnapshot.call(this);
+  };
+  function startWithCaptureProducer(this: SyntaxClient, ...args: Parameters<SyntaxClient['start']>) {
+    const result = clientStart.apply(this, args);
+    if (runtime?.deref()?.sources === this.sources && captureClient?.deref() !== this) {
+      stopCapture?.(); captureClient = new WeakRef(this); stopCapture = registerCaptureProducer(this, snapshot);
+    }
+    return result;
+  }
+  SyntaxClient.prototype.start = startWithCaptureProducer;
   SyntaxRuntime.prototype.attach = function (...args) {
-    if (runtime?.deref() !== this) { runtime = new WeakRef(this); controller++; }
+    if (runtime?.deref() !== this) {
+      stopCapture?.(); stopCapture = undefined; captureClient = undefined;
+      runtime = new WeakRef(this); controller++;
+    }
     return attached.apply(this, args);
   };
   SourceController.prototype.capturePiSource = function (...args) {
@@ -222,10 +238,12 @@ export default function syntaxDriver(pi: ExtensionAPI) {
       await Promise.all(closes);
       writeFileSync(join(output, 'syntax-shutdown.json'), JSON.stringify(snapshot(), null, 2));
     } finally {
+      stopCapture?.(); stopCapture = undefined; captureClient = undefined;
       cardObservations?.restore(); localWork.restore(); paletteWork?.restore();
       SyntaxRuntime.prototype.attach = attached; SourceController.prototype.capturePiSource = captured;
       SourceController.prototype.adoptPiFlat = bridged;
       SyntaxClient.prototype.snapshot = clientSnapshot; globalThis.fetch = fetch;
+      if (SyntaxClient.prototype.start === startWithCaptureProducer) SyntaxClient.prototype.start = clientStart;
       if (process.env.TIDY_UI_TEST_THEME_PREVIEW === '1') ExtensionSettings.prototype.update = updateSettings;
       stopPreviewProbe?.(); stopPreviewProbe = undefined;
       for (const [ui, notify] of uiNotices) ui.notify = notify; uiNotices.clear();

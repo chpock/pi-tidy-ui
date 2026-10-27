@@ -8,7 +8,7 @@ import { closeTerminals } from '../../../fixtures/terminal-cleanup.mjs';
 import { createSyntaxStockReferences, assertSyntaxStockReference } from '../../../fixtures/syntax-stock-reference.mjs';
 import { semanticPhaseReady } from '../../../fixtures/syntax-observation.mjs';
 import { paintProof, publications } from '../../../fixtures/follow-pi-physical.mjs';
-import { prepareSyntaxNative, stats, work, traffic, persisted, body, finish, until, syntaxReady } from '../../../fixtures/syntax-cli-support.mjs';
+import { prepareSyntaxNative, stats, settledStats, captureThenRenderDiagnostics, work, traffic, persisted, body, finish, until, syntaxReady } from '../../../fixtures/syntax-cli-support.mjs';
 
 const { fixture, descriptor } = await prepareSyntaxNative();
 const markers = ['FOLLOW_PI_BASH', 'FOLLOW_PI_HEADING', 'gone', 'fixed', 'FOLLOW_PI_TAIL'];
@@ -45,38 +45,35 @@ for (const mode of ['fullscreen', 'regular']) test(`Follow Pi CLI: ${mode} real 
     const terminal = create('live'); await terminal.ready(); await syntaxReady(terminal);
     terminal.send('run follow-pi-palette\r'); await terminal.event('agent_end');
     await trailingBash(terminal);
-    await until(() => semanticPhaseReady(() => stats(terminal, 'initial'), () => terminal.events(), markers, 'pi'), 'all actual Pi semantic source/style replies');
-    const dark = await terminal.capture('follow-pi-dark'); paintProof(dark);
-    const cold = await stats(terminal, 'cold');
+    const dark = await captureThenRenderDiagnostics(terminal, 'follow-pi-dark'), cold = dark.sample;
+    assert.ok(await semanticPhaseReady(() => cold, () => terminal.events(), markers, 'pi'), 'all actual Pi semantic source/style replies');
+    paintProof(dark);
     assert.ok(cold.localWork.paletteSamples > 0); assert.ok(cold.localWork.sourceSegments > 0);
     assert.equal(cold.counts.piCaptures, 0); assert.equal(cold.counts.piBridges, 0);
     for (const width of [60, 24, 140, 100]) { await terminal.resize(width); await terminal.capture(`follow-pi-width-${width}`); }
-    await terminal.observeAnimation(); const warm = await stats(terminal, 'warm');
+    await terminal.observeAnimation(); const warm = await settledStats(terminal, 'warm');
     assert.deepEqual(work(warm), work(cold), 'warm frames/reflow do not sample/derive, parse, resolve, measure or reread source scalars');
     const before = publications(terminal); assert.equal(before.size, 4);
     writeFileSync(join(terminal.output, 'syntax-theme-phase'), 'light');
     await terminal.command('/tidy-ui-theme light');
-    await until(() => {
-      const current = publications(terminal);
-      return [...before].every(([id, prior]) => current.get(id)?.phase === 'light' && current.get(id).paintStamp !== prior.paintStamp);
-    }, 'all four owned cards publish current light palette');
-    const light = await terminal.capture('follow-pi-light'); paintProof(light);
+    const light = await captureThenRenderDiagnostics(terminal, 'follow-pi-light'); paintProof(light);
+    const current = publications(terminal);
+    assert.ok([...before].every(([id, prior]) => current.get(id)?.phase === 'light' && current.get(id).paintStamp !== prior.paintStamp),
+      'all four owned cards publish current light palette');
     assert.notEqual(rgb(light, 'mdHeading'), rgb(dark, 'mdHeading'));
-    const recolored = await stats(terminal, 'recolored');
+    const recolored = light.sample;
     assert.equal(recolored.counts.sourceRequests, cold.counts.sourceRequests); assert.equal(recolored.counts.styleRequests, cold.counts.styleRequests);
     assert.equal(recolored.localWork.sourceSegments, cold.localWork.sourceSegments); assert.equal(recolored.localWork.prefixScalarReads, cold.localWork.prefixScalarReads);
     assert.ok(recolored.localWork.paletteSamples > cold.localWork.paletteSamples);
-    await terminal.observeAnimation(); assert.deepEqual(work(await stats(terminal, 'light-warm')), work(recolored));
+    await terminal.observeAnimation(); assert.deepEqual(work(await settledStats(terminal, 'light-warm')), work(recolored));
     await terminal.command('/tidy-ui-theme dark');
-    await until(async () => {
-      const current = await terminal.capture('follow-pi-back-dark');
-      const row = current.screen.findIndex(line => line.includes('FOLLOW_PI_HEADING'));
-      return row >= 0 && current.cells[row][current.screen[row].indexOf('FOLLOW_PI_HEADING')].fg === rgb(dark, 'mdHeading') ? current : false;
-    }, 'real public dark rollback');
-    const back = await terminal.capture('follow-pi-rollback'); paintProof(back);
+    const back = await captureThenRenderDiagnostics(terminal, 'follow-pi-rollback'); paintProof(back);
+    const row = back.screen.findIndex(line => line.includes('FOLLOW_PI_HEADING'));
+    assert.ok(row >= 0, 'real public dark rollback');
+    assert.equal(back.cells[row][back.screen[row].indexOf('FOLLOW_PI_HEADING')].fg, rgb(dark, 'mdHeading'));
     assert.deepEqual(body(back), body(dark));
     const liveTraffic = traffic(terminal), saved = persisted(dark), session = dark.session, workspace = terminal.work;
-    const final = await stats(terminal, 'final');
+    const final = await settledStats(terminal, 'final');
     assert.equal(final.counts.sourceRequests, cold.counts.sourceRequests); assert.equal(final.counts.styleRequests, cold.counts.styleRequests);
     await finish(terminal);
     const replay = create('replay', { session, workspace, extraEnv: { TIDY_UI_TEST_SYNTAX_ACQUIRE_GATE: '1' } }); await replay.ready();
@@ -84,8 +81,8 @@ for (const mode of ['fullscreen', 'regular']) test(`Follow Pi CLI: ${mode} real 
     await until(async () => (await stats(replay, 'replay-before-provider')).counts.piCaptures === 3, 'three finite file fallback captures before helper admission');
     await replay.capture('follow-pi-replay-initial-fallback');
     writeFileSync(join(replay.output, 'syntax-acquire-go'), 'go');
-    await until(() => semanticPhaseReady(() => stats(replay, 'replay-ready'), () => replay.events(), markers, 'pi'), 'replay actual source/style publication');
-    const restored = await replay.capture('follow-pi-replay');
+    const restored = await captureThenRenderDiagnostics(replay, 'follow-pi-replay'), replayCold = restored.sample;
+    assert.ok(await semanticPhaseReady(() => replayCold, () => replay.events(), markers, 'pi'), 'replay actual source/style publication');
     const writeRow = restored.screen.findIndex(row => row.includes('Wrote follow-pi.md'));
     const editRow = restored.screen.findIndex(row => row.includes('Edited follow-pi.md'));
     assert.ok(writeRow >= 0 && editRow > writeRow);
@@ -101,9 +98,9 @@ for (const mode of ['fullscreen', 'regular']) test(`Follow Pi CLI: ${mode} real 
     assert.deepEqual(persisted(restored), saved);
     assert.deepEqual(body(restored), body(dark));
     assert.equal(traffic(replay).length, 0);
-    const replayCold = await stats(replay, 'replay-cold'); await replay.observeAnimation();
+    await replay.observeAnimation();
     assert.equal(replayCold.counts.sourceRequests, 5, 'two Bash commands plus three file fragments are each parsed once');
-    assert.deepEqual(work(await stats(replay, 'replay-warm')), work(replayCold));
+    assert.deepEqual(work(await settledStats(replay, 'replay-warm')), work(replayCold));
     if (mode === 'fullscreen') {
       const click = async dump => {
         const y = dump.screen.findIndex(row => row.includes('~~**_fixed_**~~')); assert.ok(y >= 0, 'edit body remains visible in custom and native-expanded views');
@@ -114,18 +111,19 @@ for (const mode of ['fullscreen', 'regular']) test(`Follow Pi CLI: ${mode} real 
       await click(expanded); const collapsed = await replay.capture('follow-pi-collapsed');
       assert.equal(collapsed.tools.find(tool => tool.name === 'edit').expanded, false);
       paintProof(collapsed);
-      assert.equal((await stats(replay, 'replay-clicked')).counts.sourceRequests, replayCold.counts.sourceRequests, 'clicks reuse the already parsed edit, not fix missing highlighting');
+      assert.equal((await settledStats(replay, 'replay-clicked')).counts.sourceRequests, replayCold.counts.sourceRequests, 'clicks reuse the already parsed edit, not fix missing highlighting');
     }
     const reloadBoundary = replay.events().length;
     unlinkSync(join(replay.output, 'syntax-acquire-go'));
     await replay.command('/reload'); await replay.event('syntax_acquire_gate', 2);
     await until(async () => (await stats(replay, 'reload-before-provider')).counts.piCaptures === 3, 'reload establishes finite fallback before helper admission');
     writeFileSync(join(replay.output, 'syntax-acquire-go'), 'go');
-    await until(() => semanticPhaseReady(() => stats(replay, 'reload-ready'), () => replay.events().slice(reloadBoundary), markers, 'pi'), 'new reload SOURCE and STYLE replies, not prior-run evidence');
-    const reloaded = await replay.capture('follow-pi-reloaded'); paintProof(reloaded);
+    const reloaded = await captureThenRenderDiagnostics(replay, 'follow-pi-reloaded'); paintProof(reloaded);
+    const reloadCold = reloaded.sample;
+    assert.ok(await semanticPhaseReady(() => reloadCold, () => replay.events().slice(reloadBoundary), markers, 'pi'), 'new reload SOURCE and STYLE replies, not prior-run evidence');
     assert.deepEqual(body(reloaded), body(restored)); assert.deepEqual(persisted(reloaded), saved); assert.equal(traffic(replay).length, 0);
-    const reloadCold = await stats(replay, 'reload-cold'); assert.equal(reloadCold.counts.sourceRequests, 5);
-    await replay.observeAnimation(); assert.deepEqual(work(await stats(replay, 'reload-warm')), work(reloadCold));
+    assert.equal(reloadCold.counts.sourceRequests, 5);
+    await replay.observeAnimation(); assert.deepEqual(work(await settledStats(replay, 'reload-warm')), work(reloadCold));
     console.log(JSON.stringify({ followPiPhysical: { mode, live: terminal.output, replay: replay.output,
       cold: work(cold), warm: work(warm), recolored: work(recolored), final: work(final), replayCold: work(replayCold),
       piCaptures: [cold.counts.piCaptures, final.counts.piCaptures, replayCold.counts.piCaptures], warmDelta: 0, recolorSourceDelta: 0, recolorStyleDelta: 0 } }));

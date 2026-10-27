@@ -7,7 +7,7 @@ import { PiTerminal } from '../../../fixtures/terminal-harness.mjs';
 import { runCleanupSteps } from '../../../fixtures/terminal-cleanup.mjs';
 import { assertSyntaxStockReference } from '../../../fixtures/syntax-stock-reference.mjs';
 import { nativeReady } from '../../../fixtures/syntax-observation.mjs';
-import { prepareSyntaxPackage, scenario, stockReference, traffic, persisted, sourceColors, stats, loggingIdle, loggingPrivacy, loggerWork, loggingFrame, work, settledStats, body, syntaxReady, finish } from '../../../fixtures/syntax-cli-support.mjs';
+import { prepareSyntaxPackage, scenario, stockReference, traffic, persisted, sourceColors, stats, captureThenRenderDiagnostics, loggingIdle, loggingPrivacy, loggerWork, loggingFrame, work, settledStats, body, syntaxReady, finish } from '../../../fixtures/syntax-cli-support.mjs';
 
 const { loggingFixture } = await prepareSyntaxPackage();
 const descriptor = { TIDY_UI_TEST_SYNTAX_CARDS: '1' };
@@ -19,8 +19,11 @@ for (const mode of ['regular', 'fullscreen']) for (const native of [false])
         extraEnv: { ...descriptor, TIDY_UI_TEST_LOGGING_NATIVE: native ? '1' : '0', TIDY_UI_TEST_LOGGING_CANCEL: '1', TIDY_UI_TEST_SYNTAX_CARDS: '1' } });
       let replay;
       try {
-        const shown = await scenario(terminal, native), reference = await stockReference(mode);
+        const shown = await scenario(terminal, native, true, { ownedFallback: true }), reference = await stockReference(mode);
         assertSyntaxStockReference(reference, { traffic: traffic(terminal), persisted: persisted(shown) });
+        assert.equal(shown.sample.client.provider.availability, 'unavailable', 'owned fallback completion does not require native success');
+        assert.equal(shown.sample.source.globalUnsettledJobs, 0);
+        assert.ok(shown.sample.source.piSourceRecords > 0, 'the actual fallback owner has completed local file preparation');
         if (native) sourceColors(shown);
         const counters = native ? await stats(terminal, 'logging-before') : undefined, baseline = await loggingIdle(terminal);
         assert.ok(baseline.records > 0); assert.ok(baseline.writes > 0); assert.equal(baseline.capture, true);
@@ -58,19 +61,19 @@ for (const mode of ['regular', 'fullscreen']) for (const native of [false])
         assert.ok(logRows.some(line => line === 'Recording: On'), 'capture survives master presentation off');
         await terminal.appearance(true);
         if (native) await settledStats(terminal, 'logging-on-ready', nativeReady);
-        const on = await terminal.capture('logging-after-on'); assert.deepEqual(body(on), body(shown)); assert.deepEqual(persisted(on), persisted(shown));
+        const on = await captureThenRenderDiagnostics(terminal, 'logging-after-on'); assert.deepEqual(body(on), body(shown)); assert.deepEqual(persisted(on), persisted(shown));
         const beforeReload = await loggingIdle(terminal); await terminal.command('/reload');
-        if (native) await syntaxReady(terminal);
+        await terminal.captureSettled('logging-reload-source', { screen: false });
         const afterReload = await loggingIdle(terminal);
         assert.equal(afterReload.session, beforeReload.session); assert.notEqual(afterReload.run, beforeReload.run);
         assert.ok(existsSync(beforeReload.path.replace(/\.log$/u, '.closed.log')));
         writeFileSync(join(terminal.output, 'logging-reload.log'), readFileSync(beforeReload.path.replace(/\.log$/u, '.closed.log')));
-        const reloaded = await terminal.capture('logging-after-reload'); assert.deepEqual(body(reloaded), body(shown)); assert.deepEqual(persisted(reloaded), persisted(shown));
+        const reloaded = await captureThenRenderDiagnostics(terminal, 'logging-after-reload'); assert.deepEqual(body(reloaded), body(shown)); assert.deepEqual(persisted(reloaded), persisted(shown));
         if (native) await finish(terminal); else await terminal.close();
         replay = new PiTerminal(`logging-${mode}-replay-${native}`, { mode, session: shown.session, workspace: terminal.work, extensions: [loggingFixture],
           extraEnv: { ...descriptor, TIDY_UI_TEST_LOGGING_NATIVE: native ? '1' : '0' } });
         await replay.ready(); if (native) await settledStats(replay, 'logging-replay-ready', s => nativeReady(s) && s.source.dispatches > 0);
-        const restored = await replay.capture('logging-replay'); const replayStatus = await loggingIdle(replay);
+        const restored = await captureThenRenderDiagnostics(replay, 'logging-replay'); const replayStatus = await loggingIdle(replay);
         assert.equal(replayStatus.session, baseline.session); assert.notEqual(replayStatus.run, baseline.run);
         assert.deepEqual(body(restored), body(shown)); assert.deepEqual(persisted(restored), persisted(shown));
         assert.equal(traffic(replay).length, 0); const replayText = readFileSync(replayStatus.path, 'utf8'); loggingPrivacy(replayText, originalEvents);

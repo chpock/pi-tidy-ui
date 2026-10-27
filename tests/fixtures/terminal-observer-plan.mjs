@@ -11,7 +11,7 @@ const methods = ['getUserInput', 'setupEditorSubmitHandler', 'mountInteractiveTu
 export function planTerminalObserver(inputs) {
   if (cache.has(inputs.pi.cli)) return cache.get(inputs.pi.cli);
   const ts = createRequire(join(inputs.pi.root, 'package.json'))('typescript');
-  const visited = new Set(), candidates = [];
+  const visited = new Set(), candidates = [], editors = [];
   const packageRoot = pathToFileURL(join(inputs.pi.root, 'node_modules/@earendil-works/pi-coding-agent/')).href;
   function visit(url) {
     if (visited.has(url)) return;
@@ -23,6 +23,14 @@ export function planTerminalObserver(inputs) {
     function candidate(binding, node) {
       if (!node || !ts.isClassExpression(node) && !ts.isClassDeclaration(node)) return;
       const names = new Set(node.members.map(member => member.name?.getText(ast)));
+      if (['startAutocompleteRequest', 'cancelAutocompleteRequest'].every(name => names.has(name))) {
+        const exports = ast.statements.filter(ts.isExportDeclaration).flatMap(statement =>
+          statement.exportClause && ts.isNamedExports(statement.exportClause) ? statement.exportClause.elements : []);
+        const exported = exports.find(entry => (entry.propertyName ?? entry.name).text === binding);
+        const declarationExport = ts.getModifiers(node)?.some(modifier => modifier.kind === ts.SyntaxKind.ExportKeyword);
+        editors.push({ module: url, binding, sha256: createHash('sha256').update(bytes).digest('hex'),
+          exportName: exported?.name.text ?? (declarationExport ? binding : undefined) });
+      }
       if (!methods.every(name => names.has(name))) return;
       const clear = node.members.find(member => member.name?.getText(ast) === 'handleCtrlC');
       const windows = [];
@@ -64,7 +72,9 @@ export function planTerminalObserver(inputs) {
   }
   visit(pathToFileURL(inputs.pi.cli).href);
   assert.equal(candidates.length, 1, `Unsupported selected Pi CLI: expected one native interactive class, found ${candidates.length}`);
-  const plan = { schema: 1, ...candidates[0], visited: [...visited] };
+  assert.equal(editors.length, 1, `Unsupported selected Pi CLI: expected one native autocomplete class, found ${editors.length}`);
+  assert.ok(editors[0].module === candidates[0].module || editors[0].exportName, 'Loaded native Editor is not importable');
+  const plan = { schema: 1, ...candidates[0], editor: editors[0], visited: [...visited] };
   cache.set(inputs.pi.cli, plan);
   return plan;
 }

@@ -153,14 +153,28 @@ function metadataFits(value: unknown): boolean {
   }
   return visit(value, 0);
 }
-function sourceObservers(owner: WeakRef<ProviderBroker>, generation: number, acceptRetired: boolean) {
-  const check = () => { const broker = owner.deref(); broker?.requestSettled(generation); if (!broker?.isReady(generation)) { broker?.metric('staleReplies', 1); if (!acceptRetired) throw new RequestFailure('occipital provider retired'); } };
+function sourceObservers(owner: WeakRef<ProviderBroker>, generation: number, acceptRetired: boolean, slot: CompletionSlot) {
+  const check = () => { const broker = owner.deref(); if (!broker) cancelCompletion(slot); broker?.requestSettled(generation); if (!broker?.isReady(generation)) { broker?.metric('staleReplies', 1); if (!acceptRetired) throw new RequestFailure('occipital provider retired'); } };
   return { accept: (reply: unknown) => { check(); return reply; }, reject: (error: unknown): never => { check(); throw error instanceof RequestFailure ? error : new RequestFailure('occipital request outcome unknown'); } };
 }
 function ownedStopObserver(owner: WeakRef<ProviderBroker>, generation: number) {
   return (success: boolean) => { if (success) owner.deref()?.notifyOwnedStopped(generation); };
 }
-function availabilityNotice(owner: WeakRef<ProviderBroker>) { return () => owner.deref()?.notifyChange(); }
+type ProviderCompletion = { promise: Promise<boolean>; resolve(value: boolean): void };
+type CompletionSlot = { current?: ProviderCompletion };
+const providerSettled = Promise.resolve(true), providerCancelled = Promise.resolve(false);
+function providerCompletion(): ProviderCompletion {
+  let resolve!: ProviderCompletion['resolve'];
+  const promise = new Promise<boolean>(done => { resolve = done; });
+  return { promise, resolve };
+}
+function cancelCompletion(slot: CompletionSlot): void { const pending = slot.current; slot.current = undefined; pending?.resolve(false); }
+function availabilityNotice(owner: WeakRef<ProviderBroker>, slot: CompletionSlot) {
+  return () => { const broker = owner.deref(); if (broker) broker.notifyChange(); else cancelCompletion(slot); };
+}
+function operationNotice(owner: WeakRef<ProviderBroker>, operation: Promise<void>, slot: CompletionSlot) {
+  return () => { const broker = owner.deref(); if (broker) broker.operationSettled(operation); else cancelCompletion(slot); };
+}
 const controlCancelled = new Error('occipital control cancelled');
 /** Separate scope, and shared non-receiver error: a retained raw RPC signal must
  * not retain the active broker through cancellation closures or an error stack. */
@@ -213,8 +227,11 @@ export class ProviderBroker {
   private readonly pendingCloses = new Set<Promise<boolean>>();
   private cancellation = new AbortController();
   private operation?: Promise<void>;
+  private pendingOperation?: Promise<void>;
+  private readonly completion: CompletionSlot = {};
   private shutdown?: Promise<void>;
   private noticeScheduled = false;
+  private notifying = false;
   private recoveryTimer?: ReturnType<ProviderClock['setTimeout']>;
   private recoveryEnd = 0;
   private recoveryStart = 0;
@@ -241,11 +258,35 @@ export class ProviderBroker {
   /** Primitive internal accounting, also read through stats() without raw data. */
   metric(key: keyof ProviderStats, amount: number) { this.counters[key] += amount; }
   isReady(generation: number): boolean { return !this.suspended && this.availability === 'ready' && this.generation === generation && !!this.active; }
+  /** Observe current operations and delivery, excluding future shared-return timer ticks. */
+  whenSettled(): Promise<boolean> {
+    if (this.suspended || this.availability === 'disposed') return providerCancelled;
+    if (this.completion.current) return this.completion.current.promise;
+    if (!this.workPending()) return providerSettled;
+    this.completion.current = providerCompletion(); return this.completion.current.promise;
+  }
+  private workPending(): boolean {
+    return !!this.pendingOperation || this.pendingRequests > 0 || this.counters.activeProbes > 0 || this.noticeScheduled || this.notifying;
+  }
+  private completeWork(): void {
+    if (this.workPending()) return;
+    const pending = this.completion.current; this.completion.current = undefined; pending?.resolve(true);
+  }
+  private trackOperation(operation: Promise<void>): Promise<void> {
+    this.pendingOperation = operation;
+    const done = operationNotice(new WeakRef(this), operation, this.completion);
+    void operation.then(done, done); return operation;
+  }
+  /** Receiver-free observer of the already-running operation, never a startup demand. */
+  operationSettled(operation: Promise<void>): void {
+    if (this.pendingOperation === operation) this.pendingOperation = undefined;
+    this.completeWork();
+  }
   start(): Promise<void> {
     if (!this.enabled || this.suspended || this.availability === 'disposed') return Promise.resolve();
     if (this.operation) return this.operation;
     const epoch = this.epoch;
-    this.operation = this.select(epoch, true); return this.operation;
+    this.operation = this.trackOperation(this.select(epoch, true)); return this.operation;
   }
   /** Deliberate interruption is separate from timeout/loss and never enables a failed provider. */
   suspend(): number | undefined {
@@ -254,7 +295,7 @@ export class ProviderBroker {
     const interrupted = this.active && (this.pendingRequests > 0 || this.active.transport.hasPendingRequests === true) ? this.generation : undefined;
     const recovering = this.availability === 'transitioning' && (this.reason === 'proven_loss' || this.reason === 'handoff');
     if (this.availability === 'transitioning' && !recovering) this.unavailable(this.reason);
-    this.suspended = true;
+    this.suspended = true; cancelCompletion(this.completion);
     this.resumeNeeded = this.enabled && (this.availability === 'initializing' || recovering || interrupted !== undefined);
     this.resumeKind = this.active?.kind ?? this.transition?.kind ?? this.resumeKind;
     this.suspendedRecovery = this.transition?.recovery ?? { start: this.recoveryStart, end: this.recoveryEnd };
@@ -264,7 +305,7 @@ export class ProviderBroker {
       this.retire('suspended');
     }
     const pending = [...this.candidates].map(transport => this.close(transport));
-    this.operation = Promise.all(pending).then(ignored);
+    this.operation = this.trackOperation(Promise.all(pending).then(ignored));
     return interrupted;
   }
   resume(): Promise<void> {
@@ -280,15 +321,16 @@ export class ProviderBroker {
       this.scheduleRecovery(this.epoch); return this.operation ?? Promise.resolve();
     }
     this.availability = 'initializing'; this.reason = 'suspended'; this.changed();
-    this.operation = this.enable(this.epoch, true); return this.operation;
+    this.operation = this.trackOperation(this.enable(this.epoch, true)); return this.operation;
   }
   /** Receiver-free request settlement must not debit a replacement generation. */
-  requestSettled(generation: number): void { if (generation === this.generation) this.pendingRequests--; }
+  requestSettled(generation: number): void { if (generation === this.generation) this.pendingRequests--; this.completeWork(); }
 
   /** Session-local activation; ordinary start/status never changes this choice. */
   setEnabled(enabled: boolean): Promise<void> {
     if (this.availability === 'disposed') return this.shutdown ?? Promise.resolve();
     if (this.enabled === enabled) return this.operation ?? Promise.resolve();
+    cancelCompletion(this.completion);
     this.enabled = enabled; this.resumeNeeded = enabled && this.suspended; this.transition = undefined;
     this.resumeKind = undefined; this.suspendedRecovery = undefined;
     const epoch = ++this.epoch;
@@ -299,11 +341,11 @@ export class ProviderBroker {
       reportRuntime(this.options.diagnostic, { kind: 'released', scope: this, operation: 'startup' });
       this.availability = 'disabled'; this.reason = 'disabled'; this.changed();
       const pending = [...this.candidates].map(transport => this.close(transport));
-      this.operation = Promise.all([...pending, ...this.pendingCloses]).then(ignored);
+      this.operation = this.trackOperation(Promise.all([...pending, ...this.pendingCloses]).then(ignored));
     } else {
       this.cancellation = new AbortController(); this.consecutiveOwnedRestarts = 0;
       this.availability = 'initializing'; this.reason = 'initializing'; this.changed();
-      this.operation = this.suspended ? Promise.resolve() : this.enable(epoch);
+      this.operation = this.trackOperation(this.suspended ? Promise.resolve() : this.enable(epoch));
     }
     return this.operation;
   }
@@ -337,7 +379,7 @@ export class ProviderBroker {
     this.cancelRecovery(); this.cancellation.abort(); this.cancellation = new AbortController();
     const epoch = ++this.epoch; this.retire('proven_loss');
     this.transition = { cause: 'loss', kind: previous.kind, recovery };
-    this.operation = this.recover(epoch, previous, this.transition); return this.operation;
+    this.operation = this.trackOperation(this.recover(epoch, previous, this.transition)); return this.operation;
   }
   /** Internal public-lifetime delivery, bound to one published generation only.
    * Uncertain/policy/owner closure invalidates availability but grants no replay. */
@@ -348,7 +390,7 @@ export class ProviderBroker {
     this.cancelRecovery(); this.cancellation.abort(); this.cancellation = new AbortController();
     const epoch = ++this.epoch, unavailable = `transport_${reason}` as Reason;
     this.retire(unavailable); this.transition = undefined;
-    this.operation = this.finishEnd(epoch, previous, unavailable); return this.operation;
+    this.operation = this.trackOperation(this.finishEnd(epoch, previous, unavailable)); return this.operation;
   }
   private async finishEnd(epoch: number, previous: Candidate, reason: Reason): Promise<void> {
     const closed = await this.close(previous.transport);
@@ -372,7 +414,7 @@ export class ProviderBroker {
     if (!this.isReady(generation)) return Promise.reject(new RequestFailure('occipital provider retired', 'not_started'));
     if (typeof request.ticket === 'string' && request.ticket.startsWith('broker:')) return Promise.reject(new RequestFailure('occipital reserved ticket', 'not_started'));
     this.metric(request.op === 'styles.resolve' ? 'styleDispatches' : 'sourceDispatches', 1);
-    const observers = sourceObservers(new WeakRef(this), generation, options?.acceptRetired === true);
+    const observers = sourceObservers(new WeakRef(this), generation, options?.acceptRetired === true, this.completion);
     this.pendingRequests++;
     try { return this.active!.transport.request(request, options && { signal: options.signal, deadlineMs: options.deadlineMs, acceptRetired: options.acceptRetired, ...(options.replySize && { replySize: options.replySize }) }).then(observers.accept, observers.reject); }
     catch (error) { this.requestSettled(generation); return Promise.reject(error instanceof RequestFailure ? error : new RequestFailure('occipital request outcome unknown')); }
@@ -409,6 +451,7 @@ export class ProviderBroker {
   }
   dispose(): Promise<void> {
     if (this.shutdown) return this.shutdown;
+    cancelCompletion(this.completion);
     ++this.epoch; this.cancelRecovery(); this.cancellation.abort();
     reportRuntime(this.options.diagnostic, { kind: 'released', scope: this, operation: 'startup' });
     const transports = new Set(this.candidates); if (this.active) transports.add(this.active.transport);
@@ -440,13 +483,15 @@ export class ProviderBroker {
     this.log('Provider publication changed', { availability: this.availability, reason: this.reason, version: this.active?.description.backend_version,
       pid: this.active?.description.runtime.pid });
     if (!this.options.onChange || this.availability === 'disposed' || this.noticeScheduled) return;
-    this.noticeScheduled = true; queueMicrotask(availabilityNotice(new WeakRef(this)));
+    this.noticeScheduled = true; queueMicrotask(availabilityNotice(new WeakRef(this), this.completion));
   }
   /** Internal weak delivery reads the latest publication, not a captured old snapshot. */
   notifyChange(): void {
     this.noticeScheduled = false;
     if (this.availability === 'disposed') return;
+    this.notifying = true;
     try { this.options.onChange?.(); } catch { /* Consumer presentation cannot disturb provider ownership. */ }
+    finally { this.notifying = false; this.completeWork(); }
   }
   /** Receiver-free close observers deliver evidence, never publication/recovery. */
   notifyOwnedStopped(generation: number): void {
@@ -655,6 +700,7 @@ export class ProviderBroker {
     } finally {
       this.metric('activeProbes', -1); this.metric('probesCompleted', 1);
       if (this.current(epoch)) this.scheduleRecovery(epoch);
+      this.completeWork();
     }
   }
 }

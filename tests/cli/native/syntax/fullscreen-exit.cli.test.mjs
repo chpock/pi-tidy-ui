@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { PiTerminal } from '../../../fixtures/terminal-harness.mjs';
 import { closeTerminals } from '../../../fixtures/terminal-cleanup.mjs';
 import { semanticPhaseReady } from '../../../fixtures/syntax-observation.mjs';
-import { prepareSyntaxNative, savedThemeSession, syntaxReady, chooseTheme, stats, until,
+import { prepareSyntaxNative, savedThemeSession, syntaxReady, chooseTheme, settledStats, captureThenRenderDiagnostics,
   themeMarkers, themeForegrounds, expectedThemeColors, work, traffic, finish } from '../../../fixtures/syntax-cli-support.mjs';
 
 const { fixture, descriptor } = await prepareSyntaxNative();
@@ -31,14 +31,15 @@ for (const exitOutput of ['transcript', 'resume-hint']) test(`fullscreen exit: $
       extensions: [fixture], extraEnv: { ...descriptor, TIDY_UI_TEST_THEME_OBSERVE: '1' } });
     try {
       await terminal.ready(); await terminal.resize(100, 180); await syntaxReady(terminal); await chooseTheme(terminal, 1);
-      const selection = await stats(terminal, 'exit-selected'); let observation = 0;
-      await until(() => semanticPhaseReady(() => stats(terminal, `exit-ready-${observation++}`),
-        () => terminal.events(), themeMarkers, selection.client.effective.id), 'every saved source and native style is ready');
-      const painted = await terminal.capture('exit-ready-native'), beforeCells = sourceCells(painted, sources);
+      const selection = await settledStats(terminal, 'exit-selected');
+      const painted = await captureThenRenderDiagnostics(terminal, 'exit-ready-native'), beforeCells = sourceCells(painted, sources);
+      assert.ok(await semanticPhaseReady(() => painted.sample, () => terminal.events(), themeMarkers, selection.client.effective.id),
+        'every saved source and native style is ready');
       assert.deepEqual(themeForegrounds(painted), expectedThemeColors(terminal, 'initial', painted, selection.client.effective.id));
       assert.equal(painted.tools.length, 4); assert.deepEqual(traffic(terminal), [], 'restoring must execute no model or tool traffic');
       const session = readFileSync(saved.session); assert.deepEqual(session, saved.bytes);
-      await terminal.observeAnimation(); const before = await stats(terminal, 'exit-warm');
+      await terminal.observeAnimation(); const before = await settledStats(terminal, 'exit-warm');
+      assert.deepEqual(work(before), work(painted.sample), 'explicit diagnostics do not complete additional natural-frame adoption');
       assert.equal(before.source.globalUnsettledJobs, 0); assert.equal(before.source.remoteLeases, 0);
       writeFileSync(join(terminal.output, 'syntax-theme-phase'), 'process-exit');
       await terminal.quit('\x04');

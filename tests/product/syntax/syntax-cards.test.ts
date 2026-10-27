@@ -20,6 +20,10 @@ import { prepareBashService } from '../../../src/bash-card.ts';
 import { prepareFileCard } from '../../../src/file-card.ts';
 import { RETENTION_LIMITS } from '../../../src/occipital/retention.ts';
 import type { SyntaxTheme } from '../../../src/settings.ts';
+import { SyntaxClient } from '../../../src/occipital/client.ts';
+import type { ProviderTransport } from '../../../src/occipital/provider.ts';
+import type { TransportEnd } from '../../../src/occipital/transport-end.ts';
+import { awaitFixture } from '../../fixtures/await-fixture.ts';
 
 type Frame = Record<string, any>;
 type Owner = { input?: CardDisplayInput };
@@ -1250,4 +1254,141 @@ for (const partial of [false, true]) test(`preparation reports refused source ad
     assert.ok(receipt.publication > 0, 'retained neutral/partial paint is allowed, but cannot prove all demanded source work');
     assert.equal(receipt.refused, 1);
   } finally { clearTimeout(watchdog!); }
+});
+
+
+for (const remaining of ['none', 'held-local', 'palette-change', 'retained-style', 'recoverable'] as const) test(`completion boundary: ${remaining === 'recoverable' ? 'recoverable' : 'terminal'} provider loss drains real card metadata (${remaining})`, { timeout: 12000 }, async t => {
+  let bothBusy!: () => void, requested!: () => void, initiallyYielded!: () => void, terminalDelivered!: () => void, locallyYielded!: () => void, fallbackPrepared!: () => void, recovering!: () => void;
+  const busy = new Promise<void>(resolve => { bothBusy = resolve; }), sourceRequest = new Promise<void>(resolve => { requested = resolve; });
+  const initialYield = new Promise<void>(resolve => { initiallyYielded = resolve; }), terminal = new Promise<void>(resolve => { terminalDelivered = resolve; });
+  const localYield = new Promise<void>(resolve => { locallyYielded = resolve; });
+  const fallback = new Promise<void>(resolve => { fallbackPrepared = resolve; });
+  const recovery = new Promise<void>(resolve => { recovering = resolve; });
+  let releaseRecovery: (() => void) | undefined, sharedAttempts = 0, dispatched = 0;
+  const a = fixture(true, { diagnostic: (_level, _area, explanation, fields) => {
+    if (explanation === 'Native job dispatched' && fields?.operation === 'highlight' && ++dispatched === 2) bothBusy();
+  } });
+  class LifetimePeer implements ProviderTransport {
+    private finish!: (reason: TransportEnd) => void;
+    ended = new Promise<TransportEnd>(resolve => { this.finish = resolve; });
+    endReason: TransportEnd | undefined;
+    calls: { request: Frame; resolve(value: unknown): void }[] = [];
+    request(request: Frame): Promise<unknown> {
+      return new Promise(resolve => {
+        this.calls.push({ request, resolve });
+        if (request.op === 'describe') resolve(semanticDescriptor(request.ticket, 'terminal', []));
+        if (request.op === 'highlight') requested();
+      });
+    }
+    end(reason: TransportEnd) { this.endReason = reason; this.finish(reason); }
+    async close() { this.endReason ??= 'closed'; this.finish(this.endReason); for (const call of this.calls) call.resolve({}); }
+    source() {
+      const call = this.calls.find(call => call.request.op === 'highlight')!, q = call.request, s = q.sources[0], bytes = Buffer.byteLength(s.text);
+      call.resolve({ v: 3, ticket: q.ticket, instance: 'terminal', assets: 'assets', status: 'ok', body: {
+        kind: 'source', vocabulary: 'a'.repeat(64), sources: [{ key: s.key, generation: s.generation, source_version: s.source_version,
+          revision: 1, source_bytes: bytes, replace_from: 0, committed_bytes: bytes, complete: true, contexts: [[0, 1]], runs: [bytes, 1],
+          counters: { committed_line_calls: 0, committed_line_bytes: 0, tail_calls: 1, tail_bytes: bytes } }] } });
+    }
+  }
+  const peer = new LifetimePeer(), replacement = new LifetimePeer(); let theme = getThemeByName('system')!;
+  let cards: CardSources<Owner>, metadata = 0, classifications = 0, outcomes: readonly string[] = [];
+  const client = new SyntaxClient({ standaloneVersion: '0.2.0', initialTheme: { kind: 'pi' },
+    provider: { tryShared: async () => {
+      if (++sharedAttempts === 1) return peer;
+      assert.equal(remaining, 'recoverable', 'terminal denial must not recover');
+      return new Promise<ProviderTransport>(resolve => { releaseRecovery = () => resolve(replacement); recovering(); });
+    }, acquireOwned: async () => { assert.fail('controlled shared recovery must not acquire owned'); } },
+    onChange() { metadata++; cards?.metadataChanged(); if (client.snapshot().provider.availability === 'unavailable') terminalDelivered(); },
+    onSourceChange(keys, groups) { cards?.sourceChanged(keys, groups); } });
+  cards = new CardSources(client, { preparePiInput: funding => a.runtime.preparePiInput(theme, 'truecolor', funding),
+    classify: text => { classifications++; return highlightCode(text, 'typescript'); }, invalidate() {}, requestRender() {},
+    preparation(_owner, receipt) {
+      if (receipt.phase !== 'prepared' || receipt.revision !== 2 || client.snapshot().provider.availability === 'ready') return;
+      outcomes = [...receipt.outcomes];
+      if (remaining === 'held-local' && phase === 'open') {
+        phase = 'local';
+        for (const preparation of local) client.sources.queuePreparation(client.sources.registerPreparation(preparation)!, true);
+      }
+      fallbackPrepared();
+    } });
+  const resume = client.sources.resumePreparation;
+  let phase = 'initial', stage = 'startup', withdrawalWakes = 0, releaseInitial: (() => void) | undefined, releaseLocal: (() => void) | undefined;
+  t.mock.method(client.sources, 'resumePreparation', function(this: SourceController) {
+    if (phase === 'initial') { phase = 'initial-held'; releaseInitial = () => resume.call(this); initiallyYielded(); return; }
+    if (phase === 'local' && visits.length > 0) { phase = 'local-held'; releaseLocal = () => resume.call(this); locallyYielded(); return; }
+    return resume.call(this);
+  });
+  const owner = {}, visits: number[] = [];
+  const local = Array.from({ length: 3 }, (_, i) => ({ keys: new Set<string>(), needsRefresh() { return false; }, requiresCredit() { return false; }, prepare() { visits.push(i); } }));
+  try {
+    await client.start(); assert.equal(await awaitFixture(client.whenSettled()), true);
+    const input = { ...written('const terminal = 1;'), palette: a.runtime.palette(theme) };
+    cards.updateDisplay(owner, input); cards.useful(owner, input.revision);
+    await awaitFixture(sourceRequest); await awaitFixture(initialYield);
+    const p = client.snapshot().effective!;
+    for (const key of ['a', 'b']) a.sources.observe({ key, text: key, version: 1, complete: true, profile: p.id, fingerprint: p.fingerprint });
+    a.sources.flush(); peer.source(); await awaitFixture(busy);
+    assert.equal(a.sources.stats().globalUnsettledJobs, 2); assert.equal(client.sources.stats().unsettledJobs, 0);
+    assert.ok(releaseInitial); phase = 'open'; releaseInitial(); await settle();
+    assert.equal(client.sources.stats().waitingOwners, 1, 'B owns real credit interest after its actual SOURCE reply and preparation continuation');
+    assert.equal(peer.calls.length, 2, 'only metadata and SOURCE were dispatched; STYLE waits on foreign credit');
+    const key = cards.identities(owner)[0]!.key;
+    const retained = remaining === 'retained-style';
+    const latest = retained ? input : { ...written('const terminal = 2;', 2), palette: input.palette };
+    if (!retained) { cards.updateDisplay(owner, latest); cards.useful(owner, latest.revision); await settle(); }
+    assert.equal(client.sources.status(key)!.version, retained ? 1 : 2, 'source ownership remains while native dispatch is credit-blocked');
+    assert.equal(client.sources.stats().waitingOwners, 1);
+    const generation = client.sources.status(key)!.generation;
+    let completion = client.whenSettled(), completed = false; void completion.then(() => { completed = true; });
+    const beforeMetadata = metadata, bytes = a.sources.stats().globalTransientBytes;
+    const recoverable = remaining === 'recoverable';
+    peer.end(recoverable ? 'lost' : 'denied'); await awaitFixture(recoverable ? recovery : terminal);
+    stage = 'provider-fallback'; if (!retained) await awaitFixture(fallback);
+    if (!recoverable) assert.equal(await awaitFixture(client.broker.whenSettled()), true);
+    await settle();
+    assert.equal(client.snapshot().provider.reason, recoverable ? 'proven_loss' : 'transport_denied');
+    assert.equal(client.snapshot().provider.availability, recoverable ? 'transitioning' : 'unavailable');
+    assert.equal(client.broker.stats().recoveryTimers, 0); assert.equal(client.broker.stats().activeProbes, 0);
+    assert.equal(client.snapshot().effective?.id, 'pi'); assert.ok(metadata > beforeMetadata);
+    assert.equal(client.sources.status(key)!.generation, generation, 'metadata fallback retains the source rather than invoking a removal hook');
+    assert.equal(peer.calls.length, 2); assert.equal(classifications, retained ? 0 : 1, 'only an unparsed FILE needs a real Pi classifier fallback');
+    assert.deepEqual(outcomes, retained ? [] : ['pi']);
+    assert.equal(cards.visit(owner, (display, paint) => { assert.equal(display.kind, 'file'); assert.equal(paint.origin, 'pi'); if (display.kind === 'file') assert.equal(display.rows.find(row => row.region)?.region?.text, retained ? 'const terminal = 1;' : 'const terminal = 2;'); }), true);
+    if (remaining === 'held-local') {
+      stage = 'local-continuation'; await awaitFixture(localYield);
+      assert.ok(visits.length > 0 && visits.length < 3); assert.equal(completed, false, 'reentrant local work is owed by the original observation');
+      cards.remove(owner); assert.equal(completed, false, 'withdrawing native interest cannot release a held local continuation');
+      assert.equal(client.sources.stats().unsettledJobs, 0); assert.ok(releaseLocal); phase = 'open'; releaseLocal();
+    }
+    if (remaining === 'palette-change' || retained) {
+      const wake = client.sources.wake;
+      t.mock.method(client.sources, 'wake', function(this: SourceController) { withdrawalWakes++; return wake.call(this); });
+      theme = getThemeByName('dark')!;
+      const next = { ...latest, revision: 3, palette: a.runtime.palette(theme) };
+      cards.updateDisplay(owner, next); cards.useful(owner, next.revision); await settle();
+      assert.ok(withdrawalWakes <= 1, 'a single actual palette replacement cannot add repeated withdrawal wakes');
+      completion = client.whenSettled();
+    }
+    if (recoverable) {
+      assert.equal(await awaitFixture(client.sources.whenSettled()), true, 'source work can drain while the broker owes recovery');
+      const brokerCompletion = client.broker.whenSettled(); let brokerCompleted = false; void brokerCompletion.then(() => { brokerCompleted = true; });
+      await settle(); assert.equal(completed, false); assert.equal(brokerCompleted, false);
+      assert.equal(sharedAttempts, 2); assert.equal(client.sources.stats().waitingOwners, 0);
+      assert.equal(a.sources.stats().globalUnsettledJobs, 2); assert.equal(a.sources.stats().globalTransientBytes, bytes);
+      assert.ok(releaseRecovery); releaseRecovery(); assert.equal(await awaitFixture(brokerCompletion), true);
+    }
+    stage = 'completion'; assert.equal(await awaitFixture(completion), true);
+    if (recoverable) { assert.equal(client.snapshot().provider.availability, 'ready'); assert.deepEqual(replacement.calls.map(call => call.request.op), ['describe']); }
+    if (remaining === 'held-local') assert.deepEqual(visits, [2, 1, 0]);
+    assert.equal(a.sources.stats().globalUnsettledJobs, 2); assert.equal(a.sources.stats().globalTransientBytes, bytes);
+  } catch (error) {
+    const state = client.sources.stats();
+    console.log(JSON.stringify({ terminalProviderProbe: { remaining, stage, availability: client.snapshot().provider.availability,
+      classifications, outcomes, withdrawalWakes, waitingOwners: state.waitingOwners, jobs: state.unsettledJobs, globalJobs: state.globalUnsettledJobs,
+      closes: state.pendingCloses, recoveryTimers: client.broker.stats().recoveryTimers } }));
+    throw error;
+  } finally {
+    phase = 'open'; releaseInitial?.(); releaseLocal?.(); releaseRecovery?.(); cards.dispose(); await client.dispose();
+    a.sources.dispose(); for (const call of a.calls) call.reject(new RequestFailure('cleanup', 'not_started')); await settle();
+  }
 });

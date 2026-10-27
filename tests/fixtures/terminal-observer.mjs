@@ -1,6 +1,8 @@
-const protocol = /\x1b\[\?997;(\d+);([0123])n/g;
+import { terminalCaptureBridge, captureChanged, producerCompletion } from './terminal-capture.mjs';
 
-export function installTerminalObserver(InteractiveMode, { restorable = false, interruptWindow = 500 } = {}) {
+const protocol = /\x1b\[\?997;(\d+);([012345])n/g;
+
+export function installTerminalObserver(InteractiveMode, { restorable = false, interruptWindow = 500, capture = terminalCaptureBridge(), Editor } = {}) {
   const prototype = InteractiveMode.prototype;
   const states = new WeakMap(), restorers = [];
   function replace(object, name, factory) {
@@ -8,16 +10,31 @@ export function installTerminalObserver(InteractiveMode, { restorable = false, i
     if (typeof descriptor?.value !== 'function') throw new Error(`Unsupported Pi terminal observer: ${name}`);
     const replacement = factory(descriptor.value);
     Object.defineProperty(object, name, { ...descriptor, value: replacement });
-    if (restorable) restorers.push(() => Object.defineProperty(object, name, descriptor));
+    if (restorable) restorers.push(() => {
+      if (Object.getOwnPropertyDescriptor(object, name)?.value === replacement) Object.defineProperty(object, name, descriptor);
+    });
   }
   for (const name of ['getUserInput', 'setupEditorSubmitHandler', 'mountInteractiveTui']) {
     if (typeof prototype[name] !== 'function') throw new Error(`Unsupported Pi terminal observer: ${name}`);
+  }
+  if (Editor) for (const name of ['startAutocompleteRequest', 'cancelAutocompleteRequest']) {
+    replace(Editor.prototype, name, original => function (...args) {
+      const result = Reflect.apply(original, this, args);
+      capture.changed?.();
+      return result;
+    });
   }
   function state(mode) {
     let value = states.get(mode);
     if (!value) {
       if (typeof mode.lastSigintTime !== 'number') throw new Error('Unsupported native clear-key state');
-      value = { mode, generation: 0, renderers: new WeakMap(), requests: [], operations: new Map(), armed: [], submissions: [], ready: false };
+      value = { mode, generation: 0, renderers: new WeakMap(), requests: [], operations: new Map(), armed: [], submissions: [], ready: false, capture, captureEpoch: 0 };
+      const changed = captureChanged(new WeakRef(value), schedule), previous = capture.changed;
+      capture.changed = changed;
+      if (restorable) restorers.push(() => {
+        clearImmediate(value.check); value.requests = []; value.sourceSlot = undefined;
+        if (capture.changed === changed) capture.changed = previous;
+      });
       states.set(mode, value);
     }
     return value;
@@ -37,23 +54,52 @@ export function installTerminalObserver(InteractiveMode, { restorable = false, i
     if (!operation.submitted) return false;
     return !value.mode.pendingUserInputs?.includes(operation.text);
   }
+  function cancelCapture(value, request, message, error) {
+    if (error) emit(value, { type: 'error', id: request.id, message: error });
+    emit(value, { type: 'cancelled', id: request.id, message });
+  }
+  function captureReady(value, request, current) {
+    const producer = capture.producer;
+    request.producer ??= producer;
+    const owner = producer?.owner.deref();
+    if (!owner) { cancelCapture(value, request, 'Capture producer is unavailable'); return 'cancelled'; }
+    let slot = value.sourceSlot;
+    const same = slot?.producer === producer;
+    if (!(same && slot.sequence >= request.epoch && (!slot.done || slot.frames === current.frames))) {
+      const promise = owner.whenSettled();
+      if (!same || slot.promise !== promise) {
+        slot = { producer, promise, frames: current.frames, sequence: value.captureEpoch, done: false };
+        value.sourceSlot = slot;
+        const observed = new WeakRef(value);
+        void promise.then(producerCompletion(observed, slot), producerCompletion(observed, slot, true));
+      } else { slot.sequence = value.captureEpoch; slot.frames = current.frames; }
+    }
+    if (!slot.done) return false;
+    if (slot.result !== true) { cancelCapture(value, request, 'Capture producer observation was cancelled', slot.error); return 'cancelled'; }
+    return true;
+  }
   function flush(value) {
     const current = value.current;
-    if (!current || !value.ready || !current.frames || current.tui.stopped) return;
+    if (!current) return;
+    value.requests = value.requests.filter(request => {
+      if (request.kind !== 4) return true;
+      if (request.generation !== value.generation || request.producer && request.producer !== capture.producer) {
+        cancelCapture(value, request, 'Capture owner was replaced'); return false;
+      }
+      const slot = value.sourceSlot;
+      if (slot?.done && slot.producer === request.producer && slot.sequence >= request.epoch && slot.result !== true) {
+        cancelCapture(value, request, 'Capture producer observation was cancelled', slot.error); return false;
+      }
+      return true;
+    });
+    if (!value.ready || !current.frames || current.tui.stopped) return;
     const editor = value.mode.editor;
     if (value.autocompleteEditor !== editor) {
       value.autocompleteEditor = editor;
       value.autocompleteTask = undefined;
       value.autocompletePending = false;
     }
-    if (editor?.autocompleteDebounceTimer) {
-      // Observe native debounce completion, never accelerate or invoke its callback.
-      if (!value.debounceCheck) value.debounceCheck = setTimeout(() => {
-        value.debounceCheck = undefined;
-        schedule(value);
-      }, 2);
-      return;
-    }
+    if (editor?.autocompleteDebounceTimer) return;
     const task = editor?.autocompleteRequestTask;
     if (task && task !== value.autocompleteTask) {
       value.autocompleteTask = task;
@@ -83,9 +129,16 @@ export function installTerminalObserver(InteractiveMode, { restorable = false, i
         value.operations.delete(request.id);
         value.submissions = value.submissions.filter(entry => entry !== operation);
       }
-      emit(value, { type: request.kind === 3 ? 'capture' : 'frame', id: request.id, generation: value.generation, frames: current.frames,
+      if (request.kind === 4) {
+        const ready = captureReady(value, request, current);
+        if (!ready) { remaining.push(request); continue; }
+        if (ready === 'cancelled') continue;
+      }
+      const packet = { type: request.kind === 3 || request.kind === 4 ? 'capture' : 'frame', id: request.id, generation: value.generation, frames: current.frames,
         columns: current.tui.terminal.columns, rows: current.tui.terminal.rows,
-        clearAfter: value.mode.lastSigintTime + interruptWindow + 1 });
+        clearAfter: value.mode.lastSigintTime + interruptWindow + 1 };
+      if (request.kind === 4) packet.sample = request.producer.sample();
+      emit(value, packet);
     }
     value.requests = remaining;
   }
@@ -120,8 +173,11 @@ export function installTerminalObserver(InteractiveMode, { restorable = false, i
             value.operations.set(id, operation);
             value.armed.push(operation);
             emit(value, { type: 'armed', id });
+          } else if (kind === '5') {
+            value.requests = value.requests.filter(request => request.kind !== 4 || request.id !== id);
+            cancelCapture(value, { id }, 'Capture request was cancelled');
           } else {
-            value.requests.push({ id, kind: Number(kind) });
+            value.requests.push({ id, kind: Number(kind), ...(kind === '4' ? { generation: value.generation, producer: capture.producer, epoch: ++value.captureEpoch } : {}) });
             schedule(value);
           }
           return '';
@@ -132,7 +188,9 @@ export function installTerminalObserver(InteractiveMode, { restorable = false, i
     }
     value.current = current;
     value.generation++;
-    return Reflect.apply(original, this, [tui, ...args]);
+    const result = Reflect.apply(original, this, [tui, ...args]);
+    schedule(value);
+    return result;
   });
   replace(prototype, 'getUserInput', original => function (...args) {
     const value = state(this);

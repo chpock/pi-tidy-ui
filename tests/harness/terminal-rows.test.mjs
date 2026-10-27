@@ -139,6 +139,7 @@ test('PTY chunks use the native parser queue and retain split UTF-8, styles, fra
   try {
     await withWrites(async observed => {
       const frame = { type: 'frame', id: 1, generation: 1, frames: 1 };
+      const receipt = terminal.nativeReceipt('frame', frame.id); void receipt.catch(() => {});
       const chunks = [Buffer.from('\x1b[?2026h\x1b[31m'), ...[...Buffer.from('界éX')].map(byte => Buffer.from([byte])),
         Buffer.from('\x1b[0m\x1b[?2026l'), Buffer.from(`\x1b]777;tidy-test;${Buffer.from(JSON.stringify(frame)).toString('base64')}\x07`)];
       let reads = 0, published = false;
@@ -158,7 +159,8 @@ test('PTY chunks use the native parser queue and retain split UTF-8, styles, fra
       assert.equal(terminal.screen()[0], '界éX');
       assert.equal(terminal.term.buffer.active.getLine(0).getCell(0).getFgColor(), 1);
       assert.equal(terminal.rendering, false);
-      assert.deepEqual(terminal.nativeReceipts.get('frame:1'), frame);
+      assert.deepEqual(await receipt, frame);
+      assert.equal(terminal.nativeReceipts.size, 0, 'the correlated receipt is retired after consumption');
       assert.equal(terminal.error, undefined);
     });
   } finally { await terminal.close(); terminal.dispose(); }

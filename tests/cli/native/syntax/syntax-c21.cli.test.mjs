@@ -9,7 +9,7 @@ import { PiTerminal } from '../../../fixtures/terminal-harness.mjs';
 import { closeTerminals } from '../../../fixtures/terminal-cleanup.mjs';
 import { syntaxToolData as raw } from '../../../fixtures/syntax-tool-data.mjs';
 import { nativeReady, semanticStyle, semanticPhaseReady } from '../../../fixtures/syntax-observation.mjs';
-import { prepareSyntaxNative, inputs, stats, previewStats, settledStats, syntaxReady, until, work, body, traffic, persisted, finish, chooseTheme, expressionForeground } from '../../../fixtures/syntax-cli-support.mjs';
+import { prepareSyntaxNative, inputs, previewStats, settledStats, captureThenRenderDiagnostics, syntaxReady, until, work, body, traffic, persisted, finish, chooseTheme, expressionForeground } from '../../../fixtures/syntax-cli-support.mjs';
 
 const { fixture, descriptor } = await prepareSyntaxNative();
 const receipt = snapshot => ({ node: snapshot.node, counts: snapshot.counts, work: work(snapshot), leases: snapshot.source.remoteLeases, unsettled: snapshot.source.globalUnsettledJobs });
@@ -43,8 +43,11 @@ for (const mode of ['fullscreen', 'regular']) test(`occipital C21: ${mode} live 
     const stock = new PiTerminal(`c21-frozen-stock-${mode}`, { mode, extraEnv: descriptor });
     const phase = name => writeFileSync(join(live.output, 'syntax-theme-phase'), name);
     let ordinal = 0;
-    const ready = profile => until(() => semanticPhaseReady(() => stats(live, `frozen-ready-${ordinal++}`),
-      () => live.events(), ['STABLE_text'], profile), `frozen styles ${profile}`);
+    const ready = async profile => {
+      const current = await settledStats(live, `frozen-ready-${ordinal++}`);
+      assert.ok(await semanticPhaseReady(() => current, () => live.events(), ['STABLE_text'], profile), `frozen styles ${profile}`);
+      return current;
+    };
     try {
       for (const terminal of [live, stock]) {
         await terminal.ready(); await terminal.resize(100, 160);
@@ -56,7 +59,7 @@ for (const mode of ['fullscreen', 'regular']) test(`occipital C21: ${mode} live 
       }
       const before = await settledStats(live, 'frozen-closed', s => nativeReady(s) && s.counts.closeRequests === 1 && s.source.remoteLeases === 0);
       assert.equal(before.node, inputs.node.version); assert.equal(before.counts.sourceRequests, 1);
-      const baseline = await live.capture('physical-frozen-pi'), reference = await stock.capture('physical-frozen-stock');
+      const baseline = await captureThenRenderDiagnostics(live, 'physical-frozen-pi'), reference = await stock.capture('physical-frozen-stock');
       const bytes = readFileSync(baseline.session), originalTraffic = traffic(live), piVector = commandVector(live, baseline, 'pi');
       assert.deepEqual(originalTraffic, traffic(stock)); assert.deepEqual(persisted(baseline), persisted(reference)); assert.deepEqual(raw(baseline), raw(reference));
       assert.deepEqual(assistants(baseline), assistants(reference)); assert.equal(assistants(baseline)[0].stopReason, 'aborted');
@@ -79,29 +82,29 @@ for (const mode of ['fullscreen', 'regular']) test(`occipital C21: ${mode} live 
       assert.deepEqual(work(await previewStats(live, 'frozen-held-warm')), work(held));
       writeFileSync(join(live.output, 'syntax-preview-go'), 'go');
       await live.selectTidyItem(mocha.label); await live.closeTidyMenu(); await ready(mocha.id);
-      const themed = await live.capture('physical-frozen-native'), nativeVector = commandVector(live, themed, mocha.id);
+      const themed = await captureThenRenderDiagnostics(live, 'physical-frozen-native'), nativeVector = commandVector(live, themed, mocha.id);
       assert.notDeepEqual(nativeVector, piVector, 'actual native theme changes command cells');
-      const native = await stats(live, 'frozen-native');
+      const native = themed.sample;
       phase('cached-pi'); await chooseTheme(live, 0); await ready('pi');
-      const returned = await live.capture('physical-frozen-return-pi'); assert.deepEqual(commandVector(live, returned, 'pi'), piVector);
-      const cached = await stats(live, 'frozen-cached'); assert.equal(cached.counts.styleRequests, native.counts.styleRequests, 'cached Pi rules need no STYLE');
+      const returned = await captureThenRenderDiagnostics(live, 'physical-frozen-return-pi'); assert.deepEqual(commandVector(live, returned, 'pi'), piVector);
+      const cached = returned.sample; assert.equal(cached.counts.styleRequests, native.counts.styleRequests, 'cached Pi rules need no STYLE');
       await live.command('/tidy-ui-theme light'); await ready('pi');
-      const light = await live.capture('physical-frozen-light'), lightVector = commandVector(live, light, 'pi');
+      const light = await captureThenRenderDiagnostics(live, 'physical-frozen-light'), lightVector = commandVector(live, light, 'pi');
       assert.notEqual(lightVector.fg, piVector.fg, 'compatible Follow Pi binding change reaches physical command ink');
-      const rebound = await stats(live, 'frozen-rebound'); assert.equal(rebound.counts.styleRequests, cached.counts.styleRequests, 'compatible binding change is local');
+      const rebound = light.sample; assert.equal(rebound.counts.styleRequests, cached.counts.styleRequests, 'compatible binding change is local');
       phase('cached-mocha'); await chooseTheme(live, index + 1); await ready(mocha.id);
-      const repeated = await live.capture('physical-frozen-cached-native'); assert.deepEqual(commandVector(live, repeated, mocha.id), nativeVector);
-      const materialized = await stats(live, 'frozen-materialized');
+      const repeated = await captureThenRenderDiagnostics(live, 'physical-frozen-cached-native'); assert.deepEqual(commandVector(live, repeated, mocha.id), nativeVector);
+      const materialized = repeated.sample;
       assert.equal(materialized.counts.styleRequests, rebound.counts.styleRequests, 'cached native styles are reused');
-      for (const width of [60, 100, 100]) { await live.resize(width, 160); commandVector(live, await live.capture(`physical-frozen-warm-${ordinal++}`), mocha.id); }
-      const warm = await stats(live, 'frozen-warm'); assert.deepEqual(work(warm), work(materialized));
+      for (const width of [60, 100, 100]) { await live.resize(width, 160); commandVector(live, await captureThenRenderDiagnostics(live, `physical-frozen-warm-${ordinal++}`), mocha.id); }
+      const warm = await settledStats(live, 'frozen-warm'); assert.deepEqual(work(warm), work(materialized));
       for (const snapshot of [held, native, cached, rebound, materialized, warm]) {
         assert.equal(snapshot.counts.sourceRequests, before.counts.sourceRequests); assert.equal(snapshot.counts.closeRequests, 1);
         assert.equal(snapshot.source.preparedBytes, before.source.preparedBytes); assert.equal(snapshot.counts.acquisitions, 1);
         assert.equal(snapshot.counts.piCaptures, 0); assert.equal(snapshot.counts.piBridges, 0); assert.equal(snapshot.source.remoteLeases, 0);
       }
       assert.equal(warm.source.globalUnsettledJobs, 0);
-      const final = await live.capture('physical-frozen-final'); assert.deepEqual(raw(final), raw(baseline)); assert.deepEqual(body(final), body(baseline));
+      const final = await captureThenRenderDiagnostics(live, 'physical-frozen-final'); assert.deepEqual(raw(final), raw(baseline)); assert.deepEqual(body(final), body(baseline));
       assert.deepEqual(traffic(live), originalTraffic); assert.deepEqual(readFileSync(baseline.session), bytes);
       console.log(JSON.stringify({ c21Frozen: live.output, stock: stock.output, mode, node: warm.node, observations: [before, held, native, cached, rebound, warm].map(receipt), piVector, nativeVector, lightVector }));
       await live.quit('\x04'); await finish(live);
@@ -134,21 +137,21 @@ for (const mode of ['fullscreen', 'regular']) test(`occipital C21: ${mode} built
     try {
       for (const terminal of [live, stock]) { await terminal.ready(); await terminal.resize(100, 160); if (terminal === live) await syntaxReady(live); await terminal.run('syntax-long-output'); }
       await settledStats(live, 'long-ready', nativeReady);
-      const collapsed = await live.capture('physical-long-collapsed'), reference = await stock.capture('physical-long-stock'); longCard(collapsed, false);
+      const collapsed = await captureThenRenderDiagnostics(live, 'physical-long-collapsed'), reference = await stock.capture('physical-long-stock'); longCard(collapsed, false);
       const bytes = readFileSync(collapsed.session), originalTraffic = traffic(live);
       assert.equal(collapsed.tools[0].content[0].text, output + '\n\n<system-reminder>\n' + reminder + '\n</system-reminder>\n');
       assert.deepEqual(originalTraffic, traffic(stock)); assert.deepEqual(persisted(collapsed), persisted(reference)); assert.deepEqual(raw(collapsed), raw(reference));
       assert.equal(originalTraffic.filter(e => e.type === 'call').length, 1); assert.equal(originalTraffic.filter(e => e.type === 'result').length, 1);
       assert.equal(originalTraffic.filter(e => e.type === 'model_context').length, 2);
       await stock.close();
-      const cold = await stats(live, 'long-cold'); assert.equal(cold.node, inputs.node.version); assert.ok(cold.localWork.sourceSegments > 0);
-      for (const width of [60, 100]) { await live.resize(width, 160); longCard(await live.capture(`physical-long-preview-${width}`), false); }
-      assert.deepEqual(work(await stats(live, 'long-preview-warm')), work(cold));
+      const cold = collapsed.sample; assert.equal(cold.node, inputs.node.version); assert.ok(cold.localWork.sourceSegments > 0);
+      for (const width of [60, 100]) { await live.resize(width, 160); longCard(await captureThenRenderDiagnostics(live, `physical-long-preview-${width}`), false); }
+      assert.deepEqual(work(await settledStats(live, 'long-preview-warm')), work(cold));
       if (mode === 'fullscreen') {
         const shown = await live.capture('physical-long-click-target'), y = shown.screen.findIndex(row => row.includes('Click to expand')); assert.ok(y >= 0);
         const x = shown.screen[y].indexOf('Click to expand'); live.send(`\x1b[<0;${x + 1};${y + 1}M\x1b[<0;${x + 1};${y + 1}m`); await live.settle();
       } else { live.send('\x0f'); await live.settle(); }
-      const expanded = await live.capture('physical-long-expanded'); longCard(expanded, true);
+      const expanded = await captureThenRenderDiagnostics(live, 'physical-long-expanded'); longCard(expanded, true);
       for (const marker of ['STABLE_text o', '<system-reminder>', 'STABLE_text r', '</system-reminder>']) {
         const cell = cellAt(expanded, marker), role = marker === 'STABLE_text o' ? 'toolOutput' : 'muted';
         const fg = expanded.summaryStyles[role].match(/38;2;(\d+);(\d+);(\d+)m/); assert.ok(fg);
@@ -157,16 +160,16 @@ for (const mode of ['fullscreen', 'regular']) test(`occipital C21: ${mode} built
         assert.equal(cell.bg, Number(bg[1]) * 65536 + Number(bg[2]) * 256 + Number(bg[3]));
         assert.deepEqual([!!cell.bold, !!cell.italic, !!cell.underline, cell.inverse], [false, false, false, false]);
       }
-      const materialized = await stats(live, 'long-expanded-materialized');
-      for (const width of [60, 100]) { await live.resize(width, 160); longCard(await live.capture(`physical-long-expanded-${width}`), true); }
-      assert.deepEqual(work(await stats(live, 'long-expanded-warm')), work(materialized)); assert.deepEqual(work(materialized), work(cold));
+      const materialized = expanded.sample;
+      for (const width of [60, 100]) { await live.resize(width, 160); longCard(await captureThenRenderDiagnostics(live, `physical-long-expanded-${width}`), true); }
+      assert.deepEqual(work(await settledStats(live, 'long-expanded-warm')), work(materialized)); assert.deepEqual(work(materialized), work(cold));
       if (mode === 'fullscreen') {
         // Native double-click selection must not consume the second primary click.
         await new Promise(resolve => setTimeout(resolve, 520));
         const shown = await live.capture('physical-long-collapse-target'), y = shown.screen.findIndex(row => row.includes('$ '));
         assert.ok(y >= 0); live.send(`\x1b[<0;4;${y + 1}M\x1b[<0;4;${y + 1}m`);
       } else live.send('\x0f');
-      await live.settle(); const recollapsed = await live.capture('physical-long-recollapsed'); longCard(recollapsed, false);
+      await live.settle(); const recollapsed = await captureThenRenderDiagnostics(live, 'physical-long-recollapsed'); longCard(recollapsed, false);
       assert.deepEqual(body(recollapsed), body(collapsed)); assert.deepEqual(raw(recollapsed), raw(collapsed));
       assert.deepEqual(readFileSync(collapsed.session), bytes); assert.deepEqual(traffic(live), originalTraffic);
       assert.equal(materialized.counts.piCaptures, 0); assert.equal(materialized.counts.piBridges, 0);

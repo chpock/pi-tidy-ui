@@ -844,3 +844,43 @@ test('legacy unsealed descriptors keep byte-checked execution but cannot enter s
   assert.throws(() => refreshInputs(f.path), /sealed owned host graph/);
   const report = await f.execute(); assert.equal(report.status, 'passed'); assert.equal(report.counts.pass, 1);
 });
+
+test('strict compiler old-space allowance reaches only the check child', { timeout: 20000 }, async t => {
+  const startup = 'JSON.stringify({ execArgv: process.execArgv, nodeOptions: process.env.NODE_OPTIONS ?? null })';
+  const cliFile = 'cli/lifecycle/smoke/launch-arguments.cli.test.mjs';
+  const f = admissionFixture(t, `
+    import {test} from 'node:test'; import {writeFileSync} from 'node:fs';
+    test('ordinary worker startup', () => writeFileSync('node-startup.json', ${startup}));
+  `, 'runtime', { ['tests/' + cliFile]: `
+    import {test} from 'node:test'; import assert from 'node:assert/strict';
+    import {writeFileSync} from 'node:fs'; import {spawnSync} from 'node:child_process';
+    import {readInputs} from '../../../../scripts/test/context.mjs';
+    test('CLI worker and application startup', () => {
+      writeFileSync('cli-worker-startup.json', ${startup});
+      const inputs = readInputs();
+      const result = spawnSync(inputs.node.path, [inputs.pi.cli], { env: process.env, encoding: 'utf8' });
+      assert.equal(result.status, 0, result.stderr);
+    });
+  ` });
+  const compiler = join(f.inputs.pi.root, 'node_modules/typescript/bin/tsc');
+  mkdirSync(dirname(compiler), { recursive: true });
+  writeFileSync(compiler, `require('node:fs').writeFileSync('check-startup.json', ${startup});`);
+  writeFileSync(join(f.coding, 'cli.js'), `import {writeFileSync} from 'node:fs'; writeFileSync('cli-startup.json', ${startup});`);
+  const parentArguments = [...process.execArgv];
+  const check = await f.execute({ suite: 'check', files: undefined });
+  assert.equal(check.status, 'passed');
+  const ordinary = await f.execute();
+  assert.equal(ordinary.status, 'passed'); assert.equal(ordinary.counts.pass, 1);
+  const cli = await f.execute({ suite: 'groups', files: cliFile, layer: 'cli' });
+  assert.equal(cli.status, 'passed'); assert.equal(cli.counts.pass, 1);
+  const observations = Object.fromEntries(['check', 'node', 'cli-worker', 'cli'].map(name =>
+    [name, JSON.parse(readFileSync(join(f.inputs.pi.root, name + '-startup.json'), 'utf8'))]));
+  for (const [name, value] of Object.entries(observations)) {
+    assert.equal(value.nodeOptions, null, name + ' has no global Node startup options');
+    const allowances = value.execArgv.filter(argument => argument.startsWith('--max-old-space-size'));
+    if (name !== 'check') assert.deepEqual(allowances, [], name + ' retains its ordinary heap policy');
+  }
+  assert.deepEqual(process.execArgv, parentArguments, 'the runner caller retains its startup arguments');
+  assert.deepEqual(observations.check.execArgv.filter(argument => argument.startsWith('--max-old-space-size')),
+    ['--max-old-space-size=1024'], 'the actual TypeScript entry receives the fixed compiler-only allowance');
+});
