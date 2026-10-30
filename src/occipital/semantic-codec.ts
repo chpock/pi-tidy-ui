@@ -1,4 +1,4 @@
-// Flat context/style primitives for the active v3 application contract.
+// Flat context/style primitives for the active v4 application contract.
 import { HIGHLIGHT_LIMITS, OCCIPITAL_LIMITS } from './limits.ts';
 
 export type LiteralInk = Readonly<{ kind: 'rgb'; r: number; g: number; b: number }>
@@ -19,18 +19,11 @@ export type CardRole = typeof CARD_ROLES[number];
 export interface StyleIdentity {
   readonly vocabulary: string;
   readonly rules: string;
-  readonly mode: 'native' | 'client';
   readonly bindingSlots: number;
-}
-export interface NativePalette {
-  readonly revision: 1;
-  readonly fingerprint: string;
-  readonly slots: Uint32Array;
-  readonly origins: Uint8Array;
 }
 export interface ContextBounds { readonly vocabularySize: number; readonly maxBytes: number }
 export type SemanticErrorCode = 'invalid_context' | 'unknown_scope' | 'context_limit'
-  | 'invalid_style' | 'invalid_palette' | 'style_limit' | 'identity_mismatch' | 'invalid_source' | 'source_limit';
+  | 'invalid_style' | 'style_limit' | 'identity_mismatch' | 'invalid_source' | 'source_limit';
 export class SemanticError extends Error {
   readonly code: SemanticErrorCode;
   constructor(code: SemanticErrorCode) { super(`occipital ${code}`); this.code = code; }
@@ -93,41 +86,34 @@ export function decodeContextBatch(value: unknown, bounds: ContextBounds): {
   return { batches: plan.materialize(), words: plan.words, policyBytes: plan.policyBytes };
 }
 
-function inkKey(value: unknown, identity: Pick<StyleIdentity, 'mode' | 'bindingSlots'>): string {
+function inkKey(value: unknown, identity: Pick<StyleIdentity, 'bindingSlots'>): string {
   if (!object(value)) return fail('invalid_style');
   if (value.kind === 'rgb' && keys(value, ['kind', 'r', 'g', 'b'])
     && [value.r, value.g, value.b].every(part => integer(part, 0, 255))) return `r${value.r},${value.g},${value.b}`;
   if (value.kind === 'indexed' && keys(value, ['kind', 'index']) && integer(value.index, 0, 255)) return `i${value.index}`;
   if (value.kind === 'terminal-default' && keys(value, ['kind'])) return 'd';
-  if (identity.mode === 'client') {
-    if (value.kind === 'binding' && keys(value, ['kind', 'slot']) && integer(value.slot, 0, Math.min(0xffff, identity.bindingSlots - 1))) return `b${value.slot}`;
-    if (value.kind === 'inherit' && keys(value, ['kind'])) return 'h';
-  }
+  if (value.kind === 'binding' && keys(value, ['kind', 'slot']) && integer(value.slot, 0, Math.min(0xffff, identity.bindingSlots - 1))) return `b${value.slot}`;
+  if (value.kind === 'inherit' && keys(value, ['kind'])) return 'h';
   return fail('invalid_style');
 }
-export function expressionKey(value: unknown, identity: Pick<StyleIdentity, 'mode' | 'bindingSlots'>): string {
+export function expressionKey(value: unknown, identity: Pick<StyleIdentity, 'bindingSlots'>): string {
   if (!object(value) || !keys(value, ['foreground', 'background', 'attributes', 'attribute_mask'])
     || !integer(value.attributes, 0, 31) || !integer(value.attribute_mask, 0, 31)
-    || (value.attributes & ~value.attribute_mask) !== 0 || identity.mode === 'native' && (value.attribute_mask !== 31 || (value.attributes & 16) !== 0)) fail('invalid_style');
+    || (value.attributes & ~value.attribute_mask) !== 0) fail('invalid_style');
   return `${inkKey(value.foreground, identity)}/${inkKey(value.background, identity)}/${value.attributes}/${value.attribute_mask}`;
 }
 function copyInk(value: Ink): Ink { return { ...value }; }
-function validOrigin(value: unknown): value is number {
-  return integer(value, 0, 31) && (value & 3) < 3 && ((value >> 2) & 3) < 3;
-}
 
-/** A native palette and syntax share one exact unique expression table. The caller
- * publishes neither this transient result nor its arena references until its whole reply passes. */
 export function decodeStyleResult(value: unknown, identity: StyleIdentity, contextCount: number, maxBytes: number): {
-  styles: StyleExpression[]; indices: Uint32Array; palette: NativePalette | null; policyBytes: number;
+  styles: StyleExpression[]; indices: Uint32Array; policyBytes: number;
 } {
-  if (!object(value) || !keys(value, ['kind', 'vocabulary', 'rules', 'styles', 'indices', 'palette']) || value.kind !== 'styles') fail('invalid_style');
+  if (!object(value) || !keys(value, ['kind', 'vocabulary', 'rules', 'styles', 'indices']) || value.kind !== 'styles') fail('invalid_style');
   if (!fingerprint(value.vocabulary) || !fingerprint(value.rules)
     || value.vocabulary !== identity.vocabulary || value.rules !== identity.rules) fail('identity_mismatch');
   if (!integer(contextCount) || !integer(maxBytes, 0, OCCIPITAL_LIMITS.retainedBytes)
     || !Array.isArray(value.styles) || !Array.isArray(value.indices) || value.indices.length !== contextCount) fail('invalid_style');
   maxBytes = Math.min(maxBytes, HIGHLIGHT_LIMITS.decodedBytes);
-  let policyBytes = charge(value.styles.length * STYLE_UNITS + contextCount * 4, maxBytes, 'style_limit');
+  const policyBytes = charge(value.styles.length * STYLE_UNITS + contextCount * 4, maxBytes, 'style_limit');
   const seen = new Set<string>();
   for (const style of value.styles) {
     const key = expressionKey(style, identity);
@@ -139,28 +125,10 @@ export function decodeStyleResult(value: unknown, identity: StyleIdentity, conte
     if (!integer(id, 1, value.styles.length)) fail('invalid_style');
     referenced.add(id);
   }
-  let rawPalette: { fingerprint: string; slots: number[]; origins: number[] } | undefined;
-  if (identity.mode === 'native') {
-    const palette = value.palette;
-    if (!object(palette) || !keys(palette, ['revision', 'fingerprint', 'slots', 'origins']) || palette.revision !== 1
-      || !fingerprint(palette.fingerprint) || !Array.isArray(palette.slots) || palette.slots.length !== CARD_ROLES.length
-      || !Array.isArray(palette.origins) || palette.origins.length !== CARD_ROLES.length) fail('invalid_palette');
-    for (const id of palette.slots) {
-      if (!integer(id, 1, value.styles.length) || (value.styles[id - 1] as StyleExpression).attribute_mask !== 31) fail('invalid_palette');
-      referenced.add(id);
-    }
-    for (const origin of palette.origins) if (!validOrigin(origin)) fail('invalid_palette');
-    rawPalette = { fingerprint: palette.fingerprint, slots: palette.slots as number[], origins: palette.origins as number[] };
-    policyBytes = charge(policyBytes + CARD_ROLES.length * 5 + ROW_UNITS, maxBytes, 'style_limit');
-  } else if (value.palette !== null) fail('invalid_palette');
   if (referenced.size !== value.styles.length) fail('invalid_style');
   const styles = (value.styles as unknown as StyleExpression[]).map(style => ({
     foreground: copyInk(style.foreground), background: copyInk(style.background),
     attributes: style.attributes, attribute_mask: style.attribute_mask,
   }));
-  return {
-    styles, indices: new Uint32Array(value.indices as number[]), policyBytes,
-    palette: rawPalette ? { revision: 1, fingerprint: rawPalette.fingerprint,
-      slots: new Uint32Array(rawPalette.slots), origins: new Uint8Array(rawPalette.origins) } : null,
-  };
+  return { styles, indices: new Uint32Array(value.indices as number[]), policyBytes };
 }

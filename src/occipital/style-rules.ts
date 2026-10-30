@@ -2,15 +2,20 @@ import { createHash } from 'node:crypto';
 import { expressionKey, type Ink, type StyleExpression } from './semantic-codec.ts';
 
 export interface RuleFont { attributes: number; attribute_mask: number }
+export interface RuleContext {
+  owner: string;
+  boundaries: string[];
+}
 export interface StyleRule {
   path: string[];
   excludes: string[][];
   foreground: Ink | null;
   background: Ink | null;
   font: RuleFont | null;
+  context: RuleContext | null;
 }
 export interface RuleDefinition {
-  revision: 1;
+  revision: 2;
   binding_slots: number;
   default: StyleExpression;
   rules: StyleRule[];
@@ -24,11 +29,14 @@ function ruleExpression(rule: StyleRule): StyleExpression {
   return { foreground: rule.foreground ?? inherit, background: rule.background ?? inherit,
     attributes: rule.font === null ? 0 : rule.font.attributes, attribute_mask: rule.font === null ? 0 : rule.font.attribute_mask };
 }
+function prefixOverlap(first: string, second: string): boolean {
+  return first === second || first.startsWith(`${second}.`) || second.startsWith(`${first}.`);
+}
 function validate(value: unknown): RuleDefinition {
-  if (!object(value) || !keys(value, ['revision', 'binding_slots', 'default', 'rules']) || value.revision !== 1
+  if (!object(value) || !keys(value, ['revision', 'binding_slots', 'default', 'rules']) || value.revision !== 2
     || typeof value.binding_slots !== 'number' || !Number.isInteger(value.binding_slots) || value.binding_slots < 0 || value.binding_slots > 65536
     || !Array.isArray(value.rules) || value.rules.length > limits.selectors) reject();
-  const identity = { mode: 'client', bindingSlots: value.binding_slots } as const;
+  const identity = { bindingSlots: value.binding_slots } as const;
   expressionKey(value.default, identity);
   let paths = 0, atoms = 0, nameBytes = 0;
   const path = (value: unknown) => {
@@ -45,22 +53,31 @@ function validate(value: unknown): RuleDefinition {
     }
   };
   for (const rule of value.rules) {
-    if (!object(rule) || !keys(rule, ['path', 'excludes', 'foreground', 'background', 'font']) || !Array.isArray(rule.excludes)) reject();
+    if (!object(rule) || !keys(rule, ['path', 'excludes', 'foreground', 'background', 'font', 'context'])
+      || !Array.isArray(rule.excludes) || !Array.isArray(rule.path) || rule.context !== null && rule.path.length === 0) reject();
     path(rule.path);
     for (const excluded of rule.excludes) path(excluded);
     if (rule.foreground === undefined || rule.background === undefined
       || rule.font !== null && (!object(rule.font) || !keys(rule.font, ['attributes', 'attribute_mask']))) reject();
+    if (rule.context !== null) {
+      if (!object(rule.context) || !keys(rule.context, ['owner', 'boundaries']) || typeof rule.context.owner !== 'string'
+        || !Array.isArray(rule.context.boundaries) || rule.context.boundaries.length > 16
+        || rule.path[0] !== rule.context.owner || rule.context.boundaries.some((name: unknown) => typeof name !== 'string')) reject();
+      const owner = rule.context.owner as string, boundaries = rule.context.boundaries as string[];
+      if (new Set(boundaries).size !== boundaries.length || boundaries.some(boundary => prefixOverlap(owner, boundary))) reject();
+      path([owner]);
+      for (const boundary of boundaries) path([boundary]);
+    }
     expressionKey(ruleExpression(rule as unknown as StyleRule), identity);
   }
-  // Membership is native dictionary lookup, never an attempt to intern these names in JS.
   return value as unknown as RuleDefinition;
 }
 
 /** Hashes rule data, not public Pi colors or source/geometry. Field/path/order and
  * explicit-null/clear distinctions are framed independently of JSON object order. */
 export function fingerprintRules(value: unknown): string {
-  const definition = validate(value), identity = { mode: 'client', bindingSlots: definition.binding_slots } as const;
-  const hash = createHash('sha256').update('occipital-client-rules/2\0'), word = Buffer.allocUnsafe(4);
+  const definition = validate(value), identity = { bindingSlots: definition.binding_slots } as const;
+  const hash = createHash('sha256').update('occipital-client-rules/3\0'), word = Buffer.allocUnsafe(4);
   const number = (n: number) => { word.writeUInt32BE(n); hash.update(word); };
   const text = (s: string) => { number(Buffer.byteLength(s)); hash.update(s, 'utf8'); };
   const path = (names: readonly string[]) => { number(names.length); for (const name of names) text(name); };
@@ -71,14 +88,14 @@ export function fingerprintRules(value: unknown): string {
     path(rule.path);
     number(rule.excludes.length);
     for (const excluded of rule.excludes) path(excluded);
+    if (rule.context === null) hash.update(Buffer.from([0]));
+    else {
+      hash.update(Buffer.from([1]));
+      text(rule.context.owner);
+      path(rule.context.boundaries);
+    }
     hash.update(Buffer.from([(rule.foreground !== null ? 1 : 0) | (rule.background !== null ? 2 : 0) | (rule.font !== null ? 4 : 0)]));
     text(expressionKey(ruleExpression(rule), identity));
   }
   return hash.digest('hex');
-}
-
-/** Definition content and interpretation revision, never Pi colors or source text. */
-export function fingerprintNative(definition: string, kind: 'rules' | 'palette'): string {
-  if (!/^[a-f0-9]{64}$/.test(definition) || (kind !== 'rules' && kind !== 'palette')) reject();
-  return createHash('sha256').update(`occipital-native-${kind}/2\0`).update(definition, 'ascii').digest('hex');
 }

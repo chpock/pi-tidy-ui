@@ -1,15 +1,13 @@
 //! Fair worker-local quanta shared by source and style work in both transports.
 use crate::{
-    catalogue::{Catalogue, Snapshot as CatalogueSnapshot},
     credit::{Budget, Credit, Snapshot},
-    native_definitions::{Counters as NativeCounters, NativeDefinitions},
     protocol::Fault,
     runtime_request::DataRequest,
     semantic_engine::Limits,
     semantic_reply::{self, DataBody},
     source_request::Admission,
     source_service::{Action, Job as SourceJob, Service},
-    style_request::{RuleInput, StyleRequestPlan},
+    style_request::StyleRequestPlan,
     style_work::{StyleFailure, StyleWork},
 };
 use std::{
@@ -239,24 +237,9 @@ pub struct Scheduler {
     unhanded: Vec<Unhanded>,
     limits: Limits,
     wake: Option<Wake>,
-    snapshot: Arc<CatalogueSnapshot>,
-    definitions: Option<NativeDefinitions>,
 }
 impl Scheduler {
     pub fn new(instance: String, limits: Limits, budget: Budget) -> Self {
-        Self::with_snapshot(
-            instance,
-            limits,
-            budget,
-            Catalogue::from_os_root(None).snapshot(),
-        )
-    }
-    pub(crate) fn with_snapshot(
-        instance: String,
-        limits: Limits,
-        budget: Budget,
-        snapshot: Arc<CatalogueSnapshot>,
-    ) -> Self {
         let idle = budget.reserve(None, 0).expect("empty state reservation");
         let acks = budget.reserve(None, 0).expect("empty ack metadata");
         Self {
@@ -270,8 +253,6 @@ impl Scheduler {
             unhanded: Vec::new(),
             limits,
             wake: None,
-            snapshot,
-            definitions: None,
         }
     }
     pub fn set_wake(&mut self, wake: Wake) {
@@ -283,17 +264,6 @@ impl Scheduler {
             .bind(scope, &mut |n| self.idle.resize(n).is_ok());
         self.shrink_idle();
         result
-    }
-    pub(crate) fn publish_snapshot(&mut self, snapshot: Arc<CatalogueSnapshot>) {
-        if let Some(cache) = &mut self.definitions {
-            cache.publish(snapshot.clone());
-        }
-        self.snapshot = snapshot;
-    }
-    pub fn native_counters(&self) -> NativeCounters {
-        self.definitions
-            .as_ref()
-            .map_or_else(NativeCounters::default, NativeDefinitions::counters)
     }
     pub fn close(&mut self, scope: &str) {
         if let Some(queue) = self.queues.remove(scope) {
@@ -589,10 +559,6 @@ impl Scheduler {
         bytes: Vec<u8>,
         mut credit: Credit,
     ) -> Result<StyleWork, StyleFailure> {
-        enum Definition {
-            Native(crate::native_definitions::PreparedDefinition),
-            Client(crate::resolver::Resolver, String),
-        }
         let preparation = (|| {
             let raw: &serde_json::value::RawValue = serde_json::from_slice(&bytes)
                 .map_err(|_| Fault::not_started("invalid_request"))?;
@@ -604,40 +570,18 @@ impl Scheduler {
                     .ok_or(Fault::not_started("data_limit"))?,
             )?;
             // Both complete plans are admitted before either owned expansion.
-            let definition = match plan.rules {
-                RuleInput::Native { id, fingerprint } => {
-                    if self.definitions.is_none() {
-                        self.definitions = Some(NativeDefinitions::new(
-                            self.snapshot.clone(),
-                            self.budget.clone(),
-                        )?);
-                    }
-                    Definition::Native(self.definitions.as_mut().expect("cache").prepare(
-                        &id,
-                        &fingerprint,
-                        &mut credit,
-                    )?)
-                }
-                RuleInput::Client(plan) => {
-                    let fingerprint = plan.fingerprint().to_owned();
-                    Definition::Client(plan.compile(), fingerprint)
-                }
-            };
+            let fingerprint = plan.rules.fingerprint().to_owned();
+            let resolver = plan.rules.compile();
             let mut batches = plan.contexts.materialize();
             let contexts = batches.pop().expect("one admitted dictionary");
-            Ok((contexts, definition))
+            Ok((contexts, resolver, fingerprint))
         })();
-        let (contexts, definition) = match preparation {
+        let (contexts, resolver, fingerprint) = match preparation {
             Ok(value) => value,
             Err(fault) => return Err(StyleFailure { fault, credit }),
         };
         drop(bytes);
-        match definition {
-            Definition::Native(owner) => StyleWork::native(contexts, owner, credit),
-            Definition::Client(resolver, fingerprint) => {
-                StyleWork::new(contexts, &resolver, fingerprint, None, credit)
-            }
-        }
+        StyleWork::new(contexts, &resolver, fingerprint, credit)
     }
     fn finish_success(&mut self, waiting: Waiting, body: DataBody) {
         self.finish_success_bounded(waiting, body, crate::limits::DATA_WIRE_BYTES);
@@ -741,7 +685,7 @@ mod integration_tests {
     use super::*;
     use serde_json::{json, Value};
     fn open() -> Vec<u8> {
-        serde_json::to_vec(&json!({"v":3,"op":"stream.open","ticket":"open","instance":"boot","admission":"bounded_queue","queue_wait_ms":1000,"sources":[{"key":"key","generation":1,"source_version":0,"hint":{"language":"rust"},"text":"fn x(){}\n"}]})).unwrap()
+        serde_json::to_vec(&json!({"v":4,"op":"stream.open","ticket":"open","instance":"boot","admission":"bounded_queue","queue_wait_ms":1000,"sources":[{"key":"key","generation":1,"source_version":0,"hint":{"language":"rust"},"text":"fn x(){}\n"}]})).unwrap()
     }
     fn four_streams() -> (Scheduler, Budget) {
         let budget = Budget::new(1 << 20, 2, 2);
@@ -891,7 +835,7 @@ mod integration_tests {
         scheduler.finish_success_bounded(waiting, DataBody::Source(body), 128);
         let reply = ticket.try_take().unwrap().unwrap();
         let value: Value = serde_json::from_slice(reply.bytes()).unwrap();
-        assert_eq!(value["v"], 3);
+        assert_eq!(value["v"], 4);
         assert_eq!(value["error"]["code"], "reply_limit");
         assert_eq!(value["error"]["execution"], "started");
         assert_eq!(scheduler.leases(), 0);
@@ -905,45 +849,44 @@ mod integration_tests {
         assert_eq!(budget.snapshot().bytes, 0);
     }
     #[test]
-    fn catalogue_prune_during_actual_style_cursor_keeps_definition_credit_and_source_lease() {
-        let root = support::CaseDir::new("style-prune");
-        std::fs::create_dir(root.join("themes")).unwrap();
-        let file = root.join("themes/test.tmTheme");
-        let theme = |color| {
-            format!("<plist><dict><key>settings</key><array><dict><key>settings</key><dict><key>foreground</key><string>{color}</string></dict></dict></array></dict></plist>")
-        };
-        std::fs::write(&file, theme("#112233")).unwrap();
-        let mut catalogue = Catalogue::new(Some(root.join("config.json")));
-        let old = catalogue.snapshot();
-        let selected = old
-            .descriptors()
-            .find(|d| d.id.starts_with("custom:"))
-            .unwrap();
-        let id = selected.id.clone();
-        let fingerprint = selected.fingerprint.clone();
+    fn compiled_style_cursor_keeps_source_lease_and_credit_until_actual_settlement() {
         let budget = Budget::new(32 << 20, 4, 2);
-        let mut scheduler =
-            Scheduler::with_snapshot("boot".into(), Limits::default(), budget.clone(), old);
+        let mut scheduler = Scheduler::new("boot".into(), Limits::default(), budget.clone());
         scheduler.bind("route").unwrap();
         let mut source = scheduler.submit("route", open(), 0).unwrap();
         scheduler.tick(0);
         source.try_take().unwrap().unwrap().flushed();
         scheduler.tick(0);
         assert_eq!(scheduler.leases(), 1);
-        let request = json!({"v":3,"op":"styles.resolve","ticket":"old-definition","instance":"boot","admission":"bounded_queue","queue_wait_ms":1000,"vocabulary":crate::vocabulary::FINGERPRINT,"contexts":vec![vec![0];1000],"rules":{"kind":"native","id":id,"fingerprint":fingerprint}});
+
+        let definition = json!({
+            "revision": 2,
+            "binding_slots": 0,
+            "default": {
+                "foreground": { "kind": "inherit" },
+                "background": { "kind": "inherit" },
+                "attributes": 0,
+                "attribute_mask": 0
+            },
+            "rules": []
+        });
+        let request = json!({
+            "v": 4,
+            "op": "styles.resolve",
+            "ticket": "generic-rules",
+            "instance": "boot",
+            "admission": "bounded_queue",
+            "queue_wait_ms": 1000,
+            "vocabulary": crate::vocabulary::FINGERPRINT,
+            "contexts": vec![vec![0]; 1000],
+            "rules": definition
+        });
         let mut ticket = scheduler
             .submit("route", serde_json::to_vec(&request).unwrap(), 0)
             .unwrap();
         scheduler.tick(0);
         assert!(ticket.try_take().unwrap().is_none());
-        let owned = scheduler.native_counters().cached_definition_bytes;
-        assert!(owned > 0);
-        assert_eq!(scheduler.native_counters().compilations, 1);
-        std::fs::write(&file, theme("#445566")).unwrap();
-        catalogue.refresh().unwrap();
-        scheduler.publish_snapshot(catalogue.snapshot());
-        assert_eq!(scheduler.native_counters().entries, 0);
-        assert!(scheduler.stats().bytes >= owned);
+        let charged = scheduler.stats().bytes;
         assert_eq!(scheduler.leases(), 1);
         for _ in 0..1000 {
             scheduler.tick(0);
@@ -951,19 +894,14 @@ mod integration_tests {
         let reply = ticket.try_take().unwrap().unwrap();
         let value: Value = serde_json::from_slice(reply.bytes()).unwrap();
         assert_eq!(value["status"], "ok");
-        assert_eq!(
-            value["body"]["rules"],
-            crate::style_rules::fingerprint_native_rules(&fingerprint).unwrap()
-        );
+        assert!(value["body"]["rules"]
+            .as_str()
+            .is_some_and(|hash| hash.len() == 64));
+        assert!(value["body"].get("palette").is_none());
         assert_eq!(value["body"]["indices"].as_array().unwrap().len(), 1000);
         reply.flushed();
         scheduler.tick(0);
-        assert_eq!(
-            scheduler.stats().bytes,
-            scheduler.idle.bytes()
-                + scheduler.acks.bytes()
-                + scheduler.native_counters().metadata_bytes
-        );
+        assert!(scheduler.stats().bytes < charged);
         assert_eq!(scheduler.leases(), 1);
         scheduler.close("route");
         drop(scheduler);

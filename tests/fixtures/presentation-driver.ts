@@ -13,7 +13,11 @@ export default function presentationDriver(pi: ExtensionAPI) {
   if (process.env.TIDY_UI_TEST_WRITE_CAPTURE === '1') {
     const record = createEventRecorder(process.env.TIDY_UI_TEST_OUTPUT!);
     const gate = createWriteCaptureGate(event => record({ type: 'write_source_state', ...event }));
-    const observer = observeSyntaxCards(() => {}, { writeCapture: event => gate.observe(event) });
+    const observer = observeSyntaxCards(() => {}, { writeCapture: {
+      activate: (call, owner) => gate.activate(call, owner),
+      observe: (event, owner) => gate.observe(event, owner),
+      retire: (call, owner) => gate.retire(call, owner),
+    } });
     pi.on('session_shutdown', () => { observer.restore(); gate.close(); });
     pi.registerCommand('tidy-ui-write-ready', {
       description: 'Await observed current write source publication without requesting work',

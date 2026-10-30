@@ -7,13 +7,10 @@ import type { ConcreteStyle } from './style-materialization.ts';
 import { HIGHLIGHT_LIMITS } from '../occipital/limits.ts';
 import { highlightingPrefix } from './highlighting-prefix.ts';
 
-type NativeProfile = { id: string; fingerprint: string };
-export type SyntaxDemand = Omit<SourceDemand, 'profile' | 'fingerprint'> & {
+export type SyntaxDemand = SourceDemand & {
   /** Pi's local classifier hint; kept separate from the explicit Occipital SOURCE language selector. */
   piLanguage?: string;
   palette: number;
-  // Selected presentation identity, never parser/fallback authority.
-  nativeProfile?: NativeProfile | null;
 } & ({ fallback: 'pi'; piNeutral: ConcreteStyle } | { fallback: 'neutral' });
 export type SyntaxIdentity = Pick<SyntaxDemand, 'key' | 'version' | 'language' | 'piLanguage' | 'complete' | 'palette' | 'fallback'>;
 export type PiClassifier = (text: string, info: { language?: string; path?: string }) => readonly string[];
@@ -27,7 +24,6 @@ export interface SyntaxResolution extends SyntaxIdentity {
   piStyled?: boolean;
   committedBytes?: number;
   needsPi: boolean;
-  profileRetryAllowed: boolean;
   nativeGeneration?: number;
   piGeneration?: number;
   native?: DisplayRangeReader;
@@ -35,9 +31,6 @@ export interface SyntaxResolution extends SyntaxIdentity {
   pi?: PiProjectionReader;
 }
 type Client = Pick<SyntaxClient, 'sources' | 'snapshot'>;
-const compatibleProfile = (source: { profile: string; fingerprint: string }, profile?: NativeProfile | null) =>
-  profile === undefined || profile !== null && source.profile === profile.id && source.fingerprint === profile.fingerprint;
-
 // Factory scope retains only weak ownership and primitive validity receipts.
 function nativeReader(owner: WeakRef<SourceController>, key: string, generation: number, version: number,
   stamp: number, language?: string): DisplayRangeReader {
@@ -83,15 +76,14 @@ export function requestSyntax(client: Client, demand: SyntaxDemand, classify: Pi
   const sources = client.sources, metadata = client.snapshot();
   const { key, version, language, path, piLanguage, palette, neutral } = demand;
   const retained = sources.borrowSource(key);
-  const observe = metadata.enabled && metadata.provider.availability === 'ready' && metadata.effective;
+  const observe = metadata.enabled && metadata.provider.availability === 'ready';
   const prefix = (observe || retained) && !(retained?.text === demand.text && demand.complete
     && retained.utf8Bytes <= HIGHLIGHT_LIMITS.sourceBytes && demand.text.length <= HIGHLIGHT_LIMITS.sourceLines)
     ? highlightingPrefix(demand.text, HIGHLIGHT_LIMITS.sourceBytes) : undefined;
   const nativeText = prefix ? demand.text.slice(0, prefix.end) : demand.text;
   const complete = demand.complete || !!prefix?.saturated;
   if (observe) {
-    const profile = observe;
-    if (!sources.observe({ key, version, text: nativeText, language, path, complete, neutral, profile: profile.id, fingerprint: profile.fingerprint }))
+    if (!sources.observe({ key, version, text: nativeText, language, path, complete, neutral }))
       return { outcome: sources.workStatus(key).fallbackEligible ? 'refused' : 'waiting' };
   }
   const native = sources.borrowSource(key);
@@ -100,10 +92,10 @@ export function requestSyntax(client: Client, demand: SyntaxDemand, classify: Pi
   const display = sources.displayBasis(key);
   const exactDisplay = !!display && display.language === language
     && (display.exactVersion === version || display.version === version);
-  if (nativeExact && exactDisplay && compatibleProfile(native!, demand.nativeProfile === undefined ? metadata.effective : demand.nativeProfile))
+  if (nativeExact && exactDisplay)
     return { outcome: 'native' };
   if (demand.fallback === 'neutral') return { outcome: !nativeExact && sources.workStatus(key).fallbackEligible ? 'neutral' : 'waiting',
-    ...(metadata.enabled && (metadata.provider.availability !== 'ready' || !metadata.effective) ? { awaitingProvider: true as const } : {}) };
+    ...(metadata.enabled && metadata.provider.availability !== 'ready' ? { awaitingProvider: true as const } : {}) };
   const cached = sources.borrowPiSource(key);
   const text = cached?.text === demand.text && cached.utf8Bytes <= HIGHLIGHT_LIMITS.piSourceBytes ? demand.text
     : demand.text.slice(0, highlightingPrefix(demand.text, HIGHLIGHT_LIMITS.piSourceBytes).end);
@@ -153,13 +145,12 @@ export function requestSyntax(client: Client, demand: SyntaxDemand, classify: Pi
 /** Pure keyed metadata read: no classification, observation, allocation grants,
  * source traversal, range/style visits or dispatch. Visitor output is provisional
  * until its final true result, and must be discarded otherwise. */
-export function resolveSyntax(sources: SourceController, identity: SyntaxIdentity,
-  profile?: NativeProfile | null): SyntaxResolution {
+export function resolveSyntax(sources: SourceController, identity: SyntaxIdentity): SyntaxResolution {
   const { key, version, language, piLanguage, complete, palette, fallback } = identity;
   const allowPi = fallback === 'pi';
   const work = sources.workStatus(key), native = sources.borrowSource(key), pi = allowPi ? sources.borrowPiSource(key) : undefined;
   const matchingNative = native?.version === version && native.language === language ? native : undefined;
-  const currentNative = matchingNative && compatibleProfile(matchingNative, profile) ? matchingNative : undefined;
+  const currentNative = matchingNative;
   const status = matchingNative ? sources.status(key) : undefined;
   const nativeExact = !!status?.exact;
   const basis = sources.displayBasis(key);
@@ -173,7 +164,6 @@ export function resolveSyntax(sources: SourceController, identity: SyntaxIdentit
     execution: work.execution, fallbackEligible: work.fallbackEligible, piStyled: projection ? matchingPi?.styleDirectives : undefined, committedBytes: status?.committedBytes,
     needsPi: allowPi && (work.version === undefined || work.version <= version) && (pi === undefined || pi.version <= version)
       && !nativeExact && !display && !projection && work.fallbackEligible && !failure && !refusal,
-    profileRetryAllowed: work.version === version && work.profileRetryAllowed,
     nativeGeneration: currentNative?.generation, piGeneration: projection?.generation, display,
     native: currentNative && basis && (status?.classificationVersion !== undefined || nativeExact)
       ? nativeReader(owner, key, currentNative.generation, version, basis.stamp, language) : undefined,

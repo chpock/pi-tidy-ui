@@ -1,6 +1,6 @@
 use occipital::{
     semantic::Ink,
-    style_rules::{fingerprint_native_palette, fingerprint_native_rules, ClientRulePlan, Error},
+    style_rules::{ClientRulePlan, Error},
     vocabulary::ScopeId,
 };
 use serde::Deserialize;
@@ -10,19 +10,12 @@ use std::io::Write;
 #[derive(Deserialize)]
 struct Vectors {
     client: Vec<Client>,
-    native: Native,
 }
 #[derive(Deserialize)]
 struct Client {
     name: String,
     definition: Box<RawValue>,
     fingerprint: String,
-}
-#[derive(Deserialize)]
-struct Native {
-    definition: String,
-    rules: String,
-    palette: String,
 }
 fn document(text: impl Into<String>) -> Box<RawValue> {
     RawValue::from_string(text.into()).unwrap()
@@ -35,10 +28,10 @@ fn admitted(value: &Value) -> String {
         .to_owned()
 }
 fn empty() -> Value {
-    json!({"revision":1,"binding_slots":4,"default":{"foreground":{"kind":"inherit"},"background":{"kind":"inherit"},"attributes":0,"attribute_mask":0},"rules":[]})
+    json!({"revision":2,"binding_slots":4,"default":{"foreground":{"kind":"inherit"},"background":{"kind":"inherit"},"attributes":0,"attribute_mask":0},"rules":[]})
 }
 fn declaration() -> Value {
-    json!({"path":["comment"],"excludes":[],"foreground":null,"background":null,"font":null})
+    json!({"path":["comment"],"excludes":[],"foreground":null,"background":null,"font":null,"context":null})
 }
 fn definition(rule: Value) -> Value {
     let mut value = empty();
@@ -55,63 +48,43 @@ fn rejected(value: &Value, expected: Error) {
 }
 #[test]
 fn shared_rule_vectors_and_independent_canonical_preimages_match() {
-    let bytes = include_bytes!("../../../protocol/syntax-v3/rule-vectors.json");
+    let bytes = include_bytes!("../../../protocol/syntax-v4/rule-vectors.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
-        "6e8abf624ac2524f0cc15fb60dbf48ccc313d736ac21ac90a739271278fe3df7"
+        "4ea9e0413f99ee2692bdd7c444d079f476eaf8f6047892251241ae1c301d00fd"
     );
     let vectors: Vectors = serde_json::from_slice(bytes).unwrap();
     for vector in &vectors.client {
         let plan = ClientRulePlan::inspect(&vector.definition, usize::MAX).unwrap();
         assert_eq!(plan.fingerprint(), vector.fingerprint, "{}", vector.name);
     }
-    // Independently framed contract bytes, not production expression/path helpers.
-    let empty = b"occipital-client-rules/2\0\0\0\0\0\0\0\0\x07h/h/0/0\0\0\0\0";
-    let markdown = concat!(
-        "occipital-client-rules/2\0",
-        "\0\0\0\x04",
-        "\0\0\0\x07h/h/0/0",
-        "\0\0\0\x02",
-        "\0\0\0\x01\0\0\0\x0emarkup.heading\0\0\0\0\x01\0\0\0\x08b2/h/0/0",
-        "\0\0\0\x01\0\0\0\x0bmarkup.bold\0\0\0\x01\0\0\0\x01\0\0\0\x07comment\x04\0\0\0\x07h/h/1/1"
-    )
-    .as_bytes();
+    let empty = b"occipital-client-rules/3\0\0\0\0\0\0\0\0\x07h/h/0/0\0\0\0\0";
     assert_eq!(
         format!("{:x}", Sha256::digest(empty)),
         vectors.client[0].fingerprint
     );
-    assert_eq!(
-        format!("{:x}", Sha256::digest(markdown)),
-        vectors.client[1].fingerprint
+    let qualified = concat!(
+        "occipital-client-rules/3\0",
+        "\0\0\0\x2c",
+        "\0\0\0\x07h/h/0/0",
+        "\0\0\0\x01",
+        "\0\0\0\x01",
+        "\0\0\0\x17meta.object-literal.key",
+        "\0\0\0\0",
+        "\x01",
+        "\0\0\0\x17meta.object-literal.key",
+        "\0\0\0\x02",
+        "\0\0\0\x12meta.array.literal",
+        "\0\0\0\x18meta.template.expression",
+        "\x01",
+        "\0\0\0\x08b7/h/0/0"
     );
     assert_eq!(
-        fingerprint_native_rules(&vectors.native.definition).unwrap(),
-        vectors.native.rules
+        format!("{:x}", Sha256::digest(qualified.as_bytes())),
+        vectors.client[2].fingerprint
     );
-    assert_eq!(
-        fingerprint_native_palette(&vectors.native.definition).unwrap(),
-        vectors.native.palette
-    );
-    for (domain, expected) in [
-        ("occipital-native-rules/2", vectors.native.rules),
-        ("occipital-native-palette/2", vectors.native.palette),
-    ] {
-        assert_eq!(
-            format!(
-                "{:x}",
-                Sha256::digest(format!("{domain}\0{}", vectors.native.definition))
-            ),
-            expected
-        );
-    }
-    writeln!(
-        std::io::stdout(),
-        "shared identities: 4 client + 2 native; independent preimages {} and {} bytes",
-        empty.len(),
-        markdown.len()
-    )
-    .unwrap();
 }
+
 #[test]
 fn canonical_identity_ignores_json_order_escapes_and_number_spelling_but_not_fields() {
     let original = definition(declaration());
@@ -240,6 +213,66 @@ fn trusted_public_selector_construction_preserves_path_exclusions_and_common_sco
     writeln!(std::io::stdout(), "client compile measurement: {measure:?}").unwrap();
 }
 #[test]
+fn generic_variable_rule_matches_parameter_leaves_outside_declaration_owners() {
+    let mut variable = declaration();
+    variable["path"] = json!(["variable"]);
+    variable["excludes"] = json!([["invalid.illegal"], ["invalid.deprecated"]]);
+    variable["foreground"] = json!({"kind":"binding","slot":0});
+    let mut parameter = declaration();
+    parameter["path"] = json!(["meta.function.parameters", "variable.parameter"]);
+    parameter["excludes"] = json!([["invalid.illegal"], ["invalid.deprecated"]]);
+    parameter["foreground"] = json!({"kind":"binding","slot":1});
+    parameter["context"] = json!({"owner":"meta.function.parameters","boundaries":[]});
+    let mut value = empty();
+    value["rules"] = json!([variable, parameter]);
+    let raw = document(value.to_string());
+    let plan = ClientRulePlan::inspect(&raw, usize::MAX).unwrap();
+    let mut cursor = plan.compile().cursor(8).unwrap();
+    let path = |names: &[&str]| {
+        names
+            .iter()
+            .map(|name| ScopeId::from_name(name).unwrap().scope())
+            .collect::<Vec<_>>()
+    };
+    let declaration = path(&[
+        "source.python",
+        "meta.function.parameters.python",
+        "variable.parameter.python",
+    ]);
+    let call_argument = path(&[
+        "source.python",
+        "meta.function-call.arguments.python",
+        "variable.parameter.python",
+    ]);
+    let annotation_argument = path(&[
+        "source.java",
+        "meta.annotation.java",
+        "meta.annotation.parameters.java",
+        "variable.parameter.java",
+    ]);
+    assert_eq!(
+        cursor.resolve(&declaration).unwrap().expression.foreground,
+        Ink::Binding { slot: 1 }
+    );
+    assert_eq!(
+        cursor
+            .resolve(&call_argument)
+            .unwrap()
+            .expression
+            .foreground,
+        Ink::Binding { slot: 0 }
+    );
+    assert_eq!(
+        cursor
+            .resolve(&annotation_argument)
+            .unwrap()
+            .expression
+            .foreground,
+        Ink::Binding { slot: 0 }
+    );
+}
+
+#[test]
 fn strict_objects_required_nullable_fields_and_nested_shapes_reject() {
     for field in ["revision", "binding_slots", "default", "rules"] {
         let mut value = empty();
@@ -263,7 +296,7 @@ fn strict_objects_required_nullable_fields_and_nested_shapes_reject() {
         rejected(&definition(rule), Error::InvalidRules);
     }
     for (needle, replacement) in [
-        ("\"revision\":1", "\"revision\":1,\"revision\":1"),
+        ("\"revision\":2", "\"revision\":2,\"revision\":2"),
         (
             "\"path\":[\"comment\"]",
             "\"path\":[\"comment\"],\"path\":[]",
@@ -361,7 +394,7 @@ fn scalar_boundaries_and_all_ink_forms_are_validated_without_enum_content() {
         value["binding_slots"] = slots;
         rejected(&value, Error::InvalidRules);
     }
-    for revision in [json!(0), json!(2), Value::Null] {
+    for revision in [json!(0), json!(3), Value::Null] {
         let mut value = empty();
         value["revision"] = revision;
         rejected(&value, Error::InvalidRules);
@@ -370,13 +403,6 @@ fn scalar_boundaries_and_all_ink_forms_are_validated_without_enum_content() {
     value["binding_slots"] = json!(0);
     value["default"]["foreground"] = json!({"kind":"binding","slot":0});
     rejected(&value, Error::InvalidRules);
-    for invalid in ["", "A".repeat(64).as_str(), "0", "0123 "] {
-        assert_eq!(fingerprint_native_rules(invalid), Err(Error::InvalidRules));
-        assert_eq!(
-            fingerprint_native_palette(invalid),
-            Err(Error::InvalidRules)
-        );
-    }
 }
 #[test]
 fn actual_native_count_guards_and_exact_available_allocation_boundary() {
@@ -472,7 +498,7 @@ fn each_expression_scalar_has_the_exact_canonical_key_and_framing() {
         value["binding_slots"] = json!(65536);
         value["default"] =
             json!({"foreground":fg,"background":bg,"attributes":attributes,"attribute_mask":mask});
-        let mut bytes = b"occipital-client-rules/2\0".to_vec();
+        let mut bytes = b"occipital-client-rules/3\0".to_vec();
         bytes.extend_from_slice(&65536u32.to_be_bytes());
         bytes.extend_from_slice(&(key.len() as u32).to_be_bytes());
         bytes.extend_from_slice(key.as_bytes());
@@ -492,15 +518,6 @@ fn each_expression_scalar_has_the_exact_canonical_key_and_framing() {
         admitted(&definition(fg)),
         "foreground/background presence bits differ"
     );
-    for bad in [
-        "0".repeat(63),
-        "0".repeat(65),
-        format!("{}\0", "0".repeat(63)),
-        "é".repeat(32),
-    ] {
-        assert_eq!(fingerprint_native_rules(&bad), Err(Error::InvalidRules));
-        assert_eq!(fingerprint_native_palette(&bad), Err(Error::InvalidRules));
-    }
 }
 
 #[test]
@@ -515,10 +532,10 @@ fn shared_raw_number_vectors_match_binary64_integer_admission() {
         raw: String,
         valid: bool,
     }
-    let bytes = include_bytes!("../../../protocol/syntax-v3/rule-number-vectors.json");
+    let bytes = include_bytes!("../../../protocol/syntax-v4/rule-number-vectors.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
-        "120e3c12f9b60391e51d21686c175a2ca996d757f212ba85fbc2a93301fa04af"
+        "0bb8c789a2f97fd0ae642351f6f7ed8376e629fc4f0d62e2537c5378957b7802"
     );
     let vectors: Numbers = serde_json::from_slice(bytes).unwrap();
     let mut mismatches = Vec::new();
@@ -548,7 +565,7 @@ fn shared_raw_number_vectors_match_binary64_integer_admission() {
 
 #[test]
 fn raw_numeric_conversion_preserves_binary64_rounding_and_scalar_types() {
-    const BODY: &str = r#"{"revision":1,"binding_slots":SLOT,"default":{"foreground":{"kind":"inherit"},"background":{"kind":"inherit"},"attributes":0,"attribute_mask":0},"rules":[]}"#;
+    const BODY: &str = r#"{"revision":2,"binding_slots":SLOT,"default":{"foreground":{"kind":"inherit"},"background":{"kind":"inherit"},"attributes":0,"attribute_mask":0},"rules":[]}"#;
     let fingerprint = |token: &str| {
         let raw = document(BODY.replace("SLOT", token));
         ClientRulePlan::inspect(&raw, usize::MAX).map(|plan| plan.fingerprint().to_owned())

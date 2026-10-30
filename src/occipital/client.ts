@@ -2,8 +2,7 @@ import { diagnose, diagnosticError, reportRuntime, type DiagnosticFields, type D
 import { ExtensionSettings, type SyntaxTheme } from '../settings.ts';
 import { SourceController, type ControllerOptions } from './controller.ts';
 import type { SyntaxMenuOutcome, SyntaxMenuOwner, SyntaxMenuSnapshot } from './menu.ts';
-import { resolveTheme } from './profiles.ts';
-import type { ProfileDescription } from './protocol.ts';
+import { resolveTheme, type ThemeDescription } from '../themes/selection.ts';
 import { ProviderBroker, type ProviderOptions, type ProviderSnapshot } from './provider.ts';
 
 export interface SyntaxClientOptions {
@@ -22,14 +21,12 @@ export interface SyntaxClientOptions {
   onSourceChange?: (keys: readonly string[], changedGroups?: readonly number[]) => void;
 }
 
-type ProfileNeed = Readonly<{ generation: number; sequence: number }>;
 const SAVE_FAILED = 'Syntax theme selection could not be saved.';
-const REFRESH_FAILED = 'Syntax themes could not be reloaded.';
 const LOAD_FAILED = 'Settings could not be read.';
 // Abort reasons can retain their creation stack; keep this outside receiver scopes.
 const saveCancelled = new Error('Syntax preference retired');
 function copyTheme(choice: SyntaxTheme): SyntaxTheme {
-  return choice.kind === 'pi' ? { kind: 'pi' } : { kind: 'occipital', id: choice.id };
+  return choice.kind === 'pi' ? { kind: 'pi' } : { kind: 'theme', id: choice.id };
 }
 // Each factory has its own receiver-free lexical scope, even when observers are
 // retained through a still-live broker/controller after the client is collected.
@@ -42,7 +39,7 @@ function brokerDiagnostic(owner: WeakRef<SyntaxClient>, diagnostic?: DiagnosticS
 function brokerObserver(owner: WeakRef<SyntaxClient>) { return () => owner.deref()?.acceptBrokerChange(); }
 function ownedStopObserver(owner: WeakRef<SyntaxClient>) { return (generation: number) => owner.deref()?.sources.ownedStopped(generation); }
 function sourceObserver(owner: WeakRef<SyntaxClient>) { return (keys: readonly string[], groups?: readonly number[]) => owner.deref()?.acceptSourceChange(keys, groups); }
-type CompletionPart = 'sources' | 'provider' | 'restore' | 'startup' | 'catalogue';
+type CompletionPart = 'sources' | 'provider' | 'restore' | 'startup';
 type ClientCompletion = { promise: Promise<boolean>; resolve(value: boolean): void };
 type CompletionState = { current?: ClientCompletion;
   parts: Partial<Record<CompletionPart, { promise: Promise<unknown>; done: boolean }>> };
@@ -81,15 +78,13 @@ export class SyntaxClient implements SyntaxMenuOwner {
   private preferenceRevision = 0;
   private preferenceKnown = false;
   private selected: SyntaxTheme = { kind: 'pi' };
-  private effective?: ProfileDescription;
+  private effective?: ThemeDescription;
   private missingEpisode = false;
   private lastIssue?: string;
   private restore?: Promise<void>;
   private startup?: Promise<void>;
   private shutdown?: Promise<void>;
   private save?: AbortController;
-  private metadata?: { epoch: number; generation: number; operation?: Promise<SyntaxMenuOutcome> };
-  private attemptedNeed?: ProfileNeed;
   private noticeScheduled = false;
   private delivering = false;
   private readonly completion: CompletionState = { parts: {} };
@@ -143,7 +138,6 @@ export class SyntaxClient implements SyntaxMenuOwner {
     this.watchCompletion('provider', this.broker.whenSettled());
     this.watchCompletion('restore', this.restore);
     this.watchCompletion('startup', this.startup);
-    this.watchCompletion('catalogue', this.metadata?.operation);
     if (this.noticeScheduled || this.delivering || Object.values(state.parts).some(part => !part.done)) return;
     state.current = undefined; completion.resolve(true);
   }
@@ -160,7 +154,7 @@ export class SyntaxClient implements SyntaxMenuOwner {
     if (this.disposed) return { ok: false, message: SAVE_FAILED };
     const selected = copyTheme(choice);
     this.applyTheme(selected);
-    this.log('Syntax theme selected; applying before persistence', { choice: selected.kind, theme: selected.kind === 'occipital' ? selected.id : 'Pi', revision: this.preferenceRevision });
+    this.log('Syntax theme selected; applying before persistence', { choice: selected.kind, theme: selected.kind === 'theme' ? selected.id : 'Pi', revision: this.preferenceRevision });
     this.cancelSave(); const save = new AbortController(); this.save = save;
     try {
       const result = await this.settings.update({ syntaxTheme: copyTheme(selected) }, { signal: save.signal });
@@ -186,32 +180,23 @@ export class SyntaxClient implements SyntaxMenuOwner {
   /** Session-local application only; an earlier confirmed save remains independent. */
   previewTheme(choice: SyntaxTheme): void {
     if (this.disposed || this.preferenceKnown && choice.kind === this.selected.kind &&
-      (choice.kind === 'pi' || this.selected.kind === 'occipital' && choice.id === this.selected.id)) return;
+      (choice.kind === 'pi' || this.selected.kind === 'theme' && choice.id === this.selected.id)) return;
     this.applyTheme(copyTheme(choice));
-    this.log('Syntax theme preview applied without persistence', { choice: choice.kind, theme: choice.kind === 'occipital' ? choice.id : 'Pi', revision: this.preferenceRevision });
+    this.log('Syntax theme preview applied without persistence', { choice: choice.kind, theme: choice.kind === 'theme' ? choice.id : 'Pi', revision: this.preferenceRevision });
   }
   /** Apply a confirmed shared preference without writing it back. */
   applySavedTheme(choice: SyntaxTheme): void {
     if (this.disposed) return;
     this.applyTheme(copyTheme(choice));
-    this.log('Confirmed syntax preference applied from settings without persistence', { choice: choice.kind, theme: choice.kind === 'occipital' ? choice.id : 'Pi' });
+    this.log('Confirmed syntax preference applied from settings without persistence', { choice: choice.kind, theme: choice.kind === 'theme' ? choice.id : 'Pi' });
   }
   private applyTheme(selected: SyntaxTheme): void {
-    if (selected.kind !== this.selected.kind || selected.kind === 'occipital' && this.selected.kind === 'occipital' && selected.id !== this.selected.id)
+    if (selected.kind !== this.selected.kind || selected.kind === 'theme' && this.selected.kind === 'theme' && selected.id !== this.selected.id)
       this.missingEpisode = false;
     ++this.preferenceRevision; this.preferenceKnown = true; this.selected = selected;
     this.reconcile();
   }
 
-  refreshThemes(): Promise<SyntaxMenuOutcome> {
-    if (this.disposed) return Promise.resolve({ ok: false, message: REFRESH_FAILED });
-    if (!this.enabled || this.suspended || this.provider.availability !== 'ready' || this.metadata) {
-      this.issue(REFRESH_FAILED); return Promise.resolve({ ok: false, message: REFRESH_FAILED });
-    }
-    const need = this.sources.profileReconciliationNeeded();
-    if (need) this.attemptedNeed = need;
-    return this.readCatalogue('themes.refresh', need);
-  }
 
   setEnabled(enabled: boolean): Promise<void> {
     if (this.disposed) return this.shutdown ?? Promise.resolve();
@@ -265,14 +250,13 @@ export class SyntaxClient implements SyntaxMenuOwner {
     if (next.availability === previous.availability && next.reason === previous.reason && next.generation === previous.generation
       && next.initialShared === previous.initialShared && next.kind === previous.kind && next.description === previous.description) return;
     this.provider = next; this.reconcile();
-    this.tryProfileMetadata();
   }
   /** Internal weak source observer, called after the controller's coalesced notice. */
   acceptSourceChange(keys: readonly string[] = [], groups?: readonly number[]): void {
     if (this.disposed) return;
     const current = keys.filter(key => this.sources.workStatus(key).version !== undefined);
     try { if (current.length || groups?.length) this.onSourceChange?.(current, groups); } catch { /* Presentation cannot suppress reconciliation. */ }
-    this.changed(); this.tryProfileMetadata();
+    this.changed();
   }
   /** Internal weak coalesced presentation delivery. No source observation/flush. */
   deliverChange(): void {
@@ -292,7 +276,7 @@ export class SyntaxClient implements SyntaxMenuOwner {
       const result = await this.settings.load();
       if (this.disposed || revision !== this.preferenceRevision || this.preferenceRevision !== 0) return;
       this.selected = copyTheme(result.syntaxTheme); this.preferenceKnown = true;
-      this.log('Syntax preference restored', { ok: result.ok, choice: this.selected.kind, theme: this.selected.kind === 'occipital' ? this.selected.id : 'Pi' });
+      this.log('Syntax preference restored', { ok: result.ok, choice: this.selected.kind, theme: this.selected.kind === 'theme' ? this.selected.id : 'Pi' });
       if (!result.ok) this.issue(result.issue.message, true);
     } catch {
       if (this.disposed || revision !== this.preferenceRevision || this.preferenceRevision !== 0) return;
@@ -301,20 +285,17 @@ export class SyntaxClient implements SyntaxMenuOwner {
     this.reconcile();
   }
   private reconcile(): void {
-    const active = this.preferenceKnown && this.enabled;
-    const resolved = resolveTheme(this.selected, active && this.provider.availability === 'ready'
-      ? this.provider.description?.profiles : undefined);
-    const previous = this.effective; this.effective = active ? resolved.effective : undefined;
+    const resolved = resolveTheme(this.selected);
+    const previous = this.effective; this.effective = this.preferenceKnown ? resolved.effective : undefined;
     if (previous?.id !== this.effective?.id || previous?.fingerprint !== this.effective?.fingerprint)
-      this.log('Effective syntax profile changed without observing source text', { profile: this.effective?.id ?? 'unavailable', missing: resolved.missing });
+      this.log('Effective syntax palette changed without observing source text', { palette: this.effective?.id ?? 'unavailable', missing: resolved.missing });
     this.sources.setEnabled(this.preferenceKnown && this.enabled);
-    if (resolved.missing && this.selected.kind === 'occipital') {
+    if (resolved.missing && this.selected.kind === 'theme') {
       if (!this.missingEpisode) {
         this.missingEpisode = true;
         this.issue(`Syntax theme ${JSON.stringify(this.selected.id)} is unavailable; using Pi palette temporarily.`, true);
       }
     } else if (resolved.effective) this.missingEpisode = false;
-    // Unavailability alone cannot end an unresolved missing-theme episode.
     this.changed();
   }
   private log(explanation: string, fields?: DiagnosticFields): void { diagnose(this.diagnostic, 'INFO', 'syntax', explanation, fields); }
@@ -326,40 +307,5 @@ export class SyntaxClient implements SyntaxMenuOwner {
   private changed(): void {
     if (this.disposed || !this.onChange || this.noticeScheduled) return;
     this.noticeScheduled = true; queueMicrotask(changeNotice(new WeakRef(this)));
-  }
-  private tryProfileMetadata(): void {
-    if (this.disposed || this.suspended || !this.enabled || !this.preferenceKnown || this.metadata) return;
-    const need = this.sources.profileReconciliationNeeded();
-    if (!need || need.generation === this.attemptedNeed?.generation && need.sequence === this.attemptedNeed.sequence) return;
-    this.attemptedNeed = need;
-    void this.readCatalogue('describe', need);
-  }
-  private readCatalogue(op: 'describe' | 'themes.refresh', need?: ProfileNeed): Promise<SyntaxMenuOutcome> {
-    const attempt: NonNullable<SyntaxClient['metadata']> = { epoch: this.menuEpoch, generation: this.provider.generation };
-    this.metadata = attempt;
-    const operation = this.readCatalogueAttempt(attempt, op, need); attempt.operation = operation;
-    this.checkCompletion(); return operation;
-  }
-  private async readCatalogueAttempt(attempt: NonNullable<SyntaxClient['metadata']>, op: 'describe' | 'themes.refresh', need?: ProfileNeed): Promise<SyntaxMenuOutcome> {
-    this.log('Provider catalogue read started; this is not source classification', { operation: op, generation: attempt.generation });
-    try {
-      const description = await this.broker.catalogue(attempt.generation, op);
-      if (!this.menuCurrent(attempt.epoch) || !this.broker.isReady(attempt.generation)) return { ok: false, message: REFRESH_FAILED };
-      this.acceptBrokerChange();
-      // A newer refusal that arrived in flight remains a separate metadata need.
-      if (need) this.sources.acknowledgeProfiles(need.generation, need.sequence);
-      if (op === 'themes.refresh' && description.diagnostic !== null) {
-        this.issue(REFRESH_FAILED); return { ok: false, message: REFRESH_FAILED };
-      }
-      this.log('Provider catalogue read completed', { operation: op, generation: attempt.generation, profiles: description.profiles.length });
-      return { ok: true };
-    } catch (error) {
-      this.log('Provider catalogue read failed or wait expired; source deadline policy is unchanged', { operation: op, code: diagnosticError(error) });
-      if (this.menuCurrent(attempt.epoch) && this.broker.isReady(attempt.generation)) this.issue(REFRESH_FAILED, op === 'describe');
-      return { ok: false, message: REFRESH_FAILED };
-    } finally {
-      if (this.metadata === attempt) this.metadata = undefined;
-      this.tryProfileMetadata();
-    }
   }
 }

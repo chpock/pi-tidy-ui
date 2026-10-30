@@ -7,7 +7,7 @@ import { renderLayoutFrame } from '../../node_modules/@earendil-works/pi-tui/dis
 import { UserMessageComponent } from '../../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/components/user-message.js';
 import { initTheme, theme } from '../../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js';
 import { verifyPerformanceTools } from './performance-integrity.mjs';
-import { preparedCardReady } from './performance-readiness.mjs';
+import { preparedCardReady, waitForPerformanceReady } from './performance-readiness.mjs';
 import { beginPhase, endPhase, afterGC, capabilities, startAllocationProfile, stopAllocationProfile, summarizeAllocationProfile } from '../../scripts/test/performance/metrics.mjs';
 import { history, workload } from '../../scripts/test/performance/workloads.mjs';
 
@@ -15,7 +15,8 @@ const tick = () => new Promise(resolve => setImmediate(resolve));
 const config = JSON.parse(readFileSync(process.env.TIDY_TEST_PERF_CONFIG, 'utf8'));
 const scenario = workload(config.scenario.id, config.scenario.variant, config.scenario.parameters), p = scenario.parameters;
 if (scenario.hash !== config.scenario.hash || scenario.driver !== 'sdk') throw new Error('Invalid SDK performance workload');
-const data = history(p), componentInputs = structuredClone(data.tools), phases = [], lifecycle = [];
+const data = history(p), componentInputs = structuredClone(data.tools), toolResults = new Map(data.messages.filter(message => message.role === 'toolResult')
+  .map(message => [message.toolCallId, structuredClone(message)])), phases = [], lifecycle = [];
 let expectedAfter = data.tools;
 let controller, root, viewport, contentRoot, queueHost, tools = [], width = p.width, height = p.height, draws = 0, renderedRows = 0, allocationProfile = null, integrity;
 initTheme('dark', false);
@@ -31,20 +32,17 @@ if (scenario.variant === 'on') {
   };
   restorePreparation = () => { CardSources.prototype.prepare = original; };
 }
+function historyReady() {
+  const consumer = preparedSources?.deref(), states = consumer && Reflect.get(consumer, 'states');
+  if (!states) return false;
+  assert.ok(states instanceof WeakMap, 'SDK private prepared-source observation contract');
+  return tools.every((tool, index) => data.tools[index % data.tools.length].name === 'read' || preparedCardReady(consumer, tool));
+}
 async function ready() {
   if (scenario.variant !== 'on') return;
-  const deadline = performance.now() + 30000;
-  while (performance.now() < deadline) {
-    draw(); await tick();
-    const consumer = preparedSources?.deref(), states = consumer && Reflect.get(consumer, 'states');
-    if (!states) continue;
-    assert.ok(states instanceof WeakMap, 'SDK private prepared-source observation contract');
-    if (tools.every((tool, index) => {
-      if (data.tools[index % data.tools.length].name === 'read') return true;
-      return preparedCardReady(consumer, tool);
-    })) return;
-  }
-  throw new Error('SDK source preparation did not become ready');
+  const prepared = await waitForPerformanceReady({ frame: async () => { draw(); await tick(); }, check: historyReady,
+    pause: ms => new Promise(resolve => setTimeout(resolve, ms)), timeoutMs: 20_000 });
+  if (!prepared) throw new Error('SDK source preparation did not become ready');
 }
 let requests = 0;
 class Root extends Container { terminal = { rows: p.height }; requestRender() { requests++; } }
@@ -58,7 +56,9 @@ function add(index) {
   contentRoot.addChild(new UserMessageComponent(data.messages[(index % data.tools.length) * 3].content[0].text));
   contentRoot.addChild(new Markdown(`Result ${index}: **stable** body.`, 0, 0, getMarkdownTheme()));
   const tool = new ToolExecutionComponent(item.name, item.id, item.args, undefined, undefined, root, process.cwd());
-  tool.updateResult(item.result); contentRoot.addChild(tool); tools.push(tool);
+  const result = toolResults.get(item.id);
+    assert.equal(result?.role, 'toolResult', 'SDK components receive their completed transcript result');
+    tool.updateResult(result); contentRoot.addChild(tool); tools.push(tool);
 }
 async function phase(id, operations, action, strictWarm = false) {
   const before = snapshot(), token = beginPhase({ gcProfile: config.gcProfile === true });
@@ -134,7 +134,7 @@ try {
   }
   if (scenario.id === 'stream') {
     let output = data.tools[0].result.content[0].text, result;
-    tools[0].markExecutionStarted();
+    tools[0].setArgsComplete(); tools[0].markExecutionStarted();
     await phase('stream-updates', p.iterations, async () => {
       for (let i = 0; i < p.iterations; i++) {
         output += `\nstream_${i}`;

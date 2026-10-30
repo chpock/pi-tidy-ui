@@ -2,6 +2,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { SyntaxClient } from '../../src/occipital/client.ts';
+import { ownedStyleSelection } from './owned-style-selection.ts';
 import { createLocalOwnedFactory } from '../../src/occipital/factories.ts';
 import { readInputs, validateNative } from '../../scripts/test/context.mjs';
 import { workload } from '../../scripts/test/performance/workloads.mjs';
@@ -12,14 +13,14 @@ const scenario = workload(config.scenario.id, config.scenario.variant, config.sc
 assert.equal(scenario.id, 'source-stream'); assert.equal(scenario.hash, config.scenario.hash);
 const inputs = readInputs(), native = validateNative(inputs), p = scenario.parameters, phases = [], lifecycle = [];
 if (config.allocationProfile) throw new Error('Select render/frames for allocation stack profiling; SOURCE streaming exposes exact allocation metrics without stack sampling');
-let client = new SyntaxClient({ standaloneVersion: '0.0.0', initialTheme: { kind: 'occipital', id: 'syntect:InspiredGitHub' },
+let client = new SyntaxClient({ standaloneVersion: '0.0.0',
   provider: { tryShared: async () => undefined, acquireOwned: createLocalOwnedFactory({ command: native.path, requestDeadlineMs: 10000, terminateGraceMs: 100 }) } });
 const counters = ['dispatches', 'preparedBytes', 'decodedBytes', 'committedLineCalls', 'committedLineBytes', 'tailCalls', 'tailBytes', 'styleDispatches', 'styleEncodes'];
 const snapshot = () => client.sources.stats();
 const accounting = () => { const s = snapshot(); return { records: s.sourceRecords, entries: s.retention.entries, unsettledJobs: s.unsettledJobs, retainedBytes: s.retention.retainedBytes, outstandingPeakBytes: s.retention.outstandingPeakBytes }; };
 const line = index => `printf '%s\\n' 'source_${index}${p.unicode ? ' 界 é 👩‍💻' : ' ascii'}'\n`;
 const keys = Array.from({ length: p.cards }, (_, i) => `performance-source:${i}`);
-let profile, text = line(0), version = 1, disposed = false;
+let text = line(0), version = 1, disposed = false;
 async function ready(key, wanted, expected) {
   const end = performance.now() + 30000;
   while (performance.now() < end) {
@@ -35,8 +36,7 @@ async function ready(key, wanted, expected) {
     status: client.sources.status(key), work: client.sources.workStatus(key), statistics: accounting() })}`);
 }
 function observe(key, sourceVersion, value, complete) {
-  assert.equal(client.sources.observe({ key, version: sourceVersion, text: value, language: 'bash', neutral: 'title',
-    profile: profile.id, fingerprint: profile.fingerprint, complete }), true);
+  assert.equal(client.sources.observe({ key, version: sourceVersion, text: value, language: 'bash', neutral: 'title', complete }), true);
 }
 async function phase(id, operations, action) {
   const before = snapshot(), token = beginPhase({ gcProfile: config.gcProfile }); let result, ended = false;
@@ -47,8 +47,10 @@ async function phase(id, operations, action) {
 }
 try {
   await phase('owned-startup-and-history', p.cards, async () => {
-    await client.start(); assert.equal(client.snapshot().provider.availability, 'ready'); profile = client.snapshot().effective; assert.ok(profile); assert.equal(profile.id, 'syntect:InspiredGitHub');
-    client.sources.setStyleSelection({ kind: 'native', id: profile.id, fingerprint: profile.fingerprint });
+    await client.start(); assert.equal(client.snapshot().provider.availability, 'ready');
+    assert.equal(client.sources.stats().sourceRecords, 0, 'source preparation starts independently of any appearance selection');
+    assert.equal(client.sources.setStyleSelection(ownedStyleSelection()), true,
+      'STYLE must publish a local display basis before source readiness can complete');
     for (const key of keys) observe(key, 1, text, key !== keys.at(-1));
     for (const key of keys) await ready(key, 1, text);
   });
@@ -66,7 +68,7 @@ try {
   assert.equal(accounting().entries, 0, 'SOURCE removal releases every source entry; the live selection can still own its palette');
   await client.dispose(); disposed = true;
   const disposedAccounting = accounting(); assert.equal(disposedAccounting.retainedBytes, 0, 'dispose releases the selection and all remaining budget charges');
-  client = undefined; profile = undefined; text = '';
+  client = undefined; text = '';
   const retained = await afterGC({ turns: 3 });
   lifecycle.push({ id: 'disposed-collected', memory: retained, accounting: disposedAccounting });
   writeFileSync(process.env.TIDY_TEST_PERF_RESULT, JSON.stringify({ outcome: 'passed', phases, lifecycle, retained, capabilities: capabilities(),

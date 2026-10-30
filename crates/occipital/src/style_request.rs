@@ -1,7 +1,7 @@
-//! Borrowed styles.resolve admission; neither source parsing nor transport ownership.
+//! Borrowed v4 styles.resolve admission; neither source parsing nor transport ownership.
 use crate::{
     protocol::Fault,
-    semantic::{Bounds, ContextPlan},
+    semantic::{Bounds, ContextPlan, PROTOCOL_VERSION},
     style_rules::ClientRulePlan,
     vocabulary,
     wire::{admission, decode, fingerprint, invalid, present, text, unsigned},
@@ -33,32 +33,13 @@ struct Request<'a> {
     #[serde(borrow)]
     rules: &'a RawValue,
 }
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Input<'a> {
-    #[serde(borrow)]
-    kind: &'a RawValue,
-    #[serde(borrow, default, deserialize_with = "present")]
-    id: Option<&'a RawValue>,
-    #[serde(borrow, default, deserialize_with = "present")]
-    fingerprint: Option<&'a RawValue>,
-    #[serde(borrow, default, deserialize_with = "present")]
-    definition: Option<&'a RawValue>,
-}
-pub enum RuleInput<'a> {
-    Native {
-        id: Cow<'a, str>,
-        fingerprint: Cow<'a, str>,
-    },
-    Client(ClientRulePlan<'a>),
-}
 pub struct StyleRequestPlan<'a> {
     pub ticket: Cow<'a, str>,
     pub admission: Admission,
     pub contexts: ContextPlan<'a>,
-    pub rules: RuleInput<'a>,
-    /// Context expansion and client-rule compilation only. Raw-frame capture,
-    /// native immutable assets, matching workspace and output need separate credit.
+    pub rules: ClientRulePlan<'a>,
+    /// Context expansion and rule compilation only. Raw-frame capture,
+    /// matching workspace and output need separate credit.
     pub policy_bytes: usize,
 }
 impl<'a> StyleRequestPlan<'a> {
@@ -71,7 +52,7 @@ impl<'a> StyleRequestPlan<'a> {
             return Err(Fault::not_started("frame_limit"));
         }
         let request: Request<'a> = decode(raw)?;
-        if unsigned(request.v, u32::MAX)? != 3 {
+        if unsigned(request.v, u32::MAX)? != PROTOCOL_VERSION {
             return Err(Fault::not_started("protocol_mismatch"));
         }
         if text(request.op, 64)? != "styles.resolve" || text(request.instance, 64)? != instance {
@@ -82,24 +63,9 @@ impl<'a> StyleRequestPlan<'a> {
             return Err(Fault::not_started("vocabulary_changed"));
         }
         let admission = admission(Some(request.admission), request.queue_wait_ms)?;
-        let input: Input<'a> = decode(request.rules)?;
-        let (rules, rule_bytes) = match text(input.kind, 64)?.as_ref() {
-            "native" if input.definition.is_none() => (
-                RuleInput::Native {
-                    id: text(input.id.ok_or_else(invalid)?, 64)?,
-                    fingerprint: fingerprint(input.fingerprint.ok_or_else(invalid)?)?,
-                },
-                0,
-            ),
-            "client" if input.id.is_none() && input.fingerprint.is_none() => {
-                let plan =
-                    ClientRulePlan::inspect(input.definition.ok_or_else(invalid)?, available_bytes)
-                        .map_err(|e| e.fault())?;
-                let bytes = plan.measurement().policy_bytes;
-                (RuleInput::Client(plan), bytes)
-            }
-            _ => return Err(invalid()),
-        };
+        let rules = ClientRulePlan::inspect(request.rules, available_bytes)
+            .map_err(|error| error.fault())?;
+        let rule_bytes = rules.measurement().policy_bytes;
         let remaining = available_bytes
             .checked_sub(rule_bytes)
             .ok_or(Fault::not_started("data_limit"))?;

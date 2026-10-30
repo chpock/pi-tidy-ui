@@ -104,8 +104,8 @@ async fn dispatch(
             };
             (payload, Some(ticket))
         }
-        // Metadata cancellation is best effort; don't free its slot while a
-        // blocking refresh still owns work. EOF retires the whole incarnation.
+        // Metadata cancellation is best effort; keep its CONTROL delivery credit until the response flushes.
+        // EOF retires the whole incarnation.
         Incoming::Control(control) => {
             let payload = match authority.control(control).await {
                 Ok(value) => Payload::Control(value),

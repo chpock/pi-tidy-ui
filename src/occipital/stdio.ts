@@ -233,7 +233,7 @@ export class StdioTransport {
       const ticket = request.ticket;
       if (this.pending.has(ticket)) throw new StdioError('stdio active duplicate ticket');
       if (options.signal?.aborted) throw new StdioError('stdio aborted before dispatch');
-      const control = request.op === 'describe' || request.op === 'themes.refresh';
+      const control = request.op === 'describe';
       if (options.waitOnly && !control) throw new StdioError('stdio wait-only requires control');
       const counts = this.stats();
       if (control ? counts.unsettledControl >= 1 : counts.unsettledData >= 2) throw new StdioError('stdio request capacity');

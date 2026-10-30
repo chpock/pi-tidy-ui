@@ -88,7 +88,7 @@ impl Drop for Probe<'_> {
     }
 }
 fn request(ticket: &str, text: &str, queued: bool) -> Vec<u8> {
-    let mut value = json!({"v":3,"ticket":ticket,"op":"stream.open","instance":"boot","admission":if queued {"bounded_queue"} else {"try_now"},"sources":[{"key":ticket,"generation":1,"source_version":1,"hint":{"language":"typescript"},"text":text}]});
+    let mut value = json!({"v":4,"ticket":ticket,"op":"stream.open","instance":"boot","admission":if queued {"bounded_queue"} else {"try_now"},"sources":[{"key":ticket,"generation":1,"source_version":1,"hint":{"language":"typescript"},"text":text}]});
     if queued {
         value["queue_wait_ms"] = json!(1000);
     }

@@ -7,7 +7,7 @@ import { getThemeByName } from '../../../node_modules/@earendil-works/pi-coding-
 import { CARD_ROLES } from '../../../src/occipital/semantic-codec.ts';
 import { samplePiCardPalette } from '../../../src/syntax/pi-palette.ts';
 import { samplePiPrefix } from '../../../src/syntax/pi-bindings.ts';
-import { PI_DIRECT_BINDINGS } from '../../../src/syntax/pi-rules.ts';
+import { PI_DIRECT_BINDINGS } from '../../../src/syntax/pi-adapter.ts';
 import { compileStyleAnsi } from '../../../src/syntax/style-ansi.ts';
 
 function theme(mode: 'truecolor' | '256color' = 'truecolor', terminal = false) {

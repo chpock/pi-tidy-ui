@@ -21,7 +21,7 @@ fn source(key: usize, text: &str) -> Value {
 }
 fn request(sources: Value) -> Box<RawValue> {
     raw(
-        json!({"v":3,"op":"highlight","ticket":"t","instance":"limits","admission":"try_now","sources":sources}),
+        json!({"v":4,"op":"highlight","ticket":"t","instance":"limits","admission":"try_now","sources":sources}),
     )
 }
 fn execute(engine: &mut Engine, mut work: Work) -> SourceChunk {
@@ -170,7 +170,7 @@ async fn data_frame_refusal_recovers_ticket_without_spending_physical_credit() {
     assert_eq!(pool.stats().credits.jobs, 0);
     assert_eq!(pool.stats().credits.bytes, before);
     let Incoming::Control(control) = route
-        .receive(br#"{"v":3,"op":"describe","ticket":"metadata"}"#.to_vec())
+        .receive(br#"{"v":4,"op":"describe","ticket":"metadata"}"#.to_vec())
         .unwrap()
     else {
         panic!("metadata")
@@ -289,7 +289,7 @@ fn style_input_caps_frame_and_expansion_before_owned_work_while_retaining_failur
         style_request::StyleRequestPlan,
         style_work::StyleWork,
     };
-    let valid = json!({"v":3,"op":"styles.resolve","ticket":"style","instance":"limits","admission":"try_now",
+    let valid = json!({"v":4,"op":"styles.resolve","ticket":"style","instance":"limits","admission":"try_now",
         "vocabulary":vocabulary::FINGERPRINT,"contexts":[],"rules":{"kind":"native","id":"syntect:Theme","fingerprint":"a".repeat(64)}});
     let text = valid.to_string();
     let padded = text.replacen(
@@ -322,7 +322,6 @@ fn style_input_caps_frame_and_expansion_before_owned_work_while_retaining_failur
             contexts,
             &resolver,
             "a".repeat(64),
-            None,
             budget.reserve(Some("r"), 1024).unwrap(),
         )
         .err()

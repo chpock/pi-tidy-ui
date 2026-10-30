@@ -72,7 +72,7 @@ The captured payload keeps its existing charges. The job funds additional captur
 
 For a multi-segment card, captured membership is one group, and members must be complete and vocabulary-compatible. Growing Bash uses its single source slot. The capture’s private group identity prevents unrelated otherwise-similar captures from being assembled into one replacement.
 
-Ready controller groups also pin their selection data. A Follow Pi group retains its funded selection; a native group retains the appropriate cached palette entry. Dropping a cache’s ordinary reference therefore cannot free data still owned by a ready group. This is storage pinning, not a guarantee that the group remains current.
+Ready controller groups pin their exact generic rule definition, local palette identity and binding revision. Follow Pi retains its sampled input; an owned-palette group retains the validated palette input it uses. Dropping a cache’s ordinary reference therefore cannot free data still owned by a ready group. This is storage pinning, not a guarantee that the group remains current.
 
 ## Pressure receipts connect data loss to work ownership
 
@@ -90,7 +90,7 @@ Geometry funding protects the requesting group’s current and retained source g
 
 A visitor lends data for one synchronous callback. Its final boolean reports whether the whole operation remained valid. A callback may trigger replacement or removal; values delivered before that event are provisional.
 
-Readers use weak owners plus primitive identity checks, and temporary holders retain charges while callback frames are suspended. Removal invalidates authority immediately, but the suspended frame’s arrays are not refunded until it exits. Escaped card accessors are cleared on unwind rather than keeping a source root or old palette reachable.
+Readers use weak owners plus primitive identity checks, and temporary holders retain charges while callback frames are suspended. Group range readers also resolve their controller, work node and preparation weakly: keeping a reader does not pin any of them or its publication, and a stale or collected target makes the reader return `false`. Consumers that need a live read must retain the current owner and preparation through the call, stage output, and publish only after the visit succeeds. Removal invalidates authority immediately, but the suspended frame’s arrays are not refunded until it exits. Escaped card accessors are cleared on unwind rather than keeping a source root or old palette reachable.
 
 The consumer must stage output and publish only after the outer visit succeeds. A few successful inner callbacks are insufficient. On failure it releases the candidate layout/paint, leaving the existing accepted presentation intact.
 

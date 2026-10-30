@@ -25,7 +25,7 @@ At width zero return no rows. When the normal frame cannot fit, keep at least on
 
 ## Paint
 
-Prepared Bash/edit/write frames use literal roles from the card's ready palette, sampled or resolved before render. Independent native themes own those colors; they do not read Pi theme tokens. Under Follow Pi the mappings are:
+Prepared Bash/edit/write frames use literal roles from the card's ready palette, sampled or resolved before render. Owned palettes derive those colors from their bundled data and do not read Pi theme tokens. Under Follow Pi the mappings are:
 
 - Panel body (everything after the stripe): `toolPendingBg` for every execution state, including errors.
 - Ordinary border: `borderMuted` foreground, mapped to the prepared `frame` role.
@@ -35,9 +35,9 @@ For either palette, the stripe background remains terminal-default in ordinary a
 
 No hover highlighting or hover state. Pointer motion, focus changes and moving between cards do not alter panel paint or request pi-tidy-ui redraws. This is an intentional deviation from the OpenCode reference, accepted after unstable hover behavior.
 
-Terminal-default synchronization can change the meaning of SGR 39/49 without updating Pi's cached concrete colors. Diff RGB arithmetic and the input half-block use pi-tidy-ui's latest requested/reported concrete projection, while native semantic paint and Theme objects stay unchanged; local off samples released profile defaults when needed for the remaining presentation. See the [terminal-color contract](terminal-colors-spec.md).
+Terminal-default synchronization can change the meaning of SGR 39/49 without updating Pi's cached concrete colors. Diff RGB arithmetic and the input half-block use pi-tidy-ui's latest requested/reported concrete projection, while semantic styles and Pi Theme objects stay unchanged; local Off samples released Pi default colors when needed for the remaining presentation. See the [terminal-color contract](terminal-colors-spec.md).
 
-The generic frame receives paint callbacks instead of selecting theme roles or inspecting execution state. Its border callback styles the stripe foreground; its panel callback receives only body/internal padding. Prepared Bash/edit/write cards instead provide precompiled literal roles and do not sample an ambient theme during render. Under Follow Pi the failed stripe matches the error footer, the ordinary border follows `borderMuted`, the stripe background is default and the panel body stays neutral. Independent themes use corresponding native roles, never Pi donors.
+The generic frame receives paint callbacks instead of selecting theme roles or inspecting execution state. Its border callback styles the stripe foreground; its panel callback receives only body/internal padding. Prepared Bash/edit/write cards instead provide precompiled literal roles and do not sample an ambient theme during render. Under Follow Pi the failed stripe matches the error footer, the ordinary border follows `borderMuted`, the stripe background is default and the panel body stays neutral. Owned palettes use their corresponding local roles, never Pi donors.
 
 ### Framing APIs and ANSI responsibility
 

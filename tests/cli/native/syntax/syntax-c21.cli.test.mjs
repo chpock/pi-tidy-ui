@@ -4,12 +4,13 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import test from 'node:test';
 import { stripVTControlCharacters as plain } from 'node:util';
-import { CARD_ROLES } from '../../../../src/occipital/semantic-codec.ts';
+import { sampleOwnedPalette } from '../../../../src/themes/owned-palette.ts';
+import { THEME_CATALOGUE } from '../../../../src/themes/catalogue.ts';
 import { PiTerminal } from '../../../fixtures/terminal-harness.mjs';
 import { closeTerminals } from '../../../fixtures/terminal-cleanup.mjs';
 import { syntaxToolData as raw } from '../../../fixtures/syntax-tool-data.mjs';
 import { nativeReady, semanticStyle, semanticPhaseReady } from '../../../fixtures/syntax-observation.mjs';
-import { prepareSyntaxNative, inputs, previewStats, settledStats, captureThenRenderDiagnostics, syntaxReady, until, work, body, traffic, persisted, finish, chooseTheme, expressionForeground } from '../../../fixtures/syntax-cli-support.mjs';
+import { prepareSyntaxNative, inputs, settledStats, captureThenRenderDiagnostics, syntaxReady, until, work, body, traffic, persisted, finish, chooseTheme, expressionForeground } from '../../../fixtures/syntax-cli-support.mjs';
 
 const { fixture, descriptor } = await prepareSyntaxNative();
 const receipt = snapshot => ({ node: snapshot.node, counts: snapshot.counts, work: work(snapshot), leases: snapshot.source.remoteLeases, unsettled: snapshot.source.globalUnsettledJobs });
@@ -23,29 +24,28 @@ const cellAt = (dump, marker) => {
 };
 const vector = cell => ({ fg: cell.fg, bg: cell.bg, bold: !!cell.bold, italic: !!cell.italic, underline: !!cell.underline, inverse: cell.inverse });
 const rgb = ink => { assert.equal(ink.kind, 'rgb'); return ink.r * 65536 + ink.g * 256 + ink.b; };
-function commandVector(terminal, dump, profile) {
-  const resolved = semanticStyle(terminal.events(), 'STABLE_text', profile); assert.ok(resolved);
+function commandVector(terminal, dump, palette) {
+  const resolved = semanticStyle(terminal.events(), 'STABLE_text'); assert.ok(resolved);
   const cell = cellAt(dump, 'STABLE_text'), expression = resolved.expression;
-  const role = resolved.styleEvent.reply.body;
-  const base = profile === 'pi' ? { attributes: 0 } : role.styles[role.palette.slots[CARD_ROLES.indexOf('code')] - 1];
-  const attributes = base.attributes & ~expression.attribute_mask | expression.attributes & expression.attribute_mask;
-  assert.equal(cell.fg, expressionForeground(expression, dump, 'toolTitle'));
+  const base = palette === 'pi' ? undefined : sampleOwnedPalette(palette, 'truecolor').roles.code;
+  const attributes = (base?.attributes ?? 0) & ~expression.attribute_mask | expression.attributes & expression.attribute_mask;
+  assert.equal(cell.fg, expressionForeground(expression, dump, palette, 'toolTitle'));
   assert.deepEqual([!!cell.bold, !!cell.italic, !!cell.underline], [!!(attributes & 1), !!(attributes & 2), !!(attributes & 4)]);
   assert.equal(cell.inverse, false);
-  if (profile !== 'pi') assert.equal(cell.bg, rgb(expression.background.kind === 'inherit' ? base.background : expression.background));
+  if (base) assert.equal(cell.bg, rgb(expression.background.kind === 'inherit' ? base.background : expression.background));
   return vector(cell);
 }
 
-for (const mode of ['fullscreen', 'regular']) test(`occipital C21: ${mode} live frozen Bash recolors via STYLE and local Follow Pi without SOURCE thaw`,
+for (const mode of ['fullscreen', 'regular']) test(`occipital C21: ${mode} live frozen Bash recolors via local palette and Pi changes without SOURCE thaw`,
   { timeout: 120000 }, async () => {
     const live = new PiTerminal(`c21-frozen-${mode}`, { mode, extensions: [fixture], extraEnv: { ...descriptor,
-      TIDY_UI_TEST_THEME_OBSERVE: '1', TIDY_UI_TEST_THEME_PREVIEW: '1' } });
+      TIDY_UI_TEST_THEME_OBSERVE: '1' } });
     const stock = new PiTerminal(`c21-frozen-stock-${mode}`, { mode, extraEnv: descriptor });
     const phase = name => writeFileSync(join(live.output, 'syntax-theme-phase'), name);
     let ordinal = 0;
-    const ready = async profile => {
+    const ready = async palette => {
       const current = await settledStats(live, `frozen-ready-${ordinal++}`);
-      assert.ok(await semanticPhaseReady(() => current, () => live.events(), ['STABLE_text'], profile), `frozen styles ${profile}`);
+      assert.ok(await semanticPhaseReady(() => current, () => live.events(), ['STABLE_text'], palette), `frozen styles ${palette}`);
       return current;
     };
     try {
@@ -70,35 +70,27 @@ for (const mode of ['fullscreen', 'regular']) test(`occipital C21: ${mode} live 
       assert.equal(baseline.tools[0].args.command, ": 'STABLE_text e");
       assert.equal(baseline.tools[0].argsComplete, false); assert.equal(baseline.tools[0].executionStarted, false);
       assert.ok(body(baseline)[0].lines.some(row => row.includes('[error: incomplete tool call]')));
-      const profiles = before.client.provider.description.profiles.filter(p => p.id !== 'pi');
-      const index = profiles.findIndex(p => p.label === 'Catppuccin Mocha'); assert.ok(index >= 0); const mocha = profiles[index];
-      await live.openTidyMenu(); await live.selectTidyItem('Code color theme'); phase('held-preview'); live.send(mocha.label);
-      await live.event('syntax_preview_reply_held');
-      const held = await previewStats(live, 'frozen-held');
-      assert.ok(held.source.globalUnsettledJobs > 0); assert.ok(held.counts.styleRequests > before.counts.styleRequests);
-      const pending = await live.captureCompleteScreen('physical-frozen-pending', baseline);
-      assert.deepEqual(vector(cellAt(pending, 'STABLE_text')), piVector, 'pending real STYLE keeps the last validated ink/fonts');
-      await live.captureCompleteScreen('physical-frozen-pending-warm', baseline);
-      assert.deepEqual(work(await previewStats(live, 'frozen-held-warm')), work(held));
-      writeFileSync(join(live.output, 'syntax-preview-go'), 'go');
-      await live.selectTidyItem(mocha.label); await live.closeTidyMenu(); await ready(mocha.id);
-      const themed = await captureThenRenderDiagnostics(live, 'physical-frozen-native'), nativeVector = commandVector(live, themed, mocha.id);
-      assert.notDeepEqual(nativeVector, piVector, 'actual native theme changes command cells');
-      const native = themed.sample;
-      phase('cached-pi'); await chooseTheme(live, 0); await ready('pi');
+      const paletteId = 'catppuccin-dark', palette = THEME_CATALOGUE.find(theme => theme.id === paletteId); assert.ok(palette);
+      await chooseTheme(live, paletteId); const selected = await ready(paletteId);
+      const themed = await captureThenRenderDiagnostics(live, 'physical-frozen-owned'), ownedVector = commandVector(live, themed, paletteId);
+      assert.notDeepEqual(ownedVector, piVector, 'owned palette changes the physical command cells');
+      assert.equal(selected.counts.sourceRequests, before.counts.sourceRequests); assert.equal(selected.source.preparedBytes, before.source.preparedBytes);
+      assert.equal(selected.counts.styleRequests, before.counts.styleRequests, 'generic STYLE output is shared by every palette');
+      const owned = themed.sample;
+      phase('cached-pi'); await chooseTheme(live, 'pi'); await ready('pi');
       const returned = await captureThenRenderDiagnostics(live, 'physical-frozen-return-pi'); assert.deepEqual(commandVector(live, returned, 'pi'), piVector);
-      const cached = returned.sample; assert.equal(cached.counts.styleRequests, native.counts.styleRequests, 'cached Pi rules need no STYLE');
+      const cached = returned.sample; assert.equal(cached.counts.styleRequests, owned.counts.styleRequests, 'all palettes reuse generic STYLE output');
       await live.command('/tidy-ui-theme light'); await ready('pi');
       const light = await captureThenRenderDiagnostics(live, 'physical-frozen-light'), lightVector = commandVector(live, light, 'pi');
       assert.notEqual(lightVector.fg, piVector.fg, 'compatible Follow Pi binding change reaches physical command ink');
       const rebound = light.sample; assert.equal(rebound.counts.styleRequests, cached.counts.styleRequests, 'compatible binding change is local');
-      phase('cached-mocha'); await chooseTheme(live, index + 1); await ready(mocha.id);
-      const repeated = await captureThenRenderDiagnostics(live, 'physical-frozen-cached-native'); assert.deepEqual(commandVector(live, repeated, mocha.id), nativeVector);
+      phase('cached-owned'); await chooseTheme(live, paletteId); await ready(paletteId);
+      const repeated = await captureThenRenderDiagnostics(live, 'physical-frozen-cached-owned'); assert.deepEqual(commandVector(live, repeated, paletteId), ownedVector);
       const materialized = repeated.sample;
-      assert.equal(materialized.counts.styleRequests, rebound.counts.styleRequests, 'cached native styles are reused');
-      for (const width of [60, 100, 100]) { await live.resize(width, 160); commandVector(live, await captureThenRenderDiagnostics(live, `physical-frozen-warm-${ordinal++}`), mocha.id); }
+      assert.equal(materialized.counts.styleRequests, rebound.counts.styleRequests, 'owned palette reuses generic STYLE output');
+      for (const width of [60, 100, 100]) { await live.resize(width, 160); commandVector(live, await captureThenRenderDiagnostics(live, `physical-frozen-warm-${ordinal++}`), paletteId); }
       const warm = await settledStats(live, 'frozen-warm'); assert.deepEqual(work(warm), work(materialized));
-      for (const snapshot of [held, native, cached, rebound, materialized, warm]) {
+      for (const snapshot of [selected, owned, cached, rebound, materialized, warm]) {
         assert.equal(snapshot.counts.sourceRequests, before.counts.sourceRequests); assert.equal(snapshot.counts.closeRequests, 1);
         assert.equal(snapshot.source.preparedBytes, before.source.preparedBytes); assert.equal(snapshot.counts.acquisitions, 1);
         assert.equal(snapshot.counts.piCaptures, 0); assert.equal(snapshot.counts.piBridges, 0); assert.equal(snapshot.source.remoteLeases, 0);
@@ -106,9 +98,9 @@ for (const mode of ['fullscreen', 'regular']) test(`occipital C21: ${mode} live 
       assert.equal(warm.source.globalUnsettledJobs, 0);
       const final = await captureThenRenderDiagnostics(live, 'physical-frozen-final'); assert.deepEqual(raw(final), raw(baseline)); assert.deepEqual(body(final), body(baseline));
       assert.deepEqual(traffic(live), originalTraffic); assert.deepEqual(readFileSync(baseline.session), bytes);
-      console.log(JSON.stringify({ c21Frozen: live.output, stock: stock.output, mode, node: warm.node, observations: [before, held, native, cached, rebound, warm].map(receipt), piVector, nativeVector, lightVector }));
+      console.log(JSON.stringify({ c21Frozen: live.output, stock: stock.output, mode, node: warm.node, observations: [before, selected, owned, cached, rebound, warm].map(receipt), piVector, ownedVector, lightVector }));
       await live.quit('\x04'); await finish(live);
-    } finally { writeFileSync(join(live.output, 'syntax-preview-go'), 'go'); await closeTerminals([live, stock]); }
+    } finally { await closeTerminals([live, stock]); }
   });
 
 const output = 'STABLE_text ' + 'o'.repeat(2000), reminder = 'STABLE_text ' + 'r'.repeat(2000);

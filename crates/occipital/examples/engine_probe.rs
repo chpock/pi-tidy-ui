@@ -1,8 +1,6 @@
-//! Opt-in semantic parser/resolver engineering probe; prints counters, never source.
+//! Opt-in semantic parser and retained-source engineering probe; prints counters, never source.
 use occipital::{
-    profile::Profile,
     protocol::SyntaxHint,
-    resolver::Resolver,
     semantic_engine::{Engine, Limits, SourceChunk, Work},
 };
 use serde::Serialize;
@@ -139,15 +137,6 @@ fn main() {
         let result = execute(&mut engine, work);
         samples.push(json!({"language":language,"us":micros(start),"source_bytes":result.source_bytes,"runs":result.runs.len(),"contexts":result.contexts.len(),"counters":result.counters}));
     }
-    let mut native = Vec::new();
-    for name in Profile::bundled_names() {
-        let start = Instant::now();
-        let profile = Profile::resolve(&name).unwrap();
-        let resolver = Resolver::native(profile.native_theme().unwrap());
-        let mut cursor = resolver.cursor(0).unwrap();
-        let expression = cursor.resolve(&[]).unwrap().expression;
-        native.push(json!({"profile":name,"us":micros(start),"default":expression}));
-    }
     let text = "const value = 42;\n".repeat(2000);
     let work = engine
         .begin_open(
@@ -236,7 +225,7 @@ fn main() {
             known_bytes: engine.retained_state_bytes(),
         });
     }
-    println!("{}", serde_json::to_string_pretty(&json!({"kernel_only_not_rpc":true,"before":before,"semantic_corpus":samples,"native_resolver_defaults":native,"incremental":{"source_bytes":text.len(),"committed_calls":calls,"committed_bytes":bytes,"finalization_parse_calls":0},"all_grammar":{"count":names.len(),"memory":all_grammar},"capture_cycles":capture_cycles,"released":memory(),"live_leases":engine.leases(),"known_retained_state_bytes":engine.retained_state_bytes()})).unwrap());
+    println!("{}", serde_json::to_string_pretty(&json!({"kernel_only_not_rpc":true,"before":before,"semantic_corpus":samples,"incremental":{"source_bytes":text.len(),"committed_calls":calls,"committed_bytes":bytes,"finalization_parse_calls":0},"all_grammar":{"count":names.len(),"memory":all_grammar},"capture_cycles":capture_cycles,"released":memory(),"live_leases":engine.leases(),"known_retained_state_bytes":engine.retained_state_bytes()})).unwrap());
 }
 
 #[cfg(all(test, target_os = "linux", target_env = "gnu"))]

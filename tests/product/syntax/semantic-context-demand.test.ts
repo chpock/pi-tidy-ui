@@ -10,11 +10,11 @@ import type { SemanticChunk } from '../../../src/occipital/semantic-source.ts';
 import { CARD_ROLES, decodeStyleResult, type CardRole } from '../../../src/occipital/semantic-codec.ts';
 import { materializeStyle, type ConcreteStyle } from '../../../src/syntax/style-materialization.ts';
 const vocabulary = 'a'.repeat(64), otherVocabulary = 'd'.repeat(64), rules = 'b'.repeat(64), grant = () => true;
-const vectors = JSON.parse(readFileSync(new URL('../../../protocol/syntax-v3/vectors.json', import.meta.url), 'utf8'));
-const fixture = vectors.styles.find((v: { name: string }) => v.name === 'empty-source-complete-native-palette');
-const native = decodeStyleResult(fixture.body, { vocabulary, rules, mode: 'native', bindingSlots: 0 }, 0, 1 << 20);
+const vectors = JSON.parse(readFileSync(new URL('../../../protocol/syntax-v4/vectors.json', import.meta.url), 'utf8'));
+const fixture = vectors.styles.find((v: { name: string }) => v.name === 'literal-binding-inherit-and-explicit-clear');
+const decoded = decodeStyleResult(fixture.body, { vocabulary, rules, bindingSlots: fixture.binding_slots }, fixture.context_count, 1 << 20);
 const base: ConcreteStyle = { foreground: { kind: 'terminal-default' }, background: { kind: 'terminal-default' }, attributes: 0 };
-const literal = materializeStyle(native.styles[0]!, [], base);
+const literal = materializeStyle(decoded.styles[0]!, [], base);
 function patch(revision: number, tail = 2, namespace = vocabulary): SemanticChunk {
   return { vocabulary: namespace, key: 'a', generation: 1, source_version: revision, revision, lease: 'lease',
     replace_from: (revision - 1) * 2, committed_bytes: revision * 2, source_bytes: revision * 2 + 1, complete: false,
@@ -26,9 +26,9 @@ function contexts(owner: { visitContexts(consume: (ref: ContextRef) => void): bo
 }
 function current(pool: SemanticRetentionPool, generation = 1) { return contexts({ visitContexts: consume => pool.visitContexts(generation, consume) }); }
 function presentation(refs: readonly ContextRef[], revision = 1): ReadyPresentation {
-  return { vocabulary, rules, palette: native.palette!.fingerprint, bindingRevision: revision,
-    roles: Object.fromEntries(CARD_ROLES.map((role, i) => [role, materializeStyle(native.styles[native.palette!.slots[i]! - 1]!, [], base)])) as Record<CardRole, ConcreteStyle>,
-    contexts: refs.map(context => ({ context, style: literal })) };
+  return { vocabulary, rules, palette: 'palette:test', bindingRevision: revision,
+    roles: Object.fromEntries(CARD_ROLES.map(role => [role, structuredClone(literal)])) as Record<CardRole, ConcreteStyle>,
+    contexts: refs.map(context => ({ context, style: structuredClone(literal) })) };
 }
 function publish(pool: SemanticRetentionPool, revision = 1) {
   const status = pool.status(1)!;

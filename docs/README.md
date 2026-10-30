@@ -33,14 +33,15 @@ If you are interested in **Occipital as a daemon**, start directly with its [sta
 | Chapter | What it explains |
 |---|---|
 | [Pipeline entry](syntax-highlighting-spec.md) | Surfaces, source/style/geometry/paint identities and lifecycle/reuse map |
-| [Providers](syntax/providers.md) | Construction/activation, discovery, exact runtime acquisition, selected/effective/ready state, bounded recovery and intentional suspension |
+| [Providers](syntax/providers.md) | Construction/activation, discovery, exact runtime acquisition, selected/effective/ready palette state, bounded recovery and intentional suspension |
 | [Request adapters](syntax/requests.md) | Stdio/shared correlation, admission and decoding, caller wait versus physical settlement, failure origin and cleanup proof |
 | [Work controller](syntax/work.md) | Single weak chronological registry, SOURCE/STYLE scheduling, useful-prefix policy, fallback authority and atomic per-card publication |
 | [Storage](syntax/storage.md) | Numeric grants and shared charges, source captures/range blocks, context arena, style groups, pins, pressure and release receipts |
 | [Prepared cards](syntax/prepared-cards.md) | Prepared source slots, full display versus classification, measured geometry, coherent paint, Pi ANSI conversion and accepted borrowed visits |
 | [Shebang hints](syntax/shebang-hints.md) | Curated interpreter map, exact line-1 provenance, `env` subset, generic language selector, optional-path fallback, source identity and per-side diff painting |
-| [Follow Pi](syntax/follow-pi.md) | Complete binding and semantic-rule tables, role-specific derived colors, provenance, contrast/quantization, font composition and rationale |
-| [Color model](color-model.md) | Shared color representations/mathematics and complete, distinct Follow Pi/native diff-surface algorithms |
+| [Follow Pi](syntax/follow-pi.md) | Public Pi binding and semantic-rule tables, role-specific derived colors, provenance, contrast/quantization, font composition and rationale |
+| [Palette ownership](syntax/palettes.md) | Common 44-slot classifier, bundled local palette data, funded input leases, complete card roles and diff-surface derivation |
+| [Color model](color-model.md) | Shared color representations and diff-surface math with distinct Follow Pi/owned-palette authored inputs |
 
 `src/occipital/` contains the extension's client mechanisms; it is not the Rust daemon and is not claimed to be an independently isolated SDK package. Native computation belongs to the next section.
 
@@ -52,12 +53,10 @@ If you are interested in **Occipital as a daemon**, start directly with its [sta
 | [Runtime](occipital/runtime.md) | CLI/startup, Tokio/I/O/parser threads, route assignment, stdio/shared frontends, control authority, backpressure and shutdown |
 | [Requests and resources](occipital/requests-and-resources.md) | Borrowed probing versus authoritative validation, CONTROL/DATA queues, credited admission, turns, encoding, delivery acknowledgment and failure release |
 | [Source engine](occipital/source-engine.md) | Language selection, route/lease/state identities, finite batching, committed/checkpoint/provisional/frozen text, scope-stack emission and annotated append |
-| [Styles and palettes](occipital/styles-and-palettes.md) | Common selector scorer, seven property scores/five font winners, prefix reuse, STYLE progress, native caching and complete native role derivation |
-| [Catalogue](occipital/catalogue.md) | Configuration/schema/paths, nonrecursive custom-theme discovery, immutable publication, identifiers, cumulative pre-intern admission and refresh failures |
 | [Assets and identities](occipital/assets.md) | Build inputs, vocabulary extraction, linked contexts, native handles versus portable IDs, hashes/revisions and compatibility consequences |
 | [Protocol reference](occipital/protocol.md) | Exact carrier framing, operations/fields, correlations, source acknowledgments, contexts/styles, errors, numeric limits and counters |
 
-The protocol reference ships with this manual. Its six conformance JSON files and executable harness remain checkout-only engineering inputs under `protocol/syntax-v3/`; the reference identifies their locations without depending on a different version of GitHub main.
+The protocol reference ships with this manual. Its six current conformance JSON files and executable harness remain checkout-only engineering inputs under `protocol/syntax-v4/`; historical v3 inputs are kept separately for comparison. The reference identifies their locations without depending on a different version of GitHub main.
 
 ## Common services and engineering reference
 
@@ -81,8 +80,8 @@ The protocol reference ships with this manual. Its six conformance JSON files an
 | Why does a request stay pending after a caller stops waiting? | [Client request lifetime](syntax/requests.md) → [native request/delivery ownership](occipital/requests-and-resources.md) |
 | Why do appended command colors differ from final colors? | [Bash display proof](bash-streaming-contract.md) → [source checkpoints and tails](occipital/source-engine.md) → [exact source acknowledgments](occipital/protocol.md) |
 | What is recomputed on resize, recolor or preview rollback? | [Identity/change map](syntax-highlighting-spec.md#independent-identities) → [prepared-card reuse](syntax/prepared-cards.md) → [latest row signatures](rendering.md#latest-layout-identities) |
-| How are theme roles, Markdown and structural delimiters colored? | [Follow Pi](syntax/follow-pi.md) or [native resolver/palette](occipital/styles-and-palettes.md) → [shared color mathematics](color-model.md) |
-| Why did a saved preference or custom theme not appear? | [Preference publication/preview](settings-menu-spec.md) → [selected/effective/ready](syntax/providers.md#selected-effective-and-ready-are-different-states) → [daemon catalogue refresh](occipital/catalogue.md) |
+| How are theme roles, Markdown and structural delimiters colored? | [Follow Pi adapter](syntax/follow-pi.md) or [owned palette](syntax/palettes.md) → [shared color mathematics](color-model.md) |
+| Why did a saved palette preference not appear? | [Preference publication/preview](settings-menu-spec.md) → [selected/effective/ready](syntax/providers.md#selected-effective-and-ready-palettes) → [local palette identity and assets](syntax/palettes.md) |
 | Why was memory not freed by removing a card or clearing layouts? | [Component rows](render-cache-spec.md) → [local grants/captures](syntax/storage.md) → [native delivery credit](occipital/requests-and-resources.md) |
 | How do reload, appearance Off, native Off and terminal stop differ? | [Host lifetimes](host-integration.md) → [provider transitions](syntax/providers.md) → [terminal channels](terminal-colors-spec.md) |
 | Where can I observe a failure, and what does that evidence prove? | [Extension health/journals](debug-logging-spec.md) or [daemon runtime/descriptor/counters](occipital/README.md) → the owning request/recovery contract |

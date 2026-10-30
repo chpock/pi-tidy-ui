@@ -10,15 +10,15 @@ import { SemanticRanges, type SemanticRangeView } from '../../../src/occipital/s
 import type { ContextRef } from '../../../src/occipital/context-arena.ts';
 import { materializeStyle, type ConcreteStyle } from '../../../src/syntax/style-materialization.ts';
 
-const vectors = JSON.parse(readFileSync(new URL('../../../protocol/syntax-v3/vectors.json', import.meta.url), 'utf8'));
+const vectors = JSON.parse(readFileSync(new URL('../../../protocol/syntax-v4/vectors.json', import.meta.url), 'utf8'));
 const vocabulary = 'a'.repeat(64), rules = 'b'.repeat(64);
 const paths = decodeContextBatch([vectors.contexts[0].encoded], { vocabularySize: vectors.vocabulary_size, maxBytes: 1 << 20 }).batches[0]!;
-const fixture = vectors.styles.find((value: { name: string }) => value.name === 'empty-source-complete-native-palette');
-const native = decodeStyleResult(fixture.body, { vocabulary, rules, mode: 'native', bindingSlots: 0 }, 0, 1 << 20);
+const fixture = vectors.styles.find((value: { name: string }) => value.name === 'literal-binding-inherit-and-explicit-clear');
+const decoded = decodeStyleResult(fixture.body, { vocabulary, rules, bindingSlots: fixture.binding_slots }, fixture.context_count, 1 << 20);
 const indexedFixture = vectors.styles.find((value: { name: string }) => value.name === 'indexed-is-not-guessed-rgb');
-const indexed = decodeStyleResult(indexedFixture.body, { vocabulary, rules, mode: 'client', bindingSlots: 0 }, 1, 1 << 20);
+const indexed = decodeStyleResult(indexedFixture.body, { vocabulary, rules, bindingSlots: indexedFixture.binding_slots }, indexedFixture.context_count, 1 << 20);
 const caller: ConcreteStyle = { foreground: { kind: 'terminal-default' }, background: { kind: 'terminal-default' }, attributes: 0 };
-const oldStyle = materializeStyle(native.styles[0]!, [], caller), nextStyle = materializeStyle(indexed.styles[0]!, [], caller);
+const oldStyle = materializeStyle(decoded.styles[0]!, [], caller), nextStyle = materializeStyle(indexed.styles[0]!, [], caller);
 function source(key: string, generation: number, revision = 1): SemanticChunk {
   return { vocabulary, key, generation, revision, source_version: revision, lease: 'lease', source_bytes: revision === 1 ? 3 : 4,
     replace_from: revision === 1 ? 0 : 2, committed_bytes: 2, complete: false,
@@ -30,7 +30,7 @@ function refs(pool: SemanticRetentionPool, generation: number) {
 }
 function presentation(contexts: readonly ContextRef[], next: boolean): ReadyPresentation {
   const style = next ? nextStyle : oldStyle;
-  return { vocabulary, rules: next ? 'd'.repeat(64) : rules, palette: next ? 'e'.repeat(64) : native.palette!.fingerprint, bindingRevision: next ? 2 : 1,
+  return { vocabulary, rules: next ? 'd'.repeat(64) : rules, palette: next ? 'palette:next' : 'palette:old', bindingRevision: next ? 2 : 1,
     roles: Object.fromEntries(CARD_ROLES.map(role => [role, structuredClone(style)])) as Record<CardRole, ConcreteStyle>,
     contexts: contexts.map(context => ({ context, style: structuredClone(style) })) };
 }

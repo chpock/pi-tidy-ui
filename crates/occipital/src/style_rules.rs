@@ -3,7 +3,7 @@
 //! precede controlled compilation; the reservation is not a decoder/private-heap
 //! RSS cap. Decoder diagnostics are discarded, never returned as caller text.
 use crate::{
-    resolver::{AttributePatch, Resolver, Rule},
+    resolver::{AttributePatch, ContextQualifier, Resolver, Rule},
     semantic::{Expression, Ink},
     vocabulary::ScopeId,
 };
@@ -43,6 +43,8 @@ pub struct Measurement {
     pub names: usize,
     pub name_bytes: usize,
     pub atoms: usize,
+    pub contexts: usize,
+    pub boundaries: usize,
     /// Controlled compile peak allowance, not wire bytes, lexical scratch or RSS.
     pub policy_bytes: usize,
 }
@@ -73,6 +75,16 @@ struct Declaration<'a> {
     background: &'a RawValue,
     #[serde(borrow)]
     font: &'a RawValue,
+    #[serde(borrow)]
+    context: &'a RawValue,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Context<'a> {
+    #[serde(borrow)]
+    owner: &'a RawValue,
+    #[serde(borrow)]
+    boundaries: &'a RawValue,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -241,9 +253,7 @@ fn expression(raw: &RawValue, slots: u32) -> Result<Expression, Error> {
         attributes: unsigned(value.attributes, 31)? as u8,
         attribute_mask: unsigned(value.attribute_mask, 31)? as u8,
     };
-    result
-        .validate(false, slots)
-        .map_err(|_| Error::InvalidRules)?;
+    result.validate(slots).map_err(|_| Error::InvalidRules)?;
     Ok(result)
 }
 struct Overrides {
@@ -276,25 +286,112 @@ fn increment(total: &mut usize, n: usize, limit: usize) -> Result<(), Error> {
         .ok_or(Error::RuleLimit)?;
     Ok(())
 }
+fn scopes_overlap(a: &str, b: &str) -> bool {
+    a == b
+        || a.strip_prefix(b).is_some_and(|rest| rest.starts_with('.'))
+        || b.strip_prefix(a).is_some_and(|rest| rest.starts_with('.'))
+}
+fn compile_scope(raw: &RawValue) -> Result<Scope, Error> {
+    let mut scope = None;
+    string(raw, |name| {
+        scope = Some(ScopeId::from_name(name).ok_or(Error::UnknownScope)?.scope());
+        Ok(())
+    })?;
+    scope.ok_or(Error::InvalidRules)
+}
+fn compile_context(raw: &RawValue) -> Result<Option<ContextQualifier>, Error> {
+    if raw.get() == "null" {
+        return Ok(None);
+    }
+    let context: Context<'_> = decode(raw)?;
+    let owner = compile_scope(context.owner)?;
+    let count = array(context.boundaries, |_| Ok(()))?;
+    let mut boundaries = Vec::with_capacity(count);
+    array(context.boundaries, |raw| {
+        boundaries.push(compile_scope(raw)?);
+        Ok(())
+    })?;
+    Ok(Some(ContextQualifier { owner, boundaries }))
+}
 impl Measurement {
+    fn name(&mut self, name: &str) -> Result<(), Error> {
+        if name.is_empty() || name.chars().any(|c| c.is_whitespace() || c.is_control()) {
+            return Err(Error::InvalidRules);
+        }
+        let atoms = name.trim_end_matches('.').split('.').count();
+        if atoms > 8 {
+            return Err(Error::RuleLimit);
+        }
+        increment(
+            &mut self.name_bytes,
+            name.len(),
+            crate::limits::RULE_NAME_BYTES,
+        )?;
+        increment(&mut self.atoms, atoms, crate::limits::RULE_ATOMS)?;
+        self.names += 1;
+        ScopeId::from_name(name).ok_or(Error::UnknownScope)?;
+        Ok(())
+    }
     fn path(&mut self, raw: &RawValue) -> Result<(), Error> {
-        let limits = crate::admission::Limits::default();
-        increment(&mut self.paths, 1, crate::profile::THEME_PATHS)?;
-        array(raw, |raw| {
-            string(raw, |name| {
-                if name.is_empty() || name.chars().any(|c| c.is_whitespace() || c.is_control()) {
+        increment(&mut self.paths, 1, crate::limits::RULE_PATHS)?;
+        array(raw, |raw| string(raw, |name| self.name(name)))?;
+        Ok(())
+    }
+    fn context(&mut self, raw: &RawValue, path: &RawValue) -> Result<(), Error> {
+        if raw.get() == "null" {
+            return Ok(());
+        }
+        self.contexts = self.contexts.checked_add(1).ok_or(Error::RuleLimit)?;
+        let context: Context<'_> = decode(raw)?;
+        increment(&mut self.paths, 1, crate::limits::RULE_PATHS)?;
+        string(context.owner, |owner| {
+            self.name(owner)?;
+            let mut first_is_owner = false;
+            let mut path_position = 0usize;
+            array(path, |scope| {
+                if path_position == 0 {
+                    string(scope, |name| {
+                        first_is_owner = name == owner;
+                        Ok(())
+                    })?;
+                }
+                path_position += 1;
+                Ok(())
+            })?;
+            if !first_is_owner {
+                return Err(Error::InvalidRules);
+            }
+            let mut position = 0usize;
+            array(context.boundaries, |boundary| {
+                if position >= 16 {
                     return Err(Error::InvalidRules);
                 }
-                let atoms = name.trim_end_matches('.').split('.').count();
-                if atoms > 8 {
-                    return Err(Error::RuleLimit);
-                }
-                increment(&mut self.name_bytes, name.len(), limits.selector_bytes)?;
-                increment(&mut self.atoms, atoms, limits.atom_occurrences)?;
-                self.names += 1;
-                ScopeId::from_name(name).ok_or(Error::UnknownScope)?;
-                Ok(())
-            })
+                increment(&mut self.paths, 1, crate::limits::RULE_PATHS)?;
+                string(boundary, |name| {
+                    self.name(name)?;
+                    if scopes_overlap(owner, name) {
+                        return Err(Error::InvalidRules);
+                    }
+                    let current = position;
+                    let mut previous = 0usize;
+                    array(context.boundaries, |prior| {
+                        if previous < current {
+                            string(prior, |prior_name| {
+                                if prior_name == name {
+                                    return Err(Error::InvalidRules);
+                                }
+                                Ok(())
+                            })?;
+                        }
+                        previous += 1;
+                        Ok(())
+                    })?;
+                    position += 1;
+                    self.boundaries = self.boundaries.checked_add(1).ok_or(Error::RuleLimit)?;
+                    Ok(())
+                })
+            })?;
+            Ok(())
         })?;
         Ok(())
     }
@@ -318,6 +415,11 @@ impl Measurement {
                     .checked_mul(size_of::<Scope>())
                     .and_then(|m| n.checked_add(m))
             })
+            .and_then(|n| {
+                self.contexts
+                    .checked_mul(size_of::<ContextQualifier>())
+                    .and_then(|m| n.checked_add(m))
+            })
             .and_then(|n| n.checked_add(size_of::<ClientRulePlan<'_>>() + 64))
             .ok_or(Error::AllocationLimit)
     }
@@ -338,17 +440,18 @@ impl<'a> ClientRulePlan<'a> {
             return Err(Error::RuleLimit);
         }
         let definition: Definition<'a> = decode(raw)?;
-        if unsigned(definition.revision, 1)? != 1 {
+        if unsigned(definition.revision, 2)? != 2 {
             return Err(Error::InvalidRules);
         }
         let slots = unsigned(definition.binding_slots, 65536)?;
         expression(definition.default, slots)?;
         let mut measurement = Measurement::default();
         array(definition.rules, |raw| {
-            increment(&mut measurement.rules, 1, crate::profile::THEME_SELECTORS)?;
+            increment(&mut measurement.rules, 1, crate::limits::RULE_SELECTORS)?;
             let value: Declaration<'_> = decode(raw)?;
             measurement.path(value.path)?;
             array(value.excludes, |path| measurement.path(path))?;
+            measurement.context(value.context, value.path)?;
             overrides(&value, slots)?;
             Ok(())
         })?;
@@ -405,6 +508,7 @@ impl<'a> ClientRulePlan<'a> {
                     path: path(value.path)?,
                     excludes,
                 },
+                context: compile_context(value.context)?,
                 foreground,
                 background,
                 attributes,
@@ -454,9 +558,29 @@ fn hash_path(hash: &mut Sha256, raw: &RawValue) -> Result<(), Error> {
     })?;
     Ok(())
 }
+fn hash_context(hash: &mut Sha256, raw: &RawValue) -> Result<(), Error> {
+    if raw.get() == "null" {
+        hash.update([0]);
+        return Ok(());
+    }
+    let context: Context<'_> = decode(raw)?;
+    hash.update([1]);
+    string(context.owner, |name| {
+        text(hash, name);
+        Ok(())
+    })?;
+    number(hash, array(context.boundaries, |_| Ok(()))?);
+    array(context.boundaries, |raw| {
+        string(raw, |name| {
+            text(hash, name);
+            Ok(())
+        })
+    })?;
+    Ok(())
+}
 fn fingerprint(definition: &Definition<'_>, slots: u32, rules: usize) -> Result<String, Error> {
     let mut hash = Sha256::new();
-    hash.update(b"occipital-client-rules/2\0");
+    hash.update(b"occipital-client-rules/3\0");
     number(&mut hash, slots as usize);
     text(
         &mut hash,
@@ -468,6 +592,7 @@ fn fingerprint(definition: &Definition<'_>, slots: u32, rules: usize) -> Result<
         hash_path(&mut hash, value.path)?;
         number(&mut hash, array(value.excludes, |_| Ok(()))?);
         array(value.excludes, |raw| hash_path(&mut hash, raw))?;
+        hash_context(&mut hash, value.context)?;
         let Overrides {
             foreground: fg,
             background: bg,
@@ -488,24 +613,4 @@ fn fingerprint(definition: &Definition<'_>, slots: u32, rules: usize) -> Result<
         Ok(())
     })?;
     Ok(format!("{:x}", hash.finalize()))
-}
-fn native_identity(domain: &[u8], definition: &str) -> Result<String, Error> {
-    if definition.len() != 64
-        || !definition
-            .bytes()
-            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-    {
-        return Err(Error::InvalidRules);
-    }
-    let mut hash = Sha256::new();
-    hash.update(domain);
-    hash.update([0]);
-    hash.update(definition.as_bytes());
-    Ok(format!("{:x}", hash.finalize()))
-}
-pub fn fingerprint_native_rules(definition: &str) -> Result<String, Error> {
-    native_identity(b"occipital-native-rules/2", definition)
-}
-pub fn fingerprint_native_palette(definition: &str) -> Result<String, Error> {
-    native_identity(b"occipital-native-palette/2", definition)
 }

@@ -4,7 +4,7 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import test from 'node:test';
 import { stripVTControlCharacters as plain } from 'node:util';
-import { CARD_ROLES } from '../../../../src/occipital/semantic-codec.ts';
+import { sampleOwnedPalette } from '../../../../src/themes/owned-palette.ts';
 import { PiTerminal } from '../../../fixtures/terminal-harness.mjs';
 import { closeTerminals } from '../../../fixtures/terminal-cleanup.mjs';
 import { syntaxToolData as raw } from '../../../fixtures/syntax-tool-data.mjs';
@@ -31,13 +31,13 @@ const vector = c => ({ fg: c.fg, bg: c.bg, bold: !!c.bold, italic: !!c.italic, u
 const rgb = ink => { assert.equal(ink.kind, 'rgb'); return ink.r * 65536 + ink.g * 256 + ink.b; };
 const ansiRgb = (ansi, channel = 38) => { const match = ansi.match(new RegExp(`${channel};2;(\\d+);(\\d+);(\\d+)m`)); assert.ok(match); return Number(match[1]) * 65536 + Number(match[2]) * 256 + Number(match[3]); };
 function nativeCells(terminal, dump, marker, suffix, role = 'code') {
-  const resolved = semanticStyle(terminal.events(), marker, terminal.profile);
+  const resolved = semanticStyle(terminal.events(), marker);
   assert.ok(resolved, `validated SOURCE/STYLE for ${marker}`);
-  const palette = resolved.styleEvent.reply.body, base = palette.styles[palette.palette.slots[CARD_ROLES.indexOf(role)] - 1];
-  assert.ok(base, 'selected native role');
+  const palette = sampleOwnedPalette(terminal.paletteId, 'truecolor'), base = palette.roles[role];
+  assert.ok(base, 'selected local palette role');
   const expression = resolved.expression, attributes = base.attributes & ~expression.attribute_mask | expression.attributes & expression.attribute_mask;
   const prefix = cell(dump, marker), neutral = cell(dump, suffix);
-  assert.equal(prefix.fg, expressionForeground(expression, dump, 'toolTitle'));
+  assert.equal(prefix.fg, expressionForeground(expression, dump, terminal.paletteId, 'toolTitle'));
   assert.equal(prefix.bg, rgb(role === 'addedCode' || role === 'removedCode' || expression.background.kind === 'inherit' ? base.background : expression.background));
   assert.deepEqual([!!prefix.bold, !!prefix.italic, !!prefix.underline, !!prefix.dim, prefix.inverse],
     [!!(attributes & 1), !!(attributes & 2), !!(attributes & 4), !!(attributes & 8), false]);
@@ -96,10 +96,11 @@ async function start(name, native, plan, terminals) {
   return terminal;
 }
 async function selectNative(terminal) {
-  const s = await settledStats(terminal, 'profiles');
-  const profiles = s.client.provider.description.profiles.filter(p => p.id !== 'pi');
-  const index = profiles.findIndex(p => p.label === 'Catppuccin Mocha'); assert.ok(index >= 0);
-  terminal.profile = profiles[index].id; await chooseTheme(terminal, index + 1);
+  const paletteId = 'catppuccin-dark';
+  terminal.paletteId = paletteId;
+  await chooseTheme(terminal, paletteId);
+  const selected = await settledStats(terminal, 'owned-palette-selected');
+  assert.equal(selected.client.effective.id, paletteId);
 }
 function exactTraffic(live, stock, actual, reference) {
   assert.deepEqual(traffic(live), traffic(stock)); assert.deepEqual(persisted(actual), persisted(reference));
@@ -189,7 +190,7 @@ for (const kind of ['write', 'edit']) for (const policy of ['native', 'pi']) tes
       await terminal.run(`highlighting-limits-${kind}`);
     }
     const state = await settledStats(live, 'file-ready', s => policy === 'native' ? nativeReady(s)
-      && !!semanticStyle(live.events(), 'def VOLUME_PREFIX', live.profile) : s.counts.piBridges > 0 && s.source.globalUnsettledJobs === 0);
+      && !!semanticStyle(live.events(), 'def VOLUME_PREFIX') : s.counts.piBridges > 0 && s.source.globalUnsettledJobs === 0);
     const shown = await captureThenRenderDiagnostics(live, 'file-full'), reference = await stock.capture('file-stock'); exactTraffic(live, stock, shown, reference);
     await stock.close();
     assert.equal(readFileSync(join(live.work, 'limits.py'), 'utf8'), fileSource);

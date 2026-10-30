@@ -19,17 +19,18 @@ import { SourceController } from '../../../src/occipital/controller.ts';
 import { ProviderBroker } from '../../../src/occipital/provider.ts';
 import { StdioTransport } from '../../../src/occipital/stdio.ts';
 import { DataBudget, DataCharge } from '../../../src/occipital/data-budget.ts';
-import { inspectContextBatch } from '../../../src/occipital/semantic-codec.ts';
+import { CARD_ROLES, inspectContextBatch } from '../../../src/occipital/semantic-codec.ts';
 import { OCCIPITAL_LIMITS } from '../../../src/occipital/limits.ts';
 import { readInputs, validateNative } from '../../../scripts/test/context.mjs';
 import { awaitFixture } from '../../fixtures/await-fixture.ts';
-import { preparePiInput } from '../../../src/syntax/pi-input.ts';
-import { createPiRuleDefinition } from '../../../src/syntax/pi-rules.ts';
-import { materializeStyle, type ConcreteStyle } from '../../../src/syntax/style-materialization.ts';
+import { preparePaletteInput } from '../../../src/syntax/pi-input.ts';
+import { createSemanticRuleDefinition } from '../../../src/syntax/semantic-rules.ts';
+import type { ConcreteStyle } from '../../../src/syntax/style-materialization.ts';
 import { SemanticRetentionPool } from '../../../src/occipital/semantic-retention.ts';
 import { decodeSemanticDescription, decodeSemanticSourceReply, decodeSemanticStyleReply, SEMANTIC_PROTOCOL_VERSION } from '../../../src/occipital/semantic-protocol.ts';
-import { fingerprintNative } from '../../../src/occipital/style-rules.ts';
-import { CARD_ROLES } from '../../../src/occipital/semantic-codec.ts';
+import { fingerprintRules } from '../../../src/occipital/style-rules.ts';
+import { ownedStyleSelection } from '../../fixtures/owned-style-selection.ts';
+import { resolveTheme } from '../../../src/themes/selection.ts';
 
 const inputs = readInputs(), binary = validateNative(inputs);
 const dist = dirname(fileURLToPath(import.meta.resolve('@earendil-works/pi-coding-agent')));
@@ -91,10 +92,10 @@ test('current consumer costs: actual owned SOURCE STYLE incremental contexts and
   }
   const styles = (key: string) => { const result: ConcreteStyle[] = []; assert.equal(owner.displayBasis(key)?.visit((_text, ranges) => ranges((_from, _to, style) => result.push(style))), true); return result; };
   try {
-    await awaitFixture(broker.start()); const [a, b] = broker.snapshot().description!.profiles; assert.ok(a && b);
-    owner.setStyleSelection({ kind: 'native', id: a.id, fingerprint: a.fingerprint });
+    await awaitFixture(broker.start());
+    owner.setStyleSelection(ownedStyleSelection('gruvbox-dark'));
     const first = 'echo α\n', known = 'echo β\n', novel = '# C22 new context\n';
-    const source = { key: 'bash', version: 1, language: 'bash', profile: a.id, fingerprint: a.fingerprint, text: first, complete: false };
+    const source = { key: 'bash', version: 1, language: 'bash', text: first, complete: false };
     await run('cold-bash', () => { owner.observe(source); owner.flush(); });
     assert.equal(broker.stats().sourceDispatches, 1); assert.equal(broker.stats().styleDispatches, 1); assert.ok(styles('bash').length);
     const committed = owner.stats().committedLineBytes;
@@ -111,12 +112,12 @@ test('current consumer costs: actual owned SOURCE STYLE incremental contexts and
     assert.equal(broker.stats().sourceDispatches, 3); assert.equal(broker.stats().styleDispatches, 2);
     assert.ok(requests.find(r => r.phase === 'new-context-append' && r.op === 'styles.resolve')!.contexts > 0);
     const initial = styles('bash'), parsed = owner.stats().committedLineBytes;
-    await run('uncached-native-theme', () => { owner.setStyleSelection({ kind: 'native', id: b.id, fingerprint: b.fingerprint }); });
-    await run('cached-native-rollback', () => { owner.setStyleSelection({ kind: 'native', id: a.id, fingerprint: a.fingerprint }); });
-    assert.deepEqual(styles('bash'), initial); assert.equal(broker.stats().styleDispatches, 3); assert.equal(broker.stats().sourceDispatches, 3);
-    const selectPi = (revision: number) => { const start = performance.now(), lease = preparePiInput(themes.theme, revision, 'truecolor', owner.geometryFunding()!)!;
+    await run('owned-palette-switch', () => { owner.setStyleSelection(ownedStyleSelection('solarized-dark', 'truecolor', 2)); });
+    await run('owned-palette-rollback', () => { owner.setStyleSelection(ownedStyleSelection('gruvbox-dark', 'truecolor', 3)); });
+    assert.deepEqual(styles('bash'), initial); assert.equal(broker.stats().styleDispatches, 2, 'cached common rules need no palette-specific STYLE'); assert.equal(broker.stats().sourceDispatches, 3);
+    const selectPi = (revision: number) => { const start = performance.now(), lease = preparePaletteInput(themes.theme, 'pi', revision, 'truecolor', owner.geometryFunding()!)!;
       const inputPrepareMs = performance.now() - start, bindingStart = performance.now();
-      assert.ok(lease); try { assert.equal(lease.visit(read => { owner.setStyleSelection({ kind: 'client', definition: createPiRuleDefinition(), bindingRevision: revision,
+      assert.ok(lease); try { assert.equal(lease.visit(read => { owner.setStyleSelection({ definition: createSemanticRuleDefinition(), bindingRevision: revision,
         palette: `pi:${revision}`, bindings: read.bindings, roles: read.roles }); }), true); }
       finally { lease.dispose(); rows.push({ phase: `${phase}-local-input`, inputPrepareMs, selectionAndLeaseVisitMs: performance.now() - bindingStart }); } };
     await run('pi-rules-cold', () => { selectPi(1); });
@@ -202,10 +203,10 @@ test('current consumer geometry: actual CardSources SDK preparation warm theme w
     if (this.budget === budget) { const freed = before - budget.stats().retainedBytes, site = charges.get(this); if (freed && site) liveByAllocationSite[site] -= freed; }
   });
   try {
-    await awaitFixture(broker.start()); const [a, b] = broker.snapshot().description!.profiles; assert.ok(a && b); let selected = a;
+    await awaitFixture(broker.start()); let selected = resolveTheme({ kind: 'theme', id: 'gruvbox-dark' }).effective;
     const ui = new UI(); themes.initTheme('dark', false);
     adapter = installTidyUi(ui, () => themes.theme, { syntax: { client: { sources: owner, snapshot: () => ({ enabled: true,
-      selected: { kind: 'occipital', id: selected.id }, effective: selected, standaloneVersion: 'test', provider: broker.snapshot() }) },
+      selected: { kind: 'theme', id: selected.id }, effective: selected, standaloneVersion: 'test', provider: broker.snapshot() }) },
       palette: () => revision, classify: () => assert.fail('ready native sources must not use Pi classifier') } });
     assert.equal(adapter.active, true, adapter.reason);
     let bash: InstanceType<typeof ToolExecutionComponent>, file: InstanceType<typeof ToolExecutionComponent>;
@@ -227,10 +228,10 @@ test('current consumer geometry: actual CardSources SDK preparation warm theme w
     assert.equal(measurements, baseline.measurements); assert.ok(reflows > baseline.reflows, 'width-change really reflows retained numeric glyph data');
     assert.equal(observer.snapshot().sourceSegments, baseline.sourceSegments); assert.deepEqual(broker.stats(), work);
     const width = counts(), widthSourceWork = observer.snapshot();
-    await capture('sdk-uncached-theme', async () => { selected = b; adapter!.syntaxMetadataChanged(); await drain(); render(bash, 24); });
+    await capture('sdk-uncached-theme', async () => { selected = resolveTheme({ kind: 'theme', id: 'solarized-dark' }).effective; adapter!.syntaxMetadataChanged(); await drain(); render(bash, 24); });
     assert.equal(measurements, width.measurements); assert.equal(reflows, width.reflows); assert.equal(owner.stats().committedLineBytes, (reports[0]!.afterWork as ReturnType<typeof owner.stats>).committedLineBytes);
-    const themed = broker.stats(); assert.equal(themed.sourceDispatches, work.sourceDispatches); assert.ok(themed.styleDispatches > work.styleDispatches);
-    await capture('sdk-cached-rollback', async () => { selected = a; adapter!.syntaxMetadataChanged(); await drain(); render(bash, 24); });
+    const themed = broker.stats(); assert.equal(themed.sourceDispatches, work.sourceDispatches); assert.ok(themed.styleDispatches === work.styleDispatches);
+    await capture('sdk-cached-rollback', async () => { selected = resolveTheme({ kind: 'theme', id: 'gruvbox-dark' }).effective; adapter!.syntaxMetadataChanged(); await drain(); render(bash, 24); });
     assert.deepEqual(broker.stats(), themed); assert.equal(measurements, width.measurements); assert.equal(reflows, width.reflows);
     assert.deepEqual(observer.snapshot(), widthSourceWork, 'theme and rollback never remeasure or reread the source prefix');
     const dense = Array.from({ length: 256 }, (_, i) => `export const C22_v${i}={n:${i},s:"α",a:[true,null],f:(x:number)=>x+1}; // dense`).join('\n');
@@ -263,9 +264,8 @@ test('current consumer latency control: uninstrumented small owned sequence', as
   const owner = new SourceController(broker, { deadlineMs: 5000 });
   const timings: { phase: string; readyMs: number; eventLoopTurnMs: number; sourceDelta: number; styleDelta: number }[] = [];
   try {
-    await awaitFixture(broker.start()); const theme = broker.snapshot().description!.profiles[0]!;
-    owner.setStyleSelection({ kind: 'native', id: theme.id, fingerprint: theme.fingerprint });
-    const source = { key: 'bash', version: 0, language: 'bash', profile: theme.id, fingerprint: theme.fingerprint, text: '', complete: false };
+    await awaitFixture(broker.start()); owner.setStyleSelection(ownedStyleSelection('gruvbox-dark'));
+    const source = { key: 'bash', version: 0, language: 'bash', text: '', complete: false };
     for (const [phase, text] of [['cold', 'echo α\n'], ['known-append', 'echo α\necho β\n'], ['new-context-append', 'echo α\necho β\n# C22 new context\n']] as const) {
       const before = broker.stats(), start = performance.now(); let eventLoopTurnMs = 0;
       const event = turn().then(() => { eventLoopTurnMs = performance.now() - start; });
@@ -295,19 +295,18 @@ test('current consumer matching reference: uninstrumented cold finite 640-byte R
   const owner = new SourceController(broker, { deadlineMs: 5000 });
   try {
     await awaitFixture(broker.start());
-    const theme = broker.snapshot().description!.profiles.find(profile => profile.id === 'syntect:Catppuccin Mocha'); assert.ok(theme);
-    owner.setStyleSelection({ kind: 'native', id: theme.id, fingerprint: theme.fingerprint });
+    const paletteId = 'catppuccin-mocha'; owner.setStyleSelection(ownedStyleSelection(paletteId));
     assert.equal(broker.stats().sourceDispatches, 0); assert.equal(broker.stats().styleDispatches, 0);
     assert.equal(owner.stats().sourceRecords, 0);
     const start = performance.now(); let eventLoopTurnMs = 0;
     const event = turn().then(() => { eventLoopTurnMs = performance.now() - start; });
-    owner.observe({ key: 'matching-rust', version: 1, language: 'Rust', profile: theme.id, fingerprint: theme.fingerprint, text, complete: true }); owner.flush();
+    owner.observe({ key: 'matching-rust', version: 1, language: 'Rust', text, complete: true }); owner.flush();
     await awaitFixture((async () => { while (owner.stats().unsettledJobs || owner.displayBasis('matching-rust')?.version !== 1) { owner.flush(); await turn(); } })());
     const readyMs = performance.now() - start; await event;
     // All inspection/serialization below happens after the timed ready boundary.
     const basis = owner.displayBasis('matching-rust')!, stats = owner.stats(), concrete = new Set<string>();
     let rangeCount = 0, rangeEnd = 0, concreteTableEntries = 0;
-    assert.equal(basis.complete, true); assert.equal(basis.language, 'Rust'); assert.equal(basis.profile, theme.id);
+    assert.equal(basis.complete, true); assert.equal(basis.language, 'Rust'); assert.equal(basis.rules, fingerprintRules(createSemanticRuleDefinition()));
     assert.equal(basis.visit((source, ranges) => {
       assert.equal(source, text); assert.equal(ranges((from, to, style) => {
         assert.equal(from, rangeEnd); assert.ok(to > from); rangeEnd = to; rangeCount++;
@@ -320,11 +319,11 @@ test('current consumer matching reference: uninstrumented cold finite 640-byte R
     assert.equal(stats.committedLineCalls, 8); assert.equal(stats.committedLineBytes, 640); assert.equal(stats.tailCalls, 0); assert.equal(stats.tailBytes, 0);
     assert.equal(stats.preparedBytes, 640); assert.equal(stats.decodedBytes, 640); assert.equal(stats.remoteLeases, 0);
     console.log(JSON.stringify({ currentMatchingSmallReference: { node: process.version, pi: inputs.pi.version, source: inputs.source, native: binary,
-      workload: { language: 'Rust', theme, bytes: 640, utf16Units: text.length, lines: 8, lineBytes: 80, sha256: workloadSha256 }, readyMs, eventLoopTurnMs,
+      workload: { language: 'Rust', paletteId, bytes: 640, utf16Units: text.length, lines: 8, lineBytes: 80, sha256: workloadSha256 }, readyMs, eventLoopTurnMs,
       sourceRequests: broker.stats().sourceDispatches, styleRequests: broker.stats().styleDispatches, rangeCount, coveredBytes: rangeEnd,
       concreteTableEntries, distinctConcreteRangeStyles: concrete.size, controller: stats,
       archivalContext: { oldNativeReadyMs: { node22: 7.051399, node26: 4.450675 }, oldNativeRuns: 272, prototypeRuns: 288,
-        comparison: 'same text, Rust and Catppuccin Mocha only; old hardware/preparation/boundary equivalence unestablished; richer current broker SOURCE plus STYLE/palette and ready presentation; no ratio or like-for-like speed claim' },
+        comparison: 'same text, Rust and Catppuccin Mocha only; old hardware/preparation/boundary equivalence unestablished; current broker uses generic SOURCE plus STYLE and local owned-palette materialization; no ratio or like-for-like speed claim' },
       measurement: 'fresh actual owned helper already described and native selection set before start; no test spies; finite one-shot; ready clock stops before range/style/counter inspection; event-loop first-turn observation, not p99; no raw-wire/allocator/subphase timing claim' } }));
   } finally { owner.dispose(); await awaitFixture(broker.dispose()); await rm(root, { recursive: true, force: true }); }
   assert.equal(owner.stats().retention.retainedBytes, 0); assert.equal(owner.stats().retention.outstandingPeakBytes, 0);
@@ -334,7 +333,7 @@ test('current consumer matching reference: uninstrumented cold finite 640-byte R
 });
 
 
-test('current consumer phase boundaries: palette-only RPC, reply decode, funded adoption and local bindings', async () => {
+test('current consumer phase boundaries: generic v4 rule STYLE request and reply decode', async () => {
   const root = await mkdtemp(join(tmpdir(), 'consumer-phase-boundaries-'));
   const pipe = new StdioTransport({ command: binary.path, args: ['--stdio', '--config', join(root, 'config.json')], cwd: root,
     env: { ...process.env, HOME: root, XDG_CONFIG_HOME: root, XDG_DATA_HOME: root, XDG_CACHE_HOME: root, XDG_RUNTIME_DIR: root }, requestDeadlineMs: 5000, terminateGraceMs: 100 });
@@ -348,34 +347,26 @@ test('current consumer phase boundaries: palette-only RPC, reply decode, funded 
     const value = await pipe.request({ ...request, v: SEMANTIC_PROTOCOL_VERSION, ticket });
     return { value, ticket, requestMs: performance.now() - start };
   };
-  const caller: ConcreteStyle = { foreground: { kind: 'terminal-default' }, background: { kind: 'terminal-default' }, attributes: 0 };
   const rows: Record<string, unknown>[] = [];
   try {
     const descriptionReply = await call({ op: 'describe' }), description = decodeSemanticDescription(descriptionReply.value, descriptionReply.ticket);
-    const theme = description.profiles.find(profile => profile.id === 'syntect:Catppuccin Mocha'); assert.ok(theme);
-    const expectation = { vocabulary: description.vocabulary.fingerprint, rules: fingerprintNative(theme.fingerprint, 'rules'), mode: 'native' as const,
-      bindingSlots: 0, paletteFingerprint: fingerprintNative(theme.fingerprint, 'palette') };
+    const definition = createSemanticRuleDefinition();
+    const expectation = { vocabulary: description.vocabulary.fingerprint, rules: fingerprintRules(definition), bindingSlots: definition.binding_slots };
     const styleRequest = (contexts: number[][]) => ({ op: 'styles.resolve', instance: description.instance, vocabulary: description.vocabulary.fingerprint,
-      rules: { kind: 'native', id: theme.id, fingerprint: theme.fingerprint }, admission: 'bounded_queue', queue_wait_ms: 1000, contexts });
-    const nativeStyles = async (phase: string, contexts: number[][]) => {
+      rules: { definition }, admission: 'bounded_queue', queue_wait_ms: 1000, contexts });
+    const genericStyles = async (phase: string, contexts: number[][]) => {
       const reply = await call(styleRequest(contexts));
-      // Re-encoding is outside each clock. This isolates JSON.parse and the actual
-      // consumer decoder, not the original transport's socket/framing overhead.
       const json = JSON.stringify(reply.value), parsed = timed(() => JSON.parse(json) as unknown);
       const decoded = timed(() => decodeSemanticStyleReply(parsed.value, reply.ticket, description, expectation, contexts.length, OCCIPITAL_LIMITS.retainedBytes));
-      const concrete = timed(() => decoded.value.styles.map(style => materializeStyle(style, [], caller)));
-      assert.ok(decoded.value.palette); assert.equal(decoded.value.indices.length, contexts.length);
-      assert.equal(decoded.value.palette.slots.length, CARD_ROLES.length);
-      assert.ok(concrete.value.length > 0); assert.ok(concrete.value.every(style => Object.isFrozen(style)));
-      assert.ok(decoded.value.styles.every(style => style.foreground.kind !== 'binding' && style.background.kind !== 'binding'), 'native materialization does not read Pi bindings');
+      assert.equal(decoded.value.indices.length, contexts.length);
       rows.push({ phase, contexts: contexts.length, requestMs: reply.requestMs, jsonBytesEquivalent: Buffer.byteLength(json), jsonParseMs: parsed.ms,
-        validationAndTypedDecodeMs: decoded.ms, concreteMaterializationMs: concrete.ms, expressions: decoded.value.styles.length,
-        typedIndexBytes: decoded.value.indices.byteLength, paletteRoles: decoded.value.palette.slots.length, decodedPolicyBytes: decoded.value.policyBytes });
+        validationAndTypedDecodeMs: decoded.ms, expressions: decoded.value.styles.length,
+        typedIndexBytes: decoded.value.indices.byteLength, decodedPolicyBytes: decoded.value.policyBytes });
       return decoded.value;
     };
-    const cold = await nativeStyles('native-palette-only-cold', []), warm = await nativeStyles('native-palette-only-cached', []);
-    assert.equal(sourceRequests, 0, 'palette-only operations cannot parse source');
-    assert.deepEqual(warm, cold, 'same immutable native palette is reused without syntax contexts');
+    const cold = await genericStyles('generic-style-cold', []), warm = await genericStyles('generic-style-repeat', []);
+    assert.equal(sourceRequests, 0, 'STYLE-only requests never parse source');
+    assert.deepEqual(warm, cold);
     const text = 'fn compute(x: i32) -> i32 { let next = x + 42; println!("value={next}"); next }\n'.repeat(8);
     assert.equal(Buffer.byteLength(text), 640); assert.equal(hash(text), '76c47f6795c368f91b9956e7de60297f563ef5629d1d2af58b9789ae71e3180e');
     const workloads = [{ name: 'reference-640', language: 'Rust', text }, { name: 'dense-256', language: 'typescript',
@@ -399,12 +390,12 @@ test('current consumer phase boundaries: palette-only RPC, reply decode, funded 
         jsonBytesEquivalent: Buffer.byteLength(json), jsonParseMs: parsed.ms, validationAndTypedDecodeMs: decoded.ms, contextRangeAdoptionMs: adopted.ms,
         decodedPolicyBytes: decoded.value.policyBytes, typedRunBytes: chunk.runs.byteLength, typedContextBytes: chunk.contexts.reduce((n, c) => n + c.byteLength, 0),
         runs: chunk.runs.length / 2, contexts: chunk.contexts.length, retainedPolicyDelta: budget.stats().retainedBytes - before });
-      await nativeStyles(`${workload.name}-styles`, chunk.contexts.map(context => [0, ...context]));
+      await genericStyles(`${workload.name}-styles`, chunk.contexts.map(context => [0, ...context]));
       pool.remove(generation);
       assert.equal(budget.stats().retainedBytes, 0, 'phase input and ranges released before next workload');
     }
     themes.initTheme('dark', false);
-    const pi = timed(() => preparePiInput(themes.theme, 1, 'truecolor', { budget, grant: bytes => budget.reserve(bytes) }));
+    const pi = timed(() => preparePaletteInput(themes.theme, 'pi', 1, 'truecolor', { budget, grant: bytes => budget.reserve(bytes) }));
     assert.ok(pi.value); const lease = pi.value;
     try {
       let roles = 0, bindings = 0;

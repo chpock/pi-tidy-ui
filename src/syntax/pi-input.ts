@@ -4,8 +4,9 @@ import type { GeometryFunding } from '../occipital/controller.ts';
 import { type DataBudget, type DataCharge, type DataCleanupReceipt, type DataGrantFactory } from '../occipital/data-budget.ts';
 import { CARD_ROLES, type CardRole } from '../occipital/semantic-codec.ts';
 import { samplePiPalette } from './pi-palette.ts';
+import { sampleOwnedPalette } from '../themes/owned-palette.ts';
 import { PI_MARKER_VARIANT_SCRATCH_BYTES } from './pi-variants.ts';
-import { PI_DIRECT_BINDINGS, PI_RULE_BINDINGS } from './pi-rules.ts';
+import { PI_DIRECT_BINDINGS, PI_RULE_BINDINGS } from './pi-adapter.ts';
 import { compileStyleAnsi, type AnsiStyle } from './style-ansi.ts';
 import type { ConcreteStyle, StyleBinding } from './style-materialization.ts';
 
@@ -23,22 +24,24 @@ const handleBytes = 256;
 const dataBytes = 512 + PI_RULE_BINDINGS.length * 256 + CARD_ROLES.length * 1024;
 // The fixed public role samplers use bounded SGR parsing/map/diff temporaries.
 // This is operation scratch, not a root-pool or response-size reservation.
-const scratchBytes = 8192 + PI_DIRECT_BINDINGS.length * 256 + PI_MARKER_VARIANT_SCRATCH_BYTES;
+const piScratchBytes = 8192 + PI_DIRECT_BINDINGS.length * 256 + PI_MARKER_VARIANT_SCRATCH_BYTES;
+const ownedPaletteScratchBytes = 128 * 1024;
 const denied = Symbol('Pi input allocation denied');
 type SharedOwnership = { charge: DataCharge; holders: number; owners: number };
-type Store = { readonly paletteRevision: number; readonly terminalMode: TerminalColorMode; data?: InputData; ownership: SharedOwnership };
+type Store = { readonly paletteId: string; readonly paletteRevision: number; readonly terminalMode: TerminalColorMode; data?: InputData; ownership: SharedOwnership };
 type LeaseOwnership = { header?: DataCharge; shared?: SharedOwnership };
 // An opaque capability: consumers cannot dereference the weak store and bypass
 // lease validity/physical pins to obtain unguarded input tables.
 class InputCache {
   #store: WeakRef<Store>;
   constructor(store: Store) { this.#store = new WeakRef(store); }
-  static prepare(theme: PiInputTheme, paletteRevision: number, terminalMode: TerminalColorMode,
+  static prepare(theme: PiInputTheme | undefined, paletteId: string, paletteRevision: number, terminalMode: TerminalColorMode,
     funding: GeometryFunding, cache?: InputCache): PiInputLease | undefined {
-    return prepare(theme, paletteRevision, terminalMode, funding, cache ? cache.#store.deref() : undefined);
+    return prepare(theme, paletteId, paletteRevision, terminalMode, funding, cache ? cache.#store.deref() : undefined);
   }
 }
-export type PiInputCache = InputCache;
+export type PaletteInputCache = InputCache;
+export type PiInputCache = PaletteInputCache;
 
 function fund(budget: DataBudget, bytes: number, funding?: DataGrantFactory): DataCharge {
   const grant = funding ? funding(bytes) : budget.reserve(bytes);
@@ -82,13 +85,14 @@ class InputLease {
   #ownership: LeaseOwnership;
   #receipt: DataCleanupReceipt;
   readonly cache: PiInputCache;
+  readonly paletteId: string;
   readonly paletteRevision: number;
   readonly terminalMode: TerminalColorMode;
   readonly allocationBytes: number;
   constructor(store: Store, header: DataCharge) {
     this.#store = store; this.#ownership = { header, shared: store.ownership };
     this.#receipt = cleanup(new WeakRef(this), this.#ownership);
-    this.cache = new InputCache(store); this.paletteRevision = store.paletteRevision; this.terminalMode = store.terminalMode;
+    this.cache = new InputCache(store); this.paletteId = store.paletteId; this.paletteRevision = store.paletteRevision; this.terminalMode = store.terminalMode;
     this.allocationBytes = header.bytes + store.ownership.charge.bytes;
   }
   cleanupReceipt(): DataCleanupReceipt { return this.#receipt; }
@@ -112,14 +116,20 @@ class InputLease {
     releaseLease(this.#ownership);
   }
 }
-export type PiInputLease = InputLease;
+export type PaletteInputLease = InputLease;
+export type PiInputLease = PaletteInputLease;
 
 /** Outside-render only. A hit funds only a new handle, never resamples or
  * recompiles. The physical store, not the first lease, is the weak cache target. */
-export const preparePiInput = InputCache.prepare;
-function prepare(theme: PiInputTheme, paletteRevision: number, terminalMode: TerminalColorMode,
-  funding: GeometryFunding, previous?: Store): PiInputLease | undefined {
-  if (previous?.data && previous.ownership.owners && previous.paletteRevision === paletteRevision && previous.terminalMode === terminalMode) {
+export const preparePaletteInput = InputCache.prepare;
+/** Pi-only convenience used by embedders and focused compatibility controls. */
+export function preparePiInput(theme: PiInputTheme, paletteRevision: number, terminalMode: TerminalColorMode,
+  funding: GeometryFunding, cache?: PaletteInputCache): PaletteInputLease | undefined {
+  return preparePaletteInput(theme, 'pi', paletteRevision, terminalMode, funding, cache);
+}
+function prepare(theme: PiInputTheme | undefined, paletteId: string, paletteRevision: number, terminalMode: TerminalColorMode,
+  funding: GeometryFunding, previous?: Store): PaletteInputLease | undefined {
+  if (previous?.data && previous.ownership.owners && previous.paletteId === paletteId && previous.paletteRevision === paletteRevision && previous.terminalMode === terminalMode) {
     previous.ownership.holders++;
     let header: DataCharge | undefined;
     try {
@@ -132,11 +142,16 @@ function prepare(theme: PiInputTheme, paletteRevision: number, terminalMode: Ter
   }
   let scratch: DataCharge | undefined, charge: DataCharge | undefined, header: DataCharge | undefined;
   try {
-    scratch = fund(funding.budget, scratchBytes, funding.grant); charge = fund(funding.budget, dataBytes, funding.grant); header = fund(funding.budget, handleBytes, funding.grant);
-    const { bindings, roles } = samplePiPalette(theme, terminalMode), compiledRoles = {} as Record<CardRole, AnsiStyle>;
-    for (const role of CARD_ROLES) compiledRoles[role] = compileStyleAnsi(roles[role], terminalMode);
-    const data = Object.freeze({ bindings, roles, compiledRoles: Object.freeze(compiledRoles) });
-    const store: Store = { paletteRevision, terminalMode, data, ownership: { charge, holders: 1, owners: 1 } };
+    scratch = fund(funding.budget, paletteId === 'pi' ? piScratchBytes : ownedPaletteScratchBytes, funding.grant); charge = fund(funding.budget, dataBytes, funding.grant); header = fund(funding.budget, handleBytes, funding.grant);
+    const sampled = paletteId === 'pi'
+      ? theme ? samplePiPalette(theme, terminalMode) : undefined
+      : sampleOwnedPalette(paletteId, terminalMode);
+    if (!sampled) return undefined;
+    const { bindings, roles } = sampled;
+    const compiledRoles = 'compiledRoles' in sampled ? sampled.compiledRoles
+      : Object.freeze(Object.fromEntries(CARD_ROLES.map(role => [role, compileStyleAnsi(roles[role], terminalMode)])) as Record<CardRole, AnsiStyle>);
+    const data = Object.freeze({ bindings, roles, compiledRoles });
+    const store: Store = { paletteId, paletteRevision, terminalMode, data, ownership: { charge, holders: 1, owners: 1 } };
     const lease = new InputLease(store, header); charge = header = undefined; return lease;
   } catch (error) { if (error === denied) return undefined; throw error; }
   finally { header?.release(); charge?.release(); scratch?.release(); }

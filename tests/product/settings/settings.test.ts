@@ -10,7 +10,7 @@ import test from "node:test";
 import { ExtensionSettings, SETTINGS_FILE_MAX_BYTES, type SyntaxTheme, type SettingsLoadResult } from "../../../src/settings.ts";
 
 const pi: SyntaxTheme = { kind: "pi" };
-const theme = (id: string): SyntaxTheme => ({ kind: "occipital", id });
+const theme = (id: string): SyntaxTheme => ({ kind: "theme", id });
 
 async function fixture(t: test.TestContext) {
   const root = await fs.mkdtemp(join(tmpdir(), "tidy-settings-"));
@@ -117,7 +117,7 @@ for (const token of ["1e400", "-1e400", "9007199254740993", "-9007199254740993",
     const fresh = new ExtensionSettings({ file });
     assert.deepEqual(await fresh.load(), { ok: true, syntaxTheme: pi });
     assert.deepEqual(await fresh.update({ syntaxTheme: theme("next") }), { ok: true });
-    assert.equal(await fs.readFile(file, "utf8"), `{\n  "future": ${token},\n  "syntaxTheme": {\n    "kind": "occipital",\n    "id": "next"\n  }\n}\n`);
+    assert.equal(await fs.readFile(file, "utf8"), `{\n  "future": ${token},\n  "syntaxTheme": {\n    "kind": "theme",\n    "id": "next"\n  }\n}\n`);
     await noTemporaryFiles(file);
   });
 }
@@ -199,17 +199,17 @@ const invalidFiles: [string, string, string][] = [
   ["negative zero root", "-0", "invalid-root"],
   ["numeric theme", '{"syntaxTheme":1e400}', "invalid-theme"],
   ["numeric kind", '{"syntaxTheme":{"kind":9007199254740993}}', "invalid-theme"],
-  ["overflow catalogue ID", '{"syntaxTheme":{"kind":"occipital","id":1e400}}', "invalid-theme"],
+  ["overflow theme ID", '{"syntaxTheme":{"kind":"theme","id":1e400}}', "invalid-theme"],
   ["null theme", '{"syntaxTheme":null}', "invalid-theme"],
   ["string theme", '{"syntaxTheme":"pi"}', "invalid-theme"],
   ["array theme", '{"syntaxTheme":[]}', "invalid-theme"],
   ["missing kind", '{"syntaxTheme":{}}', "invalid-theme"],
   ["unknown kind", '{"syntaxTheme":{"kind":"SECRET"}}', "invalid-theme"],
   ["Pi extra key", '{"syntaxTheme":{"kind":"pi","id":"SECRET"}}', "invalid-theme"],
-  ["catalogue missing ID", '{"syntaxTheme":{"kind":"occipital"}}', "invalid-theme"],
-  ["catalogue number ID", '{"syntaxTheme":{"kind":"occipital","id":5}}', "invalid-theme"],
-  ["catalogue empty ID", '{"syntaxTheme":{"kind":"occipital","id":""}}', "invalid-theme"],
-  ["catalogue extra key", '{"syntaxTheme":{"kind":"occipital","id":"x","extra":true}}', "invalid-theme"],
+  ["theme missing ID", '{"syntaxTheme":{"kind":"theme"}}', "invalid-theme"],
+  ["theme number ID", '{"syntaxTheme":{"kind":"theme","id":5}}', "invalid-theme"],
+  ["theme empty ID", '{"syntaxTheme":{"kind":"theme","id":""}}', "invalid-theme"],
+  ["theme extra key", '{"syntaxTheme":{"kind":"theme","id":"x","extra":true}}', "invalid-theme"],
   ["ID exceeds 64 UTF-8 bytes", JSON.stringify({ syntaxTheme: theme("é".repeat(33)) }), "invalid-theme"],
   ["ID lone surrogate", '{"syntaxTheme":{"kind":"occipital","id":"\\ud800"}}', "invalid-theme"],
 ];
@@ -304,7 +304,7 @@ test("settings: invalid update shape never writes", async (t) => {
 for (const failure of ["mkdir", "open", "partial-write", "rename"] as const) {
   test(`settings: failed ${failure} retains old complete file and cleans temporary files`, async (t) => {
     const { store, file, seed } = await fixture(t);
-    const old = '{"future":true,"syntaxTheme":{"kind":"occipital","id":"old"}}';
+    const old = '{"future":true,"syntaxTheme":{"kind":"theme","id":"old"}}';
     await seed(old);
     const fail = () => { throw Object.assign(new Error(`EIO SECRET ${file}`), { code: "EIO" }); };
     if (failure === "mkdir") t.mock.method(fs, "mkdir", fail);
@@ -350,7 +350,7 @@ test("settings: same-client updates serialize publication and snapshot queued ch
   });
   const first = store.update({ syntaxTheme: theme("first") });
   await reached.promise;
-  const mutable = { kind: "occipital" as const, id: "second" };
+  const mutable = { kind: "theme" as const, id: "second" };
   const second = store.update({ syntaxTheme: mutable });
   mutable.id = "mutated";
   await new Promise((resolve) => setImmediate(resolve));
@@ -409,7 +409,7 @@ test("settings: independent processes publish complete files in actual rename or
       await realRename(...args);
     };
     const result = await new ExtensionSettings({file: process.env.TEST_SETTINGS_FILE})
-      .update({syntaxTheme: {kind:'occipital', id:process.env.TEST_SETTINGS_ID}});
+      .update({syntaxTheme: {kind:'theme', id:process.env.TEST_SETTINGS_ID}});
     process.send({result});
     process.disconnect();
   `;
@@ -466,7 +466,7 @@ for (const mode of ["default", "absolute", "tilde"] as const) {
         import { ExtensionSettings } from ${JSON.stringify(new URL("../../../src/settings.ts", import.meta.url).href)};
         const store = new ExtensionSettings();
         const before = await store.load();
-        const saved = ${save} ? await store.update({syntaxTheme:{kind:'occipital',id:'process-theme'}}) : null;
+        const saved = ${save} ? await store.update({syntaxTheme:{kind:'theme',id:'process-theme'}}) : null;
         console.log(JSON.stringify({root:getAgentDir(), file:store.file, before, saved}));
       `;
       const child = spawnSync(process.execPath, ["--input-type=module", "--eval", script], { env, encoding: "utf8", timeout: 30_000 });
@@ -506,7 +506,7 @@ test("settings cancellation: queued obsolete choice never rereads or publishes a
   resume.release();
   assert.deepEqual(await first, { ok: true }); safeFailure(await second, 'cancelled');
   assert.equal(reads, 1); assert.equal(publications, 1);
-  assert.equal(await fs.readFile(file, 'utf8'), '{\n  "future": 1e400,\n  "syntaxTheme": {\n    "kind": "occipital",\n    "id": "current"\n  }\n}\n');
+  assert.equal(await fs.readFile(file, 'utf8'), '{\n  "future": 1e400,\n  "syntaxTheme": {\n    "kind": "theme",\n    "id": "current"\n  }\n}\n');
   await noTemporaryFiles(file);
 });
 
@@ -563,7 +563,7 @@ const switchKeys = ['terminalColorsEnabled', 'nativeHighlightingEnabled'] as con
 
 test('settings: shared switches persist together with theme and future fields', async t => {
   const { store, file, seed } = await fixture(t);
-  await seed('{"future":{"keep":true},"syntaxTheme":{"kind":"occipital","id":"saved"}}');
+  await seed('{"future":{"keep":true},"syntaxTheme":{"kind":"theme","id":"saved"}}');
   const switches = Object.fromEntries(switchKeys.map(key => [key, false]));
   assert.deepEqual(await store.update(switches), { ok: true });
   assert.deepEqual(await new ExtensionSettings({ file }).load(), { ok: true, syntaxTheme: theme('saved'), ...switches });

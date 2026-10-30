@@ -1,4 +1,4 @@
-//! Theme-free source authority staged for v3 cutover, not an active second service.
+//! Theme-independent source authority shared by the v4 transports.
 //! The worker owns scheduling, request/response credits and actual transport settlement.
 //! bind's callback funds absolute persistent-state overlap. start/step callbacks fund
 //! absolute ADDITIONAL Job allowance (on top of decoded request/frame ownership),
@@ -629,7 +629,7 @@ mod accounting_tests {
     use serde_json::{json, value::RawValue};
     use std::io::Write;
     fn input() -> Box<RawValue> {
-        RawValue::from_string(json!({"v":3,"op":"stream.open","ticket":"t","instance":"instance","admission":"try_now","sources":[{"key":"key","generation":1,"source_version":0,"hint":{"language":"rust"},"text":"fn x(){}\n"}]}).to_string()).unwrap()
+        RawValue::from_string(json!({"v":4,"op":"stream.open","ticket":"t","instance":"instance","admission":"try_now","sources":[{"key":"key","generation":1,"source_version":0,"hint":{"language":"rust"},"text":"fn x(){}\n"}]}).to_string()).unwrap()
     }
     #[test]
     fn actual_job_credit_covers_state_and_ack_handoff_without_releasing_transport_slot() {
@@ -749,7 +749,7 @@ mod accounting_tests {
                 .unwrap();
             }
             let first = &service.bindings[0];
-            let close = RawValue::from_string(json!({"v":3,"op":"stream.close","ticket":"close","instance":"instance","key":first.key,"generation":first.generation,"lease":first.wire}).to_string()).unwrap();
+            let close = RawValue::from_string(json!({"v":4,"op":"stream.close","ticket":"close","instance":"instance","key":first.key,"generation":first.generation,"lease":first.wire}).to_string()).unwrap();
             let request =
                 SourceRequest::decode(&close, "instance", crate::limits::SOURCE_BYTES, &mut |_| {
                     true

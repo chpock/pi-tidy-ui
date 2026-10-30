@@ -10,7 +10,7 @@ impl InspectDelivery for occipital::scheduler::Delivery {
     }
 }
 fn source(ticket: &str, text: &str, queue: bool) -> Vec<u8> {
-    let mut value = json!({"v":3,"ticket":ticket,"op":"stream.open","instance":"boot","admission":if queue {"bounded_queue"} else {"try_now"},"sources":[{"key":ticket,"generation":1,"source_version":1,"hint":{"language":"bash"},"text":text}]});
+    let mut value = json!({"v":4,"ticket":ticket,"op":"stream.open","instance":"boot","admission":if queue {"bounded_queue"} else {"try_now"},"sources":[{"key":ticket,"generation":1,"source_version":1,"hint":{"language":"bash"},"text":text}]});
     if queue {
         value["queue_wait_ms"] = json!(10);
     }
@@ -218,7 +218,7 @@ fn an_unhanded_reply_keeps_its_lease_serialized_until_commit_or_discard() {
     worker.tick(0);
     let first = open.try_take().unwrap().unwrap();
     let saved = first.json()["body"]["sources"][0].clone();
-    let append = json!({"v":3,"ticket":"append","instance":"boot","op":"stream.append","admission":"bounded_queue","queue_wait_ms":10,"key":saved["key"],"generation":saved["generation"],"source_version":2,"lease":saved["lease"],"base_revision":saved["revision"],"base_bytes":saved["source_bytes"],"append":"\nnext\n","final":false});
+    let append = json!({"v":4,"ticket":"append","instance":"boot","op":"stream.append","admission":"bounded_queue","queue_wait_ms":10,"key":saved["key"],"generation":saved["generation"],"source_version":2,"lease":saved["lease"],"base_revision":saved["revision"],"base_bytes":saved["source_bytes"],"append":"\nnext\n","final":false});
     let mut second = worker
         .submit("a", serde_json::to_vec(&append).unwrap(), 0)
         .unwrap();
@@ -362,7 +362,7 @@ fn try_now_blocked_by_a_delivery_is_refused_without_waiting_or_advancing() {
     worker.tick(0);
     let first = open.try_take().unwrap().unwrap();
     let saved = first.json()["body"]["sources"][0].clone();
-    let append = json!({"v":3,"ticket":"append","instance":"boot","op":"stream.append","admission":"try_now","key":saved["key"],"generation":saved["generation"],"source_version":2,"lease":saved["lease"],"base_revision":saved["revision"],"base_bytes":saved["source_bytes"],"append":"\nnext\n","final":false});
+    let append = json!({"v":4,"ticket":"append","instance":"boot","op":"stream.append","admission":"try_now","key":saved["key"],"generation":saved["generation"],"source_version":2,"lease":saved["lease"],"base_revision":saved["revision"],"base_bytes":saved["source_bytes"],"append":"\nnext\n","final":false});
     let mut ticket = worker
         .submit("a", serde_json::to_vec(&append).unwrap(), 0)
         .unwrap();

@@ -14,8 +14,8 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 const identity = { project_root: '/fixture/project', harness: 'fixture', session: 'session' };
-const request = (ticket: string, op = 'highlight', text = '') => ({ v: 3, ticket, op, text });
-const reply = (ticket: string) => ({ v: 3, ticket, instance: 'instance', assets: 'assets', status: 'ok', body: {} });
+const request = (ticket: string, op = 'highlight', text = '') => ({ v: 4, ticket, op, text });
+const reply = (ticket: string) => ({ v: 4, ticket, instance: 'instance', assets: 'assets', status: 'ok', body: {} });
 function fixture() {
   const route: SharedRouteHandle = Object.freeze({ channel: 7, epoch: 9 });
   const calls: { handle: SharedRouteHandle; bytes: Uint8Array; options: { binary?: boolean; timeoutMs?: number; signal?: AbortSignal }; result: ReturnType<typeof deferred<unknown>> }[] = [];
@@ -86,14 +86,14 @@ for (const code of ['capability_ambiguous', 'capability_unprovided', 'route_reje
   else f.catalog.reject({ code, message: 'secret' });
   await assert.rejects(p.ready, { message: 'shared initialization failed' });
   assert.equal(f.calls.length, 0); assert.equal(f.counts().closes, 1);
-  assert.deepEqual(f.observed.slice(0, 2), ['/fixture/connection.json', 'syntax-highlight/v3']); empty(p);
+  assert.deepEqual(f.observed.slice(0, 2), ['/fixture/connection.json', 'syntax-highlight/v4']); empty(p);
 });
 
 test('explicit public connect, sole capability and complete route identity; no init request queue', async () => {
   const f = fixture(), p = f.transport();
   await assert.rejects(p.request(request('early')), /not ready/);
   await f.ready(p);
-  assert.deepEqual(f.observed, ['/fixture/connection.json', 'syntax-highlight/v3', [{ kind: 'internal_service', module_id: 'occipital', service_id: 'syntax' }, identity, { consumerIdentity: null }]]);
+  assert.deepEqual(f.observed, ['/fixture/connection.json', 'syntax-highlight/v4', [{ kind: 'internal_service', module_id: 'occipital', service_id: 'syntax' }, identity, { consumerIdentity: null }]]);
   const a = p.request(request('a', 'highlight', 'é\t🙂\n'));
   assert.equal(f.calls[0].handle, f.route); assert.equal(f.calls[0].options.binary, false);
   assert.deepEqual(JSON.parse(Buffer.from(f.calls[0].bytes).toString()), request('a', 'highlight', 'é\t🙂\n'));
@@ -108,7 +108,7 @@ test('two data calls plus independent metadata; reverse settlement and no invisi
   assert.equal(p.stats().controlReservedBytes, SHARED_LIMITS.controlReservationBytes);
   const bomb = Object.defineProperty(request('overflow'), 'text', { get() { assert.fail('capacity refusal must precede source read'); } });
   await assert.rejects(p.request(bomb), /capacity/);
-  await assert.rejects(p.request(request('metadata-extra', 'themes.refresh')), /capacity/);
+  await assert.rejects(p.request(request('metadata-extra', 'describe')), /capacity/);
   assert.equal(f.calls.length, 3);
   f.calls[2].result.resolve(reply('c')); await c;
   f.calls[1].result.resolve(reply('b')); await b;
@@ -222,10 +222,10 @@ test('already aborted and active duplicate calls do not encode or dispatch; term
   const a = p.request(request('a'));
   await assert.rejects(p.request(request('a', 'describe')), /duplicate ticket/);
   assert.equal(p.stats().serializedRequests, 1); assert.equal(f.calls.length, 1);
-  const error = { v: 3, ticket: 'a', instance: 'instance', assets: 'assets', status: 'error', error: { code: 'busy', execution: 'not_started' } };
+  const error = { v: 4, ticket: 'a', instance: 'instance', assets: 'assets', status: 'error', error: { code: 'busy', execution: 'not_started' } };
   f.calls[0].result.resolve(error); assert.deepEqual(await a, error);
   assert.equal(p.stats().dataReservedBytes, 0); assert.equal(p.stats().state, 'ready');
-  const b = p.request(request('b', 'themes.refresh')); f.calls[1].result.resolve(reply('b')); await b;
+  const b = p.request(request('b', 'describe')); f.calls[1].result.resolve(reply('b')); await b;
   assert.equal(p.stats().serializedRequests, 2);
   await p.close(); empty(p);
 });
@@ -417,12 +417,12 @@ test('review: SDK deadline-normalized connection_lost is not proof of a peer fai
 });
 
 
-test('wait-only catalogue expiry rejects just its waiter and holds control credit until the SDK settles', async t => {
+test('wait-only descriptor expiry rejects just its waiter and holds control credit until the SDK settles', async t => {
   const f = fixture(), p = f.transport(); await f.ready(p); t.after(() => p.close());
   t.mock.timers.enable({ apis: ['setTimeout'] });
   const a = p.request(request('data', 'highlight', 'x'), { deadlineMs: 30000 });
   void a.catch(() => {});
-  const c = p.request(request('catalogue', 'themes.refresh'), { deadlineMs: 5, waitOnly: true });
+  const c = p.request(request('describe-wait', 'describe'), { deadlineMs: 5, waitOnly: true });
   const refused = assert.rejects(c, { message: 'shared control wait deadline', execution: 'unknown' });
   const bytes = p.stats().encodedRequestBytes, control = p.stats().controlReservedBytes;
   t.mock.timers.tick(5); await refused;
@@ -436,14 +436,14 @@ test('wait-only catalogue expiry rejects just its waiter and holds control credi
   const b = p.request(request('second-data', 'highlight', 'y'));
   f.calls[2].result.resolve(reply('second-data')); await b;
   assert.equal(p.stats().unsettledControl, 1); assert.equal(p.stats().unsettledData, 0);
-  f.calls[1].result.resolve(reply('catalogue')); await Promise.resolve(); await Promise.resolve();
+  f.calls[1].result.resolve(reply('describe-wait')); await Promise.resolve(); await Promise.resolve();
   assert.equal(p.stats().unsettledControl, 0); assert.equal(p.stats().encodedRequestBytes, 0);
   const next = p.request(request('fresh', 'describe'), { waitOnly: true });
   f.calls[3].result.resolve(reply('fresh')); await next;
   assert.equal(f.calls.length, 4); await p.close(); empty(p); t.mock.timers.reset();
 });
 
-test('wait-only expired catalogue SDK rejection frees only its actual settled control lane', async t => {
+test('wait-only expired descriptor SDK rejection frees only its actual settled control lane', async t => {
   const f = fixture(), p = f.transport(); await f.ready(p); t.after(() => p.close());
   t.mock.timers.enable({ apis: ['setTimeout'] });
   const a = p.request(request('data'), { deadlineMs: 30000 }); void a.catch(() => {});
@@ -508,7 +508,7 @@ for (const op of ['highlight', 'styles.resolve']) for (const outcome of ['ok', '
     let settled = false; void pending.then(() => { settled = true; }, () => { settled = true; });
     abort.abort(); await tick();
     assert.equal(settled, false); assert.equal(p.stats().unsettledData, 1);
-    const terminal = outcome === 'ok' ? reply('retired') : { v: 3, ticket: 'retired', instance: 'instance', assets: 'assets',
+    const terminal = outcome === 'ok' ? reply('retired') : { v: 4, ticket: 'retired', instance: 'instance', assets: 'assets',
       status: 'error', error: { code: 'cancelled', execution: outcome } };
     f.calls[0].result.resolve(terminal);
     assert.deepEqual(await pending, terminal, 'terminal evidence must reach the canonical decoder, not become transport uncertainty');

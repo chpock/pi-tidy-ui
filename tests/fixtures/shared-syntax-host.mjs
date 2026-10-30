@@ -22,17 +22,12 @@ export async function until(check, label) {
 export async function reaped(pid) {
   await until(() => { try { process.kill(pid, 0); return false; } catch (error) { if (error.code === 'ESRCH') return true; throw error; } }, 'reaped process ' + pid);
 }
-export const themeDefinition = color => `<plist><dict><key>settings</key><array><dict><key>settings</key><dict><key>foreground</key><string>${color}</string></dict></dict></array></dict></plist>`;
 export async function sharedSyntaxHost(hostBinary, helperBinary) {
   const root = await mkdtemp(join(tmpdir(), 'occipital-cli-shared-'));
   const env = sharedHostEnv(root);
-  const runtime = env.XDG_RUNTIME_DIR, themes = join(root, 'themes'), config = join(root, 'occipital.json');
-  await mkdir(themes, { mode: 0o700 });
-  const themeFile = join(themes, 'cli-shared.tmTheme');
-  await writeFile(themeFile, themeDefinition('#223344'));
-  await writeFile(config, JSON.stringify({ themeDirectories: ['themes'] }));
+  const runtime = env.XDG_RUNTIME_DIR;
   const wrapper = join(root, 'module'), quote = value => "'" + value.replaceAll("'", "'\\''") + "'";
-  await writeFile(wrapper, `#!/bin/sh\nexec ${quote(resolve(helperBinary))} --config ${quote(config)} "$@"\n`);
+  await writeFile(wrapper, `#!/bin/sh\nexec ${quote(resolve(helperBinary))} "$@"\n`);
   await chmod(wrapper, 0o700);
   const daemonConfig = join(env.XDG_CONFIG_HOME, 'cortexkit'); await mkdir(daemonConfig, { mode: 0o700 });
   await writeFile(join(daemonConfig, 'subc.jsonc'), JSON.stringify({ version: 1, port: 0, modules: { occipital: { program: wrapper, reserved: true } } }), { mode: 0o600 });
@@ -76,6 +71,6 @@ export async function sharedSyntaxHost(hostBinary, helperBinary) {
       pids.add(client.snapshot().provider.description.runtime.pid); return client;
     };
     const initialPeer = await peer();
-    return { root, alias, connection, themeFile, peer, initialPeer, close, pids };
+    return { root, alias, connection, peer, initialPeer, close, pids };
   } catch (error) { await close(); throw error; }
 }

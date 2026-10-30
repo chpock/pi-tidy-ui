@@ -1,4 +1,4 @@
-//! Active v3 routing ownership. Borrowed plans never outlive the admitted frame;
+//! Active v4 routing ownership. Borrowed plans never outlive the admitted frame;
 //! style expansion/compilation is deferred to the existing entitled worker turn.
 use crate::{
     credit::Credit,
@@ -14,8 +14,6 @@ use serde_json::value::RawValue;
 pub enum Operation {
     #[serde(rename = "describe")]
     Describe,
-    #[serde(rename = "themes.refresh")]
-    ThemesRefresh,
     #[serde(rename = "highlight")]
     Highlight,
     #[serde(rename = "stream.open")]
@@ -47,11 +45,11 @@ struct ControlRaw<'a> {
 pub fn control(bytes: &[u8]) -> Result<ControlRequest, Fault> {
     let raw: &RawValue = serde_json::from_slice(bytes).map_err(|_| wire::invalid())?;
     let value: ControlRaw<'_> = wire::decode(raw)?;
-    if wire::unsigned(value.v, u32::MAX)? != 3 {
+    if wire::unsigned(value.v, u32::MAX)? != 4 {
         return Err(Fault::not_started("protocol_mismatch"));
     }
     let op: Operation = serde_json::from_str(value.op.get()).map_err(|_| wire::invalid())?;
-    if !matches!(op, Operation::Describe | Operation::ThemesRefresh) {
+    if op != Operation::Describe {
         return Err(wire::invalid());
     }
     if let Some(instance) = value.instance {

@@ -1,8 +1,8 @@
 import '../../fixtures/test-guard.mjs';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { setImmediate as turn, setTimeout as delay } from 'node:timers/promises';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { setImmediate as turn } from 'node:timers/promises';
+import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SourceController, type SourceDemand } from '../../../src/occipital/controller.ts';
@@ -12,10 +12,11 @@ import { StdioTransport } from '../../../src/occipital/stdio.ts';
 import { ProviderBroker } from '../../../src/occipital/provider.ts';
 import { awaitFixture } from '../../fixtures/await-fixture.ts';
 import { readInputs, validateNative } from '../../../scripts/test/context.mjs';
+import { ownedStyleSelection } from '../../fixtures/owned-style-selection.ts';
 
 const inputs = readInputs(), binary = validateNative(inputs);
 function demand(text: string, version = 1, complete = false, key = 'source'): SourceDemand {
-  return { key, version, text, language: 'bash', profile: 'pi', fingerprint: 'a'.repeat(64), complete };
+  return { key, version, text, language: 'bash', complete };
 }
 function semanticRows(controller: SourceController, key = 'source') {
   const pool = Reflect.get(controller, 'pool'); assert.ok(pool instanceof SemanticRetentionPool);
@@ -61,13 +62,13 @@ function cleaned(transport: StdioTransport, controller: SourceController) {
   assert.equal(controller.stats().globalTransientBytes, 0); assert.equal(controller.stats().retention.retainedBytes, 0);
 }
 
-test('actual product stdio controller opens, coalesces, finalizes and resolves styles independently of native parse counters', async () => {
+test('actual product stdio controller opens, coalesces, finalizes and resolves common styles independently of parse counters', async () => {
   const root = await mkdtemp(join(tmpdir(), 'occipital-controller-')), transport = pipe(root);
   const broker = new ProviderBroker({ tryShared: async () => undefined, acquireOwned: async () => transport });
   const c = new SourceController(broker, { deadlineMs: 5000 });
   try {
-    await awaitFixture(broker.start()); const profile = broker.snapshot().description!.profiles[0]!;
-    c.setStyleSelection({ kind: 'native', id: profile.id, fingerprint: profile.fingerprint });
+    await awaitFixture(broker.start());
+    c.setStyleSelection(ownedStyleSelection());
     const d = demand('echo α\necho t'); c.observe(d); c.flush(); await drain(c);
     assert.equal(c.status('source')!.committedBytes, Buffer.byteLength('echo α\n'));
     assert.ok(c.displayBasis('source')); assert.equal(broker.stats().sourceDispatches, 1); assert.equal(broker.stats().styleDispatches, 1);
@@ -96,7 +97,7 @@ test('actual product stdio controller opens, coalesces, finalizes and resolves s
     assert.equal(broker.stats().sourceDispatches, 6, 'three original parses, independent batch, cleanup open and actual close');
     assert.equal(c.stats().remoteLeases, 0); assert.equal(c.stats().transientBytes, 0);
     assert.equal(c.stats().dispatches, 5 + broker.stats().styleDispatches, 'separate styles and close are counted, not filtered away');
-    console.log(JSON.stringify({ controllerNative: { node: process.version, source: inputs.source, native: binary,
+    console.log(JSON.stringify({ controllerCommonStyles: { node: process.version, source: inputs.source, native: binary,
       sourceDispatches: broker.stats().sourceDispatches, styleDispatches: broker.stats().styleDispatches,
       dispatches: c.stats().dispatches, preparedBytes: c.stats().preparedBytes, committedLineCalls: c.stats().committedLineCalls,
       tailCalls: c.stats().tailCalls, warmFrames: 100, remoteLeases: c.stats().remoteLeases, transientBytes: c.stats().transientBytes } }));
@@ -145,7 +146,7 @@ test('real owned exits stop after two restarts; only a validated six-byte source
     const d = demand('echo x', 1, true); c.observe(d); c.flush(); await drain(c);
     assert.equal(c.status(d.key)!.exact, true); assert.equal(c.stats().dispatches, 1); assert.equal(broker.stats().successfulClassifications, 1);
     const retained = semanticRows(c); assert.ok(retained.length); assert.equal(retained.at(-1)!.to, 6);
-    assert.equal(c.displayBasis(d.key), undefined, 'source-only success does not pretend a native palette was resolved');
+    assert.equal(c.displayBasis(d.key), undefined, 'source-only success does not pretend a palette presentation was resolved');
     await exitAndRecover(); await exitAndRecover(); await exitAndRecover();
     assert.equal(pipes.length, 5); assert.equal(broker.stats().ownedRestarts, 4); assert.equal(broker.stats().ownedRestartStops, 1);
     assert.equal(broker.snapshot().reason, 'restart_limit'); c.observe(d); c.flush();
@@ -158,80 +159,29 @@ test('real owned exits stop after two restarts; only a validated six-byte source
   }
 });
 
-// A real framed relay holds helper-produced STYLE bytes before StdioTransport can
-// settle its promises. It neither manufactures application replies nor gates parses.
-const styleReplyGate = `
-import { spawn } from 'node:child_process';
-import { writeFileSync, renameSync } from 'node:fs';
-const [binary, report] = process.argv.slice(1);
-const child = spawn(binary, ['--stdio', '--config', 'config.json'], { stdio: ['pipe', 'pipe', 'inherit'] });
-let gated = false; const held = [], stats = { operations: [], cancelled: 0, held: 0, peakHeld: 0, helperPid: child.pid, helperExited: false };
-function record() { writeFileSync(report + '.tmp', JSON.stringify(stats)); renameSync(report + '.tmp', report); }
-function frames(stream, consume) { let buffer = Buffer.alloc(0); stream.on('data', bytes => {
-  buffer = Buffer.concat([buffer, bytes]);
-  while (buffer.length >= 4 && buffer.length >= 4 + buffer.readUInt32BE(0)) {
-    const end = 4 + buffer.readUInt32BE(0), frame = buffer.subarray(0, end); buffer = buffer.subarray(end);
-    consume(frame, JSON.parse(frame.subarray(4).toString('utf8')));
-  }
-}); }
-frames(process.stdin, (frame, request) => {
-  if (request.cancel) stats.cancelled++;
-  if (request.ticket === 'gate-arm') gated = true;
-  if (request.ticket === 'gate-release') { gated = false; for (const reply of held.splice(0)) process.stdout.write(reply); stats.held = 0; }
-  if (request.op) stats.operations.push({ op: request.op, theme: request.rules?.id ?? null }); record(); child.stdin.write(frame);
-});
-frames(child.stdout, (frame, reply) => {
-  if (gated && reply.body?.kind === 'styles') { held.push(frame); stats.held = held.length; stats.peakHeld = Math.max(stats.peakHeld, held.length); record(); }
-  else process.stdout.write(frame);
-});
-process.stdin.on('end', () => child.stdin.end()); process.on('SIGTERM', () => child.kill('SIGTERM'));
-process.on('exit', () => { if (child.exitCode === null) child.kill('SIGKILL'); });
-child.on('error', () => process.exit(1)); child.on('exit', code => { stats.helperExited = true; record(); process.exit(code ?? 1); });
-`;
-
-test('theme burst: 100 ten-millisecond selections converge through genuinely unsettled product STYLE replies without source replay', async () => {
-  const root = await mkdtemp(join(tmpdir(), 'occipital-theme-burst-')), report = join(root, 'gate.json');
-  const transport = new StdioTransport({ command: process.execPath, args: ['--input-type=module', '-e', styleReplyGate, binary.path, report],
-    env: environment(root), cwd: root, requestDeadlineMs: 10000, terminateGraceMs: 100 });
+test('owned palette changes repaint ready groups locally without source replay or STYLE requests', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'occipital-palette-burst-')), transport = pipe(root);
   const broker = new ProviderBroker({ tryShared: async () => undefined, acquireOwned: async () => transport });
   const c = new SourceController(broker);
-  async function until(predicate: () => boolean | Promise<boolean>) {
-    await awaitFixture((async () => { while (!await predicate()) { c.flush(); await delay(2); } })(), 10000);
-  }
-  async function gate() {
-    return JSON.parse(await readFile(report, 'utf8')) as { operations: { op: string; theme: string | null }[]; cancelled: number; held: number; peakHeld: number; helperPid: number; helperExited: boolean };
-  }
+  const themes = ['gruvbox-dark', 'nord-dark', 'monokai-dark'] as const;
   const demands = Array.from({ length: 20 }, (_, i) => ({ ...demand(i % 2 ? `const x${i} = 1;\n` : `echo source-${i}`, 1, true, `source-${i}`), language: i % 2 ? 'typescript' : 'bash' }));
   try {
-    await awaitFixture(broker.start()); const [a, b, last] = broker.snapshot().description!.profiles; assert.ok(a && b && last);
-    c.setStyleSelection({ kind: 'native', id: a.id, fingerprint: a.fingerprint });
-    for (const d of demands) c.observe(d); c.flush();
-    await until(() => demands.every(d => c.displayBasis(d.key)?.profile === a.id) && c.stats().unsettledJobs === 0);
-    const baseline = c.stats(), sourceDispatches = broker.stats().sourceDispatches, baselineOperations = (await gate()).operations.length;
-    await transport.request({ v: VERSION, op: 'describe', ticket: 'gate-arm' });
-    c.setStyleSelection({ kind: 'native', id: b.id, fingerprint: b.fingerprint });
-    await until(async () => (await gate()).held === 2);
-    assert.equal(transport.stats().unsettledData, 2); const held = c.stats();
-    for (let i = 1; i < 100; i++) { await delay(10); const selected = i % 2 ? last : b; c.setStyleSelection({ kind: 'native', id: selected.id, fingerprint: selected.fingerprint }); }
-    await turn(); assert.equal(c.stats().preparedBytes, held.preparedBytes); assert.equal(c.stats().stylePreparations, held.stylePreparations);
-    assert.equal(transport.stats().unsettledData, 2); assert.equal((await gate()).cancelled, 0);
-    for (const d of demands) assert.equal(c.displayBasis(d.key)!.profile, a.id);
-    await transport.request({ v: VERSION, op: 'describe', ticket: 'gate-release' });
-    await until(() => demands.every(d => c.displayBasis(d.key)?.profile === last.id) && c.stats().unsettledJobs === 0);
-    const observed = await gate(), updates = observed.operations.slice(baselineOperations);
-    assert.deepEqual(updates.filter(row => row.op !== 'styles.resolve').map(row => row.op), ['describe', 'describe'], 'no hidden source or close operations during recoloring');
-    const styles = updates.filter(row => row.op === 'styles.resolve');
-    assert.equal(styles.length, 4, 'two obsolete physical resolutions then two shared missing-context resolutions');
-    assert.deepEqual(styles.map(row => row.theme), [b.id, b.id, last.id, last.id]);
-    assert.equal(broker.stats().sourceDispatches, sourceDispatches); assert.equal(c.stats().preparedBytes, baseline.preparedBytes);
-    assert.equal(observed.cancelled, 0); assert.equal(observed.peakHeld, 2); assert.equal(c.stats().peakJobs, 2);
-    const warm = c.stats(), wire = broker.stats();
+    await awaitFixture(broker.start()); c.setStyleSelection(ownedStyleSelection(themes[0]));
+    for (const d of demands) c.observe(d); c.flush(); await drain(c);
+    assert.ok(demands.every(d => c.displayBasis(d.key)?.palette === `owned-palette-v1:${themes[0]}`));
+    const baseline = c.stats(), sourceDispatches = broker.stats().sourceDispatches, styleDispatches = broker.stats().styleDispatches;
+    for (let i = 0; i < 100; i++) {
+      const selected = themes[i % themes.length]!;
+      c.setStyleSelection(ownedStyleSelection(selected)); c.flush();
+    }
+    await drain(c);
+    assert.ok(demands.every(d => c.displayBasis(d.key)?.palette === `owned-palette-v1:${themes[(99) % themes.length]}`));
+    assert.equal(broker.stats().sourceDispatches, sourceDispatches);
+    assert.equal(broker.stats().styleDispatches, styleDispatches);
+    const warm = c.stats();
     for (let i = 0; i < 100; i++) { for (const d of demands) c.observe(d); c.flush(); }
-    await drain(c); assert.deepEqual(c.stats(), warm); assert.deepEqual(broker.stats(), wire);
-    console.log(JSON.stringify({ burstNative: { node: process.version, nativeSha256: binary.sha256, source: inputs.source,
-      sourceDispatches, styleDispatches: wire.styleDispatches, updateOperations: updates, held: observed.peakHeld, cancelled: observed.cancelled,
-      warmFrames: 100, preparedBytes: warm.preparedBytes, transientBytes: warm.transientBytes } }));
-  } finally { c.dispose(); await awaitFixture(broker.dispose()); await awaitFixture(transport.close()); cleaned(transport, c); const last = await gate();
-    assert.equal(last.helperExited, true); assert.throws(() => process.kill(last.helperPid, 0), { code: 'ESRCH' });
-    await rm(root, { recursive: true, force: true }); }
+    await drain(c); assert.deepEqual(c.stats(), warm); assert.ok(baseline.preparedBytes > 0);
+    console.log(JSON.stringify({ localPaletteBurst: { node: process.version, helper: binary.sha256, source: inputs.source,
+      sourceDispatches, styleDispatches, paletteChanges: 100, warmFrames: 100, preparedBytes: warm.preparedBytes, transientBytes: warm.transientBytes } }));
+  } finally { c.dispose(); await awaitFixture(broker.dispose()); cleaned(transport, c); await rm(root, { recursive: true, force: true }); }
 });

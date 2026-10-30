@@ -10,7 +10,7 @@ import { colorToHex, visibleWidth } from '@earendil-works/pi-tui';
 import xterm from '@xterm/headless';
 import { readInputs, validateNative } from '../../../../scripts/test/context.mjs';
 import { sharedPiIsolationHost, sharedPiProgress } from '../../../fixtures/shared-pi-isolation.mjs';
-import { createPiRuleDefinition } from '../../../../src/syntax/pi-rules.ts';
+import { createSemanticRuleDefinition } from '../../../../src/syntax/semantic-rules.ts';
 import { samplePiBindings } from '../../../../src/syntax/pi-bindings.ts';
 import { samplePiCardPalette } from '../../../../src/syntax/pi-palette.ts';
 import { fingerprintRules } from '../../../../src/occipital/style-rules.ts';
@@ -35,19 +35,19 @@ function publicTheme(name, faint) {
   return new Theme(fg, bg, 'truecolor', { name: `shared-${name}`, dim: faint ? ['syntaxComment'] : [] });
 }
 function bind(client, theme, revision) {
-  assert.equal(client.sources.setStyleSelection({ kind: 'client', definition: createPiRuleDefinition(),
+  assert.equal(client.sources.setStyleSelection({ definition: createSemanticRuleDefinition(),
     bindings: samplePiBindings(theme), roles: samplePiCardPalette(theme), bindingRevision: revision, palette: `pi:${revision}` }), true);
 }
 function observe(client) {
   const effective = client.snapshot().effective; assert.equal(effective.id, 'pi');
-  client.sources.observe({ key, version: 1, language: 'rust', profile: effective.id, fingerprint: effective.fingerprint, text, complete: false });
+  client.sources.observe({ key, version: 1, language: 'rust', text, complete: false });
   client.sources.flush();
 }
 async function ready(client) {
-  await sharedPiProgress(() => {
-    client.sources.flush(); const stats = client.sources.stats();
-    return client.sources.displayBasis(key) && !stats.unsettledJobs && !stats.pendingCloses;
-  });
+  assert.equal(await client.whenSettled(), true, 'existing producers settle through the public completion boundary');
+  const stats = client.sources.stats();
+  assert.ok(client.sources.displayBasis(key));
+  assert.equal(stats.unsettledJobs, 0); assert.equal(stats.pendingCloses, 0);
 }
 function traffic(client) {
   const broker = client.broker.stats(), source = client.sources.stats();
@@ -126,9 +126,9 @@ async function checkPaint(rows, theme, width = 80) {
 }
 function generic(records) {
   const styles = records.filter(record => record.request.op === 'styles.resolve'); assert.equal(styles.length, 1);
-  const { request, reply } = styles[0]; assert.equal(reply.status, 'ok'); assert.equal(reply.body.palette, null);
-  assert.deepEqual(request.rules, { kind: 'client', definition: createPiRuleDefinition() });
-  assert.equal(reply.body.rules, fingerprintRules(createPiRuleDefinition()));
+  const { request, reply } = styles[0]; assert.equal(reply.status, 'ok'); assert.equal(Object.hasOwn(reply.body, 'palette'), false);
+  assert.deepEqual(request.rules, createSemanticRuleDefinition());
+  assert.equal(reply.body.rules, fingerprintRules(createSemanticRuleDefinition()));
   assert.ok(request.contexts.length > 0); assert.ok(reply.body.styles.length > 0);
   for (const style of reply.body.styles) for (const ink of [style.foreground, style.background]) assert.ok(['binding', 'inherit'].includes(ink.kind), 'shared result contains only symbolic Pi colors');
   assert.ok(reply.body.styles.some(style => style.foreground.kind === 'binding' && style.foreground.slot === 0));
@@ -159,11 +159,11 @@ test('shared Follow Pi: two actual consumers isolate public palettes and typogra
   let a, b, ga, gb, evidence;
   try {
     a = await host.peer();
-    const singleRouteBaseline = await a.client.broker.catalogue(a.client.snapshot().provider.generation, 'describe');
+    const singleRouteBaseline = await a.describe();
     assert.equal(singleRouteBaseline.runtime.leases, 0); assert.equal(singleRouteBaseline.runtime.data_jobs, 0);
     b = await host.peer();
     assert.notEqual(a.transport(), b.transport()); assert.equal(host.pids.size, 1);
-    const baseline = await b.client.broker.catalogue(b.client.snapshot().provider.generation, 'describe');
+    const baseline = await b.describe();
     assert.equal(baseline.runtime.leases, 0); assert.equal(baseline.runtime.data_jobs, 0);
     const dark = publicTheme('dark', true), light = publicTheme('light', false);
     const ra = spy(t, a.client), rb = spy(t, b.client);
@@ -181,7 +181,7 @@ test('shared Follow Pi: two actual consumers isolate public palettes and typogra
     assert.notEqual(colors[0].syntaxComment.fg, colors[1].syntaxComment.fg);
     assert.notEqual(colors[0].syntaxComment.bg, colors[1].syntaxComment.bg);
     assert.equal(colors[0].syntaxComment.dim, true); assert.equal(colors[1].syntaxComment.dim, false);
-    const live = await b.client.broker.catalogue(b.client.snapshot().provider.generation, 'describe');
+    const live = await b.describe();
     assert.equal(live.runtime.leases, 2); assert.equal(live.runtime.data_jobs, 0);
     for (let frame = 0; frame < 10; frame++) {
       observe(a.client); observe(b.client);
@@ -207,7 +207,7 @@ test('shared Follow Pi: two actual consumers isolate public palettes and typogra
     await sharedPiProgress(() => !a.client.sources.stats().unsettledJobs && !a.client.sources.stats().pendingCloses);
     const departed = released(a, ga.funding);
     const afterDeparture = await sharedPiProgress(async () => {
-      const description = await b.client.broker.catalogue(b.client.snapshot().provider.generation, 'describe');
+      const description = await b.describe();
       return description.runtime.leases === 1 && description.runtime.data_jobs === 0 && description;
     });
     assert.equal(afterDeparture.runtime.pid, live.runtime.pid);
@@ -216,7 +216,7 @@ test('shared Follow Pi: two actual consumers isolate public palettes and typogra
     assert.deepEqual(paint(b.client, gb, 80), survivorRows); await checkPaint(survivorRows, dark);
     observe(b.client); await ready(b.client); assert.deepEqual(traffic(b.client), cold[1]);
     b.client.sources.remove(key); await sharedPiProgress(() => { b.client.sources.flush(); return !b.client.sources.stats().pendingCloses && !b.client.sources.stats().unsettledJobs; });
-    const empty = await b.client.broker.catalogue(b.client.snapshot().provider.generation, 'describe');
+    const empty = await b.describe();
     assert.equal(empty.runtime.leases, 0); assert.equal(empty.runtime.data_jobs, 0);
     assert.equal(empty.runtime.data_bytes, singleRouteBaseline.runtime.data_bytes, 'native source charges return to the measured no-source baseline');
     gb.measured.dispose(); await b.client.dispose();

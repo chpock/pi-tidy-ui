@@ -2,7 +2,7 @@ import { colorToOklch, oklchColor, type Color, type TerminalColorMode } from '@e
 import type { ThemeColor } from '@earendil-works/pi-coding-agent';
 import type { LiteralInk } from '../occipital/semantic-codec.ts';
 import { contrast, inkColor, luminance, outputInk } from './pi-color.ts';
-import { PI_RULE_BINDINGS } from './pi-rules.ts';
+import { PI_MARKER_REGIONS, PI_RULE_BINDINGS } from './pi-adapter.ts';
 import type { StyleBinding } from './style-materialization.ts';
 
 export type PiDerivedMarker = 'headingMarker' | 'inlineCodeDelimiter' | 'linkDelimiter';
@@ -85,7 +85,7 @@ export function derivePiMarkerVariants(
 ): PiMarkerVariants {
   const output = [...bindings], decisions: PiMarkerVariantDecision[] = [];
   for (const policy of policies) {
-    const index = PI_RULE_BINDINGS.indexOf(policy.binding), parentBinding = bindings[index]!;
+    const index = PI_RULE_BINDINGS.indexOf(PI_MARKER_REGIONS[policy.binding]), parentBinding = bindings[index]!;
     const context = contexts[policy.binding];
     if (!context.parent) { decisions.push(fallback(policy.binding, 'unknown-parent')); continue; }
     const neighbors = policy.neighbors.map(item => context.neighbors[item.role]);

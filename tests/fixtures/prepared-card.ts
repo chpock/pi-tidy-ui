@@ -2,8 +2,9 @@ import assert from 'node:assert/strict';
 import { SourceController } from '../../src/occipital/controller.ts';
 import { CardSources, type CardDisplayInput } from '../../src/syntax/cards.ts';
 import { layoutCard } from '../../src/syntax/card-layout.ts';
-import { preparePiInput, type PiInputTheme } from '../../src/syntax/pi-input.ts';
+import { preparePaletteInput, type PiInputTheme } from '../../src/syntax/pi-input.ts';
 import { prepareFileCard } from '../../src/file-card.ts';
+import { resolveTheme } from '../../src/themes/selection.ts';
 import type { CardGeometry } from '../../src/card-frame.ts';
 import type { BashPresentation } from '../../src/bash-card.ts';
 
@@ -14,8 +15,8 @@ export function preparedCard(input: CardDisplayInput, width: number, theme: PiIn
   const provider = { snapshot: () => ({ generation: 1, availability: 'initializing' as const, reason: 'initializing' as const, initialShared: false }),
     isReady: () => false, classificationAccepted: () => false, request: async () => assert.fail('fixture must not dispatch native work') };
   const sources = new SourceController(provider), owner = {};
-  const cards = new CardSources({ sources, snapshot: () => ({ enabled: true, provider: provider.snapshot(), selected: { kind: 'pi' as const }, standaloneVersion: 'test' }) },
-    { preparePiInput: funding => preparePiInput(theme, 1, 'truecolor', funding), classify: (text, info) => classify!(text, info.path!), invalidate() {}, requestRender() {} });
+  const cards = new CardSources({ sources, snapshot: () => ({ enabled: true, provider: provider.snapshot(), selected: { kind: 'pi' as const }, effective: resolveTheme({ kind: 'pi' }).effective, standaloneVersion: 'test' }) },
+    { preparePaletteInput: (palette, revision, mode, funding) => preparePaletteInput(theme, palette.id, revision, mode, funding), classify: (text, info) => classify!(text, info.path!), invalidate() {}, requestRender() {} });
   const funding = sources.geometryFunding()!;
   try {
     assert.equal(cards.updateDisplay(owner, input), true);

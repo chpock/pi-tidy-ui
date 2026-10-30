@@ -1,5 +1,5 @@
 import type { SyntaxTheme } from '../settings.ts';
-import { type ProfileDescription } from './protocol.ts';
+import type { ThemeDescription } from '../themes/selection.ts';
 import type { ProviderSnapshot } from './provider.ts';
 
 export type SyntaxMenuOutcome = { ok: true } | { ok: false; message: string };
@@ -9,7 +9,7 @@ export interface SyntaxMenuSnapshot {
   provider: ProviderSnapshot;
   standaloneVersion: string;
   selected: SyntaxTheme;
-  effective?: ProfileDescription;
+  effective?: ThemeDescription;
   /** Owner-supplied bounded, public-safe issue; never a raw transport/settings error. */
   lastIssue?: string;
 }
@@ -22,6 +22,5 @@ export interface SyntaxMenuOwner {
   snapshot(): SyntaxMenuSnapshot;
   /** May apply the live selection even when persistence returns an error. */
   selectTheme(choice: SyntaxTheme): Promise<SyntaxMenuOutcome>;
-  refreshThemes(): Promise<SyntaxMenuOutcome>;
   setEnabled(enabled: boolean): Promise<void>;
 }

@@ -30,7 +30,7 @@ async function script(root: string, fault: 'malformed' | 'incompatible' | 'exit'
   const command = join(root, 'owned-helper');
   const description = semanticDescriptor('', 'startup');
   if (fault === 'incompatible') description.body.protocol_version = 2;
-  const reply = fault === 'malformed' ? { v: 3, status: 'ok', body: { secret: 'PRIVATE_BODY' } } : description;
+  const reply = fault === 'malformed' ? { v: 4, status: 'ok', body: { secret: 'PRIVATE_BODY' } } : description;
   await writeFile(command, `#!${process.execPath}
 ${fault === 'exit' ? 'process.exit(7);' : fault === 'silent' ? 'process.stdin.resume();' : `let bytes=Buffer.alloc(0);process.stdin.on('data',chunk=>{
 bytes=Buffer.concat([bytes,chunk]);while(bytes.length>=4&&bytes.length>=4+bytes.readUInt32BE(0)){

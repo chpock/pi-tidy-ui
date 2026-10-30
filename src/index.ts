@@ -27,8 +27,9 @@ import { RenderCache, LAYOUT_KINDS, MEMORY_FIELDS, type LayoutKind, type LayoutM
 import { argumentParts, summaryName } from "./summary-args.ts";
 import { CardSources, type CardPreparation } from "./syntax/cards.ts";
 import { layoutCard, type CardLayout, type CardRows, type BashPaintProof } from './syntax/card-layout.ts';
-import { PiInputOwner } from './syntax/pi-input-owner.ts';
-import type { PiInputTheme, PiInputLease } from './syntax/pi-input.ts';
+import { PaletteInputOwner } from './syntax/pi-input-owner.ts';
+import type { PiInputTheme, PaletteInputLease } from './syntax/pi-input.ts';
+import { resolveTheme, type ThemeDescription } from './themes/selection.ts';
 import { SourceController, type GeometryFunding } from './occipital/controller.ts';
 import type { PiClassifier } from "./syntax/work.ts";
 import type { SyntaxClient } from "./occipital/client.ts";
@@ -116,7 +117,12 @@ export interface TidyUiOptions {
   };
   /** Coherent public Pi data; projected colors and actual public ANSI getters. */
   piInput?: () => { theme: PiInputTheme; mode: TerminalColorMode };
-  preparePiInput?: (theme: PiInputTheme, mode: TerminalColorMode, funding: GeometryFunding) => PiInputLease | undefined;
+  /** Terminal output mode without reading Pi colors for an owned palette. */
+  colorMode?: () => TerminalColorMode;
+  preparePaletteInput?: (palette: ThemeDescription, theme: PiInputTheme | undefined, revision: number, mode: TerminalColorMode,
+    funding: GeometryFunding, usePiFallback?: boolean, fallbackTheme?: () => PiInputTheme) => PaletteInputLease | undefined;
+  /** Pi-only fallback for isolated embedders that do not supply the generic lease owner. */
+  preparePiInput?: (theme: PiInputTheme, mode: TerminalColorMode, funding: GeometryFunding) => PaletteInputLease | undefined;
   cards?: readonly string[];
   compact?: readonly string[];
   warn?: (reason: string) => void;
@@ -318,7 +324,7 @@ export function installTidyUi(tui: LiveTui, getTheme: () => Palette, options: Ti
   }
   type Layout = { rows: string[]; framed?: boolean; native?: boolean };
   type PreparedLayout = { scene: CardLayout; output: CardRows; width: number; padding: number; expanded: boolean;
-    geometryStamp: number; paintStamp: number; publication: number; origin: 'native' | 'pi'; gap?: number };
+    geometryStamp: number; paintStamp: number; publication: number; origin: 'owned' | 'pi'; gap?: number };
   let preparedStates = new WeakMap<ToolNode, CacheEntry<PreparedLayout>>();
   const preparedPools = new WeakMap<CacheEntry<PreparedLayout>, RenderCache>();
   function dropPrepared(node: ToolNode) {
@@ -443,12 +449,22 @@ export function installTidyUi(tui: LiveTui, getTheme: () => Palette, options: Ti
   const refresh = () => { tui.invalidate(); tui.requestRender(); };
   // Native argument identity only, not prepared/encoded source or a reader cache.
   type SyntaxState = { attempt: number; revision: number; sourceRevision: number; serviceRevision: number; identity: unknown[]; service: unknown[];
-    palette: number; mode: TerminalColorMode; complete: boolean; live: boolean; applied: boolean; native?: boolean; refreshPending?: boolean; prefix?: { sourceRevision: number; basis: number; bytes: number } };
+    palette: number; paletteColors?: WeakRef<object>; mode: TerminalColorMode; complete: boolean; live: boolean; applied: boolean; paused?: boolean; owned?: boolean; refreshPending?: boolean; prefix?: { sourceRevision: number; basis: number; bytes: number } };
   let syntaxStates = new WeakMap<ToolNode, SyntaxState>();
   let syntax: CardSources<ToolNode> | undefined;
   let cardClient = options.syntax?.client;
+  let selectedPalette = cardClient?.snapshot().effective ?? resolveTheme({ kind: 'pi' }).effective;
   let ownedSources: SourceController | undefined;
-  const piOwner = options.preparePiInput ? undefined : new PiInputOwner(options.diagnostic);
+  const paletteOwner = new PaletteInputOwner(options.diagnostic);
+  const externalPaletteOwner = !!(options.syntax && options.preparePaletteInput);
+  function needsPiTheme(palette: ThemeDescription) {
+    return palette.kind === 'pi' || !externalPaletteOwner && paletteOwner.usesPiInput(palette);
+  }
+  function terminalMode(): TerminalColorMode {
+    if (options.colorMode) return options.colorMode();
+    const theme = getTheme() as unknown as { getColorMode?: () => TerminalColorMode };
+    return typeof theme.getColorMode === 'function' ? theme.getColorMode() : publicInput().mode;
+  }
   function publicInput() {
     if (options.piInput) return options.piInput();
     const theme = getTheme() as Palette & PiInputTheme & { getColorMode(): TerminalColorMode };
@@ -470,12 +486,17 @@ export function installTidyUi(tui: LiveTui, getTheme: () => Palette, options: Ti
     syntax = new CardSources(cardClient, {
       diagnostic: options.diagnostic, identify: node => ({ call: node.toolCallId, tool: node.toolName }),
       preparation: options.cardPreparation ? (node, receipt) => options.cardPreparation?.({ ...receipt, call: node.toolCallId, tool: node.toolName }) : undefined,
-      preparePiInput: funding => { const input = publicInput(); return options.preparePiInput
-        ? options.preparePiInput(input.theme, input.mode, funding) : piOwner!.prepare(input.theme, input.mode, funding); },
+      preparePaletteInput: (effective, revision, mode, funding, usePiFallback) => {
+        const input = needsPiTheme(effective) ? publicInput() : undefined;
+        const fallbackTheme = () => publicInput().theme;
+        if (options.preparePaletteInput) return options.preparePaletteInput(effective, input?.theme, revision, mode, funding, usePiFallback, fallbackTheme);
+        if (effective.kind === 'pi' && options.preparePiInput) return options.preparePiInput(input!.theme, mode, funding);
+        return paletteOwner.prepare(input?.theme, effective, revision, mode, funding, usePiFallback, fallbackTheme);
+      },
       classify: options.syntax?.classify ?? ((text, info) => highlightCode(text, info.language)),
-      invalidate: node => { const state = syntaxStates.get(node); let native: boolean | undefined;
-        const accepted = syntax?.visit(node, (_display, paint) => { native = paint.origin === 'native'; });
-        if (accepted && state) state.native = native;
+      invalidate: node => { const state = syntaxStates.get(node); let owned: boolean | undefined;
+        const accepted = syntax?.visit(node, (_display, paint) => { owned = paint.origin === 'owned'; });
+        if (accepted && state) state.owned = owned;
         preparePrefix(node); }, requestRender: () => { if (active && !quiescing) tui.requestRender(); },
     });
     return syntax;
@@ -514,22 +535,24 @@ export function installTidyUi(tui: LiveTui, getTheme: () => Palette, options: Ti
       (node.result?.details as { exit_code?: unknown } | undefined)?.exit_code,
       ...(node.result?.content.flatMap(p => [p.type, p.text]) ?? [])] : [context?.cwd, ...diagnosticIdentity];
     let state = syntaxStates.get(node);
-    const input = state?.native ? { mode: state.mode } : publicInput();
-    const palette = state?.native ? state.palette : options.preparePiInput ? options.syntax!.palette() : piOwner!.palette((input as ReturnType<typeof publicInput>).theme);
+    const input = needsPiTheme(selectedPalette) ? publicInput() : undefined;
+    const mode = input?.mode ?? terminalMode();
+    const palette = externalPaletteOwner ? options.syntax!.palette() : paletteOwner.palette(input?.theme, selectedPalette);
     const changed = !state || !equalIdentity(identity, state.identity), serviceChanged = !state || !equalIdentity(service, state.service);
-    if (!state) { state = { attempt: 0, revision: 0, sourceRevision: 0, serviceRevision: 0, identity: [], service: [], palette, mode: input.mode, complete: false, applied: false, live: liveBashSource(node) }; syntaxStates.set(node, state); }
+    if (!state) { state = { attempt: 0, revision: 0, sourceRevision: 0, serviceRevision: 0, identity: [], service: [], palette, mode, complete: false, applied: false, live: liveBashSource(node) }; syntaxStates.set(node, state); }
     const complete = node.toolName === 'bash' ? bashInputComplete(node) : true;
-    if (!state.applied || changed || serviceChanged || state.palette !== palette || state.mode !== input.mode || complete !== state.complete) {
+    if (!state.applied || changed || serviceChanged || state.palette !== palette || state.mode !== mode || complete !== state.complete) {
       const attempt = ++state.attempt;
       const common = { revision: attempt, sourceRevision: changed ? attempt : state.sourceRevision,
-        serviceRevision: serviceChanged ? attempt : state.serviceRevision, palette, mode: input.mode };
+        serviceRevision: serviceChanged ? attempt : state.serviceRevision, palette, mode };
       state.applied = false;
       const accepted = owner.updateDisplay(node, node.toolName === 'bash' ? { ...common, kind: 'bash', args: node.args, node,
         complete, language: 'bash', directory: bashDirectory(node) ?? undefined }
         : { ...common, kind: 'file', node, cwd: context?.cwd, language: getLanguageFromPath(filePath(node.args)!) });
       if (syntaxStates.get(node) !== state || state.attempt !== attempt) return;
       if (!accepted || !syntaxEligible(node)) { pauseSyntax(node); return; }
-      Object.assign(state, common, { identity, service, complete, applied: true });
+      Object.assign(state, common, { identity, service, complete, applied: true,
+        paletteColors: input ? new WeakRef(input.theme.colors) : undefined });
       preparePrefix(node);
     }
     if (interruptedLiveBash(node)) owner.freeze(node);
@@ -552,22 +575,34 @@ export function installTidyUi(tui: LiveTui, getTheme: () => Palette, options: Ti
     });
     if (accepted && valid) state.prefix = { sourceRevision: state.sourceRevision, basis: basis.geometryStamp, bytes };
   }
-  function pauseSyntax(node: ToolNode) { syntax?.pause(node); }
+  function pauseSyntax(node: ToolNode) {
+    const state = syntaxStates.get(node); if (state) state.paused = true;
+    syntax?.pause(node);
+  }
   function usefulSyntax(node: ToolNode) {
     const state = syntaxStates.get(node);
-    if (state?.applied && syntaxEligible(node)) syntax?.useful(node, state.revision);
+    if (state?.applied && syntaxEligible(node)) { state.paused = false; syntax?.useful(node, state.revision); }
   }
-  function observePalette(node: ToolNode, origin: 'native' | 'pi') {
-    if (origin === 'native' || quiescing) return;
+  function observePalette(node: ToolNode, origin: 'owned' | 'pi') {
+    if (origin === 'owned' || quiescing) return;
     const state = syntaxStates.get(node); if (!state || state.refreshPending) return;
-    const input = publicInput(), palette = options.preparePiInput ? options.syntax!.palette() : piOwner!.palette(input.theme);
-    if (palette === state.palette && input.mode === state.mode) return;
+    const input = publicInput();
+    if (!state.paletteColors) {
+      state.paletteColors = new WeakRef(input.theme.colors);
+      state.mode = input.mode;
+      return;
+    }
+    if (state.paletteColors.deref() === input.theme.colors && state.mode === input.mode) return;
     state.refreshPending = true;
     queueMicrotask(paletteRefresh(new WeakRef(node), new WeakRef(controller)));
   }
   function refreshPalette(node: ToolNode) {
     const state = syntaxStates.get(node); if (state) state.refreshPending = false;
-    if (active && !quiescing) { const current = observeSyntax(node); if (current) usefulSyntax(node); }
+    if (active && !quiescing) {
+      const current = observeSyntax(node);
+      // A palette refresh is not a visibility transition; only a useful frame resumes paused owners.
+      if (current && !current.paused) usefulSyntax(node);
+    }
   }
   function memo<T extends Layout>(node: ToolNode, kind: LayoutKind, width: number, theme: Palette, directory: string | undefined, padding: number, build: () => T): T {
     const signature = [kind, width, padding, theme, theme.fg, node.args, node.result, node.expanded, node.isPartial, directory];
@@ -600,7 +635,7 @@ export function installTidyUi(tui: LiveTui, getTheme: () => Palette, options: Ti
       });
       if (accepted && nativeFile) dropPrepared(node);
       if (!accepted || !candidate || !active) return undefined;
-      const state = syntaxStates.get(node); if (state) state.native = candidate.origin === 'native';
+      const state = syntaxStates.get(node); if (state) state.owned = candidate.origin === 'owned';
       if (candidate === previous) { preparedPools.get(previousEntry!)?.get(previousEntry); return previous; }
       let rows: string[] | undefined; if (!candidate.output.withRows(value => { rows = value; }) || !rows) return previous;
       const oldRelease = previousEntry && preparedCleanup.get(previousEntry);
@@ -711,19 +746,26 @@ export function installTidyUi(tui: LiveTui, getTheme: () => Palette, options: Ti
     },
     clearCache,
     syntaxSourceChanged(keys, groups) { if (active && !quiescing) syntax?.sourceChanged(keys, groups); },
-    syntaxMetadataChanged() { if (active && !quiescing) syntax?.metadataChanged(); },
+    syntaxMetadataChanged() {
+      if (active && !quiescing) {
+        selectedPalette = cardClient?.snapshot().effective ?? resolveTheme({ kind: 'pi' }).effective;
+        const paletteRevision = externalPaletteOwner ? options.syntax!.palette()
+          : paletteOwner.palette(needsPiTheme(selectedPalette) ? publicInput().theme : undefined, selectedPalette);
+        syntax?.metadataChanged(paletteRevision);
+      }
+    },
     quiesce() {
       quiescing = true; stopSpinner(); animated.clear(); animationRefs = new WeakMap();
     },
     restore({ repaint = true } = {}) {
       if (!active && !patches.size && !userPatches.size && !editorPatches.size) {
-        syntax?.dispose(); ownedSources?.dispose(); piOwner?.dispose(); syntaxStates = new WeakMap(); return;
+        syntax?.dispose(); ownedSources?.dispose(); paletteOwner?.dispose(); syntaxStates = new WeakMap(); return;
       }
       diagnose(options.diagnostic, "INFO", "runtime", "Presentation restoring native ownership; later owners remain untouched",
         { animationWakes: spinnerWakes, animationRequests: spinnerRequests });
       active = false;
       rendererClears = []; rendererClearPending = false;
-      syntax?.dispose(); ownedSources?.dispose(); piOwner?.dispose(); syntaxStates = new WeakMap();
+      syntax?.dispose(); ownedSources?.dispose(); paletteOwner?.dispose(); syntaxStates = new WeakMap();
       stopSpinner(); animated.clear(); animationRefs = new WeakMap();
       clearCache();
       if (Container.prototype.addChild === patchedAdd) Container.prototype.addChild = originalAdd;
@@ -985,7 +1027,7 @@ export function installTidyUi(tui: LiveTui, getTheme: () => Palette, options: Ti
         toolDecision(this, "Compact tool summary selected", width, rows.length);
         return presentedRows(this, rows, offset);
       }
-      catch { fail("pi-tidy-ui could not render this component; native rendering restored"); return originalRender.call(this, width); }
+       catch { fail("pi-tidy-ui could not render this component; native rendering restored"); return originalRender.call(this, width); }
     };
     const patchedMouse: Mouse = function (event) {
       if (!active) return originalMouse.call(this, event);
@@ -1568,7 +1610,7 @@ export default function tidyUi(pi: ExtensionAPI, options: TidyUiRuntimeOptions =
     lastSettingsIssue = undefined;
     reportRuntime(diagnostic, { kind: 'recovered', scope: settings, operation: 'read' });
     const choice = loaded.syntaxTheme;
-    const themeChanged = choice.kind !== selectedTheme.kind || choice.kind === 'occipital' && selectedTheme.kind === 'occipital' && choice.id !== selectedTheme.id;
+    const themeChanged = choice.kind !== selectedTheme.kind || choice.kind === 'theme' && selectedTheme.kind === 'theme' && choice.id !== selectedTheme.id;
     const colorsChanged = colorsEnabled !== (loaded.terminalColorsEnabled ?? false);
     const nativeChanged = syntaxEnabled !== (loaded.nativeHighlightingEnabled ?? true);
     if (!themeChanged && !colorsChanged && !nativeChanged) return;
@@ -1629,7 +1671,7 @@ export default function tidyUi(pi: ExtensionAPI, options: TidyUiRuntimeOptions =
     if (health) { const status = health.snapshot(); diagnose(sink, 'INFO', 'runtime', 'Snapshot of runtime health; distinct from log write failures', { errors: status.errors, active: status.active, code: status.last?.code, state: status.last?.state }); }
     if (syntax) { const stats = syntax.sources.stats(), snapshot = syntax.snapshot(); diagnose(sink, "INFO", "syntax", "Snapshot of existing source/provider state", {
       availability: snapshot.provider.availability, reason: snapshot.provider.reason, generation: snapshot.provider.generation,
-      kind: snapshot.provider.kind, theme: snapshot.selected.kind, profile: snapshot.effective?.id,
+      kind: snapshot.provider.kind, theme: snapshot.selected.kind, palette: snapshot.effective?.id,
       sourceRecords: stats.sourceRecords, piSourceRecords: stats.piSourceRecords, leases: stats.remoteLeases,
       jobs: stats.unsettledJobs, closes: stats.pendingCloses, bytes: stats.transientBytes, bookkeepingBytes: stats.bookkeepingBytes }); }
     if (colors) diagnose(sink, "INFO", "terminal-colors", "Snapshot of existing terminal-color counters", { ...colors.status(), ...colors.stats() });
@@ -1809,11 +1851,13 @@ export default function tidyUi(pi: ExtensionAPI, options: TidyUiRuntimeOptions =
       controller = installTidyUi(tui, palette, {
         diagnostic, cardPreparation: options.cardPreparation,
         syntax: { client: sourceRuntime, palette: () => sourceRuntime.palette({ colors: palette().colors! }), isLiveCall: id => liveBashCalls.has(id) },
-        piInput: () => { const theme = liveContext!.ui.theme, projected = palette().colors as PiInputTheme['colors'], mode = theme.getColorMode();
+         colorMode: () => liveContext!.ui.theme.getColorMode(),
+         piInput: () => { const theme = liveContext!.ui.theme, projected = palette().colors as PiInputTheme['colors'], mode = theme.getColorMode();
           return { theme: { colors: projected, getFgAnsi: role => theme.getFgAnsi(role),
             // Only the local terminal-default projection proves a concrete background.
             getBgAnsi: role => projected[role] !== theme.colors[role] ? backgroundAnsi(projected[role], mode) : theme.getBgAnsi(role) }, mode }; },
-        preparePiInput: (theme, mode, funding) => sourceRuntime.preparePiInput(theme, mode, funding),
+         preparePaletteInput: (effective, theme, revision, mode, funding, usePiFallback, fallbackTheme) =>
+           sourceRuntime.preparePaletteInput(effective, theme, revision, mode, funding, usePiFallback, fallbackTheme),
         cards: names("tidy-ui-card"), compact: names("tidy-ui-compact"),
         outputPad: () => pi.getSettings().outputPad ?? 1,
         nativeEditor: () => liveContext?.ui.getEditorComponent() === undefined,
@@ -1959,12 +2003,6 @@ export default function tidyUi(pi: ExtensionAPI, options: TidyUiRuntimeOptions =
         const outcome = await runtime.selectTheme(action.choice);
         if (!current() || syntax !== runtime) return retired;
         return outcome.ok ? outcome : { ok: false, message: `Theme applied for now, but not saved: ${outcome.message}` };
-      }
-      if (action.kind === 'refreshThemes') {
-        const runtime = syntax;
-        if (!runtime) return { ok: false, message: 'The highlighting service is not running.' };
-        const outcome = await runtime.refreshThemes();
-        return current() && syntax === runtime ? outcome : retired;
       }
       if (action.kind === 'reapplyAppearance') {
         if (!enabled) return { ok: false, message: 'Turn on Tidy UI appearance first.' };

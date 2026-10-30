@@ -11,6 +11,8 @@ import { sessionText } from '../../scripts/test/performance/workloads.mjs';
 
 export async function runPerformanceCLI(configPath, { name = 'performance', profilePath, created } = {}) {
 const config = JSON.parse(readFileSync(configPath, 'utf8'));
+if (config.preconditionOnly !== undefined && typeof config.preconditionOnly !== 'boolean') throw new Error('Invalid performance precondition mode');
+const preconditionOnly = config.preconditionOnly === true;
 const inputs = readInputs(), scenario = config.scenario, directory = dirname(configPath);
 const sessionHash = () => createHash('sha256').update(readFileSync(session)).digest('hex');
 const work = join(directory, 'workspace'); mkdirSync(work, { recursive: true });
@@ -19,31 +21,33 @@ const generatedSession = sessionHash();
 if (scenario.variant === 'on') validateNative(inputs);
 let terminal;
 try {
-  const started = performance.now();
+  const started = preconditionOnly ? undefined : performance.now();
+  const resultName = preconditionOnly ? 'precondition.json' : 'performance.json';
   terminal = new PiTerminal(name, { workspace: work, session, mode: config.mode ?? 'fullscreen',
     dimensions: { columns: scenario.parameters.width, rows: scenario.parameters.height },
     extensions: [join(inputs.pi.root, 'tests/fixtures', scenario.variant === 'native' ? 'performance-driver.mjs' : 'performance-tidy.ts')],
     tidyUiSettings: { terminalColorsEnabled: false, nativeHighlightingEnabled: true, syntaxTheme: { kind: 'pi' } },
     extraEnv: { TIDY_UI_TEST_PERFORMANCE: '1', TIDY_TEST_PERF_CONFIG: configPath,
       TIDY_TEST_PERF_PROFILE: profilePath,
+      ...(preconditionOnly ? { TIDY_UI_TEST_PERFORMANCE_PRECONDITION: '1' } : {}),
       ...(scenario.variant === 'on' ? { OCCIPITAL_TEST_BIN: inputs.native.path } : {}) } });
   created?.(terminal);
   await terminal.ready();
-  const launchToReadyMs = performance.now() - started, readySession = sessionHash();
+  const launchToReadyMs = preconditionOnly ? undefined : performance.now() - started, readySession = sessionHash();
   terminal.send('/tidy-perf-run\r');
-  const begin = performance.now();
+  const begin = preconditionOnly ? undefined : performance.now();
   const result = await until(() => {
     terminal.health();
-    try { return JSON.parse(readFileSync(join(terminal.output, 'performance.json'), 'utf8')); }
+    try { return JSON.parse(readFileSync(join(terminal.output, resultName), 'utf8')); }
     catch (error) { if (error.code === 'ENOENT' || error instanceof SyntaxError) return false; throw error; }
-  }, 'target performance result', 90000);
-  const controllerRoundtripMs = performance.now() - begin;
+  }, preconditionOnly ? 'target correctness precondition' : 'target performance result', 90000);
+  const controllerRoundtripMs = preconditionOnly ? undefined : performance.now() - begin;
   const events = terminal.events();
   assert.equal(events.filter(event => event.type === 'call' || event.type === 'result').length, 0, 'saved synthetic history never executes tools');
   assert.equal(events.filter(event => event.type === 'context').length, 0, 'benchmark never sends model traffic');
   assert.equal(terminal.raw.length, 1, 'benchmark controller retains only the latest PTY chunk');
   assert.ok(terminal.raw[0].length <= 65536);
-  result.controller = { launchToReadyMs, controllerRoundtripMs, rawBytesRetained: terminal.raw[0].length,
+  if (!preconditionOnly) result.controller = { launchToReadyMs, controllerRoundtripMs, rawBytesRetained: terminal.raw[0].length,
     scope: 'collector-and-PTY are distinct from measured target Pi', frameWidth: terminal.term.cols, frameHeight: terminal.term.rows };
   const viewport = Array.from({ length: terminal.term.rows }, (_, row) => terminal.term.buffer.active.getLine(row)?.translateToString(true) ?? '');
   assert.ok(viewport.some(row => row.trim().length), 'real terminal viewport contains rendered data');
@@ -63,7 +67,10 @@ try {
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  const config = JSON.parse(readFileSync(process.env.TIDY_TEST_PERF_CONFIG, 'utf8'));
   const result = await runPerformanceCLI(process.env.TIDY_TEST_PERF_CONFIG, { profilePath: process.env.TIDY_TEST_PERF_PROFILE });
-  writeFileSync(process.env.TIDY_TEST_PERF_RESULT, JSON.stringify(result));
+  const output = config.preconditionOnly ? process.env.TIDY_TEST_PERF_PRECONDITION_RESULT : process.env.TIDY_TEST_PERF_RESULT;
+  if (!output) throw new Error('Missing performance result path');
+  writeFileSync(output, JSON.stringify(result));
   if (result.outcome !== 'passed') process.exitCode = 1;
 }

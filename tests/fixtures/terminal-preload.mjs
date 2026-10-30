@@ -6,13 +6,16 @@ const plan = JSON.parse(readFileSync(process.env.TIDY_UI_TEST_OBSERVER_PLAN, 'ut
 if (plan.schema !== 1 || !/^[$A-Z_a-z][$\w]*$/.test(plan.binding) ||
   !Number.isSafeInteger(plan.interruptWindow) || plan.interruptWindow < 0) throw new Error('Invalid terminal observer plan');
 const measuring = process.env.TIDY_UI_TEST_PERFORMANCE === '1';
+const preconditionOnly = process.env.TIDY_UI_TEST_PERFORMANCE_PRECONDITION === '1';
+if (process.env.TIDY_UI_TEST_PERFORMANCE_PRECONDITION !== undefined && !preconditionOnly) throw new Error('Invalid performance precondition mode');
+if (preconditionOnly && !measuring) throw new Error('Performance precondition requires the real-Pi observer');
 if (!measuring && (!plan.editor || !/^[$A-Z_a-z][$\w]*$/.test(plan.editor.binding) ||
   plan.editor.module !== plan.module && !/^[$A-Z_a-z][$\w]*$/.test(plan.editor.exportName))) throw new Error('Invalid native autocomplete observer plan');
 const installer = new URL(measuring ? './performance-observer.mjs' : './terminal-observer.mjs', import.meta.url).href;
 const install = measuring ? 'installPerformanceObserver' : 'installTerminalObserver';
 const layoutInstrument = measuring ? (await import('./performance-layout-plan.mjs')).instrumentPerformanceLayout : undefined;
 if (measuring && !plan.layout?.module) throw new Error('Missing performance layout plan');
-if (measuring) {
+if (measuring && !preconditionOnly) {
   const { beginPhase } = await import('../../scripts/test/performance/metrics.mjs');
   globalThis[Symbol.for('pi-tidy-ui.performance.startup')] = beginPhase();
 }

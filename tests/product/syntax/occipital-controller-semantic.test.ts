@@ -4,17 +4,19 @@ import test from 'node:test';
 import { setImmediate as turn } from 'node:timers/promises';
 import { SourceController, type SourceDemand } from '../../../src/occipital/controller.ts';
 import { decodeSemanticDescription } from '../../../src/occipital/semantic-protocol.ts';
+import { fingerprintRules } from '../../../src/occipital/style-rules.ts';
 import { RequestFailure } from '../../../src/occipital/request-failure.ts';
 import type { ProviderBroker } from '../../../src/occipital/provider.ts';
 import { semanticDescriptor } from '../../fixtures/semantic-provider.ts';
 import { HIGHLIGHT_LIMITS } from '../../../src/occipital/limits.ts';
 import { SemanticRetentionPool } from '../../../src/occipital/semantic-retention.ts';
+import { syntheticSelection } from '../../fixtures/test-style-selection.ts';
 
 type Frame = Record<string, any>;
 const counters = { committed_line_calls: 0, committed_line_bytes: 0, tail_calls: 1, tail_bytes: 0 };
 class Peer implements Pick<ProviderBroker, 'snapshot' | 'isReady' | 'request' | 'classificationAccepted'> {
   generation = 1;
-  description = decodeSemanticDescription(semanticDescriptor('describe', 'instance', []), 'describe');
+  description = decodeSemanticDescription(semanticDescriptor('describe', 'instance'), 'describe');
   readonly calls: Frame[] = [];
   readonly signals: (AbortSignal | undefined)[] = [];
   readonly pending: { resolve: (reply: unknown) => void; reject: (error: unknown) => void }[] = [];
@@ -25,6 +27,13 @@ class Peer implements Pick<ProviderBroker, 'snapshot' | 'isReady' | 'request' | 
   classificationAccepted(generation: number) { assert.equal(generation, this.generation); this.useful++; return true; }
   request(generation: number, request: Record<string, unknown>, options?: { signal?: AbortSignal }) {
     assert.equal(generation, this.generation);
+    if (request.op === 'styles.resolve') {
+      const contexts = request.contexts as readonly unknown[];
+      return Promise.resolve({ v: 4, ticket: request.ticket, instance: this.description.instance,
+        assets: this.description.assets, status: 'ok', body: { kind: 'styles', vocabulary: request.vocabulary,
+          rules: fingerprintRules(request.rules), styles: contexts.length ? [{ foreground: { kind: 'inherit' }, background: { kind: 'inherit' }, attributes: 0, attribute_mask: 31 }] : [],
+          indices: contexts.map(() => 1) } });
+    }
     this.calls.push(request); this.signals.push(options?.signal);
     return new Promise<unknown>((resolve, reject) => this.pending.push({ resolve, reject }));
   }
@@ -36,17 +45,17 @@ class Peer implements Pick<ProviderBroker, 'snapshot' | 'isReady' | 'request' | 
       revision: options.revision ?? 1, source_bytes: bytes, replace_from: from,
       committed_bytes: complete ? bytes : Buffer.byteLength(text.slice(0, text.lastIndexOf('\n') + 1)), complete,
       ...(!complete || request.op === 'stream.append' ? { lease: options.lease ?? request.lease ?? 'lease:1' } : {}) };
-    this.pending[index]!.resolve({ v: 3, ticket: request.ticket, instance: this.description.instance,
+    this.pending[index]!.resolve({ v: 4, ticket: request.ticket, instance: this.description.instance,
       assets: this.description.assets, status: 'ok', body: { kind: 'source', vocabulary: this.description.vocabulary.fingerprint,
         sources: [{ ...metadata, contexts: bytes === from ? [] : [[0, 1]], runs: bytes === from ? [] : [bytes - from, 1], counters }] } });
   }
   close(index: number) {
-    this.pending[index]!.resolve({ v: 3, ticket: this.calls[index]!.ticket, instance: this.description.instance,
+    this.pending[index]!.resolve({ v: 4, ticket: this.calls[index]!.ticket, instance: this.description.instance,
       assets: this.description.assets, status: 'ok', body: { kind: 'closed' } });
   }
 }
 const demand = (values: Partial<SourceDemand> = {}): SourceDemand => ({ key: 'source', version: 1, text: 'echo ready',
-  language: 'bash', profile: 'pi', fingerprint: 'b'.repeat(64), complete: true, ...values });
+  language: 'bash', complete: true, ...values });
 async function settled() { await turn(); await turn(); }
 async function cleanup(owner: SourceController, peer: Peer) {
   owner.dispose();
@@ -54,7 +63,7 @@ async function cleanup(owner: SourceController, peer: Peer) {
   await settled();
 }
 
-test('controller v3 language selector rejects malformed identity but normalizes empty to path selection', async () => {
+test('controller v4 language selector rejects malformed identity but normalizes empty to path selection', async () => {
   const peer = new Peer(), owner = new SourceController(peer), baseline = owner.stats().bookkeepingBytes;
   try {
     for (const language of ['bad\u0001format', 'x'.repeat(129)])
@@ -68,13 +77,13 @@ test('controller v3 language selector rejects malformed identity but normalizes 
   } finally { await cleanup(owner, peer); }
 });
 
-test('controller v3 source: native-only empty catalogue still parses Follow Pi input without profile wire fields', async () => {
+test('controller v4 source: generic SOURCE parses independently of locally selected style input without palette wire fields', async () => {
   const peer = new Peer(), owner = new SourceController(peer);
   try {
     assert.equal(owner.observe(demand()), true); owner.flush();
     assert.equal(peer.calls.length, 1);
     const frame = peer.calls[0]!;
-    assert.equal(frame.v, 3); assert.equal(frame.op, 'highlight');
+    assert.equal(frame.v, 4); assert.equal(frame.op, 'highlight');
     assert.equal(Object.hasOwn(frame.sources[0], 'profile'), false);
     assert.equal(Object.hasOwn(frame.sources[0], 'fingerprint'), false);
     assert.equal(Object.hasOwn(frame.sources[0].hint, 'shebang_language'), false, 'the protocol has no shebang-specific field');
@@ -86,11 +95,11 @@ test('controller v3 source: native-only empty catalogue still parses Follow Pi i
   } finally { await cleanup(owner, peer); }
 });
 
-test('controller v3 source: theme supersession neither cancels parsing nor rejects its useful semantic result', async () => {
+test('controller v4 source: local palette supersession neither cancels parsing nor rejects its useful semantic result', async () => {
   const peer = new Peer(), owner = new SourceController(peer);
   try {
     owner.observe(demand()); owner.flush();
-    owner.observe(demand({ profile: 'native', fingerprint: 'c'.repeat(64) })); owner.flush();
+    owner.setStyleSelection(syntheticSelection(2)); owner.observe(demand()); owner.flush();
     assert.equal(peer.calls.length, 1);
     assert.equal(peer.signals[0]!.aborted, false);
     peer.reply(0, 'echo ready'); await settled();
@@ -101,13 +110,13 @@ test('controller v3 source: theme supersession neither cancels parsing nor rejec
   } finally { await cleanup(owner, peer); }
 });
 
-test('controller v3 source: theme change preserves a growing parser lease and sends only appended text', async () => {
+test('controller v4 source: local palette change preserves a growing parser lease and sends only appended text', async () => {
   const peer = new Peer(), owner = new SourceController(peer);
   try {
     owner.observe(demand({ text: 'echo one\n', complete: false })); owner.flush();
     peer.reply(0, 'echo one\n'); await settled();
     assert.equal(owner.status('source')!.acknowledgedVersion, 1);
-    owner.observe(demand({ text: 'echo one\necho two', version: 2, profile: 'native', fingerprint: 'c'.repeat(64) })); owner.flush();
+    owner.setStyleSelection(syntheticSelection(2)); owner.observe(demand({ text: 'echo one\necho two', version: 2 })); owner.flush();
     const frame = peer.calls[1]!;
     assert.equal(frame.op, 'stream.append'); assert.equal(frame.append, 'echo two');
     assert.equal(frame.lease, 'lease:1'); assert.equal(frame.base_revision, 1); assert.equal(frame.base_bytes, 9);
@@ -119,20 +128,20 @@ test('controller v3 source: theme change preserves a growing parser lease and se
   } finally { await cleanup(owner, peer); }
 });
 
-test('controller v3 source: changing desired styles cannot clear an unknown physical source outcome', async () => {
+test('controller v4 source: changing local palette cannot clear an unknown physical source outcome', async () => {
   const peer = new Peer(), owner = new SourceController(peer);
   try {
     owner.observe(demand()); owner.flush();
     peer.pending[0]!.reject(new RequestFailure('lost reply')); await settled();
     assert.equal(owner.workStatus('source').fallbackEligible, false);
-    owner.observe(demand({ profile: 'native', fingerprint: 'c'.repeat(64) })); owner.flush(); await settled();
+    owner.setStyleSelection(syntheticSelection(2)); owner.observe(demand()); owner.flush(); await settled();
     assert.equal(peer.calls.length, 1);
     assert.equal(owner.workStatus('source').execution, 'unknown');
     assert.equal(owner.workStatus('source').fallbackEligible, false);
   } finally { await cleanup(owner, peer); }
 });
 
-test('controller v3 source: removing an unsettled open closes its validated late lease without restoring data', async () => {
+test('controller v4 source: removing an unsettled open closes its validated late lease without restoring data', async () => {
   const peer = new Peer(), owner = new SourceController(peer);
   try {
     owner.observe(demand({ complete: false })); owner.flush();
@@ -148,7 +157,7 @@ test('controller v3 source: removing an unsettled open closes its validated late
   } finally { await cleanup(owner, peer); }
 });
 
-test('controller v3 source: validated parse refused by retention is acknowledged, not left physically unsettled', async () => {
+test('controller v4 source: validated parse refused by retention is acknowledged, not left physically unsettled', async () => {
   const peer = new Peer(), owner = new SourceController(peer, { retention: { maxBytes: 2000 } });
   try {
     assert.equal(owner.observe(demand()), true); owner.flush();
@@ -162,7 +171,7 @@ test('controller v3 source: validated parse refused by retention is acknowledged
   } finally { await cleanup(owner, peer); }
 });
 
-test('controller v3 source: refused open storage retires the returned lease before any continuation', async () => {
+test('controller v4 source: refused open storage retires the returned lease before any continuation', async () => {
   const peer = new Peer(), owner = new SourceController(peer, { retention: { maxBytes: 2000 } });
   try {
     owner.observe(demand({ complete: false })); owner.flush();
@@ -176,7 +185,7 @@ test('controller v3 source: refused open storage retires the returned lease befo
   } finally { await cleanup(owner, peer); }
 });
 
-test('controller v3 source: compatible provider replacement reuses finite scopes without parsing again', async () => {
+test('controller v4 source: compatible provider replacement reuses finite scopes without parsing again', async () => {
   const peer = new Peer(), owner = new SourceController(peer);
   try {
     owner.observe(demand()); owner.flush(); peer.reply(0, 'echo ready'); await settled();
@@ -192,11 +201,11 @@ test('controller v3 source: compatible provider replacement reuses finite scopes
   } finally { await cleanup(owner, peer); }
 });
 
-test('controller v3 source: incompatible vocabulary replacement reparses from full source, not foreign scope IDs', async () => {
+test('controller v4 source: incompatible vocabulary replacement reparses from full source, not foreign scope IDs', async () => {
   const peer = new Peer(), owner = new SourceController(peer);
   try {
     owner.observe(demand()); owner.flush(); peer.reply(0, 'echo ready'); await settled();
-    const before = owner.status('source')!.generation, next = semanticDescriptor('describe', 'replacement', []);
+    const before = owner.status('source')!.generation, next = semanticDescriptor('describe', 'replacement');
     next.assets = next.body.assets = 'replacement-assets'; next.body.vocabulary.fingerprint = 'd'.repeat(64);
     peer.description = decodeSemanticDescription(next, 'describe'); peer.generation++;
     owner.observe(demand()); owner.flush();
@@ -210,7 +219,7 @@ test('controller v3 source: incompatible vocabulary replacement reparses from fu
   } finally { await cleanup(owner, peer); }
 });
 
-test('controller v3 source: confirmed scopes awaiting styles veto a duplicate Pi classifier without inventing source work', async () => {
+test('controller v4 source: confirmed scopes awaiting styles veto a duplicate Pi classifier without inventing source work', async () => {
   const peer = new Peer(), owner = new SourceController(peer);
   try {
     owner.observe(demand()); owner.flush(); peer.reply(0, 'echo ready'); await settled();
@@ -240,7 +249,7 @@ function abandonedSource(peer: Peer, notify: (closed: boolean) => void) {
   return { owner: new WeakRef(owner), root };
 }
 
-test('controller v3 lifetime: explicit disposal closes the data authority while physical work stays charged', async () => {
+test('controller v4 lifetime: explicit disposal closes the data authority while physical work stays charged', async () => {
   const peer = new Peer(), owner = new SourceController(peer);
   let disposed = 0, closedRoots = 0;
   trackRoot(owner, closed => { disposed++; if (closed) closedRoots++; });
@@ -258,7 +267,7 @@ test('controller v3 lifetime: explicit disposal closes the data authority while 
   }
 });
 
-test('controller v3 lifetime: abandoned owner closes its data root through existing GC cleanup without releasing held work', async () => {
+test('controller v4 lifetime: abandoned owner closes its data root through existing GC cleanup without releasing held work', async () => {
   assert.equal(typeof global.gc, 'function');
   const peer = new Peer();
   let disposed = 0, closedRoots = 0;
@@ -415,7 +424,7 @@ for (const [kind, text] of [['bytes', 'x'.repeat(65537)], ['lines', '\n'.repeat(
   });
 }
 
-for (const field of ['language', 'path', 'profile', 'fingerprint', 'provider', 'all'] as const) {
+for (const field of ['language', 'path', 'provider', 'all'] as const) {
   test(`controller refusal review P2: changed ${field} identity is charged and repeated refusal is inert`, async () => {
     const peer = new Peer(), notifications: string[][] = [];
     const owner = new SourceController(peer, { onChange: keys => notifications.push([...keys]) });
@@ -424,15 +433,12 @@ for (const field of ['language', 'path', 'profile', 'fingerprint', 'provider', '
       owner.observe(initial); await settled();
       const next = { ...initial, version: 2, text: '\n'.repeat(8193),
         ...(['language', 'all'].includes(field) ? { language: 'javascript' } : {}),
-        ...(['path', 'all'].includes(field) ? { path: '/changed/' + 'p'.repeat(500) } : {}),
-        ...(['profile', 'all'].includes(field) ? { profile: 'changed-profile' } : {}),
-        ...(['fingerprint', 'all'].includes(field) ? { fingerprint: 'c'.repeat(64) } : {}) };
+        ...(['path', 'all'].includes(field) ? { path: '/changed/' + 'p'.repeat(500) } : {}) };
       if (field === 'provider' || field === 'all') peer.generation++;
       const before = owner.stats().bookkeepingBytes;
       assert.equal(owner.observe(next), false); await settled();
       const expectedDelta = 2 * ((next.language?.length ?? 0) - (initial.language?.length ?? 0)
-        + (next.path?.length ?? 0) - (initial.path?.length ?? 0)
-        + next.profile.length - initial.profile.length + next.fingerprint.length - initial.fingerprint.length);
+        + (next.path?.length ?? 0) - (initial.path?.length ?? 0));
       assert.equal(owner.stats().bookkeepingBytes - before, expectedDelta, 'all retained identity strings are paid');
       const notified = notifications.length, charCodeAt = String.prototype.charCodeAt;
       let sourceScans = 0;
@@ -447,8 +453,6 @@ for (const field of ['language', 'path', 'profile', 'fingerprint', 'provider', '
       assert.equal(owner.borrowSource('source'), undefined); assert.equal(peer.calls.length, 0);
       const recovery = { ...next, version: 3, text: 'small current source' };
       assert.equal(owner.observe(recovery), true); owner.flush();
-      assert.equal(owner.borrowSource('source')!.profile, next.profile);
-      assert.equal(owner.borrowSource('source')!.fingerprint, next.fingerprint);
       assert.equal(owner.borrowSource('source')!.language, next.language);
       assert.equal(owner.borrowSource('source')!.path, next.path);
       peer.reply(0, recovery.text); await settled();
@@ -462,7 +466,7 @@ for (const providerChanged of [false, true]) for (const outcome of ['acknowledge
   try {
     owner.observe(demand()); owner.flush();
     const credit = owner.stats().transientBytes;
-    const next = demand({ version: 2, text: '\n'.repeat(8193), language: 'javascript', path: '/changed/file.js', profile: 'changed', fingerprint: 'c'.repeat(64) });
+    const next = demand({ version: 2, text: '\n'.repeat(8193), language: 'javascript', path: '/changed/file.js' });
     if (providerChanged) peer.generation++;
     assert.equal(owner.observe(next), false);
     assert.equal(owner.stats().unsettledJobs, 1); assert.equal(owner.stats().transientBytes, credit);
@@ -490,7 +494,7 @@ for (const outcome of ['acknowledged', 'unknown'] as const) test(`controller ref
   try {
     owner.observe(demand()); owner.flush();
     const before = owner.stats().bookkeepingBytes, credit = owner.stats().transientBytes;
-    const next = demand({ version: 2, text: '\n'.repeat(8193), path: '/' + 'p'.repeat(4000), profile: 'changed', language: 'javascript', fingerprint: 'c'.repeat(64) });
+    const next = demand({ version: 2, text: '\n'.repeat(8193), path: '/' + 'p'.repeat(4000), language: 'javascript' });
     assert.equal(owner.observe(next), false); await settled();
     assert.equal(owner.stats().bookkeepingBytes, before, 'unfunded identity strings are not retained');
     assert.equal(owner.status('source')!.version, 2); assert.equal(owner.status('source')!.exact, false);
@@ -517,7 +521,7 @@ for (const outcome of ['acknowledged', 'unknown'] as const) test(`controller ref
   }
 });
 
-test('controller v3 source: changing explicit language invalidates old work and queues the new grammar after settlement', async () => {
+test('controller v4 source: changing explicit language invalidates old work and queues the new grammar after settlement', async () => {
   const peer = new Peer(), owner = new SourceController(peer);
   try {
     const first = demand({ language: 'python', text: 'unchanged tail', path: undefined });

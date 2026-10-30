@@ -8,6 +8,8 @@ import { PiTerminal, artifacts, plain, lines, byName, assertFits, until } from '
 import { closeTerminals } from '../../fixtures/terminal-cleanup.mjs';
 import { allBashCards, bashArguments, persisted, bashCard, bashScreenStyle, mouseAt, panelCells, moveAt, panelAt, bashPointerChecks, traffic, compactContent, bashGeometry, actualCommandCells, referenceCell, hardRows } from '../../fixtures/main-cli-support.mjs';
 
+const joinedCardText = (tool) => tool.lines.map((row) => plain(row).replace(/^\s*┃\s?/u, '').trim()).join('');
+
 test('real CLI: built-in bash full commands, preview, resize, theme and same-session controls',
   { timeout: 120000 }, async () => {
     const terminals = [];
@@ -202,7 +204,8 @@ test('real CLI: isolated opt-in representative bash metadata, comments and outpu
       assert.equal(wide.bashShape, true); allBashCards(wide);
       const tools = byName(wide, 'bash'); assert.equal(tools.length, 14);
       assert.ok(tools[0].lines.some((row) => row.includes('# Representative task description')));
-      assert.ok(tools[0].lines.some((row) => row.includes('# Running in ' + resolve(wide.cwd, '../other/./dir'))));
+      assert.ok(joinedCardText(tools[0]).includes('# Running in ' + resolve(wide.cwd, '../other/./dir')),
+        'the full normalized working directory remains present across physical wrapped rows');
       for (const text of ['(no output)', 'Background task started: task-id-123', '[exit code: 99]', 'Command exited with code 77'])
         assert.ok(tools[0].lines.some((row) => row.includes(text)), `returned literal preserved: ${text}`);
       assert.equal(tools[1].lines.filter((row) => stripVTControlCharacters(row).slice(3, -2).trim()).length, 1, 'whitespace-only output and equivalent cwd produce command only');

@@ -1,19 +1,14 @@
 //! One persistent owned helper, or the same engine hosted by a user-managed supervisor.
-use occipital::{
-    actor::ActorPool, catalogue::Catalogue, control::Authority, protocol::Fault,
-    semantic_engine::Limits,
-};
-use std::{path::PathBuf, sync::Arc, time::Duration};
+use occipital::{actor::ActorPool, control::Authority, protocol::Fault, semantic_engine::Limits};
+use std::{sync::Arc, time::Duration};
+
 enum Mode {
     Stdio,
     Shared,
 }
-fn arguments(
-    input: impl IntoIterator<Item = std::ffi::OsString>,
-) -> Result<(Mode, Option<PathBuf>), Fault> {
+fn arguments(input: impl IntoIterator<Item = std::ffi::OsString>) -> Result<Mode, Fault> {
     let mut args = input.into_iter();
     let mut mode = None;
-    let mut config = None;
     while let Some(arg) = args.next() {
         if arg == "--stdio" || arg == "--subc" {
             if mode.is_some() {
@@ -22,34 +17,25 @@ fn arguments(
             mode = Some(if arg == "--stdio" {
                 Mode::Stdio
             } else {
-                // Consume and validate the supervisor's public SDK argument;
-                // the SDK remains responsible for reading that connection file.
                 let connection = args.next().ok_or(Fault::not_started("arguments"))?;
                 if connection.is_empty() {
                     return Err(Fault::not_started("arguments"));
                 }
                 Mode::Shared
             });
-        } else if arg == "--config" {
-            if config.is_some() {
-                return Err(Fault::not_started("arguments"));
-            }
-            config = Some(PathBuf::from(
-                args.next().ok_or(Fault::not_started("arguments"))?,
-            ));
         } else if arg == "--version" {
             println!("occipital {}", env!("CARGO_PKG_VERSION"));
             std::process::exit(0);
         } else if arg == "--help" {
-            println!("occipital [--stdio | --subc CONNECTION_FILE] [--config FILE]\n\nDefault: persistent framed stdin/stdout helper.\nShared mode requires an explicitly configured user-managed Subconscious module.");
+            println!("occipital [--stdio | --subc CONNECTION_FILE]\n\nDefault: persistent framed stdin/stdout helper.\nShared mode requires an explicitly configured user-managed Subconscious module.");
             std::process::exit(0);
         } else {
             return Err(Fault::not_started("arguments"));
         }
     }
-    Ok((mode.unwrap_or(Mode::Stdio), config))
+    Ok(mode.unwrap_or(Mode::Stdio))
 }
-async fn run(mode: Mode, config: Option<PathBuf>) -> Result<(), Fault> {
+async fn run(mode: Mode) -> Result<(), Fault> {
     let mut nonce = [0u8; 16];
     getrandom::fill(&mut nonce).map_err(|_| Fault::not_started("instance"))?;
     let instance = format!("occipital-{:032x}", u128::from_be_bytes(nonce));
@@ -59,12 +45,7 @@ async fn run(mode: Mode, config: Option<PathBuf>) -> Result<(), Fault> {
     };
     let limits = Limits::default();
     let pool = ActorPool::with_limits(instance.clone(), workers, limits.clone())?;
-    let authority = Arc::new(Authority::new(
-        pool.handle(),
-        instance,
-        limits,
-        Catalogue::new(config),
-    )?);
+    let authority = Arc::new(Authority::new(pool.handle(), instance, limits));
     let result = match mode {
         Mode::Stdio => {
             let route = pool.bind().await?;
@@ -86,7 +67,7 @@ async fn run(mode: Mode, config: Option<PathBuf>) -> Result<(), Fault> {
 }
 fn main() {
     let result = (|| {
-        let (mode, config) = arguments(std::env::args_os().skip(1))?;
+        let mode = arguments(std::env::args_os().skip(1))?;
         if matches!(mode, Mode::Shared) {
             // Cache and close the inherited SDK launch descriptor before creating
             // runtime sockets or parser threads. SDK HELLO reuses its cached value.
@@ -98,9 +79,7 @@ fn main() {
             .enable_all()
             .build()
             .map_err(|_| Fault::not_started("runtime"))?;
-        let result = runtime.block_on(run(mode, config));
-        // An abandoned bounded catalogue read need not keep the owned process
-        // alive. Parser workers have their separate cooperative stop above.
+        let result = runtime.block_on(run(mode));
         runtime.shutdown_timeout(Duration::from_millis(200));
         result
     })();
@@ -114,34 +93,21 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn parse(args: &[&str]) -> Result<(Mode, Option<PathBuf>), Fault> {
+    fn parse(args: &[&str]) -> Result<Mode, Fault> {
         arguments(args.iter().map(std::ffi::OsString::from))
     }
     #[test]
-    fn public_sdk_launch_arguments_select_shared_without_becoming_native_configuration() {
-        let (mode, config) = parse(&[
-            "--subc",
-            "isolated/connection.json",
-            "--config",
-            "isolated/themes.json",
-        ])
-        .unwrap();
-        assert!(matches!(mode, Mode::Shared));
-        assert_eq!(config, Some(PathBuf::from("isolated/themes.json")));
-        let (mode, config) = parse(&[
-            "--config",
-            "isolated/themes.json",
-            "--subc",
-            "isolated/connection.json",
-        ])
-        .unwrap();
-        assert!(matches!(mode, Mode::Shared));
-        assert_eq!(config, Some(PathBuf::from("isolated/themes.json")));
+    fn public_sdk_launch_arguments_select_shared_without_theme_configuration() {
+        assert!(matches!(
+            parse(&["--subc", "isolated/connection.json"]).unwrap(),
+            Mode::Shared
+        ));
+        assert!(parse(&["--config", "isolated/themes.json"]).is_err());
     }
     #[test]
     fn standalone_is_default_and_mixed_duplicate_or_missing_launch_values_are_rejected() {
-        assert!(matches!(parse(&[]).unwrap().0, Mode::Stdio));
-        assert!(matches!(parse(&["--stdio"]).unwrap().0, Mode::Stdio));
+        assert!(matches!(parse(&[]).unwrap(), Mode::Stdio));
+        assert!(matches!(parse(&["--stdio"]).unwrap(), Mode::Stdio));
         for args in [
             vec!["--subc"],
             vec!["--subc", ""],

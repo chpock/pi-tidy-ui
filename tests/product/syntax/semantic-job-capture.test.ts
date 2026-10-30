@@ -9,10 +9,11 @@ import type { SemanticChunk } from '../../../src/occipital/semantic-source.ts';
 import { CARD_ROLES, decodeStyleResult, type CardRole } from '../../../src/occipital/semantic-codec.ts';
 import { materializeStyle, type ConcreteStyle } from '../../../src/syntax/style-materialization.ts';
 const vocabulary = 'a'.repeat(64), rules = 'b'.repeat(64);
-const vectors = JSON.parse(readFileSync(new URL('../../../protocol/syntax-v3/vectors.json', import.meta.url), 'utf8'));
-const fixture = vectors.styles.find((v: { name: string }) => v.name === 'empty-source-complete-native-palette');
-const native = decodeStyleResult(fixture.body, { vocabulary, rules, mode: 'native', bindingSlots: 0 }, 0, 1 << 20);
+const vectors = JSON.parse(readFileSync(new URL('../../../protocol/syntax-v4/vectors.json', import.meta.url), 'utf8'));
+const fixture = vectors.styles.find((v: { name: string }) => v.name === 'literal-binding-inherit-and-explicit-clear');
+const decoded = decodeStyleResult(fixture.body, { vocabulary, rules, bindingSlots: fixture.binding_slots }, fixture.context_count, 1 << 20);
 const base: ConcreteStyle = { foreground: { kind: 'terminal-default' }, background: { kind: 'terminal-default' }, attributes: 0 };
+const literal = materializeStyle(decoded.styles[0]!, [], base);
 function source(key: string, generation: number, revision = 1, complete = false, tail = 2): SemanticChunk {
   return { vocabulary, key, generation, revision, source_version: revision, ...(!complete ? { lease: 'lease' } : {}),
     source_bytes: revision * 2 + 1, replace_from: (revision - 1) * 2, committed_bytes: complete ? revision * 2 + 1 : revision * 2, complete,
@@ -27,9 +28,9 @@ function advance(pool: SemanticRetentionPool, generation: number, revision: numb
   assert.equal(pool.installChunk(generation, source(key, generation, revision, false, tail)).accepted, true);
 }
 function presentation(refs: Parameters<SemanticRetentionPool['arena']['retain']>[0], bindingRevision = 1): ReadyPresentation {
-  return { vocabulary, rules, palette: native.palette!.fingerprint, bindingRevision,
-    roles: Object.fromEntries(CARD_ROLES.map((role, i) => [role, materializeStyle(native.styles[native.palette!.slots[i]! - 1]!, [], base)])) as Record<CardRole, ConcreteStyle>,
-    contexts: refs.map(context => ({ context, style: materializeStyle(native.styles[0]!, [], base) })) };
+  return { vocabulary, rules, palette: 'palette:test', bindingRevision,
+    roles: Object.fromEntries(CARD_ROLES.map(role => [role, structuredClone(literal)])) as Record<CardRole, ConcreteStyle>,
+    contexts: refs.map(context => ({ context, style: structuredClone(literal) })) };
 }
 function updates(group: NonNullable<ReturnType<SemanticRetentionPool['captureDisplays']>['group']>, binding = 1) {
   return group.captures.map(capture => {
@@ -128,7 +129,7 @@ function heldRoot() {
   assert.equal(pool.installChunk(peer, { ...source('peer', peer, 1, true), source_bytes: 30000, committed_bytes: 30000,
     contexts: [Uint32Array.from({ length: 256 }, () => 8)], runs: Uint32Array.of(30000, 1) }).accepted, true);
   const peerRefs: Parameters<typeof presentation>[0][number][] = []; pool.visitContexts(peer, ref => peerRefs.push(ref));
-  assert.equal(pool.arena.installStyles(vocabulary, rules, peerRefs, native.styles, Uint32Array.of(1), bytes => pool.reserve(peer, bytes).accepted), true);
+  assert.equal(pool.arena.installStyles(vocabulary, rules, peerRefs, decoded.styles, Uint32Array.of(1), bytes => pool.reserve(peer, bytes).accepted), true);
   const arenaAfterGrowth = pool.arena.stats().retainedBytes; assert.ok(arenaAfterGrowth > arenaBeforeGrowth);
   const retained = pool.stats().retainedBytes; assert.ok(retained <= pool.stats().maxBytes);
   const budget = pool.budget; pool.dispose();

@@ -6,7 +6,7 @@ import { setImmediate as turn } from 'node:timers/promises';
 import { dirname, resolve } from 'node:path';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import { stripVTControlCharacters } from 'node:util';
-import { Box, Container, Text } from '@earendil-works/pi-tui';
+import { Box, Container, Text, colorToRgb } from '@earendil-works/pi-tui';
 import { VERSION, highlightCode, getLanguageFromPath, createEditToolDefinition } from '@earendil-works/pi-coding-agent';
 import { installTidyUi, type TidyUiController, type TidyUiOptions } from '../../../src/index.ts';
 import { SourceController } from '../../../src/occipital/controller.ts';
@@ -16,16 +16,20 @@ import type { ProviderSnapshot } from '../../../src/occipital/provider.ts';
 import { OCCIPITAL_LIMITS } from '../../../src/occipital/limits.ts';
 import { SEMANTIC_PROTOCOL_VERSION as PROTOCOL_VERSION, decodeSemanticDescription } from '../../../src/occipital/semantic-protocol.ts';
 import { semanticDescriptor } from '../../fixtures/semantic-provider.ts';
-import { fingerprintNative, fingerprintRules } from '../../../src/occipital/style-rules.ts';
-import { createPiRuleDefinition } from '../../../src/syntax/pi-rules.ts';
-import { CARD_ROLES } from '../../../src/occipital/semantic-codec.ts';
+import { fingerprintRules } from '../../../src/occipital/style-rules.ts';
+import { resolveTheme } from '../../../src/themes/selection.ts';
 import { CardSources } from '../../../src/syntax/cards.ts';
+import { sampleOwnedPalette } from '../../../src/themes/owned-palette.ts';
+import { samplePiPalette } from '../../../src/syntax/pi-palette.ts';
+import { PaletteInputOwner } from '../../../src/syntax/pi-input-owner.ts';
 import { observeSyntaxLocalWork } from '../../fixtures/syntax-local-work.ts';
 import { CardLayout } from '../../../src/syntax/card-layout.ts';
 import { DataCharge } from '../../../src/occipital/data-budget.ts';
 import { bashCardFixture as renderBashCard } from '../../fixtures/prepared-card.ts';
 import { fileCardFixture as renderFileCard } from '../../fixtures/prepared-card.ts';
 import * as fs from 'node:fs/promises';
+import nodeFs from 'node:fs';
+import { syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { TextJournal } from '../../../src/debug-log.ts';
@@ -36,12 +40,11 @@ const { ToolExecutionComponent } = await import(pathToFileURL(resolve(sdkDist, '
 const nativeToolRender = ToolExecutionComponent.prototype.render;
 const themes = await import(pathToFileURL(resolve(sdkDist, 'modes/interactive/theme/theme.js')).href);
 themes.initTheme('dark', false);
-const profile = { id: 'pi', label: 'Pi', fingerprint: fingerprintRules(createPiRuleDefinition()) };
-const description = decodeSemanticDescription(semanticDescriptor('describe', 'daemon', []), 'describe');
+const description = decodeSemanticDescription(semanticDescriptor('describe', 'daemon'), 'describe');
 class UI extends Container { requests = 0; requestRender() { this.requests++; } }
 const fixtures: { adapter: TidyUiController; sources: SourceController;
   calls: { request: Record<string, unknown>; resolve(value: unknown): void }[]; styleCalls: { resolve(value: unknown): void }[] }[] = [];
-function fixture(ready = false, useDefaultClassifier = false, options: Pick<TidyUiOptions, 'cards' | 'compact' | 'diagnostic'> = {}, retention?: { maxBytes: number }, switchable = false) {
+function fixture(ready = false, useDefaultClassifier = false, options: Pick<TidyUiOptions, 'cards' | 'compact' | 'diagnostic'> = {}, retention?: { maxBytes: number }, switchable = false, externalOwner = false) {
   let root = new UI();
   const ui = switchable ? new Proxy({}, {
     get: (_target, property) => {
@@ -52,24 +55,23 @@ function fixture(ready = false, useDefaultClassifier = false, options: Pick<Tidy
     set: () => { throw new Error('No renderer writes through the public TUI reference'); },
   }) as UI : root;
   const liveCalls = new Set<string>();
-  const env = { liveCalls, ready, enabled: true, generation: 1, profile: { ...profile }, selected: { kind: 'pi' } as ReturnType<SyntaxClient['snapshot']>['selected'], palette: 1, padding: 1, depth: 0, boldPi: false, plainPi: false, pi: [] as string[], observes: 0, captures: 0, reads: 0, holdStyles: false, styleRequests: [] as Record<string, any>[], poisonPi: false, keys: [] as string[], capturedKeys: [] as string[], committed: new Map<string, number>() };
+  const env = { liveCalls, ready, enabled: true, generation: 1, selected: { kind: 'pi' } as ReturnType<SyntaxClient['snapshot']>['selected'], palette: 1, padding: 1, depth: 0, boldPi: false, plainPi: false, pi: [] as string[], observes: 0, captures: 0, reads: 0, holdStyles: false, styleRequests: [] as Record<string, any>[], poisonPi: false, keys: [] as string[], capturedKeys: [] as string[], committed: new Map<string, number>() };
   const calls: { request: Record<string, unknown>; resolve(value: unknown): void }[] = [];
   const styleCalls: { request: Record<string, any>; resolve(value: unknown): void }[] = [];
   const provider = {
     snapshot(): ProviderSnapshot { return { generation: env.generation, availability: env.ready ? 'ready' : 'initializing',
-      reason: env.ready ? 'ready' : 'initializing', initialShared: false, kind: 'owned', description: env.ready ? { ...description, profiles: env.profile.id === 'pi' ? [] : [env.profile] } : undefined }; },
+      reason: env.ready ? 'ready' : 'initializing', initialShared: false, kind: 'owned', description: env.ready ? description : undefined }; },
     isReady(g: number) { return env.ready && g === env.generation; }, classificationAccepted(g: number) { return this.isReady(g); },
     request(_g: number, request: Record<string, unknown>) {
       assert.equal(env.depth, 0, 'no dispatch in render');
       if (request.op === 'styles.resolve') {
-        const q = request as Record<string, any>, native = q.rules.kind === 'native';
+        const q = request as Record<string, any>;
         env.styleRequests.push(q);
         if (env.holdStyles) return new Promise<unknown>(resolve => styleCalls.push({ request: q, resolve }));
-        return Promise.resolve({ v: 3, ticket: q.ticket, instance: 'daemon', assets: 'assets', status: 'ok', body: {
-          kind: 'styles', vocabulary: q.vocabulary, rules: native ? fingerprintNative(q.rules.fingerprint, 'rules') : fingerprintRules(q.rules.definition),
-          styles: [{ foreground: native ? { kind: 'rgb', r: 17, g: 34, b: 51 } : { kind: 'binding', slot: 1 },
-            background: native ? { kind: 'rgb', r: 40, g: 41, b: 42 } : { kind: 'inherit' }, attributes: 0, attribute_mask: native ? 31 : 0 }], indices: q.contexts.map(() => 1),
-          palette: native ? { revision: 1, fingerprint: fingerprintNative(q.rules.fingerprint, 'palette'), slots: CARD_ROLES.map(() => 1), origins: CARD_ROLES.map(() => 0) } : null } });
+        return Promise.resolve({ v: PROTOCOL_VERSION, ticket: q.ticket, instance: 'daemon', assets: 'assets', status: 'ok', body: {
+          kind: 'styles', vocabulary: q.vocabulary, rules: fingerprintRules(q.rules),
+          styles: [{ foreground: { kind: 'binding', slot: 3 }, background: { kind: 'inherit' }, attributes: 0, attribute_mask: 0 }],
+           indices: q.contexts.map(() => 1) } });
       }
       return new Promise<unknown>(resolve => calls.push({ request, resolve }));
     }
@@ -81,21 +83,30 @@ function fixture(ready = false, useDefaultClassifier = false, options: Pick<Tidy
   sources.capturePiSource = (...args) => { assert.equal(env.depth, 0, 'no Pi source preparation in render'); env.captures++; env.capturedKeys.push(args[0]); return capture(...args); };
   const client: Pick<SyntaxClient, 'sources' | 'snapshot'> = { sources, snapshot: () => {
     assert.equal(env.depth, 0, 'no work metadata read in render'); env.reads++;
-    return { enabled: env.enabled, provider: provider.snapshot(), standaloneVersion: 'test', selected: env.selected, effective: env.selected.kind === 'pi' ? profile : env.ready ? env.profile : undefined };
+    return { enabled: env.enabled, provider: provider.snapshot(), standaloneVersion: 'test', selected: env.selected, effective: resolveTheme(env.selected).effective };
   } };
   let paletteRevision = 0, paletteColors = themes.theme.colors;
+  const currentPiColors = () => {
+    if (paletteRevision !== env.palette) { paletteRevision = env.palette; paletteColors = { ...themes.theme.colors }; }
+    return paletteColors;
+  };
+  const publicPiInput = () => {
+    assert.equal(env.poisonPi, false, 'fixed owned card must not acquire unrelated Pi input');
+    return { theme: { colors: currentPiColors(), getFgAnsi: (role: Parameters<typeof themes.theme.getFgAnsi>[0]) => themes.theme.getFgAnsi(role),
+      getBgAnsi: (role: Parameters<typeof themes.theme.getBgAnsi>[0]) => themes.theme.getBgAnsi(role) }, mode: themes.theme.getColorMode() };
+  };
+  const externalInput = externalOwner ? new PaletteInputOwner(options.diagnostic) : undefined;
   const presentationOptions: TidyUiOptions = { ...options, outputPad: () => env.padding,
-    piInput: () => {
-      assert.equal(env.poisonPi, false, 'fixed native card must not acquire unrelated Pi input');
-      if (paletteRevision !== env.palette) { paletteRevision = env.palette; paletteColors = { ...themes.theme.colors }; }
-      return { theme: { colors: paletteColors, getFgAnsi: role => themes.theme.getFgAnsi(role), getBgAnsi: role => themes.theme.getBgAnsi(role) }, mode: themes.theme.getColorMode() };
-    }, syntax: { client,
+    piInput: publicPiInput, syntax: { client,
     isLiveCall: id => liveCalls.has(id),
-    palette: () => env.palette, classify: useDefaultClassifier ? undefined : (text, info) => {
+    palette: () => externalInput ? externalInput.palette({ colors: currentPiColors() }, resolveTheme(env.selected).effective) : env.palette,
+    classify: useDefaultClassifier ? undefined : (text, info) => {
       assert.equal(env.depth, 0, 'no Pi call in render'); env.pi.push(text);
       const rows = env.plainPi ? text.split('\n') : highlightCode(text, info.language);
       return env.boldPi ? rows.map(row => themes.theme.style(row, { bold: true })) : rows;
-    } } };
+    } },
+    ...(externalInput ? { preparePaletteInput: (palette, theme, revision, mode, funding, usePiFallback, fallbackTheme) =>
+      externalInput.prepare(theme, palette, revision, mode, funding, usePiFallback, fallbackTheme) } : {}) };
   const install = () => {
     adapter = installTidyUi(ui, () => themes.theme, presentationOptions);
     assert.equal(adapter.active, true, adapter.reason);
@@ -155,6 +166,10 @@ function answer(f: ReturnType<typeof fixture>, index: number, text: string, comp
       counters: { committed_line_calls: 0, committed_line_bytes: 0, tail_calls: 0, tail_bytes: 0 } }]
   } });
 }
+function fileCardOracle<T extends object>(tool: T, ...args: Parameters<typeof renderFileCard> extends [unknown, ...infer Rest] ? Rest : never) {
+  const copy = Object.assign(Object.create(Object.getPrototypeOf(tool)), tool);
+  return renderFileCard(copy, ...args);
+}
 function fault(f: ReturnType<typeof fixture>, index: number) {
   const call = f.calls[index]!;
   call.resolve({ v: PROTOCOL_VERSION, ticket: call.request.ticket, instance: 'daemon', assets: 'assets', status: 'error', error: { code: 'busy', execution: 'not_started' } });
@@ -170,7 +185,8 @@ test('host cold file is exact plain then public Pi colors; warmed render/width/p
   const f = fixture(), tool = written(f, 'const n = 1;\n\t// comment');
   const result = JSON.stringify(tool.result), args = JSON.stringify(tool.args);
   const cold = f.render(tool);
-  assert.deepEqual(plain(cold), plain(renderFileCard(tool, '/tmp', 60, themes.theme)!.rows));
+  const expectedCold = fileCardOracle(tool, '/tmp', 60, themes.theme)!;
+  assert.deepEqual(plain(cold), plain(expectedCold.rows));
   assert.deepEqual(f.env.pi, []); await settled();
   assert.deepEqual(f.env.pi, ['const n = 1;\n\t// comment']);
   const warm = f.render(tool);
@@ -239,26 +255,26 @@ for (const extra of [true, false]) test(`host frozen Bash recolors its retained 
   for (const call of f.calls.slice(2)) if (call.request.op === 'stream.close')
     call.resolve({ v: PROTOCOL_VERSION, ticket: call.request.ticket, instance: 'daemon', assets: 'assets', status: 'ok', body: { kind: 'closed' } });
   await settled();
-  const sources = f.calls.length;
+  const sources = f.calls.length, styleRequests = f.env.styleRequests.length;
   f.env.holdStyles = false;
-  f.env.profile = { id: 'syntect:frozen', label: 'Frozen', fingerprint: 'b'.repeat(64) };
-  f.env.selected = { kind: 'occipital', id: f.env.profile.id }; f.adapter.syntaxMetadataChanged(); await settled();
+  f.env.selected = { kind: 'theme', id: 'gruvbox-dark' }; f.adapter.syntaxMetadataChanged(); await settled();
   f.render(tool); await settled(); f.render(tool); await settled();
   assert.equal(f.calls.length, sources, 'recoloring frozen scopes needs no SOURCE');
-  assert.ok(f.env.styleRequests.some(q => q.rules.kind === 'native'), 'the new theme resolved retained display contexts');
-  assert.equal(f.sources.displayBasis(key)?.profile, 'syntect:frozen', 'frozen display publishes the selected native theme');
+  assert.equal(f.env.styleRequests.length, styleRequests, 'palette changes do not dispatch another generic STYLE request');
+  assert.equal(f.sources.displayBasis(key)?.palette, 'theme:gruvbox-dark:owned-palette-v1:gruvbox-dark:truecolor', 'frozen display publishes the selected palette identity');
 });
 
-for (const occupied of [true, false]) test(`host rollback to a cached native theme ${occupied ? 'does not wait for both occupied DATA credits' : '(control: free credits)'}`, async () => {
-  const f = fixture(true), first = { id: 'syntect:first', label: 'First', fingerprint: 'a'.repeat(64) }, second = { id: 'syntect:second', label: 'Second', fingerprint: 'b'.repeat(64) };
-  const select = async (profile: typeof first) => { f.env.profile = profile; f.env.selected = { kind: 'occipital', id: profile.id }; f.adapter.syntaxMetadataChanged(); await settled(); };
+for (const occupied of [true, false]) test(`host rollback to a cached owned palette ${occupied ? 'does not wait for both occupied DATA credits' : '(control: free credits)'}`, async () => {
+  const f = fixture(true), first = { id: 'gruvbox-dark' }, second = { id: 'nord-dark' };
+  const select = async (theme: typeof first) => { f.env.selected = { kind: 'theme', id: theme.id }; f.adapter.syntaxMetadataChanged(); await settled(); };
   await select(first);
   const tool = written(f, 'const rollback = 1;'); f.render(tool); await settled();
   answer(f, 0, 'const rollback = 1;'); await settled(); f.render(tool); await settled();
   const key = f.env.keys[0]!;
-  assert.equal(f.sources.displayBasis(key)?.profile, first.id);
-  await select(second); f.render(tool); await settled(); f.render(tool); await settled();
-  assert.equal(f.sources.displayBasis(key)?.profile, second.id);
+  assert.equal(f.sources.displayBasis(key)?.palette, `theme:${first.id}:owned-palette-v1:${first.id}:truecolor`);
+  await select(second); f.render(tool); await settled();
+  f.render(tool); await settled();
+  assert.equal(f.sources.displayBasis(key)?.palette, `theme:${second.id}:owned-palette-v1:${second.id}:truecolor`);
   if (occupied) {
     for (const command of ['echo held-one', 'echo held-two']) { const held = f.tool('bash', { command }); held.setArgsComplete(); f.render(held); }
     await settled(); assert.equal(f.calls.length, 3, 'both physical DATA credits are held by unrelated source work');
@@ -267,7 +283,7 @@ for (const occupied of [true, false]) test(`host rollback to a cached native the
   await select(first); f.render(tool); await settled(); f.render(tool); await settled();
   assert.equal(f.env.styleRequests.length, styles, 'the revisited theme is fully cached');
   assert.equal(f.calls.length, sources);
-  assert.equal(f.sources.displayBasis(key)?.profile, first.id, 'cached rollback publishes before unrelated work settles');
+  assert.equal(f.sources.displayBasis(key)?.palette, `theme:${first.id}:owned-palette-v1:${first.id}:truecolor`, 'cached rollback publishes before unrelated work settles');
 });
 
 test('host Bash fallback stays full-command toolTitle with zero Pi during startup off and no-start', async () => {
@@ -364,7 +380,7 @@ test('host real public Pi colors plus bare Pi font styles survive exact toolOutp
   const f = fixture(); f.env.boldPi = true;
   const tool = written(f, 'unclassified + 1;\nconst x = "s";');
   f.render(tool); await settled();
-  const expected = renderFileCard(tool, '/tmp', 60, themes.theme, (code, path) => highlightCode(code, getLanguageFromPath(path)))!;
+  const expected = fileCardOracle(tool, '/tmp', 60, themes.theme, (code, path) => highlightCode(code, getLanguageFromPath(path)))!;
   const rows = f.render(tool);
   assert.deepEqual(plain(rows), plain(expected.rows));
   assert.ok(rows.join('').includes('\x1b[1m'), 'bare public Pi bold is not discarded when foreground is neutral');
@@ -399,7 +415,7 @@ test('host default classifier uses explicit public file language outside render 
   try {
     assert.equal(native.active, true, native.reason);
     tool.render(60); await settled();
-    assert.deepEqual(plain(tool.render(60)), plain(renderFileCard(tool, '/tmp', 60, themes.theme,
+    assert.deepEqual(plain(tool.render(60)), plain(fileCardOracle(tool, '/tmp', 60, themes.theme,
       (code, path) => highlightCode(code, getLanguageFromPath(path)))!.rows));
     assert.equal(await hasHostInk(tool.render(60), themes.theme, 'syntaxKeyword', 'const'), true);
     assert.equal(await hasHostInk(tool.render(60), themes.theme, 'toolOutput', 'value'), true, 'literal neutral code uses the prepared card role, not Pi ANSI default reset');
@@ -517,8 +533,9 @@ test('P1 injected stock edit is the actual stock self-shell Box and skips all na
     f.render(tool); await settled();
     assert.deepEqual(f.env.pi, ['x', 'y']);
     assert.deepEqual(watch.counts().filter((_v, i) => i !== 5), [1, 1, 2, 0, 2, 0]);
+    const prepared = watch.counts();
     await settled(); // Finish the one-shot host-yield barrier before warm measurements.
-    assert.deepEqual(watch.counts().filter((_v, i) => i !== 5), [1, 1, 2, 0, 2, 0], 'an empty controller continuation does not revisit card preparation');
+    assert.deepEqual(watch.counts(), prepared, 'an empty controller continuation does not revisit card preparation');
     const before = watch.counts().slice(1);
     for (const width of [24, 60, 121]) f.render(tool, width);
     tool.handleMouse({ type: 'move', width: 60, height: 8, x: 0, y: 0 });
@@ -786,7 +803,7 @@ test('stream contract: aborted still-displayed command retains colors without re
   assert.deepEqual(f.render(tool, 60), rows);
   const resumedBuilds = f.adapter.cacheStats().builds, requests = f.ui.requests;
   await settled();
-  // A real pause resumes through current-profile guards, not source/classifier work.
+  // A real pause resumes through the current source identity, not classifier work.
   assert.deepEqual(sourceCounts(f), before.filter((_v, index) => index !== 3));
   const resumeReads = counts(f)[3]! - before[3]!;
   assert.ok(resumeReads >= 0 && resumeReads <= 3, 'one useful resume has at most the existing three in-memory freshness checks');
@@ -861,13 +878,13 @@ for (const frozen of [false, true]) test(`stream review F1: ${frozen ? 'frozen' 
   f.env.ready = true; f.adapter.syntaxMetadataChanged(); await settled();
   assert.ok(await hasHostInk(f.render(tool, 100), themes.theme, 'syntaxKeyword', text));
   assert.equal(f.calls.length, before); assert.equal(f.sources.displayStamp(f.env.keys[0]!), stamp); assert.equal(f.env.pi.length, 0);
-  f.env.ready = false; f.env.selected = { kind: 'occipital', id: 'different' }; f.adapter.syntaxMetadataChanged();
+  f.env.ready = false; f.env.selected = { kind: 'theme', id: 'different' }; f.adapter.syntaxMetadataChanged();
   assert.equal(await hasHostInk(f.render(tool), themes.theme, 'syntaxKeyword', text), true, 'pending preference does not erase the last ready display');
   f.env.ready = true; f.env.selected = { kind: 'pi' }; f.adapter.syntaxMetadataChanged(); await settled();
   assert.ok(await hasHostInk(f.render(tool), themes.theme, 'syntaxKeyword', text));
   f.env.enabled = false; f.sources.setEnabled(false); f.adapter.syntaxMetadataChanged(); await settled();
   assert.equal(await hasHostInk(f.render(tool), themes.theme, 'syntaxKeyword', text), false);
-  assert.equal(f.sources.displayBasis(f.env.keys[0]!), undefined, 'native source display is released; funded card geometry is separate');
+  assert.equal(f.sources.displayBasis(f.env.keys[0]!), undefined, 'semantic source display is released; funded card geometry is separate');
 });
 
 test('stream review F2: shell-file correction then provider recovery cannot paint display-only history as current coverage', async () => {
@@ -881,7 +898,7 @@ test('stream review F2: shell-file correction then provider recovery cannot pain
   assert.ok(plain(rows).join('\n').includes('zz'), 'the complete latest shell-file text remains visible');
 });
 
-test('stream review F3: frozen native display survives zero width without thawing work', async () => {
+test('stream review F3: frozen semantic display survives zero width without thawing work', async () => {
   const f = fixture(true), text = 'echo retained', tool = f.tool('bash', { command: text });
   f.render(tool); await settled(); answer(f, 0, text, false, 0); await settled(); f.render(tool);
   tool.updateResult({ content: [{ type: 'text', text: 'interrupted' }], isError: true }, false); f.render(tool);
@@ -918,7 +935,7 @@ test('stream review F5: restored frozen Bash processes actual display eviction w
   const grant = f.sources.geometryFunding()!.grant(free)!;
   const unrelated = grant.consume(free); grant.close();
   try {
-    assert.equal(f.sources.observe({ key: 'pressure-peer', version: 1, text: 'x', language: 'bash', profile: profile.id, fingerprint: profile.fingerprint, complete: true }), true);
+    assert.equal(f.sources.observe({ key: 'pressure-peer', version: 1, text: 'x', language: 'bash', complete: true }), true);
   } finally { unrelated.release(); }
   assert.equal(f.sources.displayBasis(key), undefined, 'genuine pool pressure released the frozen basis');
   f.sources.flush(); await settled();
@@ -1010,10 +1027,9 @@ for (const episode of ['startup', 'reconnection'] as const) test(`host online wa
 });
 
 
-for (const kind of ['write', 'edit'] as const) test(`host ${kind} theme switch retains ready native rows before and during deferred preparation at unchanged width`, async () => {
+for (const kind of ['write', 'edit'] as const) test(`host ${kind} palette switch rematerializes retained semantic rows locally at unchanged width`, async () => {
   const f = fixture(true);
-  f.env.profile = { id: 'syntect:first', label: 'First', fingerprint: 'a'.repeat(64) };
-  f.env.selected = { kind: 'occipital', id: f.env.profile.id }; f.adapter.syntaxMetadataChanged();
+  f.env.selected = { kind: 'theme', id: 'gruvbox-dark' }; f.adapter.syntaxMetadataChanged();
   const tools = Array.from({ length: 4 }, (_, i) => {
     if (kind === 'write') return written(f, `const host${i}=1;`);
     const tool = f.tool('edit', { path: `host${i}.ts`, oldText: `const old${i}=1;`, newText: `const next${i}=2;` });
@@ -1025,18 +1041,20 @@ for (const kind of ['write', 'edit'] as const) test(`host ${kind} theme switch r
     const call = f.calls[i]; assert.ok(call);
     answer(f, i, (call.request.sources as { text: string }[])[0]!.text); await settled();
   }
-  const first = tools[0]!, before = f.render(first);
+  const first = tools[0]!, before = f.render(first), firstKey = f.env.keys[0]!;
+  const oldPalette = f.sources.displayBasis(firstKey)?.palette;
   f.env.holdStyles = true;
-  f.env.profile = { id: 'syntect:host', label: 'Host', fingerprint: 'b'.repeat(64) };
-  f.env.selected = { kind: 'occipital', id: f.env.profile.id }; f.adapter.syntaxMetadataChanged();
-  const countsBefore = counts(f), immediate = f.render(first);
-  assert.deepEqual(plain(immediate), plain(before));
-  assert.deepEqual(immediate, before, 'the first same-width frame keeps its last ready colors');
-  assert.deepEqual(counts(f), countsBefore, 'cache invalidation itself does no metadata/native/Pi work in render');
-  const afterFrame = f.adapter.cacheStats().builds;
-  f.render(first); assert.equal(f.adapter.cacheStats().builds, afterFrame, 'ready display stays cached while new native work waits');
+   f.env.selected = { kind: 'theme', id: 'gruvbox-light' }; f.adapter.syntaxMetadataChanged();
+   await settled(); // Palette bytes and cached expressions are prepared outside render.
+   const countsBefore = counts(f), styleRequests = f.env.styleRequests.length, sourceCalls = f.calls.length;
+  const immediate = f.render(first);
+  assert.notDeepEqual(immediate, before, 'a funded local palette change rematerializes ready semantic rows immediately');
+  assert.notEqual(f.sources.displayBasis(firstKey)?.palette, oldPalette);
+  assert.deepEqual(counts(f), countsBefore, 'palette-only rematerialization does no work in render');
+  assert.equal(f.env.styleRequests.length, styleRequests, 'generic STYLE data is independent of palette identity');
+  assert.equal(f.calls.length, sourceCalls, 'retained source is not parsed again for a local palette switch');
   await settled(); await settled();
-  assert.deepEqual(f.render(first), before, 'deferred admission cannot replace ready colors with a neutral frame');
+  assert.deepEqual(f.render(first), immediate, 'the locally ready palette remains stable on the next frame');
   assert.equal(f.env.pi.length, 0);
 });
 
@@ -1066,10 +1084,54 @@ for (const kind of ['write', 'edit'] as const) test(`theme burst: ${kind} restor
 });
 
 
-test('prepared host native complete palette paints every cell without Pi on warm repaint resize and output updates', async () => {
+test('external owner establishes a Pi fallback baseline after owned-asset failure and refreshes it once on color change', async t => {
+  const openSync = nodeFs.openSync.bind(nodeFs);
+  t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); themes.setTheme('dark', false); });
+  themes.setTheme('dark', false);
+  t.mock.method(nodeFs, 'openSync', (...args: Parameters<typeof nodeFs.openSync>) => {
+    const [path] = args;
+    if (String(path).endsWith('/gruvbox-dark.json')) throw new Error('controlled known-palette read failure');
+    return openSync(...args);
+  });
+  syncBuiltinESMExports();
+  const f = fixture(false, false, {}, undefined, false, true);
+  f.env.selected = { kind: 'theme', id: 'gruvbox-dark' }; f.adapter.syntaxMetadataChanged();
+  const tool = written(f, 'const externalPaletteFallback = 1;');
+  const controller = f.adapter as TidyUiController & { refreshPreparedPalette(node: object): void };
+  const refresh = controller.refreshPreparedPalette; let refreshVisits = 0;
+  controller.refreshPreparedPalette = node => { refreshVisits++; refresh.call(controller, node); };
+  try {
+    f.render(tool); await settled(); const initial = f.render(tool); await settled();
+    assert.equal(f.sources.displayBasis(f.env.keys[0]!), undefined, 'failed local input leaves no semantic group');
+    assert.equal(f.env.pi.length, 1, 'the no-group card uses one local Pi classification');
+    assert.ok(await hasHostInk(initial, themes.theme, 'syntaxKeyword', 'const'), 'the no-group fallback uses Pi code ink');
+    const before = counts(f), styleRequests = f.env.styleRequests.length, prepared = refreshVisits;
+    for (let i = 0; i < 100; i++) f.render(tool);
+    await settled(); assert.equal(refreshVisits, prepared, 'a warm Pi fallback has a recorded public-color identity and schedules no deferred refresh');
+    assert.deepEqual(counts(f), before, 'warm Pi fallback performs no source work');
+    assert.equal(f.env.styleRequests.length, styleRequests, 'warm Pi fallback performs no STYLE work');
+    themes.setTheme('light', false); f.env.palette++; f.adapter.syntaxMetadataChanged();
+    f.render(tool); await settled(); const recolored = f.render(tool); await settled();
+    assert.notDeepEqual(recolored, initial, 'Pi-origin fallback adopts the changed public palette');
+    assert.ok(await hasHostInk(recolored, themes.theme, 'syntaxKeyword', 'const'));
+    const afterRefresh = refreshVisits;
+    assert.equal(afterRefresh, prepared + 1, 'one deferred palette refresh visit consumes the color change');
+    assert.equal(f.env.pi.length, before[0]! + 1, 'one Pi classification is regenerated for the new public colors');
+    assert.equal(f.env.captures, before[2]! + 1, 'the same source text is recaptured once into the local Pi projection');
+    assert.equal(f.calls.length, before[4], 'a palette refresh sends no Occipital SOURCE');
+    assert.equal(f.env.styleRequests.length, styleRequests, 'a palette refresh sends no generic STYLE');
+    for (let i = 0; i < 100; i++) f.render(tool);
+    await settled(); assert.equal(refreshVisits, afterRefresh, 'warm frames do not repeat deferred refresh');
+    assert.equal(f.env.pi.length, before[0]! + 1, 'warm frames do not reclassify the cached fallback text');
+    assert.equal(f.env.captures, before[2]! + 1, 'warm frames do not recapture the fallback source');
+    assert.equal(f.calls.length, before[4], 'warm frames send no Occipital SOURCE');
+    assert.equal(f.env.styleRequests.length, styleRequests, 'warm frames send no generic STYLE');
+  } finally { controller.refreshPreparedPalette = refresh; }
+});
+
+test('prepared host owned palette paints every card surface without Pi on warm repaint resize and output updates', async () => {
   const f = fixture(true);
-  f.env.profile = { id: 'native:host', label: 'Host', fingerprint: 'c'.repeat(64) };
-  f.env.selected = { kind: 'occipital', id: f.env.profile.id }; f.adapter.syntaxMetadataChanged();
+  f.env.selected = { kind: 'theme', id: 'catppuccin-dark' }; f.adapter.syntaxMetadataChanged();
   const tool = f.tool('bash', { command: 'echo native', description: 'description', workdir: '/tmp' });
   tool.setArgsComplete(); tool.updateResult({ content: [{ type: 'text', text: 'stdout\n<system-reminder>\nreminder\n</system-reminder>' }], isError: false }, false);
   const first = f.render(tool); await settled();
@@ -1083,14 +1145,18 @@ test('prepared host native complete palette paints every cell without Pi on warm
   for (const width of [24, 121, 60]) f.render(tool, width);
   tool.updateResult({ content: [{ type: 'text', text: 'new stdout' }], isError: false }, false);
   const changed = f.render(tool); assert.match(plain(changed).join('\n'), /new stdout/);
-  const cells = await hostCells(changed);
+  const cells = await hostCells(changed), selected = sampleOwnedPalette('catppuccin-dark', 'truecolor');
+  const background = selected.roles.panel.background, binding = selected.bindings[3]!.ink;
+  if (background.kind !== 'rgb' || binding.kind !== 'rgb') throw new Error('expected owned RGB inputs');
+  const expectedBg = (background.r << 16) | (background.g << 8) | background.b;
+  const expectedFg = (binding.r << 16) | (binding.g << 8) | binding.b;
   for (const row of cells) for (let x = 0; x < row.length; x++) {
     const cell = row[x]!;
     if (x === 0 || x === row.length - 1 || x === 1) assert.equal(cell.bg, -1, 'exterior and stripe retain terminal default');
-    else assert.equal(cell.bg, (40 << 16) | (41 << 8) | 42, 'all card regions use the native surface');
-    if (cell.text.trim()) assert.equal(cell.fg, (17 << 16) | (34 << 8) | 51);
+    else assert.equal(cell.bg, expectedBg, 'all card regions use the selected owned surface');
   }
-  assert.equal(f.env.pi.length, 0);
+  assert.ok(cells.some(row => row.some(cell => cell.text === 'e' && cell.fg === expectedFg)), 'semantic binding uses the selected owned palette');
+   assert.equal(f.env.pi.length, 0);
 });
 
 test('prepared host outer refusal and throw release provisional candidates without publishing or leaking funded rows', async () => {
@@ -1268,37 +1334,30 @@ test('review F1: actual SDK refused FILE revision admits no native work until id
 });
 
 
-for (const selection of ['native', 'Follow Pi'] as const) test(`C19 SDK host recolors live interrupted Bash for ${selection} without reopening SOURCE`, async t => {
+for (const selection of ['owned palette', 'Follow Pi'] as const) test(`C19 SDK host recolors live interrupted Bash for ${selection} without reopening SOURCE`, async t => {
   t.after(() => themes.setTheme('dark'));
   const f = fixture(true), text = 'echo retained', tool = f.tool('bash', { command: text });
   f.render(tool); await settled(); answer(f, 0, text, false, 0); await settled();
   assert.ok(await hasHostInk(f.render(tool), themes.theme, 'syntaxKeyword', text));
   tool.updateArgs({ command: `${text} NEW` });
   tool.updateResult({ content: [{ type: 'text', text: 'interrupted' }], isError: true }, false);
-  const interrupted = f.render(tool); await settled();
+  f.render(tool); await settled();
   const close = f.calls.find(c => c.request.op === 'stream.close')!; assert.ok(close);
   close.resolve({ v: PROTOCOL_VERSION, ticket: close.request.ticket, instance: 'daemon', assets: 'assets', status: 'ok', body: { kind: 'closed' } }); await settled();
   const before = sourceCounts(f), raw = JSON.stringify([tool.args, tool.result, tool.getRenderContext()]);
-  f.env.holdStyles = true;
-  if (selection === 'native') {
-    f.env.profile = { id: 'next', label: 'Next', fingerprint: 'b'.repeat(64) }; f.env.selected = { kind: 'occipital', id: 'next' };
-    f.adapter.syntaxMetadataChanged();
+  const styleRequests = f.env.styleRequests.length;
+  if (selection === 'owned palette') {
+    f.env.selected = { kind: 'theme', id: 'tokyonight-dark' }; f.adapter.syntaxMetadataChanged();
   } else { themes.setTheme('light'); f.env.palette++; f.render(tool); }
   await settled();
-  assert.equal(f.env.styleRequests.length, selection === 'native' ? 2 : 1, 'native selection resolves new STYLE; Follow Pi rebinds cached expressions locally');
-  if (selection === 'native') {
-    assert.deepEqual(f.render(tool), interrupted, 'pending recolor retains last-ready output');
-    const held = f.styleCalls.at(-1)!; assert.ok(held);
-    const q = held.request;
-    held.resolve({ v: 3, ticket: q.ticket, instance: 'daemon', assets: 'assets', status: 'ok', body: {
-      kind: 'styles', vocabulary: q.vocabulary, rules: fingerprintNative(q.rules.fingerprint, 'rules'),
-      styles: [{ foreground: { kind: 'rgb', r: 71, g: 72, b: 73 }, background: { kind: 'rgb', r: 40, g: 41, b: 42 }, attributes: 0, attribute_mask: 31 }],
-      indices: q.contexts.map(() => 1), palette: { revision: 1, fingerprint: fingerprintNative(q.rules.fingerprint, 'palette'), slots: CARD_ROLES.map(() => 1), origins: CARD_ROLES.map(() => 0) } } });
-    await settled();
-    const cells = (await hostCells(f.render(tool))).flat().filter(c => c.text.trim());
-    assert.ok(cells.some(c => c.text === 'e' && c.fg === (71 << 16 | 72 << 8 | 73)), 'actual SDK paint adopts new native ink');
-  } else assert.ok(await hasHostInk(f.render(tool), themes.theme, 'syntaxKeyword', text), 'retained scopes adopt current Pi ink');
+  assert.equal(f.env.styleRequests.length, styleRequests, 'palette changes rebind retained common expressions locally');
   const rows = f.render(tool);
+  if (selection === 'Follow Pi') assert.ok(await hasHostInk(rows, themes.theme, 'syntaxKeyword', text), 'retained scopes adopt current Pi ink');
+  else {
+    const owned = sampleOwnedPalette('tokyonight-dark', themes.theme.getColorMode());
+    assert.ok(Object.values(owned.compiledRoles).some(role => role.open.length > 0 && rows.some(row => row.includes(role.open))),
+      'the real installer renders with the selected locally owned palette without an external prep callback');
+  }
   assert.match(plain(rows).join('\n'), /echo retained NEW/); assert.match(plain(rows).join('\n'), /incomplete tool call/);
   if (selection === 'Follow Pi') assert.ok(await hasHostInk(rows, themes.theme, 'toolTitle', 'NEW'), 'unparsed suffix is not historical scope coverage');
   assert.deepEqual(sourceCounts(f), before); assert.equal(JSON.stringify([tool.args, tool.result, tool.getRenderContext()]), raw);
@@ -1314,66 +1373,38 @@ for (const selection of ['native', 'Follow Pi'] as const) test(`C19 SDK host rec
 function answerPausedHostStyle(f: ReturnType<typeof fixture>) {
   const held = f.styleCalls.at(-1)!; assert.ok(held);
   const q = held.request;
-  held.resolve({ v: 3, ticket: q.ticket, instance: 'daemon', assets: 'assets', status: 'ok', body: {
-    kind: 'styles', vocabulary: q.vocabulary, rules: fingerprintNative(q.rules.fingerprint, 'rules'),
-    styles: [{ foreground: { kind: 'rgb', r: 71, g: 72, b: 73 }, background: { kind: 'rgb', r: 40, g: 41, b: 42 }, attributes: 0, attribute_mask: 31 }],
-    indices: q.contexts.map(() => 1), palette: { revision: 1, fingerprint: fingerprintNative(q.rules.fingerprint, 'palette'), slots: CARD_ROLES.map(() => 1), origins: CARD_ROLES.map(() => 0) } } });
+  held.resolve({ v: PROTOCOL_VERSION, ticket: q.ticket, instance: 'daemon', assets: 'assets', status: 'ok', body: {
+    kind: 'styles', vocabulary: q.vocabulary, rules: fingerprintRules(q.rules),
+    styles: [{ foreground: { kind: 'binding', slot: 1 }, background: { kind: 'inherit' }, attributes: 0, attribute_mask: 0 }],
+    indices: q.contexts.map(() => 1) } });
 }
 
-for (const pause of ['zero-width', 'hidden'] as const) for (const pending of [false, true])
-  test(`C19 pause fix SDK host ${pause} frozen card blocks ${pending ? 'held STYLE publication' : 'theme STYLE admission'} until useful resumption`, async () => {
+for (const pause of ['zero-width', 'hidden'] as const)
+  test(`C19 pause fix SDK host ${pause} prevents a pending common STYLE result from publishing until useful resumption`, async () => {
     const f = fixture(true), text = 'echo retained', tool = f.tool('bash', { command: text });
-    f.render(tool); await settled(); answer(f, 0, text, false, 0); await settled();
-    assert.ok(await hasHostInk(f.render(tool), themes.theme, 'syntaxKeyword', text));
-    tool.updateArgs({ command: `${text} NEW` });
-    tool.updateResult({ content: [{ type: 'text', text: 'interrupted' }], isError: true }, false);
-    const ready = f.render(tool); await settled();
-    const close = f.calls.find(c => c.request.op === 'stream.close')!; assert.ok(close);
-    close.resolve({ v: PROTOCOL_VERSION, ticket: close.request.ticket, instance: 'daemon', assets: 'assets', status: 'ok', body: { kind: 'closed' } }); await settled();
-    const key = f.env.keys[0]!, before = sourceCounts(f), restarts = f.sources.stats().restarts;
-    const authority = f.sources.workStatus(key), stamp = f.sources.displayStamp(key), geometry = f.sources.displayBasis(key)!.geometryStamp;
-    const raw = JSON.stringify([tool.args, tool.result, tool.getRenderContext()]), styles = f.env.styleRequests.length;
-    assert.equal(authority.fallbackEligible, false, 'canonical source freeze remains authoritative');
-    assert.equal(f.sources.stats().remoteLeases, 0);
     f.env.holdStyles = true;
-    const select = () => {
-      f.env.profile = { id: 'paused-next', label: 'Paused next', fingerprint: 'b'.repeat(64) };
-      f.env.selected = { kind: 'occipital', id: f.env.profile.id }; f.adapter.syntaxMetadataChanged();
-    };
-    if (pending) { select(); await settled(); assert.equal(f.styleCalls.length, 1); assert.equal(f.sources.stats().unsettledJobs, 1); }
+    f.render(tool); await settled(); answer(f, 0, text, false, 0); await settled();
+    const key = f.env.keys[0]!, before = sourceCounts(f), beforeStamp = f.sources.displayStamp(key), beforeLeases = f.sources.stats().remoteLeases;
+    assert.equal(f.styleCalls.length, 1); assert.equal(f.sources.stats().unsettledJobs, 1);
     if (pause === 'hidden') tool.hideComponent = true;
     assert.deepEqual(f.render(tool, pause === 'zero-width' ? 0 : 60), []);
-    if (!pending) select();
+    answerPausedHostStyle(f); await settled();
+    assert.equal(f.sources.displayStamp(key), beforeStamp, 'STYLE settling while paused cannot publish a partial semantic replacement');
+    assert.equal(f.sources.stats().unsettledJobs, 0);
+    assert.equal(f.env.styleRequests.length, 1);
+    tool.hideComponent = false; f.env.holdStyles = false;
+    assert.ok(f.render(tool).length > 0, 'first useful frame admits the retained semantic result');
     await settled();
-    if (pending) { answerPausedHostStyle(f); await settled(); assert.equal(f.sources.stats().unsettledJobs, 0); }
-    else assert.equal(f.env.styleRequests.length, styles, 'host pause must block new STYLE without a visible useful visit');
-    assert.equal(f.sources.displayStamp(key), stamp, 'a held STYLE cannot publish across the actual host pause');
-    assert.equal(f.sources.displayBasis(key)!.geometryStamp, geometry);
-    assert.deepEqual(f.sources.workStatus(key), authority); assert.deepEqual(sourceCounts(f), before);
-    assert.equal(JSON.stringify([tool.args, tool.result, tool.getRenderContext()]), raw);
-    f.adapter.syntaxMetadataChanged(); await settled();
-    assert.equal(f.sources.displayStamp(key), stamp, 'metadata alone is not useful resumption');
-    tool.hideComponent = false;
-    assert.deepEqual(f.render(tool), ready, 'first useful frame retains the old ready paint until local publication');
-    await settled();
-    if (!pending) { assert.equal(f.styleCalls.length, 1); answerPausedHostStyle(f); await settled(); }
-    assert.equal(f.env.styleRequests.length, styles + 1, 'settled paused STYLE is reused, not re-requested');
-    const rows = f.render(tool), cells = (await hostCells(rows)).flat();
-    assert.ok(cells.some(c => c.text === 'e' && c.fg === (71 << 16 | 72 << 8 | 73)), 'fresh useful demand adopts new native ink');
-    assert.match(plain(rows).join('\n'), /echo retained NEW/); assert.match(plain(rows).join('\n'), /incomplete tool call/);
-    for (const width of [24, 60, 100]) f.render(tool, width);
-    await settled();
-    assert.deepEqual(sourceCounts(f), before); assert.deepEqual(f.sources.workStatus(key), authority);
-    assert.equal(f.sources.stats().restarts, restarts); assert.equal(f.sources.stats().remoteLeases, 0); assert.equal(f.sources.stats().pendingCloses, 0);
-    assert.equal(JSON.stringify([tool.args, tool.result, tool.getRenderContext()]), raw); assert.deepEqual(f.env.pi, []);
-    console.log(JSON.stringify({ frozenHostPause: pause, pending, sourceOps: f.calls.map(c => c.request.op), newStyles: f.env.styleRequests.length - styles,
-      newSourceObservations: f.env.observes - before[1]!, newRestarts: f.sources.stats().restarts - restarts, leases: f.sources.stats().remoteLeases }));
+    assert.equal(f.env.styleRequests.length, 1, 'resumption reuses settled common STYLE');
+    assert.ok(f.sources.displayBasis(key));
+    assert.deepEqual(sourceCounts(f), before);
+    assert.equal(f.sources.stats().remoteLeases, beforeLeases, 'visibility pause and resumption preserve the active Pi-owned lease');
+    assert.equal(f.sources.stats().pendingCloses, 0);
   });
 
 for (const kind of ['bash', 'write', 'edit'] as const) test(`host renderer transfer: ready ${kind} retains native paint and measured text without SOURCE or STYLE`, async () => {
   const f = fixture(true, false, {}, undefined, true);
-  f.env.profile = { id: 'syntect:transfer', label: 'Transfer', fingerprint: 'd'.repeat(64) };
-  f.env.selected = { kind: 'occipital', id: f.env.profile.id }; f.adapter.syntaxMetadataChanged();
+   f.env.selected = { kind: 'theme', id: 'monokai-dark' }; f.adapter.syntaxMetadataChanged();
   const tool = kind === 'write' ? written(f, 'const TRANSFER_MARK = 1;')
     : f.tool(kind, kind === 'bash' ? { command: 'echo TRANSFER_MARK' }
       : { path: 'transfer.ts', oldText: 'const TRANSFER_OLD = 1;', newText: 'const TRANSFER_NEW = 2;' });
@@ -1386,7 +1417,8 @@ for (const kind of ['bash', 'write', 'edit'] as const) test(`host renderer trans
     assert.ok(f.calls[i]); answer(f, i, (f.calls[i]!.request.sources as { text: string }[])[0]!.text); await settled();
   }
   const expected = f.document(), before = sourceCounts(f), styles = f.env.styleRequests.length;
-  assert.ok(expected.some(row => row.includes('\x1b[38;2;17;34;51m')), 'native source colors are ready before moving');
+  const marker = kind === 'edit' ? 'TRANSFER_NEW' : 'TRANSFER_MARK';
+  assert.ok(plain(expected).join('\n').includes(marker), 'owned palette card content is ready before moving');
   const counters = watchConsumer(f);
   try {
     for (let i = 0; i < 3; i++) {
@@ -1424,10 +1456,9 @@ test('host renderer transfer: restore before deferred root retirement releases e
   f.sources.dispose(); assert.equal(f.sources.stats().retention.retainedBytes, 0);
 });
 
-test('host renderer transfer: changed text is prepared instead of reusing the old native source demand', async () => {
+test('host renderer transfer: changed text is prepared instead of reusing the old semantic source demand', async () => {
   const f = fixture(true, false, {}, undefined, true), tool = written(f, 'const TRANSFER_BEFORE = 1;');
-  f.env.profile = { id: 'syntect:changed', label: 'Changed', fingerprint: 'e'.repeat(64) };
-  f.env.selected = { kind: 'occipital', id: f.env.profile.id }; f.adapter.syntaxMetadataChanged();
+   f.env.selected = { kind: 'theme', id: 'nord-light' }; f.adapter.syntaxMetadataChanged();
   f.document(); await settled(); answer(f, 0, 'const TRANSFER_BEFORE = 1;'); await settled(); f.document();
   f.ui.clear(); tool.updateArgs({ path: 'a.ts', content: 'const TRANSFER_AFTER = 2;' }); f.ui.addChild(tool);
   const current = plain(f.document()).join('\n'); assert.ok(current.includes('TRANSFER_AFTER')); assert.equal(current.includes('TRANSFER_BEFORE'), false);
@@ -1558,24 +1589,22 @@ for (const [label, initial, completed] of [
 });
 
 function roundTwoStyleReply(q: Record<string, any>) {
-  const native = q.rules.kind === 'native';
-  return { v: 3, ticket: q.ticket, instance: 'daemon', assets: 'assets', status: 'ok', body: {
-    kind: 'styles', vocabulary: q.vocabulary, rules: native ? fingerprintNative(q.rules.fingerprint, 'rules') : fingerprintRules(q.rules.definition),
-    styles: [{ foreground: native ? { kind: 'rgb', r: 17, g: 34, b: 51 } : { kind: 'binding', slot: 1 },
-      background: native ? { kind: 'rgb', r: 40, g: 41, b: 42 } : { kind: 'inherit' }, attributes: 0, attribute_mask: native ? 31 : 0 }], indices: q.contexts.map(() => 1),
-    palette: native ? { revision: 1, fingerprint: fingerprintNative(q.rules.fingerprint, 'palette'), slots: CARD_ROLES.map(() => 1), origins: CARD_ROLES.map(() => 0) } : null } };
+  return { v: PROTOCOL_VERSION, ticket: q.ticket, instance: 'daemon', assets: 'assets', status: 'ok', body: {
+    kind: 'styles', vocabulary: q.vocabulary, rules: fingerprintRules(q.rules),
+    styles: [{ foreground: { kind: 'rgb', r: 17, g: 34, b: 51 }, background: { kind: 'inherit' }, attributes: 0, attribute_mask: 0 }],
+    indices: q.contexts.map(() => 1) } };
 }
 
 for (const occupied of [true, false]) test(`syntax host: cached Follow Pi rollback from native ${occupied ? 'with both DATA credits occupied' : '(control: free credits)'}`, async () => {
-  const f = fixture(true), native = { id: 'syntect:native', label: 'Native', fingerprint: 'a'.repeat(64) };
+   const f = fixture(true), owned = 'gruvbox-dark';
   const tool = written(f, 'const rollback = 1;'); f.render(tool); await settled();
   answer(f, 0, 'const rollback = 1;'); await settled(); f.render(tool); await settled();
   const key = f.env.keys[0]!;
-  assert.equal(f.sources.displayBasis(key)?.profile, 'pi', 'initial Follow Pi display');
+  assert.equal(f.sources.displayBasis(key)?.palette, 'pi:1:truecolor', 'initial Follow Pi display');
   const initialRows = f.render(tool);
-  f.env.profile = native; f.env.selected = { kind: 'occipital', id: native.id }; f.adapter.syntaxMetadataChanged(); await settled();
+   f.env.selected = { kind: 'theme', id: owned }; f.adapter.syntaxMetadataChanged(); await settled();
   f.render(tool); await settled(); f.render(tool); await settled();
-  assert.equal(f.sources.displayBasis(key)?.profile, native.id, 'native display');
+   assert.equal(f.sources.displayBasis(key)?.palette, `theme:${owned}:owned-palette-v1:${owned}:truecolor`, 'owned palette display');
   if (occupied) {
     for (const command of ['echo held-one', 'echo held-two']) { const held = f.tool('bash', { command }); held.setArgsComplete(); f.render(held); }
     await settled(); assert.equal(f.calls.length, 3, 'both physical DATA credits held by unrelated SOURCE');
@@ -1585,16 +1614,18 @@ for (const occupied of [true, false]) test(`syntax host: cached Follow Pi rollba
   f.render(tool); await settled(); f.render(tool); await settled();
   assert.equal(f.env.styleRequests.length, styles, 'Follow Pi styles are cached');
   assert.equal(f.calls.length, sources);
-  assert.equal(f.sources.displayBasis(key)?.profile, 'pi', 'cached Follow Pi rollback publishes before unrelated work settles');
+   assert.match(f.sources.displayBasis(key)?.palette ?? '', /^pi:/, 'cached Follow Pi rollback publishes before unrelated work settles');
   assert.deepEqual(f.render(tool), initialRows, 'actual card restores exact Follow Pi text, colors and attributes');
   const warm = counts(f); for (let i = 0; i < 10; i++) f.render(tool); await settled();
   assert.deepEqual(counts(f), warm, 'cached rollback does not repeat source or classifier work on warm frames');
 });
 
-for (const interrupt of [true, false]) test(`syntax host: previously requested STYLE success after live interruption ${interrupt ? 'applies valid V2 colors' : '(control: live card publishes V2)'}`, async () => {
+for (const interrupt of [true, false]) test(`syntax host: previously requested STYLE success after live interruption ${interrupt ? 'applies valid v4 colors' : '(control: live card publishes v4)'}`, async () => {
   const f = fixture(true), tool = f.tool('bash', { command: 'echo a' });
   f.render(tool); await settled(); answer(f, 0, 'echo a', false, 0); await settled();
-  assert.ok(await hasHostInk(f.render(tool), themes.theme, 'syntaxKeyword', 'echo a'), 'V1 ready display');
+  const initialRows = f.render(tool), initialCells = await hostCells(initialRows);
+  const initialE = initialCells.flat().find(cell => cell.text === 'e')?.fg;
+  assert.notEqual(initialE, undefined); assert.ok(await hasHostInk(initialRows, themes.theme, 'syntaxKeyword', 'echo a'), 'V1 ready display');
   const key = f.env.keys[0]!, v1 = f.sources.displayBasis(key)!;
   f.env.holdStyles = true;
   tool.updateArgs({ command: 'echo a b' }); f.render(tool); await settled();
@@ -1616,7 +1647,11 @@ for (const interrupt of [true, false]) test(`syntax host: previously requested S
   const after = f.sources.displayBasis(key);
   assert.ok(after && after.version > v1.version, 'valid V2 colors publish both before and after interruption');
   let shown = ''; after.visit(text => { shown = text; }); assert.equal(shown, 'echo a b');
-  assert.ok(await hasHostInk(f.render(tool), themes.theme, 'syntaxKeyword', 'echo a b'), 'the actual card paints the newly completed result, including after interruption');
+  const finalRows = f.render(tool), finalCells = await hostCells(finalRows);
+  assert.ok(plain(finalRows).join('\n').includes('echo a b'));
+  assert.ok(finalCells.some(row => row.some(cell => cell.text === 'e' && cell.fg === initialE)), 'the unchanged V1 expression keeps its prior published style');
+  assert.ok(finalCells.some(row => row.some(cell => cell.text === 'b' && cell.fg === ((17 << 16) | (34 << 8) | 51))),
+    'the new V2 expression receives its completed literal STYLE ink, including after interruption');
   if (interrupt) { const requests = f.calls.length; for (let i = 0; i < 5; i++) f.render(tool); await settled(); assert.equal(f.calls.length, requests, 'interruption never resumes SOURCE or lease work'); }
 });
 

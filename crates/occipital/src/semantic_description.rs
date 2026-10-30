@@ -1,7 +1,6 @@
-//! Source-free v3 negotiation. Neither palette derivation nor scope matching runs here.
+//! Source-free v4 negotiation. Neither style matching nor source parsing runs here.
 use crate::{
     actor::PoolStats,
-    catalogue::{Descriptor, Diagnostic, Snapshot},
     ingress::{CONTROL_REPLY_BYTES, CONTROL_REQUEST_BYTES},
     limits,
     request::{BATCH_SOURCES, QUEUE_WAIT_MS},
@@ -13,7 +12,6 @@ use serde::Serialize;
 
 pub const OPERATIONS: &[&str] = &[
     "describe",
-    "themes.refresh",
     "highlight",
     "stream.open",
     "stream.append",
@@ -22,24 +20,20 @@ pub const OPERATIONS: &[&str] = &[
 ];
 
 #[derive(Serialize)]
-pub struct Description<'a> {
+pub struct Description {
     kind: &'static str,
     protocol_version: u32,
     contexts_revision: u32,
     resolver_revision: u32,
-    palette_revision: u32,
     source_hint_revision: u32,
     vocabulary: Vocabulary,
     assets: &'static str,
     backend_version: &'static str,
-    catalogue_revision: u64,
     capability: &'static str,
     service: &'static str,
     operations: &'static [&'static str],
     modes: &'static [&'static str],
     admission: &'static [&'static str],
-    profiles: Vec<&'a Descriptor>,
-    diagnostic: Option<String>,
     limits: WireLimits,
     runtime: RuntimeStatus,
 }
@@ -82,18 +76,12 @@ struct RuntimeStatus {
     control_jobs: usize,
 }
 
-pub fn describe<'a>(
-    snapshot: &'a Snapshot,
-    diagnostic: Option<Diagnostic>,
-    limits: &Limits,
-    stats: PoolStats,
-) -> Description<'a> {
+pub fn describe(limits: &Limits, stats: PoolStats) -> Description {
     Description {
         kind: "descriptor",
         protocol_version: PROTOCOL_VERSION,
         contexts_revision: 1,
-        resolver_revision: 2,
-        palette_revision: 1,
+        resolver_revision: 3,
         source_hint_revision: 2,
         vocabulary: Vocabulary {
             fingerprint: vocabulary::FINGERPRINT,
@@ -101,14 +89,11 @@ pub fn describe<'a>(
         },
         assets: vocabulary::ASSET_FINGERPRINT,
         backend_version: env!("CARGO_PKG_VERSION"),
-        catalogue_revision: snapshot.revision(),
         capability: CAPABILITY,
         service: "syntax",
         operations: OPERATIONS,
         modes: &["one_shot", "growing"],
         admission: &["try_now", "bounded_queue"],
-        profiles: snapshot.descriptors().collect(),
-        diagnostic: diagnostic.map(|diagnostic| diagnostic.to_string()),
         limits: WireLimits {
             request_bytes: limits::DATA_WIRE_BYTES,
             reply_bytes: limits::DATA_WIRE_BYTES,

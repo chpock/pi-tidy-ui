@@ -1,6 +1,6 @@
-# Occipital syntax-highlight/v3 — application contract
+# Occipital syntax-highlight/v4 — application contract
 
-This reference describes the current v3 native producer, stdio/shared adapters and TypeScript consumers. The [syntax specification](../syntax-highlighting-spec.md) defines product behavior; [client volume policy](../syntax/work.md#highlighting-volume-policy) defines useful classification-prefix selection, while this reference owns exact advertised limits and message-size admission. Reject v2 rather than interpreting packed colors as context IDs. Current source compatibility does not establish public v3 delivery or release/platform acceptance; published Occipital 0.1.5 remains incompatible v2.
+This reference describes the coordinated v4 native producer, stdio/shared adapters and TypeScript consumers. The [syntax specification](../syntax-highlighting-spec.md) defines product behavior; [client volume policy](../syntax/work.md#highlighting-volume-policy) defines useful classification-prefix selection, while this reference owns exact advertised limits and message-size admission. Reject older protocol and resolver interpretations rather than guessing compatibility. The published Occipital 0.2.0 / pi-tidy-ui 0.1.1 pair remains on v3 until a separately authorized release.
 
 Controlled-allocation accounting is not an allocator/private-heap/RSS guarantee. Neither this protocol nor its bounded cooperative scheduler guarantees arbitrary-language latency or dense 10 MiB full-card admission.
 
@@ -8,7 +8,7 @@ Controlled-allocation accounting is not an allocator/private-heap/RSS guarantee.
 
 ### Version, identities and carriers
 
-Application version is `3`, capability `syntax-highlight/v3`, service `syntax`. Required interpretation revisions are contexts `1`, resolver `2`, palette `1` and SOURCE hints `2`; client-definition structural revision remains `1`. The consumer requires these descriptor revisions exactly before admitting SOURCE/STYLE work. Resolver revision governs the shared expression/font vocabulary, including palette-referenced styles.
+Application version is `4`, capability `syntax-highlight/v4`, service `syntax`. Descriptor revisions are contexts `1`, resolver `3` and SOURCE hints `2`. Generic rule definition revision `2` is carried by `styles.resolve`, not the descriptor. The consumer requires the descriptor revisions exactly before admitting SOURCE/STYLE work; resolver revision governs generic rule matching and the rule revision governs the required-nullable context qualifier. Palette identity and bindings are extension-local.
 
 Owned stdio carries nonempty UTF-8 JSON preceded by its four-byte unsigned big-endian byte length, excluding those four bytes. Shared mode carries the application JSON through the public Subconscious internal-service route and SDK correlation, without an embedded stdio length prefix. The consumer preserves the complete SDK route handle, including its epoch.
 
@@ -22,11 +22,11 @@ Bounds are inclusive. A bounded identifier/text value is a nonempty string withi
 
 | Value | Bound or required value |
 |---|---|
-| `v` | `3` |
+| `v` | `4` |
 | `op` | One of the operations below |
-| `ticket`, `instance`, source `key`, `lease`, native profile `id`, error `code` | At most 64 UTF-8 bytes |
+| `ticket`, `instance`, source `key`, `lease`, error `code` | At most 64 UTF-8 bytes |
 | `assets` | Producer emits lowercase 64-character SHA-256; consumer header validation accepts bounded text up to 256 bytes and checks identity equality, not hexadecimal syntax |
-| Vocabulary, native definition, effective rule and palette fingerprints | Exactly 64 lowercase ASCII hexadecimal characters |
+| Vocabulary and effective rule fingerprints | Exactly 64 lowercase ASCII hexadecimal characters |
 | `generation` | Integer `1..4294967295` |
 | `source_version` | Integer `0..4294967295` |
 | Source `revision`, append `base_revision` | Integer `1..4294967295` |
@@ -40,7 +40,6 @@ Every ordinary request contains `v`, `op`, `ticket`. Its remaining fields are:
 | Operation | Remaining request fields |
 |---|---|
 | `describe` | Optional `instance` |
-| `themes.refresh` | Optional `instance` |
 | `highlight` | Required `instance`, `admission`, `sources`; conditional `queue_wait_ms` |
 | `stream.open` | Required `instance`, `admission`, `sources`; conditional `queue_wait_ms` |
 | `stream.append` | Required `instance`, `admission`, `key`, `lease`, `generation`, `source_version`, `base_revision`, `base_bytes`, `append`, `final`; conditional `queue_wait_ms` |
@@ -49,11 +48,11 @@ Every ordinary request contains `v`, `op`, `ticket`. Its remaining fields are:
 
 Native operation admission rejects fields not listed for that operation. CONTROL validates an optional `instance` as bounded text but does **not** compare it with the current instance. DATA requires the current instance: a SOURCE mismatch returns `restart_required`, while a STYLE mismatch returns `invalid_request`; both are no-start failures.
 
-`styles.resolve` uses the [context codec](#context-codec), [rule input](#rule-input-and-style-resolution) and [indexed style/palette payload](#one-indexed-style-and-card-palette-payload) below. SOURCE contains no theme, profile, palette or rule identity.
+`styles.resolve` uses the [context codec](#context-codec) and generic [rule definition](#rule-input-and-style-resolution) below. SOURCE contains no selected palette, style rule or display identity.
 
 ### Admission and scheduling
 
-`describe` and `themes.refresh` use the separate source-free CONTROL lane. `highlight`, all three `stream.*` operations and `styles.resolve` use DATA authority. In particular, `stream.close` is not metadata merely because it contains no source text.
+`describe` uses the separate source-free CONTROL lane. `highlight`, all three `stream.*` operations and `styles.resolve` use DATA authority. In particular, `stream.close` is not metadata merely because it contains no source text.
 
 For DATA operations other than close:
 
@@ -70,8 +69,8 @@ Close accepts neither `admission` nor `queue_wait_ms`. It still requires DATA cr
 The complete application envelopes are:
 
 ```text
-{v:3,ticket,instance,assets,status:"ok",body}
-{v:3,ticket,instance,assets,status:"error",error:{code,execution}}
+{v:4,ticket,instance,assets,status:"ok",body}
+{v:4,ticket,instance,assets,status:"error",error:{code,execution}}
 ```
 
 No `op`/`service` is added to replies. Semantic decoding requires exactly the corresponding envelope fields and exactly `code`/`execution` in errors. Expected ticket and accepted-provider instance/assets are checked before accepting outcomes or materializing semantics.
@@ -88,19 +87,19 @@ The TypeScript boundary distinguishes validated `RemoteFault` (`execution: "not_
 
 A bounded routing probe can recover a valid ticket before full operation admission to return a correlated error; this is not successful operation validation. Without recoverable correlation, stdio terminates the invalid exchange; shared mode can return an SDK handler error instead of a fabricated application envelope.
 
-Stdio cancellation uses a transport-only frame exactly `{v:3,cancel:ticket}`, bounded to 4 KiB. It has no separate acknowledgment and is not an application operation. Its version is decoded directly as Rust `u32`, unlike ordinary requests' binary64 numeric helper. Shared cancellation uses the SDK. Cancellation is best effort, not physical release or no-start evidence.
+Stdio cancellation uses a transport-only frame exactly `{v:4,cancel:ticket}`, bounded to 4 KiB. It has no separate acknowledgment and is not an application operation. Its version is decoded directly as Rust `u32`, unlike ordinary requests' binary64 numeric helper. Shared cancellation uses the SDK. Cancellation is best effort, not physical release or no-start evidence.
 
-### Descriptor and metadata operations
+### Descriptor and metadata operation
 
-Both metadata operations return exactly:
+`describe` returns exactly:
 
 ```text
 {
-  kind:"descriptor",protocol_version:3,
-  contexts_revision:1,resolver_revision:2,palette_revision:1,source_hint_revision:2,
-  vocabulary:{fingerprint,count},assets,backend_version,catalogue_revision,
-  capability:"syntax-highlight/v3",service:"syntax",
-  operations,modes,admission,profiles,diagnostic,limits,runtime
+  kind:"descriptor",protocol_version:4,
+  contexts_revision:1,resolver_revision:3,source_hint_revision:2,
+  vocabulary:{fingerprint,count},assets,backend_version,
+  capability:"syntax-highlight/v4",service:"syntax",
+  operations,modes,admission,limits,runtime
 }
 ```
 
@@ -111,25 +110,16 @@ Metadata contains no source payload, whole vocabulary, style table or card palet
 | `assets` | Equals envelope `assets` |
 | `vocabulary` | Exactly `{fingerprint,count}`; valid fingerprint, integer count `1..4294967295` |
 | `backend_version` | Nonempty bounded text, at most 128 UTF-8 bytes; no semantic-version parser requirement |
-| `source_hint_revision` | Integer `2`; defines SOURCE language selection, including absent/null/empty selector behavior and optional path-only selection. A consumer requires the exact supported revision before submitting SOURCE. This is separate from resolver/style revisions.
-| `catalogue_revision` | Integer `0..9007199254740991`; publication identity, not parser revision |
-| `operations` | Unique bounded strings, at most 16; must include all seven operations above |
-| `modes` | Unique bounded strings, at most 4; must include `one_shot`, `growing` |
-| `admission` | Unique bounded strings, at most 4; must include `try_now`, `bounded_queue` |
-| `profiles` | At most 48; each exactly `{id,label,fingerprint}`, with unique bounded ID other than `pi`, label at most 128 UTF-8 bytes, valid fingerprint |
-| `diagnostic` | `null` or nonempty bounded text, at most 256 UTF-8 bytes |
+| `source_hint_revision` | Integer `2`; defines SOURCE language selection, including absent/null/empty selector behavior and optional path-only selection. A consumer requires the exact supported revision before submitting SOURCE. |
+| `operations` | Exactly the six operation names `describe`, `highlight`, `stream.open`, `stream.append`, `stream.close`, `styles.resolve`, with unique bounded strings; order is not significant |
+| `modes` | Exactly `one_shot` and `growing`, unique bounded strings; order is not significant |
+| `admission` | Exactly `try_now` and `bounded_queue`, unique bounded strings; order is not significant |
 
 The SOURCE protocol has no shebang-specific field and the daemon never scans source text. A consumer may recognize an edit/write file's first-line shebang and send its selected canonical format through the ordinary `language` field. That explicit selector outranks `path`; the protocol treats it exactly like any other requested format.
 
-The current catalogue comprises 32 bundled definitions and at most 16 installed custom definitions. The 48-entry descriptor limit does not increase the separate custom-theme quota.
+`one_shot` identifies finite highlight and `growing` open/append/finalize. SOURCE has no separate `mode` field. The descriptor describes grammar/vocabulary and generic capabilities only; palette selection, rule bindings and card-role data remain local to the extension.
 
-Advertised-list strings use the 64-byte cap. The producer emits these operations, two modes and two admission methods. The consumer accepts extra unique entries within caps: required-subset checks do not require order or exact list equality. An extra advertised operation does not extend the current adapters' fixed operation set.
-
-`one_shot` identifies finite highlight and `growing` open/append/finalize. SOURCE has no separate `mode` field. `pi` is a local saved choice, not an advertised native definition. Empty native catalogues do not prohibit client-rule STYLE.
-
-Describe reads published metadata without parsing/style work. Refresh explicitly reloads the catalogue, preserving parser state and unchanged catalogue revision. Refresh failure can return the last-valid descriptor with a non-null diagnostic rather than an error envelope.
-
-Published-provider rereads additionally require unchanged instance, assets, vocabulary identity/count, nondecreasing catalogue revision, and unchanged profile ID/fingerprint membership if that revision is unchanged. They use local wait-only handling: waiter expiry does not complete/release the physical control request. Initial candidate negotiation is a separate acquisition path.
+Published-provider rereads require unchanged instance, assets and vocabulary identity/count, plus the exact v4 revisions and operation/capability contract. There is no catalogue refresh or profile-membership negotiation. Initial candidate negotiation remains a separate acquisition path.
 
 ### Exact `limits` fields
 
@@ -182,7 +172,7 @@ These are observations, not an atomic barrier or all-process/SDK-memory measurem
 - Routing probes ignore unrelated fields only to recover correlation before full admission.
 - TypeScript request adapters check headers/bounded JSON, not every native operation-schema field; they do not universally reject unknown request fields.
 - Transport reply checks establish correlation/header/outcome, not exact-key semantic validation.
-- Semantic decoders reject extra keys in envelopes/errors, descriptors and structured members, SOURCE/results/counters/close acknowledgments, and STYLE/expression/palette objects.
+- Semantic decoders reject extra keys in envelopes/errors, descriptors and structured members, SOURCE/results/counters/close acknowledgments, and STYLE/rule/expression objects.
 - Descriptor-list extensibility is distinct from object-key extensibility. Post-`JSON.parse` exact-key validation also does not prove raw-wire duplicate-member rejection.
 
 Native DATA preflight rejects structural JSON nesting beyond depth 64. That is a request guard, not a scope-context depth policy.
@@ -272,7 +262,7 @@ Completed LF-terminated lines advance the retained checkpoint. Ordinary untermin
 
 Counters are per operation, not stream totals, coverage or scheduler turns. Reparsed tails may include previously seen bytes. Frozen-prefix reuse, neutral skipping and empty finalization do not invent parser calls.
 
-A parse result can advance retained semantics despite a theme change in flight, but does not prove palette readiness. STYLE never advances parser revision or proves SOURCE execution. Finite parser state is released; retained display semantics belong to the client.
+A parse result can advance retained semantics despite a palette change in flight, but does not prove palette readiness. STYLE never advances parser revision or proves SOURCE execution. Finite parser state is released; retained display semantics belong to the client.
 
 ## Context codec
 
@@ -284,35 +274,26 @@ Validate every row and the **sum** of expanded policy cost over the entire batch
 
 ## Rule input and style resolution
 
-`styles.resolve` is a data operation. Request fields: instance, ticket, admission/optional queue_wait_ms, vocabulary, contexts, and exactly one rule input:
+`styles.resolve` is a DATA operation. Request fields are `instance`, `ticket`, admission/optional `queue_wait_ms`, `vocabulary`, `contexts`, and `rules`, whose value is the direct `RuleDefinition` object `{revision:2,binding_slots,default,rules}`. There is no native/client wrapper and SOURCE carries no selected palette, style rule or display identity.
 
-- native: `{kind:"native",id,fingerprint}` referencing the immutable advertised theme definition;
-- client: `{kind:"client",definition:{revision:1,binding_slots,default,rules}}` containing bounded generic rules, not daemon-owned Pi role enums. The `definition` object is exactly the four-field canonical input; the wrapper selects the input source and never enters its fingerprint.
+Every rule has exactly `{path,excludes,context,foreground,background,font}`. `context` is required and nullable. `null` preserves unqualified selector matching. A non-null context is exactly `{owner,boundaries}`: owner and each of at most16 boundary names are ordinary trusted vocabulary prefixes; they must be distinct and prefix-disjoint. The positive path is nonempty and begins with `owner`. The resolver finds the deepest stack scope matching the owner or any boundary. Only a nearest owner enables the rule, and it anchors the first positive path element. Remaining path matching preserves existing selector semantics and absolute stack-depth scoring. Exclusions are evaluated against the entire original stack. An ineligible rule contributes nothing to any property/font winner: it does not inherit, clear, or restore an ancestor style.
 
-Each client rule has exactly `{path,excludes,foreground,background,font}`: an ordered `path` of **trusted scope names**, zero or more ordered exclusion paths, and nullable foreground/background/attribute overrides. Absence is explicit `null`, not an omitted key. A non-null font is exactly `{attributes,attribute_mask}`; an explicit zero mask/value remains distinct from a null declaration. Names are dictionary lookup keys, not arbitrary selector expressions: the server validates the complete batch and resolves every name via its generated table **before** constructing scopes/selectors. Unknown names reject without interning. This avoids downloading a large scope-name table or adding a vocabulary RPC merely to express the client's small static rules. After lookup, matching uses native Syntect selectors and the common property scorer. Native/custom theme admission retains its existing separate definition/atom protections.
+For TypeScript object keys, the application uses suffix-independent `meta.object-literal.key` ownership for simple identifier, quoted and numeric keys. `meta.array.literal` and `meta.template.expression` are boundaries for computed-key contents, where ordinary rules apply; a nearer nested key may own its contents at any supported depth. Callable names and the colon retain their independent existing roles. These policies are ordinary caller rules checked against the trusted grammar vocabulary; Rust has no language, region or palette names built into the matcher.
 
-The client definition uses at most512 rule/selector branches,4096 paths (one main path plus every exclusion path per rule, including empty paths),256 KiB decoded selector-name bytes and4096 dot-separated atom occurrences across all names. Scope atoms themselves retain Syntect's maximum8 components. These reuse the established admitted-theme envelope, not a source-size ceiling. Empty selector paths/exclusions preserve native semantics. Rust/TypeScript vectors define exact operation validation and canonical definition hashing alongside the field rules below.
+Foreground/background and font overrides are explicitly nullable. Non-null font is exactly `{attributes,attribute_mask}`; an explicit zero mask/value differs from no declaration. Names are vocabulary lookup keys, not arbitrary selector expressions. The complete batch is validated and every scope name is resolved through the generated trusted table before constructing scopes/selectors; an unknown name rejects without interning.
+
+Keep the established limits: at most512 rules/selector branches,4096 paths (including empty paths),256 KiB decoded selector-name bytes and4096 dot-separated atom occurrences. Each owner/boundary name counts as an additional single-name path toward the same path, atom and byte totals. Scope atoms retain Syntect's maximum8 components; each context has at most16 boundaries. Compiled qualifier storage is charged before allocation. Qualified rules cannot use the unqualified single-scope cache. For each foreground/background property and each font bit, the earliest declaration in the original global rule list wins an exact score tie, including between `context:null` and qualified rules; cache partition or traversal order is not a second precedence rule. V4 vectors define exact operation validation and canonical definition hashing.
 
 ### Client rule fingerprint
 
-Hash bytes use SHA-256, beginning with ASCII `occipital-client-rules/2` followed by NUL. Every integer/count below is unsigned32 big-endian. Every text field is its UTF-8 byte length followed by those bytes; JSON object order and whitespace do not participate.
+Resolver revision `3` uses global declaration order to break equal exact scores for foreground, background and each font bit, irrespective of null/qualified context or single/multi selector partition. Hash bytes use SHA-256, beginning with ASCII `occipital-client-rules/3` followed by NUL. Every integer/count is unsigned32 big-endian. Every text field is its UTF-8 byte length followed by those bytes; JSON object order and whitespace do not participate.
 
-1. binding_slots; canonical default expression key; number of rules.
-2. For each rule in order: path count and framed names; exclusion count and each exclusion path in order; one presence byte (foreground1,background2,font4, set for non-null declarations); canonical expression key with absent overrides represented as inherit/inherit/0/0.
-3. An expression key is `foregroundKey/backgroundKey/attributes/attribute_mask`. Ink keys: RGB `rR,G,B`, indexed `iN`, terminal-default `d`, binding `bN`, caller-inherit `h`; all integers are minimal unsigned decimal. Thus real explicit inherit and no override differ through the presence byte, and explicit font clear cannot collapse into mask0/null.
+For each rule, canonical hashing includes path count/framed names, exclusion count and each ordered exclusion path, then a one-byte context discriminator (`0` for null, `1` for non-null). A non-null context contributes the framed owner and counted ordered boundary list. Existing override-presence and canonical expression framing follows. The expression key is `foregroundKey/backgroundKey/attributes/attribute_mask`; ink keys are RGB `rR,G,B`, indexed `iN`, terminal-default `d`, binding `bN` and caller-inherit `h`, with minimal unsigned decimal integers. Thus explicit inherit differs from no override, and explicit font clear differs from a null declaration.
 
-Client definition revision is1; binding_slots is0..65536. Numeric tokens use correctly rounded IEEE754 binary64 value semantics before finite/integer/bound checks, matching the Node JSON boundary; equivalent integer exponents/decimals are legal, fractional near-integers may not be rounded a second time into acceptance. Exact raw-token controls live in `rule-number-vectors.json`. Lexical/count preflight precedes hashing and native membership lookup precedes constructing selectors. Scope names may be encoded differently in JSON but resolve to the same validated UTF-8 key. A native definition's advertised immutable fingerprint remains a separate reference input. Effective native rules fingerprint is SHA-256 of ASCII `occipital-native-rules/2` + NUL + the64lowercase-ASCII-hex definition fingerprint; native palette fingerprint uses `occipital-native-palette/2` with the same framing. These interpretation revisions change when their respective semantics change; source, Pi colors, native process/lease and geometry never enter either hash.
+Definition revision is2; `binding_slots` is `0..65536`. Numeric tokens use correctly rounded IEEE754 binary64 value semantics before finite/integer/bound checks, matching the Node JSON boundary. Equivalent integer exponents/decimals are legal; fractional near-integers are not rounded a second time into acceptance. Exact raw-token controls live in `rule-number-vectors.json`. Lexical/count preflight precedes hashing, and vocabulary membership precedes selector construction. The effective rules fingerprint identifies the complete generic definition, including qualifiers; source text, selected palette, Pi colors, process/lease and geometry never enter it.
+## Indexed style result
 
-Both rule inputs compile to one resolver with native strict-greater scoring, stable tie order, inheritance, explicit font replacement and ordered scope semantics. A parsed-empty context uses the iterator base, not global selector evaluation. New uncached rules may require style work; local Pi binding-color changes do not.
-
-## One indexed style and card-palette payload
-
-Style body:
-
-```text
-{kind:"styles", vocabulary, rules, styles:[expression,...],
- indices:[one style ID per requested context], palette:null|nativePalette}
-```
+STYLE returns exactly `{kind:"styles",vocabulary,rules,styles:[expression,...],indices:[one style ID per requested context]}`. There is no returned palette, native card-role table or color-provenance payload.
 
 An expression is `{foreground:ink,background:ink,attributes,attribute_mask}`. Ink is exactly one of:
 
@@ -324,37 +305,24 @@ An expression is `{foreground:ink,background:ink,attributes,attribute_mask}`. In
 {kind:"inherit"}
 ```
 
-Native results contain only the first three forms, including all service regions; no Pi binding or caller-inherit can leak into native cards. Client rules can produce any form. Slot IDs are generic unsigned16-bit bindings supplied/materialized through Pi's public API, not a daemon enum of theme roles. Theme color and caller inherit are not synonymous with OSC terminal-default.
+Bindings are generic caller slots, materialized by the extension from its locally selected palette. The daemon does not know Pi role names, local palette IDs or card roles. Theme color and caller inherit are not synonymous with OSC terminal-default.
 
-Attributes: bold1, italic2, underline4, faint8, strikethrough16. Both integers are0..31; attributes must be a subset of attribute_mask. Zero mask inherits corresponding binding/caller attributes. Mask bits with zero value explicitly clear them; especially faint-clear must not disappear when bindings change. Every native expression uses mask31, preserving its native bits while clearing unrelated inherited attributes, including faint and unsupported native strike. Native expressions cannot enable strike; Syntect's original enabled font bits and authored colors are unchanged. The common painter normalizes and closes spans with SGR `22;23;24;29`, emits strike with SGR9, and treats SGR22 as bold/faint-only. Public Pi prefix sampling and flat ANSI conversion preserve SGR9/29, full SGR0 and selective resets.
+Attributes: bold1, italic2, underline4, faint8, strikethrough16. Both integers are0..31; attributes must be a subset of `attribute_mask`. Zero mask inherits corresponding caller attributes. Mask bits with zero value explicitly clear them; especially faint-clear must not disappear when bindings change. The common painter normalizes and closes spans with SGR `22;23;24;29`, emits strike with SGR9, and treats SGR22 as bold/faint-only. Public Pi sampling and flat ANSI conversion preserve SGR9/29, full SGR0 and selective resets.
 
-Style IDs are one-based table positions. The table factors exact duplicate expressions, including both colors and the complete mask/value. Duplicate or unused table entries, index0, wrong cardinality or unknown IDs reject before adopted materialization. A native palette shares this very same table rather than adding a second service-color representation. Syntax painting ignores per-token backgrounds: structural row/card surfaces keep ownership.
-
-Native palette: `{revision:1,fingerprint,slots:[26 style IDs],origins:[26 origin bytes]}`. Slot order is fixed:
-
-```text
-panel plain code output empty padding service muted footer reminder
- overflow diagnostic title prompt frame error errorFrame warning gutter numbers
- addedCode addedGutter addedSign removedCode removedGutter removedSign
-```
-
-Every palette style has explicit native colors and mask31. Each origin byte has foreground origin in bits0–1, background origin in bits2–3 and font origin in bit4:0 means theme/default,1 derived,2 terminal-dependent for colors only. Value3 or reserved high bits reject. Palette fingerprint identifies the exact immutable native definition plus palette schema/derivation revision, not source text, contexts, Pi colors or geometry. Native resolution with zero contexts still returns the complete palette; unknown/empty sources need no parser to get it. Client-rule results have palette:null because the same final card-role adapter is materialized locally from Pi, including when the daemon is absent.
-
-Retained syntax and all service colors become visible together per card. An old complete presentation can remain displayed while a replacement is pending. An obsolete result may settle its reservation but cannot replace the current desired generation.
+Style IDs are one-based table positions. The table factors exact duplicate expressions, including both colors and the complete mask/value. Duplicate or unused table entries, index0, wrong cardinality or unknown IDs reject before adopted materialization. Syntax painting ignores per-token backgrounds: structural row/card surfaces keep ownership. The extension combines indexed token expressions with a locally materialized complete role table; if no compatible semantic group is ready, it still paints neutral content from that same selected palette. A prior complete paint may remain visible while a replacement is pending. An obsolete result may settle its reservation but cannot replace the current desired generation.
 
 Follow Pi sets only strike (`16/16`) for trusted `markup.strikethrough` contexts. The pinned Markdown parser separately scopes opening/closing `~~` as `punctuation.definition.strikethrough.begin.markdown` / `.end.markdown`; the trusted prefix rule clears only strike (`0/16`) and excludes those markers from generic punctuation foreground override. Nested emphasis, links and code retain independent styles; no token-spelling inference is performed. Other grammars follow their actual emitted contexts.
 
 ## Normalization and accounting
 
-- Native color normalization preserves existing terminal semantics: alpha0 means indexed red-channel value, alpha1 terminal-default, alpha2..255 opaque RGB. Missing base uses documented native `Highlighter.get_default`; never substitute Pi or guess terminal RGB. Contrast of symbolic/indexed values remains explicitly terminal-dependent.
-- Card-palette derivation runs in Rust from native settings/hints and actual native ink constraints. Token backgrounds are inputs/hints only, not an escape from diff-row ownership. Follow Pi's bounded local role adapter is not a second scope matcher.
+- The daemon resolves generic ink expressions and caller binding references only. Palette data and complete card roles are validated, funded and materialized by the extension from locally owned JSON or public Pi inputs. Owned palette files accept opaque six-digit RGB only; output quantization precedes use. Owned diff surfaces use the shared local `diffPalette` against final emitted region inks and neutral code, while token backgrounds never replace structural row ownership.
 - SOURCE decoded policy charge is aggregate context charge plus512units per source result,4units per flat run-array word (8per length/context-ID pair), and `32 + 2 × vocabulary.length` for the body. The complete charge must fit both2MiB and the caller's remaining allowance before materialization. These are policy units, not measured heap bytes.
-- Context expansion uses128 units/row +16/expanded word. Style materialization uses256/expression +4/context index; native palette adds128 +5×26 units. Actual typed-vector bytes and canonical arena/reference charges remain visible in retention. These allowances are not hard private-heap ceilings.
-- DATA requests/replies each cap actual serialized JSON bodies at512KiB. SOURCE input/whole-batch/cumulative-stream coverage caps at64KiB UTF8 and8,192logical lines; the UI explicitly selects a scalar-safe prefix and retains full display text independently. Expanded descriptions cap65,536scope words and decoded results2MiB under existing policy accounting. The existing source-free4KiBrequest/32KiBreply caps and outer emergency framing remain distinct. The1GiB controlled data/retention pools,256MiB native state pool,eight routes andtwo physical data jobs/route remain. Parse and style work share data-job/byte authority, including encoded buffers, expanded contexts, resolver workspace and palette/table results. No dedicated unbounded style lane, whole-pool reservation per small request or count-driven cache eviction.
+- Context expansion uses128 units/row +16/expanded word. Style materialization uses256/expression +4/context index. Actual typed-vector bytes and canonical arena/reference charges remain visible in retention. These allowances are not hard private-heap ceilings.
+- DATA requests/replies each cap actual serialized JSON bodies at512KiB. SOURCE input/whole-batch/cumulative-stream coverage caps at64KiB UTF8 and8,192logical lines; the UI explicitly selects a scalar-safe prefix and retains full display text independently. Expanded descriptions cap65,536scope words and decoded results2MiB under existing policy accounting. The existing source-free4KiBrequest/32KiBreply caps and outer emergency framing remain distinct. The1GiB controlled data/retention pools,256MiB native state pool,eight routes andtwo physical data jobs/route remain. Parse and generic style work share data-job/byte authority, including encoded buffers, expanded contexts and resolver workspace. No dedicated unbounded style lane, whole-pool reservation per small request or count-driven cache eviction.
 - Validate raw bounded data before expansion; reserve controlled growth before allocating it. Native admission must use bounded typed/borrowed visitors rather than first building an unrestricted JSON Value tree. Failure before parsing says not_started; a source failure after actual mutation cannot pretend no parse occurred. A style failure never authorizes source replay, even if its own computation started.
-- Hold physical credit through actual response settlement/drain or authoritative cleanup. Yield native context matching through existing scheduler quanta and route fairness; palette caching is an optimization with byte-accounted lifetime, not a correctness dictionary. Matching-workspace accounting is additional to descriptor storage: the ancestor scoring stack owns per-depth state. Admission must also guard the pinned public Syntect scorer's `u16` depth-index arithmetic before invoking it on hostile contexts; derive that exceptional safety bound from `ATOM_LEN_BITS`, not a small example depth or palette count.
+- Hold physical credit through actual response settlement/drain or authoritative cleanup. Yield native context matching through existing scheduler quanta and route fairness; resolver-side caching is an optimization with byte-accounted lifetime, not a correctness dictionary. Matching-workspace accounting is additional to descriptor storage: the ancestor scoring stack owns per-depth state. Admission must also guard the pinned public Syntect scorer's `u16` depth-index arithmetic before invoking it on hostile contexts; derive that exceptional safety bound from `ATOM_LEN_BITS`, not a small example depth or palette count.
 - Decoder/header allocations already performed by the shared SDK are outside this application heap claim. The approved bounded DATA envelopes are still decoded synchronously; there is no whole-process preparse/RSS guarantee for an arbitrary shared host. Keep admitted finite sources one-shot, without chunk feeding, a worker or another carrier. Coverage limits do not protect full-card display/layout or promise arbitrary-grammar execution time.
 
 ## Validation reference
 
-In a repository checkout, `protocol/syntax-v3/` contains `vectors.json`, `context-number-vectors.json`, `rule-vectors.json`, `rule-number-vectors.json`, `highlighting-limits.json` and `source-hint-vectors.json`. These define cross-language envelope, context, rule, expression, palette, fingerprint, numeric-boundary and SOURCE language-selection/shebang cases. They and the executable harness are checkout-only inputs, not files adjacent to this packaged reference. [Syntax and protocol validation](../testing.md#syntax-and-palette-validation) covers retained byte-credit ownership, actual SOURCE→STYLE round trips, known/new-context appends, controlled allocation overlap, two-peer isolation and metadata fairness. Those controls do not widen the protocol into private-heap/RSS, maximum-latency or dense full-card guarantees.
+In a repository checkout, `protocol/syntax-v4/` contains `vectors.json`, `context-number-vectors.json`, `rule-vectors.json`, `rule-number-vectors.json`, `highlighting-limits.json` and `source-hint-vectors.json`. These define cross-language envelope, context, qualified-rule, expression, fingerprint, numeric-boundary and SOURCE language-selection/shebang cases. They and the executable harness are checkout-only inputs, not files adjacent to this packaged reference. [Syntax and protocol validation](../testing.md#syntax-and-palette-validation) covers retained byte-credit ownership, actual SOURCE→STYLE round trips, known/new-context appends, controlled allocation overlap, two-peer isolation and metadata fairness. Those controls do not widen the protocol into private-heap/RSS, maximum-latency or dense full-card guarantees.

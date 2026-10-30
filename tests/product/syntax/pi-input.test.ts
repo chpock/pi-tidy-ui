@@ -8,6 +8,7 @@ import { SyntaxRuntime } from '../../../src/syntax/runtime.ts';
 import { DataBudget, DataGrant, type DataGrantFactory } from '../../../src/occipital/data-budget.ts';
 import type { GeometryFunding } from '../../../src/occipital/controller.ts';
 import { CARD_ROLES } from '../../../src/occipital/semantic-codec.ts';
+import { resolveTheme } from '../../../src/themes/selection.ts';
 import { samplePiPalette } from '../../../src/syntax/pi-palette.ts';
 import { compileStyleAnsi } from '../../../src/syntax/style-ansi.ts';
 
@@ -20,12 +21,17 @@ function fixture() {
   const budget = new DataBudget(1_000_000), funding: GeometryFunding = { budget, grant: bytes => budget.reserve(bytes) };
   return { runtime, budget, funding, counters: () => ({ loads, writes, providers }) };
 }
-function counted(name = 'dark') {
-  const native = getThemeByName(name)!; let fg = 0, bg = 0;
+function tracked(native: Theme) {
+  let fg = 0, bg = 0;
   return { colors: native.colors, owner: new WeakRef(native), getFgAnsi(role: Parameters<typeof native.getFgAnsi>[0]) { fg++; return native.getFgAnsi(role); },
     getBgAnsi(role: Parameters<typeof native.getBgAnsi>[0]) { bg++; return native.getBgAnsi(role); }, counters: () => ({ fg, bg }) };
 }
-type Lease = NonNullable<ReturnType<SyntaxRuntime['preparePiInput']>>;
+function counted(name = 'dark') { return tracked(getThemeByName(name)!); }
+type Lease = NonNullable<ReturnType<SyntaxRuntime['preparePaletteInput']>>;
+const piPalette = resolveTheme({ kind: 'pi' }).effective;
+function prepare(f: ReturnType<typeof fixture>, theme: ReturnType<typeof counted>, mode: 'truecolor' | '256color', funding = f.funding) {
+  return f.runtime.preparePaletteInput(piPalette, theme, f.runtime.palette(theme), mode, funding);
+}
 function inspect(lease: Lease) {
   let result: unknown;
   assert.equal(lease.visit(read => { result = { bindings: read.bindings, roles: read.roles, compiledRoles: read.compiledRoles }; }), true);
@@ -40,14 +46,14 @@ test('Pi input: lazy identity reads allocate nothing; simultaneous owners share 
     const revision = f.runtime.palette(theme);
     for (let i = 0; i < 20; i++) { f.runtime.palette(theme); f.runtime.snapshot(); }
     assert.deepEqual(theme.counters(), { fg: 0, bg: 0 }); assert.equal(f.budget.stats().retainedBytes, 0);
-    const first = f.runtime.preparePiInput(theme, 'truecolor', f.funding)!; assert.ok(first);
+    const first = prepare(f, theme, 'truecolor', f.funding)!; assert.ok(first);
     const sampled = theme.counters(), original = inspect(first), before = f.budget.stats().retainedBytes;
-    const second = f.runtime.preparePiInput(theme, 'truecolor', f.funding)!; assert.ok(second);
+    const second = prepare(f, theme, 'truecolor', f.funding)!; assert.ok(second);
     assert.equal(second.paletteRevision, revision); assert.deepEqual(theme.counters(), sampled);
     assert.ok(f.budget.stats().retainedBytes > before);
     first.dispose(); first.cleanupReceipt().release();
     for (let width = 1; width <= 20; width++) {
-      const next = f.runtime.preparePiInput(theme, 'truecolor', f.funding)!;
+      const next = prepare(f, theme, 'truecolor', f.funding)!;
       assert.deepEqual(inspect(next), original); next.dispose();
     }
     assert.deepEqual(theme.counters(), sampled); assert.deepEqual(inspect(second), original);
@@ -67,8 +73,8 @@ test('Pi input: real SDK dark/light complete roles and bindings compile once per
       const { bindings, roles } = samplePiPalette(native, 'truecolor');
       const compiledRoles = Object.fromEntries(CARD_ROLES.map(role => [role, compileStyleAnsi(roles[role], 'truecolor')]));
       Object.freeze = ((value: any) => { if (value && typeof value.open === 'string' && typeof value.close === 'string') compilations++; return freeze(value); }) as typeof Object.freeze;
-      const before = compilations, first = f.runtime.preparePiInput(theme, 'truecolor', f.funding)!;
-      const second = f.runtime.preparePiInput(theme, 'truecolor', f.funding)!;
+      const before = compilations, first = prepare(f, theme, 'truecolor', f.funding)!;
+      const second = prepare(f, theme, 'truecolor', f.funding)!;
       Object.freeze = freeze;
       assert.equal(compilations - before, CARD_ROLES.length);
       assert.deepEqual(inspect(first), { bindings, roles, compiledRoles });
@@ -84,7 +90,7 @@ test('Pi input: real SDK dark/light complete roles and bindings compile once per
 
 test('Pi input: scoped reader invalidates immediately but physical pins survive release and throw', async () => {
   for (const throws of [false, true]) {
-    const f = fixture(), lease = f.runtime.preparePiInput(counted(), 'truecolor', f.funding)!;
+    const f = fixture(), lease = prepare(f, counted(), 'truecolor', f.funding)!;
     let escaped: Parameters<Parameters<Lease['visit']>[0]>[0] | undefined;
     const before = f.budget.stats().retainedBytes;
     const run = () => lease.visit(read => {
@@ -107,8 +113,8 @@ async function collect(weak: WeakRef<object>) {
   assert.fail('mandatory Pi input GC failed');
 }
 function sharedProbe() {
-  const f = fixture(), theme = counted(), first = f.runtime.preparePiInput(theme, 'truecolor', f.funding)!;
-  const second = f.runtime.preparePiInput(theme, 'truecolor', f.funding)!;
+  const f = fixture(), theme = counted(), first = prepare(f, theme, 'truecolor', f.funding)!;
+  const second = prepare(f, theme, 'truecolor', f.funding)!;
   let payload!: WeakRef<object>; first.visit(read => { payload = new WeakRef(read.roles); });
   return { f, owners: { first: first as Lease | undefined, second: second as Lease | undefined },
     first: new WeakRef(first), second: new WeakRef(second), theme: new WeakRef(theme), nativeTheme: theme.owner, colors: theme.colors, payload,
@@ -120,9 +126,9 @@ test('Pi input: detached receipts and weak cache do not retain first owner, them
   await collect(held.theme); await collect(held.nativeTheme);
   held.owners.first = undefined; await collect(held.first); held.receipts[0]!.release();
   assert.ok(held.payload.deref(), 'second owner survives first holder collection'); assert.ok(inspect(held.owners.second!));
-  const another = held.f.runtime.preparePiInput({ colors: held.colors,
-    getFgAnsi() { return assert.fail('live shared store must not resample after first holder GC'); },
-    getBgAnsi() { return assert.fail('live shared store must not resample after first holder GC'); },
+  const another = prepare(held.f, { colors: held.colors, owner: new WeakRef(getThemeByName('dark')!), counters: () => ({ fg: 0, bg: 0 }),
+     getFgAnsi() { return assert.fail('live shared store must not resample after first holder GC'); },
+     getBgAnsi() { return assert.fail('live shared store must not resample after first holder GC'); },
   }, 'truecolor', held.f.funding)!;
   assert.ok(another); another.dispose();
   held.owners.second = undefined; await collect(held.second); await collect(held.payload);
@@ -134,19 +140,19 @@ test('Pi input: detached receipts and weak cache do not retain first owner, them
 test('Pi input: mode and public palette replacement build once with old/new overlap, never parse or change selection', async () => {
   const f = fixture(), theme = counted(), changed = counted('light');
   try {
-    f.runtime.previewTheme({ kind: 'occipital', id: 'chosen-native' });
+    f.runtime.previewTheme({ kind: 'theme', id: 'chosen-native' });
     const selected = f.runtime.snapshot().selected, source = f.runtime.sources.stats();
-    const old = f.runtime.preparePiInput(theme, 'truecolor', f.funding)!, original = inspect(old), oldBytes = f.budget.stats().retainedBytes;
-    const next = f.runtime.preparePiInput(theme, '256color', f.funding)!;
+    const old = prepare(f, theme, 'truecolor', f.funding)!, original = inspect(old), oldBytes = f.budget.stats().retainedBytes;
+    const next = prepare(f, theme, '256color', f.funding)!;
     assert.equal(next.paletteRevision, old.paletteRevision); assert.equal(next.terminalMode, '256color');
     assert.ok(f.budget.stats().retainedBytes > oldBytes, 'physical old/new data remain charged together');
     const modeSamples = theme.counters();
-    const modeCopy = f.runtime.preparePiInput(theme, '256color', f.funding)!;
+    const modeCopy = prepare(f, theme, '256color', f.funding)!;
     assert.deepEqual(theme.counters(), modeSamples);
     next.visit(read => { for (const role of CARD_ROLES) assert.ok(!/\x1b\[(?:38|48);2;/.test(read.compiledRoles[role].open)); });
-    const light = f.runtime.preparePiInput(changed, '256color', f.funding)!;
+    const light = prepare(f, changed, '256color', f.funding)!;
     assert.notEqual(light.paletteRevision, old.paletteRevision); const lightSamples = changed.counters();
-    const lightCopy = f.runtime.preparePiInput(changed, '256color', f.funding)!; assert.deepEqual(changed.counters(), lightSamples);
+    const lightCopy = prepare(f, changed, '256color', f.funding)!; assert.deepEqual(changed.counters(), lightSamples);
     assert.deepEqual(inspect(old), original); assert.deepEqual(f.runtime.snapshot().selected, selected);
     assert.deepEqual(f.runtime.sources.stats(), source); assert.deepEqual(f.counters(), { loads: 0, writes: 0, providers: 0 });
     for (const lease of [old, next, modeCopy, light, lightCopy]) lease.dispose();
@@ -156,14 +162,14 @@ test('Pi input: mode and public palette replacement build once with old/new over
 });
 
 test('Pi input: every allocation denial, throwing factory and invalid grant refunds without damaging a live candidate', async () => {
-  const f = fixture(), oldTheme = counted(), old = f.runtime.preparePiInput(oldTheme, 'truecolor', f.funding)!;
+  const f = fixture(), oldTheme = counted(), old = prepare(f, oldTheme, 'truecolor', f.funding)!;
   const expected = inspect(old), baseline = f.budget.stats(), foreign = new DataBudget(1_000_000);
   let denials = 0, failures = 0, grantsReturned = 0, grantsClosed = 0;
   const anchors: Lease[] = [];
   try {
     const operations = [
-      (grant: DataGrantFactory) => f.runtime.preparePiInput(oldTheme, '256color', { budget: f.budget, grant }),
-      (grant: DataGrantFactory) => f.runtime.preparePiInput(oldTheme, 'truecolor', { budget: f.budget, grant }),
+      (grant: DataGrantFactory) => prepare(f, oldTheme, '256color', { budget: f.budget, grant }),
+      (grant: DataGrantFactory) => prepare(f, oldTheme, 'truecolor', { budget: f.budget, grant }),
       (grant: DataGrantFactory) => old.visit(read => assert.ok(read.isValid), grant),
     ];
     for (const operation of operations) {
@@ -171,7 +177,7 @@ test('Pi input: every allocation denial, throwing factory and invalid grant refu
       const result = operation(bytes => { count++; return f.budget.reserve(bytes); });
       if (result && typeof result === 'object') result.dispose();
       // Restore the warm shared candidate after a successful replacement trial.
-      const warm = f.runtime.preparePiInput(oldTheme, 'truecolor', f.funding)!; anchors.push(warm);
+      const warm = prepare(f, oldTheme, 'truecolor', f.funding)!; anchors.push(warm);
       const before = f.budget.stats();
       for (const behavior of ['deny', 'throw', 'foreign', 'small'] as const) for (let target = 1; target <= count; target++) {
         let calls = 0; const grants: DataGrant[] = [], closes = new Map<DataGrant, number>(), close = DataGrant.prototype.close;
@@ -201,12 +207,12 @@ test('Pi input: every allocation denial, throwing factory and invalid grant refu
 });
 
 test('Pi input: sampler failures refund all scratch and preserve the last useful shared store', async () => {
-  const f = fixture(), theme = counted(), old = f.runtime.preparePiInput(theme, 'truecolor', f.funding)!;
+  const f = fixture(), theme = counted(), old = prepare(f, theme, 'truecolor', f.funding)!;
   const before = f.budget.stats(), expected = inspect(old), sampled = theme.counters();
   try {
     for (const point of ['binding', 'palette', 'background'] as const) {
       const next = counted('light'); let fg = 0;
-      assert.throws(() => f.runtime.preparePiInput({ colors: next.colors,
+       assert.throws(() => prepare(f, { ...next,
         getFgAnsi(role) { if ((point === 'binding' && ++fg === 1) || point === 'palette' && role === 'borderMuted') throw Error('sample failure'); return next.getFgAnsi(role); },
         getBgAnsi(role) { if (point === 'background') throw Error('sample failure'); return next.getBgAnsi(role); },
       }, 'truecolor', f.funding), /sample failure/);
@@ -222,9 +228,9 @@ test('Pi input: sampler failures refund all scratch and preserve the last useful
 test('Pi input: reentrant funding release pins shared data and refuses resurrection, including throws', async () => {
   let witnesses = 0;
   for (const operation of ['acquire', 'visit'] as const) for (const throws of [false, true]) {
-    const f = fixture(), theme = counted(), lease = f.runtime.preparePiInput(theme, 'truecolor', f.funding)!;
+    const f = fixture(), theme = counted(), lease = prepare(f, theme, 'truecolor', f.funding)!;
     const sampled = theme.counters(), before = f.budget.stats().retainedBytes;
-    const extra = f.runtime.preparePiInput(theme, 'truecolor', f.funding)!;
+    const extra = prepare(f, theme, 'truecolor', f.funding)!;
     const handleBytes = f.budget.stats().retainedBytes - before; extra.dispose();
     const grant: DataGrantFactory = bytes => {
       lease.cleanupReceipt().release(); assert.equal(lease.isValid, false);
@@ -234,7 +240,7 @@ test('Pi input: reentrant funding release pins shared data and refuses resurrect
       if (throws) throw Error('reentrant funding throw');
       return f.budget.reserve(bytes);
     };
-    const run = () => operation === 'acquire' ? f.runtime.preparePiInput(theme, 'truecolor', { budget: f.budget, grant })
+    const run = () => operation === 'acquire' ? prepare(f, theme, 'truecolor', { budget: f.budget, grant })
       : lease.visit(() => assert.fail('invalidated reader must not run'), grant);
     if (throws) assert.throws(run, /reentrant funding throw/); else assert.ok(!run());
     assert.deepEqual(theme.counters(), sampled, 'a denied hit must never retry sampling');
@@ -247,7 +253,7 @@ test('Pi input: reentrant funding release pins shared data and refuses resurrect
 function detachedOwnerProbe() {
   const f = fixture(), theme = counted(), controller = f.runtime.sources;
   const root = { funding: controller.geometryFunding()! }, callback: DataGrantFactory = bytes => root.funding.grant(bytes);
-  const lease = f.runtime.preparePiInput(theme, 'truecolor', { budget: root.funding.budget, grant: callback })!;
+  const lease = prepare(f, theme, 'truecolor', { budget: root.funding.budget, grant: callback })!;
   let escaped: Parameters<Parameters<Lease['visit']>[0]>[0] | undefined, payload!: WeakRef<object>;
   lease.visit(read => { escaped = read; payload = new WeakRef(read.compiledRoles); });
   return { lease, receipt: lease.cleanupReceipt(), budget: root.funding.budget, escaped: escaped!, payload,
@@ -267,10 +273,10 @@ test('Pi input: active shared store and escaped stale reader retain no runtime, 
 
 test('Pi input: nested leases and visitors keep physical charges until the outermost unwind', async () => {
   for (const throws of [false, true]) {
-    const f = fixture(), theme = counted(), first = f.runtime.preparePiInput(theme, 'truecolor', f.funding)!;
+    const f = fixture(), theme = counted(), first = prepare(f, theme, 'truecolor', f.funding)!;
     try {
       const run = () => first.visit(read => {
-        const second = f.runtime.preparePiInput(theme, 'truecolor', f.funding)!;
+        const second = prepare(f, theme, 'truecolor', f.funding)!;
         first.cleanupReceipt().release(); assert.equal(read.isValid, false);
         const nested = () => second.visit(other => {
           assert.ok(other.isValid); second.cleanupReceipt().release(); assert.equal(other.isValid, false);
@@ -289,10 +295,10 @@ test('Pi input: nested leases and visitors keep physical charges until the outer
 
 test('Pi input: last explicit release permits later resampling, while runtime disposal leaves adopted leases usable', async () => {
   const f = fixture(), theme = counted();
-  const first = f.runtime.preparePiInput(theme, 'truecolor', f.funding)!; first.dispose(); const before = theme.counters();
-  const second = f.runtime.preparePiInput(theme, 'truecolor', f.funding)!; assert.ok(theme.counters().fg > before.fg);
+  const first = prepare(f, theme, 'truecolor', f.funding)!; first.dispose(); const before = theme.counters();
+  const second = prepare(f, theme, 'truecolor', f.funding)!; assert.ok(theme.counters().fg > before.fg);
   await f.runtime.dispose(); assert.ok(inspect(second));
-  const sampled = theme.counters(); assert.equal(f.runtime.preparePiInput(theme, 'truecolor', f.funding), undefined); assert.deepEqual(theme.counters(), sampled);
+  const sampled = theme.counters(); assert.equal(prepare(f, theme, 'truecolor', f.funding), undefined); assert.deepEqual(theme.counters(), sampled);
   second.cleanupReceipt().release(); second.dispose(); assert.equal(f.budget.stats().retainedBytes, 0);
 });
 
@@ -304,15 +310,15 @@ test('Pi input: actual SDK defaults/faint and decorated public bold/italic prefi
   const native = new Theme(fg as ConstructorParameters<typeof Theme>[0], bg as ConstructorParameters<typeof Theme>[1], 'truecolor', { dim: ['syntaxComment', 'muted'] });
   const f = fixture();
   try {
-    const plain = f.runtime.preparePiInput(native, 'truecolor', f.funding)!;
+    const plain = prepare(f, tracked(native), 'truecolor', f.funding)!;
     plain.visit(read => {
       assert.deepEqual(read.bindings[0], { ink: { kind: 'terminal-default' }, attributes: 8, attribute_mask: 31 });
       assert.deepEqual(read.roles.reminder, { foreground: { kind: 'terminal-default' }, background: { kind: 'terminal-default' }, attributes: 8 });
       assert.equal(read.compiledRoles.reminder.open, '\x1b[39m\x1b[49m\x1b[22;23;24;29m\x1b[2m');
     });
     plain.dispose();
-    const styled = f.runtime.preparePiInput({ colors: native.colors, getBgAnsi: role => native.getBgAnsi(role),
-      getFgAnsi: role => native.getFgAnsi(role) + '\x1b[1;3m' }, 'truecolor', f.funding)!;
+    const plainNative = tracked(native);
+    const styled = prepare(f, { ...plainNative, getFgAnsi: role => plainNative.getFgAnsi(role) + '\x1b[1;3m' }, 'truecolor', f.funding)!;
     styled.visit(read => {
       assert.equal(read.bindings[0]!.attributes, 11); assert.equal(read.roles.reminder.attributes, 11);
       assert.equal(read.compiledRoles.reminder.open, '\x1b[39m\x1b[49m\x1b[22;23;24;29m\x1b[1m\x1b[3m\x1b[2m');
@@ -323,21 +329,65 @@ test('Pi input: actual SDK defaults/faint and decorated public bold/italic prefi
 });
 
 
-test('Pi input: final identity-read failure and reentrant runtime disposal refund unadopted leases', async () => {
-  const f = fixture(), theme = counted(), old = f.runtime.preparePiInput(theme, 'truecolor', f.funding)!;
-  const before = f.budget.stats(), expected = inspect(old);
+test('Pi input: final adoption failure and reentrant runtime disposal refund candidates while retaining older leases', async () => {
+  const f = fixture(), theme = counted(), old = prepare(f, theme, 'truecolor', f.funding)!;
+  const before = f.budget.stats(), expected = inspect(old), originalColors = theme.colors, replacementColors = Object.freeze({ ...originalColors });
+  let changed = false, postSampleChecks = 0, grants = 0;
+  const candidateTheme = {
+    owner: theme.owner,
+    get colors() { if (changed) postSampleChecks++; return changed ? replacementColors : originalColors; },
+    getFgAnsi(role: Parameters<typeof theme.getFgAnsi>[0]) {
+      const value = theme.getFgAnsi(role);
+      if (role === 'toolDiffRemoved') changed = true;
+      return value;
+    },
+    getBgAnsi: theme.getBgAnsi,
+  };
   try {
-    let reads = 0;
-    assert.throws(() => f.runtime.preparePiInput({ get colors() { if (++reads === 2) throw Error('identity failure'); return theme.colors; },
-      getFgAnsi: role => theme.getFgAnsi(role), getBgAnsi: role => theme.getBgAnsi(role),
-    }, 'truecolor', f.funding), /identity failure/);
+    const revision = f.runtime.palette(candidateTheme);
+    const candidate = f.runtime.preparePaletteInput(piPalette, candidateTheme, revision, '256color', {
+      budget: f.budget, grant(bytes) { grants++; return f.budget.reserve(bytes); },
+    });
+    assert.equal(candidate, undefined);
+    assert.ok(grants >= 3, 'candidate scratch, data and handle were funded before final adoption');
+    assert.ok(postSampleChecks >= 2, 'sampling and final identity validation observed the replacement colors');
     assert.deepEqual(f.budget.stats(), before); assert.deepEqual(inspect(old), expected);
+
     let revoked = false;
-    const candidate = f.runtime.preparePiInput(theme, '256color', { budget: f.budget, grant(bytes) {
+    const disposedCandidate = prepare(f, theme, '256color', { budget: f.budget, grant(bytes) {
       if (!revoked) { revoked = true; void f.runtime.dispose(); }
       return f.budget.reserve(bytes);
     } });
-    assert.equal(candidate, undefined); assert.deepEqual(f.budget.stats(), before); assert.deepEqual(inspect(old), expected);
+    assert.equal(disposedCandidate, undefined); assert.deepEqual(f.budget.stats(), before); assert.deepEqual(inspect(old), expected);
+  } finally { old.dispose(); await f.runtime.dispose(); }
+  assert.equal(f.budget.stats().retainedBytes, 0);
+});
+
+
+test('Pi input: a late final identity exception refunds an acquired candidate and retains the prior lease', async () => {
+  const f = fixture(), theme = counted(), old = prepare(f, theme, 'truecolor')!;
+  const before = f.budget.stats(), oldSnapshot = inspect(old);
+  let sampled = false, lateChecks = 0, grants = 0;
+  const throwingTheme = {
+    owner: theme.owner,
+    get colors() { if (sampled) { lateChecks++; throw new Error('late identity observation'); } return theme.colors; },
+    getFgAnsi(role: Parameters<typeof theme.getFgAnsi>[0]) {
+      const value = theme.getFgAnsi(role);
+      if (role === 'borderMuted') sampled = true;
+      return value;
+    },
+    getBgAnsi(role: Parameters<typeof theme.getBgAnsi>[0]) { return theme.getBgAnsi(role); },
+  };
+  try {
+    const revision = f.runtime.palette(throwingTheme);
+    assert.throws(() => f.runtime.preparePaletteInput(piPalette, throwingTheme, revision, '256color', {
+      budget: f.budget, grant(bytes) { grants++; return f.budget.reserve(bytes); },
+    }), /late identity observation/);
+    assert.equal(sampled, true, 'the candidate completed role sampling before final identity validation');
+    assert.ok(grants >= 3, 'scratch, data and candidate handle funding preceded final adoption');
+    assert.equal(lateChecks, 1, 'the throwing read belongs to final adoption, not palette sampling');
+    assert.deepEqual(f.budget.stats(), before, 'the unadopted candidate refunded every charge');
+    assert.deepEqual(inspect(old), oldSnapshot, 'the preexisting lease remains usable');
   } finally { old.dispose(); await f.runtime.dispose(); }
   assert.equal(f.budget.stats().retainedBytes, 0);
 });

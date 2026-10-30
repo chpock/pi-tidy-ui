@@ -83,7 +83,7 @@ test('local owned factory refuses pre-abort and missing binary without download,
 const identity = { project_root: '/factory/project', harness: 'fixture', session: 'factory' };
 const discovery = { env: { XDG_RUNTIME_DIR: '/factory/run', HOME: '/factory/home' }, tempDir: '/factory/tmp', uid: 7, platform: 'linux' as const };
 const candidates = connectionCandidates(discovery);
-function description(ticket: unknown) { return semanticDescriptor(ticket, 'instance', []); }
+function description(ticket: unknown) { return semanticDescriptor(ticket, 'instance'); }
 function sdkFixture() {
   const connected: { file: string; timeout: number }[] = [], opened: SharedRouteHandle[] = [], routeCloses: SharedRouteHandle[] = [], closed: string[] = [];
   const requests: { file: string; handle: SharedRouteHandle; body: Record<string, unknown>; timeout: number }[] = [];
@@ -222,7 +222,7 @@ test('shared factory one absolute budget spans candidates and metadata despite d
   const f = sdkFixture(); let now = 0, negotiations = 0;
   t.mock.method(performance, 'now', () => now);
   const result = await factories.createSharedFactory({ ...f.options, attemptDeadlineMs: 100 })(new AbortController().signal, async transport => {
-    negotiations++; await transport.request({ v: 3, op: 'describe', ticket: `fixture:${negotiations}` });
+    negotiations++; await transport.request({ v: 4, op: 'describe', ticket: `fixture:${negotiations}` });
     if (negotiations === 1) { await transport.close(); now = 60; return false; }
     now = 100; return true;
   });
@@ -236,7 +236,7 @@ test('shared factory transfer releases caller listener and keeps configured publ
   const selected = await factories.createSharedFactory({ ...f.options, attemptDeadlineMs: 100 })(caller.signal, async () => { now = 80; return true; });
   assert.ok(selected instanceof SharedTransport); t.after(() => selected.close());
   caller.abort(); await flushShared(); assert.equal(selected.stats().state, 'ready'); assert.equal(f.closed.length, 0); assert.equal(f.requests.length, 0);
-  await selected.request({ v: 3, op: 'describe', ticket: 'fixture:published' });
+  await selected.request({ v: 4, op: 'describe', ticket: 'fixture:published' });
   assert.deepEqual(f.requests.map(call => call.timeout), [777]); assert.deepEqual(f.connected.map(call => call.timeout), [100]);
   await selected.close(); emptyShared(selected); assert.equal(f.closed.length, 1); assert.equal(f.routeCloses.length, 1); sourceFree(f);
 });

@@ -1,4 +1,10 @@
 import '../../fixtures/test-guard.mjs';
+import { compileStyleAnsi } from '../../../src/syntax/style-ansi.ts';
+import fs from 'node:fs';
+import { syncBuiltinESMExports } from 'node:module';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import assert from 'node:assert/strict';
 import { afterEach, test } from 'node:test';
 import { setImmediate as turn } from 'node:timers/promises';
@@ -7,11 +13,17 @@ import { getThemeByName } from '../../../node_modules/@earendil-works/pi-coding-
 import { CardSources, type CardDisplayInput, type CardPreparation, type PreparedCard, type ReadyCardPaint } from '../../../src/syntax/cards.ts';
 import { SourceController, type ControllerOptions } from '../../../src/occipital/controller.ts';
 import { decodeSemanticDescription } from '../../../src/occipital/semantic-protocol.ts';
-import { fingerprintNative, fingerprintRules } from '../../../src/occipital/style-rules.ts';
+import { fingerprintRules } from '../../../src/occipital/style-rules.ts';
 import { CARD_ROLES } from '../../../src/occipital/semantic-codec.ts';
 import { RequestFailure } from '../../../src/occipital/request-failure.ts';
-import { createPiRuleDefinition } from '../../../src/syntax/pi-rules.ts';
+import { resolveTheme } from '../../../src/themes/selection.ts';
+import { sampleOwnedPalette } from '../../../src/themes/owned-palette.ts';
+import { samplePiPalette } from '../../../src/syntax/pi-palette.ts';
+import { samplePiPrefix } from '../../../src/syntax/pi-bindings.ts';
+import { OwnedPaletteDataError } from '../../../src/themes/owned-palette.ts';
+import { THEME_CATALOGUE } from '../../../src/themes/catalogue.ts';
 import { SyntaxRuntime } from '../../../src/syntax/runtime.ts';
+import { PaletteInputOwner } from '../../../src/syntax/pi-input-owner.ts';
 import { semanticDescriptor } from '../../fixtures/semantic-provider.ts';
 import { reflow } from '../../../src/syntax/measured-rows.ts';
 import { paintFlat, type FlatRangeReader } from '../../../src/syntax/flat-paint.ts';
@@ -24,21 +36,20 @@ import { SyntaxClient } from '../../../src/occipital/client.ts';
 import type { ProviderTransport } from '../../../src/occipital/provider.ts';
 import type { TransportEnd } from '../../../src/occipital/transport-end.ts';
 import { awaitFixture } from '../../fixtures/await-fixture.ts';
+import { observePaletteInput } from '../../fixtures/palette-input-observer.mjs';
 
 type Frame = Record<string, any>;
 type Owner = { input?: CardDisplayInput };
-const profile = { id: 'native', label: 'Native', fingerprint: 'a'.repeat(64) };
-const literal = (n: number) => ({ foreground: { kind: 'rgb', r: n, g: 2, b: 3 }, background: { kind: 'rgb', r: 4, g: 5, b: 6 }, attributes: 0 });
 const bash = (text: string, complete = false, revision = 1): Extract<CardDisplayInput, { kind: 'bash' }> => ({ kind: 'bash', args: { command: text }, complete,
   revision, sourceRevision: revision, serviceRevision: revision, palette: 1, mode: 'truecolor', language: 'bash' });
 const written = (text: string, revision = 1, path = 'a.ts'): Extract<CardDisplayInput, { kind: 'file' }> => ({ kind: 'file', revision, sourceRevision: revision,
   serviceRevision: revision, palette: 1, mode: 'truecolor', language: 'typescript', node: { toolName: 'write', args: { path, content: text }, isPartial: false, result: {} } });
 const edited = (diff = '-1 \tx\n+1 \ty\n   ...\n-9 a\n+9 b', revision = 1): Extract<CardDisplayInput, { kind: 'file' }> => ({ ...written('', revision), kind: 'file',
   node: { toolName: 'edit', args: { path: 'a.ts' }, isPartial: false, result: { details: { diff } } } });
-const fixtures: { cards: CardSources<Owner>; sources: SourceController; runtime: SyntaxRuntime; calls: { reject(error: unknown): void }[] }[] = [];
+const fixtures: { cards: CardSources<Owner>; sources: SourceController; runtime: SyntaxRuntime; paletteInputs: PaletteInputOwner; calls: { reject(error: unknown): void }[] }[] = [];
 function fixture(ready = false, options: ControllerOptions = {}, maxBookkeepingBytes?: number) {
-  const env = { ready, enabled: true, generation: 1, vocabulary: 'a'.repeat(64), selected: { kind: 'pi' } as SyntaxTheme, profile: { ...profile },
-    classifications: [] as string[], invalidated: [] as Owner[], renders: 0, acquisitions: 0, samples: 0, failClassification: false,
+  const env = { ready, enabled: true, generation: 1, vocabulary: 'a'.repeat(64), selected: { kind: 'pi' } as SyntaxTheme,
+    classifications: [] as string[], invalidated: [] as Owner[], renders: 0, acquisitions: 0, paletteInputBytes: [] as number[], deniedPaletteInputs: 0, samples: 0, denyPaletteInput: false, failClassification: false,
     poison: false, beforeClassify: undefined as (() => void) | undefined, notices: [] as { keys: string[]; groups: number[] }[],
     preparations: [] as CardPreparation[], prepared: undefined as ((owner: Owner, receipt: Extract<CardPreparation, { phase: 'prepared' }>) => void) | undefined };
   const calls: { request: Frame; resolve(value: unknown): void; reject(error: unknown): void; done?: boolean }[] = [];
@@ -51,47 +62,65 @@ function fixture(ready = false, options: ControllerOptions = {}, maxBookkeepingB
   const sources = new SourceController(provider, { ...options, onChange: (keys, groups = []) => { env.notices.push({ keys: [...keys], groups: [...groups] }); cards.sourceChanged(keys, groups); } });
   const runtime = new SyntaxRuntime({ standaloneVersion: '0.0.0', settings: { load: async () => ({ ok: true, syntaxTheme: { kind: 'pi' } }), update: async () => ({ ok: true }) },
     provider: { tryShared: async () => undefined, acquireOwned: async () => { throw Error('unexpected provider'); } } });
+  const paletteInputs = new PaletteInputOwner();
   let theme = getThemeByName('system')!;
   const sampled = { get colors() { return theme.colors; }, getFgAnsi(role: Parameters<typeof theme.getFgAnsi>[0]) { env.samples++; if (env.poison) throw Error('Pi poison'); return theme.getFgAnsi(role); },
     getBgAnsi(role: Parameters<typeof theme.getBgAnsi>[0]) { env.samples++; if (env.poison) throw Error('Pi poison'); return theme.getBgAnsi(role); } };
   runtime.palette(sampled);
+  let paletteRevision = paletteInputs.palette(sampled, resolveTheme(env.selected).effective);
+  const owners = new Set<WeakRef<Owner>>();
+  const trackOwner = (owner: Owner) => {
+    for (const reference of owners) if (reference.deref() === owner) return;
+    owners.add(new WeakRef(owner));
+  };
   cards = new CardSources({ sources, snapshot: () => ({ enabled: env.enabled, provider: provider.snapshot(), selected: env.selected,
-    effective: env.selected.kind === 'pi' ? { id: 'pi', label: 'Pi', fingerprint: fingerprintRules(createPiRuleDefinition()) } : env.ready ? env.profile : undefined, standaloneVersion: 'test' }) }, {
-    preparePiInput: funding => { env.acquisitions++; return runtime.preparePiInput(sampled, 'truecolor', funding); },
+    effective: resolveTheme(env.selected).effective, standaloneVersion: 'test' }) }, {
+    preparePaletteInput: (palette, revision, mode, funding, usePiFallback) => {
+      env.acquisitions++; if (env.denyPaletteInput) { env.deniedPaletteInputs++; return undefined; }
+      const lease = paletteInputs.prepare(sampled, palette, revision, mode, funding, usePiFallback);
+      if (lease) env.paletteInputBytes.push(lease.allocationBytes);
+      return lease;
+    },
     classify: text => { env.classifications.push(text); env.beforeClassify?.(); if (env.failClassification) throw Error('classification failed'); return highlightCode(text, 'typescript'); },
     invalidate: owner => env.invalidated.push(owner), requestRender: () => { env.renders++; },
     preparation: (owner, receipt) => { env.preparations.push(receipt); if (receipt.phase === 'prepared') env.prepared?.(owner, receipt); } }, { maxBookkeepingBytes });
-  const f = { env, calls, sources, cards, runtime, update(owner: Owner, input: CardDisplayInput) { owner.input = input; return cards.updateDisplay(owner, input); },
+  const f = { env, calls, sources, cards, runtime, paletteInputs, sampled, update(owner: Owner, input: CardDisplayInput) { trackOwner(owner); const current = { ...input, palette: paletteRevision }; owner.input = current; return cards.updateDisplay(owner, current); },
+    forget(owner: Owner) { for (const reference of owners) if (reference.deref() === owner) owners.delete(reference); },
     use(owner: Owner, input: CardDisplayInput) { assert.equal(this.update(owner, input), true); cards.useful(owner, input.revision); },
     answerSource(i: number, text: string, context = 1, revision = 1, from = 0) {
       const call = calls[i]!, q = call.request, s = q.sources?.[0] ?? q, bytes = Buffer.byteLength(text), complete = q.op === 'highlight' || !!q.final;
-      call.done = true; call.resolve({ v: 3, ticket: q.ticket, instance: 'daemon', assets: 'assets', status: 'ok', body: { kind: 'source', vocabulary: description.vocabulary.fingerprint,
+      call.done = true; call.resolve({ v: 4, ticket: q.ticket, instance: 'daemon', assets: 'assets', status: 'ok', body: { kind: 'source', vocabulary: description.vocabulary.fingerprint,
         sources: [{ key: s.key, generation: s.generation, source_version: s.source_version, revision, source_bytes: bytes, replace_from: from,
           committed_bytes: complete ? bytes : Buffer.byteLength(text.slice(0, text.lastIndexOf('\n') + 1)), complete,
           ...(!complete || q.op === 'stream.append' ? { lease: q.lease ?? 'lease:1' } : {}), contexts: bytes === from ? [] : [[0, context]], runs: bytes === from ? [] : [bytes - from, 1],
           counters: { committed_line_calls: 1, committed_line_bytes: bytes, tail_calls: 0, tail_bytes: 0 } }] } });
     },
     answerStyle(i: number, color = 11, bad = false) {
-      const call = calls[i]!, q = call.request, native = q.rules.kind === 'native', definition = q.rules.definition;
-      call.done = true; call.resolve({ v: 3, ticket: q.ticket, instance: 'daemon', assets: 'assets', status: 'ok', body: { kind: 'styles', vocabulary: q.vocabulary,
-        rules: bad ? 'f'.repeat(64) : native ? fingerprintNative(q.rules.fingerprint, 'rules') : fingerprintRules(definition),
-        styles: q.contexts.length || native ? [{ ...(native ? literal(color) : definition.default), attribute_mask: native ? 31 : 0 }] : [], indices: q.contexts.map(() => 1),
-        palette: native ? { revision: 1, fingerprint: fingerprintNative(q.rules.fingerprint, 'palette'), slots: CARD_ROLES.map(() => 1), origins: CARD_ROLES.map(() => 0) } : null } });
+      const call = calls[i]!, q = call.request;
+      call.done = true; call.resolve({ v: 4, ticket: q.ticket, instance: 'daemon', assets: 'assets', status: 'ok', body: { kind: 'styles', vocabulary: q.vocabulary,
+        rules: bad ? 'f'.repeat(64) : fingerprintRules(q.rules),
+        styles: q.contexts.map(() => ({ foreground: { kind: 'rgb', r: color, g: 2, b: 3 }, background: { kind: 'inherit' }, attributes: 0, attribute_mask: 0 })),
+        indices: q.contexts.map(() => 1) } });
     },
     fault(i: number, execution: 'not_started' | 'unknown' = 'not_started') { calls[i]!.done = true; calls[i]!.reject(new RequestFailure('busy', execution)); },
-    piTheme(name: string) { theme = getThemeByName(name)!; return runtime.palette(sampled); },
-    native(id = 'native', fingerprint = 'a'.repeat(64)) { env.selected = { kind: 'occipital', id }; env.profile = { id, label: id, fingerprint }; cards.metadataChanged(); },
+    piTheme(name: string) { theme = getThemeByName(name)!; runtime.palette(sampled); paletteRevision = paletteInputs.palette(sampled, resolveTheme(env.selected).effective); cards.metadataChanged(paletteRevision); return paletteRevision; },
+    followPi() { env.selected = { kind: 'pi' }; paletteRevision = paletteInputs.palette(sampled, resolveTheme(env.selected).effective); cards.metadataChanged(paletteRevision); return paletteRevision; },
+    theme(id = 'gruvbox-dark') {
+      env.selected = { kind: 'theme', id };
+      paletteRevision = paletteInputs.palette(sampled, resolveTheme(env.selected).effective); cards.metadataChanged(paletteRevision);
+    },
+
   };
   fixtures.push(f); return f;
 }
 async function settle() { for (let i = 0; i < 8; i++) await turn(); }
-afterEach(async () => { for (const f of fixtures) { f.cards.dispose(); f.sources.dispose(); await f.runtime.dispose(); for (const c of f.calls) c.reject(new RequestFailure('cleanup', 'not_started')); }
+afterEach(async () => { for (const f of fixtures) { f.cards.dispose(); f.sources.dispose(); f.paletteInputs.dispose(); await f.runtime.dispose(); for (const c of f.calls) c.reject(new RequestFailure('cleanup', 'not_started')); }
   await settle(); for (const f of fixtures) { assert.equal(f.sources.stats().globalUnsettledJobs, 0); assert.equal(f.sources.stats().retention.retainedBytes, 0); } fixtures.length = 0; });
 function inspect(f: ReturnType<typeof fixture>, owner: Owner, consume: (display: PreparedCard, paint: ReadyCardPaint) => void) { assert.equal(f.cards.visit(owner, consume), true); }
 function command(f: ReturnType<typeof fixture>, owner: Owner) { let text: string | undefined; inspect(f, owner, d => { assert.equal(d.kind, 'bash'); if (d.kind === 'bash') text = d.command.text; }); return text; }
 function style(f: ReturnType<typeof fixture>, owner: Owner) { let color = ''; inspect(f, owner, (_d, p) => { color = p.roles.code.open; }); return color; }
-async function nativeReady(f: ReturnType<typeof fixture>, owner: Owner, text = 'x\n') {
-  f.native(); f.use(owner, bash(text, true)); await settle();
+async function themeReady(f: ReturnType<typeof fixture>, owner: Owner, text = 'x\n') {
+  f.theme(); f.use(owner, bash(text, true)); await settle();
   for (let i = 0; i < f.calls.length; i++) if (!f.calls[i]!.done) { if (f.calls[i]!.request.op === 'styles.resolve') f.answerStyle(i); else f.answerSource(i, text); await settle(); }
 }
 
@@ -101,6 +130,176 @@ test('cards prepared display exists before useful work', async () => {
   inspect(f, owner, (d, p) => { assert.equal(d.kind, 'bash'); if (d.kind === 'bash') { assert.equal(d.command.text, 'a\t界\nb'); assert.ok(d.command.measured.glyphCount); }
     assert.deepEqual(Object.keys(p.roles), CARD_ROLES); assert.equal(p.origin, 'pi'); });
   await settle(); assert.equal(f.calls.length, 0); assert.deepEqual(f.env.classifications, []); assert.equal(f.sources.stats().captures, 0);
+});
+
+test('cards keep selected owned colors fixed across public Pi theme changes', async () => {
+  const f = fixture(false), owner: Owner = {}; f.theme('gruvbox-dark'); f.use(owner, written('const value = 1;')); await settle();
+  const expected = style(f, owner), acquisitions = f.env.acquisitions, samples = f.env.samples;
+  const classifications = [...f.env.classifications], calls = f.calls.length;
+  f.piTheme('light'); await settle();
+  inspect(f, owner, (_display, paint) => { assert.equal(paint.origin, 'owned'); assert.equal(paint.roles.code.open, expected); });
+  assert.equal(f.env.acquisitions, acquisitions); assert.equal(f.env.samples, samples);
+  assert.deepEqual(f.env.classifications, classifications); assert.equal(f.calls.length, calls);
+});
+
+test('cards show the selected owned palette for a neutral FILE while Native is Off and no helper is ready', async () => {
+  const f = fixture(false), owner = {}; f.env.enabled = false; f.sources.setEnabled(false); f.theme('gruvbox-dark');
+  f.use(owner, written('const value = 1;')); await settle();
+  inspect(f, owner, (display, paint) => {
+    assert.equal(display.kind, 'file'); assert.equal(paint.origin, 'owned');
+    assert.equal(paint.roles.code.open, sampleOwnedPalette('gruvbox-dark', 'truecolor').compiledRoles.code.open);
+    assert.equal(paint.ranges(f.cards.identities(owner)[0]!.key), undefined, 'no semantic source proof is fabricated');
+  });
+  assert.equal(f.calls.length, 0); assert.deepEqual(f.env.classifications, []); assert.equal(f.sources.stats().dispatches, 0);
+});
+
+test('cards retain a complete owned-neutral paint when a selected catalogue asset is corrupt', async () => {
+  const f = fixture(false), owner = {}; f.theme('gruvbox-dark'); f.use(owner, written('const value = 1;')); await settle();
+  inspect(f, owner, (_display, paint) => assert.equal(paint.origin, 'owned', 'precondition: the prior complete paint uses a valid owned palette'));
+  const source = f.cards.identities(owner)![0]!, oldColor = style(f, owner), target = fileURLToPath(new URL('../../../src/themes/palettes/gruvbox-light.json', import.meta.url));
+  const directory = fs.mkdtempSync(join(tmpdir(), 'toolview-card-palette-')), corrupt = join(directory, 'replacement.json');
+  fs.writeFileSync(corrupt, '{');
+  const originalOpen = fs.openSync; let opens = 0;
+  const intercepted = ((file: string | URL, flags: string | number, mode?: number) => {
+    if (String(file) === target) { opens++; return originalOpen(corrupt, flags, mode); }
+    return originalOpen(file, flags, mode);
+  }) as typeof fs.openSync;
+  Object.defineProperty(fs, 'openSync', { configurable: true, writable: true, value: intercepted }); syncBuiltinESMExports();
+  try {
+    f.theme('gruvbox-light'); await settle();
+    assert.equal(opens, 1, 'the known catalogue asset reached its file read and failed validation');
+    inspect(f, owner, (display, paint) => {
+      assert.equal(display.kind, 'file'); assert.equal(paint.origin, 'owned');
+      assert.equal(paint.roles.code.open, oldColor, 'the last complete owned-neutral presentation remains visible');
+       assert.equal(paint.ranges(f.cards.identities(owner)[0]!.key), undefined, 'no stale or fabricated semantic group is published');
+       assert.equal(f.cards.identities(owner)![0]!.key, source.key);
+       assert.equal(f.cards.identities(owner)![0]!.version, source.version, 'asset failure retains the exact SOURCE version');
+    });
+    assert.deepEqual(f.env.classifications, [], 'retaining owned colors does not invoke Pi classification');
+  } finally {
+    Object.defineProperty(fs, 'openSync', { configurable: true, writable: true, value: originalOpen }); syncBuiltinESMExports();
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+  f.theme('dracula-dark'); await settle();
+  inspect(f, owner, (_display, paint) => {
+    assert.equal(paint.origin, 'owned'); assert.equal(paint.roles.code.open, sampleOwnedPalette('dracula-dark', 'truecolor').compiledRoles.code.open);
+  });
+});
+
+test('cards use current Pi colors only when a failed owned palette has no prior complete paint', async () => {
+  const f = fixture(false), owner: Owner = {}, target = fileURLToPath(new URL('../../../src/themes/palettes/gruvbox-light.json', import.meta.url));
+  const directory = fs.mkdtempSync(join(tmpdir(), 'toolview-card-palette-')), corrupt = join(directory, 'replacement.json'); fs.writeFileSync(corrupt, '{');
+  const originalOpen = fs.openSync; let opens = 0;
+  const intercepted = ((file: string | URL, flags: string | number, mode?: number) => {
+    if (String(file) === target) { opens++; return originalOpen(corrupt, flags, mode); }
+    return originalOpen(file, flags, mode);
+  }) as typeof fs.openSync;
+  Object.defineProperty(fs, 'openSync', { configurable: true, writable: true, value: intercepted }); syncBuiltinESMExports();
+  try {
+    f.theme('gruvbox-light'); f.use(owner, written('const value = 1;')); await settle();
+    assert.equal(opens, 1); assert.deepEqual(f.env.classifications, ['const value = 1;']);
+    inspect(f, owner, (_display, paint) => assert.equal(paint.origin, 'pi'));
+    const [source] = f.cards.identities(owner)!;
+    assert.equal(f.env.classifications.length, 1);
+    f.piTheme('light'); await settle(); assert.equal(opens, 1, 'a public Pi theme change does not reread the known failed asset');
+    assert.equal(f.cards.identities(owner)![0]!.key, source!.key, 'Pi input refresh retains the same logical SOURCE key');
+    assert.equal(f.cards.identities(owner)![0]!.version, source!.version, 'Pi input refresh retains the same logical SOURCE version');
+    assert.deepEqual(f.env.classifications, ['const value = 1;', 'const value = 1;'], 'the unchanged source is classified once for each distinct fallback palette');
+    assert.equal(f.calls.length, 0, 'with no ready semantic group, fallback recoloring stays local and does not call Occipital');
+    const expected = compileStyleAnsi(samplePiPalette(f.sampled, 'truecolor').roles.code, 'truecolor').open;
+    inspect(f, owner, (_display, paint) => {
+      assert.equal(paint.origin, 'pi'); assert.equal(paint.roles.code.open, expected);
+      assert.ok(paint.ranges(f.cards.identities(owner)![0]!.key), 'the local Pi fallback exposes its current source projection without an Occipital group');
+    });
+    const warmSamples = f.env.samples, classifications = [...f.env.classifications];
+    for (let i = 0; i < 20; i++) f.cards.useful(owner, owner.input!.revision);
+    await settle(); assert.equal(f.env.samples, warmSamples); assert.deepEqual(f.env.classifications, classifications); assert.equal(opens, 1);
+  } finally {
+    Object.defineProperty(fs, 'openSync', { configurable: true, writable: true, value: originalOpen }); syncBuiltinESMExports();
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('cards retain a funded no-group palette while a known replacement asset is corrupt, then recover', async () => {
+  const f = fixture(false), owner: Owner = {}, target = fileURLToPath(new URL('../../../src/themes/palettes/gruvbox-light.json', import.meta.url));
+  f.theme('catppuccin-dark'); f.use(owner, written('const value = 1;')); await settle();
+  const previous = style(f, owner), sourceRevision = owner.input!.sourceRevision, sourceVersion = f.cards.identities(owner)[0]!.version;
+  inspect(f, owner, (_display, paint) => { assert.equal(paint.origin, 'owned'); assert.equal(paint.ranges(f.cards.identities(owner)![0]!.key), undefined); });
+  const directory = fs.mkdtempSync(join(tmpdir(), 'toolview-card-palette-')), corrupt = join(directory, 'replacement.json'); fs.writeFileSync(corrupt, '{');
+  const originalOpen = fs.openSync; let opens = 0;
+  const intercepted = ((file: string | URL, flags: string | number, mode?: number) => {
+    if (String(file) === target) { opens++; return originalOpen(corrupt, flags, mode); }
+    return originalOpen(file, flags, mode);
+  }) as typeof fs.openSync;
+  Object.defineProperty(fs, 'openSync', { configurable: true, writable: true, value: intercepted }); syncBuiltinESMExports();
+  try {
+    f.theme('gruvbox-light'); await settle();
+    assert.equal(opens, 1, 'one known-catalogue replacement read fails');
+    assert.equal(style(f, owner), previous, 'the last complete owned neutral paint remains visible');
+    assert.equal(owner.input!.sourceRevision, sourceRevision); assert.equal(f.cards.identities(owner)[0]!.version, sourceVersion);
+    inspect(f, owner, (_display, paint) => { assert.equal(paint.origin, 'owned'); assert.equal(paint.ranges(f.cards.identities(owner)![0]!.key), undefined); });
+    const attempts = f.env.acquisitions;
+    for (let i = 0; i < 20; i++) f.cards.useful(owner, owner.input!.revision);
+    await settle(); assert.equal(f.env.acquisitions, attempts, 'a memoized failed palette is not retried on warm visits');
+    assert.equal(opens, 1);
+    f.theme('catppuccin-light'); await settle();
+    assert.equal(style(f, owner), sampleOwnedPalette('catppuccin-light', 'truecolor').compiledRoles.code.open);
+  } finally {
+    Object.defineProperty(fs, 'openSync', { configurable: true, writable: true, value: originalOpen }); syncBuiltinESMExports();
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+  f.theme('gruvbox-light'); await settle();
+  assert.equal(opens, 1);
+  assert.equal(style(f, owner), sampleOwnedPalette('gruvbox-light', 'truecolor').compiledRoles.code.open, 'a later explicit selection can recover the known asset');
+  assert.equal(owner.input!.sourceRevision, sourceRevision); assert.equal(f.cards.identities(owner)[0]!.version, sourceVersion);
+});
+
+test('cards never seeds Follow Pi projections from a retained owned lease when Pi input replacement is denied', async () => {
+  const f = fixture(false), owner: Owner = {}; f.theme('gruvbox-dark'); f.use(owner, written('const value = 1;')); await settle();
+  const ownedColor = style(f, owner), classifications = [...f.env.classifications], acquisitions = f.env.acquisitions;
+  const sourceRevision = owner.input!.sourceRevision, sourceVersion = f.cards.identities(owner)[0]!.version;
+  const denials = f.env.deniedPaletteInputs;
+  f.env.denyPaletteInput = true; f.followPi(); await settle();
+  assert.equal(f.env.acquisitions, acquisitions + 1, 'Follow Pi input acquisition was attempted');
+  assert.equal(f.env.deniedPaletteInputs, denials + 1, 'the matching Pi input lease was actually denied');
+  const deniedRevisionAcquisitions = f.env.acquisitions;
+  for (let i = 0; i < 20; i++) f.cards.useful(owner, owner.input!.revision);
+  await settle(); assert.equal(f.env.acquisitions, deniedRevisionAcquisitions, 'denied input is not retried on warm visits');
+  inspect(f, owner, (_display, paint) => { assert.equal(paint.origin, 'owned'); assert.equal(paint.roles.code.open, ownedColor); });
+  assert.deepEqual(f.env.classifications, classifications, 'no Pi projection is created without a matching Pi neutral input');
+  f.piTheme('dark'); await settle();
+  inspect(f, owner, (_display, paint) => { assert.equal(paint.origin, 'owned'); assert.equal(paint.roles.code.open, ownedColor); });
+  assert.deepEqual(f.env.classifications, classifications, 'Pi theme changes cannot reuse a fallback lease from another public color object');
+  f.env.denyPaletteInput = false; f.use(owner, { ...owner.input!, revision: owner.input!.revision + 1, sourceRevision }); await settle();
+  assert.equal(owner.input!.sourceRevision, sourceRevision, 'retry uses the exact original source version');
+  assert.equal(f.cards.identities(owner)[0]!.version, sourceVersion, 'palette recovery does not create a new SOURCE generation');
+  assert.deepEqual(f.env.classifications, ['const value = 1;']);
+  const foreground = samplePiPrefix(f.sampled.getFgAnsi('toolOutput'));
+  const background = samplePiPrefix(f.sampled.getBgAnsi('toolPendingBg'), 'background');
+  const expected = compileStyleAnsi({ foreground: foreground.ink, background: background.ink, attributes: foreground.attributes }, 'truecolor');
+  let key = '', plainToken: unknown;
+  inspect(f, owner, (_display, paint) => {
+    assert.equal(paint.origin, 'pi'); assert.equal(paint.roles.code.open, expected.open);
+    key = f.cards.identities(owner)[0]!.key;
+    assert.equal(paint.ranges(key)!((start, end, token) => { if (start <= 5 && end > 5) plainToken = token; }), true);
+  });
+  assert.ok(key); assert.deepEqual(plainToken, expected, 'the post-recovery unstyled token uses public Pi default FG/BG/attributes');
+});
+
+test('cards keep a valid owned palette for a no-group Native Off card across public Pi theme changes', async () => {
+  const f = fixture(false), owner: Owner = {};
+  f.theme('gruvbox-dark'); f.env.enabled = false; f.sources.setEnabled(false); f.cards.metadataChanged();
+  f.use(owner, written('const value = 1;')); await settle();
+  const expected = sampleOwnedPalette('gruvbox-dark', 'truecolor').compiledRoles.code.open;
+  assert.equal(style(f, owner), expected);
+  inspect(f, owner, (display, paint) => {
+    assert.equal(display.kind, 'file'); assert.equal(paint.origin, 'owned');
+    assert.equal(paint.ranges(f.cards.identities(owner)[0]!.key), undefined, 'Native Off does not invent a semantic group');
+  });
+  const before = [f.env.acquisitions, f.env.samples, f.env.classifications.length, f.calls.length];
+  f.piTheme('light'); await settle(); f.cards.useful(owner, owner.input!.revision); await settle();
+  assert.equal(style(f, owner), expected, 'a valid owned palette is independent of public Pi theme changes');
+  assert.deepEqual([f.env.acquisitions, f.env.samples, f.env.classifications.length, f.calls.length], before);
 });
 
 test('cards cache actual Pi system faint fallback once across warm visits and widths', async () => {
@@ -181,9 +380,9 @@ test('cards typed unknown work never authorizes a duplicate FILE classifier', as
   await settle(); assert.deepEqual(f.env.classifications, []); assert.equal(f.sources.workStatus(f.cards.identities(owner)[0]!.key).fallbackEligible, false);
 });
 
-test('cards native whole palette and mixed segments publish atomically without Pi syntax poisoning', async () => {
-  const f = fixture(true), owner = {}; f.native(); f.use(owner, edited()); await settle();
-  assert.equal(f.env.classifications.length, 0); const first = style(f, owner);
+test('cards owned palette and mixed semantic segments publish atomically without Pi syntax poisoning', async () => {
+  const f = fixture(true), owner = {}; f.theme(); f.use(owner, edited()); await settle();
+  assert.equal(f.env.classifications.length, 0);
   for (let step = 0; step < 12; step++) {
     let answered = false;
     for (let i = 0; i < f.calls.length; i++) if (!f.calls[i]!.done) { const q = f.calls[i]!.request;
@@ -193,41 +392,43 @@ test('cards native whole palette and mixed segments publish atomically without P
     }
     if (!answered) break;
   }
-  assert.notEqual(style(f, owner), first);
-  inspect(f, owner, (_d, p) => { assert.equal(p.origin, 'native'); for (const role of CARD_ROLES) assert.ok(p.roles[role].open.includes('77'));
+  inspect(f, owner, (_d, p) => { assert.equal(p.origin, 'owned'); for (const role of CARD_ROLES) assert.ok(p.roles[role].open.length > 0);
     for (const identity of f.cards.identities(owner)) { let count = 0; assert.equal(p.ranges(identity.key)!((_a, _b, s) => { count++; assert.ok(s.open.includes('77')); }), true); assert.ok(count); } });
   assert.equal(f.env.classifications.length, 0); f.env.poison = true;
   const samples = f.env.samples; f.update(owner, { ...edited(), revision: 2, palette: 2 }); inspect(f, owner, () => {}); assert.equal(f.env.samples, samples);
 });
 
 test('cards actual palette-only group notice is targeted and does not fake an empty source', async () => {
-  const f = fixture(true), owner = {}, untouched = {}; f.native(); f.update(owner, { ...written(''), node: { toolName: 'edit', args: { path: 'a' }, isPartial: false, result: {} } });
+  const f = fixture(true), owner = {}, untouched = {}; f.theme(); f.update(owner, { ...written(''), node: { toolName: 'edit', args: { path: 'a' }, isPartial: false, result: {} } });
   f.update(untouched, bash('not useful')); f.cards.useful(owner, 1); await settle();
-  const index = f.calls.findIndex(c => c.request.op === 'styles.resolve'); assert.ok(index >= 0); assert.deepEqual(f.calls[index]!.request.contexts, []);
-  assert.equal(f.calls.filter(c => c.request.op !== 'styles.resolve').length, 0); f.env.invalidated.length = 0; f.answerStyle(index, 43); await settle();
-  assert.ok(f.env.notices.some(n => n.keys.length === 0 && n.groups.length === 1)); assert.deepEqual(f.env.invalidated, [owner]);
-  assert.equal(f.sources.stats().sourceRecords, 0); inspect(f, owner, (_d, p) => assert.equal(p.origin, 'native'));
+  assert.deepEqual(f.calls, [], 'an empty file has neither SOURCE text nor semantic contexts to resolve');
+  f.env.invalidated.length = 0; await settle();
+  assert.deepEqual(f.env.invalidated, []);
+  assert.equal(f.sources.stats().sourceRecords, 0); inspect(f, owner, (_d, p) => assert.equal(p.origin, 'owned'));
 });
 
-test('cards equal-color metadata refresh replaces readers without geometry or paint churn', async () => {
-  const f = fixture(true), owner = {}; await nativeReady(f, owner); const before = f.cards.displayStamp(owner);
+test('cards provider metadata refresh preserves locally owned palette and ready geometry', async () => {
+  const f = fixture(true), owner = {}; await themeReady(f, owner); const before = f.cards.displayStamp(owner), count = f.calls.length;
   let measured: object | undefined; inspect(f, owner, d => { if (d.kind === 'bash') measured = d.command.measured; });
-  f.env.invalidated.length = 0; f.native('native2', 'b'.repeat(64)); await settle();
-  const i = f.calls.findIndex(c => !c.done && c.request.op === 'styles.resolve'); assert.ok(i >= 0); f.answerStyle(i, 11); await settle();
+  f.env.invalidated.length = 0; f.env.generation++; f.cards.metadataChanged(); await settle();
   inspect(f, owner, d => { if (d.kind === 'bash') assert.equal(d.command.measured, measured); });
-  assert.equal(f.cards.displayStamp(owner), before); assert.deepEqual(f.env.invalidated, []);
+  assert.equal(f.cards.displayStamp(owner), before); assert.equal(f.calls.length, count); assert.deepEqual(f.env.invalidated, []);
 });
 
-test('cards theme changes never reparse ready sources and failed selections retain the native frame', async () => {
-  const f = fixture(true), owner = {}; await nativeReady(f, owner); const nativeSources = f.calls.filter(c => c.request.op !== 'styles.resolve').length, original = style(f, owner);
-  f.native('native2', 'b'.repeat(64)); await settle(); assert.equal(style(f, owner), original);
-  const index = f.calls.findIndex(c => !c.done && c.request.op === 'styles.resolve'); f.answerStyle(index, 22, true); await settle();
-  assert.equal(style(f, owner), original); assert.equal(f.calls.filter(c => c.request.op !== 'styles.resolve').length, nativeSources);
+test('cards owned palette replacement reuses ready semantic styles without replaying SOURCE', async () => {
+  const f = fixture(true), owner = {}; await themeReady(f, owner); const key = f.cards.identities(owner)[0]!,
+    sourceCalls = f.calls.filter(c => c.request.op !== 'styles.resolve').length, styleCalls = f.calls.filter(c => c.request.op === 'styles.resolve').length,
+    original = style(f, owner);
+  inspect(f, owner, (_d, p) => assert.ok(p.ranges(key.key), 'prior source styles are ready'));
+  f.theme('monokai-dark'); await settle();
+  inspect(f, owner, (_d, p) => { assert.notEqual(p.roles.code.open, original, 'owned card roles switch to the selected local palette'); assert.ok(p.ranges(key.key)); });
+  assert.equal(f.calls.filter(c => c.request.op === 'styles.resolve').length, styleCalls, 'palette rebinding reuses cached semantic styles');
+  assert.equal(f.calls.filter(c => c.request.op !== 'styles.resolve').length, sourceCalls, 'palette changes never reparse SOURCE');
   assert.equal(f.env.classifications.length, 0);
 });
 
 test('cards live frozen Bash accepts latest prepared display without reopening work', async () => {
-  const f = fixture(true), owner = {}; await nativeReady(f, owner); f.cards.freeze(owner); const count = f.calls.length;
+  const f = fixture(true), owner = {}; await themeReady(f, owner); f.cards.freeze(owner); const count = f.calls.length;
   f.update(owner, bash('x\nnew\t界', false, 2)); assert.equal(command(f, owner), 'x\nnew\t界'); f.cards.useful(owner, 2); await settle();
   assert.equal(f.calls.length, count); assert.equal(f.env.classifications.length, 0);
 });
@@ -335,7 +536,7 @@ test('cards successful write and logical file preparation reuse existing saved d
 
 
 test('cards lifecycle cold native preparation has zero SOURCE STYLE and classifier demand', async () => {
-  const f = fixture(true), owner = {}; f.native(); f.update(owner, bash('cold', true)); await settle();
+  const f = fixture(true), owner = {}; f.theme(); f.update(owner, bash('cold', true)); await settle();
   assert.equal(f.calls.length, 0); assert.equal(f.env.classifications.length, 0); assert.equal(command(f, owner), 'cold');
 });
 
@@ -379,7 +580,7 @@ test('cards equal-text FILE revision aliases exact Pi classification rather than
 });
 
 test('cards deferred obsolete source reply never paints replacement and only current keys invalidate', async () => {
-  const f = fixture(true), owner = {}; f.native(); f.use(owner, bash('old', true)); await settle();
+  const f = fixture(true), owner = {}; f.theme(); f.use(owner, bash('old', true)); await settle();
   const first = f.calls.findIndex(c => c.request.op === 'highlight'); f.update(owner, bash('new', true, 2)); f.cards.useful(owner, 2); await settle();
   f.answerSource(first, 'old'); await settle(); assert.equal(command(f, owner), 'new');
   f.cards.remove(owner); f.env.invalidated.length = 0;
@@ -388,10 +589,10 @@ test('cards deferred obsolete source reply never paints replacement and only cur
 });
 
 test('cards Bash retains validated native prefix while latest display append is held without Pi fallback', async () => {
-  const f = fixture(true), owner = {}; await nativeReady(f, owner, 'x\n'); const before = f.calls.length;
+  const f = fixture(true), owner = {}; await themeReady(f, owner, 'x\n'); const before = f.calls.length;
   f.update(owner, bash('x\nnew界', false, 2));
   let basis = '', colored = 0;
-  inspect(f, owner, (d, p) => { assert.equal(d.kind, 'bash'); assert.equal(p.origin, 'native');
+  inspect(f, owner, (d, p) => { assert.equal(d.kind, 'bash'); assert.equal(p.origin, 'owned');
     const key = f.cards.identities(owner)[0]!.key;
     assert.equal(p.basis(key, (text, ranges) => { basis = text; assert.equal(ranges((_a, b) => { colored = b; }), true); }), true);
   });
@@ -432,25 +633,86 @@ test('cards unavailable metadata does not relabel a processed refusal as new def
   assert.equal(f.calls.length, calls); assert.equal(f.env.classifications.length, 0);
 });
 
-test('cards ready static Bash and FILE fallback do not reparse on same-profile provider recovery', async () => {
-  const f = fixture(true), a = {}; await nativeReady(f, a); const sourceCalls = f.calls.filter(c => c.request.op !== 'styles.resolve').length;
+test('cards ready static Bash and FILE fallback do not reparse on provider recovery', async () => {
+  const f = fixture(true), a = {}; await themeReady(f, a); const sourceCalls = f.calls.filter(c => c.request.op !== 'styles.resolve').length;
   f.env.ready = false; f.env.generation++; f.cards.metadataChanged(); await settle(); f.env.ready = true; f.cards.metadataChanged(); await settle();
   assert.equal(f.calls.filter(c => c.request.op !== 'styles.resolve').length, sourceCalls);
 });
 
-test('cards 100 held native profile choices coalesce, retain ready paint and never reparse', async () => {
-  const f = fixture(true), owner = {}; await nativeReady(f, owner); const original = style(f, owner), nativeCount = f.calls.filter(c => c.request.op !== 'styles.resolve').length, initialStyles = f.calls.filter(c => c.request.op === 'styles.resolve').length;
-  for (let i = 2; i <= 101; i++) { f.native(`n${i}`, i.toString(16).padStart(64, '0')); await settle(); }
-  assert.equal(f.sources.stats().unsettledJobs, 2); assert.equal(style(f, owner), original);
-  assert.equal(f.calls.filter(c => c.request.op !== 'styles.resolve').length, nativeCount);
-  assert.equal(f.calls.filter(c => c.request.op === 'styles.resolve').length, initialStyles + 2);
+test('cards 100 owned-palette choices publish locally without helper work or historical store accumulation', async () => {
+  const f = fixture(true), owner = {}; await themeReady(f, owner); const initialCalls = f.calls.length;
+  const baselineStats = f.sources.stats().retention, baselineRetainedBytes = baselineStats.retainedBytes;
+  assert.equal(f.env.paletteInputBytes.length, 1, 'the starting presentation owns one palette-input lease');
+  const initialPaletteInputBytes = f.env.paletteInputBytes[0]!;
+  const nonPaletteBaselineBytes = baselineRetainedBytes - initialPaletteInputBytes, baselineEntries = baselineStats.entries;
+  const selectionIdentity = (id: string) => { const palette = resolveTheme({ kind: 'theme', id }).effective;
+    return `theme:${palette.id}:${palette.fingerprint}:truecolor`; };
+  const initialSelection = selectionIdentity('gruvbox-dark');
+  let maxPaletteInputBytes = initialPaletteInputBytes, peakSettledBytes = baselineRetainedBytes;
+  assert.ok(nonPaletteBaselineBytes >= 0 && maxPaletteInputBytes > 0, 'the live owner holds exactly one selected palette input');
+  let selected = 'gruvbox-dark';
+  for (let i = 2; i <= 101; i++) {
+    selected = THEME_CATALOGUE[(i - 2) % THEME_CATALOGUE.length]!.id; f.theme(selected); await settle();
+    const stats = f.sources.stats(); assert.equal(stats.unsettledJobs, 0);
+    assert.equal(stats.retention.entries, baselineEntries, 'replacing one selection does not accumulate historical semantic entries');
+    maxPaletteInputBytes = Math.max(maxPaletteInputBytes, ...f.env.paletteInputBytes);
+    peakSettledBytes = Math.max(peakSettledBytes, stats.retention.retainedBytes);
+    const currentPaletteInputBytes = f.env.paletteInputBytes.at(-1)!;
+    const selection = selectionIdentity(selected), identityDelta = selection.length - initialSelection.length;
+    const selectionBytesDelta = 2 * identityDelta, displayIdentityBytesDelta = 2 * baselineEntries * identityDelta;
+    const allowedBytes = nonPaletteBaselineBytes + currentPaletteInputBytes + selectionBytesDelta + displayIdentityBytesDelta;
+    assert.ok(stats.retention.retainedBytes <= allowedBytes,
+      `settled palette ${i - 1}: retained=${stats.retention.retainedBytes}, allowed=${allowedBytes}, input=${currentPaletteInputBytes}, selectionDelta=${selectionBytesDelta}, displayDelta=${displayIdentityBytesDelta}`);
+  }
+  assert.equal(style(f, owner), sampleOwnedPalette(selected, 'truecolor').compiledRoles.code.open);
+  assert.equal(f.calls.length, initialCalls, 'local palette changes do not use the helper');
+  console.log(JSON.stringify({ ownedPaletteChurn: { choices: 100, liveOwners: 1, nonPaletteBaselineBytes,
+    peakSettledBytes, initialPaletteInputBytes, maxPaletteInputBytes } }));
 });
 
-test('cards rollback rejects late preview colors before a preparation turn', async () => {
-  const f = fixture(true), owner = {}; await nativeReady(f, owner); const color = style(f, owner), count = f.calls.length;
-  f.native('preview', 'b'.repeat(64)); await settle(); const preview = f.calls.findIndex(c => !c.done && c.request.op === 'styles.resolve');
-  f.native(); f.answerStyle(preview, 99); await settle(); assert.equal(style(f, owner), color);
-  assert.equal(f.calls.filter(c => c.request.op !== 'styles.resolve').length, f.calls.slice(0, count).filter(c => c.request.op !== 'styles.resolve').length);
+test('cards warm owned-palette reads reuse one selected asset and render without further preparation', async () => {
+  const f = fixture(true), first = {}, second = {}, observed = observePaletteInput('gruvbox-dark');
+  try {
+    await themeReady(f, first);
+    inspect(f, first, (_display, paint) => assert.equal(paint.origin, 'owned'));
+    const cold = observed.snapshot();
+    assert.equal(cold.opens, 1); assert.ok(cold.reads > 0); assert.equal(cold.ownerLookups, 1);
+
+    f.use(second, bash('second owner\n', true)); await settle();
+    for (let i = 0; i < f.calls.length; i++) if (!f.calls[i]!.done) {
+      if (f.calls[i]!.request.op === 'styles.resolve') f.answerStyle(i);
+      else f.answerSource(i, f.calls[i]!.request.sources?.[0]?.text ?? 'second owner\n');
+      await settle();
+    }
+    inspect(f, second, (_display, paint) => assert.equal(paint.origin, 'owned'));
+    const shared = observed.snapshot();
+    assert.equal(shared.opens, cold.opens); assert.equal(shared.reads, cold.reads);
+    assert.equal(shared.ownerLookups, cold.ownerLookups + 1, 'the second live owner acquires the same cached palette store');
+    assert.equal(f.sources.stats().unsettledJobs, 0);
+
+    const ownerLookups = shared.ownerLookups, acquisitions = f.env.acquisitions, calls = f.calls.length;
+    const dispatches = f.sources.stats().dispatches, paletteInputBytes = [...f.env.paletteInputBytes];
+    const preparations = [...f.env.preparations], unsettled = f.sources.stats().unsettledJobs;
+    const renderOwnedCard = (owner: Owner) => { inspect(f, owner, () => {}); f.cards.useful(owner, owner.input!.revision); };
+    for (let i = 0; i < 20; i++) { renderOwnedCard(first); renderOwnedCard(second); }
+    await settle();
+    assert.deepEqual(observed.snapshot(), shared, 'warm visit/useful renders do not reopen, reread or prepare the owned asset');
+    assert.equal(observed.snapshot().ownerLookups, ownerLookups);
+    assert.equal(f.env.acquisitions, acquisitions); assert.deepEqual(f.env.paletteInputBytes, paletteInputBytes);
+    assert.equal(f.calls.length, calls); assert.equal(f.sources.stats().dispatches, dispatches);
+    assert.deepEqual(f.env.preparations, preparations, 'warm renders do not add card-preparation receipts');
+    assert.equal(f.sources.stats().unsettledJobs, unsettled);
+  } finally { observed.restore(); }
+});
+
+test('cards local palette selection does not create preview requests or replay SOURCE', async () => {
+  const f = fixture(true), owner = {}; await themeReady(f, owner); const before = f.calls.length, identity = f.cards.identities(owner)[0]!;
+  f.theme('monokai-dark'); await settle();
+  inspect(f, owner, (_d, p) => { assert.equal(p.origin, 'owned'); assert.equal(p.roles.code.open, sampleOwnedPalette('monokai-dark', 'truecolor').compiledRoles.code.open); });
+  assert.equal(f.calls.length, before); const next = f.cards.identities(owner)[0]!;
+  assert.deepEqual({ key: next.key, version: next.version, language: next.language, complete: next.complete },
+    { key: identity.key, version: identity.version, language: identity.language, complete: identity.complete });
+  assert.notEqual(next.palette, identity.palette, 'palette selection advances only local presentation identity');
 });
 
 test('cards palette-only updates preserve logical file geometry and source identities', async () => {
@@ -500,10 +762,10 @@ test('cards held native slots do not delay an unrelated FILE fallback while nati
 });
 
 test('cards a ready recent result publishes independently while its recent peer remains held', async () => {
-  const f = fixture(true), a = {}, b = {}; f.native(); f.use(a, bash('a', true)); f.use(b, bash('b', true)); await settle();
+  const f = fixture(true), a = {}, b = {}; f.theme(); f.use(a, bash('a', true)); f.use(b, bash('b', true)); await settle();
   const bCall = f.calls.findIndex(c => c.request.sources?.[0]?.text === 'b'); f.answerSource(bCall, 'b'); await settle();
   for (let i = 0; i < f.calls.length; i++) if (!f.calls[i]!.done && f.calls[i]!.request.op === 'styles.resolve') { f.answerStyle(i, 33); await settle(); }
-  inspect(f, b, (_d, p) => assert.equal(p.origin, 'native')); assert.ok(f.calls.some(c => !c.done && c.request.sources?.[0]?.text === 'a'));
+  inspect(f, b, (_d, p) => assert.equal(p.origin, 'owned')); assert.ok(f.calls.some(c => !c.done && c.request.sources?.[0]?.text === 'a'));
 });
 
 test('cards reentrant pause preserves exact Pi fallback evidence without a duplicate classifier', async () => {
@@ -519,7 +781,7 @@ test('cards explicit Pi language changes retain key identity but update the clas
 });
 
 test('cards send a shebang-selected Occipital language without replacing path-derived Pi classification', async () => {
-  const f = fixture(true), owner = {}; f.native();
+  const f = fixture(true), owner = {}; f.theme();
   const input = written('#!/usr/bin/env python3\necho "same"', 1, 'script.rb'); input.language = 'ruby'; f.use(owner, input); await settle();
   const call = f.calls.find(entry => entry.request.sources?.[0]?.text.includes('echo "same"'));
   assert.ok(call, 'native SOURCE is admitted for the numbered file source');
@@ -559,38 +821,37 @@ test('cards actual Pi palette replacement classifies once without logical file n
 });
 
 for (const kind of ['bash', 'file'] as const) test(`cards every warm ${kind} owner recolors newest first without SOURCE replay`, async () => {
-  const f = fixture(true), owners = [{}, {}, {}]; f.native();
+  const f = fixture(true), owners = [{}, {}, {}]; f.theme();
   owners.forEach((o, i) => f.use(o, kind === 'bash' ? bash(`x${i}`, true) : written(`x${i}`))); await settle();
   for (let round = 0; round < 20; round++) { const pending = f.calls.map((c, i) => ({ c, i })).filter(x => !x.c.done); if (!pending.length) break;
     for (const { c, i } of pending) { if (c.request.op === 'styles.resolve') f.answerStyle(i); else f.answerSource(i, c.request.sources[0].text); } await settle(); }
   const before = f.calls.filter(c => c.request.op !== 'styles.resolve').length; f.env.invalidated.length = 0;
-  f.native('next', 'b'.repeat(64)); await settle();
+  f.theme('gruvbox-light'); await settle();
   for (let i = 0; i < f.calls.length; i++) if (!f.calls[i]!.done && f.calls[i]!.request.op === 'styles.resolve') { f.answerStyle(i, 44); await settle(); }
   assert.equal(f.calls.filter(c => c.request.op !== 'styles.resolve').length, before);
   for (const o of owners) assert.ok(style(f, o).includes('44'));
 });
 
-test('cards same-ID fingerprint refresh then Follow Pi replaces all roles without SOURCE replay', async () => {
-  const f = fixture(true), owner = {}; await nativeReady(f, owner); const original = style(f, owner), sources = f.calls.filter(c => c.request.op !== 'styles.resolve').length;
-  f.native('native', 'b'.repeat(64)); await settle();
-  for (let i = 0; i < f.calls.length; i++) if (!f.calls[i]!.done && f.calls[i]!.request.op === 'styles.resolve') { f.answerStyle(i, 66); await settle(); }
-  assert.notEqual(style(f, owner), original);
-  f.env.selected = { kind: 'pi' }; f.cards.metadataChanged(); await settle();
-  for (let i = 0; i < f.calls.length; i++) if (!f.calls[i]!.done && f.calls[i]!.request.op === 'styles.resolve') { f.answerStyle(i); await settle(); }
-  inspect(f, owner, (_d, p) => assert.equal(p.origin, 'pi')); assert.equal(f.calls.filter(c => c.request.op !== 'styles.resolve').length, sources);
+test('cards owned palette change then Follow Pi replaces roles locally without SOURCE replay', async () => {
+  const f = fixture(true), owner = {}; await themeReady(f, owner); const sources = f.calls.filter(c => c.request.op !== 'styles.resolve').length, before = f.calls.length;
+  f.theme('gruvbox-light'); await settle(); const owned = style(f, owner);
+  f.env.selected = { kind: 'pi' }; f.piTheme('system'); await settle();
+  inspect(f, owner, (_d, p) => { assert.equal(p.origin, 'pi'); assert.notEqual(p.roles.code.open, owned); });
+  assert.equal(f.calls.length, before); assert.equal(f.calls.filter(c => c.request.op !== 'styles.resolve').length, sources);
 });
 
-test('cards offline incompatible selection retains the complete native file palette without Pi classification', async () => {
-  const f = fixture(true), owner = {}; f.native(); f.use(owner, written('x')); await settle();
+test('cards helper loss preserves the selected owned palette and cached source without Pi classification', async () => {
+  const f = fixture(true), owner = {}; f.theme(); f.use(owner, written('x')); await settle();
   for (let round = 0; round < 10; round++) { const pending = f.calls.map((c, i) => ({ c, i })).filter(x => !x.c.done); if (!pending.length) break;
     for (const { c, i } of pending) { if (c.request.op === 'styles.resolve') f.answerStyle(i, 55); else f.answerSource(i, c.request.sources[0].text); } await settle(); }
-  const before = style(f, owner); f.env.ready = false; f.native('offline', 'b'.repeat(64)); await settle();
-  assert.equal(style(f, owner), before); assert.equal(f.env.classifications.length, 0);
+  const before = style(f, owner); f.env.ready = false; f.theme('gruvbox-light'); await settle();
+  assert.notEqual(style(f, owner), before, 'local palette selection remains effective without the helper');
+  assert.equal(f.env.classifications.length, 0);
 });
 
 
 test('cards unsupported partial malformed and error files are source-less rather than fake empty parsers', async () => {
-  const f = fixture(true); f.native();
+  const f = fixture(true); f.theme();
   const cases: CardDisplayInput[] = [
     { ...written('proposal'), node: { toolName: 'write', args: { path: 'a', content: 'proposal' }, isPartial: true, result: {} } },
     { ...written('failed'), node: { toolName: 'write', args: { path: 'a', content: 'failed' }, isPartial: false, result: { isError: true } } },
@@ -602,8 +863,8 @@ test('cards unsupported partial malformed and error files are source-less rather
 });
 
 test('cards palette acquisition reentrant removal releases the returned funded lease and cannot publish', async () => {
-  const f = fixture(), owner = {}, original = f.runtime.preparePiInput.bind(f.runtime);
-  f.runtime.preparePiInput = (...args) => { const lease = original(...args); f.cards.remove(owner); return lease; };
+  const f = fixture(), owner = {}, original = f.paletteInputs.prepare.bind(f.paletteInputs);
+  f.paletteInputs.prepare = (...args) => { const lease = original(...args); f.cards.remove(owner); return lease; };
   assert.equal(f.update(owner, bash('reentrant')), false); assert.deepEqual(f.cards.identities(owner), []);
   assert.equal(f.cards.visit(owner, () => assert.fail('removed owner')), false);
   f.sources.setStyleSelection(undefined); await settle(); assert.equal(f.sources.stats().retention.retainedBytes, 0);
@@ -643,19 +904,19 @@ test('cards file service diagnostics and notes are prepared while cwd updates re
 });
 
 
-test('cards denied replacement lookup retains complete native roles with neutral revoked readers', async () => {
-  const f = fixture(true), owner = {}; await nativeReady(f, owner); const before = style(f, owner), key = f.cards.identities(owner)[0]!.key;
+test('cards denied replacement palette input retains the prior complete paint until funding recovers', async () => {
+  const f = fixture(true), owner = {}; await themeReady(f, owner); const before = style(f, owner), key = f.cards.identities(owner)[0]!.key;
   const funding = f.sources.geometryFunding.bind(f.sources), stamp = f.cards.displayStamp(owner);
   f.sources.geometryFunding = group => { const original = funding(group); return original && { budget: original.budget, grant: bytes => bytes > 4096 ? undefined : original.grant(bytes) }; };
-  f.native('next', 'b'.repeat(64)); await settle(); const i = f.calls.findIndex(c => !c.done && c.request.op === 'styles.resolve'); assert.ok(i >= 0);
-  f.answerStyle(i, 22); await settle();
-  inspect(f, owner, (_d, p) => { assert.equal(p.origin, 'native'); assert.equal(p.roles.code.open, before); assert.equal(p.ranges(key), undefined); });
-  assert.notEqual(f.cards.displayStamp(owner), stamp); assert.equal(f.env.classifications.length, 0);
-  f.sources.geometryFunding = funding; f.update(owner, { ...bash('x\n', true), revision: 2 }); assert.ok(style(f, owner).includes('38;2;22;2;3m'));
+  f.theme('gruvbox-light'); await settle();
+  inspect(f, owner, (_d, p) => { assert.equal(p.origin, 'owned'); assert.equal(p.roles.code.open, before); assert.ok(p.ranges(key), 'old semantic ranges stay paired with the retained palette'); });
+  assert.equal(f.cards.displayStamp(owner), stamp); assert.equal(f.env.classifications.length, 0);
+  f.sources.geometryFunding = funding; f.update(owner, { ...bash('x\n', true), revision: 3 }); f.cards.useful(owner, 3); await settle();
+  inspect(f, owner, (_d, p) => assert.equal(p.roles.code.open, sampleOwnedPalette('gruvbox-light', 'truecolor').compiledRoles.code.open));
 });
 
-for (const native of [false, true]) test(`review F1: changed file never borrows previous ranges before preparation, native=${native}`, async () => {
-  const f = fixture(native), owner = {}; if (native) f.native();
+for (const native of [false, true]) test(`review F1: changed file never borrows previous ranges before preparation, ownedPalette=${native}`, async () => {
+  const f = fixture(native), owner = {}; if (native) f.theme();
   f.use(owner, written('const previous = 1')); await settle();
   if (native) for (let round = 0; round < 8; round++) {
     const pending = f.calls.map((c, i) => ({ c, i })).filter(x => !x.c.done); if (!pending.length) break;
@@ -674,7 +935,7 @@ for (const native of [false, true]) test(`review F1: changed file never borrows 
     if (d.kind !== 'file') assert.fail('file'); assert.equal(d.rows[0]!.region!.text, 'x');
     assert.equal(p.ranges(d.rows[0]!.nextSource!.key), undefined, 'new text must be neutral before current-source proof');
     assert.equal(p.basis(key, () => assert.fail('previous file is not a historical Bash basis')), false);
-    assert.equal(p.origin, native ? 'native' : 'pi'); assert.deepEqual(Object.keys(p.roles), CARD_ROLES);
+    assert.equal(p.origin, native ? 'owned' : 'pi'); assert.deepEqual(Object.keys(p.roles), CARD_ROLES);
   });
   assert.equal(f.calls.length, calls); assert.equal(f.env.classifications.length, classifications);
   f.cards.useful(owner, 2); await settle();
@@ -684,7 +945,7 @@ for (const native of [false, true]) test(`review F1: changed file never borrows 
     assert.ok(f.sources.displayBasis(key), 'the canonical historical native display is still owned');
     inspect(f, owner, (d, p) => {
       if (d.kind !== 'file') assert.fail('file'); assert.equal(d.rows[0]!.region!.text, 'x');
-      assert.equal(p.origin, 'native'); assert.deepEqual(Object.keys(p.roles), CARD_ROLES);
+      assert.equal(p.origin, 'owned'); assert.deepEqual(Object.keys(p.roles), CARD_ROLES);
       assert.equal(p.ranges(key), undefined, 'new demand metadata cannot make the previous FILE ranges compatible');
       assert.equal(p.basis(key, () => assert.fail('deferred offline preparation cannot publish the old file text')), false);
     });
@@ -692,20 +953,21 @@ for (const native of [false, true]) test(`review F1: changed file never borrows 
   }
 });
 
-for (const otherOwner of [false, true]) test(`review F2: rejected native selection retries at a cold update after real funding recovery, otherOwner=${otherOwner}`, async () => {
-  const f = fixture(true), owner = {}; f.update(owner, bash('selection', true));
+for (const otherOwner of [false, true]) test(`review F2: rejected owned-palette selection retries at a cold update after real funding recovery, otherOwner=${otherOwner}`, async () => {
+  const f = fixture(true), owner = {};
+  f.update(owner, bash('selection', true));
   const budget = f.sources.geometryFunding()!.budget, select = f.sources.setStyleSelection.bind(f.sources);
   let pressure: ReturnType<typeof budget.reserve>, refuse = true;
   const accepted: boolean[] = [];
   f.sources.setStyleSelection = input => {
-    if (input?.kind === 'native') {
+    if (input?.palette.startsWith('theme:')) {
       if (refuse && !pressure) { const usage = budget.stats(); pressure = budget.reserve(usage.limit - usage.retainedBytes - usage.outstandingPeakBytes); assert.ok(pressure); }
       const result = select(input); accepted.push(result); return result;
     }
     return select(input);
   };
   try {
-    f.native(); f.update(owner, { ...bash('selection', true), revision: 2 });
+    f.theme(); f.update(owner, { ...bash('selection', true), revision: 2 });
     assert.deepEqual(accepted, [false], 'actual controller admission must refuse with its existing budget');
     pressure!.close(); pressure = undefined; refuse = false;
     const current = otherOwner ? {} : owner;
@@ -713,7 +975,9 @@ for (const otherOwner of [false, true]) test(`review F2: rejected native selecti
     assert.deepEqual(accepted, [false, true], 'a refusal cannot be memoized as installed');
     f.cards.useful(current, 3); await settle();
     const source = f.calls.findIndex(c => c.request.op !== 'styles.resolve'); assert.ok(source >= 0); f.answerSource(source, 'selection'); await settle();
-    assert.ok(f.calls.some(c => c.request.op === 'styles.resolve' && c.request.rules.kind === 'native'));
+    const styleRequest = f.calls.find(c => c.request.op === 'styles.resolve')?.request;
+    assert.ok(styleRequest); assert.equal(styleRequest.rules.revision, 2);
+    assert.ok(styleRequest.rules.rules.every((rule: { context: unknown }) => rule.context !== undefined));
   } finally { pressure?.close(); f.sources.setStyleSelection = select; }
 });
 
@@ -753,15 +1017,20 @@ for (const noOp of [false, true]) test(`review F4: file service note follows bot
   }
 });
 
-test('review final delta: ready native adoption releases its Pi lease and never reacquires it for native-only updates', async () => {
-  const f = fixture(true), owner = {}, prepare = f.runtime.preparePiInput.bind(f.runtime);
+test('review final delta: ready owned-palette adoption releases its Pi lease and never reacquires it', async () => {
+  const f = fixture(true), owner = {}, prepare = f.paletteInputs.prepare.bind(f.paletteInputs);
   const leases: NonNullable<ReturnType<typeof prepare>>[] = [];
-  f.runtime.preparePiInput = (...args) => { const lease = prepare(...args); if (lease) leases.push(lease); return lease; };
-  await nativeReady(f, owner); assert.ok(leases.length > 0); assert.ok(leases.every(lease => !lease.isValid), 'native adoption releases every superseded Pi lease');
+  f.paletteInputs.prepare = (...args) => { const lease = prepare(...args); if (lease) leases.push(lease); return lease; };
+  f.use(owner, bash('x\n', true)); await settle();
+  for (let i = 0; i < f.calls.length; i++) if (!f.calls[i]!.done) { if (f.calls[i]!.request.op === 'styles.resolve') f.answerStyle(i); else f.answerSource(i, 'x\n'); await settle(); }
+  const piLeases = leases.filter(lease => lease.paletteId === 'pi'); assert.ok(piLeases.length > 0 && piLeases.some(lease => lease.isValid));
   const before = [f.env.acquisitions, f.env.samples, f.calls.length];
-  f.update(owner, { ...bash('x\n', true), revision: 2, palette: f.piTheme('light') });
-  inspect(f, owner, (_d, p) => assert.equal(p.origin, 'native')); assert.deepEqual([f.env.acquisitions, f.env.samples, f.calls.length], before);
-  f.cards.remove(owner); assert.ok(leases.every(lease => !lease.isValid));
+  f.theme('gruvbox-dark'); await settle();
+  assert.ok(piLeases.every(lease => !lease.isValid), 'owned-palette adoption releases every superseded Pi lease');
+  const stable = [f.env.acquisitions, f.env.samples, f.calls.length];
+  f.piTheme('light'); await settle();
+  inspect(f, owner, (_d, p) => assert.equal(p.origin, 'owned')); assert.deepEqual([f.env.acquisitions, f.env.samples, f.calls.length], stable);
+  assert.ok(stable[0] > before[0]); f.cards.remove(owner); assert.ok(piLeases.every(lease => !lease.isValid));
 });
 
 test('original 24: off-held Bash completion preserves native uncertainty, latest text and zero Pi until owned cleanup', async () => {
@@ -800,7 +1069,7 @@ for (const count of [1, 2]) test(`original 38: asynchronous local refusal preser
 });
 
 test('review F1: canonical equal-text alias keeps native file syntax without another parse', async () => {
-  const f = fixture(true), owner = {}, text = 'const unchanged = 1'; f.native();
+  const f = fixture(true), owner = {}, text = 'const unchanged = 1'; f.theme();
   f.use(owner, written(text)); await settle();
   for (let round = 0; round < 8; round++) {
     const pending = f.calls.map((c, i) => ({ c, i })).filter(x => !x.c.done); if (!pending.length) break;
@@ -922,62 +1191,59 @@ test('restored files: a held edit fragment keeps Pi paint until atomic semantic 
   inspect(f, change, (_d, p) => assert.notEqual(p.paintStamp, before, 'the complete semantic group replaces Pi paint'));
 });
 
-for (const selection of ['native', 'Follow Pi'] as const) test(`C19 frozen cards recolor retained scopes after ${selection} selection without SOURCE or identity advance`, async () => {
-  const f = fixture(true), owner = {}; await nativeReady(f, owner, 'x\n');
+for (const selection of ['owned palette', 'Follow Pi'] as const) test(`C19 frozen cards recolor locally after ${selection} selection without SOURCE or version advance`, async () => {
+  const f = fixture(true), owner = {}; await themeReady(f, owner, 'x\n');
   f.cards.freeze(owner);
   f.update(owner, bash('x\nlatest\t界', false, 2));
   const identities = f.cards.identities(owner), sourceCalls = f.calls.filter(c => c.request.op !== 'styles.resolve').length;
-  const original = style(f, owner), beforeStyles = f.calls.filter(c => c.request.op === 'styles.resolve').length;
-  if (selection === 'native') f.native('next', 'b'.repeat(64));
-  else { f.env.selected = { kind: 'pi' }; f.cards.metadataChanged(); }
-  f.cards.useful(owner, 2); await settle();
-  assert.equal(style(f, owner), original, 'pending STYLE retains the last ready paint');
-  const pending = f.calls.map((c, i) => ({ c, i })).filter(x => !x.c.done && x.c.request.op === 'styles.resolve');
-  assert.ok(pending.length > 0, 'retained scopes remain eligible for the new STYLE');
-  for (const { i } of pending) { f.answerStyle(i, 67); await settle(); }
-  assert.notEqual(style(f, owner), original);
+  const sourceIdentity = identities.map(({ key, version, language, complete }) => ({ key, version, language, complete }));
+  const originalRoles = style(f, owner), originalRanges = (() => { let value = ''; inspect(f, owner, (_d, p) => p.ranges(identities[0]!.key)?.((_a, _b, s) => { value = s.open; })); return value; })(), beforeCalls = f.calls.length;
+  if (selection === 'owned palette') f.theme('gruvbox-light');
+  else { f.env.selected = { kind: 'pi' }; f.piTheme('system'); }
+  f.cards.useful(owner, 3); await settle();
+  assert.notEqual(style(f, owner), originalRoles, 'selected local roles are immediately visible');
+  assert.equal(f.calls.length, beforeCalls, 'palette rebinding has no remote STYLE/profile request');
+  const rangesAfter = (() => { let value = ''; inspect(f, owner, (_d, p) => p.ranges(identities[0]!.key)?.((_a, _b, s) => { value = s.open; })); return value; })();
+  const explicitForeground = (open: string) => open.match(/^\x1b\[38;2;\d+;\d+;\d+m/)?.[0];
+  assert.equal(explicitForeground(rangesAfter), explicitForeground(originalRanges), 'cached explicit STYLE ink survives palette rebinding');
   inspect(f, owner, (d, p) => {
-    assert.equal(p.origin, selection === 'native' ? 'native' : 'pi');
+    assert.equal(p.origin, selection === 'owned palette' ? 'owned' : 'pi');
     assert.equal(d.kind, 'bash'); if (d.kind === 'bash') assert.equal(d.command.text, 'x\nlatest\t界');
     assert.equal(p.basis(identities[0]!.key, (text, ranges) => {
       assert.equal(text, 'x\n'); assert.equal(ranges((_a, b) => assert.ok(b <= 2)), true);
     }), true);
   });
-  assert.deepEqual(f.cards.identities(owner), identities, 'frozen source versions are not aliases for latest display');
+  assert.deepEqual(f.cards.identities(owner).map(({ key, version, language, complete }) => ({ key, version, language, complete })),
+    sourceIdentity, 'frozen source versions are not aliases for latest display');
   assert.equal(f.calls.filter(c => c.request.op !== 'styles.resolve').length, sourceCalls);
-  assert.ok(f.calls.filter(c => c.request.op === 'styles.resolve').length > beforeStyles);
   assert.deepEqual(f.env.classifications, []);
-  const palette = f.piTheme('light');
-  if (selection === 'Follow Pi') {
-    const prior = style(f, owner), calls = f.calls.length;
-    f.update(owner, { ...bash('x\nlatest\t界', false, 2), revision: 3, palette }); f.cards.useful(owner, 3); await settle();
-    assert.notEqual(style(f, owner), prior, 'Follow Pi bindings recolor locally'); assert.equal(f.calls.length, calls);
-  }
+  const calls = f.calls.length, selectedColor = style(f, owner); f.piTheme('light'); await settle();
+  if (selection === 'Follow Pi') assert.notEqual(style(f, owner), selectedColor, 'Follow Pi palette changes recolor locally');
+  else assert.equal(style(f, owner), selectedColor, 'Pi theme changes do not recolor an owned palette');
+  assert.equal(f.calls.length, calls);
 });
 
 
-for (const compatible of [true, false]) test(`C19 frozen cards provider recovery preserves parser freeze and vocabulary authority compatible=${compatible}`, async () => {
-  const f = fixture(true), owner = {}; await nativeReady(f, owner); f.cards.freeze(owner);
-  const identity = f.cards.identities(owner), sourceCalls = f.calls.filter(c => c.request.op !== 'styles.resolve').length, original = style(f, owner);
+for (const compatible of [true, false]) test(`C19 frozen cards provider recovery preserves local palette and cached display compatible=${compatible}`, async () => {
+  const f = fixture(true), owner = {}; await themeReady(f, owner); f.cards.freeze(owner);
+  const identity = f.cards.identities(owner), sourceCalls = f.calls.filter(c => c.request.op !== 'styles.resolve').length, callCount = f.calls.length;
   f.env.ready = false; f.cards.metadataChanged(); await settle(); f.env.generation++;
   if (!compatible) f.env.vocabulary = 'd'.repeat(64);
-  f.env.ready = true; f.native('next', 'b'.repeat(64)); await settle();
-  const pending = f.calls.map((c, i) => ({ c, i })).filter(x => !x.c.done && x.c.request.op === 'styles.resolve');
-  assert.equal(pending.length, compatible ? 1 : 0, 'foreign vocabulary cannot resolve retained scope IDs');
-  for (const { c, i } of pending) { assert.equal(c.request.vocabulary, 'a'.repeat(64)); f.answerStyle(i, 68); await settle(); }
-  assert.equal(style(f, owner) === original, !compatible);
+  f.env.ready = true; f.theme('gruvbox-light'); await settle();
+  assert.equal(f.calls.length, callCount, 'local palette restore does not request provider profile or SOURCE data');
+  inspect(f, owner, (_d, p) => { assert.equal(p.roles.code.open, sampleOwnedPalette('gruvbox-light', 'truecolor').compiledRoles.code.open); });
   assert.deepEqual(f.cards.identities(owner), identity); assert.equal(f.calls.filter(c => c.request.op !== 'styles.resolve').length, sourceCalls);
   assert.deepEqual(f.env.classifications, []);
 });
 
 for (const phase of ['early', 'pending', 'unknown'] as const) test(`C19 frozen cards ${phase} source never opens or gains fallback authority on recolor`, async () => {
-  const f = fixture(phase !== 'early'), owner = {}; f.native(); f.use(owner, bash('held')); await settle();
+  const f = fixture(phase !== 'early'), owner = {}; f.theme(); f.use(owner, bash('held')); await settle();
   const key = f.cards.identities(owner)[0]!.key;
   if (phase === 'unknown') { f.fault(f.calls.findIndex(c => c.request.op === 'stream.open'), 'unknown'); await settle(); }
   f.cards.freeze(owner); const sources = f.calls.filter(c => c.request.op !== 'styles.resolve').length;
   const status = f.sources.workStatus(key);
   if (phase !== 'early') assert.equal(status.fallbackEligible, false);
-  f.env.ready = true; f.native('next', 'b'.repeat(64)); f.update(owner, bash('held latest', true, 2)); f.cards.useful(owner, 2); await settle();
+  f.env.ready = true; f.theme('gruvbox-light'); f.update(owner, bash('held latest', true, 3)); f.cards.useful(owner, 3); await settle();
   assert.equal(command(f, owner), 'held latest'); assert.equal(f.calls.filter(c => c.request.op !== 'styles.resolve').length, sources);
   if (phase !== 'early') assert.equal(f.sources.workStatus(key).fallbackEligible, false);
   assert.deepEqual(f.env.classifications, []);
@@ -987,42 +1253,46 @@ for (const phase of ['early', 'pending', 'unknown'] as const) test(`C19 frozen c
   }
 });
 
-for (const stop of ['pause', 'remove', 'off'] as const) test(`C19 frozen cards ${stop} still stops its named work without thawing SOURCE`, async () => {
-  const f = fixture(true), owner = {}; await nativeReady(f, owner); f.cards.freeze(owner);
+for (const stop of ['pause', 'remove', 'off'] as const) test(`C19 frozen cards ${stop} preserves SOURCE lifecycle while palette rebinding stays local`, async () => {
+  const f = fixture(true), owner: Owner = {}; await themeReady(f, owner); f.cards.freeze(owner);
   const sources = f.calls.filter(c => c.request.op !== 'styles.resolve').length;
   if (stop === 'pause') f.cards.pause(owner);
-  else if (stop === 'remove') f.cards.remove(owner);
+  else if (stop === 'remove') { f.cards.remove(owner); f.forget(owner); }
   else { f.env.enabled = false; f.sources.setEnabled(false); }
-  const calls = f.calls.length; f.native('next', 'b'.repeat(64)); await settle(); assert.equal(f.calls.length, calls);
+  const calls = f.calls.length; f.theme('gruvbox-light'); await settle(); assert.equal(f.calls.length, calls);
   if (stop === 'pause') {
-    f.cards.useful(owner, 1); await settle(); const i = f.calls.findIndex(c => !c.done && c.request.op === 'styles.resolve'); assert.ok(i >= 0);
-    f.answerStyle(i, 69); await settle(); assert.ok(style(f, owner).includes('38;2;69;2;3m'));
+    f.cards.useful(owner, owner.input!.revision); await settle();
+     inspect(f, owner, (_d, p) => assert.equal(p.roles.code.open, sampleOwnedPalette('gruvbox-light', 'truecolor').compiledRoles.code.open));
   } else if (stop === 'off') {
-    f.env.enabled = true; f.sources.setEnabled(true); f.cards.metadataChanged(); f.cards.useful(owner, 1); await settle();
+    inspect(f, owner, (_d, p) => assert.equal(p.roles.code.open, sampleOwnedPalette('gruvbox-light', 'truecolor').compiledRoles.code.open));
+    f.env.enabled = true; f.sources.setEnabled(true); f.cards.metadataChanged(); f.cards.useful(owner, owner.input!.revision); await settle();
     assert.equal(f.sources.displayBasis(f.cards.identities(owner)[0]!.key), undefined, 'Off discarded scopes, not source freeze');
   } else assert.equal(f.cards.visit(owner, () => assert.fail('removed card')), false);
   assert.equal(f.calls.filter(c => c.request.op !== 'styles.resolve').length, sources); assert.deepEqual(f.env.classifications, []);
 });
 
-test('C19 frozen cards first retained owner collects while a recoloring peer remains live', async () => {
+test('C19 frozen cards first retained owner collects while local palette rebinding keeps a peer live', async () => {
   const f = fixture(true), peer = {}; let weak: WeakRef<Owner>;
-  async function abandon() { const owner = {}; await nativeReady(f, owner); f.cards.freeze(owner); return new WeakRef(owner); }
-  weak = await abandon(); await nativeReady(f, peer, 'peer\n'); f.cards.freeze(peer);
-  f.env.invalidated.length = 0; const before = f.sources.stats().retention.retainedBytes;
+  async function abandon() { const owner = {}; await themeReady(f, owner); f.cards.freeze(owner); return new WeakRef(owner); }
+  weak = await abandon(); await themeReady(f, peer, 'peer\n'); f.cards.freeze(peer);
+  f.env.invalidated.length = 0; const before = f.sources.stats().retention.retainedBytes, calls = f.calls.length;
   for (let i = 0; i < 60; i++) { await turn(); global.gc!(); await settle(); if (!weak.deref()) break; }
   assert.equal(weak.deref(), undefined); assert.ok(f.sources.stats().retention.retainedBytes < before);
-  f.native('next', 'b'.repeat(64)); await settle();
-  for (let i = 0; i < f.calls.length; i++) if (!f.calls[i]!.done && f.calls[i]!.request.op === 'styles.resolve') { f.answerStyle(i, 70); await settle(); }
-  assert.ok(style(f, peer).includes('38;2;70;2;3m')); assert.equal(command(f, peer), 'peer\n');
+  f.theme('gruvbox-light'); await settle();
+  assert.equal(f.calls.length, calls, 'local recoloring needs no helper request');
+  inspect(f, peer, (_d, p) => { assert.equal(p.roles.code.open, sampleOwnedPalette('gruvbox-light', 'truecolor').compiledRoles.code.open); assert.ok(p.ranges(f.cards.identities(peer)[0]!.key)); });
+  assert.equal(command(f, peer), 'peer\n');
 });
 
 
-for (const stop of ['pause', 'remove', 'off'] as const) test(`C19 frozen cards pending STYLE cannot publish across ${stop}`, async () => {
-  const f = fixture(true), owner = {}; await nativeReady(f, owner); f.cards.freeze(owner);
+for (const stop of ['pause', 'remove', 'off'] as const) test(`C19 in-flight STYLE cannot publish across ${stop}`, async () => {
+  const f = fixture(true), owner = {}; await themeReady(f, owner);
   const original = style(f, owner), sources = f.calls.filter(c => c.request.op !== 'styles.resolve').length;
-  f.native('next', 'b'.repeat(64)); await settle();
+  f.update(owner, bash('new context', true, 2)); f.cards.useful(owner, 2); await settle();
+  const source = f.calls.findIndex(c => !c.done && c.request.op !== 'styles.resolve'); assert.ok(source >= 0);
+  f.answerSource(source, 'new context', 2); await settle();
   const i = f.calls.findIndex(c => !c.done && c.request.op === 'styles.resolve'); assert.ok(i >= 0);
-  assert.equal(f.sources.stats().unsettledJobs, 1);
+  assert.equal(f.sources.stats().unsettledJobs, 1); f.cards.freeze(owner);
   if (stop === 'pause') f.cards.pause(owner);
   else if (stop === 'remove') f.cards.remove(owner);
   else { f.env.enabled = false; f.sources.setEnabled(false); f.cards.metadataChanged(); }
@@ -1031,7 +1301,7 @@ for (const stop of ['pause', 'remove', 'off'] as const) test(`C19 frozen cards p
   if (stop === 'pause') assert.equal(style(f, owner), original);
   else if (stop === 'remove') assert.equal(f.cards.visit(owner, () => assert.fail('removed STYLE owner')), false);
   else assert.equal(f.sources.displayBasis(f.cards.identities(owner)[0]!.key), undefined);
-  assert.equal(f.calls.filter(c => c.request.op !== 'styles.resolve').length, sources); assert.deepEqual(f.env.classifications, []);
+  assert.equal(f.calls.filter(c => c.request.op !== 'styles.resolve').length, sources + 1); assert.deepEqual(f.env.classifications, []);
 });
 
 test('renderer resume reuse: historical Follow Pi paint cannot suppress a source changed while the provider was unavailable', async () => {
@@ -1088,8 +1358,8 @@ test('cards bounded Pi source keeps the full write display and paints its suffix
   assert.equal(f.env.classifications.length, 3);
 });
 
-test('cards saturated Bash owns a finite native prefix while full command continues and freezes', async () => {
-  const f = fixture(true), owner = {}, prefix = 'é'.repeat(32768); f.native();
+test('cards saturated Bash owns a finite Occipital prefix while full command continues and freezes', async () => {
+  const f = fixture(true), owner = {}, prefix = 'é'.repeat(32768); f.theme();
   f.use(owner, bash(prefix + 'TAIL')); await settle();
   let index = f.calls.findIndex(c => c.request.op === 'highlight'); assert.ok(index >= 0);
   assert.equal(f.calls[index]!.request.sources[0].text.length, prefix.length);
@@ -1100,9 +1370,9 @@ test('cards saturated Bash owns a finite native prefix while full command contin
   f.use(owner, bash(prefix + 'more suffix', false, 2)); await settle();
   assert.equal(command(f, owner), prefix + 'more suffix'); assert.equal(f.calls.length, count);
   assert.equal(f.sources.stats().preparedBytes, before.preparedBytes); assert.deepEqual(f.env.classifications, []);
-  inspect(f, owner, (_d, p) => { assert.equal(p.origin, 'native'); let end = 0;
-    assert.equal(p.ranges(f.cards.identities(owner)[0]!.key)!((_a, b) => { end = b; }), true); assert.equal(end, 65536);
-    assert.ok(p.roles.title.open.includes('77')); });
+  inspect(f, owner, (_d, p) => { assert.equal(p.origin, 'owned'); let end = 0, color = '';
+    assert.equal(p.ranges(f.cards.identities(owner)[0]!.key)!((_a, b, s) => { end = b; color = s.open; }), true); assert.equal(end, 65536);
+    assert.ok(color.includes('77')); });
   f.cards.freeze(owner); f.cards.pause(owner); f.cards.useful(owner, 2); await settle(); assert.equal(f.calls.length, count);
   f.cards.remove(owner); assert.equal(f.sources.stats().sourceRecords, 0);
 });
@@ -1276,7 +1546,7 @@ for (const remaining of ['none', 'held-local', 'palette-change', 'retained-style
     request(request: Frame): Promise<unknown> {
       return new Promise(resolve => {
         this.calls.push({ request, resolve });
-        if (request.op === 'describe') resolve(semanticDescriptor(request.ticket, 'terminal', []));
+        if (request.op === 'describe') resolve(semanticDescriptor(request.ticket, 'terminal'));
         if (request.op === 'highlight') requested();
       });
     }
@@ -1284,7 +1554,7 @@ for (const remaining of ['none', 'held-local', 'palette-change', 'retained-style
     async close() { this.endReason ??= 'closed'; this.finish(this.endReason); for (const call of this.calls) call.resolve({}); }
     source() {
       const call = this.calls.find(call => call.request.op === 'highlight')!, q = call.request, s = q.sources[0], bytes = Buffer.byteLength(s.text);
-      call.resolve({ v: 3, ticket: q.ticket, instance: 'terminal', assets: 'assets', status: 'ok', body: {
+      call.resolve({ v: 4, ticket: q.ticket, instance: 'terminal', assets: 'assets', status: 'ok', body: {
         kind: 'source', vocabulary: 'a'.repeat(64), sources: [{ key: s.key, generation: s.generation, source_version: s.source_version,
           revision: 1, source_bytes: bytes, replace_from: 0, committed_bytes: bytes, complete: true, contexts: [[0, 1]], runs: [bytes, 1],
           counters: { committed_line_calls: 0, committed_line_bytes: 0, tail_calls: 1, tail_bytes: bytes } }] } });
@@ -1300,7 +1570,8 @@ for (const remaining of ['none', 'held-local', 'palette-change', 'retained-style
     }, acquireOwned: async () => { assert.fail('controlled shared recovery must not acquire owned'); } },
     onChange() { metadata++; cards?.metadataChanged(); if (client.snapshot().provider.availability === 'unavailable') terminalDelivered(); },
     onSourceChange(keys, groups) { cards?.sourceChanged(keys, groups); } });
-  cards = new CardSources(client, { preparePiInput: funding => a.runtime.preparePiInput(theme, 'truecolor', funding),
+  cards = new CardSources(client, { preparePiInput: funding => a.runtime.preparePaletteInput(
+    resolveTheme({ kind: 'pi' }).effective, theme, a.runtime.palette(theme), 'truecolor', funding),
     classify: text => { classifications++; return highlightCode(text, 'typescript'); }, invalidate() {}, requestRender() {},
     preparation(_owner, receipt) {
       if (receipt.phase !== 'prepared' || receipt.revision !== 2 || client.snapshot().provider.availability === 'ready') return;
@@ -1326,7 +1597,7 @@ for (const remaining of ['none', 'held-local', 'palette-change', 'retained-style
     cards.updateDisplay(owner, input); cards.useful(owner, input.revision);
     await awaitFixture(sourceRequest); await awaitFixture(initialYield);
     const p = client.snapshot().effective!;
-    for (const key of ['a', 'b']) a.sources.observe({ key, text: key, version: 1, complete: true, profile: p.id, fingerprint: p.fingerprint });
+    for (const key of ['a', 'b']) a.sources.observe({ key, text: key, version: 1, complete: true });
     a.sources.flush(); peer.source(); await awaitFixture(busy);
     assert.equal(a.sources.stats().globalUnsettledJobs, 2); assert.equal(client.sources.stats().unsettledJobs, 0);
     assert.ok(releaseInitial); phase = 'open'; releaseInitial(); await settle();

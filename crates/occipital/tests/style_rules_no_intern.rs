@@ -37,7 +37,7 @@ fn document(text: String) -> Box<RawValue> {
     RawValue::from_string(text).unwrap()
 }
 fn definition(path: serde_json::Value) -> serde_json::Value {
-    json!({"revision":1,"binding_slots":1,"default":{"foreground":{"kind":"inherit"},"background":{"kind":"inherit"},"attributes":0,"attribute_mask":0},"rules":[{"path":path,"excludes":[],"foreground":null,"background":null,"font":null}]})
+    json!({"revision":2,"binding_slots":1,"default":{"foreground":{"kind":"inherit"},"background":{"kind":"inherit"},"attributes":0,"attribute_mask":0},"rules":[{"path":path,"excludes":[],"context":null,"foreground":null,"background":null,"font":null}]})
 }
 #[test]
 fn rejected_definitions_and_successful_inspection_never_materialize_or_intern() {

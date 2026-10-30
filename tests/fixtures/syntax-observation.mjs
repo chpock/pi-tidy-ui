@@ -16,14 +16,14 @@ export async function themePhaseReady(observe, readEvents, phase, markers) {
   return nativeReady(snapshot) ? snapshot : false;
 }
 
-// v3 SOURCE dictionaries and STYLE dictionaries are correlated by scope paths,
+// v4 SOURCE dictionaries and generic STYLE dictionaries are correlated by scope paths,
 // never by reply-local IDs. These observers consume only actual recorded replies.
 const paths = rows => {
   const result = [];
   for (const row of rows) result.push([...(result.at(-1) ?? []).slice(0, row[0]), ...row.slice(1)]);
   return result;
 };
-export function semanticStyle(events, marker, profile, language) {
+export function semanticStyle(events, marker, _palette, language) {
   const matches = source => source.text.includes(marker) && (language === undefined || source.hint?.language === language);
   const sourceEvent = events.findLast(event => event.type === 'syntax_native_reply' && event.kind === 'source'
     && event.reply.status === 'ok' && event.payload.sources?.some(matches));
@@ -40,7 +40,7 @@ export function semanticStyle(events, marker, profile, language) {
     if (event.type !== 'syntax_native_reply' || event.kind !== 'style' || event.reply.status !== 'ok'
       || event.payload.vocabulary !== sourceEvent.reply.body.vocabulary) continue;
     const rules = event.payload.rules;
-    if (profile === 'pi' ? rules.kind !== 'client' : rules.kind !== 'native' || rules.id !== profile) continue;
+    if (!rules || rules.revision !== 2 || rules.binding_slots !== 44) continue;
     const index = paths(event.payload.contexts).findIndex(path => path.length === context.length && path.every((word, i) => word === context[i]));
     if (index >= 0) return { expression: event.reply.body.styles[event.reply.body.indices[index] - 1], sourceEvent, styleEvent: event };
   }
@@ -65,8 +65,8 @@ export function semanticSourceContext(events, marker, language) {
   }
 }
 
-export async function semanticPhaseReady(observe, readEvents, markers, profile) {
-  if (!markers.every(marker => semanticStyle(readEvents(), marker, profile))) return false;
+export async function semanticPhaseReady(observe, readEvents, markers, palette) {
+  if (!markers.every(marker => semanticStyle(readEvents(), marker))) return false;
   const snapshot = await observe();
-  return nativeReady(snapshot) && snapshot.client.effective.id === profile ? snapshot : false;
+  return nativeReady(snapshot) && snapshot.client.effective.id === palette ? snapshot : false;
 }

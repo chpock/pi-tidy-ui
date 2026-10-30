@@ -209,7 +209,7 @@ impl SourceRequest {
         }
         let source_cap = source_cap.min(crate::limits::SOURCE_BYTES);
         let r: RawRequest<'_> = decode(raw)?;
-        if unsigned(r.v, u32::MAX)? != 3 {
+        if unsigned(r.v, u32::MAX)? != crate::semantic::PROTOCOL_VERSION {
             return Err(Fault::not_started("protocol_mismatch"));
         }
         if text(r.instance, 64)?.as_ref() != instance {
@@ -399,7 +399,7 @@ mod language_hint_tests {
     use super::*;
 
     fn raw_operation(operation: &str, hint: &str) -> Box<RawValue> {
-        serde_json::from_str(&format!(r#"{{"v":3,"op":"{operation}","ticket":"t","instance":"i","admission":"try_now","sources":[{{"key":"k","generation":1,"source_version":1,"hint":{hint},"text":"print(1)"}}]}}"#)).unwrap()
+        serde_json::from_str(&format!(r#"{{"v":4,"op":"{operation}","ticket":"t","instance":"i","admission":"try_now","sources":[{{"key":"k","generation":1,"source_version":1,"hint":{hint},"text":"print(1)"}}]}}"#)).unwrap()
     }
 
     fn raw(hint: &str) -> Box<RawValue> {
@@ -505,5 +505,20 @@ mod language_hint_tests {
             assert_eq!(error, Fault::not_started("invalid_request"));
             assert_eq!(grants, 0, "invalid hint must fail before payload admission");
         }
+    }
+
+    #[test]
+    fn version_three_source_request_is_rejected_before_payload_reservation() {
+        let request = raw(r#"{"language":"rust"}"#);
+        let old = RawValue::from_string(request.get().replacen("\"v\":4", "\"v\":3", 1)).unwrap();
+        let mut grants = 0;
+        let fault = SourceRequest::decode(&old, "i", usize::MAX, &mut |_| {
+            grants += 1;
+            true
+        })
+        .err()
+        .expect("previous protocol version is rejected");
+        assert_eq!(fault.code, "protocol_mismatch");
+        assert_eq!(grants, 0);
     }
 }

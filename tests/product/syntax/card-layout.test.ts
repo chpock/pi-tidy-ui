@@ -13,8 +13,10 @@ import type { PreparedCard, PreparedRegion, ReadyCardPaint, CardDisplayInput } f
 import type { CardLayout, CardRows, CardFunding } from '../../../src/syntax/card-layout.ts';
 import { SourceController } from '../../../src/occipital/controller.ts';
 import { getThemeByName } from '../../../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js';
-import { createPiRuleDefinition } from '../../../src/syntax/pi-rules.ts';
-import { fingerprintRules, fingerprintNative } from '../../../src/occipital/style-rules.ts';
+import { createSemanticRuleDefinition } from '../../../src/syntax/semantic-rules.ts';
+import { fingerprintRules } from '../../../src/occipital/style-rules.ts';
+import { syntheticSelection } from '../../fixtures/test-style-selection.ts';
+import { resolveTheme } from '../../../src/themes/selection.ts';
 import { decodeSemanticDescription } from '../../../src/occipital/semantic-protocol.ts';
 import { semanticDescriptor } from '../../fixtures/semantic-provider.ts';
 import { RequestFailure } from '../../../src/occipital/request-failure.ts';
@@ -35,6 +37,7 @@ const loader = registerHooks({ resolve(specifier, context, next) {
 const { measure } = await import('../../../src/syntax/measured-rows.ts');
 const { layoutCard } = await import('../../../src/syntax/card-layout.ts');
 const { CardSources } = await import('../../../src/syntax/cards.ts');
+const { PaletteInputOwner } = await import('../../../src/syntax/pi-input-owner.ts');
 const { SyntaxRuntime } = await import('../../../src/syntax/runtime.ts');
 const glyphOracle = JSON.parse(readFileSync(new URL('../../fixtures/card-glyph-oracle.json', import.meta.url), 'utf8')).cases as { revision: number; width: number; outputPad: number; rows: string[] }[];
 loader.deregister();
@@ -47,7 +50,7 @@ function fixture() {
 function paint(color = 2): ReadyCardPaint {
   const roles = Object.fromEntries(CARD_ROLES.map((role, i) => [role, compileStyleAnsi({ foreground: { kind: 'indexed', index: role === 'title' ? color : (i + 1) % 16 },
     background: { kind: 'indexed', index: role === 'addedCode' ? 22 : role === 'removedCode' ? 52 : role === 'addedGutter' ? 28 : role === 'removedGutter' ? 88 : 17 }, attributes: role === 'prompt' ? 8 : role === 'frame' || role === 'errorFrame' ? 7 : 0 }, 'truecolor')])) as ReadyCardPaint['roles'];
-  return { publication: color, paintStamp: color, mode: 'truecolor', origin: 'native', roles, ranges: () => undefined, basis: () => false };
+  return { publication: color, paintStamp: color, mode: 'truecolor', origin: 'owned', roles, ranges: () => undefined, basis: () => false };
 }
 type Mutable<T> = { -readonly [K in keyof T]: T[K] };
 function bash(f: ReturnType<typeof fixture>, command: string, output: string[] = [], reminder = output.length): Mutable<Extract<PreparedCard, { kind: 'bash' }>> {
@@ -298,11 +301,15 @@ function realCards() {
   const sources = new SourceController(provider), runtime = new SyntaxRuntime({ standaloneVersion: '0.0.0', settings: { load: async () => ({ ok: true, syntaxTheme: { kind: 'pi' } }), update: async () => ({ ok: true }) },
     provider: { tryShared: async () => undefined, acquireOwned: async () => { throw Error('unexpected provider'); } } });
   const theme = getThemeByName('system')!;
-  const sampled = { colors: theme.colors, getFgAnsi(role: Parameters<typeof theme.getFgAnsi>[0]) { samples++; return theme.getFgAnsi(role); }, getBgAnsi(role: Parameters<typeof theme.getBgAnsi>[0]) { samples++; return theme.getBgAnsi(role); } };
+  const sampled = { owner: new WeakRef(theme), colors: theme.colors,
+    getFgAnsi(role: Parameters<typeof theme.getFgAnsi>[0]) { samples++; return theme.getFgAnsi(role); },
+    getBgAnsi(role: Parameters<typeof theme.getBgAnsi>[0]) { samples++; return theme.getBgAnsi(role); }, counters: () => ({ foreground: 0, background: 0 }) };
   runtime.palette(sampled);
+  const effective = resolveTheme({ kind: 'pi' }).effective;
   const cards = new CardSources<object>({ sources, snapshot: () => ({ enabled: true, provider: provider.snapshot(), selected: { kind: 'pi' },
-    effective: { id: 'pi', label: 'Pi', fingerprint: fingerprintRules(createPiRuleDefinition()) }, standaloneVersion: 'test' }) },
-  { preparePiInput: f => runtime.preparePiInput(sampled, 'truecolor', f), classify: text => { classifications++; return highlightCode(text, 'typescript'); }, invalidate() {}, requestRender() {} });
+    effective, standaloneVersion: 'test' }) },
+  { preparePaletteInput: (palette, revision, mode, f) => runtime.preparePaletteInput(palette, sampled, revision, mode, f),
+    classify: text => { classifications++; return highlightCode(text, 'typescript'); }, invalidate() {}, requestRender() {} });
   const input: CardDisplayInput = { kind: 'bash', args: { command: 'echo x' }, complete: true, revision: 1, sourceRevision: 1, serviceRevision: 1, palette: 1, mode: 'truecolor' };
   return { cards, sources, runtime, input, counters: () => ({ classifications, samples, sourceStyle, compilations }) };
 }
@@ -416,27 +423,27 @@ test('card layout: FILE projection allocations refuse atomically and service pre
 test('card layout: C7 group membership and indexed lookup work is linear within nested projection transactions', async () => {
   const observed: { members: number; emittedRanges: number; currentDisplayChecks: number; memberKeyReads: number }[] = [];
   for (const [size, rangeCount] of [[4, 1], [8, 1], [16, 1], [64, 1], [4, 32], [4, 128]] as const) {
-    const description = decodeSemanticDescription(semanticDescriptor('describe', 'instance', []), 'describe');
+    const description = decodeSemanticDescription(semanticDescriptor('describe', 'instance'), 'describe');
     const pending: { q: Record<string, any>; resolve(value: unknown): void; reject(error: unknown): void; done: boolean }[] = [];
     const provider = { snapshot: () => ({ generation: 1, availability: 'ready' as const, reason: 'ready' as const, kind: 'shared' as const, initialShared: true, description }),
       isReady: (g: number) => g === 1, classificationAccepted: () => true,
       request: (_g: number, q: Record<string, any>) => new Promise<unknown>((resolve, reject) => pending.push({ q, resolve, reject, done: false })) };
     const source = new SourceController(provider);
     const keys = new Set(Array.from({ length: size }, (_, i) => 'member:' + i));
-    const preparation = { keys, prepare() { for (const key of keys) source.observe({ key, text: 'x'.repeat(rangeCount!), version: 1, complete: true, language: 'text', profile: 'native', fingerprint: 'a'.repeat(64) }); }, needsRefresh: () => false, requiresCredit: () => false };
+    const selection = syntheticSelection(1, 'group-scaling');
+    const preparation = { keys, prepare() { for (const key of keys) source.observe({ key, text: 'x'.repeat(rangeCount!), version: 1, complete: true, language: 'text' }); }, needsRefresh: () => false, requiresCredit: () => false };
     const group = source.registerPreparation(preparation)!;
-    source.setStyleSelection({ kind: 'native', id: 'native', fingerprint: 'a'.repeat(64) }); source.queuePreparation(group, true); source.flush();
+    source.setStyleSelection(selection); source.queuePreparation(group, true); source.flush();
     try {
       for (let turns = 0; turns < 100 && !source.groupPresentation(group); turns++) {
         await turn();
         for (const item of pending) if (!item.done) {
           item.done = true; const q = item.q, s = q.sources?.[0] ?? q;
-          const body = q.op === 'styles.resolve' ? { kind: 'styles', vocabulary: q.vocabulary, rules: fingerprintNative(q.rules.fingerprint, 'rules'),
-            styles: [{ foreground: { kind: 'indexed', index: 2 }, background: { kind: 'terminal-default' }, attributes: 0, attribute_mask: 31 }], indices: q.contexts.map(() => 1),
-            palette: { revision: 1, fingerprint: fingerprintNative(q.rules.fingerprint, 'palette'), slots: CARD_ROLES.map(() => 1), origins: CARD_ROLES.map(() => 0) } }
+          const body = q.op === 'styles.resolve' ? { kind: 'styles', vocabulary: q.vocabulary, rules: fingerprintRules(q.rules),
+            styles: [{ foreground: { kind: 'binding', slot: 1 }, background: { kind: 'inherit' }, attributes: 0, attribute_mask: 0 }], indices: q.contexts.map(() => 1) }
             : { kind: 'source', vocabulary: description.vocabulary.fingerprint, sources: [{ key: s.key, generation: s.generation, source_version: s.source_version, revision: 1, source_bytes: rangeCount,
               replace_from: 0, committed_bytes: rangeCount, complete: true, contexts: rangeCount === 1 ? [[0, 1]] : [[0, 1], [0, 2]], runs: Array.from({ length: rangeCount! }, (_, i) => [1, i % 2 + 1]).flat(), counters: { committed_line_calls: 1, committed_line_bytes: rangeCount, tail_calls: 0, tail_bytes: 0 } }] };
-          item.resolve({ v: 3, ticket: q.ticket, instance: description.instance, assets: description.assets, status: 'ok', body });
+          item.resolve({ v: 4, ticket: q.ticket, instance: description.instance, assets: description.assets, status: 'ok', body });
         }
       }
       const view = source.groupPresentation(group); assert.ok(view);
@@ -475,17 +482,19 @@ test('card layout: C7 group membership and indexed lookup work is linear within 
 test('card layout: actual card demand and controller lookups are linear across nested reads', async () => {
   const observed: { members: number; ranges: number; currentDisplayChecks: number; slotKeyReads: number }[] = [];
   for (const segments of [2, 4, 8, 32]) {
-    const description = decodeSemanticDescription(semanticDescriptor('describe', 'instance', []), 'describe');
+    const description = decodeSemanticDescription(semanticDescriptor('describe', 'instance'), 'describe');
     const pending: { q: Record<string, any>; resolve(value: unknown): void; reject(error: unknown): void; done: boolean }[] = [];
     const provider = { snapshot: () => ({ generation: 1, availability: 'ready' as const, reason: 'ready' as const, kind: 'shared' as const, initialShared: true, description }),
       isReady: (g: number) => g === 1, classificationAccepted: () => true,
       request: (_g: number, q: Record<string, any>) => new Promise<unknown>((resolve, reject) => pending.push({ q, resolve, reject, done: false })) };
     const source = new SourceController(provider, { onChange(keys, groups) { cards.sourceChanged(keys, groups); } }), owner = {};
-    const cards = new CardSources<object>({ sources: source, snapshot: () => ({ enabled: true, provider: provider.snapshot(), selected: { kind: 'occipital', id: 'native' },
-      effective: { id: 'native', label: 'native', fingerprint: 'a'.repeat(64) }, standaloneVersion: 'test' }) },
-    { preparePiInput: () => undefined, classify: () => assert.fail('native card classified with Pi'), invalidate() {}, requestRender() {} });
-    source.setStyleSelection({ kind: 'native', id: 'native', fingerprint: 'a'.repeat(64) });
-    const input: CardDisplayInput = { kind: 'file', revision: 1, sourceRevision: 1, serviceRevision: 1, palette: 1, mode: 'truecolor', language: 'text',
+    const paletteOwner = new PaletteInputOwner(), effective = resolveTheme({ kind: 'theme', id: 'gruvbox-dark' }).effective;
+    const paletteRevision = paletteOwner.palette(undefined, effective);
+    const cards = new CardSources<object>({ sources: source, snapshot: () => ({ enabled: true, provider: provider.snapshot(), selected: { kind: 'theme', id: 'gruvbox-dark' },
+      effective, standaloneVersion: 'test' }) },
+    { preparePaletteInput: (palette, revision, mode, funding) => paletteOwner.prepare(undefined, palette, revision, mode, funding),
+      classify: () => assert.fail('owned-palette card classified with Pi'), invalidate() {}, requestRender() {} });
+    const input: CardDisplayInput = { kind: 'file', revision: 1, sourceRevision: 1, serviceRevision: 1, palette: paletteRevision, mode: 'truecolor', language: 'text',
       node: { toolName: 'edit', args: { path: 'a.txt' }, isPartial: false, result: { details: { diff: Array.from({ length: segments }, (_, i) => `-${i * 10 + 1} x\n+${i * 10 + 1} y`).join('\n   ...\n') } } } };
     try {
       assert.equal(cards.updateDisplay(owner, input), true); cards.useful(owner, 1); source.flush();
@@ -493,15 +502,19 @@ test('card layout: actual card demand and controller lookups are linear across n
         await turn();
         for (const item of pending) if (!item.done) {
           item.done = true; const q = item.q, s = q.sources?.[0] ?? q, bytes = Buffer.byteLength(s.text ?? '');
-          const body = q.op === 'styles.resolve' ? { kind: 'styles', vocabulary: q.vocabulary, rules: fingerprintNative(q.rules.fingerprint, 'rules'),
-            styles: [{ foreground: { kind: 'indexed', index: 2 }, background: { kind: 'terminal-default' }, attributes: 0, attribute_mask: 31 }], indices: q.contexts.map(() => 1),
-            palette: { revision: 1, fingerprint: fingerprintNative(q.rules.fingerprint, 'palette'), slots: CARD_ROLES.map(() => 1), origins: CARD_ROLES.map(() => 0) } }
+          const body = q.op === 'styles.resolve' ? { kind: 'styles', vocabulary: q.vocabulary, rules: fingerprintRules(q.rules),
+            styles: [{ foreground: { kind: 'binding', slot: 1 }, background: { kind: 'inherit' }, attributes: 0, attribute_mask: 0 }], indices: q.contexts.map(() => 1) }
             : { kind: 'source', vocabulary: description.vocabulary.fingerprint, sources: [{ key: s.key, generation: s.generation, source_version: s.source_version, revision: 1, source_bytes: bytes,
               replace_from: 0, committed_bytes: bytes, complete: true, contexts: [[0, 1]], runs: [bytes, 1], counters: { committed_line_calls: 1, committed_line_bytes: bytes, tail_calls: 0, tail_bytes: 0 } }] };
-          item.resolve({ v: 3, ticket: q.ticket, instance: description.instance, assets: description.assets, status: 'ok', body });
+          item.resolve({ v: 4, ticket: q.ticket, instance: description.instance, assets: description.assets, status: 'ok', body });
         }
         cards.metadataChanged();
-        let native = false; cards.visit(owner, (_d, p) => { native = p.origin === 'native'; }); if (native) break;
+        const keys = cards.identities(owner).map(slot => slot.key); let ready = false;
+        cards.visit(owner, (_d, p) => {
+          if (p.origin !== 'owned' || keys.length !== segments * 2) return;
+          ready = keys.every(key => { let hasRange = false; p.ranges(key)?.(() => { hasRange = true; }); return hasRange; });
+        });
+        if (ready) break;
       }
       const state = (Reflect.get(cards, 'states') as WeakMap<object, { slots: readonly { key: string }[] | ReadonlyMap<string, { key: string }> }>).get(owner)!;
       const slots = Array.from(state.slots.values()), keys = slots.map(slot => slot.key), count = keys.length; assert.equal(count, segments * 2);
@@ -510,7 +523,7 @@ test('card layout: actual card demand and controller lookups are linear across n
       const original = Reflect.get(source, 'currentDisplay') as (...args: unknown[]) => unknown, before = source.stats(), calls = pending.length;
       Reflect.set(source, 'currentDisplay', function(this: SourceController, ...args: unknown[]) { checks++; return original.apply(this, args); });
       try { assert.equal(cards.visit(owner, (_d, p) => {
-        assert.equal(p.origin, 'native');
+        assert.equal(p.origin, 'owned');
         for (const key of keys) {
           for (const surface of [undefined, 'added', 'removed'] as const) {
             const read = p.ranges(key, surface); assert.ok(read); assert.equal(read(() => { ranges++; }), true);
@@ -524,7 +537,7 @@ test('card layout: actual card demand and controller lookups are linear across n
       assert.equal(pending.length, calls); assert.equal(source.stats().stylePreparations, before.stylePreparations);
       observed.push({ members: count, ranges, currentDisplayChecks: checks, slotKeyReads: slotReads });
     } finally {
-      cards.dispose(); source.dispose(); for (const item of pending) item.reject(new RequestFailure('cleanup', 'not_started'));
+      cards.dispose(); source.dispose(); paletteOwner.dispose(); for (const item of pending) item.reject(new RequestFailure('cleanup', 'not_started'));
       for (let i = 0; i < 8; i++) await turn();
       assert.equal(source.stats().retention.retainedBytes, 0); assert.equal(source.stats().retention.outstandingPeakBytes, 0); assert.equal(source.stats().globalUnsettledJobs, 0);
     }

@@ -1,0 +1,35 @@
+{
+  "revision": 2,
+  "client": [
+    {
+      "name": "empty-definition",
+      "definition": {
+        "revision": 2,
+        "binding_slots": 0,
+        "default": {"foreground":{"kind":"inherit"},"background":{"kind":"inherit"},"attributes":0,"attribute_mask":0},
+        "rules": []
+      },
+      "fingerprint": "7bc14c95ccea9f391060f5fd606c40a81921e855bde94e1a57eda977ecf8b7a1"
+    },
+    {
+      "name": "unqualified-empty-path-remains-admissible",
+      "definition": {
+        "revision": 2,
+        "binding_slots": 0,
+        "default": {"foreground":{"kind":"inherit"},"background":{"kind":"inherit"},"attributes":0,"attribute_mask":0},
+        "rules": [{"path":[],"excludes":[],"foreground":null,"background":null,"font":null,"context":null}]
+      },
+      "fingerprint": "d31143a7af22725b78885bc7b0533d04342ee37620af22c78206d84ab226fe06"
+    },
+    {
+      "name": "nearest-key-owner-with-array-and-template-boundaries",
+      "definition": {
+        "revision": 2,
+        "binding_slots": 44,
+        "default": {"foreground":{"kind":"inherit"},"background":{"kind":"inherit"},"attributes":0,"attribute_mask":0},
+        "rules": [{"path":["meta.object-literal.key"],"excludes":[],"foreground":{"kind":"binding","slot":7},"background":null,"font":null,"context":{"owner":"meta.object-literal.key","boundaries":["meta.array.literal","meta.template.expression"]}}]
+      },
+      "fingerprint": "566c0e464fffba87449138f2107abf009083bffff83b9ab61e4ea34a8b993c37"
+    }
+  ]
+}

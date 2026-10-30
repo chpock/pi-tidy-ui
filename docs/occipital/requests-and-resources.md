@@ -2,7 +2,7 @@
 
 A native request passes through several different completion points: validation, admission, preparation, computation, encoding and transport delivery. Finishing computation does not release its physical request slot or establish that a continuation’s reply was delivered.
 
-This chapter follows those transitions. The [protocol reference](protocol.md) owns exact request fields, execution dispositions, accounting definitions and numeric defaults. The [runtime chapter](runtime.md) describes the threads and transport frontends; the [source engine](source-engine.md) and [style resolver](styles-and-palettes.md) describe the computations.
+This chapter follows those transitions. The [protocol reference](protocol.md) owns exact request fields, execution dispositions, accounting definitions and numeric defaults. The [runtime chapter](runtime.md) describes the threads and transport frontends; the [source engine](source-engine.md) and [generic style resolver](protocol.md#style-requests) describe the computations.
 
 ## One request from ingress to delivery
 
@@ -42,11 +42,11 @@ When the worker receives the request’s turn, `scheduler.rs::prepare_styles` in
 
 ## Separate CONTROL and DATA lanes
 
-`describe` and `themes.refresh` use CONTROL admission. SOURCE operations and STYLE use DATA admission. Each lane has its own request/reply bounds, physical slots and byte reservations.
+`describe` uses source-free CONTROL admission. SOURCE operations and generic STYLE use DATA admission. Each lane has its own request/reply bounds, physical slots and byte reservations.
 
-The separation lets a route obtain metadata while its DATA slots remain occupied by computation or undelivered results. It does not make refresh unlimited: a refresh waiting behind another refresh still owns its admitted control slot and allowance. Catalogue execution and publication are described in [the catalogue chapter](catalogue.md).
+The separation lets a route obtain descriptor metadata while its DATA slots remain occupied by computation or undelivered results. There is no theme-catalogue, profile-admission or refresh work in the current protocol.
 
-`semantic_description.rs` builds descriptors from the published catalogue, configured engine limits and runtime counters. It does not parse source, resolve scopes or prepare every native palette merely to answer a metadata request. The counters describe their particular owners; a descriptor is not a barrier proving that all previously submitted DATA work has settled.
+`semantic_description.rs` builds descriptors from the process's fixed grammar/vocabulary identity, configured engine limits and runtime counters. It does not parse source, compile caller rules or resolve card palettes merely to answer a metadata request. The counters describe their particular owners; a descriptor is not a barrier proving that all previously submitted DATA work has settled.
 
 ## What a credit owns
 
@@ -133,7 +133,7 @@ The important cleanup paths are:
 - **Abandoned encoded SOURCE delivery:** its receipt causes worker-side continuation discard.
 - **Route closure:** queued operations are rejected, route-owned source state is closed, and unhanded results for that route are cancelled.
 
-Capacity pressure is reported at the boundary that cannot obtain its allowance. The ledger does not make arbitrary live ownership reclaimable. Dropping an unrelated waiter does not free a still-owned physical job; a compiled native definition retained by running STYLE work also remains funded after its cache entry is removed.
+Capacity pressure is reported at the boundary that cannot obtain its allowance. The ledger does not make arbitrary live ownership reclaimable. Dropping an unrelated waiter does not free a still-owned physical job; a compiled generic rule definition retained by running STYLE work also remains funded after its cache entry is removed.
 
 The native paths do not promise a general least-recently-used eviction pass to make every new request succeed. State expiry, explicit close, route teardown, completed delivery and definition ownership release have their own mechanisms. A caller must handle the resulting refusal rather than treating absent immediate capacity as permission to duplicate work.
 
@@ -152,7 +152,7 @@ The exact defaults and accounting definitions are in the [protocol reference](pr
 | Expanded context words and decoded-result charge | Compact input can expand substantially, and empty rows still consume storage; checked before STYLE expansion and during SOURCE/STYLE result construction |
 | Selector and workspace bounds | Rule compilation and matching storage, including depth before native selector calls |
 | Lease counts and retained-state allowance | Long-lived continuation ownership; checked by the engine and reconciled by the scheduler |
-| Catalogue/admission limits | Filesystem enumeration, raw definitions, structured expansion and process-lifetime custom-scope interning; owned by the catalogue subsystem |
+| Rule/context admission limits | Caller rule structure, trusted scope-name lookup, qualified context depth and generic resolver workspace; checked before selector compilation or expansion |
 
 These are controlled application allowances, not measurements of whole-process memory. Grammar assets, private parser heaps, allocator behavior and private SDK buffers are not interchangeable with ledger bytes. In particular, the public shared SDK can receive or decode data before application admission runs. Producer-side bounded encoding and consumer negotiation remain necessary; post-decode validation cannot undo an earlier large decode.
 

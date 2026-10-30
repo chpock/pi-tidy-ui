@@ -6,7 +6,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { PiTerminal } from './terminal-harness.mjs';
 import { closeTerminals, runCleanupSteps } from './terminal-cleanup.mjs';
 import { sharedSyntaxHost } from './shared-syntax-host.mjs';
-import { prepareSyntaxNative, requiredSharedHost, until, syntaxReady, settledStats, intermediateStats, captureThenRenderDiagnostics, traffic, persisted, work } from './syntax-cli-support.mjs';
+import { prepareSyntaxNative, requiredSharedHost, until, syntaxReady, settledStats, intermediateStats, captureThenRenderDiagnostics, traffic, persisted, work, peerSource } from './syntax-cli-support.mjs';
 import { semanticPhaseReady, nativeReady } from './syntax-observation.mjs';
 import { followPiMarkers, paintProof } from './follow-pi-physical.mjs';
 
@@ -71,7 +71,7 @@ export async function runSuspendCase({ kind, mode, operation }, { binary, fixtur
         const stopped = recordLifecycle('pi-stopped');
         if (host) {
           process.kill(helperPid, 'SIGCONT'); helperStopped = false;
-          assert.equal((await host.initialPeer.refreshThemes()).ok, true, 'real shared helper and independent peer progress while Pi remains stopped');
+          await peerSource(host.initialPeer); assert.equal(host.initialPeer.snapshot().provider.availability, 'ready', 'real SOURCE proves shared helper progress while Pi remains stopped');
         }
         const minimumNs = BigInt(deadlineMs + 500) * 1_000_000n;
         const stoppedUntil = process.hrtime.bigint() + minimumNs;

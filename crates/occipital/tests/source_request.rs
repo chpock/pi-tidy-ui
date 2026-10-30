@@ -4,7 +4,7 @@ use occipital::{
 };
 use serde_json::{json, value::RawValue, Value};
 fn frame(sources: Value) -> Value {
-    json!({"v":3,"op":"highlight","ticket":"ticket","instance":"instance","admission":"try_now","sources":sources})
+    json!({"v":4,"op":"highlight","ticket":"ticket","instance":"instance","admission":"try_now","sources":sources})
 }
 fn source(key: &str) -> Value {
     json!({"key":key,"generation":2,"source_version":5,"hint":{"language":"rust"},"text":"let x = \"界\";\n"})
@@ -121,7 +121,7 @@ fn source_count_and_open_shape_keep_existing_bounds_without_source_theme_fields(
     .is_err());
 }
 fn append() -> Value {
-    json!({"v":3,"op":"stream.append","ticket":"ticket","instance":"instance","admission":"bounded_queue","queue_wait_ms":1000,
+    json!({"v":4,"op":"stream.append","ticket":"ticket","instance":"instance","admission":"bounded_queue","queue_wait_ms":1000,
     "key":"source","lease":"lease","generation":2,"source_version":5,"base_revision":1,"base_bytes":12,"append":"界","final":true})
 }
 #[test]
@@ -160,7 +160,7 @@ fn append_and_close_keep_exact_lease_metadata_and_share_admission_policy() {
         ),
         ("source", "lease", 2, 5, 1, 12, "界", true)
     );
-    let value = json!({"v":3,"op":"stream.close","ticket":"ticket","instance":"instance","key":"source","lease":"lease","generation":2});
+    let value = json!({"v":4,"op":"stream.close","ticket":"ticket","instance":"instance","key":"source","lease":"lease","generation":2});
     let request =
         SourceRequest::decode(&raw(&value), "instance", limits::SOURCE_BYTES, &mut |_| {
             true
@@ -325,4 +325,20 @@ fn admitted_batch_line_append_and_unicode_keep_exact_source_bytes() {
         };
         assert_eq!(append, text);
     }
+}
+
+#[test]
+fn source_rejects_the_previous_protocol_before_reserving_payloads() {
+    let mut value = frame(json!([source("a")]));
+    value["v"] = json!(3);
+    let mut grants = 0;
+    let error = SourceRequest::decode(&raw(&value), "instance", limits::SOURCE_BYTES, &mut |_| {
+        grants += 1;
+        true
+    })
+    .err()
+    .expect("the previous protocol version is rejected");
+    assert_eq!(error.code, "protocol_mismatch");
+    assert!(!error.started);
+    assert_eq!(grants, 0);
 }

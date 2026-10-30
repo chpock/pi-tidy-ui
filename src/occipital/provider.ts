@@ -1,6 +1,5 @@
 import { diagnose, diagnosticError, reportRuntime, type DiagnosticFields, type DiagnosticSink } from '../diagnostics.ts';
 import type { ReplySize } from './data-json.ts';
-import { ProtocolError } from './protocol.ts';
 import { decodeSemanticDescription as decodeDescription, SEMANTIC_PROTOCOL_VERSION as PROTOCOL_VERSION, type SemanticDescription as Description } from './semantic-protocol.ts';
 import { RequestFailure } from './request-failure.ts';
 import type { TransportEnd } from './transport-end.ts';
@@ -174,20 +173,6 @@ function availabilityNotice(owner: WeakRef<ProviderBroker>, slot: CompletionSlot
 }
 function operationNotice(owner: WeakRef<ProviderBroker>, operation: Promise<void>, slot: CompletionSlot) {
   return () => { const broker = owner.deref(); if (broker) broker.operationSettled(operation); else cancelCompletion(slot); };
-}
-const controlCancelled = new Error('occipital control cancelled');
-/** Separate scope, and shared non-receiver error: a retained raw RPC signal must
- * not retain the active broker through cancellation closures or an error stack. */
-function controlAttempt(parent: AbortSignal) {
-  const controller = new AbortController();
-  const abort = () => controller.abort(controlCancelled);
-  parent.addEventListener('abort', abort, { once: true });
-  if (parent.aborted) abort();
-  return { signal: controller.signal, dispose() { parent.removeEventListener('abort', abort); abort(); } };
-}
-function sameProfiles(a: Description, b: Description, labels = false): boolean {
-  return a.profiles.length === b.profiles.length && a.profiles.every(profile =>
-    b.profiles.some(other => profile.id === other.id && profile.fingerprint === other.fingerprint && (!labels || profile.label === other.label)));
 }
 /** Created outside publication scopes: a retained transport promise must never
  * retain the first broker/candidate through a V8 lexical receiver context. */
@@ -418,36 +403,6 @@ export class ProviderBroker {
     this.pendingRequests++;
     try { return this.active!.transport.request(request, options && { signal: options.signal, deadlineMs: options.deadlineMs, acceptRetired: options.acceptRetired, ...(options.replySize && { replySize: options.replySize }) }).then(observers.accept, observers.reject); }
     catch (error) { this.requestSettled(generation); return Promise.reject(error instanceof RequestFailure ? error : new RequestFailure('occipital request outcome unknown')); }
-  }
-  /** Source-free control on the already selected provider. Catalogue publication
-   * changes metadata, not transport/source authority; unrelated streams survive.
-   * A timeout is not loss proof and never closes or replaces the provider. */
-  async catalogue(generation: number, op: 'describe' | 'themes.refresh'): Promise<Description> {
-    if (!this.isReady(generation) || op !== 'describe' && op !== 'themes.refresh')
-      throw new RequestFailure('occipital catalogue unavailable', 'not_started');
-    const active = this.active!, attempt = controlAttempt(this.cancellation.signal);
-    const ticket = `broker:${this.id}:${++this.ticket}`, deadline = this.clock.now() + PROVIDER_LIMITS.controlMs;
-    this.metric('abortListeners', 1); this.pendingRequests++;
-    try {
-      this.metric('controls', 1);
-      const raw = await bounded(Promise.resolve().then(() => {
-        if (!this.isReady(generation) || attempt.signal.aborted || this.clock.now() >= deadline)
-          throw new RequestFailure('occipital catalogue retired', 'not_started');
-        return active.transport.request({ v: PROTOCOL_VERSION, ticket, op }, { signal: attempt.signal, deadlineMs: PROVIDER_LIMITS.controlMs, waitOnly: true });
-      }), this.clock, PROVIDER_LIMITS.controlMs, attempt.signal, new WeakRef(this));
-      if (!this.isReady(generation) || this.active !== active || attempt.signal.aborted || this.clock.now() >= deadline)
-        throw new RequestFailure('occipital catalogue retired');
-      if (!metadataFits(raw)) throw new ProtocolError('invalid_descriptor');
-      const description = decodeDescription(raw, ticket), previous = active.description;
-      if (description.instance !== previous.instance || description.assets !== previous.assets
-        || description.vocabulary.fingerprint !== previous.vocabulary.fingerprint || description.vocabulary.count !== previous.vocabulary.count)
-        throw new ProtocolError('provider_changed');
-      if (description.catalogue_revision < previous.catalogue_revision || description.catalogue_revision === previous.catalogue_revision && !sameProfiles(description, previous))
-        throw new ProtocolError('invalid_descriptor');
-      active.description = description;
-      if (description.catalogue_revision !== previous.catalogue_revision || description.diagnostic !== previous.diagnostic || !sameProfiles(description, previous, true)) this.changed();
-      return description;
-    } finally { attempt.dispose(); this.metric('abortListeners', -1); this.requestSettled(generation); }
   }
   dispose(): Promise<void> {
     if (this.shutdown) return this.shutdown;

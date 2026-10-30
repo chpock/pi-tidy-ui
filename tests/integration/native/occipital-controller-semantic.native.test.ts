@@ -8,14 +8,13 @@ import { tmpdir } from 'node:os';
 import { SourceController } from '../../../src/occipital/controller.ts';
 import { ProviderBroker } from '../../../src/occipital/provider.ts';
 import { StdioTransport } from '../../../src/occipital/stdio.ts';
-import { createPiRuleDefinition } from '../../../src/syntax/pi-rules.ts';
-import { fingerprintRules } from '../../../src/occipital/style-rules.ts';
+import { syntheticSelection } from '../../fixtures/test-style-selection.ts';
 import { readInputs, validateNative } from '../../../scripts/test/context.mjs';
 import { awaitFixture } from '../../fixtures/await-fixture.ts';
 
 const binary = validateNative(readInputs()).path;
 
-test('actual v3 controller: theme-independent parse checkpoints, finalization and lease cleanup use the production pipe', async () => {
+test('actual v4 controller: local palette changes preserve parse checkpoints, finalization and lease cleanup', async () => {
   const root = await mkdtemp(join(tmpdir(), 'semantic-controller-'));
   const pipe = new StdioTransport({ command: binary, args: ['--stdio', '--config', join(root, 'config.json')], cwd: root,
     env: { ...process.env, HOME: root, XDG_CONFIG_HOME: root, XDG_DATA_HOME: root, XDG_CACHE_HOME: root, XDG_RUNTIME_DIR: root },
@@ -25,15 +24,14 @@ test('actual v3 controller: theme-independent parse checkpoints, finalization an
   const drain = () => awaitFixture((async () => { while (owner.stats().unsettledJobs || owner.stats().pendingCloses) { owner.flush(); await turn(); } })());
   try {
     await awaitFixture(broker.start());
-    const selected = broker.snapshot().description!.profiles[0]!;
-    assert.ok(selected); assert.notEqual(selected.id, 'pi');
-    const source = { key: 'bash', version: 1, language: 'bash', profile: 'pi', fingerprint: fingerprintRules(createPiRuleDefinition()),
-      text: 'echo α\necho t', complete: false };
+    owner.setStyleSelection(syntheticSelection(1));
+    const source = { key: 'bash', version: 1, language: 'bash', text: 'echo α\necho t', complete: false };
     assert.equal(owner.observe(source), true); owner.flush(); await drain();
     assert.equal(owner.status('bash')!.committedBytes, Buffer.byteLength('echo α\n'));
     assert.equal(owner.stats().committedLineCalls, 1); assert.equal(owner.stats().tailCalls, 1);
     const before = broker.stats().sourceDispatches;
-    const next = { ...source, profile: selected.id, fingerprint: selected.fingerprint, version: 2, text: source.text + 'ail' };
+    owner.setStyleSelection(syntheticSelection(2));
+    const next = { ...source, version: 2, text: source.text + 'ail' };
     owner.observe(next); owner.observe({ ...next, version: 3, text: next.text + '\n' }); owner.flush(); await drain();
     assert.equal(owner.stats().committedLineCalls, 2, 'the first completed line was not parsed again');
     assert.equal(owner.stats().tailCalls, 1, 'the growing tail became a committed line');

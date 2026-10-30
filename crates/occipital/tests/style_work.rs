@@ -1,13 +1,11 @@
 use occipital::{
     credit::Budget,
-    native_palette::{HintPaths, NativeTheme},
     resolver::Resolver,
     semantic::{Expression, Ink},
     semantic_reply,
-    style_work::{native_fingerprint, StyleFailure, StyleWork},
+    style_work::{StyleFailure, StyleWork},
     vocabulary::ScopeId,
 };
-use syntect::highlighting::Theme;
 
 fn resolver() -> Resolver {
     Resolver::compile(
@@ -29,7 +27,6 @@ fn queued_work_survives_definition_release_deduplicates_and_keeps_credit_through
         vec![vec![], vec![id], vec![id]],
         &resolver(),
         "b".repeat(64),
-        None,
         budget.reserve(Some("route"), 1024).unwrap(),
     )
     .unwrap();
@@ -43,7 +40,7 @@ fn queued_work_survives_definition_release_deduplicates_and_keeps_credit_through
     let (result, credit) = work.finish().unwrap();
     assert_eq!(result.indices, vec![1, 1, 1]);
     assert_eq!(result.styles.len(), 1);
-    result.validate(false, 0, 3).unwrap();
+    result.validate(0, 3).unwrap();
     assert_eq!(budget.snapshot().jobs, 1);
     drop(result);
     assert_eq!(budget.snapshot().jobs, 1);
@@ -59,7 +56,6 @@ fn controlled_workspace_and_result_growth_fail_without_freeing_live_physical_wor
         vec![vec![]],
         &resolver(),
         "b".repeat(64),
-        None,
         probe.reserve(Some("route"), 1024).unwrap(),
     )
     .unwrap();
@@ -70,7 +66,6 @@ fn controlled_workspace_and_result_growth_fail_without_freeing_live_physical_wor
         vec![vec![]],
         &resolver(),
         "b".repeat(64),
-        None,
         budget.reserve(Some("route"), 1024).unwrap(),
     )
     .unwrap();
@@ -83,54 +78,23 @@ fn controlled_workspace_and_result_growth_fail_without_freeing_live_physical_wor
 }
 
 #[test]
-fn native_palette_without_source_shares_the_same_expression_table_and_needs_no_context_matching() {
-    let native = NativeTheme::compile(
-        &Theme::default(),
-        HintPaths {
-            comment: &[],
-            invalid: &[],
-            changed: &[],
-            inserted: &[],
-            deleted: &[],
-        },
-    )
-    .unwrap();
+fn empty_generic_style_resolution_uses_no_context_matching_and_retains_its_credit() {
     let budget = Budget::new(1 << 20, 2, 2);
-    let fingerprint = native_fingerprint(&"a".repeat(64), true).unwrap();
     let mut work = StyleWork::new(
         vec![],
-        &native.resolver,
-        native_fingerprint(&"a".repeat(64), false).unwrap(),
-        Some((&native.palette, fingerprint.clone())),
+        &resolver(),
+        "a".repeat(64),
         budget.reserve(Some("route"), 1024).unwrap(),
     )
     .unwrap();
     assert!(work.step().unwrap());
     assert_eq!(work.counters().contexts, 0);
     let (result, credit) = work.finish().unwrap();
-    result.validate(true, 0, 0).unwrap();
-    assert_eq!(result.palette.unwrap().fingerprint, fingerprint);
-    assert!(result.styles.len() < 26);
+    result.validate(0, 0).unwrap();
+    assert!(result.styles.is_empty());
+    assert_eq!(budget.snapshot().jobs, 1);
     drop(credit);
     assert_eq!(budget.snapshot().jobs, 0);
-}
-
-#[test]
-fn native_interpretation_fingerprints_match_the_same_cross_language_vectors() {
-    let vectors: serde_json::Value = serde_json::from_str(include_str!(
-        "../../../protocol/syntax-v3/rule-vectors.json"
-    ))
-    .unwrap();
-    let definition = vectors["native"]["definition"].as_str().unwrap();
-    assert_eq!(
-        native_fingerprint(definition, false).unwrap(),
-        vectors["native"]["rules"]
-    );
-    assert_eq!(
-        native_fingerprint(definition, true).unwrap(),
-        vectors["native"]["palette"]
-    );
-    assert!(native_fingerprint("a", false).is_err());
 }
 
 #[test]
@@ -140,7 +104,6 @@ fn constructor_failure_keeps_the_admitted_slot_until_error_settlement() {
         vec![vec![]],
         &resolver(),
         "b".repeat(64),
-        None,
         budget.reserve(Some("route"), 1024).unwrap(),
     );
     assert!(outcome.is_err());
@@ -169,51 +132,12 @@ fn settle_error(mut failure: StyleFailure, budget: &Budget) {
 }
 
 #[test]
-fn native_palette_growth_failure_preserves_the_original_error_slot() {
-    let native = NativeTheme::compile(
-        &Theme::default(),
-        HintPaths {
-            comment: &[],
-            invalid: &[],
-            changed: &[],
-            inserted: &[],
-            deleted: &[],
-        },
-    )
-    .unwrap();
-    let probe = Budget::new(1 << 20, 1, 1);
-    let work = StyleWork::new(
-        vec![],
-        &native.resolver,
-        "b".repeat(64),
-        None,
-        probe.reserve(Some("route"), 64).unwrap(),
-    )
-    .unwrap();
-    let base = probe.snapshot().bytes;
-    drop(work);
-    let budget = Budget::new(base + 128 + 5 * 26 + 255, 1, 1);
-    let failure = StyleWork::new(
-        vec![],
-        &native.resolver,
-        "b".repeat(64),
-        Some((&native.palette, "c".repeat(64))),
-        budget.reserve(Some("route"), 64).unwrap(),
-    )
-    .err()
-    .unwrap();
-    assert_eq!(failure.fault.code, "data_limit");
-    settle_error(failure, &budget);
-}
-
-#[test]
 fn incomplete_finish_and_authoritative_cancellation_both_transfer_the_same_live_credit() {
     let budget = Budget::new(1 << 20, 1, 1);
     let mut work = StyleWork::new(
         vec![vec![], vec![]],
         &resolver(),
         "b".repeat(64),
-        None,
         budget.reserve(Some("route"), 1024).unwrap(),
     )
     .unwrap();
@@ -225,7 +149,6 @@ fn incomplete_finish_and_authoritative_cancellation_both_transfer_the_same_live_
         vec![vec![]],
         &resolver(),
         "b".repeat(64),
-        None,
         budget.reserve(Some("route"), 1024).unwrap(),
     )
     .unwrap();

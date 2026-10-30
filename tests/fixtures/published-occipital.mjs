@@ -90,6 +90,9 @@ try {
     syncBuiltinESMExports();
     const { createSyntaxOptions } = await load('occipital/bootstrap.ts');
     const { SyntaxClient } = await load('occipital/client.ts');
+    const { createSemanticRuleDefinition, SEMANTIC_REGIONS } = await load('syntax/semantic-rules.ts');
+    const { fingerprintRules } = await load('occipital/style-rules.ts');
+    const { sampleOwnedPalette } = await load('themes/owned-palette.ts');
     assert.deepEqual((await load('occipital/release.ts')).NATIVE_RELEASE, NATIVE_RELEASE);
     for (const phase of ['cold', 'warm']) {
       const beforeUrls = urls.length, beforeDownloads = downloads, beforeStarts = starts.length;
@@ -98,9 +101,13 @@ try {
       await client.start(); await client.start();
       const snapshot = client.snapshot();
       assert.equal(snapshot.standaloneVersion, NATIVE_RELEASE.version); assert.equal(snapshot.provider.kind, 'owned'); assert.equal(snapshot.provider.availability, 'ready');
-      const nativeProfile = snapshot.provider.description.profiles.find(profile => profile.id === 'syntect:Nord'); assert.ok(nativeProfile);
-      client.previewTheme({ kind: 'occipital', id: nativeProfile.id });
-      client.sources.setStyleSelection({ kind: 'native', id: nativeProfile.id, fingerprint: nativeProfile.fingerprint });
+       const selectedPalette = 'gruvbox-dark';
+       client.previewTheme({ kind: 'theme', id: selectedPalette });
+       const palette = sampleOwnedPalette(selectedPalette, 'truecolor');
+       const definition = createSemanticRuleDefinition(), selectedRules = fingerprintRules(definition);
+       const styleSelection = { definition, bindingRevision: 1, palette: `owned-palette-v1:${selectedPalette}`,
+         bindings: palette.bindings, roles: palette.roles };
+       assert.equal(client.sources.setStyleSelection(styleSelection), true, 'current helper accepts one generic classifier with a local palette');
       const expectedPath = installed ? join(consumer, 'node_modules', nativeName, executable)
         : join(home, 'agent/extensions/pi-tidy-ui/occipital', NATIVE_RELEASE.version, target, executable);
       assert.equal(starts.length, beforeStarts + 1); assert.equal(starts.at(-1), expectedPath);
@@ -109,10 +116,14 @@ try {
       assert.equal(downloads - beforeDownloads, expectedDownloads);
       if (expectedDownloads) assert.equal(urls[beforeUrls], artifact.url); else assert.equal(urls.length, beforeUrls);
       async function classified(version, text, complete) {
-        const profile = client.snapshot().effective; assert.ok(profile);
-        assert.equal(client.sources.observe({ key: 'tiny', version, text, complete, path: 'tiny.ts', profile: profile.id, fingerprint: profile.fingerprint }), true);
+         assert.equal(client.sources.observe({ key: 'tiny', version, text, complete, path: 'tiny.ts' }), true);
         client.sources.flush();
-        const ready = () => client.sources.status('tiny')?.exact && client.sources.displayBasis('tiny')?.version === version && client.sources.stats().unsettledJobs === 0;
+         const ready = () => {
+           const display = client.sources.displayBasis('tiny');
+           return client.sources.status('tiny')?.exact && display?.version === version
+             && display.palette === styleSelection.palette && display.rules === selectedRules && display.bindingRevision === 1
+             && client.sources.stats().unsettledJobs === 0;
+         };
         if (!ready()) await new Promise((yes, no) => {
           const timer = setTimeout(() => { wake = undefined; no(Error('Installed source did not complete')); }, 10000);
           wake = () => { if (ready()) { clearTimeout(timer); wake = undefined; yes(); } }; wake();
@@ -132,7 +143,12 @@ try {
       assert.equal(complete.committedLineBytes, tail.committedLineBytes + Buffer.byteLength('//x\n'));
       const styles = [];
       assert.equal(client.sources.visitRanges('tiny', (start, end, style) => { if (end > Buffer.byteLength(prefix)) styles.push(style); }), true);
-      assert.ok(styles.length > 0); assert.ok(styles.every(style => style.foreground.kind === 'rgb'), 'actual Nord comment uses literal native colors');
+       assert.ok(styles.length > 0); assert.ok(styles.every(style => style.foreground.kind === 'rgb'), 'generic classifier returns the selected owned palette as literal colors');
+       const commentAt = Buffer.byteLength(prefix), commentStyles = [];
+       assert.equal(client.sources.visitRanges('tiny', (start, end, style) => { if (start <= commentAt && end > commentAt) commentStyles.push(style); }), true);
+       const commentSlot = SEMANTIC_REGIONS.indexOf('syntax-comment');
+       assert.equal(commentStyles.length, 1); assert.deepEqual(commentStyles[0].foreground, palette.bindings[commentSlot].ink,
+         'actual helper resolves comment semantics through the currently selected common palette binding');
       for (let i = 0; i < 20; i++) await classified(3, prefix + '//x\n', true);
       const warm = client.sources.stats(), warmSourceDispatches = (warm.dispatches - warm.styleDispatches) - (complete.dispatches - complete.styleDispatches),
         warmStyleDispatches = warm.styleDispatches - complete.styleDispatches;

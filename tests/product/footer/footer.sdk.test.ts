@@ -17,7 +17,7 @@ import { Container, CustomEditor, Text, editorSetup, fixtureSyntaxOptions, plain
 
 test("editor directory abbreviates the native home only at a path boundary before fitting", () => {
   const previous = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE };
-  const home = join(tmpdir(), "tidy-ui-home-界"), theme = { fg: (_role: string, value: string) => value };
+  const home = join(parse(tmpdir()).root, "tidy-ui-home-界"), theme = { fg: (_role: string, value: string) => value };
   const setHome = (value: string) => { process.env.HOME = value; process.env.USERPROFILE = value; };
   const render = (cwd: string, width = 120) => renderEditorStatus(width, theme,
     { model: "M", provider: "P", thinking: "off", idle: false, cwd, branch: "main" });

@@ -4,6 +4,7 @@ import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 import { readInputs, validateNative } from '../../../../scripts/test/context.mjs';
 import { sharedSyntaxHost } from '../../../fixtures/shared-syntax-host.mjs';
+import { peerSource } from '../../../fixtures/syntax-cli-support.mjs';
 import { runCleanupSteps } from '../../../fixtures/terminal-cleanup.mjs';
 
 test('two concurrently live shared hosts use independent OS-assigned loopback ports', { timeout: 45000 }, async () => {
@@ -21,7 +22,7 @@ test('two concurrently live shared hosts use independent OS-assigned loopback po
       const endpoint = connection.endpoints.find(item => item.host === '127.0.0.1');
       assert.equal(Number.isInteger(endpoint?.port) && endpoint.port > 0, true);
       ports.push(endpoint.port);
-      assert.equal((await host.initialPeer.refreshThemes()).ok, true, 'each independent host must serve real traffic while both remain live');
+      await peerSource(host.initialPeer); assert.equal(host.initialPeer.snapshot().provider.availability, 'ready', 'each independent host must serve real SOURCE while both remain live');
     }
     assert.notEqual(ports[0], ports[1]);
     assert.notEqual(hosts[0].alias, hosts[1].alias);

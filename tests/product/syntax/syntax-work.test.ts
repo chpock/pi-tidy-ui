@@ -11,15 +11,18 @@ import { preparePiFlat } from '../../../src/syntax/pi-flat.ts';
 import type { ConcreteStyle } from '../../../src/syntax/style-materialization.ts';
 import { decodeSemanticDescription } from '../../../src/occipital/semantic-protocol.ts';
 import { semanticDescriptor } from '../../fixtures/semantic-provider.ts';
-import { CARD_ROLES } from '../../../src/occipital/semantic-codec.ts';
-import { fingerprintNative } from '../../../src/occipital/style-rules.ts';
+import { fingerprintRules } from '../../../src/occipital/style-rules.ts';
+import { syntheticSelection } from '../../fixtures/test-style-selection.ts';
+import type { ThemeDescription } from '../../../src/themes/selection.ts';
+import type { RuleDefinition } from '../../../src/occipital/style-rules.ts';
 import { neutral, fileRows, bashRows, piSpans } from '../../fixtures/source-work-flat.ts';
 import { requestSyntax, resolveSyntax, type SyntaxDemand } from '../../../src/syntax/work.ts';
 
 const fingerprint = 'a'.repeat(64);
-const profile = { id: 'native', label: 'Native', fingerprint };
-const rgbProfile = { id: 'rgb', label: 'RGB', fingerprint };
-const description = decodeSemanticDescription(semanticDescriptor('describe', 'daemon', [profile, rgbProfile]), 'describe');
+const ownedTheme: ThemeDescription = { kind: 'theme', id: 'gruvbox-dark', label: 'Gruvbox Dark', fingerprint };
+const rgbProfile: ThemeDescription = { kind: 'theme', id: 'gruvbox-light', label: 'Gruvbox Light', fingerprint };
+const selection = syntheticSelection(1, 'syntax-work');
+const description = decodeSemanticDescription(semanticDescriptor('describe', 'daemon'), 'describe');
 type Call = { request: Record<string, unknown>; resolve(value: unknown): void; reject(error: unknown): void };
 class Host {
   ready = false;
@@ -37,18 +40,18 @@ class Host {
   }
   fault(index: number, code = 'busy', style = false) {
     const call = (style ? this.styles : this.calls)[index]!;
-    call.resolve({ v: 3, ticket: call.request.ticket, instance: description.instance, assets: description.assets,
+    call.resolve({ v: 4, ticket: call.request.ticket, instance: description.instance, assets: description.assets,
       status: 'error', error: { code, execution: 'not_started' } });
   }
   source(index: number, text: string, complete = true) {
     const call = this.calls[index]!, r = call.request;
     if (r.op === 'stream.close') {
-      call.resolve({ v: 3, ticket: r.ticket, instance: description.instance, assets: description.assets, status: 'ok', body: { kind: 'closed' } }); return;
+      call.resolve({ v: 4, ticket: r.ticket, instance: description.instance, assets: description.assets, status: 'ok', body: { kind: 'closed' } }); return;
     }
     const source = r.op !== 'stream.append' ? (r.sources as Record<string, unknown>[])[0]! : r;
     const bytes = Buffer.byteLength(text), committed = complete ? bytes : Buffer.byteLength(text.slice(0, text.lastIndexOf('\n') + 1));
     const from = r.op === 'stream.append' ? Number(r.base_bytes) : 0;
-    call.resolve({ v: 3, ticket: r.ticket, instance: description.instance, assets: description.assets, status: 'ok',
+    call.resolve({ v: 4, ticket: r.ticket, instance: description.instance, assets: description.assets, status: 'ok',
       body: { kind: 'source', vocabulary: description.vocabulary.fingerprint, sources: [{ key: source.key, generation: source.generation,
         source_version: source.source_version, revision: r.op === 'stream.append' ? Number(r.base_revision) + 1 : 1, replace_from: from, source_bytes: bytes, committed_bytes: committed, complete,
         ...(r.op !== 'highlight' ? { lease: 'lease' } : {}), contexts: bytes > from ? [[0, 1]] : [], runs: bytes > from ? [bytes - from, 1] : [],
@@ -56,11 +59,10 @@ class Host {
   }
   style(index: number, literal: ConcreteStyle = { foreground: { kind: 'indexed', index: 5 }, background: neutral.background, attributes: 0 }) {
     const call = this.styles[index]!, r = call.request;
-    const rules = r.rules as { fingerprint: string };
-    call.resolve({ v: 3, ticket: r.ticket, instance: description.instance, assets: description.assets, status: 'ok',
-      body: { kind: 'styles', vocabulary: r.vocabulary, rules: fingerprintNative(rules.fingerprint, 'rules'),
-        styles: [{ ...literal, attribute_mask: 31 }], indices: (r.contexts as unknown[]).map(() => 1),
-        palette: { revision: 1, fingerprint: fingerprintNative(rules.fingerprint, 'palette'), slots: CARD_ROLES.map(() => 1), origins: CARD_ROLES.map(() => 0) } } });
+    const rules = r.rules as RuleDefinition;
+    call.resolve({ v: 4, ticket: r.ticket, instance: description.instance, assets: description.assets, status: 'ok',
+      body: { kind: 'styles', vocabulary: r.vocabulary, rules: fingerprintRules(rules),
+        styles: [{ ...literal, attribute_mask: 31 }], indices: (r.contexts as unknown[]).map(() => 1) } });
   }
   async answer(index: number, text: string, complete = true, literal?: ConcreteStyle) {
     this.source(index, text, complete); await settled();
@@ -72,10 +74,10 @@ const fixtures: { host: Host; sources: SourceController }[] = [];
 function fixture(ready = false, options: ConstructorParameters<typeof SourceController>[1] = {}) {
   const host = new Host(); host.ready = ready;
   const sources = new SourceController(host, options);
-  sources.setStyleSelection({ kind: 'native', id: profile.id, fingerprint });
+  sources.setStyleSelection(selection);
   const client: Pick<SyntaxClient, 'sources' | 'snapshot'> & { enabled: boolean } = {
     sources, enabled: true,
-    snapshot() { return { enabled: this.enabled, provider: host.snapshot(), standaloneVersion: 'test', selected: { kind: 'pi' }, effective: host.ready ? profile : undefined }; }
+    snapshot() { return { enabled: this.enabled, provider: host.snapshot(), standaloneVersion: 'test', selected: { kind: 'theme', id: ownedTheme.id }, effective: ownedTheme }; }
   };
   fixtures.push({ host, sources });
   return { host, sources, client };
@@ -345,7 +347,7 @@ test('syntax work native proven prefix never borrows changed tail colors; exact 
 
 test('syntax work native RGB reader passes concrete styles without classification', async () => {
   const { client, sources, host } = fixture(true); const d = demand('x');
-  client.snapshot = () => ({ enabled: true, provider: host.snapshot(), standaloneVersion: 'test', selected: { kind: 'occipital', id: 'rgb' }, effective: rgbProfile });
+  client.snapshot = () => ({ enabled: true, provider: host.snapshot(), standaloneVersion: 'test', selected: { kind: 'theme', id: 'rgb' }, effective: rgbProfile });
   requestSyntax(client, d, highlight); sources.flush();
   await host.answer(0, d.text, true, { foreground: { kind: 'rgb', r: 1, g: 2, b: 3 }, background: neutral.background, attributes: 5 }); await settled();
   const resolved = resolveSyntax(sources, d), spans: { start: number; end: number; style: ConcreteStyle }[] = [];
@@ -354,29 +356,15 @@ test('syntax work native RGB reader passes concrete styles without classificatio
   assert.deepEqual(fileRows(sources, resolved), ['x']);
 });
 
-test('syntax work STYLE metadata reconciliation is pure and never grants parser retry', async () => {
+test('syntax work local palette replacement retries STYLE only, never SOURCE or the Pi classifier', async () => {
   const { client, sources, host } = fixture(true), d = demand(); let calls = 0;
   const classify = () => { calls++; return ['x']; };
   requestSyntax(client, d, classify); sources.flush(); host.source(0, d.text); await settled();
-  assert.equal(host.styles.length, 1); host.fault(0, 'profile_changed', true); await settled();
-  const need = sources.profileReconciliationNeeded(); assert.ok(need);
-  const before = sources.stats(), observe = sources.observe;
-  sources.observe = () => { throw new Error('completion observation'); };
-  try {
-    for (let i = 0; i < 20; i++) {
-      assert.equal(resolveSyntax(sources, d).profileRetryAllowed, false);
-      assert.equal(resolveSyntax(sources, d).needsPi, false);
-    }
-  } finally { sources.observe = observe; }
-  assert.deepEqual(sources.stats(), before);
-  sources.acknowledgeProfiles(need.generation, need.sequence);
-  assert.equal(sources.profileReconciliationNeeded(), undefined);
-  assert.equal(resolveSyntax(sources, d).profileRetryAllowed, false);
-  assert.equal(requestSyntax(client, d, classify).outcome, 'waiting'); sources.flush(); await settled();
-  assert.equal(host.calls.length, 1); assert.equal(host.styles.length, 1); assert.equal(calls, 0);
-  const next = { ...rgbProfile, fingerprint: 'b'.repeat(64) };
-  sources.setStyleSelection({ kind: 'native', id: next.id, fingerprint: next.fingerprint });
-  client.snapshot = () => ({ enabled: true, provider: host.snapshot(), standaloneVersion: 'test', selected: { kind: 'occipital', id: next.id }, effective: next });
+  assert.equal(host.styles.length, 1); host.fault(0, 'busy', true); await settled();
+  assert.equal(resolveSyntax(sources, d).needsPi, false);
+  const next = syntheticSelection(2, 'gruvbox-light');
+  sources.setStyleSelection(next);
+  client.snapshot = () => ({ enabled: true, provider: host.snapshot(), standaloneVersion: 'test', selected: { kind: 'theme', id: rgbProfile.id }, effective: rgbProfile });
   requestSyntax(client, d, classify); sources.flush(); await settled();
   assert.equal(host.calls.length, 1); assert.equal(host.styles.length, 2);
   host.style(1); await settled();
@@ -462,8 +450,8 @@ test('syntax work Pi reset restores concrete neutral fonts and glyph mismatch re
 async function collectibleNativeReader() {
   const host = new Host(); host.ready = true;
   const sources = new SourceController(host);
-  sources.setStyleSelection({ kind: 'native', id: profile.id, fingerprint });
-  sources.observe({ key: 'first', version: 1, text: 'x', complete: true, language: 'bash', profile: profile.id, fingerprint });
+  sources.setStyleSelection(selection);
+  sources.observe({ key: 'first', version: 1, text: 'x', complete: true, language: 'bash' });
   sources.flush(); await host.answer(0, 'x'); await settled();
   const reader = resolveSyntax(sources, demand('x', 1, true, 'first')).native!;
   assert.ok(reader);
@@ -629,15 +617,14 @@ test('syntax diagnostics are observational even if their sink throws', async () 
 });
 
 
-for (const code of ['busy', 'profile_changed', 'theme_unavailable', 'invalid_header', 'PRIVATE_NATIVE_CODE'])
+for (const code of ['busy', 'invalid_header', 'PRIVATE_NATIVE_CODE'])
   test(`logging review P2: native rejection preserves safe ${code} without exposing arbitrary code/message`, async () => {
     const records: { explanation: string; fields?: import('../../../src/diagnostics.ts').DiagnosticFields }[] = [];
     const f = fixture(true, { diagnostic: (_level, _area, explanation, fields) => records.push({ explanation, fields }) });
     const d = demand('PRIVATE_SOURCE_TEXT'); requestSyntax(f.client, d, highlight); f.sources.flush();
     assert.equal(f.host.calls.length, 1);
-    const styleFault = code === 'profile_changed' || code === 'theme_unavailable';
-    if (styleFault) { f.host.source(0, d.text); await settled(); f.host.fault(0, code, true); }
-    else if (code === 'invalid_header') f.host.calls[0]!.resolve({ malformed: 'PRIVATE_REPLY_TEXT' });
+    const styleFault = false;
+    if (code === 'invalid_header') f.host.calls[0]!.resolve({ malformed: 'PRIVATE_REPLY_TEXT' });
     else f.host.fault(0, code);
     await settled();
     const rejection = records.find(record => record.explanation.startsWith(styleFault ? 'Native style reply refused' : 'Native reply refused'));
@@ -662,9 +649,9 @@ test('syntax work SOURCE complete and styles pending or failed never authorizes 
     assert.equal(requestSyntax(client, d, classify).outcome, 'waiting');
     assert.equal(resolveSyntax(sources, d).needsPi, false);
   }
-  assert.equal(resolveSyntax(sources, d, null).nativeExact, true);
-  assert.equal(resolveSyntax(sources, d, null).needsPi, false);
-  assert.equal(requestSyntax(client, { ...d, nativeProfile: null }, classify).outcome, 'waiting');
+  assert.equal(resolveSyntax(sources, d).nativeExact, true);
+  assert.equal(resolveSyntax(sources, d).needsPi, false);
+    assert.equal(requestSyntax(client, d, classify).outcome, 'waiting');
   assert.equal(calls, 0); assert.equal(host.calls.length, 1);
 });
 
@@ -673,8 +660,8 @@ test('syntax work forwards explicit neutral origin and theme-only selection neve
   const observe = sources.observe.bind(sources); const origins: unknown[] = [];
   sources.observe = input => { origins.push(input.neutral); return observe(input); };
   requestSyntax(client, d, highlight); sources.flush(); await host.answer(0, 'x');
-  sources.setStyleSelection({ kind: 'native', id: rgbProfile.id, fingerprint: 'b'.repeat(64) });
-  client.snapshot = () => ({ enabled: true, provider: host.snapshot(), standaloneVersion: 'test', selected: { kind: 'occipital', id: 'rgb' }, effective: rgbProfile });
+  sources.setStyleSelection(syntheticSelection(2, 'gruvbox-light'));
+  client.snapshot = () => ({ enabled: true, provider: host.snapshot(), standaloneVersion: 'test', selected: { kind: 'theme', id: 'rgb' }, effective: rgbProfile });
   requestSyntax(client, d, highlight); sources.flush(); await settled();
   assert.deepEqual(origins, ['title', 'title']); assert.equal(host.calls.length, 1);
   assert.equal(host.styles.length, 2); host.style(1); await settled();

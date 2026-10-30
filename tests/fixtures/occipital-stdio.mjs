@@ -8,7 +8,7 @@ const mode = process.argv[2] ?? 'echo';
 const replyControlCharacter = String.fromCodePoint(0x85);
 const held = [];
 const cancelled = [];
-let heldCatalogue;
+let heldDescribe;
 let incoming = Buffer.alloc(0);
 let sequence = 0;
 let receivedBytes = 0;
@@ -26,10 +26,10 @@ function packet(value) {
   return Buffer.concat([header, body]);
 }
 function reply(request) {
-  if (request.fixtureExecution) return { v: 3, ticket: request.ticket, instance: 'fixture-instance', assets: 'fixture-assets',
+  if (request.fixtureExecution) return { v: 4, ticket: request.ticket, instance: 'fixture-instance', assets: 'fixture-assets',
     status: 'error', error: { code: 'cancelled', execution: request.fixtureExecution } };
   return {
-    v: 3, ticket: request.ticket, instance: 'fixture-instance', assets: 'fixture-assets', status: 'ok',
+    v: 4, ticket: request.ticket, instance: 'fixture-instance', assets: 'fixture-assets', status: 'ok',
     body: {
       pid: process.pid, sequence: ++sequence, cancelled: [...cancelled],
       ...(mode === 'context' ? { cwd: process.cwd(), env: process.env.OCCIPITAL_TEST_VALUE, argument: process.argv[3] } : {}),
@@ -42,19 +42,19 @@ function reply(request) {
 function send(request) { process.stdout.write(packet(reply(request))); }
 function onRequest(request) {
   if ('cancel' in request) {
-    if (request.v !== 3 || Object.keys(request).length !== 2) process.exit(3);
+    if (request.v !== 4 || Object.keys(request).length !== 2) process.exit(3);
     cancelled.push(request.cancel);
     return;
   }
-  if (request.v !== 3) process.exit(3);
+  if (request.v !== 4) process.exit(3);
   applicationFrames++;
-  if (mode === 'wait-only-catalogue') {
-    if (request.op === 'describe' || request.op === 'themes.refresh') {
-      if (request.ticket === 'ready') send(request); else heldCatalogue = request;
+  if (mode === 'wait-only-describe') {
+    if (request.op === 'describe') {
+      if (request.ticket === 'ready') send(request); else heldDescribe = request;
     } else if (request.ticket === 'release-data') {
       send(request); held.splice(0).forEach(send);
     } else if (request.ticket === 'release-control') {
-      if (heldCatalogue) { send(heldCatalogue); heldCatalogue = undefined; } send(request);
+      if (heldDescribe) { send(heldDescribe); heldDescribe = undefined; } send(request);
     } else held.push(request);
     return;
   }
@@ -67,7 +67,7 @@ function onRequest(request) {
     let index = 0;
     const premature = setInterval(() => {
       const ticket = mode === 'premature' ? `b${index}` : 'held';
-      process.stdout.write(packet({ v: 3, ticket, instance: 'fixture-instance', assets: 'fixture-assets', status: 'ok',
+      process.stdout.write(packet({ v: 4, ticket, instance: 'fixture-instance', assets: 'fixture-assets', status: 'ok',
         body: { ...counters, repliesEmitted: ++index } }));
       if (index === (mode === 'premature' ? 9 : 1)) clearInterval(premature);
     }, 150);
@@ -101,14 +101,14 @@ function onRequest(request) {
     return;
   }
   if (mode === 'hold' || mode === 'ignore-term') {
-    if (request.op === 'describe' || request.op === 'themes.refresh') {
+    if (request.op === 'describe') {
       send(request);
       if (request.ticket === 'release') held.splice(0).forEach(send);
     } else held.push(request);
     return;
   }
   if (mode === 'late') {
-    if (request.op === 'describe' || request.op === 'themes.refresh') send(request);
+    if (request.op === 'describe') send(request);
     else setTimeout(() => send(request), request.ticket === 'first' ? 180 : 350);
     return;
   }
@@ -164,7 +164,7 @@ function onRequest(request) {
     case 'error-body': process.stdout.write(packet({ ...valid, status: 'error', error: { code: 'busy', execution: 'maybe' } })); break;
     case 'control-oversize': process.stdout.write(packet({ ...valid, body: { text: 'x'.repeat(32768) } })); break;
     case 'changed-instance': process.stdout.write(packet({ ...valid, instance: sequence === 1 ? 'first-instance' : 'other-instance' })); break;
-    case 'application-error': process.stdout.write(packet({ v: 3, ticket: request.ticket, instance: 'fixture-instance', assets: 'fixture-assets', status: 'error', error: { code: 'busy', execution: 'not_started' } })); break;
+    case 'application-error': process.stdout.write(packet({ v: 4, ticket: request.ticket, instance: 'fixture-instance', assets: 'fixture-assets', status: 'error', error: { code: 'busy', execution: 'not_started' } })); break;
     default: send(request);
   }
 }

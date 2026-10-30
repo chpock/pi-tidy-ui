@@ -9,7 +9,11 @@ import { PiTerminal } from './terminal-harness.mjs';
 import { closeTerminals } from './terminal-cleanup.mjs';
 import { createSyntaxStockReferences } from './syntax-stock-reference.mjs';
 import { readPendingJson, nativeReady, themePhaseReady, semanticStyle, semanticPhaseReady } from './syntax-observation.mjs';
-import { PI_RULE_BINDINGS } from '../../src/syntax/pi-rules.ts';
+import { PI_REGION_ROLES } from '../../src/syntax/pi-adapter.ts';
+import { SEMANTIC_REGIONS } from '../../src/syntax/semantic-rules.ts';
+import { samplePiPrefix } from '../../src/syntax/pi-bindings.ts';
+import { THEME_CATALOGUE } from '../../src/themes/catalogue.ts';
+import { sampleOwnedPalette } from '../../src/themes/owned-palette.ts';
 import { childEnv, readInputs, validateNative } from '../../scripts/test/context.mjs';
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
@@ -230,24 +234,20 @@ async function menuAction(terminal, action) {
   else throw Error('Unknown test menu action');
 }
 
-async function chooseTheme(terminal, index) {
-  const snapshot = await stats(terminal, `theme-choice-${++menuSequence}`);
-  const profiles = snapshot.client.provider.description.profiles.filter(profile => profile.id !== 'pi');
-  const label = index === 0 ? 'Follow Pi theme' : profiles[index - 1].label;
+async function chooseTheme(terminal, paletteId) {
+  const label = paletteId === 'pi' ? 'Follow Pi theme' : THEME_CATALOGUE.find(theme => theme.id === paletteId)?.label;
+  assert.ok(label, `known local theme choice ${paletteId}`);
   await terminal.openTidyMenu(); await terminal.selectTidyItem('Code color theme');
   assert.ok(terminal.tidyRows().some(row => row.includes('Search:')), 'public searchable theme picker installed');
   // One complete search avoids exercising every intervening preview in controls
-  // whose counters are specifically about a single selected profile change.
+  // whose counters are specifically about a single local palette change.
   terminal.send(label);
   await terminal.waitForScreen(() => terminal.tidyRows().some(row => row.startsWith('→ ') && row.includes(label)), 'searched theme selected');
   await terminal.selectTidyItem(label); await terminal.closeTidyMenu();
 }
 
 async function peerSource(client) {
-  const profile = client.snapshot().effective;
-  assert.ok(profile);
-  assert.equal(client.sources.observe({ key: 'peer', version: 1, text: 'echo peer\n', language: 'bash', complete: true,
-    profile: profile.id, fingerprint: profile.fingerprint }), true);
+  assert.equal(client.sources.observe({ key: 'peer', version: 1, text: 'echo peer\n', language: 'bash', complete: true }), true);
   await client.sources.flush();
   assert.equal(await client.whenSettled(), true, 'actual peer work and delivery completed');
   assert.ok(client.sources.status('peer')?.exact, 'actual peer classification');
@@ -302,18 +302,18 @@ async function initialThemeStats(terminal, name) {
 
 async function retainedNativeThemeStats(terminal, name) {
   const initial = await settledStats(terminal, `${name}-before`);
-  const profile = initial.client.provider.description.profiles.find(profile => profile.label === 'Catppuccin Mocha'); assert.ok(profile);
-  // Restored FILEs can initially own only Pi ANSI. Preview once to establish
-  // their FIRST native semantics before asserting no SOURCE on later themes.
-  writeFileSync(join(terminal.output, 'syntax-theme-phase'), 'native-prerequisite');
-  await terminal.openTidyMenu(); await terminal.selectTidyItem('Code color theme'); terminal.send(profile.label);
+  const paletteId = 'catppuccin-dark', palette = THEME_CATALOGUE.find(theme => theme.id === paletteId); assert.ok(palette);
+  // Restored FILEs may initially have only Pi paint. Preview a local palette
+  // once to establish the first generic semantic group before warm-change checks.
+  writeFileSync(join(terminal.output, 'syntax-theme-phase'), 'owned-prerequisite');
+  await terminal.openTidyMenu(); await terminal.selectTidyItem('Code color theme'); terminal.send(palette.label);
   const ready = async id => {
     const current = await settledStats(terminal, `${name}-${id}`);
-    assert.ok(await semanticPhaseReady(() => current, () => terminal.events(), themeMarkers, id), 'retained native semantics for every theme marker');
+    assert.ok(await semanticPhaseReady(() => current, () => terminal.events(), themeMarkers, id), 'retained generic semantics for every marker');
     return current;
   };
-  await ready(profile.id);
-  terminal.send('\x1b'); await until(() => terminal.tidyHeading('Tidy UI'), 'prerequisite preview cancelled'); await terminal.closeTidyMenu();
+  await ready(paletteId);
+  terminal.send('\x1b'); await until(() => terminal.tidyHeading('Tidy UI'), 'prerequisite palette preview cancelled'); await terminal.closeTidyMenu();
   writeFileSync(join(terminal.output, 'syntax-theme-phase'), 'initial');
   const baseline = await ready('pi');
   assert.equal(baseline.counts.themeSaves, 0, 'prerequisite preview never persists settings');
@@ -327,19 +327,46 @@ function themeForegrounds(dump) {
   });
 }
 
-function expressionForeground(expression, dump, inherited = 'toolOutput') {
+function expressionForeground(expression, dump, paletteId, inherited = 'toolOutput') {
   const ink = expression.foreground;
   if (ink.kind === 'rgb') return ink.r * 65536 + ink.g * 256 + ink.b;
-  const role = ink.kind === 'binding' ? PI_RULE_BINDINGS[ink.slot] : inherited;
   assert.ok(ink.kind === 'binding' || ink.kind === 'inherit', `explicit expected foreground ${ink.kind}`);
+  if (paletteId !== 'pi') {
+    const palette = sampleOwnedPalette(paletteId, 'truecolor');
+    const color = ink.kind === 'binding' ? palette.bindings[ink.slot]?.ink : palette.roles[inherited === 'toolTitle' ? 'title' : 'output']?.foreground;
+    assert.equal(color?.kind, 'rgb', `owned palette provides RGB for ${paletteId}`);
+    return color.r * 65536 + color.g * 256 + color.b;
+  }
+  const region = ink.kind === 'binding' ? SEMANTIC_REGIONS[ink.slot] : undefined;
+  const role = region ? PI_REGION_ROLES[region] : inherited;
+  assert.ok(role, `Pi adapter role for semantic region ${region}`);
   const rgb = dump.summaryStyles[role].match(/38;2;(\d+);(\d+);(\d+)m/); assert.ok(rgb, `actual Pi role ${role}`);
   return Number(rgb[1]) * 65536 + Number(rgb[2]) * 256 + Number(rgb[3]);
 }
-function expectedThemeColors(terminal, phase, dump, profileId) {
-  assert.ok(profileId, 'explicit v3 profile identity is required');
+export function expressionAttributes(expression, dump, paletteId, inherited = 'toolOutput') {
+  let selected;
+  if (paletteId === 'pi') {
+    const region = expression.foreground.kind === 'binding' ? SEMANTIC_REGIONS[expression.foreground.slot] : undefined;
+    const role = region ? PI_REGION_ROLES[region] : inherited;
+    assert.ok(role, `Pi adapter role for semantic region ${region}`);
+    const summary = dump.summaryStyles[role], probe = summary?.indexOf('X');
+    assert.ok(probe > 0, `public Pi summary probe ${role}`);
+    selected = samplePiPrefix(summary.slice(0, probe));
+  } else {
+    const palette = sampleOwnedPalette(paletteId, 'truecolor');
+    selected = expression.foreground.kind === 'binding'
+      ? palette.bindings[expression.foreground.slot]
+      : palette.roles[inherited === 'toolTitle' ? 'title' : 'output'];
+  }
+  assert.ok(selected, 'selected palette provides typography');
+  return selected.attributes & ~expression.attribute_mask | expression.attributes & expression.attribute_mask;
+}
+
+function expectedThemeColors(terminal, phase, dump, paletteId) {
+  assert.ok(paletteId, 'explicit selected palette identity is required');
   return themeMarkers.map(marker => {
-    const style = semanticStyle(terminal.events(), marker, profileId); assert.ok(style, `actual v3 source/style for ${phase} ${marker}`);
-    return expressionForeground(style.expression, dump, marker.startsWith('THEME_BASH') ? 'toolTitle' : 'toolOutput');
+    const style = semanticStyle(terminal.events(), marker); assert.ok(style, `actual generic SOURCE/STYLE for ${phase} ${marker}`);
+    return expressionForeground(style.expression, dump, paletteId, marker.startsWith('THEME_BASH') ? 'toolTitle' : 'toolOutput');
   });
 }
 

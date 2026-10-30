@@ -4,7 +4,7 @@ import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import tidyUi from '../../src/index.ts';
 import { SyntaxRuntime } from '../../src/syntax/runtime.ts';
 import { CardSources } from '../../src/syntax/cards.ts';
-import { preparedHistoryReady, explainPreparedHistory } from './performance-readiness.mjs';
+import { preparedHistoryReady, preparedHistoryPaintOriginCount, explainPreparedHistory } from './performance-readiness.mjs';
 import { createSyntaxOptions } from '../../src/occipital/bootstrap.ts';
 import { createLocalOwnedFactory } from '../../src/occipital/factories.ts';
 import { registerPerformanceDriver } from './performance-driver.mjs';
@@ -27,7 +27,8 @@ export default function performanceTidy(pi: ExtensionAPI) {
         acquireOwned: signal => createLocalOwnedFactory({ command: process.env.OCCIPITAL_TEST_BIN!, requestDeadlineMs: 300000, terminateGraceMs: 1000, cwd: ctx.cwd })(signal) } };
     } });
     return { runtime: () => runtime?.deref(), controller: () => controller?.deref(),
-      ready(ids: Set<string>, profile: string | undefined) { const current = consumer?.deref(); return !!current && preparedHistoryReady(current, ids, profile); },
+      ready(ids: Set<string>, palettePrefix: string | undefined) { const current = consumer?.deref(); return !!current && preparedHistoryReady(current, ids, palettePrefix); },
+      paintOriginCount(ids: Set<string>, origin: string) { const current = consumer?.deref(); return current ? preparedHistoryPaintOriginCount(current, ids, origin) : 0; },
       diagnostics(ids: Set<string>) { const current = consumer?.deref(); return current ? explainPreparedHistory(current, ids) : null; },
       restore() { SyntaxRuntime.prototype.attach = attached; CardSources.prototype.prepare = prepare; } };
   });

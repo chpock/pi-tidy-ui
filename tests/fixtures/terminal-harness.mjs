@@ -406,11 +406,18 @@ export class PiTerminal {
             catch { return false; }
           }
           const rootSelection = rows.some(line => line.startsWith('→ Code color theme'));
+          if (this.tidyHeading('Code color theme')) {
+            const selectedTheme = rows.some(line => line.startsWith(`→ ${label}`) && line.endsWith('Selected'));
+            try {
+              const choice = JSON.parse(readFileSync(join(this.agent, 'extensions/pi-tidy-ui/config.json'), 'utf8')).syntaxTheme;
+              return selectedTheme && choice?.kind === (label === 'Follow Pi theme' ? 'pi' : 'theme');
+            } catch { return false; }
+          }
           if (this.tidyHeading('Tidy UI') || this.menuBounds && rootSelection) {
             if (!rootSelection) return false;
             try {
               const choice = JSON.parse(readFileSync(join(this.agent, 'extensions/pi-tidy-ui/config.json'), 'utf8')).syntaxTheme;
-              return choice?.kind === (label === 'Follow Pi theme' ? 'pi' : 'occipital');
+              return choice?.kind === (label === 'Follow Pi theme' ? 'pi' : 'theme');
             } catch { return false; }
           }
           return rows.some(line => /Done\.|Status refreshed\.|Cache statistics refreshed\./u.test(line));

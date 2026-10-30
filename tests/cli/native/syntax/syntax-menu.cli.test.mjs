@@ -5,28 +5,33 @@ import { rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import test from 'node:test';
 import { PiTerminal } from "../../../fixtures/terminal-harness.mjs";
+import { THEME_CATALOGUE } from '../../../../src/themes/catalogue.ts';
 import { closeTerminals, runCleanupSteps } from "../../../fixtures/terminal-cleanup.mjs";
-import { nativeReady, semanticPhaseReady } from "../../../fixtures/syntax-observation.mjs";
-import { prepareSyntaxNative, inputs, scenario, chooseTheme, settledStats, body, stats, work, finish, persisted, savedThemeSession, until, themeMarkers, themeForegrounds, syntaxReady, retainedNativeThemeStats, expectedThemeColors, traffic, captureThenRenderDiagnostics, previewStats } from "../../../fixtures/syntax-cli-support.mjs";
+import { nativeReady, semanticStyle, semanticPhaseReady } from "../../../fixtures/syntax-observation.mjs";
+import { prepareSyntaxNative, inputs, scenario, chooseTheme, settledStats, body, work, finish, persisted, savedThemeSession, until, themeMarkers, themeForegrounds, syntaxReady, retainedNativeThemeStats, expectedThemeColors, traffic, captureThenRenderDiagnostics, expressionForeground } from "../../../fixtures/syntax-cli-support.mjs";
 
 const { binary, fixture, descriptor } = await prepareSyntaxNative();
 
-test('occipital CLI: real theme picker, explicit RGB, persisted selection and fresh default enablement',
+test('occipital CLI: local palette picker, persisted selection and fresh default enablement',
   { timeout: 90000 }, async () => {
     const native = new PiTerminal('syntax-theme-native', { mode: 'fullscreen', extraEnv: descriptor, extensions: [fixture] });
     let replay;
     try {
       const initial = await scenario(native, true);
-      await chooseTheme(native, 1);
+      const paletteId = 'amoled-dark';
+      await chooseTheme(native, paletteId);
       const prefs = readFileSync(`${native.agent}/extensions/pi-tidy-ui/config.json`, 'utf8'), saved = JSON.parse(prefs);
-      assert.deepEqual(Object.keys(saved), ['syntaxTheme']); assert.equal(saved.syntaxTheme.kind, 'occipital'); assert.equal(typeof saved.syntaxTheme.id, 'string');
+      assert.deepEqual(Object.keys(saved), ['syntaxTheme']); assert.equal(saved.syntaxTheme.kind, 'theme'); assert.equal(saved.syntaxTheme.id, paletteId);
       await settledStats(native, 'theme-settled', s => nativeReady(s) && s.client.effective.id === saved.syntaxTheme.id);
       const themed = await captureThenRenderDiagnostics(native, 'syntax-explicit-theme'); assert.deepEqual(body(themed), body(initial));
       const y = themed.screen.findIndex(row => row.includes('const x=2;')), x = themed.screen[y].indexOf('const x=2;');
+      const resolved = semanticStyle(native.events(), 'const x=2;'); assert.ok(resolved, 'actual generic semantic style remains available');
+      assert.equal(themed.cells[y][x].fg, expressionForeground(resolved.expression, themed, paletteId), 'local palette reaches the physical keyword cell');
       assert.notEqual(themed.cells[y][x].fg, initial.cells[initial.screen.findIndex(row => row.includes('const x=2;'))][x].fg,
-        'explicit daemon theme RGB reaches physical source cells, not Pi keyword color');
+        'palette selection changes physical ink without a second classifier');
       const before = themed.sample; await captureThenRenderDiagnostics(native, 'syntax-theme-warm');
-      const after = await settledStats(native, 'theme-after'); assert.deepEqual(work(after), work(before)); assert.equal(after.counts.piBridges, before.counts.piBridges);
+      const after = await settledStats(native, 'theme-after'); assert.deepEqual(work(after), work(before));
+      assert.equal(after.counts.styleRequests, before.counts.styleRequests, 'palette selection reuses generic styles'); assert.equal(after.counts.piBridges, before.counts.piBridges);
       const session = initial.session, workspace = native.work; await finish(native);
       replay = new PiTerminal('syntax-theme-restored', { mode: 'fullscreen', session, workspace, extensions: [fixture],
         extraEnv: { ...descriptor, TIDY_UI_TEST_SYNTAX_CONFIG: prefs } });
@@ -43,7 +48,7 @@ test('occipital CLI: real theme picker, explicit RGB, persisted selection and fr
     } finally { await runCleanupSteps(() => native.close(), () => replay?.close(), () => replay?.dispose(), () => native.dispose()); }
   });
 
-for (const mode of ['fullscreen', 'regular']) test(`occipital CLI: ${mode} theme preview is visible before confirmation and rollback rejects late colors`,
+for (const mode of ['fullscreen', 'regular']) test(`occipital CLI: ${mode} palette preview is visible before confirmation and rollback preserves the prior selection`,
   { timeout: 120000 }, async () => {
     const { directory, session, bytes } = await savedThemeSession();
     const originalConfig = '{"syntaxTheme":{"kind":"pi"},"unknown":{"untouched":true}}\n';
@@ -52,7 +57,6 @@ for (const mode of ['fullscreen', 'regular']) test(`occipital CLI: ${mode} theme
     const config = join(terminal.agent, 'extensions/pi-tidy-ui/config.json');
     const phase = name => writeFileSync(join(terminal.output, 'syntax-theme-phase'), name);
     const observe = name => settledStats(terminal, name);
-    const observeHeld = name => previewStats(terminal, name);
     let observation = 0;
     const ready = async (name, id) => {
       const current = await observe(name);
@@ -70,7 +74,6 @@ for (const mode of ['fullscreen', 'regular']) test(`occipital CLI: ${mode} theme
       return painted;
     };
     const colors = async (name, wanted) => assertColors({ ...baseline, ...await terminal.captureSettled(name) }, wanted);
-    const heldColors = async (name, wanted) => assertColors(await terminal.captureCompleteScreen(name, baseline), wanted);
     const raw = dump => dump.tools.map(({ name, args, content, details, isError, argsComplete, executionStarted, partial }) =>
       ({ name, args, content, details, isError, argsComplete, executionStarted, partial }));
     try {
@@ -79,33 +82,32 @@ for (const mode of ['fullscreen', 'regular']) test(`occipital CLI: ${mode} theme
       const initial = await retainedNativeThemeStats(terminal, 'preview-initial');
       baseline = await captureThenRenderDiagnostics(terminal, 'physical-preview-baseline'); themeForegrounds(baseline);
       assert.ok(baseline.tools.every(tool => !('tinyLines' in tool)));
-      const profiles = initial.client.provider.description.profiles;
-      const mocha = profiles.find(profile => profile.label === 'Catppuccin Mocha'), latte = profiles.find(profile => profile.label === 'Catppuccin Latte');
+      const mocha = THEME_CATALOGUE.find(theme => theme.id === 'catppuccin-dark'), latte = THEME_CATALOGUE.find(theme => theme.id === 'catppuccin-light');
       assert.ok(mocha && latte); assert.equal(initial.counts.themeSaves, 0);
       assert.ok(initial.localWork.sourceSegments > 0); assert.ok(initial.localWork.prefixScalarReads > 0);
       const beforeMocha = await observe('before-cached-mocha');
       await terminal.openTidyMenu(); await terminal.selectTidyItem('Code color theme');
       phase('preview-mocha'); await search(mocha.label);
-      const preview = await ready('mocha', mocha.id, 'preview-mocha');
+      const preview = await ready('mocha', mocha.id);
       assert.equal(preview.counts.themeSaves, 0); assert.equal(readFileSync(config, 'utf8'), originalConfig);
-      assert.equal(preview.counts.sourceRequests, initial.counts.sourceRequests, 'retained native semantics need no SOURCE for preview');
+      assert.equal(preview.counts.sourceRequests, initial.counts.sourceRequests, 'retained source semantics need no SOURCE for preview');
       assert.equal(preview.source.preparedBytes, initial.source.preparedBytes);
       const painted = await colors('preview-before-enter', dump => expectedThemeColors(terminal, 'preview-mocha', dump, mocha.id));
       assert.notDeepEqual(themeForegrounds(painted), themeForegrounds(baseline), 'colors actually change while the unconfirmed list remains open');
       assert.ok(terminal.tidyHeading('Code color theme'));
       const cachedMocha = await observe('cached-mocha-painted');
-      assert.equal(cachedMocha.counts.styleRequests, beforeMocha.counts.styleRequests, 'cached Mocha selection through actual colors does no STYLE work');
+      assert.equal(cachedMocha.counts.styleRequests, beforeMocha.counts.styleRequests, 'palette preview reuses the common generic STYLE output');
       for (const width of [100, 90, 100]) { await terminal.resize(width, 180); await observe(`preview-warm-${width}-${observation++}`); }
       const warm = await observe('preview-warm-final'); assert.deepEqual(work(warm), work(cachedMocha));
       assert.equal(warm.counts.themeSaves, 0); assert.equal(warm.counts.piBridges, initial.counts.piBridges);
       const beforeCancel = await observe('before-cached-cancel');
       phase('cancel-pi'); terminal.send('\x1b');
       await until(() => terminal.tidyHeading('Tidy UI'), 'Escape restores the root page');
-      const cancelled = await ready('cancel-pi', 'pi', 'cancel-pi');
+      const cancelled = await ready('cancel-pi', 'pi');
       assert.equal(cancelled.counts.themeSaves, 0); assert.equal(readFileSync(config, 'utf8'), originalConfig);
       await colors('preview-cancelled', () => themeForegrounds(baseline));
       const afterCancellation = await observe('cached-cancel-painted');
-      assert.equal(afterCancellation.counts.styleRequests, beforeCancel.counts.styleRequests, 'cancel to cached Follow Pi through actual colors does no STYLE work');
+      assert.equal(afterCancellation.counts.styleRequests, beforeCancel.counts.styleRequests, 'cancel to Follow Pi reuses the generic STYLE output');
       await terminal.closeTidyMenu();
       const afterCancel = await terminal.capture('physical-preview-after-cancel');
       assert.deepEqual(raw(afterCancel), raw(baseline)); assert.deepEqual(body(afterCancel), body(baseline));
@@ -113,58 +115,52 @@ for (const mode of ['fullscreen', 'regular']) test(`occipital CLI: ${mode} theme
       await terminal.openTidyMenu(); await terminal.selectTidyItem('Code color theme');
       const beforeLatte = await observe('before-uncached-latte');
       phase('preview-latte'); await search(latte.label);
-      const lattePreview = await ready('latte', latte.id, 'preview-latte');
+      const lattePreview = await ready('latte', latte.id);
       assert.equal(lattePreview.counts.themeSaves, 0); assert.equal(readFileSync(config, 'utf8'), originalConfig);
       const lattePaint = await colors('preview-latte-before-enter', dump => expectedThemeColors(terminal, 'preview-latte', dump, latte.id));
       const latteMaterialized = await observe('uncached-latte-painted');
-      assert.ok(latteMaterialized.counts.styleRequests > beforeLatte.counts.styleRequests, 'first Latte selection resolves actual uncached STYLE');
+      assert.equal(latteMaterialized.counts.styleRequests, beforeLatte.counts.styleRequests, 'all palettes share the same rules and resolved STYLE');
       await terminal.selectTidyItem(latte.label);
-      const confirmed = await ready('confirmed', latte.id, 'preview-latte'); assert.equal(confirmed.counts.themeSaves, 1);
+      const confirmed = await ready('confirmed', latte.id); assert.equal(confirmed.counts.themeSaves, 1);
       assert.deepEqual(work(confirmed), work(latteMaterialized), 'confirming the settled preview does not parse it again');
       const confirmedConfig = readFileSync(config, 'utf8');
-      assert.deepEqual(JSON.parse(confirmedConfig), { syntaxTheme: { kind: 'occipital', id: latte.id }, unknown: { untouched: true } });
+      assert.deepEqual(JSON.parse(confirmedConfig), { syntaxTheme: { kind: 'theme', id: latte.id }, unknown: { untouched: true } });
       await terminal.closeTidyMenu();
 
       await terminal.openTidyMenu(); await terminal.selectTidyItem('Code color theme');
       const beforeSecondMocha = await observe('before-second-cached-mocha');
-      phase('second-preview'); await search(mocha.label); await ready('second-preview', mocha.id, 'second-preview');
+      phase('second-preview'); await search(mocha.label); await ready('second-preview', mocha.id);
       await colors('second-mocha-painted', dump => expectedThemeColors(terminal, 'second-preview', dump, mocha.id));
       const secondMocha = await observe('second-cached-mocha-painted');
-      assert.equal(secondMocha.counts.styleRequests, beforeSecondMocha.counts.styleRequests, 'second cached Mocha selection does no STYLE work');
+      assert.equal(secondMocha.counts.styleRequests, beforeSecondMocha.counts.styleRequests, 'cached palette preview does no additional STYLE work');
       phase('back-to-latte'); await terminal.selectTidyItem('Back');
-      const back = await ready('back', latte.id, 'back-to-latte');
+      const back = await ready('back', latte.id);
       assert.equal(back.counts.themeSaves, 1); assert.equal(readFileSync(config, 'utf8'), confirmedConfig);
       await colors('preview-back-to-confirmed', () => themeForegrounds(lattePaint));
       const backPainted = await observe('cached-back-painted');
-      assert.equal(backPainted.counts.styleRequests, secondMocha.counts.styleRequests, 'Back to cached Latte through actual colors does no STYLE work');
+      assert.equal(backPainted.counts.styleRequests, secondMocha.counts.styleRequests, 'Back to the saved palette reuses generic STYLE output');
       await terminal.closeTidyMenu();
 
       await terminal.openTidyMenu(); await terminal.selectTidyItem('Code color theme');
-      const beforeHeld = await observe('before-uncached-hold');
-      const uncached = profiles.find(profile => profile.id !== 'pi' && profile.id !== mocha.id && profile.id !== latte.id); assert.ok(uncached);
-      phase('held-preview'); await search(uncached.label); await terminal.event('syntax_preview_reply_held');
-      const held = await observeHeld('held');
-      assert.ok(held.source.globalUnsettledJobs >= 1 && held.source.globalUnsettledJobs <= 2);
-      assert.equal(held.counts.sourceRequests, confirmed.counts.sourceRequests, 'STYLE holds never reparse retained SOURCE');
-      assert.ok(held.counts.styleRequests > beforeHeld.counts.styleRequests, 'uncached held selection performs genuine STYLE work');
-      assert.ok(held.counts.heldStyleReplies >= 1 && held.counts.heldStyleReplies <= 2);
-      await heldColors('preview-held-keeps-last-colors', () => themeForegrounds(lattePaint));
-      phase('late-rollback'); await terminal.closeTidyMenu();
-      await heldColors('preview-rollback-owned', () => themeForegrounds(lattePaint));
-      const rollback = await observeHeld('late-rollback');
-      assert.equal(rollback.client.effective.id, latte.id); assert.equal(rollback.counts.themeSaves, 1);
-      writeFileSync(join(terminal.output, 'syntax-preview-go'), 'go');
-      const late = await observe('after-late');
-      assert.equal(late.client.effective.id, latte.id);
+      const beforeThird = await observe('before-third-palette');
+       const thirdPalette = THEME_CATALOGUE.find(theme => theme.id === 'nord-dark'); assert.ok(thirdPalette);
+      phase('third-palette-preview'); await search(thirdPalette.label);
+      const third = await ready('third-preview', thirdPalette.id);
+      assert.equal(third.counts.sourceRequests, confirmed.counts.sourceRequests, 'palette preview does not reparse retained SOURCE');
+      assert.equal(third.counts.styleRequests, beforeThird.counts.styleRequests, 'palette preview does not enqueue palette-specific STYLE');
+      const thirdPaint = await colors('preview-third-palette', dump => expectedThemeColors(terminal, 'third-preview', dump, thirdPalette.id));
+      assert.notDeepEqual(themeForegrounds(thirdPaint), themeForegrounds(lattePaint), 'third palette has independently visible physical colors');
+      phase('rollback'); await terminal.closeTidyMenu();
+      await colors('preview-rollback-owned', () => themeForegrounds(lattePaint));
+      const late = await observe('after-preview-rollback');
+      assert.equal(late.client.effective.id, latte.id); assert.equal(late.counts.themeSaves, 1);
       assert.equal(late.source.globalUnsettledJobs, 0);
-      assert.equal(late.counts.deliveredStyleReplies, held.counts.heldStyleReplies, 'held replies retire without replacing the cached rollback');
-      assert.equal(late.source.dispatches, held.source.dispatches, 'rollback to the retained Latte result sends no replacement classifications');
-      assert.equal(late.source.preparedBytes, held.source.preparedBytes, 'rollback encodes no duplicate source');
-      assert.equal(late.source.stylePublications, rollback.source.stylePublications, 'late STYLE replies cannot publish over the retained rollback');
-      assert.equal(late.counts.sourceRequests, initial.counts.sourceRequests, 'all preview/confirm/cancel/rollback phases reuse retained SOURCE');
+      assert.equal(late.source.dispatches, confirmed.source.dispatches, 'rollback returns to retained semantic results');
+      assert.equal(late.source.preparedBytes, confirmed.source.preparedBytes, 'palette preview encodes no duplicate source');
+      assert.equal(late.counts.sourceRequests, initial.counts.sourceRequests, 'all preview, confirm and rollback phases reuse retained SOURCE');
       assert.equal(late.source.preparedBytes, initial.source.preparedBytes);
-      assert.equal(late.counts.styleRequests, held.counts.styleRequests, 'cached rollback needs no replacement STYLE matching');
-      await colors('preview-after-late-replies', () => themeForegrounds(lattePaint));
+       assert.equal(late.counts.styleRequests, initial.counts.styleRequests, 'all local palettes reuse the common resolved STYLE expressions without another STYLE request');
+      await colors('preview-after-rollback', () => themeForegrounds(lattePaint));
       const final = await captureThenRenderDiagnostics(terminal, 'physical-preview-final');
       assert.deepEqual(raw(final), raw(baseline)); assert.deepEqual(body(final), body(baseline));
       assert.deepEqual(readFileSync(session), bytes); assert.equal(traffic(terminal).length, 0);
@@ -174,14 +170,13 @@ for (const mode of ['fullscreen', 'regular']) test(`occipital CLI: ${mode} theme
       const last = await observe('final-warm'); assert.deepEqual(work(last), finalWork);
       assert.ok(terminal.events().filter(event => event.type === 'syntax_native_dispatch').every(event => event.jobs <= 2));
       console.log(JSON.stringify({ observation: 'pre-quit', themePreview: terminal.output, mode, node: last.node, pi: inputs.pi.version,
-        previewSaves: preview.counts.themeSaves, confirmedSaves: last.counts.themeSaves, heldReplies: held.counts.heldStyleReplies, sourceRequests: last.counts.sourceRequests, styleRequests: last.counts.styleRequests, localWork: last.localWork,
+        previewSaves: preview.counts.themeSaves, confirmedSaves: last.counts.themeSaves, sourceRequests: last.counts.sourceRequests, styleRequests: last.counts.styleRequests, localWork: last.localWork,
         cachedStylePairs: [[beforeMocha.counts.styleRequests, cachedMocha.counts.styleRequests], [beforeCancel.counts.styleRequests, afterCancellation.counts.styleRequests],
           [beforeSecondMocha.counts.styleRequests, secondMocha.counts.styleRequests], [secondMocha.counts.styleRequests, backPainted.counts.styleRequests]], warmDelta: 0 }));
       phase('process-exit');
       await terminal.quit('\x04');
       await finish(terminal);
     } finally {
-      await runCleanupSteps(() => writeFileSync(join(terminal.output, 'syntax-preview-go'), 'go'),
-        () => closeTerminals([terminal]), () => rm(directory, { recursive: true, force: true }));
+       await runCleanupSteps(() => closeTerminals([terminal]), () => rm(directory, { recursive: true, force: true }));
     }
   });

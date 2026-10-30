@@ -30,7 +30,7 @@ for (const exitOutput of ['transcript', 'resume-hint']) test(`fullscreen exit: $
       ...(exitOutput === 'resume-hint' ? { agentSettings: { fullscreenExitOutput: exitOutput } } : {}),
       extensions: [fixture], extraEnv: { ...descriptor, TIDY_UI_TEST_THEME_OBSERVE: '1' } });
     try {
-      await terminal.ready(); await terminal.resize(100, 180); await syntaxReady(terminal); await chooseTheme(terminal, 1);
+      await terminal.ready(); await terminal.resize(100, 180); await syntaxReady(terminal); await chooseTheme(terminal, 'amoled-dark');
       const selection = await settledStats(terminal, 'exit-selected');
       const painted = await captureThenRenderDiagnostics(terminal, 'exit-ready-native'), beforeCells = sourceCells(painted, sources);
       assert.ok(await semanticPhaseReady(() => painted.sample, () => terminal.events(), themeMarkers, selection.client.effective.id),

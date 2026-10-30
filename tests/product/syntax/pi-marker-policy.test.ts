@@ -7,15 +7,17 @@ import { getThemeByName } from '../../../node_modules/@earendil-works/pi-coding-
 import { samplePiBindings, samplePiPrefix } from '../../../src/syntax/pi-bindings.ts';
 import { PI_MARKER_VARIANT_CANDIDATE_COUNT, PI_MARKER_VARIANT_SCRATCH_BYTES } from '../../../src/syntax/pi-variants.ts';
 import { samplePiPalette, type PiPaletteTheme } from '../../../src/syntax/pi-palette.ts';
-import { PI_DIRECT_BINDINGS, PI_RULE_BINDINGS } from '../../../src/syntax/pi-rules.ts';
+import { PI_MARKER_REGIONS, PI_RULE_BINDINGS, piBindingInkRole, type PiDerivedMarker, type PiMarkerBinding } from '../../../src/syntax/pi-adapter.ts';
 import { followPiTheme } from '../../fixtures/follow-pi-themes.ts';
 
-const slot = (name: typeof PI_RULE_BINDINGS[number]) => PI_RULE_BINDINGS.indexOf(name);
+const slot = (region: typeof PI_RULE_BINDINGS[number]) => PI_RULE_BINDINGS.indexOf(region);
+const markerSlot = (binding: PiMarkerBinding) => slot(PI_MARKER_REGIONS[binding]);
+const directRegions = PI_RULE_BINDINGS.filter(region => !['markdown-heading-marker', 'markdown-code-delimiter', 'markdown-link-delimiter'].includes(region));
 const policies = [
   { marker: 'headingMarker', parent: 'mdHeading', separation: 0.12, target: 0.22, tolerance: 0.05, neighbors: [['mdHeading', 0.12]] },
   { marker: 'inlineCodeDelimiter', parent: 'mdCode', separation: 0.07, target: 0.09, tolerance: 0.025, neighbors: [['mdCode', 0.07]] },
   { marker: 'linkDelimiter', parent: 'mdLink', separation: 0.07, target: 0.10, tolerance: 0.045, neighbors: [['mdLink', 0.07], ['mdLinkUrl', 0.055], ['toolOutput', 0.055]] },
-] as const satisfies readonly { marker: typeof PI_RULE_BINDINGS[number]; parent: ThemeColor; separation: number; target: number; tolerance: number; neighbors: readonly (readonly [ThemeColor, number])[] }[];
+] as const satisfies readonly { marker: PiDerivedMarker; parent: ThemeColor; separation: number; target: number; tolerance: number; neighbors: readonly (readonly [ThemeColor, number])[] }[];
 
 function parseInk(prefix: string) {
   const rgb = prefix.match(/38;2;(\d+);(\d+);(\d+)m/);
@@ -57,11 +59,11 @@ for (const name of ['dark', 'light', 'gruvbox']) for (const mode of ['truecolor'
   test(`Pi marker palette: ${name}/${mode} derives visible colors from each marker's own Pi role`, () => {
     const theme = fixture(name, mode), prepared = samplePiPalette(theme, mode), raw = samplePiBindings(theme);
     for (const policy of policies) {
-      const marker = prepared.bindings[slot(policy.marker)]!, parent = emittedRole(theme, policy.parent, mode);
+      const marker = prepared.bindings[markerSlot(policy.marker)]!, parent = emittedRole(theme, policy.parent, mode);
       assert.ok(parent, `${policy.marker}: public parent color is concrete`);
-      assert.equal(marker.attributes, raw[slot(policy.marker)]!.attributes, `${policy.marker}: preserve parent typography`);
-      assert.equal(marker.attribute_mask, raw[slot(policy.marker)]!.attribute_mask, `${policy.marker}: preserve parent attribute contract`);
-      assert.notDeepEqual(marker.ink, raw[slot(policy.marker)]!.ink,
+      assert.equal(marker.attributes, raw[markerSlot(policy.marker)]!.attributes, `${policy.marker}: preserve parent typography`);
+      assert.equal(marker.attribute_mask, raw[markerSlot(policy.marker)]!.attribute_mask, `${policy.marker}: preserve parent attribute contract`);
+      assert.notDeepEqual(marker.ink, raw[markerSlot(policy.marker)]!.ink,
         `${policy.marker}: selected palette provides a real derivative (${JSON.stringify(prepared.variantDecisions)})`);
       const decision = prepared.variantDecisions.find(item => item.binding === policy.marker);
       if (!decision || decision.status !== 'derived' || typeof decision.separation !== 'number')
@@ -81,9 +83,9 @@ for (const name of ['dark', 'light', 'gruvbox']) for (const mode of ['truecolor'
         assert.ok(contrast(markerColor!, background!) >= 4.5, `${policy.marker}: emitted ink meets the readable-surface threshold`);
       }
     }
-    for (const name of PI_DIRECT_BINDINGS)
-      assert.deepEqual(prepared.bindings[slot(name)]!, raw[slot(name)]!, `primary ${name} remains the exact public Pi binding`);
-    assert.deepEqual(prepared.bindings[slot('stringDelimiter')]!, raw[slot('stringDelimiter')]!, 'quotes stay part of the same literal color');
+    for (const region of directRegions)
+      assert.deepEqual(prepared.bindings[slot(region)]!, raw[slot(region)]!, `${region} remains the exact public Pi binding for ${piBindingInkRole(region)}`);
+    assert.deepEqual(prepared.bindings[markerSlot('stringDelimiter')]!, raw[markerSlot('stringDelimiter')]!, 'quotes stay part of the same literal color');
   });
 
 test('Pi marker palette: per-role candidate search is fixed and funded', () => {
@@ -101,28 +103,28 @@ test('Pi marker palette: heading and list markers keep independent semantic sour
       : role === 'mdListBullet' ? '\x1b[38;2;0;255;255m' : changed.getFgAnsi(role),
   };
   const next = samplePiPalette(decorated, 'truecolor');
-  assert.deepEqual(next.bindings[slot('headingMarker')], original.bindings[slot('headingMarker')], 'generic punctuation and list ink cannot select heading colors');
-  assert.notDeepEqual(next.bindings[slot('mdListBullet')]!.ink, original.bindings[slot('mdListBullet')]!.ink, 'list markers still follow their authored list role');
+  assert.deepEqual(next.bindings[markerSlot('headingMarker')], original.bindings[markerSlot('headingMarker')], 'generic punctuation and list ink cannot select heading colors');
+  assert.notDeepEqual(next.bindings[slot('markdown-list-item')]!.ink, original.bindings[slot('markdown-list-item')]!.ink, 'list markers still follow their authored list role');
 });
 
 test('Pi marker palette: unknown surfaces, symbolic/indexed parents and faint parents use exact-parent fallback', () => {
   const base = getThemeByName('dark')!;
   const fallback = (theme: PiPaletteTheme, mode: TerminalColorMode, markers = policies.map(policy => policy.marker)) => {
     const sampled = samplePiPalette(theme, mode), direct = samplePiBindings(theme);
-    for (const marker of markers) assert.deepEqual(sampled.bindings[slot(marker)]!, direct[slot(marker)]!, `${marker}: no numeric guess`);
+    for (const marker of markers) assert.deepEqual(sampled.bindings[markerSlot(marker)]!, direct[markerSlot(marker)]!, `${marker}: no numeric guess`);
     return { sampled, direct };
   };
   const terminal = followPiTheme('terminal-default', 'truecolor', base);
   fallback({ colors: terminal.colors, getFgAnsi: terminal.getFgAnsi.bind(terminal), getBgAnsi: role => role === 'toolPendingBg' ? '\x1b[49m' : terminal.getBgAnsi(role) }, 'truecolor');
   const faint = followPiTheme('faint-parent', 'truecolor', base);
   const faintValues = fallback(faint, 'truecolor', ['headingMarker', 'linkDelimiter']);
-  assert.notDeepEqual(faintValues.sampled.bindings[slot('inlineCodeDelimiter')]!.ink,
-    faintValues.direct[slot('inlineCodeDelimiter')]!.ink, 'unrelated non-faint semantic parent remains derivable');
+  assert.notDeepEqual(faintValues.sampled.bindings[markerSlot('inlineCodeDelimiter')]!.ink,
+    faintValues.direct[markerSlot('inlineCodeDelimiter')]!.ink, 'unrelated non-faint semantic parent remains derivable');
   const indexed: PiPaletteTheme = {
     colors: { ...base.colors, mdHeading: indexedColor(23) } as typeof base.colors,
     getFgAnsi: role => role === 'mdHeading' ? '\x1b[38;5;23m' : base.getFgAnsi(role),
     getBgAnsi: base.getBgAnsi.bind(base),
   };
   const result = samplePiPalette(indexed, 'truecolor');
-  assert.deepEqual(result.bindings[slot('headingMarker')]!, samplePiBindings(indexed)[slot('headingMarker')]!, 'authored indexed parent is not guessed as RGB');
+  assert.deepEqual(result.bindings[markerSlot('headingMarker')]!, samplePiBindings(indexed)[markerSlot('headingMarker')]!, 'authored indexed parent is not guessed as RGB');
 });

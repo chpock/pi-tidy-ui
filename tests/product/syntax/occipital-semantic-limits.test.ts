@@ -17,7 +17,7 @@ function withoutTypedAllocation(action: () => void) {
 }
 
 test('highlight limits: exported numeric policy matches the shared fixture', () => {
-  assert.deepEqual(HIGHLIGHT_LIMITS, JSON.parse(readFileSync(new URL('../../../protocol/syntax-v3/highlighting-limits.json', import.meta.url), 'utf8')));
+  assert.deepEqual(HIGHLIGHT_LIMITS, JSON.parse(readFileSync(new URL('../../../protocol/syntax-v4/highlighting-limits.json', import.meta.url), 'utf8')));
 });
 
 test('highlight limits: expanded words are aggregate across sources, checked before vectors', () => {
@@ -39,8 +39,8 @@ test('highlight limits: empty contexts still consume aggregate decoded policy un
 test('highlight limits: STYLE decoded cap is separate from generous retention and includes indices', () => {
   const style = { foreground: { kind: 'terminal-default' }, background: { kind: 'inherit' }, attributes: 0, attribute_mask: 0 };
   const indices = Array((HIGHLIGHT_LIMITS.decodedBytes - 256) / 4).fill(1);
-  const body = { kind: 'styles', vocabulary, rules, styles: [style], indices, palette: null };
-  const identity = { vocabulary, rules, mode: 'client' as const, bindingSlots: 0 };
+  const body = { kind: 'styles', vocabulary, rules, styles: [style], indices };
+  const identity = { vocabulary, rules, bindingSlots: 0 };
   assert.equal(decodeStyleResult(body, identity, indices.length, bounds.maxBytes).policyBytes, HIGHLIGHT_LIMITS.decodedBytes);
   withoutTypedAllocation(() => assert.throws(() => decodeStyleResult({ ...body, indices: [...indices, 1] }, identity, indices.length + 1, bounds.maxBytes), limit('style_limit')));
   assert.throws(() => decodeStyleResult({ ...body, indices: [1] }, identity, 1, 259), limit('style_limit'));

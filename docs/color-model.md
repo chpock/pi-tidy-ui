@@ -1,10 +1,10 @@
 # Color model and derived surfaces
 
-This is the shared numerical reference for local Follow Pi and native Occipital card colors. The two implementations share numerical building blocks but deliberately have different evidence and fallback rules. [Follow Pi](syntax/follow-pi.md) and [native styles](occipital/styles-and-palettes.md) own their semantic inputs and complete role mappings.
+This is the shared numerical reference for local Follow Pi and bundled owned-palette card colors. Both use the extension's same color conversion and `diffPalette` implementation, while their authored inputs and fallback rules remain distinct. [Follow Pi](syntax/follow-pi.md) and [palette ownership](syntax/palettes.md) define those local semantic inputs and complete role mappings.
 
 ## Derived diff backgrounds
 
-The ready palette contains four prepared diff backgrounds, independent of width and visible source tokens. Follow Pi builds them in `src/diff-palette.ts`; native mode uses `crates/occipital/src/native_palette.rs`. Both preserve syntax foregrounds instead of recoloring tokens to make a tint fit. Their inputs, gutter construction and output-mode guarantees differ as specified below. Per-token backgrounds never replace these structural surfaces; numbers/signs share their prepared gutter, while empty counterparts and alignment blanks use neutral roles. Plain `Created`/`Wrote` source does not paint diff surfaces even though its shared palette prepares those roles.
+The ready palette contains four prepared diff backgrounds, independent of width and visible source tokens. Both Follow Pi and owned palettes build them through `src/diff-palette.ts`; Occipital resolves only semantic rules/styles and never supplies palette surfaces. The adapters provide their own inputs to the common derivation. It preserves syntax foregrounds instead of recoloring tokens to make a tint fit. Per-token backgrounds never replace these structural surfaces; numbers/signs share their prepared gutter, while empty counterparts and alignment blanks use neutral roles. Plain `Created`/`Wrote` source does not paint diff surfaces even though its shared palette prepares those roles.
 
 ### Shared numerical policy
 
@@ -45,18 +45,16 @@ Every candidate is passed through the selected terminal encoder before final dis
 
 Role foregrounds and enabled fonts come from their mapped public foreground roles; background prefixes provide surface colors, not typography. Generated surfaces change neither. The finished panel/added-code/removed-code surfaces are frozen before optional marker derivation; markers must fit those surfaces, never refit them. No per-row color math or visible-token-based constraint selection occurs.
 
-### Native diff composition
+### Owned palette diff composition
 
-Native mode uses its [own palette and authored hint rules](occipital/styles-and-palettes.md#native-card-palette), not the Pi adapter:
+Owned palettes provide concrete, six-digit authored roles; they do not use Pi's adapter or daemon-owned theme rules:
 
-1. For each side, use qualified inserted/deleted background first, otherwise foreground. Presence wins even for a symbolic hint. Without a hint, keep panel for code and native gutter for numbers/signs; their foregrounds remain independently prepared.
-2. Derive code from the native panel. Constraints contain base/default foreground plus every distinct declared scope foreground, each requesting4.5. This is a source-independent inventory, not only currently visible/used tokens or five probe colors. Deduplication uses original native `Color` values before normalization.
-3. Derive gutter independently from the native gutter, using that full foreground inventory plus prepared numbers at3 and side sign at4.5. Original contrast floors use panel for code, native gutter for gutter.
-4. Apply the shared target and bounded search to each base. Failure returns that operation's unchanged base. A non-RGB base, selected hint or any required native foreground vetoes numerical tinting and records terminal-dependent provenance; unlike Follow Pi, unknown constraints are not simply omitted.
+1. Use the authored `background` as panel, and the output-quantized `addedBackground`/`removedBackground` as the two semantic hints. If an authored hint is absent, retain the panel on that side.
+2. Constrain each code surface with all 44 output-quantized semantic foreground bindings plus the authored code foreground, each at the existing 4.5 minimum contrast policy.
+3. Derive each gutter from its code surface using the authored dim number ink at3 and the matching added/removed sign at4.5. Final checks use the selected terminal encoder.
+4. Keep owned semantic foregrounds and their author-selected typography unchanged. Derivation affects only the four structural diff backgrounds; it runs while constructing the funded palette input, never per row or during rendering.
 
-Code and gutter do not form a panel → code → shifted-gutter chain. A theme without an independent gutter can therefore produce identical code/gutter surfaces; no artificial separation is imposed. The authored hint background guides restrained derivation rather than becoming the row background verbatim.
-
-The Rust conversion is the Pi TUI/Björn Ottosson sRGB/Oklab matrix port, not OKHSL; it preserves the Oklch hue-normalization round trip. Lightness is clamped to `[0,1]`. Linear RGB within `[-10⁻⁷, 1+10⁻⁷]` counts as in gamut; otherwise 20 bisection steps reduce chroma at fixed lightness/hue, starting from zero. Channels are sRGB-encoded at breakpoint0.0031308, clamped, multiplied by255 and rounded. Native guards inspect those rounded RGB channels. Native derivation has no terminal-mode parameter; later common ANSI compilation can quantize to256 colors, so these guards are **not** a post-256-output contrast guarantee.
+The shared conversion uses Pi TUI's sRGB/Oklab routines, not OKHSL. The bounded target and search are described above. Lightness is clamped to `[0,1]`; emitted colors are gamut-mapped, quantized through the selected terminal encoder and then checked for displacement and contrast. These checks describe the application encoder, not a guarantee about a terminal's customized indexed palette.
 
 ### Rationale and limits
 

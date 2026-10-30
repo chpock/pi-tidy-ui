@@ -22,8 +22,7 @@ impl Helper {
         let root = support::CaseDir::new("stdio");
         let mut child = root
             .command(env!("CARGO_BIN_EXE_occipital"))
-            .args(["--stdio", "--config"])
-            .arg(root.join("missing/config.json"))
+            .args(["--stdio"])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -81,7 +80,7 @@ impl Drop for Helper {
     }
 }
 fn request(instance: &str, op: &str, ticket: &str, text: &str) -> Value {
-    json!({"v":3,"ticket":ticket,"op":op,"instance":instance,"admission":"bounded_queue","queue_wait_ms":1000,"sources":[{"key":"code","generation":1,"source_version":1,"hint":{"language":"bash"},"text":text}]})
+    json!({"v":4,"ticket":ticket,"op":op,"instance":instance,"admission":"bounded_queue","queue_wait_ms":1000,"sources":[{"key":"code","generation":1,"source_version":1,"hint":{"language":"bash"},"text":text}]})
 }
 fn absolute_ranges(source: &Value) -> Vec<(u64, Value)> {
     let mut end = source["replace_from"].as_u64().unwrap();
@@ -116,10 +115,10 @@ fn absolute_ranges(source: &Value) -> Vec<(u64, Value)> {
 #[test]
 fn executable_negotiates_then_retains_only_stream_state_and_ends_on_eof() {
     let mut helper = Helper::new();
-    helper.send(json!({"v":3,"ticket":"d","op":"describe"}));
+    helper.send(json!({"v":4,"ticket":"d","op":"describe"}));
     let descriptor = helper.recv();
     assert_eq!(descriptor["status"], "ok");
-    assert_eq!(descriptor["body"]["capability"], "syntax-highlight/v3");
+    assert_eq!(descriptor["body"]["capability"], "syntax-highlight/v4");
     assert_eq!(descriptor["body"]["limits"]["workers"], 1);
     let instance = descriptor["instance"].as_str().unwrap().to_owned();
     let text = "echo α\necho '";
@@ -131,7 +130,7 @@ fn executable_negotiates_then_retains_only_stream_state_and_ends_on_eof() {
     let revision = first["revision"].as_u64().unwrap();
     let base_bytes = first["source_bytes"].as_u64().unwrap();
     let suffix = "value'\n";
-    helper.send(json!({"v":3,"ticket":"append","op":"stream.append","instance":instance,"admission":"bounded_queue","queue_wait_ms":1000,"key":"code","lease":lease,"generation":1,"source_version":2,"base_revision":revision,"base_bytes":base_bytes,"append":suffix,"final":true}));
+    helper.send(json!({"v":4,"ticket":"append","op":"stream.append","instance":instance,"admission":"bounded_queue","queue_wait_ms":1000,"key":"code","lease":lease,"generation":1,"source_version":2,"base_revision":revision,"base_bytes":base_bytes,"append":suffix,"final":true}));
     let appended = helper.recv();
     assert_eq!(appended["status"], "ok");
     let final_source = &appended["body"]["sources"][0];
@@ -197,12 +196,12 @@ fn executable_negotiates_then_retains_only_stream_state_and_ends_on_eof() {
         previous = end;
     }
     assert_eq!(json!(expected), json!(merged));
-    helper.send(json!({"v":3,"ticket":"old","op":"stream.append","instance":instance,"admission":"bounded_queue","queue_wait_ms":1000,"key":"code","lease":lease,"generation":1,"source_version":3,"base_revision":final_source["revision"],"base_bytes":final_source["source_bytes"],"append":"x","final":false}));
+    helper.send(json!({"v":4,"ticket":"old","op":"stream.append","instance":instance,"admission":"bounded_queue","queue_wait_ms":1000,"key":"code","lease":lease,"generation":1,"source_version":3,"base_revision":final_source["revision"],"base_bytes":final_source["source_bytes"],"append":"x","final":false}));
     let stale = helper.recv();
     assert_eq!(stale["error"]["code"], "restart_required");
     assert_eq!(stale["error"]["execution"], "not_started");
     for ticket in ["close", "close-again"] {
-        helper.send(json!({"v":3,"ticket":ticket,"op":"stream.close","instance":instance,"key":"code","lease":lease,"generation":1}));
+        helper.send(json!({"v":4,"ticket":ticket,"op":"stream.close","instance":instance,"key":"code","lease":lease,"generation":1}));
         let closed = helper.recv();
         assert_eq!(closed["status"], "ok");
         assert_eq!(closed["body"]["kind"], "closed");
@@ -214,8 +213,8 @@ fn bad_declared_pipe_length_is_rejected_before_body_and_helper_incarnations_diff
     for close_stdin in [false, true] {
         let mut first = Helper::new();
         let mut second = Helper::new();
-        first.send(json!({"v":3,"ticket":"one","op":"describe"}));
-        second.send(json!({"v":3,"ticket":"two","op":"describe"}));
+        first.send(json!({"v":4,"ticket":"one","op":"describe"}));
+        second.send(json!({"v":4,"ticket":"two","op":"describe"}));
         assert_ne!(first.recv()["instance"], second.recv()["instance"]);
         first
             .input
@@ -251,11 +250,24 @@ fn bad_declared_pipe_length_is_rejected_before_body_and_helper_incarnations_diff
 }
 
 #[test]
-fn actual_stdio_resolves_native_and_generic_without_source_theme_identity_and_rejects_v2() {
+fn actual_stdio_describes_v4_and_resolves_generic_styles_without_palette_identity() {
     let mut helper = Helper::new();
-    helper.send(json!({"v":3,"ticket":"describe-styles","op":"describe"}));
+    helper.send(json!({"v":4,"ticket":"describe-styles","op":"describe"}));
     let descriptor = helper.recv();
-    assert_eq!(descriptor["v"], 3);
+    assert_eq!(descriptor["v"], 4);
+    assert_eq!(descriptor["body"]["protocol_version"], 4);
+    assert_eq!(descriptor["body"]["capability"], "syntax-highlight/v4");
+    assert_eq!(
+        descriptor["body"]["operations"],
+        json!([
+            "describe",
+            "highlight",
+            "stream.open",
+            "stream.append",
+            "stream.close",
+            "styles.resolve"
+        ])
+    );
     assert_eq!(
         descriptor["assets"],
         occipital::vocabulary::ASSET_FINGERPRINT
@@ -265,42 +277,15 @@ fn actual_stdio_resolves_native_and_generic_without_source_theme_identity_and_re
         occipital::vocabulary::FINGERPRINT
     );
     let instance = descriptor["instance"].as_str().unwrap();
-    let native = descriptor["body"]["profiles"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|p| p["id"] == "syntect:Nord")
-        .unwrap();
-    let native_request = json!({"v":3,"op":"styles.resolve","ticket":"native","instance":instance,"admission":"bounded_queue","queue_wait_ms":1000,"vocabulary":occipital::vocabulary::FINGERPRINT,"contexts":[],"rules":{"kind":"native","id":native["id"],"fingerprint":native["fingerprint"]}});
-    helper.send(native_request.clone());
-    let palette = helper.recv();
-    assert_eq!(palette["status"], "ok");
-    assert_eq!(palette["body"]["kind"], "styles");
-    assert_eq!(palette["body"]["indices"], json!([]));
-    assert_eq!(
-        palette["body"]["palette"]["slots"]
-            .as_array()
-            .unwrap()
-            .len(),
-        26
-    );
-    assert_eq!(
-        palette["body"]["rules"],
-        occipital::style_rules::fingerprint_native_rules(native["fingerprint"].as_str().unwrap())
-            .unwrap()
-    );
     helper.send(request(instance, "highlight", "source", "let x = 1;\n"));
     let parsed = helper.recv();
     assert_eq!(parsed["status"], "ok");
     let contexts = parsed["body"]["sources"][0]["contexts"].clone();
-    let mut generic = native_request;
-    generic["ticket"] = json!("generic");
-    generic["contexts"] = contexts.clone();
-    generic["rules"] = json!({"kind":"client","definition":{"revision":1,"binding_slots":1,"default":{"foreground":{"kind":"binding","slot":0},"background":{"kind":"inherit"},"attributes":0,"attribute_mask":0},"rules":[]}});
+    let generic = json!({"v":4,"op":"styles.resolve","ticket":"generic","instance":instance,"admission":"bounded_queue","queue_wait_ms":1000,"vocabulary":occipital::vocabulary::FINGERPRINT,"contexts":contexts,"rules":{"revision":2,"binding_slots":1,"default":{"foreground":{"kind":"binding","slot":0},"background":{"kind":"inherit"},"attributes":0,"attribute_mask":0},"rules":[]}});
     helper.send(generic);
     let resolved = helper.recv();
     assert_eq!(resolved["status"], "ok");
-    assert!(resolved["body"]["palette"].is_null());
+    assert!(resolved["body"].get("palette").is_none());
     assert_eq!(
         resolved["body"]["indices"].as_array().unwrap().len(),
         contexts.as_array().unwrap().len()
@@ -309,9 +294,9 @@ fn actual_stdio_resolves_native_and_generic_without_source_theme_identity_and_re
         resolved["body"]["styles"][0]["foreground"],
         json!({"kind":"binding","slot":0})
     );
-    helper.send(json!({"v":2,"op":"describe","ticket":"old-app"}));
+    helper.send(json!({"v":3,"op":"describe","ticket":"old-app"}));
     let old = helper.recv();
-    assert_eq!(old["v"], 3);
+    assert_eq!(old["v"], 4);
     assert_eq!(old["assets"], descriptor["assets"]);
     assert_eq!(old["error"]["code"], "protocol_mismatch");
     assert_eq!(old["error"]["execution"], "not_started");
@@ -321,7 +306,7 @@ fn actual_stdio_resolves_native_and_generic_without_source_theme_identity_and_re
 #[test]
 fn executable_volume_refusals_are_typed_and_leave_control_and_following_data_usable() {
     let mut helper = Helper::new();
-    helper.send(json!({"v":3,"ticket":"describe","op":"describe"}));
+    helper.send(json!({"v":4,"ticket":"describe","op":"describe"}));
     let descriptor = helper.recv();
     assert_eq!(
         descriptor["body"]["limits"]["request_bytes"],
@@ -357,9 +342,9 @@ fn executable_volume_refusals_are_typed_and_leave_control_and_following_data_usa
             json!({"code":code,"execution":"not_started"})
         );
     }
-    helper.send(json!({"v":3,"op":"styles.resolve","ticket":"style-limit","instance":instance,"admission":"try_now",
+    helper.send(json!({"v":4,"op":"styles.resolve","ticket":"style-limit","instance":instance,"admission":"try_now",
         "vocabulary":occipital::vocabulary::FINGERPRINT,"contexts":vec![vec![0];occipital::limits::DECODED_BYTES / 128 + 1],
-        "rules":{"kind":"native","id":"syntect:Theme","fingerprint":"a".repeat(64)}}));
+        "rules":{"revision":2,"binding_slots":1,"default":{"foreground":{"kind":"binding","slot":0},"background":{"kind":"inherit"},"attributes":0,"attribute_mask":0},"rules":[]}}));
     let reply = helper.recv();
     assert_eq!(
         reply["error"],
@@ -372,7 +357,7 @@ fn executable_volume_refusals_are_typed_and_leave_control_and_following_data_usa
         reply["body"]["sources"][0]["counters"]["committed_line_calls"],
         1
     );
-    helper.send(json!({"v":3,"ticket":"after-metadata","op":"describe"}));
+    helper.send(json!({"v":4,"ticket":"after-metadata","op":"describe"}));
     assert_eq!(helper.recv()["status"], "ok");
     helper.exit();
 }

@@ -11,11 +11,19 @@ import { DataBudget } from '../../../src/occipital/data-budget.ts';
 import { measure, reflow } from '../../../src/syntax/measured-rows.ts';
 import { CardSources } from '../../../src/syntax/cards.ts';
 import { SyntaxClient } from '../../../src/occipital/client.ts';
-import { preparePiInput } from '../../../src/syntax/pi-input.ts';
+import { preparePaletteInput } from '../../../src/syntax/pi-input.ts';
 import { CARD_ROLES } from '../../../src/occipital/semantic-codec.ts';
 import { hostCells } from '../../fixtures/host-cells.ts';
 import { samplePiPalette } from '../../../src/syntax/pi-palette.ts';
 import { compileStyleAnsi } from '../../../src/syntax/style-ansi.ts';
+
+function writeCaptureJournal(gate: ReturnType<typeof createWriteCaptureGate>, observe: (event: WriteCaptureObservation) => void = () => {}) {
+  return {
+    activate: (call: string, owner: object) => gate.activate(call, owner),
+    observe: (event: WriteCaptureObservation, owner: object) => { observe(event); gate.observe(event, owner); },
+    retire: (call: string, owner: object) => gate.retire(call, owner),
+  };
+}
 
 test('syntax local observations count actual source measurement, not unrelated segmentation or scalar reads', () => {
   const source = 'OBSERVED_SOURCE αβ\nsecond row', budget = new DataBudget(8 * 1024 * 1024), observer = observeSyntaxLocalWork(text => text === source);
@@ -228,13 +236,13 @@ test('write capture readiness distinguishes neutral, valid plain, stale source/p
   t.mock.method(CardSources.prototype, 'prepare', function(this: CardSources<object>, value: Parameters<typeof originalPrepare>[0]) {
     ticket = new WeakRef(value); return originalPrepare.call(this, value);
   });
-  const observer = observeSyntaxCards(() => {}, { writeCapture: event => { events.push(event); gate.observe(event); } });
+  const observer = observeSyntaxCards(() => {}, { writeCapture: writeCaptureJournal(gate, event => events.push(event)) });
   const provider = { availability: 'disabled' as const, reason: 'disabled' as const, generation: 0, initialShared: false };
   const sources = new SourceController({ snapshot: () => provider, isReady: () => false, classificationAccepted: () => false, request: () => assert.fail('no native work') });
   sources.setEnabled(false);
   let palette = 1, classifications = 0, onInvalidation: (() => void) | undefined;
   const cards = new CardSources({ sources, snapshot: () => ({ enabled: false, selected: { kind: 'pi' as const }, standaloneVersion: 'test', provider }) }, {
-    preparePiInput: funding => preparePiInput(themes.theme, palette, 'truecolor', funding),
+    preparePiInput: funding => preparePaletteInput(themes.theme, 'pi', palette, 'truecolor', funding),
     classify: text => { classifications++; return text.split('\n'); }, invalidate() { onInvalidation?.(); }, requestRender() {},
   });
   const owner = { toolName: 'write', toolCallId: 'plain-call' };
@@ -243,9 +251,10 @@ test('write capture readiness distinguishes neutral, valid plain, stale source/p
   try {
     assert.equal(cards.updateDisplay(owner, input(1)), true);
     cards.visit(owner, () => {}); assert.equal(events.at(-1)?.status, 'pending', 'neutral shell is not a classified plain projection');
+    cards.useful(owner, 1);
     let done = false; const waiting = gate.wait().then(() => { done = true; });
     await Promise.resolve(); assert.equal(done, false);
-    cards.useful(owner, 1); sources.flush();
+    sources.flush();
     const beforeVisit = events.length; outcome = 'reject';
     assert.equal(cards.visit(owner, () => {}), false); assert.equal(events.length, beforeVisit);
     outcome = 'throw'; assert.throws(() => cards.visit(owner, () => {}), /rejected outer visit/); assert.equal(events.length, beforeVisit);
@@ -266,10 +275,10 @@ test('write capture readiness distinguishes neutral, valid plain, stale source/p
     cards.prepare(ticket!.deref()!); cards.visit(owner, () => {});
     assert.equal(events.at(-1)?.status, 'ready'); assert.equal(events.at(-1)?.palette, 2);
     const other = { toolName: 'write', toolCallId: 'same-path-other-call' };
-    cards.updateDisplay(other, input(1)); cards.visit(other, () => {});
+    cards.updateDisplay(other, input(1)); cards.visit(other, () => {}); cards.useful(other, 1);
     let bothDone = false; const both = gate.wait().then(() => { bothDone = true; });
     await Promise.resolve(); assert.equal(bothDone, false, 'a same-path ready call cannot satisfy another owner');
-    cards.useful(other, 1); sources.resumePreparation(); cards.visit(other, () => {}); await both;
+    sources.resumePreparation(); cards.visit(other, () => {}); await both;
     assert.notEqual(events.findLast(e => e.call === owner.toolCallId)?.id, events.findLast(e => e.call === other.toolCallId)?.id);
     const empty = { toolName: 'write', toolCallId: 'empty-call' };
     cards.updateDisplay(empty, input(1, '')); cards.visit(empty, () => {});
@@ -295,12 +304,12 @@ for (const failure of ['failed', 'refused'] as const) test(`write capture gate s
   const dist = dirname(fileURLToPath(import.meta.resolve('@earendil-works/pi-coding-agent')));
   const themes = await import(pathToFileURL(resolve(dist, 'modes/interactive/theme/theme.js')).href); themes.initTheme('dark', false);
   const events: WriteCaptureObservation[] = [], gate = createWriteCaptureGate(event => events.push(event));
-  const observer = observeSyntaxCards(() => {}, { writeCapture: event => gate.observe(event) });
+  const observer = observeSyntaxCards(() => {}, { writeCapture: writeCaptureJournal(gate, event => events.push(event)) });
   const provider = { availability: 'disabled' as const, reason: 'disabled' as const, generation: 0, initialShared: false };
   const sources = new SourceController({ snapshot: () => provider, isReady: () => false, classificationAccepted: () => false, request: () => assert.fail('no native work') }); sources.setEnabled(false);
   if (failure === 'refused') t.mock.method(sources, 'capturePiSource', () => false);
   const cards = new CardSources({ sources, snapshot: () => ({ enabled: false, selected: { kind: 'pi' as const }, standaloneVersion: 'test', provider }) }, {
-    preparePiInput: funding => preparePiInput(themes.theme, 1, 'truecolor', funding), classify: () => { throw Error('classifier failure'); }, invalidate() {}, requestRender() {},
+    preparePiInput: funding => preparePaletteInput(themes.theme, 'pi', 1, 'truecolor', funding), classify: () => { throw Error('classifier failure'); }, invalidate() {}, requestRender() {},
   });
   const owner = { toolName: 'write', toolCallId: 'failed-call' };
   try {
@@ -309,12 +318,14 @@ for (const failure of ['failed', 'refused'] as const) test(`write capture gate s
       revision: 1, sourceRevision: 1, serviceRevision: 1, palette: 1, mode: 'truecolor' });
     cards.visit(owner, () => {});
     const initial = events.at(-1)!;
+    cards.useful(owner, 1);
     const pending = assert.rejects(gate.wait(), new RegExp(failure));
-    cards.useful(owner, 1); sources.flush(); cards.visit(owner, () => {}); await pending;
+    sources.flush(); cards.visit(owner, () => {}); await pending;
     assert.equal(events.at(-1)?.status, failure);
     const closedEvents: WriteCaptureObservation[] = [], closed = createWriteCaptureGate(event => closedEvents.push(event));
-    closed.observe(initial); const closing = assert.rejects(closed.wait(), /closed during wait/); closed.close(); await closing;
-    closed.observe(events.at(-1)!); assert.equal(closedEvents.length, 1, 'late work cannot revive a closed gate');
+    closed.activate(initial.call, owner); closed.observe(initial, owner);
+    const closing = assert.rejects(closed.wait(), /closed during wait/); closed.close(); await closing;
+    closed.observe(events.at(-1)!, owner); assert.equal(closedEvents.length, 1, 'late work cannot revive a closed gate');
     await assert.rejects(closed.wait(), /closed/);
   } finally { observer.restore(); gate.close(); cards.dispose(); sources.dispose(); }
 });
@@ -328,7 +339,7 @@ test('write capture review F1: empty dark roles cannot certify refused light rep
   t.mock.method(CardSources.prototype, 'prepare', function(this: CardSources<object>, value: Parameters<typeof originalPrepare>[0]) {
     ticket = new WeakRef(value); return originalPrepare.call(this, value);
   });
-  const observer = observeSyntaxCards(() => {}, { writeCapture: event => gate.observe(event) });
+  const observer = observeSyntaxCards(() => {}, { writeCapture: writeCaptureJournal(gate) });
   const provider = { availability: 'disabled' as const, reason: 'disabled' as const, generation: 0, initialShared: false };
   const sources = new SourceController({ snapshot: () => provider, isReady: () => false, classificationAccepted: () => false, request: () => assert.fail('no native work') }); sources.setEnabled(false);
   let palette = 1, deny = false, refused = 0;
@@ -342,7 +353,7 @@ test('write capture review F1: empty dark roles cannot certify refused light rep
     } };
   });
   const cards = new CardSources({ sources, snapshot: () => ({ enabled: false, selected: { kind: 'pi' as const }, standaloneVersion: 'test', provider }) }, {
-    preparePiInput: funding => preparePiInput(themes.theme, palette, 'truecolor', funding), classify: text => text.split('\n'), invalidate() {}, requestRender() {},
+    preparePiInput: funding => preparePaletteInput(themes.theme, 'pi', palette, 'truecolor', funding), classify: text => text.split('\n'), invalidate() {}, requestRender() {},
   });
   const owner = { toolName: 'write', toolCallId: 'empty-role-replacement' };
   const input = (revision: number) => ({ kind: 'file' as const, node: { toolName: 'write', args: { path: 'empty.ts', content: '' }, isPartial: false, result: {} },
@@ -358,9 +369,9 @@ test('write capture review F1: empty dark roles cannot certify refused light rep
     assert.equal(cards.updateDisplay(owner, input(2)), true); cards.prepare(ticket!.deref()!);
     const retained = await hostCells(roles()), state = ticket!.deref()!.state.deref()!;
     assert.ok(refused > 0, 'real compiled-role replacement funding was denied');
-    assert.equal(state.preparedPalette, 2); assert.equal(state.pi?.paletteRevision, 2);
+    assert.equal(state.preparedPalette, 'pi:2:truecolor'); assert.equal(state.paletteInput?.paletteRevision, 2);
     assert.deepEqual(retained, dark, 'actual old dark compiled roles remain, despite the current light lease/preparation');
-    const rejectedPaint = { preparedPalette: state.preparedPalette, lease: state.pi?.paletteRevision, token: state.paintToken, publication: state.paint?.publication };
+    const rejectedPaint = { preparedPalette: state.preparedPalette, lease: state.paletteInput?.paletteRevision, token: state.paintToken, publication: state.paint?.publication };
     let resolved = false; waiting = gate.wait().then(() => { resolved = true; }); waiting.catch(() => {});
     await Promise.resolve(); assert.equal(resolved, false, 'old compiled roles cannot make the current light capture ready');
     assert.notEqual(events.at(-1)?.status, 'ready');
@@ -391,12 +402,12 @@ for (const change of ['source', 'palette'] as const) for (const rejection of ['r
     t.mock.method(CardSources.prototype, 'prepare', function(this: CardSources<object>, value: Parameters<typeof originalPrepare>[0]) {
       ticket = new WeakRef(value); return originalPrepare.call(this, value);
     });
-    const observer = observeSyntaxCards(() => {}, { writeCapture: event => gate.observe(event) });
+    const observer = observeSyntaxCards(() => {}, { writeCapture: writeCaptureJournal(gate) });
     const provider = { availability: 'disabled' as const, reason: 'disabled' as const, generation: 0, initialShared: false };
     const sources = new SourceController({ snapshot: () => provider, isReady: () => false, classificationAccepted: () => false, request: () => assert.fail('no native work') }); sources.setEnabled(false);
     let palette = 1;
     const cards = new CardSources({ sources, snapshot: () => ({ enabled: false, selected: { kind: 'pi' as const }, standaloneVersion: 'test', provider }) }, {
-      preparePiInput: funding => preparePiInput(themes.theme, palette, 'truecolor', funding), classify: text => text.split('\n'), invalidate() {}, requestRender() {},
+      preparePiInput: funding => preparePaletteInput(themes.theme, 'pi', palette, 'truecolor', funding), classify: text => text.split('\n'), invalidate() {}, requestRender() {},
     });
     const owner = { toolName: 'write', toolCallId: 'transition-call' };
     const input = (revision: number) => ({ kind: 'file' as const, node: { toolName: 'write', args: { path: 'transition.ts', content: change === 'source' && revision === 2 ? 'source B' : 'source A' }, isPartial: false, result: {} },
@@ -438,7 +449,7 @@ test('syntax local observations count an actual watched Bash suffix without repe
   const provider = { availability: 'disabled' as const, reason: 'disabled' as const, generation: 0, initialShared: false };
   const sources = new SourceController({ snapshot: () => provider, isReady: () => false, classificationAccepted: () => false, request: () => assert.fail('no native work') }); sources.setEnabled(false);
   const cards = new CardSources({ sources, snapshot: () => ({ enabled: false, selected: { kind: 'pi' as const }, standaloneVersion: 'test', provider }) }, {
-    preparePiInput: funding => preparePiInput(themes.theme, 1, 'truecolor', funding), classify: () => assert.fail('no Bash Pi classification'), invalidate() {}, requestRender() {},
+    preparePiInput: funding => preparePaletteInput(themes.theme, 'pi', 1, 'truecolor', funding), classify: () => assert.fail('no Bash Pi classification'), invalidate() {}, requestRender() {},
   });
   const observer = observeSyntaxLocalWork(), owner = {}, command = ": 'STABLE_text e", input = { kind: 'bash' as const, args: { command }, complete: false,
     revision: 1, sourceRevision: 1, serviceRevision: 1, palette: 1, mode: 'truecolor' as const, language: 'bash' };

@@ -1,7 +1,7 @@
 import type { Theme, ThemeColor } from '@earendil-works/pi-coding-agent';
 import type { LiteralInk } from '../occipital/semantic-codec.ts';
 import type { StyleBinding } from './style-materialization.ts';
-import { PI_DIRECT_BINDINGS, PI_MARKER_BINDINGS, PI_RULE_BINDINGS } from './pi-rules.ts';
+import { PI_MARKER_BINDINGS, PI_MARKER_REGIONS, PI_RULE_BINDINGS, piBindingInkRole, type PiMarkerBinding } from './pi-adapter.ts';
 
 const invalid = (): never => { throw new Error('invalid Pi binding prefix'); };
 
@@ -18,9 +18,11 @@ export function samplePiBindings(theme: Pick<Theme, 'getFgAnsi'>,
     if (!value) { value = samplePiPrefix(theme.getFgAnsi(role)); sampled.set(role, value); }
     return value;
   };
-  return Object.freeze(PI_RULE_BINDINGS.map(binding => {
-    if (!(binding in PI_MARKER_BINDINGS)) return sample(binding as typeof PI_DIRECT_BINDINGS[number]);
-    const { ink, typography } = PI_MARKER_BINDINGS[binding as keyof typeof PI_MARKER_BINDINGS];
+  return Object.freeze(PI_RULE_BINDINGS.map(region => {
+    const markerBinding = (Object.keys(PI_MARKER_REGIONS) as PiMarkerBinding[])
+      .find(binding => PI_MARKER_REGIONS[binding] === region);
+    if (!markerBinding) return sample(piBindingInkRole(region));
+    const { ink, typography } = PI_MARKER_BINDINGS[markerBinding];
     const parent = sample(typography);
     // The selected semantic role supplies ink only; original parent typography stays intact.
     return ink === typography ? parent : Object.freeze({ ...parent, ink: sample(ink).ink });

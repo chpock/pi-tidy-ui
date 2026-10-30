@@ -1,0 +1,203 @@
+{
+  "revision": 1,
+  "id": "rosepine-light",
+  "label": "Rose Pine Light",
+  "source": {
+    "repository": "anomalyco/opencode",
+    "commit": "76e1f5b0cc4e529c732eebb0bade0893a3db8bee",
+    "path": "packages/ui/src/theme/themes/rosepine.json",
+    "variant": "light"
+  },
+  "regions": {
+    "markdown-block-quote": {
+      "foreground": "#9893a5",
+      "attributes": []
+    },
+    "markdown-code": {
+      "foreground": "#286983",
+      "attributes": []
+    },
+    "markdown-code-block": {
+      "foreground": "#575279",
+      "attributes": []
+    },
+    "markdown-code-delimiter": {
+      "foreground": "#286983",
+      "attributes": []
+    },
+    "markdown-code-fence": {
+      "foreground": "#797593",
+      "attributes": []
+    },
+    "markdown-heading": {
+      "foreground": "#907aa9",
+      "attributes": []
+    },
+    "markdown-heading-marker": {
+      "foreground": "#5c4772",
+      "attributes": []
+    },
+    "markdown-horizontal-rule": {
+      "foreground": "#dfdad9",
+      "attributes": []
+    },
+    "markdown-image": {
+      "foreground": "#31748f",
+      "attributes": []
+    },
+    "markdown-image-text": {
+      "foreground": "#d7827e",
+      "attributes": []
+    },
+    "markdown-link": {
+      "foreground": "#31748f",
+      "attributes": []
+    },
+    "markdown-link-delimiter": {
+      "foreground": "#ad5d5a",
+      "attributes": []
+    },
+    "markdown-link-text": {
+      "foreground": "#d7827e",
+      "attributes": []
+    },
+    "markdown-list-enumeration": {
+      "foreground": "#d7827e",
+      "attributes": []
+    },
+    "markdown-list-item": {
+      "foreground": "#31748f",
+      "attributes": []
+    },
+    "markdown-quote-border": {
+      "foreground": "#9893a5",
+      "attributes": []
+    },
+    "markdown-strong": {
+      "foreground": "#b4637a",
+      "attributes": []
+    },
+    "syntax-attribute": {
+      "foreground": "#d7827e",
+      "attributes": []
+    },
+    "syntax-command": {
+      "foreground": "#d7827e",
+      "attributes": []
+    },
+    "syntax-comment": {
+      "foreground": "#9893a5",
+      "attributes": []
+    },
+    "syntax-constant": {
+      "foreground": "#907aa9",
+      "attributes": []
+    },
+    "syntax-critical": {
+      "foreground": "#983c5a",
+      "attributes": []
+    },
+    "syntax-diff-add": {
+      "foreground": "#416677",
+      "attributes": []
+    },
+    "syntax-diff-delete": {
+      "foreground": "#894a5c",
+      "attributes": []
+    },
+    "syntax-diff-header": {
+      "foreground": "#907aa9",
+      "attributes": []
+    },
+    "syntax-diff-unknown": {
+      "foreground": "#ff0000",
+      "attributes": []
+    },
+    "syntax-escape": {
+      "foreground": "#907aa9",
+      "attributes": []
+    },
+    "syntax-function-builtin": {
+      "foreground": "#56949f",
+      "attributes": []
+    },
+    "syntax-keyword": {
+      "foreground": "#286983",
+      "attributes": []
+    },
+    "syntax-language-constant": {
+      "foreground": "#907aa9",
+      "attributes": []
+    },
+    "syntax-number": {
+      "foreground": "#907aa9",
+      "attributes": []
+    },
+    "syntax-operator": {
+      "foreground": "#797593",
+      "attributes": []
+    },
+    "syntax-parameter": {
+      "foreground": "#575279",
+      "attributes": []
+    },
+    "syntax-preprocessor": {
+      "foreground": "#286983",
+      "attributes": []
+    },
+    "syntax-primitive": {
+      "foreground": "#d7827e",
+      "attributes": []
+    },
+    "syntax-property": {
+      "foreground": "#d7827e",
+      "attributes": []
+    },
+    "syntax-punctuation": {
+      "foreground": "#797593",
+      "attributes": []
+    },
+    "syntax-regexp": {
+      "foreground": "#454066",
+      "attributes": []
+    },
+    "syntax-string": {
+      "foreground": "#ea9d34",
+      "attributes": []
+    },
+    "syntax-string-delimiter": {
+      "foreground": "#ea9d34",
+      "attributes": []
+    },
+    "syntax-tag": {
+      "foreground": "#286983",
+      "attributes": []
+    },
+    "syntax-type": {
+      "foreground": "#56949f",
+      "attributes": []
+    },
+    "syntax-variable": {
+      "foreground": "#575279",
+      "attributes": []
+    },
+    "syntax-warning": {
+      "foreground": "#994307",
+      "attributes": []
+    }
+  },
+  "card": {
+    "added": "#416677",
+    "addedBackground": "#e6f5fd",
+    "background": "#fcfcfc",
+    "border": "#d3cdd2",
+    "dim": "#bdb9c7",
+    "error": "#983c5a",
+    "foreground": "#454066",
+    "muted": "#9893a5",
+    "removed": "#bd7488",
+    "removedBackground": "#feeef1",
+    "title": "#332d53",
+    "warning": "#994307"
+  }
+}

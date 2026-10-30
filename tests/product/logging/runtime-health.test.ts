@@ -46,10 +46,10 @@ test('runtime health: journal errors or disabled capture do not prevent runtime 
   assert.equal(health.snapshot().active, 2);
 });
 
-test('runtime health: expected volume, queue, catalogue and cancellation refusals are not errors', () => {
-  for (const code of ['source_limit', 'result_limit', 'reply_limit', 'scope_limit', 'busy', 'queue_expired', 'cancelled', 'restart_required', 'profile_changed', 'profile_unavailable'])
+test('runtime health: expected volume, queue and cancellation refusals are not errors', () => {
+  for (const code of ['source_limit', 'result_limit', 'reply_limit', 'scope_limit', 'busy', 'queue_expired', 'cancelled', 'restart_required'])
     assert.equal(unexpectedDiagnostic({ code }), false, code);
-  for (const code of ['invalid_source', 'invalid_header', 'parser_error', 'invalid_close', 'EIO']) assert.equal(unexpectedDiagnostic({ code }), true, code);
+  for (const code of ['invalid_source', 'invalid_header', 'parser_error', 'invalid_close', 'owned_palette_unavailable', 'EIO']) assert.equal(unexpectedDiagnostic({ code }), true, code);
   assert.equal(unexpectedDiagnostic({ code: 'unknown_syntax', execution: 'not_started' }), false);
   assert.equal(unexpectedDiagnostic({ code: 'unknown_syntax', execution: 'started' }), true);
   assert.equal(unexpectedDiagnostic({ code: 'unknown_syntax' }), true);

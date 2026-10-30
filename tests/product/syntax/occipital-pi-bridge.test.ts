@@ -74,7 +74,7 @@ test('Pi snapshots and native snapshots share the same byte pool and removal own
   const { host, source } = fixture({ retention: { maxBytes: 8192 } });
   const text = 'let x;';
   source.capturePiSource('same', 1, text, 'typescript'); store(source, 'same', 1, [text]);
-  source.observe({ key: 'same', version: 1, text, path: 'a.ts', profile: 'pi', fingerprint: 'a'.repeat(64), complete: true });
+  source.observe({ key: 'same', version: 1, text, path: 'a.ts', language: 'typescript', complete: true });
   const held = source.stats();
   assert.equal(held.retention.entries, 2); assert.equal(held.sourceRecords, 1); assert.equal(held.piSourceRecords, 1);
   assert.ok(held.retention.bridgeBytes > 0 && held.retention.retainedBytes <= 8192);
@@ -122,7 +122,7 @@ test('ordinary byte pressure releases Pi rows and does not retry an unchanged ca
   const { source } = fixture({ retention: { maxBytes: 8192 } });
   source.capturePiSource('pressure', 1, 'x'.repeat(100), 'bash'); assert.ok(store(source, 'pressure', 1, ['x'.repeat(100)]));
   assert.ok(source.borrowPiSource('pressure')); assert.ok(source.piProjection('pressure', 1, 1));
-  source.observe({ key: 'large', version: 1, text: 'y'.repeat(3500), profile: 'pi', fingerprint: 'a'.repeat(64), complete: true });
+  source.observe({ key: 'large', version: 1, text: 'y'.repeat(3500), language: 'text', complete: true });
   assert.equal(source.borrowPiSource('pressure'), undefined);
   assert.equal(bridge(source, 'pressure', 1, 1).available, false);
   const held = source.stats();
@@ -208,7 +208,7 @@ test('native projection borrows its current logical snapshot without a second so
   const { source, host } = fixture();
   const text = 'é\t😀\n';
   assert.equal(source.observe({ key: 'native', version: 1, text, path: 'a.ts', language: 'typescript',
-    profile: 'pi', fingerprint: 'a'.repeat(64), complete: false }), true);
+    complete: false }), true);
   const before = source.stats(), measure = Buffer.byteLength; let measured = 0;
   Buffer.byteLength = function(value: Parameters<typeof measure>[0], encoding?: Parameters<typeof measure>[1]) {
     if (value === text) measured++;
@@ -225,8 +225,7 @@ test('native projection borrows its current logical snapshot without a second so
   assert.equal(measured, 0); assert.deepEqual(source.stats(), before);
   assert.equal(source.stats().retention.entries, 1); assert.equal(source.stats().piSourceRecords, 0);
   assert.equal(host.calls, 0);
-  source.observe({ key: 'native', version: 2, text, path: 'a.ts', language: 'typescript',
-    profile: 'pi', fingerprint: 'a'.repeat(64), complete: true });
+  source.observe({ key: 'native', version: 2, text, path: 'a.ts', language: 'typescript', complete: true });
   assert.equal(source.borrowSource('native')!.version, 2);
   source.remove('native'); assert.equal(source.borrowSource('native'), undefined);
 });

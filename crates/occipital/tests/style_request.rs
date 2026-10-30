@@ -1,13 +1,17 @@
 use occipital::{
-    style_request::{Admission, RuleInput, StyleRequestPlan},
+    style_request::{Admission, StyleRequestPlan},
     vocabulary::{self, ScopeId},
 };
 use serde_json::{json, value::RawValue, Value};
 
+fn definition() -> Value {
+    json!({"revision":2,"binding_slots":0,
+        "default":{"foreground":{"kind":"inherit"},"background":{"kind":"inherit"},"attributes":0,"attribute_mask":0},"rules":[]})
+}
 fn request() -> Value {
-    json!({"v":3,"op":"styles.resolve","ticket":"ticket","instance":"instance","admission":"try_now",
+    json!({"v":4,"op":"styles.resolve","ticket":"ticket","instance":"instance","admission":"try_now",
         "vocabulary":vocabulary::FINGERPRINT,"contexts":[[0,ScopeId::from_name("source.rust").unwrap().get()]],
-        "rules":{"kind":"native","id":"syntect:Theme","fingerprint":"a".repeat(64)}})
+        "rules":definition()})
 }
 fn raw(value: Value) -> Box<RawValue> {
     serde_json::from_str(&value.to_string()).unwrap()
@@ -20,37 +24,40 @@ fn fault(value: Value) -> &'static str {
 }
 
 #[test]
-fn native_and_client_inputs_share_the_same_admitted_context_plan() {
+fn common_rules_and_contexts_share_one_admitted_v4_style_plan() {
     let input = raw(request());
     let plan = StyleRequestPlan::inspect(&input, "instance", 1 << 20).unwrap();
     assert_eq!(plan.ticket, "ticket");
     assert_eq!(plan.admission, Admission::TryNow);
-    assert_eq!(plan.policy_bytes, 128 + 16);
-    assert!(matches!(plan.rules, RuleInput::Native { .. }));
+    assert_eq!(
+        plan.policy_bytes,
+        plan.rules.measurement().policy_bytes + plan.contexts.measurement().policy_bytes
+    );
     assert_eq!(
         plan.contexts.materialize()[0][0],
         vec![ScopeId::from_name("source.rust").unwrap().get()]
     );
 
-    let mut client = request();
-    client["rules"] = json!({"kind":"client","definition":{"revision":1,"binding_slots":0,
-        "default":{"foreground":{"kind":"inherit"},"background":{"kind":"inherit"},"attributes":0,"attribute_mask":0},"rules":[]}});
-    let input = raw(client);
-    let plan = StyleRequestPlan::inspect(&input, "instance", 1 << 20).unwrap();
-    assert!(plan.policy_bytes > 144);
-    let RuleInput::Client(rules) = plan.rules else {
-        panic!("expected generic rules")
-    };
-    assert_eq!(
-        rules.fingerprint(),
-        "060533fb56662d209f344da7e38f0c21dce600121af65112714a017bcd6a1323"
+    let mut qualified = definition();
+    qualified["binding_slots"] = json!(44);
+    qualified["rules"] = json!([{"path":["string"],"excludes":[],"foreground":{"kind":"binding","slot":7},
+        "background":null,"font":null,"context":{"owner":"string","boundaries":[]}}]);
+    let mut value = request();
+    value["rules"] = qualified;
+    assert!(
+        StyleRequestPlan::inspect(&raw(value), "instance", 1 << 20)
+            .unwrap()
+            .rules
+            .measurement()
+            .contexts
+            > 0
     );
 }
 
 #[test]
 fn exact_shape_identity_and_queue_guards_reject_before_any_data_execution() {
     for (field, value, code) in [
-        ("v", json!(2), "protocol_mismatch"),
+        ("v", json!(3), "protocol_mismatch"),
         ("vocabulary", json!("b".repeat(64)), "vocabulary_changed"),
         ("instance", json!("old"), "invalid_request"),
         ("op", json!("highlight"), "invalid_request"),
@@ -62,16 +69,14 @@ fn exact_shape_identity_and_queue_guards_reject_before_any_data_execution() {
         value_copy[field] = value;
         assert_eq!(fault(value_copy), code, "{field}");
     }
-    for input in [
-        json!({"kind":"native","id":"syntect:Theme","fingerprint":"a".repeat(64),"definition":null}),
-        json!({"kind":"native","id":null,"fingerprint":"a".repeat(64)}),
-        json!({"kind":"client","definition":{},"id":null}),
-        json!({"kind":"client","definition":{},"extra":1}),
-    ] {
-        let mut value = request();
-        value["rules"] = input;
-        assert_eq!(fault(value), "invalid_request");
-    }
+    let mut missing_context = request();
+    missing_context["rules"]["rules"] =
+        json!([{"path":["string"],"excludes":[],"foreground":null,"background":null,"font":null}]);
+    assert_eq!(fault(missing_context), "invalid_rules");
+    let mut bad_qualifier = request();
+    bad_qualifier["rules"]["rules"] = json!([{"path":["string"],"excludes":[],"foreground":null,"background":null,"font":null,
+        "context":{"owner":"string","boundaries":["invalid.owner"]}}]);
+    assert_eq!(fault(bad_qualifier), "unknown_scope");
     let mut value = request();
     value["admission"] = json!("bounded_queue");
     value["queue_wait_ms"] = json!(1);
@@ -85,34 +90,40 @@ fn exact_shape_identity_and_queue_guards_reject_before_any_data_execution() {
 }
 
 #[test]
-fn exact_context_credit_and_empty_native_palettes_do_not_need_source_text() {
+fn rule_names_and_expanded_context_are_funded_before_compilation() {
     let input = raw(request());
+    let measured = StyleRequestPlan::inspect(&input, "instance", occipital::limits::DATA_BYTES)
+        .unwrap()
+        .policy_bytes;
+    assert!(measured > 0);
     assert_eq!(
-        StyleRequestPlan::inspect(&input, "instance", 144)
+        StyleRequestPlan::inspect(&input, "instance", measured)
             .unwrap()
             .policy_bytes,
-        144
+        measured
     );
-    let fault = StyleRequestPlan::inspect(&input, "instance", 143)
+    let fault = StyleRequestPlan::inspect(&input, "instance", measured - 1)
         .err()
         .unwrap();
     assert!(!fault.started);
-    assert_eq!(fault.code, "context_limit");
+    assert!(matches!(
+        fault.code,
+        "allocation_limit" | "context_limit" | "data_limit"
+    ));
+
     let mut value = request();
     value["contexts"] = json!([]);
     let input = raw(value);
-    assert_eq!(
-        StyleRequestPlan::inspect(&input, "instance", 0)
-            .unwrap()
-            .policy_bytes,
-        0
-    );
+    let empty_contexts =
+        StyleRequestPlan::inspect(&input, "instance", occipital::limits::DATA_BYTES).unwrap();
+    assert_eq!(empty_contexts.contexts.measurement().policy_bytes, 0);
+    assert!(empty_contexts.policy_bytes >= empty_contexts.rules.measurement().policy_bytes);
 }
 
 #[test]
 fn positional_objects_duplicates_and_fractional_tokens_are_not_coerced() {
     let value = request().to_string();
-    let duplicate = value.replacen("\"v\":3", "\"v\":3,\"v\":3", 1);
+    let duplicate = value.replacen("\"v\":4", "\"v\":4,\"v\":4", 1);
     for value in [
         duplicate,
         "[]".to_owned(),

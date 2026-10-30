@@ -14,10 +14,6 @@ use serde::{
 /// Both data operations use the same envelope, writer and physical credit.
 #[derive(Serialize)]
 #[serde(untagged)]
-#[expect(
-    clippy::large_enum_variant,
-    reason = "Keep admitted result headers inline; boxing here would add an allocation at reply handoff"
-)]
 pub enum DataBody {
     Source(SourceBody),
     Styles(Styles),

@@ -216,7 +216,7 @@ export class SharedTransport {
         || typeof op !== 'string' || !operations.has(op) || Object.hasOwn(request, 'cancel')) throw new SharedError('shared invalid request header');
       if (this.pending.has(ticket)) throw new SharedError('shared active duplicate ticket');
       if (options.signal?.aborted) throw new SharedError('shared aborted before dispatch');
-      const control = op === 'describe' || op === 'themes.refresh', stats = this.stats();
+      const control = op === 'describe', stats = this.stats();
       if (options.waitOnly && !control) throw new SharedError('shared wait-only requires control');
       if (control ? stats.unsettledControl >= 1 : stats.unsettledData >= 2) throw new SharedError('shared request capacity');
       const bytes = encodeRequest(request, control ? SHARED_LIMITS.controlRequestBytes : this.dataBytes);

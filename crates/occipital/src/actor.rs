@@ -1,7 +1,6 @@
 //! Fixed owning threads around the same worker-local scheduler in both I/O modes.
-//! Only owned requests, immutable catalogues and guarded encoded replies cross threads.
+//! Only owned requests and guarded encoded replies cross threads.
 use crate::{
-    catalogue::{Catalogue, Snapshot as CatalogueSnapshot},
     credit::{Budget, Snapshot},
     ingress::{self, Incoming, Prepared, Rejection, CONTROL_RESERVATION},
     protocol::Fault,
@@ -40,10 +39,6 @@ struct Front {
     sender: SyncSender<Message>,
     leases: Arc<AtomicUsize>,
 }
-struct Publication {
-    generation: u64,
-    snapshot: Arc<CatalogueSnapshot>,
-}
 struct Worker {
     instance: String,
     limits: Limits,
@@ -52,7 +47,6 @@ struct Worker {
     stopped: Arc<AtomicBool>,
     receiver: Receiver<Message>,
     leases: Arc<AtomicUsize>,
-    publication: Arc<Mutex<Publication>>,
 }
 struct Hub {
     fronts: Vec<Front>,
@@ -65,7 +59,6 @@ struct Hub {
     budget: Budget,
     controls: Budget,
     limits: Limits,
-    publication: Arc<Mutex<Publication>>,
 }
 impl Hub {
     fn now(&self) -> u64 {
@@ -243,10 +236,6 @@ impl ActorPool {
         crate::vocabulary::ScopeId::from_raw(1)
             .expect("nonempty generated vocabulary")
             .scope();
-        let publication = Arc::new(Mutex::new(Publication {
-            generation: 0,
-            snapshot: Catalogue::from_os_root(None).snapshot(),
-        }));
         let born = Instant::now();
         let mut fronts: Vec<Front> = Vec::new();
         let mut completions = Vec::new();
@@ -259,7 +248,6 @@ impl ActorPool {
             let worker_budget = budget.clone();
             let worker_instance = instance.clone();
             let worker_limits = limits.clone();
-            let worker_publication = publication.clone();
             let join = match thread::Builder::new()
                 .name(format!("occipital-worker-{index}"))
                 .spawn(move || {
@@ -271,7 +259,6 @@ impl ActorPool {
                         stopped: stop,
                         receiver,
                         leases: observed,
-                        publication: worker_publication,
                     });
                     let _ = done_tx.send(());
                 }) {
@@ -299,7 +286,6 @@ impl ActorPool {
                 budget,
                 controls: Budget::new(ROUTES * CONTROL_RESERVATION, ROUTES, 1),
                 limits,
-                publication,
             }),
             completions,
         })
@@ -310,13 +296,6 @@ impl ActorPool {
     }
     pub async fn bind(&self) -> Result<Route, Fault> {
         self.hub.bind().await
-    }
-    /// Publish one immutable definition set. Every worker reconciles the latest
-    /// generation before its next dispatch; cancellation cannot leave a half-sent
-    /// per-worker update. StyleWork retains its typed immutable definition; source
-    /// leases are unaffected by catalogue publication.
-    pub fn publish_snapshot(&self, snapshot: Arc<CatalogueSnapshot>) -> Result<(), Fault> {
-        self.hub.publish_snapshot(snapshot)
     }
     pub fn stats(&self) -> PoolStats {
         self.hub.stats()
@@ -379,35 +358,16 @@ fn run(worker: Worker) {
         stopped,
         receiver,
         leases,
-        publication,
     } = worker;
-    let mut catalogue_generation = 0;
 
     // Construction, mutation and destruction of every !Send Work occur here.
-    let initial = publication
-        .lock()
-        .expect("publication poisoned")
-        .snapshot
-        .clone();
-    let mut scheduler = Scheduler::with_snapshot(instance.clone(), limits, budget, initial);
+    let mut scheduler = Scheduler::new(instance.clone(), limits, budget);
     let mut scopes: HashMap<String, Arc<AtomicBool>> = HashMap::new();
     loop {
         if stopped.load(Ordering::Acquire) {
             break;
         }
         prune(&mut scopes, &mut scheduler);
-        let changed = {
-            let current = publication.lock().expect("publication poisoned");
-            if current.generation != catalogue_generation {
-                Some((current.generation, current.snapshot.clone()))
-            } else {
-                None
-            }
-        };
-        if let Some((generation, values)) = changed {
-            scheduler.publish_snapshot(values);
-            catalogue_generation = generation;
-        }
         if stopped.load(Ordering::Acquire) {
             break;
         }
@@ -492,9 +452,6 @@ impl PoolHandle {
     pub async fn bind(&self) -> Result<Route, Fault> {
         self.live()?.bind().await
     }
-    pub fn publish_snapshot(&self, snapshot: Arc<CatalogueSnapshot>) -> Result<(), Fault> {
-        self.live()?.publish_snapshot(snapshot)
-    }
     pub fn stats(&self) -> Result<PoolStats, Fault> {
         Ok(self.live()?.stats())
     }
@@ -542,20 +499,6 @@ impl Hub {
             return Err(Fault::not_started("scope_gone"));
         }
         Ok(Route(owner))
-    }
-    fn publish_snapshot(&self, snapshot: Arc<CatalogueSnapshot>) -> Result<(), Fault> {
-        if self.stopped.load(Ordering::Acquire) {
-            return Err(Fault::not_started("scope_gone"));
-        }
-        let mut current = self.publication.lock().expect("publication poisoned");
-        current.generation = current
-            .generation
-            .checked_add(1)
-            .ok_or(Fault::not_started("profile_limit"))?;
-        current.snapshot = snapshot;
-        drop(current);
-        self.wake();
-        Ok(())
     }
     fn stats(&self) -> PoolStats {
         PoolStats {

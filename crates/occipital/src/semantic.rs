@@ -1,11 +1,10 @@
-//! Theme-independent v3 payload primitives; transport cutover is owned by the v3 adapter.
+//! Theme-independent v4 payload primitives.
 use serde::{de, de::DeserializeSeed, Deserialize, Serialize};
 use serde_json::value::RawValue;
 use std::{collections::HashSet, fmt};
 
-pub const PROTOCOL_VERSION: u32 = 3;
-pub const CAPABILITY: &str = "syntax-highlight/v3";
-pub const CARD_SLOTS: usize = 26;
+pub const PROTOCOL_VERSION: u32 = 4;
+pub const CAPABILITY: &str = "syntax-highlight/v4";
 use crate::limits::{CONTEXT_ROW_UNITS as ROW_UNITS, CONTEXT_WORD_UNITS as WORD_UNITS};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Error {
@@ -13,7 +12,6 @@ pub enum Error {
     UnknownScope,
     ContextLimit,
     InvalidStyle,
-    InvalidPalette,
 }
 impl Error {
     pub fn code(self) -> &'static str {
@@ -22,7 +20,6 @@ impl Error {
             Self::UnknownScope => "unknown_scope",
             Self::ContextLimit => "context_limit",
             Self::InvalidStyle => "invalid_style",
-            Self::InvalidPalette => "invalid_palette",
         }
     }
 }
@@ -264,16 +261,14 @@ pub struct Expression {
     pub attribute_mask: u8,
 }
 impl Expression {
-    pub fn validate(&self, native: bool, binding_slots: u32) -> Result<(), Error> {
+    pub fn validate(&self, binding_slots: u32) -> Result<(), Error> {
         let ink = |value: &Ink| match value {
-            Ink::Binding { slot } => !native && u32::from(*slot) < binding_slots,
-            Ink::Inherit {} => !native,
+            Ink::Binding { slot } => u32::from(*slot) < binding_slots,
             _ => true,
         };
         if self.attributes > 31
             || self.attribute_mask > 31
             || self.attributes & !self.attribute_mask != 0
-            || native && (self.attribute_mask != 31 || self.attributes & 16 != 0)
             || !ink(&self.foreground)
             || !ink(&self.background)
         {
@@ -281,14 +276,6 @@ impl Expression {
         }
         Ok(())
     }
-}
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Palette {
-    pub revision: u8,
-    pub fingerprint: String,
-    pub slots: [u32; CARD_SLOTS],
-    pub origins: [u8; CARD_SLOTS],
 }
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -303,16 +290,9 @@ pub struct Styles {
     pub rules: String,
     pub styles: Vec<Expression>,
     pub indices: Vec<u32>,
-    #[serde(deserialize_with = "required_palette")]
-    pub palette: Option<Palette>,
-}
-fn required_palette<'de, D: de::Deserializer<'de>>(
-    decoder: D,
-) -> Result<Option<Palette>, D::Error> {
-    Option::<Palette>::deserialize(decoder)
 }
 impl Styles {
-    pub fn validate(&self, native: bool, binding_slots: u32, contexts: usize) -> Result<(), Error> {
+    pub fn validate(&self, binding_slots: u32, contexts: usize) -> Result<(), Error> {
         let fingerprint = |s: &str| {
             s.len() == 64
                 && s.bytes()
@@ -326,7 +306,7 @@ impl Styles {
         }
         let mut unique = HashSet::new();
         for style in &self.styles {
-            style.validate(native, binding_slots)?;
+            style.validate(binding_slots)?;
             if !unique.insert(style) {
                 return Err(Error::InvalidStyle);
             }
@@ -335,22 +315,7 @@ impl Styles {
         if !self.indices.iter().all(valid_id) {
             return Err(Error::InvalidStyle);
         }
-        let mut references: HashSet<_> = self.indices.iter().copied().collect();
-        match (&self.palette, native) {
-            (Some(palette), true)
-                if palette.revision == 1
-                    && fingerprint(&palette.fingerprint)
-                    && palette.slots.iter().all(valid_id)
-                    && palette
-                        .origins
-                        .iter()
-                        .all(|&v| v <= 31 && v & 3 < 3 && (v >> 2) & 3 < 3) =>
-            {
-                references.extend(palette.slots);
-            }
-            (None, false) => {}
-            _ => return Err(Error::InvalidPalette),
-        }
+        let references: HashSet<_> = self.indices.iter().copied().collect();
         if references.len() != self.styles.len() {
             return Err(Error::InvalidStyle);
         }
@@ -361,7 +326,7 @@ impl Styles {
 #[cfg(test)]
 mod tests {
     use super::*;
-    const VECTORS: &str = include_str!("../../../protocol/syntax-v3/vectors.json");
+    const VECTORS: &str = include_str!("../../../protocol/syntax-v4/vectors.json");
     fn raw(text: &str) -> Box<RawValue> {
         RawValue::from_string(text.to_owned()).unwrap()
     }
@@ -420,7 +385,6 @@ mod tests {
                 }
             };
             let result = body.validate(
-                case["mode"] == "native",
                 case["binding_slots"].as_u64().unwrap() as u32,
                 case["context_count"].as_u64().unwrap() as usize,
             );

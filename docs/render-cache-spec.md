@@ -18,7 +18,7 @@ A candidate layout becomes retained only after its outer prepared-card visit suc
 
 ### Terminal-default projection
 
-Terminal-color synchronization has one latest requested/reported numeric snapshot and one concrete-color projection, outside transcript accounting groups. It retains no tool/editor owner or width history. Native theme revisions and explicit retries queue source work outside render; unchanged ordinary/Working frames repeat no source read/report/projection/output. Local off stops metadata/application but can sample released profile RGB for remaining cards. Automatic mode adds no feature reports. The zero-row observer and one-shot public query deadlines are not a repeating clock. See the [terminal-color contract](terminal-colors-spec.md).
+Terminal-color synchronization has one latest requested/reported numeric snapshot and one concrete-color projection, outside transcript accounting groups. It retains no tool/editor owner or width history. Native terminal-theme revisions and explicit retries queue synchronization outside render; unchanged ordinary/Working frames repeat no source read/report/projection/output. Local off stops metadata/application but can sample released profile RGB for remaining cards. Automatic mode adds no feature reports. The zero-row observer and one-shot public query deadlines are not a repeating clock. See the [terminal-color contract](terminal-colors-spec.md).
 
 ### Session-footer snapshot
 

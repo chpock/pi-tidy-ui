@@ -12,13 +12,13 @@ import { CARD_ROLES, decodeStyleResult, type CardRole } from '../../../src/occip
 import { materializeStyle, type ConcreteStyle } from '../../../src/syntax/style-materialization.ts';
 
 const A = 'a'.repeat(64), B = 'd'.repeat(64), rules = 'b'.repeat(64), grant = () => true;
-const vectors = JSON.parse(readFileSync(new URL('../../../protocol/syntax-v3/vectors.json', import.meta.url), 'utf8'));
-const native = vectors.styles.find((value: { name: string }) => value.name === 'empty-source-complete-native-palette');
-const decoded = decodeStyleResult(native.body, { vocabulary: A, rules, mode: 'native', bindingSlots: 0 }, 0, 1 << 20);
+const vectors = JSON.parse(readFileSync(new URL('../../../protocol/syntax-v4/vectors.json', import.meta.url), 'utf8'));
+const literalFixture = vectors.styles.find((value: { name: string }) => value.name === 'literal-binding-inherit-and-explicit-clear');
+const decoded = decodeStyleResult(literalFixture.body, { vocabulary: A, rules, bindingSlots: literalFixture.binding_slots }, 4, 1 << 20);
 const base: ConcreteStyle = { foreground: { kind: 'terminal-default' }, background: { kind: 'terminal-default' }, attributes: 0 };
 const literal = materializeStyle(decoded.styles[0]!, [], base);
 const indexedFixture = vectors.styles.find((value: { name: string }) => value.name === 'indexed-is-not-guessed-rgb');
-const indexed = decodeStyleResult(indexedFixture.body, { vocabulary: A, rules, mode: 'client', bindingSlots: 0 }, 1, 1 << 20);
+const indexed = decodeStyleResult(indexedFixture.body, { vocabulary: A, rules, bindingSlots: indexedFixture.binding_slots }, 1, 1 << 20);
 const recolored = materializeStyle(indexed.styles[0]!, [], base);
 function source(vocabulary: string, key = 'source', generation = 1, options: Partial<SemanticExpectation> & { neutral?: boolean; parsedEmpty?: boolean } = {}) {
   const { neutral = false, parsedEmpty = false, ...metadata } = options;
@@ -36,7 +36,7 @@ function refs(pool: SemanticRetentionPool, generation: number) {
   const result = new Set<ContextRef>(); pool.visitRanges(generation, (_a, _b, ref) => { if (ref) result.add(ref); }); return [...result];
 }
 function ready(vocabulary: string, contexts: readonly ContextRef[], style = literal): ReadyPresentation {
-  return { vocabulary, rules, palette: native.body.palette.fingerprint, bindingRevision: 1,
+  return { vocabulary, rules, palette: 'palette:test', bindingRevision: 1,
     roles: Object.fromEntries(CARD_ROLES.map(role => [role, structuredClone(style)])) as Record<CardRole, ConcreteStyle>,
     contexts: contexts.map(context => ({ context, style: structuredClone(style) })) };
 }

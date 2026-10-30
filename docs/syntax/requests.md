@@ -24,7 +24,7 @@ Reply handling has successive responsibilities:
 
 1. **Transport admission and correlation:** locate the outstanding call, enforce its lane’s size limit and check the basic envelope/outcome shape.
 2. **Consumer size and provider validation:** `semantic-protocol.ts` checks the current negotiated cap, exact envelope, ticket, process instance and assets.
-3. **Operation validation:** SOURCE verifies every expected source acknowledgement and its replacement coverage; STYLE verifies vocabulary, rule interpretation, context correspondence and native palette identity where applicable.
+3. **Operation validation:** SOURCE verifies every expected source acknowledgement and its replacement coverage; STYLE verifies vocabulary, rule interpretation and context correspondence. STYLE results contain no palette identity or card-role colors.
 4. **Controlled materialization:** only after complete validation and expanded-allocation checks are the owned numeric vectors and semantic values constructed.
 5. **Retention/publication:** the controller and retention root decide whether the validated data still belongs to an eligible owner and can be funded.
 
@@ -32,7 +32,7 @@ A well-framed response is therefore not yet a valid source result, and a valid s
 
 For SOURCE, `semantic-source.ts` validates exact batch membership, versions, revisions, lease conditions and byte coverage. It checks scalar boundaries against the captured replacement suffix and checks the committed boundary against that supplied text. Context expansion is inspected for the complete response before typed context/range vectors are materialized. The adopted range representation uses absolute endpoints; the wire’s length pairs remain defined by the [protocol reference](../occipital/protocol.md).
 
-For STYLE, `semantic-protocol.ts` rejects a wrong native palette fingerprint before adopting the palette. `semantic-codec.ts` then validates the complete expression/context mapping and its controlled decoded cost. Structural validity alone cannot make data from another rule interpretation interchangeable.
+For STYLE, `semantic-protocol.ts` verifies the negotiated vocabulary and rule identity before adoption. `semantic-codec.ts` then validates the complete expression/context mapping and its controlled decoded cost. Structural validity alone cannot make data from another rule interpretation interchangeable.
 
 ## Size evidence is call-local, not a payload cache
 
@@ -66,13 +66,11 @@ The adapters also differ in how they obtain reply-size evidence: stdio measures 
 
 ## A caller’s wait can end before the operation
 
-Published-provider catalogue operations use `waitOnly`. Initial negotiation and DATA requests do not.
+The transport has an optional wait-only policy for CONTROL callers. On an ordinary request, deadline expiry retires the transport with uncertain execution. For a wait-only CONTROL request, expiry rejects that caller’s wait while leaving its correlation, bytes and CONTROL slot owned until actual settlement; another metadata call cannot build an unbounded queue behind it. Current protocol negotiation uses source-free `describe`; there is no theme-catalogue operation.
 
-For an ordinary request, deadline expiry retires the transport with uncertain execution. For a wait-only catalogue operation, expiry rejects that caller’s wait and detaches its completed callbacks while leaving correlation, bytes and the CONTROL slot occupied. Another refresh cannot build an unbounded queue behind it.
+Stdio sends its existing once-only cancellation frame and waits for the correlated response or child cleanup. Shared transport waits for the SDK promise or connection closure. After an expired shared CONTROL wait, an uncertain SDK rejection releases that completed record without destroying unrelated source work; explicit loss or denial still follows normal retirement.
 
-Stdio sends its existing once-only cancellation frame and waits for the correlated response or child cleanup. Shared transport waits for the SDK promise or connection closure. After an expired shared metadata wait, an uncertain SDK rejection releases that completed control record without destroying unrelated source work; explicit loss or denial still follows normal retirement.
-
-A late metadata response can release ownership, but the expired caller cannot update the published catalogue. The distinction exists because a short catalogue wait must not accidentally impose the same deadline on unrelated source requests. Increasing the deadline or ignoring lifetime notifications would not separate those responsibilities.
+A late metadata response can release ownership, but an expired caller cannot publish its result. This distinction prevents a short metadata wait from imposing the same deadline on unrelated source requests. Increasing the deadline or ignoring lifetime notifications would not separate those responsibilities.
 
 ## What an outcome proves
 
@@ -88,12 +86,12 @@ Finally, the [source controller](work.md) combines these outcomes with all still
 
 ## Protocol and resources
 
-The application protocol is **JSON v3**, capability `syntax-highlight/v3`, with exact resolver revision2 (contexts/palette/client-definition structural revisions remain1). Attributes/masks are0..31 with subset validation. Effective client-rules/native-rules/native-palette fingerprint domains are `/2`; original native theme-definition fingerprints remain unchanged. Both transports reject older/different resolver interpretations before candidate admission; a matching rebuilt helper is required. Its exact contract and cross-language vectors live in [`protocol/syntax-v3/`](../occipital/protocol.md). There is no v2 decoder or second production painter.
+The application protocol is **JSON v4**, capability `syntax-highlight/v4`, with contexts revision1, resolver revision3, SOURCE-hint revision2 and generic rule-definition revision2. Attributes/masks are0..31 with subset validation. The canonical client-rule fingerprint uses the NUL-terminated `occipital-client-rules/3` domain and includes context qualification. Both transports reject older/mismatched helpers before admitting SOURCE or STYLE; a freshly built matching helper is required. Its exact contract and cross-language vectors live in [`protocol/syntax-v4/`](../occipital/protocol.md). There is no v3 compatibility route or second production painter.
 
 - SOURCE operations carry text, grammar/source identity and incremental coverage, but no selected theme. Replies contain positive UTF-8-length/context pairs and reply-local front-coded scope contexts. A parsed empty context differs from unclassified coverage.
-- `styles.resolve` carries vocabulary-qualified contexts plus a native definition fingerprint or bounded Follow Pi rule declarations, but no source text. Replies factor shared style expressions and provide the native whole-card palette. Both theme inputs use the same Rust selector/property resolver; JavaScript does not interpret scopes.
+- `styles.resolve` carries vocabulary-qualified contexts and one bounded generic semantic rule definition, but no source text or palette. Replies factor shared style expressions; the consumer binds them to funded local palette inputs and card roles. JavaScript does not interpret scopes.
 - The build-generated trusted vocabulary is tied to grammar assets. Unknown IDs/names are rejected before arbitrary scope interning; compatible provider recovery can style retained contexts without parsing again. Incompatible vocabulary/assets require an explicit cold-source transition, never reinterpretation of old IDs.
 - Replies are self-contained. The client validates complete batch coverage, identities, scalar boundaries, negotiated limits and expanded storage before retained allocation. Its live-context/style sharing is an accounted optimization, not synchronized server dictionary state.
-- Owned stdio keeps bounded big-endian length framing; shared calls use the public Subconscious SDK. Source and style work share physical jobs/byte credits and native fairness; metadata remains independent. A style response cannot close a parser lease, clear source uncertainty or reset a source-success crash budget.
+- Owned stdio keeps bounded big-endian length framing; shared calls use the public Subconscious SDK. Source and style work share physical jobs/byte credits and Occipital fairness; source-free `describe` remains independent. A style response cannot close a parser lease, clear source uncertainty or reset a source-success crash budget.
 
 Finite admitted sources remain one-shot. New contexts can require SOURCE then STYLE; retained contexts/styles and unchanged-rule Pi rebinding avoid that work. JSON decoding remains synchronous but DATA envelopes are bounded by the [highlighting volume policy](work.md#highlighting-volume-policy); there is no chunk-feeding mode, worker/binary carrier or fast full-card rendering guarantee for enormous inputs.

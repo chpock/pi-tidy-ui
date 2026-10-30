@@ -17,7 +17,7 @@ function deferred<T>() {
   return { promise, resolve };
 }
 function descriptor(ticket: unknown) {
-  return semanticDescriptor(ticket, 'runtime', []);
+  return semanticDescriptor(ticket, 'runtime');
 }
 class Peer implements ProviderTransport {
   private termination = deferred<TransportEnd>();
@@ -26,17 +26,17 @@ class Peer implements ProviderTransport {
   calls: { request: Record<string, any>; reply: ReturnType<typeof deferred<unknown>> }[] = [];
   closes = 0;
   request(request: Record<string, unknown>) {
-    assert.equal(request.v, 3);
+    assert.equal(request.v, 4);
     const reply = deferred<unknown>(); this.calls.push({ request, reply });
-    if (request.op === 'describe' || request.op === 'themes.refresh') reply.resolve(descriptor(request.ticket));
+    if (request.op === 'describe') reply.resolve(descriptor(request.ticket));
     return reply.promise;
   }
   answer(index: number) {
     const { request: r, reply } = this.calls[index]!, s = r.sources[0];
     const bytes = Buffer.byteLength(s.text);
-    assert.equal(Object.hasOwn(s, 'profile'), false, 'v3 SOURCE is theme-independent');
+    assert.equal(Object.hasOwn(s, 'profile'), false, 'v4 SOURCE is theme-independent');
     assert.equal(Object.hasOwn(s, 'fingerprint'), false);
-    reply.resolve({ v: 3, ticket: r.ticket, instance: 'runtime', assets: 'assets', status: 'ok', body: {
+    reply.resolve({ v: 4, ticket: r.ticket, instance: 'runtime', assets: 'assets', status: 'ok', body: {
       kind: 'source', vocabulary: 'a'.repeat(64), sources: [{ key: s.key, generation: s.generation, source_version: s.source_version,
         revision: 1, replace_from: 0, source_bytes: bytes,
         committed_bytes: bytes, complete: true, contexts: [[0, 1]], runs: [bytes, 1],
@@ -80,14 +80,14 @@ async function settled() { await turn(); }
 afterEach(async () => { for (const runtime of runtimes) await runtime.dispose(); runtimes.clear(); await settled(); });
 function demand(runtime: SyntaxRuntime, key = 'one') {
   const p = runtime.snapshot().effective!;
-  assert.ok(p); return { key, version: 1, text: 'x', complete: true, profile: p.id, fingerprint: p.fingerprint };
+  assert.ok(p); return { key, version: 1, text: 'x', complete: true };
 }
 
-const definition = { revision: 1 as const, binding_slots: 0,
+const definition = { revision: 2 as const, binding_slots: 0,
   default: { foreground: { kind: 'inherit' as const }, background: { kind: 'inherit' as const }, attributes: 0, attribute_mask: 0 }, rules: [] };
 function localSelection(revision = 1) {
   const style: ConcreteStyle = { foreground: { kind: 'rgb', r: revision, g: 2, b: 3 }, background: { kind: 'terminal-default' }, attributes: 0 };
-  return { kind: 'client' as const, definition, bindingRevision: revision, palette: `local:${revision}`, bindings: [],
+  return { definition, bindingRevision: revision, palette: `local:${revision}`, bindings: [],
     roles: Object.fromEntries(CARD_ROLES.map(role => [role, style])) as Record<CardRole, ConcreteStyle> };
 }
 function emptyPreparation(sources: SourceController) {
@@ -133,7 +133,7 @@ test('source notification targets only its keyed current presentation without a 
   assert.deepEqual(f.peers[0]!.calls.map(c => c.request.op), ['describe', 'highlight']);
   f.peers[0]!.answer(1); await settled(); await settled();
   assert.deepEqual(view.calls.keys, [['one']]); assert.deepEqual(view.calls.groups, [[]]);
-  assert.equal(f.runtime.sources.status('one')?.acknowledgedVersion, 1, 'notice follows a validated v3 source reply');
+  assert.equal(f.runtime.sources.status('one')?.acknowledgedVersion, 1, 'notice follows a validated v4 source reply');
   for (let i = 0; i < 20; i++) f.runtime.snapshot(); await settled();
   assert.equal(f.peers[0]!.calls.length, 2); assert.equal(f.runtime.sources.stats().globalUnsettledJobs, 0);
 });
@@ -173,8 +173,8 @@ test('explicit preference preparation waits for saved theme without starting a p
   const f = fixture(false), loaded = deferred<SettingsLoadResult>(); f.store.loadResult = loaded.promise;
   const preparing = f.runtime.prepareThemes(); await settled();
   assert.equal(f.store.loads, 1); assert.equal(f.shared(), 0); assert.equal(f.owned(), 0);
-  loaded.resolve({ ok: true, syntaxTheme: { kind: 'occipital', id: 'saved' } }); await preparing;
-  assert.deepEqual(f.runtime.snapshot().selected, { kind: 'occipital', id: 'saved' });
+  loaded.resolve({ ok: true, syntaxTheme: { kind: 'theme', id: 'saved' } }); await preparing;
+  assert.deepEqual(f.runtime.snapshot().selected, { kind: 'theme', id: 'saved' });
   assert.equal(f.store.writes.length, 0);
 });
 
@@ -256,7 +256,7 @@ test('actual SDK stable Theme proxy changes its palette generation on a real dar
 });
 
 
-test('runtime v3: palette-only publication forwards only the exact useful group through the real weak client chain', async () => {
+test('runtime v4: palette-only publication forwards only the exact useful group through the real weak client chain', async () => {
   const f = fixture(), view = presentation(); f.runtime.attach(view); await settled();
   const sources = f.runtime.sources;
   assert.equal(sources.setStyleSelection(localSelection()), true); await settled();
@@ -287,7 +287,7 @@ test('runtime v3: palette-only publication forwards only the exact useful group 
   } finally { void dormant.preparation; void target.preparation; }
 });
 
-test('runtime v3: a genuinely queued palette notice follows the current presentation, not a still-active former owner', async () => {
+test('runtime v4: a genuinely queued palette notice follows the current presentation, not a still-active former owner', async () => {
   const f = fixture(), old = presentation(), current = presentation(); f.runtime.attach(old); await settled();
   const target = emptyPreparation(f.runtime.sources);
   try {
@@ -300,7 +300,7 @@ test('runtime v3: a genuinely queued palette notice follows the current presenta
   } finally { void target.preparation; }
 });
 
-test('runtime v3: inactive presentation suppresses a real queued notice and a later current owner receives fresh local publication', async () => {
+test('runtime v4: inactive presentation suppresses a real queued notice and a later current owner receives fresh local publication', async () => {
   const f = fixture(), old = presentation(); f.runtime.attach(old); await settled();
   const target = emptyPreparation(f.runtime.sources);
   try {
@@ -317,7 +317,7 @@ test('runtime v3: inactive presentation suppresses a real queued notice and a la
 });
 
 for (const lifecycle of ['dispose', 'off/on'] as const) {
-  test(`runtime v3: ${lifecycle} suppresses an actually scheduled palette-only notice`, async () => {
+  test(`runtime v4: ${lifecycle} suppresses an actually scheduled palette-only notice`, async () => {
     const f = fixture(), view = presentation(); f.runtime.attach(view); await settled();
     const target = emptyPreparation(f.runtime.sources);
     try {
@@ -348,11 +348,12 @@ test('runtime Pi input remains lazy across attachment, menu and current native s
     getBgAnsi(role: Parameters<typeof native.getBgAnsi>[0]) { bg++; return native.getBgAnsi(role); } };
   const budget = new DataBudget(1_000_000), funding = { budget, grant: (bytes: number) => budget.reserve(bytes) };
   f.runtime.palette(theme); f.runtime.attach(view); await settled();
-  await f.runtime.prepareThemes(); f.runtime.previewTheme({ kind: 'occipital', id: 'native-selected' });
+  await f.runtime.prepareThemes(); f.runtime.previewTheme({ kind: 'theme', id: 'native-selected' });
   for (let i = 0; i < 20; i++) { f.runtime.snapshot(); f.runtime.palette(theme); }
   assert.deepEqual([fg, bg, budget.stats().retainedBytes], [0, 0, 0]);
   const selected = f.runtime.snapshot().selected, stats = f.runtime.sources.stats(), calls = f.peers[0]!.calls.length;
-  const lease = f.runtime.preparePiInput(theme, 'truecolor', funding)!; assert.ok(lease); assert.ok(fg > 0 && bg > 0);
+  const palette = f.runtime.snapshot().effective!;
+  const lease = f.runtime.preparePaletteInput(palette, theme, f.runtime.palette(theme), 'truecolor', funding)!; assert.ok(lease); assert.ok(fg > 0 && bg > 0);
   assert.deepEqual(f.runtime.snapshot().selected, selected); assert.deepEqual(f.runtime.sources.stats(), stats);
   assert.equal(f.peers[0]!.calls.length, calls); assert.equal(f.store.writes.length, 0);
   lease.cleanupReceipt().release(); assert.equal(budget.stats().retainedBytes, 0);

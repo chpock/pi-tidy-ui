@@ -353,7 +353,7 @@ for (const mode of ['regular', 'fullscreen']) test(`real CLI: settings popup nav
 for (const mode of ['regular', 'fullscreen']) test(`settings sync: two real Pi processes share confirmed preferences but keep local flags (${mode})`, { timeout: 90000 }, async () => {
   const terminals = [];
   const live = new PiTerminal(`settings-sync-writer-${mode}`, { tidyUi: true, mode,
-    tidyUiSettings: { syntaxTheme: { kind: 'occipital', id: 'saved-A' }, terminalColorsEnabled: true, nativeHighlightingEnabled: false, future: true } });
+    tidyUiSettings: { syntaxTheme: { kind: 'theme', id: 'gruvbox-dark' }, terminalColorsEnabled: true, nativeHighlightingEnabled: false, future: true } });
   terminals.push(live);
   try {
     await live.ready(); await live.run('user-card');
@@ -366,7 +366,7 @@ for (const mode of ['regular', 'fullscreen']) test(`settings sync: two real Pi p
       } });
     terminals.push(peer); await peer.ready(); await peer.openTidyMenu();
     assert.ok(peer.tidyRows().some(row => /Tidy UI appearance\s+On$/u.test(row)));
-    assert.ok(peer.tidyRows().some(row => /Code color theme.*saved-A/u.test(row)));
+    assert.ok(peer.tidyRows().some(row => /Code color theme.*Gruvbox Dark/u.test(row)));
     await live.appearance(false); await live.diagnosticLogging(false);
     assert.deepEqual(readFileSync(file), original, 'local choices never publish into the shared file');
     const starts = live.events().filter(event => event.type === 'start').length;

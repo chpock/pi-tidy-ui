@@ -1,0 +1,182 @@
+import '../../../fixtures/test-guard.mjs';
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import { spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { SubcClient } from '@cortexkit/subc-client';
+import { readInputs, validateNative } from '../../../../scripts/test/context.mjs';
+import { sharedHostEnv } from '../../../fixtures/shared-host-environment.mjs';
+import { until, reaped } from '../../../fixtures/shared-syntax-host.mjs';
+import { runCleanupSteps } from '../../../fixtures/terminal-cleanup.mjs';
+import { StdioTransport } from '../../../../src/occipital/stdio.ts';
+import { SharedTransport } from '../../../../src/occipital/shared.ts';
+import { createSemanticRuleDefinition } from '../../../../src/syntax/semantic-rules.ts';
+
+const inputs = readInputs(), binary = validateNative(inputs).path;
+function collectWhilePending() {
+  const state = { pending: true, collected: false };
+  const handle = setImmediate(() => { global.gc(); state.collected = state.pending; });
+  return { state, handle };
+}
+
+// Bind both production transports directly, independently of the UI client.
+async function launch() {
+  assert.ok(inputs.sharedHost?.path, 'explicit prepared shared host required');
+  assert.equal(createHash('sha256').update(await readFile(inputs.sharedHost.path)).digest('hex'), inputs.sharedHost.sha256);
+  const root = await mkdtemp(join(tmpdir(), 'node-v4-wire-'));
+  const env = sharedHostEnv(root);
+  const quote = value => `'${value.replaceAll("'", "'\\''")}'`, wrapper = join(root, 'module');
+  await writeFile(wrapper, `#!/bin/sh\nexec ${quote(binary)} "$@"\n`); await chmod(wrapper, 0o700);
+  const config = join(env.XDG_CONFIG_HOME, 'cortexkit'); await mkdir(config, { mode: 0o700 });
+  await writeFile(join(config, 'subc.jsonc'), JSON.stringify({ version: 1, port: 0, modules: { occipital: { program: wrapper, reserved: true } } }), { mode: 0o600 });
+  const host = spawn(inputs.sharedHost.path, [], { cwd: root, env, stdio: ['ignore', 'pipe', 'pipe'] });
+  let failure; host.on('error', error => { failure = error; }); host.stdout.resume(); host.stderr.resume();
+  const exit = new Promise(resolve => host.once('close', resolve));
+  const connection = join(env.XDG_RUNTIME_DIR, 'subc-connection.json'), pids = new Set();
+  let startup;
+  const close = () => runCleanupSteps(() => startup?.close(), async () => {
+    if (host.exitCode === null && host.signalCode === null) host.kill('SIGTERM');
+    const watchdog = setTimeout(() => host.kill('SIGKILL'), 2000);
+    try { await exit; } finally { clearTimeout(watchdog); }
+  }, () => reaped(host.pid), ...Array.from(pids, pid => () => reaped(pid)), () => rm(root, { recursive: true, force: true }));
+  try {
+    await until(async () => {
+      if (failure) throw failure;
+      assert.equal(host.exitCode, null, 'private shared host must stay alive');
+      try { await readFile(connection); return true; } catch (error) { if (error.code === 'ENOENT') return false; throw error; }
+    }, 'private host connection');
+    startup = await SubcClient.connect({ connectionFile: connection, handshakeTimeoutMs: 2000 });
+    await until(async () => {
+      try { return await startup.resolveProvider('syntax-highlight/v4') === 'occipital'; }
+      catch (error) { if (error.code === 'capability_unprovided') return false; throw error; }
+    }, 'v4 capability publication');
+    await assert.rejects(startup.resolveProvider('syntax-highlight/v3'), { code: 'capability_unprovided' });
+    startup.close(); startup = undefined;
+    return { root, env, connection, pids, close };
+  } catch (error) { await close(); throw error; }
+}
+
+function source(key, text) { return { key, generation: 1, source_version: 0, hint: { language: 'rust' }, text }; }
+function empty(transport, shared) {
+  const stats = transport.stats();
+  for (const key of shared
+    ? ['unsettledData', 'unsettledControl', 'dataReservedBytes', 'controlReservedBytes', 'encodedRequestBytes', 'liveTimers', 'abortListeners']
+    : ['unsettledData', 'unsettledControl', 'retainedBytes', 'queuedFrames', 'liveTimers', 'abortListeners', 'ownedListeners']) assert.equal(stats[key], 0, key);
+  assert.equal(shared ? stats.state : stats.childState, shared ? 'closed' : 'exited');
+  return stats;
+}
+
+test('Node v4 wire: both production transports carry source, generic styles, empty contexts and independent control with cleanup', { timeout: 120000 }, async t => {
+  const host = await launch(), evidence = [];
+  try {
+    for (const shared of [false, true]) {
+      const transport = shared
+        ? new SharedTransport({ connectionFile: host.connection, identity: { project_root: host.root, harness: 'node-v4-wire', session: 'shared' }, initDeadlineMs: 3000, requestDeadlineMs: 30000 })
+        : new StdioTransport({ command: binary, args: ['--stdio'], env: host.env, cwd: host.root, requestDeadlineMs: 30000, terminateGraceMs: 100 });
+      // The test owns this weakly observed transport until cleanup. An awaited
+      // request Promise alone cannot keep its suspended caller graph alive.
+      t.after(() => transport.close());
+      let pid;
+      try {
+        if (shared) await transport.ready;
+        let sequence = 0;
+        const call = async (op, fields = {}, options = {}) => {
+          const ticket = `wire-${++sequence}`;
+          const reply = await transport.request({ v: 4, ticket, op, ...fields }, options);
+          assert.equal(reply.v, 4); assert.equal(reply.ticket, ticket); assert.equal(reply.status, 'ok');
+          return reply;
+        };
+        const descriptor = await call('describe', {}, { waitOnly: true });
+        pid = descriptor.body.runtime.pid; if (shared) host.pids.add(pid);
+        assert.equal(descriptor.body.capability, 'syntax-highlight/v4'); assert.equal(descriptor.body.protocol_version, 4);
+        assert.equal(descriptor.body.resolver_revision, 3); assert.equal(descriptor.body.contexts_revision, 1);
+        assert.equal(descriptor.body.source_hint_revision, 2); assert.equal(Object.hasOwn(descriptor.body, 'profiles'), false);
+        assert.equal(Object.hasOwn(descriptor.body, 'catalogue_revision'), false);
+        const instance = descriptor.instance, vocabulary = descriptor.body.vocabulary.fingerprint;
+        const data = fields => ({ instance, admission: 'bounded_queue', queue_wait_ms: 1000, ...fields });
+        const definition = createSemanticRuleDefinition();
+        const generic = contexts => data({ vocabulary, contexts, rules: definition });
+        await assert.rejects(transport.request({ v: 3, ticket: 'old', op: 'describe' }), { execution: 'not_started' });
+        const finite = await call('highlight', data({ sources: [source('finite', 'let x = "界🙂";\n'), source('empty', '')] }));
+        assert.equal(finite.body.kind, 'source'); assert.equal(finite.body.vocabulary, vocabulary);
+        assert.ok(finite.body.sources.every(s => s.complete && !Object.hasOwn(s, 'lease')));
+        assert.equal(finite.body.sources[0].counters.committed_line_calls, 1);
+        const contexts = finite.body.sources[0].contexts; assert.ok(contexts.length > 0);
+        const emptyStyles = await call('styles.resolve', generic([]));
+        assert.equal(emptyStyles.body.kind, 'styles'); assert.deepEqual(emptyStyles.body.indices, []); assert.equal(Object.hasOwn(emptyStyles.body, 'palette'), false);
+        const painted = await call('styles.resolve', generic(contexts));
+        assert.equal(painted.body.indices.length, contexts.length); assert.equal(Object.hasOwn(painted.body, 'palette'), false);
+        assert.ok(painted.body.styles.some(style => style.foreground.kind === 'binding'), 'generic STYLE must return at least one symbolic binding');
+        assert.ok(painted.body.styles.every(style => style.attribute_mask === 0 && style.attributes === 0), 'unfonted Rust rules retain the generic no-font expression');
+        const markdown = '~~strike **bold** [link](https://x)~~ after\n';
+        const md = (await call('highlight', data({ sources: [{ ...source('strike', markdown), hint: { language: 'markdown' } }] }))).body.sources[0];
+        const resolved = (await call('styles.resolve', data({ vocabulary, contexts: md.contexts, rules: definition }))).body;
+        const fonts = []; let byte = 0;
+        for (let i = 0; i < md.runs.length; i += 2) {
+          const size = md.runs[i], context = md.runs[i + 1];
+          const style = resolved.styles[resolved.indices[context - 1] - 1];
+          for (let j = 0; j < size; j++) fonts[byte++] = style.attributes;
+        }
+        assert.equal(byte, Buffer.byteLength(markdown));
+        assert.equal(fonts[2] & 16, 16); assert.equal(fonts[markdown.indexOf('bold')] & 17, 17);
+        assert.equal(fonts[markdown.indexOf('link')] & 20, 20);
+        for (const at of [0, 1, markdown.lastIndexOf('~~'), markdown.lastIndexOf('~~') + 1, markdown.indexOf('after')]) assert.equal(fonts[at] & 16, 0);
+        const hint = { language: 'python' };
+        const initial = "#!/usr/bin/env python3\nvalue = '", firstAppend = 'continued', finalAppend = "'\nprint(value)\n";
+        const opened = (await call('stream.open', data({ sources: [{ ...source('stream', initial), hint }] }))).body.sources[0];
+        const continued = (await call('stream.append', data({ key: opened.key, generation: opened.generation, source_version: 1, lease: opened.lease,
+          base_revision: opened.revision, base_bytes: opened.source_bytes, append: firstAppend, final: false }))).body.sources[0];
+        assert.equal(continued.revision, 2); assert.equal(continued.complete, false);
+        const appended = (await call('stream.append', data({ key: opened.key, generation: opened.generation, source_version: 1, lease: opened.lease,
+          base_revision: continued.revision, base_bytes: continued.source_bytes, append: finalAppend, final: true }))).body.sources[0];
+        assert.equal(appended.revision, 3); assert.equal(appended.complete, true);
+        assert.ok(appended.contexts.length > 0, 'stream append continues with the parser selected from the open hint');
+        assert.equal((await call('stream.close', { instance, key: opened.key, generation: opened.generation, lease: opened.lease })).body.kind, 'closed');
+        // Cycle the actual non-empty parser contexts: parsed-empty rows skip
+        // native selector matching and can finish before metadata is dispatched.
+        const backlog = Array.from({ length: 12000 }, (_, index) => contexts[index % contexts.length]);
+        const styleSettlements = [];
+        const held = [call('styles.resolve', generic(backlog)), call('styles.resolve', generic(backlog))].map((promise, index) => promise.then(
+          reply => { styleSettlements.push(index); return reply; },
+          error => { styleSettlements.push(index); throw error; }));
+        // Always observe rejections, including when an overlap assertion fails.
+        held.forEach(promise => { void promise.catch(() => {}); });
+        assert.equal(transport.stats().unsettledData, 2);
+        const beforeRefusal = transport.stats();
+        await assert.rejects(transport.request({ v: 4, ticket: 'full', op: 'highlight' }), { execution: 'not_started' });
+        if (shared) assert.equal(transport.stats().serializedRequests, beforeRefusal.serializedRequests);
+        const describing = call('describe', { instance }, { waitOnly: true });
+        void describing.catch(() => {});
+        const metadataAdmission = transport.stats();
+        assert.equal(metadataAdmission.unsettledData, 2);
+        assert.equal(metadataAdmission.unsettledControl, 1, 'independent control admits synchronously while both DATA credits are owned');
+        const during = await describing;
+        const overlap = { metadataAdmission, native: during.body.runtime, transport: transport.stats(), styleSettlements: [...styleSettlements] };
+        // Two slots are checked at submission above. An actual STYLE reply may
+        // settle before this independent describe reply; that legitimately frees
+        // its credit. Native two-job overlap has its own admission-witness test.
+        assert.equal(during.body.kind, 'descriptor');
+        assert.deepEqual((await Promise.all(held)).map(reply => reply.body.indices.length), [12000, 12000]);
+        assert.equal(transport.stats().unsettledData, 0, 'both actual replies release their physical credits');
+        const collection = collectWhilePending();
+        let described;
+        try { described = await call('describe', { instance }, { waitOnly: true }); }
+        finally { collection.state.pending = false; clearImmediate(collection.handle); }
+        assert.equal(collection.state.collected, true, 'GC ran while the control request was pending');
+        assert.equal(described.body.kind, 'descriptor');
+        const after = (await call('describe', { instance }, { waitOnly: true })).body.runtime;
+        assert.equal(after.data_jobs, 0); assert.equal(after.leases, 0);
+        evidence.push({ carrier: shared ? 'shared' : 'stdio', pid, finiteSources: 2, finiteParserCalls: finite.body.sources[0].counters.committed_line_calls, streamRevisions: [opened.revision, appended.revision], appendParserCalls: appended.counters.committed_line_calls, contextCount: contexts.length, styledContexts: painted.body.indices.length, transportStyleOverlap: overlap, settledJobs: after.data_jobs, remainingLeases: after.leases });
+      } finally {
+        await transport.close();
+        const cleanup = empty(transport, shared);
+        if (!shared && pid) await reaped(pid);
+        if (evidence.at(-1)?.pid === pid) evidence.at(-1).cleanup = cleanup;
+      }
+    }
+  } finally { await host.close(); }
+  console.log(JSON.stringify({ nodeV4Wire: evidence, node: process.version, source: inputs.source, helperSha256: inputs.native.sha256, hostSha256: inputs.sharedHost.sha256, ownedProcessesReaped: true }));
+});

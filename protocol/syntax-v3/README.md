@@ -1,6 +1,6 @@
-# Occipital syntax-highlight/v3 conformance inputs
+# Historical syntax-highlight/v3 conformance inputs
 
-The canonical, complete application contract is [docs/occipital/protocol.md](../../docs/occipital/protocol.md). It describes the current producer/consumer revisions, carriers, operations, identities, acknowledgments, contexts, styles/palettes, errors, limits and accounting. The standalone [Occipital manual](../../docs/occipital/README.md) explains the program and algorithms behind that contract.
+These files preserve the previous v3 wire contract for historical comparison only. The active coordinated contract is [syntax-highlight/v4](../syntax-v4/README.md), documented in [docs/occipital/protocol.md](../../docs/occipital/protocol.md). V4 removes the native-theme catalogue/palette payload and adds required-nullable context qualification to generic style definitions; v3 inputs are not active compatibility controls.
 
 This checkout directory contains conformance inputs; their wire semantics are not changed by the reference's documentation location:
 
@@ -11,4 +11,4 @@ This checkout directory contains conformance inputs; their wire semantics are no
 - [highlighting-limits.json](highlighting-limits.json) — shared limit expectations.
 - [source-hint-vectors.json](source-hint-vectors.json) — SOURCE language-selection revision, optional/null/empty language semantics, curated shebang-to-language aliases and detector boundaries exercised by both TypeScript and Rust.
 
-The complete protocol reference ships in the extension's documentation. These JSON files and their executable harness remain repository-only engineering inputs. See [syntax/protocol validation](../../docs/testing.md#syntax-and-palette-validation) for the prepared test requirements. Current v3 source compatibility does not establish publication or compatibility of historical v2 release binaries.
+The JSON files remain repository-only historical inputs. They do not establish compatibility of the v4 implementation or any released v3 binaries.

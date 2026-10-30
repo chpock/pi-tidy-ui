@@ -59,48 +59,59 @@ export type SyntaxCardObservation = { type: 'syntax_card_prepare' | 'syntax_card
 
 export type WriteCaptureObservation = {
   call: string; id?: number; path: string; revision: number; version?: number; palette?: number; theme?: number;
-  publication: number; status: 'ready' | 'pending' | 'stale' | 'failed' | 'refused' | 'waiting' | 'native'; sources: number;
-  preparation?: { processed?: number; sourceRevision: number; palette?: number; lease?: number; receipt?: string };
+  publication: number; status: 'ready' | 'pending' | 'stale' | 'failed' | 'refused' | 'waiting' | 'owned'; sources: number;
+  preparation?: { processed?: number; sourceRevision: number; palette?: string; lease?: number; receipt?: string };
 };
 type CardTicket = Parameters<CardSources<object>['prepare']>[0];
 type CardState = NonNullable<ReturnType<CardTicket['state']['deref']>>;
 type WriteReceipt = { revision: number; version: number; palette: number; theme: number; publication: number };
+type WriteCaptureJournal = {
+  activate(call: string, owner: object): void;
+  observe(event: WriteCaptureObservation, owner: object): void;
+  retire(call: string, owner: object): void;
+};
 
 // Empty sources have no token table, but their role paint still needs adoption
 // proof. refreshPaint assigns paintToken only together with the compiled paint.
 function currentEmptyPiPaint(state: CardState): boolean {
   const input = state.input, paint = state.paint;
-  if (!input || !paint || paint.origin !== 'pi' || paint.mode !== input.mode || state.pi?.terminalMode !== input.mode) return false;
+  if (!input || !paint || paint.origin !== 'pi' || paint.mode !== input.mode || state.paletteInput?.terminalMode !== input.mode) return false;
   const group = paint.group;
-  if (group && (group.palette !== `pi:${input.palette}` || group.bindingRevision !== input.palette)) return false;
-  return state.paintToken === `${group?.stamp ?? -input.palette}:${input.mode}:`;
+  if (group && (group.palette !== paint.palette || group.bindingRevision !== input.palette)) return false;
+  return state.paintToken === `${paint.palette}:${group?.stamp ?? -(input.palette + 1)}:${input.mode}:`;
 }
 
 // No source/projection borrowing here: successful work and compiled token maps
 // are inspected only at the original preparation and accepted-visit boundaries.
-function writeReceipt(state: CardState, before: { processed?: number; palette?: number; publication?: number }): WriteReceipt | undefined {
+function writeReceipt(state: CardState, before: { processed?: number; palette?: string; publication?: number }): WriteReceipt | undefined {
   const input = state.input, paint = state.paint;
   if (input?.kind !== 'file' || !state.sourceEligible || !paint || paint.origin !== 'pi'
-    || state.processed !== state.sourceRevision || state.preparedPalette !== input.palette
-    || state.pi?.paletteRevision !== input.palette || paint.mode !== input.mode || state.pi.terminalMode !== input.mode || state.preparedTheme === undefined) return;
+    || state.processed !== state.sourceRevision || state.preparedPalette !== paint.palette
+    || state.paletteInput?.paletteRevision !== input.palette || paint.mode !== input.mode || state.paletteInput.terminalMode !== input.mode || state.preparedTheme === undefined) return;
   const slots = [...state.slots.values()];
   if (!slots.length && !currentEmptyPiPaint(state)) return;
   if (slots.some(slot => slot.outcome !== 'pi' || slot.version !== state.version || slot.palette !== input.palette || !paint.piTokens.has(slot.key))) return;
   if (state.display?.kind !== 'file' || state.display.rows.some(row => [row.oldSource, row.nextSource].some(source => source && !state.slots.has(source.key)))) return;
   // A new source/palette cannot reuse the old compiled token map if compilation
   // was refused after successful classification. Repeated cached work may reuse it.
-  if (slots.length && (before.processed !== state.sourceRevision || before.palette !== input.palette) && before.publication === paint.publication) return;
+  if (slots.length && (before.processed !== state.sourceRevision || before.palette !== paint.palette) && before.publication === paint.publication) return;
   return { revision: state.sourceRevision, version: state.version, palette: input.palette, theme: state.preparedTheme, publication: paint.publication };
 }
 
 export function observeSyntaxCards(record: (event: SyntaxCardObservation) => void,
-  options: { writeCapture?: (event: WriteCaptureObservation) => void } = {}) {
-  const prepare = CardSources.prototype.prepare, visit = CardSources.prototype.visit;
-  let identities: WeakMap<object, { id: number; kind: string; path?: string; ticket: WeakRef<CardTicket>; receipt?: WriteReceipt; prior?: { processed?: number; palette?: number; publication?: number } }> | undefined = new WeakMap();
+  options: { writeCapture?: WriteCaptureJournal } = {}) {
+  const prepare = CardSources.prototype.prepare, visit = CardSources.prototype.visit, useful = CardSources.prototype.useful;
+  const pause = CardSources.prototype.pause, remove = CardSources.prototype.remove;
+  let identities: WeakMap<object, { id: number; kind: string; path?: string; ticket: WeakRef<CardTicket>; receipt?: WriteReceipt; prior?: { processed?: number; palette?: string; publication?: number } }> | undefined = new WeakMap();
   let writes: WeakMap<object, WriteCaptureObservation> | undefined = options.writeCapture ? new WeakMap() : undefined;
   const publishWrite = (owner: object, event: WriteCaptureObservation) => {
     if (!identities || !writes) return;
-    writes.set(owner, event); options.writeCapture?.(event);
+    writes.set(owner, event); options.writeCapture?.observe(event, owner);
+  };
+  const writeCall = (owner: object) => Reflect.get(owner, 'toolName') === 'write' ? Reflect.get(owner, 'toolCallId') : undefined;
+  const retireWrite = (owner: object) => {
+    const call = writeCall(owner);
+    if (typeof call === 'string') options.writeCapture?.retire(call, owner);
   };
   const revokeWrite = (cards: CardSources<object>, owner: object, state?: CardState, force = false) => {
     const previous = writes?.get(owner); if (!identities || previous?.status !== 'ready') return;
@@ -110,7 +121,7 @@ export function observeSyntaxCards(record: (event: SyntaxCardObservation) => voi
       version: state?.version, palette: state?.input?.palette, theme: state?.preparedTheme, publication: state?.paint?.publication ?? previous.publication,
       path: state?.display?.kind === 'file' ? state.display.path ?? previous.path : previous.path,
       sources: state?.slots.size ?? 0, status: 'stale', preparation: state ? { processed: state.processed,
-        sourceRevision: state.sourceRevision, palette: state.preparedPalette, lease: state.pi?.paletteRevision } : undefined });
+        sourceRevision: state.sourceRevision, palette: state.preparedPalette, lease: state.paletteInput?.paletteRevision } : undefined });
   };
   const observedPrepare: typeof prepare = function(this: CardSources<object>, ticket) {
     if (!identities) return prepare.call(this, ticket);
@@ -156,7 +167,7 @@ export function observeSyntaxCards(record: (event: SyntaxCardObservation) => voi
       // stack. That accepted publication must not require an unrelated later frame.
       const receipt = identity?.prior && state ? writeReceipt(state, identity.prior) : identity?.receipt;
       const currentSource = !!state && state.ticket === ticket && ticket?.owner.deref() === owner && state.revision === write.revision
-        && state.processed === state.sourceRevision && state.preparedPalette === state.input?.palette
+        && state.processed === state.sourceRevision && state.preparedPalette === state.paint?.palette
         && state.preparedTheme === Reflect.get(this, 'themeRevision')
         && [...state.slots.values()].every(slot => slot.version === state.version && slot.palette === state.input?.palette);
       const bad = currentSource && state && [...state.slots.values()].find(slot => slot.outcome === 'failed' || slot.outcome === 'refused' || slot.outcome === 'stale');
@@ -166,45 +177,97 @@ export function observeSyntaxCards(record: (event: SyntaxCardObservation) => voi
         && state.paint?.publication === write.publication && state.paint.mode === state.input?.mode;
       publishWrite(owner, { call: write.call, id: identity?.id, path: write.path, revision: write.revision, version: state?.version,
         palette: state?.input?.palette, theme: state?.preparedTheme, publication: write.publication, sources: state?.slots.size ?? 0,
-        preparation: state ? { processed: state.processed, sourceRevision: state.sourceRevision, palette: state.preparedPalette, lease: state.pi?.paletteRevision,
+        preparation: state ? { processed: state.processed, sourceRevision: state.sourceRevision, palette: state.preparedPalette, lease: state.paletteInput?.paletteRevision,
           receipt: receipt ? `${receipt.revision}/${receipt.version}/${receipt.palette}/${receipt.publication}` : undefined } : undefined,
-        status: write.origin === 'native' ? 'native' : bad ? bad.outcome as 'failed' | 'refused' | 'stale'
+        status: write.origin === 'owned' ? 'owned' : bad ? bad.outcome as 'failed' | 'refused' | 'stale'
           : currentPaint ? 'ready' : receipt ? 'stale' : currentSource ? 'waiting' : 'pending' });
     }
     return accepted;
   };
+  const observedUseful: typeof useful = function(this: CardSources<object>, owner, revision) {
+    useful.call(this, owner, revision);
+    if (!identities || !writes || !options.writeCapture || Reflect.get(owner, 'toolName') !== 'write') return;
+    const states = Reflect.get(this, 'states');
+    const state = states instanceof WeakMap ? states.get(owner) as CardState | undefined : undefined;
+    if (!state || state.revision !== revision || !state.useful || state.paused || state.ticket?.owner.deref() !== owner) return;
+    const call = Reflect.get(owner, 'toolCallId');
+    if (typeof call !== 'string') throw new Error('Write capture owner has no tool-call identity');
+    options.writeCapture.activate(call, owner);
+    const event = writes.get(owner);
+    if (event) options.writeCapture.observe(event, owner);
+  };
+  const observedPause: typeof pause = function(this: CardSources<object>, owner) {
+    pause.call(this, owner); retireWrite(owner);
+  };
+  const observedRemove: typeof remove = function(this: CardSources<object>, owner) {
+    retireWrite(owner);
+    try { remove.call(this, owner); } finally { identities?.delete(owner); writes?.delete(owner); }
+  };
   CardSources.prototype.prepare = observedPrepare; CardSources.prototype.visit = observedVisit;
+  if (options.writeCapture) {
+    CardSources.prototype.useful = observedUseful; CardSources.prototype.pause = observedPause; CardSources.prototype.remove = observedRemove;
+  }
   return { restore() {
     identities = undefined; writes = undefined;
     if (CardSources.prototype.prepare === observedPrepare) CardSources.prototype.prepare = prepare;
     if (CardSources.prototype.visit === observedVisit) CardSources.prototype.visit = visit;
+    if (CardSources.prototype.useful === observedUseful) CardSources.prototype.useful = useful;
+    if (CardSources.prototype.pause === observedPause) CardSources.prototype.pause = pause;
+    if (CardSources.prototype.remove === observedRemove) CardSources.prototype.remove = remove;
   } };
 }
 
-/** Finite, fixture-local primitive journal. It never owns a card or initiates work. */
 export function createWriteCaptureGate(record: (event: WriteCaptureObservation) => void) {
-  const current = new Map<string, WriteCaptureObservation>(), waiters = new Set<() => void>();
+  type Participant = { owner: WeakRef<object>; event?: WriteCaptureObservation };
+  const current = new Map<string, Participant>(), waiters = new Set<() => void>();
   let closed = false;
-  const snapshot = () => [...current.values()].map(event => ({ ...event }));
+  const live = () => {
+    const values: Participant[] = [];
+    for (const [call, participant] of current) {
+      if (!participant.owner.deref()) current.delete(call);
+      else values.push(participant);
+    }
+    return values;
+  };
+  const notify = () => { for (const check of [...waiters]) check(); };
   return {
-    observe(event: WriteCaptureObservation) {
-      if (closed || JSON.stringify(current.get(event.call)) === JSON.stringify(event)) return;
-      current.set(event.call, { ...event }); record(event);
-      for (const check of [...waiters]) check();
+    activate(call: string, owner: object) {
+      if (closed) return;
+      const previous = current.get(call);
+      if (previous?.owner.deref() === owner) return;
+      current.set(call, { owner: new WeakRef(owner) });
+      notify();
+    },
+    observe(event: WriteCaptureObservation, owner: object) {
+      if (closed) return;
+      const participant = current.get(event.call);
+      if (!participant || participant.owner.deref() !== owner || JSON.stringify(participant.event) === JSON.stringify(event)) return;
+      participant.event = { ...event }; record(event); notify();
+    },
+    retire(call: string, owner: object) {
+      const participant = current.get(call);
+      if (!participant || participant.owner.deref() !== owner) return;
+      current.delete(call); notify();
     },
     wait(): Promise<WriteCaptureObservation[]> {
       if (closed) return Promise.reject(new Error('Write capture observer is closed'));
-      if (!current.size) return Promise.reject(new Error('Write capture has no observed source-card owners'));
+      if (!live().length) return Promise.reject(new Error('Write capture has no observed source-card owners'));
       return new Promise((resolve, reject) => {
         const check = () => {
-          const values = snapshot(), failure = values.find(event => ['failed', 'refused', 'native'].includes(event.status));
-          if (closed || failure) { waiters.delete(check); reject(new Error(closed ? 'Write capture observer closed during wait' : `Write capture ${failure!.status}: ${failure!.call}`)); }
-          else if (values.every(event => event.status === 'ready')) { waiters.delete(check); resolve(values); }
+          const participants = live(), events = participants.flatMap(participant => participant.event ? [participant.event] : []);
+          const failure = events.find(event => ['failed', 'refused', 'owned'].includes(event.status));
+          if (closed || failure || !participants.length) {
+            waiters.delete(check);
+            reject(new Error(closed ? 'Write capture observer closed during wait' : failure
+              ? `Write capture ${failure.status}: ${failure.call}` : 'Write capture has no observed source-card owners'));
+          } else if (participants.every(participant => participant.event?.status === 'ready')) {
+            waiters.delete(check); resolve(events.map(event => ({ ...event })));
+          }
         };
         waiters.add(check); check();
       });
     },
-    close() { closed = true; current.clear(); for (const check of [...waiters]) check(); waiters.clear(); },
+    close() { closed = true; current.clear(); notify(); waiters.clear(); },
   };
 }
 

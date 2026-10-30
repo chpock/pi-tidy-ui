@@ -83,7 +83,9 @@ export class RuntimeHealth {
     const pending = this.pending; this.pending = new Map();
     for (const issue of pending.values()) {
       if (this.disposed) return;
-      try { this.notify(`pi-tidy-ui: ${labels[issue.area]} encountered an unexpected error (${issue.code}). Some features may use fallback presentation. Details: /tidy-ui → Status & troubleshooting.`); }
+      try { this.notify(issue.code === 'owned_palette_unavailable'
+        ? 'pi-tidy-ui: A selected built-in color palette could not be loaded. Existing card colors are retained; cards without a prior palette may use Pi colors. Details: /tidy-ui → Status & troubleshooting.'
+        : `pi-tidy-ui: ${labels[issue.area]} encountered an unexpected error (${issue.code}). Some features may use fallback presentation. Details: /tidy-ui → Status & troubleshooting.`); }
       catch { /* A failed host notification cannot affect presentation or work. */ }
     }
   }

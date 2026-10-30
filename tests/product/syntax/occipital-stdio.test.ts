@@ -15,8 +15,8 @@ const fixtureRetainedBytes=2*(2*fixtureDataBytes+STDIO_LIMITS.cancelBytes+8)
 function peer(mode = 'echo', requestDeadlineMs = 3000, terminateGraceMs = 40) {
   return new StdioTransport({ command: process.execPath, args: [fixture, mode], requestDeadlineMs, terminateGraceMs, dataBytes:fixtureDataBytes });
 }
-function data(ticket: string, text = '') { return { v: 3 as const, ticket, op: 'highlight' as const, text }; }
-function control(ticket: string) { return { v: 3 as const, ticket, op: 'describe' as const }; }
+function data(ticket: string, text = '') { return { v: 4 as const, ticket, op: 'highlight' as const, text }; }
+function control(ticket: string) { return { v: 4 as const, ticket, op: 'describe' as const }; }
 function body(reply: unknown): Record<string, unknown> { return (reply as { body: Record<string, unknown> }).body; }
 async function eventually(predicate: () => boolean) {
   for (let i = 0; i < 400; i++) {
@@ -195,7 +195,7 @@ test('instance reset on a live pipe remains an application/header identity, not 
 test('typed native no-start error remains an unknown structured application reply', async t => {
   const p = peer('application-error'); t.after(() => p.close());
   const r = await p.request(data('a'));
-  assert.deepEqual(r, { v: 3, ticket: 'a', instance: 'fixture-instance', assets: 'fixture-assets', status: 'error', error: { code: 'busy', execution: 'not_started' } });
+  assert.deepEqual(r, { v: 4, ticket: 'a', instance: 'fixture-instance', assets: 'fixture-assets', status: 'error', error: { code: 'busy', execution: 'not_started' } });
   assert.equal(p.stats().childState, 'running');
 });
 
@@ -479,14 +479,14 @@ test('stdio owner close and malformed-reply retirement retain different lifetime
 });
 
 
-test('wait-only catalogue expiry keeps the process, source requests and control credit until the late framed reply', async t => {
-  const p = peer('wait-only-catalogue', 30000); t.after(() => p.close());
+test('wait-only descriptor expiry keeps the process, source requests and control credit until the late framed reply', async t => {
+  const p = peer('wait-only-describe', 30000); t.after(() => p.close());
   const pid = body(await p.request(control('ready'))).pid as number;
   t.mock.timers.enable({ apis: ['setTimeout'] });
   let sourceSettled = false;
   const source = p.request(data('source', 'x')).then(value => { sourceSettled = true; return value; }); void source.catch(() => {});
-  const catalogue = p.request({ ...control('catalogue'), op: 'themes.refresh' }, { deadlineMs: 5, waitOnly: true });
-  const refused = assert.rejects(catalogue, { message: 'stdio control wait deadline', execution: 'unknown' });
+  const descriptor = p.request(control('describe-wait'), { deadlineMs: 5, waitOnly: true });
+  const refused = assert.rejects(descriptor, { message: 'stdio control wait deadline', execution: 'unknown' });
   t.mock.timers.tick(5); await refused;
   process.kill(pid, 0); assert.equal(p.stats().childState, 'running'); assert.equal(p.endReason, undefined);
   assert.equal(p.stats().unsettledControl, 1); assert.equal(p.stats().unsettledData, 1);
@@ -494,7 +494,7 @@ test('wait-only catalogue expiry keeps the process, source requests and control 
   assert.equal(sourceSettled, false);
   await assert.rejects(p.request(control('blocked'), { waitOnly: true }), (e: unknown) => e instanceof RequestFailure && e.execution === 'not_started' && /capacity/.test(e.message));
   const report = body(await p.request(data('release-data')));
-  assert.deepEqual(report.cancelled, ['catalogue']); assert.equal(body(await source).text, 'x');
+  assert.deepEqual(report.cancelled, ['describe-wait']); assert.equal(body(await source).text, 'x');
   assert.equal(p.stats().unsettledData, 0); assert.equal(p.stats().unsettledControl, 1);
   await p.request(data('release-control'));
   // The peer emits the late control frame before the release acknowledgment.

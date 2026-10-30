@@ -42,6 +42,8 @@ Optional comments precede the command in this order:
 1. `# <description>` when `description` is a nonempty human-readable string after label sanitization. Render it as one logical comment line, soft-wrapped if needed.
 2. `# Running in <directory>` only when a nonempty string `workdir` was explicitly supplied and its resolved path differs from the component's session working directory. Resolve relative paths against that directory and display the absolute, normalized path. Do not inspect the command for `cd`, resolve symlinks, query the filesystem, or infer runtime changes made by other extensions. Equivalent `.`/absolute current-directory paths produce no comment. Every nonempty string workdir requires the native render context's `cwd` to be an absolute string, including when workdir itself is absolute: the context is needed to decide whether the directory differs. If that context is unavailable or relative, retain native rendering rather than inventing a path.
 
+Comments use the same hard-wrapped content layout as the command. A long absolute working directory may span physical rows; wrapping does not change or truncate the logical path.
+
 If any comment exists, insert exactly one empty content row between the comment group and `$ `. Omit this separator otherwise. No tool name, named-parameter list, duration or success/checkmark is added.
 
 ## 3. Terminal-style layout and safety

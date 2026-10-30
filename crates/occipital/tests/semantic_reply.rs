@@ -93,7 +93,7 @@ fn retained_source_metadata_and_contexts_encode_after_exact_parser_lease_close()
 }
 
 #[test]
-fn v3_source_and_style_replies_share_the_existing_bounded_envelope_and_drain_credit() {
+fn v4_source_and_style_replies_share_the_existing_bounded_envelope_and_drain_credit() {
     let style = Expression {
         foreground: Ink::Binding { slot: 0 },
         background: Ink::Inherit {},
@@ -108,7 +108,6 @@ fn v3_source_and_style_replies_share_the_existing_bounded_envelope_and_drain_cre
             rules: "b".repeat(64),
             styles: vec![style],
             indices: vec![1],
-            palette: None,
         }),
     ];
     for (body, kind) in bodies.into_iter().zip(["closed", "styles"]) {
@@ -119,7 +118,7 @@ fn v3_source_and_style_replies_share_the_existing_bounded_envelope_and_drain_cre
             .encode_with_credit(&mut credit, 4096)
             .unwrap();
         let value: Value = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(value["v"], 3);
+        assert_eq!(value["v"], 4);
         assert_eq!(value["assets"], vocabulary::ASSET_FINGERPRINT);
         assert_eq!(value["instance"], "instance");
         assert_eq!(value["ticket"], "ticket");
@@ -138,7 +137,7 @@ fn v3_source_and_style_replies_share_the_existing_bounded_envelope_and_drain_cre
 }
 
 #[test]
-fn v3_errors_keep_exact_execution_evidence_and_do_not_release_the_callers_slot() {
+fn v4_errors_keep_exact_execution_evidence_and_do_not_release_the_callers_slot() {
     for fault in [
         Fault::not_started("invalid_request"),
         Fault::started("data_limit"),
@@ -150,7 +149,7 @@ fn v3_errors_keep_exact_execution_evidence_and_do_not_release_the_callers_slot()
             .encode_with_credit(&mut credit, 4096)
             .unwrap();
         let value: Value = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(value["v"], 3);
+        assert_eq!(value["v"], 4);
         assert_eq!(value["assets"], vocabulary::ASSET_FINGERPRINT);
         assert_eq!(value["status"], "error");
         assert_eq!(
@@ -166,7 +165,7 @@ fn v3_errors_keep_exact_execution_evidence_and_do_not_release_the_callers_slot()
 }
 
 #[test]
-fn a_v3_limit_failure_keeps_admitted_credit_for_its_small_error_reply() {
+fn a_v4_limit_failure_keeps_admitted_credit_for_its_small_error_reply() {
     let budget = Budget::new(4096, 1, 1);
     let mut credit = budget.reserve(Some("route"), 0).unwrap();
     credit.started();

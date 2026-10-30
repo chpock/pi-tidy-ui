@@ -159,7 +159,6 @@ pub async fn run(authority: Arc<Authority>, pool: PoolHandle) -> Result<(), Faul
             agent_facing: false,
             operations: vec![
                 "describe".into(),
-                "themes.refresh".into(),
                 "highlight".into(),
                 "stream.open".into(),
                 "stream.append".into(),
@@ -182,23 +181,17 @@ pub async fn run(authority: Arc<Authority>, pool: PoolHandle) -> Result<(), Faul
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{actor::ActorPool, catalogue::Catalogue, semantic_engine::Limits};
+    use crate::{actor::ActorPool, semantic_engine::Limits};
     use serde_json::json;
 
     fn source(ticket: &str) -> Vec<u8> {
-        serde_json::to_vec(&json!({"v":3,"ticket":ticket,"op":"stream.open","instance":"boot","admission":"bounded_queue","queue_wait_ms":1000,"sources":[{"key":ticket,"generation":1,"source_version":1,"hint":{"language":"bash"},"text":"echo 'local fixture'"}]})).unwrap()
+        serde_json::to_vec(&json!({"v":4,"ticket":ticket,"op":"stream.open","instance":"boot","admission":"bounded_queue","queue_wait_ms":1000,"sources":[{"key":ticket,"generation":1,"source_version":1,"hint":{"language":"bash"},"text":"echo 'local fixture'"}]})).unwrap()
     }
 
     #[tokio::test]
     async fn draining_releases_scopes_before_connection_end_without_releasing_held_bytes() {
         let pool = ActorPool::new("boot".into(), 1).unwrap();
-        let authority = Authority::new(
-            pool.handle(),
-            "boot".into(),
-            Limits::default(),
-            Catalogue::from_os_root(None),
-        )
-        .unwrap();
+        let authority = Authority::new(pool.handle(), "boot".into(), Limits::default());
         let route = pool.bind().await.unwrap();
         let routes = Arc::new(Mutex::new(HashMap::from([(
             RouteHandle::detached(1, 1),

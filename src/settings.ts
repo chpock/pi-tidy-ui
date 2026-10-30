@@ -4,7 +4,7 @@ import nativeFs, { type BigIntStats, type FSWatcher } from "node:fs";
 import { basename, dirname, join, relative, sep } from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 
-export type SyntaxTheme = { kind: "pi" } | { kind: "occipital"; id: string };
+export type SyntaxTheme = { kind: "pi" } | { kind: "theme"; id: string };
 export const SWITCH_KEYS = ['terminalColorsEnabled', 'nativeHighlightingEnabled'] as const;
 export type SavedSwitches = Record<(typeof SWITCH_KEYS)[number], boolean>;
 export type LocalPreferences = { appearanceEnabled: boolean; loggingEnabled: boolean };
@@ -66,10 +66,10 @@ function syntaxTheme(value: unknown): SyntaxTheme | undefined {
   if (!object(value) || !Object.hasOwn(value, "kind")) return undefined;
   const keys = Object.keys(value);
   if (value.kind === "pi" && keys.length === 1) return { kind: "pi" };
-  if (value.kind === "occipital" && keys.length === 2 && Object.hasOwn(value, "id") &&
+  if (value.kind === "theme" && keys.length === 2 && Object.hasOwn(value, "id") &&
     typeof value.id === "string" && value.id.length > 0 && value.id.length <= THEME_ID_MAX_BYTES &&
     Buffer.byteLength(value.id, "utf8") <= THEME_ID_MAX_BYTES && Buffer.from(value.id, "utf8").toString("utf8") === value.id) {
-    return { kind: "occipital", id: value.id };
+    return { kind: "theme", id: value.id };
   }
   return undefined;
 }

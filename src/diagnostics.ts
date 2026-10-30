@@ -11,7 +11,7 @@ export function reportRuntime(sink: DiagnosticSink | undefined, event: RuntimeEv
   try { sink?.runtime?.(event); } catch { /* Observability cannot alter the operation. */ }
 }
 const expectedRefusals = new Set(['busy', 'cancelled', 'queue_expired', 'provider_changed', 'restart_required',
-  'profile_changed', 'profile_unavailable', 'theme_unavailable', 'scope_gone', 'scope_limit', 'source_limit',
+  'scope_gone', 'scope_limit', 'source_limit',
   'style_limit', 'theme_limit', 'state_limit', 'result_limit', 'frame_limit', 'reply_limit', 'route_limit', 'session_limit']);
 function noStartUnknownSyntax(error: unknown): boolean {
   if (!error || typeof error !== 'object') return false;
@@ -32,7 +32,7 @@ export function diagnose(sink: DiagnosticSink | undefined, level: DiagnosticLeve
 
 const codes = new Set(["ENOENT", "EIO", "ENOSPC", "EACCES", "EPERM", "EEXIST", "EBUSY", "EMFILE", "ENFILE", "ENOTDIR", "EINVAL", "EROFS", "ELOOP", "EISDIR", "ETIMEDOUT", "ECONNREFUSED", "ECONNRESET", "EPIPE", "ABORT_ERR", "ESRCH",
   "invalid_header", "provider_changed", "invalid_descriptor", "invalid_source", "invalid_close",
-  "busy", "profile_changed", "theme_unavailable", "profile_unavailable", "restart_required", "scope_gone",
+  "busy", "restart_required", "scope_gone",
   "invalid_request", "invalid_scope", "invalid_session", "invalid_hint", "unknown_syntax", "cancelled", "worker_gone", "queue_expired",
   "route_limit", "session_limit", "source_limit", "style_limit", "theme_limit", "state_limit", "result_limit", "scope_limit", "frame_limit", "reply_limit",
   "parser_error", "control_failed", "pipe_error", "pipe_frame", "pipe_start", "pipe_window", "shared_transport"]);

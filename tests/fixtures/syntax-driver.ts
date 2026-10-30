@@ -38,7 +38,7 @@ export default function syntaxDriver(pi: ExtensionAPI) {
   const cardObservations = process.env.TIDY_UI_TEST_CARD_OBSERVE === '1' ? observeSyntaxCards(event => record({ ...event,
     phase: existsSync(join(output, 'syntax-theme-phase')) ? readFileSync(join(output, 'syntax-theme-phase'), 'utf8') : 'initial' })) : undefined;
   const transports: StdioTransport[] = [], sharedTransports: SharedTransport[] = [];
-  const counts = { constructions: 0, acquisitions: 0, downloads: 0, piCaptures: 0, piBridges: 0, describeReplies: 0, refreshReplies: 0, sharedAttempts: 0, heldReplies: 0, deliveredReplies: 0, heldBashReplies: 0, orderDispatches: 0, themeSaves: 0, sourceRequests: 0, styleRequests: 0, closeRequests: 0, heldStyleReplies: 0, deliveredStyleReplies: 0 };
+  const counts = { constructions: 0, acquisitions: 0, downloads: 0, piCaptures: 0, piBridges: 0, describeReplies: 0, sharedAttempts: 0, heldReplies: 0, deliveredReplies: 0, heldBashReplies: 0, orderDispatches: 0, themeSaves: 0, sourceRequests: 0, styleRequests: 0, closeRequests: 0, heldStyleReplies: 0, deliveredStyleReplies: 0 };
   let pendingHeldReplies = 0, healthFaultPending = process.env.TIDY_UI_TEST_RUNTIME_HEALTH === '1';
   let runtime: WeakRef<SyntaxRuntime> | undefined, client: WeakRef<SyntaxClient> | undefined, controller = 0;
   let captureClient: WeakRef<SyntaxClient> | undefined, stopCapture: (() => void) | undefined;
@@ -144,7 +144,6 @@ export default function syntaxDriver(pi: ExtensionAPI) {
             const reply = await request(payload, opts);
             if (kind) record({ type: 'syntax_native_reply', transport: 'shared', kind, payload, reply });
             if (payload.op === 'describe') counts.describeReplies++;
-            if (payload.op === 'themes.refresh') counts.refreshReplies++;
             return reply;
           };
           sharedTransports.push(shared); return negotiate(shared);

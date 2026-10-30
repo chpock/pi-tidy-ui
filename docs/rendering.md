@@ -160,9 +160,9 @@ A single inactivity deadline requests one ordinary frame only after successful d
 
 For an already prepared file, source scopes/styles remain valid. Stored glyph widths are reflowed into a new scene at the real width, then painted. The component replaces its one latest scene/output; it does not keep the old width as a history entry or issue another SOURCE/STYLE request just for geometry. Native/editor projections retain their own host rendering obligations.
 
-### Theme change
+### Palette change
 
-The source identity and measured glyphs remain. The syntax layer resolves only missing style dependencies and prepares a complete card palette. Until it can publish the replacement atomically, retained ready paint remains visible. A matching geometry scene can then be repainted without remeasurement, diff reparsing or source parsing. [Follow Pi](syntax/follow-pi.md), [native palette resolution](occipital/styles-and-palettes.md) and [color provenance](color-model.md) define the actual colors.
+The source identity and measured glyphs remain. The syntax layer resolves only missing style dependencies and prepares the complete selected palette. Until it can publish the replacement atomically, retained ready paint remains visible. A matching geometry scene can then be repainted without remeasurement, diff reparsing or source parsing. [Follow Pi](syntax/follow-pi.md), [owned palette preparation](syntax/palettes.md) and [color provenance](color-model.md) define the actual colors.
 
 ### New Bash suffix
 

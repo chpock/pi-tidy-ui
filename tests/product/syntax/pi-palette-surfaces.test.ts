@@ -8,9 +8,12 @@ import { CARD_ROLES } from '../../../src/occipital/semantic-codec.ts';
 import { samplePiCardPalette, samplePiPalette } from '../../../src/syntax/pi-palette.ts';
 import { samplePiPrefix } from '../../../src/syntax/pi-bindings.ts';
 import { effectiveColor } from '../../../src/syntax/pi-color.ts';
-import { PI_DIRECT_BINDINGS, PI_RULE_BINDINGS } from '../../../src/syntax/pi-rules.ts';
+import { PI_MARKER_REGIONS, PI_RULE_BINDINGS, piBindingInkRole, type PiMarkerBinding } from '../../../src/syntax/pi-adapter.ts';
 
 const backgrounds = new Set(['selectedBg', 'searchMatchBg', 'userMessageBg', 'customMessageBg', 'toolPendingBg', 'toolSuccessBg', 'toolErrorBg']);
+const slot = (region: typeof PI_RULE_BINDINGS[number]) => PI_RULE_BINDINGS.indexOf(region);
+const markerSlot = (binding: PiMarkerBinding) => slot(PI_MARKER_REGIONS[binding]);
+const directRegions = PI_RULE_BINDINGS.filter(region => !['markdown-heading-marker', 'markdown-code-delimiter', 'markdown-link-delimiter'].includes(region));
 function fixture(panel: string | number, options: { mode?: TerminalColorMode; fg?: Record<string, string | number>; bg?: Record<string, string | number>; faint?: ThemeColor[] } = {}) {
   const fg: Record<string, string | number> = {}, bg: Record<string, string | number> = {};
   for (const role of Object.keys(getThemeByName('dark')!.colors)) (backgrounds.has(role) ? bg : fg)[role] = backgrounds.has(role) ? '#12141a' : '#dddddd';
@@ -40,10 +43,10 @@ test('Pi surfaces: all direct Markdown/diagnostic inks constrain emitted diff su
   for (const mode of ['truecolor', '256color'] as const) {
     const theme = fixture('#12141a', { mode, fg: { mdHeading: '#6c7090', toolTitle: '#000000' } });
     const result = samplePiPalette(theme, mode), panel = color(result.roles.code.background);
-    for (const role of PI_DIRECT_BINDINGS) {
-      const ink = color(result.bindings[PI_RULE_BINDINGS.indexOf(role)]!.ink), floor = Math.min(4.5, contrast(ink, panel));
+    for (const region of directRegions) {
+      const role = piBindingInkRole(region), ink = color(result.bindings[slot(region)]!.ink), floor = Math.min(4.5, contrast(ink, panel));
       for (const row of ['addedCode', 'removedCode'] as const)
-        assert.ok(contrast(ink, color(result.roles[row].background)) + 1e-10 >= floor, `${mode}/${role}/${row}`);
+        assert.ok(contrast(ink, color(result.roles[row].background)) + 1e-10 >= floor, `${mode}/${region}/${role}/${row}`);
     }
     const other = samplePiPalette(fixture('#12141a', { mode, fg: { mdHeading: '#6c7090', toolTitle: '#ffffff' } }), mode);
     assert.deepEqual(other.roles.addedCode.background, result.roles.addedCode.background);
@@ -55,10 +58,10 @@ test('Pi surfaces: unrelated faint punctuation never donates ink to role-derived
   const prepare = (punctuation: string) => {
     const theme = fixture('#12141a', { mode: 'truecolor', fg: { syntaxPunctuation: punctuation }, faint: ['syntaxPunctuation'] });
     const result = samplePiPalette(theme, 'truecolor');
-    const donor = result.bindings[PI_RULE_BINDINGS.indexOf('syntaxPunctuation')]!;
+    const donor = result.bindings[slot('syntax-punctuation')]!;
     assert.equal(donor.attributes & 8, 8);
     for (const [name, sourceRole] of [['headingMarker', 'mdHeading'], ['inlineCodeDelimiter', 'mdCode'], ['linkDelimiter', 'mdLink']] as const) {
-      const marker = result.bindings[PI_RULE_BINDINGS.indexOf(name)]!;
+      const marker = result.bindings[markerSlot(name)]!;
       const parent = samplePiPrefix(theme.getFgAnsi(sourceRole));
       const decision = result.variantDecisions.find(item => item.binding === name)!;
       assert.equal(marker.attributes, parent.attributes, `${name}: keep its own role's typography`);
@@ -68,10 +71,10 @@ test('Pi surfaces: unrelated faint punctuation never donates ink to role-derived
     return result;
   };
   const first = prepare('#777777'), second = prepare('#999999');
-  assert.notDeepEqual(first.bindings[PI_RULE_BINDINGS.indexOf('syntaxPunctuation')]!.ink,
-    second.bindings[PI_RULE_BINDINGS.indexOf('syntaxPunctuation')]!.ink);
+  assert.notDeepEqual(first.bindings[slot('syntax-punctuation')]!.ink,
+    second.bindings[slot('syntax-punctuation')]!.ink);
   for (const name of ['headingMarker', 'inlineCodeDelimiter', 'linkDelimiter'] as const)
-    assert.deepEqual(first.bindings[PI_RULE_BINDINGS.indexOf(name)], second.bindings[PI_RULE_BINDINGS.indexOf(name)],
+    assert.deepEqual(first.bindings[markerSlot(name)], second.bindings[markerSlot(name)],
       `${name}: changing unrelated faint punctuation cannot change its own role-derived shade`);
   for (const role of CARD_ROLES) assert.deepEqual(first.roles[role].background, second.roles[role].background,
     `${role}: unverified faint ink cannot influence numeric diff-surface selection`);
@@ -89,7 +92,10 @@ test('Pi surfaces: default panel and unusable side hint never gain guessed tints
 test('Pi surfaces: symbolic/faint primary inks stay exact without globally vetoing useful tints', () => {
   const theme = fixture('#12141a', { fg: { syntaxString: 17, mdCode: '', mdHeading: '#dddddd' }, faint: ['mdHeading', 'dim'] });
   const result = samplePiPalette(theme, 'truecolor');
-  for (const role of PI_DIRECT_BINDINGS) assert.deepEqual(result.bindings[PI_RULE_BINDINGS.indexOf(role)], samplePiPrefix(theme.getFgAnsi(role)));
+  for (const region of directRegions) {
+    const role = piBindingInkRole(region);
+    assert.deepEqual(result.bindings[slot(region)], samplePiPrefix(theme.getFgAnsi(role)), region);
+  }
   assert.notDeepEqual(result.roles.addedCode.background, result.roles.panel.background);
   assert.notDeepEqual(result.roles.removedCode.background, result.roles.panel.background);
   assert.equal(result.roles.numbers.attributes & 8, 8);
@@ -119,10 +125,10 @@ for (const mode of ['truecolor', '256color'] as const) test(`Pi surfaces: ${mode
     const theme = fixture('#181818', { mode, fg: { syntaxPunctuation: index }, faint: ['syntaxPunctuation'],
       bg: { toolSuccessBg: '#88cc88', toolErrorBg: '#cc6666' } });
     assert.equal(theme.colors.syntaxPunctuation!.kind, 'oklch', 'real public Theme approximates faint and loses indexed provenance');
-    const result = samplePiPalette(theme, mode), donor = result.bindings[PI_RULE_BINDINGS.indexOf('syntaxPunctuation')]!;
+    const result = samplePiPalette(theme, mode), donor = result.bindings[slot('syntax-punctuation')]!;
     assert.deepEqual(donor.ink, { kind: 'indexed', index }); assert.equal(donor.attributes & 8, 8);
     for (const [name, sourceRole] of [['headingMarker', 'mdHeading'], ['linkDelimiter', 'mdLink']] as const) {
-      const marker = result.bindings[PI_RULE_BINDINGS.indexOf(name)]!;
+      const marker = result.bindings[markerSlot(name)]!;
       const parent = samplePiPrefix(theme.getFgAnsi(sourceRole));
       const decision = result.variantDecisions.find(item => item.binding === name)!;
       assert.equal(marker.attributes, parent.attributes, `${name}: keep its own role's typography`);
@@ -133,7 +139,7 @@ for (const mode of ['truecolor', '256color'] as const) test(`Pi surfaces: ${mode
   };
   const dim = prepare(243), bright = prepare(255);
   for (const name of ['headingMarker', 'linkDelimiter'] as const) {
-    assert.deepEqual(dim.bindings[PI_RULE_BINDINGS.indexOf(name)], bright.bindings[PI_RULE_BINDINGS.indexOf(name)],
+    assert.deepEqual(dim.bindings[markerSlot(name)], bright.bindings[markerSlot(name)],
       `${name}: a different unknown faint palette entry cannot change its own role-derived shade`);
   }
   for (const role of CARD_ROLES) assert.deepEqual(dim.roles[role].background, bright.roles[role].background,

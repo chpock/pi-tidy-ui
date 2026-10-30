@@ -9,8 +9,8 @@ import { StdioTransport } from '../../../src/occipital/stdio.ts';
 import { HIGHLIGHT_LIMITS } from '../../../src/occipital/limits.ts';
 import { decodeSemanticDescription, decodeSemanticSourceReply, decodeSemanticStyleReply, SEMANTIC_PROTOCOL_VERSION as VERSION } from '../../../src/occipital/semantic-protocol.ts';
 import type { SemanticChunk } from '../../../src/occipital/semantic-source.ts';
-import { createPiRuleDefinition } from '../../../src/syntax/pi-rules.ts';
-import { fingerprintRules, fingerprintNative } from '../../../src/occipital/style-rules.ts';
+import { createSemanticRuleDefinition } from '../../../src/syntax/semantic-rules.ts';
+import { fingerprintRules } from '../../../src/occipital/style-rules.ts';
 
 const binary = validateNative(readInputs()).path;
 async function fixture() {
@@ -18,7 +18,7 @@ async function fixture() {
   for (const name of ['home', 'config', 'data', 'cache', 'run']) await mkdir(join(root, name));
   const env = childEnv(root);
   Object.assign(env, { HOME: join(root, 'home'), XDG_CONFIG_HOME: join(root, 'config'), XDG_DATA_HOME: join(root, 'data'), XDG_CACHE_HOME: join(root, 'cache'), XDG_RUNTIME_DIR: join(root, 'run') });
-  const transport = new StdioTransport({ command: binary, args: ['--stdio', '--config', join(root, 'config', 'config.json')], env, cwd: root, requestDeadlineMs: 10_000, terminateGraceMs: 100 });
+  const transport = new StdioTransport({ command: binary, args: ['--stdio'], env, cwd: root, requestDeadlineMs: 10_000, terminateGraceMs: 100 });
   let sequence = 0;
   async function call(request: Record<string, unknown>): Promise<any> {
     const ticket = `call-${++sequence}`, reply = await transport.request({ ...request, v: VERSION, ticket }) as any;
@@ -85,23 +85,22 @@ test('actual owned helper preserves compact UTF8 highlighting and incremental wo
   } finally { await f.close(); }
 });
 
-test('actual owned helper validates whole batches before work and supports independent native profiles', async () => {
+test('actual owned helper validates whole batches before work and resolves the common rule definition', async () => {
   const f = await fixture();
   try {
     const parsed = await f.source('echo "literal"\n'), contexts = parsed.contexts.map(context => [0, ...context]);
-    const native = f.descriptor.profiles.find(value => value.id === 'syntect:Nord')!; assert.ok(native);
-    const definition = createPiRuleDefinition();
-    const resolved = [];
-    for (const rules of [{ kind: 'client', definition }, { kind: 'native', id: native.id, fingerprint: native.fingerprint }]) {
-      const reply = await f.call({ op: 'styles.resolve', instance: f.descriptor.instance, vocabulary: f.descriptor.vocabulary.fingerprint,
-        admission: 'bounded_queue', queue_wait_ms: 1000, rules, contexts });
-      const mode = rules.kind === 'native' ? 'native' : 'client';
-      const result = decodeSemanticStyleReply(reply, reply.ticket, f.descriptor, { vocabulary: f.descriptor.vocabulary.fingerprint,
-        rules: mode === 'native' ? fingerprintNative(native.fingerprint, 'rules') : fingerprintRules(definition), mode,
-        bindingSlots: mode === 'native' ? 0 : definition.binding_slots, paletteFingerprint: mode === 'native' ? fingerprintNative(native.fingerprint, 'palette') : null }, contexts.length, 64 << 20);
-      assert.equal(result.indices.length, contexts.length); resolved.push(result.styles);
-    }
-    assert.notDeepEqual(resolved[0], resolved[1]);
+    const definition = createSemanticRuleDefinition();
+    const reply = await f.call({ op: 'styles.resolve', instance: f.descriptor.instance, vocabulary: f.descriptor.vocabulary.fingerprint,
+      admission: 'bounded_queue', queue_wait_ms: 1000, rules: definition, contexts });
+    const result = decodeSemanticStyleReply(reply, reply.ticket, f.descriptor, { vocabulary: f.descriptor.vocabulary.fingerprint,
+      rules: fingerprintRules(definition), bindingSlots: definition.binding_slots }, contexts.length, 64 << 20);
+    assert.equal(result.indices.length, contexts.length);
+    assert.equal(Object.hasOwn(reply.body, 'palette'), false);
+    const beforeOldVersion = f.transport.stats();
+    await assert.rejects(f.transport.request({ v: 3, ticket: 'old-v3-source', instance: f.descriptor.instance, op: 'highlight',
+      admission: 'bounded_queue', queue_wait_ms: 1000, sources: [{ key: 'old', generation: 1, source_version: 1, hint: { language: 'bash' }, text: 'echo old' }] }),
+    /stdio invalid request header/);
+    assert.deepEqual(f.transport.stats(), beforeOldVersion, 'the TypeScript adapter rejects v3 before native dispatch');
     const rejected = await f.call({ op: 'stream.open', instance: f.descriptor.instance, admission: 'bounded_queue', queue_wait_ms: 1000,
       sources: [{ key: 'first', generation: 1, source_version: 1, text: 'echo x' }, { key: 'second', generation: 0, source_version: 1, text: 'echo y' }] });
     assert.equal(rejected.status, 'error'); assert.equal(rejected.error.execution, 'not_started'); assert.equal(Object.hasOwn(rejected, 'body'), false);

@@ -6,8 +6,8 @@ import { SourceController, CONTROLLER_LIMITS, sourceReservation, type SourceDema
 import { decodeSemanticDescription, SEMANTIC_PROTOCOL_VERSION as PROTOCOL_VERSION } from '../../../src/occipital/semantic-protocol.ts';
 import { semanticDescriptor } from '../../fixtures/semantic-provider.ts';
 import { SemanticRetentionPool } from '../../../src/occipital/semantic-retention.ts';
-import { CARD_ROLES } from '../../../src/occipital/semantic-codec.ts';
-import { fingerprintNative } from '../../../src/occipital/style-rules.ts';
+import { fingerprintRules } from '../../../src/occipital/style-rules.ts';
+import { compactSelection, syntheticSelection } from '../../fixtures/test-style-selection.ts';
 import type { ConcreteStyle } from '../../../src/syntax/style-materialization.ts';
 import { HIGHLIGHT_LIMITS, OCCIPITAL_LIMITS } from '../../../src/occipital/limits.ts';
 import { RequestFailure } from '../../../src/occipital/request-failure.ts';
@@ -36,7 +36,7 @@ class Host {
   constructor() { fixtureHosts.add(this); }
   generation = 1;
   ready = true;
-  description = { ...description, profiles: [...description.profiles], limits: { ...description.limits } };
+  description = { ...description, limits: { ...description.limits } };
   calls: Call[] = [];
   acceptedClassifications: number[] = [];
   classificationAccepted(generation: number) { this.acceptedClassifications.push(generation); return this.isReady(generation); }
@@ -72,9 +72,7 @@ class Host {
       background: { kind: 'rgb', r: 10, g: 20, b: 30 }, attributes: 0, attribute_mask: 31 };
     call.resolve({ v: PROTOCOL_VERSION, ticket: r.ticket, instance: description.instance, assets: description.assets,
       status: 'ok', body: { kind: 'styles', vocabulary: r.vocabulary,
-        rules: fingerprintNative(r.rules.fingerprint, 'rules'), styles: [style], indices: r.contexts.map(() => 1),
-        palette: { revision: 1, fingerprint: fingerprintNative(r.rules.fingerprint, 'palette'),
-          slots: CARD_ROLES.map(() => 1), origins: CARD_ROLES.map(() => 0) } } });
+        rules: fingerprintRules(r.rules), styles: [style], indices: r.contexts.map(() => 1) } });
   }
   fault(index: number, code: string, execution = 'not_started') {
     const r = this.calls[index]!.request;
@@ -82,7 +80,7 @@ class Host {
   }
 }
 function demand(text: string, version = 1, complete = false, key = 'source'): SourceDemand {
-  return { key, version, text, language: 'bash', profile: 'pi', fingerprint, complete };
+  return { key, version, text, language: 'bash', complete };
 }
 function fixture(options: ConstructorParameters<typeof SourceController>[1] = { deadlineMs: 1000 }) {
   const host = new Host(), controller = new SourceController(host, options);
@@ -198,7 +196,7 @@ test('rewrite/language retire generations; theme selection preserves parser gene
   assert.deepEqual(ranges(c), []); assert.equal(host.calls[3]!.request.op, 'stream.close');
   host.answer(3); await settle(); host.answer(4); await settle();
   const generation = c.status('source')!.generation;
-  c.observe({ ...demand('after', 2), language: 'rust', profile: 'missing' }); c.flush();
+  c.observe({ ...demand('after', 2), language: 'rust' }); c.flush();
   assert.equal(host.calls.length, 5); assert.equal(c.status('source')!.generation, generation);
   assert.equal(c.status('source')!.exact, true); assert.equal(c.status('source')!.protective, false);
 });
@@ -424,11 +422,11 @@ test('provider recovery: compatible complete semantics become local at full phys
   assert.equal(c.stats().unsettledJobs, 0); assert.deepEqual(host.acceptedClassifications, [1, 2, 2]);
 });
 
-test('mismatched desired profile does not block theme-independent parsing or become ready color evidence', async () => {
+test('SOURCE observation is independent of local palette selection and is not color evidence', async () => {
   const { host, controller: c } = fixture();
-  c.observe({ ...demand('echo x', 1, true), profile: 'missing', fingerprint: 'b'.repeat(64) }); c.flush();
+  c.observe(demand('echo x', 1, true)); c.flush();
   assert.equal(host.calls.length, 1); assert.equal(c.stats().preparedBytes, 6);
-  assert.equal(Object.hasOwn(host.calls[0]!.request.sources[0], 'profile'), false);
+  assert.equal(Object.hasOwn(host.calls[0]!.request.sources[0], 'rules'), false);
   host.answer(0); await settle();
   assert.equal(c.status('source')!.exact, true); assert.equal(c.displayBasis('source'), undefined);
   assert.equal(c.workStatus('source').fallbackEligible, false, 'pending styles are not Pi classifier permission');
@@ -831,63 +829,6 @@ for (const outcome of ['malformed','wrong_coverage','wrong_vocabulary','wrong_re
   });
 
 
-test('style refusal requests metadata once; reconciliation never restarts a parser', async () => {
-  const { host, controller: c } = await pendingStyle();
-  host.fault(1, 'profile_changed'); await settle();
-  const notice = c.profileReconciliationNeeded(); assert.ok(notice);
-  assert.equal(notice.generation, host.generation); assert.equal(c.status('source')!.exact, true);
-  assert.equal(c.workStatus('source').fallbackEligible, false);
-  c.acknowledgeProfiles(notice.generation, notice.sequence); c.observe(demand('echo x', 1, true)); c.flush(); await settle();
-  assert.equal(c.profileReconciliationNeeded(), undefined); assert.equal(host.calls.length, 2);
-  assert.equal(c.stats().preparedBytes, 6); assert.equal(c.stats().styleRejections, 1);
-});
-test('style refusal metadata acknowledgment cannot erase a newer pending refusal', async () => {
-  const { host, controller: c } = await pendingStyle();
-  host.fault(1, 'profile_unavailable'); await settle(); const first = c.profileReconciliationNeeded(); assert.ok(first);
-  selectNative(c, 'next', 'b'.repeat(64)); await settle(); host.fault(2, 'profile_changed'); await settle();
-  const second = c.profileReconciliationNeeded(); assert.ok(second); assert.ok(second.sequence > first.sequence);
-  c.acknowledgeProfiles(first.generation, first.sequence); assert.deepEqual(c.profileReconciliationNeeded(), second);
-  c.acknowledgeProfiles(second.generation, second.sequence); c.flush();
-  assert.equal(c.profileReconciliationNeeded(), undefined); assert.equal(host.calls.length, 3);
-  assert.equal(c.stats().preparedBytes, 6); assert.equal(host.acceptedClassifications.length, 1);
-});
-test('repeated unavailable styles stop unchanged work without reopening source or clearing uncertainty', async () => {
-  const { host, controller: c } = await pendingStyle(false);
-  c.observe(demand('echo xy', 2)); c.flush(); host.calls[2]!.reject(new RequestFailure('unknown source append')); await settle();
-  host.fault(1, 'profile_unavailable'); await settle(); const notice = c.profileReconciliationNeeded(); assert.ok(notice);
-  c.acknowledgeProfiles(notice.generation, notice.sequence);
-  for (let i = 0; i < 20; i++) { c.observe(demand('echo xy', 2)); c.flush(); }
-  assert.equal(host.calls.length, 3); assert.equal(c.workStatus('source').execution, 'unknown');
-  assert.equal(c.workStatus('source').fallbackEligible, false); assert.equal(c.stats().restarts, 0);
-});
-for (const outcome of ['busy', 'started', 'invalid_header', 'stale', 'removed'] as const) test(`style metadata demand excludes ${outcome} resolver outcome`, async () => {
-  const { host, controller: c } = await pendingStyle();
-  if (outcome === 'stale') host.generation++;
-  if (outcome === 'removed') c.remove('source');
-  if (outcome === 'invalid_header') host.calls[1]!.resolve({ v: 2, ticket: 'wrong', instance: 'daemon', assets: 'assets', status: 'error', error: { code: 'profile_changed', execution: 'not_started' } });
-  else host.fault(1, outcome === 'busy' ? 'busy' : 'profile_changed', outcome === 'started' ? 'started' : 'not_started');
-  await settle();
-  // Even a style computation that started has not executed source work. A valid
-  // definition fault still requests catalogue reconciliation independently.
-  assert.equal(!!c.profileReconciliationNeeded(), outcome === 'started');
-  assert.equal(host.calls.length, 2); assert.equal(c.stats().restarts, 0);
-  assert.equal(host.acceptedClassifications.length, 1);
-});
-test('style metadata acknowledgment is inert after provider change, off and disposal', async () => {
-  for (const transition of ['provider', 'off', 'dispose'] as const) {
-    const { host, controller: c } = await pendingStyle(); host.fault(1, 'profile_changed'); await settle();
-    const notice = c.profileReconciliationNeeded(); assert.ok(notice, `${transition} starts with its own pending reconciliation`);
-    const calls = host.calls.length, prepared = c.stats().preparedBytes;
-    if (transition === 'provider') host.generation++;
-    else if (transition === 'off') c.setEnabled(false);
-    else c.dispose();
-    assert.equal(c.profileReconciliationNeeded(), undefined);
-    c.acknowledgeProfiles(notice.generation, notice.sequence); c.flush(); await settle();
-    assert.equal(c.profileReconciliationNeeded(), undefined); assert.equal(host.calls.length, calls);
-    assert.equal(c.stats().preparedBytes, prepared);
-  }
-});
-
 test('source observer identifies only changed keys and coalesces two current completions', async () => {
   const observed: string[][] = [];
   const { host, controller } = fixture({ onChange: (keys: readonly string[] = []) => { observed.push([...keys]); } });
@@ -981,15 +922,6 @@ test('canonical retired settlement distinguishes validated completion, no-start,
   }
 });
 
-test('canonical style reconciliation never grants parser retry permission', async () => {
-  const { host, controller: c } = await pendingStyle(); host.fault(1, 'profile_changed'); await settle();
-  const need = c.profileReconciliationNeeded(); assert.ok(need);
-  assert.equal(c.workStatus('source').profileRetryAllowed, false);
-  c.acknowledgeProfiles(need.generation, need.sequence);
-  for (let i = 0; i < 100; i++) assert.equal(c.workStatus('source').profileRetryAllowed, false);
-  assert.equal(host.calls.length, 2); assert.equal(c.status('source')!.acknowledgedVersion, 1);
-  c.setEnabled(false); assert.equal(c.workStatus('source').profileRetryAllowed, false);
-});
 
 
 test('terminal shared unknown survives provider changes and later no-start; pending alone is not sticky unknown', async () => {
@@ -1191,20 +1123,16 @@ test('canonical correction F2 guards retain old unknown evidence until exact own
   }
 });
 
-for (const guard of ['transient', 'source-limit', 'missing-theme'] as const) {
-  test(`local native admission ${guard} keeps source permission independent of desired theme`, async () => {
+for (const guard of ['transient', 'source-limit'] as const) {
+  test(`local source admission ${guard} keeps SOURCE fallback authority independent of palette selection`, async () => {
     const notices: string[][] = [];
     const { host, controller } = fixture({ ...(guard === 'transient' ? { maxTransientBytes: 128 } : {}), onChange: keys => { notices.push([...keys]); } });
-    controller.observe(demand('xy', 1, true));
     if (guard === 'source-limit') host.description.limits.source_bytes = 1;
-    if (guard === 'missing-theme') host.description.profiles = [{ ...description.profiles[0]!, id: 'new-profile' }];
-    assert.equal(controller.workStatus('source').fallbackEligible, false);
+    controller.observe(demand('xy', 1, true));
+    assert.equal(controller.workStatus('source').fallbackEligible, guard === 'source-limit', 'a local source-size refusal is known before scheduling, while transient budget waits for admission');
     controller.flush(); await settle();
-    assert.equal(controller.workStatus('source').fallbackEligible, guard !== 'missing-theme');
-    if (guard === 'missing-theme') {
-      assert.deepEqual(notices, []); assert.equal(host.calls.length, 1); host.answer(0); await settle();
-      assert.equal(controller.status('source')!.exact, true); assert.equal(controller.displayBasis('source'), undefined);
-    } else { assert.deepEqual(notices, [['source']]); assert.equal(host.calls.length, 0); }
+    assert.equal(controller.workStatus('source').fallbackEligible, true);
+    assert.deepEqual(notices, [['source']]); assert.equal(host.calls.length, 0);
     controller.flush(); await settle();
     assert.deepEqual(notices, [['source']]);
   });
@@ -1230,13 +1158,17 @@ test('local native admission after credit wake reports refusal and preserves its
 });
 
 async function pendingStyle(complete = true) {
-  const result = fixture(); selectNative(result.controller);
+  const result = fixture(); selectStyle(result.controller);
   result.controller.observe(demand('echo x', 1, complete)); result.controller.flush(); result.host.answer(0); await settle();
   assert.equal(result.host.calls[1]!.request.op, 'styles.resolve');
   return result;
 }
-function selectNative(c: SourceController, id = 'native', selectedFingerprint = fingerprint) {
-  assert.equal(c.setStyleSelection({ kind: 'native', id, fingerprint: selectedFingerprint }), true);
+function selectStyle(c: SourceController, id = 'selected', selectedFingerprint = fingerprint) {
+  const seed = Number.parseInt(selectedFingerprint.slice(0, 2), 16) || 1;
+  assert.equal(c.setStyleSelection(syntheticSelection(seed, id)), true);
+}
+function selectionRuleFingerprint(selection: ReturnType<typeof syntheticSelection>) {
+  return fingerprintRules(selection.definition);
 }
 async function paint(c: SourceController, host: Host, sourceIndex: number, red = 80) {
   host.answer(sourceIndex); await settle();
@@ -1258,7 +1190,7 @@ function displaySnapshot(controller: SourceController, key = 'source') {
 }
 
 test('display basis: acknowledged full provisional colors stay paired with their own text during an append', async () => {
-  const { host, controller: c } = fixture(); selectNative(c);
+  const { host, controller: c } = fixture(); selectStyle(c);
   c.observe(demand('a\nt')); c.flush(); await paint(c, host, 0);
   const initial = displaySnapshot(c)!; assert.equal(initial.text, 'a\nt'); assert.equal(initial.version, 1);
   assert.deepEqual(initial.spans.map(({ start, end }) => [start, end]), [[0, 2], [2, 3]]);
@@ -1274,7 +1206,7 @@ test('display basis: acknowledged full provisional colors stay paired with their
 });
 
 test('display basis: completion-only acknowledgement preserves paint effect but settles authority and lease', async () => {
-  const { host, controller: c } = fixture(); selectNative(c);
+  const { host, controller: c } = fixture(); selectStyle(c);
   c.observe(demand('a\nt')); c.flush(); await paint(c, host, 0);
   const initial = displaySnapshot(c)!, paintStamp = c.displayBasis('source')!.paintStamp;
   c.observe(demand('a\nt', 2, true)); c.flush(); assert.equal(host.calls[2]!.request.append, '');
@@ -1287,7 +1219,7 @@ test('display basis: completion-only acknowledgement preserves paint effect but 
 });
 
 test('display basis: source rewrites retain one charged historical basis without asserting current coverage', async () => {
-  const { host, controller: c } = fixture(); selectNative(c);
+  const { host, controller: c } = fixture(); selectStyle(c);
   c.observe(demand('echo red')); c.flush(); await paint(c, host, 0); const initial = displaySnapshot(c)!;
   c.observe(demand('echo blue', 2)); assert.deepEqual(displaySnapshot(c), initial);
   assert.deepEqual(ranges(c), []); assert.equal(c.status('source')!.exact, false); assert.equal(c.stats().retention.entries, 2);
@@ -1299,7 +1231,7 @@ test('display basis: source rewrites retain one charged historical basis without
 });
 
 test('display basis: frozen formation retains charged colors, closes work and ignores a late append', async () => {
-  const { host, controller: c } = fixture(); selectNative(c);
+  const { host, controller: c } = fixture(); selectStyle(c);
   c.observe(demand('a\nt')); c.flush(); await paint(c, host, 0);
   const initial = displaySnapshot(c)!, retained = c.stats().retention.snapshotBytes;
   c.observe(demand('a\ntxy', 2)); c.flush();
@@ -1341,9 +1273,9 @@ test('display basis: a frozen unanswered open closes its late lease while a neig
 });
 
 test('display basis: zero parser-call counters cannot conceal changed validated styles', async () => {
-  const { host, controller: c } = fixture(); selectNative(c);
+  const { host, controller: c } = fixture(); selectStyle(c);
   c.observe(demand('x')); c.flush(); await paint(c, host, 0); const initial = c.displayStamp('source');
-  const parsed = c.stats().preparedBytes; selectNative(c, 'second', 'b'.repeat(64)); await settle();
+  const parsed = c.stats().preparedBytes; selectStyle(c, 'second', 'b'.repeat(64)); await settle();
   assert.equal(host.calls[2]!.request.op, 'styles.resolve'); host.style(2, 190); await settle();
   assert.equal(c.stats().tailCalls, 0); assert.equal(c.stats().committedLineCalls, 0); assert.equal(c.stats().preparedBytes, parsed);
   assert.notEqual(c.displayStamp('source'), initial);
@@ -1353,7 +1285,7 @@ test('display basis: zero parser-call counters cannot conceal changed validated 
 
 async function detachedDisplayOwner(host: Host) {
   const controller = new SourceController(host);
-  selectNative(controller); controller.observe(demand('owned display', 1, true)); controller.flush(); await paint(controller, host, 0);
+  selectStyle(controller); controller.observe(demand('owned display', 1, true)); controller.flush(); await paint(controller, host, 0);
   controller.freeze('source');
   return { owner: new WeakRef(controller), pool: new WeakRef((controller as unknown as { pool: object }).pool), view: controller.displayBasis('source')! };
 }
@@ -1370,7 +1302,8 @@ test('display basis: a persistent view does not retain the first frozen owner or
 });
 
 test('display basis: frozen colors can be evicted without native re-admission and off drops charged payload', async () => {
-  const { host, controller: c } = fixture({ retention: { maxBytes: 65536 } }); selectNative(c);
+  const { host, controller: c } = fixture({ retention: { maxBytes: 65536 } });
+  assert.equal(c.setStyleSelection(compactSelection()), true);
   c.observe(demand('echo one')); c.flush(); await paint(c, host, 0);
   const view = c.displayBasis('source')!; assert.ok(view); assert.ok(c.stats().retention.displayBytes > 0);
   assert.ok(c.stats().retention.retainedBytes > 4096 && c.stats().retention.retainedBytes < 65536);
@@ -1388,7 +1321,7 @@ test('display basis: frozen colors can be evicted without native re-admission an
 });
 
 test('display basis: retaining rewrite colors does not clear unresolved same-provider authority', async () => {
-  const { host, controller: c } = fixture(); selectNative(c);
+  const { host, controller: c } = fixture(); selectStyle(c);
   c.observe(demand('echo old')); c.flush(); await paint(c, host, 0); const initial = c.displayStamp('source');
   c.observe(demand('echo older', 2)); c.flush(); host.calls[2]!.reject(new Error('uncertain RPC')); await settle();
   assert.equal(c.workStatus('source').execution, 'unknown'); c.observe(demand('echo rewrite', 3)); c.flush();
@@ -1399,7 +1332,7 @@ test('display basis: retaining rewrite colors does not clear unresolved same-pro
 });
 
 test('stream review F2: rewrite then provider recovery never promotes historical colors into committed coverage', async () => {
-  const { host, controller: c } = fixture(); selectNative(c);
+  const { host, controller: c } = fixture(); selectStyle(c);
   c.observe(demand('if', 1, true)); c.flush(); await paint(c, host, 0);
   c.observe(demand('zz', 2, true)); c.flush();
   assert.deepEqual(ranges(c), []); assert.equal(c.status('source')?.exact, false);
@@ -1439,36 +1372,37 @@ test('LIFO registry: preparation records obey capacity, retirement and native-of
   assert.equal(visits, 1); assert.equal(c.stats().bookkeepingBytes, 0);
 });
 
-test('theme display: requested identity never relabels retained colors; rollback reuses matching styles without parsing', async () => {
-  const { host, controller: c } = fixture(); selectNative(c); const a = demand('echo retained', 1, true);
-  c.observe(a); c.flush(); await paint(c, host, 0); const display = displaySnapshot(c)!, prepared = c.stats().preparedBytes;
-  selectNative(c, 'B', 'b'.repeat(64)); c.observe({ ...a, profile: 'B', fingerprint: 'b'.repeat(64) }); c.flush();
-  assert.equal(host.calls[2]!.request.op, 'styles.resolve'); assert.equal(c.borrowSource('source')!.profile, 'B');
-  assert.equal(c.displayBasis('source')!.profile, 'native'); assert.deepEqual(displaySnapshot(c), display);
-  assert.equal(c.status('source')!.exact, true, 'semantic completion is independent of desired palette');
-  selectNative(c); c.observe(a); c.flush(); await settle();
+test('palette display: requested identity never relabels retained colors; rollback reuses matching styles without parsing', async () => {
+  const { host, controller: c } = fixture(); selectStyle(c); const a = demand('echo retained', 1, true);
+  c.observe(a); c.flush(); await paint(c, host, 0); const display = displaySnapshot(c)!, basis = c.displayBasis('source')!, prepared = c.stats().preparedBytes;
+  selectStyle(c, 'B', 'b'.repeat(64)); c.flush();
+  assert.equal(host.calls[2]!.request.op, 'styles.resolve'); assert.equal(c.borrowSource('source')!.generation, basis.generation);
+  assert.equal(c.displayBasis('source')!.palette, basis.palette); assert.deepEqual(displaySnapshot(c), display);
+  assert.equal(c.status('source')!.exact, true, 'semantic completion is independent of selected palette');
+  selectStyle(c); c.flush(); await settle();
   assert.deepEqual(displaySnapshot(c)!.spans, display.spans); assert.equal(host.calls.length, 3); assert.equal(c.stats().preparedBytes, prepared);
   assert.equal(c.stats().unsettledJobs, 1, 'cached rollback never releases held obsolete STYLE credit');
   host.style(2, 170); await settle(); assert.deepEqual(displaySnapshot(c)!.spans, display.spans);
-  assert.equal(c.displayBasis('source')!.profile, 'native'); assert.equal(host.acceptedClassifications.length, 1);
+  assert.equal(c.displayBasis('source')!.palette, basis.palette); assert.equal(host.acceptedClassifications.length, 1);
 });
 
-test('theme display: repeated pending palettes retain one semantic basis; actual language changes discard it', async () => {
-  const { host, controller: c } = fixture(); selectNative(c); const a = demand('echo retained', 1, true);
-  c.observe(a); c.flush(); await paint(c, host, 0); const initial = displaySnapshot(c)!, generation = c.status('source')!.generation;
+test('palette display: repeated pending palettes retain one semantic basis; actual language changes discard it', async () => {
+  const { host, controller: c } = fixture(); selectStyle(c); const a = demand('echo retained', 1, true);
+  c.observe(a); c.flush(); await paint(c, host, 0); const initial = displaySnapshot(c)!, basis = c.displayBasis('source')!, generation = c.status('source')!.generation;
   for (const byte of ['b', 'c', 'd', 'e']) {
-    selectNative(c, byte, byte.repeat(64)); c.observe({ ...a, profile: byte, fingerprint: byte.repeat(64) });
+    selectStyle(c, byte, byte.repeat(64)); c.flush(); await settle();
     assert.deepEqual(displaySnapshot(c), initial); assert.equal(c.status('source')!.generation, generation);
-    assert.equal(c.stats().retention.entries, 1, 'no parser or source history for theme selection');
+    assert.equal(c.stats().retention.entries, 1, 'palette selection adds no parser or source history');
+    assert.equal(c.displayBasis('source')!.palette, basis.palette);
   }
   c.observe({ ...a, version: 2, language: 'python' }); assert.equal(c.displayBasis('source'), undefined);
 });
 
-test('theme display: provisional rollback keeps parser lease; completion still needs one empty final append', async () => {
-  const { host, controller: c } = fixture(); selectNative(c); const original = demand('echo partial');
+test('palette display: provisional rollback keeps parser lease; completion still needs one empty final append', async () => {
+  const { host, controller: c } = fixture(); selectStyle(c); const original = demand('echo partial');
   c.observe(original); c.flush(); await paint(c, host, 0); assert.equal(c.displayBasis('source')!.complete, false);
   const generation = c.status('source')!.generation;
-  selectNative(c, 'preview', 'b'.repeat(64)); selectNative(c);
+  selectStyle(c, 'preview', 'b'.repeat(64)); selectStyle(c);
   c.observe({ ...original, complete: true }); c.flush();
   assert.equal(c.status('source')!.generation, generation); assert.equal(host.calls[2]!.request.op, 'stream.append');
   assert.equal(host.calls[2]!.request.append, ''); assert.equal(host.calls[2]!.request.final, true);
@@ -1476,34 +1410,36 @@ test('theme display: provisional rollback keeps parser lease; completion still n
   assert.equal(host.calls.length, 3); assert.equal(host.acceptedClassifications.length, 2);
 });
 
-for (const alreadyPending of [false, true]) test(`theme display recovery: compatible provider resolves requested styles without source replay ${alreadyPending ? 'after' : 'during'} selection`, async () => {
-  const { host, controller: c } = fixture(); selectNative(c); const original = demand('echo recovery', 1, true);
+for (const alreadyPending of [false, true]) test(`palette display recovery: compatible provider resolves selected styles without source replay ${alreadyPending ? 'after' : 'during'} selection`, async () => {
+  const { host, controller: c } = fixture(); selectStyle(c); const original = demand('echo recovery', 1, true);
   c.observe(original); c.flush(); await paint(c, host, 0); const display = displaySnapshot(c)!;
-  selectNative(c, 'B', 'b'.repeat(64));
+  selectStyle(c, 'B', 'b'.repeat(64));
   if (alreadyPending) { c.flush(); assert.equal(host.calls.length, 3); }
-  host.generation++; c.observe({ ...original, profile: 'B', fingerprint: 'b'.repeat(64) }); c.flush();
+  host.generation++; c.observe(original); c.flush();
   assert.equal(c.status('source')!.exact, true); assert.equal(c.status('source')!.acknowledgedVersion, undefined);
   assert.deepEqual(displaySnapshot(c), display); assert.equal(c.stats().preparedBytes, 13);
   if (alreadyPending) { host.style(2, 130); await settle(); }
-  const styles = host.calls.map((call, index) => ({ call, index })).filter(({ call }) => call.request.op === 'styles.resolve' && call.request.rules.id === 'B');
+  const selectedRules = selectionRuleFingerprint(syntheticSelection(0xbb, 'B'));
+  const styles = host.calls.map((call, index) => ({ call, index })).filter(({ call }) => call.request.op === 'styles.resolve' && fingerprintRules(call.request.rules) === selectedRules);
   for (const { index } of styles) { host.style(index, 130); await settle(); }
-  assert.equal(c.displayBasis('source')!.profile, 'B'); assert.equal(c.displayBasis('source')!.fingerprint, 'b'.repeat(64));
+  const basis = c.displayBasis('source')!;
+  assert.equal(basis.palette, syntheticSelection(0xbb, 'B').palette); assert.equal(basis.rules, selectedRules);
   assert.equal(host.calls.filter(call => call.request.op === 'highlight').length, 1);
 });
 
-test('theme burst: superseding styles leaves already-dispatched work to settle normally without parser replay', async () => {
-  const { host, controller: c } = fixture(); selectNative(c); const source = demand('echo original', 1, true);
+test('palette burst: superseding styles leave already-dispatched work to settle normally without parser replay', async () => {
+  const { host, controller: c } = fixture(); selectStyle(c); const source = demand('echo original', 1, true);
   c.observe(source); c.flush(); await paint(c, host, 0);
-  selectNative(c, 'B', 'b'.repeat(64)); await settle(); selectNative(c, 'C', 'c'.repeat(64)); await settle();
-  assert.equal(host.calls[2]!.signal!.aborted, false); assert.equal(c.displayBasis('source')!.profile, 'native');
-  host.style(2, 140); await settle(); assert.equal(host.calls[3]!.request.rules.id, 'C');
+  selectStyle(c, 'B', 'b'.repeat(64)); await settle(); selectStyle(c, 'C', 'c'.repeat(64)); await settle();
+  assert.equal(host.calls[2]!.signal!.aborted, false); assert.equal(c.displayBasis('source')!.palette, syntheticSelection(0xaa, 'selected').palette);
+  host.style(2, 140); await settle(); assert.equal(fingerprintRules(host.calls[3]!.request.rules), selectionRuleFingerprint(syntheticSelection(0xcc, 'C')));
   assert.equal(c.workStatus('source').execution, 'acknowledged'); assert.equal(c.stats().preparedBytes, 13);
-  host.style(3, 180); await settle(); assert.equal(c.displayBasis('source')!.profile, 'C');
+  host.style(3, 180); await settle(); assert.equal(c.displayBasis('source')!.palette, syntheticSelection(0xcc, 'C').palette);
   assert.equal(host.calls.length, 4); assert.equal(host.acceptedClassifications.length, 1);
 });
 
-test('theme burst: yielded preparation visits a linear number of weak registry entries', async () => {
-  const { host, controller: c } = fixture(); selectNative(c); host.ready = false;
+test('theme burst: yielded preparation bounds weak registry visits per owner', async () => {
+  const { host, controller: c } = fixture(); selectStyle(c); host.ready = false;
   const tasks: { keys: Set<string>; prepare(): void }[] = [];
   let prepared = 0, visits = 0;
   for (let i = 0; i < 32; i++) {
@@ -1513,14 +1449,17 @@ test('theme burst: yielded preparation visits a linear number of weak registry e
     group.preparation.deref = () => { visits++; return deref(); };
     c.queuePreparation(group);
   }
+  const registrationVisits = visits; visits = 0;
   for (let i = 0; i < 32; i++) await settle();
+  const waveVisits = visits;
   assert.equal(prepared, tasks.length);
-  assert.ok(visits <= 4 * tasks.length, `one preparation wave visited ${visits} entries for ${tasks.length} owners`);
+  assert.ok(registrationVisits <= 4 * tasks.length, `registration visited ${registrationVisits} entries for ${tasks.length} owners`);
+  assert.ok(waveVisits <= 8 * tasks.length, `yielded preparation wave visited ${waveVisits} entries for ${tasks.length} owners`);
   assert.equal(host.calls.length, 0);
 });
 
 test('theme burst: two same-turn settlements cannot strand a newer coalesced source', async () => {
-  const { host, controller: c } = fixture(); selectNative(c);
+  const { host, controller: c } = fixture(); selectStyle(c);
   c.observe(demand('old a', 1, true, 'a')); c.flush(); c.observe(demand('old b', 1, true, 'b')); c.flush();
   c.observe(demand('new a', 2, true, 'a')); c.observe(demand('new b', 2, true, 'b')); c.flush();
   host.answer(1); host.answer(0); await settle();
@@ -1541,52 +1480,30 @@ test('theme burst: byte backpressure defers repeated group preparation with one 
   assert.equal(host.calls.length, 1); assert.equal(prepared, 2, 'metadata cannot bypass exhausted byte credit');
 });
 
-for (const action of ['remove', 'freeze', 'off', 'rewrite'] as const) test(`theme selection: ${action} still cancels a held parser despite a changed desired palette`, async () => {
-  const { host, controller: c } = fixture(); selectNative(c);
-  host.description.profiles = [...description.profiles, { id: 'B', label: 'B', fingerprint: 'b'.repeat(64) }];
+for (const action of ['remove', 'freeze', 'off', 'rewrite'] as const) test(`palette selection: ${action} still cancels a held parser only at the source lifecycle boundary`, async () => {
+  const { host, controller: c } = fixture(); selectStyle(c);
   const source = demand('echo old', 1, true);
-  c.observe(source); c.flush();
-  c.observe({ ...source, profile: 'B', fingerprint: 'b'.repeat(64) }); c.flush();
+  c.observe(source); c.flush(); selectStyle(c, 'B', 'b'.repeat(64)); c.flush();
   assert.equal(host.calls[0]!.signal?.aborted, false);
   if (action === 'remove') c.remove('source');
   else if (action === 'freeze') c.freeze('source');
   else if (action === 'off') c.setEnabled(false);
-  else c.observe({ ...source, profile: 'B', fingerprint: 'b'.repeat(64), text: 'corrected', version: 2 });
+  else c.observe({ ...source, text: 'corrected', version: 2 });
   assert.equal(host.calls[0]!.signal?.aborted, true, 'lifecycle cancellation owns every pending generation of this incarnation');
   assert.equal(c.stats().globalUnsettledJobs, 1, 'cancel delivery is not physical settlement');
   host.answer(0); await settle();
   assert.equal(c.displayBasis('source'), undefined, 'obsolete completion cannot restore retired display');
 });
 
-for (const code of ['profile_changed', 'profile_unavailable'] as const) test(`native definition refusal notifies source metadata demand: ${code}`, async () => {
-  const packets: { keys: readonly string[]; groups: readonly number[] }[] = [];
-  const { host, controller: c } = fixture({ onChange(keys, groups = []) { packets.push({ keys, groups }); } });
-  selectNative(c); c.observe(demand('echo x', 1, true)); c.flush(); host.answer(0); await settle();
-  assert.equal(host.calls[1]!.request.op, 'styles.resolve'); packets.length = 0;
-  const prepared = c.stats().preparedBytes, classifications = host.acceptedClassifications.length;
-  host.fault(1, code); await settle();
-  const need = c.profileReconciliationNeeded(); assert.ok(need, 'a native STYLE definition fault must request fresh catalogue metadata');
-  assert.deepEqual(packets, [{ keys: ['source'], groups: [] }], 'the client must be woken by one targeted coalesced notice');
-  assert.equal(c.status('source')!.exact, true); assert.equal(c.status('source')!.acknowledgedVersion, 1);
-  assert.equal(c.workStatus('source').profileRetryAllowed, false); assert.equal(c.workStatus('source').fallbackEligible, false);
-  c.acknowledgeProfiles(need.generation, need.sequence); packets.length = 0;
-  for (let i = 0; i < 100; i++) { c.observe(demand('echo x', 1, true)); c.flush(); }
-  await settle(); assert.equal(host.calls.length, 2); assert.deepEqual(packets, []);
-  selectNative(c, 'replacement', 'b'.repeat(64)); await settle();
-  assert.equal(host.calls[2]!.request.op, 'styles.resolve'); host.style(2); await settle();
-  assert.ok(c.displayBasis('source')); assert.equal(c.stats().preparedBytes, prepared);
-  assert.equal(host.acceptedClassifications.length, classifications); assert.equal(c.stats().restarts, 0);
-  assert.deepEqual(host.calls.map(call => call.request.op), ['highlight', 'styles.resolve', 'styles.resolve']);
-});
 
-test('unknown STYLE error codes do not invent a catalogue need or source retry', async () => {
-  for (const code of ['busy', 'theme_unavailable']) {
+test('generic STYLE refusal does not invent source retry or provider recovery', async () => {
+  for (const code of ['busy', 'invalid_rules']) {
     const packets: string[][] = [];
     const { host, controller: c } = fixture({ onChange(keys) { packets.push([...keys]); } });
-    selectNative(c); c.observe(demand('echo x', 1, true)); c.flush(); host.answer(0); await settle();
+    selectStyle(c); c.observe(demand('echo x', 1, true)); c.flush(); host.answer(0); await settle();
     packets.length = 0; host.fault(1, code); await settle();
-    assert.equal(c.profileReconciliationNeeded(), undefined); assert.deepEqual(packets, []);
-    assert.equal(c.workStatus('source').profileRetryAllowed, false); assert.equal(c.status('source')!.exact, true);
+    assert.deepEqual(packets, []);
+    assert.equal(c.workStatus('source').execution, 'acknowledged'); assert.equal(c.status('source')!.exact, true);
     c.flush(); await settle(); assert.equal(host.calls.length, 2); assert.equal(host.acceptedClassifications.length, 1);
   }
 });
@@ -1630,9 +1547,10 @@ test('geometry funding: native Off preserves funded geometry; explicit removal a
 
 for (const settleFirst of [false, true]) test(`geometry funding: source/style pressure cancels only after render, credit waits for outcome (${settleFirst})`, async () => {
   const { host, controller: c } = fixture({ retention: { maxBytes: 65536 } });
-  selectNative(c); c.observe(demand('echo A', 1, true)); c.flush(); await paint(c, host, 0);
+  assert.equal(c.setStyleSelection(compactSelection(1, 'initial')), true);
+  c.observe(demand('echo A', 1, true)); c.flush(); await paint(c, host, 0);
   const previous = c.displayBasis('source')!;
-  selectNative(c, 'next', 'b'.repeat(64)); await settle();
+  assert.equal(c.setStyleSelection(compactSelection(2, 'next', 'replacement')), true); await settle();
   assert.equal(host.calls[2]!.request.op, 'styles.resolve');
   c.observe(demand('echo other', 1, true, 'other')); c.flush();
   assert.equal(host.calls[3]!.request.op, 'highlight');
@@ -1698,13 +1616,13 @@ for (const kind of ['empty', 'source', 'palette'] as const) test(`geometry fundi
   assert.equal(typeof global.gc, 'function');
   const { host, controller: c } = fixture({ retention: { maxBytes: 65536 } });
   if (kind !== 'source') { c.observe(demand('held independent source', 1, true)); c.flush(); }
-  if (kind === 'palette') selectNative(c);
+  if (kind === 'palette') assert.equal(c.setStyleSelection(compactSelection()), true);
   const abandoned = await abandonedGeometryPreparation(c, kind);
   for (let i = 0; i < 80; i++) { await turn(); global.gc!(); await turn(); if (!abandoned.weak.deref()) break; }
   assert.equal(abandoned.weak.deref(), undefined, 'actual owner GC is a required precondition');
   assert.equal(host.calls[0]!.request.op, 'highlight');
-  if (kind === 'palette') assert.equal(host.calls[1]!.request.op, 'styles.resolve');
-  const jobs = kind === 'palette' ? 2 : 1;
+  if (kind === 'palette') assert.equal(host.calls.length, 1, 'palette-only selection is local and does not send a STYLE request');
+  const jobs = 1;
   assert.equal(c.stats().globalUnsettledJobs, jobs);
   let renderDepth = 0, inside = 0, aborted = 0, done!: () => void;
   const cancelled = new Promise<void>(resolve => { done = resolve; });
@@ -1724,7 +1642,7 @@ for (const kind of ['empty', 'source', 'palette'] as const) test(`geometry fundi
   } finally { renderDepth--; }
   await awaitFixture(cancelled); assert.equal(inside, 0); assert.equal(aborted, jobs);
   assert.equal(c.stats().globalUnsettledJobs, jobs, 'cleanup does not release physical request credit');
-  host.answer(0); if (kind === 'palette') host.style(1); await settle();
+  host.answer(0); await settle();
   assert.equal(c.stats().globalUnsettledJobs, 0); assert.equal(c.displayBasis('source'), undefined);
   assert.equal(c.stats().preparedBytes, before.preparedBytes); assert.equal(host.calls.length, jobs);
 });
@@ -1830,10 +1748,10 @@ test('runtime health: expected SOURCE limit refusal and explicit native Off are 
 
 test('runtime health: unexpected STYLE response clears only after that owner publishes valid replacement styles', async () => {
   const health = new RuntimeHealth(() => {}), { host, controller: c } = fixture({ diagnostic: health.sink(() => {}) });
-  selectNative(c); c.observe(demand('x', 1, true)); c.flush(); host.answer(0); await settle();
+  selectStyle(c); c.observe(demand('x', 1, true)); c.flush(); host.answer(0); await settle();
   assert.equal(host.calls[1]!.request.op, 'styles.resolve'); host.calls[1]!.resolve({}); await settle();
   assert.equal(health.snapshot().active, 1); assert.equal(health.snapshot().issues[0]!.operation, 'styles');
-  selectNative(c, 'replacement', 'b'.repeat(64)); c.flush(); await settle();
+  selectStyle(c, 'replacement', 'b'.repeat(64)); c.flush(); await settle();
   const index = host.calls.length - 1; assert.equal(host.calls[index]!.request.op, 'styles.resolve');
   host.style(index); await settle(); assert.equal(health.snapshot().active, 0);
   assert.equal(health.snapshot().errors, 1); assert.equal(health.snapshot().last?.state, 'recovered');
@@ -1849,12 +1767,12 @@ test('runtime health: actual encoded frame refusal keeps no-start authority with
 
 for (const rejected of [false, true]) test(`runtime health: obsolete STYLE ${rejected ? 'rejection' : 'invalid reply'} cannot reopen healthy cached rollback`, async () => {
   const health = new RuntimeHealth(() => {}), { host, controller: c } = fixture({ diagnostic: health.sink(() => {}) });
-  selectNative(c); const a = demand('echo retained', 1, true); c.observe(a); c.flush(); await paint(c, host, 0);
-  selectNative(c, 'B', 'b'.repeat(64)); c.observe({ ...a, profile: 'B', fingerprint: 'b'.repeat(64) }); c.flush();
+  selectStyle(c); const a = demand('echo retained', 1, true); c.observe(a); c.flush(); await paint(c, host, 0);
+  selectStyle(c, 'B', 'b'.repeat(64)); c.flush();
   assert.equal(host.calls[2]!.request.op, 'styles.resolve');
-  selectNative(c); c.observe(a); c.flush(); await settle(); assert.equal(c.stats().unsettledJobs, 1);
+  selectStyle(c); c.observe(a); c.flush(); await settle(); assert.equal(c.stats().unsettledJobs, 1);
   if (rejected) host.calls[2]!.reject(new Error('PRIVATE_OLD_THEME')); else host.calls[2]!.resolve({});
-  await settle(); assert.equal(c.displayBasis('source')!.profile, 'native');
+  await settle(); assert.equal(c.displayBasis('source')!.palette, syntheticSelection(0xaa, 'selected').palette);
   assert.equal(health.snapshot().errors, 0); assert.equal(health.snapshot().active, 0);
 });
 
@@ -1928,7 +1846,7 @@ test('intentional suspend reopens an interrupted append using latest full source
 
 test('intentional suspend retries STYLE without reparsing completed scopes', async () => {
   const { host, controller: c } = fixture();
-  c.setStyleSelection({ kind: 'native', id: 'pi', fingerprint });
+  selectStyle(c);
   c.observe(demand('done', 1, true)); c.flush(); host.answer(0); await settle(); c.flush();
   assert.equal(host.calls[1]!.request.op, 'styles.resolve');
   c.suspend(); c.interruptProvider(host.generation); host.generation++;
@@ -1942,7 +1860,7 @@ test('intentional suspend retries STYLE without reparsing completed scopes', asy
 
 test('intentional suspend keeps complete source and ready styles locally reusable', async () => {
   const { host, controller: c } = fixture();
-  c.setStyleSelection({ kind: 'native', id: 'pi', fingerprint });
+  selectStyle(c);
   c.observe(demand('done', 1, true)); c.flush(); host.answer(0); await settle(); c.flush(); host.style(1); await settle();
   const before = c.displayBasis('source'); assert.ok(before);
   c.suspend(); c.flush(); assert.equal(c.displayBasis('source')?.stamp, before.stamp);
@@ -2123,7 +2041,7 @@ test('completion boundary: withdrawing desired STYLE does not wait on unrelated 
   busy.controller.observe(demand('held a', 1, true, 'a')); busy.controller.observe(demand('held b', 1, true, 'b')); busy.controller.flush();
   const preparation = { keys: new Set<string>(), requiresCredit() { return false; }, needsRefresh() { return false; }, prepare() { assert.fail('palette-only demand does not queue preparation'); } };
   const group = waiting.controller.registerPreparation(preparation)!;
-  waiting.controller.updatePreparation(group); waiting.controller.setStyleSelection({ kind: 'native', id: 'pi', fingerprint });
+  waiting.controller.updatePreparation(group); waiting.controller.setStyleSelection(syntheticSelection(0xaa, 'selected'));
   try {
     await turn();
     const completion = waiting.controller.whenSettled(); waiting.controller.setStyleSelection(undefined);
@@ -2141,7 +2059,7 @@ for (const withdrawal of ['pause', 'unregister', 'remove', 'freeze', 'style'] as
   const withdrawn = { keys: new Set<string>(), requiresCredit() { return true; }, needsRefresh() { return false; }, prepare() { assert.fail('withdrawn preparation cannot run'); } };
   const group = c.registerPreparation(withdrawn)!;
   if (withdrawal === 'pause' || withdrawal === 'unregister') c.queuePreparation(group);
-  else if (withdrawal === 'style') { c.updatePreparation(group); c.setStyleSelection({ kind: 'native', id: 'pi', fingerprint }); }
+  else if (withdrawal === 'style') { c.updatePreparation(group); selectStyle(c); }
   else c.observe(demand('withdrawn source', 1, true));
   const wake = c.wake;
   t.mock.method(c, 'wake', function(this: SourceController) { wakes++; return wake.call(this); });
@@ -2218,7 +2136,7 @@ test('completion boundary: SOURCE freeze re-registers genuinely blocked retained
   t.mock.method(waiting.host, 'request', function(this: Host, ...args: Parameters<Host['request']>) {
     const result = request.apply(this, args); if (args[1].op === 'styles.resolve') dispatched(); return result;
   });
-  selectNative(c, 'replacement', 'b'.repeat(64)); await turn();
+  selectStyle(c, 'replacement', 'b'.repeat(64)); await turn();
   const completion = c.whenSettled(); let completed = false; void completion.then(() => { completed = true; });
   try {
     c.freeze('source'); await turn();
@@ -2261,7 +2179,7 @@ test('completion boundary: another card evicts the last frozen STYLE basis witho
   const busy = fixture(); busy.controller.observe(demand('held a', 1, true, 'a')); busy.controller.observe(demand('held b', 1, true, 'b')); busy.controller.flush();
   const other = { keys: new Set<string>(), needsRefresh() { return false; }, prepare() { assert.fail('geometry funding is not a preparation demand'); } };
   const funding = c.geometryFunding(c.registerPreparation(other)!)!;
-  selectNative(c, 'replacement', 'b'.repeat(64)); await turn();
+  selectStyle(c, 'replacement', 'b'.repeat(64)); await turn();
   const completion = c.whenSettled(), bytes = c.stats().globalTransientBytes;
   try {
     funding.grant(funding.budget.limit)?.close();

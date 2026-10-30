@@ -1,6 +1,6 @@
 {
-  "revision": 1,
-  "binding_slots": 17,
+  "revision": 2,
+  "binding_slots": 44,
   "default": {
     "foreground": {
       "kind": "inherit"
@@ -19,10 +19,11 @@
       "excludes": [],
       "foreground": {
         "kind": "binding",
-        "slot": 2
+        "slot": 34
       },
       "background": null,
-      "font": null
+      "font": null,
+      "context": null
     },
     {
       "path": [
@@ -34,7 +35,8 @@
         "slot": 0
       },
       "background": null,
-      "font": null
+      "font": null,
+      "context": null
     },
     {
       "path": [
@@ -43,10 +45,11 @@
       "excludes": [],
       "foreground": {
         "kind": "binding",
-        "slot": 2
+        "slot": 33
       },
       "background": null,
-      "font": null
+      "font": null,
+      "context": null
     },
     {
       "path": [
@@ -55,10 +58,11 @@
       "excludes": [],
       "foreground": {
         "kind": "binding",
-        "slot": 7
+        "slot": 5
       },
       "background": null,
-      "font": null
+      "font": null,
+      "context": null
     },
     {
       "path": [
@@ -67,10 +71,11 @@
       "excludes": [],
       "foreground": {
         "kind": "binding",
-        "slot": 1
+        "slot": 3
       },
       "background": null,
-      "font": null
+      "font": null,
+      "context": null
     },
     {
       "path": [
@@ -79,10 +84,11 @@
       "excludes": [],
       "foreground": {
         "kind": "binding",
-        "slot": 4
+        "slot": 8
       },
       "background": null,
-      "font": null
+      "font": null,
+      "context": null
     },
     {
       "path": [
@@ -94,7 +100,8 @@
         "slot": 0
       },
       "background": null,
-      "font": null
+      "font": null,
+      "context": null
     },
     {
       "path": [
@@ -106,7 +113,8 @@
         "slot": 2
       },
       "background": null,
-      "font": null
+      "font": null,
+      "context": null
     },
     {
       "path": [
@@ -115,10 +123,11 @@
       "excludes": [],
       "foreground": {
         "kind": "binding",
-        "slot": 3
+        "slot": 28
       },
       "background": null,
-      "font": null
+      "font": null,
+      "context": null
     },
     {
       "path": [
@@ -127,10 +136,11 @@
       "excludes": [],
       "foreground": {
         "kind": "binding",
-        "slot": 3
+        "slot": 29
       },
       "background": null,
-      "font": null
+      "font": null,
+      "context": null
     },
     {
       "path": [
@@ -139,10 +149,11 @@
       "excludes": [],
       "foreground": {
         "kind": "binding",
-        "slot": 3
+        "slot": 28
       },
       "background": null,
-      "font": null
+      "font": null,
+      "context": null
     },
     {
       "path": [
@@ -151,10 +162,11 @@
       "excludes": [],
       "foreground": {
         "kind": "binding",
-        "slot": 5
+        "slot": 4
       },
       "background": null,
-      "font": null
+      "font": null,
+      "context": null
     },
     {
       "path": [
@@ -163,10 +175,11 @@
       "excludes": [],
       "foreground": {
         "kind": "binding",
-        "slot": 5
+        "slot": 4
       },
       "background": null,
-      "font": null
+      "font": null,
+      "context": null
     },
     {
       "path": [
@@ -175,10 +188,11 @@
       "excludes": [],
       "foreground": {
         "kind": "binding",
-        "slot": 4
+        "slot": 8
       },
       "background": null,
-      "font": null
+      "font": null,
+      "context": null
     },
     {
       "path": [
@@ -187,10 +201,11 @@
       "excludes": [],
       "foreground": {
         "kind": "binding",
-        "slot": 4
+        "slot": 8
       },
       "background": null,
-      "font": null
+      "font": null,
+      "context": null
     },
     {
       "path": [
@@ -199,10 +214,11 @@
       "excludes": [],
       "foreground": {
         "kind": "binding",
-        "slot": 4
+        "slot": 8
       },
       "background": null,
-      "font": null
+      "font": null,
+      "context": null
     },
     {
       "path": [
@@ -211,10 +227,11 @@
       "excludes": [],
       "foreground": {
         "kind": "binding",
-        "slot": 4
+        "slot": 8
       },
       "background": null,
-      "font": null
+      "font": null,
+      "context": null
     },
     {
       "path": [
@@ -223,10 +240,11 @@
       "excludes": [],
       "foreground": {
         "kind": "binding",
-        "slot": 4
+        "slot": 8
       },
       "background": null,
-      "font": null
+      "font": null,
+      "context": null
     },
     {
       "path": [
@@ -235,10 +253,11 @@
       "excludes": [],
       "foreground": {
         "kind": "binding",
-        "slot": 1
+        "slot": 3
       },
       "background": null,
-      "font": null
+      "font": null,
+      "context": null
     },
     {
       "path": [
@@ -250,7 +269,8 @@
         "slot": 6
       },
       "background": null,
-      "font": null
+      "font": null,
+      "context": null
     },
     {
       "path": [
@@ -259,10 +279,11 @@
       "excludes": [],
       "foreground": {
         "kind": "binding",
-        "slot": 6
+        "slot": 36
       },
       "background": null,
-      "font": null
+      "font": null,
+      "context": null
     },
     {
       "path": [
@@ -271,10 +292,11 @@
       "excludes": [],
       "foreground": {
         "kind": "binding",
-        "slot": 1
+        "slot": 3
       },
       "background": null,
-      "font": null
+      "font": null,
+      "context": null
     },
     {
       "path": [
@@ -283,10 +305,11 @@
       "excludes": [],
       "foreground": {
         "kind": "binding",
-        "slot": 1
+        "slot": 3
       },
       "background": null,
-      "font": null
+      "font": null,
+      "context": null
     },
     {
       "path": [
@@ -295,10 +318,11 @@
       "excludes": [],
       "foreground": {
         "kind": "binding",
-        "slot": 8
+        "slot": 35
       },
       "background": null,
-      "font": null
+      "font": null,
+      "context": null
     },
     {
       "path": [
@@ -307,10 +331,11 @@
       "excludes": [],
       "foreground": {
         "kind": "binding",
-        "slot": 8
+        "slot": 10
       },
       "background": null,
-      "font": null
+      "font": null,
+      "context": null
     },
     {
       "path": [
@@ -319,10 +344,11 @@
       "excludes": [],
       "foreground": {
         "kind": "binding",
-        "slot": 1
+        "slot": 3
       },
       "background": null,
-      "font": null
+      "font": null,
+      "context": null
     },
     {
       "path": [
@@ -331,10 +357,11 @@
       "excludes": [],
       "foreground": {
         "kind": "binding",
-        "slot": 1
+        "slot": 3
       },
       "background": null,
-      "font": null
+      "font": null,
+      "context": null
     },
     {
       "path": [
@@ -343,13 +370,14 @@
       "excludes": [],
       "foreground": {
         "kind": "binding",
-        "slot": 9
+        "slot": 16
       },
       "background": null,
       "font": {
         "attributes": 1,
         "attribute_mask": 1
-      }
+      },
+      "context": null
     },
     {
       "path": [
@@ -361,7 +389,8 @@
       "font": {
         "attributes": 1,
         "attribute_mask": 1
-      }
+      },
+      "context": null
     },
     {
       "path": [
@@ -373,7 +402,8 @@
       "font": {
         "attributes": 2,
         "attribute_mask": 2
-      }
+      },
+      "context": null
     },
     {
       "path": [
@@ -382,13 +412,14 @@
       "excludes": [],
       "foreground": {
         "kind": "binding",
-        "slot": 11
+        "slot": 17
       },
       "background": null,
       "font": {
         "attributes": 4,
         "attribute_mask": 4
-      }
+      },
+      "context": null
     },
     {
       "path": [
@@ -397,10 +428,11 @@
       "excludes": [],
       "foreground": {
         "kind": "binding",
-        "slot": 11
+        "slot": 17
       },
       "background": null,
-      "font": null
+      "font": null,
+      "context": null
     },
     {
       "path": [
@@ -409,13 +441,14 @@
       "excludes": [],
       "foreground": {
         "kind": "binding",
-        "slot": 10
+        "slot": 18
       },
       "background": null,
       "font": {
         "attributes": 4,
         "attribute_mask": 4
-      }
+      },
+      "context": null
     },
     {
       "path": [
@@ -424,10 +457,11 @@
       "excludes": [],
       "foreground": {
         "kind": "binding",
-        "slot": 12
+        "slot": 19
       },
       "background": null,
-      "font": null
+      "font": null,
+      "context": null
     },
     {
       "path": [
@@ -436,10 +470,11 @@
       "excludes": [],
       "foreground": {
         "kind": "binding",
-        "slot": 13
+        "slot": 27
       },
       "background": null,
-      "font": null
+      "font": null,
+      "context": null
     },
     {
       "path": [
@@ -448,10 +483,11 @@
       "excludes": [],
       "foreground": {
         "kind": "binding",
-        "slot": 13
+        "slot": 27
       },
       "background": null,
-      "font": null
+      "font": null,
+      "context": null
     },
     {
       "path": [
@@ -460,10 +496,11 @@
       "excludes": [],
       "foreground": {
         "kind": "binding",
-        "slot": 14
+        "slot": 20
       },
       "background": null,
-      "font": null
+      "font": null,
+      "context": null
     },
     {
       "path": [
@@ -472,10 +509,11 @@
       "excludes": [],
       "foreground": {
         "kind": "binding",
-        "slot": 15
+        "slot": 24
       },
       "background": null,
-      "font": null
+      "font": null,
+      "context": null
     },
     {
       "path": [
@@ -484,10 +522,11 @@
       "excludes": [],
       "foreground": {
         "kind": "binding",
-        "slot": 15
+        "slot": 23
       },
       "background": null,
-      "font": null
+      "font": null,
+      "context": null
     },
     {
       "path": [
@@ -496,10 +535,11 @@
       "excludes": [],
       "foreground": {
         "kind": "binding",
-        "slot": 15
+        "slot": 23
       },
       "background": null,
-      "font": null
+      "font": null,
+      "context": null
     },
     {
       "path": [
@@ -508,10 +548,11 @@
       "excludes": [],
       "foreground": {
         "kind": "binding",
-        "slot": 16
+        "slot": 22
       },
       "background": null,
-      "font": null
+      "font": null,
+      "context": null
     },
     {
       "path": [
@@ -520,10 +561,11 @@
       "excludes": [],
       "foreground": {
         "kind": "binding",
-        "slot": 16
+        "slot": 22
       },
       "background": null,
-      "font": null
+      "font": null,
+      "context": null
     }
   ]
 }

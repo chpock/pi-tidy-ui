@@ -6,22 +6,28 @@ import { SourceController, type SourcePreparation, type GroupDisplayBasis } from
 import { SemanticRetentionPool } from '../../../src/occipital/semantic-retention.ts';
 import { CARD_ROLES, type CardRole } from '../../../src/occipital/semantic-codec.ts';
 import { decodeSemanticDescription } from '../../../src/occipital/semantic-protocol.ts';
-import { fingerprintNative, fingerprintRules } from '../../../src/occipital/style-rules.ts';
+import { fingerprintRules } from '../../../src/occipital/style-rules.ts';
 import { RequestFailure } from '../../../src/occipital/request-failure.ts';
 import { HIGHLIGHT_LIMITS } from '../../../src/occipital/limits.ts';
 import type { ConcreteStyle } from '../../../src/syntax/style-materialization.ts';
 import { semanticDescriptor } from '../../fixtures/semantic-provider.ts';
+import { createSemanticRuleDefinition, SEMANTIC_REGIONS } from '../../../src/syntax/semantic-rules.ts';
+import { compactSelection } from '../../fixtures/test-style-selection.ts';
 
 type Frame = Record<string, any>;
-const definition = { revision: 1 as const, binding_slots: 0, default: { foreground: { kind: 'inherit' as const }, background: { kind: 'inherit' as const }, attributes: 0, attribute_mask: 0 }, rules: [] };
+const baseDefinition = createSemanticRuleDefinition();
+const definition = (slot: number, marker: number) => ({ ...baseDefinition, default: { background: baseDefinition.default.background,
+  attributes: baseDefinition.default.attributes, attribute_mask: baseDefinition.default.attribute_mask, foreground: { kind: 'binding' as const, slot } },
+  rules: [...baseDefinition.rules, { path: [`test.synthetic.${marker}`], excludes: [], foreground: { kind: 'binding' as const, slot }, background: null, font: null, context: null }] });
 const literal = (n: number): ConcreteStyle => ({ foreground: { kind: 'rgb', r: n, g: 2, b: 3 }, background: { kind: 'rgb', r: 4, g: 5, b: 6 }, attributes: 0 });
 const roles = (n: number) => Object.fromEntries(CARD_ROLES.map(role => [role, literal(n)])) as Record<CardRole, ConcreteStyle>;
-const native = (n = 1) => ({ kind: 'native' as const, id: `native${n}`, fingerprint: n.toString(16).padStart(64, '0') });
-const local = (n = 1, bindingRevision = n) => ({ kind: 'client' as const, definition, bindingRevision, palette: `local:${bindingRevision}`, bindings: [], roles: roles(n) });
-const demand = (key: string, text = 'x\n', version = 1, complete = true) => ({ key, text, version, complete, language: 'text', profile: 'pi', fingerprint: fingerprintRules(definition) });
+const paletteInput = (n = 1, bindingRevision = n, ruleSeed = 1) => ({ definition: definition(ruleSeed % SEMANTIC_REGIONS.length, ruleSeed), bindingRevision, palette: `owned:${bindingRevision}`,
+  bindings: SEMANTIC_REGIONS.map(() => ({ ink: { kind: 'rgb' as const, r: n & 0xff, g: 2, b: 3 }, attributes: 0, attribute_mask: 31 })), roles: roles(n) });
+const local = paletteInput;
+const demand = (key: string, text = 'x\n', version = 1, complete = true) => ({ key, text, version, complete, language: 'text' });
 class Peer {
   generation = 1;
-  description = decodeSemanticDescription(semanticDescriptor('describe', 'instance', []), 'describe');
+  description = decodeSemanticDescription(semanticDescriptor('describe', 'instance'), 'describe');
   calls: Frame[] = []; signals: (AbortSignal | undefined)[] = []; useful = 0;
   pending: { resolve(value: unknown): void; reject(error: unknown): void }[] = [];
   snapshot() { return { generation: this.generation, availability: 'ready' as const, reason: 'ready' as const, kind: 'shared' as const, initialShared: true, description: this.description }; }
@@ -31,7 +37,7 @@ class Peer {
     this.calls.push(request); this.signals.push(options?.signal);
     return new Promise<unknown>((resolve, reject) => this.pending.push({ resolve, reject }));
   }
-  envelope(i: number, body: unknown) { return { v: 3, ticket: this.calls[i]!.ticket, instance: this.description.instance, assets: this.description.assets, status: 'ok', body }; }
+  envelope(i: number, body: unknown) { return { v: 4, ticket: this.calls[i]!.ticket, instance: this.description.instance, assets: this.description.assets, status: 'ok', body }; }
   source(i: number, text = 'x\n', context = 1, revision = 1, from = 0, split = false) {
     const q = this.calls[i]!, s = q.sources?.[0] ?? q, bytes = Buffer.byteLength(text), complete = q.op === 'highlight' || !!q.final;
     this.pending[i]!.resolve(this.envelope(i, { kind: 'source', vocabulary: this.description.vocabulary.fingerprint, sources: [{ key: s.key, generation: s.generation, source_version: s.source_version,
@@ -40,10 +46,9 @@ class Peer {
       counters: { committed_line_calls: 1, committed_line_bytes: bytes, tail_calls: 0, tail_bytes: 0 } }] }));
   }
   style(i: number, n = 1, bad = false) {
-    const q = this.calls[i]!, isNative = q.rules.kind === 'native';
-    this.pending[i]!.resolve(this.envelope(i, { kind: 'styles', vocabulary: q.vocabulary, rules: bad ? 'f'.repeat(64) : isNative ? fingerprintNative(q.rules.fingerprint, 'rules') : fingerprintRules(q.rules.definition),
-      styles: q.contexts.length || isNative ? [{ ...(isNative ? literal(n) : definition.default), attribute_mask: isNative ? 31 : 0 }] : [], indices: q.contexts.map(() => 1),
-      palette: isNative ? { revision: 1, fingerprint: fingerprintNative(q.rules.fingerprint, 'palette'), slots: CARD_ROLES.map(() => 1), origins: CARD_ROLES.map(() => 0) } : null }));
+    const q = this.calls[i]!, rules = q.rules as ReturnType<typeof definition>;
+    this.pending[i]!.resolve(this.envelope(i, { kind: 'styles', vocabulary: q.vocabulary, rules: bad ? 'f'.repeat(64) : fingerprintRules(rules),
+      styles: q.contexts.length ? [{ ...rules.default, attribute_mask: 0 }] : [], indices: q.contexts.map(() => 1) }));
   }
 }
 async function settle() { for (let i = 0; i < 8; i++) await turn(); }
@@ -85,36 +90,32 @@ test('group presentation: useful zero-source demand is explicit; generic uses no
   } finally { void c.preparation; await cleanup(owner, peer); }
 });
 
-test('group presentation: native palette-only uses empty contexts, rollback cache and no fake source', async () => {
+test('group presentation: palette-only owner resolves all roles locally without STYLE or fake source', async () => {
   const peer = new Peer(), owner = new SourceController(peer), c = card(owner, []);
   try {
-    owner.setStyleSelection(native()); c.start(); await settle();
-    assert.equal(peer.calls.length, 1); assert.equal(peer.calls[0]!.op, 'styles.resolve'); assert.deepEqual(peer.calls[0]!.contexts, []);
+    owner.setStyleSelection(paletteInput()); c.start(); await settle();
+    const first = owner.groupPresentation(c.group)!; assert.equal(ink(first.role('frame')), 1);
     assert.equal(owner.stats().sourceRecords, 0); assert.equal(owner.stats().captures, 0); assert.equal(owner.stats().retention.entries, 0);
-    peer.style(0, 11); await settle(); const a = owner.groupPresentation(c.group)!; assert.equal(ink(a.role('frame')), 11);
-    owner.setStyleSelection(native(2)); await settle(); assert.equal(ink(owner.groupPresentation(c.group)!.role('frame')), 11);
-    peer.style(1, 22); await settle(); assert.equal(a.role('frame'), undefined);
-    owner.setStyleSelection(native()); await settle(); assert.equal(ink(owner.groupPresentation(c.group)!.role('frame')), 11);
-    assert.equal(peer.calls.length, 2); assert.equal(peer.useful, 0); assert.equal(owner.stats().preparedBytes, 0);
+    owner.setStyleSelection(paletteInput(2)); await settle();
+    const second = owner.groupPresentation(c.group)!; assert.equal(ink(second.role('frame')), 2); assert.equal(first.role('frame'), undefined);
+    owner.setStyleSelection(paletteInput()); await settle(); assert.equal(ink(owner.groupPresentation(c.group)!.role('frame')), 1);
+    assert.equal(peer.calls.length, 0); assert.equal(peer.useful, 0); assert.equal(owner.stats().preparedBytes, 0);
     owner.unregisterPreparation(c.group); assert.equal(owner.groupPresentation(c.group), undefined);
-    assert.equal(owner.stats().retention.retainedBytes > 0, true, 'desired config alone remains after last useful owner/cache removal');
+    assert.equal(owner.stats().retention.retainedBytes > 0, true, 'selected input remains charged after its last useful owner');
   } finally { void c.preparation; await cleanup(owner, peer); }
 });
 
-test('group presentation: two stable slots switch all-old to all-new; unrelated group completes independently', async () => {
+test('group presentation: two stable slots rebind locally while unrelated empty group publishes independently', async () => {
   const peer = new Peer(), owner = new SourceController(peer), c = card(owner, ['left', 'right']);
   try {
-    owner.setStyleSelection(native()); c.start(); await settle();
+    owner.setStyleSelection(paletteInput()); c.start(); await settle();
     peer.source(0, 'x\n', 1); peer.source(1, 'x\n', 2); await settle(); peer.style(2, 11); await settle();
-    assert.deepEqual(colors(owner.groupPresentation(c.group), ['left', 'right']), [11, 11, 11]);
-    owner.setStyleSelection(native(2)); await settle();
+    assert.deepEqual(colors(owner.groupPresentation(c.group), ['left', 'right']), [1, 1, 1]);
+    owner.setStyleSelection(paletteInput(2)); await settle();
     const other = card(owner, []); other.start(); await settle();
-    assert.deepEqual(colors(owner.groupPresentation(c.group), ['left', 'right']), [11, 11, 11]);
-    // One existing palette request also satisfies the independent empty owner after settlement.
-    peer.style(3, 22); await settle();
-    assert.deepEqual(colors(owner.groupPresentation(c.group), ['left', 'right']), [22, 22, 22]);
-    assert.equal(ink(owner.groupPresentation(other.group)!.role('panel')), 22);
-    assert.equal(peer.useful, 2); void other.preparation;
+    assert.deepEqual(colors(owner.groupPresentation(c.group), ['left', 'right']), [2, 2, 2]);
+    assert.equal(ink(owner.groupPresentation(other.group)!.role('panel')), 2);
+    assert.equal(peer.calls.length, 3); assert.equal(peer.useful, 2); void other.preparation;
   } finally { void c.preparation; await cleanup(owner, peer); }
 });
 
@@ -131,15 +132,15 @@ test('group presentation: equal-color metadata closes strict reader without pain
 test('group presentation: missing, equal-size changed and recreated members cannot attach stale colors', async () => {
   const peer = new Peer(), owner = new SourceController(peer), c = card(owner, ['left']);
   try {
-    owner.setStyleSelection(native()); c.start(); peer.source(0); await settle(); peer.style(1, 11); await settle(); const a = owner.groupPresentation(c.group)!;
+    owner.setStyleSelection(paletteInput()); c.start(); peer.source(0); await settle(); peer.style(1, 11); await settle(); const a = owner.groupPresentation(c.group)!;
     c.keys.delete('left'); c.keys.add('right'); assert.equal(owner.groupPresentation(c.group), undefined);
     assert.equal(owner.updatePreparation(c.group), false); assert.equal(a.role('panel'), undefined);
     c.keys.delete('right'); c.keys.add('left'); assert.equal(owner.updatePreparation(c.group), true); await settle();
     owner.remove('left'); assert.equal(owner.groupPresentation(c.group), undefined);
     c.start(); await settle(); const q = peer.calls.length - 1; assert.equal(peer.calls[q]!.op, 'highlight'); peer.source(q); await settle();
-    assert.equal(owner.groupPresentation(c.group), undefined, 'recreated member needs a fresh validated style basis');
-    peer.style(peer.calls.length - 1, 44); await settle();
-    assert.equal(ink(owner.groupPresentation(c.group)!.role('panel')), 44); assert.equal(a.visit(() => assert.fail('recreated member')), false);
+    const style = peer.calls.length - 1; assert.equal(peer.calls[style]!.op, 'styles.resolve'); peer.style(style); await settle();
+    assert.ok(owner.groupPresentation(c.group), 'recreated member receives a fresh basis from its current source identity');
+    assert.equal(ink(owner.groupPresentation(c.group)!.role('panel')), 1); assert.equal(a.visit(() => assert.fail('recreated member')), false);
   } finally { void c.preparation; await cleanup(owner, peer); }
 });
 
@@ -155,29 +156,31 @@ test('group presentation: reentrant unregister invalidates all member reads and 
   } finally { void c.preparation; await cleanup(owner, peer); }
 });
 
-test('group presentation: held palette selections latest-only, errors retain ready palette without warm retry', async () => {
-  const peer = new Peer(), owner = new SourceController(peer), c = card(owner, []);
+test('group presentation: a held generic STYLE reply uses the latest local palette bindings', async () => {
+  const peer = new Peer(), owner = new SourceController(peer), c = card(owner, ['source']);
   try {
-    owner.setStyleSelection(native()); c.start(); await settle(); peer.style(0, 11); await settle();
-    owner.setStyleSelection(native(2)); await settle(); owner.setStyleSelection(native(3)); await settle();
-    assert.equal(owner.stats().unsettledJobs, 2);
-    for (let n = 4; n < 100; n++) owner.setStyleSelection(native(n)); await settle(); assert.equal(peer.calls.length, 3);
-    peer.style(1, 22); await settle(); assert.equal(ink(owner.groupPresentation(c.group)!.role('panel')), 11);
-    assert.equal(peer.calls[3]!.rules.id, 'native99'); peer.style(2, 33); await settle(); peer.style(3, 99, true); await settle();
-    for (let n = 0; n < 100; n++) owner.flush(); await settle(); assert.equal(peer.calls.length, 4);
-    assert.equal(ink(owner.groupPresentation(c.group)!.role('panel')), 11); assert.equal(owner.stats().sourceRecords, 0); assert.equal(peer.useful, 0);
-    assert.equal(owner.stats().peakJobs, 2); owner.setEnabled(false); assert.equal(owner.groupPresentation(c.group), undefined);
+    owner.setStyleSelection(paletteInput(1, 1, 1)); c.start(); await settle(); peer.source(0); await settle();
+    assert.equal(peer.calls[1]!.op, 'styles.resolve');
+    owner.setStyleSelection(paletteInput(2, 2, 1)); await settle(); owner.setStyleSelection(paletteInput(3, 3, 1)); await settle();
+    assert.equal(owner.stats().unsettledJobs, 1, 'same-rule palette changes do not replace the held physical STYLE request');
+    for (let n = 4; n < 100; n++) owner.setStyleSelection(paletteInput(n, n, 1)); await settle();
+    assert.equal(peer.calls.length, 2, 'local palette changes do not dispatch duplicate STYLE requests');
+    peer.style(1, 99); await settle();
+    assert.deepEqual(colors(owner.groupPresentation(c.group), ['source']), [99, 99], 'the reply materializes through the newest local bindings and roles');
+    for (let n = 0; n < 100; n++) owner.flush(); await settle(); assert.equal(peer.calls.length, 2);
+    assert.equal(owner.stats().sourceRecords, 1); assert.equal(peer.useful, 1);
+    assert.ok(owner.stats().peakJobs <= 2); owner.setEnabled(false); assert.equal(owner.groupPresentation(c.group), undefined);
   } finally { void c.preparation; await cleanup(owner, peer); }
 });
 
-test('group presentation: cached native and local roles progress while two source slots remain physically held', async () => {
+test('group presentation: cached styles and local roles progress while two source slots remain physically held', async () => {
   const peer = new Peer(), owner = new SourceController(peer), c = card(owner, []);
   try {
-    owner.setStyleSelection(native()); c.start(); await settle(); peer.style(0, 11); await settle();
+    owner.setStyleSelection(paletteInput()); c.start(); await settle(); assert.equal(peer.calls.length, 0);
     owner.observe(demand('held-a')); owner.observe(demand('held-b')); owner.flush(); await settle(); assert.equal(owner.stats().unsettledJobs, 2);
     owner.setStyleSelection(local(8)); await settle(); assert.equal(ink(owner.groupPresentation(c.group)!.role('panel')), 8);
-    owner.setStyleSelection(native()); await settle(); assert.equal(ink(owner.groupPresentation(c.group)!.role('panel')), 11);
-    owner.setStyleSelection(native(2)); await settle(); assert.equal(peer.calls.length, 3);
+    owner.setStyleSelection(paletteInput()); await settle(); assert.equal(ink(owner.groupPresentation(c.group)!.role('panel')), 1);
+    owner.setStyleSelection(paletteInput(2)); await settle(); assert.equal(peer.calls.length, 2);
     owner.unregisterPreparation(c.group); assert.equal(owner.stats().unsettledJobs, 2);
   } finally { void c.preparation; await cleanup(owner, peer); }
 });
@@ -222,12 +225,12 @@ test('display text lifetime: removal, replacement and throw hold actual text unt
 test('group presentation: an independently completed card is not blocked by another held multi-slot selection', async () => {
   const peer = new Peer(), owner = new SourceController(peer), pair = card(owner, ['left', 'right']);
   try {
-    owner.setStyleSelection(native()); pair.start(); await settle(); peer.source(0, 'x\n', 1); peer.source(1, 'x\n', 2); await settle(); peer.style(2, 11); await settle();
-    owner.setStyleSelection(native(2)); await settle(); assert.equal(peer.calls[3]!.op, 'styles.resolve');
+    owner.setStyleSelection(paletteInput()); pair.start(); await settle(); peer.source(0, 'x\n', 1); peer.source(1, 'x\n', 2); await settle(); peer.style(2, 11); await settle();
+    owner.setStyleSelection(paletteInput(22, 22, 2)); await settle(); assert.equal(peer.calls[3]!.op, 'styles.resolve');
     const independent = card(owner, ['third']); independent.start(); await settle(); peer.source(4, 'x\n', 3); await settle();
     assert.equal(peer.calls[5]!.op, 'styles.resolve'); peer.style(5, 22); await settle();
     assert.deepEqual(colors(owner.groupPresentation(independent.group), ['third']), [22, 22]);
-    assert.deepEqual(colors(owner.groupPresentation(pair.group), ['left', 'right']), [11, 11, 11]);
+    assert.deepEqual(colors(owner.groupPresentation(pair.group), ['left', 'right']), [1, 1, 1]);
     peer.style(3, 22); await settle(); assert.deepEqual(colors(owner.groupPresentation(pair.group), ['left', 'right']), [22, 22, 22]);
     assert.equal(peer.useful, 3); void independent.preparation;
   } finally { void pair.preparation; await cleanup(owner, peer); }
@@ -272,14 +275,12 @@ test('group presentation: SyntaxClient weak observer forwards group-only deliver
   } finally { await client.dispose(); }
 });
 
-test('group presentation: unregister aborts palette-only work but physical credit and config charge survive until settlement', async () => {
+test('group presentation: unregister releases local palette-only owner without SOURCE or STYLE work', async () => {
   const peer = new Peer(), owner = new SourceController(peer), c = card(owner, []);
   try {
-    owner.setStyleSelection(native()); c.start(); await settle(); assert.equal(owner.stats().unsettledJobs, 1);
+    owner.setStyleSelection(paletteInput()); c.start(); await settle(); assert.ok(owner.groupPresentation(c.group));
     owner.unregisterPreparation(c.group); owner.setStyleSelection(undefined);
-    assert.equal(peer.signals[0]!.aborted, true); assert.equal(owner.stats().globalUnsettledJobs, 1);
-    assert.ok(owner.stats().retention.retainedBytes > 0, 'physical request still owns selected declaration');
-    peer.style(0, 11); await settle(); assert.equal(owner.stats().globalUnsettledJobs, 0); assert.equal(owner.stats().retention.retainedBytes, 0);
+    assert.equal(owner.stats().globalUnsettledJobs, 0); assert.equal(peer.calls.length, 0);
     assert.equal(owner.groupPresentation(c.group), undefined); assert.equal(peer.useful, 0);
   } finally { void c.preparation; await cleanup(owner, peer); }
 });
@@ -334,12 +335,12 @@ test('group presentation: ordinary append keeps historical ready colors and same
   const preparation: SourcePreparation = { keys, prepare() { owner.observe(current); }, requiresCredit() { return false; }, needsRefresh() { return false; } };
   const group = owner.registerPreparation(preparation)!;
   try {
-    owner.setStyleSelection(native()); owner.queuePreparation(group, true); owner.flush(); peer.source(0); await settle(); peer.style(1, 11); await settle();
+    owner.setStyleSelection(paletteInput()); owner.queuePreparation(group, true); owner.flush(); peer.source(0); await settle(); peer.style(1, 1); await settle();
     const a = owner.groupPresentation(group)!;
     current = { ...current, version: 2, text: 'x\ny\n' }; owner.queuePreparation(group, true); owner.flush(); await settle();
-    assert.deepEqual(colors(owner.groupPresentation(group), ['bash']), [11, 11]); assert.equal(a.role('panel')?.foreground.kind, 'rgb');
+    assert.deepEqual(colors(owner.groupPresentation(group), ['bash']), [1, 1]); assert.equal(a.role('panel')?.foreground.kind, 'rgb');
     peer.source(2, current.text, 2, 2, 2); await settle();
-    assert.deepEqual(colors(owner.groupPresentation(group), ['bash']), [11, 11]); peer.style(3, 11); await settle();
+    assert.deepEqual(colors(owner.groupPresentation(group), ['bash']), [1, 1]); peer.style(3, 1); await settle();
     const before = owner.groupPresentation(group)!, basis = owner.displayBasis('bash')!;
     current = { ...current, version: 3, complete: true }; owner.queuePreparation(group, true); owner.flush(); await settle();
     assert.equal(peer.calls[4]!.op, 'stream.append'); assert.equal(peer.calls[4]!.append, ''); peer.source(4, current.text, 2, 3, 4); await settle();
@@ -350,27 +351,27 @@ test('group presentation: ordinary append keeps historical ready colors and same
   } finally { void preparation; await cleanup(owner, peer); }
 });
 
-test('group presentation: compatible provider recovery retains old coherent display until current palette replacement', async () => {
+test('group presentation: compatible provider recovery applies local roles while SOURCE resumes', async () => {
   const peer = new Peer(), owner = new SourceController(peer), keys = new Set(['one']);
   const preparation: SourcePreparation = { keys, prepare() { owner.observe({ ...demand('one', 'x\n', 1, false), language: 'bash' }); }, requiresCredit() { return false; }, needsRefresh() { return false; } };
   const group = owner.registerPreparation(preparation)!;
   try {
-    owner.setStyleSelection(native()); owner.queuePreparation(group, true); owner.flush(); peer.source(0); await settle(); peer.style(1, 11); await settle();
+    owner.setStyleSelection(paletteInput(11)); owner.queuePreparation(group, true); owner.flush(); peer.source(0); await settle(); peer.style(1, 11); await settle();
     const old = owner.groupPresentation(group)!; peer.generation = 2; owner.queuePreparation(group, true); owner.flush(); await settle();
     assert.deepEqual(colors(owner.groupPresentation(group), ['one']), [11, 11]);
     const q = peer.calls.length - 1; assert.equal(peer.calls[q]!.op, 'stream.open');
-    owner.setStyleSelection(native(2)); peer.source(q); await settle();
-    assert.deepEqual(colors(owner.groupPresentation(group), ['one']), [11, 11]);
-    peer.style(peer.calls.length - 1, 22); await settle();
-    assert.deepEqual(colors(owner.groupPresentation(group), ['one']), [22, 22]); assert.equal(old.role('panel'), undefined);
+    owner.setStyleSelection(paletteInput(22)); peer.source(q); await settle();
+    assert.deepEqual(colors(owner.groupPresentation(group), ['one']), [22, 22]);
+    assert.equal(peer.calls.length, q + 1, 'new local roles reuse compatible generic STYLE without a palette-only request');
+    assert.equal(old.role('panel'), undefined);
   } finally { void preparation; await cleanup(owner, peer); }
 });
 
 test('group presentation: denied client config keeps previous ready palette without warm retry', async () => {
   const peer = new Peer(), owner = new SourceController(peer, { retention: { maxBytes: 20000 } }), c = card(owner, []);
   try {
-    assert.equal(owner.setStyleSelection(local(7)), true); c.start(); await settle(); const view = owner.groupPresentation(c.group)!;
-    assert.equal(owner.setStyleSelection(local(9)), false);
+    assert.equal(owner.setStyleSelection(compactSelection(7, 'first')), true); c.start(); await settle(); const view = owner.groupPresentation(c.group)!;
+    assert.equal(owner.setStyleSelection(compactSelection(9, 'next')), false);
     for (let i = 0; i < 100; i++) owner.flush(); await settle();
     assert.equal(owner.groupPresentation(c.group)!.stamp, view.stamp); assert.equal(ink(view.role('panel')), 7); assert.equal(peer.calls.length, 0);
     assert.equal(owner.stats().retention.outstandingPeakBytes, 0);
@@ -388,20 +389,19 @@ test('group presentation: failed cold seal never adopts partial or foreign-sourc
   } finally { void c.preparation; await cleanup(owner, peer); }
 });
 
-function abandonedNative(peer: Peer, budget: import('../../../src/occipital/data-budget.ts').DataBudget) {
+function abandonedPaletteOwner(peer: Peer, budget: import('../../../src/occipital/data-budget.ts').DataBudget) {
   const owner = new SourceController(peer, { retention: { budget } }), c = card(owner, []);
-  owner.setStyleSelection(native()); c.start(); return new WeakRef(owner);
+  owner.setStyleSelection(compactSelection()); c.start(); return new WeakRef(owner);
 }
-test('group presentation: abandoned palette-only owner releases logical roles but held request credit/config end only on physical settlement', async () => {
+test('group presentation: abandoned local palette-only owner releases roles without fabricating helper credit', async () => {
   const { DataBudget } = await import('../../../src/occipital/data-budget.ts');
   const { OCCIPITAL_LIMITS } = await import('../../../src/occipital/limits.ts');
   const peer = new Peer(), observer = new SourceController(peer), budget = new DataBudget(OCCIPITAL_LIMITS.retainedBytes);
-  const weak = abandonedNative(peer, budget); await settle(); assert.equal(peer.calls.length, 1);
+  const weak = abandonedPaletteOwner(peer, budget); await settle(); assert.equal(peer.calls.length, 0);
   for (let i = 0; i < 40; i++) { await turn(); global.gc!(); await settle(); if (!weak.deref()) break; }
   try {
-    assert.equal(weak.deref(), undefined); assert.equal(budget.stats().closed, true); assert.ok(budget.stats().retainedBytes > 0);
-    assert.equal(peer.signals[0]!.aborted, true); assert.equal(observer.stats().globalUnsettledJobs, 1);
-    peer.style(0, 11); await settle(); assert.equal(observer.stats().globalUnsettledJobs, 0); assert.equal(budget.stats().retainedBytes, 0);
+    assert.equal(weak.deref(), undefined); assert.equal(budget.stats().closed, true); assert.equal(budget.stats().retainedBytes, 0);
+    assert.equal(observer.stats().globalUnsettledJobs, 0); assert.equal(peer.calls.length, 0);
     console.log(JSON.stringify({ groupPaletteLifetime: { node: process.version, ownerCollected: true, physicalJobsAfterSettlement: observer.stats().globalUnsettledJobs,
       finalLogicalBytes: budget.stats().retainedBytes, sourceClassifications: peer.useful } }));
   } finally { await cleanup(observer, peer); }
@@ -413,21 +413,20 @@ test('group presentation: thrown preparation is not useful empty palette demand'
   const preparation: SourcePreparation = { keys: new Set(), prepare() { if (throwing) throw new Error('not prepared'); }, needsRefresh() { return false; }, requiresCredit() { return false; } };
   const group = owner.registerPreparation(preparation)!;
   try {
-    owner.setStyleSelection(native()); owner.queuePreparation(group, true); assert.throws(() => owner.flush(), /not prepared/); await settle();
+    owner.setStyleSelection(compactSelection()); owner.queuePreparation(group, true); assert.throws(() => owner.flush(), /not prepared/); await settle();
     assert.equal(owner.groupPresentation(group), undefined); assert.equal(peer.calls.length, 0);
-    throwing = false; owner.queuePreparation(group, true); await settle(); assert.equal(peer.calls.length, 1); peer.style(0, 11); await settle();
-    assert.equal(ink(owner.groupPresentation(group)!.role('panel')), 11);
+      throwing = false; owner.queuePreparation(group, true); await settle(); assert.equal(peer.calls.length, 0);
+      assert.equal(ink(owner.groupPresentation(group)!.role('panel')), 1);
   } finally { void preparation; await cleanup(owner, peer); }
 });
 
-test('group presentation: palette-only owners publish newest-first through the existing shared registry', async () => {
+test('group presentation: local palette-only groups publish newest-first through the existing shared registry', async () => {
   const peer = new Peer(), notices: number[] = [], owner = new SourceController(peer, { onChange(_keys, groups = []) { notices.push(...groups); } });
   const older = card(owner, []), newer = card(owner, []);
   try {
-    owner.setStyleSelection(native()); owner.queuePreparation(older.group, true); owner.queuePreparation(newer.group, true); owner.flush(); await settle();
-    assert.equal(peer.calls.length, 1); peer.style(0, 11); await settle();
-    assert.deepEqual(notices, [newer.group.id, older.group.id]); assert.equal(peer.calls.length, 1);
-    assert.equal(owner.stats().sourceRecords, 0);
+    owner.setStyleSelection(paletteInput()); owner.queuePreparation(older.group, true); owner.queuePreparation(newer.group, true); owner.flush(); await settle();
+    assert.deepEqual(notices, [newer.group.id, older.group.id]); assert.equal(peer.calls.length, 0);
+    assert.equal(owner.stats().sourceRecords, 0); assert.equal(ink(owner.groupPresentation(older.group)!.role('panel')), 1);
   } finally { void older.preparation; void newer.preparation; await cleanup(owner, peer); }
 });
 
@@ -437,16 +436,16 @@ test('group presentation: replacement display generation cannot alias equal loca
   const preparation: SourcePreparation = { keys, prepare() { owner.observe({ ...demand('bash', text, version, false), language: 'bash' }); }, requiresCredit() { return false; }, needsRefresh() { return false; } };
   const group = owner.registerPreparation(preparation)!;
   try {
-    owner.setStyleSelection(native()); owner.queuePreparation(group, true); owner.flush(); peer.source(0); await settle(); peer.style(1, 11); await settle();
+    owner.setStyleSelection(paletteInput()); owner.queuePreparation(group, true); owner.flush(); peer.source(0); await settle(); peer.style(1, 11); await settle();
     const before = owner.groupPresentation(group)!;
     text = 'replacement\n'; version = 2; owner.queuePreparation(group, true); owner.flush(); await settle();
-    assert.deepEqual(colors(owner.groupPresentation(group), ['bash']), [11, 11]);
+    assert.deepEqual(colors(owner.groupPresentation(group), ['bash']), [1, 1]);
     const close = peer.calls.findIndex(q => q.op === 'stream.close');
     if (close !== -1) { peer.pending[close]!.resolve(peer.envelope(close, { kind: 'closed' })); await settle(); }
     const q = peer.calls.findIndex((q, i) => i > 1 && q.op === 'stream.open'); assert.ok(q > 1); peer.source(q, text); await settle();
     const after = owner.groupPresentation(group); assert.ok(after, 'complete replacement must not keep a dead historical member receipt');
     assert.notEqual(after.stamp, before.stamp); assert.notEqual(after.paintStamp, before.paintStamp);
-    assert.deepEqual(colors(after, ['bash']), [11, 11]); assert.equal(before.role('panel'), undefined);
+    assert.deepEqual(colors(after, ['bash']), [1, 1]); assert.equal(before.role('panel'), undefined);
   } finally { void preparation; await cleanup(owner, peer); }
 });
 
@@ -456,7 +455,7 @@ test('group presentation: first captured Bash colors remain useful when parser a
   const preparation: SourcePreparation = { keys, prepare() { owner.observe({ ...demand('bash', text, version, false), language: 'bash' }); }, requiresCredit() { return false; }, needsRefresh() { return false; } };
   const group = owner.registerPreparation(preparation)!;
   try {
-    owner.setStyleSelection(native()); owner.queuePreparation(group, true); owner.flush(); peer.source(0); await settle();
+    owner.setStyleSelection(paletteInput()); owner.queuePreparation(group, true); owner.flush(); peer.source(0); await settle();
     text = 'x\ny\n'; version = 2; owner.queuePreparation(group, true); owner.flush(); await settle(); peer.source(2, text, 2, 2, 2); await settle();
     assert.equal(owner.groupPresentation(group), undefined); peer.style(1, 11); await settle();
     const first = owner.groupPresentation(group); assert.ok(first, 'held first validated basis remains display-only useful');
@@ -484,37 +483,45 @@ test('group presentation: reentrant local update invalidates candidate ranges an
   } finally { void c.preparation; await cleanup(owner, peer); }
 });
 
-test('group presentation: pressure cannot hide actually pinned native palette data from another useful group', async () => {
+test('group presentation: pressure preserves the pinned owned palette and refuses an unfunded replacement', async () => {
   const { DataBudget } = await import('../../../src/occipital/data-budget.ts');
-  const budget = new DataBudget(100000), peer = new Peer(), owner = new SourceController(peer, { retention: { budget } }), first = card(owner, []);
+  const budget = new DataBudget(1_000_000), peer = new Peer(), owner = new SourceController(peer, { retention: { budget } }), first = card(owner, []);
   let pressure: import('../../../src/occipital/data-budget.ts').DataCharge | undefined;
   try {
-    owner.setStyleSelection(native()); first.start(); await settle(); peer.style(0, 11); await settle();
-    const bytes = budget.limit - budget.stats().retainedBytes - 1024, grant = budget.reserve(bytes)!; pressure = grant.consume(bytes); grant.close();
-    assert.equal(owner.setStyleSelection(native(2)), true); await settle(); assert.equal(peer.calls.length, 1, 'uncached native preparation is denied before dispatch');
-    assert.equal(ink(owner.groupPresentation(first.group)!.role('panel')), 11);
-    pressure.release(); pressure = undefined; owner.setStyleSelection(native()); await settle();
+    assert.equal(owner.setStyleSelection(paletteInput()), true); first.start(); await settle();
+    assert.equal(ink(owner.groupPresentation(first.group)!.role('panel')), 1);
+    const bytes = budget.limit - budget.stats().retainedBytes, grant = budget.reserve(bytes)!; pressure = grant.consume(bytes); grant.close();
+    assert.equal(owner.setStyleSelection(paletteInput(2)), false, 'a replacement palette cannot be installed without its complete admission charge');
+    assert.equal(ink(owner.groupPresentation(first.group)!.role('panel')), 1, 'the already-adopted complete palette remains visible');
+    pressure.release(); pressure = undefined;
+    assert.equal(owner.setStyleSelection(paletteInput()), true);
     const second = card(owner, []); second.start(); await settle();
-    assert.equal(peer.calls.length, 1, 'owned role cache remains discoverable while a useful group pins its actual charge');
-    assert.equal(ink(owner.groupPresentation(second.group)!.role('panel')), 11); void second.preparation;
+    assert.equal(peer.calls.length, 0, 'owned palette recovery is local and does not need SOURCE or STYLE');
+    assert.equal(ink(owner.groupPresentation(second.group)!.role('panel')), 1); void second.preparation;
   } finally { pressure?.release(); void first.preparation; await cleanup(owner, peer); }
 });
 
 test('group presentation: eviction of historical member closes escaped roles even while current parser data survives', async () => {
   const { DataBudget } = await import('../../../src/occipital/data-budget.ts');
-  const budget = new DataBudget(200000), peer = new Peer(), owner = new SourceController(peer, { retention: { budget } }), keys = new Set(['bash']);
+  const budget = new DataBudget(1_000_000), peer = new Peer(), owner = new SourceController(peer, { retention: { budget } }), keys = new Set(['bash']);
   let filler: import('../../../src/occipital/data-budget.ts').DataCharge | undefined;
   let text = 'x\n', version = 1;
   const preparation: SourcePreparation = { keys, prepare() { owner.observe({ ...demand('bash', text, version, false), language: 'bash' }); }, requiresCredit() { return false; }, needsRefresh() { return false; } };
   const group = owner.registerPreparation(preparation)!;
   try {
-    owner.setStyleSelection(native()); owner.queuePreparation(group, true); owner.flush(); peer.source(0); await settle(); peer.style(1, 11); await settle();
+    assert.equal(owner.setStyleSelection(paletteInput()), true); owner.queuePreparation(group, true); owner.flush(); peer.source(0); await settle(); peer.style(1, 11); await settle();
     const old = owner.groupPresentation(group)!;
     text = 'replacement\n'; version = 2; owner.queuePreparation(group, true); owner.flush(); await settle();
     const close = peer.calls.findIndex(q => q.op === 'stream.close');
     if (close !== -1) { peer.pending[close]!.resolve(peer.envelope(close, { kind: 'closed' })); await settle(); }
-    const open = peer.calls.findIndex((q, i) => i > 1 && q.op === 'stream.open'); owner.setStyleSelection(native(2)); peer.source(open, text, 2); await settle();
-    assert.deepEqual(colors(owner.groupPresentation(group), ['bash']), [11, 11]); owner.borrowSource('bash');
+    const open = peer.calls.findIndex((q, i) => i > 1 && q.op === 'stream.open');
+    assert.equal(owner.setStyleSelection(paletteInput(2)), true);
+    peer.source(open, text, 2); await settle();
+    const replacementStyle = peer.calls.findIndex((q, i) => i > open && q.op === 'styles.resolve');
+    assert.ok(replacementStyle >= 0, 'new semantic context awaits generic STYLE while prior coherent paint remains visible');
+    assert.ok(owner.stats().unsettledJobs <= 2, 'held close and generic STYLE stay within the existing physical-job cap');
+    assert.deepEqual(colors(owner.groupPresentation(group), ['bash']), [1, 1], 'the prior complete card paint remains atomic while new STYLE is held');
+    assert.equal(owner.borrowSource('bash')?.version, 2, 'the current parser snapshot is installed before pressure');
     const free = budget.limit - budget.stats().retainedBytes, available = HIGHLIGHT_LIMITS.piSourceBytes;
     assert.ok(free > available);
     const grant = budget.reserve(free - available)!; assert.ok(grant);
@@ -523,7 +530,7 @@ test('group presentation: eviction of historical member closes escaped roles eve
     const pressure = 'z'.repeat(Math.floor((available + 512 - 1100) / 2));
     assert.ok(Buffer.byteLength(pressure) <= HIGHLIGHT_LIMITS.piSourceBytes);
     assert.equal(owner.capturePiSource('pressure', 1, pressure), true);
-    assert.equal(owner.status('bash')!.acknowledgedVersion, 2, 'current parser basis was not the pressure victim');
+    assert.equal(owner.borrowSource('bash')?.version, 2, 'the current parser basis was not the pressure victim');
     assert.equal(owner.groupPresentation(group), undefined); assert.equal(old.role('panel'), undefined, 'evicted historical member must retire its complete palette receipt');
   } finally { filler?.release(); void preparation; await cleanup(owner, peer); }
 });
@@ -535,7 +542,7 @@ test('group presentation: repeated rewrites retain the last coherent display whi
   const preparation: SourcePreparation = { keys, prepare() { owner.observe({ ...demand('bash', text, version, false), language: 'bash' }); }, requiresCredit() { return false; }, needsRefresh() { return false; } };
   const group = owner.registerPreparation(preparation)!;
   try {
-    owner.setStyleSelection(native()); owner.queuePreparation(group, true); owner.flush(); peer.source(0); await settle(); peer.style(1, 11); await settle();
+    owner.setStyleSelection(paletteInput()); owner.queuePreparation(group, true); owner.flush(); peer.source(0); await settle(); peer.style(1, 11); await settle();
     const original = owner.groupPresentation(group)!;
     let oldMember: import('../../../src/occipital/controller.ts').GroupDisplayMember | undefined;
     assert.equal(original.visit(member => { oldMember = member('bash'); }), true);
@@ -546,22 +553,22 @@ test('group presentation: repeated rewrites retain the last coherent display whi
     const openB = peer.calls.findIndex(q => q.op === 'stream.open' && q.sources?.[0]?.source_version === 2); assert.ok(openB >= 0);
     peer.source(openB, text, 2); await settle();
     const styleB = peer.calls.length - 1; assert.equal(peer.calls[styleB]!.op, 'styles.resolve');
-    assert.deepEqual(colors(owner.groupPresentation(group), ['bash']), [11, 11]);
+    assert.deepEqual(colors(owner.groupPresentation(group), ['bash']), [1, 1]);
     text = 'final replacement\n'; version = 3; owner.queuePreparation(group, true); owner.flush(); await settle();
     const retained = owner.groupPresentation(group);
     assert.ok(retained, 'parsed B without styles must not displace the last coherent A presentation during C restart');
-    assert.equal(retained.stamp, original.stamp); assert.deepEqual(colors(retained, ['bash']), [11, 11]);
+    assert.equal(retained.stamp, original.stamp); assert.deepEqual(colors(retained, ['bash']), [1, 1]);
     assert.equal(oldMember.read(() => {}), true); assert.equal(peer.signals[styleB]!.aborted, true);
     const closeB = peer.calls.findIndex((q, index) => index > openB && q.op === 'stream.close');
     if (closeB !== -1) { peer.pending[closeB]!.resolve(peer.envelope(closeB, { kind: 'closed' })); await settle(); }
     const openC = peer.calls.findIndex(q => q.op === 'stream.open' && q.sources?.[0]?.source_version === 3); assert.ok(openC >= 0);
     peer.source(openC, text, 3); await settle();
-    assert.deepEqual(colors(owner.groupPresentation(group), ['bash']), [11, 11]);
+    assert.deepEqual(colors(owner.groupPresentation(group), ['bash']), [1, 1]);
     peer.style(styleB, 22); await settle();
-    assert.equal(original.role('panel') && ink(original.role('panel')), 11, 'late canceled B cannot replace the coherent group');
+    assert.equal(original.role('panel') && ink(original.role('panel')), 1, 'late canceled B cannot replace the coherent group');
     const styleC = peer.calls.findIndex((q, index) => index > openC && q.op === 'styles.resolve'); assert.ok(styleC >= 0);
     peer.style(styleC, 33); await settle();
-    assert.deepEqual(colors(owner.groupPresentation(group), ['bash']), [11, 33], 'same native definition retains its palette while the new context gets its own style');
+    assert.deepEqual(colors(owner.groupPresentation(group), ['bash']), [1, 1], 'generic expressions for both source contexts use the selected local palette');
     assert.equal(original.role('panel'), undefined); assert.equal(oldMember.read(() => assert.fail('old ranges revived')), false);
     assert.equal(original.visit(() => assert.fail('old group revived')), false);
     assert.equal(peer.useful, 3); assert.equal(owner.stats().peakJobs, 2);
@@ -576,7 +583,7 @@ test('group presentation: compatible recovery reuses complete newer parse indepe
   const preparation: SourcePreparation = { keys, prepare() { owner.observe({ ...demand('bash', text, version), language: 'bash' }); }, requiresCredit() { return false; }, needsRefresh() { return false; } };
   const group = owner.registerPreparation(preparation)!;
   try {
-    owner.setStyleSelection(native()); owner.queuePreparation(group, true); owner.flush(); peer.source(0); await settle(); peer.style(1, 11); await settle();
+    owner.setStyleSelection(paletteInput()); owner.queuePreparation(group, true); owner.flush(); peer.source(0); await settle(); peer.style(1, 11); await settle();
     const original = owner.groupPresentation(group)!;
     text = 'replacement\n'; version = 2; owner.queuePreparation(group, true); owner.flush(); await settle();
     const parseB = peer.calls.findIndex((q, index) => index > 1 && q.op === 'highlight'); assert.ok(parseB >= 0);
@@ -585,7 +592,7 @@ test('group presentation: compatible recovery reuses complete newer parse indepe
     const parsedGeneration = owner.status('bash')!.generation, sourceCalls = peer.calls.filter(q => q.op === 'highlight' || q.op === 'stream.open').length;
     peer.generation++; version++;
     owner.queuePreparation(group, true); owner.flush(); await settle();
-    assert.deepEqual(colors(owner.groupPresentation(group), ['bash']), [11, 11]);
+    assert.deepEqual(colors(owner.groupPresentation(group), ['bash']), [1, 1]);
     assert.equal(owner.status('bash')!.generation, parsedGeneration, 'complete compatible B annotations are useful even before B colors');
     assert.equal(owner.status('bash')!.acknowledgedVersion, undefined, 'new provider did not acknowledge the retained parse');
     assert.equal(owner.displayBasis('bash')!.exactVersion, undefined, 'historical A colors are not current B authority');
@@ -593,38 +600,17 @@ test('group presentation: compatible recovery reuses complete newer parse indepe
     assert.equal(peer.calls.filter(q => q.op === 'highlight' || q.op === 'stream.open').length, sourceCalls, 'recovery must not parse complete B again merely to retain A colors');
     const retryStyle = peer.calls.findIndex((q, index) => index > styleB && q.op === 'styles.resolve'); assert.ok(retryStyle >= 0);
     peer.style(retryStyle, 22); await settle();
-    assert.deepEqual(colors(owner.groupPresentation(group), ['bash']), [11, 22], 'compatible recovery reuses the immutable native palette');
+    assert.deepEqual(colors(owner.groupPresentation(group), ['bash']), [1, 1], 'compatible recovery reuses complete generic expressions and the selected local palette');
     assert.equal(original.role('panel'), undefined); assert.equal(peer.useful, 2);
     assert.equal(owner.stats().retention.entries, 1);
   } finally { void preparation; await cleanup(owner, peer); }
 });
 
-for (const code of ['profile_changed', 'profile_unavailable'] as const) test(`native definition refusal delivers palette-only metadata notice: ${code}`, async () => {
-  const peer = new Peer(), packets: { keys: readonly string[]; groups: readonly number[] }[] = [];
-  const owner = new SourceController(peer, { onChange(keys, groups = []) { packets.push({ keys, groups }); } }), c = card(owner, []);
-  try {
-    owner.setStyleSelection(native()); c.start(); await settle(); peer.style(0, 11); await settle();
-    const ready = owner.groupPresentation(c.group)!; assert.equal(ink(ready.role('panel')), 11);
-    owner.setStyleSelection(native(2)); await settle(); assert.equal(peer.calls[1]!.op, 'styles.resolve'); packets.length = 0;
-    peer.pending[1]!.resolve({ v: 3, ticket: peer.calls[1]!.ticket, instance: peer.description.instance, assets: peer.description.assets,
-      status: 'error', error: { code, execution: 'not_started' } }); await settle();
-    const need = owner.profileReconciliationNeeded(); assert.ok(need, 'palette-only definition refusal must request fresh catalogue metadata');
-    assert.deepEqual(packets, [{ keys: [], groups: [c.group.id] }], 'no fake source or global empty notice may replace the exact group notification');
-    assert.equal(ink(owner.groupPresentation(c.group)!.role('panel')), 11); assert.equal(ready.role('panel')?.foreground.kind, 'rgb');
-    owner.acknowledgeProfiles(need.generation, need.sequence); packets.length = 0;
-    for (let i = 0; i < 100; i++) { owner.groupPresentation(c.group); owner.flush(); }
-    await settle(); assert.equal(peer.calls.length, 2); assert.deepEqual(packets, []);
-    owner.setStyleSelection(native(3)); await settle(); peer.style(2, 33); await settle();
-    assert.equal(ink(owner.groupPresentation(c.group)!.role('panel')), 33); assert.equal(ready.role('panel'), undefined);
-    assert.equal(peer.calls.every(call => call.op === 'styles.resolve'), true); assert.equal(peer.useful, 0);
-    assert.equal(owner.stats().sourceRecords, 0); assert.equal(owner.stats().preparedBytes, 0); assert.equal(owner.stats().remoteLeases, 0);
-  } finally { void c.preparation; await cleanup(owner, peer); }
-});
 
 test('group presentation: ready-style enumeration covers complete roles and all member literal identities without range reads', async () => {
   const peer = new Peer(), owner = new SourceController(peer), c = card(owner, ['left', 'right']);
   try {
-    owner.setStyleSelection(native()); c.start(); await settle(); peer.source(0, 'x\n', 1); peer.source(1, 'x\n', 2); await settle(); peer.style(2, 11); await settle();
+    owner.setStyleSelection(paletteInput()); c.start(); await settle(); peer.source(0, 'x\n', 1); peer.source(1, 'x\n', 2); await settle(); peer.style(2, 11); await settle();
     const basis = owner.groupPresentation(c.group)!, table = new Set<ConcreteStyle>();
     assert.equal(basis.visitStyles(style => table.add(style)), true);
     for (const role of CARD_ROLES) assert.ok(table.has(basis.role(role)!));
@@ -637,12 +623,11 @@ test('group presentation: ready-style enumeration covers complete roles and all 
       const before = owner.stats(), calls = peer.calls.length;
       assert.equal(basis.visitStyles(style => assert.ok(table.has(style))), true);
       assert.equal(peer.calls.length, calls); assert.deepEqual(owner.stats(), before);
-      owner.setStyleSelection(native(2)); await settle();
-      assert.equal(basis.visitStyles(style => assert.ok(table.has(style))), true, 'pending desired theme cannot color the adopted table');
-      peer.style(peer.calls.length - 1, 22); await settle();
-      assert.equal(basis.visitStyles(() => assert.fail('obsolete table')), false);
+      owner.setStyleSelection(paletteInput(2)); await settle();
+      assert.equal(basis.visitStyles(() => assert.fail('superseded group table')), false, 'a complete local palette replacement publishes a new generation');
       const next = owner.groupPresentation(c.group)!; assert.notEqual(next.stamp, basis.stamp);
-      assert.equal(next.visitStyles(style => assert.equal(ink(style), 22)), true);
+      assert.equal(next.visitStyles(style => assert.equal(ink(style), 2)), true, 'all enumerated styles use the selected local palette');
+      assert.equal(peer.calls.length, calls, 'cached generic expressions need no palette-only STYLE request');
     } finally { root.visitDisplay = visit; }
   } finally { void c.preparation; await cleanup(owner, peer); }
 });
@@ -732,14 +717,15 @@ for (const mode of ['remove', 'replace', 'off', 'dispose', 'pressure', 'throw'] 
 
 test('group presentation: ready member collection funding denial is atomic and does not retry warm reads', async () => {
   const { DataBudget } = await import('../../../src/occipital/data-budget.ts');
-  const budget = new DataBudget(200000), peer = new Peer(), owner = new SourceController(peer, { retention: { budget } }), c = card(owner, ['one']);
+  const budget = new DataBudget(1_000_000), peer = new Peer(), owner = new SourceController(peer, { retention: { budget } }), c = card(owner, ['one']);
   const reserve = DataBudget.prototype.reserve;
-  let denials = 0;
+  let denials = 0; const attempts: number[] = [];
   try {
-    owner.setStyleSelection(local(7)); c.start(); peer.source(0); await settle(); peer.style(1); await settle();
+    assert.equal(owner.setStyleSelection(local(7)), true); c.start(); peer.source(0); await settle(); peer.style(1); await settle();
     const old = owner.groupPresentation(c.group)!, source = owner.displayBasis('one')!, bytes = 1024 + 512 + 2 * 'one'.length;
-    DataBudget.prototype.reserve = function(n) { if (this === budget && n === bytes) { denials++; return undefined; } return reserve.call(this, n); };
-    owner.setStyleSelection(local(9)); await settle();
+    DataBudget.prototype.reserve = function(n) { if (this === budget) { attempts.push(n); if (n === bytes) { denials++; return undefined; } } return reserve.call(this, n); };
+    assert.equal(owner.setStyleSelection(local(9)), true); await settle();
+    assert.ok(attempts.includes(bytes), `expected group publication reservation ${bytes}; observed ${attempts.join(',')}`);
     assert.equal(denials, 1); assert.equal(owner.groupPresentation(c.group)!.stamp, old.stamp);
     assert.equal(owner.displayBasis('one')!.stamp, source.stamp); assert.deepEqual(colors(old, ['one']), [7, 7]);
     const before = owner.stats();
@@ -750,17 +736,20 @@ test('group presentation: ready member collection funding denial is atomic and d
   } finally { DataBudget.prototype.reserve = reserve; void c.preparation; await cleanup(owner, peer); }
 });
 
+type AbandonedMemberKeepAlive = { owner: SourceController | undefined; preparation: SourcePreparation | undefined };
 async function abandonedMember(peer: Peer) {
   const owner = new SourceController(peer), c = card(owner, ['first']);
   owner.setStyleSelection(local(7)); c.start(); peer.source(0); await settle(); peer.style(1); await settle();
   let read: import('../../../src/occipital/controller.ts').DisplayRangeReader | undefined;
   owner.groupPresentation(c.group)!.visit(member => { read = member('first')!.read; });
-  return { owner: new WeakRef(owner), preparation: new WeakRef(c.preparation), read: read!, budget: (Reflect.get(owner, 'pool') as SemanticRetentionPool).budget };
+  const keepAlive: AbandonedMemberKeepAlive = { owner, preparation: c.preparation };
+  return { owner: new WeakRef(owner), preparation: new WeakRef(c.preparation), read: read!, budget: (Reflect.get(owner, 'pool') as SemanticRetentionPool).budget, keepAlive };
 }
 test('group presentation: escaped first member reader keeps no owner or preparation alive beside active peer', async () => {
   const peer = new Peer(), gone = await abandonedMember(peer), live = new SourceController(peer), c = card(live, []);
   try {
     live.setStyleSelection(local(8)); c.start(); await settle(); assert.equal(gone.read(() => {}), true);
+    gone.keepAlive.owner = undefined; gone.keepAlive.preparation = undefined;
     for (let i = 0; i < 40; i++) { await turn(); global.gc!(); await settle(); if (!gone.owner.deref()) break; }
     assert.equal(gone.owner.deref(), undefined); assert.equal(gone.preparation.deref(), undefined);
     assert.equal(gone.budget.stats().retainedBytes, 0); assert.equal(gone.budget.stats().outstandingPeakBytes, 0);

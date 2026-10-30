@@ -10,7 +10,7 @@ fn source(key: &str, text: &str) -> Value {
     json!({"key":key,"generation":1,"source_version":0,"hint":{"language":"rust"},"text":text})
 }
 fn finite(sources: Vec<Value>, open: bool) -> Value {
-    json!({"v":3,"op":if open{"stream.open"}else{"highlight"},"instance":"instance","ticket":"t","admission":"try_now","sources":sources})
+    json!({"v":4,"op":if open{"stream.open"}else{"highlight"},"instance":"instance","ticket":"t","admission":"try_now","sources":sources})
 }
 fn decode(value: Value) -> SourceRequest {
     SourceRequest::decode(
@@ -56,10 +56,10 @@ fn job_start(service: &mut Service, route: &str, request: Value) -> Job {
     job(service, route, request, &mut |_| true)
 }
 fn append(result: &Value, text: &str, finalize: bool, version: u32) -> Value {
-    json!({"v":3,"op":"stream.append","instance":"instance","ticket":"t","admission":"try_now","key":result["key"],"generation":result["generation"],"source_version":version,"lease":result["lease"],"base_revision":result["revision"],"base_bytes":result["source_bytes"],"append":text,"final":finalize})
+    json!({"v":4,"op":"stream.append","instance":"instance","ticket":"t","admission":"try_now","key":result["key"],"generation":result["generation"],"source_version":version,"lease":result["lease"],"base_revision":result["revision"],"base_bytes":result["source_bytes"],"append":text,"final":finalize})
 }
 fn close(result: &Value) -> Value {
-    json!({"v":3,"op":"stream.close","instance":"instance","ticket":"t","key":result["key"],"generation":result["generation"],"lease":result["lease"]})
+    json!({"v":4,"op":"stream.close","instance":"instance","ticket":"t","key":result["key"],"generation":result["generation"],"lease":result["lease"]})
 }
 fn error(service: &mut Service, route: &str, request: Value) -> Fault {
     service
@@ -559,46 +559,36 @@ fn bind_denial_precedes_expansion_and_does_not_invalidate_existing_routes() {
     writeln!(std::io::stdout(),"bind controlled state: initial peak={first_peak}, retained={first_retained}; exact/denied allocation and existing route authority verified").unwrap();
 }
 #[test]
-fn source_results_and_lease_survive_unrelated_native_theme_work() {
+fn source_results_and_lease_are_independent_of_generic_style_definitions() {
     let mut worker = service(Limits::default());
     let first = open(&mut worker, "k", "fn x(){}\n");
     let immutable = first.clone();
     let before = worker.known_state_bytes();
-    // Real native palette construction cannot retire source state; no theme data
-    // is passed into or retained by Service, and the source contract rejects it.
-    let themes: two_face::theme::LazyThemeSet = two_face::theme::extra().into();
-    for name in ["Nord", "ansi"] {
-        let theme = themes.get(name).unwrap();
-        let palette = occipital::native_palette::NativeTheme::compile(
-            theme,
-            occipital::native_palette::HintPaths {
-                comment: &[],
-                invalid: &[],
-                changed: &[],
-                inserted: &[],
-                deleted: &[],
-            },
-        )
-        .unwrap();
-        assert_eq!(palette.palette.slots.len(), 26);
-    }
+    let definition = r#"{"revision":2,"binding_slots":0,"default":{"foreground":{"kind":"inherit"},"background":{"kind":"inherit"},"attributes":0,"attribute_mask":0},"rules":[]}"#;
+    let raw = RawValue::from_string(definition.to_owned()).unwrap();
+    let plan = occipital::style_rules::ClientRulePlan::inspect(&raw, usize::MAX).unwrap();
+    assert_eq!(
+        plan.fingerprint().len(),
+        64,
+        "the complete generic definition is validated and fingerprinted"
+    );
     assert_eq!(worker.known_state_bytes(), before);
     assert_eq!(first, immutable);
     let request = job_start(
         &mut worker,
         "r",
-        append(&first, "// same lease\n", false, 1),
+        append(&first, "// same lease\\n", false, 1),
     );
     let (body, _) = drive(&mut worker, request, &mut |_| true);
     assert_eq!(body["sources"][0]["lease"], first["lease"]);
     assert_eq!(body["sources"][0]["revision"], 2);
     let mut forbidden = finite(vec![source("k", "x")], false);
-    forbidden["sources"][0]["profile"] = json!("syntect:Nord");
+    forbidden["sources"][0]["palette"] = json!("gruvbox-dark");
     assert!(SourceRequest::decode(
         &RawValue::from_string(forbidden.to_string()).unwrap(),
         "instance",
         occipital::limits::SOURCE_BYTES,
-        &mut |_| panic!("theme field must fail before materialization")
+        &mut |_| panic!("removed theme field must fail before materialization")
     )
     .is_err());
 }

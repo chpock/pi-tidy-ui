@@ -1,34 +1,16 @@
 //! Resumable style execution. Uses the caller's existing data-job credit.
 use crate::{
     credit::Credit,
-    native_definitions::PreparedDefinition,
-    native_palette,
     protocol::Fault,
     resolver::{self, Cursor, Resolver},
-    semantic::{Expression, Palette, StyleKind, Styles, CARD_SLOTS},
+    semantic::{Expression, StyleKind, Styles},
     vocabulary::{self, ScopeId},
 };
-use sha2::{Digest, Sha256};
 use std::{collections::HashMap, mem::size_of};
 use syntect::parsing::Scope;
 
 use crate::limits::STYLE_UNITS;
 const RESULT_UNITS: usize = 512;
-
-pub fn native_fingerprint(definition: &str, palette: bool) -> Result<String, Fault> {
-    if definition.len() != 64
-        || !definition
-            .bytes()
-            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-    {
-        return Err(Fault::not_started("invalid_rules"));
-    }
-    let domain = if palette { "palette" } else { "rules" };
-    let mut hash = Sha256::new();
-    hash.update(format!("occipital-native-{domain}/2\0"));
-    hash.update(definition.as_bytes());
-    Ok(format!("{:x}", hash.finalize()))
-}
 
 pub struct StyleFailure {
     pub fault: Fault,
@@ -50,31 +32,15 @@ pub struct StyleWork {
     result: Styles,
     interned: HashMap<Expression, u32>,
     decoded_bytes: usize,
-    // Drop cursor/payloads before the last native allocation owner.
-    _native_definition: Option<PreparedDefinition>,
     credit: Credit,
 }
 impl StyleWork {
-    pub fn native(
-        contexts: Vec<Vec<u32>>,
-        definition: PreparedDefinition,
-        credit: Credit,
-    ) -> Result<Self, StyleFailure> {
-        definition.start(contexts, credit)
-    }
-    pub(crate) fn retain_native(mut self, definition: PreparedDefinition) -> Self {
-        self._native_definition = Some(definition);
-        self
-    }
-    /// Descriptors and compiled definition are already preflighted and charged.
-    /// Their credit must survive this job; the actor can keep a cache-owned
-    /// definition charge separately, or include it in the supplied job credit.
-    /// A native palette is immutable, source-independent and already derived.
+    /// Descriptor and compiled rules are already preflighted and charged.
+    /// Their credit must survive this job until reply settlement.
     pub fn new(
         contexts: Vec<Vec<u32>>,
         resolver: &Resolver,
         rules: String,
-        native: Option<(&native_palette::Palette, String)>,
         mut credit: Credit,
     ) -> Result<Self, StyleFailure> {
         let prepared = (|| {
@@ -130,38 +96,12 @@ impl StyleWork {
                 rules,
                 styles: Vec::new(),
                 indices,
-                palette: None,
             },
             interned: HashMap::new(),
-            _native_definition: None,
             credit,
         };
-        if let Some((palette, fingerprint)) = native {
-            if let Err(fault) = work.install_palette(palette, fingerprint) {
-                return Err(work.fail(fault));
-            }
-        }
         work.credit.started();
         Ok(work)
-    }
-    fn install_palette(
-        &mut self,
-        palette: &native_palette::Palette,
-        fingerprint: String,
-    ) -> Result<(), Fault> {
-        self.charge_result(crate::limits::CONTEXT_ROW_UNITS + 5 * CARD_SLOTS)?;
-        self.grow(128 + 5 * CARD_SLOTS)?;
-        let mut slots = [0; CARD_SLOTS];
-        for (id, expression) in slots.iter_mut().zip(&palette.slots) {
-            *id = self.intern(expression)?;
-        }
-        self.result.palette = Some(Palette {
-            revision: 1,
-            fingerprint,
-            slots,
-            origins: palette.origins,
-        });
-        Ok(())
     }
     fn charge_result(&mut self, additional: usize) -> Result<(), Fault> {
         let total = self
@@ -267,7 +207,6 @@ mod volume_tests {
             vec![],
             &resolver,
             "a".repeat(64),
-            None,
             budget.reserve(Some("r"), 0).unwrap(),
         )
         .unwrap();

@@ -7,10 +7,11 @@ import type { SyntaxMenuOutcome, SyntaxMenuSnapshot } from './occipital/menu.ts'
 import type { RuntimeHealthSnapshot } from './runtime-health.ts';
 import type { SessionLogging } from './session-logging.ts';
 import { SEMANTIC_PROTOCOL_VERSION as PROTOCOL_VERSION } from './occipital/semantic-protocol.ts';
+import { THEME_CATALOGUE, themeEntry } from './themes/catalogue.ts';
 
 export type TidyMenuAction = { kind: 'switch'; key: keyof Switches; value: boolean }
   | { kind: 'theme'; choice: SyntaxTheme }
-  | { kind: 'refreshThemes' | 'reapplyAppearance' | 'reapplyColors' | 'clearCache' | 'retryLogging' | 'snapshotLogs' };
+  | { kind: 'reapplyAppearance' | 'reapplyColors' | 'clearCache' | 'retryLogging' | 'snapshotLogs' };
 export interface TidyMenuSnapshot extends Switches {
   selected: SyntaxTheme;
   appearance: string;
@@ -48,22 +49,15 @@ const title: Record<Page, string> = { root: 'Tidy UI', themes: 'Code color theme
 const onOff = (value: boolean) => value ? 'On' : 'Off';
 const safe = (value: string) => readableDiagnosticText(value);
 
-export function profileLabels(profiles: NonNullable<SyntaxMenuSnapshot['provider']['description']>['profiles']): string[] {
-  const labels = profiles.map(profile => safe(profile.label));
-  return profiles.map((profile, index) => labels.filter(label => label === labels[index]).length > 1 ||
-    ['Follow Pi theme', 'Refresh theme list', 'Back'].includes(labels[index]!)
-    ? `${labels[index]} [${JSON.stringify(profile.id)}]` : labels[index]!);
+export function themeLabels(themes: typeof THEME_CATALOGUE): string[] {
+  const labels = themes.map(theme => safe(theme.label));
+  return themes.map((theme, index) => labels.filter(label => label === labels[index]).length > 1 ||
+    ['Follow Pi theme', 'Back'].includes(labels[index]!)
+    ? `${labels[index]} [${JSON.stringify(theme.id)}]` : labels[index]!);
 }
 function selectedLabel(state: TidyMenuSnapshot): string {
   const choice = state.selected;
-  return choice.kind === 'pi' ? 'Follow Pi' : safe(state.syntax?.provider.description?.profiles.find(profile => profile.id === choice.id)?.label ?? choice.id);
-}
-function themesUnavailable(state: TidyMenuSnapshot): string | undefined {
-  if (!state.appearanceEnabled) return 'Turn on Tidy UI appearance to use native themes.';
-  if (!state.nativeHighlightingEnabled) return 'Turn on Occipital highlighting in Status & troubleshooting to use native themes.';
-  if (!state.syntax || state.syntax.provider.availability !== 'ready') return 'Native themes are unavailable. Follow Pi remains selectable.';
-  if (!state.syntax.provider.description) return 'The native theme list is not available yet.';
-  return undefined;
+  return choice.kind === 'pi' ? 'Follow Pi' : safe(themeEntry(choice.id)?.label ?? choice.id);
 }
 
 /** One invocation owns one overlay. Syntax/provider generations cannot retire it. */
@@ -134,7 +128,7 @@ export class TidyMenu implements Component {
         if (!this.closed && this.page === 'themes' && visit === this.themeVisit) {
           this.themeLoading = false;
           const choice = this.owner.snapshot().selected; this.originalTheme = { ...choice };
-          this.selected.themes = choice.kind === 'pi' ? 'theme:pi' : `profile:${choice.id}`;
+          this.selected.themes = choice.kind === 'pi' ? 'theme:pi' : `theme:${choice.id}`;
           this.listKey = ''; this.requestRender();
         }
       }, () => {
@@ -150,9 +144,9 @@ export class TidyMenu implements Component {
   }
   private previewTheme(value: string): void {
     if (this.closed || this.busy || this.page !== 'themes' || !this.originalTheme) return;
-    const state = this.owner.snapshot();
-    const profile = !themesUnavailable(state) && state.syntax?.provider.description?.profiles.find(profile => `profile:${profile.id}` === value);
-    const choice: SyntaxTheme | undefined = value === 'theme:pi' ? { kind: 'pi' } : profile ? { kind: 'occipital', id: profile.id } : undefined;
+    const id = value.startsWith('theme:') ? value.slice(6) : undefined;
+    const choice: SyntaxTheme | undefined = value === 'theme:pi' ? { kind: 'pi' }
+      : id && themeEntry(id) ? { kind: 'theme', id } : undefined;
     if (choice) { this.themePreviewed = true; this.owner.previewTheme(choice); }
   }
   private confirmTheme(choice: SyntaxTheme): void {
@@ -186,14 +180,13 @@ export class TidyMenu implements Component {
     if (key) { void this.perform({ kind: 'switch', key, value: !state[key] }); return; }
     if (value === 'refresh-status') { this.listKey = ''; this.feedback('Status refreshed.'); return; }
     if (value === 'refresh-cache') { this.cache = this.owner.cacheDetails(); this.feedback('Cache statistics refreshed.'); return; }
-    if (value === 'refreshThemes' && themesUnavailable(state)) { this.feedback(themesUnavailable(state)!, true); return; }
     if (value === 'theme:pi') { this.confirmTheme({ kind: 'pi' }); return; }
-    if (value.startsWith('profile:')) {
-      const profile = !themesUnavailable(state) && state.syntax?.provider.description?.profiles.find(profile => `profile:${profile.id}` === value);
-      if (profile) this.confirmTheme({ kind: 'occipital', id: profile.id });
+    if (value.startsWith('theme:')) {
+      const id = value.slice(6);
+      if (themeEntry(id)) this.confirmTheme({ kind: 'theme', id });
       return;
     }
-    if (['refreshThemes', 'reapplyAppearance', 'reapplyColors', 'clearCache', 'retryLogging', 'snapshotLogs'].includes(value))
+    if (['reapplyAppearance', 'reapplyColors', 'clearCache', 'retryLogging', 'snapshotLogs'].includes(value))
       void this.perform({ kind: value as Exclude<TidyMenuAction, { key: unknown } | { choice: unknown }>['kind'] });
   }
   private navigation(): string {
@@ -220,14 +213,12 @@ export class TidyMenu implements Component {
       case 'themes': {
         if (this.themeLoading || this.themeLoadFailed) return [back];
         const query = filtered ? this.search.getValue().toLocaleLowerCase() : '';
-        const profiles = themesUnavailable(state) ? [] : state.syntax?.provider.description?.profiles.filter(profile => profile.id !== 'pi') ?? [];
-        const labels = profileLabels(profiles);
+        const labels = themeLabels(THEME_CATALOGUE);
         const choices = [item('theme:pi', 'Follow Pi theme', 'Use Pi’s code colors.', state.selected.kind === 'pi' ? 'Selected' : undefined),
-          ...profiles.map((profile, index) => item(`profile:${profile.id}`, labels[index]!, 'Preview this theme. Enter saves; Esc restores the previous theme.',
-            state.selected.kind === 'occipital' && state.selected.id === profile.id ? 'Selected' : undefined))];
+          ...THEME_CATALOGUE.map((theme, index) => item(`theme:${theme.id}`, labels[index]!, 'Preview this palette. Enter saves; Esc restores the previous choice.',
+            state.selected.kind === 'theme' && state.selected.id === theme.id ? 'Selected' : undefined))];
         return [...choices.filter(choice => choice.label.toLocaleLowerCase().includes(query) ||
-          choice.value.startsWith('profile:') && choice.value.slice(8).toLocaleLowerCase().includes(query)),
-          item('refreshThemes', 'Refresh theme list', 'Reload available native themes explicitly.'), back];
+          choice.value.slice(6).toLocaleLowerCase().includes(query)), back];
       }
       case 'support': return [
         item('reapplyAppearance', 'Reapply Tidy UI appearance', 'Retry styling without switching it off first. Does not change your current preference.'),
@@ -261,15 +252,18 @@ export class TidyMenu implements Component {
   }
   private summary(state: TidyMenuSnapshot): string[] {
     if (this.page === 'support') return [...this.healthSummary(state), `Appearance: ${state.appearance}`, `Terminal colors: ${state.terminalColors}`,
-      `Code colors: ${!state.appearanceEnabled ? 'Pi interface' : !state.nativeHighlightingEnabled ? 'Native highlighting off; fallback colors' : state.syntax?.provider.availability === 'ready' ? 'Native service available' : 'Fallback colors; native service unavailable'}`];
+      `Code colors: ${!state.appearanceEnabled ? 'Pi interface' : selectedLabel(state)}`];
     if (this.page === 'themes') {
       if (this.themeLoading) return ['Loading saved code theme…'];
       if (this.themeLoadFailed) return ['Saved code theme could not be loaded. Reopen this page to retry.'];
       const lines = [`Selected: ${selectedLabel(state)}`];
       const effective = state.syntax?.effective;
-      if (state.selected.kind === 'occipital' && effective?.id !== state.selected.id)
-        lines.push('Native selection is not active; using available fallback colors.');
-      const unavailable = themesUnavailable(state); if (unavailable) lines.push(unavailable);
+      if (state.selected.kind === 'theme' && effective?.id !== state.selected.id)
+        lines.push('The saved palette is unknown; using Follow Pi colors.');
+      if (state.selected.kind === 'theme' && !state.nativeHighlightingEnabled)
+        lines.push('Local palette colors remain active while syntax highlighting is off.');
+      else if (state.selected.kind === 'theme' && state.syntax?.provider.availability !== 'ready')
+        lines.push('Local palette colors remain active while the highlighting service is unavailable.');
       return lines;
     }
     if (this.page === 'logs') {
@@ -290,7 +284,7 @@ export class TidyMenu implements Component {
         `Provider: ${provider?.kind ?? 'none'}`, `Daemon version: ${safe(provider?.description?.backend_version ?? 'unavailable')}`,
         `Protocol: ${provider?.description ? PROTOCOL_VERSION : 'unavailable'}`,
         `Standalone version: ${safe(syntax?.standaloneVersion ?? 'not loaded')}`, `Selected theme: ${selectedLabel(state)}`,
-        `Effective native theme: ${safe(syntax?.effective?.label ?? 'unavailable')}`, `Last issue: ${safe(syntax?.lastIssue ?? 'none')}`];
+        `Effective code palette: ${safe(syntax?.effective?.label ?? 'unavailable')}`, `Last issue: ${safe(syntax?.lastIssue ?? 'none')}`];
     }
     return [];
   }

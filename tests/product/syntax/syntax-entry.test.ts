@@ -16,6 +16,7 @@ import { CardSources, type CardDisplayInput } from '../../../src/syntax/cards.ts
 import { SyntaxRuntime } from '../../../src/syntax/runtime.ts';
 import { ExpectedOwnedUnavailable } from '../../../src/occipital/owned-startup.ts';
 import { samplePiCardPalette } from '../../../src/syntax/pi-palette.ts';
+import { sampleOwnedPalette } from '../../../src/themes/owned-palette.ts';
 import { menuPage, withMenu, setAppearance, setLogging } from '../../helpers/menu-driver.ts';
 import { ExtensionSettings, type SettingsLoadResult, type SettingsPatch, type LocalPreferences } from '../../../src/settings.ts';
 
@@ -175,7 +176,13 @@ test('entry projects trusted terminal backgrounds into prepared Pi input without
   for (const role of Object.keys(fg)) if (role.startsWith('syntax')) fg[role] = '#eeeeee';
   Object.assign(bg, { toolPendingBg: '', toolSuccessBg: '#2d4935', toolErrorBg: '#492d35' });
   themes.setTerminalColors({ foreground: { r: 229, g: 229, b: 231 }, background: { r: 10, g: 11, b: 12 } });
-  const original = SyntaxRuntime.prototype.preparePiInput;
+  const original = SyntaxRuntime.prototype.preparePaletteInput, originalVisit = CardSources.prototype.visit;
+  const preparedPaints: { mode: string; opens: readonly string[] }[] = [];
+  CardSources.prototype.visit = function (this: CardSources<object>, owner: object, consume) {
+    return originalVisit.call(this, owner, (display, paint) => {
+      preparedPaints.push({ mode: paint.mode, opens: Object.values(paint.roles).map(style => style.open) }); consume(display, paint);
+    });
+  } as typeof CardSources.prototype.visit;
   try {
     for (const [background, mode] of [['#123456', 'truecolor'], ['#0a0b0c', 'truecolor'], ['#123456', '256color']] as const) {
       await fs.writeFile(path, JSON.stringify({ colors: { text: '#eeeeee' }, export: { pageBg: background } }));
@@ -188,9 +195,10 @@ test('entry projects trusted terminal backgrounds into prepared Pi input without
         createWriteToolDefinition('/tmp'), h.root as never, '/tmp');
       tool.setArgsComplete(); tool.updateResult({ content: [{ type: 'text', text: 'written' }], isError: false }, false); h.root.addChild(tool);
       const samples: { roles: ReturnType<typeof samplePiCardPalette>; mode: string; foregrounds: string[] }[] = [];
-      SyntaxRuntime.prototype.preparePiInput = function (input, mode, funding) {
-        samples.push({ roles: samplePiCardPalette(input, mode), mode, foregrounds: (['toolOutput', 'dim', 'muted'] as const).map(role => input.getFgAnsi(role)) });
-        return original.call(this, input, mode, funding);
+      SyntaxRuntime.prototype.preparePaletteInput = function (palette, input, revision, mode, funding) {
+        if (palette.kind === 'pi' && input) samples.push({ roles: samplePiCardPalette(input, mode), mode,
+          foregrounds: (['toolOutput', 'dim', 'muted'] as const).map(role => input.getFgAnsi(role)) });
+        return original.call(this, palette, input, revision, mode, funding);
       };
       try {
         await h.start(); await settled(); h.root.render(80); await settled();
@@ -201,7 +209,10 @@ test('entry projects trusted terminal backgrounds into prepared Pi input without
         const expected = samplePiCardPalette(explicit, mode);
         assert.deepEqual(sample.roles.panel.background, expected.panel.background, 'known default must not be mistaken for an unknown terminal default');
         assert.equal(sample.roles.panel.background.kind, mode === 'truecolor' ? 'rgb' : 'indexed');
-        if (mode === '256color') assert.ok(rows.every(row => !/\x1b\[(?:38|48);2;/.test(row)), 'current public mode also governs projected background output');
+        const readyPaints = preparedPaints.filter(paint => paint.mode === mode);
+        assert.ok(readyPaints.length > 0, 'the installed card published its final compiled paint');
+        if (mode === '256color') assert.ok(readyPaints.every(paint => paint.opens.every(open => !/\x1b\[(?:38|48);2;/.test(open))),
+          'compiled card roles follow the current public mode, independent of Pi UI chrome');
         assert.equal(sample.roles.prompt.foreground.kind, 'terminal-default');
         assert.equal(sample.roles.prompt.attributes, 8, 'raw faint must not be reapplied to an already blended RGB');
         assert.equal(sample.mode, theme.getColorMode());
@@ -219,9 +230,25 @@ test('entry projects trusted terminal backgrounds into prepared Pi input without
       } finally { await h.stop(); }
     }
   } finally {
-    SyntaxRuntime.prototype.preparePiInput = original; themes.setTerminalColors({});
+    SyntaxRuntime.prototype.preparePaletteInput = original; CardSources.prototype.visit = originalVisit; themes.setTerminalColors({});
     await fs.rm(directory, { recursive: true, force: true });
   }
+});
+
+test('entry paints a saved owned palette from its installer-local input owner without a Pi preparation callback', async () => {
+  const h = fixture('tui', false, { async load() { return { ok: true, syntaxTheme: { kind: 'theme', id: 'gruvbox-dark' }, nativeHighlightingEnabled: false }; },
+    async update() { return { ok: true }; } });
+  const tool = new ToolExecutionComponent('write', 'entry-owned-write', { path: 'owned.ts', content: 'const ownedInput = 1;' }, undefined,
+    createWriteToolDefinition('/tmp'), h.root as never, '/tmp');
+  tool.setArgsComplete(); tool.updateResult({ content: [{ type: 'text', text: 'written' }], isError: false }, false); h.root.addChild(tool);
+  const expected = sampleOwnedPalette('gruvbox-dark', themes.theme.getColorMode()).compiledRoles.code.open;
+  try {
+    await h.start(); h.root.render(80); await settled();
+    const rows = h.root.render(80);
+    assert.ok(rows.some(row => row.includes('const ownedInput = 1;')));
+    assert.ok(rows.some(row => row.includes(expected)), 'the actual installed card paints from its local owned-palette input owner');
+    assert.equal(h.counts.shared, 0); assert.equal(h.counts.owned, 0, 'Native Off still paints the selected local palette');
+  } finally { await h.stop(); }
 });
 
 test('entry logging controls use public session metadata, remain alive while presentation is off, and contain no bodies', async () => {
@@ -541,14 +568,14 @@ test('entry gives the same overlay live per-page sizing without remounts or pref
 
 test('entry discards an unconfirmed theme preview when a session shuts down and constructs its next runtime', async () => {
   let saves = 0;
-  const original = { kind: 'occipital' as const, id: 'saved-independent-theme' };
+  const original = { kind: 'theme' as const, id: 'saved-independent-theme' };
   const h = fixture('tui', false, { load: async () => ({ ok: true, syntaxTheme: original }),
     update: async () => { saves++; return { ok: true }; } });
   await h.start(); await settled();
   await withMenu(h.command, h.ctx, async menu => {
     await menu.select('Code color theme');
     assert.match(menu.text(), /Selected: saved-independent-theme/);
-    // The missing native choice is intentionally not fabricated as a row.
+    // The missing owned palette is intentionally not fabricated as a row.
     await menu.key('\x1b[A'); await menu.key('\x1b[B');
     assert.match(menu.text(), /Selected: Follow Pi/);
     assert.equal(saves, 0);
@@ -575,7 +602,7 @@ test('settings sync: external shared fields apply without saves, local flags sta
   const h = fixture('tui', false, { load: async () => ({ ok: true, syntaxTheme: { kind: 'pi' } }),
     async update() { saves++; return { ok: true }; }, watch(callback) { changed = callback; return () => { stops++; }; } });
   await h.start(); await h.appearance(false); await h.recording(false);
-  changed({ ok: true, syntaxTheme: { kind: 'occipital', id: 'peer-B' }, terminalColorsEnabled: false, nativeHighlightingEnabled: false });
+  changed({ ok: true, syntaxTheme: { kind: 'theme', id: 'peer-B' }, terminalColorsEnabled: false, nativeHighlightingEnabled: false });
   await h.page(); assert.match(h.view, /Tidy UI appearance\s+Off/); assert.match(h.view, /Set terminal colors from Pi theme\s+Off/); assert.match(h.view, /peer-B/);
   await h.page('Status & troubleshooting'); assert.match(h.view, /Use Occipital highlighting\s+Off/);
   await h.page('Status & troubleshooting', 'Diagnostic logs'); assert.match(h.view, /Record diagnostic logs\s+Off/);
@@ -601,13 +628,13 @@ test('settings policy: reload restores local flags from process memory while a f
 
 test('settings sync: entry preserves an unconfirmed preview and Esc uses the latest peer confirmation without writes', async () => {
   let changed!: (value: SettingsLoadResult) => void, saves = 0;
-  const h = fixture('tui', false, { load: async () => ({ ok: true, syntaxTheme: { kind: 'occipital', id: 'saved-A' } }),
+  const h = fixture('tui', false, { load: async () => ({ ok: true, syntaxTheme: { kind: 'theme', id: 'saved-A' } }),
     async update() { saves++; return { ok: true }; }, watch(callback) { changed = callback; return () => {}; } });
   await h.start();
   await withMenu(h.command, h.ctx, async menu => {
     await menu.select('Code color theme'); await menu.key('\x1b[A'); await menu.key('\x1b[B');
     assert.match(menu.text(), /Selected: Follow Pi/);
-    changed({ ok: true, syntaxTheme: { kind: 'occipital', id: 'peer-B' } }); await settled();
+    changed({ ok: true, syntaxTheme: { kind: 'theme', id: 'peer-B' } }); await settled();
     assert.match(menu.text(), /Selected: Follow Pi/); assert.equal(saves, 0);
     await menu.key('\x1b'); assert.match(menu.text(), /peer-B/);
   });

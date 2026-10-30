@@ -7,13 +7,18 @@ pub const DATA_WIRE_BYTES: usize = 512 << 10;
 pub const CONTEXT_WORDS: usize = 65536;
 pub const DECODED_BYTES: usize = 2 << 20;
 
+pub const RULE_SELECTORS: usize = 512;
+pub const RULE_PATHS: usize = 4096;
+pub const RULE_ATOMS: usize = 4096;
+pub const RULE_NAME_BYTES: usize = 256 << 10;
+
 pub const WIRE_BYTES: usize = 64 << 20;
 pub const PATH_HINT_BYTES: usize = 4096;
 // A positive length/style pair needs at least four JSON bytes. The exact writer
 // also counts brackets, metadata, escapes and longer decimal values.
 pub const RUNS: usize = DATA_WIRE_BYTES / 4;
 // Admitted foregrounds + default, each with three font bits, plus neutral Plain.
-pub const STYLES: usize = (crate::profile::THEME_SELECTORS + 1) * 8 + 1;
+pub const STYLES: usize = (RULE_SELECTORS + 1) * 8 + 1;
 pub const DATA_BYTES: usize = 1 << 30;
 pub const STATE_BYTES: usize = 256 << 20;
 pub const ROUTES: usize = 8;

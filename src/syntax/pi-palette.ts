@@ -5,7 +5,7 @@ import { CARD_ROLES, type CardRole, type LiteralInk } from '../occipital/semanti
 import { samplePiBindings, samplePiPrefix } from './pi-bindings.ts';
 import { effectiveColor, inkColor, outputInk } from './pi-color.ts';
 import { derivePiMarkerVariants, type PiDerivedMarker, type PiMarkerVariantContext } from './pi-variants.ts';
-import { PI_MARKER_BINDINGS, PI_RULE_BINDINGS, piBindingInkRole } from './pi-rules.ts';
+import { PI_MARKER_BINDINGS, PI_MARKER_REGIONS, PI_RULE_BINDINGS, piBindingInkRole } from './pi-adapter.ts';
 import type { ConcreteStyle } from './style-materialization.ts';
 
 const foregrounds = {
@@ -65,7 +65,7 @@ export function samplePiPalette(theme: PiPaletteTheme, mode: TerminalColorMode) 
     ? Object.freeze(finalSurfaces) : undefined;
   const variantContext = (binding: PiDerivedMarker, neighbors: readonly ThemeColor[]): PiMarkerVariantContext => {
     const source = PI_MARKER_BINDINGS[binding].ink;
-    const parent = effectiveColor(baseBindings[PI_RULE_BINDINGS.indexOf(binding)]!, theme.colors?.[source], mode);
+    const parent = effectiveColor(baseBindings[PI_RULE_BINDINGS.indexOf(PI_MARKER_REGIONS[binding])]!, theme.colors?.[source], mode);
     return { parent, neighbors: Object.fromEntries(neighbors.map(role => [role, known(role)])), surfaces: frozenSurfaces };
   };
   const variants = derivePiMarkerVariants(baseBindings, {

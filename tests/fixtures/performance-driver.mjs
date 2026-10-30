@@ -24,6 +24,9 @@ export async function registerPerformanceDriver(pi, adapter) {
   const config = JSON.parse(readFileSync(process.env.TIDY_TEST_PERF_CONFIG, 'utf8'));
   const scenario = workload(config.scenario.id, config.scenario.variant, config.scenario.parameters);
   if (scenario.hash !== config.scenario.hash || scenario.driver !== 'cli') throw new Error('Invalid native performance workload');
+  if (config.preconditionOnly !== undefined && typeof config.preconditionOnly !== 'boolean') throw new Error('Invalid performance precondition mode');
+  const preconditionOnly = config.preconditionOnly === true;
+  if (preconditionOnly && (scenario.id !== 'frames' || scenario.variant !== 'on')) throw new Error('Readiness precondition is limited to enabled real-Pi frames');
   if (scenario.variant !== 'native' && !adapter || scenario.variant === 'native' && adapter) throw new Error('Wrong performance extension-loader entry for the selected variant');
   const installed = adapter?.(pi, scenario);
   const runtime = () => installed?.runtime(), controller = () => installed?.controller();
@@ -33,7 +36,7 @@ export async function registerPerformanceDriver(pi, adapter) {
   pi.registerCommand('tidy-perf-run', { description: 'Execute one fixed synthetic performance trial', handler: async (_args, ctx) => {
     if (running) throw new Error('Performance trial already executed');
     running = true;
-    const output = join(process.env.TIDY_UI_TEST_OUTPUT, 'performance.json');
+    const output = join(process.env.TIDY_UI_TEST_OUTPUT, preconditionOnly ? 'precondition.json' : 'performance.json');
     const phases = [], bridge = performanceBridge(); let allocationProfile = null;
     const sourceCounters = () => runtime()?.sources.stats() ?? {};
     const snapshot = () => {
@@ -43,11 +46,11 @@ export async function registerPerformanceDriver(pi, adapter) {
       if (cache) for (const key of ['builds', 'hits', 'misses', 'releases']) assert.ok(Number.isSafeInteger(cache[key]), `benchmark layout ${key} counter`);
       return { ...bridge.counts(), ...sourceCounters(), ...(cache ? { layoutBuilds: cache.builds, layoutHits: cache.hits, layoutMisses: cache.misses, layoutReleases: cache.releases } : {}) };
     };
-    async function ready(profile) {
-      const settled = await waitForPerformanceReady({ frame: () => bridge.frame(), pause, check: () => {
+    async function ready(palettePrefix) {
+      const settled = await waitForPerformanceReady({ frame: () => bridge.frame(), pause, now: preconditionOnly ? Date.now : () => performance.now(), check: () => {
         if (scenario.variant !== 'on') return true;
         const current = runtime(), stats = current?.sources.stats();
-        return current?.snapshot().provider.availability === 'ready' && installed.ready(expectedIds, profile)
+        return current?.snapshot().provider.availability === 'ready' && installed.ready(expectedIds, palettePrefix)
           && stats.unsettledJobs === 0 && stats.pendingCloses === 0;
       } });
       if (settled) return;
@@ -60,6 +63,15 @@ export async function registerPerformanceDriver(pi, adapter) {
           retainedBytes: counters.retention.retainedBytes, entries: counters.retention.entries } : null,
         preparation: installed?.diagnostics(expectedIds),
         states: states instanceof Map ? [...states.keys()].slice(0, 8).map(key => ({ key, exact: current.sources.status(key)?.exact, protective: current.sources.status(key)?.protective, basis: !!current.sources.displayBasis(key) })) : null })}`);
+    }
+    function inspectTools() {
+      const nodes = [], pending = [bridge.current.renderer.deref()], seen = new Set();
+      while (pending.length) {
+        const node = pending.pop(); if (!node || seen.has(node)) continue; seen.add(node);
+        if (typeof node.toolCallId === 'string' && typeof node.updateResult === 'function') nodes.push(node);
+        if (Array.isArray(node.children)) pending.push(...node.children);
+      }
+      return verifyPerformanceTools(nodes, history(scenario.parameters).tools, scenario.parameters.width, scenario.variant, 'cli');
     }
     async function measure(id, operations, action, forbidden = []) {
       const before = snapshot(); bridge.observe(true);
@@ -79,17 +91,27 @@ export async function registerPerformanceDriver(pi, adapter) {
       } catch (error) { if (!ended) endPhase(token, { operations: 0 }); bridge.observe(false); throw error; }
     }
     try {
+      if (preconditionOnly) {
+        assert.equal(bridge.startupPhase, undefined, 'proof-only preload must not collect a startup phase');
+        assert.equal(globalThis[Symbol.for('pi-tidy-ui.performance.startup')], undefined, 'proof-only preload must not start a phase');
+        const before = snapshot();
+        await ready();
+        const after = snapshot(), counters = delta(before, after);
+        assert.equal(typeof installed?.paintOriginCount, 'function', 'full-history Pi paint observation contract');
+        const paintOriginCount = installed.paintOriginCount(expectedIds, 'pi');
+        assert.equal(paintOriginCount, expectedIds.size, 'every expected restored card must use Pi-origin paint');
+        assert.ok((counters.nativeCalls ?? 0) >= 3, 'readiness survives three completed native frames');
+        assert.ok((counters.rootRenders ?? 0) + (counters.layoutPasses ?? 0) > 0, 'readiness observes actual root/layout work');
+        const integrity = inspectTools();
+        const result = { outcome: 'passed', preconditionOnly: true, phaseSamples: 0, phases: [], startupPhase: null,
+          readiness: { palette: 'pi-origin', cards: expectedIds.size, paintOriginCount, completedFrames: counters.nativeCalls,
+            counters }, integrity, source: sourceCounters(), observer: { perFrameReceipts: false, statsInsideTarget: true },
+          target: { pid: process.pid, node: process.version, v8: process.versions.v8 }, expectedCards: scenario.parameters.cards };
+        writeFileSync(output + '.tmp', JSON.stringify(result)); renameSync(output + '.tmp', output);
+        return;
+      }
       if (bridge.startupPhase) phases.push(bridge.startupPhase);
       await measure('prepare-to-ready', 1, () => ready());
-      function inspectTools() {
-        const nodes = [], pending = [bridge.current.renderer.deref()], seen = new Set();
-        while (pending.length) {
-          const node = pending.pop(); if (!node || seen.has(node)) continue; seen.add(node);
-          if (typeof node.toolCallId === 'string' && typeof node.updateResult === 'function') nodes.push(node);
-          if (Array.isArray(node.children)) pending.push(...node.children);
-        }
-        return verifyPerformanceTools(nodes, history(scenario.parameters).tools, scenario.parameters.width, scenario.variant, 'cli');
-      }
       const integrity = inspectTools();
       await measure('warmup', scenario.parameters.warmup, () => bridge.frames(scenario.parameters.warmup));
       await measure('noop-envelope', scenario.parameters.iterations, async () => {
@@ -105,11 +127,19 @@ export async function registerPerformanceDriver(pi, adapter) {
       assert.ok(phases.find(value => value.id === 'warm-frames').counts.nativeCalls >= scenario.parameters.iterations, 'fixed actions actually completed new native renders');
       if (scenario.id === 'syntax') {
         const current = runtime(); assert.ok(current);
-        await measure('new-native-theme', 1, async () => { current.previewTheme({ kind: 'occipital', id: 'syntect:InspiredGitHub' }); await ready('syntect:InspiredGitHub'); });
-        await measure('same-source-pi-theme', 1, async () => { current.previewTheme({ kind: 'pi' }); await ready('pi'); }, noSourceWork);
-        await measure('cached-native-rollback', 1, async () => { current.previewTheme({ kind: 'occipital', id: 'syntect:InspiredGitHub' }); await ready('syntect:InspiredGitHub'); }, noRPC);
-        await measure('cached-pi-rollback', 1, async () => { current.previewTheme({ kind: 'pi' }); await ready('pi'); }, noRPC);
-        await measure('reselected-pi-theme', 1, async () => { current.previewTheme({ kind: 'pi' }); await bridge.frame(); }, warmWork);
+        await measure('new-owned-palette', 1, async () => {
+          current.previewTheme({ kind: 'theme', id: 'gruvbox-dark' });
+          const selected = current.snapshot().effective; assert.ok(selected);
+          await ready(`theme:${selected.id}:${selected.fingerprint}:`);
+        });
+        await measure('same-source-pi-palette', 1, async () => { current.previewTheme({ kind: 'pi' }); await ready('pi:'); }, noSourceWork);
+        await measure('cached-owned-palette-rollback', 1, async () => {
+          current.previewTheme({ kind: 'theme', id: 'gruvbox-dark' });
+          const selected = current.snapshot().effective; assert.ok(selected);
+          await ready(`theme:${selected.id}:${selected.fingerprint}:`);
+        }, noRPC);
+        await measure('cached-pi-rollback', 1, async () => { current.previewTheme({ kind: 'pi' }); await ready('pi:'); }, noRPC);
+        await measure('reselected-pi-palette', 1, async () => { current.previewTheme({ kind: 'pi' }); await bridge.frame(); }, warmWork);
       }
       if (scenario.id === 'status') {
         assert.equal(typeof ctx.ui.setStatus, 'function', 'selected host public extension status contract');

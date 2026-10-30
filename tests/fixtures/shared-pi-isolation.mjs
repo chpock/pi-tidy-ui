@@ -23,10 +23,9 @@ export async function sharedPiIsolationHost(inputs, binary) {
   assert.equal(createHash('sha256').update(await readFile(inputs.sharedHost.path)).digest('hex'), inputs.sharedHost.sha256);
   const root = await mkdtemp(join(tmpdir(), 'shared-pi-isolation-'));
   const env = sharedHostEnv(root);
-  const config = join(root, 'occipital.json'), wrapper = join(root, 'module');
-  await writeFile(config, '{}');
+  const wrapper = join(root, 'module');
   const quote = value => `'${value.replaceAll("'", "'\\''")}'`;
-  await writeFile(wrapper, `#!/bin/sh\nexec ${quote(resolve(binary))} --config ${quote(config)} "$@"\n`);
+  await writeFile(wrapper, `#!/bin/sh\nexec ${quote(resolve(binary))} "$@"\n`);
   await chmod(wrapper, 0o700);
   const directory = join(env.XDG_CONFIG_HOME, 'cortexkit'); await mkdir(directory, { mode: 0o700 });
   await writeFile(join(directory, 'subc.jsonc'), JSON.stringify({ version: 1, port: 0, modules: { occipital: { program: wrapper, reserved: true } } }), { mode: 0o600 });
@@ -58,19 +57,24 @@ export async function sharedPiIsolationHost(inputs, binary) {
     const startup = await SubcClient.connect({ connectionFile: connection, handshakeTimeoutMs: 2000 });
     try {
       await sharedPiProgress(async () => {
-        try { return await startup.resolveProvider('syntax-highlight/v3') === 'occipital'; }
+        try { return await startup.resolveProvider('syntax-highlight/v4') === 'occipital'; }
         catch (error) { if (error.code === 'capability_unprovided') return false; throw error; }
       });
     } finally { startup.close(); }
     const peer = async () => {
-      let transport;
+      let transport, sequence = 0;
       const factory = createSharedFactory({ identity: { project_root: root, harness: 'pi', session: `isolation-${peers.length}` },
         discovery: { explicit: connection, env: {} }, requestDeadlineMs: 5000 });
       const client = new SyntaxClient({ standaloneVersion: '0.1.0', initialTheme: { kind: 'pi' }, provider: {
         async tryShared(...args) { transport = await factory(...args); return transport; },
         async acquireOwned() { throw new Error('isolation consumer must remain shared'); },
       } });
-      const result = { client, transport: () => transport }; peers.push(result);
+      const result = { client, transport: () => transport, async describe() {
+        const ticket = `isolation-${peers.length}-${++sequence}`;
+        const reply = await transport.request({ v: 4, ticket, op: 'describe' }, { waitOnly: true });
+        assert.equal(reply.v, 4); assert.equal(reply.ticket, ticket); assert.equal(reply.status, 'ok');
+        return reply.body;
+      } }; peers.push(result);
       await client.start();
       assert.equal(client.snapshot().provider.kind, 'shared'); assert.equal(client.snapshot().provider.availability, 'ready');
       assert.equal(client.broker.stats().ownedAttempts, 0);

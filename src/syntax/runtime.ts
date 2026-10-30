@@ -4,8 +4,10 @@ import { type SyntaxMenuOwner } from '../occipital/menu.ts';
 import type { SyntaxTheme } from '../settings.ts';
 import type { TerminalColorMode } from '@earendil-works/pi-tui';
 import type { GeometryFunding } from '../occipital/controller.ts';
-import { type PiInputTheme, type PiInputLease } from './pi-input.ts';
-import { PiInputOwner } from './pi-input-owner.ts';
+import { type PiInputTheme, type PaletteInputLease } from './pi-input.ts';
+import { PaletteInputOwner } from './pi-input-owner.ts';
+import type { ThemeDescription } from '../themes/selection.ts';
+import { resolveTheme } from '../themes/selection.ts';
 
 interface Presentation {
   readonly active: boolean;
@@ -32,7 +34,7 @@ export class SyntaxRuntime implements SyntaxMenuOwner {
   private readonly options: SyntaxRuntimeOptions;
   private readonly owner = new WeakRef(this);
   private presentation?: WeakRef<Presentation>;
-  private readonly piInput: PiInputOwner;
+  private readonly paletteInput: PaletteInputOwner;
   private enabled: boolean;
   private started = false;
   private scheduled = false;
@@ -40,7 +42,8 @@ export class SyntaxRuntime implements SyntaxMenuOwner {
   private epoch = 0;
 
   constructor(options: SyntaxRuntimeOptions) {
-    this.options = options; this.piInput = new PiInputOwner(options.diagnostic); this.enabled = options.enabled ?? true;
+    this.options = options; this.paletteInput = new PaletteInputOwner(options.diagnostic,
+      message => options.notify?.(message, 'error')); this.enabled = options.enabled ?? true;
     this.client = new SyntaxClient({ ...options, onChange: metadataNotice(this.owner), onSourceChange: sourceNotice(this.owner) });
     // Construction is resource-free. Only attach or an explicit UI menu restores
     // settings; a menu without an active adapter must never activate a provider.
@@ -55,10 +58,16 @@ export class SyntaxRuntime implements SyntaxMenuOwner {
   }
   /** The public Theme proxy is stable; its cached colors object changes on theme
    * or terminal-default changes. Never sample tokens or inspect its private target. */
-  palette(theme: { readonly colors: object }): number { return this.piInput.palette(theme); }
-  /** Data-only acquisition; leases belong to the card owner. */
-  preparePiInput(theme: PiInputTheme, mode: TerminalColorMode, funding: GeometryFunding): PiInputLease | undefined {
-    return this.disposed ? undefined : this.piInput.prepare(theme, mode, funding);
+  palette(theme: { readonly colors: object }): number {
+    const selected = this.client.snapshot().effective ?? resolveTheme({ kind: 'pi' }).effective;
+    return this.paletteInput.palette(theme, selected);
+  }
+  /** Data-only acquisition; the selected identity and lease remain card-owner inputs. */
+  preparePaletteInput(palette: ThemeDescription, theme: PiInputTheme | undefined, revision: number,
+    mode: TerminalColorMode, funding: GeometryFunding, usePiFallback = true, fallbackTheme?: () => PiInputTheme): PaletteInputLease | undefined {
+    if (this.disposed) return undefined;
+    if (theme || !this.paletteInput.usesPiInput(palette)) this.paletteInput.palette(theme, palette);
+    return this.paletteInput.prepare(theme, palette, revision, mode, funding, usePiFallback, fallbackTheme);
   }
   attach(presentation: Presentation): void {
     if (this.disposed || !presentation.active) return;
@@ -80,9 +89,8 @@ export class SyntaxRuntime implements SyntaxMenuOwner {
   previewTheme(choice: SyntaxTheme) { this.client.previewTheme(choice); }
   applySavedTheme(choice: SyntaxTheme) { this.client.applySavedTheme(choice); }
   selectTheme(choice: SyntaxTheme) { return this.client.selectTheme(choice); }
-  refreshThemes() { return this.client.refreshThemes(); }
   dispose(): Promise<void> {
-    if (!this.disposed) { reportRuntime(this.options.diagnostic, { kind: 'released', scope: this, operation: '*' }); diagnose(this.options.diagnostic, 'INFO', 'syntax', 'Syntax runtime disposing; current source owners are retired'); this.disposed = true; ++this.epoch; this.presentation = undefined; this.piInput.dispose(); }
+    if (!this.disposed) { reportRuntime(this.options.diagnostic, { kind: 'released', scope: this, operation: '*' }); diagnose(this.options.diagnostic, 'INFO', 'syntax', 'Syntax runtime disposing; current source owners are retired'); this.disposed = true; ++this.epoch; this.presentation = undefined; this.paletteInput.dispose(); }
     return this.client.dispose();
   }
 

@@ -10,15 +10,15 @@ import { decodeSemanticSources, type SemanticChunk } from '../../../src/occipita
 import { materializeStyle, type ConcreteStyle } from '../../../src/syntax/style-materialization.ts';
 import type { ContextRef } from '../../../src/occipital/context-arena.ts';
 
-const vectors = JSON.parse(readFileSync(new URL('../../../protocol/syntax-v3/vectors.json', import.meta.url), 'utf8'));
+const vectors = JSON.parse(readFileSync(new URL('../../../protocol/syntax-v4/vectors.json', import.meta.url), 'utf8'));
 const vocabulary = 'a'.repeat(64), rules = 'b'.repeat(64), grant = () => true;
 const paths = decodeContextBatch([vectors.contexts[0].encoded], { vocabularySize: vectors.vocabulary_size, maxBytes: 1 << 20 }).batches[0]!;
-const nativeFixture = vectors.styles.find((vector: { name: string }) => vector.name === 'empty-source-complete-native-palette');
-const native = decodeStyleResult(nativeFixture.body, { vocabulary, rules, mode: 'native', bindingSlots: 0 }, 0, 1 << 20);
+const literalFixture = vectors.styles.find((vector: { name: string }) => vector.name === 'literal-binding-inherit-and-explicit-clear');
+const decoded = decodeStyleResult(literalFixture.body, { vocabulary, rules, bindingSlots: literalFixture.binding_slots }, literalFixture.context_count, 1 << 20);
 const indexedFixture = vectors.styles.find((vector: { name: string }) => vector.name === 'indexed-is-not-guessed-rgb');
-const indexed = decodeStyleResult(indexedFixture.body, { vocabulary, rules, mode: 'client', bindingSlots: 0 }, 1, 1 << 20);
+const indexed = decodeStyleResult(indexedFixture.body, { vocabulary, rules, bindingSlots: indexedFixture.binding_slots }, indexedFixture.context_count, 1 << 20);
 const caller: ConcreteStyle = { foreground: { kind: 'terminal-default' }, background: { kind: 'terminal-default' }, attributes: 0 };
-const nativeStyle = materializeStyle(native.styles[0]!, [], caller), indexedStyle = materializeStyle(indexed.styles[0]!, [], caller);
+const literalStyle = materializeStyle(decoded.styles[0]!, [], caller), indexedStyle = materializeStyle(indexed.styles[0]!, [], caller);
 
 function chunk(key: string, generation: number, text: string, options: Partial<SemanticChunk> = {}): SemanticChunk {
   const source_bytes = Buffer.byteLength(text), replace_from = options.replace_from ?? 0, complete = options.complete ?? false;
@@ -37,10 +37,9 @@ function chunk(key: string, generation: number, text: string, options: Partial<S
 function references(pool: SemanticRetentionPool, generation: number) {
   const refs = new Set<ContextRef>(); pool.visitRanges(generation, (_a, _b, ref) => { if (ref) refs.add(ref); }); return [...refs];
 }
-function presentation(refs: readonly ContextRef[], style: ConcreteStyle = nativeStyle): ReadyPresentation {
-  return { vocabulary, rules, palette: native.palette!.fingerprint, bindingRevision: 1,
-    roles: Object.fromEntries(CARD_ROLES.map((role, index) => [role, structuredClone(style === nativeStyle
-      ? materializeStyle(native.styles[native.palette!.slots[index]! - 1]!, [], caller) : style)])) as Record<CardRole, ConcreteStyle>,
+function presentation(refs: readonly ContextRef[], style: ConcreteStyle = literalStyle): ReadyPresentation {
+  return { vocabulary, rules, palette: 'palette:test', bindingRevision: 1,
+    roles: Object.fromEntries(CARD_ROLES.map(role => [role, structuredClone(style)])) as Record<CardRole, ConcreteStyle>,
     contexts: refs.map(context => ({ context, style: structuredClone(style) })) };
 }
 function publish(pool: SemanticRetentionPool, generation: number, data = presentation(references(pool, generation))) {
@@ -66,7 +65,7 @@ test('ready display: V1 exact text and literal palette survive V2 parser progres
   assert.equal(publish(pool, generation, data).accepted, true);
   const old = pool.displayStatus(generation)!, oldRows = displayRows(pool, generation), oldSnapshot = pool.borrowDisplay(generation, old.effectStamp)!;
   const oldTail = references(pool, generation)[1]!;
-  pool.arena.installStyles(vocabulary, rules, [oldTail], native.styles, Uint32Array.of(1), grant);
+  pool.arena.installStyles(vocabulary, rules, [oldTail], decoded.styles, Uint32Array.of(1), grant);
   pool.replaceSnapshot(generation, 2, 'a\nbc');
   pool.installChunk(generation, chunk('a', generation, 'a\nbc', { revision: 2, source_version: 2, replace_from: 2, contexts: [paths[3]!] }));
   assert.equal(pool.borrowSnapshot(generation, 'basis')!.text, 'a\nbc');
@@ -198,7 +197,7 @@ test('ready display: native ready data are detached immutable literals; complete
   const status = pool.displayStatus(generation)!, expected = displayRows(pool, generation), code = pool.displayRole(generation, status.effectStamp, 'code')!;
   assert.equal(status.complete, true); assert.equal(pool.borrowDisplay(generation, status.effectStamp)!.text, 'a雪é');
   assert.deepEqual(expected.map(row => [row.from, row.to, row.id === 0]), [[0, 1, true], [1, 4, false], [4, 6, false]]);
-  assert.equal(expected[0]!.style, code); assert.deepEqual(code, nativeStyle);
+  assert.equal(expected[0]!.style, code); assert.deepEqual(code, literalStyle);
   Object.assign(data.roles.code.foreground, { r: 1 }); Object.assign(data.contexts[0]!.style, { attributes: 15 });
   (data.contexts as { context: ContextRef; style: ConcreteStyle }[]).pop();
   assert.deepEqual(displayRows(pool, generation), expected); assert.ok(Object.isFrozen(code)); assert.ok(Object.isFrozen(code.foreground));
@@ -211,7 +210,7 @@ test('ready display: missing roles, forged handles and duplicates are refused; i
   publish(pool, generation, data); const old = pool.displayStatus(generation)!;
   const missing = { ...data, roles: { ...data.roles } }; delete (missing.roles as Partial<typeof missing.roles>).frame;
   assert.equal(publish(pool, generation, missing).accepted, false);
-  assert.equal(publish(pool, generation, { ...data, contexts: [{ context: { id: data.contexts[0]!.context.id }, style: nativeStyle }] }).accepted, false);
+  assert.equal(publish(pool, generation, { ...data, contexts: [{ context: { id: data.contexts[0]!.context.id }, style: literalStyle }] }).accepted, false);
   assert.equal(publish(pool, generation, { ...data, contexts: [data.contexts[0]!, data.contexts[0]!] }).accepted, false);
   assert.deepEqual(pool.displayStatus(generation), old);
   assert.equal(publish(pool, generation, { ...data, contexts: data.contexts.slice(0, 1) }).accepted, true, 'caller owns completeness; root does not scan prefix');
@@ -275,7 +274,7 @@ test('ready display: saved invalidated weak reader and detached containers do no
   for (let i = 0; i < 40; i++) { await turn(); global.gc!(); await turn(); if (!first.owner.deref() && !first.arena.deref()) break; }
   assert.equal(first.owner.deref(), undefined); assert.equal(first.arena.deref(), undefined);
   assert.equal(first.reader.read(), undefined); assert.equal(first.reader.visit(), false);
-  assert.equal(first.saved!.text, 'a\nb'); assert.deepEqual(first.role, nativeStyle); assert.ok(peer.stats().retainedBytes > 0);
+  assert.equal(first.saved!.text, 'a\nb'); assert.deepEqual(first.role, literalStyle); assert.ok(peer.stats().retainedBytes > 0);
   console.log(JSON.stringify({ readyGC: { rootCollected: !first.owner.deref(), arenaCollected: !first.arena.deref(), staleVisit: first.reader.visit(), peerEntries: peer.stats().entries } }));
   peer.dispose();
 });
@@ -379,7 +378,9 @@ for (const nested of [false, true]) test(`ready display P1: ${nested ? 'replacem
 test('ready display P1: nested palette-only replacement frees retired lookup while its shared live view remains charged', async () => {
   const pool = new SemanticRetentionPool(), observed = instrumentReadyOwnership(pool), generation = observed.generation;
   const old = pool.displayStatus(generation)!, refs = references(pool, generation);
-  const metadata = { ...presentation(refs), rules: 'd'.repeat(64), bindingRevision: 2 }, replacement = presentation(refs, indexedStyle);
+  const metadata = { ...presentation(refs), rules: 'd'.repeat(64), bindingRevision: 2 };
+  const replacement = { ...presentation(refs, indexedStyle),
+    roles: { ...presentation(refs, indexedStyle).roles, code: structuredClone(indexedStyle) } };
   await turn(); // No weak deref in the adoption job.
   let calls = 0;
   assert.equal(pool.visitDisplay(generation, old.effectStamp, () => {

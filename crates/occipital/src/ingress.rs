@@ -92,7 +92,7 @@ pub(crate) fn prepare(
     let header = routing_header(&bytes);
     let is_control = header
         .as_ref()
-        .is_some_and(|(_, op)| matches!(op, Operation::Describe | Operation::ThemesRefresh));
+        .is_some_and(|(_, op)| matches!(op, Operation::Describe));
     let ticket = header.map(|(ticket, _)| ticket);
     let result = (|| {
         if bytes.len() > request::REQUEST_BYTES {
@@ -107,7 +107,7 @@ pub(crate) fn prepare(
             let decoded = runtime_request::control(&bytes);
             drop(bytes);
             let request = decoded?;
-            if matches!(request.op, Operation::Describe | Operation::ThemesRefresh) {
+            if matches!(request.op, Operation::Describe) {
                 return Ok(Prepared::Control(Control { request, credit }));
             }
             // A mismatching decoded control kind is never routed into source work.

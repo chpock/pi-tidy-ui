@@ -2,16 +2,15 @@ import '../../fixtures/test-guard.mjs';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { readFileSync } from 'node:fs';
-import { decodeContextBatch, decodeStyleResult, SemanticError, CARD_ROLES, type StyleIdentity } from '../../../src/occipital/semantic-codec.ts';
+import { decodeContextBatch, decodeStyleResult, SemanticError, type StyleIdentity } from '../../../src/occipital/semantic-codec.ts';
 
 const vocabulary = 'a'.repeat(64), rules = 'b'.repeat(64);
 const bounds = { vocabularySize: 20, maxBytes: 1 << 20 };
-const client: StyleIdentity = { vocabulary, rules, mode: 'client', bindingSlots: 4 };
-const native: StyleIdentity = { vocabulary, rules, mode: 'native', bindingSlots: 0 };
+const client: StyleIdentity = { vocabulary, rules, bindingSlots: 4 };
 const rgb = { kind: 'rgb', r: 10, g: 20, b: 30 };
 const literal = { foreground: rgb, background: { kind: 'terminal-default' }, attributes: 0, attribute_mask: 31 };
 const binding = { foreground: { kind: 'binding', slot: 2 }, background: { kind: 'inherit' }, attributes: 0, attribute_mask: 8 };
-const body = (styles: unknown[] = [literal, binding]) => ({ kind: 'styles', vocabulary, rules, styles, indices: [1, 2, 1], palette: null });
+const body = (styles: unknown[] = [literal, binding]) => ({ kind: 'styles', vocabulary, rules, styles, indices: [1, 2, 1] });
 const error = (code: string) => (value: unknown) => value instanceof SemanticError && value.code === code;
 
 function allocationsDuring(fn: () => void): number {
@@ -55,18 +54,7 @@ test('semantic styles: literal, binding, caller-inherit and explicit faint-clear
   assert.deepEqual([...value.indices], [1, 2, 3, 1]);
   assert.equal(value.styles[1]!.attribute_mask, 8);
   assert.equal(value.styles[2]!.attribute_mask, 0);
-  assert.equal(value.palette, null);
-});
-
-test('semantic styles: native complete palette uses the same indexed styles as syntax and never accepts Pi bindings', () => {
-  const palette = { revision: 1, fingerprint: 'c'.repeat(64), slots: CARD_ROLES.map(() => 1), origins: CARD_ROLES.map(() => 0) };
-  const value = decodeStyleResult({ ...body([literal]), indices: [1], palette }, native, 1, 1 << 20);
-  assert.equal(value.styles.length, 1);
-  assert.equal(value.palette!.slots.length, 26);
-  assert.deepEqual([...value.palette!.slots], Array(26).fill(1));
-  assert.throws(() => decodeStyleResult({ ...body(), palette }, native, 3, 1 << 20), error('invalid_style'));
-  assert.throws(() => decodeStyleResult({ ...body([literal]), indices: [1], palette: null }, native, 1, 1 << 20), error('invalid_palette'));
-  assert.throws(() => decodeStyleResult({ ...body([literal]), indices: [1], palette }, client, 1, 1 << 20), error('invalid_palette'));
+  assert.equal(Object.hasOwn(value, 'palette'), false);
 });
 
 for (const style of [
@@ -90,17 +78,15 @@ test('semantic styles: identities, cardinality, unique/referenced entries and al
   assert.throws(() => decodeStyleResult(body(), client, 3, 1), error('style_limit'));
 });
 
-test('semantic styles: empty contexts still obtain a source-independent native palette; client empty result stays empty', () => {
-  const palette = { revision: 1, fingerprint: 'c'.repeat(64), slots: CARD_ROLES.map(() => 1), origins: CARD_ROLES.map(() => 21) };
-  assert.equal(decodeStyleResult({ ...body([literal]), indices: [], palette }, native, 0, 1 << 20).styles.length, 1);
-  assert.equal(decodeStyleResult({ ...body([]), indices: [] }, client, 0, 1 << 20).styles.length, 0);
-  for (const patch of [{ slots: [1] }, { origins: Array(26).fill(3) }, { origins: Array(26).fill(32) }, { slots: Array(26).fill(0) }, { fingerprint: 'bad' }]) {
-    assert.throws(() => decodeStyleResult({ ...body([literal]), indices: [], palette: { ...palette, ...patch } }, native, 0, 1 << 20), error('invalid_palette'));
-  }
+test('semantic styles: empty results remain palette-free', () => {
+  const result = decodeStyleResult({ ...body([]), indices: [] }, { ...client, bindingSlots: 0 }, 0, 1 << 20);
+  assert.equal(result.styles.length, 0);
+  assert.equal(result.indices.length, 0);
+  assert.equal(Object.hasOwn(result, 'palette'), false);
 });
 
-const vectors = JSON.parse(readFileSync(new URL('../../../protocol/syntax-v3/vectors.json', import.meta.url), 'utf8'));
-for (const vector of vectors.contexts) test(`v3 shared vector: ${vector.name}`, () => {
+const vectors = JSON.parse(readFileSync(new URL('../../../protocol/syntax-v4/vectors.json', import.meta.url), 'utf8'));
+for (const vector of vectors.contexts) test(`v4 shared vector: ${vector.name}`, () => {
   const limit = { vocabularySize: vectors.vocabulary_size, maxBytes: vector.max_bytes ?? bounds.maxBytes };
   if (vector.error) assert.throws(() => decodeContextBatch([vector.encoded], limit), error(vector.error));
   else {
@@ -110,27 +96,26 @@ for (const vector of vectors.contexts) test(`v3 shared vector: ${vector.name}`, 
     assert.equal(decoded.policyBytes, vector.policy_bytes);
   }
 });
-for (const vector of vectors.styles) test(`v3 shared vector: ${vector.name}`, () => {
-  const identity = { vocabulary, rules, mode: vector.mode, bindingSlots: vector.binding_slots };
+for (const vector of vectors.styles) test(`v4 shared vector: ${vector.name}`, () => {
+  const identity = { vocabulary, rules, bindingSlots: vector.binding_slots };
   if (vector.error) assert.throws(() => decodeStyleResult(vector.body, identity, vector.context_count, 1 << 20), error(vector.error));
   else {
     const decoded = decodeStyleResult(vector.body, identity, vector.context_count, 1 << 20);
     assert.deepEqual(decoded.styles, vector.body.styles);
     assert.deepEqual([...decoded.indices], vector.body.indices);
-    assert.deepEqual(decoded.palette && { ...decoded.palette, slots: [...decoded.palette.slots], origins: [...decoded.palette.origins] }, vector.body.palette);
+    assert.equal(Object.hasOwn(decoded, 'palette'), false);
   }
 });
 
-test('semantic styles: binding IDs stay uint16 and native expressions always fully override inherited attributes', () => {
+test('semantic styles: binding IDs stay uint16 and five-bit attributes are validated', () => {
   const oversized = { ...literal, foreground: { kind: 'binding', slot: 65536 } };
   assert.throws(() => decodeStyleResult({ ...body([oversized]), indices: [1] }, { ...client, bindingSlots: 65537 }, 1, 1 << 20), error('invalid_style'));
   const partial = { ...literal, attribute_mask: 8 };
-  const palette = { revision: 1, fingerprint: 'c'.repeat(64), slots: CARD_ROLES.map(() => 1), origins: CARD_ROLES.map(() => 0) };
-  assert.throws(() => decodeStyleResult({ ...body([literal, partial]), indices: [2], palette }, native, 1, 1 << 20), error('invalid_style'));
+  assert.deepEqual(decodeStyleResult({ ...body([partial]), indices: [1] }, client, 1, 1 << 20).styles, [partial]);
 });
 
 test('semantic contexts: literal numeric spellings match correctly rounded native admission', () => {
-  const vectors = JSON.parse(readFileSync(new URL('../../../protocol/syntax-v3/context-number-vectors.json', import.meta.url), 'utf8'));
+  const vectors = JSON.parse(readFileSync(new URL('../../../protocol/syntax-v4/context-number-vectors.json', import.meta.url), 'utf8'));
   for (const vector of vectors.cases) {
     const raw = JSON.parse(vector.raw), bounds = { vocabularySize: 20, maxBytes: 1 << 20 };
     if (vector.error) assert.throws(() => decodeContextBatch([raw], bounds), error(vector.error), vector.name);

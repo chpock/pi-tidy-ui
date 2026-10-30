@@ -1,10 +1,11 @@
 import '../../fixtures/test-guard.mjs';
+import { createSemanticRuleDefinition } from '../../../src/syntax/semantic-rules.ts';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { Theme } from '@earendil-works/pi-coding-agent';
 import { getThemeByName } from '../../../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js';
 import { samplePiBindings } from '../../../src/syntax/pi-bindings.ts';
-import { PI_DIRECT_BINDINGS, createPiRuleDefinition } from '../../../src/syntax/pi-rules.ts';
+import { PI_DIRECT_BINDINGS, PI_REGION_ROLES, PI_RULE_BINDINGS } from '../../../src/syntax/pi-adapter.ts';
 import { materializeStyle } from '../../../src/syntax/style-materialization.ts';
 import { fingerprintRules } from '../../../src/occipital/style-rules.ts';
 
@@ -23,22 +24,23 @@ function theme(mode: 'truecolor' | '256color', faint = true) {
 test('Pi bindings: sample all stable slots once through the public prefix API, not approximate theme.colors', () => {
   const native = theme('truecolor'), seen: string[] = [];
   const values = samplePiBindings({ getFgAnsi(role) { seen.push(role); return native.getFgAnsi(role); } });
-  assert.deepEqual(seen, PI_DIRECT_BINDINGS);
-  assert.deepEqual(values[0], { ink: { kind: 'rgb', r: 18, g: 52, b: 86 }, attributes: 8, attribute_mask: 31 });
-  assert.deepEqual(values[1], { ink: { kind: 'rgb', r: 18, g: 52, b: 86 }, attributes: 0, attribute_mask: 31 });
-  assert.deepEqual(values[3]!.ink, { kind: 'indexed', index: 6 });
-  assert.deepEqual(values[12]!.ink, { kind: 'terminal-default' });
-  assert.deepEqual(values[PI_DIRECT_BINDINGS.indexOf('accent')]!.ink, { kind: 'indexed', index: 2 });
+  assert.deepEqual([...new Set(seen)].sort(), [...PI_DIRECT_BINDINGS].sort());
+  assert.equal(seen.length, PI_DIRECT_BINDINGS.length);
+  const slot = (region: keyof typeof PI_REGION_ROLES) => PI_RULE_BINDINGS.indexOf(region);
+  assert.deepEqual(values[slot('syntax-comment')], { ink: { kind: 'rgb', r: 18, g: 52, b: 86 }, attributes: 8, attribute_mask: 31 });
+  assert.deepEqual(values[slot('syntax-keyword')], { ink: { kind: 'rgb', r: 18, g: 52, b: 86 }, attributes: 0, attribute_mask: 31 });
+  assert.deepEqual(values[slot('syntax-number')]!.ink, { kind: 'indexed', index: 6 });
+  assert.deepEqual(values[slot('markdown-strong')]!.ink, { kind: 'indexed', index: 2 });
 });
 
 test('Pi bindings: preserve the actual terminal mode instead of inventing RGB for indexed colors', () => {
   const native = theme('256color');
   for (const value of samplePiBindings(native)) assert.ok(value.ink.kind === 'indexed' || value.ink.kind === 'terminal-default');
-  assert.deepEqual(samplePiBindings(native)[3]!.ink, { kind: 'indexed', index: 6 });
+  assert.deepEqual(samplePiBindings(native)[PI_RULE_BINDINGS.indexOf('syntax-number')]!.ink, { kind: 'indexed', index: 6 });
 });
 
 test('Pi bindings: local faint and color rebinding leave the resolver definition unchanged', () => {
-  const definition = createPiRuleDefinition(), rules = fingerprintRules(definition);
+  const definition = createSemanticRuleDefinition(), rules = fingerprintRules(definition);
   const expression = { foreground: { kind: 'binding' as const, slot: 0 }, background: { kind: 'inherit' as const }, attributes: 1, attribute_mask: 9 };
   const caller = { foreground: { kind: 'indexed' as const, index: 1 }, background: { kind: 'terminal-default' as const }, attributes: 8 };
   const faint = samplePiBindings(theme('truecolor')), normal = samplePiBindings(theme('truecolor', false));

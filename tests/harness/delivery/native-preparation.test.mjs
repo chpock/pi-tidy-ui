@@ -299,7 +299,7 @@ const spawnSync=(command,args,options)=>{
 
 test('native source identity binds shared protocol bytes even when Rust source is unchanged', t => {
   const f = fixture(t); observe(t, f);
-  const relative = 'protocol/syntax-v3/vectors.json', path = join(f.checkout, relative);
+  const relative = 'protocol/syntax-v4/vectors.json', path = join(f.checkout, relative);
   fs.mkdirSync(dirname(path), { recursive: true }); fs.writeFileSync(path, '{"revision":1}\n');
   const before = sourceIdentity(f.checkout, f.tools, f.environment), first = prepareNative(f.options);
   assert.equal(fs.readFileSync(join(first.project, relative), 'utf8'), '{"revision":1}\n');

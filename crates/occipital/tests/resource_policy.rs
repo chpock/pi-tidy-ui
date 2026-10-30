@@ -79,7 +79,7 @@ fn saturated_source_preserves_exact_prefix_and_empty_finalize_does_not_reparse()
 
 fn source(ticket: &str) -> Vec<u8> {
     serde_json::to_vec(
-        &json!({"v":3,"ticket":ticket,"op":"stream.open","instance":"policy",
+        &json!({"v":4,"ticket":ticket,"op":"stream.open","instance":"policy",
         "admission":"try_now","sources":[{"key":ticket,"generation":1,"source_version":0,
         "hint":{"language":"text"},"text":"a"}]}),
     )
@@ -121,7 +121,7 @@ async fn all_eight_routes_can_hold_two_calls_without_a_separate_queue_count_refu
     assert_eq!(pool.stats().leases, 16);
     // Metadata remains available while every advertised data slot is occupied.
     let Incoming::Control(control) = routes[0]
-        .receive(br#"{"v":3,"ticket":"metadata","op":"describe"}"#.to_vec())
+        .receive(br#"{"v":4,"ticket":"metadata","op":"describe"}"#.to_vec())
         .unwrap()
     else {
         panic!("control")
