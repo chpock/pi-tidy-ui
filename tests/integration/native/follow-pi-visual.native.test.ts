@@ -34,7 +34,7 @@ assert.equal(baselineHeadingForeground.slot, slot('markdown-heading'), 'the froz
 
 test('Follow Pi early whole-source comparison: baseline, same-parent and role-specific colors across actual retained contexts', { timeout: 30000 }, async () => {
   const root = await mkdtemp(join(tmpdir(), 'pi-palette-visual-'));
-  const pipe = new StdioTransport({ command: binary.path, args: ['--stdio', '--config', join(root, 'config.json')], cwd: root,
+  const pipe = new StdioTransport({ command: binary.path, args: ['--stdio'], cwd: root,
     env: { ...process.env, HOME: root, XDG_CONFIG_HOME: root, XDG_DATA_HOME: root, XDG_CACHE_HOME: root, XDG_RUNTIME_DIR: root }, requestDeadlineMs: 5000, terminateGraceMs: 100 });
   const broker = new ProviderBroker({ async tryShared() { return undefined; }, async acquireOwned() { return pipe; } });
   const owner = new SourceController(broker, { deadlineMs: 5000 });

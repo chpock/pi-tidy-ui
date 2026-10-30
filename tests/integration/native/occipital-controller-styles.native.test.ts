@@ -23,7 +23,7 @@ function paletteInput(revision: number) {
 }
 test('actual v4 generic styles executor: production broker SOURCE STYLE, binding rollback, and local palette materialization', async () => {
   const root = await mkdtemp(join(tmpdir(), 'style-controller-'));
-  const pipe = new StdioTransport({ command: binary.path, args: ['--stdio', '--config', join(root, 'config.json')], cwd: root,
+  const pipe = new StdioTransport({ command: binary.path, args: ['--stdio'], cwd: root,
     env: { ...process.env, HOME: root, XDG_CONFIG_HOME: root, XDG_DATA_HOME: root, XDG_CACHE_HOME: root, XDG_RUNTIME_DIR: root }, requestDeadlineMs: 5000, terminateGraceMs: 100 });
   const broker = new ProviderBroker({ async tryShared() { return undefined; }, async acquireOwned() { return pipe; } });
   const owner = new SourceController(broker, { deadlineMs: 5000 });
@@ -44,7 +44,8 @@ test('actual v4 generic styles executor: production broker SOURCE STYLE, binding
     owner.setStyleSelection(paletteInput(7)); await drain(); assert.deepEqual(read(), first);
     assert.equal(broker.stats().styleDispatches, styleDispatches);
     owner.setStyleSelection(paletteInput(9)); await drain(); assert.ok(read().some(style => style.foreground.kind === 'rgb' && style.foreground.r === 9));
-    assert.equal(broker.stats().sourceDispatches, 1); assert.equal(broker.stats().styleDispatches, 3);
+    assert.equal(broker.stats().sourceDispatches, 1);
+    assert.equal(broker.stats().styleDispatches, styleDispatches, 'local palette rebinding reuses generic STYLE results');
     owner.observe({ ...source, version: 2, text: source.text + 'ail\n', complete: true }); owner.flush(); await drain();
     assert.equal(broker.stats().sourceDispatches, 2); assert.equal(owner.stats().committedLineCalls, 2); assert.equal(owner.stats().remoteLeases, 0);
     owner.setStyleSelection(paletteInput(7)); owner.observe({ ...source, key: 'empty', text: '', complete: true }); await drain();
@@ -69,7 +70,7 @@ function displayVersions(box: { owner?: WeakRef<SourceController> }, versions: n
 }
 test('actual v4 styles executor: first selected palette V1 survives real parser V2 overtaking the held STYLE reply', async () => {
   const root = await mkdtemp(join(tmpdir(), 'style-race-'));
-  const pipe = new StdioTransport({ command: binary.path, args: ['--stdio', '--config', join(root, 'config.json')], cwd: root,
+  const pipe = new StdioTransport({ command: binary.path, args: ['--stdio'], cwd: root,
     env: { ...process.env, HOME: root, XDG_CONFIG_HOME: root, XDG_DATA_HOME: root, XDG_CACHE_HOME: root, XDG_RUNTIME_DIR: root }, requestDeadlineMs: 5000, terminateGraceMs: 100 });
   const broker = new ProviderBroker({ async tryShared() { return undefined; }, async acquireOwned() { return pipe; } });
   let release!: () => void, arrived!: () => void, held = false;
@@ -110,7 +111,7 @@ test('actual v4 styles executor: first selected palette V1 survives real parser 
 
 test('actual v4 empty-context group: selected local palette needs no helper style/source work and cleans up', async () => {
   const root = await mkdtemp(join(tmpdir(), 'group-palette-'));
-  const pipe = new StdioTransport({ command: binary.path, args: ['--stdio', '--config', join(root, 'config.json')], cwd: root,
+  const pipe = new StdioTransport({ command: binary.path, args: ['--stdio'], cwd: root,
     env: { ...process.env, HOME: root, XDG_CONFIG_HOME: root, XDG_DATA_HOME: root, XDG_CACHE_HOME: root, XDG_RUNTIME_DIR: root }, requestDeadlineMs: 5000, terminateGraceMs: 100 });
   const broker = new ProviderBroker({ async tryShared() { return undefined; }, async acquireOwned() { return pipe; } });
   const requests: { op: unknown; contexts: unknown; sourceFields: boolean }[] = [];
@@ -152,7 +153,7 @@ test('actual v4 empty-context group: selected local palette needs no helper styl
 
 for (const kind of ['follow-pi', 'owned'] as const) test(`actual v4 empty Bash: ${kind} local empty paint then SOURCE STYLE append finalization`, async () => {
   const root = await mkdtemp(join(tmpdir(), 'empty-bash-'));
-  const pipe = new StdioTransport({ command: binary.path, args: ['--stdio', '--config', join(root, 'config.json')], cwd: root,
+  const pipe = new StdioTransport({ command: binary.path, args: ['--stdio'], cwd: root,
     env: { ...process.env, HOME: root, XDG_CONFIG_HOME: root, XDG_DATA_HOME: root, XDG_CACHE_HOME: root, XDG_RUNTIME_DIR: root }, requestDeadlineMs: 5000, terminateGraceMs: 100 });
   const broker = new ProviderBroker({ async tryShared() { return undefined; }, async acquireOwned() { return pipe; } });
   const revisions: number[] = [], operations: string[] = [];

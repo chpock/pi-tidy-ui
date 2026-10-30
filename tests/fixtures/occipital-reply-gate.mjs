@@ -1,10 +1,9 @@
 // Holds exact product reply frames before the client's transport can settle them.
 import { spawn } from 'node:child_process';
 import { writeFileSync, renameSync } from 'node:fs';
-import { join } from 'node:path';
 
 const [binary, report] = process.argv.slice(2);
-const child = spawn(binary, ['--stdio', '--config', join(process.cwd(), 'config.json')], { stdio: ['pipe', 'pipe', 'inherit'] });
+const child = spawn(binary, ['--stdio'], { stdio: ['pipe', 'pipe', 'inherit'] });
 let gated = false;
 const held = [], stats = { data: [], cancelled: 0, held: 0, peakHeld: 0 };
 function record() { writeFileSync(`${report}.tmp`, JSON.stringify(stats)); renameSync(`${report}.tmp`, report); }

@@ -16,7 +16,7 @@ const binary = validateNative(readInputs()).path;
 
 test('actual v4 controller: local palette changes preserve parse checkpoints, finalization and lease cleanup', async () => {
   const root = await mkdtemp(join(tmpdir(), 'semantic-controller-'));
-  const pipe = new StdioTransport({ command: binary, args: ['--stdio', '--config', join(root, 'config.json')], cwd: root,
+  const pipe = new StdioTransport({ command: binary, args: ['--stdio'], cwd: root,
     env: { ...process.env, HOME: root, XDG_CONFIG_HOME: root, XDG_DATA_HOME: root, XDG_CACHE_HOME: root, XDG_RUNTIME_DIR: root },
     requestDeadlineMs: 5000, terminateGraceMs: 100 });
   const broker = new ProviderBroker({ async tryShared() { return undefined; }, async acquireOwned() { return pipe; } });
@@ -45,7 +45,8 @@ test('actual v4 controller: local palette changes preserve parse checkpoints, fi
     for (let i = 0; i < 100; i++) { owner.observe({ ...next, version: 3, text: next.text + '\n', complete: true }); owner.flush(); }
     assert.equal(broker.stats().sourceDispatches, warm);
     owner.remove('bash'); owner.flush(); await drain();
-    assert.equal(owner.stats().retention.retainedBytes, 0);
+    assert.equal(owner.stats().retention.entries, 0);
+    assert.equal(owner.stats().retention.styles, 0);
   } finally {
     owner.dispose(); await awaitFixture(broker.dispose()); await rm(root, { recursive: true, force: true });
   }
@@ -54,4 +55,5 @@ test('actual v4 controller: local palette changes preserve parse checkpoints, fi
   assert.equal(pipe.stats().retainedBytes, 0);
   assert.equal(owner.stats().unsettledJobs, 0);
   assert.equal(owner.stats().transientBytes, 0);
+  assert.equal(owner.stats().retention.retainedBytes, 0);
 });

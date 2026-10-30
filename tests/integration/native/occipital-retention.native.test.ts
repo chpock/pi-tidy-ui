@@ -18,7 +18,7 @@ test('actual running helper survives obsolete-download pruning and warm cleanup 
     maxBytes: native.bytes, url: 'https://fixture.invalid/occipital-retention' };
   const fetcher = async () => { downloads++; return new Response(bytes); };
   const old = await acquireNative({ cacheDir, release, fetcher });
-  transport = new StdioTransport({ command: old.path, args: ['--stdio', '--config', join(root, 'config.json')],
+  transport = new StdioTransport({ command: old.path, args: ['--stdio'],
     env: childEnv(root), cwd: root, requestDeadlineMs: 10_000, terminateGraceMs: 100 });
   const raw = await transport.request({ v: VERSION, op: 'describe', ticket: 'before-prune' });
   const descriptor = decodeSemanticDescription(raw, 'before-prune');

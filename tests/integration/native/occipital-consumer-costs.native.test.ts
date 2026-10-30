@@ -40,7 +40,7 @@ const hash = (text: string) => createHash('sha256').update(text).digest('hex');
 
 test('current consumer costs: actual owned SOURCE STYLE incremental contexts and lifetime ledger', async t => {
   const root = await mkdtemp(join(tmpdir(), 'consumer-costs-'));
-  const pipe = new StdioTransport({ command: binary.path, args: ['--stdio', '--config', join(root, 'config.json')], cwd: root,
+  const pipe = new StdioTransport({ command: binary.path, args: ['--stdio'], cwd: root,
     env: { ...process.env, HOME: root, XDG_CONFIG_HOME: root, XDG_DATA_HOME: root, XDG_CACHE_HOME: root, XDG_RUNTIME_DIR: root }, requestDeadlineMs: 5000, terminateGraceMs: 100 });
   const broker = new ProviderBroker({ async tryShared() { return undefined; }, async acquireOwned() { return pipe; } });
   let phase = 'setup', holdStyle = false, release = () => {}, arrived = () => {};
@@ -152,7 +152,7 @@ test('current consumer costs: actual owned SOURCE STYLE incremental contexts and
 test('current consumer geometry: actual CardSources SDK preparation warm theme width and dense finite paint', async t => {
   const { ToolExecutionComponent } = await import(pathToFileURL(resolve(dist, 'modes/interactive/components/tool-execution.js')).href);
   const root = await mkdtemp(join(tmpdir(), 'consumer-geometry-'));
-  const pipe = new StdioTransport({ command: binary.path, args: ['--stdio', '--config', join(root, 'config.json')], cwd: root,
+  const pipe = new StdioTransport({ command: binary.path, args: ['--stdio'], cwd: root,
     env: { ...process.env, HOME: root, XDG_CONFIG_HOME: root, XDG_DATA_HOME: root, XDG_CACHE_HOME: root, XDG_RUNTIME_DIR: root }, requestDeadlineMs: 5000, terminateGraceMs: 100 });
   const broker = new ProviderBroker({ async tryShared() { return undefined; }, async acquireOwned() { return pipe; } });
   class UI extends Container { requestRender() {} }
@@ -258,7 +258,7 @@ test('current consumer geometry: actual CardSources SDK preparation warm theme w
 
 test('current consumer latency control: uninstrumented small owned sequence', async () => {
   const root = await mkdtemp(join(tmpdir(), 'consumer-latency-'));
-  const pipe = new StdioTransport({ command: binary.path, args: ['--stdio', '--config', join(root, 'config.json')], cwd: root,
+  const pipe = new StdioTransport({ command: binary.path, args: ['--stdio'], cwd: root,
     env: { ...process.env, HOME: root, XDG_CONFIG_HOME: root, XDG_DATA_HOME: root, XDG_CACHE_HOME: root, XDG_RUNTIME_DIR: root }, requestDeadlineMs: 5000, terminateGraceMs: 100 });
   const broker = new ProviderBroker({ async tryShared() { return undefined; }, async acquireOwned() { return pipe; } });
   const owner = new SourceController(broker, { deadlineMs: 5000 });
@@ -281,7 +281,7 @@ test('current consumer latency control: uninstrumented small owned sequence', as
   assert.equal(owner.stats().retention.retainedBytes, 0); assert.equal(owner.stats().globalTransientBytes, 0); assert.equal(pipe.stats().childState, 'exited'); assert.equal(pipe.stats().retainedBytes, 0);
 });
 
-test('current consumer matching reference: uninstrumented cold finite 640-byte Rust Mocha', async () => {
+test('current consumer matching reference: uninstrumented cold finite 640-byte Rust with Catppuccin', async () => {
   // Inline the archived workload, not the ignored prototype or its parser.
   const line = 'fn compute(x: i32) -> i32 { let next = x + 42; println!("value={next}"); next }\n';
   const text = line.repeat(8), workloadSha256 = hash(text);
@@ -289,13 +289,13 @@ test('current consumer matching reference: uninstrumented cold finite 640-byte R
   assert.equal(text.split('\n').length - 1, 8);
   assert.equal(workloadSha256, '76c47f6795c368f91b9956e7de60297f563ef5629d1d2af58b9789ae71e3180e');
   const root = await mkdtemp(join(tmpdir(), 'consumer-matching-reference-'));
-  const pipe = new StdioTransport({ command: binary.path, args: ['--stdio', '--config', join(root, 'config.json')], cwd: root,
+  const pipe = new StdioTransport({ command: binary.path, args: ['--stdio'], cwd: root,
     env: { ...process.env, HOME: root, XDG_CONFIG_HOME: root, XDG_DATA_HOME: root, XDG_CACHE_HOME: root, XDG_RUNTIME_DIR: root }, requestDeadlineMs: 5000, terminateGraceMs: 100 });
   const broker = new ProviderBroker({ async tryShared() { return undefined; }, async acquireOwned() { return pipe; } });
   const owner = new SourceController(broker, { deadlineMs: 5000 });
   try {
     await awaitFixture(broker.start());
-    const paletteId = 'catppuccin-mocha'; owner.setStyleSelection(ownedStyleSelection(paletteId));
+    const paletteId = 'catppuccin-dark'; owner.setStyleSelection(ownedStyleSelection(paletteId));
     assert.equal(broker.stats().sourceDispatches, 0); assert.equal(broker.stats().styleDispatches, 0);
     assert.equal(owner.stats().sourceRecords, 0);
     const start = performance.now(); let eventLoopTurnMs = 0;
@@ -323,7 +323,7 @@ test('current consumer matching reference: uninstrumented cold finite 640-byte R
       sourceRequests: broker.stats().sourceDispatches, styleRequests: broker.stats().styleDispatches, rangeCount, coveredBytes: rangeEnd,
       concreteTableEntries, distinctConcreteRangeStyles: concrete.size, controller: stats,
       archivalContext: { oldNativeReadyMs: { node22: 7.051399, node26: 4.450675 }, oldNativeRuns: 272, prototypeRuns: 288,
-        comparison: 'same text, Rust and Catppuccin Mocha only; old hardware/preparation/boundary equivalence unestablished; current broker uses generic SOURCE plus STYLE and local owned-palette materialization; no ratio or like-for-like speed claim' },
+        comparison: 'same text and Rust language; the historical request used Catppuccin Mocha, while the current catalogue identity is catppuccin-dark; hardware/preparation/boundary equivalence unestablished; current broker uses generic SOURCE plus STYLE and local owned-palette materialization; no ratio or like-for-like speed claim' },
       measurement: 'fresh actual owned helper already described and native selection set before start; no test spies; finite one-shot; ready clock stops before range/style/counter inspection; event-loop first-turn observation, not p99; no raw-wire/allocator/subphase timing claim' } }));
   } finally { owner.dispose(); await awaitFixture(broker.dispose()); await rm(root, { recursive: true, force: true }); }
   assert.equal(owner.stats().retention.retainedBytes, 0); assert.equal(owner.stats().retention.outstandingPeakBytes, 0);
@@ -335,7 +335,7 @@ test('current consumer matching reference: uninstrumented cold finite 640-byte R
 
 test('current consumer phase boundaries: generic v4 rule STYLE request and reply decode', async () => {
   const root = await mkdtemp(join(tmpdir(), 'consumer-phase-boundaries-'));
-  const pipe = new StdioTransport({ command: binary.path, args: ['--stdio', '--config', join(root, 'config.json')], cwd: root,
+  const pipe = new StdioTransport({ command: binary.path, args: ['--stdio'], cwd: root,
     env: { ...process.env, HOME: root, XDG_CONFIG_HOME: root, XDG_DATA_HOME: root, XDG_CACHE_HOME: root, XDG_RUNTIME_DIR: root }, requestDeadlineMs: 5000, terminateGraceMs: 100 });
   const pool = new SemanticRetentionPool(), budget = pool.budget;
   const timed = <T,>(work: () => T) => { const start = performance.now(); const value = work(); return { value, ms: performance.now() - start }; };
@@ -353,7 +353,7 @@ test('current consumer phase boundaries: generic v4 rule STYLE request and reply
     const definition = createSemanticRuleDefinition();
     const expectation = { vocabulary: description.vocabulary.fingerprint, rules: fingerprintRules(definition), bindingSlots: definition.binding_slots };
     const styleRequest = (contexts: number[][]) => ({ op: 'styles.resolve', instance: description.instance, vocabulary: description.vocabulary.fingerprint,
-      rules: { definition }, admission: 'bounded_queue', queue_wait_ms: 1000, contexts });
+      rules: definition, admission: 'bounded_queue', queue_wait_ms: 1000, contexts });
     const genericStyles = async (phase: string, contexts: number[][]) => {
       const reply = await call(styleRequest(contexts));
       const json = JSON.stringify(reply.value), parsed = timed(() => JSON.parse(json) as unknown);

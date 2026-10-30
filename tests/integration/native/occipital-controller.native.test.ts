@@ -1,7 +1,6 @@
 import '../../fixtures/test-guard.mjs';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { setImmediate as turn } from 'node:timers/promises';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -43,15 +42,13 @@ function coalesce(rows: ReturnType<typeof semanticRows>) {
   return result;
 }
 async function drain(controller: SourceController) {
-  await awaitFixture((async () => {
-    for (let i = 0; i < 4 || controller.stats().unsettledJobs || controller.stats().pendingCloses; i++) { controller.flush(); await turn(); }
-  })());
+  assert.equal(await awaitFixture(controller.whenSettled()), true);
 }
 function environment(root: string) {
   return { ...process.env, HOME: root, XDG_CONFIG_HOME: root, XDG_DATA_HOME: root, XDG_CACHE_HOME: root, XDG_RUNTIME_DIR: root };
 }
 function pipe(root: string) {
-  return new StdioTransport({ command: binary.path, args: ['--stdio', '--config', join(root, 'config.json')], env: environment(root), cwd: root,
+  return new StdioTransport({ command: binary.path, args: ['--stdio'], env: environment(root), cwd: root,
     requestDeadlineMs: 5000, terminateGraceMs: 100 });
 }
 function cleaned(transport: StdioTransport, controller: SourceController) {

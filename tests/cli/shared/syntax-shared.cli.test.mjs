@@ -5,9 +5,10 @@ import test from 'node:test';
 import { PiTerminal } from '../../fixtures/terminal-harness.mjs';
 import { closeTerminals, runCleanupSteps } from '../../fixtures/terminal-cleanup.mjs';
 import { semanticSourceContext, semanticStyle, semanticPhaseReady } from '../../fixtures/syntax-observation.mjs';
+import { SEMANTIC_REGIONS } from '../../../src/syntax/semantic-rules.ts';
 import { sampleOwnedPalette } from '../../../src/themes/owned-palette.ts';
 import { sharedSyntaxHost, reaped } from '../../fixtures/shared-syntax-host.mjs';
-import { prepareSyntaxNative, requiredSharedHost, scenario, traffic, persisted, menuAction, chooseTheme, settledStats, captureThenRenderDiagnostics, work, peerSource, finish, body, shebangScenario, shebangContextColors, shebangStringColors, expressionForeground, expressionAttributes, expectedThemeColors, themeForegrounds, themeMarkers } from '../../fixtures/syntax-cli-support.mjs';
+import { prepareSyntaxNative, requiredSharedHost, scenario, traffic, persisted, menuAction, chooseTheme, settledStats, captureThenRenderDiagnostics, work, peerSource, finish, body, shebangScenario, shebangContextColors, shebangStringColors, expressionForeground, expressionAttributes, sourceColors } from '../../fixtures/syntax-cli-support.mjs';
 
 const { binary, fixture, descriptor } = await prepareSyntaxNative();
 
@@ -65,7 +66,7 @@ test('occipital CLI: shared discovery, local palette selection, provider loss an
   { timeout: 120000 }, async () => {
     const host = await sharedSyntaxHost(requiredSharedHost(), binary);
     const terminal = new PiTerminal('syntax-shared-transitions', { mode: 'fullscreen', extensions: [fixture],
-      extraEnv: { ...descriptor, SUBC_CONNECTION_FILE: host.alias, TIDY_UI_TEST_SYNTAX_SHARED: '1' } });
+      extraEnv: { ...descriptor, SUBC_CONNECTION_FILE: host.alias, TIDY_UI_TEST_SYNTAX_SHARED: '1', TIDY_UI_TEST_PALETTE_OBSERVE: '1' } });
     let returnedPeer;
     try {
       const initial = await scenario(terminal, true), original = initial.sample;
@@ -73,6 +74,16 @@ test('occipital CLI: shared discovery, local palette selection, provider loss an
       const oldPid = original.client.provider.description.runtime.pid;
       assert.equal(oldPid, host.initialPeer.snapshot().provider.description.runtime.pid);
       const initialTraffic = traffic(terminal), initialData = persisted(initial), initialBranch = initial.branch;
+      const markers = ['SYNTAX_OUTPUT', 'x=1', 'x=2'];
+      const colors = (dump, palette) => markers.map(marker => {
+        const y = dump.screen.findIndex(row => row.includes(marker)); assert.ok(y >= 0, `physically visible ${marker}`);
+        const context = semanticStyle(terminal.events(), marker); assert.ok(context, `actual generic STYLE context for ${marker}`);
+        const role = marker === 'SYNTAX_OUTPUT' ? 'toolTitle' : 'toolOutput', at = dump.screen[y].indexOf(marker);
+        const actual = dump.cells[y][at].fg;
+        assert.equal(actual, expressionForeground(context.expression, dump, palette, role), `physical ${role} ink matches generic STYLE for ${marker}`);
+        return actual;
+      });
+      const initialColors = colors(initial, 'pi');
       await menuAction(terminal, 'status');
       assert.ok(terminal.screen().some(row => row.includes('Provider: shared')), 'public status reports the actual provider');
       await terminal.closeTidyMenu();
@@ -80,11 +91,11 @@ test('occipital CLI: shared discovery, local palette selection, provider loss an
       const paletteId = 'catppuccin-dark';
       await terminal.resize(42, 12); await chooseTheme(terminal, paletteId); await terminal.resize(100, 80);
       const ready = await settledStats(terminal, 'shared-owned-palette-ready', s => s.client.effective.id === paletteId);
-      assert.ok(await semanticPhaseReady(() => ready, () => terminal.events(), themeMarkers, paletteId));
+      assert.ok(await semanticPhaseReady(() => ready, () => terminal.events(), markers, paletteId));
       const selected = JSON.parse(readFileSync(`${terminal.agent}/extensions/pi-tidy-ui/config.json`, 'utf8'));
       assert.deepEqual(selected, { syntaxTheme: { kind: 'theme', id: paletteId } });
-      const selectedPaint = await captureThenRenderDiagnostics(terminal, 'shared-owned-palette');
-      assert.deepEqual(themeForegrounds(selectedPaint), expectedThemeColors(terminal, 'shared-owned-palette', selectedPaint, paletteId));
+      const selectedPaint = await captureThenRenderDiagnostics(terminal, 'shared-owned-palette'), selectedColors = colors(selectedPaint, paletteId);
+      assert.notDeepEqual(selectedColors, initialColors, 'the selected owned palette changes physical source ink');
 
       rmSync(host.alias); process.kill(oldPid, 'SIGKILL'); await terminal.event('syntax_acquired');
       const owned = await settledStats(terminal, 'owned-after-loss', s => s.client.provider.kind === 'owned' && s.client.effective.id === paletteId);
@@ -92,8 +103,8 @@ test('occipital CLI: shared discovery, local palette selection, provider loss an
       assert.equal(owned.client.provider.initialShared, true); assert.equal(owned.broker.recoveryTimers, 1);
       assert.equal(owned.client.selected.id, paletteId);
       const offlinePaint = await captureThenRenderDiagnostics(terminal, 'owned-palette-after-loss');
-      assert.deepEqual(themeForegrounds(offlinePaint), expectedThemeColors(terminal, 'owned-palette-after-loss', offlinePaint, paletteId),
-        'the locally owned palette remains available while its SOURCE/STYLE provider is unavailable');
+      assert.deepEqual(colors(offlinePaint, paletteId), selectedColors,
+        'the locally owned palette keeps the same physical source ink while its SOURCE/STYLE provider is unavailable');
       await reaped(oldPid); await host.initialPeer.dispose();
 
       returnedPeer = await host.peer(); await peerSource(returnedPeer);
@@ -107,7 +118,7 @@ test('occipital CLI: shared discovery, local palette selection, provider loss an
       assert.equal(returned.broker.recoveryTimers, 0); assert.equal(returned.counts.acquisitions, 1);
       await reaped(owned.transports[0].pid);
       const returnedPaint = await captureThenRenderDiagnostics(terminal, 'shared-owned-palette-returned');
-      assert.deepEqual(themeForegrounds(returnedPaint), expectedThemeColors(terminal, 'shared-owned-palette-returned', returnedPaint, paletteId));
+      assert.deepEqual(colors(returnedPaint, paletteId), selectedColors, 'shared provider return preserves physical owned-palette ink');
 
       await chooseTheme(terminal, 'pi');
       const pi = await settledStats(terminal, 'shared-pi-selected', s => s.client.effective.id === 'pi');
@@ -129,7 +140,7 @@ test('occipital CLI: owned palette renders both diff sides, mapped semantic ink 
   { timeout: 120000 }, async () => {
     const host = await sharedSyntaxHost(requiredSharedHost(), binary);
     const terminal = new PiTerminal('syntax-physical-styles', { mode: 'fullscreen', extensions: [fixture],
-      extraEnv: { ...descriptor, SUBC_CONNECTION_FILE: host.alias, TIDY_UI_TEST_SYNTAX_SHARED: '1' } });
+      extraEnv: { ...descriptor, SUBC_CONNECTION_FILE: host.alias, TIDY_UI_TEST_SYNTAX_SHARED: '1', TIDY_UI_TEST_PALETTE_OBSERVE: '1' } });
     const vectors = dump => {
       const found = [];
       for (const [y, row] of dump.screen.entries()) {
@@ -138,7 +149,8 @@ test('occipital CLI: owned palette renders both diff sides, mapped semantic ink 
           const x = match.index, start = index === 0 ? 0 : matches[index - 1].index + 10;
           const end = index + 1 === matches.length ? dump.cells[y].length : matches[index + 1].index;
           found.push({ y, x, start, end, value: match[0], keyword: dump.cells[y].slice(x, x + 5), variable: dump.cells[y][x + 6],
-            operator: dump.cells[y][x + 7], number: dump.cells[y][x + 8], prefix: dump.cells[y].slice(start, x), suffix: dump.cells[y].slice(x + 10, end) });
+            operator: dump.cells[y][x + 7], number: dump.cells[y][x + 8], punctuation: dump.cells[y][x + 9],
+            prefix: dump.cells[y].slice(start, x), suffix: dump.cells[y].slice(x + 10, end) });
         }
       }
       assert.equal(found.length, 3, 'write source plus both old/new edit sides are physically visible');
@@ -169,9 +181,10 @@ test('occipital CLI: owned palette renders both diff sides, mapped semantic ink 
       const wideBaseline = baselines.get(140); await terminal.resize(100);
 
       const paletteId = 'catppuccin-dark', owned = sampleOwnedPalette(paletteId, 'truecolor'), palette = owned.roles;
+      const styleMarkers = ['const x=1;', '=', 'x=1', '1;', ';'];
       await chooseTheme(terminal, paletteId);
       const selected = await settledStats(terminal, 'styles-selected', s => s.client.effective.id === paletteId);
-      assert.ok(await semanticPhaseReady(() => selected, () => terminal.events(), themeMarkers, paletteId), 'all generic semantic styles use the selected owned palette');
+      assert.ok(await semanticPhaseReady(() => selected, () => terminal.events(), styleMarkers, paletteId), 'all generic semantic styles use the selected owned palette');
       const painted = await captureThenRenderDiagnostics(terminal, 'styles-colored');
       assert.deepEqual(body(painted), body(baseline), 'local palette changes source styles only, never tool glyphs or geometry');
       assert.notDeepEqual(palette.addedCode.background, palette.removedCode.background, 'authored semantic inputs retain distinct add/delete surfaces');
@@ -181,7 +194,7 @@ test('occipital CLI: owned palette renders both diff sides, mapped semantic ink 
 
       const events = terminal.events();
       const expression = marker => {
-        const result = semanticStyle(events, marker, paletteId, 'typescript'); assert.ok(result, `actual generic STYLE for ${marker}`);
+        const result = semanticStyle(events, marker, paletteId); assert.ok(result, `actual generic STYLE for ${marker}`);
         return result.expression;
       };
       const token = marker => {
@@ -189,7 +202,10 @@ test('occipital CLI: owned palette renders both diff sides, mapped semantic ink 
         return { fg: expressionForeground(value, painted, paletteId), bold: !!(attrs & 1), italic: !!(attrs & 2),
           underline: !!(attrs & 4), dim: !!(attrs & 8), inverse: !!(attrs & 16) };
       };
-      const keyword = token('const x=1;'), operator = token('='), variable = token('x=1'), number = token('1;');
+      const keyword = token('const x=1;'), operator = token('='), variable = token('x=1'), number = token('1;'), punctuation = token(';');
+      const punctuationForeground = expression(';').foreground;
+      assert.equal(punctuationForeground.kind, 'binding');
+      assert.equal(SEMANTIC_REGIONS[punctuationForeground.slot], 'syntax-punctuation');
       const assertVectors = dump => {
         for (const row of vectors(dump)) {
           for (const cell of row.keyword) assert.deepEqual({ fg: cell.fg, rgb: cell.fgMode, bold: !!cell.bold, italic: !!cell.italic, underline: !!cell.underline },
@@ -200,7 +216,9 @@ test('occipital CLI: owned palette renders both diff sides, mapped semantic ink 
             { fg: variable.fg, rgb: 50331648, bold: variable.bold, italic: variable.italic, underline: variable.underline }, 'keyword attributes cannot leak into the next variable');
           assert.deepEqual({ fg: row.number.fg, rgb: row.number.fgMode, bold: !!row.number.bold, italic: !!row.number.italic, underline: !!row.number.underline },
             { fg: number.fg, rgb: 50331648, bold: number.bold, italic: number.italic, underline: number.underline });
-          for (const cell of [...row.keyword, row.variable, row.operator, row.number])
+          assert.deepEqual({ fg: row.punctuation.fg, rgb: row.punctuation.fgMode, bold: !!row.punctuation.bold, italic: !!row.punctuation.italic, underline: !!row.punctuation.underline },
+            { fg: punctuation.fg, rgb: 50331648, bold: punctuation.bold, italic: punctuation.italic, underline: punctuation.underline }, 'punctuation retains its actual generic STYLE');
+          for (const cell of [...row.keyword, row.variable, row.operator, row.number, row.punctuation])
             assert.ok(ratio(cell.fg, cell.bg) >= 4.5, 'final terminal ink has accessible contrast against the rendered code surface');
         }
       };
@@ -233,6 +251,7 @@ test('occipital CLI: owned palette renders both diff sides, mapped semantic ink 
             expected[segment.x + 6] = { ...expected[segment.x + 6], ...variable };
             expected[segment.x + 7] = { ...expected[segment.x + 7], ...operator };
             expected[segment.x + 8] = { ...expected[segment.x + 8], ...number };
+            expected[segment.x + 9] = { ...expected[segment.x + 9], ...punctuation };
           }
           assert.deepEqual(row.prefix.map(cellStyle), expected.slice(row.start, row.x), 'owned frame, number/sign gutters and prefix isolation');
           assert.deepEqual(row.suffix.map(cellStyle), expected.slice(row.x + 10, row.end), 'semantic padding and suffix attribute/background isolation');
@@ -250,7 +269,8 @@ test('occipital CLI: owned palette renders both diff sides, mapped semantic ink 
             if (emptySource) assert.equal(dump.screen[y].slice(3, 6), ' 2 ', 'trailing source newline retains its numbered empty row');
             for (let x = 2; x < cells.length - 1; x++) {
               const role = emptySource && x >= 3 && x < 6 ? 'numbers' :
-                y === heading && x >= 3 && x < cells.length - 2 ? 'muted' : 'padding';
+                y === heading && x >= 3 && x < cells.length - 2 ? 'muted' :
+                  y === heading + 1 && x >= 3 && x < cells.length - 2 ? 'empty' : 'padding';
               assert.deepEqual(cellStyle(cells[x]), expectedStyle(role), 'owned header, empty source/panel and outer padding reset');
             }
           }
