@@ -5,7 +5,6 @@ import test from 'node:test';
 import { readFile, writeFile, mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
-import { setImmediate as turn } from 'node:timers/promises';
 import { getThemeByName } from '../../../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js';
 import { SourceController } from '../../../src/occipital/controller.ts';
 import { ProviderBroker } from '../../../src/occipital/provider.ts';
@@ -41,12 +40,6 @@ test('Follow Pi early whole-source comparison: baseline, same-parent and role-sp
   const output = resolve('.test-artifacts/follow-pi-visual'); await mkdir(output, { recursive: true });
   const definition = createSemanticRuleDefinition();
   let revision = 0;
-  const drain = async (ready: () => boolean) => {
-    let active = true;
-    try { await awaitFixture((async () => {
-      for (; active && (!ready() || owner.stats().unsettledJobs);) { owner.flush(); await turn(); }
-    })(), 10000); } finally { active = false; }
-  };
   try {
     await awaitFixture(broker.start());
     for (const item of corpus) owner.observe({ key: item.id, version: 1, language: item.language, text: item.source, complete: true });
@@ -88,17 +81,29 @@ test('Follow Pi early whole-source comparison: baseline, same-parent and role-sp
           const activeBindings = bindings.map((binding, slot) => ({ slot, role: PI_RULE_BINDINGS[slot], ink: binding.ink,
             attributes: binding.attributes, attributeMask: binding.attribute_mask }));
           const before = broker.stats(), publications = owner.stats().stylePublications;
-          const fingerprint = fingerprintRules(rules);
-          assert.equal(owner.setStyleSelection({ definition: rules, bindingRevision: ++revision,
-            palette: `visual:${revision}`, bindings, roles: prepared.roles }), true);
-          await drain(() => owner.stats().stylePublications >= publications + corpus.length
-            && corpus.every(item => owner.displayBasis(item.id)?.rules === fingerprint));
+          const fingerprint = fingerprintRules(rules), phase = `${name}/${mode}/${variant}`;
+          const palette = `visual:${++revision}`;
+          assert.equal(owner.setStyleSelection({ definition: rules, bindingRevision: revision,
+            palette, bindings, roles: prepared.roles }), true);
+          const settled = await awaitFixture(owner.whenSettled(), 10000).catch(cause => {
+            throw new Error(`${phase}: controller did not settle; ${JSON.stringify(owner.stats())}`, { cause });
+          });
+          assert.equal(settled, true, `${phase}: cancelled work is not a completed comparison`);
+          assert.ok(owner.stats().stylePublications >= publications + corpus.length, `${phase}: every corpus entry publishes`);
           const sections = corpus.map(item => {
+            const label = `${phase}/${item.id}`, basis = owner.displayBasis(item.id);
+            assert.ok(basis, `${label}: a current display exists`);
+            assert.equal(basis.palette, palette, `${label}: current palette`);
+            assert.equal(basis.rules, fingerprint, `${label}: current rules`);
+            assert.equal(basis.bindingRevision, revision, `${label}: current bindings`);
+            assert.equal(basis.complete, true, `${label}: complete source`);
+            assert.equal(basis.exactVersion, 1, `${label}: exact observed source version`);
             const ranges: { from: number; to: number; foreground: unknown; background: unknown; attributes: number; ansi: ReturnType<typeof compileStyleAnsi> }[] = [];
-            owner.displayBasis(item.id)!.visit((source, spans) => {
-              assert.equal(source, item.source);
-              spans((from, to, style) => ranges.push({ from, to, foreground: style.foreground, background: style.background, attributes: style.attributes, ansi: compileStyleAnsi(style, mode) }));
-            });
+            assert.equal(basis.visit((source, spans) => {
+              assert.equal(source, item.source, `${label}: exact source text`);
+              assert.equal(spans((from, to, style) => ranges.push({ from, to, foreground: style.foreground, background: style.background, attributes: style.attributes, ansi: compileStyleAnsi(style, mode) })), true,
+                `${label}: complete range visit`);
+            }), true, `${label}: display reader remains valid`);
             return { ...item, ranges };
           });
           const roleSpecificCandidateDecisions = variant === 't2-heading' ? prepared.variantDecisions.map(item => item.binding === 'headingMarker'
