@@ -164,8 +164,22 @@ test('owned palette changes repaint ready groups locally without source replay o
   const demands = Array.from({ length: 20 }, (_, i) => ({ ...demand(i % 2 ? `const x${i} = 1;\n` : `echo source-${i}`, 1, true, `source-${i}`), language: i % 2 ? 'typescript' : 'bash' }));
   try {
     await awaitFixture(broker.start()); c.setStyleSelection(ownedStyleSelection(themes[0]));
-    for (const d of demands) c.observe(d); c.flush(); await drain(c);
-    assert.ok(demands.every(d => c.displayBasis(d.key)?.palette === `owned-palette-v1:${themes[0]}`));
+    const initialPalette = `owned-palette-v1:${themes[0]}`;
+    for (const d of demands) {
+      c.observe(d); c.flush(); await drain(c);
+      const source = c.status(d.key);
+      assert.ok(source, `native SOURCE status for ${d.key}`);
+      assert.equal(source.acknowledgedVersion, d.version, `native SOURCE acknowledgment for ${d.key}`);
+      assert.equal(source.exact, true, `exact source for ${d.key}`);
+      assert.equal(source.complete, true, `complete source for ${d.key}`);
+      const basis = c.displayBasis(d.key);
+      assert.ok(basis, `published SOURCE/STYLE basis for ${d.key}`);
+      assert.equal(basis.palette, initialPalette, `current initial palette for ${d.key}`);
+      assert.equal(basis.version, d.version, `display source version for ${d.key}`);
+      assert.equal(basis.exactVersion, d.version, `exact display version for ${d.key}`);
+      assert.equal(basis.complete, true, `complete display basis for ${d.key}`);
+    }
+    assert.ok(demands.every(d => c.displayBasis(d.key)?.palette === initialPalette));
     const baseline = c.stats(), sourceDispatches = broker.stats().sourceDispatches, styleDispatches = broker.stats().styleDispatches;
     for (let i = 0; i < 100; i++) {
       const selected = themes[i % themes.length]!;

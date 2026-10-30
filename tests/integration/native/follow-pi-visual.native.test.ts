@@ -35,6 +35,27 @@ test('Follow Pi early whole-source comparison: baseline, same-parent and role-sp
   const root = await mkdtemp(join(tmpdir(), 'pi-palette-visual-'));
   const pipe = new StdioTransport({ command: binary.path, args: ['--stdio'], cwd: root,
     env: { ...process.env, HOME: root, XDG_CONFIG_HOME: root, XDG_DATA_HOME: root, XDG_CACHE_HOME: root, XDG_RUNTIME_DIR: root }, requestDeadlineMs: 5000, terminateGraceMs: 100 });
+  const nativeRequest = pipe.request.bind(pipe);
+  let dataTail: Promise<void> = Promise.resolve();
+  let queuedData = 0, activeData = 0, peakQueuedData = 0, peakActiveData = 0, startedData = 0, admittedData = 0, peakTransportData = 0;
+  // Palette comparisons measure completed output, not competing for bounded DATA admission.
+  pipe.request = (frame, options) => {
+    if (frame.op === 'describe') return nativeRequest(frame, options);
+    queuedData++; peakQueuedData = Math.max(peakQueuedData, queuedData);
+    const current = dataTail.then(async () => {
+      queuedData--; activeData++; startedData++;
+      peakActiveData = Math.max(peakActiveData, activeData);
+      try {
+        const response = nativeRequest(frame, options);
+        const transportPending = pipe.stats().unsettledData;
+        peakTransportData = Math.max(peakTransportData, transportPending);
+        if (transportPending > 0) admittedData++;
+        return await response;
+      } finally { activeData--; }
+    });
+    dataTail = current.then(() => undefined, () => undefined);
+    return current;
+  };
   const broker = new ProviderBroker({ async tryShared() { return undefined; }, async acquireOwned() { return pipe; } });
   const owner = new SourceController(broker, { deadlineMs: 5000 });
   const output = resolve('.test-artifacts/follow-pi-visual'); await mkdir(output, { recursive: true });
@@ -117,11 +138,25 @@ test('Follow Pi early whole-source comparison: baseline, same-parent and role-sp
         }
       }
     }
+    await dataTail;
+    const transport = pipe.stats(), provider = broker.stats();
+    const dataDispatches = provider.sourceDispatches + provider.styleDispatches;
     assert.equal(broker.stats().sourceDispatches, corpus.length);
+    assert.equal(queuedData, 0); assert.equal(activeData, 0); assert.equal(transport.unsettledData, 0);
+    assert.ok(peakQueuedData <= 2, 'fixture queue stays within the controller DATA job window');
+    assert.equal(peakActiveData, 1); assert.equal(peakTransportData, 1);
+    assert.equal(admittedData, startedData, 'every wrapped DATA request reaches transport admission');
+    assert.equal(startedData, dataDispatches, 'fixture forwards every broker DATA dispatch');
     console.log(JSON.stringify({ followPiEarlyVisual: { output, publications: owner.stats().stylePublications,
-      comparisons: revision, sourceDispatches: broker.stats().sourceDispatches, styleDispatches: broker.stats().styleDispatches,
+      comparisons: revision, sourceDispatches: provider.sourceDispatches, styleDispatches: provider.styleDispatches,
+      dataAdmission: { started: startedData, admitted: admittedData, peakQueued: peakQueuedData,
+        peakActive: peakActiveData, peakTransportUnsettled: peakTransportData, settled: queuedData === 0 && activeData === 0 },
       sourceBytes: corpus.reduce((sum, item) => sum + Buffer.byteLength(item.source), 0), nativeSha256: binary.sha256 } }));
-  } finally { owner.dispose(); await awaitFixture(broker.dispose()); await rm(root, { recursive: true, force: true }); }
+  } finally {
+    owner.dispose();
+    await awaitFixture(Promise.all([dataTail, broker.dispose()]));
+    await rm(root, { recursive: true, force: true });
+  }
   assert.equal(owner.stats().retention.retainedBytes, 0); assert.equal(owner.stats().globalTransientBytes, 0);
   assert.equal(pipe.stats().childState, 'exited'); assert.equal(pipe.stats().ownedListeners, 0);
 });

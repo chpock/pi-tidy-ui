@@ -185,15 +185,19 @@ test('group presentation: cached styles and local roles progress while two sourc
   } finally { void c.preparation; await cleanup(owner, peer); }
 });
 
-function abandoned(peer: Peer) {
-  const owner = new SourceController(peer), c = card(owner, []); owner.setStyleSelection(local(7)); c.start();
-  return { owner: new WeakRef(owner), preparation: new WeakRef(c.preparation), group: c.group };
+async function abandoned(peer: Peer) {
+  const owner = new SourceController(peer), c = card(owner, []), preparation = c.preparation;
+  owner.setStyleSelection(local(7)); c.start();
+  assert.equal(await owner.whenSettled(), true);
+  const escaped = owner.groupPresentation(c.group);
+  assert.ok(escaped); assert.equal(ink(escaped.role('panel')), 7); assert.equal(escaped.visitStyles(() => {}), true);
+  const globalBookkeepingBytes = owner.stats().globalBookkeepingBytes;
+  return { owner: new WeakRef(owner), preparation: new WeakRef(preparation), escaped, globalBookkeepingBytes };
 }
 test('group presentation: first useful owner and preparation collect with escaped weak reader while peer remains active', async () => {
   const peer = new Peer(), live = new SourceController(peer), keep = card(live, []); live.setStyleSelection(local(8)); keep.start();
-  const gone = abandoned(peer); await settle(); let escaped: GroupDisplayBasis | undefined = gone.owner.deref()?.groupPresentation(gone.group);
-  assert.ok(escaped); assert.equal(escaped.visitStyles(() => {}), true);
-    const before = live.stats().globalBookkeepingBytes;
+  const gone = await abandoned(peer); let escaped: GroupDisplayBasis | undefined = gone.escaped;
+  const before = gone.globalBookkeepingBytes;
   for (let i = 0; i < 40; i++) { await turn(); global.gc!(); await settle(); if (!gone.owner.deref()) break; }
   assert.equal(gone.owner.deref(), undefined); assert.equal(gone.preparation.deref(), undefined);
   assert.equal(escaped.role('panel'), undefined); assert.equal(escaped.visitStyles(() => assert.fail('collected group emitted styles')), false);
