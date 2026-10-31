@@ -400,6 +400,8 @@ export class TidyMenu implements Component {
       }
     } else {
       this.list.handleInput(data);
+      // Selection callbacks may synchronously close and dispose this popup.
+      if (this.closed) return;
       const value = this.list.getSelectedItem()?.value; if (value) this.previewTheme(value);
     }
     if (!this.closed) this.requestRender();
@@ -413,6 +415,7 @@ export class TidyMenu implements Component {
     const page = this.page, list = this.list;
     const result = list.handleMouse({ ...event, x: event.x - this.frameInset,
       y: row ?? 0, width: this.bodyWidth + 2, height: this.listHeight });
+    if (this.closed) return result;
     if (result) {
       if (this.page === page) {
         const value = list.getSelectedItem()?.value; this.selected[page] = value;

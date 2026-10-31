@@ -16,7 +16,7 @@ function fixture(width = 70, height = 24) {
   const previews: TidyMenuSnapshot['selected'][] = [];
   const state: TidyMenuSnapshot = { appearanceEnabled: true, terminalColorsEnabled: true, nativeHighlightingEnabled: true, loggingEnabled: true,
     selected: { kind: 'pi' }, appearance: 'Active', terminalColors: 'Following Pi theme', syntax: undefined };
-  let prepared = 0, cacheReads = 0, closed = 0;
+  let prepared = 0, cacheReads = 0, closed = 0, renderRequests = 0;
   let perform: TidyMenuOwner['act'] = async action => {
     calls.push(action);
     if (action.kind === 'switch') state[action.key] = action.value;
@@ -27,7 +27,7 @@ function fixture(width = 70, height = 24) {
   const owner: TidyMenuOwner = { snapshot: () => state, prepareThemes: async () => { prepared++; },
     previewTheme(choice) { const copy = structuredClone(choice); previews.push(copy); state.selected = copy; },
     act: action => perform(action), cacheDetails: () => { cacheReads++; return ['Cached layouts: 2', 'Estimated memory: 1 KiB']; } };
-  const menu = new TidyMenu(owner, colors as any, () => {}, () => { closed++; }, () => height);
+  const menu = new TidyMenu(owner, colors as any, () => { renderRequests++; }, () => { closed++; }, () => height);
   const render = () => menu.render(width).map(plain);
   const key = async (data: string) => { menu.handleInput(data); await turn(); render(); };
   const select = async (label: string) => {
@@ -38,7 +38,8 @@ function fixture(width = 70, height = 24) {
     assert.fail(`Missing selected item ${label}: ${render().join('\n')}`);
   };
   return { menu, owner, state, calls, previews, render, key, select, get closed() { return closed; },
-    get prepared() { return prepared; }, get cacheReads() { return cacheReads; }, set perform(next: typeof perform) { perform = next; } };
+    get prepared() { return prepared; }, get cacheReads() { return cacheReads; }, get renderRequests() { return renderRequests; },
+    set perform(next: typeof perform) { perform = next; } };
 }
 
 test('menu root exposes ordinary appearance choices only; first Enter navigates, never toggles', async () => {
@@ -108,6 +109,42 @@ test('inline failure is bounded and remains visible after the operation; no raw 
   await f.select('Set terminal colors from Pi theme');
   assert.match(f.render().join('\n'), /could not be completed/i);
   assert.doesNotMatch(f.render().join('\n'), /PRIVATE_URL_TOKEN/);
+});
+
+test('menu close: Enter on Close retires the popup during delegated input', async () => {
+  const f = fixture(); f.render();
+  for (let i = 0; i < 3; i++) await f.key('\x1b[B');
+  assert.ok(f.render().some(row => row.includes('→ Close')));
+  const requests = f.renderRequests;
+
+  f.menu.handleInput('\r');
+
+  assert.equal(f.closed, 1);
+  assert.deepEqual(f.render(), []);
+  assert.equal(f.renderRequests, requests, 'a completed input must not request another popup render');
+  assert.equal(f.calls.length, 0); assert.equal(f.previews.length, 0);
+  f.menu.handleInput('\r'); f.menu.handleInput('\x1b[B'); f.menu.close(); f.menu.dispose();
+  assert.equal(f.closed, 1); assert.equal(f.renderRequests, requests);
+});
+
+test('menu close: mouse confirmation retires the popup during delegated input', () => {
+  const f = fixture(), rows = f.render(), y = rows.findIndex(row => row.includes('Close'));
+  assert.ok(y >= 0);
+  const event = { button: 'left' as const, x: 4, y, screenX: 4, screenY: y,
+    width: 70, height: rows.length, shift: false, alt: false, ctrl: false };
+  f.menu.handleMouse({ ...event, type: 'press' });
+  assert.equal(f.closed, 0, 'pressing alone does not confirm Close');
+  const requests = f.renderRequests;
+
+  assert.equal(f.menu.handleMouse({ ...event, type: 'click' })?.handled, true);
+
+  assert.equal(f.closed, 1);
+  assert.deepEqual(f.render(), []);
+  assert.equal(f.renderRequests, requests, 'a completed click must not request another popup render');
+  assert.equal(f.calls.length, 0); assert.equal(f.previews.length, 0);
+  assert.equal(f.menu.handleMouse({ ...event, type: 'click' }), undefined);
+  f.menu.close(); f.menu.dispose();
+  assert.equal(f.closed, 1); assert.equal(f.renderRequests, requests);
 });
 
 test('closing pending menu work ignores late completion and input', async () => {

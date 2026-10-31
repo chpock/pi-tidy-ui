@@ -32,6 +32,8 @@ The first page contains:
 
 The theme row is initially selected, so the first Enter navigates rather than toggles. Header and bottom navigation are separate sections divided from the body by horizontal rules. After the menu, one empty row precedes exactly two reserved description rows for the selected item. Short descriptions leave the second row empty; longer ones end the second row with an ellipsis. Very short terminals omit the frame/header/navigation before giving up description space; below four rows only the compact list/details fit. Arrow keys navigate, Enter confirms, Escape returns one page or closes from the first page; Ctrl+C closes. Fullscreen mouse clicks activate content rows, not borders. Narrow/short layouts retain keyboard access; Page Up/Down scroll detail text without skipping hidden rows. All pages occupy the same overlay, independent of the presentation adapter or syntax-provider generation. The native editor is not replaced or transferred.
 
+The list's confirmation callbacks run synchronously and may close the popup before delegated keyboard or mouse handling returns. Once closed, that input event must stop menu processing: do not read the disposed list, update selection/preview or request another popup render. Mouse confirmation still returns the native handled result; subsequent input and repeated close/dispose calls do not reopen or complete the interaction again. Dismissal removes the popup frame from the terminal, and reopening creates a fresh usable menu.
+
 Appearance Off leaves the menu and independent logging usable. On/Off values show preferences, not availability. Actual limitations are explained separately; automatic/system Pi themes retain native control of terminal colors.
 
 ## Theme picker

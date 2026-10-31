@@ -263,7 +263,10 @@ for (const mode of ['regular', 'fullscreen']) test(`real CLI: settings popup nav
       assert.equal(live.tidyFrame().width, rootWidth, 'widening restores intrinsic size, not terminal width');
       await live.selectTidyItem('Close', false);
       assert.match(checkLayout('Tidy UI').join(' '), /Close this panel without changing anything\./u);
-      await live.closeTidyMenu(); assert.deepEqual(readFileSync(path), before, 'opening, searching and cancelling never writes settings');
+      live.send('\r');
+      await until(async () => { await live.refreshTidyBounds(); return !live.tidyFrame(); }, 'Enter on Close dismisses the popup');
+      await live.openTidyMenu(); await live.closeTidyMenu();
+      assert.deepEqual(readFileSync(path), before, 'opening, searching and cancelling never writes settings');
       await live.tidyPage(['Code color theme', 'Follow Pi theme']);
       if (mode === 'fullscreen') {
         await live.openTidyMenu();
@@ -277,7 +280,13 @@ for (const mode of ['regular', 'fullscreen']) test(`real CLI: settings popup nav
         assert.deepEqual(readFileSync(path), savedBeforePointer, 'neither frame nor outside columns change persistent settings');
         click(bounds.left + 4);
         await until(() => JSON.parse(readFileSync(path, 'utf8')).terminalColorsEnabled === false, 'normalized mouse toggles exactly the clicked setting');
-        assert.ok(live.tidyHeading('Tidy UI')); await live.closeTidyMenu();
+        assert.ok(live.tidyHeading('Tidy UI'));
+        await live.selectTidyItem('Close', false);
+        const closeY = live.tidyRows().findIndex(row => row.startsWith('→ Close'));
+        assert.ok(closeY >= 0);
+        live.send(`\x1b[<0;${bounds.left + 5};${closeY + 1}M\x1b[<0;${bounds.left + 5};${closeY + 1}m`);
+        await until(async () => { await live.refreshTidyBounds(); return !live.tidyFrame(); }, 'mouse Close dismisses the popup');
+        await live.openTidyMenu(); await live.closeTidyMenu();
       } else await live.terminalColors(false);
       await live.tidyPage(['Status & troubleshooting', 'Use Occipital highlighting']);
       await live.diagnosticLogging(false); await live.appearance(false);
