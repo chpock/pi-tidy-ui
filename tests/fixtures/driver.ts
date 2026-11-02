@@ -1,6 +1,7 @@
 // Offline real-CLI fixture: built-ins stay real unless the isolated bash-shape opt-in is set.
 import { CustomEditor, ToolExecutionComponent, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { createAssistantMessageEventStream, Type, type ToolCall } from "@earendil-works/pi-ai";
+import { createAssistantMessageEventStream, type ToolCall } from "@earendil-works/pi-ai";
+import { Type } from "typebox";
 import { Container, Text, matchesKey, type TUI, type OverlayHandle } from "@earendil-works/pi-tui";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { followPiText } from "./follow-pi-source.ts";
