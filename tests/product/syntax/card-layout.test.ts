@@ -12,7 +12,7 @@ import { compileStyleAnsi } from '../../../src/syntax/style-ansi.ts';
 import type { PreparedCard, PreparedRegion, ReadyCardPaint, CardDisplayInput } from '../../../src/syntax/cards.ts';
 import type { CardLayout, CardRows, CardFunding } from '../../../src/syntax/card-layout.ts';
 import { SourceController } from '../../../src/occipital/controller.ts';
-import { getThemeByName } from '../../../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js';
+import { getThemeByName, setThemeInstance } from '../../../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js';
 import { createSemanticRuleDefinition } from '../../../src/syntax/semantic-rules.ts';
 import { fingerprintRules } from '../../../src/occipital/style-rules.ts';
 import { syntheticSelection } from '../../fixtures/test-style-selection.ts';
@@ -329,7 +329,7 @@ function realCards() {
     isReady: () => false, classificationAccepted: () => false, request: async () => { sourceStyle++; throw Error('unexpected SOURCE/STYLE'); } };
   const sources = new SourceController(provider), runtime = new SyntaxRuntime({ standaloneVersion: '0.0.0', settings: { load: async () => ({ ok: true, syntaxTheme: { kind: 'pi' } }), update: async () => ({ ok: true }) },
     provider: { tryShared: async () => undefined, acquireOwned: async () => { throw Error('unexpected provider'); } } });
-  const theme = getThemeByName('system')!;
+  const theme = getThemeByName('system')!; setThemeInstance(theme);
   const sampled = { owner: new WeakRef(theme), colors: theme.colors,
     getFgAnsi(role: Parameters<typeof theme.getFgAnsi>[0]) { samples++; return theme.getFgAnsi(role); },
     getBgAnsi(role: Parameters<typeof theme.getBgAnsi>[0]) { samples++; return theme.getBgAnsi(role); }, counters: () => ({ foreground: 0, background: 0 }) };

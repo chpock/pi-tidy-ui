@@ -199,7 +199,7 @@ try {
     const footerHost = Object.assign(Object.create(InteractiveMode.prototype), { ui: footerRoot, footerContainer,
       footer: nativeFooter, footerDataProvider: { getExtensionStatuses: () => new Map(), onBranchChange: () => () => {} },
       defaultEditor: footerEditor, editor: footerEditor, editorContainer: footerInput, statusContainer: new Container(),
-      widgetContainerAbove: aboveFooter, widgetContainerBelow: belowFooter,
+      widgetContainerAbove: aboveFooter, widgetContainerBelow: belowFooter, extensionDialogs: [],
       extensionWidgetsAbove: new Map(), extensionWidgetsBelow: new Map() });
     for (const child of [new Container(), new Container(), footerHost.statusContainer, aboveFooter, footerInput, belowFooter, footerContainer]) footerRoot.addChild(child);
     const manager = SessionManager.inMemory("/tmp");

@@ -881,16 +881,17 @@ test("stock edit visibility proof rejects same-name custom renderers and is chec
     assert.deepEqual(node.render(140), []);
     assert.ok(native.mock.calls.length > 0, "an edit name is not evidence of stock visibility");
     custom.renderCall = deferred.renderCall as typeof definition.renderCall; custom.renderResult = deferred.renderResult as typeof definition.renderResult;
-    node.updateArgs({ path: "example.ts" });
+    // Renderer replacement needs invalidation; Pi may defer streamed argument updates until render.
+    node.invalidate();
     const before = native.mock.calls.length;
     assert.match(node.render(140).map(plain).join(""), /← edit example.ts/);
     assert.equal(native.mock.calls.length, before, "the stock pair skips visibility without a retained proof cache");
     custom.renderCall = emptyCall;
-    node.updateArgs({ path: "example.ts" });
+    node.invalidate();
     node.render(140);
     assert.ok(native.mock.calls.length > before, "replacing just one renderer immediately restores native authority");
     custom.renderCall = deferred.renderCall as typeof definition.renderCall; custom.renderResult = emptyResult;
-    node.updateArgs({ path: "example.ts" });
+    node.invalidate();
     const mixed = native.mock.calls.length;
     node.render(140);
     assert.ok(native.mock.calls.length > mixed, "both functions must match, not merely the call renderer");

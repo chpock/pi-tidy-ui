@@ -9,7 +9,7 @@ import assert from 'node:assert/strict';
 import { afterEach, test } from 'node:test';
 import { setImmediate as turn } from 'node:timers/promises';
 import { highlightCode } from '@earendil-works/pi-coding-agent';
-import { getThemeByName } from '../../../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js';
+import { getThemeByName, initTheme, setThemeInstance } from '../../../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js';
 import { CardSources, type CardDisplayInput, type CardPreparation, type PreparedCard, type ReadyCardPaint } from '../../../src/syntax/cards.ts';
 import { DataBudget } from '../../../src/occipital/data-budget.ts';
 import { layoutCard, type CardRows } from '../../../src/syntax/card-layout.ts';
@@ -65,7 +65,7 @@ function fixture(ready = false, options: ControllerOptions = {}, maxBookkeepingB
   const runtime = new SyntaxRuntime({ standaloneVersion: '0.0.0', settings: { load: async () => ({ ok: true, syntaxTheme: { kind: 'pi' } }), update: async () => ({ ok: true }) },
     provider: { tryShared: async () => undefined, acquireOwned: async () => { throw Error('unexpected provider'); } } });
   const paletteInputs = new PaletteInputOwner();
-  let theme = getThemeByName('system')!;
+  let theme = getThemeByName('system')!; setThemeInstance(theme);
   const sampled = { get colors() { return theme.colors; }, getFgAnsi(role: Parameters<typeof theme.getFgAnsi>[0]) { env.samples++; if (env.poison) throw Error('Pi poison'); return theme.getFgAnsi(role); },
     getBgAnsi(role: Parameters<typeof theme.getBgAnsi>[0]) { env.samples++; if (env.poison) throw Error('Pi poison'); return theme.getBgAnsi(role); } };
   runtime.palette(sampled);
@@ -105,7 +105,7 @@ function fixture(ready = false, options: ControllerOptions = {}, maxBookkeepingB
         indices: q.contexts.map(() => 1) } });
     },
     fault(i: number, execution: 'not_started' | 'unknown' = 'not_started') { calls[i]!.done = true; calls[i]!.reject(new RequestFailure('busy', execution)); },
-    piTheme(name: string) { theme = getThemeByName(name)!; runtime.palette(sampled); paletteRevision = paletteInputs.palette(sampled, resolveTheme(env.selected).effective); cards.metadataChanged(paletteRevision); return paletteRevision; },
+    piTheme(name: string) { theme = getThemeByName(name)!; setThemeInstance(theme); runtime.palette(sampled); paletteRevision = paletteInputs.palette(sampled, resolveTheme(env.selected).effective); cards.metadataChanged(paletteRevision); return paletteRevision; },
     followPi() { env.selected = { kind: 'pi' }; paletteRevision = paletteInputs.palette(sampled, resolveTheme(env.selected).effective); cards.metadataChanged(paletteRevision); return paletteRevision; },
     theme(id = 'gruvbox-dark') {
       env.selected = { kind: 'theme', id };
@@ -117,7 +117,7 @@ function fixture(ready = false, options: ControllerOptions = {}, maxBookkeepingB
 }
 async function settle() { for (let i = 0; i < 8; i++) await turn(); }
 afterEach(async () => { for (const f of fixtures) { f.cards.dispose(); f.sources.dispose(); f.paletteInputs.dispose(); await f.runtime.dispose(); for (const c of f.calls) c.reject(new RequestFailure('cleanup', 'not_started')); }
-  await settle(); for (const f of fixtures) { assert.equal(f.sources.stats().globalUnsettledJobs, 0); assert.equal(f.sources.stats().retention.retainedBytes, 0); } fixtures.length = 0; });
+  await settle(); for (const f of fixtures) { assert.equal(f.sources.stats().globalUnsettledJobs, 0); assert.equal(f.sources.stats().retention.retainedBytes, 0); } fixtures.length = 0; initTheme('system', false); });
 function inspect(f: ReturnType<typeof fixture>, owner: Owner, consume: (display: PreparedCard, paint: ReadyCardPaint) => void) { assert.equal(f.cards.visit(owner, consume), true); }
 function weakFilePayloads(f: ReturnType<typeof fixture>, owner: Owner) {
   let rows: object | undefined, measurement: object | undefined;
@@ -1737,7 +1737,7 @@ for (const remaining of ['none', 'held-local', 'palette-change', 'retained-style
           counters: { committed_line_calls: 0, committed_line_bytes: 0, tail_calls: 1, tail_bytes: bytes } }] } });
     }
   }
-  const peer = new LifetimePeer(), replacement = new LifetimePeer(); let theme = getThemeByName('system')!;
+  const peer = new LifetimePeer(), replacement = new LifetimePeer(); let theme = getThemeByName('system')!; setThemeInstance(theme);
   let cards: CardSources<Owner>, metadata = 0, classifications = 0, outcomes: readonly string[] = [];
   const client = new SyntaxClient({ standaloneVersion: '0.2.0', initialTheme: { kind: 'pi' },
     provider: { tryShared: async () => {
@@ -1811,7 +1811,7 @@ for (const remaining of ['none', 'held-local', 'palette-change', 'retained-style
     if (remaining === 'palette-change' || retained) {
       const wake = client.sources.wake;
       t.mock.method(client.sources, 'wake', function(this: SourceController) { withdrawalWakes++; return wake.call(this); });
-      theme = getThemeByName('dark')!;
+      theme = getThemeByName('dark')!; setThemeInstance(theme);
       const next = { ...latest, revision: 3, palette: a.runtime.palette(theme) };
       cards.updateDisplay(owner, next); cards.useful(owner, next.revision); await settle();
       assert.ok(withdrawalWakes <= 1, 'a single actual palette replacement cannot add repeated withdrawal wakes');

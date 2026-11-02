@@ -20,6 +20,7 @@ import { sampleOwnedPalette } from '../../../src/themes/owned-palette.ts';
 import { menuPage, withMenu, setAppearance, setLogging } from '../../helpers/menu-driver.ts';
 import { ExtensionSettings, type SettingsLoadResult, type SettingsPatch, type LocalPreferences } from '../../../src/settings.ts';
 import { FilePreviewState } from '../../../src/file-preview-state.ts';
+import { createLazyNativeRendererResolver, DeferredRenderer, isDeferredStockFilePair } from '../../../src/syntax/lazy-native-renderers.ts';
 import { extensionHarness as sharedExtensionHarness } from '../../fixtures/sdk-contract-support.ts';
 
 const dist = dirname(fileURLToPath(import.meta.resolve('@earendil-works/pi-coding-agent')));
@@ -188,6 +189,17 @@ test('public renderer resolver is installed before session use and wraps only ex
   } finally { await h.stop(); }
 });
 
+test('complete deferred stock pair proof rejects absent and foreign callbacks', () => {
+  const stock = rendererSet(createWriteToolDefinition('/tmp'));
+  const pair = createLazyNativeRendererResolver()('write', () => stock)!;
+  const foreign = () => new Text('foreign');
+  for (const [call, result, expected] of [
+    [pair.renderCall, pair.renderResult, true], [pair.renderCall, undefined, false],
+    [foreign, undefined, false], [foreign, pair.renderResult, false],
+    [pair.renderCall, foreign, false], [undefined, undefined, false],
+  ] as const) assert.equal(isDeferredStockFilePair(call, result), expected, 'membership requires both registered callbacks');
+});
+
 test('stock write/edit callbacks remain lazy through component updates and prepare only on native render', async () => {
   const h = fixture(), editRoot = await fs.mkdtemp(join(tmpdir(), 'tidy-ui-native-edit-')), editPath = join(editRoot, 'file.ts');
   await fs.writeFile(editPath, 'const value = 1;\n');
@@ -242,9 +254,10 @@ test('stock write/edit callbacks remain lazy through component updates and prepa
     assert.equal(weakDeferredInner(Reflect.get(writeTool, 'callRendererComponent') as object).deref(), nativeWriteInner,
       'native write retains its component/cache when Pi replaces the callback');
     assert.ok(updatedWriteRows.join('\n').includes('updated'));
-    const updatedEditWait = observeNextRequest(h.root), beforeEditUpdate = nativeStyleCalls;
+    const beforeEditUpdate = nativeStyleCalls;
     editTool.updateArgs({ path: editPath, oldText: '1', newText: '3' });
     assert.equal(nativeStyleCalls, beforeEditUpdate, 'native callback replacement remains lazy before render');
+    const updatedEditWait = observeNextRequest(h.root);
     const updatedEditRows = editTool.render(80);
     assert.equal(weakDeferredInner(Reflect.get(editTool, 'callRendererComponent') as object).deref(), nativeEditInner,
       'edit keeps the stock call component and preflight state across callback replacement');
@@ -535,6 +548,77 @@ test('hidden-only saved patch result replacement refreshes warm source cache wit
   } finally { await h.stop(); }
 });
 
+test('custom argument updates preserve native batching and keep retained stock leaves current', async t => {
+  const h = fixture();
+  try {
+    await h.ready;
+    const native = writeOwner(h, 'native-argument-baseline', 'const initial = 0;');
+    const prototype = Object.getPrototypeOf(native) as { updateDisplay(...args: unknown[]): unknown };
+    const originalUpdate = prototype.updateDisplay, updates = new WeakMap<object, number>();
+    t.mock.method(prototype, 'updateDisplay', function(this: ToolExecutionComponent, ...args: unknown[]) {
+      updates.set(this, (updates.get(this) ?? 0) + 1);
+      return originalUpdate.apply(this, args);
+    });
+    const nativeBefore = updates.get(native) ?? 0;
+    native.updateArgs({ path: 'native-argument-baseline.ts', content: 'const next = 1;' });
+    const nativeDelta = (updates.get(native) ?? 0) - nativeBefore;
+    h.root.clear();
+
+    await h.start();
+    const tool = writeOwner(h, 'current-argument-owner', 'const initial = 0;');
+    completeLiveWrite(h, tool); h.root.render(80); await settled();
+    const before = updates.get(tool) ?? 0;
+    let nativePreparations = 0;
+    const materialize = DeferredRenderer.prototype.materialize;
+    t.mock.method(DeferredRenderer.prototype, 'materialize', function(this: DeferredRenderer) {
+      if (Reflect.get(this, 'invoke') && !Reflect.get(this, 'disposed') && !Reflect.get(this, 'component')) nativePreparations++;
+      materialize.call(this);
+    });
+    for (let i = 1; i <= 3; i++) tool.updateArgs({ path: `current-argument-${i}.ts`, content: `const latest_${i} = ${i};` });
+    const customDelta = (updates.get(tool) ?? 0) - before;
+    assert.equal(customDelta, nativeDelta * 3, 'the adapter adds no native composition to the SDK update contract');
+    h.root.render(80); await settled();
+    assert.match(tool.render(80).join('\n'), /latest_3/u);
+    const customPreparations = nativePreparations;
+    assert.equal(customPreparations, 0, 'custom frames never materialize either stock slot');
+
+    const retainedCall = Reflect.get(tool, 'callRendererComponent') as Component;
+    const retainedResult = Reflect.get(tool, 'resultRendererComponent') as Component;
+    const currentNative = retainedCall.render(80).join('\n');
+    assert.match(currentNative, /current-argument-3\.ts/u);
+    assert.match(currentNative, /latest_3/u, 'a retained lazy leaf uses current arguments without a native host flush');
+    assert.deepEqual(retainedResult.render(80), []);
+    assert.equal(nativePreparations, 2, 'genuine native access prepares the shared call/result pair once');
+    console.log(JSON.stringify({ borrowedArguments: { nativeCompositionPerUpdate: nativeDelta, compositionsForThreeCustomUpdates: customDelta,
+      customPreparations, preparationsAfterNativeAccess: nativePreparations } }));
+  } finally { await h.stop(); }
+});
+
+for (const replaceCall of [false, true]) test(`removing a stock result renderer excludes the retained owner from argument synchronization${replaceCall ? ' with a foreign call' : ''}`, async () => {
+  const h = fixture();
+  try {
+    await h.ready; await h.start();
+    const stock = rendererSet(createWriteToolDefinition('/tmp'));
+    const definition: ToolRenderers = { ...stock, ...h.rendererResolvers[0]!('write', () => stock) };
+    const tool = new ToolExecutionComponent('write', 'incomplete-stock-pair',
+      { path: 'incomplete-stock-pair.ts', content: 'const callback_generation_before = 1;' }, undefined, definition,
+      h.root as unknown as ConstructorParameters<typeof ToolExecutionComponent>[5], '/tmp');
+    h.root.addChild(tool); completeLiveWrite(h, tool); h.root.render(80); await settled();
+    const previousCall = Reflect.get(tool, 'callRendererComponent');
+    if (replaceCall) {
+      const call = definition.renderCall!;
+      definition.renderCall = (args, theme, context) => call(args, theme, context);
+    }
+    Reflect.deleteProperty(definition, 'renderResult');
+    tool.updateArgs({ path: 'incomplete-stock-pair.ts', content: 'const callback_generation_after = 2;' });
+    h.root.render(80); await settled();
+    const currentCall = Reflect.get(tool, 'callRendererComponent') as Component;
+    const nativeRows = currentCall.render(80).join('\n');
+    const expected = currentCall === previousCall ? /callback_generation_before/u : /callback_generation_after/u;
+    assert.match(nativeRows, expected, 'an incomplete pair changes arguments only through an actual native callback generation');
+  } finally { await h.stop(); }
+});
+
 test('same-prefix argument and patch replacement releases old raw guards while owners stay live', { skip: !global.gc }, async () => {
   const h = fixture();
   try {
@@ -634,9 +718,9 @@ test('custom preview takeover releases superseded native children while the host
     const oldInnerRef = weakDeferredInner(oldWrapper);
 
     tool.updateArgs({ path: '/tmp/after.ts', content: 'const after = true;\n' });
-    const updatedWrapper = Reflect.get(tool, 'callRendererComponent') as object;
-    assert.notEqual(updatedWrapper, oldWrapper, 'Pi replaces the callback after argument updates');
     const latestNativeCall = h.root.render(80).join('\n');
+    const updatedWrapper = Reflect.get(tool, 'callRendererComponent') as object;
+    assert.notEqual(updatedWrapper, oldWrapper, 'Pi replaces the callback by the next native argument-update frame');
     assert.ok(latestNativeCall.includes('after.ts'), `current native file preview: ${latestNativeCall}`);
     assert.equal(weakDeferredInner(updatedWrapper).deref(), oldInnerRef.deref(), 'native callback replacement reuses the stock write component while rendering remains native');
     tool.updateResult({ content: [{ type: 'text', text: 'written' }], isError: false }, false);

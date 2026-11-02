@@ -37,7 +37,7 @@ import type { PiClassifier } from "./syntax/work.ts";
 import type { SyntaxClient } from "./occipital/client.ts";
 import { createSyntaxOptions } from "./occipital/bootstrap.ts";
 import { SyntaxRuntime, type SyntaxRuntimeOptions } from "./syntax/runtime.ts";
-import { createLazyNativeRendererResolver, isDeferredStockEditComponent, isDeferredStockEditPair, isDeferredStockFileCall, isDeferredStockFilePair, releaseNativeRendererCache, stockEditCall, stockEditResult, type NativeRendererFailureReporter } from './syntax/lazy-native-renderers.ts';
+import { createLazyNativeRendererResolver, isDeferredStockEditComponent, isDeferredStockEditPair, isDeferredStockFileCall, isDeferredStockFilePair, releaseNativeRendererCache, updateNativeRendererArgs, stockEditCall, stockEditResult, type NativeRendererFailureReporter } from './syntax/lazy-native-renderers.ts';
 export { describeArgs, sanitize } from "./summary-args.ts";
 const extensionVersion = (createRequire(import.meta.url)("../package.json") as { version: string }).version;
 let terminalColorDebug: WeakRef<TerminalColors> | undefined;
@@ -1548,6 +1548,10 @@ export function installTidyUi(tui: LiveTui, getTheme: () => Palette, options: Ti
         if (fileTool(this) && (name === 'updateArgs' || name === 'updateResult' || name === 'invalidate')) dirtyFileSources.add(this);
         if (name === 'invalidate' && this.result) imageResults.delete(this.result);
         const result = method.apply(this, args);
+        if (name === 'updateArgs' && fileTool(this) && isDeferredStockFilePair(this.getCallRenderer?.(), this.getResultRenderer?.())) {
+          const context = this.getRenderContext() as { state?: unknown } | null | undefined;
+          updateNativeRendererArgs(context?.state, this.toolName, this.toolCallId, this.args);
+        }
         if (name === 'updateResult' && this.result) imageResults.delete(this.result);
         observeFileTurn(this, name === 'updateResult');
         if (name !== "invalidate") nativePhase(this, name);

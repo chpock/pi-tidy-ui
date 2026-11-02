@@ -42,7 +42,7 @@ interface RendererOwner {
   prepareNative(): void;
 }
 
-const owners = new WeakMap<object, RendererOwner>();
+const owners = new WeakMap<object, Owner>();
 const deferredFilePairs = new WeakMap<Function, Function>();
 const deferredEditComponents = new WeakSet<object>();
 
@@ -65,9 +65,10 @@ class Owner implements RendererOwner {
   private preparedCall?: DeferredRenderer;
   private preparedResult?: DeferredRenderer;
   private preparing = false;
+  args: CallContext['args'];
 
-  constructor(id: string, tool: 'write' | 'edit', reporter: RendererFailureReporterProvider) {
-    this.id = id; this.tool = tool; this.reporter = reporter;
+  constructor(id: string, tool: 'write' | 'edit', reporter: RendererFailureReporterProvider, args: CallContext['args']) {
+    this.id = id; this.tool = tool; this.reporter = reporter; this.args = args;
   }
 
   inner(slot: Slot): Component | undefined { return slot === 'call' ? this.callInner : this.resultInner; }
@@ -125,6 +126,7 @@ class Owner implements RendererOwner {
     this.call?.dispose(); this.result?.dispose();
     this.call = undefined; this.result = undefined;
     this.callInner = undefined; this.resultInner = undefined;
+    this.args = undefined;
     clearState(this.rendererState);
   }
 }
@@ -206,15 +208,15 @@ export class DeferredRenderer implements Component {
   }
 }
 
-function ownerFor(context: RenderContext, tool: 'write' | 'edit', reporter: RendererFailureReporterProvider): Owner {
+function ownerFor(context: RenderContext, tool: 'write' | 'edit', reporter: RendererFailureReporterProvider, args: CallContext['args']): Owner {
   const state = context.state;
   if (state === null || (typeof state !== 'object' && typeof state !== 'function'))
     throw new TypeError('Pi tool renderer state must be an object');
   const key = state as object;
-  let owner = owners.get(key) as Owner | undefined;
-  if (owner?.id === context.toolCallId && owner.tool === tool) return owner;
+  let owner = owners.get(key);
+  if (owner?.id === context.toolCallId && owner.tool === tool) { owner.args = args; return owner; }
   owner?.dispose();
-  owner = new Owner(context.toolCallId, tool, reporter);
+  owner = new Owner(context.toolCallId, tool, reporter, args);
   owners.set(key, owner);
   return owner;
 }
@@ -227,17 +229,22 @@ function resultFailure(): Component {
   return new Text('[Native file result unavailable]', 0, 0);
 }
 
+function nativeContextFields(context: RenderContext, owner: Owner): Omit<RenderContext, 'args' | 'lastComponent'> {
+  // Pi may batch argument updates without replacing these leaves; only the owner borrows arguments.
+  const { args: _args, lastComponent: _lastComponent, ...fields } = context;
+  return { ...fields, state: owner.rendererState };
+}
+
 function deferredCall(
   owner: Owner,
   toolName: 'write' | 'edit',
   renderer: CallRenderer,
-  args: Parameters<CallRenderer>[0],
   theme: Parameters<CallRenderer>[1],
   context: CallContext,
 ): DeferredRenderer {
-  const safeContext = { ...context, lastComponent: undefined, state: owner.rendererState };
+  const safeContext = nativeContextFields(context, owner);
   const component = new DeferredRenderer(owner, 'call', () => {
-    const next = renderer(args, theme, { ...safeContext, lastComponent: owner.inner('call') });
+    const next = renderer(owner.args, theme, { ...safeContext, args: owner.args, lastComponent: owner.inner('call') });
     owner.setInner('call', next);
     return next;
   }, () => callFailure(toolName));
@@ -253,9 +260,9 @@ function deferredResult(
   theme: Parameters<ResultRenderer>[2],
   context: ResultContext,
 ): DeferredRenderer {
-  const safeContext = { ...context, lastComponent: undefined, state: owner.rendererState };
+  const safeContext = nativeContextFields(context, owner);
   const component = new DeferredRenderer(owner, 'result', () => {
-    const next = renderer(result, options, theme, { ...safeContext, lastComponent: owner.inner('result') });
+    const next = renderer(result, options, theme, { ...safeContext, args: owner.args, lastComponent: owner.inner('result') });
     owner.setInner('result', next);
     return next;
   }, resultFailure);
@@ -274,18 +281,24 @@ export function createLazyNativeRendererResolver(reporter: RendererFailureReport
     const callRenderer = stock.renderCall as unknown as CallRenderer;
     const resultRenderer = stock.renderResult as unknown as ResultRenderer;
     const renderCall: CallRenderer = (args, theme, context) => {
-      const owner = ownerFor(context, toolName, reporter);
-      const component = deferredCall(owner, toolName, callRenderer, args, theme, context);
+      const owner = ownerFor(context, toolName, reporter, args);
+      const component = deferredCall(owner, toolName, callRenderer, theme, context);
       if (toolName === 'edit') deferredEditComponents.add(component);
       return component;
     };
     const renderResult: ResultRenderer = (result, options, theme, context) => {
-      const owner = ownerFor(context, toolName, reporter);
+      const owner = ownerFor(context, toolName, reporter, context.args);
       return deferredResult(owner, resultRenderer, result, options, theme, context);
     };
     deferredFilePairs.set(renderCall, renderResult);
     return { ...base, renderCall, renderResult };
   };
+}
+
+export function updateNativeRendererArgs(state: unknown, tool: string, id: string, args: CallContext['args']): void {
+  if (state === null || (typeof state !== 'object' && typeof state !== 'function')) return;
+  const owner = owners.get(state as object);
+  if (owner?.tool === tool && owner.id === id) owner.args = args;
 }
 
 export function releaseNativeRendererCache(state: unknown): void {
@@ -294,7 +307,7 @@ export function releaseNativeRendererCache(state: unknown): void {
 }
 
 export function isDeferredStockFilePair(call: unknown, result: unknown): boolean {
-  return typeof call === 'function' && deferredFilePairs.get(call) === result;
+  return typeof call === 'function' && typeof result === 'function' && deferredFilePairs.get(call) === result;
 }
 
 export function isDeferredStockEditPair(call: unknown, result: unknown): boolean {
