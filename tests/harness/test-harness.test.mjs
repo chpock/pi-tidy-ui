@@ -11,9 +11,10 @@ import { createHash } from 'node:crypto';
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { setTimeout as delay } from 'node:timers/promises';
 import { childEnv, validateNative, validateHost, readInputs } from '../../scripts/test/context.mjs';
+import { MINIMUM_PI } from '../../scripts/test/ci-plan.mjs';
 import { execute, isolatedCommand, selectSuite } from '../../scripts/test/run.mjs';
 import { discoverEntries, resolveSelection, testEntries } from '../../scripts/test/catalog.mjs';
-import { dependencyIdentity, materializeSource, materializeTools, refreshInputs, snapshotIdentity, sourceIdentity, validateNeutralRunRoot } from '../../scripts/test/prepare.mjs';
+import { defaultInputsPath, dependencyIdentity, materializeSource, materializeTools, refreshInputs, snapshotIdentity, sourceIdentity, validateNeutralRunRoot } from '../../scripts/test/prepare.mjs';
 
 function fixture(t) {
   const root = mkdtempSync(join(tmpdir(), 'tidy-harness-'));
@@ -23,6 +24,12 @@ function fixture(t) {
   mkdirSync(inputs.tools.bin);
   return { root, inputs };
 }
+
+test('minimum input path follows the exact development Pi pin', t => {
+  const { root } = fixture(t);
+  writeFileSync(join(root, 'package.json'), JSON.stringify({ devDependencies: { '@earendil-works/pi-coding-agent': MINIMUM_PI } }));
+  assert.equal(defaultInputsPath(root), join(root, `.test-artifacts/harness/${MINIMUM_PI}/inputs.json`));
+});
 
 test('test environment excludes ambient Pi, credentials, proxies and Node startup controls', t => {
   const { root, inputs } = fixture(t);
@@ -127,14 +134,14 @@ test('suite selection accounts for every test file without environment-gated omi
 });
 
 test('host acceptance rejects an external CLI and a changed SDK manifest', t => {
-  const { root, inputs } = fixture(t);
+  const { root, inputs } = fixture(t), version = readInputs().pi.version;
   const codingRoot = join(root, 'node_modules/@earendil-works/pi-coding-agent');
   mkdirSync(codingRoot, { recursive: true });
   const manifest = join(codingRoot, 'package.json'), cli = join(codingRoot, 'cli.js');
-  writeFileSync(manifest, JSON.stringify({ name: '@earendil-works/pi-coding-agent', version: '1.0.0', bin: { pi: 'cli.js' } }));
+  writeFileSync(manifest, JSON.stringify({ name: '@earendil-works/pi-coding-agent', version, bin: { pi: 'cli.js' } }));
   writeFileSync(cli, '');
   const lock = join(root, 'package-lock.json'); writeFileSync(lock, '{}');
-  inputs.pi = { root, version: '1.0.0', cli, lock, lockSha256: createHash('sha256').update(readFileSync(lock)).digest('hex'), packages: [{ name: '@earendil-works/pi-coding-agent', version: '1.0.0', path: manifest,
+  inputs.pi = { root, version, cli, lock, lockSha256: createHash('sha256').update(readFileSync(lock)).digest('hex'), packages: [{ name: '@earendil-works/pi-coding-agent', version, path: manifest,
     sha256: createHash('sha256').update(readFileSync(manifest)).digest('hex') }] };
   validateHost(inputs, false);
   const originalManifest = readFileSync(manifest);
@@ -679,7 +686,7 @@ test('every Node test entry rejects direct execution without bootstrap even when
 function preparationFixture(t) {
   const f = repository(t, {
     '.gitignore': 'node_modules/\n',
-    'package.json': JSON.stringify({ type: 'module', devDependencies: { '@earendil-works/pi-coding-agent': '1.0.0' } }),
+    'package.json': JSON.stringify({ type: 'module', devDependencies: { '@earendil-works/pi-coding-agent': '1.0.1', '@earendil-works/pi-tui': '1.0.1' } }),
     'package-lock.json': '{"packages":{}}',
     '.cargo/config.toml': '[build]\njobs = 1\n',
   });
@@ -690,7 +697,7 @@ function preparationFixture(t) {
     writeFileSync(${JSON.stringify(marker)}, 'started');
     for (const name of ['pi-coding-agent', 'pi-tui', 'pi-ai', 'pi-agent-core']) {
       const root = 'node_modules/@earendil-works/' + name; mkdirSync(root, {recursive:true});
-      writeFileSync(root + '/package.json', JSON.stringify({name:'@earendil-works/' + name, version:'1.0.0', bin:{pi:'cli.js'}}));
+      writeFileSync(root + '/package.json', JSON.stringify({name:'@earendil-works/' + name, version:'1.0.1', bin:{pi:'cli.js'}}));
       writeFileSync(root + '/cli.js', '');
     }
   `);

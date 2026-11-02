@@ -1,8 +1,9 @@
 import "./test-guard.mjs";
 import { Container, Text, type TuiMouseEvent } from "@earendil-works/pi-tui";
-import { CustomEditor, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { CustomEditor, createEditToolDefinition, createWriteToolDefinition, type ExtensionAPI, type ExtensionContext, type ToolRendererResolver, type ToolRenderers } from "@earendil-works/pi-coding-agent";
 import tidyUi, { installTidyUi as installHost, type TidyUiOptions } from "../../src/index.ts";
 import type { SyntaxRuntimeOptions } from "../../src/syntax/runtime.ts";
+import { createLazyNativeRendererResolver } from "../../src/syntax/lazy-native-renderers.ts";
 import { getThemeByName } from '../../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js';
 export const cardInputTheme = getThemeByName('dark')!;
 // Synthetic ordinary formatters are not Pi-input themes. Custom cards consume
@@ -34,8 +35,25 @@ export class Root extends Container {
   }
 }
 
+const resolveStockFileRenderers = createLazyNativeRendererResolver();
+type PublicFileToolDefinition = ReturnType<typeof createWriteToolDefinition> | ReturnType<typeof createEditToolDefinition>;
+export function resolvePublicFileToolDefinition(name: 'write' | 'edit', definition?: unknown, cwd?: string): PublicFileToolDefinition | ToolRenderers | undefined;
+export function resolvePublicFileToolDefinition(name: string, definition?: unknown, cwd?: string): unknown;
+export function resolvePublicFileToolDefinition(name: string, definition?: unknown, cwd = '/tmp'): unknown {
+  if (name !== 'write' && name !== 'edit') return definition;
+  const base = definition ?? (name === 'write' ? createWriteToolDefinition(cwd) : createEditToolDefinition(cwd));
+  return resolveStockFileRenderers(name, () => base as ToolRenderers) ?? base;
+}
+export function rawStockFileToolRenderers(name: 'write' | 'edit', cwd = '/tmp'): ToolRenderers {
+  const definition = name === 'write' ? createWriteToolDefinition(cwd) : createEditToolDefinition(cwd);
+  if (!definition.renderCall || !definition.renderResult) throw new Error(`Pi ${name} stock renderer pair is incomplete`);
+  return { renderCall: definition.renderCall as ToolRenderers['renderCall'], renderResult: definition.renderResult as ToolRenderers['renderResult'] };
+}
+
 export class Tool extends Container {
   toolCallId = "test-id";
+  private callRenderer?: ToolRenderers['renderCall'];
+  private resultRenderer?: ToolRenderers['renderResult'];
   toolName: string;
   args: Record<string, unknown>;
   expanded = false;
@@ -47,11 +65,16 @@ export class Tool extends Container {
     { content: [{ type: "text", text: "FULL_OUTPUT" }] };
   constructor(name = "read", args: Record<string, unknown> = { path: "a.txt" }) {
     super(); this.toolName = name; this.args = args;
+    const base = resolvePublicFileToolDefinition(name, undefined, '/project') as ToolRenderers | undefined;
+    if (base) this.setFileRenderers(base);
   }
   markExecutionStarted() { this.executionStarted = true; }
   updateResult(result: Tool["result"], partial = false) { this.result = result; this.isPartial = partial; }
   updateArgs(args: Record<string, unknown>) { this.args = args; }
   setExpanded(value: boolean) { this.expanded = value; }
+  getCallRenderer() { return this.callRenderer; }
+  getResultRenderer() { return this.resultRenderer; }
+  setFileRenderers(renderers: ToolRenderers) { this.callRenderer = renderers.renderCall; this.resultRenderer = renderers.renderResult; }
   getRenderContext() { return { cwd: "/project" }; }
   getRenderShell() { return "default"; }
   render(_width: number): string[] { return this.hideComponent ? [] : ["", `NATIVE ${this.toolName}`, "FULL_OUTPUT"]; }
@@ -98,6 +121,7 @@ export function extensionHarness(mode: "tui" | "print" | "json" | "rpc" = "tui",
   const widgets: string[] = [], notices: string[] = [];
   const widgetComponents = new Map<string, { render(width: number): string[] }>();
   const widgetPlacements = new Map<string, unknown>();
+  const toolRendererResolvers: ToolRendererResolver[] = [];
   const api = {
     on: (name: string, handler: (event: unknown, ctx: ExtensionContext) => void) => events.set(name, handler),
     registerCommand: (name: string, command: { handler(args: string, ctx: ExtensionContext): Promise<void> }) => commands.set(name, command),
@@ -105,6 +129,7 @@ export function extensionHarness(mode: "tui" | "print" | "json" | "rpc" = "tui",
     getFlag: (name: string) => flagValues[name],
     getSettings: () => ({}),
     getThinkingLevel: () => "off",
+    registerToolRenderer: (resolver: ToolRendererResolver) => toolRendererResolvers.push(resolver),
   } as unknown as ExtensionAPI;
   const ctx = { mode, hasUI: mode === 'tui', isIdle: () => true,
     sessionManager: { getSessionId: () => 'sdk-contract-session' }, ui: {
@@ -119,7 +144,7 @@ export function extensionHarness(mode: "tui" | "print" | "json" | "rpc" = "tui",
   } } as unknown as ExtensionContext;
   tidyUi(api, { logging: false, terminalDefaults: {}, localPreferences: { appearanceEnabled: true, loggingEnabled: true },
     settings: fixtureSyntaxOptions().settings, syntax: fixtureSyntaxOptions });
-  return { root, ctx, events, commands, flags, widgets, notices, widgetComponents, widgetPlacements };
+  return { root, ctx, events, commands, flags, widgets, notices, widgetComponents, widgetPlacements, toolRendererResolvers };
 }
 
 export function bashTool(command = "echo hello") {

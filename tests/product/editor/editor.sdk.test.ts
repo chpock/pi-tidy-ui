@@ -458,7 +458,7 @@ test("editor status native clock stays in its container across animation off/on 
     host.clearStatusIndicator(); frame("regular", 100);
     assert.match(controller.renderEditorStatus(100, info).map(editorPlain).join("\n"), / • Idle/u);
     assert.equal(clears.mock.calls.length, 1);
-  } finally { controller.restore(); }
+  } finally { controller.restore(); host.clearStatusIndicator(); }
 });
 
 test("editor status public widget reads fresh session metadata and is removed on shutdown", async () => {
@@ -468,7 +468,7 @@ test("editor status public widget reads fresh session metadata and is removed on
   for (const child of h.root.children) slots[0]!.addChild(child);
   h.root.clear(); for (const slot of slots) h.root.addChild(slot);
   const host = Object.assign(Object.create(InteractiveMode.prototype), { ui: h.root, editor, defaultEditor: editor,
-    editorContainer: slots[4], statusContainer: slots[2], idleStatus: new IdleStatus(), options: { tuiMode: "regular" } });
+    editorContainer: slots[4], statusContainer: slots[2], idleStatus: new IdleStatus(), extensionDialogs: [], options: { tuiMode: "regular" } });
   Object.assign(h.ctx.ui, { setEditorComponent: (factory: unknown) => host.setCustomEditorComponent(factory),
     getEditorComponent: () => host.editorComponentFactory });
   const first = Object.assign(h.ctx, { model: { name: "First Name", provider: "literal-provider-id" }, thinkingLevel: "high" });
@@ -631,7 +631,7 @@ function editorWidgetSetup() {
   const above = new Container(), input = new Container(), below = new Container(), footer = new Container();
   input.addChild(editor);
   const host = Object.assign(Object.create(InteractiveMode.prototype), {
-    ui: root, widgetContainerAbove: above, widgetContainerBelow: below,
+    ui: root, widgetContainerAbove: above, widgetContainerBelow: below, extensionDialogs: [],
     extensionWidgetsAbove: new Map(), extensionWidgetsBelow: new Map(),
   });
   host.renderWidgets();

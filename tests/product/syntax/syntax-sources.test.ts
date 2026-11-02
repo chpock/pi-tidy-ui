@@ -1,7 +1,7 @@
 import '../../fixtures/test-guard.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { prepareFileCard } from '../../../src/file-card.ts';
+import { filePreviewText, prepareFileCard } from '../../../src/file-card.ts';
 import { fileCardFixture as renderFileCard, bashCardFixture as renderBashCard } from '../../fixtures/prepared-card.ts';
 import { bashCommandSource } from '../../../src/bash-card.ts';
 import { stripVTControlCharacters } from 'node:util';
@@ -17,6 +17,10 @@ function write(content: string, details?: Record<string, unknown>) {
 
 // Preparation is called explicitly outside rendering. It does not acquire a
 // provider, open files, emit ANSI, expand parser tabs or project visible context.
+test('bounded preview normalizes CRLF and CR-only rows before terminal-control cleaning', () => {
+  assert.deepEqual(filePreviewText('one\r\ntwo\rthree\r'), { text: 'one\ntwo\nthree', omitted: false });
+});
+
 test('file preparation keeps parser tabs and exact normalized endings separate from display cells', () => {
   const node = write('\tconst 名 = 1;\r\n\t\tvalue();\r');
   const saved = JSON.stringify(node), plan = prepareFileCard(node)!;
@@ -89,6 +93,57 @@ test('Created and Replaced use saved diff; Wrote and explicitly truncated diff u
   assert.equal(truncated.sources[0]!.text, '\twhole\ntext\n');
   assert.equal(truncated.view.note, 'Diff truncated by tool; showing supplied content.');
   assert.equal(prepareFileCard(write('same', { noOp: true }))!.view.note, 'No changes.');
+});
+
+test('bounded saved previews count data overflow, validate genuine EOF and preserve selected diff surfaces', () => {
+  const preview = (node: Parameters<typeof prepareFileCard>[0]) => prepareFileCard(node, false, 'preview');
+  for (const count of [10, 11, 12]) {
+    const context = Array.from({ length: count }, (_, index) => ` context_${index + 1}`).join('\n');
+    const patch = `--- a/sample.ts\n+++ b/sample.ts\n@@ -1,${count} +1,${count} @@\n${context}`;
+    const card = preview({ ...edit('ignored'), result: { details: { patch } } })!;
+    assert.equal(card.view.preview, true);
+    assert.equal(card.view.omitted, true, `${count} hidden data rows remain explicitly omitted despite file/hunk headers`);
+    assert.equal(card.view.mode, 'diff');
+    assert.ok(card.view.lines.length <= 10);
+  }
+
+  const multipleHunks = ['--- a/sample.ts', '+++ b/sample.ts', '@@ -1,2 +1,2 @@', ' keep_a', ' keep_b',
+    '@@ -10,12 +10,12 @@', ...Array.from({ length: 12 }, (_, i) => ` keep_${i + 1}`)].join('\n');
+  const multi = preview({ ...edit('ignored'), result: { details: { patch: multipleHunks } } })!;
+  assert.equal(multi.view.omitted, true, 'multiple valid hunks preserve an explicit data-row overflow witness');
+  assert.equal(multi.view.mode, 'diff');
+
+  const carriageRows = preview(write('first carriage row\rsecond carriage row'))!;
+  assert.deepEqual(carriageRows.view.lines.map(line => line.kind === 'gap' ? '' : line.logical), ['first carriage row', 'second carriage row'],
+    'CR and CRLF normalization happens inside the bounded prefix before display cleaning can remove control characters');
+
+  const malformedEof = preview({ ...edit('ignored'), result: { details: { patch: '@@ -1,2 +1,2 @@\n only_one_row' } } });
+  assert.equal(malformedEof, undefined, 'a short fully inspected malformed hunk is not accepted as an artificial prefix');
+  const cutHunk = preview({ ...edit('ignored'), result: { details: { patch:
+    `@@ -1,12 +1,12 @@\n${Array.from({ length: 12 }, (_, i) => ` context_${i + 1}`).join('\n')}` } } })!;
+  assert.equal(cutHunk.view.omitted, true);
+  assert.equal(cutHunk.view.lines.length, 9, 'only complete selected data rows are retained');
+
+  const savedContext = Array.from({ length: 10 }, (_, i) => ` context_${i + 1}`).join('\n');
+  const sourceWinsOnlyWhenMetadataIsAbsent = preview({ ...write('UNRELATED_ARGUMENT_SOURCE'), result: { details: {
+    diff: `@@ -1,12 +1,12 @@\n${savedContext}\n-old_later\n+new_later` } } })!;
+  assert.equal(sourceWinsOnlyWhenMetadataIsAbsent.view.mode, 'diff');
+  assert.equal(sourceWinsOnlyWhenMetadataIsAbsent.view.label, 'Write');
+  assert.doesNotMatch(sourceWinsOnlyWhenMetadataIsAbsent.view.lines.map(line => line.kind === 'gap' ? '' : line.logical).join('\n'), /UNRELATED_ARGUMENT_SOURCE/u);
+  const added = preview({ ...write('UNRELATED_ARGUMENT_SOURCE'), result: { details: { patch:
+    '@@ -1,1 +1,2 @@\n context\n+added_source' } } })!;
+  assert.equal(added.view.mode, 'diff', 'a prefix containing only context/additions is not whole-patch Created classification');
+  assert.deepEqual(added.view.lines.map(line => line.kind), [' ', '+']);
+  assert.equal(preview({ ...write('source'), result: { details: { patch: 7 } } }), undefined, 'unsupported selected metadata stays native');
+
+  const unicode = '名\t👩‍👩‍👧‍👦';
+  const crlf = prepareFileCard(write(`${Array.from({ length: 9 }, (_, i) => `line_${i}`).join('\r\n')}\r\n\x1b[31m${unicode}\x1b[0m\r\nHIDDEN`), true, 'preview')!;
+  assert.equal(crlf.view.lines.length, 10);
+  assert.equal(crlf.view.lines[9]!.kind === 'gap' ? '' : crlf.view.lines[9]!.text, unicode, 'CRLF, tabs, graphemes and terminal-control cleaning survive the exact row cut');
+  assert.equal(crlf.view.omitted, true);
+  const longFirstLine = preview({ ...write('x'.repeat(8193) + '\nVISIBLE_SUFFIX') })!;
+  assert.deepEqual(longFirstLine.view.lines, [], 'a single over-window row is omitted whole rather than sliced into a false code row');
+  assert.equal(longFirstLine.view.omitted, true);
 });
 
 test('unsupported metadata, incomplete/failed write and failed edit never create parser sources', () => {

@@ -30,12 +30,24 @@ function paletteInputObservation(consumer, state) {
   return { kind: 'revision', current, matches: Number.isSafeInteger(current) && state.preparedPalette === current };
 }
 
+function sourceMatches(consumer, state) {
+  const identityBased = Reflect.has(consumer, 'currentPalette') || Reflect.has(consumer, 'inputIdentity');
+  if (identityBased) {
+    if (typeof state.processed !== 'string') return false;
+    const input = state.input;
+    if (!input || (input.kind !== 'file' && input.kind !== 'bash')) return false;
+    const view = input.kind === 'file' ? input.viewMode ?? 'full' : 'bash';
+    return state.processed === `${state.sourceRevision}:${view}`;
+  }
+  return Number.isSafeInteger(state.processed) && state.processed === state.sourceRevision;
+}
+
 export function preparedCardReady(consumer, owner, palettePrefix) {
   const states = Reflect.get(consumer, 'states');
   assert.ok(states instanceof WeakMap, 'benchmark prepared-source observation contract');
   const state = states.get(owner);
   if (!state?.display || !state.paint || state.display.revision !== state.revision
-    || state.processed !== state.sourceRevision || state.preparedTheme !== Reflect.get(consumer, 'themeRevision')) return false;
+    || !sourceMatches(consumer, state) || state.preparedTheme !== Reflect.get(consumer, 'themeRevision')) return false;
   if (!paletteInputObservation(consumer, state).matches) return false;
   const client = Reflect.get(consumer, 'client'), sources = client.sources, wanted = new Map();
   for (const [key, slot] of state.slots) {

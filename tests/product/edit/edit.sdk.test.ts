@@ -6,27 +6,29 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import xterm from "@xterm/headless";
-import { visibleWidth, parseColor, colorToRgb, rgbColor, colorToOklch } from "@earendil-works/pi-tui";
-import { ToolExecutionComponent as NativeToolExecution, createEditToolDefinition, highlightCode, getLanguageFromPath } from "@earendil-works/pi-coding-agent";
+import { visibleWidth, parseColor, colorToRgb, rgbColor, colorToOklch, Container } from "@earendil-works/pi-tui";
+import { ToolExecutionComponent as NativeToolExecution, createEditToolDefinition, highlightCode, getLanguageFromPath, type ToolRenderers } from "@earendil-works/pi-coding-agent";
 import { fileCardFixture as renderFileCard } from "../../fixtures/prepared-card.ts";
 import type { PiInputTheme } from "../../../src/syntax/pi-input.ts";
 import { CardSources } from "../../../src/syntax/cards.ts";
 import { samplePiCardPalette } from "../../../src/syntax/pi-palette.ts";
 import { compileStyleAnsi } from "../../../src/syntax/style-ansi.ts";
 import { cardGeometry } from "../../../src/card-frame.ts";
-import { measureFileCard } from "../../../src/file-card.ts";
+import { measureFileCard, prepareFileCard } from "../../../src/file-card.ts";
 import { generateDiffString, generateUnifiedPatch } from "../../../node_modules/@earendil-works/pi-coding-agent/dist/core/tools/edit-diff.js";
 import type { CardTheme } from "../../../src/card-theme.ts";
 import { Theme, initTheme, loadThemeFromPath, setThemeInstance, theme as nativeTheme } from "../../../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js";
 import { Root, Text, Tool, color, editDiff, installTidyUi, mouse, plain, setup, spinnerFrames, type TuiMouseEvent } from "../../fixtures/sdk-contract-support.ts";
+import { createLazyNativeRendererResolver } from "../../../src/syntax/lazy-native-renderers.ts";
 
 initTheme('dark', false);
 
 test("edit cards reproduce OpenCode numbered unified/split diff and cache warm frames", () => {
   const edit = new Tool("edit", { path: "src/example.ts", oldText: "PROPOSAL_OLD", newText: "PROPOSAL_NEW" });
   edit.updateResult({ content: [{ type: "text", text: "RESULT_BODY" }], details: { diff: editDiff } }, edit.isPartial);
+  edit.setExpanded(true);
   const snapshot = structuredClone({ args: edit.args, result: edit.result });
-  const { root, controller, original } = setup([edit, new Tool()]);
+  const { root, controller } = setup([edit, new Tool()]);
   try {
     const rows = edit.render(120).map(plain);
     assert.ok(rows.some((row) => row.includes("← Edited src/example.ts")));
@@ -43,7 +45,7 @@ test("edit cards reproduce OpenCode numbered unified/split diff and cache warm f
     assert.equal(root.render(121).filter((row) => row === "").length, 1, "one separator after a diff card");
     for (let width = 0; width < 30; width++) assert.ok(edit.render(width).every((row) => visibleWidth(row) <= width));
     assert.deepEqual({ args: edit.args, result: edit.result }, snapshot);
-    edit.setExpanded(true); assert.deepEqual(edit.render(80), original.call(edit, 80));
+    assert.ok(edit.render(80).map(plain).some(row => row.includes("← Edited src/example.ts")), "Ctrl+O keeps the full file card in the owned renderer");
   } finally { controller.restore(); }
 });
 
@@ -68,11 +70,31 @@ test("one-sided edits use full-width unified rows for numbered and unified metad
   }
 });
 
+test("edit preview bounds prepared diff rows and keeps unsupported prefixes generic", () => {
+  const diff = Array.from({ length: 20 }, (_, i) => i === 9 ? "+10 new_10" : ` ${i + 1} old_${i + 1}`).join("\n");
+  const node = { toolName: "edit", args: { path: "example.txt" }, isPartial: false,
+    result: { details: { diff } } };
+  const preview = prepareFileCard(node, true, "preview")!;
+  assert.equal(preview.view.label, "Edit");
+  assert.equal(preview.view.preview, true);
+  assert.equal(preview.view.omitted, true);
+  assert.equal(preview.view.lines.length, 10);
+  assert.ok(preview.view.lines.some(line => line.kind !== "gap" && line.logical.includes("new_10")));
+  assert.ok(preview.view.lines.every(line => line.kind === "gap" || !line.logical.includes("old_20")));
+  const full = prepareFileCard(node, true, "full")!;
+  assert.equal(full.view.label, "Edited");
+  assert.ok(full.view.lines.some(line => line.kind !== "gap" && line.logical.includes("old_20")));
+
+  const unsupported = prepareFileCard({ ...node, result: { details: { patch: "not a unified patch\nUNAVAILABLE_SUFFIX" } } }, true, "preview");
+  assert.equal(unsupported, undefined, "unsupported saved metadata does not produce prepared preview rows; the host owns its bounded placeholder");
+});
+
 test("one-sided mode is selected globally across hunks and invalidated on metadata updates", () => {
   const tool = new Tool("edit", { path: "one-sided.ts" });
   const onlyAdds = "@@ -1,1 +1,2 @@\n const anchor = 1;\n+const a = 2;\n@@ -10,1 +11,2 @@\n const other = 10;\n+const b = 11;\n";
   const mixed = "@@ -1,1 +1,0 @@\n-const removed = 1;\n@@ -8,0 +8,1 @@\n+const inserted = 8;\n";
   tool.updateResult({ content: [], details: { patch: onlyAdds } }, tool.isPartial);
+  tool.setExpanded(true);
   const { controller } = setup([tool]);
   try {
     for (const patch of [onlyAdds, mixed, onlyAdds]) {
@@ -93,6 +115,7 @@ test("successful edit framed and metadata-free headings share the Bash descripti
   const bash = new Tool("bash", { command: "true", description: "Heading" });
   const edit = new Tool("edit", { path: "example.ts" });
   edit.updateResult({ content: [], details: { diff: editDiff } }, edit.isPartial);
+  edit.setExpanded(true);
   const { controller } = setup([bash, edit]);
   try {
     for (const width of [24, 80, 120, 141]) {
@@ -205,7 +228,9 @@ test("edit compact pending/error states, metadata updates, native/compact overri
     edit.updateResult({ content: [{ type: "text", text: "FAILURE_BODY" }], isError: true, details: { diff: editDiff } });
     assert.doesNotMatch(edit.render(80).map(plain).join(""), /const before|FAILURE_BODY/);
     assert.equal(edit.handleMouse(mouse(0))?.handled, true);
-    assert.equal(edit.expanded, true);
+    const details = edit.render(80).map(plain).join("");
+    assert.match(details, /FAILURE_BODY/, "the failed-summary click shows our bounded available details");
+    assert.doesNotMatch(details, /FULL_OUTPUT/);
     edit.setExpanded(false);
     edit.updateResult({ content: [], details: { diff: editDiff } });
     assert.match(edit.render(80).map(plain).join(""), /┃/);
@@ -398,9 +423,11 @@ test("edit adapter chooses syntax from the file type for TypeScript, Python, JSO
   const output = new xterm.Terminal({ cols: 100, rows: 20, allowProposedApi: true });
   const reference = new xterm.Terminal({ cols: 100, rows: 20, allowProposedApi: true });
   let checked = 0;
+  const resolveRenderers = createLazyNativeRendererResolver();
   try {
     for (const sample of samples) {
       const node = new Tool("edit", { path: sample.path });
+      node.setFileRenderers(resolveRenderers("edit", () => createEditToolDefinition("/project") as unknown as ToolRenderers)! ); node.setExpanded(true);
       node.updateResult({ content: [], details: { diff: sample.code.split("\n").map((line, index) => `+${index + 1} ${line}`).join("\n") } }, node.isPartial);
       const root = new Root(); root.addChild(node);
       const controller = installTidyUi(root, () => nativeTheme);
@@ -446,13 +473,16 @@ test("completed edit cards expand from panel cells but never margins, selection 
     assert.equal(edit.handleMouse(event(3, 1)), undefined);
     root.selection = false;
     edit.updateResult(edit.result, true);
+    root.render(width);
     assert.equal(edit.handleMouse(event(3, 1)), undefined);
     edit.updateResult(edit.result, false);
     for (const [x, y] of [[1, 0], [3, 1], [width - 2, count - 1]]) {
       assert.equal(edit.handleMouse(event(x!, y!))?.handled, true, "border, content and padding use the shared panel hit bounds");
-      assert.equal(edit.expanded, true);
-      assert.deepEqual(edit.render(width), original.call(edit, width));
-      edit.setExpanded(false);
+      const full = edit.render(width).map(plain).join("");
+      assert.match(full, /← Edited example\.ts/, "the cell click expands the owned full card");
+      assert.doesNotMatch(full, /FULL_OUTPUT/);
+      assert.equal(edit.handleMouse(event(3, 1))?.handled, true, "the full card collapses back to its preview");
+      assert.match(edit.render(width).map(plain).join(""), /← Edit example\.ts/);
     }
   } finally { controller.restore(); }
 });
@@ -566,6 +596,7 @@ test("edit adaptive colors are calculated once per build, not once per fragment"
 test("edit predecessor spacing never builds an unretained diff body", () => {
   const edit = new Tool("edit", { path: "example.ts" }), following = new Tool();
   edit.updateResult({ content: [], details: { diff: editDiff } }, edit.isPartial);
+  edit.setExpanded(true);
   const { root, controller } = setup([edit, following]);
   try {
     following.render(80);
@@ -600,11 +631,13 @@ test("ignored edit mouse events do not build an unretained diff", () => {
 test("failed edits skip stale diff parsing and syntax work", t => {
   const tool = new Tool('edit', { path: 'example.ts' });
   tool.updateResult({ content: [], details: { diff: '-1 old\n+1 next' } }, false);
+  tool.setExpanded(true);
   const updates = t.mock.method(CardSources.prototype, 'updateDisplay');
   const prepare = t.mock.method(CardSources.prototype, 'prepare');
   const { controller } = setup([tool]);
   try {
     assert.match(tool.render(80).map(plain).join(''), /← Edited/);
+    tool.setExpanded(false);
     const before = [updates.mock.calls.length, prepare.mock.calls.length];
     assert.ok(before[0]! > 0, 'positive control: successful edit prepares a card');
     const details = { get patch(): string { return assert.fail('failed edit read stale patch'); }, get diff(): string { return assert.fail('failed edit read stale diff'); } };
@@ -648,15 +681,21 @@ test("metadata-only edit measurement preserves render classification and separat
 test("edit spacing and rejected events keep native delegation for malformed metadata", () => {
   const edit = new Tool("edit", { path: "example.ts" }), next = new Tool();
   edit.updateResult({ content: [], details: { patch: "@@ -1 +1 @@\n-old\n" } }, edit.isPartial);
-  const { controller, original } = setup([edit, next]);
+  edit.setExpanded(true);
+  const { root, controller } = setup([edit, next]);
   try {
+    const initialRows = root.render(80).map(plain);
+    assert.ok(initialRows.some(row => row.includes("NATIVE edit")) && initialRows.some(row => row.includes(" → read a.txt")), `unsupported full metadata keeps its native renderer and the ordinary read summary: ${JSON.stringify(initialRows)}`);
     assert.equal(next.render(80)[0], "", "native multirow predecessor still owns separation");
     const builds = controller.cacheStats().builds;
     assert.equal(edit.handleMouse({ ...mouse(1), button: "right" }), undefined);
     assert.equal(controller.cacheStats().builds, builds, "ignored native event needs no custom body either");
     assert.equal(edit.handleMouse(mouse(1))?.handled, true, "native primary click remains delegated");
-    assert.equal(edit.expanded, true);
-    assert.deepEqual(edit.render(80), original.call(edit, 80));
+    assert.equal(edit.expanded, false, "native click collapses its unsupported full view");
+    const collapsed = edit.render(80).map(plain).join("");
+    assert.match(collapsed, /No saved file change details are available; expand for full validation/);
+    assert.match(collapsed, /Click to expand/);
+    assert.doesNotMatch(collapsed, /NATIVE edit|FULL_OUTPUT/);
   } finally { controller.restore(); }
 });
 
@@ -682,9 +721,10 @@ test("edit uses ordinary summaries until final success and follows the shared sp
     edit.markExecutionStarted();
     assert.ok(spinnerFrames.includes(plain(edit.render(140)[0]!).trim()[0]!));
     assert.equal(starts.mock.calls.length, 1);
-    const builds = controller.cacheStats().builds;
+    const beforeSpinner = controller.cacheStats();
     t.mock.timers.tick(100); root.render(140);
-    assert.equal(controller.cacheStats().builds, builds, "spinner frames reuse summary layout");
+    const afterSpinner = controller.cacheStats();
+    assert.equal(afterSpinner.builds, beforeSpinner.builds, "spinner frames reuse summary layout: " + JSON.stringify({ before: beforeSpinner.byKind, after: afterSpinner.byKind }));
     const proposed = { get patch(): string { return assert.fail("partial/failure custom presentation must not inspect proposed diff"); } };
     edit.updateResult({ content: [{ type: "text", text: "PARTIAL_BODY" }], details: proposed, isError: true }, true);
     const partial = edit.render(140).map(plain).join("");
@@ -693,18 +733,22 @@ test("edit uses ordinary summaries until final success and follows the shared sp
     assert.equal(stops.mock.calls.length, 0, "partial errors remain running, not final failures");
     edit.updateResult({ content: [], details: { diff: editDiff } });
     assert.equal(stops.mock.calls.length, 1, "final success stops the summary spinner before painting its card");
+    edit.setExpanded(true);
     assert.match(edit.render(140).map(plain).join(""), /┃.*← Edited example.ts/);
     assert.match(edit.render(140).map(plain).join(""), /const after = 3/);
     const idleRequests = root.requests;
     t.mock.timers.tick(300);
     assert.equal(root.requests, idleRequests, "success leaves no idle animation redraws");
+    edit.setExpanded(false);
     edit.updateResult({ content: [{ type: "text", text: "FAILURE_BODY" }], isError: true, details: proposed });
     const failure = edit.render(140).map(plain).join("");
     assert.match(failure, /← edit example.ts/); assert.doesNotMatch(failure, /┃|← Edited|FAILURE_BODY|const after/);
     assert.equal(starts.mock.calls.length, 2, "the acknowledged fallback has rearmed once, with no clock for final failure");
     const offset = edit.render(140)[0] === "" ? 1 : 0;
     assert.equal(edit.handleMouse(mouse(offset, 140))?.handled, true);
-    assert.deepEqual(edit.render(140), original.call(edit, 140), "failed summary opens unchanged native details");
+    const details = edit.render(140).map(plain).join("");
+    assert.match(details, /FAILURE_BODY/, "the failed-summary click reveals our available bounded error text");
+    assert.doesNotMatch(details, /FULL_OUTPUT/);
   } finally { controller.restore(); }
 });
 
@@ -733,10 +777,15 @@ test("edit final failures color every ordinary-summary segment and preserve stat
   }
   for (const partial of [true, false]) {
     const hidden = new SelfEdit("edit", { path: "example.ts" });
+    hidden.setFileRenderers({ renderCall: () => new Container(), renderResult: () => new Container() });
     hidden.updateResult({ content: [], isError: true }, hidden.isPartial); hidden.updateResult(hidden.result, partial);
     const { controller } = setup([hidden]);
-    try { assert.deepEqual(hidden.render(80), []); assert.match(hidden.render(24).map(plain).join(""), /edit example.ts/); }
-    finally { controller.restore(); }
+    try {
+      assert.deepEqual(hidden.render(80), [], 'the self-shell remains hidden at widths where its native render is empty');
+      const visible = hidden.render(24).map(plain).join('\n');
+      assert.match(visible, /edit example\.ts/);
+      assert.doesNotMatch(visible, /NATIVE SELF/, 'a visible compatible foreign file call keeps the legacy custom presentation');
+    } finally { controller.restore(); }
   }
 });
 
@@ -760,6 +809,9 @@ test("edit state policy keeps native safeguards and explicit compact override pr
         if (guard === "compact") {
           assert.match(edit.render(140).map(plain).join(""), /← edit example.ts/);
           assert.doesNotMatch(edit.render(140).map(plain).join(""), /┃|← Edited/);
+        } else if (guard === "expanded") {
+          const rows = edit.render(140).map(plain).join("");
+          assert.doesNotMatch(rows, /FULL_OUTPUT|NATIVE edit/, "Ctrl+O stays in the owned file detail renderer");
         } else assert.deepEqual(edit.render(140), original.call(edit, 140), `${guard} delegates in every edit phase`);
       } finally { controller.restore(); }
     }
@@ -770,8 +822,10 @@ test("verified stock edit presentation never visits native rows for rendering, s
   initTheme("dark");
   const root = new Root();
   const definition = createEditToolDefinition("/project");
-  const first = new NativeToolExecution("edit", "visibility-first", { path: "example.ts" }, undefined, definition, root as never, "/project");
-  const second = new NativeToolExecution("edit", "visibility-second", { path: "other.ts" }, undefined, definition, root as never, "/project");
+  const resolveRenderers = createLazyNativeRendererResolver();
+  const deferred = resolveRenderers("edit", () => definition as unknown as ToolRenderers)!;
+  const first = new NativeToolExecution("edit", "visibility-first", { path: "example.ts" }, undefined, deferred, root as never, "/project");
+  const second = new NativeToolExecution("edit", "visibility-second", { path: "other.ts" }, undefined, deferred, root as never, "/project");
   const follower = new Tool("read", { path: "a.txt" });
   root.addChild(first); root.addChild(second); root.addChild(follower);
   const native = t.mock.method(NativeToolExecution.prototype, "render");
@@ -782,6 +836,7 @@ test("verified stock edit presentation never visits native rows for rendering, s
       if (phase === "execution") first.markExecutionStarted();
       first.updateResult(phase === "arguments" || phase === "execution" ? undefined as never : { ...success, isError: phase === "failure" }, phase === "arguments" || phase === "execution" || phase === "partial");
       second.updateResult(success);
+      first.setExpanded(phase === "success");
       const rows = root.render(140).map(plain);
       assert.match(rows.join(""), phase === "success" ? /← Edited example.ts/ : /edit example.ts/);
       const builds = controller.cacheStats().builds;
@@ -802,8 +857,10 @@ test("verified stock edit presentation never visits native rows for rendering, s
     Reflect.set(first, "hideComponent", false);
     first.setExpanded(true);
     const before = native.mock.calls.length;
-    first.render(140);
-    assert.ok(native.mock.calls.length > before, "native expansion remains native");
+    const expanded = first.render(140).map(plain).join("");
+    assert.match(expanded, /← Edited example\.ts/);
+    assert.doesNotMatch(expanded, /FULL_OUTPUT/);
+    assert.equal(native.mock.calls.length, before, "Ctrl+O keeps the supported full edit card on the owned path");
   } finally { controller.restore(); }
 });
 
@@ -812,6 +869,7 @@ test("stock edit visibility proof rejects same-name custom renderers and is chec
   const root = new Root(), definition = createEditToolDefinition("/project");
   const emptyCall = () => new Text("", 0, 0);
   const emptyResult = () => new Text("", 0, 0);
+  const deferred = createLazyNativeRendererResolver()("edit", () => definition as unknown as ToolRenderers)!;
   const custom: typeof definition = { ...definition, renderCall: emptyCall, renderResult: emptyResult };
   const node = new NativeToolExecution("edit", "custom-visibility", { path: "example.ts" }, undefined, custom, root as never, "/project");
   root.addChild(node);
@@ -822,17 +880,18 @@ test("stock edit visibility proof rejects same-name custom renderers and is chec
     assert.equal(Reflect.get(node, "hideComponent"), false);
     assert.deepEqual(node.render(140), []);
     assert.ok(native.mock.calls.length > 0, "an edit name is not evidence of stock visibility");
-    custom.renderCall = definition.renderCall!; custom.renderResult = definition.renderResult!;
-    node.updateArgs({ path: "example.ts" });
+    custom.renderCall = deferred.renderCall as typeof definition.renderCall; custom.renderResult = deferred.renderResult as typeof definition.renderResult;
+    // Renderer replacement needs invalidation; Pi may defer streamed argument updates until render.
+    node.invalidate();
     const before = native.mock.calls.length;
     assert.match(node.render(140).map(plain).join(""), /← edit example.ts/);
     assert.equal(native.mock.calls.length, before, "the stock pair skips visibility without a retained proof cache");
     custom.renderCall = emptyCall;
-    node.updateArgs({ path: "example.ts" });
+    node.invalidate();
     node.render(140);
     assert.ok(native.mock.calls.length > before, "replacing just one renderer immediately restores native authority");
-    custom.renderCall = definition.renderCall!; custom.renderResult = emptyResult;
-    node.updateArgs({ path: "example.ts" });
+    custom.renderCall = deferred.renderCall as typeof definition.renderCall; custom.renderResult = emptyResult;
+    node.invalidate();
     const mixed = native.mock.calls.length;
     node.render(140);
     assert.ok(native.mock.calls.length > mixed, "both functions must match, not merely the call renderer");

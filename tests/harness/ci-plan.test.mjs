@@ -1,6 +1,7 @@
 import '../fixtures/test-guard.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { buildCIPlan, validateCIResults, MINIMUM_PI, NODE_VERSIONS, CLI_SHARDS } from '../../scripts/test/ci-plan.mjs';
 import { candidateTargets, enabledTargets, platforms } from '../../scripts/release/platforms.mjs';
 import { readInputs } from '../../scripts/test/context.mjs';
@@ -18,7 +19,7 @@ const cliProfiles = profiles => profiles.flatMap(profile => Array.from({length:C
 const branches = ['nativeHost','nativeRemaining','nativeHostConsumers','sdk','cli','delivery','daemonRegressions','publishedConsumer','preparedPack','daemonRelease','daemonNpm'];
 
 test('fixed main push, PR and manual events have the same approved obligations and exact source authority', async () => {
-  assert.equal(MINIMUM_PI,'1.0.0');
+  assert.equal(MINIMUM_PI,'1.0.1');
   assert.deepEqual(NODE_VERSIONS,['22.19.0','26.7.0']);
   assert.equal(CLI_SHARDS,4);
   const baseline = await plan();
@@ -51,6 +52,25 @@ test('fixed main push, PR and manual events have the same approved obligations a
     assert.equal(validateCIResults(result,success(result)),true);
   }
   assert.deepEqual(JSON.parse(JSON.stringify(baseline)),baseline,'plan is a complete serializable Actions output');
+});
+
+test('minimum Pi is enforced by the extension peers, dev graph and root lock', () => {
+  const manifest = JSON.parse(readFileSync(new URL('../../package.json', import.meta.url), 'utf8'));
+  const lock = JSON.parse(readFileSync(new URL('../../package-lock.json', import.meta.url), 'utf8'));
+  for (const name of ['@earendil-works/pi-coding-agent', '@earendil-works/pi-tui']) {
+    assert.equal(manifest.peerDependencies[name], '>=1.0.1');
+    assert.equal(manifest.devDependencies[name], MINIMUM_PI);
+    assert.equal(lock.packages[`node_modules/${name}`].version, MINIMUM_PI);
+  }
+});
+
+test('minimum Pi rejects older stable and its own prereleases without rejecting a later prerelease', async () => {
+  for (const version of ['1.0.0', '1.0.0-alpha', '1.0.1-alpha']) {
+    await assert.rejects(plan({ fetchLatest:async () => response(version) }), /below minimum 1\.0\.1/);
+  }
+  const later = await plan({ fetchLatest:async () => response('1.0.2-alpha') });
+  assert.equal(later.piSelection.latest, '1.0.2-alpha');
+  assert.deepEqual(later.profiles, productProfiles(['1.0.1', '1.0.2-alpha']));
 });
 
 test('latest is acquired once with bounded no-redirect fetch and shared exact SDK/CLI pins', async t => {
@@ -246,7 +266,7 @@ test('invalid or unavailable latest metadata fails without fallback, retry or mi
     async () => new Response('not-json'),
     async () => { throw new Error('transport unavailable'); },
   ]) await assert.rejects(plan({fetchLatest}));
-  for (const version of ['1.0.1-alpha.0','1.1.0-rc.1','2.0.0','99999999999999999999.0.0']) {
+  for (const version of ['1.0.2-alpha.0','1.1.0-rc.1','2.0.0','99999999999999999999.0.0']) {
     assert.equal((await plan({fetchLatest:async () => response(version)})).piSelection.latest,version);
   }
 });

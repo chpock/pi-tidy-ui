@@ -73,7 +73,7 @@ JS
     trap print_diagnostics EXIT
     native_args=()
     if [[ "$SUITE" != published-consumer ]]; then native_args=(--native-artifact "$ARTIFACT"); fi
-    "$NODE" scripts/test/prepare.mjs --pi-version 1.0.0 --offline --archives \
+    "$NODE" scripts/test/prepare.mjs --pi-version 1.0.1 --offline --archives \
       --registry-inputs "$PREPARATION/inputs.json" --npm-cache "$PREPARATION/environment/cache/npm" "${native_args[@]}" --output "$PREPARATION/gnu"
     case "$SUITE" in
       native|native-consumer) "$NODE" scripts/test/run.mjs --inputs "$PREPARATION/gnu/inputs.json" --suite native --files occipital-native.test.ts \

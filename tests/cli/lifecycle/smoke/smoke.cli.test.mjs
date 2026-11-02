@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import test from 'node:test';
 import { PiTerminal, extension, plain, lines, byName, toolLines, assertFits, until } from '../../../fixtures/terminal-harness.mjs';
 import { closeTerminals } from '../../../fixtures/terminal-cleanup.mjs';
-import { compact, semanticColors, simpleBashCards, execution, persisted, compactContent, summaryText } from '../../../fixtures/main-cli-support.mjs';
+import { compact, semanticColors, simpleBashCards, execution, persisted, compactContent, summaryText, sgrAt } from '../../../fixtures/main-cli-support.mjs';
 
 test('real CLI: isolated offline stock control and terminal transport', { timeout: 60000 }, async () => {
   const stock = new PiTerminal('stock-control');
@@ -68,8 +68,12 @@ test('real CLI: pi-tidy-ui policy, input, lifecycle and same-session stock repla
       live.send('\x0f'); await live.settle(); const expanded = await live.capture('expanded');
       assert.ok(expanded.tools.every((tool) => tool.expanded));
       simpleBashCards(expanded);
-      assert.deepEqual(toolLines({ tools: expanded.tools.filter((tool) => tool.name !== 'bash') }),
-        toolLines({ tools: controlExpanded.tools.filter((tool) => tool.name !== 'bash') }));
+      const nonFileTools = tools => tools.filter(tool => !['bash', 'write', 'edit'].includes(tool.name));
+      assert.deepEqual(toolLines({ tools: nonFileTools(expanded.tools) }),
+        toolLines({ tools: nonFileTools(controlExpanded.tools) }), 'Ctrl+O leaves every unrelated native tool on its exact stock rows');
+      for (const name of ['write', 'edit'])
+        assert.deepEqual(byName(expanded, name)[0].lines, byName(collapsed, name)[0].lines,
+          `Ctrl+O selects the complete custom ${name} card without changing saved rows or physical styling`);
       assert.ok(expanded.screen.some((line) => line.includes('READ_A_CONTENT')));
       live.send('\x0f'); await live.settle(); const recollapsed = await live.capture('recollapsed');
       assert.deepEqual(toolLines(recollapsed), toolLines(collapsed)); compact(recollapsed);
@@ -91,6 +95,15 @@ test('real CLI: pi-tidy-ui policy, input, lifecycle and same-session stock repla
       assert.ok(off.screen.some((line) => line.includes('read a.txt')));
       const offRow = off.screen.findIndex((line) => line.includes('read a.txt'));
       assert.notEqual(off.cells[offRow][off.screen[offRow].indexOf('read')].bgMode, 0, 'disabled read is a stock card on screen');
+      live.send('\x0f'); await live.settle(); const offExpanded = await live.capture('disabled-expanded');
+      assert.ok(offExpanded.tools.every(tool => tool.expanded), 'Appearance Off retains Pi Ctrl+O expansion');
+      assert.deepEqual(toolLines({ tools: nonFileTools(offExpanded.tools) }),
+        toolLines({ tools: nonFileTools(controlExpanded.tools) }), 'Appearance Off keeps unrelated native full tools byte-identical');
+      for (const name of ['write', 'edit'])
+        assert.deepEqual(byName(offExpanded, name)[0].lines, byName(controlExpanded, name)[0].lines,
+          `Appearance Off retains byte-identical Pi stock full ${name} rows and styling`);
+      live.send('\x0f'); await live.settle(); const offCollapsed = await live.capture('disabled-recollapsed');
+      assert.deepEqual(toolLines(offCollapsed), toolLines(control), 'Appearance Off collapse returns exact Pi stock compact rows');
       await live.appearance(true); compact(await live.capture('enabled'));
       await live.appearance(true); compact(await live.capture('enabled-twice'));
       const starts = live.events().filter((e) => e.type === 'start').length;
@@ -133,8 +146,28 @@ test('real CLI: pi-tidy-ui policy, input, lifecycle and same-session stock repla
       const nativeReplay = await start('stock-replay', { session, workspace: stock.work });
       const native = await nativeReplay.capture('collapsed');
       await nativeReplay.close();
-      assert.deepEqual(byName(resumed, 'write')[0].lines, byName(beforeReplay, 'write')[0].lines, 'same-session Wrote replay retains the exact input-source card');
+      for (const [name, heading] of [['write', 'Write'], ['edit', 'Edit']]) {
+        const rendered = byName(resumed, name)[0].lines.map(plain).join('\n');
+        assert.match(rendered, new RegExp(`← ${heading} written\\.txt`, 'u'), `${name} restores as the selected bounded preview`);
+        assert.doesNotMatch(rendered, new RegExp(`← ${name === 'write' ? 'Wrote' : 'Edited'} written\\.txt`, 'u'));
+      }
+      assert.ok(byName(resumed, 'write')[0].lines.map(plain).join('\n').includes('WRITE_BEFORE'));
+      assert.ok(byName(resumed, 'edit')[0].lines.map(plain).join('\n').includes('WRITE_AFTER'));
       assert.deepEqual(resumed.tools.map(({ name, content }) => ({ name, content })), beforeReplay.tools.map(({ name, content }) => ({ name, content })));
+      assert.deepEqual(persisted(resumed), persisted(beforeReplay), 'restoring bounded views does not rewrite saved session data');
+      replay.send('\x0f'); await replay.settle();
+      await until(() => ['Wrote written.txt', 'Edited written.txt', 'WRITE_AFTER'].every(text => replay.screen().some(row => row.includes(text))), 'full saved file text after real Ctrl+O');
+      const replayFull = await replay.capture('expanded');
+      assert.ok(replayFull.tools.every(tool => tool.expanded), 'real Ctrl+O still reaches Pi while selecting full file views');
+      for (const name of ['write', 'edit'])
+        assert.deepEqual(byName(replayFull, name)[0].lines, byName(collapsed, name)[0].lines,
+          `explicit expansion restores the complete saved ${name} rows and physical styling rather than comparing with preview`);
+      assert.deepEqual(persisted(replayFull), persisted(beforeReplay));
+      replay.send('\x0f'); await replay.settle();
+      await until(() => ['Write written.txt', 'Edit written.txt'].every(text => replay.screen().some(row => row.includes(text))), 'bounded saved preview after collapsing');
+      const replayCollapsed = await replay.capture('recollapsed');
+      compact(replayCollapsed);
+      assert.match(byName(replayCollapsed, 'write')[0].lines.map(plain).join('\n'), /← Write written\.txt/u);
       await replay.appearance(false); const disabledReplay = await replay.capture('disabled');
       assert.deepEqual(disabledReplay.tools.map((t) => t.lines), native.tools.map((t) => t.lines), 'disable restores exact same-session stock rendering');
       await replay.close();

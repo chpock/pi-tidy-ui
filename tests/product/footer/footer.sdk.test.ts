@@ -326,13 +326,13 @@ async function footerSetup(foreignEditor = false, selectorAtStartup = false) {
   const host = Object.assign(Object.create(InteractiveMode.prototype), { ui: root, footerContainer: footer,
     footer: native, footerDataProvider: data, customFooter: undefined,
     defaultEditor: editor, editor, editorContainer: input, statusContainer: new Container(), keybindings,
-    widgetContainerAbove: above, widgetContainerBelow: below,
+    widgetContainerAbove: above, widgetContainerBelow: below, extensionDialogs: [],
     extensionWidgetsAbove: new Map(), extensionWidgetsBelow: new Map() });
   for (const child of [new Container(), new Container(), host.statusContainer, above, input, below, footer]) root.addChild(child);
   const handlers = new Map<string, Function[]>();
   let command: Function;
   const pi = { on(name: string, fn: Function) { handlers.set(name, [...(handlers.get(name) ?? []), fn]); return () => {}; },
-    registerFlag() {}, getFlag() {}, getThinkingLevel: () => "off", getSettings: () => ({ compaction: { enabled: auto } }),
+    registerFlag() {}, registerToolRenderer() {}, getFlag() {}, getThinkingLevel: () => "off", getSettings: () => ({ compaction: { enabled: auto } }),
     registerCommand(name: string, options: { handler: Function }) { if (name === "tidy-ui") command = options.handler; } };
   const ctx = { mode: "tui", hasUI: true, cwd: "/footer-probe", ui: { ...host.createExtensionUIContext(), notify() {} }, model, sessionManager: manager,
     modelRegistry: { isUsingOAuth: () => { authReads++; return subscription; }, getProvider: () => { authReads++; return { auth: { oauth: { isSubscription: true } } }; } },

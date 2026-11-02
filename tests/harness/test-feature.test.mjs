@@ -12,7 +12,7 @@ import { dependencyIdentity, materializeDependencies, materializeSource, refresh
 import { runFeature } from '../../scripts/test/feature.mjs';
 function temporary(t) { const root=mkdtempSync(join(tmpdir(),'feature-')); t.after(()=>rmSync(root,{recursive:true,force:true})); return root; }
 function sourceFixture(t) {
-  const root=temporary(t), source=join(root,'source'), runRoot=join(root,'runtime'), tree=join(runRoot,'project'), preparation=join(root,'preparation'), original=readInputs();
+  const root=temporary(t), source=join(root,'source'), runRoot=join(root,'runtime'), tree=join(runRoot,'project'), preparation=join(root,'preparation'), original=readInputs(), version=original.pi.version;
   mkdirSync(source); mkdirSync(preparation);
   for(const [name,value] of Object.entries({'package.json':'{"type":"module"}','package-lock.json':'{}','old.ts':'old source'})) writeFileSync(join(source,name),value);
   const env=childEnv(join(root,'environment'),{},original);
@@ -20,9 +20,9 @@ function sourceFixture(t) {
   git('init','-q');git('add','.');git('-c','user.name=Fixture','-c','user.email=fixture@example.invalid','commit','-qm','fixture');
   const identity=sourceIdentity(source,original.tools,env); materializeSource(source,tree,identity.files);
   const coding=join(tree,'node_modules/@earendil-works/pi-coding-agent');mkdirSync(coding,{recursive:true});
-  const manifest=join(coding,'package.json');writeFileSync(manifest,JSON.stringify({name:'@earendil-works/pi-coding-agent',version:'1.0.0',bin:{pi:'cli.js'}}));writeFileSync(join(coding,'cli.js'),'actual sealed bytes');
+  const manifest=join(coding,'package.json');writeFileSync(manifest,JSON.stringify({name:'@earendil-works/pi-coding-agent',version,bin:{pi:'cli.js'}}));writeFileSync(join(coding,'cli.js'),'actual sealed bytes');
   const {files,...record}=identity, lock=join(source,'package-lock.json');
-  const inputs={...original,native:{commit:'a'.repeat(40),nativeTree:'b'.repeat(64)},runRoot,preparation,source:record,pi:{root:tree,version:'1.0.0',cli:join(coding,'cli.js'),lock,lockSha256:digest(readFileSync(lock)),packages:[{name:'@earendil-works/pi-coding-agent',version:'1.0.0',path:manifest,sha256:digest(readFileSync(manifest))}]},
+  const inputs={...original,native:{commit:'a'.repeat(40),nativeTree:'b'.repeat(64)},runRoot,preparation,source:record,pi:{root:tree,version,cli:join(coding,'cli.js'),lock,lockSha256:digest(readFileSync(lock)),packages:[{name:'@earendil-works/pi-coding-agent',version,path:manifest,sha256:digest(readFileSync(manifest))}]},
     install:{manifest:digest(readFileSync(join(source,'package.json'))),lock:digest(readFileSync(lock)),platform:process.platform,arch:process.arch,modules:dependencyIdentity(join(tree,'node_modules'))}};
   const path=join(preparation,'inputs.json');writeFileSync(path,JSON.stringify(inputs));writeFileSync(join(runRoot,'source-files.json'),JSON.stringify(files));
   return {root,source,tree,inputs,path,coding,save:()=>writeFileSync(path,JSON.stringify(inputs))};

@@ -91,6 +91,14 @@ function sourceColors(dump) {
 const body = dump => dump.tools.map(({ name, lines }) => ({ name, lines: lines.map(stripVTControlCharacters)
   .map(row => row.replace(/Took \d+(?:\.\d+)?s/g, 'Took <runtime>s')) }));
 
+function assertRestoredFilePreview(dump) {
+  const cards = body(dump).filter(({ name }) => name === 'write' || name === 'edit');
+  const text = cards.flatMap(({ lines }) => lines).join('\n');
+  assert.match(text, /← Write syntax\.ts/u);
+  assert.match(text, /← Edit syntax\.ts/u);
+  assert.doesNotMatch(text, /← Wrote syntax\.ts|← Edited syntax\.ts/u);
+}
+
 const traffic = terminal => terminal.events().filter(e => ['call', 'result', 'model_context'].includes(e.type));
 
 const persisted = dump => dump.branch.filter(e => e.type === 'message').flatMap(({ message }) => {
@@ -392,4 +400,4 @@ async function savedThemeSession() {
     return { directory, cards, session, bytes: readFileSync(session) };
 }
 
-export { inputs, requiredSharedHost, prepareSyntaxPackage, prepareSyntaxNative, pause, until, stats, work, sourceColors, body, traffic, persisted, finish, settledStats, intermediateStats, captureThenRenderDiagnostics, syntaxReady, scenario, stockReference, previewStats, menuSequence, menuAction, chooseTheme, peerSource, keywordColor, loggingFrame, loggingIdle, loggerWork, loggingPrivacy, themeMarkers, initialThemeStats, retainedNativeThemeStats, themeForegrounds, expectedThemeColors, expressionForeground, savedThemeSession, shebangScenario, shebangContextColors, shebangStringColors };
+export { inputs, requiredSharedHost, prepareSyntaxPackage, prepareSyntaxNative, pause, until, stats, work, sourceColors, body, assertRestoredFilePreview, traffic, persisted, finish, settledStats, intermediateStats, captureThenRenderDiagnostics, syntaxReady, scenario, stockReference, previewStats, menuSequence, menuAction, chooseTheme, peerSource, keywordColor, loggingFrame, loggingIdle, loggerWork, loggingPrivacy, themeMarkers, initialThemeStats, retainedNativeThemeStats, themeForegrounds, expectedThemeColors, expressionForeground, savedThemeSession, shebangScenario, shebangContextColors, shebangStringColors };

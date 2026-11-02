@@ -1,6 +1,6 @@
 # Pi host integration and extension lifecycle
 
-`src/index.ts` is the composition root and the only live-host adapter. It connects Pi's lifecycle, actual component tree and public extension UI to otherwise host-independent presenters, syntax services, preferences and diagnostics. It does not replace tools, execute commands on their behalf or rewrite conversation records.
+`src/index.ts` is the composition root and the only live-host adapter. It connects Pi's lifecycle, actual component tree and public extension UI to otherwise host-independent presenters, syntax services, preferences and diagnostics. It does not replace tools, execute commands on their behalf or rewrite conversation records. The minimum supported host is Pi 1.0.1, whose public tool-renderer resolver is required for file-preview laziness.
 
 Start with the [system overview](architecture.md). This chapter owns attachment, compatibility, publication into a live session and teardown. The [rendering pipeline](rendering.md) owns text/layout work; [editor](editor.md), [footer](footer-spec.md), [terminal defaults](terminal-colors-spec.md) and [syntax providers](syntax/providers.md) specify their narrower state machines.
 
@@ -23,14 +23,15 @@ The settings file persists only the confirmed code theme and terminal/native swi
 
 ## Startup and attachment
 
-1. The factory registers `tidy-ui-card` and `tidy-ui-compact` string flags. Deprecated `tidy-ui-cache-mb` and `tidy-ui-card-cache-mb` are accepted but ignored: live layouts are not subject to those former eviction budgets. Supplying them produces a bounded warning when presentation starts.
-2. It starts one preference-load promise. Loading preferences does not construct the presentation adapter or start a syntax provider. The initial defaults are Follow Pi with terminal matching and native highlighting enabled; failures are reported rather than silently saved over the input file.
-3. `session_start` closes an old popup, increments the lifecycle epoch, aborts old unpublished save work, clears transient Bash-call IDs/name state and waits for preferences if necessary. A later epoch invalidates that continuation.
-4. Logging/health start from the public session identity. Presentation starts only in TUI mode with appearance enabled. Print/JSON/RPC paths do not install terminal presentation or open the menu.
-5. `startColors` establishes the zero-row terminal observer before presentation capture. Its factory binds public terminal start/stop to colors and `ensureSyntax(ctx)`. This can construct the syntax runtime, but construction leaves its client disabled: an observer may exist even if presentation attachment later fails.
-6. A separate zero-row public capture-widget factory obtains the actual live TUI. It is removed immediately: this is a capture mechanism, not an extra visible row. The adapter verifies that the TUI shares the imported `Container` identity, has the required operations and contains compatible component shapes.
-7. The existing tree is visited before future-child observers are installed. A public `Container.addChild` wrapper subsequently visits the entire added subtree, not only its root; restored history can arrive already assembled. Only a successfully installed adapter is passed to `SyntaxRuntime.attach`, which schedules activation outside rendering.
-8. The runtime installs eligible below-editor metadata and footer after adapter installation. A settings-directory subscription is bound to the current epoch.
+1. Before flags, hooks, commands or preference I/O, the factory requires public `registerToolRenderer`; an older host fails immediately with a message naming the 1.0.1 minimum. On supported hosts it registers the exact-stock write/edit lazy resolver before session use.
+2. The factory registers `tidy-ui-card` and `tidy-ui-compact` string flags. Deprecated `tidy-ui-cache-mb` and `tidy-ui-card-cache-mb` are accepted but ignored: live layouts are not subject to those former eviction budgets. Supplying them produces a bounded warning when presentation starts.
+3. It starts one preference-load promise. Loading preferences does not construct the presentation adapter or start a syntax provider. The initial defaults are Follow Pi with terminal matching and native highlighting enabled; failures are reported rather than silently saved over the input file.
+4. `session_start` closes an old popup, increments the lifecycle epoch, aborts old unpublished save work, clears transient Bash-call IDs/name state and waits for preferences if necessary. A later epoch invalidates that continuation.
+5. Logging/health start from the public session identity. Presentation starts only in TUI mode with appearance enabled. Print/JSON/RPC paths do not install terminal presentation or open the menu.
+6. `startColors` establishes the zero-row terminal observer before presentation capture. Its factory binds public terminal start/stop to colors and `ensureSyntax(ctx)`. This can construct the syntax runtime, but construction leaves its client disabled: an observer may exist even if presentation attachment later fails.
+7. A separate zero-row public capture-widget factory obtains the actual live TUI. It is removed immediately: this is a capture mechanism, not an extra visible row. The adapter verifies that the TUI shares the imported `Container` identity, has the required operations and contains compatible component shapes.
+8. The existing tree is visited before future-child observers are installed. A public `Container.addChild` wrapper subsequently visits the entire added subtree, not only its root; restored history can arrive already assembled. Only a successfully installed adapter is passed to `SyntaxRuntime.attach`, which schedules activation outside rendering.
+9. The runtime installs eligible below-editor metadata and footer after adapter installation. A settings-directory subscription is bound to the current epoch.
 
 The terminal-color observer is also a zero-row public widget. It supplies actual terminal write/query functions and binds the terminal instance's public start/stop lifecycle to both colors and syntax. [Terminal-default eligibility](terminal-colors-spec.md#eligibility-and-automatic-themes) includes a narrowly scoped guarded renderer-state read; it is not permission for general private renderer interception.
 
@@ -40,12 +41,15 @@ The stable TUI reference is retained across Pi's regular/fullscreen renderer rep
 
 | Boundary | Adapter observation/projection | Native work retained |
 | --- | --- | --- |
+| Public tool-renderer resolver | Exact stock `write`/`edit` call+result renderer pairs receive lazy leaf proxies; custom, mixed and all other pairs pass through unchanged | Native execution and results; original stock callbacks and their arguments/theme/context when actually painted |
 | Tool prototype | Render, normalized mouse and update notifications (`updateArgs`, `updateResult`, `setArgsComplete`, `setExpanded`, `invalidate`, `markExecutionStarted`) | Original update method, receiver and arguments; actual tool execution and results |
 | User-message prototype | Render plus rebuild/output-padding/invalidation notifications | Native Markdown rendering and original message data |
 | Recognized stock editor | Presentation/border hooks, placement accessor and normalized mouse translation | Same editor instance, keyboard input, paste/cursor/undo/history and autocomplete engine |
 | `Container` add/remove/clear | Tree attachment and owned-resource lifecycle | Native child mutations and ordering |
 | Existing `Container.render`/`Spacer.render` | Call-local document settings/time samples, native widget-height observation and guarded queued-card projection | Native traversal, geometry updates and child ownership |
 | Public footer/widget slots | Owned footer and metadata rows | Later owners, native selectors and native activity indicator lifecycle |
+
+Each lazy proxy is associated with the host renderer's actual weak-keyed `context.state`, not a process-global tool-call ID registry. It delegates rendering, input, mouse and invalidation to the current native component without inheriting Pi's container layout cache. Callback replacement retires superseded proxies and releases their slot inputs; when a successful custom card takes over, the live owner evicts its materialized native child components but retains the current deferred invocation and its input references for a later genuine native fallback. These are separate lifecycle operations even if Pi still holds an older proxy in its mouse layout. Call/result callback or component-render failures use bounded neutral fallback text, report one safe runtime-health issue per slot, and clear that issue after a later successful native generation.
 
 The integration uses **inspected private component shapes**, even though it imports host classes through public package exports. These are compatibility checks, not a promise that arbitrary future Pi implementations or other extensions have the same shape.
 
@@ -63,26 +67,30 @@ Dispatch tests lifecycle and safeguards before it performs expensive preparation
 | --- | --- |
 | Collapsed eligible text-only tool | Compact summary, unless a native-card policy/default applies |
 | Exact Bash with displayable command/directory context | Bash frame, collapsed or expanded |
-| Exact edit, final successful result, valid path | Saved diff frame, heading without metadata, or native fallback for malformed metadata |
-| Exact write, final successful result, valid path | Saved changes or submitted-source card according to metadata; malformed metadata remains native |
-| Incomplete/partial/failed edit or write | Compact lifecycle summary; a partial error is still running, a final error is wholly error-colored |
+| Compatible edit, final successful result, valid path | Selected bounded saved-diff preview or full saved diff; malformed preview metadata shows the owned unavailable row, while unsupported explicitly full metadata uses native rendering |
+| Compatible write, final successful result, valid path | Selected bounded saved-data preview or full write card; malformed preview metadata shows the owned unavailable row, while unsupported explicitly full metadata uses native rendering |
+| Incomplete/partial/failed edit or write | Compact lifecycle summary by default; expanded pending details show a bounded received-source excerpt, while expanded final-error details show all available saved request/error text only after ordinary construction funding and measurement succeed |
 | PowerShell, ordinary expanded tools, images, intentional hiding or explicit opt-out | Native tool path |
 | Compatible ordinary user / native pending queue | User or queued projection, not a synthetic conversation entry |
 | Recognized still-owned stock editor | Editor frame and below-editor rows; separate footer eligibility also applies |
 
 `--tidy-ui-card` adds exact names to native-card policy; using `bash`, `edit` or `write` opts that name out of its custom presenter. `--tidy-ui-compact` wins over that policy, but never over expansion, images or intentional native hiding. The same final-file-success predicate is used by rendering, spacing, mouse and animation teardown, avoiding a frame in one path and a running summary in another.
 
+A stacked host wrapper that does not own a file tool's attached presentation delegates the original mouse event unchanged to its predecessor. It does not render that tool to infer an exterior gap: the attached owner's wrapper applies its own hit-testing and coordinates. This keeps mouse movement from causing hidden render, useful-card or measurement work in another live adapter.
+
 ### Native visibility
 
-A native self-shell renderer can return no rows even with `hideComponent=false`. Unknown, custom, mixed or replaced renderers must therefore execute their original renderer at the actual viewport width when visibility is needed. Names/schemas cannot prove that the component is visible.
+A native self-shell renderer can return no rows even with `hideComponent=false`. The host observer is installed only on the compatible public tool-component shape, but that includes the stock self-shell edit component. A compatible saved write/edit data shape remains eligible for a file card even when its renderer pair is custom, mixed or replaced; those callbacks remain untouched and their original renderer is executed at the actual viewport width when self-shell visibility or native fallback requires it. Names/schemas cannot prove that the component is visible.
 
-The narrow stock-edit shortcut verifies on every visit:
+The narrow stock-edit shortcut verifies on every visit either the original public `createEditToolDefinition` call/result pair plus a current plain `Box` with exact stock methods, or the exact adapter-owned deferred renderer pair plus its adapter-created call component. Function identity alone is insufficient for the unwrapped stock path: the stock tool factory can reuse an earlier custom Box. This shortcut stores no visibility proof and changes no native state. Compatible third-party file renderers remain eligible for the same saved-data presentation, but are not wrapped, retired or cleared; only the exact deferred stock pair receives lazy ownership and its native-work savings. Supported expansion uses the custom full saved-data view; explicit native presentation, image/hidden guards and malformed-data fallback use the existing native renderer.
 
-- the `ToolExecutionComponent` shape and exact `edit` name;
-- the call/result function pair obtained from public `createEditToolDefinition`;
-- a current plain `Box` with exact stock `render`, `clear` and `addChild` methods.
+### Lazy stock write/edit renderers
 
-Function identity alone is insufficient: the stock tool factory can reuse an earlier custom Box. This shortcut stores no visibility proof and changes no native state. Explicit native presentation, expansion, images/hidden guards and malformed fallback still use native rendering.
+The public resolver wraps only the complete stock write or edit renderer pair. A custom, mixed, missing or later-replaced renderer is returned unchanged. This lazy-owner boundary is separate from file-card eligibility: compatible third-party saved data still uses the custom file presenter without claiming callback savings. Resolver selection creates a lightweight component but does not run Pi's syntax highlighting, edit-preview preparation or result formatting. The stock callback receives the current borrowed arguments and its callback-generation theme/context only when Pi actually paints the component on the native path; repeated paints reuse that call/result component. A custom successful-file preview can therefore avoid work that would have been performed solely to construct an invisible native renderer. The wrapper keeps its lazy renderer data in the weak per-component `context.state` association and returns plain-text native fallback content if a stock callback fails.
+
+When a custom file preview takes over, the adapter evicts already-materialized stock child components but preserves the current lazy renderer leaves and their latest invocation inputs. This releases invisible native component trees without requiring `updateDisplay`, while an immediate native fallback can still reconstruct the current call and result. Replacing a renderer or disposing its host owner retires the old leaf and drops its invocation inputs; only a live leaf may rematerialize.
+
+The lazy owner holds one current argument reference shared by call invocation and both slot contexts. After the original host `updateArgs()` returns, the adapter replaces that reference only for the complete deferred stock pair and the matching state/tool/call identity. Invocation recipes exclude the old `context.args` as well as the previous component; callback generations still supply their other context fields, themes, result envelopes and options. This constant-time reference update neither creates an owner nor invokes a renderer, clones arguments, clears native children or forces `updateDisplay()`. It preserves hosts that batch callback replacement until a native frame while releasing obsolete arguments even when custom cards bypass that frame. Native-child eviction remains an actual custom-takeover operation, not a side effect of every argument delta.
 
 ### One document visit
 
@@ -112,9 +120,11 @@ This is neither a grace-period cache nor a timed session handoff. Appearance Off
 | `session_start` | New epoch/save-abort ownership; preference readiness; logging/presentation start; replace settings subscription |
 | Assistant `message_start` | Clear primitive IDs of the current live Bash stream |
 | TUI tool-call start/delta/end `message_update` | Record exact live Bash call IDs, never retain message bodies/history |
-| `session_tree`, `session_compact`, `model_select`, `message_end`, `turn_end` | Update current context and advance footer semantic epoch |
-| `tool_execution_end` | Footer refresh plus eligible Git rediscovery |
-| `agent_end` | Clear live Bash IDs; footer/Git refresh |
+| `turn_start` | Start the current candidate batch for the weak latest-ten automatic full-file window; refresh the footer semantic snapshot |
+| `session_tree`, `session_compact`, `model_select`, `message_end` | Update current context and advance footer semantic epoch |
+| `tool_execution_end` | Refresh footer/Git state; a successful write/edit marks its attached owner as a completed-window candidate |
+| `turn_end` | Filter attached final-success candidates, fold the whole batch into the latest-ten automatic window and demote older automatic views together; an empty/non-file turn leaves it unchanged; refresh the footer semantic snapshot |
+| `agent_end` | Clear live Bash IDs, finalize the file-window batch as a fallback boundary, then refresh footer/Git state |
 | `session_info_changed` | Invalidate saved-name snapshot, request owned footer rendering and notify run-bound logging |
 | `session_shutdown` | Retire epoch/watch/popup and services; restore owned UI as below |
 
@@ -182,4 +192,4 @@ Terminal stop/start is **not shutdown**. It keeps the session and ready represen
 
 ## Compatibility boundary
 
-The minimum supported host is Pi 1.0.0. Positive activation on supported Pi versions is required precisely because fallback alone can hide contract drift. The adapter does not restyle HTML exports or standalone user shell messages, replace native focus/selection/mouse processing, mutate global themes, read tool files to reconstruct results, add model requests or promise compatibility with arbitrary competing hook owners. Native tool update/preflight work remains native and must not be misreported as custom rendering work.
+The minimum supported host is Pi 1.0.1. Positive activation on supported Pi versions is required precisely because fallback alone can hide contract drift. The adapter does not restyle HTML exports or standalone user shell messages, replace native focus/selection/mouse processing, mutate global themes, read tool files to reconstruct results, add model requests or promise compatibility with arbitrary competing hook owners. Pi dispatches SGR mouse input only in fullscreen `TuiAltScreen`; regular TUI mode has no mouse-event dispatch, so pointer-selection guarantees and CLI click controls are fullscreen-only. For an exact deferred stock write/edit pair, a saved-data card does not materialize the stock renderer or run its native file preparation; a genuine TUI native path (appearance off, explicit native override or unsupported full metadata) materializes it and retains Pi's own behavior. Pi's `/export` command is separate: its HTML template renders write/edit directly from full saved call/result data and does not invoke the deferred TUI stock callbacks. The public `createToolHtmlRenderer` API is separately tested when directly supplied renderers. Compatible foreign renderers keep their callbacks and producer state untouched and are still presented from compatible saved data, but they have no zero-native-work guarantee.

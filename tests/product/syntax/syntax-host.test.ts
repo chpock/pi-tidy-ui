@@ -1,26 +1,26 @@
 import '../../fixtures/test-guard.mjs';
+import { isDeferredStockEditComponent, isDeferredStockFileCall, isDeferredStockFilePair } from '../../../src/syntax/lazy-native-renderers.ts';
 import { hostCells, hasHostInk } from '../../fixtures/host-cells.ts';
+import type { ToolDefinition } from '@earendil-works/pi-coding-agent';
 import assert from 'node:assert/strict';
 import { afterEach, test } from 'node:test';
 import { setImmediate as turn } from 'node:timers/promises';
 import { dirname, resolve } from 'node:path';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import { stripVTControlCharacters } from 'node:util';
-import { Box, Container, Text, colorToRgb } from '@earendil-works/pi-tui';
-import { VERSION, highlightCode, getLanguageFromPath, createEditToolDefinition } from '@earendil-works/pi-coding-agent';
+import { Box, Container, Text } from '@earendil-works/pi-tui';
+import { VERSION, highlightCode, getLanguageFromPath, createEditToolDefinition, createWriteToolDefinition } from '@earendil-works/pi-coding-agent';
 import { installTidyUi, type TidyUiController, type TidyUiOptions } from '../../../src/index.ts';
+import { resolvePublicFileToolDefinition } from '../../fixtures/sdk-contract-support.ts';
 import { SourceController } from '../../../src/occipital/controller.ts';
-import { RETENTION_LIMITS } from '../../../src/occipital/retention.ts';
 import type { SyntaxClient } from '../../../src/occipital/client.ts';
 import type { ProviderSnapshot } from '../../../src/occipital/provider.ts';
-import { OCCIPITAL_LIMITS } from '../../../src/occipital/limits.ts';
 import { SEMANTIC_PROTOCOL_VERSION as PROTOCOL_VERSION, decodeSemanticDescription } from '../../../src/occipital/semantic-protocol.ts';
 import { semanticDescriptor } from '../../fixtures/semantic-provider.ts';
 import { fingerprintRules } from '../../../src/occipital/style-rules.ts';
 import { resolveTheme } from '../../../src/themes/selection.ts';
 import { CardSources } from '../../../src/syntax/cards.ts';
 import { sampleOwnedPalette } from '../../../src/themes/owned-palette.ts';
-import { samplePiPalette } from '../../../src/syntax/pi-palette.ts';
 import { PaletteInputOwner } from '../../../src/syntax/pi-input-owner.ts';
 import { observeSyntaxLocalWork } from '../../fixtures/syntax-local-work.ts';
 import { CardLayout } from '../../../src/syntax/card-layout.ts';
@@ -130,7 +130,8 @@ function fixture(ready = false, useDefaultClassifier = false, options: Pick<Tidy
     tool(name: string, args: Record<string, unknown>, definition?: unknown, restored = false) {
       const id = `host-${name}-${++toolIdentity}`;
       if (!restored) liveCalls.add(id);
-      const tool = new ToolExecutionComponent(name, id, args, undefined, definition, ui, '/tmp');
+      const resolvedDefinition = resolvePublicFileToolDefinition(name, definition, '/tmp') as ToolDefinition | undefined;
+      const tool = new ToolExecutionComponent(name, id, args, undefined, resolvedDefinition, ui, '/tmp');
       ui.addChild(tool); return tool;
     } };
   fixtures.push(value); return value;
@@ -183,6 +184,7 @@ afterEach(async () => {
 
 test('host cold file is exact plain then public Pi colors; warmed render/width/padding/output events do zero work', async () => {
   const f = fixture(), tool = written(f, 'const n = 1;\n\t// comment');
+  tool.setExpanded(true);
   const result = JSON.stringify(tool.result), args = JSON.stringify(tool.args);
   const cold = f.render(tool);
   const expectedCold = fileCardOracle(tool, '/tmp', 60, themes.theme)!;
@@ -318,8 +320,16 @@ test('host keyed notices retire only affected layout while metadata upgrades eve
   assert.equal(f.env.pi.length, 2);
 });
 
+test('same-object image invalidation relinquishes a previously owned file card to the native renderer', () => {
+  const f = fixture(), tool = written(f, 'IMAGE_GUARD_SOURCE');
+  const owned = plain(f.render(tool)); assert.ok(owned.some(row => row.includes('← Write')));
+  const native = plain(nativeToolRender.call(tool, 60));
+  tool.result!.content.push({ type: 'image' }); tool.invalidate();
+  assert.deepEqual(plain(f.render(tool)), native);
+});
+
 test('host hidden/self-empty/image/compact/native/expanded files never authorize work; stock edit probe exemption remains', async () => {
-  const f = fixture(), watch = watchConsumer(f);
+  const f = fixture(false, false, { cards: ['write'] }), watch = watchConsumer(f);
   try {
     const hidden = written(f, 'h'); hidden.hideComponent = true;
     const expanded = written(f, 'e'); expanded.setExpanded(true);
@@ -338,11 +348,11 @@ test('host hidden/self-empty/image/compact/native/expanded files never authorize
 test('host pause preserves held-work veto; remove/clear/restore release source ownership and queued work', async () => {
   const f = fixture(true), tool = written(f, 'x'); f.render(tool); await settled();
   const key = f.env.keys[0]!;
-  tool.setExpanded(true); f.render(tool);
+  tool.hideComponent = true; f.render(tool);
   f.env.enabled = false; f.sources.setEnabled(false); f.adapter.syntaxMetadataChanged(); await settled();
   assert.equal(f.sources.workStatus(key).fallbackEligible, false); assert.equal(f.env.pi.length, 0);
   f.sources.ownedStopped(1); await settled(); assert.equal(f.env.pi.length, 0);
-  tool.setExpanded(false); f.render(tool); await settled(); assert.deepEqual(f.env.pi, ['x']);
+  tool.hideComponent = false; f.render(tool); await settled(); assert.deepEqual(f.env.pi, ['x']);
   f.ui.removeChild(tool); assert.equal(f.sources.borrowPiSource(key), undefined);
   const pending = written(f, 'pending'); f.render(pending); f.ui.clear(); await settled(); assert.deepEqual(f.env.pi, ['x']);
   const live = written(f, 'live'); f.render(live); await settled(); assert.equal(f.sources.stats().piSourceRecords, 1);
@@ -379,6 +389,7 @@ test('host first active native source installer collects with adapter/controller
 test('host real public Pi colors plus bare Pi font styles survive exact toolOutput neutral projection', async () => {
   const f = fixture(); f.env.boldPi = true;
   const tool = written(f, 'unclassified + 1;\nconst x = "s";');
+  tool.setExpanded(true);
   f.render(tool); await settled();
   const expected = fileCardOracle(tool, '/tmp', 60, themes.theme, (code, path) => highlightCode(code, getLanguageFromPath(path)))!;
   const rows = f.render(tool);
@@ -388,25 +399,27 @@ test('host real public Pi colors plus bare Pi font styles survive exact toolOutp
 });
 
 
-test('host useful tickets are single actual-render demands, not measurement, mouse or native visits', async () => {
+test('host useful tickets count owned full/preview renders, not measurement, mouse or native visits', async () => {
   const f = fixture(), file = written(f, 'x'), shell = f.tool('bash', { command: 'x' });
   const useful = CardSources.prototype.useful;
   let demands = 0;
   CardSources.prototype.useful = function (...args) { demands++; assert.equal(f.env.depth, 1); return useful.apply(this, args); };
   try {
-    file.setExpanded(true); f.render(file); assert.equal(demands, 0);
-    file.setExpanded(false); f.render(file); assert.equal(demands, 1);
-    f.render(shell); assert.equal(demands, 2);
+    file.setExpanded(true); f.render(file); assert.equal(demands, 1, 'the owned full file is a rendered presentation');
+    file.setExpanded(false); f.render(file); assert.equal(demands, 2, 'the bounded preview is also a rendered presentation');
+    f.render(shell); assert.equal(demands, 3);
     file.handleMouse({ type: 'move', width: 60, height: 8, x: 0, y: 0 });
-    assert.equal(demands, 2);
-    f.render(shell, 0); assert.equal(demands, 2);
-    file.hideComponent = true; f.render(file); assert.equal(demands, 2);
+    assert.equal(demands, 3, 'mouse movement is not a useful render');
+    nativeToolRender.call(file, 60); assert.equal(demands, 3, 'direct native rendering is not a card demand');
+    f.render(shell, 0); assert.equal(demands, 3);
+    file.hideComponent = true; f.render(file); assert.equal(demands, 3);
   } finally { CardSources.prototype.useful = useful; }
   await settled(); assert.equal(f.env.pi.length, 0, 'paused owners cancel pending preparation');
 });
 
 test('host default classifier uses explicit public file language outside render and no-client adapter is unchanged', async () => {
   const f = fixture(false, true), tool = written(f, 'const value = 1;');
+  tool.setExpanded(true);
   const cold = f.render(tool); await settled();
   assert.equal(f.env.captures, 1); const warm = f.render(tool);
   assert.deepEqual(plain(warm), plain(cold)); assert.ok(await hasHostInk(warm, themes.theme, 'syntaxKeyword', 'const'));
@@ -519,16 +532,19 @@ test('P1 host fixture installs actual self-empty renderer identities and denies 
 
 test('P1 injected stock edit is the actual stock self-shell Box and skips all native visibility probes', async t => {
   const native = t.mock.method(ToolExecutionComponent.prototype, 'render');
+  const nativeBoxRender = t.mock.method(Box.prototype, 'render');
   const f = fixture(), watch = watchConsumer(f);
   try {
     const definition = createEditToolDefinition('/tmp');
+    const resolved = resolvePublicFileToolDefinition('edit', definition, '/tmp') as typeof definition;
     const tool = f.tool('edit', { path: 'a.ts', oldText: 'x', newText: 'y' }, definition);
-    assert.equal(tool.getCallRenderer(), definition.renderCall); assert.equal(tool.getResultRenderer(), definition.renderResult);
+    assert.equal(isDeferredStockFileCall(tool.getCallRenderer()), true);
+    assert.equal(isDeferredStockFilePair(tool.getCallRenderer(), tool.getResultRenderer()), true);
+    assert.equal(isDeferredStockFilePair(resolved.renderCall, resolved.renderResult), true);
     assert.equal(tool.getRenderShell(), 'self'); assert.equal(tool.hideComponent, false);
-    assert.ok(tool.callRendererComponent instanceof Box);
-    assert.equal(Object.getPrototypeOf(tool.callRendererComponent), Box.prototype);
-    for (const method of ['render', 'clear', 'addChild'] as const) assert.equal(tool.callRendererComponent[method], Box.prototype[method]);
-    assert.ok(nativeToolRender.call(tool, 60).length > 0, 'stock native heading really exists');
+    assert.ok(isDeferredStockEditComponent(tool.callRendererComponent), 'the host stores a lazy edit delegate, not an eager native Box');
+    assert.ok(nativeToolRender.call(tool, 60).length > 0, 'native invocation materializes visible stock output');
+    assert.ok(nativeBoxRender.mock.calls.some(call => call.this instanceof Box), 'deferred stock rendering invokes the actual native Box');
     tool.updateResult({ content: [], details: { diff: '-1 x\n+1 y' } }, false);
     f.render(tool); await settled();
     assert.deepEqual(f.env.pi, ['x', 'y']);
@@ -546,6 +562,27 @@ test('P1 injected stock edit is the actual stock self-shell Box and skips all na
 
 // Full presentation reinstallation deliberately ends its source-owner incarnation.
 // A rare repeat is accepted; ordinary warm frames and same-adapter off remain strict.
+test('a non-owning outer host wrapper delegates mouse without rendering the inner owner', async t => {
+  const first = fixture(), tool = written(first, 'const MOUSE_OWNER = 1;');
+  tool.setExpanded(true); first.render(tool); await settled();
+  const firstMouse = ToolExecutionComponent.prototype.handleMouse;
+  const previousRender = t.mock.method(ToolExecutionComponent.prototype, 'render');
+  const useful = CardSources.prototype.useful; let usefulCalls = 0;
+  CardSources.prototype.useful = function (...args) { usefulCalls++; return useful.apply(this, args); };
+  const second = fixture(); second.tool('read', { path: 'outer-root-trigger.ts' });
+  try {
+    assert.notEqual(ToolExecutionComponent.prototype.handleMouse, firstMouse, 'the second adapter adds the outer mouse wrapper');
+    previousRender.mock.resetCalls();
+    assert.equal(tool.handleMouse({ type: 'move', width: 60, height: 8, x: 0, y: 0 }), undefined);
+    await settled();
+    assert.equal(previousRender.mock.calls.length, 0, 'the outer non-owner does not render through the inner adapter');
+    assert.equal(usefulCalls, 0, 'delegated mouse movement does not create file preparation demand');
+  } finally {
+    second.adapter.restore(); previousRender.mock.restore();
+    CardSources.prototype.useful = useful; first.adapter.restore();
+  }
+});
+
 test('host full reinstall may repeat file highlighting with an old native request unsettled, then remains warm and rejects its late colors', async () => {
   const f = fixture(true), tool = written(f, 'x');
   const args = JSON.stringify(tool.args), result = JSON.stringify(tool.result);
@@ -1058,18 +1095,24 @@ for (const kind of ['write', 'edit'] as const) test(`host ${kind} palette switch
   assert.equal(f.env.pi.length, 0);
 });
 
-for (const kind of ['write', 'edit'] as const) test(`theme burst: ${kind} restores cached Pi colors after native expansion`, async () => {
+for (const kind of ['write', 'edit'] as const) test(`theme burst: ${kind} preview→full→preview preserves cached Pi colors`, async t => {
   const f = fixture();
   const tool = kind === 'write' ? written(f, 'const n = 1') : f.tool('edit', { path: 'a.ts', oldText: 'const n = 1', newText: 'const n = 2' });
   if (kind === 'edit') tool.updateResult({ content: [{ type: 'text', text: 'saved' }], details: { diff: '-1 const n = 1\n+1 const n = 2' }, isError: false }, false);
   f.render(tool); await settled();
-  const before = f.render(tool), classifications = f.env.pi.length;
-  tool.setExpanded(true); f.render(tool); tool.setExpanded(false); f.render(tool); await settled();
-  assert.deepEqual(f.render(tool), before, 'a resumed file must replace a temporarily plain cached layout even when the stored colors are unchanged');
-  assert.equal(f.env.pi.length, classifications, 'restoring a layout cannot repeat Pi classification');
+  const before = f.render(tool), classifications = f.env.pi.length, sourceCalls = f.calls.length;
+  assert.ok(await hasHostInk(before, themes.theme, 'syntaxKeyword', 'const'), 'the starting preview has Pi paint');
+  tool.setExpanded(true); f.render(tool); await settled();
+  const full = f.render(tool);
+  assert.ok(await hasHostInk(full, themes.theme, 'syntaxKeyword', 'const'), 'full owned view keeps prepared Pi paint');
+  assert.match(plain(full).join('\n'), /const n = 1/);
+  tool.setExpanded(false); f.render(tool); await settled();
+  assert.deepEqual(f.render(tool), before, 'the preview returns to its exact cached ANSI rows');
+  assert.equal(f.env.pi.length, classifications, 'the mode round trip cannot repeat Pi classification');
+  assert.equal(f.calls.length, sourceCalls, 'the mode round trip cannot dispatch source work');
 });
 
-for (const kind of ['write', 'edit'] as const) test(`theme burst: ${kind} restores retained native colors while both unrelated jobs remain held`, async () => {
+for (const kind of ['write', 'edit'] as const) test(`theme burst: ${kind} preview→full→preview keeps cached paint while unrelated jobs remain held`, async t => {
   const f = fixture(true);
   const tool = kind === 'write' ? written(f, 'const n = 1') : f.tool('edit', { path: 'a.ts', oldText: 'const n = 1', newText: 'const n = 2' });
   if (kind === 'edit') tool.updateResult({ content: [{ type: 'text', text: 'saved' }], details: { diff: '-1 const n = 1\n+1 const n = 2' }, isError: false }, false);
@@ -1078,11 +1121,48 @@ for (const kind of ['write', 'edit'] as const) test(`theme burst: ${kind} restor
   await settled(); const before = f.render(tool);
   f.render(f.tool('bash', { command: 'echo held B' })); f.render(f.tool('bash', { command: 'echo held C' })); await settled();
   assert.equal(f.sources.stats().globalUnsettledJobs, 2); const dispatched = f.calls.length, pi = f.env.pi.length;
-  tool.setExpanded(true); f.render(tool); tool.setExpanded(false); f.render(tool); await settled(); await settled();
-  assert.deepEqual(f.render(tool), before, 'local restoration cannot wait for unrelated native credit');
+  assert.ok(await hasHostInk(before, themes.theme, 'syntaxKeyword', 'const'), 'the starting preview has prepared paint');
+  tool.setExpanded(true); f.render(tool); await settled();
+  const full = f.render(tool);
+  assert.ok(await hasHostInk(full, themes.theme, 'syntaxKeyword', 'const'), 'full view uses retained local paint while jobs are held');
+  assert.match(plain(full).join('\n'), kind === 'write' ? /const n = 1/ : /const n = 1[\s\S]*const n = 2/);
+  tool.setExpanded(false); f.render(tool); await settled(); await settled();
+  assert.deepEqual(f.render(tool), before, 'the preview returns to exact paint without waiting for unrelated native credit');
   assert.equal(f.calls.length, dispatched); assert.equal(f.env.pi.length, pi); assert.equal(f.sources.stats().globalUnsettledJobs, 2);
 });
 
+
+for (const kind of ['write', 'edit'] as const) test(`theme burst: ${kind} owned palette preview→full→preview keeps binding paint while unrelated jobs remain held`, async () => {
+  const f = fixture(true);
+  f.env.selected = { kind: 'theme', id: 'catppuccin-dark' }; f.adapter.syntaxMetadataChanged(); await settled();
+  const tool = kind === 'write' ? written(f, 'const n = 1') : f.tool('edit', { path: 'a.ts', oldText: 'const n = 1', newText: 'const n = 2' });
+  if (kind === 'edit') tool.updateResult({ content: [{ type: 'text', text: 'saved' }], details: { diff: '-1 const n = 1\n+1 const n = 2' }, isError: false }, false);
+  f.render(tool); await settled();
+  for (let i = 0; i < f.calls.length; i++) answer(f, i, (f.calls[i]!.request.sources as { text: string }[])[0]!.text, true);
+  await settled(); const before = f.render(tool);
+  assert.match(plain(before).join('\n'), /const n = 1/);
+  const selected = sampleOwnedPalette('catppuccin-dark', 'truecolor');
+  const binding = selected.bindings[3]!.ink, plainCode = selected.roles.code.foreground;
+  if (binding.kind !== 'rgb' || plainCode.kind !== 'rgb') throw new Error('expected owned RGB inputs');
+  const bindingFg = (binding.r << 16) | (binding.g << 8) | binding.b;
+  const plainCodeFg = (plainCode.r << 16) | (plainCode.g << 8) | plainCode.b;
+  const hasKeywordInk = async (rows: string[]) => (await hostCells(rows)).some(row => row.some(cell => cell.text === 'c' && cell.fg === bindingFg));
+  assert.notEqual(bindingFg, plainCodeFg, 'the selected keyword binding is distinct from neutral code foreground');
+  assert.ok(await hasKeywordInk(before), 'the owned palette baseline uses the exact selected keyword binding RGB, not neutral code ink');
+  f.render(f.tool('bash', { command: 'echo held B' })); f.render(f.tool('bash', { command: 'echo held C' })); await settled();
+  assert.equal(f.sources.stats().globalUnsettledJobs, 2);
+  const dispatched = f.calls.length, pi = f.env.pi.length, styleRequests = f.env.styleRequests.length;
+  tool.setExpanded(true); f.render(tool); await settled();
+  const full = f.render(tool);
+  assert.match(plain(full).join('\n'), kind === 'write' ? /const n = 1/ : /const n = 1[\s\S]*const n = 2/);
+  assert.ok(await hasKeywordInk(full), 'the full owned card keeps the exact selected keyword binding RGB, not neutral code ink');
+  tool.setExpanded(false); f.render(tool); await settled(); await settled();
+  assert.deepEqual(f.render(tool), before, 'the preview returns to exact owned-palette ANSI rows');
+  assert.equal(f.calls.length, dispatched, 'mode round trip dispatches no additional SOURCE');
+  assert.equal(f.env.pi.length, pi, 'owned mode round trip does not invoke Pi classification');
+  assert.equal(f.env.styleRequests.length, styleRequests, 'mode round trip adds no STYLE work');
+  assert.equal(f.sources.stats().globalUnsettledJobs, 2, 'unrelated source jobs remain held through the round trip');
+});
 
 test('external owner establishes a Pi fallback baseline after owned-asset failure and refreshes it once on color change', async t => {
   const openSync = nodeFs.openSync.bind(nodeFs);
@@ -1115,7 +1195,7 @@ test('external owner establishes a Pi fallback baseline after owned-asset failur
     assert.notDeepEqual(recolored, initial, 'Pi-origin fallback adopts the changed public palette');
     assert.ok(await hasHostInk(recolored, themes.theme, 'syntaxKeyword', 'const'));
     const afterRefresh = refreshVisits;
-    assert.equal(afterRefresh, prepared + 1, 'one deferred palette refresh visit consumes the color change');
+    assert.equal(afterRefresh, prepared, 'the cold visible owner update adopts the new public colors without a deferred refresh visit');
     assert.equal(f.env.pi.length, before[0]! + 1, 'one Pi classification is regenerated for the new public colors');
     assert.equal(f.env.captures, before[2]! + 1, 'the same source text is recaptured once into the local Pi projection');
     assert.equal(f.calls.length, before[4], 'a palette refresh sends no Occipital SOURCE');
@@ -1161,7 +1241,7 @@ test('prepared host owned palette paints every card surface without Pi on warm r
 
 test('prepared host outer refusal and throw release provisional candidates without publishing or leaking funded rows', async () => {
   const f = fixture(), tool = written(f, 'const retained=1;');
-  f.render(tool); await settled(); const accepted = f.render(tool), builds = f.adapter.cacheStats().builds;
+  f.render(tool); await settled(); const accepted = f.render(tool);
   const visit = CardSources.prototype.visit;
   let refuse = true;
   CardSources.prototype.visit = function(owner, consume) {
@@ -1171,8 +1251,14 @@ test('prepared host outer refusal and throw release provisional candidates witho
   };
   try {
     const before = f.sources.stats().retention.retainedBytes;
+    const acceptedStats = f.adapter.cacheStats(), cardBuilds = acceptedStats.cards.builds, ordinaryBuilds = acceptedStats.ordinary.builds;
     for (let i = 0; i < 4; i++) f.render(tool, 24);
-    assert.equal(f.sources.stats().retention.retainedBytes, before); assert.equal(f.adapter.cacheStats().builds, builds);
+    const deniedStats = f.adapter.cacheStats();
+    assert.equal(f.sources.stats().retention.retainedBytes, before);
+    assert.equal(deniedStats.cards.builds, cardBuilds, 'denial does not adopt a provisional prepared card');
+    assert.equal(deniedStats.ordinary.builds, ordinaryBuilds + 1, 'one bounded ordinary fallback is built for the denied width');
+    for (let i = 0; i < 4; i++) f.render(tool, 24);
+    assert.equal(f.adapter.cacheStats().ordinary.builds, deniedStats.ordinary.builds, 'warm denied-width fallback is reused');
     refuse = false; assert.deepEqual(f.render(tool, 60), accepted, 'outer refusal preserves the accepted detached cache without publishing wrong-width rows');
     assert.notDeepEqual(f.render(tool, 24), accepted);
   } finally { CardSources.prototype.visit = visit; }
@@ -1285,8 +1371,9 @@ test('prepared host streamed Bash argument appends never remeasure the unchanged
 });
 
 
-test('prepared host same-object diagnostic mutation changes service rows without reparsing unchanged file source', async () => {
+test('prepared host full-mode same-object diagnostic mutation changes service rows without reparsing file source', async () => {
   const f = fixture(), text = 'const diagnosticSource=1;', tool = written(f, text);
+  tool.setExpanded(true);
   const diagnostics = [{ severity: 'error', message: 'first diagnostic', line: 1 }];
   tool.updateResult({ ...tool.result, details: { diagnostics } }, false);
   f.render(tool); await settled(); assert.match(plain(f.render(tool)).join('\n'), /first diagnostic/);
@@ -1443,7 +1530,8 @@ test('host renderer transfer: a genuinely cleared root blocks already-queued wor
   assert.equal(f.sources.stats().sourceRecords, 0); assert.equal(f.adapter.cacheStats().entries, 0);
   assert.equal(f.sources.stats().retention.entries, 0);
   tool.invalidate(); f.render(tool); await settled();
-  assert.equal(f.sources.stats().sourceRecords, 0); assert.equal(f.adapter.cacheStats().entries, 0);
+  assert.equal(f.sources.stats().sourceRecords, 0, 'detached invalidation must not recreate source records');
+  assert.equal(f.adapter.cacheStats().entries, 0, 'rendering a detached owner must not memoize a new card layout');
 });
 
 test('host renderer transfer: restore before deferred root retirement releases everything and never resurrects it', async () => {
@@ -1461,7 +1549,9 @@ test('host renderer transfer: changed text is prepared instead of reusing the ol
    f.env.selected = { kind: 'theme', id: 'nord-light' }; f.adapter.syntaxMetadataChanged();
   f.document(); await settled(); answer(f, 0, 'const TRANSFER_BEFORE = 1;'); await settled(); f.document();
   f.ui.clear(); tool.updateArgs({ path: 'a.ts', content: 'const TRANSFER_AFTER = 2;' }); f.ui.addChild(tool);
-  const current = plain(f.document()).join('\n'); assert.ok(current.includes('TRANSFER_AFTER')); assert.equal(current.includes('TRANSFER_BEFORE'), false);
+  const current = plain(f.document()).join('\n');
+  assert.ok(current.includes('TRANSFER_AFTER'), `reattached card must show changed source, got:\n${current}`);
+  assert.equal(current.includes('TRANSFER_BEFORE'), false, `reattached card must not retain stale source, got:\n${current}`);
   await settled(); assert.equal(f.calls.length, 2);
   assert.equal((f.calls[1]!.request.sources as { text: string }[])[0]!.text, 'const TRANSFER_AFTER = 2;');
 });
@@ -1498,6 +1588,7 @@ test('host renderer transfer: pending retirement does not retain the removed fir
 test('host bounded file classification retains full visible suffix and exact tool data', async () => {
   const f = fixture(), prefix = 'x'.repeat(8191) + '\n', text = prefix + 'UNCLASSIFIED_TAIL';
   const tool = written(f, text), saved = JSON.stringify({ args: tool.args, result: tool.result });
+  tool.setExpanded(true);
   f.render(tool, 8300); await settled();
   assert.equal(f.env.pi.length, 1); assert.equal(f.env.pi[0]!.length, prefix.length);
   const rows = plain(f.render(tool, 8300));
@@ -1727,4 +1818,130 @@ test('completion boundary: held native notification includes actual Bash prefix 
     const warm = observer.snapshot(); f.document(100); f.document(60);
     assert.deepEqual(observer.snapshot(), warm);
   } finally { release?.(); observer.restore(); }
+});
+
+
+test('compatible third-party file renderers keep file cards while self-shell visibility stays native-owned', () => {
+  const f = fixture(true);
+  const args = { path: '/tmp/foreign-write.ts', content: 'const foreign = 1;\n' };
+  const result = { content: [{ type: 'text' as const, text: 'FOREIGN_RESULT' }], isError: false };
+  let selfCall = 0, selfResult = 0, mixedResult = 0;
+  const selfDefinition = {
+    ...createWriteToolDefinition('/tmp'),
+    renderShell: 'self' as const,
+    renderCall: (_args: unknown, _theme: unknown) => { selfCall++; return new Text('FOREIGN_CALL', 0, 0); },
+    renderResult: (_result: unknown) => { selfResult++; return new Text('FOREIGN_RESULT', 0, 0); },
+  } as ToolDefinition;
+  const self = f.tool('write', args, selfDefinition);
+  self.updateResult(result, false);
+  self.setExpanded(true);
+  const selfRows = plain(f.render(self, 80)).join('\n');
+  assert.match(selfRows, /← Wrote foreign-write\.ts/u);
+  assert.match(selfRows, /foreign/iu);
+  assert.equal(self.getCallRenderer(), selfDefinition.renderCall, 'foreign call callback stays installed');
+  assert.equal(self.getResultRenderer(), selfDefinition.renderResult, 'foreign result callback stays installed');
+  assert.ok(selfCall > 0 && selfResult > 0, 'actual-width self visibility uses the foreign renderer callbacks');
+
+  const lazy = resolvePublicFileToolDefinition('write', createWriteToolDefinition('/tmp')) as ToolDefinition;
+  const foreignResult = (_result: unknown) => { mixedResult++; return new Text('MIXED_FOREIGN_RESULT', 0, 0); };
+  const mixedDefinition = { ...lazy, renderResult: foreignResult } as ToolDefinition;
+  const mixed = f.tool('write', { path: '/tmp/mixed-write.ts', content: 'const mixed = 1;\n' }, mixedDefinition);
+  mixed.updateResult(result, false);
+  const deferredCall = mixed.callRendererComponent as unknown as { render(width: number): string[]; component?: { render(width: number): string[] } };
+  deferredCall.render(80);
+  const nativeCall = deferredCall.component;
+  assert.ok(nativeCall, 'the mixed pair can retain its already materialized stock call component');
+  let nativeCallRenders = 0;
+  const renderNativeCall = nativeCall.render.bind(nativeCall);
+  nativeCall.render = (width) => { nativeCallRenders++; return renderNativeCall(width); };
+  const mixedCallsBeforePresentation = mixedResult;
+  const mixedRows = plain(f.render(mixed, 80)).join('\n');
+  assert.match(mixedRows, /← Write mixed-write\.ts/u, 'a mixed stock/third-party pair retains the compatible preview');
+  assert.match(mixedRows, /1 const mixed = 1;/u, 'the bounded source rows remain visible');
+  assert.equal(mixed.getResultRenderer(), foreignResult, 'mixed-pair callback is not wrapped or removed');
+  assert.equal(mixedResult, mixedCallsBeforePresentation, 'the custom file card does not add foreign result-render work');
+  deferredCall.render(80);
+  assert.equal(nativeCallRenders, 1, 'presenting a mixed pair does not evict its already materialized stock half');
+
+  let boxCall = 0, boxResult = 0;
+  const boxDefinition = {
+    ...createWriteToolDefinition('/tmp'),
+    renderCall: (_args: unknown, _theme: unknown) => { boxCall++; const box = new Box(); box.addChild(new Text('BOX_CALL', 0, 0)); return box; },
+    renderResult: (_result: unknown) => { boxResult++; const box = new Box(); box.addChild(new Text('BOX_RESULT', 0, 0)); return box; },
+  } as ToolDefinition;
+  const box = f.tool('write', { path: '/tmp/box-write.ts', content: 'const boxed = 2;\n' }, boxDefinition);
+  box.updateResult(result, false); box.setExpanded(true);
+  const callbacksBeforePresentation = [boxCall, boxResult];
+  const boxRows = plain(f.render(box, 80)).join('\n');
+  assert.match(boxRows, /← Wrote box-write\.ts/u, 'a third-party Box renderer keeps the compatible full file card');
+  assert.match(boxRows, /boxed/u);
+  assert.equal(box.getCallRenderer(), boxDefinition.renderCall);
+  assert.equal(box.getResultRenderer(), boxDefinition.renderResult);
+  assert.deepEqual([boxCall, boxResult], callbacksBeforePresentation, 'custom Box presentation adds no foreign renderer work');
+
+  const hiddenDefinition = {
+    ...createWriteToolDefinition('/tmp'),
+    renderShell: 'self' as const,
+    renderCall: (_args: unknown, _theme: unknown) => new Text('', 0, 0),
+    renderResult: (_result: unknown) => new Text('', 0, 0),
+  } as ToolDefinition;
+  const hidden = f.tool('write', { path: '/tmp/hidden-foreign.ts', content: 'const hidden = 1;\n' }, hiddenDefinition);
+  hidden.updateResult(result, false);
+  hidden.setExpanded(true);
+  assert.deepEqual(f.render(hidden, 80), [], 'an empty self renderer remains hidden rather than being replaced by a custom card');
+});
+
+
+test('native and hidden file successes consume rolling recency without changing their presentation', () => {
+  const f = fixture(false, false, { cards: ['edit'] });
+  try {
+    f.adapter.beginFileTurn();
+    const entries: ReturnType<typeof f.tool>[] = [];
+    const stringField = (tool: ReturnType<typeof f.tool>, name: string) => {
+      const value = Reflect.get(tool, name);
+      if (typeof value !== 'string') throw new TypeError(`Expected ${name} to be a string`);
+      return value;
+    };
+    for (let i = 0; i < 9; i++) entries.push(f.tool('write', { path: `window-${i}.ts`, content: `const window_${i} = ${i};` }));
+    const native = f.tool('edit', { path: 'window-native.ts', edits: [{ oldText: 'before', newText: 'after' }] });
+    entries.push(native);
+    for (const tool of entries) f.render(tool, 80);
+    for (const tool of [...entries].reverse()) f.adapter.completeFileCall(stringField(tool, 'toolCallId'));
+    for (const tool of [...entries].reverse()) {
+      const result = stringField(tool, 'toolName') === 'write'
+        ? { content: [{ type: 'text' as const, text: 'saved' }], isError: false }
+        : { content: [{ type: 'text' as const, text: 'saved' }], isError: false, details: { diff: '-1 before\n+1 after' } };
+      tool.updateResult(result, false);
+    }
+    const nativeBefore = f.render(native, 80);
+
+    const hidden = f.tool('write', { path: 'window-hidden.ts', content: 'const hidden = true;' });
+    f.render(hidden, 80);
+    hidden.updateResult({ content: [{ type: 'text', text: 'saved' }], isError: false }, false);
+    hidden.hideComponent = true;
+    f.ui.removeChild(hidden);
+    f.adapter.completeFileCall(stringField(hidden, 'toolCallId'));
+    f.ui.addChild(hidden);
+    const hiddenBefore = f.render(hidden, 80);
+
+    const newest = f.tool('write', { path: 'window-newest.ts', content: 'const newest = true;' });
+    f.render(newest, 80);
+    f.adapter.completeFileCall(stringField(newest, 'toolCallId'));
+    newest.updateResult({ content: [{ type: 'text', text: 'saved' }], isError: false }, false);
+    f.adapter.finishFileTurn();
+
+    assert.deepEqual(f.render(native, 80), nativeBefore, 'native override output remains native across window accounting');
+    assert.deepEqual(f.render(hidden, 80), hiddenBefore, 'hidden file output remains hidden across window accounting');
+    hidden.hideComponent = false;
+    const nextTurn = f.tool('write', { path: 'window-next-turn.ts', content: 'const next_turn = true;' });
+    f.adapter.beginFileTurn(); f.render(nextTurn, 80); f.adapter.completeFileCall(nextTurn.toolCallId);
+    nextTurn.updateResult({ content: [{ type: 'text', text: 'saved' }], isError: false }, false); f.adapter.finishFileTurn();
+    const views = [...entries.slice(0, 9), hidden, newest, nextTurn].map(tool => plain(f.render(tool, 80)).join('\n'));
+    for (const index of [0, 1, 2]) {
+      assert.match(views[index]!, new RegExp(`Write window-${index}\\.ts`), `older successful write ${index} must be demoted by all later calls`);
+      assert.doesNotMatch(views[index]!, new RegExp(`Wrote window-${index}\\.ts`));
+    }
+    for (const index of [3, 4, 5, 6, 7, 8, 9, 10, 11]) assert.match(views[index]!, /Wrote window-/,
+      `the ten most recent successes, including native and hidden calls across turns, remain in the automatic full window: ${index}`);
+  } finally { f.adapter.restore(); }
 });

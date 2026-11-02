@@ -11,7 +11,7 @@ test("native rich overrides, image, hidden and expanded tools delegate exactly",
   const image = new Tool(); image.updateResult({ content: [{ type: "image" }] }, image.isPartial);
   const expanded = new Tool(); expanded.expanded = true;
   const hidden = new Tool(); hidden.hideComponent = true;
-  const { controller, original } = setup([...tools, image, expanded, hidden], { cards: ["edit"] });
+  const { controller, original } = setup([...tools, image, expanded, hidden], { cards: ["write", "edit"] });
   try {
     for (const tool of [...tools, image, expanded, hidden]) assert.deepEqual(tool.render(80), original.call(tool, 80));
   } finally { controller.restore(); }

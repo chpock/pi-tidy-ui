@@ -5,7 +5,8 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { stripVTControlCharacters } from 'node:util';
 import { Container, ScrollView } from "@earendil-works/pi-tui";
-import { ToolExecutionComponent, createEditToolDefinition } from "@earendil-works/pi-coding-agent";
+import { ToolExecutionComponent } from "@earendil-works/pi-coding-agent";
+import { resolvePublicFileToolDefinition } from "./sdk-contract-support.ts";
 import { renderLayoutFrame } from "../../node_modules/@earendil-works/pi-tui/dist/layout.js";
 import { generateDiffString } from "../../node_modules/@earendil-works/pi-coding-agent/dist/core/tools/edit-diff.js";
 import { initTheme, theme } from "../../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js";
@@ -29,8 +30,10 @@ const details = { diff: generateDiffString(before.join("\n"), after.join("\n")).
   patch: `@@ -1,250 +1,250 @@\n${before.map(row => "-" + row).join("\n")}\n${after.map(row => "+" + row).join("\n")}\n` };
 const edits: (ToolExecutionComponent | undefined)[] = [];
 for (let i = 0; i < 24; i++) {
-  const node = new ToolExecutionComponent("edit", `diff-${i}`, { path: `example-${i}.ts` }, undefined, createEditToolDefinition("/tmp"), root as never, "/tmp");
-  node.updateResult({ content: [], details, isError: false }); root.addChild(node); edits.push(node);
+  const node = new ToolExecutionComponent("edit", `diff-${i}`, { path: `example-${i}.ts` }, undefined, resolvePublicFileToolDefinition("edit", undefined, "/tmp"), root as never, "/tmp");
+  node.updateResult({ content: [], details, isError: false });
+  node.setExpanded(true);
+  root.addChild(node); edits.push(node);
 }
 const controller = installTidyUi(root, () => theme), observations: object[] = [];
 function frame(stage: string, width = 140, height = 24) {

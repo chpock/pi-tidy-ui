@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import test from 'node:test';
-import { PiTerminal, artifacts, plain, lines, toolLines, assertFits } from '../../fixtures/terminal-harness.mjs';
+import { PiTerminal, artifacts, plain, lines, toolLines, assertFits, deferredNativePreparation } from '../../fixtures/terminal-harness.mjs';
 import { replayBlockStart, compareEditReplayColors } from '../../fixtures/edit-replay-comparator.mjs';
 import { closeTerminals } from '../../fixtures/terminal-cleanup.mjs';
 import { Terminal, compactContent, persisted, referenceCell } from '../../fixtures/main-cli-support.mjs';
@@ -30,7 +30,7 @@ test('real CLI: OpenCode-style edit syntax, numbered unified/split format, error
   { timeout: 180000 }, async () => {
     const terminals = [];
     const start = async (name, options = {}) => {
-      const terminal = new PiTerminal(name, { extraEnv: { TIDY_UI_TEST_EDIT_CARDS: '1' }, ...options });
+      const terminal = new PiTerminal(name, { extraEnv: { TIDY_UI_TEST_EDIT_CARDS: '1', TIDY_UI_TEST_NATIVE_PREPARATION: '1', TIDY_UI_TEST_SYNTAX_CARDS: '1' }, ...options });
       terminals.push(terminal);
       mkdirSync(join(terminal.agent, 'themes'), { recursive: true });
       writeFileSync(join(terminal.agent, 'themes/gruvbox-dark-hard.json'), readFileSync(new URL('../../fixtures/gruvbox-dark-hard.json', import.meta.url)));
@@ -68,9 +68,27 @@ test('real CLI: OpenCode-style edit syntax, numbered unified/split format, error
       const cell = reference.buffer.active.getLine(0).getCell(0);
       return { fg: cell.getFgColor(), fgMode: cell.getFgColorMode(), dim: cell.isDim() };
     };
-    const replayColors = async (actual, expected) =>
-      compareEditReplayColors(actual, expected, await fg(actual, 'mdCodeBlock'));
-    const check = async (dump, split, evidence) => {
+    const replayColors = async (actual, expected, expandedErrors = false) =>
+      compareEditReplayColors(actual, expected, await fg(actual, 'mdCodeBlock'), expandedErrors ? [2, 3] : []);
+    const checkPreview = async (dump, evidence) => {
+      const rows = lines(dump.tools[0]), text = rows.join('\n');
+      assert.match(text, /← Edit edit-example\.ts/);
+      assert.doesNotMatch(text, /← Edited edit-example\.ts|const context17 =/);
+      assert.match(text, /const before = 10/);
+      assert.match(text, /const after = 20/);
+      assert.match(text, /Click to expand/);
+      const physical = dump.screen.map(plain);
+      const start = physical.findIndex((row, y) => row === rows[0] && rows.every((value, offset) => physical[y + offset] === value));
+      assert.ok(start >= 0, 'the bounded restored edit preview is present on the physical screen');
+      const sourceRow = rows.findIndex(row => row.includes('const before = 10'));
+      const column = rows[sourceRow].indexOf('export');
+      assert.ok(column >= 0);
+      const cell = dump.cells[start + sourceRow][column];
+      assert.deepEqual({ fg: cell.fg, fgMode: cell.fgMode, dim: cell.dim }, await fg(dump, 'syntaxKeyword'),
+        'the visible bounded edit row keeps its physical keyword color');
+      if (evidence) writeFileSync(join(artifacts, `edit-preview-${evidence}.json`), JSON.stringify({ rows, keyword: cell.fg }, null, 2));
+    };
+    const check = async (dump, split, evidence, fullErrors = false) => {
       assert.equal(dump.tools.length, 7);
       const first = dump.tools[0], second = dump.tools[1];
       const rows = lines(first);
@@ -195,6 +213,13 @@ test('real CLI: OpenCode-style edit syntax, numbered unified/split format, error
       assert.equal(tail.length, 1, 'wrapped replacement does not duplicate the next context row');
       if (split) assert.equal(tail[0].match(/const tail = 40;/g)?.length, 2, 'unequal wrapped panes realign the following context');
       for (const failed of [dump.tools[2], dump.tools[3]]) {
+        if (fullErrors) {
+          const detail = lines(failed).join('\n');
+          assert.match(detail, /Original file content:/);
+          assert.match(detail, /Requested replacement:/);
+          assert.match(detail, /Could not find|ENOENT/);
+          continue;
+        }
         compactContent(failed);
         assert.doesNotMatch(lines(failed).join(''), /┃|← Edited|Could not find|ENOENT/);
         const failureRows = lines(failed);
@@ -211,6 +236,10 @@ test('real CLI: OpenCode-style edit syntax, numbered unified/split format, error
       assert.ok(native.nativeRenderCalls.edit > 0, 'stock control proves the native counter is active');
       stock.send('\x0f'); await stock.settle(); const nativeExpanded = await stock.capture('expanded');
       const live = await start('edit-tidyUi', { tidyUi: true, workspace: stock.work });
+      const startupProbe = deferredNativePreparation(live);
+      assert.ok(startupProbe.probes.length > 0, 'the in-graph deferred-renderer probe is installed before tool construction');
+      const liveProbeEpoch = startupProbe.probes.at(-1).epoch;
+      assert.deepEqual(startupProbe.attempts.filter(event => event.epoch === liveProbeEpoch), [], 'startup constructs lazy callbacks without preparing stock edit renderers');
       // Recreate only the four owned fixture inputs; no runtime package or project file is modified.
       const { pending, running } = await run(live);
       for (const dump of [pending, running]) assert.equal(dump.nativeRenderCalls.edit ?? 0, 0, 'stock edit streaming/execution performs no native visibility render');
@@ -221,7 +250,9 @@ test('real CLI: OpenCode-style edit syntax, numbered unified/split format, error
       assert.doesNotMatch(lines(running.tools[0]).join(''), /┃|← Edited/);
       const wide = await preparedCapture(live, 'unified'); await check(wide, false, 'dark-fullscreen');
       assert.equal(wide.nativeRenderCalls.edit ?? 0, 0, 'five cards and two failed summaries never build discarded native rows');
+      assert.deepEqual(deferredNativePreparation(live).attempts.filter(event => event.epoch === liveProbeEpoch), [], 'custom edit and failed-summary presentation never prepares stock edit renderers');
       const nativeTraffic = traffic(stock);
+      assert.ok(nativeExpanded.nativeRenderCalls.edit > 0, 'stock Ctrl+O control visits the actual native renderer');
       assert.deepEqual(traffic(live), nativeTraffic, '7 actual calls/results and 8 provider contexts are identical');
       // Captures and traffic are detached; only the shared workspace must survive for replay.
       await stock.close();
@@ -238,42 +269,93 @@ test('real CLI: OpenCode-style edit syntax, numbered unified/split format, error
       assert.equal(unified.nativeRenderCalls.edit ?? 0, 0, 'resize/theme changes do not reinstate native visibility work');
       assert.deepEqual(toolLines(unified), toolLines(wide), 'resize/theme round trip retains complete code and styling');
       live.send('\x0f'); await live.settle(); const expanded = await live.capture('expanded');
-      assert.deepEqual(toolLines(expanded), toolLines(nativeExpanded), 'Ctrl+O exposes the unchanged full native presentation');
-      assert.ok(expanded.nativeRenderCalls.edit > 0, 'expansion still visits the actual native renderer');
+      for (const index of [0, 1, 4, 5, 6]) assert.deepEqual(expanded.tools[index].lines, wide.tools[index].lines,
+        'Ctrl+O keeps each successful owned full card unchanged');
+      for (const index of [2, 3]) {
+        const details = lines(expanded.tools[index]).join('\n');
+        assert.match(details, /Original file content:/); assert.match(details, /Requested replacement:/); assert.match(details, /Tool error:/);
+      }
+      assert.equal(expanded.nativeRenderCalls.edit ?? 0, 0, 'owned Ctrl+O expansion does not invoke the stock renderer');
       live.send('\x0f'); await live.settle();
       const successful = await preparedCapture(live, 'before-successful-click');
       const successY = successful.screen.findIndex((row) => row.includes('← Edited edit-example.ts') && row.includes('┃'));
       assert.ok(successY >= 0);
       live.send(`\x1b[<0;8;${successY + 1}M\x1b[<0;8;${successY + 1}m`); await live.settle();
       const successClicked = await live.capture('successful-click');
-      assert.equal(successClicked.tools[0].expanded, true, 'a real completed diff-panel click expands only that edit');
+      assert.equal(successClicked.tools[0].expanded, false, 'a completed owned-card click changes only its file view, not Pi expansion state');
       assert.equal(successClicked.tools[1].expanded, false);
-      assert.deepEqual(successClicked.tools[0].lines, nativeExpanded.tools[0].lines);
+      assert.match(lines(successClicked.tools[0]).join('\n'), /← Edit edit-example\.ts/);
+      assert.doesNotMatch(lines(successClicked.tools[0]).join('\n'), /← Edited edit-example\.ts|const context17 =/);
+      const previewY = successClicked.screen.findIndex(row => row.includes('← Edit edit-example.ts') && row.includes('┃'));
+      assert.ok(previewY >= 0, 'the collapsed preview remains a real panel click target');
+      live.send(`\x1b[<0;8;${previewY + 1}M\x1b[<0;8;${previewY + 1}m`); await live.settle();
+      const successFull = await preparedCapture(live, 'successful-click-full');
+      assert.equal(successFull.tools[0].expanded, false);
+      assert.deepEqual(successFull.tools[0].lines, wide.tools[0].lines, 'the same card can return to its complete owned presentation');
+      assert.equal(successFull.nativeRenderCalls.edit ?? 0, 0, 'both click directions remain on the owned renderer');
       live.send('\x0f'); await live.settle(); live.send('\x0f'); await live.settle();
       const failed = await preparedCapture(live, 'before-failed-click');
       const failedRows = lines(failed.tools[2]);
       const y = failed.screen.map(plain).findIndex((row, index) => row === failedRows[0] && failedRows.every((value, offset) => plain(failed.screen[index + offset] ?? '') === value));
       assert.ok(y >= 0);
       live.send(`\x1b[<0;8;${y + 1}M\x1b[<0;8;${y + 1}m`); await live.settle();
-      const clicked = await live.capture('failed-click'); assert.equal(clicked.tools[2].expanded, true);
-      assert.deepEqual(clicked.tools[2].lines, nativeExpanded.tools[2].lines, 'click exposes native failure details');
+      const clicked = await live.capture('failed-click'); assert.equal(clicked.tools[2].expanded, false);
+      assert.match(lines(clicked.tools[2]).join('\n'), /Could not find|ENOENT/,
+        'the owned full detail shows the saved error after a deliberate click');
+      assert.equal(clicked.nativeRenderCalls.edit ?? 0, 0, 'opening a failed owned detail does not materialize native renderers');
       // Ctrl+O is still the host's global expansion toggle.
       live.send('\x0f'); await live.settle(); live.send('\x0f'); await live.settle();
+      const beforeOff = deferredNativePreparation(live);
+      assert.deepEqual(beforeOff.attempts.filter(event => event.epoch === liveProbeEpoch), [], 'all resize, palette, click, failed-detail and expansion transitions remain stock-preparation free immediately before Off');
       await live.appearance(false); assert.deepEqual(toolLines(await live.capture('off')), toolLines(native));
-      await live.appearance(true); await check(await preparedCapture(live, 'on'), false);
+      const offPreparations = deferredNativePreparation(live).attempts.filter(event => event.epoch === liveProbeEpoch && event.tool === 'edit');
+      assert.ok(offPreparations.some(event => event.slot === 'call') && offPreparations.some(event => event.slot === 'result'), 'Appearance Off positively observes stock edit call and result materialization');
+      const offAttemptCount = deferredNativePreparation(live).attempts.filter(event => event.epoch === liveProbeEpoch).length;
+      await live.appearance(true); await checkPreview(await preparedCapture(live, 'on'), 'on');
+      assert.equal(deferredNativePreparation(live).attempts.filter(event => event.epoch === liveProbeEpoch).length, offAttemptCount, 'native-to-owned recovery adds no stock edit materialization');
       const starts = live.events().filter((event) => event.type === 'start').length;
-      await live.command('/reload'); await live.event('start', starts + 1); const reloaded = await preparedCapture(live, 'reload'); await check(reloaded, false);
+      const probesBeforeReload = deferredNativePreparation(live).probes.length;
+      await live.command('/reload'); await live.event('start', starts + 1); const reloaded = await preparedCapture(live, 'reload'); await checkPreview(reloaded, 'reload');
+      const reloadProbe = deferredNativePreparation(live);
+      assert.ok(reloadProbe.probes.length > probesBeforeReload, 'reload installs the observer in the new extension graph');
+      const reloadEpoch = reloadProbe.probes.at(-1).epoch;
+      assert.deepEqual(reloadProbe.attempts.filter(event => event.epoch === reloadEpoch), [], 'custom edit reload does not prepare stock callbacks during construction or presentation');
+      await live.appearance(false);
+      const reloadOff = await live.capture('reload-off');
+      const reloadOffPreparations = deferredNativePreparation(live).attempts.filter(event => event.epoch === reloadEpoch && event.tool === 'edit');
+      assert.ok(reloadOffPreparations.some(event => event.slot === 'call') && reloadOffPreparations.some(event => event.slot === 'result'), 'reloaded extension graph positively observes both native stock edit callbacks');
+      const nativeReloadTerminal = await start('reload-native-control', { tidyUi: false, session: wide.session, workspace: live.work });
+      const nativeReload = await nativeReloadTerminal.capture('native-reload-control');
+      await nativeReloadTerminal.close();
+      assert.deepEqual(reloadOff.tools.map(tool => tool.expanded), nativeReload.tools.map(tool => tool.expanded), 'reload Off and stock replay have the same Pi expansion state');
+      const failedEdits = reloadOff.tools.map((tool, index) => tool.name === 'edit' && tool.isError ? index : -1).filter(index => index >= 0);
+      assert.ok(failedEdits.length > 0);
+      assert.ok(failedEdits.every(index => reloadOff.tools[index].argsComplete === false && nativeReload.tools[index].argsComplete === false),
+        'both restored-history controls retain Pi argsComplete=false, so stock edit preflight is not forced');
+      assert.ok(native.tools.filter(tool => tool.name === 'edit' && tool.isError).every(tool => tool.argsComplete === true),
+        'the live error control has Pi argsComplete=true, distinguishing its native preflight phase');
+      assert.deepEqual(toolLines(reloadOff), toolLines(nativeReload), 'the reloaded Off graph preserves exact native edit rows and ANSI colors for identical saved history');
+      const reloadOffAttemptCount = deferredNativePreparation(live).attempts.filter(event => event.epoch === reloadEpoch).length;
+      await live.appearance(true);
+      const reloadOn = await preparedCapture(live, 'reload-on'); await checkPreview(reloadOn, 'reload-on');
+      assert.equal(deferredNativePreparation(live).attempts.filter(event => event.epoch === reloadEpoch).length, reloadOffAttemptCount, 'reloaded graph returns to the custom view without new stock callbacks');
        const warmStats = await live.cacheSnapshot(); const warm = await preparedCapture(live, 'warm');
        const warmAgainStats = await live.cacheSnapshot(); const warmAgain = await preparedCapture(live, 'warm-again');
        assert.equal(warmAgainStats.builds, warmStats.builds, 'warm CLI frames do not rebuild/re-highlight edit layouts');
-       for (const frame of [warm, warmAgain]) assert.equal(frame.nativeRenderCalls.edit ?? 0, reloaded.nativeRenderCalls.edit ?? 0,
-         'both warm observations add exactly zero native renders to the post-reload baseline');
+       for (const frame of [warm, warmAgain]) assert.equal(frame.nativeRenderCalls.edit ?? 0, reloadOn.nativeRenderCalls.edit ?? 0,
+         'both warm observations add exactly zero host tool-component renders after same-epoch native-to-owned recovery');
       assert.deepEqual(traffic(live), nativeTraffic); assert.deepEqual(readFileSync(wide.session), sessionBytes);
       await live.close();
       for (const mode of ['fullscreen', 'regular']) {
         const replay = await start(`edit-replay-${mode}`, { tidyUi: true, session: wide.session, workspace: stock.work, mode });
-        const resumed = await preparedCapture(replay, 'replayed'); await check(resumed, false, `dark-${mode}`);
-        await replayColors(resumed, wide); assert.deepEqual(persisted(resumed), persisted(wide));
+        const replayProbe = deferredNativePreparation(replay);
+        assert.ok(replayProbe.probes.length > 0, `${mode} replay installs the same-graph native observer`);
+        const replayEpoch = replayProbe.probes.at(-1).epoch;
+        const preview = await preparedCapture(replay, 'replayed-preview'); await checkPreview(preview, `dark-${mode}`);
+        assert.deepEqual(deferredNativePreparation(replay).attempts.filter(event => event.epoch === replayEpoch), [], `${mode} restored preview stays cold`);
+        replay.send('\x0f'); await replay.settle();
+        const resumed = await preparedCapture(replay, 'replayed-full'); await check(resumed, false, `dark-${mode}`, true);
+        await replayColors(resumed, wide, true); assert.deepEqual(persisted(resumed), persisted(wide));
         const htmlBlock = resumed.tools[4].lines.map(plain), htmlStart = replayBlockStart(resumed, htmlBlock);
         const codeRow = htmlBlock.findIndex(line => /^\s*┃\s+\d+ [ +\-] /.test(line));
         const from = /^\s*┃\s+\d+ [ +\-] /.exec(htmlBlock[codeRow])[0].length;
@@ -283,16 +365,39 @@ test('real CLI: OpenCode-style edit syntax, numbered unified/split format, error
           const damaged = { ...resumed, cells: resumed.cells.slice() }, y = htmlStart + codeRow;
           damaged.cells[y] = resumed.cells[y].slice();
           damaged.cells[y][column] = { ...resumed.cells[y][column], [field]: resumed.cells[y][column][field] ^ 1 };
-          await assert.rejects(() => replayColors(damaged, wide), `comparison detects ${field} corruption at column ${column}`);
+          await assert.rejects(() => replayColors(damaged, wide, true), `comparison detects ${field} corruption at column ${column}`);
         }
         assert.equal(resumed.nativeRenderCalls.edit ?? 0, 0, `${mode} replay uses the native-free custom path`);
+        assert.deepEqual(deferredNativePreparation(replay).attempts.filter(event => event.epoch === replayEpoch), [], `${mode} restored full cards remain stock-preparation free`);
         assert.deepEqual(toolLines(await preparedCapture(replay, 'replayed-warm')), toolLines(resumed), 'warm replay does not replace the accepted exact fallback');
+        let finalPaletteCapture;
         for (const theme of ['light', 'gruvbox-dark-hard']) {
           await replay.command(`/tidy-ui-theme ${theme}`);
           const changed = await preparedCapture(replay, `palette-${theme}`);
-          await check(changed, false, `${theme === 'light' ? 'light' : 'gruvbox'}-${mode}`);
+          await check(changed, false, `${theme === 'light' ? 'light' : 'gruvbox'}-${mode}`, true);
           assert.deepEqual(persisted(changed), persisted(wide), 'palette changes leave source/session data intact');
+          finalPaletteCapture = changed;
         }
+        const stockReplay = await start(`edit-stock-replay-${mode}`, { tidyUi: false, session: wide.session, workspace: stock.work, mode });
+        await stockReplay.command('/tidy-ui-theme gruvbox-dark-hard');
+        stockReplay.send('\x0f'); await stockReplay.settle();
+        const stockReplayFull = await stockReplay.capture('replayed-native-full');
+        await stockReplay.close();
+        const beforeReplayOff = deferredNativePreparation(replay);
+        assert.deepEqual(beforeReplayOff.attempts.filter(event => event.epoch === replayEpoch), [], `${mode} replay color/layout updates remain stock-preparation free before Off`);
+        await replay.appearance(false);
+        const replayOff = await replay.capture('replayed-off');
+        assert.deepEqual(replayOff.tools.map(tool => tool.expanded), stockReplayFull.tools.map(tool => tool.expanded),
+          `${mode} replay Off and pure Pi replay have the same expansion state`);
+        assert.deepEqual(toolLines(replayOff), toolLines(stockReplayFull),
+          `${mode} replay Off preserves exact styled native rows against the same-session, same-theme pure Pi replay`);
+        const replayOffPreparations = deferredNativePreparation(replay).attempts.filter(event => event.epoch === replayEpoch && event.tool === 'edit');
+        assert.ok(replayOffPreparations.some(event => event.slot === 'call') && replayOffPreparations.some(event => event.slot === 'result'), `${mode} replay Off positively materializes both stock edit callbacks`);
+        const replayOffAttemptCount = deferredNativePreparation(replay).attempts.filter(event => event.epoch === replayEpoch).length;
+        await replay.appearance(true);
+        const replayOn = await preparedCapture(replay, 'replayed-on'); await check(replayOn, false, `gruvbox-${mode}`, true);
+        assert.deepEqual(toolLines(replayOn), toolLines(finalPaletteCapture), `${mode} replay returns to the same expanded full card after native Off`);
+        assert.equal(deferredNativePreparation(replay).attempts.filter(event => event.epoch === replayEpoch).length, replayOffAttemptCount, `${mode} replay returns to owned mode without new stock callbacks`);
         await replay.close();
         assert.equal(replay.closed, true, 'the completed replay bridge is reaped before the next independent mode');
       }
@@ -313,8 +418,8 @@ test('real CLI: OpenCode-style edit syntax, numbered unified/split format, error
         identity: 'exact traffic, persisted metadata and unchanged session bytes',
         cache: 'zero extra warm-frame builds; no alternate-width diagnostic probes',
         nativeWork: 'zero native edit renders while custom (pending/running/failure/success/resize/theme/replay); stock/expanded controls are positive',
-        reloadNativeWork: { baseline: reloaded.nativeRenderCalls.edit ?? 0, warm: warm.nativeRenderCalls.edit ?? 0,
-          warmAgain: warmAgain.nativeRenderCalls.edit ?? 0, added: (warmAgain.nativeRenderCalls.edit ?? 0) - (reloaded.nativeRenderCalls.edit ?? 0) },
+        reloadNativeWork: { baseline: reloadOn.nativeRenderCalls.edit ?? 0, warm: warm.nativeRenderCalls.edit ?? 0,
+          warmAgain: warmAgain.nativeRenderCalls.edit ?? 0, added: (warmAgain.nativeRenderCalls.edit ?? 0) - (reloadOn.nativeRenderCalls.edit ?? 0) },
         acceptedFallback: 'cold HTML may retain exact Pi mdCodeBlock foreground before lazy grammar readiness; only source foreground differs, no glyph/background/font/gutter/session/model deviation',
         scope: 'actual built-in edit; no installed AFT execution or pixel-perfect OpenCode screenshot claim' }, null, 2));
     } finally {
@@ -421,8 +526,14 @@ test('real CLI: minified edit keeps linear ANSI size, warm work, exact traffic a
       await live.close();
       for (const mode of ['fullscreen', 'regular']) {
         const replay = await start(`minified-replay-${mode}`, { tidyUi: true, session: wide.session, workspace: stock.work, mode });
+        const preview = await replay.capture('pointer-minified-preview');
+        assert.match(lines(preview.tools[0]).join('\n'), /← Edit edit-minified\.ts/);
+        assert.doesNotMatch(lines(preview.tools[0]).join('\n'), /← Edited edit-minified\.ts/);
+        replay.send('\x0f'); await replay.settle();
+        await replay.settle();
         const resumed = await replay.capture('pointer-minified-replayed'); check(resumed);
-        assert.deepEqual(toolLines(resumed), toolLines(wide)); assert.deepEqual(persisted(resumed), persisted(wide));
+        assert.deepEqual(resumed.tools[0].lines, wide.tools[0].lines, 'global expansion restores the exact complete minified edit card');
+        assert.deepEqual(persisted(resumed), persisted(wide));
         assert.equal(replay.events().filter((event) => ['call', 'result', 'model_context'].includes(event.type)).length, 0);
         await replay.close();
         assert.equal(replay.closed, true, 'the completed replay bridge is reaped before the next independent mode');

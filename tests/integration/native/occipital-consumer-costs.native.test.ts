@@ -237,6 +237,8 @@ test('current consumer geometry: actual CardSources SDK preparation warm theme w
     const dense = Array.from({ length: 256 }, (_, i) => `export const C22_v${i}={n:${i},s:"α",a:[true,null],f:(x:number)=>x+1}; // dense`).join('\n');
     await capture('sdk-dense-finite-write', async () => {
       file = new ToolExecutionComponent('write', 'c22-write', { path: 'C22_dense.ts', content: dense }, undefined, undefined, ui, root);
+      // Measure the full finite-source contract, not the default bounded preview.
+      file.setExpanded(true);
       ui.addChild(file); file.updateResult({ content: [] }, false); render(file, 60); await drain(); assert.match(render(file, 60), /C22_v0/);
     });
     const beforeDense = reports.find(row => row.phase === 'sdk-dense-finite-write')!.beforeWork as ReturnType<typeof owner.stats>;

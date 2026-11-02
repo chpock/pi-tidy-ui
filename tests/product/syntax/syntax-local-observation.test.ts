@@ -1,6 +1,7 @@
 import '../../fixtures/test-guard.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { stripVTControlCharacters } from 'node:util';
 import { observeSyntaxLocalWork, observeSyntaxCards, observePiPaletteWork, createWriteCaptureGate, type WriteCaptureObservation, type SyntaxCardObservation } from '../../fixtures/syntax-local-work.ts';
 import { Container } from '@earendil-works/pi-tui';
 import { dirname, resolve } from 'node:path';
@@ -16,6 +17,7 @@ import { CARD_ROLES } from '../../../src/occipital/semantic-codec.ts';
 import { hostCells } from '../../fixtures/host-cells.ts';
 import { samplePiPalette } from '../../../src/syntax/pi-palette.ts';
 import { compileStyleAnsi } from '../../../src/syntax/style-ansi.ts';
+import { resolvePublicFileToolDefinition } from '../../fixtures/sdk-contract-support.ts';
 
 function writeCaptureJournal(gate: ReturnType<typeof createWriteCaptureGate>, observe: (event: WriteCaptureObservation) => void = () => {}) {
   return {
@@ -86,7 +88,7 @@ test('syntax card observations follow actual preparation and only outer-accepted
   try {
     adapter = installTidyUi(ui, () => themes.theme, { syntax: { client: { sources, snapshot: () => ({ enabled: false,
       selected: { kind: 'pi' }, standaloneVersion: 'test', provider }) }, palette: () => 1, classify: text => [text] } });
-    const node = new ToolExecutionComponent('write', 'observed', { path: 'observer.ts', content: 'const observed=1;' }, undefined, undefined, ui, '/tmp');
+    const node = new ToolExecutionComponent('write', 'observed', { path: 'observer.ts', content: 'const observed=1;' }, undefined, resolvePublicFileToolDefinition('write', undefined, '/tmp'), ui, '/tmp');
     ui.addChild(node); node.updateResult({ content: [], isError: false }, false);
     node.render(60); for (let i = 0; i < 8; i++) await new Promise<void>(resolve => setImmediate(resolve));
     assert.ok(events.some(e => e.type === 'syntax_card_prepare' && e.kind === 'write' && e.path === 'observer.ts'));
@@ -94,7 +96,7 @@ test('syntax card observations follow actual preparation and only outer-accepted
     const visit = CardSources.prototype.visit;
     const acceptedBefore = events.filter(e => e.type === 'syntax_card_publication').length;
     node.render(24); assert.ok(events.filter(e => e.type === 'syntax_card_publication').length > acceptedBefore);
-    const edit = new ToolExecutionComponent('edit', 'same-path-edit', { path: 'observer.ts', oldText: 'const observed=1;', newText: 'const observed=2;' }, undefined, undefined, ui, '/tmp');
+    const edit = new ToolExecutionComponent('edit', 'same-path-edit', { path: 'observer.ts', oldText: 'const observed=1;', newText: 'const observed=2;' }, undefined, resolvePublicFileToolDefinition('edit', undefined, '/tmp'), ui, '/tmp');
     ui.addChild(edit); edit.updateResult({ content: [], details: { diff: '-1 const observed=1;\n+1 const observed=2;' }, isError: false }, false);
     edit.render(60);
     for (let i = 0; i < 8; i++) await new Promise<void>(resolve => setImmediate(resolve));
@@ -198,7 +200,7 @@ test('C25C saved write cold dump precedes bounded Pi preparation and its render 
       timeline.push({ event: 'classify', path: info.path, language: info.language, units: text.length }); return rows;
     } } });
     const nodes = fixtures.map(({ details, ...args }, i) => {
-      const node = new ToolExecutionComponent('write', `terminal-1-${i === 7 ? 8 : i}`, args, undefined, undefined, ui, '/tmp');
+      const node = new ToolExecutionComponent('write', `terminal-1-${i === 7 ? 8 : i}`, args, undefined, resolvePublicFileToolDefinition('write', undefined, '/tmp'), ui, '/tmp');
       ui.addChild(node); node.updateResult({ content: [], isError: false, details }, false); return node;
     });
     const before = JSON.stringify(fixtures);
@@ -210,7 +212,11 @@ test('C25C saved write cold dump precedes bounded Pi preparation and its render 
     assert.equal(prepared, fixtures.length);
     assert.ok(calls.length > 0); assert.ok(calls.every(call => call.styled));
     const first = calls.find(call => call.info.path === 'write-created.ts')!;
-    assert.equal(first.text, created.join('\n')); assert.equal(first.info.language, 'typescript');
+    assert.equal(first.text, created.slice(0, 10).join('\n'), 'collapsed saved write classifies only its accepted physical prefix');
+    assert.equal(first.info.language, 'typescript');
+    const coldText = stripVTControlCharacters(cold[0]!.join('\n'));
+    assert.match(coldText, /Click to expand/);
+    assert.doesNotMatch(coldText, /WRITE_TAIL_19/);
     const warm = nodes.map(node => node.render(100));
     const classified = calls.length;
     assert.notDeepEqual(warm[0], cold[0]);

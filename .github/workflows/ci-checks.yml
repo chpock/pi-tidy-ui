@@ -71,7 +71,7 @@ jobs:
             if (coverage === 'complete' && !shard) throw new Error('Complete CLI requires its planned shard');
             if (coverage === 'compatibility' && (shard || nightly)) throw new Error('Physical compatibility is unsharded and cannot replace nightly complete coverage');
           }
-          if (['delivery','daemon'].includes(layer) && (nightly || process.env.PI_VERSION !== '1.0.0')) throw new Error('Delivery checks run once per Node on the minimum Pi, never nightly');
+          if (['delivery','daemon'].includes(layer) && (nightly || process.env.PI_VERSION !== '1.0.1')) throw new Error('Delivery checks run once per Node on the minimum Pi, never nightly');
           const suite = layer === 'cli' ? coverage === 'compatibility' ? 'cli-compatibility' : 'cli' : layer === 'delivery' ? 'native-release' : layer === 'daemon' ? 'daemon-regression' : nightly ? 'compatibility' : 'unit';
           const selection = resolveSelection(process.cwd(), {suite, ...(shard ? {shard} : {})});
           for (const [key,value] of Object.entries({suite, ...Object.fromEntries(['native','integration','shared'].map(key => [key,selection.requirements.includes(key)]))})) {

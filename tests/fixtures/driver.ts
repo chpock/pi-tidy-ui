@@ -1,6 +1,7 @@
 // Offline real-CLI fixture: built-ins stay real unless the isolated bash-shape opt-in is set.
 import { CustomEditor, ToolExecutionComponent, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { createAssistantMessageEventStream, Type, type ToolCall } from "@earendil-works/pi-ai";
+import { createAssistantMessageEventStream, type ToolCall } from "@earendil-works/pi-ai";
+import { Type } from "typebox";
 import { Container, Text, matchesKey, type TUI, type OverlayHandle } from "@earendil-works/pi-tui";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { followPiText } from "./follow-pi-source.ts";
@@ -137,6 +138,14 @@ export default function terminalDriver(pi: ExtensionAPI) {
     { name: "write", arguments: { path: "write-cleared.ts", content: "" } },
     { name: "write", arguments: { path: "write-directory", content: "FAILED_WRITE_PAYLOAD" } },
   ];
+  const writeWindowBatch: Pick<ToolCall, "name" | "arguments">[] = Array.from({ length: 12 }, (_, index) => ({
+    name: "write", arguments: { path: `rolling-window-${String(index).padStart(2, '0')}.ts`,
+      content: Array.from({ length: 12 }, (_, row) => `const ROLLING_${String(index).padStart(2, '0')}_ROW_${String(row).padStart(2, '0')} = ${row};`).join("\n") },
+  }));
+  const writeWindowShort: Pick<ToolCall, "name" | "arguments">[] = [{
+    name: "write", arguments: { path: "rolling-window-late.ts",
+      content: Array.from({ length: 12 }, (_, row) => `const ROLLING_12_ROW_${String(row).padStart(2, '0')} = ${row};`).join("\n") },
+  }];
   const writeShapeCases = ["created", "edited", "replaced", "cleared", "noop", "context-only", "truncated", "malformed", "plain", "hidden"];
   const writeShapeSuite: Pick<ToolCall, "name" | "arguments">[] = [
     ...writeShapeCases.map(fixtureCase => ({ name: "write", arguments: { path: `write-${fixtureCase}.ts`,
@@ -490,7 +499,7 @@ export default function terminalDriver(pi: ExtensionAPI) {
         const user: any = context.messages[last];
         const prompt = typeof user?.content === "string" ? user.content :
           user?.content?.filter((c: any) => c.type === "text").map((c: any) => c.text).join("");
-        const scenario = prompt === 'run follow-pi-palette' ? 'follow-pi-palette' : prompt === 'run bash-empty-stream' ? 'bash-empty-stream' : /^run highlighting-limits-(bash|write|edit)$/.test(prompt ?? "") ? prompt.slice(4) : prompt === "run syntax-long-output" ? "syntax-long-output" : prompt === "run bash-prefix-contract" ? "bash-prefix-contract" : prompt === "run syntax-cards" ? "syntax-cards" : prompt === "run syntax-shebang" ? "syntax-shebang" : prompt?.includes("run write-stock") ? "write-stock" : prompt?.includes("run write-shapes") ? "write-shapes" : prompt?.includes("run edit-performance") ? "edit-performance" : prompt?.includes("run edit-cards") ? "edit-cards" : prompt?.includes("run user-card") ? "user-card" : prompt === "run cache-performance" ? "cache-performance" : prompt?.includes("bash-width") ? "bash-width" : prompt?.includes("bash-stream") ? "bash-stream" : prompt?.includes("bash-real") ? "bash-real" :
+        const scenario = prompt === 'run follow-pi-palette' ? 'follow-pi-palette' : prompt === 'run bash-empty-stream' ? 'bash-empty-stream' : /^run highlighting-limits-(bash|write|edit)$/.test(prompt ?? "") ? prompt.slice(4) : prompt === "run syntax-long-output" ? "syntax-long-output" : prompt === "run bash-prefix-contract" ? "bash-prefix-contract" : prompt === "run syntax-cards" ? "syntax-cards" : prompt === "run syntax-shebang" ? "syntax-shebang" : prompt === "run write-window-batch" ? "write-window-batch" : prompt === "run write-window-empty" ? "write-window-empty" : prompt === "run write-window-short" ? "write-window-short" : prompt?.includes("run write-stock") ? "write-stock" : prompt?.includes("run write-shapes") ? "write-shapes" : prompt?.includes("run edit-performance") ? "edit-performance" : prompt?.includes("run edit-cards") ? "edit-cards" : prompt?.includes("run user-card") ? "user-card" : prompt === "run cache-performance" ? "cache-performance" : prompt?.includes("bash-width") ? "bash-width" : prompt?.includes("bash-stream") ? "bash-stream" : prompt?.includes("bash-real") ? "bash-real" :
           prompt?.includes("bash-shape-timeout-stream") ? "bash-shape-timeout-stream" : prompt?.includes("bash-shape-timeouts") ? "bash-shape-timeouts" :
           prompt?.includes("bash-shape-exception-stream") ? "bash-shape-exception-stream" : prompt?.includes("bash-shape-exceptions") ? "bash-shape-exceptions" :
           prompt?.includes('bash-shape-tasks') ? 'bash-shape-tasks' : prompt?.includes("bash-shape-reminders") ? "bash-shape-reminders" : prompt?.includes("bash-shape-stream") ? "bash-shape-stream" : prompt?.includes("bash-shapes") ? "bash-shapes" :
@@ -508,7 +517,8 @@ export default function terminalDriver(pi: ExtensionAPI) {
         if (writeShape && scenario !== "write-shapes") throw new Error("write-shape opt-in is isolated from all other scenarios");
         if (scenario.startsWith("footer-") && process.env.TIDY_UI_TEST_FOOTER_HISTORY !== "1") throw new Error("footer-history requests require explicit isolated opt-in");
         const volume = scenario.startsWith("highlighting-limits-") ? JSON.parse(readFileSync(join(output, 'highlighting-limits.json'), 'utf8')) as { calls: Pick<ToolCall, "name" | "arguments">[]; prefixes?: string[] } : undefined;
-        const calls: Pick<ToolCall, "name" | "arguments">[] = volume ? volume.calls : scenario === 'follow-pi-palette' ? [
+        if (scenario.startsWith("write-window-") && !writeDiagnostics) throw new Error("write-window scenario requires write card diagnostics");
+        const calls: Pick<ToolCall, "name" | "arguments">[] = volume ? volume.calls : scenario === "write-window-batch" ? writeWindowBatch : scenario === "write-window-empty" ? [] : scenario === "write-window-short" ? writeWindowShort : scenario === 'follow-pi-palette' ? [
           { name: 'bash', arguments: { command: "printf '%s\\n' 'FOLLOW_PI_BASH'" } },
           { name: 'write', arguments: { path: 'follow-pi.md', content: followPiText } },
           { name: 'edit', arguments: { path: 'follow-pi.md', oldText: followPiText, newText: followPiText.replace('gone', 'fixed') } },
@@ -612,7 +622,7 @@ export default function terminalDriver(pi: ExtensionAPI) {
           }
           message.content[0] = call;
           stream.push({ type: "toolcall_delta", contentIndex: 0, delta: JSON.stringify(call.arguments), partial: message });
-          if ((scenario === "pending" || scenario === "bash-stream" || scenario === "syntax-cards" || scenario === "edit-cards" || (writeDiagnostics && scenario.startsWith("write-"))) && step === 0) {
+          if ((scenario === "pending" || scenario === "bash-stream" || scenario === "syntax-cards" || scenario === "edit-cards" || (writeDiagnostics && ["write-stock", "write-shapes"].includes(scenario))) && step === 0) {
             record({ type: "provider_gate" });
             await gate("provider-go", options?.signal);
           }
@@ -796,6 +806,7 @@ export default function terminalDriver(pi: ExtensionAPI) {
           ({ width, text: node.getText(), padding: node.getPaddingX(), lines: node.render(width) }))[0],
         ...(spinnerDiagnostics ? { spinnerStats, spinnerWork } : {}),
         ...(editDiagnostics ? { nativeRenderCalls } : {}),
+        ...(writeDiagnostics ? { fullRedraws: tui.fullRedraws } : {}),
         selectionActive: typeof tui.hasActiveSelection === "function" ? tui.hasActiveSelection() : false,
         frameStyles: {
           border: ctx.ui.theme.fg("borderMuted", "┃"),

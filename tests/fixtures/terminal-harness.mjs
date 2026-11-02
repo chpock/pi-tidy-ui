@@ -27,6 +27,13 @@ export const lines = (tool) => tool.lines.map(plain).filter((line) => line.trim(
 export const byName = (dump, name) => dump.tools.filter((tool) => tool.name === name);
 export const nativeTiming = (value) => value.replace(/Took \d+(?:\.\d+)?s/g, 'Took <runtime>s');
 export const toolLines = (dump) => dump.tools.map(({ name, lines }) => ({ name, lines: lines.map(nativeTiming) }));
+export function deferredNativePreparation(terminal) {
+  const events = terminal.events();
+  return {
+    probes: events.filter(event => event.type === 'deferred_native_probe'),
+    attempts: events.filter(event => event.type === 'deferred_native_materialize'),
+  };
+}
 export { assertFits } from './terminal-rows.mjs';
 
 export async function until(check, label, timeout = 12000) {

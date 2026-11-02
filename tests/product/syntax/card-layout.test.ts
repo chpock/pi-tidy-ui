@@ -12,7 +12,7 @@ import { compileStyleAnsi } from '../../../src/syntax/style-ansi.ts';
 import type { PreparedCard, PreparedRegion, ReadyCardPaint, CardDisplayInput } from '../../../src/syntax/cards.ts';
 import type { CardLayout, CardRows, CardFunding } from '../../../src/syntax/card-layout.ts';
 import { SourceController } from '../../../src/occipital/controller.ts';
-import { getThemeByName } from '../../../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js';
+import { getThemeByName, setThemeInstance } from '../../../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js';
 import { createSemanticRuleDefinition } from '../../../src/syntax/semantic-rules.ts';
 import { fingerprintRules } from '../../../src/occipital/style-rules.ts';
 import { syntheticSelection } from '../../fixtures/test-style-selection.ts';
@@ -144,6 +144,35 @@ test('card layout: sparse FILE full-source byte offsets, side selection, gaps, s
     assert.equal(old.getCell(10)!.getChars(), 'o'); assert.equal(old.getCell(10)!.getFgColor(), 1); assert.equal(old.getCell(10)!.getBgColor(), 52);
     assert.equal(added.getCell(10)!.getChars(), '界'); assert.equal(added.getCell(10)!.getFgColor(), 4); assert.equal(added.getCell(10)!.getBgColor(), 22);
   } finally { t.dispose(); out.dispose(); l.dispose(); f.dispose(); }
+});
+
+test('card layout: bounded file preview limits wrapped visual code rows and signals expansion', () => {
+  const f = fixture(), d = file(f, ['z'.repeat(500)]);
+  d.preview = true; d.omitted = true; d.note = f.region('Preview data is limited.');
+  const preview = layoutCard(d, { width: 32 }, f)!;
+  assert.ok(preview.expandable, 'visual wrapping beyond the preview limit keeps an expansion affordance');
+  const painted = preview.paint(d, paint(), f)!;
+  const visible = rows(painted).map(plain), code = visible.filter(row => row.includes('z'));
+  assert.equal(code.length, 10, 'one long physical row is clipped to ten visual code rows');
+  assert.ok(visible.some(row => row.includes('Click to expand')),
+    `bounded preview should keep the common overflow marker visible across wrapped rows:\n${visible.join('\n')}`);
+
+  const mixed = file(f, ['context row', 'old value', 'new value'], [' ', '-', '+']);
+  mixed.mode = 'diff'; mixed.preview = true; mixed.omitted = true; mixed.note = f.region('Saved diff preview.');
+  const mixedLayout = layoutCard(mixed, { width: 140 }, f)!;
+  const mixedRows = mixedLayout.paint(mixed, paint(), f)!;
+  const mixedText = rows(mixedRows).map(plain);
+  assert.ok(mixedText.some(row => row.includes('context row')) && mixedText.some(row => row.includes('old value')) && mixedText.some(row => row.includes('new value')),
+    `bounded mixed previews preserve the unified prefix: ${mixedText.join(String.fromCharCode(10))}`);
+  assert.ok(!mixedText.some(row => row.includes('old value') && row.includes('new value')), 'preview mode never switches to split columns that can duplicate or lose prefix rows');
+  assert.ok(mixedText.some(row => row.includes('Click to expand')), 'the common overflow marker is independent of the normal note');
+
+  d.preview = undefined; d.note = undefined;
+  const full = layoutCard(d, { width: 32 }, f)!;
+  const fullRows = full.paint(d, paint(), f)!;
+  assert.ok(rows(fullRows).filter(row => plain(row).includes('z')).length > 10, 'full mode retains its complete saved row');
+  mixedRows.dispose(); mixedLayout.dispose();
+  fullRows.dispose(); full.dispose(); painted.dispose(); preview.dispose(); f.dispose();
 });
 
 test('card layout: split diff context uses each visible side grammar and unified context uses the new grammar', async () => {
@@ -300,7 +329,7 @@ function realCards() {
     isReady: () => false, classificationAccepted: () => false, request: async () => { sourceStyle++; throw Error('unexpected SOURCE/STYLE'); } };
   const sources = new SourceController(provider), runtime = new SyntaxRuntime({ standaloneVersion: '0.0.0', settings: { load: async () => ({ ok: true, syntaxTheme: { kind: 'pi' } }), update: async () => ({ ok: true }) },
     provider: { tryShared: async () => undefined, acquireOwned: async () => { throw Error('unexpected provider'); } } });
-  const theme = getThemeByName('system')!;
+  const theme = getThemeByName('system')!; setThemeInstance(theme);
   const sampled = { owner: new WeakRef(theme), colors: theme.colors,
     getFgAnsi(role: Parameters<typeof theme.getFgAnsi>[0]) { samples++; return theme.getFgAnsi(role); },
     getBgAnsi(role: Parameters<typeof theme.getBgAnsi>[0]) { samples++; return theme.getBgAnsi(role); }, counters: () => ({ foreground: 0, background: 0 }) };

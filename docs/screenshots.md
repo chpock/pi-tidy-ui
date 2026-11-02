@@ -36,7 +36,7 @@ mkdir -p "$RECEIPTS"
 /usr/bin/python3 -I -S scripts/test/safe-run.py \
   --label screenshot-prepare --receipt "$RECEIPTS/prepare-01.json" \
   --limit-seconds 600 -- \
-  "$NODE" scripts/test/prepare.mjs --pi-version 1.0.0 \
+  "$NODE" scripts/test/prepare.mjs --pi-version 1.0.1 \
   --tools "$PWD/scripts/screenshot/tools.example.json" \
   --rust-root "$RUST_ROOT" --build-native --output "$INPUT_ROOT"
 

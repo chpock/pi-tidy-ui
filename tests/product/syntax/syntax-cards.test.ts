@@ -9,8 +9,10 @@ import assert from 'node:assert/strict';
 import { afterEach, test } from 'node:test';
 import { setImmediate as turn } from 'node:timers/promises';
 import { highlightCode } from '@earendil-works/pi-coding-agent';
-import { getThemeByName } from '../../../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js';
+import { getThemeByName, initTheme, setThemeInstance } from '../../../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js';
 import { CardSources, type CardDisplayInput, type CardPreparation, type PreparedCard, type ReadyCardPaint } from '../../../src/syntax/cards.ts';
+import { DataBudget } from '../../../src/occipital/data-budget.ts';
+import { layoutCard, type CardRows } from '../../../src/syntax/card-layout.ts';
 import { SourceController, type ControllerOptions } from '../../../src/occipital/controller.ts';
 import { decodeSemanticDescription } from '../../../src/occipital/semantic-protocol.ts';
 import { fingerprintRules } from '../../../src/occipital/style-rules.ts';
@@ -63,7 +65,7 @@ function fixture(ready = false, options: ControllerOptions = {}, maxBookkeepingB
   const runtime = new SyntaxRuntime({ standaloneVersion: '0.0.0', settings: { load: async () => ({ ok: true, syntaxTheme: { kind: 'pi' } }), update: async () => ({ ok: true }) },
     provider: { tryShared: async () => undefined, acquireOwned: async () => { throw Error('unexpected provider'); } } });
   const paletteInputs = new PaletteInputOwner();
-  let theme = getThemeByName('system')!;
+  let theme = getThemeByName('system')!; setThemeInstance(theme);
   const sampled = { get colors() { return theme.colors; }, getFgAnsi(role: Parameters<typeof theme.getFgAnsi>[0]) { env.samples++; if (env.poison) throw Error('Pi poison'); return theme.getFgAnsi(role); },
     getBgAnsi(role: Parameters<typeof theme.getBgAnsi>[0]) { env.samples++; if (env.poison) throw Error('Pi poison'); return theme.getBgAnsi(role); } };
   runtime.palette(sampled);
@@ -103,7 +105,7 @@ function fixture(ready = false, options: ControllerOptions = {}, maxBookkeepingB
         indices: q.contexts.map(() => 1) } });
     },
     fault(i: number, execution: 'not_started' | 'unknown' = 'not_started') { calls[i]!.done = true; calls[i]!.reject(new RequestFailure('busy', execution)); },
-    piTheme(name: string) { theme = getThemeByName(name)!; runtime.palette(sampled); paletteRevision = paletteInputs.palette(sampled, resolveTheme(env.selected).effective); cards.metadataChanged(paletteRevision); return paletteRevision; },
+    piTheme(name: string) { theme = getThemeByName(name)!; setThemeInstance(theme); runtime.palette(sampled); paletteRevision = paletteInputs.palette(sampled, resolveTheme(env.selected).effective); cards.metadataChanged(paletteRevision); return paletteRevision; },
     followPi() { env.selected = { kind: 'pi' }; paletteRevision = paletteInputs.palette(sampled, resolveTheme(env.selected).effective); cards.metadataChanged(paletteRevision); return paletteRevision; },
     theme(id = 'gruvbox-dark') {
       env.selected = { kind: 'theme', id };
@@ -115,14 +117,163 @@ function fixture(ready = false, options: ControllerOptions = {}, maxBookkeepingB
 }
 async function settle() { for (let i = 0; i < 8; i++) await turn(); }
 afterEach(async () => { for (const f of fixtures) { f.cards.dispose(); f.sources.dispose(); f.paletteInputs.dispose(); await f.runtime.dispose(); for (const c of f.calls) c.reject(new RequestFailure('cleanup', 'not_started')); }
-  await settle(); for (const f of fixtures) { assert.equal(f.sources.stats().globalUnsettledJobs, 0); assert.equal(f.sources.stats().retention.retainedBytes, 0); } fixtures.length = 0; });
+  await settle(); for (const f of fixtures) { assert.equal(f.sources.stats().globalUnsettledJobs, 0); assert.equal(f.sources.stats().retention.retainedBytes, 0); } fixtures.length = 0; initTheme('system', false); });
 function inspect(f: ReturnType<typeof fixture>, owner: Owner, consume: (display: PreparedCard, paint: ReadyCardPaint) => void) { assert.equal(f.cards.visit(owner, consume), true); }
+function weakFilePayloads(f: ReturnType<typeof fixture>, owner: Owner) {
+  let rows: object | undefined, measurement: object | undefined;
+  inspect(f, owner, display => {
+    assert.equal(display.kind, 'file'); if (display.kind !== 'file') return;
+    rows = display.rows;
+    measurement = display.rows.find(row => row.region)?.region?.measured;
+  });
+  assert.ok(rows && measurement, 'capture an actual prepared file row array and measurement');
+  return { rows: new WeakRef(rows), measurement: new WeakRef(measurement) };
+}
+async function collectFilePayload(reference: WeakRef<object>) {
+  assert.equal(typeof global.gc, 'function', 'run the retained-file regression with the prepared GC-enabled input');
+  for (let pass = 0; pass < 40; pass++) {
+    await turn(); global.gc!(); await turn();
+    if (!reference.deref()) return;
+  }
+  assert.fail('demoted full-file payload was retained while its owner stayed live');
+}
+function rowsFromLayout(output: CardRows) { const result: string[] = []; assert.equal(output.visitRows((_index, row) => result.push(row)), true); return result; }
 function command(f: ReturnType<typeof fixture>, owner: Owner) { let text: string | undefined; inspect(f, owner, d => { assert.equal(d.kind, 'bash'); if (d.kind === 'bash') text = d.command.text; }); return text; }
 function style(f: ReturnType<typeof fixture>, owner: Owner) { let color = ''; inspect(f, owner, (_d, p) => { color = p.roles.code.open; }); return color; }
 async function themeReady(f: ReturnType<typeof fixture>, owner: Owner, text = 'x\n') {
   f.theme(); f.use(owner, bash(text, true)); await settle();
   for (let i = 0; i < f.calls.length; i++) if (!f.calls[i]!.done) { if (f.calls[i]!.request.op === 'styles.resolve') f.answerStyle(i); else f.answerSource(i, text); await settle(); }
 }
+
+test('file preview identity separates bounded excerpts from full saved-file preparation', async () => {
+  const f = fixture(), owner: Owner = {};
+  const prefix = Array.from({ length: 10 }, (_, i) => `const row${i + 1} = ${i + 1};`).join('\n');
+  const preview = { ...written(`${prefix}\nSMALL_HIDDEN_SUFFIX`), viewMode: 'preview' as const };
+  f.use(owner, preview); await settle();
+  const previewKey = f.cards.identities(owner)[0]?.key;
+  assert.ok(previewKey);
+  let previewRows: string[] = [];
+  inspect(f, owner, display => { if (display.kind === 'file') previewRows = display.rows.map(row => row.region?.text ?? ''); });
+  assert.ok(previewRows.join('\n').includes('row10'));
+  assert.doesNotMatch(previewRows.join('\n'), /SMALL_HIDDEN_SUFFIX/u);
+  const firstClassifications = f.env.classifications.slice();
+  const firstRetainedBytes = f.sources.stats().retention.retainedBytes;
+  assert.ok(firstClassifications.length > 0);
+  assert.equal(f.calls.length, 0);
+
+  const largeFixture = fixture(), largeOwner: Owner = {};
+  const largeSuffix = { ...written(`${prefix}\n${'HIDDEN_SUFFIX '.repeat(100_000)}`), viewMode: 'preview' as const };
+  largeFixture.use(largeOwner, largeSuffix); await settle();
+  assert.equal(largeFixture.sources.stats().retention.retainedBytes, firstRetainedBytes,
+    'same visible prefix and revision fund the same descriptor allowance despite a much larger hidden suffix');
+  let largeRows: string[] = [];
+  inspect(largeFixture, largeOwner, display => { if (display.kind === 'file') largeRows = display.rows.map(row => row.region?.text ?? ''); });
+  assert.deepEqual(largeRows, previewRows, 'a much larger saved suffix does not change prepared preview rows');
+  assert.deepEqual(largeFixture.env.classifications, firstClassifications,
+    'the classifier receives the same bounded prefix and volume for either hidden suffix');
+
+  const modeOwner: Owner = {};
+  const fullSuffixRows = Array.from({ length: 160 }, (_, i) => `const full_tail_${i} = ${i};`).join('\n');
+  const fullTailMarker = 'full_tail_159';
+  const fullSource = `${prefix}\n${fullSuffixRows}`;
+  const sameSourcePreview = { ...written(fullSource), viewMode: 'preview' as const };
+  f.use(modeOwner, sameSourcePreview); await settle();
+  const previewRetainedBytes = f.sources.stats().retention.retainedBytes;
+  const classificationsBeforeFull = f.env.classifications.length;
+  const sameSourceFull = { ...sameSourcePreview, revision: 2, viewMode: 'full' as const };
+  f.use(modeOwner, sameSourceFull); await settle();
+  const fullRetainedBytes = f.sources.stats().retention.retainedBytes;
+  const fullIdentity = f.cards.identities(modeOwner)[0];
+  assert.ok(fullIdentity);
+  let fullRows: string[] = [], fullMeasurement: { isValid: boolean } | undefined;
+  inspect(f, modeOwner, display => { if (display.kind === 'file') {
+    fullRows = display.rows.map(row => row.region?.text ?? '');
+    fullMeasurement = display.rows.find(row => row.region)?.region?.measured;
+  } });
+  assert.ok(fullRows.length > previewRows.length);
+  assert.ok(fullRows.some(row => row.includes(fullTailMarker)));
+  assert.ok(f.env.classifications.slice(classificationsBeforeFull).some(text => text.includes(fullTailMarker)),
+    'full mode admits the entire saved suffix rather than reusing the bounded preview source');
+  assert.ok(fullRetainedBytes > previewRetainedBytes, 'the expanded source and display retain additional charged data while the owner is live');
+  const fullPayloads = weakFilePayloads(f, modeOwner);
+
+  f.use(modeOwner, { ...sameSourceFull, revision: 3, viewMode: 'preview' }); await settle();
+  const previewAfterFullBytes = f.sources.stats().retention.retainedBytes;
+  const previewIdentityAfterFull = f.cards.identities(modeOwner)[0];
+  assert.ok(previewIdentityAfterFull && previewIdentityAfterFull.version > fullIdentity.version,
+    'the live owner adopts a new bounded source version after full-to-preview demotion');
+  assert.ok(previewAfterFullBytes < fullRetainedBytes, 'the accepted smaller view releases the full display and source charges without removing the owner');
+  assert.ok(modeOwner.input && f.cards.identities(modeOwner).length === 1, 'the owner and its current preview remain retained after release');
+  let demotedRows: string[] = [];
+  inspect(f, modeOwner, display => { if (display.kind === 'file') demotedRows = display.rows.map(row => row.region?.text ?? ''); });
+  assert.deepEqual(demotedRows, previewRows, 'demotion of the still-live owner returns to the bounded preview source without the full-only suffix');
+  assert.equal(fullMeasurement?.isValid, false, 'the old measured row is invalidated at accepted demotion');
+  fullMeasurement = undefined;
+  await collectFilePayload(fullPayloads.rows);
+  await collectFilePayload(fullPayloads.measurement);
+  assert.equal(modeOwner.input?.kind, 'file');
+  if (modeOwner.input?.kind === 'file') assert.equal(modeOwner.input.node.args.content, fullSource, 'the original full call data stays with the live owner');
+});
+
+test('real mixed preview stays unified and keeps its click hint after the bounded-source note', async () => {
+  const f = fixture(), owner: Owner = {};
+  const changes = Array.from({ length: 12 }, (_, i) => `-const old_preview_${i} = ${i};\n+const new_preview_${i} = ${i + 1};`).join('\n');
+  const input = { ...edited(`@@ -1,12 +1,12 @@\n${changes}`), viewMode: 'preview' as const };
+  f.use(owner, input); await settle();
+  const funding = f.sources.geometryFunding()!;
+  const retainedBeforeLayout = funding.budget.stats().retainedBytes;
+  inspect(f, owner, (display, preparedPaint) => {
+    assert.equal(display.kind, 'file'); if (display.kind !== 'file') throw Error('missing file preview');
+    assert.equal(display.preview, true); assert.equal(display.omitted, true); assert.ok(display.note);
+    const layout = layoutCard(display, { width: 160 }, funding)!;
+    const painted = layout.paint(display, preparedPaint, funding)!;
+    const visible = rowsFromLayout(painted).map(stripVTControlCharacters);
+    const oldRow = visible.findIndex(row => row.includes('old_preview_0'));
+    const newRow = visible.findIndex(row => row.includes('new_preview_0'));
+    assert.ok(oldRow >= 0 && newRow >= 0 && oldRow !== newRow, `wide bounded edit previews remain unified instead of using split columns:\n${visible.join('\n')}`);
+    assert.ok(visible.some(row => row.includes('Preview is limited')), `the prepared bounded note remains visible:\n${visible.join('\n')}`);
+    assert.ok(visible.some(row => row.includes('Click to expand')), `visual overflow gets a separate literal expansion hint:\n${visible.join('\n')}`);
+    assert.ok(visible.filter(row => /(?:old|new)_preview_\d/u.test(row)).length <= 10);
+    painted.dispose(); layout.dispose();
+  });
+  assert.equal(funding.budget.stats().retainedBytes, retainedBeforeLayout, 'direct scene layout releases only its new geometry receipts');
+});
+
+test('funding refusal cold-discards a full file view without unregistering same-index execution authority', async () => {
+  const f = fixture(true), owner: Owner = {};
+  const fullText = `${Array.from({ length: 24 }, (_, i) => `const full${i} = ${i};`).join('\n')}\nHIDDEN_FULL_SUFFIX`;
+  const full = written(fullText); f.theme(); f.use(owner, full); await settle();
+  const identity = f.cards.identities(owner)[0]; assert.ok(identity);
+  const sourceCall = f.calls.findIndex(call => !call.done && call.request.sources?.some((source: Frame) => source.text === fullText));
+  assert.notEqual(sourceCall, -1, 'the full view has an admitted but unsettled native SOURCE request');
+  let fullMeasurement: { isValid: boolean } | undefined;
+  inspect(f, owner, display => { assert.equal(display.kind, 'file'); if (display.kind === 'file') fullMeasurement = display.rows.find(row => row.region)?.region?.measured; });
+  assert.ok(fullMeasurement?.isValid);
+  const retainedBefore = f.sources.stats().retention.retainedBytes;
+  const workBefore = f.sources.workStatus(identity.key);
+  const originalFunding = f.sources.geometryFunding.bind(f.sources);
+  f.sources.geometryFunding = () => undefined;
+  try { assert.equal(f.update(owner, { ...written(fullText, 2), viewMode: 'preview' }), false); }
+  finally { f.sources.geometryFunding = originalFunding; }
+
+  assert.equal(f.cards.visit(owner, () => assert.fail('unfunded preview must not retain the old full display')), false);
+  assert.equal(fullMeasurement.isValid, false, 'old measured rows are released at the cold boundary');
+  assert.deepEqual(f.cards.identities(owner), [identity], 'same-index key/version evidence remains registered');
+  assert.deepEqual(f.sources.workStatus(identity.key), workBefore, 'unsettled SOURCE execution authority remains unchanged');
+  assert.ok(f.sources.stats().retention.retainedBytes < retainedBefore, 'full display and compiled paint charges are released');
+
+  f.answerSource(sourceCall, fullText);
+  await settle();
+  assert.equal(f.cards.visit(owner, () => assert.fail('a late full-view reply cannot republish the discarded display')), false);
+
+  const preview = { ...written(fullText, 3), viewMode: 'preview' as const };
+  f.use(owner, preview); await settle();
+  let previewRows: string[] = [];
+  inspect(f, owner, display => { assert.equal(display.kind, 'file'); if (display.kind === 'file') previewRows = display.rows.map(row => row.region?.text ?? ''); });
+  assert.equal(f.cards.identities(owner)[0]?.key, identity.key, 'the retry reuses same-index ownership');
+  assert.ok(previewRows.length <= 10);
+  assert.doesNotMatch(previewRows.join('\n'), /HIDDEN_FULL_SUFFIX/u);
+});
 
 test('cards prepared display exists before useful work', async () => {
   const f = fixture(), owner = {};
@@ -534,6 +685,32 @@ test('cards successful write and logical file preparation reuse existing saved d
   assert.equal(logical.view.lines[0]!.kind === 'gap' ? '' : logical.view.lines[0]!.text, '\tx');
 });
 
+
+test('file preview accounting and display never scan beyond the raw source or diff prefix', () => {
+  const f = fixture(), owner = {};
+  const source = 'VISIBLE_SOURCE\n' + 'x'.repeat(16_384) + '\nHIDDEN_SOURCE_SUFFIX';
+  const diff = Array.from({ length: 1200 }, (_, i) => `+${i + 1} visible_${i + 1}`).join('\n') + '\n+1201 HIDDEN_DIFF_SUFFIX';
+  const original = String.prototype.charCodeAt; let sourceReads = 0, diffReads = 0;
+  String.prototype.charCodeAt = function(index: number) {
+    if (this.length === source.length) sourceReads++;
+    if (this.length === diff.length) diffReads++;
+    return original.call(this, index);
+  };
+  try {
+    const input = { ...written(source), viewMode: 'preview' as const, node: { ...written(source).node,
+      result: { details: { diff } } } };
+    assert.equal(f.update(owner, input), true);
+    inspect(f, owner, display => {
+      assert.equal(display.kind, 'file'); if (display.kind !== 'file') return;
+      assert.equal(display.preview, true); assert.equal(display.omitted, true); assert.ok(display.rows.length <= 10);
+      assert.ok(display.rows.some(row => row.region?.text.includes('visible_1')));
+      assert.ok(display.rows.every(row => !row.region?.text.includes('HIDDEN')));
+    });
+    assert.ok(sourceReads <= 2 * 8192, `source accounting read ${sourceReads} code units`);
+    assert.ok(diffReads <= 2 * 8192, `diff accounting read ${diffReads} code units`);
+    assert.equal(f.calls.length, 0, 'display preparation alone does not dispatch source work');
+  } finally { String.prototype.charCodeAt = original; f.cards.dispose(); }
+});
 
 test('cards lifecycle cold native preparation has zero SOURCE STYLE and classifier demand', async () => {
   const f = fixture(true), owner = {}; f.theme(); f.update(owner, bash('cold', true)); await settle();
@@ -1560,7 +1737,7 @@ for (const remaining of ['none', 'held-local', 'palette-change', 'retained-style
           counters: { committed_line_calls: 0, committed_line_bytes: 0, tail_calls: 1, tail_bytes: bytes } }] } });
     }
   }
-  const peer = new LifetimePeer(), replacement = new LifetimePeer(); let theme = getThemeByName('system')!;
+  const peer = new LifetimePeer(), replacement = new LifetimePeer(); let theme = getThemeByName('system')!; setThemeInstance(theme);
   let cards: CardSources<Owner>, metadata = 0, classifications = 0, outcomes: readonly string[] = [];
   const client = new SyntaxClient({ standaloneVersion: '0.2.0', initialTheme: { kind: 'pi' },
     provider: { tryShared: async () => {
@@ -1634,7 +1811,7 @@ for (const remaining of ['none', 'held-local', 'palette-change', 'retained-style
     if (remaining === 'palette-change' || retained) {
       const wake = client.sources.wake;
       t.mock.method(client.sources, 'wake', function(this: SourceController) { withdrawalWakes++; return wake.call(this); });
-      theme = getThemeByName('dark')!;
+      theme = getThemeByName('dark')!; setThemeInstance(theme);
       const next = { ...latest, revision: 3, palette: a.runtime.palette(theme) };
       cards.updateDisplay(owner, next); cards.useful(owner, next.revision); await settle();
       assert.ok(withdrawalWakes <= 1, 'a single actual palette replacement cannot add repeated withdrawal wakes');
@@ -1662,4 +1839,33 @@ for (const remaining of ['none', 'held-local', 'palette-change', 'retained-style
     phase = 'open'; releaseInitial?.(); releaseLocal?.(); releaseRecovery?.(); cards.dispose(); await client.dispose();
     a.sources.dispose(); for (const call of a.calls) call.reject(new RequestFailure('cleanup', 'not_started')); await settle();
   }
+});
+
+test('review F4: preview availability follows the selected view, not patch preparation success', () => {
+  const f = fixture(true), previewOwner = {}, fullOwner = {};
+  let previewEntries = 0;
+  const diagnostics = new Proxy([{ severity: 'error', line: 7, message: 'FULL_DIAGNOSTIC_MUST_NOT_LEAK' }], {
+    get(target, key, receiver) {
+      if (key === '0') previewEntries++;
+      return Reflect.get(target, key, receiver);
+    },
+  });
+  const preview = { ...edited('', 1), viewMode: 'preview' as const,
+    node: { toolName: 'edit', args: { path: 'unsupported.ts' }, isPartial: false,
+      result: { details: { patch: { unsupported: true }, diagnostics } } } };
+  assert.equal(f.update(previewOwner, preview), true);
+  assert.equal(previewEntries, 0, 'a bounded preview records only whether diagnostics exist; it does not format full messages');
+  inspect(f, previewOwner, display => {
+    if (display.kind !== 'file') assert.fail('expected file display');
+    assert.ok(display.diagnostics.some(region => region.text === 'Diagnostics available in the full file view.'));
+    assert.ok(display.diagnostics.every(region => !region.text.includes('FULL_DIAGNOSTIC_MUST_NOT_LEAK')));
+  });
+
+  const full = { ...preview, viewMode: 'full' as const };
+  assert.equal(f.update(fullOwner, full), true);
+  inspect(f, fullOwner, display => {
+    if (display.kind !== 'file') assert.fail('expected file display');
+    assert.ok(display.diagnostics.some(region => region.text.includes('FULL_DIAGNOSTIC_MUST_NOT_LEAK')),
+      'full diagnostics remain available even when an unsupported patch has no file rows');
+  });
 });

@@ -9,7 +9,8 @@ function fixture() {
   const piPalette = { kind: 'pi' }, palette = 'pi:3:truecolor', input = { palette: 3, mode: 'truecolor' };
   const display = { version: 2, palette }, slot = { version: 2, palette: 3, outcome: 'waiting' };
   let native = true, pi = false, text = 'current', visit = true;
-  const state = { revision: 4, display: { revision: 4 }, sourceRevision: 2, processed: 2, input,
+  Object.assign(input, { kind: 'file', viewMode: 'preview', sourceRevision: 2 });
+  const state = { revision: 4, display: { revision: 4 }, sourceRevision: 2, processed: '2:preview', input,
     paint: { origin: 'pi', group: { palette } }, preparedTheme: 5, preparedPalette: palette, slots: new Map([['key', slot]]) };
   const consumer = { states: new WeakMap([[owner, state]]), themeRevision: 5, selectedPalette: piPalette,
     currentPalette(current) {
@@ -61,6 +62,7 @@ function baselineFixture() {
   f.display.fingerprint = 'baseline-fingerprint';
   delete f.display.palette;
   f.state.input = { palette: 3, mode: 'truecolor' };
+  f.state.processed = f.state.sourceRevision;
   f.state.pi = { paletteRevision: 3 };
   f.state.preparedPalette = 3;
   return f;
@@ -80,6 +82,9 @@ test('performance readiness: candidate input identity and baseline Pi revision u
 
   const baseline = baselineFixture();
   assert.equal(Object.hasOwn(baseline.display, 'palette'), false);
+  baseline.state.processed = '2:preview';
+  assert.equal(preparedCardReady(baseline.consumer, baseline.owner), false, 'frozen baseline graphs require the numeric source-revision shape');
+  baseline.state.processed = baseline.state.sourceRevision;
   assert.notEqual(baseline.state.input, baseline.state.pi);
   assert.equal(preparedCardReady(baseline.consumer, baseline.owner), true);
   assert.equal(preparedHistoryPaintOriginCount(baseline.consumer, new Set(['one']), 'pi'), 1);
@@ -88,6 +93,17 @@ test('performance readiness: candidate input identity and baseline Pi revision u
   baseline.state.pi.paletteRevision = 3;
   baseline.state.input = undefined;
   assert.equal(preparedCardReady(baseline.consumer, baseline.owner), false);
+});
+
+test('performance readiness: candidate source stamp includes the numeric revision and selected view mode', () => {
+  const candidate = fixture();
+  assert.equal(preparedCardReady(candidate.consumer, candidate.owner, 'pi:'), true);
+  candidate.state.processed = '1:preview';
+  assert.equal(preparedCardReady(candidate.consumer, candidate.owner, 'pi:'), false, 'a different numeric source revision is not prepared');
+  candidate.state.processed = '2:full';
+  assert.equal(preparedCardReady(candidate.consumer, candidate.owner, 'pi:'), false, 'full and preview views have distinct prepared source identity');
+  candidate.state.processed = 2;
+  assert.equal(preparedCardReady(candidate.consumer, candidate.owner, 'pi:'), false, 'candidate graphs require the source-stamp shape');
 });
 
 test('performance readiness: ordinary unprepared states stay unready and mixed collector shapes fail closed', () => {

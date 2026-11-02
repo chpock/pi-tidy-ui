@@ -36,13 +36,13 @@ Works with Pi's built-in tools and **[AFT](https://github.com/cortexkit/aft)**, 
 
 ## Install
 
-Requires **Pi 1.0.0 or later** and **Node.js 22.19.0 or later**. See [platform support](#compatibility-and-boundaries).
+Requires **Pi 1.0.1 or later** and **Node.js 22.19.0 or later**. See [platform support](#compatibility-and-boundaries).
 
 ```sh
 pi install npm:pi-tidy-ui
 ```
 
-Start a new Pi session. Styling is enabled automatically. **Ctrl+O** reveals tool details; **`/tidy-ui`** opens theme selection and the appearance toggle.
+Start a new Pi session. Styling is enabled automatically. **Ctrl+O** reveals tool details using Tidy UI's owned file view; **`/tidy-ui`** opens theme selection and the appearance toggle.
 
 On supported platforms, the Occipital Rust daemon for your operating system and CPU architecture is downloaded and used automatically.
 
@@ -72,11 +72,11 @@ The distinction is deliberate: do not hide what is being executed, but do not le
 
 ### Code changes worth reviewing
 
-Successful **edit** calls show syntax-colored diffs with original line numbers, clear additions/removals and a little surrounding context. All available changed lines are shown. Mixed additions and removals switch to side-by-side view above 120 columns; narrower views and addition-only or removal-only changes stay unified.
+Successful **edit** calls show syntax-colored diffs with original line numbers, clear additions/removals and a little surrounding context. Full views show all available changed lines; mixed additions and removals switch to side-by-side above 120 columns, while narrower and one-sided views stay unified. Bounded live previews remain unified at every width so their selected saved prefix is not split or rearranged.
 
 Successful **write** calls show the supplied source with line numbers, or a saved diff when the tool provides one. This covers new content, additions and replacements without hiding changed lines. If a tool explicitly reports a truncated diff, the card says so and shows the submitted content instead of pretending the partial diff is complete.
 
-Pending and failed edit/write calls stay compact. Proposed arguments are never presented as a successfully applied change. These cards use the saved tool result, not a later reread of a file that may already have changed. When only submitted content is available, it is not a guarantee of the final bytes after an external formatter.
+Pending and failed edit/write calls stay compact by default. Proposed arguments are never presented as a successfully applied change. Expanded pending details use only saved data, bounded to an 8,192-unit source prefix and ten physical input rows with an omission notice; they do not silently reveal a hidden suffix. Expanded final-error details expose all available saved arguments and error text only when ordinary construction and measurement funding succeeds; refusal shows a bounded unavailable-details message without retaining the body. Successful supported file cards use the owned full view during the live turn. At `turn_end`, automatic full presentation is retained for the latest ten successful attached write/edit owners across turns in first-seen component order, regardless of completion order. A successful hidden or explicitly native-rendered call still consumes a recency slot without changing its hidden/native presentation. Restored history starts in a bounded generic preview; per-card choices remain separate from the automatic window. These cards use saved tool data, not a later reread of a file that may already have changed. When only submitted content is available, it is not a guarantee of the final bytes after an external formatter.
 
 ### Quiet exploration, details on demand
 
@@ -202,9 +202,10 @@ Confirmed code themes, terminal-color and native-highlighting preferences are sa
 
 ### Expand, select, or keep a tool native
 
-- **Ctrl+O** keeps Pi's global tool expansion behavior.
-- In **fullscreen mode**, click a completed summary or edit/write card to reveal native details; expandable Bash cards toggle their output. Active text selection is not turned into a click-to-toggle action.
-- In **regular terminal mode**, use Ctrl+O; the terminal retains mouse handling.
+- **Ctrl+O** keeps Pi's global expansion flag and requests Tidy UI's owned full view for completed edit/write cards; it does not invoke Pi's stock full-file syntax/preflight renderer. Clearing it restores each card's automatic or explicit choice.
+- In **fullscreen mode**, a selection-safe primary click inside a completed edit/write card toggles its own bounded/full view; failed summaries reveal their saved error. Pending write/edit previews remain bounded. Expandable Bash cards toggle their output. Active text selection is not turned into a click-to-toggle action.
+- In **regular terminal mode**, use Ctrl+O: Pi's regular TUI does not dispatch terminal mouse events, so per-card pointer selection is available only in fullscreen.
+- Native appearance-off, explicit per-tool native overrides and native image/hidden-component behavior remain Pi-owned.
 - Keep particular tools in Pi's original presentation or force them compact for one invocation:
 
   ```sh
@@ -217,7 +218,7 @@ The compact override wins if a tool appears in both lists. PowerShell keeps its 
 ## Compatibility and boundaries
 
 - **Platforms:** GNU Linux x64/ARM64 with glibc 2.28+, macOS x64/ARM64, and Windows x64. Windows ARM64 is currently unsupported. Pi and Node's own host requirements also apply.
-- **Pi versions:** 1.0.0 is the minimum tested host. CI checks the minimum and latest Pi; future releases are not automatically guaranteed compatible. If the expected UI integration is unavailable, the extension warns and leaves the affected presentation native.
+- **Pi versions:** 1.0.1 is the minimum supported host. CI checks the minimum and latest Pi; future releases are not automatically guaranteed compatible. If the expected UI integration is unavailable, the extension warns and leaves the affected presentation native.
 - **Terminal UI only:** print, JSON and RPC modes are unchanged. This is not an HTML-export theme or an OpenCode port.
 - **Other UI extensions:** [Custom editors disable pi-tidy-ui's input styling and footer, not its tool cards](#a-coherent-conversation-and-input-area). Multiple extensions replacing the same footer/rendering methods are not guaranteed to compose. Avoid running multiple extensions that change the terminal background.
 - **Nothing is secretly removed from the agent's view.** Compact summaries and previews affect your display, not prompts, tool arguments, results or saved sessions. Displayed secret-key masking is not a security boundary; expanded content and session files can still contain sensitive data.

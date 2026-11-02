@@ -9,6 +9,7 @@ import { ToolExecutionComponent as NativeToolExecution, createEditToolDefinition
 import { cardGeometry, frameRows, insidePanel } from "../../../src/card-frame.ts";
 import { editorGeometry } from "../../../src/editor-card.ts";
 import { measureFileCard } from "../../../src/file-card.ts";
+import { SourceController } from "../../../src/occipital/controller.ts";
 import type { CardTheme } from "../../../src/card-theme.ts";
 import { hostCells, hasHostInk } from '../../fixtures/host-cells.ts';
 import { cardInputTheme } from '../../fixtures/sdk-contract-support.ts';
@@ -464,6 +465,7 @@ test("Output padding updates every tool layout cache, inline measurement and pan
   const edit = new Tool("edit", { path: "padding.ts" }); edit.updateResult({ content: [], details: { diff: "-1 const before = 1;\n+1 const after = 2;" } }, edit.isPartial);
   const write = new Tool("write", { path: "padding.ts", content: "const written = 3;\n" });
   const inline = new Tool("edit", { path: "inline-" + "x".repeat(90) + ".ts" }); inline.updateResult({ content: [] }, inline.isPartial);
+  inline.setExpanded(true);
   const { root, controller } = setup([compact, bash, edit, write, inline], { outputPad: () => { settingsReads++; return padding; } });
   try {
     for (const value of [1, 0, 1]) {
@@ -576,3 +578,40 @@ function cacheMenuStats(text: string) {
     presentationRetainedBytes, footerLayout: footer, processHeapUsedBytes: Number(/Whole Pi process heap: (\d+)/u.exec(text)![1]),
     ordinary: { entries: byKind.summary.entries }, cards: { entries: byKind.bash.entries + byKind.edit.entries + byKind.write.entries } };
 }
+
+test("review F5: file service rows fit narrow widths with output padding", () => {
+  let padding = 0;
+  const waiting = new Tool("write", { path: "waiting.ts" });
+  waiting.updateResult(undefined, true); waiting.setExpanded(true);
+  const omitted = new Tool("write", { path: "omitted.ts", content: Array.from({ length: 80 }, (_, i) => `const pending_${i} = ${i};`).join("\n") });
+  omitted.updateResult(undefined, true); omitted.setExpanded(true);
+  const error = new Tool("write", { path: "error.ts" });
+  error.updateResult({ isError: true, content: [] }, false); error.setExpanded(true);
+  const unsupported = new Tool("edit", { path: "unsupported.ts", oldText: "before", newText: "after" });
+  unsupported.updateResult({ content: [], isError: false, details: { patch: { unsupported: true } } }, false);
+  const refused = new Tool("write", { path: "refused.ts", content: "const saved = true;" });
+  refused.updateResult({ content: [], isError: false }, false); refused.setExpanded(true);
+  const { controller } = setup([waiting, omitted, error, unsupported, refused], { outputPad: () => padding });
+  const originalFunding = SourceController.prototype.geometryFunding;
+  try {
+    for (padding of [0, 1, 2]) for (const width of [1, 2, 24, 60, 100]) {
+      for (const [name, tool] of [["waiting", waiting], ["omitted", omitted], ["error", error], ["unsupported", unsupported]] as const) {
+        const rows = tool.render(width);
+        assert.ok(rows.every(row => visibleWidth(row) <= width), `${name}: width=${width}, padding=${padding}, rows=${JSON.stringify(rows)}`);
+      }
+      SourceController.prototype.geometryFunding = () => undefined;
+      try {
+        const rows = refused.render(width);
+        assert.ok(rows.every(row => visibleWidth(row) <= width), `refused: width=${width}, padding=${padding}, rows=${JSON.stringify(rows)}`);
+      } finally { SourceController.prototype.geometryFunding = originalFunding; }
+    }
+    padding = 0;
+    assert.ok(waiting.render(100).some(row => plain(row).includes("Waiting for file content.")));
+    assert.ok(omitted.render(100).some(row => plain(row).includes("additional file content is omitted")));
+    assert.ok(error.render(100).some(row => plain(row).includes("error without text details")));
+    assert.ok(unsupported.render(100).some(row => plain(row).includes("No saved file change details are available")));
+    SourceController.prototype.geometryFunding = () => undefined;
+    try { assert.ok(refused.render(100).some(row => plain(row).includes("Full file view unavailable"))); }
+    finally { SourceController.prototype.geometryFunding = originalFunding; }
+  } finally { controller.restore(); }
+});

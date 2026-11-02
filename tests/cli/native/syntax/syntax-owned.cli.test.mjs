@@ -11,7 +11,7 @@ import { PiTerminal } from "../../../fixtures/terminal-harness.mjs";
 import { closeTerminals, runCleanupSteps } from "../../../fixtures/terminal-cleanup.mjs";
 import { assertSyntaxStockReference } from "../../../fixtures/syntax-stock-reference.mjs";
 import { nativeReady, semanticStyle, semanticPhaseReady, semanticSourceContext } from "../../../fixtures/syntax-observation.mjs";
-import { prepareSyntaxNative, inputs, scenario, traffic, persisted, stats, sourceColors, body, work, until, finish, settledStats, intermediateStats, captureThenRenderDiagnostics, stockReference, syntaxReady, savedThemeSession, themeForegrounds, expectedThemeColors, expressionForeground, expressionAttributes, initialThemeStats, retainedNativeThemeStats, themeMarkers, chooseTheme, shebangScenario, shebangContextColors, shebangStringColors } from "../../../fixtures/syntax-cli-support.mjs";
+import { prepareSyntaxNative, inputs, scenario, traffic, persisted, stats, sourceColors, body, assertRestoredFilePreview, work, until, finish, settledStats, intermediateStats, captureThenRenderDiagnostics, stockReference, syntaxReady, savedThemeSession, themeForegrounds, expectedThemeColors, expressionForeground, expressionAttributes, initialThemeStats, retainedNativeThemeStats, themeMarkers, chooseTheme, shebangScenario, shebangContextColors, shebangStringColors } from "../../../fixtures/syntax-cli-support.mjs";
 
 const { binary, fixture, descriptor } = await prepareSyntaxNative();
 
@@ -48,7 +48,10 @@ for (const mode of ['fullscreen', 'regular']) test(`occipital CLI: actual ${mode
       await native.appearance(false); const off = await stats(native, 'master-off');
       assert.ok(off.transports.every(t => t.childState === 'exited' && t.retainedBytes === 0 && t.liveTimers === 0));
       assert.throws(() => process.kill(pid, 0), { code: 'ESRCH' });
-      await native.appearance(true); const reenabled = await captureThenRenderDiagnostics(native, 'syntax-reenabled');
+      await native.appearance(true); const reenabledPreview = await captureThenRenderDiagnostics(native, 'syntax-reenabled-preview');
+      assertRestoredFilePreview(reenabledPreview);
+      native.send('\x0f'); await native.settle();
+      const reenabled = await captureThenRenderDiagnostics(native, 'syntax-reenabled');
       assert.deepEqual(body(reenabled), body(shown));
       const afterOn = await settledStats(native, 'master-on'); assert.equal(afterOn.counts.acquisitions, 1, 'session-native-off survives full adapter reinstall');
       assert.ok(afterOn.source.piSourceRecords > 0, 'post-reinstall diagnostics describe the current fallback owner, not the disposed native controller');
@@ -57,6 +60,9 @@ for (const mode of ['fullscreen', 'regular']) test(`occipital CLI: actual ${mode
       const session = shown.session, workspace = native.work; await finish(native);
       const replay = create('replay', { session, workspace, extraEnv: descriptor, extensions: [fixture] });
       await replay.ready();
+      const replayPreview = await captureThenRenderDiagnostics(replay, 'syntax-replay-preview');
+      assertRestoredFilePreview(replayPreview);
+      replay.send('\x0f'); await replay.settle();
       const replayed = await captureThenRenderDiagnostics(replay, 'syntax-replay'), replayStats = replayed.sample;
       assert.ok(nativeReady(replayStats) && replayStats.source.dispatches > 0, 'native source work accepted after asynchronous replay startup');
       assert.deepEqual(persisted(replayed), nativeData); assert.deepEqual(body(replayed), body(shown));
