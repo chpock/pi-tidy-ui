@@ -1,4 +1,5 @@
 import "../../fixtures/test-guard.mjs";
+import type { ToolRenderers } from "@earendil-works/pi-coding-agent";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { writeFileSync, readFileSync, mkdtempSync, rmSync } from "node:fs";
@@ -6,15 +7,16 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import xterm from "@xterm/headless";
-import { visibleWidth } from "@earendil-works/pi-tui";
+import { Container, visibleWidth } from "@earendil-works/pi-tui";
 import { ToolExecutionComponent as NativeToolExecution, createWriteToolDefinition, createWriteTool, highlightCode, getLanguageFromPath } from "@earendil-works/pi-coding-agent";
 import { describeArgs } from "../../../src/index.ts";
 import { fileCardFixture as renderFileCard } from "../../fixtures/prepared-card.ts";
 import { cardGeometry } from "../../../src/card-frame.ts";
-import { measureFileCard } from "../../../src/file-card.ts";
+import { measureFileCard, prepareFileCard } from "../../../src/file-card.ts";
 import { generateDiffString, generateUnifiedPatch } from "../../../node_modules/@earendil-works/pi-coding-agent/dist/core/tools/edit-diff.js";
 import { initTheme, theme as nativeTheme } from "../../../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js";
 import { Root, Tool, color, installTidyUi, mouse, plain, setup, type TuiMouseEvent } from "../../fixtures/sdk-contract-support.ts";
+import { createLazyNativeRendererResolver } from "../../../src/syntax/lazy-native-renderers.ts";
 
 initTheme('dark', false);
 
@@ -34,6 +36,7 @@ test("write success selects Created/Edited/Replaced/Wrote from saved source, not
   for (const [details, label, source] of cases) {
     const tool = new Tool("write", { path: "example.ts", content });
     tool.updateResult({ content: [{ type: "text", text: "RESULT_SENTINEL" }], details }, tool.isPartial);
+    tool.setExpanded(true);
     const snapshot = structuredClone({ args: tool.args, result: tool.result });
     const { controller } = setup([tool]);
     try {
@@ -70,15 +73,20 @@ test("write lifecycle is path-only compact until final success, including propos
     tool.markExecutionStarted(); assert.match(tool.render(80)[0]!, /⠋ write example.ts/);
     const partial = { content: [], isError: true, details: { diff: "+1 PROPOSED_DIFF" } };
     tool.updateResult(partial, true); assert.doesNotMatch(root.render(80).join(""), /PROPOSED|PAYLOAD|┃|Created/);
-    tool.updateResult(partial); assert.deepEqual(tool.render(80), [" ← write example.ts"]);
+    tool.updateResult(partial);
+    const failedSummary = tool.render(80).map(plain).join(" ");
+    assert.match(failedSummary, /← write example\.ts/);
+    assert.doesNotMatch(failedSummary, /PROPOSED|PAYLOAD|FULL_OUTPUT/);
     assert.equal(controller.cacheStats().cards.entries, 0);
     tool.updateResult({ content: [], details: { diff: "+1 const written = 1;" } });
+    tool.setExpanded(true);
     assert.match(tool.render(80).join(""), /← Created example.ts/);
     assert.equal(controller.cacheStats().ordinary.entries, 0); assert.equal(controller.cacheStats().cards.entries, 1);
     const height = tool.render(80).length;
-    assert.ok(tool.handleMouse(mouse(height - 1))?.handled); assert.equal(tool.expanded, true);
-    assert.deepEqual(tool.render(80), original.call(tool, 80));
-    tool.setExpanded(false); tool.updateArgs({ path: "new.ts", content: "NEW_CONTENT" }); tool.updateResult({ content: [] });
+    assert.ok(tool.handleMouse(mouse(height - 1))?.handled); assert.equal(tool.expanded, false);
+    assert.match(tool.render(80).join(""), /← Write example.ts/);
+    assert.doesNotMatch(tool.render(80).join(""), /FULL_OUTPUT/);
+    tool.updateArgs({ path: "new.ts", content: "NEW_CONTENT" }); tool.updateResult({ content: [] }); tool.setExpanded(true);
     assert.match(tool.render(80).join(""), /← Wrote new.ts/); assert.match(tool.render(80).join(""), /NEW_CONTENT/);
   } finally { controller.restore(); }
 });
@@ -133,6 +141,53 @@ test("write validates both metadata formats and classifies globally before conte
   } finally { rmSync(temporary, { recursive: true, force: true }); }
 });
 
+test("write preview only consumes a bounded raw prefix and never claims a partial change class", () => {
+  const lines = Array.from({ length: 20 }, (_, i) => `+${i + 1} const visible_${i + 1} = ${i + 1};`).join("\n");
+  const metadata = lines + "\n-21 const hidden_removed = 21;\n+22 HIDDEN_SUFFIX";
+  const node = { toolName: "write", args: { path: "example.ts", content: metadata }, isPartial: false, result: { details: { diff: metadata } } };
+  const preview = prepareFileCard(node, true, "preview")!;
+  assert.equal(preview.view.label, "Write");
+  assert.equal(preview.view.preview, true);
+  assert.equal(preview.view.omitted, true);
+  assert.equal(preview.view.lines.length, 10);
+  assert.ok(preview.view.lines.some(line => "logical" in line && line.logical.includes("visible_1")));
+  assert.ok(preview.view.lines.every(line => !("logical" in line) || !line.logical.includes("HIDDEN")));
+  assert.match(preview.view.note ?? "", /Preview is limited to a bounded source prefix/);
+  assert.doesNotMatch(preview.view.note ?? "", /hidden_removed/);
+  const short = prepareFileCard({ toolName: "write", args: { path: "short.ts", content: "const small = 1;" }, isPartial: false,
+    result: { details: { diff: "+1 const small = 1;" } } }, true, "preview")!;
+  assert.equal(short.view.omitted, false);
+  assert.doesNotMatch(short.view.note ?? "", /Preview is limited to a bounded source prefix/);
+  const full = prepareFileCard(node, true, "full")!;
+  assert.equal(full.view.label, "Replaced", "full presentation keeps complete supplied-diff classification");
+  assert.ok(full.view.lines.some(line => "logical" in line && line.kind === "-" && line.logical.includes("hidden_removed")));
+
+  const oversized = prepareFileCard({ ...node, args: { path: "oversized.ts", content: "VISIBLE\n" + "x".repeat(9000) + "\nHIDDEN_FIRST_ROW_TAIL" }, result: { details: undefined } }, true, "preview")!;
+  assert.equal(oversized.view.label, "Write");
+  assert.equal(oversized.view.omitted, true);
+  assert.equal(oversized.view.lines.length, 1, "only the complete row before the oversized row is retained");
+  assert.ok(oversized.view.lines.every(line => !("logical" in line) || !line.logical.includes("HIDDEN")));
+
+  const exact = prepareFileCard({ ...node, args: { path: "exact.ts", content: Array.from({ length: 10 }, (_, i) => `line ${i + 1}`).join("\n") }, result: { details: undefined } }, true, "preview")!;
+  assert.equal(exact.view.omitted, false, "exactly ten complete rows are not reported as truncated");
+  assert.equal(exact.view.lines.length, 10);
+  const oneExtra = prepareFileCard({ ...node, args: { path: "eleven.ts", content: Array.from({ length: 11 }, (_, i) => `line ${i + 1}`).join("\r\n") }, result: { details: undefined } }, true, "preview")!;
+  assert.equal(oneExtra.view.omitted, true);
+  assert.equal(oneExtra.view.lines.length, 10);
+  assert.ok(oneExtra.view.lines.every(line => !("logical" in line) || !line.logical.includes("line 11")));
+  const wideFirstRow = prepareFileCard({ ...node, args: { path: "wide.ts", content: "x".repeat(8193) }, result: { details: undefined } }, true, "preview")!;
+  assert.equal(wideFirstRow.view.omitted, true);
+  assert.equal(wideFirstRow.view.lines.length, 0, "an incomplete first row is never presented");
+  const cleanSource = prepareFileCard({ ...node, args: { path: "clean.ts", content: 'const\tname = "👩‍💻 λ";\r\n\x1b[31mconst color = 1;\x1b[0m\u0007\r\n' }, result: { details: undefined } }, false, "preview")!;
+  const firstCleanLine = cleanSource.view.lines[0];
+  assert.ok(firstCleanLine && firstCleanLine.kind !== "gap", "first clean source row should be renderable");
+  assert.equal(firstCleanLine.logical, 'const\tname = "👩‍💻 λ";');
+  assert.equal(firstCleanLine.text, 'const   name = "👩‍💻 λ";', "terminal painting expands the logical tab to its cell width");
+  const secondCleanLine = cleanSource.view.lines[1];
+  assert.ok(secondCleanLine && secondCleanLine.kind !== "gap", "second clean source row should be renderable");
+  assert.equal(secondCleanLine.logical, "const color = 1;");
+});
+
 test("write plain source preserves all rows, whitespace, Unicode and filename syntax without diff paint", async () => {
   const source = '/* open\ncontinued comment */\nconst family = "👩‍💻 界 é";  \n\n' + 'const v = "' + 'x'.repeat(1600) + '";\n\nTAIL_LAST';
   for (const themeName of ["dark", "light"] as const) {
@@ -183,11 +238,14 @@ test("write metadata/native/compact/image/hidden guards remain authoritative in 
     const { controller, original } = setup([tool], guard === "compact" ? { cards: ["write"], compact: ["write"] } : guard === "native" ? { cards: ["write"] } : {});
     try {
       if (guard === "compact") assert.deepEqual(tool.render(140), [" ← write example.ts"]);
-      else assert.deepEqual(tool.render(140), original.call(tool, 140));
+      else if (guard === "expanded") {
+        const rows = tool.render(140).map(plain).join("");
+        assert.doesNotMatch(rows, /FULL_OUTPUT|NATIVE write/, "Ctrl+O stays in the owned write detail renderer");
+      } else assert.deepEqual(tool.render(140), original.call(tool, 140));
     } finally { controller.restore(); }
   }
   for (const details of [{ patch: "@@ -1 +1 @@\n-before\n", diff: "+1 VALID_BUT_LOWER_PRIORITY" }, { diff: 1 }, { patch: null, diff: "+1 IGNORED" }, { diff: "+1missing_space" }]) {
-    const tool = new Tool("write", { path: "example.ts", content: "INPUT" }); tool.updateResult({ content: [], details }, tool.isPartial);
+    const tool = new Tool("write", { path: "example.ts", content: "INPUT" }); tool.updateResult({ content: [], details }, tool.isPartial); tool.setExpanded(true);
     const { controller, original } = setup([tool]);
     try { assert.deepEqual(tool.render(80), original.call(tool, 80)); assert.equal(controller.cacheStats().cards.entries, 0); }
     finally { controller.restore(); }
@@ -198,10 +256,16 @@ test("write metadata/native/compact/image/hidden guards remain authoritative in 
     handleMouse(event: TuiMouseEvent) { return super.handleMouse(event); }
   }
   const hidden = new HiddenWrite("write", { path: "example.ts", content: "HIDDEN" }), follower = new Tool();
+  hidden.setFileRenderers({ renderCall: () => new Container(), renderResult: () => new Container() });
   const { controller } = setup([hidden, follower]);
   try {
-    assert.deepEqual(hidden.render(80), []); assert.equal(follower.render(80)[0], " → read a.txt");
-    assert.match(hidden.render(24).join(""), /← Wrote/); assert.equal(follower.render(24)[0], "");
+    assert.deepEqual(hidden.render(80), [], 'the self-shell remains hidden at widths where its native render is empty');
+    assert.equal(follower.render(80)[0], " → read a.txt");
+    const visible = hidden.render(24).map(plain).join('\n');
+    assert.match(visible, /Write example\.ts/);
+    assert.match(visible, /HIDDEN/);
+    assert.doesNotMatch(visible, /NATIVE_VISIBLE/, 'a visible compatible foreign file call keeps the legacy custom preview');
+    assert.equal(follower.render(24)[0], "", "a multi-row custom file preview keeps the successor separator");
   } finally { controller.restore(); }
 });
 
@@ -210,7 +274,7 @@ test("write failure skips metadata/payload, uses only error paint and tears down
   t.mock.method(performance, "now", () => Date.now());
   const starts = t.mock.method(globalThis, "setTimeout"), stops = t.mock.method(globalThis, "clearTimeout");
   const tool = new Tool("write", { path: "example.ts", get content(): string { return assert.fail("failure must not read payload"); } });
-  tool.updateResult(undefined, tool.isPartial);
+  tool.updateResult(undefined, true);
   const root = new Root(); root.addChild(tool); const roles: string[] = [];
   const controller = installTidyUi(root, () => ({ fg(role, text) { roles.push(role); return text; } }));
   try {
@@ -249,10 +313,11 @@ test("write measurement and rejected clicks never build source and repeated body
   } finally { controller.restore(); }
 });
 
-test("actual SDK write stays provider-neutral for new, empty, replaced and cleared files and delegates expansion", async (t) => {
+test("actual SDK write keeps a provider-neutral full card in the owned renderer", async (t) => {
   initTheme("dark");
   const directory = mkdtempSync(join(tmpdir(), "tidy-ui-stock-write-")), root = new Root();
   const tool = createWriteTool(directory), definition = createWriteToolDefinition(directory);
+  const renderers = createLazyNativeRendererResolver()("write", () => definition as unknown as ToolRenderers)!;
   const source = Array.from({ length: 22 }, (_, i) => `const stock_${i + 1} = ${i + 1};`).join("\n");
   writeFileSync(join(directory, "empty.ts"), ""); writeFileSync(join(directory, "existing.ts"), "OLD_CONTENT");
   const nodes: NativeToolExecution[] = [];
@@ -265,18 +330,17 @@ test("actual SDK write stays provider-neutral for new, empty, replaced and clear
       const result = await tool.execute(`write-${index}`, args);
       assert.equal(result.details, undefined, "stock write provides no diff/creation metadata in any case");
       assert.equal(readFileSync(join(directory, args.path), "utf8"), args.content);
-      const node = new NativeToolExecution("write", `stock-${index}`, args, undefined, definition, root as never, directory);
-      root.addChild(node); nodes.push(node); node.updateResult({ ...result, isError: false });
+      const node = new NativeToolExecution("write", `stock-${index}`, args, undefined, renderers, root as never, directory);
+      root.addChild(node); nodes.push(node); node.updateResult({ ...result, isError: false }); node.setExpanded(true);
       const rows = node.render(140).map(plain);
       assert.match(rows.join(""), /← Wrote/); assert.doesNotMatch(rows.join(""), /← Created|← Replaced/);
       if (args.content) assert.match(rows.join("\n"), /22 const stock_22 = 22;/);
     }
-    assert.equal(native.mock.calls.length, 0, "stock content-shell writes need no discarded native rendering");
+    assert.equal(native.mock.calls.length, 0, "stock content-shell writes need no discarded native rendering in full or preview mode");
     root.render(140); const builds = controller.cacheStats().builds;
     root.render(140); assert.equal(controller.cacheStats().builds, builds); assert.equal(controller.cacheStats().cards.entries, 4);
-    nodes[0]!.setExpanded(true); const actual = nodes[0]!.render(140), original = originalRender.call(nodes[0]!, 140);
-    assert.deepEqual(actual, original); assert.ok(native.mock.calls.length > 0);
-    nodes[0]!.setExpanded(false); assert.match(nodes[0]!.render(140).map(plain).join(""), /← Wrote/);
+    nodes[0]!.setExpanded(false); assert.match(nodes[0]!.render(140).map(plain).join(""), /← Write new.ts/);
+    assert.equal(native.mock.calls.length, 0, "collapsing a write remains custom and lazy");
     const before = controller.cacheStats().builds;
     nodes[1]!.updateArgs({ path: "empty.ts", content: "const updated = 99;" });
     root.render(140); assert.equal(controller.cacheStats().builds, before + 1, "only changed write source is rebuilt");

@@ -5,8 +5,9 @@ export function replayBlockStart(dump, block) {
   return dump.screen.map(plain).findIndex((row, y, screen) =>
     row === block[0] && block.every((value, offset) => screen[y + offset] === value));
 }
-export function compareEditReplayColors(actual, expected, uncolored) {
-  assert.deepEqual(toolLines(actual).filter((_, index) => index !== 4), toolLines(expected).filter((_, index) => index !== 4),
+export function compareEditReplayColors(actual, expected, uncolored, expandedDetails = []) {
+  const details = new Set(expandedDetails);
+  assert.deepEqual(toolLines(actual).filter((_, index) => index !== 4 && !details.has(index)), toolLines(expected).filter((_, index) => index !== 4 && !details.has(index)),
     'all eager-language, summary and one-sided replay colors remain byte-identical');
   const actualHtml = actual.tools[4].lines, expectedHtml = expected.tools[4].lines;
   assert.deepEqual(actualHtml.map(plain), expectedHtml.map(plain), 'accepted cold HTML fallback changes no glyphs or geometry');

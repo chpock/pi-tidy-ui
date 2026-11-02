@@ -7,7 +7,7 @@ import { PiTerminal } from '../../../fixtures/terminal-harness.mjs';
 import { runCleanupSteps } from '../../../fixtures/terminal-cleanup.mjs';
 import { assertSyntaxStockReference } from '../../../fixtures/syntax-stock-reference.mjs';
 import { nativeReady } from '../../../fixtures/syntax-observation.mjs';
-import { prepareSyntaxPackage, scenario, stockReference, traffic, persisted, sourceColors, stats, captureThenRenderDiagnostics, loggingIdle, loggingPrivacy, loggerWork, loggingFrame, work, settledStats, body, syntaxReady, finish } from '../../../fixtures/syntax-cli-support.mjs';
+import { prepareSyntaxPackage, scenario, stockReference, traffic, persisted, sourceColors, stats, captureThenRenderDiagnostics, assertRestoredFilePreview, loggingIdle, loggingPrivacy, loggerWork, loggingFrame, work, settledStats, body, syntaxReady, finish } from '../../../fixtures/syntax-cli-support.mjs';
 
 const { loggingFixture } = await prepareSyntaxPackage();
 const descriptor = { TIDY_UI_TEST_SYNTAX_CARDS: '1' };
@@ -61,6 +61,9 @@ for (const mode of ['regular', 'fullscreen']) for (const native of [false])
         assert.ok(logRows.some(line => line === 'Recording: On'), 'capture survives master presentation off');
         await terminal.appearance(true);
         if (native) await settledStats(terminal, 'logging-on-ready', nativeReady);
+        const onPreview = await captureThenRenderDiagnostics(terminal, 'logging-after-on-preview');
+        assertRestoredFilePreview(onPreview);
+        terminal.send('\x0f'); await terminal.settle();
         const on = await captureThenRenderDiagnostics(terminal, 'logging-after-on'); assert.deepEqual(body(on), body(shown)); assert.deepEqual(persisted(on), persisted(shown));
         const beforeReload = await loggingIdle(terminal); await terminal.command('/reload');
         await terminal.captureSettled('logging-reload-source', { screen: false });
@@ -73,6 +76,9 @@ for (const mode of ['regular', 'fullscreen']) for (const native of [false])
         replay = new PiTerminal(`logging-${mode}-replay-${native}`, { mode, session: shown.session, workspace: terminal.work, extensions: [loggingFixture],
           extraEnv: { ...descriptor, TIDY_UI_TEST_LOGGING_NATIVE: native ? '1' : '0' } });
         await replay.ready(); if (native) await settledStats(replay, 'logging-replay-ready', s => nativeReady(s) && s.source.dispatches > 0);
+        const restoredPreview = await captureThenRenderDiagnostics(replay, 'logging-replay-preview');
+        assertRestoredFilePreview(restoredPreview);
+        replay.send('\x0f'); await replay.settle();
         const restored = await captureThenRenderDiagnostics(replay, 'logging-replay'); const replayStatus = await loggingIdle(replay);
         assert.equal(replayStatus.session, baseline.session); assert.notEqual(replayStatus.run, baseline.run);
         assert.deepEqual(body(restored), body(shown)); assert.deepEqual(persisted(restored), persisted(shown));

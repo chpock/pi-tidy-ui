@@ -332,7 +332,7 @@ async function footerSetup(foreignEditor = false, selectorAtStartup = false) {
   const handlers = new Map<string, Function[]>();
   let command: Function;
   const pi = { on(name: string, fn: Function) { handlers.set(name, [...(handlers.get(name) ?? []), fn]); return () => {}; },
-    registerFlag() {}, getFlag() {}, getThinkingLevel: () => "off", getSettings: () => ({ compaction: { enabled: auto } }),
+    registerFlag() {}, registerToolRenderer() {}, getFlag() {}, getThinkingLevel: () => "off", getSettings: () => ({ compaction: { enabled: auto } }),
     registerCommand(name: string, options: { handler: Function }) { if (name === "tidy-ui") command = options.handler; } };
   const ctx = { mode: "tui", hasUI: true, cwd: "/footer-probe", ui: { ...host.createExtensionUIContext(), notify() {} }, model, sessionManager: manager,
     modelRegistry: { isUsingOAuth: () => { authReads++; return subscription; }, getProvider: () => { authReads++; return { auth: { oauth: { isSubscription: true } } }; } },

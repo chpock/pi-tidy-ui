@@ -38,7 +38,12 @@ test('occipital CLI: local palette picker, persisted selection and fresh default
       await replay.ready(); await settledStats(replay, 'theme-restored-settled', s => nativeReady(s)
         && s.source.dispatches > 0 && s.client.effective.id === saved.syntaxTheme.id);
       const restored = await captureThenRenderDiagnostics(replay, 'syntax-theme-restored');
-      assert.deepEqual(body(restored), body(themed)); assert.deepEqual(persisted(restored), persisted(initial));
+      const restoredFiles = body(restored).filter(({ name }) => name === 'write' || name === 'edit').flatMap(({ lines }) => lines).join('\n');
+      assert.match(restoredFiles, /← Write syntax\.ts/u); assert.match(restoredFiles, /← Edit syntax\.ts/u);
+      assert.doesNotMatch(restoredFiles, /← Wrote syntax\.ts|← Edited syntax\.ts/u);
+      assert.deepEqual(body(restored).filter(({ name }) => name !== 'write' && name !== 'edit'),
+        body(themed).filter(({ name }) => name !== 'write' && name !== 'edit'), 'non-file tool bodies remain identical across session restore');
+      assert.deepEqual(persisted(restored), persisted(initial));
       const ry = restored.screen.findIndex(row => row.includes('const x=2;')), rx = restored.screen[ry].indexOf('const x=2;');
       assert.equal(restored.cells[ry][rx].fg, themed.cells[y][x].fg, 'fresh client restores saved explicit theme');
       const restoredStats = restored.sample; assert.equal(restoredStats.counts.acquisitions, 1); assert.equal(restoredStats.counts.downloads, 0);

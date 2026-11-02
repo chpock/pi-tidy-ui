@@ -93,7 +93,7 @@ jobs:
           ARTIFACT="$RUNNER_TEMP/occipital-native-artifact"
           tools_args=()
           if [[ "$TARGET" == windows-* ]]; then tools_args=(--run-root "$RUNNER_TEMP" --tools "$RUNNER_TEMP/runtime-tools.json"); fi
-          node scripts/test/prepare.mjs --pi-version 1.0.0 --archives --native-artifact "$ARTIFACT" "${tools_args[@]}" --output "$PREPARATION"
+          node scripts/test/prepare.mjs --pi-version 1.0.1 --archives --native-artifact "$ARTIFACT" "${tools_args[@]}" --output "$PREPARATION"
           if [[ "$TARGET" == linux-* ]]; then
             NODE="$NODE" bash scripts/release/installed-linux-gnu.sh "$RUST_TARGET" native-consumer "$PREPARATION" "$ARTIFACT"
           else

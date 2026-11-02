@@ -1,7 +1,9 @@
+import { readFileSync } from 'node:fs';
 import { enabledTargets, platforms } from '../release/platforms.mjs';
 import { parseVersion } from '../../src/occipital/version.ts';
 
-export const MINIMUM_PI = '1.0.0';
+const packageManifest = JSON.parse(readFileSync(new URL('../../package.json', import.meta.url), 'utf8'));
+export const MINIMUM_PI = packageManifest.devDependencies['@earendil-works/pi-coding-agent'];
 export const NODE_VERSIONS = Object.freeze(['22.19.0','26.7.0']);
 export const CLI_SHARDS = 4;
 
@@ -65,8 +67,10 @@ export async function buildCIPlan(options) {
     if (metadata?.name !== packageName) throw new Error('Unexpected Pi latest package identity');
     const parsed = parseVersion(metadata.version);
     if (!parsed || metadata.version.includes('+')) throw new Error('Expected an exact npm Pi latest version');
-    const [major,minor,patch] = metadata.version.split('-')[0].split('.').map(BigInt);
-    if (major < 1n || major === 1n && minor === 0n && patch === 0n && parsed.prerelease) throw new Error('Pi latest is below minimum ' + MINIMUM_PI);
+    const actual = metadata.version.split('-')[0].split('.').map(BigInt), minimum = MINIMUM_PI.split('.').map(BigInt);
+    const comparison = actual.findIndex((part, index) => part !== minimum[index]);
+    const belowMinimum = comparison === -1 ? Boolean(parsed.prerelease) : actual[comparison] < minimum[comparison];
+    if (belowMinimum) throw new Error('Pi latest is below minimum ' + MINIMUM_PI);
     latest = metadata.version;
     resolvedAt = new Date().toISOString();
   }

@@ -205,7 +205,7 @@ test('GNU native-consumer shares one complete offline preparation per Node but r
       const preparation = join(f.root, 'gnu'), calls = entries.filter(e => e.tool === 'node');
       assert.equal(preparations.has(preparation), false, 'Node/architecture lanes must not reuse prepared state'); preparations.add(preparation);
       assert.deepEqual(calls.map(e => e.args), [
-        ['scripts/test/prepare.mjs', '--pi-version', '1.0.0', '--offline', '--archives',
+        ['scripts/test/prepare.mjs', '--pi-version', '1.0.1', '--offline', '--archives',
           '--registry-inputs', join(f.root,'inputs.json'), '--npm-cache', join(f.root,'environment/cache/npm'),
           '--native-artifact', join(f.root,'artifact'), '--output', preparation],
         ['scripts/test/run.mjs', '--inputs', join(preparation,'inputs.json'), '--suite', 'native', '--files', 'occipital-native.test.ts',

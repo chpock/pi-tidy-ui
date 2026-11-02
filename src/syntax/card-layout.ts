@@ -192,21 +192,33 @@ export function layoutCard(display: PreparedCard, options: CardLayoutOptions, fu
         if (display.heading) lines('heading', 0, 'muted');
         current.digits = String(display.rows.reduce((max, r) => Math.max(max, r.old ?? 0, r.next ?? 0), 1)).length;
         const plain = display.mode === 'code';
-        const split = !plain && geometry.width > 120 && display.rows.some(r => r.kind === '+') && display.rows.some(r => r.kind === '-');
-        const cell = (index: number, side: 'old' | 'next', width: number): Cell => {
+        const split = !display.preview && !plain && geometry.width > 120 && display.rows.some(r => r.kind === '+') && display.rows.some(r => r.kind === '-');
+        const codeLimit = display.preview ? 10 : Number.POSITIVE_INFINITY;
+        let codeRows = 0, visualOverflow = display.preview === true && display.omitted === true;
+        const cell = (index: number, side: 'old' | 'next', width: number, maxRows?: number): Cell => {
           if (index < 0) return empty(width);
           const r = display.rows[index]!;
           if (r.kind === 'gap') return empty(width, -3);
           const size = current.digits + (plain ? 2 : 4), gutter = size < width ? size : 0;
           const role = plain || r.kind === ' ' ? 'code' : r.kind === '+' ? 'addedCode' : 'removedCode';
-          const id = entry('file', index, role, width - gutter, 'file', false, undefined, side);
+          const id = entry('file', index, role, width - gutter, 'file', false, maxRows, side);
           return { entry: id, row: 0, width, gutter, line: index, side };
         };
         const pair = (leftIndex: number, rightIndex: number) => {
+          const remaining = codeLimit - codeRows;
+          if (remaining <= 0) {
+            for (let i = Math.max(0, leftIndex, rightIndex); i < display.rows.length; i++) if (display.rows[i]!.kind !== 'gap') { visualOverflow = true; break; }
+            return;
+          }
+          const maxRows = Number.isFinite(remaining) ? remaining + 1 : undefined;
           const leftWidth = Math.floor(available / 2), rightWidth = available - leftWidth;
-          const a = cell(leftIndex, split || display.rows[leftIndex]?.kind === '-' ? 'old' : 'next', split ? leftWidth : available), b = split ? cell(rightIndex, 'next', rightWidth) : undefined;
+          const a = cell(leftIndex, split || display.rows[leftIndex]?.kind === '-' ? 'old' : 'next', split ? leftWidth : available, maxRows),
+            b = split ? cell(rightIndex, 'next', rightWidth, maxRows) : undefined;
           const count = Math.max(a.entry < 0 ? 1 : current.entries[a.entry]!.layout.rowCount, b && b.entry >= 0 ? current.entries[b.entry]!.layout.rowCount : 1);
-          for (let row = 0; row < count; row++) append({ ...a, row }, b ? { ...b, row } : undefined);
+          const shown = Math.min(count, remaining);
+          for (let row = 0; row < shown; row++) append({ ...a, row }, b ? { ...b, row } : undefined);
+          codeRows += shown;
+          if (count > remaining) visualOverflow = true;
         };
         if (display.rows.length) append(empty());
         for (let i = 0; i < display.rows.length;) {
@@ -225,6 +237,8 @@ export function layoutCard(display: PreparedCard, options: CardLayoutOptions, fu
           }
         }
         if (display.note) { append(empty()); lines('note', 0, 'muted'); }
+        if (visualOverflow) append(empty(available, -2));
+        current.expandable = visualOverflow;
         if (display.diagnostics.length) append(empty());
         for (let i = 0; i < display.diagnostics.length; i++) lines('diagnostic', i, 'diagnostic');
       }

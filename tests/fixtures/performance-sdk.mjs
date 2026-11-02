@@ -2,10 +2,11 @@
 import assert from 'node:assert/strict';
 import { writeFileSync, readFileSync } from 'node:fs';
 import { Container, ScrollView, Markdown, Loader, Text } from '@earendil-works/pi-tui';
-import { ToolExecutionComponent, getMarkdownTheme } from '@earendil-works/pi-coding-agent';
+import { ToolExecutionComponent, createEditToolDefinition, createWriteToolDefinition, getMarkdownTheme } from '@earendil-works/pi-coding-agent';
 import { renderLayoutFrame } from '../../node_modules/@earendil-works/pi-tui/dist/layout.js';
 import { UserMessageComponent } from '../../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/components/user-message.js';
 import { initTheme, theme } from '../../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js';
+import { createLazyNativeRendererResolver } from '../../src/syntax/lazy-native-renderers.ts';
 import { verifyPerformanceTools } from './performance-integrity.mjs';
 import { preparedCardReady, waitForPerformanceReady } from './performance-readiness.mjs';
 import { beginPhase, endPhase, afterGC, capabilities, startAllocationProfile, stopAllocationProfile, summarizeAllocationProfile } from '../../scripts/test/performance/metrics.mjs';
@@ -21,6 +22,7 @@ let expectedAfter = data.tools;
 let controller, root, viewport, contentRoot, queueHost, tools = [], width = p.width, height = p.height, draws = 0, renderedRows = 0, allocationProfile = null, integrity;
 initTheme('dark', false);
 const install = scenario.variant === 'native' ? undefined : (await import('../../src/index.ts')).installTidyUi;
+const resolveFileRenderers = createLazyNativeRendererResolver();
 const QueueMode = scenario.id === 'queued' ? (await import('../../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/interactive-mode.js')).InteractiveMode : undefined;
 let preparedSources, restorePreparation = () => {};
 if (scenario.variant === 'on') {
@@ -55,7 +57,11 @@ function add(index) {
   const item = componentInputs[index % componentInputs.length];
   contentRoot.addChild(new UserMessageComponent(data.messages[(index % data.tools.length) * 3].content[0].text));
   contentRoot.addChild(new Markdown(`Result ${index}: **stable** body.`, 0, 0, getMarkdownTheme()));
-  const tool = new ToolExecutionComponent(item.name, item.id, item.args, undefined, undefined, root, process.cwd());
+  const stock = item.name === 'write' ? createWriteToolDefinition(process.cwd())
+    : item.name === 'edit' ? createEditToolDefinition(process.cwd()) : undefined;
+  const renderers = scenario.variant === 'native' || !stock ? stock
+    : resolveFileRenderers(item.name, () => stock);
+  const tool = new ToolExecutionComponent(item.name, item.id, item.args, undefined, renderers, root, process.cwd());
   const result = toolResults.get(item.id);
     assert.equal(result?.role, 'toolResult', 'SDK components receive their completed transcript result');
     tool.updateResult(result); contentRoot.addChild(tool); tools.push(tool);

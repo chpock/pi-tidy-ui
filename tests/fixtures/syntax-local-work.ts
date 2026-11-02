@@ -60,7 +60,7 @@ export type SyntaxCardObservation = { type: 'syntax_card_prepare' | 'syntax_card
 export type WriteCaptureObservation = {
   call: string; id?: number; path: string; revision: number; version?: number; palette?: number; theme?: number;
   publication: number; status: 'ready' | 'pending' | 'stale' | 'failed' | 'refused' | 'waiting' | 'owned'; sources: number;
-  preparation?: { processed?: number; sourceRevision: number; palette?: string; lease?: number; receipt?: string };
+  preparation?: { processed?: string; sourceRevision: number; palette?: string; lease?: number; receipt?: string };
 };
 type CardTicket = Parameters<CardSources<object>['prepare']>[0];
 type CardState = NonNullable<ReturnType<CardTicket['state']['deref']>>;
@@ -72,21 +72,26 @@ type WriteCaptureJournal = {
 };
 
 // Empty sources have no token table, but their role paint still needs adoption
-// proof. refreshPaint assigns paintToken only together with the compiled paint.
+// proof, including the current-version eligibility represented by file paints.
 function currentEmptyPiPaint(state: CardState): boolean {
   const input = state.input, paint = state.paint;
   if (!input || !paint || paint.origin !== 'pi' || paint.mode !== input.mode || state.paletteInput?.terminalMode !== input.mode) return false;
   const group = paint.group;
   if (group && (group.palette !== paint.palette || group.bindingRevision !== input.palette)) return false;
-  return state.paintToken === `${paint.palette}:${group?.stamp ?? -(input.palette + 1)}:${input.mode}:`;
+  const effects = `${input.mode}:`, eligibility = input.kind === 'file' ? `${state.version}:` : '';
+  return state.paintToken === `${paint.palette}:${group?.stamp ?? -(input.palette + 1)}:${effects}:${eligibility}`;
 }
 
 // No source/projection borrowing here: successful work and compiled token maps
 // are inspected only at the original preparation and accepted-visit boundaries.
-function writeReceipt(state: CardState, before: { processed?: number; palette?: string; publication?: number }): WriteReceipt | undefined {
+function processingStamp(state: CardState): string {
+  const view = state.input?.kind === 'file' ? state.input.viewMode ?? 'full' : 'bash';
+  return `${state.sourceRevision}:${view}`;
+}
+function writeReceipt(state: CardState, before: { processed?: string; palette?: string; publication?: number }): WriteReceipt | undefined {
   const input = state.input, paint = state.paint;
   if (input?.kind !== 'file' || !state.sourceEligible || !paint || paint.origin !== 'pi'
-    || state.processed !== state.sourceRevision || state.preparedPalette !== paint.palette
+    || state.processed !== processingStamp(state) || state.preparedPalette !== paint.palette
     || state.paletteInput?.paletteRevision !== input.palette || paint.mode !== input.mode || state.paletteInput.terminalMode !== input.mode || state.preparedTheme === undefined) return;
   const slots = [...state.slots.values()];
   if (!slots.length && !currentEmptyPiPaint(state)) return;
@@ -94,7 +99,7 @@ function writeReceipt(state: CardState, before: { processed?: number; palette?: 
   if (state.display?.kind !== 'file' || state.display.rows.some(row => [row.oldSource, row.nextSource].some(source => source && !state.slots.has(source.key)))) return;
   // A new source/palette cannot reuse the old compiled token map if compilation
   // was refused after successful classification. Repeated cached work may reuse it.
-  if (slots.length && (before.processed !== state.sourceRevision || before.palette !== paint.palette) && before.publication === paint.publication) return;
+  if (slots.length && (before.processed !== processingStamp(state) || before.palette !== paint.palette) && before.publication === paint.publication) return;
   return { revision: state.sourceRevision, version: state.version, palette: input.palette, theme: state.preparedTheme, publication: paint.publication };
 }
 
@@ -102,7 +107,7 @@ export function observeSyntaxCards(record: (event: SyntaxCardObservation) => voi
   options: { writeCapture?: WriteCaptureJournal } = {}) {
   const prepare = CardSources.prototype.prepare, visit = CardSources.prototype.visit, useful = CardSources.prototype.useful;
   const pause = CardSources.prototype.pause, remove = CardSources.prototype.remove;
-  let identities: WeakMap<object, { id: number; kind: string; path?: string; ticket: WeakRef<CardTicket>; receipt?: WriteReceipt; prior?: { processed?: number; palette?: string; publication?: number } }> | undefined = new WeakMap();
+  let identities: WeakMap<object, { id: number; kind: string; path?: string; ticket: WeakRef<CardTicket>; receipt?: WriteReceipt; prior?: { processed?: string; palette?: string; publication?: number } }> | undefined = new WeakMap();
   let writes: WeakMap<object, WriteCaptureObservation> | undefined = options.writeCapture ? new WeakMap() : undefined;
   const publishWrite = (owner: object, event: WriteCaptureObservation) => {
     if (!identities || !writes) return;
@@ -139,7 +144,7 @@ export function observeSyntaxCards(record: (event: SyntaxCardObservation) => voi
       prepare.call(this, ticket);
       if (options.writeCapture && identities && association && state?.ticket === ticket) association.receipt = writeReceipt(state, prior);
     } finally { if (association) Reflect.deleteProperty(association, 'prior'); }
-    if (identities && identity && state?.ticket === ticket && state.preparedTheme !== before && state.processed === state.sourceRevision)
+    if (identities && identity && state?.ticket === ticket && state.preparedTheme !== before && state.processed === processingStamp(state))
       record({ type: 'syntax_card_prepared', ...identity });
   };
   const observedVisit: typeof visit = function(this: CardSources<object>, owner, consume) {
@@ -167,7 +172,7 @@ export function observeSyntaxCards(record: (event: SyntaxCardObservation) => voi
       // stack. That accepted publication must not require an unrelated later frame.
       const receipt = identity?.prior && state ? writeReceipt(state, identity.prior) : identity?.receipt;
       const currentSource = !!state && state.ticket === ticket && ticket?.owner.deref() === owner && state.revision === write.revision
-        && state.processed === state.sourceRevision && state.preparedPalette === state.paint?.palette
+        && state.processed === processingStamp(state) && state.preparedPalette === state.paint?.palette
         && state.preparedTheme === Reflect.get(this, 'themeRevision')
         && [...state.slots.values()].every(slot => slot.version === state.version && slot.palette === state.input?.palette);
       const bad = currentSource && state && [...state.slots.values()].find(slot => slot.outcome === 'failed' || slot.outcome === 'refused' || slot.outcome === 'stale');

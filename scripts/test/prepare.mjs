@@ -10,6 +10,14 @@ import { childEnv, digest, readInputs, rustLoaderEnvironment, validateHost, vali
 const project = resolve(import.meta.dirname, '../..');
 const json = path => JSON.parse(readFileSync(path, 'utf8'));
 const save = (path, value) => { mkdirSync(dirname(path), { recursive: true }); writeFileSync(path, JSON.stringify(value, null, 2) + '\n'); };
+
+export function minimumPiVersion(root = project) {
+  return json(join(root, 'package.json')).devDependencies['@earendil-works/pi-coding-agent'];
+}
+
+export function defaultInputsPath(root = project) {
+  return join(root, '.test-artifacts/harness', minimumPiVersion(root), 'inputs.json');
+}
 const quote = value => "'" + value.replaceAll("'", "'\\''") + "'";
 
 export function systemTools(node, supplied = {}) {
@@ -212,8 +220,8 @@ export async function prepare(options) {
   if (options['refresh-inputs']) return refreshInputs(resolve(options['refresh-inputs']));
   const started = performance.now();
   process.umask(0o077);
-  const root = resolve(options.root ?? project), output = resolve(options.output ?? join(root, '.test-artifacts/harness', options['pi-version'] ?? '1.0.0'));
-  const version = options['pi-version'] ?? json(join(root, 'package.json')).devDependencies['@earendil-works/pi-coding-agent'];
+  const root = resolve(options.root ?? project), version = options['pi-version'] ?? minimumPiVersion(root);
+  const output = resolve(options.output ?? join(root, '.test-artifacts/harness', version));
   if (!/^\d+\.\d+\.\d+(?:-[\da-z.-]+)?$/i.test(version)) throw new Error('Supply one exact Pi version, not a tag/range');
   const node = realpathSync(options.node ?? process.execPath), tools = systemTools(node, options.tools ? json(resolve(options.tools)) : {});
   mkdirSync(output, { recursive: true });

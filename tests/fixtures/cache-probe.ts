@@ -15,7 +15,8 @@ import tidyUi, { installTidyUi, terminalAppearanceTracking } from "../../src/ind
 import { TerminalColors, terminalColorExit } from "../../src/terminal-colors.ts";
 import { InteractiveMode } from "../../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/interactive-mode.js";
 import { menuPage, setAppearance } from "../helpers/menu-driver.ts";
-import { CustomEditor, Theme, getSelectListTheme, createWriteToolDefinition, SessionManager, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { CustomEditor, Theme, getSelectListTheme, SessionManager, type ExtensionAPI, type ExtensionContext, type ToolRendererResolver } from "@earendil-works/pi-coding-agent";
+import { resolvePublicFileToolDefinition } from "./sdk-contract-support.ts";
 
 initTheme("dark", false);
 class Root extends Container { requestRender() {} }
@@ -152,7 +153,7 @@ try {
    } finally { userController.restore(); }
    const writeRoot = new Root(), writeViewport = new ScrollView(writeRoot, { scrollbar: "hidden", primary: true });
    let writeNode: ToolExecutionComponent | undefined = new ToolExecutionComponent("write", "first-write-installer",
-     { path: "example.txt", content: "WRITE_CACHE_PROBE_" + "x".repeat(2000) }, undefined, createWriteToolDefinition("/tmp"), writeRoot as never, "/tmp");
+     { path: "example.txt", content: "WRITE_CACHE_PROBE_" + "x".repeat(2000) }, undefined, resolvePublicFileToolDefinition("write", undefined, "/tmp"), writeRoot as never, "/tmp");
    writeNode.updateResult({ content: [{ type: "text", text: "STOCK_WRITE_RESULT" }], isError: false }); writeRoot.addChild(writeNode);
     segments = 0; enabled = true;
     const writeController = installTidyUi(writeRoot as never, () => theme, { diagnostic });
@@ -204,14 +205,16 @@ try {
     const manager = SessionManager.inMemory("/tmp");
     const footerContext = { mode: "tui", hasUI: true, cwd: "/tmp", ui: { ...footerHost.createExtensionUIContext(), notify() {} }, sessionManager: manager,
       getContextUsage: () => undefined, isIdle: () => true } as unknown as ExtensionContext;
-    const handlers = new Map<string, Function[]>(); let footerCommand: Function;
+    const handlers = new Map<string, Function[]>(), footerResolvers: ToolRendererResolver[] = []; let footerCommand: Function;
     tidyUi({ on(name: string, callback: Function) { handlers.set(name, [...(handlers.get(name) ?? []), callback]); },
       registerFlag() {}, getFlag() {}, getThinkingLevel: () => "off", getSettings: () => ({}),
+      registerToolRenderer(resolver: ToolRendererResolver) { footerResolvers.push(resolver); },
       registerCommand(name: string, options: { handler: Function }) { if (name === "tidy-ui") footerCommand = options.handler; },
     } as unknown as ExtensionAPI, { logging: { root: join(logDirectory, "footer") },
       settings: { async load() { return { ok: true, syntaxTheme: { kind: 'pi' } }; }, async update() { return { ok: true }; } }, syntax: () => ({ standaloneVersion: "gc",
       settings: { async load() { return { ok: true, syntaxTheme: { kind: "pi" } }; }, async update() { return { ok: true }; } },
       provider: { async tryShared() { return undefined; }, async acquireOwned() { throw Error("isolated unavailable fixture"); } } }) });
+    assert.equal(footerResolvers.length, 1, "the GC footer host models Pi's public renderer registration contract");
     for (const callback of handlers.get("session_start") ?? []) await callback({ reason: "startup" }, footerContext);
     await menuPage(footerCommand! as any, footerContext, ['Status & troubleshooting', 'Diagnostic logs', 'Write state snapshot']);
     const replaceFirstFooter = async () => {

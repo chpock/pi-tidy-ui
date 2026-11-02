@@ -99,6 +99,11 @@ test('edit replay comparison: accepts exact cold foreground including wrapped so
   for (const row of [1, 2]) for (let x = sourceOrigin; x < width; x++) actual.cells[row][x].fg = uncolored.fg;
   compareEditReplayColors(expected, expected, uncolored);
   compareEditReplayColors(actual, expected, uncolored);
+  const expandedError = { ...actual, tools: actual.tools.map(tool => ({ ...tool, lines: tool.lines.slice() })) };
+  expandedError.tools[2].lines = ['Original file content:', 'Error text'];
+  assert.throws(() => compareEditReplayColors(expandedError, expected, uncolored), 'error details remain compared by default');
+  compareEditReplayColors(expandedError, expected, uncolored, [2]);
+  assert.throws(() => compareEditReplayColors(expandedError, expected, uncolored, [3]), 'only the named expanded detail may differ');
   for (const [row, column, field] of [[1, sourceOrigin, 'fg'], [1, sourceOrigin + 2, 'fg'],
     [2, sourceOrigin + 2, 'fg'], [1, sourceOrigin + 2, 'bg'], [1, sourceOrigin + 2, 'bold'],
     [1, 1, 'fg'], [0, 4, 'fg'], [3, 3, 'fg'], [4, 3, 'fg']]) {

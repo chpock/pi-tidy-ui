@@ -1,5 +1,5 @@
-import { VERSION, CustomEditor, createEditToolDefinition, highlightCode, getLanguageFromPath, type ExtensionAPI, type ExtensionContext, type ThemeColor } from "@earendil-works/pi-coding-agent";
-import { Box, Container, Editor, Markdown, Spacer, TruncatedText, backgroundAnsi, visibleWidth, type TerminalColorMode, type Component, type TuiMouseEvent, type TuiMouseEventResult } from "@earendil-works/pi-tui";
+import { VERSION, CustomEditor, highlightCode, getLanguageFromPath, type ExtensionAPI, type ExtensionContext, type ThemeColor } from "@earendil-works/pi-coding-agent";
+import { Box, Container, Editor, Markdown, Spacer, Text, TruncatedText, backgroundAnsi, visibleWidth, type TerminalColorMode, type Component, type TuiMouseEvent, type TuiMouseEventResult } from "@earendil-works/pi-tui";
 import { isAbsolute, resolve } from "node:path";
 import { createRequire } from "node:module";
 import { SessionLogging } from "./session-logging.ts";
@@ -12,8 +12,9 @@ import { type JournalOptions } from "./debug-log.ts";
 import { diagnose, reportRuntime, type DiagnosticFields, type DiagnosticSink } from "./diagnostics.ts";
 import { stripVTControlCharacters } from "node:util";
 import { bashFailurePhase } from "./bash-card.ts";
-import { filePath } from "./file-card.ts";
-import { reflow } from './syntax/measured-rows.ts';
+import { FILE_PREVIEW_MAX_ROWS, FILE_PREVIEW_MAX_UNITS, cleanFileDisplayText, filePath, filePreviewText } from "./file-card.ts";
+import { FilePreviewState, type FilePreviewMode } from './file-preview-state.ts';
+import { measure, reflow, SpanKind, type MeasuredText } from './syntax/measured-rows.ts';
 import { renderUserCard } from "./user-card.ts";
 import { prepareQueuedCard, projectQueuedCards, type QueuedCard } from "./queued-card.ts";
 import { EDITOR_TOP, EDITOR_BOTTOM, renderEditorCard, type EditorLayout } from "./editor-card.ts";
@@ -31,10 +32,12 @@ import { PaletteInputOwner } from './syntax/pi-input-owner.ts';
 import type { PiInputTheme, PaletteInputLease } from './syntax/pi-input.ts';
 import { resolveTheme, type ThemeDescription } from './themes/selection.ts';
 import { SourceController, type GeometryFunding } from './occipital/controller.ts';
+import type { DataCharge, DataCleanupReceipt } from './occipital/data-budget.ts';
 import type { PiClassifier } from "./syntax/work.ts";
 import type { SyntaxClient } from "./occipital/client.ts";
 import { createSyntaxOptions } from "./occipital/bootstrap.ts";
 import { SyntaxRuntime, type SyntaxRuntimeOptions } from "./syntax/runtime.ts";
+import { createLazyNativeRendererResolver, isDeferredStockEditComponent, isDeferredStockEditPair, isDeferredStockFileCall, isDeferredStockFilePair, releaseNativeRendererCache, stockEditCall, stockEditResult, type NativeRendererFailureReporter } from './syntax/lazy-native-renderers.ts';
 export { describeArgs, sanitize } from "./summary-args.ts";
 const extensionVersion = (createRequire(import.meta.url)("../package.json") as { version: string }).version;
 let terminalColorDebug: WeakRef<TerminalColors> | undefined;
@@ -47,7 +50,7 @@ export function terminalColorDiagnostics() {
   return view ? { status: view.status(), counters: view.stats() } : undefined;
 }
 
-/** The private contract verified against Pi 1.0.0; never import a second internal class. */
+/** The private component contract verified against Pi 1.0.1; never import a second internal class. */
 interface ToolNode extends Component {
   toolCallId: string;
   toolName: string;
@@ -154,6 +157,9 @@ export interface TidyUiController {
   /** Forward composed-client notices without traversing transcript history. */
   syntaxSourceChanged(keys: readonly string[], groups?: readonly number[]): void;
   syntaxMetadataChanged(): void;
+  beginFileTurn(): void;
+  completeFileCall(toolCallId: string): void;
+  finishFileTurn(): void;
 }
 function preparedRelease(receipts: { geometry?: { release(): void }; output: { release(): void } }) {
   return { release() { receipts.geometry?.release(); receipts.geometry = undefined; receipts.output.release(); } };
@@ -169,8 +175,6 @@ function paletteRefresh(owner: WeakRef<ToolNode>, adapter: WeakRef<PreparedCardC
   return () => { const node = owner.deref(), host = adapter.deref(); if (node && host?.active) host.refreshPreparedPalette(node); };
 }
 const DEFAULT_CARDS = ["bash", "powershell", "write", "edit"];
-// The public factory exposes the stable stock renderer functions; no execution or file I/O.
-const { renderCall: stockEditCall, renderResult: stockEditResult } = createEditToolDefinition(".");
 // Controls all trailing status markers, including the pending ellipsis, not the leading spinner.
 const SHOW_COMPLETION_MARKERS = false;
 const SPINNER_FRAMES = Array.from("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏");
@@ -291,6 +295,7 @@ function bashDirectory(node: ToolNode): string | null | undefined {
 /** The only compatibility-sensitive adapter. It does not change tools or session entries. */
 export function installTidyUi(tui: LiveTui, getTheme: () => Palette, options: TidyUiOptions = {}): TidyUiController {
   let active = false;
+  const filePreviewState = new FilePreviewState<ToolNode>();
   let reason: string | undefined;
   const parents = new WeakMap<Component, { parent: Container; index: number }>();
   let rendererClears: WeakRef<Component>[] = [], rendererClearPending = false;
@@ -418,13 +423,34 @@ export function installTidyUi(tui: LiveTui, getTheme: () => Palette, options: Ti
     if (passSpinnerTime === undefined && spinnerTimer === undefined) armSpinner();
   }
   let states = new WeakMap<ToolNode, { signature: unknown[]; entry: CacheEntry<Layout>; pool: RenderCache; gap?: number }>();
-  const forget = (node: ToolNode, cause = "source or lifecycle changed") => { const state = states.get(node); state?.pool.drop(state.entry); states.delete(node);
+  type FileDetailRecord = { owner: WeakRef<ToolNode>; receipt: DataCleanupReceipt };
+  type FileDetailSource = { prefix: string; text: string };
+  type FileDetailSources = () => Iterable<FileDetailSource>;
+  const fileDetailTextHeader = 64;
+  type FileDetailCache = { args: Record<string, unknown>; result?: ToolNode['result']; mode: FilePreviewMode; text: string; omitted: boolean;
+    error: boolean; pending: boolean; measured?: MeasuredText; record?: FileDetailRecord; denied: boolean };
+  let fileDetailCaches = new WeakMap<ToolNode, FileDetailCache>();
+  const fileDetailRecords = new Set<FileDetailRecord>();
+  const fileDetailFinalizer = new FinalizationRegistry<FileDetailRecord>(record => {
+    fileDetailRecords.delete(record); record.receipt.release();
+  });
+  function releaseFileDetail(node: ToolNode): void {
+    const cached = fileDetailCaches.get(node); if (!cached) return;
+    fileDetailCaches.delete(node);
+    if (cached.record) { fileDetailFinalizer.unregister(cached.record); fileDetailRecords.delete(cached.record); cached.record.receipt.release(); }
+  }
+  function clearFileDetails(): void {
+    for (const record of fileDetailRecords) { fileDetailFinalizer.unregister(record); record.receipt.release(); }
+    fileDetailRecords.clear(); fileDetailCaches = new WeakMap();
+  }
+  const forget = (node: ToolNode, cause = "source or lifecycle changed", preserveFileDetail = false) => { const state = states.get(node); state?.pool.drop(state.entry); states.delete(node);
+    if (!preserveFileDetail) releaseFileDetail(node);
     if (state) diagnose(options.diagnostic, "DEBUG", "cache", "Tool layout invalidated", { call: node.toolCallId, tool: node.toolName, cause }); };
   let userStates = new WeakMap<UserNode, { signature: unknown[]; entry: CacheEntry<Layout> }>();
   const forgetUser = (node: UserNode) => { cache.drop(userStates.get(node)?.entry); userStates.delete(node); };
   let queuedStates = new WeakMap<Component, { signature: unknown[]; entry: CacheEntry<QueuedCard> }>();
   const forgetQueued = (node: Component) => { cache.drop(queuedStates.get(node)?.entry); queuedStates.delete(node); };
-  const clearCache = () => { cache.clear(); cardCache.clear(); preparedStates = new WeakMap(); states = new WeakMap(); userStates = new WeakMap(); queuedStates = new WeakMap();
+  const clearCache = () => { clearFileDetails(); cache.clear(); cardCache.clear(); preparedStates = new WeakMap(); states = new WeakMap(); userStates = new WeakMap(); queuedStates = new WeakMap();
     diagnose(options.diagnostic, "INFO", "cache", "Presentation layouts cleared; native/source caches are unchanged"); };
   const cards = new Set([...DEFAULT_CARDS, ...options.cards ?? []]);
   const overrides = new Set(options.compact ?? []);
@@ -448,10 +474,24 @@ export function installTidyUi(tui: LiveTui, getTheme: () => Palette, options: Ti
   }>();
   const refresh = () => { tui.invalidate(); tui.requestRender(); };
   // Native argument identity only, not prepared/encoded source or a reader cache.
+  type FileSourceSnapshot = { mode: FilePreviewMode; key: readonly unknown[] };
+  type FileDiagnosticsSnapshot = readonly unknown[] | boolean;
   type SyntaxState = { attempt: number; revision: number; sourceRevision: number; serviceRevision: number; identity: unknown[]; service: unknown[];
+    fileInput?: { args: Record<string, unknown>; result: unknown; source: FileSourceSnapshot; diagnostics: FileDiagnosticsSnapshot; token: object };
     palette: number; paletteColors?: WeakRef<object>; mode: TerminalColorMode; complete: boolean; live: boolean; applied: boolean; paused?: boolean; owned?: boolean; refreshPending?: boolean; prefix?: { sourceRevision: number; basis: number; bytes: number } };
   let syntaxStates = new WeakMap<ToolNode, SyntaxState>();
+  const dirtyFileSources = new WeakSet<ToolNode>();
   let syntax: CardSources<ToolNode> | undefined;
+  function discardFullFile(node: ToolNode): void {
+    const state = syntaxStates.get(node);
+    if (state) state.applied = false;
+    dropPrepared(node);
+    syntax?.discardFile(node);
+  }
+  function unsupportedFullFile(node: ToolNode): boolean {
+    return filePreviewMode(node) === 'full' && syntaxStates.get(node)?.applied === true
+      && syntax?.filePreparationOutcome(node) === 'unsupported';
+  }
   let cardClient = options.syntax?.client;
   let selectedPalette = cardClient?.snapshot().effective ?? resolveTheme({ kind: 'pi' }).effective;
   let ownedSources: SourceController | undefined;
@@ -497,11 +537,19 @@ export function installTidyUi(tui: LiveTui, getTheme: () => Palette, options: Ti
       invalidate: node => { const state = syntaxStates.get(node); let owned: boolean | undefined;
         const accepted = syntax?.visit(node, (_display, paint) => { owned = paint.origin === 'owned'; });
         if (accepted && state) state.owned = owned;
+        else if (state && fileTool(node)) { state.applied = false; dropPrepared(node); }
         preparePrefix(node); }, requestRender: () => { if (active && !quiescing) tui.requestRender(); },
     });
     return syntax;
   }
   const primitiveIdentity = (value: unknown) => value !== null && (typeof value === 'object' || typeof value === 'function') ? typeof value : value;
+  const objectIdentities = new WeakMap<object, object>();
+  function weakIdentity(value: unknown): unknown {
+    if (value === null || (typeof value !== 'object' && typeof value !== 'function')) return value;
+    let identity = objectIdentities.get(value as object);
+    if (!identity) { identity = {}; objectIdentities.set(value as object, identity); }
+    return identity;
+  }
   function liveBashSource(node: ToolNode): boolean { return syntaxStates.get(node)?.live ?? options.syntax?.isLiveCall?.(node.toolCallId) ?? true; }
   function bashInputComplete(node: ToolNode): boolean {
     return node.argsComplete || !node.isPartial && node.result?.role === 'toolResult' || abandonedBashSource(node) && !liveBashSource(node);
@@ -511,30 +559,79 @@ export function installTidyUi(tui: LiveTui, getTheme: () => Palette, options: Ti
   }
   function interruptedLiveBash(node: ToolNode): boolean { return abandonedBashSource(node) && liveBashSource(node); }
   function syntaxEligible(node: ToolNode): boolean {
-    if (!active || !attached(node) || node.hideComponent || node.result?.content.some(part => part.type === 'image')) return false;
-    if (node.toolName === 'bash') return !overrides.has('bash') && !nativeOverrides.has('bash') && typeof node.args.command === 'string' && bashDirectory(node) !== null;
-    return fileSucceeded(node) && !node.expanded && !overrides.has(node.toolName) && !nativeOverrides.has(node.toolName) && !!filePath(node.args);
+    if (!active || !attached(node) || node.hideComponent) return false;
+    if (node.toolName === 'bash') return !overrides.has('bash') && !nativeOverrides.has('bash') && typeof node.args.command === 'string'
+      && bashDirectory(node) !== null && !node.result?.content.some(part => part.type === 'image');
+    return fileSucceeded(node) && filePreviewMode(node) !== undefined && !resultHasImage(node);
   }
-  const equalIdentity = (a: unknown[], b: unknown[]) => a.length === b.length && a.every((v, i) => v === b[i]);
+  const equalIdentity = (a: readonly unknown[], b: readonly unknown[]) => a.length === b.length && a.every((v, i) => v === b[i]);
+  function fileDiagnosticsSnapshot(node: ToolNode, mode: FilePreviewMode): FileDiagnosticsSnapshot {
+    const value = (node.result?.details as { diagnostics?: unknown } | undefined)?.diagnostics;
+    if (mode === 'preview') return Array.isArray(value) && value.length > 0;
+    if (!Array.isArray(value)) return [];
+    const identity: unknown[] = [];
+    for (const item of value) {
+      if (!item || typeof item !== 'object') continue;
+      const diagnostic = item as { severity?: unknown; message?: unknown; line?: unknown };
+      if (diagnostic.severity !== 'error' || typeof diagnostic.message !== 'string') continue;
+      identity.push(typeof diagnostic.line === 'number' && Number.isSafeInteger(diagnostic.line) && diagnostic.line > 0 ? diagnostic.line : undefined, diagnostic.message);
+    }
+    return identity;
+  }
+  function sameFileDiagnostics(a: FileDiagnosticsSnapshot, b: FileDiagnosticsSnapshot): boolean {
+    return a === b || Array.isArray(a) && Array.isArray(b) && equalIdentity(a, b);
+  }
+  function fileSourceSnapshot(node: ToolNode, mode: FilePreviewMode): FileSourceSnapshot {
+    const details = node.result?.details as { patch?: unknown; diff?: unknown; truncated?: unknown; noOp?: unknown } | undefined;
+    const args = node.args;
+    let sourceKind: string, source: unknown;
+    if (node.toolName === 'write' && details?.truncated === true) { sourceKind = 'content'; source = args.content; }
+    else if (details?.patch !== undefined) { sourceKind = 'patch'; source = details.patch; }
+    else if (details?.diff !== undefined) { sourceKind = 'diff'; source = details.diff; }
+    else if (node.toolName === 'write') { sourceKind = 'content'; source = args.content; }
+    else { sourceKind = 'newText'; source = args.newText; }
+    const text = typeof source === 'string' ? source : '';
+    const selected = mode === 'preview' ? filePreviewText(text) : { text, omitted: false };
+    return { mode, key: [node.toolName, mode, filePath(args), sourceKind, typeof source,
+      selected.text, selected.omitted, mode === 'full' ? args.content : undefined, details?.truncated === true, details?.noOp === true, node.isPartial, node.result?.isError === true] };
+  }
+  function sameFileSource(a: FileSourceSnapshot, b: FileSourceSnapshot): boolean { return a.mode === b.mode && equalIdentity(a.key, b.key); }
   function observeSyntax(node: ToolNode): SyntaxState | undefined {
-    if (quiescing || !syntaxEligible(node)) { if (node.toolName !== 'bash') dropPrepared(node); pauseSyntax(node); return; }
+    if (!quiescing && fileTool(node) && !attached(node)) {
+      const state = syntaxStates.get(node); if (state) state.applied = false;
+      pauseSyntax(node); return;
+    }
+    if (quiescing || !syntaxEligible(node)) {
+      const state = syntaxStates.get(node); if (state) { state.applied = false; if (node.toolName !== 'bash') state.fileInput = undefined; }
+      if (node.toolName !== 'bash') { dropPrepared(node); if (!quiescing) syntax?.discardFile(node); }
+      pauseSyntax(node); return;
+    }
     const owner = ensureCards();
-    const identity = node.toolName === 'bash' ? [node.toolName, primitiveIdentity(node.args.command)] : (() => {
-      const d = node.result?.details as { diff?: unknown; patch?: unknown; truncated?: unknown; noOp?: unknown } | undefined;
-      return [node.toolName, filePath(node.args), node.toolName === 'write' ? primitiveIdentity(node.args.content) : undefined,
-        primitiveIdentity(d?.diff), primitiveIdentity(d?.patch), primitiveIdentity(d?.truncated), primitiveIdentity(d?.noOp)];
-    })();
+    let state = syntaxStates.get(node);
+    const viewMode = filePreviewMode(node)!;
+    let fileInput: SyntaxState['fileInput'];
+    let identity: unknown[];
+    if (node.toolName === 'bash') identity = [node.toolName, primitiveIdentity(node.args.command)];
+    else {
+      const previous = state?.fileInput;
+      const sourceDirty = dirtyFileSources.delete(node);
+      const reusable = previous && !sourceDirty && previous.args === node.args && previous.result === node.result && previous.source.mode === viewMode;
+      const source = reusable ? previous.source : fileSourceSnapshot(node, viewMode);
+      const token = previous && sameFileSource(previous.source, source) ? previous.token : {};
+      const changedDiagnostics = reusable ? previous.diagnostics : fileDiagnosticsSnapshot(node, viewMode);
+      const diagnostics = previous && sameFileDiagnostics(previous.diagnostics, changedDiagnostics) ? previous.diagnostics : changedDiagnostics;
+      fileInput = { args: node.args, result: node.result, source, diagnostics, token };
+      identity = [node.toolName, token, viewMode];
+    }
     const context = node.getRenderContext() as { cwd?: string };
-    const diagnostics = (node.result?.details as { diagnostics?: unknown } | undefined)?.diagnostics;
-    const diagnosticIdentity = node.toolName !== 'bash' && Array.isArray(diagnostics) ? diagnostics.flatMap(value => {
-      const diagnostic = value as { severity?: unknown; message?: unknown; line?: unknown } | null;
-      return diagnostic?.severity === 'error' && typeof diagnostic.message === 'string' ? [diagnostic.message, primitiveIdentity(diagnostic.line)] : [];
-    }) : [];
-    const service = node.toolName === 'bash' ? [node.expanded, node.args.description, node.args.workdir, bashDirectory(node), node.result?.isError,
+    let service: unknown[];
+    if (node.toolName === 'bash') service = [node.expanded, node.args.description, node.args.workdir, bashDirectory(node), node.result?.isError,
       node.isPartial, node.result?.isError ? node.executionStarted : undefined, node.result?.isError ? node.argsComplete : undefined,
       (node.result?.details as { exit_code?: unknown } | undefined)?.exit_code,
-      ...(node.result?.content.flatMap(p => [p.type, p.text]) ?? [])] : [context?.cwd, ...diagnosticIdentity];
-    let state = syntaxStates.get(node);
+      ...(node.result?.content.flatMap(p => [p.type, p.text]) ?? [])];
+    else if (viewMode === 'preview') service = [context?.cwd, node.isPartial, node.result?.isError === true, fileInput?.diagnostics ?? false];
+    else service = [context?.cwd, weakIdentity(node.result), node.isPartial, fileInput?.diagnostics ?? []];
+    if (state && fileInput) state.fileInput = fileInput;
     const input = needsPiTheme(selectedPalette) ? publicInput() : undefined;
     const mode = input?.mode ?? terminalMode();
     const palette = externalPaletteOwner ? options.syntax!.palette() : paletteOwner.palette(input?.theme, selectedPalette);
@@ -548,10 +645,13 @@ export function installTidyUi(tui: LiveTui, getTheme: () => Palette, options: Ti
       state.applied = false;
       const accepted = owner.updateDisplay(node, node.toolName === 'bash' ? { ...common, kind: 'bash', args: node.args, node,
         complete, language: 'bash', directory: bashDirectory(node) ?? undefined }
-        : { ...common, kind: 'file', node, cwd: context?.cwd, language: getLanguageFromPath(filePath(node.args)!) });
+        : { ...common, kind: 'file', node, viewMode: filePreviewMode(node) ?? 'preview', cwd: context?.cwd, language: getLanguageFromPath(filePath(node.args)!) });
       if (syntaxStates.get(node) !== state || state.attempt !== attempt) return;
-      if (!accepted || !syntaxEligible(node)) { pauseSyntax(node); return; }
-      Object.assign(state, common, { identity, service, complete, applied: true,
+      if (!accepted || !syntaxEligible(node)) {
+        if (!accepted && fileTool(node) && viewMode === 'full') discardFullFile(node);
+        pauseSyntax(node); return;
+      }
+      Object.assign(state, common, { identity, service, ...(fileInput ? { fileInput } : {}), complete, applied: true,
         paletteColors: input ? new WeakRef(input.theme.colors) : undefined });
       preparePrefix(node);
     }
@@ -605,7 +705,8 @@ export function installTidyUi(tui: LiveTui, getTheme: () => Palette, options: Ti
     }
   }
   function memo<T extends Layout>(node: ToolNode, kind: LayoutKind, width: number, theme: Palette, directory: string | undefined, padding: number, build: () => T): T {
-    const signature = [kind, width, padding, theme, theme.fg, node.args, node.result, node.expanded, node.isPartial, directory];
+    const signature = [kind, width, padding, theme, theme.fg, node.args, node.result, node.expanded, node.isPartial, directory,
+      fileTool(node) ? filePreviewMode(node) : undefined];
     const state = states.get(node);
     if (state && equalIdentity(signature, state.signature)) { const value = state.pool.get(state.entry); if (value) return value as T; }
     state?.pool.drop(state.entry); const value = build(); cache.get(undefined);
@@ -616,14 +717,20 @@ export function installTidyUi(tui: LiveTui, getTheme: () => Palette, options: Ti
     if (!syntaxStates.get(node)?.applied) return;
     const previousEntry = preparedStates.get(node), previous = previousEntry?.value;
     const padding = outputPadding(), funding = cardClient?.sources.geometryFunding();
+    if (!funding) {
+      // The funded logical file view remains retryable; only its derived scene is unavailable.
+      if (fileTool(node) && filePreviewMode(node) === 'full' && !unsupportedFullFile(node)) dropPrepared(node);
+      return;
+    }
     let scene: CardLayout | undefined, output: CardRows | undefined, candidate: PreparedLayout | undefined, adopted = false, nativeFile = false;
     try {
       const accepted = !!funding && !!syntax?.visit(node, (display, paint) => {
         if (display.kind === 'file' && display.mode === undefined) { nativeFile = true; return; }
         observePalette(node, paint.origin);
-        const sameGeometry = previous?.scene.isRetained && previous.width === width && previous.padding === padding && previous.expanded === node.expanded && previous.geometryStamp === display.geometryStamp;
+        const expanded = display.kind === 'bash' ? node.expanded : display.preview !== true;
+        const sameGeometry = previous?.scene.isRetained && previous.width === width && previous.padding === padding && previous.expanded === expanded && previous.geometryStamp === display.geometryStamp;
         if (sameGeometry && previous.output.isValid && previous.paintStamp === paint.paintStamp) { candidate = previous; return; }
-        scene = sameGeometry ? previous.scene : layoutCard(display, { width, outputPad: padding, expanded: node.expanded }, funding);
+        scene = sameGeometry ? previous.scene : layoutCard(display, { width, outputPad: padding, expanded }, funding);
         if (!scene) return;
         let proof: BashPaintProof | undefined;
         if (display.kind === 'bash') {
@@ -631,13 +738,20 @@ export function installTidyUi(tui: LiveTui, getTheme: () => Palette, options: Ti
           if (key && prefix && prefix.sourceRevision === syntaxStates.get(node)?.sourceRevision) paint.basis(key, (_text, ranges) => { proof = { ranges, eligibleBytes: prefix.bytes }; });
         }
         output = scene.paint(display, paint, funding, proof); if (!output) return;
-        candidate = { scene, output, width, padding, expanded: node.expanded, geometryStamp: display.geometryStamp, paintStamp: paint.paintStamp, publication: paint.publication, origin: paint.origin };
+        candidate = { scene, output, width, padding, expanded, geometryStamp: display.geometryStamp, paintStamp: paint.paintStamp, publication: paint.publication, origin: paint.origin };
       });
       if (accepted && nativeFile) dropPrepared(node);
-      if (!accepted || !candidate || !active) return undefined;
+      if (!accepted || !candidate || !active) {
+        if (active && accepted && !candidate && fileTool(node) && filePreviewMode(node) === 'full' && !nativeFile) dropPrepared(node);
+        return undefined;
+      }
       const state = syntaxStates.get(node); if (state) state.owned = candidate.origin === 'owned';
       if (candidate === previous) { preparedPools.get(previousEntry!)?.get(previousEntry); return previous; }
-      let rows: string[] | undefined; if (!candidate.output.withRows(value => { rows = value; }) || !rows) return previous;
+      let rows: string[] | undefined;
+      if (!candidate.output.withRows(value => { rows = value; }) || !rows) {
+        if (fileTool(node) && filePreviewMode(node) === 'full') dropPrepared(node);
+        return undefined;
+      }
       const oldRelease = previousEntry && preparedCleanup.get(previousEntry);
       const release = { geometry: candidate.scene.cleanupReceipt() as ReturnType<CardLayout['cleanupReceipt']> | undefined, output: candidate.output.cleanupReceipt() };
       const pool = candidate.scene.framed ? cardCache : cache;
@@ -661,18 +775,272 @@ export function installTidyUi(tui: LiveTui, getTheme: () => Palette, options: Ti
   function preparedRows(layout: PreparedLayout | undefined): string[] {
     let rows: string[] | undefined; layout?.output.withRows(value => { rows = value; }); return rows ?? [];
   }
+  function buildFileDetail(node: ToolNode, mode: FilePreviewMode): { text: string; sources?: FileDetailSources; omitted: boolean; error: boolean; pending: boolean } {
+    const error = !node.isPartial && node.result?.isError === true, pending = node.isPartial || !node.result;
+    if (fileSucceeded(node)) return { text: '', omitted: false, error: false, pending: false };
+    const omitted = { value: false };
+    const bounded = (value: unknown, maxUnits = FILE_PREVIEW_MAX_UNITS, maxRows = FILE_PREVIEW_MAX_ROWS) => {
+      if (typeof value !== 'string') return { text: '', omitted: false };
+      return filePreviewText(value, maxUnits, maxRows);
+    };
+    const editSources = function* (entry: unknown, index: number, multiple: boolean, incomplete?: () => void): Generator<FileDetailSource> {
+      if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return;
+      const value = entry as Record<string, unknown>, suffix = multiple ? ` (edit ${index + 1})` : '';
+      const oldText = value.oldText;
+      if (typeof oldText === 'string') yield { prefix: `Original file content${suffix}:\n`, text: oldText }; else incomplete?.();
+      const newText = value.newText;
+      if (typeof newText === 'string') yield { prefix: `Requested replacement${suffix}:\n`, text: newText }; else incomplete?.();
+    };
+    if (error && mode === 'preview') return { text: '', omitted: false, error: true, pending: false };
+    if (pending) {
+      if (mode === 'preview') return { text: '', omitted: false, error: false, pending: true };
+      const parts: string[] = []; let pendingOmitted = false;
+      if (node.toolName === 'write') {
+        const request = bounded(node.args.content);
+        if (request.text) parts.push(`Requested file content:\n${request.text}`);
+        pendingOmitted = request.omitted;
+      } else {
+        const entries = Array.isArray(node.args.edits) ? node.args.edits : [node.args];
+        const multiple = entries.length > 1, maxEntries = FILE_PREVIEW_MAX_ROWS;
+        let combined = '', visited = 0, stop = false;
+        for (let index = 0; index < Math.min(entries.length, maxEntries); index++) {
+          visited = index + 1;
+          const entry = entries[index];
+          if (Array.isArray(node.args.edits) && (!entry || typeof entry !== 'object' || Array.isArray(entry))) { pendingOmitted = true; continue; }
+          for (const source of editSources(entry, index, multiple)) {
+            if (!source.text) continue;
+            const separator = combined ? '\n' : '';
+            const prefixRows = (source.prefix.match(/\n/gu) ?? []).length;
+            const currentRows = combined ? combined.split('\n').length : 0;
+            const remainingRows = FILE_PREVIEW_MAX_ROWS - currentRows - (separator ? 1 : 0) - prefixRows;
+            const remainingUnits = FILE_PREVIEW_MAX_UNITS - combined.length - separator.length - source.prefix.length;
+            if (remainingRows < 1 || remainingUnits < 1) { pendingOmitted = true; stop = true; break; }
+            const part = filePreviewText(source.text, remainingUnits, remainingRows);
+            const joined = `${combined}${separator}${source.prefix}${part.text}`;
+            const preview = filePreviewText(joined, FILE_PREVIEW_MAX_UNITS, FILE_PREVIEW_MAX_ROWS);
+            combined = preview.text;
+            pendingOmitted ||= part.omitted || preview.omitted;
+            if (part.omitted || preview.omitted) { stop = true; break; }
+          }
+          if (stop) break;
+        }
+        if (entries.length > visited) pendingOmitted = true;
+        if (combined) parts.push(combined);
+      }
+      const preview = filePreviewText(parts.join('\n'), FILE_PREVIEW_MAX_UNITS, FILE_PREVIEW_MAX_ROWS);
+      return { text: preview.text, omitted: pendingOmitted || preview.omitted, error: false, pending: true };
+    }
+    const requestedContent = node.args.content, resultContent = node.result?.content ?? [];
+    const rawSources: FileDetailSources = function* () {
+      if (node.toolName === 'write' && typeof requestedContent === 'string') yield { prefix: 'Requested file content:\n', text: requestedContent };
+      if (node.toolName === 'edit') {
+        const edits = Array.isArray(node.args.edits), entries = edits ? node.args.edits as unknown[] : [node.args];
+        const multiple = entries.length > 1;
+        for (let index = 0; index < entries.length; index++) {
+          const entry = entries[index];
+          if (edits && (!entry || typeof entry !== 'object' || Array.isArray(entry))) { omitted.value = true; continue; }
+          yield* editSources(entry, index, multiple, () => { omitted.value = true; });
+        }
+      }
+      let first = true;
+      for (const part of resultContent) if (part.type === 'text' && typeof part.text === 'string') {
+        yield { prefix: first ? 'Tool error:\n' : '', text: part.text }; first = false;
+      }
+    };
+    return { text: '', sources: rawSources, get omitted() { return omitted.value; }, error: true, pending: false };
+  }
+  function fileDetailTextBytes(text: string): number {
+    const bytes = text.length * 2;
+    return Number.isSafeInteger(bytes) && bytes <= Number.MAX_SAFE_INTEGER - fileDetailTextHeader ? bytes + fileDetailTextHeader : Number.POSITIVE_INFINITY;
+  }
+  function fileDetailConstructionPeak(units: number, parts: number): number {
+    const maximum = Number.MAX_SAFE_INTEGER;
+    if (!Number.isSafeInteger(units) || units < 0 || !Number.isSafeInteger(parts) || parts < 0 ||
+      units > Math.floor((maximum - 4096 - fileDetailTextHeader) / 8)) return Number.POSITIVE_INFINITY;
+    const scratch = 4096 + units * 6;
+    const retainedText = fileDetailTextHeader + units * 2;
+    if (retainedText > maximum - scratch) return Number.POSITIVE_INFINITY;
+    const partOverhead = 64;
+    const available = maximum - scratch - retainedText;
+    if (parts > Math.floor(available / partOverhead)) return Number.POSITIVE_INFINITY;
+    // Three UTF-16-sized construction copies plus the separately charged joined text; no per-line descriptors are built here.
+    return scratch + retainedText + parts * partOverhead;
+  }
+  function retainFileDetail(node: ToolNode, detail: FileDetailCache, textCharge: DataCharge): void {
+    const measuredReceipt = detail.measured!.cleanupReceipt(); let released = false;
+    const receipt: DataCleanupReceipt = { release() {
+      if (released) return; released = true; measuredReceipt.release(); textCharge.release();
+    } };
+    const record = { owner: new WeakRef(node), receipt };
+    detail.record = record; fileDetailRecords.add(record); fileDetailFinalizer.register(node, record, record);
+  }
+  function detailCache(node: ToolNode, mode: FilePreviewMode): FileDetailCache {
+    const cached = fileDetailCaches.get(node);
+    if (cached && !cached.denied && cached.args === node.args && cached.result === node.result && cached.mode === mode) return cached;
+    const detail = buildFileDetail(node, mode);
+    if (cached && !cached.denied && !detail.sources && cached.mode === mode && cached.text === detail.text && cached.omitted === detail.omitted &&
+      cached.error === detail.error && cached.pending === detail.pending) {
+      cached.args = node.args; cached.result = node.result; return cached;
+    }
+    releaseFileDetail(node);
+    const next: FileDetailCache = { text: detail.text, omitted: detail.omitted, error: detail.error, pending: detail.pending,
+      args: node.args, result: node.result, mode, denied: false };
+    if (detail.sources) {
+      let units = 0, parts = 0;
+      for (const source of detail.sources()) {
+        const addition = source.prefix.length + source.text.length + (parts ? 1 : 0);
+        if (!Number.isSafeInteger(addition) || units > Number.MAX_SAFE_INTEGER - addition || parts === Number.MAX_SAFE_INTEGER) {
+          units = Number.POSITIVE_INFINITY; break;
+        }
+        units += addition; parts++;
+      }
+      next.omitted = detail.omitted;
+      if (parts) {
+        const funding = cardClient?.sources.geometryFunding();
+        const estimate = fileDetailConstructionPeak(units, parts);
+        const reservation = funding && Number.isSafeInteger(estimate) ? funding.grant(estimate) : undefined;
+        if (!funding || !reservation) next.denied = true;
+        else {
+          let textCharge: DataCharge | undefined;
+          try {
+            const parts: string[] = []; let index = 0;
+            for (const { prefix, text } of detail.sources()) {
+              parts.push(`${index++ ? '\n' : ''}${prefix}${cleanFileDisplayText(text)}`);
+            }
+            next.omitted = detail.omitted;
+            next.text = parts.join('');
+            textCharge = reservation.consume(fileDetailTextBytes(next.text));
+            parts.length = 0;
+            reservation.close();
+            next.measured = measure(next.text, funding.budget, funding.grant);
+            if (next.measured) retainFileDetail(node, next, textCharge);
+            else { textCharge.release(); textCharge = undefined; next.text = ''; next.denied = true; }
+          } catch (error) {
+            textCharge?.release(); next.text = ''; next.denied = true;
+            diagnose(options.diagnostic, 'ERROR', 'file-detail', 'Expanded file details could not be measured', { call: node.toolCallId, error: error instanceof Error ? error.name : 'UnknownError' });
+          } finally { reservation.close(); }
+        }
+      }
+    } else if (next.text) {
+      const funding = cardClient?.sources.geometryFunding(), bytes = fileDetailTextBytes(next.text);
+      const reservation = funding && Number.isSafeInteger(bytes) ? funding.grant(bytes) : undefined;
+      if (!funding || !reservation) { next.text = ''; next.denied = true; }
+      else {
+        let textCharge: DataCharge | undefined;
+        try {
+          textCharge = reservation.consume(bytes); reservation.close();
+          next.measured = measure(next.text, funding.budget, funding.grant);
+          if (next.measured) retainFileDetail(node, next, textCharge);
+          else { textCharge.release(); textCharge = undefined; next.text = ''; next.denied = true; }
+        } catch (error) {
+          textCharge?.release(); next.text = ''; next.denied = true;
+          diagnose(options.diagnostic, 'ERROR', 'file-detail', 'Expanded file details could not be measured', { call: node.toolCallId, error: error instanceof Error ? error.name : 'UnknownError' });
+        } finally { reservation.close(); }
+      }
+    }
+    fileDetailCaches.set(node, next); return next;
+  }
+  function prepareFileDetail(node: ToolNode): void {
+    if (!active || quiescing || !attached(node) || fileSucceeded(node) || filePreviewMode(node) !== 'full') {
+      releaseFileDetail(node);
+      return;
+    }
+    ensureCards();
+    detailCache(node, 'full');
+  }
+  function detailRows(detail: FileDetailCache, width: number): string[] | undefined {
+    if (!detail.text) return [];
+    const measured = detail.measured, funding = cardClient?.sources.geometryFunding();
+    if (!measured || !measured.isValid || !funding) return;
+    const layout = reflow(measured, { mode: 'file', width }, funding.grant);
+    if (!layout) return;
+    const rows: string[] = []; let span = 0;
+    try {
+      const valid = layout.withLookup(measured, read => {
+        layout.visitRows((_row, _cells, spanCount) => {
+          let line = '';
+          for (let i = 0; i < spanCount; i++, span++) read.span(span, (kind, first, end, cells) => {
+            if (kind === SpanKind.Source && end > first) line += detail.text.slice(read.glyphStart(first), read.glyphEnd(end - 1));
+            else if (kind === SpanKind.Tab) line += ' '.repeat(cells);
+            else if (kind === SpanKind.Replacement) line += '�' + ' '.repeat(Math.max(0, cells - 1));
+          });
+          rows.push(line);
+        });
+      });
+      return valid ? rows : undefined;
+    } finally { layout.dispose(); }
+  }
+  function fileDetailServiceRow(text: string, width: number, padding: number): string[] {
+    // Pi's regular renderer rejects rows wider than the current transcript, even for fixed service copy.
+    if (width < 1) return [];
+    const inset = Math.min(Math.max(0, padding), Math.floor((width - 1) / 2));
+    return new Text(text, inset, 0).render(width);
+  }
+  function fileDetailLayout(node: ToolNode, width: number): Layout {
+    const theme = getTheme(), padding = outputPadding(), mode = filePreviewMode(node) ?? 'preview';
+    return memo(node, node.toolName as LayoutKind, width, theme, undefined, padding, () => {
+      const summary = summaryRows(node, width, theme, padding), cached = fileDetailCaches.get(node);
+      const detail = mode === 'full' && cached?.args === node.args && cached.result === node.result && cached.mode === mode ? cached : undefined;
+      const rows = [...summary.rows];
+      if (fileSucceeded(node) && mode === 'preview') {
+        const unsupported = syntax?.filePreparationOutcome(node) === 'unsupported';
+        rows.push(...fileDetailServiceRow(theme.fg('muted', unsupported ? '  No saved file change details are available; expand for full validation.'
+          : '  File preview unavailable within the current geometry budget; expand to continue.'), width, padding));
+      }
+      if (mode === 'full' && (!detail || detail.denied)) rows.push(...fileDetailServiceRow(theme.fg('muted', detail?.denied && !fileSucceeded(node)
+        ? '  File details are unavailable within the current geometry budget.'
+        : '  Full file view unavailable within the current preparation or geometry budget.'), width, padding));
+      else if (mode === 'full' && detail?.text) {
+        const measured = detailRows(detail, width);
+        if (measured) rows.push(...measured);
+        else rows.push(...fileDetailServiceRow(theme.fg('muted', '  File details are unavailable within the current geometry budget.'), width, padding));
+      }
+      if (detail?.omitted) rows.push(...fileDetailServiceRow(theme.fg('muted', '  … additional file content is omitted from this bounded view'), width, padding));
+      else if (!detail?.denied && node.result?.isError && mode === 'full' && !detail?.text) rows.push(...fileDetailServiceRow(theme.fg('error', '  The tool reported an error without text details.'), width, padding));
+      else if (!detail?.denied && (node.isPartial || !node.result) && mode === 'full' && !detail?.text) rows.push(...fileDetailServiceRow(theme.fg('muted', '  Waiting for file content.'), width, padding));
+      if (mode === 'preview' && node.result && !node.isPartial) rows.push(...fileDetailServiceRow(theme.fg('muted', '  … (Click to expand)'), width, padding));
+      return { ...summary, rows };
+    });
+  }
   const bashLayout = preparedLayout;
   const fileLayout = (node: ToolNode, width: number) => {
+    if (!fileSucceeded(node)) {
+      const layout = filePreviewMode(node) === 'full' ? fileDetailLayout(node, width) : summaryLayout(node, width);
+      return { ...layout, framed: false, native: false };
+    }
+    const mode = filePreviewMode(node);
     const layout = preparedLayout(node, width);
-    return layout ? { geometry: layout.scene.geometry, framed: layout.scene.framed, native: false, rows: preparedRows(layout) }
-      : { rows: nativeRows(node, width), framed: false, native: true };
+    if (layout) return { geometry: layout.scene.geometry, framed: layout.scene.framed, native: false, rows: preparedRows(layout) };
+    if (mode === undefined || mode === 'full' && unsupportedFullFile(node)) return { rows: nativeRows(node, width), framed: false, native: true };
+    return { ...fileDetailLayout(node, width), framed: false, native: false };
   };
   function fileMeasure(node: ToolNode, width: number) {
-    if (!syntaxStates.get(node)?.applied) return;
+    const fallback = () => {
+      const mode = filePreviewMode(node);
+      if (!fileSucceeded(node)) {
+        const layout = mode === 'full' ? fileDetailLayout(node, width) : summaryLayout(node, width);
+        return { framed: layout.framed ?? false, height: layout.rows.length };
+      }
+      if (mode === undefined || unsupportedFullFile(node)) {
+        const rows = nativeRows(node, width);
+        return { framed: false, height: rows.length - (rows[0] === '' ? 1 : 0) };
+      }
+      const layout = fileDetailLayout(node, width);
+      return { framed: layout.framed ?? false, height: layout.rows.length };
+    };
+    if (width < 1 && filePreviewMode(node) !== undefined) { pauseSyntax(node); return { framed: false, height: 0 }; }
+    if (!fileSucceeded(node)) return fallback();
+    observeSyntax(node);
+    if (!syntaxStates.get(node)?.applied) return fallback();
     const existing = preparedStates.get(node)?.value, padding = outputPadding();
-    let measurement: { framed: boolean; height: number } | undefined;
+    let measurement: { framed: boolean; height: number } | undefined, unsupported = false;
+    const requestedMode = filePreviewMode(node);
     const accepted = syntax?.visit(node, display => {
-      if (display.kind !== 'file' || display.mode === undefined) return;
+      if (display.kind !== 'file') return;
+      if (display.mode === undefined) {
+        if (requestedMode !== 'preview') unsupported = true;
+        return;
+      }
       if (existing?.scene.isRetained && existing.width === width && existing.padding === padding && existing.geometryStamp === display.geometryStamp) {
         measurement = { framed: existing.scene.framed, height: existing.scene.rowCount }; return;
       }
@@ -687,12 +1055,39 @@ export function installTidyUi(tui: LiveTui, getTheme: () => Palette, options: Ti
       try { if (heading) measurement = { framed: false, height: heading.rowCount }; }
       finally { heading?.dispose(); }
     });
-    return accepted ? measurement : undefined;
+    if (!accepted) return fallback();
+    if (unsupported) {
+      const rows = nativeRows(node, width);
+      return { framed: false, height: rows.length - (rows[0] === '' ? 1 : 0) };
+    }
+    return measurement ?? fallback();
   }
   const summaryLayout = (node: ToolNode, width: number) => {
     const theme = getTheme(), padding = outputPadding();
     return memo(node, 'summary', width, theme, undefined, padding, () => summaryRows(node, width, theme, padding));
   };
+  function finishFileTurn(): void {
+    if (!active || quiescing) return;
+    const live = filePreviewState.candidates().filter(({ owner, toolCallId }) => attached(owner) && owner.toolCallId === toolCallId);
+    const previous = new Map(live.map(({ owner, toolCallId }) => [owner, filePreviewState.mode(owner, toolCallId, owner.expanded)]));
+    const successful = live.filter(({ owner }) => fileSucceeded(owner));
+    const completed = new Set(successful.filter(({ owner, toolCallId }) => filePresentationEligible(owner)
+      && filePreviewState.isCurrentSuccess(owner, toolCallId)).map(({ owner }) => owner));
+    filePreviewState.finishTurn(successful);
+    let changed = false;
+    for (const { owner, toolCallId } of live) {
+      if (!filePresentationEligible(owner)) continue;
+      const modeChanged = previous.get(owner) !== filePreviewState.mode(owner, toolCallId, owner.expanded);
+      if (modeChanged) { dropPrepared(owner); forget(owner, 'file turn preview window changed'); }
+      if (modeChanged || completed.has(owner)) { observeSyntax(owner); changed = true; }
+    }
+    if (changed) tui.requestRender();
+  }
+  function observeFileTurn(node: ToolNode, finalize = false): void {
+    if (!active || quiescing || !fileTool(node) || !attached(node)) return;
+    filePreviewState.observe(node, node.toolCallId);
+    if (finalize && fileSucceeded(node)) filePreviewState.finalize(node, node.toolCallId);
+  }
   const controller: PreparedCardController = {
     refreshPreparedPalette: refreshPalette,
     retireRendererClears() {
@@ -746,6 +1141,9 @@ export function installTidyUi(tui: LiveTui, getTheme: () => Palette, options: Ti
     },
     clearCache,
     syntaxSourceChanged(keys, groups) { if (active && !quiescing) syntax?.sourceChanged(keys, groups); },
+    beginFileTurn() { if (active && !quiescing) filePreviewState.beginTurn(); },
+    completeFileCall(toolCallId) { if (active && !quiescing) filePreviewState.completed(toolCallId); },
+    finishFileTurn,
     syntaxMetadataChanged() {
       if (active && !quiescing) {
         selectedPalette = cardClient?.snapshot().effective ?? resolveTheme({ kind: 'pi' }).effective;
@@ -764,6 +1162,7 @@ export function installTidyUi(tui: LiveTui, getTheme: () => Palette, options: Ti
       diagnose(options.diagnostic, "INFO", "runtime", "Presentation restoring native ownership; later owners remain untouched",
         { animationWakes: spinnerWakes, animationRequests: spinnerRequests });
       active = false;
+      filePreviewState.reset();
       rendererClears = []; rendererClearPending = false;
       syntax?.dispose(); ownedSources?.dispose(); paletteOwner?.dispose(); syntaxStates = new WeakMap();
       stopSpinner(); animated.clear(); animationRefs = new WeakMap();
@@ -826,10 +1225,33 @@ export function installTidyUi(tui: LiveTui, getTheme: () => Palette, options: Ti
   };
   const fileTool = (node: ToolNode) => node.toolName === "edit" || node.toolName === "write";
   const fileSucceeded = (node: ToolNode) => fileTool(node) && !!node.result && !node.isPartial && !node.result.isError;
+  const imageResults = new WeakMap<object, boolean>();
+  function resultHasImage(node: ToolNode): boolean {
+    const result = node.result;
+    if (!result) return false;
+    const cached = imageResults.get(result);
+    if (cached !== undefined) return cached;
+    const found = result.content.some(part => part.type === 'image');
+    imageResults.set(result, found);
+    return found;
+  }
+  function nativeFileOwner(node: ToolNode): boolean {
+    const call = node.getCallRenderer?.(), result = node.getResultRenderer?.();
+    return fileTool(node) && isDeferredStockFileCall(call) && (result === undefined || isDeferredStockFilePair(call, result));
+  }
+  function filePresentationEligible(node: ToolNode): boolean {
+    return active && fileTool(node) && !node.hideComponent && !overrides.has(node.toolName) && !nativeOverrides.has(node.toolName) &&
+      !resultHasImage(node);
+  }
+  function filePreviewMode(node: ToolNode): FilePreviewMode | undefined {
+    if (!filePresentationEligible(node) || fileSucceeded(node) && !filePath(node.args)) return undefined;
+    return filePreviewState.mode(node, node.toolCallId, node.expanded);
+  }
   const eligible = (node: Component): node is ToolNode => active && candidate(node) &&
-    !node.hideComponent && !node.expanded && (overrides.has(node.toolName) || !cards.has(node.toolName) ||
+    !node.hideComponent && !node.expanded &&
+    (overrides.has(node.toolName) || !cards.has(node.toolName) ||
       (fileTool(node) && !nativeOverrides.has(node.toolName) && !fileSucceeded(node))) &&
-    !node.result?.content.some((content) => content.type === "image");
+    !resultHasImage(node);
   const compact = (node: Component, width: number): node is ToolNode => {
     if (!eligible(node)) return false;
     return nativeVisible(node, width);
@@ -839,13 +1261,15 @@ export function installTidyUi(tui: LiveTui, getTheme: () => Palette, options: Ti
     // Stock edit always supplies a heading in an ordinary Box. Its native factory can reuse
     // a previous custom Box, so both renderer identities AND the current component must qualify.
     // Check every visit; no retained visibility proof or native-state mutation.
-    if (typeof stockEditCall === "function" && typeof stockEditResult === "function" &&
-      node.constructor.name === "ToolExecutionComponent" && node.toolName === "edit" &&
-      typeof node.getCallRenderer === "function" && node.getCallRenderer() === stockEditCall &&
-      typeof node.getResultRenderer === "function" && node.getResultRenderer() === stockEditResult &&
+    const callRenderer = node.getCallRenderer?.(), resultRenderer = node.getResultRenderer?.();
+    const stockEdit = callRenderer === stockEditCall && resultRenderer === stockEditResult &&
       node.callRendererComponent instanceof Box && Object.getPrototypeOf(node.callRendererComponent) === Box.prototype &&
-      node.callRendererComponent.render === Box.prototype.render &&
-      node.callRendererComponent.clear === Box.prototype.clear && node.callRendererComponent.addChild === Box.prototype.addChild) return true;
+      node.callRendererComponent.render === Box.prototype.render && node.callRendererComponent.clear === Box.prototype.clear &&
+      node.callRendererComponent.addChild === Box.prototype.addChild;
+    const deferredEdit = isDeferredStockEditPair(callRenderer, resultRenderer) &&
+      isDeferredStockEditComponent(node.callRendererComponent);
+    if (node.constructor.name === "ToolExecutionComponent" && node.toolName === "edit" && typeof node.getCallRenderer === "function" &&
+      typeof node.getResultRenderer === "function" && (stockEdit || deferredEdit)) return true;
     // Unknown self shells can be empty/width-dependent even when hideComponent is false.
     return nativeRows(node, width).length > 0;
   }
@@ -858,10 +1282,7 @@ export function installTidyUi(tui: LiveTui, getTheme: () => Palette, options: Ti
   }
 
   function fileCard(node: Component, width: number): boolean {
-    if (!active || !candidate(node) || !fileSucceeded(node) || node.hideComponent || node.expanded ||
-      overrides.has(node.toolName) || nativeOverrides.has(node.toolName) || !filePath(node.args) ||
-      node.result?.content.some((part) => part.type === "image")) return false;
-    return nativeVisible(node, width);
+    return width > 0 && candidate(node) && filePresentationEligible(node as ToolNode);
   }
 
   function summaryRows(node: ToolNode, width: number, theme: Palette, padding: number): SummaryLayout {
@@ -922,6 +1343,10 @@ export function installTidyUi(tui: LiveTui, getTheme: () => Palette, options: Ti
     const render = candidate(node) ? patches.get(Object.getPrototypeOf(node))?.render.value as Render | undefined : undefined;
     return render ? render.call(node as ToolNode, width) : node.render(width);
   }
+  function releaseNativeFileRenderer(node: ToolNode): void {
+    const context = node.getRenderContext() as { state?: unknown } | null | undefined;
+    releaseNativeRendererCache(context?.state);
+  }
   function previousLayout(node: Component, width: number): { compact: boolean; tool: boolean; height: number; separator?: boolean } | undefined {
     const position = parents.get(node);
     const siblings = position?.parent.children ?? [];
@@ -930,9 +1355,16 @@ export function installTidyUi(tui: LiveTui, getTheme: () => Palette, options: Ti
     for (let index = current - 1; index >= 0; index--) {
       const previous = siblings[index];
       if (width > 0 && bashCard(previous, width)) return { compact: false, tool: true, height: 3 };
-      if (width > 0 && candidate(previous) && fileCard(previous, width)) {
-        const measure = fileMeasure(previous, width);
-        if (measure?.height) return { compact: !measure.framed, tool: true, height: measure.height };
+      if (candidate(previous) && filePreviewMode(previous) !== undefined) {
+        if (width < 1) { pauseSyntax(previous); continue; }
+        if (fileCard(previous, width)) {
+          if (!nativeVisible(previous as ToolNode, width)) continue;
+          const measure = fileMeasure(previous, width);
+          if (measure?.height) return { compact: !measure.framed, tool: true, height: measure.height };
+          const summary = summaryLayout(previous, width);
+          if (summary.rows.length) return { compact: true, tool: true, height: summary.rows.length };
+          continue;
+        }
       }
       if (compact(previous, width)) return { compact: true, tool: true, height: summaryLayout(previous, width).rows.length };
       // User cards contribute cached content metadata, not recursive predecessor rendering.
@@ -980,7 +1412,9 @@ export function installTidyUi(tui: LiveTui, getTheme: () => Palette, options: Ti
   function install(node: ToolNode) {
     if (!compatible(node)) { fail("Tool component contract is incompatible; native rendering retained"); return; }
     patchPrototype(Object.getPrototypeOf(node) as object);
+    observeFileTurn(node, true);
     observeSyntax(node);
+    prepareFileDetail(node);
   }
   // Persistent wrappers must be created in a scope with no tool-instance parameter.
   function patchPrototype(prototype: object) {
@@ -995,6 +1429,7 @@ export function installTidyUi(tui: LiveTui, getTheme: () => Palette, options: Ti
     const patchedRender: Render = function (width) {
       try {
         if (quiescing) return cleanupRows(this, width) ?? originalRender.call(this, width);
+        if (width < 1 && filePreviewMode(this) !== undefined) { removeAnimation(this); pauseSyntax(this); return []; }
         if (bashCard(this, width)) {
           removeAnimation(this);
           const layout = bashLayout(this, width);
@@ -1006,15 +1441,27 @@ export function installTidyUi(tui: LiveTui, getTheme: () => Palette, options: Ti
           return presentedRows(this, rows, previousLayout(this, width) ? 1 : 0);
         }
         if (fileCard(this, width)) {
-          removeAnimation(this);
+          if (!attached(this)) {
+            removeAnimation(this); pauseSyntax(this);
+            const rows = originalRender.call(this, width);
+            return nativeGap(this, width, rows) ? ['', ...rows] : rows;
+          }
+          if (!nativeVisible(this, width)) { removeAnimation(this); pauseSyntax(this); return []; }
+          if (fileSucceeded(this)) { removeAnimation(this); observeSyntax(this); }
+          else { if (!executing(this)) removeAnimation(this); pauseSyntax(this); }
           const layout = fileLayout(this, width);
+          if (nativeFileOwner(this) && !layout.native && (fileSucceeded(this) || this.expanded)) releaseNativeFileRenderer(this);
           toolDecision(this, layout.native ? "File card delegated to native renderer; preparation/geometry guard rejected" : layout.framed ? "Prepared file card selected" : "Inline file result selected", width, layout.rows.length);
           if (layout.framed && !layout.native && layout.rows.length) usefulSyntax(this);
           else pauseSyntax(this);
+          const rows = fileSucceeded(this) ? layout.rows : [
+            ...paintSummary(this, width), ...layout.rows.slice(summaryLayout(this, width).rows.length),
+          ];
           const offset = layout.native ? nativeGap(this, width, layout.rows) : layout.framed ? (previousLayout(this, width) ? 1 : 0) : gap(this, width);
-          return presentedRows(this, layout.rows, offset);
+          return presentedRows(this, rows, offset);
         }
         pauseSyntax(this);
+        if (fileTool(this)) releaseFileDetail(this);
         if (!eligible(this)) {
           removeAnimation(this);
           const lines = originalRender.call(this, width);
@@ -1023,6 +1470,7 @@ export function installTidyUi(tui: LiveTui, getTheme: () => Palette, options: Ti
         }
         if (width < 1) { toolDecision(this, "Tool suppressed at zero width", width, 0); removeAnimation(this); return []; }
         if (!nativeVisible(this, width)) { toolDecision(this, "Native self-shell returned no visible rows", width, 0); removeAnimation(this); return []; }
+        if (fileTool(this) && nativeFileOwner(this)) releaseNativeFileRenderer(this);
         const offset = gap(this, width), rows = paintSummary(this, width);
         toolDecision(this, "Compact tool summary selected", width, rows.length);
         return presentedRows(this, rows, offset);
@@ -1031,6 +1479,7 @@ export function installTidyUi(tui: LiveTui, getTheme: () => Palette, options: Ti
     };
     const patchedMouse: Mouse = function (event) {
       if (!active) return originalMouse.call(this, event);
+      if (event.width < 1 && filePreviewMode(this) !== undefined) { pauseSyntax(this); return undefined; }
       if (quiescing) return undefined;
       if (event.width > 0 && bashCard(this, event.width)) {
         if (event.type !== "click" || event.button !== "left" || tui.hasActiveSelection?.()) return undefined;
@@ -1043,20 +1492,31 @@ export function installTidyUi(tui: LiveTui, getTheme: () => Palette, options: Ti
         return { handled: true };
       }
       if (event.width > 0 && fileCard(this, event.width)) {
-        const rejected = !this.result || this.isPartial || tui.hasActiveSelection?.() || event.type !== "click" || event.button !== "left";
-        if (rejected) {
-          // Unsupported metadata must still delegate; supported cards need no body to reject an event.
-          if (fileMeasure(this, event.width)) return undefined;
-        } else {
-          const layout = fileLayout(this, event.width);
-          if (!layout.native) {
-            const offset = layout.framed ? (previousLayout(this, event.width) ? 1 : 0) : gap(this, event.width);
-            const hit = layout.framed ? insidePanel(cardGeometry(event.width, outputPadding()), layout.rows.length, event.x, event.y - offset) :
-              this.result?.isError && event.y >= offset && event.y < offset + layout.rows.length;
-            if (!hit) return undefined;
-            this.setExpanded(true); tui.requestRender(); return { handled: true };
+        if (!attached(this) || !nativeVisible(this, event.width)) return originalMouse.call(this, event);
+        if (!this.result || this.isPartial || event.type !== 'click' || event.button !== 'left' || tui.hasActiveSelection?.()) {
+          const mode = filePreviewMode(this);
+          if (mode === undefined || mode === 'full' && unsupportedFullFile(this)) {
+            const rows = nativeRows(this, event.width), offset = nativeGap(this, event.width, rows);
+            if (event.y < offset) return undefined;
+            return originalMouse.call(this, offset ? { ...event, y: event.y - offset, height: event.height - offset } : event);
           }
+          return undefined;
         }
+        const layout = fileLayout(this, event.width);
+        if (layout.native) {
+          const offset = nativeGap(this, event.width, layout.rows);
+          if (event.y < offset) return undefined;
+          return originalMouse.call(this, offset ? { ...event, y: event.y - offset, height: event.height - offset } : event);
+        }
+        const offset = layout.framed ? (previousLayout(this, event.width) ? 1 : 0) : gap(this, event.width);
+        const hit = layout.framed ? insidePanel(cardGeometry(event.width, outputPadding()), layout.rows.length, event.x, event.y - offset)
+          : event.y >= offset && event.y < offset + layout.rows.length;
+        if (!hit) return undefined;
+        filePreviewState.toggle(this, this.toolCallId, this.expanded);
+        if (this.expanded) this.setExpanded(false);
+        else { forget(this, 'file preview expanded or collapsed'); dropPrepared(this); observeSyntax(this); }
+        prepareFileDetail(this);
+        tui.requestRender(); return { handled: true };
       }
       if (!compact(this, event.width)) {
         const offset = nativeGap(this, event.width, originalRender.call(this, event.width));
@@ -1081,18 +1541,20 @@ export function installTidyUi(tui: LiveTui, getTheme: () => Palette, options: Ti
       if (typeof method !== "function" || (original && (!original.writable || !original.configurable)) || (!original && !Object.isExtensible(prototype)))
         throw new Error("Tool cache invalidation methods cannot be wrapped");
       const wrapper = function (this: ToolNode, ...args: unknown[]) {
-        // Bash keys include every displayed argument; unrelated/same argument updates reuse its body.
+        const preserveFileDetail = fileTool(this) && (name === 'updateArgs' || name === 'updateResult' || name === 'setArgsComplete');
         if (name !== "markExecutionStarted" && !((name === "updateArgs" || name === 'setArgsComplete') && this.toolName === "bash" && !overrides.has("bash")) &&
-          !(name === "setExpanded" && args[0] === this.expanded)) forget(this, name);
+          !(name === "setExpanded" && args[0] === this.expanded)) forget(this, name, preserveFileDetail);
         if (quiescing && name !== 'markExecutionStarted') { dropPrepared(this); }
+        if (fileTool(this) && (name === 'updateArgs' || name === 'updateResult' || name === 'invalidate')) dirtyFileSources.add(this);
+        if (name === 'invalidate' && this.result) imageResults.delete(this.result);
         const result = method.apply(this, args);
+        if (name === 'updateResult' && this.result) imageResults.delete(this.result);
+        observeFileTurn(this, name === 'updateResult');
         if (name !== "invalidate") nativePhase(this, name);
         observeSyntax(this);
-        if (name === 'setExpanded' && this.toolName !== 'bash' && this.expanded) {
-          dropPrepared(this);
-        }
+        if (fileTool(this)) prepareFileDetail(this);
+        if (name === 'setExpanded' && this.toolName !== 'bash' && this.expanded) dropPrepared(this);
         if (!quiescing && syntax && name === "updateResult" && interruptedLiveBash(this)) {
-          // Terminal formation retires native work, not the still-displayed presentation.
           syntax.freeze(this);
           cardClient!.sources.flush();
         }
@@ -1475,8 +1937,13 @@ export function installTidyUi(tui: LiveTui, getTheme: () => Palette, options: Ti
   function visit(node: Component, parent?: Container, index = -1) {
     if (!active) return;
     if (parent) parents.set(node, { parent, index });
-    if (candidate(node)) install(node);
-    else if (userCandidate(node)) installUser(node);
+    if (candidate(node)) {
+      if (attached(node) && filePresentationEligible(node)) {
+        filePreviewState.observe(node, node.toolCallId);
+        if (fileSucceeded(node)) filePreviewState.finalize(node, node.toolCallId);
+      }
+      install(node);
+    } else if (userCandidate(node)) installUser(node);
     else if (Object.getPrototypeOf(node) === CustomEditor.prototype) {
       patchEditorPrototype(CustomEditor.prototype); patchEditorPlacement(node as CustomEditor);
       if (stockEditor(node as CustomEditor)) statusEditor = new WeakRef(node as CustomEditor);
@@ -1490,7 +1957,7 @@ export function installTidyUi(tui: LiveTui, getTheme: () => Palette, options: Ti
   }
   function releaseTree(node: Component) {
     forgetQueued(node);
-    if (candidate(node)) { forget(node); dropPrepared(node); removeAnimation(node); syntax?.remove(node); syntaxStates.delete(node); }
+    if (candidate(node)) { filePreviewState.detach(node); forget(node); dropPrepared(node); removeAnimation(node); syntax?.remove(node); syntaxStates.delete(node); }
     else if (userCandidate(node)) forgetUser(node);
     parents.delete(node);
     if (node instanceof Container) for (const child of node.children) if (!attached(child)) releaseTree(child);
@@ -1570,6 +2037,11 @@ function loggingNotice(owner: WeakRef<SyntaxContext>) {
 }
 
 export default function tidyUi(pi: ExtensionAPI, options: TidyUiRuntimeOptions = {}) {
+  if (typeof pi.registerToolRenderer !== 'function')
+    throw new Error(`Pi ${VERSION} is unsupported; pi-tidy-ui requires Pi 1.0.1 or newer with public registerToolRenderer support.`);
+  const nativeRendererFailureBridge: { current?: NativeRendererFailureReporter } = {};
+  const rendererResolver = createLazyNativeRendererResolver(() => nativeRendererFailureBridge.current);
+  pi.registerToolRenderer(rendererResolver);
   pi.registerFlag("tidy-ui-card", { type: "string", description: "Additional comma-separated tool names that retain native cards" });
   pi.registerFlag("tidy-ui-compact", { type: "string", description: "Comma-separated tool names that use compact summaries instead of native cards" });
   const retiredBudgetFlags = ["tidy-ui-cache-mb", "tidy-ui-card-cache-mb"];
@@ -1646,6 +2118,14 @@ export default function tidyUi(pi: ExtensionAPI, options: TidyUiRuntimeOptions =
       const owner = new WeakRef(diagnosticContext);
       health = new RuntimeHealth(runtimeNotice(owner)); diagnostic = health.sink(diagnosticCapture(owner));
     } else diagnosticContext.current = ctx;
+    const rendererSink = diagnostic;
+    nativeRendererFailureBridge.current = (scope, tool, slot, outcome) => {
+      const operation = `native-renderer:${tool}:${slot}`;
+      if (outcome === 'failure') {
+        diagnose(rendererSink, 'ERROR', 'appearance', 'Native file preview renderer failed; bounded fallback shown', { tool, slot });
+        reportRuntime(rendererSink, { kind: 'failure', scope, operation, area: 'appearance', code: 'native_renderer' });
+      } else reportRuntime(rendererSink, { kind: outcome, scope, operation });
+    };
     if (options.logging === false) return;
     const session = ctx.sessionManager.getSessionId();
     if (logging?.status().session === session) { if (loggingContext) loggingContext.current = ctx; return; }
@@ -1909,14 +2389,18 @@ export default function tidyUi(pi: ExtensionAPI, options: TidyUiRuntimeOptions =
   pi.on("session_compact", refreshFooter);
   pi.on("model_select", refreshFooter);
   pi.on("message_end", refreshFooter);
-  pi.on("turn_end", refreshFooter);
+  pi.on("turn_start", (_event, ctx) => { controller?.beginFileTurn(); refreshFooter(_event, ctx); });
+  pi.on("turn_end", (event, ctx) => { controller?.finishFileTurn(); refreshFooter(event, ctx); });
   const refreshDirectory = (_event: unknown, ctx: ExtensionContext) => {
+    const event = _event as { toolCallId?: unknown; toolName?: unknown; isError?: unknown };
+    if ((event.toolName === 'write' || event.toolName === 'edit') && event.isError === false && typeof event.toolCallId === 'string')
+      controller?.completeFileCall(event.toolCallId);
     refreshFooter(_event, ctx);
     directorySource?.setDirectory(controller?.editorStatusActive ? ctx.cwd : undefined);
     directorySource?.refresh(true);
   };
   pi.on("tool_execution_end", refreshDirectory);
-  pi.on("agent_end", (event, ctx) => { liveBashCalls.clear(); refreshDirectory(event, ctx); });
+  pi.on("agent_end", (event, ctx) => { liveBashCalls.clear(); controller?.finishFileTurn(); refreshDirectory(event, ctx); });
   pi.on('session_start', async (event, ctx) => {
     activeMenu?.close(); activeMenu = undefined;
     const current = ++lifecycle;
@@ -1936,7 +2420,7 @@ export default function tidyUi(pi: ExtensionAPI, options: TidyUiRuntimeOptions =
   pi.on("session_shutdown", async (event, ctx) => {
     ++lifecycle; saveAbort.abort(); unwatchSettings?.(); unwatchSettings = undefined; activeMenu?.close(); activeMenu = undefined;
     liveBashCalls.clear(); footerName = undefined;
-    liveContext = ctx; logSnapshot(); pendingFooter = undefined; health?.dispose();
+    liveContext = ctx; logSnapshot(); pendingFooter = undefined; nativeRendererFailureBridge.current = undefined; health?.dispose();
     controller?.quiesce();
     try { await stopSyntax(); }
     finally {

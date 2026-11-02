@@ -7,7 +7,7 @@ import { parseArgs } from 'node:util';
 import { childEnv, readInputs, rustLoaderEnvironment, toolPath, validateHost, validateRequirements } from './context.mjs';
 import { resolveSelection } from './catalog.mjs';
 export { selectSuite } from './catalog.mjs';
-import { snapshotIdentity, sourceIdentity, validateNeutralRunRoot } from './prepare.mjs';
+import { defaultInputsPath, snapshotIdentity, sourceIdentity, validateNeutralRunRoot } from './prepare.mjs';
 import { appendProgress, progressPaths, readProgressEvents, resetProgressFile, summarizeTestEvents, writeReport } from './progress.mjs';
 import { focusedRerun, readWorkerResources, resourceIntervalMs, scopeResources, summarizeWorkerResources } from './resources.mjs';
 
@@ -109,7 +109,7 @@ async function executeStep({ command, args, cwd, env, inputs, networkIsolated, b
 
 export async function execute({ inputs: path, suite = 'unit', files, groups, layer, pattern, skip, shard, jobs, 'network-isolated': networkIsolated = false, 'release-ref': releaseRef, 'rust-test': rustTests = [], output }) {
   process.umask(0o077);
-  const inputPath = resolve(path ?? join(import.meta.dirname, '../../.test-artifacts/harness/1.0.0/inputs.json'));
+  const inputPath = resolve(path ?? defaultInputsPath());
   const reportPath = output ? resolve(output) : join(dirname(inputPath), 'runs', suite + '-' + randomUUID(), 'report.json');
   const artifacts = progressPaths(reportPath), started = performance.now(), startedAt = new Date().toISOString();
   const report = { schema: 1, suite, selected: [], selection: { files: files ?? null, groups: groups ?? null, layer: layer ?? null, pattern: pattern ?? null, skip: skip ?? null, shard: shard ?? null, jobs: jobs ?? null, rustTests }, cases: [], network: networkIsolated ? 'os-isolated' : 'prepared-fixtures', status: 'setup-failed', phase: 'setup', reason: 'inputs', counts: {}, startedAt, elapsedMs: null, currentStep: null,

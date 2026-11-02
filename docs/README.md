@@ -21,8 +21,8 @@ If you are interested in **Occipital as a daemon**, start directly with its [sta
 | [Compact summaries](tool-summary-spec.md) | Field selection, bounded serialization, secret masking, wrapping/span recoloring and execution-prefix composition |
 | [Bash cards](bash-card-spec.md) | Command/service/output/reminder decomposition, complete supplied text, previews and exact terminal-tail conventions |
 | [Bash streaming](bash-streaming-contract.md) | Current text versus historical prefix colors, incomplete calls, frozen/restored sources and work authority |
-| [Edit cards](edit-card-spec.md) | Saved patch/numbered formats, full and visible views, continuous old/new source regions, unified/split pairing and coordinate projection |
-| [Write cards](write-card-spec.md) | Saved-metadata precedence, Created/Edited/Replaced/Wrote classification and reuse of the file pipeline |
+| [Edit cards](edit-card-spec.md) | Saved patch/numbered formats, bounded restored/selected previews versus full views, funded pending/error details, continuous old/new source regions, unified/split pairing and coordinate projection |
+| [Write cards](write-card-spec.md) | Saved-metadata precedence, bounded previews versus selected full views, Created/Edited/Replaced/Wrote classification and reuse of the file pipeline |
 | [User and queued cards](user-queued-cards.md) | Native Markdown reframing versus full plain queue preparation, native traversal, geometric stripping and height-only selection |
 | [Editor](editor.md) | Stock-instance projection, paired widths, sentinels, cursor/mouse coordinates, native activity and below-editor metadata |
 | [Footer](footer-spec.md) | Semantic snapshots, usage/cache/context/title calculation, opaque producer-status packing and layout reuse |
@@ -75,6 +75,8 @@ The protocol reference ships with this manual. Its six current conformance JSON 
 | Question | Reading route |
 |---|---|
 | Why is this component native, hidden or custom? | [Host dispatch](host-integration.md#presentation-dispatch) → [native visibility](host-integration.md#native-visibility) → the relevant presenter |
+| What is shown from saved write/edit data, and when is it only a preview? | [Host dispatch](host-integration.md#presentation-dispatch) → [edit view selection](edit-card-spec.md#metadata-and-scope) or [write view selection](write-card-spec.md#saved-source-and-classification) → [prepared-file identity](syntax/prepared-cards.md) |
+| Does Pi's `/export` invoke the TUI write/edit renderer, and what does the direct SDK HTML renderer cover? | [Host compatibility boundary](host-integration.md#compatibility-boundary) → [CLI versus SDK controls](testing.md#cards-and-native-data) |
 | What happens between a tool result and terminal pixels? | [Worked card](architecture.md#one-card-from-result-to-terminal) → [rendering](rendering.md) → [prepared cards](syntax/prepared-cards.md) |
 | How do I run or use Occipital without Pi? | [Daemon overview](occipital/README.md) → [runtime modes](occipital/runtime.md#executable-entry) → [protocol negotiation and requests](occipital/protocol.md) |
 | Why does a request stay pending after a caller stops waiting? | [Client request lifetime](syntax/requests.md) → [native request/delivery ownership](occipital/requests-and-resources.md) |

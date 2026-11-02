@@ -15,12 +15,15 @@ type DiffLine = (Exclude<DisplayLine, { kind: "gap" }> & { logical: string; lang
 
 // Display-only maximum on each side of a change; metadata may supply fewer rows.
 const DIFF_CONTEXT_LINES = 3;
+export const FILE_PREVIEW_MAX_UNITS = 8192;
+export const FILE_PREVIEW_MAX_ROWS = 10;
 
 /** Display-only cleaning. Preserve code whitespace; no file reads or proposal diffing. */
 function clean(value: string): string {
   return stripVTControlCharacters(stripTerminalSequences(value)).replace(/\p{Bidi_Control}/gu, "")
     .replace(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u200b\u200e\u200f\u2060-\u206f]/gu, "");
 }
+export function cleanFileDisplayText(value: string): string { return clean(value); }
 export function filePath(args: Record<string, unknown>): string | undefined {
   const path = args.path ?? args.file_path ?? args.filePath;
   return typeof path === "string" && path.length ? path : undefined;
@@ -42,22 +45,23 @@ const segments = new Intl.Segmenter(undefined, { granularity: "grapheme" });
 const validNumber = (value: number) => Number.isSafeInteger(value) && value >= 0;
 
 /** Stream source rows; validation-only callers need no temporary array of the whole diff. */
-function* sourceRows(diff: string, trimFinalNewline = false): Generator<string> {
+function* sourceRows(diff: string, trimFinalNewline = false, maxRows = Number.POSITIVE_INFINITY): Generator<string> {
   const text = diff.replace(/\r\n?/gu, "\n");
   const length = text.length - (trimFinalNewline && text.endsWith("\n") ? 1 : 0);
-  let start = 0;
+  let start = 0, rows = 0;
   do {
+    if (rows++ >= maxRows) return;
     const newline = text.indexOf("\n", start), end = newline < 0 ? length : Math.min(newline, length);
     yield text.slice(start, end); start = end + 1;
   } while (start <= length);
 }
 
 /** Pi/AFT number context in the old file; OpenCode's unified view numbers context in the new file. */
-function numberedDiff(diff: string, content = true, kinds?: Set<" " | "+" | "-">, logicalOnly = false): DiffLine[] | undefined {
+function numberedDiff(diff: string, content = true, kinds?: Set<" " | "+" | "-">, logicalOnly = false, maxRows = Number.POSITIVE_INFINITY): DiffLine[] | undefined {
   if (!diff) return [];
   const result: DiffLine[] = [];
   let delta = 0;
-  for (const row of sourceRows(diff)) {
+  for (const row of sourceRows(diff, false, maxRows)) {
     if (/^ +\.\.\.$/u.test(row)) { if (content) result.push({ kind: "gap" }); continue; }
     const match = /^([ +\-]) *(\d+) (.*)$/u.exec(row);
     if (!match) return undefined;
@@ -77,11 +81,11 @@ function numberedDiff(diff: string, content = true, kinds?: Set<" " | "+" | "-">
 }
 
 /** Accept single-file unified patches only, and validate hunk counts before painting any edits. */
-function unifiedDiff(diff: string, content = true, kinds?: Set<" " | "+" | "-">, logicalOnly = false): DiffLine[] | undefined {
+function unifiedDiff(diff: string, content = true, kinds?: Set<" " | "+" | "-">, logicalOnly = false, maxRows = Number.POSITIVE_INFINITY, allowIncomplete = false): DiffLine[] | undefined {
   if (!diff) return [];
   const result: DiffLine[] = [];
   let old = 0, next = 0, oldRemaining = 0, newRemaining = 0, hunks = 0;
-  for (const row of sourceRows(diff, true)) {
+  for (const row of sourceRows(diff, true, maxRows)) {
     const header = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(?:.*)$/u.exec(row);
     if (header) {
       if (oldRemaining || newRemaining) return undefined;
@@ -107,20 +111,22 @@ function unifiedDiff(diff: string, content = true, kinds?: Set<" " | "+" | "-">,
     if (kind !== "+") old++;
     if (kind !== "-") next++;
   }
-  return hunks && !oldRemaining && !newRemaining ? result : undefined;
+  return hunks && (allowIncomplete || !oldRemaining && !newRemaining) ? result : undefined;
 }
 
 /** Validation-only calls collect no source rows and do no cleaning, segmentation or highlighting. */
-function savedDiff(node: FilePresentation, content = true, kinds?: Set<" " | "+" | "-">, logicalOnly = false): DiffLine[] | "inline" | undefined {
+function savedDiff(node: FilePresentation, content = true, kinds?: Set<" " | "+" | "-">, logicalOnly = false,
+  maxRows = Number.POSITIVE_INFINITY, allowIncomplete = false): DiffLine[] | "inline" | undefined {
   // Reject stale/proposed source before even looking at diff metadata on final errors.
   if (!node.isPartial && node.result?.isError === true) return "inline";
   const details = node.result?.details as { diff?: unknown; patch?: unknown } | undefined;
   if (details?.diff === undefined && details?.patch === undefined) return "inline";
-  if (details?.patch !== undefined) return typeof details.patch === "string" ? unifiedDiff(details.patch, content, kinds, logicalOnly) : undefined;
+  if (details?.patch !== undefined) return typeof details.patch === "string" ? unifiedDiff(details.patch, content, kinds, logicalOnly, maxRows, allowIncomplete) : undefined;
   return typeof details?.diff === "string" ? /^@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@/mu.test(details.diff) ?
-    unifiedDiff(details.diff, content, kinds, logicalOnly) : numberedDiff(details.diff, content, kinds, logicalOnly) : undefined;
+    unifiedDiff(details.diff, content, kinds, logicalOnly, maxRows, allowIncomplete) : numberedDiff(details.diff, content, kinds, logicalOnly, maxRows) : undefined;
 }
-type FileView = { label: "Edited" | "Created" | "Replaced" | "Wrote"; mode: "inline" | "diff" | "code"; lines: readonly DisplayLine[]; note?: string };
+type FileView = { label: "Edited" | "Created" | "Replaced" | "Wrote" | "Edit" | "Write"; mode: "inline" | "diff" | "code";
+  lines: readonly DisplayLine[]; note?: string; preview?: boolean; omitted?: boolean };
 type SourceFileView = Omit<FileView, "lines"> & { lines: DiffLine[] };
 
 /** Current service metadata; it does not require rebuilding the source rows. */
@@ -131,7 +137,54 @@ export function fileNote(node: FilePresentation, view: Pick<FileView, 'label' | 
 }
 
 /** Classify supplied rows before projecting context; validation-only calls never materialize code. */
-function presentation(node: FilePresentation, content = true, logicalOnly = false): SourceFileView | undefined {
+type PreviewText = { text: string; omitted: boolean };
+export function filePreviewText(source: string, maxUnits = FILE_PREVIEW_MAX_UNITS, maxRows = FILE_PREVIEW_MAX_ROWS): PreviewText {
+  const sourcePrefix = source.slice(0, maxUnits).replace(/\r\n?/gu, "\n"), bounded = clean(sourcePrefix), clipped = source.length > maxUnits;
+  const end = clipped ? bounded.lastIndexOf("\n") : bounded.length;
+  const complete = end < 0 ? "" : bounded.slice(0, end);
+  const rows = Array.from(sourceRows(complete, true, maxRows + 1));
+  return { text: rows.slice(0, maxRows).join("\n"), omitted: clipped || rows.length > maxRows };
+}
+function previewRows(source: string, logicalOnly: boolean): DiffLine[] {
+  if (!source) return [];
+  const lines: DiffLine[] = []; let next = 1;
+  for (const text of sourceRows(source, false, FILE_PREVIEW_MAX_ROWS + 1)) {
+    const candidate = next === 1 ? shebangLanguage(text) : undefined;
+    lines.push({ kind: " ", ...sourceText(text, logicalOnly), next: next++, ...(candidate ? { languageHint: candidate } : {}) });
+  }
+  return lines;
+}
+function previewPresentation(node: FilePresentation, logicalOnly: boolean): SourceFileView | undefined {
+  if (!node.result || node.isPartial || node.result.isError) return undefined;
+  const details = node.result.details as { diff?: unknown; patch?: unknown; truncated?: unknown; noOp?: unknown } | undefined;
+  let lines: DiffLine[] = [], omitted = true, mode: FileView["mode"] = "diff";
+  const useContent = node.toolName === "write" && (details?.truncated === true || details?.patch === undefined && details?.diff === undefined);
+  if (useContent) {
+    const content = typeof node.args.content === "string" ? node.args.content : undefined;
+    if (content === undefined) return undefined;
+    const bounded = filePreviewText(content), parsed = previewRows(bounded.text, logicalOnly);
+    omitted = bounded.omitted || parsed.length > FILE_PREVIEW_MAX_ROWS;
+    lines = parsed.slice(0, FILE_PREVIEW_MAX_ROWS); mode = "code";
+  } else {
+    if (details?.patch === undefined && details?.diff === undefined) return undefined;
+    const source = details.patch !== undefined ? typeof details.patch === "string" ? details.patch : undefined
+      : typeof details.diff === "string" ? details.diff : undefined;
+    if (source === undefined) return undefined;
+    const bounded = filePreviewText(source);
+    const parsed = savedDiff({ ...node, result: { ...node.result, details: { patch: details.patch === undefined ? undefined : bounded.text,
+      diff: details.patch === undefined ? bounded.text : undefined } } }, true, undefined, logicalOnly, FILE_PREVIEW_MAX_ROWS, bounded.omitted);
+    if (!parsed || parsed === "inline") return undefined;
+    omitted = bounded.omitted;
+    lines = parsed;
+  }
+  const label = node.toolName === "write" ? "Write" : "Edit";
+  const note = [details?.noOp === true && node.toolName === "write" ? "No changes." : undefined,
+    details?.truncated === true && node.toolName === "write" ? "Diff truncated by tool; showing supplied content." : undefined,
+    omitted ? "Preview is limited to a bounded source prefix; expand for the complete card." : undefined].filter(Boolean).join(" ");
+  return { label, mode, lines, preview: true, omitted, note: note || undefined };
+}
+function presentation(node: FilePresentation, content = true, logicalOnly = false, viewMode: "full" | "preview" = "full"): SourceFileView | undefined {
+  if (viewMode === "preview") return previewPresentation(node, logicalOnly);
   if (node.toolName !== "write") {
     const diff = savedDiff(node, content, undefined, logicalOnly);
     return diff === "inline" ? { label: "Edited", mode: "inline", lines: [] } :
@@ -181,11 +234,11 @@ export interface PreparedFileCard {
  * Sources retain tabs and include all available context. Positions prove continuity;
  * explicit omissions always reset it. Missing source is not reconstructed/read.
  */
-export function prepareFileCard(node: FilePresentation, logicalOnly = false): PreparedFileCard | undefined {
+export function prepareFileCard(node: FilePresentation, logicalOnly = false, viewMode: "full" | "preview" = "full"): PreparedFileCard | undefined {
   if ((node.toolName !== "edit" && node.toolName !== "write") || !node.result || node.isPartial) return undefined;
   const path = filePath(node.args);
   if (!path) return undefined;
-  const view = presentation(node, true, logicalOnly);
+  const view = presentation(node, true, logicalOnly, viewMode);
   if (!view) return undefined;
   return { path, view, sources: logicalOnly ? [] : fileSources(view) };
 }

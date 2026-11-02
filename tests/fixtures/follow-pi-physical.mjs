@@ -35,6 +35,13 @@ function derived(marker, parent, minimum, label) {
   assert.equal(same(marker, parent), false, `${label}: derived marker differs from its own semantic source`);
   assert.ok(distance(actual, source) >= minimum, `${label}: final emitted separation must be at least ${minimum}`);
 }
+export function paintPreviewProof(dump) {
+  for (const found of spans(dump, 'FOLLOW_PI_HEADING'))
+    assert.ok(found.cells.every(cell => same(cell, publicInk(dump, 'mdHeading')) && cell.bold), 'visible preview heading uses physical Pi heading ink');
+  for (const text of ['gone', 'fixed']) for (const found of spans(dump, text))
+    assert.ok(found.cells.every(cell => same(cell, publicInk(dump, 'accent')) && cell.bold && cell.italic && cell.strike), 'visible nested preview text preserves Pi color and font attributes');
+}
+
 export function paintProof(dump, { distinct = true } = {}) {
   for (const text of ['FOLLOW_PI_HEADING', 'LIST_HEADING']) for (const found of spans(dump, text)) {
     assert.ok(found.cells.every(cell => same(cell, publicInk(dump, 'mdHeading')) && cell.bold));

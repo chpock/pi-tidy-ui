@@ -3,7 +3,7 @@ import { basename, dirname, join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import { featurePlan, validateCatalogue } from './catalog.mjs';
 import { readInputs, validateRequirements } from './context.mjs';
-import { refreshInputs } from './prepare.mjs';
+import { defaultInputsPath, refreshInputs } from './prepare.mjs';
 import { execute, fileJobs } from './run.mjs';
 import { appendProgress, resetProgressFile, writeReport } from './progress.mjs';
 
@@ -20,7 +20,7 @@ export async function runFeature(options, run = execute) {
   if (typeof options.features !== 'string') throw new Error('Supply explicit --features (empty string selects the common baseline)');
   const names = options.features === '' ? [] : options.features.split(',');
   if (!names.length && options['affected-only']) throw new Error('Empty feature selection');
-  const inputPath = resolve(options.inputs ?? '.test-artifacts/harness/1.0.0/inputs.json');
+  const inputPath = resolve(options.inputs ?? defaultInputsPath());
   const output = resolve(options.output ?? join(dirname(inputPath), 'feature-runs', Date.now().toString()));
   const reportPath = join(output, 'report.json'), progressPath = join(output, 'progress.jsonl');
   const startedAt = new Date().toISOString();

@@ -9,6 +9,43 @@ import { PiTerminal, plain, byName, toolLines, assertFits, until } from '../../f
 import { closeTerminals, runCleanupSteps } from '../../fixtures/terminal-cleanup.mjs';
 import { referenceCell, allBashCards, traffic, sgrAt } from '../../fixtures/main-cli-support.mjs';
 
+const fileNames = new Set(['write', 'edit']);
+const nonFileTools = dump => dump.tools.filter(tool => !fileNames.has(tool.name));
+const toolDataIdentity = dump => dump.tools.map(({ args, content, details, isError }) => ({ args, content, details, isError }));
+const screenHas = (terminal, text) => terminal.screen().some(row => plain(row).includes(text));
+async function toggleFileCard(terminal, dump, name) {
+  const card = byName(dump, name)[0], rows = card.lines.filter(row => row !== '').map(plain);
+  const y = dump.screen.findIndex((_, start) => rows.every((row, offset) => dump.screen[start + offset] !== undefined && plain(dump.screen[start + offset]) === row));
+  assert.ok(y >= 0, `complete ${name} panel is physically available as a public mouse target`);
+  const headings = name === 'write' ? ['Wrote', 'Write'] : ['Edited', 'Edit'];
+  const heading = headings.find(value => dump.screen.some(row => plain(row).includes(`← ${value} `)));
+  assert.ok(heading, `visible ${name} panel heading is a click target`);
+  const titleRow = dump.screen.findIndex(row => plain(row).includes(`← ${heading} `));
+  const column = plain(dump.screen[titleRow]).indexOf(heading) + 1;
+  await sgrAt(terminal, column, titleRow);
+}
+function fileContentRows(card) {
+  const rows = card.lines.map(row => {
+    const text = plain(row), border = text.indexOf('┃');
+    return (border < 0 ? text : text.slice(border + 1)).trim();
+  });
+  const heading = rows.findIndex(row => row.startsWith('← Wrote') || row.startsWith('← Edited'));
+  assert.ok(heading >= 0, 'full file panel has a physical Wrote/Edited heading');
+  let body = heading + 1;
+  while (body < rows.length && rows[body] !== '') body++;
+  assert.ok(body < rows.length, 'full file heading is followed by its physical row separator');
+  while (body < rows.length && rows[body] === '') body++;
+  const content = rows.slice(body).filter(Boolean);
+  assert.ok(content.length > 0, 'full file panel includes at least one physical source/diff row');
+  return content;
+}
+function assertPreviewLabels(dump) {
+  assert.match(byName(dump, 'write')[0].lines.map(plain).join('\n'), /← Write /u);
+  assert.doesNotMatch(byName(dump, 'write')[0].lines.map(plain).join('\n'), /← Wrote /u);
+  assert.match(byName(dump, 'edit')[0].lines.map(plain).join('\n'), /← Edit /u);
+  assert.doesNotMatch(byName(dump, 'edit')[0].lines.map(plain).join('\n'), /← Edited /u);
+}
+
 test('Output padding settings update summaries and all transcript cards live with native and replay controls', { timeout: 180000 }, async () => {
   const terminals = [], extraEnv = { TIDY_UI_TEST_USER_CARDS: '1' };
   const start = async (name, options) => {
@@ -46,53 +83,85 @@ test('Output padding settings update summaries and all transcript cards live wit
     }
     for (const summary of [...byName(dump, 'read'), ...byName(dump, 'tidy_ui_unknown')]) {
       const rows = summary.lines.filter(row => row !== '').map(plain);
-      assert.ok(rows[0][padding] === (summary.name === 'read' ? '→' : '⚙'));
-      assert.ok(rows.slice(1).every(row => row.startsWith(' '.repeat(padding + 2))));
+      if (!summary.expanded) {
+        assert.ok(rows[0][padding] === (summary.name === 'read' ? '→' : '⚙'));
+        assert.ok(rows.slice(1).every(row => row.startsWith(' '.repeat(padding + 2))));
+      }
       await assertFits(rows, width - padding);
       const y = dump.screen.findIndex((_, start) => rows.every((row, offset) => (dump.screen[start + offset] || '').slice(0, row.length) === row));
       assert.ok(y >= 0, 'complete wrapped summary block physically visible');
-      if (padding) assert.ok(rows.every((_, offset) => dump.cells[y + offset][width - 1].text === ''));
+      if (padding && !summary.expanded) assert.ok(rows.every((_, offset) => dump.cells[y + offset][width - 1].text === ''));
     }
     allBashCards(dump);
     assert.equal(dump.editor.padding, 2); assert.ok(dump.editor.lines.every(row => plain(row)[2] === '┃'), 'Editor padding remains independent');
     assert.equal(dump.extensionIssues.length, 0);
     return dump;
   };
-  const identity = dump => dump.tools.map(({ args, content, details, isError }) => ({ args, content, details, isError }));
   try {
     for (const mode of ['fullscreen', 'regular']) {
       const live = await start(`output-padding-${mode}`, { tidyUi: true, mode });
       await live.run('suite'); const activity = traffic(live, 7), first = await check(live, 0, 100, `${mode}-initial`);
-      const bytes = readFileSync(first.session), saved = new Map();
+      const bytes = readFileSync(first.session), saved = new Map(), fullPanels = new Map();
       for (const [cycle, padding] of [0, 1, 0].entries()) {
         if (cycle) await setPadding(live, padding);
         for (const width of [24, 100]) {
           const dump = await check(live, padding, width, `${mode}-${cycle}-${width}`);
-          saved.set(`${padding}-${width}`, dump); assert.deepEqual(identity(dump), identity(first));
+          saved.set(`${padding}-${width}`, dump); assert.deepEqual(toolDataIdentity(dump), toolDataIdentity(first));
           const rows = dump.users[0].lines.filter(row => row !== '');
           await live.appearance(false);
           const native = await live.capture(`native-user-output-${mode}-${cycle}-${width}`);
           const contentWidth = width - 2 * padding - 3;
           assert.deepEqual(rows.slice(1, -1).map(row => stripVTControlCharacters(sliceByColumn(row, padding + 2, contentWidth))),
             native.users[0].contentControl.slice(1, -1).map(row => stripVTControlCharacters(sliceByColumn(row, padding, contentWidth))), 'native Markdown body at equal content width');
-          assert.deepEqual(identity(native), identity(first));
+          assert.deepEqual(toolDataIdentity(native), toolDataIdentity(first));
           await live.appearance(true);
           const restored = await check(live, padding, width, `${mode}-${cycle}-${width}-on`);
-          assert.deepEqual(restored.tools.map(tool => tool.lines), dump.tools.map(tool => tool.lines));
+          assertPreviewLabels(restored);
+          assert.deepEqual(nonFileTools(restored).map(tool => tool.lines), nonFileTools(dump).map(tool => tool.lines), 'appearance re-enable rebuilds unrelated transcript tools unchanged');
+          let selected = restored;
+          if (mode === 'fullscreen') {
+            const name = padding === 1 && width === 100 ? 'edit' : 'write';
+            const filePath = byName(selected, name)[0].args.path, fullHeading = name === 'write' ? 'Wrote' : 'Edited';
+            await toggleFileCard(live, selected, name);
+            await until(() => live.screen().some(row => row.includes(`← ${fullHeading} ${filePath}`)), `fullscreen click expands ${name} after appearance re-enable`);
+            selected = await check(live, padding, width, `${mode}-${cycle}-${width}-selected-${name}`);
+            assert.deepEqual(fileContentRows(byName(selected, name)[0]), fileContentRows(byName(first, name)[0]), `mouse-selected full ${name} content survives appearance rebuild and output padding`);
+            fullPanels.set(`${padding}-${width}`, new Map([[name, byName(selected, name)[0].lines]]));
+            await toggleFileCard(live, selected, name);
+            const previewHeading = name === 'write' ? 'Write' : 'Edit';
+            await until(() => live.screen().some(row => row.includes(`← ${previewHeading} ${filePath}`)), `fullscreen click restores ${name} preview`);
+            selected = await check(live, padding, width, `${mode}-${cycle}-${width}-collapsed-${name}`);
+          } else {
+            live.send('\x0f'); await live.settle();
+            const paths = Object.fromEntries(['write', 'edit'].map(name => [name, byName(restored, name)[0].args.path]));
+            const full = () => screenHas(live, '← Wrote') && screenHas(live, '← Edited');
+            await until(full, 'regular mode uses Pi Ctrl+O to expand both file cards, including wrapped titles');
+            selected = await check(live, padding, width, `${mode}-${cycle}-${width}-all-full`);
+            assert.ok(['write', 'edit'].every(name => byName(selected, name)[0].expanded), 'Pi reports both tools expanded');
+            fullPanels.set(`${padding}-${width}`, new Map(['write', 'edit'].map(name => [name, byName(selected, name)[0].lines])));
+            for (const name of ['write', 'edit'])
+              assert.deepEqual(fileContentRows(byName(selected, name)[0]), fileContentRows(byName(first, name)[0]), `Ctrl+O full ${name} content survives appearance rebuild and output padding`);
+            live.send('\x0f'); await live.settle();
+            const preview = () => screenHas(live, '← Write') && screenHas(live, '← Edit ');
+            await until(preview, 'regular mode Ctrl+O restores both saved file previews');
+            selected = await check(live, padding, width, `${mode}-${cycle}-${width}-collapsed-all`);
+          }
+          assertPreviewLabels(selected);
         }
       }
       await live.resize(100, 220);
       const current = saved.get('0-100');
       await live.command('/reload'); await live.event('start', 2);
       const reloaded = await check(live, 0, 100, `${mode}-reload`);
-      assert.deepEqual(reloaded.tools.map(tool => tool.lines), current.tools.map(tool => tool.lines));
+      assertPreviewLabels(reloaded);
+      assert.deepEqual(nonFileTools(reloaded).map(tool => tool.lines), nonFileTools(current).map(tool => tool.lines), 'reload restores non-file cards without changing presentation');
       if (mode === 'fullscreen') {
-        const edit = byName(reloaded, 'edit')[0], expected = edit.lines.filter(row => row !== '').map(plain);
-        const y = reloaded.screen.findIndex((_, start) => expected.every((row, offset) => reloaded.screen[start + offset] !== undefined && plain(reloaded.screen[start + offset]) === row));
-        assert.ok(y >= 0, 'complete zero-margin edit panel is on the physical screen');
-        await sgrAt(live, 0, y);
-        const expanded = await live.capture(`pointer-output-${mode}-click-zero`);
-        assert.equal(byName(expanded, 'edit')[0].expanded, true, 'zero-margin stripe is a real panel click target');
+        await toggleFileCard(live, reloaded, 'edit');
+        const editPath = byName(reloaded, 'edit')[0].args.path;
+        await until(() => live.screen().some(row => row.includes(`← Edited ${editPath}`)), 'full edit card after zero-margin mouse selection');
+        const expanded = await check(live, 0, 100, `pointer-output-${mode}-click-zero`);
+        assert.match(byName(expanded, 'edit')[0].lines.map(plain).join('\n'), /← Edited /u, 'zero-margin stripe is a real panel click target');
+        assert.deepEqual(byName(expanded, 'edit')[0].lines, byName(first, 'edit')[0].lines, 'the selected full edit retains its complete physical panel');
         live.send('\x0f'); await live.settle(); // native global toggle from false to true
         live.send('\x0f'); await live.settle(); // restore every tool to collapsed
       }
@@ -103,16 +172,42 @@ test('Output padding settings update summaries and all transcript cards live wit
       for (const padding of [0, 1]) {
         if (padding) { await setPadding(replay, padding); await setPadding(native, padding); }
         for (const width of [24, 100]) {
-          const custom = await check(replay, padding, width, `replay-${mode}-${padding}-${width}`), expected = saved.get(`${padding}-${width}`);
-          assert.deepEqual(custom.tools.map(tool => tool.lines), expected.tools.map(tool => tool.lines));
-          assert.deepEqual(custom.users.map(user => user.lines), expected.users.map(user => user.lines));
+          const expected = saved.get(`${padding}-${width}`);
+          await replay.resize(width, 220); await native.resize(width, 220);
           await replay.appearance(false);
           const off = await replay.capture(`pointer-output-native-${mode}-${padding}-${width}`);
-          await native.resize(width, 220);
           const control = await native.capture(`pointer-output-control-${mode}-${padding}-${width}`);
           assert.deepEqual(off.tools.map(tool => tool.lines), control.tools.map(tool => tool.lines), 'complete native same-session tool rows restored without padding changes');
           assert.deepEqual(off.users.map(user => user.lines), control.users.map(user => user.lines));
           await replay.appearance(true);
+          const restored = await check(replay, padding, width, `replay-${mode}-${padding}-${width}-restored-preview`);
+          assertPreviewLabels(restored);
+          assert.deepEqual(nonFileTools(restored).map(tool => tool.lines), nonFileTools(expected).map(tool => tool.lines));
+          const paths = Object.fromEntries(['write', 'edit'].map(name => [name, byName(restored, name)[0].args.path]));
+          if (mode === 'fullscreen') {
+            const name = padding === 1 && width === 100 ? 'edit' : 'write';
+            await toggleFileCard(replay, restored, name);
+            const heading = name === 'write' ? 'Wrote' : 'Edited';
+            await until(() => replay.screen().some(row => row.includes(`← ${heading} ${paths[name]}`)), `fullscreen replay click expands ${name}`);
+            const selected = await check(replay, padding, width, `replay-${mode}-${padding}-${width}-selected-${name}`);
+            assert.deepEqual(byName(selected, name)[0].lines, fullPanels.get(`${padding}-${width}`).get(name), `fullscreen replay preserves full physical ${name} rows`);
+            await toggleFileCard(replay, selected, name);
+            const previewHeading = name === 'write' ? 'Write' : 'Edit';
+            await until(() => replay.screen().some(row => row.includes(`← ${previewHeading} ${paths[name]}`)), `fullscreen replay restores ${name} preview`);
+          } else {
+            replay.send('\x0f'); await replay.settle();
+            const full = () => screenHas(replay, '← Wrote') && screenHas(replay, '← Edited');
+            await until(full, 'regular replay uses Pi Ctrl+O to expand both saved file cards');
+            const selected = await replay.capture(`replay-${mode}-${padding}-${width}-all-full`);
+            for (const name of ['write', 'edit'])
+              assert.deepEqual(byName(selected, name)[0].lines, fullPanels.get(`${padding}-${width}`).get(name), `regular replay preserves full physical ${name} rows`);
+            replay.send('\x0f'); await replay.settle();
+            const preview = () => screenHas(replay, '← Write') && screenHas(replay, '← Edit ');
+            await until(preview, 'regular replay Ctrl+O restores both saved file previews');
+          }
+          const collapsed = await check(replay, padding, width, `replay-${mode}-${padding}-${width}-collapsed`);
+          assertPreviewLabels(collapsed);
+          assert.deepEqual(nonFileTools(collapsed).map(tool => tool.lines), nonFileTools(expected).map(tool => tool.lines));
         }
       }
       for (const terminal of [native, replay]) for (const type of ['call', 'result', 'model_context', 'provider_error'])
@@ -127,7 +222,7 @@ test('Output padding settings update summaries and all transcript cards live wit
 test('Output padding project override stays consistent after native user padding changes', { timeout: 60000 }, async () => {
   for (const mode of ['fullscreen', 'regular']) {
     const live = new PiTerminal(`output-padding-project-${mode}`, {
-      tidyUi: true, mode, extraEnv: { TIDY_UI_TEST_USER_CARDS: '1' },
+      tidyUi: true, mode, extraEnv: { TIDY_UI_TEST_USER_CARDS: '1', TIDY_UI_TEST_SYNTAX_CARDS: '1' },
       // Override the harness's -na only for this isolated, test-owned project config.
       flags: ['--approve'], agentSettings: { outputPad: 1 },
       profileFactory: ({ workDir }) => {
@@ -138,6 +233,10 @@ test('Output padding project override stays consistent after native user padding
     try {
       await live.ready(); await live.resize(100, 220); await live.run('suite');
       const before = await live.capture(`pointer-project-before-${mode}`), activity = traffic(live, 7), bytes = readFileSync(before.session);
+      assert.ok(screenHas(live, '← Wrote') && screenHas(live, '← Edited'), 'attached successful file calls are full in the live turn');
+      const filePresentation = ['write', 'edit'].map(name => byName(before, name)[0].lines);
+      const fileArgsComplete = dump => ['write', 'edit'].map(name => byName(dump, name)[0].argsComplete);
+      assert.deepEqual(fileArgsComplete(before), [true, true], 'the before capture observes actual completed live tool owners');
       assert.equal(before.outputPad, 0); assert.equal(before.users[0].outputPad, 0);
       await live.command('/settings'); live.send('Output padding'); await live.settle(); live.send('\r'); await live.settle();
       assert.ok(live.screen().some(row => /^\s*→ Output padding\s+1\s*$/u.test(row)));
@@ -145,8 +244,36 @@ test('Output padding project override stays consistent after native user padding
       const after = await live.capture(`pointer-project-after-${mode}`);
       assert.equal(after.outputPad, 0, 'public effective settings keep the project override');
       assert.equal(after.users[0].outputPad, 1, 'actual Pi callback changes native user-component geometry separately');
-      assert.deepEqual(after.tools.map(tool => tool.lines), before.tools.map(tool => tool.lines));
+      assert.deepEqual(toolDataIdentity(after), toolDataIdentity(before), 'changing native user padding preserves every tool/session datum');
       assert.deepEqual(after.users.map(user => user.lines), before.users.map(user => user.lines), 'all pi-tidy-ui margins continue using effective padding with identical Markdown');
+      let presentation = after;
+      const afterFileRows = ['write', 'edit'].map(name => byName(after, name)[0].lines);
+      const afterArgsComplete = fileArgsComplete(after);
+      const retainedOwner = afterArgsComplete.every(complete => complete === true);
+      const reconstructedOwner = afterArgsComplete.every(complete => complete === false);
+      assert.ok(retainedOwner || reconstructedOwner, 'native lifecycle diagnostics distinguish retained live owners from reconstructed saved calls');
+      if (reconstructedOwner) {
+        assertPreviewLabels(after);
+        if (mode === 'fullscreen') {
+          const writePath = byName(after, 'write')[0].args.path;
+          await toggleFileCard(live, after, 'write');
+          await until(() => live.screen().some(row => row.includes(`← Wrote ${writePath}`)), 'fullscreen restores the re-created live write to full view');
+          presentation = await live.capture(`pointer-project-full-write-${mode}`);
+          assert.deepEqual(byName(presentation, 'write')[0].lines, filePresentation[0], 'full write rows and styling survive Pi reconstruction');
+        } else {
+          live.send('\x0f'); await live.settle();
+          const allFull = () => screenHas(live, '← Wrote') && screenHas(live, '← Edited');
+          await until(allFull, 'regular Ctrl+O restores both re-created live file cards to full view');
+          presentation = await live.capture(`pointer-project-full-${mode}`);
+          for (const name of ['write', 'edit'])
+            assert.deepEqual(byName(presentation, name)[0].lines, filePresentation[name === 'write' ? 0 : 1], `full ${name} rows and styling survive Pi reconstruction`);
+        }
+      } else {
+        assert.ok(filePresentation.every((rows, index) => rows.length === afterFileRows[index].length &&
+          rows.every((row, rowIndex) => row === afterFileRows[index][rowIndex])),
+        'a retained completed owner keeps its exact full presentation and styling');
+      }
+      assert.deepEqual(toolDataIdentity(presentation), toolDataIdentity(before));
       const body = after.users[0].lines.filter(row => row !== '').slice(1, -1);
       await live.appearance(false);
       const native = await live.capture(`native-user-project-${mode}`);

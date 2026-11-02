@@ -67,7 +67,9 @@ test('nightly has separate concurrency and final result; it cannot replace ordin
  assert.match(job(source,'result'),/name: \$\{\{ github.event_name == 'schedule' && 'Nightly latest-Pi result' \|\| 'Complete CI result' \}\}/);
  assert.match(job(source,'sdk'),/nightly: \$\{\{ needs.metadata.outputs.kind == 'nightly' \}\}/);
  const checks=readFileSync(join(repo,'.github/workflows/ci-checks.yml'),'utf8');
- assert.match(checks,/nightly \? 'compatibility' : 'unit'/);assert.match(checks,/\['delivery','daemon'\].includes\(layer\) && \(nightly \|\| process.env.PI_VERSION !== '1.0.0'\)/);
+  assert.match(checks,/nightly \? 'compatibility' : 'unit'/);assert.match(checks,/\['delivery','daemon'\]\.includes\(layer\) && \(nightly \|\| process\.env\.PI_VERSION !== '1\.0\.1'\)/);
+  const consumers=readFileSync(join(repo,'.github/workflows/occipital-consumer.yml'),'utf8');
+  assert.match(step(consumers,'Same-commit clean consumer and actual helper'),/--pi-version 1\.0\.1/);
 });
 
 test('actual required-result step rejects failed, cancelled, missing or skipped planned branches on subsequent commits',async t=>{

@@ -9,7 +9,7 @@ import xterm from "@xterm/headless";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { describeArgs, sanitize } from "../../../src/index.ts";
 import { PRIORITY_FIELDS, VALUE_TEXT_LIMIT, SUMMARY_TEXT_LIMIT } from "../../../src/summary-args.ts";
-import { Container, Root, Text, Tool, color, editDiff, installTidyUi, mouse, plain, setup, spinnerFrames, type TuiMouseEvent } from "../../fixtures/sdk-contract-support.ts";
+import { Container, Root, Text, Tool, color, editDiff, installTidyUi, mouse, plain, setup, spinnerFrames, type TuiMouseEvent, rawStockFileToolRenderers } from "../../fixtures/sdk-contract-support.ts";
 
 test("adjacent summaries skip empty siblings but separate visible text and cards", () => {
   const first = new Tool(), second = new Tool("grep", { pattern: "needle", path: "src" });
@@ -745,7 +745,7 @@ const summarySegments = new Intl.Segmenter(undefined, { granularity: "grapheme" 
 
 const summaryLength = (text: string) => [...summarySegments.segment(text)].length;
 
-test("bounded compact edit path bypasses every other argument and preserves lifecycle/native safeguards", (t) => {
+test("bounded edit preview bypasses every other compact argument and preserves lifecycle behavior", (t) => {
   t.mock.timers.enable({ apis: ["setTimeout", "Date"], now: 0 });
   t.mock.method(performance, "now", () => Date.now());
   const args = { path: "src/my file.ts", pattern: "not the title", get edits(): never { return assert.fail("path-only edit must not inspect payloads"); },
@@ -761,16 +761,42 @@ test("bounded compact edit path bypasses every other argument and preserves life
     assert.equal(plain(tool.render(80)[0]!), ' ⠙ edit "src/my file.ts"');
     tool.updateResult({ isError: true, content: [{ type: "text", text: "NATIVE_ERROR" }] });
     assert.deepEqual(tool.render(80), [' ← edit "src/my file.ts"']);
-    tool.setExpanded(true);
-    assert.deepEqual(tool.render(80), ["", "NATIVE edit", "FULL_OUTPUT"]);
-    tool.setExpanded(false); tool.updateArgs({ path: "example.ts", query: "ignored", edits: [] });
+    tool.updateArgs({ path: "example.ts", query: "ignored", edits: [] });
     tool.updateResult({ content: [], details: { diff: editDiff } });
-    assert.ok(tool.render(80).some(row => plain(row).includes("← Edited example.ts")), "success still uses the existing diff card");
+    const preview = tool.render(80).map(plain).join("\n");
+    assert.match(preview, /example\.ts/); assert.match(preview, /const after = 3/);
+    assert.doesNotMatch(preview, /not the title|ignored/);
   } finally { controller.restore(); }
   for (const path of [undefined, "", null, false, 0, [], { file: "a" }]) {
     const fallback = { ...(path === undefined ? {} : { path }), query: "fallback", newText: "visible" };
     assert.equal(describeArgs("edit", fallback), describeArgs("custom", fallback));
   }
+});
+
+test("failed edit keeps expanded custom details, preserves compatible foreign presentation and honors native override", () => {
+  const owned = new Tool("edit", { path: "owned.ts", oldText: "before", newText: "after" });
+  owned.updateResult({ isError: true, content: [{ type: "text", text: "OWNED_FULL_ERROR" }] }, false);
+  owned.setExpanded(true);
+  const foreign = new Tool("edit", { path: "foreign.ts", oldText: "before", newText: "after" });
+  foreign.setFileRenderers(rawStockFileToolRenderers('edit', '/tmp'));
+  foreign.updateResult({ isError: true, content: [{ type: "text", text: "FOREIGN_FULL_ERROR" }] }, false);
+  foreign.setExpanded(true);
+  const { controller, original } = setup([owned, foreign]);
+  try {
+    const detail = owned.render(80).map(plain).join("\n");
+    assert.match(detail, /OWNED_FULL_ERROR/);
+    assert.doesNotMatch(detail, /NATIVE edit/);
+    const foreignDetail = foreign.render(80).map(plain).join("\n");
+    assert.match(foreignDetail, /FOREIGN_FULL_ERROR/, 'compatible third-party file renderers retain custom full presentation');
+    assert.doesNotMatch(foreignDetail, /NATIVE edit/);
+  } finally { controller.restore(); }
+
+  const native = new Tool("edit", { path: "native.ts", oldText: "before", newText: "after" });
+  native.updateResult({ isError: true, content: [{ type: "text", text: "NATIVE_FULL_ERROR" }] }, false);
+  native.setExpanded(true);
+  const nativeHost = setup([native], { cards: ["edit"] });
+  try { assert.deepEqual(native.render(80), nativeHost.original.call(native, 80), 'an explicit native policy keeps the real native renderer'); }
+  finally { nativeHost.controller.restore(); }
 });
 
 test("bounded compact priorities expose former payloads after unknown fields and retain exact secret masking", () => {

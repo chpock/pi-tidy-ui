@@ -9,6 +9,7 @@ import { createEditToolDefinition, highlightCode } from '@earendil-works/pi-codi
 import { SourceController } from '../../../src/occipital/controller.ts';
 import { installTidyUi } from '../../../src/index.ts';
 import { CardSources } from '../../../src/syntax/cards.ts';
+import { resolvePublicFileToolDefinition } from '../../fixtures/sdk-contract-support.ts';
 const dist = dirname(fileURLToPath(import.meta.resolve('@earendil-works/pi-coding-agent')));
 const { ToolExecutionComponent } = await import(pathToFileURL(resolve(dist, 'modes/interactive/components/tool-execution.js')).href);
 const themes = await import(pathToFileURL(resolve(dist, 'modes/interactive/theme/theme.js')).href);
@@ -25,19 +26,20 @@ function reviewFixture(t: TestContext) {
   sources.setEnabled(false);
   const update = CardSources.prototype.updateDisplay;
   t.mock.method(CardSources.prototype, 'updateDisplay', function(this: CardSources<object>, ...args: Parameters<typeof update>) {
-    assert.equal(depth, 0, 'display preparation never occurs in render/mouse'); preparations++;
+    assert.equal(depth, 0, 'display preparation never occurs in render or passive mouse handling'); preparations++;
     return update.apply(this, args);
   });
   adapter = installTidyUi(ui, () => themes.theme, { syntax: { client: { sources, snapshot: () => snapshot }, palette: () => 1,
     classify: (text, info) => { assert.equal(depth, 0); classifications++; return highlightCode(text, info.language); } } });
   const tool = (name: string, args: Record<string, unknown>, definition?: unknown) => {
-    const node = new ToolExecutionComponent(name, `review-${++sequence}`, args, undefined, definition, ui, '/tmp');
+    const resolvedDefinition = resolvePublicFileToolDefinition(name, definition, '/tmp');
+    const node = new ToolExecutionComponent(name, `review-${++sequence}`, args, undefined, resolvedDefinition, ui, '/tmp');
     ui.addChild(node); return node;
   };
   t.after(() => { adapter.restore(); sources.dispose(); });
   return { ui, sources, adapter, tool, counts: () => [preparations, classifications],
     render(node: InstanceType<typeof ToolExecutionComponent>, width = 60) { depth++; try { return node.render(width); } finally { depth--; } },
-    mouse(node: InstanceType<typeof ToolExecutionComponent>, event: Record<string, unknown>) { depth++; try { return node.handleMouse(event); } finally { depth--; } } };
+    mouse(node: InstanceType<typeof ToolExecutionComponent>, event: Record<string, unknown>) { if (event.type === 'click') return node.handleMouse(event); depth++; try { return node.handleMouse(event); } finally { depth--; } } };
 }
 const textRows = (rows: string[]) => rows.map(plain).join('\n');
 const move = { type: 'move', button: 'none', width: 60, height: 12, x: 2, y: 2, screenX: 2, screenY: 2 };
@@ -99,13 +101,29 @@ test('review F2: actual SDK invalidate observes reused Bash source and service w
 
 test('review F2: actual SDK invalidate observes authoritative patch and same-object diagnostic mutations', async t => {
   const f = reviewFixture(t), tool = f.tool('edit', { path: 'review.ts' }, createEditToolDefinition('/tmp'));
+  tool.setExpanded(true);
   const details = { patch: '@@ -1 +1 @@\n-OLD_SOURCE\n+FIRST_SOURCE\n', diagnostics: [{ severity: 'error', message: 'FIRST_DIAGNOSTIC' }] };
   const result = { content: [], details }; tool.updateResult(result, false); f.render(tool); await tick();
   details.patch = '@@ -1 +1 @@\n-OLD_SOURCE\n+REPLACED_SOURCE\n'; details.diagnostics[0]!.message = 'REPLACED_DIAGNOSTIC'; tool.invalidate();
   const rows = textRows(f.render(tool)); assert.match(rows, /REPLACED_SOURCE/); assert.match(rows, /REPLACED_DIAGNOSTIC/);
   assert.doesNotMatch(rows, /FIRST_SOURCE|FIRST_DIAGNOSTIC/);
   await tick(); const warm = f.counts(); tool.invalidate(); f.render(tool);
-  assert.deepEqual(f.counts(), warm);
+  await tick(); assert.deepEqual(f.counts(), warm);
+});
+
+test('review F2: actual SDK preview refreshes same-object patch on invalidate and stays warm when unchanged', async t => {
+  const f = reviewFixture(t), edit = f.tool('edit', { path: 'preview.ts' }, createEditToolDefinition('/tmp'));
+  const details = { patch: '@@ -1 +1 @@\n-OLD_PREVIEW\n+FIRST_PREVIEW\n', diagnostics: [{ severity: 'error', message: 'HIDDEN_DIAGNOSTIC' }] };
+  edit.updateResult({ content: [], details }, false);
+  assert.match(textRows(f.render(edit)), /FIRST_PREVIEW/); await tick();
+  const initial = f.counts();
+  details.patch = '@@ -1 +1 @@\n-OLD_PREVIEW\n+REPLACED_PREVIEW\n'; edit.invalidate();
+  const replaced = textRows(f.render(edit));
+  assert.match(replaced, /REPLACED_PREVIEW/); assert.doesNotMatch(replaced, /FIRST_PREVIEW|HIDDEN_DIAGNOSTIC/);
+  assert.match(replaced, /Diagnostics available in the full file view/);
+  await tick(); const updated = f.counts(); assert.ok(updated[0]! > initial[0] && updated[1]! > initial[1]);
+  edit.invalidate(); assert.equal(textRows(f.render(edit)), replaced); await tick();
+  assert.deepEqual(f.counts(), updated, 'unchanged same-object invalidation does not prepare or classify the source again');
 });
 
 for (const name of ['bash', 'write']) test(`review F3: actual SDK ${name} quiesce replays accepted separator without source borrowing`, async t => {
@@ -129,6 +147,7 @@ test('review F3: actual SDK prepared unknown self-shell stays native-visible dur
 
 test('review F4: actual SDK predecessor measurement follows current inline heading before edit rerender', t => {
   const f = reviewFixture(t), edit = f.tool('edit', { path: 'a.ts' }, createEditToolDefinition('/tmp'));
+  edit.setExpanded(true);
   edit.updateResult({ content: [], details: { patch: '@@ -1 +1 @@\n-before\n+after\n' } }, false);
   const summary = f.tool('read', { path: 'next.ts' }); summary.updateResult({ content: [] }, false);
   f.render(edit); assert.equal(f.render(summary)[0], '');
@@ -149,9 +168,24 @@ test('review F4: actual SDK malformed replacement delegates rejected mouse rathe
   const native = ToolExecutionComponent.prototype.handleMouse; let delegates = 0;
   t.mock.method(ToolExecutionComponent.prototype, 'handleMouse', function(this: InstanceType<typeof ToolExecutionComponent>, ...args: unknown[]) { delegates++; return Reflect.apply(native, this, args); });
   const f = reviewFixture(t), edit = f.tool('edit', { path: 'a.ts' }, createEditToolDefinition('/tmp'));
+  edit.setExpanded(true);
   edit.updateResult({ content: [], details: { patch: '@@ -1 +1 @@\n-before\n+after\n' } }, false); f.render(edit);
   edit.updateResult({ content: [], details: { patch: 'UNSUPPORTED_METADATA' } }, false);
   f.mouse(edit, move); assert.equal(delegates, 1);
+});
+
+test('review F4: unsupported preview stays owned until click, then full native input delegates', t => {
+  const native = ToolExecutionComponent.prototype.handleMouse; let delegates = 0;
+  t.mock.method(ToolExecutionComponent.prototype, 'handleMouse', function(this: InstanceType<typeof ToolExecutionComponent>, ...args: unknown[]) { delegates++; return Reflect.apply(native, this, args); });
+  const f = reviewFixture(t), edit = f.tool('edit', { path: 'a.ts' }, createEditToolDefinition('/tmp'));
+  edit.updateResult({ content: [], details: { patch: 'UNSUPPORTED_METADATA' } }, false);
+  const preview = textRows(f.render(edit));
+  assert.match(preview, /No saved file change details are available/);
+  assert.doesNotMatch(preview, /geometry budget/);
+  f.mouse(edit, move); assert.equal(delegates, 0, 'unsupported preview must not materialize native callbacks');
+  const clicked = f.mouse(edit, { ...move, type: 'click', button: 'left', y: 0 }) as { handled?: boolean } | undefined;
+  assert.equal(clicked?.handled, true);
+  f.mouse(edit, move); assert.equal(delegates, 1, 'expanded unsupported full edit preserves native mouse handling');
 });
 
 test('review F4: actual SDK cold predecessor and rejected mouse do no raw diff normalization or preparation', t => {

@@ -23,16 +23,18 @@ test('entry exposes the canonical TidyUi installer and default function', () => 
   assert.equal(tidyUi.name, 'tidyUi');
 });
 
-test('entry registers only the menu command and flags; retired arguments do no work beyond factory preload', async () => {
+test('entry registers the menu, flags and public lazy renderer; retired arguments do no work beyond factory preload', async () => {
   const commands = new Map<string, { handler(args: string, ctx: ExtensionContext): Promise<void> }>();
-  const flags: string[] = [], notices: [string, string][] = []; let reads = 0, writes = 0;
+  const flags: string[] = [], notices: [string, string][] = [], renderers: unknown[] = []; let reads = 0, writes = 0;
   const pi = {
     registerCommand: (name: string, command: { handler(args: string, ctx: ExtensionContext): Promise<void> }) => commands.set(name, command),
+    registerToolRenderer: (resolver: unknown) => renderers.push(resolver),
     registerFlag: (name: string) => flags.push(name), on() {},
   } as unknown as ExtensionAPI;
   await tidyUi(pi, { settings: { async load() { reads++; return { ok: true, syntaxTheme: { kind: 'pi' } }; },
     async update() { writes++; return { ok: true }; } } });
   assert.equal(reads, 1, 'the awaited factory preloads preferences once');
+  assert.equal(renderers.length, 1, 'the public factory registers one lazy write/edit renderer resolver');
   assert.deepEqual([...commands.keys()], ['tidy-ui']);
   assert.deepEqual(flags, ['tidy-ui-card', 'tidy-ui-compact', 'tidy-ui-cache-mb', 'tidy-ui-card-cache-mb']);
   const ctx = { mode: 'rpc', hasUI: false, ui: { notify: (message: string, type: string) => notices.push([message, type]) } } as unknown as ExtensionContext;

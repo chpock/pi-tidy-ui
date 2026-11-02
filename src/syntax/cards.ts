@@ -1,7 +1,7 @@
 import type { TerminalColorMode } from '@earendil-works/pi-tui';
 import { diagnose, type DiagnosticFields, type DiagnosticSink } from '../diagnostics.ts';
 import { bashCommandSource, prepareBashService, type BashPresentation } from '../bash-card.ts';
-import { contextRows, fileDiagnosticText, fileHeading, fileNote, fileSources, prepareFileCard, type PreparedFileCard } from '../file-card.ts';
+import { contextRows, fileDiagnosticText, fileHeading, fileNote, filePreviewText, fileSources, prepareFileCard, type PreparedFileCard } from '../file-card.ts';
 import type { SyntaxClient } from '../occipital/client.ts';
 import { CONTROLLER_LIMITS, type GeometryFunding, type GroupDisplayBasis, type SourceController, type SourceDisplayBasis, type SourceWorkGroup } from '../occipital/controller.ts';
 import { type DataCharge, type DataCleanupReceipt } from '../occipital/data-budget.ts';
@@ -18,7 +18,7 @@ import type { ConcreteStyle } from './style-materialization.ts';
 import { requestSyntax, resolveSyntax, type PiClassifier, type SyntaxIdentity, type SyntaxWorkResult } from './work.ts';
 
 export type CardSourceInput = { palette: number; language?: string } & (
-  { kind: 'file'; node: Parameters<typeof prepareFileCard>[0] } |
+  { kind: 'file'; node: Parameters<typeof prepareFileCard>[0]; viewMode?: 'preview' | 'full' } |
   { kind: 'bash'; args: Record<string, unknown>; complete: boolean; node?: BashPresentation }
 );
 export type CardDisplayInput = CardSourceInput & {
@@ -61,7 +61,7 @@ export type PreparedCard = { readonly kind: 'bash'; readonly revision: number; r
   readonly command: PreparedRegion; readonly service: ReturnType<typeof prepareBashService>;
   readonly regions: PreparedBashRegions } |
   { readonly kind: 'file'; readonly revision: number; readonly geometryStamp: number; readonly path?: string;
-    readonly label?: string; readonly mode?: string; readonly note?: PreparedRegion; readonly heading?: PreparedRegion;
+    readonly label?: string; readonly mode?: string; readonly preview?: boolean; readonly omitted?: boolean; readonly note?: PreparedRegion; readonly heading?: PreparedRegion;
     readonly error: boolean; readonly diagnostics: readonly PreparedRegion[];
     readonly rows: readonly FileRowDescriptor[] };
 export interface ReadyCardPaint {
@@ -83,8 +83,8 @@ type Compiled = { charge: DataCharge; table: Map<ConcreteStyle, LiteralPaint>; r
 type State = { input?: CardDisplayInput; revision: number; sourceRevision: number; serviceRevision: number;
   version: number; slots: ReadonlyMap<string, Slot>; sourceEligible?: boolean; display?: PreparedCard; file?: PreparedFileCard; charge?: DataCharge;
   paletteInput?: PaletteInputLease; paletteFallback?: string; paint?: Compiled; ticket?: RecordTicket; paused?: boolean; frozen?: boolean; expanded?: boolean;
-  useful?: boolean; processed?: number; preparedTheme?: number; preparedPalette?: string; mutation: number; geometry: number;
-  descriptorReceipt?: DataCleanupReceipt; paintReceipt?: DataCleanupReceipt; paintToken?: string; paintEffects?: string; paintSignature?: string };
+  useful?: boolean; processed?: string; preparedTheme?: number; preparedPalette?: string; mutation: number; geometry: number;
+  descriptorReceipt?: DataCleanupReceipt; paintReceipt?: DataCleanupReceipt; paintToken?: string; paintEffects?: string; paintEligibility?: string; paintSignature?: string };
 type RecordTicket = { id: number; owner: WeakRef<object>; state: WeakRef<State>; keys: Set<string>; bytes: number;
   consumer: WeakRef<CardSources<object>>; prepare(): void; acceptsSelection(palette: string, rules: string): boolean;
   needsRefresh(newest: boolean): boolean; requiresCredit(): boolean; work?: SourceWorkGroup; receipts: Set<DataCleanupReceipt> };
@@ -112,18 +112,29 @@ function fund(funding: GeometryFunding, bytes: number): DataCharge | undefined {
 }
 // Detached numeric receipt: finalizer tickets never retain descriptor/compiled stores.
 function chargeReceipt(charge: DataCharge): DataCleanupReceipt { return { release: () => charge.release() }; }
+function sourceStamp(input: CardDisplayInput) { return `${input.sourceRevision}:${input.kind === 'file' ? input.viewMode ?? 'full' : 'bash'}`; }
 function inputBytes(input: CardDisplayInput) {
   const args = input.kind === 'bash' ? input.args : input.node.args;
+  const preview = input.kind === 'file' && input.viewMode === 'preview';
   let rows = 1;
-  const size = (text: string) => { for (let i = 0; i < text.length; i++) if (text.charCodeAt(i) === 10 || text.charCodeAt(i) === 13) rows++; return text.length; };
+  const size = (text: string, limit = Number.POSITIVE_INFINITY) => {
+    const length = Math.min(text.length, limit);
+    for (let i = 0; i < length; i++) if (text.charCodeAt(i) === 10 || text.charCodeAt(i) === 13) rows++;
+    return length;
+  };
   let units = (input.cwd?.length ?? 0) + (input.directory?.length ?? 0) + (input.language?.length ?? 0);
-  for (const key of ['command', 'description', 'content', 'path', 'file_path', 'filePath']) if (typeof args[key] === 'string') units += size(args[key]);
+  for (const key of ['command', 'description', 'content', 'path', 'file_path', 'filePath']) if (typeof args[key] === 'string')
+    units += size(preview && key === 'content' ? filePreviewText(args[key] as string).text : args[key]);
   const result = input.kind === 'bash' ? input.node?.result : input.node.result;
   if (input.kind === 'bash') for (const part of input.node?.result?.content ?? []) units += size(part.text ?? '');
   const details = result?.details as { diff?: unknown; patch?: unknown; diagnostics?: unknown } | undefined;
-  for (const value of [details?.diff, details?.patch]) if (typeof value === 'string') units += size(value);
-  if (Array.isArray(details?.diagnostics)) for (const item of details.diagnostics) {
-    if (item && typeof item === 'object' && typeof item.message === 'string') { units += size(item.message); rows++; }
+  for (const value of [details?.diff, details?.patch]) if (typeof value === 'string')
+    units += size(preview ? filePreviewText(value).text : value);
+  if (Array.isArray(details?.diagnostics)) {
+    if (preview) { if (details.diagnostics.length) { units += 64; rows++; } }
+    else for (const item of details.diagnostics) {
+      if (item && typeof item === 'object' && typeof item.message === 'string') { units += size(item.message); rows++; }
+    }
   }
   // Fund normalization scratch, logical fragments and row descriptors before construction.
   return 4096 + units * 6 + rows * 1024;
@@ -179,12 +190,21 @@ export class CardSources<Owner extends object> {
     let state = this.states.get(owner);
     if (!state) { state = { revision: -1, sourceRevision: -1, serviceRevision: -1, version: 0, slots: noSlots, mutation: 0, geometry: 0 }; this.states.set(owner, state); }
     const ticket = this.register(owner, state); if (!ticket?.work) return false;
-    const funding = this.client.sources.geometryFunding(ticket.work); if (!funding) return false;
+    const previousView = state.input?.kind === 'file' ? state.input.viewMode ?? 'full' : 'bash';
+    const nextView = input.kind === 'file' ? input.viewMode ?? 'full' : 'bash';
+    const discardRefusedFullPreview = () => {
+      if (input.kind === 'file' && nextView === 'preview' && previousView === 'full' && state.input?.kind === 'file')
+        this.discardFileDisplay(owner, state, ticket, input.revision);
+    };
+    const funding = this.client.sources.geometryFunding(ticket.work);
+    if (!funding) { discardRefusedFullPreview(); return false; }
     const expanded = input.kind === 'bash' && input.node?.expanded === true;
-    if (state.revision === input.revision && state.input?.palette === input.palette && state.input.mode === input.mode && state.expanded === expanded) return true;
-    const sourceChanged = state.sourceRevision !== input.sourceRevision;
+    if (state.revision === input.revision && state.input?.palette === input.palette && state.input.mode === input.mode
+      && state.expanded === expanded && previousView === nextView) return true;
+    const sourceChanged = state.sourceRevision !== input.sourceRevision || previousView !== nextView;
     const completed = input.kind === 'bash' && input.complete && state.input?.kind === 'bash' && !state.input.complete;
-    const mutation = ++state.mutation, charge = fund(funding, inputBytes(input)); if (!charge) return false;
+    const mutation = ++state.mutation, charge = fund(funding, inputBytes(input));
+    if (!charge) { discardRefusedFullPreview(); return false; }
     const receipts = new Set<DataCleanupReceipt>(), old = state.display;
     let display: PreparedCard | undefined, file: PreparedFileCard | undefined, adopted = false, append: MeasuredAppend | undefined;
     const region = (text: string): PreparedRegion => {
@@ -221,13 +241,17 @@ export class CardSources<Owner extends object> {
         const same = old?.kind === 'bash' && command === old.command && regions === old.regions;
         display = Object.freeze({ kind: 'bash', revision: input.revision, geometryStamp: same ? old.geometryStamp : ++state.geometry, command, service, regions });
       } else {
-        file = state.sourceRevision === input.sourceRevision && state.file ? state.file : prepareFileCard(input.node, true);
+        file = state.sourceRevision === input.sourceRevision && previousView === nextView && state.file ? state.file : prepareFileCard(input.node, true, input.viewMode ?? 'full');
         const error = !input.node.isPartial && input.node.result?.isError === true;
-        const diagnostics = old?.kind === 'file' && state.serviceRevision === input.serviceRevision ? old.diagnostics
-          : Object.freeze(fileDiagnosticText((input.node.result?.details as { diagnostics?: unknown } | undefined)?.diagnostics).map(region));
-        const noteText = file ? fileNote(input.node, file.view) : undefined;
+        const preview = (input.viewMode ?? 'full') === 'preview';
+        const details = input.node.result?.details as { diagnostics?: unknown } | undefined;
+        const diagnostics = preview ? Object.freeze(Array.isArray(details?.diagnostics) && details.diagnostics.length
+          ? [region('Diagnostics available in the full file view.')] : [])
+          : old?.kind === 'file' && state.serviceRevision === input.serviceRevision && previousView === nextView ? old.diagnostics
+            : Object.freeze(fileDiagnosticText(details?.diagnostics).map(region));
+        const noteText = file ? (preview ? file.view.note : fileNote(input.node, file.view)) : undefined;
         const note = noteText ? old?.kind === 'file' && old.note?.text === noteText ? old.note : region(noteText) : undefined;
-        if (old?.kind === 'file' && file === state.file) {
+        if (old?.kind === 'file' && file === state.file && previousView === nextView) {
           const heading = state.input?.cwd === input.cwd ? old.heading : file ? region(fileHeading(file.path, input.cwd, file.view.label)) : undefined;
           display = Object.freeze({ ...old, revision: input.revision, heading, error, diagnostics, note,
             geometryStamp: heading === old.heading && diagnostics === old.diagnostics && note === old.note ? old.geometryStamp : ++state.geometry });
@@ -235,7 +259,7 @@ export class CardSources<Owner extends object> {
         else {
           const rows: FileRowDescriptor[] = [];
           if (file) {
-            const visible = file.view.mode === 'code' ? file.view.lines : contextRows(file.view.lines);
+            const visible = file.view.preview || file.view.mode === 'code' ? file.view.lines : contextRows(file.view.lines);
             const indices = new Map(file.view.lines.map((line, index) => [line, index]));
             const coordinates = new Map<number, { oldSource?: FileRowDescriptor['oldSource']; nextSource?: FileRowDescriptor['nextSource'] }>();
             let segment = 0;
@@ -262,7 +286,7 @@ export class CardSources<Owner extends object> {
             });
           }
           display = Object.freeze({ kind: 'file', revision: input.revision, geometryStamp: ++state.geometry, path: file?.path, label: file?.view.label,
-            mode: file?.view.mode, note, error, diagnostics, heading: file ? region(fileHeading(file.path, input.cwd, file.view.label)) : undefined, rows: Object.freeze(rows) });
+            mode: file?.view.mode, preview: file?.view.preview, omitted: file?.view.omitted, note, error, diagnostics, heading: file ? region(fileHeading(file.path, input.cwd, file.view.label)) : undefined, rows: Object.freeze(rows) });
         }
       }
       if (!this.owned(owner, state, ticket) || state.mutation !== mutation) return false;
@@ -289,7 +313,11 @@ export class CardSources<Owner extends object> {
       if (state.useful && !state.paused && !state.frozen && input.kind === 'bash' && input.complete && (sourceChanged || completed)) this.enqueue(ticket, true);
       if (this.owned(owner, state, ticket) && state.input === input) this.observePreparation(owner, state, 'updated');
       return true;
-    } catch (error) { if (error !== refused) throw error; return false; }
+    } catch (error) {
+      if (error !== refused) throw error;
+      if (this.owned(owner, state, ticket) && state.mutation === mutation) discardRefusedFullPreview();
+      return false;
+    }
     finally {
       append?.dispose();
       if (adopted) charge.release();
@@ -307,9 +335,9 @@ export class CardSources<Owner extends object> {
         && state.preparedPalette === this.inputIdentity(this.currentPalette(state), state.input)) return;
       state.useful = true; this.enqueue(ticket, true); return;
     }
-    if (!resumed && state.useful && state.input && state.processed === state.sourceRevision && state.preparedTheme === this.themeRevision
+    if (!resumed && state.useful && state.input && state.processed === sourceStamp(state.input!) && state.preparedTheme === this.themeRevision
       && state.preparedPalette === this.inputIdentity(this.currentPalette(state), state.input)) return;
-    state.useful = true; this.enqueue(ticket, state.processed !== undefined && (state.processed !== state.sourceRevision
+    state.useful = true; this.enqueue(ticket, state.processed !== undefined && (state.processed !== sourceStamp(state.input!)
       || !!state.input && state.preparedPalette !== this.inputIdentity(this.currentPalette(state), state.input)));
   }
   private syncMetadata() {
@@ -378,7 +406,7 @@ export class CardSources<Owner extends object> {
   }
   requiresCredit(ticket?: RecordTicket): boolean {
     const state = ticket?.state.deref(), palette = this.currentPalette(state);
-    if (state?.processed !== undefined && state.processed === state.sourceRevision && ticket?.work
+    if (state?.processed !== undefined && state.processed === sourceStamp(state.input!) && ticket?.work
       && state.input && this.client.sources.groupPresentation(ticket.work)?.palette === this.paletteIdentity(palette, state.input.palette, state.input.mode)) return false;
     return this.enabled && this.providerReady;
   }
@@ -387,7 +415,7 @@ export class CardSources<Owner extends object> {
     if (!owner || !state) { this.release(ticket); return false; }
     if (!this.current(owner, state, ticket) || !state.useful) return false;
     if (state.frozen) return state.preparedTheme !== this.themeRevision || state.preparedPalette !== this.inputIdentity(this.currentPalette(state), state.input!);
-    if (state.processed !== state.sourceRevision || state.preparedTheme !== this.themeRevision
+    if (state.processed !== sourceStamp(state.input!) || state.preparedTheme !== this.themeRevision
       || state.preparedPalette !== this.inputIdentity(this.currentPalette(state), state.input!)) return true;
     for (const slot of state.slots.values()) {
       if (slot.awaitingProvider && this.requiresCredit() || slot.fallback === 'pi' &&
@@ -454,7 +482,7 @@ export class CardSources<Owner extends object> {
       this.refreshPaint(owner, state); return;
     }
     // A resumed ready group already owns this source demand; do not rebuild its slots.
-    if (state.processed === state.sourceRevision && state.preparedTheme === this.themeRevision
+    if (state.processed === sourceStamp(state.input!) && state.preparedTheme === this.themeRevision
       && [...state.slots.values()].every(slot => !slot.awaitingProvider && (input.kind === 'file' || slot.complete === input.complete))
       && state.preparedPalette === this.inputIdentity(this.currentPalette(state), input)
       && this.client.sources.groupPresentation(ticket.work)) { this.refreshPaint(owner, state); return; }
@@ -500,7 +528,7 @@ export class CardSources<Owner extends object> {
       for (const key of ticket.keys) if (!slots.has(key)) {
         ticket.keys.delete(key); this.keys.delete(key); this.client.sources.remove(key); const bytes = keyBytes(key); ticket.bytes -= bytes; this.bytes -= bytes;
       }
-      state.slots = slots; state.processed = state.sourceRevision; state.preparedTheme = this.themeRevision; state.preparedPalette = this.inputIdentity(this.currentPalette(state), input);
+      state.slots = slots; state.processed = sourceStamp(input); state.preparedTheme = this.themeRevision; state.preparedPalette = this.inputIdentity(this.currentPalette(state), input);
       this.client.sources.updatePreparation(ticket.work); const applied = this.refreshPaint(owner, state);
       this.log(owner, 'Prepared source demand evaluated outside render', { sources: slots.size, version: state.version, revision: state.revision });
       if (this.current(owner, state, ticket) && state.mutation === mutation) this.observePreparation(owner, state, 'prepared', applied, refused);
@@ -516,13 +544,15 @@ export class CardSources<Owner extends object> {
     const paletteReady = state.paletteInput?.paletteId === (isOwned ? selected.id : 'pi')
       && state.paletteInput.paletteRevision === input.palette && state.paletteInput.terminalMode === input.mode;
     const publication = group?.stamp ?? -(input.palette + 1);
-    // Work-only slots carry no visible effect. Ready projections include their
-    // revision/palette so changed syntax inks cannot hide behind a source alias.
+    // Ready projections change paint when their generation, revision, or palette changes.
+    // File slot-version eligibility is tracked separately for both Pi and owned palettes.
     const effects = `${input.mode}:${Array.from(state.slots.values(), s => {
       const p = this.client.sources.piProjection(s.key, s.version, s.palette);
       return p ? `${p.generation}/${p.revision}/${p.palette}` : '';
     }).filter(Boolean).join(',')}`;
-    const token = `${identity}:${publication}:${effects}`;
+    const eligibility = input.kind === 'file' ? `${state.version}:${Array.from(state.slots.values(), slot =>
+      `${slot.key}/${slot.version}/${slot.version === state.version ? 1 : 0}`).join(',')}` : '';
+    const token = `${identity}:${publication}:${effects}:${eligibility}`;
     if (state.paintToken === token) return true;
     const previous = state.paint, mutation = state.mutation;
     if (state.paused && group && group.stamp !== previous?.group?.stamp) return true;
@@ -555,7 +585,7 @@ export class CardSources<Owner extends object> {
       }
       signature = CARD_ROLES.map(role => compiled[role].open).join('|');
       const same = previous && signature === state.paintSignature && (group?.paintStamp ?? 0) === (previous.group?.paintStamp ?? 0)
-        && previous.palette === identity && (isOwned || effects === state.paintEffects);
+        && previous.palette === identity && (isOwned || effects === state.paintEffects) && eligibility === state.paintEligibility;
       next = { charge, table, roles: Object.freeze(compiled), literals: roles, group, palette: identity,
         paletteRevision: input.palette, sourceRevision: input.sourceRevision, publication: ++this.publication,
         paintStamp: same ? previous.paintStamp : this.publication, origin: isOwned ? 'owned' : 'pi', mode: input.mode, piTokens };
@@ -574,7 +604,7 @@ export class CardSources<Owner extends object> {
       if (!next || !this.owned(owner, state, ticket) || state.mutation !== mutation || state.input !== input || state.paint !== previous) return false;
       const receipt = chargeReceipt(next.charge); state.paintReceipt?.release();
       const oldReceipt = state.paintReceipt; if (oldReceipt) ticket.receipts.delete(oldReceipt);
-      state.paintReceipt = receipt; ticket.receipts.add(receipt); state.paint = next; state.paintToken = token; state.paintEffects = effects; state.paintSignature = signature; charge = undefined;
+      state.paintReceipt = receipt; ticket.receipts.add(receipt); state.paint = next; state.paintToken = token; state.paintEffects = effects; state.paintEligibility = eligibility; state.paintSignature = signature; charge = undefined;
       if (previous && previous.paintStamp !== next.paintStamp && !state.paused) this.invalidatePrepared(owner);
       return true;
     } finally {
@@ -607,12 +637,23 @@ export class CardSources<Owner extends object> {
       return accepted && invoked && scoped.valid();
     } finally { scoped.clear(); charge.release(); paint.charge.release(); }
   }
+  // Accepted metadata is knowable before palette paint publication, which may be denied independently.
+  filePreparationOutcome(owner: Owner): 'supported' | 'unsupported' | undefined {
+    const state = this.states.get(owner);
+    if (!state?.charge || state.input?.kind !== 'file' || state.display?.kind !== 'file') return;
+    return state.file ? 'supported' : 'unsupported';
+  }
   displayStamp(owner: Owner): number { return this.states.get(owner)?.paint?.paintStamp ?? 0; }
   identities(owner: Owner): SyntaxIdentity[] { const state = this.states.get(owner);
     return state ? Array.from(state.slots.values(), ({ key, version, language, piLanguage, complete, palette, fallback }) => ({ key, version, language, piLanguage, complete, palette, fallback })) : []; }
   freeze(owner: Owner): void { const s = this.states.get(owner); if (!s || s.frozen) return; s.frozen = true;
     for (const slot of s.slots.values()) this.client.sources.freeze(slot.key); }
   pause(owner: Owner): void { const s = this.states.get(owner); if (!s) return; s.paused = true; if (s.ticket?.work) this.client.sources.pausePreparation(s.ticket.work); }
+  /** Release a file's derived display while preserving its ticket and per-key execution authority. */
+  discardFile(owner: Owner): void {
+    const state = this.states.get(owner), ticket = state?.ticket;
+    if (state?.input?.kind === 'file' && ticket) this.discardFileDisplay(owner, state, ticket, state.revision);
+  }
   remove(owner: Owner): void { const s = this.states.get(owner); this.states.delete(owner); if (s?.ticket) this.release(s.ticket); }
   dispose(): void { if (this.disposed) return; this.disposed = true; for (const t of this.records.values()) this.release(t); }
   release(ticket: RecordTicket): void {
@@ -621,6 +662,18 @@ export class CardSources<Owner extends object> {
     for (const key of ticket.keys) this.keys.delete(key); ticket.keys.clear(); this.bytes -= ticket.bytes;
     releaseReceipts(ticket);
     const s = ticket.state.deref(); if (s) { s.mutation++; s.ticket = undefined; s.display = s.file = s.input = s.paint = s.paletteInput = s.charge = undefined; s.slots = noSlots; }
+  }
+  private discardFileDisplay(owner: Owner, state: State, ticket: RecordTicket, revision: number): void {
+    if (!this.owned(owner, state, ticket) || state.input?.kind !== 'file') return;
+    state.mutation++;
+    if (ticket.work) this.client.sources.pausePreparation(ticket.work);
+    for (const receipt of ticket.receipts) receipt.release();
+    ticket.receipts.clear();
+    state.display = state.file = state.input = state.paint = state.paletteInput = state.charge = state.descriptorReceipt = state.paintReceipt = undefined;
+    state.sourceEligible = false; state.paused = true; state.useful = false; state.processed = undefined;
+    state.preparedTheme = state.preparedPalette = state.paletteFallback = state.paintToken = state.paintEffects = state.paintSignature = undefined;
+    state.expanded = false; state.revision = revision;
+    this.invalidatePrepared(owner);
   }
   private owned(owner: Owner, state: State, ticket: RecordTicket): boolean { return !this.disposed && this.states.get(owner) === state && this.records.get(ticket.id) === ticket; }
   private current(owner: Owner, state: State, ticket: RecordTicket): boolean { return this.owned(owner, state, ticket) && !state.paused; }

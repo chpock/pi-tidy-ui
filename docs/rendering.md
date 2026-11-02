@@ -11,11 +11,13 @@ Pi arguments / result / saved metadata / native rendered rows
   |
   +-- bounded description ------------------------> summary spans
   |
-  +-- complete logical text + metadata ------------> Bash/file display model
-  |                                                   |
-  |                   useful syntax preparation <-----+--> measured glyphs
-  |                   scopes -> styles -> ready paint      |
-  |                                                   width-dependent scene
+  +-- complete latest command ----------------------> complete Bash display
+  |
+  +-- saved file arguments/result -> select preview/full -> selected file display
+                                                   |
+                     useful syntax preparation <---+--> measured glyphs
+                     scopes -> styles -> ready paint     |
+                                                   width-dependent scene
   |                                                       |
   +-- native user/editor rows ----------------------> geometric projection
   |
@@ -28,14 +30,14 @@ Pi arguments / result / saved metadata / native rendered rows
                                                 native Pi composition/output
 ```
 
-Not every arrow runs on every render. Bash/file input and syntax preparation happen through owned useful-work updates outside render; a normal warm visit consumes their prepared state. User/editor projection deliberately calls the native renderer on the appropriate cold/live path because native Markdown and editing behavior remain authoritative.
+Not every arrow runs on every render. Saved-file preview/full selection happens before the chosen view is normalized or admitted for syntax preparation; Bash continues to display the complete latest command. File/Bash input and syntax preparation happen through owned useful-work updates outside render; a normal warm visit consumes their prepared state. User/editor projection deliberately calls the native renderer on the appropriate cold/live path because native Markdown and editing behavior remain authoritative.
 
 The stored representations have distinct purposes:
 
 | Representation | What it means | What it does not prove |
 | --- | --- | --- |
 | Supplied text/metadata | Original tool or native message facts | Availability of source omitted by a producer |
-| Logical display text | Sanitized text with source boundaries/positions preserved for that presenter | Already expanded tabs or viewport rows |
+| Logical display text | Sanitized Bash text or the selected full/bounded saved-file view, with source boundaries/positions preserved | Already expanded tabs or viewport rows; a bounded file view does not include its hidden suffix |
 | Semantic source ranges | Validated byte ranges and context identities for a source version | Current theme or row breaks |
 | Measured glyph data | Color-free grapheme widths and coordinate mapping | A width-specific layout or active colors |
 | Scene/reflow | Rows/cells for width, padding, expansion and logical geometry | Current style readiness |
@@ -52,7 +54,7 @@ There is no universal “sanitize and wrap” operation. Each input has a differ
 | --- | --- | --- |
 | Compact arguments | Select bounded raw grapheme prefixes, sanitize and serialize a bounded logical description | Structural punctuation and selected argument meanings; not complete source/output |
 | Bash / queued plain blocks | Strip terminal sequences, normalize CR/CRLF to LF, remove unsafe terminal/bidi controls; retain logical newlines and indentation | Complete supplied text, joining marks and tabs until display layout |
-| Saved file rows | Normalize line endings while iterating source rows; sanitize individual source text; keep logical tabs and old/new positions | Supplied hunk boundaries and omitted-source gaps; no file reread |
+| Saved file rows | Select the requested full or bounded raw source window, then normalize line endings while iterating selected rows; sanitize text and keep logical tabs/positions | Supplied hunk boundaries and omitted-source gaps; no file reread; preview rows beyond the selected prefix |
 | Native user rows | Ask native Markdown to render at a paired width, then remove known padding | Native transformations, syntax/link ANSI and interior blank rows |
 | Native editor rows | Native wrapping first, sentinel-delimited projection and cursor-safe column slices | Editing state, semantic inverse/selection and cursor marker; not a replacement editor |
 | Footer producer statuses | Keep opaque producer ANSI and fit/pack whole entries, isolating boundaries | Producer content, not parsed native-footer output |
@@ -112,7 +114,7 @@ The live adapter reads `syntax.visit(...)`, which validates the current prepared
 4. If geometry changed, construct a new scene from measured data and paint it.
 5. Publish a candidate only after the outer prepared-card visit succeeds and the adapter remains active.
 
-A scene is the width-dependent layout, not a retained parser. Source/style/geometry funding can be refused or genuinely evicted under the separate logical-data authority even though rendered-layout accounting has no LRU policy. If the path cannot produce a valid prepared card, its presenter uses the defined native/ready fallback; it never fabricates permission for duplicate classification.
+A scene is the width-dependent layout, not a retained parser. Source/style/geometry funding can be refused or genuinely evicted under the separate logical-data authority even though rendered-layout accounting has no LRU policy. If a valid selected file view cannot be funded, it remains an owned bounded limitation presentation rather than falling through to hidden stock preparation; genuine unsupported full metadata and other documented native exceptions still use the native renderer. Missing syntax within an accepted view uses the ready palette's neutral role and does not fabricate permission for duplicate classification.
 
 ### Transactional replacement and cleanup
 
@@ -130,9 +132,9 @@ Outside transcript separators are not retained inside a body. Parent/index edges
 - A compact sibling uses its latest bounded summary layout.
 - User projection supplies cached body metadata rather than recursively invoking predecessor spacing.
 - Unknown/native renderers may still have to render at the actual width to establish visibility.
-- File spacing reads the **already prepared file display**, not saved metadata through `measureFileCard`.
+- File spacing prefers the **already prepared file display**; when no prepared scene is available, it derives height from the same selected owned fallback used by rendering, not from a one-row compact approximation.
 
-For files, `fileMeasure` in `src/index.ts` first requires an applied prepared presentation. An exact retained scene supplies its row count. A non-inline file mode supplies only the needed multiline-frame classification; no source rows need reflow. An inline heading needs an exact height, so the adapter temporarily reflows its existing heading measurement and disposes that temporary result immediately. Failed/currentness-rejected visits do not publish a measurement.
+For files, `fileMeasure` in `src/index.ts` first uses an exact retained scene when available. Otherwise it derives fallback height from the same owned selected layout as `fileCard`: bounded preview, full view, unavailable-preview row, funded pending/error detail, or a bounded limitation after funding refusal. Only genuine native cases (including unsupported explicitly full metadata) call native rows for visibility. A non-inline accepted file mode needs only the framed/multiline classification; no source rows need reflow. An inline heading needs an exact height, so the adapter temporarily reflows its existing heading measurement and disposes that temporary result immediately. Failed/currentness-rejected visits do not publish a measurement.
 
 This is not an extra height cache, a source-classification retry or another body admission. It exists because separation needs “one row versus multiline” and sometimes heading height, not a freshly painted diff.
 
