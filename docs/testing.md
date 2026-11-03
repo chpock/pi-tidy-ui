@@ -251,7 +251,7 @@ Every `main` push, pull request and ordinary manual dispatch runs the same fixed
 | `main` push / PR / ordinary manual | All five enabled native producers and one minimum-Node/minimum-Pi consumer per target; types and complete `unit` on both Nodes × minimum/resolved-latest Pi; complete CLI on Linux x64 / Node 22.19.0 / latest Pi, fixed smoke/editor physical compatibility on each other profile; inert delivery once per Node on minimum Pi |
 | Nightly schedule | Types and `compatibility` on resolved-latest Pi on both Nodes; complete CLI on those two profiles; Linux x64 Pi-free helper producer as their prerequisite only |
 | Occipital push tag | All enabled native producers and both-Node/minimum-Pi consumers; once-per-Node minimum-Pi inert delivery and mandatory `daemon-regression` (`integration/native` plus `harness/packaging`) on both Nodes/minimum Pi; GitHub Release then exact-byte native npm publication |
-| Extension push tag | Complete types/`unit` and full CLI on both Nodes × minimum/latest Pi; all enabled native producers and both-Node/minimum-Pi consumers, including public native delivery verification; inert delivery on both Nodes and admitted extension packing, OIDC/provenance publication and exact public-byte verification |
+| Extension push tag | Complete types/`unit` and full CLI on both Nodes × minimum/latest Pi; all enabled native producers and both-Node/minimum-Pi consumers, including public native delivery verification; inert delivery on both Nodes, admitted extension packing/OIDC/provenance/public-byte verification, then required changelog-derived GitHub notes |
 
 Ordinary/extension SDK and CLI profiles use Node **22.19.0 / 26.7.0 × minimum Pi 1.0.1 / exact resolved latest**. Planning reads public `@earendil-works/pi-coding-agent/latest` metadata once, validates package identity and exact version at least 1.0.1, and pins every SDK/CLI profile to that value. Invalid/unavailable metadata fails without an older fallback. Equal minimum/latest profiles collapse. Job retries reuse the plan; a new workflow resolves afresh. Independent Occipital releases and platform consumers remain minimum-only and do not resolve latest.
 
@@ -626,3 +626,25 @@ bash scripts/release/linux-gnu.sh x86_64-unknown-linux-gnu
 The wrapper checks native architecture/glibc and owns image/cache/SDK mounts. Image creation may need networking; execution uses `--network=none`. Internal `_gnu-native` orders format, workspace tests, allocator checks, strict lint, locked release build and ABI admission with offline Cargo. Actual-helper smoke follows separate exact-artifact staging/preparation before consumers; `_gnu-native` is not a standalone host-baseline check or that smoke. Honor `CARGO_HOME`/`CARGO_TARGET_DIR` and use isolated output. The diagnostic `engine_probe` returns unavailable allocator data as `null` before glibc 2.33; this gate runs no calibration mode.
 
 Keep both independent optional/non-optional npm consumer installs and exact same-source bytes. Lock/dry-run closure preparation does not establish actual installability. Test zero optional bootstrap downloads, one cold fixture download, zero warm HTTP, UTF-8/incremental work and real process reaping. Public registry/GitHub verification requires its explicit extension-release authority and network profile; it is not hermetic coverage or fallback for missing current-source inputs. Linux enforcement controls do not establish equivalent OS-level egress enforcement elsewhere.
+
+### Changelog and release-note controls
+
+Run `npm run changelog:check` before committing. The prepared `delivery` group
+covers the restricted Markdown/SemVer reader, exact product entry extraction,
+immutable GitHub release retries, staged npm history and development/prerelease
+tracking policy. `harness/ci-plan` and the actual workflow shell controls establish
+that extension GitHub notes are required only after verified npm publication and
+that the notes job has no npm/OIDC mutation authority. These are inert publication
+controls: they execute real local Git/npm archive operations where needed, but
+remote GitHub/npm calls are injected and no tag or public release is created.
+
+`harness/packaging/changelog.sdk.test.mjs` uses the installed SDK's real
+`DefaultResourceLoader`, package metadata and changelog parser against staged
+stable/prerelease/disabled packages. On Pi 1.5 it requires package-origin metadata
+with the enabled path only for the stable package; on the older supported SDK it
+establishes package loadability and native-parser compatibility, not a nonexistent
+extension-update UI. It asserts only the intended stable update is selected and
+that the current native dependency footer survives. This is an SDK integration,
+not a physical startup-screen or external npm publication check. Stable projection
+also rejects literal column-zero H2 rows in fenced examples, which Pi's simpler
+reader otherwise mistakes for version boundaries.

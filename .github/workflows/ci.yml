@@ -66,6 +66,10 @@ jobs:
           import {npmReleaseTag} from './scripts/release/version.mjs';
           npmReleaseTag(process.env.RELEASE_REF.slice('refs/tags/'.length));
           JS
+      - name: Validate product changelogs and exact release entry
+        env:
+          RELEASE_REF: ${{ github.ref }}
+        run: node scripts/release/release-notes.mjs check "$RELEASE_REF"
       - name: Validate workflows
         uses: docker://rhysd/actionlint:1.7.12
 
@@ -260,10 +264,33 @@ jobs:
       - name: Publish pi-tidy-ui using OIDC and verify public registry bytes
         run: node scripts/release/extension-publication.mjs publish .test-artifacts/extension-release/prepared/publication.json
 
+  release-extension:
+    needs: [metadata, extension-package]
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/pi-tidy-ui-v')
+    permissions:
+      contents: write
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_TAG: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          ref: ${{ needs.metadata.outputs.source }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v7.1.0
+        with:
+          package-manager-cache: false
+          node-version: '22.19.0'
+      - name: Publish extension notes after verified npm publication
+        run: node scripts/release/github-release.mjs "$RELEASE_TAG"
+
   result:
     name: ${{ github.event_name == 'schedule' && 'Nightly latest-Pi result' || 'Complete CI result' }}
     if: always()
-    needs: [metadata, native-linux, native-platforms, consumer-linux, delivery, sdk, cli, daemon-regressions, release-occipital, publish-occipital-npm, extension-package]
+    needs: [metadata, native-linux, native-platforms, consumer-linux, delivery, sdk, cli, daemon-regressions, release-occipital, publish-occipital-npm, extension-package, release-extension]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
@@ -285,7 +312,7 @@ jobs:
           const needs = JSON.parse(process.env.CI_NEEDS);
           if (needs.metadata.result !== 'success') throw new Error('CI metadata or latest-version selection failed');
           const plan = JSON.parse(process.env.CI_PLAN);
-          const mapping = {nativeHost:'native-linux',nativeRemaining:'native-platforms',nativeHostConsumers:'consumer-linux',delivery:'delivery',sdk:'sdk',cli:'cli',daemonRegressions:'daemon-regressions',daemonRelease:'release-occipital',daemonNpm:'publish-occipital-npm',preparedPack:'extension-package'};
+          const mapping = {nativeHost:'native-linux',nativeRemaining:'native-platforms',nativeHostConsumers:'consumer-linux',delivery:'delivery',sdk:'sdk',cli:'cli',daemonRegressions:'daemon-regressions',daemonRelease:'release-occipital',daemonNpm:'publish-occipital-npm',preparedPack:'extension-package',extensionRelease:'release-extension'};
           // Public-consumer checks are a mandatory part of the existing extension-tag platform consumers.
           const statuses = Object.fromEntries(Object.entries(mapping).map(([branch,job]) => [branch,needs[job].result]));
           statuses.publishedConsumer = plan.publishedConsumer ? needs['consumer-linux'].result : 'skipped';

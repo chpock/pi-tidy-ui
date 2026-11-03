@@ -130,6 +130,8 @@ This is neither a grace-period cache nor a timed session handoff. Appearance Off
 
 Saved session-name event ordering is not trusted as current-name authority: a later render rereads the public current metadata once. Footer snapshots are keyed by session/model/leaf and semantic epochs, not a scan on every render. Live Bash IDs distinguish live interruption from a newly restored interrupted result; see [streaming state](bash-streaming-contract.md).
 
+In ordinary terminal mode, shrinking a file card above the visible area (for example, demoting an older automatic full view to preview) can make Pi redraw the screen and clear terminal scrollback. This does not remove saved session or tool data. Fullscreen uses its own screen buffer; the file-window policy does not promise scrollback preservation or zero full redraws.
+
 This table describes the extension's handlers, not a claim that every Pi transition necessarily reuses the same extension factory. Pi owns history reconstruction and intermediate reload frames. No private session-transition wrappers, transition timer, screen snapshot or output suppression hides the native interval between extension runtimes.
 
 ## Settings actions and asynchronous ownership

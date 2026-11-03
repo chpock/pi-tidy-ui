@@ -1,8 +1,8 @@
 import '../fixtures/test-guard.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {mkdtempSync,readFileSync,rmSync,writeFileSync} from 'node:fs';
-import {join,resolve} from 'node:path';
+import {copyFileSync,mkdirSync,mkdtempSync,readFileSync,rmSync,writeFileSync} from 'node:fs';
+import {dirname,join,resolve} from 'node:path';
 import {tmpdir} from 'node:os';
 import {spawnSync} from 'node:child_process';
 import {pathToFileURL} from 'node:url';
@@ -20,7 +20,7 @@ const fetchLatest=async()=>Response.json({name:'@earendil-works/pi-coding-agent'
 
 function needsFor(plan){
  const needs={metadata:{result:'success'}};
- for(const [branch,name]of Object.entries({nativeHost:'native-linux',nativeRemaining:'native-platforms',nativeHostConsumers:'consumer-linux',sdk:'sdk',cli:'cli',delivery:'delivery',daemonRegressions:'daemon-regressions',preparedPack:'extension-package',daemonRelease:'release-occipital',daemonNpm:'publish-occipital-npm'}))needs[name]={result:plan.requiredBranches[branch]?'success':'skipped'};
+ for(const [branch,name]of Object.entries({nativeHost:'native-linux',nativeRemaining:'native-platforms',nativeHostConsumers:'consumer-linux',sdk:'sdk',cli:'cli',delivery:'delivery',daemonRegressions:'daemon-regressions',preparedPack:'extension-package',daemonRelease:'release-occipital',daemonNpm:'publish-occipital-npm',extensionRelease:'release-extension'}))needs[name]={result:plan.requiredBranches[branch]?'success':'skipped'};
  return needs;
 }
 
@@ -197,4 +197,44 @@ test('actual physical role command invokes the selected suite once and propagate
   assert.deepEqual(readFileSync(trace,'utf8').trim().split('\n'),['scripts/test/run.mjs','--inputs',join(root,'check-inputs/inputs.json'),'--suite',suite,...(shard?['--shard',shard]:[]),'--network-isolated']);
   assert.equal(run(suite,shard,'17').status,17);
  }
+});
+
+
+test('exact extension-note obligation follows npm success with isolated GitHub-only permissions', async t => {
+  const source = ci(), notes = job(source, 'release-extension');
+  assert.match(notes, /needs: \[metadata, extension-package\]/);
+  assert.match(notes, /github.event_name == 'push'.*refs\/tags\/pi-tidy-ui-v/);
+  assert.match(notes, /^    permissions:\n      contents: write$/m);
+  assert.doesNotMatch(notes, /id-token:|npm publish|upload-artifact|NPM_TOKEN/);
+  assert.match(notes, /ref: \$\{\{ needs.metadata.outputs.source \}\}/);
+  assert.match(notes, /fetch-depth: 0/);
+  assert.match(notes, /run: node scripts\/release\/github-release.mjs "\$RELEASE_TAG"/);
+  const root = fixture(t), script = javascript(step(source, 'Require every planned branch, including every CLI partition'));
+  const plan = await buildCIPlan({ eventName: 'push', ref: 'refs/tags/pi-tidy-ui-v0.4.0', sha: commit, fetchLatest });
+  const needs = needsFor(plan);
+  assert.equal(executeScript(root, script, { CI_PLAN: JSON.stringify(plan), CI_NEEDS: JSON.stringify(needs) }).status, 0);
+  for (const result of ['failure', 'cancelled', 'skipped']) {
+    assert.notEqual(executeScript(root, script, { CI_PLAN: JSON.stringify(plan),
+      CI_NEEDS: JSON.stringify({ ...needs, 'release-extension': { result } }) }).status, 0);
+  }
+});
+
+test('actual metadata changelog command admits independent pending work and rejects an unprepared product tag', t => {
+  const root = fixture(t), inputs = readInputs();
+  for (const file of ['scripts/release/release-notes.mjs', 'scripts/release/changelog.mjs',
+    'scripts/release/version.mjs', 'src/occipital/version.ts']) {
+    mkdirSync(dirname(join(root, file)), { recursive: true });
+    copyFileSync(join(repo, file), join(root, file));
+  }
+  writeFileSync(join(root, 'package.json'), JSON.stringify({ type: 'module', version: '0.0.0', files: ['CHANGELOG.md'], pi: { changelogPath: '' } }));
+  writeFileSync(join(root, 'CHANGELOG.md'), '# Extension\n\n## [Unreleased]\n\n## [0.4.0] - 2026-11-03\n\n- Released extension.\n');
+  mkdirSync(join(root, 'docs/occipital'), { recursive: true });
+  writeFileSync(join(root, 'docs/occipital/CHANGELOG.md'), '# Native\n\n## [Unreleased]\n\n- Pending native work.\n');
+  const command = step(ci(), 'Validate product changelogs and exact release entry').match(/^        run: (.+)$/m)?.[1];
+  assert.ok(command);
+  for (const [ref, passes] of [['refs/heads/main', true], ['refs/tags/pi-tidy-ui-v0.4.0', true], ['refs/tags/occipital-v0.3.0', false]]) {
+    const result = spawnSync(inputs.tools.bash, ['-e', '-c', command], { cwd: root,
+      env: childEnv(join(root, 'environment'), { RELEASE_REF: ref }, inputs), encoding: 'utf8', timeout: 10000 });
+    assert.equal(result.status === 0, passes, result.stdout + result.stderr);
+  }
 });

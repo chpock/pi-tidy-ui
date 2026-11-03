@@ -280,12 +280,13 @@ test('real staged extension packs exact metadata/native pins and verifies its ac
   const f = await fixture(t), { packExtensionRelease, publishExtensionRelease } = await publisher();
   const source = join(f.root, 'source'); await mkdir(join(source, 'src/occipital'), { recursive: true });
   const sentinel = join(f.root, 'lifecycle-ran');
-  const manifest = { ...f.manifest, version: '0.0.0', files: ['src', 'README.md', 'LICENSE'],
+  const manifest = { ...f.manifest, version: '0.0.0', files: ['src', 'README.md', 'CHANGELOG.md', 'LICENSE'], pi: { changelogPath: '' },
     description: 'Offline publication fixture', keywords: ['pi-package'], author: { name: 'Fixture' },
     scripts: { prepack: `node -e ${JSON.stringify(`require('node:fs').writeFileSync(${JSON.stringify(sentinel)}, 'unexpected')`)}` } };
   await writeFile(join(source, 'package.json'), JSON.stringify(manifest));
   await writeFile(join(source, 'README.md'), 'Inert fixture; not a real native or public release.\n');
   await writeFile(join(source, 'LICENSE'), 'MIT fixture\n');
+  await writeFile(join(source, 'CHANGELOG.md'), '# Changes\n\n## [Unreleased]\n');
   await writeFile(join(source, 'src/occipital/release.ts'), await readFile(join(repo, 'src/occipital/release.ts')));
   const release = JSON.parse(await readFile(join(repo, 'tests/fixtures/occipital-release-0.1.4.json'), 'utf8'));
   const packageDirectory = join(f.root, 'staged-extension');

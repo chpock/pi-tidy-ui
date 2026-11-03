@@ -85,10 +85,10 @@ export async function buildCIPlan(options) {
     cliProfiles,
     native,delivery:!nightly,deliveryProfiles:nightly ? [] : profilesFor([MINIMUM_PI]),
     daemonRegressionProfiles:daemon ? profilesFor([MINIMUM_PI]) : [],
-    release:daemon || extension,publishedConsumer:extension,preparedPack:extension,daemonRelease:daemon,daemonNpm:daemon,
+    release:daemon || extension,publishedConsumer:extension,preparedPack:extension,daemonRelease:daemon,daemonNpm:daemon,extensionRelease:extension,
     requiredBranches:{
       nativeHost:true,nativeRemaining:native.remaining.length > 0,nativeHostConsumers:native.hostConsumers.length > 0,
-      sdk:!daemon,cli:!daemon,delivery:!nightly,daemonRegressions:daemon,publishedConsumer:extension,preparedPack:extension,daemonRelease:daemon,daemonNpm:daemon,
+      sdk:!daemon,cli:!daemon,delivery:!nightly,daemonRegressions:daemon,publishedConsumer:extension,preparedPack:extension,daemonRelease:daemon,daemonNpm:daemon,extensionRelease:extension,
     },
   };
 }

@@ -243,3 +243,14 @@ The root README is the user guide. For exact behavior and development work:
 Working from a Git checkout instead of npm? Development uses a locally built Occipital helper; see [source-build setup](docs/testing.md#provision-optional-inputs-from-a-fresh-clone) and the [development delivery contract](docs/releases.md#extension-delivery).
 
 The visual direction owes much to OpenCode; the editing, sessions and agent workflow remain Pi's. Licensed under [MIT](LICENSE).
+
+## Updates and release history
+
+Read the [pi-tidy-ui changelog](CHANGELOG.md) for interface, compatibility and
+upgrade instructions, and the independent [Occipital changelog](docs/occipital/CHANGELOG.md)
+for helper/protocol changes. The products have separate versions and tags.
+Pi 1.5 can show stable package updates on a fresh launch after it has recorded a
+previous version; development/prerelease checkouts do not enable these automatic
+notices. The complete histories and GitHub release notes remain available even
+when no startup notice is shown. See the [release guide](docs/releases.md#changelogs-and-release-notes)
+for authoring and generating notes.

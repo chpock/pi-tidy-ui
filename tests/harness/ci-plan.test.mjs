@@ -16,7 +16,7 @@ const plan = (extra = {}) => buildCIPlan({ ...options, fetchLatest:async () => r
 const success = result => Object.fromEntries(Object.entries(result.requiredBranches).map(([key, required]) => [key, required ? 'success' : 'skipped']));
 const productProfiles = pis => NODE_VERSIONS.flatMap(node => pis.map(pi => ({node,pi})));
 const cliProfiles = profiles => profiles.flatMap(profile => Array.from({length:CLI_SHARDS}, (_, index) => ({...profile,coverage:'complete',shard:`${index + 1}/${CLI_SHARDS}`})));
-const branches = ['nativeHost','nativeRemaining','nativeHostConsumers','sdk','cli','delivery','daemonRegressions','publishedConsumer','preparedPack','daemonRelease','daemonNpm'];
+const branches = ['nativeHost','nativeRemaining','nativeHostConsumers','sdk','cli','delivery','daemonRegressions','publishedConsumer','preparedPack','daemonRelease','daemonNpm','extensionRelease'];
 
 test('fixed main push, PR and manual events have the same approved obligations and exact source authority', async () => {
   assert.equal(MINIMUM_PI,'1.0.1');
@@ -128,7 +128,7 @@ test('nightly is exclusively latest SDK/profile and every physical CLI shard wit
   for (const key of ['delivery','release','publishedConsumer','preparedPack','daemonRelease','daemonNpm']) assert.equal(result[key],false,key);
   assert.deepEqual(result.requiredBranches,{
     nativeHost:true,nativeRemaining:false,nativeHostConsumers:false,sdk:true,cli:true,
-    delivery:false,daemonRegressions:false,publishedConsumer:false,preparedPack:false,daemonRelease:false,daemonNpm:false,
+    delivery:false,daemonRegressions:false,publishedConsumer:false,preparedPack:false,daemonRelease:false,daemonNpm:false,extensionRelease:false,
   });
 });
 
@@ -166,7 +166,7 @@ test('actual Occipital push tags require native/delivery and daemon gates withou
   for (const key of ['publishedConsumer','preparedPack']) assert.equal(result[key],false,key);
   assert.deepEqual(result.requiredBranches,{
     nativeHost:true,nativeRemaining:true,nativeHostConsumers:true,sdk:false,cli:false,
-    delivery:true,daemonRegressions:true,publishedConsumer:false,preparedPack:false,daemonRelease:true,daemonNpm:true,
+    delivery:true,daemonRegressions:true,publishedConsumer:false,preparedPack:false,daemonRelease:true,daemonNpm:true,extensionRelease:false,
   });
 });
 
@@ -307,5 +307,20 @@ test('ordinary budget has one complete reference, three compatibility profiles a
       const statuses=success(result);if(status===undefined)delete statuses.cli;else statuses.cli=status;
       assert.equal(validateCIResults(result,statuses),false,'compatibility failure cannot be waived by a later source');
     }
+  }
+});
+
+
+test('extension notes are a separate required post-npm release obligation, never an ordinary or daemon publication', async () => {
+  const extension = await plan({ref:'refs/tags/pi-tidy-ui-v0.3.0'});
+  assert.equal(extension.extensionRelease, true);
+  assert.equal(extension.requiredBranches.extensionRelease, true);
+  const statuses = success(extension);
+  statuses.extensionRelease = 'skipped';
+  assert.equal(validateCIResults(extension, statuses), false);
+  for (const ref of ['refs/heads/main', 'refs/tags/occipital-v0.3.0']) {
+    const other = await plan({ref});
+    assert.equal(other.extensionRelease, false);
+    assert.equal(other.requiredBranches.extensionRelease, false);
   }
 });

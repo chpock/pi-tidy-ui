@@ -1,0 +1,39 @@
+# Occipital changelog
+
+Changes to the Occipital helper are recorded independently of
+[pi-tidy-ui](https://github.com/chpock/pi-tidy-ui/blob/main/CHANGELOG.md).
+Release notes before the published 0.2.0 baseline have not been reconstructed.
+
+## [Unreleased]
+
+### Breaking changes
+
+- Replace `syntax-highlight/v3` with `syntax-highlight/v4` and resolver revision 3.
+  Clients and helpers must implement the same contract; published v3 releases
+  remain immutable and are not compatible with v4 clients.
+- Remove the native theme catalogue, `.tmTheme` loading, native palettes and
+  theme-specific profile definitions. Clients now own their palettes and submit
+  generic style rules.
+
+### Added
+
+- Context-qualified generic STYLE rules with nearest-owner matching. Equal-score
+  matches use the first applicable declaration independently for foreground,
+  background and each font attribute.
+- v4 conformance vectors and explicit rule limits: 512 selectors, 4096 paths,
+  4096 atoms and 256 KiB of rule-name bytes.
+
+### Changed
+
+- Move theme selection and final palette application to clients and remove the
+  unused theme-loading dependencies. SOURCE parsing remains theme-independent.
+- Generate release descriptions from this product's versioned changelog instead
+  of using a generic asset-packaging description.
+
+## [0.2.0] - 2026-10-25
+
+### Compatibility
+
+- Published `syntax-highlight/v3` baseline with resolver revision 2. Original
+  binaries and metadata remain available in
+  [Occipital 0.2.0](https://github.com/chpock/pi-tidy-ui/releases/tag/occipital-v0.2.0).
