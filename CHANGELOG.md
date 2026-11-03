@@ -7,6 +7,8 @@ been reconstructed.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-03
+
 ### Breaking changes
 
 - Require Pi 1.0.1 or newer. Node.js 22.19.0 remains the minimum Node version.
