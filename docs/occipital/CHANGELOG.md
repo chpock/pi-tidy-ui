@@ -6,6 +6,8 @@ Release notes before the published 0.2.0 baseline have not been reconstructed.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-03
+
 ### Breaking changes
 
 - Replace `syntax-highlight/v3` with `syntax-highlight/v4` and resolver revision 3.
