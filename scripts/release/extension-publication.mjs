@@ -56,7 +56,7 @@ export async function packExtensionRelease({ planPath, execute = run }) {
   return publication;
 }
 
-export async function publishExtensionRelease({ planPath, env = process.env, execute = run, fetcher = fetch, report = value => console.log(JSON.stringify(value)) }) {
+export async function publishExtensionRelease({ planPath, env = process.env, execute = run, fetcher = fetch, report = value => console.log(JSON.stringify(value)), verification }) {
   const plan = await json(planPath), release = releasePlan(plan);
   if (env.GITHUB_ACTIONS !== 'true' || env.GITHUB_REPOSITORY !== repository || env.GITHUB_EVENT_NAME !== 'push'
     || env.GITHUB_REF !== plan.ref || env.GITHUB_SHA !== plan.commit || env.GITHUB_WORKFLOW_SHA !== plan.commit
@@ -92,8 +92,7 @@ export async function publishExtensionRelease({ planPath, env = process.env, exe
     }
     receipt.outcome = 'published'; await checkpoint();
   }
-  try { await verifyPublicArchive({ name, version: release.version, tarball: plan.tarball, integrity: plan.integrity }, fetcher); }
-  catch { throw new Error('Public registry archive verification failed'); }
+  await verifyPublicArchive({ name, version: release.version, tarball: plan.tarball, integrity: plan.integrity }, fetcher, verification);
   receipt.registryByteVerified = true; await checkpoint();
   return receipt;
 }

@@ -91,7 +91,7 @@ for (const change of ['name', 'version', 'os', 'cpu', 'libc', 'repository', 'scr
 }
 
 function absent() { return Object.assign(new Error('fixture absent'), { stdout: JSON.stringify({ error: { code: 'E404' } }) }); }
-async function planned(t, version) { const f = await fixture(t, version), { prepareNpmRelease } = await publisher(); return { f, plan: await prepareNpmRelease(f) }; }
+async function planned(t, version, targets = enabledTargets()) { const f = await fixture(t, version, targets), { prepareNpmRelease } = await publisher(); return { f, plan: await prepareNpmRelease(f) }; }
 function registryFetcher(plan, { corrupt = false, missing = false } = {}) {
   return async url => {
     const archive = String(url).includes('/archive/');
@@ -104,6 +104,21 @@ function registryFetcher(plan, { corrupt = false, missing = false } = {}) {
     }
     if (missing) return new Response('{}', { status: 404 });
     return Response.json({ name: row.name, version: row.version, dist: { integrity: row.integrity, tarball: 'https://registry.npmjs.org/archive/' + row.target } });
+  };
+}
+function verificationClock(start = 0) {
+  let current = start;
+  const requestStarts = [], requestTimeouts = [], waits = [];
+  return {
+    now: () => current,
+    advance: milliseconds => { current += milliseconds; },
+    wait: async milliseconds => { waits.push(milliseconds); current += milliseconds; },
+    timeoutSignal: milliseconds => {
+      assert.ok(Number.isInteger(milliseconds) && milliseconds > 0);
+      requestStarts.push(current); requestTimeouts.push(milliseconds);
+      return new AbortController().signal;
+    },
+    requestStarts, requestTimeouts, waits, current: () => current,
   };
 }
 
@@ -208,7 +223,9 @@ test('public tarball corruption is refused even when registry metadata reports t
     if (args[0] === 'publish') { uploads++; throw new Error('Unexpected upload'); }
     assert.fail('Archive verification must not resolve the version through npm pack');
   };
-  await assert.rejects(publishNpmRelease({ planPath: join(f.output, 'plan.json'), env: host, execute, fetcher: registryFetcher(plan, { corrupt: true }) }), /Public registry archive differs/);
+  await assert.rejects(publishNpmRelease({ planPath: join(f.output, 'plan.json'), env: host, execute, fetcher: registryFetcher(plan, { corrupt: true }) }), error => {
+    assert.equal(error.stage, 'archive'); assert.equal(error.reason, 'integrity-mismatch'); return true;
+  });
   assert.equal(uploads, 0);
   assert.equal((await json(join(f.output, 'receipts.json'))).packages.some(row => row.registryByteVerified), false);
 });
@@ -272,7 +289,175 @@ test('provenance generation failure stops the native family without a fallback u
   assert.deepEqual(receipts.packages.map(row => row.outcome), ['unconfirmed', 'not-started', 'not-started', 'not-started', 'not-started']);
 });
 
-test('post-publication verification reads exact version and raw archive, never package-version resolution or a second publish', async t => {
+test('fresh upload waits through exact metadata 404 and a matching version waits without another upload', async t => {
+  const { f, plan } = await planned(t, '0.1.5', ['linux-x64-gnu']), { publishNpmRelease } = await publisher();
+  const row = plan.packages[0], baseFetcher = registryFetcher(plan);
+  let viewCount = 0, uploads = 0, metadata404s = 2, metadataRequests = 0, archiveRequests = 0;
+  const execute = async (_npm, args) => {
+    if (args[0] === 'view') {
+      viewCount++;
+      if (viewCount === 1) throw absent();
+      return { stdout: JSON.stringify({ name: row.name, version: row.version, dist: { integrity: row.integrity } }) };
+    }
+    uploads++;
+    return { stdout: JSON.stringify([{ name: row.name, version: row.version, integrity: row.integrity }]) };
+  };
+  const fetcher = async (url, options) => {
+    assert.ok(options.signal); assert.equal(options.redirect, 'error');
+    if (String(url).includes('/archive/')) archiveRequests++;
+    else {
+      metadataRequests++;
+      if (metadata404s > 0) { metadata404s--; return new Response('{}', { status: 404 }); }
+    }
+    return baseFetcher(url, options);
+  };
+  const firstClock = verificationClock(0.25);
+  const first = await publishNpmRelease({ planPath: join(f.output, 'plan.json'), targets: ['linux-x64-gnu'], env: host, execute, fetcher, report: () => {}, verification: firstClock });
+  assert.equal(first.packages[0].outcome, 'published'); assert.equal(first.packages[0].registryByteVerified, true);
+  assert.equal(uploads, 1); assert.equal(metadataRequests, 3); assert.equal(archiveRequests, 1);
+  assert.deepEqual(firstClock.waits, [5000, 5000]);
+
+  metadata404s = 1;
+  const secondClock = verificationClock(3.5);
+  const second = await publishNpmRelease({ planPath: join(f.output, 'plan.json'), targets: ['linux-x64-gnu'], env: host, execute, fetcher, report: () => {}, verification: secondClock });
+  assert.equal(second.packages[0].outcome, 'already-published'); assert.equal(second.packages[0].registryByteVerified, true);
+  assert.equal(uploads, 1); assert.equal(metadataRequests, 5); assert.equal(archiveRequests, 2);
+  assert.deepEqual(secondClock.waits, [5000]);
+});
+
+test('metadata readiness counts delayed request time and refuses a fractional near-deadline request', async t => {
+  const { f, plan } = await planned(t, '0.1.5', ['linux-x64-gnu']), { publishNpmRelease } = await publisher(), row = plan.packages[0];
+  const clock = verificationClock(0.25); let requests = 0, archiveRequests = 0;
+  const execute = async (_npm, args) => {
+    assert.equal(args[0], 'view');
+    return { stdout: JSON.stringify({ name: row.name, version: row.version, dist: { integrity: row.integrity } }) };
+  };
+  await assert.rejects(publishNpmRelease({ planPath: join(f.output, 'plan.json'), targets: ['linux-x64-gnu'], env: host, execute, report: () => {}, verification: clock,
+    fetcher: async (url, options) => {
+      assert.ok(options.signal); assert.equal(options.redirect, 'error');
+      if (String(url).includes('/archive/')) { archiveRequests++; return new Response('unexpected'); }
+      requests++;
+      if (requests === 1) clock.advance(59999.5);
+      return new Response('{}', { status: 404 });
+    },
+  }), error => {
+    assert.equal(error.stage, 'metadata'); assert.equal(error.reason, 'not-found'); assert.equal(error.status, 404);
+    return true;
+  });
+  assert.equal(requests, 12); assert.equal(archiveRequests, 0);
+  assert.deepEqual(clock.waits, Array(12).fill(5000));
+  assert.equal(clock.requestStarts[0], 0.25); assert.equal(clock.requestStarts.at(-1), 114999.75);
+  assert.equal(clock.current(), 119999.75); assert.equal(120000.25 - clock.current(), 0.5);
+  assert.equal(clock.requestTimeouts.at(-1), 5000);
+  assert.ok(clock.requestStarts.every(start => start < 120000.25));
+  const receipt = await json(join(f.output, 'receipts.json'));
+  assert.equal(receipt.packages[0].outcome, 'already-published');
+  assert.equal(receipt.packages[0].registryByteVerified, undefined);
+});
+
+test('native verifier errors retain safe metadata diagnostics and discard poisoned transport details', async t => {
+  const { f, plan } = await planned(t, '0.1.5', ['linux-x64-gnu']), { publishNpmRelease } = await publisher(), row = plan.packages[0];
+  const secrets = ['PRIVATE_VERIFY_SENTINEL', 'https://private.invalid/secret-url', '/private/archive/secret-path', 'credential-value', 'stdout-value', 'stderr-value', 'cause-value'];
+  const raw = Object.assign(new Error(secrets.join(' '), { cause: new Error('cause-value') }), {
+    stdout: 'stdout-value', stderr: 'stderr-value', path: '/private/archive/secret-path',
+    url: 'https://private.invalid/secret-url', env: { TOKEN: 'credential-value' },
+  });
+  await assert.rejects(publishNpmRelease({ planPath: join(f.output, 'plan.json'), targets: ['linux-x64-gnu'], env: host, report: () => {},
+    execute: async (_npm, args) => {
+      assert.equal(args[0], 'view');
+      return { stdout: JSON.stringify({ name: row.name, version: row.version, dist: { integrity: row.integrity } }) };
+    }, fetcher: async () => { throw raw; },
+  }), error => {
+    assert.equal(error.stage, 'metadata'); assert.equal(error.reason, 'transport'); assert.equal(error.status, undefined);
+    assert.equal(error.cause, undefined); assert.equal(error.stdout, undefined); assert.equal(error.stderr, undefined);
+    for (const secret of secrets) {
+      assert.equal(JSON.stringify(error).includes(secret), false);
+      assert.equal(String(error.stack).includes(secret), false);
+    }
+    return true;
+  });
+});
+
+test('native metadata response body-read failures are distinct from invalid JSON and suppress raw errors', async t => {
+  const { f, plan } = await planned(t, '0.1.5', ['linux-x64-gnu']), { publishNpmRelease } = await publisher(), row = plan.packages[0];
+  const secret = 'PRIVATE_BODY_STREAM_SENTINEL';
+  const raw = new Error(secret);
+  await assert.rejects(publishNpmRelease({ planPath: join(f.output, 'plan.json'), targets: ['linux-x64-gnu'], env: host, report: () => {},
+    execute: async (_npm, args) => {
+      assert.equal(args[0], 'view');
+      return { stdout: JSON.stringify({ name: row.name, version: row.version, dist: { integrity: row.integrity } }) };
+    }, fetcher: async () => new Response(new ReadableStream({ start(controller) { controller.error(raw); } }), { status: 200 }),
+  }), error => {
+    assert.equal(error.stage, 'metadata'); assert.equal(error.reason, 'body-read'); assert.equal(error.status, undefined);
+    assert.equal(error.cause, undefined); assert.doesNotMatch(String(error), /PRIVATE_BODY_STREAM_SENTINEL/);
+    assert.doesNotMatch(String(error.stack), /PRIVATE_BODY_STREAM_SENTINEL/);
+    return true;
+  });
+  const receipt = await json(join(f.output, 'receipts.json'));
+  assert.equal(receipt.packages[0].outcome, 'already-published');
+  assert.equal(receipt.packages[0].registryByteVerified, undefined);
+});
+
+test('native metadata body consumption counts against the readiness deadline', async t => {
+  const { f, plan } = await planned(t, '0.1.5', ['linux-x64-gnu']), { publishNpmRelease } = await publisher(), row = plan.packages[0];
+  const clock = verificationClock(0.25);
+  let archiveRequests = 0;
+  const item = { name: row.name, version: row.version, dist: { integrity: row.integrity, tarball: 'https://registry.npmjs.org/archive/native' } };
+  await assert.rejects(publishNpmRelease({ planPath: join(f.output, 'plan.json'), targets: ['linux-x64-gnu'], env: host, report: () => {}, verification: clock,
+    execute: async (_npm, args) => {
+      assert.equal(args[0], 'view');
+      return { stdout: JSON.stringify({ name: row.name, version: row.version, dist: { integrity: row.integrity } }) };
+    }, fetcher: async url => {
+      if (String(url).includes('/archive/')) archiveRequests++;
+      return new Response(new ReadableStream({ pull(controller) {
+        clock.advance(120000);
+        controller.enqueue(new TextEncoder().encode(JSON.stringify(item)));
+        controller.close();
+      } }, { highWaterMark: 0 }), { status: 200 });
+    },
+  }), error => {
+    assert.equal(error.stage, 'metadata'); assert.equal(error.reason, 'deadline'); assert.equal(error.status, undefined);
+    return true;
+  });
+  assert.equal(clock.current(), 120000.25);
+  assert.equal(archiveRequests, 0);
+  const receipt = await json(join(f.output, 'receipts.json'));
+  assert.equal(receipt.packages[0].outcome, 'already-published');
+  assert.equal(receipt.packages[0].registryByteVerified, undefined);
+});
+
+test('native fresh upload exhaustion persists published without a verification flag or archive request', async t => {
+  const { f, plan } = await planned(t, '0.1.5', ['linux-x64-gnu']), { publishNpmRelease } = await publisher(), row = plan.packages[0];
+  const clock = verificationClock(0.25), calls = [], requests = [];
+  let uploads = 0;
+  await assert.rejects(publishNpmRelease({ planPath: join(f.output, 'plan.json'), targets: ['linux-x64-gnu'], env: host, report: () => {}, verification: clock,
+    execute: async (_npm, args) => {
+      calls.push(args);
+      if (args[0] === 'view') throw absent();
+      assert.equal(args[0], 'publish'); uploads++;
+      return { stdout: JSON.stringify([{ name: row.name, version: row.version, integrity: row.integrity }]) };
+    }, fetcher: async (url, options) => {
+      assert.ok(options.signal); assert.equal(options.redirect, 'error');
+      requests.push(String(url));
+      return new Response('{}', { status: 404 });
+    },
+  }), error => {
+    assert.equal(error.stage, 'metadata'); assert.equal(error.reason, 'not-found'); assert.equal(error.status, 404);
+    return true;
+  });
+  assert.deepEqual(calls.map(args => args[0]), ['view', 'publish']);
+  assert.equal(uploads, 1);
+  assert.equal(requests.length, 24);
+  assert.equal(requests.every(url => url === `https://registry.npmjs.org/${encodeURIComponent(row.name)}/${row.version}`), true);
+  assert.equal(requests.some(url => url.includes('/archive/')), false);
+  assert.deepEqual(clock.waits, Array(24).fill(5000));
+  const receipt = await json(join(f.output, 'receipts.json'));
+  assert.equal(receipt.packages.length, 1);
+  assert.equal(receipt.packages[0].outcome, 'published');
+  assert.equal(receipt.packages[0].registryByteVerified, undefined);
+});
+
+test('post-publication verification waits only for exact metadata 404 and reads the exact raw archive', async t => {
   const { f, plan } = await planned(t), { publishNpmRelease } = await publisher(), requests = [], calls = [];
   const fetcher = registryFetcher(plan), execute = async (_npm, args) => {
     calls.push(args);
@@ -288,12 +473,16 @@ test('post-publication verification reads exact version and raw archive, never p
   assert.equal(requests.filter(url => url.includes('/archive/')).length, 5);
   assert.equal(result.packages.filter(row => row.registryByteVerified).length, 5);
   requests.length = 0;
-  await assert.rejects(publishNpmRelease({ planPath: join(f.output, 'plan.json'), env: host, execute,
-    fetcher: async url => { requests.push(url); return new Response('{}', { status: 404 }); } }), /HTTP 404/);
-  assert.equal(requests.length, 1, 'an unavailable exact version is surfaced, never slept/retried');
+  const clock = verificationClock();
+  await assert.rejects(publishNpmRelease({ planPath: join(f.output, 'plan.json'), env: host, execute, verification: clock,
+    fetcher: async url => { requests.push(url); return new Response('{}', { status: 404 }); } }), error => {
+    assert.equal(error.stage, 'metadata'); assert.equal(error.reason, 'not-found'); assert.equal(error.status, 404); return true;
+  });
+  assert.equal(requests.length, 24, 'one missing package exhausts only its per-package visibility window');
+  assert.deepEqual(clock.waits, Array(24).fill(5000));
 });
 
-test('public verification cancels HTTP-error and oversized bodies without replacing the HTTP failure', async t => {
+test('public verification cancels non-404 HTTP-error and oversized bodies without replacing the HTTP failure', async t => {
   const { f, plan } = await planned(t), { publishNpmRelease } = await publisher(), row = plan.packages[0];
   const execute = async (_, args) => {
     const item = plan.packages.find(item => args[1] === `${item.name}@${item.version}`);
@@ -309,10 +498,14 @@ test('public verification cancels HTTP-error and oversized bodies without replac
         dist: { integrity: row.integrity, tarball: 'https://registry.npmjs.org/archive/' + row.target } });
       const stream = new ReadableStream({ start(controller) { controller.enqueue(new Uint8Array(kind === 'oversized' ? (expectedSize + 1) : 1)); },
         cancel() { cancelled++; if (kind === 'metadata') throw new Error('Cancellation must not replace HTTP failure'); } });
-      return new Response(stream, { status: kind === 'metadata' ? 404 : kind === 'archive' ? 503 : 200 });
+      return new Response(stream, { status: kind === 'metadata' ? 503 : kind === 'archive' ? 503 : 200 });
     };
-    await assert.rejects(publishNpmRelease({ planPath: join(f.output, 'plan.json'), env: host, execute, fetcher }),
-      kind === 'oversized' ? /Public registry archive differs/ : new RegExp(kind === 'metadata' ? 'HTTP 404' : 'HTTP 503'));
+    await assert.rejects(publishNpmRelease({ planPath: join(f.output, 'plan.json'), env: host, execute, fetcher }), error => {
+      assert.equal(error.stage, kind === 'metadata' ? 'metadata' : 'archive');
+      assert.equal(error.reason, kind === 'oversized' ? 'size-mismatch' : 'http-status');
+      assert.equal(error.status, kind === 'oversized' ? undefined : 503);
+      return true;
+    });
     assert.equal(cancelled, 1, kind);
     assert.equal((await json(join(f.output, 'receipts.json'))).packages.some(item => item.registryByteVerified), false);
   }
