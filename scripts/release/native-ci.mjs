@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { copyFile, mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, readFile, readdir, rename, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createHash } from 'node:crypto';
@@ -8,6 +8,7 @@ import { candidateTargets, daemonVersion, executableDigest, stageRelease } from 
 import { prepareNotices } from './native-notices.mjs';
 import { releaseRef, npmReleaseTag } from './version.mjs';
 import { enabledTargets, validateTargets } from './platforms.mjs';
+import { publishGitHubRelease as publishProductRelease } from './github-release.mjs';
 
 const run = promisify(execFile);
 export function assetName(version, target) {
@@ -125,45 +126,10 @@ export async function assembleRelease({ directory, tag, repository, commit, outp
   return metadata;
 }
 
-/** Reuse an existing release only after comparing every already-admitted asset; never repair it. */
-export async function publishGitHubRelease({root,directory,tag,repository,commit,env=process.env,execute=run}) {
-  identity(repository,commit);
-  const release=npmReleaseTag(tag);
-  if(release.product!=='occipital'||env.GITHUB_ACTIONS!=='true'||env.GITHUB_EVENT_NAME!=='push'||env.GITHUB_REF!=='refs/tags/'+tag
-    ||env.GITHUB_REPOSITORY!==repository||env.GITHUB_SHA!==commit||!env.GH_TOKEN)throw Error('GitHub publication requires the exact authenticated push-tag source');
-  const options={cwd:root,env,timeout:30000,maxBuffer:8*1024*1024};
-  for(const revision of ['HEAD',`refs/tags/${tag}^{commit}`]){
-    const result=await execute('git',['rev-parse','--verify','--end-of-options',revision],options);
-    if(result.stdout.trim()!==commit)throw Error('GitHub publication source/tag commit differs');
-  }
-  const names=(await readdir(directory)).sort(),files=new Map();
-  for(const required of ['native-release.json','NOTICE','LICENSE','SHA256SUMS'])if(!names.includes(required))throw Error('Missing admitted release assets');
-  for(const name of names)files.set(name,await readFile(join(directory,name)));
-  let lookup;
-  try{lookup=await execute('gh',['api','--include',`repos/${repository}/releases/tags/${encodeURIComponent(tag)}`],options);}
-  catch(error){if(!/^HTTP\/[\d.]+\s+\d{3}\b/.test(error.stdout??''))throw error;lookup=error;}
-  const text=lookup.stdout.replace(/\r\n/g,'\n'),status=/^HTTP\/[\d.]+\s+(\d{3})\b/.exec(text),split=text.indexOf('\n\n');
-  if(!status||split<0)throw Error('Invalid GitHub release lookup response');
-  if(status[1]==='404'){
-    const args=['release','create',tag,...names.map(name=>join(directory,name)),'--repo',repository,'--verify-tag','--draft',
-      '--title',`Occipital ${release.version}`,'--notes','Occipital-only release. Verified raw executables, notices, checksums and native-release.json. Native npm publication follows in the same CI pipeline.'];
-    if(release.prerelease)args.push('--prerelease');
-    await execute('gh',args,{...options,timeout:0});await execute('gh',['release','edit',tag,'--repo',repository,'--draft=false'],{...options,timeout:0});
-    return {status:'published',assets:names.length};
-  }
-  if(status[1]!=='200')throw Error('GitHub release lookup failed: HTTP '+status[1]);
-  const published=JSON.parse(text.slice(split+2));
-  if(published.tag_name!==tag||published.draft!==false||published.prerelease!==release.prerelease||!Array.isArray(published.assets))throw Error('Existing release is not the exact completed publication');
-  const remote=published.assets.map(asset=>asset.name).sort();
-  if(JSON.stringify(remote)!==JSON.stringify(names)||new Set(published.assets.map(asset=>asset.id)).size!==names.length)throw Error('Existing release asset inventory differs');
-  for(const asset of published.assets)if(!Number.isSafeInteger(asset.id)||asset.id<=0||asset.size!==files.get(asset.name).length)throw Error('Existing release asset size/identity differs');
-  const temporary=await mkdtemp(join(dirname(directory),'release-existing-'));
-  try{
-    await execute('gh',['release','download',tag,'--repo',repository,'--dir',temporary,'--pattern','*'],{...options,timeout:0});
-    if(JSON.stringify((await readdir(temporary)).sort())!==JSON.stringify(names))throw Error('Downloaded release asset inventory differs');
-    for(const[name,bytes]of files)if(!bytes.equals(await readFile(join(temporary,name))))throw Error('Existing published release bytes differ: '+name);
-  }finally{await rm(temporary,{recursive:true,force:true});}
-  return {status:'already-published',assets:names.length};
+/** Publish only the native product; the common publisher verifies authored notes and immutable assets. */
+export async function publishGitHubRelease(options) {
+  if (npmReleaseTag(options.tag).product !== 'occipital') throw new Error('Expected an Occipital release tag');
+  return publishProductRelease(options);
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {

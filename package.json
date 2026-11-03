@@ -35,6 +35,7 @@
     "docs/performance-testing.md",
     "docs/screenshots.md",
     "docs/releases.md",
+    "docs/changelog-format.md",
     "docs/assets/pi-tidy-ui.png",
     "docs/tool-summary-spec.md",
     "docs/bash-card-spec.md",
@@ -62,21 +63,26 @@
     "docs/syntax/follow-pi.md",
     "docs/syntax/palettes.md",
     "docs/occipital/README.md",
+    "docs/occipital/CHANGELOG.md",
     "docs/occipital/runtime.md",
     "docs/occipital/requests-and-resources.md",
     "docs/occipital/source-engine.md",
     "docs/occipital/assets.md",
     "docs/occipital/protocol.md",
     "README.md",
+    "CHANGELOG.md",
     "LICENSE"
   ],
   "pi": {
+    "changelogPath": "",
     "image": "https://raw.githubusercontent.com/chpock/pi-tidy-ui/main/docs/assets/pi-tidy-ui.png",
     "extensions": [
       "./src/index.ts"
     ]
   },
   "scripts": {
+    "changelog:check": "node scripts/release/release-notes.mjs check",
+    "release:notes": "node scripts/release/release-notes.mjs notes",
     "check": "node scripts/test/run.mjs --suite check",
     "test:prepare": "node scripts/test/prepare.mjs",
     "test": "node scripts/test/run.mjs --suite unit",

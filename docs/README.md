@@ -65,7 +65,8 @@ The protocol reference ships with this manual. Its six current conformance JSON 
 | [Settings and menu](settings-menu-spec.md) | Popup/service boundaries, preview/confirmation, file/token validation, serialized rename, cross-process watches and local versus persisted switches |
 | [Terminal defaults](terminal-colors-spec.md) | Fixed/automatic source eligibility, desired/applied OSC channels, concrete RGB projection, source failure, stop/start and process-exit ownership |
 | [Diagnostics and health](debug-logging-spec.md) | Independent observation/health/journal owners, safe metadata, bounded writer, retention, incidents, recovery and explicit controls |
-| [Delivery and releases](releases.md) | CI graph, supported targets, version/native-byte admission, staging, notices and exact-tag OIDC/provenance npm publication |
+| [Delivery and releases](releases.md) | CI graph, supported targets, version/native-byte admission, staging, notices, independent product changelogs and exact-tag publication |
+| [Changelog format](changelog-format.md) | Canonical Markdown validation, SemVer ordering, exact entry extraction and packaged-history projection |
 | [Performance framework](performance-testing.md) | Workload/input identities, subprocess containment, metrics, diagnostics, comparison and artifact semantics |
 | [README screenshots](screenshots.md) | Tracked offline demo, immutable Working frame, real Git workspace and terminal colors, actual foot/grim PNG capture on Hyprland, signal cleanup, prerequisites and explicit preview replacement |
 | [Testing](testing.md) | Fresh-clone provisioning, prepared inputs, bounded file jobs, diagnostic duration/RAM results, real integrations, containment and affected contract checks |
@@ -88,6 +89,7 @@ The protocol reference ships with this manual. Its six current conformance JSON 
 | How do reload, appearance Off, native Off and terminal stop differ? | [Host lifetimes](host-integration.md) → [provider transitions](syntax/providers.md) → [terminal channels](terminal-colors-spec.md) |
 | Where can I observe a failure, and what does that evidence prove? | [Extension health/journals](debug-logging-spec.md) or [daemon runtime/descriptor/counters](occipital/README.md) → the owning request/recovery contract |
 | How does an extension identify a script without a useful filename? | [Shebang provenance and aliases](syntax/shebang-hints.md) → [SOURCE grammar precedence](occipital/source-engine.md#language-selection) → [source-hint protocol revision](occipital/protocol.md#descriptor-and-metadata-operations) |
+| How do I record changes or prepare release notes for either product? | [Changelog workflow](releases.md#changelogs-and-release-notes) → [format](changelog-format.md) → [extension history](../CHANGELOG.md) / [Occipital history](occipital/CHANGELOG.md) |
 | What must change when grammar, vocabulary or rule interpretation changes? | [Native assets/identities](occipital/assets.md) → [wire compatibility](occipital/protocol.md) → [delivery](releases.md) → [validation](testing.md) |
 
 ## Boundaries of this manual

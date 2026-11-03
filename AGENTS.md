@@ -12,6 +12,8 @@ Examples: `feat: add terminal color synchronization`, `fix: preserve native edit
 
 Use `!` or a `BREAKING CHANGE:` footer to identify breaking changes.
 
+Before **every commit**, review the staged changes against the `Unreleased` sections in `CHANGELOG.md` (pi-tidy-ui) and `docs/occipital/CHANGELOG.md` (Occipital). Update each affected product's entry for user-visible changes, including compatibility and migration requirements; reuse an existing accurate entry rather than duplicating it. For internal/test-only changes, state why no entry is needed in the completion report. Run `npm run changelog:check`. For entry format, product boundaries, release preparation or release-note generation, follow [Changelogs and release notes](docs/releases.md#changelogs-and-release-notes).
+
 ## Delegation
 
 Subagents may be used when implementing tasks. Delegation is permitted, not required.

@@ -284,7 +284,7 @@ test('every executable workflow job has an explicit bounded timeout, including r
   }
   assert.deepEqual(timeouts, {
     'ci-checks.yml/checks': [10, 30], 'ci.yml/metadata': 5, 'ci.yml/result': 5,
-    'ci.yml/extension-package': 15,
+    'ci.yml/extension-package': 15, 'ci.yml/release-extension': 5,
     'occipital-npm-publish.yml/publish': 15, 'occipital-release.yml/publish': 10,
     'occipital.yml/build': 60, 'occipital-consumer.yml/consumer': 25,
   });
@@ -850,7 +850,10 @@ test('automatic GitHub publication reuses only an identical completed release an
   const tag='occipital-v0.2.0',repository='chpock/pi-tidy-ui',commit='b'.repeat(40);
   const bytes=new Map([['native-release.json',Buffer.from('{"version":"0.2.0","artifacts":[]}')],['NOTICE',Buffer.from('retained notices')],['LICENSE',Buffer.from('retained license')],['SHA256SUMS',Buffer.from('admitted checksum bytes')]]);
   for(const[name,value]of bytes)await writeFile(join(directory,name),value);
-  const base={tag_name:tag,draft:false,prerelease:false,assets:[...bytes].map(([name,value],index)=>({name,id:index+1,size:value.length}))};
+  const body='## [0.2.0] - 2026-10-25\n\n- Fixture release notes.\n';
+  await mkdir(join(root,'docs/occipital'),{recursive:true});
+  await writeFile(join(root,'docs/occipital/CHANGELOG.md'),'# Occipital\n\n## [Unreleased]\n\n'+body);
+  const base={tag_name:tag,name:'Occipital 0.2.0',body,draft:false,prerelease:false,assets:[...bytes].map(([name,value],index)=>({name,id:index+1,size:value.length}))};
   const env={GITHUB_ACTIONS:'true',GITHUB_EVENT_NAME:'push',GITHUB_REF:'refs/tags/'+tag,GITHUB_REPOSITORY:repository,GITHUB_SHA:commit,GH_TOKEN:'inert-not-a-credential'};
   async function attempt({status=200,release=base,alter,lookupError,sourceCommit=commit,...patch}={}){
     const mutations=[],reads=[];
@@ -877,6 +880,7 @@ test('automatic GitHub publication reuses only an identical completed release an
   const absent=await attempt({status:404});assert.equal(absent.error,undefined);assert.equal(absent.value.status,'published');assert.deepEqual(absent.mutations.map(args=>args[1]),['create','edit']);
   const identical=await attempt();assert.equal(identical.error,undefined);assert.equal(identical.value.status,'already-published');assert.deepEqual(identical.mutations,[]);
   for(const options of [{release:{...base,draft:true}},{release:{...base,tag_name:'occipital-v0.3.0'}},{release:{...base,prerelease:true}},
+    {release:{...base,body:'Changed public notes'}},{release:{...base,name:'Changed title'}},
     {release:{...base,assets:base.assets.slice(1)}},{release:{...base,assets:[...base.assets,{name:'extra',id:99,size:1}]}},
     {release:{...base,assets:[...base.assets,base.assets[0]]}},{release:{...base,assets:base.assets.map((value,index)=>index?value:{...value,size:999})}},
     {alter:{changed:'NOTICE'}},{alter:{missing:'LICENSE'}},{alter:{extra:true}},{status:403},{status:500},{lookupError:true},

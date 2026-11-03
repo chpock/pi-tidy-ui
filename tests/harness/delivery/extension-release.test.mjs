@@ -11,6 +11,7 @@ import { enabledTargets } from "../../../scripts/release/platforms.mjs";
 import { candidateTargets } from "../../../scripts/release/native-release.mjs";
 import { stageExtensionPackage } from "../../../scripts/release/extension-release.mjs";
 import * as extensionRelease from "../../../scripts/release/extension-release.mjs";
+import { extensionChangelog, releaseNotes } from '../../../scripts/release/changelog.mjs';
 import { stageRelease } from "../../../scripts/release/native-release.mjs";
 import { artifactName, assetName, assembleRelease } from "../../../scripts/release/native-ci.mjs";
 
@@ -19,12 +20,13 @@ const release = JSON.parse(await readFile(join(repo, 'tests/fixtures/occipital-r
 async function fixture(t) {
   const root = await mkdtemp(join(tmpdir(), 'extension-release-')); t.after(() => rm(root, { recursive: true, force: true }));
   await mkdir(join(root, 'src/occipital'), { recursive: true });
-  const manifest = { name: 'pi-tidy-ui', version: '0.0.0', type: 'module', files: ['src', 'README.md', 'LICENSE'],
+  const manifest = { name: 'pi-tidy-ui', version: '0.0.0', type: 'module', files: ['src', 'README.md', 'CHANGELOG.md', 'LICENSE'], pi: { changelogPath: '' },
     optionalDependencies: { '@cortexkit/subc-client': '0.21.1' } };
   await writeFile(join(root, 'package.json'), JSON.stringify(manifest));
   await writeFile(join(root, 'package-lock.json'), '{"version":"0.0.0","packages":{}}');
   await writeFile(join(root, 'README.md'), 'Fixture package, not release evidence.\n'); await writeFile(join(root, 'LICENSE'), 'MIT\n');
   await writeFile(join(root, 'src/occipital/release.ts'), await readFile(join(repo, 'src/occipital/release.ts')));
+  await writeFile(join(root, 'CHANGELOG.md'), '# pi-tidy-ui\n\n## [Unreleased]\n\n## [0.2.0] - 2026-11-03\n\n- Fixture extension release.\n');
   return { root, manifest, output: join(root, 'disposable-package') };
 }
 
@@ -72,7 +74,7 @@ test('generated extension packs its own version and native declaration without r
     { cwd: f.output, timeout: 30000, maxBuffer: 1024 * 1024 });
   const records = JSON.parse(stdout), result = Array.isArray(records) ? records[0] : Object.values(records)[0];
   assert.equal(result.name, 'pi-tidy-ui'); assert.equal(result.version, '0.2.0');
-  assert.deepEqual(result.files.map(file => file.path).sort(), ['LICENSE', 'README.md', 'package.json', 'src/occipital/release.ts']);
+  assert.deepEqual(result.files.map(file => file.path).sort(), ['CHANGELOG.md', 'LICENSE', 'README.md', 'package.json', 'src/occipital/release.ts']);
 });
 
 async function preparedFamily(t) {
@@ -232,4 +234,31 @@ test('extension target configuration and malformed disabled declarations fail be
   malformed.artifacts.find(record => record.target === 'windows-arm64-msvc').sha256 = 'invalid';
   await assert.rejects(stageExtensionPackage({ ...f, version: '0.2.0', release: malformed }));
   await assert.rejects(stat(f.output), { code: 'ENOENT' });
+});
+
+
+test('generated stable and prerelease archives expose the same current release notes and explicit Pi tracking policy', async t => {
+  const history = '# Changes\n\n## [Unreleased]\n\n' +
+    '## [0.2.0] - 2026-11-03\n\n- STABLE_ONLY.\n\n' +
+    '## [0.2.0-rc.2] - 2026-11-02\n\n- PREVIEW_ONLY.\n\n' +
+    '## [0.1.1] - 2026-10-26\n\n- PAST_STABLE.\n';
+  for (const version of ['0.2.0', '0.2.0-rc.2']) {
+    const f = await fixture(t), changelog = extensionChangelog(history, version, release.version);
+    const before = await readFile(join(f.root, 'package.json'));
+    const manifest = await stageExtensionPackage({ ...f, version, release, changelog });
+    assert.equal(manifest.pi.changelogPath, version.includes('-') ? '' : './CHANGELOG.md');
+    assert.equal(await readFile(join(f.output, 'CHANGELOG.md'), 'utf8'), changelog);
+    assert.ok(changelog.includes(releaseNotes(history, version, release.version)));
+    assert.ok(!changelog.includes('[Unreleased]'));
+    assert.equal(changelog.includes('PREVIEW_ONLY'), version.includes('-'));
+    assert.equal(changelog.includes('STABLE_ONLY'), !version.includes('-'));
+    assert.deepEqual(await readFile(join(f.root, 'package.json')), before);
+    const { stdout } = await run(process.platform === 'win32' ? 'npm.cmd' : 'npm', ['pack', '--ignore-scripts', '--json'],
+      { cwd: f.output, timeout: 30000, maxBuffer: 1024 * 1024 });
+    const [packed] = JSON.parse(stdout), archive = join(f.output, packed.filename);
+    const { stdout: archived } = await run('tar', ['-xOf', archive, 'package/CHANGELOG.md'], { timeout: 30000 });
+    assert.equal(archived, changelog);
+    const { stdout: packageJSON } = await run('tar', ['-xOf', archive, 'package/package.json'], { timeout: 30000 });
+    assert.equal(JSON.parse(packageJSON).pi.changelogPath, manifest.pi.changelogPath);
+  }
 });

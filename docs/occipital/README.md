@@ -14,6 +14,7 @@ The daemon does not execute source, read the files named by source hints, select
 | What can a generic rule definition express? | [Application protocol](protocol.md) |
 | Where do grammar assets, scope IDs and fingerprints come from? | [Assets and maintenance](assets.md) |
 | How is a binary built, selected and distributed? | [Release delivery](../releases.md) |
+| What changed in a helper version? | [Occipital changelog](CHANGELOG.md) and [independent release-note workflow](../releases.md#changelogs-and-release-notes) |
 
 The protocol reference is the exact source for wire fields, advertised limits, numeric interpretation and operation semantics. Source paths are checkout-relative. The manual is packaged; source, test harness and conformance fixtures require a repository checkout.
 

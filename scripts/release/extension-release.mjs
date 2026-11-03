@@ -9,6 +9,8 @@ import { enabledTargets, validateTargets } from './platforms.mjs';
 import { assetName, assembleRelease } from './native-ci.mjs';
 import { releaseRef, nearestDaemonTag } from './version.mjs';
 import { validatePublicRelease } from './npm-release.mjs';
+import { extensionChangelog, loadChangelog } from './changelog.mjs';
+import { releasedEntry } from './release-notes.mjs';
 
 const run = promisify(execFile), npm = process.platform === 'win32' ? 'npm.cmd' : 'npm';
 const publicRegistry = ['--registry=https://registry.npmjs.org', '--@kchpock:registry=https://registry.npmjs.org'];
@@ -38,7 +40,7 @@ function checkedDeclaration(input, targets = enabledTargets()) {
 }
 
 /** Stage only package inputs. Production callers first use prepareExtensionRelease's release/raw-hash admission. */
-export async function stageExtensionPackage({ root, output, version, release, targets = enabledTargets() }) {
+export async function stageExtensionPackage({ root, output, version, release, changelog, targets = enabledTargets() }) {
   targets = validateTargets(targets);
   if (typeof version !== 'string') throw new Error('Expected a real npm extension version');
   const extension = releaseRef(`refs/tags/pi-tidy-ui-v${version}`);
@@ -47,6 +49,9 @@ export async function stageExtensionPackage({ root, output, version, release, ta
   const metadata = { version: declared.version, artifacts: declared.artifacts.filter(record => targets.includes(record.target)) };
   const source = JSON.parse(await readFile(join(root, 'package.json'), 'utf8'));
   if (source.version !== '0.0.0' || !source.name || !Array.isArray(source.files)) throw new Error('Expected the unmodified development package manifest');
+  if (changelog !== undefined && (typeof changelog !== 'string' || !changelog.trim() || !source.files.includes('CHANGELOG.md'))) {
+    throw new Error('Expected generated release changelog and an included CHANGELOG.md');
+  }
   for (const field of ['dependencies', 'optionalDependencies', 'devDependencies']) {
     if (Object.keys(source[field] ?? {}).some(name => name.startsWith('@kchpock/occipital-'))) throw new Error('Native pins must not be committed to repository manifests');
   }
@@ -56,9 +61,11 @@ export async function stageExtensionPackage({ root, output, version, release, ta
   // A fresh destination prevents accidental reuse of another version's files or lockfile.
   await mkdir(output);
   for (const path of source.files) await cp(join(root, path), join(output, path), { recursive: true });
-  const manifest = { ...source, version, optionalDependencies: { ...source.optionalDependencies } };
+  const manifest = { ...source, version, optionalDependencies: { ...source.optionalDependencies },
+    pi: { ...source.pi, changelogPath: changelog !== undefined && !extension.prerelease ? './CHANGELOG.md' : '' } };
   for (const target of targets) manifest.optionalDependencies[`@kchpock/occipital-${target}`] = metadata.version;
   await writeFile(join(output, 'package.json'), JSON.stringify(manifest, null, 2) + '\n');
+  if (changelog !== undefined) await writeFile(join(output, 'CHANGELOG.md'), changelog);
   await writeFile(join(output, 'src/occipital/release.ts'), template.replace(marker,
     `export const NATIVE_RELEASE: NativeReleaseDeclaration | undefined = ${JSON.stringify(metadata, null, 2)};`));
   return manifest;
@@ -109,6 +116,8 @@ export async function prepareExtensionRelease({ root, ref, commit, directory, pu
   const exact = (await git(['rev-parse', '--verify', '--end-of-options', `${ref}^{commit}`])).stdout.trim();
   const head = (await git(['rev-parse', 'HEAD'])).stdout.trim();
   if (!/^[a-f0-9]{40}$/.test(commit) || exact !== commit || head !== commit) throw new Error('Expected the exact checked-out extension release commit');
+  const history = await loadChangelog(root, 'pi-tidy-ui');
+  releasedEntry(history, extension.version);
   const daemon = await nearestDaemonTag(root, ref);
   const published = await json(join(publicDirectory, 'release.json')); validatePublicRelease(published, daemon.tag);
   const declaration = checkedDeclaration(await json(join(publicDirectory, 'native-release.json')), targets);
@@ -158,7 +167,8 @@ export async function prepareExtensionRelease({ root, ref, commit, directory, pu
     }
   }
   const packageDirectory = join(output, 'extension');
-  await stageExtensionPackage({ root, output: packageDirectory, version: extension.version, release: declaration, targets });
+  await stageExtensionPackage({ root, output: packageDirectory, version: extension.version, release: declaration,
+    changelog: extensionChangelog(history, extension.version, daemon.version), targets });
   const plan = { ref, commit, version: extension.version, daemonTag: daemon.tag, release: selected, packageDirectory };
   await writeFile(join(output, 'plan.json'), JSON.stringify(plan, null, 2) + '\n');
   return plan;

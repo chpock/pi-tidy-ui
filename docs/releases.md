@@ -35,7 +35,7 @@ Published artifacts/tags remain immutable, including existing Windows ARM64 bina
 | Ref | CI version substitution | Publication |
 | --- | --- | --- |
 | Branch / pull request | Extension remains `0.0.0`; daemon uses the nearest reachable `occipital-v*` version | None |
-| `pi-tidy-ui-v0.2.0` | Extension release version; daemon uses the nearest reachable `occipital-v*` version | Admitted npm tarball published through OIDC with required provenance and exact public-byte verification |
+| `pi-tidy-ui-v0.2.0` | Extension release version; daemon uses the nearest reachable `occipital-v*` version | Admitted npm tarball published through OIDC with required provenance and exact public-byte verification, followed by a notes-only GitHub Release |
 | `occipital-v0.1.0` | Only the daemon Cargo manifest/lock entry, **before compilation** | Occipital GitHub Release, followed automatically by native npm publication |
 
 Tags must contain a complete SemVer version. Prerelease tags such as `occipital-v0.1.0-rc.1` produce prereleases. CI substitutions affect disposable checkouts, not repository commits or dependency versions. The npm package is named `pi-tidy-ui` and the command is `/tidy-ui`; tags select versions without changing these identities.
@@ -115,6 +115,7 @@ Every runner job has an explicit `timeout-minutes`; matrix entries each receive 
 | GitHub Release assembly and publication | 10 |
 | Automatic native npm publication | 15 |
 | Extension release admission, packing and npm publication | 15 |
+| Post-npm extension GitHub release notes | 5 |
 
 The unit/SDK/GC step also has a five-minute limit within its ten-minute job. Current-source and extension-release-only published-consumer steps have fifteen minutes each within the twenty-five-minute platform/Node consumer job; npm commands have a five-minute bound, not relaxed native source/classification deadlines. Time limits are configured bounds, not evidence that required jobs passed. Expiry stops the process or cancels the job; it does not bypass assertions or trigger a successful retry. Job execution timeouts do not bound waiting for a runner. Interrupted release publication can leave a draft; the existing inspection/no-overwrite rule below still applies.
 
@@ -135,20 +136,20 @@ The release workflow checks every enabled platform artifact's source commits, ve
 
 The common `NOTICE` preserves each distinct platform inventory byte-for-byte and labels its covered targets; identical complete inventories appear once. Native npm packages retain their own platform `NOTICE`. This layout is used by `0.1.3` and subsequent releases; earlier published assets remain unchanged.
 
-If absent, it creates a draft, uploads all files, then publishes it. A retry may reuse an already-published release only when tag/prerelease identity, exact asset names/sizes and every raw asset byte match the newly admitted same-source assembly; that branch performs no remote mutation. Drafts, changed/missing/extra assets and lookup/download failures stop publication without repair or overwrite. After a failed draft upload, inspect it before an explicitly authorized cleanup/rerun. It uses the job-scoped `GITHUB_TOKEN` with `contents: write`, not an npm token. Do not move published tags.
+If absent, it creates a draft, uploads all files, then publishes it. A retry may reuse an already-published release only when tag/prerelease identity, title, changelog-derived body, exact asset names/sizes and every raw asset byte match the newly admitted same-source assembly; that branch performs no remote mutation. Drafts, changed/missing/extra assets and lookup/download failures stop publication without repair or overwrite. After a failed draft upload, inspect it before an explicitly authorized cleanup/rerun. It uses the job-scoped `GITHUB_TOKEN` with `contents: write`, not an npm token. Do not move published tags.
 
 Creating/pushing a tag is a separate operator action. The tag-triggered workflows do not create tags, commit version changes or update `src/occipital/release.ts`. An Occipital tag automatically publishes its admitted native npm packages after GitHub Release success; it never publishes the extension. Extension release admission downloads/verifies the selected public family and generates its exact `NATIVE_RELEASE` only in the disposable package, independently of the extension's version and repository placeholders.
 
 ## Extension release preparation
 
-On an extension push tag, `extension-package` runs only after native, unit/SDK and physical CLI gates. It fetches the selected completed public release, compares current executables for every enabled platform and validates the declared public registry payloads, and stages the package only after every check passes. Changed bytes, missing assets, incomplete npm versions or a malformed nearest tag fail instead of choosing an older release. The same job packs and publishes exactly that admitted archive through OIDC with mandatory provenance; `Complete CI result` requires this job, including public-byte verification, to succeed. No extension GitHub Release, new workflow, extra build or Actions upload is introduced. Local preparation alone does not publish or grant authority. The preparation command takes explicit current/public artifact directories:
+On an extension push tag, `extension-package` runs only after native, unit/SDK and physical CLI gates. It fetches the selected completed public release, compares current executables for every enabled platform and validates the declared public registry payloads, and stages the package only after every check passes. Changed bytes, missing assets, incomplete npm versions or a malformed nearest tag fail instead of choosing an older release. The same job packs and publishes exactly that admitted archive through OIDC with mandatory provenance; `Complete CI result` requires this job, including public-byte verification, to succeed. After verified npm publication, the separate `release-extension` job creates a notes-only GitHub Release from the same exact source/tag. It has only `contents: write`; npm's job retains only its existing read/OIDC permissions. The final CI result requires both jobs. No extra build, tarball upload or Actions artifact is introduced. Local preparation alone does not publish or grant authority. The preparation command takes explicit current/public artifact directories:
 
 ```sh
 SOURCE_COMMIT=FULL_EXTENSION_COMMIT node scripts/release/extension-release.mjs \
   refs/tags/pi-tidy-ui-vVERSION CI_ARTIFACTS PUBLIC_ASSETS NEW_OUTPUT
 ```
 
-`PUBLIC_ASSETS` includes the public release assets and `release.json` from the GitHub API. `CI_ARTIFACTS` contains every enabled platform's same-commit `occipital-vVERSION-TARGET` directories. The ref must resolve to the checked-out source commit. The generated package directory and `plan.json` are disposable release artifacts, not source files.
+`PUBLIC_ASSETS` includes the public release assets and `release.json` from the GitHub API. `CI_ARTIFACTS` contains every enabled platform's same-commit `occipital-vVERSION-TARGET` directories. The ref must resolve to the checked-out source commit. The generated package directory and `plan.json` are disposable release artifacts, not source files. Release preparation also requires the exact dated extension changelog entry, generates the packaged history and adds the selected Occipital dependency version. Lower-level synthetic staging without generated history keeps automatic changelog tracking disabled; it is not a release preparation shortcut.
 
 ### Extension npm publication
 
@@ -196,3 +197,126 @@ A staged version already occupies its package/version identity and cannot be pub
 [Release and platform validation](testing.md#release-and-platform-validation) contains local commands and the distinction between inert packaging tests, actual ABI/runtime checks and authorized public-consumer verification. The workflow's mandatory gates and immutable-artifact rules above are delivery behavior, not evidence that a particular run succeeded.
 
 The installed Pi/Node host remains an independent prerequisite. In particular, [official Node 25+ Linux binaries require `libatomic`](https://github.com/nodejs/node/blob/v26.7.0/BUILDING.md#official-binary-platforms-and-toolchains), supplied by the host distribution rather than by Occipital.
+
+## Changelogs and release notes
+
+### One history per product
+
+The canonical histories are [`CHANGELOG.md`](../CHANGELOG.md) for pi-tidy-ui and
+[`docs/occipital/CHANGELOG.md`](occipital/CHANGELOG.md) for Occipital. They use the
+[restricted Keep a Changelog format](changelog-format.md): one first `Unreleased`
+section, followed by dated, unique, descending SemVer entries; entry subsections
+use H3. Published baselines are extension 0.1.1 and helper 0.2.0. Earlier history
+has not been reconstructed, and tag existence alone is not evidence of publication.
+The native history is documentation, not an input to compiled-native source identity.
+
+During each task, add user-visible changes to the affected product's `Unreleased`.
+Use `Added`, `Changed`, `Deprecated`, `Removed`, `Fixed`, `Security` and an explicit
+`Breaking changes` section as applicable; omit empty categories. State necessary
+upgrade/downgrade actions and compatibility changes. Describe effects, not commit
+subjects or internal test execution. When a change affects both products, describe
+each product's effect in its own history. Internal refactors and test-only fixes
+need no duplicate user-facing entry. Conventional Commits and the Git diff are
+completeness aids, not an automatic substitute for reviewed release prose.
+
+Before every commit, review the staged changes against both histories, update or
+reuse the relevant entry, and run:
+
+```sh
+npm run changelog:check
+```
+
+`AGENTS.md` makes this a commit prerequisite. CI's metadata job independently
+validates both histories and the development manifest before any build/publication.
+Format checks cannot determine whether prose accurately covers the staged change;
+that remains an author/reviewer responsibility. Use absolute URLs in entries so
+links remain meaningful outside the repository.
+
+### Preparing a release
+
+1. Review the selected product's `Unreleased` against changes since its previous
+   **published tag in the same family**. Do not compare against the other product's
+   version or infer publication from the largest tag.
+2. Choose that product's version explicitly. Turn its reviewed `Unreleased` body
+   into `## [VERSION] - YYYY-MM-DD` with the release's calendar date, and add a new
+   empty `## [Unreleased]` above it. Do not change the other product's pending body,
+   repository `0.0.0` manifests/lockfiles or generated native pins. Never rewrite
+   previously published entries to describe new behavior.
+3. Validate and preview the exact notes **before** requesting a tag:
+
+   ```sh
+   npm run changelog:check
+   node scripts/release/release-notes.mjs check refs/tags/occipital-vVERSION
+   npm run release:notes -- occipital-vVERSION
+   # For an extension release, use pi-tidy-ui-vVERSION instead.
+   ```
+
+   The tag-specific check requires that product's exact nonempty dated entry and
+   empty `Unreleased`; it never publishes pending changes as a substitute. It does
+   not choose or create a tag. Extension note generation also reads the nearest
+   reachable Occipital tag from the checked-out source and appends its exact
+   dependency version/link. Shared services remain selected by protocol
+   compatibility, so this identifies the packaged helper rather than promising
+   that every runtime uses that exact helper process. The generated
+   `### Occipital dependency` section must not be authored by hand.
+4. Obtain authorization for the release commit/tag/push. If native bytes changed,
+   finish the matching Occipital GitHub/npm release before the extension tag. The
+   existing native-byte and public npm admission barriers still apply.
+
+`npm run release:notes -- PRODUCT-TAG` writes the selected entry to stdout; it
+neither edits files nor creates GitHub drafts. Both tag families reject development
+`0.0.0` and npm-incompatible `+build` versions. Prerelease SemVer is supported, and
+versions remain independent. Selecting a backport entry does not change the rule
+that the release source/tag and admitted artifact bytes must match exactly.
+
+### Publication and immutable retries
+
+`github-release.mjs` is the common GitHub boundary. It checks authenticated push-tag
+authority, local HEAD and tag commit, admitted notes and applicable asset bytes.
+Occipital's existing publication wrapper uses the selected native entry instead
+of generic packaging text. Its executable/NOTICE/LICENSE/metadata/checksum assets
+and subsequent npm pipeline are unchanged.
+
+An extension tag first completes its current npm admission, OIDC/provenance upload
+and public-byte verification. Only then does `release-extension` publish the
+extension entry as a GitHub Release, with the same generated native-version footer
+used in the npm changelog. It attaches no extra archive or diagnostic assets and
+sets `--latest=false` both when creating the draft and when publishing it: GitHub's
+publish PATCH otherwise defaults to marking the newly public release Latest. The
+repository-wide badge remains with the independent native release stream. Neither
+stream resolves releases by that badge.
+
+A missing release is created as a draft and made public after creation completes.
+Existing releases are reused only after checking their tag, prerelease state,
+title and notes (normalizing line endings/trailing newlines), and every admitted
+asset where applicable. Changed public notes, assets, incomplete drafts and API
+failures stop without editing or replacing an existing release. If npm succeeds
+but the extension notes job fails, the overall result fails; inspect the partial
+public state, then rerun only the failed job with the identical source. No automatic
+republish, tag movement, cleanup or adoption of a different artifact occurs.
+
+### Packaged history and Pi's update view
+
+Source/development `package.json` sets `pi.changelogPath` to `""` because its version
+remains `0.0.0`. A release archive includes `CHANGELOG.md`, projected from its own
+canonical history: no `Unreleased`, no future entries, and exactly the generated
+current entry/native dependency footer used for GitHub. Historical entries retain
+their authored text, not today's dependency version. The helper's independent
+history also ships as documentation; it is not a second Pi extension package.
+
+Stable release staging enables `pi.changelogPath: "./CHANGELOG.md"` and includes
+only stable historical entries. Pi 1.5 compares only numeric version components;
+prerelease staging therefore keeps the complete eligible history in the archive
+but leaves automatic tracking disabled. Prerelease notes remain readable in the
+package and on GitHub. Older supported Pi versions do not gain a custom popup or
+new runtime hook from this metadata.
+
+Pi 1.5's native behavior is authoritative: a package must load an extension; the
+first detection only records its version; newer entries appear on a subsequent
+fresh launch, not a resumed session. `collapseChangelog` condenses the display.
+`/changelog` shows Pi's own history, not extension histories. A separately updated
+Occipital service has no independent Pi notice. The first changelog-enabled release
+may merely establish Pi's baseline, so breaking-change instructions must also be
+available in the repository/GitHub notes; update popups are not migration enforcement.
+No extra extension UI, persisted version database, timers or startup rendering is
+introduced.
