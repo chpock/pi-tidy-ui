@@ -24,6 +24,12 @@ The peak is **additional** storage while old data may still exist. Replacing a s
 
 Not all resource counters are this budget. Controller bookkeeping and physical request/frame/workspace reservations have their own bounded authorities. Native service credits and transcript-row retention are different again. A low source-entry count is not proof that all of those liabilities are gone.
 
+## Card construction and compact read owners
+
+Card construction participates in this existing geometry/logical-data authority. An expanded read includes its returned text and row-descriptor contribution in the construction peak before joining text parts or allocating a full prepared view. Its small path/argument envelope is not a substitute for that returned-data charge. Refusal publishes no body and invokes no stock read renderer as an escape; only bounded bookkeeping can remain. No separate read-specific quota is introduced.
+
+A compact read owns its summary, not a prepared result body. Collapse releases full display/measurement/paint receipts and syntax demand while the Pi component keeps its original saved result. Host-owned Image payloads/conversion caches remain outside these text-storage claims. See [read ownership](../read-card-spec.md#preparation-retention-and-refusal) and [prepared-card construction](prepared-cards.md).
+
 ## Latest text, acknowledged basis and displayed text
 
 A source entry can hold three snapshots:

@@ -18,6 +18,7 @@ import { matchesKey } from '@earendil-works/pi-tui';
 import { observeSyntaxLocalWork, observeSyntaxCards, observePiPaletteWork } from './syntax-local-work.ts';
 import { syntaxSuspendProbe } from './syntax-suspend-probe.ts';
 import { registerCaptureProducer } from './terminal-capture.mjs';
+import { observeDeferredNativePreparation } from './presentation-driver.ts';
 
 export default function syntaxDriver(pi: ExtensionAPI) {
   const output = process.env.TIDY_UI_TEST_OUTPUT!, binary = process.env.TIDY_UI_TEST_OCCIPITAL_BIN!;
@@ -32,6 +33,7 @@ export default function syntaxDriver(pi: ExtensionAPI) {
     mkdirSync(preferences, { recursive: true }); writeFileSync(join(preferences, 'config.json'), process.env.TIDY_UI_TEST_SYNTAX_CONFIG);
   }
   const record = createEventRecorder(output);
+  const restoreNativePreparation = process.env.TIDY_UI_TEST_NATIVE_PREPARATION === '1' ? observeDeferredNativePreparation(record) : undefined;
   const suspendProbe = process.env.TIDY_UI_TEST_SUSPEND_PROBE === '1' ? syntaxSuspendProbe(output, record) : undefined;
   const localWork = observeSyntaxLocalWork();
   const paletteWork = process.env.TIDY_UI_TEST_PALETTE_OBSERVE === '1' ? observePiPaletteWork() : undefined;
@@ -123,7 +125,7 @@ export default function syntaxDriver(pi: ExtensionAPI) {
       notify.call(ctx.ui, message, level);
     };
   });
-  tidyUi(pi, { logging: process.env.TIDY_UI_TEST_RUNTIME_HEALTH === '1' ? false : undefined, syntax(ctx: ExtensionContext) {
+  const ready = tidyUi(pi, { logging: process.env.TIDY_UI_TEST_RUNTIME_HEALTH === '1' ? false : undefined, syntax(ctx: ExtensionContext) {
     counts.constructions++;
     const options = createSyntaxOptions(ctx, release), acquire = options.provider.acquireOwned;
     return { ...options, provider: { ...(process.env.TIDY_UI_TEST_SYNTAX_SHARED === '1' ? { clock } : {}),
@@ -238,7 +240,7 @@ export default function syntaxDriver(pi: ExtensionAPI) {
       writeFileSync(join(output, 'syntax-shutdown.json'), JSON.stringify(snapshot(), null, 2));
     } finally {
       stopCapture?.(); stopCapture = undefined; captureClient = undefined;
-      cardObservations?.restore(); localWork.restore(); paletteWork?.restore();
+      cardObservations?.restore(); localWork.restore(); paletteWork?.restore(); restoreNativePreparation?.();
       SyntaxRuntime.prototype.attach = attached; SourceController.prototype.capturePiSource = captured;
       SourceController.prototype.adoptPiFlat = bridged;
       SyntaxClient.prototype.snapshot = clientSnapshot; globalThis.fetch = fetch;
@@ -249,4 +251,5 @@ export default function syntaxDriver(pi: ExtensionAPI) {
       for (const timer of timers.keys()) clearTimeout(timer); timers.clear();
     }
   });
+  return ready;
 }

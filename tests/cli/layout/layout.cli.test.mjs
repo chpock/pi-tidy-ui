@@ -31,7 +31,7 @@ test('real CLI: component-owned layout work counters and released retained memor
       assert.equal(stats.presentationRetainedBytes, stats.retainedBytes + stats.footerLayout.retainedBytes);
       assert.equal(stats.presentationEntries, stats.entries + stats.footerLayout.entries);
       assert.equal(stats.presentationRows, stats.rows + stats.footerLayout.rows);
-      assert.deepEqual(Object.keys(stats.byKind).sort(), ['summary', 'bash', 'edit', 'write', 'user', 'queued'].sort());
+      assert.deepEqual(Object.keys(stats.byKind).sort(), ['summary', 'bash', 'edit', 'write', 'read', 'user', 'queued'].sort());
       for (const key of memory) assert.equal(stats.byKind.queued[key], 0, 'no queued layouts exist in this completed-transcript control');
       for (const group of ['ordinary', 'cards']) {
         assert.deepEqual(Object.keys(stats[group]).sort(), [...numeric, 'byKind'].sort());
@@ -87,16 +87,21 @@ test('real CLI: component-owned layout work counters and released retained memor
       await bashScreenStyle(wide, 'CACHE_OUTPUT_7_0010_ASCII_PAYLOAD', 'toolOutput', 'toolPendingBg');
       let { stats: previous } = await observe(live, 'warm');
       assert.equal('limitBytes' in previous, false, 'legacy launch budget does not reintroduce eviction');
-      assert.equal(previous.byKind.summary.entries, 2); assert.equal(previous.byKind.user.entries, 1);
+      assert.equal(previous.byKind.summary.entries, 2);
+      assert.equal(previous.byKind.read.entries, 0, 'compact reads retain summaries, not prepared source layouts');
+      assert.equal(previous.byKind.user.entries, 1);
       assert.equal(previous.byKind.bash.entries, 8);
       assert.equal(previous.ordinary.entries, 3); assert.equal(previous.cards.entries, 8);
       assert.equal(wide.users.length, 1, 'one actual user message joins the ten custom tool components');
-       assert.equal(previous.entries, 11, 'one latest layout per eight bash, two compact tools and one user card; hidden contributes none');
+      assert.equal(previous.entries, 11, 'one latest layout per eight bash cards, two compact reads and one user card; hidden contributes none');
       assert.ok(previous.retainedBytes > 0 && previous.builds >= 11);
       for (const name of ['frame-one', 'frame-two', 'frame-three']) {
         const { dump, stats } = await observe(live, name);
         delta(previous, stats, 0, name);
         assert.equal(stats.entries, 11); assert.equal(stats.retainedBytes, previous.retainedBytes);
+        assert.equal(stats.byKind.summary.entries, 2, `${name}: both compact read summaries remain warm`);
+        assert.equal(stats.byKind.summary.retainedBytes, previous.byKind.summary.retainedBytes);
+        assert.equal(stats.byKind.read.entries, 0, 'warm compact reads prepare no source layouts');
         assert.deepEqual(dump.tools.map((tool) => tool.lines), wide.tools.map((tool) => tool.lines));
         identity(dump, wide); previous = stats;
       }
@@ -188,9 +193,10 @@ test('real CLI: component-owned layout work counters and released retained memor
       allBashCards(measured.dump); identity(measured.dump, wide); previous = measured.stats;
       const clear = await observe(live, 'clear', '/tidy-ui cache clear');
       assert.equal(clear.stats.entries, 0); assert.equal(clear.stats.retainedBytes, 0);
+      assert.equal(clear.stats.byKind.summary.entries, 0, 'clear releases both compact read summaries');
       assert.equal(clear.stats.builds, previous.builds, 'clear releases data before any next-frame builds');
       measured = await observe(live, 'clear-cold'); delta(previous, measured.stats, 11, 'clear causes exactly one on-demand rebuild per custom tool/user component');
-      assert.equal(measured.stats.entries, 11); identity(measured.dump, wide);
+      assert.equal(measured.stats.entries, 11); assert.equal(measured.stats.byKind.summary.entries, 2); identity(measured.dump, wide);
 
       const session = wide.session;
       const native = await start('cache-performance-native', { session, workspace: live.work });
@@ -201,12 +207,13 @@ test('real CLI: component-owned layout work counters and released retained memor
       await native.close();
       await live.appearance(false); const off = await observe(live, 'off');
       assert.equal(off.stats.entries, 0); assert.equal(off.stats.retainedBytes, 0);
+      assert.equal(off.stats.byKind.summary.entries, 0, 'Appearance Off releases compact read summaries');
       const nativeRows = off.dump.tools.map((tool) => tool.lines);
       assert.deepEqual(off.dump.tools.map((tool) => tool.lines), nativeLive.tools.map((tool) => tool.lines),
         'off restores the original same-live native bodies byte-for-byte, including real unpersisted timing');
       await live.appearance(true); const on = await observe(live, 'on-cold');
       assert.equal(on.stats.builds, 11, 'new controller starts cold and builds ten tool bodies plus one user card once');
-      assert.equal(on.stats.entries, 11); identity(on.dump, wide);
+      assert.equal(on.stats.entries, 11); assert.equal(on.stats.byKind.summary.entries, 2); identity(on.dump, wide);
       assert.deepEqual(on.dump.tools.map((tool) => tool.lines), wide.tools.map((tool) => tool.lines));
       const onWarm = await observe(live, 'on-warm'); delta(on.stats, onWarm.stats, 0, 'reenabled steady frames');
       await live.appearance(false); const offAgain = await live.capture('pointer-cache-off-again');

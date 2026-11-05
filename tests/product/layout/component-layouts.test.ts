@@ -44,17 +44,20 @@ test("component layout entries survive count and byte pressure without eviction"
 test("component layout statistics attribute rows and estimated bytes by presentation kind", () => {
   const cache = new RenderCache();
   const summary = cache.put({ rows: ["abc", "def"] }, ["abc", "def"], "summary");
+  const read = cache.put({ rows: ["read"] }, ["read"], "read");
   const user = cache.put({ rows: ["user"] }, ["user"], "user");
   const stats = cache.stats();
-  assert.equal(stats.entries, 2); assert.equal(stats.rows, 3);
-  assert.equal(stats.stringBytes, 20);
+  assert.equal(stats.entries, 3); assert.equal(stats.rows, 4);
+  assert.equal(stats.stringBytes, 28);
   assert.equal(stats.retainedBytes, stats.stringBytes + stats.overheadBytes);
   assert.equal(stats.byKind.summary.entries, 1); assert.equal(stats.byKind.summary.rows, 2);
+  assert.equal(stats.byKind.read.entries, 1); assert.equal(stats.byKind.read.rows, 1);
   assert.equal(stats.byKind.user.entries, 1); assert.equal(stats.byKind.user.rows, 1);
   for (const key of ["entries", "rows", "retainedBytes", "stringBytes", "overheadBytes"] as const)
     assert.equal(stats[key], Object.values(stats.byKind).reduce((total, item) => total + item[key], 0));
   cache.drop(summary); cache.drop(summary);
-  assert.equal(cache.stats().entries, 1, "release is idempotent");
+  assert.equal(cache.stats().entries, 2, "release is idempotent");
+  assert.equal(cache.get(read)?.rows[0], "read");
   assert.equal(cache.get(user)?.rows[0], "user");
   cache.clear();
 });

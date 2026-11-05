@@ -1,6 +1,7 @@
 import { Text, type Component, type TuiMouseEvent, type TuiMouseEventResult } from '@earendil-works/pi-tui';
 import {
   createEditToolDefinition,
+  createReadToolDefinition,
   createWriteToolDefinition,
   type ToolRendererResolver,
   type ToolRenderers,
@@ -12,13 +13,17 @@ type CallContext = Parameters<CallRenderer>[2];
 type ResultContext = Parameters<ResultRenderer>[3];
 type RenderContext = CallContext | ResultContext;
 type Slot = 'call' | 'result';
+type NativeFileTool = 'read' | 'write' | 'edit';
 export type NativeRendererFailureOutcome = 'failure' | 'recovered' | 'released';
 type RendererFailureOutcome = NativeRendererFailureOutcome;
-export type NativeRendererFailureReporter = (owner: object, tool: 'write' | 'edit', slot: Slot, outcome: NativeRendererFailureOutcome) => void;
+export type NativeRendererFailureReporter = (owner: object, tool: NativeFileTool, slot: Slot, outcome: NativeRendererFailureOutcome) => void;
 type RendererFailureReporterProvider = () => NativeRendererFailureReporter | undefined;
 
+const stockRead = createReadToolDefinition('.');
 const stockWrite = createWriteToolDefinition('.');
 const stockEdit = createEditToolDefinition('.');
+export const stockReadCall = stockRead.renderCall;
+export const stockReadResult = stockRead.renderResult;
 export const stockWriteCall = stockWrite.renderCall;
 export const stockWriteResult = stockWrite.renderResult;
 export const stockEditCall = stockEdit.renderCall;
@@ -26,7 +31,7 @@ export const stockEditResult = stockEdit.renderResult;
 
 interface RendererOwner {
   readonly id: string;
-  readonly tool: 'write' | 'edit';
+  readonly tool: NativeFileTool;
   readonly rendererState: Record<string, unknown>;
   call?: DeferredRenderer;
   result?: DeferredRenderer;
@@ -44,6 +49,7 @@ interface RendererOwner {
 
 const owners = new WeakMap<object, Owner>();
 const deferredFilePairs = new WeakMap<Function, Function>();
+const deferredReadPairs = new WeakMap<Function, Function>();
 const deferredEditComponents = new WeakSet<object>();
 
 function shadowState(): Record<string, unknown> { return {}; }
@@ -59,7 +65,7 @@ class Owner implements RendererOwner {
   callInner?: Component;
   resultInner?: Component;
   readonly id: string;
-  readonly tool: 'write' | 'edit';
+  readonly tool: NativeFileTool;
   private readonly reporter: RendererFailureReporterProvider;
   private readonly failures = new Set<Slot>();
   private preparedCall?: DeferredRenderer;
@@ -67,7 +73,7 @@ class Owner implements RendererOwner {
   private preparing = false;
   args: CallContext['args'];
 
-  constructor(id: string, tool: 'write' | 'edit', reporter: RendererFailureReporterProvider, args: CallContext['args']) {
+  constructor(id: string, tool: NativeFileTool, reporter: RendererFailureReporterProvider, args: CallContext['args']) {
     this.id = id; this.tool = tool; this.reporter = reporter; this.args = args;
   }
 
@@ -208,7 +214,7 @@ export class DeferredRenderer implements Component {
   }
 }
 
-function ownerFor(context: RenderContext, tool: 'write' | 'edit', reporter: RendererFailureReporterProvider, args: CallContext['args']): Owner {
+function ownerFor(context: RenderContext, tool: NativeFileTool, reporter: RendererFailureReporterProvider, args: CallContext['args']): Owner {
   const state = context.state;
   if (state === null || (typeof state !== 'object' && typeof state !== 'function'))
     throw new TypeError('Pi tool renderer state must be an object');
@@ -221,7 +227,7 @@ function ownerFor(context: RenderContext, tool: 'write' | 'edit', reporter: Rend
   return owner;
 }
 
-function callFailure(toolName: 'write' | 'edit'): Component {
+function callFailure(toolName: NativeFileTool): Component {
   return new Text(`[Native ${toolName} preview unavailable]`, 0, 0);
 }
 
@@ -237,7 +243,7 @@ function nativeContextFields(context: RenderContext, owner: Owner): Omit<RenderC
 
 function deferredCall(
   owner: Owner,
-  toolName: 'write' | 'edit',
+  toolName: NativeFileTool,
   renderer: CallRenderer,
   theme: Parameters<CallRenderer>[1],
   context: CallContext,
@@ -272,9 +278,9 @@ function deferredResult(
 
 export function createLazyNativeRendererResolver(reporter: RendererFailureReporterProvider = () => undefined): ToolRendererResolver {
   return (toolName, next) => {
-    if (toolName !== 'write' && toolName !== 'edit') return next();
+    if (toolName !== 'read' && toolName !== 'write' && toolName !== 'edit') return next();
     const base = next();
-    const stock = toolName === 'write' ? stockWrite : stockEdit;
+    const stock = toolName === 'read' ? stockRead : toolName === 'write' ? stockWrite : stockEdit;
     if (!base || !stock.renderCall || !stock.renderResult ||
       base.renderCall !== stock.renderCall || base.renderResult !== stock.renderResult) return base;
 
@@ -291,6 +297,7 @@ export function createLazyNativeRendererResolver(reporter: RendererFailureReport
       return deferredResult(owner, resultRenderer, result, options, theme, context);
     };
     deferredFilePairs.set(renderCall, renderResult);
+    if (toolName === 'read') deferredReadPairs.set(renderCall, renderResult);
     return { ...base, renderCall, renderResult };
   };
 }
@@ -304,6 +311,10 @@ export function updateNativeRendererArgs(state: unknown, tool: string, id: strin
 export function releaseNativeRendererCache(state: unknown): void {
   if (state === null || (typeof state !== 'object' && typeof state !== 'function')) return;
   owners.get(state as object)?.evict();
+}
+
+export function isDeferredStockReadPair(call: unknown, result: unknown): boolean {
+  return typeof call === 'function' && typeof result === 'function' && deferredReadPairs.get(call) === result;
 }
 
 export function isDeferredStockFilePair(call: unknown, result: unknown): boolean {

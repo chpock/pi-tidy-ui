@@ -1,7 +1,7 @@
 import type { DataCleanupReceipt } from './occipital/data-budget.ts';
 
 /** Component state owns rendered data; this module keeps only weak accounting records. */
-export const LAYOUT_KINDS = ["summary", "bash", "edit", "write", "user", "queued"] as const;
+export const LAYOUT_KINDS = ["summary", "bash", "edit", "write", "read", "user", "queued"] as const;
 export type LayoutKind = typeof LAYOUT_KINDS[number];
 export interface LayoutMemory {
   retainedBytes: number;

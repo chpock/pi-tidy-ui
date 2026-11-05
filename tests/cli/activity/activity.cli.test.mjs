@@ -176,7 +176,7 @@ for (const mode of ['regular', 'fullscreen']) test(`real CLI: spinner shares Wor
     } finally { await closeTerminals(terminals.reverse()); }
   });
 
-test('real CLI: gated pending/streaming, image/hidden fallback and exact-name flags',
+test('real CLI: gated pending/streaming, owned read images, hidden fallback and exact-name flags',
   { timeout: 120000 }, async (t) => {
     assert.ok(existsSync(extension), 'src/index.ts is required for the implementation gate');
     const terminals = [];
@@ -208,8 +208,12 @@ test('real CLI: gated pending/streaming, image/hidden fallback and exact-name fl
       const native = await start('fallback-stock-replay', { session: fallback.session });
       const stock = await native.capture('fallback');
       await native.close();
-      await t.test('image fallback matches same-session stock replay', () => {
-        assert.deepEqual(byName(fallback, 'read').at(-1).lines, byName(stock, 'read').at(-1).lines, 'image rendering stays native');
+      await t.test('image read stays compact and preserves same-session data', () => {
+        const image = byName(fallback, 'read').at(-1), nativeImage = byName(stock, 'read').at(-1);
+        assert.equal(lines(image).length, 1, 'collapsed image read has only its owned summary');
+        assert.match(lines(image)[0], /^ → read .*pixel\.png$/u);
+        assert.deepEqual(image.args, nativeImage.args, 'presentation preserves saved read arguments');
+        assert.deepEqual(image.content, nativeImage.content, 'presentation preserves the saved image result');
         assert.ok(fallback.screen.some((line) => line.includes('pixel.png')));
       });
       await t.test('intentionally hidden renderer remains hidden live', () => {
@@ -218,10 +222,12 @@ test('real CLI: gated pending/streaming, image/hidden fallback and exact-name fl
         assert.ok(!fallback.screen.some((line) => line.includes('tidy_ui_hidden')));
       });
       const card = await start('flag-card', { tidyUi: true,
-        flags: ['--tidy-ui-card', 'tidy_ui_unknown,tidy_ui_stream'], session: fallback.session });
+        flags: ['--tidy-ui-card', 'tidy_ui_unknown,tidy_ui_stream,read'], session: fallback.session });
       const cards = await card.capture('cards');
       for (const name of ['tidy_ui_unknown', 'tidy_ui_stream'])
         assert.deepEqual(byName(cards, name)[0].lines, byName(stock, name)[0].lines, `comma-separated card flag: ${name}`);
+      assert.deepEqual(byName(cards, 'read').at(-1).lines, byName(stock, 'read').at(-1).lines,
+        'explicit native-read policy preserves the complete same-session stock image card');
       await card.close();
       assert.equal(card.closed, true, 'completed card variant is reaped before independent flag overrides');
       const override = await start('flag-override', { tidyUi: true,
@@ -231,7 +237,8 @@ test('real CLI: gated pending/streaming, image/hidden fallback and exact-name fl
       await t.test('hidden safeguard wins over flags on replay', () => {
         assert.equal(lines(byName(overrides, 'tidy_ui_hidden')[0]).length, 0, 'hidden safeguard wins over flags');
       });
-      assert.deepEqual(byName(overrides, 'read').at(-1).lines, byName(stock, 'read').at(-1).lines, 'image safeguard wins over flags');
+      assert.deepEqual(byName(overrides, 'read').at(-1).lines, byName(fallback, 'read').at(-1).lines,
+        'compact read policy wins over native policy for images too');
       await override.close();
       const exact = await start('flag-exact', { tidyUi: true,
         flags: ['--tidy-ui-card', 'tidy_ui_strea,READ'], session: fallback.session });

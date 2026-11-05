@@ -1,8 +1,8 @@
 # Shebang-derived source hints
 
-A shebang can select a grammar when a successful `edit` or `write` card exposes the file's first source line. The extension recognizes a reviewed interpreter spelling and sends the resulting canonical format through the existing `hint.language` field. The protocol describes only a requested language; it does not know whether the caller obtained that value from a shebang or another source. No interpreter is executed, and Occipital never searches source text for a shebang.
+A shebang can select a grammar when a successful `read`, `edit` or `write` card exposes the file's first source line. The extension recognizes a reviewed interpreter spelling and sends the resulting canonical format through the existing `hint.language` field. The protocol describes only a requested language; it does not know whether the caller obtained that value from a shebang or another source. No interpreter is executed, and Occipital never searches source text for a shebang.
 
-The wire interpretation is versioned by [`source_hint_revision`](../occipital/protocol.md#descriptor-and-metadata-operations). This chapter owns the client alias table and when the hint is attached; [the Occipital source engine](../occipital/source-engine.md) owns grammar precedence and parser state.
+The wire interpretation is versioned by [`source_hint_revision`](../occipital/protocol.md#descriptor-and-metadata-operation). This chapter owns the client alias table and when the hint is attached; [the Occipital source engine](../occipital/source-engine.md) owns grammar precedence and parser state.
 
 ## Where the first line comes from
 
@@ -12,6 +12,7 @@ The saved card coordinates are authoritative:
 
 - For a numbered patch, `old=1` and `next=1` independently identify the first lines of the old and new file. A context row can identify line 1 on both sides. A hunk beginning at line 8 cannot.
 - For supplied `write` content, `next=1` identifies its first file line.
+- For expanded `read`, the saved returned slice must begin at file line1. Detect only its original first text row when the effective offset is1; the first returned row at offset>1 is not provenance, even if it starts with `#!`. Compact read performs no body/shebang preparation.
 - Each side's detected format is attached as `hint.language` to every prepared source fragment for that side, including fragments after omitted ranges. A gap interrupts parser text continuity, not the identity of the file whose grammar is being selected.
 
 If exactly one side yields a recognized shebang, its canonical format is assigned to both sides: the side without a recognized shebang is treated as having the same format. If both sides yield recognized shebangs, keep their formats independent. If neither does, no explicit language is supplied and Occipital can use the filename path. This is a producer decision about the versions being compared, not a protocol-level shebang fallback.

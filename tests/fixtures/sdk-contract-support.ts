@@ -1,6 +1,6 @@
 import "./test-guard.mjs";
 import { Container, Text, type TuiMouseEvent } from "@earendil-works/pi-tui";
-import { CustomEditor, createEditToolDefinition, createWriteToolDefinition, type ExtensionAPI, type ExtensionContext, type ToolRendererResolver, type ToolRenderers } from "@earendil-works/pi-coding-agent";
+import { CustomEditor, createEditToolDefinition, createReadToolDefinition, createWriteToolDefinition, type ExtensionAPI, type ExtensionContext, type ToolRendererResolver, type ToolRenderers } from "@earendil-works/pi-coding-agent";
 import tidyUi, { installTidyUi as installHost, type TidyUiOptions } from "../../src/index.ts";
 import type { SyntaxRuntimeOptions } from "../../src/syntax/runtime.ts";
 import { createLazyNativeRendererResolver } from "../../src/syntax/lazy-native-renderers.ts";
@@ -36,16 +36,18 @@ export class Root extends Container {
 }
 
 const resolveStockFileRenderers = createLazyNativeRendererResolver();
-type PublicFileToolDefinition = ReturnType<typeof createWriteToolDefinition> | ReturnType<typeof createEditToolDefinition>;
-export function resolvePublicFileToolDefinition(name: 'write' | 'edit', definition?: unknown, cwd?: string): PublicFileToolDefinition | ToolRenderers | undefined;
+type PublicFileToolDefinition = ReturnType<typeof createReadToolDefinition> | ReturnType<typeof createWriteToolDefinition> | ReturnType<typeof createEditToolDefinition>;
+export function resolvePublicFileToolDefinition(name: 'read' | 'write' | 'edit', definition?: unknown, cwd?: string): PublicFileToolDefinition | ToolRenderers | undefined;
 export function resolvePublicFileToolDefinition(name: string, definition?: unknown, cwd?: string): unknown;
 export function resolvePublicFileToolDefinition(name: string, definition?: unknown, cwd = '/tmp'): unknown {
-  if (name !== 'write' && name !== 'edit') return definition;
-  const base = definition ?? (name === 'write' ? createWriteToolDefinition(cwd) : createEditToolDefinition(cwd));
+  if (name !== 'read' && name !== 'write' && name !== 'edit') return definition;
+  const base = definition ?? (name === 'read' ? createReadToolDefinition(cwd)
+    : name === 'write' ? createWriteToolDefinition(cwd) : createEditToolDefinition(cwd));
   return resolveStockFileRenderers(name, () => base as ToolRenderers) ?? base;
 }
-export function rawStockFileToolRenderers(name: 'write' | 'edit', cwd = '/tmp'): ToolRenderers {
-  const definition = name === 'write' ? createWriteToolDefinition(cwd) : createEditToolDefinition(cwd);
+export function rawStockFileToolRenderers(name: 'read' | 'write' | 'edit', cwd = '/tmp'): ToolRenderers {
+  const definition = name === 'read' ? createReadToolDefinition(cwd)
+    : name === 'write' ? createWriteToolDefinition(cwd) : createEditToolDefinition(cwd);
   if (!definition.renderCall || !definition.renderResult) throw new Error(`Pi ${name} stock renderer pair is incomplete`);
   return { renderCall: definition.renderCall as ToolRenderers['renderCall'], renderResult: definition.renderResult as ToolRenderers['renderResult'] };
 }

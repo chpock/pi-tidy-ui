@@ -2,7 +2,7 @@
 
 The presentation pipeline converts already supplied Pi data into terminal rows without changing tool execution, model text or session records. Its central rule is to keep **source meaning, geometry, paint and surrounding composition separate**. A change in one need not invalidate the others.
 
-[Host integration](host-integration.md#presentation-dispatch) selects a presenter and owns hooks. This chapter explains the common representation and reuse model. Exact visible behavior belongs to [summaries](tool-summary-spec.md), [Bash](bash-card-spec.md), [edit](edit-card-spec.md), [write](write-card-spec.md), [user/queued messages](user-queued-cards.md), [editor](editor.md) and [footer](footer-spec.md).
+[Host integration](host-integration.md#presentation-dispatch) selects a presenter and owns hooks. This chapter explains the common representation and reuse model. Exact visible behavior belongs to [summaries](tool-summary-spec.md), [Bash](bash-card-spec.md), [read](read-card-spec.md), [edit](edit-card-spec.md), [write](write-card-spec.md), [user/queued messages](user-queued-cards.md), [editor](editor.md) and [footer](footer-spec.md).
 
 ## The representation pipeline
 
@@ -30,7 +30,7 @@ Pi arguments / result / saved metadata / native rendered rows
                                                 native Pi composition/output
 ```
 
-Not every arrow runs on every render. Saved-file preview/full selection happens before the chosen view is normalized or admitted for syntax preparation; Bash continues to display the complete latest command. File/Bash input and syntax preparation happen through owned useful-work updates outside render; a normal warm visit consumes their prepared state. User/editor projection deliberately calls the native renderer on the appropriate cold/live path because native Markdown and editing behavior remain authoritative.
+Not every arrow runs on every render. Write/edit preview/full selection happens before the chosen view is normalized or admitted for syntax preparation; compact read contributes no body, while explicit expansion supplies its saved result text; Bash continues to display the complete latest command. File/Bash input and syntax preparation happen through owned useful-work updates outside render; a normal warm visit consumes their prepared state. User/editor projection deliberately calls the native renderer on the appropriate cold/live path because native Markdown and editing behavior remain authoritative.
 
 The stored representations have distinct purposes:
 
@@ -55,6 +55,8 @@ There is no universal “sanitize and wrap” operation. Each input has a differ
 | Compact arguments | Select bounded raw grapheme prefixes, sanitize and serialize a bounded logical description | Structural punctuation and selected argument meanings; not complete source/output |
 | Bash / queued plain blocks | Strip terminal sequences, normalize CR/CRLF to LF, remove unsafe terminal/bidi controls; retain logical newlines and indentation | Complete supplied text, joining marks and tabs until display layout |
 | Saved file rows | Select the requested full or bounded raw source window, then normalize line endings while iterating selected rows; sanitize text and keep logical tabs/positions | Supplied hunk boundaries and omitted-source gaps; no file reread; preview rows beyond the selected prefix |
+| Expanded read text | Prepare saved result text parts as one plain file-code view, starting at the supplied valid offset | Returned notices and text; no reconstruction of missing source, no body preparation while compact |
+| Read image rows | Borrow current public host Image output at useful content width, preserving opaque protocol/empty reservation rows | Host image IDs, conversion and width-cache ownership; no syntax measurement or retained payload copy |
 | Native user rows | Ask native Markdown to render at a paired width, then remove known padding | Native transformations, syntax/link ANSI and interior blank rows |
 | Native editor rows | Native wrapping first, sentinel-delimited projection and cursor-safe column slices | Editing state, semantic inverse/selection and cursor marker; not a replacement editor |
 | Footer producer statuses | Keep opaque producer ANSI and fit/pack whole entries, isolating boundaries | Producer content, not parsed native-footer output |
@@ -88,7 +90,7 @@ Transcript Output padding is independent of native user Markdown padding, Editor
 | `frameRows` | Styled strings whose cell width still needs checking, plus panel/stripe paint callbacks | Add top/bottom rows, measure visible widths, reject overflow, frame each row and restore enclosing panel paint after standalone SGR 0/49 resets |
 | `frameMeasuredRow` | A fully painted child row and an already known valid cell count | Frame/pad that one row without scanning its ANSI or reopening parent paint across its explicit child resets |
 
-User/queued projections use the first contract. Prepared Bash/edit/write output in `src/syntax/card-layout.ts` uses the second, explicitly producing top/bottom and body rows with prepared roles. Its child painter already paints complete cells, including diff/neutral surfaces. Reinterpreting that ANSI in the frame would duplicate work and could overwrite intentional child backgrounds.
+User/queued projections use the first contract. Prepared Bash/read/edit/write output in `src/syntax/card-layout.ts` uses the second, explicitly producing top/bottom and body rows with prepared roles. Its child painter already paints complete cells, including diff/neutral surfaces. Reinterpreting that ANSI in the frame would duplicate work and could overwrite intentional child backgrounds.
 
 Neither API truncates oversized body text to make a caller error disappear. Measured framing validates a safe integer cell count within its allocation; generic framing checks actual visible width. The common outer shell resets inherited background before the stripe and leaves exterior spaces unpainted. Panel hit tests are component-local and require the adapter to subtract any outside transcript separator.
 
@@ -104,7 +106,7 @@ A component's weak-keyed state owns its latest layout entry. The summary memo in
 
 User rows additionally depend on native text, padding, Markdown-child identity/theme/transformers and paint callbacks. Queued preparation depends on text, width, Output padding, paint and the last-card hint; screen height only selects already-prepared rows. The editor does not participate in these retained-row caches.
 
-### Prepared Bash/edit/write scenes
+### Prepared Bash/read/edit/write scenes
 
 The live adapter reads `syntax.visit(...)`, which validates the current prepared display and paint. It compares the previous retained scene against width, padding, expansion and `geometryStamp`:
 
@@ -113,6 +115,8 @@ The live adapter reads `syntax.visit(...)`, which validates the current prepared
 3. If only paint changed, paint the same scene with the new complete ready publication.
 4. If geometry changed, construct a new scene from measured data and paint it.
 5. Publish a candidate only after the outer prepared-card visit succeeds and the adapter remains active.
+
+Read image blocks are composed outside the retained prepared text rows. Their opaque protocol and literal empty reservation rows bypass text framing/measurement, with only safe anchor positioning. Pi's current Image instances own their data/cache; the block can change after public image settings without invalidating or rebuilding saved text. See [read images](read-card-spec.md#images-a-host-owned-opaque-block).
 
 A scene is the width-dependent layout, not a retained parser. Source/style/geometry funding can be refused or genuinely evicted under the separate logical-data authority even though rendered-layout accounting has no LRU policy. If a valid selected file view cannot be funded, it remains an owned bounded limitation presentation rather than falling through to hidden stock preparation; genuine unsupported full metadata and other documented native exceptions still use the native renderer. Missing syntax within an accepted view uses the ready palette's neutral role and does not fabricate permission for duplicate classification.
 
@@ -137,6 +141,8 @@ Outside transcript separators are not retained inside a body. Parent/index edges
 For files, `fileMeasure` in `src/index.ts` first uses an exact retained scene when available. Otherwise it derives fallback height from the same owned selected layout as `fileCard`: bounded preview, full view, unavailable-preview row, funded pending/error detail, or a bounded limitation after funding refusal. Only genuine native cases (including unsupported explicitly full metadata) call native rows for visibility. A non-inline accepted file mode needs only the framed/multiline classification; no source rows need reflow. An inline heading needs an exact height, so the adapter temporarily reflows its existing heading measurement and disposes that temporary result immediately. Failed/currentness-rejected visits do not publish a measurement.
 
 This is not an extra height cache, a source-classification retry or another body admission. It exists because separation needs “one row versus multiline” and sometimes heading height, not a freshly painted diff.
+
+Read's stock constructor spacer is not an image spacer and is not borrowed into the owned body. A hidden foreign read is skipped like any other hidden predecessor, whether compact or explicitly expanded. Its unknown self-shell visibility can still require native rendering; exact stock read does not need that probe.
 
 The next tool owns any required outside separator. A completed compact body with no separator can return its retained array directly; adding a separator or replacing an animated prefix can allocate a small composition array. Exact separation/interaction rules are in [summaries](tool-summary-spec.md#6-separation-and-visibility) and [frame hit testing](card-frame-spec.md).
 
@@ -169,6 +175,10 @@ The source identity and measured glyphs remain. The syntax layer resolves only m
 ### New Bash suffix
 
 The full latest normalized command becomes current display geometry. Only a validated scalar-prefix-compatible historical basis can color its matching prefix; the proof uses UTF-8 source bytes and belongs to the current revision. New text remains visible even while classification is waiting. That historical paint is display continuity, never evidence that a parser checkpoint or lease can be resumed. See [Bash streaming](bash-streaming-contract.md).
+
+### Read collapse
+
+Full read and compact summary are different representations, not a clipping flag over a retained full source. Collapse releases owned full display/geometry/paint and demand while keeping the original result in Pi. Warm compact frames neither scan that saved body nor render its images. Reopening prepares current saved text; host image lifetime remains independent.
 
 ### Removal or failed candidate
 

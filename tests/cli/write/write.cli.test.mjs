@@ -163,6 +163,18 @@ for (const shape of [false, true]) test(`real CLI: write cards ${shape ? 'repres
       assert.match(failure, /Tool error:/u);
       assert.match(failure, /EISDIR/u);
     };
+    const assertReadExpansion = (dump, expectedRows, reference, label) => {
+      const readIndex = dump.tools.findIndex(tool => tool.name === 'read');
+      assert.ok(readIndex >= 0, `${label}: saved read remains present`);
+      const read = dump.tools[readIndex];
+      assert.deepEqual(read.args, { path: 'a.txt', limit: 1 }, `${label}: read arguments remain exact`);
+      const rows = lines(read).map(plain);
+      assert.ok(rows.some(row => row.includes('→ Read a.txt')), `${label}: owned Read heading is visible`);
+      assert.ok(rows.some(row => row.includes('READ_A_CONTENT')), `${label}: full saved read text is visible`);
+      assert.deepEqual(persisted(dump), persisted(reference), `${label}: expansion leaves saved arguments/results unchanged`);
+      assert.deepEqual(toolLines({ tools: dump.tools.filter((_, index) => index !== readIndex) }),
+        expectedRows.filter((_, index) => index !== readIndex), `${label}: all non-read rows retain their exact native/custom comparison`);
+    };
     let nativeControl, nativeTerminal, darkPanel;
     try {
       const stock = await start('native'); nativeTerminal = stock; await run(stock); nativeControl = await stock.capture('pointer-write-native');
@@ -226,7 +238,7 @@ for (const shape of [false, true]) test(`real CLI: write cards ${shape ? 'repres
         assertExpandedWriteError(expanded.tools[4]);
         assert.deepEqual(toolLines(expanded).filter((_, index) => index !== 4), expectedExpanded.filter((_, index) => index !== 4),
           'unrelated native tools and successful saved-data cards retain exact Pi/custom expansion');
-      } else assert.deepEqual(toolLines(expanded), expectedExpanded, 'global expansion keeps Pi behavior for unrelated/native tools and custom full saved-data cards');
+      } else assertReadExpansion(expanded, expectedExpanded, liveFirst, 'live global expansion');
       live.send('\x0f'); await live.settle(); await check(await captureReady(live, 'pointer-write-recollapsed'));
       let exportAttempts = [];
       const beforeExport = deferredNativePreparation(live);
@@ -362,7 +374,7 @@ for (const shape of [false, true]) test(`real CLI: write cards ${shape ? 'repres
         const regularOn = await captureReady(regular, 'pointer-write-regular-on');
         assert.deepEqual(toolLines(regularOn), toolLines(regularExpanded), 'regular native-to-owned recovery preserves the currently expanded full file view');
         assert.equal(deferredNativePreparation(regular).attempts.filter(event => event.epoch === regularEpoch).length, regularOffAttemptCount, 'regular native-to-owned recovery adds no stock callbacks');
-      } else assert.deepEqual(toolLines(regularExpanded), expectedRegularExpanded, 'Ctrl+O expands supported file cards without changing unrelated native renderer output');
+      } else assertReadExpansion(regularExpanded, expectedRegularExpanded, liveFirst, 'regular global expansion');
       assert.deepEqual(readFileSync(liveFirst.session), bytes);
       writeFileSync(join(artifacts, `${scenario}-coverage.json`), JSON.stringify({
         actualStockExecuted: !shape, installedAFTExecuted: false, calls: count, results: count, modelContexts: count + 1,

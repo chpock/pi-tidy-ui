@@ -52,13 +52,15 @@ Consider a newly completed successful **full-view** `write` with path `demo.ts`,
 6. **Publish one coherent card.** Once the selected palette input and all source styles required by this card are available, `CardSources` exposes an accepted ready presentation. The common layout/painter combines it with color-free measurements, fits rows for the current width and adds the frame. A final borrowed-visit validity check precedes publication of the candidate rows. An obsolete source/palette/owner cannot commit a partly valid view. Multi-source edit panes use the same rule for the whole card, without blocking independent cards.
 7. **Reuse or release the right layer.** An unchanged terminal visit returns the latest body rows. A width change reflows stored measurements; a palette change reuses source and geometry and rematerializes retained styles locally, requesting STYLE only for missing expressions. Switching between bounded preview and full file view changes the selected source/display and can require cold preparation of newly exposed text; a same-view hidden-suffix replacement does not. Removal releases component presentation ownership and unregisters source work; outstanding physical work still settles according to its transport/cleanup contract.
 
+Read uses the same file pipeline, but begins body preparation only on explicit expansion and takes source from saved result text rather than submitted write arguments. It has no diff or latest-ten membership. Collapse releases its derived full representation while retaining the saved result. Host-owned images are borrowed as opaque rows outside the text/geometry cache, not reconstructed by the syntax service. See the [read contract](read-card-spec.md).
+
 The selected-file-view and complete representation paths are in [rendering](rendering.md), [edit](edit-card-spec.md#metadata-and-scope), [write](write-card-spec.md#saved-source-and-classification), and [prepared cards](syntax/prepared-cards.md). [Client requests](syntax/requests.md) and [native requests/resources](occipital/requests-and-resources.md) explain the two sides of step 4. [Follow Pi](syntax/follow-pi.md), [owned palette preparation](syntax/palettes.md) and the [color model](color-model.md) own step 5's exact algorithms.
 
 ## Why these boundaries exist
 
 | Principle | Consequence and reason |
 |---|---|
-| Presentation is not execution | Tool execution, definitions, saved/model data and results stay authoritative. For an exact deferred stock write/edit pair, a supported owned file view may defer stock presentation-only highlighting, diff/preflight and result formatting until a genuine native path; it never changes execution or reads a file. Foreign callbacks remain untouched and have no zero-work guarantee. |
+| Presentation is not execution | Tool execution, definitions, saved/model data and results stay authoritative. For an exact deferred stock read/write/edit pair, a supported owned file view may defer stock presentation-only highlighting, diff/preflight and result formatting until a genuine native path; it never changes execution or reads a file. Foreign callbacks remain untouched and have no zero-work guarantee. |
 | Source is theme-independent | SOURCE returns semantic contexts, not final terminal colors. Recoloring must not reopen parser leases or reparse unchanged text. |
 | One full-stack style resolver | Rust resolves one shared semantic definition and independent font properties. TypeScript binds either public Pi inputs or owned palette data and paints validated literal styles instead of implementing a second scope matcher. |
 | Desired work is not ready paint | One complete ready card generation can remain visible during a replacement. This avoids mixed edit panes and unnecessary neutral flashes; it proves nothing about an unsettled parser job. |
@@ -78,7 +80,7 @@ These are design constraints, not claims that every constant is uniquely optimal
 | Pi process | Local appearance/logging flags; two applied terminal-default values and owner-free exit cleanup | No component, UI adapter or session runtime survives reload through these process cells |
 | Session runtime | Settings/watch services, Git snapshot, health and journal observers, popup owner, syntax service composition | Old callbacks retain their old epoch/observer and cannot publish into a successor session |
 | Installed presentation adapter | Hooks/slots, weak component records, `CardSources` consumer | Full removal/reinstallation may allocate fresh source keys and occasionally repeat classification; ordinary redraw/Off-within-source does not erase execution evidence |
-| Card/source owner | Current selected preview/full display, classification demand/version, measured geometry, ready presentation | Current demand and historical display are separate; appearance changes do not prove SOURCE completion |
+| Card/source owner | Current selected preview/full display (no body for compact read), classification demand/version, measured geometry, ready presentation | Current demand and historical display are separate; appearance changes do not prove SOURCE completion |
 | Local syntax storage | Budget grants and shared charges, text/range captures, context leases, styles, concrete ready payloads | Attribution, last reference and actual funded-storage release are separate events |
 | Occipital process | Bundled grammar assets/vocabulary, workers, process credits and generic rule preparation | It owns no palette catalogue, selected theme or palette-file access |
 | Native route | Worker affinity and route-scoped source leases | Client UI owner identity is not the route or the external parser lease token |
@@ -94,6 +96,7 @@ The detailed local ownership graph is in [syntax storage](syntax/storage.md); th
 | Real width change | Reflow, projection and final rows | Source scopes, styles and measured glyph widths |
 | Palette preview/rollback | Local bindings/palette and coherent repaint; STYLE only for missing expressions | Theme-independent source and geometry; retained expressions allow local rollback |
 | File preview/full selection | Selected source/display identity and any newly exposed source preparation | Still-valid selected source fragments and measurements only under their exact view/prefix identities |
+| Read full/compact selection | Prepare or release its owned saved-result body, geometry, paint and demand | Original Pi result and independently host-owned images |
 | New source text | Current source/version and useful demand; changed display measurement | Valid immutable prefix/storage and ready display only under their exact prefix/identity proofs |
 | Terminal `stop` / successful `start` | Release/reconcile terminal channels; deliberately interrupt unfinished syntax and resume useful work | Session, draft, cards and eligible local ready data; idle healthy providers need not restart |
 | Appearance Off or adapter replacement | Remove/restore owned presentation and its source consumer | Tool/session data and native editing engine; process-only flags/default-channel cells have their own lifetime |
@@ -107,7 +110,7 @@ Native-highlighting Off, frozen/hidden sources, explicit cache clearing, transpo
 |---|---|
 | `src/index.ts`, `git-branch.ts` | [Host integration, routing, events and Git service](host-integration.md) |
 | `summary-args.ts`, `plain-text.ts`, `card-frame.ts`, `card-theme.ts` | [Rendering representations](rendering.md), [summary algorithms](tool-summary-spec.md), [frame contracts](card-frame-spec.md) |
-| `bash-card.ts`, `file-card.ts` | [Bash preparation](bash-card-spec.md), [stream lifetime](bash-streaming-contract.md), [edit representation](edit-card-spec.md), [write selection](write-card-spec.md) |
+| `bash-card.ts`, `file-card.ts` | [Bash preparation](bash-card-spec.md), [stream lifetime](bash-streaming-contract.md), [edit representation](edit-card-spec.md), [write selection](write-card-spec.md), [read saved-result selection](read-card-spec.md) |
 | `user-card.ts`, `queued-card.ts`, `editor-card.ts`, `editor-status.ts`, `footer.ts` | [Message projections](user-queued-cards.md), [editor](editor.md), [footer accounting/composition](footer-spec.md) |
 | `render-cache.ts` | [Latest-layout ownership and animation](render-cache-spec.md) |
 | `src/syntax/` | [Highlighting pipeline](syntax-highlighting-spec.md), [prepared cards](syntax/prepared-cards.md), [Follow Pi](syntax/follow-pi.md) |
