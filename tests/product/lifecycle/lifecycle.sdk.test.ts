@@ -6,15 +6,20 @@ import type { CardTheme } from "../../../src/card-theme.ts";
 import { setAppearance } from "../../helpers/menu-driver.ts";
 import { Container, Root, Text, Tool, bashTool, color, extensionHarness, installTidyUi, mouse, plain, setup, type TuiMouseEvent } from "../../fixtures/sdk-contract-support.ts";
 
-test("native rich overrides, image, hidden and expanded tools delegate exactly", () => {
+test("native rich overrides, non-read image/expanded and hidden tools delegate exactly", () => {
   const tools = ["bash", "powershell", "write", "edit"].map((name) => new Tool(name));
-  const image = new Tool(); image.updateResult({ content: [{ type: "image" }] }, image.isPartial);
-  const expanded = new Tool(); expanded.expanded = true;
+  const image = new Tool("image-tool"); image.updateResult({ content: [{ type: "image" }] }, image.isPartial);
+  const expanded = new Tool("expanded-tool"); expanded.expanded = true;
   const hidden = new Tool(); hidden.hideComponent = true;
   const { controller, original } = setup([...tools, image, expanded, hidden], { cards: ["write", "edit"] });
   try {
     for (const tool of [...tools, image, expanded, hidden]) assert.deepEqual(tool.render(80), original.call(tool, 80));
   } finally { controller.restore(); }
+  const read = new Tool(); read.updateResult({ content: [{ type: "image" }] }, read.isPartial); read.expanded = true;
+  const nativeRead = setup([read], { cards: ["read"] });
+  try {
+    assert.deepEqual(read.render(80), nativeRead.original.call(read, 80), 'explicit native read still delegates image and expansion');
+  } finally { nativeRead.controller.restore(); }
 });
 
 test("restoration is idempotent; re-enabling covers existing and future tools", () => {

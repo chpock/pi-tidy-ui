@@ -1,7 +1,7 @@
 import type { TerminalColorMode } from '@earendil-works/pi-tui';
 import { diagnose, type DiagnosticFields, type DiagnosticSink } from '../diagnostics.ts';
 import { bashCommandSource, prepareBashService, type BashPresentation } from '../bash-card.ts';
-import { contextRows, fileDiagnosticText, fileHeading, fileNote, filePreviewText, fileSources, prepareFileCard, type PreparedFileCard } from '../file-card.ts';
+import { contextRows, fileDiagnosticText, fileHeading, fileNote, filePreviewText, fileSources, prepareFileCard, readHeading, type PreparedFileCard } from '../file-card.ts';
 import type { SyntaxClient } from '../occipital/client.ts';
 import { CONTROLLER_LIMITS, type GeometryFunding, type GroupDisplayBasis, type SourceController, type SourceDisplayBasis, type SourceWorkGroup } from '../occipital/controller.ts';
 import { type DataCharge, type DataCleanupReceipt } from '../occipital/data-budget.ts';
@@ -127,6 +127,13 @@ function inputBytes(input: CardDisplayInput) {
     units += size(preview && key === 'content' ? filePreviewText(args[key] as string).text : args[key]);
   const result = input.kind === 'bash' ? input.node?.result : input.node.result;
   if (input.kind === 'bash') for (const part of input.node?.result?.content ?? []) units += size(part.text ?? '');
+  if (input.kind === 'file' && input.node.toolName === 'read' && !preview) {
+    let first = true;
+    for (const part of input.node.result?.content ?? []) if (part.type === 'text' && typeof part.text === 'string') {
+      if (!first) units += size('\n');
+      units += size(part.text); first = false;
+    }
+  }
   const details = result?.details as { diff?: unknown; patch?: unknown; diagnostics?: unknown } | undefined;
   for (const value of [details?.diff, details?.patch]) if (typeof value === 'string')
     units += size(preview ? filePreviewText(value).text : value);
@@ -196,15 +203,28 @@ export class CardSources<Owner extends object> {
       if (input.kind === 'file' && nextView === 'preview' && previousView === 'full' && state.input?.kind === 'file')
         this.discardFileDisplay(owner, state, ticket, input.revision);
     };
+    const expanded = input.kind === 'bash' && input.node?.expanded === true;
+    const sameFileSource = input.kind === 'file' && state.input?.kind === 'file'
+      && state.sourceRevision === input.sourceRevision && state.serviceRevision === input.serviceRevision && previousView === nextView;
+    if (state.revision === input.revision && state.expanded === expanded && previousView === nextView
+      && (state.input?.palette === input.palette && state.input.mode === input.mode || sameFileSource)) {
+      if (sameFileSource) state.input = input;
+      if (input.kind === 'file') {
+        const mutation = state.mutation, funding = this.client.sources.geometryFunding(ticket.work);
+        if (funding) this.reconcileSelection(state, funding);
+        if (!this.owned(owner, state, ticket) || state.mutation !== mutation) return false;
+      }
+      this.refreshPaint(owner, state);
+      return true;
+    }
     const funding = this.client.sources.geometryFunding(ticket.work);
     if (!funding) { discardRefusedFullPreview(); return false; }
-    const expanded = input.kind === 'bash' && input.node?.expanded === true;
-    if (state.revision === input.revision && state.input?.palette === input.palette && state.input.mode === input.mode
-      && state.expanded === expanded && previousView === nextView) return true;
+    const reusingFileSource = input.kind === 'file' && state.display?.kind === 'file' && state.input?.kind === 'file'
+      && state.sourceRevision === input.sourceRevision && previousView === nextView && !!state.file;
     const sourceChanged = state.sourceRevision !== input.sourceRevision || previousView !== nextView;
     const completed = input.kind === 'bash' && input.complete && state.input?.kind === 'bash' && !state.input.complete;
-    const mutation = ++state.mutation, charge = fund(funding, inputBytes(input));
-    if (!charge) { discardRefusedFullPreview(); return false; }
+    const mutation = ++state.mutation, charge = reusingFileSource ? undefined : fund(funding, inputBytes(input));
+    if (!charge && !reusingFileSource) { discardRefusedFullPreview(); return false; }
     const receipts = new Set<DataCleanupReceipt>(), old = state.display;
     let display: PreparedCard | undefined, file: PreparedFileCard | undefined, adopted = false, append: MeasuredAppend | undefined;
     const region = (text: string): PreparedRegion => {
@@ -252,7 +272,8 @@ export class CardSources<Owner extends object> {
         const noteText = file ? (preview ? file.view.note : fileNote(input.node, file.view)) : undefined;
         const note = noteText ? old?.kind === 'file' && old.note?.text === noteText ? old.note : region(noteText) : undefined;
         if (old?.kind === 'file' && file === state.file && previousView === nextView) {
-          const heading = state.input?.cwd === input.cwd ? old.heading : file ? region(fileHeading(file.path, input.cwd, file.view.label)) : undefined;
+          const headingText = file ? input.node.toolName === 'read' ? readHeading(file.path, input.cwd) : fileHeading(file.path, input.cwd, file.view.label) : undefined;
+          const heading = state.input?.cwd === input.cwd ? old.heading : headingText ? region(headingText) : undefined;
           display = Object.freeze({ ...old, revision: input.revision, heading, error, diagnostics, note,
             geometryStamp: heading === old.heading && diagnostics === old.diagnostics && note === old.note ? old.geometryStamp : ++state.geometry });
         }
@@ -286,7 +307,9 @@ export class CardSources<Owner extends object> {
             });
           }
           display = Object.freeze({ kind: 'file', revision: input.revision, geometryStamp: ++state.geometry, path: file?.path, label: file?.view.label,
-            mode: file?.view.mode, preview: file?.view.preview, omitted: file?.view.omitted, note, error, diagnostics, heading: file ? region(fileHeading(file.path, input.cwd, file.view.label)) : undefined, rows: Object.freeze(rows) });
+            mode: file?.view.mode, preview: file?.view.preview, omitted: file?.view.omitted, note, error, diagnostics,
+            heading: file ? region(input.node.toolName === 'read' ? readHeading(file.path, input.cwd) : fileHeading(file.path, input.cwd, file.view.label)) : undefined,
+            rows: Object.freeze(rows) });
         }
       }
       if (!this.owned(owner, state, ticket) || state.mutation !== mutation) return false;
@@ -299,11 +322,13 @@ export class CardSources<Owner extends object> {
       const keep = new Set<DataCleanupReceipt>([...used, ...(state.paletteInput ? [state.paletteInput.cleanupReceipt()] : [])]);
       // Only measurements and the local descriptor charge change at this boundary.
       for (const r of ticket.receipts) if (!keep.has(r) && r !== state.descriptorReceipt && r !== state.paintReceipt) { r.release(); ticket.receipts.delete(r); }
-      state.descriptorReceipt?.release(); if (state.descriptorReceipt) ticket.receipts.delete(state.descriptorReceipt);
-      const receipt = chargeReceipt(charge); state.descriptorReceipt = receipt; ticket.receipts.add(receipt);
+      if (charge) {
+        state.descriptorReceipt?.release(); if (state.descriptorReceipt) ticket.receipts.delete(state.descriptorReceipt);
+        const receipt = chargeReceipt(charge); state.descriptorReceipt = receipt; ticket.receipts.add(receipt);
+      }
       for (const r of used) ticket.receipts.add(r);
-      adopted = true; charge.retain();
-      state.charge = charge; state.display = display; state.file = file; state.input = input; state.expanded = expanded;
+      adopted = true; charge?.retain();
+      state.charge = charge ?? state.charge; state.display = display; state.file = file; state.input = input; state.expanded = expanded;
       state.sourceEligible = input.kind === 'bash' ? typeof input.args.command === 'string' : !!file && !input.node.result?.isError;
       if (sourceChanged) state.version++;
       state.sourceRevision = input.sourceRevision; state.serviceRevision = input.serviceRevision; state.revision = input.revision;
@@ -320,8 +345,8 @@ export class CardSources<Owner extends object> {
     }
     finally {
       append?.dispose();
-      if (adopted) charge.release();
-      else { charge.release(); for (const r of receipts) r.release(); }
+      if (adopted) charge?.release();
+      else { charge?.release(); for (const r of receipts) r.release(); }
     }
   }
   useful(owner: Owner, revision: number): void {
@@ -555,7 +580,7 @@ export class CardSources<Owner extends object> {
     const token = `${identity}:${publication}:${effects}:${eligibility}`;
     if (state.paintToken === token) return true;
     const previous = state.paint, mutation = state.mutation;
-    if (state.paused && group && group.stamp !== previous?.group?.stamp) return true;
+    if (state.paused && group && previous && group.stamp !== previous.group?.stamp) return true;
     // Keep the last complete paint while new palette input or styles are pending.
     // A matching source revision makes its cached rows safe even after the old STYLE group is retired.
     const replacementPending = !paletteReady || previous?.group !== undefined && this.enabled && !group;

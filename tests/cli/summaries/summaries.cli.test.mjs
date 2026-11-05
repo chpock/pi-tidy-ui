@@ -72,12 +72,12 @@ test('real CLI: complete multiline summaries, adaptive separation, continuation 
       await live.settle(); const clicked = await live.capture('continuation-click');
       assert.deepEqual(clicked.tools.filter((tool) => tool.expanded).map((tool) => tool.id), [reads[2].id], 'continuation expands precisely the completed built-in read');
       assert.ok(clicked.screen.some((row) => row.includes('LONG_READ_CONTENT')));
-      // Collapse via the native title after the expanded long filename wraps.
+      // Collapse via the owned title after the expanded long filename wraps.
       const pathRow = clicked.screen.findIndex((row) => row.includes('long-directory/'));
       assert.ok(pathRow > 0);
-      const title = pathRow - 1; // Native read wraps a long filename below its title.
-      assert.match(clicked.screen[title], /\bread\b/u);
-      const titleColumn = clicked.screen[title].indexOf('read') + 1;
+      const title = clicked.screen.findIndex((row) => row.includes('→ Read'));
+      assert.ok(title >= 0 && title < pathRow, 'the owned Read heading precedes the wrapped path');
+      const titleColumn = clicked.screen[title].indexOf('Read') + 1;
       assert.ok(titleColumn > 0);
       live.send(`\x1b[<0;${titleColumn};${title + 1}M\x1b[<0;${titleColumn};${title + 1}m`);
       await live.settle(); multilineLayout(await live.capture('native-collapsed'));
@@ -115,9 +115,16 @@ test('real CLI: complete multiline summaries, adaptive separation, continuation 
       live.send('\x0f'); await live.settle(); const expanded = await live.capture('expanded');
       assert.ok(expanded.tools.every((tool) => tool.expanded));
       simpleBashCards(expanded, 'MULTILINE_NATIVE_BASH');
-      assert.deepEqual(toolLines({ tools: expanded.tools.filter((tool) => tool.name !== 'bash') }),
-        toolLines({ tools: nativeExpanded.tools.filter((tool) => tool.name !== 'bash') }), 'Ctrl+O returns exact native cards/results except custom bash');
-      assert.deepEqual(persisted(expanded), persisted(wide));
+      assert.deepEqual(toolLines({ tools: expanded.tools.filter((tool) => !['bash', 'read'].includes(tool.name)) }),
+        toolLines({ tools: nativeExpanded.tools.filter((tool) => !['bash', 'read'].includes(tool.name)) }), 'Ctrl+O returns exact native rows for every non-read tool except custom bash');
+      const expandedReads = byName(expanded, 'read');
+      assert.equal(expandedReads.length, 4, 'both b.txt calls and the a.txt/long-path calls remain present');
+      for (const [index, marker] of ['READ_A_CONTENT', 'READ_B_CONTENT', 'LONG_READ_CONTENT', 'READ_B_CONTENT'].entries()) {
+        const rows = lines(expandedReads[index]).map(plain);
+        assert.ok(rows.some(row => row.includes('→ Read')), 'Ctrl+O selects the owned case-sensitive Read heading');
+        assert.ok(rows.some(row => row.includes(marker)), 'owned expansion exposes each saved read body');
+      }
+      assert.deepEqual(persisted(expanded), persisted(wide), 'expansion preserves exact saved arguments/results');
       live.send('\x0f'); await live.settle(); multilineLayout(await live.capture('recollapsed'));
       await live.appearance(false); const off = await live.capture('disabled');
       assert.deepEqual(toolLines(off), toolLines(control));
@@ -315,7 +322,17 @@ test('real CLI: long-word summaries fill preceding space and prefer bounded punc
         stock.send('\x0f'); await stock.settle(); const nativeExpanded = await stock.capture('expanded');
         const nativeTraffic = activity(stock); await stock.close();
         live.send('\x0f'); await live.settle(); const expanded = await live.capture('expanded');
-        assert.ok(expanded.tools.every(tool => tool.expanded)); assert.deepEqual(toolLines(expanded), toolLines(nativeExpanded));
+        assert.ok(expanded.tools.every(tool => tool.expanded));
+        assert.deepEqual(toolLines({ tools: expanded.tools.filter(tool => tool.name !== 'read') }),
+          toolLines({ tools: nativeExpanded.tools.filter(tool => tool.name !== 'read') }), 'Ctrl+O preserves exact native rows for every non-read tool');
+        const expandedReads = byName(expanded, 'read');
+        assert.equal(expandedReads.length, 2);
+        for (const read of expandedReads) {
+          const rows = lines(read).map(plain);
+          assert.ok(rows.some(row => row.includes('→ Read')), 'Ctrl+O selects the owned case-sensitive Read heading');
+          assert.ok(rows.some(row => row.includes('LONG_READ_CONTENT')), 'owned expansion exposes the saved read body');
+        }
+        assert.deepEqual(persisted(expanded), persisted(wide), 'expansion preserves the exact saved read arguments/results');
         live.send('\x0f'); await live.settle(); await check(await live.capture('collapsed'), 105);
         await live.appearance(false); assert.deepEqual(toolLines(await live.capture('off')), toolLines(native));
         await live.appearance(true); await check(await live.capture('on'), 105);
@@ -338,7 +355,7 @@ test('real CLI: long-word summaries fill preceding space and prefer bounded punc
     });
   });
 
-test('real CLI: failed summaries are wholly error-colored, hide bodies and final badges, and expose native errors on click',
+test('real CLI: failed summaries are wholly error-colored, hide bodies and final badges, and expose available error details',
   { timeout: 120000 }, async () => {
     const terminals = [];
     const start = async (name, options = {}) => {
@@ -402,7 +419,24 @@ test('real CLI: failed summaries are wholly error-colored, hide bodies and final
       assert.ok(clicked.screen.some((row) => row.includes('ERROR_STACK_SENTINEL')), 'full available second error line is visible after expansion');
       live.send('\x0f'); await live.settle(); const expanded = await live.capture('expanded');
       assert.ok(expanded.tools.every((tool) => tool.expanded));
-      assert.deepEqual(toolLines(expanded), toolLines(nativeExpanded));
+      assert.deepEqual(toolLines({ tools: expanded.tools.filter((tool) => tool.name !== 'read') }),
+        toolLines({ tools: nativeExpanded.tools.filter((tool) => tool.name !== 'read') }), 'Ctrl+O preserves exact native rows for every non-read tool');
+      const failedRead = byName(expanded, 'read')[0];
+      const readArgs = byName(wide, 'read')[0].args;
+      assert.deepEqual(failedRead.args, readArgs, 'the failed read card retains its original path, offset and limit');
+      const savedRead = persisted(wide).find(entry => entry.role === 'toolResult' && entry.toolName === 'read');
+      assert.ok(savedRead, 'the fixture has a saved read result');
+      const savedReadError = savedRead.content.filter(part => part.type === 'text').map(part => part.text).join('\n');
+      assert.ok(savedReadError.includes(readArgs.path), 'the saved read error contains the complete current requested path');
+      const readRows = lines(failedRead);
+      assert.ok(readRows.some(row => row.includes('→ Read')), 'failed expansion uses the owned Read heading');
+      const toolErrorRow = readRows.findIndex(row => row.includes('Tool error:'));
+      assert.ok(toolErrorRow >= 0, 'failed expansion exposes the saved error label');
+      const readBody = readRows.slice(toolErrorRow + 1).join('');
+      assert.match(readBody, /ENOENT: no such file or directory/u, 'the owned read preserves the saved failure cause');
+      assert.ok(readBody.includes(readArgs.path),
+        'the complete requested path is visible in the error body after Tool error:, across display wraps');
+      assert.deepEqual(persisted(expanded), persisted(wide), 'expansion preserves the exact saved arguments/results');
       live.send('\x0f'); await live.settle(); await check(await live.capture('recollapsed'), 80);
       await live.appearance(false); assert.deepEqual(toolLines(await live.capture('off')), toolLines(native));
       await live.appearance(true); await check(await live.capture('on'), 80);
@@ -420,7 +454,7 @@ test('real CLI: failed summaries are wholly error-colored, hide bodies and final
       writeFileSync(join(artifacts, 'compact-errors-coverage.json'), JSON.stringify({
         calls: 4, results: 4, modelContexts: 5, failedCalls: 3, checkedErrorCells, widths: [21, 80],
         tools: 'Real built-in failing read plus two generic throwing summaries and one generic success; no installed third-party execution',
-        lifecycle: ['real failed-continuation SGR click', 'exact native expansion', 'dark/light', 'resize round trip', 'off/on', 'reload', 'same-session replay'],
+        lifecycle: ['real failed-continuation SGR click', 'exact stock expansion for non-read tools; available read error text', 'dark/light', 'resize round trip', 'off/on', 'reload', 'same-session replay'],
         identity: 'Exact raw arguments/results/model contexts and unchanged session bytes',
       }, null, 2));
     } finally {

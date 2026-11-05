@@ -38,7 +38,7 @@ test("summaries at transcript start need no leading gap; new attached subtrees a
 });
 
 test("completed summaries hide result text and markers; failures color every visible segment", () => {
-  for (const name of ["read", "custom"]) {
+  for (const name of ["custom"]) {
     const tool = new Tool(name, { pattern: "needle", path: "文件/" + "p".repeat(40), query: "a,b,c", limit: 0 });
     const root = new Root(); root.addChild(tool);
     const paints: { role: string; text: string }[] = [];
@@ -199,7 +199,9 @@ test("mouse dispatch uses rendered summary heights and ignores gaps, pending cal
     assert.equal(first.expanded, false);
     assert.ok(root.handleMouse(mouse(3))?.handled);
     assert.equal(first.expanded, false); assert.equal(second.expanded, true);
-    assert.match(second.render(80)[1], /NATIVE/);
+    const expandedRead = second.render(80).map(plain).join('\n');
+    assert.match(expandedRead, /Read/u, 'read expansion uses the owned Read heading');
+    assert.doesNotMatch(expandedRead, /NATIVE read/u, 'read text expansion does not restore the stock renderer');
     second.handleMouse(mouse(1)); assert.equal(second.expanded, false);
     first.isPartial = true;
     assert.equal(first.handleMouse(mouse(1)), undefined);
@@ -253,7 +255,12 @@ test("exact read/edit/write summaries use directional arrows; other compact tool
       assert.equal(screen.getCell(3)!.getChars(), tool.toolName[0]);
       assert.equal(terminal.buffer.active.cursorY, 0);
       tool.setExpanded(true);
-      assert.deepEqual(tool.render(80), ["", `NATIVE ${tool.toolName}`, "FULL_OUTPUT"]);
+      const expanded = tool.render(80).map(plain);
+      if (tool.toolName === "read") {
+        assert.ok(expanded.some((line) => line.includes("Read")));
+        assert.ok(expanded.some((line) => line.includes("ERROR_TEXT")));
+        assert.ok(expanded.every((line) => !line.includes("NATIVE read")));
+      } else assert.deepEqual(expanded, ["", `NATIVE ${tool.toolName}`, "FULL_OUTPUT"]);
     }
   } finally { terminal.dispose(); controller.restore(); }
 });
@@ -689,7 +696,10 @@ test("summary long-word preserves Unicode graphemes, all text, failure styles, c
     const last = tool.render(40).length - 1;
     assert.equal(tool.handleMouse(mouse(last, 40))?.handled, true);
     assert.equal(tool.expanded, true);
-    assert.deepEqual(tool.render(40), ["", "NATIVE read", "FULL_OUTPUT"]);
+    const expanded = tool.render(40).map(plain).join("\n");
+    assert.match(expanded, /Read/u);
+    assert.match(expanded, /FULL_OUTPUT/u);
+    assert.doesNotMatch(expanded, /NATIVE read/u);
   } finally { controller.restore(); }
 });
 

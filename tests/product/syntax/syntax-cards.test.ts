@@ -48,6 +48,9 @@ const written = (text: string, revision = 1, path = 'a.ts'): Extract<CardDisplay
   serviceRevision: revision, palette: 1, mode: 'truecolor', language: 'typescript', node: { toolName: 'write', args: { path, content: text }, isPartial: false, result: {} } });
 const edited = (diff = '-1 \tx\n+1 \ty\n   ...\n-9 a\n+9 b', revision = 1): Extract<CardDisplayInput, { kind: 'file' }> => ({ ...written('', revision), kind: 'file',
   node: { toolName: 'edit', args: { path: 'a.ts' }, isPartial: false, result: { details: { diff } } } });
+const read = (text: string, revision = 1, images: string[] = []): Extract<CardDisplayInput, { kind: 'file' }> => ({ ...written('', revision), kind: 'file',
+  node: { toolName: 'read', args: { path: 'a.ts', offset: 41 }, isPartial: false,
+    result: { content: [{ type: 'text', text }, ...images.map(data => ({ type: 'image' as const, data, mimeType: 'image/png' }))], isError: false } } });
 const fixtures: { cards: CardSources<Owner>; sources: SourceController; runtime: SyntaxRuntime; paletteInputs: PaletteInputOwner; calls: { reject(error: unknown): void }[] }[] = [];
 function fixture(ready = false, options: ControllerOptions = {}, maxBookkeepingBytes?: number) {
   const env = { ready, enabled: true, generation: 1, vocabulary: 'a'.repeat(64), selected: { kind: 'pi' } as SyntaxTheme,
@@ -129,13 +132,13 @@ function weakFilePayloads(f: ReturnType<typeof fixture>, owner: Owner) {
   assert.ok(rows && measurement, 'capture an actual prepared file row array and measurement');
   return { rows: new WeakRef(rows), measurement: new WeakRef(measurement) };
 }
-async function collectFilePayload(reference: WeakRef<object>) {
+async function collectFilePayload(reference: WeakRef<object>, description = 'demoted full-file payload') {
   assert.equal(typeof global.gc, 'function', 'run the retained-file regression with the prepared GC-enabled input');
   for (let pass = 0; pass < 40; pass++) {
     await turn(); global.gc!(); await turn();
     if (!reference.deref()) return;
   }
-  assert.fail('demoted full-file payload was retained while its owner stayed live');
+  assert.fail(`${description} was retained while its owner stayed live`);
 }
 function rowsFromLayout(output: CardRows) { const result: string[] = []; assert.equal(output.visitRows((_index, row) => result.push(row)), true); return result; }
 function command(f: ReturnType<typeof fixture>, owner: Owner) { let text: string | undefined; inspect(f, owner, d => { assert.equal(d.kind, 'bash'); if (d.kind === 'bash') text = d.command.text; }); return text; }
@@ -273,6 +276,44 @@ test('funding refusal cold-discards a full file view without unregistering same-
   assert.equal(f.cards.identities(owner)[0]?.key, identity.key, 'the retry reuses same-index ownership');
   assert.ok(previewRows.length <= 10);
   assert.doesNotMatch(previewRows.join('\n'), /HIDDEN_FULL_SUFFIX/u);
+});
+
+test('read reopens complete saved rows after discarding paint with a retained native group', async () => {
+  const f = fixture(true), owner: Owner = {}, text = 'const REOPEN_SAVED_READ = 73;';
+  const input = read(text);
+  f.use(owner, input); await settle();
+  const source = f.calls.findIndex(call => !call.done && call.request.sources?.[0]?.text === text);
+  assert.notEqual(source, -1, 'a genuine native SOURCE request was admitted');
+  f.answerSource(source, text); await settle();
+  const styles = f.calls.findIndex(call => !call.done && call.request.op === 'styles.resolve');
+  assert.notEqual(styles, -1, 'the parsed source requires an actual native STYLE response');
+  f.answerStyle(styles); await settle();
+  inspect(f, owner, (_display, paint) => assert.ok(paint.publication > 0, 'first expansion has published native paint'));
+  const identity = f.cards.identities(owner), requests = f.calls.length;
+  const original = f.sources.groupPresentation;
+  let retainedGroup = false;
+  f.sources.groupPresentation = function (work) {
+    const group = original.call(this, work);
+    retainedGroup ||= !!group;
+    return group;
+  };
+  try {
+    for (const revision of [2, 3]) {
+      f.cards.discardFile(owner);
+      assert.equal(f.cards.visit(owner, () => assert.fail('collapsed read must release the full display')), false);
+      retainedGroup = false;
+      assert.equal(f.update(owner, { ...input, revision }), true);
+      assert.equal(retainedGroup, true, 'the real controller retains current native styles across collapse');
+      inspect(f, owner, (display, paint) => {
+        assert.equal(display.kind, 'file'); if (display.kind !== 'file') return;
+        assert.equal(display.rows.map(row => row.region?.text ?? '').join('\n'), text);
+        assert.ok(paint.publication > 0, 'reopening has usable native paint before render enrollment');
+      });
+      f.cards.useful(owner, revision); await settle();
+      assert.deepEqual(f.cards.identities(owner).map(item => item.key), identity.map(item => item.key), 'reopening retains the same source owner');
+      assert.equal(f.calls.length, requests, 'reopening never reparses or resolves unchanged native styles');
+    }
+  } finally { f.sources.groupPresentation = original; }
 });
 
 test('cards prepared display exists before useful work', async () => {
@@ -1868,4 +1909,69 @@ test('review F4: preview availability follows the selected view, not patch prepa
     assert.ok(display.diagnostics.some(region => region.text.includes('FULL_DIAGNOSTIC_MUST_NOT_LEAK')),
       'full diagnostics remain available even when an unsupported patch has no file rows');
   });
+});
+
+test('read saved result uses the common funded plain-file pipeline without retaining image payload in rows', async () => {
+  const f = fixture(), owner: Owner = {};
+  const opaque = 'opaque_image_payload_not_text'.repeat(1024);
+  const first = read('const READ_A = 1;\nPi producer notice: keep verbatim.', 1, [opaque]);
+  f.use(owner, first); await settle();
+  assert.deepEqual(f.env.classifications, ['const READ_A = 1;\nPi producer notice: keep verbatim.']);
+  assert.ok(f.sources.stats().retention.retainedBytes > 0, 'saved text is admitted through ordinary source funding');
+  inspect(f, owner, display => {
+    assert.equal(display.kind, 'file'); if (display.kind !== 'file') return;
+    assert.equal(display.rows.some(row => row.region?.text.includes(opaque)), false, 'opaque image bytes never become prepared text rows');
+    assert.ok(display.rows.some(row => row.region?.text.includes('Pi producer notice: keep verbatim.')));
+  });
+
+  const changed = read('const READ_B = 2;\nPi producer notice: keep verbatim.', 2, [opaque]);
+  f.use(owner, changed); await settle();
+  assert.deepEqual(f.env.classifications, [
+    'const READ_A = 1;\nPi producer notice: keep verbatim.',
+    'const READ_B = 2;\nPi producer notice: keep verbatim.',
+  ], 'a same-path/offset replacement reparses only the current saved result');
+  assert.equal(owner.input?.node, changed.node, 'the controller retains the current saved result without reconstructing the Pi node');
+
+  const refs = weakFilePayloads(f, owner);
+  f.cards.discardFile(owner);
+  const measurementInvalidated = (refs.measurement.deref() as { isValid?: boolean } | undefined)?.isValid === false;
+  assert.equal(measurementInvalidated, true, 'collapsing an expanded read invalidates its old measurement');
+  assert.equal(owner.input?.node, changed.node, 'the live Pi owner still retains the original saved result');
+  await collectFilePayload(refs.rows, 'read display row array');
+  await collectFilePayload(refs.measurement, 'read measured region');
+});
+
+
+test('read result text and rows participate in construction funding before preparation', () => {
+  const f = fixture(), smallOwner: Owner = {}, largeOwner: Owner = {};
+  const originalFunding = f.sources.geometryFunding.bind(f.sources), requests: number[] = [];
+  const maximumConstructionGrant = 100_000;
+  f.sources.geometryFunding = group => {
+    const current = originalFunding(group);
+    if (!current) return undefined;
+    return { budget: current.budget, grant: bytes => {
+      requests.push(bytes);
+      return bytes > maximumConstructionGrant ? undefined : current.grant(bytes);
+    } };
+  };
+  try {
+    const smallText = Array.from({ length: 60 }, (_, index) => `line_${index}`).join('\n');
+    assert.equal(f.update(smallOwner, read(smallText)), true, 'ordinary small read results remain admissible');
+    assert.ok(requests.length > 0, 'ordinary saved text is presented through the controlled construction grant');
+    f.cards.discardFile(smallOwner);
+
+    const largeText = Array.from({ length: 60 }, (_, index) => `line_${index}_${'x'.repeat(800)}`).join('\n');
+    assert.ok(largeText.length < 50_000, 'the controlled large saved result remains a normal-sized read body');
+    requests.length = 0;
+    const before = f.sources.stats().retention.retainedBytes;
+    assert.equal(f.update(largeOwner, read(largeText)), false,
+      'the larger saved result with the same row count is rejected by the same construction funding');
+    assert.ok(requests.length > 0, 'the large saved result reaches the controlled construction grant');
+    assert.deepEqual(f.env.classifications, [], 'refused read text never reaches the classifier');
+    assert.equal(f.cards.visit(largeOwner, () => {}), false, 'a refused read source publishes no display or prepared rows');
+    assert.ok(f.sources.stats().retention.retainedBytes - before < RETENTION_LIMITS.entryAllowance,
+      'refused read text retains only bounded bookkeeping, not the body or prepared rows');
+  } finally {
+    f.sources.geometryFunding = originalFunding;
+  }
 });

@@ -8,8 +8,9 @@ import type { JournalOptions } from '../../../src/debug-log.ts';
 import { setImmediate as turn } from 'node:timers/promises';
 import { dirname, resolve } from 'node:path';
 import { pathToFileURL, fileURLToPath } from 'node:url';
-import { Container, Text, colorToHex, type Component } from '@earendil-works/pi-tui';
-import { Theme, createEditToolDefinition, createWriteToolDefinition, ToolExecutionComponent, type ExtensionAPI, type ExtensionContext, type ToolRendererResolver, type ToolRenderers } from '@earendil-works/pi-coding-agent';
+import { Container, Image, Spacer, Text, colorToHex, getCapabilities, setCapabilities, type Component, type TerminalColorMode } from '@earendil-works/pi-tui';
+import { cardGeometry } from '../../../src/card-frame.ts';
+import { Theme, createEditToolDefinition, createReadToolDefinition, createWriteToolDefinition, ToolExecutionComponent, type ExtensionAPI, type ExtensionContext, type ToolRendererResolver, type ToolRenderers } from '@earendil-works/pi-coding-agent';
 import tidyUi, { debugLoggingDiagnostics, type TidyUiRuntimeOptions } from '../../../src/index.ts';
 import { SourceController } from '../../../src/occipital/controller.ts';
 import { CardSources, type CardDisplayInput } from '../../../src/syntax/cards.ts';
@@ -28,16 +29,18 @@ const themes = await import(pathToFileURL(resolve(dist, 'modes/interactive/theme
 themes.initTheme('dark', false);
 class UI extends Container { requests = 0; selection = false; requestRender() { this.requests++; } hasActiveSelection() { return this.selection; } }
 const cleanups: (() => Promise<void>)[] = [];
+function plainRows(rows: readonly string[]): string { return rows.join('\n').replace(/\x1b\[[0-?]*[ -/]*[@-~]/gu, ''); }
 function fixture(mode = 'tui', logging: false | Omit<JournalOptions, 'warn' | 'enabled'> = false,
   settings?: Pick<ExtensionSettings, 'load' | 'update'> & Partial<Pick<ExtensionSettings, 'watch'>>,
   localPreferences: LocalPreferences = { appearanceEnabled: true, loggingEnabled: true },
-  cardPreparation?: TidyUiRuntimeOptions['cardPreparation']) {
+  cardPreparation?: TidyUiRuntimeOptions['cardPreparation'],
+  syntaxTheme: SettingsLoadResult['syntaxTheme'] = { kind: 'pi' }) {
   const root = new UI(), events = new Map<string, (event: unknown, ctx: ExtensionContext) => unknown>();
   const commands = new Map<string, { handler(args: string, ctx: ExtensionContext): Promise<void> }>();
   const rendererResolvers: ToolRendererResolver[] = [];
   const counts = { constructed: 0, load: 0, saves: 0, shared: 0, owned: 0 }, notices: string[] = [];
   const flags = new Map<string, string>();
-  let saved: SettingsLoadResult = { ok: true, syntaxTheme: { kind: 'pi' } }, view = '';
+  let saved: SettingsLoadResult = { ok: true, syntaxTheme }, view = '';
   const store = settings ?? { async load() { counts.load++; return { ...saved }; },
     async update(patch: SettingsPatch) { counts.saves++; saved = { ...saved, ...patch }; return { ok: true as const }; } };
   const ctx = { mode, hasUI: mode === 'tui', cwd: '/tmp', isIdle: () => true,
@@ -64,7 +67,7 @@ function fixture(mode = 'tui', logging: false | Omit<JournalOptions, 'warn' | 'e
     async appearance(value: boolean) { return view = await setAppearance(commands.get('tidy-ui')!.handler, ctx, value); },
     async recording(value: boolean) { return view = await setLogging(commands.get('tidy-ui')!.handler, ctx, value); } };
 }
-function rendererSet(base: ReturnType<typeof createWriteToolDefinition> | ReturnType<typeof createEditToolDefinition>): ToolRenderers {
+function rendererSet(base: ReturnType<typeof createWriteToolDefinition> | ReturnType<typeof createEditToolDefinition> | ReturnType<typeof createReadToolDefinition>): ToolRenderers {
   return { renderShell: base.renderShell,
     renderCall: base.renderCall as unknown as ToolRenderers['renderCall'],
     renderResult: base.renderResult as unknown as ToolRenderers['renderResult'] };
@@ -82,6 +85,28 @@ function writeToolDefinition(h: ReturnType<typeof fixture>) {
 }
 function editToolDefinition(h: ReturnType<typeof fixture>) {
   return resolvedFileToolDefinition(h, 'edit') as ReturnType<typeof createEditToolDefinition>;
+}
+type ReadRendererCalls = { call: number; result: number };
+function readToolDefinition(h: ReturnType<typeof fixture>, calls?: ReadRendererCalls) {
+  const base = createReadToolDefinition('/tmp');
+  const resolved = h.rendererResolvers[0]!('read', () => rendererSet(base));
+  if (resolved || !calls) return { ...base, ...resolved } as unknown as ReturnType<typeof createReadToolDefinition>;
+  return {
+    ...base,
+    ...(base.renderCall ? { renderCall: (...args: Parameters<NonNullable<typeof base.renderCall>>) => {
+      calls.call++; return base.renderCall!(...args);
+    } } : {}),
+    ...(base.renderResult ? { renderResult: (...args: Parameters<NonNullable<typeof base.renderResult>>) => {
+      calls.result++; return base.renderResult!(...args);
+    } } : {}),
+  };
+}
+function readOwner(h: ReturnType<typeof fixture>, id: string, args: Record<string, unknown> = { path: `${id}.ts`, offset: 41 },
+  calls?: ReadRendererCalls) {
+  const tool = new ToolExecutionComponent('read', id, args, undefined, readToolDefinition(h, calls),
+    h.root as unknown as ConstructorParameters<typeof ToolExecutionComponent>[5], '/tmp');
+  h.root.addChild(tool);
+  return tool;
 }
 function writeOwner(h: ReturnType<typeof fixture>, id: string, content: string) {
   const tool = new ToolExecutionComponent('write', id, { path: `${id}.ts`, content }, undefined,
@@ -106,12 +131,15 @@ function liveToolCallId(tool: ToolExecutionComponent): string {
 function liveToolName(tool: ToolExecutionComponent): string {
   return liveToolString(tool, 'toolName', 'name');
 }
-function completeLiveFile(h: ReturnType<typeof fixture>, tool: ToolExecutionComponent) {
+function completeLiveFile(h: ReturnType<typeof fixture>, tool: ToolExecutionComponent,
+  result: { content: []; isError: false; details?: { diff: string } } = { content: [], isError: false }) {
   tool.markExecutionStarted();
-  const result = { content: [], isError: false };
   h.events.get('tool_execution_end')!({ type: 'tool_execution_end', toolCallId: liveToolCallId(tool),
     toolName: liveToolName(tool), result, isError: false }, h.ctx);
   tool.updateResult(result, false);
+}
+function completeLiveEdit(h: ReturnType<typeof fixture>, tool: ToolExecutionComponent) {
+  completeLiveFile(h, tool, { content: [], isError: false, details: { diff: '@@ -1 +1 @@\n-before\n+after' } });
 }
 function completeLiveWrite(h: ReturnType<typeof fixture>, tool: ToolExecutionComponent) { completeLiveFile(h, tool); }
 function clickFile(tool: ToolExecutionComponent, y = 2) {
@@ -135,14 +163,530 @@ function weakDeferredInner(wrapper: object): WeakRef<object> {
   assert.ok(inner && typeof Reflect.get(inner, 'render') === 'function', `capture the materialized native child from ${Reflect.get(wrapper, 'constructor')?.name} with keys ${Reflect.ownKeys(wrapper).join(',')}`);
   return new WeakRef(inner as object);
 }
+function observeNativeRendererCalls(tool: ToolExecutionComponent, callbackCalls?: ReadRendererCalls) {
+  const calls = { call: 0, result: 0 }, seen = new WeakSet<object>(), invoked = new WeakSet<object>();
+  const install = () => {
+    for (const [slot, field] of [['call', 'callRendererComponent'], ['result', 'resultRendererComponent']] as const) {
+      const component = Reflect.get(tool, field) as Component | undefined;
+      if (!component || seen.has(component)) continue;
+      seen.add(component);
+      const render = component.render.bind(component);
+      component.render = width => { calls[slot]++; return render(width); };
+      if (component instanceof DeferredRenderer && callbackCalls && !invoked.has(component)) {
+        invoked.add(component);
+        const invoke = Reflect.get(component, 'invoke');
+        if (typeof invoke === 'function') Reflect.set(component, 'invoke', () => {
+          callbackCalls[slot]++; return invoke();
+        });
+      }
+    }
+  };
+  install();
+  return { calls, install };
+}
 function assertNativeRendererCold(tool: ToolExecutionComponent, slot: 'call' | 'result', message: string) {
   const wrapper = Reflect.get(tool, slot === 'call' ? 'callRendererComponent' : 'resultRendererComponent');
-  assert.ok(wrapper, `${message}: public lazy wrapper remains installed`);
+  assert.ok(wrapper instanceof DeferredRenderer, `${message}: public lazy wrapper remains installed`);
   assert.equal(Reflect.get(wrapper, 'component'), undefined, `${message}: Pi component has not been materialized`);
   assert.equal(Reflect.get(Reflect.get(wrapper, 'owner'), slot === 'call' ? 'callInner' : 'resultInner'), undefined,
     `${message}: owner retains no native inner component`);
 }
 afterEach(async () => { for (const cleanup of cleanups.splice(0)) await cleanup(); });
+
+test('expanded read uses saved text, keeps stock callbacks cold, and retains Pi fallbacks', async () => {
+  const preparations: unknown[] = [];
+  const h = fixture('tui', false, undefined, undefined, receipt => preparations.push(receipt));
+  try {
+    await h.ready; await h.start();
+    const args = { path: 'read-saved-text.ts', offset: 41 }, callbacks = { call: 0, result: 0 };
+    const owner = readOwner(h, 'read-saved-text', args, callbacks), native = observeNativeRendererCalls(owner, callbacks);
+    owner.setArgsComplete();
+    const result = { content: [{ type: 'text' as const, text: 'const READ_SAVED_SENTINEL = 41;\nconst secondLine = READ_SAVED_SENTINEL + 1;\n[Showing lines 41-42 of 100. Use offset=43 to continue.]' }], isError: false };
+    owner.updateResult(result, false);  native.install();
+
+    const collapsed = plainRows(owner.render(80));
+    assert.match(collapsed, /→ read read-saved-text\.ts \[offset=41\]/u, 'active collapsed read uses the existing owned compact summary');
+    assert.doesNotMatch(collapsed, /READ_SAVED_SENTINEL/u);
+    assert.equal(preparations.length, 0, 'collapsed read does not prepare or classify saved result text');
+    assert.equal(native.calls.result, 0, 'the owned compact read does not render Pi result components');
+    assert.deepEqual(callbacks, { call: 0, result: 0 }, 'owned compact read invokes neither stock renderer callback');
+
+    h.root.selection = true;
+    assert.equal(clickFileSummary(owner)?.handled, undefined, 'active terminal selection prevents compact read toggling');
+    assert.equal(Reflect.get(owner, 'expanded'), false, 'selection leaves compact read state unchanged');
+    h.root.selection = false;
+    assert.equal(clickFileSummary(owner)?.handled, true, 'the compact read summary is a click target');
+    assert.equal(Reflect.get(owner, 'expanded'), true, 'clicking the read summary opens the owned full card');
+     native.install();
+    await settled();
+    const expanded = plainRows(owner.render(80));
+    assert.match(expanded, /→ Read/u);
+    assert.match(expanded, /41.*READ_SAVED_SENTINEL/u);
+    assert.match(expanded, /42.*secondLine/u);
+    assert.match(expanded, /\[Showing lines 41-42 of 100\. Use offset=43 to continue\.\]/u);
+    assert.doesNotMatch(expanded, /^\s*(?:\+|-) /mu, 'read uses a single plain-code pane, not a diff');
+    assert.equal(Reflect.get(owner, 'args'), args, 'rendering retains the exact saved arguments');
+    assert.equal(Reflect.get(owner, 'result'), result, 'rendering retains the exact saved tool result');
+    assert.equal(preparations.some(value => (value as { phase?: unknown }).phase === 'updated'), true,
+      'expanded read prepares its saved body through CardSources');
+    assert.equal(native.calls.result, 0, 'the expanded owned read does not render Pi result components');
+    assert.deepEqual(callbacks, { call: 0, result: 0 }, 'owned expanded read invokes neither stock renderer callback');
+
+    assert.equal(clickFile(owner, 2)?.handled, true, 'clicking the full read card collapses it');
+    assert.equal(Reflect.get(owner, 'expanded'), false);
+     native.install();
+    await settled();
+    const collapsedAgain = plainRows(owner.render(80));
+    assert.match(collapsedAgain, /→ read read-saved-text\.ts \[offset=41\]/u);
+    assert.doesNotMatch(collapsedAgain, /READ_SAVED_SENTINEL/u, 'collapse hides the full presentation');
+
+    await h.appearance(false);
+    owner.setExpanded(true);  native.install();
+    const offRows = owner.render(80).join('\n');
+    assert.match(offRows, /READ_SAVED_SENTINEL/u, 'Appearance Off retains Pi saved-result presentation');
+    assert.ok(native.calls.result > 0, 'Appearance Off is a positive native result-render control');
+    assert.ok(callbacks.call > 0 && callbacks.result > 0, `Appearance Off positively invokes both stock callbacks: ${JSON.stringify(callbacks)}`);
+  } finally { await h.stop(); }
+});
+
+test('pending and failed read cards stay owned when saved arguments have no path', async () => {
+  const h = fixture();
+  try {
+    await h.ready; await h.start();
+    const pendingCalls = { call: 0, result: 0 }, pending = readOwner(h, 'read-no-path-pending', {}, pendingCalls);
+    pending.setArgsComplete(); pending.setExpanded(true); await settled();
+    const pendingRows = plainRows(pending.render(80));
+    assert.ok(pendingRows.includes('→ Read') && pendingRows.includes('Waiting for file content.'));
+    assert.deepEqual(pendingCalls, { call: 0, result: 0 });
+
+    const errorCalls = { call: 0, result: 0 }, failed = readOwner(h, 'read-no-path-error', {}, errorCalls);
+    failed.setArgsComplete(); failed.updateResult({ content: [{ type: 'text', text: 'READ_ERROR_WITHOUT_PATH' }], isError: true }, false);
+    failed.setExpanded(true); await settled();
+    const failedRows = plainRows(failed.render(80));
+    assert.ok(failedRows.includes('→ Read') && failedRows.includes('READ_ERROR_WITHOUT_PATH'));
+    assert.deepEqual(errorCalls, { call: 0, result: 0 }, 'a final error without a path cannot escape through stock renderers');
+  } finally { await h.stop(); }
+});
+
+test('expanded pending read keeps its bounded waiting detail without invoking stock callbacks', async () => {
+  const h = fixture();
+  try {
+    await h.ready; await h.start();
+    const callbacks = { call: 0, result: 0 }, owner = readOwner(h, 'read-pending', { path: 'pending-read.ts' }, callbacks);
+    owner.setArgsComplete(); owner.setExpanded(true); await settled();
+    const rows = plainRows(owner.render(80));
+    assert.match(rows, /→ Read/u);
+    assert.match(rows, /Waiting for file content\./u);
+    assert.deepEqual(callbacks, { call: 0, result: 0 });
+  } finally { await h.stop(); }
+});
+
+test('expanded read failures show saved error text while stock callbacks stay cold', async () => {
+  const h = fixture();
+  try {
+    await h.ready; await h.start();
+    const args = { offset: 23 };
+    const callbacks = { call: 0, result: 0 }, owner = readOwner(h, 'read-error', args, callbacks), native = observeNativeRendererCalls(owner, callbacks); owner.setArgsComplete();
+    const result = { content: [{ type: 'text' as const, text: 'READ_ERROR_BODY\nREAD_ERROR_STACK' }], isError: true };
+    owner.updateResult(result, false);
+    assert.doesNotMatch(owner.render(80).join('\n'), /READ_ERROR_BODY|READ_ERROR_STACK/u);
+    native.install();
+    assert.equal(native.calls.result, 0, 'collapsed read error does not render Pi result components');
+    owner.setExpanded(true);  native.install(); await settled();
+    const rows = plainRows(owner.render(80));
+    assert.match(rows, /→ Read/u); assert.match(rows, /READ_ERROR_BODY/u); assert.match(rows, /READ_ERROR_STACK/u);
+    assert.equal(Reflect.get(owner, 'args'), args); assert.equal(Reflect.get(owner, 'result'), result);
+    assert.equal(native.calls.result, 0, 'expanded read error does not render Pi result components');
+    assert.equal(native.calls.call, 0, 'expanded read error does not render Pi call components');
+    assert.deepEqual(callbacks, { call: 0, result: 0 }, 'owned read error invokes neither stock renderer callback');
+  } finally { await h.stop(); }
+});
+
+test('read source updates and result invalidation prepare only current saved text', async () => {
+  const preparations: unknown[] = [];
+  const h = fixture('tui', false, undefined, undefined, receipt => preparations.push(receipt));
+  try {
+    await h.ready; await h.start();
+    const callbacks = { call: 0, result: 0 }, owner = readOwner(h, 'read-refresh', { path: 'read-refresh.ts', offset: 7 }, callbacks), native = observeNativeRendererCalls(owner, callbacks);
+    owner.setArgsComplete();
+    const result = { content: [{ type: 'text' as const, text: 'const READ_VERSION_A = 1;' }], isError: false };
+    owner.updateResult(result, false);  native.install(); owner.setExpanded(true); await settled();
+    assert.match(owner.render(100).join('\n'), /7.*READ_VERSION_A/u);
+    const preparedA = preparations.filter(value => (value as { phase?: unknown }).phase === 'updated').length;
+    assert.ok(preparedA > 0, 'the initial expanded result is prepared');
+
+    owner.updateResult({ content: [{ type: 'text' as const, text: 'const READ_VERSION_B = 2;' }], isError: false }, false);
+     native.install(); await settled();
+    const bRows = owner.render(100).join('\n');
+    assert.match(bRows, /7.*READ_VERSION_B/u);
+    assert.doesNotMatch(bRows, /READ_VERSION_A/u, 'same-path result replacement never revives old text');
+    const preparedB = preparations.filter(value => (value as { phase?: unknown }).phase === 'updated').length;
+    assert.equal(preparedB, preparedA + 1, 'one changed saved result creates one source update');
+
+    const beforeUnchangedInvalidation = preparations.filter(value => (value as { phase?: unknown }).phase === 'updated').length;
+    owner.invalidate(); native.install(); await settled();
+    const unchangedRows = owner.render(100).join('\n');
+    assert.match(unchangedRows, /7.*READ_VERSION_B/u);
+    assert.doesNotMatch(unchangedRows, /READ_VERSION_A/u);
+    assert.equal(preparations.filter(value => (value as { phase?: unknown }).phase === 'updated').length, beforeUnchangedInvalidation,
+      'ordinary invalidation with unchanged saved result text reuses the read source token');
+    const beforeWarm = preparations.length;
+    owner.render(100); owner.render(58);
+    assert.equal(preparations.length, beforeWarm, 'warm and width-only renders do not reprepare SOURCE');
+
+    const currentResult = Reflect.get(owner, 'result') as { content: { type: string; text?: string }[] };
+    currentResult.content[0]!.text = 'const READ_VERSION_C = 3;';
+    owner.invalidate();  native.install(); await settled();
+    const cRows = owner.render(100).join('\n');
+    assert.match(cRows, /7.*READ_VERSION_C/u);
+    assert.doesNotMatch(cRows, /READ_VERSION_A|READ_VERSION_B/u, 'native invalidation reads mutated saved result text');
+    const preparedC = preparations.filter(value => (value as { phase?: unknown }).phase === 'updated').length;
+    assert.equal(preparedC, preparedB + 1, 'same-object text mutation creates one new source update');
+
+    owner.setExpanded(false);  await settled(); owner.render(80);
+    owner.updateResult({ content: [{ type: 'text' as const, text: 'const READ_HIDDEN_D = 4;' }], isError: false }, false);
+     native.install(); await settled(); owner.setExpanded(true);  native.install(); await settled();
+    const dRows = owner.render(100).join('\n');
+    assert.match(dRows, /7.*READ_HIDDEN_D/u);
+    assert.doesNotMatch(dRows, /READ_VERSION_A|READ_VERSION_B|READ_VERSION_C/u, 'hidden updates cannot revive prior sources');
+  } finally { await h.stop(); }
+});
+
+test('AFT read metadata-only invalidation refreshes source numbering and preserves literal stock fallback', async () => {
+  const preparations: unknown[] = [], h = fixture('tui', false, undefined, undefined, value => preparations.push(value));
+  try {
+    await h.ready; await h.start();
+    const owner = readOwner(h, 'aft-read-metadata', { path: 'saved.md', startLine: '41', offset: 900 });
+    const text = '41: ## Saved heading\n42: original source';
+    const details = { success: true, content: text, text, start_line: 41, end_line: 42, lines_read: 2 };
+    owner.setArgsComplete(); owner.updateResult({ content: [{ type: 'text', text }], details, isError: false }, false);
+    owner.setExpanded(true); await settled();
+    const first = plainRows(owner.render(100));
+    assert.match(first, /┃\s+41\s+## Saved heading/u);
+    assert.doesNotMatch(first, /41: ## Saved heading/u);
+
+    details.success = false; owner.invalidate(); await settled();
+    const literal = plainRows(owner.render(100));
+    assert.match(literal, /┃\s+900\s+41: ## Saved heading/u, 'the same saved text with invalidated metadata is not decoded using stale coordinates');
+    details.success = true; owner.invalidate(); await settled();
+    details.content = 'UNRELATED_METADATA_CONTENT'; owner.invalidate(); await settled();
+    assert.match(plainRows(owner.render(100)), /┃\s+900\s+41: ## Saved heading/u, 'content-correlation changes alone invalidate decoded source');
+    details.content = text; owner.invalidate(); await settled();
+    assert.match(plainRows(owner.render(100)), /┃\s+41\s+## Saved heading/u);
+    details.start_line = 42; details.end_line = 43; owner.invalidate(); await settled();
+    assert.match(plainRows(owner.render(100)), /┃\s+900\s+41: ## Saved heading/u, 'coordinate-only changes must be validated against current saved prefixes');
+    details.start_line = 41; details.end_line = 42; owner.invalidate(); await settled();
+    details.lines_read = 1; details.end_line = 41; owner.invalidate(); await settled();
+    assert.match(plainRows(owner.render(100)), /┃\s+900\s+41: ## Saved heading/u, 'a coherent count/range change cannot reuse a previously decoded full block');
+    details.lines_read = 2; details.end_line = 42; owner.invalidate(); await settled();
+    const restored = plainRows(owner.render(100));
+    assert.match(restored, /┃\s+41\s+## Saved heading/u);
+    assert.doesNotMatch(restored, /41: ## Saved heading/u);
+    const count = preparations.length;
+    owner.invalidate(); await settled(); owner.render(100); owner.render(58);
+    assert.equal(preparations.length, count, 'unchanged valid metadata, warm frames and width changes retain prepared source');
+  } finally { await h.stop(); }
+});
+
+test('expanded text-only read does not borrow Pi constructor spacers', async () => {
+  const h = fixture();
+  try {
+    await h.ready; await h.start();
+    const owner = readOwner(h, 'read-text-only-spacer', { path: 'plain.ts' });
+    owner.setArgsComplete(); owner.updateResult({ content: [{ type: 'text', text: 'const PLAIN_READ = true;' }], isError: false }, false); owner.setExpanded(true);
+    const spacer = owner.children.find((child): child is Spacer => child instanceof Spacer);
+    assert.ok(spacer, 'Pi supplies the constructor spacer in its public child list');
+    let spacerCalls = 0;
+    Reflect.set(spacer, 'render', () => { spacerCalls++; return ['READ_CONSTRUCTOR_SPACER']; });
+    const rows = plainRows(owner.render(80));
+    assert.match(rows, /const PLAIN_READ = true;/u);
+    assert.doesNotMatch(rows, /READ_CONSTRUCTOR_SPACER/u, 'text-only read output excludes the constructor spacer');
+    assert.equal(spacerCalls, 0, 'a text-only expanded read does not borrow the unrelated constructor spacer');
+  } finally { await h.stop(); }
+});
+
+test('expanded read reuses public Pi image children as unpadded protocol rows', async () => {
+  const previous = getCapabilities(); setCapabilities({ ...previous, images: 'kitty' });
+  const h = fixture();
+  try {
+    await h.ready; await h.start();
+    h.root.addChild(new Text('preceding visible row\nsecond visible row'));
+    const callbacks = { call: 0, result: 0 }, owner = readOwner(h, 'read-image', { path: 'photo.png', offset: 1 }, callbacks), native = observeNativeRendererCalls(owner, callbacks);
+    owner.setShowImages(true); owner.setImageWidthCells(30);
+    owner.updateResult({ content: [
+      { type: 'text', text: 'Read image: photo.png' },
+      { type: 'image', data: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/pWQAAAAASUVORK5CYII=', mimeType: 'image/png' },
+    ], isError: false }, false);
+    const initialImages = owner.children.filter((child): child is Image => child instanceof Image);
+    assert.equal(initialImages.length, 1, 'the SDK owns and supplies the public image child');
+    const renderedWidths: number[] = [], nativeRows: string[][] = [], observedImages = new WeakSet<Image>();
+    const observeImage = (image: Image) => {
+      if (observedImages.has(image)) return;
+      observedImages.add(image);
+      const originalRender = image.render.bind(image) as (width: number) => string[];
+      image.render = width => { renderedWidths.push(width); const rows = originalRender(width); nativeRows.push(rows); return rows; };
+    };
+    observeImage(initialImages[0]!);
+    owner.render(80); native.install();
+    assert.equal(renderedWidths.length, 0, 'collapsed read does not paint its image child');
+    assert.deepEqual(callbacks, { call: 0, result: 0 }, 'owned image read does not invoke Pi text callbacks');
+    owner.setExpanded(true);
+    const images = owner.children.filter((child): child is Image => child instanceof Image);
+    const spacers = owner.children.filter((child): child is Spacer => child instanceof Spacer);
+    assert.equal(images.length, 1, 'expansion uses one current public image child');
+    for (const image of images) observeImage(image);
+    assert.ok(spacers.length > 0, 'the SDK supplies public reservation spacers around the image');
+    const image = images[0]!;
+    const imageIndex = owner.children.indexOf(image), imageSpacer = owner.children[imageIndex - 1];
+    assert.ok(imageSpacer instanceof Spacer, 'Pi inserts the image reservation spacer immediately before its public Image child');
+    const constructorSpacer = spacers.find(spacer => owner.children.indexOf(spacer) < imageIndex - 1);
+    assert.ok(constructorSpacer, 'Pi also supplies an unrelated constructor spacer before the image block');
+    const spacerRows = new Map<Spacer, string[]>(), spacerCalls = new Map<Spacer, number>();
+    for (const spacer of spacers) {
+      const reservation = spacer.render(cardGeometry(80).contentWidth);
+      spacerRows.set(spacer, reservation); spacerCalls.set(spacer, 0);
+      Reflect.set(spacer, 'render', () => { spacerCalls.set(spacer, spacerCalls.get(spacer)! + 1); return reservation; });
+    }
+    const rows = owner.render(80);
+    const geometry = cardGeometry(80);
+    assert.deepEqual(renderedWidths, [geometry.contentWidth], 'the existing Image renders only at useful inner width');
+    assert.equal(spacerCalls.get(imageSpacer), 1, 'the image block borrows its own immediately preceding reservation spacer');
+    assert.equal(spacerCalls.get(constructorSpacer), 0, 'the unrelated Pi constructor spacer is not added to the card');
+    assert.deepEqual(callbacks, { call: 0, result: 0 }, 'expanded image read remains in our saved-text presentation');
+    const imageProtocolRows = nativeRows[0]!.filter(row => row.includes('\x1b_G') || row.includes('\x1b]1337;File='));
+    assert.ok(nativeRows[0]!.length > 1, 'the fixture exercises a multi-row native image block');
+    assert.ok(imageProtocolRows.length > 0, 'Pi produces a native Kitty or iTerm image protocol row');
+    const prefix = `\x1b[0m\x1b[${geometry.contentX}C`;
+    const expectedImageBlock = [...spacerRows.get(imageSpacer)!, ...nativeRows[0]!.map(row => !row ? ''
+      : row.includes('\x1b_G') || row.includes('\x1b]1337;File=') ? prefix + row : row)];
+    const firstProtocolInBlock = expectedImageBlock.findIndex(row => row.includes(prefix) && (row.includes('\x1b_G') || row.includes('\x1b]1337;File=')));
+    const firstProtocolInOutput = rows.findIndex(row => row.includes(prefix) && (row.includes('\x1b_G') || row.includes('\x1b]1337;File=')));
+    assert.ok(firstProtocolInBlock >= 0 && firstProtocolInOutput >= firstProtocolInBlock, 'the image protocol block is present in the card');
+    const blockStart = firstProtocolInOutput - firstProtocolInBlock;
+    assert.deepEqual(rows.slice(blockStart, blockStart + expectedImageBlock.length), expectedImageBlock,
+      'image reservation rows, protocol continuations and surrounding order exactly match the current Pi child block');
+    assert.ok(spacerRows.get(imageSpacer)!.length > 0 && spacerRows.get(imageSpacer)!.every(row => row === ''), 'the image reservation consists of literal empty rows');
+    const imageProtocolRow = rows.findIndex(row => row.includes(prefix) && (row.includes('\x1b_G') || row.includes('\x1b]1337;File=')));
+    const imageEvent = (y: number, height = rows.length, x = geometry.contentX) => owner.handleMouse({ type: 'click', button: 'left', x, y,
+      screenX: x, screenY: y, width: 80, height, shift: false, alt: false, ctrl: false });
+    assert.ok(imageProtocolRow >= 0, 'the owned output exposes the image row coordinate for hit testing');
+    assert.equal(imageEvent(imageProtocolRow)?.handled, undefined, 'opaque protocol image rows are not hit-test targets');
+    assert.equal(Reflect.get(owner, 'expanded'), true, 'clicking an image row cannot collapse the read');
+    const plainFallbackImage = image.render;
+    Reflect.set(image, 'render', () => ['plain image fallback']);
+    const fallbackRows = plainRows(owner.render(80));
+    assert.ok(fallbackRows.includes(`${' '.repeat(geometry.contentX)}plain image fallback`),
+      'non-protocol image fallback aligns with the content column without framing');
+    Reflect.set(image, 'render', plainFallbackImage);
+    const interactiveRows = owner.render(80);
+    assert.equal(interactiveRows[0], '', 'a multi-row predecessor contributes the ordinary nonzero separator');
+    const textRow = interactiveRows.findIndex(row => row.includes('Read image: photo.png'));
+    assert.ok(textRow >= 0);
+    assert.equal(imageEvent(textRow, interactiveRows.length)?.handled, true, 'ordinary saved text rows remain clickable');
+    assert.equal(Reflect.get(owner, 'expanded'), false, 'clicking saved text collapses the read');
+    owner.setExpanded(true);
+    const expandedRows = owner.render(80), bottomPaddingY = expandedRows.length - 1;
+    assert.equal(imageEvent(0, expandedRows.length)?.handled, undefined, 'the nonzero predecessor separator is not a border hit');
+    assert.equal(imageEvent(bottomPaddingY, expandedRows.length, 0)?.handled, undefined, 'exterior margin rows remain outside the hit target');
+    assert.equal(Reflect.get(owner, 'expanded'), true);
+    h.root.selection = true;
+    assert.equal(imageEvent(bottomPaddingY, expandedRows.length)?.handled, undefined, 'active selection suppresses bottom-border toggling');
+    assert.equal(Reflect.get(owner, 'expanded'), true);
+    h.root.selection = false;
+    assert.equal(imageEvent(bottomPaddingY, expandedRows.length)?.handled, true,
+      'the actual final framed padding row remains clickable after the opaque image block and predecessor gap');
+    assert.equal(Reflect.get(owner, 'expanded'), false, 'the bottom border collapses the expanded read');
+    owner.setExpanded(true);
+    const beforeZero = renderedWidths.length;
+    assert.equal(cardGeometry(0).contentWidth, 0, 'the test width has no usable image content columns');
+    owner.render(0);
+    assert.equal(renderedWidths.length, beforeZero, 'zero usable content width never calls Image.render');
+    owner.setShowImages(false);
+    const hiddenImageRows = plainRows(owner.render(80));
+    assert.equal(owner.children.filter(child => child instanceof Image).length, 0, 'Pi may rebuild the current image children when images are hidden');
+    assert.match(hiddenImageRows, /Read image: photo\.png/u, 'saved textual context remains visible when images are hidden');
+    assert.equal(hiddenImageRows.includes('\x1b_G') || hiddenImageRows.includes('\x1b]1337;File='), false);
+    owner.setShowImages(true);
+    owner.setImageWidthCells(35);
+    assert.equal(owner.children.filter(child => child instanceof Image).length, 1, 'the rebuilt Pi display supplies one image child, not a duplicate');
+    const rebuiltImage = owner.children.find((child): child is Image => child instanceof Image)!;
+    Reflect.set(rebuiltImage, 'render', (imageWidth: number) => { renderedWidths.push(imageWidth); return []; });
+    owner.render(80);
+    assert.equal(renderedWidths.at(-1), cardGeometry(80).contentWidth, 'the current image child after both public setters is observed on the next expanded frame');
+    owner.setExpanded(false); const beforeCollapse = renderedWidths.length; owner.render(80);
+    assert.equal(renderedWidths.length, beforeCollapse, 'collapsed image is not rendered');
+  } finally { await h.stop(); setCapabilities(previous); }
+});
+
+test('hidden foreign self-rendered reads preserve visible predecessor spacing before the next card', async () => {
+  const preparations: unknown[] = [], h = fixture('tui', false, undefined, undefined, receipt => preparations.push(receipt));
+  try {
+    await h.ready; await h.start();
+    h.root.addChild(new Text('visible predecessor'));
+    const stock = createReadToolDefinition('/tmp');
+    const foreign = { ...stock, renderShell: 'self' as const,
+      renderCall: () => new Container(), renderResult: () => new Container() };
+    const hidden = new ToolExecutionComponent('read', 'foreign-empty-read', { path: 'short.ts' }, undefined,
+      foreign, h.root as unknown as ConstructorParameters<typeof ToolExecutionComponent>[5], '/tmp');
+    h.root.addChild(hidden);
+    hidden.updateResult({ content: [{ type: 'text', text: 'hidden foreign content' }], isError: false }, false);
+    assert.deepEqual(hidden.render(120), [], 'an empty foreign self shell remains genuinely hidden when collapsed');
+
+    const next = readOwner(h, 'after-hidden-read', { path: 'next.ts' });
+    next.updateResult({ content: [{ type: 'text', text: 'const NEXT_READ = true;' }], isError: false }, false);
+    const compactAfterHidden = next.render(120);
+    assert.equal(compactAfterHidden[0], '', 'a one-row compact successor preserves the preceding visible-message separator');
+
+    hidden.setExpanded(true);
+    assert.deepEqual(hidden.render(120), [], 'an empty foreign self shell remains genuinely hidden when expanded');
+    assert.equal(next.render(120)[0], '', 'a hidden expanded read does not replace preceding-visible geometry');
+    assert.equal(preparations.some(value => (value as { phase?: unknown; call?: unknown }).phase === 'updated' &&
+      (value as { call?: unknown }).call === 'foreign-empty-read'), false, 'a hidden foreign shell does not admit read preparation');
+  } finally { await h.stop(); }
+});
+
+test('collapsed foreign read hit-testing uses the current self-shell visibility', async () => {
+  const h = fixture();
+  try {
+    await h.ready; await h.start(); h.root.addChild(new Text('visible predecessor'));
+    const stock = createReadToolDefinition('/tmp');
+    const foreign = { ...stock, renderShell: 'self' as const,
+      renderCall: () => new Container(), renderResult: () => new Container() };
+    const expected = readOwner(h, 'visible-predecessor-next-read', { path: 'next.ts' });
+    expected.updateResult({ content: [{ type: 'text', text: 'const NEXT_READ = true;' }], isError: false }, false);
+    const expectedRows = expected.render(120);
+    h.root.removeChild(expected);
+
+    const hidden = new ToolExecutionComponent('read', 'collapsed-empty-read', { path: 'short.ts' }, undefined,
+      foreign, h.root as unknown as ConstructorParameters<typeof ToolExecutionComponent>[5], '/tmp');
+    h.root.addChild(hidden);
+    hidden.updateResult({ content: [{ type: 'text', text: 'hidden foreign content' }], isError: false }, false);
+    assert.deepEqual(hidden.render(120), [], 'an empty foreign self shell remains genuinely hidden when collapsed');
+    const next = readOwner(h, 'after-collapsed-hidden-read', { path: 'next.ts' });
+    next.updateResult({ content: [{ type: 'text', text: 'const NEXT_READ = true;' }], isError: false }, false);
+    assert.deepEqual(next.render(120), expectedRows, 'the collapsed hidden foreign summary adds no extra row or phantom spacing');
+  } finally { await h.stop(); }
+});
+
+test('expanded foreign read hit-testing skips a now-empty prepared self shell', async () => {
+  const h = fixture();
+  try {
+    await h.ready; await h.start(); h.root.addChild(new Text('visible predecessor'));
+    const compactBefore = readOwner(h, 'compact-before-hidden-read', { path: 'compact-before.ts' });
+    compactBefore.updateResult({ content: [{ type: 'text', text: 'const COMPACT_BEFORE = true;' }], isError: false }, false);
+    compactBefore.render(100);
+    const call = new Container(), result = new Container();
+    call.addChild(new Text('foreign call')); result.addChild(new Text('foreign result'));
+    const stock = createReadToolDefinition('/tmp');
+    const foreign = { ...stock, renderShell: 'self' as const, renderCall: () => call, renderResult: () => result };
+    const hidden = new ToolExecutionComponent('read', 'expanded-empty-read', { path: 'hidden.ts' }, undefined,
+      foreign, h.root as unknown as ConstructorParameters<typeof ToolExecutionComponent>[5], '/tmp');
+    h.root.addChild(hidden);
+    hidden.updateResult({ content: [{ type: 'text', text: 'const HIDDEN_FULL_READ = true;' }], isError: false }, false);
+    hidden.render(100); hidden.setExpanded(true); await settled();
+    assert.match(hidden.render(100).join('\\n'), /HIDDEN_FULL_READ/u, 'the foreign read first becomes a genuinely prepared full card');
+    call.clear(); result.clear();
+    const next = readOwner(h, 'after-expanded-hidden-read', { path: 'next-expanded.ts' });
+    next.updateResult({ content: [{ type: 'text', text: 'const NEXT_EXPANDED_READ = true;' }], isError: false }, false);
+    const rows = next.render(100);
+    assert.notEqual(rows[0], '', 'an empty previously prepared foreign shell contributes no full-card separator');
+  } finally { await h.stop(); }
+});
+
+test('compatible foreign self-rendered read defers cold source preparation outside render', async () => {
+  const h = fixture();
+  const updateDisplay = CardSources.prototype.updateDisplay;
+  let inRender = false, renderStackUpdates = 0, updates = 0;
+  CardSources.prototype.updateDisplay = function(owner, input) {
+    updates++; if (inRender) renderStackUpdates++;
+    return updateDisplay.call(this, owner, input);
+  };
+  try {
+    await h.ready; await h.start();
+    const stock = createReadToolDefinition('/tmp'), calls = { call: 0, result: 0 };
+    const foreign = { ...stock, renderShell: 'self' as const,
+      renderCall: () => { calls.call++; return new Text('foreign read call'); },
+      renderResult: () => { calls.result++; return new Text('foreign read result'); } };
+    const owner = new ToolExecutionComponent('read', 'foreign-visible-read', { path: 'foreign.ts', offset: 7 }, undefined,
+      foreign, h.root as unknown as ConstructorParameters<typeof ToolExecutionComponent>[5], '/tmp');
+    h.root.addChild(owner);
+    owner.updateResult({ content: [{ type: 'text', text: 'const FOREIGN_READ_BODY = true;' }], isError: false }, false);
+    owner.setExpanded(true);
+    inRender = true;
+    const initialRows = plainRows(owner.render(100));
+    inRender = false;
+    assert.equal(renderStackUpdates, 0, 'first visible foreign frame never calls CardSources.updateDisplay synchronously');
+    assert.equal(updates, 0, 'cold display construction waits until after the component render returns');
+    assert.doesNotMatch(initialRows, /FOREIGN_READ_BODY/u, 'unprepared saved body is not copied through a render fallback');
+
+    const following = readOwner(h, 'following-foreign-read', { path: 'following.ts' });
+    following.updateResult({ content: [{ type: 'text', text: 'const FOLLOWING_READ = true;' }], isError: false }, false);
+    updates = 0; renderStackUpdates = 0; inRender = true;
+    const predecessorMeasuredRows = plainRows(following.render(100));
+    inRender = false;
+    assert.match(predecessorMeasuredRows, /following\.ts/u, 'the following compact read itself remains visible');
+    assert.equal(renderStackUpdates, 0, 'previousLayout/fileMeasure never admits the cold preceding read during render');
+    assert.equal(updates, 0, 'predecessor geometry observes no cold source preparation');
+
+    await turn(); await settled();
+    assert.ok(updates > 0, 'the existing owner work path admits deferred preparation after visibility discovery');
+    const rows = plainRows(owner.render(100));
+    assert.match(rows, /→ Read/u);
+    assert.match(rows, /7.*FOREIGN_READ_BODY/u, 'the compatible foreign read displays only the saved result text');
+    assert.equal(renderStackUpdates, 0, 'the post-render admission remains outside every render stack');
+    assert.ok(calls.call > 0 && calls.result > 0, 'visibility probing uses the foreign renderer callbacks without replacing them');
+  } finally { CardSources.prototype.updateDisplay = updateDisplay; await h.stop(); }
+});
+
+test('read is excluded from the write/edit rolling automatic-full window', async () => {
+  const h = fixture();
+  try {
+    await h.ready; await h.start();
+    h.events.get('turn_start')!({ type: 'turn_start' }, h.ctx);
+    const writes = Array.from({ length: 10 }, (_, index) => writeOwner(h, `read-window-${index}`, writeSource(`read_window_${index}`)));
+    for (const owner of writes) completeLiveWrite(h, owner);
+    const read = readOwner(h, 'read-window-read');
+    read.updateResult({ content: [{ type: 'text', text: 'const READ_WINDOW_ONLY = true;' }], isError: false }, false);
+    completeLiveFile(h, read);
+    h.events.get('turn_end')!({ type: 'turn_end' }, h.ctx);
+    for (const [index, owner] of writes.entries())
+      assert.match(owner.render(100).join('\n'), new RegExp(`read_window_${index}_row_13`), 'read does not consume one of ten automatic write slots');
+    assert.doesNotMatch(read.render(100).join('\n'), /READ_WINDOW_ONLY/u, 'read stays a collapsed summary by default');
+  } finally { await h.stop(); }
+});
+
+test('compact read policy keeps its precedence when native and compact flags both name read', async () => {
+  const h = fixture(); h.setFlag('tidy-ui-compact', 'read'); h.setFlag('tidy-ui-card', 'read');
+  try {
+    await h.ready; await h.start();
+    const callbacks = { call: 0, result: 0 }, owner = readOwner(h, 'read-compact-native-priority', { path: 'priority.ts' }, callbacks);
+    owner.updateResult({ content: [{ type: 'text', text: 'const READ_PRIORITY = true;' }], isError: false }, false);
+    const collapsed = plainRows(owner.render(80));
+    assert.match(collapsed, /→ read priority\.ts/u, 'compact mode remains visible ahead of the native full-card override');
+    assert.doesNotMatch(collapsed, /READ_PRIORITY/u);
+    assert.deepEqual(callbacks, { call: 0, result: 0 });
+    owner.setExpanded(true);
+    const expanded = plainRows(owner.render(80));
+    assert.match(expanded, /→ Read/u, 'combined flags still allow the manual owned full view');
+    assert.match(expanded, /READ_PRIORITY/u, 'the explicit compact setting does not force the expanded body back to summary');
+    assert.deepEqual(callbacks, { call: 0, result: 0 }, 'expanded combined-flag read still owns both stock callbacks');
+  } finally { await h.stop(); }
+});
+
+test('explicit native read override keeps Pi renderers', async () => {
+  const h = fixture(); h.setFlag('tidy-ui-card', 'read');
+  try {
+    await h.ready; await h.start();
+    const callbacks = { call: 0, result: 0 }, owner = readOwner(h, 'read-native-override', { path: 'read-native-override.ts', offset: 41 }, callbacks);
+    const native = observeNativeRendererCalls(owner, callbacks);
+    owner.updateResult({ content: [{ type: 'text', text: 'const READ_NATIVE_OVERRIDE = true;' }], isError: false }, false);
+    owner.setExpanded(true); native.install();
+    const rows = plainRows(owner.render(80));
+    assert.match(rows, /READ_NATIVE_OVERRIDE/u);
+    assert.match(rows, /read read-native-override\.ts/u, 'explicit override keeps the stock read call presentation');
+    assert.ok(callbacks.call > 0 && callbacks.result > 0, `explicit override invokes the native renderer callbacks: ${JSON.stringify(callbacks)}`);
+  } finally { await h.stop(); }
+});
 
 test('unsupported host without public tool-renderer registration is rejected before hooks, flags, commands or preference IO', () => {
   const calls = { hooks: 0, flags: 0, commands: 0, settings: 0 };
@@ -333,6 +877,52 @@ test('same toolCallId in HTML export and a live TUI component keeps distinct laz
     const afterHtml = nativeStyleCalls;
     live.render(80);
     assert.equal(nativeStyleCalls, afterHtml, 'HTML export with a matching id does not evict the live TUI renderer');
+  } finally {
+    if (descriptor) Object.defineProperty(activeTheme, 'fg', descriptor);
+    else delete activeTheme.fg;
+    await h.stop();
+  }
+});
+
+test('same read toolCallId in HTML export and the live TUI keeps separate lazy-renderer owners', async () => {
+  const h = fixture(); let nativeStyleCalls = 0;
+  const themeKey = Symbol.for('@earendil-works/pi-coding-agent:theme');
+  const activeTheme = (globalThis as Record<PropertyKey, any>)[themeKey];
+  assert.ok(activeTheme);
+  const descriptor = Object.getOwnPropertyDescriptor(activeTheme, 'fg');
+  const originalFg = activeTheme.fg.bind(activeTheme);
+  Object.defineProperty(activeTheme, 'fg', { configurable: true, writable: true,
+    value: (...args: Parameters<typeof themes.theme.fg>) => { nativeStyleCalls++; return originalFg(...args); } });
+  try {
+    await h.ready;
+    const resolver = h.rendererResolvers[0]!;
+    const wrapped = resolver('read', () => rendererSet(createReadToolDefinition('/tmp')))!;
+    const args = { path: '/tmp/shared-read-owner.ts' };
+    const live = new ToolExecutionComponent('read', 'same-read-owner-id', args, undefined, wrapped,
+      h.root as unknown as ConstructorParameters<typeof ToolExecutionComponent>[5], '/tmp');
+    live.updateResult({ content: [{ type: 'text', text: 'const savedReadOwner = "live";\n' }], isError: false });
+    live.setExpanded(true);
+    h.root.addChild(live);
+    const liveRows = live.render(80);
+    assert.ok(liveRows.join('\n').includes('savedReadOwner'));
+    const afterLive = nativeStyleCalls;
+
+    const { createToolHtmlRenderer } = await import(pathToFileURL(resolve(dist, 'core/export-html/tool-renderer.js')).href);
+    const html = createToolHtmlRenderer({
+      getToolRenderers(name: string) {
+        return name === 'read' ? resolver('read', () => rendererSet(createReadToolDefinition('/tmp'))) : undefined;
+      }, theme: themes.theme, cwd: '/tmp', width: 80,
+    });
+    const call = html.renderCall('same-read-owner-id', 'read', args);
+    const result = html.renderResult('same-read-owner-id', 'read', [{ type: 'text', text: 'separate HTML read result' }], undefined, true);
+    assert.ok(call?.includes('shared-read-owner.ts'));
+    assert.ok(result?.expanded?.includes('separate HTML read result'));
+    assert.ok(nativeStyleCalls > afterLive, 'the real HTML exporter invokes its own stock read callbacks');
+    const afterHtml = nativeStyleCalls;
+    const liveAgain = live.render(80);
+    assert.ok(liveAgain.join('\n').includes('savedReadOwner'));
+    assert.ok(!liveAgain.join('\n').includes('separate HTML read result'));
+    assert.equal(nativeStyleCalls, afterHtml, 'HTML export with a matching read id neither evicts nor revives the live renderer');
   } finally {
     if (descriptor) Object.defineProperty(activeTheme, 'fg', descriptor);
     else delete activeTheme.fg;
@@ -819,6 +1409,17 @@ test('native renderer failures use bounded reported fallbacks and recover on the
     assert.match(recoveredResult, /recovered native result/u);
     await h.page('Status & troubleshooting');
     assert.match(h.view, /No active runtime errors/u);
+
+    const readBase = createReadToolDefinition('/tmp');
+    const readContext = { ...context, toolCallId: 'bounded-read-failure-id', state: {}, args: { path: '/tmp/read.ts' } } as Parameters<NonNullable<ToolRenderers['renderResult']>>[3];
+    const wrappedRead = resolver('read', () => rendererSet(readBase))!;
+    const readRows = wrappedRead.renderResult!({ content: [{ type: 'text', text: 'PRIVATE_READ_RESULT' }], details: undefined },
+      { expanded: false, isPartial: false }, failingTheme, readContext).render(80).join('\n');
+    assert.match(readRows, /Native file result unavailable/u);
+    assert.doesNotMatch(readRows, /PRIVATE_READ_RESULT|PRIVATE_RENDERER_EXCEPTION/u);
+    await settled();
+    await h.page('Status & troubleshooting');
+    assert.match(h.view, /appearance.*native_renderer/u, 'read callback failures use the existing native renderer diagnostic reporter');
   } finally { await h.stop(); }
 });
 
@@ -1503,6 +2104,8 @@ test('valid full file preparation refusal stays custom and retries without chang
     assert.equal(Reflect.get(tool, 'expanded'), true, 'a funding refusal preserves Pi’s requested full mode');
     assert.ok(refusals > 0, 'the full-card preparation encountered the controlled refusal');
   } finally { SourceController.prototype.geometryFunding = geometryFunding; }
+  tool.render(80);
+  await settled();
   const recovered = tool.render(80).join('\n');
   assert.match(recovered, /preparation_refusal_row_13/u, 'an eligible cold visit retries the same full card after funding returns');
   assertNativeRendererCold(tool, 'call', 'recovered full card remains custom');
@@ -1936,6 +2539,7 @@ test('valid full file cards stay owned across preparation and geometry refusal, 
     assertNativeRendererCold(tool, 'result', 'valid full preparation refusal never constructs stock result output');
 
     SourceController.prototype.geometryFunding = originalFunding;
+    tool.render(80); await settled();
     rows = tool.render(80).join('\n');
     assert.match(rows, /funded_full_retry_row_13/, 'ordinary later render retries the same requested full mode');
     assertNativeRendererCold(tool, 'call', 'successful cold retry remains custom');
@@ -2274,4 +2878,265 @@ test('unsupported saved edit preview spacing stays on the bounded owned fallback
       'spacing measures the same multi-row owned fallback that the unsupported predecessor renders');
     assert.ok(rootRows.join('\n').includes('unsupported_spacing_successor_row_0'));
   } finally { await h.stop(); }
+});
+
+
+test('expanded read image rows remain during reload cleanup until hooks are restored', async () => {
+  const previousCapabilities = getCapabilities(); setCapabilities({ ...previousCapabilities, images: 'kitty' });
+  const h = fixture();
+  let release!: () => void, stopping: Promise<void> | undefined;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const dispose = SyntaxRuntime.prototype.dispose;
+  try {
+    await h.ready; await h.start();
+    const owner = readOwner(h, 'read-image-reload', { path: 'reload.png' });
+    owner.setShowImages(true); owner.setImageWidthCells(30);
+    owner.updateResult({ content: [{ type: 'image', data: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/pWQAAAAASUVORK5CYII=', mimeType: 'image/png' }], isError: false }, false);
+    owner.setExpanded(true);
+    const before = h.root.render(80);
+    assert.equal(before.some(row => row.includes('\x1b_G') || row.includes('\x1b]1337;File=')), true,
+      'the normal expanded read frame includes its saved Pi image protocol block');
+    SyntaxRuntime.prototype.dispose = function () {
+      const stopped = dispose.call(this);
+      return Promise.all([stopped, gate]).then(() => {});
+    };
+    stopping = h.events.get('session_shutdown')!({ type: 'session_shutdown', reason: 'reload' }, h.ctx) as Promise<void>;
+    await settled();
+    const cleanup = h.root.render(80);
+    assert.deepEqual(cleanup, before, 'the temporary reload-cleanup frame retains the current saved image rows and surrounding card');
+  } finally {
+    release();
+    if (stopping) await stopping;
+    SyntaxRuntime.prototype.dispose = dispose;
+    await h.stop(); setCapabilities(previousCapabilities);
+  }
+});
+
+
+test('owned-palette mode drift schedules current refresh outside render without changing source identity', async () => {
+  const h = fixture('tui', false, undefined, undefined, undefined, { kind: 'theme', id: 'gruvbox-dark' });
+  const theme = themes.getThemeByName('dark') as Theme & { getColorMode(): TerminalColorMode } | undefined;
+  assert.ok(theme, 'the SDK returns a real public theme instance for this mode-change control');
+  themes.setThemeInstance(theme);
+  const descriptor = Object.getOwnPropertyDescriptor(theme, 'getColorMode');
+  let mode = theme.getColorMode();
+  Object.defineProperty(theme, 'getColorMode', { configurable: true, value: () => mode });
+  const original = CardSources.prototype.updateDisplay;
+  const inputs: CardDisplayInput[] = [];
+  let inRender = false, updatesInRender = 0;
+  CardSources.prototype.updateDisplay = function(node, input) {
+    if (inRender) updatesInRender++;
+    inputs.push(input);
+    return original.call(this, node, input);
+  };
+  try {
+    await h.ready; await h.start();
+    const owner = writeOwner(h, 'owned-mode-deferred', 'const OWNED_MODE_REFRESH = true;');
+    completeLiveWrite(h, owner); owner.setExpanded(true); owner.render(80); await settled();
+    const first = inputs.at(-1);
+    assert.equal(first?.kind, 'file'); if (first?.kind !== 'file') return;
+    const sourceRevision = first.sourceRevision;
+    mode = mode === 'truecolor' ? '256color' : 'truecolor';
+    assert.equal(theme.getColorMode(), mode, 'the public Theme getter observes the changed mode before the render probe');
+    inRender = true; owner.render(80); inRender = false;
+    assert.equal(updatesInRender, 0, 'an already-applied owned palette never rebuilds rows or measurements on the render stack');
+    await settled();
+    const refreshed = inputs.at(-1);
+    assert.equal(refreshed?.kind, 'file'); if (refreshed?.kind !== 'file') return;
+    assert.equal(refreshed.mode, mode, 'the deferred drain re-reads current public color mode rather than a captured value');
+    assert.equal(refreshed.sourceRevision, sourceRevision, 'mode-only refresh keeps the accepted source revision');
+    const calls = inputs.length;
+    owner.render(80); owner.render(100); await settled();
+    assert.equal(inputs.length, calls, 'warm and width-only frames do not repeat display preparation');
+  } finally {
+    CardSources.prototype.updateDisplay = original;
+    if (descriptor) Object.defineProperty(theme, 'getColorMode', descriptor);
+    else Reflect.deleteProperty(theme, 'getColorMode');
+    themes.initTheme('dark', false);
+    await h.stop();
+  }
+});
+
+test('cold expanded write and edit preparation leaves the render stack and recovers at the same expansion', async () => {
+  const originalUpdate = CardSources.prototype.updateDisplay;
+  for (const kind of ['write', 'edit'] as const) {
+    const h = fixture(); let inRender = false, updatesInRender = 0, updatesOutsideRender = 0, siblingUpdates = 0, denyTarget = false;
+    let sibling: ToolExecutionComponent | undefined, target: ToolExecutionComponent | undefined;
+    CardSources.prototype.updateDisplay = function (owner, input) {
+      if (inRender) updatesInRender++; else updatesOutsideRender++;
+      if (owner === sibling) siblingUpdates++;
+      if (owner === target && denyTarget) return false;
+      return originalUpdate.call(this, owner, input);
+    };
+    try {
+      await h.start();
+      sibling = writeOwner(h, `warm-sibling-${kind}`, writeSource(`warm_sibling_${kind}`));
+      completeLiveWrite(h, sibling); sibling.setExpanded(true); sibling.render(80); await settled();
+      const siblingRows = sibling.render(80);
+      assert.ok(siblingRows.join('\n').includes(`warm_sibling_${kind}_row_13`), `the unrelated sibling has an admitted full display before target refusal; rows:\n${siblingRows.join('\n')}`);
+      updatesOutsideRender = 0; siblingUpdates = 0;
+      const owner = kind === 'write' ? writeOwner(h, `deferred-${kind}`, writeSource(`deferred_${kind}`)) : editOwner(h, `deferred-${kind}`);
+      h.root.removeChild(owner);
+      owner.setExpanded(true);
+      if (kind === 'edit') completeLiveEdit(h, owner); else completeLiveWrite(h, owner);
+      Reflect.set(owner, 'hideComponent', true);
+      h.root.addChild(owner);
+      assert.equal(Reflect.get(owner, 'hideComponent'), true, `${kind} remains genuinely hidden after Pi updates its result`);
+      assert.equal(updatesOutsideRender, 0, `${kind} has not attempted source admission while detached`);
+      target = owner; denyTarget = true;
+      const args = Reflect.get(owner, 'args'), result = Reflect.get(owner, 'result');
+      owner.render(80);
+      assert.equal(updatesOutsideRender, 0, `${kind} hidden detached-to-attached render still does not admit content`);
+      Reflect.set(owner, 'hideComponent', false);
+
+      inRender = true;
+      try { owner.render(80); } finally { inRender = false; }
+      const pendingRows = owner.render(80).join('\n');
+      assert.match(pendingRows, /Preparing full file view/u, `${kind} distinguishes pending admission from a real funding refusal`);
+      assert.doesNotMatch(pendingRows, /unavailable within the current .* budget/u);
+      assert.equal(updatesInRender, 0, `${kind} cold source/display admission does not run inside its render call`);
+      const framesBeforeDrain = h.root.requests;
+      await settled();
+      assert.ok(updatesOutsideRender > 0, `${kind} admission drains outside render`);
+      assert.equal(siblingUpdates, 0, `${kind} refused outcome does not invalidate or re-admit a warm unrelated sibling`);
+      const firstRequestedFrame = h.root.requests;
+      assert.equal(firstRequestedFrame, framesBeforeDrain + 1, `${kind} first refusal requests exactly one ordinary status frame`);
+      const attemptsBeforeRepeat = updatesOutsideRender, stableFrames = h.root.requests;
+      for (let i = 0; i < 3; i++) { owner.render(80); await settled(); }
+      assert.ok(updatesOutsideRender - attemptsBeforeRepeat <= 3, `${kind} repeated denied frames remain bounded to explicit attempts`);
+      assert.equal(h.root.requests, stableFrames, `${kind} unchanged refusal does not create a self-sustaining frame loop`);
+      assert.equal(siblingUpdates, 0, `${kind} target-only notification leaves the warm sibling cache untouched`);
+      const siblingTail = sibling.render(80).join('\n');
+      assert.ok(siblingTail.includes(`warm_sibling_${kind}_row_13`), `${kind} target refusal leaves the warm sibling's saved full rows available`);
+      assert.equal(siblingUpdates, 0, `${kind} sibling-only render does not re-admit its source`);
+
+      denyTarget = false;
+      inRender = true;
+      try { owner.render(80); } finally { inRender = false; }
+      assert.equal(updatesInRender, 0, `${kind} funding recovery remains deferred`);
+      await settled();
+      const rows = owner.render(80).join('\n');
+      assert.ok(rows.includes(kind === 'write' ? 'deferred_write_row_13' : 'after'), `${kind} saved full text recovers without changing expansion`);
+      assert.equal(Reflect.get(owner, 'expanded'), true);
+      assert.equal(Reflect.get(owner, 'args'), args); assert.equal(Reflect.get(owner, 'result'), result);
+      const warmUpdates = updatesOutsideRender;
+      inRender = true;
+      try { owner.render(80); owner.render(100); } finally { inRender = false; }
+      await settled();
+      assert.equal(updatesOutsideRender, warmUpdates, `${kind} warm and width-only visits reuse current preparation`);
+      assert.equal(updatesInRender, 0);
+      assert.equal(siblingUpdates, 0);
+    } finally {
+      CardSources.prototype.updateDisplay = originalUpdate;
+      await h.stop();
+    }
+  }
+});
+
+test('predecessor measurement defers cold full write and edit preparation', async () => {
+  const originalUpdate = CardSources.prototype.updateDisplay;
+  for (const kind of ['write', 'edit'] as const) {
+    const h = fixture(); let inRender = false, updatesInRender = 0, updatesOutsideRender = 0;
+    CardSources.prototype.updateDisplay = function (owner, input) {
+      if (inRender) updatesInRender++; else updatesOutsideRender++;
+      return originalUpdate.call(this, owner, input);
+    };
+    try {
+      await h.start();
+      const predecessor = kind === 'write' ? writeOwner(h, `measure-${kind}`, writeSource(`measure_${kind}`)) : editOwner(h, `measure-${kind}`);
+      h.root.removeChild(predecessor);
+      predecessor.setExpanded(true);
+      if (kind === 'edit') completeLiveEdit(h, predecessor); else completeLiveWrite(h, predecessor);
+      Reflect.set(predecessor, 'hideComponent', true);
+      h.root.addChild(predecessor);
+      assert.equal(Reflect.get(predecessor, 'hideComponent'), true);
+      assert.equal(updatesOutsideRender, 0, `${kind} predecessor has not been admitted before sibling measurement`);
+      const follower = readOwner(h, `measure-follower-${kind}`);
+      completeLiveFile(h, follower);
+      const originalArgs = Reflect.get(predecessor, 'args'), originalResult = Reflect.get(predecessor, 'result');
+      Reflect.set(predecessor, 'hideComponent', false);
+
+      inRender = true;
+      let rows: string[];
+      try { rows = follower.render(80); } finally { inRender = false; }
+      assert.ok(rows.length > 0, 'the following compact read remains visible');
+      assert.equal(updatesInRender, 0, `${kind} predecessor measurement does not construct source/display rows inside the follower render`);
+      await settled();
+      assert.ok(updatesOutsideRender > 0, `${kind} predecessor admission drains after render`);
+      const rendered = predecessor.render(80).join('\n');
+      assert.ok(rendered.includes(kind === 'write' ? 'measure_write_row_13' : 'after'), `${kind} predecessor becomes available after deferred preparation`);
+      assert.equal(Reflect.get(predecessor, 'args'), originalArgs); assert.equal(Reflect.get(predecessor, 'result'), originalResult);
+      const warmUpdates = updatesOutsideRender;
+      follower.render(80); predecessor.render(80); await settled();
+      assert.equal(updatesOutsideRender, warmUpdates, `${kind} warm predecessor measurement does not repeat source/display admission`);
+      assert.equal(updatesInRender, 0);
+    } finally {
+      CardSources.prototype.updateDisplay = originalUpdate;
+      await h.stop();
+    }
+  }
+});
+
+
+test('queued palette refresh rechecks lifecycle and preserves the current token', async () => {
+  const h = fixture('tui', false, undefined, undefined, undefined, { kind: 'theme', id: 'gruvbox-dark' });
+  const theme = themes.getThemeByName('dark') as Theme & { getColorMode(): TerminalColorMode } | undefined;
+  assert.ok(theme, 'the SDK returns a real public Theme instance for deferred-token checks');
+  themes.setThemeInstance(theme);
+  const descriptor = Object.getOwnPropertyDescriptor(theme, 'getColorMode');
+  let mode = theme.getColorMode();
+  Object.defineProperty(theme, 'getColorMode', { configurable: true, value: () => mode });
+  const original = CardSources.prototype.updateDisplay;
+  const inputs: CardDisplayInput[] = [];
+  let owner: ToolExecutionComponent | undefined;
+  CardSources.prototype.updateDisplay = function(node, input) {
+    if (node === owner) inputs.push(input);
+    return original.call(this, node, input);
+  };
+  let stopped = false;
+  try {
+    await h.ready; await h.start();
+    owner = writeOwner(h, 'queued-refresh-lifecycle', 'const QUEUED_REFRESH_LIFECYCLE = true;');
+    completeLiveWrite(h, owner); owner.setExpanded(true); owner.render(80); await settled();
+    assert.ok(inputs.some(input => input.kind === 'file' && input.mode === mode), 'initial full display is prepared before lifecycle probes');
+
+    for (const transition of ['hide', 'detach', 'zero-width', 'collapse'] as const) {
+      mode = '256color';
+      const beforeSchedule = inputs.length;
+      owner.render(80);
+      assert.equal(inputs.length, beforeSchedule, `${transition}: mode drift is not prepared in render`);
+      if (transition === 'hide') Reflect.set(owner, 'hideComponent', true);
+      else if (transition === 'detach') h.root.removeChild(owner);
+      else if (transition === 'zero-width') owner.render(0);
+      else owner.setExpanded(false);
+      const afterLifecycle = inputs.length;
+      await settled();
+      assert.equal(inputs.length, afterLifecycle, `${transition}: queued obsolete refresh adds no preparation after lifecycle change`);
+      if (transition === 'collapse') {
+        assert.ok(inputs.slice(beforeSchedule).every(input => input.kind === 'file' && input.viewMode === 'preview'),
+          'a real collapse may prepare only its current preview, never stale full rows');
+        owner.setExpanded(true);
+      } else if (transition === 'hide') Reflect.set(owner, 'hideComponent', false);
+      else if (transition === 'detach') h.root.addChild(owner);
+
+      mode = inputs.at(-1)?.mode === '256color' ? 'truecolor' : '256color';
+      const beforeCurrent = inputs.length;
+      owner.render(80);
+      await settled();
+      assert.ok(inputs.slice(beforeCurrent).some(input => input.kind === 'file' && input.mode === mode),
+        `${transition}: a later valid current token still refreshes the changed mode; observed=${JSON.stringify(inputs.map(input => input.kind === 'file' ? { mode: input.mode, viewMode: input.viewMode, revision: input.revision } : input.kind))}; expected=${mode}`);
+    }
+
+    mode = '256color'; owner.render(80);
+    const beforeStop = inputs.length;
+    await h.stop(); stopped = true;
+    await settled();
+    assert.equal(inputs.length, beforeStop, 'quiescing invalidates a queued refresh before it can prepare');
+  } finally {
+    CardSources.prototype.updateDisplay = original;
+    if (descriptor) Object.defineProperty(theme, 'getColorMode', descriptor);
+    else Reflect.deleteProperty(theme, 'getColorMode');
+    themes.initTheme('dark', false);
+    if (!stopped) await h.stop();
+  }
 });

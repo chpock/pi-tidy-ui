@@ -9,7 +9,7 @@ import { dirname, resolve } from 'node:path';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import { stripVTControlCharacters } from 'node:util';
 import { Box, Container, Text } from '@earendil-works/pi-tui';
-import { VERSION, highlightCode, getLanguageFromPath, createEditToolDefinition, createWriteToolDefinition } from '@earendil-works/pi-coding-agent';
+import { VERSION, highlightCode, getLanguageFromPath, createBashToolDefinition, createEditToolDefinition, createReadToolDefinition, createWriteToolDefinition } from '@earendil-works/pi-coding-agent';
 import { installTidyUi, type TidyUiController, type TidyUiOptions } from '../../../src/index.ts';
 import { resolvePublicFileToolDefinition } from '../../fixtures/sdk-contract-support.ts';
 import { SourceController } from '../../../src/occipital/controller.ts';
@@ -20,6 +20,7 @@ import { semanticDescriptor } from '../../fixtures/semantic-provider.ts';
 import { fingerprintRules } from '../../../src/occipital/style-rules.ts';
 import { resolveTheme } from '../../../src/themes/selection.ts';
 import { CardSources } from '../../../src/syntax/cards.ts';
+import { DeferredRenderer } from '../../../src/syntax/lazy-native-renderers.ts';
 import { sampleOwnedPalette } from '../../../src/themes/owned-palette.ts';
 import { PaletteInputOwner } from '../../../src/syntax/pi-input-owner.ts';
 import { observeSyntaxLocalWork } from '../../fixtures/syntax-local-work.ts';
@@ -127,6 +128,8 @@ function fixture(ready = false, useDefaultClassifier = false, options: Pick<Tidy
     document(width = 60): string[] {
       env.depth++; try { return ui.render(width); } finally { env.depth--; }
     },
+    currentPiColors,
+    weakCurrentPiColors() { return new WeakRef(paletteColors); },
     tool(name: string, args: Record<string, unknown>, definition?: unknown, restored = false) {
       const id = `host-${name}-${++toolIdentity}`;
       if (!restored) liveCalls.add(id);
@@ -153,6 +156,69 @@ function watchConsumer(f: ReturnType<typeof fixture>) {
 function written(f: ReturnType<typeof fixture>, content: string, path = 'a.ts') {
   const tool = f.tool('write', { path, content });
   tool.updateResult({ content: [{ type: 'text', text: 'saved' }], isError: false }, false); return tool;
+}
+function observeLazyFileCallbacks(tool: object) {
+  const calls = { call: 0, result: 0 };
+  for (const [slot, field] of [['call', 'callRendererComponent'], ['result', 'resultRendererComponent']] as const) {
+    const component = Reflect.get(tool, field);
+    assert.ok(component instanceof DeferredRenderer, `current Pi ${slot} slot is the owned deferred stock wrapper`);
+    assert.equal(typeof Reflect.get(component, 'invoke'), 'function', `current Pi ${slot} wrapper has a live stock callback`);
+  }
+  const materialize = DeferredRenderer.prototype.materialize;
+  const observed = function(this: DeferredRenderer) {
+    const slot = this === Reflect.get(tool, 'callRendererComponent') ? 'call'
+      : this === Reflect.get(tool, 'resultRendererComponent') ? 'result' : undefined;
+    if (slot && !Reflect.get(this, 'disposed') && !Reflect.get(this, 'component') && typeof Reflect.get(this, 'invoke') === 'function') calls[slot]++;
+    return materialize.call(this);
+  };
+  DeferredRenderer.prototype.materialize = observed;
+  return { calls, restore() { if (DeferredRenderer.prototype.materialize === observed) DeferredRenderer.prototype.materialize = materialize; } };
+}
+function paintFundingProbe(f: ReturnType<typeof fixture>, refusal: 'palette' | 'paint' = 'paint') {
+  const originalFunding = f.sources.geometryFunding;
+  const boundFunding = originalFunding.bind(f.sources);
+  const originalRefresh = Reflect.get(CardSources.prototype, 'refreshPaint');
+  const originalReconcile = Reflect.get(CardSources.prototype, 'reconcileSelection');
+  assert.equal(typeof originalRefresh, 'function'); assert.equal(typeof originalReconcile, 'function');
+  let paintDepth = 0, paletteDepth = 0, displayDepth = 0, stage: 'refused' | 'palette-only' | 'recovery' | 'allowed' = 'refused';
+  let deniedPreparationBytes = 0, deniedLogicalBytes = 0;
+  const originalUpdate = CardSources.prototype.updateDisplay;
+  const observedUpdate = function(this: CardSources<object>, ...args: Parameters<typeof originalUpdate>) {
+    displayDepth++; try { return originalUpdate.apply(this, args); } finally { displayDepth--; }
+  };
+  CardSources.prototype.updateDisplay = observedUpdate;
+  f.sources.geometryFunding = group => {
+    const available = boundFunding(group);
+    if (!available) return undefined;
+    return { budget: available.budget, grant(bytes: number) {
+      if ((stage === 'recovery' || stage === 'palette-only') && displayDepth > 0 && paintDepth === 0 && paletteDepth === 0) { deniedLogicalBytes += bytes; return undefined; }
+      if (stage === 'palette-only' && paintDepth > 0 && bytes > 16 * 1024
+        || stage === 'refused' && (refusal === 'palette' ? paletteDepth > 0 : paintDepth > 0 && bytes > 16 * 1024)) {
+        deniedPreparationBytes += bytes; return undefined;
+      }
+      return available.grant(bytes);
+    } };
+  };
+  const observedRefresh = function(this: CardSources<object>, ...args: unknown[]) {
+    paintDepth++;
+    try { return Reflect.apply(originalRefresh, this, args); } finally { paintDepth--; }
+  };
+  const observedReconcile = function(this: CardSources<object>, ...args: unknown[]) {
+    paletteDepth++;
+    try { return Reflect.apply(originalReconcile, this, args); } finally { paletteDepth--; }
+  };
+  Reflect.set(CardSources.prototype, 'refreshPaint', observedRefresh);
+  Reflect.set(CardSources.prototype, 'reconcileSelection', observedReconcile);
+  return {
+    paletteOnly() { stage = 'palette-only'; }, recover() { stage = 'recovery'; }, allow() { stage = 'allowed'; },
+    snapshot() { return { deniedPreparationBytes, deniedLogicalBytes }; },
+    restore() {
+      if (Reflect.get(CardSources.prototype, 'refreshPaint') === observedRefresh) Reflect.set(CardSources.prototype, 'refreshPaint', originalRefresh);
+      if (Reflect.get(CardSources.prototype, 'reconcileSelection') === observedReconcile) Reflect.set(CardSources.prototype, 'reconcileSelection', originalReconcile);
+      if (CardSources.prototype.updateDisplay === observedUpdate) CardSources.prototype.updateDisplay = originalUpdate;
+      f.sources.geometryFunding = originalFunding;
+    },
+  };
 }
 function answer(f: ReturnType<typeof fixture>, index: number, text: string, complete = true, committedBytes?: number) {
   const call = f.calls[index]!, r = call.request;
@@ -224,6 +290,167 @@ test('host Bash duplicate and same-object source events coalesce; argsComplete f
   assert.ok(await hasHostInk(f.render(tool), themes.theme, 'syntaxKeyword', 'x'));
   args.command = 'y'; tool.updateArgs(args); f.render(tool); await settled();
   assert.equal(f.env.pi.length, 0); assert.ok(f.env.observes > before[1]!);
+});
+
+test('a refused Bash replacement renders the current native command and result, not stale prepared rows', async () => {
+  const f = fixture(true), previous = "printf 'BASH_OLD_COMMAND'", latest = "printf 'BASH_NEW_COMMAND'";
+  const tool = f.tool('bash', { command: previous }, createBashToolDefinition('/tmp'));
+  tool.setArgsComplete();
+  tool.updateResult({ content: [{ type: 'text', text: 'BASH_OLD_OUTPUT' }], isError: false }, false);
+  f.render(tool); await settled();
+  assert.equal(f.calls.length, 1, 'the initial command is admitted once'); answer(f, 0, previous); await settled();
+  const originalVisit = CardSources.prototype.visit; let acceptedPriorDisplays = 0;
+  CardSources.prototype.visit = function (owner, consume) {
+    return originalVisit.call(this, owner, (display, paint) => { if (display.kind === 'bash') acceptedPriorDisplays++; consume(display, paint); });
+  };
+  let warm: string[];
+  try { warm = f.render(tool); } finally { CardSources.prototype.visit = originalVisit; }
+  assert.ok(acceptedPriorDisplays > 0, 'the prior prepared display has a ready paint accepted by CardSources.visit before replacement');
+  assert.ok(plain(warm).join('\n').includes(previous) && plain(warm).join('\n').includes('BASH_OLD_OUTPUT'), `the admitted display contains its old current command and result: ${plain(warm).join(' | ')}`);
+  const funding = f.sources.geometryFunding;
+  let denied = 0;
+  f.sources.geometryFunding = () => { denied++; return undefined; };
+  try {
+    tool.updateArgs({ command: latest });
+    tool.updateResult({ content: [{ type: 'text', text: 'BASH_NEW_OUTPUT' }], isError: false }, false);
+  } finally { f.sources.geometryFunding = funding; }
+  assert.ok(denied > 0, 'the replacement attempt reaches the real geometry-funding boundary and is refused');
+  assert.ok(f.sources.geometryFunding(), 'the old retained display would remain fundable to a stale borrower');
+  const current = plain(f.render(tool)).join('\n');
+  assert.ok(current.includes('BASH_NEW_COMMAND') && current.includes('BASH_NEW_OUTPUT'), `native fallback must show latest Bash content: ${current}`);
+  assert.ok(!current.includes('BASH_OLD_COMMAND') && !current.includes('BASH_OLD_OUTPUT'), `stale prepared rows must not replace current output: ${current}`);
+});
+
+for (const refusal of ['palette', 'paint'] as const) test(`accepted read source with refused first ${refusal} stays bounded and recovers without stock callbacks`, async () => {
+  const f = fixture(false, false, {}, undefined, false, true);
+  f.env.enabled = false; await f.sources.setEnabled(false);
+  f.env.selected = { kind: 'theme', id: 'gruvbox-dark' }; f.adapter.syntaxMetadataChanged(); await settled();
+  const marker = 'F2_PAINT_REFUSAL_READ_SOURCE', resultText = `const ${marker} = 1;`;
+  const work = observeSyntaxLocalWork(text => text.includes(marker)), probe = paintFundingProbe(f, refusal);
+  const updateDisplay = CardSources.prototype.updateDisplay;
+  let acceptedFullInputs = 0, denyLayout = false, target: object | undefined;
+  let basis: { revision: number; display: unknown; charge: unknown } | undefined;
+  const geometryFunding = f.sources.geometryFunding;
+  f.sources.geometryFunding = group => {
+    const funding = geometryFunding.call(f.sources, group);
+    return funding && { budget: funding.budget, grant: bytes => denyLayout && f.env.depth > 0 ? undefined : funding.grant(bytes) };
+  };
+  CardSources.prototype.updateDisplay = function (owner, input) {
+    const accepted = updateDisplay.call(this, owner, input);
+    if (accepted && owner === target && input.kind === 'file' && input.viewMode === 'full') {
+      acceptedFullInputs++;
+      const current = (Reflect.get(this, 'states') as WeakMap<object, { display: unknown; charge: unknown }>).get(owner)!;
+      if (!basis) basis = { revision: input.revision, display: current.display, charge: current.charge };
+      else {
+        assert.equal(input.revision, basis.revision, 'paint retry keeps its accepted input revision');
+        assert.equal(current.display === basis.display, true, 'paint retry retains the exact logical display');
+        assert.equal(current.charge === basis.charge, true, 'paint retry retains the logical charge');
+      }
+    }
+    return accepted;
+  };
+  let native: ReturnType<typeof observeLazyFileCallbacks> | undefined;
+  try {
+    const tool = f.tool('read', { path: 'paint-retry.txt' }, createReadToolDefinition('/tmp')); target = tool;
+    tool.updateResult({ content: [{ type: 'text', text: resultText }], isError: false }, false);
+    const beforeRefusalRequests = f.ui.requests;
+    tool.setExpanded(true); await settled();
+    native = observeLazyFileCallbacks(tool);
+    const refused = plain(f.render(tool, 60)).join('\n'); await settled();
+    const stableRequests = f.ui.requests;
+    const sourceWork = () => ({ ...work.snapshot(), requests: f.calls.length, pi: f.env.pi.length, observes: f.env.observes, styles: f.env.styleRequests.length });
+    const stableWork = sourceWork();
+    assert.equal(f.ui.requests, beforeRefusalRequests + 1, 'the first actual refusal requests one status frame');
+    assert.ok(acceptedFullInputs > 0, 'the logical saved read was accepted despite refusal');
+    assert.ok(probe.snapshot().deniedPreparationBytes > 0, `the actual ${refusal} grant was denied`);
+    assert.match(refused, /unavailable within the current\s+preparation\s+or\s+paint\s+budget/u);
+    assert.ok(!refused.includes(marker), 'unpainted text is not exposed through a plain fallback');
+    assert.deepEqual(native.calls, { call: 0, result: 0 });
+    for (let i = 0; i < 3; i++) { f.render(tool, 60); await settled(); }
+    assert.equal(f.ui.requests, stableRequests, 'unchanged refusal cannot create a frame loop');
+    assert.deepEqual(sourceWork(), stableWork, 'repeated refusal does no source or measurement work');
+
+    if (refusal === 'palette') {
+      probe.paletteOnly(); f.render(tool, 60); await settled();
+      assert.match(plain(f.render(tool, 60)).join('\n'), /unavailable within the current\s+preparation\s+or\s+paint\s+budget/u);
+      assert.equal(f.ui.requests, stableRequests, 'palette-only recovery does not announce usable paint');
+      assert.deepEqual(sourceWork(), stableWork, 'partially recovered paint preserves source work');
+    }
+    probe.recover(); denyLayout = true;
+    f.render(tool, 60); await settled();
+    assert.equal(f.ui.requests, stableRequests + 1, 'first usable paint requests one recovery frame');
+    const geometryRefused = plain(f.render(tool, 60)).join('\n'); await settled();
+    assert.match(geometryRefused, /unavailable within the current\s+preparation or geometry budget/u);
+    for (let i = 0; i < 3; i++) { f.render(tool, 60); await settled(); }
+    assert.equal(f.ui.requests, stableRequests + 1, 'continued geometry refusal does not rearm the refusal notification');
+    denyLayout = false;
+    const recovered = plain(f.render(tool, 60)).join('\n'); await settled();
+    assert.ok(recovered.includes(resultText), `same expanded read recovers from saved data: ${recovered}`);
+    assert.equal(probe.snapshot().deniedLogicalBytes, 0, 'recovery requests no duplicate logical construction grant');
+    assert.deepEqual(sourceWork(), stableWork, 'recovery does not remeasure or request source/style work');
+    assert.deepEqual(native.calls, { call: 0, result: 0 });
+
+    const stock = fixture(false, false, { cards: ['read'] });
+    const stockTool = stock.tool('read', { path: 'paint-retry.txt' }, createReadToolDefinition('/tmp'));
+    stockTool.updateResult({ content: [{ type: 'text', text: resultText }], isError: false }, false); stockTool.setExpanded(true); await settled();
+    const positive = observeLazyFileCallbacks(stockTool);
+    try {
+      stock.render(stockTool, 60);
+      assert.ok(positive.calls.call > 0 && positive.calls.result > 0, 'native control invokes both current stock callbacks');
+    } finally { positive.restore(); stock.adapter.restore(); }
+  } finally {
+    denyLayout = false; probe.allow();
+    CardSources.prototype.updateDisplay = updateDisplay;
+    probe.restore(); native?.restore(); work.restore();
+  }
+});
+
+test('a read replacement during paint refusal recovers the latest saved result', async () => {
+  const f = fixture(false, false, {}, undefined, false, true);
+  f.env.enabled = false; await f.sources.setEnabled(false);
+  f.env.selected = { kind: 'theme', id: 'gruvbox-dark' }; f.adapter.syntaxMetadataChanged(); await settled();
+  const previous = 'const READ_BEFORE_PAINT_REFUSAL = 1;', latest = 'const READ_REPLACED_DURING_REFUSAL = 2;';
+  const probe = paintFundingProbe(f, 'paint'), updateDisplay = CardSources.prototype.updateDisplay;
+  let target: object | undefined, acceptedInputs = 0;
+  CardSources.prototype.updateDisplay = function (owner, input) {
+    const accepted = updateDisplay.call(this, owner, input);
+    if (accepted && owner === target && input.kind === 'file') acceptedInputs++;
+    return accepted;
+  };
+  let native: ReturnType<typeof observeLazyFileCallbacks> | undefined;
+  try {
+    const tool = f.tool('read', { path: 'paint-replacement.txt' }, createReadToolDefinition('/tmp')); target = tool;
+    tool.updateResult({ content: [{ type: 'text', text: previous }], isError: false }, false);
+    tool.setExpanded(true); await settled();
+    native = observeLazyFileCallbacks(tool);
+    const refused = plain(f.render(tool, 60)).join('\n'); await settled();
+    assert.ok(acceptedInputs > 0, 'the first saved input was logically accepted');
+    assert.ok(probe.snapshot().deniedPreparationBytes > 0, 'actual compiled paint funding was refused');
+    assert.match(refused, /unavailable within the current\s+preparation\s+or\s+paint\s+budget/u);
+    const beforeReplacement = acceptedInputs;
+    const replacement = { content: [{ type: 'text' as const, text: latest }], isError: false };
+    tool.updateResult(replacement, false);
+    const savedReplacement = tool.result;
+    f.render(tool, 60); await settled();
+    assert.ok(acceptedInputs > beforeReplacement, 'the replacement reaches real logical admission while paint is refused');
+    assert.match(plain(f.render(tool, 60)).join('\n'), /unavailable within the current\s+preparation\s+or\s+paint\s+budget/u);
+    probe.recover(); f.render(tool, 60); await settled();
+    const recovered = plain(f.render(tool, 60)).join('\n');
+    assert.ok(recovered.includes(latest), `recovery must show the current saved result: ${recovered}`);
+    assert.ok(!recovered.includes(previous), 'the obsolete accepted input must not reappear');
+    assert.equal(tool.expanded, true, 'replacement and recovery do not toggle expansion');
+    assert.equal(tool.result === savedReplacement, true, 'recovery does not replace the host result');
+    assert.deepEqual(tool.result?.content, replacement.content, 'the saved replacement text remains exact');
+    assert.equal(probe.snapshot().deniedLogicalBytes, 0, 'paint recovery does not construct the accepted replacement again');
+    assert.deepEqual(native.calls, { call: 0, result: 0 });
+    probe.allow();
+    const stockRows = plain(nativeToolRender.call(tool, 60)).join('\n');
+    assert.ok(stockRows.includes(latest), 'the same current generation has a real native saved-result positive');
+    assert.ok(native.calls.call > 0 && native.calls.result > 0, 'both replacement-generation stock callbacks are observable');
+  } finally {
+    probe.allow(); CardSources.prototype.updateDisplay = updateDisplay;
+    probe.restore(); native?.restore();
+  }
 });
 
 test('host completed Follow Pi Bash card keeps its custom presentation after native Off', async () => {
@@ -1177,9 +1404,9 @@ test('external owner establishes a Pi fallback baseline after owned-asset failur
   const f = fixture(false, false, {}, undefined, false, true);
   f.env.selected = { kind: 'theme', id: 'gruvbox-dark' }; f.adapter.syntaxMetadataChanged();
   const tool = written(f, 'const externalPaletteFallback = 1;');
-  const controller = f.adapter as TidyUiController & { refreshPreparedPalette(node: object): void };
+  const controller = f.adapter as TidyUiController & { refreshPreparedPalette(node: object, token: object): void };
   const refresh = controller.refreshPreparedPalette; let refreshVisits = 0;
-  controller.refreshPreparedPalette = node => { refreshVisits++; refresh.call(controller, node); };
+  controller.refreshPreparedPalette = (node, token) => { refreshVisits++; refresh.call(controller, node, token); };
   try {
     f.render(tool); await settled(); const initial = f.render(tool); await settled();
     assert.equal(f.sources.displayBasis(f.env.keys[0]!), undefined, 'failed local input leaves no semantic group');
@@ -1195,7 +1422,7 @@ test('external owner establishes a Pi fallback baseline after owned-asset failur
     assert.notDeepEqual(recolored, initial, 'Pi-origin fallback adopts the changed public palette');
     assert.ok(await hasHostInk(recolored, themes.theme, 'syntaxKeyword', 'const'));
     const afterRefresh = refreshVisits;
-    assert.equal(afterRefresh, prepared, 'the cold visible owner update adopts the new public colors without a deferred refresh visit');
+    assert.equal(afterRefresh, prepared + 1, 'one current-color refresh is deferred outside the cold owner render');
     assert.equal(f.env.pi.length, before[0]! + 1, 'one Pi classification is regenerated for the new public colors');
     assert.equal(f.env.captures, before[2]! + 1, 'the same source text is recaptured once into the local Pi projection');
     assert.equal(f.calls.length, before[4], 'a palette refresh sends no Occipital SOURCE');
@@ -1207,6 +1434,49 @@ test('external owner establishes a Pi fallback baseline after owned-asset failur
     assert.equal(f.calls.length, before[4], 'warm frames send no Occipital SOURCE');
     assert.equal(f.env.styleRequests.length, styleRequests, 'warm frames send no generic STYLE');
   } finally { controller.refreshPreparedPalette = refresh; }
+});
+
+test('collected prior Pi colors still trigger retained-card recolor without new SOURCE', async () => {
+  const f = fixture(true), tool = written(f, 'const COLLECTED_PI_COLORS = true;');
+  const original = CardSources.prototype.updateDisplay;
+  let updates = 0, inRender = false, updatesInRender = 0;
+  CardSources.prototype.updateDisplay = function(node, input) {
+    if (node === tool) { updates++; if (inRender) updatesInRender++; }
+    return original.call(this, node, input);
+  };
+  try {
+    f.render(tool); await settled();
+    for (let i = 0; i < f.calls.length; i++) {
+      if (f.calls[i]!.request.op === 'highlight') answer(f, i, 'const COLLECTED_PI_COLORS = true;');
+    }
+    await settled();
+    const ready = f.render(tool); await settled();
+    const previousTheme = themes.getThemeByName('dark');
+    assert.ok(previousTheme && await hasHostInk(ready, previousTheme, 'syntaxKeyword', 'const'));
+    const beforeSources = f.calls.length, beforeStyles = f.env.styleRequests.length;
+    const priorColors = f.weakCurrentPiColors();
+    const replacement = themes.getThemeByName('light');
+    assert.ok(replacement, 'the SDK provides a real replacement Theme instance');
+    themes.setThemeInstance(replacement);
+    f.env.palette++; f.currentPiColors();
+    const gc = (globalThis as typeof globalThis & { gc?: () => void }).gc;
+    assert.equal(typeof gc, 'function', 'this harness exposes bounded explicit GC');
+    let colorsCollected = false;
+    for (let i = 0; i < 12 && !colorsCollected; i++) {
+      await turn(); gc!(); await turn();
+      colorsCollected = priorColors.deref() === undefined;
+    }
+    assert.equal(colorsCollected, true, 'the replaced public color map is actually collected while its tool owner remains live');
+    const beforeDeferred = updates;
+    inRender = true; try { f.render(tool); } finally { inRender = false; }
+    assert.equal(updatesInRender, 0, 'collected weak color identity does not rebuild presentation on render');
+    await settled();
+    const recolored = f.render(tool);
+    assert.ok(await hasHostInk(recolored, replacement, 'syntaxKeyword', 'const'), 'retained semantic rows adopt current public colors');
+    assert.equal(updates, beforeDeferred + 1, 'one outside-render refresh repairs the dead weak baseline');
+    assert.equal(f.calls.length, beforeSources, 'color-map replacement dispatches no new SOURCE');
+    assert.equal(f.env.styleRequests.length, beforeStyles, 'color-map replacement dispatches no generic STYLE');
+  } finally { CardSources.prototype.updateDisplay = original; themes.initTheme('dark', false); }
 });
 
 test('prepared host owned palette paints every card surface without Pi on warm repaint resize and output updates', async () => {
@@ -1549,6 +1819,9 @@ test('host renderer transfer: changed text is prepared instead of reusing the ol
    f.env.selected = { kind: 'theme', id: 'nord-light' }; f.adapter.syntaxMetadataChanged();
   f.document(); await settled(); answer(f, 0, 'const TRANSFER_BEFORE = 1;'); await settled(); f.document();
   f.ui.clear(); tool.updateArgs({ path: 'a.ts', content: 'const TRANSFER_AFTER = 2;' }); f.ui.addChild(tool);
+  const pending = plain(f.document()).join('\n');
+  assert.match(pending, /Preparing file preview/u, 'reattachment first shows the honest pending state');
+  await settled();
   const current = plain(f.document()).join('\n');
   assert.ok(current.includes('TRANSFER_AFTER'), `reattached card must show changed source, got:\n${current}`);
   assert.equal(current.includes('TRANSFER_BEFORE'), false, `reattached card must not retain stale source, got:\n${current}`);
@@ -1892,7 +2165,7 @@ test('compatible third-party file renderers keep file cards while self-shell vis
 });
 
 
-test('native and hidden file successes consume rolling recency without changing their presentation', () => {
+test('native and hidden file successes consume rolling recency without changing their presentation', async () => {
   const f = fixture(false, false, { cards: ['edit'] });
   try {
     f.adapter.beginFileTurn();
@@ -1936,7 +2209,10 @@ test('native and hidden file successes consume rolling recency without changing 
     const nextTurn = f.tool('write', { path: 'window-next-turn.ts', content: 'const next_turn = true;' });
     f.adapter.beginFileTurn(); f.render(nextTurn, 80); f.adapter.completeFileCall(nextTurn.toolCallId);
     nextTurn.updateResult({ content: [{ type: 'text', text: 'saved' }], isError: false }, false); f.adapter.finishFileTurn();
-    const views = [...entries.slice(0, 9), hidden, newest, nextTurn].map(tool => plain(f.render(tool, 80)).join('\n'));
+    const automatic = [...entries.slice(0, 9), hidden, newest, nextTurn];
+    automatic.forEach(tool => f.render(tool, 80));
+    await settled();
+    const views = automatic.map(tool => plain(f.render(tool, 80)).join('\n'));
     for (const index of [0, 1, 2]) {
       assert.match(views[index]!, new RegExp(`Write window-${index}\\.ts`), `older successful write ${index} must be demoted by all later calls`);
       assert.doesNotMatch(views[index]!, new RegExp(`Wrote window-${index}\\.ts`));
@@ -1944,4 +2220,148 @@ test('native and hidden file successes consume rolling recency without changing 
     for (const index of [3, 4, 5, 6, 7, 8, 9, 10, 11]) assert.match(views[index]!, /Wrote window-/,
       `the ten most recent successes, including native and hidden calls across turns, remain in the automatic full window: ${index}`);
   } finally { f.adapter.restore(); }
+});
+
+
+test('target refusal leaves the warm sibling presentation cache built on its own visit', async () => {
+  const f = fixture(true);
+  const originalUpdate = CardSources.prototype.updateDisplay;
+  let sibling: ReturnType<typeof f.tool> | undefined, target: ReturnType<typeof f.tool> | undefined;
+  let denyTarget = false, siblingUpdates = 0;
+  CardSources.prototype.updateDisplay = function(owner, input) {
+    if (owner === sibling) siblingUpdates++;
+    if (owner === target && denyTarget) return false;
+    return originalUpdate.call(this, owner, input);
+  };
+  const result = { content: [{ type: 'text' as const, text: 'saved' }], isError: false };
+  try {
+    sibling = f.tool('write', { path: '/tmp/warm-sibling.ts', content: Array.from({ length: 14 }, (_, index) => `const warm_sibling_row_${index} = ${index};`).join('\n') }, createWriteToolDefinition('/tmp'));
+    sibling.updateResult(result, false); sibling.setExpanded(true);
+    f.render(sibling, 80); await settled();
+    const warmRows = plain(f.render(sibling, 80)).join('\n');
+    assert.match(warmRows, /warm_sibling_row_13/u, 'the unrelated sibling has an admitted full tail before target refusal');
+    const warmedBuilds = f.adapter.cacheStats().builds;
+
+    target = f.tool('write', { path: '/tmp/refused-target.ts', content: 'const refused_target = 2;\n' }, createWriteToolDefinition('/tmp'));
+    denyTarget = true;
+    target.updateResult(result, false); target.setExpanded(true); await settled();
+    const refusalRows = plain(f.render(target, 80)).join('\n');
+    assert.match(refusalRows, /budget/u, 'the target receives a controlled normal construction refusal');
+
+    const buildsBeforeSiblingVisit = f.adapter.cacheStats().builds;
+    assert.ok(buildsBeforeSiblingVisit >= warmedBuilds, 'target refusal may build or release only its own presentation');
+    siblingUpdates = 0;
+    const before = f.adapter.cacheStats().builds;
+    const siblingAfter = plain(f.render(sibling, 80)).join('\n');
+    const after = f.adapter.cacheStats().builds;
+    assert.match(siblingAfter, /warm_sibling/u, 'the sibling retains its full rows after target refusal');
+    assert.equal(siblingUpdates, 0, 'the sibling-only render does not re-admit its saved source');
+    assert.equal(after, before, 'the sibling-only render does not rebuild its warm layout after target notification');
+  } finally {
+    CardSources.prototype.updateDisplay = originalUpdate;
+    f.adapter.restore();
+  }
+});
+
+
+for (const kind of ['write', 'edit'] as const) for (const refusal of ['palette', 'paint'] as const)
+test(`supported collapsed ${kind} preview reports refused ${refusal} and recovers without expansion`, async () => {
+  const f = fixture(false, false, {}, undefined, false, true);
+  f.env.enabled = false; await f.sources.setEnabled(false);
+  f.env.selected = { kind: 'theme', id: 'gruvbox-dark' }; f.adapter.syntaxMetadataChanged(); await settled();
+  const marker = `F2_PAINT_REFUSAL_${kind}_PREVIEW`, content = `const ${marker} = 1;`;
+  const work = observeSyntaxLocalWork(text => text.includes(marker)), probe = paintFundingProbe(f, refusal);
+  const geometryFunding = f.sources.geometryFunding; let denyLayout = false;
+  f.sources.geometryFunding = group => {
+    const funding = geometryFunding.call(f.sources, group);
+    return funding && { budget: funding.budget, grant: bytes => denyLayout && f.env.depth > 0 ? undefined : funding.grant(bytes) };
+  };
+  const updateDisplay = CardSources.prototype.updateDisplay; let acceptedPreviewInputs = 0;
+  CardSources.prototype.updateDisplay = function (owner, input) {
+    const accepted = updateDisplay.call(this, owner, input);
+    if (accepted && input.kind === 'file' && input.viewMode === 'preview') acceptedPreviewInputs++;
+    return accepted;
+  };
+  try {
+    const tool = f.tool(kind, kind === 'write' ? { path: 'preview-retry.ts', content }
+      : { path: 'preview-retry.ts', oldText: 'old', newText: content },
+      kind === 'write' ? createWriteToolDefinition('/tmp') : createEditToolDefinition('/tmp'), true);
+    tool.updateResult({ content: [{ type: 'text', text: 'saved' }], isError: false,
+      ...(kind === 'edit' ? { details: { diff: `@@ -1 +1 @@\n-old\n+${content}` } } : {}) }, false); await settled();
+    const refused = plain(f.render(tool, 60)).join('\n');
+    assert.ok(acceptedPreviewInputs > 0, 'CardSources accepted the supported collapsed preview');
+    assert.ok(probe.snapshot().deniedPreparationBytes > 0, `the actual preview ${refusal} grant was refused`);
+    assert.match(refused, /unavailable within the current\s+preparation\s+or\s+paint\s+budget/u);
+    assert.ok(!refused.includes(marker), 'unpainted preview source is not exposed through a fallback');
+    const before = { ...work.snapshot(), requests: f.calls.length, styles: f.env.styleRequests.length };
+    const requests = f.ui.requests;
+    for (let i = 0; i < 3; i++) { f.render(tool, 60); await settled(); }
+    assert.equal(f.ui.requests, requests, 'refused previews do not create a frame loop');
+    probe.recover(); denyLayout = true; f.render(tool, 60); await settled();
+    assert.equal(f.ui.requests, requests + 1, 'preview paint recovery requests one frame');
+    assert.match(plain(f.render(tool, 60)).join('\n'), /unavailable within the current\s+geometry\s+budget/u);
+    for (let i = 0; i < 3; i++) { f.render(tool, 60); await settled(); }
+    assert.equal(f.ui.requests, requests + 1, 'continued preview geometry refusal does not rearm status frames');
+    denyLayout = false;
+    const recovered = plain(f.render(tool, 60)).join('\n'); await settled();
+    assert.ok(recovered.includes(marker), `same collapsed preview recovers without expansion: ${recovered}`);
+    assert.equal(probe.snapshot().deniedLogicalBytes, 0, 'preview recovery requests no duplicate logical grant');
+    assert.deepEqual({ ...work.snapshot(), requests: f.calls.length, styles: f.env.styleRequests.length }, before,
+      'preview paint recovery does not remeasure or request SOURCE/STYLE');
+  } finally {
+    denyLayout = false; probe.allow(); CardSources.prototype.updateDisplay = updateDisplay;
+    probe.restore(); work.restore();
+  }
+});
+
+test('same-source palette updates reuse the charged file descriptor under construction pressure', async () => {
+  const f = fixture(false, false, {}, undefined, false, true);
+  f.env.enabled = false; await f.sources.setEnabled(false);
+  f.env.selected = { kind: 'theme', id: 'gruvbox-dark' }; f.adapter.syntaxMetadataChanged(); await settled();
+  const marker = 'RETAINED_DESCRIPTOR_PALETTE', text = `const ${marker} = 1;`;
+  const tool = f.tool('read', { path: 'retained-descriptor.txt' }, createReadToolDefinition('/tmp'));
+  tool.updateResult({ content: [{ type: 'text', text }], isError: false }, false); tool.setExpanded(true);
+  f.render(tool); await settled();
+  assert.ok(plain(f.render(tool)).join('\n').includes(text), 'a full display is already funded');
+  const work = observeSyntaxLocalWork(source => source.includes(marker)), probe = paintFundingProbe(f);
+  const updateDisplay = CardSources.prototype.updateDisplay; let updates = 0;
+  CardSources.prototype.updateDisplay = function (owner, input) { updates++; return updateDisplay.call(this, owner, input); };
+  try {
+    probe.recover();
+    f.env.selected = { kind: 'theme', id: 'nord-dark' }; f.adapter.syntaxMetadataChanged();
+    tool.invalidate(); await settled();
+    f.render(tool); await settled();
+    const rows = plain(f.render(tool)).join('\n');
+    assert.ok(updates > 0, 'the palette change reaches the actual update boundary');
+    assert.ok(rows.includes(text), `the accepted body survives with no duplicate descriptor funds: ${rows}`);
+    assert.equal(probe.snapshot().deniedLogicalBytes, 0, 'same-source palette update reuses its descriptor charge');
+    assert.equal(work.snapshot().sourceSegments, 0, 'palette replacement retains source row measurements');
+  } finally {
+    CardSources.prototype.updateDisplay = updateDisplay; probe.allow(); probe.restore(); work.restore();
+  }
+});
+
+
+test('a retained detached Bash renders natively without disabling the live adapter', async () => {
+  const f = fixture();
+  const detached = f.tool('bash', { command: 'printf DETACHED_BASH_COMMAND' }, createBashToolDefinition('/tmp'));
+  detached.setArgsComplete();
+  detached.updateResult({ content: [{ type: 'text', text: 'DETACHED_BASH_RESULT' }], isError: false }, false);
+  f.render(detached); await settled();
+  const attachedRows = plain(f.render(detached)).join('\n');
+  assert.equal(detached.hideComponent, false, 'the real completed Bash is visible');
+  assert.ok(attachedRows.includes('DETACHED_BASH_COMMAND') && attachedRows.includes('┃'), 'the removed card is owned before removal');
+  const sibling = written(f, 'const LIVE_SIBLING_AFTER_DETACH = 1;');
+  sibling.setExpanded(true); f.render(sibling); await settled();
+  assert.ok(plain(f.render(sibling)).some(row => row.startsWith(' ┃')), 'the sibling starts in owned presentation');
+  const native = plain(nativeToolRender.call(detached, 60));
+  f.ui.removeChild(detached); await settled();
+  assert.equal(f.ui.children.includes(detached), false, 'the public Container removal detached this owner');
+  const requests = f.ui.requests;
+  assert.deepEqual(plain(f.render(detached)), native, 'the retained former component keeps its complete native rows');
+  assert.equal(f.ui.requests, requests, 'a detached render requests no recovery or failure frame');
+  assert.equal(f.adapter.reason, undefined, 'the cleanup boundary is not a compatibility failure');
+  assert.equal(f.adapter.active, true, 'a legitimate detached render must not disable the adapter');
+  const live = plain(f.render(sibling)).join('\n');
+  assert.ok(live.includes('LIVE_SIBLING_AFTER_DETACH') && live.includes('┃'), 'the mounted sibling remains owned');
 });

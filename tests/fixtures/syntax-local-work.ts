@@ -4,7 +4,7 @@ import { Theme } from '@earendil-works/pi-coding-agent';
 // Primitive source markers belonging to the selected physical scenarios.
 // UI strings containing them are excluded by the actual measurement call site.
 export const selectedSyntaxSource = (text: string) => text.startsWith("printf 'SYNTAX_OUTPUT") || text.includes('const x=')
-  || text.includes('STABLE_text') || text.includes('THEME_') || text.includes('HEADER_SCOPE')
+  || text.includes('STABLE_text') || text.includes('SAVED_AFT_HEADING') || text.includes('THEME_') || text.includes('HEADER_SCOPE')
   || text.includes('ONLINE_WAIT_') || text.includes('USER_BASH_OUTPUT') || text.includes('ORDER_CARD_') || text.includes('FOLLOW_PI_')
   || text.includes('#!/usr/bin/env python3') || text.includes('#!/usr/bin/env bash') || text.includes('echo "same"')
     || text.includes('NO_SHEBANG_CONTROL') || text.includes('BASH_NO_SHEBANG_HINT') || text.includes('SHEBANG_FILE_ONLY_MEASURE_7F3A');
@@ -13,9 +13,12 @@ export function observeSyntaxLocalWork(watches: (text: string) => boolean = sele
   let sourceSegments = 0, sourceSegmentUnits = 0, shebangFileSegments = 0, prefixScalarReads = 0, basisDepth = 0, sourceUpdateDepth = 0;
   const segment = Intl.Segmenter.prototype.segment, scalar = String.prototype.codePointAt, visit = CardSources.prototype.visit, update = CardSources.prototype.updateDisplay;
   const observedSegment = function(this: Intl.Segmenter, text: string) {
-    if (typeof text === 'string' && (sourceUpdateDepth || watches(text)) && new Error().stack?.includes('measured-rows.ts')) {
-      sourceSegments++; sourceSegmentUnits += text.length;
-      if (text.includes('SHEBANG_FILE_ONLY_MEASURE_7F3A')) shebangFileSegments++;
+    if (typeof text === 'string' && (sourceUpdateDepth || watches(text))) {
+      const stack = new Error().stack;
+      if (stack?.includes('measured-rows.ts')) {
+        sourceSegments++; sourceSegmentUnits += text.length;
+        if (text.includes('SHEBANG_FILE_ONLY_MEASURE_7F3A')) shebangFileSegments++;
+      }
     }
     return segment.call(this, text);
   };

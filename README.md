@@ -25,7 +25,7 @@ It changes the presentation, not the agent: the same tools run, the model receiv
 | What the agent is running | Terminal-style Bash cards with the complete command, live output preview and expandable results |
 | What it changed | Syntax-colored edit diffs with line numbers; side-by-side replacements when there is room |
 | What it wrote | Full supplied source or a saved diff—not a few lines of a large write |
-| Where it is looking | Compact, usually one-line summaries for reads, searches and other text-only tools |
+| Where it is looking | Compact read/search summaries; expand a read into a highlighted, numbered source card |
 | What you asked and queued | Consistent message, input and Steering/Follow-up cards |
 | How prompt-cache reuse is changing | The latest cache-hit percentage, ten-request history and current context usage |
 | A terminal that matches Pi's theme | Optional background and default text-color synchronization; off until you enable it |
@@ -82,7 +82,9 @@ Pending and failed edit/write calls stay compact by default. Proposed arguments 
 
 Reads, searches and other text-only tools become compact summaries centered on their action, target and useful arguments. Most fit on one line; long paths or arguments wrap rather than being forced into an unreadable sliver. Consecutive short calls do not each need a large card and blank separator.
 
-A spinner distinguishes an executing call from one whose arguments are still arriving. Failed summaries are highlighted, and the complete available result or error remains accessible through Pi's expanded view. Images retain native handling; you can also [keep individual tools in their original presentation](#expand-select-or-keep-a-tool-native).
+Expand a **read** to see the text the tool actually returned in a syntax-colored, numbered card, without diff styling. It stays compact until you open it and does not consume one of the ten automatic write/edit slots. The file is not read again: saved offsets, omitted text and continuation notices remain the tool's responsibility. Closing the card releases its prepared full view while keeping the saved result. Compatible third-party tools named `read` use this presenter too; `--tidy-ui-card read` keeps their original card instead.
+
+A spinner distinguishes an executing call from one whose arguments are still arriving. Failed summaries are highlighted, and expansion exposes the available result or error. Read images reuse Pi's image support inside our presentation; their image rows have no continuous frame stripe or background. Other tools retain native image handling. You can also [keep individual tools in their original presentation](#expand-select-or-keep-a-tool-native).
 
 ### Native support for AFT tools
 
@@ -109,11 +111,11 @@ The footer adds context usage, the cache chart, your session name when space all
 
 ## Richer syntax without repeated work
 
-**Occipital**, the included Rust syntax highlighter, brings language-aware colors to Bash commands and edit/write source using [Syntect](https://github.com/trishume/syntect) and [Two-Face](https://github.com/CosmicHorrorDev/two-face).
+**Occipital**, the included Rust syntax highlighter, brings language-aware colors to Bash commands and expanded read/edit/write source using [Syntect](https://github.com/trishume/syntect) and [Two-Face](https://github.com/CosmicHorrorDev/two-face).
 
 The benefit is not just more colors. Parsing runs outside Pi's JavaScript rendering path, and prepared results are reused: an unchanged frame does not parse the code again, resizing does not repeat syntax analysis, and changing a code theme reuses parsed source. Reusing parsed code and limiting the amount parsed at once avoids unnecessary CPU and memory work while you scroll, resize or watch a streaming command.
 
-**Follow Pi theme** is the default. You can also choose one of 72 bundled independent code palettes with live preview; it changes the whole Bash/edit/write card palette, not just token colors. User-supplied `.tmTheme` files and custom palette directories are not supported. See the [owned-palette guide](docs/syntax/palettes.md) for the full color and card-role contract. Parser-backed syntax requires the matching Occipital v4 helper shipped for this extension release; an older v3 helper is incompatible. A bundled palette still supplies neutral card colors while the helper is unavailable, but it cannot supply language-specific syntax classification without that helper.
+**Follow Pi theme** is the default. You can also choose one of 72 bundled independent code palettes with live preview; it changes the whole Bash/read/edit/write text-card palette, not just token colors. User-supplied `.tmTheme` files and custom palette directories are not supported. See the [owned-palette guide](docs/syntax/palettes.md) for the full color and card-role contract. Parser-backed syntax requires the matching Occipital v4 helper shipped for this extension release; an older v3 helper is incompatible. A bundled palette still supplies neutral card colors while the helper is unavailable, but it cannot supply language-specific syntax classification without that helper.
 
 This is source highlighting, not a log highlighter: Bash output stays tool output. Unknown languages remain readable in a neutral color. Very large sources can have an uncolored remainder without losing visible text.
 
@@ -144,7 +146,7 @@ For example, a theme containing this fragment supplies a dark background and lig
 
 Theme-variable references in these fields are resolved through the theme's `vars`, just like explicit color values. Missing or empty fields leave that channel at the terminal profile's default; if the extension previously applied that channel, it releases it. The background is not guessed from a card color or a theme's name.
 
-These are **terminal defaults**, not a recoloring of every cell: explicit syntax colors and panel backgrounds still keep their own colors. The cursor color and ANSI palette are not changed, and your terminal application's configuration is not rewritten. This setting follows Pi's overall theme—not the independent **Code color theme** you may choose for Bash/edit/write cards.
+These are **terminal defaults**, not a recoloring of every cell: explicit syntax colors and panel backgrounds still keep their own colors. The cursor color and ANSI palette are not changed, and your terminal application's configuration is not rewritten. This setting follows Pi's overall theme—not the independent **Code color theme** you may choose for Bash/read/edit/write cards.
 
 ### Theme changes, restoration and troubleshooting
 
@@ -202,14 +204,14 @@ Confirmed code themes, terminal-color and native-highlighting preferences are sa
 
 ### Expand, select, or keep a tool native
 
-- **Ctrl+O** keeps Pi's global expansion flag and requests Tidy UI's owned full view for completed edit/write cards; it does not invoke Pi's stock full-file syntax/preflight renderer. Clearing it restores each card's automatic or explicit choice.
-- In **fullscreen mode**, a selection-safe primary click inside a completed edit/write card toggles its own bounded/full view; failed summaries reveal their saved error. Pending write/edit previews remain bounded. Expandable Bash cards toggle their output. Active text selection is not turned into a click-to-toggle action.
+- **Ctrl+O** keeps Pi's global expansion flag and requests Tidy UI's owned full view for read/edit/write cards; it does not invoke Pi's stock text-card preparation. Clearing it collapses reads and restores write/edit cards' automatic or explicit choices.
+- In **fullscreen mode**, a selection-safe primary click opens a completed read summary and collapses its expanded text panel. Image rows are not click targets. Completed edit/write cards toggle their own bounded/full view; failed summaries reveal their saved error. Pending details remain bounded. Expandable Bash cards toggle their output. Active text selection is not turned into a click-to-toggle action.
 - In **regular terminal mode**, use Ctrl+O: Pi's regular TUI does not dispatch terminal mouse events, so per-card pointer selection is available only in fullscreen.
-- Native appearance-off, explicit per-tool native overrides and native image/hidden-component behavior remain Pi-owned.
+- Appearance Off and explicit per-tool native overrides retain Pi's presentation; use `--tidy-ui-card read` for its original read card. Intentional hiding and image capability/conversion remain Pi-owned.
 - Keep particular tools in Pi's original presentation or force them compact for one invocation:
 
   ```sh
-  pi --tidy-ui-card edit,write
+  pi --tidy-ui-card read,edit,write
   pi --tidy-ui-compact bash
   ```
 

@@ -1,14 +1,14 @@
 # Syntax highlighting
 
-This is the entry to the **extension-side highlighting pipeline**. Occipital performs theme-independent SOURCE parsing and generic-rule STYLE resolution; Bash/edit/write share one prepared renderer. Follow Pi and the extension's locally owned palettes are inputs to one common painter, not competing classifiers or daemon modes.
+This is the entry to the **extension-side highlighting pipeline**. Occipital performs theme-independent SOURCE parsing and generic-rule STYLE resolution; Bash/read/edit/write share one prepared renderer. Follow Pi and the extension's locally owned palettes are inputs to one common painter, not competing classifiers or daemon modes.
 
 For the native program itself, start with the [Occipital manual](occipital/README.md). For a first end-to-end example, follow [one card from result to terminal](architecture.md#one-card-from-result-to-terminal). The exact [wire protocol](occipital/protocol.md) is a reference, not a prerequisite for understanding a card.
 
 ## Surfaces and source text
 
-Only Bash **commands** and successful edit/write **source bodies**, including Markdown files, enter this pipeline. Bash output, ordinary tool summaries, native user-message Markdown, the editor and delegated native cards do not. The selected local card palette owns custom card interiors, not Pi's global theme or editor.
+Only Bash **commands** and successful read/edit/write **source bodies**, including Markdown files, enter this pipeline. Read contributes its saved returned text only while explicitly expanded; its compact summary creates no body demand. Bash output, ordinary tool summaries, native user-message Markdown, the editor and delegated native cards do not. The selected local card palette owns custom card interiors, not Pi's global theme or editor.
 
-Display uses complete supplied text; useful classification may use a bounded normalized prefix. Parsing sees logical normalized source before tab expansion, wrapping, gutters and paint. Saved diff sides are separate logical sources, and a gap in supplied context begins a new fragment rather than inventing missing file text. For edit/write, a recognized first-line shebang selects the generic explicit `language` hint before Occipital resolves the optional path, so it overrides even a known extension; other text producers can also request a language without a path. Exact line provenance, the curated alias map and split/unified side painting are documented in [shebang-derived hints](syntax/shebang-hints.md). No tool/source file is reread and no result or session entry is modified.
+Display uses complete supplied text; useful classification may use a bounded normalized prefix. Parsing sees logical normalized source before tab expansion, wrapping, gutters and paint. Saved diff sides are separate logical sources, and a gap in supplied context begins a new fragment rather than inventing missing file text. For read/edit/write, a recognized first-line shebang selects the generic explicit `language` hint before Occipital resolves the optional path, so it overrides even a known extension; other text producers can also request a language without a path. Exact line provenance, the curated alias map and split/unified side painting are documented in [shebang-derived hints](syntax/shebang-hints.md). Read requires actual first-line provenance (returned offset1), not merely a shebang-looking first row of a later slice. No tool/source file is reread and no result or session entry is modified. Read producer notices stay in saved text; image protocol output is a separate host-owned opaque block outside this syntax pipeline. See the [read source/image contract](read-card-spec.md).
 
 Live Bash argument formation, `setArgsComplete`, tool execution and restored history have distinct lifetimes. A command can be syntactically finalized while the process is still running. A restored interrupted card may receive one finite classification of its saved text; that does not claim the old call executed or its arguments completed. The exact live/frozen/restored rules are in [source work](syntax/work.md#surfaces-and-source-text) and the [Bash streaming contract](bash-streaming-contract.md).
 
@@ -67,7 +67,8 @@ The [storage chapter](syntax/storage.md) defines vocabulary-qualified contexts a
 |---|---|
 | Hidden/zero-width card | Pause new useful work under the explicit pause rules; this is not owner removal |
 | Live interrupted/frozen Bash | Retain a display basis and permit allowed recoloring/reflow; do not reopen SOURCE |
-| Restored card | A new finite saved-source owner, not continuation of the old live parser lease |
+| Restored card | A new finite saved-source owner, not continuation of the old live parser lease; a compact read admits no source until expansion |
+| Read full → compact | Release its derived full display/measurements/paint and syntax demand, preserving the host component and saved result |
 | Native-highlighting Off | SOURCE/provider work is disabled while local palette selection and neutral card roles remain active; canonical source-execution evidence is preserved |
 | Transport loss | Bounded provider recovery only for the typed ending causes and unspent allowances |
 | Ordinary uncertain request timeout | Preserve conservative execution authority; do not silently classify through another path |

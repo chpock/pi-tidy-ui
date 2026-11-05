@@ -1,6 +1,6 @@
 # Follow Pi palette
 
-Follow Pi highlights **source inside Bash/edit/write cards** using the selected Pi theme. It does not style Pi's rendered conversational Markdown, change editor/footer colors, or change Occipital's bundled grammars. It is one palette choice, not a collection of legacy/palette-expansion modes.
+Follow Pi highlights **source inside Bash/read/edit/write cards** using the selected Pi theme. It does not style Pi's rendered conversational Markdown, change editor/footer colors, or change Occipital's bundled grammars. It is one palette choice, not a collection of legacy/palette-expansion modes.
 
 The purpose is to expose useful structure already present in the parser's contexts without replacing the theme's identity. A distinct parser scope does not automatically deserve a new color. Primary Pi colors remain exact, including deliberately equal or low-contrast colors; only three explicitly selected structural roles derive additional foregrounds. Parameters are not less important than variables, and literal values are not made faint merely to increase the number of distinguishable classes.
 

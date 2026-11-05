@@ -68,13 +68,20 @@ test('real CLI: pi-tidy-ui policy, input, lifecycle and same-session stock repla
       live.send('\x0f'); await live.settle(); const expanded = await live.capture('expanded');
       assert.ok(expanded.tools.every((tool) => tool.expanded));
       simpleBashCards(expanded);
-      const nonFileTools = tools => tools.filter(tool => !['bash', 'write', 'edit'].includes(tool.name));
-      assert.deepEqual(toolLines({ tools: nonFileTools(expanded.tools) }),
-        toolLines({ tools: nonFileTools(controlExpanded.tools) }), 'Ctrl+O leaves every unrelated native tool on its exact stock rows');
+      const untouchedNativeTools = tools => tools.filter(tool => !['bash', 'write', 'edit', 'read'].includes(tool.name));
+      assert.deepEqual(toolLines({ tools: untouchedNativeTools(expanded.tools) }),
+        toolLines({ tools: untouchedNativeTools(controlExpanded.tools) }), 'Ctrl+O leaves unrelated native tools on their exact stock rows');
       for (const name of ['write', 'edit'])
         assert.deepEqual(byName(expanded, name)[0].lines, byName(collapsed, name)[0].lines,
           `Ctrl+O selects the complete custom ${name} card without changing saved rows or physical styling`);
-      assert.ok(expanded.screen.some((line) => line.includes('READ_A_CONTENT')));
+      for (const [path, marker] of [['a.txt', 'READ_A_CONTENT'], ['b.txt', 'READ_B_CONTENT']]) {
+        const read = byName(expanded, 'read').find(tool => tool.args.path === path);
+        assert.ok(read, `saved read call for ${path} remains present`);
+        const rows = lines(read).map(plain);
+        assert.ok(rows.some(row => row.includes(`→ Read ${path}`)), `Ctrl+O selects the owned ${path} heading`);
+        assert.ok(rows.some(row => row.includes(marker)), `owned ${path} view exposes its saved result text`);
+      }
+      assert.deepEqual(persisted(expanded), persisted(collapsed), 'Ctrl+O changes read presentation without changing saved arguments/results');
       live.send('\x0f'); await live.settle(); const recollapsed = await live.capture('recollapsed');
       assert.deepEqual(toolLines(recollapsed), toolLines(collapsed)); compact(recollapsed);
       const row = recollapsed.screen.findIndex((line) => /\bread\b.*b\.txt/.test(line));
@@ -83,11 +90,16 @@ test('real CLI: pi-tidy-ui policy, input, lifecycle and same-session stock repla
       await live.settle(); const clicked = await live.capture('clicked');
       assert.equal(byName(clicked, 'read')[0].expanded, false);
       assert.equal(byName(clicked, 'read')[1].expanded, true, 'SGR click expands precisely the chosen compact row');
-      assert.ok(clicked.screen.some((line) => line.includes('READ_B_CONTENT')));
-      // Collapse with stock mouse handling on the expanded title, not direct method invocation.
-      const titleRow = clicked.screen.findIndex((line) => line.includes('b.txt'));
+      const clickedRead = byName(clicked, 'read')[1];
+      assert.ok(lines(clickedRead).map(plain).some(row => row.includes('→ Read b.txt')));
+      assert.ok(lines(clickedRead).map(plain).some(row => row.includes('READ_B_CONTENT')));
+      assert.deepEqual(persisted(clicked), persisted(collapsed), 'primary click changes read presentation without changing saved arguments/results');
+      // Collapse the selected read card with a pointer event on its owned title.
+      const titleRow = clicked.screen.findIndex((line) => line.includes('→ Read b.txt'));
       assert.ok(titleRow >= 0);
-      live.send(`\x1b[<0;${column};${titleRow + 1}M\x1b[<0;${column};${titleRow + 1}m`);
+      const titleColumn = clicked.screen[titleRow].indexOf('Read') + 1;
+      assert.ok(titleColumn > 0);
+      live.send(`\x1b[<0;${titleColumn};${titleRow + 1}M\x1b[<0;${titleColumn};${titleRow + 1}m`);
       await live.settle(); compact(await live.capture('mouse-collapsed'));
       await live.tidyPage(['Status & troubleshooting']);
       await live.appearance(false); const off = await live.capture('disabled');
@@ -97,8 +109,7 @@ test('real CLI: pi-tidy-ui policy, input, lifecycle and same-session stock repla
       assert.notEqual(off.cells[offRow][off.screen[offRow].indexOf('read')].bgMode, 0, 'disabled read is a stock card on screen');
       live.send('\x0f'); await live.settle(); const offExpanded = await live.capture('disabled-expanded');
       assert.ok(offExpanded.tools.every(tool => tool.expanded), 'Appearance Off retains Pi Ctrl+O expansion');
-      assert.deepEqual(toolLines({ tools: nonFileTools(offExpanded.tools) }),
-        toolLines({ tools: nonFileTools(controlExpanded.tools) }), 'Appearance Off keeps unrelated native full tools byte-identical');
+      assert.deepEqual(toolLines(offExpanded), toolLines(controlExpanded), 'Appearance Off restores every Pi stock full tool, including reads, byte-identically');
       for (const name of ['write', 'edit'])
         assert.deepEqual(byName(offExpanded, name)[0].lines, byName(controlExpanded, name)[0].lines,
           `Appearance Off retains byte-identical Pi stock full ${name} rows and styling`);

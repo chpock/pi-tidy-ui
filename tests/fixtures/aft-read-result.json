@@ -1,0 +1,27 @@
+{
+  "producer": "@cortexkit/aft-pi@0.63.5",
+  "arguments": { "offset": 2, "limit": 7 },
+  "input": "NOT_RETURNED_BEFORE\n## SAVED_AFT_HEADING\n\n1: SOURCE_LITERAL_AFT\n```typescript\nconst AFT_SAVED_NUMBER = 73;\n```\nReturned source ends here.\nNOT_RETURNED_AFTER\nAnother excluded source row.\nAn excluded blank follows.\n\n",
+  "source": "## SAVED_AFT_HEADING\n\n1: SOURCE_LITERAL_AFT\n```typescript\nconst AFT_SAVED_NUMBER = 73;\n```\nReturned source ends here.",
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "2: ## SAVED_AFT_HEADING\n3: \n4: 1: SOURCE_LITERAL_AFT\n5: ```typescript\n6: const AFT_SAVED_NUMBER = 73;\n7: ```\n8: Returned source ends here.\n"
+      }
+    ],
+    "details": {
+      "success": true,
+      "content": "2: ## SAVED_AFT_HEADING\n3: \n4: 1: SOURCE_LITERAL_AFT\n5: ```typescript\n6: const AFT_SAVED_NUMBER = 73;\n7: ```\n8: Returned source ends here.\n",
+      "complete": false,
+      "scan_bytes_examined": 138,
+      "scan_gap": null,
+      "lines_read": 7,
+      "start_line": 2,
+      "end_line": 8,
+      "truncated": true,
+      "byte_size": 214,
+      "text": "2: ## SAVED_AFT_HEADING\n3: \n4: 1: SOURCE_LITERAL_AFT\n5: ```typescript\n6: const AFT_SAVED_NUMBER = 73;\n7: ```\n8: Returned source ends here.\n"
+    }
+  }
+}

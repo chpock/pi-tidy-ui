@@ -64,7 +64,8 @@ test('Output padding settings update summaries and all transcript cards live wit
     const dump = await terminal.capture(`pointer-output-${label}`);
     assert.equal(dump.outputPad, padding); assert.equal(dump.width, width); assert.equal(dump.users.length, 1);
     assert.equal(dump.users[0].outputPad, padding);
-    const cards = [dump.users[0], byName(dump, 'bash')[0], byName(dump, 'write')[0], byName(dump, 'edit')[0]];
+    const cards = [dump.users[0], byName(dump, 'bash')[0], byName(dump, 'write')[0], byName(dump, 'edit')[0],
+      ...byName(dump, 'read').filter(card => card.expanded && !card.isError)];
     for (const [index, card] of cards.entries()) {
       const rows = card.lines.filter(row => row !== ''), expected = rows.map(plain);
       const y = dump.screen.findIndex((_, start) => expected.every((row, offset) => dump.screen[start + offset] !== undefined && plain(dump.screen[start + offset]) === row));
@@ -87,7 +88,12 @@ test('Output padding settings update summaries and all transcript cards live wit
         assert.ok(rows[0][padding] === (summary.name === 'read' ? '→' : '⚙'));
         assert.ok(rows.slice(1).every(row => row.startsWith(' '.repeat(padding + 2))));
       }
-      await assertFits(rows, width - padding);
+      const rowWidth = summary.name === 'read' && summary.expanded ? width : width - padding;
+      try { await assertFits(rows, rowWidth); }
+      catch (error) {
+        error.message = `${label}: ${summary.name} expanded=${summary.expanded}, row widths=${rows.map(row => visibleWidth(row)).join(',')}; ${error.message}`;
+        throw error;
+      }
       const y = dump.screen.findIndex((_, start) => rows.every((row, offset) => (dump.screen[start + offset] || '').slice(0, row.length) === row));
       assert.ok(y >= 0, 'complete wrapped summary block physically visible');
       if (padding && !summary.expanded) assert.ok(rows.every((_, offset) => dump.cells[y + offset][width - 1].text === ''));

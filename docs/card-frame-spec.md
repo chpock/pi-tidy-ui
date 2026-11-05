@@ -1,10 +1,10 @@
 # Shared card frame specification
 
-This specification defines the shared frame for Bash, user-message, queued-message, main editor, [edit cards](edit-card-spec.md) and [write cards](write-card-spec.md). Other tool cards and native expanded results are unchanged. The common host/module boundaries are described in [architecture](architecture.md).
+This specification defines the shared frame for Bash, user-message, queued-message, main editor, [read cards](read-card-spec.md), [edit cards](edit-card-spec.md) and [write cards](write-card-spec.md). Other tool cards and native expanded results are unchanged. The common host/module boundaries are described in [architecture](architecture.md).
 
 ## Scope and architecture
 
-One pi-tidy-ui adapter owns live-host hooks, runtime lifecycle and mouse routing. The shared frame is a pure layout/painting module independent of tools, commands, results, expansion and host component classes. Callers supply already styled content rendered for its reported content width and painting callbacks. Bash, edit/write and user-message presenters supply their own content and paint; Bash toggles its custom output and completed edit/write cards expand to native content. All use the same frame and sole host adapter, without another extension or another set of container/input hooks. There is no plugin registry, new tool execution, session format, global theme modification or external shared package.
+One pi-tidy-ui adapter owns live-host hooks, runtime lifecycle and mouse routing. The shared frame is a pure layout/painting module independent of tools, commands, results, expansion and host component classes. Callers supply already styled content rendered for its reported content width and painting callbacks. Bash, read/edit/write and user-message presenters supply their own content and paint; Bash toggles its custom output, read opens its owned saved-result view, and completed edit/write cards select their owned preview/full views. All use the same frame and sole host adapter, without another extension or another set of container/input hooks. There is no plugin registry, new tool execution, session format, global theme modification or external shared package.
 
 ## Reference and geometry
 
@@ -25,7 +25,7 @@ At width zero return no rows. When the normal frame cannot fit, keep at least on
 
 ## Paint
 
-Prepared Bash/edit/write frames use literal roles from the card's ready palette, sampled or resolved before render. Owned palettes derive those colors from their bundled data and do not read Pi theme tokens. Under Follow Pi the mappings are:
+Prepared Bash/read/edit/write frames use literal roles from the card's ready palette, sampled or resolved before render. Owned palettes derive those colors from their bundled data and do not read Pi theme tokens. Under Follow Pi the mappings are:
 
 - Panel body (everything after the stripe): `toolPendingBg` for every execution state, including errors.
 - Ordinary border: `borderMuted` foreground, mapped to the prepared `frame` role.
@@ -37,7 +37,11 @@ No hover highlighting or hover state. Pointer motion, focus changes and moving b
 
 Terminal-default synchronization can change the meaning of SGR 39/49 without updating Pi's cached concrete colors. Diff RGB arithmetic and the input half-block use pi-tidy-ui's latest requested/reported concrete projection, while semantic styles and Pi Theme objects stay unchanged; local Off samples released Pi default colors when needed for the remaining presentation. See the [terminal-color contract](terminal-colors-spec.md).
 
-The generic frame receives paint callbacks instead of selecting theme roles or inspecting execution state. Its border callback styles the stripe foreground; its panel callback receives only body/internal padding. Prepared Bash/edit/write cards instead provide precompiled literal roles and do not sample an ambient theme during render. Under Follow Pi the failed stripe matches the error footer, the ordinary border follows `borderMuted`, the stripe background is default and the panel body stays neutral. Owned palettes use their corresponding local roles, never Pi donors.
+The generic frame receives paint callbacks instead of selecting theme roles or inspecting execution state. Its border callback styles the stripe foreground; its panel callback receives only body/internal padding. Prepared Bash/read/edit/write cards instead provide precompiled literal roles and do not sample an ambient theme during render. Under Follow Pi the failed stripe matches the error footer, the ordinary border follows `borderMuted`, the stripe background is default and the panel body stays neutral. Owned palettes use their corresponding local roles, never Pi donors.
+
+### Opaque read-image blocks
+
+For a successful framed read, the adapter reuses Pi's public image children between its text and final padding. An unframed detail/limitation view appends its image block after those details. Native image protocol rows and literal empty height-reservation rows bypass both framing APIs: adding a stripe, background or ordinary suffix padding can break Pi's placement/cropping and cursor accounting. Only safe horizontal anchor positioning is added. These rows are outside panel click targets; the actual surrounding text/border remains clickable. Image payload/cache ownership stays with Pi. See the [read image contract](read-card-spec.md#images-a-host-owned-opaque-block).
 
 ### Framing APIs and ANSI responsibility
 
@@ -50,7 +54,7 @@ The generic frame receives paint callbacks instead of selecting theme roles or i
 
 Native child strings are shallow ANSI wrappers, not a background stack. The generic `frameRows` path preserves original reset sequences and child colors, then reapplies panel paint to the following fragment. User/queued projections use this path. It never paints the stripe/exterior with the panel callback.
 
-Prepared Bash/edit/write use `frameMeasuredRow`; the common painter already emits complete body cells, structural diff/neutral surfaces and explicit attribute closure. It produces its own top/bottom rows and neutral counterparts/padding. The measured frame does not repair arbitrary incomplete child paint. Neither API silently truncates oversized content or wraps a caller's row to mask an invalid measurement. The exact source/layout/paint flow is in [rendering](rendering.md#two-framing-apis-two-input-contracts).
+Prepared Bash/read/edit/write use `frameMeasuredRow`; the common painter already emits complete body cells, structural diff/neutral surfaces and explicit attribute closure. It produces its own top/bottom rows and neutral counterparts/padding. The measured frame does not repair arbitrary incomplete child paint. Neither API silently truncates oversized content or wraps a caller's row to mask an invalid measurement. The exact source/layout/paint flow is in [rendering](rendering.md#two-framing-apis-two-input-contracts).
 
 ## Pointer behavior and lifecycle
 

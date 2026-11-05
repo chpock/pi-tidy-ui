@@ -42,6 +42,7 @@
     "docs/bash-streaming-contract.md",
     "docs/edit-card-spec.md",
     "docs/write-card-spec.md",
+    "docs/read-card-spec.md",
     "docs/card-frame-spec.md",
     "docs/render-cache-spec.md",
     "docs/footer-spec.md",

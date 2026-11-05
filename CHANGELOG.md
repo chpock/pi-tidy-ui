@@ -7,6 +7,33 @@ been reconstructed.
 
 ## [Unreleased]
 
+### Added
+
+- Expand compact read summaries into syntax-colored, numbered source cards without
+  diff styling. Fullscreen click and Ctrl+O reveal only the saved returned text;
+  regular terminal mode uses Ctrl+O. Reads stay outside the automatic write/edit
+  window. Expanded image reads reuse Pi's own images in an unframed image block
+  within the owned presentation.
+
+### Changed
+
+- Read expansion now opens the owned card instead of Pi's stock text card.
+  Defer Pi's stock read text preparation while the owned card is active. Collapsed
+  reads prepare no result body, and collapsing releases their derived full view.
+  Appearance Off and explicit native-read policy retain Pi's presentation.
+
+### Fixed
+
+- Keep read/write/edit text preparation outside drawing, including neighbor spacing
+  and terminal color-mode changes. Show memory-limit messages only after an actual
+  refusal, without self-triggered repaint retries. Recover an accepted file view
+  after palette or paint funding becomes available without rebuilding its source.
+- Reopen a collapsed read with complete text and highlighting even when its native
+  syntax results are retained, rather than incorrectly reporting a paint-budget limit.
+- Support AFT's saved numbered read results without duplicate gutters or passing
+  producer line-number prefixes into syntax highlighting. Preserve literal stock
+  read text, returned line coordinates and producer notices.
+
 ## [0.2.0] - 2026-11-03
 
 ### Breaking changes

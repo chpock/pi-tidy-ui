@@ -4,11 +4,16 @@ import { stripTerminalSequences, visibleWidth } from "@earendil-works/pi-tui";
 import { cardGeometry } from "./card-frame.ts";
 import { shebangLanguage } from "./syntax/shebang-language.ts";
 
+interface SavedReadResult {
+  isError?: boolean;
+  details?: unknown;
+  content?: readonly { type?: unknown; text?: unknown }[];
+}
 interface FilePresentation {
   toolName?: string;
   args: Record<string, unknown>;
   isPartial: boolean;
-  result?: { isError?: boolean; details?: unknown };
+  result?: SavedReadResult;
 }
 type DisplayLine = { kind: " " | "+" | "-"; text: string; old?: number; next?: number; hunk?: number } | { kind: "gap" };
 type DiffLine = (Exclude<DisplayLine, { kind: "gap" }> & { logical: string; languageHint?: string }) | { kind: "gap" };
@@ -125,7 +130,7 @@ function savedDiff(node: FilePresentation, content = true, kinds?: Set<" " | "+"
   return typeof details?.diff === "string" ? /^@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@/mu.test(details.diff) ?
     unifiedDiff(details.diff, content, kinds, logicalOnly, maxRows, allowIncomplete) : numberedDiff(details.diff, content, kinds, logicalOnly, maxRows) : undefined;
 }
-type FileView = { label: "Edited" | "Created" | "Replaced" | "Wrote" | "Edit" | "Write"; mode: "inline" | "diff" | "code";
+type FileView = { label: "Edited" | "Created" | "Replaced" | "Wrote" | "Edit" | "Write" | "Read"; mode: "inline" | "diff" | "code";
   lines: readonly DisplayLine[]; note?: string; preview?: boolean; omitted?: boolean };
 type SourceFileView = Omit<FileView, "lines"> & { lines: DiffLine[] };
 
@@ -183,7 +188,68 @@ function previewPresentation(node: FilePresentation, logicalOnly: boolean): Sour
     omitted ? "Preview is limited to a bounded source prefix; expand for the complete card." : undefined].filter(Boolean).join(" ");
   return { label, mode, lines, preview: true, omitted, note: note || undefined };
 }
+export function savedReadParts(result: SavedReadResult | undefined): string[] {
+  return result?.content?.filter((part) => part.type === "text" && typeof part.text === "string").map((part) => part.text as string) ?? [];
+}
+export function savedReadText(result: SavedReadResult | undefined): string { return savedReadParts(result).join("\n"); }
+function readCoordinate(value: unknown): number | undefined {
+  return typeof value === "number" && validNumber(value) ? value : undefined;
+}
+function numberedReadRange(details: Record<string, unknown>) {
+  const start = readCoordinate(details.start_line), end = readCoordinate(details.end_line), count = readCoordinate(details.lines_read);
+  if (start === undefined || start < 1 || end === undefined || count === undefined || count < 1 || end - start + 1 !== count) return undefined;
+  return { start, count };
+}
+function numberedReadMetadata(result: SavedReadResult | undefined) {
+  const value = result?.details;
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const details = value as Record<string, unknown>;
+  if (details.success !== true || typeof details.content !== "string") return undefined;
+  const range = numberedReadRange(details);
+  return range ? { content: details.content, ...range } : undefined;
+}
+/** Snapshot only saved values; validating/splitting the numbered block requires the construction grant. */
+export function savedReadIdentity(result: SavedReadResult | undefined): unknown[] {
+  const parts = savedReadParts(result), metadata = numberedReadMetadata(result);
+  return [parts.length, ...parts, metadata?.content, metadata?.start, metadata?.count];
+}
+function readBlockMatches(text: string, content: string): boolean {
+  return text.startsWith(content) && (text.length === content.length ||
+    /[\r\n]/u.test(content.charAt(content.length - 1)) || /[\r\n]/u.test(text.charAt(content.length)));
+}
+function numberedReadRows(result: SavedReadResult, text: string): { text: string; next?: number }[] | undefined {
+  const metadata = numberedReadMetadata(result);
+  if (!metadata || !readBlockMatches(text, metadata.content)) return undefined;
+  const supplied = Array.from(sourceRows(metadata.content));
+  if (supplied.length < metadata.count) return undefined;
+  const rows: { text: string; next?: number }[] = [];
+  for (let index = 0; index < metadata.count; index++) {
+    const match = /^ *(\d+): (.*)$/su.exec(supplied[index]!);
+    if (!match || match[1] !== String(metadata.start + index)) return undefined;
+    rows.push({ text: match[2]!, next: metadata.start + index });
+  }
+  const saved = Array.from(sourceRows(text));
+  for (let index = metadata.count; index < saved.length; index++) {
+    if (/^ *\d+: /u.test(saved[index]!)) return undefined;
+    rows.push({ text: saved[index]! });
+  }
+  return rows;
+}
+function readOffset(value: unknown): number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? value : 1;
+}
+function readPresentation(node: FilePresentation, logicalOnly: boolean, viewMode: "full" | "preview"): SourceFileView | undefined {
+  if (!node.result || node.isPartial) return undefined;
+  if (viewMode === "preview") return { label: "Read", mode: "code", lines: [], preview: true };
+  const text = savedReadText(node.result), offset = readOffset(node.args.offset);
+  const rows = numberedReadRows(node.result, text) ?? Array.from(sourceRows(text), (text, index) => ({ text, next: offset + index }));
+  const languageHint = rows[0]?.next === 1 ? shebangLanguage(rows[0].text) : undefined;
+  const lines = rows.map((row, index): DiffLine => ({ kind: " ", ...sourceText(row.text, logicalOnly), next: row.next,
+    ...(index === 0 && languageHint ? { languageHint } : {}) }));
+  return { label: "Read", mode: "code", lines };
+}
 function presentation(node: FilePresentation, content = true, logicalOnly = false, viewMode: "full" | "preview" = "full"): SourceFileView | undefined {
+  if (node.toolName === "read") return readPresentation(node, logicalOnly, viewMode);
   if (viewMode === "preview") return previewPresentation(node, logicalOnly);
   if (node.toolName !== "write") {
     const diff = savedDiff(node, content, undefined, logicalOnly);
@@ -235,7 +301,7 @@ export interface PreparedFileCard {
  * explicit omissions always reset it. Missing source is not reconstructed/read.
  */
 export function prepareFileCard(node: FilePresentation, logicalOnly = false, viewMode: "full" | "preview" = "full"): PreparedFileCard | undefined {
-  if ((node.toolName !== "edit" && node.toolName !== "write") || !node.result || node.isPartial) return undefined;
+  if ((node.toolName !== "edit" && node.toolName !== "write" && node.toolName !== "read") || !node.result || node.isPartial) return undefined;
   const path = filePath(node.args);
   if (!path) return undefined;
   const view = presentation(node, true, logicalOnly, viewMode);
@@ -268,9 +334,16 @@ export function fileSources(view: PreparedFileCard['view']): FileSource[] {
   return sources;
 }
 
-export function fileHeading(path: string, cwd: string | undefined, label: FileView["label"]): string {
+function headingPath(path: string, cwd: string | undefined): string {
   const local = cwd && isAbsolute(path) ? relative(cwd, path) : path;
-  return `← ${label} ${clean(local || path).replace(/\s+/gu, " ").trim()}`;
+  return clean(local || path).replace(/\s+/gu, " ").trim();
+}
+export function fileHeading(path: string, cwd: string | undefined, label: FileView["label"]): string {
+  return `← ${label} ${headingPath(path, cwd)}`;
+}
+
+export function readHeading(path: string, cwd: string | undefined): string {
+  return `→ Read ${headingPath(path, cwd)}`;
 }
 
 /** Class/height needed for spacing or rejected clicks, not a rendered layout or a second cache. */

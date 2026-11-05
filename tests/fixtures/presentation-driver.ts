@@ -12,6 +12,34 @@ import { join } from 'node:path';
 
 const nativePreparationObserver = Symbol.for('tidy-ui-test:deferred-native-original');
 
+function nativeMaterialization(renderer: DeferredRenderer, prototype: object): { tool: string; slot: string } | undefined {
+  const component = Reflect.get(renderer, 'component'), invoke = Reflect.get(renderer, 'invoke');
+  if (Reflect.get(renderer, 'disposed') === true || component !== undefined || typeof invoke !== 'function') return;
+  if (Object.getPrototypeOf(renderer) !== prototype) throw new TypeError('Native renderer probe observed a different DeferredRenderer prototype');
+  const owner = Reflect.get(renderer, 'owner'), tool = Reflect.get(owner, 'tool'), slot = Reflect.get(renderer, 'slot');
+  if (!['read', 'write', 'edit'].includes(tool) || !['call', 'result'].includes(slot)) throw new TypeError('Deferred native renderer has an unknown owner or slot');
+  return { tool, slot };
+}
+
+export function observeDeferredNativePreparation(record: (event: unknown) => void): () => void {
+  const probeEpoch = randomUUID(), prototype = DeferredRenderer.prototype;
+  const descriptor = Object.getOwnPropertyDescriptor(prototype, 'materialize');
+  if (!descriptor || typeof descriptor.value !== 'function') throw new Error('DeferredRenderer.materialize is not an own method');
+  const current = prototype.materialize as typeof prototype.materialize & { [nativePreparationObserver]?: typeof prototype.materialize };
+  const original = current[nativePreparationObserver] ?? current;
+  function observed(this: DeferredRenderer): void {
+    const preparation = nativeMaterialization(this, prototype);
+    if (preparation) record({ type: 'deferred_native_materialize', epoch: probeEpoch, ...preparation, prototypeMatches: true });
+    return original.call(this);
+  }
+  Object.defineProperty(observed, nativePreparationObserver, { value: original });
+  Object.defineProperty(prototype, 'materialize', { ...descriptor, value: observed });
+  record({ type: 'deferred_native_probe', epoch: probeEpoch, prototype: DeferredRenderer.name });
+  return () => {
+    if (prototype.materialize === observed) Object.defineProperty(prototype, 'materialize', descriptor);
+  };
+}
+
 export default function presentationDriver(pi: ExtensionAPI) {
   if (process.env.TIDY_UI_TEST_WRITE_CAPTURE === '1') {
     const record = createEventRecorder(process.env.TIDY_UI_TEST_OUTPUT!);
@@ -30,29 +58,7 @@ export default function presentationDriver(pi: ExtensionAPI) {
   const output = process.env.TIDY_UI_TEST_OUTPUT!;
   const record = process.env.TIDY_UI_TEST_EDIT_CARDS === '1' ? createEventRecorder(output) : undefined, epoch = record ? randomUUID() : undefined;
   if (process.env.TIDY_UI_TEST_NATIVE_PREPARATION === '1') {
-    const recordPreparation = createEventRecorder(output), probeEpoch = randomUUID();
-    const prototype = DeferredRenderer.prototype;
-    const descriptor = Object.getOwnPropertyDescriptor(prototype, 'materialize');
-    if (!descriptor || typeof descriptor.value !== 'function') throw new Error('DeferredRenderer.materialize is not an own method');
-    const current = prototype.materialize as typeof prototype.materialize & { [nativePreparationObserver]?: typeof prototype.materialize };
-    const original = current[nativePreparationObserver] ?? current;
-    function observed(this: DeferredRenderer): void {
-      const component = Reflect.get(this, 'component');
-      const invoke = Reflect.get(this, 'invoke');
-      if (Reflect.get(this, 'disposed') !== true && component === undefined && typeof invoke === 'function') {
-        if (Object.getPrototypeOf(this) !== prototype) throw new TypeError('Native renderer probe observed a different DeferredRenderer prototype');
-        const owner = Reflect.get(this, 'owner'), tool = Reflect.get(owner, 'tool'), slot = Reflect.get(this, 'slot');
-        if ((tool !== 'write' && tool !== 'edit') || (slot !== 'call' && slot !== 'result')) throw new TypeError('Deferred native renderer has an unknown owner or slot');
-        recordPreparation({ type: 'deferred_native_materialize', epoch: probeEpoch, tool, slot, prototypeMatches: true });
-      }
-      return original.call(this);
-    }
-    Object.defineProperty(observed, nativePreparationObserver, { value: original });
-    Object.defineProperty(prototype, 'materialize', { ...descriptor, value: observed });
-    recordPreparation({ type: 'deferred_native_probe', epoch: probeEpoch, prototype: DeferredRenderer.name });
-    pi.on('session_shutdown', () => {
-      if (prototype.materialize === observed) Object.defineProperty(prototype, 'materialize', descriptor);
-    });
+    pi.on('session_shutdown', observeDeferredNativePreparation(createEventRecorder(output)));
   }
   return tidyUi(pi, { logging: record ? { root: join(output, 'logs') } : undefined,
     cardPreparation: record ? event => record({ type: 'card_preparation', ...event, update: `${epoch}:${event.update}` }) : undefined, syntax(ctx) {
