@@ -24,6 +24,9 @@ been reconstructed.
 
 ### Fixed
 
+- Show root-reaching `../` file paths as their resolved absolute names in owned
+  tool summaries and read/write/edit headings, preserving nearby relative paths
+  and original tool/session data.
 - Keep read/write/edit text preparation outside drawing, including neighbor spacing
   and terminal color-mode changes. Show memory-limit messages only after an actual
   refusal, without self-triggered repaint retries. Recover an accepted file view

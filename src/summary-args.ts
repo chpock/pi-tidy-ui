@@ -1,9 +1,12 @@
 import { stripVTControlCharacters } from "node:util";
+import { displayPath } from "./display-path.ts";
 
 export const VALUE_TEXT_LIMIT = 256;
 export const SUMMARY_TEXT_LIMIT = 1024;
 const graphemes = new Intl.Segmenter(undefined, { granularity: "grapheme" });
 const OBJECT_KEYS = ["path", "target", "url", "scope"];
+const PATH_FIELDS = new Set(["path", "paths", "file_path", "filePath", "target", "targets", "scope", "files", "destination",
+  "cwd", "workdir", "dir", "toPath", "handoffPath", "sessionDir", "outputPaths"]);
 
 /** Exact top-level names, ordered by action, target, selection, then auxiliary settings. */
 export const PRIORITY_FIELDS = [
@@ -49,9 +52,9 @@ function prefix(text: string, limit: number): { text: string; truncated: boolean
   }
   return { text: parts.join(""), truncated: false };
 }
-function cleanPrefix(text: string, limit: number) {
+function cleanPrefix(text: string, limit: number, cwd?: string) {
   const value = prefix(text, Math.max(0, Math.min(VALUE_TEXT_LIMIT, limit)));
-  return { text: sanitize(value.text), truncated: value.truncated };
+  return { text: sanitize(value.truncated ? value.text : displayPath(value.text, cwd)), truncated: value.truncated };
 }
 function plainPrefix(value: { text: string; truncated: boolean }, limit: number): string {
   const clipped = prefix(value.text, limit);
@@ -78,10 +81,10 @@ function quotedPrefix(value: { text: string; truncated: boolean }, limit: number
   }
   return '"' + parts.map(part => part.text).join("") + (truncated ? "…" : "") + '"';
 }
-const quoted = (text: string, limit: number) => quotedPrefix(cleanPrefix(text, limit), limit);
+const quoted = (text: string, limit: number, cwd?: string) => quotedPrefix(cleanPrefix(text, limit, cwd), limit);
 const location = (value: unknown): value is string => typeof value === "string" && value.length > 0;
-function objectText(text: string, limit: number): string {
-  const value = cleanPrefix(text, limit);
+function objectText(text: string, limit: number, cwd?: string): string {
+  const value = cleanPrefix(text, limit, cwd);
   return !value.text || /[\s"\\\[\],]/u.test(value.text) ? quotedPrefix(value, limit) : plainPrefix(value, limit);
 }
 export function summaryName(name: string): string {
@@ -95,8 +98,8 @@ function* keys(value: object): Generator<string> {
   if (Array.isArray(value)) { for (let index = 0; index < value.length; index++) yield String(index); }
   else for (const key in value) if (Object.hasOwn(value, key)) yield key;
 }
-function jsonPreview(value: unknown, limit: number, parents: Set<object>): string {
-  if (typeof value === "string") return quoted(value, limit);
+function jsonPreview(value: unknown, limit: number, parents: Set<object>, cwd?: string, pathValue = false): string {
+  if (typeof value === "string") return quoted(value, limit, pathValue ? cwd : undefined);
   if (value === null || typeof value !== "object") {
     const text = JSON.stringify(value) ?? '"[unavailable]"';
     return size(text) <= limit ? text : "…";
@@ -117,7 +120,7 @@ function jsonPreview(value: unknown, limit: number, parents: Set<object>): strin
       if (remaining < 1) { members.push("…"); break; }
       const item = (value as Record<string, unknown>)[current.value];
       if (!array && (item === undefined || typeof item === "function" || typeof item === "symbol")) { current = next; continue; }
-      const child = jsonPreview(array && item === undefined ? null : item, remaining, parents);
+      const child = jsonPreview(array && item === undefined ? null : item, remaining, parents, cwd, array ? pathValue : PATH_FIELDS.has(current.value));
       const text = label + child;
       members.push(text); used += separator.length + size(text);
       if (child === "…") {
@@ -129,26 +132,26 @@ function jsonPreview(value: unknown, limit: number, parents: Set<object>): strin
     return (array ? "[" : "{") + members.join(",") + (array ? "]" : "}");
   } finally { parents.delete(value); }
 }
-function valueText(value: unknown, limit: number): string {
-  try { return jsonPreview(value, limit, new Set()); }
+function valueText(value: unknown, limit: number, cwd?: string, pathValue = false): string {
+  try { return jsonPreview(value, limit, new Set(), cwd, pathValue); }
   catch { return quoted("[unavailable]", limit); }
 }
 
 /** Name and argument text share one budget; outside glyphs, indentation and status do not. */
-export function argumentParts(name: string, args: Record<string, unknown>) {
+export function argumentParts(name: string, args: Record<string, unknown>, cwd?: string) {
   let remaining = SUMMARY_TEXT_LIMIT - size(summaryName(name)) - 1;
   const used = new Set<string>();
   let pattern: string | undefined, object: string | undefined;
   // Do not enumerate/read the rest of an edit/write call once its path establishes the short view.
-  if ((name === "edit" || name === "write") && location(args.path)) return { object: objectText(args.path, Math.min(VALUE_TEXT_LIMIT, remaining)), params: "" };
+  if ((name === "edit" || name === "write") && location(args.path)) return { object: objectText(args.path, Math.min(VALUE_TEXT_LIMIT, remaining), cwd), params: "" };
   if (typeof args.pattern === "string") {
     pattern = valueText(args.pattern, Math.min(VALUE_TEXT_LIMIT, remaining)); remaining -= size(pattern); used.add("pattern");
     if (location(args.path)) {
-      object = objectText(args.path, Math.min(VALUE_TEXT_LIMIT, remaining - 4)); remaining -= 4 + size(object); used.add("path");
+      object = objectText(args.path, Math.min(VALUE_TEXT_LIMIT, remaining - 4), cwd); remaining -= 4 + size(object); used.add("path");
     }
   } else {
     const key = OBJECT_KEYS.find(key => location(args[key]));
-    if (key) { object = objectText(args[key] as string, Math.min(VALUE_TEXT_LIMIT, remaining)); remaining -= size(object); used.add(key); }
+    if (key) { object = objectText(args[key] as string, Math.min(VALUE_TEXT_LIMIT, remaining), PATH_FIELDS.has(key) ? cwd : undefined); remaining -= size(object); used.add(key); }
   }
   if (pattern !== undefined || object !== undefined) remaining--; // space before a parameter block
   const rank = (key: string) => ranks.get(key) ?? unknownRank;
@@ -164,15 +167,15 @@ export function argumentParts(name: string, args: Record<string, unknown>) {
     if (available <= size(label) + 1) { params.push("…"); break; }
     const value = args[key];
     if (value === undefined) continue;
-    const text = `${label}=${valueText(SECRET_KEYS.has(key) ? "<redacted>" : value, VALUE_TEXT_LIMIT)}`;
+    const text = `${label}=${valueText(SECRET_KEYS.has(key) ? "<redacted>" : value, VALUE_TEXT_LIMIT, cwd, PATH_FIELDS.has(key))}`;
     if (size(text) > available) { params.push("…"); break; }
     params.push(text); usedSpace += separator.length + size(text);
   }
   return { pattern, object, params: params.length ? `[${params.join(", ")}]` : "" };
 }
 
-export function describeArgs(name: string, args: Record<string, unknown>): string {
-  const { pattern, object, params } = argumentParts(name, args);
+export function describeArgs(name: string, args: Record<string, unknown>, cwd?: string): string {
+  const { pattern, object, params } = argumentParts(name, args, cwd);
   const primary = pattern !== undefined ? `${pattern}${object !== undefined ? ` in ${object}` : ""}` : object ?? "";
   return [primary, params].filter(Boolean).join(" ");
 }

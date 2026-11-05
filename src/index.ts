@@ -1094,8 +1094,9 @@ export function installTidyUi(tui: LiveTui, getTheme: () => Palette, options: Ti
   }
   function fileDetailLayout(node: ToolNode, width: number): Layout {
     const theme = getTheme(), padding = outputPadding(), mode = fileMode(node) ?? 'preview';
-    return memo(node, node.toolName as LayoutKind, width, theme, undefined, padding, () => {
-      const summary = summaryRows(node, width, theme, padding, node.toolName === 'read' && mode === 'full' ? 'Read' : summaryName(node.toolName)), cached = fileDetailCaches.get(node);
+    const cwd = (node.getRenderContext() as { cwd?: string } | undefined)?.cwd;
+    return memo(node, node.toolName as LayoutKind, width, theme, cwd, padding, () => {
+      const summary = summaryRows(node, width, theme, padding, node.toolName === 'read' && mode === 'full' ? 'Read' : summaryName(node.toolName), cwd), cached = fileDetailCaches.get(node);
       const paintRetry = syntaxStates.get(node)?.paintRetry === true;
       const detail = mode === 'full' && cached?.args === node.args && cached.result === node.result && cached.mode === mode ? cached : undefined;
       const rows = [...summary.rows];
@@ -1236,7 +1237,8 @@ export function installTidyUi(tui: LiveTui, getTheme: () => Palette, options: Ti
   }
   const summaryLayout = (node: ToolNode, width: number) => {
     const theme = getTheme(), padding = outputPadding();
-    return memo(node, 'summary', width, theme, undefined, padding, () => summaryRows(node, width, theme, padding));
+    const cwd = (node.getRenderContext() as { cwd?: string } | undefined)?.cwd;
+    return memo(node, 'summary', width, theme, cwd, padding, () => summaryRows(node, width, theme, padding, undefined, cwd));
   };
   function finishFileTurn(): void {
     if (!active || quiescing) return;
@@ -1474,7 +1476,7 @@ export function installTidyUi(tui: LiveTui, getTheme: () => Palette, options: Ti
     return tool.toolName === 'read' ? readPresentationMode(tool) === 'full' : filePresentationEligible(tool);
   }
 
-  function summaryRows(node: ToolNode, width: number, theme: Palette, padding: number, title = summaryName(node.toolName)): SummaryLayout {
+  function summaryRows(node: ToolNode, width: number, theme: Palette, padding: number, title = summaryName(node.toolName), cwd?: string): SummaryLayout {
     if (width < 1) return { rows: [], prefixLength: 0, prefixLeft: 0, prefixSpace: false };
     const available = width - padding, indent = padding + 2;
     const failed = !node.isPartial && node.result?.isError;
@@ -1489,7 +1491,7 @@ export function installTidyUi(tui: LiveTui, getTheme: () => Palette, options: Ti
     }
     const prefix = theme.fg(failed ? "error" : "dim", `${" ".repeat(padding)}${glyph} `);
     const parts: { color?: ThemeColor; text: string }[] = [{ color: "toolTitle", text: title }];
-    const { pattern, object, params } = argumentParts(node.toolName, node.args);
+    const { pattern, object, params } = argumentParts(node.toolName, node.args, cwd);
     if (pattern) {
       parts.push({ color: "muted", text: ` ${pattern}` });
       if (object) parts.push({ color: "dim", text: " in " }, { color: "muted", text: object });

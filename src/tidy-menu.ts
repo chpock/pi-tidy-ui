@@ -2,6 +2,7 @@ import type { Theme } from '@earendil-works/pi-coding-agent';
 import { Input, SelectList, getKeybindings, matchesKey, truncateToWidth, visibleWidth, wrapTextWithAnsi,
   type Component, type SelectItem, type TuiMouseEvent, type TuiMouseEventResult } from '@earendil-works/pi-tui';
 import { readableDiagnosticText } from './debug-log.ts';
+import { displayPath } from './display-path.ts';
 import type { Switches, SyntaxTheme } from './settings.ts';
 import type { SyntaxMenuOutcome, SyntaxMenuSnapshot } from './occipital/menu.ts';
 import type { RuntimeHealthSnapshot } from './runtime-health.ts';
@@ -269,7 +270,7 @@ export class TidyMenu implements Component {
     if (this.page === 'logs') {
       const log = state.logs;
       return [...this.healthSummary(state), ...(log ? [`Recording: ${log.capture ? log.state === 'failed' ? 'Failed; retry available' : 'On' : 'Off'}`,
-        ...(log.state === 'off' ? ['No log file created.'] : [`Journal: ${safe(log.path)}`, `Session index: ${safe(log.commonPath)}`]),
+        ...(log.state === 'off' ? ['No log file created.'] : [`Journal: ${safe(displayPath(log.path))}`, `Session index: ${safe(displayPath(log.commonPath))}`]),
         `Run: ${safe(log.run)}; session: ${safe(log.session)}`,
         `Session name: ${safe(log.name ?? 'unknown')}`,
         `Records: ${log.records}; writes: ${log.writes}`,

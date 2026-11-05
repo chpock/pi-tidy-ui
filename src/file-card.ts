@@ -2,6 +2,7 @@ import { isAbsolute, relative } from "node:path";
 import { stripVTControlCharacters } from "node:util";
 import { stripTerminalSequences, visibleWidth } from "@earendil-works/pi-tui";
 import { cardGeometry } from "./card-frame.ts";
+import { displayPath } from "./display-path.ts";
 import { shebangLanguage } from "./syntax/shebang-language.ts";
 
 interface SavedReadResult {
@@ -335,8 +336,8 @@ export function fileSources(view: PreparedFileCard['view']): FileSource[] {
 }
 
 function headingPath(path: string, cwd: string | undefined): string {
-  const local = cwd && isAbsolute(path) ? relative(cwd, path) : path;
-  return clean(local || path).replace(/\s+/gu, " ").trim();
+  const local = cwd && isAbsolute(cwd) && isAbsolute(path) ? relative(cwd, path) : path;
+  return clean(displayPath(local || path, cwd)).replace(/\s+/gu, " ").trim();
 }
 export function fileHeading(path: string, cwd: string | undefined, label: FileView["label"]): string {
   return `← ${label} ${headingPath(path, cwd)}`;

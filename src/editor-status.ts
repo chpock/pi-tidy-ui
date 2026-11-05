@@ -5,6 +5,7 @@ import type { ThemeColor } from "@earendil-works/pi-coding-agent";
 import { cardGeometry, frameRows, type CardGeometry } from "./card-frame.ts";
 import type { CardTheme } from "./card-theme.ts";
 import { sanitize } from "./summary-args.ts";
+import { displayPath } from "./display-path.ts";
 
 export interface EditorStatusInfo {
   model: string;
@@ -115,7 +116,7 @@ function middle(value: string, budget: number, parent = false): string {
 /** Pure staged cwd/branch presentation. Git validation belongs to the data source. */
 export function directoryStatus(cwd: string, branch: string | undefined, budget: number, theme: CardTheme): string {
   if (!cwd || budget < 1) return "";
-  let path = sanitize(cwd);
+  let path = sanitize(displayPath(cwd));
   const windows = /^[a-z]:[\\/]/iu.test(path) || path.startsWith("\\\\") || path.startsWith("~\\");
   const root = windows ? win32.parse(path).root : path.match(/^\/+/u)?.[0] ?? "";
   // Keep filesystem/drive/UNC roots intact, but not non-root trailing separators.

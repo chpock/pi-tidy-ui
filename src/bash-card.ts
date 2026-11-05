@@ -1,4 +1,5 @@
 import { blockText } from "./plain-text.ts";
+import { displayPath } from "./display-path.ts";
 
 export interface BashPresentation {
   args: Record<string, unknown>;
@@ -117,7 +118,7 @@ export interface BashService {
 /** Width-independent service policy shared by lifecycle preparation and frame rendering. */
 export function prepareBashService(node: BashPresentation, directory?: string): BashService {
   const description = typeof node.args.description === 'string' ? blockText(node.args.description).replace(/\s+/gu, ' ').trim() : '';
-  const heading = directory ? `# Running in ${blockText(directory).replace(/[\n\t]/gu, ' ')}` : '';
+  const heading = directory ? `# Running in ${blockText(displayPath(directory)).replace(/[\n\t]/gu, ' ')}` : '';
   const code = exitCode(node), final = !!node.result && !node.isPartial;
   const error = final && (node.result?.isError === true || (code !== undefined && code !== 0));
   const { rows: output, reminder, end } = resultRows(node, final);

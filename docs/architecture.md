@@ -109,7 +109,7 @@ Native-highlighting Off, frozen/hidden sources, explicit cache clearing, transpo
 | Module family | Canonical explanation |
 |---|---|
 | `src/index.ts`, `git-branch.ts` | [Host integration, routing, events and Git service](host-integration.md) |
-| `summary-args.ts`, `plain-text.ts`, `card-frame.ts`, `card-theme.ts` | [Rendering representations](rendering.md), [summary algorithms](tool-summary-spec.md), [frame contracts](card-frame-spec.md) |
+| `summary-args.ts`, `display-path.ts`, `plain-text.ts`, `card-frame.ts`, `card-theme.ts` | [Rendering representations](rendering.md), [summary algorithms](tool-summary-spec.md), [frame contracts](card-frame-spec.md) |
 | `bash-card.ts`, `file-card.ts` | [Bash preparation](bash-card-spec.md), [stream lifetime](bash-streaming-contract.md), [edit representation](edit-card-spec.md), [write selection](write-card-spec.md), [read saved-result selection](read-card-spec.md) |
 | `user-card.ts`, `queued-card.ts`, `editor-card.ts`, `editor-status.ts`, `footer.ts` | [Message projections](user-queued-cards.md), [editor](editor.md), [footer accounting/composition](footer-spec.md) |
 | `render-cache.ts` | [Latest-layout ownership and animation](render-cache-spec.md) |
