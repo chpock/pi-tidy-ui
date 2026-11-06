@@ -90,6 +90,7 @@ jobs:
             ownedDirectory(path);
             if (relative(path,store) === '') break;
             path = join(path, relative(path,store).split(sep)[0]);
+            if (!lstatSync(path, {throwIfNoEntry:false})) mkdirSync(path, {mode:0o700});
           }
           for (const name of ['config.toml','config','credentials.toml','credentials']) {
             if (lstatSync(join(store,name), {throwIfNoEntry:false})) throw new Error('Setup Cargo store contains unexpected configuration or credentials');

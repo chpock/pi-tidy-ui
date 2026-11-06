@@ -677,9 +677,19 @@ test('actual CI setup store admission preserves declared Cargo paths and refuses
     assert.equal(await readFile(receipt,'utf8'),'');
     await assert.rejects(lstat(log),{code:'ENOENT'});
     await assert.rejects(lstat(forbidden),{code:'ENOENT'});
+    return result;
   };
-  for (const CARGO_HOME of [store,temporaryStore]) {
+  const coldParent = join(temp,'cold-parent');
+  for (const [CARGO_HOME,cold] of [[store,false],[store,true],[temporaryStore,false],[join(coldParent,'nested','cargo'),true]]) {
+    if (cold) await rm(CARGO_HOME === store ? store : coldParent,{recursive:true,force:true});
     const result = await run({CARGO_HOME}); assert.equal(result.status,0,result.stderr);
+    if (cold) for (const path of CARGO_HOME === store ? [store] : [coldParent,join(coldParent,'nested'),CARGO_HOME]) {
+      const info = await lstat(path);
+      assert.equal(info.isDirectory(),true);
+      assert.equal(info.isSymbolicLink(),false);
+      assert.equal(info.mode & 0o777,0o700);
+      assert.equal(info.uid,process.getuid());
+    }
     const declared = Object.fromEntries((await readFile(receipt,'utf8')).trim().split('\n').map(line=>[line.slice(0,line.indexOf('=')),line.slice(line.indexOf('=')+1)]));
     assert.equal(declared.CARGO_HOME,CARGO_HOME,'retain the exact setup path, not a relocated cache');
     assert.equal(declared.RUST_ROOT,rust); assert.equal(declared.NODE,process.execPath);
@@ -697,6 +707,11 @@ test('actual CI setup store admission preserves declared Cargo paths and refuses
     await mkdir(config); await reject(); assert.ok((await lstat(config)).isDirectory()); await rm(config,{recursive:true});
   }
   await chmod(store,0o777); await reject(); await chmod(store,0o700);
+  const unsafeParent = join(temp,'unsafe-parent'), missingStore = join(unsafeParent,'cargo');
+  await mkdir(unsafeParent); await chmod(unsafeParent,0o777);
+  const rejection = await reject({CARGO_HOME:missingStore});
+  assert.match(rejection.stderr,/Setup Cargo store is not an owned safe directory/);
+  await assert.rejects(lstat(missingStore),{code:'ENOENT'});
   const alias = join(temp,'aliased-store'); await symlink(store,alias); await reject({CARGO_HOME:alias}); assert.equal(await readlink(alias),store);
   const ancestor = join(temp,'aliased-parent'); await symlink(profile,ancestor); await reject({CARGO_HOME:join(ancestor,'.cargo')});
   // POSIX ownership is real filesystem metadata, not the declared path alone.
