@@ -1,13 +1,16 @@
 import '../../fixtures/test-guard.mjs';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
 import { childEnv, digest, readInputs } from '../../../scripts/test/context.mjs';
 import { renderFoot } from '../../../scripts/screenshot/foot.mjs';
+import { runTool } from '../../fixtures/screenshot-tools.mjs';
 
 function fixture(t, mode) {
   const root = mkdtempSync(join(tmpdir(), 'screenshot-tools-')), output = join(root, 'output'), groups = [];
@@ -58,6 +61,42 @@ for (const mode of ['success', 'grim-failure', 'wrong-grid', 'missing-ack']) {
     assert.equal(journal.filter(row => row.rule === 'disabled').length, 1);
   });
 }
+
+test('screenshot fixture keeps scope receipts complete during first write and replacement', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'screenshot-receipt-')), output = join(root, 'records'), receipt = join(output, 'scope.json');
+  const previousArgv = process.argv, originalWriteFileSync = fs.writeFileSync, observations = [];
+  const expected = JSON.stringify({ outcome: 'passed' }), oldRecord = JSON.stringify({ outcome: 'old' });
+  try {
+    mkdirSync(output);
+    writeFileSync(join(root, 'control.json'), JSON.stringify({ mode: 'success', output }));
+    process.argv = [process.execPath, 'screenshot-tools.mjs', '--receipt', receipt];
+    fs.writeFileSync = function (path, data, ...options) {
+      if (typeof path !== 'string' || dirname(path) !== output) return originalWriteFileSync.call(fs, path, data, ...options);
+      const bytes = Buffer.isBuffer(data) ? data : Buffer.from(data);
+      originalWriteFileSync.call(fs, path, bytes.subarray(0, Math.max(1, Math.floor(bytes.length / 2))), ...options);
+      observations.push(existsSync(receipt) ? readFileSync(receipt, 'utf8') : null);
+      return originalWriteFileSync.call(fs, path, data, ...options);
+    };
+    syncBuiltinESMExports();
+
+    await runTool('python3', root);
+    assert.ok(observations.length > 0, 'observe the in-progress receipt write');
+    assert.ok(observations.every(value => value === null), 'a first receipt stays absent until its complete record is ready');
+    assert.equal(readFileSync(receipt, 'utf8'), expected);
+
+    originalWriteFileSync.call(fs, receipt, oldRecord);
+    observations.length = 0;
+    await runTool('python3', root);
+    assert.ok(observations.length > 0, 'observe the in-progress receipt replacement');
+    assert.ok(observations.every(value => value === oldRecord), 'a replacement keeps the previous complete receipt visible');
+    assert.equal(readFileSync(receipt, 'utf8'), expected);
+  } finally {
+    fs.writeFileSync = originalWriteFileSync;
+    syncBuiltinESMExports();
+    process.argv = previousArgv;
+    rmSync(root, { recursive: true, force: true });
+  }
+});
 
 function launchOwner(f, marker) {
   const env = childEnv(join(f.root, 'owner'), { XDG_RUNTIME_DIR: join(f.root, 'wayland'), WAYLAND_DISPLAY: 'fixture-only', HYPRLAND_INSTANCE_SIGNATURE: 'fixture-only' }, f.inputs);

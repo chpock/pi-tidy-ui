@@ -1,11 +1,15 @@
-import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 
 // Inert declared tools for lifecycle tests; these never contact a display server.
 export async function runTool(name, root) {
   const args = process.argv.slice(2), settings = JSON.parse(readFileSync(join(root, 'control.json'), 'utf8'));
   const record = value => appendFileSync(join(root, 'journal.jsonl'), JSON.stringify({ tool: name, ...value }) + '\n');
-  const save = (path, value) => writeFileSync(path, JSON.stringify(value));
+  const save = (path, value) => {
+    const pending = path + '.pending';
+    writeFileSync(pending, JSON.stringify(value));
+    renameSync(pending, path);
+  };
   record({ args });
   if (name === 'hyprctl') {
     if (args[0] === '-j' && args[1] === 'monitors') console.log(JSON.stringify([{ name: 'fixture-monitor', scale: 1, focused: true }]));
