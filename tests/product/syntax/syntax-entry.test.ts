@@ -10,6 +10,8 @@ import { dirname, resolve } from 'node:path';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import { Container, Image, Spacer, Text, colorToHex, getCapabilities, setCapabilities, type Component, type TerminalColorMode } from '@earendil-works/pi-tui';
 import { cardGeometry } from '../../../src/card-frame.ts';
+import { visibleWidth } from '@earendil-works/pi-tui';
+import { hasHostInk } from '../../fixtures/host-cells.ts';
 import { Theme, createEditToolDefinition, createReadToolDefinition, createWriteToolDefinition, ToolExecutionComponent, type ExtensionAPI, type ExtensionContext, type ToolRendererResolver, type ToolRenderers } from '@earendil-works/pi-coding-agent';
 import tidyUi, { debugLoggingDiagnostics, type TidyUiRuntimeOptions } from '../../../src/index.ts';
 import { SourceController } from '../../../src/occipital/controller.ts';
@@ -405,7 +407,7 @@ test('expanded text-only read does not borrow Pi constructor spacers', async () 
   } finally { await h.stop(); }
 });
 
-test('expanded read reuses public Pi image children as unpadded protocol rows', async () => {
+for (const failed of [false, true]) test(`expanded ${failed ? 'failed' : 'successful'} read reuses public Pi image children as unpadded protocol rows`, async () => {
   const previous = getCapabilities(); setCapabilities({ ...previous, images: 'kitty' });
   const h = fixture();
   try {
@@ -416,7 +418,7 @@ test('expanded read reuses public Pi image children as unpadded protocol rows', 
     owner.updateResult({ content: [
       { type: 'text', text: 'Read image: photo.png' },
       { type: 'image', data: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/pWQAAAAASUVORK5CYII=', mimeType: 'image/png' },
-    ], isError: false }, false);
+    ], isError: failed }, false);
     const initialImages = owner.children.filter((child): child is Image => child instanceof Image);
     assert.equal(initialImages.length, 1, 'the SDK owns and supplies the public image child');
     const renderedWidths: number[] = [], nativeRows: string[][] = [], observedImages = new WeakSet<Image>();
@@ -2310,7 +2312,87 @@ test('a real wide mixed preview keeps unified rows, a visual cap and the common 
   } finally { await h.stop(); }
 });
 
-test('pending edit details are bounded while funded final-error details preserve every saved entry', async () => {
+test('expanded failed file tools use a Bash-style error frame without proposed source', async () => {
+  const h = fixture();
+  try {
+    await h.start();
+    const owners = [readOwner(h, 'framed-read-error'), writeOwner(h, 'framed-write-error', 'PROPOSED_WRITE_SOURCE'),
+      editOwner(h, 'framed-edit-error')];
+    for (const owner of owners) {
+      owner.setArgsComplete(); owner.markExecutionStarted();
+      owner.updateResult({ content: [{ type: 'text', text: 'EACCES: permission denied\r  detail 界é' },
+        { type: 'text', text: 'ERROR_TAIL' }], isError: true }, false);
+      assert.doesNotMatch(plainRows(owner.render(80)), /┃|EACCES|ERROR_TAIL/u, 'a failed call starts compact');
+      const args = Reflect.get(owner, 'args') as Record<string, unknown>;
+      let proposalReads = 0;
+      for (const key of ['content', 'edits', 'oldText', 'newText']) {
+        const value = args[key];
+        Object.defineProperty(args, key, { configurable: true, get() { proposalReads++; return value; } });
+      }
+      owner.setExpanded(true);
+      const rows = owner.render(80), text = plainRows(rows);
+      assert.match(text, /┃/u, 'explicit expansion uses the shared card frame');
+      assert.ok(rows.every(row => !row || plainRows([row]).startsWith(' ┃')), 'the expanded frame replaces the compact summary, without an outside duplicate title');
+      assert.match(text, /EACCES: permission denied/u);
+      assert.ok(rows.some(row => plainRows([row]).includes('┃   detail 界é')), 'standalone CR becomes a newline and preserves error indentation');
+      assert.match(text, /ERROR_TAIL/u, 'every saved text part is visible');
+      assert.match(text, /\[error: tool call failed\]/u);
+      assert.doesNotMatch(text, /PROPOSED_WRITE_SOURCE|Original file content|Requested replacement|Tool error:|Requested file content/u);
+      assert.equal(await hasHostInk(rows, themes.theme, 'error', '┃'), true, 'the stripe uses the error foreground');
+      assert.equal(await hasHostInk(rows, themes.theme, 'error', '[error:'), true, 'the separate status uses the error foreground');
+      assert.equal(await hasHostInk(rows, themes.theme, 'toolOutput', 'EACCES'), true, 'error output remains readable, not entirely red');
+      assert.equal(await hasHostInk(rows, themes.theme, 'muted', owner === owners[0] ? 'Read' : owner === owners[1] ? 'Write' : 'Edit'), true);
+      for (const width of [1, 2, 5, 24, 80]) {
+        const narrow = owner.render(width);
+        assert.ok(narrow.every(row => visibleWidth(row) <= width), `error frame fits width ${width}`);
+      }
+      assertNativeRendererCold(owner, 'call', 'owned error cards never materialize stock call callbacks');
+      assertNativeRendererCold(owner, 'result', 'owned error cards never materialize stock result callbacks');
+      owner.setExpanded(false);
+      assert.doesNotMatch(plainRows(owner.render(80)), /┃|EACCES|ERROR_TAIL/u, 'collapse returns to the compact failure');
+      owner.setExpanded(true);
+      assert.match(plainRows(owner.render(80)), /ERROR_TAIL/u, 're-expansion restores the complete error');
+      assert.equal(proposalReads, 0, 'error preparation and drawing do not read proposed source fields');
+    }
+  } finally { await h.stop(); }
+});
+
+test('expanded error headings retain the compact path budget instead of preparing unbounded arguments', async () => {
+  const h = fixture();
+  try {
+    await h.start();
+    const path = `${'long-path/'.repeat(1500)}UNBOUNDED_PATH_TAIL`;
+    const owner = writeOwner(h, 'bounded-error-heading', '');
+    owner.updateArgs({ path, content: 'UNAPPLIED' });
+    owner.updateResult({ content: [{ type: 'text', text: 'SAVED_ERROR' }], isError: true }, false);
+    owner.setExpanded(true);
+    const text = plainRows(owner.render(80));
+    assert.match(text, /SAVED_ERROR/u);
+    assert.match(text, /…/u, 'the bounded path remains visibly abbreviated');
+    assert.doesNotMatch(text, /UNBOUNDED_PATH_TAIL/u, 'failed title formatting retains the existing compact argument budget');
+    assert.equal((Reflect.get(owner, 'args') as { path: string }).path, path, 'the original path remains in tool data');
+  } finally { await h.stop(); }
+});
+
+test('empty and pathless file failures retain one no-details message inside an error frame', async () => {
+  const h = fixture();
+  try {
+    await h.start();
+    const owners = [readOwner(h, 'empty-read-error', {}), writeOwner(h, 'empty-write-error', ''), editOwner(h, 'empty-edit-error')];
+    for (const owner of owners) {
+      owner.updateArgs({});
+      owner.updateResult({ content: [], isError: true }, false);
+      owner.setExpanded(true);
+      const text = plainRows(owner.render(80));
+      assert.match(text, /┃/u);
+      assert.equal(text.split('The tool reported an error without text details.').length - 1, 1, 'the empty-error note is not duplicated');
+      assert.match(text, /\[error: tool call failed\]/u, 'status does not infer an execution cause from absent live flags');
+      assert.ok(!h.notices.length, 'a missing path cannot disable the adapter');
+    }
+  } finally { await h.stop(); }
+});
+
+test('pending edit details are bounded while final failures show complete errors without reading proposals', async () => {
   const h = fixture();
   try {
     await h.start();
@@ -2360,7 +2442,8 @@ test('pending edit details are bounded while funded final-error details preserve
     ] });
     failed.updateResult({ content: [{ type: 'text', text: 'EDIT_FAILED' }], isError: true }, false); failed.setExpanded(true);
     const failedRows = failed.render(100).join('\n');
-    for (const text of ['FAILED_BEFORE_1', 'FAILED_AFTER_1', 'FAILED_BEFORE_2', 'FAILED_AFTER_2', 'EDIT_FAILED']) assert.ok(failedRows.includes(text), text);
+    assert.match(failedRows, /EDIT_FAILED/u);
+    assert.doesNotMatch(failedRows, /FAILED_BEFORE_|FAILED_AFTER_/u, 'failed edits show the error, not unapplied proposals');
 
     const finalEntries: unknown[] = Array.from({ length: 12 }, (_, index) => ({
       oldText: `FINAL_ERROR_OLD_${index}`, newText: `FINAL_ERROR_NEW_${index}`,
@@ -2378,20 +2461,19 @@ test('pending edit details are bounded while funded final-error details preserve
     fullFailure.setExpanded(true);
     const fullFailureRows = fullFailure.render(100).join('\n');
     for (let index = 0; index < finalEntries.length; index++) {
-      assert.ok(fullFailureRows.includes(`FINAL_ERROR_OLD_${index}`), `all saved edit entries remain available: old ${index}`);
-      assert.ok(fullFailureRows.includes(`FINAL_ERROR_NEW_${index}`), `all saved edit entries remain available: new ${index}`);
+      assert.ok(!fullFailureRows.includes(`FINAL_ERROR_OLD_${index}`) && !fullFailureRows.includes(`FINAL_ERROR_NEW_${index}`), 'failed edits do not display unapplied source');
       assert.ok(fullFailureRows.includes(`FINAL_ERROR_ROW_${index}_`), `all saved error rows remain available: ${index}`);
     }
     assert.ok(finalErrorRows.length > 8192 && finalErrorRows.split('\n').length > 10);
     assert.ok(fullFailureRows.includes(finalErrorTail), 'the error suffix beyond both pending-preview limits remains visible when funded');
-    assert.ok(finalReads.includes(11), `full error details visit later saved edits: ${JSON.stringify(finalReads)}`);
+    assert.deepEqual(finalReads, [], 'error preparation does not traverse the proposed edits');
 
     const requestTail = 'WRITE_REQUEST_TAIL', writeErrorTail = 'WRITE_ERROR_TAIL';
     const writeFailure = writeOwner(h, 'full-final-write-error', `${'r'.repeat(8300)}${requestTail}`);
     writeFailure.updateResult({ content: [{ type: 'text', text: `${'e'.repeat(8300)}${writeErrorTail}` }], isError: true }, false);
     writeFailure.setExpanded(true);
     const writeFailureRows = writeFailure.render(100).join('\n');
-    assert.ok(writeFailureRows.includes(requestTail), 'funded final write errors retain all submitted content');
+    assert.ok(!writeFailureRows.includes(requestTail), 'failed writes do not display submitted content');
     assert.ok(writeFailureRows.includes(writeErrorTail), 'funded final write errors retain all saved error text');
   } finally { await h.stop(); }
 });
@@ -2634,6 +2716,8 @@ test('expanded final error details refuse unbudgeted untrusted text without reta
     const rows = error.render(80).join('\n');
     assert.ok(refusals > 0, 'expanded full details actually encounter a denied reservation');
     assert.match(rows, /File details are unavailable within the current geometry budget/);
+    assert.match(rows, /┃/u, 'budget refusal retains the same owned error panel');
+    assert.match(rows, /\[error: tool call failed\]/u, 'budget refusal does not remove the known error status');
     assert.doesNotMatch(rows, new RegExp(marker), 'an unfunded full error body never reaches the card');
     assert.equal(budget?.stats().retainedBytes, retainedBefore, 'a refused detail keeps neither copied text nor measurement charges');
     SourceController.prototype.geometryFunding = originalFunding;
@@ -2668,7 +2752,7 @@ test('expanded error details use actual measurement funding without the pending-
     assert.match(rows, /LOW_GLYPH_DETAIL_TAIL/, 'complete saved error rows remain available under ordinary geometry grants');
     assert.ok(grants.length > 1, 'construction scratch, retained text and measured glyph storage use ordinary independent grants');
     assert.ok(grants.every(bytes => bytes <= largestSingleGrant), `no single reservation exceeds the existing 1 MiB operation budget: ${JSON.stringify(grants)}`);
-    const admittedTextUnits = 'Requested file content:\nrequest\nTool error:\n'.length + longErrorText.length;
+    const admittedTextUnits = longErrorText.length;
     assert.ok((budget?.stats().retainedBytes ?? 0) > admittedTextUnits * 2, 'the retained complete error text has a separate charged measurement while the owner is alive');
     assert.equal(budget?.stats().outstandingPeakBytes, 0, 'completed detail preparation leaves no outstanding synthetic grant');
     const lineError = writeOwner(h, 'newline-error-details', 'request');
@@ -2765,9 +2849,8 @@ test('entry keeps pending and failed details bounded and lets explicit expansion
     error.updateResult({ content: [{ type: 'text', text: details }], isError: true }, false);
     rows = error.render(80).join('\n'); assert.doesNotMatch(rows, /const later = true|failure_detail_/, 'collapsed errors do not disclose requested or returned file text');
     assert.equal(clickFileSummary(error)?.handled, true, 'the compact error summary has an explicit expansion target');
-    rows = error.render(80).join('\n'); assert.match(rows, /const later = true/);
-    assert.match(rows, /Requested file content/);
-    for (let index = 0; index < 14; index++) assert.match(rows, new RegExp(`failure_detail_${index}(?:\\n|$)`), `funded final-error details preserve saved row ${index}`);
+    rows = error.render(80).join('\n'); assert.doesNotMatch(rows, /const later = true|Requested file content/);
+    for (let index = 0; index < 14; index++) assert.ok(rows.includes(`failure_detail_${index}`), `funded final-error details preserve saved row ${index}`);
     assert.doesNotMatch(rows, /additional file content is omitted/, 'final errors use ordinary full-detail funding, not pending preview bounds');
     assert.equal(clickFileSummary(error)?.handled, true, 'the expanded error can be collapsed again');
     rows = error.render(80).join('\n'); assert.doesNotMatch(rows, /failure_detail_0/);
@@ -2780,7 +2863,7 @@ test('entry keeps pending and failed details bounded and lets explicit expansion
     assert.doesNotMatch(rows, /ORIGINAL_REQUEST|REQUESTED_REPLACEMENT|EDIT_ERROR_TEXT/, 'collapsed edit errors hide the complete old/new request and result text');
     assert.equal(clickFileSummary(editError)?.handled, true);
     rows = editError.render(80).join('\n');
-    assert.match(rows, /ORIGINAL_REQUEST/); assert.match(rows, /REQUESTED_REPLACEMENT/); assert.match(rows, /EDIT_ERROR_TEXT/);
+    assert.doesNotMatch(rows, /ORIGINAL_REQUEST|REQUESTED_REPLACEMENT/); assert.match(rows, /EDIT_ERROR_TEXT/);
 
     error.updateResult({ content: [], isError: false }, false);
     rows = error.render(80).join('\n'); assert.match(rows, /later/); assert.doesNotMatch(rows, /failure_detail_0/, 'successful recovery replaces the error body on the same owner');

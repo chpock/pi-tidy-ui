@@ -71,7 +71,7 @@ Use current theme roles at render time:
 | Optional success `✓`, failure `✗` | `success`, `error` |
 | Every segment of a completed failed summary, including its leading glyph, name, primary description, connector and parameters | `error` (overrides the ordinary roles above) |
 
-Only a completed result with `isError` marks a summary failed; a partial result does not. Compact summaries never append result/error content, not even a first-line preview. Clicking a completed summary exposes the available result/error: read uses its owned full card, while ordinary tools delegate to their native information. Result bodies, metadata, model context and session data are unchanged.
+Only a completed result with `isError` marks a summary failed; a partial result does not. Compact summaries never append result/error content, not even a first-line preview. Clicking a completed summary exposes the available result/error: read uses its owned full card; failed read/write/edit calls use the shared [expanded error panel](read-card-spec.md#expanded-file-errors), without proposed file contents. Ordinary tools delegate to their native information. Result bodies, metadata, model context and session data are unchanged.
 
 The source constant `SHOW_COMPLETION_MARKERS = false` in `src/index.ts` disables all trailing status indicators: pending/partial `…`, success `✓`, and failure `✗`. Their code remains available: changing this one constant to `true` restores them, without restoring error-body previews. The leading execution spinner is independent of this constant. A hidden indicator adds no separator space and occupies no layout column. There is no runtime setting or command for this source-level policy.
 

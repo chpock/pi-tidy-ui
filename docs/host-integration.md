@@ -70,7 +70,7 @@ Dispatch tests lifecycle and safeguards before it performs expensive preparation
 | Compatible read | Compact summary by default, including image results; explicit expansion selects owned saved text/error details and any host image block, never the write/edit automatic-full window |
 | Compatible edit, final successful result, valid path | Selected bounded saved-diff preview or full saved diff; malformed preview metadata shows the owned unavailable row, while unsupported explicitly full metadata uses native rendering |
 | Compatible write, final successful result, valid path | Selected bounded saved-data preview or full write card; malformed preview metadata shows the owned unavailable row, while unsupported explicitly full metadata uses native rendering |
-| Incomplete/partial/failed edit or write | Compact lifecycle summary by default; expanded pending details show a bounded received-source excerpt, while expanded final-error details show all available saved request/error text only after ordinary construction funding and measurement succeed |
+| Incomplete/partial/failed edit or write | Compact lifecycle summary by default; expanded pending details show a bounded received-source excerpt, while expanded final-error details show all saved error-result text in the shared error frame only after ordinary construction funding and measurement succeed, without proposed source |
 | PowerShell, ordinary expanded tools, non-read images, intentional hiding or explicit opt-out | Native tool path |
 | Compatible ordinary user / native pending queue | User or queued projection, not a synthetic conversation entry |
 | Recognized still-owned stock editor | Editor frame and below-editor rows; separate footer eligibility also applies |

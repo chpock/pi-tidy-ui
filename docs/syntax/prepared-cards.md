@@ -128,7 +128,7 @@ On provider readiness, an eligible restored file with only exact Pi fallback can
 
 ## Palette and geometry independence
 
-Only syntax glyph color/attributes change; token backgrounds never replace structural row surfaces. The ready selected palette owns **all** card-interior roles: code/plain/unknown text, padding, numbers/gutters/signs, frames, errors, reminders and service/footer regions. Pi-colored edges are not an owned-palette fallback. If a bundled owned asset is unusable, an explicit complete Follow Pi input is allowed.
+Only syntax glyph color/attributes change; token backgrounds never replace structural row surfaces. The ready selected palette owns **all** card-interior roles: code/plain/unknown text, padding, numbers/gutters/signs, frames, errors, reminders and service/footer regions. Pi-colored edges are not an owned-palette fallback. Expanded failed read/write/edit details are a separate non-syntax [service panel](../read-card-spec.md#expanded-file-errors), like compact summaries: they use the active Pi UI theme and never acquire a prepared source/code palette. If a bundled owned asset is unusable, an explicit complete Follow Pi input is allowed.
 
 One accepted publication couples a card's palette with all its source styles, including both edit panes. Keep the old ready presentation until the new one is complete; a stale, rejected or exceptional candidate cannot partially replace it. An unchanged neutral preparation, waiting notification or completion-only acknowledgment changes authority without changing paint. Borrowed visits expire on replacement/removal, and failed outer visits release provisional layout/paint candidates before publication.
 

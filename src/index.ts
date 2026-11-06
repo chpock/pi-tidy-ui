@@ -18,7 +18,7 @@ import { measure, reflow, SpanKind, type MeasuredText } from './syntax/measured-
 import { renderUserCard } from "./user-card.ts";
 import { prepareQueuedCard, projectQueuedCards, type QueuedCard } from "./queued-card.ts";
 import { EDITOR_TOP, EDITOR_BOTTOM, renderEditorCard, type EditorLayout } from "./editor-card.ts";
-import { cardGeometry, frameMeasuredRow, insidePanel } from "./card-frame.ts";
+import { cardGeometry, frameRows, insidePanel } from "./card-frame.ts";
 import { toolCardPaint } from "./card-theme.ts";
 import { renderEditorStatus, type EditorStatusInfo } from "./editor-status.ts";
 import { GitBranchSource, gitDiagnostics } from "./git-branch.ts";
@@ -787,18 +787,17 @@ export function installTidyUi(tui: LiveTui, getTheme: () => Palette, options: Ti
   function buildFileDetail(node: ToolNode, mode: FilePreviewMode): { text: string; sources?: FileDetailSources; omitted: boolean; error: boolean; pending: boolean } {
     const error = !node.isPartial && node.result?.isError === true, pending = node.isPartial || !node.result;
     if (fileSucceeded(node) && node.toolName !== 'read') return { text: '', omitted: false, error: false, pending: false };
-    const omitted = { value: false };
     const bounded = (value: unknown, maxUnits = FILE_PREVIEW_MAX_UNITS, maxRows = FILE_PREVIEW_MAX_ROWS) => {
       if (typeof value !== 'string') return { text: '', omitted: false };
       return filePreviewText(value, maxUnits, maxRows);
     };
-    const editSources = function* (entry: unknown, index: number, multiple: boolean, incomplete?: () => void): Generator<FileDetailSource> {
+    const editSources = function* (entry: unknown, index: number, multiple: boolean): Generator<FileDetailSource> {
       if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return;
       const value = entry as Record<string, unknown>, suffix = multiple ? ` (edit ${index + 1})` : '';
       const oldText = value.oldText;
-      if (typeof oldText === 'string') yield { prefix: `Original file content${suffix}:\n`, text: oldText }; else incomplete?.();
+      if (typeof oldText === 'string') yield { prefix: `Original file content${suffix}:\n`, text: oldText };
       const newText = value.newText;
-      if (typeof newText === 'string') yield { prefix: `Requested replacement${suffix}:\n`, text: newText }; else incomplete?.();
+      if (typeof newText === 'string') yield { prefix: `Requested replacement${suffix}:\n`, text: newText };
     };
     if (error && mode === 'preview') return { text: '', omitted: false, error: true, pending: false };
     if (pending) {
@@ -856,30 +855,12 @@ export function installTidyUi(tui: LiveTui, getTheme: () => Palette, options: Ti
       const preview = filePreviewText(parts.join('\n'), FILE_PREVIEW_MAX_UNITS, FILE_PREVIEW_MAX_ROWS);
       return { text: preview.text, omitted: pendingOmitted || preview.omitted, error: false, pending: true };
     }
-    const requestedContent = node.args.content, resultContent = node.result?.content ?? [];
+    const resultContent = node.result?.content ?? [];
     const rawSources: FileDetailSources = function* () {
-      if (node.toolName === 'read' && fileSucceeded(node)) {
-        let index = 0;
-        for (const text of savedReadParts(node.result)) yield { prefix: index++ ? '\n' : '', text };
-      }
-      if (node.toolName === 'write' && typeof requestedContent === 'string') yield { prefix: 'Requested file content:\n', text: requestedContent };
-      if (node.toolName === 'edit') {
-        const edits = Array.isArray(node.args.edits), entries = edits ? node.args.edits as unknown[] : [node.args];
-        const multiple = entries.length > 1;
-        for (let index = 0; index < entries.length; index++) {
-          const entry = entries[index];
-          if (edits && (!entry || typeof entry !== 'object' || Array.isArray(entry))) { omitted.value = true; continue; }
-          yield* editSources(entry, index, multiple, () => { omitted.value = true; });
-        }
-      }
-      if (node.toolName !== 'read' || !fileSucceeded(node)) {
-        let first = true;
-        for (const part of resultContent) if (part.type === 'text' && typeof part.text === 'string') {
-          yield { prefix: first ? 'Tool error:\n' : '', text: part.text }; first = false;
-        }
-      }
+      for (const part of resultContent) if (part.type === 'text' && typeof part.text === 'string')
+        yield { prefix: '', text: part.text };
     };
-    return { text: '', sources: rawSources, get omitted() { return omitted.value; }, error, pending: false };
+    return { text: '', sources: rawSources, omitted: false, error, pending: false };
   }
   function fileDetailTextBytes(text: string): number {
     const bytes = text.length * 2;
@@ -937,7 +918,7 @@ export function installTidyUi(tui: LiveTui, getTheme: () => Palette, options: Ti
           try {
             const parts: string[] = []; let index = 0;
             for (const { prefix, text } of detail.sources()) {
-              parts.push(`${index++ ? '\n' : ''}${prefix}${cleanFileDisplayText(text)}`);
+              parts.push(`${index++ ? '\n' : ''}${prefix}${cleanFileDisplayText(text.replace(/\r\n?/gu, '\n'))}`);
             }
             next.omitted = detail.omitted;
             next.text = parts.join('');
@@ -1008,13 +989,32 @@ export function installTidyUi(tui: LiveTui, getTheme: () => Palette, options: Ti
     const inset = Math.min(Math.max(0, padding), Math.floor((width - 1) / 2));
     return new Text(text, inset, 0).render(width);
   }
+  function fileErrorLayout(node: ToolNode, width: number, theme: Palette, padding: number, cwd: string | undefined, detail?: FileDetailCache): Layout {
+    const geometry = cardGeometry(width, padding), available = geometry.contentWidth;
+    const path = filePath(node.args), location = path ? argumentParts('write', { path }, cwd).object : undefined;
+    const title = node.toolName === 'read' ? '→ Read' : node.toolName === 'edit' ? '← Edit' : '← Write';
+    const heading = title + (location ? ` ${location}` : '');
+    const service = (text: string, role: ThemeColor) => wrapText(text, available, { wide: 'replace' }).map(row => theme.fg(role, row));
+    const body = service(heading, 'muted');
+    body.push('');
+    const output = detail && !detail.denied ? detailRows(detail, available) : undefined;
+    if (output?.length) for (const row of output) body.push(theme.fg('toolOutput', row));
+    else body.push(...service(!detail || detail.denied || output === undefined
+      ? 'File details are unavailable within the current geometry budget.'
+      : 'The tool reported an error without text details.', 'muted'));
+    body.push('', ...service('[error: tool call failed]', 'error'));
+    return { rows: frameRows(geometry, body, toolCardPaint(theme, true)), framed: true };
+  }
   function fileDetailLayout(node: ToolNode, width: number): Layout {
     const theme = getTheme(), padding = outputPadding(), mode = fileMode(node) ?? 'preview';
     const cwd = (node.getRenderContext() as { cwd?: string } | undefined)?.cwd;
     return memo(node, node.toolName as LayoutKind, width, theme, cwd, padding, () => {
-      const summary = summaryRows(node, width, theme, padding, node.toolName === 'read' && mode === 'full' ? 'Read' : summaryName(node.toolName), cwd), cached = fileDetailCaches.get(node);
-      const paintRetry = syntaxStates.get(node)?.paintRetry === true;
+      const cached = fileDetailCaches.get(node);
       const detail = mode === 'full' && cached?.args === node.args && cached.result === node.result && cached.mode === mode ? cached : undefined;
+      if (mode === 'full' && !node.isPartial && node.result?.isError === true)
+        return fileErrorLayout(node, width, theme, padding, cwd, detail);
+      const summary = summaryRows(node, width, theme, padding, node.toolName === 'read' && mode === 'full' ? 'Read' : summaryName(node.toolName), cwd);
+      const paintRetry = syntaxStates.get(node)?.paintRetry === true;
       const rows = [...summary.rows];
       if (fileSucceeded(node) && mode === 'preview') {
         const unsupported = syntax?.filePreparationOutcome(node) === 'unsupported';
@@ -1053,7 +1053,7 @@ export function installTidyUi(tui: LiveTui, getTheme: () => Palette, options: Ti
     const mode = fileMode(node);
     if (!fileSucceeded(node)) {
       const layout = mode === 'full' ? fileDetailLayout(node, width) : summaryLayout(node, width);
-      return { ...layout, framed: false, native: false };
+      return { ...layout, native: false };
     }
     if (node.toolName === 'read' && mode !== 'full')
       return { ...summaryLayout(node, width), framed: false, native: false };
@@ -1592,7 +1592,7 @@ export function installTidyUi(tui: LiveTui, getTheme: () => Palette, options: Ti
           if ((nativeFileOwner(this) || nativeReadOwner(this)) && !layout.native && (fileSucceeded(this) || this.expanded)) releaseNativeFileRenderer(this);
           if (layout.framed && !layout.native && layout.rows.length) usefulSyntax(this);
           else pauseSyntax(this);
-          const rows = fileSucceeded(this) || this.toolName === 'read' && fileMode(this) === 'full' ? layout.rows : [
+          const rows = layout.framed || fileSucceeded(this) || this.toolName === 'read' && fileMode(this) === 'full' ? layout.rows : [
             ...paintSummary(this, width), ...layout.rows.slice(summaryLayout(this, width).rows.length),
           ];
           const displayedRows = this.toolName === 'read' ? readImageRows(this, width, rows, layout.framed === true) : rows;

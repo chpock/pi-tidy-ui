@@ -431,12 +431,13 @@ test('real CLI: failed summaries are wholly error-colored, hide bodies and final
       assert.ok(savedReadError.includes(readArgs.path), 'the saved read error contains the complete current requested path');
       const readRows = lines(failedRead);
       assert.ok(readRows.some(row => row.includes('→ Read')), 'failed expansion uses the owned Read heading');
-      const toolErrorRow = readRows.findIndex(row => row.includes('Tool error:'));
-      assert.ok(toolErrorRow >= 0, 'failed expansion exposes the saved error label');
-      const readBody = readRows.slice(toolErrorRow + 1).join('');
-      assert.match(readBody, /ENOENT: no such file or directory/u, 'the owned read preserves the saved failure cause');
+      assert.ok(!readRows.some(row => row.includes('Tool error:')), 'failed file-tool expansion has no synthetic error prefix');
+      assert.ok(readRows.some(row => row.includes('[error: tool call failed]')), 'failed expansion keeps the separate call-status footer');
+      const bodyStart = readRows.findIndex(row => row.includes('ENOENT: no such file or directory'));
+      assert.ok(bodyStart >= 0, 'the owned read preserves the saved failure cause');
+      const readBody = readRows.slice(bodyStart).map(row => row.slice(3, expanded.width - 2).trimEnd()).join('');
       assert.ok(readBody.includes(readArgs.path),
-        'the complete requested path is visible in the error body after Tool error:, across display wraps');
+        'the complete requested path remains visible in the saved error after display wrapping');
       assert.deepEqual(persisted(expanded), persisted(wide), 'expansion preserves the exact saved arguments/results');
       live.send('\x0f'); await live.settle(); await check(await live.capture('recollapsed'), 80);
       await live.appearance(false); assert.deepEqual(toolLines(await live.capture('off')), toolLines(native));

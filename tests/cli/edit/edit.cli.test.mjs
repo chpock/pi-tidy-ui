@@ -215,9 +215,9 @@ test('real CLI: OpenCode-style edit syntax, numbered unified/split format, error
       for (const failed of [dump.tools[2], dump.tools[3]]) {
         if (fullErrors) {
           const detail = lines(failed).join('\n');
-          assert.match(detail, /Original file content:/);
-          assert.match(detail, /Requested replacement:/);
           assert.match(detail, /Could not find|ENOENT/);
+          assert.doesNotMatch(detail, /Original file content:|Requested replacement:|Tool error:|NONEXISTENT_EDIT|FAILURE_PROPOSAL/u,
+            'failed edit output retains the saved error without either proposed edit side');
           continue;
         }
         compactContent(failed);
@@ -273,7 +273,9 @@ test('real CLI: OpenCode-style edit syntax, numbered unified/split format, error
         'Ctrl+O keeps each successful owned full card unchanged');
       for (const index of [2, 3]) {
         const details = lines(expanded.tools[index]).join('\n');
-        assert.match(details, /Original file content:/); assert.match(details, /Requested replacement:/); assert.match(details, /Tool error:/);
+        assert.match(details, /Could not find|ENOENT/);
+        assert.doesNotMatch(details, /Original file content:|Requested replacement:|Tool error:|NONEXISTENT_EDIT|FAILURE_PROPOSAL/u,
+          'failed edit output retains the saved error without either proposed edit side');
       }
       assert.equal(expanded.nativeRenderCalls.edit ?? 0, 0, 'owned Ctrl+O expansion does not invoke the stock renderer');
       live.send('\x0f'); await live.settle();

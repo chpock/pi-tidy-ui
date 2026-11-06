@@ -20,9 +20,9 @@ for (const shape of [false, true]) test(`real CLI: write cards ${shape ? 'repres
       await terminal.command(`/tidy-ui-write-ready ${name}`);
       const ready = await terminal.waitForProgress(() => terminal.events().find(event => event.type === 'write_capture_ready' && event.name === name), `prepared write sources: ${name}`);
       const dump = await terminal.capture(name);
-      const framed = dump.tools.filter(tool => tool.name === 'write' && tool.lines.some(row => plain(row).startsWith(' ┃')));
-      assert.ok(framed.length > 0, 'settled write reference contains actual source cards');
-      assert.deepEqual(ready.calls.map(event => event.call).sort(), framed.map(tool => tool.id).sort(), 'readiness covers every current source-card call, not merely a same-path owner');
+      const sourceCards = dump.tools.filter(tool => tool.name === 'write' && !tool.isError && tool.lines.some(row => plain(row).startsWith(' ┃')));
+      assert.ok(sourceCards.length > 0, 'settled write reference contains actual source cards');
+      assert.deepEqual(ready.calls.map(event => event.call).sort(), sourceCards.map(tool => tool.id).sort(), 'readiness covers every current source-card call, not merely a same-path owner');
       assert.ok(ready.calls.every(event => event.status === 'ready'));
       return dump;
     };
@@ -158,10 +158,9 @@ for (const shape of [false, true]) test(`real CLI: write cards ${shape ? 'repres
     };
     const assertExpandedWriteError = (tool) => {
       const failure = lines(tool).map(plain).join('\n');
-      assert.match(failure, /Requested file content:/u);
-      assert.match(failure, /FAILED_WRITE_PAYLOAD/u);
-      assert.match(failure, /Tool error:/u);
-      assert.match(failure, /EISDIR/u);
+      assert.doesNotMatch(failure, /Requested file content:|Tool error:|FAILED_WRITE_PAYLOAD/u,
+        'a failed write never exposes the proposed file content');
+      assert.match(failure, /EISDIR/u, 'the saved write failure remains visible');
     };
     const assertReadExpansion = (dump, expectedRows, reference, label) => {
       const readIndex = dump.tools.findIndex(tool => tool.name === 'read');

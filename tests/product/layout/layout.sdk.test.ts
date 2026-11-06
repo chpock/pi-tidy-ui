@@ -40,6 +40,33 @@ test("shared frame accepts unrelated bodies and paint without host/tool state", 
   }
 });
 
+test('expanded file failures fit shared geometry at both Output padding values', () => {
+  for (const name of ['read', 'write', 'edit']) for (const padding of [0, 1]) {
+    const tool = new Tool(name, { path: `nested/${'long-'.repeat(20)}file.ts`, content: 'HIDDEN_PROPOSAL' });
+    tool.updateResult({ content: [{ type: 'text', text: `ERROR ${'界é '.repeat(40)}\nERROR_END` }], isError: true });
+    tool.setExpanded(true);
+    const { controller } = setup([tool], { outputPad: () => padding });
+    try {
+      for (const width of [0, 1, 2, 3, 4, 5, 6, 24, 80]) {
+        const rows = tool.render(width), geometry = cardGeometry(width, padding);
+        if (!width) { assert.deepEqual(rows, []); continue; }
+        assert.ok(rows.length > 3);
+        for (const row of rows.map(plain)) {
+          assert.equal(visibleWidth(row), width, `${name} error frame fits width=${width}, padding=${padding}`);
+          if (geometry.borderWidth) assert.equal(row[geometry.marginLeft], '┃');
+        }
+      }
+      const full = tool.render(80).map(plain).join('\n');
+      assert.match(full, /ERROR_END/u, 'tiny widths must not disable the owned presenter');
+      assert.doesNotMatch(full, /HIDDEN_PROPOSAL|FULL_OUTPUT/u);
+      const event = mouse(2);
+      if (padding) assert.equal(tool.handleMouse({ ...event, x: 0 })?.handled, undefined, 'the exterior margin does not collapse the panel');
+      assert.equal(tool.handleMouse({ ...event, x: cardGeometry(80, padding).panelX })?.handled, true, 'the framed stripe remains a collapse target');
+      assert.doesNotMatch(tool.render(80).map(plain).join('\n'), /ERROR_END|┃/u);
+    } finally { controller.restore(); }
+  }
+});
+
 test("failed stripe and footer share error foreground, never a background-token color", async () => {
   const root = new Root(), tool = bashTool(); root.addChild(tool);
   const foregrounds: [string, string][] = [], backgrounds: string[] = [];

@@ -17,6 +17,9 @@ been reconstructed.
 
 ### Changed
 
+- Show expanded read/write/edit failures in Bash-style error panels, with a red
+  stripe and status, readable complete error output, and no proposed file contents.
+  Compact failure summaries and original session data remain unchanged.
 - Show Bash as a compact tool call until its command/context and prepared card are
   available, rather than briefly displaying Pi's native card. Preserve explicit
   native policy and image safeguards; Ctrl+O keeps an unavailable owned card compact.

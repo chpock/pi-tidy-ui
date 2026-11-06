@@ -131,6 +131,11 @@ export default function terminalDriver(pi: ExtensionAPI) {
   const writeDiagnostics = process.env.TIDY_UI_TEST_WRITE_CARDS === "1";
   const writeSource = '/* write comment\ncontinued write comment */\nexport const value = "界é";\n' +
     Array.from({ length: 15 }, (_, i) => `const line${i + 4} = ${i + 4};`).join("\n") + '\nconst WRITE_TAIL_19 = 19;';
+  const fileErrorSuite: Pick<ToolCall, "name" | "arguments">[] = [
+    { name: "read", arguments: { path: "missing.txt" } },
+    { name: "write", arguments: { path: "write-directory", content: "FILE_ERROR_WRITE_PROPOSAL" } },
+    { name: "edit", arguments: { path: "missing-edit.ts", edits: [{ oldText: "FILE_ERROR_OLD_TEXT", newText: "FILE_ERROR_NEW_TEXT" }] } },
+  ];
   const writeStockSuite: Pick<ToolCall, "name" | "arguments">[] = [
     { name: "write", arguments: { path: "write-stock.ts", content: writeSource } },
     { name: "write", arguments: { path: "write-stock.ts", content: "const overwritten = 20;\n" } },
@@ -499,7 +504,7 @@ export default function terminalDriver(pi: ExtensionAPI) {
         const user: any = context.messages[last];
         const prompt = typeof user?.content === "string" ? user.content :
           user?.content?.filter((c: any) => c.type === "text").map((c: any) => c.text).join("");
-        const scenario = prompt === 'run follow-pi-palette' ? 'follow-pi-palette' : prompt === 'run bash-empty-stream' ? 'bash-empty-stream' : /^run highlighting-limits-(bash|write|edit|read)$/.test(prompt ?? "") ? prompt.slice(4) : prompt === "run syntax-long-output" ? "syntax-long-output" : prompt === "run bash-prefix-contract" ? "bash-prefix-contract" : prompt === "run syntax-cards" ? "syntax-cards" : prompt === "run syntax-shebang" ? "syntax-shebang" : prompt === "run write-window-batch" ? "write-window-batch" : prompt === "run write-window-empty" ? "write-window-empty" : prompt === "run write-window-short" ? "write-window-short" : prompt?.includes("run write-stock") ? "write-stock" : prompt?.includes("run write-shapes") ? "write-shapes" : prompt?.includes("run edit-performance") ? "edit-performance" : prompt?.includes("run edit-cards") ? "edit-cards" : prompt?.includes("run user-card") ? "user-card" : prompt === "run cache-performance" ? "cache-performance" : prompt?.includes("bash-width") ? "bash-width" : prompt === "run bash-compact-transition" ? "bash-compact-transition" : prompt?.includes("bash-stream") ? "bash-stream" : prompt?.includes("bash-real") ? "bash-real" :
+        const scenario = prompt === 'run follow-pi-palette' ? 'follow-pi-palette' : prompt === 'run bash-empty-stream' ? 'bash-empty-stream' : /^run highlighting-limits-(bash|write|edit|read)$/.test(prompt ?? "") ? prompt.slice(4) : prompt === "run syntax-long-output" ? "syntax-long-output" : prompt === "run bash-prefix-contract" ? "bash-prefix-contract" : prompt === "run syntax-cards" ? "syntax-cards" : prompt === "run syntax-shebang" ? "syntax-shebang" : prompt === "run write-window-batch" ? "write-window-batch" : prompt === "run write-window-empty" ? "write-window-empty" : prompt === "run write-window-short" ? "write-window-short" : prompt === "run file-errors" ? "file-errors" : prompt?.includes("run write-stock") ? "write-stock" : prompt?.includes("run write-shapes") ? "write-shapes" : prompt?.includes("run edit-performance") ? "edit-performance" : prompt?.includes("run edit-cards") ? "edit-cards" : prompt?.includes("run user-card") ? "user-card" : prompt === "run cache-performance" ? "cache-performance" : prompt?.includes("bash-width") ? "bash-width" : prompt === "run bash-compact-transition" ? "bash-compact-transition" : prompt?.includes("bash-stream") ? "bash-stream" : prompt?.includes("bash-real") ? "bash-real" :
           prompt?.includes("bash-shape-timeout-stream") ? "bash-shape-timeout-stream" : prompt?.includes("bash-shape-timeouts") ? "bash-shape-timeouts" :
           prompt?.includes("bash-shape-exception-stream") ? "bash-shape-exception-stream" : prompt?.includes("bash-shape-exceptions") ? "bash-shape-exceptions" :
           prompt?.includes('bash-shape-tasks') ? 'bash-shape-tasks' : prompt?.includes("bash-shape-reminders") ? "bash-shape-reminders" : prompt?.includes("bash-shape-stream") ? "bash-shape-stream" : prompt?.includes("bash-shapes") ? "bash-shapes" :
@@ -518,7 +523,7 @@ export default function terminalDriver(pi: ExtensionAPI) {
         if (scenario.startsWith("footer-") && process.env.TIDY_UI_TEST_FOOTER_HISTORY !== "1") throw new Error("footer-history requests require explicit isolated opt-in");
         const volume = scenario.startsWith("highlighting-limits-") ? JSON.parse(readFileSync(join(output, 'highlighting-limits.json'), 'utf8')) as { calls: Pick<ToolCall, "name" | "arguments">[]; prefixes?: string[] } : undefined;
         if (scenario.startsWith("write-window-") && !writeDiagnostics) throw new Error("write-window scenario requires write card diagnostics");
-        const calls: Pick<ToolCall, "name" | "arguments">[] = volume ? volume.calls : scenario === "write-window-batch" ? writeWindowBatch : scenario === "write-window-empty" ? [] : scenario === "write-window-short" ? writeWindowShort : scenario === 'follow-pi-palette' ? [
+        const calls: Pick<ToolCall, "name" | "arguments">[] = volume ? volume.calls : scenario === "write-window-batch" ? writeWindowBatch : scenario === "write-window-empty" ? [] : scenario === "write-window-short" ? writeWindowShort : scenario === "file-errors" ? fileErrorSuite : scenario === 'follow-pi-palette' ? [
           { name: 'bash', arguments: { command: "printf '%s\\n' 'FOLLOW_PI_BASH'" } },
           { name: 'write', arguments: { path: 'follow-pi.md', content: followPiText } },
           { name: 'edit', arguments: { path: 'follow-pi.md', oldText: followPiText, newText: followPiText.replace('gone', 'fixed') } },
