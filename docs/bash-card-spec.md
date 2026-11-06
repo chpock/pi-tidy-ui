@@ -31,7 +31,9 @@ This is the default presentation for the exact tool name `bash`; other shell/too
 
 Change presentation only: no tool registration/replacement, execution interception, result rewriting, additional session entries, subprocesses, polling or file reads. Off restores the original Pi rendering. Images and intentionally hidden native components retain native behavior. Non-terminal modes remain unaffected.
 
-By default `bash` uses this card both collapsed and expanded. An explicit `--tidy-ui-card bash` requests the original native card; `--tidy-ui-compact bash` keeps the existing compact override and takes precedence. Invalid/non-string command arguments fall back to native presentation; an empty string command is displayable. During argument streaming the card updates when a string command is available.
+By default attached `bash` calls use this card both collapsed and expanded once its command, directory context and prepared presentation are usable. Before then, including actual preparation/paint/geometry refusal, use the existing bounded [compact tool summary](tool-summary-spec.md), not an intermediate native card. Show currently supplied arguments under the ordinary summary budgets; Ctrl+O does not bypass this transition. An empty string command is displayable. Ordinary input/preparation updates and successful layout admission can replace the summary with the complete card. This presentation choice adds no preparation queue or retry loop. Detached owners retain native authority.
+
+An explicit `--tidy-ui-card bash` requests the original native card; `--tidy-ui-compact bash` keeps the existing compact override and takes precedence, including its native expansion behavior. Appearance Off, images and native hiding/visibility safeguards remain unchanged.
 
 ## 2. Command and comments
 
@@ -40,7 +42,7 @@ Show the entire supplied command, without an argument-length or row cap. Prepend
 Optional comments precede the command in this order:
 
 1. `# <description>` when `description` is a nonempty human-readable string after label sanitization. Render it as one logical comment line, soft-wrapped if needed.
-2. `# Running in <directory>` only when a nonempty string `workdir` was explicitly supplied and its resolved path differs from the component's session working directory. Resolve relative paths against that directory and display the absolute, normalized path. Do not inspect the command for `cd`, resolve symlinks, query the filesystem, or infer runtime changes made by other extensions. Equivalent `.`/absolute current-directory paths produce no comment. Every nonempty string workdir requires the native render context's `cwd` to be an absolute string, including when workdir itself is absolute: the context is needed to decide whether the directory differs. If that context is unavailable or relative, retain native rendering rather than inventing a path.
+2. `# Running in <directory>` only when a nonempty string `workdir` was explicitly supplied and its resolved path differs from the component's session working directory. Resolve relative paths against that directory and display the absolute, normalized path. Do not inspect the command for `cd`, resolve symlinks, query the filesystem, or infer runtime changes made by other extensions. Equivalent `.`/absolute current-directory paths produce no comment. Every nonempty string workdir requires the native render context's `cwd` to be an absolute string, including when workdir itself is absolute: the context is needed to decide whether the directory differs. If that context is unavailable or relative, retain the compact summary rather than inventing a path.
 
 Comments use the same hard-wrapped content layout as the command. A long absolute working directory may span physical rows; wrapping does not change or truncate the logical path.
 

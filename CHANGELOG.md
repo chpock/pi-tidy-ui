@@ -17,6 +17,9 @@ been reconstructed.
 
 ### Changed
 
+- Show Bash as a compact tool call until its command/context and prepared card are
+  available, rather than briefly displaying Pi's native card. Preserve explicit
+  native policy and image safeguards; Ctrl+O keeps an unavailable owned card compact.
 - Read expansion now opens the owned card instead of Pi's stock text card.
   Defer Pi's stock read text preparation while the owned card is active. Collapsed
   reads prepare no result body, and collapsing releases their derived full view.

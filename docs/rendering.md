@@ -30,7 +30,7 @@ Pi arguments / result / saved metadata / native rendered rows
                                                 native Pi composition/output
 ```
 
-Not every arrow runs on every render. Write/edit preview/full selection happens before the chosen view is normalized or admitted for syntax preparation; compact read contributes no body, while explicit expansion supplies its saved result text; Bash continues to display the complete latest command. File/Bash input and syntax preparation happen through owned useful-work updates outside render; a normal warm visit consumes their prepared state. User/editor projection deliberately calls the native renderer on the appropriate cold/live path because native Markdown and editing behavior remain authoritative.
+Not every arrow runs on every render. Write/edit preview/full selection happens before the chosen view is normalized or admitted for syntax preparation; compact read contributes no body, while explicit expansion supplies its saved result text; a usable Bash frame displays the complete latest command, while unavailable command/context or preparation uses the ordinary bounded summary. File/Bash input and syntax preparation happen through owned useful-work updates outside render; a normal warm visit consumes their prepared state. User/editor projection deliberately calls the native renderer on the appropriate cold/live path because native Markdown and editing behavior remain authoritative.
 
 The stored representations have distinct purposes:
 
@@ -146,7 +146,7 @@ The complete source/palette atomicity rules remain in [prepared cards](syntax/pr
 
 Outside transcript separators are not retained inside a body. Parent/index edges are recorded during attachment; a visit first checks its recorded index and lazily repairs it after structural changes. It then walks backward to the previous visible sibling.
 
-- Eligible Bash is already known to be a multiline framed presentation; spacing need not format its output.
+- Owned Bash can be compact or framed. A current compact entry or unavailable prepared display uses bounded-summary height; a usable prepared display needs only the multiline frame classification. A successful frame adoption releases the interim summary. Spacing never builds hidden Bash output merely to classify it.
 - A compact sibling uses its latest bounded summary layout.
 - User projection supplies cached body metadata rather than recursively invoking predecessor spacing.
 - Unknown/native renderers may still have to render at the actual width to establish visibility.

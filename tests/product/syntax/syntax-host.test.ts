@@ -292,7 +292,7 @@ test('host Bash duplicate and same-object source events coalesce; argsComplete f
   assert.equal(f.env.pi.length, 0); assert.ok(f.env.observes > before[1]!);
 });
 
-test('a refused Bash replacement renders the current native command and result, not stale prepared rows', async () => {
+test('a refused Bash replacement shows current compact arguments, not stale prepared rows', async () => {
   const f = fixture(true), previous = "printf 'BASH_OLD_COMMAND'", latest = "printf 'BASH_NEW_COMMAND'";
   const tool = f.tool('bash', { command: previous }, createBashToolDefinition('/tmp'));
   tool.setArgsComplete();
@@ -317,8 +317,13 @@ test('a refused Bash replacement renders the current native command and result, 
   assert.ok(denied > 0, 'the replacement attempt reaches the real geometry-funding boundary and is refused');
   assert.ok(f.sources.geometryFunding(), 'the old retained display would remain fundable to a stale borrower');
   const current = plain(f.render(tool)).join('\n');
-  assert.ok(current.includes('BASH_NEW_COMMAND') && current.includes('BASH_NEW_OUTPUT'), `native fallback must show latest Bash content: ${current}`);
+  assert.match(current, /⚙ bash/u);
+  assert.ok(current.includes('BASH_NEW_COMMAND'), `compact fallback shows latest Bash arguments: ${current}`);
   assert.ok(!current.includes('BASH_OLD_COMMAND') && !current.includes('BASH_OLD_OUTPUT'), `stale prepared rows must not replace current output: ${current}`);
+  assert.equal(tool.result.content[0].text, 'BASH_NEW_OUTPUT', 'compact presentation preserves the full current saved result');
+  tool.updateArgs({ ...tool.args });
+  const recovered = plain(f.render(tool)).join('\n');
+  assert.ok(recovered.includes('┃') && recovered.includes('BASH_NEW_COMMAND') && recovered.includes('BASH_NEW_OUTPUT'), 'ordinary input preparation restores the complete latest card');
 });
 
 for (const refusal of ['palette', 'paint'] as const) test(`accepted read source with refused first ${refusal} stays bounded and recovers without stock callbacks`, async () => {
@@ -2364,4 +2369,87 @@ test('a retained detached Bash renders natively without disabling the live adapt
   assert.equal(f.adapter.active, true, 'a legitimate detached render must not disable the adapter');
   const live = plain(f.render(sibling)).join('\n');
   assert.ok(live.includes('LIVE_SIBLING_AFTER_DETACH') && live.includes('┃'), 'the mounted sibling remains owned');
+});
+
+
+for (const refusal of ['palette', 'paint'] as const) test(`bash transition: refused first ${refusal} keeps compact arguments until ordinary recovery`, async () => {
+  const f = fixture(false, false, {}, undefined, false, true);
+  f.env.selected = { kind: 'theme', id: 'gruvbox-dark' }; f.adapter.syntaxMetadataChanged();
+  const probe = paintFundingProbe(f, refusal);
+  try {
+    const tool = f.tool('bash', { command: 'echo BASH_PAINT_TRANSITION' }, createBashToolDefinition('/tmp'));
+    tool.setExpanded(true);
+    assert.ok(probe.snapshot().deniedPreparationBytes > 0, 'a real card palette/paint reservation is refused');
+    const fallback = plain(f.render(tool)).join('\n');
+    assert.match(fallback, /⚙ bash/u); assert.match(fallback, /BASH_PAINT_TRANSITION/u);
+    assert.doesNotMatch(fallback, /┃/u);
+    const work = counts(f), requests = f.ui.requests;
+    for (let index = 0; index < 4; index++) f.render(tool);
+    assert.deepEqual(counts(f), work, 'compact frames do not retry source preparation');
+    assert.equal(f.ui.requests, requests, 'compact refusal does not create a repaint loop');
+    probe.allow(); tool.updateArgs({ ...tool.args, description: 'RECOVERED_PAINT' });
+    const recovered = plain(f.render(tool)).join('\n');
+    assert.match(recovered, /┃/u); assert.match(recovered, /BASH_PAINT_TRANSITION/u);
+    assert.match(recovered, /RECOVERED_PAINT/u);
+    assert.equal(f.env.pi.length, 0, 'Bash does not use the Pi classifier while switching presentation');
+  } finally { probe.allow(); probe.restore(); }
+});
+
+test('bash transition: refused geometry uses compact spacing and recovers without source work', async () => {
+  const f = fixture(), tool = f.tool('bash', { command: 'echo GEOMETRY_TRANSITION' }, createBashToolDefinition('/tmp'));
+  const next = f.tool('grep', { pattern: 'AFTER_BASH' });
+  const funding = f.sources.geometryFunding;
+  let denied = 0, blocked = true;
+  f.sources.geometryFunding = group => {
+    const available = funding.call(f.sources, group);
+    return available && { budget: available.budget, grant(bytes) {
+      if (blocked && f.env.depth > 0) { denied++; return undefined; }
+      return available.grant(bytes);
+    } };
+  };
+  try {
+    assert.match(plain(f.render(tool)).join('\n'), /⚙ bash/u);
+    assert.ok(denied > 0, 'the frame actually fails geometry admission');
+    assert.notEqual(f.render(next)[0], '', 'the rendered compact predecessor contributes no framed gap');
+    const before = sourceCounts(f);
+    blocked = false;
+    const recovered = plain(f.render(tool)).join('\n');
+    assert.match(recovered, /┃/u); assert.match(recovered, /GEOMETRY_TRANSITION/u);
+    assert.equal(f.render(next)[0], '', 'the recovered frame contributes the ordinary separator');
+    assert.deepEqual(sourceCounts(f), before, 'layout recovery does not prepare or classify source again');
+  } finally { f.sources.geometryFunding = funding; }
+});
+
+
+for (const expanded of [false, true]) test(`bash transition: executing compact refusal shares the spinner and retires on frame takeover (${expanded})`, t => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 0 });
+  t.mock.method(performance, 'now', () => Date.now());
+  const f = fixture(false), tool = f.tool('bash', { command: 'echo SPINNER_TRANSITION' }, createBashToolDefinition('/tmp'));
+  tool.markExecutionStarted(); tool.setExpanded(expanded);
+  const funding = f.sources.geometryFunding;
+  let blocked = true;
+  f.sources.geometryFunding = group => {
+    const available = funding.call(f.sources, group);
+    return available && { budget: available.budget, grant(bytes: number) {
+      return blocked && f.env.depth > 0 ? undefined : available.grant(bytes);
+    } };
+  };
+  try {
+    const glyph = () => plain(f.document()).find(row => row.includes(' bash '))?.[1];
+    assert.match(glyph() ?? '', /[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]/u, 'executing compact Bash uses the existing spinner, not a static gear');
+    const builds = f.adapter.cacheStats().builds, requests = f.ui.requests, work = sourceCounts(f), seen = new Set<string>();
+    for (let index = 0; index < 6; index++) {
+      t.mock.timers.tick(80); seen.add(glyph() ?? '');
+    }
+    assert.ok(seen.size > 2, 'native document visits advance the shared spinner phase');
+    assert.equal(f.adapter.cacheStats().builds, builds, 'warm spinner frames reuse the summary body');
+    assert.equal(f.ui.requests, requests, 'regular document visits suppress extra fallback requests');
+    assert.deepEqual(sourceCounts(f), work, 'spinner frames repeat no source preparation');
+    blocked = false;
+    assert.match(plain(f.document()).join('\n'), /┃.*SPINNER_TRANSITION/u);
+    assert.equal(f.adapter.cacheStats().byKind.summary.entries, 0, 'the full frame releases its interim summary');
+    const after = f.ui.requests;
+    t.mock.timers.tick(1000);
+    assert.equal(f.ui.requests, after, 'a running full Bash frame leaves no compact spinner deadline');
+  } finally { f.sources.geometryFunding = funding; f.adapter.restore(); }
 });

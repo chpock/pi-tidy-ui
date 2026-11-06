@@ -291,7 +291,8 @@ export function installTidyUi(tui: LiveTui, getTheme: () => Palette, options: Ti
     }
     return true;
   }
-  const executing = (node: ToolNode) => node.executionStarted && (node.isPartial || !node.result) && eligible(node);
+  const executing = (node: ToolNode) => node.executionStarted && (node.isPartial || !node.result) &&
+    (eligible(node) || ownedBash(node) && states.get(node)?.signature[0] === 'summary');
   function pruneAnimation() {
     // Only the small weak set of painted running calls, never a full transcript traversal.
     for (const reference of animated) {
@@ -1378,11 +1379,12 @@ export function installTidyUi(tui: LiveTui, getTheme: () => Palette, options: Ti
     return nativeRows(node, width).length > 0;
   }
 
-  function bashCard(node: Component, width: number): boolean {
-    if (!active || !candidate(node) || node.toolName !== "bash" || node.hideComponent ||
-      overrides.has("bash") || nativeOverrides.has("bash") || typeof node.args.command !== "string" ||
-      node.result?.content.some((part) => part.type === "image") || bashDirectory(node) === null) return false;
-    return nativeVisible(node, width);
+  function ownedBash(node: ToolNode): boolean {
+    return active && node.toolName === 'bash' && !node.hideComponent && !overrides.has('bash') && !nativeOverrides.has('bash') &&
+      !node.result?.content.some((part) => part.type === 'image') && attached(node);
+  }
+  function bashPresentation(node: Component, width: number): boolean {
+    return candidate(node) && ownedBash(node) && nativeVisible(node, width);
   }
 
   function fileCard(node: Component, width: number): boolean {
@@ -1447,6 +1449,12 @@ export function installTidyUi(tui: LiveTui, getTheme: () => Palette, options: Ti
     const prefix = getTheme().fg("dim", " ".repeat(layout.prefixLeft) + frame + (layout.prefixSpace ? " " : ""));
     return [prefix + layout.rows[0]!.slice(layout.prefixLength), ...layout.rows.slice(1)];
   }
+  function presentSummary(node: ToolNode, width: number): string[] {
+    if (width < 1) { removeAnimation(node); pauseSyntax(node); return []; }
+    const offset = gap(node, width), rows = paintSummary(node, width);
+    toolDecision(node, "Compact tool summary selected", width, rows.length);
+    return presentedRows(node, rows, offset);
+  }
   function nativeRows(node: Component, width: number): string[] {
     const render = candidate(node) ? patches.get(Object.getPrototypeOf(node))?.render.value as Render | undefined : undefined;
     return render ? render.call(node as ToolNode, width) : node.render(width);
@@ -1462,7 +1470,12 @@ export function installTidyUi(tui: LiveTui, getTheme: () => Palette, options: Ti
     if (siblings[current] !== node) { current = siblings.indexOf(node); if (position) position.index = current; }
     for (let index = current - 1; index >= 0; index--) {
       const previous = siblings[index];
-      if (width > 0 && bashCard(previous, width)) return { compact: false, tool: true, height: 3 };
+      if (width > 0 && candidate(previous) && bashPresentation(previous, width)) {
+        const state = states.get(previous);
+        if (state?.signature[0] !== 'summary' && syntaxStates.get(previous)?.applied && syntax?.visit(previous, () => {}))
+          return { compact: false, tool: true, height: 3 };
+        return { compact: true, tool: true, height: summaryLayout(previous, width).rows.length };
+      }
       if (candidate(previous) && (filePreviewMode(previous) !== undefined ||
         previous.toolName === 'read' && filePresentationEligible(previous as ToolNode))) {
         if (width < 1) { pauseSyntax(previous as ToolNode); continue; }
@@ -1548,10 +1561,11 @@ export function installTidyUi(tui: LiveTui, getTheme: () => Palette, options: Ti
         if (this.toolName === 'read') readImageWindows.delete(this);
         if (quiescing) return cleanupRows(this, width) ?? originalRender.call(this, width);
         if (width < 1 && fileMode(this) !== undefined) { removeAnimation(this); pauseSyntax(this); return []; }
-        if (bashCard(this, width)) {
-          removeAnimation(this);
+        if (bashPresentation(this, width)) {
           const layout = bashLayout(this, width);
-          if (!layout) return originalRender.call(this, width);
+          if (!layout) return presentSummary(this, width);
+          removeAnimation(this);
+          forget(this, 'prepared Bash replaces compact summary');
           const rows = preparedRows(layout);
           toolDecision(this, rows.length ? "Bash card selected" : "Bash card returned no rows", width, rows.length);
           if (!rows.length) { pauseSyntax(this); return rows; }
@@ -1597,9 +1611,7 @@ export function installTidyUi(tui: LiveTui, getTheme: () => Palette, options: Ti
         if (width < 1) { toolDecision(this, "Tool suppressed at zero width", width, 0); removeAnimation(this); return []; }
         if (!nativeVisible(this, width)) { toolDecision(this, "Native self-shell returned no visible rows", width, 0); removeAnimation(this); return []; }
         if (filePresentationTool(this) && (nativeFileOwner(this) || nativeReadOwner(this))) releaseNativeFileRenderer(this);
-        const offset = gap(this, width), rows = paintSummary(this, width);
-        toolDecision(this, "Compact tool summary selected", width, rows.length);
-        return presentedRows(this, rows, offset);
+        return presentSummary(this, width);
       }
        catch { fail("pi-tidy-ui could not render this component; native rendering restored"); return originalRender.call(this, width); }
     };
@@ -1607,7 +1619,7 @@ export function installTidyUi(tui: LiveTui, getTheme: () => Palette, options: Ti
       if (!active) return originalMouse.call(this, event);
       if (event.width < 1 && filePreviewMode(this) !== undefined) { pauseSyntax(this); return undefined; }
       if (quiescing) return undefined;
-      if (event.width > 0 && bashCard(this, event.width)) {
+      if (event.width > 0 && bashPresentation(this, event.width)) {
         if (event.type !== "click" || event.button !== "left" || tui.hasActiveSelection?.()) return undefined;
         const layout = bashLayout(this, event.width);
         const offset = previousLayout(this, event.width) ? 1 : 0;
@@ -1692,7 +1704,7 @@ export function installTidyUi(tui: LiveTui, getTheme: () => Palette, options: Ti
         readImageWindows.delete(this);
         if (name === 'setShowImages' || name === 'setImageWidthCells') return method.apply(this, args);
         const preserveFileDetail = fileTool(this) && (name === 'updateArgs' || name === 'updateResult' || name === 'setArgsComplete');
-        if (name !== "markExecutionStarted" && !((name === "updateArgs" || name === 'setArgsComplete') && this.toolName === "bash" && !overrides.has("bash")) &&
+        if (name !== "markExecutionStarted" &&
           !(name === "setExpanded" && args[0] === this.expanded)) forget(this, name, preserveFileDetail);
         if (quiescing && name !== 'markExecutionStarted') { dropPrepared(this); }
         if (filePresentationTool(this) && (name === 'updateArgs' || name === 'updateResult' || name === 'invalidate')) dirtyFileSources.add(this);

@@ -14,7 +14,7 @@ import { Container, Root, Text, Tool, color, editDiff, installTidyUi, mouse, pla
 test("adjacent summaries skip empty siblings but separate visible text and cards", () => {
   const first = new Tool(), second = new Tool("grep", { pattern: "needle", path: "src" });
   const bash = new Tool("bash"), third = new Tool("read", { path: "b.txt" });
-  const { root, controller } = setup([new Text("User", 0, 0), first, new Text("", 0, 0), second, bash, third]);
+  const { root, controller } = setup([new Text("User", 0, 0), first, new Text("", 0, 0), second, bash, third], { cards: ["bash"] });
   try {
     assert.equal(controller.active, true);
     const rows = root.render(80).map(plain);
@@ -411,7 +411,7 @@ test("native self cards get only a missing separator after multiline calls and a
   }
   const long = new Tool("custom", { query: "x".repeat(80) }), card = new NativeSelf("native_self");
   const bash = new Tool("bash");
-  const { controller } = setup([long, card, bash], { cards: ["native_self"] });
+  const { controller } = setup([long, card, bash], { cards: ["native_self", "bash"] });
   try {
     assert.deepEqual(card.render(24), ["", "SELF CARD"]);
     assert.equal(card.handleMouse(mouse(0, 24)), undefined);

@@ -192,6 +192,100 @@ test('real CLI: gated actual built-in bash streaming and argument pending',
     } finally { await closeTerminals([live]); }
   });
 
+for (const mode of ['fullscreen', 'regular']) test(`real CLI: Bash formation stays compact through execution and replay (${mode})`,
+  { timeout: 120000 }, async () => {
+    const terminals = [];
+    const description = 'Pending Bash command';
+    const command = "printf 'BASH_COMPACT_TRANSITION_RESULT\\n'";
+    const args = { description, command };
+    const resultContent = [{ type: 'text', text: 'BASH_COMPACT_TRANSITION_RESULT\n' }];
+    const start = async (name, options = {}) => {
+      const terminal = new PiTerminal(`bash-compact-transition-${mode}-${name}`, { tidyUi: true, mode, ...options });
+      terminals.push(terminal); await terminal.ready(); await terminal.resize(100, 120); return terminal;
+    };
+    const assertNoExecution = terminal => {
+      for (const type of ['call', 'result']) assert.equal(terminal.events().filter(event => event.type === type).length, 0,
+        `${type} has not started while the provider holds tool formation`);
+    };
+    const compactSummary = (dump, expectedArgs) => {
+      const tools = byName(dump, 'bash'); assert.equal(tools.length, 1);
+      const tool = tools[0]; assert.deepEqual(tool.args, expectedArgs);
+      const rows = compactContent(tool).map(plain);
+      assert.ok(rows.join(' ').includes(description), 'compact Bash summary retains the streamed description');
+      assert.doesNotMatch(tool.lines.map(plain).join('\n'), /[\u2500-\u257F]/u, 'compact summary has no native call-card geometry');
+      assert.doesNotMatch(tool.lines.map(plain).join('\n'), /(?:^|\n)\s*\$\s|Took \d|[✓✗]/u, 'compact summary has no native command, duration or completion marker');
+      const y = dump.screen.findIndex(row => row.includes(rows[0].trim()));
+      assert.ok(y >= 0, 'compact summary is visible on the physical terminal');
+      const x = dump.screen[y].indexOf('bash'); assert.ok(x >= 0);
+      assert.equal(dump.cells[y][x].bgMode, 0, 'compact summary uses no call-card background');
+      return tool;
+    };
+    const assertFormingRender = dump => {
+      const tool = byName(dump, 'bash')[0]; assert.ok(tool);
+      assert.deepEqual(tool.args, args, 'complete command arguments are streamed while the provider still holds formation');
+      if (tool.lines.some(row => plain(row).includes('┃'))) bashCard(tool, args, dump, { partial: true });
+      else {
+        const summary = compactSummary(dump, args);
+        assert.ok(summary.lines.map(plain).join(' ').includes('BASH_COMPACT_TRANSITION_RESULT'), 'unprepared Bash remains a useful command summary');
+      }
+    };
+    const raw = ({ id, args, content, details, isError }) => ({ id, args, content, details, isError });
+    try {
+      const live = await start('live');
+      live.send('run bash-compact-transition\r'); await live.event('bash_compact_formation_gate');
+      const forming = await live.capture('description-only');
+      assert.equal(forming.bashShape, false, 'the scenario uses Pi built-in Bash, not a synthetic Bash renderer');
+      compactSummary(forming, { description }); assertNoExecution(live);
+
+      live.send('\x0f'); await live.settle();
+      const toggled = await live.capture('ctrl-o-while-forming');
+      compactSummary(toggled, { description }); assertNoExecution(live);
+
+      writeFileSync(join(live.output, 'bash-compact-formation-go'), 'go');
+      await live.event('provider_gate');
+      const commandFormed = await live.capture('command-formed');
+      assert.equal(commandFormed.bashShape, false);
+      assertFormingRender(commandFormed); assertNoExecution(live);
+
+      writeFileSync(join(live.output, 'provider-go'), 'go'); await live.event('agent_end');
+      const final = await live.capture('executed'); allBashCards(final);
+      assert.equal(final.tools.length, 1); assert.deepEqual(final.tools.map(raw)[0].args, args);
+      assert.deepEqual(final.tools[0].content, resultContent, 'the real built-in Bash result is complete and exact');
+      assert.ok(final.screen.some(row => plain(row).includes('BASH_COMPACT_TRANSITION_RESULT')), 'the completed owned command/result frame is physical');
+      assert.equal(final.tools[0].details, undefined, 'untruncated built-in Bash does not persist transient structured metadata');
+      assert.equal(final.tools[0].isError, false);
+      const observed = traffic(live, 1);
+      assert.deepEqual(observed.filter(event => event.type === 'call').map(event => event.input), [args]);
+      const result = observed.find(event => event.type === 'result');
+      assert.ok(result); assert.deepEqual(result.content, resultContent);
+      assert.equal(result.details, undefined); assert.equal(result.isError, false);
+      const resultForContext = { name: 'bash', content: result.content, isError: result.isError,
+        ...(result.details === undefined ? {} : { details: result.details }) };
+      assert.deepEqual(observed.filter(event => event.type === 'model_context').map(event => event.results), [[], [resultForContext]]);
+      const saved = persisted(final);
+      assert.deepEqual(saved, [{ name: 'bash', arguments: args }, { role: 'toolResult', toolName: 'bash',
+        content: resultContent, details: result.details, isError: false }]);
+      const sessionBytes = readFileSync(final.session, 'utf8');
+
+      for (const width of [24, 100]) {
+        await live.resize(width, 120); const resized = await live.capture(`width-${width}`); allBashCards(resized);
+        assert.deepEqual(resized.tools.map(raw), final.tools.map(raw), 'resize preserves the exact executed call and result');
+        assert.deepEqual(persisted(resized), saved); assert.equal(readFileSync(resized.session, 'utf8'), sessionBytes);
+        assert.deepEqual(traffic(live, 1), observed, 'resize does not execute Bash or call the provider again');
+      }
+      const session = final.session, workspace = live.work;
+      await live.close();
+      const sameSession = await start('same-session', { session, workspace });
+      const replayed = await sameSession.capture('replay'); allBashCards(replayed);
+      assert.ok(replayed.screen.some(row => plain(row).includes('BASH_COMPACT_TRANSITION_RESULT')), 'replay physically restores the owned Bash result');
+      assert.deepEqual(replayed.tools.map(raw), final.tools.map(raw));
+      assert.deepEqual(persisted(replayed), saved); assert.equal(readFileSync(replayed.session, 'utf8'), sessionBytes);
+      const replayEvents = sameSession.events();
+      for (const type of ['call', 'result', 'model_context', 'provider_error'])
+        assert.equal(replayEvents.filter(event => event.type === type).length, 0, `replay does not emit ${type}`);
+    } finally { await closeTerminals(terminals.reverse()); }
+  });
+
 test('real CLI: isolated opt-in representative bash metadata, comments and output boundaries',
   { timeout: 90000 }, async () => {
     const terminals = [];

@@ -499,7 +499,7 @@ export default function terminalDriver(pi: ExtensionAPI) {
         const user: any = context.messages[last];
         const prompt = typeof user?.content === "string" ? user.content :
           user?.content?.filter((c: any) => c.type === "text").map((c: any) => c.text).join("");
-        const scenario = prompt === 'run follow-pi-palette' ? 'follow-pi-palette' : prompt === 'run bash-empty-stream' ? 'bash-empty-stream' : /^run highlighting-limits-(bash|write|edit|read)$/.test(prompt ?? "") ? prompt.slice(4) : prompt === "run syntax-long-output" ? "syntax-long-output" : prompt === "run bash-prefix-contract" ? "bash-prefix-contract" : prompt === "run syntax-cards" ? "syntax-cards" : prompt === "run syntax-shebang" ? "syntax-shebang" : prompt === "run write-window-batch" ? "write-window-batch" : prompt === "run write-window-empty" ? "write-window-empty" : prompt === "run write-window-short" ? "write-window-short" : prompt?.includes("run write-stock") ? "write-stock" : prompt?.includes("run write-shapes") ? "write-shapes" : prompt?.includes("run edit-performance") ? "edit-performance" : prompt?.includes("run edit-cards") ? "edit-cards" : prompt?.includes("run user-card") ? "user-card" : prompt === "run cache-performance" ? "cache-performance" : prompt?.includes("bash-width") ? "bash-width" : prompt?.includes("bash-stream") ? "bash-stream" : prompt?.includes("bash-real") ? "bash-real" :
+        const scenario = prompt === 'run follow-pi-palette' ? 'follow-pi-palette' : prompt === 'run bash-empty-stream' ? 'bash-empty-stream' : /^run highlighting-limits-(bash|write|edit|read)$/.test(prompt ?? "") ? prompt.slice(4) : prompt === "run syntax-long-output" ? "syntax-long-output" : prompt === "run bash-prefix-contract" ? "bash-prefix-contract" : prompt === "run syntax-cards" ? "syntax-cards" : prompt === "run syntax-shebang" ? "syntax-shebang" : prompt === "run write-window-batch" ? "write-window-batch" : prompt === "run write-window-empty" ? "write-window-empty" : prompt === "run write-window-short" ? "write-window-short" : prompt?.includes("run write-stock") ? "write-stock" : prompt?.includes("run write-shapes") ? "write-shapes" : prompt?.includes("run edit-performance") ? "edit-performance" : prompt?.includes("run edit-cards") ? "edit-cards" : prompt?.includes("run user-card") ? "user-card" : prompt === "run cache-performance" ? "cache-performance" : prompt?.includes("bash-width") ? "bash-width" : prompt === "run bash-compact-transition" ? "bash-compact-transition" : prompt?.includes("bash-stream") ? "bash-stream" : prompt?.includes("bash-real") ? "bash-real" :
           prompt?.includes("bash-shape-timeout-stream") ? "bash-shape-timeout-stream" : prompt?.includes("bash-shape-timeouts") ? "bash-shape-timeouts" :
           prompt?.includes("bash-shape-exception-stream") ? "bash-shape-exception-stream" : prompt?.includes("bash-shape-exceptions") ? "bash-shape-exceptions" :
           prompt?.includes('bash-shape-tasks') ? 'bash-shape-tasks' : prompt?.includes("bash-shape-reminders") ? "bash-shape-reminders" : prompt?.includes("bash-shape-stream") ? "bash-shape-stream" : prompt?.includes("bash-shapes") ? "bash-shapes" :
@@ -541,7 +541,9 @@ export default function terminalDriver(pi: ExtensionAPI) {
           Array.from({ length: scenario === "footer-history" ? 19 : 11 }, () => ({ name: "read", arguments: { path: "a.txt", offset: 1, limit: 1 } })) : scenario === "write-stock" ? writeStockSuite : scenario === "write-shapes" ? writeShapeSuite : scenario === "edit-performance" ? editPerformanceSuite : scenario === "edit-cards" ? editSuite : scenario === "user-card" ? [
           { name: "bash", arguments: { command: "printf 'USER_BASH_OUTPUT\\n'" } },
           { name: "read", arguments: { path: "a.txt" } },
-        ] : scenario === "cache-performance" ? cacheSuite : scenario === "bash-width" ? bashWidth : scenario === "bash-real" ? bashReal : scenario === "bash-shapes" ? bashShapes :
+        ] : scenario === "cache-performance" ? cacheSuite : scenario === "bash-width" ? bashWidth : scenario === "bash-real" ? bashReal : scenario === "bash-compact-transition" ? [
+            { name: "bash", arguments: { description: "Pending Bash command", command: "printf 'BASH_COMPACT_TRANSITION_RESULT\\n'" } },
+          ] : scenario === "bash-shapes" ? bashShapes :
           scenario === 'bash-shape-tasks' ? ['task-empty', 'task-exit', 'task-timeout', 'task-cap'].map(fixtureCase => ({ name: 'bash', arguments: { command: 'shape ' + fixtureCase, fixtureCase } })) :
           scenario === "bash-shape-reminders" ? ['reminder-inline', 'reminder-timeout', 'reminder-long', 'reminder-cap'].map(fixtureCase => ({ name: 'bash', arguments: { command: 'shape ' + fixtureCase, fixtureCase } })) :
           scenario === "bash-shape-timeouts" ? bashTimeouts :
@@ -584,8 +586,12 @@ export default function terminalDriver(pi: ExtensionAPI) {
         stream.push({ type: "start", partial: message });
         if (step < calls.length) {
           const call = { type: "toolCall" as const, id: `terminal-${last}-${step}`, ...calls[step] };
-          message.content.push({ ...call, arguments: {} });
+          message.content.push({ ...call, arguments: scenario === "bash-compact-transition" ? { description: "Pending Bash command" } : {} });
           stream.push({ type: "toolcall_start", contentIndex: 0, partial: message });
+          if (scenario === "bash-compact-transition" && step === 0) {
+            record({ type: "bash_compact_formation_gate" });
+            await gate("bash-compact-formation-go", options?.signal);
+          }
           await wait(60);
           if (scenario === 'bash-empty-stream' && step === 0) {
             for (const [phase, prefix] of ['', 'printf', String(call.arguments.command)].entries()) {
@@ -622,7 +628,7 @@ export default function terminalDriver(pi: ExtensionAPI) {
           }
           message.content[0] = call;
           stream.push({ type: "toolcall_delta", contentIndex: 0, delta: JSON.stringify(call.arguments), partial: message });
-          if ((scenario === "pending" || scenario === "bash-stream" || scenario === "syntax-cards" || scenario === "edit-cards" || (writeDiagnostics && ["write-stock", "write-shapes"].includes(scenario))) && step === 0) {
+          if ((scenario === "pending" || scenario === "bash-stream" || scenario === "bash-compact-transition" || scenario === "syntax-cards" || scenario === "edit-cards" || (writeDiagnostics && ["write-stock", "write-shapes"].includes(scenario))) && step === 0) {
             record({ type: "provider_gate" });
             await gate("provider-go", options?.signal);
           }

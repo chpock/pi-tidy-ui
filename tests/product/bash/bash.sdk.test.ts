@@ -770,3 +770,57 @@ test('bash task markers: filtering does not consume preview rows, add overflow o
   } finally { controller.restore(); }
   assert.deepEqual(tool.render(100), native, 'Off returns the original raw native presentation');
 });
+
+
+test('bash transition: missing command stays compact through expansion and same-object argument updates', () => {
+  const args: Record<string, unknown> = { description: 'BEFORE_COMMAND' };
+  const tool = new Tool('bash', args);
+  tool.executionStarted = false; tool.argsComplete = false; tool.result = undefined;
+  const { controller } = setup([tool]);
+  try {
+    for (const expanded of [false, true]) {
+      tool.setExpanded(expanded);
+      const rows = tool.render(80).map(plain).join('\n');
+      assert.match(rows, /⚙ bash/u);
+      assert.match(rows, /BEFORE_COMMAND/u);
+      assert.doesNotMatch(rows, /NATIVE|┃/u);
+    }
+    args.description = 'CURRENT_DESCRIPTION'; tool.updateArgs(args);
+    const changed = tool.render(80).map(plain).join('\n');
+    assert.match(changed, /CURRENT_DESCRIPTION/u);
+    assert.doesNotMatch(changed, /BEFORE_COMMAND|NATIVE/u);
+    args.command = 'echo READY_COMMAND'; tool.updateArgs(args);
+    assert.deepEqual(bashBody(tool), ['# CURRENT_DESCRIPTION', '', '$ echo READY_COMMAND']);
+    delete args.command; tool.updateArgs(args);
+    const missing = tool.render(80).map(plain).join('\n');
+    assert.match(missing, /⚙ bash/u);
+    assert.doesNotMatch(missing, /READY_COMMAND|NATIVE|┃/u);
+  } finally { controller.restore(); }
+});
+
+test('bash transition: predecessor spacing follows compact and prepared presentation', () => {
+  const tool = new Tool('bash', {}), next = new Tool('grep', { pattern: 'NEIGHBOR' });
+  tool.executionStarted = false; tool.argsComplete = false; tool.result = undefined;
+  const { controller } = setup([tool, next]);
+  try {
+    assert.notEqual(next.render(80)[0], '', 'one-line pending Bash has ordinary compact spacing');
+    tool.render(80);
+    tool.updateArgs({ command: 'echo PREPARED' });
+    assert.equal(next.render(80)[0], '', 'a prepared frame receives a separate neighbor gap');
+    tool.updateArgs({ description: 'PENDING_AGAIN' });
+    assert.notEqual(next.render(80)[0], '', 'spacing does not retain the former frame classification');
+  } finally { controller.restore(); }
+});
+
+test('bash transition: missing workdir context remains compact until context is usable', () => {
+  const tool = bashTool('pwd'); let cwd = '';
+  tool.getRenderContext = () => ({ cwd });
+  tool.updateArgs({ command: 'pwd', workdir: 'sub' });
+  const { controller } = setup([tool]);
+  try {
+    assert.match(tool.render(80).map(plain).join('\n'), /⚙ bash/u);
+    assert.doesNotMatch(tool.render(80).map(plain).join('\n'), /NATIVE|┃/u);
+    cwd = '/project'; tool.updateArgs({ ...tool.args });
+    assert.deepEqual(bashBody(tool), ['# Running in /project/sub', '', '$ pwd']);
+  } finally { controller.restore(); }
+});

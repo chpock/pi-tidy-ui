@@ -66,7 +66,7 @@ Dispatch tests lifecycle and safeguards before it performs expensive preparation
 | Current component | Selected path |
 | --- | --- |
 | Collapsed eligible text-only tool | Compact summary, unless a native-card policy/default applies |
-| Exact Bash with displayable command/directory context | Bash frame, collapsed or expanded |
+| Attached exact Bash under owned policy | Bash frame when command/context and prepared paint/layout are usable; otherwise the existing bounded summary, even expanded |
 | Compatible read | Compact summary by default, including image results; explicit expansion selects owned saved text/error details and any host image block, never the write/edit automatic-full window |
 | Compatible edit, final successful result, valid path | Selected bounded saved-diff preview or full saved diff; malformed preview metadata shows the owned unavailable row, while unsupported explicitly full metadata uses native rendering |
 | Compatible write, final successful result, valid path | Selected bounded saved-data preview or full write card; malformed preview metadata shows the owned unavailable row, while unsupported explicitly full metadata uses native rendering |
