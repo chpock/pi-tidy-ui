@@ -28,6 +28,8 @@ The cause is not attributed to a specific filesystem, scanner, CPU or runner def
 
 `scripts/release/platforms.mjs` is the single platform catalogue. Windows ARM64 remains fully described but disabled by default. Set the repository Actions variable `CI_WINDOWS_ARM64=true` to include its existing build and release inputs again, with minimum-Node consumers for ordinary events and both-Node consumers for releases; absent/`false` excludes it, and any other value fails planning. Compilation, consumers, release assembly and generated native dependencies use the same selected targets. Enabling that platform does not by itself establish restored support: both runtime profiles and complete release admission must pass.
 
+Native macOS producers and their consumers use the catalogue's fixed `macos-15` (ARM64) and `macos-15-intel` (x64) runners, not `macos-latest`. GitHub has [retired macOS 14 runner images](https://github.blog/changelog/2026-10-01-github-actions-macos-14-runner-image-retirement/). These runner versions do not establish a minimum supported macOS; compiler/SDK byte differences remain subject to [raw-byte release admission](#compiler-and-release-equality).
+
 Published artifacts/tags remain immutable, including existing Windows ARM64 binaries. Do not delete or substitute them. Admission validates the identities and public raw/npm bytes actually declared by the selected public release, and requires current CI equality for every enabled platform. Generated extension dependencies include only those enabled platforms; no stale ARM64 CI binary is invented when it is disabled. No installation/startup prohibition is introduced.
 
 ## Version and publication routing

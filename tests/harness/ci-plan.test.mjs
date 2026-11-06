@@ -154,6 +154,23 @@ test('enabled platforms build once; ordinary consumers use minimum Node and rele
   }
 });
 
+test('macOS producers and consumers use fixed architecture-matched macOS 15 runners', async () => {
+  for (const ref of ['refs/heads/main','refs/tags/occipital-v0.2.0','refs/tags/pi-tidy-ui-v0.3.0']) {
+    const {native} = await plan({ref});
+    const nodes = ref === 'refs/heads/main' ? [NODE_VERSIONS[0]] : NODE_VERSIONS;
+    for (const [target,runner,rust] of [
+      ['darwin-x64','macos-15-intel','x86_64-apple-darwin'],
+      ['darwin-arm64','macos-15','aarch64-apple-darwin'],
+    ]) {
+      const producer = native.remaining.find(row => row.target === target);
+      assert.equal(producer?.runner,runner,`${target} producer runner`);
+      assert.equal(producer.rust,rust);
+      assert.deepEqual(producer.consumerMatrix.map(({runner,rust,node}) => ({runner,rust,node})),
+        nodes.map(node => ({runner,rust,node})),`${target} consumer runners`);
+    }
+  }
+});
+
 test('actual Occipital push tags require native/delivery and daemon gates without UI/latest acquisition', async () => {
   const result = await plan({ref:'refs/tags/occipital-v0.2.0',fetchLatest:() => assert.fail('native-only release must not fetch Pi')});
   assert.equal(result.kind,'occipital-release');
