@@ -125,7 +125,8 @@ export function layoutCard(display: PreparedCard, options: CardLayoutOptions, fu
     const entry = (kind: RegionKind, index: number, role: CardRole, width: number, mode: 'file' | 'bash', prompt = false, maxRows?: number, side?: 'old' | 'next') => {
       const locator = { kind, index }, r = region(display, locator); if (!r) throw refused;
       ledger.add(funding, 256);
-      const layout = reflow(r.measured, { mode, width, prompt, maxRows }, funding.grant); if (!layout) throw refused;
+      const layout = reflow(r.measured, { mode, width, prompt, maxRows,
+        wrap: kind === 'heading' && mode === 'file' ? 'fragments' : undefined }, funding.grant); if (!layout) throw refused;
       current.children.push(layout.cleanupReceipt());
       ledger.add(funding, 128 + layout.rowCount * 16);
       const cells: number[] = [], blank: boolean[] = [];

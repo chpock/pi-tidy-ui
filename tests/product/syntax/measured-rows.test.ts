@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import { registerHooks } from 'node:module';
 import { setImmediate as turn } from 'node:timers/promises';
 import { DataBudget } from '../../../src/occipital/data-budget.ts';
+import { wrapText } from '../../../src/text-wrap.ts';
 import { visibleWidth as piWidth } from '@earendil-works/pi-tui';
 
 const widthKey = Symbol.for('test.measured-rows.width');
@@ -613,5 +614,57 @@ for (const [label, base, completion] of [
     }
     console.log(JSON.stringify({ surrogateJoin: { label, prefixUnits: prefix.length, resegmentedUnits: units, glyphs: actual.glyphCount } }));
   } finally { append.dispose(); actual.dispose(); complete.dispose(); old.dispose(); }
+  assert.equal(budget.stats().retainedBytes, 0);
+});
+
+
+test('measured rows: heading fragments share string rules without growing glyph records or repeating measurement', () => {
+  const budget = new DataBudget(1_000_000), text = '← Edited abcdefgh/klmnopqrstuvwx';
+  const ordinary = measure(text, budget)!, heading = measure(text, budget, undefined, 'fragments')!;
+  assert.equal(heading.bufferBytes, ordinary.bufferBytes);
+  assert.equal(heading.allocationBytes, ordinary.allocationBytes);
+  assert.throws(() => reflow(ordinary, { mode: 'file', width: 19, wrap: 'fragments' }), /invalid geometry policy/);
+  assert.throws(() => reflow(heading, { mode: 'bash', width: 19, wrap: 'fragments' }), /invalid geometry policy/);
+  const segment = Intl.Segmenter.prototype.segment, char = String.prototype.charCodeAt;
+  let widths = 0, segments = 0, bytes = 0;
+  hooks[widthKey] = () => { widths++; throw Error('heading resize measured width'); };
+  Intl.Segmenter.prototype.segment = () => { segments++; throw Error('heading resize segmented text'); };
+  String.prototype.charCodeAt = () => { bytes++; throw Error('heading resize measured UTF8'); };
+  const layouts: Layout[] = [];
+  try {
+    for (const width of [1, 2, 8, 19, 40, 19]) {
+      const layout = reflow(heading, { mode: 'file', width, wrap: 'fragments' })!;
+      layouts.push(layout);
+      assert.ok(layout.rowCount > 0);
+    }
+  } finally {
+    delete hooks[widthKey]; Intl.Segmenter.prototype.segment = segment; String.prototype.charCodeAt = char;
+  }
+  try {
+    assert.deepEqual(rows(text, heading, layouts[3]!), ['← Edited abcdefgh/', 'klmnopqrstuvwx']);
+    assert.deepEqual([widths, segments, bytes], [0, 0, 0]);
+  } finally { for (const layout of layouts) layout.dispose(); ordinary.dispose(); heading.dispose(); }
+  assert.equal(budget.stats().retainedBytes, 0);
+});
+
+
+test('measured rows: Unicode heading adapters agree across tiny widths and annotated append', () => {
+  const budget = new DataBudget(1_000_000);
+  const check = (text: string, measured: Measured) => {
+    for (const width of [1, 2, 3, 8, 19, 40]) {
+      const layout = reflow(measured, { mode: 'file', width, wrap: 'fragments' })!;
+      try { assert.deepEqual(rows(text, measured, layout), wrapText(text, width, { wide: 'replace' }), `width=${width}`); }
+      finally { layout.dispose(); }
+    }
+  };
+  for (const text of ['← Edited a \u0301', '→ Read folder/界é👩‍💻🙂-tail.ts', '← Wrote x\u0600 yyyyyyyyyy']) {
+    const measured = measure(text, budget, undefined, 'fragments')!;
+    try { check(text, measured); } finally { measured.dispose(); }
+  }
+  const prefix = '← Edited a ', text = prefix + '\u0301/folder-tail.ts';
+  const previous = measure(prefix, budget, undefined, 'fragments')!, append = prepareMeasuredAppend(previous, text)!;
+  assert.ok(append); assert.equal(append.commit(), true); append.dispose();
+  try { check(text, append.measured); }
+  finally { append.measured.dispose(); previous.dispose(); }
   assert.equal(budget.stats().retainedBytes, 0);
 });

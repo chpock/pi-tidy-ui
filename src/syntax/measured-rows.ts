@@ -1,4 +1,5 @@
 import { visibleWidth } from '@earendil-works/pi-tui';
+import { wrapFlags, wrapUnits } from '../text-wrap.ts';
 import { DataBudget, type DataCharge, type DataGrantFactory, type DataCleanupReceipt } from '../occipital/data-budget.ts';
 
 export const GlyphFlag = Object.freeze({ Whitespace: 1, Tab: 2, Newline: 4 } as const);
@@ -6,6 +7,7 @@ export const SpanKind = Object.freeze({ Source: 0, Tab: 1, Replacement: 2, Promp
 export type GeometrySpanKind = typeof SpanKind[keyof typeof SpanKind];
 export type GeometryPolicy = Readonly<{
   mode: 'file' | 'bash'; width: number;
+  wrap?: 'fragments';
   /** Output/service rows share Bash wrapping but have no synthetic command prefix. */
   prompt?: boolean;
   /** Optional visual-row prefix, including any overflow-proof row. Stops the
@@ -132,14 +134,16 @@ class Measurement {
   readonly glyphCount: number;
   readonly bufferBytes: number;
   readonly allocationBytes: number;
-  private constructor(budget: DataBudget, data: Packed, header: DataCharge, glyphCount = data.words.length / 4) {
+  readonly fragmentWrap: boolean;
+  private constructor(budget: DataBudget, data: Packed, header: DataCharge, glyphCount = data.words.length / 4, fragments = false) {
+    this.fragmentWrap = fragments;
     this.#budget = budget; this.#data = data; this.#header = header;
     this.#ownership = { header, first: data.charge };
     this.#receipt = geometryReceipt(new WeakRef(this), this.#ownership);
     this.glyphCount = glyphCount; this.bufferBytes = data.words.byteLength;
     this.allocationBytes = header.bytes + data.charge.bytes;
   }
-  static create(text: string, budget: DataBudget, funding?: DataGrantFactory): Measurement | undefined {
+  static create(text: string, budget: DataBudget, funding?: DataGrantFactory, fragments = false): Measurement | undefined {
     let header: DataCharge | undefined, builder: Words | undefined, data: Packed | undefined;
     let memoHeader: DataCharge | undefined, memo: Map<string, WidthEntry> | undefined, entries: WidthEntry | undefined;
     try {
@@ -164,10 +168,11 @@ class Measurement {
         }
         if (!Number.isInteger(width) || width < 0 || width > 0xffffffff) throw new Error('invalid geometry glyph width');
         builder.push(index + segment.length); builder.push(bytes); builder.push(width);
-        builder.push((/\s/u.test(segment) ? GlyphFlag.Whitespace : 0) | (tab ? GlyphFlag.Tab : 0) | (newline ? GlyphFlag.Newline : 0));
+        builder.push((fragments ? wrapFlags(segment) : /\s/u.test(segment) ? GlyphFlag.Whitespace : 0)
+          | (tab ? GlyphFlag.Tab : 0) | (newline ? GlyphFlag.Newline : 0));
       }
       data = builder.finish();
-      return new Measurement(budget, data, header);
+      return new Measurement(budget, data, header, undefined, fragments);
     } catch (error) {
       data?.charge.release(); header?.release();
       if (error === denied) return undefined;
@@ -198,7 +203,7 @@ class Measurement {
       const start = stable ? old.words[(stable - 1) * 4]! : 0;
       const byte = stable ? old.words[(stable - 1) * 4 + 1]! : 0;
       scratch = fund(previous.#budget, 256 + (text.length - start) * 2, funding);
-      suffix = Measurement.create(text.slice(start), previous.#budget, funding);
+      suffix = Measurement.create(text.slice(start), previous.#budget, funding, previous.fragmentWrap);
       if (!suffix || previous.#data !== old) return undefined;
       const count = stable + suffix.glyphCount, words = count * 4;
       if (words <= old.words.length) { old.charge.retain(); target = old; }
@@ -209,7 +214,7 @@ class Measurement {
       }
       header = fund(previous.#budget, measuredHeader, funding);
       if (previous.#data !== old) return undefined;
-      const measured = new Measurement(previous.#budget, target, header, count), tail = suffix;
+      const measured = new Measurement(previous.#budget, target, header, count, previous.fragmentWrap), tail = suffix;
       // The numeric endpoints are checked before adoption, while failure can
       // still refund the whole candidate and preserve the previous measurement.
       if (tail.glyphCount && byte + tail.#data!.words[(tail.glyphCount - 1) * 4 + 1]! > 0xffffffff) {
@@ -257,14 +262,16 @@ class Measurement {
   static reflow(measured: Measurement, policy: GeometryPolicy, funding?: DataGrantFactory): RowLayout | undefined {
     const { width, mode, maxRows } = policy;
     if (!Number.isSafeInteger(width) || width < 0 || width > 0xffffffff || (mode !== 'file' && mode !== 'bash')
-      || maxRows !== undefined && (!Number.isSafeInteger(maxRows) || maxRows < 0)) throw new Error('invalid geometry policy');
+      || maxRows !== undefined && (!Number.isSafeInteger(maxRows) || maxRows < 0)
+      || policy.wrap !== undefined && (policy.wrap !== 'fragments' || mode !== 'file' || !measured.fragmentWrap)) throw new Error('invalid geometry policy');
     const data = measured.#data, measuredCharge = measured.#header;
     if (!data || !measuredCharge) return undefined;
     data.charge.retain(); measuredCharge.retain();
     let header: DataCharge | undefined, spans: Words | undefined, rows: Words | undefined, packedSpans: Packed | undefined, packedRows: Packed | undefined;
     try {
       header = fund(measured.#budget, layoutHeader, funding); spans = new Words(measured.#budget, fund(measured.#budget, builderHeader, funding), funding); rows = new Words(measured.#budget, fund(measured.#budget, builderHeader, funding), funding);
-      buildRows(data.words, measured.glyphCount, mode, width, spans, rows, policy.prompt !== false, maxRows ?? Infinity);
+      if (policy.wrap === 'fragments') buildFragmentRows(data.words, measured.glyphCount, width, spans, rows, maxRows ?? Infinity);
+      else buildRows(data.words, measured.glyphCount, mode, width, spans, rows, policy.prompt !== false, maxRows ?? Infinity);
       if (measured.#data !== data) return undefined;
       packedSpans = spans.finish(); packedRows = rows.finish();
       const result = new RowLayout(measured, header, packedSpans, packedRows);
@@ -388,6 +395,26 @@ function geometryLookup(glyphs: Uint32Array | undefined, glyphCount: number, row
   return { read, clear() { glyphs = rows = spans = undefined; basis = layout = undefined; } };
 }
 
+function buildFragmentRows(glyphs: Uint32Array, count: number, width: number, spans: Words, rows: Words, maxRows: number): void {
+  if (!width || !maxRows) return;
+  let spanCount = 0;
+  wrapUnits({ length: count, width: i => Math.min(glyphs[i * 4 + 2]!, width), flags: i => glyphs[i * 4 + 3]! }, width, (first, end, cells) => {
+    let start = first, columns = 0;
+    const append = (kind: number, last: number, size: number) => {
+      spans.push(kind); spans.push(start); spans.push(last); spans.push(size); spans.push(0); spanCount++;
+    };
+    for (let i = first; i < end; i++) {
+      const size = glyphs[i * 4 + 2]!;
+      if (size <= width) { columns += size; continue; }
+      if (start < i) append(SpanKind.Source, i, columns);
+      start = i; append(SpanKind.Replacement, i + 1, width); start = i + 1; columns = 0;
+    }
+    if (start < end) append(SpanKind.Source, end, columns);
+    rows.push(spanCount); rows.push(cells);
+    return rows.length / 2 < maxRows;
+  });
+}
+
 function buildRows(glyphs: Uint32Array, count: number, mode: 'file' | 'bash', width: number, spans: Words, rows: Words, prompt: boolean, maxRows: number): void {
   if (!width || !maxRows) return;
   let columns = 0, spanCount = 0, pendingKind = -1, pendingFirst = 0, pendingEnd = 0, pendingCells = 0, pendingOffset = 0;
@@ -479,5 +506,5 @@ export function prepareMeasuredAppend(previous: MeasuredText, text: string, fund
 export type MeasuredRowLayout = RowLayout;
 /** Caller supplies the existing ledger. Denial returns undefined; malformed
  * input/allocation exceptions propagate after refunding the entire candidate. */
-export function measure(logicalText: string, budget: DataBudget, funding?: DataGrantFactory): MeasuredText | undefined { return Measurement.create(logicalText, budget, funding); }
+export function measure(logicalText: string, budget: DataBudget, funding?: DataGrantFactory, wrap?: 'fragments'): MeasuredText | undefined { return Measurement.create(logicalText, budget, funding, wrap === 'fragments'); }
 export function reflow(measured: MeasuredText, policy: GeometryPolicy, funding?: DataGrantFactory): MeasuredRowLayout | undefined { return Measurement.reflow(measured, policy, funding); }

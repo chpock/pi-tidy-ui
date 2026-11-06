@@ -24,6 +24,10 @@ been reconstructed.
 
 ### Fixed
 
+- Keep oversized read/write/edit paths beside their heading labels when moving the
+  path cannot make it fit. Share fragment wrapping and preferred separator cuts
+  with compact tool calls, without changing file/diff body wrapping or remeasuring
+  headings on resize.
 - Show root-reaching `../` file paths as their resolved absolute names in owned
   tool summaries and read/write/edit headings, preserving nearby relative paths
   and original tool/session data.

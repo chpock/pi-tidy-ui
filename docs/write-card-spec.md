@@ -27,6 +27,8 @@ First check the explicit truncation override: for a final successful write, `det
 | Explicit `details.truncated === true`, even if some diff rows survived | `← Wrote <path>` | Supplied `args.content` plus `Diff truncated by tool; showing supplied content.` |
 | Present malformed/unsupported diff without the explicit truncation override | Native | Native available information |
 
+All titles, including bounded `Write` previews, use [shared fragment wrapping](rendering.md#shared-fragment-wrapping). An oversized path fills the remaining title row; a fragment fitting a full row moves intact. Source/diff body wrapping is unchanged.
+
 `Created` is the agreed display classification **content added from zero**, including filling an existing empty file. It is not proof that the file did not previously exist. `Edited` and `Replaced` describe the supplied change pattern, not distinct tool implementations. Do not infer these labels from message text, tool identity, addition/deletion counters or current file existence.
 
 Without a usable diff, the old source and changed positions are unknown. Show the supplied input, not a fabricated comparison. It describes the content the agent submitted; it is not a guarantee of final bytes after producer-side formatting. Where trustworthy `details.noOp === true` accompanies absent/empty/context-only metadata, add `No changes.`. Never infer no-op solely from absent metadata. The truncated warning takes precedence over no-op. Unsupported metadata does not become a no-op merely because it has no recognized source rows.

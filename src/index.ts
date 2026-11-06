@@ -1,5 +1,5 @@
 import { VERSION, CustomEditor, highlightCode, getLanguageFromPath, type ExtensionAPI, type ExtensionContext, type ThemeColor } from "@earendil-works/pi-coding-agent";
-import { Box, Container, Editor, Image, Markdown, Spacer, Text, TruncatedText, backgroundAnsi, visibleWidth, type TerminalColorMode, type Component, type TuiMouseEvent, type TuiMouseEventResult } from "@earendil-works/pi-tui";
+import { Box, Container, Editor, Image, Markdown, Spacer, Text, TruncatedText, backgroundAnsi, type TerminalColorMode, type Component, type TuiMouseEvent, type TuiMouseEventResult } from "@earendil-works/pi-tui";
 import { isAbsolute, resolve } from "node:path";
 import { createRequire } from "node:module";
 import { SessionLogging } from "./session-logging.ts";
@@ -27,6 +27,7 @@ import { TerminalColors, processTerminalDefaults, type DefaultColors } from "./t
 import type { CardTheme } from "./card-theme.ts";
 import { RenderCache, LAYOUT_KINDS, MEMORY_FIELDS, type LayoutKind, type LayoutMemory, type CacheEntry, type CacheStats } from "./render-cache.ts";
 import { argumentParts, summaryName } from "./summary-args.ts";
+import { wrapText } from './text-wrap.ts';
 import { CardSources, type CardPreparation } from "./syntax/cards.ts";
 import { layoutCard, type CardLayout, type CardRows, type BashPaintProof } from './syntax/card-layout.ts';
 import { PaletteInputOwner } from './syntax/pi-input-owner.ts';
@@ -182,92 +183,6 @@ const SPINNER_FRAMES = Array.from("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏");
 const SPINNER_INTERVAL_MS = 100;
 
 
-const summaryGraphemes = new Intl.Segmenter(undefined, { granularity: "grapheme" });
-// Keep Pi's CJK/space boundaries and the existing parameter-comma soft breaks.
-const summaryCjkBreak = /[\p{Script_Extensions=Han}\p{Script_Extensions=Hiragana}\p{Script_Extensions=Katakana}\p{Script_Extensions=Hangul}\p{Script_Extensions=Bopomofo}]/u;
-const SUMMARY_SPLIT_LOOKBACK = 20;
-// Path/URL/identifier separators, not quotes or brackets. Match whole graphemes.
-const summarySplitSeparators = new Set(["/", "\\", ".", "-", "_", ":", ",", ";", "?", "!", "&", "=", "+", "@", "#", "%"]);
-
-/** Wrap plain source before coloring; only oversized tokens gain preferred cuts. */
-function wrapSummary(text: string, width: number, parameterStart: number, parameterLength: number): string[] {
-  const tokens: { text: string; start: number }[] = [];
-  const preferred = new Set<number>();
-  let word = "", wordStart = 0, wordIsSpace = false, quoted = false, escapeEnd = 0;
-  const flushWord = () => { if (word) tokens.push({ text: word, start: wordStart }); word = ""; };
-  for (const { segment, index } of summaryGraphemes.segment(text)) {
-    const end = index + segment.length;
-    // JSON syntax and grapheme boundaries are independent: quotes may share a
-    // grapheme with following marks or preceding Unicode Prepend characters.
-    // Visit every code unit for ASCII syntax; prefer cuts only after whole units.
-    for (let position = index; position < end; position++) {
-      if (position < escapeEnd) continue;
-      if (text[position] === '"') quoted = !quoted;
-      else if (quoted && text[position] === "\\") {
-        const escape = /^\\(?:u[\da-fA-F]{4}|["\\/bfnrt])/u.exec(text.slice(position, position + 6));
-        if (escape) escapeEnd = position + escape[0].length;
-      }
-    }
-    if (summarySplitSeparators.has(segment) && end >= escapeEnd) preferred.add(end);
-    if (summaryCjkBreak.test(segment)) {
-      flushWord(); tokens.push({ text: segment, start: index }); continue;
-    }
-    const space = segment === " ";
-    if (word && wordIsSpace !== space) flushWord();
-    if (!word) wordStart = index;
-    word += segment;
-    wordIsSpace = space;
-    if (segment === "," && index >= parameterStart && index < parameterStart + parameterLength) flushWord();
-  }
-  flushWord();
-  const rows: string[] = [];
-  let line = "", lineWidth = 0;
-  const flush = () => { if (line.trimEnd()) rows.push(line.trimEnd()); line = ""; lineWidth = 0; };
-  for (const token of tokens) {
-    const tokenWidth = visibleWidth(token.text);
-    const whitespace = token.text.trim() === "";
-    if (tokenWidth > width && !whitespace) {
-      // Segment this oversized token once. Prefix widths make each bounded
-      // lookback constant work; no rescanning the remaining suffix per row.
-      const units = Array.from(summaryGraphemes.segment(token.text));
-      const columns = [0];
-      for (const unit of units) columns.push(columns.at(-1)! + visibleWidth(unit.segment));
-      let from = 0;
-      while (from < units.length) {
-        const remaining = width - lineWidth;
-        let hardEnd = from;
-        while (hardEnd < units.length && columns[hardEnd + 1]! - columns[from]! <= remaining) hardEnd++;
-        if (hardEnd === from && line) { flush(); continue; }
-        // Preserve an indivisible over-wide grapheme at impossible tiny widths,
-        // rather than dropping it or looping without progress, as native does.
-        if (hardEnd === from) hardEnd++;
-        let cut = hardEnd;
-        if (hardEnd < units.length) {
-          for (let candidate = hardEnd; candidate > from && hardEnd - candidate <= SUMMARY_SPLIT_LOOKBACK; candidate--) {
-            const end = units[candidate - 1]!.index + units[candidate - 1]!.segment.length;
-            const filled = columns[candidate]! - columns[from]!;
-            if (filled * 2 < remaining) break; // Never waste over half this row's free columns.
-            if (preferred.has(token.start + end)) { cut = candidate; break; }
-          }
-        }
-        const end = cut < units.length ? units[cut]!.index : token.text.length;
-        line += token.text.slice(units[from]!.index, end);
-        lineWidth += columns[cut]! - columns[from]!;
-        from = cut;
-        if (from < units.length) flush();
-      }
-    } else if (lineWidth + tokenWidth > width) {
-      flush();
-      if (!whitespace) { line = token.text; lineWidth = tokenWidth; }
-    } else {
-      if (!line && whitespace) continue;
-      line += token.text;
-      lineWidth += tokenWidth;
-    }
-  }
-  flush();
-  return rows;
-}
 
 
 function candidate(node: Component): node is ToolNode {
@@ -1224,7 +1139,7 @@ export function installTidyUi(tui: LiveTui, getTheme: () => Palette, options: Ti
       const available = geometry.width - inset - geometry.marginRight;
       if (available <= 0 || !display.heading) { measurement = { framed: false, height: 0 }; return; }
       const funding = cardClient?.sources.geometryFunding(); if (!funding) return;
-      const heading = reflow(display.heading.measured, { mode: 'file', width: available }, funding.grant);
+      const heading = reflow(display.heading.measured, { mode: 'file', width: available, wrap: 'fragments' }, funding.grant);
       try { if (heading) measurement = { framed: false, height: heading.rowCount }; }
       finally { heading?.dispose(); }
     });
@@ -1505,7 +1420,9 @@ export function installTidyUi(tui: LiveTui, getTheme: () => Palette, options: Ti
     let end = 0;
     const spans = parts.map((part) => { const start = end; end += part.text.length; return { ...part, start, end }; });
     let cursor = 0;
-    const rows = wrapSummary(plain, available - indent, parameterStart, params.length).map((line, index) => {
+    const rows = wrapText(plain, available - indent, { json: true, parameterStart, parameterLength: params.length }).map((rawLine, index) => {
+      // Preserve compact rows' historical cleanup, including spaces in Prepend graphemes.
+      const line = rawLine.trimEnd();
       const start = plain.indexOf(line, cursor);
       if (start < 0) throw new Error("Wrapped text is not a source substring");
       cursor = start + line.length;

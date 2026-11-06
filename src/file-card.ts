@@ -3,6 +3,7 @@ import { stripVTControlCharacters } from "node:util";
 import { stripTerminalSequences, visibleWidth } from "@earendil-works/pi-tui";
 import { cardGeometry } from "./card-frame.ts";
 import { displayPath } from "./display-path.ts";
+import { wrapText } from "./text-wrap.ts";
 import { shebangLanguage } from "./syntax/shebang-language.ts";
 
 interface SavedReadResult {
@@ -358,7 +359,7 @@ export function measureFileCard(node: FilePresentation, cwd: string | undefined,
   if (view.mode !== "inline") return { framed: true, height: 3 };
   const geometry = cardGeometry(width, outputPad);
   const inset = Math.min(geometry.contentX, Math.max(0, width - geometry.marginRight - 1));
-  return { framed: false, height: chunks(fileHeading(path, cwd, view.label), width - inset - geometry.marginRight).length };
+  return { framed: false, height: wrapText(fileHeading(path, cwd, view.label), width - inset - geometry.marginRight, { wide: 'replace' }).length };
 }
 
 /** Project available context without changing source positions or joining separate hunks. */
@@ -388,32 +389,6 @@ export function contextRows<T extends DisplayLine>(lines: readonly T[]): (T | { 
   return rows.slice(first, last);
 }
 
-/** Word-preferred grapheme wrapping, retaining every space and keeping ANSI out of layout. */
-type Chunk = { text: string; length: number; size: number };
-function chunks(text: string, width: number): Chunk[] {
-  const units = Array.from(segments.segment(text), ({ segment }) => ({ text: segment, width: visibleWidth(segment) }));
-  const rows: Chunk[] = [];
-  let index = 0;
-  do {
-    let end = index, size = 0, boundary = index, boundarySize = 0;
-    while (end < units.length) {
-      const unit = units[end]!, columns = Math.min(unit.width, width);
-      if (size + columns > width) break;
-      size += columns; end++;
-      if (/\s/u.test(unit.text) && end > index + 1) { boundary = end; boundarySize = size; }
-    }
-    if (end < units.length && boundary > index && boundarySize > 0) { end = boundary; size = boundarySize; }
-    const parts: string[] = [];
-    let length = 0;
-    for (let part = index; part < end; part++) {
-      const unit = units[part]!;
-      parts.push(unit.width > width ? "�" : unit.text); length += unit.text.length;
-    }
-    rows.push({ text: parts.join(""), length, size });
-    index = end;
-  } while (index < units.length);
-  return rows;
-}
 /** AFT supplies flattened display positions, not OpenCode's zero-based LSP range map. */
 export function fileDiagnosticText(input: unknown): string[] {
   if (!Array.isArray(input)) return [];

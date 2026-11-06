@@ -76,6 +76,8 @@ Source-key and group-ID notices are resolved through the existing ticket maps. T
 
 Append preparation cannot assume that the old final grapheme remains complete. It remeasures that grapheme and the new suffix, stepping back farther when completing an isolated high surrogate could join the new scalar to the preceding grapheme. The candidate is checked before adoption. Commit transfers reusable capacity or adopts geometrically grown storage; failure preserves the old measurement.
 
+File headings additionally record shared fragment-boundary/separator flags in that same glyph record; other source measurements do not perform this classification. The [shared fragment kernel](../rendering.md#shared-fragment-wrapping) is used by heading layout, inline height reflow and compact text adapters. It does not replace source/diff wrapping. A fragment-policy marker prevents using missing heading annotations as valid input.
+
 Reflow consumes those stored widths and flags with a width/mode policy. It produces numeric rows and spans for source glyphs, tabs, replacement glyphs and Bash prompt cells. It does not resample the theme, invoke a classifier or call the width calculator again. Measurements retain their independent lifetime while layouts refer to their valid basis.
 
 For a valid full file card, refusal of a later width-dependent layout geometry grant drops only the failed scene. The already-funded logical display and numeric measurements remain attached to the same owner so ordinary frames can retry geometry without repeating file-source preparation or measurement. A refusal before the logical display is accepted still releases partial construction and retries cold.

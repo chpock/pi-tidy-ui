@@ -31,7 +31,7 @@ const widthModule = 'data:text/javascript,' + encodeURIComponent(`import { visib
 const styleModule = 'data:text/javascript,' + encodeURIComponent(`import { compileStyleAnsi as original } from ${JSON.stringify(import.meta.resolve('../../../src/syntax/style-ansi.ts'))}; export function compileStyleAnsi(...args) { globalThis[Symbol.for('test.card-layout.compile')]?.(); return original(...args); }`);
 const loader = registerHooks({ resolve(specifier, context, next) {
   if (specifier.endsWith('style-ansi.ts') && context.parentURL?.includes('/src/')) return { url: styleModule, shortCircuit: true };
-  if (specifier === '@earendil-works/pi-tui' && (context.parentURL?.endsWith('/src/syntax/measured-rows.ts') || context.parentURL?.endsWith('/src/card-frame.ts'))) return { url: widthModule, shortCircuit: true };
+  if (specifier === '@earendil-works/pi-tui' && (context.parentURL?.endsWith('/src/syntax/measured-rows.ts') || context.parentURL?.endsWith('/src/card-frame.ts') || context.parentURL?.endsWith('/src/text-wrap.ts'))) return { url: widthModule, shortCircuit: true };
   return next(specifier, context);
 } });
 const { measure } = await import('../../../src/syntax/measured-rows.ts');
@@ -44,7 +44,7 @@ loader.deregister();
 function funding(budget = new DataBudget(64_000_000)): CardFunding { return { budget, grant: bytes => budget.reserve(bytes) }; }
 function fixture() {
   const f = funding(), regions: PreparedRegion[] = [];
-  const region = (text: string) => { const r = { text, measured: measure(text, f.budget, f.grant)! }; regions.push(r); return r; };
+  const region = (text: string, wrap?: 'fragments') => { const r = { text, measured: measure(text, f.budget, f.grant, wrap)! }; regions.push(r); return r; };
   return { ...f, region, dispose() { for (const r of regions) r.measured.dispose(); assert.equal(f.budget.stats().retainedBytes, 0); assert.equal(f.budget.stats().outstandingPeakBytes, 0); } };
 }
 function paint(color = 2): ReadyCardPaint {
@@ -60,7 +60,7 @@ function bash(f: ReturnType<typeof fixture>, command: string, output: string[] =
 }
 function file(f: ReturnType<typeof fixture>, texts: string[], kinds: (' ' | '+' | '-')[] = texts.map(() => ' ')): Mutable<Extract<PreparedCard, { kind: 'file' }>> {
   let offset = 0;
-  return { kind: 'file', revision: 1, geometryStamp: 1, mode: 'code', error: false, diagnostics: [], heading: f.region('← Wrote a.ts'),
+  return { kind: 'file', revision: 1, geometryStamp: 1, mode: 'code', error: false, diagnostics: [], heading: f.region('← Wrote a.ts', 'fragments'),
     rows: texts.map((text, i) => { const r = { index: i, kind: kinds[i]!, old: i + 1, next: i + 1, region: f.region(text), oldSource: { key: 'old', byte: offset, utf16: offset }, nextSource: { key: 'next', byte: offset, utf16: offset } }; offset += Buffer.byteLength(text) + 1; return r; }) };
 }
 function rows(output: CardRows) { const result: string[] = []; assert.equal(output.visitRows((_i, row) => result.push(row)), true); return result; }
@@ -124,7 +124,7 @@ test('card layout: caller-proved partial Bash prefix owns unfinished grapheme bu
 
 test('card layout: sparse FILE full-source byte offsets, side selection, gaps, signs, numbers and complete surfaces', async () => {
   const f = fixture(), d = file(f, ['old', '界new', 'ctx'], ['-', '+', ' ']);
-  d.mode = 'diff'; d.heading = f.region('← Edited a.ts');
+  d.mode = 'diff'; d.heading = f.region('← Edited a.ts', 'fragments');
   d.rows = [
     { ...d.rows[0]!, old: 20, next: undefined, oldSource: { key: 'old', utf16: 99, byte: 101 } },
     { ...d.rows[1]!, old: undefined, next: 30, nextSource: { key: 'next', utf16: 500, byte: 600 } },
@@ -238,7 +238,7 @@ test('card layout: narrow/zero width, inline failure, blank code, tabs and repla
     if (width <= 3) assert.equal(out.rowCount, width === 0 ? 0 : l.rowCount);
     assert.ok(rows(out).every(s => !plain(s).includes('\t'))); out.dispose(); l.dispose();
   }
-  const inline = file(f, []); inline.mode = 'inline'; inline.error = true; inline.heading = f.region('← Edited a.ts');
+  const inline = file(f, []); inline.mode = 'inline'; inline.error = true; inline.heading = f.region('← Edited a.ts', 'fragments');
   const l = layoutCard(inline, { width: 24 }, f)!, out = l.paint(inline, paint(), f)!;
   assert.equal(l.framed, false); assert.ok(!rows(out).join('').includes('┃')); assert.ok(rows(out).map(plain).join('').includes('← Edited a.ts'));
   out.dispose(); l.dispose(); f.dispose();
@@ -246,6 +246,9 @@ test('card layout: narrow/zero width, inline failure, blank code, tabs and repla
 
 test('card layout: warm paint/recolor and geometry-only resize do zero width, segmentation, UTF8, normalization or compilation work', () => {
   const f = fixture(), d = bash(f, '界é👩‍💻\tZ'), p = paint();
+  const framed = file(f, ['unchanged body']), inline = file(f, []);
+  framed.heading = f.region('→ Read ' + 'long-folder/'.repeat(6) + '界é👩‍💻.ts', 'fragments');
+  inline.mode = 'inline'; inline.heading = framed.heading;
   const segment = Intl.Segmenter.prototype.segment, byteLength = Buffer.byteLength, encode = TextEncoder.prototype.encode, normalize = String.prototype.normalize;
   const compileBefore = compilations;
   const counters = { width: 0, segments: 0, utf8: 0, normalization: 0, ranges: 0, compilations: 0 };
@@ -256,9 +259,9 @@ test('card layout: warm paint/recolor and geometry-only resize do zero width, se
   String.prototype.normalize = () => { counters.normalization++; throw Error('unexpected normalization'); };
   const outputs: CardRows[] = [], layouts: CardLayout[] = [];
   try {
-    for (const width of [24, 40, 12]) {
-      const l = layoutCard(d, { width }, f)!; layouts.push(l);
-      for (let i = 0; i < 3; i++) outputs.push(l.paint(d, p, f, { eligibleBytes: 1, ranges: cb => { counters.ranges++; cb(0, 1, p.roles.code); return true; } })!);
+    for (const display of [d, framed, inline]) for (const width of [24, 40, 12]) {
+      const l = layoutCard(display, { width }, f)!; layouts.push(l);
+      for (let i = 0; i < 3; i++) outputs.push(l.paint(display, p, f, { eligibleBytes: 1, ranges: cb => { counters.ranges++; cb(0, 1, p.roles.code); return true; } })!);
     }
   } finally {
     delete global[key]; Intl.Segmenter.prototype.segment = segment; Buffer.byteLength = byteLength; TextEncoder.prototype.encode = encode; String.prototype.normalize = normalize;
@@ -599,8 +602,19 @@ test('card layout: actual C9 FILE exact projection then stale reader removal ref
 });
 
 
-test('card layout: supplementary legacy-policy oracle retains complete text across padding, split threshold and tiny widths', async () => {
+test('card layout: supplementary legacy-policy oracle retains complete bodies across padding, split threshold and tiny widths', async () => {
   const f = realCards(), owner = {}, funding = f.sources.geometryFunding()!;
+  // Historical headings preserve whitespace-only rows; body geometry remains authoritative.
+  const afterHeading = (rendered: string[], heading: string, framed: boolean) => {
+    let remaining = heading.replace(/\s/gu, ''), row = framed ? 1 : 0;
+    while (remaining && row < rendered.length) {
+      const part = rendered[row++]!.replace(/[┃\s]/gu, '');
+      assert.ok(remaining.startsWith(part), 'heading preserves its complete logical text');
+      remaining = remaining.slice(part.length);
+    }
+    assert.equal(remaining, '', 'all heading characters were displayed');
+    return [...(framed ? rendered.slice(0, 1) : []), ...rendered.slice(row)];
+  };
   const bashNode = { args: { command: 'a\t界é\nb', description: 'run it' }, expanded: false, isPartial: false,
     result: { content: [{ type: 'text', text: 'out\n\n<system-reminder>\nremember\n</system-reminder>' }], details: { exit_code: 1 }, isError: true } };
   const inputs: CardDisplayInput[] = [
@@ -618,7 +632,10 @@ test('card layout: supplementary legacy-policy oracle retains complete text acro
           const layout = layoutCard(d, { width, outputPad }, funding)!, out = layout.paint(d, p, funding)!;
           try {
             const expected = glyphOracle.find(c => c.revision === input.revision && c.width === width && c.outputPad === outputPad)!;
-            assert.deepEqual(rows(out).map(plain), expected.rows, `${input.kind} revision=${input.revision} width=${width} pad=${outputPad}`);
+            const actual = rows(out).map(plain);
+            assert.deepEqual(d.kind === 'file' && d.heading && width ? afterHeading(actual, d.heading.text, layout.framed) : actual,
+              d.kind === 'file' && d.heading && width ? afterHeading(expected.rows, d.heading.text, layout.framed) : expected.rows,
+              `${input.kind} revision=${input.revision} width=${width} pad=${outputPad}`);
           } finally { out.dispose(); layout.dispose(); }
         }), true);
       }
@@ -789,4 +806,46 @@ test('card rows: nested operation borrows hold every row charge through disposal
     assert.equal(out.withRows(() => assert.fail('disposed array escaped')), false);
     l.dispose(); f.dispose();
   }
+});
+
+
+test('card layout: oversized heading paths fill the label row while fitting paths stay whole', () => {
+  for (const label of ['→ Read', '← Edited', '← Wrote', '← Created', '← Replaced', '← Edit', '← Write']) {
+    for (const path of ['abcdefghij'.repeat(7) + '.ts', 'abcdefghijklmnop']) {
+      const f = fixture(), d = file(f, []);
+      d.heading = f.region(`${label} ${path}`, 'fragments');
+      const layout = layoutCard(d, { width: 24 }, f)!;
+      const output = layout.paint(d, paint(), f)!;
+      try {
+        const content = rows(output).map(plain).slice(1, -1).map(row => row.slice(3, 22).trimEnd());
+        if (path.length > 19) {
+          assert.equal(content[0], `${label} ${path.slice(0, 19 - label.length - 1)}`,
+            'a path longer than a whole content row starts beside the label');
+        } else {
+          assert.equal(content[0], label);
+          assert.equal(content[1], path, 'a path fitting a whole content row is not split');
+        }
+        assert.equal(content.join('').replace(/ /g, ''), `${label}${path}`.replace(/ /g, ''));
+      } finally { output.dispose(); layout.dispose(); f.dispose(); }
+    }
+  }
+});
+
+test('card layout: a following space does not evict a heading word that exactly fits', () => {
+  const f = fixture(), d = file(f, []);
+  d.heading = f.region('← Edited abcdefghijklmnop', 'fragments');
+  const layout = layoutCard(d, { width: 13 }, f)!, output = layout.paint(d, paint(), f)!;
+  try {
+    assert.equal(plain(rows(output)[1]!).slice(3, 11), '← Edited');
+  } finally { output.dispose(); layout.dispose(); f.dispose(); }
+});
+
+
+test('card layout: heading space-plus-mark graphemes remain visible', () => {
+  const f = fixture(), d = file(f, []);
+  d.heading = f.region('→ Read a \u0301', 'fragments');
+  const layout = layoutCard(d, { width: 24 }, f)!, output = layout.paint(d, paint(), f)!;
+  try {
+    assert.ok(rows(output).some(row => plain(row).includes('a \u0301')), 'a complete visible grapheme is not disposable layout space');
+  } finally { output.dispose(); layout.dispose(); f.dispose(); }
 });

@@ -227,8 +227,8 @@ export class CardSources<Owner extends object> {
     if (!charge && !reusingFileSource) { discardRefusedFullPreview(); return false; }
     const receipts = new Set<DataCleanupReceipt>(), old = state.display;
     let display: PreparedCard | undefined, file: PreparedFileCard | undefined, adopted = false, append: MeasuredAppend | undefined;
-    const region = (text: string): PreparedRegion => {
-      const measured = measure(text, funding.budget, funding.grant); if (!measured) throw refused;
+    const region = (text: string, wrap?: 'fragments'): PreparedRegion => {
+      const measured = measure(text, funding.budget, funding.grant, wrap); if (!measured) throw refused;
       receipts.add(measured.cleanupReceipt()); return Object.freeze({ text, measured });
     };
     try {
@@ -268,12 +268,12 @@ export class CardSources<Owner extends object> {
         const diagnostics = preview ? Object.freeze(Array.isArray(details?.diagnostics) && details.diagnostics.length
           ? [region('Diagnostics available in the full file view.')] : [])
           : old?.kind === 'file' && state.serviceRevision === input.serviceRevision && previousView === nextView ? old.diagnostics
-            : Object.freeze(fileDiagnosticText(details?.diagnostics).map(region));
+            : Object.freeze(fileDiagnosticText(details?.diagnostics).map(text => region(text)));
         const noteText = file ? (preview ? file.view.note : fileNote(input.node, file.view)) : undefined;
         const note = noteText ? old?.kind === 'file' && old.note?.text === noteText ? old.note : region(noteText) : undefined;
         if (old?.kind === 'file' && file === state.file && previousView === nextView) {
           const headingText = file ? input.node.toolName === 'read' ? readHeading(file.path, input.cwd) : fileHeading(file.path, input.cwd, file.view.label) : undefined;
-          const heading = state.input?.cwd === input.cwd ? old.heading : headingText ? region(headingText) : undefined;
+          const heading = state.input?.cwd === input.cwd ? old.heading : headingText ? region(headingText, 'fragments') : undefined;
           display = Object.freeze({ ...old, revision: input.revision, heading, error, diagnostics, note,
             geometryStamp: heading === old.heading && diagnostics === old.diagnostics && note === old.note ? old.geometryStamp : ++state.geometry });
         }
@@ -308,7 +308,7 @@ export class CardSources<Owner extends object> {
           }
           display = Object.freeze({ kind: 'file', revision: input.revision, geometryStamp: ++state.geometry, path: file?.path, label: file?.view.label,
             mode: file?.view.mode, preview: file?.view.preview, omitted: file?.view.omitted, note, error, diagnostics,
-            heading: file ? region(input.node.toolName === 'read' ? readHeading(file.path, input.cwd) : fileHeading(file.path, input.cwd, file.view.label)) : undefined,
+            heading: file ? region(input.node.toolName === 'read' ? readHeading(file.path, input.cwd) : fileHeading(file.path, input.cwd, file.view.label), 'fragments') : undefined,
             rows: Object.freeze(rows) });
         }
       }

@@ -72,11 +72,12 @@ test('real CLI: complete multiline summaries, adaptive separation, continuation 
       await live.settle(); const clicked = await live.capture('continuation-click');
       assert.deepEqual(clicked.tools.filter((tool) => tool.expanded).map((tool) => tool.id), [reads[2].id], 'continuation expands precisely the completed built-in read');
       assert.ok(clicked.screen.some((row) => row.includes('LONG_READ_CONTENT')));
-      // Collapse via the owned title after the expanded long filename wraps.
+      // Collapse via the owned title sharing the oversized filename's first row.
       const pathRow = clicked.screen.findIndex((row) => row.includes('long-directory/'));
       assert.ok(pathRow > 0);
       const title = clicked.screen.findIndex((row) => row.includes('→ Read'));
-      assert.ok(title >= 0 && title < pathRow, 'the owned Read heading precedes the wrapped path');
+      assert.equal(title, pathRow, 'the oversized path starts beside the owned Read label');
+      assert.ok(clicked.screen[title].includes('→ Read long-directory/'));
       const titleColumn = clicked.screen[title].indexOf('Read') + 1;
       assert.ok(titleColumn > 0);
       live.send(`\x1b[<0;${titleColumn};${title + 1}M\x1b[<0;${titleColumn};${title + 1}m`);

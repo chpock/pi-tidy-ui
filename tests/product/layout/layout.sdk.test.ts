@@ -615,3 +615,47 @@ test("review F5: file service rows fit narrow widths with output padding", () =>
     finally { SourceController.prototype.geometryFunding = originalFunding; }
   } finally { controller.restore(); }
 });
+
+
+test('inline heading resize and predecessor spacing reuse measured text', () => {
+  const marker = 'INLINE_WRAP_UNIQUE_', inline = new Tool('edit', { path: marker + 'folder-'.repeat(20) + '.ts' });
+  inline.updateResult({ content: [] }); inline.setExpanded(true);
+  const next = new Tool('custom', { query: 'after inline heading' });
+  const segment = Intl.Segmenter.prototype.segment;
+  let measurements = 0;
+  Intl.Segmenter.prototype.segment = function(text) {
+    if (text.includes(marker)) measurements++;
+    return segment.call(this, text);
+  };
+  const { root, controller } = setup([inline, next]);
+  try {
+    root.render(24);
+    assert.ok(measurements > 0, 'the unique heading was actually prepared');
+    measurements = 0;
+    for (const width of [40, 13, 24, 80]) {
+      controller.clearCache();
+      assert.ok(next.render(width).some(row => plain(row).includes('custom')), 'spacing visits the preceding uncached heading');
+      assert.ok(inline.render(width).some(row => plain(row).includes('← Edited')));
+      root.render(width); root.render(width);
+    }
+    assert.equal(measurements, 0, 'spacing, cold width layouts and warm frames do not measure the heading again');
+  } finally { Intl.Segmenter.prototype.segment = segment; controller.restore(); }
+});
+
+
+test('inline heading space-plus-mark graphemes match standalone measured height', () => {
+  let padding = 1;
+  const inline = new Tool('edit', { path: 'a \u0301' });
+  inline.updateResult({ content: [] }); inline.setExpanded(true);
+  const { root, controller } = setup([inline], { outputPad: () => padding });
+  try {
+    for (const value of [0, 1]) {
+      padding = value;
+      for (const width of [1, 2, 3, 6, 10, 14, 24]) {
+        root.render(width);
+        assert.equal(inline.render(width).filter(row => row !== '').length,
+          measureFileCard(inline, '/project', width, padding)!.height, `width=${width} padding=${padding}`);
+      }
+    }
+  } finally { controller.restore(); }
+});

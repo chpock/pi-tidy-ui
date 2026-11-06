@@ -77,6 +77,20 @@ For example, before `e` in `a😀é`, the JS offset is 3 code units and the UTF
 
 Files use four-column tab stops from the original logical-line origin; soft wrapping does not restart that file origin. Plain Bash/queued wrapping uses eight-column display stops. An overwide grapheme in a narrow plain-text content area becomes a replacement cell rather than a split grapheme. Native user/editor projections instead delegate impossible projections to native rendering at the real width. These policies are intentionally different preservation boundaries, not interchangeable helpers.
 
+## Shared fragment wrapping
+
+Compact tool descriptions and read/write/edit headings use the single fragment algorithm in `src/text-wrap.ts`. A fragment is bounded by spaces or CJK characters; the summary adapter additionally marks commas inside named parameters as soft boundaries. Paths are not parsed into a separate wrapping grammar.
+
+- A fragment that fits a whole content row moves intact when the current remainder is too small. A fragment longer than a whole row instead starts in the current remainder and continues across rows. A following space cannot evict a word that already fits.
+- At a necessary cut, take the farthest whole grapheme that fits. Prefer the nearest boundary after a standalone ASCII `/`, `\`, `.`, `-`, `_`, `:`, `,`, `;`, `?`, `!`, `&`, `=`, `+`, `@`, `#` or `%`, at most **20 graphemes** before that hard boundary and using at least **half the current row's free columns**. Otherwise retain the hard boundary. Do not rebalance the suffix. A separator combined with a mark is not standalone.
+- Only standalone U+0020 graphemes are disposable layout spaces; a space joined to a combining mark or Unicode Prepend character remains part of a complete visible grapheme. Leading/trailing standalone spaces do not create whitespace-only rows. Cuts do not insert source characters, split graphemes, truncate a heading or alter saved paths. JSON escape eligibility and parameter boundaries are supplied only by the summary adapter; a literal heading path is not JSON.
+
+`wrapUnits` consumes measured widths and boundary flags and emits source-unit intervals. Fragment traversal is linear with a bounded 20-unit lookback per cut. `wrapText` is the string adapter: it segments/measures once per cold layout and restores strings from those intervals. Summaries and the standalone `measureFileCard` height helper use that adapter; summary color spans remain outside wrapping.
+
+Prepared headings instead annotate their existing numeric measurements once, using spare flag bits without enlarging glyph records. Only headings pay for that classification. The file-heading layout and inline predecessor-height paths select the same fragment policy; resize does no segmentation, width calculation or UTF-8 measurement. A policy marker rejects fragment reflow of an unannotated measurement. The existing painter consumes the resulting numeric spans; no second string-row painter or persistent cache is added. Impossible-width headings keep file replacement-cell semantics, whereas summaries retain their existing indivisible over-wide character behavior.
+
+Source/diff rows, Bash bodies, native renderers, editor and user messages retain their own preservation and wrapping contracts. Warm retained layouts invoke neither adapter nor the shared algorithm.
+
 ## Shared frame geometry
 
 `cardGeometry` in `src/card-frame.ts` floors/clamps the component width, then allocates a possible stripe, up to two inner padding cells, exterior Output-padding margins and the remaining content width. It reserves useful content before all decorations can fit. `panelX`/`panelWidth` delimit the painted hit region; `contentX`/`contentWidth` delimit the caller's text area. Exact narrow-width allocations and paint roles are in [frame geometry](card-frame-spec.md).

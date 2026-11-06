@@ -937,3 +937,13 @@ test("path-only file summaries never read unrelated signature fields", () => {
     finally { controller.restore(); }
   }
 });
+
+
+test('summary retains historical trailing-space trimming for a Prepend-plus-space grapheme', () => {
+  const tool = new Tool('read', { path: 'x\u0600 yyyyyyyyyy' });
+  tool.updateResult({ content: [{ type: 'text', text: 'saved result' }] });
+  const { controller } = setup([tool]);
+  try {
+    assert.equal(plain(tool.render(12)[0]!), ' → read "x\u0600');
+  } finally { controller.restore(); }
+});
