@@ -27,6 +27,8 @@ been reconstructed.
 
 ### Changed
 
+- Stop `/tidy-ui` arrow navigation at the first and last items instead of wrapping,
+  including filtered theme lists; disabled items remain skipped.
 - List 36 code-theme families instead of 72 Dark/Light palettes in `/tidy-ui`.
   Choose the variant in a separate root control, dimmed, disabled and skipped
   during navigation when Follow Pi is selected; its remembered value is retained.

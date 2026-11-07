@@ -35,9 +35,12 @@ function fixture(width = 70, height = 24) {
   const render = () => menu.render(width).map(plain);
   const key = async (data: string) => { menu.handleInput(data); await turn(); render(); };
   const select = async (label: string) => {
+    let direction = '\x1b[B';
     for (let i = 0; i < 100; i++) {
       if (render().some(row => /^.*[→›] /.test(row) && row.includes(label))) { await key('\r'); return; }
-      await key('\x1b[B');
+      const before = render().find(row => row.includes('→ '));
+      await key(direction);
+      if (render().find(row => row.includes('→ ')) === before) direction = '\x1b[A';
     }
     assert.fail(`Missing selected item ${label}: ${render().join('\n')}`);
   };
@@ -851,5 +854,57 @@ test('disabled-origin root press stays inert when an external confirmation enabl
     f.menu.handleMouse({ ...event, type: 'press' }); f.render();
     f.menu.handleMouse({ ...event, type: 'click' }); await turn();
     assert.deepEqual(f.calls, [{ kind: 'theme', choice: { kind: 'theme', id: 'github', variant: 'light' } }], 'a fresh enabled-origin click still confirms Light');
+  } finally { f.menu.dispose(); }
+});
+
+for (const [page, path, first, last] of [
+  ['root', [], 'Tidy UI appearance', 'Close'],
+  ['themes', ['Code color theme'], 'Follow Pi theme', 'Back'],
+  ['support', ['Status & troubleshooting'], 'Reapply Tidy UI appearance', 'Back'],
+  ['service', ['Status & troubleshooting', 'Highlighting service details'], 'Back', 'Back'],
+  ['logs', ['Status & troubleshooting', 'Diagnostic logs'], 'Record diagnostic logs', 'Back'],
+  ['cache', ['Status & troubleshooting', 'Display cache'], 'Refresh statistics', 'Back'],
+] as const) test(`keyboard bounds: ${page} stops at both list edges`, async () => {
+  const f = fixture();
+  try {
+    for (const label of path) await f.select(label);
+    const selected = () => f.render().find(row => row.includes('→ '))?.split('→ ')[1] ?? '';
+    for (let i = 0; i < 100 && !selected().startsWith(first); i++) await f.key('\x1b[A');
+    assert.ok(selected().startsWith(first), `first ${page} row is reachable`);
+    const calls = f.calls.length, previews = f.previews.length;
+    for (let i = 0; i < 3; i++) {
+      await f.key('\x1b[A');
+      assert.ok(selected().startsWith(first), `Up stays on the first ${page} row`);
+    }
+    assert.equal(f.previews.length, previews, 'an outward step does not change the theme preview');
+    for (let i = 0; i < 100 && !selected().startsWith(last); i++) await f.key('\x1b[B');
+    assert.ok(selected().startsWith(last), `last ${page} row is reachable`);
+    const endPreviews = f.previews.length;
+    for (let i = 0; i < 3; i++) {
+      await f.key('\x1b[B');
+      assert.ok(selected().startsWith(last), `Down stays on the last ${page} row`);
+    }
+    assert.equal(f.previews.length, endPreviews);
+    assert.equal(f.calls.length, calls, 'navigation neither activates nor saves a preference');
+  } finally { f.menu.dispose(); }
+});
+
+for (const query of ['github', 'no-matching-family']) test(`keyboard bounds: filtered theme list (${query})`, async () => {
+  const f = fixture();
+  try {
+    await f.select('Code color theme'); await f.key(query);
+    const selected = () => f.render().find(row => row.includes('→ '))?.split('→ ')[1] ?? '';
+    const first = query === 'github' ? 'GitHub' : 'Back';
+    assert.ok(selected().startsWith(first));
+    const preview = structuredClone(f.state.selected), count = f.previews.length;
+    await f.key('\x1b[A');
+    assert.ok(selected().startsWith(first), 'Up respects the filtered first row');
+    assert.deepEqual(f.state.selected, preview); assert.equal(f.previews.length, count);
+    await f.key('\x1b[B'); assert.ok(selected().startsWith('Back'));
+    await f.key('\x1b[B'); assert.ok(selected().startsWith('Back'), 'Down respects filtered Back');
+    if (query === 'github') {
+      await f.key('\x1b[A'); assert.ok(selected().startsWith('GitHub'), 'inward navigation still works');
+    }
+    assert.equal(f.calls.length, 0);
   } finally { f.menu.dispose(); }
 });

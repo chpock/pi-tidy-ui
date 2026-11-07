@@ -421,6 +421,8 @@ export class TidyMenu implements Component {
       }
     } else {
       const down = kb.matches(data, 'tui.select.down'), up = kb.matches(data, 'tui.select.up');
+      const selected = this.list.getSelectedItem()?.value;
+      if (up && selected === this.items[0]?.value || down && selected === this.items.at(-1)?.value) return;
       this.list.handleInput(data);
       // Selection callbacks may synchronously close and dispose this popup.
       if (this.closed) return;

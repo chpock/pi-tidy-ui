@@ -1946,7 +1946,7 @@ test('entry discards an unconfirmed theme preview when a session shuts down and 
     await menu.select('Code color theme');
     assert.match(menu.text(), /Selected: saved-independent-theme/);
     // The missing owned palette is intentionally not fabricated as a row.
-    await menu.key('\x1b[A'); await menu.key('\x1b[B');
+    await menu.key('\x1b[B'); await menu.key('\x1b[A');
     assert.match(menu.text(), /Selected: Follow Pi/);
     assert.equal(saves, 0);
     await h.stop();
@@ -2002,7 +2002,7 @@ test('settings sync: entry preserves an unconfirmed preview and Esc uses the lat
     async update() { saves++; return { ok: true }; }, watch(callback) { changed = callback; return () => {}; } });
   await h.start();
   await withMenu(h.command, h.ctx, async menu => {
-    await menu.select('Code color theme'); await menu.key('\x1b[A'); await menu.key('\x1b[B');
+    await menu.select('Code color theme'); await menu.key('\x1b[B'); await menu.key('\x1b[A');
     assert.match(menu.text(), /Selected: Follow Pi/);
     changed({ ok: true, themePreference: { kind: 'theme', id: 'peer-B', variant: 'dark' } }); await settled();
     assert.match(menu.text(), /Selected: Follow Pi/); assert.equal(saves, 0);

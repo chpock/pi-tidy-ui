@@ -55,8 +55,10 @@ export async function withMenu(handler: (args: string, ctx: ExtensionContext) =>
       return overlayOptions!.width as number;
     }, input(data) { text(); component!.handleInput?.(data); }, async select(label: string) {
       for (let i = 0; i < 100; i++) {
-        if (text().split('\n').some(row => row.startsWith('→ ') && row.slice(2).startsWith(label))) { await key('\r'); return; }
-        await key('\x1b[B');
+        const rows = text().split('\n'), current = rows.findIndex(row => row.startsWith('→ '));
+        if (rows[current]?.slice(2).startsWith(label)) { await key('\r'); return; }
+        const target = rows.findIndex(row => row.startsWith(`  ${label}`));
+        await key(target >= 0 && target < current ? '\x1b[A' : '\x1b[B');
       }
       assert.fail(`Missing popup item ${label}: ${text()}`);
     } });

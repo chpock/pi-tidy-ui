@@ -378,6 +378,7 @@ export class PiTerminal {
   }
   async selectTidyItem(label, activate = true) {
     const selected = () => this.tidyRows().findIndex(row => row.startsWith('→ '));
+    let direction = '\x1b[B';
     for (let i = 0; i < 100; i++) {
       await this.refreshTidyBounds();
       const index = selected(), row = this.tidyRows()[index];
@@ -437,9 +438,14 @@ export class PiTerminal {
         await this.refreshTidyBounds();
         return;
       }
+      const rows = this.tidyRows(), target = rows.findIndex(candidate => candidate.startsWith('  ') &&
+        (label === 'Code color theme' && candidate.trimStart().startsWith(`${label} `) ||
+          label.startsWith(candidate.trimStart().split('…')[0].split(/ {2,}/u)[0].replace(/\s+›$/u, '').trimEnd())));
+      if (target >= 0) direction = target < index ? '\x1b[A' : '\x1b[B';
       const before = `${index}:${row}`;
-      this.send('\x1b[B');
-      await until(async () => { await this.refreshTidyBounds(); return `${selected()}:${this.tidyRows()[selected()]}` !== before; }, `popup selection after ${paintedLabel}`);
+      this.send(direction);
+      await this.settle(); await this.refreshTidyBounds();
+      if (`${selected()}:${this.tidyRows()[selected()]}` === before) direction = direction === '\x1b[B' ? '\x1b[A' : '\x1b[B';
     }
     assert.fail(`Public popup item not found: ${label}`);
   }
