@@ -61,12 +61,12 @@ Persistent prototype wrappers are made in prototype-only factory scopes, not a s
 
 ## Presentation dispatch
 
-Dispatch tests lifecycle and safeguards before it performs expensive preparation. Output size is not the policy selector.
+Dispatch tests lifecycle and safeguards before it performs expensive preparation. Output size is not the policy selector. The static [producer registry](tool-adapters.md) matches the current exact names `read`, `write`, `edit` and `bash` with each adapter's saved-shape rules, then returns a semantic card kind. The host uses that kind for routing, expansion, turn-window membership and layout accounting; unrecognized names use the summary kind rather than acquiring per-name layout categories. Actual names remain authoritative for policy flags, labels and native tool identity. Saved-format recognition neither discovers external extensions nor attributes a historical call to its current registration.
 
 | Current component | Selected path |
 | --- | --- |
 | Collapsed eligible text-only tool | Compact summary, unless a native-card policy/default applies |
-| Attached exact Bash under owned policy | Bash frame when command/context and prepared paint/layout are usable; otherwise the existing bounded summary, even expanded |
+| Attached supported command under owned policy | Bash-style frame when command/context and prepared paint/layout are usable; otherwise the existing bounded summary, even expanded |
 | Compatible read | Compact summary by default, including image results; explicit expansion selects owned saved text/error details and any host image block, never the write/edit automatic-full window |
 | Compatible edit, final successful result, valid path | Selected bounded saved-diff preview or full saved diff; malformed preview metadata shows the owned unavailable row, while unsupported explicitly full metadata uses native rendering |
 | Compatible write, final successful result, valid path | Selected bounded saved-data preview or full write card; malformed preview metadata shows the owned unavailable row, while unsupported explicitly full metadata uses native rendering |

@@ -1,16 +1,16 @@
-import '../../../fixtures/test-guard.mjs';
+import '../../../../../fixtures/test-guard.mjs';
 import assert from 'node:assert/strict';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import test from 'node:test';
-import { PiTerminal } from '../../../fixtures/terminal-harness.mjs';
-import { closeTerminals } from '../../../fixtures/terminal-cleanup.mjs';
-import { prepareSyntaxNative, captureThenRenderDiagnostics, finish, syntaxReady, traffic, work } from '../../../fixtures/syntax-cli-support.mjs';
+import { PiTerminal } from '../../../../../fixtures/terminal-harness.mjs';
+import { closeTerminals } from '../../../../../fixtures/terminal-cleanup.mjs';
+import { prepareSyntaxNative, captureThenRenderDiagnostics, finish, syntaxReady, traffic, work } from '../../../../../fixtures/syntax-cli-support.mjs';
 
 const { fixture, descriptor } = await prepareSyntaxNative();
-const aftReadFixture = resolve('tests/fixtures/aft-read-driver.ts');
+const aftReadFixture = resolve('tests/fixtures/tool-adapters/aft/read-driver.ts');
 const file = 'aft-saved.md';
-const captured = JSON.parse(readFileSync(resolve('tests/fixtures/aft-read-result.json'), 'utf8'));
+const captured = JSON.parse(readFileSync(resolve('tests/fixtures/tool-adapters/aft/read-result.json'), 'utf8'));
 const heading = '## SAVED_AFT_HEADING';
 const visible = 'Returned source ends here.';
 const hidden = 'NOT_RETURNED';

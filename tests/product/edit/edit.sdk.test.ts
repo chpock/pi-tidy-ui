@@ -14,7 +14,8 @@ import { CardSources } from "../../../src/syntax/cards.ts";
 import { samplePiCardPalette } from "../../../src/syntax/pi-palette.ts";
 import { compileStyleAnsi } from "../../../src/syntax/style-ansi.ts";
 import { cardGeometry } from "../../../src/card-frame.ts";
-import { measureFileCard, prepareFileCard } from "../../../src/file-card.ts";
+import { measureFileCard } from "../../../src/file-card.ts";
+import { prepareFileToolCall } from '../../fixtures/tool-adapters/reader-fixture.ts';
 import { generateDiffString, generateUnifiedPatch } from "../../../node_modules/@earendil-works/pi-coding-agent/dist/core/tools/edit-diff.js";
 import type { CardTheme } from "../../../src/card-theme.ts";
 import { Theme, initTheme, loadThemeFromPath, setThemeInstance, theme as nativeTheme } from "../../../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js";
@@ -74,18 +75,18 @@ test("edit preview bounds prepared diff rows and keeps unsupported prefixes gene
   const diff = Array.from({ length: 20 }, (_, i) => i === 9 ? "+10 new_10" : ` ${i + 1} old_${i + 1}`).join("\n");
   const node = { toolName: "edit", args: { path: "example.txt" }, isPartial: false,
     result: { details: { diff } } };
-  const preview = prepareFileCard(node, true, "preview")!;
+  const preview = prepareFileToolCall(node, true, "preview")!
   assert.equal(preview.view.label, "Edit");
   assert.equal(preview.view.preview, true);
   assert.equal(preview.view.omitted, true);
   assert.equal(preview.view.lines.length, 10);
   assert.ok(preview.view.lines.some(line => line.kind !== "gap" && line.logical.includes("new_10")));
   assert.ok(preview.view.lines.every(line => line.kind === "gap" || !line.logical.includes("old_20")));
-  const full = prepareFileCard(node, true, "full")!;
+  const full = prepareFileToolCall(node, true, "full")!
   assert.equal(full.view.label, "Edited");
   assert.ok(full.view.lines.some(line => line.kind !== "gap" && line.logical.includes("old_20")));
 
-  const unsupported = prepareFileCard({ ...node, result: { details: { patch: "not a unified patch\nUNAVAILABLE_SUFFIX" } } }, true, "preview");
+  const unsupported = prepareFileToolCall({ ...node, result: { details: { patch: "not a unified patch\nUNAVAILABLE_SUFFIX" } } }, true, "preview");
   assert.equal(unsupported, undefined, "unsupported saved metadata does not produce prepared preview rows; the host owns its bounded placeholder");
 });
 
@@ -181,8 +182,9 @@ test("edit context constant controls projection without fetching unavailable sou
       const file = join(temporary, `edit-${count}.ts`); writeFileSync(file, configured);
       const alternate = await import(pathToFileURL(file).href);
       for (const available of [2, 8]) {
-        const node = { args: { path: "example.txt" }, isPartial: false, result: { details: { diff: generateDiffString(before, after, available).diff } } };
-        const text = alternate.contextRows(alternate.prepareFileCard({ toolName: "edit", ...node }).view.lines).map((row: { text?: string }) => row.text ?? "").join("\n");
+        const prepared = alternate.prepareFileCard({ kind: 'edit', path: 'example.txt', complete: true, failed: false, viewMode: 'full',
+          saved: { format: 'numbered', value: generateDiffString(before, after, available).diff } });
+        const text = alternate.contextRows(prepared.view.lines).map((row: { text?: string }) => row.text ?? "").join("\n");
         assert.equal([...text.matchAll(/source_(\d+)/g)].filter((match) => Number(match[1]) !== 10).length, 2 * Math.min(count, available));
         assert.match(text, /source_10/); assert.match(text, /changed_10/);
       }
@@ -661,13 +663,15 @@ test("very large edit row counts do not overflow a function argument spread", ()
 });
 
 test("metadata-only edit measurement preserves render classification and separator height", () => {
-  const details = [undefined, { diff: "" }, { diff: editDiff }, { patch: "@@ -1 +1 @@\n-old\n+new\n" },
-    { patch: "@@ -1 +1 @@\n-old\n" }, { diff: "+1no_space" }, { diff: 4 }, { patch: null },
-    { diff: " 1 first\r\n+2 next" }, { diff: "+1 text\n" }];
-  for (const value of details) for (const isError of [false, true]) for (const width of [0, 1, 5, 24, 100, 140]) {
+  const numbered = (value: unknown) => ({ details: { diff: value }, saved: { format: 'numbered' as const, value } });
+  const unified = (value: unknown) => ({ details: { patch: value }, saved: { format: 'unified' as const, value } });
+  const cases = [{ details: undefined, saved: undefined }, numbered(""), numbered(editDiff), unified("@@ -1 +1 @@\n-old\n+new\n"),
+    unified("@@ -1 +1 @@\n-old\n"), numbered("+1no_space"), numbered(4), unified(null),
+    numbered(" 1 first\r\n+2 next"), numbered("+1 text\n")];
+  for (const { details: value, saved } of cases) for (const isError of [false, true]) for (const width of [0, 1, 5, 24, 100, 140]) {
     const node = { args: { path: "/project/" + "long-folder/".repeat(8) + "example.ts" }, isPartial: false,
       result: { details: value, isError } };
-    const measured = measureFileCard(node, "/project", width);
+    const measured = measureFileCard({ kind: 'edit', path: node.args.path, complete: true, failed: isError, viewMode: 'full', saved }, "/project", width);
     if (!width) { assert.equal(measured?.height, 0); continue; }
     const layout = renderFileCard(node, "/project", width, nativeTheme);
     assert.equal(!!measured, !!layout, "unsupported metadata has exactly the same native fallback");

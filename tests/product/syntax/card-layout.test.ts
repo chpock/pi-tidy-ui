@@ -21,6 +21,7 @@ import { decodeSemanticDescription } from '../../../src/occipital/semantic-proto
 import { semanticDescriptor } from '../../fixtures/semantic-provider.ts';
 import { RequestFailure } from '../../../src/occipital/request-failure.ts';
 import { highlightCode } from '@earendil-works/pi-coding-agent';
+import { bashToolReaderFixture, fileToolReaderFixture, type ToolCallFixture } from '../../fixtures/tool-adapters/reader-fixture.ts';
 
 const key = Symbol.for('test.card-layout.width');
 const compileKey = Symbol.for('test.card-layout.compile');
@@ -42,6 +43,10 @@ const { SyntaxRuntime } = await import('../../../src/syntax/runtime.ts');
 const glyphOracle = JSON.parse(readFileSync(new URL('../../fixtures/card-glyph-oracle.json', import.meta.url), 'utf8')).cases as { revision: number; width: number; outputPad: number; rows: string[] }[];
 loader.deregister();
 function funding(budget = new DataBudget(64_000_000)): CardFunding { return { budget, grant: bytes => budget.reserve(bytes) }; }
+function fileInput(call: ToolCallFixture, revision = 1, sourceRevision = revision, serviceRevision = revision): Extract<CardDisplayInput, { kind: 'file' }> {
+  const reader = fileToolReaderFixture(call);
+  return { kind: 'file', reader, diagnostics: reader.diagnostics('full'), revision, sourceRevision, serviceRevision, palette: 1, mode: 'truecolor' };
+}
 function fixture() {
   const f = funding(), regions: PreparedRegion[] = [];
   const region = (text: string, wrap?: 'fragments') => { const r = { text, measured: measure(text, f.budget, f.grant, wrap)! }; regions.push(r); return r; };
@@ -342,7 +347,8 @@ function realCards() {
     effective, standaloneVersion: 'test' }) },
   { preparePaletteInput: (palette, revision, mode, f) => runtime.preparePaletteInput(palette, sampled, revision, mode, f),
     classify: text => { classifications++; return highlightCode(text, 'typescript'); }, invalidate() {}, requestRender() {} });
-  const input: CardDisplayInput = { kind: 'bash', args: { command: 'echo x' }, complete: true, revision: 1, sourceRevision: 1, serviceRevision: 1, palette: 1, mode: 'truecolor' };
+  const input: CardDisplayInput = { kind: 'bash', reader: bashToolReaderFixture({ args: { command: 'echo x' } }), complete: true,
+    revision: 1, sourceRevision: 1, serviceRevision: 1, palette: 1, mode: 'truecolor' };
   return { cards, sources, runtime, input, counters: () => ({ classifications, samples, sourceStyle, compilations }) };
 }
 
@@ -526,8 +532,8 @@ test('card layout: actual card demand and controller lookups are linear across n
       effective, standaloneVersion: 'test' }) },
     { preparePaletteInput: (palette, revision, mode, funding) => paletteOwner.prepare(undefined, palette, revision, mode, funding),
       classify: () => assert.fail('owned-palette card classified with Pi'), invalidate() {}, requestRender() {} });
-    const input: CardDisplayInput = { kind: 'file', revision: 1, sourceRevision: 1, serviceRevision: 1, palette: paletteRevision, mode: 'truecolor', language: 'text',
-      node: { toolName: 'edit', args: { path: 'a.txt' }, isPartial: false, result: { details: { diff: Array.from({ length: segments }, (_, i) => `-${i * 10 + 1} x\n+${i * 10 + 1} y`).join('\n   ...\n') } } } };
+    const input: CardDisplayInput = { ...fileInput({ name: 'edit', args: { path: 'a.txt' }, result: { details: {
+      diff: Array.from({ length: segments }, (_, i) => `-${i * 10 + 1} x\n+${i * 10 + 1} y`).join('\n   ...\n') } } }), palette: paletteRevision };
     try {
       assert.equal(cards.updateDisplay(owner, input), true); cards.useful(owner, 1); source.flush();
       for (let turns = 0; turns < 100; turns++) {
@@ -579,8 +585,7 @@ test('card layout: actual card demand and controller lookups are linear across n
 
 test('card layout: actual C9 FILE exact projection then stale reader removal refuses colors without source recovery or geometry changes', async () => {
   const f = realCards(), owner = {};
-  const input: CardDisplayInput = { kind: 'file', revision: 1, sourceRevision: 1, serviceRevision: 1, palette: 1, mode: 'truecolor', language: 'typescript',
-    node: { toolName: 'write', args: { path: 'a.ts', content: 'const x = 1;' }, isPartial: false, result: {} } };
+  const input: CardDisplayInput = fileInput({ name: 'write', args: { path: 'a.ts', content: 'const x = 1;' }, result: {} });
   assert.equal(f.cards.updateDisplay(owner, input), true); f.cards.useful(owner, 1);
   for (let i = 0; i < 8; i++) await turn();
   const funding = f.sources.geometryFunding()!, before = f.counters();
@@ -618,11 +623,10 @@ test('card layout: supplementary legacy-policy oracle retains complete bodies ac
   const bashNode = { args: { command: 'a\t界é\nb', description: 'run it' }, expanded: false, isPartial: false,
     result: { content: [{ type: 'text', text: 'out\n\n<system-reminder>\nremember\n</system-reminder>' }], details: { exit_code: 1 }, isError: true } };
   const inputs: CardDisplayInput[] = [
-    { ...f.input, kind: 'bash', node: bashNode, args: bashNode.args, directory: '/work', revision: 1, sourceRevision: 1, serviceRevision: 1 },
-    { kind: 'file', revision: 2, sourceRevision: 2, serviceRevision: 2, palette: 1, mode: 'truecolor', node: { toolName: 'edit', args: { path: 'a.ts' }, isPartial: false,
-      result: { details: { diff: '-20 old\n+20 new\n-21 again\n   ...\n+90 later', diagnostics: [{ severity: 'error', line: 90, message: 'bad' }] } } } },
-    { kind: 'file', revision: 3, sourceRevision: 3, serviceRevision: 3, palette: 1, mode: 'truecolor', node: { toolName: 'write', args: { path: 'a.ts', content: 'abc def\n\t界é' }, isPartial: false, result: {} } },
-    { kind: 'file', revision: 4, sourceRevision: 4, serviceRevision: 4, palette: 1, mode: 'truecolor', node: { toolName: 'edit', args: { path: 'a.ts' }, isPartial: false, result: { isError: true } } },
+    { ...f.input, reader: bashToolReaderFixture(bashNode), directory: '/work', revision: 1, sourceRevision: 1, serviceRevision: 1 },
+    fileInput({ name: 'edit', args: { path: 'a.ts' }, result: { details: { diff: '-20 old\n+20 new\n-21 again\n   ...\n+90 later', diagnostics: [{ severity: 'error', line: 90, message: 'bad' }] } } }, 2),
+    fileInput({ name: 'write', args: { path: 'a.ts', content: 'abc def\n\t界é' }, result: {} }, 3),
+    fileInput({ name: 'edit', args: { path: 'a.ts' }, result: { isError: true } }, 4),
   ];
   try {
     for (const input of inputs) {
@@ -648,8 +652,7 @@ test('card layout: supplementary legacy-policy oracle retains complete bodies ac
 test('card layout: ordered card demand reuse retires absent FILE keys and preserves exact Pi reads', async () => {
   const f = realCards(), owner = {};
   const diff = (segments: number) => Array.from({ length: segments }, (_, i) => `-${i * 10 + 1} const old${i} = 1;\n+${i * 10 + 1} const next${i} = 2;`).join('\n   ...\n');
-  const input: CardDisplayInput = { kind: 'file', revision: 1, sourceRevision: 1, serviceRevision: 1, palette: 1, mode: 'truecolor', language: 'typescript',
-    node: { toolName: 'edit', args: { path: 'a.ts' }, isPartial: false, result: { details: { diff: diff(3) } } } };
+  const input: CardDisplayInput = fileInput({ name: 'edit', args: { path: 'a.ts' }, result: { details: { diff: diff(3) } } });
   const settle = async () => { for (let i = 0; i < 8; i++) await turn(); };
   try {
     assert.equal(f.cards.updateDisplay(owner, input), true); f.cards.useful(owner, 1); f.sources.flush(); await settle();
@@ -658,8 +661,8 @@ test('card layout: ordered card demand reuse retires absent FILE keys and preser
     assert.equal(f.cards.updateDisplay(owner, { ...input, revision: 2, serviceRevision: 2 }), true);
     f.cards.useful(owner, 2); f.sources.flush(); await settle();
     assert.deepEqual(f.cards.identities(owner), original); assert.equal(f.counters().classifications, before.classifications);
-    const changed: CardDisplayInput = { ...input, revision: 3, sourceRevision: 2, serviceRevision: 3,
-      node: { ...input.node, result: { details: { diff: '-1 const smaller = 3;\n+1 const smaller = 4;' } } } };
+    const changed: CardDisplayInput = fileInput({ name: 'edit', args: input.reader.argsRef,
+      result: { details: { diff: '-1 const smaller = 3;\n+1 const smaller = 4;' } } }, 3, 2, 3);
     assert.equal(f.cards.updateDisplay(owner, changed), true); f.cards.useful(owner, 3); f.sources.flush(); await settle();
     const current = f.cards.identities(owner); assert.equal(current.length, 2);
     assert.deepEqual(current.map(i => i.key), original.slice(0, 2).map(i => i.key));

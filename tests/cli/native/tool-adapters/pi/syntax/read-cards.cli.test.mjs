@@ -1,13 +1,13 @@
-import '../../../fixtures/test-guard.mjs';
+import '../../../../../fixtures/test-guard.mjs';
 import assert from 'node:assert/strict';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import test from 'node:test';
-import { PiTerminal } from '../../../fixtures/terminal-harness.mjs';
-import { closeTerminals } from '../../../fixtures/terminal-cleanup.mjs';
-import { Terminal } from '../../../fixtures/main-cli-support.mjs';
-import { prepareSyntaxNative, captureThenRenderDiagnostics, finish, syntaxReady, traffic, work } from '../../../fixtures/syntax-cli-support.mjs';
+import { PiTerminal } from '../../../../../fixtures/terminal-harness.mjs';
+import { closeTerminals } from '../../../../../fixtures/terminal-cleanup.mjs';
+import { Terminal } from '../../../../../fixtures/main-cli-support.mjs';
+import { prepareSyntaxNative, captureThenRenderDiagnostics, finish, syntaxReady, traffic, work } from '../../../../../fixtures/syntax-cli-support.mjs';
 
 const { fixture, descriptor } = await prepareSyntaxNative();
 const file = 'read-saved.ts', missing = 'read-missing.txt';

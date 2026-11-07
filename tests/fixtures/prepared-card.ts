@@ -3,10 +3,9 @@ import { SourceController } from '../../src/occipital/controller.ts';
 import { CardSources, type CardDisplayInput } from '../../src/syntax/cards.ts';
 import { layoutCard } from '../../src/syntax/card-layout.ts';
 import { preparePaletteInput, type PiInputTheme } from '../../src/syntax/pi-input.ts';
-import { prepareFileCard } from '../../src/file-card.ts';
+import { bashToolReaderFixture, fileToolReaderFixture, type ToolCallFixture } from './tool-adapters/reader-fixture.ts';
 import { resolveTheme } from '../../src/themes/selection.ts';
 import type { CardGeometry } from '../../src/card-frame.ts';
-import type { BashPresentation } from '../../src/bash-card.ts';
 
 // Test composition only: exercise the shipping preparer/layout/painter with actual
 // public Pi input. This is not a differential oracle or a replacement renderer.
@@ -33,12 +32,15 @@ export function preparedCard(input: CardDisplayInput, width: number, theme: PiIn
     return result!;
   } finally { cards.dispose(); sources.dispose(); assert.equal(funding.budget.stats().retainedBytes, 0); }
 }
-export function fileCardFixture(node: Parameters<typeof prepareFileCard>[0], cwd: string | undefined, width: number,
+export function fileCardFixture(input: ToolCallFixture, cwd: string | undefined, width: number,
   theme: PiInputTheme, classify?: (text: string, path: string) => string[], outputPad = 1) {
-  node = { toolName: 'edit', ...node };
-  if (!prepareFileCard(node, true)) return undefined;
-  return preparedCard({ kind: 'file', node, cwd, revision: 1, sourceRevision: 1, serviceRevision: 1, palette: 1, mode: 'truecolor' }, width, theme, outputPad, classify);
+  const reader = fileToolReaderFixture(input);
+  if (!reader.prepareFile('full', true)) return undefined;
+  return preparedCard({ kind: 'file', reader, diagnostics: reader.diagnostics('full'), cwd, revision: 1, sourceRevision: 1,
+    serviceRevision: 1, palette: 1, mode: 'truecolor' }, width, theme, outputPad, classify);
 }
-export function bashCardFixture(node: BashPresentation, directory: string | undefined, width: number, theme: PiInputTheme, outputPad = 1) {
-  return preparedCard({ kind: 'bash', node, args: node.args, complete: !node.isPartial, directory, revision: 1, sourceRevision: 1, serviceRevision: 1, palette: 1, mode: 'truecolor' }, width, theme, outputPad, undefined, node.expanded);
+export function bashCardFixture(input: ToolCallFixture, directory: string | undefined, width: number, theme: PiInputTheme, outputPad = 1) {
+  const reader = bashToolReaderFixture(input);
+  return preparedCard({ kind: 'bash', reader, complete: !reader.call.partial, directory, revision: 1, sourceRevision: 1,
+    serviceRevision: 1, palette: 1, mode: 'truecolor' }, width, theme, outputPad, undefined, reader.call.expanded);
 }

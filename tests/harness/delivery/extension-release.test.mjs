@@ -77,6 +77,16 @@ test('generated extension packs its own version and native declaration without r
   assert.deepEqual(result.files.map(file => file.path).sort(), ['CHANGELOG.md', 'LICENSE', 'README.md', 'package.json', 'src/occipital/release.ts']);
 });
 
+test('the source npm archive includes every tool adapter and its canonical manual chapter', async () => {
+  const { stdout } = await run(process.platform === 'win32' ? 'npm.cmd' : 'npm', ['pack', '--dry-run', '--offline', '--ignore-scripts', '--json'],
+    { cwd: repo, timeout: 30000, maxBuffer: 1024 * 1024 });
+  const files = new Set(JSON.parse(stdout)[0].files.map(file => file.path));
+  const adapters = (await readdir(join(repo, 'src/tool-adapters'), { recursive: true })).filter(path => path.endsWith('.ts'));
+  assert.ok(adapters.length > 0);
+  for (const path of adapters) assert.ok(files.has(`src/tool-adapters/${path.replaceAll('\\', '/')}`), `missing tool adapter: ${path}`);
+  assert.ok(files.has('docs/tool-adapters.md'), 'missing canonical tool-adapter chapter');
+});
+
 async function preparedFamily(t) {
   const f = await fixture(t), version = '0.1.4', tag = 'occipital-v' + version, ref = 'refs/tags/pi-tidy-ui-v0.2.0';
   await mkdir(join(f.root, 'crates/occipital'), { recursive: true });

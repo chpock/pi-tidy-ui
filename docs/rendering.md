@@ -2,7 +2,7 @@
 
 The presentation pipeline converts already supplied Pi data into terminal rows without changing tool execution, model text or session records. Its central rule is to keep **source meaning, geometry, paint and surrounding composition separate**. A change in one need not invalidate the others.
 
-[Host integration](host-integration.md#presentation-dispatch) selects a presenter and owns hooks. This chapter explains the common representation and reuse model. Exact visible behavior belongs to [summaries](tool-summary-spec.md), [Bash](bash-card-spec.md), [read](read-card-spec.md), [edit](edit-card-spec.md), [write](write-card-spec.md), [user/queued messages](user-queued-cards.md), [editor](editor.md) and [footer](footer-spec.md).
+[Host integration](host-integration.md#presentation-dispatch) selects a presenter and owns hooks. [Producer adapters](tool-adapters.md) interpret tool-specific fields and provide deferred, funded inputs to that presenter; the shared pipeline does not decode each extension's wire format. This chapter explains the common representation and reuse model. Exact visible behavior belongs to [summaries](tool-summary-spec.md), [Bash](bash-card-spec.md), [read](read-card-spec.md), [edit](edit-card-spec.md), [write](write-card-spec.md), [user/queued messages](user-queued-cards.md), [editor](editor.md) and [footer](footer-spec.md).
 
 ## The representation pipeline
 
@@ -116,7 +116,7 @@ There are two related retention paths, not one monolithic cache key.
 
 ### Compact and native-projection rows
 
-A component's weak-keyed state owns its latest layout entry. The summary memo includes presentation kind, width, Output padding, theme/callback identity, argument/result identity, expansion/partial state and relevant directory. Existing host update/invalidation methods also release layouts, covering mutation inside an otherwise identical argument/result object.
+A component's weak-keyed state owns its latest layout entry. The summary memo includes semantic card kind (or the shared summary kind for other names), width, Output padding, theme/callback identity, argument/result identity, expansion/partial state and relevant directory. It does not create a layout-accounting category for every actual tool name. Existing host update/invalidation methods also release layouts, covering mutation inside an otherwise identical argument/result object.
 
 User rows additionally depend on native text, padding, Markdown-child identity/theme/transformers and paint callbacks. Queued preparation depends on text, width, Output padding, paint and the last-card hint; screen height only selects already-prepared rows. The editor does not participate in these retained-row caches.
 
@@ -202,8 +202,8 @@ Native removal releases that owner's rows and useful syntax work, unless it is a
 
 - `src/index.ts`: presenter dispatch, latest-row adoption, predecessor spacing, transient prefix/separator composition and host ownership.
 - `src/card-frame.ts`, `src/card-theme.ts`: geometry/framing and paint interfaces.
-- `src/plain-text.ts`, `src/summary-args.ts`: distinct plain-block and bounded-description policies.
-- `src/bash-card.ts`, `src/file-card.ts`: logical display models; source/presentation algorithms are explained in their respective chapters.
+- `src/tool-adapters/summary.ts`, `src/summary-args.ts`: producer-selected compact arguments and the shared bounded-description formatter; `src/plain-text.ts` owns plain-block normalization.
+- `src/tool-adapters/`: producer-specific saved-field interpretation and reader identities; `src/bash-card.ts`, `src/file-card.ts`: shared producer-neutral logical display/service models. Source and presentation responsibilities are explained in their respective chapters.
 - `src/user-card.ts`, `src/queued-card.ts`: native Markdown projection and prepared plain queue rows.
 - `src/syntax/cards.ts`, `measured-rows.ts`, `card-layout.ts`, `flat-paint.ts`: prepared source models, measured geometry, scenes and monotonic literal painting.
 - `src/render-cache.ts`: weak row accounting and detached release receipts.

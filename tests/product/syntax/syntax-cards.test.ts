@@ -30,8 +30,7 @@ import { semanticDescriptor } from '../../fixtures/semantic-provider.ts';
 import { reflow } from '../../../src/syntax/measured-rows.ts';
 import { paintFlat, type FlatRangeReader } from '../../../src/syntax/flat-paint.ts';
 import { stripVTControlCharacters } from 'node:util';
-import { prepareBashService } from '../../../src/bash-card.ts';
-import { prepareFileCard } from '../../../src/file-card.ts';
+import { bashToolReaderFixture, fileToolReaderFixture, type ToolCallFixture } from '../../fixtures/tool-adapters/reader-fixture.ts';
 import { RETENTION_LIMITS } from '../../../src/occipital/retention.ts';
 import type { ThemePreference } from '../../../src/settings.ts';
 import { palettePreference } from '../../fixtures/palette-preference.ts';
@@ -43,15 +42,26 @@ import { observePaletteInput } from '../../fixtures/palette-input-observer.mjs';
 
 type Frame = Record<string, any>;
 type Owner = { input?: CardDisplayInput };
-const bash = (text: string, complete = false, revision = 1): Extract<CardDisplayInput, { kind: 'bash' }> => ({ kind: 'bash', args: { command: text }, complete,
-  revision, sourceRevision: revision, serviceRevision: revision, palette: 1, mode: 'truecolor', language: 'bash' });
-const written = (text: string, revision = 1, path = 'a.ts'): Extract<CardDisplayInput, { kind: 'file' }> => ({ kind: 'file', revision, sourceRevision: revision,
-  serviceRevision: revision, palette: 1, mode: 'truecolor', language: 'typescript', node: { toolName: 'write', args: { path, content: text }, isPartial: false, result: {} } });
-const edited = (diff = '-1 \tx\n+1 \ty\n   ...\n-9 a\n+9 b', revision = 1): Extract<CardDisplayInput, { kind: 'file' }> => ({ ...written('', revision), kind: 'file',
-  node: { toolName: 'edit', args: { path: 'a.ts' }, isPartial: false, result: { details: { diff } } } });
-const read = (text: string, revision = 1, images: string[] = []): Extract<CardDisplayInput, { kind: 'file' }> => ({ ...written('', revision), kind: 'file',
-  node: { toolName: 'read', args: { path: 'a.ts', offset: 41 }, isPartial: false,
-    result: { content: [{ type: 'text', text }, ...images.map(data => ({ type: 'image' as const, data, mimeType: 'image/png' }))], isError: false } } });
+const fileInput = (call: ToolCallFixture, revision = 1, viewMode?: 'preview' | 'full'): Extract<CardDisplayInput, { kind: 'file' }> => {
+  const reader = fileToolReaderFixture(call), mode = viewMode ?? 'full';
+  return { kind: 'file', reader, diagnostics: reader.diagnostics(mode), ...(viewMode ? { viewMode } : {}), revision, sourceRevision: revision,
+    serviceRevision: revision, palette: 1, mode: 'truecolor' };
+};
+const withFileCall = (input: Extract<CardDisplayInput, { kind: 'file' }>, call: ToolCallFixture) => {
+  const reader = fileToolReaderFixture(call);
+  return { ...input, reader, diagnostics: reader.diagnostics(input.viewMode ?? 'full') };
+};
+const withBashCall = (input: Extract<CardDisplayInput, { kind: 'bash' }>, call: ToolCallFixture) => ({ ...input,
+  reader: bashToolReaderFixture({ ...call, args: { ...input.reader.argsRef, ...call.args } }) });
+const bash = (text: string, complete = false, revision = 1): Extract<CardDisplayInput, { kind: 'bash' }> => ({ kind: 'bash',
+  reader: bashToolReaderFixture({ args: { command: text } }), complete, revision, sourceRevision: revision, serviceRevision: revision,
+  palette: 1, mode: 'truecolor' });
+const written = (text: string, revision = 1, path = 'a.ts'): Extract<CardDisplayInput, { kind: 'file' }> => fileInput({ name: 'write',
+  args: { path, content: text }, result: {} }, revision);
+const edited = (diff = '-1 \tx\n+1 \ty\n   ...\n-9 a\n+9 b', revision = 1): Extract<CardDisplayInput, { kind: 'file' }> =>
+  fileInput({ name: 'edit', args: { path: 'a.ts' }, result: { details: { diff } } }, revision);
+const read = (text: string, revision = 1, images: string[] = []): Extract<CardDisplayInput, { kind: 'file' }> => fileInput({ name: 'read',
+  args: { path: 'a.ts', offset: 41 }, result: { content: [{ type: 'text', text }, ...images.map(data => ({ type: 'image' as const, data, mimeType: 'image/png' }))], isError: false } }, revision);
 const fixtures: { cards: CardSources<Owner>; sources: SourceController; runtime: SyntaxRuntime; paletteInputs: PaletteInputOwner; calls: { reject(error: unknown): void }[] }[] = [];
 function fixture(ready = false, options: ControllerOptions = {}, maxBookkeepingBytes?: number) {
   const env = { ready, enabled: true, generation: 1, vocabulary: 'a'.repeat(64), selected: { kind: 'pi', variant: 'dark' } as ThemePreference,
@@ -216,7 +226,7 @@ test('file preview identity separates bounded excerpts from full saved-file prep
   await collectFilePayload(fullPayloads.rows);
   await collectFilePayload(fullPayloads.measurement);
   assert.equal(modeOwner.input?.kind, 'file');
-  if (modeOwner.input?.kind === 'file') assert.equal(modeOwner.input.node.args.content, fullSource, 'the original full call data stays with the live owner');
+  if (modeOwner.input?.kind === 'file') assert.equal(modeOwner.input.reader.argsRef.content, fullSource, 'the original full call data stays with the live owner');
 });
 
 test('real mixed preview stays unified and keeps its click hint after the bounded-source note', async () => {
@@ -514,7 +524,8 @@ test('cards cache actual Pi system faint fallback once across warm visits and wi
 test('cards output-only updates and equal-text finalization reuse normalized command measurement', async () => {
   const f = fixture(), owner = {}; f.use(owner, bash('a\tb\n')); await settle();
   let measured: object | undefined, stamp = 0; inspect(f, owner, d => { if (d.kind === 'bash') { measured = d.command.measured; stamp = d.geometryStamp; } });
-  const input = { ...bash('a\tb\n'), revision: 2, serviceRevision: 2, node: { args: {}, expanded: false, isPartial: true, result: { content: [{ type: 'text', text: 'out' }] } } };
+  const input = withBashCall({ ...bash('a\tb\n'), revision: 2, serviceRevision: 2 },
+    { args: {}, expanded: false, isPartial: true, result: { content: [{ type: 'text', text: 'out' }] } });
   assert.equal(f.update(owner, input), true); inspect(f, owner, d => { if (d.kind === 'bash') { assert.equal(d.command.measured, measured); assert.equal(d.service.output[0], 'out'); } });
   const final = { ...input, revision: 3, complete: true, sourceRevision: 3 };
   assert.equal(f.update(owner, final), true); inspect(f, owner, d => { if (d.kind === 'bash') assert.equal(d.command.measured, measured); });
@@ -592,7 +603,8 @@ test('cards owned palette and mixed semantic segments publish atomically without
 });
 
 test('cards actual palette-only group notice is targeted and does not fake an empty source', async () => {
-  const f = fixture(true), owner = {}, untouched = {}; f.theme(); f.update(owner, { ...written(''), node: { toolName: 'edit', args: { path: 'a' }, isPartial: false, result: {} } });
+  const f = fixture(true), owner = {}, untouched = {}; f.theme(); f.update(owner, withFileCall(written(''),
+    { name: 'edit', args: { path: 'a' }, result: {} }));
   f.update(untouched, bash('not useful')); f.cards.useful(owner, 1); await settle();
   assert.deepEqual(f.calls, [], 'an empty file has neither SOURCE text nor semantic contexts to resolve');
   f.env.invalidated.length = 0; await settle();
@@ -715,14 +727,14 @@ test('cards LIFO backlog retains newest-first order and yields after two prepara
 test('cards Bash service preparation preserves timeout reminder and phase policy', () => {
   const node = { args: { description: 'desc\nline' }, expanded: false, isPartial: false, argsComplete: false,
     result: { isError: true, content: [{ type: 'text', text: 'out\n\n[command timed out]\n[exit code: 124]\n\n<system-reminder>\nreminder\n</system-reminder>' }], details: { exit_code: 124 } } };
-  const prepared = prepareBashService(node, 'a\tb'); assert.equal(prepared.footer, '[exit code: 124; error: command timed out]');
+  const prepared = bashToolReaderFixture(node).prepareService('a\tb'); assert.equal(prepared.footer, '[exit code: 124; error: command timed out]');
   assert.deepEqual(prepared.output.slice(prepared.first, prepared.last), ['out']); assert.equal(prepared.output[prepared.reminder], '<system-reminder>');
   assert.equal(prepared.description, 'desc line'); assert.equal(prepared.heading, '# Running in a b');
-  assert.equal(prepareBashService({ ...node, result: { isError: true, content: [] } }).footer, '[error: incomplete tool call]');
+  assert.equal(bashToolReaderFixture({ ...node, result: { isError: true, content: [] } }).prepareService(undefined).footer, '[error: incomplete tool call]');
 });
 
 test('cards successful write and logical file preparation reuse existing saved diff continuity', () => {
-  const input = edited(); if (input.kind !== 'file') assert.fail('file'); const normal = prepareFileCard(input.node)!, logical = prepareFileCard(input.node, true)!;
+  const input = edited(), normal = input.reader.prepareFile('full')!, logical = input.reader.prepareFile('full', true)!;
   assert.deepEqual(normal.sources.map(s => s.text), ['\tx', 'a', '\ty', 'b']); assert.deepEqual(logical.sources, []);
   assert.equal(logical.view.lines[0]!.kind === 'gap' ? '' : logical.view.lines[0]!.text, '\tx');
 });
@@ -739,8 +751,8 @@ test('file preview accounting and display never scan beyond the raw source or di
     return original.call(this, index);
   };
   try {
-    const input = { ...written(source), viewMode: 'preview' as const, node: { ...written(source).node,
-      result: { details: { diff } } } };
+    const input = withFileCall({ ...written(source), viewMode: 'preview' as const },
+      { name: 'write', args: { path: 'a.ts', content: source }, result: { details: { diff } } });
     assert.equal(f.update(owner, input), true);
     inspect(f, owner, display => {
       assert.equal(display.kind, 'file'); if (display.kind !== 'file') return;
@@ -777,7 +789,8 @@ test('cards warm resize readers do zero normalization measurement sampling compi
       assert.ok(painted); painted.dispose(); layout.dispose();
     });
     assert.deepEqual([normalizations, measurements, compilations, f.env.samples, f.env.classifications.length, f.calls.length], before);
-    const input = { ...bash(marker), revision: 2, serviceRevision: 2, node: { args: {}, expanded: false, isPartial: true, result: { content: [{ type: 'text', text: 'output only' }] } } };
+    const input = withBashCall({ ...bash(marker), revision: 2, serviceRevision: 2 },
+      { args: {}, expanded: false, isPartial: true, result: { content: [{ type: 'text', text: 'output only' }] } });
     f.update(owner, input); assert.deepEqual([normalizations, measurements], before.slice(0, 2));
     console.log(JSON.stringify({ warmReader: { frames: 100, newNormalizations: 0, newCommandMeasurements: 0, newCompilations: 0, newSamples: 0, newClassifiers: 0, newRPC: 0 } }));
   } finally { String.prototype.replace = replace; Intl.Segmenter.prototype.segment = segment; Object.freeze = freeze; }
@@ -822,9 +835,9 @@ test('cards Bash retains validated native prefix while latest display append is 
 for (const invalid of ['patch', 'content', 'command'] as const) test(`P0 cards invalid ${invalid} preparation preserves held key authority until restored`, async () => {
   const f = fixture(true), owner = {}, input = invalid === 'command' ? bash('held', true) : written('held'); f.use(owner, input); await settle();
   const key = f.cards.identities(owner)[0]!.key;
-  const broken = invalid === 'command' ? { ...bash('held', true, 2), args: { command: undefined } } : invalid === 'content'
-    ? { ...written('', 2), node: { toolName: 'write', args: { path: 'a' }, isPartial: false, result: {} } }
-    : { ...edited('', 2), node: { toolName: 'edit', args: { path: 'a' }, isPartial: false, result: { details: { patch: '@@ -1 +1 @@\n-x' } } } };
+  const broken = invalid === 'command' ? withBashCall(bash('held', true, 2), { args: { command: undefined } }) : invalid === 'content'
+    ? withFileCall(written('', 2), { name: 'write', args: { path: 'a' }, result: {} })
+    : withFileCall(edited('', 2), { name: 'edit', args: { path: 'a' }, result: { details: { patch: '@@ -1 +1 @@\n-x' } } });
   f.update(owner, broken); f.cards.useful(owner, 2); await settle(); assert.equal(f.cards.identities(owner)[0]!.key, key);
   assert.equal(f.sources.workStatus(key).fallbackEligible, false); assert.equal(f.env.classifications.length, 0);
   f.use(owner, invalid === 'command' ? bash('held', true, 3) : written('held', 3)); await settle();
@@ -832,7 +845,7 @@ for (const invalid of ['patch', 'content', 'command'] as const) test(`P0 cards i
 });
 
 test('cards LF display paths unsupported wire hints and independent peer preserve full glyphs', async () => {
-  const f = fixture(true), a = {}, b = {}; const input = written('\t界 full', 1, 'a\nb.ts'); input.language = 'bad\nhint';
+  const f = fixture(true), a = {}, b = {}; const input = written('\t界 full', 1, 'a\nb.ts'); input.reader.language = () => 'bad\nhint';
   f.use(a, input); f.use(b, written('peer')); await settle();
   const native = f.calls.find(c => c.request.sources?.[0]?.text === '\t界 full')!.request.sources[0];
   assert.equal(native.path, undefined); assert.equal(native.language, undefined);
@@ -994,14 +1007,14 @@ test('cards reentrant pause preserves exact Pi fallback evidence without a dupli
 
 test('cards explicit Pi language changes retain key identity but update the classifier demand', async () => {
   const f = fixture(), owner = {}; f.use(owner, written('x')); await settle(); const key = f.cards.identities(owner)[0]!.key;
-  const input = written('y', 2, 'next.rb'); input.language = 'python'; f.use(owner, input); await settle();
+  const input = written('y', 2, 'next.rb'); input.reader.language = () => 'python'; f.use(owner, input); await settle();
   assert.equal(f.cards.identities(owner)[0]!.key, key); assert.equal(f.cards.identities(owner)[0]!.language, undefined);
   assert.equal(f.cards.identities(owner)[0]!.piLanguage, 'python'); assert.deepEqual(f.env.classifications, ['x', 'y']);
 });
 
 test('cards send a shebang-selected Occipital language without replacing path-derived Pi classification', async () => {
   const f = fixture(true), owner = {}; f.theme();
-  const input = written('#!/usr/bin/env python3\necho "same"', 1, 'script.rb'); input.language = 'ruby'; f.use(owner, input); await settle();
+  const input = written('#!/usr/bin/env python3\necho "same"', 1, 'script.rb'); input.reader.language = () => 'ruby'; f.use(owner, input); await settle();
   const call = f.calls.find(entry => entry.request.sources?.[0]?.text.includes('echo "same"'));
   assert.ok(call, 'native SOURCE is admitted for the numbered file source');
   assert.equal(call.request.sources[0].hint.language, 'python');
@@ -1072,9 +1085,9 @@ test('cards helper loss preserves the selected owned palette and cached source w
 test('cards unsupported partial malformed and error files are source-less rather than fake empty parsers', async () => {
   const f = fixture(true); f.theme();
   const cases: CardDisplayInput[] = [
-    { ...written('proposal'), node: { toolName: 'write', args: { path: 'a', content: 'proposal' }, isPartial: true, result: {} } },
-    { ...written('failed'), node: { toolName: 'write', args: { path: 'a', content: 'failed' }, isPartial: false, result: { isError: true } } },
-    { ...edited(), node: { toolName: 'edit', args: { path: 'a' }, isPartial: false, result: { details: { patch: '@@ -1 +1 @@\n-old' } } } },
+    fileInput({ name: 'write', args: { path: 'a', content: 'proposal' }, partial: true }, 1),
+    fileInput({ name: 'write', args: { path: 'a', content: 'failed' }, result: { isError: true } }, 1),
+    fileInput({ name: 'edit', args: { path: 'a' }, result: { details: { patch: '@@ -1 +1 @@\n-old' } } }, 1),
   ];
   const owners = cases.map(input => { const o = {}; f.use(o, input); return o; }); await settle();
   assert.equal(f.calls.filter(c => c.request.op !== 'styles.resolve').length, 0); assert.equal(f.env.classifications.length, 0); assert.equal(f.sources.stats().sourceRecords, 0);
@@ -1099,10 +1112,11 @@ test('cards reentrant disposal during source capture cannot publish payload or r
 
 
 test('cards prepared Bash service measurements use explicit roles and original output coordinates', () => {
-  const f = fixture(), owner = {}, input = bash('echo x', true);
-  input.args.description = 'desc\nline'; input.directory = 'a\tb';
-  input.node = { args: {}, expanded: false, isPartial: false, result: { isError: true, details: { exit_code: 124 }, content: [
-    { type: 'text', text: 'out\n\n[command timed out]\n[exit code: 124]\n\n<system-reminder>\nnote\n</system-reminder>' }] } };
+  const f = fixture(), owner = {}, input = withBashCall(bash('echo x', true),
+    { args: { command: 'echo x', description: 'desc\nline' }, expanded: false, isPartial: false,
+      result: { isError: true, details: { exit_code: 124 }, content: [
+        { type: 'text', text: 'out\n\n[command timed out]\n[exit code: 124]\n\n<system-reminder>\nnote\n</system-reminder>' }] } });
+  input.directory = 'a\tb';
   f.update(owner, input); inspect(f, owner, d => { if (d.kind !== 'bash') assert.fail('bash');
     assert.equal(d.regions.description!.text, '# desc line'); assert.equal(d.regions.heading!.text, '# Running in a b');
     assert.equal(d.regions.output[0]!.text, 'out'); assert.equal(d.regions.output[2], undefined); assert.equal(d.regions.output[3], undefined);
@@ -1112,8 +1126,8 @@ test('cards prepared Bash service measurements use explicit roles and original o
 
 
 test('cards file service diagnostics and notes are prepared while cwd updates reuse source measurements', () => {
-  const f = fixture(), owner = {}, input = written('x');
-  input.node.result = { details: { noOp: true, diagnostics: [{ severity: 'error', line: 3, message: 'bad\n\tmessage\x1b[31m' }, { severity: 'warning', message: 'ignored' }] } };
+  const f = fixture(), owner = {}, input = withFileCall(written('x'), { name: 'write', args: { path: 'a.ts', content: 'x' },
+    result: { details: { noOp: true, diagnostics: [{ severity: 'error', line: 3, message: 'bad\n\tmessage\x1b[31m' }, { severity: 'warning', message: 'ignored' }] } } });
   f.update(owner, input); let measured: object | undefined;
   inspect(f, owner, d => { if (d.kind !== 'file') assert.fail('file'); measured = d.rows[0]!.region!.measured;
     assert.equal(d.note!.text, 'No changes.'); assert.equal(d.diagnostics[0]!.text, 'Error [3]: bad message'); assert.equal(d.diagnostics.length, 1); assert.equal(d.error, false); });
@@ -1201,8 +1215,9 @@ for (const otherOwner of [false, true]) test(`review F2: rejected owned-palette 
 });
 
 for (const kind of ['bash', 'file'] as const) test(`review F3: prepared ${kind} containers reject mutation without freezing opaque handles`, () => {
-  const f = fixture(), owner = {}, input = kind === 'bash' ? bash('echo x') : edited();
-  if (input.kind === 'bash') input.node = { args: {}, expanded: false, isPartial: false, result: { content: [{ type: 'text', text: 'out' }] } };
+  const f = fixture(), owner = {}, input = kind === 'bash'
+    ? withBashCall(bash('echo x'), { args: {}, expanded: false, isPartial: false, result: { content: [{ type: 'text', text: 'out' }] } })
+    : edited();
   f.update(owner, input); let checkAgain: (() => void) | undefined;
   inspect(f, owner, (d, p) => {
     assert.equal(Reflect.set(p.roles, 'code', p.roles.title), false, 'role table is immutable');
@@ -1224,12 +1239,14 @@ for (const kind of ['bash', 'file'] as const) test(`review F3: prepared ${kind} 
 });
 
 for (const noOp of [false, true]) test(`review F4: file service note follows both metadata transitions with reused source geometry, initial=${noOp}`, async () => {
-  const f = fixture(), owner = {}, initial = written('const same = 1'); initial.node.result = { details: { noOp } };
+  const f = fixture(), owner = {}, initial = withFileCall(written('const same = 1'), { name: 'write',
+    args: { path: 'a.ts', content: 'const same = 1' }, result: { details: { noOp } } });
   f.use(owner, initial); await settle(); const identity = f.cards.identities(owner), before = [f.env.classifications.length, f.calls.length];
   let measurement: object | undefined;
   inspect(f, owner, d => { if (d.kind !== 'file') assert.fail('file'); measurement = d.rows[0]!.region!.measured; assert.equal(d.note?.text, noOp ? 'No changes.' : undefined); });
   for (const [index, current] of [!noOp, noOp].entries()) {
-    const input = { ...initial, revision: index + 2, serviceRevision: index + 2, node: { ...initial.node, result: { details: { noOp: current } } } };
+    const input = withFileCall({ ...initial, revision: index + 2, serviceRevision: index + 2 },
+      { name: 'write', args: initial.reader.argsRef, result: { details: { noOp: current } } });
     f.update(owner, input); f.cards.useful(owner, input.revision);
     inspect(f, owner, d => { if (d.kind !== 'file') assert.fail('file'); assert.equal(d.note?.text, current ? 'No changes.' : undefined); assert.equal(d.rows[0]!.region!.measured, measurement); });
     await settle(); assert.deepEqual(f.cards.identities(owner), identity); assert.deepEqual([f.env.classifications.length, f.calls.length], before);
@@ -1892,9 +1909,8 @@ test('review F4: preview availability follows the selected view, not patch prepa
       return Reflect.get(target, key, receiver);
     },
   });
-  const preview = { ...edited('', 1), viewMode: 'preview' as const,
-    node: { toolName: 'edit', args: { path: 'unsupported.ts' }, isPartial: false,
-      result: { details: { patch: { unsupported: true }, diagnostics } } } };
+  const preview = withFileCall({ ...edited('', 1), viewMode: 'preview' as const },
+    { name: 'edit', args: { path: 'unsupported.ts' }, result: { details: { patch: { unsupported: true }, diagnostics } } });
   assert.equal(f.update(previewOwner, preview), true);
   assert.equal(previewEntries, 0, 'a bounded preview records only whether diagnostics exist; it does not format full messages');
   inspect(f, previewOwner, display => {
@@ -1931,13 +1947,13 @@ test('read saved result uses the common funded plain-file pipeline without retai
     'const READ_A = 1;\nPi producer notice: keep verbatim.',
     'const READ_B = 2;\nPi producer notice: keep verbatim.',
   ], 'a same-path/offset replacement reparses only the current saved result');
-  assert.equal(owner.input?.node, changed.node, 'the controller retains the current saved result without reconstructing the Pi node');
+  assert.equal(owner.input?.reader, changed.reader, 'the controller retains the current producer reader without reconstructing its snapshot');
 
   const refs = weakFilePayloads(f, owner);
   f.cards.discardFile(owner);
   const measurementInvalidated = (refs.measurement.deref() as { isValid?: boolean } | undefined)?.isValid === false;
   assert.equal(measurementInvalidated, true, 'collapsing an expanded read invalidates its old measurement');
-  assert.equal(owner.input?.node, changed.node, 'the live Pi owner still retains the original saved result');
+  assert.equal(owner.input?.reader, changed.reader, 'the live owner still retains the current producer reader');
   await collectFilePayload(refs.rows, 'read display row array');
   await collectFilePayload(refs.measurement, 'read measured region');
 });

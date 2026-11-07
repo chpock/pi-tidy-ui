@@ -12,7 +12,8 @@ import { ToolExecutionComponent as NativeToolExecution, createWriteToolDefinitio
 import { describeArgs } from "../../../src/index.ts";
 import { fileCardFixture as renderFileCard } from "../../fixtures/prepared-card.ts";
 import { cardGeometry } from "../../../src/card-frame.ts";
-import { measureFileCard, prepareFileCard } from "../../../src/file-card.ts";
+import { measureFileCard } from "../../../src/file-card.ts";
+import { prepareFileToolCall } from '../../fixtures/tool-adapters/reader-fixture.ts';
 import { generateDiffString, generateUnifiedPatch } from "../../../node_modules/@earendil-works/pi-coding-agent/dist/core/tools/edit-diff.js";
 import { initTheme, theme as nativeTheme } from "../../../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js";
 import { Root, Tool, color, installTidyUi, mouse, plain, setup, type TuiMouseEvent } from "../../fixtures/sdk-contract-support.ts";
@@ -115,12 +116,15 @@ test("write validates both metadata formats and classifies globally before conte
   for (const [before, after, label] of pairs) {
     const numbered = generateDiffString(before!, after!).diff, patch = generateUnifiedPatch("example.ts", before!, after!);
     // A no-op unified patch can contain headers without hunks: unsupported metadata stays native.
-    const metadata = before === after ? [{ diff: numbered }] : [{ diff: numbered }, { patch }, { diff: patch }];
-    for (const details of metadata) {
+    const numberedCase = { details: { diff: numbered }, saved: { format: 'numbered' as const, value: numbered } };
+    const metadata = before === after ? [numberedCase] : [numberedCase,
+      { details: { patch }, saved: { format: 'unified' as const, value: patch } },
+      { details: { diff: patch }, saved: { format: 'unified' as const, value: patch } }];
+    for (const { details, saved } of metadata) {
       const node = { toolName: "write", args: { path: "example.ts", content: after }, result: { details }, isPartial: false };
       const rendered = renderFileCard(node, undefined, 140, nativeTheme)!;
       assert.match(rendered.rows.map(plain).join("\n"), new RegExp(`← ${label} example.ts`));
-      assert.equal(measureFileCard(node, undefined, 140)!.framed, true);
+      assert.equal(measureFileCard({ kind: 'write', path: node.args.path, content: after, complete: true, failed: false, viewMode: 'full', saved }, undefined, 140)!.framed, true);
     }
   }
   const multi = "@@ -1,1 +1,2 @@\n const retained = 1;\n+const first = 2;\n@@ -10,1 +11,0 @@\n-const erased = 10;\n";
@@ -134,7 +138,8 @@ test("write validates both metadata formats and classifies globally before conte
         `from ${JSON.stringify(specifier.startsWith(".") ? new URL(specifier, url).href : import.meta.resolve(specifier))}`);
     const file = join(temporary, "file-card.ts"); writeFileSync(file, alternateSource);
     const alternate = await import(pathToFileURL(file).href);
-    const prepared = alternate.prepareFileCard({ ...node, result: { details: { diff: " 1 OLD_CONTEXT\n+2 ADDED" } } });
+    const prepared = alternate.prepareFileCard({ kind: 'write', path: 'example.ts', complete: true, failed: false, viewMode: 'full',
+       saved: { format: 'numbered', value: " 1 OLD_CONTEXT\n+2 ADDED" } });
     assert.equal(prepared.view.label, "Edited");
     const rows = alternate.contextRows(prepared.view.lines).map((row: { text?: string }) => row.text ?? "").join("\n");
     assert.match(rows, /ADDED/); assert.doesNotMatch(rows, /OLD_CONTEXT|Created/);
@@ -145,7 +150,7 @@ test("write preview only consumes a bounded raw prefix and never claims a partia
   const lines = Array.from({ length: 20 }, (_, i) => `+${i + 1} const visible_${i + 1} = ${i + 1};`).join("\n");
   const metadata = lines + "\n-21 const hidden_removed = 21;\n+22 HIDDEN_SUFFIX";
   const node = { toolName: "write", args: { path: "example.ts", content: metadata }, isPartial: false, result: { details: { diff: metadata } } };
-  const preview = prepareFileCard(node, true, "preview")!;
+  const preview = prepareFileToolCall(node, true, "preview")!;
   assert.equal(preview.view.label, "Write");
   assert.equal(preview.view.preview, true);
   assert.equal(preview.view.omitted, true);
@@ -154,31 +159,31 @@ test("write preview only consumes a bounded raw prefix and never claims a partia
   assert.ok(preview.view.lines.every(line => !("logical" in line) || !line.logical.includes("HIDDEN")));
   assert.match(preview.view.note ?? "", /Preview is limited to a bounded source prefix/);
   assert.doesNotMatch(preview.view.note ?? "", /hidden_removed/);
-  const short = prepareFileCard({ toolName: "write", args: { path: "short.ts", content: "const small = 1;" }, isPartial: false,
+  const short = prepareFileToolCall({ toolName: "write", args: { path: "short.ts", content: "const small = 1;" }, isPartial: false,
     result: { details: { diff: "+1 const small = 1;" } } }, true, "preview")!;
   assert.equal(short.view.omitted, false);
   assert.doesNotMatch(short.view.note ?? "", /Preview is limited to a bounded source prefix/);
-  const full = prepareFileCard(node, true, "full")!;
+  const full = prepareFileToolCall(node, true, "full")!;
   assert.equal(full.view.label, "Replaced", "full presentation keeps complete supplied-diff classification");
   assert.ok(full.view.lines.some(line => "logical" in line && line.kind === "-" && line.logical.includes("hidden_removed")));
 
-  const oversized = prepareFileCard({ ...node, args: { path: "oversized.ts", content: "VISIBLE\n" + "x".repeat(9000) + "\nHIDDEN_FIRST_ROW_TAIL" }, result: { details: undefined } }, true, "preview")!;
+  const oversized = prepareFileToolCall({ ...node, args: { path: "oversized.ts", content: "VISIBLE\n" + "x".repeat(9000) + "\nHIDDEN_FIRST_ROW_TAIL" }, result: { details: undefined } }, true, "preview")!;
   assert.equal(oversized.view.label, "Write");
   assert.equal(oversized.view.omitted, true);
   assert.equal(oversized.view.lines.length, 1, "only the complete row before the oversized row is retained");
   assert.ok(oversized.view.lines.every(line => !("logical" in line) || !line.logical.includes("HIDDEN")));
 
-  const exact = prepareFileCard({ ...node, args: { path: "exact.ts", content: Array.from({ length: 10 }, (_, i) => `line ${i + 1}`).join("\n") }, result: { details: undefined } }, true, "preview")!;
+  const exact = prepareFileToolCall({ ...node, args: { path: "exact.ts", content: Array.from({ length: 10 }, (_, i) => `line ${i + 1}`).join("\n") }, result: { details: undefined } }, true, "preview")!;
   assert.equal(exact.view.omitted, false, "exactly ten complete rows are not reported as truncated");
   assert.equal(exact.view.lines.length, 10);
-  const oneExtra = prepareFileCard({ ...node, args: { path: "eleven.ts", content: Array.from({ length: 11 }, (_, i) => `line ${i + 1}`).join("\r\n") }, result: { details: undefined } }, true, "preview")!;
+  const oneExtra = prepareFileToolCall({ ...node, args: { path: "eleven.ts", content: Array.from({ length: 11 }, (_, i) => `line ${i + 1}`).join("\r\n") }, result: { details: undefined } }, true, "preview")!;
   assert.equal(oneExtra.view.omitted, true);
   assert.equal(oneExtra.view.lines.length, 10);
   assert.ok(oneExtra.view.lines.every(line => !("logical" in line) || !line.logical.includes("line 11")));
-  const wideFirstRow = prepareFileCard({ ...node, args: { path: "wide.ts", content: "x".repeat(8193) }, result: { details: undefined } }, true, "preview")!;
+  const wideFirstRow = prepareFileToolCall({ ...node, args: { path: "wide.ts", content: "x".repeat(8193) }, result: { details: undefined } }, true, "preview")!;
   assert.equal(wideFirstRow.view.omitted, true);
   assert.equal(wideFirstRow.view.lines.length, 0, "an incomplete first row is never presented");
-  const cleanSource = prepareFileCard({ ...node, args: { path: "clean.ts", content: 'const\tname = "👩‍💻 λ";\r\n\x1b[31mconst color = 1;\x1b[0m\u0007\r\n' }, result: { details: undefined } }, false, "preview")!;
+  const cleanSource = prepareFileToolCall({ ...node, args: { path: "clean.ts", content: 'const\tname = "👩‍💻 λ";\r\n\x1b[31mconst color = 1;\x1b[0m\u0007\r\n' }, result: { details: undefined } }, false, "preview")!;
   const firstCleanLine = cleanSource.view.lines[0];
   assert.ok(firstCleanLine && firstCleanLine.kind !== "gap", "first clean source row should be renderable");
   assert.equal(firstCleanLine.logical, 'const\tname = "👩‍💻 λ";');

@@ -491,7 +491,8 @@ test("Output padding updates every tool layout cache, inline measurement and pan
   const bash = bashTool(); bash.updateResult({ content: [{ type: "text", text: Array(11).fill("BASH_PAD").join("\n") }] }, bash.isPartial);
   const edit = new Tool("edit", { path: "padding.ts" }); edit.updateResult({ content: [], details: { diff: "-1 const before = 1;\n+1 const after = 2;" } }, edit.isPartial);
   const write = new Tool("write", { path: "padding.ts", content: "const written = 3;\n" });
-  const inline = new Tool("edit", { path: "inline-" + "x".repeat(90) + ".ts" }); inline.updateResult({ content: [] }, inline.isPartial);
+  const inlineInput = { kind: 'edit' as const, path: "inline-" + "x".repeat(90) + ".ts", complete: true, failed: false, viewMode: 'full' as const };
+  const inline = new Tool("edit", { path: inlineInput.path }); inline.updateResult({ content: [] }, inline.isPartial);
   inline.setExpanded(true);
   const { root, controller } = setup([compact, bash, edit, write, inline], { outputPad: () => { settingsReads++; return padding; } });
   try {
@@ -510,7 +511,7 @@ test("Output padding updates every tool layout cache, inline measurement and pan
       }
       root.render(24); assert.equal(controller.cacheStats().builds, cold, "unchanged padding is a hot cache hit");
       assert.equal(controller.cacheStats().entries, 5, "one latest layout per tool, no padding-history cache");
-      assert.equal(measureFileCard(inline, "/project", 24, padding)!.height, inline.render(24).filter(row => row !== "").length);
+      assert.equal(measureFileCard(inlineInput, "/project", 24, padding)!.height, inline.render(24).filter(row => row !== "").length);
       for (const node of [bash, edit, write]) {
         if (padding) for (const x of [0, 23]) assert.equal(node.handleMouse({ ...mouse(1, 24), x }), undefined);
         assert.equal(node.handleMouse({ ...mouse(1, 24), x: padding })?.handled, true, "current stripe is clickable");
@@ -672,7 +673,8 @@ test('inline heading resize and predecessor spacing reuse measured text', () => 
 
 test('inline heading space-plus-mark graphemes match standalone measured height', () => {
   let padding = 1;
-  const inline = new Tool('edit', { path: 'a \u0301' });
+  const inlineInput = { kind: 'edit' as const, path: 'a \u0301', complete: true, failed: false, viewMode: 'full' as const };
+  const inline = new Tool('edit', { path: inlineInput.path });
   inline.updateResult({ content: [] }); inline.setExpanded(true);
   const { root, controller } = setup([inline], { outputPad: () => padding });
   try {
@@ -681,7 +683,7 @@ test('inline heading space-plus-mark graphemes match standalone measured height'
       for (const width of [1, 2, 3, 6, 10, 14, 24]) {
         root.render(width);
         assert.equal(inline.render(width).filter(row => row !== '').length,
-          measureFileCard(inline, '/project', width, padding)!.height, `width=${width} padding=${padding}`);
+          measureFileCard(inlineInput, '/project', width, padding)!.height, `width=${width} padding=${padding}`);
       }
     }
   } finally { controller.restore(); }

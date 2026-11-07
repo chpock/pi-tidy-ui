@@ -142,8 +142,6 @@ export function argumentParts(name: string, args: Record<string, unknown>, cwd?:
   let remaining = SUMMARY_TEXT_LIMIT - size(summaryName(name)) - 1;
   const used = new Set<string>();
   let pattern: string | undefined, object: string | undefined;
-  // Do not enumerate/read the rest of an edit/write call once its path establishes the short view.
-  if ((name === "edit" || name === "write") && location(args.path)) return { object: objectText(args.path, Math.min(VALUE_TEXT_LIMIT, remaining), cwd), params: "" };
   if (typeof args.pattern === "string") {
     pattern = valueText(args.pattern, Math.min(VALUE_TEXT_LIMIT, remaining)); remaining -= size(pattern); used.add("pattern");
     if (location(args.path)) {

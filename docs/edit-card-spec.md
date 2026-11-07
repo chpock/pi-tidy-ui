@@ -1,6 +1,6 @@
 # Edit cards: saved rows, source regions and display projection
 
-Edit/write share `src/file-card.ts` for persisted-format validation and logical data. This chapter owns accepted diff formats and edit behavior; [write cards](write-card-spec.md) owns write-specific classification. Neither reconstructs changes from proposed arguments or rereads a file.
+Edit/write use [producer adapters](tool-adapters.md) for persisted-format validation and share neutral logical rows, source regions and layout. Producer-specific metadata precedence stays in the adapter layer. This chapter owns accepted diff formats and edit behavior; [write cards](write-card-spec.md) owns write-specific classification. Neither reconstructs changes from proposed arguments or rereads a file.
 
 ## Internal flow
 
@@ -16,7 +16,7 @@ persisted patch/diff + path
                   +-----------------------------> complete ready card paint
 ```
 
-`prepareFileCard` first classifies supplied data. The live prepared owner requests `logicalOnly=true`: source rows retain tabs and logical text, without eager tab-expanded strings or immediately joined source fragments. Validation/classification is outside the paint callback.
+The deferred adapter first classifies supplied data under the construction grant. The live prepared owner consumes logical source rows that retain tabs, without eager tab-expanded strings or immediately joined source fragments. Validation/classification is outside the paint callback.
 
 The full view and visible view are separate. `contextRows` walks contiguous unchanged runs within each supplied hunk, retaining the configured prefix/suffix beside changes and inserting an interior gap when a longer unchanged run is omitted. Original row objects preserve their full-view index; generated omission markers have no original source row. Leading/trailing generated gaps are removed without stripping literal source ellipses.
 
@@ -45,7 +45,7 @@ This is a source-grounded transfer of the display format, not a pixel-perfect Op
 
 ## Metadata and scope
 
-`src/file-card.ts` validates saved metadata, prepares logical display/source regions and supplies validation-only measurement; it neither classifies syntax nor paints the card. `src/syntax/cards.ts` owns prepared text and ready paint, `src/syntax/work.ts` applies classification/fallback authority, and `src/syntax/card-layout.ts` supplies the shared layout/painter path. `src/index.ts` remains the sole host adapter. See the [common pipeline and ownership map](syntax-highlighting-spec.md#syntax-pipeline-and-ownership). Reuse the existing frame, mouse routing, lifecycle hooks and component-owned rendered-layout retention. Diff presentation introduces no source-file read, execution interception or dedicated render timer; native provider lifecycle is separate. When native presentation is selected, Pi's renderer methods—including asynchronous edit preflight—remain unchanged. The public resolver defers only the exact stock callback pair; compatible third-party callbacks remain untouched and may run at their ordinary native visibility/fallback boundary.
+Producer readers under `src/tool-adapters/` select and interpret producer-specific saved fields before passing a `FileCardInput` to shared `src/file-card.ts`, which validates the selected representation and prepares logical display/source rows; it neither classifies syntax nor paints the card. `src/syntax/cards.ts` owns prepared text and ready paint, `src/syntax/work.ts` applies classification/fallback authority, and `src/syntax/card-layout.ts` supplies the shared layout/painter path. `src/index.ts` remains the sole live-host adapter. See the [common pipeline and ownership map](syntax-highlighting-spec.md#syntax-pipeline-and-ownership). Reuse the existing frame, mouse routing, lifecycle hooks and component-owned rendered-layout retention. Diff presentation introduces no source-file read, execution interception or dedicated render timer; native provider lifecycle is separate. When native presentation is selected, Pi's renderer methods—including asynchronous edit preflight—remain unchanged. The public resolver defers only the exact stock callback pair; compatible third-party callbacks remain untouched and may run at their ordinary native visibility/fallback boundary.
 
 Select the path with nullish precedence, `args.path ?? args.file_path ?? args.filePath`, then require a nonempty primitive string. An empty or wrong-type non-nullish earlier field blocks later aliases; this is not a search for the first usable string. Format absolute paths relative to the component's native `cwd`, then apply the [shared path-display rule](tool-summary-spec.md#filesystem-path-display): a parent ladder reaching the filesystem root becomes the resolved absolute path, while nearby relative names remain relative. Source arguments are unchanged. The compact edit/write shortcut is different: it recognizes only a nonempty primitive `path`. Use persisted result metadata only:
 

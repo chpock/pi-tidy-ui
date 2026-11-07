@@ -6,7 +6,7 @@ The wire interpretation is versioned by [`source_hint_revision`](../occipital/pr
 
 ## Where the first line comes from
 
-`prepareFileCard` receives completed file-tool input and produces numbered source rows before the display sanitization pass. The original row text is available at that boundary, including terminal controls which the displayed/parser text may subsequently remove. The detector runs against the original row; it must not turn ordinary text containing a control character into a valid shebang by first deleting that character.
+The producer reader supplies the selected completed file input to the common `prepareFileCard`, which produces numbered logical source rows before display sanitization. Producer-specific saved-data decoding has already selected those rows; the common file preparation preserves their original row text, including terminal controls which the displayed/parser text may subsequently remove. The shebang detector runs against the original row; it must not turn ordinary text containing a control character into a valid shebang by first deleting that character.
 
 The saved card coordinates are authoritative:
 

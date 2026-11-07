@@ -38,6 +38,7 @@
     "docs/changelog-format.md",
     "docs/assets/pi-tidy-ui.png",
     "docs/tool-summary-spec.md",
+    "docs/tool-adapters.md",
     "docs/bash-card-spec.md",
     "docs/bash-streaming-contract.md",
     "docs/edit-card-spec.md",

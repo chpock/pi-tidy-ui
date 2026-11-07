@@ -1,6 +1,6 @@
 # Bash cards: command and service preparation
 
-Bash has two independent inputs: the normalized command is syntax source, while already-returned output/metadata are service presentation. `src/bash-card.ts` prepares those logical values; the common [prepared-card pipeline](syntax/prepared-cards.md) measures and paints them. The [streaming contract](bash-streaming-contract.md) separately owns parser/checkpoint and historical-paint authority.
+Bash has two independent inputs: the normalized command is syntax source, while already-returned output/metadata are service presentation. The [producer adapters](tool-adapters.md) prepare those logical values; the common [prepared-card pipeline](syntax/prepared-cards.md) measures and paints them. Producer-specific metadata and terminal annotation rules stay in the adapter layer, not in shared layout or source scheduling. The [streaming contract](bash-streaming-contract.md) separately owns parser/checkpoint and historical-paint authority.
 
 ## Internal flow
 
@@ -17,15 +17,17 @@ text result blocks + result metadata
 
 `BashService` is a frozen width-independent object. `output` retains the normalized rows; `[first,last)` selects ordinary output and `[reminder,end)` selects reminders. `description`, directory `heading`, `footer` and `error` are separate service facts. Tail conventions adjust ranges rather than passing service/output text into the command parser.
 
+The common `src/bash-card.ts` `prepareBashService` only sanitizes frame labels, adds the resolved directory heading and freezes neutral rows/ranges; it does not decode producer markers. `src/tool-adapters/aft/bash.ts` reads compatible `exit_code`/`task_id` metadata and `description`/`workdir`, removes at most one task row matching the saved task ID, and considers a Bash call for this format reader when it has a result or owns one of its extended argument fields (`description`, `workdir`, `content`, `path`, `file_path`, `filePath`). `src/tool-adapters/aft/service.ts` recognizes compatible reminder suffixes in final saved results and exact timeout/duplicate-footer conventions before calling the common preparation. This is format compatibility, not authenticated AFT provenance: a valid metadata-independent reminder convention in any compatible saved Bash result follows the same rule, and text alone does not identify its producer.
+
 Order matters. Task annotation recognition uses an exact metadata-qualified **raw** whole row before sanitization can manufacture a match. Joined normalization remains authoritative; if cross-block control sequences erase or change the independently reconstructed boundaries, the apparent reminder suffix stays ordinary output. A final complete, nonnested reminder must respect original block boundaries. Only afterward do the narrowly specified timeout/duplicate-footer rules alter the ordinary-output range. The exact accepted strings and error evidence are defined below, not generalized into producer identification.
 
 The prepared owner tracks command and service revisions independently. Equal command text can reuse measurement; a true suffix can extend measured data. Service regions compare their own text and reuse unchanged measurements. A new execution result can therefore change the footer without reparsing an unchanged command.
 
 Complete service text remains available even when collapsed. Because every logical row contributes at least one visual row, each collapsed output/reminder section needs measurements for at most eleven logical rows to prove the ten-row preview overflow. Expansion prepares the missing measurements before render. Width-dependent reflow stops at the necessary visual overflow proof; this is bounded display work, not removal of hidden output or a count of all hidden visual rows.
 
-The host resolves an explicit Bash working directory against a valid native cwd without inspecting the filesystem. Directory context and description never become command source. Prefix compatibility for an evolving command is a separate UTF-8/scalar proof, not the result of comparing already wrapped or colored terminal strings.
+The adapter resolves an explicit command working directory against the host's valid native cwd without inspecting the filesystem. Directory context and description never become command source. Prefix compatibility for an evolving command is a separate UTF-8/scalar proof, not the result of comparing already wrapped or colored terminal strings.
 
-This is the default presentation for the exact tool name `bash`; other shell/tool names keep their existing policy. It supplements [tool-summary-spec.md](tool-summary-spec.md), whose argument-summary rules do not apply inside this card.
+The production registry selects this presentation only for the existing exact name `bash`; other shell/tool names keep their existing policy. Shared command presentation dispatch uses the semantic `bash` family, while flags and native ownership keep the actual name. Additional names are not enabled through a runtime extension API. It supplements [tool-summary-spec.md](tool-summary-spec.md), whose argument-summary rules do not apply inside this card.
 
 ## 1. Scope and policy
 

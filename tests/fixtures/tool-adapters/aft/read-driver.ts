@@ -3,9 +3,9 @@ import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { createEventRecorder } from "./terminal-output.ts";
+import { createEventRecorder } from "../../terminal-output.ts";
 
-const captured = JSON.parse(readFileSync(new URL("./aft-read-result.json", import.meta.url), "utf8"));
+const captured = JSON.parse(readFileSync(new URL("./read-result.json", import.meta.url), "utf8"));
 const range = Type.Optional(Type.Union([Type.Number(), Type.String()]));
 const readParameters = Type.Object({
   path: Type.String(),

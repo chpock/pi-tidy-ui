@@ -17,6 +17,7 @@ If you are interested in **Occipital as a daemon**, start directly with its [sta
 |---|---|
 | [Host integration](host-integration.md) | Composition root, actual host capture, public API versus inspected shapes, exact routing/visibility, descriptor/slot ownership, renderer transfer, events, Git metadata and shutdown |
 | [Rendering](rendering.md) | Representation pipeline, normalization, coordinate systems, framing responsibilities, reuse and worked width/theme/removal paths |
+| [Tool producers and adapters](tool-adapters.md) | Producer-specific formats and summaries, per-call selection, deferred/funded decoding, source identity and isolated code/test scopes |
 | [Shared frame](card-frame-spec.md) | Exact geometry, Output padding, narrow widths, generic versus measured framing, ANSI boundaries and hit regions |
 | [Compact summaries](tool-summary-spec.md) | Field selection, bounded serialization, secret masking, wrapping/span recoloring and execution-prefix composition |
 | [Bash cards](bash-card-spec.md) | Command/service/output/reminder decomposition, complete supplied text, previews and exact terminal-tail conventions |
@@ -77,6 +78,7 @@ The protocol reference ships with this manual. Its six current conformance JSON 
 | Question | Reading route |
 |---|---|
 | Why is this component native, hidden or custom? | [Host dispatch](host-integration.md#presentation-dispatch) → [native visibility](host-integration.md#native-visibility) → the relevant presenter |
+| Where does support for another extension's tool belong? | [Producer adapters](tool-adapters.md) → [shared preparation](syntax/prepared-cards.md) → [test selection](testing.md#test-selection-and-cadence) |
 | What is shown from saved write/edit data, and when is it only a preview? | [Host dispatch](host-integration.md#presentation-dispatch) → [edit view selection](edit-card-spec.md#metadata-and-scope) or [write view selection](write-card-spec.md#saved-source-and-classification) → [prepared-file identity](syntax/prepared-cards.md) |
 | How does a compact read open without Pi's stock text card, and who owns its images? | [Read presentation](read-card-spec.md) → [lazy ownership](host-integration.md#lazy-stock-file-renderers) → [prepared text](syntax/prepared-cards.md) |
 | Does Pi's `/export` invoke the TUI file renderer, and what does the direct SDK HTML renderer cover? | [Host compatibility boundary](host-integration.md#compatibility-boundary) → [CLI versus SDK controls](testing.md#cards-and-native-data) |

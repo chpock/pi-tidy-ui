@@ -1,12 +1,12 @@
-import '../../fixtures/test-guard.mjs';
+import '../../../../fixtures/test-guard.mjs';
 import assert from 'node:assert/strict';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { stripVTControlCharacters } from 'node:util';
 import test from 'node:test';
-import { PiTerminal, artifacts, plain, assertFits } from '../../fixtures/terminal-harness.mjs';
-import { persisted, traffic } from '../../fixtures/main-cli-support.mjs';
-import { closeTerminals } from '../../fixtures/terminal-cleanup.mjs';
+import { PiTerminal, artifacts, plain, assertFits } from '../../../../fixtures/terminal-harness.mjs';
+import { persisted, traffic } from '../../../../fixtures/main-cli-support.mjs';
+import { closeTerminals } from '../../../../fixtures/terminal-cleanup.mjs';
 
 const id = 'bash-443fe78c4d7f1e35';
 function body(tool) {

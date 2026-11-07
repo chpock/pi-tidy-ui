@@ -18,6 +18,12 @@ import { hostCells } from '../../fixtures/host-cells.ts';
 import { samplePiPalette } from '../../../src/syntax/pi-palette.ts';
 import { compileStyleAnsi } from '../../../src/syntax/style-ansi.ts';
 import { resolvePublicFileToolDefinition } from '../../fixtures/sdk-contract-support.ts';
+import { bashToolReaderFixture, fileToolReaderFixture, type ToolCallFixture } from '../../fixtures/tool-adapters/reader-fixture.ts';
+
+function fileInput(call: ToolCallFixture, revision: number, sourceRevision = revision, serviceRevision = revision, palette = 1) {
+  const reader = fileToolReaderFixture(call);
+  return { kind: 'file' as const, reader, diagnostics: reader.diagnostics('full'), revision, sourceRevision, serviceRevision, palette, mode: 'truecolor' as const };
+}
 
 function writeCaptureJournal(gate: ReturnType<typeof createWriteCaptureGate>, observe: (event: WriteCaptureObservation) => void = () => {}) {
   return {
@@ -252,8 +258,7 @@ test('write capture readiness distinguishes neutral, valid plain, stale source/p
     classify: text => { classifications++; return text.split('\n'); }, invalidate() { onInvalidation?.(); }, requestRender() {},
   });
   const owner = { toolName: 'write', toolCallId: 'plain-call' };
-  const input = (revision: number, content = 'plain source') => ({ kind: 'file' as const, node: { toolName: 'write', args: { path: 'same.ts', content }, isPartial: false, result: {} },
-    revision, sourceRevision: revision, serviceRevision: revision, palette, mode: 'truecolor' as const });
+  const input = (revision: number, content = 'plain source') => fileInput({ name: 'write', args: { path: 'same.ts', content }, result: {} }, revision, revision, revision, palette);
   try {
     assert.equal(cards.updateDisplay(owner, input(1)), true);
     cards.visit(owner, () => {}); assert.equal(events.at(-1)?.status, 'pending', 'neutral shell is not a classified plain projection');
@@ -296,7 +301,7 @@ test('write capture readiness distinguishes neutral, valid plain, stale source/p
     assert.equal(events.at(-1)?.status, 'ready', 'empty source needs no new token map after its role palette is already compiled');
     assert.equal(events.at(-1)?.palette, 3);
     const edit = { toolName: 'edit', toolCallId: 'same-path-edit' }, count = events.length;
-    cards.updateDisplay(edit, { ...input(1), node: { ...input(1).node, toolName: 'edit', result: { details: { diff: '-1 plain source\n+1 changed source' } } } }); cards.visit(edit, () => {});
+    cards.updateDisplay(edit, fileInput({ name: 'edit', args: { path: 'same.ts' }, result: { details: { diff: '-1 plain source\n+1 changed source' } } }, 1, 1, 1, palette)); cards.visit(edit, () => {});
     assert.equal(events.length, count, 'other tool kinds cannot enter the write-only gate');
     const laterVisit = CardSources.prototype.visit, wrapper: typeof laterVisit = function(this: CardSources<object>, ...args) { return laterVisit.apply(this, args); };
     CardSources.prototype.visit = wrapper;
@@ -320,8 +325,7 @@ for (const failure of ['failed', 'refused'] as const) test(`write capture gate s
   const owner = { toolName: 'write', toolCallId: 'failed-call' };
   try {
     await assert.rejects(gate.wait(), /no observed source-card/);
-    cards.updateDisplay(owner, { kind: 'file', node: { toolName: 'write', args: { path: 'failed.ts', content: 'source' }, isPartial: false, result: {} },
-      revision: 1, sourceRevision: 1, serviceRevision: 1, palette: 1, mode: 'truecolor' });
+    cards.updateDisplay(owner, fileInput({ name: 'write', args: { path: 'failed.ts', content: 'source' }, result: {} }, 1));
     cards.visit(owner, () => {});
     const initial = events.at(-1)!;
     cards.useful(owner, 1);
@@ -362,8 +366,7 @@ test('write capture review F1: empty dark roles cannot certify refused light rep
     preparePiInput: funding => preparePaletteInput(themes.theme, 'pi', palette, 'truecolor', funding), classify: text => text.split('\n'), invalidate() {}, requestRender() {},
   });
   const owner = { toolName: 'write', toolCallId: 'empty-role-replacement' };
-  const input = (revision: number) => ({ kind: 'file' as const, node: { toolName: 'write', args: { path: 'empty.ts', content: '' }, isPartial: false, result: {} },
-    revision, sourceRevision: 1, serviceRevision: revision, palette, mode: 'truecolor' as const });
+  const input = (revision: number) => fileInput({ name: 'write', args: { path: 'empty.ts', content: '' }, result: {} }, revision, 1, revision, palette);
   const roles = () => { const rows: string[] = []; assert.equal(cards.visit(owner, (_display, paint) => {
     for (const role of ['code', 'frame'] as const) rows.push(paint.roles[role].open + 'X' + paint.roles[role].close);
   }), true); return rows; };
@@ -416,8 +419,8 @@ for (const change of ['source', 'palette'] as const) for (const rejection of ['r
       preparePiInput: funding => preparePaletteInput(themes.theme, 'pi', palette, 'truecolor', funding), classify: text => text.split('\n'), invalidate() {}, requestRender() {},
     });
     const owner = { toolName: 'write', toolCallId: 'transition-call' };
-    const input = (revision: number) => ({ kind: 'file' as const, node: { toolName: 'write', args: { path: 'transition.ts', content: change === 'source' && revision === 2 ? 'source B' : 'source A' }, isPartial: false, result: {} },
-      revision, sourceRevision: change === 'source' ? revision : 1, serviceRevision: revision, palette, mode: 'truecolor' as const });
+    const input = (revision: number) => fileInput({ name: 'write', args: { path: 'transition.ts', content: change === 'source' && revision === 2 ? 'source B' : 'source A' }, result: {} },
+      revision, change === 'source' ? revision : 1, revision, palette);
     let waiting: Promise<unknown> | undefined;
     try {
       cards.updateDisplay(owner, input(1)); cards.useful(owner, 1); sources.flush(); cards.visit(owner, () => {});
@@ -457,11 +460,12 @@ test('syntax local observations count an actual watched Bash suffix without repe
   const cards = new CardSources({ sources, snapshot: () => ({ enabled: false, selected: { kind: 'pi' as const, variant: 'dark' as const }, standaloneVersion: 'test', provider }) }, {
     preparePiInput: funding => preparePaletteInput(themes.theme, 'pi', 1, 'truecolor', funding), classify: () => assert.fail('no Bash Pi classification'), invalidate() {}, requestRender() {},
   });
-  const observer = observeSyntaxLocalWork(), owner = {}, command = ": 'STABLE_text e", input = { kind: 'bash' as const, args: { command }, complete: false,
-    revision: 1, sourceRevision: 1, serviceRevision: 1, palette: 1, mode: 'truecolor' as const, language: 'bash' };
+  const observer = observeSyntaxLocalWork(), owner = {}, command = ": 'STABLE_text e";
+  const input = (revision: number, source: string) => ({ kind: 'bash' as const, reader: bashToolReaderFixture({ args: { command: source } }), complete: false,
+    revision, sourceRevision: revision, serviceRevision: revision, palette: 1, mode: 'truecolor' as const });
   try {
-    assert.equal(cards.updateDisplay(owner, input), true); const cold = observer.snapshot(); assert.ok(cold.sourceSegments > 0);
-    const next = { ...input, args: { command: command + '\u0301界' }, revision: 2, sourceRevision: 2 };
+    assert.equal(cards.updateDisplay(owner, input(1, command)), true); const cold = observer.snapshot(); assert.ok(cold.sourceSegments > 0);
+    const next = input(2, command + '\u0301界');
     assert.equal(cards.updateDisplay(owner, next), true); const appended = observer.snapshot();
     assert.ok(appended.sourceSegments > cold.sourceSegments, 'actual suffix measurement is observable without its full source marker');
     assert.ok(appended.sourceSegmentUnits - cold.sourceSegmentUnits < command.length, 'the stable prefix was not measured');

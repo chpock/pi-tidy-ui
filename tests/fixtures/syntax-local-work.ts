@@ -36,7 +36,7 @@ export function observeSyntaxLocalWork(watches: (text: string) => boolean = sele
     });
   };
   const observedUpdate = function(this: CardSources<object>, ...args: Parameters<typeof update>) {
-    const input = args[1], selected = input.kind === 'bash' && typeof input.args?.command === 'string' && watches(input.args.command);
+    const input = args[1], selected = input.kind === 'bash' && input.reader.source().some(value => typeof value === 'string' && watches(value));
     // Appended graphemes need not contain the full source marker. Correlate only
     // this synchronous update, without retaining its component or source text.
     if (selected) sourceUpdateDepth++;
@@ -134,8 +134,7 @@ export function observeSyntaxCards(record: (event: SyntaxCardObservation) => voi
   const observedPrepare: typeof prepare = function(this: CardSources<object>, ticket) {
     if (!identities) return prepare.call(this, ticket);
     const state = ticket.state.deref(), input = state?.input;
-    const identity = input && { id: ticket.id, kind: input.kind === 'file' ? input.node.toolName ?? 'file' : 'bash',
-      path: input.kind === 'file' && typeof input.node.args.path === 'string' ? input.node.args.path : undefined };
+    const identity = input && { id: ticket.id, kind: input.reader.kind, path: input.reader.path() };
     const before = state?.preparedTheme, owner = ticket.owner.deref();
     const association = identity && { ...identity, ticket: new WeakRef(ticket), receipt: owner ? identities.get(owner)?.receipt : undefined };
     const prior = { processed: state?.processed, palette: state?.preparedPalette, publication: state?.paint?.publication };

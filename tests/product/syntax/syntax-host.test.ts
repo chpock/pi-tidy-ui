@@ -896,7 +896,7 @@ test('host partial Bash errors do not retire forming args and completed argument
   tool.updateResult({ content: [{ type: 'text', text: 'partial error' }], isError: true }, true);
   f.render(tool); await settled();
   assert.equal(f.sources.stats().sourceRecords, 1); assert.equal(f.sources.stats().remoteLeases, 1);
-  assert.equal(f.calls.length, 1, 'partial result is not terminal argument abandonment');
+  assert.equal(f.calls.length, 1, `partial result is not terminal argument abandonment: ${JSON.stringify(f.calls.map(call => ({ op: call.request.op, final: call.request.final })))}`);
   tool.setArgsComplete(); await settled(); assert.equal(f.calls.length, 2);
   assert.equal(f.calls[1]!.request.op, 'stream.append'); assert.equal(f.calls[1]!.request.final, true);
   answer(f, 1, 'x\n'); await settled(); assert.equal(f.sources.stats().remoteLeases, 0);

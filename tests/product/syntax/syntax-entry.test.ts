@@ -1755,7 +1755,7 @@ test('entry public streaming identities separate quick live abort from restored 
   CardSources.prototype.prepare = function (ticket) {
     const state = Reflect.get(ticket, 'state') as WeakRef<{ input?: CardDisplayInput }>;
     const input = state.deref()?.input;
-    if (input?.kind === 'bash') observed.push({ text: String(input.args.command), complete: input.complete });
+    if (input?.kind === 'bash') observed.push({ text: input.reader.command() ?? '', complete: input.complete });
     return prepare.call(this, ticket);
   };
   const tool = (id: string, text: string) => {

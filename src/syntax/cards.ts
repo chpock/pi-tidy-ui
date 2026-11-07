@@ -1,7 +1,8 @@
 import type { TerminalColorMode } from '@earendil-works/pi-tui';
 import { diagnose, type DiagnosticFields, type DiagnosticSink } from '../diagnostics.ts';
-import { bashCommandSource, prepareBashService, type BashPresentation } from '../bash-card.ts';
-import { contextRows, fileDiagnosticText, fileHeading, fileNote, filePreviewText, fileSources, prepareFileCard, readHeading, type PreparedFileCard } from '../file-card.ts';
+import type { BashService } from '../bash-card.ts';
+import { contextRows, fileDiagnosticText, fileHeading, fileSources, readHeading, type PreparedFileCard } from '../file-card.ts';
+import type { BashToolReader, FileToolReader, ToolDiagnosticsIdentity } from '../tool-adapters/contracts.ts';
 import type { SyntaxClient } from '../occipital/client.ts';
 import { CONTROLLER_LIMITS, type GeometryFunding, type GroupDisplayBasis, type SourceController, type SourceDisplayBasis, type SourceWorkGroup } from '../occipital/controller.ts';
 import { type DataCharge, type DataCleanupReceipt } from '../occipital/data-budget.ts';
@@ -17,9 +18,9 @@ import { compileStyleAnsi, type AnsiStyle } from './style-ansi.ts';
 import type { ConcreteStyle } from './style-materialization.ts';
 import { requestSyntax, resolveSyntax, type PiClassifier, type SyntaxIdentity, type SyntaxWorkResult } from './work.ts';
 
-export type CardSourceInput = { palette: number; language?: string } & (
-  { kind: 'file'; node: Parameters<typeof prepareFileCard>[0]; viewMode?: 'preview' | 'full' } |
-  { kind: 'bash'; args: Record<string, unknown>; complete: boolean; node?: BashPresentation }
+export type CardSourceInput = { palette: number } & (
+  { kind: 'file'; reader: FileToolReader; diagnostics: ToolDiagnosticsIdentity; viewMode?: 'preview' | 'full' } |
+  { kind: 'bash'; reader: BashToolReader; complete: boolean }
 );
 export type CardDisplayInput = CardSourceInput & {
   revision: number; sourceRevision: number; serviceRevision: number; mode: TerminalColorMode;
@@ -58,7 +59,7 @@ export interface FileRowDescriptor {
   readonly nextSource?: { readonly key: string; readonly utf16: number; readonly byte: number };
 }
 export type PreparedCard = { readonly kind: 'bash'; readonly revision: number; readonly geometryStamp: number;
-  readonly command: PreparedRegion; readonly service: ReturnType<typeof prepareBashService>;
+  readonly command: PreparedRegion; readonly service: BashService;
   readonly regions: PreparedBashRegions } |
   { readonly kind: 'file'; readonly revision: number; readonly geometryStamp: number; readonly path?: string;
     readonly label?: string; readonly mode?: string; readonly preview?: boolean; readonly omitted?: boolean; readonly note?: PreparedRegion; readonly heading?: PreparedRegion;
@@ -114,37 +115,9 @@ function fund(funding: GeometryFunding, bytes: number): DataCharge | undefined {
 function chargeReceipt(charge: DataCharge): DataCleanupReceipt { return { release: () => charge.release() }; }
 function sourceStamp(input: CardDisplayInput) { return `${input.sourceRevision}:${input.kind === 'file' ? input.viewMode ?? 'full' : 'bash'}`; }
 function inputBytes(input: CardDisplayInput) {
-  const args = input.kind === 'bash' ? input.args : input.node.args;
-  const preview = input.kind === 'file' && input.viewMode === 'preview';
-  let rows = 1;
-  const size = (text: string, limit = Number.POSITIVE_INFINITY) => {
-    const length = Math.min(text.length, limit);
-    for (let i = 0; i < length; i++) if (text.charCodeAt(i) === 10 || text.charCodeAt(i) === 13) rows++;
-    return length;
-  };
-  let units = (input.cwd?.length ?? 0) + (input.directory?.length ?? 0) + (input.language?.length ?? 0);
-  for (const key of ['command', 'description', 'content', 'path', 'file_path', 'filePath']) if (typeof args[key] === 'string')
-    units += size(preview && key === 'content' ? filePreviewText(args[key] as string).text : args[key]);
-  const result = input.kind === 'bash' ? input.node?.result : input.node.result;
-  if (input.kind === 'bash') for (const part of input.node?.result?.content ?? []) units += size(part.text ?? '');
-  if (input.kind === 'file' && input.node.toolName === 'read' && !preview) {
-    let first = true;
-    for (const part of input.node.result?.content ?? []) if (part.type === 'text' && typeof part.text === 'string') {
-      if (!first) units += size('\n');
-      units += size(part.text); first = false;
-    }
-  }
-  const details = result?.details as { diff?: unknown; patch?: unknown; diagnostics?: unknown } | undefined;
-  for (const value of [details?.diff, details?.patch]) if (typeof value === 'string')
-    units += size(preview ? filePreviewText(value).text : value);
-  if (Array.isArray(details?.diagnostics)) {
-    if (preview) { if (details.diagnostics.length) { units += 64; rows++; } }
-    else for (const item of details.diagnostics) {
-      if (item && typeof item === 'object' && typeof item.message === 'string') { units += size(item.message); rows++; }
-    }
-  }
-  // Fund normalization scratch, logical fragments and row descriptors before construction.
-  return 4096 + units * 6 + rows * 1024;
+  return input.reader.estimateBytes({ mode: input.kind === 'file' ? input.viewMode ?? 'full' : undefined,
+    cwd: input.kind === 'file' ? input.cwd : undefined, directory: input.kind === 'bash' ? input.directory : undefined,
+    language: input.reader.language() });
 }
 
 /** Local prepared display and one weak controller registry entry per owner.
@@ -203,7 +176,7 @@ export class CardSources<Owner extends object> {
       if (input.kind === 'file' && nextView === 'preview' && previousView === 'full' && state.input?.kind === 'file')
         this.discardFileDisplay(owner, state, ticket, input.revision);
     };
-    const expanded = input.kind === 'bash' && input.node?.expanded === true;
+    const expanded = input.kind === 'bash' && input.reader.call.expanded;
     const sameFileSource = input.kind === 'file' && state.input?.kind === 'file'
       && state.sourceRevision === input.sourceRevision && state.serviceRevision === input.serviceRevision && previousView === nextView;
     if (state.revision === input.revision && state.expanded === expanded && previousView === nextView
@@ -227,13 +200,17 @@ export class CardSources<Owner extends object> {
     if (!charge && !reusingFileSource) { discardRefusedFullPreview(); return false; }
     const receipts = new Set<DataCleanupReceipt>(), old = state.display;
     let display: PreparedCard | undefined, file: PreparedFileCard | undefined, adopted = false, append: MeasuredAppend | undefined;
+    let sourceEligible: boolean | undefined;
     const region = (text: string, wrap?: 'fragments'): PreparedRegion => {
       const measured = measure(text, funding.budget, funding.grant, wrap); if (!measured) throw refused;
       receipts.add(measured.cleanupReceipt()); return Object.freeze({ text, measured });
     };
     try {
       if (input.kind === 'bash') {
-        const logical = old?.kind === 'bash' && state.sourceRevision === input.sourceRevision ? old.command.text : bashCommandSource(input.args) ?? '';
+        const sameSource = old?.kind === 'bash' && state.sourceRevision === input.sourceRevision;
+        const commandSource = sameSource ? undefined : input.reader.command();
+        const logical = sameSource ? old.command.text : commandSource ?? '';
+        if (!sameSource) sourceEligible = commandSource !== undefined;
         let command: PreparedRegion;
         if (old?.kind === 'bash' && old.command.text === logical) command = old.command;
         else if (old?.kind === 'bash' && logical.startsWith(old.command.text)) {
@@ -242,8 +219,7 @@ export class CardSources<Owner extends object> {
           receipts.add(append.measured.cleanupReceipt()); command = Object.freeze({ text: logical, measured: append.measured });
         } else command = region(logical);
         const sameService = old?.kind === 'bash' && state.serviceRevision === input.serviceRevision;
-        const service = sameService ? old.service : prepareBashService(input.node ? { ...input.node, args: input.args }
-          : { args: input.args, expanded: false, isPartial: !input.complete }, input.directory);
+        const service = sameService ? old.service : input.reader.prepareService(input.directory);
         const previous = old?.kind === 'bash' ? old.regions : undefined;
         const serviceRegion = (text: string, prior?: PreparedRegion) => prior?.text === text ? prior : region(text);
         // Every logical row contributes at least one visual row. Each collapsed
@@ -261,18 +237,17 @@ export class CardSources<Owner extends object> {
         const same = old?.kind === 'bash' && command === old.command && regions === old.regions;
         display = Object.freeze({ kind: 'bash', revision: input.revision, geometryStamp: same ? old.geometryStamp : ++state.geometry, command, service, regions });
       } else {
-        file = state.sourceRevision === input.sourceRevision && previousView === nextView && state.file ? state.file : prepareFileCard(input.node, true, input.viewMode ?? 'full');
-        const error = !input.node.isPartial && input.node.result?.isError === true;
+        file = state.sourceRevision === input.sourceRevision && previousView === nextView && state.file ? state.file : input.reader.prepareFile(input.viewMode ?? 'full', true);
+        const error = !input.reader.call.partial && input.reader.failed;
         const preview = (input.viewMode ?? 'full') === 'preview';
-        const details = input.node.result?.details as { diagnostics?: unknown } | undefined;
-        const diagnostics = preview ? Object.freeze(Array.isArray(details?.diagnostics) && details.diagnostics.length
+        const diagnostics = preview ? Object.freeze(input.diagnostics === true
           ? [region('Diagnostics available in the full file view.')] : [])
           : old?.kind === 'file' && state.serviceRevision === input.serviceRevision && previousView === nextView ? old.diagnostics
-            : Object.freeze(fileDiagnosticText(details?.diagnostics).map(text => region(text)));
-        const noteText = file ? (preview ? file.view.note : fileNote(input.node, file.view)) : undefined;
+            : Object.freeze(fileDiagnosticText(input.reader.diagnosticText()).map(text => region(text)));
+        const noteText = preview ? file?.view.note : file ? input.reader.note(file.view) : undefined;
         const note = noteText ? old?.kind === 'file' && old.note?.text === noteText ? old.note : region(noteText) : undefined;
         if (old?.kind === 'file' && file === state.file && previousView === nextView) {
-          const headingText = file ? input.node.toolName === 'read' ? readHeading(file.path, input.cwd) : fileHeading(file.path, input.cwd, file.view.label) : undefined;
+          const headingText = file ? input.reader.kind === 'read' ? readHeading(file.path, input.cwd) : fileHeading(file.path, input.cwd, file.view.label) : undefined;
           const heading = state.input?.cwd === input.cwd ? old.heading : headingText ? region(headingText, 'fragments') : undefined;
           display = Object.freeze({ ...old, revision: input.revision, heading, error, diagnostics, note,
             geometryStamp: heading === old.heading && diagnostics === old.diagnostics && note === old.note ? old.geometryStamp : ++state.geometry });
@@ -308,7 +283,7 @@ export class CardSources<Owner extends object> {
           }
           display = Object.freeze({ kind: 'file', revision: input.revision, geometryStamp: ++state.geometry, path: file?.path, label: file?.view.label,
             mode: file?.view.mode, preview: file?.view.preview, omitted: file?.view.omitted, note, error, diagnostics,
-            heading: file ? region(input.node.toolName === 'read' ? readHeading(file.path, input.cwd) : fileHeading(file.path, input.cwd, file.view.label), 'fragments') : undefined,
+            heading: file ? region(input.reader.kind === 'read' ? readHeading(file.path, input.cwd) : fileHeading(file.path, input.cwd, file.view.label), 'fragments') : undefined,
             rows: Object.freeze(rows) });
         }
       }
@@ -329,7 +304,7 @@ export class CardSources<Owner extends object> {
       for (const r of used) ticket.receipts.add(r);
       adopted = true; charge?.retain();
       state.charge = charge ?? state.charge; state.display = display; state.file = file; state.input = input; state.expanded = expanded;
-      state.sourceEligible = input.kind === 'bash' ? typeof input.args.command === 'string' : !!file && !input.node.result?.isError;
+      state.sourceEligible = input.kind === 'bash' ? sourceEligible ?? state.sourceEligible : !!file && !input.reader.failed;
       if (sourceChanged) state.version++;
       state.sourceRevision = input.sourceRevision; state.serviceRevision = input.serviceRevision; state.revision = input.revision;
       this.reconcileSelection(state, funding);
@@ -519,7 +494,7 @@ export class CardSources<Owner extends object> {
       if (!scratch) return;
       // Retained classification owns only a prefix, never the full current demand.
       const demands: { text: string; languageHint?: string }[] = state.sourceEligible && input.kind === 'bash' && state.display.kind === 'bash' ? [{ text: state.display.command.text }]
-        : state.file && input.kind === 'file' && !input.node.result?.isError ? fileSources(state.file.view) : [];
+        : state.file && input.kind === 'file' && !input.reader.failed ? fileSources(state.file.view) : [];
         const slots = new Map<string, Slot>();
         const palette = this.currentPalette(state), piFallback = input.kind === 'file' && palette.kind === 'pi' && this.inputMatches(state, palette);
         let refused = 0;
@@ -529,8 +504,8 @@ export class CardSources<Owner extends object> {
           const bytes = keyBytes(key); if (this.bytes + bytes > this.maxBytes) { refused++; continue; }
           ticket.keys.add(key); this.keys.set(key, ticket); this.bytes += bytes; ticket.bytes += bytes;
         }
-        const language = input.kind === 'bash' ? wireHint(input.language, 128) : wireHint(demands[index]!.languageHint, 128);
-        const piLanguage = input.kind === 'file' ? wireHint(input.language, 128) : undefined;
+        const language = input.kind === 'bash' ? wireHint(input.reader.language(), 128) : wireHint(demands[index]!.languageHint, 128);
+        const piLanguage = input.kind === 'file' ? wireHint(input.reader.language(), 128) : undefined;
         const slot: Slot = { key, version: state.version, language, piLanguage, complete: input.kind === 'file' || input.complete,
           palette: input.palette, fallback: piFallback ? 'pi' : 'neutral', outcome: 'refused' };
         slots.set(key, slot);
