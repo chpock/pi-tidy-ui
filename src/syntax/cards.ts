@@ -161,7 +161,7 @@ export class CardSources<Owner extends object> {
   private metadata = '';
   private selection = '';
   private selectionRules = '';
-  private selectedPalette = resolveTheme({ kind: 'pi' }).effective;
+  private selectedPalette = resolveTheme({ kind: 'pi', variant: 'dark' }).effective;
   private enabled = true;
   private providerReady = false;
   private themeRevision = 0;
@@ -367,7 +367,7 @@ export class CardSources<Owner extends object> {
   }
   private syncMetadata() {
     const snapshot = this.client.snapshot();
-    this.selectedPalette = snapshot.effective ?? resolveTheme({ kind: 'pi' }).effective;
+    this.selectedPalette = snapshot.effective ?? resolveTheme({ kind: 'pi', variant: 'dark' }).effective;
     this.enabled = snapshot.enabled;
     this.providerReady = snapshot.provider.availability === 'ready';
     return snapshot;
@@ -375,7 +375,7 @@ export class CardSources<Owner extends object> {
   private requestedPalette(): ThemeDescription { return this.selectedPalette; }
   private currentPalette(state?: State): ThemeDescription {
     const requested = this.selectedPalette;
-    if (state?.input && state.paletteFallback === this.inputIdentity(requested, state.input)) return resolveTheme({ kind: 'pi' }).effective;
+    if (state?.input && state.paletteFallback === this.inputIdentity(requested, state.input)) return resolveTheme({ kind: 'pi', variant: 'dark' }).effective;
     return requested;
   }
   private paletteIdentity(palette: ThemeDescription, revision: number, mode: TerminalColorMode): string {
@@ -406,7 +406,7 @@ export class CardSources<Owner extends object> {
       if (this.disposed || state.ticket !== ticket || state.input !== input || this.records.get(ticket.id) !== ticket) { candidate?.cleanupReceipt().release(); return; }
       if (candidate) {
         if (requested.kind === 'theme' && candidate.paletteId === 'pi') {
-          state.paletteFallback = requestedIdentity; palette = resolveTheme({ kind: 'pi' }).effective;
+          state.paletteFallback = requestedIdentity; palette = resolveTheme({ kind: 'pi', variant: 'dark' }).effective;
           identity = this.paletteIdentity(palette, input.palette, input.mode); paletteId = 'pi';
         }
         const old = state.paletteInput;

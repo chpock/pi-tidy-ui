@@ -111,7 +111,7 @@ export function mouse(y: number, width = 80): TuiMouseEvent {
 
 export function fixtureSyntaxOptions(): SyntaxRuntimeOptions {
   return { standaloneVersion: "fixture", settings: {
-    async load() { return { ok: true, syntaxTheme: { kind: "pi" } }; }, async update() { return { ok: true }; },
+    async load() { return { ok: true, themePreference: { kind: "pi", variant: 'dark' } }; }, async update() { return { ok: true }; },
   }, provider: { async tryShared() { return undefined; }, async acquireOwned() { throw new Error("fixture unavailable"); } } };
 }
 

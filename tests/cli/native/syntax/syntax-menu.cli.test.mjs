@@ -21,8 +21,9 @@ test('occipital CLI: local palette picker, persisted selection and fresh default
       const paletteId = 'amoled-dark';
       await chooseTheme(native, paletteId);
       const prefs = readFileSync(`${native.agent}/extensions/pi-tidy-ui/config.json`, 'utf8'), saved = JSON.parse(prefs);
-      assert.deepEqual(Object.keys(saved), ['syntaxTheme']); assert.equal(saved.syntaxTheme.kind, 'theme'); assert.equal(saved.syntaxTheme.id, paletteId);
-      await settledStats(native, 'theme-settled', s => nativeReady(s) && s.client.effective.id === saved.syntaxTheme.id);
+      assert.deepEqual(Object.keys(saved).sort(), ['syntaxTheme', 'syntaxThemeVariant']);
+      assert.deepEqual(saved, { syntaxTheme: { kind: 'theme', id: 'amoled' }, syntaxThemeVariant: 'dark' });
+      await settledStats(native, 'theme-settled', s => nativeReady(s) && s.client.effective.id === paletteId);
       const themed = await captureThenRenderDiagnostics(native, 'syntax-explicit-theme'); assert.deepEqual(body(themed), body(initial));
       const y = themed.screen.findIndex(row => row.includes('const x=2;')), x = themed.screen[y].indexOf('const x=2;');
       const resolved = semanticStyle(native.events(), 'const x=2;'); assert.ok(resolved, 'actual generic semantic style remains available');
@@ -36,7 +37,7 @@ test('occipital CLI: local palette picker, persisted selection and fresh default
       replay = new PiTerminal('syntax-theme-restored', { mode: 'fullscreen', session, workspace, extensions: [fixture],
         extraEnv: { ...descriptor, TIDY_UI_TEST_SYNTAX_CONFIG: prefs } });
       await replay.ready(); await settledStats(replay, 'theme-restored-settled', s => nativeReady(s)
-        && s.source.dispatches > 0 && s.client.effective.id === saved.syntaxTheme.id);
+        && s.source.dispatches > 0 && s.client.effective.id === paletteId);
       const restored = await captureThenRenderDiagnostics(replay, 'syntax-theme-restored');
       const restoredFiles = body(restored).filter(({ name }) => name === 'write' || name === 'edit').flatMap(({ lines }) => lines).join('\n');
       assert.match(restoredFiles, /← Write syntax\.ts/u); assert.match(restoredFiles, /← Edit syntax\.ts/u);
@@ -87,12 +88,12 @@ for (const mode of ['fullscreen', 'regular']) test(`occipital CLI: ${mode} palet
       const initial = await retainedNativeThemeStats(terminal, 'preview-initial');
       baseline = await captureThenRenderDiagnostics(terminal, 'physical-preview-baseline'); themeForegrounds(baseline);
       assert.ok(baseline.tools.every(tool => !('tinyLines' in tool)));
-      const mocha = THEME_CATALOGUE.find(theme => theme.id === 'catppuccin-dark'), latte = THEME_CATALOGUE.find(theme => theme.id === 'catppuccin-light');
-      assert.ok(mocha && latte); assert.equal(initial.counts.themeSaves, 0);
+      const mocha = THEME_CATALOGUE.find(theme => theme.id === 'catppuccin-dark'), confirmedPalette = THEME_CATALOGUE.find(theme => theme.id === 'github-dark');
+      assert.ok(mocha && confirmedPalette); assert.equal(initial.counts.themeSaves, 0);
       assert.ok(initial.localWork.sourceSegments > 0); assert.ok(initial.localWork.prefixScalarReads > 0);
       const beforeMocha = await observe('before-cached-mocha');
       await terminal.openTidyMenu(); await terminal.selectTidyItem('Code color theme');
-      phase('preview-mocha'); await search(mocha.label);
+      phase('preview-mocha'); await search('Catppuccin');
       const preview = await ready('mocha', mocha.id);
       assert.equal(preview.counts.themeSaves, 0); assert.equal(readFileSync(config, 'utf8'), originalConfig);
       assert.equal(preview.counts.sourceRequests, initial.counts.sourceRequests, 'retained source semantics need no SOURCE for preview');
@@ -118,30 +119,30 @@ for (const mode of ['fullscreen', 'regular']) test(`occipital CLI: ${mode} palet
       assert.deepEqual(raw(afterCancel), raw(baseline)); assert.deepEqual(body(afterCancel), body(baseline));
 
       await terminal.openTidyMenu(); await terminal.selectTidyItem('Code color theme');
-      const beforeLatte = await observe('before-uncached-latte');
-      phase('preview-latte'); await search(latte.label);
-      const lattePreview = await ready('latte', latte.id);
-      assert.equal(lattePreview.counts.themeSaves, 0); assert.equal(readFileSync(config, 'utf8'), originalConfig);
-      const lattePaint = await colors('preview-latte-before-enter', dump => expectedThemeColors(terminal, 'preview-latte', dump, latte.id));
-      const latteMaterialized = await observe('uncached-latte-painted');
-      assert.equal(latteMaterialized.counts.styleRequests, beforeLatte.counts.styleRequests, 'all palettes share the same rules and resolved STYLE');
-      await terminal.selectTidyItem(latte.label);
-      const confirmed = await ready('confirmed', latte.id); assert.equal(confirmed.counts.themeSaves, 1);
-      assert.deepEqual(work(confirmed), work(latteMaterialized), 'confirming the settled preview does not parse it again');
+      const beforeConfirmation = await observe('before-uncached-github');
+      phase('preview-github'); await search('GitHub');
+      const githubPreview = await ready('github', confirmedPalette.id);
+      assert.equal(githubPreview.counts.themeSaves, 0); assert.equal(readFileSync(config, 'utf8'), originalConfig);
+      const confirmedPaint = await colors('preview-github-before-enter', dump => expectedThemeColors(terminal, 'preview-github', dump, confirmedPalette.id));
+      const githubMaterialized = await observe('uncached-github-painted');
+      assert.equal(githubMaterialized.counts.styleRequests, beforeConfirmation.counts.styleRequests, 'all palettes share the same rules and resolved STYLE');
+      await terminal.selectTidyItem('GitHub');
+      const confirmed = await ready('confirmed', confirmedPalette.id); assert.equal(confirmed.counts.themeSaves, 1);
+      assert.deepEqual(work(confirmed), work(githubMaterialized), 'confirming the settled preview does not parse it again');
       const confirmedConfig = readFileSync(config, 'utf8');
-      assert.deepEqual(JSON.parse(confirmedConfig), { syntaxTheme: { kind: 'theme', id: latte.id }, unknown: { untouched: true } });
+      assert.deepEqual(JSON.parse(confirmedConfig), { syntaxTheme: { kind: 'theme', id: 'github' }, syntaxThemeVariant: 'dark', unknown: { untouched: true } });
       await terminal.closeTidyMenu();
 
       await terminal.openTidyMenu(); await terminal.selectTidyItem('Code color theme');
       const beforeSecondMocha = await observe('before-second-cached-mocha');
-      phase('second-preview'); await search(mocha.label); await ready('second-preview', mocha.id);
+      phase('second-preview'); await search('Catppuccin'); await ready('second-preview', mocha.id);
       await colors('second-mocha-painted', dump => expectedThemeColors(terminal, 'second-preview', dump, mocha.id));
       const secondMocha = await observe('second-cached-mocha-painted');
       assert.equal(secondMocha.counts.styleRequests, beforeSecondMocha.counts.styleRequests, 'cached palette preview does no additional STYLE work');
-      phase('back-to-latte'); await terminal.selectTidyItem('Back');
-      const back = await ready('back', latte.id);
+      phase('back-to-github'); await terminal.selectTidyItem('Back');
+      const back = await ready('back', confirmedPalette.id);
       assert.equal(back.counts.themeSaves, 1); assert.equal(readFileSync(config, 'utf8'), confirmedConfig);
-      await colors('preview-back-to-confirmed', () => themeForegrounds(lattePaint));
+      await colors('preview-back-to-confirmed', () => themeForegrounds(confirmedPaint));
       const backPainted = await observe('cached-back-painted');
       assert.equal(backPainted.counts.styleRequests, secondMocha.counts.styleRequests, 'Back to the saved palette reuses generic STYLE output');
       await terminal.closeTidyMenu();
@@ -149,23 +150,23 @@ for (const mode of ['fullscreen', 'regular']) test(`occipital CLI: ${mode} palet
       await terminal.openTidyMenu(); await terminal.selectTidyItem('Code color theme');
       const beforeThird = await observe('before-third-palette');
        const thirdPalette = THEME_CATALOGUE.find(theme => theme.id === 'nord-dark'); assert.ok(thirdPalette);
-      phase('third-palette-preview'); await search(thirdPalette.label);
+      phase('third-palette-preview'); await search('Nord');
       const third = await ready('third-preview', thirdPalette.id);
       assert.equal(third.counts.sourceRequests, confirmed.counts.sourceRequests, 'palette preview does not reparse retained SOURCE');
       assert.equal(third.counts.styleRequests, beforeThird.counts.styleRequests, 'palette preview does not enqueue palette-specific STYLE');
       const thirdPaint = await colors('preview-third-palette', dump => expectedThemeColors(terminal, 'third-preview', dump, thirdPalette.id));
-      assert.notDeepEqual(themeForegrounds(thirdPaint), themeForegrounds(lattePaint), 'third palette has independently visible physical colors');
+      assert.notDeepEqual(themeForegrounds(thirdPaint), themeForegrounds(confirmedPaint), 'third palette has independently visible physical colors');
       phase('rollback'); await terminal.closeTidyMenu();
-      await colors('preview-rollback-owned', () => themeForegrounds(lattePaint));
+      await colors('preview-rollback-owned', () => themeForegrounds(confirmedPaint));
       const late = await observe('after-preview-rollback');
-      assert.equal(late.client.effective.id, latte.id); assert.equal(late.counts.themeSaves, 1);
+      assert.equal(late.client.effective.id, confirmedPalette.id); assert.equal(late.counts.themeSaves, 1);
       assert.equal(late.source.globalUnsettledJobs, 0);
       assert.equal(late.source.dispatches, confirmed.source.dispatches, 'rollback returns to retained semantic results');
       assert.equal(late.source.preparedBytes, confirmed.source.preparedBytes, 'palette preview encodes no duplicate source');
       assert.equal(late.counts.sourceRequests, initial.counts.sourceRequests, 'all preview, confirm and rollback phases reuse retained SOURCE');
       assert.equal(late.source.preparedBytes, initial.source.preparedBytes);
        assert.equal(late.counts.styleRequests, initial.counts.styleRequests, 'all local palettes reuse the common resolved STYLE expressions without another STYLE request');
-      await colors('preview-after-rollback', () => themeForegrounds(lattePaint));
+      await colors('preview-after-rollback', () => themeForegrounds(confirmedPaint));
       const final = await captureThenRenderDiagnostics(terminal, 'physical-preview-final');
       assert.deepEqual(raw(final), raw(baseline)); assert.deepEqual(body(final), body(baseline));
       assert.deepEqual(readFileSync(session), bytes); assert.equal(traffic(terminal).length, 0);
@@ -184,4 +185,61 @@ for (const mode of ['fullscreen', 'regular']) test(`occipital CLI: ${mode} palet
     } finally {
        await runCleanupSteps(() => closeTerminals([terminal]), () => rm(directory, { recursive: true, force: true }));
     }
+  });
+
+
+test('occipital CLI: variant-only changes recolor retained sources without SOURCE, STYLE or remeasurement',
+  { timeout: 120000 }, async () => {
+    const terminal = new PiTerminal('theme-variant-native', { mode: 'fullscreen',
+      extraEnv: { ...descriptor, TIDY_UI_TEST_THEME_PREVIEW: '1' }, extensions: [fixture] });
+    let replay;
+    const paletteId = variant => `github-${variant}`;
+    const keyword = (dump, id) => {
+      const marker = 'const x=2;', y = dump.screen.findIndex(row => row.includes(marker));
+      assert.ok(y >= 0, 'the actual source remains physically present');
+      const context = semanticStyle(terminal.events(), marker); assert.ok(context);
+      const actual = dump.cells[y][dump.screen[y].indexOf(marker)].fg;
+      assert.equal(actual, expressionForeground(context.expression, dump, id));
+      return actual;
+    };
+    try {
+      const initial = await scenario(terminal, true), savedSession = readFileSync(initial.session), originalTraffic = traffic(terminal);
+      await chooseTheme(terminal, paletteId('dark'));
+      const dark = await captureThenRenderDiagnostics(terminal, 'variant-native-dark'), darkStats = dark.sample;
+      const darkInk = keyword(dark, paletteId('dark'));
+      assert.ok(darkStats.localWork.sourceSegments > 0, 'the cold control observes real source measurement');
+      assert.ok(darkStats.localWork.sourceSegmentUnits > 0);
+      await terminal.openTidyMenu(); await terminal.selectTidyItem('Code color variant', false); terminal.send('\r');
+      const config = join(terminal.agent, 'extensions/pi-tidy-ui/config.json');
+      await until(() => JSON.parse(readFileSync(config, 'utf8')).syntaxThemeVariant === 'light', 'variant-only Light save');
+      await terminal.closeTidyMenu();
+      const light = await captureThenRenderDiagnostics(terminal, 'variant-native-light'), lightStats = light.sample;
+      const lightInk = keyword(light, paletteId('light'));
+      assert.notEqual(lightInk, darkInk, 'variant changes real token ink rather than just the menu value');
+      assert.deepEqual(lightStats.client.selected, { kind: 'theme', id: 'github', variant: 'light' });
+      assert.equal(lightStats.client.effective.id, paletteId('light'));
+      for (const counter of ['sourceRequests', 'styleRequests', 'piBridges'])
+        assert.equal(lightStats.counts[counter], darkStats.counts[counter], `variant reuses ${counter}`);
+      for (const counter of ['sourceSegments', 'sourceSegmentUnits'])
+        assert.equal(lightStats.localWork[counter], darkStats.localWork[counter], `variant reuses measured geometry: ${counter}`);
+      assert.equal(lightStats.counts.themeSaves, darkStats.counts.themeSaves + 1, 'one confirmed pair makes one settings write');
+      const configText = readFileSync(config, 'utf8');
+      assert.deepEqual(JSON.parse(configText), { syntaxTheme: { kind: 'theme', id: 'github' }, syntaxThemeVariant: 'light' });
+      await captureThenRenderDiagnostics(terminal, 'variant-native-warm');
+      const warm = await settledStats(terminal, 'variant-native-warm-stats');
+      assert.deepEqual(work(warm), work(lightStats));
+      assert.deepEqual(persisted(light), persisted(initial)); assert.deepEqual(traffic(terminal), originalTraffic);
+      assert.deepEqual(readFileSync(initial.session), savedSession);
+      await finish(terminal);
+      replay = new PiTerminal('theme-variant-native-replay', { mode: 'fullscreen', session: initial.session, workspace: terminal.work,
+        extensions: [fixture], extraEnv: { ...descriptor, TIDY_UI_TEST_SYNTAX_CONFIG: configText } });
+      await replay.ready();
+      await settledStats(replay, 'variant-native-replay-ready', state => nativeReady(state) && state.client.effective.id === paletteId('light'));
+      const restored = await captureThenRenderDiagnostics(replay, 'variant-native-replay');
+      const marker = 'const x=2;', y = restored.screen.findIndex(row => row.includes(marker)); assert.ok(y >= 0);
+      assert.equal(restored.cells[y][restored.screen[y].indexOf(marker)].fg, lightInk);
+      assert.deepEqual(persisted(restored), persisted(initial)); assert.equal(traffic(replay).length, 0);
+      assert.deepEqual(readFileSync(initial.session), savedSession);
+      await finish(replay);
+    } finally { await closeTerminals([terminal, replay].filter(Boolean)); }
   });

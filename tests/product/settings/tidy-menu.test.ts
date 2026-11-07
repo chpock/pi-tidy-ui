@@ -7,15 +7,19 @@ import { visibleWidth } from '@earendil-works/pi-tui';
 import { TidyMenu, themeLabels, type TidyMenuOwner, type TidyMenuSnapshot, type TidyMenuAction } from '../../../src/tidy-menu.ts';
 import { DataBudget } from '../../../src/occipital/data-budget.ts';
 import { SyntaxRuntime } from '../../../src/syntax/runtime.ts';
-import { THEME_CATALOGUE } from '../../../src/themes/catalogue.ts';
+import { THEME_CATALOGUE, THEME_FAMILIES } from '../../../src/themes/catalogue.ts';
 import { observePaletteInput } from '../../fixtures/palette-input-observer.mjs';
 
 const colors = { fg: (_: string, text: string) => text, bold: (text: string) => text };
+const preference = (id: string, variant?: 'dark' | 'light') => {
+  const suffix = /-(dark|light)$/u.exec(id)?.[1] as 'dark' | 'light' | undefined;
+  return { kind: 'theme' as const, id: id.replace(/-(?:dark|light)$/u, ''), variant: variant ?? suffix ?? 'dark' };
+};
 function fixture(width = 70, height = 24) {
   const calls: TidyMenuAction[] = [];
   const previews: TidyMenuSnapshot['selected'][] = [];
   const state: TidyMenuSnapshot = { appearanceEnabled: true, terminalColorsEnabled: true, nativeHighlightingEnabled: true, loggingEnabled: true,
-    selected: { kind: 'pi' }, appearance: 'Active', terminalColors: 'Following Pi theme', syntax: undefined };
+    selected: { kind: 'pi', variant: 'dark' }, appearance: 'Active', terminalColors: 'Following Pi theme', syntax: undefined };
   let prepared = 0, cacheReads = 0, closed = 0, renderRequests = 0;
   let perform: TidyMenuOwner['act'] = async action => {
     calls.push(action);
@@ -166,8 +170,8 @@ for (const [width, height] of [[70, 24], [24, 12], [24, 5], [24, 2], [24, 1], [1
 });
 
 test('the fixed local palette catalogue has unique safe labels and exact stable IDs', () => {
-  const labels = themeLabels(THEME_CATALOGUE);
-  assert.equal(labels.length, 72); assert.equal(new Set(labels).size, labels.length);
+  const labels = themeLabels(THEME_FAMILIES);
+  assert.equal(labels.length, 36); assert.equal(new Set(labels).size, labels.length);
   assert.ok(labels.every(label => !/[\n\x1b\p{Cc}\p{Cs}]/u.test(label)));
   assert.equal(THEME_CATALOGUE.find(theme => theme.id === 'gruvbox-dark')?.label, 'Gruvbox Dark');
 });
@@ -176,43 +180,43 @@ function native(f: ReturnType<typeof fixture>, _count?: number) {
   f.state.syntax = { enabled: true, standaloneVersion: 'test', selected: f.state.selected,
     provider: { availability: 'ready', reason: 'ready', generation: 1, initialShared: false, kind: 'owned',
       description: { backend_version: 'test' } as any } };
-  return THEME_CATALOGUE;
+  return THEME_FAMILIES;
 }
 
-for (const [width, height] of [[70, 24], [24, 12], [24, 5], [24, 2], [24, 1]]) test(`local theme catalogue: all ${THEME_CATALOGUE.length} palettes are reachable at ${width}x${height}`, async () => {
+for (const [width, height] of [[70, 24], [24, 12], [24, 5], [24, 2], [24, 1]]) test(`local theme catalogue: all ${THEME_FAMILIES.length} families are reachable at ${width}x${height}`, async () => {
   const f = fixture(width, height); const themes = native(f);
   f.render(); await f.key('\r');
   for (let i = 0; i < themes.length; i++) {
     await f.key('\x1b[B');
     const rows = f.render();
-    const choice = { kind: 'theme' as const, id: themes[i]!.id };
+    const choice = { kind: 'theme' as const, id: themes[i]!.id, variant: 'dark' as const };
     assert.deepEqual(f.state.selected, choice, `choice ${themes[i]!.id} is selected through the public input path`);
     assert.deepEqual(f.previews.at(-1), choice, `choice ${themes[i]!.id} is previewed through its selection callback`);
     assert.ok(rows.some(row => row.includes('→') || row.includes('›')), 'the active selection remains visible');
     assert.ok(rows.length <= height); assert.ok(rows.every(row => visibleWidth(row) <= width));
   }
   await f.key('\r');
-  assert.deepEqual(f.calls, [{ kind: 'theme', choice: { kind: 'theme', id: themes.at(-1)!.id } }]);
+  assert.deepEqual(f.calls, [{ kind: 'theme', choice: { kind: 'theme', id: themes.at(-1)!.id, variant: 'dark' } }]);
   assert.ok(f.render().some(row => row.includes('→ Code color')), `confirmation returns to the main page with its theme entry selected: ${f.render().join('\n')}`);
 });
 
 test('theme picker previews a local stable ID, then restores its entry choice without saving', async () => {
-  const f = fixture(); native(f); f.state.selected = { kind: 'theme', id: 'gruvbox-dark' };
+  const f = fixture(); native(f); f.state.selected = preference('gruvbox-dark');
   f.render(); await f.key('\r');
-  await f.key('solarized-light');
-  assert.ok(f.render().some(row => row.includes('→ Solarized Light')));
-  assert.deepEqual(f.state.selected, { kind: 'theme', id: 'solarized-light' });
-  assert.deepEqual(f.previews, [{ kind: 'theme', id: 'solarized-light' }]);
+  await f.key('solarized');
+  assert.ok(f.render().some(row => row.includes('→ Solarized')));
+  assert.deepEqual(f.state.selected, preference('solarized-dark'));
+  assert.deepEqual(f.previews, [preference('solarized-dark')]);
   assert.equal(f.calls.length, 0);
   await f.key('\x1b'); assert.equal(f.calls.length, 0);
-  assert.deepEqual(f.state.selected, { kind: 'theme', id: 'gruvbox-dark' });
+  assert.deepEqual(f.state.selected, preference('gruvbox-dark'));
 });
 
 test('menu-only local theme preview does not prepare or read an asset until selected card input is requested', async () => {
   const f = fixture(); native(f);
   let settingsLoads = 0, providerStarts = 0;
   const runtime = new SyntaxRuntime({ standaloneVersion: '0.1.0-test',
-    settings: { load: async () => { settingsLoads++; return { ok: true, syntaxTheme: { kind: 'pi' } }; }, update: async () => ({ ok: true }) },
+    settings: { load: async () => { settingsLoads++; return { ok: true, themePreference: { kind: 'pi', variant: 'dark' } }; }, update: async () => ({ ok: true }) },
     provider: { tryShared: async () => { providerStarts++; return undefined; }, acquireOwned: async () => { providerStarts++; throw Error('unexpected provider'); } } });
   let preparation: Promise<void> | undefined;
   f.owner.prepareThemes = () => {
@@ -222,13 +226,13 @@ test('menu-only local theme preview does not prepare or read an asset until sele
   f.owner.previewTheme = choice => { runtime.previewTheme(choice); f.state.selected = choice; };
   const budget = new DataBudget(1_000_000), funding = { budget, grant: (bytes: number) => budget.reserve(bytes) };
   const leases: NonNullable<ReturnType<SyntaxRuntime['preparePaletteInput']>>[] = [];
-  const observed = observePaletteInput('solarized-light');
+  const observed = observePaletteInput('solarized-dark');
   try {
     f.render();
     await f.key('\r'); assert.ok(preparation); await preparation;
     f.render();
-    await f.key('solarized-light');
-    assert.deepEqual(runtime.snapshot().selected, { kind: 'theme', id: 'solarized-light' });
+    await f.key('solarized');
+    assert.deepEqual(runtime.snapshot().selected, preference('solarized-dark'));
     assert.deepEqual(observed.snapshot(), { opens: 0, reads: 0, ownerLookups: 0 });
     assert.equal(settingsLoads, 1); assert.equal(providerStarts, 0);
     assert.equal(runtime.sources.stats().sourceRecords, 0); assert.equal(runtime.sources.stats().dispatches, 0);
@@ -256,15 +260,15 @@ test('menu-only local theme preview does not prepare or read an asset until sele
 for (const availability of ['disabled', 'initializing', 'transitioning', 'unavailable', 'disposed'] as const)
   test(`theme picker ${availability}: local palettes remain available without helper catalogue access`, async () => {
     const f = fixture(); native(f); f.state.syntax!.provider.availability = availability;
-    f.render(); await f.key('\r'); assert.match(f.render().join('\n'), /AMOLED Dark/);
-    await f.select('Solarized Dark'); assert.deepEqual(f.calls, [{ kind: 'theme', choice: { kind: 'theme', id: 'solarized-dark' } }]);
+    f.render(); await f.key('\r'); assert.match(f.render().join('\n'), /AMOLED/);
+    await f.select('Solarized'); assert.deepEqual(f.calls, [{ kind: 'theme', choice: preference('solarized-dark') }]);
     assert.equal(f.prepared, 1, 'only the local selection boundary is prepared');
   });
 
 test('helper-off and appearance-off do not hide locally owned palettes', async () => {
   for (const key of ['nativeHighlightingEnabled', 'appearanceEnabled'] as const) {
     const f = fixture(); native(f); f.state[key] = false; f.render(); await f.key('\r');
-    assert.match(f.render().join('\n'), /AMOLED Dark/); assert.equal(f.calls.length, 0);
+    assert.match(f.render().join('\n'), /AMOLED/); assert.equal(f.calls.length, 0);
   }
 });
 
@@ -286,8 +290,8 @@ test('public mouse hover has no action, click changes only the clicked preferenc
 
 test('fixed palette IDs remain separate from navigation and action values', async () => {
   const f = fixture(); native(f); f.render(); await f.key('\r');
-  await f.select('Synthwave \'84 Dark');
-  assert.deepEqual(f.calls, [{ kind: 'theme', choice: { kind: 'theme', id: 'synthwave84-dark' } }]);
+  await f.select('Synthwave \'84');
+  assert.deepEqual(f.calls, [{ kind: 'theme', choice: preference('synthwave84-dark') }]);
   assert.equal(f.closed, 0);
 });
 
@@ -307,29 +311,29 @@ test('service details report negotiated protocol 3 without acquiring a provider'
 
 test('theme search filters by local ID; confirmation saves once and returns to root', async () => {
   const f = fixture(); native(f); f.render(); await f.key('\r');
-  await f.key('solarized-light');
-  assert.ok(f.render().some(row => row.includes('→ Solarized Light')));
+  await f.key('solarized');
+  assert.ok(f.render().some(row => row.includes('→ Solarized')));
   assert.equal(f.calls.length, 0);
   await f.key('\r');
-  assert.deepEqual(f.calls, [{ kind: 'theme', choice: { kind: 'theme', id: 'solarized-light' } }]);
+  assert.deepEqual(f.calls, [{ kind: 'theme', choice: preference('solarized-dark') }]);
   assert.ok(f.render().some(row => row.includes('Tidy UI appearance')));
 });
 
 test('theme mouse confirmation returns to the main page and saves the clicked local identity', async () => {
   const f = fixture(); native(f); f.render(); await f.key('\r');
-  const rows = f.render(), y = rows.findIndex(row => row.includes('AMOLED Dark'));
+  const rows = f.render(), y = rows.findIndex(row => row.includes('AMOLED'));
   const event = { button: 'left' as const, x: 4, y, screenX: 4, screenY: y, width: 70, height: rows.length, shift: false, alt: false, ctrl: false };
   f.menu.handleMouse({ ...event, type: 'press' }); f.render();
-  assert.deepEqual(f.state.selected, { kind: 'pi' }); assert.equal(f.previews.length, 0); assert.equal(f.calls.length, 0);
+  assert.deepEqual(f.state.selected, { kind: 'pi', variant: 'dark' }); assert.equal(f.previews.length, 0); assert.equal(f.calls.length, 0);
   f.menu.handleMouse({ ...event, type: 'click' }); await turn();
-  assert.deepEqual(f.calls, [{ kind: 'theme', choice: { kind: 'theme', id: 'amoled-dark' } }]);
+  assert.deepEqual(f.calls, [{ kind: 'theme', choice: preference('amoled-dark') }]);
   assert.ok(f.render().some(row => row.includes('Tidy UI appearance')));
   assert.equal(f.closed, 0);
 });
 
 test('Follow Pi remains a separate option from the fixed local palette catalogue', async () => {
   const f = fixture(); native(f); f.render(); await f.key('\r');
-  assert.match(f.render().join('\n'), /Follow Pi theme/); assert.match(f.render().join('\n'), /AMOLED Dark/);
+  assert.match(f.render().join('\n'), /Follow Pi theme/); assert.match(f.render().join('\n'), /AMOLED/);
   assert.equal(THEME_CATALOGUE.some(theme => theme.id === 'pi'), false);
 });
 
@@ -497,18 +501,20 @@ test('preferred width fits root labels, values and navigation without stretching
 });
 
 test('different pages measure the full fixed catalogue, not only visible or searched choices', async () => {
+  const cache = fixture(); await cache.select('Status & troubleshooting'); await cache.select('Display cache');
+  const cacheWidth = cache.menu.preferredWidth();
   const f = fixture(); native(f); const root = f.menu.preferredWidth();
   await f.select('Code color theme'); const themes = f.menu.preferredWidth();
-  const labelWidth = Math.max(...themeLabels(THEME_CATALOGUE).map(visibleWidth));
+  const labelWidth = Math.max(...themeLabels(THEME_FAMILIES).map(visibleWidth));
   const expected = Math.min(72, Math.max(4 + labelWidth + visibleWidth('Selected'),
     visibleWidth('Code color theme'), visibleWidth('↑↓ Navigate · Enter Select · Esc Back')) + 2);
   assert.equal(themes, expected, 'full local palette catalogue determines picker width, even when the root page is wider');
   for (let i = 0; i < 20; i++) { await f.key('\x1b[B'); assert.equal(f.menu.preferredWidth(), themes); }
-  await f.key('solarized-light'); assert.equal(f.menu.preferredWidth(), themes, 'filtering does not shrink the picker');
-  assert.ok(f.render().some(row => row.includes('→ Solarized Light')));
+  await f.key('solarized'); assert.equal(f.menu.preferredWidth(), themes, 'filtering does not shrink the picker');
+  assert.ok(f.render().some(row => row.includes('→ Solarized')));
   await f.key('\x1b'); assert.equal(f.menu.preferredWidth(), root);
   await f.select('Status & troubleshooting'); await f.select('Display cache');
-  assert.ok(f.menu.preferredWidth() < themes, 'cache actions need not inherit the picker width');
+  assert.equal(f.menu.preferredWidth(), cacheWidth, 'cache actions measure their own contents after leaving the picker');
   assert.equal(f.calls.length, 0, 'measuring/navigating/filtering has no preference action');
 });
 
@@ -595,13 +601,13 @@ test('support actions share the toggle label column and a distinct submenu indic
 });
 
 test('selected marker stays aligned across the full fixed catalogue and filtering', async () => {
-  const f = fixture(); native(f); f.state.selected = { kind: 'theme', id: 'amoled-dark' };
+  const f = fixture(); native(f); f.state.selected = preference('amoled-dark');
   await f.select('Code color theme'); const width = f.menu.preferredWidth();
-  const selectedRow = () => f.menu.render(width).map(plain).find(row => /^│[→ ] /u.test(row) && row.includes('AMOLED Dark'))!;
+  const selectedRow = () => f.menu.render(width).map(plain).find(row => /^│[→ ] /u.test(row) && row.includes('AMOLED'))!;
   const column = cellOf(selectedRow(), 'Selected');
-  const longest = Math.max(...THEME_CATALOGUE.map(theme => visibleWidth(theme.label)));
+  const longest = Math.max(...themeLabels(THEME_FAMILIES).map(visibleWidth));
   assert.ok(3 + longest + 2 <= column, 'the marker follows the longest static label');
-  await f.key('amoled-dark');
+  await f.key('amoled');
   assert.equal(f.menu.preferredWidth(), width); assert.equal(cellOf(selectedRow(), 'Selected'), column);
   assert.equal(f.calls.length, 0);
 });
@@ -622,7 +628,7 @@ for (const exit of ['escape', 'back', 'ctrl+c', 'close', 'dispose'] as const) {
     f.render(); await f.key('\r');
     assert.equal(f.previews.length, 0, 'opening is not a theme change');
     await f.key('\x1b[B');
-    assert.deepEqual(f.state.selected, { kind: 'theme', id: 'amoled-dark' });
+    assert.deepEqual(f.state.selected, preference('amoled-dark'));
     assert.equal(f.calls.length, 0);
     const before = f.previews.length;
     for (let i = 0; i < 30; i++) f.render();
@@ -632,7 +638,7 @@ for (const exit of ['escape', 'back', 'ctrl+c', 'close', 'dispose'] as const) {
     else if (exit === 'ctrl+c') await f.key('\x03');
     else if (exit === 'close') f.menu.close();
     else f.menu.dispose();
-    assert.deepEqual(f.state.selected, { kind: 'pi' });
+    assert.deepEqual(f.state.selected, { kind: 'pi', variant: 'dark' });
     assert.equal(f.calls.length, 0);
     const restored = f.previews.length;
     f.menu.dispose(); f.menu.dispose();
@@ -643,15 +649,15 @@ for (const exit of ['escape', 'back', 'ctrl+c', 'close', 'dispose'] as const) {
 test('theme preview: confirming promotes the preview; the next visit has its own rollback point', async () => {
   const f = fixture(); native(f, 3); f.render(); await f.key('\r');
   await f.key('\x1b[B'); await f.key('\r');
-  assert.deepEqual(f.calls, [{ kind: 'theme', choice: { kind: 'theme', id: 'amoled-dark' } }]);
-  assert.deepEqual(f.state.selected, { kind: 'theme', id: 'amoled-dark' });
+  assert.deepEqual(f.calls, [{ kind: 'theme', choice: preference('amoled-dark') }]);
+  assert.deepEqual(f.state.selected, preference('amoled-dark'));
   const before = f.previews.length;
   await f.key('\r'); assert.equal(f.previews.length, before);
-  assert.ok(f.render().some(row => row.includes('→ AMOLED Dark')));
+  assert.ok(f.render().some(row => row.includes('→ AMOLED')));
   await f.key('\x1b[B');
-  assert.deepEqual(f.state.selected, { kind: 'theme', id: 'amoled-light' });
+  assert.deepEqual(f.state.selected, preference('aura-dark'));
   await f.key('\x1b'); f.menu.close();
-  assert.deepEqual(f.state.selected, { kind: 'theme', id: 'amoled-dark' });
+  assert.deepEqual(f.state.selected, preference('amoled-dark'));
   assert.equal(f.calls.length, 1);
 });
 
@@ -660,12 +666,12 @@ test('theme preview: closing during confirmed persistence is not rollback and la
   let resolve!: (value: { ok: true }) => void;
   f.perform = action => { f.calls.push(action); return new Promise(done => { resolve = done; }); };
   await f.key('\r');
-  assert.equal(f.calls.length, 1); assert.deepEqual(f.state.selected, { kind: 'theme', id: 'amoled-dark' });
+  assert.equal(f.calls.length, 1); assert.deepEqual(f.state.selected, preference('amoled-dark'));
   const before = f.previews.length;
   await f.key('\x1b[B'); await f.key('\x03');
   assert.equal(f.closed, 1); assert.equal(f.previews.length, before);
   resolve({ ok: true }); await turn();
-  assert.deepEqual(f.state.selected, { kind: 'theme', id: 'amoled-dark' });
+  assert.deepEqual(f.state.selected, preference('amoled-dark'));
   assert.deepEqual(f.render(), []); assert.equal(f.previews.length, before);
 });
 
@@ -674,37 +680,37 @@ test('theme preview: failed confirmation keeps the live choice and does not sile
   f.perform = async action => { f.calls.push(action); return { ok: false, message: 'Applied but not saved.' }; };
   await f.key('\r'); assert.match(f.render().join('\n'), /Applied but not saved/);
   f.menu.close();
-  assert.deepEqual(f.state.selected, { kind: 'theme', id: 'amoled-dark' }); assert.equal(f.calls.length, 1);
+  assert.deepEqual(f.state.selected, preference('amoled-dark')); assert.equal(f.calls.length, 1);
 });
 
 test('theme preview: empty search results and action rows do not become theme choices', async () => {
-  const f = fixture(); native(f, 2); f.render(); await f.key('\r'); await f.key('amoled-light');
-  assert.deepEqual(f.state.selected, { kind: 'theme', id: 'amoled-light' });
+  const f = fixture(); native(f, 2); f.render(); await f.key('\r'); await f.key('amoled');
+  assert.deepEqual(f.state.selected, preference('amoled-dark'));
   const before = f.previews.length;
   await f.key('not-a-theme'); assert.equal(f.previews.length, before);
   await f.key('\x1b[B'); assert.equal(f.previews.length, before);
-  await f.key('\x1b'); assert.deepEqual(f.state.selected, { kind: 'pi' }); assert.equal(f.calls.length, 0);
+  await f.key('\x1b'); assert.deepEqual(f.state.selected, { kind: 'pi', variant: 'dark' }); assert.equal(f.calls.length, 0);
 });
 
 test('theme preview: loading from a cancelled visit cannot establish a later visit rollback point', async () => {
   const f = fixture(); native(f, 3); const pending: (() => void)[] = [];
   f.owner.prepareThemes = () => new Promise<void>(resolve => { pending.push(resolve); });
   f.render(); await f.key('\r'); await f.key('\x1b');
-  f.state.selected = { kind: 'theme', id: 'amoled-light' };
+  f.state.selected = preference('amoled-light');
   await f.key('\r'); pending[1]!(); await turn(); f.render();
-  await f.key('\x1b[B'); assert.deepEqual(f.state.selected, { kind: 'theme', id: 'aura-dark' });
+  await f.key('\x1b[B'); assert.deepEqual(f.state.selected, preference('aura-light'));
   pending[0]!(); await turn(); f.render();
-  await f.key('\x1b'); assert.deepEqual(f.state.selected, { kind: 'theme', id: 'amoled-light' });
+  await f.key('\x1b'); assert.deepEqual(f.state.selected, preference('amoled-light'));
   assert.equal(f.calls.length, 0);
 });
 
 test('theme preview: rapid arrow input keeps only the latest selection and cancellation restores the entry choice', async () => {
   const f = fixture(); native(f, 12); f.render(); await f.key('\r');
   for (let i = 0; i < 8; ++i) f.menu.handleInput('\x1b[B');
-  assert.deepEqual(f.state.selected, { kind: 'theme', id: 'carbonfox-light' });
+  assert.deepEqual(f.state.selected, preference('cobalt2-dark'));
   assert.equal(f.calls.length, 0);
   await f.key('\x1b');
-  assert.deepEqual(f.state.selected, { kind: 'pi' }); assert.equal(f.calls.length, 0);
+  assert.deepEqual(f.state.selected, { kind: 'pi', variant: 'dark' }); assert.equal(f.calls.length, 0);
 });
 
 test('theme preview: native wheel selection previews without confirming or persisting', async () => {
@@ -712,13 +718,13 @@ test('theme preview: native wheel selection previews without confirming or persi
   const rows = f.render(), y = rows.findIndex(row => row.includes('Follow Pi theme'));
   f.menu.handleMouse({ type: 'wheel', button: 'none', wheelDelta: 1, x: 4, y, screenX: 4, screenY: y,
     width: 70, height: rows.length, shift: false, alt: false, ctrl: false });
-  assert.deepEqual(f.state.selected, { kind: 'theme', id: 'amoled-dark' }); assert.equal(f.calls.length, 0);
-  await f.key('\x1b'); assert.deepEqual(f.state.selected, { kind: 'pi' });
+  assert.deepEqual(f.state.selected, preference('amoled-dark')); assert.equal(f.calls.length, 0);
+  await f.key('\x1b'); assert.deepEqual(f.state.selected, { kind: 'pi', variant: 'dark' });
 });
 
 for (const finish of ['escape', 'confirm'] as const) test(`settings sync: external confirmation preserves local preview until ${finish}`, async () => {
   const f = fixture(); native(f, 3); await f.select('Code color theme'); await f.key('\x1b[B');
-  const preview = { kind: 'theme' as const, id: 'amoled-dark' }, external = { kind: 'theme' as const, id: 'aura-dark' };
+  const preview = preference('amoled-dark'), external = preference('aura-dark');
   assert.deepEqual(f.state.selected, preview);
   const change = Reflect.get(f.menu, 'preferencesChanged'); assert.equal(typeof change, 'function');
   assert.equal(change.call(f.menu, external), true, 'host must not apply the external theme over a local preview');
@@ -754,4 +760,96 @@ test('runtime health menu: log write errors and lost records are explicitly dist
   assert.match(text, /Dropped records: 1598; log write errors: 0/);
   assert.match(text, /Some diagnostic records were lost/);
   assert.doesNotMatch(text, /dropped: 1598; errors: 0/);
+});
+
+
+test('theme picker offers families and root variant control follows the confirmed theme pair', async () => {
+  const f = fixture(); native(f);
+  f.state.selected = preference('github', 'light');
+  f.render(); await f.key('\r');
+  const picker = f.render().join('\n');
+  assert.match(picker, /GitHub/u);
+  assert.doesNotMatch(picker, /GitHub (?:Dark|Light)/u);
+  assert.match(picker, /Search:/u);
+  assert.equal(THEME_CATALOGUE.length, 72, 'family menu changes do not replace concrete asset catalogue');
+
+  await f.key('\x1b');
+  await f.select('Code color variant');
+  assert.deepEqual(f.calls, [{ kind: 'theme', choice: { kind: 'theme', id: 'github', variant: 'dark' } }]);
+  assert.deepEqual(f.state.selected, { kind: 'theme', id: 'github', variant: 'dark' });
+});
+
+test('Pi disables root variant choice and keyboard/wheel/pointer cannot select it', async () => {
+  const f = fixture();
+  const rows = f.render();
+  const variantRow = rows.findIndex(row => row.includes('Code color variant'));
+  assert.ok(variantRow >= 0, `root exposes variant row: ${rows.join('\n')}`);
+
+  await f.key('\x1b[B');
+  assert.ok(f.render().some(row => row.includes('→ Set terminal colors from Pi theme')), 'keyboard skips the disabled row');
+  await f.key('\x1b[A');
+  f.menu.handleMouse({ type: 'wheel', button: 'left', wheelDelta: 1, x: 4, y: 0, screenX: 4, screenY: 0,
+    width: 70, height: rows.length, shift: false, alt: false, ctrl: false });
+  assert.ok(f.render().some(row => row.includes('→ Set terminal colors from Pi theme')), 'wheel skips the disabled row');
+
+  const event = { button: 'left' as const, x: 4, y: variantRow, screenX: 4, screenY: variantRow,
+    width: 70, height: rows.length, shift: false, alt: false, ctrl: false };
+  f.menu.handleMouse({ ...event, type: 'press' }); f.render();
+  f.menu.handleMouse({ ...event, type: 'click' }); await turn(); f.render();
+  assert.deepEqual(f.calls, []);
+  assert.deepEqual(f.state.selected, { kind: 'pi', variant: 'dark' });
+});
+
+
+test('accepted root press survives recentering onto the disabled variant row', async () => {
+  const f = fixture(70, 12); f.render();
+  await f.key('\x1b[B'); await f.key('\x1b[B');
+  assert.ok(f.render().some(row => row.includes('→ Status & troubleshooting')));
+  const rows = f.render(), y = rows.findIndex(row => row.includes('Set terminal colors from Pi theme'));
+  assert.ok(y >= 0);
+  const event = { button: 'left' as const, x: 4, y, screenX: 4, screenY: y,
+    width: 70, height: rows.length, shift: false, alt: false, ctrl: false };
+  f.menu.handleMouse({ ...event, type: 'press' });
+  assert.ok(f.render()[y]?.includes('Code color variant'), 'the native selection recenters before release');
+  f.menu.handleMouse({ ...event, type: 'click' }); await turn();
+  assert.deepEqual(f.calls, [{ kind: 'switch', key: 'terminalColorsEnabled', value: false }]);
+  assert.equal(f.state.terminalColorsEnabled, false);
+});
+
+for (const variant of ['dark', 'light'] as const) test(`theme family warning matches catalogue membership (${variant})`, async () => {
+  const f = fixture(); native(f);
+  f.state.selected = { kind: 'theme', id: 'github', variant };
+  f.state.syntax!.selected = f.state.selected;
+  f.state.syntax!.effective = { kind: 'theme', id: `github-${variant}`, label: `GitHub ${variant}`, fingerprint: `owned-palette-v1:github-${variant}` };
+  f.render(); await f.key('\r');
+  assert.doesNotMatch(f.render().join('\n'), /saved palette is unknown/u);
+});
+
+test('theme family warning retains the actual unknown-family fallback', async () => {
+  const f = fixture(); native(f);
+  f.state.selected = { kind: 'theme', id: 'not-installed', variant: 'dark' };
+  f.state.syntax!.selected = f.state.selected;
+  f.state.syntax!.effective = { kind: 'pi', id: 'pi', label: 'Follow Pi', fingerprint: 'pi-palette-v1' };
+  f.render(); await f.key('\r');
+  assert.match(f.render().join('\n'), /saved palette is unknown/u);
+});
+
+
+test('disabled-origin root press stays inert when an external confirmation enables its row', async () => {
+  const f = fixture(), rows = f.render(), y = rows.findIndex(row => row.includes('Code color variant'));
+  assert.ok(y >= 0);
+  const event = { button: 'left' as const, x: 4, y, screenX: 4, screenY: y,
+    width: 70, height: rows.length, shift: false, alt: false, ctrl: false };
+  try {
+    f.menu.handleMouse({ ...event, type: 'press' });
+    f.state.selected = { kind: 'theme', id: 'github', variant: 'dark' };
+    assert.equal(f.menu.preferencesChanged(f.state.selected), false);
+    assert.match(f.render()[y]!, /Code color variant\s+Dark/u, 'the external family confirmation rebuilds the now-enabled row');
+    f.menu.handleMouse({ ...event, type: 'click' }); await turn();
+    assert.equal(f.calls.length, 0, 'release from a disabled-origin press cannot confirm a newly enabled control');
+    assert.deepEqual(f.state.selected, { kind: 'theme', id: 'github', variant: 'dark' });
+    f.menu.handleMouse({ ...event, type: 'press' }); f.render();
+    f.menu.handleMouse({ ...event, type: 'click' }); await turn();
+    assert.deepEqual(f.calls, [{ kind: 'theme', choice: { kind: 'theme', id: 'github', variant: 'light' } }], 'a fresh enabled-origin click still confirms Light');
+  } finally { f.menu.dispose(); }
 });

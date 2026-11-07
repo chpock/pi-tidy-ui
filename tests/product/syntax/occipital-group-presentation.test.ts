@@ -268,8 +268,8 @@ test('group presentation: targeted notices coalesce exact group IDs and unregist
 test('group presentation: SyntaxClient weak observer forwards group-only delivery without data RPC', async () => {
   const { SyntaxClient } = await import('../../../src/occipital/client.ts');
   const notices: { keys: readonly string[]; groups: readonly number[] }[] = [];
-  const client = new SyntaxClient({ standaloneVersion: '0.1.5', initialTheme: { kind: 'pi' },
-    settings: { async load() { return { ok: true, syntaxTheme: { kind: 'pi' } }; }, async update() { return { ok: true }; } },
+  const client = new SyntaxClient({ standaloneVersion: '0.1.5', initialTheme: { kind: 'pi', variant: 'dark' },
+    settings: { async load() { return { ok: true, themePreference: { kind: 'pi', variant: 'dark' } }; }, async update() { return { ok: true }; } },
     provider: { async tryShared() { return undefined; }, async acquireOwned() { throw new Error('owned unavailable'); } },
     onSourceChange(keys, groups = []) { notices.push({ keys, groups }); } });
   try {

@@ -93,7 +93,7 @@ test('occipital CLI: shared discovery, local palette selection, provider loss an
       const ready = await settledStats(terminal, 'shared-owned-palette-ready', s => s.client.effective.id === paletteId);
       assert.ok(await semanticPhaseReady(() => ready, () => terminal.events(), markers, paletteId));
       const selected = JSON.parse(readFileSync(`${terminal.agent}/extensions/pi-tidy-ui/config.json`, 'utf8'));
-      assert.deepEqual(selected, { syntaxTheme: { kind: 'theme', id: paletteId } });
+      assert.deepEqual(selected, { syntaxTheme: { kind: 'theme', id: 'catppuccin' }, syntaxThemeVariant: 'dark' });
       const selectedPaint = await captureThenRenderDiagnostics(terminal, 'shared-owned-palette'), selectedColors = colors(selectedPaint, paletteId);
       assert.notDeepEqual(selectedColors, initialColors, 'the selected owned palette changes physical source ink');
 
@@ -101,7 +101,7 @@ test('occipital CLI: shared discovery, local palette selection, provider loss an
       const owned = await settledStats(terminal, 'owned-after-loss', s => s.client.provider.kind === 'owned' && s.client.effective.id === paletteId);
       assert.equal(owned.broker.reconnectAttempts, 2); assert.equal(owned.counts.acquisitions, 1);
       assert.equal(owned.client.provider.initialShared, true); assert.equal(owned.broker.recoveryTimers, 1);
-      assert.equal(owned.client.selected.id, paletteId);
+      assert.deepEqual(owned.client.selected, { kind: 'theme', id: 'catppuccin', variant: 'dark' });
       const offlinePaint = await captureThenRenderDiagnostics(terminal, 'owned-palette-after-loss');
       assert.deepEqual(colors(offlinePaint, paletteId), selectedColors,
         'the locally owned palette keeps the same physical source ink while its SOURCE/STYLE provider is unavailable');

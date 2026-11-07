@@ -330,15 +330,15 @@ function realCards() {
   let classifications = 0, samples = 0, sourceStyle = 0;
   const provider = { snapshot: () => ({ generation: 1, availability: 'initializing' as const, reason: 'initializing' as const, kind: 'owned' as const, initialShared: false }),
     isReady: () => false, classificationAccepted: () => false, request: async () => { sourceStyle++; throw Error('unexpected SOURCE/STYLE'); } };
-  const sources = new SourceController(provider), runtime = new SyntaxRuntime({ standaloneVersion: '0.0.0', settings: { load: async () => ({ ok: true, syntaxTheme: { kind: 'pi' } }), update: async () => ({ ok: true }) },
+  const sources = new SourceController(provider), runtime = new SyntaxRuntime({ standaloneVersion: '0.0.0', settings: { load: async () => ({ ok: true, themePreference: { kind: 'pi', variant: 'dark' } }), update: async () => ({ ok: true }) },
     provider: { tryShared: async () => undefined, acquireOwned: async () => { throw Error('unexpected provider'); } } });
   const theme = getThemeByName('system')!; setThemeInstance(theme);
   const sampled = { owner: new WeakRef(theme), colors: theme.colors,
     getFgAnsi(role: Parameters<typeof theme.getFgAnsi>[0]) { samples++; return theme.getFgAnsi(role); },
     getBgAnsi(role: Parameters<typeof theme.getBgAnsi>[0]) { samples++; return theme.getBgAnsi(role); }, counters: () => ({ foreground: 0, background: 0 }) };
   runtime.palette(sampled);
-  const effective = resolveTheme({ kind: 'pi' }).effective;
-  const cards = new CardSources<object>({ sources, snapshot: () => ({ enabled: true, provider: provider.snapshot(), selected: { kind: 'pi' },
+  const effective = resolveTheme({ kind: 'pi', variant: 'dark' }).effective;
+  const cards = new CardSources<object>({ sources, snapshot: () => ({ enabled: true, provider: provider.snapshot(), selected: { kind: 'pi', variant: 'dark' },
     effective, standaloneVersion: 'test' }) },
   { preparePaletteInput: (palette, revision, mode, f) => runtime.preparePaletteInput(palette, sampled, revision, mode, f),
     classify: text => { classifications++; return highlightCode(text, 'typescript'); }, invalidate() {}, requestRender() {} });
@@ -520,9 +520,9 @@ test('card layout: actual card demand and controller lookups are linear across n
       isReady: (g: number) => g === 1, classificationAccepted: () => true,
       request: (_g: number, q: Record<string, any>) => new Promise<unknown>((resolve, reject) => pending.push({ q, resolve, reject, done: false })) };
     const source = new SourceController(provider, { onChange(keys, groups) { cards.sourceChanged(keys, groups); } }), owner = {};
-    const paletteOwner = new PaletteInputOwner(), effective = resolveTheme({ kind: 'theme', id: 'gruvbox-dark' }).effective;
+    const paletteOwner = new PaletteInputOwner(), effective = resolveTheme({ kind: 'theme', id: 'gruvbox', variant: 'dark' }).effective;
     const paletteRevision = paletteOwner.palette(undefined, effective);
-    const cards = new CardSources<object>({ sources: source, snapshot: () => ({ enabled: true, provider: provider.snapshot(), selected: { kind: 'theme', id: 'gruvbox-dark' },
+    const cards = new CardSources<object>({ sources: source, snapshot: () => ({ enabled: true, provider: provider.snapshot(), selected: { kind: 'theme', id: 'gruvbox', variant: 'dark' },
       effective, standaloneVersion: 'test' }) },
     { preparePaletteInput: (palette, revision, mode, funding) => paletteOwner.prepare(undefined, palette, revision, mode, funding),
       classify: () => assert.fail('owned-palette card classified with Pi'), invalidate() {}, requestRender() {} });

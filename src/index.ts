@@ -4,7 +4,8 @@ import { isAbsolute, resolve } from "node:path";
 import { createRequire } from "node:module";
 import { SessionLogging } from "./session-logging.ts";
 import { RuntimeHealth } from './runtime-health.ts';
-import { ExtensionSettings, processPreferences, type LocalPreferences, type SettingsLoadResult, type SyntaxTheme } from './settings.ts';
+import { copyThemePreference, ExtensionSettings, processPreferences, sameThemePreference,
+  type LocalPreferences, type SettingsLoadResult, type ThemePreference } from './settings.ts';
 import { bindTerminalLifecycle } from "./terminal-lifecycle.ts";
 import { TidyMenu, type TidyMenuOwner, type TidyMenuAction } from './tidy-menu.ts';
 import type { SyntaxMenuOutcome } from './occipital/menu.ts';
@@ -438,7 +439,7 @@ export function installTidyUi(tui: LiveTui, getTheme: () => Palette, options: Ti
       && syntax?.filePreparationOutcome(node) === 'unsupported';
   }
   let cardClient = options.syntax?.client;
-  let selectedPalette = cardClient?.snapshot().effective ?? resolveTheme({ kind: 'pi' }).effective;
+  let selectedPalette = cardClient?.snapshot().effective ?? resolveTheme({ kind: 'pi', variant: 'dark' }).effective;
   let ownedSources: SourceController | undefined;
   const paletteOwner = new PaletteInputOwner(options.diagnostic);
   const externalPaletteOwner = !!(options.syntax && options.preparePaletteInput);
@@ -460,7 +461,7 @@ export function installTidyUi(tui: LiveTui, getTheme: () => Palette, options: Ti
   function ensureCards(): CardSources<ToolNode> {
     if (syntax) return syntax;
     if (!cardClient) {
-      const snapshot = { enabled: false, selected: { kind: 'pi' } as const, standaloneVersion: extensionVersion,
+      const snapshot = { enabled: false, selected: { kind: 'pi', variant: 'dark' } as const, standaloneVersion: extensionVersion,
         provider: { availability: 'disabled' as const, reason: 'disabled' as const, generation: 0, initialShared: false } };
       ownedSources = new SourceController({ snapshot: () => snapshot.provider, isReady: () => false,
         classificationAccepted: () => { throw new Error('Disabled card provider accepted work'); },
@@ -1236,7 +1237,7 @@ export function installTidyUi(tui: LiveTui, getTheme: () => Palette, options: Ti
     finishFileTurn,
     syntaxMetadataChanged() {
       if (active && !quiescing) {
-        selectedPalette = cardClient?.snapshot().effective ?? resolveTheme({ kind: 'pi' }).effective;
+        selectedPalette = cardClient?.snapshot().effective ?? resolveTheme({ kind: 'pi', variant: 'dark' }).effective;
         const paletteRevision = externalPaletteOwner ? options.syntax!.palette()
           : paletteOwner.palette(needsPiTheme(selectedPalette) ? publicInput().theme : undefined, selectedPalette);
         syntax?.metadataChanged(paletteRevision);
@@ -2218,7 +2219,7 @@ export default function tidyUi(pi: ExtensionAPI, options: TidyUiRuntimeOptions =
   const local = options.localPreferences ?? processPreferences();
   let enabled = local.appearanceEnabled, colorsEnabled = false, loggingEnabled = local.loggingEnabled;
   // Only confirmed choices survive runtime replacement; menu previews are client-local.
-  let selectedTheme: SyntaxTheme = { kind: 'pi' };
+  let selectedTheme: ThemePreference = { kind: 'pi', variant: 'dark' };
   const settings = options.settings ?? new ExtensionSettings();
   let preferencesReady: Promise<void> | undefined, preferencesLoaded = false;
   let preferencesIssue: string | undefined;
@@ -2233,7 +2234,7 @@ export default function tidyUi(pi: ExtensionAPI, options: TidyUiRuntimeOptions =
         const loaded = await settings.load();
         colorsEnabled = loaded.terminalColorsEnabled ?? false;
         syntaxEnabled = loaded.nativeHighlightingEnabled ?? true;
-        selectedTheme = loaded.syntaxTheme;
+        selectedTheme = copyThemePreference(loaded.themePreference);
         if (!loaded.ok) preferencesIssue = lastSettingsIssue = loaded.issue.message;
       } catch { preferencesIssue = 'Settings could not be read; using defaults.'; }
       finally { preferencesLoaded = true; }
@@ -2248,12 +2249,12 @@ export default function tidyUi(pi: ExtensionAPI, options: TidyUiRuntimeOptions =
     }
     lastSettingsIssue = undefined;
     reportRuntime(diagnostic, { kind: 'recovered', scope: settings, operation: 'read' });
-    const choice = loaded.syntaxTheme;
-    const themeChanged = choice.kind !== selectedTheme.kind || choice.kind === 'theme' && selectedTheme.kind === 'theme' && choice.id !== selectedTheme.id;
+    const choice = loaded.themePreference;
+    const themeChanged = !sameThemePreference(choice, selectedTheme);
     const colorsChanged = colorsEnabled !== (loaded.terminalColorsEnabled ?? false);
     const nativeChanged = syntaxEnabled !== (loaded.nativeHighlightingEnabled ?? true);
     if (!themeChanged && !colorsChanged && !nativeChanged) return;
-    selectedTheme = { ...choice }; syntaxEnabled = loaded.nativeHighlightingEnabled ?? true;
+    selectedTheme = copyThemePreference(choice); syntaxEnabled = loaded.nativeHighlightingEnabled ?? true;
     if (colorsChanged) applyTerminalPreference(loaded.terminalColorsEnabled ?? false, ctx);
     const previewing = activeMenu?.preferencesChanged(selectedTheme);
     if (themeChanged && !previewing) syntax?.applySavedTheme(selectedTheme);
@@ -2650,7 +2651,7 @@ export default function tidyUi(pi: ExtensionAPI, options: TidyUiRuntimeOptions =
       }
       if (action.kind === 'theme') {
         const runtime = ensureSyntax(ctx);
-        selectedTheme = action.choice;
+        selectedTheme = copyThemePreference(action.choice);
         const outcome = await runtime.selectTheme(action.choice);
         if (!current() || syntax !== runtime) return retired;
         return outcome.ok ? outcome : { ok: false, message: `Theme applied for now, but not saved: ${outcome.message}` };

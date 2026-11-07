@@ -3,8 +3,33 @@ import fs from "node:fs/promises";
 import nativeFs, { type BigIntStats, type FSWatcher } from "node:fs";
 import { basename, dirname, join, relative, sep } from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
+import { themeFamilyId } from './themes/catalogue.ts';
 
+export type ThemeVariant = 'dark' | 'light';
 export type SyntaxTheme = { kind: "pi" } | { kind: "theme"; id: string };
+export type ThemePreference = { kind: 'pi'; variant: ThemeVariant } | { kind: 'theme'; id: string; variant: ThemeVariant };
+export type ThemeSettingsPatch = { syntaxTheme: SyntaxTheme; syntaxThemeVariant: ThemeVariant };
+
+export function copyThemePreference(choice: ThemePreference): ThemePreference {
+  return choice.kind === 'pi' ? { kind: 'pi', variant: choice.variant }
+    : { kind: 'theme', id: choice.id, variant: choice.variant };
+}
+
+export function themePreferenceFromSettings(choice: SyntaxTheme, variant: unknown): ThemePreference {
+  const selectedVariant: ThemeVariant = variant === 'light' ? 'light' : 'dark';
+  if (choice.kind === 'pi') return { kind: 'pi', variant: selectedVariant };
+  return { kind: 'theme', id: themeFamilyId(choice.id) ?? choice.id, variant: selectedVariant };
+}
+
+export function sameThemePreference(left: ThemePreference, right: ThemePreference): boolean {
+  return left.kind === right.kind && left.variant === right.variant &&
+    (left.kind === 'pi' || right.kind === 'theme' && left.id === right.id);
+}
+
+export function themePatch(choice: ThemePreference): ThemeSettingsPatch {
+  return { syntaxTheme: choice.kind === 'pi' ? { kind: 'pi' } : { kind: 'theme', id: choice.id },
+    syntaxThemeVariant: choice.variant };
+}
 export const SWITCH_KEYS = ['terminalColorsEnabled', 'nativeHighlightingEnabled'] as const;
 export type SavedSwitches = Record<(typeof SWITCH_KEYS)[number], boolean>;
 export type LocalPreferences = { appearanceEnabled: boolean; loggingEnabled: boolean };
@@ -15,7 +40,7 @@ export function processPreferences(): LocalPreferences {
   const processState = globalThis as typeof globalThis & { [localKey]?: LocalPreferences };
   return processState[localKey] ??= { appearanceEnabled: true, loggingEnabled: true };
 }
-export type SettingsPatch = Partial<SavedSwitches & { syntaxTheme: SyntaxTheme }>;
+export type SettingsPatch = Partial<SavedSwitches & ThemeSettingsPatch>;
 export const SETTINGS_FILE_MAX_BYTES = 64 * 1024;
 const THEME_ID_MAX_BYTES = 64;
 // The supported Node runtime has these APIs; ES2023 project typings do not.
@@ -42,8 +67,8 @@ const ISSUE_MESSAGES = {
 
 export type SettingsIssue = { code: keyof typeof ISSUE_MESSAGES; message: string };
 export type SettingsLoadResult = Partial<SavedSwitches> & (
-  | { ok: true; syntaxTheme: SyntaxTheme }
-  | { ok: false; syntaxTheme: SyntaxTheme; issue: SettingsIssue });
+  | { ok: true; themePreference: ThemePreference }
+  | { ok: false; themePreference: ThemePreference; issue: SettingsIssue });
 export type SettingsSaveResult = { ok: true } | { ok: false; issue: SettingsIssue };
 export type SettingsLocation = { agentDir: string; file?: never } | { file: string; agentDir?: never };
 
@@ -143,10 +168,11 @@ export class ExtensionSettings {
 
   private async read(): Promise<{ value: SettingsLoadResult; stamp?: string }> {
     const result = await readDocument(this.file);
-    if (!result.ok) return { value: { ok: false, syntaxTheme: { kind: 'pi' }, issue: result.issue } };
+    if (!result.ok) return { value: { ok: false, themePreference: { kind: 'pi', variant: 'dark' }, issue: result.issue } };
     const switches = Object.fromEntries(SWITCH_KEYS.filter(key => Object.hasOwn(result.document, key)).map(key => [key, result.document[key]])) as Partial<SavedSwitches>;
-    return { stamp: result.stamp, value: { ok: true, ...switches, syntaxTheme: Object.hasOwn(result.document, 'syntaxTheme') ?
-      syntaxTheme(result.document.syntaxTheme)! : { kind: 'pi' } } };
+    const choice = Object.hasOwn(result.document, 'syntaxTheme') ? syntaxTheme(result.document.syntaxTheme)! : { kind: 'pi' as const };
+    return { stamp: result.stamp, value: { ok: true, ...switches,
+      themePreference: themePreferenceFromSettings(choice, result.document.syntaxThemeVariant) } };
   }
   async load(): Promise<SettingsLoadResult> {
     const result = await this.read(); this.lastStamp = result.stamp; return result.value;
@@ -185,7 +211,7 @@ export class ExtensionSettings {
         catch (error) {
           const code = (error as NodeJS.ErrnoException).code;
           if ((code === 'ENOENT' || code === 'ENOTDIR') && dirname(target) !== target) { target = dirname(target); continue; }
-          publish({ ok: false, syntaxTheme: { kind: 'pi' }, issue: issue('watch-failed') }); return;
+          publish({ ok: false, themePreference: { kind: 'pi', variant: 'dark' }, issue: issue('watch-failed') }); return;
         }
       }
       // Cover mkdir between the failed child watch and the ancestor subscription.
@@ -195,7 +221,7 @@ export class ExtensionSettings {
         catch (error) {
           const code = (error as NodeJS.ErrnoException).code;
           if (code === 'ENOENT' || code === 'ENOTDIR') return;
-          publish({ ok: false, syntaxTheme: { kind: 'pi' }, issue: issue('watch-failed') }); return;
+          publish({ ok: false, themePreference: { kind: 'pi', variant: 'dark' }, issue: issue('watch-failed') }); return;
         }
       }
     };
@@ -222,7 +248,7 @@ export class ExtensionSettings {
           stamp = loaded.stamp ?? next; this.lastStamp = stamp;
           publish(loaded.value);
         } while (dirty && !closed);
-      } catch { publish({ ok: false, syntaxTheme: { kind: 'pi' }, issue: issue('read-failed') }); }
+      } catch { publish({ ok: false, themePreference: { kind: 'pi', variant: 'dark' }, issue: issue('read-failed') }); }
       finally { running = false; if (dirty) schedule(); }
     };
     arm(); schedule();
@@ -241,6 +267,8 @@ export class ExtensionSettings {
         const choice = syntaxTheme(value);
         if (!choice) return Promise.resolve({ ok: false, issue: issue('invalid-patch') });
         copy.syntaxTheme = choice;
+      } else if (key === 'syntaxThemeVariant' && (value === 'dark' || value === 'light')) {
+        copy.syntaxThemeVariant = value;
       } else if ((SWITCH_KEYS as readonly string[]).includes(key) && typeof value === 'boolean') {
         copy[key as keyof SavedSwitches] = value;
       } else return Promise.resolve({ ok: false, issue: issue('invalid-patch') });

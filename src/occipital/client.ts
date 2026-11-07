@@ -1,5 +1,6 @@
 import { diagnose, diagnosticError, reportRuntime, type DiagnosticFields, type DiagnosticSink, type RuntimeEvent } from '../diagnostics.ts';
-import { ExtensionSettings, type SyntaxTheme } from '../settings.ts';
+import { copyThemePreference, ExtensionSettings, sameThemePreference, themePatch,
+  type ThemePreference } from '../settings.ts';
 import { SourceController, type ControllerOptions } from './controller.ts';
 import type { SyntaxMenuOutcome, SyntaxMenuOwner, SyntaxMenuSnapshot } from './menu.ts';
 import { resolveTheme, type ThemeDescription } from '../themes/selection.ts';
@@ -12,7 +13,7 @@ export interface SyntaxClientOptions {
   standaloneVersion: string;
   settings?: Pick<ExtensionSettings, 'load' | 'update'>;
   /** A validated preference already loaded by the extension before activation. */
-  initialTheme?: SyntaxTheme;
+  initialTheme?: ThemePreference;
   source?: Omit<ControllerOptions, 'onChange'>;
   notify?: (message: string, type: 'error') => void;
   onChange?: () => void;
@@ -25,9 +26,6 @@ const SAVE_FAILED = 'Syntax theme selection could not be saved.';
 const LOAD_FAILED = 'Settings could not be read.';
 // Abort reasons can retain their creation stack; keep this outside receiver scopes.
 const saveCancelled = new Error('Syntax preference retired');
-function copyTheme(choice: SyntaxTheme): SyntaxTheme {
-  return choice.kind === 'pi' ? { kind: 'pi' } : { kind: 'theme', id: choice.id };
-}
 // Each factory has its own receiver-free lexical scope, even when observers are
 // retained through a still-live broker/controller after the client is collected.
 function brokerDiagnostic(owner: WeakRef<SyntaxClient>, diagnostic?: DiagnosticSink): DiagnosticSink {
@@ -77,7 +75,7 @@ export class SyntaxClient implements SyntaxMenuOwner {
   private menuEpoch = 0;
   private preferenceRevision = 0;
   private preferenceKnown = false;
-  private selected: SyntaxTheme = { kind: 'pi' };
+  private selected: ThemePreference = { kind: 'pi', variant: 'dark' };
   private effective?: ThemeDescription;
   private missingEpisode = false;
   private lastIssue?: string;
@@ -93,7 +91,7 @@ export class SyntaxClient implements SyntaxMenuOwner {
   constructor(options: SyntaxClientOptions) {
     this.settings = options.settings ?? new ExtensionSettings();
     if (options.initialTheme) {
-      this.selected = copyTheme(options.initialTheme); this.preferenceKnown = true; this.restore = Promise.resolve();
+      this.selected = copyThemePreference(options.initialTheme); this.preferenceKnown = true; this.restore = Promise.resolve();
     }
     this.standaloneVersion = options.standaloneVersion; this.diagnostic = options.diagnostic;
     this.notify = options.notify; this.onChange = options.onChange; this.onSourceChange = options.onSourceChange;
@@ -147,17 +145,17 @@ export class SyntaxClient implements SyntaxMenuOwner {
 
   snapshot(): SyntaxMenuSnapshot {
     return { enabled: this.enabled, provider: { ...this.provider }, standaloneVersion: this.standaloneVersion,
-      selected: copyTheme(this.selected), effective: this.effective ? { ...this.effective } : undefined, lastIssue: this.lastIssue };
+      selected: copyThemePreference(this.selected), effective: this.effective ? { ...this.effective } : undefined, lastIssue: this.lastIssue };
   }
 
-  async selectTheme(choice: SyntaxTheme): Promise<SyntaxMenuOutcome> {
+  async selectTheme(choice: ThemePreference): Promise<SyntaxMenuOutcome> {
     if (this.disposed) return { ok: false, message: SAVE_FAILED };
-    const selected = copyTheme(choice);
+    const selected = copyThemePreference(choice);
     this.applyTheme(selected);
     this.log('Syntax theme selected; applying before persistence', { choice: selected.kind, theme: selected.kind === 'theme' ? selected.id : 'Pi', revision: this.preferenceRevision });
     this.cancelSave(); const save = new AbortController(); this.save = save;
     try {
-      const result = await this.settings.update({ syntaxTheme: copyTheme(selected) }, { signal: save.signal });
+      const result = await this.settings.update(themePatch(selected), { signal: save.signal });
       if (this.disposed || save.signal.aborted || this.save !== save) { this.log('Theme save result ignored; request cancelled or retired'); return { ok: false, message: SAVE_FAILED }; }
       if (!result.ok) {
         diagnose(this.diagnostic, 'ERROR', 'settings', 'Theme persistence failed; selection remains session-local');
@@ -178,19 +176,18 @@ export class SyntaxClient implements SyntaxMenuOwner {
   }
 
   /** Session-local application only; an earlier confirmed save remains independent. */
-  previewTheme(choice: SyntaxTheme): void {
-    if (this.disposed || this.preferenceKnown && choice.kind === this.selected.kind &&
-      (choice.kind === 'pi' || this.selected.kind === 'theme' && choice.id === this.selected.id)) return;
-    this.applyTheme(copyTheme(choice));
+  previewTheme(choice: ThemePreference): void {
+    if (this.disposed || this.preferenceKnown && sameThemePreference(choice, this.selected)) return;
+    this.applyTheme(copyThemePreference(choice));
     this.log('Syntax theme preview applied without persistence', { choice: choice.kind, theme: choice.kind === 'theme' ? choice.id : 'Pi', revision: this.preferenceRevision });
   }
   /** Apply a confirmed shared preference without writing it back. */
-  applySavedTheme(choice: SyntaxTheme): void {
+  applySavedTheme(choice: ThemePreference): void {
     if (this.disposed) return;
-    this.applyTheme(copyTheme(choice));
+    this.applyTheme(copyThemePreference(choice));
     this.log('Confirmed syntax preference applied from settings without persistence', { choice: choice.kind, theme: choice.kind === 'theme' ? choice.id : 'Pi' });
   }
-  private applyTheme(selected: SyntaxTheme): void {
+  private applyTheme(selected: ThemePreference): void {
     if (selected.kind !== this.selected.kind || selected.kind === 'theme' && this.selected.kind === 'theme' && selected.id !== this.selected.id)
       this.missingEpisode = false;
     ++this.preferenceRevision; this.preferenceKnown = true; this.selected = selected;
@@ -275,7 +272,7 @@ export class SyntaxClient implements SyntaxMenuOwner {
     try {
       const result = await this.settings.load();
       if (this.disposed || revision !== this.preferenceRevision || this.preferenceRevision !== 0) return;
-      this.selected = copyTheme(result.syntaxTheme); this.preferenceKnown = true;
+      this.selected = copyThemePreference(result.themePreference); this.preferenceKnown = true;
       this.log('Syntax preference restored', { ok: result.ok, choice: this.selected.kind, theme: this.selected.kind === 'theme' ? this.selected.id : 'Pi' });
       if (!result.ok) this.issue(result.issue.message, true);
     } catch {

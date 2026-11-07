@@ -17,7 +17,7 @@ themes.initTheme('dark', false);
 class UI extends Container { requestRender() {} }
 const tick = async () => { for (let i = 0; i < 8; i++) await new Promise<void>(resolve => setImmediate(resolve)); };
 function reviewFixture(t: TestContext) {
-  const ui = new UI(), snapshot = { enabled: false, selected: { kind: 'pi' } as const, standaloneVersion: 'test',
+  const ui = new UI(), snapshot = { enabled: false, selected: { kind: 'pi', variant: 'dark' } as const, standaloneVersion: 'test',
     provider: { availability: 'disabled' as const, reason: 'disabled' as const, generation: 0, initialShared: false } };
   let adapter: ReturnType<typeof installTidyUi>, classifications = 0, depth = 0, preparations = 0, sequence = 0;
   const sources = new SourceController({ snapshot: () => snapshot.provider, isReady: () => false,

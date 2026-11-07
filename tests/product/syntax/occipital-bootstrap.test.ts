@@ -200,7 +200,7 @@ for (const mode of ['unsupported', 'undeclared', 'missing-artifact'] as const) t
   const notices: string[] = [], health = new RuntimeHealth(message => notices.push(message));
   const release: NativeReleaseDeclaration | undefined = mode === 'undeclared' ? undefined : { version: '0.1.0', artifacts: [] };
   const options = bootstrap.createSyntaxOptions(ctx, release, health.sink(() => {}));
-  const client = new SyntaxClient({ ...options, initialTheme: { kind: 'pi' }, provider: { ...options.provider, tryShared: async () => undefined } });
+  const client = new SyntaxClient({ ...options, initialTheme: { kind: 'pi', variant: 'dark' }, provider: { ...options.provider, tryShared: async () => undefined } });
   t.after(async () => { await client.dispose(); health.dispose(); });
   const platform = Object.getOwnPropertyDescriptor(process, 'platform')!, fetch = globalThis.fetch;
   let downloads = 0; globalThis.fetch = async () => { downloads++; throw Error('No network in delivery classification control'); };

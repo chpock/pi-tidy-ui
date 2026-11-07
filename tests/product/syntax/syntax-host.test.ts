@@ -19,6 +19,7 @@ import { SEMANTIC_PROTOCOL_VERSION as PROTOCOL_VERSION, decodeSemanticDescriptio
 import { semanticDescriptor } from '../../fixtures/semantic-provider.ts';
 import { fingerprintRules } from '../../../src/occipital/style-rules.ts';
 import { resolveTheme } from '../../../src/themes/selection.ts';
+import { palettePreference } from '../../fixtures/palette-preference.ts';
 import { CardSources } from '../../../src/syntax/cards.ts';
 import { DeferredRenderer } from '../../../src/syntax/lazy-native-renderers.ts';
 import { sampleOwnedPalette } from '../../../src/themes/owned-palette.ts';
@@ -56,7 +57,7 @@ function fixture(ready = false, useDefaultClassifier = false, options: Pick<Tidy
     set: () => { throw new Error('No renderer writes through the public TUI reference'); },
   }) as UI : root;
   const liveCalls = new Set<string>();
-  const env = { liveCalls, ready, enabled: true, generation: 1, selected: { kind: 'pi' } as ReturnType<SyntaxClient['snapshot']>['selected'], palette: 1, padding: 1, depth: 0, boldPi: false, plainPi: false, pi: [] as string[], observes: 0, captures: 0, reads: 0, holdStyles: false, styleRequests: [] as Record<string, any>[], poisonPi: false, keys: [] as string[], capturedKeys: [] as string[], committed: new Map<string, number>() };
+  const env = { liveCalls, ready, enabled: true, generation: 1, selected: { kind: 'pi', variant: 'dark' } as ReturnType<SyntaxClient['snapshot']>['selected'], palette: 1, padding: 1, depth: 0, boldPi: false, plainPi: false, pi: [] as string[], observes: 0, captures: 0, reads: 0, holdStyles: false, styleRequests: [] as Record<string, any>[], poisonPi: false, keys: [] as string[], capturedKeys: [] as string[], committed: new Map<string, number>() };
   const calls: { request: Record<string, unknown>; resolve(value: unknown): void }[] = [];
   const styleCalls: { request: Record<string, any>; resolve(value: unknown): void }[] = [];
   const provider = {
@@ -329,7 +330,7 @@ test('a refused Bash replacement shows current compact arguments, not stale prep
 for (const refusal of ['palette', 'paint'] as const) test(`accepted read source with refused first ${refusal} stays bounded and recovers without stock callbacks`, async () => {
   const f = fixture(false, false, {}, undefined, false, true);
   f.env.enabled = false; await f.sources.setEnabled(false);
-  f.env.selected = { kind: 'theme', id: 'gruvbox-dark' }; f.adapter.syntaxMetadataChanged(); await settled();
+  f.env.selected = { kind: 'theme', id: 'gruvbox', variant: 'dark' }; f.adapter.syntaxMetadataChanged(); await settled();
   const marker = 'F2_PAINT_REFUSAL_READ_SOURCE', resultText = `const ${marker} = 1;`;
   const work = observeSyntaxLocalWork(text => text.includes(marker)), probe = paintFundingProbe(f, refusal);
   const updateDisplay = CardSources.prototype.updateDisplay;
@@ -413,7 +414,7 @@ for (const refusal of ['palette', 'paint'] as const) test(`accepted read source 
 test('a read replacement during paint refusal recovers the latest saved result', async () => {
   const f = fixture(false, false, {}, undefined, false, true);
   f.env.enabled = false; await f.sources.setEnabled(false);
-  f.env.selected = { kind: 'theme', id: 'gruvbox-dark' }; f.adapter.syntaxMetadataChanged(); await settled();
+  f.env.selected = { kind: 'theme', id: 'gruvbox', variant: 'dark' }; f.adapter.syntaxMetadataChanged(); await settled();
   const previous = 'const READ_BEFORE_PAINT_REFUSAL = 1;', latest = 'const READ_REPLACED_DURING_REFUSAL = 2;';
   const probe = paintFundingProbe(f, 'paint'), updateDisplay = CardSources.prototype.updateDisplay;
   let target: object | undefined, acceptedInputs = 0;
@@ -491,7 +492,7 @@ for (const extra of [true, false]) test(`host frozen Bash recolors its retained 
   await settled();
   const sources = f.calls.length, styleRequests = f.env.styleRequests.length;
   f.env.holdStyles = false;
-  f.env.selected = { kind: 'theme', id: 'gruvbox-dark' }; f.adapter.syntaxMetadataChanged(); await settled();
+  f.env.selected = { kind: 'theme', id: 'gruvbox', variant: 'dark' }; f.adapter.syntaxMetadataChanged(); await settled();
   f.render(tool); await settled(); f.render(tool); await settled();
   assert.equal(f.calls.length, sources, 'recoloring frozen scopes needs no SOURCE');
   assert.equal(f.env.styleRequests.length, styleRequests, 'palette changes do not dispatch another generic STYLE request');
@@ -500,7 +501,7 @@ for (const extra of [true, false]) test(`host frozen Bash recolors its retained 
 
 for (const occupied of [true, false]) test(`host rollback to a cached owned palette ${occupied ? 'does not wait for both occupied DATA credits' : '(control: free credits)'}`, async () => {
   const f = fixture(true), first = { id: 'gruvbox-dark' }, second = { id: 'nord-dark' };
-  const select = async (theme: typeof first) => { f.env.selected = { kind: 'theme', id: theme.id }; f.adapter.syntaxMetadataChanged(); await settled(); };
+  const select = async (theme: typeof first) => { f.env.selected = palettePreference(theme.id); f.adapter.syntaxMetadataChanged(); await settled(); };
   await select(first);
   const tool = written(f, 'const rollback = 1;'); f.render(tool); await settled();
   answer(f, 0, 'const rollback = 1;'); await settled(); f.render(tool); await settled();
@@ -1147,9 +1148,9 @@ for (const frozen of [false, true]) test(`stream review F1: ${frozen ? 'frozen' 
   f.env.ready = true; f.adapter.syntaxMetadataChanged(); await settled();
   assert.ok(await hasHostInk(f.render(tool, 100), themes.theme, 'syntaxKeyword', text));
   assert.equal(f.calls.length, before); assert.equal(f.sources.displayStamp(f.env.keys[0]!), stamp); assert.equal(f.env.pi.length, 0);
-  f.env.ready = false; f.env.selected = { kind: 'theme', id: 'different' }; f.adapter.syntaxMetadataChanged();
+  f.env.ready = false; f.env.selected = { kind: 'theme', id: 'different', variant: 'dark' }; f.adapter.syntaxMetadataChanged();
   assert.equal(await hasHostInk(f.render(tool), themes.theme, 'syntaxKeyword', text), true, 'pending preference does not erase the last ready display');
-  f.env.ready = true; f.env.selected = { kind: 'pi' }; f.adapter.syntaxMetadataChanged(); await settled();
+  f.env.ready = true; f.env.selected = { kind: 'pi', variant: 'dark' }; f.adapter.syntaxMetadataChanged(); await settled();
   assert.ok(await hasHostInk(f.render(tool), themes.theme, 'syntaxKeyword', text));
   f.env.enabled = false; f.sources.setEnabled(false); f.adapter.syntaxMetadataChanged(); await settled();
   assert.equal(await hasHostInk(f.render(tool), themes.theme, 'syntaxKeyword', text), false);
@@ -1298,7 +1299,7 @@ for (const episode of ['startup', 'reconnection'] as const) test(`host online wa
 
 for (const kind of ['write', 'edit'] as const) test(`host ${kind} palette switch rematerializes retained semantic rows locally at unchanged width`, async () => {
   const f = fixture(true);
-  f.env.selected = { kind: 'theme', id: 'gruvbox-dark' }; f.adapter.syntaxMetadataChanged();
+  f.env.selected = { kind: 'theme', id: 'gruvbox', variant: 'dark' }; f.adapter.syntaxMetadataChanged();
   const tools = Array.from({ length: 4 }, (_, i) => {
     if (kind === 'write') return written(f, `const host${i}=1;`);
     const tool = f.tool('edit', { path: `host${i}.ts`, oldText: `const old${i}=1;`, newText: `const next${i}=2;` });
@@ -1313,7 +1314,7 @@ for (const kind of ['write', 'edit'] as const) test(`host ${kind} palette switch
   const first = tools[0]!, before = f.render(first), firstKey = f.env.keys[0]!;
   const oldPalette = f.sources.displayBasis(firstKey)?.palette;
   f.env.holdStyles = true;
-   f.env.selected = { kind: 'theme', id: 'gruvbox-light' }; f.adapter.syntaxMetadataChanged();
+   f.env.selected = { kind: 'theme', id: 'gruvbox', variant: 'light' }; f.adapter.syntaxMetadataChanged();
    await settled(); // Palette bytes and cached expressions are prepared outside render.
    const countsBefore = counts(f), styleRequests = f.env.styleRequests.length, sourceCalls = f.calls.length;
   const immediate = f.render(first);
@@ -1366,7 +1367,7 @@ for (const kind of ['write', 'edit'] as const) test(`theme burst: ${kind} previe
 
 for (const kind of ['write', 'edit'] as const) test(`theme burst: ${kind} owned palette preview→full→preview keeps binding paint while unrelated jobs remain held`, async () => {
   const f = fixture(true);
-  f.env.selected = { kind: 'theme', id: 'catppuccin-dark' }; f.adapter.syntaxMetadataChanged(); await settled();
+  f.env.selected = { kind: 'theme', id: 'catppuccin', variant: 'dark' }; f.adapter.syntaxMetadataChanged(); await settled();
   const tool = kind === 'write' ? written(f, 'const n = 1') : f.tool('edit', { path: 'a.ts', oldText: 'const n = 1', newText: 'const n = 2' });
   if (kind === 'edit') tool.updateResult({ content: [{ type: 'text', text: 'saved' }], details: { diff: '-1 const n = 1\n+1 const n = 2' }, isError: false }, false);
   f.render(tool); await settled();
@@ -1407,7 +1408,7 @@ test('external owner establishes a Pi fallback baseline after owned-asset failur
   });
   syncBuiltinESMExports();
   const f = fixture(false, false, {}, undefined, false, true);
-  f.env.selected = { kind: 'theme', id: 'gruvbox-dark' }; f.adapter.syntaxMetadataChanged();
+  f.env.selected = { kind: 'theme', id: 'gruvbox', variant: 'dark' }; f.adapter.syntaxMetadataChanged();
   const tool = written(f, 'const externalPaletteFallback = 1;');
   const controller = f.adapter as TidyUiController & { refreshPreparedPalette(node: object, token: object): void };
   const refresh = controller.refreshPreparedPalette; let refreshVisits = 0;
@@ -1486,7 +1487,7 @@ test('collected prior Pi colors still trigger retained-card recolor without new 
 
 test('prepared host owned palette paints every card surface without Pi on warm repaint resize and output updates', async () => {
   const f = fixture(true);
-  f.env.selected = { kind: 'theme', id: 'catppuccin-dark' }; f.adapter.syntaxMetadataChanged();
+  f.env.selected = { kind: 'theme', id: 'catppuccin', variant: 'dark' }; f.adapter.syntaxMetadataChanged();
   const tool = f.tool('bash', { command: 'echo native', description: 'description', workdir: '/tmp' });
   tool.setArgsComplete(); tool.updateResult({ content: [{ type: 'text', text: 'stdout\n<system-reminder>\nreminder\n</system-reminder>' }], isError: false }, false);
   const first = f.render(tool); await settled();
@@ -1709,7 +1710,7 @@ for (const selection of ['owned palette', 'Follow Pi'] as const) test(`C19 SDK h
   const before = sourceCounts(f), raw = JSON.stringify([tool.args, tool.result, tool.getRenderContext()]);
   const styleRequests = f.env.styleRequests.length;
   if (selection === 'owned palette') {
-    f.env.selected = { kind: 'theme', id: 'tokyonight-dark' }; f.adapter.syntaxMetadataChanged();
+    f.env.selected = { kind: 'theme', id: 'tokyonight', variant: 'dark' }; f.adapter.syntaxMetadataChanged();
   } else { themes.setTheme('light'); f.env.palette++; f.render(tool); }
   await settled();
   assert.equal(f.env.styleRequests.length, styleRequests, 'palette changes rebind retained common expressions locally');
@@ -1766,7 +1767,7 @@ for (const pause of ['zero-width', 'hidden'] as const)
 
 for (const kind of ['bash', 'write', 'edit'] as const) test(`host renderer transfer: ready ${kind} retains native paint and measured text without SOURCE or STYLE`, async () => {
   const f = fixture(true, false, {}, undefined, true);
-   f.env.selected = { kind: 'theme', id: 'monokai-dark' }; f.adapter.syntaxMetadataChanged();
+   f.env.selected = { kind: 'theme', id: 'monokai', variant: 'dark' }; f.adapter.syntaxMetadataChanged();
   const tool = kind === 'write' ? written(f, 'const TRANSFER_MARK = 1;')
     : f.tool(kind, kind === 'bash' ? { command: 'echo TRANSFER_MARK' }
       : { path: 'transfer.ts', oldText: 'const TRANSFER_OLD = 1;', newText: 'const TRANSFER_NEW = 2;' });
@@ -1821,7 +1822,7 @@ test('host renderer transfer: restore before deferred root retirement releases e
 
 test('host renderer transfer: changed text is prepared instead of reusing the old semantic source demand', async () => {
   const f = fixture(true, false, {}, undefined, true), tool = written(f, 'const TRANSFER_BEFORE = 1;');
-   f.env.selected = { kind: 'theme', id: 'nord-light' }; f.adapter.syntaxMetadataChanged();
+   f.env.selected = { kind: 'theme', id: 'nord', variant: 'light' }; f.adapter.syntaxMetadataChanged();
   f.document(); await settled(); answer(f, 0, 'const TRANSFER_BEFORE = 1;'); await settled(); f.document();
   f.ui.clear(); tool.updateArgs({ path: 'a.ts', content: 'const TRANSFER_AFTER = 2;' }); f.ui.addChild(tool);
   const pending = plain(f.document()).join('\n');
@@ -1971,7 +1972,7 @@ for (const occupied of [true, false]) test(`syntax host: cached Follow Pi rollba
   const key = f.env.keys[0]!;
   assert.equal(f.sources.displayBasis(key)?.palette, 'pi:1:truecolor', 'initial Follow Pi display');
   const initialRows = f.render(tool);
-   f.env.selected = { kind: 'theme', id: owned }; f.adapter.syntaxMetadataChanged(); await settled();
+   f.env.selected = palettePreference(owned); f.adapter.syntaxMetadataChanged(); await settled();
   f.render(tool); await settled(); f.render(tool); await settled();
    assert.equal(f.sources.displayBasis(key)?.palette, `theme:${owned}:owned-palette-v1:${owned}:truecolor`, 'owned palette display');
   if (occupied) {
@@ -1979,7 +1980,7 @@ for (const occupied of [true, false]) test(`syntax host: cached Follow Pi rollba
     await settled(); assert.equal(f.calls.length, 3, 'both physical DATA credits held by unrelated SOURCE');
   }
   const styles = f.env.styleRequests.length, sources = f.calls.length;
-  f.env.selected = { kind: 'pi' }; f.adapter.syntaxMetadataChanged(); await settled();
+  f.env.selected = { kind: 'pi', variant: 'dark' }; f.adapter.syntaxMetadataChanged(); await settled();
   f.render(tool); await settled(); f.render(tool); await settled();
   assert.equal(f.env.styleRequests.length, styles, 'Follow Pi styles are cached');
   assert.equal(f.calls.length, sources);
@@ -2273,7 +2274,7 @@ for (const kind of ['write', 'edit'] as const) for (const refusal of ['palette',
 test(`supported collapsed ${kind} preview reports refused ${refusal} and recovers without expansion`, async () => {
   const f = fixture(false, false, {}, undefined, false, true);
   f.env.enabled = false; await f.sources.setEnabled(false);
-  f.env.selected = { kind: 'theme', id: 'gruvbox-dark' }; f.adapter.syntaxMetadataChanged(); await settled();
+  f.env.selected = { kind: 'theme', id: 'gruvbox', variant: 'dark' }; f.adapter.syntaxMetadataChanged(); await settled();
   const marker = `F2_PAINT_REFUSAL_${kind}_PREVIEW`, content = `const ${marker} = 1;`;
   const work = observeSyntaxLocalWork(text => text.includes(marker)), probe = paintFundingProbe(f, refusal);
   const geometryFunding = f.sources.geometryFunding; let denyLayout = false;
@@ -2322,7 +2323,7 @@ test(`supported collapsed ${kind} preview reports refused ${refusal} and recover
 test('same-source palette updates reuse the charged file descriptor under construction pressure', async () => {
   const f = fixture(false, false, {}, undefined, false, true);
   f.env.enabled = false; await f.sources.setEnabled(false);
-  f.env.selected = { kind: 'theme', id: 'gruvbox-dark' }; f.adapter.syntaxMetadataChanged(); await settled();
+  f.env.selected = { kind: 'theme', id: 'gruvbox', variant: 'dark' }; f.adapter.syntaxMetadataChanged(); await settled();
   const marker = 'RETAINED_DESCRIPTOR_PALETTE', text = `const ${marker} = 1;`;
   const tool = f.tool('read', { path: 'retained-descriptor.txt' }, createReadToolDefinition('/tmp'));
   tool.updateResult({ content: [{ type: 'text', text }], isError: false }, false); tool.setExpanded(true);
@@ -2333,7 +2334,7 @@ test('same-source palette updates reuse the charged file descriptor under constr
   CardSources.prototype.updateDisplay = function (owner, input) { updates++; return updateDisplay.call(this, owner, input); };
   try {
     probe.recover();
-    f.env.selected = { kind: 'theme', id: 'nord-dark' }; f.adapter.syntaxMetadataChanged();
+    f.env.selected = { kind: 'theme', id: 'nord', variant: 'dark' }; f.adapter.syntaxMetadataChanged();
     tool.invalidate(); await settled();
     f.render(tool); await settled();
     const rows = plain(f.render(tool)).join('\n');
@@ -2374,7 +2375,7 @@ test('a retained detached Bash renders natively without disabling the live adapt
 
 for (const refusal of ['palette', 'paint'] as const) test(`bash transition: refused first ${refusal} keeps compact arguments until ordinary recovery`, async () => {
   const f = fixture(false, false, {}, undefined, false, true);
-  f.env.selected = { kind: 'theme', id: 'gruvbox-dark' }; f.adapter.syntaxMetadataChanged();
+  f.env.selected = { kind: 'theme', id: 'gruvbox', variant: 'dark' }; f.adapter.syntaxMetadataChanged();
   const probe = paintFundingProbe(f, refusal);
   try {
     const tool = f.tool('bash', { command: 'echo BASH_PAINT_TRANSITION' }, createBashToolDefinition('/tmp'));

@@ -15,7 +15,7 @@ import { compileStyleAnsi } from '../../../src/syntax/style-ansi.ts';
 function fixture() {
   let loads = 0, writes = 0, providers = 0;
   const runtime = new SyntaxRuntime({ standaloneVersion: '0.1.0-test',
-    settings: { load: async () => { loads++; return { ok: true, syntaxTheme: { kind: 'pi' } }; },
+    settings: { load: async () => { loads++; return { ok: true, themePreference: { kind: 'pi', variant: 'dark' } }; },
       update: async () => { writes++; return { ok: true }; } },
     provider: { tryShared: async () => { providers++; return undefined; }, acquireOwned: async () => { providers++; throw Error('unexpected provider'); } } });
   const budget = new DataBudget(1_000_000), funding: GeometryFunding = { budget, grant: bytes => budget.reserve(bytes) };
@@ -28,7 +28,7 @@ function tracked(native: Theme) {
 }
 function counted(name = 'dark') { return tracked(getThemeByName(name)!); }
 type Lease = NonNullable<ReturnType<SyntaxRuntime['preparePaletteInput']>>;
-const piPalette = resolveTheme({ kind: 'pi' }).effective;
+const piPalette = resolveTheme({ kind: 'pi', variant: 'dark' }).effective;
 function prepare(f: ReturnType<typeof fixture>, theme: ReturnType<typeof counted>, mode: 'truecolor' | '256color', funding = f.funding) {
   return f.runtime.preparePaletteInput(piPalette, theme, f.runtime.palette(theme), mode, funding);
 }
@@ -140,7 +140,7 @@ test('Pi input: detached receipts and weak cache do not retain first owner, them
 test('Pi input: mode and public palette replacement build once with old/new overlap, never parse or change selection', async () => {
   const f = fixture(), theme = counted(), changed = counted('light');
   try {
-    f.runtime.previewTheme({ kind: 'theme', id: 'chosen-native' });
+    f.runtime.previewTheme({ kind: 'theme', id: 'chosen-native', variant: 'dark' });
     const selected = f.runtime.snapshot().selected, source = f.runtime.sources.stats();
     const old = prepare(f, theme, 'truecolor', f.funding)!, original = inspect(old), oldBytes = f.budget.stats().retainedBytes;
     const next = prepare(f, theme, '256color', f.funding)!;

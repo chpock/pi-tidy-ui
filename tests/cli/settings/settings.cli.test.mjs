@@ -328,13 +328,17 @@ for (const mode of ['regular', 'fullscreen']) test(`real CLI: settings popup nav
       const checkRootColumns = (narrow = false, expectedColumn) => {
         const dump = live.captureScreen(`settings-columns-${++layoutCapture}`, {}), bounds = live.tidyFrame();
         assert.ok(bounds);
-        const items = ['Tidy', 'Code color', 'Set', 'Status', 'Close'].map(label => {
-          const y = live.tidyRows().findIndex(row => /^(?:→ |  )/u.test(row) && row.slice(2).startsWith(label));
-          if (narrow && y < 0) return undefined;
-          assert.ok(y >= 0, `root item is painted: ${label}`);
-          return { y, text: sliceByColumn(dump.screen[y], bounds.left + 1, bounds.width - 2),
-            value: label === 'Code color' ? narrow ? 'Fo…' : 'Follow Pi' : ['Tidy', 'Set'].includes(label) ? 'On' : undefined };
-        }).filter(Boolean);
+        const rows = live.tidyRows();
+        if (!narrow) for (const label of ['Tidy UI appearance', 'Code color theme', 'Code color variant', 'Set', 'Status', 'Close'])
+          assert.ok(rows.some(row => /^(?:→ |  )/u.test(row) && row.slice(2).startsWith(label)), `root item is painted: ${label}`);
+        const items = rows.flatMap((row, y) => {
+          if (!/^(?:→ |  )(?:Tidy|Code color|Set|Status|Close)/u.test(row)) return [];
+          const text = sliceByColumn(dump.screen[y], bounds.left + 1, bounds.width - 2);
+          const value = / {2,}(Follow Pi|Fo…|Dark|Da…|On)(?:\s|›|$)/u.exec(text)?.[1];
+          if (/^(?:→ |  )(?:Tidy|Code color|Set)/u.test(row)) assert.ok(value, 'each visible setting keeps its value');
+          if (value) assert.ok((narrow ? ['Fo…', 'Da…', 'On'] : ['Follow Pi', 'Dark', 'On']).includes(value), 'only narrow values are ellipsized');
+          return [{ y, text, value }];
+        });
         const anchor = items.find(item => item.value);
         const column = expectedColumn ?? (anchor ? anchor.text.indexOf(anchor.value) : -1);
         assert.ok(column >= 0);
@@ -423,7 +427,7 @@ for (const mode of ['regular', 'fullscreen']) test(`real CLI: settings popup nav
       } else await live.terminalColors(false);
       await live.tidyPage(['Status & troubleshooting', 'Use Occipital highlighting']);
       await live.diagnosticLogging(false); await live.appearance(false);
-      const saved = { ...initialSettings, syntaxTheme: { kind: 'pi' }, terminalColorsEnabled: false,
+      const saved = { ...initialSettings, syntaxTheme: { kind: 'pi' }, syntaxThemeVariant: 'dark', terminalColorsEnabled: false,
         nativeHighlightingEnabled: false };
       assert.deepEqual(JSON.parse(readFileSync(path, 'utf8')), saved);
       const off = await live.capture('settings-all-off');
@@ -508,7 +512,8 @@ for (const mode of ['regular', 'fullscreen']) test(`settings sync: two real Pi p
       } });
     terminals.push(peer); await peer.ready(); await peer.openTidyMenu();
     assert.ok(peer.tidyRows().some(row => /Tidy UI appearance\s+On$/u.test(row)));
-    assert.ok(peer.tidyRows().some(row => /Code color theme.*Gruvbox Dark/u.test(row)));
+    assert.ok(peer.tidyRows().some(row => /Code color theme.*Gruvbox/u.test(row)));
+    assert.ok(peer.tidyRows().some(row => /Code color variant\s+Dark/u.test(row)));
     await live.appearance(false); await live.diagnosticLogging(false);
     assert.deepEqual(readFileSync(file), original, 'local choices never publish into the shared file');
     const starts = live.events().filter(event => event.type === 'start').length;
@@ -530,7 +535,7 @@ for (const mode of ['regular', 'fullscreen']) test(`settings sync: two real Pi p
     await live.closeTidyMenu();
     assert.ok((await live.tidyPage()).some(row => /Tidy UI appearance\s+Off$/u.test(row)));
     assert.ok((await peer.tidyPage(['Status & troubleshooting', 'Diagnostic logs'])).some(row => row === 'Recording: On'));
-    assert.deepEqual(JSON.parse(readFileSync(file, 'utf8')), { syntaxTheme: { kind: 'pi' }, nativeHighlightingEnabled: true, terminalColorsEnabled: false, future: true });
+    assert.deepEqual(JSON.parse(readFileSync(file, 'utf8')), { syntaxTheme: { kind: 'pi' }, syntaxThemeVariant: 'dark', nativeHighlightingEnabled: true, terminalColorsEnabled: false, future: true });
     assert.deepEqual(traffic(live, 2), data); assert.deepEqual(readFileSync(initial.session), bytes);
     assert.equal(peer.events().filter(event => ['call', 'result', 'model_context'].includes(event.type)).length, 0);
   } finally { await closeTerminals(terminals.reverse()); }

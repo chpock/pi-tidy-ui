@@ -40,3 +40,26 @@ export const THEME_CATALOGUE: readonly ThemeCatalogueEntry[] = Object.freeze([
 ]);
 
 export const themeEntry = (id: string): ThemeCatalogueEntry | undefined => THEME_CATALOGUE.find(entry => entry.id === id);
+
+
+export interface ThemeFamilyEntry { readonly id: string; readonly label: string }
+
+const familyEntries = new Map<string, ThemeFamilyEntry>();
+const concreteFamilies = new Map<string, string>();
+for (const theme of THEME_CATALOGUE) {
+  const id = theme.id.replace(/-(?:dark|light)$/u, '');
+  if (!familyEntries.has(id)) familyEntries.set(id, { id, label: theme.label.replace(/ (?:Dark|Light)$/u, '') });
+  concreteFamilies.set(theme.id, id);
+}
+
+export const THEME_FAMILIES: readonly ThemeFamilyEntry[] = Object.freeze([...familyEntries.values()]);
+
+/** Known family membership wins over exact legacy concrete-ID aliases. */
+export function themeFamilyId(id: string): string | undefined {
+  return familyEntries.has(id) ? id : concreteFamilies.get(id);
+}
+
+export function themeFamilyEntry(id: string): ThemeFamilyEntry | undefined {
+  const family = themeFamilyId(id);
+  return family ? familyEntries.get(family) : undefined;
+}

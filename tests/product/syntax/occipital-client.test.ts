@@ -8,7 +8,8 @@ import { join } from 'node:path';
 import { RuntimeHealth } from '../../../src/runtime-health.ts';
 import { reportRuntime } from '../../../src/diagnostics.ts';
 import { SyntaxClient, type SyntaxClientOptions } from '../../../src/occipital/client.ts';
-import { ExtensionSettings, SETTINGS_FILE_MAX_BYTES, type SettingsLoadResult, type SettingsSaveResult, type SyntaxTheme } from '../../../src/settings.ts';
+import { ExtensionSettings, SETTINGS_FILE_MAX_BYTES, type SettingsLoadResult, type SettingsPatch, type SettingsSaveResult,
+  type SyntaxTheme, type ThemePreference, type ThemeVariant } from '../../../src/settings.ts';
 import type { ProviderClock, ProviderTransport } from '../../../src/occipital/provider.ts';
 import type { TransportEnd } from '../../../src/occipital/transport-end.ts';
 import { semanticDescriptor } from '../../fixtures/semantic-provider.ts';
@@ -17,7 +18,10 @@ import { createSemanticRuleDefinition } from '../../../src/syntax/semantic-rules
 import { ownedStyleSelection } from '../../fixtures/owned-style-selection.ts';
 
 const pi = { id: 'pi', label: 'Follow Pi', fingerprint: 'pi-palette-v1' };
-const themeChoice = { kind: 'theme' as const, id: 'gruvbox-dark' };
+const piPreference: ThemePreference = { kind: 'pi', variant: 'dark' };
+const preference = (id: string, variant: ThemeVariant = 'dark'): Extract<ThemePreference, { kind: 'theme' }> =>
+  ({ kind: 'theme', id: id.replace(/-(?:dark|light)$/u, ''), variant });
+const themeChoice = preference('gruvbox-dark');
 const native = { id: 'gruvbox-dark', label: 'Gruvbox Dark', fingerprint: 'owned-palette-v1:gruvbox-dark' };
 function deferred<T>() {
   let resolve!: (value: T) => void, reject!: (error: unknown) => void;
@@ -79,13 +83,14 @@ class Clock implements ProviderClock {
   }
 }
 class Store {
-  loads = 0; writes: { choice: SyntaxTheme; signal?: AbortSignal }[] = [];
-  restored: SettingsLoadResult = { ok: true, syntaxTheme: { kind: 'pi' } };
+  loads = 0; writes: { choice: SyntaxTheme; variant: ThemeVariant; signal?: AbortSignal }[] = [];
+  restored: SettingsLoadResult = { ok: true, themePreference: piPreference };
   loadResult?: Promise<SettingsLoadResult>;
   saveResult: SettingsSaveResult | Promise<SettingsSaveResult> = { ok: true };
   load() { this.loads++; return this.loadResult ?? Promise.resolve(this.restored); }
-  update(patch: { syntaxTheme: SyntaxTheme }, options?: { signal?: AbortSignal }) {
-    this.writes.push({ choice: patch.syntaxTheme, signal: options?.signal }); return Promise.resolve(this.saveResult);
+  update(patch: SettingsPatch, options?: { signal?: AbortSignal }) {
+    this.writes.push({ choice: patch.syntaxTheme!, variant: patch.syntaxThemeVariant!, signal: options?.signal });
+    return Promise.resolve(this.saveResult);
   }
 }
 const clients = new Set<SyntaxClient>();
@@ -121,12 +126,12 @@ test('constructor, snapshots, source inspection and menu captures never load, ac
   assert.equal(f.c.snapshot().enabled, true); assert.equal(f.c.snapshot().effective, undefined);
   assert.equal(f.peer.calls.length, 0);
 });
-for (const choice of [{ kind: 'pi' }, themeChoice, { kind: 'theme', id: 'missing' }] as SyntaxTheme[]) {
+for (const choice of [piPreference, themeChoice, preference('missing')] as ThemePreference[]) {
   test(`one startup restores ${JSON.stringify(choice)} without writing defaults`, async () => {
-    const store = new Store(); store.restored = { ok: true, syntaxTheme: choice }; const f = fixture({}, store);
+    const store = new Store(); store.restored = { ok: true, themePreference: choice }; const f = fixture({}, store);
     const a = f.c.start(), b = f.c.start(); assert.equal(a, b); await a; await f.c.start();
     assert.equal(store.loads, 1); assert.equal(store.writes.length, 0); assert.equal(f.sharedAttempts(), 1); assert.equal(f.acquisitions(), 0);
-    assert.deepEqual(f.c.snapshot().selected, choice); assert.equal(f.c.snapshot().effective?.id, choice.kind === 'theme' && choice.id === native.id ? native.id : pi.id);
+    assert.deepEqual(f.c.snapshot().selected, choice); assert.equal(f.c.snapshot().effective?.id, choice.kind === 'theme' && choice.id === 'gruvbox' ? native.id : pi.id);
     assert.equal(f.errors.length, choice.kind === 'theme' && choice.id === 'missing' ? 1 : 0);
     assert.deepEqual(f.peer.calls.map(call => call.request.op), ['describe']);
   });
@@ -136,17 +141,17 @@ test('provider readiness does not publish a palette before settings load; explic
   const restored = deferred<SettingsLoadResult>(), store = new Store(); store.loadResult = restored.promise; const f = fixture({}, store);
   const start = f.c.start(); await settle(); assert.ok(f.c.snapshot().provider.description); assert.equal(f.c.snapshot().effective, undefined);
   assert.equal(f.c.sources.observe({ key: 'one', version: 1, text: 'x', complete: true }), false);
-  const choice: SyntaxTheme = { kind: 'theme', id: themeChoice.id }; await f.c.selectTheme(choice); choice.id = 'mutated';
-  assert.deepEqual(f.c.snapshot().selected, { kind: 'theme', id: 'gruvbox-dark' }); assert.equal(f.c.snapshot().effective?.id, native.id);
-  restored.resolve({ ok: true, syntaxTheme: { kind: 'pi' } }); await start;
+  const choice: ThemePreference = preference(native.id); await f.c.selectTheme(choice); choice.id = 'mutated';
+  assert.deepEqual(f.c.snapshot().selected, themeChoice); assert.equal(f.c.snapshot().effective?.id, native.id);
+  restored.resolve({ ok: true, themePreference: piPreference }); await start;
   assert.equal(f.c.snapshot().effective?.id, native.id); assert.equal(f.peer.calls.length, 1);
   const snapshot = f.c.snapshot(); (snapshot.selected as { id: string }).id = 'bad'; (snapshot.effective as { fingerprint: string }).fingerprint = 'bad';
-  assert.equal(f.c.snapshot().effective?.fingerprint, native.fingerprint); assert.equal((f.c.snapshot().selected as { id: string }).id, native.id);
+  assert.equal(f.c.snapshot().effective?.fingerprint, native.fingerprint); assert.equal((f.c.snapshot().selected as { id: string }).id, 'gruvbox');
   assert.equal(f.c.snapshot().provider.description, f.c.broker.snapshot().description);
 });
 
 test('invalid settings default and rejected load report only fixed bounded errors, never raw details', async () => {
-  const store = new Store(); store.restored = { ok: false, syntaxTheme: { kind: 'pi' }, issue: { code: 'invalid-theme', message: 'Settings contain an invalid syntax theme preference.' } };
+  const store = new Store(); store.restored = { ok: false, themePreference: piPreference, issue: { code: 'invalid-theme', message: 'Settings contain an invalid syntax theme preference.' } };
   const f = fixture({}, store); await f.c.start(); assert.equal(f.c.snapshot().effective?.id, 'pi'); assert.equal(store.writes.length, 0);
   assert.equal(f.errors.length, 1); assert.ok(f.c.snapshot().lastIssue);
   const other = fixture({ settings: { load: async () => { throw Error('/SECRET/path'); }, update: async () => ({ ok: true }) } });
@@ -159,7 +164,7 @@ test('real store failure keeps prior disk and new active choice; cancellation si
   try {
     const previous = '{"syntaxTheme":{"kind":"pi"}}\n'; await writeFile(file, previous);
     const settings = new ExtensionSettings({ file }); const f = fixture({ settings }); await f.c.start();
-    await writeFile(file, 'invalid'); assert.equal((await f.c.selectTheme({ kind: 'theme', id: native.id })).ok, false);
+    await writeFile(file, 'invalid'); assert.equal((await f.c.selectTheme(preference(native.id))).ok, false);
     assert.equal(f.c.snapshot().effective?.id, native.id); assert.equal(await readFile(file, 'utf8'), 'invalid');
     assert.equal(f.c.snapshot().lastIssue?.includes('invalid JSON'), true);
     const fixed = { syntaxTheme: { kind: 'pi' }, unknown: '' };
@@ -167,15 +172,15 @@ test('real store failure keeps prior disk and new active choice; cancellation si
     const valid = JSON.stringify(fixed); await writeFile(file, valid);
     const retained = fixture({ settings }); await retained.c.start();
     assert.equal(retained.c.snapshot().effective?.id, 'pi');
-    assert.equal((await retained.c.selectTheme({ kind: 'theme', id: native.id })).ok, false);
+    assert.equal((await retained.c.selectTheme(preference(native.id))).ok, false);
     assert.equal(retained.c.snapshot().effective?.id, native.id);
     assert.equal(await readFile(file, 'utf8'), valid, 'failed oversized replacement must keep previous valid disk file');
   } finally { await rm(directory, { recursive: true, force: true }); }
   const held = deferred<SettingsSaveResult>(), store = new Store(); store.saveResult = held.promise; const f = fixture({}, store); await f.c.start();
-  const first = f.c.selectTheme({ kind: 'theme', id: native.id }); const second = f.c.selectTheme({ kind: 'pi' });
+  const first = f.c.selectTheme(preference(native.id)); const second = f.c.selectTheme(piPreference);
   assert.notEqual(store.writes[0]!.signal, store.writes[1]!.signal); assert.equal(store.writes[0]!.signal!.aborted, true);
   const off = f.c.setEnabled(false); assert.equal(store.writes[1]!.signal!.aborted, true); await off;
-  const third = f.c.selectTheme({ kind: 'pi' }); assert.equal(store.writes[2]!.signal!.aborted, false);
+  const third = f.c.selectTheme(piPreference); assert.equal(store.writes[2]!.signal!.aborted, false);
   await f.c.dispose(); assert.equal(store.writes[2]!.signal!.aborted, true);
   held.resolve({ ok: false, issue: { code: 'write-failed', message: 'SECRET' } }); await Promise.all([first, second, third]);
   assert.equal(f.c.snapshot().lastIssue, undefined); assert.equal(f.errors.length, 0);
@@ -185,7 +190,7 @@ test('off retires sources and saves synchronously; captures never revive, includ
   const f = fixture(); const initial = f.c.captureMenu(); await f.c.setEnabled(false);
   assert.equal(initial(), false); const disabled = f.c.captureMenu(); assert.equal(disabled(), true); await f.c.start();
   assert.equal(f.sharedAttempts(), 0); assert.equal(f.store.loads, 1); assert.equal(f.c.snapshot().effective?.id, pi.id);
-  await f.c.selectTheme({ kind: 'theme', id: native.id }); assert.equal(f.sharedAttempts(), 0);
+  await f.c.selectTheme(preference(native.id)); assert.equal(f.sharedAttempts(), 0);
   await f.c.setEnabled(true); assert.equal(disabled(), false); assert.equal(initial(), false); assert.equal(f.c.snapshot().effective?.id, native.id);
   const live = f.c.captureMenu(); const source = demand(f.c); f.c.sources.observe(source); f.c.sources.flush();
   const call = f.peer.calls.at(-1)!; const exit = deferred<void>(); f.peer.exit = exit.promise;
@@ -195,12 +200,12 @@ test('off retires sources and saves synchronously; captures never revive, includ
   await f.c.setEnabled(true); assert.equal(live(), false); assert.equal(f.store.loads, 1); assert.equal(f.store.writes.length, 1);
   const final = f.c.captureMenu(); await f.c.dispose(); assert.equal(final(), false); assert.equal(f.c.captureMenu()(), false);
   const counts = [f.sharedAttempts(), f.store.writes.length, f.notices(), f.errors.length];
-  await f.c.start(); await f.c.setEnabled(true); await f.c.selectTheme({ kind: 'pi' }); await settle();
+  await f.c.start(); await f.c.setEnabled(true); await f.c.selectTheme(piPreference); await settle();
   assert.deepEqual([f.sharedAttempts(), f.store.writes.length, f.notices(), f.errors.length], counts);
 });
 
 test('unknown local theme warns once; palette choice is independent of provider metadata', async () => {
-  const missing = 'quote"\n\u001b'; const store = new Store(); store.restored = { ok: true, syntaxTheme: { kind: 'theme', id: missing } };
+  const missing = 'quote"\n\u001b'; const store = new Store(); store.restored = { ok: true, themePreference: preference(missing) };
   const f = fixture({}, store); await f.c.start();
   assert.equal(f.errors.length, 1); assert.ok(f.errors[0]!.includes(JSON.stringify(missing))); assert.equal(f.errors[0]!.includes('\u001b'), false);
   assert.equal(f.c.snapshot().effective?.id, 'pi');
@@ -216,7 +221,7 @@ test('local palette changes never reparse or re-request SOURCE', async () => {
   const source = demand(f.c); f.c.sources.observe(source); f.c.sources.flush(); f.peer.answerSource(1); await settle();
   const stats = f.c.sources.stats(), accepted = f.c.broker.stats().successfulClassifications;
   const calls = f.peer.calls.length;
-  await f.c.selectTheme({ kind: 'theme', id: 'solarized-dark' }); await settle();
+  await f.c.selectTheme(preference('solarized')); await settle();
   assert.equal(f.c.snapshot().effective?.id, 'solarized-dark');
   assert.equal(f.peer.calls.length, calls, 'owned palette selection is local and does not ask the helper for a theme catalogue');
   assert.deepEqual(f.c.sources.stats(), stats); assert.equal(f.c.broker.stats().successfulClassifications, accepted);
@@ -248,13 +253,13 @@ test('retained production broker/source observer callbacks cannot retain first o
 });
 
 test('explicit preference before start is not overwritten by startup restore; known late restore gates native work', async () => {
-  const early = fixture(); await early.c.selectTheme({ kind: 'theme', id: native.id }); await early.c.start();
+  const early = fixture(); await early.c.selectTheme(preference(native.id)); await early.c.start();
   assert.equal(early.c.snapshot().effective?.id, native.id); assert.equal(early.store.loads, 1);
   const load = deferred<SettingsLoadResult>(), store = new Store(); store.loadResult = load.promise;
   const f = fixture({}, store); const start = f.c.start(); await settle();
   const piDemand = { key: 'one', version: 1, text: 'x', complete: true };
   assert.equal(f.c.sources.observe(piDemand), false); f.c.sources.flush(); assert.equal(f.peer.calls.length, 1);
-  load.resolve({ ok: true, syntaxTheme: { kind: 'theme', id: native.id } }); await start;
+  load.resolve({ ok: true, themePreference: preference(native.id) }); await start;
   f.c.sources.observe(demand(f.c)); f.c.sources.flush();
   assert.equal(f.c.snapshot().effective?.id, native.id);
   assert.equal(Object.hasOwn(f.peer.calls[1]!.request.sources[0], 'profile'), false);
@@ -267,7 +272,7 @@ test('explicit preference before start is not overwritten by startup restore; kn
 
 test('stale source reply after current content demand cannot publish or reset classification crash budget', async () => {
   const f = fixture(); await f.c.start(); f.c.sources.observe(demand(f.c)); f.c.sources.flush();
-  const old = f.peer.calls[1]!; await f.c.selectTheme({ kind: 'theme', id: native.id });
+  const old = f.peer.calls[1]!; await f.c.selectTheme(preference(native.id));
   f.c.sources.observe({ ...demand(f.c), version: 2, text: 'y' }); f.c.sources.flush();
   assert.equal(old.options?.signal?.aborted, true, 'content replacement retires parser work, unlike theme-only selection');
   assert.equal(old.options?.acceptRetired, true, 'canonical terminal evidence passes through the broker');
@@ -300,7 +305,7 @@ test('late startup preference/provider completions after disposal neither publis
   const load = deferred<SettingsLoadResult>(), connection = deferred<ProviderTransport | undefined>(), store = new Store(); store.loadResult = load.promise;
   let acquired = 0; const f = fixture({ provider: { tryShared: async () => connection.promise, acquireOwned: async () => { acquired++; return new Peer(); } } }, store);
   const start = f.c.start(); await settle(); await f.c.dispose(); const notices = f.notices();
-  const late = new Peer(); connection.resolve(late); load.resolve({ ok: true, syntaxTheme: { kind: 'theme', id: 'missing' } });
+  const late = new Peer(); connection.resolve(late); load.resolve({ ok: true, themePreference: preference('missing') });
   await start; await settle(); assert.equal(acquired, 0); assert.equal(late.closes, 1); assert.equal(late.calls.length, 0);
   assert.equal(f.c.snapshot().provider.availability, 'disposed'); assert.equal(f.c.snapshot().effective, undefined);
   assert.equal(f.c.sources.observe({ key: 'one', version: 1, text: 'x', complete: true }), false);
@@ -311,7 +316,7 @@ test('local palette and UI changes never reset the owned restart budget; deliber
   const peers: Peer[] = []; const f = fixture({ provider: { tryShared: async () => undefined, acquireOwned: async () => { const peer = new Peer(); peers.push(peer); return peer; } } });
   await f.c.start(); assert.equal(peers.length, 1);
   for (let i = 0; i < 3; i++) {
-    await f.c.selectTheme({ kind: 'pi' }); f.c.snapshot(); f.c.captureMenu()();
+    await f.c.selectTheme(piPreference); f.c.snapshot(); f.c.captureMenu()();
     peers[i]!.end('lost'); await settle();
   }
   assert.equal(peers.length, 3); assert.equal(f.c.snapshot().provider.reason, 'restart_limit');
@@ -402,39 +407,39 @@ test('canonical client receives a fully validated retired shared outcome without
 
 test('theme preview applies immediately, copies the choice, coalesces notices and never persists', async () => {
   const f = fixture(); await f.c.start(); await settle();
-  const choice: SyntaxTheme = { kind: 'theme', id: native.id };
+  const choice: ThemePreference = preference(native.id);
   f.c.previewTheme(choice); choice.id = 'mutated';
   assert.deepEqual(f.c.snapshot().selected, themeChoice);
   assert.equal(f.c.snapshot().effective?.id, native.id);
-  f.c.previewTheme({ kind: 'pi' }); f.c.previewTheme({ kind: 'theme', id: native.id }); f.c.previewTheme({ kind: 'pi' });
+  f.c.previewTheme(piPreference); f.c.previewTheme(preference(native.id)); f.c.previewTheme(piPreference);
   await settle(); assert.equal(f.c.snapshot().effective?.id, pi.id);
   assert.equal(f.store.writes.length, 0); assert.deepEqual(f.peer.calls.map(call => call.request.op), ['describe']);
   const before = f.notices();
-  for (let i = 0; i < 100; i++) f.c.previewTheme({ kind: 'pi' });
+  for (let i = 0; i < 100; i++) f.c.previewTheme(piPreference);
   await settle(); assert.equal(f.notices(), before, 'unchanged previews are not new metadata demand');
-  assert.equal((await f.c.selectTheme({ kind: 'pi' })).ok, true);
+  assert.equal((await f.c.selectTheme(piPreference)).ok, true);
   assert.deepEqual(f.store.writes.map(write => write.choice), [{ kind: 'pi' }]);
 });
 
 test('theme preview cannot cancel an earlier confirmation or be overwritten by its late save result', async () => {
   const held = deferred<SettingsSaveResult>(), store = new Store(); store.saveResult = held.promise;
   const f = fixture({}, store); await f.c.start();
-  const confirming = f.c.selectTheme({ kind: 'theme', id: native.id });
-  f.c.previewTheme({ kind: 'pi' });
+  const confirming = f.c.selectTheme(preference(native.id));
+  f.c.previewTheme(piPreference);
   assert.equal(store.writes[0]!.signal!.aborted, false);
   held.resolve({ ok: true }); assert.equal((await confirming).ok, true);
-  assert.deepEqual(f.c.snapshot().selected, { kind: 'pi' });
-  f.c.previewTheme({ kind: 'theme', id: native.id });
+  assert.deepEqual(f.c.snapshot().selected, piPreference);
+  f.c.previewTheme(preference(native.id));
   assert.equal(f.c.snapshot().effective?.id, native.id); assert.equal(store.writes.length, 1);
 });
 
 test('theme preview and rollback remain current after a late preference load', async () => {
   const restored = deferred<SettingsLoadResult>(), store = new Store(); store.loadResult = restored.promise;
   const f = fixture({}, store); const starting = f.c.start(); await settle();
-  f.c.previewTheme(themeChoice); f.c.previewTheme({ kind: 'pi' });
-  restored.resolve({ ok: true, syntaxTheme: themeChoice }); await starting;
+  f.c.previewTheme(themeChoice); f.c.previewTheme(piPreference);
+  restored.resolve({ ok: true, themePreference: themeChoice }); await starting;
   assert.equal(f.c.snapshot().effective?.id, pi.id);
-  f.c.previewTheme(themeChoice); f.c.previewTheme({ kind: 'pi' });
+  f.c.previewTheme(themeChoice); f.c.previewTheme(piPreference);
   assert.equal(f.c.snapshot().effective?.id, pi.id); assert.equal(store.writes.length, 0);
   assert.deepEqual(f.peer.calls.map(call => call.request.op), ['describe']);
 });
@@ -446,14 +451,14 @@ test('theme preview and rollback leave the real settings bytes intact; only conf
     const store = new ExtensionSettings({ file }); let writes = 0;
     const f = fixture({ settings: { load: () => store.load(), update: (...args) => { writes++; return store.update(...args); } } });
     await f.c.start();
-    f.c.previewTheme({ kind: 'theme', id: native.id }); f.c.previewTheme({ kind: 'pi' });
+    f.c.previewTheme(preference(native.id)); f.c.previewTheme(piPreference);
     assert.equal(writes, 0); assert.equal(await readFile(file, 'utf8'), original);
-    f.c.previewTheme({ kind: 'theme', id: native.id });
-    assert.equal((await f.c.selectTheme({ kind: 'theme', id: native.id })).ok, true);
+    f.c.previewTheme(preference(native.id));
+    assert.equal((await f.c.selectTheme(preference(native.id))).ok, true);
     assert.equal(writes, 1);
-    assert.deepEqual(JSON.parse(await readFile(file, 'utf8')), { syntaxTheme: { kind: 'theme', id: native.id }, unknown: { preserved: true } });
+    assert.deepEqual(JSON.parse(await readFile(file, 'utf8')), { syntaxTheme: { kind: 'theme', id: 'gruvbox' }, syntaxThemeVariant: 'dark', unknown: { preserved: true } });
     await f.c.dispose(); const selected = f.c.snapshot().selected;
-    f.c.previewTheme({ kind: 'pi' });
+    f.c.previewTheme(piPreference);
     assert.deepEqual(f.c.snapshot().selected, selected); assert.equal(writes, 1);
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
@@ -462,19 +467,19 @@ test('runtime health: actual theme-save failure is counted without capture and s
   const notices: string[] = [], health = new RuntimeHealth(message => notices.push(message));
   const diagnostic = health.sink(() => {}), f = fixture({ diagnostic });
   f.store.saveResult = { ok: false, issue: { code: 'write-failed', message: 'PRIVATE_SAVE_FAILURE' } };
-  assert.equal((await f.c.selectTheme({ kind: 'pi' })).ok, false); await settle();
+  assert.equal((await f.c.selectTheme(piPreference)).ok, false); await settle();
   assert.equal(health.snapshot().errors, 1); assert.equal(health.snapshot().active, 1); assert.equal(notices.length, 1);
   assert.doesNotMatch(notices[0]!, /PRIVATE_SAVE_FAILURE/);
-  f.store.saveResult = { ok: true }; await f.c.selectTheme({ kind: 'pi' });
+  f.store.saveResult = { ok: true }; await f.c.selectTheme(piPreference);
   assert.equal(health.snapshot().active, 0); assert.equal(health.snapshot().last?.state, 'recovered');
   reportRuntime(diagnostic, { kind: 'failure', scope: f.store, operation: 'save', area: 'settings', code: 'settings_save' });
-  await f.c.selectTheme({ kind: 'theme', id: native.id }); assert.equal(health.snapshot().active, 0);
+  await f.c.selectTheme(preference(native.id)); assert.equal(health.snapshot().active, 0);
 });
 
 test('runtime health: a retired theme-save failure is not a runtime incident', async () => {
   const health = new RuntimeHealth(() => {}), f = fixture({ diagnostic: health.sink(() => {}) });
   const pending = deferred<SettingsSaveResult>(); f.store.saveResult = pending.promise;
-  const saving = f.c.selectTheme({ kind: 'pi' }); await f.c.dispose();
+  const saving = f.c.selectTheme(piPreference); await f.c.dispose();
   pending.resolve({ ok: false, issue: { code: 'write-failed', message: 'cancelled' } }); await saving;
   assert.equal(health.snapshot().errors, 0);
 });
@@ -572,4 +577,54 @@ test('completion boundary: cancelled source callbacks cannot cancel a successor 
     assert.ok(release); release();
     load.resolve(store.restored); assert.equal(await successor, true); assert.equal(visits, 3);
   } finally { release?.(); load.resolve(store.restored); await start; }
+});
+
+
+test('theme preferences retain the chosen variant for Pi and save both canonical settings keys', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'syntax-theme-variant-'));
+  const file = join(directory, 'config.json');
+  try {
+    const settings = new ExtensionSettings({ file });
+    const f = fixture({ settings });
+    const piLight: ThemePreference = { kind: 'pi', variant: 'light' };
+    f.c.applySavedTheme(piPreference);
+    f.c.previewTheme(piLight);
+    assert.deepEqual(f.c.snapshot().selected, piLight, 'variant-only Pi preview updates its remembered choice');
+    f.c.applySavedTheme(piLight);
+    assert.deepEqual(f.c.snapshot().selected, piLight, 'Pi retains a variant even though its effective palette ignores it');
+    assert.equal(f.c.snapshot().effective?.id, 'pi');
+
+    const light: ThemePreference = { kind: 'theme', id: 'github', variant: 'light' };
+    assert.equal((await f.c.selectTheme(light)).ok, true);
+    assert.deepEqual(f.c.snapshot().selected, light);
+    assert.equal(f.c.snapshot().effective?.id, 'github-light');
+    const saved = await readFile(file, 'utf8');
+    assert.deepEqual(JSON.parse(saved), {
+      syntaxTheme: { kind: 'theme', id: 'github' }, syntaxThemeVariant: 'light',
+    });
+    const dark: ThemePreference = { ...light, variant: 'dark' };
+    f.c.previewTheme(dark);
+    assert.deepEqual(f.c.snapshot().selected, dark, 'variant-only owned preview updates its selected pair');
+    assert.equal(f.c.snapshot().effective?.id, 'github-dark');
+    assert.equal(await readFile(file, 'utf8'), saved, 'preview does not save its variant');
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+
+test('unknown-family warning is not repeated for variant-only changes', async () => {
+  const store = new Store();
+  const missing: ThemePreference = { kind: 'theme', id: 'not-installed', variant: 'dark' };
+  store.restored = { ok: true, themePreference: missing };
+  const f = fixture({}, store); await f.c.start();
+  assert.equal(f.errors.length, 1);
+  f.c.previewTheme({ ...missing, variant: 'light' });
+  assert.equal(f.errors.length, 1, 'previewing a variant does not start another missing-family episode');
+  f.c.applySavedTheme(missing);
+  assert.equal(f.errors.length, 1, 'an external variant-only update retains the same warning episode');
+  await f.c.selectTheme({ ...missing, variant: 'light' });
+  assert.equal(f.errors.length, 1, 'explicit variant confirmation retains the same warning episode');
+  f.c.applySavedTheme({ kind: 'theme', id: 'another-missing-family', variant: 'light' });
+  assert.equal(f.errors.length, 2, 'a different missing family is a new episode');
+  f.c.applySavedTheme(piPreference); f.c.applySavedTheme(missing);
+  assert.equal(f.errors.length, 3, 'returning after a known preference starts a new episode');
 });

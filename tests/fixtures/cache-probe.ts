@@ -211,8 +211,8 @@ try {
       registerToolRenderer(resolver: ToolRendererResolver) { footerResolvers.push(resolver); },
       registerCommand(name: string, options: { handler: Function }) { if (name === "tidy-ui") footerCommand = options.handler; },
     } as unknown as ExtensionAPI, { logging: { root: join(logDirectory, "footer") },
-      settings: { async load() { return { ok: true, syntaxTheme: { kind: 'pi' } }; }, async update() { return { ok: true }; } }, syntax: () => ({ standaloneVersion: "gc",
-      settings: { async load() { return { ok: true, syntaxTheme: { kind: "pi" } }; }, async update() { return { ok: true }; } },
+      settings: { async load() { return { ok: true, themePreference: { kind: 'pi', variant: 'dark' } }; }, async update() { return { ok: true }; } }, syntax: () => ({ standaloneVersion: "gc",
+      settings: { async load() { return { ok: true, themePreference: { kind: "pi", variant: 'dark' } }; }, async update() { return { ok: true }; } },
       provider: { async tryShared() { return undefined; }, async acquireOwned() { throw Error("isolated unavailable fixture"); } } }) });
     assert.equal(footerResolvers.length, 1, "the GC footer host models Pi's public renderer registration contract");
     for (const callback of handlers.get("session_start") ?? []) await callback({ reason: "startup" }, footerContext);

@@ -128,18 +128,18 @@ export async function registerPerformanceDriver(pi, adapter) {
       if (scenario.id === 'syntax') {
         const current = runtime(); assert.ok(current);
         await measure('new-owned-palette', 1, async () => {
-          current.previewTheme({ kind: 'theme', id: 'gruvbox-dark' });
+          current.previewTheme({ kind: 'theme', id: 'gruvbox', variant: 'dark' });
           const selected = current.snapshot().effective; assert.ok(selected);
           await ready(`theme:${selected.id}:${selected.fingerprint}:`);
         });
-        await measure('same-source-pi-palette', 1, async () => { current.previewTheme({ kind: 'pi' }); await ready('pi:'); }, noSourceWork);
+        await measure('same-source-pi-palette', 1, async () => { current.previewTheme({ kind: 'pi', variant: 'dark' }); await ready('pi:'); }, noSourceWork);
         await measure('cached-owned-palette-rollback', 1, async () => {
-          current.previewTheme({ kind: 'theme', id: 'gruvbox-dark' });
+          current.previewTheme({ kind: 'theme', id: 'gruvbox', variant: 'dark' });
           const selected = current.snapshot().effective; assert.ok(selected);
           await ready(`theme:${selected.id}:${selected.fingerprint}:`);
         }, noRPC);
-        await measure('cached-pi-rollback', 1, async () => { current.previewTheme({ kind: 'pi' }); await ready('pi:'); }, noRPC);
-        await measure('reselected-pi-palette', 1, async () => { current.previewTheme({ kind: 'pi' }); await bridge.frame(); }, warmWork);
+        await measure('cached-pi-rollback', 1, async () => { current.previewTheme({ kind: 'pi', variant: 'dark' }); await ready('pi:'); }, noRPC);
+        await measure('reselected-pi-palette', 1, async () => { current.previewTheme({ kind: 'pi', variant: 'dark' }); await bridge.frame(); }, warmWork);
       }
       if (scenario.id === 'status') {
         assert.equal(typeof ctx.ui.setStatus, 'function', 'selected host public extension status contract');

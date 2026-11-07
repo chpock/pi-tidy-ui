@@ -17,6 +17,7 @@ import { CARD_ROLES } from '../../../src/occipital/semantic-codec.ts';
 import { OWNED_PALETTE_FILE_BYTES, parseOwnedPaletteBytes, parseOwnedPaletteData, sampleOwnedPalette, validateOwnedPaletteData } from '../../../src/themes/owned-palette.ts';
 import { THEME_CATALOGUE } from '../../../src/themes/catalogue.ts';
 import { resolveTheme } from '../../../src/themes/selection.ts';
+import { palettePreference } from '../../fixtures/palette-preference.ts';
 import { PaletteInputOwner } from '../../../src/syntax/pi-input-owner.ts';
 import { DataBudget } from '../../../src/occipital/data-budget.ts';
 import { getThemeByName } from '../../../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js';
@@ -84,7 +85,7 @@ test('owned palette inputs compile each role once, share warm owners, and releas
   let peakOverlapBytes = 0;
   try {
     for (const { id } of THEME_CATALOGUE) {
-      const palette = resolveTheme({ kind: 'theme', id }).effective;
+      const palette = resolveTheme(palettePreference(id)).effective;
       const revision = owner.palette(undefined, palette);
       observeCompilations = false;
       const expected = sampleOwnedPalette(id, 'truecolor');
@@ -132,7 +133,7 @@ test('owned palette input funding refusal refunds each partial reservation befor
   }) as typeof Object.freeze;
   try {
     for (const deniedGrant of [1, 2, 3]) {
-      const owner = new PaletteInputOwner(), palette = resolveTheme({ kind: 'theme', id: 'gruvbox-dark' }).effective;
+      const owner = new PaletteInputOwner(), palette = resolveTheme({ kind: 'theme', id: 'gruvbox', variant: 'dark' }).effective;
       const revision = owner.palette(undefined, palette), budget = new DataBudget(1_000_000);
       let grants = 0;
       const funding = { budget, grant(bytes: number) { grants++; return grants === deniedGrant ? undefined : budget.reserve(bytes); } };
@@ -201,7 +202,7 @@ test('missing selected assets use a bounded Pi fallback and recover on a new val
   assert.deepEqual(counts, sampled, 'a memoized missing identity does not resample Pi or reread the owned asset');
   assert.equal(warnings.length, 1, 'one visible warning for the failed identity');
   const expected = sampleOwnedPalette('gruvbox-dark', 'truecolor');
-  const valid = resolveTheme({ kind: 'theme', id: 'gruvbox-dark' }).effective;
+  const valid = resolveTheme({ kind: 'theme', id: 'gruvbox', variant: 'dark' }).effective;
   const nextRevision = owner.palette(theme, valid);
   const recovered = owner.prepare(theme, valid, nextRevision, 'truecolor', funding)!;
   assert.equal(recovered.paletteId, valid.id);
@@ -245,7 +246,7 @@ test('failed owned identity refreshes and lazily reacquires its Pi fallback afte
 test('known missing, corrupt and incomplete palette assets notify once, retain status, and release on selection change', async () => {
   const native = getThemeByName('dark')!;
   const theme = { colors: native.colors, getFgAnsi: native.getFgAnsi.bind(native), getBgAnsi: native.getBgAnsi.bind(native) };
-  const selected = resolveTheme({ kind: 'theme', id: 'gruvbox-dark' }).effective;
+  const selected = resolveTheme({ kind: 'theme', id: 'gruvbox', variant: 'dark' }).effective;
   const target = fileURLToPath(new URL('../../../src/themes/palettes/gruvbox-dark.json', import.meta.url));
   const directory = fs.mkdtempSync(join(tmpdir(), 'toolview-palette-failure-'));
   const corruptPath = join(directory, 'replacement.json');
@@ -287,7 +288,7 @@ test('known missing, corrupt and incomplete palette assets notify once, retain s
       assert.equal(notices.length, 1, `${name} failure uses runtime-health notification`);
        assert.equal(directNotices.length, 0, `${name} failure does not duplicate the health notification through direct UI`);
        assert.match(notices[0]!, /built-in color palette could not be loaded/u);
-      const recoveredTheme = resolveTheme({ kind: 'theme', id: 'gruvbox-light' }).effective;
+      const recoveredTheme = resolveTheme({ kind: 'theme', id: 'gruvbox', variant: 'light' }).effective;
       const recoveredRevision = owner.palette(theme, recoveredTheme);
       assert.equal(health.snapshot().active, 0, `${name} issue is released when the failed selection is abandoned`);
       assert.equal(health.snapshot().last?.state, 'released');

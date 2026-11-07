@@ -77,7 +77,7 @@ function fixture(ready = false, options: ConstructorParameters<typeof SourceCont
   sources.setStyleSelection(selection);
   const client: Pick<SyntaxClient, 'sources' | 'snapshot'> & { enabled: boolean } = {
     sources, enabled: true,
-    snapshot() { return { enabled: this.enabled, provider: host.snapshot(), standaloneVersion: 'test', selected: { kind: 'theme', id: ownedTheme.id }, effective: ownedTheme }; }
+    snapshot() { return { enabled: this.enabled, provider: host.snapshot(), standaloneVersion: 'test', selected: { kind: 'theme', id: 'gruvbox', variant: 'dark' }, effective: ownedTheme }; }
   };
   fixtures.push({ host, sources });
   return { host, sources, client };
@@ -104,7 +104,7 @@ for (const mode of ['startup', 'off', 'unavailable'] as const) {
   test(`syntax work ${mode} reuses exact Pi without capture, rows lookup or another classifier`, () => {
     const { client, sources, host } = fixture();
     if (mode === 'off') { client.enabled = false; sources.setEnabled(false); }
-    if (mode === 'unavailable') client.snapshot = () => ({ enabled: true, provider: { ...host.snapshot(), availability: 'unavailable', reason: 'transport_closed' }, standaloneVersion: 'test', selected: { kind: 'pi' } });
+    if (mode === 'unavailable') client.snapshot = () => ({ enabled: true, provider: { ...host.snapshot(), availability: 'unavailable', reason: 'transport_closed' }, standaloneVersion: 'test', selected: { kind: 'pi', variant: 'dark' } });
     let calls = 0, captures = 0, visits = 0;
     const originalCapture = sources.capturePiSource.bind(sources), originalVisit = sources.visitPiRanges.bind(sources);
     sources.capturePiSource = (...args) => { captures++; return originalCapture(...args); };
@@ -171,7 +171,7 @@ for (const mode of ['startup', 'off', 'unavailable'] as const) {
   test(`syntax work ${mode} admits useful incomplete demand, reuses exact colors and finalizes latest`, () => {
     const { client, sources, host } = fixture(); let calls = 0;
     if (mode === 'off') { client.enabled = false; sources.setEnabled(false); }
-    if (mode === 'unavailable') client.snapshot = () => ({ enabled: true, provider: { ...host.snapshot(), availability: 'unavailable', reason: 'transport_closed' }, standaloneVersion: 'test', selected: { kind: 'pi' } });
+    if (mode === 'unavailable') client.snapshot = () => ({ enabled: true, provider: { ...host.snapshot(), availability: 'unavailable', reason: 'transport_closed' }, standaloneVersion: 'test', selected: { kind: 'pi', variant: 'dark' } });
     const classify = (text: string) => { calls++; return highlight(text); };
     const initial = demand('a', 1, false);
     assert.equal(resolveSyntax(sources, initial).needsPi, true);
@@ -347,7 +347,7 @@ test('syntax work native proven prefix never borrows changed tail colors; exact 
 
 test('syntax work native RGB reader passes concrete styles without classification', async () => {
   const { client, sources, host } = fixture(true); const d = demand('x');
-  client.snapshot = () => ({ enabled: true, provider: host.snapshot(), standaloneVersion: 'test', selected: { kind: 'theme', id: 'rgb' }, effective: rgbProfile });
+  client.snapshot = () => ({ enabled: true, provider: host.snapshot(), standaloneVersion: 'test', selected: { kind: 'theme', id: 'rgb', variant: 'light' }, effective: rgbProfile });
   requestSyntax(client, d, highlight); sources.flush();
   await host.answer(0, d.text, true, { foreground: { kind: 'rgb', r: 1, g: 2, b: 3 }, background: neutral.background, attributes: 5 }); await settled();
   const resolved = resolveSyntax(sources, d), spans: { start: number; end: number; style: ConcreteStyle }[] = [];
@@ -364,7 +364,7 @@ test('syntax work local palette replacement retries STYLE only, never SOURCE or 
   assert.equal(resolveSyntax(sources, d).needsPi, false);
   const next = syntheticSelection(2, 'gruvbox-light');
   sources.setStyleSelection(next);
-  client.snapshot = () => ({ enabled: true, provider: host.snapshot(), standaloneVersion: 'test', selected: { kind: 'theme', id: rgbProfile.id }, effective: rgbProfile });
+  client.snapshot = () => ({ enabled: true, provider: host.snapshot(), standaloneVersion: 'test', selected: { kind: 'theme', id: 'gruvbox', variant: 'light' }, effective: rgbProfile });
   requestSyntax(client, d, classify); sources.flush(); await settled();
   assert.equal(host.calls.length, 1); assert.equal(host.styles.length, 2);
   host.style(1); await settled();
@@ -391,7 +391,7 @@ test('syntax work stale classifier publication cannot install or mark a replacem
 
 function collectibleReader() {
   const host = new Host(), sources = new SourceController(host);
-  const client = { sources, snapshot: () => ({ enabled: false, provider: host.snapshot(), standaloneVersion: 'test', selected: { kind: 'pi' as const } }) };
+  const client = { sources, snapshot: () => ({ enabled: false, provider: host.snapshot(), standaloneVersion: 'test', selected: { kind: 'pi' as const, variant: 'dark' as const } }) };
   requestSyntax(client, demand('x', 1, true, 'first'), () => ['\x1b[1mx\x1b[22m']);
   const reader = resolveSyntax(sources, demand('x', 1, true, 'first')).pi!;
   return { owner: new WeakRef(sources), reader };
@@ -661,7 +661,7 @@ test('syntax work forwards explicit neutral origin and theme-only selection neve
   sources.observe = input => { origins.push(input.neutral); return observe(input); };
   requestSyntax(client, d, highlight); sources.flush(); await host.answer(0, 'x');
   sources.setStyleSelection(syntheticSelection(2, 'gruvbox-light'));
-  client.snapshot = () => ({ enabled: true, provider: host.snapshot(), standaloneVersion: 'test', selected: { kind: 'theme', id: 'rgb' }, effective: rgbProfile });
+  client.snapshot = () => ({ enabled: true, provider: host.snapshot(), standaloneVersion: 'test', selected: { kind: 'theme', id: 'rgb', variant: 'light' }, effective: rgbProfile });
   requestSyntax(client, d, highlight); sources.flush(); await settled();
   assert.deepEqual(origins, ['title', 'title']); assert.equal(host.calls.length, 1);
   assert.equal(host.styles.length, 2); host.style(1); await settled();

@@ -59,7 +59,7 @@ function cleanup(transports: StdioTransport[]) {
   }
 }
 function client(t: TestContext, acquireOwned: ProviderOptions['acquireOwned'], health = healthFixture()) {
-  const value = new SyntaxClient({ standaloneVersion: '0.0.0', initialTheme: { kind: 'pi' }, diagnostic: health.diagnostic,
+  const value = new SyntaxClient({ standaloneVersion: '0.0.0', initialTheme: { kind: 'pi', variant: 'dark' }, diagnostic: health.diagnostic,
     provider: { tryShared: async () => undefined, acquireOwned } });
   t.after(() => value.dispose());
   return { value, ...health };
@@ -77,7 +77,7 @@ for (const fault of ['nonexecutable', 'malformed', 'incompatible', 'exit'] as co
     let missing = 0;
     const owned = tracked(t, createLocalOwnedFactory({ command, requestDeadlineMs: 500, terminateGraceMs: 30, onMissing() { missing++; } }));
     const f = healthFixture(), completed = deferred<void>(), embedding: string[] = [];
-    const runtime = new SyntaxRuntime({ standaloneVersion: '0.0.0', initialTheme: { kind: 'pi' }, diagnostic: f.diagnostic,
+    const runtime = new SyntaxRuntime({ standaloneVersion: '0.0.0', initialTheme: { kind: 'pi', variant: 'dark' }, diagnostic: f.diagnostic,
       provider: { tryShared: async () => undefined, acquireOwned: owned.acquire }, notify: message => embedding.push(message) });
     t.after(() => runtime.dispose());
     const view = { active: true, syntaxMetadataChanged() {
@@ -163,7 +163,7 @@ test('owned startup health: failed startup releases on Off, recovers on valid re
 
 test('owned startup health: embedding without a runtime observer gets one fixed notification per failed episode', async t => {
   const root = await directory(t), notifications: string[] = [];
-  const value = new SyntaxClient({ standaloneVersion: '0.0.0', initialTheme: { kind: 'pi' },
+  const value = new SyntaxClient({ standaloneVersion: '0.0.0', initialTheme: { kind: 'pi', variant: 'dark' },
     provider: { tryShared: async () => undefined, acquireOwned: createOwnedFactory({ cacheDir: root, release,
       requestDeadlineMs: 500, terminateGraceMs: 30, fetcher: async () => { throw Error('PRIVATE'); } }) },
     notify: message => notifications.push(message) });
@@ -215,7 +215,7 @@ for (const action of ['off', 'dispose'] as const) {
 test('owned startup health: runtime embedding without logging or health observer still notifies once', async t => {
   const root = await directory(t), command = join(root, 'broken'), notifications: string[] = [], completed = deferred<void>();
   await writeFile(command, 'not executable'); await chmod(command, 0o600);
-  const runtime = new SyntaxRuntime({ standaloneVersion: '0.0.0', initialTheme: { kind: 'pi' },
+  const runtime = new SyntaxRuntime({ standaloneVersion: '0.0.0', initialTheme: { kind: 'pi', variant: 'dark' },
     provider: { tryShared: async () => undefined, acquireOwned: createLocalOwnedFactory({ command, requestDeadlineMs: 500, terminateGraceMs: 30 }) },
     notify: message => notifications.push(message) });
   t.after(() => runtime.dispose());

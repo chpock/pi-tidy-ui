@@ -242,8 +242,11 @@ async function menuAction(terminal, action) {
   else throw Error('Unknown test menu action');
 }
 
+const familyLabel = paletteId => paletteId === 'pi' ? 'Follow Pi theme'
+  : THEME_CATALOGUE.find(theme => theme.id === paletteId)?.label.replace(/ (?:Dark|Light)$/u, '');
+
 async function chooseTheme(terminal, paletteId) {
-  const label = paletteId === 'pi' ? 'Follow Pi theme' : THEME_CATALOGUE.find(theme => theme.id === paletteId)?.label;
+  const label = familyLabel(paletteId);
   assert.ok(label, `known local theme choice ${paletteId}`);
   await terminal.openTidyMenu(); await terminal.selectTidyItem('Code color theme');
   assert.ok(terminal.tidyRows().some(row => row.includes('Search:')), 'public searchable theme picker installed');
@@ -252,6 +255,13 @@ async function chooseTheme(terminal, paletteId) {
   terminal.send(label);
   await terminal.waitForScreen(() => terminal.tidyRows().some(row => row.startsWith('→ ') && row.includes(label)), 'searched theme selected');
   await terminal.selectTidyItem(label); await terminal.closeTidyMenu();
+  if (paletteId !== 'pi') {
+    const variant = paletteId.endsWith('-light') ? 'light' : 'dark';
+    const file = join(terminal.agent, 'extensions/pi-tidy-ui/config.json');
+    if (JSON.parse(readFileSync(file, 'utf8')).syntaxThemeVariant !== variant) {
+      await terminal.openTidyMenu(); await terminal.selectTidyItem('Code color variant'); await terminal.closeTidyMenu();
+    }
+  }
 }
 
 async function peerSource(client) {
@@ -314,7 +324,7 @@ async function retainedNativeThemeStats(terminal, name) {
   // Restored FILEs may initially have only Pi paint. Preview a local palette
   // once to establish the first generic semantic group before warm-change checks.
   writeFileSync(join(terminal.output, 'syntax-theme-phase'), 'owned-prerequisite');
-  await terminal.openTidyMenu(); await terminal.selectTidyItem('Code color theme'); terminal.send(palette.label);
+  await terminal.openTidyMenu(); await terminal.selectTidyItem('Code color theme'); terminal.send(familyLabel(paletteId));
   const ready = async id => {
     const current = await settledStats(terminal, `${name}-${id}`);
     assert.ok(await semanticPhaseReady(() => current, () => terminal.events(), themeMarkers, id), 'retained generic semantics for every marker');

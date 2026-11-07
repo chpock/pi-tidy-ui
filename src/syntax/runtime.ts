@@ -1,7 +1,7 @@
 import { diagnose, reportRuntime } from '../diagnostics.ts';
 import { SyntaxClient, type SyntaxClientOptions } from '../occipital/client.ts';
 import { type SyntaxMenuOwner } from '../occipital/menu.ts';
-import type { SyntaxTheme } from '../settings.ts';
+import type { ThemePreference } from '../settings.ts';
 import type { TerminalColorMode } from '@earendil-works/pi-tui';
 import type { GeometryFunding } from '../occipital/controller.ts';
 import { type PiInputTheme, type PaletteInputLease } from './pi-input.ts';
@@ -59,7 +59,7 @@ export class SyntaxRuntime implements SyntaxMenuOwner {
   /** The public Theme proxy is stable; its cached colors object changes on theme
    * or terminal-default changes. Never sample tokens or inspect its private target. */
   palette(theme: { readonly colors: object }): number {
-    const selected = this.client.snapshot().effective ?? resolveTheme({ kind: 'pi' }).effective;
+    const selected = this.client.snapshot().effective ?? resolveTheme({ kind: 'pi', variant: 'dark' }).effective;
     return this.paletteInput.palette(theme, selected);
   }
   /** Data-only acquisition; the selected identity and lease remain card-owner inputs. */
@@ -86,9 +86,9 @@ export class SyntaxRuntime implements SyntaxMenuOwner {
   suspend(): void { if (!this.disposed) this.client.suspend(); }
   resume(): void { if (!this.disposed) void this.client.resume().catch(startupFailure(this.owner)); }
   prepareThemes() { return this.disposed ? Promise.resolve() : this.client.restorePreference(); }
-  previewTheme(choice: SyntaxTheme) { this.client.previewTheme(choice); }
-  applySavedTheme(choice: SyntaxTheme) { this.client.applySavedTheme(choice); }
-  selectTheme(choice: SyntaxTheme) { return this.client.selectTheme(choice); }
+  previewTheme(choice: ThemePreference) { this.client.previewTheme(choice); }
+  applySavedTheme(choice: ThemePreference) { this.client.applySavedTheme(choice); }
+  selectTheme(choice: ThemePreference) { return this.client.selectTheme(choice); }
   dispose(): Promise<void> {
     if (!this.disposed) { reportRuntime(this.options.diagnostic, { kind: 'released', scope: this, operation: '*' }); diagnose(this.options.diagnostic, 'INFO', 'syntax', 'Syntax runtime disposing; current source owners are retired'); this.disposed = true; ++this.epoch; this.presentation = undefined; this.paletteInput.dispose(); }
     return this.client.dispose();

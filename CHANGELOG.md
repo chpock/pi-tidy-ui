@@ -7,6 +7,16 @@ been reconstructed.
 
 ## [Unreleased]
 
+### Breaking changes
+
+- Store the code-theme family in `syntaxTheme.id` and its variant separately in
+  `syntaxThemeVariant` (`"dark"` or `"light"`). Missing or unsupported variants use
+  Dark. Known legacy IDs such as `github-light` are recognized as the `github`
+  family, but their suffix does not select Light: set `syntaxThemeVariant` to
+  `"light"` to retain it. Reading does not rewrite configuration; confirming a
+  theme or variant saves the new pair. Reset `syntaxTheme` to `{"kind":"pi"}`
+  before downgrading to versions that require concrete palette IDs.
+
 ### Added
 
 - Expand compact read summaries into syntax-colored, numbered source cards without
@@ -17,6 +27,9 @@ been reconstructed.
 
 ### Changed
 
+- List 36 code-theme families instead of 72 Dark/Light palettes in `/tidy-ui`.
+  Choose the variant in a separate root control, dimmed, disabled and skipped
+  during navigation when Follow Pi is selected; its remembered value is retained.
 - Show expanded read/write/edit failures in Bash-style error panels, with a red
   stripe and status, readable complete error output, and no proposed file contents.
   Compact failure summaries and original session data remain unchanged.

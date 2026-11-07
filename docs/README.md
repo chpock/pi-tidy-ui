@@ -41,7 +41,7 @@ If you are interested in **Occipital as a daemon**, start directly with its [sta
 | [Prepared cards](syntax/prepared-cards.md) | Prepared source slots, full display versus classification, measured geometry, coherent paint, Pi ANSI conversion and accepted borrowed visits |
 | [Shebang hints](syntax/shebang-hints.md) | Curated interpreter map, exact line-1 provenance, `env` subset, generic language selector, optional-path fallback, source identity and per-side diff painting |
 | [Follow Pi](syntax/follow-pi.md) | Public Pi binding and semantic-rule tables, role-specific derived colors, provenance, contrast/quantization, font composition and rationale |
-| [Palette ownership](syntax/palettes.md) | Common 44-slot classifier, bundled local palette data, funded input leases, complete card roles and diff-surface derivation |
+| [Palette ownership](syntax/palettes.md) | Common 44-slot classifier, family/variant resolution to bundled concrete palette data, funded input leases, complete card roles and diff-surface derivation |
 | [Color model](color-model.md) | Shared color representations and diff-surface math with distinct Follow Pi/owned-palette authored inputs |
 
 `src/occipital/` contains the extension's client mechanisms; it is not the Rust daemon and is not claimed to be an independently isolated SDK package. Native computation belongs to the next section.
@@ -63,7 +63,7 @@ The protocol reference ships with this manual. Its six current conformance JSON 
 
 | Chapter | What it explains |
 |---|---|
-| [Settings and menu](settings-menu-spec.md) | Popup/service boundaries, preview/confirmation, file/token validation, serialized rename, cross-process watches and local versus persisted switches |
+| [Settings and menu](settings-menu-spec.md) | Popup/service boundaries, separate theme families/variants, disabled navigation, preview/confirmation, file/token validation, serialized rename, cross-process watches and local versus persisted switches |
 | [Terminal defaults](terminal-colors-spec.md) | Fixed/automatic source eligibility, desired/applied OSC channels, concrete RGB projection, source failure, stop/start and process-exit ownership |
 | [Diagnostics and health](debug-logging-spec.md) | Independent observation/health/journal owners, safe metadata, bounded writer, retention, incidents, recovery and explicit controls |
 | [Delivery and releases](releases.md) | CI graph, supported targets, version/native-byte admission, staging, notices, independent product changelogs and exact-tag publication |

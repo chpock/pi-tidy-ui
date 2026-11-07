@@ -21,7 +21,7 @@ import { ExpectedOwnedUnavailable } from '../../../src/occipital/owned-startup.t
 import { samplePiCardPalette } from '../../../src/syntax/pi-palette.ts';
 import { sampleOwnedPalette } from '../../../src/themes/owned-palette.ts';
 import { menuPage, withMenu, setAppearance, setLogging } from '../../helpers/menu-driver.ts';
-import { ExtensionSettings, type SettingsLoadResult, type SettingsPatch, type LocalPreferences } from '../../../src/settings.ts';
+import { ExtensionSettings, themePreferenceFromSettings, type SettingsLoadResult, type SettingsPatch, type LocalPreferences } from '../../../src/settings.ts';
 import { FilePreviewState } from '../../../src/file-preview-state.ts';
 import { createLazyNativeRendererResolver, DeferredRenderer, isDeferredStockFilePair } from '../../../src/syntax/lazy-native-renderers.ts';
 import { extensionHarness as sharedExtensionHarness } from '../../fixtures/sdk-contract-support.ts';
@@ -36,15 +36,19 @@ function fixture(mode = 'tui', logging: false | Omit<JournalOptions, 'warn' | 'e
   settings?: Pick<ExtensionSettings, 'load' | 'update'> & Partial<Pick<ExtensionSettings, 'watch'>>,
   localPreferences: LocalPreferences = { appearanceEnabled: true, loggingEnabled: true },
   cardPreparation?: TidyUiRuntimeOptions['cardPreparation'],
-  syntaxTheme: SettingsLoadResult['syntaxTheme'] = { kind: 'pi' }) {
+  themePreference: SettingsLoadResult['themePreference'] = { kind: 'pi', variant: 'dark' }) {
   const root = new UI(), events = new Map<string, (event: unknown, ctx: ExtensionContext) => unknown>();
   const commands = new Map<string, { handler(args: string, ctx: ExtensionContext): Promise<void> }>();
   const rendererResolvers: ToolRendererResolver[] = [];
   const counts = { constructed: 0, load: 0, saves: 0, shared: 0, owned: 0 }, notices: string[] = [];
   const flags = new Map<string, string>();
-  let saved: SettingsLoadResult = { ok: true, syntaxTheme }, view = '';
+  let saved: SettingsLoadResult = { ok: true, themePreference }, view = '';
   const store = settings ?? { async load() { counts.load++; return { ...saved }; },
-    async update(patch: SettingsPatch) { counts.saves++; saved = { ...saved, ...patch }; return { ok: true as const }; } };
+    async update(patch: SettingsPatch) { counts.saves++; const { syntaxTheme, syntaxThemeVariant, ...switches } = patch;
+      const current = saved.themePreference.kind === 'pi' ? { kind: 'pi' as const }
+        : { kind: 'theme' as const, id: saved.themePreference.id };
+      saved = { ...saved, ...switches, themePreference: themePreferenceFromSettings(syntaxTheme ?? current,
+        syntaxThemeVariant ?? saved.themePreference.variant) }; return { ok: true as const }; } };
   const ctx = { mode, hasUI: mode === 'tui', cwd: '/tmp', isIdle: () => true,
     sessionManager: { getSessionId: () => 'entry-fixture', getSessionFile: () => '/example/entry-fixture.jsonl',
       getSessionName: () => { throw Error('Logging must not scan history for a session name'); } }, ui: { theme: themes.theme,
@@ -697,7 +701,7 @@ test('unsupported host without public tool-renderer registration is rejected bef
     getFlag() {}, getSettings: () => ({}), getThinkingLevel: () => 'off',
   } as unknown as ExtensionAPI;
   assert.throws(() => tidyUi(unsupported, { localPreferences: { appearanceEnabled: true, loggingEnabled: false },
-    settings: { async load() { calls.settings++; return { ok: true, syntaxTheme: { kind: 'pi' } }; }, async update() { return { ok: true }; } } }),
+    settings: { async load() { calls.settings++; return { ok: true, themePreference: { kind: 'pi', variant: 'dark' } }; }, async update() { return { ok: true }; } } }),
   /Pi 1\.0\.1.*registerToolRenderer/u);
   assert.deepEqual(calls, { hooks: 0, flags: 0, commands: 0, settings: 0 });
 });
@@ -1292,7 +1296,7 @@ test('ineligible file ownership releases superseded argument and result snapshot
 test('custom preview takeover releases superseded native children while the host retains its old layout', { skip: !global.gc }, async () => {
   const preparations: Parameters<NonNullable<TidyUiRuntimeOptions['cardPreparation']>>[0][] = [];
   const h = fixture('tui', false, {
-    async load() { return { ok: true, syntaxTheme: { kind: 'theme', id: 'gruvbox-dark' }, nativeHighlightingEnabled: false }; },
+    async load() { return { ok: true, themePreference: { kind: 'theme', id: 'gruvbox', variant: 'dark' }, nativeHighlightingEnabled: false }; },
     async update() { return { ok: true }; },
   }, { appearanceEnabled: true, loggingEnabled: false }, event => preparations.push(event));
   try {
@@ -1476,14 +1480,14 @@ for (const [name, contents, enabled] of [
 test('entry terminal colors: removing a shared preference releases colors without writing or disabling highlighting', async () => {
   let changed!: (value: SettingsLoadResult) => void, saves = 0;
   const h = fixture('tui', false, {
-    async load() { return { ok: true, syntaxTheme: { kind: 'pi' }, terminalColorsEnabled: true }; },
+    async load() { return { ok: true, themePreference: { kind: 'pi', variant: 'dark' }, terminalColorsEnabled: true }; },
     async update() { saves++; return { ok: true }; }, watch(callback) { changed = callback; return () => {}; },
   });
   const directory = await fs.mkdtemp(join(tmpdir(), 'tidy-colors-shared-'));
   const packets = await observeTerminalDefaults(h, directory);
   try {
     await h.start(); await settled(); assert.ok(packets.some(packet => packet.includes('\x1b]11;')));
-    changed({ ok: true, syntaxTheme: { kind: 'pi' } }); await settled();
+    changed({ ok: true, themePreference: { kind: 'pi', variant: 'dark' } }); await settled();
     assert.equal(packets.at(-1), '\x1b]111\x07\x1b]110\x07');
     await h.page(); assert.match(h.view, /Set terminal colors from Pi theme\s+Off/);
     await h.page('Status & troubleshooting'); assert.match(h.view, /Use Occipital highlighting\s+On/);
@@ -1552,7 +1556,7 @@ test('entry projects trusted terminal backgrounds into prepared Pi input without
   try {
     for (const [background, mode] of [['#123456', 'truecolor'], ['#0a0b0c', 'truecolor'], ['#123456', '256color']] as const) {
       await fs.writeFile(path, JSON.stringify({ colors: { text: '#eeeeee' }, export: { pageBg: background } }));
-      const h = fixture('tui', false, { async load() { return { ok: true, syntaxTheme: { kind: 'pi' }, terminalColorsEnabled: true }; },
+      const h = fixture('tui', false, { async load() { return { ok: true, themePreference: { kind: 'pi', variant: 'dark' }, terminalColorsEnabled: true }; },
         async update() { return { ok: true }; } }), theme = new Theme(fg as never, bg as never, mode, { name: 'entry-colors', sourcePath: path, dim: ['dim', 'muted'] });
       Object.assign(h.ctx.ui, { theme });
       Object.assign(h.root, { terminalColorSchemeNotificationsEnabled: false, terminal: { start() {}, stop() {}, write() {} } });
@@ -1602,7 +1606,7 @@ test('entry projects trusted terminal backgrounds into prepared Pi input without
 });
 
 test('entry paints a saved owned palette from its installer-local input owner without a Pi preparation callback', async () => {
-  const h = fixture('tui', false, { async load() { return { ok: true, syntaxTheme: { kind: 'theme', id: 'gruvbox-dark' }, nativeHighlightingEnabled: false }; },
+  const h = fixture('tui', false, { async load() { return { ok: true, themePreference: { kind: 'theme', id: 'gruvbox', variant: 'dark' }, nativeHighlightingEnabled: false }; },
     async update() { return { ok: true }; } });
   const tool = new ToolExecutionComponent('write', 'entry-owned-write', { path: 'owned.ts', content: 'const ownedInput = 1;' }, undefined,
     writeToolDefinition(h), h.root as never, '/tmp');
@@ -1802,7 +1806,7 @@ test('entry persists shared preferences; a same-process runtime restores local O
     await first.page('Set terminal colors from Pi theme');
     await first.recording(false); await first.appearance(false);
     await first.page('Code color theme', 'Follow Pi theme');
-    assert.deepEqual(JSON.parse(await fs.readFile(file, 'utf8')), { syntaxTheme: { kind: 'pi' },
+    assert.deepEqual(JSON.parse(await fs.readFile(file, 'utf8')), { syntaxTheme: { kind: 'pi' }, syntaxThemeVariant: 'dark',
       terminalColorsEnabled: false, nativeHighlightingEnabled: false });
     await first.stop();
     const nextRoot = join(directory, 'restored-logs');
@@ -1825,7 +1829,7 @@ test('entry persists shared preferences; a same-process runtime restores local O
 
 test('entry failed switch persistence reports applied-but-unsaved without undoing the live choice', async () => {
   let saves = 0;
-  const store = { async load(): Promise<SettingsLoadResult> { return { ok: true, syntaxTheme: { kind: 'pi' }, terminalColorsEnabled: false }; },
+  const store = { async load(): Promise<SettingsLoadResult> { return { ok: true, themePreference: { kind: 'pi', variant: 'dark' }, terminalColorsEnabled: false }; },
     async update() { saves++; return { ok: false as const, issue: { code: 'write-failed' as const, message: 'Settings could not be saved.' } }; } };
   const h = fixture('tui', false, store); await h.start();
   await h.page('Set terminal colors from Pi theme');
@@ -1855,7 +1859,7 @@ test('entry shutdown aborts a pending switch save and closes the overlay; late c
   let release!: (value: { ok: true }) => void, signal: AbortSignal | undefined;
   const saving = new Promise<{ ok: true }>(resolve => { release = resolve; });
   const h = fixture('tui', false, {
-    async load() { return { ok: true, syntaxTheme: { kind: 'pi' }, terminalColorsEnabled: false }; },
+    async load() { return { ok: true, themePreference: { kind: 'pi', variant: 'dark' }, terminalColorsEnabled: false }; },
     update(_patch, options) { signal = options?.signal; return saving; },
   });
   await h.start();
@@ -1876,7 +1880,7 @@ test('entry a retired pending initial load cannot install UI, open logs, start p
   const h = fixture('tui', { root: logs }, { load: () => loading, async update() { return { ok: true }; } });
   try {
     const starting = h.start(); await h.stop();
-    release({ ok: false, syntaxTheme: { kind: 'pi' }, issue: { code: 'invalid-json', message: 'Settings JSON could not be read.' } });
+    release({ ok: false, themePreference: { kind: 'pi', variant: 'dark' }, issue: { code: 'invalid-json', message: 'Settings JSON could not be read.' } });
     await starting; await settled();
     assert.deepEqual(h.counts, { constructed: 0, load: 0, saves: 0, shared: 0, owned: 0 });
     assert.equal(h.notices.length, 0); await assert.rejects(fs.stat(logs), { code: 'ENOENT' });
@@ -1935,7 +1939,7 @@ test('entry gives the same overlay live per-page sizing without remounts or pref
 test('entry discards an unconfirmed theme preview when a session shuts down and constructs its next runtime', async () => {
   let saves = 0;
   const original = { kind: 'theme' as const, id: 'saved-independent-theme' };
-  const h = fixture('tui', false, { load: async () => ({ ok: true, syntaxTheme: original }),
+  const h = fixture('tui', false, { load: async () => ({ ok: true, themePreference: themePreferenceFromSettings(original, 'dark') }),
     update: async () => { saves++; return { ok: true }; } });
   await h.start(); await settled();
   await withMenu(h.command, h.ctx, async menu => {
@@ -1965,17 +1969,17 @@ test('settings policy: appearance and diagnostic recording are process-local act
 
 test('settings sync: external shared fields apply without saves, local flags stay local, and retired callbacks cannot act', async () => {
   let changed!: (value: SettingsLoadResult) => void, stops = 0, saves = 0;
-  const h = fixture('tui', false, { load: async () => ({ ok: true, syntaxTheme: { kind: 'pi' } }),
+  const h = fixture('tui', false, { load: async () => ({ ok: true, themePreference: { kind: 'pi', variant: 'dark' } }),
     async update() { saves++; return { ok: true }; }, watch(callback) { changed = callback; return () => { stops++; }; } });
   await h.start(); await h.appearance(false); await h.recording(false);
-  changed({ ok: true, syntaxTheme: { kind: 'theme', id: 'peer-B' }, terminalColorsEnabled: false, nativeHighlightingEnabled: false });
+  changed({ ok: true, themePreference: { kind: 'theme', id: 'peer-B', variant: 'dark' }, terminalColorsEnabled: false, nativeHighlightingEnabled: false });
   await h.page(); assert.match(h.view, /Tidy UI appearance\s+Off/); assert.match(h.view, /Set terminal colors from Pi theme\s+Off/); assert.match(h.view, /peer-B/);
   await h.page('Status & troubleshooting'); assert.match(h.view, /Use Occipital highlighting\s+Off/);
   await h.page('Status & troubleshooting', 'Diagnostic logs'); assert.match(h.view, /Record diagnostic logs\s+Off/);
-  changed({ ok: false, syntaxTheme: { kind: 'pi' }, issue: { code: 'invalid-json', message: 'Settings contain invalid JSON or UTF-8.' } });
+  changed({ ok: false, themePreference: { kind: 'pi', variant: 'dark' }, issue: { code: 'invalid-json', message: 'Settings contain invalid JSON or UTF-8.' } });
   await h.page(); assert.match(h.view, /peer-B/); assert.equal(saves, 0);
   await h.stop(); assert.equal(stops, 1); const counts = { ...h.counts }, warnings = [...h.notices];
-  changed({ ok: true, syntaxTheme: { kind: 'pi' }, nativeHighlightingEnabled: true }); await settled();
+  changed({ ok: true, themePreference: { kind: 'pi', variant: 'dark' }, nativeHighlightingEnabled: true }); await settled();
   assert.deepEqual(h.counts, counts); assert.deepEqual(h.notices, warnings); assert.equal(saves, 0);
 });
 
@@ -1994,13 +1998,13 @@ test('settings policy: reload restores local flags from process memory while a f
 
 test('settings sync: entry preserves an unconfirmed preview and Esc uses the latest peer confirmation without writes', async () => {
   let changed!: (value: SettingsLoadResult) => void, saves = 0;
-  const h = fixture('tui', false, { load: async () => ({ ok: true, syntaxTheme: { kind: 'theme', id: 'saved-A' } }),
+  const h = fixture('tui', false, { load: async () => ({ ok: true, themePreference: { kind: 'theme', id: 'saved-A', variant: 'dark' } }),
     async update() { saves++; return { ok: true }; }, watch(callback) { changed = callback; return () => {}; } });
   await h.start();
   await withMenu(h.command, h.ctx, async menu => {
     await menu.select('Code color theme'); await menu.key('\x1b[A'); await menu.key('\x1b[B');
     assert.match(menu.text(), /Selected: Follow Pi/);
-    changed({ ok: true, syntaxTheme: { kind: 'theme', id: 'peer-B' } }); await settled();
+    changed({ ok: true, themePreference: { kind: 'theme', id: 'peer-B', variant: 'dark' } }); await settled();
     assert.match(menu.text(), /Selected: Follow Pi/); assert.equal(saves, 0);
     await menu.key('\x1b'); assert.match(menu.text(), /peer-B/);
   });
@@ -2225,17 +2229,17 @@ test('entry preloads preferences before startup and attaches without another asy
 
 test('runtime health entry: settings errors are visible with recording unavailable, recover on valid read, and reset for a new session', async () => {
   let changed!: (value: SettingsLoadResult) => void;
-  const h = fixture('tui', false, { async load() { return { ok: true, syntaxTheme: { kind: 'pi' }, terminalColorsEnabled: false }; },
+  const h = fixture('tui', false, { async load() { return { ok: true, themePreference: { kind: 'pi', variant: 'dark' }, terminalColorsEnabled: false }; },
     async update() { return { ok: true }; }, watch(callback) { changed = callback; return () => {}; } });
   await h.start(); await settled();
   const before = h.notices.length;
-  const bad: SettingsLoadResult = { ok: false, syntaxTheme: { kind: 'pi' }, issue: { code: 'invalid-json', message: 'PRIVATE_CONFIG_DETAIL' } };
+  const bad: SettingsLoadResult = { ok: false, themePreference: { kind: 'pi', variant: 'dark' }, issue: { code: 'invalid-json', message: 'PRIVATE_CONFIG_DETAIL' } };
   changed(bad); changed(bad); await settled();
   assert.equal(h.notices.length, before + 1); assert.doesNotMatch(h.notices.at(-1)!, /PRIVATE_CONFIG_DETAIL/);
   await h.page('Status & troubleshooting'); assert.match(h.view, /Runtime errors: 1; active: 1/);
   await h.page('Status & troubleshooting', 'Diagnostic logs'); assert.match(h.view, /Runtime errors: 1; active: 1/);
   assert.match(h.view, /Diagnostic logging is unavailable/);
-  changed({ ok: true, syntaxTheme: { kind: 'pi' }, terminalColorsEnabled: false }); await settled();
+  changed({ ok: true, themePreference: { kind: 'pi', variant: 'dark' }, terminalColorsEnabled: false }); await settled();
   await h.page('Status & troubleshooting'); assert.match(h.view, /Runtime errors: 1; active: 0/); assert.match(h.view, /recovered/);
   await h.stop();
   const after = h.notices.length; changed(bad); await settled(); assert.equal(h.notices.length, after, 'old watcher cannot report after shutdown');
@@ -2244,7 +2248,7 @@ test('runtime health entry: settings errors are visible with recording unavailab
 });
 
 test('runtime health entry: explicit appearance Off and reinstallation retire the old failed owner without GC', async () => {
-  const h = fixture('tui', false, { async load() { return { ok: true, syntaxTheme: { kind: 'pi' }, terminalColorsEnabled: false }; }, async update() { return { ok: true }; } });
+  const h = fixture('tui', false, { async load() { return { ok: true, themePreference: { kind: 'pi', variant: 'dark' }, terminalColorsEnabled: false }; }, async update() { return { ok: true }; } });
   const foreign = Object.assign(new Container(), { toolCallId: 'incompatible', toolName: 'bash' });
   h.root.addChild(foreign); await h.start(); await settled();
   await h.page('Status & troubleshooting'); assert.match(h.view, /Runtime errors: 1; active: 1/);
@@ -2997,7 +3001,7 @@ test('expanded read image rows remain during reload cleanup until hooks are rest
 
 
 test('owned-palette mode drift schedules current refresh outside render without changing source identity', async () => {
-  const h = fixture('tui', false, undefined, undefined, undefined, { kind: 'theme', id: 'gruvbox-dark' });
+  const h = fixture('tui', false, undefined, undefined, undefined, { kind: 'theme', id: 'gruvbox', variant: 'dark' });
   const theme = themes.getThemeByName('dark') as Theme & { getColorMode(): TerminalColorMode } | undefined;
   assert.ok(theme, 'the SDK returns a real public theme instance for this mode-change control');
   themes.setThemeInstance(theme);
@@ -3162,7 +3166,7 @@ test('predecessor measurement defers cold full write and edit preparation', asyn
 
 
 test('queued palette refresh rechecks lifecycle and preserves the current token', async () => {
-  const h = fixture('tui', false, undefined, undefined, undefined, { kind: 'theme', id: 'gruvbox-dark' });
+  const h = fixture('tui', false, undefined, undefined, undefined, { kind: 'theme', id: 'gruvbox', variant: 'dark' });
   const theme = themes.getThemeByName('dark') as Theme & { getColorMode(): TerminalColorMode } | undefined;
   assert.ok(theme, 'the SDK returns a real public Theme instance for deferred-token checks');
   themes.setThemeInstance(theme);

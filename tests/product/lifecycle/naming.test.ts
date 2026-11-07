@@ -31,7 +31,7 @@ test('entry registers the menu, flags and public lazy renderer; retired argument
     registerToolRenderer: (resolver: unknown) => renderers.push(resolver),
     registerFlag: (name: string) => flags.push(name), on() {},
   } as unknown as ExtensionAPI;
-  await tidyUi(pi, { settings: { async load() { reads++; return { ok: true, syntaxTheme: { kind: 'pi' } }; },
+  await tidyUi(pi, { settings: { async load() { reads++; return { ok: true, themePreference: { kind: 'pi', variant: 'dark' } }; },
     async update() { writes++; return { ok: true }; } } });
   assert.equal(reads, 1, 'the awaited factory preloads preferences once');
   assert.equal(renderers.length, 1, 'the public factory registers one lazy write/edit renderer resolver');

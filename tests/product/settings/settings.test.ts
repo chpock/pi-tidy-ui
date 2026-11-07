@@ -8,9 +8,12 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { ExtensionSettings, SETTINGS_FILE_MAX_BYTES, type SyntaxTheme, type SettingsLoadResult } from "../../../src/settings.ts";
+import { THEME_CATALOGUE } from "../../../src/themes/catalogue.ts";
 
 const pi: SyntaxTheme = { kind: "pi" };
 const theme = (id: string): SyntaxTheme => ({ kind: "theme", id });
+const preference = (choice: SyntaxTheme, variant: 'dark' | 'light' = 'dark') => choice.kind === 'pi'
+  ? { kind: 'pi' as const, variant } : { kind: 'theme' as const, id: choice.id, variant };
 
 async function fixture(t: test.TestContext) {
   const root = await fs.mkdtemp(join(tmpdir(), "tidy-settings-"));
@@ -38,11 +41,11 @@ async function noTemporaryFiles(file: string) {
 test("settings: missing file and field use Pi without writes; explicit file seam", async (t) => {
   const { root, store, file, seed } = await fixture(t);
   assert.equal(store.file, file);
-  assert.deepEqual(await store.load(), { ok: true, syntaxTheme: pi });
+  assert.deepEqual(await store.load(), { ok: true, themePreference: preference(pi) });
   assert.deepEqual(await fs.readdir(root), []);
   const original = '{ "future": {"enabled": false} }';
   await seed(original);
-  assert.deepEqual(await new ExtensionSettings({ file }).load(), { ok: true, syntaxTheme: pi });
+  assert.deepEqual(await new ExtensionSettings({ file }).load(), { ok: true, themePreference: preference(pi) });
   assert.equal(await fs.readFile(file, "utf8"), original);
 });
 
@@ -57,7 +60,7 @@ test("settings: writes two-space pretty JSON with a final newline", async (t) =>
 }
 `);
   assert.deepEqual(await new ExtensionSettings({ file }).load(), {
-    ok: true, syntaxTheme: pi, terminalColorsEnabled: false,
+    ok: true, themePreference: preference(pi), terminalColorsEnabled: false,
   });
   await noTemporaryFiles(file);
 });
@@ -66,7 +69,7 @@ test("settings: round trips, opaque IDs and no extra persisted preferences", asy
   const { store, file } = await fixture(t);
   for (const choice of [theme("catalogue:dark"), theme("../opaque/🧠"), theme("é".repeat(32)), pi]) {
     assert.deepEqual(await store.update({ syntaxTheme: choice }), { ok: true });
-    assert.deepEqual(await new ExtensionSettings({ file }).load(), { ok: true, syntaxTheme: choice });
+    assert.deepEqual(await new ExtensionSettings({ file }).load(), { ok: true, themePreference: preference(choice) });
     assert.deepEqual(JSON.parse(await fs.readFile(file, "utf8")), { syntaxTheme: choice });
     await noTemporaryFiles(file);
   }
@@ -115,7 +118,7 @@ for (const token of ["1e400", "-1e400", "9007199254740993", "-9007199254740993",
     assert.deepEqual(await store.update({ syntaxTheme: pi }), { ok: true });
     assert.equal(await fs.readFile(file, "utf8"), `{\n  "future": ${token},\n  "syntaxTheme": {\n    "kind": "pi"\n  }\n}\n`);
     const fresh = new ExtensionSettings({ file });
-    assert.deepEqual(await fresh.load(), { ok: true, syntaxTheme: pi });
+    assert.deepEqual(await fresh.load(), { ok: true, themePreference: preference(pi) });
     assert.deepEqual(await fresh.update({ syntaxTheme: theme("next") }), { ok: true });
     assert.equal(await fs.readFile(file, "utf8"), `{\n  "future": ${token},\n  "syntaxTheme": {\n    "kind": "theme",\n    "id": "next"\n  }\n}\n`);
     await noTemporaryFiles(file);
@@ -157,7 +160,7 @@ test("settings: preserve nested future and prototype-named numeric tokens withou
   }
 }
 `);
-  assert.deepEqual(await new ExtensionSettings({ file }).load(), { ok: true, syntaxTheme: pi });
+  assert.deepEqual(await new ExtensionSettings({ file }).load(), { ok: true, themePreference: preference(pi) });
   assert.equal(({} as { n?: unknown }).n, undefined);
   await noTemporaryFiles(file);
 });
@@ -182,7 +185,7 @@ for (const failure of ["rawJSON missing", "isRawJSON missing", "source context m
     }
     const loaded = await store.load();
     safeFailure(loaded, "numeric-preservation-unavailable");
-    assert.deepEqual(loaded.syntaxTheme, pi);
+    assert.deepEqual(loaded.themePreference, preference(pi));
     safeFailure(await store.update({ syntaxTheme: pi }), "numeric-preservation-unavailable");
     assert.equal(await fs.readFile(file, "utf8"), original);
     await noTemporaryFiles(file);
@@ -219,7 +222,7 @@ for (const [label, contents, code] of invalidFiles) {
     await seed(contents);
     const loaded = await store.load();
     safeFailure(loaded, code);
-    assert.deepEqual(loaded.syntaxTheme, pi);
+    assert.deepEqual(loaded.themePreference, preference(pi));
     safeFailure(await store.update({ syntaxTheme: theme("new") }), code);
     assert.equal(await fs.readFile(file, "utf8"), contents);
     await noTemporaryFiles(file);
@@ -231,7 +234,7 @@ test("settings: byte-bounded reads/writes and exact size boundary", async (t) =>
   const exact = JSON.stringify({ future: "x".repeat(SETTINGS_FILE_MAX_BYTES - 13) });
   assert.equal(Buffer.byteLength(exact), SETTINGS_FILE_MAX_BYTES);
   await seed(exact);
-  assert.deepEqual(await store.load(), { ok: true, syntaxTheme: pi });
+  assert.deepEqual(await store.load(), { ok: true, themePreference: preference(pi) });
   safeFailure(await store.update({ syntaxTheme: pi }), "too-large");
   assert.equal(await fs.readFile(file, "utf8"), exact);
   await seed(exact + " ");
@@ -326,7 +329,7 @@ for (const failure of ["mkdir", "open", "partial-write", "rename"] as const) {
     await noTemporaryFiles(file);
     t.mock.restoreAll();
     assert.deepEqual(await store.update({ syntaxTheme: theme("recovered") }), { ok: true });
-    assert.deepEqual(await store.load(), { ok: true, syntaxTheme: theme("recovered") });
+    assert.deepEqual(await store.load(), { ok: true, themePreference: preference(theme("recovered")) });
   });
 }
 
@@ -355,11 +358,11 @@ test("settings: same-client updates serialize publication and snapshot queued ch
   mutable.id = "mutated";
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(publications, 1);
-  assert.deepEqual(await store.load(), { ok: true, syntaxTheme: pi });
+  assert.deepEqual(await store.load(), { ok: true, themePreference: preference(pi) });
   resume.release();
   assert.deepEqual(await Promise.all([first, second]), [{ ok: true }, { ok: true }]);
   assert.equal(publications, 2);
-  assert.deepEqual(await store.load(), { ok: true, syntaxTheme: theme("second") });
+  assert.deepEqual(await store.load(), { ok: true, themePreference: preference(theme("second")) });
   await noTemporaryFiles(file);
 });
 
@@ -386,12 +389,12 @@ test("settings: independent clients use unique complete temporary files; last ac
   const first = store.update({ syntaxTheme: theme("first") });
   await firstReached.promise;
   assert.deepEqual(await peer.update({ syntaxTheme: theme("second") }), { ok: true });
-  assert.deepEqual(await store.load(), { ok: true, syntaxTheme: theme("second") });
+  assert.deepEqual(await store.load(), { ok: true, themePreference: preference(theme("second")) });
   publishFirst.release();
   assert.deepEqual(await first, { ok: true });
   assert.deepEqual(published, ["second", "first"]);
   assert.equal(new Set(temporaryPaths).size, 2);
-  assert.deepEqual(await peer.load(), { ok: true, syntaxTheme: theme("first") });
+  assert.deepEqual(await peer.load(), { ok: true, themePreference: preference(theme("first")) });
   await noTemporaryFiles(file);
 });
 
@@ -428,13 +431,13 @@ test("settings: independent processes publish complete files in actual rename or
   const [preparedSecond] = await once(second, "message");
   assert.deepEqual(preparedSecond, { prepared: { future: { retained: true }, syntaxTheme: theme("process-second") } });
   assert.notEqual(first.pid, second.pid);
-  assert.deepEqual(await store.load(), { ok: true, syntaxTheme: pi });
+  assert.deepEqual(await store.load(), { ok: true, themePreference: preference(pi) });
   const secondResult = once(second, "message");
   const secondExit = once(second, "exit");
   second.send("publish");
   assert.deepEqual((await secondResult)[0], { result: { ok: true } });
   assert.deepEqual(await secondExit, [0, null]);
-  assert.deepEqual(await store.load(), { ok: true, syntaxTheme: theme("process-second") });
+  assert.deepEqual(await store.load(), { ok: true, themePreference: preference(theme("process-second")) });
   const firstResult = once(first, "message");
   const firstExit = once(first, "exit");
   first.send("publish");
@@ -476,10 +479,10 @@ for (const mode of ["default", "absolute", "tilde"] as const) {
     const first = run(true);
     assert.equal(first.root, expectedRoot);
     assert.equal(first.file, expectedFile);
-    assert.deepEqual(first.before, { ok: true, syntaxTheme: pi });
+    assert.deepEqual(first.before, { ok: true, themePreference: preference(pi) });
     assert.deepEqual(first.saved, { ok: true });
     const fresh = run(false);
-    assert.deepEqual(fresh.before, { ok: true, syntaxTheme: theme("process-theme") });
+    assert.deepEqual(fresh.before, { ok: true, themePreference: preference(theme("process-theme")) });
     assert.deepEqual(JSON.parse(await fs.readFile(expectedFile, "utf8")), { syntaxTheme: theme("process-theme") });
     if (mode !== "default") assert.equal(await fs.readFile(defaultFile, "utf8"), "SECRET default must not be read or changed");
   });
@@ -543,7 +546,7 @@ for (const stage of ['read', 'write', 'close'] as const) test(`settings cancella
   assert.equal(await fs.readFile(file, 'utf8'), original); await noTemporaryFiles(file);
   t.mock.restoreAll();
   assert.deepEqual(await store.update({ syntaxTheme: theme('new owner') }), { ok: true });
-  assert.deepEqual(await store.load(), { ok: true, syntaxTheme: theme('new owner') });
+  assert.deepEqual(await store.load(), { ok: true, themePreference: preference(theme('new owner')) });
 });
 
 test("settings cancellation: a rename already requested by a live owner is the commit boundary, not retroactively undone", async (t) => {
@@ -556,7 +559,7 @@ test("settings cancellation: a rename already requested by a live owner is the c
   const save = store.update({ syntaxTheme: theme('committed') }, { signal: abort.signal });
   await reached.promise; abort.abort(); resume.release();
   assert.deepEqual(await save, { ok: true }); assert.equal(publications, 1);
-  assert.deepEqual(await store.load(), { ok: true, syntaxTheme: theme('committed') }); await noTemporaryFiles(file);
+  assert.deepEqual(await store.load(), { ok: true, themePreference: preference(theme('committed')) }); await noTemporaryFiles(file);
 });
 
 const switchKeys = ['terminalColorsEnabled', 'nativeHighlightingEnabled'] as const;
@@ -566,10 +569,10 @@ test('settings: shared switches persist together with theme and future fields', 
   await seed('{"future":{"keep":true},"syntaxTheme":{"kind":"theme","id":"saved"}}');
   const switches = Object.fromEntries(switchKeys.map(key => [key, false]));
   assert.deepEqual(await store.update(switches), { ok: true });
-  assert.deepEqual(await new ExtensionSettings({ file }).load(), { ok: true, syntaxTheme: theme('saved'), ...switches });
+  assert.deepEqual(await new ExtensionSettings({ file }).load(), { ok: true, themePreference: preference(theme('saved')), ...switches });
   await store.update({ terminalColorsEnabled: true });
   await store.update({ syntaxTheme: pi });
-  assert.deepEqual(await new ExtensionSettings({ file }).load(), { ok: true, syntaxTheme: pi, ...switches, terminalColorsEnabled: true });
+  assert.deepEqual(await new ExtensionSettings({ file }).load(), { ok: true, themePreference: preference(pi), ...switches, terminalColorsEnabled: true });
   assert.deepEqual(JSON.parse(await fs.readFile(file, 'utf8')).future, { keep: true });
   await noTemporaryFiles(file);
 });
@@ -592,7 +595,7 @@ test('settings: serialized mixed switch and theme patches preserve one another',
   const outcomes = await Promise.all([store.update({ nativeHighlightingEnabled: true }), store.update({ syntaxTheme: theme('mixed') }),
     store.update({ terminalColorsEnabled: false }), store.update({ nativeHighlightingEnabled: false })]);
   assert.ok(outcomes.every(result => result.ok));
-  assert.deepEqual(await new ExtensionSettings({ file }).load(), { ok: true, syntaxTheme: theme('mixed'),
+  assert.deepEqual(await new ExtensionSettings({ file }).load(), { ok: true, themePreference: preference(theme('mixed')),
     terminalColorsEnabled: false, nativeHighlightingEnabled: false });
 });
 
@@ -600,7 +603,7 @@ test('settings: serialized mixed switch and theme patches preserve one another',
 test('settings policy: legacy process-local flags are ignored and removed by the next explicit save', async t => {
   const { store, file, seed } = await fixture(t);
   await seed('{"appearanceEnabled":false,"loggingEnabled":"obsolete","terminalColorsEnabled":false,"future":true}');
-  assert.deepEqual(await store.load(), { ok: true, syntaxTheme: pi, terminalColorsEnabled: false });
+  assert.deepEqual(await store.load(), { ok: true, themePreference: preference(pi), terminalColorsEnabled: false });
   assert.deepEqual(await store.update({ syntaxTheme: theme('chosen') }), { ok: true });
   assert.deepEqual(JSON.parse(await fs.readFile(file, 'utf8')), { terminalColorsEnabled: false, future: true, syntaxTheme: theme('chosen') });
 });
@@ -638,7 +641,7 @@ test('settings watch: atomic peer saves apply repeatedly without rewriting or id
   const peer = new ExtensionSettings({ file });
   for (const id of ['A', 'B', 'C']) {
     const notification = changed(); await peer.update({ syntaxTheme: theme(id) }); await notification;
-    assert.deepEqual(changes.at(-1), { ok: true, syntaxTheme: theme(id) });
+    assert.deepEqual(changes.at(-1), { ok: true, themePreference: preference(theme(id)) });
   }
   assert.equal(writes, 3, 'subscribers never write settings back');
   const frozen = changes.length; stop(); await peer.update({ syntaxTheme: pi }); await turns();
@@ -678,7 +681,7 @@ test('settings watch: first save is observed even when the configuration directo
   assert.deepEqual(await fs.readdir(root), [], 'watching must not create config directories or files');
   const saved = await new ExtensionSettings({ file }).update({ syntaxTheme: theme('first') });
   record({ operation: 'save-completed', ok: saved.ok }); assert.deepEqual(saved, { ok: true });
-  assert.deepEqual(await changed, { ok: true, syntaxTheme: theme('first') }); completed = true;
+  assert.deepEqual(await changed, { ok: true, themePreference: preference(theme('first')) }); completed = true;
 });
 
 test('settings watch: creating a directory between the missing-child check and ancestor subscription cannot lose the first save', { timeout: 10000 }, async t => {
@@ -716,7 +719,7 @@ test('settings watch: creating a directory between the missing-child check and a
   await fs.mkdir(parent); await observedMissing;
   assert.equal(gapCreated, true, 'the real directory is created inside the failed-watch/ancestor-watch window');
   assert.deepEqual(await new ExtensionSettings({ file }).update({ syntaxTheme: theme('first') }), { ok: true });
-  assert.deepEqual(await changed, { ok: true, syntaxTheme: theme('first') });
+  assert.deepEqual(await changed, { ok: true, themePreference: preference(theme('first')) });
   completed = true;
 });
 
@@ -731,4 +734,64 @@ test('settings policy: process-local values survive module reload but not a new 
   const next = spawnSync(process.execPath, ['--input-type=module', '--eval', script], { env: { ...process.env }, encoding: 'utf8' });
   assert.equal(next.status, 0, next.stderr);
   assert.deepEqual(JSON.parse(next.stdout), { appearanceEnabled: true, loggingEnabled: true });
+});
+
+
+test('settings: external theme family and variant fields default safely without invalidating known preferences', async t => {
+  const { store, file, seed } = await fixture(t);
+  const original = '{"future":{"n":9007199254740993},"syntaxTheme":{"kind":"theme","id":"github-light"},"syntaxThemeVariant":"obsolete","terminalColorsEnabled":false}';
+  await seed(original);
+  assert.deepEqual(await store.load(), {
+    ok: true, themePreference: { kind: 'theme', id: 'github', variant: 'dark' }, terminalColorsEnabled: false,
+  });
+  assert.equal(await fs.readFile(file, 'utf8'), original, 'loading does not rewrite legacy or unsupported configuration');
+
+  await seed('{"syntaxTheme":{"kind":"theme","id":"one-dark"},"syntaxThemeVariant":"light"}');
+  assert.deepEqual(await store.load(), {
+    ok: true, themePreference: { kind: 'theme', id: 'one-dark', variant: 'light' },
+  }, 'known family membership takes precedence over legacy concrete-ID lookup');
+
+  await seed('{"syntaxTheme":{"kind":"theme","id":"not-installed"},"syntaxThemeVariant":"light"}');
+  assert.deepEqual(await store.load(), {
+    ok: true, themePreference: { kind: 'theme', id: 'not-installed', variant: 'light' },
+  }, 'unknown families remain unknown for the existing fallback and warning');
+});
+
+test('settings: every known concrete alias maps to its family and defaults dark, including legacy light IDs', async t => {
+  const { store, seed } = await fixture(t);
+  for (const { id } of THEME_CATALOGUE) {
+    const family = id.replace(/-(?:dark|light)$/u, '');
+    await seed(JSON.stringify({ syntaxTheme: theme(id) }));
+    assert.deepEqual(await store.load(), {
+      ok: true, themePreference: { kind: 'theme', id: family, variant: 'dark' },
+    }, `${id} is an accepted old concrete-ID alias without inferring a light preference`);
+  }
+});
+
+test('settings: theme confirmation patches preserve exact split keys and unrelated numeric source tokens', async t => {
+  const { store, file, seed } = await fixture(t);
+  await seed('{"future":9007199254740993,"syntaxTheme":{"kind":"theme","id":"github"},"syntaxThemeVariant":"dark"}');
+  assert.deepEqual(await store.update({ syntaxTheme: theme('one-dark'), syntaxThemeVariant: 'light' }), { ok: true });
+  assert.equal(await fs.readFile(file, 'utf8'), '{\n  "future": 9007199254740993,\n  "syntaxTheme": {\n    "kind": "theme",\n    "id": "one-dark"\n  },\n  "syntaxThemeVariant": "light"\n}\n');
+  assert.deepEqual(await store.load(), {
+    ok: true, themePreference: { kind: 'theme', id: 'one-dark', variant: 'light' },
+  });
+
+  const invalid = await store.update({ syntaxThemeVariant: 'system' } as never);
+  safeFailure(invalid, 'invalid-patch');
+  assert.equal((JSON.parse(await fs.readFile(file, 'utf8')) as { syntaxThemeVariant: string }).syntaxThemeVariant, 'light');
+});
+
+test('settings watch publishes an external variant-only confirmation for the same family', async t => {
+  const { store, file, seed } = await fixture(t);
+  await seed('{"syntaxTheme":{"kind":"theme","id":"github"},"syntaxThemeVariant":"dark"}');
+  await store.load();
+  const changes: SettingsLoadResult[] = [];
+  let resolveChange!: (value: SettingsLoadResult) => void;
+  const changed = new Promise<SettingsLoadResult>(resolve => { resolveChange = resolve; });
+  const stop = watchSettings(store, value => { changes.push(value); resolveChange(value); }); t.after(stop);
+  await turns();
+  assert.deepEqual(await new ExtensionSettings({ file }).update({ syntaxThemeVariant: 'light' }), { ok: true });
+  assert.deepEqual(await changed, { ok: true, themePreference: { kind: 'theme', id: 'github', variant: 'light' } });
+  assert.equal(changes.length, 1, 'one external pair change is published without a local rewrite');
 });

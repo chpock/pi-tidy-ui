@@ -33,7 +33,8 @@ import { stripVTControlCharacters } from 'node:util';
 import { prepareBashService } from '../../../src/bash-card.ts';
 import { prepareFileCard } from '../../../src/file-card.ts';
 import { RETENTION_LIMITS } from '../../../src/occipital/retention.ts';
-import type { SyntaxTheme } from '../../../src/settings.ts';
+import type { ThemePreference } from '../../../src/settings.ts';
+import { palettePreference } from '../../fixtures/palette-preference.ts';
 import { SyntaxClient } from '../../../src/occipital/client.ts';
 import type { ProviderTransport } from '../../../src/occipital/provider.ts';
 import type { TransportEnd } from '../../../src/occipital/transport-end.ts';
@@ -53,7 +54,7 @@ const read = (text: string, revision = 1, images: string[] = []): Extract<CardDi
     result: { content: [{ type: 'text', text }, ...images.map(data => ({ type: 'image' as const, data, mimeType: 'image/png' }))], isError: false } } });
 const fixtures: { cards: CardSources<Owner>; sources: SourceController; runtime: SyntaxRuntime; paletteInputs: PaletteInputOwner; calls: { reject(error: unknown): void }[] }[] = [];
 function fixture(ready = false, options: ControllerOptions = {}, maxBookkeepingBytes?: number) {
-  const env = { ready, enabled: true, generation: 1, vocabulary: 'a'.repeat(64), selected: { kind: 'pi' } as SyntaxTheme,
+  const env = { ready, enabled: true, generation: 1, vocabulary: 'a'.repeat(64), selected: { kind: 'pi', variant: 'dark' } as ThemePreference,
     classifications: [] as string[], invalidated: [] as Owner[], renders: 0, acquisitions: 0, paletteInputBytes: [] as number[], deniedPaletteInputs: 0, samples: 0, denyPaletteInput: false, failClassification: false,
     poison: false, beforeClassify: undefined as (() => void) | undefined, notices: [] as { keys: string[]; groups: number[] }[],
     preparations: [] as CardPreparation[], prepared: undefined as ((owner: Owner, receipt: Extract<CardPreparation, { phase: 'prepared' }>) => void) | undefined };
@@ -65,7 +66,7 @@ function fixture(ready = false, options: ControllerOptions = {}, maxBookkeepingB
     request: (_g: number, request: Frame) => new Promise<unknown>((resolve, reject) => calls.push({ request, resolve, reject })) };
   let cards: CardSources<Owner>;
   const sources = new SourceController(provider, { ...options, onChange: (keys, groups = []) => { env.notices.push({ keys: [...keys], groups: [...groups] }); cards.sourceChanged(keys, groups); } });
-  const runtime = new SyntaxRuntime({ standaloneVersion: '0.0.0', settings: { load: async () => ({ ok: true, syntaxTheme: { kind: 'pi' } }), update: async () => ({ ok: true }) },
+  const runtime = new SyntaxRuntime({ standaloneVersion: '0.0.0', settings: { load: async () => ({ ok: true, themePreference: { kind: 'pi', variant: 'dark' } }), update: async () => ({ ok: true }) },
     provider: { tryShared: async () => undefined, acquireOwned: async () => { throw Error('unexpected provider'); } } });
   const paletteInputs = new PaletteInputOwner();
   let theme = getThemeByName('system')!; setThemeInstance(theme);
@@ -109,9 +110,9 @@ function fixture(ready = false, options: ControllerOptions = {}, maxBookkeepingB
     },
     fault(i: number, execution: 'not_started' | 'unknown' = 'not_started') { calls[i]!.done = true; calls[i]!.reject(new RequestFailure('busy', execution)); },
     piTheme(name: string) { theme = getThemeByName(name)!; setThemeInstance(theme); runtime.palette(sampled); paletteRevision = paletteInputs.palette(sampled, resolveTheme(env.selected).effective); cards.metadataChanged(paletteRevision); return paletteRevision; },
-    followPi() { env.selected = { kind: 'pi' }; paletteRevision = paletteInputs.palette(sampled, resolveTheme(env.selected).effective); cards.metadataChanged(paletteRevision); return paletteRevision; },
+    followPi() { env.selected = { kind: 'pi', variant: 'dark' }; paletteRevision = paletteInputs.palette(sampled, resolveTheme(env.selected).effective); cards.metadataChanged(paletteRevision); return paletteRevision; },
     theme(id = 'gruvbox-dark') {
-      env.selected = { kind: 'theme', id };
+      env.selected = palettePreference(id);
       paletteRevision = paletteInputs.palette(sampled, resolveTheme(env.selected).effective); cards.metadataChanged(paletteRevision);
     },
 
@@ -863,7 +864,7 @@ test('cards 100 owned-palette choices publish locally without helper work or his
   assert.equal(f.env.paletteInputBytes.length, 1, 'the starting presentation owns one palette-input lease');
   const initialPaletteInputBytes = f.env.paletteInputBytes[0]!;
   const nonPaletteBaselineBytes = baselineRetainedBytes - initialPaletteInputBytes, baselineEntries = baselineStats.entries;
-  const selectionIdentity = (id: string) => { const palette = resolveTheme({ kind: 'theme', id }).effective;
+  const selectionIdentity = (id: string) => { const palette = resolveTheme(palettePreference(id)).effective;
     return `theme:${palette.id}:${palette.fingerprint}:truecolor`; };
   const initialSelection = selectionIdentity('gruvbox-dark');
   let maxPaletteInputBytes = initialPaletteInputBytes, peakSettledBytes = baselineRetainedBytes;
@@ -1053,7 +1054,7 @@ for (const kind of ['bash', 'file'] as const) test(`cards every warm ${kind} own
 test('cards owned palette change then Follow Pi replaces roles locally without SOURCE replay', async () => {
   const f = fixture(true), owner = {}; await themeReady(f, owner); const sources = f.calls.filter(c => c.request.op !== 'styles.resolve').length, before = f.calls.length;
   f.theme('gruvbox-light'); await settle(); const owned = style(f, owner);
-  f.env.selected = { kind: 'pi' }; f.piTheme('system'); await settle();
+  f.env.selected = { kind: 'pi', variant: 'dark' }; f.piTheme('system'); await settle();
   inspect(f, owner, (_d, p) => { assert.equal(p.origin, 'pi'); assert.notEqual(p.roles.code.open, owned); });
   assert.equal(f.calls.length, before); assert.equal(f.calls.filter(c => c.request.op !== 'styles.resolve').length, sources);
 });
@@ -1417,7 +1418,7 @@ for (const selection of ['owned palette', 'Follow Pi'] as const) test(`C19 froze
   const sourceIdentity = identities.map(({ key, version, language, complete }) => ({ key, version, language, complete }));
   const originalRoles = style(f, owner), originalRanges = (() => { let value = ''; inspect(f, owner, (_d, p) => p.ranges(identities[0]!.key)?.((_a, _b, s) => { value = s.open; })); return value; })(), beforeCalls = f.calls.length;
   if (selection === 'owned palette') f.theme('gruvbox-light');
-  else { f.env.selected = { kind: 'pi' }; f.piTheme('system'); }
+  else { f.env.selected = { kind: 'pi', variant: 'dark' }; f.piTheme('system'); }
   f.cards.useful(owner, 3); await settle();
   assert.notEqual(style(f, owner), originalRoles, 'selected local roles are immediately visible');
   assert.equal(f.calls.length, beforeCalls, 'palette rebinding has no remote STYLE/profile request');
@@ -1780,7 +1781,7 @@ for (const remaining of ['none', 'held-local', 'palette-change', 'retained-style
   }
   const peer = new LifetimePeer(), replacement = new LifetimePeer(); let theme = getThemeByName('system')!; setThemeInstance(theme);
   let cards: CardSources<Owner>, metadata = 0, classifications = 0, outcomes: readonly string[] = [];
-  const client = new SyntaxClient({ standaloneVersion: '0.2.0', initialTheme: { kind: 'pi' },
+  const client = new SyntaxClient({ standaloneVersion: '0.2.0', initialTheme: { kind: 'pi', variant: 'dark' },
     provider: { tryShared: async () => {
       if (++sharedAttempts === 1) return peer;
       assert.equal(remaining, 'recoverable', 'terminal denial must not recover');
@@ -1789,7 +1790,7 @@ for (const remaining of ['none', 'held-local', 'palette-change', 'retained-style
     onChange() { metadata++; cards?.metadataChanged(); if (client.snapshot().provider.availability === 'unavailable') terminalDelivered(); },
     onSourceChange(keys, groups) { cards?.sourceChanged(keys, groups); } });
   cards = new CardSources(client, { preparePiInput: funding => a.runtime.preparePaletteInput(
-    resolveTheme({ kind: 'pi' }).effective, theme, a.runtime.palette(theme), 'truecolor', funding),
+    resolveTheme({ kind: 'pi', variant: 'dark' }).effective, theme, a.runtime.palette(theme), 'truecolor', funding),
     classify: text => { classifications++; return highlightCode(text, 'typescript'); }, invalidate() {}, requestRender() {},
     preparation(_owner, receipt) {
       if (receipt.phase !== 'prepared' || receipt.revision !== 2 || client.snapshot().provider.availability === 'ready') return;

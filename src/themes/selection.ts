@@ -1,4 +1,4 @@
-import type { SyntaxTheme } from '../settings.ts';
+import type { ThemePreference } from '../settings.ts';
 import { themeEntry } from '../themes/catalogue.ts';
 
 export interface ThemeDescription {
@@ -12,9 +12,9 @@ export interface ResolvedTheme { readonly effective: ThemeDescription; readonly 
 const PI_THEME: ThemeDescription = Object.freeze({ kind: 'pi', id: 'pi', label: 'Follow Pi', fingerprint: 'pi-palette-v1' });
 
 /** Palette identity is local and independent of the helper's availability. */
-export function resolveTheme(selected: SyntaxTheme): ResolvedTheme {
+export function resolveTheme(selected: ThemePreference): ResolvedTheme {
   if (selected.kind === 'pi') return { effective: PI_THEME, missing: false };
-  const entry = themeEntry(selected.id);
+  const entry = themeEntry(`${selected.id}-${selected.variant}`);
   return entry
     ? { effective: Object.freeze({ kind: 'theme', id: entry.id, label: entry.label, fingerprint: `owned-palette-v1:${entry.id}` }), missing: false }
     : { effective: PI_THEME, missing: true };

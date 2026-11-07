@@ -404,6 +404,11 @@ export class PiTerminal {
           const rows = this.tidyRows();
           const switches = { 'Tidy UI appearance': 'appearanceEnabled', 'Set terminal colors from Pi theme': 'terminalColorsEnabled',
             'Use Occipital highlighting': 'nativeHighlightingEnabled', 'Record diagnostic logs': 'loggingEnabled' };
+          if (label === 'Code color variant') {
+            const desired = before.endsWith('Dark') ? 'light' : 'dark';
+            try { return !rows.includes('Applying…') && JSON.parse(readFileSync(join(this.agent, 'extensions/pi-tidy-ui/config.json'), 'utf8')).syntaxThemeVariant === desired; }
+            catch { return false; }
+          }
           const key = switches[label];
           if (key) {
             const selected = rows.find(line => line.startsWith('→ '));

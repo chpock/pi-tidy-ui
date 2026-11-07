@@ -115,7 +115,7 @@ The footer adds context usage, the cache chart, your session name when space all
 
 The benefit is not just more colors. Parsing runs outside Pi's JavaScript rendering path, and prepared results are reused: an unchanged frame does not parse the code again, resizing does not repeat syntax analysis, and changing a code theme reuses parsed source. Reusing parsed code and limiting the amount parsed at once avoids unnecessary CPU and memory work while you scroll, resize or watch a streaming command.
 
-**Follow Pi theme** is the default. You can also choose one of 72 bundled independent code palettes with live preview; it changes the whole Bash/read/edit/write text-card palette, not just token colors. User-supplied `.tmTheme` files and custom palette directories are not supported. See the [owned-palette guide](docs/syntax/palettes.md) for the full color and card-role contract. Parser-backed syntax requires the matching Occipital v4 helper shipped for this extension release; an older v3 helper is incompatible. A bundled palette still supplies neutral card colors while the helper is unavailable, but it cannot supply language-specific syntax classification without that helper.
+**Follow Pi theme** is the default. You can also choose one of 36 bundled theme families with live preview and a separate Dark/Light variant; it changes the whole Bash/read/edit/write text-card palette, not just token colors. User-supplied `.tmTheme` files and custom palette directories are not supported. See the [owned-palette guide](docs/syntax/palettes.md) for the full color and card-role contract. Parser-backed syntax requires the matching Occipital v4 helper shipped for this extension release; an older v3 helper is incompatible. A bundled palette still supplies neutral card colors while the helper is unavailable, but it cannot supply language-specific syntax classification without that helper.
 
 This is source highlighting, not a log highlighter: Bash output stays tool output. Unknown languages remain readable in a neutral color. Very large sources can have an uncolored remainder without losing visible text.
 
@@ -194,13 +194,14 @@ Run **`/tidy-ui`**. No configuration file editing is needed for normal use.
 | Control | What it does |
 | --- | --- |
 | **Tidy UI appearance** | Toggle the custom cards, messages, input and footer |
-| **Code color theme** | Search themes, preview with navigation, confirm with Enter; Escape restores the previous choice |
+| **Code color theme** | Choose Follow Pi or search 36 theme families; navigation previews, Enter confirms, Escape restores the previous choice |
+| **Code color variant** | Switch Dark/Light; disabled and skipped during navigation under Follow Pi, which remembers the last variant |
 | **Set terminal colors from Pi theme** | [Match terminal defaults to Pi's theme](#match-your-terminal-to-pis-theme). Off by default; active only while Tidy UI appearance is On |
 | **Status & troubleshooting** | Inspect actual state, toggle Occipital, reapply appearance/colors, inspect or record diagnostic logs, and view or clear saved display layouts |
 
 For spacing, use Pi's **`/settings`**: **Output padding** controls transcript margins, while **Editor padding** controls the input panel. Both apply without reloading.
 
-Confirmed code themes, terminal-color and native-highlighting preferences are saved and shared across running Pi instances. Appearance and diagnostic-recording switches belong to the current Pi process: they survive `/reload`, but a new process starts them enabled. Logs are local diagnostics; the menu shows their paths and lets you turn recording off. See [what is recorded](docs/debug-logging-spec.md).
+Confirmed code-theme families and variants, terminal-color and native-highlighting preferences are saved and shared across running Pi instances. The config stores a family ID without its variant suffix and a separate `syntaxThemeVariant` key; missing or unsupported variants mean Dark. Known old suffixed IDs are accepted as family aliases, but an old `-light` suffix does not override that default. See the [configuration format and compatibility rules](docs/settings-menu-spec.md#persistence). Appearance and diagnostic-recording switches belong to the current Pi process: they survive `/reload`, but a new process starts them enabled. Logs are local diagnostics; the menu shows their paths and lets you turn recording off. See [what is recorded](docs/debug-logging-spec.md).
 
 ### Expand, select, or keep a tool native
 

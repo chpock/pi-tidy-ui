@@ -65,7 +65,7 @@ export async function sharedPiIsolationHost(inputs, binary) {
       let transport, sequence = 0;
       const factory = createSharedFactory({ identity: { project_root: root, harness: 'pi', session: `isolation-${peers.length}` },
         discovery: { explicit: connection, env: {} }, requestDeadlineMs: 5000 });
-      const client = new SyntaxClient({ standaloneVersion: '0.1.0', initialTheme: { kind: 'pi' }, provider: {
+      const client = new SyntaxClient({ standaloneVersion: '0.1.0', initialTheme: { kind: 'pi', variant: 'dark' }, provider: {
         async tryShared(...args) { transport = await factory(...args); return transport; },
         async acquireOwned() { throw new Error('isolation consumer must remain shared'); },
       } });

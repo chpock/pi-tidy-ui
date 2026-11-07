@@ -15,7 +15,7 @@ export function preparedCard(input: CardDisplayInput, width: number, theme: PiIn
   const provider = { snapshot: () => ({ generation: 1, availability: 'initializing' as const, reason: 'initializing' as const, initialShared: false }),
     isReady: () => false, classificationAccepted: () => false, request: async () => assert.fail('fixture must not dispatch native work') };
   const sources = new SourceController(provider), owner = {};
-  const cards = new CardSources({ sources, snapshot: () => ({ enabled: true, provider: provider.snapshot(), selected: { kind: 'pi' as const }, effective: resolveTheme({ kind: 'pi' }).effective, standaloneVersion: 'test' }) },
+  const cards = new CardSources({ sources, snapshot: () => ({ enabled: true, provider: provider.snapshot(), selected: { kind: 'pi' as const, variant: 'dark' as const }, effective: resolveTheme({ kind: 'pi', variant: 'dark' }).effective, standaloneVersion: 'test' }) },
     { preparePaletteInput: (palette, revision, mode, funding) => preparePaletteInput(theme, palette.id, revision, mode, funding), classify: (text, info) => classify!(text, info.path!), invalidate() {}, requestRender() {} });
   const funding = sources.geometryFunding()!;
   try {

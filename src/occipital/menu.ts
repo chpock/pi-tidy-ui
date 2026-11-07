@@ -1,4 +1,4 @@
-import type { SyntaxTheme } from '../settings.ts';
+import type { ThemePreference } from '../settings.ts';
 import type { ThemeDescription } from '../themes/selection.ts';
 import type { ProviderSnapshot } from './provider.ts';
 
@@ -8,7 +8,7 @@ export interface SyntaxMenuSnapshot {
   enabled: boolean;
   provider: ProviderSnapshot;
   standaloneVersion: string;
-  selected: SyntaxTheme;
+  selected: ThemePreference;
   effective?: ThemeDescription;
   /** Owner-supplied bounded, public-safe issue; never a raw transport/settings error. */
   lastIssue?: string;
@@ -21,6 +21,6 @@ export interface SyntaxMenuOwner {
   /** Read cached, validated metadata only; no describe, refresh or startup. */
   snapshot(): SyntaxMenuSnapshot;
   /** May apply the live selection even when persistence returns an error. */
-  selectTheme(choice: SyntaxTheme): Promise<SyntaxMenuOutcome>;
+  selectTheme(choice: ThemePreference): Promise<SyntaxMenuOutcome>;
   setEnabled(enabled: boolean): Promise<void>;
 }

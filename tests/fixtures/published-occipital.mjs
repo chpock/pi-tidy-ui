@@ -102,7 +102,7 @@ try {
       const snapshot = client.snapshot();
       assert.equal(snapshot.standaloneVersion, NATIVE_RELEASE.version); assert.equal(snapshot.provider.kind, 'owned'); assert.equal(snapshot.provider.availability, 'ready');
        const selectedPalette = 'gruvbox-dark';
-       client.previewTheme({ kind: 'theme', id: selectedPalette });
+       client.previewTheme({ kind: 'theme', id: 'gruvbox', variant: 'dark' });
        const palette = sampleOwnedPalette(selectedPalette, 'truecolor');
        const definition = createSemanticRuleDefinition(), selectedRules = fingerprintRules(definition);
        const styleSelection = { definition, bindingRevision: 1, palette: `owned-palette-v1:${selectedPalette}`,

@@ -203,10 +203,10 @@ test('current consumer geometry: actual CardSources SDK preparation warm theme w
     if (this.budget === budget) { const freed = before - budget.stats().retainedBytes, site = charges.get(this); if (freed && site) liveByAllocationSite[site] -= freed; }
   });
   try {
-    await awaitFixture(broker.start()); let selected = resolveTheme({ kind: 'theme', id: 'gruvbox-dark' }).effective;
+    await awaitFixture(broker.start()); let selected = resolveTheme({ kind: 'theme', id: 'gruvbox', variant: 'dark' }).effective;
     const ui = new UI(); themes.initTheme('dark', false);
     adapter = installTidyUi(ui, () => themes.theme, { syntax: { client: { sources: owner, snapshot: () => ({ enabled: true,
-      selected: { kind: 'theme', id: selected.id }, effective: selected, standaloneVersion: 'test', provider: broker.snapshot() }) },
+      selected: { kind: 'theme', id: selected.id.replace(/-dark$/u, ''), variant: 'dark' }, effective: selected, standaloneVersion: 'test', provider: broker.snapshot() }) },
       palette: () => revision, classify: () => assert.fail('ready native sources must not use Pi classifier') } });
     assert.equal(adapter.active, true, adapter.reason);
     let bash: InstanceType<typeof ToolExecutionComponent>, file: InstanceType<typeof ToolExecutionComponent>;
@@ -228,10 +228,10 @@ test('current consumer geometry: actual CardSources SDK preparation warm theme w
     assert.equal(measurements, baseline.measurements); assert.ok(reflows > baseline.reflows, 'width-change really reflows retained numeric glyph data');
     assert.equal(observer.snapshot().sourceSegments, baseline.sourceSegments); assert.deepEqual(broker.stats(), work);
     const width = counts(), widthSourceWork = observer.snapshot();
-    await capture('sdk-uncached-theme', async () => { selected = resolveTheme({ kind: 'theme', id: 'solarized-dark' }).effective; adapter!.syntaxMetadataChanged(); await drain(); render(bash, 24); });
+    await capture('sdk-uncached-theme', async () => { selected = resolveTheme({ kind: 'theme', id: 'solarized', variant: 'dark' }).effective; adapter!.syntaxMetadataChanged(); await drain(); render(bash, 24); });
     assert.equal(measurements, width.measurements); assert.equal(reflows, width.reflows); assert.equal(owner.stats().committedLineBytes, (reports[0]!.afterWork as ReturnType<typeof owner.stats>).committedLineBytes);
     const themed = broker.stats(); assert.equal(themed.sourceDispatches, work.sourceDispatches); assert.ok(themed.styleDispatches === work.styleDispatches);
-    await capture('sdk-cached-rollback', async () => { selected = resolveTheme({ kind: 'theme', id: 'gruvbox-dark' }).effective; adapter!.syntaxMetadataChanged(); await drain(); render(bash, 24); });
+    await capture('sdk-cached-rollback', async () => { selected = resolveTheme({ kind: 'theme', id: 'gruvbox', variant: 'dark' }).effective; adapter!.syntaxMetadataChanged(); await drain(); render(bash, 24); });
     assert.deepEqual(broker.stats(), themed); assert.equal(measurements, width.measurements); assert.equal(reflows, width.reflows);
     assert.deepEqual(observer.snapshot(), widthSourceWork, 'theme and rollback never remeasure or reread the source prefix');
     const dense = Array.from({ length: 256 }, (_, i) => `export const C22_v${i}={n:${i},s:"α",a:[true,null],f:(x:number)=>x+1}; // dense`).join('\n');

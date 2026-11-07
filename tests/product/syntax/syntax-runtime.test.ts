@@ -9,7 +9,7 @@ import { semanticDescriptor } from '../../fixtures/semantic-provider.ts';
 import { CARD_ROLES, type CardRole } from '../../../src/occipital/semantic-codec.ts';
 import type { ConcreteStyle } from '../../../src/syntax/style-materialization.ts';
 import type { SourceController } from '../../../src/occipital/controller.ts';
-import type { SettingsLoadResult, SettingsSaveResult, SyntaxTheme } from '../../../src/settings.ts';
+import { themePatch, type SettingsLoadResult, type SettingsSaveResult, type SyntaxTheme, type ThemePreference } from '../../../src/settings.ts';
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -50,12 +50,12 @@ class Peer implements ProviderTransport {
   }
 }
 class Store {
-  loads = 0; writes: { choice: SyntaxTheme; signal?: AbortSignal }[] = [];
+  loads = 0; writes: { choice: SyntaxTheme; variant: ThemePreference['variant']; signal?: AbortSignal }[] = [];
   loadResult?: Promise<SettingsLoadResult>;
   saveResult: SettingsSaveResult | Promise<SettingsSaveResult> = { ok: true };
-  load() { this.loads++; return this.loadResult ?? Promise.resolve({ ok: true, syntaxTheme: { kind: 'pi' } } as SettingsLoadResult); }
-  update(patch: { syntaxTheme: SyntaxTheme }, options?: { signal?: AbortSignal }) {
-    this.writes.push({ choice: patch.syntaxTheme, signal: options?.signal }); return Promise.resolve(this.saveResult);
+  load() { this.loads++; return this.loadResult ?? Promise.resolve({ ok: true, themePreference: { kind: 'pi', variant: 'dark' } } as SettingsLoadResult); }
+  update(patch: ReturnType<typeof themePatch>, options?: { signal?: AbortSignal }) {
+    this.writes.push({ choice: patch.syntaxTheme, variant: patch.syntaxThemeVariant, signal: options?.signal }); return Promise.resolve(this.saveResult);
   }
 }
 function presentation() {
@@ -121,7 +121,7 @@ test('only an active presentation starts one client asynchronously; repeated att
   assert.equal(f.shared(), 0, 'attach must return before discovery work starts');
   await settled(); assert.equal(f.store.loads, 1); assert.equal(f.shared(), 1);
   assert.equal(f.runtime.snapshot().effective, undefined);
-  load.resolve({ ok: true, syntaxTheme: { kind: 'pi' } }); await settled();
+  load.resolve({ ok: true, themePreference: { kind: 'pi', variant: 'dark' } }); await settled();
   assert.equal(f.runtime.snapshot().effective?.id, 'pi'); assert.ok(view.calls.metadata > 0);
   const before = [f.shared(), f.store.loads, f.peers[0]!.calls.length];
   f.runtime.attach(view); await settled(); assert.deepEqual([f.shared(), f.store.loads, f.peers[0]!.calls.length], before);
@@ -173,8 +173,8 @@ test('explicit preference preparation waits for saved theme without starting a p
   const f = fixture(false), loaded = deferred<SettingsLoadResult>(); f.store.loadResult = loaded.promise;
   const preparing = f.runtime.prepareThemes(); await settled();
   assert.equal(f.store.loads, 1); assert.equal(f.shared(), 0); assert.equal(f.owned(), 0);
-  loaded.resolve({ ok: true, syntaxTheme: { kind: 'theme', id: 'saved' } }); await preparing;
-  assert.deepEqual(f.runtime.snapshot().selected, { kind: 'theme', id: 'saved' });
+  loaded.resolve({ ok: true, themePreference: { kind: 'theme', id: 'saved', variant: 'dark' } }); await preparing;
+  assert.deepEqual(f.runtime.snapshot().selected, { kind: 'theme', id: 'saved', variant: 'dark' });
   assert.equal(f.store.writes.length, 0);
 });
 
@@ -186,9 +186,11 @@ test('retired runtime preference preparation is inert', async () => {
 test('disposal aborts an already delegated settings save, with no late UI or presentation resurrection', async () => {
   const f = fixture(), view = presentation(), save = deferred<SettingsSaveResult>();
   f.runtime.attach(view); await settled(); f.store.saveResult = save.promise;
-  const selecting = f.runtime.selectTheme({ kind: 'pi' }); assert.equal(f.store.writes.length, 1);
+  const selecting = f.runtime.selectTheme({ kind: 'pi', variant: 'dark' }); assert.equal(f.store.writes.length, 1);
   await f.runtime.dispose(); const before = structuredClone(view.calls);
-  assert.equal(f.store.writes[0]!.signal!.aborted, true); save.resolve({ ok: true });
+  assert.equal(f.store.writes[0]!.signal!.aborted, true);
+   assert.deepEqual({ syntaxTheme: f.store.writes[0]!.choice, syntaxThemeVariant: f.store.writes[0]!.variant },
+     { syntaxTheme: { kind: 'pi' }, syntaxThemeVariant: 'dark' }); save.resolve({ ok: true });
   assert.equal((await selecting).ok, false); f.runtime.attach(view); await settled();
   assert.deepEqual(view.calls, before); assert.equal(f.shared(), 1); assert.equal(f.peers[0]!.closes, 1);
   assert.equal(f.runtime.snapshot().provider.availability, 'disposed');
@@ -348,7 +350,7 @@ test('runtime Pi input remains lazy across attachment, menu and current native s
     getBgAnsi(role: Parameters<typeof native.getBgAnsi>[0]) { bg++; return native.getBgAnsi(role); } };
   const budget = new DataBudget(1_000_000), funding = { budget, grant: (bytes: number) => budget.reserve(bytes) };
   f.runtime.palette(theme); f.runtime.attach(view); await settled();
-  await f.runtime.prepareThemes(); f.runtime.previewTheme({ kind: 'theme', id: 'native-selected' });
+  await f.runtime.prepareThemes(); f.runtime.previewTheme({ kind: 'theme', id: 'native-selected', variant: 'dark' });
   for (let i = 0; i < 20; i++) { f.runtime.snapshot(); f.runtime.palette(theme); }
   assert.deepEqual([fg, bg, budget.stats().retainedBytes], [0, 0, 0]);
   const selected = f.runtime.snapshot().selected, stats = f.runtime.sources.stats(), calls = f.peers[0]!.calls.length;
