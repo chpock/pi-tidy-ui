@@ -22,7 +22,7 @@ for (const mode of ['regular', 'fullscreen']) test(`runtime health CLI: ${mode} 
       const painted = await settledStats(terminal, 'health-ready-frame');
       assert.deepEqual(work(painted), work(ready), 'diagnostic rendering adds no delayed first adoption');
       assert.equal(terminal.events().filter(event => event.type === 'runtime_health_invalid_reply').length, 1);
-      const notices = () => terminal.events().filter(event => event.type === 'syntax_notify' && event.message.startsWith('pi-tidy-ui:'));
+      const notices = () => terminal.events().filter(event => event.type === 'syntax_notify' && event.message.startsWith('[pi-tidy-ui] '));
       assert.equal(notices().length, 1); assert.equal(notices()[0].level, 'error');
       assert.match(notices()[0].message, /unexpected error.*Details: \/tidy-ui/);
       await terminal.openTidyMenu(); await terminal.selectTidyItem('Status & troubleshooting');

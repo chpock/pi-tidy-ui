@@ -1,5 +1,5 @@
 // Offline real-CLI fixture: built-ins stay real unless the isolated bash-shape opt-in is set.
-import { CustomEditor, ToolExecutionComponent, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { CustomEditor, ToolExecutionComponent, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { createAssistantMessageEventStream, type ToolCall } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { Container, Text, matchesKey, type TUI, type OverlayHandle } from "@earendil-works/pi-tui";
@@ -47,6 +47,23 @@ export default function terminalDriver(pi: ExtensionAPI) {
   const output = process.env.TIDY_UI_TEST_OUTPUT!;
   let tui: any;
   const record = createEventRecorder(output);
+  if (process.env.TIDY_UI_TEST_NOTIFICATIONS === '1') {
+    type UI = ExtensionContext['ui'];
+    const observers = new Map<UI, { original: UI['notify']; observed: UI['notify'] }>();
+    pi.on('session_start', (_event, ctx) => {
+      if (observers.has(ctx.ui)) return;
+      const original = ctx.ui.notify;
+      const observed: UI['notify'] = (message, level) => {
+        record({ type: 'notification', message, level });
+        original.call(ctx.ui, message, level);
+      };
+      observers.set(ctx.ui, { original, observed }); ctx.ui.notify = observed;
+    });
+    pi.on('session_shutdown', () => {
+      for (const [ui, { original, observed }] of observers) if (ui.notify === observed) ui.notify = original;
+      observers.clear();
+    });
+  }
   const wait = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
   // Observe host geometry only: no draft access, command injection or render request.
   const observeTerminalSize = () => record({ type: "terminal_size", width: process.stdout.columns, height: process.stdout.rows });

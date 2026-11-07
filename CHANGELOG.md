@@ -45,6 +45,8 @@ been reconstructed.
 
 ### Fixed
 
+- Attribute all extension error, warning and info notifications with a consistent
+  `[pi-tidy-ui] ` prefix, without changing their severity or repeat suppression.
 - Keep oversized read/write/edit paths beside their heading labels when moving the
   path cannot make it fit. Share fragment wrapping and preferred separator cuts
   with compact tool calls, without changing file/diff body wrapping or remeasuring

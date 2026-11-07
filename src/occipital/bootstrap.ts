@@ -5,6 +5,7 @@ import { open } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ExtensionSettings } from '../settings.ts';
+import { notify } from '../notifications.ts';
 import type { SyntaxRuntimeOptions } from '../syntax/runtime.ts';
 import { createLocalOwnedFactory, createOwnedFactory, createSharedFactory } from './factories.ts';
 import { OCCIPITAL_LIMITS } from './limits.ts';
@@ -94,6 +95,6 @@ function missingLocalWarning(ui: WeakRef<ExtensionContext['ui']>): () => void {
     const current = ui.deref();
     if (!current) return;
     warned = true;
-    current.notify('[pi-tidy-ui] Local Occipital build not found next to this extension; using fallback highlighting without Occipital.', 'warning');
+    notify(current, 'Local Occipital build not found next to this extension; using fallback highlighting without Occipital.', 'warning');
   };
 }

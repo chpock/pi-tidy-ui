@@ -4,6 +4,7 @@ import { isAbsolute, resolve } from "node:path";
 import { createRequire } from "node:module";
 import { SessionLogging } from "./session-logging.ts";
 import { RuntimeHealth } from './runtime-health.ts';
+import { notify } from './notifications.ts';
 import { copyThemePreference, ExtensionSettings, processPreferences, sameThemePreference,
   type LocalPreferences, type SettingsLoadResult, type ThemePreference } from './settings.ts';
 import { bindTerminalLifecycle } from "./terminal-lifecycle.ts";
@@ -2195,13 +2196,13 @@ function diagnosticCapture(owner: WeakRef<DiagnosticContext>): DiagnosticSink {
   return (level, area, message, fields) => owner.deref()?.logging?.sink(level, area, message, fields);
 }
 function runtimeNotice(owner: WeakRef<DiagnosticContext>) {
-  return (message: string) => { const ctx = owner.deref()?.current; if (ctx?.hasUI) ctx.ui.notify(message, 'error'); };
+  return (message: string) => { const ctx = owner.deref()?.current; if (ctx?.hasUI) notify(ctx.ui, message, 'error'); };
 }
 function syntaxNotice(owner: WeakRef<SyntaxContext>) {
-  return (message: string, type: "error") => owner.deref()?.current?.ui.notify(message, type);
+  return (message: string, type: "error") => notify(owner.deref()?.current?.ui, message, type);
 }
 function loggingNotice(owner: WeakRef<SyntaxContext>) {
-  return (message: string) => { const ctx = owner.deref()?.current; if (ctx?.hasUI) ctx.ui.notify(message, "warning"); };
+  return (message: string) => { const ctx = owner.deref()?.current; if (ctx?.hasUI) notify(ctx.ui, message, 'warning'); };
 }
 
 export default function tidyUi(pi: ExtensionAPI, options: TidyUiRuntimeOptions = {}) {
@@ -2259,7 +2260,7 @@ export default function tidyUi(pi: ExtensionAPI, options: TidyUiRuntimeOptions =
     const previewing = activeMenu?.preferencesChanged(selectedTheme);
     if (themeChanged && !previewing) syntax?.applySavedTheme(selectedTheme);
     if (nativeChanged) {
-      void syntax?.setEnabled(syntaxEnabled).catch(() => { if (epoch === lifecycle && ctx.hasUI) ctx.ui.notify('pi-tidy-ui: Native highlighting preference could not be applied.', 'warning'); });
+      void syntax?.setEnabled(syntaxEnabled).catch(() => { if (epoch === lifecycle && ctx.hasUI) notify(ctx.ui, 'Native highlighting preference could not be applied.', 'warning'); });
     }
     diagnose(logging?.sink, 'INFO', 'runtime', 'Shared preferences refreshed without writing configuration', { themeChanged, colorsChanged, nativeChanged });
   }
@@ -2372,7 +2373,7 @@ export default function tidyUi(pi: ExtensionAPI, options: TidyUiRuntimeOptions =
           if (force) queueMicrotask(() => { if (colors === view) reference.deref()?.requestRender(true); });
           else reference.deref()?.requestRender();
         },
-        warn: message => liveContext?.ui.notify(`pi-tidy-ui colors: ${message}`, "warning"),
+        warn: message => notify(liveContext?.ui, `Terminal colors: ${message}`, 'warning'),
       });
       detachColorLifecycle = bindTerminalLifecycle(tui.terminal, ensureSyntax(ctx), view);
       colors = view; terminalColorDebug = new WeakRef(view);
@@ -2486,7 +2487,7 @@ export default function tidyUi(pi: ExtensionAPI, options: TidyUiRuntimeOptions =
     if (!warnedBudgetFlags) {
       warnedBudgetFlags = true;
       for (const flag of retiredBudgetFlags) if (pi.getFlag(flag) !== undefined)
-        ctx.ui.notify(`pi-tidy-ui: --${flag} is ignored; layouts are retained per component without eviction limits`, "warning");
+        notify(ctx.ui, `--${flag} is ignored; layouts are retained per component without eviction limits`, 'warning');
     }
     // A public widget factory exposes the actual live tree, including bundled CLI classes.
     // Remove the empty widget immediately: it is not part of our layout.
@@ -2515,7 +2516,7 @@ export default function tidyUi(pi: ExtensionAPI, options: TidyUiRuntimeOptions =
           directorySource?.dispose(); directorySource = undefined;
           liveContext?.ui.setWidget(statusWidget, undefined);
         },
-        warn: (message) => { restoreFooter(); if (!diagnostic?.runtime) liveContext?.ui.notify(`pi-tidy-ui disabled: ${message}`, "warning"); },
+        warn: (message) => { restoreFooter(); if (!diagnostic?.runtime) notify(liveContext?.ui, `Appearance disabled: ${message}`, 'warning'); },
       });
       diagnose(logging?.sink, "INFO", "runtime", "Presentation installation finished", { active: controller.active, reason: controller.reason });
       if (controller.active) sourceRuntime.attach(controller);
@@ -2719,8 +2720,8 @@ export default function tidyUi(pi: ExtensionAPI, options: TidyUiRuntimeOptions =
   pi.registerCommand('tidy-ui', {
     description: 'Open Tidy UI appearance settings, status and troubleshooting',
     handler: async (args, ctx) => {
-      if (args.trim()) { ctx.ui.notify('Usage: /tidy-ui — open the settings menu; command arguments are no longer supported.', 'warning'); return; }
-      if (ctx.mode !== 'tui' || !ctx.hasUI) { ctx.ui.notify('pi-tidy-ui: menu is available only in terminal mode with UI.', 'info'); return; }
+      if (args.trim()) { notify(ctx.ui, 'Usage: /tidy-ui — open the settings menu; command arguments are no longer supported.', 'warning'); return; }
+      if (ctx.mode !== 'tui' || !ctx.hasUI) { notify(ctx.ui, 'menu is available only in terminal mode with UI.', 'info'); return; }
       const epoch = lifecycle;
       await loadPreferences();
       if (epoch !== lifecycle) return;
@@ -2735,7 +2736,7 @@ export default function tidyUi(pi: ExtensionAPI, options: TidyUiRuntimeOptions =
           const menu = new TidyMenu(menuOwner(ctx, epoch), theme, () => tui.requestRender(), () => done(), () => tui.terminal.rows);
           opened = activeMenu = menu; return menu;
         }, { overlay: true, overlayOptions: { anchor: 'center', get width() { return opened?.preferredWidth() ?? 1; }, maxHeight: '100%', margin: 0 } });
-      } catch { if (epoch === lifecycle) ctx.ui.notify('pi-tidy-ui: Settings menu could not be opened.', 'error'); }
+      } catch { if (epoch === lifecycle) notify(ctx.ui, 'Settings menu could not be opened.', 'error'); }
       finally { opened?.dispose(); if (activeMenu === opened) activeMenu = undefined; }
     },
   });

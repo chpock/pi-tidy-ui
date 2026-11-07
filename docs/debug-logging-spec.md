@@ -21,6 +21,12 @@ The text and health paths are independent. `diagnose` delivers already-selected 
 
 This separation allows a failed or disabled journal to coexist with useful runtime warnings. Conversely, a healthy writer proves only that diagnostics could be written. Provider/source/controller owners decide what a successful operation or expected refusal means; the logger cannot infer it from severity or from a neighboring operation's success. [Host teardown](host-integration.md#shutdown-and-failures) retires the observers in an order that still permits outgoing syntax-cleanup records, without reattributing them to a new session.
 
+## Public notifications
+
+`src/notifications.ts` is the common delivery boundary for extension-owned Pi notifications at `error`, `warning` and `info` levels. Callers supply an unprefixed message body and its existing level; `notify(ui, message, level)` adds exactly `[pi-tidy-ui] ` before delegating to the public `ui.notify` method with its original receiver. Message content and severity are otherwise unchanged. Journals and runtime-health producers pass unbranded bodies to their existing callbacks; they do not add a second prefix.
+
+The helper retains no UI owner, schedules nothing and adds no suppression or exception handling. Existing callers still own current-context/UI guards, weak references, lifecycle epochs, coalescing and warning-once behavior. A missing current UI is a no-op; the helper does not impose a new `hasUI` check on command notices already supported by the host. It never replaces Pi's notification method. Other extensions' notifications, tool-result error panels, inline menu feedback and journal records are not rewritten.
+
 ## Reading and controls
 
 Bare `/tidy-ui` → **Status & troubleshooting → Diagnostic logs** shows current session/run, paths, capture state and counters. **Record diagnostic logs** stops or resumes capture; **Retry recording** explicitly retries a failed writer. **Write state snapshot** records existing runtime/cache/syntax/color/Git/animation counters, without enabling capture or rendering.
@@ -109,6 +115,6 @@ The two-second close bound limits the **caller's wait**, not the underlying file
 
 ## Module ownership
 
-`src/debug-log.ts` owns files, batching and retention; `src/session-logging.ts` binds observers to a run; `src/diagnostics.ts` isolates observers and classifies safe errors. Existing UI/syntax/Occipital owners emit already-computed decisions. Old callbacks cannot be reattributed to a new run. Session shutdown quiesces presentation, awaits syntax/helper disposal, then closes logging before restoring hooks in nested `finally` blocks. Closing the run-bound sink concurrently with syntax cleanup would discard cleanup diagnostics; this ordering preserves them without keeping the retired UI operational.
+`src/notifications.ts` owns the public notification prefix and delivery only. `src/debug-log.ts` owns files, batching and retention; `src/session-logging.ts` binds observers to a run; `src/diagnostics.ts` isolates observers and classifies safe errors. Existing UI/syntax/Occipital owners emit already-computed decisions. Old callbacks cannot be reattributed to a new run. Session shutdown quiesces presentation, awaits syntax/helper disposal, then closes logging before restoring hooks in nested `finally` blocks. Closing the run-bound sink concurrently with syntax cleanup would discard cleanup diagnostics; this ordering preserves them without keeping the retired UI operational.
 
 See [diagnostics and runtime-health validation](testing.md#diagnostics-and-runtime-health) for filesystem, lifecycle and physical live/replay controls.

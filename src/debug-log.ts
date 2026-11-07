@@ -176,7 +176,7 @@ export class TextJournal {
     this.queue = []; this.pendingBytes = 0; this.omitted = 0; this.cancelTimer();
     const handle = this.handle; this.handle = undefined;
     this.failedClose = handle?.close().catch(() => undefined);
-    this.notice(`[pi-tidy-ui] Debug logging stopped (${this.failure}). Open /tidy-ui → Status & troubleshooting → Diagnostic logs for details or to retry.`);
+    this.notice(`Debug logging stopped (${this.failure}). Open /tidy-ui → Status & troubleshooting → Diagnostic logs for details or to retry.`);
   }
   private cancelTimer(): void { if (this.timer) clearTimeout(this.timer); this.timer = undefined; }
   private schedule(): void {
@@ -277,7 +277,7 @@ export class TextJournal {
       await handle.writeFile(row);
     } catch (error) {
       this.commonFailed = true; this.writeErrors++;
-      this.notice(`[pi-tidy-ui] Common session journal unavailable (${diagnosticError(error)}); detailed logging is independent. Open /tidy-ui → Status & troubleshooting → Diagnostic logs for its path.`);
+      this.notice(`Common session journal unavailable (${diagnosticError(error)}); detailed logging is independent. Open /tidy-ui → Status & troubleshooting → Diagnostic logs for its path.`);
     } finally { await handle?.close().catch(() => undefined); }
   }
   close(reason: string): Promise<void> {

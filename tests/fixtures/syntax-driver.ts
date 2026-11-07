@@ -121,7 +121,7 @@ export default function syntaxDriver(pi: ExtensionAPI) {
     if (uiNotices.has(ctx.ui)) return;
     const notify = ctx.ui.notify; uiNotices.set(ctx.ui, notify);
     ctx.ui.notify = (message, level) => {
-      if (message.startsWith('Syntax') || (process.env.TIDY_UI_TEST_RUNTIME_HEALTH === '1' || process.env.TIDY_UI_TEST_EMPTY_BASH === '1') && message.startsWith('pi-tidy-ui:')) record({ type: 'syntax_notify', message, level });
+      if (message.startsWith('[pi-tidy-ui] Syntax') || (process.env.TIDY_UI_TEST_RUNTIME_HEALTH === '1' || process.env.TIDY_UI_TEST_EMPTY_BASH === '1') && message.startsWith('[pi-tidy-ui] ')) record({ type: 'syntax_notify', message, level });
       notify.call(ctx.ui, message, level);
     };
   });

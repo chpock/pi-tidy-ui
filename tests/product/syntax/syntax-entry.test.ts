@@ -1708,6 +1708,7 @@ test('entry logging failure and disabled snapshot are truthful, isolate presenta
     const failed = debugLoggingDiagnostics()!;
     assert.equal(failed.state, 'failed'); assert.equal(failed.pendingBytes, 0); assert.equal(failed.inFlightBytes, 0); assert.equal(failed.timer, false);
     assert.equal(h.notices.filter(message => message.includes('Debug logging stopped')).length, 1);
+    assert.match(h.notices.find(message => message.includes('Debug logging stopped'))!, /^\[pi-tidy-ui\] Debug logging stopped/u);
     assert.equal(h.notices.some(message => message.includes('PRIVATE_DISK_ERROR_BODY')), false);
     for (let i = 0; i < 50; i++) h.root.render(80);
     await settled(); assert.deepEqual(h.counts, before); assert.equal(debugLoggingDiagnostics()!.writes, failed.writes);
@@ -2227,6 +2228,16 @@ test('entry preloads preferences before startup and attaches without another asy
   await starting; assert.equal(h.counts.load, 1);
 });
 
+test('notification prefix: an unavailable selected theme is attributed once through the real entry', async () => {
+  const h = fixture('tui', false, undefined, undefined, undefined,
+    { kind: 'theme', id: 'unavailable-notification-family', variant: 'dark' });
+  await h.start(); await h.page('Code color theme'); await settled();
+  const messages = () => h.notices.filter(message => message.includes('Syntax theme'));
+  assert.deepEqual(messages(), ['[pi-tidy-ui] Syntax theme "unavailable-notification-family" is unavailable; using Pi palette temporarily.']);
+  await h.page('Code color theme'); await settled();
+  assert.equal(messages().length, 1, 'prefixing does not change the missing-theme episode suppression');
+});
+
 test('runtime health entry: settings errors are visible with recording unavailable, recover on valid read, and reset for a new session', async () => {
   let changed!: (value: SettingsLoadResult) => void;
   const h = fixture('tui', false, { async load() { return { ok: true, themePreference: { kind: 'pi', variant: 'dark' }, terminalColorsEnabled: false }; },
@@ -2236,6 +2247,7 @@ test('runtime health entry: settings errors are visible with recording unavailab
   const bad: SettingsLoadResult = { ok: false, themePreference: { kind: 'pi', variant: 'dark' }, issue: { code: 'invalid-json', message: 'PRIVATE_CONFIG_DETAIL' } };
   changed(bad); changed(bad); await settled();
   assert.equal(h.notices.length, before + 1); assert.doesNotMatch(h.notices.at(-1)!, /PRIVATE_CONFIG_DETAIL/);
+  assert.match(h.notices.at(-1)!, /^\[pi-tidy-ui\] Settings encountered an unexpected error/u);
   await h.page('Status & troubleshooting'); assert.match(h.view, /Runtime errors: 1; active: 1/);
   await h.page('Status & troubleshooting', 'Diagnostic logs'); assert.match(h.view, /Runtime errors: 1; active: 1/);
   assert.match(h.view, /Diagnostic logging is unavailable/);

@@ -166,7 +166,7 @@ test("debug log: write failure disables capture, releases queue and warns once w
   journal.record("DEBUG", "runtime", "Cannot restart implicitly");
   await journal.flush();
   assert.equal(warnings.length, 1);
-  assert.match(warnings[0]!, /pi-tidy-ui.*ENOSPC/u);
+  assert.match(warnings[0]!, /^Debug logging stopped.*ENOSPC/u);
   assert.ok(!warnings[0]!.includes("SECRET"));
   await journal.close("shutdown");
 });

@@ -40,12 +40,16 @@ test('entry registers the menu, flags and public lazy renderer; retired argument
   const ctx = { mode: 'rpc', hasUI: false, ui: { notify: (message: string, type: string) => notices.push([message, type]) } } as unknown as ExtensionContext;
   const command = commands.get('tidy-ui')!;
   await command.handler('', ctx);
-  assert.deepEqual(notices.pop(), ['pi-tidy-ui: menu is available only in terminal mode with UI.', 'info']);
+  assert.deepEqual(notices.pop(), ['[pi-tidy-ui] menu is available only in terminal mode with UI.', 'info']);
   for (const argument of ['on', 'off', 'status', 'syntax', 'colors off', 'cache clear', 'logs on', 'unknown']) {
     await command.handler(argument, ctx);
     const [message, type] = notices.pop()!;
-    assert.match(message, /^Usage: \/tidy-ui.*arguments are no longer supported/); assert.equal(type, 'warning');
+    assert.match(message, /^\[pi-tidy-ui\] Usage: \/tidy-ui.*arguments are no longer supported/); assert.equal(type, 'warning');
   }
+  const brokenMenu = { ...ctx, mode: 'tui', hasUI: true, ui: { ...ctx.ui,
+    async custom() { throw new Error('PRIVATE_MENU_ERROR'); } } } as unknown as ExtensionContext;
+  await command.handler('', brokenMenu);
+  assert.deepEqual(notices.pop(), ['[pi-tidy-ui] Settings menu could not be opened.', 'error']);
   assert.equal(reads, 1); assert.equal(writes, 0);
 });
 
