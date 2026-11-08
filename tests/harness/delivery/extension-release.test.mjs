@@ -86,6 +86,9 @@ test('the source npm archive includes all tool adapters, TUI palettes and canoni
   for (const path of adapters) assert.ok(files.has(`src/tool-adapters/${path.replaceAll('\\', '/')}`), `missing tool adapter: ${path}`);
   assert.ok(files.has('docs/tool-adapters.md'), 'missing canonical tool-adapter chapter');
   assert.ok(files.has('docs/syntax/opencode-tui-mapping.md'), 'missing canonical TUI correspondence chapter');
+  assert.ok(files.has('docs/highlighting-comparison.md'), 'missing canonical highlighting-comparison chapter');
+  for (const prefix of ['scripts/highlight-compare/', 'tests/fixtures/highlight-compare/', 'tests/harness/highlight-compare/'])
+    assert.equal([...files].some(path => path.startsWith(prefix)), false, `checkout-only comparison files must not ship: ${prefix}`);
   assert.ok(files.has('src/themes/NOTICE'), 'missing upstream theme attribution');
   const palettes = (await readdir(join(repo, 'src/themes/palettes'))).filter(path => path.endsWith('.json'));
   assert.equal(palettes.length, 64);

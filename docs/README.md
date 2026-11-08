@@ -71,6 +71,7 @@ The protocol reference ships with this manual. Its six current conformance JSON 
 | [Delivery and releases](releases.md) | CI graph, supported targets, version/native-byte admission, staging, notices, independent product changelogs and exact-tag publication |
 | [Changelog format](changelog-format.md) | Canonical Markdown validation, SemVer ordering, exact entry extraction and packaged-history projection |
 | [Performance framework](performance-testing.md) | Workload/input identities, subprocess containment, metrics, diagnostics, comparison and artifact semantics |
+| [Highlighting comparison](highlighting-comparison.md) | Repository-maintained neutral fixtures and reference adapters, real TUI styles, source alignment, readiness and disposable generated results |
 | [README screenshots](screenshots.md) | Tracked offline demo, immutable Working frame, real Git workspace and terminal colors, actual foot/grim PNG capture on Hyprland, signal cleanup, prerequisites and explicit preview replacement |
 | [Testing](testing.md) | Fresh-clone provisioning, prepared inputs, bounded file jobs, diagnostic duration/RAM results, real integrations, containment and affected contract checks |
 

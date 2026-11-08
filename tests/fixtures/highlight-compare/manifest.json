@@ -1,0 +1,403 @@
+{
+  "schema": 1,
+  "languages": [
+    {
+      "id": "python-core",
+      "language": "python",
+      "version": "3.14",
+      "syntaxBaseline": "3.13",
+      "path": "python-core.py",
+      "cases": [
+        {
+          "id": "comments-and-docstring",
+          "title": "Comment and module docstring",
+          "features": ["comments", "docstrings"],
+          "startLine": 1,
+          "endLine": 2
+        },
+        {
+          "id": "imports-and-aliases",
+          "title": "Imports and import aliases",
+          "features": ["imports", "import-aliases"],
+          "startLine": 4,
+          "endLine": 5
+        },
+        {
+          "id": "literals-and-strings",
+          "title": "Numeric, string, bytes, f-string and Unicode forms",
+          "features": [
+            "integer-bases-and-separators",
+            "float-and-imaginary-literals",
+            "escapes-and-raw-strings",
+            "bytes-literals",
+            "adjacent-and-multiline-strings",
+            "f-string-conversion-format-and-debug-field",
+            "nested-f-string-and-assignment-expression",
+            "multiline-f-string-expression",
+            "unicode-identifier-and-string"
+          ],
+          "startLine": 7,
+          "endLine": 25
+        },
+        {
+          "id": "soft-keywords-and-operators",
+          "title": "Soft-keyword names and operator forms",
+          "features": [
+            "soft-keywords-as-identifiers",
+            "bitwise-operators",
+            "comparison-and-boolean-operators",
+            "slicing"
+          ],
+          "startLine": 27,
+          "endLine": 33
+        },
+        {
+          "id": "collections-and-comprehensions",
+          "title": "Collection displays, unpacking and comprehensions",
+          "features": [
+            "list-set-dict-and-generator-displays",
+            "starred-assignment-unpacking",
+            "dictionary-unpacking",
+            "list-set-and-dict-comprehensions",
+            "generator-expression"
+          ],
+          "startLine": 35,
+          "endLine": 42
+        },
+        {
+          "id": "generic-type-aliases",
+          "title": "Type aliases and a defaulted type parameter",
+          "features": ["type-statement", "generic-type-alias", "type-parameter-default"],
+          "startLine": 44,
+          "endLine": 45
+        },
+        {
+          "id": "function-parameter-forms",
+          "title": "Function annotations and parameter forms",
+          "features": [
+            "positional-only-parameter",
+            "variadic-positional-parameter",
+            "keyword-only-parameter",
+            "default-argument",
+            "variadic-keyword-parameter",
+            "return-annotation",
+            "call-expression"
+          ],
+          "startLine": 47,
+          "endLine": 48
+        },
+        {
+          "id": "decorated-class",
+          "title": "Decorated class, fields and methods",
+          "features": [
+            "decorator",
+            "class-definition",
+            "field-annotations-and-defaults",
+            "classmethod",
+            "special-method"
+          ],
+          "startLine": 50,
+          "endLine": 60
+        },
+        {
+          "id": "generic-function-and-lambda",
+          "title": "Generic function, conditional expression and lambda",
+          "features": ["generic-function", "type-parameter", "conditional-expression", "lambda"],
+          "startLine": 62,
+          "endLine": 65
+        },
+        {
+          "id": "iteration-and-generators",
+          "title": "Loop control, loop else and generator statements",
+          "features": ["for-loop", "while-loop", "loop-else", "continue", "yield", "yield-from"],
+          "startLine": 67,
+          "endLine": 75
+        },
+        {
+          "id": "match-patterns",
+          "title": "Structural matching with distinct pattern forms",
+          "features": [
+            "match-and-case",
+            "mapping-pattern",
+            "sequence-pattern",
+            "class-pattern",
+            "literal-pattern",
+            "or-pattern",
+            "capture-and-wildcard-patterns",
+            "guard"
+          ],
+          "startLine": 77,
+          "endLine": 90
+        },
+        {
+          "id": "exceptions",
+          "title": "Exception handling and exception groups",
+          "features": [
+            "try-except-else-finally",
+            "exception-alias",
+            "exception-chaining",
+            "except-star"
+          ],
+          "startLine": 92,
+          "endLine": 108
+        },
+        {
+          "id": "async-context-and-generators",
+          "title": "Async iteration, context management, awaiting and yielding",
+          "features": [
+            "async-function",
+            "async-for",
+            "async-with",
+            "await",
+            "async-generator"
+          ],
+          "startLine": 110,
+          "endLine": 120
+        }
+      ]
+    },
+    {
+      "id": "python-3.14",
+      "language": "python",
+      "version": "3.14",
+      "path": "python-3.14.py",
+      "cases": [
+        {
+          "id": "template-string",
+          "title": "Python 3.14 template string literal",
+          "features": ["t-string", "conversion-field", "format-specifier"],
+          "startLine": 4,
+          "endLine": 5
+        },
+        {
+          "id": "unparenthesized-exception-types",
+          "title": "Python 3.14 multiple exception types without grouping parentheses",
+          "features": ["except", "multiple-exception-types", "parenthesis-free-except-types"],
+          "startLine": 7,
+          "endLine": 11
+        }
+      ]
+    },
+    {
+      "id": "python-projection",
+      "language": "python",
+      "version": "3.14",
+      "path": "python-projection.py",
+      "cases": [
+        {
+          "id": "terminal-text-projection",
+          "title": "Tabs, wide glyphs, a combining mark and an oversized fragment",
+          "features": ["literal-tab-indentation",
+            "inline-tab-expansion", "wide-identifier", "combining-grapheme", "soft-wrap-projection"],
+          "startLine": 1,
+          "endLine": 4
+        }
+      ]
+    },
+    {
+      "id": "markdown-commonmark-0.31.2",
+      "language": "markdown",
+      "version": "CommonMark 0.31.2",
+      "path": "markdown-commonmark-0.31.2.md",
+      "cases": [
+        {"id": "heading-paragraph-emphasis", "title": "Heading, paragraph, inline emphasis, code and escapes", "features": ["atx-heading", "paragraph", "strong-and-emphasis", "code-span", "backslash-escape", "entity-reference"], "startLine": 1, "endLine": 3},
+        {"id": "reference-link-and-hard-break", "title": "Reference link definition and hard line break", "features": ["reference-link", "link-title", "hard-line-break"], "startLine": 5, "endLine": 8},
+        {"id": "block-containers", "title": "Block quote, nested unordered list and ordered list", "features": ["block-quote", "nested-list", "ordered-list"], "startLine": 10, "endLine": 18},
+        {"id": "thematic-and-setext", "title": "Thematic break and setext heading", "features": ["thematic-break", "setext-heading"], "startLine": 20, "endLine": 23},
+        {"id": "fenced-language-info", "title": "Fenced code block with language info string", "features": ["fenced-code-block", "info-string", "embedded-typescript-text"], "startLine": 25, "endLine": 27},
+        {"id": "raw-html-block", "title": "Raw HTML block with nested markup", "features": ["raw-html-block", "html-elements"], "startLine": 29, "endLine": 33},
+        {"id": "inline-link-image-code-spans", "title": "Inline link, image and multiple-backtick code span", "features": ["inline-link", "inline-link-title", "image", "image-title", "code-span-multiple-backticks"], "startLine": 35, "endLine": 35},
+        {"id": "indented-code-block", "title": "Indented code block with four-space prefix", "features": ["indented-code-block"], "startLine": 37, "endLine": 37}
+      ]
+    },
+    {
+      "id": "markdown-gfm-0.29-gfm",
+      "language": "markdown",
+      "version": "GFM 0.29-gfm (CommonMark 0.29-derived)",
+      "path": "markdown-gfm-0.29-gfm.md",
+      "cases": [
+        {"id": "gfm-heading-and-inline", "title": "Heading, paragraph and GFM strikethrough", "features": ["atx-heading", "paragraph", "strikethrough", "strong-emphasis"], "startLine": 1, "endLine": 3},
+        {"id": "pipe-table", "title": "Pipe table with left and right alignment", "features": ["gfm-table", "alignment-markers", "inline-code"], "startLine": 5, "endLine": 8},
+        {"id": "task-list", "title": "Checked and unchecked task items", "features": ["gfm-task-list", "checked-item", "unchecked-item"], "startLine": 10, "endLine": 11},
+        {"id": "autolinks", "title": "CommonMark angle-bracket autolink and GFM extended bare-URL autolink", "features": ["angle-bracket-autolink", "gfm-extended-bare-url-autolink"], "startLine": 13, "endLine": 15},
+        {"id": "fenced-yaml", "title": "Fenced code with YAML info string", "features": ["fenced-code-block", "info-string", "embedded-yaml-text"], "startLine": 17, "endLine": 20}
+      ]
+    },
+    {
+      "id": "json-core",
+      "language": "json",
+      "version": "RFC 8259",
+      "path": "json-core.json",
+      "cases": [
+        {"id": "object-arrays-and-nesting", "title": "Nested objects and arrays", "features": ["object", "array", "nested-collections"], "startLine": 1, "endLine": 13},
+        {"id": "unicode-and-escapes", "title": "Unicode, surrogate pair and escaped control characters", "features": ["utf8-text", "unicode-escape", "surrogate-pair", "string-escapes"], "startLine": 3, "endLine": 4},
+        {"id": "number-forms", "title": "Signed, fractional and exponent number forms", "features": ["integer", "negative-zero", "fraction", "exponent"], "startLine": 5, "endLine": 5},
+        {"id": "literal-values", "title": "Boolean and null values", "features": ["true", "false", "null"], "startLine": 6, "endLine": 6}
+      ]
+    },
+    {
+      "id": "yaml-core",
+      "language": "yaml",
+      "version": "YAML 1.2.2 Core",
+      "path": "yaml-core.yaml",
+      "cases": [
+        {"id": "comment-and-directives", "title": "Comment, YAML version and tag-handle directives", "features": ["comment", "yaml-directive", "tag-directive", "document-start"], "startLine": 1, "endLine": 4},
+        {"id": "anchors-flow-and-block-collections", "title": "Anchor and alias with block and flow mappings/sequences", "features": ["anchor", "alias", "block-mapping", "flow-mapping", "flow-sequence", "block-sequence"], "startLine": 5, "endLine": 18},
+        {"id": "core-scalars-and-quoted-forms", "title": "Core numeric, plain, single-quoted and double-quoted scalars", "features": ["core-boolean", "core-null", "hexadecimal", "octal", "exponent", "plain-string", "single-quoted-string", "double-quoted-string", "escape"], "startLine": 5, "endLine": 19},
+        {"id": "block-scalar-chomping", "title": "Literal and folded block scalars with clip, strip and keep chomping", "features": ["literal-block-scalar", "folded-block-scalar", "clip-chomping", "strip-chomping", "keep-chomping"], "startLine": 20, "endLine": 28},
+        {"id": "explicit-tags-and-document-end", "title": "Standard tag handles and explicit document end", "features": ["standard-tag", "tag-handle", "document-end"], "startLine": 29, "endLine": 31}
+      ]
+    },
+    {
+      "id": "go-1.27",
+      "language": "go",
+      "version": "Go 1.27",
+      "syntaxBaseline": "1.24",
+      "path": "go-core.go",
+      "cases": [
+        {"id": "comments-build-directive-and-package", "title": "Build directive, line/block comments and package declaration", "features": ["build-directive", "line-comment", "block-comment", "package"], "startLine": 1, "endLine": 8},
+        {"id": "numeric-literals", "title": "Integer bases, separators and floating-point forms", "features": ["decimal-literal", "hex-literal", "octal-literal", "binary-literal", "float-literal"], "startLine": 9, "endLine": 16},
+        {"id": "generic-types-and-alias", "title": "Type constraint, generic alias and generic struct", "features": ["interface-constraint", "type-set", "generic-type-alias", "generic-struct", "declaration"], "startLine": 18, "endLine": 20},
+        {"id": "receiver-method-and-channel-select", "title": "Receiver method, directed channels, defer and select", "features": ["receiver-method", "channel-directions", "channel-receive", "channel-send", "defer", "select-statement"], "startLine": 21, "endLine": 35},
+        {"id": "string-and-rune-literals", "title": "Interpreted/raw strings and Unicode rune", "features": ["interpreted-string", "raw-string", "rune-literal", "escapes"], "startLine": 37, "endLine": 40},
+        {"id": "generic-function-and-iterator", "title": "Generic function, range-over-integer and iterator function", "features": ["generic-function", "range-integer", "iterator-function", "variadic-parameter", "return-parameter"], "startLine": 42, "endLine": 57},
+        {"id": "type-switch-and-flow", "title": "Type switch, cases and control flow", "features": ["type-switch", "switch-case", "return", "default-case"], "startLine": 59, "endLine": 68},
+        {"id": "generic-slice-transform", "title": "Generic slice construction, loop and call expressions", "features": ["multi-type-parameters", "slice-type", "for-range", "call-expression"], "startLine": 70, "endLine": 78},
+        {"id": "complete-main", "title": "Standalone main function calling generic and receiver methods", "features": ["main-function", "generic-call", "receiver-method-call", "composite-literal"], "startLine": 80, "endLine": 83}
+      ]
+    },
+    {
+      "id": "cpp-23",
+      "language": "cpp",
+      "version": "C++23",
+      "path": "cpp-core.cpp",
+      "cases": [
+        {"id": "preprocessor", "title": "Standard headers, macro and conditional directives", "features": ["include-directive", "macro-definition", "conditional-compilation"], "startLine": 1, "endLine": 12},
+        {"id": "constexpr-if-consteval", "title": "Namespace, constexpr function, if consteval and static assertion", "features": ["namespace", "alias-declaration", "constexpr", "if-consteval", "static-assert"], "startLine": 14, "endLine": 26},
+        {"id": "literal-families", "title": "Digit separators, suffixes, escapes, raw and UTF-8 strings", "features": ["integer-literals", "floating-literal", "character-escape", "raw-string-literal", "utf8-literal", "multiline-string"], "startLine": 28, "endLine": 35},
+        {"id": "concepts-and-requires", "title": "Concept, requires-expression and constrained template", "features": ["concept", "requires-expression", "template-parameter", "standard-library-concept", "range-for"], "startLine": 37, "endLine": 47},
+        {"id": "class-attributes-and-operators", "title": "Class declarations, attribute, default member initializers and operator", "features": ["struct", "attribute", "member-function", "friend-function", "operator-overload", "constructor", "member-initializer"], "startLine": 49, "endLine": 62},
+        {"id": "generic-lambda", "title": "Init-capture generic lambda", "features": ["lambda", "init-capture", "generic-parameter", "inline-constexpr"], "startLine": 64, "endLine": 67},
+        {"id": "structured-binding-and-casts", "title": "Structured binding, boolean operators, cast and conditional", "features": ["main-function", "using-declaration", "structured-binding", "logical-operators", "bitwise-operator", "static-cast", "conditional-operator"], "startLine": 69, "endLine": 78}
+      ]
+    },
+    {
+      "id": "rust-2024",
+      "language": "rust",
+      "version": "Rust edition 2024",
+      "path": "rust-core.rs",
+      "cases": [
+        {"id": "crate-attributes-and-struct", "title": "Inner/outer attributes, doc comment and lifetime-bearing struct", "features": ["inner-attribute", "doc-comment", "derive-attribute", "repr-attribute", "lifetime-parameter", "tuple-type"], "startLine": 1, "endLine": 12},
+        {"id": "trait-and-generic-impl", "title": "Generic trait and bounded implementation", "features": ["trait", "generic-parameter", "trait-bound", "impl-block", "borrowed-self"], "startLine": 14, "endLine": 22},
+        {"id": "macro-and-async", "title": "Declarative macro and async function", "features": ["macro-rules", "macro-metavariable", "macro-invocation", "async-function", "format-string-interpolation"], "startLine": 24, "endLine": 32},
+        {"id": "async-result-await", "title": "Async Result caller with await, question-mark and let-else", "features": ["result-type", "await-expression", "question-mark-operator", "let-else"], "startLine": 34, "endLine": 42},
+        {"id": "match-patterns", "title": "Nested destructuring patterns, guards and match arms", "features": ["match-expression", "struct-pattern", "tuple-pattern", "match-guard", "option-pattern"], "startLine": 44, "endLine": 51},
+        {"id": "literal-forms", "title": "Escaped and raw strings, byte string, Unicode char and numeric bases", "features": ["string-escapes", "raw-string", "byte-string", "unicode-character", "hexadecimal", "octal", "binary", "numeric-separators"], "startLine": 53, "endLine": 60},
+        {"id": "explicit-unsafe", "title": "Unsafe function with explicit unsafe operation block", "features": ["unsafe-function", "raw-pointer", "unsafe-block", "method-call"], "startLine": 62, "endLine": 64},
+        {"id": "edition-2024-raw-identifier", "title": "Rust 2024 keyword used as a raw identifier", "features": ["raw-identifier", "impl-trait", "iterator", "range-expression", "closure"], "startLine": 66, "endLine": 68}
+      ]
+    },
+    {
+      "id": "typescript-5.9",
+      "language": "typescript",
+      "version": "TypeScript 5.9.3",
+      "path": "typescript-core.ts",
+      "cases": [
+        {"id": "comments-and-keyword-text", "title": "Line/block comments and keyword-looking string text", "features": ["block-comment", "line-comment", "keyword-looking-string"], "startLine": 1, "endLine": 5},
+        {"id": "type-only-import-and-interface", "title": "Type-only import and constrained generic interface", "features": ["type-only-import", "interface", "generic-constraint", "optional-property", "readonly-modifier"], "startLine": 2, "endLine": 10},
+        {"id": "advanced-type-operators", "title": "Mapped, conditional and template-literal types", "features": ["mapped-type", "keyof", "conditional-type", "infer", "recursive-type", "template-literal-type"], "startLine": 12, "endLine": 14},
+        {"id": "const-and-satisfies", "title": "Const assertion and satisfies operator", "features": ["as-const", "indexed-access-type", "satisfies", "readonly-record"], "startLine": 16, "endLine": 18},
+        {"id": "enum-and-namespace", "title": "Enum and namespace declarations", "features": ["enum", "namespace", "exported-namespace-member"], "startLine": 20, "endLine": 23},
+        {"id": "decorator-and-parameter-properties", "title": "Class decorator, parameter properties, accessors and modifiers", "features": ["class-decorator", "decorator-context", "parameter-property", "public-modifier", "private-modifier", "readonly-modifier", "getter", "method"], "startLine": 25, "endLine": 36},
+        {"id": "type-annotation", "title": "Imported type annotation and return type", "features": ["type-reference", "parameter-type", "return-type", "property-access"], "startLine": 38, "endLine": 40}
+      ]
+    },
+    {
+      "id": "javascript-es2024",
+      "language": "javascript",
+      "version": "ECMAScript 2024 (15th edition), module",
+      "path": "javascript-core.js",
+      "cases": [
+        {"id": "comments-and-keyword-text", "title": "Line/block comments and keyword-looking string text", "features": ["block-comment", "line-comment", "keyword-looking-string"], "startLine": 3, "endLine": 5},
+        {"id": "module-import", "title": "Named import declaration", "features": ["import-declaration", "named-import"], "startLine": 1, "endLine": 1},
+        {"id": "numeric-forms-and-bigint", "title": "Decimal, radix, fractional, exponent and BigInt literals", "features": ["integer-forms", "decimal-literal", "exponent-literal", "bigint-literal"], "startLine": 7, "endLine": 10},
+        {"id": "strings-regexp-and-division", "title": "Escaped/template strings, regular expression and division", "features": ["string-escapes", "template-substitution", "regexp-literal", "unicode-property-escape", "division-operator"], "startLine": 11, "endLine": 14},
+        {"id": "private-fields-and-destructuring", "title": "Private class field, static block, destructuring defaults and spread", "features": ["class-declaration", "private-field", "static-field", "static-block", "destructuring", "object-rest", "rest-parameter", "spread"], "startLine": 16, "endLine": 29},
+        {"id": "async-generators-and-nullish", "title": "Async generator, for-await, optional chaining and nullish coalescing", "features": ["async-generator", "yield", "for-await-of", "optional-chaining", "nullish-coalescing"], "startLine": 31, "endLine": 35},
+        {"id": "async-arrow-and-await", "title": "Async caller awaiting a loader through an arrow function", "features": ["async-function", "await-expression", "arrow-function"], "startLine": 37, "endLine": 40},
+        {"id": "assertions-and-return", "title": "Imported assertion call and optional value access", "features": ["member-call", "strict-comparison", "optional-property", "default-export"], "startLine": 42, "endLine": 45}
+      ]
+    },
+    {
+      "id": "bash-5.3",
+      "language": "bash",
+      "version": "GNU Bash 5.3",
+      "path": "bash-core.sh",
+      "cases": [
+        {"id": "quoting-and-expansions", "title": "Single, double and ANSI-C quoting with parameter expansion", "features": ["comment", "single-quotes", "double-quotes", "ansi-c-quoting", "parameter-expansion", "escape"], "startLine": 1, "endLine": 4},
+        {"id": "arithmetic-glob-and-redirection", "title": "Shell arithmetic expansion/command, brace/glob expansion and output redirection", "features": ["arithmetic-expansion", "arithmetic-command", "brace-expansion", "pathname-expansion", "output-redirection"], "startLine": 5, "endLine": 11},
+        {"id": "arrays-and-function", "title": "Indexed/associative arrays and function-local parameters", "features": ["indexed-array", "associative-array", "function-definition", "local-variable", "printf-format"], "startLine": 6, "endLine": 18},
+        {"id": "case-and-regex-condition", "title": "Case patterns and conditional regular-expression operator", "features": ["case-statement", "pattern-alternative", "conditional-command", "regex-match"], "startLine": 20, "endLine": 25},
+        {"id": "loop-pipeline-and-redirections", "title": "For/while loops, pipeline, command substitution and here-string", "features": ["for-loop", "while-loop", "pipeline", "command-substitution", "here-string", "read-option"], "startLine": 26, "endLine": 33},
+        {"id": "here-documents", "title": "Quoted and tab-stripping here-document delimiters", "features": ["quoted-heredoc", "literal-heredoc-body", "here-document-strip-tabs"], "startLine": 35, "endLine": 41}
+      ]
+    },
+    {
+      "id": "html-living-standard",
+      "language": "html",
+      "version": "WHATWG HTML Living Standard snapshot 5fcc2318395821db61e353705e6368ad9a000af5",
+      "path": "html-core.html",
+      "cases": [
+        {"id": "document-metadata", "title": "Doctype, language, metadata and document title", "features": ["doctype", "html-document", "language-attribute", "meta-void-elements", "title"], "startLine": 1, "endLine": 6},
+        {"id": "embedded-css", "title": "Embedded stylesheet block", "features": ["style-element", "embedded-css", "custom-property", "media-rule"], "startLine": 7, "endLine": 14},
+        {"id": "semantic-content-and-attributes", "title": "Comment, semantic elements, quoted/data/ARIA attributes and character references", "features": ["html-comment", "main", "heading", "emphasis-element", "entity-reference", "fragment-link", "details-summary", "list-items", "template-element"], "startLine": 16, "endLine": 27},
+        {"id": "embedded-module-script", "title": "Embedded JavaScript module source without evaluation", "features": ["script-module", "embedded-javascript", "map", "optional-chaining", "nullish-coalescing", "dom-method"], "startLine": 28, "endLine": 32}
+      ]
+    },
+    {
+      "id": "css-modules-2021",
+      "language": "css",
+      "version": "CSS Syntax Level 3 (2021-12-24) plus named module snapshots",
+      "path": "css-core.css",
+      "cases": [
+        {"id": "layers-and-custom-properties", "title": "Layer order, escaped/hex colors and custom properties", "features": ["layer-rule", "custom-property", "hex-color", "color-scheme", "calc-function", "dimension-units"], "startLine": 1, "endLine": 8},
+        {"id": "attribute-selector-and-values", "title": "Attribute selector, variable fallback, modern color functions and escaped string", "features": ["attribute-selector", "case-insensitive-flag", "var-function", "rgb-space-syntax", "hsl-angle", "string-escape"], "startLine": 10, "endLine": 17},
+        {"id": "level-four-pseudo-selectors", "title": "Escaped identifier and Selectors Level 4 logical/relational/structural pseudos", "features": ["escaped-identifier", "is-pseudo-class", "where-pseudo-class", "nth-child-of-selector-list", "has-pseudo-class"], "startLine": 19, "endLine": 24},
+        {"id": "supports-and-media", "title": "Supports condition, media range context and nested selector", "features": ["supports-rule", "not-condition", "media-range-query", "css-nesting", "logical-inline-unit"], "startLine": 26, "endLine": 35},
+        {"id": "keyframes", "title": "Keyframes and transform function", "features": ["keyframes-rule", "from-to-selectors", "transform-function", "time-independent-values"], "startLine": 37, "endLine": 40}
+      ]
+    }
+  ],
+  "diffs": [
+    {
+      "id": "mixed-replacement-and-blank-removal",
+      "oldPath": "diff/mixed-before.txt",
+      "newPath": "diff/mixed-after.txt",
+      "description": "Mixed context, removals, additions and replacements; line numbers exceed one digit, and an empty removed line is present.",
+      "roleSamples": [
+        {"role": "context", "oldLine": 9, "newLine": 9, "text": "context 09"},
+        {"role": "removed", "oldLine": 10, "text": "old heading"},
+        {"role": "removed", "oldLine": 11, "text": "old description"},
+        {"role": "removed", "oldLine": 12, "text": ""},
+        {"role": "added", "newLine": 10, "text": "new heading"},
+        {"role": "added", "newLine": 11, "text": "new description"},
+        {"role": "context", "oldLine": 13, "newLine": 12, "text": "shared body"},
+        {"role": "removed", "oldLine": 14, "text": "old ending"},
+        {"role": "added", "newLine": 13, "text": "new ending"},
+        {"role": "context", "oldLine": 15, "newLine": 14, "text": "shared footer"},
+        {"role": "context", "oldLine": 16, "newLine": 15, "text": "context 16"}
+      ]
+    },
+    {
+      "id": "empty-old-side-with-blank-addition",
+      "oldPath": "diff/empty-before.txt",
+      "newPath": "diff/empty-after.txt",
+      "description": "An empty old side aligned against inserted rows, including a blank added row.",
+      "roleSamples": [
+        {"role": "added", "newLine": 1, "text": ""},
+        {"role": "added", "newLine": 2, "text": "first inserted line"},
+        {"role": "added", "newLine": 3, "text": "second inserted line"}
+      ]
+    }
+  ]
+}

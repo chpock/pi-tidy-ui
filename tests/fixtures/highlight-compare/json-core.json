@@ -1,0 +1,13 @@
+{
+  "name": "independent fixture",
+  "unicode": "café, snowman \u2603, rocket \uD83D\uDE80",
+  "escaped": "quote: \" slash: \\ newline: \n tab: \t",
+  "numbers": [0, -0, 42, 1.25, 1e+2],
+  "flags": [true, false, null],
+  "nested": {
+    "items": [
+      {"id": 1, "enabled": true},
+      {"id": 2, "enabled": false}
+    ]
+  }
+}

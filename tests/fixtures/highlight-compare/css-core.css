@@ -1,0 +1,40 @@
+/* CSS Syntax 3 plus named modern module snapshots; no external assets. */
+@layer reset, components, theme;
+
+:root {
+  --accent: #336699;
+  --spacing: calc(1rem + 2px);
+  color-scheme: light dark;
+}
+
+.card,
+[data-mode="quiet" i] {
+  color: var(--accent, navy);
+  margin: var(--spacing);
+  background: rgb(24 48 72 / 80%);
+  border-color: hsl(210deg 50% 40%);
+  content: "line\A value";
+}
+
+#sp\ ace > .label:is(.ready, :where([aria-current="true"])):nth-child(2n + 1 of .item) {
+  width: min(100%, 48rem);
+  opacity: .875;
+}
+
+.panel:has(> .warning) { outline: 1px solid currentColor; }
+
+@supports (display: grid) and (not (color: transparent)) {
+  .layout { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+@media (width >= 40rem) {
+  .card {
+    padding-inline: 2vi;
+    & > .label { font-weight: 650; }
+  }
+}
+
+@keyframes arrive {
+  from { transform: translateY(1rem); }
+  to { transform: translateY(0); }
+}

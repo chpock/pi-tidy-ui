@@ -1,0 +1,31 @@
+# YAML 1.2.2 Core schema, with aliases and explicit standard tags.
+%YAML 1.2
+%TAG !core! tag:yaml.org,2002:
+---
+defaults: &defaults
+  active: true
+  labels: [compact, "quoted, value", 'single''quote']
+  nested:
+    exponent: 1.25e+2
+    hexadecimal: 0x2A
+    octal: 0o52
+    plain-yes: yes
+    empty: null
+copy: *defaults
+flow: { name: "flow", flag: false, values: [1, 2.5, ~] }
+sequence:
+  - plain scalar
+  - 'quoted scalar'
+  - "escaped\nvalue"
+block-scalars:
+  literal-clip: |
+    first line
+    second line
+  literal-strip: |-
+    no final line
+  folded-keep: >+
+    wrapped
+    prose
+standard-tag: !!str false
+handle-tag: !core!str 0042
+...

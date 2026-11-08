@@ -1,0 +1,20 @@
+Comparison specimen
+shared header
+context 03
+context 04
+context 05
+context 06
+context 07
+context 08
+context 09
+old heading
+old description
+
+shared body
+old ending
+shared footer
+context 16
+context 17
+context 18
+context 19
+final line

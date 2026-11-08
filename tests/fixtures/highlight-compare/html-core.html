@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Neutral markup specimen</title>
+  <style>
+    :root { --accent: #246; color-scheme: light dark; }
+    .card { color: var(--accent); padding: calc(1rem + 2px); }
+    .card > .label { font-weight: 600; }
+    @media (width >= 40rem) {
+      .card { margin-inline: auto; }
+    }
+  </style>
+</head>
+<body>
+  <!-- Comments, entities, and quoted attributes remain intact. -->
+  <main id="sections" class="card" data-state="ready" aria-label="Example &amp; sample">
+    <h1 class="label">A <em>complete</em> document</h1>
+    <p>Escaped text: &lt;tag&gt; and &#x2603;.</p>
+    <a href="#details" title="Local fragment">Open details</a>
+    <details id="details">
+      <summary>Disclosure</summary>
+      <ul><li>First item</li><li>Second item</li></ul>
+    </details>
+    <template id="row-template"><span class="label">Stored markup</span></template>
+  </main>
+  <script type="module">
+    const rows = new Map([['ready', 1], ['waiting', 0]]);
+    const current = rows.get(document.querySelector('main')?.dataset.state) ?? 0;
+    document.querySelector('.label')?.setAttribute('data-count', String(current));
+  </script>
+</body>
+</html>
