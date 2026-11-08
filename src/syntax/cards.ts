@@ -69,13 +69,13 @@ export interface ReadyCardPaint {
   readonly publication: number; readonly paintStamp: number; readonly mode: TerminalColorMode;
   readonly origin: 'owned' | 'pi'; readonly roles: Readonly<Record<CardRole, AnsiStyle>>;
   /** Accessors are valid only within the outer synchronous visit. No compilation occurs here. */
-  ranges(key: string, surface?: 'added' | 'removed'): FlatRangeReader | undefined;
+  ranges(key: string, surface?: 'added' | 'removed' | 'context'): FlatRangeReader | undefined;
   /** Historical text is borrowed under canonical ownership, never source authority. */
   basis(key: string, consume: (text: string, ranges: FlatRangeReader) => void): boolean;
 }
 type Slot = SyntaxIdentity & { outcome: SyntaxWorkResult['outcome']; awaitingProvider?: true };
 const noSlots: ReadonlyMap<string, Slot> = new Map();
-type LiteralPaint = { normal: AnsiStyle; added: AnsiStyle; removed: AnsiStyle };
+type LiteralPaint = { normal: AnsiStyle; added: AnsiStyle; removed: AnsiStyle; context: AnsiStyle };
 type Compiled = { charge: DataCharge; table: Map<ConcreteStyle, LiteralPaint>; roles: Record<CardRole, AnsiStyle>;
   literals: Readonly<Record<CardRole, ConcreteStyle>>;
   group?: GroupDisplayBasis; palette: string; paletteRevision: number; sourceRevision: number;
@@ -567,13 +567,14 @@ export class CardSources<Owner extends object> {
     const compile = (roles: Readonly<Record<CardRole, ConcreteStyle>>, enumerate: (consume: (style: ConcreteStyle) => void) => boolean,
       preparedRoles?: Readonly<Record<CardRole, AnsiStyle>>) => {
       let count = 0; if (!enumerate(() => count++)) return;
-      charge = fund(funding, 4096 + count * 2048 + state.slots.size * 512); if (!charge) return;
+      charge = fund(funding, 4096 + count * 2560 + state.slots.size * 512); if (!charge) return;
       const table = new Map<ConcreteStyle, LiteralPaint>(), compiled = {} as Record<CardRole, AnsiStyle>;
       const known = new Map<ConcreteStyle, AnsiStyle>();
       if (preparedRoles) for (const role of CARD_ROLES) known.set(roles[role], preparedRoles[role]);
       const add = (style: ConcreteStyle) => { if (!table.has(style)) table.set(style, {
         normal: known.get(style) ?? compileStyleAnsi(style, input.mode), added: compileStyleAnsi({ ...style, background: roles.addedCode.background }, input.mode),
-        removed: compileStyleAnsi({ ...style, background: roles.removedCode.background }, input.mode) }); };
+        removed: compileStyleAnsi({ ...style, background: roles.removedCode.background }, input.mode),
+        context: compileStyleAnsi({ ...style, background: roles.contextCode.background }, input.mode) }); };
       if (!enumerate(add)) return;
       for (const role of CARD_ROLES) { const style = roles[role]; add(style); compiled[role] = table.get(style)!.normal; }
       const piTokens = new Map<string, Map<number, ConcreteStyle>>();
@@ -706,7 +707,7 @@ function cardVisit(display: PreparedCard | undefined, paint: Compiled | undefine
   sources: SourceController | undefined, current: (() => boolean) | undefined) {
   const valid = () => !!current?.();
   const stale = () => { if (!valid()) throw new Error('stale card visit'); };
-  const ranges = (key: string, surface?: 'added' | 'removed'): FlatRangeReader | undefined => {
+  const ranges = (key: string, surface?: 'added' | 'removed' | 'context'): FlatRangeReader | undefined => {
     if (!valid()) return undefined;
     const slot = state!.slots.get(key);
     if (!slot || display!.kind === 'file' && slot.version !== state!.version) return undefined;
@@ -714,7 +715,7 @@ function cardVisit(display: PreparedCard | undefined, paint: Compiled | undefine
       if (!valid()) return false;
       let complete = true;
       const result = read((a, b, literal) => { if (!valid()) return; const style = paint!.table.get(literal);
-        if (!style) { complete = false; return; } cb(a, b, surface === 'added' ? style.added : surface === 'removed' ? style.removed : style.normal); });
+        if (!style) { complete = false; return; } cb(a, b, surface === 'added' ? style.added : surface === 'removed' ? style.removed : surface === 'context' ? style.context : style.normal); });
       return result && complete && valid();
     };
     if (paint!.group) {

@@ -201,7 +201,7 @@ export function layoutCard(display: PreparedCard, options: CardLayoutOptions, fu
           const r = display.rows[index]!;
           if (r.kind === 'gap') return empty(width, -3);
           const size = current.digits + (plain ? 2 : 4), gutter = size < width ? size : 0;
-          const role = plain || r.kind === ' ' ? 'code' : r.kind === '+' ? 'addedCode' : 'removedCode';
+          const role = plain ? 'code' : r.kind === ' ' ? 'contextCode' : r.kind === '+' ? 'addedCode' : 'removedCode';
           const id = entry('file', index, role, width - gutter, 'file', false, maxRows, side);
           return { entry: id, row: 0, width, gutter, line: index, side };
         };
@@ -299,7 +299,7 @@ function paintScene(scene: Scene, display: PreparedCard, paint: ReadyCardPaint, 
       for (let i = 0; i < scene.entries.length; i++) {
         const e = scene.entries[i]!; if (e.kind !== 'file') continue;
         const row = display.rows[e.index]!, c = coordinate(row, e.side ?? 'next'); if (!c) continue;
-        const surface = row.kind === '+' && display.mode !== 'code' ? 'added' : row.kind === '-' && display.mode !== 'code' ? 'removed' : '';
+        const surface = display.mode === 'code' ? '' : row.kind === '+' ? 'added' : row.kind === '-' ? 'removed' : 'context';
         scratch.add(funding, 256 + (c.key.length + 1 + surface.length) * 2);
         const key = c.key + '\0' + surface;
         let group = projections.get(key); if (!group) { group = []; projections.set(key, group); }
@@ -309,7 +309,7 @@ function paintScene(scene: Scene, display: PreparedCard, paint: ReadyCardPaint, 
         const ranges: Projected[] = []; group.push({ index: i, start: c.byte, end: c.byte + bytes, ranges }); projected.set(i, ranges);
       }
       for (const [key, group] of projections) {
-        const zero = key.indexOf('\0'), source = key.slice(0, zero), surface = key.slice(zero + 1) as '' | 'added' | 'removed';
+        const zero = key.indexOf('\0'), source = key.slice(0, zero), surface = key.slice(zero + 1) as '' | 'added' | 'removed' | 'context';
         const reader = paint.ranges(source, surface || undefined); if (!reader) continue;
         let first = 0;
         if (!reader((a, b, style) => {
@@ -354,7 +354,7 @@ function paintScene(scene: Scene, display: PreparedCard, paint: ReadyCardPaint, 
       if (c.gutter && display.kind === 'file') {
         const r = display.rows[c.line]!, plain = display.mode === 'code';
         const number = c.row === 0 ? String(r[c.side] ?? '').padStart(scene.digits) : ' '.repeat(scene.digits);
-        const g = !plain && r.kind === '+' ? roles.addedGutter : !plain && r.kind === '-' ? roles.removedGutter : roles.numbers;
+        const g = plain ? roles.numbers : r.kind === '+' ? roles.addedGutter : r.kind === '-' ? roles.removedGutter : roles.contextGutter;
         const sign = r.kind === '+' ? roles.addedSign : roles.removedSign;
         gutter = styled(g, ' ' + number) + (plain ? '' : c.row === 0 && (r.kind === '+' || r.kind === '-') ? styled(sign, ' ' + r.kind) : styled(g, '  ')) + styled(g, ' ');
       }

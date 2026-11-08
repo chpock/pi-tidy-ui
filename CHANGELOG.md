@@ -9,6 +9,10 @@ been reconstructed.
 
 ### Breaking changes
 
+- Remove GUI-only code themes `amoled`, `oc-2`, `onedarkpro` and `shadesofpurple`,
+  and the unsupported transparent theme `lucent-orng`. Their saved selections remain
+  unchanged but fall back to Follow Pi with a missing-theme
+  notice; select another theme to replace them. New TUI `opencode` is not an `oc-2` alias.
 - Store the code-theme family in `syntaxTheme.id` and its variant separately in
   `syntaxThemeVariant` (`"dark"` or `"light"`). Missing or unsupported variants use
   Dark. Known legacy IDs such as `github-light` are recognized as the `github`
@@ -29,7 +33,11 @@ been reconstructed.
 
 - Stop `/tidy-ui` arrow navigation at the first and last items instead of wrapping,
   including filtered theme lists; disabled items remain skipped.
-- List 36 code-theme families instead of 72 Dark/Light palettes in `/tidy-ui`.
+- Use only OpenCode TUI themes: 32 families and 64 Dark/Light variants, including
+  native `opencode` and excluding transparent `lucent-orng`. Preserve TUI syntax
+  colors/fonts and authored diff code, gutter, sign and number colors without
+  contrast correction; keep Follow Pi unchanged.
+- List 32 code-theme families instead of 64 Dark/Light palettes in `/tidy-ui`.
   Choose the variant in a separate root control, dimmed, disabled and skipped
   during navigation when Follow Pi is selected; its remembered value is retained.
 - Show expanded read/write/edit failures in Bash-style error panels, with a red
@@ -45,6 +53,9 @@ been reconstructed.
 
 ### Fixed
 
+- Restore visible read/write/edit source cards after turning native syntax Off,
+  instead of leaving them at a preparation placeholder when repaint happens before
+  local paint recovery. Keep the selected theme and existing parser authority.
 - Attribute all extension error, warning and info notifications with a consistent
   `[pi-tidy-ui] ` prefix, without changing their severity or repeat suppression.
 - Keep oversized read/write/edit paths beside their heading labels when moving the

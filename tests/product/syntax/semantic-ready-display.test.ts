@@ -168,8 +168,8 @@ test('ready display: old display may recolor while current parser advances, but 
 });
 
 test('ready display: denied old/new peak protects old display and returns every pressure eviction receipt', () => {
-  // Namespace keys/provenance are now charged: admit one ready pair, still deny its old/new peak.
-  const pool = new SemanticRetentionPool({ maxBytes: 21000 }), generation = provisional(pool);
+  // Admit a complete 28-role presentation, but not the old/new adoption peak.
+  const pool = new SemanticRetentionPool({ maxBytes: 22200 }), generation = provisional(pool);
   assert.equal(publish(pool, generation).accepted, true);
   pool.admit('peer1', 1, 'peer'); pool.admit('peer2', 1, 'peer');
   const old = pool.displayStatus(generation)!, before = displayRows(pool, generation), snapshot = pool.borrowDisplay(generation, old.effectStamp);
@@ -185,7 +185,7 @@ test('ready display: denied old/new peak protects old display and returns every 
   assert.deepEqual(failed.released.map(receipt => receipt.key), ['peer1', 'peer2']);
   assert.deepEqual(pool.displayStatus(generation), old); assert.deepEqual(displayRows(pool, generation), before);
   assert.deepEqual(pool.borrowDisplay(generation, old.effectStamp), snapshot);
-  assert.equal(pool.stats().entries, 1); assert.equal(pool.stats().rangeViews, 1); assert.ok(pool.stats().retainedBytes <= 21000);
+  assert.equal(pool.stats().entries, 1); assert.equal(pool.stats().rangeViews, 1); assert.ok(pool.stats().retainedBytes <= 22200);
   console.log(JSON.stringify({ readyDenial: { accepted: failed.accepted, deniedMapAllocations, deniedSetAllocations, receipts: failed.released.map(receipt => ({ key: receipt.key, bytes: receipt.retainedBytes })), retained: pool.stats().retainedBytes } }));
   pool.clear(); assert.equal(pool.stats().retainedBytes, 0);
 });
@@ -280,8 +280,8 @@ test('ready display: saved invalidated weak reader and detached containers do no
 });
 
 test('ready display: snapshot/bridge/source growth and retainBasis preserve union charges and complete release receipts', () => {
-  // Namespace keys/provenance are now charged: admit one ready pair, still deny its old/new peak.
-  const pool = new SemanticRetentionPool({ maxBytes: 21000 }), generation = provisional(pool); publish(pool, generation);
+  // Admit a complete 28-role presentation, but not the old/new adoption peak.
+  const pool = new SemanticRetentionPool({ maxBytes: 22200 }), generation = provisional(pool); publish(pool, generation);
   const ready = pool.displayStatus(generation)!, expected = displayRows(pool, generation);
   const peer = pool.admit('peer', 1, 'x'.repeat(5000)).generation!; assert.ok(peer);
   const text = 'a\nb' + 'y'.repeat(5000), growth = pool.replaceSnapshot(generation, 2, text);

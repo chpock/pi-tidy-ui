@@ -8,10 +8,9 @@ import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
 import { setImmediate as turn } from 'node:timers/promises';
 import { colorToRgb, rgbColor, type TerminalColorMode } from '@earendil-works/pi-tui';
-import { diffPalette } from '../../../src/diff-palette.ts';
-import type { Ink, LiteralInk } from '../../../src/occipital/semantic-codec.ts';
+import type { LiteralInk } from '../../../src/occipital/semantic-codec.ts';
 import type { DiagnosticSink } from '../../../src/diagnostics.ts';
-import { inkColor, outputInk } from '../../../src/syntax/pi-color.ts';
+import { outputInk } from '../../../src/syntax/pi-color.ts';
 import { SEMANTIC_REGIONS } from '../../../src/syntax/semantic-rules.ts';
 import { CARD_ROLES } from '../../../src/occipital/semantic-codec.ts';
 import { OWNED_PALETTE_FILE_BYTES, parseOwnedPaletteBytes, parseOwnedPaletteData, sampleOwnedPalette, validateOwnedPaletteData } from '../../../src/themes/owned-palette.ts';
@@ -30,49 +29,23 @@ function color(hex: string) {
   const value = Number.parseInt(hex.slice(1), 16);
   return rgbColor(value >>> 16, value >>> 8 & 255, value & 255);
 }
-function emitted(hex: string, mode: TerminalColorMode) { return inkColor(outputInk(color(hex), mode)); }
 function ink(hex: string, mode: TerminalColorMode): LiteralInk { return outputInk(color(hex), mode); }
-function literal(value: Ink): LiteralInk {
-  if (value.kind === 'binding' || value.kind === 'inherit') throw new Error('expected materialized literal ink');
-  return value;
-}
-function colorOf(value: Ink) { return inkColor(literal(value))!; }
-function contrast(first: ReturnType<typeof colorOf>, second: ReturnType<typeof colorOf>): number {
-  const luminance = (value: ReturnType<typeof colorOf>) => {
-    const { r, g, b } = colorToRgb(value), linear = (n: number) => n <= 10.31475 ? n / 3294.6 : ((n / 255 + 0.055) / 1.055) ** 2.4;
-    return 0.2126 * linear(r) + 0.7152 * linear(g) + 0.0722 * linear(b);
-  };
-  const a = luminance(first), b = luminance(second);
-  return (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05);
-}
-function hex(value: Ink) {
-  const rgb = colorToRgb(colorOf(value)); return `#${[rgb.r, rgb.g, rgb.b].map(part => part.toString(16).padStart(2, '0')).join('')}`;
-}
 
-test('all 72 owned semantic palettes supply every role and 44 bindings in both output modes', () => {
-  assert.equal(THEME_CATALOGUE.length, 72);
+test('all 64 TUI palettes supply every authored role and 44 bindings in both output modes', () => {
+  assert.equal(THEME_CATALOGUE.length, 64);
   for (const theme of THEME_CATALOGUE) for (const mode of ['truecolor', '256color'] as const) {
-    const palette = sampleOwnedPalette(theme.id, mode);
+    const palette = sampleOwnedPalette(theme.id, mode), data = validateOwnedPaletteData(paletteFile(theme.id), theme.id);
     assert.equal(palette.bindings.length, SEMANTIC_REGIONS.length, `${theme.id}/${mode}`);
     assert.deepEqual(Object.keys(palette.roles).sort(), [...CARD_ROLES].sort(), `${theme.id}/${mode}`);
     assert.deepEqual(Object.keys(palette.compiledRoles).sort(), [...CARD_ROLES].sort(), `${theme.id}/${mode}`);
-    const panel = colorOf(palette.roles.panel.background);
-    const codeInks = [...palette.bindings.map(binding => colorOf(binding.ink)), colorOf(palette.roles.code.foreground)];
-    const gutterInks = [palette.roles.numbers.foreground, palette.roles.addedSign.foreground, palette.roles.removedSign.foreground].map(colorOf);
-    for (const candidate of codeInks) {
-      const floor = Math.min(4.5, contrast(candidate, panel));
-      for (const role of ['addedCode', 'removedCode'] as const)
-        assert.ok(contrast(candidate, colorOf(palette.roles[role].background)) + 1e-10 >= floor, `${theme.id}/${mode}/code/${role}`);
-    }
-    for (const [index, candidate] of gutterInks.entries()) {
-      const floor = Math.min(index === 0 ? 3 : 4.5, contrast(candidate, panel));
-      for (const role of ['addedGutter', 'removedGutter'] as const)
-        assert.ok(contrast(candidate, colorOf(palette.roles[role].background)) + 1e-10 >= floor, `${theme.id}/${mode}/gutter/${role}`);
+    for (const role of CARD_ROLES) {
+      assert.deepEqual(palette.roles[role].foreground, ink(data.roles[role].foreground, mode), `${theme.id}/${mode}/${role}/foreground`);
+      assert.deepEqual(palette.roles[role].background, ink(data.roles[role].background, mode), `${theme.id}/${mode}/${role}/background`);
     }
   }
 });
 
-test('owned palette inputs compile each role once, share warm owners, and release prior stores across all 72 choices', () => {
+test('owned palette inputs compile each role once, share warm owners, and release prior stores across all 64 choices', () => {
   const owner = new PaletteInputOwner(), budget = new DataBudget(1_000_000), funding = { budget, grant: (bytes: number) => budget.reserve(bytes) };
   type Lease = NonNullable<ReturnType<PaletteInputOwner['prepare']>>;
   let current: Lease | undefined, currentExpected: ReturnType<typeof sampleOwnedPalette> | undefined;
@@ -303,55 +276,34 @@ test('known missing, corrupt and incomplete palette assets notify once, retain s
   }
 });
 
-test('owned diff roles use the common diffPalette with final emitted inks in both terminal modes', () => {
+test('owned diff roles preserve authored Gruvbox TUI code, gutter, sign and number colors', () => {
   const input = paletteFile();
+  const expected = {
+    panel: ['#ebdbb2', '#3c3836'], numbers: ['#928374', '#3c3836'],
+    contextCode: ['#ebdbb2', '#3c3836'], contextGutter: ['#a8a29e', '#3c3836'],
+    addedCode: ['#ebdbb2', '#32302f'], addedGutter: ['#a8a29e', '#2a2827'], addedSign: ['#b8bb26', '#2a2827'],
+    removedCode: ['#ebdbb2', '#322929'], removedGutter: ['#a8a29e', '#2a2222'], removedSign: ['#fb4934', '#2a2222'],
+  };
   for (const mode of ['truecolor', '256color'] as const) {
     const palette = parseOwnedPaletteData(input, input.id, mode);
-    const expected = diffPalette({
-      panel: colorOf(palette.roles.panel.background),
-      codeInks: [...palette.bindings.map(binding => colorOf(binding.ink)), colorOf(palette.roles.code.foreground)],
-      added: inkColor(ink(input.card.addedBackground, mode))!, removed: inkColor(ink(input.card.removedBackground, mode))!,
-      numbers: inkColor(ink(input.card.dim, mode))!, addedSign: inkColor(ink(input.card.added, mode))!,
-      removedSign: inkColor(ink(input.card.removed, mode))!, mode,
-    });
-    const added = expected.toolDiffAdded!, removed = expected.toolDiffRemoved!;
-    assert.deepEqual(palette.roles.addedCode.background, outputInk(added.code, mode));
-    assert.deepEqual(palette.roles.addedGutter.background, outputInk(added.gutter, mode));
-    assert.deepEqual(palette.roles.addedSign.background, outputInk(added.gutter, mode));
-    assert.deepEqual(palette.roles.removedCode.background, outputInk(removed.code, mode));
-    assert.deepEqual(palette.roles.removedGutter.background, outputInk(removed.gutter, mode));
-    assert.deepEqual(palette.roles.removedSign.background, outputInk(removed.gutter, mode));
-    const surfaces = Object.fromEntries(['addedCode', 'addedGutter', 'addedSign', 'removedCode', 'removedGutter', 'removedSign']
-      .map(role => [role, hex(palette.roles[role as keyof typeof palette.roles].background)]));
-    assert.deepEqual(surfaces, mode === 'truecolor' ? {
-      addedCode: '#16160b', addedGutter: '#111006', addedSign: '#111006',
-      removedCode: '#1d1210', removedGutter: '#170d0b', removedSign: '#170d0b',
-    } : {
-      addedCode: '#1c1c1c', addedGutter: '#1c1c1c', addedSign: '#1c1c1c',
-      removedCode: '#1c1c1c', removedGutter: '#1c1c1c', removedSign: '#1c1c1c',
-    });
-    assert.equal(hex(palette.roles.panel.foreground), mode === 'truecolor' ? '#ecdbb0' : '#ffd7af');
-    assert.equal(hex(palette.roles.panel.background), mode === 'truecolor' ? '#1b1b1a' : '#1c1c1c');
+    for (const [role, [foreground, background]] of Object.entries(expected)) {
+      const actual = palette.roles[role as keyof typeof palette.roles];
+      assert.deepEqual(actual.foreground, ink(foreground!, mode), `${mode}/${role}/foreground`);
+      assert.deepEqual(actual.background, ink(background!, mode), `${mode}/${role}/background`);
+    }
   }
 });
 
-test('owned palette contrast does not impose a 4.5:1 repair on initially poor colors', () => {
+test('owned palette materialization does not modify poor authored contrast', () => {
   const input = paletteFile();
-  input.card.background = '#101010'; input.card.foreground = '#111111'; input.card.addedBackground = '#101010'; input.card.removedBackground = '#101010';
-  input.card.dim = '#111111'; input.card.added = '#111111'; input.card.removed = '#111111';
-  for (const region of SEMANTIC_REGIONS) {
-    const style = input.regions[region];
-    input.regions[region] = typeof style === 'string' ? '#111111' : { ...style, foreground: '#111111' };
+  for (const role of CARD_ROLES) {
+    input.roles[role].background = '#101010'; input.roles[role].foreground = '#111111';
   }
   for (const mode of ['truecolor', '256color'] as const) {
-    const palette = parseOwnedPaletteData(input, input.id, mode), panel = colorOf(palette.roles.panel.background);
-    const ink = colorOf(palette.roles.code.foreground), initial = contrast(ink, panel);
-    assert.ok(initial < 4.5, `${mode}: source intentionally starts below WCAG text contrast`);
-    const floor = Math.min(4.5, initial);
-    for (const role of ['addedCode', 'removedCode', 'addedGutter', 'removedGutter'] as const) {
-      const final = contrast(ink, colorOf(palette.roles[role].background));
-      assert.ok(final + 1e-10 >= floor, `${mode}/${role} preserves its source contrast floor`);
-      assert.ok(final < 4.5, `${mode}/${role} is not forced through an unrelated contrast repair`);
+    const palette = parseOwnedPaletteData(input, input.id, mode);
+    for (const role of CARD_ROLES) {
+      assert.deepEqual(palette.roles[role].foreground, ink('#111111', mode), `${mode}/${role}/foreground`);
+      assert.deepEqual(palette.roles[role].background, ink('#101010', mode), `${mode}/${role}/background`);
     }
   }
 });

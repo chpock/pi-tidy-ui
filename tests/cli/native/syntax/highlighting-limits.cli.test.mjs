@@ -9,7 +9,7 @@ import { PiTerminal } from '../../../fixtures/terminal-harness.mjs';
 import { closeTerminals } from '../../../fixtures/terminal-cleanup.mjs';
 import { syntaxToolData as raw } from '../../../fixtures/syntax-tool-data.mjs';
 import { nativeReady, semanticStyle } from '../../../fixtures/syntax-observation.mjs';
-import { prepareSyntaxNative, inputs, syntaxReady, settledStats, captureThenRenderDiagnostics, traffic, persisted, finish, chooseTheme, expressionForeground, work } from '../../../fixtures/syntax-cli-support.mjs';
+import { prepareSyntaxNative, inputs, syntaxReady, settledStats, captureThenRenderDiagnostics, traffic, persisted, finish, chooseTheme, expressionForeground, expressionAttributes, work } from '../../../fixtures/syntax-cli-support.mjs';
 
 const { fixture, descriptor } = await prepareSyntaxNative();
 const nativeBytes = 65536, piBytes = 8192;
@@ -35,7 +35,8 @@ function nativeCells(terminal, dump, marker, suffix, role = 'code') {
   assert.ok(resolved, `validated SOURCE/STYLE for ${marker}`);
   const palette = sampleOwnedPalette(terminal.paletteId, 'truecolor'), base = palette.roles[role];
   assert.ok(base, 'selected local palette role');
-  const expression = resolved.expression, attributes = base.attributes & ~expression.attribute_mask | expression.attributes & expression.attribute_mask;
+  const expression = resolved.expression;
+  const attributes = expressionAttributes(expression, dump, terminal.paletteId, role === 'title' ? 'toolTitle' : 'toolOutput');
   const prefix = cell(dump, marker), neutral = cell(dump, suffix);
   assert.equal(prefix.fg, expressionForeground(expression, dump, terminal.paletteId, 'toolTitle'));
   assert.equal(prefix.bg, rgb(role === 'addedCode' || role === 'removedCode' || expression.background.kind === 'inherit' ? base.background : expression.background));

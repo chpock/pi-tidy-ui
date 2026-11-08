@@ -64,6 +64,7 @@
     "docs/syntax/shebang-hints.md",
     "docs/syntax/follow-pi.md",
     "docs/syntax/palettes.md",
+    "docs/syntax/opencode-tui-mapping.md",
     "docs/occipital/README.md",
     "docs/occipital/CHANGELOG.md",
     "docs/occipital/runtime.md",

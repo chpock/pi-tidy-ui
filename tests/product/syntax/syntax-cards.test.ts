@@ -880,6 +880,8 @@ test('cards 100 owned-palette choices publish locally without helper work or his
   const selectionIdentity = (id: string) => { const palette = resolveTheme(palettePreference(id)).effective;
     return `theme:${palette.id}:${palette.fingerprint}:truecolor`; };
   const initialSelection = selectionIdentity('gruvbox-dark');
+  const roleLiteralCount = (id: string) => new Set(Object.values(sampleOwnedPalette(id, 'truecolor').roles).map(style => JSON.stringify(style))).size;
+  const initialRoleLiterals = roleLiteralCount('gruvbox-dark');
   let maxPaletteInputBytes = initialPaletteInputBytes, peakSettledBytes = baselineRetainedBytes;
   assert.ok(nonPaletteBaselineBytes >= 0 && maxPaletteInputBytes > 0, 'the live owner holds exactly one selected palette input');
   let selected = 'gruvbox-dark';
@@ -892,9 +894,10 @@ test('cards 100 owned-palette choices publish locally without helper work or his
     const currentPaletteInputBytes = f.env.paletteInputBytes.at(-1)!;
     const selection = selectionIdentity(selected), identityDelta = selection.length - initialSelection.length;
     const selectionBytesDelta = 2 * identityDelta, displayIdentityBytesDelta = 2 * baselineEntries * identityDelta;
-    const allowedBytes = nonPaletteBaselineBytes + currentPaletteInputBytes + selectionBytesDelta + displayIdentityBytesDelta;
+    const roleLiteralBytesDelta = 256 * baselineEntries * (roleLiteralCount(selected) - initialRoleLiterals);
+    const allowedBytes = nonPaletteBaselineBytes + currentPaletteInputBytes + selectionBytesDelta + displayIdentityBytesDelta + roleLiteralBytesDelta;
     assert.ok(stats.retention.retainedBytes <= allowedBytes,
-      `settled palette ${i - 1}: retained=${stats.retention.retainedBytes}, allowed=${allowedBytes}, input=${currentPaletteInputBytes}, selectionDelta=${selectionBytesDelta}, displayDelta=${displayIdentityBytesDelta}`);
+      `settled palette ${i - 1}: retained=${stats.retention.retainedBytes}, allowed=${allowedBytes}, input=${currentPaletteInputBytes}, selectionDelta=${selectionBytesDelta}, displayDelta=${displayIdentityBytesDelta}, roleLiteralDelta=${roleLiteralBytesDelta}`);
   }
   assert.equal(style(f, owner), sampleOwnedPalette(selected, 'truecolor').compiledRoles.code.open);
   assert.equal(f.calls.length, initialCalls, 'local palette changes do not use the helper');
@@ -1061,7 +1064,7 @@ for (const kind of ['bash', 'file'] as const) test(`cards every warm ${kind} own
   f.theme('gruvbox-light'); await settle();
   for (let i = 0; i < f.calls.length; i++) if (!f.calls[i]!.done && f.calls[i]!.request.op === 'styles.resolve') { f.answerStyle(i, 44); await settle(); }
   assert.equal(f.calls.filter(c => c.request.op !== 'styles.resolve').length, before);
-  for (const o of owners) assert.ok(style(f, o).includes('44'));
+  for (const o of owners) assert.equal(style(f, o), sampleOwnedPalette('gruvbox-light', 'truecolor').compiledRoles.code.open);
 });
 
 test('cards owned palette change then Follow Pi replaces roles locally without SOURCE replay', async () => {

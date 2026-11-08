@@ -54,7 +54,7 @@ function fixture() {
 }
 function paint(color = 2): ReadyCardPaint {
   const roles = Object.fromEntries(CARD_ROLES.map((role, i) => [role, compileStyleAnsi({ foreground: { kind: 'indexed', index: role === 'title' ? color : (i + 1) % 16 },
-    background: { kind: 'indexed', index: role === 'addedCode' ? 22 : role === 'removedCode' ? 52 : role === 'addedGutter' ? 28 : role === 'removedGutter' ? 88 : 17 }, attributes: role === 'prompt' ? 8 : role === 'frame' || role === 'errorFrame' ? 7 : 0 }, 'truecolor')])) as ReadyCardPaint['roles'];
+    background: { kind: 'indexed', index: role === 'contextCode' ? 23 : role === 'contextGutter' ? 29 : role === 'addedCode' ? 22 : role === 'removedCode' ? 52 : role === 'addedGutter' ? 28 : role === 'removedGutter' ? 88 : 17 }, attributes: role === 'prompt' ? 8 : role === 'frame' || role === 'errorFrame' ? 7 : 0 }, 'truecolor')])) as ReadyCardPaint['roles'];
   return { publication: color, paintStamp: color, mode: 'truecolor', origin: 'owned', roles, ranges: () => undefined, basis: () => false };
 }
 type Mutable<T> = { -readonly [K in keyof T]: T[K] };
@@ -141,13 +141,17 @@ test('card layout: sparse FILE full-source byte offsets, side selection, gaps, s
   const p = paint(); p.ranges = (key, surface) => cb => { calls.push(key + ':' + surface); if (key === 'old') cb(101, 104, red); else if (key === 'next') cb(600, 606, blue); return true; };
   const l = layoutCard(d, { width: 60 }, f)!, out = l.paint(d, p, f)!;
   const text = rows(out).map(plain).join('\n'); assert.match(text, / 20 - old/); assert.match(text, / 30 \+ 界new/); assert.match(text, /100   ctx/); assert.match(text, /…/);
-  assert.deepEqual(calls, ['old:removed', 'next:added', 'next2:undefined']);
+  assert.deepEqual(calls, ['old:removed', 'next:added', 'next2:context']);
   const t = await terminal(out, 60);
   try {
     const old = t.buffer.active.getLine(3)!, added = t.buffer.active.getLine(4)!;
     assert.equal(old.getCell(5)!.getBgColor(), 88); assert.equal(added.getCell(5)!.getBgColor(), 28);
     assert.equal(old.getCell(10)!.getChars(), 'o'); assert.equal(old.getCell(10)!.getFgColor(), 1); assert.equal(old.getCell(10)!.getBgColor(), 52);
     assert.equal(added.getCell(10)!.getChars(), '界'); assert.equal(added.getCell(10)!.getFgColor(), 4); assert.equal(added.getCell(10)!.getBgColor(), 22);
+    const context = t.buffer.active.getLine(6)!;
+    assert.equal(context.getCell(5)!.getBgColor(), 29, 'context numbers use their own gutter surface');
+    assert.equal(context.getCell(10)!.getChars(), 'c'); assert.equal(context.getCell(10)!.getBgColor(), 23);
+    assert.equal(context.getCell(55)!.getBgColor(), 23, 'context padding shares the code surface');
   } finally { t.dispose(); out.dispose(); l.dispose(); f.dispose(); }
 });
 
@@ -212,12 +216,12 @@ test('card layout: split diff context uses each visible side grammar and unified
 
   const splitCalls: string[] = [], split = layoutCard(d, { width: 140 }, f)!, splitRows = split.paint(d, paintWith(splitCalls), f)!;
   assert.deepEqual((await contextColors(splitRows, 140)).sort(), [1, 4]);
-  assert.deepEqual(splitCalls.sort(), ['next:', 'next:added', 'old:', 'old:removed']);
+  assert.deepEqual(splitCalls.sort(), ['next:added', 'next:context', 'old:context', 'old:removed']);
   splitRows.dispose(); split.dispose();
 
   const unifiedCalls: string[] = [], unified = layoutCard(d, { width: 100 }, f)!, unifiedRows = unified.paint(d, paintWith(unifiedCalls), f)!;
   assert.deepEqual(await contextColors(unifiedRows, 100), [4]);
-  assert.deepEqual(unifiedCalls.sort(), ['next:', 'next:added', 'old:removed']);
+  assert.deepEqual(unifiedCalls.sort(), ['next:added', 'next:context', 'old:removed']);
   unifiedRows.dispose(); unified.dispose(); f.dispose();
 });
 

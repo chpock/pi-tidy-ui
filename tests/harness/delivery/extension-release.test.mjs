@@ -77,7 +77,7 @@ test('generated extension packs its own version and native declaration without r
   assert.deepEqual(result.files.map(file => file.path).sort(), ['CHANGELOG.md', 'LICENSE', 'README.md', 'package.json', 'src/occipital/release.ts']);
 });
 
-test('the source npm archive includes every tool adapter and its canonical manual chapter', async () => {
+test('the source npm archive includes all tool adapters, TUI palettes and canonical chapters', async () => {
   const { stdout } = await run(process.platform === 'win32' ? 'npm.cmd' : 'npm', ['pack', '--dry-run', '--offline', '--ignore-scripts', '--json'],
     { cwd: repo, timeout: 30000, maxBuffer: 1024 * 1024 });
   const files = new Set(JSON.parse(stdout)[0].files.map(file => file.path));
@@ -85,6 +85,14 @@ test('the source npm archive includes every tool adapter and its canonical manua
   assert.ok(adapters.length > 0);
   for (const path of adapters) assert.ok(files.has(`src/tool-adapters/${path.replaceAll('\\', '/')}`), `missing tool adapter: ${path}`);
   assert.ok(files.has('docs/tool-adapters.md'), 'missing canonical tool-adapter chapter');
+  assert.ok(files.has('docs/syntax/opencode-tui-mapping.md'), 'missing canonical TUI correspondence chapter');
+  assert.ok(files.has('src/themes/NOTICE'), 'missing upstream theme attribution');
+  const palettes = (await readdir(join(repo, 'src/themes/palettes'))).filter(path => path.endsWith('.json'));
+  assert.equal(palettes.length, 64);
+  assert.deepEqual([...files].filter(path => /^src\/themes\/palettes\/[^/]+\.json$/u.test(path)).sort(),
+    palettes.map(path => `src/themes/palettes/${path}`).sort());
+  for (const id of ['amoled', 'oc-2', 'onedarkpro', 'shadesofpurple', 'lucent-orng'])
+    assert.equal([...files].some(path => path.startsWith(`src/themes/palettes/${id}-`)), false, `removed palette ${id} must not ship`);
 });
 
 async function preparedFamily(t) {

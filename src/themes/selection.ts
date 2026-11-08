@@ -16,6 +16,6 @@ export function resolveTheme(selected: ThemePreference): ResolvedTheme {
   if (selected.kind === 'pi') return { effective: PI_THEME, missing: false };
   const entry = themeEntry(`${selected.id}-${selected.variant}`);
   return entry
-    ? { effective: Object.freeze({ kind: 'theme', id: entry.id, label: entry.label, fingerprint: `owned-palette-v1:${entry.id}` }), missing: false }
+    ? { effective: Object.freeze({ kind: 'theme', id: entry.id, label: entry.label, fingerprint: `owned-palette-v2:${entry.id}` }), missing: false }
     : { effective: PI_THEME, missing: true };
 }

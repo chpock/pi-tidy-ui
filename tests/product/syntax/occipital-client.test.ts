@@ -22,7 +22,7 @@ const piPreference: ThemePreference = { kind: 'pi', variant: 'dark' };
 const preference = (id: string, variant: ThemeVariant = 'dark'): Extract<ThemePreference, { kind: 'theme' }> =>
   ({ kind: 'theme', id: id.replace(/-(?:dark|light)$/u, ''), variant });
 const themeChoice = preference('gruvbox-dark');
-const native = { id: 'gruvbox-dark', label: 'Gruvbox Dark', fingerprint: 'owned-palette-v1:gruvbox-dark' };
+const native = { id: 'gruvbox-dark', label: 'Gruvbox Dark', fingerprint: 'owned-palette-v2:gruvbox-dark' };
 function deferred<T>() {
   let resolve!: (value: T) => void, reject!: (error: unknown) => void;
   const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no; });

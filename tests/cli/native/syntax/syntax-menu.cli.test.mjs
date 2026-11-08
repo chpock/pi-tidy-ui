@@ -18,11 +18,11 @@ test('occipital CLI: local palette picker, persisted selection and fresh default
     let replay;
     try {
       const initial = await scenario(native, true);
-      const paletteId = 'amoled-dark';
+      const paletteId = 'aura-dark';
       await chooseTheme(native, paletteId);
       const prefs = readFileSync(`${native.agent}/extensions/pi-tidy-ui/config.json`, 'utf8'), saved = JSON.parse(prefs);
       assert.deepEqual(Object.keys(saved).sort(), ['syntaxTheme', 'syntaxThemeVariant']);
-      assert.deepEqual(saved, { syntaxTheme: { kind: 'theme', id: 'amoled' }, syntaxThemeVariant: 'dark' });
+      assert.deepEqual(saved, { syntaxTheme: { kind: 'theme', id: 'aura' }, syntaxThemeVariant: 'dark' });
       await settledStats(native, 'theme-settled', s => nativeReady(s) && s.client.effective.id === paletteId);
       const themed = await captureThenRenderDiagnostics(native, 'syntax-explicit-theme'); assert.deepEqual(body(themed), body(initial));
       const y = themed.screen.findIndex(row => row.includes('const x=2;')), x = themed.screen[y].indexOf('const x=2;');
