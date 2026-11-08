@@ -131,12 +131,12 @@ The background constraints include every numerically evaluable direct semantic b
 
 Only after those direct constraints produce final emitted backgrounds are marker candidates evaluated. Otherwise an optional foreground near the contrast floor could force a useful added/removed tint back to the panel, sacrificing structural diff cues to decorate punctuation. Markers therefore adapt to surfaces, never the reverse: no iterative refitting, primary-ink correction or source-dependent invalidation cycle.
 
-All 26 Pi card roles are materialized together. Their foreground sources are:
+All 28 Pi card roles are materialized together. Their foreground sources are:
 
 | Card roles | Public Pi foreground |
 | --- | --- |
-| `panel`, `plain`, `code`, `output`, `padding`, `addedCode`, `removedCode` | `toolOutput` |
-| `empty`, `overflow`, `prompt`, `gutter`, `numbers`, `addedGutter`, `removedGutter` | `dim` |
+| `panel`, `plain`, `code`, `contextCode`, `output`, `padding`, `addedCode`, `removedCode` | `toolOutput` |
+| `empty`, `overflow`, `prompt`, `gutter`, `numbers`, `contextGutter`, `addedGutter`, `removedGutter` | `dim` |
 | `service`, `muted`, `footer`, `reminder` | `muted` |
 | `diagnostic`, `error`, `errorFrame` | `error` |
 | `title` | `toolTitle` |
@@ -156,7 +156,7 @@ Materialization starts from the caller's attributes, applies the selected foregr
 
 This vocabulary is the exact **resolver revision3** interpretation of protocol4 / `syntax-highlight/v4`; context revision remains1 and generic rule definition is revision2. The canonical client-rule fingerprint uses the NUL-terminated `occipital-client-rules/3` domain and frames the required context discriminator, owner and ordered boundaries. Native-theme rule and palette hash domains have been removed. Both transports reject older protocol/resolver interpretations before SOURCE/STYLE admission rather than silently widening an older rule format. Source contexts and geometry retain their existing wire representation. See the [wire contract](../occipital/protocol.md).
 
-Owned palettes supply all 44 local semantic bindings and complete card roles from validated bundled data; they do not sample Pi colors. Changing the public Pi theme therefore changes Follow Pi input only, while a valid owned palette remains fixed. If an owned asset fails, its whole-card Follow Pi fallback tracks the current public Pi colors rather than reusing an old owned lease. Actual SGR9 appearance still depends on the terminal and font; color-only imitation is not a fallback.
+Owned palettes supply all 44 local semantic bindings and 28 complete card roles from validated TUI-derived data; they do not sample Pi colors. The distinct unchanged-diff `contextCode`/`contextGutter` roles use the exact existing `code`/`numbers` styles under Follow Pi, so separating owned TUI surfaces does not change public-Pi paint. Changing the public Pi theme therefore changes Follow Pi input only, while a valid owned palette remains fixed. If an owned asset fails, its whole-card Follow Pi fallback tracks the current public Pi colors rather than reusing an old owned lease. Actual SGR9 appearance still depends on the terminal and font; color-only imitation is not a fallback.
 
 ## Reuse, funding and limits
 
@@ -167,13 +167,13 @@ Owned palettes supply all 44 local semantic bindings and complete card roles fro
 | Allocation | Policy bytes |
 | --- | --- |
 | Each input handle | 256 |
-| Shared immutable store | `512 + bindingCount × 256 + cardRoleCount × 1024` = **38,400** for 44 bindings and 26 roles |
+| Shared immutable store | `512 + bindingCount × 256 + cardRoleCount × 1024` = **40,448** for 44 bindings and 28 roles |
 | Pi marker variant scratch | `1024 + 224 × 256` = **58,368** |
 | Complete Pi cold-operation scratch | `8192 + directBindingCount × 256 + variantScratch` = **72,704** for 24 direct bindings |
 | Owned JSON read/parse scratch | **131,072** bytes, fixed before bounded file admission |
 | Each scoped read | 256 temporary bytes in addition to its pinned store/handle |
 
-A cold Pi preparation therefore funds **111,360** policy bytes before sampling; a cold owned-palette preparation funds **169,728** before reading/parsing. Operation scratch is released afterward. A cache hit funds only the new 256-byte handle. These are allocation-policy units, not measured process RSS. Allocation denial returns no prepared input; it never publishes a partially generated palette or starts an unbounded retry/cache. A scoped visit whose temporary charge is denied returns `false`. Scoped reads pin their data while visited and invalidate escaped readers afterward; cleanup receipts release the numeric charges without retaining the Theme, UI owner or source text.
+A cold Pi preparation therefore funds **113,408** policy bytes before sampling; a cold owned-palette preparation funds **171,776** before reading/parsing. Operation scratch is released afterward. A cache hit funds only the new 256-byte handle. These are allocation-policy units, not measured process RSS. Allocation denial returns no prepared input; it never publishes a partially generated palette or starts an unbounded retry/cache. A scoped visit whose temporary charge is denied returns `false`. Scoped reads pin their data while visited and invalidate escaped readers afterward; cleanup receipts release the numeric charges without retaining the Theme, UI owner or source text.
 
 Palette publication includes bindings, complete card roles and all affected code segments atomically. Theme changes reuse source/scopes and glyph geometry; width changes reuse stored glyph widths. Warm frames do no Pi sampling, candidate search, SOURCE/STYLE dispatch or measurement. Returning to a still-owned cached style/palette can reuse it; eviction or loss of ownership can require preparation again. The [storage and charge-lifetime rules](storage.md) and [per-card publication rules](work.md#sealing-and-publishing-one-card) apply equally to Follow Pi and owned-palette presentations.
 

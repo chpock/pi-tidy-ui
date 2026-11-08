@@ -1496,7 +1496,8 @@ export function installTidyUi(tui: LiveTui, getTheme: () => Palette, options: Ti
           else { if (!executing(this)) removeAnimation(this); pauseSyntax(this); }
           const layout = fileLayout(this, width);
           if ((nativeFileOwner(this) || nativeReadOwner(this)) && !layout.native && (fileSucceeded(this) || this.expanded)) releaseNativeFileRenderer(this);
-          if (layout.framed && !layout.native && layout.rows.length) usefulSyntax(this);
+          // Pending local paint must not pause the visible source needed to produce it.
+          if (!layout.native && layout.rows.length && (layout.framed || fileSucceeded(this))) usefulSyntax(this);
           else pauseSyntax(this);
           const rows = layout.framed || fileSucceeded(this) || cardKind(this) === 'read' && fileMode(this) === 'full' ? layout.rows : [
             ...paintSummary(this, width), ...layout.rows.slice(summaryLayout(this, width).rows.length),

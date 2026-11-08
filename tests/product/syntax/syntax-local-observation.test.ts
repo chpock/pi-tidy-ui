@@ -358,7 +358,7 @@ test('write capture review F1: empty dark roles cannot certify refused light rep
     const current = funding(...args); if (!current) return current;
     return { ...current, grant(bytes: number) {
       // The existing role-table funding seam, not an invented product limit.
-      if (deny && bytes === 4096 + CARD_ROLES.length * 2048) { refused++; return undefined; }
+      if (deny && bytes === 4096 + CARD_ROLES.length * 2560) { refused++; return undefined; }
       return current.grant(bytes);
     } };
   });
@@ -490,4 +490,53 @@ test('palette observations distinguish actual preparation from public color read
     samplePiPalette(theme, 'truecolor');
     assert.equal(observer.snapshot().paletteSamples, 2);
   } finally { observer.restore(); }
+});
+
+for (const shape of ['empty', 'unsupported'] as const) test(`write capture distinguishes ${shape} previews and waits for actual source recovery`, async () => {
+  const dist = dirname(fileURLToPath(import.meta.resolve('@earendil-works/pi-coding-agent')));
+  const themes = await import(pathToFileURL(resolve(dist, 'modes/interactive/theme/theme.js')).href); themes.initTheme('dark', false);
+  const gate = createWriteCaptureGate(() => {}), observer = observeSyntaxCards(() => {}, { writeCapture: writeCaptureJournal(gate) });
+  const provider = { availability: 'disabled' as const, reason: 'disabled' as const, generation: 0, initialShared: false };
+  const sources = new SourceController({ snapshot: () => provider, isReady: () => false, classificationAccepted: () => false,
+    request: () => assert.fail('no native work') }); sources.setEnabled(false);
+  const cards = new CardSources({ sources, snapshot: () => ({ enabled: false, selected: { kind: 'pi' as const, variant: 'dark' as const }, standaloneVersion: 'test', provider }) }, {
+    preparePiInput: funding => preparePaletteInput(themes.theme, 'pi', 1, 'truecolor', funding),
+    classify: text => text.split('\n'), invalidate() {}, requestRender() {},
+  });
+  const peer = { toolName: 'write', toolCallId: 'source-call' }, owner = { toolName: 'write', toolCallId: 'preview-call' };
+  const source = (revision: number) => fileInput({ name: 'write', args: { path: 'source.ts', content: `const source = ${revision};` }, result: {} }, revision);
+  let waiting: Promise<unknown> | undefined;
+  try {
+    cards.updateDisplay(peer, source(1)); cards.useful(peer, 1);
+    assert.equal(await sources.whenSettled(), true); cards.visit(peer, () => {});
+    assert.deepEqual((await gate.wait()).map(event => event.call), ['source-call']);
+    const preview = { ...fileInput({ name: 'write', args: { path: 'preview.ts', content: '' }, result: {
+      details: shape === 'empty' ? { diff: '', noOp: true } : { patch: '@@ -1 +1 @@\n-UNFINISHED\n' },
+    } }, 1), viewMode: 'preview' as const };
+    assert.equal(cards.updateDisplay(owner, preview), true); cards.useful(owner, 1);
+    assert.equal(await sources.whenSettled(), true); cards.visit(owner, display => {
+      assert.equal(display.kind, 'file');
+      if (display.kind === 'file') {
+        assert.equal(display.mode, shape === 'empty' ? 'diff' : undefined);
+        assert.equal(display.rows.length, 0);
+      }
+    });
+    const expected = shape === 'empty' ? ['preview-call', 'source-call'] : ['source-call'];
+    let captured: string[] | undefined;
+    waiting = gate.wait().then(events => { captured = events.map(event => event.call).sort(); }); waiting.catch(() => {});
+    await Promise.resolve();
+    assert.deepEqual(captured, expected, 'empty diff participates, but unsupported service rows cannot block source readiness');
+    cards.updateDisplay(owner, source(2)); cards.visit(owner, () => {}); cards.useful(owner, 2);
+    let ready = false;
+    waiting = gate.wait().then(() => { ready = true; }); waiting.catch(() => {});
+    await Promise.resolve(); assert.equal(ready, false, 'a newly eligible source still waits for actual preparation');
+    assert.equal(await sources.whenSettled(), true); cards.visit(owner, () => {}); await waiting;
+    assert.deepEqual((await gate.wait()).map(event => event.call).sort(), ['preview-call', 'source-call']);
+    cards.updateDisplay(owner, { ...preview, revision: 3, sourceRevision: 3, serviceRevision: 3 }); cards.useful(owner, 3);
+    assert.equal(await sources.whenSettled(), true); cards.visit(owner, () => {});
+    captured = undefined;
+    waiting = gate.wait().then(events => { captured = events.map(event => event.call).sort(); }); waiting.catch(() => {});
+    await Promise.resolve();
+    assert.deepEqual(captured, expected, 'an enrolled source owner is retired only when it becomes an unsupported service row');
+  } finally { observer.restore(); gate.close(); await waiting?.catch(() => {}); cards.dispose(); sources.dispose(); }
 });

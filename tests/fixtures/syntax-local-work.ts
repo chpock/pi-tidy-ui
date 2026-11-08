@@ -159,7 +159,7 @@ export function observeSyntaxCards(record: (event: SyntaxCardObservation) => voi
       const identity = identities?.get(owner);
       if (identity) candidate = { type: 'syntax_card_publication', id: identity.id, kind: identity.kind, path: identity.path,
         mode: display.kind === 'file' ? display.mode : undefined, publication: paint.publication, paintStamp: paint.paintStamp, origin: paint.origin };
-      if (options.writeCapture && display.kind === 'file' && display.mode && Reflect.get(owner, 'toolName') === 'write') {
+      if (options.writeCapture && display.kind === 'file' && (display.mode === 'code' || display.mode === 'diff') && Reflect.get(owner, 'toolName') === 'write') {
         const call = Reflect.get(owner, 'toolCallId');
         if (typeof call === 'string' && display.path) write = { call, path: display.path, revision: display.revision, publication: paint.publication, origin: paint.origin };
       }
@@ -197,6 +197,9 @@ export function observeSyntaxCards(record: (event: SyntaxCardObservation) => voi
     const states = Reflect.get(this, 'states');
     const state = states instanceof WeakMap ? states.get(owner) as CardState | undefined : undefined;
     if (!state || state.revision !== revision || !state.useful || state.paused || state.ticket?.owner.deref() !== owner) return;
+    if (state.display?.kind === 'file' && state.display.mode !== 'code' && state.display.mode !== 'diff') {
+      retireWrite(owner); return;
+    }
     const call = Reflect.get(owner, 'toolCallId');
     if (typeof call !== 'string') throw new Error('Write capture owner has no tool-call identity');
     options.writeCapture.activate(call, owner);

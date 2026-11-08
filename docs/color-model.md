@@ -1,12 +1,12 @@
 # Color model and derived surfaces
 
-This is the shared numerical reference for local Follow Pi and bundled owned-palette card colors. Both use the extension's same color conversion and `diffPalette` implementation, while their authored inputs and fallback rules remain distinct. [Follow Pi](syntax/follow-pi.md) and [palette ownership](syntax/palettes.md) define those local semantic inputs and complete role mappings.
+This is the numerical reference for local Follow Pi derivation and authored TUI palette surfaces. Both use the extension's output color conversion; **only Follow Pi** uses `diffPalette`. Owned themes retain their explicit TUI surfaces without contrast correction. [Follow Pi](syntax/follow-pi.md), [palette ownership](syntax/palettes.md) and [TUI correspondence](syntax/opencode-tui-mapping.md) define their inputs and role mappings.
 
 ## Derived diff backgrounds
 
-The ready palette contains four prepared diff backgrounds, independent of width and visible source tokens. Both Follow Pi and owned palettes build them through `src/diff-palette.ts`; Occipital resolves only semantic rules/styles and never supplies palette surfaces. The adapters provide their own inputs to the common derivation. It preserves syntax foregrounds instead of recoloring tokens to make a tint fit. Per-token backgrounds never replace these structural surfaces; numbers/signs share their prepared gutter, while empty counterparts and alignment blanks use neutral roles. Plain `Created`/`Wrote` source does not paint diff surfaces even though its shared palette prepares those roles.
+Follow Pi prepares four derived added/removed code/gutter backgrounds through `src/diff-palette.ts`, independently of width and visible tokens. Its unchanged diff code/numbers retain their ordinary styles. Owned themes instead prepare explicit context/added/removed code/gutter backgrounds from TUI data. Occipital resolves semantic rules/styles, never palette surfaces. Token backgrounds cannot replace structural rows; signs use their side's gutter, while empty counterparts and alignment blanks remain neutral. Plain source views use ordinary code/number styles, not diff-context roles.
 
-### Shared numerical policy
+### Follow Pi numerical policy
 
 Contrast uses sRGB relative luminance. Normalize an 8-bit channel to `x = channel / 255`, then:
 
@@ -47,17 +47,14 @@ Role foregrounds and enabled fonts come from their mapped public foreground role
 
 ### Owned palette diff composition
 
-Owned palettes provide concrete, six-digit authored roles; they do not use Pi's adapter or daemon-owned theme rules:
+Owned revision-2 assets contain all 28 opaque role styles. Ordinary code/panel use TUI `backgroundPanel`; diff context uses `diffContextBg`; added/removed content and gutters use their respective authored diff fields. Ordinary numbers use `textMuted`, diff numbers use `diffLineNumber`, and signs use `diffHighlightAdded`/`diffHighlightRemoved`. The separate context roles prevent those values from recoloring plain file views.
 
-1. Use the authored `background` as panel, and the output-quantized `addedBackground`/`removedBackground` as the two semantic hints. If an authored hint is absent, retain the panel on that side.
-2. Constrain each code surface with all 44 output-quantized semantic foreground bindings plus the authored code foreground, each at the existing 4.5 minimum contrast policy.
-3. Derive each gutter from its code surface using the authored dim number ink at3 and the matching added/removed sign at4.5. Final checks use the selected terminal encoder.
-4. Keep owned semantic foregrounds and their author-selected typography unchanged. Derivation affects only the four structural diff backgrounds; it runs while constructing the funded palette input, never per row or during rendering.
+Authoring resolves source references/variants and composites nonzero alpha once over the declared opaque surface, with nearest-integer channel rounding. The [mapping table](syntax/opencode-tui-mapping.md) records each backdrop and the limits of this normalization; fully transparent `lucent-orng` is excluded. Runtime loading performs only validation, terminal output conversion and one compilation per role. It does not derive tint, search contrast, adjust foregrounds or invent a missing variant. Truecolor retains the authored literal RGB; 256-color uses the common encoder without a contrast-repair pass. Low authored contrast is preserved, not certified as readable.
 
-The shared conversion uses Pi TUI's sRGB/Oklab routines, not OKHSL. The bounded target and search are described above. Lightness is clamped to `[0,1]`; emitted colors are gamut-mapped, quantized through the selected terminal encoder and then checked for displacement and contrast. These checks describe the application encoder, not a guarantee about a terminal's customized indexed palette.
+Follow Pi's derivation uses Pi TUI's sRGB/Oklab routines, not OKHSL. Its displacement/contrast checks describe the application encoder, not a terminal's customized indexed palette. Owned palettes share output conversion but none of that numerical admission policy.
 
 ### Rationale and limits
 
 Semantic background hints preserve authored intent, including neutral additions that bright sign foregrounds do not encode. Cartesian Oklab bounds lightness/chromatic movement independently and avoids inventing hue through neutral colors. Sign-based Multiply would always darken, leave black unchanged and disproportionately affect light panels; it couples tint lightness to panel channels instead of preserving a restrained displacement.
 
-The goal is subdued code surfaces with readable numbers/signs, not byte-for-byte reconstruction of another application's authored theme. Matching a sign color cannot recreate a different neutral panel. Generated foreground safeguards, tint bounds, error-frame bold and numerical fallbacks are explicit card policy, distinct from authored syntax colors/fonts. An authored low-contrast theme, symbolic colors, faint/font rendering, customized indexed palettes and output quantization do not acquire universal accessibility guarantees. Neutral fallback is valid but does not claim a visually distinct tint.
+Follow Pi's goal is subdued code surfaces with readable numbers/signs, not reconstruction of another application's authored theme. Owned palettes instead preserve the selected TUI inputs, even when they have lower contrast. Matching a sign color cannot recreate a different neutral panel. Generated foreground safeguards, tint bounds, error-frame bold and numerical fallbacks are explicit card policy, distinct from authored syntax colors/fonts. An authored low-contrast theme, symbolic colors, faint/font rendering, customized indexed palettes and output quantization do not acquire universal accessibility guarantees. Neutral fallback is valid but does not claim a visually distinct tint.

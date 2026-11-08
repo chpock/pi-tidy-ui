@@ -1,168 +1,170 @@
 {
-  "revision": 1,
+  "revision": 2,
   "id": "mercury-dark",
   "label": "Mercury Dark",
   "source": {
     "repository": "anomalyco/opencode",
-    "commit": "76e1f5b0cc4e529c732eebb0bade0893a3db8bee",
-    "path": "packages/ui/src/theme/themes/mercury.json",
+    "commit": "810c0eba1a7348036f8bdf61e6632d0c36c6876c",
+    "path": "packages/tui/src/theme/assets/mercury.json",
     "variant": "dark"
   },
   "regions": {
-    "markdown-block-quote": {
-      "foreground": "#9d9da8",
-      "attributes": []
-    },
-    "markdown-code": {
-      "foreground": "#77c599",
-      "attributes": []
-    },
-    "markdown-code-block": {
-      "foreground": "#dddde5",
-      "attributes": []
-    },
-    "markdown-code-delimiter": {
-      "foreground": "#9cebbd",
-      "attributes": []
-    },
-    "markdown-code-fence": {
-      "foreground": "#dddde5",
-      "attributes": []
-    },
-    "markdown-heading": {
-      "foreground": "#ffffff",
-      "attributes": []
-    },
-    "markdown-heading-marker": {
-      "foreground": "#b9b9b9",
-      "attributes": []
-    },
-    "markdown-horizontal-rule": {
-      "foreground": "#22232d",
-      "attributes": []
-    },
-    "markdown-image": {
-      "foreground": "#8da4f5",
-      "attributes": []
-    },
-    "markdown-image-text": {
-      "foreground": "#a7b6f8",
-      "attributes": []
-    },
-    "markdown-link": {
-      "foreground": "#8da4f5",
-      "attributes": []
-    },
-    "markdown-link-delimiter": {
-      "foreground": "#c2ceff",
-      "attributes": []
-    },
-    "markdown-link-text": {
-      "foreground": "#a7b6f8",
-      "attributes": []
-    },
-    "markdown-list-enumeration": {
-      "foreground": "#8da4f5",
-      "attributes": []
-    },
-    "markdown-list-item": {
-      "foreground": "#ffffff",
-      "attributes": []
-    },
-    "markdown-quote-border": {
-      "foreground": "#9d9da8",
-      "attributes": []
-    },
-    "markdown-strong": {
-      "foreground": "#f4f5f9",
-      "attributes": []
-    },
-    "syntax-attribute": {
-      "foreground": "#a7b6f8",
-      "attributes": []
-    },
-    "syntax-command": {
-      "foreground": "#8da4f5",
-      "attributes": []
-    },
     "syntax-comment": {
       "foreground": "#9d9da8",
+      "attributes": [
+        "italic"
+      ]
+    },
+    "syntax-regexp": {
+      "foreground": "#8da4f5",
       "attributes": []
     },
-    "syntax-constant": {
-      "foreground": "#fc9b6f",
-      "attributes": []
-    },
-    "syntax-critical": {
-      "foreground": "#fec0d1",
-      "attributes": []
-    },
-    "syntax-diff-add": {
-      "foreground": "#90eab8",
-      "attributes": []
-    },
-    "syntax-diff-delete": {
-      "foreground": "#ffbfd2",
-      "attributes": []
-    },
-    "syntax-diff-header": {
-      "foreground": "#ffffff",
-      "attributes": []
-    },
-    "syntax-diff-unknown": {
-      "foreground": "#ff0000",
-      "attributes": []
-    },
-    "syntax-escape": {
-      "foreground": "#fc9b6f",
-      "attributes": []
-    },
-    "syntax-function-builtin": {
-      "foreground": "#77becf",
+    "syntax-string": {
+      "foreground": "#77c599",
       "attributes": []
     },
     "syntax-keyword": {
       "foreground": "#8da4f5",
-      "attributes": []
+      "attributes": [
+        "italic"
+      ]
     },
-    "syntax-language-constant": {
-      "foreground": "#fc9b6f",
-      "attributes": []
-    },
-    "syntax-number": {
-      "foreground": "#fc9b6f",
+    "syntax-primitive": {
+      "foreground": "#8da4f5",
       "attributes": []
     },
     "syntax-operator": {
       "foreground": "#8da4f5",
       "attributes": []
     },
-    "syntax-parameter": {
+    "syntax-variable": {
       "foreground": "#77becf",
       "attributes": []
     },
-    "syntax-preprocessor": {
-      "foreground": "#8da4f5",
-      "attributes": []
-    },
-    "syntax-primitive": {
-      "foreground": "#8da4f5",
-      "attributes": []
-    },
     "syntax-property": {
-      "foreground": "#a7b6f8",
+      "foreground": "#77becf",
+      "attributes": []
+    },
+    "syntax-type": {
+      "foreground": "#77becf",
+      "attributes": []
+    },
+    "syntax-constant": {
+      "foreground": "#fc9b6f",
       "attributes": []
     },
     "syntax-punctuation": {
       "foreground": "#dddde5",
       "attributes": []
     },
-    "syntax-regexp": {
-      "foreground": "#dddde5",
+    "syntax-warning": {
+      "foreground": "#fc9b6f",
+      "attributes": [
+        "bold"
+      ]
+    },
+    "syntax-critical": {
+      "foreground": "#fc92b4",
+      "attributes": [
+        "bold"
+      ]
+    },
+    "syntax-diff-add": {
+      "foreground": "#77c599",
       "attributes": []
     },
-    "syntax-string": {
+    "syntax-diff-delete": {
+      "foreground": "#fc92b4",
+      "attributes": []
+    },
+    "syntax-diff-unknown": {
+      "foreground": "#9d9da8",
+      "attributes": []
+    },
+    "markdown-heading": {
+      "foreground": "#ffffff",
+      "attributes": [
+        "bold"
+      ]
+    },
+    "markdown-link": {
+      "foreground": "#8da4f5",
+      "attributes": [
+        "underline"
+      ]
+    },
+    "markdown-link-text": {
+      "foreground": "#a7b6f8",
+      "attributes": [
+        "underline"
+      ]
+    },
+    "markdown-code": {
       "foreground": "#77c599",
+      "attributes": []
+    },
+    "markdown-block-quote": {
+      "foreground": "#9d9da8",
+      "attributes": [
+        "italic"
+      ]
+    },
+    "markdown-strong": {
+      "foreground": "#f4f5f9",
+      "attributes": [
+        "bold"
+      ]
+    },
+    "markdown-horizontal-rule": {
+      "foreground": "#24242f",
+      "attributes": []
+    },
+    "markdown-list-item": {
+      "foreground": "#ffffff",
+      "attributes": []
+    },
+    "markdown-list-enumeration": {
+      "foreground": "#ffffff",
+      "attributes": []
+    },
+    "markdown-image": {
+      "foreground": "#8da4f5",
+      "attributes": [
+        "underline"
+      ]
+    },
+    "markdown-image-text": {
+      "foreground": "#a7b6f8",
+      "attributes": [
+        "underline"
+      ]
+    },
+    "markdown-code-block": {
+      "foreground": "#77c599",
+      "attributes": []
+    },
+    "syntax-number": {
+      "foreground": "#fc9b6f",
+      "attributes": []
+    },
+    "syntax-language-constant": {
+      "foreground": "#fc9b6f",
+      "attributes": []
+    },
+    "syntax-parameter": {
+      "foreground": "#77becf",
+      "attributes": []
+    },
+    "syntax-function-builtin": {
+      "foreground": "#fc92b4",
+      "attributes": []
+    },
+    "syntax-command": {
+      "foreground": "#8da4f5",
+      "attributes": []
+    },
+    "syntax-escape": {
+      "foreground": "#8da4f5",
       "attributes": []
     },
     "syntax-string-delimiter": {
@@ -170,34 +172,192 @@
       "attributes": []
     },
     "syntax-tag": {
+      "foreground": "#fc92b4",
+      "attributes": []
+    },
+    "syntax-attribute": {
+      "foreground": "#fc9b6f",
+      "attributes": []
+    },
+    "syntax-preprocessor": {
       "foreground": "#8da4f5",
+      "attributes": [
+        "italic"
+      ]
+    },
+    "syntax-diff-header": {
+      "foreground": "#9d9da8",
       "attributes": []
     },
-    "syntax-type": {
-      "foreground": "#77becf",
+    "markdown-heading-marker": {
+      "foreground": "#ffffff",
+      "attributes": [
+        "bold"
+      ]
+    },
+    "markdown-code-delimiter": {
+      "foreground": "#77c599",
       "attributes": []
     },
-    "syntax-variable": {
-      "foreground": "#77becf",
+    "markdown-link-delimiter": {
+      "foreground": "#a7b6f8",
+      "attributes": [
+        "underline"
+      ]
+    },
+    "markdown-code-fence": {
+      "foreground": "#77c599",
       "attributes": []
     },
-    "syntax-warning": {
-      "foreground": "#fdc3ba",
-      "attributes": []
+    "markdown-quote-border": {
+      "foreground": "#9d9da8",
+      "attributes": [
+        "italic"
+      ]
     }
   },
-  "card": {
-    "added": "#90eab8",
-    "addedBackground": "#011309",
-    "background": "#0e0e17",
-    "border": "#42424b",
-    "dim": "#797981",
-    "error": "#fec0d1",
-    "foreground": "#dddde5",
-    "muted": "#9d9da8",
-    "removed": "#d84e83",
-    "removedBackground": "#22010e",
-    "title": "#fcfcfc",
-    "warning": "#fdc3ba"
+  "roles": {
+    "panel": {
+      "foreground": "#dddde5",
+      "background": "#10101a",
+      "attributes": []
+    },
+    "plain": {
+      "foreground": "#dddde5",
+      "background": "#10101a",
+      "attributes": []
+    },
+    "code": {
+      "foreground": "#dddde5",
+      "background": "#10101a",
+      "attributes": []
+    },
+    "output": {
+      "foreground": "#dddde5",
+      "background": "#10101a",
+      "attributes": []
+    },
+    "empty": {
+      "foreground": "#9d9da8",
+      "background": "#10101a",
+      "attributes": []
+    },
+    "padding": {
+      "foreground": "#dddde5",
+      "background": "#10101a",
+      "attributes": []
+    },
+    "service": {
+      "foreground": "#9d9da8",
+      "background": "#10101a",
+      "attributes": []
+    },
+    "muted": {
+      "foreground": "#9d9da8",
+      "background": "#10101a",
+      "attributes": []
+    },
+    "footer": {
+      "foreground": "#9d9da8",
+      "background": "#10101a",
+      "attributes": []
+    },
+    "reminder": {
+      "foreground": "#9d9da8",
+      "background": "#10101a",
+      "attributes": []
+    },
+    "overflow": {
+      "foreground": "#9d9da8",
+      "background": "#10101a",
+      "attributes": []
+    },
+    "diagnostic": {
+      "foreground": "#fc92b4",
+      "background": "#10101a",
+      "attributes": []
+    },
+    "title": {
+      "foreground": "#dddde5",
+      "background": "#10101a",
+      "attributes": []
+    },
+    "prompt": {
+      "foreground": "#9d9da8",
+      "background": "#10101a",
+      "attributes": []
+    },
+    "frame": {
+      "foreground": "#171721",
+      "background": "#10101a",
+      "attributes": []
+    },
+    "error": {
+      "foreground": "#fc92b4",
+      "background": "#10101a",
+      "attributes": []
+    },
+    "errorFrame": {
+      "foreground": "#fc92b4",
+      "background": "#10101a",
+      "attributes": [
+        "bold"
+      ]
+    },
+    "warning": {
+      "foreground": "#fc9b6f",
+      "background": "#10101a",
+      "attributes": []
+    },
+    "gutter": {
+      "foreground": "#9d9da8",
+      "background": "#10101a",
+      "attributes": []
+    },
+    "numbers": {
+      "foreground": "#9d9da8",
+      "background": "#10101a",
+      "attributes": []
+    },
+    "contextCode": {
+      "foreground": "#dddde5",
+      "background": "#1e1e2a",
+      "attributes": []
+    },
+    "contextGutter": {
+      "foreground": "#c3c3cc",
+      "background": "#1e1e2a",
+      "attributes": []
+    },
+    "addedCode": {
+      "foreground": "#dddde5",
+      "background": "#253433",
+      "attributes": []
+    },
+    "removedCode": {
+      "foreground": "#dddde5",
+      "background": "#3f2a39",
+      "attributes": []
+    },
+    "addedGutter": {
+      "foreground": "#c3c3cc",
+      "background": "#303f40",
+      "attributes": []
+    },
+    "removedGutter": {
+      "foreground": "#c3c3cc",
+      "background": "#4a3546",
+      "attributes": []
+    },
+    "addedSign": {
+      "foreground": "#77c599",
+      "background": "#303f40",
+      "attributes": []
+    },
+    "removedSign": {
+      "foreground": "#fc92b4",
+      "background": "#4a3546",
+      "attributes": []
+    }
   }
 }

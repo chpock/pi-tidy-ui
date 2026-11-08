@@ -16,13 +16,13 @@ async function assertOutputPalette(dump, variant) {
   const marker = 'USER_BASH_OUTPUT';
   const y = dump.screen.findIndex(row => plain(row).replace('┃', '').trim() === marker);
   assert.ok(y >= 0, 'the real Bash output is physically visible, independently of its command heading');
-  const x = plain(dump.screen[y]).indexOf(marker), cell = dump.cells[y][x], card = palette(variant).card;
+  const x = plain(dump.screen[y]).indexOf(marker), cell = dump.cells[y][x], output = palette(variant).roles.output;
   const rgb = await referenceCell('\x1b[38;2;1;2;3;48;2;4;5;6mX');
   assert.notEqual(rgb.fgMode, 0); assert.notEqual(rgb.bgMode, 0);
   assert.equal(cell.fgMode, rgb.fgMode);
   assert.equal(cell.bgMode, rgb.bgMode);
-  assert.equal(cell.fg, Number.parseInt(card.foreground.slice(1), 16), `physical ${variant} output foreground`);
-  assert.equal(cell.bg, Number.parseInt(card.background.slice(1), 16), `physical ${variant} panel background`);
+  assert.equal(cell.fg, Number.parseInt(output.foreground.slice(1), 16), `physical ${variant} output foreground`);
+  assert.equal(cell.bg, Number.parseInt(output.background.slice(1), 16), `physical ${variant} panel background`);
 }
 
 async function assertDisabled(terminal, dim, name, variant) {
@@ -71,7 +71,7 @@ for (const mode of ['regular', 'fullscreen']) test(`real CLI: separate theme fam
         await live.selectTidyItem('Code color theme', false);
       }
       live.send('\r'); await until(() => live.tidyHeading('Code color theme') && live.tidyRows().some(row => row.includes('Follow Pi theme')), 'family picker');
-      assert.ok(live.tidyRows().some(row => row.includes('(1/38)')), 'picker has 36 families, Follow Pi and Back, not 72 palette variants');
+      assert.ok(live.tidyRows().some(row => row.includes('(1/34)')), 'picker has 32 TUI families, Follow Pi and Back, not 64 palette variants');
       live.send('GitHub'); await until(() => selected(live).includes('GitHub'), 'one GitHub family is highlighted');
       assert.ok(!live.tidyRows().some(row => /GitHub (?:Dark|Light)/u.test(row)), 'variants are not separate family choices');
       assert.deepEqual(readFileSync(config), originalConfig, 'family preview and invalid-variant normalization do not rewrite configuration');

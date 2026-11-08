@@ -2,5 +2,8 @@
 /LICENSE -text
 /scripts/release/notices/*.txt -text
 
+# Preserve the pinned upstream source fixture byte-for-byte in CRLF checkouts too.
+/tests/fixtures/opencode-tui/theme-index.ts.txt -text
+
 # Keep JSON text diffs and identical LF bytes, including hashed protocol fixtures.
 *.json text eol=lf

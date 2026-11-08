@@ -496,7 +496,7 @@ for (const extra of [true, false]) test(`host frozen Bash recolors its retained 
   f.render(tool); await settled(); f.render(tool); await settled();
   assert.equal(f.calls.length, sources, 'recoloring frozen scopes needs no SOURCE');
   assert.equal(f.env.styleRequests.length, styleRequests, 'palette changes do not dispatch another generic STYLE request');
-  assert.equal(f.sources.displayBasis(key)?.palette, 'theme:gruvbox-dark:owned-palette-v1:gruvbox-dark:truecolor', 'frozen display publishes the selected palette identity');
+  assert.equal(f.sources.displayBasis(key)?.palette, 'theme:gruvbox-dark:owned-palette-v2:gruvbox-dark:truecolor', 'frozen display publishes the selected palette identity');
 });
 
 for (const occupied of [true, false]) test(`host rollback to a cached owned palette ${occupied ? 'does not wait for both occupied DATA credits' : '(control: free credits)'}`, async () => {
@@ -506,10 +506,10 @@ for (const occupied of [true, false]) test(`host rollback to a cached owned pale
   const tool = written(f, 'const rollback = 1;'); f.render(tool); await settled();
   answer(f, 0, 'const rollback = 1;'); await settled(); f.render(tool); await settled();
   const key = f.env.keys[0]!;
-  assert.equal(f.sources.displayBasis(key)?.palette, `theme:${first.id}:owned-palette-v1:${first.id}:truecolor`);
+  assert.equal(f.sources.displayBasis(key)?.palette, `theme:${first.id}:owned-palette-v2:${first.id}:truecolor`);
   await select(second); f.render(tool); await settled();
   f.render(tool); await settled();
-  assert.equal(f.sources.displayBasis(key)?.palette, `theme:${second.id}:owned-palette-v1:${second.id}:truecolor`);
+  assert.equal(f.sources.displayBasis(key)?.palette, `theme:${second.id}:owned-palette-v2:${second.id}:truecolor`);
   if (occupied) {
     for (const command of ['echo held-one', 'echo held-two']) { const held = f.tool('bash', { command }); held.setArgsComplete(); f.render(held); }
     await settled(); assert.equal(f.calls.length, 3, 'both physical DATA credits are held by unrelated source work');
@@ -518,7 +518,7 @@ for (const occupied of [true, false]) test(`host rollback to a cached owned pale
   await select(first); f.render(tool); await settled(); f.render(tool); await settled();
   assert.equal(f.env.styleRequests.length, styles, 'the revisited theme is fully cached');
   assert.equal(f.calls.length, sources);
-  assert.equal(f.sources.displayBasis(key)?.palette, `theme:${first.id}:owned-palette-v1:${first.id}:truecolor`, 'cached rollback publishes before unrelated work settles');
+  assert.equal(f.sources.displayBasis(key)?.palette, `theme:${first.id}:owned-palette-v2:${first.id}:truecolor`, 'cached rollback publishes before unrelated work settles');
 });
 
 test('host Bash fallback stays full-command toolTitle with zero Pi during startup off and no-start', async () => {
@@ -1974,7 +1974,7 @@ for (const occupied of [true, false]) test(`syntax host: cached Follow Pi rollba
   const initialRows = f.render(tool);
    f.env.selected = palettePreference(owned); f.adapter.syntaxMetadataChanged(); await settled();
   f.render(tool); await settled(); f.render(tool); await settled();
-   assert.equal(f.sources.displayBasis(key)?.palette, `theme:${owned}:owned-palette-v1:${owned}:truecolor`, 'owned palette display');
+   assert.equal(f.sources.displayBasis(key)?.palette, `theme:${owned}:owned-palette-v2:${owned}:truecolor`, 'owned palette display');
   if (occupied) {
     for (const command of ['echo held-one', 'echo held-two']) { const held = f.tool('bash', { command }); held.setArgsComplete(); f.render(held); }
     await settled(); assert.equal(f.calls.length, 3, 'both physical DATA credits held by unrelated SOURCE');
@@ -2454,3 +2454,33 @@ for (const expanded of [false, true]) test(`bash transition: executing compact r
     assert.equal(f.ui.requests, after, 'a running full Bash frame leaves no compact spinner deadline');
   } finally { f.sources.geometryFunding = funding; f.adapter.restore(); }
 });
+
+
+for (const palette of ['owned', 'pi'] as const) for (const kind of ['write', 'edit', 'read'] as const)
+  for (const firstRepaint of ['before', 'after'] as const)
+  test(`host native Off preserves a published ${palette} ${kind} source through its first repaint (${firstRepaint} local preparation)`, async () => {
+    const f = fixture(true), content = '// OFF_FILE_SOURCE\nconst x=1;';
+    if (palette === 'owned') { f.env.selected = palettePreference('github-dark'); f.adapter.syntaxMetadataChanged(); }
+    const tool = kind === 'write' ? written(f, content) : f.tool(kind, kind === 'edit'
+      ? { path: 'a.ts', oldText: content, newText: content.replace('x=1', 'x=2') } : { path: 'a.ts' });
+    if (kind !== 'write') tool.updateResult({ content: [{ type: 'text', text: content }], isError: false,
+      ...(kind === 'edit' ? { details: { diff: ' 1 // OFF_FILE_SOURCE\n-2 const x=1;\n+2 const x=2;' } } : {}) }, false);
+    if (kind === 'read') tool.setExpanded(true);
+    f.render(tool); await settled(); assert.ok(f.calls.length > 0);
+    for (let index = 0; index < f.calls.length; index++) {
+      const source = (f.calls[index]!.request.sources as { text: string }[])[0]!;
+      answer(f, index, source.text); await settled();
+    }
+    assert.match(plain(f.render(tool)).join('\n'), /OFF_FILE_SOURCE/u);
+    const before = sourceCounts(f);
+    f.env.enabled = false; f.sources.setEnabled(false); f.adapter.syntaxMetadataChanged();
+    if (firstRepaint === 'after') await settled();
+    f.render(tool); await settled();
+    assert.match(plain(f.render(tool)).join('\n'), /OFF_FILE_SOURCE/u);
+    assert.equal(f.calls.length, before[3]); assert.equal(f.env.observes, before[1]);
+    if (palette === 'owned') assert.deepEqual(sourceCounts(f), before);
+    const warm = sourceCounts(f), requests = f.ui.requests;
+    for (let frame = 0; frame < 4; frame++) { f.render(tool); await settled(); }
+    assert.deepEqual(sourceCounts(f), warm, 'settled native-Off frames repeat no source or Pi work');
+    assert.equal(f.ui.requests, requests, 'settled native-Off frames do not request another frame');
+  });

@@ -94,7 +94,7 @@ test('Pi input: scoped reader invalidates immediately but physical pins survive 
     let escaped: Parameters<Parameters<Lease['visit']>[0]>[0] | undefined;
     const before = f.budget.stats().retainedBytes;
     const run = () => lease.visit(read => {
-      escaped = read; assert.ok(read.isValid); assert.equal(Object.keys(read.roles).length, 26);
+      escaped = read; assert.ok(read.isValid); assert.equal(Object.keys(read.roles).length, 28);
       const pinned = f.budget.stats().retainedBytes; assert.ok(pinned > before, 'the scoped reader is funded too');
       lease.cleanupReceipt().release(); assert.equal(lease.isValid, false); assert.equal(read.isValid, false);
       assert.equal(f.budget.stats().retainedBytes, pinned);

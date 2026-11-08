@@ -15,6 +15,7 @@ const foregrounds = {
   error: 'error', errorFrame: 'error', warning: 'warning', gutter: 'dim', numbers: 'dim',
   addedCode: 'toolOutput', addedGutter: 'dim', addedSign: 'toolDiffAdded',
   removedCode: 'toolOutput', removedGutter: 'dim', removedSign: 'toolDiffRemoved',
+  contextCode: 'toolOutput', contextGutter: 'dim',
 } as const satisfies Record<CardRole, ThemeColor>;
 
 export type PiPaletteTheme = Pick<Theme, 'getFgAnsi' | 'getBgAnsi' | 'colors'>;
