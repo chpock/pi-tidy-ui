@@ -65,7 +65,7 @@ test('nightly has separate concurrency and final result; it cannot replace ordin
  const source=ci();
  assert.match(source,/group: \$\{\{ github.event_name == 'schedule' && 'nightly-latest' \|\| 'complete-ci' \}\}-\$\{\{ github.ref \}\}/);
  assert.match(job(source,'result'),/name: \$\{\{ github.event_name == 'schedule' && 'Nightly latest-Pi result' \|\| 'Complete CI result' \}\}/);
- assert.match(job(source,'sdk'),/nightly: \$\{\{ needs.metadata.outputs.kind == 'nightly' \}\}/);
+ for (const branch of ['sdk', 'cli']) assert.match(job(source,branch),/nightly: \$\{\{ needs.metadata.outputs.kind == 'nightly' \}\}/);
  const checks=readFileSync(join(repo,'.github/workflows/ci-checks.yml'),'utf8');
   assert.match(checks,/nightly \? 'compatibility' : 'unit'/);assert.match(checks,/\['delivery','daemon'\]\.includes\(layer\) && \(nightly \|\| process\.env\.PI_VERSION !== '1\.0\.1'\)/);
   const consumers=readFileSync(join(repo,'.github/workflows/occipital-consumer.yml'),'utf8');
@@ -236,5 +236,70 @@ test('actual metadata changelog command admits independent pending work and reje
     const result = spawnSync(inputs.tools.bash, ['-e', '-c', command], { cwd: root,
       env: childEnv(join(root, 'environment'), { RELEASE_REF: ref }, inputs), encoding: 'utf8', timeout: 10000 });
     assert.equal(result.status === 0, passes, result.stdout + result.stderr);
+  }
+});
+
+function sharedHostPreparation(t, nightly, {curlStatus = 0, checksumStatus = 0, unzipStatus = 0} = {}) {
+  const root = fixture(t), inputs = readInputs();
+  const source = readFileSync(join(repo, '.github/workflows/ci-checks.yml'), 'utf8');
+  const selected = step(source, 'Prepare fixed isolated Subconscious host prerequisite');
+  const body = selected.split('        run: |\n')[1];
+  assert.ok(body);
+  const script = body.split('\n').map(line => line.replace(/^          /, '')).join('\n');
+  const commands = `
+    curl() { printf 'curl\\n' >> "$TRACE"; printf '%s\\n' "$@" > "$CURL_ARGS"; return "$CURL_STATUS"; }
+    sha256sum() { printf 'sha256sum\\n' >> "$TRACE"; IFS= read -r checksum; printf '%s\\n' "$checksum" > "$CHECKSUM_INPUT"; return "$CHECKSUM_STATUS"; }
+    unzip() { printf 'unzip\\n' >> "$TRACE"; printf '%s\\n' "$@" > "$UNZIP_ARGS"; return "$UNZIP_STATUS"; }
+    chmod() { printf 'chmod\\n' >> "$TRACE"; printf '%s\\n' "$@" > "$CHMOD_ARGS"; }
+  `;
+  const result = spawnSync(inputs.tools.bash, ['-e', '-o', 'pipefail', '-c', commands + script], {
+    cwd: repo, encoding: 'utf8', timeout: 15000,
+    env: childEnv(root, {NIGHTLY: String(nightly), RUNNER_TEMP: root, TRACE: join(root, 'trace'),
+      CURL_ARGS: join(root, 'curl-args'), CHECKSUM_INPUT: join(root, 'checksum-input'),
+      UNZIP_ARGS: join(root, 'unzip-args'), CHMOD_ARGS: join(root, 'chmod-args'),
+      CURL_STATUS: String(curlStatus), CHECKSUM_STATUS: String(checksumStatus), UNZIP_STATUS: String(unzipStatus)}, inputs),
+  });
+  assert.equal(result.error, undefined);
+  return {root, result, lines: name => readFileSync(join(root, name), 'utf8').trimEnd().split('\n')};
+}
+
+test('actual shared-host preparation applies bounded fixed-interval retries only to nightly downloads', t => {
+  for (const nightly of [false, true]) {
+    const {root, result, lines} = sharedHostPreparation(t, nightly);
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    const args = lines('curl-args');
+    assert.ok(args.includes('--fail')); assert.ok(args.includes('--location'));
+    assert.equal(args[args.indexOf('--output') + 1], join(root, 'shared-host/host.zip'));
+    assert.equal(args.at(-1), 'https://github.com/cortexkit/subconscious/releases/download/subc-core-v0.20.83/ck-subc-linux-x64.zip');
+    for (const [flag, value] of [['--retry', '5'], ['--retry-delay', '10'], ['--retry-max-time', '120'], ['--connect-timeout', '15'], ['--max-time', '30']]) {
+      if (nightly) { assert.ok(args.includes(flag), flag); assert.equal(args[args.indexOf(flag) + 1], value); }
+      else assert.ok(!args.includes(flag), 'ordinary CI must retain its original acquisition policy: ' + flag);
+    }
+    assert.ok(!args.includes('--retry-all-errors'), 'permanent acquisition failures are not transient retries');
+    assert.deepEqual(lines('checksum-input'), ['c905fd8c5eba045c38fb61dd0c6c0ffc8254ae2cb0be50ef1017cde5470e62c4  ' + join(root, 'shared-host/host.zip')]);
+    assert.deepEqual(lines('unzip-args'), ['-j', join(root, 'shared-host/host.zip'), 'ck-subc', '-d', join(root, 'shared-host')]);
+    assert.deepEqual(lines('chmod-args'), ['700', join(root, 'shared-host/ck-subc')]);
+    assert.deepEqual(lines('trace'), ['curl', 'sha256sum', 'unzip', 'chmod']);
+  }
+  const source = readFileSync(join(repo, '.github/workflows/ci-checks.yml'), 'utf8');
+  assert.match(step(source, 'Prepare fixed isolated Subconscious host prerequisite'),
+    /^          NIGHTLY: \$\{\{ inputs\.nightly \}\}$/m, 'download policy must use the caller\'s nightly input');
+});
+
+test('actual shared-host preparation propagates exhausted download failure without validating or extracting partial input', t => {
+  for (const nightly of [false, true]) {
+    const {result, lines} = sharedHostPreparation(t, nightly, {curlStatus: 22});
+    assert.equal(result.status, 22);
+    assert.deepEqual(lines('trace'), ['curl']);
+  }
+});
+
+test('actual shared-host preparation never retries or admits failed integrity and extraction', t => {
+  for (const nightly of [false, true]) {
+    for (const [failure, status, expected] of [['checksumStatus', 1, ['curl', 'sha256sum']], ['unzipStatus', 9, ['curl', 'sha256sum', 'unzip']]]) {
+      const {result, lines} = sharedHostPreparation(t, nightly, {[failure]: status});
+      assert.equal(result.status, status);
+      assert.deepEqual(lines('trace'), expected);
+    }
   }
 });

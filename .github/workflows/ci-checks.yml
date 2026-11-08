@@ -108,9 +108,15 @@ jobs:
           /usr/bin/bwrap --unshare-user --unshare-net --ro-bind / / -- /usr/bin/true
       - name: Prepare fixed isolated Subconscious host prerequisite
         if: steps.selection.outputs.shared == 'true'
+        env:
+          NIGHTLY: ${{ inputs.nightly }}
         run: |
+          download_options=()
+          if [[ "$NIGHTLY" == true ]]; then
+            download_options=(--retry 5 --retry-delay 10 --retry-max-time 120 --connect-timeout 15 --max-time 30)
+          fi
           mkdir -p "$RUNNER_TEMP/shared-host"
-          curl --fail --location --output "$RUNNER_TEMP/shared-host/host.zip" \
+          curl --fail --location "${download_options[@]}" --output "$RUNNER_TEMP/shared-host/host.zip" \
             https://github.com/cortexkit/subconscious/releases/download/subc-core-v0.20.83/ck-subc-linux-x64.zip
           printf '%s  %s\n' c905fd8c5eba045c38fb61dd0c6c0ffc8254ae2cb0be50ef1017cde5470e62c4 "$RUNNER_TEMP/shared-host/host.zip" | sha256sum --check
           unzip -j "$RUNNER_TEMP/shared-host/host.zip" ck-subc -d "$RUNNER_TEMP/shared-host"
