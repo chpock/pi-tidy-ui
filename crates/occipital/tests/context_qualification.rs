@@ -509,3 +509,81 @@ fn cursors_reuse_only_their_own_prefix_workspace_and_enforce_admitted_depth() {
         .resolve(&hostile[..occipital::resolver::MAX_CONTEXT_DEPTH])
         .unwrap();
 }
+
+#[test]
+fn qualified_exclusions_preserve_full_stack_and_short_circuit_work_counts() {
+    use occipital::resolver::Counters;
+
+    for (excludes, slot, exclusion_calls, anchored_tests) in [
+        (json!([]), 1, 0, 1),
+        (
+            json!([["invalid.illegal"], ["invalid.deprecated"]]),
+            1,
+            2,
+            1,
+        ),
+        (json!([["source.ts"], ["invalid.illegal"]]), 0, 1, 0),
+        (json!([[], ["source.ts"]]), 0, 0, 0),
+        (json!([["invalid.illegal"], []]), 0, 1, 0),
+    ] {
+        let mut qualified = production_property_rule();
+        qualified["excludes"] = excludes;
+        let (color, counters) = foreground(
+            base_definition(vec![qualified]),
+            &[
+                "source.ts",
+                "meta.object-literal.key.ts",
+                "string.quoted.double.ts",
+            ],
+        );
+        assert_eq!(color, Ink::Binding { slot });
+        // Two visited scopes each test two boundaries and then the owner.
+        // The source exclusion is above that owner; an empty exclusion never
+        // invokes Syntect or allows subsequent exclusions/anchored matching.
+        assert_eq!(
+            counters,
+            Counters {
+                contexts: 1,
+                scored_scopes: 3,
+                contextual_rules: 1,
+                context_scopes_tested: 6,
+                exclusion_selector_calls: exclusion_calls,
+                anchored_path_scopes_tested: anchored_tests,
+                ..Counters::default()
+            }
+        );
+    }
+}
+
+#[test]
+fn qualification_rejection_performs_no_exclusion_or_anchored_work() {
+    use occipital::resolver::Counters;
+
+    for (names, context_tests) in [
+        (
+            &[
+                "source.ts",
+                "meta.object-literal.key.ts",
+                "meta.array.literal.ts",
+                "string.quoted.double.ts",
+            ][..],
+            4,
+        ),
+        (&["source.ts", "string.quoted.double.ts"][..], 6),
+        (&[][..], 0),
+    ] {
+        let (color, counters) =
+            foreground(base_definition(vec![production_property_rule()]), names);
+        assert_eq!(color, Ink::Binding { slot: 0 });
+        assert_eq!(
+            counters,
+            Counters {
+                contexts: 1,
+                scored_scopes: names.len(),
+                contextual_rules: usize::from(!names.is_empty()),
+                context_scopes_tested: context_tests,
+                ..Counters::default()
+            }
+        );
+    }
+}

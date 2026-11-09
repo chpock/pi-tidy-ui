@@ -47,12 +47,65 @@ pub struct Rule {
     pub background: Option<Ink>,
     pub attributes: Option<AttributePatch>,
 }
+impl Rule {
+    fn score(&self, path: &[Scope], counters: &mut Counters) -> Option<MatchPower> {
+        let Some(context) = &self.context else {
+            counters.selector_calls += 1;
+            return self.selector.does_match(path);
+        };
+        counters.contextual_rules += 1;
+        let anchor = context.nearest_owner(path, counters)?;
+        if self.excluded(path, counters) {
+            return None;
+        }
+        self.anchored_score(path, anchor, counters)
+    }
+    fn excluded(&self, path: &[Scope], counters: &mut Counters) -> bool {
+        for exclusion in &self.selector.excludes {
+            if exclusion.is_empty() {
+                return true;
+            }
+            counters.exclusion_selector_calls += 1;
+            if exclusion.does_match(path).is_some() {
+                return true;
+            }
+        }
+        false
+    }
+    fn anchored_score(
+        &self,
+        path: &[Scope],
+        anchor: usize,
+        counters: &mut Counters,
+    ) -> Option<MatchPower> {
+        let mut selector_index = 0usize;
+        let mut score = 0.0;
+        for (depth, scope) in path.iter().enumerate().skip(anchor) {
+            counters.anchored_path_scopes_tested += 1;
+            let required = self.selector.path.as_slice()[selector_index];
+            if required.is_prefix_of(*scope) {
+                score += f64::from(required.len()) * f64::from(ATOM_LEN_BITS * depth as u16).exp2();
+                selector_index += 1;
+                if selector_index == self.selector.path.len() {
+                    break;
+                }
+            }
+        }
+        (selector_index == self.selector.path.len()).then_some(MatchPower(score))
+    }
+}
 /// The winning declaration, not merely a matching rule. Empty/global selectors
 /// are deliberately distinguishable from authored semantic hints.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Declaration {
     pub rule_index: usize,
     pub explicit_path: bool,
+}
+impl Declaration {
+    fn wins(self, previous: Option<Self>, score: MatchPower, current: MatchPower) -> bool {
+        score > current
+            || score == current && previous.is_none_or(|old| self.rule_index < old.rule_index)
+    }
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Resolution {
@@ -79,38 +132,40 @@ impl Scored {
         }
     }
     fn apply(&mut self, rule: &Rule, index: usize, score: MatchPower) {
-        let owner = Some(Declaration {
+        let owner = Declaration {
             rule_index: index,
             explicit_path: !rule.selector.path.is_empty(),
-        });
-        let wins = |previous: Option<Declaration>, current: MatchPower| {
-            score > current || score == current && previous.is_none_or(|old| index < old.rule_index)
         };
         let expression = &mut self.resolution.expression;
         if let Some(value) = &rule.foreground {
-            if wins(self.resolution.foreground, self.scores[0]) {
+            if owner.wins(self.resolution.foreground, score, self.scores[0]) {
                 self.scores[0] = score;
                 expression.foreground = value.clone();
-                self.resolution.foreground = owner;
+                self.resolution.foreground = Some(owner);
             }
         }
         if let Some(value) = &rule.background {
-            if wins(self.resolution.background, self.scores[1]) {
+            if owner.wins(self.resolution.background, score, self.scores[1]) {
                 self.scores[1] = score;
                 expression.background = value.clone();
-                self.resolution.background = owner;
+                self.resolution.background = Some(owner);
             }
         }
         if let Some(patch) = rule.attributes {
-            for i in 0..5 {
-                let bit = 1 << i;
-                if patch.mask & bit != 0 && wins(self.resolution.attributes[i], self.scores[i + 2])
-                {
-                    self.scores[i + 2] = score;
-                    expression.attribute_mask |= bit;
-                    expression.attributes = (expression.attributes & !bit) | (patch.value & bit);
-                    self.resolution.attributes[i] = owner;
-                }
+            self.apply_attributes(patch, owner, score);
+        }
+    }
+    fn apply_attributes(&mut self, patch: AttributePatch, owner: Declaration, score: MatchPower) {
+        let expression = &mut self.resolution.expression;
+        for i in 0..5 {
+            let bit = 1 << i;
+            if patch.mask & bit != 0
+                && owner.wins(self.resolution.attributes[i], score, self.scores[i + 2])
+            {
+                self.scores[i + 2] = score;
+                expression.attribute_mask |= bit;
+                expression.attributes = (expression.attributes & !bit) | (patch.value & bit);
+                self.resolution.attributes[i] = Some(owner);
             }
         }
     }
@@ -254,47 +309,7 @@ impl Cursor {
         let mut state = self.ancestors.last().unwrap().clone();
         if !path.is_empty() {
             for (index, rule) in &self.definition.multis {
-                let score = if let Some(context) = &rule.context {
-                    self.counters.contextual_rules += 1;
-                    let Some(anchor) = context.nearest_owner(path, &mut self.counters) else {
-                        continue;
-                    };
-                    let mut excluded = false;
-                    for exclusion in &rule.selector.excludes {
-                        if exclusion.is_empty() {
-                            excluded = true;
-                            break;
-                        }
-                        self.counters.exclusion_selector_calls += 1;
-                        if exclusion.does_match(path).is_some() {
-                            excluded = true;
-                            break;
-                        }
-                    }
-                    if excluded {
-                        None
-                    } else {
-                        let mut selector_index = 0usize;
-                        let mut score = 0.0;
-                        for (depth, scope) in path.iter().enumerate().skip(anchor) {
-                            self.counters.anchored_path_scopes_tested += 1;
-                            let required = rule.selector.path.as_slice()[selector_index];
-                            if required.is_prefix_of(*scope) {
-                                score += f64::from(required.len())
-                                    * f64::from(ATOM_LEN_BITS * depth as u16).exp2();
-                                selector_index += 1;
-                                if selector_index == rule.selector.path.len() {
-                                    break;
-                                }
-                            }
-                        }
-                        (selector_index == rule.selector.path.len()).then_some(MatchPower(score))
-                    }
-                } else {
-                    self.counters.selector_calls += 1;
-                    rule.selector.does_match(path)
-                };
-                if let Some(score) = score {
+                if let Some(score) = rule.score(path, &mut self.counters) {
                     state.apply(rule, *index, score);
                 }
             }
