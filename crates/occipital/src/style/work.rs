@@ -1,9 +1,11 @@
 //! Resumable style execution. Uses the caller's existing data-job credit.
+use super::{
+    model::{Expression, StyleKind, Styles},
+    resolver::{self, Cursor, Resolver},
+};
 use crate::{
     credit::Credit,
     fault::Fault,
-    resolver::{self, Cursor, Resolver},
-    semantic::{Expression, StyleKind, Styles},
     vocabulary::{self, ScopeId},
 };
 use std::{collections::HashMap, mem::size_of};
@@ -191,7 +193,7 @@ impl StyleWork {
 #[cfg(test)]
 mod volume_tests {
     use super::*;
-    use crate::{credit::Budget, semantic::Ink};
+    use crate::{credit::Budget, style::model::Ink};
 
     #[test]
     fn result_charge_stops_style_interning_before_owned_growth_and_preserves_slot() {

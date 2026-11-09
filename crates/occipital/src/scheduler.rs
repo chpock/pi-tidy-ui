@@ -7,8 +7,7 @@ use crate::{
     runtime_request::DataRequest,
     semantic_reply::{self, DataBody},
     source::{request::SourceRequest, Action, Job as SourceJob, Service},
-    style_request::StyleRequestPlan,
-    style_work::{StyleFailure, StyleWork},
+    style::{request::StyleRequestPlan, StyleFailure, StyleWork},
 };
 use std::{
     collections::{HashMap, VecDeque},

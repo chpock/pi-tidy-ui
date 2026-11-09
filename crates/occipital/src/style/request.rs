@@ -1,8 +1,11 @@
 //! Borrowed v4 styles.resolve admission; neither source parsing nor transport ownership.
+use super::{
+    contexts::{Bounds, ContextPlan},
+    rules::ClientRulePlan,
+};
 use crate::{
     fault::Fault,
-    semantic::{Bounds, ContextPlan, PROTOCOL_VERSION},
-    style_rules::ClientRulePlan,
+    semantic::PROTOCOL_VERSION,
     vocabulary,
     wire::{admission, decode, fingerprint, invalid, present, text, unsigned},
 };

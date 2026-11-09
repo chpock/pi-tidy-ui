@@ -82,7 +82,7 @@ Several fingerprints coexist because they invalidate different reusable results:
 
 The common rule fingerprint and its exact v4 framing are described in the [protocol](protocol.md). Local owned-palette manifests and file validation are documented in [palette ownership](../syntax/palettes.md).
 
-`style_rules.rs` computes caller-rule identity from validated canonical semantics, not JSON whitespace or object-member order. Rule order, path/exclusion order, binding slots and explicit property presence remain meaningful. A missing override is not interchangeable with an explicit inherit or font clear. The exact canonical hash fields and interpretation domains are defined in the [protocol](protocol.md).
+`style/rules.rs` computes caller-rule identity from validated canonical semantics, not JSON whitespace or object-member order. Rule order, path/exclusion order, binding slots and explicit property presence remain meaningful. A missing override is not interchangeable with an explicit inherit or font clear. The exact canonical hash fields and interpretation domains are defined in the [protocol](protocol.md).
 
 Rule identity includes generic rule semantics, context qualifications, order and binding slots. It does not include source text, process/lease identity, current Pi colors, owned palette colors or geometry.
 

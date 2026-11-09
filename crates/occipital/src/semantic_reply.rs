@@ -2,8 +2,9 @@
 use crate::{
     fault::Fault,
     reply::{Outcome, Reply},
-    semantic::{Styles, PROTOCOL_VERSION},
+    semantic::PROTOCOL_VERSION,
     source::SourceBody,
+    style::Styles,
     vocabulary,
 };
 use serde::Serialize;

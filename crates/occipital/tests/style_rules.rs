@@ -1,6 +1,8 @@
 use occipital::{
-    semantic::Ink,
-    style_rules::{ClientRulePlan, Error},
+    style::{
+        rules::{ClientRulePlan, Error},
+        Ink,
+    },
     vocabulary::ScopeId,
 };
 use serde::Deserialize;

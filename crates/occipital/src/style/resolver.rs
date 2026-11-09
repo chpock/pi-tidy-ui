@@ -1,7 +1,7 @@
 //! One property scorer for validated semantic rules and caller-compiled selectors.
 //! This module never interns caller text; the owner validates names through the
 //! trusted grammar vocabulary before constructing rules.
-use crate::semantic::{Expression, Ink};
+use super::model::{Expression, Ink};
 use std::mem::size_of;
 use std::sync::Arc;
 use syntect::{

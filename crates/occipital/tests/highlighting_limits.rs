@@ -5,9 +5,9 @@ use occipital::{
     fault::Fault,
     ingress::Incoming,
     limits::{self, Limits},
-    semantic::{Bounds, ContextPlan},
     semantic_reply,
     source::{request, Engine, SourceChunk, SyntaxHint, Work},
+    style::contexts::{Bounds, ContextPlan},
     vocabulary,
 };
 use serde_json::{json, value::RawValue, Value};
@@ -282,11 +282,8 @@ async fn source_producer_enforces_aggregate_expanded_result_across_batch_members
 
 #[test]
 fn style_input_caps_frame_and_expansion_before_owned_work_while_retaining_failure_credit() {
-    use occipital::{
-        resolver::Resolver,
-        semantic::{Expression, Ink},
-        style_request::StyleRequestPlan,
-        style_work::StyleWork,
+    use occipital::style::{
+        request::StyleRequestPlan, resolver::Resolver, Expression, Ink, StyleWork,
     };
     let valid = json!({"v":4,"op":"styles.resolve","ticket":"style","instance":"limits","admission":"try_now",
         "vocabulary":vocabulary::FINGERPRINT,"contexts":[],"rules":{"kind":"native","id":"syntect:Theme","fingerprint":"a".repeat(64)}});

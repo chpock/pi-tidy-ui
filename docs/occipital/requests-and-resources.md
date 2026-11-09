@@ -42,9 +42,11 @@ This prevents a valid early member of a batch from causing unbounded owned alloc
 
 ### STYLE allocation
 
-STYLE retains the admitted raw frame while queued. `style_request.rs` inspects the rule input and context dictionary without expanding the dictionary into owned scope arrays. `semantic.rs` counts the expanded context words, including copied prefixes, and charges each row even when that row contains no scope words.
+STYLE retains the admitted raw frame while queued. `style::request::StyleRequestPlan` inspects the rule input and context dictionary without expanding the dictionary into owned scope arrays. `style::contexts::ContextPlan` counts the expanded context words, including copied prefixes, and charges each row even when that row contains no scope words. Its context-only errors are separate from portable style-value validation and rule compilation; this does not change reservation terms or operation-specific fault mapping.
 
 When the worker receives the request’s turn, `scheduler.rs::prepare_styles` inspects that immutable frame again and reserves the combined plan before compiling caller rules or materializing contexts. The second inspection occurs at the ownership boundary where the resulting objects will be created; borrowed plans do not cross threads or outlive their frame.
+
+`style::StyleWork` owns the original physical credit through matching, result growth and error/cancellation handoff. Its private implementation uses the common `Credit`, not a scheduler-owned allocation abstraction. Matching workspace and one allowance per distinct expression retain their existing accounting; consuming work transfers the live guard with the result or failure, rather than releasing and reacquiring a slot.
 
 ## Separate CONTROL and DATA lanes
 

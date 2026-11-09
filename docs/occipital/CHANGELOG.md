@@ -13,6 +13,10 @@ Release notes before the published 0.2.0 baseline have not been reconstructed.
   admission metadata in `protocol::Admission`. Rust callers must update imports,
   use `source::request::decode` instead of `SourceRequest::decode`, and pass a
   validated `SourceOperation` to `Service::start` instead of the request envelope.
+  STYLE values and work now use `occipital::style`, with context admission,
+  rules, matching and the request adapter under `style::contexts`, `style::rules`,
+  `style::resolver` and `style::request`. Replace the mixed `semantic::Error`
+  with context-only `style::contexts::Error` or value-only `style::StyleError`.
   Old Rust paths and signatures are not retained. The executable interface,
   `syntax-highlight/v4` JSON/RPC contract and resource limits are unchanged.
 

@@ -1,9 +1,7 @@
 use occipital::{
     credit::Budget,
-    resolver::Resolver,
-    semantic::{Expression, Ink},
     semantic_reply,
-    style_work::{StyleFailure, StyleWork},
+    style::{resolver::Resolver, Expression, Ink, StyleFailure, StyleWork},
     vocabulary::ScopeId,
 };
 
@@ -30,13 +28,19 @@ fn queued_work_survives_definition_release_deduplicates_and_keeps_credit_through
         budget.reserve(Some("route"), 1024).unwrap(),
     )
     .unwrap();
+    let prepared = budget.snapshot().bytes;
+    // One depth-1 cursor is 696 bytes, plus path 16, indices 12 and result allowance 512.
+    assert_eq!(prepared, 2260);
     assert_eq!(budget.snapshot().jobs, 1);
     assert_eq!(budget.snapshot().queued, 0);
     assert!(!work.step().unwrap());
     assert!(!work.step().unwrap());
     assert!(work.step().unwrap());
-    assert_eq!(work.counters().contexts, 3);
-    assert_eq!(work.counters().scored_scopes, 1);
+    let counters = work.counters();
+    assert_eq!(counters.contexts, 3);
+    assert_eq!(counters.scored_scopes, 1);
+    let ready = budget.snapshot().bytes;
+    assert_eq!(ready, 2516);
     let (result, credit) = work.finish().unwrap();
     assert_eq!(result.indices, vec![1, 1, 1]);
     assert_eq!(result.styles.len(), 1);
@@ -45,8 +49,14 @@ fn queued_work_survives_definition_release_deduplicates_and_keeps_credit_through
     drop(result);
     assert_eq!(budget.snapshot().jobs, 1);
     drop(credit);
-    assert_eq!(budget.snapshot().jobs, 0);
-    assert_eq!(budget.snapshot().bytes, 0);
+    let final_state = budget.snapshot();
+    assert_eq!(final_state.jobs, 0);
+    assert_eq!(final_state.bytes, 0);
+    assert_eq!(final_state.queued, 0);
+    eprintln!(
+        "style work accounting: prepared={prepared}, ready={ready}, contexts={}, scored_scopes={}, final_bytes={}, final_jobs={}, final_queued={}",
+        counters.contexts, counters.scored_scopes, final_state.bytes, final_state.jobs, final_state.queued
+    );
 }
 
 #[test]

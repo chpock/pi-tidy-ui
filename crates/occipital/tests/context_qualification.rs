@@ -1,6 +1,8 @@
 use occipital::{
-    semantic::Ink,
-    style_rules::{ClientRulePlan, Error},
+    style::{
+        rules::{ClientRulePlan, Error},
+        Ink,
+    },
     vocabulary::ScopeId,
 };
 use serde_json::{json, value::RawValue, Value};
@@ -52,14 +54,14 @@ fn path(names: &[&str]) -> Vec<syntect::parsing::Scope> {
         .map(|name| ScopeId::from_name(name).unwrap().scope())
         .collect()
 }
-fn foreground(definition: Value, names: &[&str]) -> (Ink, occipital::resolver::Counters) {
+fn foreground(definition: Value, names: &[&str]) -> (Ink, occipital::style::resolver::Counters) {
     let raw = document(&definition);
     let resolver = ClientRulePlan::inspect(&raw, usize::MAX).unwrap().compile();
     let mut cursor = resolver.cursor(names.len()).unwrap();
     let foreground = cursor.resolve(&path(names)).unwrap().expression.foreground;
     (foreground, cursor.counters())
 }
-fn resolution(definition: Value, names: &[&str]) -> occipital::resolver::Resolution {
+fn resolution(definition: Value, names: &[&str]) -> occipital::style::resolver::Resolution {
     let raw = document(&definition);
     let resolver = ClientRulePlan::inspect(&raw, usize::MAX).unwrap().compile();
     let mut cursor = resolver.cursor(names.len()).unwrap();
@@ -430,7 +432,7 @@ fn cursor_keeps_its_definition_alive_after_resolver_owner_is_dropped() {
 
 #[test]
 fn cursors_reuse_only_their_own_prefix_workspace_and_enforce_admitted_depth() {
-    use occipital::resolver::Error as ResolverError;
+    use occipital::style::resolver::Error as ResolverError;
 
     let raw = document(&base_definition(vec![
         rule(&["meta.block"], 1),
@@ -494,7 +496,7 @@ fn cursors_reuse_only_their_own_prefix_workspace_and_enforce_admitted_depth() {
     let prior = left.counters();
     let hostile = vec![
         ScopeId::from_name("source.rust").unwrap().scope();
-        occipital::resolver::MAX_CONTEXT_DEPTH + 1
+        occipital::style::resolver::MAX_CONTEXT_DEPTH + 1
     ];
     assert_eq!(left.resolve(&hostile), Err(ResolverError::ContextTooDeep));
     assert_eq!(
@@ -503,16 +505,16 @@ fn cursors_reuse_only_their_own_prefix_workspace_and_enforce_admitted_depth() {
         "depth admission precedes external matching"
     );
     let mut maximum = resolver
-        .cursor(occipital::resolver::MAX_CONTEXT_DEPTH)
+        .cursor(occipital::style::resolver::MAX_CONTEXT_DEPTH)
         .unwrap();
     maximum
-        .resolve(&hostile[..occipital::resolver::MAX_CONTEXT_DEPTH])
+        .resolve(&hostile[..occipital::style::resolver::MAX_CONTEXT_DEPTH])
         .unwrap();
 }
 
 #[test]
 fn qualified_exclusions_preserve_full_stack_and_short_circuit_work_counts() {
-    use occipital::resolver::Counters;
+    use occipital::style::resolver::Counters;
 
     for (excludes, slot, exclusion_calls, anchored_tests) in [
         (json!([]), 1, 0, 1),
@@ -557,7 +559,7 @@ fn qualified_exclusions_preserve_full_stack_and_short_circuit_work_counts() {
 
 #[test]
 fn qualification_rejection_performs_no_exclusion_or_anchored_work() {
-    use occipital::resolver::Counters;
+    use occipital::style::resolver::Counters;
 
     for (names, context_tests) in [
         (

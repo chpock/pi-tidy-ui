@@ -96,13 +96,15 @@ Controlled budgets bound admitted application work and retained logical data. Th
 ## Implementation boundaries
 
 - `main.rs`, `actor.rs`, `stdio.rs`, `shared.rs`, `frame.rs`: process, workers, routes and carriers.
-- `ingress.rs`, `runtime_request.rs`, `source/request.rs`, `style_request.rs`, `wire.rs`: admission and typed operation construction. SOURCE request envelopes stay in the decoder adapter, not the computation model.
+- `ingress.rs`, `runtime_request.rs`, `source/request.rs`, `style/request.rs`, `wire.rs`: admission and typed operation construction. SOURCE request envelopes stay in the decoder adapter, not the computation model.
 - `scheduler.rs`, `credit.rs`, `reply.rs`, `semantic_reply.rs`, `semantic_description.rs`: queued/running ownership phases, fair computational turns, physical credit, delivery and observations.
 - `source/mod.rs`: canonical Rust SOURCE interface; private `source/model.rs`, `source/engine.rs`, `source/service.rs` and `source/reply.rs` own domain values, parsing, continuation authority and flat result serialization respectively. The explicit `source::request` adapter decodes wire input.
-- `semantic.rs`, `protocol.rs`, `fault.rs`, `limits.rs`: portable context/style values, common service/admission metadata, execution failures and shared fixed/configurable policy.
-- `resolver.rs`, `style_rules.rs`, `style_work.rs`: generic rules, context qualification, resolver scoring and bounded work.
+- `style/mod.rs`: canonical portable values and resumable work, with private `style/model.rs` and `style/work.rs`; public `style/contexts.rs`, `style/rules.rs`, `style/resolver.rs` and `style/request.rs` own bounded context admission, rule compilation/identity, matching and the wire request adapter.
+- `semantic.rs`, `protocol.rs`, `fault.rs`, `limits.rs`: common wire identity, service/admission metadata, execution failures and shared fixed/configurable policy.
 - `build.rs`, `vocabulary_build.rs`, `vocabulary.rs`: build-time grammar assets and portable trusted scope IDs.
 
 The SOURCE facade exposes typed commands/results and worker-local parser/service ownership independently of private filenames. `source::Service::start` takes a validated `SourceOperation`, not a transport ticket or queueing policy; runtime owns those separately. `source::request::decode` is the executable's JSON admission adapter. Shared configuration is `limits::Limits`, failures are `fault::Fault`, and common request admission is `protocol::Admission`; no old Rust paths are retained. This separation lets another consumer manage its own usefulness, caches and presentation without changing source computation or embedding today's UI controller into the daemon interface.
+
+The STYLE interface exposes portable `style::{Ink, Expression, StyleKind, Styles, StyleError}` and `style::{StyleWork, StyleFailure}`. Context admission, rule compilation and matching each have a separate error domain under `style::contexts`, `style::rules` and `style::resolver`; value validation cannot return a context error. Matching depends on style values and trusted grammar scopes, not the context JSON decoder or SOURCE. The request adapter composes borrowed context/rule plans, while resumable work deliberately retains the existing common credit guard. These are generic daemon responsibilities, independent of consumer palettes, caches or UI scheduling.
 
 These paths are relative to `crates/occipital/` (`src/` for runtime modules). The crate uses Syntect with Oniguruma and pinned Two-Face grammar assets; dependency and generated-identity details belong to [assets and maintenance](assets.md). Return to the [extension manual](../README.md).

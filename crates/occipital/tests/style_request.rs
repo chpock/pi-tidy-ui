@@ -1,6 +1,6 @@
 use occipital::{
     protocol::Admission,
-    style_request::StyleRequestPlan,
+    style::request::StyleRequestPlan,
     vocabulary::{self, ScopeId},
 };
 use serde_json::{json, value::RawValue, Value};

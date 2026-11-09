@@ -8,7 +8,7 @@ use crate::{
         request::{self, SourceRequest},
         SourceOperation,
     },
-    style_request::StyleRequestPlan,
+    style::request::StyleRequestPlan,
     wire,
 };
 use serde::Deserialize;

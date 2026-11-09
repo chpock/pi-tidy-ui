@@ -2,11 +2,11 @@
 //! RawValue capture/frame buffering and serde_json's lexical/unescape/error scratch
 //! precede controlled compilation; the reservation is not a decoder/private-heap
 //! RSS cap. Decoder diagnostics are discarded, never returned as caller text.
-use crate::{
+use super::{
+    model::{Expression, Ink},
     resolver::{AttributePatch, ContextQualifier, Resolver, Rule},
-    semantic::{Expression, Ink},
-    vocabulary::ScopeId,
 };
+use crate::vocabulary::ScopeId;
 use serde::{
     de::{self, SeqAccess, Visitor},
     Deserialize,

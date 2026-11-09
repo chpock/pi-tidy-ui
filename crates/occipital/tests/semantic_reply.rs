@@ -2,9 +2,9 @@ use occipital::{
     credit::Budget,
     fault::Fault,
     limits::Limits,
-    semantic::{Expression, Ink, StyleKind, Styles},
     semantic_reply::{self, DataBody},
     source::{Engine, SourceBody, SourceResult, SyntaxHint},
+    style::{Expression, Ink, StyleKind, Styles},
     vocabulary,
 };
 use serde_json::{json, Value};

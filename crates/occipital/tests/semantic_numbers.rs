@@ -1,4 +1,4 @@
-use occipital::semantic::{Bounds, ContextPlan};
+use occipital::style::contexts::{Bounds, ContextPlan};
 use serde::Deserialize;
 use serde_json::value::RawValue;
 

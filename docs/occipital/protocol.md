@@ -297,6 +297,8 @@ Definition revision is2; `binding_slots` is `0..65536`. Numeric tokens use corre
 
 STYLE returns exactly `{kind:"styles",vocabulary,rules,styles:[expression,...],indices:[one style ID per requested context]}`. There is no returned palette, native card-role table or color-provenance payload.
 
+The Rust model is `style::{Ink, Expression, StyleKind, Styles}`. Value validation returns only `style::StyleError::InvalidStyle`; borrowed context admission returns `style::contexts::Error::{InvalidContext, UnknownScope, ContextLimit}`. Rule compilation and matching retain their own errors under `style::rules` and `style::resolver`. These separate Rust domains do not add wire errors or change precedence: request adapters retain the operation-specific code and `started` mapping.
+
 An expression is `{foreground:ink,background:ink,attributes,attribute_mask}`. Ink is exactly one of:
 
 ```text

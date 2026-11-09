@@ -566,7 +566,7 @@ fn source_results_and_lease_are_independent_of_generic_style_definitions() {
     let before = worker.known_state_bytes();
     let definition = r#"{"revision":2,"binding_slots":0,"default":{"foreground":{"kind":"inherit"},"background":{"kind":"inherit"},"attributes":0,"attribute_mask":0},"rules":[]}"#;
     let raw = RawValue::from_string(definition.to_owned()).unwrap();
-    let plan = occipital::style_rules::ClientRulePlan::inspect(&raw, usize::MAX).unwrap();
+    let plan = occipital::style::rules::ClientRulePlan::inspect(&raw, usize::MAX).unwrap();
     assert_eq!(
         plan.fingerprint().len(),
         64,

@@ -1,6 +1,6 @@
 //! Independent-process probes keep other tests' legitimate grammar interning out.
 use occipital::{
-    style_rules::{ClientRulePlan, Error},
+    style::rules::{ClientRulePlan, Error},
     vocabulary::ScopeId,
 };
 use serde_json::{json, value::RawValue};
