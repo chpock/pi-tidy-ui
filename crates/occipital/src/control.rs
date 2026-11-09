@@ -1,11 +1,11 @@
 //! Source-free v4 negotiation. Theme and catalogue state is owned by the caller.
 use crate::{
     actor::PoolHandle,
+    fault::Fault,
     ingress::{Control, ControlDelivery},
-    protocol::Fault,
+    limits::Limits,
     runtime_request::Operation,
     semantic_description,
-    semantic_engine::Limits,
 };
 use std::sync::atomic::{AtomicBool, Ordering};
 

@@ -186,7 +186,7 @@ impl<'a> ContextPlan<'a> {
         self.measurement
     }
     pub fn inspect(raw: &[&'a RawValue], bounds: Bounds) -> Result<Self, Error> {
-        if raw.len() > crate::request::BATCH_SOURCES
+        if raw.len() > crate::limits::BATCH_SOURCES
             || bounds.vocabulary_size == 0
             || bounds.max_bytes > crate::limits::DATA_BYTES
         {

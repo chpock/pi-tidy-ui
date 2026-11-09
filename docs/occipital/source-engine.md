@@ -4,7 +4,7 @@ SOURCE owns theme-free parsing of supplied text. It does not read hint paths, se
 
 ## The identities behind a continuation
 
-`source_service.rs` separates caller identity from parser identity. A **lease** is permission to continue a particular retained parser state; it is not simply a reusable source name.
+`source/service.rs` separates caller identity from parser identity. A **lease** is permission to continue a particular retained parser state; it is not simply a reusable source name.
 
 The layers are:
 
@@ -25,7 +25,7 @@ Engine slot-capacity growth is a separate private admission operation, entered o
 
 ## Finite batches and preparation
 
-`source_request.rs` validates and measures the complete wire batch before allocating owned source strings. `source_service.rs::Service::start` validates the route and handles immediate close; private `Job::admit` then checks aggregate source cost and resolves every member’s syntax before admitting the batch headers or constructing any parser `Work`.
+`source/request.rs` validates and measures the complete wire batch before allocating owned source strings. `source/service.rs::Service::start` validates the route and handles immediate close; private `Job::admit` then checks aggregate source cost and resolves every member’s syntax before admitting the batch headers or constructing any parser `Work`.
 
 Thus an unknown syntax in a later member is discovered before parsing an earlier member. This is a preparation property, not a guarantee that every possible batch failure is `not_started`: parser errors and output-growth failures can occur after execution begins.
 
@@ -37,7 +37,7 @@ Only when all members finish does the service return a batch body for encoding. 
 
 ## Language selection
 
-Occipital uses supplied hints, never file reads or content sniffing. The private immutable `LANGUAGE_ALIASES` table in `semantic_engine.rs` holds alias data separately from `Engine::syntax` selection logic. A nonempty explicit `language` wins over `path`: recognized aliases are normalized case-insensitively, then syntax name and extension lookup are tried. An unknown explicit language does **not** fall through to the path. An omitted, null or empty language permits path selection; `path` is optional, and a pathless source can still be selected by explicit language. With no usable selector/path, or when its grammar is unknown, SOURCE returns `unknown_syntax/not_started`, not an implicit Plain Text parse; Plain Text must be explicit.
+Occipital uses supplied hints, never file reads or content sniffing. The private immutable `LANGUAGE_ALIASES` table in `source/engine.rs` holds alias data separately from `Engine::syntax` selection logic. A nonempty explicit `language` wins over `path`: recognized aliases are normalized case-insensitively, then syntax name and extension lookup are tried. An unknown explicit language does **not** fall through to the path. An omitted, null or empty language permits path selection; `path` is optional, and a pathless source can still be selected by explicit language. With no usable selector/path, or when its grammar is unknown, SOURCE returns `unknown_syntax/not_started`, not an implicit Plain Text parse; Plain Text must be explicit.
 
 The complete explicit-language alias table is maintained here so protocol readers have one authoritative mapping:
 
@@ -94,7 +94,7 @@ A **checkpoint** is the retained parser state and scope stack after completed li
 
 `Engine` keeps active-lease checks, clock/slot authority and the cooperative line/byte/time quantum. Private `Work::commit_line` and `Work::update_tail` keep each complete-line or provisional/frozen-tail mutation together with its emissions, parser counters and allocation releases. They receive the already-selected input length and borrow that slice inside `Work`; no source copy, extra owner or persistent field is needed. Shared `Work::emit_tail` emits the retained window and unclassified suffix for both a tail update and empty input, without invoking the parser. `Work` also initializes its own operation fields, while engine admission and final retained-state handoff remain separate.
 
-`semantic_engine.rs::State` therefore keeps distinct values for:
+`source/engine.rs::State` therefore keeps distinct values for:
 
 - Total accepted source bytes.
 - Bytes committed through actual completed lines.
@@ -131,7 +131,7 @@ The parser state after such a line is deliberately prefix-derived. It is not a c
 
 Syntect returns ordered scope-stack operations at byte positions. A **scope stack** is the complete ordered nesting of syntax scopes at a position, not a single color category.
 
-`semantic_engine.rs::apply_operations` emits the span before each operation using the current stack, applies that operation, and finally emits the remaining span. Operation positions must be monotonic, within the supplied string and on UTF-8 boundaries.
+`source/engine.rs::apply_operations` emits the span before each operation using the current stack, applies that operation, and finally emits the remaining span. Operation positions must be monotonic, within the supplied string and on UTF-8 boundaries.
 
 Zero-length spans produce no range, but their operations still run. Multiple operations at one position, or operations at the end of a line, can change the state of later text. Discarding an operation because it has no immediately visible bytes would change parsing semantics.
 
@@ -143,7 +143,7 @@ Adjacent spans with the same context ID merge. Different contexts remain distinc
 
 A successfully parsed empty stack receives a positive context ID for an empty context. Context zero instead marks unclassified bytes. This distinction survives later STYLE resolution: parsed-empty uses the resolver’s base expression; unclassified coverage is not submitted as a parsed context.
 
-A retained tail window stores complete paths and runs. When reused, it is inserted into the new emitter’s dictionary and its IDs are remapped. `semantic_reply.rs` then serializes the resulting run pairs directly. The exact encoding is defined in the [protocol reference](protocol.md).
+A retained tail window stores complete paths and runs. When reused, it is inserted into the new emitter’s dictionary and its IDs are remapped. Private `source/reply.rs` then serializes the resulting run pairs directly. The exact encoding is defined in the [protocol reference](protocol.md).
 
 ## Completion, discard and expiry
 
@@ -151,7 +151,7 @@ Finishing accepted work updates total bytes and revision. Nonempty appended inpu
 
 `stream.close` removes a binding only when the route, lease, key and generation match. A missing or nonmatching binding still receives the closed response without closing somebody else’s continuation. Close is cleanup, not proof that earlier work never executed.
 
-Errors and cancellation use `source_service.rs::discard`, not merely a Rust destructor for the job. The service records affected external/internal lease pairs separately from pending work so it can retire a continuation even after parsing finished and its reply is waiting for delivery. The scheduler’s [delivery ownership](requests-and-resources.md) prevents a later append from overtaking that decision.
+Errors and cancellation use `source/service.rs::discard`, not merely a Rust destructor for the job. The service records affected external/internal lease pairs separately from pending work so it can retire a continuation even after parsing finished and its reply is waiting for delivery. The scheduler’s [delivery ownership](requests-and-resources.md) prevents a later append from overtaking that decision.
 
 Expiry is the earlier of the idle-progress deadline and the absolute age deadline. Source progress can extend the former but never the latter. Busy markers retain expiry too; queueing or executing an append does not suspend the lifetime bound.
 
@@ -161,6 +161,6 @@ The service prunes bindings against live engine leases. Both tables preserve inc
 
 ### Reading parser counters
 
-`protocol.rs` defines the per-operation counters returned with SOURCE results. Completed-line calls count actual parser invocations on committed line prefixes. Tail calls count provisional parsing; tail-byte totals include bytes replayed when a growing unfinished line is parsed again.
+`source/model.rs` defines the per-operation counters returned with SOURCE results. Completed-line calls count actual parser invocations on committed line prefixes. Tail calls count provisional parsing; tail-byte totals include bytes replayed when a growing unfinished line is parsed again.
 
 A frozen prefix reused without parsing and an empty finalization can therefore advance coverage or finish authority without increasing those parser-call counters. Conversely, one visible unfinished line can account for several tail calls across appends. Counters describe work performed, not a separate proof of delivered or published paint.

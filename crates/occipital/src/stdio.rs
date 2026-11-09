@@ -3,11 +3,11 @@
 use crate::{
     actor::Route,
     control::Authority,
+    fault::Fault,
     frame,
     ingress::{self, ControlDelivery, Incoming, CONTROL_REQUEST_BYTES},
-    protocol::Fault,
+    limits::WIRE_BYTES,
     reply::REPLY_BYTES,
-    request::REQUEST_BYTES,
     scheduler::{Delivery, Ticket},
     semantic::PROTOCOL_VERSION,
     semantic_reply,
@@ -154,7 +154,7 @@ pub async fn run(authority: Arc<Authority>, route: Route) -> Result<(), Fault> {
             let result = (|| {
                 let input_fd = std::io::stdin();
                 let mut reader = input_fd.lock();
-                while let Some(bytes) = frame::read_frame(&mut reader, REQUEST_BYTES)
+                while let Some(bytes) = frame::read_frame(&mut reader, WIRE_BYTES)
                     .map_err(|_| Fault::not_started("pipe_frame"))?
                 {
                     if input.blocking_send(bytes).is_err() {

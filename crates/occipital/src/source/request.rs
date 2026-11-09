@@ -1,9 +1,10 @@
 //! Theme-free source admission. Reserve the complete owned request before decoding
 //! its payload strings. Bounded JSON decoder scratch belongs to frame admission.
-pub use crate::wire::Admission;
+use super::model::{SourceInput, SourceOperation, SyntaxHint};
 use crate::{
-    protocol::{Fault, SyntaxHint},
-    wire::{admission, decode, invalid, present, text, unsigned},
+    fault::Fault,
+    protocol::Admission,
+    wire::{admission, decode as decode_json, invalid, present, text, unsigned},
 };
 use serde::{de, Deserialize};
 use serde_json::value::RawValue;
@@ -87,7 +88,7 @@ fn measure(raw: &RawValue) -> Result<(usize, usize), Fault> {
     serde::Deserializer::deserialize_str(&mut decoder, Length).map_err(|_| invalid())
 }
 fn hint(raw: &RawValue) -> Result<SyntaxHint, Fault> {
-    let value: Hint<'_> = decode(raw)?;
+    let value: Hint<'_> = decode_json(raw)?;
     let language = match value.language {
         None => None,
         Some(raw) if raw.get().trim() == "null" || raw.get().trim() == "\"\"" => None,
@@ -110,34 +111,6 @@ struct SourcePlan<'a> {
     hint: SyntaxHint,
     text: &'a RawValue,
 }
-pub struct SourceInput {
-    pub key: String,
-    pub generation: u32,
-    pub source_version: u32,
-    pub hint: SyntaxHint,
-    pub text: String,
-}
-pub enum SourceOperation {
-    Finite {
-        sources: Vec<SourceInput>,
-        open: bool,
-    },
-    Append {
-        key: String,
-        lease: String,
-        generation: u32,
-        source_version: u32,
-        base_revision: u32,
-        base_bytes: u32,
-        append: String,
-        finalize: bool,
-    },
-    Close {
-        key: String,
-        lease: String,
-        generation: u32,
-    },
-}
 pub struct SourceRequest {
     pub ticket: String,
     pub admission: Option<Admission>,
@@ -154,8 +127,8 @@ fn sources(raw: &RawValue) -> Result<Vec<&RawValue>, Fault> {
             f.write_str("bounded source array")
         }
         fn visit_seq<A: de::SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
-            let mut result = Vec::with_capacity(crate::request::BATCH_SOURCES);
-            while result.len() < crate::request::BATCH_SOURCES {
+            let mut result = Vec::with_capacity(crate::limits::BATCH_SOURCES);
+            while result.len() < crate::limits::BATCH_SOURCES {
                 match seq.next_element::<&RawValue>()? {
                     Some(value) => result.push(value),
                     None => return Ok(result),
@@ -195,55 +168,204 @@ fn allowance(parts: &[usize]) -> Result<usize, Fault> {
         .try_fold(0usize, |n, value| n.checked_add(*value))
         .ok_or(Fault::not_started("data_limit"))
 }
-impl SourceRequest {
-    /// The caller already holds frame/scratch/job credit. `grant` reserves the
-    /// additional owned request allowance; it never releases that physical slot.
-    pub fn decode(
-        raw: &RawValue,
-        instance: &str,
-        source_cap: usize,
-        grant: &mut dyn FnMut(usize) -> bool,
-    ) -> Result<Self, Fault> {
-        if raw.get().len() > crate::limits::DATA_WIRE_BYTES {
-            return Err(Fault::not_started("frame_limit"));
-        }
-        let source_cap = source_cap.min(crate::limits::SOURCE_BYTES);
-        let r: RawRequest<'_> = decode(raw)?;
-        if unsigned(r.v, u32::MAX)? != crate::semantic::PROTOCOL_VERSION {
-            return Err(Fault::not_started("protocol_mismatch"));
-        }
-        if text(r.instance, 64)?.as_ref() != instance {
-            return Err(Fault::not_started("restart_required"));
-        }
-        let ticket = text(r.ticket, 64)?;
-        let op = text(r.op, 64)?;
-        let ticket_bytes = cow_bytes(&ticket);
-        let (operation, admitted) = match op.as_ref() {
-            "highlight" | "stream.open" => {
-                Self::decode_finite(&r, ticket_bytes, op == "stream.open", source_cap, grant)?
-            }
-            "stream.append" => Self::decode_append(&r, ticket_bytes, source_cap, grant)?,
-            "stream.close" => Self::decode_close(&r, ticket_bytes, grant)?,
-            _ => return Err(invalid()),
-        };
-        Ok(Self {
-            ticket: ticket.into_owned(),
-            admission: admitted,
-            operation,
-        })
+/// The caller already holds frame/scratch/job credit. `grant` reserves the
+/// additional owned request allowance; it never releases that physical slot.
+pub fn decode(
+    raw: &RawValue,
+    instance: &str,
+    source_cap: usize,
+    grant: &mut dyn FnMut(usize) -> bool,
+) -> Result<SourceRequest, Fault> {
+    if raw.get().len() > crate::limits::DATA_WIRE_BYTES {
+        return Err(Fault::not_started("frame_limit"));
     }
+    let source_cap = source_cap.min(crate::limits::SOURCE_BYTES);
+    let r: RawRequest<'_> = decode_json(raw)?;
+    if unsigned(r.v, u32::MAX)? != crate::semantic::PROTOCOL_VERSION {
+        return Err(Fault::not_started("protocol_mismatch"));
+    }
+    if text(r.instance, 64)?.as_ref() != instance {
+        return Err(Fault::not_started("restart_required"));
+    }
+    let ticket = text(r.ticket, 64)?;
+    let op = text(r.op, 64)?;
+    let ticket_bytes = cow_bytes(&ticket);
+    let (operation, admitted) = match op.as_ref() {
+        "highlight" | "stream.open" => {
+            decode_finite(&r, ticket_bytes, op == "stream.open", source_cap, grant)?
+        }
+        "stream.append" => decode_append(&r, ticket_bytes, source_cap, grant)?,
+        "stream.close" => decode_close(&r, ticket_bytes, grant)?,
+        _ => return Err(invalid()),
+    };
+    Ok(SourceRequest {
+        ticket: ticket.into_owned(),
+        admission: admitted,
+        operation,
+    })
+}
 
-    fn decode_finite(
-        r: &RawRequest<'_>,
-        ticket_bytes: usize,
-        open: bool,
-        source_cap: usize,
-        grant: &mut dyn FnMut(usize) -> bool,
-    ) -> Result<(SourceOperation, Option<Admission>), Fault> {
-        if [
-            r.key,
-            r.lease,
-            r.generation,
+fn decode_finite(
+    r: &RawRequest<'_>,
+    ticket_bytes: usize,
+    open: bool,
+    source_cap: usize,
+    grant: &mut dyn FnMut(usize) -> bool,
+) -> Result<(SourceOperation, Option<Admission>), Fault> {
+    if [
+        r.key,
+        r.lease,
+        r.generation,
+        r.source_version,
+        r.base_revision,
+        r.base_bytes,
+        r.append,
+        r.finalize,
+    ]
+    .iter()
+    .any(Option::is_some)
+    {
+        return Err(invalid());
+    }
+    let mode = admission(r.admission, r.queue_wait_ms)?;
+    let values = sources(r.sources.ok_or_else(invalid)?)?;
+    if values.is_empty() || open && values.len() != 1 {
+        return Err(invalid());
+    }
+    let mut plans: Vec<SourcePlan<'_>> = Vec::with_capacity(values.len());
+    let mut total = 0usize;
+    let mut lines = 0usize;
+    for raw in values {
+        let source: RawSource<'_> = decode_json(raw)?;
+        let key = text(source.key, 64)?;
+        let generation = nonzero(source.generation)?;
+        let source_version = unsigned(source.source_version, u32::MAX)?;
+        let hint = hint(source.hint)?;
+        let (bytes, count) = measure(source.text)?;
+        lines += count;
+        total = total
+            .checked_add(bytes)
+            .ok_or(Fault::not_started("source_limit"))?;
+        if total > source_cap || lines > crate::limits::SOURCE_LINES {
+            return Err(Fault::not_started("source_limit"));
+        }
+        if plans.iter().any(|p| p.key == key) {
+            return Err(invalid());
+        }
+        plans.push(SourcePlan {
+            key,
+            generation,
+            source_version,
+            hint,
+            text: source.text,
+        });
+    }
+    // Payload capacity and bounded request/metadata storage; lexer
+    // scratch is separately covered by admitted frame credit.
+    let metadata = plans.iter().try_fold(ticket_bytes, |total, plan| {
+        allowance(&[
+            total,
+            cow_bytes(&plan.key),
+            plan.hint.language.as_ref().map_or(0, String::capacity),
+            plan.hint.path.as_ref().map_or(0, String::capacity),
+        ])
+    })?;
+    let payload = total
+        .checked_mul(2)
+        .ok_or(Fault::not_started("data_limit"))?;
+    reserve(
+        allowance(&[
+            size_of::<SourceRequest>(),
+            plans.capacity() * size_of::<SourcePlan<'_>>(),
+            plans.len() * size_of::<SourceInput>(),
+            metadata,
+            payload,
+        ])?,
+        grant,
+    )?;
+    let mut result = Vec::with_capacity(plans.len());
+    for plan in plans {
+        result.push(SourceInput {
+            key: plan.key.into_owned(),
+            generation: plan.generation,
+            source_version: plan.source_version,
+            hint: plan.hint,
+            text: owned(plan.text)?,
+        });
+    }
+    Ok((
+        SourceOperation::Finite {
+            sources: result,
+            open,
+        },
+        Some(mode),
+    ))
+}
+
+fn decode_append(
+    r: &RawRequest<'_>,
+    ticket_bytes: usize,
+    source_cap: usize,
+    grant: &mut dyn FnMut(usize) -> bool,
+) -> Result<(SourceOperation, Option<Admission>), Fault> {
+    if r.sources.is_some() {
+        return Err(invalid());
+    }
+    let mode = admission(r.admission, r.queue_wait_ms)?;
+    let key = text(r.key.ok_or_else(invalid)?, 64)?;
+    let lease = text(r.lease.ok_or_else(invalid)?, 64)?;
+    let generation = nonzero(r.generation.ok_or_else(invalid)?)?;
+    let source_version = unsigned(r.source_version.ok_or_else(invalid)?, u32::MAX)?;
+    let base_revision = nonzero(r.base_revision.ok_or_else(invalid)?)?;
+    let base_bytes = unsigned(r.base_bytes.ok_or_else(invalid)?, u32::MAX)?;
+    let raw = r.append.ok_or_else(invalid)?;
+    let (size, lines) = measure(raw)?;
+    if lines > crate::limits::SOURCE_LINES
+        || size
+            .checked_add(base_bytes as usize)
+            .is_none_or(|n| n > source_cap)
+    {
+        return Err(Fault::not_started("source_limit"));
+    }
+    let finalize: bool =
+        serde_json::from_str(r.finalize.ok_or_else(invalid)?.get()).map_err(|_| invalid())?;
+    let payload = size
+        .checked_mul(2)
+        .ok_or(Fault::not_started("data_limit"))?;
+    reserve(
+        allowance(&[
+            size_of::<SourceRequest>(),
+            ticket_bytes,
+            cow_bytes(&key),
+            cow_bytes(&lease),
+            payload,
+        ])?,
+        grant,
+    )?;
+    Ok((
+        SourceOperation::Append {
+            key: key.into_owned(),
+            lease: lease.into_owned(),
+            generation,
+            source_version,
+            base_revision,
+            base_bytes,
+            append: owned(raw)?,
+            finalize,
+        },
+        Some(mode),
+    ))
+}
+
+fn decode_close(
+    r: &RawRequest<'_>,
+    ticket_bytes: usize,
+    grant: &mut dyn FnMut(usize) -> bool,
+) -> Result<(SourceOperation, Option<Admission>), Fault> {
+    if r.sources.is_some()
+        || r.admission.is_some()
+        || r.queue_wait_ms.is_some()
+        || [
             r.source_version,
             r.base_revision,
             r.base_bytes,
@@ -252,180 +374,29 @@ impl SourceRequest {
         ]
         .iter()
         .any(Option::is_some)
-        {
-            return Err(invalid());
-        }
-        let mode = admission(r.admission, r.queue_wait_ms)?;
-        let values = sources(r.sources.ok_or_else(invalid)?)?;
-        if values.is_empty() || open && values.len() != 1 {
-            return Err(invalid());
-        }
-        let mut plans: Vec<SourcePlan<'_>> = Vec::with_capacity(values.len());
-        let mut total = 0usize;
-        let mut lines = 0usize;
-        for raw in values {
-            let source: RawSource<'_> = decode(raw)?;
-            let key = text(source.key, 64)?;
-            let generation = nonzero(source.generation)?;
-            let source_version = unsigned(source.source_version, u32::MAX)?;
-            let hint = hint(source.hint)?;
-            let (bytes, count) = measure(source.text)?;
-            lines += count;
-            total = total
-                .checked_add(bytes)
-                .ok_or(Fault::not_started("source_limit"))?;
-            if total > source_cap || lines > crate::limits::SOURCE_LINES {
-                return Err(Fault::not_started("source_limit"));
-            }
-            if plans.iter().any(|p| p.key == key) {
-                return Err(invalid());
-            }
-            plans.push(SourcePlan {
-                key,
-                generation,
-                source_version,
-                hint,
-                text: source.text,
-            });
-        }
-        // Payload capacity and bounded request/metadata storage; lexer
-        // scratch is separately covered by admitted frame credit.
-        let metadata = plans.iter().try_fold(ticket_bytes, |total, plan| {
-            allowance(&[
-                total,
-                cow_bytes(&plan.key),
-                plan.hint.language.as_ref().map_or(0, String::capacity),
-                plan.hint.path.as_ref().map_or(0, String::capacity),
-            ])
-        })?;
-        let payload = total
-            .checked_mul(2)
-            .ok_or(Fault::not_started("data_limit"))?;
-        reserve(
-            allowance(&[
-                size_of::<Self>(),
-                plans.capacity() * size_of::<SourcePlan<'_>>(),
-                plans.len() * size_of::<SourceInput>(),
-                metadata,
-                payload,
-            ])?,
-            grant,
-        )?;
-        let mut result = Vec::with_capacity(plans.len());
-        for plan in plans {
-            result.push(SourceInput {
-                key: plan.key.into_owned(),
-                generation: plan.generation,
-                source_version: plan.source_version,
-                hint: plan.hint,
-                text: owned(plan.text)?,
-            });
-        }
-        Ok((
-            SourceOperation::Finite {
-                sources: result,
-                open,
-            },
-            Some(mode),
-        ))
+    {
+        return Err(invalid());
     }
-
-    fn decode_append(
-        r: &RawRequest<'_>,
-        ticket_bytes: usize,
-        source_cap: usize,
-        grant: &mut dyn FnMut(usize) -> bool,
-    ) -> Result<(SourceOperation, Option<Admission>), Fault> {
-        if r.sources.is_some() {
-            return Err(invalid());
-        }
-        let mode = admission(r.admission, r.queue_wait_ms)?;
-        let key = text(r.key.ok_or_else(invalid)?, 64)?;
-        let lease = text(r.lease.ok_or_else(invalid)?, 64)?;
-        let generation = nonzero(r.generation.ok_or_else(invalid)?)?;
-        let source_version = unsigned(r.source_version.ok_or_else(invalid)?, u32::MAX)?;
-        let base_revision = nonzero(r.base_revision.ok_or_else(invalid)?)?;
-        let base_bytes = unsigned(r.base_bytes.ok_or_else(invalid)?, u32::MAX)?;
-        let raw = r.append.ok_or_else(invalid)?;
-        let (size, lines) = measure(raw)?;
-        if lines > crate::limits::SOURCE_LINES
-            || size
-                .checked_add(base_bytes as usize)
-                .is_none_or(|n| n > source_cap)
-        {
-            return Err(Fault::not_started("source_limit"));
-        }
-        let finalize: bool =
-            serde_json::from_str(r.finalize.ok_or_else(invalid)?.get()).map_err(|_| invalid())?;
-        let payload = size
-            .checked_mul(2)
-            .ok_or(Fault::not_started("data_limit"))?;
-        reserve(
-            allowance(&[
-                size_of::<Self>(),
-                ticket_bytes,
-                cow_bytes(&key),
-                cow_bytes(&lease),
-                payload,
-            ])?,
-            grant,
-        )?;
-        Ok((
-            SourceOperation::Append {
-                key: key.into_owned(),
-                lease: lease.into_owned(),
-                generation,
-                source_version,
-                base_revision,
-                base_bytes,
-                append: owned(raw)?,
-                finalize,
-            },
-            Some(mode),
-        ))
-    }
-
-    fn decode_close(
-        r: &RawRequest<'_>,
-        ticket_bytes: usize,
-        grant: &mut dyn FnMut(usize) -> bool,
-    ) -> Result<(SourceOperation, Option<Admission>), Fault> {
-        if r.sources.is_some()
-            || r.admission.is_some()
-            || r.queue_wait_ms.is_some()
-            || [
-                r.source_version,
-                r.base_revision,
-                r.base_bytes,
-                r.append,
-                r.finalize,
-            ]
-            .iter()
-            .any(Option::is_some)
-        {
-            return Err(invalid());
-        }
-        let key = text(r.key.ok_or_else(invalid)?, 64)?;
-        let lease = text(r.lease.ok_or_else(invalid)?, 64)?;
-        let generation = nonzero(r.generation.ok_or_else(invalid)?)?;
-        reserve(
-            allowance(&[
-                size_of::<Self>(),
-                ticket_bytes,
-                cow_bytes(&key),
-                cow_bytes(&lease),
-            ])?,
-            grant,
-        )?;
-        Ok((
-            SourceOperation::Close {
-                key: key.into_owned(),
-                lease: lease.into_owned(),
-                generation,
-            },
-            None,
-        ))
-    }
+    let key = text(r.key.ok_or_else(invalid)?, 64)?;
+    let lease = text(r.lease.ok_or_else(invalid)?, 64)?;
+    let generation = nonzero(r.generation.ok_or_else(invalid)?)?;
+    reserve(
+        allowance(&[
+            size_of::<SourceRequest>(),
+            ticket_bytes,
+            cow_bytes(&key),
+            cow_bytes(&lease),
+        ])?,
+        grant,
+    )?;
+    Ok((
+        SourceOperation::Close {
+            key: key.into_owned(),
+            lease: lease.into_owned(),
+            generation,
+        },
+        None,
+    ))
 }
 
 #[cfg(test)]
@@ -441,7 +412,7 @@ mod language_hint_tests {
     }
 
     fn decoded(hint: &str) -> SyntaxHint {
-        let request = SourceRequest::decode(&raw(hint), "i", usize::MAX, &mut |_| true).unwrap();
+        let request = decode(&raw(hint), "i", usize::MAX, &mut |_| true).unwrap();
         let SourceOperation::Finite { sources, .. } = request.operation else {
             panic!("finite source request")
         };
@@ -452,7 +423,7 @@ mod language_hint_tests {
     fn language_hint_and_optional_path_metadata_are_accounted() {
         fn admitted(hint: &str) -> usize {
             let mut bytes = 0;
-            SourceRequest::decode(&raw(hint), "i", usize::MAX, &mut |amount| {
+            decode(&raw(hint), "i", usize::MAX, &mut |amount| {
                 bytes = amount;
                 true
             })
@@ -471,7 +442,7 @@ mod language_hint_tests {
     #[test]
     fn shared_vectors_preserve_absent_null_empty_and_explicit_language() {
         let vectors: serde_json::Value = serde_json::from_str(include_str!(
-            "../../../protocol/syntax-v3/source-hint-vectors.json"
+            "../../../../protocol/syntax-v3/source-hint-vectors.json"
         ))
         .unwrap();
         assert_eq!(vectors["revision"], 2);
@@ -483,7 +454,7 @@ mod language_hint_tests {
         }
 
         let opened_raw = raw_operation("stream.open", r#"{"language":"python"}"#);
-        let opened = SourceRequest::decode(&opened_raw, "i", usize::MAX, &mut |_| true).unwrap();
+        let opened = decode(&opened_raw, "i", usize::MAX, &mut |_| true).unwrap();
         let SourceOperation::Finite { sources, open } = opened.operation else {
             panic!("stream open source")
         };
@@ -530,7 +501,7 @@ mod language_hint_tests {
         malformed.push(format!(r#"{{"language":"{too_long}"}}"#));
         for hint in &malformed {
             let mut grants = 0;
-            let error = SourceRequest::decode(&raw(hint), "i", usize::MAX, &mut |_| {
+            let error = decode(&raw(hint), "i", usize::MAX, &mut |_| {
                 grants += 1;
                 true
             })
@@ -546,7 +517,7 @@ mod language_hint_tests {
         let request = raw(r#"{"language":"rust"}"#);
         let old = RawValue::from_string(request.get().replacen("\"v\":4", "\"v\":3", 1)).unwrap();
         let mut grants = 0;
-        let fault = SourceRequest::decode(&old, "i", usize::MAX, &mut |_| {
+        let fault = decode(&old, "i", usize::MAX, &mut |_| {
             grants += 1;
             true
         })
@@ -566,7 +537,7 @@ mod reservation_tests {
         let raw: Box<RawValue> = serde_json::from_str(request).unwrap();
         for accepted in [true, false] {
             let mut grants = Vec::new();
-            let result = SourceRequest::decode(&raw, "i", usize::MAX, &mut |bytes| {
+            let result = decode(&raw, "i", usize::MAX, &mut |bytes| {
                 grants.push(bytes);
                 accepted
             });

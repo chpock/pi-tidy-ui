@@ -6,7 +6,7 @@ use occipital::{
     actor::{ActorPool, Route},
     control::Authority,
     ingress::Incoming,
-    semantic_engine::Limits,
+    limits::Limits,
 };
 use serde_json::{json, Value};
 

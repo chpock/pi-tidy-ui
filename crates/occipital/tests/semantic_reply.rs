@@ -1,10 +1,10 @@
 use occipital::{
     credit::Budget,
-    protocol::{Fault, SyntaxHint},
+    fault::Fault,
+    limits::Limits,
     semantic::{Expression, Ink, StyleKind, Styles},
-    semantic_engine::{Engine, Limits},
     semantic_reply::{self, DataBody},
-    semantic_reply::{SourceBody, SourceResult},
+    source::{Engine, SourceBody, SourceResult, SyntaxHint},
     vocabulary,
 };
 use serde_json::{json, Value};
@@ -16,7 +16,7 @@ fn hint() -> SyntaxHint {
     }
 }
 fn record(
-    chunk: occipital::semantic_engine::SourceChunk,
+    chunk: occipital::source::SourceChunk,
     complete: bool,
     lease: Option<String>,
 ) -> SourceBody {

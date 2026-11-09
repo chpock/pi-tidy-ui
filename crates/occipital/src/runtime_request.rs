@@ -2,8 +2,12 @@
 //! style expansion/compilation is deferred to the existing entitled worker turn.
 use crate::{
     credit::Credit,
-    protocol::Fault,
-    source_request::{Admission, SourceOperation, SourceRequest},
+    fault::Fault,
+    protocol::Admission,
+    source::{
+        request::{self, SourceRequest},
+        SourceOperation,
+    },
     style_request::StyleRequestPlan,
     wire,
 };
@@ -123,7 +127,7 @@ impl DataRequest {
         } else {
             let base = credit.bytes();
             let mut owned = 0;
-            let request = SourceRequest::decode(raw, instance, source_bytes, &mut |n| {
+            let request = request::decode(raw, instance, source_bytes, &mut |n| {
                 let Some(total) = base.checked_add(n) else {
                     return false;
                 };

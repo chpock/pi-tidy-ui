@@ -1,7 +1,7 @@
 //! Actual executable, framed pipes and native Syntect state.
 mod support;
 
-use occipital::{frame, reply::REPLY_BYTES, request::REQUEST_BYTES};
+use occipital::{frame, limits::WIRE_BYTES, reply::REPLY_BYTES};
 use serde_json::{json, Value};
 use std::{
     io::{Read, Write},
@@ -48,7 +48,7 @@ impl Helper {
         frame::write_frame(
             self.input.as_mut().unwrap(),
             &serde_json::to_vec(&value).unwrap(),
-            REQUEST_BYTES,
+            WIRE_BYTES,
         )
         .unwrap();
     }
@@ -220,7 +220,7 @@ fn bad_declared_pipe_length_is_rejected_before_body_and_helper_incarnations_diff
             .input
             .as_mut()
             .unwrap()
-            .write_all(&((REQUEST_BYTES + 1) as u32).to_be_bytes())
+            .write_all(&((WIRE_BYTES + 1) as u32).to_be_bytes())
             .unwrap();
         if close_stdin {
             drop(first.input.take());

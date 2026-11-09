@@ -1,8 +1,8 @@
 //! Generic STYLE jobs share physical data authority with source work.
 use occipital::{
     credit::Budget,
+    limits::Limits,
     scheduler::{Delivery, Scheduler, Ticket},
-    semantic_engine::Limits,
     vocabulary::{self, ScopeId},
 };
 use serde_json::{json, Value};

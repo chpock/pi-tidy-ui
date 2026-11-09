@@ -2,8 +2,9 @@
 use crate::{
     actor::{PoolHandle, Route},
     control::Authority,
+    fault::Fault,
     ingress::{self, Incoming},
-    protocol::{Fault, SERVICE},
+    protocol::SERVICE,
     semantic::CAPABILITY,
     semantic_reply,
 };
@@ -181,7 +182,7 @@ pub async fn run(authority: Arc<Authority>, pool: PoolHandle) -> Result<(), Faul
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{actor::ActorPool, semantic_engine::Limits};
+    use crate::{actor::ActorPool, limits::Limits};
     use serde_json::json;
 
     fn source(ticket: &str) -> Vec<u8> {

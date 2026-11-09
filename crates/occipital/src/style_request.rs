@@ -1,6 +1,6 @@
 //! Borrowed v4 styles.resolve admission; neither source parsing nor transport ownership.
 use crate::{
-    protocol::Fault,
+    fault::Fault,
     semantic::{Bounds, ContextPlan, PROTOCOL_VERSION},
     style_rules::ClientRulePlan,
     vocabulary,
@@ -10,7 +10,7 @@ use serde::Deserialize;
 use serde_json::value::RawValue;
 use std::borrow::Cow;
 
-pub use crate::wire::Admission;
+use crate::protocol::Admission;
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Request<'a> {

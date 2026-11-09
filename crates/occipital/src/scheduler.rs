@@ -1,12 +1,12 @@
 //! Fair worker-local quanta shared by source and style work in both transports.
 use crate::{
     credit::{Budget, Credit, Snapshot},
-    protocol::Fault,
+    fault::Fault,
+    limits::Limits,
+    protocol::Admission,
     runtime_request::DataRequest,
-    semantic_engine::Limits,
     semantic_reply::{self, DataBody},
-    source_request::{Admission, SourceRequest},
-    source_service::{Action, Job as SourceJob, Service},
+    source::{request::SourceRequest, Action, Job as SourceJob, Service},
     style_request::StyleRequestPlan,
     style_work::{StyleFailure, StyleWork},
 };
@@ -646,10 +646,12 @@ impl Scheduler {
         request: SourceRequest,
         mut funding: Funding,
     ) -> Option<(Envelope, Active)> {
-        match self
+        let result = self
             .service
-            .start(scope, request, &mut |n| funding.reserve(n))
-        {
+            .start(scope, request.operation, &mut |n| funding.reserve(n));
+        // Release decoded request metadata before reconciling or encoding its result.
+        drop(request.ticket);
+        match result {
             Ok(Action::Job(job)) => {
                 if let Err(fault) =
                     funding.reconcile(self.service.known_idle_state_bytes(), &mut self.idle)
@@ -848,14 +850,12 @@ mod integration_tests {
             panic!("source")
         };
         let mut grants = 0;
-        let Action::Job(job) = probe
-            .service
-            .start("route", request, &mut |_| {
-                grants += 1;
-                true
-            })
-            .unwrap()
-        else {
+        let result = probe.service.start("route", request.operation, &mut |_| {
+            grants += 1;
+            true
+        });
+        drop(request.ticket);
+        let Action::Job(job) = result.unwrap() else {
             panic!("source")
         };
         probe.service.discard(job);
@@ -877,15 +877,15 @@ mod integration_tests {
             };
             funding.credit.started();
             let mut calls = 0;
-            let fault = scheduler
+            let result = scheduler
                 .service
-                .start("route", request, &mut |n| {
+                .start("route", request.operation, &mut |n| {
                     let allowed = calls != denied;
                     calls += 1;
                     allowed && funding.reserve(n)
-                })
-                .err()
-                .expect("reservation denied");
+                });
+            drop(request.ticket);
+            let fault = result.err().expect("reservation denied");
             scheduler.finish_failure(
                 Finalization {
                     envelope,

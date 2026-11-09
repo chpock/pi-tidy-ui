@@ -10,10 +10,10 @@ Consider a valid `stream.open` on an already-bound route:
 
 1. The transport supplies a complete application body to `actor.rs` through `Route::receive`.
 2. `ingress.rs` inspects a borrowed routing header and selects the DATA lane.
-3. `scheduler.rs` reserves a physical route job and decoding allowance. `runtime_request.rs` and `source_request.rs` validate the complete operation before allocating its owned source payload.
+3. `scheduler.rs` reserves a physical route job and decoding allowance. `runtime_request.rs` and `source/request.rs` validate the complete operation before allocating its owned source payload.
 4. The route submits the owned request to its assigned parser worker. The worker places it in that route’s queue.
-5. When the route receives a turn, `source_service.rs` prepares a job and creates its continuation binding. The parser state itself remains worker-local.
-6. `semantic_engine.rs` advances the job through cooperative parsing turns. Other eligible routes can receive turns between them.
+5. When the route receives a turn, the scheduler passes only the validated `SourceOperation` to `source/service.rs`, which prepares a job and creates its continuation binding. Correlation/admission metadata and request credit remain caller responsibilities; parser state remains worker-local.
+6. `source/engine.rs` advances the job through cooperative parsing turns. Other eligible routes can receive turns between them.
 7. The scheduler transfers any newly retained state allowance to its persistent state owner, then constructs and encodes the result.
 8. The encoded `Delivery` keeps the original physical slot. Separate worker-owned acknowledgment metadata identifies the continuation whose reply is pending.
 9. A successful direct flush or public SDK ownership handoff acknowledges the delivery. The worker then releases acknowledgment metadata. Abandoning the delivery instead causes the worker to discard the affected continuation.
@@ -30,7 +30,9 @@ A recovered ticket permits a correlated refusal; it does not make the request va
 
 ### SOURCE allocation
 
-`source_request.rs` checks the common frame, version, instance and correlation envelope in `SourceRequest::decode`, then delegates to private finite/open, append and close decoders. The facade retains the correlation ticket and passes its storage charge, not the ticket buffer, to the operation decoder. Each operation decoder keeps its forbidden-field checks, admission policy, value validation, additional reservation and owned-operation construction together.
+`source/request.rs` checks the common frame, version, instance and correlation envelope through `source::request::decode`, then delegates to private finite/open, append and close decoders. This adapter owns `SourceRequest`: the correlation ticket, common admission metadata and a typed `SourceOperation`. It retains the ticket and passes its storage charge, not the ticket buffer, to the operation decoder. Each operation decoder keeps its forbidden-field checks, admission policy, value validation, additional reservation and owned-operation construction together.
+
+`source/model.rs` owns computation inputs and results, not the request envelope. `source::Service::start` consumes a validated, admitted operation without requiring JSON, a ticket or a queueing policy. The scheduler retains the original decoded header while queued and releases its residual ticket as soon as preparation returns, before state reconciliation or result encoding. The existing request credit continues covering its obligation; releasing metadata does not release the physical job.
 
 The finite/open decoder first measures the supplied source strings and their aggregate logical-line count. It also validates source identities and rejects duplicate keys within a finite batch. Only after the complete plan passes and the owner grants additional capacity does it construct owned source strings.
 
@@ -105,7 +107,7 @@ If the next queued operation targets that lease, the route is blocked until the 
 
 ## Encoding and transport delivery
 
-`semantic_reply.rs` supplies typed result bodies; `reply.rs` writes the common envelope directly through a bounded JSON writer. SOURCE run pairs are serialized directly rather than first being copied into an intermediate JSON value tree.
+`source/model.rs` owns typed SOURCE result values, and private `source/reply.rs` implements their flat serialization. `semantic_reply.rs` composes typed DATA results with their common envelope; `reply.rs` writes that envelope directly through a bounded JSON writer. SOURCE run pairs are serialized directly rather than first being copied into an intermediate JSON value tree.
 
 The writer checks the encoded ceiling while writing. When its output vector needs more capacity, it grows the request’s allowance before reserving that capacity. Structured results and encoded bytes can coexist during serialization, so both must remain funded until the structured reply is destroyed.
 

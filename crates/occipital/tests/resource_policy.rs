@@ -2,18 +2,17 @@
 use occipital::{
     actor::ActorPool,
     ingress::Incoming,
-    protocol::SyntaxHint,
+    limits::{Limits, SOURCE_BYTES, WIRE_BYTES},
     reply::REPLY_BYTES,
-    request::{REQUEST_BYTES, SOURCE_BYTES},
-    semantic_engine::{Engine, Limits, SourceChunk, Work},
+    source::{Engine, SourceChunk, SyntaxHint, Work},
 };
 use serde_json::{json, Value};
 
 #[test]
 fn data_family_and_interval_palette_bounds_are_derived_not_example_sized() {
     let limits = Limits::default();
-    assert_eq!(REQUEST_BYTES, 64 << 20);
-    assert_eq!(REPLY_BYTES, REQUEST_BYTES);
+    assert_eq!(WIRE_BYTES, 64 << 20);
+    assert_eq!(REPLY_BYTES, WIRE_BYTES);
     assert_eq!(SOURCE_BYTES, 64 << 10);
     assert_eq!(limits.source_bytes, SOURCE_BYTES);
     // Positive length + style + two separators consume at least four JSON bytes.

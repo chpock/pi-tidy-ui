@@ -2,10 +2,10 @@
 //! Only owned requests and guarded encoded replies cross threads.
 use crate::{
     credit::{Budget, Snapshot},
+    fault::Fault,
     ingress::{self, Incoming, Prepared, Rejection, CONTROL_RESERVATION},
-    protocol::Fault,
+    limits::Limits,
     scheduler::{Scheduler, Submission, Ticket, Wake},
-    semantic_engine::Limits,
 };
 use std::{
     collections::HashMap,

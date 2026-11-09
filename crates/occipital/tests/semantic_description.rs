@@ -2,10 +2,9 @@ use occipital::{
     actor::PoolStats,
     credit::Snapshot,
     ingress::CONTROL_REPLY_BYTES,
-    limits,
+    limits::{self, Limits},
     semantic::CAPABILITY,
     semantic_description::{self, OPERATIONS},
-    semantic_engine::Limits,
     semantic_reply, vocabulary,
 };
 use serde_json::{json, Value};

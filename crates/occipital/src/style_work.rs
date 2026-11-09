@@ -1,7 +1,7 @@
 //! Resumable style execution. Uses the caller's existing data-job credit.
 use crate::{
     credit::Credit,
-    protocol::Fault,
+    fault::Fault,
     resolver::{self, Cursor, Resolver},
     semantic::{Expression, StyleKind, Styles},
     vocabulary::{self, ScopeId},

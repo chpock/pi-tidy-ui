@@ -1,14 +1,13 @@
 //! Theme-independent source authority shared by the v4 transports.
 //! The worker owns scheduling, request/response credits and actual transport settlement.
 //! bind's callback funds absolute persistent-state overlap. start/step callbacks fund
-//! absolute ADDITIONAL Job allowance (on top of decoded request/frame ownership),
+//! absolute ADDITIONAL Job allowance (on top of caller-owned input/request storage),
 //! cumulatively across every Work and ready result; hold their high-water until drain.
-use crate::{
-    protocol::Fault,
-    semantic_engine::{Engine, Lease, Limits, Work},
-    semantic_reply::{SourceBody, SourceResult},
-    source_request::{SourceInput, SourceOperation, SourceRequest},
+use super::{
+    engine::{Engine, Lease, Work},
+    model::{SourceBody, SourceInput, SourceOperation, SourceResult},
 };
+use crate::{fault::Fault, limits::Limits};
 use sha2::{Digest, Sha256};
 use std::{
     mem::size_of,
@@ -424,12 +423,12 @@ impl Service {
         }
         Ok(wire)
     }
-    /// Request must have passed SourceRequest::decode; it owns request/frame credit.
-    /// No duplicate raw decoder or source-key/generation validator lives here.
+    /// The caller supplies a validated, admitted operation and keeps its input/request funded.
+    /// Correlation and scheduling metadata do not enter source computation.
     pub fn start(
         &mut self,
         scope: &str,
-        request: SourceRequest,
+        operation: SourceOperation,
         reserve: &mut dyn FnMut(usize) -> bool,
     ) -> Result<Action, Fault> {
         let route = self.route(scope).ok_or(Fault::not_started("scope_gone"))?;
@@ -438,7 +437,7 @@ impl Service {
             key,
             lease,
             generation,
-        } = request.operation
+        } = operation
         {
             if let Some(i) = self.binding(scope, &lease) {
                 let b = &self.bindings[i];
@@ -449,8 +448,8 @@ impl Service {
             }
             return Ok(Action::Immediate(SourceBody::Closed));
         }
-        let mut job = Job::admit(scope, route, &request.operation, &self.engine, reserve)?;
-        let result = self.prepare(&mut job, request.operation, reserve);
+        let mut job = Job::admit(scope, route, &operation, &self.engine, reserve)?;
+        let result = self.prepare(&mut job, operation, reserve);
         if let Err(fault) = result {
             self.discard(job);
             return Err(fault);
@@ -651,7 +650,7 @@ impl Service {
 #[cfg(test)]
 mod accounting_tests {
     use super::*;
-    use crate::credit::Budget;
+    use crate::{credit::Budget, source::request};
     use serde_json::{json, value::RawValue};
     use std::io::Write;
     fn input() -> Box<RawValue> {
@@ -667,7 +666,7 @@ mod accounting_tests {
             let bound = idle.bytes();
             let mut credit = pool.reserve(Some("r"), 0).unwrap();
             let mut decoded = 0;
-            let request = SourceRequest::decode(
+            let request = request::decode(
                 &input(),
                 "instance",
                 crate::limits::SOURCE_BYTES,
@@ -683,7 +682,9 @@ mod accounting_tests {
             credit.started();
             let (body, mut job) = {
                 let mut grant = |n| credit.resize(decoded + n).is_ok();
-                let Action::Job(mut job) = service.start("r", request, &mut grant).unwrap() else {
+                let result = service.start("r", request.operation, &mut grant);
+                drop(request.ticket);
+                let Action::Job(mut job) = result.unwrap() else {
                     panic!("expected job")
                 };
                 loop {
@@ -745,14 +746,16 @@ mod accounting_tests {
             let mut service = Service::new(Limits::default(), "instance".into());
             service.bind("r", &mut |_| true).unwrap();
             for _ in 0..count {
-                let request = SourceRequest::decode(
+                let request = request::decode(
                     &input(),
                     "instance",
                     crate::limits::SOURCE_BYTES,
                     &mut |_| true,
                 )
                 .unwrap();
-                let Action::Job(mut job) = service.start("r", request, &mut |_| true).unwrap()
+                let Action::Job(mut job) = service
+                    .start("r", request.operation, &mut |_| true)
+                    .unwrap()
                 else {
                     panic!("expected job")
                 };
@@ -777,22 +780,27 @@ mod accounting_tests {
             let first = &service.bindings[0];
             let close = RawValue::from_string(json!({"v":4,"op":"stream.close","ticket":"close","instance":"instance","key":first.key,"generation":first.generation,"lease":first.wire}).to_string()).unwrap();
             let request =
-                SourceRequest::decode(&close, "instance", crate::limits::SOURCE_BYTES, &mut |_| {
+                request::decode(&close, "instance", crate::limits::SOURCE_BYTES, &mut |_| {
                     true
                 })
                 .unwrap();
             assert!(matches!(
-                service.start("r", request, &mut |_| true).unwrap(),
+                service
+                    .start("r", request.operation, &mut |_| true)
+                    .unwrap(),
                 Action::Immediate(_)
             ));
-            let request = SourceRequest::decode(
+            let request = request::decode(
                 &input(),
                 "instance",
                 crate::limits::SOURCE_BYTES,
                 &mut |_| true,
             )
             .unwrap();
-            let Action::Job(busy) = service.start("r", request, &mut |_| true).unwrap() else {
+            let Action::Job(busy) = service
+                .start("r", request.operation, &mut |_| true)
+                .unwrap()
+            else {
                 panic!("expected busy job")
             };
             service.engine.take_lease_visits();
@@ -817,14 +825,17 @@ mod accounting_tests {
     fn finish_state_failure_is_started_and_retains_job_cleanup_authority() {
         let mut service = Service::new(Limits::default(), "instance".into());
         service.bind("r", &mut |_| true).unwrap();
-        let request = SourceRequest::decode(
+        let request = request::decode(
             &input(),
             "instance",
             crate::limits::SOURCE_BYTES,
             &mut |_| true,
         )
         .unwrap();
-        let Action::Job(mut job) = service.start("r", request, &mut |_| true).unwrap() else {
+        let Action::Job(mut job) = service
+            .start("r", request.operation, &mut |_| true)
+            .unwrap()
+        else {
             panic!("expected job")
         };
         service.engine.limits.state_pool_bytes = service.engine.retained_state_bytes();

@@ -1,14 +1,9 @@
 //! Shared borrowed v3 request primitives. No source or context materialization.
-use crate::protocol::Fault;
+use crate::{fault::Fault, protocol::Admission};
 use serde::Deserialize;
 use serde_json::value::RawValue;
 use std::borrow::Cow;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Admission {
-    TryNow,
-    BoundedQueue(u32),
-}
 pub(crate) fn invalid() -> Fault {
     Fault::not_started("invalid_request")
 }
@@ -58,7 +53,7 @@ pub(crate) fn admission(
     match text(raw.ok_or_else(invalid)?, 64)?.as_ref() {
         "try_now" if wait.is_none() => Ok(Admission::TryNow),
         "bounded_queue" => {
-            let wait = unsigned(wait.ok_or_else(invalid)?, crate::request::QUEUE_WAIT_MS)?;
+            let wait = unsigned(wait.ok_or_else(invalid)?, crate::limits::QUEUE_WAIT_MS)?;
             if wait == 0 {
                 return Err(invalid());
             }

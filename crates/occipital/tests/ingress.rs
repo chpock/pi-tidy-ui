@@ -175,7 +175,7 @@ async fn metadata_encoding_failure_and_explicit_commit_release_reserved_credit()
     let delivery = acquire()
         .error(
             "boot",
-            occipital::protocol::Fault::not_started("controlled_denial"),
+            occipital::fault::Fault::not_started("controlled_denial"),
         )
         .unwrap();
     assert!(pool.stats().control_credits.bytes > 0);

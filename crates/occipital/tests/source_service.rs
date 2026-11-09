@@ -1,8 +1,7 @@
 use occipital::{
-    protocol::Fault,
-    semantic_engine::{Engine, Limits},
-    source_request::SourceRequest,
-    source_service::{Action, Job, Service},
+    fault::Fault,
+    limits::Limits,
+    source::{request, Action, Engine, Job, Service, SourceInput, SourceOperation},
 };
 use serde_json::{json, value::RawValue, Value};
 use std::io::Write;
@@ -12,14 +11,15 @@ fn source(key: &str, text: &str) -> Value {
 fn finite(sources: Vec<Value>, open: bool) -> Value {
     json!({"v":4,"op":if open{"stream.open"}else{"highlight"},"instance":"instance","ticket":"t","admission":"try_now","sources":sources})
 }
-fn decode(value: Value) -> SourceRequest {
-    SourceRequest::decode(
+fn decode(value: Value) -> SourceOperation {
+    request::decode(
         &RawValue::from_string(value.to_string()).unwrap(),
         "instance",
         occipital::limits::SOURCE_BYTES,
         &mut |_| true,
     )
     .unwrap()
+    .operation
 }
 fn service(limits: Limits) -> Service {
     let mut service = Service::new(limits, "instance".into());
@@ -148,7 +148,7 @@ fn finite_batch_uses_actual_parser_and_shared_flat_source_schema() {
         let mut work = oracle
             .begin_one_shot(
                 (*text).into(),
-                &occipital::protocol::SyntaxHint {
+                &occipital::source::SyntaxHint {
                     language: Some("rust".into()),
                     path: None,
                 },
@@ -423,7 +423,7 @@ fn late_invalid_batches_reject_before_service_allocation_or_any_parser_work() {
         false,
     );
     let raw = RawValue::from_string(duplicate.to_string()).unwrap();
-    assert!(SourceRequest::decode(
+    assert!(request::decode(
         &raw,
         "instance",
         occipital::limits::SOURCE_BYTES,
@@ -584,7 +584,7 @@ fn source_results_and_lease_are_independent_of_generic_style_definitions() {
     assert_eq!(body["sources"][0]["revision"], 2);
     let mut forbidden = finite(vec![source("k", "x")], false);
     forbidden["sources"][0]["palette"] = json!("gruvbox-dark");
-    assert!(SourceRequest::decode(
+    assert!(request::decode(
         &RawValue::from_string(forbidden.to_string()).unwrap(),
         "instance",
         occipital::limits::SOURCE_BYTES,
@@ -703,7 +703,7 @@ fn malformed_language_hint_values_are_invalid_requests_at_the_native_boundary() 
         input["hint"]["language"] = value.clone();
         let request = finite(vec![input], false);
         let raw = RawValue::from_string(request.to_string()).unwrap();
-        let result = SourceRequest::decode(
+        let result = request::decode(
             &raw,
             "instance",
             occipital::limits::SOURCE_BYTES,
@@ -742,4 +742,40 @@ fn request_path_hint_budget_survives_engine_boundary() {
             assert_eq!(service.leases(), 0);
         }
     }
+}
+
+#[test]
+fn typed_source_operation_needs_no_transport_correlation_or_admission_envelope() {
+    let mut worker = service(Limits::default());
+    let text = "let typed = 1;\n";
+    let operation = SourceOperation::Finite {
+        sources: vec![SourceInput {
+            key: "typed".into(),
+            generation: 1,
+            source_version: 3,
+            hint: occipital::source::SyntaxHint {
+                language: Some("rust".into()),
+                path: None,
+            },
+            text: text.into(),
+        }],
+        open: false,
+    };
+    let Action::Job(job) = worker.start("r", operation, &mut |_| true).unwrap() else {
+        panic!("expected finite job")
+    };
+    let (body, job) = drive(&mut worker, job, &mut |_| true);
+    let result = &body["sources"][0];
+    assert_source(result, text, true);
+    assert_eq!(result["key"], "typed");
+    assert_eq!(result["source_version"], 3);
+    assert_eq!(result["counters"]["committed_line_calls"], 1);
+    assert_eq!(result["counters"]["tail_calls"], 0);
+    assert!(body.get("ticket").is_none());
+    assert!(body.get("admission").is_none());
+    assert!(job.started());
+    worker.discard(job);
+    worker.close_scope("r");
+    assert_eq!(worker.leases(), 0);
+    assert_eq!(worker.known_state_bytes(), 0);
 }

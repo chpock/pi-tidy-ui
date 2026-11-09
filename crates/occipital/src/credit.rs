@@ -1,5 +1,5 @@
 //! Shared reservations for controlled application payloads, not a claim about private parser heaps.
-use crate::protocol::Fault;
+use crate::fault::Fault;
 use std::{
     collections::HashMap,
     sync::{Arc, Mutex},

@@ -41,3 +41,36 @@ pub(crate) fn source_lines(text: &str) -> usize {
     text.bytes().filter(|&b| b == b'\n').count()
         + usize::from(!text.is_empty() && !text.ends_with('\n'))
 }
+
+/// Classified prefix of each line; longer source text is still admitted.
+pub const LINE_BYTES: usize = 64 * 1024;
+pub const BATCH_SOURCES: usize = 8;
+pub const QUEUE_WAIT_MS: u32 = 1000;
+
+#[derive(Clone, Debug)]
+pub struct Limits {
+    pub source_bytes: usize,
+    pub line_bytes: usize,
+    pub leases: usize,
+    pub per_scope: usize,
+    pub state_pool_bytes: usize,
+    pub runs: usize,
+    pub quantum_ms: u64,
+    pub idle_ms: u64,
+    pub age_ms: u64,
+}
+impl Default for Limits {
+    fn default() -> Self {
+        Self {
+            source_bytes: SOURCE_BYTES,
+            line_bytes: LINE_BYTES,
+            leases: LEASES,
+            per_scope: LEASES_PER_ROUTE,
+            state_pool_bytes: STATE_BYTES,
+            runs: RUNS,
+            quantum_ms: 2,
+            idle_ms: IDLE_MS,
+            age_ms: AGE_MS,
+        }
+    }
+}

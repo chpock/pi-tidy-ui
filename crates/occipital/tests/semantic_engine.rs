@@ -1,6 +1,7 @@
 use occipital::{
-    protocol::{Fault, SyntaxHint},
-    semantic_engine::{Engine, Limits, SourceChunk, Work},
+    fault::Fault,
+    limits::Limits,
+    source::{Engine, SourceChunk, SyntaxHint, Work},
     vocabulary::ScopeId,
 };
 use std::io::Write;

@@ -2,11 +2,10 @@
 //! The small control lane cannot be exhausted by two unsettled source deliveries.
 use crate::{
     credit::{Budget, Credit},
-    protocol::Fault,
-    request,
+    fault::Fault,
+    limits::{self, Limits},
     runtime_request::{self, ControlRequest, Operation},
     scheduler::{Submission, Ticket, Wake},
-    semantic_engine::Limits,
     semantic_reply,
 };
 use serde::{de, Deserialize, Serialize};
@@ -95,7 +94,7 @@ pub(crate) fn prepare(
         .is_some_and(|(_, op)| matches!(op, Operation::Describe));
     let ticket = header.map(|(ticket, _)| ticket);
     let result = (|| {
-        if bytes.len() > request::REQUEST_BYTES {
+        if bytes.len() > limits::WIRE_BYTES {
             return Err(Fault::not_started("frame_limit"));
         }
         if is_control {
@@ -128,7 +127,7 @@ pub fn routing_ticket(frame: &[u8]) -> Option<String> {
     routing_header(frame).map(|(ticket, _)| ticket)
 }
 fn routing_header(frame: &[u8]) -> Option<(String, Operation)> {
-    if frame.len() > request::REQUEST_BYTES || !bounded_depth(frame) {
+    if frame.len() > limits::WIRE_BYTES || !bounded_depth(frame) {
         return None;
     }
     struct Header<'a>(&'a RawValue, &'a RawValue);

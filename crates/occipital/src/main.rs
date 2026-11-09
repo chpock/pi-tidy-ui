@@ -1,5 +1,5 @@
 //! One persistent owned helper, or the same engine hosted by a user-managed supervisor.
-use occipital::{actor::ActorPool, control::Authority, protocol::Fault, semantic_engine::Limits};
+use occipital::{actor::ActorPool, control::Authority, fault::Fault, limits::Limits};
 use std::{sync::Arc, time::Duration};
 
 enum Mode {

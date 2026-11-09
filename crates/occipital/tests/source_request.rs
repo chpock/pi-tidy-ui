@@ -1,6 +1,7 @@
 use occipital::{
     limits,
-    source_request::{Admission, SourceOperation, SourceRequest},
+    protocol::Admission,
+    source::{request, SourceOperation},
 };
 use serde_json::{json, value::RawValue, Value};
 fn frame(sources: Value) -> Value {
@@ -18,7 +19,7 @@ fn the_whole_batch_is_validated_before_the_owned_payload_reservation() {
     let valid = frame(json!([source("a"), source("b")]));
     let mut grants = Vec::new();
     let input = raw(&valid);
-    let request = SourceRequest::decode(&input, "instance", limits::SOURCE_BYTES, &mut |n| {
+    let request = request::decode(&input, "instance", limits::SOURCE_BYTES, &mut |n| {
         grants.push(n);
         true
     })
@@ -38,7 +39,7 @@ fn the_whole_batch_is_validated_before_the_owned_payload_reservation() {
     assert_eq!(sources[0].hint.language.as_deref(), Some("rust"));
     assert!(grants[0] >= sources.iter().map(|s| s.text.len()).sum::<usize>());
     let mut calls = 0;
-    let error = SourceRequest::decode(&input, "instance", limits::SOURCE_BYTES, &mut |_| {
+    let error = request::decode(&input, "instance", limits::SOURCE_BYTES, &mut |_| {
         calls += 1;
         false
     })
@@ -68,13 +69,12 @@ fn the_whole_batch_is_validated_before_the_owned_payload_reservation() {
     cases.push(path);
     for value in cases {
         let mut calls = 0;
-        let error =
-            SourceRequest::decode(&raw(&value), "instance", limits::SOURCE_BYTES, &mut |_| {
-                calls += 1;
-                true
-            })
-            .err()
-            .unwrap();
+        let error = request::decode(&raw(&value), "instance", limits::SOURCE_BYTES, &mut |_| {
+            calls += 1;
+            true
+        })
+        .err()
+        .unwrap();
         assert!(!error.started);
         assert_eq!(calls, 0, "{value}");
     }
@@ -86,7 +86,7 @@ fn source_count_and_open_shape_keep_existing_bounds_without_source_theme_fields(
             .map(|i| source(&i.to_string()))
             .collect::<Vec<_>>())));
         assert!(
-            SourceRequest::decode(&input, "instance", limits::SOURCE_BYTES, &mut |_| panic!(
+            request::decode(&input, "instance", limits::SOURCE_BYTES, &mut |_| panic!(
                 "materialization before shape check"
             ))
             .is_err()
@@ -94,7 +94,7 @@ fn source_count_and_open_shape_keep_existing_bounds_without_source_theme_fields(
     }
     let mut value = frame(json!([source("a"), source("b")]));
     value["op"] = json!("stream.open");
-    assert!(SourceRequest::decode(
+    assert!(request::decode(
         &raw(&value),
         "instance",
         limits::SOURCE_BYTES,
@@ -102,17 +102,16 @@ fn source_count_and_open_shape_keep_existing_bounds_without_source_theme_fields(
     )
     .is_err());
     value["sources"] = json!([source("a")]);
-    let request =
-        SourceRequest::decode(&raw(&value), "instance", limits::SOURCE_BYTES, &mut |_| {
-            true
-        })
-        .unwrap();
+    let request = request::decode(&raw(&value), "instance", limits::SOURCE_BYTES, &mut |_| {
+        true
+    })
+    .unwrap();
     assert!(matches!(
         request.operation,
         SourceOperation::Finite { open: true, .. }
     ));
     value["key"] = Value::Null;
-    assert!(SourceRequest::decode(
+    assert!(request::decode(
         &raw(&value),
         "instance",
         limits::SOURCE_BYTES,
@@ -126,7 +125,7 @@ fn append() -> Value {
 }
 #[test]
 fn append_and_close_keep_exact_lease_metadata_and_share_admission_policy() {
-    let request = SourceRequest::decode(
+    let request = request::decode(
         &raw(&append()),
         "instance",
         limits::SOURCE_BYTES,
@@ -161,11 +160,10 @@ fn append_and_close_keep_exact_lease_metadata_and_share_admission_policy() {
         ("source", "lease", 2, 5, 1, 12, "界", true)
     );
     let value = json!({"v":4,"op":"stream.close","ticket":"ticket","instance":"instance","key":"source","lease":"lease","generation":2});
-    let request =
-        SourceRequest::decode(&raw(&value), "instance", limits::SOURCE_BYTES, &mut |_| {
-            true
-        })
-        .unwrap();
+    let request = request::decode(&raw(&value), "instance", limits::SOURCE_BYTES, &mut |_| {
+        true
+    })
+    .unwrap();
     assert!(request.admission.is_none());
     assert!(matches!(
         request.operation,
@@ -181,7 +179,7 @@ fn append_and_close_keep_exact_lease_metadata_and_share_admission_policy() {
     ] {
         let mut value = value.clone();
         value[field] = Value::Null;
-        assert!(SourceRequest::decode(
+        assert!(request::decode(
             &raw(&value),
             "instance",
             limits::SOURCE_BYTES,
@@ -216,7 +214,7 @@ fn total_append_bytes_bad_queue_and_stale_instances_reject_before_payload_alloca
     cases.push(value);
     for value in cases {
         assert!(
-            !SourceRequest::decode(
+            !request::decode(
                 &raw(&value),
                 "instance",
                 limits::SOURCE_BYTES,
@@ -235,12 +233,12 @@ fn raw_numeric_spellings_and_duplicate_fields_have_the_same_integer_boundary() {
         .replace("\"generation\":2", "\"generation\":2e0")
         .replace("\"source_version\":5", "\"source_version\":5.0");
     let input = RawValue::from_string(text.clone()).unwrap();
-    assert!(SourceRequest::decode(&input, "instance", limits::SOURCE_BYTES, &mut |_| true).is_ok());
+    assert!(request::decode(&input, "instance", limits::SOURCE_BYTES, &mut |_| true).is_ok());
     for text in [
         text.replace("\"generation\":2e0", "\"generation\":15.9999999999999991"),
         text.replace("\"generation\":2e0", "\"generation\":2,\"generation\":2"),
     ] {
-        assert!(SourceRequest::decode(
+        assert!(request::decode(
             &RawValue::from_string(text).unwrap(),
             "instance",
             limits::SOURCE_BYTES,
@@ -254,16 +252,16 @@ fn raw_numeric_spellings_and_duplicate_fields_have_the_same_integer_boundary() {
 fn active_source_limit_applies_to_the_entire_batch_and_append_base_before_reservation() {
     let input = raw(&frame(json!([source("a"), source("b")])));
     let bytes = 2 * "let x = \"界\";\n".len();
-    assert!(SourceRequest::decode(&input, "instance", bytes, &mut |_| true).is_ok());
-    let error = SourceRequest::decode(&input, "instance", bytes - 1, &mut |_| {
+    assert!(request::decode(&input, "instance", bytes, &mut |_| true).is_ok());
+    let error = request::decode(&input, "instance", bytes - 1, &mut |_| {
         panic!("over-limit batch allocated")
     })
     .err()
     .unwrap();
     assert_eq!(error.code, "source_limit");
     let input = raw(&append());
-    assert!(SourceRequest::decode(&input, "instance", 15, &mut |_| true).is_ok());
-    let error = SourceRequest::decode(&input, "instance", 14, &mut |_| {
+    assert!(request::decode(&input, "instance", 15, &mut |_| true).is_ok());
+    let error = request::decode(&input, "instance", 14, &mut |_| {
         panic!("over-limit append allocated")
     })
     .err()
@@ -278,7 +276,7 @@ fn a_batch_has_one_current_incarnation_per_key_before_any_payload_reservation() 
         other["generation"] = json!(generation);
         let input = raw(&frame(json!([source("a"), other])));
         let mut grants = 0;
-        let result = SourceRequest::decode(&input, "instance", limits::SOURCE_BYTES, &mut |_| {
+        let result = request::decode(&input, "instance", limits::SOURCE_BYTES, &mut |_| {
             grants += 1;
             true
         });
@@ -300,7 +298,7 @@ fn admitted_batch_line_append_and_unicode_keep_exact_source_bytes() {
         input["text"] = json!(text);
         let mut other = input.clone();
         other["key"] = json!("right");
-        let request = SourceRequest::decode(
+        let request = request::decode(
             &raw(&frame(json!([input, other]))),
             "instance",
             limits::SOURCE_BYTES,
@@ -315,11 +313,10 @@ fn admitted_batch_line_append_and_unicode_keep_exact_source_bytes() {
         assert_eq!(sources[1].text, text);
         let mut input = append();
         input["append"] = json!(text);
-        let request =
-            SourceRequest::decode(&raw(&input), "instance", limits::SOURCE_BYTES, &mut |_| {
-                true
-            })
-            .unwrap();
+        let request = request::decode(&raw(&input), "instance", limits::SOURCE_BYTES, &mut |_| {
+            true
+        })
+        .unwrap();
         let SourceOperation::Append { append, .. } = request.operation else {
             panic!()
         };
@@ -332,7 +329,7 @@ fn source_rejects_the_previous_protocol_before_reserving_payloads() {
     let mut value = frame(json!([source("a")]));
     value["v"] = json!(3);
     let mut grants = 0;
-    let error = SourceRequest::decode(&raw(&value), "instance", limits::SOURCE_BYTES, &mut |_| {
+    let error = request::decode(&raw(&value), "instance", limits::SOURCE_BYTES, &mut |_| {
         grants += 1;
         true
     })
@@ -383,7 +380,7 @@ fn operation_foreign_fields_including_null_reject_before_any_owned_request_grant
                 let mut request = request.clone();
                 request[field] = value;
                 let mut grants = 0;
-                let fault = SourceRequest::decode(
+                let fault = request::decode(
                     &raw(&request),
                     "instance",
                     limits::SOURCE_BYTES,

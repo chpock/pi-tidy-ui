@@ -1,5 +1,5 @@
 //! Shared JSON replies; adapters hand these exact encoded bytes to their transport.
-use crate::protocol::Fault;
+use crate::fault::Fault;
 use serde::Serialize;
 
 pub const REPLY_BYTES: usize = crate::limits::WIRE_BYTES;

@@ -6,6 +6,16 @@ Release notes before the published 0.2.0 baseline have not been reconstructed.
 
 ## [Unreleased]
 
+### Breaking changes
+
+- Reorganize the Rust library's SOURCE interface under `occipital::source`,
+  with shared configuration in `limits::Limits`, failures in `fault::Fault` and
+  admission metadata in `protocol::Admission`. Rust callers must update imports,
+  use `source::request::decode` instead of `SourceRequest::decode`, and pass a
+  validated `SourceOperation` to `Service::start` instead of the request envelope.
+  Old Rust paths and signatures are not retained. The executable interface,
+  `syntax-highlight/v4` JSON/RPC contract and resource limits are unchanged.
+
 ## [0.3.0] - 2026-11-03
 
 ### Breaking changes

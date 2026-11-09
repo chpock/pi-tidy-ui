@@ -1,57 +1,16 @@
 //! Theme-independent parser continuation. Reply dictionaries never live in idle leases.
 //! Syntect's private parser/lexer heaps and its transient operation Vec are outside
 //! controlled allocation policy. The latter is measured and dropped within each line call.
-use crate::{
-    protocol::{Counters, Fault, SyntaxHint},
-    vocabulary::ScopeId,
-};
+use super::model::{Counters, SourceChunk, SyntaxHint};
+use crate::{fault::Fault, limits::Limits, vocabulary::ScopeId};
 use std::{collections::hash_map::RandomState, hash::BuildHasher, mem::size_of, sync::OnceLock};
 use syntect::parsing::{
     ClearAmount, ParseState, Scope, ScopeStack, ScopeStackOp, SyntaxReference, SyntaxSet,
 };
 
-#[derive(Clone, Debug)]
-pub struct Limits {
-    pub source_bytes: usize,
-    pub line_bytes: usize,
-    pub leases: usize,
-    pub per_scope: usize,
-    pub state_pool_bytes: usize,
-    pub runs: usize,
-    pub quantum_ms: u64,
-    pub idle_ms: u64,
-    pub age_ms: u64,
-}
-impl Default for Limits {
-    fn default() -> Self {
-        Self {
-            source_bytes: crate::limits::SOURCE_BYTES,
-            line_bytes: crate::request::LINE_BYTES,
-            leases: crate::limits::LEASES,
-            per_scope: crate::limits::LEASES_PER_ROUTE,
-            state_pool_bytes: crate::limits::STATE_BYTES,
-            runs: crate::limits::RUNS,
-            quantum_ms: 2,
-            idle_ms: crate::limits::IDLE_MS,
-            age_ms: crate::limits::AGE_MS,
-        }
-    }
-}
 /// Opaque parser incarnation, independent of the service's wire lease/generation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Lease(u64);
-#[derive(Debug)]
-pub struct SourceChunk {
-    pub revision: u32,
-    pub source_bytes: u32,
-    pub committed_bytes: u32,
-    pub replace_from: u32,
-    /// Front-coded reply-local rows. Positive run IDs are one-based positions here.
-    pub contexts: Vec<Vec<u32>>,
-    /// [positive byte length, reply-local context ID]; zero means unclassified.
-    pub runs: Vec<[u32; 2]>,
-    pub counters: Counters,
-}
 #[derive(Default)]
 struct Budget {
     held: usize,
@@ -497,9 +456,13 @@ struct Record {
 }
 /// Worker-local !Send parser ownership. The service must discard failed/cancelled work.
 /// The caller holds the largest accepted reservation until this Work is consumed.
+/// ```
+/// use occipital::source::Work;
+/// let _ = std::mem::size_of::<Work>();
+/// ```
 /// ```compile_fail
 /// fn require_send<T: Send>() {}
-/// require_send::<occipital::semantic_engine::Work>();
+/// require_send::<occipital::source::Work>();
 /// ```
 pub struct Work {
     state: State,

@@ -2,10 +2,8 @@
 use crate::{
     actor::PoolStats,
     ingress::{CONTROL_REPLY_BYTES, CONTROL_REQUEST_BYTES},
-    limits,
-    request::{BATCH_SOURCES, QUEUE_WAIT_MS},
+    limits::{self, Limits, BATCH_SOURCES, QUEUE_WAIT_MS},
     semantic::{CAPABILITY, PROTOCOL_VERSION},
-    semantic_engine::Limits,
     vocabulary,
 };
 use serde::Serialize;

@@ -28,8 +28,8 @@ pub enum Error {
 }
 impl Error {
     /// Every failure is before source work and before any selector/scope materialization.
-    pub fn fault(self) -> crate::protocol::Fault {
-        crate::protocol::Fault::not_started(match self {
+    pub fn fault(self) -> crate::fault::Fault {
+        crate::fault::Fault::not_started(match self {
             Self::UnknownScope => "unknown_scope",
             Self::AllocationLimit => "data_limit",
             Self::InvalidRules | Self::RuleLimit => "invalid_rules",

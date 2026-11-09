@@ -2,13 +2,12 @@
 use occipital::{
     actor::ActorPool,
     credit::Budget,
+    fault::Fault,
     ingress::Incoming,
-    limits,
-    protocol::{Fault, SyntaxHint},
+    limits::{self, Limits},
     semantic::{Bounds, ContextPlan},
-    semantic_engine::{Engine, Limits, SourceChunk, Work},
     semantic_reply,
-    source_request::SourceRequest,
+    source::{request, Engine, SourceChunk, SyntaxHint, Work},
     vocabulary,
 };
 use serde_json::{json, value::RawValue, Value};
@@ -55,7 +54,7 @@ fn source_batch_shares_bytes_and_logical_lines_before_owned_payload_admission() 
             .map(|(i, t)| source(i, t))
             .collect::<Vec<_>>()));
         let mut grants = 0;
-        let result = SourceRequest::decode(&input, "limits", usize::MAX, &mut |_| {
+        let result = request::decode(&input, "limits", usize::MAX, &mut |_| {
             grants += 1;
             true
         });
@@ -68,7 +67,7 @@ fn source_batch_shares_bytes_and_logical_lines_before_owned_payload_admission() 
         "\0".repeat(bytes),
     ] {
         let input = request(json!([source(0, &text)]));
-        assert!(SourceRequest::decode(&input, "limits", usize::MAX, &mut |_| true).is_ok());
+        assert!(request::decode(&input, "limits", usize::MAX, &mut |_| true).is_ok());
     }
 }
 

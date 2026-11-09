@@ -46,7 +46,7 @@ async fn worker_expiry_runs_without_new_requests_or_an_idle_poll() {
     let pool = ActorPool::with_limits(
         "boot".into(),
         1,
-        occipital::semantic_engine::Limits {
+        occipital::limits::Limits {
             // This test exercises the nearest-expiry receive, not a sub-cold-parse
             // TTL. A 10ms lease can validly expire before the first acknowledgement.
             idle_ms: 500,

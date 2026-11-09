@@ -1,7 +1,7 @@
 //! Opt-in semantic parser and retained-source engineering probe; prints counters, never source.
 use occipital::{
-    protocol::SyntaxHint,
-    semantic_engine::{Engine, Limits, SourceChunk, Work},
+    limits::Limits,
+    source::{Engine, SourceChunk, SyntaxHint, Work},
 };
 use serde::Serialize;
 use serde_json::json;
