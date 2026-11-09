@@ -5,12 +5,14 @@ use crate::{
     control::Authority,
     fault::Fault,
     frame,
-    ingress::{self, ControlDelivery, Incoming, CONTROL_REQUEST_BYTES},
-    limits::WIRE_BYTES,
-    reply::REPLY_BYTES,
+    ingress::{ControlDelivery, Incoming},
+    limits::{CONTROL_REQUEST_BYTES, WIRE_BYTES},
+    protocol::{
+        probe,
+        reply::{self, REPLY_BYTES},
+        PROTOCOL_VERSION,
+    },
     scheduler::{Delivery, Ticket},
-    semantic::PROTOCOL_VERSION,
-    semantic_reply,
 };
 use serde::Deserialize;
 use std::{
@@ -71,7 +73,7 @@ fn cancellation(bytes: &[u8]) -> Option<String> {
     .then_some(value.cancel)
 }
 fn error(authority: &Authority, ticket: &str, fault: Fault) -> Result<Payload, Fault> {
-    semantic_reply::error::<()>(ticket, authority.instance(), fault)
+    reply::error::<()>(ticket, authority.instance(), fault)
         .encode()
         .map(Payload::Error)
 }
@@ -212,7 +214,7 @@ pub async fn run(authority: Arc<Authority>, route: Route) -> Result<(), Fault> {
                     if let Some(cancel) = registry.lock().expect("pipe registry poisoned").get(&ticket) { cancel.cancel(); }
                     continue;
                 }
-                let Some(correlation) = ingress::routing_ticket(&bytes) else { break Err(Fault::not_started("invalid_request")); };
+                let Some(correlation) = probe::routing_ticket(&bytes) else { break Err(Fault::not_started("invalid_request")); };
                 if registry.lock().expect("pipe registry poisoned").contains_key(&correlation) {
                     break Err(Fault::not_started("invalid_request"));
                 }

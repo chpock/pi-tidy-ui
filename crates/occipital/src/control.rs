@@ -4,8 +4,7 @@ use crate::{
     fault::Fault,
     ingress::{Control, ControlDelivery},
     limits::Limits,
-    runtime_request::Operation,
-    semantic_description,
+    protocol::{description, request::Operation},
 };
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -42,9 +41,6 @@ impl Authority {
             return control.error(&self.instance, Fault::not_started("invalid_request"));
         }
         let stats = self.pool.stats()?;
-        control.reply(
-            &self.instance,
-            semantic_description::describe(&self.limits, stats),
-        )
+        control.reply(&self.instance, description::describe(&self.limits, stats))
     }
 }

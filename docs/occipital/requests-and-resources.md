@@ -9,7 +9,7 @@ This chapter follows those transitions. The [protocol reference](protocol.md) ow
 Consider a valid `stream.open` on an already-bound route:
 
 1. The transport supplies a complete application body to `actor.rs` through `Route::receive`.
-2. `ingress.rs` inspects a borrowed routing header and selects the DATA lane.
+2. `ingress.rs` uses the borrowed header probe from `protocol/probe.rs` and selects the DATA lane.
 3. `scheduler.rs` reserves a physical route job and decoding allowance. `runtime_request.rs` and `source/request.rs` validate the complete operation before allocating its owned source payload.
 4. The route submits the owned request to its assigned parser worker. The worker places it in that route’s queue.
 5. When the route receives a turn, the scheduler passes only the validated `SourceOperation` to `source/service.rs`, which prepares a job and creates its continuation binding. Correlation/admission metadata and request credit remain caller responsibilities; parser state remains worker-local.
@@ -22,11 +22,11 @@ A finite `highlight` follows the same request and delivery path without leaving 
 
 ## Routing is not authoritative validation
 
-The routing probe in `ingress.rs` answers a deliberately small question: which operation and correlation ticket does this body appear to contain? It borrows raw JSON values rather than constructing a general JSON tree or materializing source text. It handles valid JSON escapes in field names and tickets.
+The routing probe in `protocol/probe.rs` answers a deliberately small question: which operation and correlation ticket does this body appear to contain? It borrows raw JSON values rather than constructing a general JSON tree or materializing source text. It handles valid JSON escapes in field names and tickets.
 
 Before that probe, a quote- and escape-aware scanner bounds nesting. This is separate from typed request validation: the raw/ignored-value JSON scanner has its own nesting storage, so a later typed decoder’s recursion guard is not sufficient protection for the earlier probe.
 
-A recovered ticket permits a correlated refusal; it does not make the request valid. The authoritative decoders subsequently check operation shape, required and forbidden fields, identity, numbers, strings and operation-specific limits. `wire.rs` supplies the shared primitive checks. Numeric checks follow the protocol’s JSON number interpretation rather than assuming that integer-valued inputs must use integer-looking tokens.
+A recovered ticket permits a correlated refusal; it does not make the request valid. The authoritative decoders subsequently check operation shape, required and forbidden fields, identity, numbers, strings and operation-specific limits. `protocol/wire.rs` supplies the shared primitive checks; common operation names and source-free CONTROL decoding live in `protocol/request.rs`. Numeric checks follow the protocol’s JSON number interpretation rather than assuming that integer-valued inputs must use integer-looking tokens.
 
 ### SOURCE allocation
 
@@ -54,7 +54,7 @@ When the worker receives the request’s turn, `scheduler.rs::prepare_styles` in
 
 The separation lets a route obtain descriptor metadata while its DATA slots remain occupied by computation or undelivered results. There is no theme-catalogue, profile-admission or refresh work in the current protocol.
 
-`semantic_description.rs` builds descriptors from the process's fixed grammar/vocabulary identity, configured engine limits and runtime counters. It does not parse source, compile caller rules or resolve card palettes merely to answer a metadata request. The counters describe their particular owners; a descriptor is not a barrier proving that all previously submitted DATA work has settled.
+`protocol/description.rs` builds descriptors from the process's fixed grammar/vocabulary identity, shared configured limits and pure `stats::PoolStats` observations. Runtime supplies the same field-identical pool/ledger snapshots; representation does not depend on a pool handle, ingress implementation or concrete credit guard. It does not parse source, compile caller rules or resolve card palettes merely to answer a metadata request. The counters describe their particular owners; a descriptor is not a barrier proving that all previously submitted DATA work has settled.
 
 ## What a credit owns
 
@@ -109,9 +109,9 @@ If the next queued operation targets that lease, the route is blocked until the 
 
 ## Encoding and transport delivery
 
-`source/model.rs` owns typed SOURCE result values, and private `source/reply.rs` implements their flat serialization. `semantic_reply.rs` composes typed DATA results with their common envelope; `reply.rs` writes that envelope directly through a bounded JSON writer. SOURCE run pairs are serialized directly rather than first being copied into an intermediate JSON value tree.
+`source/model.rs` owns typed SOURCE result values, and private `source/reply.rs` implements their flat serialization. The scheduler's success finalization accepts either computation's serializable body directly; there is no additional DATA serialization enum. `protocol/reply.rs` composes the generic envelope and writes it through one bounded JSON writer. SOURCE run pairs are serialized directly rather than first being copied into an intermediate JSON value tree.
 
-The writer checks the encoded ceiling while writing. When its output vector needs more capacity, it grows the request’s allowance before reserving that capacity. Structured results and encoded bytes can coexist during serialization, so both must remain funded until the structured reply is destroyed.
+The writer checks the encoded ceiling while writing and asks one boolean authorization hook for each new absolute output capacity before reserving it. `runtime::encoding::encode` captures the request's existing byte base once and authorizes base plus capacity through the same live credit; overflow or denied growth maps to started `data_limit`, not the ledger's `busy` refusal. Byte-ceiling failure remains started `reply_limit`. Unfunded encoding uses the same bounded writer without a ledger. Structured results and encoded bytes can coexist during serialization, so both must remain funded until the structured reply is destroyed; the caller retains credit with the returned buffer through settlement.
 
 For a successful SOURCE result, the scheduler then:
 

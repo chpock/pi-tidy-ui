@@ -1,9 +1,10 @@
 //! Source-free v4 negotiation. Neither style matching nor source parsing runs here.
+use super::{CAPABILITY, PROTOCOL_VERSION};
 use crate::{
-    actor::PoolStats,
-    ingress::{CONTROL_REPLY_BYTES, CONTROL_REQUEST_BYTES},
-    limits::{self, Limits, BATCH_SOURCES, QUEUE_WAIT_MS},
-    semantic::{CAPABILITY, PROTOCOL_VERSION},
+    limits::{
+        self, Limits, BATCH_SOURCES, CONTROL_REPLY_BYTES, CONTROL_REQUEST_BYTES, QUEUE_WAIT_MS,
+    },
+    stats::PoolStats,
     vocabulary,
 };
 use serde::Serialize;

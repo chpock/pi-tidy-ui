@@ -5,15 +5,16 @@ use super::{
 };
 use crate::{
     fault::Fault,
-    semantic::PROTOCOL_VERSION,
+    protocol::{
+        wire::{admission, decode, fingerprint, invalid, present, text, unsigned},
+        Admission, PROTOCOL_VERSION,
+    },
     vocabulary,
-    wire::{admission, decode, fingerprint, invalid, present, text, unsigned},
 };
 use serde::Deserialize;
 use serde_json::value::RawValue;
 use std::borrow::Cow;
 
-use crate::protocol::Admission;
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Request<'a> {

@@ -86,7 +86,7 @@ The daemon never uses cancellation or route disappearance as permission to mutat
 
 ## Descriptor control lane
 
-`describe` uses source-free CONTROL authority so capability negotiation and bounded runtime observations do not depend on DATA queue completion. The descriptor is fixed for the process incarnation: grammar/vocabulary identity and protocol revisions do not change during its lifetime. There is no filesystem theme load, mutable catalogue publication or profile refresh. Palette selection and preview are local consumer responsibilities.
+`describe` uses source-free CONTROL authority so capability negotiation and bounded runtime observations do not depend on DATA queue completion. Runtime observes its pool and supplies shared `stats::PoolStats`/`Snapshot` values and configured limits to `protocol::description`; the protocol representation owns no pool handle or credit ledger. These are ordinary owner snapshots, not a DATA barrier. The descriptor is fixed for the process incarnation: grammar/vocabulary identity and protocol revisions do not change during its lifetime. There is no filesystem theme load, mutable catalogue publication or profile refresh. Palette selection and preview are local consumer responsibilities.
 
 ## Shutdown and reporting
 
@@ -98,4 +98,4 @@ Fatal startup/runtime failure writes only `occipital stopped: <safe-code>` to st
 
 ## Implementation map
 
-`crates/occipital/src/main.rs` composes the process; `actor.rs` owns worker/route authority; `stdio.rs` and `shared.rs` adapt carriers; `frame.rs` handles direct framing; `control.rs` serves the fixed descriptor. None of these files chooses Toolview palette selection, visibility, fallback or UI retry policy.
+`crates/occipital/src/main.rs` composes the process; `actor.rs` owns worker/route authority; `stdio.rs` and `shared.rs` adapt carriers; `frame.rs` handles direct framing; `control.rs` supplies descriptor authority and observations. `protocol/` owns pure operation/CONTROL decoding, routing/depth probes, common envelopes/bounded serialization and descriptor values. `runtime/encoding.rs` connects output capacity to the existing credit, while `stats.rs` holds shared observations and `limits.rs` holds immutable policy. None of these files chooses Toolview palette selection, visibility, fallback or UI retry policy.

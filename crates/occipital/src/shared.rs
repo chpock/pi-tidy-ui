@@ -3,10 +3,8 @@ use crate::{
     actor::{PoolHandle, Route},
     control::Authority,
     fault::Fault,
-    ingress::{self, Incoming},
-    protocol::SERVICE,
-    semantic::CAPABILITY,
-    semantic_reply,
+    ingress::Incoming,
+    protocol::{probe, reply, CAPABILITY, SERVICE},
 };
 use std::{
     collections::HashMap,
@@ -38,8 +36,7 @@ impl Handler {
     fn fault(&self, ticket: Option<&str>, fault: Fault) -> HandlerOutcome {
         match ticket {
             Some(ticket) => {
-                match semantic_reply::error::<()>(ticket, self.authority.instance(), fault).encode()
-                {
+                match reply::error::<()>(ticket, self.authority.instance(), fault).encode() {
                     Ok(bytes) => HandlerOutcome::Response(bytes),
                     Err(_) => HandlerOutcome::Error {
                         code: "reply_limit".into(),
@@ -91,7 +88,7 @@ impl ModuleHandler for Handler {
         self.close_all();
     }
     async fn handle(&self, ctx: RequestCtx, body: Vec<u8>) -> HandlerOutcome {
-        let correlation = ingress::routing_ticket(&body);
+        let correlation = probe::routing_ticket(&body);
         if !self.authority.is_alive() {
             return self.fault(correlation.as_deref(), Fault::not_started("scope_gone"));
         }

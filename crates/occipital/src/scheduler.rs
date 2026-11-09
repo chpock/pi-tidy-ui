@@ -1,14 +1,17 @@
 //! Fair worker-local quanta shared by source and style work in both transports.
 use crate::{
-    credit::{Budget, Credit, Snapshot},
+    credit::{Budget, Credit},
     fault::Fault,
     limits::Limits,
+    protocol::reply,
     protocol::Admission,
+    runtime::encoding,
     runtime_request::DataRequest,
-    semantic_reply::{self, DataBody},
     source::{request::SourceRequest, Action, Job as SourceJob, Service},
+    stats::Snapshot,
     style::{request::StyleRequestPlan, StyleFailure, StyleWork},
 };
+use serde::Serialize;
 use std::{
     collections::{HashMap, VecDeque},
     sync::{
@@ -593,10 +596,7 @@ impl Scheduler {
             return None;
         }
         if let Some(body) = body {
-            self.finish_success(
-                Finalization::source(envelope, funding, job),
-                DataBody::Source(body),
-            );
+            self.finish_success(Finalization::source(envelope, funding, job), body);
             None
         } else {
             Some(Waiting::running(envelope, Active::Source { job, funding }))
@@ -608,10 +608,7 @@ impl Scheduler {
             Ok(false) => return Some(Waiting::running(envelope, Active::Styles(work))),
             Ok(true) => match work.finish() {
                 Ok((body, credit)) => {
-                    self.finish_success(
-                        Finalization::plain(envelope, credit),
-                        DataBody::Styles(body),
-                    );
+                    self.finish_success(Finalization::plain(envelope, credit), body);
                 }
                 Err(failure) => self.finish_style_error(envelope, failure),
             },
@@ -669,7 +666,7 @@ impl Scheduler {
                         funding,
                         source: None,
                     },
-                    DataBody::Source(body),
+                    body,
                 );
                 None
             }
@@ -715,18 +712,18 @@ impl Scheduler {
         drop(bytes);
         StyleWork::new(contexts, &resolver, fingerprint, credit)
     }
-    fn finish_success(&mut self, finalization: Finalization, body: DataBody) {
+    fn finish_success(&mut self, finalization: Finalization, body: impl Serialize) {
         self.finish_success_bounded(finalization, body, crate::limits::DATA_WIRE_BYTES);
     }
     fn finish_success_bounded(
         &mut self,
         mut finalization: Finalization,
-        body: DataBody,
+        body: impl Serialize,
         cap: usize,
     ) {
         let encoded = {
-            let reply = semantic_reply::ok(&finalization.envelope.ticket, &self.instance, body);
-            reply.encode_with_credit(&mut finalization.funding.credit, cap)
+            let reply = reply::ok(&finalization.envelope.ticket, &self.instance, body);
+            encoding::encode(&reply, &mut finalization.funding.credit, cap)
         };
         let bytes = match encoded {
             Ok(bytes) => bytes,
@@ -790,7 +787,7 @@ fn deliver_error(instance: &str, envelope: Envelope, mut credit: Credit, fault: 
     credit
         .resize(4096)
         .expect("prepaid error floor survives state handoff");
-    let bytes = semantic_reply::error::<()>(&envelope.ticket, instance, fault)
+    let bytes = reply::error::<()>(&envelope.ticket, instance, fault)
         .encode_with_cap(4096)
         .expect("bounded fixed error envelope fits prepaid floor");
     credit.resize(bytes.capacity()).expect("encoded allowance");
@@ -969,11 +966,7 @@ mod integration_tests {
         assert_eq!(scheduler.leases(), 1);
         // Same bounded writer/failure/cleanup path with a scaled response cap,
         // rather than generating an unrelated64MiB traffic campaign.
-        scheduler.finish_success_bounded(
-            Finalization::source(envelope, funding, job),
-            DataBody::Source(body),
-            128,
-        );
+        scheduler.finish_success_bounded(Finalization::source(envelope, funding, job), body, 128);
         let reply = ticket.try_take().unwrap().unwrap();
         let value: Value = serde_json::from_slice(reply.bytes()).unwrap();
         assert_eq!(value["v"], 4);

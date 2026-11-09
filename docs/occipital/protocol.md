@@ -4,6 +4,8 @@ This reference describes the coordinated v4 native producer, stdio/shared adapte
 
 Controlled-allocation accounting is not an allocator/private-heap/RSS guarantee. Neither this protocol nor its bounded cooperative scheduler guarantees arbitrary-language latency or dense 10 MiB full-card admission.
 
+The Rust `protocol` module owns wire identity, common request operations/CONTROL decoding, routing probes, generic reply envelopes and descriptor representation. Bounded encoding accepts capacity authorization without requiring a concrete ledger; `runtime::encoding::encode` supplies existing request credit. Shared observations are `stats::{PoolStats, Snapshot}`. These Rust boundaries do not change the executable JSON/RPC contract.
+
 ## Authority and transport
 
 ### Version, identities and carriers

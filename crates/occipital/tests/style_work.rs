@@ -1,6 +1,7 @@
 use occipital::{
     credit::Budget,
-    semantic_reply,
+    protocol::reply,
+    runtime::encoding,
     style::{resolver::Resolver, Expression, Ink, StyleFailure, StyleWork},
     vocabulary::ScopeId,
 };
@@ -29,7 +30,7 @@ fn queued_work_survives_definition_release_deduplicates_and_keeps_credit_through
     )
     .unwrap();
     let prepared = budget.snapshot().bytes;
-    // One depth-1 cursor is 696 bytes, plus path 16, indices 12 and result allowance 512.
+    // Existing credit 1024, depth-1 cursor 696, path 16, indices 12 and result allowance 512.
     assert_eq!(prepared, 2260);
     assert_eq!(budget.snapshot().jobs, 1);
     assert_eq!(budget.snapshot().queued, 0);
@@ -128,9 +129,12 @@ fn settle_error(mut failure: StyleFailure, budget: &Budget) {
     // Partial context/cursor/result payloads were destroyed by error handoff.
     // Keep the physical slot, and replace their allowance with encoded bytes.
     failure.credit.resize(0).unwrap();
-    let bytes = semantic_reply::error::<()>("ticket", "instance", failure.fault)
-        .encode_with_credit(&mut failure.credit, 4096)
-        .unwrap();
+    let bytes = encoding::encode(
+        &reply::error::<()>("ticket", "instance", failure.fault),
+        &mut failure.credit,
+        4096,
+    )
+    .unwrap();
     assert_eq!(budget.snapshot().bytes, bytes.capacity());
     assert_eq!(budget.snapshot().jobs, 1);
     assert!(budget.reserve(Some("route"), 0).is_err());

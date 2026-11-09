@@ -132,7 +132,7 @@ async fn escaped_header_keys_and_reverse_control_data_overlap_remain_valid() {
 
 #[test]
 fn routing_probe_bounds_ignored_nesting_without_confusing_source_quotes_or_braces() {
-    use occipital::ingress::routing_ticket;
+    use occipital::protocol::probe::routing_ticket;
     let deep = format!(
         "{{\"ticket\":\"depth\",\"op\":\"highlight\",\"future\":{}null{}}}",
         "[".repeat(64),

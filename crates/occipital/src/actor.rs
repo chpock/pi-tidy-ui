@@ -1,11 +1,13 @@
 //! Fixed owning threads around the same worker-local scheduler in both I/O modes.
 //! Only owned requests and guarded encoded replies cross threads.
 use crate::{
-    credit::{Budget, Snapshot},
+    credit::Budget,
     fault::Fault,
     ingress::{self, Incoming, Prepared, Rejection, CONTROL_RESERVATION},
     limits::Limits,
+    protocol::probe,
     scheduler::{Scheduler, Submission, Ticket, Wake},
+    stats::PoolStats,
 };
 use std::{
     collections::HashMap,
@@ -105,7 +107,7 @@ impl Route {
     }
     pub fn receive(&self, bytes: Vec<u8>) -> Result<Incoming, Rejection> {
         let hub = self.live().map_err(|fault| Rejection {
-            ticket: ingress::routing_ticket(&bytes),
+            ticket: probe::routing_ticket(&bytes),
             fault,
         })?;
         let sender = hub.fronts[self.0.worker].sender.clone();
@@ -191,14 +193,6 @@ struct Completion {
 pub struct ActorPool {
     hub: Arc<Hub>,
     completions: Vec<Completion>,
-}
-#[derive(Clone, Copy, Debug)]
-pub struct PoolStats {
-    pub credits: Snapshot,
-    pub control_credits: Snapshot,
-    pub workers: usize,
-    pub routes: usize,
-    pub leases: usize,
 }
 impl ActorPool {
     pub fn new(instance: String, workers: usize) -> Result<Self, Fault> {

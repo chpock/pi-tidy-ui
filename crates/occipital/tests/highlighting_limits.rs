@@ -5,7 +5,8 @@ use occipital::{
     fault::Fault,
     ingress::Incoming,
     limits::{self, Limits},
-    semantic_reply,
+    protocol::reply,
+    runtime::encoding,
     source::{request, Engine, SourceChunk, SyntaxHint, Work},
     style::contexts::{Bounds, ContextPlan},
     vocabulary,
@@ -183,12 +184,12 @@ async fn data_frame_refusal_recovers_ticket_without_spending_physical_credit() {
 fn data_reply_writer_stops_at_policy_cap_while_control_encoding_keeps_emergency_guard() {
     let budget = Budget::new(limits::DATA_BYTES, 1, 1);
     let mut credit = budget.reserve(Some("r"), 0).unwrap();
-    let reply = semantic_reply::ok("t", "limits", json!({"text":"x".repeat(524288)}));
+    let reply = reply::ok("t", "limits", json!({"text":"x".repeat(524288)}));
     assert!(
         reply.encode().is_ok(),
         "generic source-free writer retains emergency cap"
     );
-    let result = reply.encode_with_credit(&mut credit, 524288);
+    let result = encoding::encode(&reply, &mut credit, 524288);
     assert_eq!(result.unwrap_err(), Fault::started("reply_limit"));
     assert!(budget.snapshot().bytes <= 524288);
     assert_eq!(budget.snapshot().jobs, 1);

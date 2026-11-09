@@ -1,7 +1,7 @@
 //! Actual executable, framed pipes and native Syntect state.
 mod support;
 
-use occipital::{frame, limits::WIRE_BYTES, reply::REPLY_BYTES};
+use occipital::{frame, limits::WIRE_BYTES, protocol::reply::REPLY_BYTES};
 use serde_json::{json, Value};
 use std::{
     io::{Read, Write},

@@ -3,8 +3,10 @@
 use super::model::{SourceInput, SourceOperation, SyntaxHint};
 use crate::{
     fault::Fault,
-    protocol::Admission,
-    wire::{admission, decode as decode_json, invalid, present, text, unsigned},
+    protocol::{
+        wire::{admission, decode as decode_json, invalid, present, text, unsigned},
+        Admission,
+    },
 };
 use serde::{de, Deserialize};
 use serde_json::value::RawValue;
@@ -181,7 +183,7 @@ pub fn decode(
     }
     let source_cap = source_cap.min(crate::limits::SOURCE_BYTES);
     let r: RawRequest<'_> = decode_json(raw)?;
-    if unsigned(r.v, u32::MAX)? != crate::semantic::PROTOCOL_VERSION {
+    if unsigned(r.v, u32::MAX)? != crate::protocol::PROTOCOL_VERSION {
         return Err(Fault::not_started("protocol_mismatch"));
     }
     if text(r.instance, 64)?.as_ref() != instance {

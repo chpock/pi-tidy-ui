@@ -1,5 +1,6 @@
 //! Shared JSON replies; adapters hand these exact encoded bytes to their transport.
-use crate::fault::Fault;
+use super::PROTOCOL_VERSION;
+use crate::{fault::Fault, vocabulary};
 use serde::Serialize;
 
 pub const REPLY_BYTES: usize = crate::limits::WIRE_BYTES;
@@ -48,28 +49,19 @@ impl<'a, T: Serialize> Reply<'a, T> {
         self.encode_with_cap(REPLY_BYTES)
     }
     pub(crate) fn encode_with_cap(&self, cap: usize) -> Result<Vec<u8>, Fault> {
-        self.encode_bounded(cap, None)
+        self.encode_bounded(cap, |_| true)
     }
-    /// The owner retains this credit alongside the encoded buffer until transport
-    /// settlement. Growth adds actual buffer capacity, not a whole reply ceiling.
-    pub fn encode_with_credit(
-        &self,
-        credit: &mut crate::credit::Credit,
-        cap: usize,
-    ) -> Result<Vec<u8>, Fault> {
-        self.encode_bounded(cap.min(REPLY_BYTES), Some(credit))
-    }
-    fn encode_bounded(
+    /// Authorize each new absolute output capacity before allocation. Any funding
+    /// must remain owned by the caller alongside the body and returned bytes.
+    pub fn encode_bounded(
         &self,
         cap: usize,
-        credit: Option<&mut crate::credit::Credit>,
+        authorize: impl FnMut(usize) -> bool,
     ) -> Result<Vec<u8>, Fault> {
-        let base = credit.as_ref().map_or(0, |credit| credit.bytes());
         let mut writer = LimitedWriter {
             bytes: Vec::new(),
-            cap,
-            credit,
-            base,
+            cap: cap.min(REPLY_BYTES),
+            authorize,
             failure: "reply_limit",
         };
         if serde_json::to_writer(&mut writer, self).is_err() {
@@ -78,14 +70,13 @@ impl<'a, T: Serialize> Reply<'a, T> {
         Ok(writer.bytes)
     }
 }
-struct LimitedWriter<'a> {
+struct LimitedWriter<F> {
     bytes: Vec<u8>,
     cap: usize,
-    credit: Option<&'a mut crate::credit::Credit>,
-    base: usize,
+    authorize: F,
     failure: &'static str,
 }
-impl std::io::Write for LimitedWriter<'_> {
+impl<F: FnMut(usize) -> bool> std::io::Write for LimitedWriter<F> {
     fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
         if bytes.len() > self.cap.saturating_sub(self.bytes.len()) {
             return Err(std::io::Error::other("reply byte limit"));
@@ -95,12 +86,9 @@ impl std::io::Write for LimitedWriter<'_> {
             let capacity = needed
                 .max(self.bytes.capacity().saturating_mul(2))
                 .min(self.cap);
-            if let Some(credit) = &mut self.credit {
-                let total = self.base.checked_add(capacity);
-                if total.is_none_or(|total| credit.resize(total).is_err()) {
-                    self.failure = "data_limit";
-                    return Err(std::io::Error::other("reply allocation credit"));
-                }
+            if !(self.authorize)(capacity) {
+                self.failure = "data_limit";
+                return Err(std::io::Error::other("reply allocation credit"));
             }
             self.bytes.reserve_exact(capacity - self.bytes.len());
         }
@@ -112,25 +100,74 @@ impl std::io::Write for LimitedWriter<'_> {
     }
 }
 
+pub fn ok<'a, T>(ticket: &'a str, instance: &'a str, body: T) -> Reply<'a, T> {
+    Reply {
+        v: PROTOCOL_VERSION,
+        ticket,
+        instance,
+        assets: vocabulary::ASSET_FINGERPRINT,
+        outcome: Outcome::Ok { body },
+    }
+}
+pub fn error<'a, T>(ticket: &'a str, instance: &'a str, fault: Fault) -> Reply<'a, T> {
+    Reply {
+        v: PROTOCOL_VERSION,
+        ticket,
+        instance,
+        assets: vocabulary::ASSET_FINGERPRINT,
+        outcome: Outcome::Error {
+            error: fault.into(),
+        },
+    }
+}
+
 #[cfg(test)]
 mod bounded_encoding_tests {
     use serde_json::json;
+
+    #[test]
+    fn denied_growth_preserves_the_existing_buffer_and_capacity_authority() {
+        use std::{cell::Cell, io::Write};
+
+        for initial in [&b""[..], &b"01234567"[..]] {
+            let reserved = Cell::new(0);
+            {
+                let mut writer = super::LimitedWriter {
+                    bytes: Vec::new(),
+                    cap: 4096,
+                    authorize: |capacity| {
+                        if capacity > initial.len() {
+                            return false;
+                        }
+                        reserved.set(capacity);
+                        true
+                    },
+                    failure: "reply_limit",
+                };
+                writer.write_all(initial).unwrap();
+                assert!(writer.write_all(b"x").is_err());
+                assert_eq!(writer.bytes.as_slice(), initial);
+                assert_eq!(writer.bytes.capacity(), initial.len());
+                assert_eq!(writer.failure, "data_limit");
+            }
+            assert_eq!(reserved.get(), initial.len());
+        }
+    }
 
     #[test]
     fn writer_enforces_encoded_bytes_including_escape_amplification() {
         // Exercise the production writer with a scaled cap, not a 64 MiB corpus.
         let cap = 2048;
         for text in ["a".repeat(cap), "\u{0}".repeat(cap / 6)] {
-            let error = crate::semantic_reply::ok("ticket", "instance", json!({"text":text}))
+            let error = super::ok("ticket", "instance", json!({"text":text}))
                 .encode_with_cap(cap)
                 .unwrap_err();
             assert_eq!(error.code, "reply_limit");
             assert!(error.started);
         }
-        let bytes =
-            crate::semantic_reply::ok("ticket", "instance", json!({"text":"a".repeat(cap-512)}))
-                .encode_with_cap(cap)
-                .unwrap();
+        let bytes = super::ok("ticket", "instance", json!({"text":"a".repeat(cap-512)}))
+            .encode_with_cap(cap)
+            .unwrap();
         assert!(bytes.len() <= cap);
     }
 }

@@ -1,18 +1,10 @@
 //! Shared reservations for controlled application payloads, not a claim about private parser heaps.
-use crate::fault::Fault;
+use crate::{fault::Fault, stats::Snapshot};
 use std::{
     collections::HashMap,
     sync::{Arc, Mutex},
 };
 
-#[derive(Clone, Copy, Debug, Default)]
-pub struct Snapshot {
-    pub bytes: usize,
-    pub jobs: usize,
-    pub peak_bytes: usize,
-    pub peak_jobs: usize,
-    pub queued: usize,
-}
 struct State {
     limits: (usize, usize, usize),
     stats: Snapshot,

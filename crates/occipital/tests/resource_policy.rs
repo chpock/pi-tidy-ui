@@ -3,7 +3,7 @@ use occipital::{
     actor::ActorPool,
     ingress::Incoming,
     limits::{Limits, SOURCE_BYTES, WIRE_BYTES},
-    reply::REPLY_BYTES,
+    protocol::reply::REPLY_BYTES,
     source::{Engine, SourceChunk, SyntaxHint, Work},
 };
 use serde_json::{json, Value};

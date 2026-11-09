@@ -4,6 +4,8 @@ pub const SOURCE_BYTES: usize = 64 << 10;
 pub const SOURCE_LINES: usize = 8192;
 pub const PI_SOURCE_BYTES: usize = 8 << 10;
 pub const DATA_WIRE_BYTES: usize = 512 << 10;
+pub const CONTROL_REQUEST_BYTES: usize = 4096;
+pub const CONTROL_REPLY_BYTES: usize = 32 * 1024;
 pub const CONTEXT_WORDS: usize = 65536;
 pub const DECODED_BYTES: usize = 2 << 20;
 

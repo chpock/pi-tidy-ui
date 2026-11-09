@@ -17,6 +17,10 @@ Release notes before the published 0.2.0 baseline have not been reconstructed.
   rules, matching and the request adapter under `style::contexts`, `style::rules`,
   `style::resolver` and `style::request`. Replace the mixed `semantic::Error`
   with context-only `style::contexts::Error` or value-only `style::StyleError`.
+  Protocol identity, operations, descriptors and generic reply envelopes now use
+  `protocol`; pool/resource observations use `stats::{PoolStats, Snapshot}`.
+  Replace `Reply::encode_with_credit` with `runtime::encoding::encode`; SOURCE
+  and STYLE bodies serialize directly without `DataBody`.
   Old Rust paths and signatures are not retained. The executable interface,
   `syntax-highlight/v4` JSON/RPC contract and resource limits are unchanged.
 

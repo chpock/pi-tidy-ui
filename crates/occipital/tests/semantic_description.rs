@@ -1,11 +1,12 @@
 use occipital::{
-    actor::PoolStats,
-    credit::Snapshot,
-    ingress::CONTROL_REPLY_BYTES,
-    limits::{self, Limits},
-    semantic::CAPABILITY,
-    semantic_description::{self, OPERATIONS},
-    semantic_reply, vocabulary,
+    limits::{self, Limits, CONTROL_REPLY_BYTES},
+    protocol::{
+        description::{self, OPERATIONS},
+        reply, CAPABILITY,
+    },
+    runtime::encoding,
+    stats::{PoolStats, Snapshot},
+    vocabulary,
 };
 use serde_json::{json, Value};
 
@@ -30,8 +31,7 @@ fn stats() -> PoolStats {
 
 #[test]
 fn descriptor_exposes_only_protocol_v4_source_capabilities_and_generated_identities() {
-    let value =
-        serde_json::to_value(semantic_description::describe(&Limits::default(), stats())).unwrap();
+    let value = serde_json::to_value(description::describe(&Limits::default(), stats())).unwrap();
     assert_eq!(value.as_object().unwrap().len(), 15);
     assert_eq!(value["kind"], "descriptor");
     assert_eq!(value["protocol_version"], 4);
@@ -78,13 +78,16 @@ fn descriptor_keeps_control_credit_through_bounded_serialization_and_honors_acti
             source_bytes,
             ..Limits::default()
         };
-        let body = semantic_description::describe(&configured, stats());
+        let body = description::describe(&configured, stats());
         let budget = occipital::credit::Budget::new(1 << 20, 1, 1);
         let mut credit = budget.reserve(Some("control"), 0).unwrap();
         credit.started();
-        let bytes = semantic_reply::ok("ticket", "instance", body)
-            .encode_with_credit(&mut credit, CONTROL_REPLY_BYTES)
-            .unwrap();
+        let bytes = encoding::encode(
+            &reply::ok("ticket", "instance", body),
+            &mut credit,
+            CONTROL_REPLY_BYTES,
+        )
+        .unwrap();
         assert!(bytes.len() <= CONTROL_REPLY_BYTES);
         let value: Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(value["v"], 4);

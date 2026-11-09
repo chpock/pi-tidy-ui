@@ -1,5 +1,6 @@
-//! Shared borrowed v3 request primitives. No source or context materialization.
-use crate::{fault::Fault, protocol::Admission};
+//! Shared borrowed v4 request primitives. No source or context materialization.
+use super::Admission;
+use crate::fault::Fault;
 use serde::Deserialize;
 use serde_json::value::RawValue;
 use std::borrow::Cow;

@@ -2,7 +2,8 @@ use occipital::{
     credit::Budget,
     fault::Fault,
     limits::Limits,
-    semantic_reply::{self, DataBody},
+    protocol::reply,
+    runtime::encoding,
     source::{Engine, SourceBody, SourceResult, SyntaxHint},
     style::{Expression, Ink, StyleKind, Styles},
     vocabulary,
@@ -94,29 +95,12 @@ fn retained_source_metadata_and_contexts_encode_after_exact_parser_lease_close()
 
 #[test]
 fn v4_source_and_style_replies_share_the_existing_bounded_envelope_and_drain_credit() {
-    let style = Expression {
-        foreground: Ink::Binding { slot: 0 },
-        background: Ink::Inherit {},
-        attributes: 0,
-        attribute_mask: 31,
-    };
-    let bodies = [
-        DataBody::Source(SourceBody::Closed),
-        DataBody::Styles(Styles {
-            kind: StyleKind::Styles,
-            vocabulary: vocabulary::FINGERPRINT.into(),
-            rules: "b".repeat(64),
-            styles: vec![style],
-            indices: vec![1],
-        }),
-    ];
-    for (body, kind) in bodies.into_iter().zip(["closed", "styles"]) {
+    fn check(body: impl serde::Serialize, kind: &str) {
         let budget = Budget::new(1 << 20, 1, 1);
         let mut credit = budget.reserve(Some("route"), 0).unwrap();
         credit.started();
-        let bytes = semantic_reply::ok("ticket", "instance", body)
-            .encode_with_credit(&mut credit, 4096)
-            .unwrap();
+        let bytes =
+            encoding::encode(&reply::ok("ticket", "instance", body), &mut credit, 4096).unwrap();
         let value: Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(value["v"], 4);
         assert_eq!(value["assets"], vocabulary::ASSET_FINGERPRINT);
@@ -134,6 +118,23 @@ fn v4_source_and_style_replies_share_the_existing_bounded_envelope_and_drain_cre
         assert_eq!(budget.snapshot().bytes, 0);
         assert_eq!(budget.snapshot().jobs, 0);
     }
+
+    check(SourceBody::Closed, "closed");
+    check(
+        Styles {
+            kind: StyleKind::Styles,
+            vocabulary: vocabulary::FINGERPRINT.into(),
+            rules: "b".repeat(64),
+            styles: vec![Expression {
+                foreground: Ink::Binding { slot: 0 },
+                background: Ink::Inherit {},
+                attributes: 0,
+                attribute_mask: 31,
+            }],
+            indices: vec![1],
+        },
+        "styles",
+    );
 }
 
 #[test]
@@ -145,9 +146,12 @@ fn v4_errors_keep_exact_execution_evidence_and_do_not_release_the_callers_slot()
         let budget = Budget::new(4096, 1, 1);
         let mut credit = budget.reserve(Some("route"), 0).unwrap();
         credit.started();
-        let bytes = semantic_reply::error::<()>("ticket", "instance", fault)
-            .encode_with_credit(&mut credit, 4096)
-            .unwrap();
+        let bytes = encoding::encode(
+            &reply::error::<()>("ticket", "instance", fault),
+            &mut credit,
+            4096,
+        )
+        .unwrap();
         let value: Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(value["v"], 4);
         assert_eq!(value["assets"], vocabulary::ASSET_FINGERPRINT);
@@ -169,16 +173,19 @@ fn a_v4_limit_failure_keeps_admitted_credit_for_its_small_error_reply() {
     let budget = Budget::new(4096, 1, 1);
     let mut credit = budget.reserve(Some("route"), 0).unwrap();
     credit.started();
-    let too_large = semantic_reply::ok("ticket", "instance", json!({"text":"x".repeat(4096)}));
-    let fault = too_large.encode_with_credit(&mut credit, 512).unwrap_err();
+    let too_large = reply::ok("ticket", "instance", json!({"text":"x".repeat(4096)}));
+    let fault = encoding::encode(&too_large, &mut credit, 512).unwrap_err();
     assert_eq!(fault.code, "reply_limit");
     assert_eq!(budget.snapshot().jobs, 1);
     drop(too_large);
     // The failed writer already dropped its buffer; reuse the same slot/credit.
     credit.resize(0).unwrap();
-    let bytes = semantic_reply::error::<()>("ticket", "instance", fault)
-        .encode_with_credit(&mut credit, 512)
-        .unwrap();
+    let bytes = encoding::encode(
+        &reply::error::<()>("ticket", "instance", fault),
+        &mut credit,
+        512,
+    )
+    .unwrap();
     assert_eq!(
         serde_json::from_slice::<Value>(&bytes).unwrap()["error"]["code"],
         "reply_limit"
