@@ -61,6 +61,8 @@ The queued-job counter is a subset of unsettled jobs. Moving a request into prep
 
 Byte allowance can grow before allocation, shrink after objects are destroyed, or transfer to another owner in the same ledger. A transfer moves already-admitted bytes without first releasing and then reacquiring them. Physical job ownership does not transfer with those bytes.
 
+The scheduler keeps the request's correlation ticket, delivery sender and receipt in a common envelope. Its queued/running phase owns the remaining data: queued input and its credit, running SOURCE work and its funding, or a running `StyleWork` that owns the original credit itself. Consuming a phase returns the credit with its result or failure; there is no temporary empty request/job/credit combination to reconstruct. `Funding` keeps the decoded-input base and the amount transferred to persistent state alongside that same guard.
+
 ### Moving work into retained state
 
 A growing SOURCE operation can leave an idle parser checkpoint, binding strings and table capacity behind. That retained memory must outlive the request.
@@ -77,7 +79,9 @@ Each worker’s scheduler keeps a FIFO queue for each route and a separate rotat
 
 This is native route fairness, not the consumer’s newest-card-first scheduling policy.
 
-`try_now` refuses rather than joining an existing worker turn sequence. It also refuses a mutation whose lease is still held by an unacknowledged earlier SOURCE delivery. `bounded_queue` may wait, but its deadline applies while the operation is still awaiting preparation. It is not a timer that interrupts an operation after preparation begins.
+`try_now` refuses rather than joining an existing worker turn sequence. It also refuses a mutation whose lease is still held by an unacknowledged earlier SOURCE delivery. `bounded_queue` may wait, but its deadline belongs only to the queued phase. It is not a timer that interrupts an operation after preparation begins.
+
+A turn first removes cancelled entries and expired queued entries, then selects one eligible route. Preparation returns running SOURCE or STYLE work (or delivers an immediate result); computation advances one existing quantum before an unfinished job returns to its route. A `Finalization` carries credit and optional SOURCE authority into encoding or failure cleanup. A queued refusal uses that same path without implying that computation started; a successful SOURCE result may retain its job for delivery acknowledgment. These ownership types do not replace the ordering rules: preparation is not proof that execution started, buffer replacement still needs overlap funding, and actual transport settlement remains separate from computation.
 
 A full worker mailbox can also produce a correlated `busy` refusal for an already-admitted submission. That refusal still follows the credited reply path; mailbox rejection is not an excuse to detach bytes from their owner.
 

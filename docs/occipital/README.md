@@ -97,7 +97,7 @@ Controlled budgets bound admitted application work and retained logical data. Th
 
 - `main.rs`, `actor.rs`, `stdio.rs`, `shared.rs`, `frame.rs`: process, workers, routes and carriers.
 - `ingress.rs`, `runtime_request.rs`, `source_request.rs`, `style_request.rs`, `request.rs`, `wire.rs`: admission and typed operation construction.
-- `scheduler.rs`, `credit.rs`, `reply.rs`, `semantic_reply.rs`, `semantic_description.rs`, `limits.rs`: scheduling, physical credit, delivery and observations.
+- `scheduler.rs`, `credit.rs`, `reply.rs`, `semantic_reply.rs`, `semantic_description.rs`, `limits.rs`: queued/running ownership phases, fair computational turns, physical credit, delivery and observations.
 - `source_service.rs`, `semantic_engine.rs`, `semantic.rs`, `protocol.rs`: source identity, parsing, contexts and common semantic values.
 - `resolver.rs`, `style_rules.rs`, `style_work.rs`: generic rules, context qualification, resolver scoring and bounded work.
 - `build.rs`, `vocabulary_build.rs`, `vocabulary.rs`: build-time grammar assets and portable trusted scope IDs.

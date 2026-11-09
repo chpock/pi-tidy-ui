@@ -5,7 +5,7 @@ use crate::{
     runtime_request::DataRequest,
     semantic_engine::Limits,
     semantic_reply::{self, DataBody},
-    source_request::Admission,
+    source_request::{Admission, SourceRequest},
     source_service::{Action, Job as SourceJob, Service},
     style_request::StyleRequestPlan,
     style_work::{StyleFailure, StyleWork},
@@ -173,53 +173,149 @@ impl Submission {
         ))
     }
     pub(crate) fn reject(self, instance: &str, fault: Fault) {
-        deliver_error(instance, self.waiting(), fault);
-    }
-    fn waiting(self) -> Waiting {
-        let base = self.credit.bytes();
-        let ticket = self.request.ticket().to_owned();
-        let admission = self.request.admission();
-        Waiting {
-            request: Some(self.request),
-            job: None,
-            ticket,
-            admission,
-            deadline: self.deadline,
+        let envelope = Envelope {
+            ticket: self.request.ticket().to_owned(),
             sender: self.sender,
             receipt: self.receipt,
-            credit: Some(self.credit),
-            base,
+        };
+        drop(self.request);
+        deliver_error(instance, envelope, self.credit, fault);
+    }
+    fn waiting(self) -> Waiting {
+        Waiting {
+            envelope: Envelope {
+                ticket: self.request.ticket().to_owned(),
+                sender: self.sender,
+                receipt: self.receipt,
+            },
+            phase: Phase::Queued {
+                request: self.request,
+                deadline: self.deadline,
+                funding: Funding::new(self.credit),
+            },
+        }
+    }
+}
+
+struct Envelope {
+    ticket: String,
+    sender: oneshot::Sender<Delivery>,
+    receipt: Arc<Receipt>,
+}
+impl Envelope {
+    fn deliver(self, bytes: Vec<u8>, credit: Credit) {
+        let _ = self.sender.send(Delivery {
+            bytes,
+            receipt: self.receipt,
+            _credit: credit,
+        });
+    }
+}
+
+struct Funding {
+    credit: Credit,
+    base: usize,
+    transferred: usize,
+}
+impl Funding {
+    fn new(credit: Credit) -> Self {
+        Self {
+            base: credit.bytes(),
+            credit,
             transferred: 0,
         }
     }
+    fn reserve(&mut self, additional: usize) -> bool {
+        self.base
+            .checked_add(additional)
+            .and_then(|n| n.checked_sub(self.transferred))
+            .is_some_and(|n| self.credit.resize(n).is_ok())
+    }
+    // Move NET retained growth without reserving twice. Later absolute Work
+    // callbacks subtract the allowance already transferred to persistent state.
+    fn reconcile(&mut self, retained: usize, idle: &mut Credit) -> Result<(), Fault> {
+        if retained > idle.bytes() {
+            let growth = retained - idle.bytes();
+            self.credit.transfer_to(idle, growth)?;
+            self.transferred = self
+                .transferred
+                .checked_add(growth)
+                .ok_or(Fault::started("state_limit"))?;
+        } else {
+            idle.resize(retained)?;
+        }
+        Ok(())
+    }
 }
-#[expect(
-    clippy::large_enum_variant,
-    reason = "Keep admitted Work headers inline without an unplanned boxed allocation"
-)]
-enum Job {
-    Source(SourceJob),
+
+enum Active {
+    Source { job: SourceJob, funding: Funding },
     Styles(StyleWork),
 }
-impl Job {
-    fn started(&self) -> bool {
-        match self {
-            Self::Source(j) => j.started(),
-            Self::Styles(_) => true,
+enum Phase {
+    Queued {
+        request: DataRequest,
+        deadline: u64,
+        funding: Funding,
+    },
+    Running(Active),
+}
+struct Waiting {
+    envelope: Envelope,
+    phase: Phase,
+}
+impl Waiting {
+    fn running(envelope: Envelope, active: Active) -> Self {
+        Self {
+            envelope,
+            phase: Phase::Running(active),
+        }
+    }
+    fn queued_request(&self) -> Option<&DataRequest> {
+        match &self.phase {
+            Phase::Queued { request, .. } => Some(request),
+            Phase::Running(_) => None,
+        }
+    }
+    fn expiry(&self) -> Option<u64> {
+        match &self.phase {
+            Phase::Queued {
+                request, deadline, ..
+            } if matches!(request.admission(), Some(Admission::BoundedQueue(_))) => Some(*deadline),
+            _ => None,
+        }
+    }
+    fn rejection(&self, now: u64) -> Option<Fault> {
+        if self.envelope.receipt.state.load(Ordering::Acquire) == CANCELLED {
+            Some(Fault::not_started("cancelled"))
+        } else if self.expiry().is_some_and(|deadline| now >= deadline) {
+            Some(Fault::not_started("queue_expired"))
+        } else {
+            None
         }
     }
 }
-struct Waiting {
-    request: Option<DataRequest>,
-    job: Option<Job>,
-    ticket: String,
-    admission: Option<Admission>,
-    deadline: u64,
-    sender: oneshot::Sender<Delivery>,
-    receipt: Arc<Receipt>,
-    credit: Option<Credit>,
-    base: usize,
-    transferred: usize,
+
+struct Finalization {
+    envelope: Envelope,
+    funding: Funding,
+    source: Option<SourceJob>,
+}
+impl Finalization {
+    fn source(envelope: Envelope, funding: Funding, job: SourceJob) -> Self {
+        Self {
+            envelope,
+            funding,
+            source: Some(job),
+        }
+    }
+    fn plain(envelope: Envelope, credit: Credit) -> Self {
+        Self {
+            envelope,
+            funding: Funding::new(credit),
+            source: None,
+        }
+    }
 }
 struct Unhanded {
     job: SourceJob,
@@ -291,19 +387,18 @@ impl Scheduler {
         self.service
             .next_expiry()
             .into_iter()
-            .chain(self.queues.values().flat_map(|q| {
-                q.iter().filter_map(|w| match w.admission {
-                    Some(Admission::BoundedQueue(_)) if w.request.is_some() => Some(w.deadline),
-                    _ => None,
-                })
-            }))
+            .chain(
+                self.queues
+                    .values()
+                    .flat_map(|q| q.iter().filter_map(Waiting::expiry)),
+            )
             .min()
     }
     fn blocked(&self, scope: &str) -> bool {
         self.queues
             .get(scope)
             .and_then(|q| q.front())
-            .and_then(|w| w.request.as_ref())
+            .and_then(Waiting::queued_request)
             .and_then(DataRequest::lease)
             .is_some_and(|lease| {
                 self.unhanded
@@ -333,18 +428,18 @@ impl Scheduler {
             .queues
             .values()
             .flat_map(|q| q.iter())
-            .filter(|w| w.request.is_some())
+            .filter(|w| w.queued_request().is_some())
             .count();
         let held = waiting
-            .request
-            .as_ref()
+            .queued_request()
             .and_then(DataRequest::lease)
             .is_some_and(|lease| {
                 self.unhanded
                     .iter()
                     .any(|item| item.job.owns_lease(scope, lease))
             });
-        if (waiting.admission == Some(Admission::TryNow) && (!self.turns.is_empty() || held))
+        let admission = waiting.queued_request().and_then(DataRequest::admission);
+        if (admission == Some(Admission::TryNow) && (!self.turns.is_empty() || held))
             || count >= QUEUED
         {
             self.finish_error(waiting, Fault::not_started("busy"));
@@ -380,55 +475,59 @@ impl Scheduler {
             self.idle.resize(bytes).expect("state shrink");
         }
     }
-    // New state was admitted by this physical Job. Move its NET retained growth
-    // without reserving twice; future absolute Work callbacks subtract transfers.
-    fn reconcile(&mut self, waiting: &mut Waiting) -> Result<(), Fault> {
-        let bytes = self.service.known_idle_state_bytes();
-        if bytes > self.idle.bytes() {
-            let growth = bytes - self.idle.bytes();
-            waiting
-                .credit
-                .as_mut()
-                .expect("source owns credit")
-                .transfer_to(&mut self.idle, growth)?;
-            waiting.transferred = waiting
-                .transferred
-                .checked_add(growth)
-                .ok_or(Fault::started("state_limit"))?;
-        } else {
-            self.idle.resize(bytes)?;
-        }
-        Ok(())
-    }
-    fn finish_error(&mut self, mut waiting: Waiting, mut fault: Fault) {
-        if let Some(job) = waiting.job.take() {
-            fault.started |= job.started();
-            match job {
-                Job::Source(job) => self.service.discard(job),
-                Job::Styles(work) => waiting.credit = Some(work.fail(fault).credit),
+    fn finish_error(&mut self, waiting: Waiting, mut fault: Fault) {
+        let Waiting { envelope, phase } = waiting;
+        match phase {
+            Phase::Queued {
+                request, funding, ..
+            } => {
+                drop(request);
+                self.finish_failure(
+                    Finalization {
+                        envelope,
+                        funding,
+                        source: None,
+                    },
+                    fault,
+                );
+            }
+            Phase::Running(Active::Source { job, funding }) => {
+                self.finish_failure(Finalization::source(envelope, funding, job), fault);
+            }
+            Phase::Running(Active::Styles(work)) => {
+                fault.started = true;
+                self.finish_style_error(envelope, work.fail(fault));
             }
         }
-        // Preparation may leave funded Vec capacity behind even after its Work
-        // is discarded. Transfer it before reducing this job to an error envelope.
-        self.reconcile(&mut waiting)
-            .expect("retained source growth was admitted by the failing job");
-        deliver_error(&self.instance, waiting, fault);
     }
-    pub fn tick(&mut self, now: u64) {
-        self.cleanup();
-        self.service.advance_clock(now);
-        self.shrink_idle();
+    fn finish_failure(&mut self, mut finalization: Finalization, mut fault: Fault) {
+        if let Some(job) = finalization.source.take() {
+            fault.started |= job.started();
+            self.service.discard(job);
+        }
+        // Failed preparation may leave funded table capacity after Work disposal.
+        // Transfer that retained growth before shrinking to the error envelope.
+        finalization
+            .funding
+            .reconcile(self.service.known_idle_state_bytes(), &mut self.idle)
+            .expect("retained source growth was admitted by the failing job");
+        deliver_error(
+            &self.instance,
+            finalization.envelope,
+            finalization.funding.credit,
+            fault,
+        );
+    }
+    fn finish_style_error(&mut self, envelope: Envelope, failure: StyleFailure) {
+        self.finish_failure(Finalization::plain(envelope, failure.credit), failure.fault);
+    }
+    fn sweep(&mut self, now: u64) {
         let scopes: Vec<_> = self.queues.keys().cloned().collect();
         for scope in scopes {
             let mut keep = VecDeque::new();
             for waiting in self.queues.remove(&scope).expect("queue exists") {
-                if waiting.receipt.state.load(Ordering::Acquire) == CANCELLED {
-                    self.finish_error(waiting, Fault::not_started("cancelled"));
-                } else if waiting.request.is_some()
-                    && matches!(waiting.admission, Some(Admission::BoundedQueue(_)))
-                    && now >= waiting.deadline
-                {
-                    self.finish_error(waiting, Fault::not_started("queue_expired"));
+                if let Some(fault) = waiting.rejection(now) {
+                    self.finish_error(waiting, fault);
                 } else {
                     keep.push_back(waiting);
                 }
@@ -439,69 +538,34 @@ impl Scheduler {
                 self.queues.insert(scope, keep);
             }
         }
-        let mut entitled = None;
+    }
+    fn next_turn(&mut self) -> Option<String> {
         for _ in 0..self.turns.len() {
             let scope = self.turns.pop_front().expect("turn");
-            if self.blocked(&scope) {
-                self.turns.push_back(scope);
-            } else {
-                entitled = Some(scope);
-                break;
+            if !self.blocked(&scope) {
+                return Some(scope);
             }
+            self.turns.push_back(scope);
         }
-        let Some(scope) = entitled else {
+        None
+    }
+    pub fn tick(&mut self, now: u64) {
+        self.cleanup();
+        self.service.advance_clock(now);
+        self.shrink_idle();
+        self.sweep(now);
+        let Some(scope) = self.next_turn() else {
             return;
         };
         let mut queue = self.queues.remove(&scope).expect("queue");
         let waiting = queue.pop_front().expect("nonempty");
-        if let Some(mut waiting) = self.prepare(&scope, waiting) {
-            let job = waiting.job.take().expect("prepared work");
-            match job {
-                Job::Source(mut job) => {
-                    let base = waiting.base;
-                    let transferred = waiting.transferred;
-                    let credit = waiting.credit.as_mut().expect("source credit");
-                    let result = self.service.step(&mut job, &mut |n| {
-                        base.checked_add(n)
-                            .and_then(|n| n.checked_sub(transferred))
-                            .is_some_and(|n| credit.resize(n).is_ok())
-                    });
-                    waiting.job = Some(Job::Source(job));
-                    match result {
-                        Err(fault) => self.finish_error(waiting, fault),
-                        Ok(body) => match self.reconcile(&mut waiting) {
-                            Err(fault) => self.finish_error(waiting, fault),
-                            Ok(()) => {
-                                if let Some(body) = body {
-                                    self.finish_success(waiting, DataBody::Source(body));
-                                } else {
-                                    queue.push_front(waiting);
-                                }
-                            }
-                        },
-                    }
-                }
-                Job::Styles(mut work) => match work.step() {
-                    Err(fault) => {
-                        let failure = work.fail(fault);
-                        waiting.credit = Some(failure.credit);
-                        self.finish_error(waiting, failure.fault);
-                    }
-                    Ok(false) => {
-                        waiting.job = Some(Job::Styles(work));
-                        queue.push_front(waiting);
-                    }
-                    Ok(true) => match work.finish() {
-                        Ok((body, credit)) => {
-                            waiting.credit = Some(credit);
-                            self.finish_success(waiting, DataBody::Styles(body));
-                        }
-                        Err(failure) => {
-                            waiting.credit = Some(failure.credit);
-                            self.finish_error(waiting, failure.fault);
-                        }
-                    },
-                },
+        if let Some((envelope, active)) = self.prepare(&scope, waiting) {
+            let next = match active {
+                Active::Source { job, funding } => self.step_source(envelope, job, funding),
+                Active::Styles(work) => self.step_styles(envelope, work),
+            };
+            if let Some(waiting) = next {
+                queue.push_front(waiting);
             }
         }
         if !queue.is_empty() {
@@ -510,49 +574,116 @@ impl Scheduler {
         }
         self.shrink_idle();
     }
-    fn prepare(&mut self, scope: &str, mut waiting: Waiting) -> Option<Waiting> {
-        if let Some(request) = waiting.request.take() {
-            waiting.credit.as_mut().expect("queued credit").started();
-            match request {
-                DataRequest::Source(request) => {
-                    let credit = waiting.credit.as_mut().expect("source credit");
-                    let base = waiting.base;
-                    match self.service.start(scope, request, &mut |n| {
-                        base.checked_add(n)
-                            .is_some_and(|n| credit.resize(n).is_ok())
-                    }) {
-                        Ok(Action::Job(job)) => {
-                            waiting.job = Some(Job::Source(job));
-                            if let Err(fault) = self.reconcile(&mut waiting) {
-                                self.finish_error(waiting, fault);
-                                return None;
-                            }
-                        }
-                        Ok(Action::Immediate(body)) => {
-                            self.shrink_idle();
-                            self.finish_success(waiting, DataBody::Source(body));
-                            return None;
-                        }
-                        Err(fault) => {
-                            self.finish_error(waiting, fault);
-                            return None;
-                        }
-                    }
+    fn step_source(
+        &mut self,
+        envelope: Envelope,
+        mut job: SourceJob,
+        mut funding: Funding,
+    ) -> Option<Waiting> {
+        let body = match self.service.step(&mut job, &mut |n| funding.reserve(n)) {
+            Ok(body) => body,
+            Err(fault) => {
+                self.finish_failure(Finalization::source(envelope, funding, job), fault);
+                return None;
+            }
+        };
+        if let Err(fault) = funding.reconcile(self.service.known_idle_state_bytes(), &mut self.idle)
+        {
+            drop(body);
+            self.finish_failure(Finalization::source(envelope, funding, job), fault);
+            return None;
+        }
+        if let Some(body) = body {
+            self.finish_success(
+                Finalization::source(envelope, funding, job),
+                DataBody::Source(body),
+            );
+            None
+        } else {
+            Some(Waiting::running(envelope, Active::Source { job, funding }))
+        }
+    }
+    fn step_styles(&mut self, envelope: Envelope, mut work: StyleWork) -> Option<Waiting> {
+        match work.step() {
+            Err(fault) => self.finish_style_error(envelope, work.fail(fault)),
+            Ok(false) => return Some(Waiting::running(envelope, Active::Styles(work))),
+            Ok(true) => match work.finish() {
+                Ok((body, credit)) => {
+                    self.finish_success(
+                        Finalization::plain(envelope, credit),
+                        DataBody::Styles(body),
+                    );
                 }
-                DataRequest::Styles { bytes, .. } => {
-                    let credit = waiting.credit.take().expect("original physical credit");
-                    match self.prepare_styles(bytes, credit) {
-                        Ok(work) => waiting.job = Some(Job::Styles(work)),
-                        Err(failure) => {
-                            waiting.credit = Some(failure.credit);
-                            self.finish_error(waiting, failure.fault);
-                            return None;
-                        }
-                    }
+                Err(failure) => self.finish_style_error(envelope, failure),
+            },
+        }
+        None
+    }
+    fn prepare(&mut self, scope: &str, waiting: Waiting) -> Option<(Envelope, Active)> {
+        let Waiting { envelope, phase } = waiting;
+        let (request, mut funding) = match phase {
+            Phase::Running(active) => return Some((envelope, active)),
+            Phase::Queued {
+                request, funding, ..
+            } => (request, funding),
+        };
+        funding.credit.started();
+        match request {
+            DataRequest::Source(request) => self.prepare_source(scope, envelope, request, funding),
+            DataRequest::Styles { bytes, .. } => match self.prepare_styles(bytes, funding.credit) {
+                Ok(work) => Some((envelope, Active::Styles(work))),
+                Err(failure) => {
+                    self.finish_style_error(envelope, failure);
+                    None
+                }
+            },
+        }
+    }
+    fn prepare_source(
+        &mut self,
+        scope: &str,
+        envelope: Envelope,
+        request: SourceRequest,
+        mut funding: Funding,
+    ) -> Option<(Envelope, Active)> {
+        match self
+            .service
+            .start(scope, request, &mut |n| funding.reserve(n))
+        {
+            Ok(Action::Job(job)) => {
+                if let Err(fault) =
+                    funding.reconcile(self.service.known_idle_state_bytes(), &mut self.idle)
+                {
+                    self.finish_failure(Finalization::source(envelope, funding, job), fault);
+                    None
+                } else {
+                    Some((envelope, Active::Source { job, funding }))
                 }
             }
+            Ok(Action::Immediate(body)) => {
+                self.shrink_idle();
+                self.finish_success(
+                    Finalization {
+                        envelope,
+                        funding,
+                        source: None,
+                    },
+                    DataBody::Source(body),
+                );
+                None
+            }
+            Err(fault) => {
+                self.finish_failure(
+                    Finalization {
+                        envelope,
+                        funding,
+                        source: None,
+                    },
+                    fault,
+                );
+                None
+            }
         }
-        Some(waiting)
     }
     fn prepare_styles(
         &mut self,
@@ -583,25 +714,30 @@ impl Scheduler {
         drop(bytes);
         StyleWork::new(contexts, &resolver, fingerprint, credit)
     }
-    fn finish_success(&mut self, waiting: Waiting, body: DataBody) {
-        self.finish_success_bounded(waiting, body, crate::limits::DATA_WIRE_BYTES);
+    fn finish_success(&mut self, finalization: Finalization, body: DataBody) {
+        self.finish_success_bounded(finalization, body, crate::limits::DATA_WIRE_BYTES);
     }
-    fn finish_success_bounded(&mut self, mut waiting: Waiting, body: DataBody, cap: usize) {
+    fn finish_success_bounded(
+        &mut self,
+        mut finalization: Finalization,
+        body: DataBody,
+        cap: usize,
+    ) {
         let encoded = {
-            let reply = semantic_reply::ok(&waiting.ticket, &self.instance, body);
-            reply.encode_with_credit(waiting.credit.as_mut().expect("finished credit"), cap)
+            let reply = semantic_reply::ok(&finalization.envelope.ticket, &self.instance, body);
+            reply.encode_with_credit(&mut finalization.funding.credit, cap)
         };
         let bytes = match encoded {
             Ok(bytes) => bytes,
             Err(fault) => {
-                self.finish_error(waiting, fault);
+                self.finish_failure(finalization, fault);
                 return;
             }
         };
-        if let Some(Job::Source(mut job)) = waiting.job.take() {
+        if let Some(mut job) = finalization.source.take() {
             job.trim_completed();
             let ack_bytes = job.acknowledgement_bytes() + std::mem::size_of::<Unhanded>();
-            let credit = waiting.credit.as_mut().expect("source credit");
+            let credit = &mut finalization.funding.credit;
             // Account the ack vector's gross replacement before allocating it.
             let growth = if self.unhanded.len() == self.unhanded.capacity() {
                 (self.unhanded.len() + 1) * std::mem::size_of::<Unhanded>()
@@ -614,9 +750,9 @@ impl Scheduler {
                     .checked_add(ack_bytes + growth)
                     .expect("bounded ack headers"),
             ) {
-                waiting.job = Some(Job::Source(job));
+                finalization.source = Some(job);
                 drop(bytes);
-                self.finish_error(waiting, fault);
+                self.finish_failure(finalization, fault);
                 return;
             }
             let mut ack = self.budget.reserve(None, 0).expect("zero metadata guard");
@@ -637,43 +773,27 @@ impl Scheduler {
             }
             self.unhanded.push(Unhanded {
                 job,
-                receipt: waiting.receipt.clone(),
+                receipt: finalization.envelope.receipt.clone(),
                 _credit: ack,
             });
         }
-        let mut credit = waiting
-            .credit
-            .take()
-            .expect("delivery retains original slot");
+        let mut credit = finalization.funding.credit;
         credit
             .resize(bytes.capacity())
             .expect("encoded capacity was admitted");
-        let _ = waiting.sender.send(Delivery {
-            bytes,
-            receipt: waiting.receipt,
-            _credit: credit,
-        });
+        finalization.envelope.deliver(bytes, credit);
     }
 }
-fn deliver_error(instance: &str, mut waiting: Waiting, fault: Fault) {
-    drop(waiting.request.take());
-    let mut credit = waiting
-        .credit
-        .take()
-        .expect("failure returns original physical credit");
+fn deliver_error(instance: &str, envelope: Envelope, mut credit: Credit, fault: Fault) {
     credit.started();
     credit
         .resize(4096)
         .expect("prepaid error floor survives state handoff");
-    let bytes = semantic_reply::error::<()>(&waiting.ticket, instance, fault)
+    let bytes = semantic_reply::error::<()>(&envelope.ticket, instance, fault)
         .encode_with_cap(4096)
         .expect("bounded fixed error envelope fits prepaid floor");
     credit.resize(bytes.capacity()).expect("encoded allowance");
-    let _ = waiting.sender.send(Delivery {
-        bytes,
-        receipt: waiting.receipt,
-        _credit: credit,
-    });
+    envelope.deliver(bytes, credit);
 }
 
 #[cfg(test)]
@@ -718,8 +838,13 @@ mod integration_tests {
             None,
         )
         .unwrap();
-        let mut waiting = submission.waiting();
-        let DataRequest::Source(request) = waiting.request.take().unwrap() else {
+        let Waiting { envelope, phase } = submission.waiting();
+        let Phase::Queued {
+            request: DataRequest::Source(request),
+            funding,
+            ..
+        } = phase
+        else {
             panic!("source")
         };
         let mut grants = 0;
@@ -734,31 +859,41 @@ mod integration_tests {
             panic!("source")
         };
         probe.service.discard(job);
-        drop(waiting);
+        drop((envelope, funding));
         drop(probe);
         for denied in 0..grants {
             let (mut scheduler, budget) = four_streams();
             let (submission, mut ticket) =
                 Submission::decode("route", open(), 0, &budget, &scheduler.limits, "boot", None)
                     .unwrap();
-            let mut waiting = submission.waiting();
-            let DataRequest::Source(request) = waiting.request.take().unwrap() else {
+            let Waiting { envelope, phase } = submission.waiting();
+            let Phase::Queued {
+                request: DataRequest::Source(request),
+                mut funding,
+                ..
+            } = phase
+            else {
                 panic!("source")
             };
-            let base = waiting.base;
-            let credit = waiting.credit.as_mut().unwrap();
-            credit.started();
+            funding.credit.started();
             let mut calls = 0;
             let fault = scheduler
                 .service
                 .start("route", request, &mut |n| {
                     let allowed = calls != denied;
                     calls += 1;
-                    allowed && credit.resize(base + n).is_ok()
+                    allowed && funding.reserve(n)
                 })
                 .err()
                 .expect("reservation denied");
-            scheduler.finish_error(waiting, fault);
+            scheduler.finish_failure(
+                Finalization {
+                    envelope,
+                    funding,
+                    source: None,
+                },
+                fault,
+            );
             assert_eq!(scheduler.leases(), 4);
             assert_eq!(
                 scheduler.idle.bytes(),
@@ -809,30 +944,37 @@ mod integration_tests {
         let (submission, mut ticket) =
             Submission::decode("route", open(), 0, &budget, &scheduler.limits, "boot", None)
                 .unwrap();
-        let mut waiting = scheduler.prepare("route", submission.waiting()).unwrap();
-        let Job::Source(mut job) = waiting.job.take().unwrap() else {
+        let (envelope, active) = scheduler.prepare("route", submission.waiting()).unwrap();
+        let Active::Source {
+            mut job,
+            mut funding,
+        } = active
+        else {
             panic!("source")
         };
         let body = loop {
-            let credit = waiting.credit.as_mut().unwrap();
             let result = scheduler
                 .service
-                .step(&mut job, &mut |n| {
-                    credit
-                        .resize(waiting.base + n - waiting.transferred)
-                        .is_ok()
-                })
+                .step(&mut job, &mut |n| funding.reserve(n))
                 .unwrap();
             if let Some(body) = result {
                 break body;
             }
         };
-        waiting.job = Some(Job::Source(job));
-        scheduler.reconcile(&mut waiting).unwrap();
+        funding
+            .reconcile(
+                scheduler.service.known_idle_state_bytes(),
+                &mut scheduler.idle,
+            )
+            .unwrap();
         assert_eq!(scheduler.leases(), 1);
         // Same bounded writer/failure/cleanup path with a scaled response cap,
         // rather than generating an unrelated64MiB traffic campaign.
-        scheduler.finish_success_bounded(waiting, DataBody::Source(body), 128);
+        scheduler.finish_success_bounded(
+            Finalization::source(envelope, funding, job),
+            DataBody::Source(body),
+            128,
+        );
         let reply = ticket.try_take().unwrap().unwrap();
         let value: Value = serde_json::from_slice(reply.bytes()).unwrap();
         assert_eq!(value["v"], 4);
