@@ -35,7 +35,7 @@ The pool owns thread completion/join handles. Its transport-facing `PoolHandle` 
 
 The parser actor is not spawned per request. Oniguruma/Syntect work stays on its owning thread; a bounded native turn does not make a single regex call preemptible. Immutable grammar/vocabulary assets are shared, while per-worker lease/state quotas are divided so their sum stays within process limits.
 
-The worker loop observes stop/route revocation, advances the scheduler, publishes its current lease count, then receives messages. While work is runnable it uses nonblocking receive between turns. When only expiry remains it waits until the next expiry; otherwise it blocks for a message. There is no recurring idle wake merely to rescan an empty worker.
+The worker loop observes stop/route revocation, advances the scheduler, publishes its current lease count, then receives messages. Its private `receive_message` helper owns the wait policy: while work is runnable it uses nonblocking receive between turns; when only expiry remains it waits until the next expiry; otherwise it blocks for a message. An empty nonblocking read or timed-out wait returns no message for that turn, whereas channel disconnection terminates the loop. Message dispatch, barrier processing and final scope/mailbox cleanup remain with the worker loop. There is no recurring idle wake merely to rescan an empty worker.
 
 ## Route authority and affinity
 
