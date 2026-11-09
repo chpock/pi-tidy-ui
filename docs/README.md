@@ -4,7 +4,7 @@ This manual explains **how pi-tidy-ui is built and why its boundaries work this 
 
 ## Start here
 
-1. [System architecture](architecture.md) — components, dependencies, principles, state lifetimes and one complete `write`-card walkthrough.
+1. [System architecture](architecture.md) — components, dependencies, principles, state lifetimes, fact/decision/release authority and one complete `write`-card walkthrough.
 2. [Pi host integration](host-integration.md) — startup, borrowed hooks, presentation selection, semantic events, shared services and teardown.
 3. [Rendering](rendering.md) — logical text, byte/scalar/grapheme/cell coordinates, measurement, layout, paint and retained rows.
 4. [Highlighting pipeline](syntax-highlighting-spec.md) — how the extension prepares work, obtains semantic/style data and publishes coherent cards.
@@ -91,7 +91,7 @@ The protocol reference ships with this manual. Its six current conformance JSON 
 | What is recomputed on resize, recolor or preview rollback? | [Identity/change map](syntax-highlighting-spec.md#independent-identities) → [prepared-card reuse](syntax/prepared-cards.md) → [latest row signatures](rendering.md#latest-layout-identities) |
 | How are theme roles, Markdown and structural delimiters colored? | [Follow Pi adapter](syntax/follow-pi.md) or [owned palette](syntax/palettes.md) → [shared color mathematics](color-model.md) |
 | Why did a saved palette preference not appear? | [Preference publication/preview](settings-menu-spec.md) → [selected/effective/ready](syntax/providers.md#selected-effective-and-ready-palettes) → [local palette identity and assets](syntax/palettes.md) |
-| Why was memory not freed by removing a card or clearing layouts? | [Component rows](render-cache-spec.md) → [local grants/captures](syntax/storage.md) → [native delivery credit](occipital/requests-and-resources.md) |
+| Why was memory not freed by removing a card or clearing layouts? | [Release authority](architecture.md#facts-decisions-and-release-authority) → [component rows](render-cache-spec.md) → [local grants/captures](syntax/storage.md) → [native delivery credit](occipital/requests-and-resources.md) |
 | How do reload, appearance Off, native Off and terminal stop differ? | [Host lifetimes](host-integration.md) → [provider transitions](syntax/providers.md) → [terminal channels](terminal-colors-spec.md) |
 | Where can I observe a failure, and what does that evidence prove? | [Extension health/journals](debug-logging-spec.md) or [daemon runtime/descriptor/counters](occipital/README.md) → the owning request/recovery contract |
 | How does an extension identify a script without a useful filename? | [Shebang provenance and aliases](syntax/shebang-hints.md) → [SOURCE grammar precedence](occipital/source-engine.md#language-selection) → [source-hint protocol revision](occipital/protocol.md#descriptor-and-metadata-operation) |

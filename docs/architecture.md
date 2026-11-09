@@ -88,6 +88,38 @@ These are design constraints, not claims that every constant is uniquely optimal
 
 The detailed local ownership graph is in [syntax storage](syntax/storage.md); the daemon graph is in [requests/resources](occipital/requests-and-resources.md). Transcript latest-row retention deliberately has **no fixed entry/byte eviction budget**: evicting still-live layouts would make Pi's repeated whole-document visits rebuild them. It uses weak component lifetime and one latest layout, not a recency cache. Syntax storage and native admission remain bounded independently.
 
+## Facts, decisions and release authority
+
+A stored observation is not an independent policy authority. Keep the native fact,
+its derived decision and the accepted display distinguishable: copying a flag into
+another owner does not transfer the right to change it. In particular, source
+execution, desired appearance and historical ready paint have different validity
+and release boundaries.
+
+| Fact / identity | Authoritative owner | Decision and effect | Invalidation or release |
+|---|---|---|---|
+| Tool arguments/result and native partial, expanded and hidden state | Pi's existing component | The host adapter selects a borrowed presentation; producers decode only supplied data | The actual native update or detach; no rewritten execution or saved result |
+| Actual-width native visibility | The current native render, borrowed by the installed adapter | Routing, spacing, mouse and useful demand follow the same current facts | Recheck at the width/visit required by the guard; do not retain visibility proof across visits |
+| Hook and descriptor ownership | The installed adapter's still-owned hook-family descriptors | Borrow native behavior without replacing a later extension owner | Restore exact prior descriptors only while the adapter still owns each hook |
+| Selected preview/full view and logical display/source/service revisions | File-preview selection or Pi's read expansion; `CardSources`' explicit lifecycle update | Construct only the selected logical body and canonical source segments | A real view/source change or removal; read collapse releases its derived full view |
+| Source version/content aliases, parser lease and execution evidence | `SourceController`'s joint source/job state | Admit native work or eligible Pi fallback; historical colors never grant permission | Validated completion, typed no-start and exact generation-qualified cleanup have distinct effects |
+| Outstanding physical DATA slots/bytes | Reserved jobs and module-incarnation physical accounting | All source/style work shares the existing admission capacity | Actual job settlement releases credit; abort, GC and fallback permission are not refunds |
+| Retained source/context/range/Pi data and shared charges | Local syntax storage and its existing pressure owner | Fund storage, borrow synchronously and release through the last holder | Exact receipts, eviction and owner lifetime; extracted stores get no new capacity |
+| Numeric grants and charges | `DataBudget`/`DataGrant`/`DataCharge` | Admit an operation's peak and transfer its numeric charge, never store its payload | Refund unused grant capacity; release the final charge owner |
+| Measured glyph widths and reflow coordinates | Measured text/layout storage | Resize reflows; recolor reuses source and geometry | Source/view replacement and the exact geometry receipt, not a theme change |
+| Desired palette/rules versus a complete accepted card | Desired style selection; ready group and `CardSources` publication | Resolve missing styles and publish all source/service/frame regions coherently | Final current-visit check; refusal retains only an eligible prior view |
+| Latest completed rows versus layout accounting | Component-owned cache entry; `RenderCache`'s weak numeric record | Reuse one latest body without live-entry count/byte eviction | Replacement, explicit clear, detach and GC release their owned receipts |
+| Confirmed preferences versus temporary preview | `ExtensionSettings` validates persistence; the session retains confirmed fields; `TidyMenu` owns preview rollback and `SyntaxClient` applies the selection | Apply saved state, preview/rollback and derive the effective palette | Settings publication/menu/session epochs; confirmation and ready paint are not interchangeable |
+| Session callbacks versus process-only values | Session epoch and existing focused services; separate primitive process cells | Reject obsolete callbacks while preserving only approved local flags/default channels | Syntax cleanup precedes journal closure; no UI/runtime survives through process cells |
+
+For a pending owned SOURCE job, confirmed helper cleanup can discard validation
+payload and permit fallback **without freeing its outstanding DATA credit**. A
+shared unknown outcome cannot borrow that owned-stop proof. Likewise, a refused
+full-to-preview transition releases the old full display, paint and measurements
+but keeps source keys and execution evidence; a late full reply cannot restore it.
+See [work authority](syntax/work.md), [storage lifetimes](syntax/storage.md),
+[accepted prepared views](syntax/prepared-cards.md) and [settings publication](settings-menu-spec.md).
+
 ## Changes and invalidation
 
 | Change | Work that changes | Work deliberately reused |
