@@ -891,3 +891,19 @@ test('strict compiler old-space allowance reaches only the check child', { timeo
   assert.deepEqual(observations.check.execArgv.filter(argument => argument.startsWith('--max-old-space-size')),
     ['--max-old-space-size=1024'], 'the actual TypeScript entry receives the fixed compiler-only allowance');
 });
+
+
+test('prepared hosts directly declare and execute the fixture transformer', async () => {
+  const inputs = readInputs();
+  const manifest = JSON.parse(readFileSync(join(inputs.preparation, 'dependencies/package.json'), 'utf8'));
+  const declaration = manifest.devDependencies?.esbuild ?? manifest.dependencies?.esbuild;
+  assert.equal(typeof declaration, 'string', 'esbuild must be an explicit fixture input, not an incidental Pi dependency');
+  const transformer = await import('esbuild');
+  try {
+    const result = await transformer.transform('export const answer: number = 6 * 7;', { loader: 'ts', format: 'esm' });
+    const compiled = await import(`data:text/javascript;base64,${Buffer.from(result.code).toString('base64')}`);
+    assert.equal(compiled.answer, 42);
+  } finally {
+    transformer.stop();
+  }
+});
