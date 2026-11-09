@@ -30,9 +30,13 @@ A recovered ticket permits a correlated refusal; it does not make the request va
 
 ### SOURCE allocation
 
-`source_request.rs` first measures the supplied source strings and their aggregate logical-line count. It also validates source identities and rejects duplicate keys within a finite batch. Only after the complete plan passes and the owner grants additional capacity does it construct owned source strings.
+`source_request.rs` checks the common frame, version, instance and correlation envelope in `SourceRequest::decode`, then delegates to private finite/open, append and close decoders. The facade retains the correlation ticket and passes its storage charge, not the ticket buffer, to the operation decoder. Each operation decoder keeps its forbidden-field checks, admission policy, value validation, additional reservation and owned-operation construction together.
 
-This prevents a valid early member of a batch from causing unbounded owned allocation before an invalid later member is encountered. The borrowed scan still operates within an already-admitted frame and decoding allowance; it is not a claim that the transport received the request without allocating any bytes.
+The finite/open decoder first measures the supplied source strings and their aggregate logical-line count. It also validates source identities and rejects duplicate keys within a finite batch. Only after the complete plan passes and the owner grants additional capacity does it construct owned source strings.
+
+Each valid operation requests one additional allowance. Finite/open charges the request header, borrowed-plan capacity, output source headers, metadata storage and twice the decoded source bytes. Append charges the request header, ticket/key/lease storage and twice the decoded append bytes; close charges the request header and ticket/key/lease storage without a text payload. Owned metadata is charged by capacity, not encoded JSON length. A refused grant reports `data_limit` without starting computation or constructing the owned operation.
+
+This prevents a valid early member of a batch from causing unbounded owned allocation before an invalid later member is encountered. The borrowed scan and metadata decoding still operate within an already-admitted frame and decoding allowance; this is not a claim of zero allocation before the additional request grant.
 
 ### STYLE allocation
 

@@ -342,3 +342,62 @@ fn source_rejects_the_previous_protocol_before_reserving_payloads() {
     assert!(!error.started);
     assert_eq!(grants, 0);
 }
+
+#[test]
+fn operation_foreign_fields_including_null_reject_before_any_owned_request_grant() {
+    let finite_fields = vec![
+        ("key", json!("other")),
+        ("lease", json!("lease")),
+        ("generation", json!(1)),
+        ("source_version", json!(1)),
+        ("base_revision", json!(1)),
+        ("base_bytes", json!(0)),
+        ("append", json!("x")),
+        ("final", json!(true)),
+    ];
+    let finite = frame(json!([source("a")]));
+    let mut open = finite.clone();
+    open["op"] = json!("stream.open");
+    let close = json!({"v":4,"op":"stream.close","ticket":"ticket","instance":"instance","key":"source","lease":"lease","generation":2});
+    let cases = [
+        (finite, finite_fields.clone()),
+        (open, finite_fields),
+        (append(), vec![("sources", json!([source("other")]))]),
+        (
+            close,
+            vec![
+                ("sources", json!([source("other")])),
+                ("admission", json!("try_now")),
+                ("queue_wait_ms", json!(1)),
+                ("source_version", json!(1)),
+                ("base_revision", json!(1)),
+                ("base_bytes", json!(0)),
+                ("append", json!("x")),
+                ("final", json!(true)),
+            ],
+        ),
+    ];
+    for (request, fields) in cases {
+        for (field, value) in fields {
+            for value in [Value::Null, value] {
+                let mut request = request.clone();
+                request[field] = value;
+                let mut grants = 0;
+                let fault = SourceRequest::decode(
+                    &raw(&request),
+                    "instance",
+                    limits::SOURCE_BYTES,
+                    &mut |_| {
+                        grants += 1;
+                        true
+                    },
+                )
+                .err()
+                .expect("foreign operation field was accepted");
+                assert_eq!(fault.code, "invalid_request", "{request}");
+                assert!(!fault.started);
+                assert_eq!(grants, 0, "{request}");
+            }
+        }
+    }
+}

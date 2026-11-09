@@ -217,7 +217,30 @@ impl SourceRequest {
         }
         let ticket = text(r.ticket, 64)?;
         let op = text(r.op, 64)?;
-        let extra = [
+        let ticket_bytes = cow_bytes(&ticket);
+        let (operation, admitted) = match op.as_ref() {
+            "highlight" | "stream.open" => {
+                Self::decode_finite(&r, ticket_bytes, op == "stream.open", source_cap, grant)?
+            }
+            "stream.append" => Self::decode_append(&r, ticket_bytes, source_cap, grant)?,
+            "stream.close" => Self::decode_close(&r, ticket_bytes, grant)?,
+            _ => return Err(invalid()),
+        };
+        Ok(Self {
+            ticket: ticket.into_owned(),
+            admission: admitted,
+            operation,
+        })
+    }
+
+    fn decode_finite(
+        r: &RawRequest<'_>,
+        ticket_bytes: usize,
+        open: bool,
+        source_cap: usize,
+        grant: &mut dyn FnMut(usize) -> bool,
+    ) -> Result<(SourceOperation, Option<Admission>), Fault> {
+        if [
             r.key,
             r.lease,
             r.generation,
@@ -226,171 +249,182 @@ impl SourceRequest {
             r.base_bytes,
             r.append,
             r.finalize,
-        ];
-        let (operation, admitted) = match op.as_ref() {
-            "highlight" | "stream.open" => {
-                if extra.iter().any(Option::is_some) {
-                    return Err(invalid());
-                }
-                let mode = admission(r.admission, r.queue_wait_ms)?;
-                let values = sources(r.sources.ok_or_else(invalid)?)?;
-                if values.is_empty() || op == "stream.open" && values.len() != 1 {
-                    return Err(invalid());
-                }
-                let mut plans: Vec<SourcePlan<'_>> = Vec::with_capacity(values.len());
-                let mut total = 0usize;
-                let mut lines = 0usize;
-                for raw in values {
-                    let source: RawSource<'_> = decode(raw)?;
-                    let key = text(source.key, 64)?;
-                    let generation = nonzero(source.generation)?;
-                    let source_version = unsigned(source.source_version, u32::MAX)?;
-                    let hint = hint(source.hint)?;
-                    let (bytes, count) = measure(source.text)?;
-                    lines += count;
-                    total = total
-                        .checked_add(bytes)
-                        .ok_or(Fault::not_started("source_limit"))?;
-                    if total > source_cap || lines > crate::limits::SOURCE_LINES {
-                        return Err(Fault::not_started("source_limit"));
-                    }
-                    if plans.iter().any(|p| p.key == key) {
-                        return Err(invalid());
-                    }
-                    plans.push(SourcePlan {
-                        key,
-                        generation,
-                        source_version,
-                        hint,
-                        text: source.text,
-                    });
-                }
-                // Payload capacity and bounded request/metadata storage; lexer
-                // scratch is separately covered by admitted frame credit.
-                let metadata = plans.iter().try_fold(cow_bytes(&ticket), |total, plan| {
-                    allowance(&[
-                        total,
-                        cow_bytes(&plan.key),
-                        plan.hint.language.as_ref().map_or(0, String::capacity),
-                        plan.hint.path.as_ref().map_or(0, String::capacity),
-                    ])
-                })?;
-                let payload = total
-                    .checked_mul(2)
-                    .ok_or(Fault::not_started("data_limit"))?;
-                reserve(
-                    allowance(&[
-                        size_of::<Self>(),
-                        plans.capacity() * size_of::<SourcePlan<'_>>(),
-                        plans.len() * size_of::<SourceInput>(),
-                        metadata,
-                        payload,
-                    ])?,
-                    grant,
-                )?;
-                let mut result = Vec::with_capacity(plans.len());
-                for plan in plans {
-                    result.push(SourceInput {
-                        key: plan.key.into_owned(),
-                        generation: plan.generation,
-                        source_version: plan.source_version,
-                        hint: plan.hint,
-                        text: owned(plan.text)?,
-                    });
-                }
-                (
-                    SourceOperation::Finite {
-                        sources: result,
-                        open: op == "stream.open",
-                    },
-                    Some(mode),
-                )
+        ]
+        .iter()
+        .any(Option::is_some)
+        {
+            return Err(invalid());
+        }
+        let mode = admission(r.admission, r.queue_wait_ms)?;
+        let values = sources(r.sources.ok_or_else(invalid)?)?;
+        if values.is_empty() || open && values.len() != 1 {
+            return Err(invalid());
+        }
+        let mut plans: Vec<SourcePlan<'_>> = Vec::with_capacity(values.len());
+        let mut total = 0usize;
+        let mut lines = 0usize;
+        for raw in values {
+            let source: RawSource<'_> = decode(raw)?;
+            let key = text(source.key, 64)?;
+            let generation = nonzero(source.generation)?;
+            let source_version = unsigned(source.source_version, u32::MAX)?;
+            let hint = hint(source.hint)?;
+            let (bytes, count) = measure(source.text)?;
+            lines += count;
+            total = total
+                .checked_add(bytes)
+                .ok_or(Fault::not_started("source_limit"))?;
+            if total > source_cap || lines > crate::limits::SOURCE_LINES {
+                return Err(Fault::not_started("source_limit"));
             }
-            "stream.append" => {
-                if r.sources.is_some() {
-                    return Err(invalid());
-                }
-                let mode = admission(r.admission, r.queue_wait_ms)?;
-                let key = text(r.key.ok_or_else(invalid)?, 64)?;
-                let lease = text(r.lease.ok_or_else(invalid)?, 64)?;
-                let generation = nonzero(r.generation.ok_or_else(invalid)?)?;
-                let source_version = unsigned(r.source_version.ok_or_else(invalid)?, u32::MAX)?;
-                let base_revision = nonzero(r.base_revision.ok_or_else(invalid)?)?;
-                let base_bytes = unsigned(r.base_bytes.ok_or_else(invalid)?, u32::MAX)?;
-                let raw = r.append.ok_or_else(invalid)?;
-                let (size, lines) = measure(raw)?;
-                if lines > crate::limits::SOURCE_LINES
-                    || size
-                        .checked_add(base_bytes as usize)
-                        .is_none_or(|n| n > source_cap)
-                {
-                    return Err(Fault::not_started("source_limit"));
-                }
-                let finalize: bool = serde_json::from_str(r.finalize.ok_or_else(invalid)?.get())
-                    .map_err(|_| invalid())?;
-                let payload = size
-                    .checked_mul(2)
-                    .ok_or(Fault::not_started("data_limit"))?;
-                reserve(
-                    allowance(&[
-                        size_of::<Self>(),
-                        cow_bytes(&ticket),
-                        cow_bytes(&key),
-                        cow_bytes(&lease),
-                        payload,
-                    ])?,
-                    grant,
-                )?;
-                (
-                    SourceOperation::Append {
-                        key: key.into_owned(),
-                        lease: lease.into_owned(),
-                        generation,
-                        source_version,
-                        base_revision,
-                        base_bytes,
-                        append: owned(raw)?,
-                        finalize,
-                    },
-                    Some(mode),
-                )
+            if plans.iter().any(|p| p.key == key) {
+                return Err(invalid());
             }
-            "stream.close" => {
-                if r.sources.is_some()
-                    || r.admission.is_some()
-                    || r.queue_wait_ms.is_some()
-                    || extra[3..].iter().any(Option::is_some)
-                {
-                    return Err(invalid());
-                }
-                let key = text(r.key.ok_or_else(invalid)?, 64)?;
-                let lease = text(r.lease.ok_or_else(invalid)?, 64)?;
-                let generation = nonzero(r.generation.ok_or_else(invalid)?)?;
-                reserve(
-                    allowance(&[
-                        size_of::<Self>(),
-                        cow_bytes(&ticket),
-                        cow_bytes(&key),
-                        cow_bytes(&lease),
-                    ])?,
-                    grant,
-                )?;
-                (
-                    SourceOperation::Close {
-                        key: key.into_owned(),
-                        lease: lease.into_owned(),
-                        generation,
-                    },
-                    None,
-                )
-            }
-            _ => return Err(invalid()),
-        };
-        Ok(Self {
-            ticket: ticket.into_owned(),
-            admission: admitted,
-            operation,
-        })
+            plans.push(SourcePlan {
+                key,
+                generation,
+                source_version,
+                hint,
+                text: source.text,
+            });
+        }
+        // Payload capacity and bounded request/metadata storage; lexer
+        // scratch is separately covered by admitted frame credit.
+        let metadata = plans.iter().try_fold(ticket_bytes, |total, plan| {
+            allowance(&[
+                total,
+                cow_bytes(&plan.key),
+                plan.hint.language.as_ref().map_or(0, String::capacity),
+                plan.hint.path.as_ref().map_or(0, String::capacity),
+            ])
+        })?;
+        let payload = total
+            .checked_mul(2)
+            .ok_or(Fault::not_started("data_limit"))?;
+        reserve(
+            allowance(&[
+                size_of::<Self>(),
+                plans.capacity() * size_of::<SourcePlan<'_>>(),
+                plans.len() * size_of::<SourceInput>(),
+                metadata,
+                payload,
+            ])?,
+            grant,
+        )?;
+        let mut result = Vec::with_capacity(plans.len());
+        for plan in plans {
+            result.push(SourceInput {
+                key: plan.key.into_owned(),
+                generation: plan.generation,
+                source_version: plan.source_version,
+                hint: plan.hint,
+                text: owned(plan.text)?,
+            });
+        }
+        Ok((
+            SourceOperation::Finite {
+                sources: result,
+                open,
+            },
+            Some(mode),
+        ))
+    }
+
+    fn decode_append(
+        r: &RawRequest<'_>,
+        ticket_bytes: usize,
+        source_cap: usize,
+        grant: &mut dyn FnMut(usize) -> bool,
+    ) -> Result<(SourceOperation, Option<Admission>), Fault> {
+        if r.sources.is_some() {
+            return Err(invalid());
+        }
+        let mode = admission(r.admission, r.queue_wait_ms)?;
+        let key = text(r.key.ok_or_else(invalid)?, 64)?;
+        let lease = text(r.lease.ok_or_else(invalid)?, 64)?;
+        let generation = nonzero(r.generation.ok_or_else(invalid)?)?;
+        let source_version = unsigned(r.source_version.ok_or_else(invalid)?, u32::MAX)?;
+        let base_revision = nonzero(r.base_revision.ok_or_else(invalid)?)?;
+        let base_bytes = unsigned(r.base_bytes.ok_or_else(invalid)?, u32::MAX)?;
+        let raw = r.append.ok_or_else(invalid)?;
+        let (size, lines) = measure(raw)?;
+        if lines > crate::limits::SOURCE_LINES
+            || size
+                .checked_add(base_bytes as usize)
+                .is_none_or(|n| n > source_cap)
+        {
+            return Err(Fault::not_started("source_limit"));
+        }
+        let finalize: bool =
+            serde_json::from_str(r.finalize.ok_or_else(invalid)?.get()).map_err(|_| invalid())?;
+        let payload = size
+            .checked_mul(2)
+            .ok_or(Fault::not_started("data_limit"))?;
+        reserve(
+            allowance(&[
+                size_of::<Self>(),
+                ticket_bytes,
+                cow_bytes(&key),
+                cow_bytes(&lease),
+                payload,
+            ])?,
+            grant,
+        )?;
+        Ok((
+            SourceOperation::Append {
+                key: key.into_owned(),
+                lease: lease.into_owned(),
+                generation,
+                source_version,
+                base_revision,
+                base_bytes,
+                append: owned(raw)?,
+                finalize,
+            },
+            Some(mode),
+        ))
+    }
+
+    fn decode_close(
+        r: &RawRequest<'_>,
+        ticket_bytes: usize,
+        grant: &mut dyn FnMut(usize) -> bool,
+    ) -> Result<(SourceOperation, Option<Admission>), Fault> {
+        if r.sources.is_some()
+            || r.admission.is_some()
+            || r.queue_wait_ms.is_some()
+            || [
+                r.source_version,
+                r.base_revision,
+                r.base_bytes,
+                r.append,
+                r.finalize,
+            ]
+            .iter()
+            .any(Option::is_some)
+        {
+            return Err(invalid());
+        }
+        let key = text(r.key.ok_or_else(invalid)?, 64)?;
+        let lease = text(r.lease.ok_or_else(invalid)?, 64)?;
+        let generation = nonzero(r.generation.ok_or_else(invalid)?)?;
+        reserve(
+            allowance(&[
+                size_of::<Self>(),
+                ticket_bytes,
+                cow_bytes(&key),
+                cow_bytes(&lease),
+            ])?,
+            grant,
+        )?;
+        Ok((
+            SourceOperation::Close {
+                key: key.into_owned(),
+                lease: lease.into_owned(),
+                generation,
+            },
+            None,
+        ))
     }
 }
 
@@ -520,5 +554,121 @@ mod language_hint_tests {
         .expect("previous protocol version is rejected");
         assert_eq!(fault.code, "protocol_mismatch");
         assert_eq!(grants, 0);
+    }
+}
+
+#[cfg(test)]
+mod reservation_tests {
+    use super::*;
+    use std::io::Write;
+
+    fn single_grant(label: &str, request: &str, expected: usize) {
+        let raw: Box<RawValue> = serde_json::from_str(request).unwrap();
+        for accepted in [true, false] {
+            let mut grants = Vec::new();
+            let result = SourceRequest::decode(&raw, "i", usize::MAX, &mut |bytes| {
+                grants.push(bytes);
+                accepted
+            });
+            assert_eq!(grants, [expected], "{label}, accepted={accepted}");
+            if accepted {
+                assert!(result.is_ok(), "{label}");
+            } else {
+                assert_eq!(result.err().unwrap(), Fault::not_started("data_limit"));
+            }
+        }
+        writeln!(
+            std::io::stdout(),
+            "decode grant {label}: request={}, plan={}, input={}, bytes={expected}, calls=1",
+            size_of::<SourceRequest>(),
+            size_of::<SourcePlan<'_>>(),
+            size_of::<SourceInput>(),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn finite_and_open_charge_exact_headers_metadata_and_decoded_payload_once() {
+        let expected = size_of::<SourceRequest>()
+            + size_of::<SourcePlan<'_>>()
+            + size_of::<SourceInput>()
+            + "ticket".len()
+            + "a".len()
+            + "rust".len()
+            + "src/main.rs".len()
+            + 2 * "λ\n".len();
+        for (variant, fields) in [
+            (
+                "plain",
+                r#""ticket":"ticket","sources":[{"key":"a","generation":1,"source_version":1,"hint":{"language":"rust","path":"src/main.rs"},"text":"λ\n"}]"#,
+            ),
+            (
+                "escaped",
+                r#""ticket":"t\u0069cket","sources":[{"key":"\u0061","generation":1,"source_version":1,"hint":{"language":"r\u0075st","path":"src\u002fmain.rs"},"text":"\u03bb\n"}]"#,
+            ),
+        ] {
+            for op in ["highlight", "stream.open"] {
+                let raw = format!(
+                    r#"{{"v":4,"instance":"i","op":"{op}","admission":"try_now",{fields}}}"#
+                );
+                single_grant(&format!("{op}-{variant}"), &raw, expected);
+            }
+        }
+    }
+
+    #[test]
+    fn finite_batch_charges_every_plan_and_output_header_before_materialization() {
+        let raw = r#"{"v":4,"instance":"i","op":"highlight","admission":"try_now","ticket":"ticket","sources":[{"key":"a","generation":1,"source_version":1,"hint":{},"text":"λ\n"},{"key":"b","generation":2,"source_version":3,"hint":{},"text":"界"}]}"#;
+        let expected = size_of::<SourceRequest>()
+            + 2 * size_of::<SourcePlan<'_>>()
+            + 2 * size_of::<SourceInput>()
+            + "ticket".len()
+            + "a".len()
+            + "b".len()
+            + 2 * ("λ\n".len() + "界".len());
+        single_grant("highlight-batch", raw, expected);
+    }
+
+    #[test]
+    fn append_charges_exact_ticket_key_lease_and_decoded_payload_once() {
+        let expected = size_of::<SourceRequest>()
+            + "ticket".len()
+            + "source".len()
+            + "lease".len()
+            + 2 * "界".len();
+        for (variant, fields) in [
+            (
+                "plain",
+                r#""ticket":"ticket","key":"source","lease":"lease","append":"界""#,
+            ),
+            (
+                "escaped",
+                r#""ticket":"t\u0069cket","key":"s\u006furce","lease":"l\u0065ase","append":"\u754c""#,
+            ),
+        ] {
+            let raw = format!(
+                r#"{{"v":4,"instance":"i","op":"stream.append","admission":"try_now","generation":1,"source_version":1,"base_revision":1,"base_bytes":0,"final":true,{fields}}}"#
+            );
+            single_grant(&format!("append-{variant}"), &raw, expected);
+        }
+    }
+
+    #[test]
+    fn close_charges_exact_ticket_key_and_lease_without_payload_once() {
+        let expected = size_of::<SourceRequest>() + "ticket".len() + "source".len() + "lease".len();
+        for (variant, fields) in [
+            (
+                "plain",
+                r#""ticket":"ticket","key":"source","lease":"lease""#,
+            ),
+            (
+                "escaped",
+                r#""ticket":"t\u0069cket","key":"s\u006furce","lease":"l\u0065ase""#,
+            ),
+        ] {
+            let raw =
+                format!(r#"{{"v":4,"instance":"i","op":"stream.close","generation":1,{fields}}}"#);
+            single_grant(&format!("close-{variant}"), &raw, expected);
+        }
     }
 }
