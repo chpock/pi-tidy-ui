@@ -21,6 +21,8 @@ Append first locates the binding within the requesting route. It requires the sa
 
 An idle engine slot owns its checkpoint. Starting an append moves that state into worker-local `Work` and leaves a busy marker containing the operation serial and expiry. Both completion and retirement check the lease and busy serial. Old work cannot publish into or remove a newer incarnation merely because a key happens to match.
 
+Engine slot-capacity growth is a separate private admission operation, entered only for a new owner/key position. It checks the retained-state pool and funds gross replacement capacity before allocating the vector; old capacity remains owned during that overlap. Replacing an existing engine slot does not trigger this growth path.
+
 ## Finite batches and preparation
 
 `source_request.rs` validates and measures the complete wire batch before allocating owned source strings. `source_service.rs::Service::start` validates the route and handles immediate close; private `Job::admit` then checks aggregate source cost and resolves every member’s syntax before admitting the batch headers or constructing any parser `Work`.
@@ -90,6 +92,8 @@ Within admitted input, bytes after a classified line prefix retain explicit uncl
 
 A **checkpoint** is the retained parser state and scope stack after completed lines. An ordinary unterminated line is a **provisional tail**: its current bytes are parsed using a clone of that checkpoint, so later appended text can change the interpretation of the whole unfinished line.
 
+`Engine` keeps active-lease checks, clock/slot authority and the cooperative line/byte/time quantum. Private `Work::commit_line` and `Work::update_tail` keep each complete-line or provisional/frozen-tail mutation together with its emissions, parser counters and allocation releases. They receive the already-selected input length and borrow that slice inside `Work`; no source copy, extra owner or persistent field is needed. Shared `Work::emit_tail` emits the retained window and unclassified suffix for both a tail update and empty input, without invoking the parser. `Work` also initializes its own operation fields, while engine admission and final retained-state handoff remain separate.
+
 `semantic_engine.rs::State` therefore keeps distinct values for:
 
 - Total accepted source bytes.
@@ -133,7 +137,7 @@ Zero-length spans produce no range, but their operations still run. Multiple ope
 
 The stack wrapper handles push/pop and Syntect clear/restore behavior. Clearing scopes can retain a saved stack for a later restore, so its allocation accounting includes saved stacks and their headers as well as the currently visible stack. Restoring without a corresponding clear is an error. Pushed native scopes must be representable by the trusted vocabulary.
 
-For each positive parsed span, the emitter converts the complete native scope stack into portable vocabulary IDs. It deduplicates equal paths using a hash index with exact path comparison; hash equality alone is not identity. New paths receive reply-local context IDs in discovery order. Their encoded rows reuse the common prefix of the preceding dictionary row, without creating a persistent dictionary shared with the consumer.
+For each positive parsed span, the emitter converts the complete native scope stack into portable vocabulary IDs. It deduplicates equal paths using a hash index with exact path comparison; hash equality alone is not identity. New paths receive reply-local context IDs in discovery order. Their encoded rows reuse the common prefix of the preceding dictionary row, without creating a persistent dictionary shared with the consumer. Private emitter index growth keeps gross replacement funding and rehashing together; context/result limits are checked before that operation, and row/path allocation follows it.
 
 Adjacent spans with the same context ID merge. Different contexts remain distinct even if a particular theme would assign them equal colors. SOURCE does not resolve colors.
 
@@ -143,7 +147,7 @@ A retained tail window stores complete paths and runs. When reused, it is insert
 
 ## Completion, discard and expiry
 
-Finishing accepted work updates total bytes and revision. Nonempty appended input updates source-progress time; empty input does not. A nonfinal operation returns the parser state to an idle slot. Finalization removes its engine slot and service binding.
+Finishing accepted work updates total bytes and revision. Nonempty appended input updates source-progress time; empty input does not. A nonfinal operation returns the parser state to an idle slot. `Engine::fund_handoff` checks the retained-state pool and funds the retained header before that slot assignment. Funding borrows the existing state and budget; `finish` retains ownership of `Work` and the extracted result until assignment or failure, keeping their cleanup in the same finalization scope. Finalization removes its engine slot and service binding.
 
 `stream.close` removes a binding only when the route, lease, key and generation match. A missing or nonmatching binding still receives the closed response without closing somebody else’s continuation. Close is cleanup, not proof that earlier work never executed.
 

@@ -302,6 +302,33 @@ impl Emitter {
     fn bucket(&self, path: &[u32]) -> usize {
         self.hash.hash_one(path) as usize & (self.indices.len() - 1)
     }
+    fn grow_index(
+        &mut self,
+        count: usize,
+        b: &mut Budget,
+        reserve: &mut dyn FnMut(usize) -> bool,
+    ) -> Result<(), Fault> {
+        if self.indices.len() < count.checked_mul(2).ok_or(Fault::started("data_limit"))? {
+            let cap = self
+                .indices
+                .len()
+                .checked_mul(2)
+                .ok_or(Fault::started("data_limit"))?
+                .max(8);
+            b.add(bytes::<u32>(cap)?, reserve)?;
+            let mut indices = vec![0; cap];
+            for (n, path) in self.window.paths.iter().enumerate() {
+                let mut index = self.hash.hash_one(path) as usize & (cap - 1);
+                while indices[index] != 0 {
+                    index = (index + 1) & (cap - 1);
+                }
+                indices[index] = n as u32 + 1;
+            }
+            b.release(self.indices.capacity() * 4);
+            self.indices = indices;
+        }
+        Ok(())
+    }
     fn context(
         &mut self,
         path: &[u32],
@@ -324,25 +351,7 @@ impl Emitter {
         )?;
         let count = self.window.paths.len() + 1;
         let id = u32::try_from(count).map_err(|_| Fault::started("result_limit"))?;
-        if self.indices.len() < count.checked_mul(2).ok_or(Fault::started("data_limit"))? {
-            let cap = self
-                .indices
-                .len()
-                .checked_mul(2)
-                .ok_or(Fault::started("data_limit"))?
-                .max(8);
-            b.add(bytes::<u32>(cap)?, reserve)?;
-            let mut indices = vec![0; cap];
-            for (n, path) in self.window.paths.iter().enumerate() {
-                let mut index = self.hash.hash_one(path) as usize & (cap - 1);
-                while indices[index] != 0 {
-                    index = (index + 1) & (cap - 1);
-                }
-                indices[index] = n as u32 + 1;
-            }
-            b.release(self.indices.capacity() * 4);
-            self.indices = indices;
-        }
+        self.grow_index(count, b, reserve)?;
         grow(&mut self.window.paths, count, b, reserve)?;
         grow(&mut self.rows, count, b, reserve)?;
         let previous = self.window.paths.last().map_or(&[][..], Vec::as_slice);
@@ -510,6 +519,151 @@ pub struct Work {
     parser_scratch_peak: usize,
 }
 impl Work {
+    fn new(state: State, input: String, finalize: bool, budget: Budget) -> Self {
+        let replace_from = state.committed;
+        Self {
+            state,
+            input,
+            cursor: 0,
+            replace_from,
+            output: Emitter::default(),
+            counters: Counters::default(),
+            key: None,
+            lease: None,
+            serial: 0,
+            finalize,
+            done: false,
+            started: false,
+            failed: false,
+            budget,
+            parser_scratch_peak: 0,
+        }
+    }
+    fn commit_line(
+        &mut self,
+        length: usize,
+        limits: &Limits,
+        syntaxes: &SyntaxSet,
+        reserve: &mut dyn FnMut(usize) -> bool,
+    ) -> Result<(), Fault> {
+        let part = &self.input[self.cursor..][..length];
+        let state = &mut self.state;
+        let full = state.tail_bytes + length as u32;
+        let prefix;
+        if state.frozen {
+            prefix = state.tail.len();
+            self.output
+                .emit_window(&state.basis, limits.runs, &mut self.budget, reserve)?;
+        } else {
+            let text = if state.tail_bytes == 0 {
+                &part[..prefix_len(part, limits.line_bytes)]
+            } else {
+                let end = prefix_len(part, limits.line_bytes - state.tail.len());
+                append_text(&mut state.tail, &part[..end], &mut self.budget, reserve)?;
+                &state.tail
+            };
+            prefix = text.len();
+            if !text.is_empty() {
+                self.started = true;
+                self.counters.committed_line_calls += 1;
+                self.counters.committed_line_bytes += text.len() as u64;
+                let mut admission = Admission {
+                    budget: &mut self.budget,
+                    reserve,
+                    cap: limits.runs,
+                    scratch: &mut self.parser_scratch_peak,
+                };
+                parse_line(
+                    &mut state.parse,
+                    &mut state.stack,
+                    text,
+                    syntaxes,
+                    &mut self.output,
+                    &mut admission,
+                )?;
+            }
+        }
+        self.output.span(
+            full as usize - prefix,
+            0,
+            limits.runs,
+            &mut self.budget,
+            reserve,
+        )?;
+        state.committed += full;
+        state.newlines += 1;
+        self.budget
+            .release(state.tail.capacity() + state.basis.dynamic_bytes());
+        state.tail = String::new();
+        state.basis = Window::default();
+        state.tail_bytes = 0;
+        state.frozen = false;
+        Ok(())
+    }
+    fn update_tail(
+        &mut self,
+        length: usize,
+        limits: &Limits,
+        syntaxes: &SyntaxSet,
+        reserve: &mut dyn FnMut(usize) -> bool,
+    ) -> Result<(), Fault> {
+        let part = &self.input[self.cursor..][..length];
+        let state = &mut self.state;
+        let full = state.tail_bytes + length as u32;
+        if !state.frozen {
+            let end = prefix_len(part, limits.line_bytes - state.tail.len());
+            append_text(&mut state.tail, &part[..end], &mut self.budget, reserve)?;
+            let mut stack = state.stack.preview(&mut self.budget, reserve)?;
+            let mut parse = state.parse.clone();
+            let mut output = Emitter::default();
+            if !state.tail.is_empty() {
+                self.started = true;
+                self.counters.tail_calls += 1;
+                self.counters.tail_bytes += state.tail.len() as u64;
+                let mut admission = Admission {
+                    budget: &mut self.budget,
+                    reserve,
+                    cap: limits.runs,
+                    scratch: &mut self.parser_scratch_peak,
+                };
+                parse_line(
+                    &mut parse,
+                    &mut stack,
+                    &state.tail,
+                    syntaxes,
+                    &mut output,
+                    &mut admission,
+                )?;
+            }
+            self.budget.release(state.basis.dynamic_bytes());
+            state.basis = output.into_window(&mut self.budget);
+            if end < part.len() || state.tail.len() == limits.line_bytes {
+                self.budget.release(state.stack.dynamic_bytes());
+                state.stack = stack;
+                state.parse = parse;
+                state.frozen = true;
+            } else {
+                self.budget.release(stack.dynamic_bytes());
+            }
+        }
+        state.tail_bytes = full;
+        self.emit_tail(limits, reserve)
+    }
+    fn emit_tail(
+        &mut self,
+        limits: &Limits,
+        reserve: &mut dyn FnMut(usize) -> bool,
+    ) -> Result<(), Fault> {
+        self.output
+            .emit_window(&self.state.basis, limits.runs, &mut self.budget, reserve)?;
+        self.output.span(
+            self.state.tail_bytes as usize - self.state.tail.len(),
+            0,
+            limits.runs,
+            &mut self.budget,
+            reserve,
+        )
+    }
     pub fn started(&self) -> bool {
         self.started
     }
@@ -689,26 +843,6 @@ impl Engine {
             .ok_or(Fault::not_started("session_limit"))?;
         Ok(self.next_serial)
     }
-    fn work(state: State, input: String, finalize: bool, budget: Budget) -> Work {
-        let replace_from = state.committed;
-        Work {
-            state,
-            input,
-            cursor: 0,
-            replace_from,
-            output: Emitter::default(),
-            counters: Counters::default(),
-            key: None,
-            lease: None,
-            serial: 0,
-            finalize,
-            done: false,
-            started: false,
-            failed: false,
-            budget,
-            parser_scratch_peak: 0,
-        }
-    }
     pub fn begin_one_shot(
         &mut self,
         source: String,
@@ -719,7 +853,41 @@ impl Engine {
         let state = self.state(hint)?;
         let mut budget = Budget::default();
         budget.add(size_of::<Work>() + source.capacity(), reserve)?;
-        Ok(Self::work(state, source, true, budget))
+        Ok(Work::new(state, source, true, budget))
+    }
+    /// Fund gross new slot capacity while old state credit is still live. The
+    /// caller is opening a new slot; keep this allowance through Work settlement
+    /// and retained-state handoff.
+    fn grow_slots(
+        &mut self,
+        owner: &str,
+        key: &str,
+        budget: &mut Budget,
+        reserve: &mut dyn FnMut(usize) -> bool,
+    ) -> Result<(), Fault> {
+        if self.slots.len() == self.slots.capacity() {
+            let cap = self
+                .slots
+                .capacity()
+                .checked_mul(2)
+                .ok_or(Fault::not_started("state_limit"))?
+                .max(4);
+            let additional = bytes::<Record>(cap)?;
+            if self
+                .retained_state_bytes()
+                .checked_add(additional)
+                .and_then(|n| n.checked_add(owner.len()))
+                .and_then(|n| n.checked_add(key.len()))
+                .is_none_or(|n| n > self.limits.state_pool_bytes)
+            {
+                return Err(Fault::not_started("state_limit"));
+            }
+            budget.add(additional, reserve)?;
+            self.slots
+                .try_reserve_exact(cap - self.slots.len())
+                .map_err(|_| Fault::not_started("state_limit"))?;
+        }
+        Ok(())
     }
     pub fn begin_open(
         &mut self,
@@ -729,7 +897,10 @@ impl Engine {
         hint: &SyntaxHint,
         reserve: &mut dyn FnMut(usize) -> bool,
     ) -> Result<Work, Fault> {
-        if owner.is_empty() || key.is_empty() || owner.len() > 64 || key.len() > 64 {
+        if [owner, key]
+            .iter()
+            .any(|value| value.is_empty() || value.len() > 64)
+        {
             return Err(Fault::not_started("invalid_session"));
         }
         self.validate_source(&source, 0, 0, false)?;
@@ -756,29 +927,8 @@ impl Engine {
         {
             return Err(Fault::not_started("state_limit"));
         }
-        if position.is_none() && self.slots.len() == self.slots.capacity() {
-            let cap = self
-                .slots
-                .capacity()
-                .checked_mul(2)
-                .ok_or(Fault::not_started("state_limit"))?
-                .max(4);
-            let additional = bytes::<Record>(cap)?;
-            if self
-                .retained_state_bytes()
-                .checked_add(additional)
-                .and_then(|n| n.checked_add(owner.len()))
-                .and_then(|n| n.checked_add(key.len()))
-                .is_none_or(|n| n > self.limits.state_pool_bytes)
-            {
-                return Err(Fault::not_started("state_limit"));
-            }
-            // The caller funds gross new capacity while old state credit is still
-            // live; keep this allowance through Work settlement/state handoff.
-            budget.add(additional, reserve)?;
-            self.slots
-                .try_reserve_exact(cap - self.slots.len())
-                .map_err(|_| Fault::not_started("state_limit"))?;
+        if position.is_none() {
+            self.grow_slots(owner, key, &mut budget, reserve)?;
         }
         let serial = self.serial()?;
         let lease = Lease(serial);
@@ -793,7 +943,7 @@ impl Engine {
             self.slots.remove(i);
         }
         self.slots.push(record);
-        let mut work = Self::work(state, source, false, budget);
+        let mut work = Work::new(state, source, false, budget);
         work.key = Some((owner.to_owned(), key.to_owned()));
         work.serial = serial;
         work.lease = Some(lease);
@@ -839,7 +989,7 @@ impl Engine {
             unreachable!()
         };
         budget.release(size_of::<State>());
-        let mut work = Self::work(*state, source, finalize, budget);
+        let mut work = Work::new(*state, source, finalize, budget);
         work.key = Some((owner.to_owned(), key.to_owned()));
         work.lease = Some(lease);
         work.serial = serial;
@@ -901,15 +1051,7 @@ impl Engine {
             return Ok(true);
         }
         if w.input.is_empty() {
-            w.output
-                .emit_window(&w.state.basis, self.limits.runs, &mut w.budget, reserve)?;
-            w.output.span(
-                (w.state.tail_bytes - w.state.tail.len() as u32) as usize,
-                0,
-                self.limits.runs,
-                &mut w.budget,
-                reserve,
-            )?;
+            w.emit_tail(&self.limits, reserve)?;
             w.started = true;
             w.done = true;
             return Ok(true);
@@ -928,106 +1070,10 @@ impl Engine {
             {
                 return Ok(false);
             }
-            let part = &remaining[..length];
-            let state = &mut w.state;
-            let full = state.tail_bytes + length as u32;
-            if part.ends_with('\n') {
-                let prefix;
-                if state.frozen {
-                    prefix = state.tail.len();
-                    w.output
-                        .emit_window(&state.basis, self.limits.runs, &mut w.budget, reserve)?;
-                } else {
-                    let text = if state.tail_bytes == 0 {
-                        &part[..prefix_len(part, self.limits.line_bytes)]
-                    } else {
-                        let end = prefix_len(part, self.limits.line_bytes - state.tail.len());
-                        append_text(&mut state.tail, &part[..end], &mut w.budget, reserve)?;
-                        &state.tail
-                    };
-                    prefix = text.len();
-                    if !text.is_empty() {
-                        w.started = true;
-                        w.counters.committed_line_calls += 1;
-                        w.counters.committed_line_bytes += text.len() as u64;
-                        let mut admission = Admission {
-                            budget: &mut w.budget,
-                            reserve,
-                            cap: self.limits.runs,
-                            scratch: &mut w.parser_scratch_peak,
-                        };
-                        parse_line(
-                            &mut state.parse,
-                            &mut state.stack,
-                            text,
-                            self.syntaxes,
-                            &mut w.output,
-                            &mut admission,
-                        )?;
-                    }
-                }
-                w.output.span(
-                    full as usize - prefix,
-                    0,
-                    self.limits.runs,
-                    &mut w.budget,
-                    reserve,
-                )?;
-                state.committed += full;
-                state.newlines += 1;
-                w.budget
-                    .release(state.tail.capacity() + state.basis.dynamic_bytes());
-                state.tail = String::new();
-                state.basis = Window::default();
-                state.tail_bytes = 0;
-                state.frozen = false;
+            if remaining[..length].ends_with('\n') {
+                w.commit_line(length, &self.limits, self.syntaxes, reserve)?;
             } else {
-                if !state.frozen {
-                    let end = prefix_len(part, self.limits.line_bytes - state.tail.len());
-                    append_text(&mut state.tail, &part[..end], &mut w.budget, reserve)?;
-                    let mut stack = state.stack.preview(&mut w.budget, reserve)?;
-                    let mut parse = state.parse.clone();
-                    let mut output = Emitter::default();
-                    if !state.tail.is_empty() {
-                        w.started = true;
-                        w.counters.tail_calls += 1;
-                        w.counters.tail_bytes += state.tail.len() as u64;
-                        let mut admission = Admission {
-                            budget: &mut w.budget,
-                            reserve,
-                            cap: self.limits.runs,
-                            scratch: &mut w.parser_scratch_peak,
-                        };
-                        parse_line(
-                            &mut parse,
-                            &mut stack,
-                            &state.tail,
-                            self.syntaxes,
-                            &mut output,
-                            &mut admission,
-                        )?;
-                    }
-                    w.budget.release(state.basis.dynamic_bytes());
-                    state.basis = output.into_window(&mut w.budget);
-                    if end < part.len() || state.tail.len() == self.limits.line_bytes {
-                        w.budget.release(state.stack.dynamic_bytes());
-                        state.stack = stack;
-                        state.parse = parse;
-                        state.frozen = true;
-                    } else {
-                        w.budget.release(stack.dynamic_bytes());
-                    }
-                }
-                state.tail_bytes = full;
-                w.output
-                    .emit_window(&state.basis, self.limits.runs, &mut w.budget, reserve)?;
-                w.output.span(
-                    full as usize - state.tail.len(),
-                    0,
-                    self.limits.runs,
-                    &mut w.budget,
-                    reserve,
-                )?;
+                w.update_tail(length, &self.limits, self.syntaxes, reserve)?;
             }
             w.started = true;
             w.cursor += length;
@@ -1036,6 +1082,23 @@ impl Engine {
         }
         w.done = true;
         Ok(true)
+    }
+    fn fund_handoff(
+        &self,
+        state: &State,
+        budget: &mut Budget,
+        reserve: &mut dyn FnMut(usize) -> bool,
+    ) -> Result<(), Fault> {
+        if self
+            .retained_state_bytes()
+            .checked_add(state.known_bytes())
+            .is_none_or(|n| n > self.limits.state_pool_bytes)
+        {
+            return Err(Fault::started("state_limit"));
+        }
+        budget
+            .add(size_of::<State>(), reserve)
+            .map_err(|_| Fault::started("data_limit"))
     }
     pub fn finish(
         &mut self,
@@ -1072,17 +1135,9 @@ impl Engine {
             if w.finalize {
                 self.retire(&w);
             } else {
-                if self
-                    .retained_state_bytes()
-                    .checked_add(w.state.known_bytes())
-                    .is_none_or(|n| n > self.limits.state_pool_bytes)
-                {
+                if let Err(fault) = self.fund_handoff(&w.state, &mut w.budget, reserve) {
                     self.retire(&w);
-                    return Err(Fault::started("state_limit"));
-                }
-                if w.budget.add(size_of::<State>(), reserve).is_err() {
-                    self.retire(&w);
-                    return Err(Fault::started("data_limit"));
+                    return Err(fault);
                 }
                 let index = self.position(owner, key).unwrap();
                 self.slots[index].slot = Slot::Idle(Box::new(w.state));
@@ -1644,6 +1699,46 @@ mod service_slot_admission_tests {
         assert_eq!(work.required_bytes(), exact);
         assert_eq!(engine.slots.capacity(), 4);
         engine.discard(work);
+        assert_eq!(engine.retained_state_bytes(), 0);
+    }
+    #[test]
+    fn replacing_idle_position_at_full_capacity_does_not_fund_slot_growth() {
+        let mut engine = Engine::new(Limits::default());
+        let hint = SyntaxHint {
+            language: Some("text".into()),
+            path: None,
+        };
+        let mut leases = Vec::new();
+        for n in 0..4 {
+            let mut work = engine
+                .begin_open("r", &format!("k{n}"), String::new(), &hint, &mut |_| true)
+                .unwrap();
+            leases.push(work.lease().unwrap());
+            assert!(engine.step(&mut work, &mut |_| true).unwrap());
+            engine.finish(work, &mut |_| true).unwrap();
+        }
+        let capacity = engine.slots.capacity();
+        assert_eq!(engine.slots.len(), capacity);
+        let base = size_of::<Work>() + 6;
+        let mut requests = Vec::new();
+        let replacement = engine
+            .begin_open("r", "k0", String::new(), &hint, &mut |required| {
+                requests.push(required);
+                required <= base
+            })
+            .unwrap();
+        assert_eq!(requests, vec![base]);
+        assert_eq!(replacement.required_bytes(), base);
+        assert_eq!(engine.slots.capacity(), capacity);
+        assert_eq!(engine.leases(), 4);
+        assert!(!engine.contains("r", "k0", leases[0]));
+        for (n, lease) in leases.iter().enumerate().skip(1) {
+            assert!(engine.contains("r", &format!("k{n}"), *lease));
+        }
+        engine.discard(replacement);
+        for (n, lease) in leases.into_iter().enumerate().skip(1) {
+            assert!(engine.close("r", &format!("k{n}"), lease));
+        }
         assert_eq!(engine.retained_state_bytes(), 0);
     }
     #[test]
