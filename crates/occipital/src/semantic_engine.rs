@@ -701,6 +701,46 @@ pub struct Engine {
     lease_visits: std::cell::Cell<usize>,
 }
 
+const LANGUAGE_ALIASES: &[(&str, &str)] = &[
+    ("typescript", "TypeScript"),
+    ("ts", "TypeScript"),
+    ("javascript", "JavaScript"),
+    ("js", "JavaScript"),
+    ("bash", "Bourne Again Shell (bash)"),
+    ("sh", "Bourne Again Shell (bash)"),
+    ("shell", "Bourne Again Shell (bash)"),
+    ("awk", "AWK"),
+    ("clojure", "Clojure"),
+    ("coffeescript", "CoffeeScript"),
+    ("elixir", "Elixir"),
+    ("erlang", "Erlang"),
+    ("groovy", "Groovy"),
+    ("haskell", "Haskell"),
+    ("java", "Java"),
+    ("julia", "Julia"),
+    ("kotlin", "Kotlin"),
+    ("ocaml", "OCaml"),
+    ("perl", "Perl"),
+    ("php", "PHP"),
+    ("powershell", "PowerShell"),
+    ("python", "Python"),
+    ("r", "R"),
+    ("racket", "Racket"),
+    ("ruby", "Ruby"),
+    ("rust", "Rust"),
+    ("scala", "Scala"),
+    ("swift", "Swift"),
+    ("tcl", "Tcl"),
+    ("makefile", "Makefile"),
+    ("make", "Makefile"),
+    ("py", "Python"),
+    ("rs", "Rust"),
+    ("json", "JSON"),
+    ("plaintext", "Plain Text"),
+    ("text", "Plain Text"),
+    ("txt", "Plain Text"),
+];
+
 impl Engine {
     pub fn new(limits: Limits) -> Self {
         static SYNTAXES: OnceLock<SyntaxSet> = OnceLock::new();
@@ -728,48 +768,10 @@ impl Engine {
             .as_deref()
             .filter(|language| !language.is_empty())
         {
-            let alias = [
-                ("typescript", "TypeScript"),
-                ("ts", "TypeScript"),
-                ("javascript", "JavaScript"),
-                ("js", "JavaScript"),
-                ("bash", "Bourne Again Shell (bash)"),
-                ("sh", "Bourne Again Shell (bash)"),
-                ("shell", "Bourne Again Shell (bash)"),
-                ("awk", "AWK"),
-                ("clojure", "Clojure"),
-                ("coffeescript", "CoffeeScript"),
-                ("elixir", "Elixir"),
-                ("erlang", "Erlang"),
-                ("groovy", "Groovy"),
-                ("haskell", "Haskell"),
-                ("java", "Java"),
-                ("julia", "Julia"),
-                ("kotlin", "Kotlin"),
-                ("ocaml", "OCaml"),
-                ("perl", "Perl"),
-                ("php", "PHP"),
-                ("powershell", "PowerShell"),
-                ("python", "Python"),
-                ("r", "R"),
-                ("racket", "Racket"),
-                ("ruby", "Ruby"),
-                ("rust", "Rust"),
-                ("scala", "Scala"),
-                ("swift", "Swift"),
-                ("tcl", "Tcl"),
-                ("makefile", "Makefile"),
-                ("make", "Makefile"),
-                ("py", "Python"),
-                ("rs", "Rust"),
-                ("json", "JSON"),
-                ("plaintext", "Plain Text"),
-                ("text", "Plain Text"),
-                ("txt", "Plain Text"),
-            ]
-            .into_iter()
-            .find(|(name, _)| language.eq_ignore_ascii_case(name))
-            .map_or(language, |(_, syntax)| syntax);
+            let alias = LANGUAGE_ALIASES
+                .iter()
+                .find(|(name, _)| language.eq_ignore_ascii_case(name))
+                .map_or(language, |(_, syntax)| *syntax);
             return self
                 .syntaxes
                 .find_syntax_by_name(alias)
@@ -995,24 +997,19 @@ impl Engine {
         work.serial = serial;
         Ok(work)
     }
+    fn work_position(&self, work: &Work) -> Option<usize> {
+        let (owner, key) = work.key.as_ref()?;
+        self.position(owner, key).filter(|&i| {
+            self.slots[i].lease == work.lease.unwrap()
+                && matches!(self.slots[i].slot,Slot::Busy{serial,..}if serial==work.serial)
+        })
+    }
     fn active(&self, work: &Work) -> bool {
-        !work.failed
-            && work.key.as_ref().is_none_or(|(owner, key)| {
-                self.position(owner, key).is_some_and(|i| {
-                    self.slots[i].lease == work.lease.unwrap()
-                        && matches!(self.slots[i].slot,Slot::Busy{serial,..}if serial==work.serial)
-                })
-            })
+        !work.failed && (work.key.is_none() || self.work_position(work).is_some())
     }
     fn retire(&mut self, work: &Work) {
-        if let Some((owner, key)) = &work.key {
-            if let Some(i) = self.position(owner, key) {
-                if self.slots[i].lease == work.lease.unwrap()
-                    && matches!(self.slots[i].slot,Slot::Busy{serial,..}if serial==work.serial)
-                {
-                    self.remove(i);
-                }
-            }
+        if let Some(i) = self.work_position(work) {
+            self.remove(i);
         }
     }
     fn remove(&mut self, index: usize) {
@@ -1317,6 +1314,85 @@ mod tests {
             "no source run for marker {marker:?} at byte {byte}; replaced from {}",
             chunk.replace_from
         );
+    }
+
+    #[test]
+    fn documented_aliases_keep_exact_names_and_case_insensitive_priority() {
+        let engine = Engine::new(Limits::default());
+        let cases: &[(&str, &[&str])] = &[
+            ("TypeScript", &["typescript", "ts"]),
+            ("JavaScript", &["javascript", "js"]),
+            ("Bourne Again Shell (bash)", &["bash", "sh", "shell"]),
+            ("AWK", &["awk"]),
+            ("Clojure", &["clojure"]),
+            ("CoffeeScript", &["coffeescript"]),
+            ("Elixir", &["elixir"]),
+            ("Erlang", &["erlang"]),
+            ("Groovy", &["groovy"]),
+            ("Haskell", &["haskell"]),
+            ("Java", &["java"]),
+            ("Julia", &["julia"]),
+            ("Kotlin", &["kotlin"]),
+            ("OCaml", &["ocaml"]),
+            ("Perl", &["perl"]),
+            ("PHP", &["php"]),
+            ("PowerShell", &["powershell"]),
+            ("Python", &["python", "py"]),
+            ("R", &["r"]),
+            ("Racket", &["racket"]),
+            ("Ruby", &["ruby"]),
+            ("Rust", &["rust", "rs"]),
+            ("Scala", &["scala"]),
+            ("Swift", &["swift"]),
+            ("Tcl", &["tcl"]),
+            ("Makefile", &["makefile", "make"]),
+            ("JSON", &["json"]),
+            ("Plain Text", &["plaintext", "text", "txt"]),
+        ];
+        for (expected, aliases) in cases {
+            for alias in *aliases {
+                for language in [alias.to_string(), alias.to_ascii_uppercase()] {
+                    let hint = SyntaxHint {
+                        language: Some(language),
+                        path: Some("conflicting.txt".into()),
+                    };
+                    assert_eq!(engine.syntax(&hint).unwrap().name, *expected, "{hint:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn work_retirement_preserves_same_key_peers_and_one_shot_lookup_counts() {
+        let mut engine = Engine::new(Limits::default());
+        let hint = SyntaxHint {
+            language: Some("text".into()),
+            path: None,
+        };
+        let cancelled = engine
+            .begin_open("cancelled", "same", "old\n".into(), &hint, &mut |_| true)
+            .unwrap();
+        let peer = engine
+            .begin_open("peer", "same", "peer\n".into(), &hint, &mut |_| true)
+            .unwrap();
+        let lease = peer.lease().unwrap();
+        let finite = engine
+            .begin_one_shot("finite\n".into(), &hint, &mut |_| true)
+            .unwrap();
+        engine.take_lease_visits();
+
+        engine.discard(cancelled);
+        assert_eq!(engine.take_lease_visits(), 1);
+        assert_eq!(engine.leases(), 1);
+        assert_eq!(run_work(&mut engine, finite).source_bytes, 7);
+        assert_eq!(engine.take_lease_visits(), 0);
+        assert_eq!(engine.leases(), 1);
+
+        assert_eq!(run_work(&mut engine, peer).source_bytes, 5);
+        assert_eq!(engine.take_lease_visits(), 3);
+        assert!(engine.close("peer", "same", lease));
+        assert_eq!(engine.leases(), 0);
+        assert_eq!(engine.retained_state_bytes(), 0);
     }
 
     #[test]

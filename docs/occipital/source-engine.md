@@ -19,7 +19,7 @@ The service uses the external lease string as the engine key. It does not use th
 
 Append first locates the binding within the requesting route. It requires the same caller key/generation and a source version no older than the binding’s current version. The engine then requires the matching internal lease, an idle slot and the exact acknowledged revision and byte count. A matching key alone cannot recover lost parser state.
 
-An idle engine slot owns its checkpoint. Starting an append moves that state into worker-local `Work` and leaves a busy marker containing the operation serial and expiry. Both completion and retirement check the lease and busy serial. Old work cannot publish into or remove a newer incarnation merely because a key happens to match.
+An idle engine slot owns its checkpoint. Starting an append moves that state into worker-local `Work` and leaves a busy marker containing the operation serial and expiry. Private `Engine::work_position` shares the owner/key, lease and busy-serial match used by active-work checking and retirement. The active check additionally rejects failed work; retirement remains available independently of that flag. One-shot work needs no slot lookup. Completion first validates active work and retains its existing final slot lookup after handoff funding. Old work cannot publish into or remove a newer incarnation merely because a key happens to match.
 
 Engine slot-capacity growth is a separate private admission operation, entered only for a new owner/key position. It checks the retained-state pool and funds gross replacement capacity before allocating the vector; old capacity remains owned during that overlap. Replacing an existing engine slot does not trigger this growth path.
 
@@ -37,7 +37,7 @@ Only when all members finish does the service return a batch body for encoding. 
 
 ## Language selection
 
-Occipital uses supplied hints, never file reads or content sniffing. A nonempty explicit `language` wins over `path`: recognized aliases are normalized case-insensitively, then syntax name and extension lookup are tried. An unknown explicit language does **not** fall through to the path. An omitted, null or empty language permits path selection; `path` is optional, and a pathless source can still be selected by explicit language. With no usable selector/path, or when its grammar is unknown, SOURCE returns `unknown_syntax/not_started`, not an implicit Plain Text parse; Plain Text must be explicit.
+Occipital uses supplied hints, never file reads or content sniffing. The private immutable `LANGUAGE_ALIASES` table in `semantic_engine.rs` holds alias data separately from `Engine::syntax` selection logic. A nonempty explicit `language` wins over `path`: recognized aliases are normalized case-insensitively, then syntax name and extension lookup are tried. An unknown explicit language does **not** fall through to the path. An omitted, null or empty language permits path selection; `path` is optional, and a pathless source can still be selected by explicit language. With no usable selector/path, or when its grammar is unknown, SOURCE returns `unknown_syntax/not_started`, not an implicit Plain Text parse; Plain Text must be explicit.
 
 The complete explicit-language alias table is maintained here so protocol readers have one authoritative mapping:
 
