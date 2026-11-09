@@ -1,9 +1,8 @@
 //! Focused admission controls, not a new large-source benchmark matrix.
 use occipital::{
-    actor::ActorPool,
-    ingress::Incoming,
     limits::{Limits, SOURCE_BYTES, WIRE_BYTES},
     protocol::reply::REPLY_BYTES,
+    runtime::{ActorPool, Incoming},
     source::{Engine, SourceChunk, SyntaxHint, Work},
 };
 use serde_json::{json, Value};

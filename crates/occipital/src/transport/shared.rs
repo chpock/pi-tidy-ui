@@ -1,10 +1,8 @@
 //! Public Subconscious internal-service frontend, no router/bootstrap/private sender.
 use crate::{
-    actor::{PoolHandle, Route},
-    control::Authority,
     fault::Fault,
-    ingress::Incoming,
     protocol::{probe, reply, CAPABILITY, SERVICE},
+    runtime::{Authority, Incoming, PoolHandle, Route},
 };
 use std::{
     collections::HashMap,
@@ -179,7 +177,7 @@ pub async fn run(authority: Arc<Authority>, pool: PoolHandle) -> Result<(), Faul
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{actor::ActorPool, limits::Limits};
+    use crate::{limits::Limits, runtime::ActorPool};
     use serde_json::json;
 
     fn source(ticket: &str) -> Vec<u8> {

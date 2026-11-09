@@ -1,12 +1,11 @@
 //! Fair worker-local quanta shared by source and style work in both transports.
+use super::{encoding, request::DataRequest};
 use crate::{
     credit::{Budget, Credit},
     fault::Fault,
     limits::Limits,
     protocol::reply,
     protocol::Admission,
-    runtime::encoding,
-    runtime_request::DataRequest,
     source::{request::SourceRequest, Action, Job as SourceJob, Service},
     stats::Snapshot,
     style::{request::StyleRequestPlan, StyleFailure, StyleWork},
@@ -796,7 +795,7 @@ fn deliver_error(instance: &str, envelope: Envelope, mut credit: Credit, fault: 
 
 #[cfg(test)]
 #[allow(dead_code)]
-#[path = "../tests/support/mod.rs"]
+#[path = "../../tests/support/mod.rs"]
 mod support;
 #[cfg(test)]
 mod integration_tests {

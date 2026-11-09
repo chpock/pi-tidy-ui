@@ -1,5 +1,6 @@
 //! Bounded pre-decode admission shared by pipe and public module frontends.
 //! The small control lane cannot be exhausted by two unsettled source deliveries.
+use super::scheduler::{Submission, Ticket, Wake};
 use crate::{
     credit::{Budget, Credit},
     fault::Fault,
@@ -9,10 +10,9 @@ use crate::{
         reply,
         request::{self, ControlRequest, Operation},
     },
-    scheduler::{Submission, Ticket, Wake},
 };
 use serde::Serialize;
-pub const CONTROL_RESERVATION: usize = 64 * 1024;
+pub(super) const CONTROL_RESERVATION: usize = 64 * 1024;
 
 pub enum Incoming {
     Data(Ticket),

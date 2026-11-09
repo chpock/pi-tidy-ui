@@ -1,8 +1,10 @@
 //! Source-free v4 negotiation. Theme and catalogue state is owned by the caller.
-use crate::{
-    actor::PoolHandle,
-    fault::Fault,
+use super::{
     ingress::{Control, ControlDelivery},
+    pool::PoolHandle,
+};
+use crate::{
+    fault::Fault,
     limits::Limits,
     protocol::{description, request::Operation},
 };

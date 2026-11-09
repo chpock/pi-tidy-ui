@@ -3,10 +3,8 @@
 mod support;
 
 use occipital::{
-    actor::{ActorPool, Route},
-    control::Authority,
-    ingress::Incoming,
     limits::Limits,
+    runtime::{ActorPool, Authority, Incoming, Route},
 };
 use serde_json::{json, Value};
 

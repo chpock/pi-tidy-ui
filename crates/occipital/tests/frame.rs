@@ -1,4 +1,4 @@
-use occipital::frame::{read_frame, write_frame};
+use occipital::transport::frame::{read_frame, write_frame};
 use std::io::{self, Cursor, Read};
 struct Fragmented {
     input: Cursor<Vec<u8>>,

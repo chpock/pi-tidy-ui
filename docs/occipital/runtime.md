@@ -35,6 +35,8 @@ The pool owns thread completion/join handles. Its transport-facing `PoolHandle` 
 
 The parser actor is not spawned per request. Oniguruma/Syntect work stays on its owning thread; a bounded native turn does not make a single regex call preemptible. Immutable grammar/vocabulary assets are shared, while per-worker lease/state quotas are divided so their sum stays within process limits.
 
+The private `runtime/worker.rs` owns the complete message/worker bundle and constructs its scheduler once inside the spawned owning thread. `runtime/pool.rs` retains route dispatch, startup failure handling and completion/join authority; it does not construct or advance a scheduler. Both use the same elapsed-time calculation and startup time base.
+
 The worker loop observes stop/route revocation, advances the scheduler, publishes its current lease count, then receives messages. Its private `receive_message` helper owns the wait policy: while work is runnable it uses nonblocking receive between turns; when only expiry remains it waits until the next expiry; otherwise it blocks for a message. An empty nonblocking read or timed-out wait returns no message for that turn, whereas channel disconnection terminates the loop. Message dispatch, barrier processing and final scope/mailbox cleanup remain with the worker loop. There is no recurring idle wake merely to rescan an empty worker.
 
 ## Route authority and affinity
@@ -72,7 +74,7 @@ Reader completion, writer failure or frontend failure revokes the route, cancels
 
 ## Shared SDK frontend
 
-`shared.rs` registers an internal, non-agent-facing bulk service with the existing public SDK. It advertises exactly `describe`, `highlight`, `stream.open`, `stream.append`, `stream.close` and `styles.resolve`; exact service/capability names are in the [protocol](protocol.md#version-identities-and-carriers).
+`transport/shared.rs` registers an internal, non-agent-facing bulk service with the existing public SDK. It advertises exactly `describe`, `highlight`, `stream.open`, `stream.append`, `stream.close` and `styles.resolve`; exact service/capability names are in the [protocol](protocol.md#version-identities-and-carriers).
 
 - `on_bind` accepts only the expected internal-service target and a live authority, then allocates a native route. The complete SDK route handle is the mapping key. A duplicate or late bind closes the tentative route and is rejected.
 - A request retrieves its bound route and checks cancellation before ingress. DATA cancellation is signaled once while still awaiting the native ticket. `describe` reads the fixed source-free descriptor.
@@ -98,4 +100,8 @@ Fatal startup/runtime failure writes only `occipital stopped: <safe-code>` to st
 
 ## Implementation map
 
-`crates/occipital/src/main.rs` composes the process; `actor.rs` owns worker/route authority; `stdio.rs` and `shared.rs` adapt carriers; `frame.rs` handles direct framing; `control.rs` supplies descriptor authority and observations. `protocol/` owns pure operation/CONTROL decoding, routing/depth probes, common envelopes/bounded serialization and descriptor values. `runtime/encoding.rs` connects output capacity to the existing credit, while `stats.rs` holds shared observations and `limits.rs` holds immutable policy. None of these files chooses Toolview palette selection, visibility, fallback or UI retry policy.
+Paths below are relative to `crates/occipital/src/`. `main.rs` composes the process. The public `runtime` facade exports `ActorPool`, `PoolHandle`, `Route`, `Authority`, `Incoming`, `Rejection`, `Control`, `ControlDelivery`, `Scheduler`, `Ticket` and `Delivery`. Its `pool`, `worker`, `control`, `ingress`, `request` and `scheduler` implementation modules are private. The credited serializer remains the explicit `runtime::encoding::encode` adapter; internal submissions and CONTROL reservation policy are not public APIs.
+
+`runtime/pool.rs` owns pool startup/join, weak route facades and bounded message dispatch. `runtime/worker.rs` owns scheduler construction, waits, dispatch and final cleanup on that thread. `runtime/scheduler.rs` deliberately retains the complete queue/cancellation/receipt/finalization state machine together; separating its ticket or delivery storage would obscure their shared physical ownership. `runtime/ingress.rs` selects the credited lane; `runtime/request.rs` orchestrates typed DATA decoding; `runtime/control.rs` supplies source-free descriptor authority and observations.
+
+Public `transport::{stdio,shared,frame}` modules retain explicit carrier entry points, direct framing and their distinct delivery boundaries. `protocol/` owns operation/CONTROL decoding, routing/depth probes, common envelopes/bounded serialization and descriptor representation without live execution ownership. Shared `credit.rs`, `fault.rs`, `limits.rs`, `stats.rs` and `vocabulary.rs` remain independent of both runtime and transports. None chooses Toolview palettes, visibility, fallback or UI retry policy.

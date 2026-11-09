@@ -95,10 +95,12 @@ Controlled budgets bound admitted application work and retained logical data. Th
 
 ## Implementation boundaries
 
-- `main.rs`, `actor.rs`, `stdio.rs`, `shared.rs`, `frame.rs`: process, workers, routes and carriers.
-- `ingress.rs`, `runtime_request.rs`, `source/request.rs`, `style/request.rs`: admission and typed computation construction. SOURCE request envelopes stay in the decoder adapter, not the computation model.
+- `main.rs`: process composition and mode selection.
+- `runtime/mod.rs`: canonical thread/route, admission, scheduling and guarded-delivery interface. Private `runtime/pool.rs` owns startup/join and route facades; `runtime/worker.rs` owns the entire scheduler/message/cleanup lifecycle. `runtime/ingress.rs`, `runtime/request.rs` and `runtime/control.rs` own admission, typed DATA orchestration and source-free authority respectively.
+- `transport/{stdio,shared,frame}.rs`: carrier lifecycles and direct framing, with separate pipe-flush and SDK-handoff settlement.
+- `source/request.rs`, `style/request.rs`: feature-specific wire adapters; SOURCE request envelopes stay in the decoder adapter, not the computation model.
 - `protocol/`: common identity/admission metadata, operation names and CONTROL decoding, borrowed routing/depth probes and primitives, generic reply envelopes/bounded encoding and descriptor representation. None requires concrete workers, computation implementations or a credit ledger.
-- `scheduler.rs`, `runtime/encoding.rs`, `credit.rs`: queued/running ownership phases, fair computational turns, credited encoding and physical delivery ownership.
+- Private `runtime/scheduler.rs`: one queued/running/cancellation/receipt state machine with fair computational turns and physical delivery ownership. Public `runtime/encoding.rs` connects generic output capacity to the existing credit; shared `credit.rs` owns the ledger independently of runtime.
 - `source/mod.rs`: canonical Rust SOURCE interface; private `source/model.rs`, `source/engine.rs`, `source/service.rs` and `source/reply.rs` own domain values, parsing, continuation authority and flat result serialization respectively. The explicit `source::request` adapter decodes wire input.
 - `style/mod.rs`: canonical portable values and resumable work, with private `style/model.rs` and `style/work.rs`; public `style/contexts.rs`, `style/rules.rs`, `style/resolver.rs` and `style/request.rs` own bounded context admission, rule compilation/identity, matching and the wire request adapter.
 - `fault.rs`, `limits.rs`, `stats.rs`: execution failures, shared fixed/configurable policy and field-identical resource/pool observations without live ownership.
@@ -109,5 +111,7 @@ The SOURCE facade exposes typed commands/results and worker-local parser/service
 The STYLE interface exposes portable `style::{Ink, Expression, StyleKind, Styles, StyleError}` and `style::{StyleWork, StyleFailure}`. Context admission, rule compilation and matching each have a separate error domain under `style::contexts`, `style::rules` and `style::resolver`; value validation cannot return a context error. Matching depends on style values and trusted grammar scopes, not the context JSON decoder or SOURCE. The request adapter composes borrowed context/rule plans, while resumable work deliberately retains the existing common credit guard. These are generic daemon responsibilities, independent of consumer palettes, caches or UI scheduling.
 
 `protocol::reply::Reply` represents and serializes generic envelopes without a concrete ledger. Its capacity authorization hook runs before output growth; `runtime::encoding::encode` connects it to the caller's existing credit. SOURCE and STYLE bodies serialize directly rather than through a redundant DATA result enum. Descriptors consume common `stats::{PoolStats, Snapshot}` observations supplied by runtime, not a pool handle or a completion barrier.
+
+The [runtime interface](runtime.md#implementation-map) exposes the existing operational types through `runtime` rather than committing consumers to its private file layout. Carrier entry points remain explicit under `transport::{stdio,shared,frame}`; no generic transport interface replaces their different settlement rules. Shared failures, policy, observations, credit and vocabulary stay independent leaves because both computation and orchestration use them.
 
 These paths are relative to `crates/occipital/` (`src/` for runtime modules). The crate uses Syntect with Oniguruma and pinned Two-Face grammar assets; dependency and generated-identity details belong to [assets and maintenance](assets.md). Return to the [extension manual](../README.md).

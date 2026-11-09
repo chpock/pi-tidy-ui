@@ -2,7 +2,7 @@
 use occipital::{
     credit::Budget,
     limits::Limits,
-    scheduler::{Delivery, Scheduler, Ticket},
+    runtime::{Delivery, Scheduler, Ticket},
     vocabulary::{self, ScopeId},
 };
 use serde_json::{json, Value};

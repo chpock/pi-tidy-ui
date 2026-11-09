@@ -21,6 +21,10 @@ Release notes before the published 0.2.0 baseline have not been reconstructed.
   `protocol`; pool/resource observations use `stats::{PoolStats, Snapshot}`.
   Replace `Reply::encode_with_credit` with `runtime::encoding::encode`; SOURCE
   and STYLE bodies serialize directly without `DataBody`.
+  Worker/route/admission/delivery types now use `runtime::{ActorPool, PoolHandle,
+  Route, Authority, Scheduler, Ticket, Delivery, Incoming, Rejection, Control,
+  ControlDelivery}`; carrier entry points use `transport::{stdio, shared, frame}`.
+  Runtime implementation modules and the CONTROL reservation constant are internal.
   Old Rust paths and signatures are not retained. The executable interface,
   `syntax-highlight/v4` JSON/RPC contract and resource limits are unchanged.
 

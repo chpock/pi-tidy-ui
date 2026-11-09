@@ -1,5 +1,9 @@
 //! One persistent owned helper, or the same engine hosted by a user-managed supervisor.
-use occipital::{actor::ActorPool, control::Authority, fault::Fault, limits::Limits};
+use occipital::{
+    fault::Fault,
+    limits::Limits,
+    runtime::{ActorPool, Authority},
+};
 use std::{sync::Arc, time::Duration};
 
 enum Mode {
@@ -50,13 +54,13 @@ async fn run(mode: Mode) -> Result<(), Fault> {
         Mode::Stdio => {
             let route = pool.bind().await?;
             tokio::select! {
-                result = occipital::stdio::run(Arc::clone(&authority), route) => result,
+                result = occipital::transport::stdio::run(Arc::clone(&authority), route) => result,
                 _ = tokio::signal::ctrl_c() => Ok(()),
             }
         }
         Mode::Shared => {
             tokio::select! {
-                result = occipital::shared::run(Arc::clone(&authority), pool.handle()) => result,
+                result = occipital::transport::shared::run(Arc::clone(&authority), pool.handle()) => result,
                 _ = tokio::signal::ctrl_c() => Ok(()),
             }
         }

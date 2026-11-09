@@ -1,5 +1,5 @@
 //! Actual allocator observations at payload destruction, not only end-state counters.
-use occipital::{credit::Budget, limits::Limits, scheduler::Scheduler};
+use occipital::{credit::Budget, limits::Limits, runtime::Scheduler};
 use serde_json::json;
 use std::{
     alloc::{GlobalAlloc, Layout, System},

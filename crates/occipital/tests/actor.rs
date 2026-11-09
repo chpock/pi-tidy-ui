@@ -1,5 +1,5 @@
 //! Actual fixed owning-worker threads; no test parser or transport emulation.
-use occipital::actor::ActorPool;
+use occipital::runtime::ActorPool;
 use serde_json::{json, Value};
 fn open(ticket: &str) -> Vec<u8> {
     serde_json::to_vec(&json!({"v":4,"ticket":ticket,"op":"stream.open","instance":"boot","admission":"bounded_queue","queue_wait_ms":1000,"sources":[{"key":"same","generation":1,"source_version":1,"hint":{"language":"bash"},"text":"echo one"}]})).unwrap()
@@ -105,7 +105,7 @@ async fn shutdown_invalidates_retained_route_facades_and_late_handoff() {
 
 #[tokio::test]
 async fn await_helper_drops_consumed_ticket_without_cancelling_returned_delivery() {
-    async fn delivery(route: &occipital::actor::Route) -> occipital::scheduler::Delivery {
+    async fn delivery(route: &occipital::runtime::Route) -> occipital::runtime::Delivery {
         let mut ticket = route.submit(open("local-ticket")).unwrap();
         ticket.take().await.unwrap()
     }

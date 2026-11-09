@@ -1,5 +1,5 @@
 //! Real actor admission and a separate bounded control lane, before transport adapters.
-use occipital::{actor::ActorPool, ingress::Incoming};
+use occipital::runtime::{ActorPool, Incoming};
 use serde_json::{json, Value};
 fn source(ticket: &str) -> Vec<u8> {
     serde_json::to_vec(&json!({"v":4,"ticket":ticket,"op":"stream.open","instance":"boot","admission":"bounded_queue","queue_wait_ms":1000,"sources":[{"key":ticket,"generation":1,"source_version":1,"hint":{"language":"bash"},"text":"echo x"}]})).unwrap()

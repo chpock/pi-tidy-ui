@@ -1,18 +1,15 @@
 //! Persistent owned pipe frontend. Blocking fd operations live on two fixed IO
 //! threads; bounded channels, native guards and receipts survive actual write/flush.
+use super::frame;
 use crate::{
-    actor::Route,
-    control::Authority,
     fault::Fault,
-    frame,
-    ingress::{ControlDelivery, Incoming},
     limits::{CONTROL_REQUEST_BYTES, WIRE_BYTES},
     protocol::{
         probe,
         reply::{self, REPLY_BYTES},
         PROTOCOL_VERSION,
     },
-    scheduler::{Delivery, Ticket},
+    runtime::{Authority, ControlDelivery, Delivery, Incoming, Route, Ticket},
 };
 use serde::Deserialize;
 use std::{

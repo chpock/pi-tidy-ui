@@ -1,10 +1,10 @@
 //! Deterministic owning-worker controls; real transports are a separate gate.
-use occipital::{credit::Budget, limits::Limits, scheduler::Scheduler};
+use occipital::{credit::Budget, limits::Limits, runtime::Scheduler};
 use serde_json::{json, Value};
 trait InspectDelivery {
     fn json(&self) -> Value;
 }
-impl InspectDelivery for occipital::scheduler::Delivery {
+impl InspectDelivery for occipital::runtime::Delivery {
     fn json(&self) -> Value {
         serde_json::from_slice(self.bytes()).unwrap()
     }

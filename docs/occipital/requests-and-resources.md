@@ -8,9 +8,9 @@ This chapter follows those transitions. The [protocol reference](protocol.md) ow
 
 Consider a valid `stream.open` on an already-bound route:
 
-1. The transport supplies a complete application body to `actor.rs` through `Route::receive`.
-2. `ingress.rs` uses the borrowed header probe from `protocol/probe.rs` and selects the DATA lane.
-3. `scheduler.rs` reserves a physical route job and decoding allowance. `runtime_request.rs` and `source/request.rs` validate the complete operation before allocating its owned source payload.
+1. The transport supplies a complete application body through `runtime::Route::receive`, implemented in `runtime/pool.rs`.
+2. `runtime/ingress.rs` uses the borrowed header probe from `protocol/probe.rs` and selects the DATA lane.
+3. `runtime/scheduler.rs` reserves a physical route job and decoding allowance. `runtime/request.rs` and `source/request.rs` validate the complete operation before allocating its owned source payload.
 4. The route submits the owned request to its assigned parser worker. The worker places it in that route’s queue.
 5. When the route receives a turn, the scheduler passes only the validated `SourceOperation` to `source/service.rs`, which prepares a job and creates its continuation binding. Correlation/admission metadata and request credit remain caller responsibilities; parser state remains worker-local.
 6. `source/engine.rs` advances the job through cooperative parsing turns. Other eligible routes can receive turns between them.
@@ -44,7 +44,7 @@ This prevents a valid early member of a batch from causing unbounded owned alloc
 
 STYLE retains the admitted raw frame while queued. `style::request::StyleRequestPlan` inspects the rule input and context dictionary without expanding the dictionary into owned scope arrays. `style::contexts::ContextPlan` counts the expanded context words, including copied prefixes, and charges each row even when that row contains no scope words. Its context-only errors are separate from portable style-value validation and rule compilation; this does not change reservation terms or operation-specific fault mapping.
 
-When the worker receives the request’s turn, `scheduler.rs::prepare_styles` inspects that immutable frame again and reserves the combined plan before compiling caller rules or materializing contexts. The second inspection occurs at the ownership boundary where the resulting objects will be created; borrowed plans do not cross threads or outlive their frame.
+When the worker receives the request’s turn, `runtime/scheduler.rs::prepare_styles` inspects that immutable frame again and reserves the combined plan before compiling caller rules or materializing contexts. The second inspection occurs at the ownership boundary where the resulting objects will be created; borrowed plans do not cross threads or outlive their frame.
 
 `style::StyleWork` owns the original physical credit through matching, result growth and error/cancellation handoff. Its private implementation uses the common `Credit`, not a scheduler-owned allocation abstraction. Matching workspace and one allowance per distinct expression retain their existing accounting; consuming work transfers the live guard with the result or failure, rather than releasing and reacquiring a slot.
 
@@ -125,9 +125,9 @@ A `Ticket` initially owns automatic cancellation. Successfully taking its delive
 
 ### The delivery boundary differs by carrier
 
-For direct mode, `stdio.rs` calls the delivery’s flush completion only after the frame has been written and flushed. The buffer is destroyed before its native credit is released.
+For direct mode, `transport/stdio.rs` calls the delivery’s flush completion only after the frame has been written and flushed. The buffer is destroyed before its native credit is released.
 
-For shared mode, `shared.rs` constructs the public SDK’s owning response object before acknowledging the native handoff. Subsequent SDK/router buffering is a different ownership boundary. Native handoff does not prove that a remote consumer received, validated or published the result.
+For shared mode, `transport/shared.rs` constructs the public SDK’s owning response object before acknowledging the native handoff. Subsequent SDK/router buffering is a different ownership boundary. Native handoff does not prove that a remote consumer received, validated or published the result.
 
 Acknowledgment changes only a pending receipt to committed. If cancellation already won, a later flush or handoff does not turn that cancelled receipt into success. On its next cleanup turn, the worker discards the affected SOURCE continuation.
 
@@ -155,10 +155,10 @@ The exact defaults and accounting definitions are in the [protocol reference](pr
 
 | Protection | Cost bounded and enforcement point |
 |---|---|
-| Outer framing | Carrier capture before application interpretation; direct framing is in `frame.rs` |
+| Outer framing | Carrier capture before application interpretation; direct framing is in `transport/frame.rs` |
 | DATA and CONTROL body bounds | Complete serialized application messages, including envelopes; checked at ingress and during reply encoding |
 | Physical route/global jobs | Concurrent ownership of admitted work and undelivered results; reserved in `credit.rs` |
-| Queue bounds and wait deadlines | Unprepared work awaiting a worker turn; enforced by `scheduler.rs` |
+| Queue bounds and wait deadlines | Unprepared work awaiting a worker turn; enforced by `runtime/scheduler.rs` |
 | Source bytes and logical lines | Supplied classification workload, including aggregate finite batches and cumulative appends; enforced by request/service/engine checks |
 | Classified-line window | The amount passed to a non-preemptible line parser; excess supplied coverage is represented as unclassified, not silently omitted |
 | Expanded context words and decoded-result charge | Compact input can expand substantially, and empty rows still consume storage; checked before STYLE expansion and during SOURCE/STYLE result construction |

@@ -1,12 +1,10 @@
 //! Approved volume policy: admission and actual producer controls, not grammar timing tests.
 use occipital::{
-    actor::ActorPool,
     credit::Budget,
     fault::Fault,
-    ingress::Incoming,
     limits::{self, Limits},
     protocol::reply,
-    runtime::encoding,
+    runtime::{encoding, ActorPool, Incoming},
     source::{request, Engine, SourceChunk, SyntaxHint, Work},
     style::contexts::{Bounds, ContextPlan},
     vocabulary,
