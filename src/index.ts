@@ -4,8 +4,8 @@ import { createRequire } from "node:module";
 import { SessionLogging } from "./session-logging.ts";
 import { RuntimeHealth } from './runtime-health.ts';
 import { notify } from './notifications.ts';
-import { copyThemePreference, ExtensionSettings, processPreferences, sameThemePreference,
-  type LocalPreferences, type SettingsLoadResult, type ThemePreference } from './settings.ts';
+import { copyThemePreference, sameThemePreference, type ThemePreference } from './appearance/theme-preference.ts';
+import { ExtensionSettings, processPreferences, type LocalPreferences, type SettingsLoadResult } from './settings.ts';
 import { bindTerminalLifecycle } from "./terminal-lifecycle.ts";
 import { TidyMenu, type TidyMenuOwner, type TidyMenuAction } from './tidy-menu.ts';
 import type { SyntaxMenuOutcome } from './occipital/menu.ts';
@@ -35,8 +35,9 @@ import { layoutCard, type CardLayout, type CardRows, type BashPaintProof } from 
 import { PaletteInputOwner } from './syntax/pi-input-owner.ts';
 import type { PiInputTheme, PaletteInputLease } from './syntax/pi-input.ts';
 import { resolveTheme, type ThemeDescription } from './themes/selection.ts';
-import { SourceController, type GeometryFunding } from './occipital/controller.ts';
-import type { DataCharge, DataCleanupReceipt } from './occipital/data-budget.ts';
+import { SourceController } from './occipital/controller.ts';
+import type { GeometryFunding } from './resources/data-budget.ts';
+import type { DataCharge, DataCleanupReceipt } from './resources/data-budget.ts';
 import type { PiClassifier } from "./syntax/work.ts";
 import type { SyntaxClient } from "./occipital/client.ts";
 import { createSyntaxOptions } from "./occipital/bootstrap.ts";

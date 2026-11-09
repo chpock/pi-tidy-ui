@@ -26,7 +26,7 @@ import { sampleOwnedPalette } from '../../../src/themes/owned-palette.ts';
 import { PaletteInputOwner } from '../../../src/syntax/pi-input-owner.ts';
 import { observeSyntaxLocalWork } from '../../fixtures/syntax-local-work.ts';
 import { CardLayout } from '../../../src/syntax/card-layout.ts';
-import { DataCharge } from '../../../src/occipital/data-budget.ts';
+import { DataCharge } from '../../../src/resources/data-budget.ts';
 import { bashCardFixture as renderBashCard } from '../../fixtures/prepared-card.ts';
 import { fileCardFixture as renderFileCard } from '../../fixtures/prepared-card.ts';
 import * as fs from 'node:fs/promises';

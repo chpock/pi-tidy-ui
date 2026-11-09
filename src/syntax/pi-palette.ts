@@ -1,7 +1,8 @@
 import type { Theme, ThemeColor } from '@earendil-works/pi-coding-agent';
 import type { Color, TerminalColorMode } from '@earendil-works/pi-tui';
 import { diffPalette } from '../diff-palette.ts';
-import { CARD_ROLES, type CardRole, type LiteralInk } from '../occipital/semantic-codec.ts';
+import { CARD_ROLES, type CardRole } from '../appearance/card-roles.ts';
+import type { LiteralInk } from '../occipital/style-types.ts';
 import { samplePiBindings, samplePiPrefix } from './pi-bindings.ts';
 import { effectiveColor, inkColor, outputInk } from './pi-color.ts';
 import { derivePiMarkerVariants, type PiDerivedMarker, type PiMarkerVariantContext } from './pi-variants.ts';

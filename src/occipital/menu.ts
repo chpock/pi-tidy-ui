@@ -1,4 +1,4 @@
-import type { ThemePreference } from '../settings.ts';
+import type { ThemePreference } from '../appearance/theme-preference.ts';
 import type { ThemeDescription } from '../themes/selection.ts';
 import type { ProviderSnapshot } from './provider.ts';
 

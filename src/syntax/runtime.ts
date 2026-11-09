@@ -1,9 +1,9 @@
 import { diagnose, reportRuntime } from '../diagnostics.ts';
 import { SyntaxClient, type SyntaxClientOptions } from '../occipital/client.ts';
 import { type SyntaxMenuOwner } from '../occipital/menu.ts';
-import type { ThemePreference } from '../settings.ts';
+import type { ThemePreference } from '../appearance/theme-preference.ts';
 import type { TerminalColorMode } from '@earendil-works/pi-tui';
-import type { GeometryFunding } from '../occipital/controller.ts';
+import type { GeometryFunding } from '../resources/data-budget.ts';
 import { type PiInputTheme, type PaletteInputLease } from './pi-input.ts';
 import { PaletteInputOwner } from './pi-input-owner.ts';
 import type { ThemeDescription } from '../themes/selection.ts';

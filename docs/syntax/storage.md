@@ -4,7 +4,7 @@ The client separates logical source ownership from actual storage holders. This 
 
 ## Follow the storage holder, not just the source record
 
-`SemanticRetentionPool` in `src/occipital/semantic-retention.ts` owns source entries and the context arena. `SourceController` owns the pool and exposes geometry funding to card preparation. This lets semantic data, Pi projections, measurements and compiled presentation participate in the same local logical-data authority without making the budget retain UI objects.
+`SemanticRetentionPool` in `src/occipital/semantic-retention.ts` owns source entries and the context arena. `SourceController` owns the pool and exposes the operation-scoped `GeometryFunding` capability to card preparation. It supplies numeric grants for card construction, palette preparation, paint and measured geometry; it neither authorizes SOURCE work or fallback nor owns retained payloads. This lets semantic data, Pi projections, measurements and compiled presentation participate in the same local logical-data authority without making the budget retain UI objects.
 
 The allocation path is concrete:
 
@@ -20,7 +20,7 @@ operation needing storage
 
 The peak is **additional** storage while old data may still exist. Replacing a source snapshot, growing a numeric vector or building a new palette must fund the overlap, not assume that the old allocation can be freed first.
 
-`DataBudget` in `src/occipital/data-budget.ts` stores numbers only. `DataGrant.close` returns unused reservation; consumed storage remains charged. `DataCharge.retain` gives another holder a share of the same charge, and only the final release returns its retained credit. Closing the budget prevents new admission but does not pretend that existing holders vanished.
+`DataBudget` in `src/resources/data-budget.ts` stores numbers only. `DataGrant.close` returns unused reservation; consumed storage remains charged. `DataCharge.retain` gives another holder a share of the same charge, and only the final release returns its retained credit. Closing the budget prevents new admission but does not pretend that existing holders vanished.
 
 Not all resource counters are this budget. Controller bookkeeping and physical request/frame/workspace reservations have their own bounded authorities. Native service credits and transcript-row retention are different again. A low source-entry count is not proof that all of those liabilities are gone.
 
@@ -114,7 +114,7 @@ The [allocation contract](#allocation-and-pressure-ownership) defines pressure, 
 
 ## Allocation and pressure ownership
 
-`DataBudget` records numeric policy credit only: it holds no source/UI owners and chooses no eviction victims. The retention root funds additional peaks by visiting least-recently-touched entries in its existing order, skipping explicitly protected/pinned generations. A successful pressure check is not reusable allocation credit: an actual grant must be reserved and consumed into storage charges. Unused grant credit is returned; shared charges live until their last owner releases them.
+`DataBudget` and `GeometryFunding` in `src/resources/data-budget.ts` record/admit numeric policy credit only: they hold no source/UI owners and choose no eviction victims. The retention root funds additional peaks by visiting least-recently-touched entries in its existing order, skipping explicitly protected/pinned generations. A successful pressure check is not reusable allocation credit: an actual grant must be reserved and consumed into storage charges. Unused grant credit is returned; shared charges live until their last owner releases them.
 
 Every eviction returns a key/generation-qualified receipt. The controller processes receipts even when the attempted new admission ultimately fails: dropping other entries does not guarantee that captures or physical outstanding work leave enough free credit. Receipts retire matching leases, invalidate ready/display ownership and preserve refusal state; they do not authorize an endless eviction/reclassification cycle. Entry-attributed bytes and bytes actually freed are different when borrowers/captures still own storage.
 

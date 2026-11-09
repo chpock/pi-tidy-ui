@@ -6,10 +6,11 @@ import { SyntaxRuntime } from '../../../src/syntax/runtime.ts';
 import type { ProviderTransport } from '../../../src/occipital/provider.ts';
 import type { TransportEnd } from '../../../src/occipital/transport-end.ts';
 import { semanticDescriptor } from '../../fixtures/semantic-provider.ts';
-import { CARD_ROLES, type CardRole } from '../../../src/occipital/semantic-codec.ts';
+import { CARD_ROLES, type CardRole } from '../../../src/appearance/card-roles.ts';
 import type { ConcreteStyle } from '../../../src/syntax/style-materialization.ts';
 import type { SourceController } from '../../../src/occipital/controller.ts';
-import { themePatch, type SettingsLoadResult, type SettingsSaveResult, type SyntaxTheme, type ThemePreference } from '../../../src/settings.ts';
+import { themePatch, type SettingsLoadResult, type SettingsSaveResult, type SyntaxTheme } from '../../../src/settings.ts';
+import type { ThemePreference } from '../../../src/appearance/theme-preference.ts';
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -342,7 +343,7 @@ for (const lifecycle of ['dispose', 'off/on'] as const) {
 
 
 test('runtime Pi input remains lazy across attachment, menu and current native selection; explicit fallback preserves selection and source authority', async () => {
-  const { DataBudget } = await import('../../../src/occipital/data-budget.ts');
+  const { DataBudget } = await import('../../../src/resources/data-budget.ts');
   const { getThemeByName } = await import('../../../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js');
   const f = fixture(), view = presentation(), native = getThemeByName('dark')!;
   let fg = 0, bg = 0;

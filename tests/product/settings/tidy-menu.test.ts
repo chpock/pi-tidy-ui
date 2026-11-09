@@ -5,7 +5,7 @@ import { setImmediate as turn } from 'node:timers/promises';
 import { stripVTControlCharacters as plain } from 'node:util';
 import { visibleWidth } from '@earendil-works/pi-tui';
 import { TidyMenu, themeLabels, type TidyMenuOwner, type TidyMenuSnapshot, type TidyMenuAction } from '../../../src/tidy-menu.ts';
-import { DataBudget } from '../../../src/occipital/data-budget.ts';
+import { DataBudget } from '../../../src/resources/data-budget.ts';
 import { SyntaxRuntime } from '../../../src/syntax/runtime.ts';
 import { THEME_CATALOGUE, THEME_FAMILIES } from '../../../src/themes/catalogue.ts';
 import { observePaletteInput } from '../../fixtures/palette-input-observer.mjs';

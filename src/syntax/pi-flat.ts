@@ -1,7 +1,7 @@
 import type { PiProjectionPayload, StagedPiProjection } from '../occipital/pi-projection.ts';
-import { DataBudget, type DataCharge, type DataGrant } from '../occipital/data-budget.ts';
+import { DataBudget, type DataCharge, type DataGrant } from '../resources/data-budget.ts';
 import { OCCIPITAL_LIMITS } from '../occipital/limits.ts';
-import type { LiteralInk } from '../occipital/semantic-codec.ts';
+import type { LiteralInk } from '../occipital/style-types.ts';
 import type { ConcreteStyle } from './style-materialization.ts';
 /** Exact synchronous public highlightCode rows, excluding LF and preserving tabs. */
 export type PiRowReader = (consume: (index: number, line: string) => void) => boolean;

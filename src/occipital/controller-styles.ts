@@ -1,4 +1,4 @@
-import { CARD_ROLES, type CardRole } from './semantic-codec.ts';
+import { CARD_ROLES, type CardRole } from '../appearance/card-roles.ts';
 import { fingerprintRules, type RuleDefinition } from './style-rules.ts';
 import { materializeStyle, type ConcreteStyle, type StyleBinding } from '../syntax/style-materialization.ts';
 import type { SemanticStyleExpectation } from './semantic-protocol.ts';
@@ -59,7 +59,7 @@ function freezeCopy<T>(value: T): T {
 export function expectation(selection: PreparedSelection, vocabulary: string): SemanticStyleExpectation {
   return { vocabulary, rules: selection.rules, bindingSlots: selection.input.definition.binding_slots };
 }
-export function concreteStyle(expression: import('./semantic-codec.ts').StyleExpression, selection: PreparedSelection,
+export function concreteStyle(expression: import('./style-types.ts').StyleExpression, selection: PreparedSelection,
   roles: StyleRoles, neutral: 'title' | 'code'): ConcreteStyle {
   return materializeStyle(expression, selection.input.bindings, roles[neutral], roles.code.background);
 }

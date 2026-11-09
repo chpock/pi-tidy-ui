@@ -1,4 +1,4 @@
-import { DataBudget, type DataCharge, type DataGrantFactory, type DataCleanupReceipt } from '../occipital/data-budget.ts';
+import { DataBudget, type DataCharge, type DataGrantFactory, type DataCleanupReceipt } from '../resources/data-budget.ts';
 import { SpanKind, type MeasuredText, type MeasuredRowLayout } from './measured-rows.ts';
 import type { AnsiStyle } from './style-ansi.ts';
 

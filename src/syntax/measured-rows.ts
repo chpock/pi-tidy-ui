@@ -1,6 +1,6 @@
 import { visibleWidth } from '@earendil-works/pi-tui';
 import { wrapFlags, wrapUnits } from '../text-wrap.ts';
-import { DataBudget, type DataCharge, type DataGrantFactory, type DataCleanupReceipt } from '../occipital/data-budget.ts';
+import { DataBudget, type DataCharge, type DataGrantFactory, type DataCleanupReceipt } from '../resources/data-budget.ts';
 
 export const GlyphFlag = Object.freeze({ Whitespace: 1, Tab: 2, Newline: 4 } as const);
 export const SpanKind = Object.freeze({ Source: 0, Tab: 1, Replacement: 2, Prompt: 3 } as const);

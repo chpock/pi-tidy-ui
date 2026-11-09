@@ -2714,7 +2714,7 @@ test('unsupported full file metadata reuses exact current native leaves across p
 test('expanded final error details refuse unbudgeted untrusted text without retaining a copied body', async () => {
   const h = fixture();
   const originalFunding = SourceController.prototype.geometryFunding;
-  let refusals = 0, budget: import('../../../src/occipital/data-budget.ts').DataBudget | undefined, retainedBefore: number | undefined;
+  let refusals = 0, budget: import('../../../src/resources/data-budget.ts').DataBudget | undefined, retainedBefore: number | undefined;
   try {
     await h.start();
     const error = writeOwner(h, 'large-error-details', 'small request');
@@ -2748,7 +2748,7 @@ test('expanded error details use actual measurement funding without the pending-
   const originalFunding = SourceController.prototype.geometryFunding;
   const largestSingleGrant = 1024 * 1024;
   const grants: number[] = [];
-  let budget: import('../../../src/occipital/data-budget.ts').DataBudget | undefined;
+  let budget: import('../../../src/resources/data-budget.ts').DataBudget | undefined;
   SourceController.prototype.geometryFunding = function (...args) {
     const funding = originalFunding.apply(this, args);
     if (!funding) return funding;

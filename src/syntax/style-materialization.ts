@@ -1,4 +1,4 @@
-import type { Ink, LiteralInk, StyleExpression } from '../occipital/semantic-codec.ts';
+import type { Ink, LiteralInk, StyleExpression } from '../occipital/style-types.ts';
 
 type BindingInk = LiteralInk | Readonly<{ kind: 'inherit' }>;
 export interface StyleBinding {

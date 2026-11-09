@@ -1,26 +1,7 @@
 // Flat context/style primitives for the active v4 application contract.
 import { HIGHLIGHT_LIMITS, OCCIPITAL_LIMITS } from './limits.ts';
+import type { Ink, StyleExpression, StyleIdentity } from './style-types.ts';
 
-export type LiteralInk = Readonly<{ kind: 'rgb'; r: number; g: number; b: number }>
-  | Readonly<{ kind: 'indexed'; index: number }> | Readonly<{ kind: 'terminal-default' }>;
-export type Ink = LiteralInk | Readonly<{ kind: 'binding'; slot: number }> | Readonly<{ kind: 'inherit' }>;
-export interface StyleExpression {
-  readonly foreground: Ink;
-  readonly background: Ink;
-  readonly attributes: number;
-  readonly attribute_mask: number;
-}
-export const CARD_ROLES = Object.freeze([
-  'panel', 'plain', 'code', 'output', 'empty', 'padding', 'service', 'muted', 'footer', 'reminder',
-  'overflow', 'diagnostic', 'title', 'prompt', 'frame', 'error', 'errorFrame', 'warning', 'gutter',
-  'numbers', 'addedCode', 'addedGutter', 'addedSign', 'removedCode', 'removedGutter', 'removedSign', 'contextCode', 'contextGutter',
-] as const);
-export type CardRole = typeof CARD_ROLES[number];
-export interface StyleIdentity {
-  readonly vocabulary: string;
-  readonly rules: string;
-  readonly bindingSlots: number;
-}
 export interface ContextBounds { readonly vocabularySize: number; readonly maxBytes: number }
 export type SemanticErrorCode = 'invalid_context' | 'unknown_scope' | 'context_limit'
   | 'invalid_style' | 'style_limit' | 'identity_mismatch' | 'invalid_source' | 'source_limit';

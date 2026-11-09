@@ -4,7 +4,7 @@ import test from 'node:test';
 import { Theme, type ThemeColor } from '@earendil-works/pi-coding-agent';
 import { colorToRgb, indexedColor, rgbColor, type Color, type TerminalColorMode } from '@earendil-works/pi-tui';
 import { getThemeByName } from '../../../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js';
-import { CARD_ROLES } from '../../../src/occipital/semantic-codec.ts';
+import { CARD_ROLES } from '../../../src/appearance/card-roles.ts';
 import { samplePiCardPalette, samplePiPalette } from '../../../src/syntax/pi-palette.ts';
 import { samplePiPrefix } from '../../../src/syntax/pi-bindings.ts';
 import { effectiveColor } from '../../../src/syntax/pi-color.ts';

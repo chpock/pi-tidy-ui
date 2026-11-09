@@ -2,7 +2,8 @@ import '../../fixtures/test-guard.mjs';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { readFileSync } from 'node:fs';
-import { decodeContextBatch, decodeStyleResult, SemanticError, type StyleIdentity } from '../../../src/occipital/semantic-codec.ts';
+import { decodeContextBatch, decodeStyleResult, SemanticError } from '../../../src/occipital/semantic-codec.ts';
+import type { StyleIdentity } from '../../../src/occipital/style-types.ts';
 
 const vocabulary = 'a'.repeat(64), rules = 'b'.repeat(64);
 const bounds = { vocabularySize: 20, maxBytes: 1 << 20 };

@@ -1,6 +1,6 @@
 import type { SyntaxClient } from '../occipital/client.ts';
 import type { DisplayRangeReader, PiFailure, PiProjectionReader, SourceController, SourceDemand, SourceDisplayBasis, SourceWorkStatus } from '../occipital/controller.ts';
-import type { DataCharge } from '../occipital/data-budget.ts';
+import type { DataCharge } from '../resources/data-budget.ts';
 import { preparePiFlat, type PiRowReader, type PreparedPiFlat } from './pi-flat.ts';
 import type { StagedPiProjection } from '../occipital/pi-projection.ts';
 import type { ConcreteStyle } from './style-materialization.ts';

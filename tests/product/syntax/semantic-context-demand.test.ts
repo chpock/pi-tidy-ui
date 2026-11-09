@@ -7,7 +7,8 @@ import { ContextArena, type ContextRef } from '../../../src/occipital/context-ar
 import { SemanticRanges } from '../../../src/occipital/semantic-ranges.ts';
 import { SemanticRetentionPool, type ReadyPresentation } from '../../../src/occipital/semantic-retention.ts';
 import type { SemanticChunk } from '../../../src/occipital/semantic-source.ts';
-import { CARD_ROLES, decodeStyleResult, type CardRole } from '../../../src/occipital/semantic-codec.ts';
+import { CARD_ROLES, type CardRole } from '../../../src/appearance/card-roles.ts';
+import { decodeStyleResult } from '../../../src/occipital/semantic-codec.ts';
 import { materializeStyle, type ConcreteStyle } from '../../../src/syntax/style-materialization.ts';
 const vocabulary = 'a'.repeat(64), otherVocabulary = 'd'.repeat(64), rules = 'b'.repeat(64), grant = () => true;
 const vectors = JSON.parse(readFileSync(new URL('../../../protocol/syntax-v4/vectors.json', import.meta.url), 'utf8'));

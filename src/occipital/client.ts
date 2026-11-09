@@ -1,6 +1,6 @@
 import { diagnose, diagnosticError, reportRuntime, type DiagnosticFields, type DiagnosticSink, type RuntimeEvent } from '../diagnostics.ts';
-import { copyThemePreference, ExtensionSettings, sameThemePreference, themePatch,
-  type ThemePreference } from '../settings.ts';
+import { copyThemePreference, sameThemePreference, type ThemePreference } from '../appearance/theme-preference.ts';
+import { ExtensionSettings, themePatch } from '../settings.ts';
 import { SourceController, type ControllerOptions } from './controller.ts';
 import type { SyntaxMenuOutcome, SyntaxMenuOwner, SyntaxMenuSnapshot } from './menu.ts';
 import { resolveTheme, type ThemeDescription } from '../themes/selection.ts';

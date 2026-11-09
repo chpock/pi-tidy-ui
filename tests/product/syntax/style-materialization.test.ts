@@ -1,7 +1,7 @@
 import '../../fixtures/test-guard.mjs';
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import type { StyleExpression } from '../../../src/occipital/semantic-codec.ts';
+import type { StyleExpression } from '../../../src/occipital/style-types.ts';
 import { materializeStyle, type ConcreteStyle, type StyleBinding } from '../../../src/syntax/style-materialization.ts';
 
 const rgb = (r: number, g: number, b: number) => ({ kind: 'rgb' as const, r, g, b });

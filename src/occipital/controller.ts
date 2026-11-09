@@ -2,9 +2,9 @@ import { concreteStyle, expectation, prepareSelection, selectionBytes, type Prep
 import type { StagedPiProjection } from './pi-projection.ts';
 import { PiPreparation } from './semantic-retention.ts';
 export type { PiPreparation } from './semantic-retention.ts';
-import type { DataBudget, DataCharge, DataGrant } from './data-budget.ts';
+import type { DataCharge, DataGrant, GeometryFunding } from '../resources/data-budget.ts';
 import type { ContextRef } from './context-arena.ts';
-import { CARD_ROLES, type CardRole } from './semantic-codec.ts';
+import { CARD_ROLES, type CardRole } from '../appearance/card-roles.ts';
 import type { SemanticCaptureGroup } from './semantic-capture.ts';
 import { decodeSemanticStyleReply, type SemanticStyleExpectation } from './semantic-protocol.ts';
 import type { CaptureSelection, ReadyDisplayUpdate } from './semantic-retention.ts';
@@ -39,10 +39,6 @@ export interface SourcePreparation {
   requiresCredit?(): boolean;
 }
 export type SourceWorkGroup = { readonly id: number; readonly preparation: WeakRef<SourcePreparation>; readonly keys: ReadonlySet<string> };
-export interface GeometryFunding {
-  readonly budget: DataBudget;
-  grant(bytes: number): DataGrant | undefined;
-}
 type WorkEntry = SourceWorkGroup | SourceState;
 type StyleAttempt = { failed: boolean };
 type GroupMember = { key: string; id: number };

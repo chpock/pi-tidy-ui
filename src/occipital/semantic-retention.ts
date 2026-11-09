@@ -2,13 +2,13 @@ import type { PiProjectionPayload, StagedPiProjection } from './pi-projection.ts
 import { ContextArena, type ContextRef } from './context-arena.ts';
 import { SemanticError } from './semantic-codec.ts';
 import { SemanticRanges, type SemanticRangeView } from './semantic-ranges.ts';
-import type { CardRole } from './semantic-codec.ts';
+import type { CardRole } from '../appearance/card-roles.ts';
 import type { ConcreteStyle } from '../syntax/style-materialization.ts';
 import { completeRoles, copyPresentation, equalPresentation, presentationPeak, type OwnedPresentation, type ReadyPresentation } from './ready-presentation.ts';
 export type { ReadyPresentation } from './ready-presentation.ts';
 import type { SemanticChunk } from './semantic-source.ts';
 import { OCCIPITAL_LIMITS } from './limits.ts';
-import { DataBudget, type DataCharge } from './data-budget.ts';
+import { DataBudget, type DataCharge } from '../resources/data-budget.ts';
 import { AccountedSnapshot, SemanticCapture, SemanticCaptureGroup } from './semantic-capture.ts';
 export type { SemanticCapture, SemanticCaptureGroup } from './semantic-capture.ts';
 

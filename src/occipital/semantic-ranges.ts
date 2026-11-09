@@ -1,7 +1,7 @@
 import { ContextArena, contextPeak, type ContextLease, type ContextRef } from './context-arena.ts';
 import { SemanticError } from './semantic-codec.ts';
 import type { SemanticChunk } from './semantic-source.ts';
-import { dataGrant, type DataCharge, type DataGrant } from './data-budget.ts';
+import { dataGrant, type DataCharge, type DataGrant } from '../resources/data-budget.ts';
 
 type Reserve = (additionalPeakPolicyBytes: number) => boolean;
 type Identity = Pick<SemanticChunk, 'key' | 'generation' | 'lease' | 'vocabulary'>;

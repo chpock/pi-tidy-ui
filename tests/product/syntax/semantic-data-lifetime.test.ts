@@ -3,7 +3,7 @@ import { installProjection, visitProjection, projectionRanges } from '../../fixt
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { setImmediate as turn } from 'node:timers/promises';
-import { DataBudget, DataGrant } from '../../../src/occipital/data-budget.ts';
+import { DataBudget, DataGrant } from '../../../src/resources/data-budget.ts';
 import { ContextArena } from '../../../src/occipital/context-arena.ts';
 import { SemanticRanges } from '../../../src/occipital/semantic-ranges.ts';
 import { SemanticRetentionPool } from '../../../src/occipital/semantic-retention.ts';

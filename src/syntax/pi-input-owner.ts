@@ -1,6 +1,6 @@
 import { diagnose, reportRuntime, type DiagnosticSink } from '../diagnostics.ts';
 import type { TerminalColorMode } from '@earendil-works/pi-tui';
-import type { GeometryFunding } from '../occipital/controller.ts';
+import type { GeometryFunding } from '../resources/data-budget.ts';
 import type { ThemeDescription } from '../themes/selection.ts';
 import { preparePaletteInput, type PaletteInputCache, type PiInputTheme } from './pi-input.ts';
 import { OwnedPaletteDataError } from '../themes/owned-palette.ts';

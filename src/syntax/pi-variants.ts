@@ -1,6 +1,6 @@
 import { colorToOklch, oklchColor, type Color, type TerminalColorMode } from '@earendil-works/pi-tui';
 import type { ThemeColor } from '@earendil-works/pi-coding-agent';
-import type { LiteralInk } from '../occipital/semantic-codec.ts';
+import type { LiteralInk } from '../occipital/style-types.ts';
 import { contrast, inkColor, luminance, outputInk } from './pi-color.ts';
 import { PI_MARKER_REGIONS, PI_RULE_BINDINGS } from './pi-adapter.ts';
 import type { StyleBinding } from './style-materialization.ts';

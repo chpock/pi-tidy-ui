@@ -18,7 +18,7 @@ import { RenderCache } from '../../../src/render-cache.ts';
 import { RuntimeHealth } from '../../../src/runtime-health.ts';
 import { measure, reflow, type MeasuredRowLayout } from '../../../src/syntax/measured-rows.ts';
 import { paintFlat, type FlatPaintRows } from '../../../src/syntax/flat-paint.ts';
-import type { DataCleanupReceipt } from '../../../src/occipital/data-budget.ts';
+import type { DataCleanupReceipt } from '../../../src/resources/data-budget.ts';
 
 function frameCleanup(layout: DataCleanupReceipt, paint: DataCleanupReceipt): DataCleanupReceipt {
   return { release() { layout.release(); paint.release(); } };

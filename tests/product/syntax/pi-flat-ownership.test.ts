@@ -1,7 +1,7 @@
 import '../../fixtures/test-guard.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { DataBudget } from '../../../src/occipital/data-budget.ts';
+import { DataBudget } from '../../../src/resources/data-budget.ts';
 import { preparePiFlat } from '../../../src/syntax/pi-flat.ts';
 import { SourceController } from '../../../src/occipital/controller.ts';
 import { SemanticRetentionPool } from '../../../src/occipital/semantic-retention.ts';

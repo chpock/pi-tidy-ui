@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
-import { expressionKey, type Ink, type StyleExpression } from './semantic-codec.ts';
+import { expressionKey } from './semantic-codec.ts';
+import type { Ink, StyleExpression } from './style-types.ts';
 
 export interface RuleFont { attributes: number; attribute_mask: number }
 export interface RuleContext {

@@ -2,7 +2,7 @@ import '../../fixtures/test-guard.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { setImmediate as turn } from 'node:timers/promises';
-import { DataBudget, DataGrant, type DataGrantFactory } from '../../../src/occipital/data-budget.ts';
+import { DataBudget, DataGrant, type DataGrantFactory } from '../../../src/resources/data-budget.ts';
 import { measure, reflow } from '../../../src/syntax/measured-rows.ts';
 import { paintFlat } from '../../../src/syntax/flat-paint.ts';
 const neutral = { open: '', close: '' };

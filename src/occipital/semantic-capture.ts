@@ -1,5 +1,5 @@
 import type { ContextRef } from './context-arena.ts';
-import type { DataCharge, DataGrant } from './data-budget.ts';
+import type { DataCharge, DataGrant } from '../resources/data-budget.ts';
 import type { SemanticRangeView } from './semantic-ranges.ts';
 
 export class AccountedSnapshot {

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { setImmediate as turn } from 'node:timers/promises';
 import { ContextArena } from '../../../src/occipital/context-arena.ts';
-import type { StyleExpression } from '../../../src/occipital/semantic-codec.ts';
+import type { StyleExpression } from '../../../src/occipital/style-types.ts';
 
 const vocabulary = 'a'.repeat(64), a = 'b'.repeat(64), b = 'c'.repeat(64), grant = () => true;
 const ink = (red: number): StyleExpression => ({ foreground: { kind: 'rgb', r: red, g: 20, b: 30 },

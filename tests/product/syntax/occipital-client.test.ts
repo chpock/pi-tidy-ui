@@ -9,7 +9,8 @@ import { RuntimeHealth } from '../../../src/runtime-health.ts';
 import { reportRuntime } from '../../../src/diagnostics.ts';
 import { SyntaxClient, type SyntaxClientOptions } from '../../../src/occipital/client.ts';
 import { ExtensionSettings, SETTINGS_FILE_MAX_BYTES, type SettingsLoadResult, type SettingsPatch, type SettingsSaveResult,
-  type SyntaxTheme, type ThemePreference, type ThemeVariant } from '../../../src/settings.ts';
+  type SyntaxTheme } from '../../../src/settings.ts';
+import type { ThemePreference, ThemeVariant } from '../../../src/appearance/theme-preference.ts';
 import type { ProviderClock, ProviderTransport } from '../../../src/occipital/provider.ts';
 import type { TransportEnd } from '../../../src/occipital/transport-end.ts';
 import { semanticDescriptor } from '../../fixtures/semantic-provider.ts';

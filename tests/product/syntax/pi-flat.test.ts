@@ -3,7 +3,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { setImmediate as turn } from 'node:timers/promises';
 import { highlightCode, initTheme } from '@earendil-works/pi-coding-agent';
-import { DataBudget } from '../../../src/occipital/data-budget.ts';
+import { DataBudget } from '../../../src/resources/data-budget.ts';
 import { compileStyleAnsi } from '../../../src/syntax/style-ansi.ts';
 import { measure, reflow } from '../../../src/syntax/measured-rows.ts';
 import { paintFlat } from '../../../src/syntax/flat-paint.ts';

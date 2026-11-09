@@ -3,7 +3,8 @@ import { Input, SelectList, getKeybindings, matchesKey, truncateToWidth, visible
   type Component, type SelectItem, type TuiMouseEvent, type TuiMouseEventResult } from '@earendil-works/pi-tui';
 import { readableDiagnosticText } from './debug-log.ts';
 import { displayPath } from './display-path.ts';
-import { copyThemePreference, type Switches, type ThemePreference, type ThemeVariant } from './settings.ts';
+import { copyThemePreference, type ThemePreference, type ThemeVariant } from './appearance/theme-preference.ts';
+import type { Switches } from './settings.ts';
 import type { SyntaxMenuOutcome, SyntaxMenuSnapshot } from './occipital/menu.ts';
 import type { RuntimeHealthSnapshot } from './runtime-health.ts';
 import type { SessionLogging } from './session-logging.ts';

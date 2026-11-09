@@ -1,8 +1,8 @@
 import type { Theme } from '@earendil-works/pi-coding-agent';
 import type { TerminalColorMode } from '@earendil-works/pi-tui';
-import type { GeometryFunding } from '../occipital/controller.ts';
-import { type DataBudget, type DataCharge, type DataCleanupReceipt, type DataGrantFactory } from '../occipital/data-budget.ts';
-import { CARD_ROLES, type CardRole } from '../occipital/semantic-codec.ts';
+import type { GeometryFunding } from '../resources/data-budget.ts';
+import { type DataBudget, type DataCharge, type DataCleanupReceipt, type DataGrantFactory } from '../resources/data-budget.ts';
+import { CARD_ROLES, type CardRole } from '../appearance/card-roles.ts';
 import { samplePiPalette } from './pi-palette.ts';
 import { sampleOwnedPalette } from '../themes/owned-palette.ts';
 import { PI_MARKER_VARIANT_SCRATCH_BYTES } from './pi-variants.ts';

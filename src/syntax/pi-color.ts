@@ -1,5 +1,5 @@
 import { colorToRgb, foregroundAnsi, indexedColor, rgbColor, type Color, type TerminalColorMode } from '@earendil-works/pi-tui';
-import type { LiteralInk } from '../occipital/semantic-codec.ts';
+import type { LiteralInk } from '../occipital/style-types.ts';
 import { samplePiPrefix } from './pi-bindings.ts';
 
 export function outputInk(color: Color, mode: TerminalColorMode): LiteralInk {

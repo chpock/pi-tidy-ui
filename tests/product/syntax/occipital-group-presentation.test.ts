@@ -4,7 +4,7 @@ import test from 'node:test';
 import { setImmediate as turn } from 'node:timers/promises';
 import { SourceController, type SourcePreparation, type GroupDisplayBasis } from '../../../src/occipital/controller.ts';
 import { SemanticRetentionPool } from '../../../src/occipital/semantic-retention.ts';
-import { CARD_ROLES, type CardRole } from '../../../src/occipital/semantic-codec.ts';
+import { CARD_ROLES, type CardRole } from '../../../src/appearance/card-roles.ts';
 import { decodeSemanticDescription } from '../../../src/occipital/semantic-protocol.ts';
 import { fingerprintRules } from '../../../src/occipital/style-rules.ts';
 import { RequestFailure } from '../../../src/occipital/request-failure.ts';
@@ -393,12 +393,12 @@ test('group presentation: failed cold seal never adopts partial or foreign-sourc
   } finally { void c.preparation; await cleanup(owner, peer); }
 });
 
-function abandonedPaletteOwner(peer: Peer, budget: import('../../../src/occipital/data-budget.ts').DataBudget) {
+function abandonedPaletteOwner(peer: Peer, budget: import('../../../src/resources/data-budget.ts').DataBudget) {
   const owner = new SourceController(peer, { retention: { budget } }), c = card(owner, []);
   owner.setStyleSelection(compactSelection()); c.start(); return new WeakRef(owner);
 }
 test('group presentation: abandoned local palette-only owner releases roles without fabricating helper credit', async () => {
-  const { DataBudget } = await import('../../../src/occipital/data-budget.ts');
+  const { DataBudget } = await import('../../../src/resources/data-budget.ts');
   const { OCCIPITAL_LIMITS } = await import('../../../src/occipital/limits.ts');
   const peer = new Peer(), observer = new SourceController(peer), budget = new DataBudget(OCCIPITAL_LIMITS.retainedBytes);
   const weak = abandonedPaletteOwner(peer, budget); await settle(); assert.equal(peer.calls.length, 0);
@@ -488,9 +488,9 @@ test('group presentation: reentrant local update invalidates candidate ranges an
 });
 
 test('group presentation: pressure preserves the pinned owned palette and refuses an unfunded replacement', async () => {
-  const { DataBudget } = await import('../../../src/occipital/data-budget.ts');
+  const { DataBudget } = await import('../../../src/resources/data-budget.ts');
   const budget = new DataBudget(1_000_000), peer = new Peer(), owner = new SourceController(peer, { retention: { budget } }), first = card(owner, []);
-  let pressure: import('../../../src/occipital/data-budget.ts').DataCharge | undefined;
+  let pressure: import('../../../src/resources/data-budget.ts').DataCharge | undefined;
   try {
     assert.equal(owner.setStyleSelection(paletteInput()), true); first.start(); await settle();
     assert.equal(ink(owner.groupPresentation(first.group)!.role('panel')), 1);
@@ -506,9 +506,9 @@ test('group presentation: pressure preserves the pinned owned palette and refuse
 });
 
 test('group presentation: eviction of historical member closes escaped roles even while current parser data survives', async () => {
-  const { DataBudget } = await import('../../../src/occipital/data-budget.ts');
+  const { DataBudget } = await import('../../../src/resources/data-budget.ts');
   const budget = new DataBudget(1_000_000), peer = new Peer(), owner = new SourceController(peer, { retention: { budget } }), keys = new Set(['bash']);
-  let filler: import('../../../src/occipital/data-budget.ts').DataCharge | undefined;
+  let filler: import('../../../src/resources/data-budget.ts').DataCharge | undefined;
   let text = 'x\n', version = 1;
   const preparation: SourcePreparation = { keys, prepare() { owner.observe({ ...demand('bash', text, version, false), language: 'bash' }); }, requiresCredit() { return false; }, needsRefresh() { return false; } };
   const group = owner.registerPreparation(preparation)!;
@@ -720,7 +720,7 @@ for (const mode of ['remove', 'replace', 'off', 'dispose', 'pressure', 'throw'] 
 });
 
 test('group presentation: ready member collection funding denial is atomic and does not retry warm reads', async () => {
-  const { DataBudget } = await import('../../../src/occipital/data-budget.ts');
+  const { DataBudget } = await import('../../../src/resources/data-budget.ts');
   const budget = new DataBudget(1_000_000), peer = new Peer(), owner = new SourceController(peer, { retention: { budget } }), c = card(owner, ['one']);
   const reserve = DataBudget.prototype.reserve;
   let denials = 0; const attempts: number[] = [];

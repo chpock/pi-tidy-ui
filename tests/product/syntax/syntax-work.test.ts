@@ -6,7 +6,7 @@ import { SourceController } from '../../../src/occipital/controller.ts';
 import type { SyntaxClient } from '../../../src/occipital/client.ts';
 import type { ProviderSnapshot } from '../../../src/occipital/provider.ts';
 import { RequestFailure } from '../../../src/occipital/request-failure.ts';
-import { DataBudget } from '../../../src/occipital/data-budget.ts';
+import { DataBudget } from '../../../src/resources/data-budget.ts';
 import { preparePiFlat } from '../../../src/syntax/pi-flat.ts';
 import type { ConcreteStyle } from '../../../src/syntax/style-materialization.ts';
 import { decodeSemanticDescription } from '../../../src/occipital/semantic-protocol.ts';

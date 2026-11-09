@@ -1,5 +1,6 @@
 import { ProtocolError, RemoteFault, type Limits, type Description } from './protocol.ts';
-import { decodeStyleResult, SemanticError, type StyleIdentity } from './semantic-codec.ts';
+import { decodeStyleResult, SemanticError } from './semantic-codec.ts';
+import type { StyleIdentity } from './style-types.ts';
 import { decodeSemanticSources, type SemanticExpectation } from './semantic-source.ts';
 import { HIGHLIGHT_LIMITS, OCCIPITAL_LIMITS } from './limits.ts';
 import { replyJsonBytes, type ReplySize } from './data-json.ts';

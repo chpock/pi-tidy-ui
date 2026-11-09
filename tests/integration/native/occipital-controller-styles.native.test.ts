@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os';
 import { SourceController } from '../../../src/occipital/controller.ts';
 import { ProviderBroker } from '../../../src/occipital/provider.ts';
 import { StdioTransport } from '../../../src/occipital/stdio.ts';
-import { CARD_ROLES, type CardRole } from '../../../src/occipital/semantic-codec.ts';
+import { CARD_ROLES, type CardRole } from '../../../src/appearance/card-roles.ts';
 import { syntheticSelection } from '../../fixtures/test-style-selection.ts';
 import type { ConcreteStyle } from '../../../src/syntax/style-materialization.ts';
 import { readInputs, validateNative } from '../../../scripts/test/context.mjs';

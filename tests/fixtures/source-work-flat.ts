@@ -1,6 +1,6 @@
 import type { SourceController, DisplayRangeReader, PiProjectionReader } from '../../src/occipital/controller.ts';
 import type { SyntaxResolution } from '../../src/syntax/work.ts';
-import { DataBudget } from '../../src/occipital/data-budget.ts';
+import { DataBudget } from '../../src/resources/data-budget.ts';
 import { measure, reflow } from '../../src/syntax/measured-rows.ts';
 import { paintFlat, type FlatRangeReader } from '../../src/syntax/flat-paint.ts';
 import { compileStyleAnsi, type AnsiStyle } from '../../src/syntax/style-ansi.ts';

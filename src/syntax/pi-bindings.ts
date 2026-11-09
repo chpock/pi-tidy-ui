@@ -1,5 +1,5 @@
 import type { Theme, ThemeColor } from '@earendil-works/pi-coding-agent';
-import type { LiteralInk } from '../occipital/semantic-codec.ts';
+import type { LiteralInk } from '../occipital/style-types.ts';
 import type { StyleBinding } from './style-materialization.ts';
 import { PI_MARKER_BINDINGS, PI_MARKER_REGIONS, PI_RULE_BINDINGS, piBindingInkRole, type PiMarkerBinding } from './pi-adapter.ts';
 

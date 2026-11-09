@@ -3,7 +3,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { registerHooks } from 'node:module';
 import { setImmediate as turn } from 'node:timers/promises';
-import { DataBudget } from '../../../src/occipital/data-budget.ts';
+import { DataBudget } from '../../../src/resources/data-budget.ts';
 import { wrapText } from '../../../src/text-wrap.ts';
 import { visibleWidth as piWidth } from '@earendil-works/pi-tui';
 

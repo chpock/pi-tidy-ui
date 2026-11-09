@@ -1,6 +1,6 @@
 import { cardGeometry, frameMeasuredRow, type CardGeometry } from '../card-frame.ts';
-import type { DataBudget, DataCharge, DataCleanupReceipt, DataGrantFactory } from '../occipital/data-budget.ts';
-import type { CardRole } from '../occipital/semantic-codec.ts';
+import type { DataBudget, DataCharge, DataCleanupReceipt, DataGrantFactory } from '../resources/data-budget.ts';
+import type { CardRole } from '../appearance/card-roles.ts';
 import type { PreparedCard, PreparedRegion, ReadyCardPaint, FileRowDescriptor } from './cards.ts';
 import { paintFlat, type FlatRangeReader, type FlatPaintRows } from './flat-paint.ts';
 import { reflow, SpanKind, type MeasuredRowLayout, type MeasuredText } from './measured-rows.ts';

@@ -4,26 +4,15 @@ import nativeFs, { type BigIntStats, type FSWatcher } from "node:fs";
 import { basename, dirname, join, relative, sep } from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { themeFamilyId } from './themes/catalogue.ts';
+import type { ThemePreference, ThemeVariant } from './appearance/theme-preference.ts';
 
-export type ThemeVariant = 'dark' | 'light';
 export type SyntaxTheme = { kind: "pi" } | { kind: "theme"; id: string };
-export type ThemePreference = { kind: 'pi'; variant: ThemeVariant } | { kind: 'theme'; id: string; variant: ThemeVariant };
 export type ThemeSettingsPatch = { syntaxTheme: SyntaxTheme; syntaxThemeVariant: ThemeVariant };
-
-export function copyThemePreference(choice: ThemePreference): ThemePreference {
-  return choice.kind === 'pi' ? { kind: 'pi', variant: choice.variant }
-    : { kind: 'theme', id: choice.id, variant: choice.variant };
-}
 
 export function themePreferenceFromSettings(choice: SyntaxTheme, variant: unknown): ThemePreference {
   const selectedVariant: ThemeVariant = variant === 'light' ? 'light' : 'dark';
   if (choice.kind === 'pi') return { kind: 'pi', variant: selectedVariant };
   return { kind: 'theme', id: themeFamilyId(choice.id) ?? choice.id, variant: selectedVariant };
-}
-
-export function sameThemePreference(left: ThemePreference, right: ThemePreference): boolean {
-  return left.kind === right.kind && left.variant === right.variant &&
-    (left.kind === 'pi' || right.kind === 'theme' && left.id === right.id);
 }
 
 export function themePatch(choice: ThemePreference): ThemeSettingsPatch {

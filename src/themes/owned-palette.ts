@@ -1,7 +1,7 @@
 import { closeSync, fstatSync, openSync, readSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { rgbColor, type Color, type TerminalColorMode } from '@earendil-works/pi-tui';
-import { CARD_ROLES, type CardRole } from '../occipital/semantic-codec.ts';
+import { CARD_ROLES, type CardRole } from '../appearance/card-roles.ts';
 import type { StyleBinding } from '../syntax/style-materialization.ts';
 import { compileStyleAnsi, type AnsiStyle } from '../syntax/style-ansi.ts';
 import { outputInk } from '../syntax/pi-color.ts';

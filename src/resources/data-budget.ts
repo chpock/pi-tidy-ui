@@ -54,3 +54,9 @@ export function dataGrant(budget: DataBudget, peak: number, reserve: (bytes: num
 export type DataGrantFactory = (bytes: number) => DataGrant | undefined;
 /** Detached, idempotent ownership release; contains no data payload. */
 export interface DataCleanupReceipt { release(): void }
+
+/** Scoped numeric funding; grants no SOURCE or fallback permission and owns no retained payloads. */
+export interface GeometryFunding {
+  readonly budget: DataBudget;
+  grant(bytes: number): DataGrant | undefined;
+}

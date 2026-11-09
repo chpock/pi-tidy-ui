@@ -1,4 +1,4 @@
-import { CARD_ROLES } from '../../src/occipital/semantic-codec.ts';
+import { CARD_ROLES } from '../../src/appearance/card-roles.ts';
 import { createSemanticRuleDefinition, SEMANTIC_REGIONS } from '../../src/syntax/semantic-rules.ts';
 import type { ConcreteStyle } from '../../src/syntax/style-materialization.ts';
 

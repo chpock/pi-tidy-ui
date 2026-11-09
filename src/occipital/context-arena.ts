@@ -1,5 +1,6 @@
-import { SemanticError, type Ink, type StyleExpression } from './semantic-codec.ts';
-import { DataBudget, dataGrant, type DataCharge, type DataGrant } from './data-budget.ts';
+import { SemanticError } from './semantic-codec.ts';
+import type { Ink, StyleExpression } from './style-types.ts';
+import { DataBudget, dataGrant, type DataCharge, type DataGrant } from '../resources/data-budget.ts';
 import { OCCIPITAL_LIMITS } from './limits.ts';
 
 export interface ContextRef { readonly id: number }

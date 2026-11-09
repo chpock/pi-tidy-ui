@@ -1,7 +1,7 @@
 import '../../fixtures/test-guard.mjs';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { CARD_ROLES } from '../../../src/occipital/semantic-codec.ts';
+import { CARD_ROLES } from '../../../src/appearance/card-roles.ts';
 import { SEMANTIC_REGIONS } from '../../../src/syntax/semantic-rules.ts';
 import { parseOwnedPaletteData, validateOwnedPaletteData } from '../../../src/themes/owned-palette.ts';
 import { outputInk } from '../../../src/syntax/pi-color.ts';

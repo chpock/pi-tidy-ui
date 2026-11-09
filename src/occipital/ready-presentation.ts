@@ -1,5 +1,6 @@
-import { CARD_ROLES, type CardRole, type LiteralInk } from './semantic-codec.ts';
-import type { DataCharge, DataGrant } from './data-budget.ts';
+import { CARD_ROLES, type CardRole } from '../appearance/card-roles.ts';
+import type { LiteralInk } from './style-types.ts';
+import type { DataCharge, DataGrant } from '../resources/data-budget.ts';
 import type { ContextRef } from './context-arena.ts';
 import type { ConcreteStyle } from '../syntax/style-materialization.ts';
 

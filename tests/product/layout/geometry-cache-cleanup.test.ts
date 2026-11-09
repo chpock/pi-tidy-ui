@@ -3,7 +3,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { setImmediate as turn } from 'node:timers/promises';
 import { RenderCache, type CacheEntry } from '../../../src/render-cache.ts';
-import { DataBudget } from '../../../src/occipital/data-budget.ts';
+import { DataBudget } from '../../../src/resources/data-budget.ts';
 import { measure, reflow } from '../../../src/syntax/measured-rows.ts';
 import { paintFlat, type FlatPaintRows } from '../../../src/syntax/flat-paint.ts';
 

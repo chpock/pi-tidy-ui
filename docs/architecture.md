@@ -146,9 +146,12 @@ Native-highlighting Off, frozen/hidden sources, explicit cache clearing, transpo
 | `user-card.ts`, `queued-card.ts`, `editor-card.ts`, `editor-status.ts`, `footer.ts` | [Message projections](user-queued-cards.md), [editor](editor.md), [footer accounting/composition](footer-spec.md) |
 | `render-cache.ts` | [Latest-layout ownership and animation](render-cache-spec.md) |
 | `src/syntax/` | [Highlighting pipeline](syntax-highlighting-spec.md), [prepared cards](syntax/prepared-cards.md), [Follow Pi](syntax/follow-pi.md) |
+| `src/appearance/` | Pure theme-choice values and the shared card-role list; generic Occipital style shapes are the only permitted type-only native dependency. See [preferences and persistence](settings-menu-spec.md) and [palette roles](syntax/palettes.md) |
+| `src/resources/data-budget.ts` | Numeric budget, grants/charges and the operation-scoped funding capability. See [syntax storage](syntax/storage.md) |
+| `src/occipital/style-types.ts` | Import-free shared wire-expression and style-identity types; runtime decoding remains in the Occipital client modules. See the [highlighting pipeline](syntax-highlighting-spec.md) and [protocol reference](occipital/protocol.md) |
 | `src/occipital/` | [Providers](syntax/providers.md), [request adapters](syntax/requests.md), [work controller](syntax/work.md), [storage](syntax/storage.md); a module directory, not an independently isolated SDK package |
 | `src/themes/`, syntax palette adapters | [Palette ownership](syntax/palettes.md), [Follow Pi binding](syntax/follow-pi.md), [shared color mathematics](color-model.md) |
-| `settings.ts`, `tidy-menu.ts` | [Preferences, popup ownership and persistence](settings-menu-spec.md) |
+| `settings.ts`, `tidy-menu.ts` | Persistence boundary and popup ownership; the pure selection model is in `src/appearance/`. See [preferences, popup ownership and persistence](settings-menu-spec.md) |
 | `terminal-colors.ts`, `terminal-lifecycle.ts` | [Terminal defaults and lifecycle](terminal-colors-spec.md) |
 | `debug-log.ts`, `session-logging.ts`, `diagnostics.ts`, `runtime-health.ts` | [Observation, text journals and runtime health](debug-logging-spec.md) |
 | `crates/occipital/` | [Standalone daemon manual](occipital/README.md): runtime, requests, parser, generic resolver, assets and protocol |

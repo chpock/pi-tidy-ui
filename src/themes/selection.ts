@@ -1,4 +1,4 @@
-import type { ThemePreference } from '../settings.ts';
+import type { ThemePreference } from '../appearance/theme-preference.ts';
 import { themeEntry } from '../themes/catalogue.ts';
 
 export interface ThemeDescription {
