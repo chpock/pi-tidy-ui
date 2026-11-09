@@ -7,7 +7,7 @@ use crate::{
     protocol::Fault,
     semantic_engine::{Engine, Lease, Limits, Work},
     semantic_reply::{SourceBody, SourceResult},
-    source_request::{SourceOperation, SourceRequest},
+    source_request::{SourceInput, SourceOperation, SourceRequest},
 };
 use sha2::{Digest, Sha256};
 use std::{
@@ -67,6 +67,116 @@ pub struct Job {
     result_bytes: usize,
 }
 impl Job {
+    fn admit(
+        scope: &str,
+        route: u64,
+        operation: &SourceOperation,
+        engine: &Engine,
+        reserve: &mut dyn FnMut(usize) -> bool,
+    ) -> Result<Self, Fault> {
+        let count = match operation {
+            SourceOperation::Finite { sources, .. } => {
+                let mut bytes = 0usize;
+                let mut lines = 0usize;
+                for source in sources {
+                    bytes = add(bytes, source.text.len())?;
+                    lines = add(lines, crate::limits::source_lines(&source.text))?;
+                    if bytes > engine.limits.source_bytes.min(crate::limits::SOURCE_BYTES)
+                        || lines > crate::limits::SOURCE_LINES
+                    {
+                        return Err(Fault::not_started("source_limit"));
+                    }
+                    engine.validate_input(&source.text, &source.hint)?;
+                }
+                sources.len()
+            }
+            _ => 1,
+        };
+        let mut required = 0;
+        admit(&mut required, add(size_of::<Self>(), scope.len())?, reserve)?;
+        admit(
+            &mut required,
+            add(units::<Pending>(count)?, units::<SourceResult>(count)?)?,
+            reserve,
+        )?;
+        let affected_count = usize::from(matches!(
+            operation,
+            SourceOperation::Finite { open: true, .. } | SourceOperation::Append { .. }
+        ));
+        admit(&mut required, units::<Authority>(affected_count)?, reserve)?;
+        Ok(Self {
+            scope: scope.into(),
+            route,
+            pending: Vec::with_capacity(count),
+            front: 0,
+            ready: Vec::with_capacity(count),
+            affected: Vec::with_capacity(affected_count),
+            started: false,
+            done: false,
+            failed: false,
+            required,
+            result_words: 0,
+            result_bytes: 0,
+        })
+    }
+    fn advance(
+        &mut self,
+        engine: &mut Engine,
+        reserve: &mut dyn FnMut(usize) -> bool,
+    ) -> Result<Option<SourceResult>, Fault> {
+        let pending = self
+            .pending
+            .get_mut(self.front)
+            .ok_or(Fault::not_started("invalid_request"))?;
+        let chunk = {
+            let work = pending.work.as_mut().expect("current source has work");
+            if self.result_bytes
+                > crate::limits::DECODED_BYTES
+                    - crate::limits::SOURCE_BODY_UNITS
+                    - crate::limits::SOURCE_UNITS
+            {
+                return Err(Fault::not_started("result_limit"));
+            }
+            work.limit_result(self.result_words, self.result_bytes);
+            let mut grant = work_grant(&mut self.required, &mut pending.peak, reserve);
+            let ready = engine.step(work, &mut grant);
+            self.started |= work.started();
+            if !ready? {
+                return Ok(None);
+            }
+            let work = pending.work.take().expect("validated work");
+            engine.finish(work, &mut grant)?
+        };
+        Ok(Some(SourceResult {
+            key: std::mem::take(&mut pending.key),
+            generation: pending.generation,
+            source_version: pending.source_version,
+            lease: pending.lease.take(),
+            complete: pending.complete,
+            chunk,
+        }))
+    }
+    fn record(&mut self, result: SourceResult) -> Option<SourceBody> {
+        let result_words = result
+            .chunk
+            .contexts
+            .iter()
+            .map(|row| row[0] as usize + row.len() - 1)
+            .sum::<usize>();
+        self.result_words += result_words;
+        self.result_bytes += crate::limits::SOURCE_UNITS
+            + result.chunk.runs.len() * 8
+            + result.chunk.contexts.len() * crate::limits::CONTEXT_ROW_UNITS
+            + result_words * crate::limits::CONTEXT_WORD_UNITS;
+        self.ready.push(result);
+        self.front += 1;
+        if self.front == self.pending.len() {
+            self.done = true;
+            Some(SourceBody::sources(std::mem::take(&mut self.ready)))
+        } else {
+            None
+        }
+    }
     pub fn started(&self) -> bool {
         self.started
             || self
@@ -339,55 +449,7 @@ impl Service {
             }
             return Ok(Action::Immediate(SourceBody::Closed));
         }
-        let count = match &request.operation {
-            SourceOperation::Finite { sources, .. } => {
-                let mut bytes = 0usize;
-                let mut lines = 0usize;
-                for source in sources {
-                    bytes = add(bytes, source.text.len())?;
-                    lines = add(lines, crate::limits::source_lines(&source.text))?;
-                    if bytes
-                        > self
-                            .engine
-                            .limits
-                            .source_bytes
-                            .min(crate::limits::SOURCE_BYTES)
-                        || lines > crate::limits::SOURCE_LINES
-                    {
-                        return Err(Fault::not_started("source_limit"));
-                    }
-                    self.engine.validate_input(&source.text, &source.hint)?;
-                }
-                sources.len()
-            }
-            _ => 1,
-        };
-        let mut required = 0;
-        admit(&mut required, add(size_of::<Job>(), scope.len())?, reserve)?;
-        admit(
-            &mut required,
-            add(units::<Pending>(count)?, units::<SourceResult>(count)?)?,
-            reserve,
-        )?;
-        let affected_count = usize::from(matches!(
-            request.operation,
-            SourceOperation::Finite { open: true, .. } | SourceOperation::Append { .. }
-        ));
-        admit(&mut required, units::<Authority>(affected_count)?, reserve)?;
-        let mut job = Job {
-            scope: scope.into(),
-            route,
-            pending: Vec::with_capacity(count),
-            front: 0,
-            ready: Vec::with_capacity(count),
-            affected: Vec::with_capacity(affected_count),
-            started: false,
-            done: false,
-            failed: false,
-            required,
-            result_words: 0,
-            result_bytes: 0,
-        };
+        let mut job = Job::admit(scope, route, &request.operation, &self.engine, reserve)?;
         let result = self.prepare(&mut job, request.operation, reserve);
         if let Err(fault) = result {
             self.discard(job);
@@ -404,61 +466,7 @@ impl Service {
         match operation {
             SourceOperation::Finite { sources, open } => {
                 for source in sources {
-                    // SourceInput keys transfer into Pending/result; reserve their
-                    // still-live capacity in addition to the already-decoded request.
-                    admit(&mut job.required, source.key.capacity(), reserve)?;
-                    let mut peak = 0;
-                    let (lease, work) = if open {
-                        let strings = add(add(job.scope.len(), source.key.len())?, 3 * 64)?;
-                        admit(&mut job.required, strings, reserve)?;
-                        let wire = self.wire_lease()?;
-                        let work = self.engine.begin_open(
-                            &job.scope,
-                            &wire,
-                            source.text,
-                            &source.hint,
-                            &mut work_grant(&mut job.required, &mut peak, reserve),
-                        )?;
-                        let needed = self.bindings.len() + 1;
-                        if let Err(fault) =
-                            grow(&mut self.bindings, needed, &mut job.required, reserve)
-                        {
-                            self.engine.discard(work);
-                            return Err(fault);
-                        }
-                        let internal = work.lease().expect("open establishes an incarnation");
-                        self.bindings.push(Binding {
-                            scope: job.scope.clone(),
-                            wire: wire.clone(),
-                            key: source.key.clone(),
-                            generation: source.generation,
-                            source_version: source.source_version,
-                            internal,
-                        });
-                        job.affected.push(Authority {
-                            wire: wire.clone(),
-                            internal,
-                        });
-                        (Some(wire), work)
-                    } else {
-                        (
-                            None,
-                            self.engine.begin_one_shot(
-                                source.text,
-                                &source.hint,
-                                &mut work_grant(&mut job.required, &mut peak, reserve),
-                            )?,
-                        )
-                    };
-                    job.pending.push(Pending {
-                        key: source.key,
-                        generation: source.generation,
-                        source_version: source.source_version,
-                        lease,
-                        complete: !open,
-                        work: Some(work),
-                        peak,
-                    });
+                    self.prepare_member(job, source, open, reserve)?;
                 }
             }
             SourceOperation::Append {
@@ -513,6 +521,68 @@ impl Service {
         }
         Ok(())
     }
+    fn prepare_member(
+        &mut self,
+        job: &mut Job,
+        source: SourceInput,
+        open: bool,
+        reserve: &mut dyn FnMut(usize) -> bool,
+    ) -> Result<(), Fault> {
+        // SourceInput keys transfer into Pending/result; reserve their still-live
+        // capacity in addition to the already-decoded request.
+        admit(&mut job.required, source.key.capacity(), reserve)?;
+        let mut peak = 0;
+        let (lease, work) = if open {
+            let strings = add(add(job.scope.len(), source.key.len())?, 3 * 64)?;
+            admit(&mut job.required, strings, reserve)?;
+            let wire = self.wire_lease()?;
+            let work = self.engine.begin_open(
+                &job.scope,
+                &wire,
+                source.text,
+                &source.hint,
+                &mut work_grant(&mut job.required, &mut peak, reserve),
+            )?;
+            let needed = self.bindings.len() + 1;
+            if let Err(fault) = grow(&mut self.bindings, needed, &mut job.required, reserve) {
+                self.engine.discard(work);
+                return Err(fault);
+            }
+            let internal = work.lease().expect("open establishes an incarnation");
+            self.bindings.push(Binding {
+                scope: job.scope.clone(),
+                wire: wire.clone(),
+                key: source.key.clone(),
+                generation: source.generation,
+                source_version: source.source_version,
+                internal,
+            });
+            job.affected.push(Authority {
+                wire: wire.clone(),
+                internal,
+            });
+            (Some(wire), work)
+        } else {
+            (
+                None,
+                self.engine.begin_one_shot(
+                    source.text,
+                    &source.hint,
+                    &mut work_grant(&mut job.required, &mut peak, reserve),
+                )?,
+            )
+        };
+        job.pending.push(Pending {
+            key: source.key,
+            generation: source.generation,
+            source_version: source.source_version,
+            lease,
+            complete: !open,
+            work: Some(work),
+            peak,
+        });
+        Ok(())
+    }
     pub fn step(
         &mut self,
         job: &mut Job,
@@ -543,63 +613,19 @@ impl Service {
         if self.route(&job.scope) != Some(job.route) {
             return Err(Fault::not_started("scope_gone"));
         }
-        let pending = job
-            .pending
-            .get_mut(job.front)
-            .ok_or(Fault::not_started("invalid_request"))?;
-        let chunk = {
-            let work = pending.work.as_mut().expect("current source has work");
-            if job.result_bytes
-                > crate::limits::DECODED_BYTES
-                    - crate::limits::SOURCE_BODY_UNITS
-                    - crate::limits::SOURCE_UNITS
-            {
-                return Err(Fault::not_started("result_limit"));
-            }
-            work.limit_result(job.result_words, job.result_bytes);
-            let mut grant = work_grant(&mut job.required, &mut pending.peak, reserve);
-            let ready = self.engine.step(work, &mut grant);
-            job.started |= work.started();
-            if !ready? {
-                return Ok(None);
-            }
-            let work = pending.work.take().expect("validated work");
-            self.engine.finish(work, &mut grant)?
+        let Some(result) = job.advance(&mut self.engine, reserve)? else {
+            return Ok(None);
         };
-        if let Some(wire) = &pending.lease {
+        if let Some(wire) = &result.lease {
             if let Some(i) = self.binding(&job.scope, wire) {
-                if pending.complete {
+                if result.complete {
                     self.remove_binding(i);
                 } else {
-                    self.bindings[i].source_version = pending.source_version;
+                    self.bindings[i].source_version = result.source_version;
                 }
             }
         }
-        let result_words = chunk
-            .contexts
-            .iter()
-            .map(|row| row[0] as usize + row.len() - 1)
-            .sum::<usize>();
-        job.result_words += result_words;
-        job.result_bytes += crate::limits::SOURCE_UNITS
-            + chunk.runs.len() * 8
-            + chunk.contexts.len() * crate::limits::CONTEXT_ROW_UNITS
-            + result_words * crate::limits::CONTEXT_WORD_UNITS;
-        job.ready.push(SourceResult {
-            key: std::mem::take(&mut pending.key),
-            generation: pending.generation,
-            source_version: pending.source_version,
-            lease: pending.lease.take(),
-            complete: pending.complete,
-            chunk,
-        });
-        job.front += 1;
-        if job.front == job.pending.len() {
-            job.done = true;
-            Ok(Some(SourceBody::sources(std::mem::take(&mut job.ready))))
-        } else {
-            Ok(None)
-        }
+        Ok(job.record(result))
     }
     /// Must run on actual cancellation/error cleanup, including a ready result
     /// not yet drained. Dropping Job alone is not authoritative lease retirement.

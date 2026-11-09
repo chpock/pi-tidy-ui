@@ -23,11 +23,13 @@ An idle engine slot owns its checkpoint. Starting an append moves that state int
 
 ## Finite batches and preparation
 
-`source_request.rs` validates and measures the complete wire batch before allocating owned source strings. `source_service.rs::start` then checks aggregate source cost and resolves every member’s syntax before constructing any parser `Work`.
+`source_request.rs` validates and measures the complete wire batch before allocating owned source strings. `source_service.rs::Service::start` validates the route and handles immediate close; private `Job::admit` then checks aggregate source cost and resolves every member’s syntax before admitting the batch headers or constructing any parser `Work`.
 
 Thus an unknown syntax in a later member is discovered before parsing an earlier member. This is a preparation property, not a guarantee that every possible batch failure is `not_started`: parser errors and output-growth failures can occur after execution begins.
 
-Preparation creates pending work for the batch in input order. The service subsequently advances one current member at a time. Completed member results remain in the job while the next member runs. Their context-word and decoded-result charges reduce the remaining allowance for later members.
+Preparation creates pending work for the batch in input order. `Service::prepare_member` keeps finite/open work creation, binding installation and rollback together; append retains its distinct binding/version checks. `Job` owns the batch cursor, cumulative allowance, ready results and affected external/internal lease pairs. `Service` keeps route identity and performs binding reconciliation, pruning and retirement.
+
+The service subsequently validates the route and lets `Job::advance` run one current member against the borrowed engine. A finished member supplies its identity and chunk; the service updates or removes its binding before `Job::record` accounts and retains that result. Completed member results remain in the job while the next member runs. Their context-word and decoded-result charges reduce the remaining allowance for later members. No parser state moves across workers, and this division introduces no additional owned buffer or charged field.
 
 Only when all members finish does the service return a batch body for encoding. There is no partial-success batch publication. If preparation fails after constructing some pending work, or execution fails after producing some results, explicit discard tears down the job’s remaining work and affected continuation authority.
 
