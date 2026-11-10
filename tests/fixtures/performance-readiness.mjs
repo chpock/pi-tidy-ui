@@ -49,16 +49,17 @@ export function preparedCardReady(consumer, owner, palettePrefix) {
   if (!state?.display || !state.paint || state.display.revision !== state.revision
     || !sourceMatches(consumer, state) || state.preparedTheme !== Reflect.get(consumer, 'themeRevision')) return false;
   if (!paletteInputObservation(consumer, state).matches) return false;
-  const client = Reflect.get(consumer, 'client'), sources = client.sourceWork ?? client.sources, wanted = new Map();
+  const client = Reflect.get(consumer, 'client'), sources = client.sourceWork ?? client.sources;
+  const piFallback = client.pi ?? sources, wanted = new Map();
   for (const [key, slot] of state.slots) {
     const current = sources.status(key), display = sources.displayBasis(key);
     const classified = current?.exact && !current.protective && display
       && (display.exactVersion === slot.version || display.version === slot.version)
       && (!palettePrefix || display.palette.startsWith(palettePrefix));
-    const pi = (!palettePrefix || palettePrefix === 'pi:') && sources.piProjection(key, slot.version, slot.palette);
+    const projection = (!palettePrefix || palettePrefix === 'pi:') && piFallback.piProjection(key, slot.version, slot.palette);
     const neutral = slot.fallback === 'neutral' && slot.outcome === 'neutral' && client.snapshot().enabled === false;
-    if (!classified && !pi && !neutral) return false;
-    wanted.set(key, { classified: !!classified, neutral, text: neutral ? undefined : (classified ? sources.borrowSource(key) : sources.borrowPiSource(key))?.text });
+    if (!classified && !projection && !neutral) return false;
+    wanted.set(key, { classified: !!classified, neutral, text: neutral ? undefined : (classified ? sources.borrowSource(key) : piFallback.borrowPiSource(key))?.text });
   }
   let accepted = false;
   return consumer.visit(owner, (_display, paint) => {

@@ -1,3 +1,4 @@
+import { PiFallbackCoordinator } from '../../../src/highlighting/pi-fallback.ts';
 import '../../fixtures/test-guard.mjs';
 import assert from 'node:assert/strict';
 import { afterEach, test } from 'node:test';
@@ -1519,9 +1520,9 @@ test('entry uses prepared file path and preserves actual SDK args/results on war
     writeToolDefinition(h), h.root as unknown as ConstructorParameters<typeof ToolExecutionComponent>[5], '/tmp');
   tool.setArgsComplete(); tool.updateResult({ content: [{ type: 'text', text: 'written' }], isError: false }, false); h.root.addChild(tool);
   const args = JSON.stringify(Reflect.get(tool, 'args')), result = JSON.stringify(Reflect.get(tool, 'result'));
-  const original = SourceExecution.prototype.adoptPiFlat;
+  const original = PiFallbackCoordinator.prototype.adoptPiFlat;
   let stores = 0, inRender = false, storesInRender = 0;
-  SourceExecution.prototype.adoptPiFlat = function (...parameters) {
+  PiFallbackCoordinator.prototype.adoptPiFlat = function (...parameters) {
     stores++; if (inRender) storesInRender++;
     return original.apply(this, parameters);
   };
@@ -1532,7 +1533,7 @@ test('entry uses prepared file path and preserves actual SDK args/results on war
     for (const width of [80, 60, 100, 80]) render(width);
     await settled(); assert.deepEqual(h.counts, before); assert.equal(stores, 1); assert.equal(storesInRender, 0);
     assert.equal(JSON.stringify(Reflect.get(tool, 'args')), args); assert.equal(JSON.stringify(Reflect.get(tool, 'result')), result);
-  } finally { SourceExecution.prototype.adoptPiFlat = original; }
+  } finally { PiFallbackCoordinator.prototype.adoptPiFlat = original; }
 });
 
 

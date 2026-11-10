@@ -19,13 +19,13 @@ function fixture(options: ConstructorParameters<typeof SourceExecution>[1] = {})
   return { host, source };
 }
 function bridge(source: SourceExecution, key: string, version: number, palette: number) {
-  const ranges: number[][] = [], projection = source.piProjection(key, version, palette);
+  const ranges: number[][] = [], projection = source.pi.piProjection(key, version, palette);
   const available = projection?.visitRanges((...range) => ranges.push(range)) ?? false;
   return { available, ranges };
 }
-function hasProjection(source: SourceExecution, key: string, version: number, palette: number) { return source.piProjection(key, version, palette) !== undefined; }
+function hasProjection(source: SourceExecution, key: string, version: number, palette: number) { return source.pi.piProjection(key, version, palette) !== undefined; }
 function store(source: SourceExecution, key: string, palette: number, lines: readonly string[]) {
-  const capture = source.borrowPiSource(key)!;
+  const capture = source.pi.borrowPiSource(key)!;
   return installControllerProjection(source, key, capture.generation, capture.version, capture.text, palette, lines);
 }
 afterEach(() => {
@@ -41,8 +41,8 @@ afterEach(() => {
 test('Pi bridge captures and exact rows work with native classification disabled, without RPC', () => {
   const { host, source } = fixture(); source.setEnabled(false);
   const text = '\tconst x = 1;\n';
-  assert.equal(source.capturePiSource('card', 1, text, 'typescript'), true);
-  const capture = source.borrowPiSource('card')!;
+  assert.equal(source.pi.capturePiSource('card', 1, text, 'typescript'), true);
+  const capture = source.pi.borrowPiSource('card')!;
   assert.equal(capture.text, text); assert.equal(capture.utf8Bytes, Buffer.byteLength(text));
   assert.equal(capture.language, 'typescript'); assert.equal(capture.version, 1);
   assert.equal(store(source, 'card', 7, ['\t\x1b[31mconst\x1b[39m x = 1;', '']), true);
@@ -52,9 +52,49 @@ test('Pi bridge captures and exact rows work with native classification disabled
   assert.equal(source.stats().piSourceRecords, 1); assert.ok(source.stats().retention.bridgeBytes > 0);
 });
 
+test('Pi capture accepts inclusive UTF8 identifier bounds and Unicode format characters', () => {
+  const { host, source } = fixture();
+  for (const key of ['x'.repeat(64), 'é'.repeat(32), '😀'.repeat(16), 'a\u200d']) {
+    for (const language of ['x'.repeat(128), 'é'.repeat(64), '😀'.repeat(32), 'a\u200d']) {
+      assert.equal(source.pi.capturePiSource(key, 1, 'x', language), true);
+      assert.equal(source.pi.borrowPiSource(key)?.language, language);
+    }
+  }
+  assert.equal(source.stats().piSourceRecords, 4);
+  assert.equal(host.calls, 0);
+});
+
+for (const [label, value] of [
+  ['empty', ''], ['ASCII byte overflow', 'x'.repeat(65)], ['multibyte byte overflow', 'é'.repeat(33)],
+  ['astral byte overflow', '😀'.repeat(17)], ['C1 control', 'a\u0085'],
+  ['unpaired high surrogate', 'a\ud800'], ['unpaired low surrogate', 'a\udc00'],
+  ['non-string', 42], ['boxed string', new String('card')],
+] as const) {
+  test(`Pi capture rejects ${label} keys before retaining data`, () => {
+    const { host, source } = fixture(), before = source.stats();
+    assert.throws(() => source.pi.capturePiSource(value as string, 1, 'x', 'text'), /invalid Pi source/);
+    assert.deepEqual(source.stats(), before);
+    assert.equal(host.calls, 0);
+  });
+}
+
+for (const [label, value] of [
+  ['empty', ''], ['ASCII byte overflow', 'x'.repeat(129)], ['multibyte byte overflow', 'é'.repeat(65)],
+  ['astral byte overflow', '😀'.repeat(33)], ['C1 control', 'a\u0085'],
+  ['unpaired high surrogate', 'a\ud800'], ['unpaired low surrogate', 'a\udc00'],
+  ['non-string', 42], ['boxed string', new String('card')],
+] as const) {
+  test(`Pi capture rejects ${label} languages before retaining data`, () => {
+    const { host, source } = fixture(), before = source.stats();
+    assert.throws(() => source.pi.capturePiSource('card', 1, 'x', value as string), /invalid Pi source/);
+    assert.deepEqual(source.stats(), before);
+    assert.equal(host.calls, 0);
+  });
+}
+
 test('warm Pi source and bridge visits use cached UTF8 and copy no rows', () => {
   const { source } = fixture(); const text = 'é😀\n';
-  source.capturePiSource('warm', 1, text, 'javascript'); store(source, 'warm', 2, [text.slice(0, -1), '']);
+  source.pi.capturePiSource('warm', 1, text, 'javascript'); store(source, 'warm', 2, [text.slice(0, -1), '']);
   const before = source.stats(), byteLength = Buffer.byteLength; let measured = 0;
   Buffer.byteLength = function(value: Parameters<typeof byteLength>[0], encoding?: Parameters<typeof byteLength>[1]) {
     if (value === text) measured++;
@@ -62,8 +102,8 @@ test('warm Pi source and bridge visits use cached UTF8 and copy no rows', () => 
   };
   try {
     for (let i = 0; i < 100; i++) {
-      assert.equal(source.capturePiSource('warm', 1, text, 'javascript'), true);
-      assert.equal(source.borrowPiSource('warm')!.utf8Bytes, 7);
+      assert.equal(source.pi.capturePiSource('warm', 1, text, 'javascript'), true);
+      assert.equal(source.pi.borrowPiSource('warm')!.utf8Bytes, 7);
       assert.equal(bridge(source, 'warm', 1, 2).available, true);
     }
   } finally { Buffer.byteLength = byteLength; }
@@ -73,7 +113,7 @@ test('warm Pi source and bridge visits use cached UTF8 and copy no rows', () => 
 test('Pi snapshots and native snapshots share the same byte pool and removal owner', () => {
   const { host, source } = fixture({ retention: { maxBytes: 8192 } });
   const text = 'let x;';
-  source.capturePiSource('same', 1, text, 'typescript'); store(source, 'same', 1, [text]);
+  source.pi.capturePiSource('same', 1, text, 'typescript'); store(source, 'same', 1, [text]);
   source.observe({ key: 'same', version: 1, text, path: 'a.ts', language: 'typescript', complete: true });
   const held = source.stats();
   assert.equal(held.retention.entries, 2); assert.equal(held.sourceRecords, 1); assert.equal(held.piSourceRecords, 1);
@@ -85,7 +125,7 @@ test('Pi snapshots and native snapshots share the same byte pool and removal own
 
 test('language, palette and incarnation authority reject stale Pi results', () => {
   const { source } = fixture(); const text = 'x';
-  source.capturePiSource('identity', 1, text, 'javascript'); const first = source.borrowPiSource('identity')!;
+  source.pi.capturePiSource('identity', 1, text, 'javascript'); const first = source.pi.borrowPiSource('identity')!;
   store(source, 'identity', 1, ['\x1b[31mx\x1b[39m']);
   assert.equal(bridge(source, 'identity', 1, 2).available, false);
   store(source, 'identity', 2, ['\x1b[32mx\x1b[39m']);
@@ -93,70 +133,70 @@ test('language, palette and incarnation authority reject stale Pi results', () =
   const current = bridge(source, 'identity', 1, 2);
   assert.equal(installControllerProjection(source, 'identity', first.generation, first.version, first.text, 1, ['wrong']), false);
   assert.deepEqual(bridge(source, 'identity', 1, 2), current);
-  source.capturePiSource('identity', 1, text, 'bash');
-  assert.notEqual(source.borrowPiSource('identity')!.generation, first.generation);
+  source.pi.capturePiSource('identity', 1, text, 'bash');
+  assert.notEqual(source.pi.borrowPiSource('identity')!.generation, first.generation);
   assert.equal(installControllerProjection(source, 'identity', first.generation, first.version, first.text, 2, ['wrong']), false);
   assert.equal(bridge(source, 'identity', 1, 2).available, false);
-  source.remove('identity'); source.capturePiSource('identity', 1, text, 'bash');
+  source.remove('identity'); source.pi.capturePiSource('identity', 1, text, 'bash');
   assert.equal(installControllerProjection(source, 'identity', first.generation, first.version, first.text, 2, ['wrong']), false);
 });
 
 test('changed text retires colors; equal text aliases later source versions without recoloring', () => {
   const { source } = fixture();
-  source.capturePiSource('changing', 1, 'old', 'bash'); store(source, 'changing', 3, ['old']);
-  const old = source.borrowPiSource('changing')!;
-  source.capturePiSource('changing', 2, 'new', 'bash');
+  source.pi.capturePiSource('changing', 1, 'old', 'bash'); store(source, 'changing', 3, ['old']);
+  const old = source.pi.borrowPiSource('changing')!;
+  source.pi.capturePiSource('changing', 2, 'new', 'bash');
   assert.equal(bridge(source, 'changing', 2, 3).available, false);
   assert.equal(installControllerProjection(source, 'changing', old.generation, 1, old.text, 3, ['old']), false);
   store(source, 'changing', 3, ['new']); const heldBytes = source.stats().retention.bridgeBytes;
   const install = SemanticRetentionPool.prototype.adoptPiFlat; let replacements = 0;
   SemanticRetentionPool.prototype.adoptPiFlat = function(...args) { replacements++; return install.apply(this, args); };
-  try { source.capturePiSource('changing', 3, 'new', 'bash'); } finally { SemanticRetentionPool.prototype.adoptPiFlat = install; }
+  try { source.pi.capturePiSource('changing', 3, 'new', 'bash'); } finally { SemanticRetentionPool.prototype.adoptPiFlat = install; }
   assert.equal(replacements, 0, 'an equal-text alias never reinstalls/copies Pi rows');
   assert.deepEqual(bridge(source, 'changing', 3, 3), { available: true, ranges: [[0, 3, 0]] });
   assert.equal(source.stats().retention.bridgeBytes, heldBytes);
-  assert.throws(() => source.capturePiSource('changing', 2, 'new', 'bash'), /non-monotonic/);
+  assert.throws(() => source.pi.capturePiSource('changing', 2, 'new', 'bash'), /non-monotonic/);
 });
 
 test('ordinary byte pressure releases Pi rows and does not retry an unchanged capture', () => {
   const { source } = fixture({ retention: { maxBytes: 8192 } });
-  source.capturePiSource('pressure', 1, 'x'.repeat(100), 'bash'); assert.ok(store(source, 'pressure', 1, ['x'.repeat(100)]));
-  assert.ok(source.borrowPiSource('pressure')); assert.ok(source.piProjection('pressure', 1, 1));
+  source.pi.capturePiSource('pressure', 1, 'x'.repeat(100), 'bash'); assert.ok(store(source, 'pressure', 1, ['x'.repeat(100)]));
+  assert.ok(source.pi.borrowPiSource('pressure')); assert.ok(source.pi.piProjection('pressure', 1, 1));
   source.observe({ key: 'large', version: 1, text: 'y'.repeat(3500), language: 'text', complete: true });
-  assert.equal(source.borrowPiSource('pressure'), undefined);
+  assert.equal(source.pi.borrowPiSource('pressure'), undefined);
   assert.equal(bridge(source, 'pressure', 1, 1).available, false);
   const held = source.stats();
-  for (let i = 0; i < 20; i++) assert.equal(source.capturePiSource('pressure', 1, 'x'.repeat(100), 'bash'), false);
+  for (let i = 0; i < 20; i++) assert.equal(source.pi.capturePiSource('pressure', 1, 'x'.repeat(100), 'bash'), false);
   assert.deepEqual(source.stats(), held);
-  assert.equal(source.capturePiSource('pressure', 2, 'x'.repeat(100), 'bash'), true);
+  assert.equal(source.pi.capturePiSource('pressure', 2, 'x'.repeat(100), 'bash'), true);
   assert.ok(source.stats().retention.retainedBytes <= 8192);
 });
 
 test('bridge-only lifetime closes while native work is disabled; disposal forbids resurrection', () => {
   const { source } = fixture(); source.setEnabled(false);
-  source.capturePiSource('disabled', 1, 'x'); store(source, 'disabled', 0, ['x']);
+  source.pi.capturePiSource('disabled', 1, 'x'); store(source, 'disabled', 0, ['x']);
   source.setEnabled(false); assert.equal(bridge(source, 'disabled', 1, 0).available, true);
   source.dispose(); assert.equal(source.stats().piSourceRecords, 0); assert.equal(source.stats().retention.entries, 0);
-  assert.equal(source.capturePiSource('disabled', 1, 'x'), false); assert.equal(source.borrowPiSource('disabled'), undefined);
+  assert.equal(source.pi.capturePiSource('disabled', 1, 'x'), false); assert.equal(source.pi.borrowPiSource('disabled'), undefined);
   assert.equal(bridge(source, 'disabled', 1, 0).available, false);
 });
 
 test('reentrant removal stops a Pi row visit and rejects its provisional result', () => {
-  const { source } = fixture(); source.capturePiSource('remove', 1, 'x\ny'); store(source, 'remove', 1, ['x', '\x1b[31my']);
+  const { source } = fixture(); source.pi.capturePiSource('remove', 1, 'x\ny'); store(source, 'remove', 1, ['x', '\x1b[31my']);
   const seen: number[] = [];
-  const available = source.piProjection('remove', 1, 1)!.visitRanges((start) => { seen.push(start); source.remove('remove'); });
+  const available = source.pi.piProjection('remove', 1, 1)!.visitRanges((start) => { seen.push(start); source.remove('remove'); });
   assert.equal(available, false); assert.deepEqual(seen, [0]); assert.equal(source.stats().retention.entries, 0);
 });
 
 test('a rejected replacement drops the prior Pi allocation instead of leaving unowned rows', () => {
   const { source } = fixture({ retention: { maxBytes: 8192 } });
-  source.capturePiSource('replacement', 1, 'old');
-  const old = source.borrowPiSource('replacement')!;
+  source.pi.capturePiSource('replacement', 1, 'old');
+  const old = source.pi.borrowPiSource('replacement')!;
   installControllerProjection(source, 'replacement', old.generation, 1, old.text, 1, ['old']);
-  assert.equal(source.capturePiSource('replacement', 2, 'y'.repeat(4000)), false);
+  assert.equal(source.pi.capturePiSource('replacement', 2, 'y'.repeat(4000)), false);
   assert.equal(source.stats().retention.entries, 0);
   assert.equal(source.stats().retention.retainedBytes, 0);
-  assert.equal(source.borrowPiSource('replacement'), undefined);
+  assert.equal(source.pi.borrowPiSource('replacement'), undefined);
   assert.equal(installControllerProjection(source, 'replacement', old.generation, 1, old.text, 1, ['old']), false);
   source.remove('replacement');
   assert.equal(source.stats().bookkeepingBytes, 128);
@@ -165,15 +205,15 @@ test('a rejected replacement drops the prior Pi allocation instead of leaving un
 
 function capturedPiOwner() {
   const source = new SourceExecution(new Unavailable());
-  source.capturePiSource('first', 1, 'first\n', 'bash');
+  source.pi.capturePiSource('first', 1, 'first\n', 'bash');
   store(source, 'first', 1, ['first', '']);
-  return { weak: new WeakRef(source), capture: source.borrowPiSource('first')! };
+  return { weak: new WeakRef(source), capture: source.pi.borrowPiSource('first')! };
 }
 
 test('first Pi owner collects with a borrowed primitive capture and a second live owner', async () => {
   assert.equal(typeof global.gc, 'function');
   const { source } = fixture();
-  source.capturePiSource('second', 1, 'second', 'bash'); store(source, 'second', 1, ['second']);
+  source.pi.capturePiSource('second', 1, 'second', 'bash'); store(source, 'second', 1, ['second']);
   const { weak, capture } = capturedPiOwner();
   let collected = false;
   for (let attempt = 0; attempt < 60; attempt++) {
@@ -189,19 +229,19 @@ test('first Pi owner collects with a borrowed primitive capture and a second liv
 
 test('bookkeeping refusal of a changed source revokes the old Pi capture before returning false', () => {
   const { source } = fixture({ maxBookkeepingBytes: 1280 });
-  assert.equal(source.capturePiSource('card', 1, 'old'), true);
-  const old = source.borrowPiSource('card')!;
+  assert.equal(source.pi.capturePiSource('card', 1, 'old'), true);
+  const old = source.pi.borrowPiSource('card')!;
   assert.equal(store(source, 'card', 1, ['old']), true);
-  assert.equal(source.capturePiSource('card', 2, 'new', 'x'.repeat(128)), false);
-  assert.equal(source.borrowPiSource('card'), undefined);
+  assert.equal(source.pi.capturePiSource('card', 2, 'new', 'x'.repeat(128)), false);
+  assert.equal(source.pi.borrowPiSource('card'), undefined);
   assert.equal(bridge(source, 'card', 1, 1).available, false);
   assert.equal(installControllerProjection(source, 'card', old.generation, old.version, old.text, 1, ['old']), false);
   assert.equal(source.stats().retention.entries, 0);
   const held = source.stats();
-  for (let attempt = 0; attempt < 20; attempt++) assert.equal(source.capturePiSource('card', 2, 'new', 'x'.repeat(128)), false);
+  for (let attempt = 0; attempt < 20; attempt++) assert.equal(source.pi.capturePiSource('card', 2, 'new', 'x'.repeat(128)), false);
   assert.deepEqual(source.stats(), held);
-  assert.equal(source.capturePiSource('card', 3, 'new'), true);
-  assert.equal(source.borrowPiSource('card')!.text, 'new');
+  assert.equal(source.pi.capturePiSource('card', 3, 'new'), true);
+  assert.equal(source.pi.borrowPiSource('card')!.text, 'new');
 });
 
 test('native projection borrows its current logical snapshot without a second source/bridge allocation', () => {
@@ -233,60 +273,62 @@ test('native projection borrows its current logical snapshot without a second so
 test('Pi bridge readiness is a constant primitive query with version/palette and alias authority', () => {
   const { source } = fixture();
   assert.equal(hasProjection(source, 'a', 1, 1), false);
-  assert.ok(source.capturePiSource('a', 1, 'one'));
-  const capture = source.borrowPiSource('a')!;
+  assert.ok(source.pi.capturePiSource('a', 1, 'one'));
+  const capture = source.pi.borrowPiSource('a')!;
   assert.equal(hasProjection(source, 'a', 1, 1), false);
   assert.ok(installControllerProjection(source, 'a', capture.generation, 1, capture.text, 1, ['one']));
-  const before = source.stats();
-  const visit = source.visitPiRanges;
-  source.visitPiRanges = () => { throw new Error('readiness walked ranges'); };
-  for (let index = 0; index < 100; index++) assert.equal(hasProjection(source, 'a', 1, 1), true);
-  source.visitPiRanges = visit;
+  const before = source.stats(), piProjection = source.pi.piProjection.bind(source.pi);
+  source.pi.piProjection = (...args) => {
+    const reader = piProjection(...args);
+    return reader && { ...reader, visitRanges() { throw new Error('readiness walked ranges'); }, visitStyles() { throw new Error('readiness walked styles'); } };
+  };
+  try { for (let index = 0; index < 100; index++) assert.equal(hasProjection(source, 'a', 1, 1), true); }
+  finally { source.pi.piProjection = piProjection; }
   assert.deepEqual(source.stats(), before);
   assert.equal(hasProjection(source, 'a', 2, 1), false);
   assert.equal(hasProjection(source, 'a', 1, 2), false);
-  assert.ok(source.capturePiSource('a', 2, 'one'));
+  assert.ok(source.pi.capturePiSource('a', 2, 'one'));
   assert.equal(hasProjection(source, 'a', 2, 1), true);
-  assert.ok(source.capturePiSource('a', 2, 'one', 'bash'));
+  assert.ok(source.pi.capturePiSource('a', 2, 'one', 'bash'));
   assert.equal(hasProjection(source, 'a', 2, 1), false);
-  source.removePiSource('a');
+  source.pi.remove('a');
   assert.equal(hasProjection(source, 'a', 2, 1), false);
 });
 
 
 test('canonical Pi classifier failure is exact, aliases equal text, and differs from admission refusal', () => {
   const { source } = fixture(); source.setEnabled(false);
-  source.capturePiSource('failure', 1, 'x', 'bash');
-  const capture = source.borrowPiSource('failure')!;
-  assert.equal(source.piFailure('failure', 1, 1), undefined);
-  assert.equal(source.recordPiFailure('failure', capture.generation, 1, 1, 'threw'), true);
-  assert.equal(source.piFailure('failure', 1, 1), 'threw');
+  source.pi.capturePiSource('failure', 1, 'x', 'bash');
+  const capture = source.pi.borrowPiSource('failure')!;
+  assert.equal(source.pi.piFailure('failure', 1, 1), undefined);
+  assert.equal(source.pi.recordPiFailure('failure', capture.generation, 1, 1, 'threw'), true);
+  assert.equal(source.pi.piFailure('failure', 1, 1), 'threw');
   assert.equal(hasProjection(source, 'failure', 1, 1), false);
-  source.capturePiSource('failure', 2, 'x', 'bash');
-  assert.equal(source.piFailure('failure', 2, 1), 'threw');
-  assert.equal(source.piFailure('failure', 2, 2), undefined);
-  assert.equal(source.recordPiFailure('failure', capture.generation, 1, 2, 'invalid_rows'), false, 'stale version rejected');
-  assert.equal(source.recordPiFailure('failure', capture.generation, 2, 2, 'invalid_rows'), true);
-  assert.equal(source.piFailure('failure', 2, 2), 'invalid_rows');
-  assert.equal(source.recordPiFailure('failure', capture.generation, 2, 1, 'threw'), false, 'reentrant older palette rejected');
-  source.capturePiSource('failure', 3, 'y', 'bash');
-  assert.equal(source.piFailure('failure', 3, 2), undefined);
-  assert.equal(source.recordPiFailure('failure', capture.generation, 3, 2, 'threw'), false, 'old incarnation rejected');
-  const changed = source.borrowPiSource('failure')!;
-  source.recordPiFailure('failure', changed.generation, 3, 2, 'threw');
-  source.capturePiSource('failure', 3, 'y', 'rust');
-  assert.equal(source.piFailure('failure', 3, 2), undefined);
-  const current = source.borrowPiSource('failure')!;
-  source.remove('failure'); source.capturePiSource('failure', 1, 'y', 'rust');
-  assert.equal(source.recordPiFailure('failure', current.generation, 1, 2, 'threw'), false);
+  source.pi.capturePiSource('failure', 2, 'x', 'bash');
+  assert.equal(source.pi.piFailure('failure', 2, 1), 'threw');
+  assert.equal(source.pi.piFailure('failure', 2, 2), undefined);
+  assert.equal(source.pi.recordPiFailure('failure', capture.generation, 1, 2, 'invalid_rows'), false, 'stale version rejected');
+  assert.equal(source.pi.recordPiFailure('failure', capture.generation, 2, 2, 'invalid_rows'), true);
+  assert.equal(source.pi.piFailure('failure', 2, 2), 'invalid_rows');
+  assert.equal(source.pi.recordPiFailure('failure', capture.generation, 2, 1, 'threw'), false, 'reentrant older palette rejected');
+  source.pi.capturePiSource('failure', 3, 'y', 'bash');
+  assert.equal(source.pi.piFailure('failure', 3, 2), undefined);
+  assert.equal(source.pi.recordPiFailure('failure', capture.generation, 3, 2, 'threw'), false, 'old incarnation rejected');
+  const changed = source.pi.borrowPiSource('failure')!;
+  source.pi.recordPiFailure('failure', changed.generation, 3, 2, 'threw');
+  source.pi.capturePiSource('failure', 3, 'y', 'rust');
+  assert.equal(source.pi.piFailure('failure', 3, 2), undefined);
+  const current = source.pi.borrowPiSource('failure')!;
+  source.remove('failure'); source.pi.capturePiSource('failure', 1, 'y', 'rust');
+  assert.equal(source.pi.recordPiFailure('failure', current.generation, 1, 2, 'threw'), false);
   assert.equal(source.stats().retention.bridgeBytes, 0, 'failure stores no dummy rows');
   const refused = fixture({ retention: { maxBytes: 1 } }).source;
-  assert.equal(refused.capturePiSource('no-room', 1, 'x'), false);
-  assert.equal(refused.piFailure('no-room', 1, 2), undefined);
+  assert.equal(refused.pi.capturePiSource('no-room', 1, 'x'), false);
+  assert.equal(refused.pi.piFailure('no-room', 1, 2), undefined);
 });
 
 test('Pi readiness and visits bypass accounting/source comparisons and retain real LRU behavior', () => {
-  const { source } = fixture(); source.capturePiSource('ready', 1, 'x'); store(source, 'ready', 1, ['x']);
+  const { source } = fixture(); source.pi.capturePiSource('ready', 1, 'x'); store(source, 'ready', 1, ['x']);
   const status = SemanticRetentionPool.prototype.status;
   SemanticRetentionPool.prototype.status = () => { throw Error('accounting path invoked'); };
   try {
@@ -305,12 +347,12 @@ test('Pi readiness and visits bypass accounting/source comparisons and retain re
 
 
 test('reentrant Pi outcomes cannot replace an already-current failure or valid same-palette bridge', () => {
-  const { source } = fixture(); source.capturePiSource('reentrant', 1, 'x', 'bash');
-  const capture = source.borrowPiSource('reentrant')!;
-  assert.equal(source.recordPiFailure('reentrant', capture.generation, 1, 1, 'invalid_rows'), true);
+  const { source } = fixture(); source.pi.capturePiSource('reentrant', 1, 'x', 'bash');
+  const capture = source.pi.borrowPiSource('reentrant')!;
+  assert.equal(source.pi.recordPiFailure('reentrant', capture.generation, 1, 1, 'invalid_rows'), true);
   assert.equal(installControllerProjection(source, 'reentrant', capture.generation, 1, 'x', 1, ['x']), false);
   assert.equal(installControllerProjection(source, 'reentrant', capture.generation, 1, 'x', 2, ['x']), true);
-  assert.equal(source.recordPiFailure('reentrant', capture.generation, 1, 2, 'threw'), false);
+  assert.equal(source.pi.recordPiFailure('reentrant', capture.generation, 1, 2, 'threw'), false);
   assert.equal(hasProjection(source, 'reentrant', 1, 2), true);
-  assert.equal(source.recordPiFailure('reentrant', capture.generation, 1, 1, 'threw'), false);
+  assert.equal(source.pi.recordPiFailure('reentrant', capture.generation, 1, 1, 'threw'), false);
 });

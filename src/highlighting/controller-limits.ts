@@ -17,6 +17,11 @@ const fullFamily = sourceReservation({ captureUnits: HIGHLIGHT_LIMITS.sourceByte
 export const CONTROLLER_LIMITS = Object.freeze({ jobs: 2, transientBytes: 2 * fullFamily,
   bookkeepingBytes: OCCIPITAL_LIMITS.retainedBytes, restarts: 1 });
 
+export function sourceIdentifier(value: unknown, cap = 64): value is string {
+  return typeof value === 'string' && value.length > 0 && value.length <= cap
+    && Buffer.byteLength(value) <= cap && !/[\p{Cc}\p{Cs}]/u.test(value);
+}
+
 /** Admission only, never clipping: callers supply the actual finite parser input. */
 export function sourceFits(text: string, maxBytes: number): boolean {
   if (text.length > maxBytes) return false;

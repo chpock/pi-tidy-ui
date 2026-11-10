@@ -1,6 +1,3 @@
-import type { DataCharge } from '../resources/data-budget.ts';
-import type { StyleRoles } from './controller-styles.ts';
-
 /** Payload-free presentation preparation registered in chronological work order. */
 export interface SourcePreparation {
   readonly keys: ReadonlySet<string>;
@@ -13,30 +10,22 @@ export interface SourcePreparation {
 /** Opaque handle; only the execution owner and registry associate source incarnations. */
 export type SourceWorkGroup = { readonly id: number; readonly preparation: WeakRef<SourcePreparation>; readonly keys: ReadonlySet<string> };
 export type WorkEntry<State> = SourceWorkGroup | State;
-export type StyleAttempt = { failed: boolean };
-export type GroupMember = { key: string; id: number };
-export type GroupSeal = { members: readonly GroupMember[]; revision: number; charge: DataCharge };
-export type GroupReadyMember = GroupMember & { generation: number; version: number; stamp: number; geometryStamp: number; paintStamp: number; complete: boolean };
-export type GroupHold = { charge: DataCharge; pin: DataCharge };
-export type GroupReady = GroupHold & { members: ReadonlyMap<string, GroupReadyMember>; readers: number; roles: StyleRoles; stamp: number; paintStamp: number;
-  rules: string; palette: string; bindingRevision: number };
+export type WorkPending = false | 'native' | 'local';
 
-/** One entry identity; registry owns linkage/pass fields, execution owns style and publication fields. */
-export type WorkNode<Entry> = {
-  seal?: GroupSeal; ready?: GroupReady; attempt?: { outcome: StyleAttempt; epoch: number; revision: number; vocabulary: string };
-  styleRevision: number; failedEpoch?: number; failedRevision?: number; failedVocabulary?: string; failedCacheRevision?: number;
-  failedPalette?: string; failedBindingRevision?: number; value: Entry; pending: false | 'native' | 'local'; epoch: number; seen: number;
-  paused?: boolean; older?: WorkNode<Entry>; newer?: WorkNode<Entry>;
+/** Registry scheduling fields are added to the execution-supplied metadata object itself. */
+export type WorkNode<Entry, Metadata extends object> = Metadata & {
+  value: Entry; pending: WorkPending; epoch: number; seen: number;
+  paused?: boolean; older?: WorkNode<Entry, Metadata>; newer?: WorkNode<Entry, Metadata>;
 };
 
-export interface WorkTurnExecution<State extends { key: string }, Description> {
+export interface WorkTurnExecution<State extends { key: string }, Description, Metadata extends object> {
   registrySuspended(): boolean;
   registryDisposed(): boolean;
   registryEnabled(): boolean;
   registryHasSelection(): boolean;
   registryBeginTurn(): Description | undefined;
   registryIsFull(description: Description | undefined, creditBlocked: boolean): boolean;
-  registryPrepareStyles(node: WorkNode<WorkEntry<State>>, description: Description | undefined, full: boolean): void;
+  registryPrepareStyles(node: WorkNode<WorkEntry<State>, Metadata>, description: Description | undefined, full: boolean): void;
   registryDispatch(state: State | undefined, description: Description | undefined, full: () => boolean): boolean;
   registrySource(key: string): State | undefined;
   registrySourceBusy(key: string): boolean;
@@ -53,19 +42,19 @@ function isGroup<State>(entry: WorkEntry<State>): entry is SourceWorkGroup {
   return typeof entry === 'object' && entry !== null && 'preparation' in entry;
 }
 
-function scheduleContinuation<State extends { key: string }, Description>(owner: WeakRef<WorkTurnExecution<State, Description>>) {
+function scheduleContinuation<State extends { key: string }, Description, Metadata extends object>(owner: WeakRef<WorkTurnExecution<State, Description, Metadata>>) {
   return () => owner.deref()?.registryContinue();
 }
-function preparationTurn<State extends { key: string }, Description>(owner: WeakRef<WorkTurnExecution<State, Description>>) {
+function preparationTurn<State extends { key: string }, Description, Metadata extends object>(owner: WeakRef<WorkTurnExecution<State, Description, Metadata>>) {
   return () => owner.deref()?.registryResumePreparation();
 }
 
 /** Private chronological registry. It owns the sole synchronous pass and host-turn quota. */
-export class WorkRegistry<State extends { key: string }, Description> {
-  private readonly owner: WeakRef<WorkTurnExecution<State, Description>>;
-  private readonly entries = new Map<WorkEntry<State>, WorkNode<WorkEntry<State>>>();
-  private newest?: WorkNode<WorkEntry<State>>;
-  private cursor?: WorkNode<WorkEntry<State>>;
+export class WorkRegistry<State extends { key: string }, Description, Metadata extends object> {
+  private readonly owner: WeakRef<WorkTurnExecution<State, Description, Metadata>>;
+  private readonly entries = new Map<WorkEntry<State>, WorkNode<WorkEntry<State>, Metadata>>();
+  private newest?: WorkNode<WorkEntry<State>, Metadata>;
+  private cursor?: WorkNode<WorkEntry<State>, Metadata>;
   private pass = 0;
   private refreshEpoch = 0;
   private localPending = 0;
@@ -78,33 +67,33 @@ export class WorkRegistry<State extends { key: string }, Description> {
   private creditBlocked = false;
   private readonly preparationLimit: number;
 
-  constructor(owner: WeakRef<WorkTurnExecution<State, Description>>, preparationLimit: number) {
+  constructor(owner: WeakRef<WorkTurnExecution<State, Description, Metadata>>, preparationLimit: number) {
     this.owner = owner; this.preparationLimit = preparationLimit;
   }
 
   get size(): number { return this.entries.size; }
   get hasWorkTurn(): boolean { return this.scheduled || this.yielding || this.pumping; }
 
-  get(value: WorkEntry<State>): WorkNode<WorkEntry<State>> | undefined { return this.entries.get(value); }
+  get(value: WorkEntry<State>): WorkNode<WorkEntry<State>, Metadata> | undefined { return this.entries.get(value); }
   has(value: WorkEntry<State>): boolean { return this.entries.has(value); }
-  values(): IterableIterator<WorkNode<WorkEntry<State>>> { return this.entries.values(); }
-  [Symbol.iterator](): IterableIterator<[WorkEntry<State>, WorkNode<WorkEntry<State>>]> { return this.entries[Symbol.iterator](); }
+  values(): IterableIterator<WorkNode<WorkEntry<State>, Metadata>> { return this.entries.values(); }
+  [Symbol.iterator](): IterableIterator<[WorkEntry<State>, WorkNode<WorkEntry<State>, Metadata>]> { return this.entries[Symbol.iterator](); }
   clear(): void { this.entries.clear(); this.newest = undefined; this.cursor = undefined; this.localPending = 0; }
 
-  register(value: WorkEntry<State>): void {
-    const node: WorkNode<WorkEntry<State>> = { styleRevision: 0, value, pending: false, epoch: this.refreshEpoch, seen: -1, older: this.newest };
+  register(value: WorkEntry<State>, metadata: Metadata): void {
+    const node = Object.assign(metadata, { value, pending: false as const, epoch: this.refreshEpoch, seen: -1, older: this.newest }) as WorkNode<WorkEntry<State>, Metadata>;
     if (this.newest) this.newest.newer = node;
     this.newest = node; this.entries.set(value, node); this.rewind();
   }
   nextGroupId(): number { return ++this.groupSequence; }
   rewind(): void { this.pass++; this.cursor = this.newest; }
-  private setPending(node: WorkNode<WorkEntry<State>>, pending: WorkNode<WorkEntry<State>>['pending']): void {
+  private setPending(node: WorkNode<WorkEntry<State>, Metadata>, pending: WorkPending): void {
     if (node.pending === 'local') this.localPending--;
     node.pending = pending;
     if (pending === 'local') this.localPending++;
   }
-  remove(value: WorkEntry<State>, report: (node: WorkNode<WorkEntry<State>>) => void,
-    release: (node: WorkNode<WorkEntry<State>>) => void): boolean {
+  remove(value: WorkEntry<State>, report: (node: WorkNode<WorkEntry<State>, Metadata>) => void,
+    release: (node: WorkNode<WorkEntry<State>, Metadata>) => void): boolean {
     const node = this.entries.get(value); if (!node) return false;
     report(node);
     this.setPending(node, false);

@@ -6,7 +6,7 @@ import { SourceExecution } from '../../../src/highlighting/source-execution.ts';
 import type { ProviderSnapshot } from '../../../src/occipital/provider.ts';
 import { RequestFailure } from '../../../src/occipital/request-failure.ts';
 import { DataBudget } from '../../../src/resources/data-budget.ts';
-import { preparePiFlat } from '../../../src/syntax/pi-flat.ts';
+import { preparePiFlat } from '../../../src/highlighting/pi-flat.ts';
 import type { ConcreteStyle } from '../../../src/appearance/style-materialization.ts';
 import { decodeSemanticDescription } from '../../../src/occipital/semantic-protocol.ts';
 import { semanticDescriptor } from '../../fixtures/semantic-provider.ts';
@@ -75,7 +75,7 @@ function fixture(ready = false, options: ConstructorParameters<typeof SourceExec
   const sources = new SourceExecution(host, options);
   sources.setStyleSelection(selection);
   const client: SyntaxSourceClient & { enabled: boolean } = {
-    sourceWork: sources, enabled: true,
+    sourceWork: sources, pi: sources.pi, enabled: true,
     snapshot() { return { enabled: this.enabled, provider: host.snapshot(), standaloneVersion: 'test', selected: { kind: 'theme', id: 'gruvbox', variant: 'dark' }, effective: ownedTheme }; }
   };
   fixtures.push({ host, sources });
@@ -105,9 +105,9 @@ for (const mode of ['startup', 'off', 'unavailable'] as const) {
     if (mode === 'off') { client.enabled = false; sources.setEnabled(false); }
     if (mode === 'unavailable') client.snapshot = () => ({ enabled: true, provider: { ...host.snapshot(), availability: 'unavailable', reason: 'transport_closed' }, standaloneVersion: 'test', selected: { kind: 'pi', variant: 'dark' } });
     let calls = 0, captures = 0, visits = 0;
-    const originalCapture = sources.capturePiSource.bind(sources), originalVisit = sources.visitPiRanges.bind(sources);
-    sources.capturePiSource = (...args) => { captures++; return originalCapture(...args); };
-    sources.visitPiRanges = (...args) => { visits++; return originalVisit(...args); };
+    const originalCapture = sources.pi.capturePiSource.bind(sources.pi), originalVisit = sources.pi.visitRanges.bind(sources.pi);
+    sources.pi.capturePiSource = (...args) => { captures++; return originalCapture(...args); };
+    sources.pi.visitRanges = (...args) => { visits++; return originalVisit(...args); };
     const classify = (text: string, info: { language?: string; path?: string }) => {
       calls++; assert.equal(text, 'é\t😀\n'); assert.deepEqual(info, { language: 'bash', path: 'file.sh' }); return highlight(text);
     };
@@ -115,7 +115,7 @@ for (const mode of ['startup', 'off', 'unavailable'] as const) {
     assert.equal(requestSyntax(client, d, classify).outcome, 'pi');
     for (let index = 0; index < 3; index++) assert.equal(requestSyntax(client, d, classify).outcome, 'pi');
     assert.equal(calls, 1); assert.equal(captures, 1); assert.equal(visits, 0); assert.equal(host.calls.length, 0);
-    assert.equal(sources.borrowPiSource(d.key)?.utf8Bytes, 8);
+    assert.equal(sources.pi.borrowPiSource(d.key)?.utf8Bytes, 8);
   });
 }
 
@@ -125,7 +125,7 @@ test('syntax work queued, pending and off held authority never permits Pi', asyn
   const classify = (text: string) => { calls++; return highlight(text); };
   const d = demand('x', 1, false);
   assert.equal(requestSyntax(client, d, classify).outcome, 'waiting');
-  assert.equal(resolveSyntax(sources, d).needsPi, false); // before flush is already queued
+  assert.equal(resolveSyntax(sources, sources.pi, d).needsPi, false); // before flush is already queued
   sources.flush(); assert.equal(host.calls.length, 1);
   assert.equal(requestSyntax(client, d, classify).outcome, 'waiting');
   client.enabled = false; sources.setEnabled(false);
@@ -146,7 +146,7 @@ test('syntax work terminal shared unknown suppresses only its source', async () 
   host.ready = false;
   assert.equal(requestSyntax(client, demand(), classify).outcome, 'waiting');
   assert.equal(requestSyntax(client, demand('y', 1, true, 'peer'), classify).outcome, 'pi');
-  assert.equal(calls, 1); assert.equal(resolveSyntax(sources, demand()).needsPi, false);
+  assert.equal(calls, 1); assert.equal(resolveSyntax(sources, sources.pi, demand()).needsPi, false);
   sources.setEnabled(false); host.ready = true; sources.setEnabled(true);
   assert.equal(requestSyntax(client, demand(), classify).outcome, 'waiting');
   assert.equal(calls, 1); // Off/on is not a new source owner or stop proof.
@@ -159,10 +159,10 @@ test('syntax work typed no-start exposes pure needsPi and classifies only explic
   const d = demand('é', 1, false);
   requestSyntax(client, d, classify); sources.flush(); host.fault(0); await settled();
   const before = sources.stats();
-  for (let index = 0; index < 3; index++) assert.equal(resolveSyntax(sources, d).needsPi, true);
+  for (let index = 0; index < 3; index++) assert.equal(resolveSyntax(sources, sources.pi, d).needsPi, true);
   assert.equal(calls, 0); assert.deepEqual(sources.stats(), before); assert.equal(host.calls.length, 1);
   assert.equal(requestSyntax(client, d, classify).outcome, 'pi');
-  assert.notEqual(sources.borrowSource(d.key)?.generation, sources.borrowPiSource(d.key)?.generation);
+  assert.notEqual(sources.borrowSource(d.key)?.generation, sources.pi.borrowPiSource(d.key)?.generation);
   assert.equal(requestSyntax(client, d, classify).outcome, 'pi'); assert.equal(calls, 1); assert.equal(host.calls.length, 1);
 });
 
@@ -173,26 +173,26 @@ for (const mode of ['startup', 'off', 'unavailable'] as const) {
     if (mode === 'unavailable') client.snapshot = () => ({ enabled: true, provider: { ...host.snapshot(), availability: 'unavailable', reason: 'transport_closed' }, standaloneVersion: 'test', selected: { kind: 'pi', variant: 'dark' } });
     const classify = (text: string) => { calls++; return highlight(text); };
     const initial = demand('a', 1, false);
-    assert.equal(resolveSyntax(sources, initial).needsPi, true);
+    assert.equal(resolveSyntax(sources, sources.pi, initial).needsPi, true);
     assert.equal(requestSyntax(client, initial, classify).outcome, 'pi');
     assert.equal(requestSyntax(client, initial, classify).outcome, 'pi');
-    assert.equal(resolveSyntax(sources, initial).needsPi, false);
+    assert.equal(resolveSyntax(sources, sources.pi, initial).needsPi, false);
     assert.equal(calls, 1);
     // Caller has coalesced intermediate changes; only its useful latest is submitted.
     const latest = demand('a\tb\n', 3, false);
-    assert.equal(resolveSyntax(sources, latest).needsPi, true);
+    assert.equal(resolveSyntax(sources, sources.pi, latest).needsPi, true);
     assert.equal(requestSyntax(client, latest, classify).outcome, 'pi');
-    const old = resolveSyntax(sources, latest);
-    const generation = sources.borrowPiSource(latest.key)?.generation;
+    const old = resolveSyntax(sources, sources.pi, latest);
+    const generation = sources.pi.borrowPiSource(latest.key)?.generation;
     assert.equal(calls, 2);
     const complete = { ...latest, version: 4, complete: true };
     assert.equal(requestSyntax(client, complete, classify).outcome, 'pi');
     assert.equal(requestSyntax(client, complete, classify).outcome, 'pi');
     assert.equal(calls, 2);
-    assert.equal(sources.borrowPiSource(latest.key)?.generation, generation);
-    assert.equal(sources.borrowPiSource(latest.key)?.utf8Bytes, 4);
+    assert.equal(sources.pi.borrowPiSource(latest.key)?.generation, generation);
+    assert.equal(sources.pi.borrowPiSource(latest.key)?.utf8Bytes, 4);
     assert.equal(fileRows(sources, old), undefined);
-    assert.deepEqual(fileRows(sources, resolveSyntax(sources, complete)), ['a   b', '']);
+    assert.deepEqual(fileRows(sources, resolveSyntax(sources, sources.pi, complete)), ['a   b', '']);
     assert.equal(host.calls.length, 0);
   });
 }
@@ -201,15 +201,15 @@ test('syntax work source, Pi classifier language and palette transitions invalid
   const { client, sources } = fixture(); let calls = 0;
   const classify = (text: string) => { calls++; return highlight(text); };
   const original = demand('x'); requestSyntax(client, original, classify);
-  const old = resolveSyntax(sources, original);
+  const old = resolveSyntax(sources, sources.pi, original);
   const rewritten = demand('y', 2); requestSyntax(client, rewritten, classify);
   assert.equal(fileRows(sources, old), undefined);
   const language = { ...rewritten, piLanguage: 'python' }; requestSyntax(client, language, classify);
-  assert.equal(fileRows(sources, resolveSyntax(sources, rewritten)), undefined);
+  assert.equal(fileRows(sources, resolveSyntax(sources, sources.pi, rewritten)), undefined);
   const palette = { ...language, palette: 2 }; requestSyntax(client, palette, classify);
-  assert.equal(fileRows(sources, resolveSyntax(sources, language)), undefined);
+  assert.equal(fileRows(sources, resolveSyntax(sources, sources.pi, language)), undefined);
   requestSyntax(client, palette, classify); assert.equal(calls, 4);
-  assert.deepEqual(fileRows(sources, resolveSyntax(sources, palette)), ['y']);
+  assert.deepEqual(fileRows(sources, resolveSyntax(sources, sources.pi, palette)), ['y']);
 });
 
 test('syntax work native format changes reuse unchanged Pi classification identity', () => {
@@ -220,8 +220,8 @@ test('syntax work native format changes reuse unchanged Pi classification identi
   const shebangSelected = { ...pathSelected, language: 'bash' };
   assert.equal(requestSyntax(client, shebangSelected, classify).outcome, 'pi');
   assert.equal(calls, 1, 'a native shebang selector does not reclassify Pi fallback');
-  assert.equal(sources.borrowPiSource(shebangSelected.key)?.language, 'ruby');
-  assert.equal(resolveSyntax(sources, shebangSelected).needsPi, false);
+  assert.equal(sources.pi.borrowPiSource(shebangSelected.key)?.language, 'ruby');
+  assert.equal(resolveSyntax(sources, sources.pi, shebangSelected).needsPi, false);
 });
 
 test('syntax work accepts faint Pi rows and reuses the exact result', () => {
@@ -231,22 +231,22 @@ test('syntax work accepts faint Pi rows and reuses the exact result', () => {
   assert.deepEqual(requestSyntax(client, d, classify), { outcome: 'pi' });
   assert.deepEqual(requestSyntax(client, d, classify), { outcome: 'pi' });
   assert.equal(calls, 1);
-  assert.equal(sources.piFailure(d.key, d.version, d.palette), undefined);
-  assert.equal(resolveSyntax(sources, d).needsPi, false);
-  assert.deepEqual(piSpans(resolveSyntax(sources, d).pi)?.[0]?.style, { ...neutral, attributes: 8 });
+  assert.equal(sources.pi.piFailure(d.key, d.version, d.palette), undefined);
+  assert.equal(resolveSyntax(sources, sources.pi, d).needsPi, false);
+  assert.deepEqual(piSpans(resolveSyntax(sources, sources.pi, d).pi)?.[0]?.style, { ...neutral, attributes: 8 });
 });
 
 for (const kind of ['threw', 'invalid_rows'] as const) {
   test(`syntax work exact ${kind} failure is cached and new palette permits one attempt`, () => {
     const { client, sources } = fixture(); let calls = 0, captures = 0;
-    const capture = sources.capturePiSource.bind(sources);
-    sources.capturePiSource = (...args) => { captures++; return capture(...args); };
+    const capture = sources.pi.capturePiSource.bind(sources.pi);
+    sources.pi.capturePiSource = (...args) => { captures++; return capture(...args); };
     const classify = () => { calls++; if (kind === 'threw') throw new Error('fixture'); return ['\x1b[8mx']; };
     const d = demand();
     assert.deepEqual(requestSyntax(client, d, classify), { outcome: 'failed', failure: kind });
     assert.deepEqual(requestSyntax(client, d, classify), { outcome: 'failed', failure: kind });
-    assert.equal(calls, 1); assert.equal(captures, 1); assert.equal(sources.piFailure(d.key, d.version, d.palette), kind);
-    assert.equal(resolveSyntax(sources, d).needsPi, false);
+    assert.equal(calls, 1); assert.equal(captures, 1); assert.equal(sources.pi.piFailure(d.key, d.version, d.palette), kind);
+    assert.equal(resolveSyntax(sources, sources.pi, d).needsPi, false);
     requestSyntax(client, { ...d, palette: 2 }, classify); assert.equal(calls, 2);
   });
 }
@@ -257,18 +257,18 @@ for (const failure of ['threw', 'invalid_rows'] as const) {
     const initial = demand();
     const bad = () => { calls++; if (failure === 'threw') throw new Error('fixture'); return ['\x1b[8mx']; };
     assert.deepEqual(requestSyntax(client, initial, bad), { outcome: 'failed', failure });
-    assert.equal(resolveSyntax(sources, initial).needsPi, false);
+    assert.equal(resolveSyntax(sources, sources.pi, initial).needsPi, false);
     const changed = { ...initial, piLanguage: 'python' };
     const before = sources.stats();
-    assert.equal(resolveSyntax(sources, changed).needsPi, true);
+    assert.equal(resolveSyntax(sources, sources.pi, changed).needsPi, true);
     assert.deepEqual(sources.stats(), before);
     assert.equal(calls, 1);
-    assert.equal(sources.piFailure(initial.key, initial.version, initial.palette), failure);
+    assert.equal(sources.pi.piFailure(initial.key, initial.version, initial.palette), failure);
     assert.equal(requestSyntax(client, changed, text => { calls++; return highlight(text); }).outcome, 'pi');
     assert.equal(requestSyntax(client, changed, text => { calls++; return highlight(text); }).outcome, 'pi');
     assert.equal(calls, 2);
-    assert.equal(resolveSyntax(sources, changed).needsPi, false);
-    assert.deepEqual(fileRows(sources, resolveSyntax(sources, changed)), ['x']);
+    assert.equal(resolveSyntax(sources, sources.pi, changed).needsPi, false);
+    assert.deepEqual(fileRows(sources, resolveSyntax(sources, sources.pi, changed)), ['x']);
     assert.equal(host.calls.length, 0);
   });
 }
@@ -278,7 +278,7 @@ test('syntax work source admission refusal skips classification', () => {
   const classify = () => { calls++; return ['x']; };
   assert.equal(requestSyntax(client, demand(), classify).outcome, 'refused');
   assert.equal(requestSyntax(client, demand(), classify).outcome, 'refused');
-  assert.equal(calls, 0); assert.equal(sources.borrowPiSource('source'), undefined);
+  assert.equal(calls, 0); assert.equal(sources.pi.borrowPiSource('source'), undefined);
 });
 
 test('syntax work inspected ANSI storage refusal is not classifier failure and cannot carousel', () => {
@@ -289,10 +289,10 @@ test('syntax work inspected ANSI storage refusal is not classifier failure and c
   const before = sources.stats();
   for (let i = 0; i < 30; i++) {
     assert.equal(requestSyntax(client, d, classify).outcome, 'refused');
-    assert.equal(resolveSyntax(sources, d).needsPi, false);
+    assert.equal(resolveSyntax(sources, sources.pi, d).needsPi, false);
   }
-  assert.equal(calls, 1); assert.equal(sources.piFailure(d.key, d.version, d.palette), undefined);
-  assert.equal(sources.piRefusal(d.key, d.version, d.palette), true);
+  assert.equal(calls, 1); assert.equal(sources.pi.piFailure(d.key, d.version, d.palette), undefined);
+  assert.equal(sources.pi.piRefusal(d.key, d.version, d.palette), true);
   assert.deepEqual(sources.stats(), before);
   requestSyntax(client, demand('y', 2), text => { calls++; return [text]; });
   assert.equal(calls, 2);
@@ -303,9 +303,9 @@ test('syntax work warmed resolution and test-only common painting does not class
   const d = demand('a\t😀\nz'); requestSyntax(client, d, text => { calls++; return highlight(text); });
   const before = sources.stats();
   sources.observe = () => { throw new Error('render observe'); };
-  sources.capturePiSource = () => { throw new Error('render capture'); };
+  sources.pi.capturePiSource = () => { throw new Error('render capture'); };
   for (const width of [8, 12, 8]) {
-    const resolved = resolveSyntax(sources, d);
+    const resolved = resolveSyntax(sources, sources.pi, d);
     assert.deepEqual(fileRows(sources, resolved), ['a   😀', 'z']);
     assert.ok(bashRows(sources, resolved, width));
   }
@@ -317,7 +317,7 @@ test('syntax work stored native exact is preferred offline and reader validates 
   const d = demand('x\t'); let calls = 0;
   requestSyntax(client, d, () => { calls++; return ['x\t']; }); sources.flush(); await host.answer(0, d.text); await settled();
   host.ready = false;
-  const resolved = resolveSyntax(sources, d);
+  const resolved = resolveSyntax(sources, sources.pi, d);
   assert.equal(resolved.nativeExact, true); assert.equal(resolved.needsPi, false);
   assert.deepEqual(fileRows(sources, resolved), ['x   ']);
   assert.equal(calls, 0);
@@ -331,14 +331,14 @@ test('syntax work native proven prefix never borrows changed tail colors; exact 
   requestSyntax(client, initial, highlight); sources.flush(); await host.answer(0, initial.text, false); await settled();
   const latest = demand('a\nbc', 2);
   requestSyntax(client, latest, highlight);
-  let resolved = resolveSyntax(sources, latest);
+  let resolved = resolveSyntax(sources, sources.pi, latest);
   assert.equal(resolved.nativeExact, false);
   assert.deepEqual(fileRows(sources, resolved), ['a', 'bc']);
   const prefix: { start: number; end: number; style: ConcreteStyle }[] = [];
   assert.equal(resolved.native?.((start, end, style) => prefix.push({ start, end, style })), true);
   assert.deepEqual(prefix, [{ start: 0, end: 2, style: { foreground: { kind: 'indexed', index: 5 }, background: neutral.background, attributes: 0 } }]);
   sources.flush(); host.fault(1); await settled();
-  requestSyntax(client, latest, highlight); resolved = resolveSyntax(sources, latest);
+  requestSyntax(client, latest, highlight); resolved = resolveSyntax(sources, sources.pi, latest);
   assert.ok(resolved.pi);
   assert.deepEqual(piSpans(resolved.pi)?.map(span => span.style.foreground), [{ kind: 'indexed', index: 1 }, neutral.foreground, { kind: 'indexed', index: 1 }]);
   assert.deepEqual(fileRows(sources, resolved), ['a', 'bc']);
@@ -349,7 +349,7 @@ test('syntax work native RGB reader passes concrete styles without classificatio
   client.snapshot = () => ({ enabled: true, provider: host.snapshot(), standaloneVersion: 'test', selected: { kind: 'theme', id: 'rgb', variant: 'light' }, effective: rgbProfile });
   requestSyntax(client, d, highlight); sources.flush();
   await host.answer(0, d.text, true, { foreground: { kind: 'rgb', r: 1, g: 2, b: 3 }, background: neutral.background, attributes: 5 }); await settled();
-  const resolved = resolveSyntax(sources, d), spans: { start: number; end: number; style: ConcreteStyle }[] = [];
+  const resolved = resolveSyntax(sources, sources.pi, d), spans: { start: number; end: number; style: ConcreteStyle }[] = [];
   assert.equal(resolved.native?.((a, b, style) => spans.push({ start: a, end: b, style })), true);
   assert.deepEqual(spans, [{ start: 0, end: 1, style: { foreground: { kind: 'rgb', r: 1, g: 2, b: 3 }, background: neutral.background, attributes: 5 } }]);
   assert.deepEqual(fileRows(sources, resolved), ['x']);
@@ -360,39 +360,39 @@ test('syntax work local palette replacement retries STYLE only, never SOURCE or 
   const classify = () => { calls++; return ['x']; };
   requestSyntax(client, d, classify); sources.flush(); host.source(0, d.text); await settled();
   assert.equal(host.styles.length, 1); host.fault(0, 'busy', true); await settled();
-  assert.equal(resolveSyntax(sources, d).needsPi, false);
+  assert.equal(resolveSyntax(sources, sources.pi, d).needsPi, false);
   const next = syntheticSelection(2, 'gruvbox-light');
   sources.setStyleSelection(next);
   client.snapshot = () => ({ enabled: true, provider: host.snapshot(), standaloneVersion: 'test', selected: { kind: 'theme', id: 'gruvbox', variant: 'light' }, effective: rgbProfile });
   requestSyntax(client, d, classify); sources.flush(); await settled();
   assert.equal(host.calls.length, 1); assert.equal(host.styles.length, 2);
   host.style(1); await settled();
-  assert.ok(resolveSyntax(sources, d).display); assert.equal(calls, 0);
+  assert.ok(resolveSyntax(sources, sources.pi, d).display); assert.equal(calls, 0);
 });
 
 test('syntax work stale Pi reader generation/version rejects removed, replaced and reentrant owner', () => {
   const { client, sources } = fixture(); const d = demand(); requestSyntax(client, d, highlight);
-  const old = resolveSyntax(sources, d); assert.ok(old.pi);
-  sources.removePiSource(d.key); requestSyntax(client, d, highlight);
+  const old = resolveSyntax(sources, sources.pi, d); assert.ok(old.pi);
+  sources.pi.remove(d.key); requestSyntax(client, d, highlight);
   assert.equal(old.pi.visitRanges(() => {}), false); assert.equal(fileRows(sources, old), undefined);
-  const next = resolveSyntax(sources, d);
-  assert.equal(next.pi?.visitRanges(() => { sources.removePiSource(d.key); }), false);
+  const next = resolveSyntax(sources, sources.pi, d);
+  assert.equal(next.pi?.visitRanges(() => { sources.pi.remove(d.key); }), false);
 });
 
 test('syntax work stale classifier publication cannot install or mark a replacement failure', () => {
   const { client, sources } = fixture(); const d = demand();
   const result = requestSyntax(client, d, () => {
-    sources.removePiSource(d.key); sources.capturePiSource(d.key, 2, 'y', 'bash'); return ['bad'];
+    sources.pi.remove(d.key); sources.pi.capturePiSource(d.key, 2, 'y', 'bash'); return ['bad'];
   });
-  assert.equal(result.outcome, 'stale'); assert.equal(sources.piFailure(d.key, 2, d.palette), undefined);
-  assert.equal(sources.piProjection(d.key, 2, d.palette), undefined);
+  assert.equal(result.outcome, 'stale'); assert.equal(sources.pi.piFailure(d.key, 2, d.palette), undefined);
+  assert.equal(sources.pi.piProjection(d.key, 2, d.palette), undefined);
 });
 
 function collectibleReader() {
   const host = new Host(), sources = new SourceExecution(host);
-  const client = { sourceWork: sources, snapshot: () => ({ enabled: false, provider: host.snapshot(), standaloneVersion: 'test', selected: { kind: 'pi' as const, variant: 'dark' as const } }) };
+  const client = { sourceWork: sources, pi: sources.pi, snapshot: () => ({ enabled: false, provider: host.snapshot(), standaloneVersion: 'test', selected: { kind: 'pi' as const, variant: 'dark' as const } }) };
   requestSyntax(client, demand('x', 1, true, 'first'), () => ['\x1b[1mx\x1b[22m']);
-  const reader = resolveSyntax(sources, demand('x', 1, true, 'first')).pi!;
+  const reader = resolveSyntax(sources, sources.pi, demand('x', 1, true, 'first')).pi!;
   return { owner: new WeakRef(sources), reader };
 }
 test('syntax work first active owner collects with retained reader and another active owner', { skip: !global.gc }, async () => {
@@ -405,7 +405,7 @@ test('syntax work first active owner collects with retained reader and another a
     if (!first.owner.deref()) { collected = true; break; }
   }
   assert.equal(collected, true); assert.equal(first.reader.visitRanges(() => {}), false);
-  assert.deepEqual(fileRows(peer.sources, resolveSyntax(peer.sources, demand('y', 1, true, 'peer'))), ['y']);
+  assert.deepEqual(fileRows(peer.sources, resolveSyntax(peer.sources, peer.sources.pi, demand('y', 1, true, 'peer'))), ['y']);
 });
 
 test('syntax work retained exact Pi stays visible during explicit native upgrade then yields to native exact', async () => {
@@ -413,12 +413,12 @@ test('syntax work retained exact Pi stays visible during explicit native upgrade
   const classify = (text: string) => { calls++; return highlight(text); };
   requestSyntax(client, d, classify); host.ready = true;
   requestSyntax(client, d, classify); sources.flush();
-  assert.deepEqual(fileRows(sources, resolveSyntax(sources, d)), ['x']);
-  assert.deepEqual(piSpans(resolveSyntax(sources, d).pi)?.[0]?.style.foreground, { kind: 'indexed', index: 1 });
+  assert.deepEqual(fileRows(sources, resolveSyntax(sources, sources.pi, d)), ['x']);
+  assert.deepEqual(piSpans(resolveSyntax(sources, sources.pi, d).pi)?.[0]?.style.foreground, { kind: 'indexed', index: 1 });
   await host.answer(0, d.text); await settled();
-  assert.deepEqual(fileRows(sources, resolveSyntax(sources, d)), ['x']);
+  assert.deepEqual(fileRows(sources, resolveSyntax(sources, sources.pi, d)), ['x']);
   const foregrounds: unknown[] = [];
-  assert.equal(resolveSyntax(sources, d).native?.((_a, _b, style) => foregrounds.push(style.foreground)), true);
+  assert.equal(resolveSyntax(sources, sources.pi, d).native?.((_a, _b, style) => foregrounds.push(style.foreground)), true);
   assert.deepEqual(foregrounds, [{ kind: 'indexed', index: 5 }]);
   assert.equal(calls, 1); assert.equal(host.calls.length, 1);
 });
@@ -426,24 +426,24 @@ test('syntax work retained exact Pi stays visible during explicit native upgrade
 test('syntax work pool eviction makes retained Pi reader and neutral display resolution stale', () => {
   const { client, sources } = fixture(false, { retention: { maxBytes: 4000 } });
   const d = demand(); assert.equal(requestSyntax(client, d, highlight).outcome, 'pi');
-  const resolved = resolveSyntax(sources, d); assert.ok(resolved.pi);
+  const resolved = resolveSyntax(sources, sources.pi, d); assert.ok(resolved.pi);
   assert.ok(sources.stats().retention.retainedBytes > 0);
   assert.equal(requestSyntax(client, demand('y', 1, true, 'peer'), highlight).outcome, 'pi');
-  assert.ok(resolveSyntax(sources, demand('y', 1, true, 'peer')).pi);
+  assert.ok(resolveSyntax(sources, sources.pi, demand('y', 1, true, 'peer')).pi);
   assert.equal(resolved.pi.visitRanges(() => {}), false);
   assert.equal(fileRows(sources, resolved), undefined);
-  assert.equal(fileRows(sources, resolveSyntax(sources, d)), undefined);
+  assert.equal(fileRows(sources, resolveSyntax(sources, sources.pi, d)), undefined);
 });
 
 test('syntax work Pi reset restores concrete neutral fonts and glyph mismatch rejects entire projection', () => {
   const { client, sources } = fixture(); const d = demand('ab');
   requestSyntax(client, d, () => ['\x1b[1ma\x1b[0mb']);
-  const resolved = resolveSyntax(sources, d);
+  const resolved = resolveSyntax(sources, sources.pi, d);
   assert.deepEqual(piSpans(resolved.pi), [{ start: 0, end: 1, style: { ...neutral, attributes: 1 } }, { start: 1, end: 2, style: neutral }]);
   assert.deepEqual(fileRows(sources, resolved), ['ab']);
   assert.equal(requestSyntax(client, demand('c', 2), () => ['d']).outcome, 'failed');
-  assert.equal(sources.piFailure('source', 2, 1), 'invalid_rows');
-  assert.equal(fileRows(sources, resolveSyntax(sources, demand('c', 2))), undefined);
+  assert.equal(sources.pi.piFailure('source', 2, 1), 'invalid_rows');
+  assert.equal(fileRows(sources, resolveSyntax(sources, sources.pi, demand('c', 2))), undefined);
 });
 
 async function collectibleNativeReader() {
@@ -452,7 +452,7 @@ async function collectibleNativeReader() {
   sources.setStyleSelection(selection);
   sources.observe({ key: 'first', version: 1, text: 'x', complete: true, language: 'bash' });
   sources.flush(); await host.answer(0, 'x'); await settled();
-  const reader = resolveSyntax(sources, demand('x', 1, true, 'first')).native!;
+  const reader = resolveSyntax(sources, sources.pi, demand('x', 1, true, 'first')).native!;
   assert.ok(reader);
   return { owner: new WeakRef(sources), reader };
 }
@@ -467,16 +467,16 @@ test('syntax work first active native owner collects while its reader and a peer
     if (!first.owner.deref()) { collected = true; break; }
   }
   assert.equal(collected, true); assert.equal(first.reader(() => {}), false);
-  assert.deepEqual(fileRows(peer.sources, resolveSyntax(peer.sources, d)), ['y']);
+  assert.deepEqual(fileRows(peer.sources, resolveSyntax(peer.sources, peer.sources.pi, d)), ['y']);
 });
 
 test('syntax work stale completion identities cannot request Pi for a newer native or Pi version', () => {
   const native = fixture(true), old = demand();
   requestSyntax(native.client, demand('y', 2), highlight);
   native.host.ready = false;
-  assert.equal(resolveSyntax(native.sources, old).needsPi, false);
+  assert.equal(resolveSyntax(native.sources, native.sources.pi, old).needsPi, false);
   const pi = fixture(); requestSyntax(pi.client, demand('y', 2), highlight);
-  assert.equal(resolveSyntax(pi.sources, old).needsPi, false);
+  assert.equal(resolveSyntax(pi.sources, pi.sources.pi, old).needsPi, false);
 });
 
 test('syntax work equal-text finalization and warmed Pi never remeasure UTF8', () => {
@@ -504,16 +504,16 @@ test('syntax work empty logical source has exact immediate rows without invoking
   const classify = () => { calls++; return ['']; };
   assert.equal(requestSyntax(client, d, classify).outcome, 'pi');
   assert.equal(calls, 0);
-  assert.deepEqual(fileRows(sources, resolveSyntax(sources, d)), ['']);
-  assert.deepEqual(bashRows(sources, resolveSyntax(sources, d), 8), ['$ ']);
+  assert.deepEqual(fileRows(sources, resolveSyntax(sources, sources.pi, d)), ['']);
+  assert.deepEqual(bashRows(sources, resolveSyntax(sources, sources.pi, d), 8), ['$ ']);
 });
 
 test('syntax work paint rejects another controller even when key and pool generations coincide', () => {
   const first = fixture(), second = fixture(); const d = demand();
   requestSyntax(first.client, d, highlight);
   requestSyntax(second.client, demand('y'), highlight);
-  const resolved = resolveSyntax(first.sources, d);
-  assert.equal(first.sources.borrowPiSource(d.key)?.generation, second.sources.borrowPiSource(d.key)?.generation);
+  const resolved = resolveSyntax(first.sources, first.sources.pi, d);
+  assert.equal(first.sources.pi.borrowPiSource(d.key)?.generation, second.sources.pi.borrowPiSource(d.key)?.generation);
   assert.equal(fileRows(second.sources, resolved), undefined);
   assert.equal(bashRows(second.sources, resolved, 8), undefined);
   assert.deepEqual(fileRows(first.sources, resolved), ['x']);
@@ -531,10 +531,10 @@ for (const mode of ['initializing', 'unavailable', 'off'] as const) {
     const identity = { ...demand('x'), fallback: 'neutral' as const };
     const result = requestSyntax(client, identity, () => { pi++; return ['x']; });
     assert.equal(result.outcome, 'neutral'); assert.equal(result.awaitingProvider, mode === 'off' ? undefined : true);
-    const resolution = resolveSyntax(sources, identity);
+    const resolution = resolveSyntax(sources, sources.pi, identity);
     assert.equal(resolution.needsPi, false); assert.equal(resolution.pi, undefined);
     assert.equal(bashRows(sources, resolution, 12), undefined);
-    assert.equal(pi, 0); assert.equal(host.calls.length, 0); assert.equal(sources.borrowPiSource('source'), undefined);
+    assert.equal(pi, 0); assert.equal(host.calls.length, 0); assert.equal(sources.pi.borrowPiSource('source'), undefined);
     assert.equal(sources.stats().retention.entries, 0);
   });
 }
@@ -544,14 +544,14 @@ test('syntax work neutral fallback ignores Pi retained by another surface and st
   assert.equal(requestSyntax(client, demand('x'), classify).outcome, 'pi');
   const identity = { ...demand('x'), fallback: 'neutral' as const };
   assert.equal(requestSyntax(client, identity, classify).outcome, 'neutral');
-  assert.equal(resolveSyntax(sources, identity).pi, undefined);
+  assert.equal(resolveSyntax(sources, sources.pi, identity).pi, undefined);
   assert.equal(pi, 1);
   host.ready = true;
   assert.equal(requestSyntax(client, identity, classify).outcome, 'waiting');
   sources.flush(); assert.equal(host.calls.length, 1);
   await host.answer(0, 'x'); for (let i = 0; i < 5; i++) await turn();
   assert.equal(requestSyntax(client, identity, classify).outcome, 'native');
-  const resolution = resolveSyntax(sources, identity);
+  const resolution = resolveSyntax(sources, sources.pi, identity);
   assert.equal(resolution.nativeExact, true); assert.equal(resolution.pi, undefined);
   assert.ok(bashRows(sources, resolution, 12));
   assert.equal(pi, 1); assert.equal(host.calls.length, 1);
@@ -565,14 +565,14 @@ test('syntax work neutral fallback keeps held native authority through off witho
   sources.flush(); assert.equal(host.calls.length, 1);
   client.enabled = false; sources.setEnabled(false);
   assert.equal(requestSyntax(client, identity, classify).outcome, 'waiting');
-  const resolution = resolveSyntax(sources, identity);
+  const resolution = resolveSyntax(sources, sources.pi, identity);
   assert.equal(resolution.needsPi, false); assert.equal(resolution.pi, undefined);
   assert.equal(bashRows(sources, resolution, 12), undefined);
   assert.equal(sources.workStatus('source').fallbackEligible, false);
   await host.answer(0, 'x'); await settled();
   assert.equal(sources.workStatus('source').fallbackEligible, true);
   assert.equal(requestSyntax(client, identity, classify).outcome, 'neutral');
-  assert.equal(pi, 0); assert.equal(host.calls.length, 1); assert.equal(sources.borrowPiSource('source'), undefined);
+  assert.equal(pi, 0); assert.equal(host.calls.length, 1); assert.equal(sources.pi.borrowPiSource('source'), undefined);
 });
 
 
@@ -583,13 +583,13 @@ test('syntax diagnostics keep cached plain Pi silent and distinguish native disp
   let calls = 0;
   const d = demand('PRIVATE_SOURCE_CONTENT', 1, false);
   requestSyntax(client, d, text => { calls++; return text.split('\n'); });
-  assert.equal(resolveSyntax(sources, d).piStyled, false);
-  assert.ok(resolveSyntax(sources, d).pi);
+  assert.equal(resolveSyntax(sources, sources.pi, d).piStyled, false);
+  assert.ok(resolveSyntax(sources, sources.pi, d).pi);
   const before = events.length;
   for (let index = 0; index < 20; index++) {
     requestSyntax(client, d, () => { throw new Error('must reuse Pi'); });
-    resolveSyntax(sources, d);
-    fileRows(sources, resolveSyntax(sources, d));
+    resolveSyntax(sources, sources.pi, d);
+    fileRows(sources, resolveSyntax(sources, sources.pi, d));
   }
   assert.equal(events.length, before);
   assert.equal(calls, 1);
@@ -610,7 +610,7 @@ test('syntax diagnostics are observational even if their sink throws', async () 
   assert.equal(requestSyntax(client, d, text => { calls++; return highlight(text); }).outcome, 'waiting');
   sources.flush(); assert.equal(host.calls.length, 1);
   await host.answer(0, d.text, false); await settled();
-  assert.equal(resolveSyntax(sources, d).nativeExact, true);
+  assert.equal(resolveSyntax(sources, sources.pi, d).nativeExact, true);
   assert.equal(calls, 0);
   assert.equal(sources.stats().globalUnsettledJobs, 0);
 });
@@ -639,17 +639,17 @@ test('syntax work SOURCE complete and styles pending or failed never authorizes 
   const classify = () => { calls++; return ['x']; };
   requestSyntax(client, d, classify); sources.flush(); host.source(0, 'x'); await settled();
   assert.equal(host.styles.length, 1);
-  const pending = resolveSyntax(sources, d);
+  const pending = resolveSyntax(sources, sources.pi, d);
   assert.equal(pending.nativeExact, true); assert.equal(pending.native, undefined); assert.equal(pending.display, undefined);
   assert.equal(pending.needsPi, false); assert.equal(requestSyntax(client, d, classify).outcome, 'waiting');
   host.fault(0, 'busy', true); await settled();
   host.ready = false;
   for (let i = 0; i < 10; i++) {
     assert.equal(requestSyntax(client, d, classify).outcome, 'waiting');
-    assert.equal(resolveSyntax(sources, d).needsPi, false);
+    assert.equal(resolveSyntax(sources, sources.pi, d).needsPi, false);
   }
-  assert.equal(resolveSyntax(sources, d).nativeExact, true);
-  assert.equal(resolveSyntax(sources, d).needsPi, false);
+  assert.equal(resolveSyntax(sources, sources.pi, d).nativeExact, true);
+  assert.equal(resolveSyntax(sources, sources.pi, d).needsPi, false);
     assert.equal(requestSyntax(client, d, classify).outcome, 'waiting');
   assert.equal(calls, 0); assert.equal(host.calls.length, 1);
 });
@@ -671,15 +671,17 @@ test('syntax work warm requests and pure resolution never scan source, ranges, s
   requestSyntax(client, d, highlight);
   const before = sources.stats(), char = String.prototype.charCodeAt;
   const forbidden = () => { throw new Error('warm traversal or allocation'); };
-  sources.capturePiSource = forbidden; sources.piPreparation = forbidden; sources.reservePiData = forbidden;
-  sources.visitPiRanges = forbidden; sources.visitPiStyles = forbidden; sources.visitRanges = forbidden;
+  sources.pi.capturePiSource = forbidden; sources.pi.piPreparation = forbidden; sources.pi.reservePiData = forbidden;
+  const piProjection = sources.pi.piProjection.bind(sources.pi);
+  sources.pi.piProjection = (...args) => { const reader = piProjection(...args); return reader && { ...reader, visitRanges: forbidden, visitStyles: forbidden }; };
+  sources.visitRanges = forbidden;
   String.prototype.charCodeAt = forbidden;
   try {
     for (let i = 0; i < 20; i++) {
       assert.equal(requestSyntax(client, d, forbidden).outcome, 'pi');
-      assert.equal(resolveSyntax(sources, d).needsPi, false);
+      assert.equal(resolveSyntax(sources, sources.pi, d).needsPi, false);
     }
-  } finally { String.prototype.charCodeAt = char; }
+  } finally { String.prototype.charCodeAt = char; sources.pi.piProjection = piProjection; }
   assert.deepEqual(sources.stats(), before);
 });
 
@@ -689,7 +691,7 @@ test('syntax work Pi neutral preserves real default/index/RGB fonts, resets and 
     const piNeutral: ConcreteStyle = { foreground, background: { kind: 'indexed', index: 8 }, attributes: 15 };
     const d = { ...demand('abc', 1, true, foreground.kind), piNeutral };
     assert.equal(requestSyntax(client, d, () => ['a\x1b[22;23;24;38;5;2;48;5;9mb\x1b[0mc']).outcome, 'pi');
-    assert.deepEqual(piSpans(resolveSyntax(sources, d).pi), [
+    assert.deepEqual(piSpans(resolveSyntax(sources, sources.pi, d).pi), [
       { start: 0, end: 1, style: piNeutral },
       { start: 1, end: 2, style: { foreground: { kind: 'indexed', index: 2 }, background: piNeutral.background, attributes: 0 } },
       { start: 2, end: 3, style: piNeutral },
@@ -700,12 +702,12 @@ test('syntax work Pi neutral preserves real default/index/RGB fonts, resets and 
 test('syntax work preparation pins exact text through classifier removal and releases on unwind', () => {
   const { client, sources } = fixture(), d = demand('old');
   const emptyBytes = sources.stats().retention.retainedBytes; let pinnedBytes = 0, pinnedText: string | undefined;
-  const prepare = sources.piPreparation.bind(sources);
-  let held: ReturnType<typeof sources.piPreparation>;
-  sources.piPreparation = (...args) => held = prepare(...args);
+  const prepare = sources.pi.piPreparation.bind(sources.pi);
+  let held: ReturnType<typeof sources.pi.piPreparation>;
+  sources.pi.piPreparation = (...args) => held = prepare(...args);
   assert.equal(requestSyntax(client, d, text => {
     assert.equal(held?.text, text); assert.ok(held);
-    sources.removePiSource(d.key);
+    sources.pi.remove(d.key);
     pinnedText = held.text; pinnedBytes = held.budget.stats().retainedBytes;
     assert.equal(held.budget.reserve(held.budget.limit), undefined);
     return ['old'];
@@ -721,20 +723,20 @@ test('syntax work palette reentrancy cannot publish old converted data or mark a
     assert.equal(requestSyntax(client, { ...d, palette: 2 }, () => ['\x1b[34mx']).outcome, 'pi');
     return ['\x1b[31mx'];
   }).outcome, 'stale');
-  assert.equal(sources.piProjection(d.key, 1, 1), undefined);
-  assert.deepEqual(piSpans(sources.piProjection(d.key, 1, 2))?.[0]?.style.foreground, { kind: 'indexed', index: 4 });
-  assert.equal(sources.piFailure(d.key, 1, 2), undefined);
+  assert.equal(sources.pi.piProjection(d.key, 1, 1), undefined);
+  assert.deepEqual(piSpans(sources.pi.piProjection(d.key, 1, 2))?.[0]?.style.foreground, { kind: 'indexed', index: 4 });
+  assert.equal(sources.pi.piFailure(d.key, 1, 2), undefined);
   assert.equal(sources.stats().retention.outstandingPeakBytes, 0);
 });
 
 test('syntax work inspected ANSI is funded throughout conversion and staging receives the same hook', () => {
   const { client, sources } = fixture(), d = demand();
-  const prepare = sources.piPreparation.bind(sources), reserve = sources.reservePiData.bind(sources);
-  let held: ReturnType<typeof sources.piPreparation>, baseline = 0, fundedReads = 0, stages = 0;
+  const prepare = sources.pi.piPreparation.bind(sources.pi), reserve = sources.pi.reservePiData.bind(sources.pi);
+  let held: ReturnType<typeof sources.pi.piPreparation>, baseline = 0, fundedReads = 0, stages = 0;
   const line = '\x1b[31mx', ansiBytes = 64 + 40 + line.length * 2;
-  sources.piPreparation = (...args) => { held = prepare(...args); baseline = held!.budget.stats().retainedBytes; return held; };
+  sources.pi.piPreparation = (...args) => { held = prepare(...args); baseline = held!.budget.stats().retainedBytes; return held; };
   const peaks: number[] = [];
-  sources.reservePiData = (ticket, bytes) => {
+  sources.pi.reservePiData = (ticket, bytes) => {
     assert.equal(ticket, held); peaks.push(bytes);
     if (peaks.length > 1) assert.ok(ticket.budget.stats().retainedBytes >= baseline + ansiBytes);
     return reserve(ticket, bytes);
@@ -760,10 +762,10 @@ for (const point of ['conversion', 'staging', 'adoption'] as const) {
   test(`syntax work ${point} exception releases ticket, transient ANSI and every abandoned candidate`, () => {
     const { client, sources } = fixture(), d = demand();
     const emptyBytes = sources.stats().retention.retainedBytes;
-    const prepare = sources.piPreparation.bind(sources), reserve = sources.reservePiData.bind(sources);
-    let held: ReturnType<typeof sources.piPreparation>, baseline = 0, reservations = 0;
-    sources.piPreparation = (...args) => { held = prepare(...args); baseline = held!.budget.stats().retainedBytes; return held; };
-    sources.reservePiData = (ticket, bytes) => {
+    const prepare = sources.pi.piPreparation.bind(sources.pi), reserve = sources.pi.reservePiData.bind(sources.pi);
+    let held: ReturnType<typeof sources.pi.piPreparation>, baseline = 0, reservations = 0;
+    sources.pi.piPreparation = (...args) => { held = prepare(...args); baseline = held!.budget.stats().retainedBytes; return held; };
+    sources.pi.reservePiData = (ticket, bytes) => {
       if (point === 'conversion' && ++reservations === 2) throw new Error('conversion');
       return reserve(ticket, bytes);
     };
@@ -772,14 +774,14 @@ for (const point of ['conversion', 'staging', 'adoption'] as const) {
     const prototype = Object.getPrototypeOf(probe.projection), stage = prototype.stage;
     let abandoned: typeof probe.projection | undefined;
     if (point === 'staging') prototype.stage = function() { abandoned = this; throw new Error('staging'); };
-    if (point === 'adoption') sources.adoptPiFlat = () => { throw new Error('adoption'); };
+    if (point === 'adoption') sources.pi.adoptPiFlat = () => { throw new Error('adoption'); };
     try { assert.throws(() => requestSyntax(client, d, highlight), new RegExp(point)); }
     finally { prototype.stage = stage; probe.projection.dispose(); }
     assert.equal(abandoned?.isValid, point === 'staging' ? false : undefined);
     assert.equal(held?.text, undefined);
     assert.equal(held?.budget.stats().outstandingPeakBytes, 0);
     assert.equal(held?.budget.stats().retainedBytes, baseline - 128);
-    sources.removePiSource(d.key);
+    sources.pi.remove(d.key);
     assert.equal(held?.budget.stats().retainedBytes, emptyBytes);
   });
 }
@@ -788,9 +790,9 @@ for (const point of ['conversion', 'staging', 'adoption'] as const) {
 test('syntax work inspected ANSI refusal preserves an older ready palette without warm retries', () => {
   const { client, sources } = fixture(false, { retention: { maxBytes: 5000 } }), d = demand();
   assert.equal(requestSyntax(client, d, highlight).outcome, 'pi');
-  const old = resolveSyntax(sources, d).pi; assert.ok(old);
-  const reserve = sources.reservePiData.bind(sources); const peaks: number[] = []; let calls = 0;
-  sources.reservePiData = (ticket, bytes) => { peaks.push(bytes); return reserve(ticket, bytes); };
+  const old = resolveSyntax(sources, sources.pi, d).pi; assert.ok(old);
+  const reserve = sources.pi.reservePiData.bind(sources.pi); const peaks: number[] = []; let calls = 0;
+  sources.pi.reservePiData = (ticket, bytes) => { peaks.push(bytes); return reserve(ticket, bytes); };
   const next = { ...d, palette: 2 };
   const oversized = () => { calls++; return ['\x1b[31m'.repeat(800) + 'x']; };
   assert.equal(requestSyntax(client, next, oversized).outcome, 'refused');
@@ -805,17 +807,17 @@ test('syntax work inspected ANSI refusal preserves an older ready palette withou
 test('syntax work source retirement during a conversion reservation abandons all charged data', () => {
   const { client, sources } = fixture(), d = demand();
   const emptyBytes = sources.stats().retention.retainedBytes;
-  const reserve = sources.reservePiData.bind(sources), prepare = sources.piPreparation.bind(sources);
-  let held: ReturnType<typeof sources.piPreparation>, calls = 0, pinnedBytes = 0;
-  sources.piPreparation = (...args) => held = prepare(...args);
-  sources.reservePiData = (ticket, bytes) => {
-    if (++calls === 2) { sources.removePiSource(d.key); pinnedBytes = ticket.budget.stats().retainedBytes; }
+  const reserve = sources.pi.reservePiData.bind(sources.pi), prepare = sources.pi.piPreparation.bind(sources.pi);
+  let held: ReturnType<typeof sources.pi.piPreparation>, calls = 0, pinnedBytes = 0;
+  sources.pi.piPreparation = (...args) => held = prepare(...args);
+  sources.pi.reservePiData = (ticket, bytes) => {
+    if (++calls === 2) { sources.pi.remove(d.key); pinnedBytes = ticket.budget.stats().retainedBytes; }
     return reserve(ticket, bytes);
   };
   assert.equal(requestSyntax(client, d, highlight).outcome, 'stale');
   assert.equal(calls, 2); assert.ok(pinnedBytes > emptyBytes + 164, 'source ticket and inspected ANSI coexist during callback');
   assert.equal(held?.text, undefined); assert.equal(held?.budget.stats().retainedBytes, emptyBytes);
-  assert.equal(held?.budget.stats().outstandingPeakBytes, 0); assert.equal(resolveSyntax(sources, d).pi, undefined);
+  assert.equal(held?.budget.stats().outstandingPeakBytes, 0); assert.equal(resolveSyntax(sources, sources.pi, d).pi, undefined);
 });
 
 
@@ -833,9 +835,9 @@ test('syntax work legal SOURCE restart_required recovers parser independently of
   await host.answer(2, '');
   assert.equal(host.calls.length, 4); assert.equal(host.calls[3]?.request.op, 'stream.open');
   assert.equal(sources.stats().restarts, 1);
-  assert.equal(resolveSyntax(sources, next).needsPi, false);
+  assert.equal(resolveSyntax(sources, sources.pi, next).needsPi, false);
   await host.answer(3, next.text, false);
-  assert.equal(resolveSyntax(sources, next).nativeExact, true);
+  assert.equal(resolveSyntax(sources, sources.pi, next).nativeExact, true);
   assert.equal(calls, 0); assert.equal(host.calls.length, 4);
 });
 
@@ -873,8 +875,8 @@ test('syntax work Pi classifies only its scalar-safe prefix and aliases the uncl
   const before = sources.stats();
   assert.equal(requestSyntax(client, { ...first, version: 2, text: prefix + 'other tail' }, classify).outcome, 'pi');
   assert.deepEqual(seen, [prefix]); assert.equal(sources.stats().preparedBytes, before.preparedBytes);
-  assert.equal(sources.borrowPiSource(first.key)?.text, prefix);
-  assert.equal(sources.piProjection(first.key, 2, 1)?.sourceBytes, 8192);
+  assert.equal(sources.pi.borrowPiSource(first.key)?.text, prefix);
+  assert.equal(sources.pi.piProjection(first.key, 2, 1)?.sourceBytes, 8192);
   requestSyntax(client, { ...first, version: 3, text: 'y' + first.text.slice(1) }, classify);
   assert.equal(seen.length, 2);
  });
@@ -895,5 +897,37 @@ test('syntax work saturation finalizes an existing native stream without claimin
   assert.equal(sources.stats().remoteLeases, 0);
   assert.equal(sources.borrowSource(first.key)?.text, prefix);
   assert.equal(sources.status(first.key)?.committedBytes, 65536);
-  assert.equal(resolveSyntax(sources, latest).nativeExact, true); // Exact submitted source only.
+  assert.equal(resolveSyntax(sources, sources.pi, latest).nativeExact, true); // Exact submitted source only.
+});
+
+test('syntax work cached Pi remains usable under queued and held native authority without another attempt', () => {
+  const { client, sources, host } = fixture(), d = demand();
+  const capture = sources.pi.capturePiSource.bind(sources.pi);
+  let captures = 0, classifications = 0;
+  sources.pi.capturePiSource = (...args) => { captures++; return capture(...args); };
+  const classify = (text: string) => { classifications++; return highlight(text); };
+  assert.equal(requestSyntax(client, d, classify).outcome, 'pi');
+  assert.equal(captures, 1); assert.equal(classifications, 1);
+
+  host.ready = true;
+  assert.equal(requestSyntax(client, d, classify).outcome, 'pi');
+  assert.equal(sources.workStatus(d.key).fallbackEligible, false);
+  assert.equal(captures, 1); assert.equal(classifications, 1);
+  sources.flush();
+  assert.equal(host.calls.length, 1);
+  assert.equal(sources.workStatus(d.key).execution, 'unsettled');
+  const held = sources.stats();
+  assert.equal(held.unsettledJobs, 1); assert.equal(held.captures, 1);
+  for (let index = 0; index < 20; index++) {
+    assert.equal(requestSyntax(client, d, classify).outcome, 'pi');
+    assert.equal(sources.workStatus(d.key).fallbackEligible, false);
+  }
+  const after = sources.stats();
+  assert.equal(captures, 1); assert.equal(classifications, 1); assert.equal(host.calls.length, 1);
+  assert.equal(after.unsettledJobs, held.unsettledJobs); assert.equal(after.captures, held.captures);
+  assert.equal(after.transientBytes, held.transientBytes);
+  assert.equal(after.globalUnsettledJobs, held.globalUnsettledJobs);
+  assert.equal(after.globalTransientBytes, held.globalTransientBytes);
+  assert.equal(after.bookkeepingBytes, held.bookkeepingBytes);
+  assert.equal(after.retention.retainedBytes, held.retention.retainedBytes);
 });

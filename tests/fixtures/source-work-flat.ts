@@ -39,7 +39,7 @@ function project(sources: SourceExecution, resolution: SyntaxResolution, width: 
     return undefined;
   }
   if (resolution.pi) {
-    const source = sources.borrowPiSource(resolution.key), projection = resolution.pi;
+    const source = sources.pi.borrowPiSource(resolution.key), projection = resolution.pi;
     if (source?.generation !== projection.generation || source.version !== resolution.version) return undefined;
     const styles: AnsiStyle[] = [];
     if (!projection.visitStyles((index, style) => { styles[index] = compileStyleAnsi(style, 'truecolor'); })) return undefined;

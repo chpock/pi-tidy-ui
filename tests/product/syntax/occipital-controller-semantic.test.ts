@@ -376,16 +376,16 @@ test('controller volume limits: negotiated DATA reply refusal retains unknown so
 test('controller volume limits: Pi storage accepts only actual8KiB prefixes and warm versions do not rescan', async () => {
   const peer = new Peer(), owner = new SourceExecution(peer), text = 'é'.repeat(4096);
   try {
-    assert.equal(owner.capturePiSource('pi', 1, text), true);
-    assert.equal(owner.borrowPiSource('pi')!.text, text);
-    assert.equal(owner.capturePiSource('over', 1, text + 'x'), false);
-    assert.equal(owner.borrowPiSource('over'), undefined);
+    assert.equal(owner.pi.capturePiSource('pi', 1, text), true);
+    assert.equal(owner.pi.borrowPiSource('pi')!.text, text);
+    assert.equal(owner.pi.capturePiSource('over', 1, text + 'x'), false);
+    assert.equal(owner.pi.borrowPiSource('over'), undefined);
     owner.observe(demand({ text }));
     const charCodeAt = String.prototype.charCodeAt;
     let visits = 0;
     String.prototype.charCodeAt = function (index) { if (String(this) === text) visits++; return charCodeAt.call(this, index); };
     try {
-      for (let i = 0; i < 20; i++) { owner.observe(demand({ text })); owner.capturePiSource('pi', 1, text); }
+      for (let i = 0; i < 20; i++) { owner.observe(demand({ text })); owner.pi.capturePiSource('pi', 1, text); }
     } finally { String.prototype.charCodeAt = charCodeAt; }
     assert.equal(visits, 0);
   } finally { await cleanup(owner, peer); }

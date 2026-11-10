@@ -1,4 +1,5 @@
 import { diagnose, reportRuntime } from '../diagnostics.ts';
+import type { PiFallbackPort } from '../highlighting/pi-fallback.ts';
 import { SyntaxClient, type SyntaxClientOptions } from './syntax-client.ts';
 import { type SyntaxMenuOwner } from './syntax-menu.ts';
 import type { ThemePreference } from '../appearance/theme-preference.ts';
@@ -53,6 +54,7 @@ export class SyntaxRuntime implements SyntaxMenuOwner {
 
   get cardSource(): CardSourcePort { return this.client.cardSource; }
   get sourceWork(): SourceWorkPort { return this.client.sourceWork; }
+  get pi(): PiFallbackPort { return this.client.pi; }
   get sourceLifecycle(): SourceLifecyclePort { return this.client.sourceLifecycle; }
   get sourcePump(): SourcePumpPort { return this.client.sourcePump; }
   get sourceStatistics(): SourceStatisticsPort { return this.client.sourceStatistics; }

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { preparePiFlat } from '../../src/syntax/pi-flat.ts';
+import { preparePiFlat } from '../../src/highlighting/pi-flat.ts';
 import type { ConcreteStyle } from '../../src/appearance/style-materialization.ts';
 import type { SemanticRetentionPool } from '../../src/highlighting/storage/semantic-retention.ts';
 import type { SourceExecution } from '../../src/highlighting/source-execution.ts';
@@ -27,11 +27,11 @@ export function projectionRanges(pool: SemanticRetentionPool, generation: number
   const ranges: number[][] = []; assert.equal(visitProjection(pool, generation, (...range) => ranges.push(range)), true); return ranges;
 }
 export function installControllerProjection(source: SourceExecution, key: string, generation: number, version: number, text: string, palette: number, rows: readonly string[]) {
-  const ticket = source.piPreparation(key, generation, version, palette); if (!ticket) return false;
+  const ticket = source.pi.piPreparation(key, generation, version, palette); if (!ticket) return false;
   try {
-    const result = preparePiFlat(text, consume => { rows.forEach((line, index) => consume(index, line)); return true; }, piNeutral, ticket.budget, bytes => source.reservePiData(ticket, bytes));
+    const result = preparePiFlat(text, consume => { rows.forEach((line, index) => consume(index, line)); return true; }, piNeutral, ticket.budget, bytes => source.pi.reservePiData(ticket, bytes));
     if (result.outcome !== 'ready') return false;
     const staged = result.projection.stage(); assert.ok(staged);
-    return source.adoptPiFlat(ticket, text, staged);
+    return source.pi.adoptPiFlat(ticket, text, staged);
   } finally { ticket.release(); }
 }

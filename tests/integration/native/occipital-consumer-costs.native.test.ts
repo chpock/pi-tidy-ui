@@ -220,7 +220,7 @@ test('current consumer geometry: actual CardSources SDK preparation warm theme w
   try {
     await awaitFixture(broker.start()); let selected = resolveTheme({ kind: 'theme', id: 'gruvbox', variant: 'dark' }).effective;
     const ui = new UI(); themes.initTheme('dark', false);
-    adapter = installTidyUi(ui, () => themes.theme, { syntax: { client: { cardSource: owner, sourceWork: owner, sourcePump: owner, sourceStatistics: owner, snapshot: () => ({ enabled: true,
+    adapter = installTidyUi(ui, () => themes.theme, { syntax: { client: { cardSource: owner, sourceWork: owner, pi: owner.pi, sourcePump: owner, sourceStatistics: owner, snapshot: () => ({ enabled: true,
       selected: { kind: 'theme', id: selected.id.replace(/-dark$/u, ''), variant: 'dark' }, effective: selected, standaloneVersion: 'test', provider: broker.snapshot() }) },
       palette: () => revision, classify: () => assert.fail('ready native sources must not use Pi classifier') } });
     assert.equal(adapter.active, true, adapter.reason);

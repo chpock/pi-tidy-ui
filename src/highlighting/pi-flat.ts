@@ -1,4 +1,4 @@
-import type { PiProjectionPayload, StagedPiProjection } from '../highlighting/storage/pi-projection.ts';
+import type { PiProjectionPayload, StagedPiProjection } from './storage/pi-projection.ts';
 import { DataBudget, type DataCharge, type DataGrant } from '../resources/data-budget.ts';
 import { OCCIPITAL_LIMITS } from '../occipital/limits.ts';
 import type { LiteralInk } from '../occipital/style-types.ts';

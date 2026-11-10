@@ -5,6 +5,7 @@ import { contextRows, fileDiagnosticText, fileHeading, fileSources, readHeading,
 import type { BashToolReader, FileToolReader, ToolDiagnosticsIdentity } from '../tool-adapters/contracts.ts';
 import { CONTROLLER_LIMITS } from '../highlighting/controller-limits.ts';
 import type { CardSourcePort, GroupDisplayBasis, SourceDisplayBasis } from '../highlighting/source-ports.ts';
+import type { PiFallbackPort } from '../highlighting/pi-fallback.ts';
 import type { SourceWorkGroup } from '../highlighting/work-registry.ts';
 import type { GeometryFunding } from '../resources/data-budget.ts';
 import { type DataCharge, type DataCleanupReceipt } from '../resources/data-budget.ts';
@@ -425,7 +426,7 @@ export class CardSources<Owner extends object> {
       || state.preparedPalette !== this.inputIdentity(this.currentPalette(state), state.input!)) return true;
     for (const slot of state.slots.values()) {
       if (slot.awaitingProvider && this.requiresCredit() || slot.fallback === 'pi' &&
-        (newest || slot.outcome === 'waiting') && resolveSyntax(this.client.sourceWork, slot).needsPi) return true;
+        (newest || slot.outcome === 'waiting') && resolveSyntax(this.client.sourceWork, this.client.pi, slot).needsPi) return true;
       // Every eligible Pi FILE needs its first native SOURCE; retained semantic
       // SOURCE on compatible recovery must not be reclassified.
       if (state.input?.kind === 'file' && slot.outcome === 'pi' && !this.client.cardSource.borrowSource(slot.key)
@@ -468,7 +469,7 @@ export class CardSources<Owner extends object> {
       if (!this.owned(owner, state, ticket)) continue;
       this.refreshPaint(owner, state);
       if (!state.paused && !state.frozen && state.useful && state.paint?.origin !== 'owned') {
-        for (const slot of state.slots.values()) if (resolveSyntax(this.client.sourceWork, slot).needsPi) {
+        for (const slot of state.slots.values()) if (resolveSyntax(this.client.sourceWork, this.client.pi, slot).needsPi) {
           this.enqueue(ticket, true); break;
         }
       }
@@ -553,7 +554,7 @@ export class CardSources<Owner extends object> {
     // Ready projections change paint when their generation, revision, or palette changes.
     // File slot-version eligibility is tracked separately for both Pi and owned palettes.
     const effects = `${input.mode}:${Array.from(state.slots.values(), s => {
-      const p = this.client.cardSource.piProjection(s.key, s.version, s.palette);
+      const p = this.client.pi.piProjection(s.key, s.version, s.palette);
       return p ? `${p.generation}/${p.revision}/${p.palette}` : '';
     }).filter(Boolean).join(',')}`;
     const eligibility = input.kind === 'file' ? `${state.version}:${Array.from(state.slots.values(), slot =>
@@ -585,7 +586,7 @@ export class CardSources<Owner extends object> {
       for (const role of CARD_ROLES) { const style = roles[role]; add(style); compiled[role] = table.get(style)!.normal; }
       const piTokens = new Map<string, Map<number, ConcreteStyle>>();
       if (!isOwned) for (const slot of state.slots.values()) {
-        const projection = slot.palette === input.palette ? this.client.cardSource.piProjection(slot.key, slot.version, slot.palette) : undefined; if (!projection) continue;
+        const projection = slot.palette === input.palette ? this.client.pi.piProjection(slot.key, slot.version, slot.palette) : undefined; if (!projection) continue;
         const entries = new Map<number, ConcreteStyle>();
         if (!projection.visitStyles((i, style) => { add(style); entries.set(i, style); })) return;
         piTokens.set(slot.key, entries);
@@ -605,7 +606,7 @@ export class CardSources<Owner extends object> {
         compile(roles, consume => group.visitStyles(consume));
       } else if (paletteReady && state.paletteInput) state.paletteInput.visit(read => {
         compile(read.roles, consume => { for (const role of CARD_ROLES) consume(read.roles[role]);
-          if (!isOwned) for (const slot of state.slots.values()) { const projection = this.client.cardSource.piProjection(slot.key, slot.version, slot.palette); if (projection && !projection.visitStyles((_i, style) => consume(style))) return false; }
+          if (!isOwned) for (const slot of state.slots.values()) { const projection = this.client.pi.piProjection(slot.key, slot.version, slot.palette); if (projection && !projection.visitStyles((_i, style) => consume(style))) return false; }
           return read.isValid; }, read.compiledRoles);
       }, funding.grant);
       if (!next || !this.owned(owner, state, ticket) || state.mutation !== mutation || state.input !== input || state.paint !== previous) return false;
@@ -634,7 +635,7 @@ export class CardSources<Owner extends object> {
     const state = this.states.get(owner), display = state?.display, paint = state?.paint, charge = state?.charge;
     if (this.disposed || !state || !display || !paint || !charge) return false;
     const mutation = state.mutation;
-    const scoped = cardVisit(display, paint, state, this.client.cardSource,
+    const scoped = cardVisit(display, paint, state, this.client.cardSource, this.client.pi,
       () => !this.disposed && this.states.get(owner) === state && state.mutation === mutation && state.paint === paint);
     charge.retain(); paint.charge.retain();
     try {
@@ -710,7 +711,7 @@ function matchesFileBasis(basis: SourceDisplayBasis | undefined, slot: Slot): ba
 
 // Clear every payload holder on unwind. Escaped accessors retain neither owner nor display data.
 function cardVisit(display: PreparedCard | undefined, paint: Compiled | undefined, state: State | undefined,
-  sources: CardSourcePort | undefined, current: (() => boolean) | undefined) {
+  sources: CardSourcePort | undefined, piFallback: PiFallbackPort | undefined, current: (() => boolean) | undefined) {
   const valid = () => !!current?.();
   const stale = () => { if (!valid()) throw new Error('stale card visit'); };
   const ranges = (key: string, surface?: 'added' | 'removed' | 'context'): FlatRangeReader | undefined => {
@@ -738,7 +739,7 @@ function cardVisit(display: PreparedCard | undefined, paint: Compiled | undefine
       if (result || paint!.origin === 'owned') return result;
     }
     if (paint!.origin === 'owned') return undefined;
-    const projection = paint!.piTokens.has(key) ? sources!.piProjection(key, slot.version, slot.palette) : undefined;
+    const projection = paint!.piTokens.has(key) ? piFallback?.piProjection(key, slot.version, slot.palette) : undefined;
     return projection ? wrap(cb => projection.visitRanges((a, b, i) => {
       if (!valid()) return; const style = paint!.piTokens.get(key)?.get(i); if (style) cb(a, b, style);
     })) : undefined;
@@ -752,5 +753,5 @@ function cardVisit(display: PreparedCard | undefined, paint: Compiled | undefine
       if (display!.kind === 'file' && (!slot || !matchesFileBasis(basis, slot))) return false;
       const read = ranges(key);
       return !!basis && !!read && basis.visit(text => { if (valid()) callback(text, read); }) && valid(); } });
-  return { display: readDisplay, paint: readPaint, valid, clear() { display = paint = state = sources = current = undefined; } };
+  return { display: readDisplay, paint: readPaint, valid, clear() { display = paint = state = sources = piFallback = current = undefined; } };
 }

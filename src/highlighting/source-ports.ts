@@ -1,10 +1,8 @@
 import type { CardRole } from '../appearance/card-roles.ts';
 import type { ProviderSnapshot } from '../occipital/provider.ts';
 import type { ConcreteStyle } from '../appearance/style-materialization.ts';
-import type { DataGrant, GeometryFunding } from '../resources/data-budget.ts';
+import type { GeometryFunding } from '../resources/data-budget.ts';
 import type { StyleSelection } from './controller-styles.ts';
-import type { StagedPiProjection } from './storage/pi-projection.ts';
-import type { PiPreparation } from './storage/pi-projection.ts';
 import type { SourcePreparation, SourceWorkGroup } from './work-registry.ts';
 
 export interface SourceDemand {
@@ -121,19 +119,10 @@ export interface SourceWorkPort {
   displayBasis(key: string): SourceDisplayBasis | undefined;
   displayStamp(key: string): number;
   visitRanges(key: string, consume: (start: number, end: number, style: ConcreteStyle) => void): boolean;
-  borrowPiSource(key: string): BorrowedPiSource | undefined;
-  capturePiSource(key: string, version: number, text: string, language?: string): boolean;
-  piPreparation(key: string, generation: number, version: number, palette: number): PiPreparation | undefined;
-  reservePiData(ticket: PiPreparation, additionalPeak: number): DataGrant | undefined;
-  adoptPiFlat(ticket: PiPreparation, text: string, staged: StagedPiProjection, styleDirectives?: boolean): boolean;
-  piRefusal(key: string, version: number, palette: number): boolean;
-  piFailure(key: string, version: number, palette: number): PiFailure | undefined;
-  recordPiFailure(key: string, generation: number, version: number, palette: number, failure: PiFailure): boolean;
-  piProjection(key: string, version: number, palette: number): PiProjectionReader | undefined;
 }
 
 /** Operations used by the card preparation and paint consumer. */
-export interface CardSourcePort extends Pick<SourceWorkPort, 'workStatus' | 'borrowSource' | 'piProjection' | 'displayBasis'> {
+export interface CardSourcePort extends Pick<SourceWorkPort, 'workStatus' | 'borrowSource' | 'displayBasis'> {
   geometryFunding(group?: SourceWorkGroup): GeometryFunding | undefined;
   registerPreparation(preparation: SourcePreparation): SourceWorkGroup | undefined;
   updatePreparation(group: SourceWorkGroup): boolean;

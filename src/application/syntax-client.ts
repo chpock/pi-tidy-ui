@@ -3,6 +3,7 @@ import { copyThemePreference, sameThemePreference, type ThemePreference } from '
 import { ExtensionSettings, themePatch } from '../settings.ts';
 import { SourceExecution, type SourceExecutionOptions } from '../highlighting/source-execution.ts';
 import type { CardSourcePort, SourceLifecyclePort, SourcePumpPort, SourceStatisticsPort, SourceWorkPort } from '../highlighting/source-ports.ts';
+import type { PiFallbackPort } from '../highlighting/pi-fallback.ts';
 import type { SyntaxMenuOutcome, SyntaxMenuOwner, SyntaxMenuSnapshot } from './syntax-menu.ts';
 import { resolveTheme, type ThemeDescription } from '../themes/selection.ts';
 import { ProviderBroker, type ProviderOptions, type ProviderSnapshot } from '../occipital/provider.ts';
@@ -64,6 +65,7 @@ export class SyntaxClient implements SyntaxMenuOwner {
   readonly broker: ProviderBroker;
   readonly cardSource: CardSourcePort;
   readonly sourceWork: SourceWorkPort;
+  readonly pi: PiFallbackPort;
   readonly sourceLifecycle: SourceLifecyclePort;
   readonly sourcePump: SourcePumpPort;
   readonly sourceStatistics: SourceStatisticsPort;
@@ -104,7 +106,8 @@ export class SyntaxClient implements SyntaxMenuOwner {
       onOwnedStopped: ownedStopObserver(new WeakRef(this)) });
     this.provider = this.broker.snapshot();
     const execution = new SourceExecution(this.broker, { ...options.source, diagnostic: options.diagnostic ?? options.source?.diagnostic, onChange: sourceObserver(new WeakRef(this)) });
-    this.cardSource = execution; this.sourceWork = execution; this.sourceLifecycle = execution; this.sourcePump = execution; this.sourceStatistics = execution;
+    this.cardSource = execution; this.sourceWork = execution; this.pi = execution.pi;
+    this.sourceLifecycle = execution; this.sourcePump = execution; this.sourceStatistics = execution;
     this.sourceLifecycle.setEnabled(false);
   }
 

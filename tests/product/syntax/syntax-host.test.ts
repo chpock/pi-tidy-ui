@@ -1,3 +1,4 @@
+import { PiFallbackCoordinator } from '../../../src/highlighting/pi-fallback.ts';
 import '../../fixtures/test-guard.mjs';
 import { isDeferredStockEditComponent, isDeferredStockFileCall, isDeferredStockFilePair } from '../../../src/syntax/lazy-native-renderers.ts';
 import { hostCells, hasHostInk } from '../../fixtures/host-cells.ts';
@@ -80,10 +81,10 @@ function fixture(ready = false, useDefaultClassifier = false, options: Pick<Tidy
   };
   let adapter: TidyUiController, toolIdentity = 0;
   const sources = new SourceExecution(provider, { retention, diagnostic: options.diagnostic, onChange: (keys, groups) => adapter.syntaxSourceChanged(keys, groups) });
-  const observe = sources.observe.bind(sources), capture = sources.capturePiSource.bind(sources);
+  const observe = sources.observe.bind(sources), capture = sources.pi.capturePiSource.bind(sources.pi);
   sources.observe = (...args) => { assert.equal(env.depth, 0, 'no native source preparation in render'); env.observes++; env.keys.push(args[0].key); return observe(...args); };
-  sources.capturePiSource = (...args) => { assert.equal(env.depth, 0, 'no Pi source preparation in render'); env.captures++; env.capturedKeys.push(args[0]); return capture(...args); };
-  const client: NonNullable<TidyUiOptions['syntax']>['client'] = { cardSource: sources, sourceWork: sources, sourcePump: sources, sourceStatistics: sources, snapshot: () => {
+  sources.pi.capturePiSource = (...args) => { assert.equal(env.depth, 0, 'no Pi source preparation in render'); env.captures++; env.capturedKeys.push(args[0]); return capture(...args); };
+  const client: NonNullable<TidyUiOptions['syntax']>['client'] = { cardSource: sources, sourceWork: sources, pi: sources.pi, sourcePump: sources, sourceStatistics: sources, snapshot: () => {
     assert.equal(env.depth, 0, 'no work metadata read in render'); env.reads++;
     return { enabled: env.enabled, provider: provider.snapshot(), standaloneVersion: 'test', selected: env.selected, effective: resolveTheme(env.selected).effective };
   } };
@@ -586,7 +587,7 @@ test('host pause preserves held-work veto; remove/clear/restore release source o
   assert.equal(f.sources.workStatus(key).fallbackEligible, false); assert.equal(f.env.pi.length, 0);
   f.sources.ownedStopped(1); await settled(); assert.equal(f.env.pi.length, 0);
   tool.hideComponent = false; f.render(tool); await settled(); assert.deepEqual(f.env.pi, ['x']);
-  f.ui.removeChild(tool); assert.equal(f.sources.borrowPiSource(key), undefined);
+  f.ui.removeChild(tool); assert.equal(f.sources.pi.borrowPiSource(key), undefined);
   const pending = written(f, 'pending'); f.render(pending); f.ui.clear(); await settled(); assert.deepEqual(f.env.pi, ['x']);
   const live = written(f, 'live'); f.render(live); await settled(); assert.equal(f.sources.stats().piSourceRecords, 1);
   f.adapter.restore(); assert.equal(f.sources.stats().piSourceRecords, 0);
@@ -595,8 +596,8 @@ test('host pause preserves held-work veto; remove/clear/restore release source o
 
 test('host reentrant classification removal cannot publish source or resurrect a node', async () => {
   const f = fixture(), tool = written(f, 'x');
-  const capture = f.sources.capturePiSource.bind(f.sources);
-  f.sources.capturePiSource = (...args) => { f.ui.removeChild(tool); return capture(...args); };
+  const capture = f.sources.pi.capturePiSource.bind(f.sources.pi);
+  f.sources.pi.capturePiSource = (...args) => { f.ui.removeChild(tool); return capture(...args); };
   f.render(tool); await settled(); assert.equal(f.sources.stats().piSourceRecords, 0);
   assert.equal(f.adapter.cacheStats().entries, 0);
 });
@@ -1671,7 +1672,7 @@ test('prepared host palette refresh is weakly guarded after restore and the exte
   f.adapter.restore(); f.env.poisonPi = true;
   await settled();
   assert.equal(disposals, 0, 'adapter restoration never disposes its supplied client root');
-  assert.equal(f.sources.capturePiSource('caller-after-restore', 1, 'const usable=2;', 'typescript'), true);
+  assert.equal(f.sources.pi.capturePiSource('caller-after-restore', 1, 'const usable=2;', 'typescript'), true);
   assert.equal(f.adapter.active, false);
 });
 
@@ -1841,7 +1842,7 @@ test('host renderer transfer: retiring an old subtree preserves a descendant alr
   f.document(); await settled(); const before = f.render(a), key = f.env.capturedKeys[f.env.pi.indexOf('const TRANSFER_A = 1;')]!, calls = f.env.pi.length;
   f.ui.clear(); f.ui.addChild(a); await settled();
   assert.deepEqual(f.render(a), before); assert.equal(f.sources.stats().piSourceRecords, 1);
-  assert.ok(f.sources.borrowPiSource(key)); assert.equal(f.env.pi.length, calls);
+  assert.ok(f.sources.pi.borrowPiSource(key)); assert.equal(f.env.pi.length, calls);
   branch.removeChild(a); assert.deepEqual(f.render(a), before);
   f.ui.removeChild(a); assert.equal(f.sources.stats().piSourceRecords, 0, 'ordinary removal remains synchronous');
 });

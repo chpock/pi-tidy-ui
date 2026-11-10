@@ -12,6 +12,9 @@ const sourceTypes = [ts.ScriptKind.TS, ts.ScriptKind.TSX, ts.ScriptKind.TS, ts.S
   ts.ScriptKind.JS, ts.ScriptKind.JSX, ts.ScriptKind.JS, ts.ScriptKind.JS];
 const highlightingModules = [
   'src/highlighting/source-execution.ts',
+  'src/highlighting/pi-fallback.ts',
+  'src/highlighting/pi-flat.ts',
+  'src/highlighting/card-publication.ts',
   'src/highlighting/source-ports.ts',
   'src/highlighting/work-registry.ts',
   'src/highlighting/style-preparation.ts',
@@ -287,6 +290,19 @@ function assertHighlightingDependency(edge) {
   }
 }
 
+function assertRegistryDependency(edge) {
+  if (edge.source !== 'src/highlighting/work-registry.ts') return;
+  const target = edge.target;
+  const domain = ['src/resources/', 'src/appearance/', 'src/occipital/', 'src/application/',
+    'src/syntax/', 'src/themes/', 'src/tool-adapters/', 'src/highlighting/storage/'].some(prefix => target.startsWith(prefix))
+    || ['src/highlighting/source-execution.ts', 'src/highlighting/source-ports.ts',
+      'src/highlighting/controller-styles.ts', 'src/highlighting/style-preparation.ts',
+      'src/highlighting/pi-fallback.ts', 'src/highlighting/pi-flat.ts', 'src/highlighting/card-publication.ts',
+      'src/highlighting/controller-limits.ts', 'src/highlighting/limits.ts'].includes(target)
+    || presentationAndPayloadFiles.has(target);
+  if (domain) throw new Error(`chronological registry imports source, style, storage or presentation ownership: ${edgeKey(edge)}`);
+}
+
 function assertStorageDependency(edge) {
   if (!edge.source.startsWith('src/highlighting/storage/')) return;
   const allowed = edge.target.startsWith('src/highlighting/storage/')
@@ -299,6 +315,7 @@ function assertStorageDependency(edge) {
 }
 
 function assertEdgePolicy(edge) {
+  assertRegistryDependency(edge);
   assertStorageDependency(edge);
   assertNativeDependency(edge);
   assertHighlightingDependency(edge);
@@ -527,4 +544,22 @@ test('retained storage imports only its shared resource, model and wire-data lea
     }
     for (const target of allowed) assert.doesNotThrow(() => assertEdgePolicy({ source, target, kind }));
   }
+});
+
+test('chronological registry rejects domain ownership through type and value dependencies', () => {
+  const source = 'src/highlighting/work-registry.ts';
+  const forbidden = ['src/resources/data-budget.ts', 'src/appearance/card-roles.ts',
+    'src/occipital/provider.ts', 'src/application/syntax-client.ts', 'src/syntax/cards.ts',
+    'src/highlighting/storage/semantic-retention.ts', 'src/highlighting/source-execution.ts',
+    'src/highlighting/source-ports.ts', 'src/highlighting/controller-styles.ts',
+    'src/highlighting/style-preparation.ts', 'src/highlighting/pi-fallback.ts',
+    'src/highlighting/pi-flat.ts', 'src/highlighting/card-publication.ts',
+    'src/highlighting/controller-limits.ts', 'src/highlighting/limits.ts'];
+  for (const target of forbidden) {
+    for (const kind of ['type-only', 'value', 'mixed']) {
+      assert.throws(() => assertEdgePolicy({ source, target, kind }), /chronological registry imports/);
+    }
+  }
+  assert.doesNotThrow(() => assertEdgePolicy({ source: 'src/highlighting/source-execution.ts',
+    target: 'src/resources/data-budget.ts', kind: 'value' }));
 });

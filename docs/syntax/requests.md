@@ -86,7 +86,7 @@ A validated remote `RemoteFault` carries the correlated operation’s execution 
 
 Transport ending is another question. The first `lost`, `closed`, `uncertain` or `denied` origin controls provider recovery. In particular, the shared SDK’s pending-request `connection_lost` wrapper can cover either EOF or a local read timeout, so that wrapper alone is treated as uncertain. Typed socket/stale-route evidence and public route-close reasons are handled separately; error-message text is never a recovery signal.
 
-Finally, the [source controller](work.md) combines these outcomes with all still-held jobs and previous unknown-work guards. That is the only place where “may use Pi fallback now” is decided.
+Finally, `SourceExecution` in the [work controller](work.md) combines these outcomes with all still-held jobs and previous unknown-work guards. It alone decides whether a Pi fallback attempt is permitted; the separate Pi coordinator performs no permission inference.
 
 ## Protocol and resources
 

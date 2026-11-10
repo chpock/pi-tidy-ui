@@ -347,7 +347,7 @@ function realCards() {
     getBgAnsi(role: Parameters<typeof theme.getBgAnsi>[0]) { samples++; return theme.getBgAnsi(role); }, counters: () => ({ foreground: 0, background: 0 }) };
   runtime.palette(sampled);
   const effective = resolveTheme({ kind: 'pi', variant: 'dark' }).effective;
-  const cards = new CardSources<object>({ cardSource: sources, sourceWork: sources, snapshot: () => ({ enabled: true, provider: provider.snapshot(), selected: { kind: 'pi', variant: 'dark' },
+  const cards = new CardSources<object>({ cardSource: sources, sourceWork: sources, pi: sources.pi, snapshot: () => ({ enabled: true, provider: provider.snapshot(), selected: { kind: 'pi', variant: 'dark' },
     effective, standaloneVersion: 'test' }) },
   { preparePaletteInput: (palette, revision, mode, f) => runtime.preparePaletteInput(palette, sampled, revision, mode, f),
     classify: text => { classifications++; return highlightCode(text, 'typescript'); }, invalidate() {}, requestRender() {} });
@@ -532,7 +532,7 @@ test('card layout: actual card demand and controller lookups are linear across n
     const source = new SourceExecution(provider, { onChange(keys, groups) { cards.sourceChanged(keys, groups); } }), owner = {};
     const paletteOwner = new PaletteInputOwner(), effective = resolveTheme({ kind: 'theme', id: 'gruvbox', variant: 'dark' }).effective;
     const paletteRevision = paletteOwner.palette(undefined, effective);
-    const cards = new CardSources<object>({ cardSource: source, sourceWork: source, snapshot: () => ({ enabled: true, provider: provider.snapshot(), selected: { kind: 'theme', id: 'gruvbox', variant: 'dark' },
+    const cards = new CardSources<object>({ cardSource: source, sourceWork: source, pi: source.pi, snapshot: () => ({ enabled: true, provider: provider.snapshot(), selected: { kind: 'theme', id: 'gruvbox', variant: 'dark' },
       effective, standaloneVersion: 'test' }) },
     { preparePaletteInput: (palette, revision, mode, funding) => paletteOwner.prepare(undefined, palette, revision, mode, funding),
       classify: () => assert.fail('owned-palette card classified with Pi'), invalidate() {}, requestRender() {} });
@@ -674,7 +674,7 @@ test('card layout: ordered card demand reuse retires absent FILE keys and preser
     assert.equal(f.cards.visit(owner, (_d, p) => {
       assert.equal(p.origin, 'pi');
       for (const item of current) { let ranges = 0; assert.equal(p.ranges(item.key)!(() => { ranges++; }), true); assert.ok(ranges); }
-      for (const item of original.slice(2)) { assert.equal(p.ranges(item.key), undefined); assert.equal(f.sources.piProjection(item.key, item.version, item.palette), undefined); }
+      for (const item of original.slice(2)) { assert.equal(p.ranges(item.key), undefined); assert.equal(f.sources.pi.piProjection(item.key, item.version, item.palette), undefined); }
     }), true);
     const stable = f.counters();
     for (let i = 0; i < 20; i++) assert.equal(f.cards.visit(owner, (_d, p) => {

@@ -89,7 +89,7 @@ function fixture(ready = false, options: SourceExecutionOptions = {}, maxBookkee
     for (const reference of owners) if (reference.deref() === owner) return;
     owners.add(new WeakRef(owner));
   };
-  cards = new CardSources({ cardSource: sources, sourceWork: sources, snapshot: () => ({ enabled: env.enabled, provider: provider.snapshot(), selected: env.selected,
+  cards = new CardSources({ cardSource: sources, sourceWork: sources, pi: sources.pi, snapshot: () => ({ enabled: env.enabled, provider: provider.snapshot(), selected: env.selected,
     effective: resolveTheme(env.selected).effective, standaloneVersion: 'test' }) }, {
     preparePaletteInput: (palette, revision, mode, funding, usePiFallback) => {
       env.acquisitions++; if (env.denyPaletteInput) { env.deniedPaletteInputs++; return undefined; }
@@ -1107,8 +1107,8 @@ test('cards palette acquisition reentrant removal releases the returned funded l
 
 
 test('cards reentrant disposal during source capture cannot publish payload or revive keys', async () => {
-  const f = fixture(), owner = {}, capture = f.sources.capturePiSource.bind(f.sources);
-  f.sources.capturePiSource = (...args) => { f.cards.dispose(); return capture(...args); };
+  const f = fixture(), owner = {}, capture = f.sources.pi.capturePiSource.bind(f.sources.pi);
+  f.sources.pi.capturePiSource = (...args) => { f.cards.dispose(); return capture(...args); };
   f.use(owner, written('x')); await settle(); assert.deepEqual(f.cards.identities(owner), []);
   assert.equal(f.sources.stats().piSourceRecords, 0); assert.equal(f.cards.visit(owner, () => assert.fail('disposed')), false);
 });

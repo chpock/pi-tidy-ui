@@ -536,7 +536,7 @@ test('group presentation: eviction of historical member closes escaped roles eve
     // Keep the actual pressure-triggering Pi source within its classification quota.
     const pressure = 'z'.repeat(Math.floor((available + 512 - 1100) / 2));
     assert.ok(Buffer.byteLength(pressure) <= HIGHLIGHT_LIMITS.piSourceBytes);
-    assert.equal(owner.capturePiSource('pressure', 1, pressure), true);
+    assert.equal(owner.pi.capturePiSource('pressure', 1, pressure), true);
     assert.equal(owner.borrowSource('bash')?.version, 2, 'the current parser basis was not the pressure victim');
     assert.equal(owner.groupPresentation(group), undefined); assert.equal(old.role('panel'), undefined, 'evicted historical member must retire its complete palette receipt');
   } finally { filler?.release(); void preparation; await cleanup(owner, peer); }
@@ -621,6 +621,16 @@ test('group presentation: ready-style enumeration covers complete roles and all 
     const basis = owner.groupPresentation(c.group)!, table = new Set<ConcreteStyle>();
     assert.equal(basis.visitStyles(style => table.add(style)), true);
     for (const role of CARD_ROLES) assert.ok(table.has(basis.role(role)!));
+    const keyIterator = c.keys[Symbol.iterator]; let groupKeyScans = 0, scansAtFirstStyle = -1;
+    Object.defineProperty(c.keys, Symbol.iterator, { configurable: true, value: function* () { groupKeyScans++; yield* keyIterator.call(c.keys); } });
+    try {
+      assert.equal(basis.visitStyles(style => {
+        if (scansAtFirstStyle < 0) scansAtFirstStyle = groupKeyScans;
+        assert.ok(table.has(style));
+      }), true);
+      assert.equal(scansAtFirstStyle, 1, 'one ordered membership check precedes ready-style visitation');
+      assert.equal(groupKeyScans, 2, 'one final ordered membership check validates the outer borrow');
+    } finally { Reflect.deleteProperty(c.keys, Symbol.iterator); }
     assert.equal(basis.visit(member => {
       for (const key of c.keys) assert.equal(member(key)!.read((_from, _to, style) => assert.ok(table.has(style))), true);
     }), true);

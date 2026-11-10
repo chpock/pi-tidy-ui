@@ -28,7 +28,7 @@ host semantic update
 |---|---|---|
 | Runtime selection | Syntax runtime, provider broker, selected local palette and compatible available transport | [Providers](syntax/providers.md) |
 | Physical requests | Typed native operations, adapter correlation, descriptor/carrier validation, explicit consumer decode bounds and actual settlement | [Request adapters](syntax/requests.md) |
-| Useful source/style work | `SourceExecution` and its private `WorkRegistry`; joint source/job authority, chronological turns and card-group publication | [Work and execution](syntax/work.md) |
+| Useful source/style work | `SourceExecution` and its private `WorkRegistry`; joint source/job authority, canonical Pi permission, chronological turns and root-coordinated card publication | [Work and execution](syntax/work.md) |
 | Retained data | Grants/charges, text and semantic captures, context leases, styles and ready payloads | [Storage](syntax/storage.md) |
 | Card preparation and paint | `CardSources`, measured geometry, display signatures and borrowed accepted visits | [Prepared cards](syntax/prepared-cards.md) |
 | Follow Pi | Public color sampling, complete binding/semantic-rule tables, role-specific derivatives and typography | [Follow Pi reference](syntax/follow-pi.md) |
@@ -61,7 +61,7 @@ The [storage chapter](syntax/storage.md) defines vocabulary-qualified contexts a
 - **Text:** prepare current complete display, update bounded demand and measure genuinely changed geometry. Valid immutable prefix data is reusable only with its exact continuity proofs.
 - **Pending or unavailable Occipital work:** preserve compatible ready display; otherwise display full text in the selected palette's neutral roles. An owned palette remains available without classification and never borrows Pi syntax colors. If its bundled asset is invalid, use the complete Follow Pi input rather than a partial palette. An ordinary file may use a permitted exact public Pi SOURCE fallback, but Bash never does.
 
-`SourceExecution.workStatus` is the authority for fallback. Queued, running or uncertain native work prohibits duplicate Pi classification in the same installed owner. Missing colors, a successful STYLE result, cancellation, timeout or absent provider do not prove no parsing occurred. Read the full [fallback table](syntax/work.md#rendering-and-fallback), [request failure distinctions](syntax/requests.md) and [publication rules](syntax/prepared-cards.md).
+`SourceExecution.workStatus` is the authority for fallback permission. `PiFallbackCoordinator` owns Pi source records and performs the funded classification/projection transaction through the same execution root and retention pool; it cannot grant itself permission. Queued, running or uncertain native work prohibits duplicate Pi classification in the same installed owner. Missing colors, a successful STYLE result, cancellation, timeout or absent provider do not prove no parsing occurred. Read the full [fallback table](syntax/work.md#rendering-and-fallback), [request failure distinctions](syntax/requests.md) and [publication rules](syntax/prepared-cards.md).
 
 ## Lifecycles that must not be conflated
 

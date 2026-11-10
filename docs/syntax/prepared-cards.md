@@ -102,13 +102,13 @@ Output allocation is funded while pieces and joined rows coexist. Each emitted p
 
 ## Pi fallback becomes the same kind of paint input
 
-After `requestSyntax` obtains permission to call Pi, the returned rows are treated as external data. Their retained allocation is funded, then `preparePiFlat` in `src/syntax/pi-flat.ts` checks row sequence and visible text against the exact submitted source.
+After `requestSyntax` obtains permission to call Pi, it passes the classifier to the stable Pi capability owned by `SourceExecution`. `PiFallbackCoordinator` in `src/highlighting/pi-fallback.ts` performs the funded capture, classification and projection transaction. The returned rows are treated as external data; the pure `preparePiFlat` conversion in `src/highlighting/pi-flat.ts` checks row sequence and visible text against the exact ticket text.
 
 Every visible scalar must match. Row boundaries must correspond to source newlines. Malformed or unsupported escape sequences, changed text, missing rows or an invalid producer visit reject the whole candidate. The conversion does not normalize the classifier’s answer to make it fit.
 
 Accepted foregrounds and font state become immutable literal styles and byte ranges. Background controls are parsed but do not replace the supplied card surface. Detailed font/color interpretation belongs to [Follow Pi](follow-pi.md) and the [color model](../color-model.md).
 
-The result is staged and transferred to the root retention entry's `PiProjectionHolder` under the same logical-data budget; its ticket, payload and callback-held charge lifetimes are described in [storage](storage.md#latest-text-acknowledged-basis-and-displayed-text). The original ANSI rows are released. Rendering then uses the common painter, not a second ANSI-row rendering branch. Since these styles contain literal colors rather than reversible semantic scopes, a changed effective fallback palette may require a newly permitted classification. Width changes do not.
+The result is staged and adopted by the coordinator into the existing root retention entry's `PiProjectionHolder` under the same logical-data budget; no second pool or accounting authority is introduced. Ticket, payload and callback-held charge lifetimes are described in [storage](storage.md#latest-text-acknowledged-basis-and-displayed-text). The original ANSI rows are released. Rendering then uses the common painter, not a second ANSI-row rendering branch. Since these styles contain literal colors rather than reversible semantic scopes, a changed effective fallback palette may require a newly permitted classification. Width changes do not.
 
 ## Following one owner through its lifecycle
 

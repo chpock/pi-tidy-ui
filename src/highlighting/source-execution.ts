@@ -1,8 +1,8 @@
 import { concreteStyle, expectation, prepareSelection, selectionBytes, type PreparedSelection, type StyleRoles, type StyleSelection } from './controller-styles.ts';
-import { WorkRegistry, type GroupHold, type GroupMember, type GroupReady, type GroupReadyMember, type GroupSeal, type SourcePreparation, type SourceWorkGroup, type StyleAttempt, type WorkEntry as WorkEntryType, type WorkNode, type WorkTurnExecution } from './work-registry.ts';
+import { WorkRegistry, type SourcePreparation, type SourceWorkGroup, type WorkEntry as WorkEntryType, type WorkNode as WorkNodeType, type WorkTurnExecution } from './work-registry.ts';
+import { createCardPublicationMetadata, dropCardPublication, publishGroupReady, releaseGroupHold, visitGroupReady, type CardPublicationMetadata, type GroupHold, type GroupMember, type GroupReady, type GroupReadyMember, type GroupSeal } from './card-publication.ts';
+import { PiFallbackCoordinator } from './pi-fallback.ts';
 import { collectStyleContexts, estimateStyleRepresentation } from './style-preparation.ts';
-import type { StagedPiProjection } from './storage/pi-projection.ts';
-import { PiPreparation } from './storage/pi-projection.ts';
 import type { DataCharge, DataGrant, GeometryFunding } from '../resources/data-budget.ts';
 import type { ContextRef } from './storage/context-arena.ts';
 import { CARD_ROLES, type CardRole } from '../appearance/card-roles.ts';
@@ -15,7 +15,7 @@ import { RemoteFault } from '../occipital/protocol.ts';
 import { decodeSemanticClosed as decodeClosed, decodeSemanticSourceReply, SEMANTIC_PROTOCOL_VERSION as PROTOCOL_VERSION, type SemanticDescription as Description } from '../occipital/semantic-protocol.ts';
 import type { SemanticExpectation as ExpectedSource } from '../occipital/semantic-source.ts';
 import type { ConcreteStyle } from '../appearance/style-materialization.ts';
-import type { BorrowedPiSource, BorrowedSource, CardSourcePort, DisplayRangeReader, GroupDisplayBasis, GroupDisplayMember, PiFailure, PiProjectionReader, SourceDemand, SourceDisplayBasis, SourceExecutionState, SourceExecutionStats, SourceLifecyclePort, SourcePumpPort, SourceRecordStatus, SourceStatisticsPort, SourceWorkStatus } from './source-ports.ts';
+import type { BorrowedSource, CardSourcePort, DisplayRangeReader, GroupDisplayBasis, GroupDisplayMember, SourceDemand, SourceDisplayBasis, SourceExecutionState, SourceExecutionStats, SourceLifecyclePort, SourcePumpPort, SourceRecordStatus, SourceStatisticsPort, SourceWorkStatus } from './source-ports.ts';
 export type { BorrowedPiSource, BorrowedSource, DisplayRangeReader, GroupDisplayBasis, PiFailure, PiProjectionReader, SourceDemand, SourceDisplayBasis, SourceExecutionState, SourceRecordStatus, SourceWorkStatus } from './source-ports.ts';
 import { SemanticRetentionPool, type SemanticRelease as ReleaseReceipt } from './storage/semantic-retention.ts';
 import { OCCIPITAL_LIMITS } from '../occipital/limits.ts';
@@ -25,9 +25,13 @@ import { RequestFailure } from '../occipital/request-failure.ts';
 import type { ProviderBroker } from '../occipital/provider.ts';
 import { RETENTION_LIMITS } from './storage/retention.ts';
 
-import { sourceFits, sourceReservation, CONTROLLER_LIMITS } from './controller-limits.ts';
+import { sourceFits, sourceIdentifier as identifier, sourceReservation, CONTROLLER_LIMITS } from './controller-limits.ts';
 export { sourceReservation, CONTROLLER_LIMITS } from './controller-limits.ts';
 type WorkEntry = WorkEntryType<SourceState>;
+type StyleAttempt = { failed: boolean };
+type WorkMetadata = CardPublicationMetadata & { styleRevision: number; attempt?: { outcome: StyleAttempt; epoch: number; revision: number; vocabulary: string }; failedEpoch?: number; failedRevision?: number; failedVocabulary?: string; failedCacheRevision?: number; failedPalette?: string; failedBindingRevision?: number };
+type WorkNode = WorkNodeType<WorkEntry, WorkMetadata>;
+function workMetadata(): WorkMetadata { return Object.assign(createCardPublicationMetadata(), { styleRevision: 0 }); }
 // Weak registry/refusal metadata plus one targeted group-ID notice association/packet.
 const groupBytes = 1024;
 export type { SourcePreparation, SourceWorkGroup } from './work-registry.ts';
@@ -60,12 +64,10 @@ type SourceState = {
   retired?: boolean;
   sharedUnknown?: boolean; ownedUnknown?: number; resumeProvider?: number;
 };
-type PiSource = { key: string; storageKey: string; generation?: number; version: number; contentVersion: number;
-   language?: string; palette?: number; readyPalette?: number; failure?: PiFailure; projectionRefused?: boolean; refused?: boolean; styleDirectives?: boolean; bytes: number };
 type Close = { key: string; ownerKey: string; generation: number; lease: string; provider: number; bytes: number; health?: WeakRef<SourceState> };
 type StyleMember = { key: string; id: number; generation: number };
 type StyleJob = { expected: SemanticStyleExpectation; captures?: SemanticCaptureGroup; refs: readonly ContextRef[];
-  members: readonly StyleMember[]; group?: WeakRef<SourceWorkGroup>; groupRevision?: number; node: WeakRef<WorkNode<WorkEntry>>; epoch: number; revision: number; demandRevision: number; outcome: StyleAttempt; decodedBytes: number };
+  members: readonly StyleMember[]; group?: WeakRef<SourceWorkGroup>; groupRevision?: number; node: WeakRef<WorkNode>; epoch: number; revision: number; demandRevision: number; outcome: StyleAttempt; decodedBytes: number };
 type StyleCache = { revision: number; charge: DataCharge };
 type JobOperation = 'source' | 'style' | 'close';
 type Job = { id: number; operation: JobOperation; provider: number; generation?: number; key?: string; stateId?: number; ticket: string; pendingRetire?: true;
@@ -95,7 +97,7 @@ const lifetimes = new FinalizationRegistry<Lifetime>(lifetime => {
   // validation; keep physical credit until settlement, not their source payload.
   for (const reference of lifetime.jobs) { const job = reference.deref(); if (job) { job.source = undefined; releaseStyle(job); job.abort.abort(sourceRetired); } }
   lifetime.jobs.clear();
-  for (const hold of lifetime.groups) { hold.pin.release(); hold.charge.release(); } lifetime.groups.clear();
+  for (const hold of lifetime.groups) releaseGroupHold(hold); lifetime.groups.clear();
   for (const charge of lifetime.charges) charge.release(); lifetime.charges.clear();
   const data = lifetime.data; lifetime.data = undefined;
   data?.dispose();
@@ -138,26 +140,20 @@ function displayRole(owner: WeakRef<SourceExecution>, key: string, id: number, g
 function displayStyles(owner: WeakRef<SourceExecution>, key: string, id: number, generation: number, version: number, stamp: number) {
   return (consume: (style: ConcreteStyle) => void) => owner.deref()?.visitDisplayStyles(key, id, generation, version, stamp, consume) ?? false;
 }
-function groupStyles(owner: WeakRef<SourceExecution>, node: WeakRef<WorkNode<WorkEntry>>, stamp: number) {
+function groupStyles(owner: WeakRef<SourceExecution>, node: WeakRef<WorkNode>, stamp: number) {
   return (consume: (style: ConcreteStyle) => void) => owner.deref()?.visitGroupStyles(node, stamp, consume) ?? false;
 }
-function groupRole(owner: WeakRef<SourceExecution>, node: WeakRef<WorkNode<WorkEntry>>, stamp: number) {
+function groupRole(owner: WeakRef<SourceExecution>, node: WeakRef<WorkNode>, stamp: number) {
   return (role: CardRole) => owner.deref()?.readGroupRole(node, stamp, role);
 }
-function groupVisit(owner: WeakRef<SourceExecution>, node: WeakRef<WorkNode<WorkEntry>>, stamp: number) {
+function groupVisit(owner: WeakRef<SourceExecution>, node: WeakRef<WorkNode>, stamp: number) {
   return (consume: (member: (key: string) => GroupDisplayMember | undefined) => void) => owner.deref()?.visitGroup(node, stamp, consume) ?? false;
 }
-function groupMember(owner: WeakRef<SourceExecution>, node: WeakRef<WorkNode<WorkEntry>>, stamp: number) {
+function groupMember(owner: WeakRef<SourceExecution>, node: WeakRef<WorkNode>, stamp: number) {
   return (key: string) => owner.deref()?.readGroupMember(node, stamp, key);
 }
-function groupRanges(owner: WeakRef<SourceExecution>, node: WeakRef<WorkNode<WorkEntry>>, stamp: number, key: string): DisplayRangeReader {
+function groupRanges(owner: WeakRef<SourceExecution>, node: WeakRef<WorkNode>, stamp: number, key: string): DisplayRangeReader {
   return consume => owner.deref()?.visitGroupRanges(node, stamp, key, consume) ?? false;
-}
-function piRanges(owner: WeakRef<SourceExecution>, key: string, version: number, palette: number, revision: number) {
-  return (consume: (start: number, end: number, style: number) => void) => owner.deref()?.visitPiRanges(key, version, palette, revision, consume) ?? false;
-}
-function piStyles(owner: WeakRef<SourceExecution>, key: string, version: number, palette: number, revision: number) {
-  return (consume: (index: number, style: ConcreteStyle) => void) => owner.deref()?.visitPiStyles(key, version, palette, revision, consume) ?? false;
 }
 function equalInk(a: ConcreteStyle['foreground'], b: ConcreteStyle['foreground']): boolean {
   return a.kind === 'rgb' ? b.kind === 'rgb' && a.r === b.r && a.g === b.g && a.b === b.b
@@ -166,10 +162,6 @@ function equalInk(a: ConcreteStyle['foreground'], b: ConcreteStyle['foreground']
 function equalRoles(a: StyleRoles, b: StyleRoles): boolean {
   return CARD_ROLES.every(role => a[role].attributes === b[role].attributes && equalInk(a[role].foreground, b[role].foreground)
     && equalInk(a[role].background, b[role].background));
-}
-function identifier(value: unknown, cap = 64): value is string {
-  return typeof value === 'string' && value.length > 0 && value.length <= cap
-    && Buffer.byteLength(value) <= cap && !/[\p{Cc}\p{Cs}]/u.test(value);
 }
 function coherent(text: string): boolean {
   for (let i = 0; i < text.length; i++) {
@@ -189,7 +181,7 @@ function stateBytes(demand: SourceDemand): number {
  * two charged captures. Tombstones contain primitives and suppress pressure
  * carousels; off keeps physical-work evidence, removal/disposal drops it.
  * Primitive record credit is bounded separately by the same generous retained-family allowance, not a count cap. */
-export class SourceExecution implements WorkTurnExecution<SourceState, Description>, CardSourcePort, SourceLifecyclePort, SourcePumpPort, SourceStatisticsPort {
+export class SourceExecution implements WorkTurnExecution<SourceState, Description, WorkMetadata>, CardSourcePort, SourceLifecyclePort, SourcePumpPort, SourceStatisticsPort {
   private readonly provider: Provider;
   private readonly pool: SemanticRetentionPool;
   private readonly options: SourceExecutionOptions;
@@ -215,7 +207,7 @@ export class SourceExecution implements WorkTurnExecution<SourceState, Descripti
   private notifying = false;
   private preparing?: SourceWorkGroup;
   // One chronological registry selects both lazy groups and standalone sources.
-  private readonly work: WorkRegistry<SourceState, Description>;
+  private readonly work: WorkRegistry<SourceState, Description, WorkMetadata>;
   private workProvider = -1;
   private workReady = false;
   // Primitive key aliases only, prepaid by each source's existing entry allowance.
@@ -227,8 +219,7 @@ export class SourceExecution implements WorkTurnExecution<SourceState, Descripti
   private remoteLeases = 0;
   private transientBytes = 0;
   private states = new Map<string, SourceState>();
-  private readonly piSources = new Map<string, PiSource>();
-  private readonly piGenerations = new Map<number, PiSource>();
+  readonly pi: PiFallbackCoordinator;
   private jobs = new Map<number, Job>();
   private closes: Close[] = [];
   private counters = { dispatches: 0, preparedBytes: 0, decodedBytes: 0, staleReplies: 0, restarts: 0,
@@ -250,6 +241,11 @@ export class SourceExecution implements WorkTurnExecution<SourceState, Descripti
     this.options = { deadlineMs, admission: options.admission, queueWaitMs: options.queueWaitMs, onChange: options.onChange, diagnostic: options.diagnostic };
     this.work = new WorkRegistry(this.owner, CONTROLLER_LIMITS.jobs);
     this.pool = new SemanticRetentionPool(options.retention);
+    this.pi = new PiFallbackCoordinator(this.pool, {
+      isDisposed: () => this.disposed, charge: delta => this.charge(delta), wireKey: () => this.wireKey(),
+      receipts: receipts => this.receipts(receipts), changed: key => this.changed(key),
+      log: (level, explanation, fields) => this.log(level, explanation, fields), diagnostic: options.diagnostic,
+    });
     this.lifetime.data = this.pool;
     if (!this.charge(128)) throw new Error('controller bookkeeping capacity');
     lifetimes.register(this, this.lifetime, this.lifetime);
@@ -332,7 +328,7 @@ export class SourceExecution implements WorkTurnExecution<SourceState, Descripti
   registerPreparation(preparation: SourcePreparation): SourceWorkGroup | undefined {
     if (this.disposed || !this.charge(groupBytes)) return undefined;
     const group = { id: this.work.nextGroupId(), preparation: new WeakRef(preparation), keys: preparation.keys };
-    this.work.register(group); return group;
+    this.work.register(group, workMetadata()); return group;
   }
   /** Cold, idempotent ordered membership seal after logical preparation.
    * Call explicitly after membership edits outside prepare(); registration alone is not useful demand. */
@@ -365,12 +361,9 @@ export class SourceExecution implements WorkTurnExecution<SourceState, Descripti
     }
     return true;
   }
-  private dropGroup(node: WorkNode<WorkEntry>, seal = false): void {
-    const ready = node.ready; node.ready = undefined;
-    if (ready) { this.lifetime.groups.delete(ready); ready.pin.release(); ready.charge.release();
-      if ('preparation' in node.value) this.changedGroup(node.value.id);
-    }
-    if (seal && node.seal) { this.lifetime.charges.delete(node.seal.charge); node.seal.charge.release(); node.seal = undefined; }
+  private dropGroup(node: WorkNode, seal = false): void {
+    if (dropCardPublication(node, this.lifetime.groups, this.lifetime.charges, seal) && 'preparation' in node.value)
+      this.changedGroup(node.value.id);
   }
   groupPresentation(group: SourceWorkGroup): GroupDisplayBasis | undefined {
     const node = this.work.get(group), ready = node?.ready;
@@ -381,7 +374,7 @@ export class SourceExecution implements WorkTurnExecution<SourceState, Descripti
       role: groupRole(this.owner, weak, ready.stamp), visitStyles: groupStyles(this.owner, weak, ready.stamp),
       visit: groupVisit(this.owner, weak, ready.stamp) };
   }
-  private groupCurrent(node: WorkNode<WorkEntry>, stamp: number, boundary = false): boolean {
+  private groupCurrent(node: WorkNode, stamp: number, boundary = false): boolean {
     const entry = node.value, ready = node.ready;
     if (this.disposed || !this.enabled || !ready || ready.stamp !== stamp || !('preparation' in entry)
       || this.work.get(entry) !== node || !entry.preparation.deref() || !node.seal || entry.keys.size !== node.seal.members.length) return false;
@@ -394,17 +387,14 @@ export class SourceExecution implements WorkTurnExecution<SourceState, Descripti
     }
     return true;
   }
-  readGroupRole(weak: WeakRef<WorkNode<WorkEntry>>, stamp: number, role: CardRole): ConcreteStyle | undefined {
+  readGroupRole(weak: WeakRef<WorkNode>, stamp: number, role: CardRole): ConcreteStyle | undefined {
     const node = weak.deref();
     // Membership/source mutations invalidate the node on their cold update path.
     return !this.disposed && this.enabled && node?.ready?.stamp === stamp && 'preparation' in node.value
       && !!node.value.preparation.deref() && this.work.get(node.value) === node ? node.ready.roles[role] : undefined;
   }
-  visitGroupStyles(weak: WeakRef<WorkNode<WorkEntry>>, stamp: number, consume: (style: ConcreteStyle) => void): boolean {
-    const node = weak.deref(); if (!node || !this.groupCurrent(node, stamp)) return false;
-    const ready = node.ready!, pin = ready.pin.retain(), charge = ready.charge.retain();
-    ready.readers++;
-    try {
+  visitGroupStyles(weak: WeakRef<WorkNode>, stamp: number, consume: (style: ConcreteStyle) => void): boolean {
+    return visitGroupReady(weak, stamp, (node, currentStamp, boundary) => this.groupCurrent(node, currentStamp, boundary), (_node, ready) => {
       for (const role of CARD_ROLES) {
         if (!this.readGroupRole(weak, stamp, role)) return false;
         consume(ready.roles[role]);
@@ -416,34 +406,29 @@ export class SourceExecution implements WorkTurnExecution<SourceState, Descripti
         });
         if (!valid) return false;
       }
-      return this.groupCurrent(node, stamp, ready.readers === 1);
-    } finally { ready.readers--; pin.release(); charge.release(); }
+      return true;
+    });
   }
-  visitGroup(weak: WeakRef<WorkNode<WorkEntry>>, stamp: number, consume: (member: (key: string) => GroupDisplayMember | undefined) => void): boolean {
-    const node = weak.deref(); if (!node || !this.groupCurrent(node, stamp)) return false;
-    const ready = node.ready!, pin = ready.pin.retain(), charge = ready.charge.retain();
-    ready.readers++;
-    try { consume(groupMember(this.owner, weak, stamp)); return this.groupCurrent(node, stamp, ready.readers === 1); }
-    finally { ready.readers--; pin.release(); charge.release(); }
+  visitGroup(weak: WeakRef<WorkNode>, stamp: number, consume: (member: (key: string) => GroupDisplayMember | undefined) => void): boolean {
+    return visitGroupReady(weak, stamp, (node, currentStamp, boundary) => this.groupCurrent(node, currentStamp, boundary), () => {
+      consume(groupMember(this.owner, weak, stamp)); return true;
+    });
   }
-  readGroupMember(weak: WeakRef<WorkNode<WorkEntry>>, stamp: number, key: string): GroupDisplayMember | undefined {
+  readGroupMember(weak: WeakRef<WorkNode>, stamp: number, key: string): GroupDisplayMember | undefined {
     const node = weak.deref(); if (!node || !this.groupCurrent(node, stamp)) return undefined;
     const member = node.ready!.members.get(key);
     return member && this.currentDisplay(key, member.id, member.generation, member.version, member.stamp) ? { key, generation: member.generation, version: member.version, stamp: member.stamp,
       geometryStamp: member.geometryStamp, paintStamp: member.paintStamp, complete: member.complete,
       read: groupRanges(this.owner, weak, stamp, key) } : undefined;
   }
-  visitGroupRanges(weak: WeakRef<WorkNode<WorkEntry>>, stamp: number, key: string, consume: (start: number, end: number, style: ConcreteStyle) => void): boolean {
-    const node = weak.deref(); if (!node || !this.groupCurrent(node, stamp)) return false;
-    const ready = node.ready!, member = ready.members.get(key); if (!member) return false;
-    const pin = ready.pin.retain(), charge = ready.charge.retain();
-    ready.readers++;
-    try {
+  visitGroupRanges(weak: WeakRef<WorkNode>, stamp: number, key: string, consume: (start: number, end: number, style: ConcreteStyle) => void): boolean {
+    return visitGroupReady(weak, stamp, (node, currentStamp, boundary) => this.groupCurrent(node, currentStamp, boundary), (node, ready) => {
+      const member = ready.members.get(key); if (!member) return false;
       const valid = this.visitDisplayRanges(key, member.id, member.generation, member.version, member.stamp, (from, to, style) => {
         if (this.groupCurrent(node, stamp)) consume(from, to, style);
       });
-      return valid && this.groupCurrent(node, stamp, ready.readers === 1);
-    } finally { ready.readers--; pin.release(); charge.release(); }
+      return valid;
+    });
   }
   queuePreparation(group: SourceWorkGroup, local = false): void { this.work.queue(group, local); }
   pausePreparation(group: SourceWorkGroup): void { this.work.pause(group); }
@@ -531,7 +516,7 @@ export class SourceExecution implements WorkTurnExecution<SourceState, Descripti
        };
       if (this.preparing?.keys.has(key)) state.group = this.preparing;
       this.states.set(key, state);
-      if (!state.group) this.work.register(state);
+      if (!state.group) this.work.register(state, workMetadata());
        if (!fits) {
          state.blocked = true; state.styleDirty = false; state.refusedProvider = provider;
          this.changed(key);
@@ -678,159 +663,6 @@ export class SourceExecution implements WorkTurnExecution<SourceState, Descripti
     return available && this.currentDisplay(key, id, generation, version, stamp);
   }
 
-  /** Exact Pi fallback snapshots share the native result pool but do not require
-   * an enabled/available daemon. Caller prepares them outside render. */
-  capturePiSource(key: string, version: number, text: string, language?: string): boolean {
-    if (this.disposed) return false;
-    if (!identifier(key) || !Number.isInteger(version) || version < 0 || version > 0xffffffff
-      || typeof text !== 'string' || language !== undefined && !identifier(language, 128)) throw new Error('invalid Pi source');
-    let state = this.piSources.get(key);
-    if (state && version < state.version) throw new Error('non-monotonic Pi source');
-    if (state?.refused && version === state.version) return false;
-    if (state && version === state.version && language === state.language)
-      return state.generation !== undefined && !!this.pool.status(state.generation);
-    if (!sourceFits(text, HIGHLIGHT_LIMITS.piSourceBytes)) return this.refusePiSource(state, version);
-    if (!state) {
-      const storageKey = this.wireKey(), bytes = RETENTION_LIMITS.entryAllowance + 2*(key.length + storageKey.length + (language?.length ?? 0));
-      if (!this.charge(bytes)) return false;
-      state = { key, storageKey, version, contentVersion: version, language, bytes };
-      this.piSources.set(key, state);
-    } else {
-      const bytes = RETENTION_LIMITS.entryAllowance + 2*(key.length + state.storageKey.length + (language?.length ?? 0));
-      if (!this.charge(bytes - state.bytes)) return this.refusePiSource(state, version);
-      state.bytes = bytes;
-      const old = state.generation === undefined ? undefined : this.pool.borrowSnapshot(state.generation);
-      if (old?.text === text && state.language === language) {
-        const result = this.pool.replaceSnapshot(state.generation!, version, text); this.receipts(result.released);
-        state.version = version; return result.accepted && state.generation !== undefined;
-      }
-    }
-    state.version = version; state.contentVersion = version; state.language = language; state.palette = undefined; state.readyPalette = undefined; state.failure = undefined; state.projectionRefused = false; state.refused = false;
-    if (state.generation !== undefined) this.receipts(this.pool.remove(state.generation));
-    const result = this.pool.admit(state.storageKey, version, text); this.receipts(result.released);
-    state.generation = result.generation;
-    if (result.accepted) this.piGenerations.set(result.generation!, state);
-    return result.accepted;
-  }
-  /** Fresh primitive capture with cached UTF8; never exposes owned row arrays. */
-  borrowPiSource(key: string): BorrowedPiSource | undefined {
-    const state = this.piSources.get(key);
-    const source = state?.generation === undefined ? undefined : this.pool.borrowSnapshot(state.generation);
-    return source && state ? { ...source, generation: state.generation!, language: state.language, styleDirectives: state.styleDirectives } : undefined;
-  }
-  /** Storage identity only. The caller must independently check workStatus. */
-  piPreparation(key: string, generation: number, version: number, palette: number): PiPreparation | undefined {
-    if (!Number.isSafeInteger(palette) || palette < 0) throw new Error('invalid Pi palette revision');
-    const state = this.piSources.get(key);
-    if (this.disposed || !state || state.generation !== generation || state.version !== version
-      || state.palette !== undefined && palette < state.palette || state.palette === palette && (state.failure !== undefined || state.projectionRefused)) return undefined;
-    const released: ReleaseReceipt[] = [];
-    let result: ReturnType<SemanticRetentionPool['piPreparation']>;
-    try { result = this.pool.piPreparation(generation, version, palette, released); }
-    finally { this.receipts(released); }
-    if (!result.accepted) { this.recordPiRefusal(state, palette); return undefined; }
-    state.palette = palette; state.failure = undefined; state.projectionRefused = false;
-    return result.ticket;
-  }
-  private acceptsPiPreparation(ticket: PiPreparation): boolean {
-    if (this.disposed || !this.pool.acceptsPiPreparation(ticket)) return false;
-    const state = this.piGenerations.get(ticket.generation);
-    return !!state && state.version === ticket.version && state.palette === ticket.palette && !state.failure && !state.projectionRefused;
-  }
-  reservePiData(ticket: PiPreparation, additionalPeak: number): DataGrant | undefined {
-    if (!this.acceptsPiPreparation(ticket)) return undefined;
-    const result = this.pool.reserve(ticket.generation, additionalPeak); this.receipts(result.released);
-    if (!result.accepted || !this.acceptsPiPreparation(ticket)) {
-      if (this.acceptsPiPreparation(ticket)) this.recordPiRefusal(this.piGenerations.get(ticket.generation)!, ticket.palette);
-      return undefined;
-    }
-    const grant = this.pool.budget.reserve(additionalPeak);
-    if (!grant) this.recordPiRefusal(this.piGenerations.get(ticket.generation)!, ticket.palette);
-    return grant;
-  }
-  /** Ownership is consumed even for stale/foreign tickets and invalid candidates. */
-  adoptPiFlat(ticket: PiPreparation, text: string, staged: StagedPiProjection, styleDirectives?: boolean): boolean {
-    if (!this.acceptsPiPreparation(ticket)) { staged.dispose(); return false; }
-    const released: ReleaseReceipt[] = [];
-    let result: ReturnType<SemanticRetentionPool['adoptPiFlat']>;
-    try { result = this.pool.adoptPiFlat(ticket, text, staged, released); }
-    finally { this.receipts(released); }
-    const state = this.piGenerations.get(ticket.generation);
-    if (!state || state.version !== ticket.version || state.palette !== ticket.palette) return false;
-    if (!result.accepted) { if (result.refused) this.recordPiRefusal(state, ticket.palette); return false; }
-    state.readyPalette = ticket.palette; state.failure = undefined; state.projectionRefused = false; state.styleDirectives = styleDirectives;
-    reportRuntime(this.options.diagnostic, { kind: 'recovered', scope: state, operation: 'pi' });
-    this.changed(state.key); return true;
-  }
-  private recordPiRefusal(state: PiSource, palette: number): void {
-    state.palette = palette; state.failure = undefined; state.projectionRefused = true;
-  }
-  piRefusal(key: string, version: number, palette: number): boolean {
-    const state = this.piSources.get(key);
-    return !this.disposed && state?.version === version && state.palette === palette && state.projectionRefused === true;
-  }
-  /** Exact classifier failure, distinct from source/row storage refusal. */
-  piFailure(key: string, version: number, palette: number): PiFailure | undefined {
-    const state = this.piSources.get(key);
-    return !this.disposed && state?.version === version && state.palette === palette ? state.failure : undefined;
-  }
-  /** Record before bridge installation, using the caller's primitive capture.
-   * Reentrant source/version/palette changes cannot publish an obsolete failure. */
-  recordPiFailure(key: string, generation: number, version: number, palette: number, failure: PiFailure): boolean {
-    if (!Number.isSafeInteger(palette) || palette < 0 || failure !== 'threw' && failure !== 'invalid_rows') throw new Error('invalid Pi failure');
-    const state = this.piSources.get(key);
-    if (this.disposed || !state || state.generation !== generation || state.version !== version
-      || state.palette !== undefined && palette < state.palette) return false;
-    if (state.palette === palette && state.projectionRefused || this.piProjectionStatus(key, version, palette)) return false;
-    const changed = state.palette !== palette || state.failure !== failure;
-    state.palette = palette; state.failure = failure; state.projectionRefused = false;
-    if (changed) {
-      this.log('ERROR', 'Pi fallback classification failed; exact failure cached', { source: key, version, generation, palette, reason: failure });
-      reportRuntime(this.options.diagnostic, { kind: 'failure', scope: state, operation: 'pi', area: 'syntax', code: failure });
-    }
-    return true;
-  }
-  piProjection(key: string, version: number, palette: number): PiProjectionReader | undefined {
-    const status = this.piProjectionStatus(key, version, palette); if (!status) return undefined;
-    return Object.freeze({ ...status, version, palette,
-      visitRanges: piRanges(this.owner, key, version, palette, status.revision),
-      visitStyles: piStyles(this.owner, key, version, palette, status.revision) });
-  }
-  private piProjectionStatus(key: string, version: number, palette: number) {
-    const state = this.piSources.get(key), generation = state?.generation;
-    if (this.disposed || !state || generation === undefined || state.version !== version || state.readyPalette !== palette) return undefined;
-    const status = this.pool.piProjectionStatus(generation);
-    return status && status.version >= state.contentVersion && status.version <= version ? { ...status, generation } : undefined;
-  }
-  visitPiRanges(key: string, version: number, palette: number, revision: number, consume: (start: number, end: number, style: number) => void): boolean {
-    const generation = this.piProjectionStatus(key, version, palette)?.generation;
-    if (generation === undefined || this.piProjectionStatus(key, version, palette)?.revision !== revision) return false;
-    const available = this.pool.visitPiRanges(generation, revision, (start, end, style) => {
-      if (this.piProjectionStatus(key, version, palette)?.revision === revision) consume(start, end, style);
-    });
-    return available && this.piProjectionStatus(key, version, palette)?.revision === revision;
-  }
-  visitPiStyles(key: string, version: number, palette: number, revision: number, consume: (index: number, style: ConcreteStyle) => void): boolean {
-    const generation = this.piProjectionStatus(key, version, palette)?.generation;
-    if (generation === undefined || this.piProjectionStatus(key, version, palette)?.revision !== revision) return false;
-    const available = this.pool.visitPiStyles(generation, revision, (index, style) => {
-      if (this.piProjectionStatus(key, version, palette)?.revision === revision) consume(index, style);
-    });
-    return available && this.piProjectionStatus(key, version, palette)?.revision === revision;
-  }
-  private refusePiSource(state: PiSource | undefined, version: number): false {
-    if (state) {
-      state.version = version; state.contentVersion = version; state.palette = undefined; state.readyPalette = undefined; state.failure = undefined; state.projectionRefused = false; state.refused = true;
-      if (state.generation !== undefined) this.receipts(this.pool.remove(state.generation));
-    }
-    return false;
-  }
-  removePiSource(key: string): void {
-    const state = this.piSources.get(key); if (!state) return;
-    reportRuntime(this.options.diagnostic, { kind: 'released', scope: state, operation: '*' });
-    this.piSources.delete(key); this.charge(-state.bytes);
-    if (state.generation !== undefined) this.receipts(this.pool.remove(state.generation));
-  }
 
   suspend(): void { if (!this.disposed) { this.suspended = true; this.completeWork(true); } }
   /** Exact generation deliberately retired by the broker, not a generic abort/timeout. */
@@ -885,7 +717,7 @@ export class SourceExecution implements WorkTurnExecution<SourceState, Descripti
     const jobLimit = description ? Math.min(CONTROLLER_LIMITS.jobs, description.limits.data_per_route) : 0;
     return creditBlocked || this.jobs.size >= jobLimit || flight.jobs >= CONTROLLER_LIMITS.jobs;
   }
-  registryPrepareStyles(node: WorkNode<WorkEntry>, description: Description | undefined, full: boolean): void {
+  registryPrepareStyles(node: WorkNode, description: Description | undefined, full: boolean): void {
     this.prepareStyles(node, description, full);
   }
   registryDispatch(state: SourceState | undefined, description: Description | undefined, full: () => boolean): boolean {
@@ -981,7 +813,7 @@ export class SourceExecution implements WorkTurnExecution<SourceState, Descripti
   }
   stats(): SourceExecutionStats { return { ...this.counters, styleCaptures: [...this.jobs.values()].filter(job => job.style).length, unsettledJobs: this.jobs.size, captures: [...this.jobs.values()].filter(job => job.source).length,
     globalUnsettledJobs: flight.jobs, globalTransientBytes: flight.bytes, transientBytes: this.transientBytes, maxTransientBytes: this.maxTransientBytes,
-      remoteLeases: this.remoteLeases, pendingCloses: this.closes.length, sourceRecords: this.states.size, piSourceRecords: this.piSources.size,
+      remoteLeases: this.remoteLeases, pendingCloses: this.closes.length, sourceRecords: this.states.size, piSourceRecords: this.pi.size,
     guardRecords: [...this.states.values()].filter(state => state.generation === undefined || state.uncertain).length,
     bookkeepingBytes: this.lifetime.bytes, globalBookkeepingBytes: flight.bookkeepingBytes, waitingOwners: waiters.size,
     retention: this.pool.stats() }; }
@@ -1013,7 +845,7 @@ export class SourceExecution implements WorkTurnExecution<SourceState, Descripti
     if (current) this.reconcileWithdrawal();
   }
   private removeSource(key: string, deferred: boolean): void {
-    this.removePiSource(key);
+    this.pi.remove(key);
     this.noticeKeys.delete(key);
     const state = this.states.get(key); if (!state) return;
     reportRuntime(this.options.diagnostic, { kind: 'released', scope: state, operation: '*' });
@@ -1034,7 +866,7 @@ export class SourceExecution implements WorkTurnExecution<SourceState, Descripti
            state.retired = true; state.dirty = false;
         } else { reportRuntime(this.options.diagnostic, { kind: 'released', scope: state, operation: '*' }); this.states.delete(key); this.removeWork(state); this.charge(-state.bytes); }
       }
-      for (const key of this.piSources.keys()) this.removePiSource(key); this.receipts(this.pool.clear()); this.flush(); }
+      this.pi.clear(); this.receipts(this.pool.clear()); this.flush(); }
   }
   dispose(): void {
     if (this.disposed) return;
@@ -1043,7 +875,7 @@ export class SourceExecution implements WorkTurnExecution<SourceState, Descripti
     this.work.clear();
     this.setEnabled(false);
     // Pi fallback may have been captured while the native controller was already off.
-    for (const key of this.piSources.keys()) this.removePiSource(key);
+    this.pi.clear();
     this.disposed = true; ++this.noticeEpoch; this.noticeScheduled = false; this.noticeKeys.clear(); this.noticeGroups.clear();
     for (const state of this.states.values()) { reportRuntime(this.options.diagnostic, { kind: 'released', scope: state, operation: '*' }); this.charge(-state.bytes); }
     this.states.clear();
@@ -1159,8 +991,7 @@ export class SourceExecution implements WorkTurnExecution<SourceState, Descripti
   private releaseReceipts(receipts: readonly ReleaseReceipt[], deferred: boolean): boolean {
     let withdrew = false;
     for (const receipt of receipts) {
-      const pi = this.piGenerations.get(receipt.generation);
-      if (pi) { this.piGenerations.delete(receipt.generation); pi.generation = undefined; pi.palette = undefined; pi.readyPalette = undefined; this.changed(pi.key); continue; }
+      if (this.pi.releaseGeneration(receipt.generation)) continue;
       for (const state of this.states.values()) {
         if (state.previous === receipt.generation) {
           withdrew = true;
@@ -1213,18 +1044,18 @@ export class SourceExecution implements WorkTurnExecution<SourceState, Descripti
       node.attempt = undefined;
     }
   }
-  private clearStyleRefusal(node: WorkNode<WorkEntry>): void {
+  private clearStyleRefusal(node: WorkNode): void {
     node.failedEpoch = undefined; node.failedRevision = undefined; node.failedVocabulary = undefined;
     node.failedCacheRevision = undefined; node.failedPalette = undefined; node.failedBindingRevision = undefined;
   }
-  private refuseStyles(node: WorkNode<WorkEntry>, vocabulary: string, epoch: number, revision: number): void {
+  private refuseStyles(node: WorkNode, vocabulary: string, epoch: number, revision: number): void {
     const selection = this.selection;
     if (this.work.get(node.value) !== node || this.styleEpoch !== epoch || node.styleRevision !== revision || !selection) return;
     node.failedEpoch = epoch; node.failedRevision = revision; node.failedVocabulary = vocabulary;
     node.failedCacheRevision = this.styleCache.get(this.styleKey(vocabulary, selection.rules))?.revision ?? 0;
     node.failedPalette = selection.palette; node.failedBindingRevision = selection.bindingRevision;
   }
-  private styleHealthOwner(style: StyleJob, provider: number): WorkNode<WorkEntry> | undefined {
+  private styleHealthOwner(style: StyleJob, provider: number): WorkNode | undefined {
     const node = style.node.deref();
     return node && this.work.get(node.value) === node && this.styleEpoch === style.epoch
       && node.styleRevision === style.revision && this.provider.isReady(provider) ? node : undefined;
@@ -1268,7 +1099,7 @@ export class SourceExecution implements WorkTurnExecution<SourceState, Descripti
         sourceVersion: display.sourceVersion, vocabulary, invalidation, charge });
     } finally { grant.close(); }
   }
-  private styleMembers(node: WorkNode<WorkEntry>): StyleMember[] | undefined {
+  private styleMembers(node: WorkNode): StyleMember[] | undefined {
     const entry = node.value, members: StyleMember[] = [];
     if (node.paused) return undefined;
     if ('preparation' in entry && (!entry.preparation.deref() || !node.seal || !this.sealMatches(entry, node.seal))) return undefined;
@@ -1289,7 +1120,7 @@ export class SourceExecution implements WorkTurnExecution<SourceState, Descripti
   private canDispatchStyles(description: Description | undefined, vocabulary: string): description is Description {
     return !!description && description.vocabulary.fingerprint === vocabulary && this.provider.isReady(this.workProvider);
   }
-  private prepareStyles(node: WorkNode<WorkEntry>, description: Description | undefined, full: boolean): void {
+  private prepareStyles(node: WorkNode, description: Description | undefined, full: boolean): void {
     const selection = this.selection;
     if (!selection || !this.enabled || this.disposed) return;
     // No descriptor enumeration/encoding for an uncached choice at full credits.
@@ -1429,7 +1260,7 @@ export class SourceExecution implements WorkTurnExecution<SourceState, Descripti
       if (unexpectedDiagnostic(error)) reportRuntime(this.options.diagnostic, { kind: 'failure', scope: node, operation: 'styles', area: 'syntax', code: diagnosticError(error) });
     }
   }
-  private publishStyles(members: readonly StyleMember[], selection: PreparedSelection, captures?: SemanticCaptureGroup, node?: WorkNode<WorkEntry>, vocabularyHint?: string): boolean {
+  private publishStyles(members: readonly StyleMember[], selection: PreparedSelection, captures?: SemanticCaptureGroup, node?: WorkNode, vocabularyHint?: string): boolean {
     if (!this.enabled || this.disposed || this.selection !== selection) return false;
     const vocabulary = captures?.captures[0]?.vocabulary ?? (members[0] && this.pool.status(members[0].generation)?.vocabulary) ?? vocabularyHint;
     if (vocabulary === undefined) return false;
@@ -1498,7 +1329,7 @@ export class SourceExecution implements WorkTurnExecution<SourceState, Descripti
     this.counters.stylePublications++; return true;
     } finally { groupGrant?.close(); }
   }
-  private publishGroup(node: WorkNode<WorkEntry>, members: readonly StyleMember[], selection: PreparedSelection, roles: StyleRoles,
+  private publishGroup(node: WorkNode, members: readonly StyleMember[], selection: PreparedSelection, roles: StyleRoles,
     vocabulary: string, grant: DataGrant, bytes: number): boolean {
     const entry = node.value;
     if (!('preparation' in entry) || !node.seal || !this.sealMatches(entry, node.seal) || !entry.preparation.deref()) return false;
@@ -1531,7 +1362,7 @@ export class SourceExecution implements WorkTurnExecution<SourceState, Descripti
     const stamp = ++this.displaySequence;
     const ready: GroupReady = { members: readyMembers, readers: 0, roles, rules: selection.rules, palette: selection.palette, bindingRevision: selection.bindingRevision,
       stamp, paintStamp: equal ? prior!.paintStamp : stamp, pin: pin.retain(), charge: grant.consume(bytes) };
-    this.dropGroup(node); node.ready = ready; this.lifetime.groups.add(ready); this.changedGroup(entry.id);
+    publishGroupReady(node, ready, this.lifetime.groups); this.changedGroup(entry.id);
     return true;
   }
   private settleStyles(job: Job, raw: unknown, rejected: boolean): void {
@@ -1685,7 +1516,7 @@ export class SourceExecution implements WorkTurnExecution<SourceState, Descripti
   }
   wake(): void { this.work.wake(); }
   private changed(key: string): void {
-    if (!this.options.onChange || this.disposed || !this.states.has(key) && !this.piSources.has(key)) return;
+    if (!this.options.onChange || this.disposed || !this.states.has(key) && !this.pi.has(key)) return;
     this.noticeKeys.add(key);
     if (this.noticeScheduled) return;
     this.noticeScheduled = true; queueMicrotask(notice(this.owner, this.noticeEpoch));

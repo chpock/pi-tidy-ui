@@ -8,13 +8,13 @@ import { compileStyleAnsi } from '../../../src/syntax/style-ansi.ts';
 import { measure, reflow } from '../../../src/syntax/measured-rows.ts';
 import { paintFlat } from '../../../src/syntax/flat-paint.ts';
 import type { ConcreteStyle } from '../../../src/appearance/style-materialization.ts';
-import type { PiRowReader } from '../../../src/syntax/pi-flat.ts';
+import type { PiRowReader } from '../../../src/highlighting/pi-flat.ts';
 import xterm from '@xterm/headless';
 
-const adapter = () => import('../../../src/syntax/pi-flat.ts');
+const adapter = () => import('../../../src/highlighting/pi-flat.ts');
 const neutral: ConcreteStyle = Object.freeze({ foreground: Object.freeze({ kind: 'indexed', index: 7 }), background: Object.freeze({ kind: 'rgb', r: 4, g: 5, b: 6 }), attributes: 8 });
 const rows = (values: readonly string[]): PiRowReader => consume => { values.forEach((value, index) => consume(index, value)); return true; };
-type Projection = Extract<ReturnType<typeof import('../../../src/syntax/pi-flat.ts').preparePiFlat>, { outcome: 'ready' }>['projection'];
+type Projection = Extract<ReturnType<typeof import('../../../src/highlighting/pi-flat.ts').preparePiFlat>, { outcome: 'ready' }>['projection'];
 function ranges(projection: Projection) {
   const values: [number, number, number][] = [];
   assert.equal(projection.visitRanges((start, end, style) => values.push([start, end, style])), true); return values;

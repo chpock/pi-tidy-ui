@@ -476,7 +476,7 @@ export function installTidyUi(tui: LiveTui, getTheme: () => Palette, options: Ti
         request: () => { throw new Error('Disabled card provider requested work'); } },
         { diagnostic: options.diagnostic, onChange: localCardNotice(new WeakRef(controller)) });
       execution.setEnabled(false); ownedSources = execution;
-      cardClient = { cardSource: execution, sourceWork: execution, sourcePump: execution, sourceStatistics: execution, snapshot: () => snapshot };
+      cardClient = { cardSource: execution, sourceWork: execution, pi: execution.pi, sourcePump: execution, sourceStatistics: execution, snapshot: () => snapshot };
     }
     syntax = new CardSources(cardClient, {
       diagnostic: options.diagnostic, identify: node => ({ call: node.toolCallId, tool: node.toolName }),
@@ -751,7 +751,7 @@ export function installTidyUi(tui: LiveTui, getTheme: () => Palette, options: Ti
       preparedCleanup.set(entry, release); preparedPools.set(entry, pool); dropPrepared(node); preparedStates.set(node, entry); adopted = true;
       const identity = syntax?.identities(node)[0];
       const basis = identity && cardClient!.cardSource.displayBasis(identity.key);
-      const pi = identity && cardClient!.sourceWork.borrowPiSource(identity.key);
+      const pi = identity && cardClient!.pi.borrowPiSource(identity.key);
       const selected = cardKind(node) === 'bash' ? syntaxStates.get(node)?.prefix?.bytes ? 'historical-native-prefix' : 'toolTitle'
         : basis ? 'exact-native' : pi ? pi.styleDirectives ? 'styled-pi' : 'plain-pi' : 'waiting';
       decision(node, 'syntax', selected === 'historical-native-prefix' ? 'Validated historical-prefix display, not parser authority'

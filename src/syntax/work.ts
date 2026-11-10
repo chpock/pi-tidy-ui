@@ -1,20 +1,17 @@
 import type { DisplayRangeReader, PiFailure, PiProjectionReader, SourceDemand, SourceDisplayBasis, SourceWorkPort, SourceWorkStatus } from '../highlighting/source-ports.ts';
+import type { PiFallbackPort, PiClassifier } from '../highlighting/pi-fallback.ts';
 import type { ThemeDescription } from '../themes/selection.ts';
 import type { ProviderSnapshot } from '../occipital/provider.ts';
-import type { DataCharge } from '../resources/data-budget.ts';
-import { preparePiFlat, type PiRowReader, type PreparedPiFlat } from './pi-flat.ts';
-import type { StagedPiProjection } from '../highlighting/storage/pi-projection.ts';
 import type { ConcreteStyle } from '../appearance/style-materialization.ts';
 import { HIGHLIGHT_LIMITS } from '../highlighting/limits.ts';
 import { highlightingPrefix } from './highlighting-prefix.ts';
-
 export type SyntaxDemand = SourceDemand & {
   /** Pi's local classifier hint; kept separate from the explicit Occipital SOURCE language selector. */
   piLanguage?: string;
   palette: number;
 } & ({ fallback: 'pi'; piNeutral: ConcreteStyle } | { fallback: 'neutral' });
 export type SyntaxIdentity = Pick<SyntaxDemand, 'key' | 'version' | 'language' | 'piLanguage' | 'complete' | 'palette' | 'fallback'>;
-export type PiClassifier = (text: string, info: { language?: string; path?: string }) => readonly string[];
+export type { PiClassifier } from '../highlighting/pi-fallback.ts';
 export type SyntaxWorkResult = { outcome: 'native' | 'pi' | 'neutral' | 'waiting' | 'refused' | 'failed' | 'stale'; failure?: PiFailure; awaitingProvider?: true };
 export interface SyntaxResolution extends SyntaxIdentity {
   owner: WeakRef<SourceWorkPort>;
@@ -38,6 +35,7 @@ export interface SyntaxSourceSnapshot {
 }
 export interface SyntaxSourceClient {
   readonly sourceWork: SourceWorkPort;
+  readonly pi: PiFallbackPort;
   snapshot(): SyntaxSourceSnapshot;
 }
 // Factory scope retains only weak ownership and primitive validity receipts.
@@ -52,30 +50,6 @@ function nativeReader(owner: WeakRef<SourceWorkPort>, key: string, generation: n
     };
     if (!sources || !current()) return false;
     return sources.visitRanges(key, consume) && current();
-  };
-}
-
-// Inspect only shape/length before funding the returned external allocation. The
-// budget itself bounds inspection; no unrelated row/count ceiling is introduced.
-function ansiBytes(lines: readonly string[], limit: number): number | undefined {
-  if (!Array.isArray(lines)) return undefined;
-  let bytes = 64 + lines.length * 40;
-  if (bytes > limit) return bytes;
-  for (let index = 0; index < lines.length; index++) {
-    if (typeof lines[index] !== 'string') return undefined;
-    bytes += lines[index]!.length * 2;
-    if (bytes > limit) return bytes;
-  }
-  return bytes;
-}
-function classificationRows(lines: readonly string[], styled: { value: boolean }): PiRowReader {
-  return consume => {
-    for (let index = 0; index < lines.length; index++) {
-      const line = lines[index]!;
-      if (line.includes('\x1b[')) styled.value = true;
-      consume(index, line);
-    }
-    return true;
   };
 }
 
@@ -105,59 +79,28 @@ export function requestSyntax(client: SyntaxSourceClient, demand: SyntaxDemand, 
     return { outcome: 'native' };
   if (demand.fallback === 'neutral') return { outcome: !nativeExact && sources.workStatus(key).fallbackEligible ? 'neutral' : 'waiting',
     ...(metadata.enabled && metadata.provider.availability !== 'ready' ? { awaitingProvider: true as const } : {}) };
-  const cached = sources.borrowPiSource(key);
+  const pi = client.pi;
+  const cached = pi.borrowPiSource(key);
   const text = cached?.text === demand.text && cached.utf8Bytes <= HIGHLIGHT_LIMITS.piSourceBytes ? demand.text
     : demand.text.slice(0, highlightingPrefix(demand.text, HIGHLIGHT_LIMITS.piSourceBytes).end);
   if (cached?.version === version && cached.language === piLanguage && cached.text === text) {
-    if (sources.piProjection(key, version, palette)) return { outcome: 'pi' };
-    const failure = sources.piFailure(key, version, palette);
+    if (pi.piProjection(key, version, palette)) return { outcome: 'pi' };
+    const failure = pi.piFailure(key, version, palette);
     if (failure) return { outcome: 'failed', failure };
-    if (sources.piRefusal(key, version, palette)) return { outcome: 'refused' };
+    if (pi.piRefusal(key, version, palette)) return { outcome: 'refused' };
   }
   if (nativeExact || exactDisplay || !sources.workStatus(key).fallbackEligible) return { outcome: 'waiting' };
   if (cached && (cached.version > version || cached.version === version && cached.language === piLanguage && cached.text !== text)) return { outcome: 'stale' };
-  if (!sources.capturePiSource(key, version, text, piLanguage)) return { outcome: 'refused' };
-  const source = sources.borrowPiSource(key);
-  if (!source || source.version !== version || source.language !== piLanguage || source.text !== text) return { outcome: 'stale' };
-  if (sources.piProjection(key, version, palette)) return { outcome: 'pi' }; // Finite equal-text alias.
-  const failure = sources.piFailure(key, version, palette);
-  if (failure) return { outcome: 'failed', failure };
-  if (sources.piRefusal(key, version, palette)) return { outcome: 'refused' };
-  const ticket = sources.piPreparation(key, source.generation, version, palette);
-  if (!ticket) return { outcome: sources.piRefusal(key, version, palette) ? 'refused' : 'stale' };
-  let lines: readonly string[] | undefined, ansi: DataCharge | undefined;
-  let candidate: PreparedPiFlat | undefined, staged: StagedPiProjection | undefined;
-  const failed = (kind: PiFailure): SyntaxWorkResult => sources.recordPiFailure(key, ticket.generation, version, palette, kind)
-    ? { outcome: 'failed', failure: kind } : { outcome: 'stale' };
-  const denied = (): SyntaxWorkResult => ({ outcome: sources.piRefusal(key, version, palette) ? 'refused' : 'stale' });
-  const reserve = (bytes: number) => sources.reservePiData(ticket, bytes);
-  try {
-    try { lines = ticket.text!.length ? classify(ticket.text!, { language: piLanguage, path }) : []; }
-    catch { return failed('threw'); }
-    const bytes = ansiBytes(lines, ticket.budget.limit);
-    if (bytes === undefined) return failed('invalid_rows');
-    const grant = reserve(bytes);
-    if (!grant) return denied();
-    try { ansi = grant.consume(bytes); } finally { grant.close(); }
-    const styled = { value: false };
-    const prepared = preparePiFlat(ticket.text!, classificationRows(lines, styled), demand.piNeutral, ticket.budget, reserve);
-    if (prepared.outcome !== 'ready') return prepared.outcome === 'invalid' ? failed('invalid_rows') : denied();
-    candidate = prepared.projection;
-    staged = candidate.stage(reserve);
-    if (!staged) return denied();
-    return sources.adoptPiFlat(ticket, ticket.text!, staged, styled.value) ? { outcome: 'pi' } : denied();
-  } finally {
-    staged?.dispose(); candidate?.dispose(); lines = undefined; ansi?.release(); ticket.release();
-  }
+  return pi.classify({ key, version, text, language: piLanguage, path, palette, neutral: demand.piNeutral }, classify);
 }
 
 /** Pure keyed metadata read: no classification, observation, allocation grants,
  * source traversal, range/style visits or dispatch. Visitor output is provisional
  * until its final true result, and must be discarded otherwise. */
-export function resolveSyntax(sources: SourceWorkPort, identity: SyntaxIdentity): SyntaxResolution {
+export function resolveSyntax(sources: SourceWorkPort, piFallback: PiFallbackPort, identity: SyntaxIdentity): SyntaxResolution {
   const { key, version, language, piLanguage, complete, palette, fallback } = identity;
   const allowPi = fallback === 'pi';
-  const work = sources.workStatus(key), native = sources.borrowSource(key), pi = allowPi ? sources.borrowPiSource(key) : undefined;
+  const work = sources.workStatus(key), native = sources.borrowSource(key), pi = allowPi ? piFallback.borrowPiSource(key) : undefined;
   const matchingNative = native?.version === version && native.language === language ? native : undefined;
   const currentNative = matchingNative;
   const status = matchingNative ? sources.status(key) : undefined;
@@ -165,9 +108,9 @@ export function resolveSyntax(sources: SourceWorkPort, identity: SyntaxIdentity)
   const basis = sources.displayBasis(key);
   const display = complete && basis?.complete && basis.exactVersion === version && basis.language === language ? basis : undefined;
   const matchingPi = pi?.version === version && pi.language === piLanguage ? pi : undefined;
-  const projection = matchingPi ? sources.piProjection(key, version, palette) : undefined;
-  const failure = matchingPi && sources.piFailure(key, version, palette);
-  const refusal = matchingPi && sources.piRefusal(key, version, palette);
+  const projection = matchingPi ? piFallback.piProjection(key, version, palette) : undefined;
+  const failure = matchingPi && piFallback.piFailure(key, version, palette);
+  const refusal = matchingPi && piFallback.piRefusal(key, version, palette);
   const owner = new WeakRef(sources);
   return { key, version, language, piLanguage, complete, palette, fallback, owner, nativeExact,
     execution: work.execution, fallbackEligible: work.fallbackEligible, piStyled: projection ? matchingPi?.styleDirectives : undefined, committedBytes: status?.committedBytes,

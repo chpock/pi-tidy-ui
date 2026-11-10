@@ -19,8 +19,9 @@ function fixture() {
     },
     inputIdentity(selected, currentInput) { return `${selected.kind === 'pi' ? 'pi' : selected.id}:${currentInput.palette}:${currentInput.mode}`; },
     records: new Map([[1, { owner: new WeakRef(owner) }]]),
-    client: { snapshot: () => ({ enabled: true }), sourceWork: { status: () => native ? status : undefined, displayBasis: () => native ? display : undefined,
-      piProjection: () => pi ? {} : undefined, borrowSource: () => ({ text: 'current' }), borrowPiSource: () => ({ text: 'current' }) } },
+    client: { snapshot: () => ({ enabled: true }), sourceWork: { status: () => native ? status : undefined,
+      displayBasis: () => native ? display : undefined, borrowSource: () => ({ text: 'current' }) },
+      pi: { piProjection: () => pi ? {} : undefined, borrowPiSource: () => ({ text: 'current' }) } },
     visit(_owner, consume) { if (!visit) return false; consume(state.display, { origin: state.paint.origin,
       ranges() { return () => true; }, basis(_key, callback) { callback(text); return true; } }); return true; } };
   return { owner, state, consumer, status, display, set(value) { ({ native = native, pi = pi, text = text, visit = visit } = value); } };
@@ -56,8 +57,9 @@ test('write capture gate: pausing the current owner removes its pending particip
 
 function baselineFixture() {
   const f = fixture();
-  f.consumer.client.sources = f.consumer.client.sourceWork;
+  f.consumer.client.sources = { ...f.consumer.client.sourceWork, ...f.consumer.client.pi };
   delete f.consumer.client.sourceWork;
+  delete f.consumer.client.pi;
   delete f.consumer.currentPalette;
   delete f.consumer.inputIdentity;
   f.display.profile = 'baseline-profile';
@@ -81,6 +83,11 @@ test('performance readiness: candidate input identity and baseline Pi revision u
   candidate.state.preparedPalette = 'pi:3:truecolor';
   candidate.state.input = undefined;
   assert.equal(preparedCardReady(candidate.consumer, candidate.owner, 'pi:'), false);
+
+  const combined = fixture();
+  Object.assign(combined.consumer.client.sourceWork, combined.consumer.client.pi);
+  delete combined.consumer.client.pi;
+  assert.equal(preparedCardReady(combined.consumer, combined.owner, 'pi:'), true);
 
   const baseline = baselineFixture();
   assert.equal(Object.hasOwn(baseline.display, 'palette'), false);

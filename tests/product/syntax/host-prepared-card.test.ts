@@ -29,7 +29,7 @@ function reviewFixture(t: TestContext) {
     assert.equal(depth, 0, 'display preparation never occurs in render or passive mouse handling'); preparations++;
     return update.apply(this, args);
   });
-  adapter = installTidyUi(ui, () => themes.theme, { syntax: { client: { cardSource: sources, sourceWork: sources, sourcePump: sources, sourceStatistics: sources, snapshot: () => snapshot }, palette: () => 1,
+  adapter = installTidyUi(ui, () => themes.theme, { syntax: { client: { cardSource: sources, sourceWork: sources, pi: sources.pi, sourcePump: sources, sourceStatistics: sources, snapshot: () => snapshot }, palette: () => 1,
     classify: (text, info) => { assert.equal(depth, 0); classifications++; return highlightCode(text, info.language); } } });
   const tool = (name: string, args: Record<string, unknown>, definition?: unknown) => {
     const resolvedDefinition = resolvePublicFileToolDefinition(name, definition, '/tmp');

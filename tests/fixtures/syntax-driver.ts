@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import { setTimeout as pause } from 'node:timers/promises';
 import tidyUi from '../../src/index.ts';
 import { createSyntaxOptions } from '../../src/application/syntax-options.ts';
-import { SourceExecution } from '../../src/highlighting/source-execution.ts';
+import { PiFallbackCoordinator } from '../../src/highlighting/pi-fallback.ts';
 import type { StdioTransport } from '../../src/occipital/stdio.ts';
 import type { SharedTransport } from '../../src/occipital/shared.ts';
 import type { ProviderClock } from '../../src/occipital/provider.ts';
@@ -63,8 +63,8 @@ export default function syntaxDriver(pi: ExtensionAPI) {
       return updateSettings.apply(this, args);
     };
   }
-  const attached = SyntaxRuntime.prototype.attach, captured = SourceExecution.prototype.capturePiSource,
-    bridged = SourceExecution.prototype.adoptPiFlat, fetch = globalThis.fetch;
+  const attached = SyntaxRuntime.prototype.attach, captured = PiFallbackCoordinator.prototype.capturePiSource,
+    bridged = PiFallbackCoordinator.prototype.adoptPiFlat, fetch = globalThis.fetch;
   const brokerStats = () => client?.deref()?.broker.stats();
   const clientSnapshot = SyntaxClient.prototype.snapshot, clientStart = SyntaxClient.prototype.start;
   SyntaxClient.prototype.snapshot = function () {
@@ -86,14 +86,14 @@ export default function syntaxDriver(pi: ExtensionAPI) {
     }
     return attached.apply(this, args);
   };
-  SourceExecution.prototype.capturePiSource = function (...args) {
+  PiFallbackCoordinator.prototype.capturePiSource = function (...args) {
     counts.piCaptures++;
     const accepted = captured.apply(this, args);
     if (process.env.TIDY_UI_TEST_HIGHLIGHTING_LIMITS === '1') record({ type: 'highlighting_limits_pi_capture', key: args[0], version: args[1], text: args[2], language: args[3], accepted });
     if (process.env.TIDY_UI_TEST_PALETTE_OBSERVE === '1') record({ type: 'follow_pi_capture', key: args[0], version: args[1], text: args[2], language: args[3], accepted });
     return accepted;
   };
-  SourceExecution.prototype.adoptPiFlat = function (...args) { counts.piBridges++; return bridged.apply(this, args); };
+  PiFallbackCoordinator.prototype.adoptPiFlat = function (...args) { counts.piBridges++; return bridged.apply(this, args); };
   globalThis.fetch = async () => { counts.downloads++; throw new Error('No network in the syntax fixture'); };
   const snapshot = () => {
     const current = runtime?.deref();
@@ -241,8 +241,8 @@ export default function syntaxDriver(pi: ExtensionAPI) {
     } finally {
       stopCapture?.(); stopCapture = undefined; captureClient = undefined;
       cardObservations?.restore(); localWork.restore(); paletteWork?.restore(); restoreNativePreparation?.();
-      SyntaxRuntime.prototype.attach = attached; SourceExecution.prototype.capturePiSource = captured;
-      SourceExecution.prototype.adoptPiFlat = bridged;
+      SyntaxRuntime.prototype.attach = attached; PiFallbackCoordinator.prototype.capturePiSource = captured;
+      PiFallbackCoordinator.prototype.adoptPiFlat = bridged;
       SyntaxClient.prototype.snapshot = clientSnapshot; globalThis.fetch = fetch;
       if (SyntaxClient.prototype.start === startWithCaptureProducer) SyntaxClient.prototype.start = clientStart;
       if (process.env.TIDY_UI_TEST_THEME_PREVIEW === '1') ExtensionSettings.prototype.update = updateSettings;
