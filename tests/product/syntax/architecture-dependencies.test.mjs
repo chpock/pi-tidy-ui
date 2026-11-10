@@ -36,10 +36,14 @@ const applicationModules = [
   'src/application/syntax-runtime.ts',
   'src/application/syntax-options.ts',
 ];
-const cardModules = ['src/cards/file-model.ts', 'src/cards/file-sources.ts'];
+const cardModules = ['src/cards/file-model.ts', 'src/cards/file-sources.ts', 'src/cards/file-display.ts',
+  'src/cards/preparation.ts', 'src/cards/bash-preparation.ts', 'src/cards/file-preparation.ts'];
+const renderingModules = ['src/rendering/card-values.ts', 'src/rendering/card-styles.ts'];
 const governedModules = new Set([
   ...cardModules,
+  ...renderingModules,
   'src/appearance/card-roles.ts',
+  'src/appearance/style-ansi.ts',
   'src/appearance/theme-preference.ts',
   'src/appearance/style-materialization.ts',
   'src/occipital/style-types.ts',
@@ -242,6 +246,7 @@ function collectProductionEdges(files) {
     if (!sourceExtensions.has(extname(path))) continue;
     const source = parseSource(path);
     for (const reference of moduleReferences(source)) {
+      assertRenderingReference(path, reference);
       if (!reference.specifier.startsWith('.')) continue;
       edges.push({ source: path, target: resolveRelativeImport(path, reference.specifier), kind: reference.kind, syntax: reference.syntax });
     }
@@ -250,7 +255,7 @@ function collectProductionEdges(files) {
 }
 
 function assertKnownGovernedModule(path) {
-  const governed = path.startsWith('src/cards/') || path.startsWith('src/resources/') || path.startsWith('src/appearance/')
+  const governed = path.startsWith('src/cards/') || path.startsWith('src/rendering/') || path.startsWith('src/resources/') || path.startsWith('src/appearance/')
     || path.startsWith('src/highlighting/') || path.startsWith('src/application/') || path === genericStyleTypesPath;
   if (governed && !governedModules.has(path)) throw new Error(`unclassified governed source module: ${path}`);
 }
@@ -333,7 +338,32 @@ function assertCardReference(path, reference) {
   }
 }
 
+function isRenderingModule(path) {
+  return path.startsWith('src/rendering/') || path === 'src/syntax/card-layout.ts';
+}
+
+function assertRenderingDependency(edge) {
+  if (!isRenderingModule(edge.source)) return;
+  const models = ['src/appearance/card-roles.ts', 'src/appearance/style-materialization.ts', 'src/appearance/style-ansi.ts'];
+  const opaqueMeasurement = edge.source === 'src/rendering/card-values.ts'
+    && edge.target === 'src/syntax/measured-rows.ts' && edge.kind === 'type-only';
+  const sceneKernel = edge.source === 'src/syntax/card-layout.ts'
+    && ['src/card-frame.ts', 'src/syntax/flat-paint.ts', 'src/syntax/measured-rows.ts'].includes(edge.target);
+  const allowed = edge.target.startsWith('src/rendering/') || edge.target.startsWith('src/resources/')
+    || models.includes(edge.target) || opaqueMeasurement || sceneKernel;
+  if (!allowed) throw new Error(`rendering imports card, source-work or host ownership: ${edgeKey(edge)}`);
+}
+
+function assertRenderingReference(path, reference) {
+  if (!isRenderingModule(path)) return;
+  if (reference.specifier === '@earendil-works/pi-coding-agent'
+    || reference.specifier.startsWith('@earendil-works/pi-coding-agent/')) {
+    throw new Error(`rendering imports the Pi host SDK: ${path} -> ${reference.specifier} [${reference.kind}]`);
+  }
+}
+
 function assertEdgePolicy(edge) {
+  assertRenderingDependency(edge);
   assertCardDependency(edge);
   assertRegistryDependency(edge);
   assertStorageDependency(edge);
@@ -648,6 +678,58 @@ test('card preparation accepts only its own models, rendering, numeric funding a
     for (const target of ['src/cards/file-model.ts', 'src/cards/file-sources.ts',
       'src/rendering/prepared-card.ts', 'src/resources/data-budget.ts', 'src/highlighting/source-ports.ts']) {
       assert.doesNotThrow(() => assertEdgePolicy({ source, target, kind }));
+    }
+  }
+});
+
+
+test('rendering accepts concrete style and numeric data, never preparation or source-work owners', () => {
+  for (const source of ['src/rendering/new-owner.ts', 'src/syntax/card-layout.ts']) {
+    for (const kind of ['type-only', 'value', 'mixed']) {
+      for (const target of ['src/cards/file-model.ts', 'src/cards/file-sources.ts', 'src/syntax/cards.ts',
+        'src/syntax/work.ts', 'src/highlighting/source-ports.ts', 'src/highlighting/source-execution.ts',
+        'src/highlighting/storage/semantic-retention.ts', 'src/occipital/style-types.ts', 'src/occipital/provider.ts',
+        'src/tool-adapters/contracts.ts', 'src/application/syntax-client.ts', 'src/host/pi/tool.ts',
+        'src/presentation/tool.ts', 'src/themes/selection.ts', 'src/appearance/theme-preference.ts', 'src/unclassified-owner.ts', ...presentationAndPayloadFiles]) {
+        if (source === 'src/syntax/card-layout.ts' && target === 'src/card-frame.ts') continue;
+        assert.throws(() => assertEdgePolicy({ source, target, kind }), /rendering imports/);
+      }
+      for (const target of ['src/rendering/card-values.ts', 'src/rendering/card-styles.ts', 'src/resources/data-budget.ts',
+        'src/appearance/card-roles.ts', 'src/appearance/style-materialization.ts', 'src/appearance/style-ansi.ts']) {
+        assert.doesNotThrow(() => assertEdgePolicy({ source, target, kind }));
+      }
+      for (const specifier of ['@earendil-works/pi-coding-agent', '@earendil-works/pi-coding-agent/host']) {
+        assert.throws(() => assertRenderingReference(source, { specifier, kind }), /rendering imports the Pi host SDK/);
+      }
+      assert.doesNotThrow(() => assertRenderingReference(source, { specifier: '@earendil-works/pi-tui', kind }));
+    }
+  }
+  assert.doesNotThrow(() => assertEdgePolicy({ source: 'src/rendering/card-values.ts', target: 'src/syntax/measured-rows.ts', kind: 'type-only' }));
+  for (const kind of ['value', 'mixed']) {
+    assert.throws(() => assertEdgePolicy({ source: 'src/rendering/card-values.ts', target: 'src/syntax/measured-rows.ts', kind }), /rendering imports/);
+  }
+  assert.throws(() => assertEdgePolicy({ source: 'src/rendering/new-owner.ts', target: 'src/syntax/measured-rows.ts', kind: 'type-only' }), /rendering imports/);
+  assert.throws(() => assertKnownGovernedModule('src/rendering/unclassified.ts'), /unclassified governed source module/);
+});
+
+test('render-facing card declarations belong to rendering, not preparation or logical normalization', () => {
+  const path = 'src/rendering/card-values.ts';
+  const moved = new Map([
+    ['src/syntax/cards.ts', ['PreparedRegion', 'PreparedBashRegions', 'FileRowDescriptor', 'PreparedCard', 'ReadyCardPaint']],
+    ['src/bash-card.ts', ['BashService', 'BashServiceInput']],
+    ['src/syntax/flat-paint.ts', ['FlatRangeReader']],
+  ]);
+  for (const [legacyPath, names] of moved) {
+    const legacy = declarationExportNames(parseSource(legacyPath));
+    for (const name of names) assert.equal(legacy.has(name), false, `${legacyPath} must not own render-facing ${name}`);
+  }
+  const values = declarationExportNames(parseSource(path));
+  for (const [legacyPath, names] of moved) {
+    const forwarded = reexportedSourceNames(legacyPath, path);
+    assert.equal(forwarded.has('*'), false, `${legacyPath} must not forward rendering values`);
+    for (const name of names) {
+      assert.equal(values.has(name), true, `rendering owns ${name}`);
+      assert.equal(forwarded.has(name), false, `${legacyPath} must not forward ${name}`);
     }
   }
 });

@@ -1,4 +1,4 @@
-import type { BashService } from '../bash-card.ts';
+import type { BashService } from '../rendering/card-values.ts';
 import type { PreparedFileCard } from '../cards/file-model.ts';
 import type { FilePreviewMode } from '../file-preview-state.ts';
 

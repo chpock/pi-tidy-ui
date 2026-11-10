@@ -8,7 +8,7 @@ import { replayBlockStart, compareEditReplayColors } from '../../fixtures/edit-r
 import { closeTerminals } from '../../fixtures/terminal-cleanup.mjs';
 import { Terminal, compactContent, persisted, referenceCell } from '../../fixtures/main-cli-support.mjs';
 import { cardGeometry } from '../../../src/card-frame.ts';
-import { compileStyleAnsi } from '../../../src/syntax/style-ansi.ts';
+import { compileStyleAnsi } from '../../../src/appearance/style-ansi.ts';
 
 const rgb = value => [value >>> 16, value >>> 8 & 255, value & 255];
 const hex = value => '#' + value.toString(16).padStart(6, '0');

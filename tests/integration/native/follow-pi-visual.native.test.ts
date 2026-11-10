@@ -12,7 +12,7 @@ import { StdioTransport } from '../../../src/occipital/stdio.ts';
 import { PI_MARKER_REGIONS, PI_RULE_BINDINGS, type PiMarkerBinding } from '../../../src/syntax/pi-adapter.ts';
 import { samplePiBindings, samplePiPrefix } from '../../../src/syntax/pi-bindings.ts';
 import { samplePiPalette } from '../../../src/syntax/pi-palette.ts';
-import { compileStyleAnsi } from '../../../src/syntax/style-ansi.ts';
+import { compileStyleAnsi } from '../../../src/appearance/style-ansi.ts';
 import { fingerprintRules, type RuleDefinition } from '../../../src/occipital/style-rules.ts';
 import { readInputs, validateNative } from '../../../scripts/test/context.mjs';
 import { awaitFixture } from '../../fixtures/await-fixture.ts';

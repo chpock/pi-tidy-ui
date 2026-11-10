@@ -1,6 +1,6 @@
 import { backgroundAnsi, foregroundAnsi, indexedColor, rgbColor, type TerminalColorMode } from '@earendil-works/pi-tui';
 import type { LiteralInk } from '../occipital/style-types.ts';
-import type { ConcreteStyle } from '../appearance/style-materialization.ts';
+import type { ConcreteStyle } from './style-materialization.ts';
 
 export interface AnsiStyle { readonly open: string; readonly close: string }
 const resetFonts = '\x1b[22;23;24;29m';

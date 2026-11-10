@@ -5,7 +5,7 @@ import { registerHooks } from 'node:module';
 import { setImmediate as turn } from 'node:timers/promises';
 import xterm from '@xterm/headless';
 import { DataBudget } from '../../../src/resources/data-budget.ts';
-import { compileStyleAnsi, type AnsiStyle } from '../../../src/syntax/style-ansi.ts';
+import { compileStyleAnsi, type AnsiStyle } from '../../../src/appearance/style-ansi.ts';
 import { terminalRows } from '../../../src/plain-text.ts';
 
 const widthKey = Symbol.for('test.flat-paint.width');

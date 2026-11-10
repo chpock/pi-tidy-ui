@@ -3,8 +3,9 @@ import type { DisplayRangeReader, PiProjectionReader } from '../../src/highlight
 import type { SyntaxResolution } from '../../src/syntax/work.ts';
 import { DataBudget } from '../../src/resources/data-budget.ts';
 import { measure, reflow } from '../../src/syntax/measured-rows.ts';
-import { paintFlat, type FlatRangeReader } from '../../src/syntax/flat-paint.ts';
-import { compileStyleAnsi, type AnsiStyle } from '../../src/syntax/style-ansi.ts';
+import { paintFlat } from '../../src/syntax/flat-paint.ts';
+import type { FlatRangeReader } from '../../src/rendering/card-values.ts';
+import { compileStyleAnsi, type AnsiStyle } from '../../src/appearance/style-ansi.ts';
 import type { ConcreteStyle } from '../../src/appearance/style-materialization.ts';
 
 export const neutral: ConcreteStyle = { foreground: { kind: 'rgb', r: 1, g: 2, b: 3 }, background: { kind: 'terminal-default' }, attributes: 0 };

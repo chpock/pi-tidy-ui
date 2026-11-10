@@ -16,7 +16,7 @@ import { preparePaletteInput } from '../../../src/syntax/pi-input.ts';
 import { CARD_ROLES } from '../../../src/appearance/card-roles.ts';
 import { hostCells } from '../../fixtures/host-cells.ts';
 import { samplePiPalette } from '../../../src/syntax/pi-palette.ts';
-import { compileStyleAnsi } from '../../../src/syntax/style-ansi.ts';
+import { compileStyleAnsi } from '../../../src/appearance/style-ansi.ts';
 import { resolvePublicFileToolDefinition } from '../../fixtures/sdk-contract-support.ts';
 import { bashToolReaderFixture, fileToolReaderFixture, type ToolCallFixture } from '../../fixtures/tool-adapters/reader-fixture.ts';
 

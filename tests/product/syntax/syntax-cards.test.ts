@@ -1,5 +1,5 @@
 import '../../fixtures/test-guard.mjs';
-import { compileStyleAnsi } from '../../../src/syntax/style-ansi.ts';
+import { compileStyleAnsi } from '../../../src/appearance/style-ansi.ts';
 import fs from 'node:fs';
 import { syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
@@ -10,7 +10,8 @@ import { afterEach, test } from 'node:test';
 import { setImmediate as turn } from 'node:timers/promises';
 import { highlightCode } from '@earendil-works/pi-coding-agent';
 import { getThemeByName, initTheme, setThemeInstance } from '../../../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js';
-import { CardSources, type CardDisplayInput, type CardPreparation, type PreparedCard, type ReadyCardPaint } from '../../../src/syntax/cards.ts';
+import { CardSources, type CardDisplayInput, type CardPreparation } from '../../../src/syntax/cards.ts';
+import type { PreparedCard, ReadyCardPaint, FlatRangeReader } from '../../../src/rendering/card-values.ts';
 import { DataBudget } from '../../../src/resources/data-budget.ts';
 import { layoutCard, type CardRows } from '../../../src/syntax/card-layout.ts';
 import { SourceExecution, type SourceExecutionOptions } from '../../../src/highlighting/source-execution.ts';
@@ -28,7 +29,7 @@ import { SyntaxRuntime } from '../../../src/application/syntax-runtime.ts';
 import { PaletteInputOwner } from '../../../src/syntax/pi-input-owner.ts';
 import { semanticDescriptor } from '../../fixtures/semantic-provider.ts';
 import { reflow } from '../../../src/syntax/measured-rows.ts';
-import { paintFlat, type FlatRangeReader } from '../../../src/syntax/flat-paint.ts';
+import { paintFlat } from '../../../src/syntax/flat-paint.ts';
 import { stripVTControlCharacters } from 'node:util';
 import { bashToolReaderFixture, fileToolReaderFixture, type ToolCallFixture } from '../../fixtures/tool-adapters/reader-fixture.ts';
 import { RETENTION_LIMITS } from '../../../src/highlighting/storage/retention.ts';
@@ -2033,4 +2034,82 @@ test('read result text and rows participate in construction funding before prepa
   } finally {
     f.sources.geometryFunding = originalFunding;
   }
+});
+
+
+test('card construction refunds a staged command append when later service preparation throws', () => {
+  const f = fixture(), owner = {}, initial = 'printf \ud83d';
+  assert.equal(f.update(owner, bash(initial)), true);
+  const budget = f.sources.geometryFunding()!.budget, before = budget.stats();
+  let measured: object | undefined;
+  inspect(f, owner, display => { if (display.kind !== 'bash') assert.fail('bash'); measured = display.command.measured; });
+  const input = bash(`${initial}\ude00 suffix`, false, 2);
+  let serviceCalls = 0, stagedBytes = 0;
+  input.reader = { ...input.reader, prepareService() {
+    serviceCalls++; stagedBytes = budget.stats().retainedBytes - before.retainedBytes;
+    throw new Error('service preparation failed');
+  } };
+  assert.throws(() => f.update(owner, input), /service preparation failed/u);
+  assert.equal(serviceCalls, 1); assert.ok(stagedBytes > 0, 'the failure occurs with a genuinely funded replacement in progress');
+  assert.deepEqual(budget.stats(), before, 'the caller releases all candidate measurement, append and descriptor liability');
+  inspect(f, owner, display => {
+    if (display.kind !== 'bash') assert.fail('bash');
+    assert.equal(display.command.text, initial); assert.equal(display.command.measured === measured, true);
+    assert.equal(display.command.measured.isValid, true);
+  });
+  assert.equal(f.update(owner, bash(`${initial}\ude00 suffix`, false, 3)), true);
+  assert.equal(command(f, owner), `${initial}\ude00 suffix`, 'a normal later append can still adopt the preserved numeric basis');
+  assert.equal(f.calls.length, 0); assert.equal(f.env.classifications.length, 0);
+});
+
+test('card construction cannot replace a reentrant winner or retain its rejected file measurements', () => {
+  const f = fixture(), control = fixture(), owner = {}, reference = {}, winner = 'winner\t界\nline';
+  assert.equal(f.update(owner, written('original')), true); assert.equal(control.update(reference, written('original')), true);
+  const outer = written('obsolete outer body', 2), prepareFile = outer.reader.prepareFile.bind(outer.reader);
+  let reentries = 0, accepted = false;
+  outer.reader = { ...outer.reader, prepareFile(...args) {
+    reentries++; accepted = f.update(owner, written(winner, 3));
+    return prepareFile(...args);
+  } };
+  assert.equal(f.update(owner, outer), false); assert.equal(reentries, 1); assert.equal(accepted, true);
+  assert.equal(control.update(reference, written(winner, 3)), true);
+  let stamp = 0;
+  inspect(f, owner, display => {
+    if (display.kind !== 'file') assert.fail('file');
+    assert.equal(display.revision, 3); assert.equal(display.rows.map(row => row.region?.text ?? '').join('\n'), winner);
+    assert.equal(display.rows.every(row => !row.region || row.region.measured.isValid), true); stamp = display.geometryStamp;
+  });
+  assert.deepEqual(f.sources.geometryFunding()!.budget.stats(), control.sources.geometryFunding()!.budget.stats(),
+    'a rejected outer candidate adds no retained or outstanding bytes to the independently accepted winner');
+  assert.equal(f.update(owner, written('later accepted body', 4)), true);
+  inspect(f, owner, display => assert.ok(display.geometryStamp > stamp, 'new accepted geometry has a distinct identity'));
+  assert.equal(f.env.preparations.filter(receipt => receipt.phase === 'updated').length, 3, 'only the three accepted inputs acknowledge preparation');
+  assert.equal(f.calls.length, 0); assert.equal(f.env.classifications.length, 0);
+});
+
+test('card construction refusal after preview decoding drops full payloads but preserves unsettled execution', async () => {
+  const f = fixture(true), owner = {}, text = Array.from({ length: 24 }, (_, index) => `const row${index} = ${index};`).join('\n');
+  f.theme(); f.use(owner, written(text)); await settle();
+  const identity = f.cards.identities(owner)[0]!; assert.ok(identity);
+  const work = f.sources.workStatus(identity.key), funding = f.sources.geometryFunding.bind(f.sources), budget = funding()!.budget;
+  assert.equal(work.execution, 'unsettled');
+  const outstanding = budget.stats().outstandingPeakBytes;
+  let measured: { readonly isValid: boolean } | undefined;
+  inspect(f, owner, display => { if (display.kind !== 'file') assert.fail('file'); measured = display.rows[0]!.region!.measured; });
+  const input = { ...written(text, 2), viewMode: 'preview' as const }, prepareFile = input.reader.prepareFile.bind(input.reader);
+  let decoded = 0, denied = 0, refuse = false;
+  input.reader = { ...input.reader, prepareFile(...args) { const file = prepareFile(...args); decoded++; refuse = true; return file; } };
+  f.sources.geometryFunding = group => {
+    const current = funding(group);
+    return current && { budget: current.budget, grant: bytes => { if (refuse) { denied++; return undefined; } return current.grant(bytes); } };
+  };
+  try { assert.equal(f.update(owner, input), false); }
+  finally { f.sources.geometryFunding = funding; }
+  assert.equal(decoded, 1); assert.ok(denied > 0, 'logical decoding completed before actual measurement admission refused');
+  assert.equal(measured!.isValid, false); assert.equal(f.cards.visit(owner, () => assert.fail('refused preview retained a full view')), false);
+  assert.deepEqual(f.cards.identities(owner), [identity]); assert.deepEqual(f.sources.workStatus(identity.key), work);
+  assert.equal(budget.stats().outstandingPeakBytes, outstanding, 'candidate refusal does not refund an unsettled job reservation');
+  const call = f.calls.findIndex(request => !request.done && request.request.sources?.[0]?.text === text);
+  assert.ok(call >= 0); f.answerSource(call, text); await settle();
+  assert.equal(f.cards.visit(owner, () => assert.fail('late full reply revived a discarded presentation')), false);
 });

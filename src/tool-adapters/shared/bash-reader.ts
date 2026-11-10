@@ -1,4 +1,4 @@
-import type { BashService } from '../../bash-card.ts';
+import type { BashService } from '../../rendering/card-values.ts';
 import type { BashToolReader, ReaderEstimateContext, ToolCallSnapshot } from '../contracts.ts';
 
 export interface BashReaderBehavior {

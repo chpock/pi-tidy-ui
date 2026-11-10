@@ -10,7 +10,7 @@ import type { GeometryFunding } from '../../../src/resources/data-budget.ts';
 import { CARD_ROLES } from '../../../src/appearance/card-roles.ts';
 import { resolveTheme } from '../../../src/themes/selection.ts';
 import { samplePiPalette } from '../../../src/syntax/pi-palette.ts';
-import { compileStyleAnsi } from '../../../src/syntax/style-ansi.ts';
+import { compileStyleAnsi } from '../../../src/appearance/style-ansi.ts';
 
 function fixture() {
   let loads = 0, writes = 0, providers = 0;

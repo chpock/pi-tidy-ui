@@ -1,9 +1,11 @@
 import type { TerminalColorMode } from '@earendil-works/pi-tui';
 import { diagnose, type DiagnosticFields, type DiagnosticSink } from '../diagnostics.ts';
-import type { BashService } from '../bash-card.ts';
-import { contextRows, fileDiagnosticText, fileHeading, readHeading } from '../file-card.ts';
+import { fileHeading, readHeading } from '../file-card.ts';
+import { prepareCommand, prepareBashRegions } from '../cards/bash-preparation.ts';
+import { prepareFileServices, prepareFileRows } from '../cards/file-preparation.ts';
+import { cardSourceKey as sourceKey, type CardMeasurements } from '../cards/preparation.ts';
 import type { PreparedFileCard } from '../cards/file-model.ts';
-import { fileSources, visitFileSegments } from '../cards/file-sources.ts';
+import { fileSources } from '../cards/file-sources.ts';
 import type { BashToolReader, FileToolReader, ToolDiagnosticsIdentity } from '../tool-adapters/contracts.ts';
 import { CONTROLLER_LIMITS } from '../highlighting/controller-limits.ts';
 import type { CardSourcePort, GroupDisplayBasis, SourceDisplayBasis } from '../highlighting/source-ports.ts';
@@ -13,13 +15,14 @@ import type { GeometryFunding } from '../resources/data-budget.ts';
 import { type DataCharge, type DataCleanupReceipt } from '../resources/data-budget.ts';
 import { RETENTION_LIMITS } from '../highlighting/storage/retention.ts';
 import { CARD_ROLES, type CardRole } from '../appearance/card-roles.ts';
-import { measure, prepareMeasuredAppend, type MeasuredAppend, type MeasuredText } from './measured-rows.ts';
-import type { FlatRangeReader } from './flat-paint.ts';
+import { measure, prepareMeasuredAppend, type MeasuredAppend } from './measured-rows.ts';
+import type { FlatRangeReader, PreparedRegion, PreparedCard, ReadyCardPaint } from '../rendering/card-values.ts';
+import { compileCardStyles, type LiteralPaint } from '../rendering/card-styles.ts';
 import type { PaletteInputLease } from './pi-input.ts';
 import { createSemanticRuleDefinition } from './semantic-rules.ts';
 import { fingerprintRules } from '../occipital/style-rules.ts';
 import { resolveTheme, type ThemeDescription } from '../themes/selection.ts';
-import { compileStyleAnsi, type AnsiStyle } from './style-ansi.ts';
+import type { AnsiStyle } from '../appearance/style-ansi.ts';
 import type { ConcreteStyle } from '../appearance/style-materialization.ts';
 import { requestSyntax, resolveSyntax, type PiClassifier, type SyntaxIdentity, type SyntaxSourceClient, type SyntaxWorkResult } from './work.ts';
 
@@ -47,40 +50,8 @@ export interface CardSourceHost<Owner extends object> {
   /** Observes accepted inputs and actual preparation completion; never requests work. */
   preparation?(owner: Owner, receipt: CardPreparation): void;
 }
-export interface PreparedRegion { readonly text: string; readonly measured: MeasuredText }
-export interface PreparedBashRegions {
-  readonly description?: PreparedRegion; readonly heading?: PreparedRegion;
-  /** Original service.output indices. Collapsed sections prepare only their first
-   * eleven logical rows; empty/trimmed/footer-only rows need no measurement. */
-  readonly output: readonly (PreparedRegion | undefined)[];
-  readonly footer?: PreparedRegion;
-}
-export interface FileRowDescriptor {
-  readonly kind: ' ' | '+' | '-' | 'gap'; readonly index: number;
-  readonly old?: number; readonly next?: number; readonly hunk?: number;
-  readonly region?: PreparedRegion;
-  /** Full continuous source coordinates, not concatenated selected-context coordinates. */
-  readonly oldSource?: { readonly key: string; readonly utf16: number; readonly byte: number };
-  readonly nextSource?: { readonly key: string; readonly utf16: number; readonly byte: number };
-}
-export type PreparedCard = { readonly kind: 'bash'; readonly revision: number; readonly geometryStamp: number;
-  readonly command: PreparedRegion; readonly service: BashService;
-  readonly regions: PreparedBashRegions } |
-  { readonly kind: 'file'; readonly revision: number; readonly geometryStamp: number; readonly path?: string;
-    readonly label?: string; readonly mode?: string; readonly preview?: boolean; readonly omitted?: boolean; readonly note?: PreparedRegion; readonly heading?: PreparedRegion;
-    readonly error: boolean; readonly diagnostics: readonly PreparedRegion[];
-    readonly rows: readonly FileRowDescriptor[] };
-export interface ReadyCardPaint {
-  readonly publication: number; readonly paintStamp: number; readonly mode: TerminalColorMode;
-  readonly origin: 'owned' | 'pi'; readonly roles: Readonly<Record<CardRole, AnsiStyle>>;
-  /** Accessors are valid only within the outer synchronous visit. No compilation occurs here. */
-  ranges(key: string, surface?: 'added' | 'removed' | 'context'): FlatRangeReader | undefined;
-  /** Historical text is borrowed under canonical ownership, never source authority. */
-  basis(key: string, consume: (text: string, ranges: FlatRangeReader) => void): boolean;
-}
 type Slot = SyntaxIdentity & { outcome: SyntaxWorkResult['outcome']; awaitingProvider?: true };
 const noSlots: ReadonlyMap<string, Slot> = new Map();
-type LiteralPaint = { normal: AnsiStyle; added: AnsiStyle; removed: AnsiStyle; context: AnsiStyle };
 type Compiled = { charge: DataCharge; table: Map<ConcreteStyle, LiteralPaint>; roles: Record<CardRole, AnsiStyle>;
   literals: Readonly<Record<CardRole, ConcreteStyle>>;
   group?: GroupDisplayBasis; palette: string; paletteRevision: number; sourceRevision: number;
@@ -108,7 +79,6 @@ function refreshTicket(this: RecordTicket, newest: boolean) { return this.consum
 function creditTicket(this: RecordTicket) { return this.consumer.deref()?.requiresCredit(this) ?? false; }
 function renderNotice(owner: WeakRef<CardSources<object>>) { return () => owner.deref()?.renderPrepared(); }
 const keyBytes = (key: string) => RETENTION_LIMITS.entryAllowance + 2 * key.length;
-const sourceKey = (ticket: number, ordinal: number) => `card:${ticket}:${ordinal}`;
 function wireHint(value: string | undefined, cap: number) {
   return value && value.length <= cap && Buffer.byteLength(value) <= cap && !/[\p{Cc}\p{Cs}]/u.test(value) ? value : undefined;
 }
@@ -215,47 +185,31 @@ export class CardSources<Owner extends object> {
       const measured = measure(text, funding.budget, funding.grant, wrap); if (!measured) throw refused;
       receipts.add(measured.cleanupReceipt()); return Object.freeze({ text, measured });
     };
+    const measurements: CardMeasurements = { region, append(previous, text) {
+      append = prepareMeasuredAppend(previous.measured, text, funding.grant);
+      if (!append) throw refused;
+      receipts.add(append.measured.cleanupReceipt()); return Object.freeze({ text, measured: append.measured });
+    } };
     try {
       if (input.kind === 'bash') {
         const sameSource = old?.kind === 'bash' && state.sourceRevision === input.sourceRevision;
         const commandSource = sameSource ? undefined : input.reader.command();
         const logical = sameSource ? old.command.text : commandSource ?? '';
         if (!sameSource) sourceEligible = commandSource !== undefined;
-        let command: PreparedRegion;
-        if (old?.kind === 'bash' && old.command.text === logical) command = old.command;
-        else if (old?.kind === 'bash' && logical.startsWith(old.command.text)) {
-          append = prepareMeasuredAppend(old.command.measured, logical, funding.grant);
-          if (!append) throw refused;
-          receipts.add(append.measured.cleanupReceipt()); command = Object.freeze({ text: logical, measured: append.measured });
-        } else command = region(logical);
+        const command = prepareCommand(logical, old?.kind === 'bash' ? old.command : undefined, measurements);
         const sameService = old?.kind === 'bash' && state.serviceRevision === input.serviceRevision;
         const service = sameService ? old.service : input.reader.prepareService(input.directory);
         const previous = old?.kind === 'bash' ? old.regions : undefined;
-        const serviceRegion = (text: string, prior?: PreparedRegion) => prior?.text === text ? prior : region(text);
-        // Every logical row contributes at least one visual row. Each collapsed
-        // section therefore needs at most eleven logical rows, at every width.
-        // Keep complete service text; setExpanded prepares missing rows before render.
-        const outputEnd = expanded ? service.last : Math.min(service.last, service.first + 11);
-        const reminderEnd = expanded ? service.end : Math.min(service.end, service.reminder + 11);
-        const regions = sameService && state.expanded === expanded ? old.regions : Object.freeze({
-          description: service.description ? serviceRegion(`# ${service.description}`, previous?.description) : undefined,
-          heading: service.heading ? serviceRegion(service.heading, previous?.heading) : undefined,
-          output: Object.freeze(service.output.map((text, index) => text && (index >= service.first && index < outputEnd || index >= service.reminder && index < reminderEnd)
-            ? serviceRegion(text, previous?.output[index]) : undefined)),
-          footer: service.footer ? serviceRegion(service.footer, previous?.footer) : undefined,
-        });
+        const regions = sameService && state.expanded === expanded ? old.regions : prepareBashRegions(service, expanded, previous, measurements);
         const same = old?.kind === 'bash' && command === old.command && regions === old.regions;
         display = Object.freeze({ kind: 'bash', revision: input.revision, geometryStamp: same ? old.geometryStamp : ++state.geometry, command, service, regions });
       } else {
         file = state.sourceRevision === input.sourceRevision && previousView === nextView && state.file ? state.file : input.reader.prepareFile(input.viewMode ?? 'full', true);
         const error = !input.reader.call.partial && input.reader.failed;
         const preview = (input.viewMode ?? 'full') === 'preview';
-        const diagnostics = preview ? Object.freeze(input.diagnostics === true
-          ? [region('Diagnostics available in the full file view.')] : [])
-          : old?.kind === 'file' && state.serviceRevision === input.serviceRevision && previousView === nextView ? old.diagnostics
-            : Object.freeze(fileDiagnosticText(input.reader.diagnosticText()).map(text => region(text)));
-        const noteText = preview ? file?.view.note : file ? input.reader.note(file.view) : undefined;
-        const note = noteText ? old?.kind === 'file' && old.note?.text === noteText ? old.note : region(noteText) : undefined;
+        const { diagnostics, note } = prepareFileServices({ file, previous: old?.kind === 'file' ? old : undefined,
+          preview, diagnostics: input.diagnostics, sameService: state.serviceRevision === input.serviceRevision && previousView === nextView,
+          metadata: input.reader }, measurements);
         if (old?.kind === 'file' && file === state.file && previousView === nextView) {
           const headingText = file ? input.reader.kind === 'read' ? readHeading(file.path, input.cwd) : fileHeading(file.path, input.cwd, file.view.label) : undefined;
           const heading = state.input?.cwd === input.cwd ? old.heading : headingText ? region(headingText, 'fragments') : undefined;
@@ -263,31 +217,11 @@ export class CardSources<Owner extends object> {
             geometryStamp: heading === old.heading && diagnostics === old.diagnostics && note === old.note ? old.geometryStamp : ++state.geometry });
         }
         else {
-          const rows: FileRowDescriptor[] = [];
-          if (file) {
-            const visible = file.view.preview || file.view.mode === 'code' ? file.view.lines : contextRows(file.view.lines);
-            const indices = new Map(file.view.lines.map((line, index) => [line, index]));
-            const coordinates = new Map<number, { oldSource?: FileRowDescriptor['oldSource']; nextSource?: FileRowDescriptor['nextSource'] }>();
-            let previous = -1, utf16 = 0, byte = 0;
-            visitFileSegments(file.view.lines, (side, ordinal, index, line) => {
-              if (ordinal !== previous) { utf16 = byte = 0; previous = ordinal; }
-              const key = sourceKey(ticket.id, ordinal);
-              const coordinate = coordinates.get(index) ?? {}; coordinate[side === 'old' ? 'oldSource' : 'nextSource'] = { key, utf16, byte }; coordinates.set(index, coordinate);
-              utf16 += line.logical.length + 1; byte += Buffer.byteLength(line.logical) + 1;
-            });
-            visible.forEach(line => {
-              const index = indices.get(line) ?? -1;
-              const coordinate = coordinates.get(index);
-              if (coordinate?.oldSource) Object.freeze(coordinate.oldSource);
-              if (coordinate?.nextSource) Object.freeze(coordinate.nextSource);
-              rows.push(Object.freeze(line.kind === 'gap' ? { kind: 'gap', index } : { kind: line.kind, index, old: line.old, next: line.next, hunk: line.hunk,
-                region: region(line.logical), ...coordinate }));
-            });
-          }
+          const rows = prepareFileRows(file, ticket.id, measurements);
           display = Object.freeze({ kind: 'file', revision: input.revision, geometryStamp: ++state.geometry, path: file?.path, label: file?.view.label,
             mode: file?.view.mode, preview: file?.view.preview, omitted: file?.view.omitted, note, error, diagnostics,
             heading: file ? region(input.reader.kind === 'read' ? readHeading(file.path, input.cwd) : fileHeading(file.path, input.cwd, file.view.label), 'fragments') : undefined,
-            rows: Object.freeze(rows) });
+            rows });
         }
       }
       if (!this.owned(owner, state, ticket) || state.mutation !== mutation) return false;
@@ -569,17 +503,10 @@ export class CardSources<Owner extends object> {
     let next: Compiled | undefined, signature: string | undefined;
     const compile = (roles: Readonly<Record<CardRole, ConcreteStyle>>, enumerate: (consume: (style: ConcreteStyle) => void) => boolean,
       preparedRoles?: Readonly<Record<CardRole, AnsiStyle>>) => {
-      let count = 0; if (!enumerate(() => count++)) return;
-      charge = fund(funding, 4096 + count * 2560 + state.slots.size * 512); if (!charge) return;
-      const table = new Map<ConcreteStyle, LiteralPaint>(), compiled = {} as Record<CardRole, AnsiStyle>;
-      const known = new Map<ConcreteStyle, AnsiStyle>();
-      if (preparedRoles) for (const role of CARD_ROLES) known.set(roles[role], preparedRoles[role]);
-      const add = (style: ConcreteStyle) => { if (!table.has(style)) table.set(style, {
-        normal: known.get(style) ?? compileStyleAnsi(style, input.mode), added: compileStyleAnsi({ ...style, background: roles.addedCode.background }, input.mode),
-        removed: compileStyleAnsi({ ...style, background: roles.removedCode.background }, input.mode),
-        context: compileStyleAnsi({ ...style, background: roles.contextCode.background }, input.mode) }); };
-      if (!enumerate(add)) return;
-      for (const role of CARD_ROLES) { const style = roles[role]; add(style); compiled[role] = table.get(style)!.normal; }
+      const stage = compileCardStyles(roles, enumerate, input.mode,
+        count => charge = fund(funding, 4096 + count * 2560 + state.slots.size * 512), preparedRoles);
+      if (!stage) return;
+      const { table, roles: compiled, add } = stage;
       const piTokens = new Map<string, Map<number, ConcreteStyle>>();
       if (!isOwned) for (const slot of state.slots.values()) {
         const projection = slot.palette === input.palette ? this.client.pi.piProjection(slot.key, slot.version, slot.palette) : undefined; if (!projection) continue;
@@ -590,7 +517,7 @@ export class CardSources<Owner extends object> {
       signature = CARD_ROLES.map(role => compiled[role].open).join('|');
       const same = previous && signature === state.paintSignature && (group?.paintStamp ?? 0) === (previous.group?.paintStamp ?? 0)
         && previous.palette === identity && (isOwned || effects === state.paintEffects) && eligibility === state.paintEligibility;
-      next = { charge, table, roles: Object.freeze(compiled), literals: roles, group, palette: identity,
+      next = { charge: stage.charge, table, roles: Object.freeze(compiled), literals: roles, group, palette: identity,
         paletteRevision: input.palette, sourceRevision: input.sourceRevision, publication: ++this.publication,
         paintStamp: same ? previous.paintStamp : this.publication, origin: isOwned ? 'owned' : 'pi', mode: input.mode, piTokens };
     };

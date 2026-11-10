@@ -1,10 +1,10 @@
 import { cardGeometry, frameMeasuredRow, type CardGeometry } from '../card-frame.ts';
 import type { DataBudget, DataCharge, DataCleanupReceipt, DataGrantFactory } from '../resources/data-budget.ts';
 import type { CardRole } from '../appearance/card-roles.ts';
-import type { PreparedCard, PreparedRegion, ReadyCardPaint, FileRowDescriptor } from './cards.ts';
-import { paintFlat, type FlatRangeReader, type FlatPaintRows } from './flat-paint.ts';
+import type { PreparedCard, PreparedRegion, ReadyCardPaint, FileRowDescriptor, FlatRangeReader } from '../rendering/card-values.ts';
+import { paintFlat, type FlatPaintRows } from './flat-paint.ts';
 import { reflow, SpanKind, type MeasuredRowLayout, type MeasuredText } from './measured-rows.ts';
-import type { AnsiStyle } from './style-ansi.ts';
+import type { AnsiStyle } from '../appearance/style-ansi.ts';
 
 export interface CardLayoutOptions { width: number; outputPad?: number; expanded?: boolean }
 /** Proof preparation and caching belong to the host, not this consumer. The byte

@@ -1,5 +1,6 @@
 import { blockText } from '../../plain-text.ts';
-import { prepareBashService, type BashService } from '../../bash-card.ts';
+import { prepareBashService } from '../../bash-card.ts';
+import type { BashService } from '../../rendering/card-values.ts';
 import { commandFooter } from '../shared/command-footer.ts';
 
 export interface AftBashServiceInput {

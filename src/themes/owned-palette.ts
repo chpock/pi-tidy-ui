@@ -3,7 +3,7 @@ import { fileURLToPath } from 'node:url';
 import { rgbColor, type Color, type TerminalColorMode } from '@earendil-works/pi-tui';
 import { CARD_ROLES, type CardRole } from '../appearance/card-roles.ts';
 import type { StyleBinding } from '../appearance/style-materialization.ts';
-import { compileStyleAnsi, type AnsiStyle } from '../syntax/style-ansi.ts';
+import { compileStyleAnsi, type AnsiStyle } from '../appearance/style-ansi.ts';
 import { outputInk } from '../syntax/pi-color.ts';
 import { SEMANTIC_REGIONS } from '../syntax/semantic-rules.ts';
 import type { ConcreteStyle } from '../appearance/style-materialization.ts';

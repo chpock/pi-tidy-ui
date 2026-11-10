@@ -12,9 +12,9 @@ import { fileCardFixture as renderFileCard } from "../../fixtures/prepared-card.
 import type { PiInputTheme } from "../../../src/syntax/pi-input.ts";
 import { CardSources } from "../../../src/syntax/cards.ts";
 import { samplePiCardPalette } from "../../../src/syntax/pi-palette.ts";
-import { compileStyleAnsi } from "../../../src/syntax/style-ansi.ts";
+import { compileStyleAnsi } from "../../../src/appearance/style-ansi.ts";
 import { cardGeometry } from "../../../src/card-frame.ts";
-import { measureFileCard } from "../../../src/file-card.ts";
+import { measureFileCard, prepareFileCard } from "../../../src/file-card.ts";
 import { prepareFileToolCall } from '../../fixtures/tool-adapters/reader-fixture.ts';
 import { generateDiffString, generateUnifiedPatch } from "../../../node_modules/@earendil-works/pi-coding-agent/dist/core/tools/edit-diff.js";
 import type { CardTheme } from "../../../src/card-theme.ts";
@@ -170,7 +170,7 @@ test("edit context merges overlapping windows once and marks omitted interiors",
 });
 
 test("edit context constant controls projection without fetching unavailable source", async () => {
-  const url = new URL("../../../src/file-card.ts", import.meta.url), source = readFileSync(url, "utf8");
+  const url = new URL("../../../src/cards/file-display.ts", import.meta.url), source = readFileSync(url, "utf8");
   const declaration = "const DIFF_CONTEXT_LINES = 3;";
   assert.ok(source.includes(declaration), "context is configured by one source constant, defaulting to three");
   const temporary = mkdtempSync(join(tmpdir(), "tidy-ui-edit-context-"));
@@ -182,9 +182,9 @@ test("edit context constant controls projection without fetching unavailable sou
       const file = join(temporary, `edit-${count}.ts`); writeFileSync(file, configured);
       const alternate = await import(pathToFileURL(file).href);
       for (const available of [2, 8]) {
-        const prepared = alternate.prepareFileCard({ kind: 'edit', path: 'example.txt', complete: true, failed: false, viewMode: 'full',
+        const prepared = prepareFileCard({ kind: 'edit', path: 'example.txt', complete: true, failed: false, viewMode: 'full',
           saved: { format: 'numbered', value: generateDiffString(before, after, available).diff } });
-        const text = alternate.contextRows(prepared.view.lines).map((row: { text?: string }) => row.text ?? "").join("\n");
+        const text = alternate.contextRows(prepared!.view.lines).map((row: { text?: string }) => row.text ?? "").join("\n");
         assert.equal([...text.matchAll(/source_(\d+)/g)].filter((match) => Number(match[1]) !== 10).length, 2 * Math.min(count, available));
         assert.match(text, /source_10/); assert.match(text, /changed_10/);
       }

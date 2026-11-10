@@ -12,7 +12,7 @@ import type { SyntaxMenuOutcome } from './application/syntax-menu.ts';
 import { type JournalOptions } from "./debug-log.ts";
 import { diagnose, reportRuntime, type DiagnosticFields, type DiagnosticSink } from "./diagnostics.ts";
 import { stripVTControlCharacters } from "node:util";
-import { cleanFileDisplayText } from "./file-card.ts";
+import { cleanFileDisplayText } from "./cards/file-display.ts";
 import { FilePreviewState, type FilePreviewMode } from './file-preview-state.ts';
 import { measure, reflow, SpanKind, type MeasuredText } from './syntax/measured-rows.ts';
 import { renderUserCard } from "./user-card.ts";

@@ -5,7 +5,7 @@ import xterm from '@xterm/headless';
 import { Theme } from '@earendil-works/pi-coding-agent';
 import { getThemeByName } from '../../../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js';
 import { rgbColor } from '@earendil-works/pi-tui';
-import { compileStyleAnsi } from '../../../src/syntax/style-ansi.ts';
+import { compileStyleAnsi } from '../../../src/appearance/style-ansi.ts';
 import { materializeStyle, type ConcreteStyle } from '../../../src/appearance/style-materialization.ts';
 
 const style: ConcreteStyle = { foreground: { kind: 'rgb', r: 18, g: 52, b: 86 },
