@@ -141,7 +141,7 @@ test('Pi input: mode and public palette replacement build once with old/new over
   const f = fixture(), theme = counted(), changed = counted('light');
   try {
     f.runtime.previewTheme({ kind: 'theme', id: 'chosen-native', variant: 'dark' });
-    const selected = f.runtime.snapshot().selected, source = f.runtime.sources.stats();
+    const selected = f.runtime.snapshot().selected, source = f.runtime.sourceStatistics.stats();
     const old = prepare(f, theme, 'truecolor', f.funding)!, original = inspect(old), oldBytes = f.budget.stats().retainedBytes;
     const next = prepare(f, theme, '256color', f.funding)!;
     assert.equal(next.paletteRevision, old.paletteRevision); assert.equal(next.terminalMode, '256color');
@@ -154,7 +154,7 @@ test('Pi input: mode and public palette replacement build once with old/new over
     assert.notEqual(light.paletteRevision, old.paletteRevision); const lightSamples = changed.counters();
     const lightCopy = prepare(f, changed, '256color', f.funding)!; assert.deepEqual(changed.counters(), lightSamples);
     assert.deepEqual(inspect(old), original); assert.deepEqual(f.runtime.snapshot().selected, selected);
-    assert.deepEqual(f.runtime.sources.stats(), source); assert.deepEqual(f.counters(), { loads: 0, writes: 0, providers: 0 });
+    assert.deepEqual(f.runtime.sourceStatistics.stats(), source); assert.deepEqual(f.counters(), { loads: 0, writes: 0, providers: 0 });
     for (const lease of [old, next, modeCopy, light, lightCopy]) lease.dispose();
     assert.equal(f.budget.stats().retainedBytes, 0);
     console.log(JSON.stringify({ piInputModePalette: { modeSamples, lightSamples, oldNewOverlap: true, sourceChanges: 0, settingsWrites: 0, rpc: 0, finalBytes: 0 } }));
@@ -251,7 +251,7 @@ test('Pi input: reentrant funding release pins shared data and refuses resurrect
 });
 
 function detachedOwnerProbe() {
-  const f = fixture(), theme = counted(), controller = f.runtime.sources;
+  const f = fixture(), theme = counted(), controller = f.runtime.cardSource;
   const root = { funding: controller.geometryFunding()! }, callback: DataGrantFactory = bytes => root.funding.grant(bytes);
   const lease = prepare(f, theme, 'truecolor', { budget: root.funding.budget, grant: callback })!;
   let escaped: Parameters<Parameters<Lease['visit']>[0]>[0] | undefined, payload!: WeakRef<object>;

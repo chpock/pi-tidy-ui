@@ -2,7 +2,9 @@ import '../../fixtures/test-guard.mjs';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { setImmediate as turn } from 'node:timers/promises';
-import { SourceController, type SourcePreparation, type GroupDisplayBasis } from '../../../src/highlighting/controller.ts';
+import { SourceExecution } from '../../../src/highlighting/source-execution.ts';
+import type { GroupDisplayBasis, GroupDisplayMember, DisplayRangeReader } from '../../../src/highlighting/source-ports.ts';
+import type { SourcePreparation } from '../../../src/highlighting/work-registry.ts';
 import { SemanticRetentionPool } from '../../../src/highlighting/semantic-retention.ts';
 import { CARD_ROLES, type CardRole } from '../../../src/appearance/card-roles.ts';
 import { decodeSemanticDescription } from '../../../src/occipital/semantic-protocol.ts';
@@ -52,13 +54,13 @@ class Peer {
   }
 }
 async function settle() { for (let i = 0; i < 8; i++) await turn(); }
-function card(owner: SourceController, names: string[]) {
+function card(owner: SourceExecution, names: string[]) {
   const keys = new Set(names);
   const preparation: SourcePreparation = { keys, prepare() { for (const key of keys) owner.observe(demand(key)); }, needsRefresh() { return false; }, requiresCredit() { return false; } };
   const group = owner.registerPreparation(preparation)!;
   return { keys, preparation, group, start() { owner.queuePreparation(group, true); owner.flush(); } };
 }
-async function cleanup(owner: SourceController, peer: Peer) {
+async function cleanup(owner: SourceExecution, peer: Peer) {
   owner.dispose();
   for (let i = 0; i < 4; i++) {
     for (const p of peer.pending) p.reject(new RequestFailure('cleanup', 'not_started'));
@@ -77,7 +79,7 @@ function colors(view: GroupDisplayBasis | undefined, keys: string[]) {
 }
 
 test('group presentation: useful zero-source demand is explicit; generic uses no RPC or source authority', async () => {
-  const peer = new Peer(), owner = new SourceController(peer), c = card(owner, []);
+  const peer = new Peer(), owner = new SourceExecution(peer), c = card(owner, []);
   try {
     owner.setStyleSelection(local(7)); await settle(); assert.equal(owner.groupPresentation(c.group), undefined);
     c.start(); await settle(); const view = owner.groupPresentation(c.group)!;
@@ -91,7 +93,7 @@ test('group presentation: useful zero-source demand is explicit; generic uses no
 });
 
 test('group presentation: palette-only owner resolves all roles locally without STYLE or fake source', async () => {
-  const peer = new Peer(), owner = new SourceController(peer), c = card(owner, []);
+  const peer = new Peer(), owner = new SourceExecution(peer), c = card(owner, []);
   try {
     owner.setStyleSelection(paletteInput()); c.start(); await settle();
     const first = owner.groupPresentation(c.group)!; assert.equal(ink(first.role('frame')), 1);
@@ -106,7 +108,7 @@ test('group presentation: palette-only owner resolves all roles locally without 
 });
 
 test('group presentation: two stable slots rebind locally while unrelated empty group publishes independently', async () => {
-  const peer = new Peer(), owner = new SourceController(peer), c = card(owner, ['left', 'right']);
+  const peer = new Peer(), owner = new SourceExecution(peer), c = card(owner, ['left', 'right']);
   try {
     owner.setStyleSelection(paletteInput()); c.start(); await settle();
     peer.source(0, 'x\n', 1); peer.source(1, 'x\n', 2); await settle(); peer.style(2, 11); await settle();
@@ -120,7 +122,7 @@ test('group presentation: two stable slots rebind locally while unrelated empty 
 });
 
 test('group presentation: equal-color metadata closes strict reader without paint churn', async () => {
-  const peer = new Peer(), owner = new SourceController(peer), c = card(owner, []);
+  const peer = new Peer(), owner = new SourceExecution(peer), c = card(owner, []);
   try {
     owner.setStyleSelection(local(7)); c.start(); await settle(); const a = owner.groupPresentation(c.group)!;
     owner.setStyleSelection(local(7, 9)); await settle(); const b = owner.groupPresentation(c.group)!;
@@ -130,7 +132,7 @@ test('group presentation: equal-color metadata closes strict reader without pain
 });
 
 test('group presentation: missing, equal-size changed and recreated members cannot attach stale colors', async () => {
-  const peer = new Peer(), owner = new SourceController(peer), c = card(owner, ['left']);
+  const peer = new Peer(), owner = new SourceExecution(peer), c = card(owner, ['left']);
   try {
     owner.setStyleSelection(paletteInput()); c.start(); peer.source(0); await settle(); peer.style(1, 11); await settle(); const a = owner.groupPresentation(c.group)!;
     c.keys.delete('left'); c.keys.add('right'); assert.equal(owner.groupPresentation(c.group), undefined);
@@ -145,7 +147,7 @@ test('group presentation: missing, equal-size changed and recreated members cann
 });
 
 test('group presentation: reentrant unregister invalidates all member reads and holds charged palette through unwind', async () => {
-  const peer = new Peer(), owner = new SourceController(peer), c = card(owner, []);
+  const peer = new Peer(), owner = new SourceExecution(peer), c = card(owner, []);
   try {
     owner.setStyleSelection(local(7)); c.start(); await settle(); const view = owner.groupPresentation(c.group)!;
     assert.equal(view.visit(() => {
@@ -157,7 +159,7 @@ test('group presentation: reentrant unregister invalidates all member reads and 
 });
 
 test('group presentation: a held generic STYLE reply uses the latest local palette bindings', async () => {
-  const peer = new Peer(), owner = new SourceController(peer), c = card(owner, ['source']);
+  const peer = new Peer(), owner = new SourceExecution(peer), c = card(owner, ['source']);
   try {
     owner.setStyleSelection(paletteInput(1, 1, 1)); c.start(); await settle(); peer.source(0); await settle();
     assert.equal(peer.calls[1]!.op, 'styles.resolve');
@@ -174,7 +176,7 @@ test('group presentation: a held generic STYLE reply uses the latest local palet
 });
 
 test('group presentation: cached styles and local roles progress while two source slots remain physically held', async () => {
-  const peer = new Peer(), owner = new SourceController(peer), c = card(owner, []);
+  const peer = new Peer(), owner = new SourceExecution(peer), c = card(owner, []);
   try {
     owner.setStyleSelection(paletteInput()); c.start(); await settle(); assert.equal(peer.calls.length, 0);
     owner.observe(demand('held-a')); owner.observe(demand('held-b')); owner.flush(); await settle(); assert.equal(owner.stats().unsettledJobs, 2);
@@ -186,7 +188,7 @@ test('group presentation: cached styles and local roles progress while two sourc
 });
 
 async function abandoned(peer: Peer) {
-  const owner = new SourceController(peer), c = card(owner, []), preparation = c.preparation;
+  const owner = new SourceExecution(peer), c = card(owner, []), preparation = c.preparation;
   owner.setStyleSelection(local(7)); c.start();
   assert.equal(await owner.whenSettled(), true);
   const escaped = owner.groupPresentation(c.group);
@@ -195,7 +197,7 @@ async function abandoned(peer: Peer) {
   return { owner: new WeakRef(owner), preparation: new WeakRef(preparation), escaped, globalBookkeepingBytes };
 }
 test('group presentation: first useful owner and preparation collect with escaped weak reader while peer remains active', async () => {
-  const peer = new Peer(), live = new SourceController(peer), keep = card(live, []); live.setStyleSelection(local(8)); keep.start();
+  const peer = new Peer(), live = new SourceExecution(peer), keep = card(live, []); live.setStyleSelection(local(8)); keep.start();
   const gone = await abandoned(peer); let escaped: GroupDisplayBasis | undefined = gone.escaped;
   const before = gone.globalBookkeepingBytes;
   for (let i = 0; i < 40; i++) { await turn(); global.gc!(); await settle(); if (!gone.owner.deref()) break; }
@@ -227,7 +229,7 @@ test('display text lifetime: removal, replacement and throw hold actual text unt
 });
 
 test('group presentation: an independently completed card is not blocked by another held multi-slot selection', async () => {
-  const peer = new Peer(), owner = new SourceController(peer), pair = card(owner, ['left', 'right']);
+  const peer = new Peer(), owner = new SourceExecution(peer), pair = card(owner, ['left', 'right']);
   try {
     owner.setStyleSelection(paletteInput()); pair.start(); await settle(); peer.source(0, 'x\n', 1); peer.source(1, 'x\n', 2); await settle(); peer.style(2, 11); await settle();
     owner.setStyleSelection(paletteInput(22, 22, 2)); await settle(); assert.equal(peer.calls[3]!.op, 'styles.resolve');
@@ -241,7 +243,7 @@ test('group presentation: an independently completed card is not blocked by anot
 });
 
 test('group presentation: equal-color member metadata invalidates strict reads but retains paint and geometry', async () => {
-  const peer = new Peer(), owner = new SourceController(peer), c = card(owner, ['one']);
+  const peer = new Peer(), owner = new SourceExecution(peer), c = card(owner, ['one']);
   try {
     owner.setStyleSelection(local(7)); c.start(); peer.source(0); await settle(); peer.style(1); await settle();
     const before = owner.groupPresentation(c.group)!, source = owner.displayBasis('one')!;
@@ -254,7 +256,7 @@ test('group presentation: equal-color member metadata invalidates strict reads b
 
 test('group presentation: targeted notices coalesce exact group IDs and unregister suppresses pending delivery', async () => {
   const peer = new Peer(), notices: { keys: readonly string[]; groups: readonly number[] }[] = [];
-  const owner = new SourceController(peer, { onChange(keys, groups = []) { notices.push({ keys, groups }); } });
+  const owner = new SourceExecution(peer, { onChange(keys, groups = []) { notices.push({ keys, groups }); } });
   const a = card(owner, []), b = card(owner, []);
   try {
     owner.setStyleSelection(local(7)); a.start(); await settle(); assert.deepEqual(notices.splice(0), [{ keys: [], groups: [a.group.id] }]);
@@ -273,14 +275,15 @@ test('group presentation: SyntaxClient weak observer forwards group-only deliver
     provider: { async tryShared() { return undefined; }, async acquireOwned() { throw new Error('owned unavailable'); } },
     onSourceChange(keys, groups = []) { notices.push({ keys, groups }); } });
   try {
-    await client.start(); const c = card(client.sources, []); client.sources.setStyleSelection(local(7)); c.start(); await settle();
+    await client.start(); const execution = client.cardSource as SourceExecution;
+    const c = card(execution, []); execution.setStyleSelection(local(7)); c.start(); await settle();
     assert.deepEqual(notices, [{ keys: [], groups: [c.group.id] }]); assert.equal(client.broker.stats().sourceDispatches, 0); assert.equal(client.broker.stats().styleDispatches, 0);
     void c.preparation;
   } finally { await client.dispose(); }
 });
 
 test('group presentation: unregister releases local palette-only owner without SOURCE or STYLE work', async () => {
-  const peer = new Peer(), owner = new SourceController(peer), c = card(owner, []);
+  const peer = new Peer(), owner = new SourceExecution(peer), c = card(owner, []);
   try {
     owner.setStyleSelection(paletteInput()); c.start(); await settle(); assert.ok(owner.groupPresentation(c.group));
     owner.unregisterPreparation(c.group); owner.setStyleSelection(undefined);
@@ -290,11 +293,11 @@ test('group presentation: unregister releases local palette-only owner without S
 });
 
 test('group presentation: escaped member ranges reject reentrant removal and keep suspended palette/member data charged', async () => {
-  const peer = new Peer(), owner = new SourceController(peer), c = card(owner, ['one']);
+  const peer = new Peer(), owner = new SourceExecution(peer), c = card(owner, ['one']);
   try {
     owner.setStyleSelection(local(7)); c.start(); peer.source(0); await settle(); peer.style(1); await settle();
     const view = owner.groupPresentation(c.group)!;
-    let read: import('../../../src/highlighting/controller.ts').DisplayRangeReader | undefined;
+    let read: import('../../../src/highlighting/source-ports.ts').DisplayRangeReader | undefined;
     assert.equal(view.visit(member => { read = member('one')!.read; }), true);
     let calls = 0;
     assert.equal(read!(() => {
@@ -306,7 +309,7 @@ test('group presentation: escaped member ranges reject reentrant removal and kee
 });
 
 test('controller display text lifetime: nested source callback removal retains actual text storage until unwind', async () => {
-  const peer = new Peer(), owner = new SourceController(peer), text = 'text:' + 'x'.repeat(8192);
+  const peer = new Peer(), owner = new SourceExecution(peer), text = 'text:' + 'x'.repeat(8192);
   try {
     owner.setStyleSelection(local(7)); owner.observe(demand('one', text)); owner.flush(); peer.source(0, text); await settle(); peer.style(1); await settle();
     const basis = owner.displayBasis('one')!;
@@ -318,11 +321,11 @@ test('controller display text lifetime: nested source callback removal retains a
   } finally { await cleanup(owner, peer); }
 });
 
-function ephemeralPreparation(owner: SourceController) {
+function ephemeralPreparation(owner: SourceExecution) {
   const c = card(owner, []); c.start(); return { group: c.group, preparation: new WeakRef(c.preparation) };
 }
 test('group presentation: collecting preparation releases its first ready role hold while controller and another group remain active', async () => {
-  const peer = new Peer(), owner = new SourceController(peer), live = card(owner, []); owner.setStyleSelection(local(7)); live.start();
+  const peer = new Peer(), owner = new SourceExecution(peer), live = card(owner, []); owner.setStyleSelection(local(7)); live.start();
   const gone = ephemeralPreparation(owner); await settle(); const view = owner.groupPresentation(gone.group)!;
   try {
     const before = owner.stats().retention.retainedBytes;
@@ -334,7 +337,7 @@ test('group presentation: collecting preparation releases its first ready role h
 });
 
 test('group presentation: ordinary append keeps historical ready colors and same-text finalization is an identity no-op', async () => {
-  const peer = new Peer(), owner = new SourceController(peer), keys = new Set(['bash']);
+  const peer = new Peer(), owner = new SourceExecution(peer), keys = new Set(['bash']);
   let current = { ...demand('bash', 'x\n', 1, false), language: 'bash' };
   const preparation: SourcePreparation = { keys, prepare() { owner.observe(current); }, requiresCredit() { return false; }, needsRefresh() { return false; } };
   const group = owner.registerPreparation(preparation)!;
@@ -356,7 +359,7 @@ test('group presentation: ordinary append keeps historical ready colors and same
 });
 
 test('group presentation: compatible provider recovery applies local roles while SOURCE resumes', async () => {
-  const peer = new Peer(), owner = new SourceController(peer), keys = new Set(['one']);
+  const peer = new Peer(), owner = new SourceExecution(peer), keys = new Set(['one']);
   const preparation: SourcePreparation = { keys, prepare() { owner.observe({ ...demand('one', 'x\n', 1, false), language: 'bash' }); }, requiresCredit() { return false; }, needsRefresh() { return false; } };
   const group = owner.registerPreparation(preparation)!;
   try {
@@ -372,7 +375,7 @@ test('group presentation: compatible provider recovery applies local roles while
 });
 
 test('group presentation: denied client config keeps previous ready palette without warm retry', async () => {
-  const peer = new Peer(), owner = new SourceController(peer, { retention: { maxBytes: 20000 } }), c = card(owner, []);
+  const peer = new Peer(), owner = new SourceExecution(peer, { retention: { maxBytes: 20000 } }), c = card(owner, []);
   try {
     assert.equal(owner.setStyleSelection(compactSelection(7, 'first')), true); c.start(); await settle(); const view = owner.groupPresentation(c.group)!;
     assert.equal(owner.setStyleSelection(compactSelection(9, 'next')), false);
@@ -383,7 +386,7 @@ test('group presentation: denied client config keeps previous ready palette with
 });
 
 test('group presentation: failed cold seal never adopts partial or foreign-source membership', async () => {
-  const peer = new Peer(), owner = new SourceController(peer), c = card(owner, []);
+  const peer = new Peer(), owner = new SourceExecution(peer), c = card(owner, []);
   try {
     owner.setStyleSelection(local(7)); c.start(); await settle(); const old = owner.groupPresentation(c.group)!;
     owner.observe(demand('foreign')); c.keys.add('foreign');
@@ -394,13 +397,13 @@ test('group presentation: failed cold seal never adopts partial or foreign-sourc
 });
 
 function abandonedPaletteOwner(peer: Peer, budget: import('../../../src/resources/data-budget.ts').DataBudget) {
-  const owner = new SourceController(peer, { retention: { budget } }), c = card(owner, []);
+  const owner = new SourceExecution(peer, { retention: { budget } }), c = card(owner, []);
   owner.setStyleSelection(compactSelection()); c.start(); return new WeakRef(owner);
 }
 test('group presentation: abandoned local palette-only owner releases roles without fabricating helper credit', async () => {
   const { DataBudget } = await import('../../../src/resources/data-budget.ts');
   const { OCCIPITAL_LIMITS } = await import('../../../src/occipital/limits.ts');
-  const peer = new Peer(), observer = new SourceController(peer), budget = new DataBudget(OCCIPITAL_LIMITS.retainedBytes);
+  const peer = new Peer(), observer = new SourceExecution(peer), budget = new DataBudget(OCCIPITAL_LIMITS.retainedBytes);
   const weak = abandonedPaletteOwner(peer, budget); await settle(); assert.equal(peer.calls.length, 0);
   for (let i = 0; i < 40; i++) { await turn(); global.gc!(); await settle(); if (!weak.deref()) break; }
   try {
@@ -412,7 +415,7 @@ test('group presentation: abandoned local palette-only owner releases roles with
 });
 
 test('group presentation: thrown preparation is not useful empty palette demand', async () => {
-  const peer = new Peer(), owner = new SourceController(peer);
+  const peer = new Peer(), owner = new SourceExecution(peer);
   let throwing = true;
   const preparation: SourcePreparation = { keys: new Set(), prepare() { if (throwing) throw new Error('not prepared'); }, needsRefresh() { return false; }, requiresCredit() { return false; } };
   const group = owner.registerPreparation(preparation)!;
@@ -425,7 +428,7 @@ test('group presentation: thrown preparation is not useful empty palette demand'
 });
 
 test('group presentation: local palette-only groups publish newest-first through the existing shared registry', async () => {
-  const peer = new Peer(), notices: number[] = [], owner = new SourceController(peer, { onChange(_keys, groups = []) { notices.push(...groups); } });
+  const peer = new Peer(), notices: number[] = [], owner = new SourceExecution(peer, { onChange(_keys, groups = []) { notices.push(...groups); } });
   const older = card(owner, []), newer = card(owner, []);
   try {
     owner.setStyleSelection(paletteInput()); owner.queuePreparation(older.group, true); owner.queuePreparation(newer.group, true); owner.flush(); await settle();
@@ -435,7 +438,7 @@ test('group presentation: local palette-only groups publish newest-first through
 });
 
 test('group presentation: replacement display generation cannot alias equal local effect numbers or strand the ready card', async () => {
-  const peer = new Peer(), owner = new SourceController(peer), keys = new Set(['bash']);
+  const peer = new Peer(), owner = new SourceExecution(peer), keys = new Set(['bash']);
   let text = 'x\n', version = 1;
   const preparation: SourcePreparation = { keys, prepare() { owner.observe({ ...demand('bash', text, version, false), language: 'bash' }); }, requiresCredit() { return false; }, needsRefresh() { return false; } };
   const group = owner.registerPreparation(preparation)!;
@@ -454,7 +457,7 @@ test('group presentation: replacement display generation cannot alias equal loca
 });
 
 test('group presentation: first captured Bash colors remain useful when parser append overtakes held style reply', async () => {
-  const peer = new Peer(), owner = new SourceController(peer), keys = new Set(['bash']);
+  const peer = new Peer(), owner = new SourceExecution(peer), keys = new Set(['bash']);
   let text = 'x\n', version = 1;
   const preparation: SourcePreparation = { keys, prepare() { owner.observe({ ...demand('bash', text, version, false), language: 'bash' }); }, requiresCredit() { return false; }, needsRefresh() { return false; } };
   const group = owner.registerPreparation(preparation)!;
@@ -470,7 +473,7 @@ test('group presentation: first captured Bash colors remain useful when parser a
 });
 
 test('group presentation: reentrant local update invalidates candidate ranges and releases overlap only after unwind', async () => {
-  const peer = new Peer(), owner = new SourceController(peer), c = card(owner, ['one']);
+  const peer = new Peer(), owner = new SourceExecution(peer), c = card(owner, ['one']);
   try {
     owner.setStyleSelection(local(7)); c.start(); peer.source(0); await settle(); peer.style(1); await settle();
     const old = owner.groupPresentation(c.group)!, before = owner.stats().retention.retainedBytes;
@@ -489,7 +492,7 @@ test('group presentation: reentrant local update invalidates candidate ranges an
 
 test('group presentation: pressure preserves the pinned owned palette and refuses an unfunded replacement', async () => {
   const { DataBudget } = await import('../../../src/resources/data-budget.ts');
-  const budget = new DataBudget(1_000_000), peer = new Peer(), owner = new SourceController(peer, { retention: { budget } }), first = card(owner, []);
+  const budget = new DataBudget(1_000_000), peer = new Peer(), owner = new SourceExecution(peer, { retention: { budget } }), first = card(owner, []);
   let pressure: import('../../../src/resources/data-budget.ts').DataCharge | undefined;
   try {
     assert.equal(owner.setStyleSelection(paletteInput()), true); first.start(); await settle();
@@ -507,7 +510,7 @@ test('group presentation: pressure preserves the pinned owned palette and refuse
 
 test('group presentation: eviction of historical member closes escaped roles even while current parser data survives', async () => {
   const { DataBudget } = await import('../../../src/resources/data-budget.ts');
-  const budget = new DataBudget(1_000_000), peer = new Peer(), owner = new SourceController(peer, { retention: { budget } }), keys = new Set(['bash']);
+  const budget = new DataBudget(1_000_000), peer = new Peer(), owner = new SourceExecution(peer, { retention: { budget } }), keys = new Set(['bash']);
   let filler: import('../../../src/resources/data-budget.ts').DataCharge | undefined;
   let text = 'x\n', version = 1;
   const preparation: SourcePreparation = { keys, prepare() { owner.observe({ ...demand('bash', text, version, false), language: 'bash' }); }, requiresCredit() { return false; }, needsRefresh() { return false; } };
@@ -541,14 +544,14 @@ test('group presentation: eviction of historical member closes escaped roles eve
 
 
 test('group presentation: repeated rewrites retain the last coherent display while superseded parsed styles settle late', async () => {
-  const peer = new Peer(), owner = new SourceController(peer), keys = new Set(['bash']);
+  const peer = new Peer(), owner = new SourceExecution(peer), keys = new Set(['bash']);
   let text = 'x\n', version = 1;
   const preparation: SourcePreparation = { keys, prepare() { owner.observe({ ...demand('bash', text, version, false), language: 'bash' }); }, requiresCredit() { return false; }, needsRefresh() { return false; } };
   const group = owner.registerPreparation(preparation)!;
   try {
     owner.setStyleSelection(paletteInput()); owner.queuePreparation(group, true); owner.flush(); peer.source(0); await settle(); peer.style(1, 11); await settle();
     const original = owner.groupPresentation(group)!;
-    let oldMember: import('../../../src/highlighting/controller.ts').GroupDisplayMember | undefined;
+    let oldMember: import('../../../src/highlighting/source-ports.ts').GroupDisplayMember | undefined;
     assert.equal(original.visit(member => { oldMember = member('bash'); }), true);
     assert.ok(oldMember);
     text = 'replacement\n'; version = 2; owner.queuePreparation(group, true); owner.flush(); await settle();
@@ -582,7 +585,7 @@ test('group presentation: repeated rewrites retain the last coherent display whi
 });
 
 test('group presentation: compatible recovery reuses complete newer parse independently of historical display', async () => {
-  const peer = new Peer(), owner = new SourceController(peer), keys = new Set(['bash']);
+  const peer = new Peer(), owner = new SourceExecution(peer), keys = new Set(['bash']);
   let text = 'x\n', version = 1;
   const preparation: SourcePreparation = { keys, prepare() { owner.observe({ ...demand('bash', text, version), language: 'bash' }); }, requiresCredit() { return false; }, needsRefresh() { return false; } };
   const group = owner.registerPreparation(preparation)!;
@@ -612,7 +615,7 @@ test('group presentation: compatible recovery reuses complete newer parse indepe
 
 
 test('group presentation: ready-style enumeration covers complete roles and all member literal identities without range reads', async () => {
-  const peer = new Peer(), owner = new SourceController(peer), c = card(owner, ['left', 'right']);
+  const peer = new Peer(), owner = new SourceExecution(peer), c = card(owner, ['left', 'right']);
   try {
     owner.setStyleSelection(paletteInput()); c.start(); await settle(); peer.source(0, 'x\n', 1); peer.source(1, 'x\n', 2); await settle(); peer.style(2, 11); await settle();
     const basis = owner.groupPresentation(c.group)!, table = new Set<ConcreteStyle>();
@@ -637,7 +640,7 @@ test('group presentation: ready-style enumeration covers complete roles and all 
 });
 
 for (const throws of [false, true]) test(`group presentation: palette-only style visitor stops on unregister and pins roles (throws=${throws})`, async () => {
-  const peer = new Peer(), owner = new SourceController(peer), c = card(owner, []);
+  const peer = new Peer(), owner = new SourceExecution(peer), c = card(owner, []);
   try {
     owner.setStyleSelection(local(7)); c.start(); await settle(); const basis = owner.groupPresentation(c.group)!;
     let callbacks = 0, during = 0;
@@ -656,12 +659,12 @@ for (const throws of [false, true]) test(`group presentation: palette-only style
 });
 
 for (const throws of [false, true]) test(`group presentation: nested different-ready borrows and escaped lookups reset at unwind (throws=${throws})`, async () => {
-  const peer = new Peer(), owner = new SourceController(peer), first = card(owner, ['one']), other = card(owner, []);
+  const peer = new Peer(), owner = new SourceExecution(peer), first = card(owner, ['one']), other = card(owner, []);
   try {
     owner.setStyleSelection(local(7)); first.start(); peer.source(0); await settle(); peer.style(1); await settle(); other.start(); await settle();
     const old = owner.groupPresentation(first.group)!, separate = owner.groupPresentation(other.group)!;
-    let escaped: ((key: string) => import('../../../src/highlighting/controller.ts').GroupDisplayMember | undefined) | undefined;
-    let read: import('../../../src/highlighting/controller.ts').DisplayRangeReader | undefined;
+    let escaped: ((key: string) => import('../../../src/highlighting/source-ports.ts').GroupDisplayMember | undefined) | undefined;
+    let read: import('../../../src/highlighting/source-ports.ts').DisplayRangeReader | undefined;
     const transaction = () => old.visit(member => {
       escaped = member; read = member('one')!.read;
       assert.equal(old.visit(nested => assert.equal(nested('one')!.read(() => {}), true)), true);
@@ -689,7 +692,7 @@ for (const throws of [false, true]) test(`group presentation: nested different-r
 });
 
 for (const mode of ['remove', 'replace', 'off', 'dispose', 'pressure', 'throw'] as const) test(`group presentation: active nested source borrow guards invalidation and charged unwind (${mode})`, async () => {
-  const peer = new Peer(), owner = new SourceController(peer), c = card(owner, ['one']);
+  const peer = new Peer(), owner = new SourceExecution(peer), c = card(owner, ['one']);
   try {
     owner.setStyleSelection(local(7)); c.start(); peer.source(0, 'x\n', 1, 1, 0, true); await settle(); peer.style(1); await settle();
     const view = owner.groupPresentation(c.group)!;
@@ -721,7 +724,7 @@ for (const mode of ['remove', 'replace', 'off', 'dispose', 'pressure', 'throw'] 
 
 test('group presentation: ready member collection funding denial is atomic and does not retry warm reads', async () => {
   const { DataBudget } = await import('../../../src/resources/data-budget.ts');
-  const budget = new DataBudget(1_000_000), peer = new Peer(), owner = new SourceController(peer, { retention: { budget } }), c = card(owner, ['one']);
+  const budget = new DataBudget(1_000_000), peer = new Peer(), owner = new SourceExecution(peer, { retention: { budget } }), c = card(owner, ['one']);
   const reserve = DataBudget.prototype.reserve;
   let denials = 0; const attempts: number[] = [];
   try {
@@ -740,17 +743,17 @@ test('group presentation: ready member collection funding denial is atomic and d
   } finally { DataBudget.prototype.reserve = reserve; void c.preparation; await cleanup(owner, peer); }
 });
 
-type AbandonedMemberKeepAlive = { owner: SourceController | undefined; preparation: SourcePreparation | undefined };
+type AbandonedMemberKeepAlive = { owner: SourceExecution | undefined; preparation: SourcePreparation | undefined };
 async function abandonedMember(peer: Peer) {
-  const owner = new SourceController(peer), c = card(owner, ['first']);
+  const owner = new SourceExecution(peer), c = card(owner, ['first']);
   owner.setStyleSelection(local(7)); c.start(); peer.source(0); await settle(); peer.style(1); await settle();
-  let read: import('../../../src/highlighting/controller.ts').DisplayRangeReader | undefined;
+  let read: import('../../../src/highlighting/source-ports.ts').DisplayRangeReader | undefined;
   owner.groupPresentation(c.group)!.visit(member => { read = member('first')!.read; });
   const keepAlive: AbandonedMemberKeepAlive = { owner, preparation: c.preparation };
   return { owner: new WeakRef(owner), preparation: new WeakRef(c.preparation), read: read!, budget: (Reflect.get(owner, 'pool') as SemanticRetentionPool).budget, keepAlive };
 }
 test('group presentation: escaped first member reader keeps no owner or preparation alive beside active peer', async () => {
-  const peer = new Peer(), gone = await abandonedMember(peer), live = new SourceController(peer), c = card(live, []);
+  const peer = new Peer(), gone = await abandonedMember(peer), live = new SourceExecution(peer), c = card(live, []);
   try {
     live.setStyleSelection(local(8)); c.start(); await settle(); assert.equal(gone.read(() => {}), true);
     gone.keepAlive.owner = undefined; gone.keepAlive.preparation = undefined;
@@ -764,11 +767,11 @@ test('group presentation: escaped first member reader keeps no owner or preparat
 });
 
 for (const site of ['visit', 'ranges', 'styles'] as const) test(`group presentation: unchanged ready borrow resets after ${site} throws and validates standalone and outer boundaries`, async () => {
-  const peer = new Peer(), owner = new SourceController(peer), c = card(owner, ['one']);
+  const peer = new Peer(), owner = new SourceExecution(peer), c = card(owner, ['one']);
   try {
     owner.setStyleSelection(local(7)); c.start(); peer.source(0); await settle(); peer.style(1); await settle();
     const view = owner.groupPresentation(c.group)!;
-    let read: import('../../../src/highlighting/controller.ts').DisplayRangeReader | undefined;
+    let read: import('../../../src/highlighting/source-ports.ts').DisplayRangeReader | undefined;
     view.visit(member => { read = member('one')!.read; });
     const fail = () => { throw new Error('same ready failed'); };
     assert.throws(() => site === 'visit' ? view.visit(fail) : site === 'styles' ? view.visitStyles(fail) : read!(fail), /same ready failed/);

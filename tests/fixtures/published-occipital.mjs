@@ -107,7 +107,7 @@ try {
        const definition = createSemanticRuleDefinition(), selectedRules = fingerprintRules(definition);
        const styleSelection = { definition, bindingRevision: 1, palette: `owned-palette-v1:${selectedPalette}`,
          bindings: palette.bindings, roles: palette.roles };
-       assert.equal(client.sources.setStyleSelection(styleSelection), true, 'current helper accepts one generic classifier with a local palette');
+       assert.equal(client.cardSource.setStyleSelection(styleSelection), true, 'current helper accepts one generic classifier with a local palette');
       const expectedPath = installed ? join(consumer, 'node_modules', nativeName, executable)
         : join(home, 'agent/extensions/pi-tidy-ui/occipital', NATIVE_RELEASE.version, target, executable);
       assert.equal(starts.length, beforeStarts + 1); assert.equal(starts.at(-1), expectedPath);
@@ -116,19 +116,19 @@ try {
       assert.equal(downloads - beforeDownloads, expectedDownloads);
       if (expectedDownloads) assert.equal(urls[beforeUrls], artifact.url); else assert.equal(urls.length, beforeUrls);
       async function classified(version, text, complete) {
-         assert.equal(client.sources.observe({ key: 'tiny', version, text, complete, path: 'tiny.ts' }), true);
-        client.sources.flush();
+         assert.equal(client.sourceWork.observe({ key: 'tiny', version, text, complete, path: 'tiny.ts' }), true);
+        client.sourcePump.flush();
          const ready = () => {
-           const display = client.sources.displayBasis('tiny');
-           return client.sources.status('tiny')?.exact && display?.version === version
+           const display = client.sourceWork.displayBasis('tiny');
+           return client.sourceWork.status('tiny')?.exact && display?.version === version
              && display.palette === styleSelection.palette && display.rules === selectedRules && display.bindingRevision === 1
-             && client.sources.stats().unsettledJobs === 0;
+             && client.sourceStatistics.stats().unsettledJobs === 0;
          };
         if (!ready()) await new Promise((yes, no) => {
           const timer = setTimeout(() => { wake = undefined; no(Error('Installed source did not complete')); }, 10000);
           wake = () => { if (ready()) { clearTimeout(timer); wake = undefined; yes(); } }; wake();
         });
-        assert.ok(ready()); return client.sources.stats();
+        assert.ok(ready()); return client.sourceStatistics.stats();
       }
       const prefix = 'let n="界";\n', first = await classified(1, prefix, false), tail = await classified(2, prefix + '//x', false);
       assert.equal(tail.committedLineCalls, first.committedLineCalls); assert.equal(tail.committedLineBytes, first.committedLineBytes);
@@ -142,21 +142,21 @@ try {
       assert.equal(complete.committedLineCalls, tail.committedLineCalls + 1);
       assert.equal(complete.committedLineBytes, tail.committedLineBytes + Buffer.byteLength('//x\n'));
       const styles = [];
-      assert.equal(client.sources.visitRanges('tiny', (start, end, style) => { if (end > Buffer.byteLength(prefix)) styles.push(style); }), true);
+      assert.equal(client.sourceWork.visitRanges('tiny', (start, end, style) => { if (end > Buffer.byteLength(prefix)) styles.push(style); }), true);
        assert.ok(styles.length > 0); assert.ok(styles.every(style => style.foreground.kind === 'rgb'), 'generic classifier returns the selected owned palette as literal colors');
        const commentAt = Buffer.byteLength(prefix), commentStyles = [];
-       assert.equal(client.sources.visitRanges('tiny', (start, end, style) => { if (start <= commentAt && end > commentAt) commentStyles.push(style); }), true);
+       assert.equal(client.sourceWork.visitRanges('tiny', (start, end, style) => { if (start <= commentAt && end > commentAt) commentStyles.push(style); }), true);
        const commentSlot = SEMANTIC_REGIONS.indexOf('syntax-comment');
        assert.equal(commentStyles.length, 1); assert.deepEqual(commentStyles[0].foreground, palette.bindings[commentSlot].ink,
          'actual helper resolves comment semantics through the currently selected common palette binding');
       for (let i = 0; i < 20; i++) await classified(3, prefix + '//x\n', true);
-      const warm = client.sources.stats(), warmSourceDispatches = (warm.dispatches - warm.styleDispatches) - (complete.dispatches - complete.styleDispatches),
+      const warm = client.sourceStatistics.stats(), warmSourceDispatches = (warm.dispatches - warm.styleDispatches) - (complete.dispatches - complete.styleDispatches),
         warmStyleDispatches = warm.styleDispatches - complete.styleDispatches;
       assert.equal(warmSourceDispatches, 0); assert.equal(warmStyleDispatches, 0);
       assert.equal(warm.dispatches, complete.dispatches); assert.equal(warm.preparedBytes, complete.preparedBytes);
       const pid = snapshot.provider.description.runtime.pid;
       await client.dispose();
-      assert.equal(client.sources.stats().retention.retainedBytes, 0); assert.equal(client.sources.stats().unsettledJobs, 0);
+      assert.equal(client.sourceStatistics.stats().retention.retainedBytes, 0); assert.equal(client.sourceStatistics.stats().unsettledJobs, 0);
       assert.equal(client.broker.stats().liveTimers, 0); assert.equal(client.broker.stats().recoveryTimers, 0);
       assert.throws(() => process.kill(pid, 0), { code: 'ESRCH' }); client = undefined;
       console.log(JSON.stringify({ node: process.version, target, version: NATIVE_RELEASE.version, installed, phase,

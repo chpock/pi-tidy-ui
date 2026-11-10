@@ -3,8 +3,9 @@ import { diagnose, type DiagnosticFields, type DiagnosticSink } from '../diagnos
 import type { BashService } from '../bash-card.ts';
 import { contextRows, fileDiagnosticText, fileHeading, fileSources, readHeading, type PreparedFileCard } from '../file-card.ts';
 import type { BashToolReader, FileToolReader, ToolDiagnosticsIdentity } from '../tool-adapters/contracts.ts';
-import type { SyntaxClient } from '../application/syntax-client.ts';
-import { CONTROLLER_LIMITS, type GroupDisplayBasis, type SourceController, type SourceDisplayBasis, type SourceWorkGroup } from '../highlighting/controller.ts';
+import { CONTROLLER_LIMITS } from '../highlighting/controller-limits.ts';
+import type { CardSourcePort, GroupDisplayBasis, SourceDisplayBasis } from '../highlighting/source-ports.ts';
+import type { SourceWorkGroup } from '../highlighting/work-registry.ts';
 import type { GeometryFunding } from '../resources/data-budget.ts';
 import { type DataCharge, type DataCleanupReceipt } from '../resources/data-budget.ts';
 import { RETENTION_LIMITS } from '../highlighting/retention.ts';
@@ -17,7 +18,7 @@ import { fingerprintRules } from '../occipital/style-rules.ts';
 import { resolveTheme, type ThemeDescription } from '../themes/selection.ts';
 import { compileStyleAnsi, type AnsiStyle } from './style-ansi.ts';
 import type { ConcreteStyle } from '../appearance/style-materialization.ts';
-import { requestSyntax, resolveSyntax, type PiClassifier, type SyntaxIdentity, type SyntaxWorkResult } from './work.ts';
+import { requestSyntax, resolveSyntax, type PiClassifier, type SyntaxIdentity, type SyntaxSourceClient, type SyntaxWorkResult } from './work.ts';
 
 export type CardSourceInput = { palette: number } & (
   { kind: 'file'; reader: FileToolReader; diagnostics: ToolDiagnosticsIdentity; viewMode?: 'preview' | 'full' } |
@@ -90,7 +91,7 @@ type State = { input?: CardDisplayInput; revision: number; sourceRevision: numbe
 type RecordTicket = { id: number; owner: WeakRef<object>; state: WeakRef<State>; keys: Set<string>; bytes: number;
   consumer: WeakRef<CardSources<object>>; prepare(): void; acceptsSelection(palette: string, rules: string): boolean;
   needsRefresh(newest: boolean): boolean; requiresCredit(): boolean; work?: SourceWorkGroup; receipts: Set<DataCleanupReceipt> };
-type Release = { consumer: WeakRef<CardSources<object>>; sources: WeakRef<SourceController>; ticket: RecordTicket };
+type Release = { consumer: WeakRef<CardSources<object>>; sources: WeakRef<CardSourcePort>; ticket: RecordTicket };
 let sequence = 0;
 const collected = new FinalizationRegistry<Release>(release => {
   const consumer = release.consumer.deref();
@@ -123,6 +124,10 @@ function inputBytes(input: CardDisplayInput) {
 
 /** Local prepared display and one weak controller registry entry per owner.
  * Host lifecycle updates establish first-frame display; useful only schedules. */
+export interface SyntaxCardClient extends SyntaxSourceClient {
+  readonly cardSource: CardSourcePort;
+}
+
 export class CardSources<Owner extends object> {
   private readonly owner = new WeakRef(this as unknown as CardSources<object>);
   private readonly states = new WeakMap<Owner, State>();
@@ -143,9 +148,9 @@ export class CardSources<Owner extends object> {
   private renderScheduled = false;
   private readonly definition = createSemanticRuleDefinition();
   private readonly definitionRules = fingerprintRules(this.definition);
-  private readonly client: Pick<SyntaxClient, 'sources' | 'snapshot'>;
+  private readonly client: SyntaxCardClient;
   private readonly host: CardSourceHost<Owner>;
-  constructor(client: Pick<SyntaxClient, 'sources' | 'snapshot'>, host: CardSourceHost<Owner>,
+  constructor(client: SyntaxCardClient, host: CardSourceHost<Owner>,
     options: { maxBookkeepingBytes?: number } = {}) {
     this.client = client; this.host = host;
     this.maxBytes = options.maxBookkeepingBytes ?? CONTROLLER_LIMITS.bookkeepingBytes;
@@ -158,11 +163,11 @@ export class CardSources<Owner extends object> {
     if (this.bytes + RETENTION_LIMITS.entryAllowance > this.maxBytes) return undefined;
     const ticket: RecordTicket = { id: ++sequence, owner: new WeakRef(owner), state: new WeakRef(state), keys: new Set(), bytes: RETENTION_LIMITS.entryAllowance,
       consumer: this.owner, prepare: prepareTicket, acceptsSelection: acceptsTicket, needsRefresh: refreshTicket, requiresCredit: creditTicket, receipts: new Set() };
-    ticket.work = this.client.sources.registerPreparation(ticket); if (!ticket.work) return undefined;
+    ticket.work = this.client.cardSource.registerPreparation(ticket); if (!ticket.work) return undefined;
     state.ticket = ticket; this.records.set(ticket.id, ticket); this.groups.set(ticket.work.id, ticket); this.bytes += ticket.bytes;
-    collected.register(owner, { consumer: this.owner, sources: new WeakRef(this.client.sources), ticket }, ticket);
-    this.client.sources.pausePreparation(ticket.work);
-    this.client.sources.updatePreparation(ticket.work);
+    collected.register(owner, { consumer: this.owner, sources: new WeakRef(this.client.cardSource), ticket }, ticket);
+    this.client.cardSource.pausePreparation(ticket.work);
+    this.client.cardSource.updatePreparation(ticket.work);
     return ticket;
   }
   /** Explicit cold lifecycle boundary. Never call from render. */
@@ -184,14 +189,14 @@ export class CardSources<Owner extends object> {
       && (state.input?.palette === input.palette && state.input.mode === input.mode || sameFileSource)) {
       if (sameFileSource) state.input = input;
       if (input.kind === 'file') {
-        const mutation = state.mutation, funding = this.client.sources.geometryFunding(ticket.work);
+        const mutation = state.mutation, funding = this.client.cardSource.geometryFunding(ticket.work);
         if (funding) this.reconcileSelection(state, funding);
         if (!this.owned(owner, state, ticket) || state.mutation !== mutation) return false;
       }
       this.refreshPaint(owner, state);
       return true;
     }
-    const funding = this.client.sources.geometryFunding(ticket.work);
+    const funding = this.client.cardSource.geometryFunding(ticket.work);
     if (!funding) { discardRefusedFullPreview(); return false; }
     const reusingFileSource = input.kind === 'file' && state.display?.kind === 'file' && state.input?.kind === 'file'
       && state.sourceRevision === input.sourceRevision && previousView === nextView && !!state.file;
@@ -394,7 +399,7 @@ export class CardSources<Owner extends object> {
     if (lease?.paletteId === paletteId && lease.paletteRevision === input.palette && lease.terminalMode === input.mode
       && (this.selection !== identity || this.selectionRules !== this.definitionRules)) {
       let accepted = false;
-      lease.visit(read => { accepted = this.client.sources.setStyleSelection({ definition: this.definition, bindingRevision: input.palette,
+      lease.visit(read => { accepted = this.client.cardSource.setStyleSelection({ definition: this.definition, bindingRevision: input.palette,
         palette: identity, bindings: read.bindings, roles: read.roles }); }, funding.grant);
       if (accepted) { this.selection = identity; this.selectionRules = this.definitionRules; this.themeRevision++; }
     }
@@ -408,7 +413,7 @@ export class CardSources<Owner extends object> {
   requiresCredit(ticket?: RecordTicket): boolean {
     const state = ticket?.state.deref(), palette = this.currentPalette(state);
     if (state?.processed !== undefined && state.processed === sourceStamp(state.input!) && ticket?.work
-      && state.input && this.client.sources.groupPresentation(ticket.work)?.palette === this.paletteIdentity(palette, state.input.palette, state.input.mode)) return false;
+      && state.input && this.client.cardSource.groupPresentation(ticket.work)?.palette === this.paletteIdentity(palette, state.input.palette, state.input.mode)) return false;
     return this.enabled && this.providerReady;
   }
   needsRefresh(ticket: RecordTicket, newest: boolean): boolean {
@@ -420,11 +425,11 @@ export class CardSources<Owner extends object> {
       || state.preparedPalette !== this.inputIdentity(this.currentPalette(state), state.input!)) return true;
     for (const slot of state.slots.values()) {
       if (slot.awaitingProvider && this.requiresCredit() || slot.fallback === 'pi' &&
-        (newest || slot.outcome === 'waiting') && resolveSyntax(this.client.sources, slot).needsPi) return true;
+        (newest || slot.outcome === 'waiting') && resolveSyntax(this.client.sourceWork, slot).needsPi) return true;
       // Every eligible Pi FILE needs its first native SOURCE; retained semantic
       // SOURCE on compatible recovery must not be reclassified.
-      if (state.input?.kind === 'file' && slot.outcome === 'pi' && !this.client.sources.borrowSource(slot.key)
-        && this.client.sources.workStatus(slot.key).fallbackEligible && this.requiresCredit()) return true;
+      if (state.input?.kind === 'file' && slot.outcome === 'pi' && !this.client.cardSource.borrowSource(slot.key)
+        && this.client.cardSource.workStatus(slot.key).fallbackEligible && this.requiresCredit()) return true;
     }
     return false;
   }
@@ -448,7 +453,7 @@ export class CardSources<Owner extends object> {
       this.paletteRevision = paletteRevision;
     }
     this.metadataSelection = selection; this.metadata = identity;
-    this.client.sources.refreshPreparations();
+    this.client.cardSource.refreshPreparations();
   }
   private metadataSelection = '';
   private paletteRevision?: number;
@@ -463,7 +468,7 @@ export class CardSources<Owner extends object> {
       if (!this.owned(owner, state, ticket)) continue;
       this.refreshPaint(owner, state);
       if (!state.paused && !state.frozen && state.useful && state.paint?.origin !== 'owned') {
-        for (const slot of state.slots.values()) if (resolveSyntax(this.client.sources, slot).needsPi) {
+        for (const slot of state.slots.values()) if (resolveSyntax(this.client.sourceWork, slot).needsPi) {
           this.enqueue(ticket, true); break;
         }
       }
@@ -473,7 +478,7 @@ export class CardSources<Owner extends object> {
     const owner = ticket.owner.deref() as Owner | undefined, state = ticket.state.deref();
     if (!owner || !state) { this.release(ticket); return; }
     if (!this.current(owner, state, ticket) || !state.useful || !state.input || !state.display || !ticket.work) return;
-    const input = state.input, mutation = state.mutation, funding = this.client.sources.geometryFunding(ticket.work); if (!funding) return;
+    const input = state.input, mutation = state.mutation, funding = this.client.cardSource.geometryFunding(ticket.work); if (!funding) return;
     this.reconcileSelection(state, funding);
     if (!this.current(owner, state, ticket) || state.mutation !== mutation) return;
     // Freeze ends SOURCE authority, not retained-scope STYLE/local binding work.
@@ -486,7 +491,7 @@ export class CardSources<Owner extends object> {
     if (state.processed === sourceStamp(state.input!) && state.preparedTheme === this.themeRevision
       && [...state.slots.values()].every(slot => !slot.awaitingProvider && (input.kind === 'file' || slot.complete === input.complete))
       && state.preparedPalette === this.inputIdentity(this.currentPalette(state), input)
-      && this.client.sources.groupPresentation(ticket.work)) { this.refreshPaint(owner, state); return; }
+      && this.client.cardSource.groupPresentation(ticket.work)) { this.refreshPaint(owner, state); return; }
     if (!state.sourceEligible && ticket.keys.size) { this.pause(owner); this.refreshPaint(owner, state); return; }
     let scratch: DataCharge | undefined;
     try {
@@ -515,31 +520,31 @@ export class CardSources<Owner extends object> {
         if (input.kind === 'bash') Object.assign(slot, requestSyntax(this.client, { ...demand, fallback: 'neutral' }, this.host.classify));
         else if (piFallback && state.paletteInput) state.paletteInput.visit(read => { Object.assign(slot, requestSyntax(this.client, { ...demand, fallback: 'pi', piNeutral: read.roles.code }, this.host.classify)); }, funding.grant);
         else Object.assign(slot, requestSyntax(this.client, { ...demand, fallback: 'neutral' }, this.host.classify));
-        const status = this.client.sources.workStatus(key);
+        const status = this.client.cardSource.workStatus(key);
         this.log(owner, 'Syntax work evaluated outside render', { source: key, version: slot.version, units: demand.text.length,
           language: slot.language ?? 'unknown', palette: slot.palette, outcome: slot.outcome, awaitingProvider: !!slot.awaitingProvider,
           execution: status.execution, fallbackEligible: status.fallbackEligible });
         if (!this.current(owner, state, ticket) || state.mutation !== mutation) {
           // A reentrant capture may finish after unregistering this ticket. Remove
           // only retired ownership, never a paused or replaced live incarnation.
-          if (!this.owned(owner, state, ticket)) for (const attempted of slots.values()) this.client.sources.remove(attempted.key);
+          if (!this.owned(owner, state, ticket)) for (const attempted of slots.values()) this.client.cardSource.remove(attempted.key);
           return;
         }
       }
       for (const key of ticket.keys) if (!slots.has(key)) {
-        ticket.keys.delete(key); this.keys.delete(key); this.client.sources.remove(key); const bytes = keyBytes(key); ticket.bytes -= bytes; this.bytes -= bytes;
+        ticket.keys.delete(key); this.keys.delete(key); this.client.cardSource.remove(key); const bytes = keyBytes(key); ticket.bytes -= bytes; this.bytes -= bytes;
       }
       state.slots = slots; state.processed = sourceStamp(input); state.preparedTheme = this.themeRevision; state.preparedPalette = this.inputIdentity(this.currentPalette(state), input);
-      this.client.sources.updatePreparation(ticket.work); const applied = this.refreshPaint(owner, state);
+      this.client.cardSource.updatePreparation(ticket.work); const applied = this.refreshPaint(owner, state);
       this.log(owner, 'Prepared source demand evaluated outside render', { sources: slots.size, version: state.version, revision: state.revision });
       if (this.current(owner, state, ticket) && state.mutation === mutation) this.observePreparation(owner, state, 'prepared', applied, refused);
     } finally { scratch?.release(); }
   }
   private refreshPaint(owner: Owner, state: State): boolean {
     const ticket = state.ticket, input = state.input; if (!ticket?.work || !input) return false;
-    const funding = this.client.sources.geometryFunding(ticket.work); if (!funding) return false;
+    const funding = this.client.cardSource.geometryFunding(ticket.work); if (!funding) return false;
     const selected = this.currentPalette(state), identity = this.paletteIdentity(selected, input.palette, input.mode);
-    const availableGroup = this.client.sources.groupPresentation(ticket.work);
+    const availableGroup = this.client.cardSource.groupPresentation(ticket.work);
     const group = availableGroup?.palette === identity ? availableGroup : undefined;
     const isOwned = selected.kind === 'theme';
     const paletteReady = state.paletteInput?.paletteId === (isOwned ? selected.id : 'pi')
@@ -548,7 +553,7 @@ export class CardSources<Owner extends object> {
     // Ready projections change paint when their generation, revision, or palette changes.
     // File slot-version eligibility is tracked separately for both Pi and owned palettes.
     const effects = `${input.mode}:${Array.from(state.slots.values(), s => {
-      const p = this.client.sources.piProjection(s.key, s.version, s.palette);
+      const p = this.client.cardSource.piProjection(s.key, s.version, s.palette);
       return p ? `${p.generation}/${p.revision}/${p.palette}` : '';
     }).filter(Boolean).join(',')}`;
     const eligibility = input.kind === 'file' ? `${state.version}:${Array.from(state.slots.values(), slot =>
@@ -580,7 +585,7 @@ export class CardSources<Owner extends object> {
       for (const role of CARD_ROLES) { const style = roles[role]; add(style); compiled[role] = table.get(style)!.normal; }
       const piTokens = new Map<string, Map<number, ConcreteStyle>>();
       if (!isOwned) for (const slot of state.slots.values()) {
-        const projection = slot.palette === input.palette ? this.client.sources.piProjection(slot.key, slot.version, slot.palette) : undefined; if (!projection) continue;
+        const projection = slot.palette === input.palette ? this.client.cardSource.piProjection(slot.key, slot.version, slot.palette) : undefined; if (!projection) continue;
         const entries = new Map<number, ConcreteStyle>();
         if (!projection.visitStyles((i, style) => { add(style); entries.set(i, style); })) return;
         piTokens.set(slot.key, entries);
@@ -600,7 +605,7 @@ export class CardSources<Owner extends object> {
         compile(roles, consume => group.visitStyles(consume));
       } else if (paletteReady && state.paletteInput) state.paletteInput.visit(read => {
         compile(read.roles, consume => { for (const role of CARD_ROLES) consume(read.roles[role]);
-          if (!isOwned) for (const slot of state.slots.values()) { const projection = this.client.sources.piProjection(slot.key, slot.version, slot.palette); if (projection && !projection.visitStyles((_i, style) => consume(style))) return false; }
+          if (!isOwned) for (const slot of state.slots.values()) { const projection = this.client.cardSource.piProjection(slot.key, slot.version, slot.palette); if (projection && !projection.visitStyles((_i, style) => consume(style))) return false; }
           return read.isValid; }, read.compiledRoles);
       }, funding.grant);
       if (!next || !this.owned(owner, state, ticket) || state.mutation !== mutation || state.input !== input || state.paint !== previous) return false;
@@ -629,7 +634,7 @@ export class CardSources<Owner extends object> {
     const state = this.states.get(owner), display = state?.display, paint = state?.paint, charge = state?.charge;
     if (this.disposed || !state || !display || !paint || !charge) return false;
     const mutation = state.mutation;
-    const scoped = cardVisit(display, paint, state, this.client.sources,
+    const scoped = cardVisit(display, paint, state, this.client.cardSource,
       () => !this.disposed && this.states.get(owner) === state && state.mutation === mutation && state.paint === paint);
     charge.retain(); paint.charge.retain();
     try {
@@ -649,8 +654,8 @@ export class CardSources<Owner extends object> {
   identities(owner: Owner): SyntaxIdentity[] { const state = this.states.get(owner);
     return state ? Array.from(state.slots.values(), ({ key, version, language, piLanguage, complete, palette, fallback }) => ({ key, version, language, piLanguage, complete, palette, fallback })) : []; }
   freeze(owner: Owner): void { const s = this.states.get(owner); if (!s || s.frozen) return; s.frozen = true;
-    for (const slot of s.slots.values()) this.client.sources.freeze(slot.key); }
-  pause(owner: Owner): void { const s = this.states.get(owner); if (!s) return; s.paused = true; if (s.ticket?.work) this.client.sources.pausePreparation(s.ticket.work); }
+    for (const slot of s.slots.values()) this.client.cardSource.freeze(slot.key); }
+  pause(owner: Owner): void { const s = this.states.get(owner); if (!s) return; s.paused = true; if (s.ticket?.work) this.client.cardSource.pausePreparation(s.ticket.work); }
   /** Release a file's derived display while preserving its ticket and per-key execution authority. */
   discardFile(owner: Owner): void {
     const state = this.states.get(owner), ticket = state?.ticket;
@@ -660,7 +665,7 @@ export class CardSources<Owner extends object> {
   dispose(): void { if (this.disposed) return; this.disposed = true; for (const t of this.records.values()) this.release(t); }
   release(ticket: RecordTicket): void {
     if (!this.records.delete(ticket.id)) return;
-    collected.unregister(ticket); if (ticket.work) { this.groups.delete(ticket.work.id); this.client.sources.unregisterPreparation(ticket.work); }
+    collected.unregister(ticket); if (ticket.work) { this.groups.delete(ticket.work.id); this.client.cardSource.unregisterPreparation(ticket.work); }
     for (const key of ticket.keys) this.keys.delete(key); ticket.keys.clear(); this.bytes -= ticket.bytes;
     releaseReceipts(ticket);
     const s = ticket.state.deref(); if (s) { s.mutation++; s.ticket = undefined; s.display = s.file = s.input = s.paint = s.paletteInput = s.charge = undefined; s.slots = noSlots; }
@@ -668,7 +673,7 @@ export class CardSources<Owner extends object> {
   private discardFileDisplay(owner: Owner, state: State, ticket: RecordTicket, revision: number): void {
     if (!this.owned(owner, state, ticket) || state.input?.kind !== 'file') return;
     state.mutation++;
-    if (ticket.work) this.client.sources.pausePreparation(ticket.work);
+    if (ticket.work) this.client.cardSource.pausePreparation(ticket.work);
     for (const receipt of ticket.receipts) receipt.release();
     ticket.receipts.clear();
     state.display = state.file = state.input = state.paint = state.paletteInput = state.charge = state.descriptorReceipt = state.paintReceipt = undefined;
@@ -679,7 +684,7 @@ export class CardSources<Owner extends object> {
   }
   private owned(owner: Owner, state: State, ticket: RecordTicket): boolean { return !this.disposed && this.states.get(owner) === state && this.records.get(ticket.id) === ticket; }
   private current(owner: Owner, state: State, ticket: RecordTicket): boolean { return this.owned(owner, state, ticket) && !state.paused; }
-  private enqueue(ticket: RecordTicket, local = false): void { if (ticket.work && this.records.has(ticket.id)) this.client.sources.queuePreparation(ticket.work, local); }
+  private enqueue(ticket: RecordTicket, local = false): void { if (ticket.work && this.records.has(ticket.id)) this.client.cardSource.queuePreparation(ticket.work, local); }
   private invalidatePrepared(owner: Owner): void { this.host.invalidate(owner); if (!this.disposed && !this.renderScheduled) { this.renderScheduled = true; queueMicrotask(renderNotice(this.owner)); } }
   renderPrepared(): void { this.renderScheduled = false; if (!this.disposed) this.host.requestRender(); }
   private observePreparation(owner: Owner, state: State, phase: CardPreparation['phase'], applied = false, refused = 0): void {
@@ -705,7 +710,7 @@ function matchesFileBasis(basis: SourceDisplayBasis | undefined, slot: Slot): ba
 
 // Clear every payload holder on unwind. Escaped accessors retain neither owner nor display data.
 function cardVisit(display: PreparedCard | undefined, paint: Compiled | undefined, state: State | undefined,
-  sources: SourceController | undefined, current: (() => boolean) | undefined) {
+  sources: CardSourcePort | undefined, current: (() => boolean) | undefined) {
   const valid = () => !!current?.();
   const stale = () => { if (!valid()) throw new Error('stale card visit'); };
   const ranges = (key: string, surface?: 'added' | 'removed' | 'context'): FlatRangeReader | undefined => {

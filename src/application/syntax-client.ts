@@ -1,7 +1,8 @@
 import { diagnose, diagnosticError, reportRuntime, type DiagnosticFields, type DiagnosticSink, type RuntimeEvent } from '../diagnostics.ts';
 import { copyThemePreference, sameThemePreference, type ThemePreference } from '../appearance/theme-preference.ts';
 import { ExtensionSettings, themePatch } from '../settings.ts';
-import { SourceController, type ControllerOptions } from '../highlighting/controller.ts';
+import { SourceExecution, type SourceExecutionOptions } from '../highlighting/source-execution.ts';
+import type { CardSourcePort, SourceLifecyclePort, SourcePumpPort, SourceStatisticsPort, SourceWorkPort } from '../highlighting/source-ports.ts';
 import type { SyntaxMenuOutcome, SyntaxMenuOwner, SyntaxMenuSnapshot } from './syntax-menu.ts';
 import { resolveTheme, type ThemeDescription } from '../themes/selection.ts';
 import { ProviderBroker, type ProviderOptions, type ProviderSnapshot } from '../occipital/provider.ts';
@@ -14,7 +15,7 @@ export interface SyntaxClientOptions {
   settings?: Pick<ExtensionSettings, 'load' | 'update'>;
   /** A validated preference already loaded by the extension before activation. */
   initialTheme?: ThemePreference;
-  source?: Omit<ControllerOptions, 'onChange'>;
+  source?: Omit<SourceExecutionOptions, 'onChange'>;
   notify?: (message: string, type: 'error') => void;
   onChange?: () => void;
   /** Coalesced source keys and primitive group IDs for targeted presentation invalidation.
@@ -35,7 +36,7 @@ function brokerDiagnostic(owner: WeakRef<SyntaxClient>, diagnostic?: DiagnosticS
   return sink;
 }
 function brokerObserver(owner: WeakRef<SyntaxClient>) { return () => owner.deref()?.acceptBrokerChange(); }
-function ownedStopObserver(owner: WeakRef<SyntaxClient>) { return (generation: number) => owner.deref()?.sources.ownedStopped(generation); }
+function ownedStopObserver(owner: WeakRef<SyntaxClient>) { return (generation: number) => owner.deref()?.sourceLifecycle.ownedStopped(generation); }
 function sourceObserver(owner: WeakRef<SyntaxClient>) { return (keys: readonly string[], groups?: readonly number[]) => owner.deref()?.acceptSourceChange(keys, groups); }
 type CompletionPart = 'sources' | 'provider' | 'restore' | 'startup';
 type ClientCompletion = { promise: Promise<boolean>; resolve(value: boolean): void };
@@ -61,7 +62,11 @@ function menuCapture(owner: WeakRef<SyntaxClient>, epoch: number) { return () =>
  * retain their existing owners; preference reconciliation never observes source text. */
 export class SyntaxClient implements SyntaxMenuOwner {
   readonly broker: ProviderBroker;
-  readonly sources: SourceController;
+  readonly cardSource: CardSourcePort;
+  readonly sourceWork: SourceWorkPort;
+  readonly sourceLifecycle: SourceLifecyclePort;
+  readonly sourcePump: SourcePumpPort;
+  readonly sourceStatistics: SourceStatisticsPort;
   private readonly settings: Pick<ExtensionSettings, 'load' | 'update'>;
   private readonly standaloneVersion: string;
   private readonly diagnostic?: DiagnosticSink;
@@ -98,8 +103,9 @@ export class SyntaxClient implements SyntaxMenuOwner {
     this.broker = new ProviderBroker({ ...options.provider, diagnostic: brokerDiagnostic(new WeakRef(this), options.diagnostic ?? options.provider.diagnostic), onChange: brokerObserver(new WeakRef(this)),
       onOwnedStopped: ownedStopObserver(new WeakRef(this)) });
     this.provider = this.broker.snapshot();
-    this.sources = new SourceController(this.broker, { ...options.source, diagnostic: options.diagnostic ?? options.source?.diagnostic, onChange: sourceObserver(new WeakRef(this)) });
-    this.sources.setEnabled(false);
+    const execution = new SourceExecution(this.broker, { ...options.source, diagnostic: options.diagnostic ?? options.source?.diagnostic, onChange: sourceObserver(new WeakRef(this)) });
+    this.cardSource = execution; this.sourceWork = execution; this.sourceLifecycle = execution; this.sourcePump = execution; this.sourceStatistics = execution;
+    this.sourceLifecycle.setEnabled(false);
   }
 
   start(): Promise<void> {
@@ -132,7 +138,7 @@ export class SyntaxClient implements SyntaxMenuOwner {
   }
   private checkCompletion(): void {
     const state = this.completion, completion = state.current; if (!completion) return;
-    this.watchCompletion('sources', this.sources.whenSettled());
+    this.watchCompletion('sources', this.sourceLifecycle.whenSettled());
     this.watchCompletion('provider', this.broker.whenSettled());
     this.watchCompletion('restore', this.restore);
     this.watchCompletion('startup', this.startup);
@@ -200,7 +206,7 @@ export class SyntaxClient implements SyntaxMenuOwner {
     if (this.enabled === enabled) return Promise.resolve();
     this.cancelCompletion(); this.enabled = enabled; ++this.menuEpoch; this.cancelSave();
     this.log('Native highlighting session activation changed', { enabled });
-    this.sources.setEnabled(enabled && this.preferenceKnown);
+    this.sourceLifecycle.setEnabled(enabled && this.preferenceKnown);
     const operation = this.broker.setEnabled(enabled);
     this.acceptBrokerChange();
     return enabled ? Promise.all([this.restorePreference(), operation]).then(() => {}) : operation;
@@ -209,22 +215,22 @@ export class SyntaxClient implements SyntaxMenuOwner {
   suspend(): void {
     if (this.disposed || this.suspended) return;
     this.cancelCompletion(); this.suspended = true; ++this.menuEpoch;
-    this.sources.suspend();
+    this.sourceLifecycle.suspend();
     const interrupted = this.broker.suspend();
-    if (interrupted !== undefined) this.sources.interruptProvider(interrupted);
+    if (interrupted !== undefined) this.sourceLifecycle.interruptProvider(interrupted);
     this.acceptBrokerChange();
   }
   resume(): Promise<void> {
     if (this.disposed || !this.suspended) return Promise.resolve();
     this.suspended = false;
     const operation = this.broker.resume();
-    this.sources.resume(); this.acceptBrokerChange();
+    this.sourceLifecycle.resume(); this.acceptBrokerChange();
     return operation;
   }
 
   dispose(): Promise<void> {
     if (this.shutdown) return this.shutdown;
-    this.cancelCompletion(); this.completion.parts = {}; this.disposed = true; ++this.menuEpoch; this.cancelSave(); this.sources.dispose();
+    this.cancelCompletion(); this.completion.parts = {}; this.disposed = true; ++this.menuEpoch; this.cancelSave(); this.sourceLifecycle.dispose();
     this.shutdown = this.broker.dispose(); this.provider = this.broker.snapshot(); this.effective = undefined;
     return this.shutdown;
   }
@@ -251,7 +257,7 @@ export class SyntaxClient implements SyntaxMenuOwner {
   /** Internal weak source observer, called after the controller's coalesced notice. */
   acceptSourceChange(keys: readonly string[] = [], groups?: readonly number[]): void {
     if (this.disposed) return;
-    const current = keys.filter(key => this.sources.workStatus(key).version !== undefined);
+    const current = keys.filter(key => this.sourceLifecycle.workStatus(key).version !== undefined);
     try { if (current.length || groups?.length) this.onSourceChange?.(current, groups); } catch { /* Presentation cannot suppress reconciliation. */ }
     this.changed();
   }
@@ -286,7 +292,7 @@ export class SyntaxClient implements SyntaxMenuOwner {
     const previous = this.effective; this.effective = this.preferenceKnown ? resolved.effective : undefined;
     if (previous?.id !== this.effective?.id || previous?.fingerprint !== this.effective?.fingerprint)
       this.log('Effective syntax palette changed without observing source text', { palette: this.effective?.id ?? 'unavailable', missing: resolved.missing });
-    this.sources.setEnabled(this.preferenceKnown && this.enabled);
+    this.sourceLifecycle.setEnabled(this.preferenceKnown && this.enabled);
     if (resolved.missing && this.selected.kind === 'theme') {
       if (!this.missingEpisode) {
         this.missingEpisode = true;

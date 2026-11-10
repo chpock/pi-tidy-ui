@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { SourceController } from '../../src/highlighting/controller.ts';
+import { SourceExecution } from '../../src/highlighting/source-execution.ts';
 import { CardSources, type CardDisplayInput } from '../../src/syntax/cards.ts';
 import { layoutCard } from '../../src/syntax/card-layout.ts';
 import { preparePaletteInput, type PiInputTheme } from '../../src/syntax/pi-input.ts';
@@ -13,8 +13,8 @@ export function preparedCard(input: CardDisplayInput, width: number, theme: PiIn
   classify?: (text: string, path: string) => string[], expanded = false) {
   const provider = { snapshot: () => ({ generation: 1, availability: 'initializing' as const, reason: 'initializing' as const, initialShared: false }),
     isReady: () => false, classificationAccepted: () => false, request: async () => assert.fail('fixture must not dispatch native work') };
-  const sources = new SourceController(provider), owner = {};
-  const cards = new CardSources({ sources, snapshot: () => ({ enabled: true, provider: provider.snapshot(), selected: { kind: 'pi' as const, variant: 'dark' as const }, effective: resolveTheme({ kind: 'pi', variant: 'dark' }).effective, standaloneVersion: 'test' }) },
+  const sources = new SourceExecution(provider), owner = {};
+  const cards = new CardSources({ cardSource: sources, sourceWork: sources, snapshot: () => ({ enabled: true, provider: provider.snapshot(), selected: { kind: 'pi' as const, variant: 'dark' as const }, effective: resolveTheme({ kind: 'pi', variant: 'dark' }).effective, standaloneVersion: 'test' }) },
     { preparePaletteInput: (palette, revision, mode, funding) => preparePaletteInput(theme, palette.id, revision, mode, funding), classify: (text, info) => classify!(text, info.path!), invalidate() {}, requestRender() {} });
   const funding = sources.geometryFunding()!;
   try {

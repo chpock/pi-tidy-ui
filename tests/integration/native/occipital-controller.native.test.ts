@@ -5,7 +5,8 @@ import { test } from 'node:test';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { SourceController, type SourceDemand } from '../../../src/highlighting/controller.ts';
+import { SourceExecution } from '../../../src/highlighting/source-execution.ts';
+import type { SourceDemand } from '../../../src/highlighting/source-ports.ts';
 import { decodeSemanticSourceReply, SEMANTIC_PROTOCOL_VERSION as VERSION } from '../../../src/occipital/semantic-protocol.ts';
 import { SemanticRetentionPool } from '../../../src/highlighting/semantic-retention.ts';
 import { StdioTransport } from '../../../src/occipital/stdio.ts';
@@ -18,7 +19,7 @@ const inputs = readInputs(), binary = validateNative(inputs);
 function demand(text: string, version = 1, complete = false, key = 'source'): SourceDemand {
   return { key, version, text, language: 'bash', complete };
 }
-function semanticRows(controller: SourceController, key = 'source') {
+function semanticRows(controller: SourceExecution, key = 'source') {
   const pool = Reflect.get(controller, 'pool'); assert.ok(pool instanceof SemanticRetentionPool);
   const status = controller.status(key)!;
   const states = Reflect.get(controller, 'states'); assert.ok(states instanceof Map);
@@ -42,7 +43,7 @@ function coalesce(rows: ReturnType<typeof semanticRows>) {
   }
   return result;
 }
-async function drain(controller: SourceController) {
+async function drain(controller: SourceExecution) {
   assert.equal(await awaitFixture(controller.whenSettled()), true);
 }
 function environment(root: string) {
@@ -52,7 +53,7 @@ function pipe(root: string) {
   return new StdioTransport({ command: binary.path, args: ['--stdio'], env: environment(root), cwd: root,
     requestDeadlineMs: 5000, terminateGraceMs: 100 });
 }
-function cleaned(transport: StdioTransport, controller: SourceController) {
+function cleaned(transport: StdioTransport, controller: SourceExecution) {
   assert.equal(transport.stats().childState, 'exited');
   assert.equal(transport.stats().ownedListeners, 0); assert.equal(transport.stats().liveTimers, 0); assert.equal(transport.stats().retainedBytes, 0);
   assert.throws(() => process.kill(transport.stats().pid!, 0), { code: 'ESRCH' });
@@ -63,7 +64,7 @@ function cleaned(transport: StdioTransport, controller: SourceController) {
 test('actual product stdio controller opens, coalesces, finalizes and resolves common styles independently of parse counters', async () => {
   const root = await mkdtemp(join(tmpdir(), 'occipital-controller-')), transport = pipe(root);
   const broker = new ProviderBroker({ tryShared: async () => undefined, acquireOwned: async () => transport });
-  const c = new SourceController(broker, { deadlineMs: 5000 });
+  const c = new SourceExecution(broker, { deadlineMs: 5000 });
   try {
     await awaitFixture(broker.start());
     c.setStyleSelection(ownedStyleSelection());
@@ -105,7 +106,7 @@ test('actual product stdio controller opens, coalesces, finalizes and resolves c
 test('review F2 pressure: six actual source bytes recover once after verified semantic eviction, without a warm parse carousel', async () => {
   const root = await mkdtemp(join(tmpdir(), 'occipital-controller-pressure-')), transport = pipe(root);
   const broker = new ProviderBroker({ tryShared: async () => undefined, acquireOwned: async () => transport });
-  const c = new SourceController(broker, { retention: { maxBytes: 8192 }, deadlineMs: 5000 });
+  const c = new SourceExecution(broker, { retention: { maxBytes: 8192 }, deadlineMs: 5000 });
   try {
     await awaitFixture(broker.start()); const d = demand('echo x', 1, true);
     c.observe(d); c.flush(); await drain(c);
@@ -130,7 +131,7 @@ test('review F2 pressure: six actual source bytes recover once after verified se
 test('real owned exits stop after two restarts; only a validated six-byte source classification opens a fresh pair', async () => {
   const root = await mkdtemp(join(tmpdir(), 'occipital-crash-budget-')), pipes: StdioTransport[] = [];
   const broker = new ProviderBroker({ tryShared: async () => undefined, acquireOwned: async () => { const transport = pipe(root); pipes.push(transport); return transport; } });
-  const c = new SourceController(broker);
+  const c = new SourceExecution(broker);
   async function exitAndRecover() {
     const generation = broker.snapshot().generation, transport = pipes.at(-1)!;
     process.kill(transport.stats().pid!, 'SIGKILL'); await awaitFixture(transport.ended); assert.equal(transport.endReason, 'lost');
@@ -160,7 +161,7 @@ test('real owned exits stop after two restarts; only a validated six-byte source
 test('owned palette changes repaint ready groups locally without source replay or STYLE requests', async () => {
   const root = await mkdtemp(join(tmpdir(), 'occipital-palette-burst-')), transport = pipe(root);
   const broker = new ProviderBroker({ tryShared: async () => undefined, acquireOwned: async () => transport });
-  const c = new SourceController(broker);
+  const c = new SourceExecution(broker);
   const themes = ['gruvbox-dark', 'nord-dark', 'monokai-dark'] as const;
   const demands = Array.from({ length: 20 }, (_, i) => ({ ...demand(i % 2 ? `const x${i} = 1;\n` : `echo source-${i}`, 1, true, `source-${i}`), language: i % 2 ? 'typescript' : 'bash' }));
   try {

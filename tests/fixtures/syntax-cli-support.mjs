@@ -265,10 +265,10 @@ async function chooseTheme(terminal, paletteId) {
 }
 
 async function peerSource(client) {
-  assert.equal(client.sources.observe({ key: 'peer', version: 1, text: 'echo peer\n', language: 'bash', complete: true }), true);
-  await client.sources.flush();
+  assert.equal(client.sourceWork.observe({ key: 'peer', version: 1, text: 'echo peer\n', language: 'bash', complete: true }), true);
+  await client.sourcePump.flush();
   assert.equal(await client.whenSettled(), true, 'actual peer work and delivery completed');
-  assert.ok(client.sources.status('peer')?.exact, 'actual peer classification');
+  assert.ok(client.sourceWork.status('peer')?.exact, 'actual peer classification');
 }
 
 async function keywordColor(terminal, color, name) {

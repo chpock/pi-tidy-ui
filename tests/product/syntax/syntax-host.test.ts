@@ -12,7 +12,7 @@ import { Box, Container, Text } from '@earendil-works/pi-tui';
 import { VERSION, highlightCode, getLanguageFromPath, createBashToolDefinition, createEditToolDefinition, createReadToolDefinition, createWriteToolDefinition } from '@earendil-works/pi-coding-agent';
 import { installTidyUi, type TidyUiController, type TidyUiOptions } from '../../../src/index.ts';
 import { resolvePublicFileToolDefinition } from '../../fixtures/sdk-contract-support.ts';
-import { SourceController } from '../../../src/highlighting/controller.ts';
+import { SourceExecution } from '../../../src/highlighting/source-execution.ts';
 import type { SyntaxClient } from '../../../src/application/syntax-client.ts';
 import type { ProviderSnapshot } from '../../../src/occipital/provider.ts';
 import { SEMANTIC_PROTOCOL_VERSION as PROTOCOL_VERSION, decodeSemanticDescription } from '../../../src/occipital/semantic-protocol.ts';
@@ -44,7 +44,7 @@ const themes = await import(pathToFileURL(resolve(sdkDist, 'modes/interactive/th
 themes.initTheme('dark', false);
 const description = decodeSemanticDescription(semanticDescriptor('describe', 'daemon'), 'describe');
 class UI extends Container { requests = 0; requestRender() { this.requests++; } }
-const fixtures: { adapter: TidyUiController; sources: SourceController;
+const fixtures: { adapter: TidyUiController; sources: SourceExecution;
   calls: { request: Record<string, unknown>; resolve(value: unknown): void }[]; styleCalls: { resolve(value: unknown): void }[] }[] = [];
 function fixture(ready = false, useDefaultClassifier = false, options: Pick<TidyUiOptions, 'cards' | 'compact' | 'diagnostic'> = {}, retention?: { maxBytes: number }, switchable = false, externalOwner = false) {
   let root = new UI();
@@ -79,11 +79,11 @@ function fixture(ready = false, useDefaultClassifier = false, options: Pick<Tidy
     }
   };
   let adapter: TidyUiController, toolIdentity = 0;
-  const sources = new SourceController(provider, { retention, diagnostic: options.diagnostic, onChange: (keys, groups) => adapter.syntaxSourceChanged(keys, groups) });
+  const sources = new SourceExecution(provider, { retention, diagnostic: options.diagnostic, onChange: (keys, groups) => adapter.syntaxSourceChanged(keys, groups) });
   const observe = sources.observe.bind(sources), capture = sources.capturePiSource.bind(sources);
   sources.observe = (...args) => { assert.equal(env.depth, 0, 'no native source preparation in render'); env.observes++; env.keys.push(args[0].key); return observe(...args); };
   sources.capturePiSource = (...args) => { assert.equal(env.depth, 0, 'no Pi source preparation in render'); env.captures++; env.capturedKeys.push(args[0]); return capture(...args); };
-  const client: Pick<SyntaxClient, 'sources' | 'snapshot'> = { sources, snapshot: () => {
+  const client: NonNullable<TidyUiOptions['syntax']>['client'] = { cardSource: sources, sourceWork: sources, sourcePump: sources, sourceStatistics: sources, snapshot: () => {
     assert.equal(env.depth, 0, 'no work metadata read in render'); env.reads++;
     return { enabled: env.enabled, provider: provider.snapshot(), standaloneVersion: 'test', selected: env.selected, effective: resolveTheme(env.selected).effective };
   } };
@@ -2037,7 +2037,7 @@ test('host native completion precedes delayed Bash prefix adoption; only adopted
   tool.setArgsComplete(); tool.updateResult({ content: [{ type: 'text', text: 'USER_BASH_OUTPUT' }], isError: false }, false);
   const observer = observeSyntaxLocalWork(), notify = f.sources.notifyChange;
   let release: (() => void) | undefined, held = false;
-  t.mock.method(f.sources, 'notifyChange', function(this: SourceController, epoch: number) {
+  t.mock.method(f.sources, 'notifyChange', function(this: SourceExecution, epoch: number) {
     // Retain one real presentation notification after native SOURCE/STYLE settle.
     if (!held && f.env.styleRequests.length > 0 && this.stats().globalUnsettledJobs === 0) {
       held = true; release = () => notify.call(this, epoch); delivered(); return;
@@ -2075,7 +2075,7 @@ test('completion boundary: held native notification includes actual Bash prefix 
   tool.setArgsComplete(); tool.updateResult({ content: [{ type: 'text', text: 'SETTLED_BASH_OUTPUT' }], isError: false }, false);
   const observer = observeSyntaxLocalWork(text => text.includes('SETTLED_BASH_OUTPUT')), notify = f.sources.notifyChange;
   let release: (() => void) | undefined, retained = false, completed = false;
-  t.mock.method(f.sources, 'notifyChange', function(this: SourceController, epoch: number) {
+  t.mock.method(f.sources, 'notifyChange', function(this: SourceExecution, epoch: number) {
     if (!retained && f.env.styleRequests.length > 0 && this.stats().globalUnsettledJobs === 0) {
       retained = true; release = () => notify.call(this, epoch); held(); return;
     }

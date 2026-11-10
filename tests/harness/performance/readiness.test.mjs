@@ -19,7 +19,7 @@ function fixture() {
     },
     inputIdentity(selected, currentInput) { return `${selected.kind === 'pi' ? 'pi' : selected.id}:${currentInput.palette}:${currentInput.mode}`; },
     records: new Map([[1, { owner: new WeakRef(owner) }]]),
-    client: { snapshot: () => ({ enabled: true }), sources: { status: () => native ? status : undefined, displayBasis: () => native ? display : undefined,
+    client: { snapshot: () => ({ enabled: true }), sourceWork: { status: () => native ? status : undefined, displayBasis: () => native ? display : undefined,
       piProjection: () => pi ? {} : undefined, borrowSource: () => ({ text: 'current' }), borrowPiSource: () => ({ text: 'current' }) } },
     visit(_owner, consume) { if (!visit) return false; consume(state.display, { origin: state.paint.origin,
       ranges() { return () => true; }, basis(_key, callback) { callback(text); return true; } }); return true; } };
@@ -56,6 +56,8 @@ test('write capture gate: pausing the current owner removes its pending particip
 
 function baselineFixture() {
   const f = fixture();
+  f.consumer.client.sources = f.consumer.client.sourceWork;
+  delete f.consumer.client.sourceWork;
   delete f.consumer.currentPalette;
   delete f.consumer.inputIdentity;
   f.display.profile = 'baseline-profile';

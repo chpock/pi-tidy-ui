@@ -238,7 +238,7 @@ test('menu-only local theme preview does not prepare or read an asset until sele
     assert.deepEqual(runtime.snapshot().selected, preference('solarized-dark'));
     assert.deepEqual(observed.snapshot(), { opens: 0, reads: 0, ownerLookups: 0 });
     assert.equal(settingsLoads, 1); assert.equal(providerStarts, 0);
-    assert.equal(runtime.sources.stats().sourceRecords, 0); assert.equal(runtime.sources.stats().dispatches, 0);
+    assert.equal(runtime.sourceStatistics.stats().sourceRecords, 0); assert.equal(runtime.sourceStatistics.stats().dispatches, 0);
 
     const palette = runtime.snapshot().effective; assert.ok(palette);
     const revision = runtime.palette({ colors: {} });
@@ -251,7 +251,7 @@ test('menu-only local theme preview does not prepare or read an asset until sele
     assert.deepEqual(observed.snapshot(), { opens: cold.opens, reads: cold.reads, ownerLookups: cold.ownerLookups + 1 },
       'a warm owner lookup reuses the compiled store without reopening or rereading its asset');
     assert.equal(settingsLoads, 1); assert.equal(providerStarts, 0);
-    assert.equal(runtime.sources.stats().sourceRecords, 0); assert.equal(runtime.sources.stats().dispatches, 0);
+    assert.equal(runtime.sourceStatistics.stats().sourceRecords, 0); assert.equal(runtime.sourceStatistics.stats().dispatches, 0);
   } finally {
     for (const lease of leases) lease.dispose();
     observed.restore();

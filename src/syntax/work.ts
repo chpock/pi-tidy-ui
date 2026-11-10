@@ -1,5 +1,6 @@
-import type { SyntaxClient } from '../application/syntax-client.ts';
-import type { DisplayRangeReader, PiFailure, PiProjectionReader, SourceController, SourceDemand, SourceDisplayBasis, SourceWorkStatus } from '../highlighting/controller.ts';
+import type { DisplayRangeReader, PiFailure, PiProjectionReader, SourceDemand, SourceDisplayBasis, SourceWorkPort, SourceWorkStatus } from '../highlighting/source-ports.ts';
+import type { ThemeDescription } from '../themes/selection.ts';
+import type { ProviderSnapshot } from '../occipital/provider.ts';
 import type { DataCharge } from '../resources/data-budget.ts';
 import { preparePiFlat, type PiRowReader, type PreparedPiFlat } from './pi-flat.ts';
 import type { StagedPiProjection } from '../highlighting/pi-projection.ts';
@@ -16,7 +17,7 @@ export type SyntaxIdentity = Pick<SyntaxDemand, 'key' | 'version' | 'language' |
 export type PiClassifier = (text: string, info: { language?: string; path?: string }) => readonly string[];
 export type SyntaxWorkResult = { outcome: 'native' | 'pi' | 'neutral' | 'waiting' | 'refused' | 'failed' | 'stale'; failure?: PiFailure; awaitingProvider?: true };
 export interface SyntaxResolution extends SyntaxIdentity {
-  owner: WeakRef<SourceController>;
+  owner: WeakRef<SourceWorkPort>;
   /** Exactness of the submitted prefix, not the full display or paint readiness. */
   nativeExact: boolean;
   execution: SourceWorkStatus['execution'];
@@ -30,9 +31,17 @@ export interface SyntaxResolution extends SyntaxIdentity {
   display?: SourceDisplayBasis;
   pi?: PiProjectionReader;
 }
-type Client = Pick<SyntaxClient, 'sources' | 'snapshot'>;
+export interface SyntaxSourceSnapshot {
+  readonly enabled: boolean;
+  readonly effective?: ThemeDescription;
+  readonly provider: Pick<ProviderSnapshot, 'availability' | 'generation'>;
+}
+export interface SyntaxSourceClient {
+  readonly sourceWork: SourceWorkPort;
+  snapshot(): SyntaxSourceSnapshot;
+}
 // Factory scope retains only weak ownership and primitive validity receipts.
-function nativeReader(owner: WeakRef<SourceController>, key: string, generation: number, version: number,
+function nativeReader(owner: WeakRef<SourceWorkPort>, key: string, generation: number, version: number,
   stamp: number, language?: string): DisplayRangeReader {
   return consume => {
     const sources = owner.deref();
@@ -72,8 +81,8 @@ function classificationRows(lines: readonly string[], styled: { value: boolean }
 
 /** Useful/coalesced demand only, outside render. Native source execution and
  * palette readiness are independent; only workStatus authorizes a Pi attempt. */
-export function requestSyntax(client: Client, demand: SyntaxDemand, classify: PiClassifier): SyntaxWorkResult {
-  const sources = client.sources, metadata = client.snapshot();
+export function requestSyntax(client: SyntaxSourceClient, demand: SyntaxDemand, classify: PiClassifier): SyntaxWorkResult {
+  const sources = client.sourceWork, metadata = client.snapshot();
   const { key, version, language, path, piLanguage, palette, neutral } = demand;
   const retained = sources.borrowSource(key);
   const observe = metadata.enabled && metadata.provider.availability === 'ready';
@@ -145,7 +154,7 @@ export function requestSyntax(client: Client, demand: SyntaxDemand, classify: Pi
 /** Pure keyed metadata read: no classification, observation, allocation grants,
  * source traversal, range/style visits or dispatch. Visitor output is provisional
  * until its final true result, and must be discarded otherwise. */
-export function resolveSyntax(sources: SourceController, identity: SyntaxIdentity): SyntaxResolution {
+export function resolveSyntax(sources: SourceWorkPort, identity: SyntaxIdentity): SyntaxResolution {
   const { key, version, language, piLanguage, complete, palette, fallback } = identity;
   const allowPi = fallback === 'pi';
   const work = sources.workStatus(key), native = sources.borrowSource(key), pi = allowPi ? sources.borrowPiSource(key) : undefined;

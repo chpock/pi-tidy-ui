@@ -11,7 +11,10 @@ const sourceExtensions = new Set(['.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', 
 const sourceTypes = [ts.ScriptKind.TS, ts.ScriptKind.TSX, ts.ScriptKind.TS, ts.ScriptKind.TS,
   ts.ScriptKind.JS, ts.ScriptKind.JSX, ts.ScriptKind.JS, ts.ScriptKind.JS];
 const highlightingModules = [
-  'src/highlighting/controller.ts',
+  'src/highlighting/source-execution.ts',
+  'src/highlighting/source-ports.ts',
+  'src/highlighting/work-registry.ts',
+  'src/highlighting/style-preparation.ts',
   'src/highlighting/controller-limits.ts',
   'src/highlighting/limits.ts',
   'src/highlighting/controller-styles.ts',
@@ -48,12 +51,6 @@ const movedPreferenceNames = new Set(['ThemeVariant', 'ThemePreference', 'copyTh
 const movedStyleTypeNames = new Set(['LiteralInk', 'Ink', 'StyleExpression', 'StyleIdentity']);
 const entryPath = 'src/index.ts';
 const genericStyleTypesPath = 'src/occipital/style-types.ts';
-const temporarySyntaxApplicationEdges = [
-  { source: 'src/syntax/cards.ts', target: 'src/application/syntax-client.ts', kind: 'type-only',
-    reason: 'Cards still read the existing client snapshot until their actual logical-card interface replaces this type dependency.', removalCheckpoint: 'CP5' },
-  { source: 'src/syntax/work.ts', target: 'src/application/syntax-client.ts', kind: 'type-only',
-    reason: 'Work still reads the existing client snapshot until the Pi-fallback/storage seam replaces this type dependency.', removalCheckpoint: 'CP4' },
-];
 const presentationAndPayloadFiles = new Set([
   'src/bash-card.ts', 'src/card-frame.ts', 'src/card-theme.ts', 'src/diff-palette.ts',
   'src/display-path.ts', 'src/editor-card.ts', 'src/editor-status.ts', 'src/file-card.ts',
@@ -255,15 +252,8 @@ function edgeKey({ source, target, kind }) {
   return `${source} -> ${target} [${kind}]`;
 }
 
-function assertTemporarySyntaxApplicationEdges(actual, expected = temporarySyntaxApplicationEdges) {
-  if (expected.some(edge => !edge.reason || !edge.removalCheckpoint || edge.kind !== 'type-only')) {
-    throw new Error('each temporary syntax-to-application edge must be type-only and name its removal checkpoint');
-  }
-  const actualKeys = actual.map(edgeKey).sort();
-  const expectedKeys = expected.map(({ source, target, kind }) => `${source} -> ${target} [${kind}]`).sort();
-  if (JSON.stringify(actualKeys) !== JSON.stringify(expectedKeys)) {
-    throw new Error(`temporary syntax-to-application edge inventory changed; actual=${JSON.stringify(actualKeys)} expected=${JSON.stringify(expectedKeys)}`);
-  }
+function assertNoSyntaxApplicationEdges(actual) {
+  if (actual.length) throw new Error(`syntax modules must not import application ownership: ${actual.map(edgeKey).join(', ')}`);
 }
 
 function assertNativeDependency(edge) {
@@ -316,10 +306,7 @@ function assertEdgePolicy(edge) {
     }
   }
   if (edge.source.startsWith('src/syntax/') && edge.target.startsWith('src/application/')) {
-    const allowed = temporarySyntaxApplicationEdges.some(item => item.source === edge.source && item.target === edge.target);
-    if (!allowed || edge.kind !== 'type-only') {
-      throw new Error(`syntax may temporarily depend on application only through an approved type-only seam: ${edgeKey(edge)}`);
-    }
+    throw new Error(`syntax module imports application ownership: ${edgeKey(edge)}`);
   }
   if (edge.target === entryPath && edge.source !== entryPath) {
     throw new Error(`production module back-imports the extension entry: ${edgeKey(edge)}`);
@@ -333,18 +320,18 @@ function assertGovernedInventory(files) {
 
 function assertBudgetBoundary(legacyExists, forwardedNames) {
   assert.equal(legacyExists, false, 'the legacy Occipital budget module must stay deleted');
-  assert.equal(forwardedNames.size, 0, 'the controller must not forward the resource module');
+  assert.equal(forwardedNames.size, 0, 'source execution must not forward the resource module');
 }
 
 function assertMigratedContracts() {
   assertBudgetBoundary(existsSync(resolve(projectRoot, 'src/occipital/data-budget.ts')),
-    reexportedSourceNames('src/highlighting/controller.ts', 'src/resources/data-budget.ts'));
+    reexportedSourceNames('src/highlighting/source-execution.ts', 'src/resources/data-budget.ts'));
   const roles = declarationExportNames(parseSource('src/appearance/card-roles.ts'));
   const preference = declarationExportNames(parseSource('src/appearance/theme-preference.ts'));
   const styles = declarationExportNames(parseSource(genericStyleTypesPath));
   const codec = declarationExportNames(parseSource('src/occipital/semantic-codec.ts'));
   const settings = declarationExportNames(parseSource('src/settings.ts'));
-  const controller = declarationExportNames(parseSource('src/highlighting/controller.ts'));
+  const sourceExecution = declarationExportNames(parseSource('src/highlighting/source-execution.ts'));
   const budget = declarationExportNames(parseSource('src/resources/data-budget.ts'));
 
   for (const name of movedRoleNames) assert.ok(roles.has(name), `appearance/card-roles.ts must own ${name}`);
@@ -367,7 +354,7 @@ function assertMigratedContracts() {
   assert.ok(settings.has('SyntaxTheme') && settings.has('ThemeSettingsPatch')
     && settings.has('themePreferenceFromSettings') && settings.has('themePatch'),
   'settings.ts retains persistence shape, normalization and patch conversion');
-  assert.ok(!controller.has('GeometryFunding') && budget.has('GeometryFunding'),
+  assert.ok(!sourceExecution.has('GeometryFunding') && budget.has('GeometryFunding'),
     'resources/data-budget.ts owns the existing GeometryFunding capability');
 }
 
@@ -396,8 +383,8 @@ test('production imports preserve the migrated module boundaries', () => {
   assert.deepEqual(styleConversionEdges.map(edgeKey), [
     `src/appearance/style-materialization.ts -> ${genericStyleTypesPath} [type-only]`,
   ], 'concrete style materialization depends only on generic type-only wire shapes');
-  const temporaryEdges = edges.filter(edge => edge.source.startsWith('src/syntax/') && edge.target.startsWith('src/application/'));
-  assertTemporarySyntaxApplicationEdges(temporaryEdges);
+  const syntaxApplicationEdges = edges.filter(edge => edge.source.startsWith('src/syntax/') && edge.target.startsWith('src/application/'));
+  assertNoSyntaxApplicationEdges(syntaxApplicationEdges);
 });
 
 test('native modules are independent of application, highlighting, presentation and Pi host SDK', () => {
@@ -445,7 +432,7 @@ test('dependency parser and architecture rules reject synthetic boundary violati
   assert.throws(() => assertImportFree('synthetic.ts', parseSource('synthetic.ts', "import { basename } from 'node:path';")), /must remain import-free/);
 
   assert.doesNotThrow(() => assertKnownGovernedModule('src/appearance/theme-preference.ts'));
-  assert.doesNotThrow(() => assertKnownGovernedModule('src/highlighting/controller.ts'));
+  assert.doesNotThrow(() => assertKnownGovernedModule('src/highlighting/source-execution.ts'));
   assert.doesNotThrow(() => assertKnownGovernedModule('src/application/syntax-options.ts'));
   assert.throws(() => assertKnownGovernedModule('src/appearance/new-model.ts'), /unclassified governed source module/);
   assert.throws(() => assertKnownGovernedModule('src/highlighting/new-owner.ts'), /unclassified governed source module/);
@@ -465,7 +452,7 @@ test('dependency parser and architecture rules reject synthetic boundary violati
   assert.throws(() => assertEdgePolicy({
     source: 'src/resources/new-budget.ts', target: 'src/tool-adapters/file.ts', kind: 'type-only',
   }), /resource module imports native, UI or payload implementation/);
-  for (const target of ['src/highlighting/controller.ts', 'src/application/syntax-client.ts']) {
+  for (const target of ['src/highlighting/source-execution.ts', 'src/application/syntax-client.ts']) {
     assert.throws(() => assertEdgePolicy({ source: 'src/resources/new-budget.ts', target, kind: 'type-only' }),
       /resource module imports native, UI or payload implementation/);
   }
@@ -473,16 +460,12 @@ test('dependency parser and architecture rules reject synthetic boundary violati
     target: 'src/application/syntax-client.ts', kind: 'type-only' }), /highlighting module imports application/);
   assert.throws(() => assertEdgePolicy({ source: 'src/highlighting/new-owner.ts',
     target: 'src/syntax/cards.ts', kind: 'type-only' }), /highlighting module imports application/);
-  assert.doesNotThrow(() => assertEdgePolicy({ source: 'src/syntax/cards.ts',
-    target: 'src/application/syntax-client.ts', kind: 'type-only' }));
-  assert.doesNotThrow(() => assertEdgePolicy({ source: 'src/syntax/work.ts',
-    target: 'src/application/syntax-client.ts', kind: 'type-only' }));
-  assert.throws(() => assertEdgePolicy({ source: 'src/syntax/cards.ts',
-    target: 'src/application/syntax-client.ts', kind: 'value' }), /approved type-only seam/);
-  assert.throws(() => assertEdgePolicy({ source: 'src/syntax/new-owner.ts',
-    target: 'src/application/syntax-client.ts', kind: 'type-only' }), /approved type-only seam/);
+  for (const source of ['src/syntax/cards.ts', 'src/syntax/work.ts', 'src/syntax/new-owner.ts']) {
+    for (const kind of ['type-only', 'value']) assert.throws(() => assertEdgePolicy({ source,
+      target: 'src/application/syntax-client.ts', kind }), /syntax module imports application ownership/);
+  }
 
-  for (const target of ['src/application/syntax-client.ts', 'src/highlighting/controller.ts',
+  for (const target of ['src/application/syntax-client.ts', 'src/highlighting/source-execution.ts',
     'src/syntax/cards.ts', 'src/appearance/card-roles.ts', 'src/themes/catalog.ts',
     'src/settings.ts', 'src/notifications.ts']) {
     for (const kind of ['type-only', 'value']) assert.throws(() => assertNativeDependency({
@@ -502,21 +485,12 @@ test('dependency parser and architecture rules reject synthetic boundary violati
 
   assert.doesNotThrow(() => assertBudgetBoundary(false, new Set()));
   assert.throws(() => assertBudgetBoundary(true, new Set()), /legacy Occipital budget module must stay deleted/);
-  const wildcard = parseSource('src/highlighting/controller.ts', "export * from '../resources/data-budget.ts';");
+  const wildcard = parseSource('src/highlighting/source-execution.ts', "export * from '../resources/data-budget.ts';");
   assert.throws(() => assertBudgetBoundary(false,
-    reexportedSourceNames('src/highlighting/controller.ts', 'src/resources/data-budget.ts', wildcard)), /controller must not forward/);
+    reexportedSourceNames('src/highlighting/source-execution.ts', 'src/resources/data-budget.ts', wildcard)), /source execution must not forward/);
 
-  const expected = [
-    { source: 'src/syntax/cards.ts', target: 'src/application/syntax-client.ts', kind: 'type-only',
-      reason: 'current card snapshot', removalCheckpoint: 'CP5' },
-    { source: 'src/syntax/work.ts', target: 'src/application/syntax-client.ts', kind: 'type-only',
-      reason: 'current work snapshot', removalCheckpoint: 'CP4' },
-  ];
-  assert.doesNotThrow(() => assertTemporarySyntaxApplicationEdges(expected, expected));
-  assert.throws(() => assertTemporarySyntaxApplicationEdges([], expected), /temporary syntax-to-application edge inventory changed/);
-  assert.throws(() => assertTemporarySyntaxApplicationEdges([
-    { source: expected[0].source, target: expected[0].target, kind: 'value' }, expected[1],
-  ], expected), /temporary syntax-to-application edge inventory changed/);
-  assert.throws(() => assertTemporarySyntaxApplicationEdges(expected, [{ ...expected[0], removalCheckpoint: undefined }, expected[1]]),
-    /must be type-only and name its removal checkpoint/);
+  assert.doesNotThrow(() => assertNoSyntaxApplicationEdges([]));
+  assert.throws(() => assertNoSyntaxApplicationEdges([
+    { source: 'src/syntax/cards.ts', target: 'src/application/syntax-client.ts', kind: 'type-only' },
+  ]), /syntax modules must not import application ownership/);
 });

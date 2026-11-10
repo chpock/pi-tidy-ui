@@ -4,7 +4,7 @@ The client separates logical source ownership from actual storage holders. This 
 
 ## Follow the storage holder, not just the source record
 
-`SemanticRetentionPool` in `src/highlighting/semantic-retention.ts` owns source entries and the context arena. `SourceController` owns the pool and exposes the operation-scoped `GeometryFunding` capability to card preparation. It supplies numeric grants for card construction, palette preparation, paint and measured geometry; it neither authorizes SOURCE work or fallback nor owns retained payloads. This lets semantic data, Pi projections, measurements and compiled presentation participate in the same local logical-data authority without making the budget retain UI objects.
+`SemanticRetentionPool` in `src/highlighting/semantic-retention.ts` owns source entries and the context arena. `SourceExecution` owns the pool and exposes operation-scoped `GeometryFunding` through the card-facing capability. That funding capability supplies numeric grants for card construction, palette preparation, paint and measured geometry; it neither authorizes SOURCE work or fallback nor owns retained payloads. The registry and calculation-only style helper use this same root's funded operations, without independent capacity or charge ledgers. Semantic data, Pi projections, measurements and compiled presentation therefore participate in one existing local logical-data authority without making the budget retain UI objects.
 
 The allocation path is concrete:
 

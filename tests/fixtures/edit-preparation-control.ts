@@ -1,15 +1,15 @@
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
-import { SourceController } from '../../src/highlighting/controller.ts';
+import { SourceExecution } from '../../src/highlighting/source-execution.ts';
 import presentationDriver from './presentation-driver.ts';
 import { createEventRecorder } from './terminal-output.ts';
 
 export default function editPreparationControl(pi: ExtensionAPI) {
   const record = createEventRecorder(process.env.TIDY_UI_TEST_OUTPUT!);
-  const original = { continueWork: SourceController.prototype.continueWork, resumePreparation: SourceController.prototype.resumePreparation };
-  const deferred: { owner: WeakRef<SourceController>; method: keyof typeof original }[] = [];
+  const original = { continueWork: SourceExecution.prototype.continueWork, resumePreparation: SourceExecution.prototype.resumePreparation };
+  const deferred: { owner: WeakRef<SourceExecution>; method: keyof typeof original }[] = [];
   let holding = false;
   for (const method of ['continueWork', 'resumePreparation'] as const) {
-    SourceController.prototype[method] = function () {
+    SourceExecution.prototype[method] = function () {
       if (!holding) return original[method].call(this);
       if (deferred.length >= 16) throw new Error('Unexpected continuation count');
       deferred.push({ owner: new WeakRef(this), method });
@@ -30,7 +30,7 @@ export default function editPreparationControl(pi: ExtensionAPI) {
   pi.registerCommand('release-preparation', { description: 'Deliver each retained real continuation once', handler: async () => release() });
   pi.on('session_shutdown', () => {
     release();
-    for (const method of ['continueWork', 'resumePreparation'] as const) SourceController.prototype[method] = original[method];
+    for (const method of ['continueWork', 'resumePreparation'] as const) SourceExecution.prototype[method] = original[method];
   });
   return presentationDriver(pi);
 }

@@ -17,7 +17,7 @@ export default function loggingDriver(pi: ExtensionAPI) {
     const attach = SyntaxRuntime.prototype.attach, start = SyntaxClient.prototype.start;
     const sample = () => {
       const current = runtime?.deref();
-      return { node: process.version, client: current?.snapshot(), source: current?.sources.stats(), logging: debugLoggingDiagnostics() };
+      return { node: process.version, client: current?.snapshot(), source: current?.sourceStatistics.stats(), logging: debugLoggingDiagnostics() };
     };
     function attachWithCapture(this: SyntaxRuntime, ...args: Parameters<SyntaxRuntime['attach']>) {
       if (runtime?.deref() !== this) {
@@ -27,7 +27,7 @@ export default function loggingDriver(pi: ExtensionAPI) {
     }
     function startWithCapture(this: SyntaxClient, ...args: Parameters<SyntaxClient['start']>) {
       const result = start.apply(this, args);
-      if (runtime?.deref()?.sources === this.sources && client?.deref() !== this) {
+      if (runtime?.deref()?.sourceWork === this.sourceWork && client?.deref() !== this) {
         stopCapture?.(); client = new WeakRef(this); stopCapture = registerCaptureProducer(this, sample);
       }
       return result;

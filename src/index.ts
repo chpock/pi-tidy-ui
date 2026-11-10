@@ -30,16 +30,16 @@ import { argumentParts, summaryName } from "./summary-args.ts";
 import { captureToolCall, createToolReader, supportsToolName, toolCardKind } from './tool-adapters/registry.ts';
 import type { FileToolReader, ToolDiagnosticsIdentity, ToolReader } from './tool-adapters/contracts.ts';
 import { wrapText } from './text-wrap.ts';
-import { CardSources, type CardPreparation } from "./syntax/cards.ts";
+import { CardSources, type CardPreparation, type SyntaxCardClient } from "./syntax/cards.ts";
 import { layoutCard, type CardLayout, type CardRows, type BashPaintProof } from './syntax/card-layout.ts';
 import { PaletteInputOwner } from './syntax/pi-input-owner.ts';
 import type { PiInputTheme, PaletteInputLease } from './syntax/pi-input.ts';
 import { resolveTheme, type ThemeDescription } from './themes/selection.ts';
-import { SourceController } from './highlighting/controller.ts';
+import { SourceExecution } from './highlighting/source-execution.ts';
+import type { SourceLifecyclePort, SourcePumpPort, SourceStatisticsPort } from './highlighting/source-ports.ts';
 import type { GeometryFunding } from './resources/data-budget.ts';
 import type { DataCharge, DataCleanupReceipt } from './resources/data-budget.ts';
 import type { PiClassifier } from "./syntax/work.ts";
-import type { SyntaxClient } from "./application/syntax-client.ts";
 import { createSyntaxOptions } from "./application/syntax-options.ts";
 import { SyntaxRuntime, type SyntaxRuntimeOptions } from "./application/syntax-runtime.ts";
 import { createLazyNativeRendererResolver, isDeferredStockEditComponent, isDeferredStockEditPair, isDeferredStockFileCall, isDeferredStockFilePair, isDeferredStockReadPair, releaseNativeRendererCache, updateNativeRendererArgs, stockEditCall, stockEditResult, type NativeRendererFailureReporter } from './syntax/lazy-native-renderers.ts';
@@ -117,7 +117,7 @@ export interface TidyUiOptions {
   cardPreparation?: (event: CardPreparation & { call: string; tool: string }) => void;
   /** Optional composed client; lifecycle/startup remains the caller's responsibility. */
   syntax?: {
-    client: Pick<SyntaxClient, "sources" | "snapshot">;
+    client: SyntaxCardClient & { readonly sourcePump: SourcePumpPort; readonly sourceStatistics: SourceStatisticsPort };
     /** Established cheap Pi palette generation, never color sampling or theme inference. */
     palette(): number;
     classify?: PiClassifier;
@@ -448,7 +448,7 @@ export function installTidyUi(tui: LiveTui, getTheme: () => Palette, options: Ti
   }
   let cardClient = options.syntax?.client;
   let selectedPalette = cardClient?.snapshot().effective ?? resolveTheme({ kind: 'pi', variant: 'dark' }).effective;
-  let ownedSources: SourceController | undefined;
+  let ownedSources: SourceLifecyclePort | undefined;
   const paletteOwner = new PaletteInputOwner(options.diagnostic);
   const externalPaletteOwner = !!(options.syntax && options.preparePaletteInput);
   function needsPiTheme(palette: ThemeDescription) {
@@ -471,11 +471,12 @@ export function installTidyUi(tui: LiveTui, getTheme: () => Palette, options: Ti
     if (!cardClient) {
       const snapshot = { enabled: false, selected: { kind: 'pi', variant: 'dark' } as const, standaloneVersion: extensionVersion,
         provider: { availability: 'disabled' as const, reason: 'disabled' as const, generation: 0, initialShared: false } };
-      ownedSources = new SourceController({ snapshot: () => snapshot.provider, isReady: () => false,
+      const execution = new SourceExecution({ snapshot: () => snapshot.provider, isReady: () => false,
         classificationAccepted: () => { throw new Error('Disabled card provider accepted work'); },
         request: () => { throw new Error('Disabled card provider requested work'); } },
         { diagnostic: options.diagnostic, onChange: localCardNotice(new WeakRef(controller)) });
-      ownedSources.setEnabled(false); cardClient = { sources: ownedSources, snapshot: () => snapshot };
+      execution.setEnabled(false); ownedSources = execution;
+      cardClient = { cardSource: execution, sourceWork: execution, sourcePump: execution, sourceStatistics: execution, snapshot: () => snapshot };
     }
     syntax = new CardSources(cardClient, {
       diagnostic: options.diagnostic, identify: node => ({ call: node.toolCallId, tool: node.toolName }),
@@ -614,7 +615,7 @@ export function installTidyUi(tui: LiveTui, getTheme: () => Palette, options: Ti
   function preparePrefix(node: ToolNode) {
     const state = syntaxStates.get(node); if (!state?.applied || cardKind(node) !== 'bash' || !syntax) return;
     const key = syntax.identities(node)[0]?.key; if (!key) return;
-    const basis = cardClient!.sources.displayBasis(key); if (!basis || state.prefix?.sourceRevision === state.sourceRevision && state.prefix.basis === basis.geometryStamp) return;
+    const basis = cardClient!.cardSource.displayBasis(key); if (!basis || state.prefix?.sourceRevision === state.sourceRevision && state.prefix.basis === basis.geometryStamp) return;
     let bytes = 0, valid = false;
     const accepted = syntax.visit(node, (display, paint) => {
       if (display.kind !== 'bash') return;
@@ -697,7 +698,7 @@ export function installTidyUi(tui: LiveTui, getTheme: () => Palette, options: Ti
   function preparedLayout(node: ToolNode, width: number): PreparedLayout | undefined {
     if (!syntaxStates.get(node)?.applied) return;
     const previousEntry = preparedStates.get(node), previous = previousEntry?.value;
-    const padding = outputPadding(), funding = cardClient?.sources.geometryFunding();
+    const padding = outputPadding(), funding = cardClient?.cardSource.geometryFunding();
     if (!funding) {
       if (filePresentationTool(node) && syntaxStates.get(node)?.applied) {
         if (fileMode(node) === 'full' && !unsupportedFullFile(node)) dropPrepared(node);
@@ -749,8 +750,8 @@ export function installTidyUi(tui: LiveTui, getTheme: () => Palette, options: Ti
       if (candidate.scene === previous?.scene && oldRelease) oldRelease.geometry = undefined;
       preparedCleanup.set(entry, release); preparedPools.set(entry, pool); dropPrepared(node); preparedStates.set(node, entry); adopted = true;
       const identity = syntax?.identities(node)[0];
-      const basis = identity && cardClient!.sources.displayBasis(identity.key);
-      const pi = identity && cardClient!.sources.borrowPiSource(identity.key);
+      const basis = identity && cardClient!.cardSource.displayBasis(identity.key);
+      const pi = identity && cardClient!.sourceWork.borrowPiSource(identity.key);
       const selected = cardKind(node) === 'bash' ? syntaxStates.get(node)?.prefix?.bytes ? 'historical-native-prefix' : 'toolTitle'
         : basis ? 'exact-native' : pi ? pi.styleDirectives ? 'styled-pi' : 'plain-pi' : 'waiting';
       decision(node, 'syntax', selected === 'historical-native-prefix' ? 'Validated historical-prefix display, not parser authority'
@@ -818,7 +819,7 @@ export function installTidyUi(tui: LiveTui, getTheme: () => Palette, options: Ti
       }
       next.omitted = detail.omitted;
       if (parts) {
-        const funding = cardClient?.sources.geometryFunding();
+        const funding = cardClient?.cardSource.geometryFunding();
         const estimate = fileDetailConstructionPeak(units, parts);
         const reservation = funding && Number.isSafeInteger(estimate) ? funding.grant(estimate) : undefined;
         if (!funding || !reservation) next.denied = true;
@@ -844,7 +845,7 @@ export function installTidyUi(tui: LiveTui, getTheme: () => Palette, options: Ti
         }
       }
     } else if (next.text) {
-      const funding = cardClient?.sources.geometryFunding(), bytes = fileDetailTextBytes(next.text);
+      const funding = cardClient?.cardSource.geometryFunding(), bytes = fileDetailTextBytes(next.text);
       const reservation = funding && Number.isSafeInteger(bytes) ? funding.grant(bytes) : undefined;
       if (!funding || !reservation) { next.text = ''; next.denied = true; }
       else {
@@ -872,7 +873,7 @@ export function installTidyUi(tui: LiveTui, getTheme: () => Palette, options: Ti
   }
   function detailRows(detail: FileDetailCache, width: number): string[] | undefined {
     if (!detail.text) return [];
-    const measured = detail.measured, funding = cardClient?.sources.geometryFunding();
+    const measured = detail.measured, funding = cardClient?.cardSource.geometryFunding();
     if (!measured || !measured.isValid || !funding) return;
     const layout = reflow(measured, { mode: 'file', width }, funding.grant);
     if (!layout) return;
@@ -1048,7 +1049,7 @@ export function installTidyUi(tui: LiveTui, getTheme: () => Palette, options: Ti
       const geometry = cardGeometry(width, padding), inset = Math.min(geometry.contentX, Math.max(0, geometry.width - geometry.marginRight - 1));
       const available = geometry.width - inset - geometry.marginRight;
       if (available <= 0 || !display.heading) { measurement = { framed: false, height: 0 }; return; }
-      const funding = cardClient?.sources.geometryFunding(); if (!funding) return;
+      const funding = cardClient?.cardSource.geometryFunding(); if (!funding) return;
       const heading = reflow(display.heading.measured, { mode: 'file', width: available, wrap: 'fragments' }, funding.grant);
       try { if (heading) measurement = { framed: false, height: heading.rowCount }; }
       finally { heading?.dispose(); }
@@ -1631,7 +1632,7 @@ export function installTidyUi(tui: LiveTui, getTheme: () => Palette, options: Ti
         if (name === 'setExpanded' && cardKind(this) !== 'bash' && this.expanded) dropPrepared(this);
         if (!quiescing && syntax && name === "updateResult" && interruptedLiveBash(toolReader(this), liveBashSource(this))) {
           syntax.freeze(this);
-          cardClient!.sources.flush();
+          cardClient!.sourcePump.flush();
         }
         if (!executing(this) || !attached(this)) removeAnimation(this);
         return result;
@@ -2224,7 +2225,7 @@ export default function tidyUi(pi: ExtensionAPI, options: TidyUiRuntimeOptions =
       entries: stats.entries, rows: stats.rows, bytes: stats.retainedBytes, hits: stats.hits, misses: stats.misses, builds: stats.builds,
       releases: stats.releases, collected: stats.collected }); }
     if (health) { const status = health.snapshot(); diagnose(sink, 'INFO', 'runtime', 'Snapshot of runtime health; distinct from log write failures', { errors: status.errors, active: status.active, code: status.last?.code, state: status.last?.state }); }
-    if (syntax) { const stats = syntax.sources.stats(), snapshot = syntax.snapshot(); diagnose(sink, "INFO", "syntax", "Snapshot of existing source/provider state", {
+    if (syntax) { const stats = syntax.sourceStatistics.stats(), snapshot = syntax.snapshot(); diagnose(sink, "INFO", "syntax", "Snapshot of existing source/provider state", {
       availability: snapshot.provider.availability, reason: snapshot.provider.reason, generation: snapshot.provider.generation,
       kind: snapshot.provider.kind, theme: snapshot.selected.kind, palette: snapshot.effective?.id,
       sourceRecords: stats.sourceRecords, piSourceRecords: stats.piSourceRecords, leases: stats.remoteLeases,

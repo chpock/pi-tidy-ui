@@ -2,7 +2,7 @@ import '../../fixtures/test-guard.mjs';
 import { installControllerProjection, installProjection } from '../../fixtures/pi-projection.ts';
 import assert from 'node:assert/strict';
 import { afterEach, test } from 'node:test';
-import { SourceController } from '../../../src/highlighting/controller.ts';
+import { SourceExecution } from '../../../src/highlighting/source-execution.ts';
 import { SemanticRetentionPool } from '../../../src/highlighting/semantic-retention.ts';
 import type { ProviderSnapshot } from '../../../src/occipital/provider.ts';
 
@@ -13,18 +13,18 @@ class Unavailable {
   classificationAccepted() { return false; }
   request(): Promise<unknown> { this.calls++; return Promise.reject(new Error('unexpected dispatch')); }
 }
-const owners = new Set<SourceController>();
-function fixture(options: ConstructorParameters<typeof SourceController>[1] = {}) {
-  const host = new Unavailable(), source = new SourceController(host, options); owners.add(source);
+const owners = new Set<SourceExecution>();
+function fixture(options: ConstructorParameters<typeof SourceExecution>[1] = {}) {
+  const host = new Unavailable(), source = new SourceExecution(host, options); owners.add(source);
   return { host, source };
 }
-function bridge(source: SourceController, key: string, version: number, palette: number) {
+function bridge(source: SourceExecution, key: string, version: number, palette: number) {
   const ranges: number[][] = [], projection = source.piProjection(key, version, palette);
   const available = projection?.visitRanges((...range) => ranges.push(range)) ?? false;
   return { available, ranges };
 }
-function hasProjection(source: SourceController, key: string, version: number, palette: number) { return source.piProjection(key, version, palette) !== undefined; }
-function store(source: SourceController, key: string, palette: number, lines: readonly string[]) {
+function hasProjection(source: SourceExecution, key: string, version: number, palette: number) { return source.piProjection(key, version, palette) !== undefined; }
+function store(source: SourceExecution, key: string, palette: number, lines: readonly string[]) {
   const capture = source.borrowPiSource(key)!;
   return installControllerProjection(source, key, capture.generation, capture.version, capture.text, palette, lines);
 }
@@ -164,7 +164,7 @@ test('a rejected replacement drops the prior Pi allocation instead of leaving un
 });
 
 function capturedPiOwner() {
-  const source = new SourceController(new Unavailable());
+  const source = new SourceExecution(new Unavailable());
   source.capturePiSource('first', 1, 'first\n', 'bash');
   store(source, 'first', 1, ['first', '']);
   return { weak: new WeakRef(source), capture: source.borrowPiSource('first')! };

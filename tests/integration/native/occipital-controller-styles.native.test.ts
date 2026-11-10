@@ -6,7 +6,7 @@ import { setImmediate as turn } from 'node:timers/promises';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { SourceController } from '../../../src/highlighting/controller.ts';
+import { SourceExecution } from '../../../src/highlighting/source-execution.ts';
 import { ProviderBroker } from '../../../src/occipital/provider.ts';
 import { StdioTransport } from '../../../src/occipital/stdio.ts';
 import { CARD_ROLES, type CardRole } from '../../../src/appearance/card-roles.ts';
@@ -27,7 +27,7 @@ test('actual v4 generic styles executor: production broker SOURCE STYLE, binding
   const pipe = new StdioTransport({ command: binary.path, args: ['--stdio'], cwd: root,
     env: { ...process.env, HOME: root, XDG_CONFIG_HOME: root, XDG_DATA_HOME: root, XDG_CACHE_HOME: root, XDG_RUNTIME_DIR: root }, requestDeadlineMs: 5000, terminateGraceMs: 100 });
   const broker = new ProviderBroker({ async tryShared() { return undefined; }, async acquireOwned() { return pipe; } });
-  const owner = new SourceController(broker, { deadlineMs: 5000 });
+  const owner = new SourceExecution(broker, { deadlineMs: 5000 });
   const drain = () => awaitFixture((async () => {
     for (let i = 0; i < 3 || owner.stats().unsettledJobs || owner.stats().pendingCloses; i++) { owner.flush(); await turn(); }
   })());
@@ -66,7 +66,7 @@ test('actual v4 generic styles executor: production broker SOURCE STYLE, binding
   assert.equal(pipe.stats().childState, 'exited'); assert.equal(pipe.stats().ownedListeners, 0); assert.equal(pipe.stats().retainedBytes, 0);
 });
 
-function displayVersions(box: { owner?: WeakRef<SourceController> }, versions: number[]) {
+function displayVersions(box: { owner?: WeakRef<SourceExecution> }, versions: number[]) {
   return () => { const version = box.owner?.deref()?.displayBasis('bash')?.version; if (version !== undefined) versions.push(version); };
 }
 test('actual v4 styles executor: first selected palette V1 survives real parser V2 overtaking the held STYLE reply', async () => {
@@ -85,8 +85,8 @@ test('actual v4 styles executor: first selected palette V1 survives real parser 
       if (request.op !== 'styles.resolve' || held) return result;
       held = true; return result.then(async value => { arrived(); await gate; return value; });
     } };
-  const versions: number[] = [], box: { owner?: WeakRef<SourceController> } = {};
-  const owner = new SourceController(provider, { deadlineMs: 5000, onChange: displayVersions(box, versions) });
+  const versions: number[] = [], box: { owner?: WeakRef<SourceExecution> } = {};
+  const owner = new SourceExecution(provider, { deadlineMs: 5000, onChange: displayVersions(box, versions) });
   box.owner = new WeakRef(owner);
   try {
     await awaitFixture(broker.start()); owner.setStyleSelection(paletteInput(7));
@@ -122,7 +122,7 @@ test('actual v4 empty-context group: selected local palette needs no helper styl
       requests.push({ op: request.op, contexts: request.op === 'styles.resolve' ? request.contexts : undefined, sourceFields: ['sources', 'key', 'generation', 'source_version', 'text', 'lease'].some(key => key in request) });
       return broker.request(generation, request, options);
     } };
-  const owner = new SourceController(provider, { deadlineMs: 5000 });
+  const owner = new SourceExecution(provider, { deadlineMs: 5000 });
   const preparation = { keys: new Set<string>(), prepare() {}, needsRefresh() { return false; }, requiresCredit() { return false; } };
   const group = owner.registerPreparation(preparation)!;
   const drain = () => awaitFixture((async () => {
@@ -167,7 +167,7 @@ for (const kind of ['follow-pi', 'owned'] as const) test(`actual v4 empty Bash: 
       return reply;
     } };
   const errors: string[] = [];
-  const owner = new SourceController(provider, { deadlineMs: 5000, diagnostic(level, _area, _message, fields) {
+  const owner = new SourceExecution(provider, { deadlineMs: 5000, diagnostic(level, _area, _message, fields) {
     if (level === 'ERROR') errors.push(String(fields?.code));
   } });
   const drain = () => awaitFixture((async () => {
@@ -200,7 +200,7 @@ test('actual v4 font contract: Markdown strike uses trusted rules and survives l
   const pipe = new StdioTransport({ command: binary.path, args: ['--stdio'], cwd: root,
     env: { ...process.env, HOME: root, XDG_CONFIG_HOME: root, XDG_DATA_HOME: root, XDG_CACHE_HOME: root, XDG_RUNTIME_DIR: root }, requestDeadlineMs: 5000, terminateGraceMs: 100 });
   const broker = new ProviderBroker({ async tryShared() { return undefined; }, async acquireOwned() { return pipe; } });
-  const owner = new SourceController(broker, { deadlineMs: 5000 });
+  const owner = new SourceExecution(broker, { deadlineMs: 5000 });
   const text = 'plain ~~strike **bold _italic_** [link](https://x) `code`~~ after\n';
   const drain = () => awaitFixture((async () => {
     for (let i = 0; i < 3 || owner.stats().unsettledJobs; i++) { owner.flush(); await turn(); }

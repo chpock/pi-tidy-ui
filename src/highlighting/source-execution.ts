@@ -1,4 +1,6 @@
 import { concreteStyle, expectation, prepareSelection, selectionBytes, type PreparedSelection, type StyleRoles, type StyleSelection } from './controller-styles.ts';
+import { WorkRegistry, type GroupHold, type GroupMember, type GroupReady, type GroupReadyMember, type GroupSeal, type SourcePreparation, type SourceWorkGroup, type StyleAttempt, type WorkEntry as WorkEntryType, type WorkNode, type WorkTurnExecution } from './work-registry.ts';
+import { collectStyleContexts, estimateStyleRepresentation } from './style-preparation.ts';
 import type { StagedPiProjection } from './pi-projection.ts';
 import { PiPreparation } from './semantic-retention.ts';
 export type { PiPreparation } from './semantic-retention.ts';
@@ -14,6 +16,8 @@ import { RemoteFault } from '../occipital/protocol.ts';
 import { decodeSemanticClosed as decodeClosed, decodeSemanticSourceReply, SEMANTIC_PROTOCOL_VERSION as PROTOCOL_VERSION, type SemanticDescription as Description } from '../occipital/semantic-protocol.ts';
 import type { SemanticExpectation as ExpectedSource } from '../occipital/semantic-source.ts';
 import type { ConcreteStyle } from '../appearance/style-materialization.ts';
+import type { BorrowedPiSource, BorrowedSource, CardSourcePort, DisplayRangeReader, GroupDisplayBasis, GroupDisplayMember, PiFailure, PiProjectionReader, SourceDemand, SourceDisplayBasis, SourceExecutionState, SourceExecutionStats, SourceLifecyclePort, SourcePumpPort, SourceRecordStatus, SourceStatisticsPort, SourceWorkStatus } from './source-ports.ts';
+export type { BorrowedPiSource, BorrowedSource, DisplayRangeReader, GroupDisplayBasis, PiFailure, PiProjectionReader, SourceDemand, SourceDisplayBasis, SourceExecutionState, SourceRecordStatus, SourceWorkStatus } from './source-ports.ts';
 import { SemanticRetentionPool, type SemanticRelease as ReleaseReceipt } from './semantic-retention.ts';
 import { OCCIPITAL_LIMITS } from '../occipital/limits.ts';
 import { HIGHLIGHT_LIMITS } from './limits.ts';
@@ -24,35 +28,12 @@ import { RETENTION_LIMITS } from './retention.ts';
 
 import { sourceFits, sourceReservation, CONTROLLER_LIMITS } from './controller-limits.ts';
 export { sourceReservation, CONTROLLER_LIMITS } from './controller-limits.ts';
-export interface SourceDemand {
-  key: string; version: number; text: string; language?: string; path?: string; complete: boolean;
-  /** Presentation default only; never part of parser identity. */
-  neutral?: 'title' | 'code';
-}
-/** Payload-free preparation registered before expensive source construction. */
-export interface SourcePreparation {
-  readonly keys: ReadonlySet<string>;
-  prepare(): void;
-  /** Optional synchronous guard for the exact palette/rules generation being prepared. */
-  acceptsSelection?(palette: string, rules: string): boolean;
-  /** A local palette or provider change reconsiders useful presentation without reading source text. */
-  needsRefresh?(newest: boolean): boolean;
-  requiresCredit?(): boolean;
-}
-export type SourceWorkGroup = { readonly id: number; readonly preparation: WeakRef<SourcePreparation>; readonly keys: ReadonlySet<string> };
-type WorkEntry = SourceWorkGroup | SourceState;
-type StyleAttempt = { failed: boolean };
-type GroupMember = { key: string; id: number };
-type GroupSeal = { members: readonly GroupMember[]; revision: number; charge: DataCharge };
-type GroupReadyMember = GroupMember & { generation: number; version: number; stamp: number; geometryStamp: number; paintStamp: number; complete: boolean };
-type GroupHold = { charge: DataCharge; pin: DataCharge };
-type GroupReady = GroupHold & { members: ReadonlyMap<string, GroupReadyMember>; readers: number; roles: StyleRoles; stamp: number; paintStamp: number;
-  rules: string; palette: string; bindingRevision: number };
-type WorkNode = { seal?: GroupSeal; ready?: GroupReady; attempt?: { outcome: StyleAttempt; epoch: number; revision: number; vocabulary: string }; styleRevision: number; failedEpoch?: number; failedRevision?: number; failedVocabulary?: string; failedCacheRevision?: number; failedPalette?: string; failedBindingRevision?: number; value: WorkEntry; pending: false | 'native' | 'local'; epoch: number; seen: number; paused?: boolean; older?: WorkNode; newer?: WorkNode };
+type WorkEntry = WorkEntryType<SourceState>;
 // Weak registry/refusal metadata plus one targeted group-ID notice association/packet.
 const groupBytes = 1024;
+export type { SourcePreparation, SourceWorkGroup } from './work-registry.ts';
 
-export interface ControllerOptions {
+export interface SourceExecutionOptions {
   diagnostic?: DiagnosticSink;
   deadlineMs?: number; admission?: 'try_now' | 'bounded_queue'; queueWaitMs?: number;
   maxTransientBytes?: number; maxBookkeepingBytes?: number;
@@ -62,44 +43,7 @@ export interface ControllerOptions {
   onChange?: (keys: readonly string[], changedGroups?: readonly number[]) => void;
 }
 type Provider = Pick<ProviderBroker, 'snapshot' | 'isReady' | 'request' | 'classificationAccepted'>;
-type Execution = 'not_started' | 'unsettled' | 'acknowledged' | 'unknown' | 'started';
-export type PiFailure = 'threw' | 'invalid_rows';
-export interface SourceWorkStatus {
-  version?: number; execution: Execution; fallbackEligible: boolean;
-}
-export interface PiProjectionReader {
-  readonly generation: number; readonly version: number; readonly palette: number; readonly revision: number;
-  readonly sourceBytes: number; readonly rangeCount: number; readonly styleCount: number;
-  visitRanges(consume: (start: number, end: number, style: number) => void): boolean;
-  visitStyles(consume: (index: number, style: ConcreteStyle) => void): boolean;
-}
-export type DisplayRangeReader = (consume: (start: number, end: number, style: ConcreteStyle) => void) => boolean;
-/** Historical display coordinates only, never parser/fallback/finite-work authority. */
-export interface GroupDisplayMember {
-  readonly key: string; readonly generation: number; readonly version: number; readonly stamp: number;
-  readonly geometryStamp: number; readonly paintStamp: number; readonly complete: boolean;
-  readonly read: DisplayRangeReader;
-}
-export interface GroupDisplayBasis {
-  /** Strict reader validity and displayed effects are independent identities. */
-  readonly stamp: number; readonly paintStamp: number;
-  readonly rules: string; readonly palette: string; readonly bindingRevision: number;
-  role(role: CardRole): ConcreteStyle | undefined;
-  /** Complete ready literals (roles and member tables); identities may repeat. */
-  visitStyles(consume: (style: ConcreteStyle) => void): boolean;
-  /** Provisional synchronous transaction: publish caller output only on true. */
-  visit(consume: (member: (key: string) => GroupDisplayMember | undefined) => void): boolean;
-}
-export interface SourceDisplayBasis {
-  generation: number; version: number; stamp: number; language?: string; palette: string; rules: string; bindingRevision: number; complete: boolean; exactVersion?: number;
-  /** Separate cache identities; stamp above is weak-reader validity, not paint. */
-  geometryStamp: number; paintStamp: number;
-  /** Detached immutable literal. Retained output/copies belong to the caller's budget. */
-  role(role: CardRole): ConcreteStyle | undefined;
-  /** Adopted neutral and context literals, not a traversal of source ranges. */
-  visitStyles(consume: (style: ConcreteStyle) => void): boolean;
-  visit(consume: (text: string, read: DisplayRangeReader) => void): boolean;
-}
+type Execution = SourceExecutionState;
 type StyleCoverage = { generation: number; semanticStamp: number; sourceVersion: number; vocabulary: string; invalidation: number; charge: DataCharge };
 type SourceState = {
   coverage?: Map<string, StyleCoverage>;
@@ -122,12 +66,13 @@ type PiSource = { key: string; storageKey: string; generation?: number; version:
 type Close = { key: string; ownerKey: string; generation: number; lease: string; provider: number; bytes: number; health?: WeakRef<SourceState> };
 type StyleMember = { key: string; id: number; generation: number };
 type StyleJob = { expected: SemanticStyleExpectation; captures?: SemanticCaptureGroup; refs: readonly ContextRef[];
-  members: readonly StyleMember[]; group?: WeakRef<SourceWorkGroup>; groupRevision?: number; node: WeakRef<WorkNode>; epoch: number; revision: number; demandRevision: number; outcome: StyleAttempt; decodedBytes: number };
+  members: readonly StyleMember[]; group?: WeakRef<SourceWorkGroup>; groupRevision?: number; node: WeakRef<WorkNode<WorkEntry>>; epoch: number; revision: number; demandRevision: number; outcome: StyleAttempt; decodedBytes: number };
 type StyleCache = { revision: number; charge: DataCharge };
-type Job = { id: number; provider: number; generation?: number; key?: string; stateId?: number; ticket: string; pendingRetire?: true;
+type JobOperation = 'source' | 'style' | 'close';
+type Job = { id: number; operation: JobOperation; provider: number; generation?: number; key?: string; stateId?: number; ticket: string; pendingRetire?: true;
   abort: AbortController; bytes: number; description: Description; reserved: boolean; replySize: ReplySize;
   source?: { capture: Readonly<{ version: number; text: string }>; expected: ExpectedSource; replaceUnits: number; open: boolean; decodedBytes: number };
-  style?: StyleJob; styleCharge?: DataCharge; close?: Close; sourceWork?: boolean; kind?: 'shared' | 'owned'; stopped?: boolean; interrupted?: boolean; lifetimeRef?: WeakRef<Job> };
+  style?: StyleJob; styleCharge?: DataCharge; close?: Close; kind?: 'shared' | 'owned'; stopped?: boolean; interrupted?: boolean; lifetimeRef?: WeakRef<Job> };
 type WorkCompletion = { promise: Promise<boolean>; resolve(value: boolean): void };
 function workCompletion(): WorkCompletion {
   let resolve!: WorkCompletion['resolve'];
@@ -135,15 +80,15 @@ function workCompletion(): WorkCompletion {
   return { promise, resolve };
 }
 const workSettled = Promise.resolve(true), workCancelled = Promise.resolve(false);
-type Lifetime = { bytes: number; owner: WeakRef<SourceController>; jobs: Set<WeakRef<Job>>; charges: Set<DataCharge>; groups: Set<GroupHold>; data?: SemanticRetentionPool; completion?: WorkCompletion };
-let nextController = 0;
+type Lifetime = { bytes: number; owner: WeakRef<SourceExecution>; jobs: Set<WeakRef<Job>>; charges: Set<DataCharge>; groups: Set<GroupHold>; data?: SemanticRetentionPool; completion?: WorkCompletion };
+let nextExecution = 0;
 const ignored = () => {};
 // A signal can outlive its owner; a receiver-created abort stack retains it.
 const sourceRetired = new Error('occipital source retired');
 // Credit survives owner GC and abort, until actual terminal settlement. Module
 // incarnation only: parent reload/provider cleanup remains an integration gate.
 const flight = { jobs: 0, bytes: 0, bookkeepingBytes: 0 };
-const waiters = new Set<WeakRef<SourceController>>();
+const waiters = new Set<WeakRef<SourceExecution>>();
 const lifetimes = new FinalizationRegistry<Lifetime>(lifetime => {
   lifetime.completion?.resolve(false); lifetime.completion = undefined;
   flight.bookkeepingBytes -= lifetime.bytes; lifetime.bytes = 0; waiters.delete(lifetime.owner);
@@ -168,53 +113,51 @@ function releaseCredit(job: Job): void {
   const pending = [...waiters]; waiters.clear();
   for (const owner of pending) owner.deref()?.wake();
 }
-function waitForCredit(owner: WeakRef<SourceController>): void {
+function waitForCredit(owner: WeakRef<SourceExecution>): void {
   // Membership is prepaid by each owner's128-byte lifetime ticket. There is no
   // independent waiter count ceiling or abandoned live callback at a magic count.
   for (const waiter of waiters) if (!waiter.deref()) waiters.delete(waiter);
   waiters.add(owner);
 }
-function completion(owner: WeakRef<SourceController>, job: Job) {
+function completion(owner: WeakRef<SourceExecution>, job: Job) {
   return { reply: (value: unknown) => { try { owner.deref()?.settle(job, value, false); } finally { releaseStyleRequest(job); releaseCredit(job); } },
     failed: (_error: unknown) => { try { owner.deref()?.settle(job, _error, true); } finally { releaseStyleRequest(job); releaseCredit(job); } } };
 }
-function continuation(owner: WeakRef<SourceController>) { return () => owner.deref()?.continueWork(); }
-function geometryGrant(owner: WeakRef<SourceController>, group?: WeakRef<SourceWorkGroup>, id?: number) {
+function geometryGrant(owner: WeakRef<SourceExecution>, group?: WeakRef<SourceWorkGroup>, id?: number) {
   return (bytes: number) => owner.deref()?.grantGeometry(bytes, group?.deref(), id);
 }
-function preparationTurn(owner: WeakRef<SourceController>) { return () => owner.deref()?.resumePreparation(); }
-function notice(owner: WeakRef<SourceController>, epoch: number) { return () => owner.deref()?.notifyChange(epoch); }
-function displayVisit(owner: WeakRef<SourceController>, key: string, id: number, generation: number, version: number, stamp: number) {
+function notice(owner: WeakRef<SourceExecution>, epoch: number) { return () => owner.deref()?.notifyChange(epoch); }
+function displayVisit(owner: WeakRef<SourceExecution>, key: string, id: number, generation: number, version: number, stamp: number) {
   return (consume: (text: string, read: DisplayRangeReader) => void) => owner.deref()?.visitDisplayBasis(key, id, generation, version, stamp, consume) ?? false;
 }
-function displayRanges(owner: WeakRef<SourceController>, key: string, id: number, generation: number, version: number, stamp: number): DisplayRangeReader {
+function displayRanges(owner: WeakRef<SourceExecution>, key: string, id: number, generation: number, version: number, stamp: number): DisplayRangeReader {
   return consume => owner.deref()?.visitDisplayRanges(key, id, generation, version, stamp, consume) ?? false;
 }
-function displayRole(owner: WeakRef<SourceController>, key: string, id: number, generation: number, version: number, stamp: number) {
+function displayRole(owner: WeakRef<SourceExecution>, key: string, id: number, generation: number, version: number, stamp: number) {
   return (role: CardRole) => owner.deref()?.readDisplayRole(key, id, generation, version, stamp, role);
 }
-function displayStyles(owner: WeakRef<SourceController>, key: string, id: number, generation: number, version: number, stamp: number) {
+function displayStyles(owner: WeakRef<SourceExecution>, key: string, id: number, generation: number, version: number, stamp: number) {
   return (consume: (style: ConcreteStyle) => void) => owner.deref()?.visitDisplayStyles(key, id, generation, version, stamp, consume) ?? false;
 }
-function groupStyles(owner: WeakRef<SourceController>, node: WeakRef<WorkNode>, stamp: number) {
+function groupStyles(owner: WeakRef<SourceExecution>, node: WeakRef<WorkNode<WorkEntry>>, stamp: number) {
   return (consume: (style: ConcreteStyle) => void) => owner.deref()?.visitGroupStyles(node, stamp, consume) ?? false;
 }
-function groupRole(owner: WeakRef<SourceController>, node: WeakRef<WorkNode>, stamp: number) {
+function groupRole(owner: WeakRef<SourceExecution>, node: WeakRef<WorkNode<WorkEntry>>, stamp: number) {
   return (role: CardRole) => owner.deref()?.readGroupRole(node, stamp, role);
 }
-function groupVisit(owner: WeakRef<SourceController>, node: WeakRef<WorkNode>, stamp: number) {
+function groupVisit(owner: WeakRef<SourceExecution>, node: WeakRef<WorkNode<WorkEntry>>, stamp: number) {
   return (consume: (member: (key: string) => GroupDisplayMember | undefined) => void) => owner.deref()?.visitGroup(node, stamp, consume) ?? false;
 }
-function groupMember(owner: WeakRef<SourceController>, node: WeakRef<WorkNode>, stamp: number) {
+function groupMember(owner: WeakRef<SourceExecution>, node: WeakRef<WorkNode<WorkEntry>>, stamp: number) {
   return (key: string) => owner.deref()?.readGroupMember(node, stamp, key);
 }
-function groupRanges(owner: WeakRef<SourceController>, node: WeakRef<WorkNode>, stamp: number, key: string): DisplayRangeReader {
+function groupRanges(owner: WeakRef<SourceExecution>, node: WeakRef<WorkNode<WorkEntry>>, stamp: number, key: string): DisplayRangeReader {
   return consume => owner.deref()?.visitGroupRanges(node, stamp, key, consume) ?? false;
 }
-function piRanges(owner: WeakRef<SourceController>, key: string, version: number, palette: number, revision: number) {
+function piRanges(owner: WeakRef<SourceExecution>, key: string, version: number, palette: number, revision: number) {
   return (consume: (start: number, end: number, style: number) => void) => owner.deref()?.visitPiRanges(key, version, palette, revision, consume) ?? false;
 }
-function piStyles(owner: WeakRef<SourceController>, key: string, version: number, palette: number, revision: number) {
+function piStyles(owner: WeakRef<SourceExecution>, key: string, version: number, palette: number, revision: number) {
   return (consume: (index: number, style: ConcreteStyle) => void) => owner.deref()?.visitPiStyles(key, version, palette, revision, consume) ?? false;
 }
 function equalInk(a: ConcreteStyle['foreground'], b: ConcreteStyle['foreground']): boolean {
@@ -247,14 +190,14 @@ function stateBytes(demand: SourceDemand): number {
  * two charged captures. Tombstones contain primitives and suppress pressure
  * carousels; off keeps physical-work evidence, removal/disposal drops it.
  * Primitive record credit is bounded separately by the same generous retained-family allowance, not a count cap. */
-export class SourceController {
+export class SourceExecution implements WorkTurnExecution<SourceState, Description>, CardSourcePort, SourceLifecyclePort, SourcePumpPort, SourceStatisticsPort {
   private readonly provider: Provider;
   private readonly pool: SemanticRetentionPool;
-  private readonly options: ControllerOptions;
+  private readonly options: SourceExecutionOptions;
   private readonly maxTransientBytes: number;
   private readonly maxBookkeepingBytes: number;
   private readonly maxDecodedBytes: number;
-  private readonly id = ++nextController;
+  private readonly id = ++nextExecution;
   private readonly owner = new WeakRef(this);
   private readonly lifetime: Lifetime = { bytes: 0, owner: this.owner, jobs: new Set(), charges: new Set(), groups: new Set() };
   private selection?: PreparedSelection;
@@ -269,25 +212,13 @@ export class SourceController {
   private enabled = true;
   private suspended = false;
   private disposed = false;
-  private scheduled = false;
   private noticeScheduled = false;
   private notifying = false;
   private preparing?: SourceWorkGroup;
-  private preparations = 0;
-  private groupSequence = 0;
-  private yielding = false;
-  private pumping = false;
   // One chronological registry selects both lazy groups and standalone sources.
-  private readonly work = new Map<WorkEntry, WorkNode>();
-  private newest?: WorkNode;
-  private cursor?: WorkNode;
-  private workPass = 0;
-  private refreshEpoch = 0;
-  private localPending = 0;
+  private readonly work: WorkRegistry<SourceState, Description>;
   private workProvider = -1;
   private workReady = false;
-  private retryScan = false;
-  private creditBlocked = false;
   // Primitive key aliases only, prepaid by each source's existing entry allowance.
   // Explicit removal drops its slot; delivery/off release the pending packet.
   private readonly noticeKeys = new Set<string>();
@@ -305,7 +236,7 @@ export class SourceController {
     committedLineCalls: 0, committedLineBytes: 0, tailCalls: 0, tailBytes: 0, cleanupRefusals: 0,
     peakTransientBytes: 0, peakJobs: 0, stylePreparations: 0, styleContextVisits: 0, styleEncodes: 0, styleDispatches: 0, stylePublications: 0, styleRejections: 0 };
 
-  constructor(provider: Provider, options: ControllerOptions = {}) {
+  constructor(provider: Provider, options: SourceExecutionOptions = {}) {
     const deadlineMs = duration(options.deadlineMs ?? OCCIPITAL_LIMITS.dataDeadlineMs);
     if (options.onChange !== undefined && typeof options.onChange !== 'function') throw new Error('invalid controller observer');
     if (options.admission !== undefined && options.admission !== 'try_now' && options.admission !== 'bounded_queue') throw new Error('invalid controller admission');
@@ -318,6 +249,7 @@ export class SourceController {
     this.maxDecodedBytes = Math.min(options.retention?.maxBytes ?? HIGHLIGHT_LIMITS.decodedBytes, HIGHLIGHT_LIMITS.decodedBytes);
     this.provider = provider;
     this.options = { deadlineMs, admission: options.admission, queueWaitMs: options.queueWaitMs, onChange: options.onChange, diagnostic: options.diagnostic };
+    this.work = new WorkRegistry(this.owner, CONTROLLER_LIMITS.jobs);
     this.pool = new SemanticRetentionPool(options.retention);
     this.lifetime.data = this.pool;
     if (!this.charge(128)) throw new Error('controller bookkeeping capacity');
@@ -333,7 +265,7 @@ export class SourceController {
     return this.lifetime.completion.promise;
   }
   private workPending(): boolean {
-    return this.scheduled || this.yielding || this.pumping || this.notifying || this.noticeScheduled
+    return this.work.hasWorkTurn || this.notifying || this.noticeScheduled
       || this.jobs.size > 0 || this.closes.length > 0 || waiters.has(this.owner);
   }
   private completeWork(cancelled = false): void {
@@ -400,8 +332,8 @@ export class SourceController {
   }
   registerPreparation(preparation: SourcePreparation): SourceWorkGroup | undefined {
     if (this.disposed || !this.charge(groupBytes)) return undefined;
-    const group = { id: ++this.groupSequence, preparation: new WeakRef(preparation), keys: preparation.keys };
-    this.addWork(group); return group;
+    const group = { id: this.work.nextGroupId(), preparation: new WeakRef(preparation), keys: preparation.keys };
+    this.work.register(group); return group;
   }
   /** Cold, idempotent ordered membership seal after logical preparation.
    * Call explicitly after membership edits outside prepare(); registration alone is not useful demand. */
@@ -434,7 +366,7 @@ export class SourceController {
     }
     return true;
   }
-  private dropGroup(node: WorkNode, seal = false): void {
+  private dropGroup(node: WorkNode<WorkEntry>, seal = false): void {
     const ready = node.ready; node.ready = undefined;
     if (ready) { this.lifetime.groups.delete(ready); ready.pin.release(); ready.charge.release();
       if ('preparation' in node.value) this.changedGroup(node.value.id);
@@ -450,7 +382,7 @@ export class SourceController {
       role: groupRole(this.owner, weak, ready.stamp), visitStyles: groupStyles(this.owner, weak, ready.stamp),
       visit: groupVisit(this.owner, weak, ready.stamp) };
   }
-  private groupCurrent(node: WorkNode, stamp: number, boundary = false): boolean {
+  private groupCurrent(node: WorkNode<WorkEntry>, stamp: number, boundary = false): boolean {
     const entry = node.value, ready = node.ready;
     if (this.disposed || !this.enabled || !ready || ready.stamp !== stamp || !('preparation' in entry)
       || this.work.get(entry) !== node || !entry.preparation.deref() || !node.seal || entry.keys.size !== node.seal.members.length) return false;
@@ -463,13 +395,13 @@ export class SourceController {
     }
     return true;
   }
-  readGroupRole(weak: WeakRef<WorkNode>, stamp: number, role: CardRole): ConcreteStyle | undefined {
+  readGroupRole(weak: WeakRef<WorkNode<WorkEntry>>, stamp: number, role: CardRole): ConcreteStyle | undefined {
     const node = weak.deref();
     // Membership/source mutations invalidate the node on their cold update path.
     return !this.disposed && this.enabled && node?.ready?.stamp === stamp && 'preparation' in node.value
       && !!node.value.preparation.deref() && this.work.get(node.value) === node ? node.ready.roles[role] : undefined;
   }
-  visitGroupStyles(weak: WeakRef<WorkNode>, stamp: number, consume: (style: ConcreteStyle) => void): boolean {
+  visitGroupStyles(weak: WeakRef<WorkNode<WorkEntry>>, stamp: number, consume: (style: ConcreteStyle) => void): boolean {
     const node = weak.deref(); if (!node || !this.groupCurrent(node, stamp)) return false;
     const ready = node.ready!, pin = ready.pin.retain(), charge = ready.charge.retain();
     ready.readers++;
@@ -488,21 +420,21 @@ export class SourceController {
       return this.groupCurrent(node, stamp, ready.readers === 1);
     } finally { ready.readers--; pin.release(); charge.release(); }
   }
-  visitGroup(weak: WeakRef<WorkNode>, stamp: number, consume: (member: (key: string) => GroupDisplayMember | undefined) => void): boolean {
+  visitGroup(weak: WeakRef<WorkNode<WorkEntry>>, stamp: number, consume: (member: (key: string) => GroupDisplayMember | undefined) => void): boolean {
     const node = weak.deref(); if (!node || !this.groupCurrent(node, stamp)) return false;
     const ready = node.ready!, pin = ready.pin.retain(), charge = ready.charge.retain();
     ready.readers++;
     try { consume(groupMember(this.owner, weak, stamp)); return this.groupCurrent(node, stamp, ready.readers === 1); }
     finally { ready.readers--; pin.release(); charge.release(); }
   }
-  readGroupMember(weak: WeakRef<WorkNode>, stamp: number, key: string): GroupDisplayMember | undefined {
+  readGroupMember(weak: WeakRef<WorkNode<WorkEntry>>, stamp: number, key: string): GroupDisplayMember | undefined {
     const node = weak.deref(); if (!node || !this.groupCurrent(node, stamp)) return undefined;
     const member = node.ready!.members.get(key);
     return member && this.currentDisplay(key, member.id, member.generation, member.version, member.stamp) ? { key, generation: member.generation, version: member.version, stamp: member.stamp,
       geometryStamp: member.geometryStamp, paintStamp: member.paintStamp, complete: member.complete,
       read: groupRanges(this.owner, weak, stamp, key) } : undefined;
   }
-  visitGroupRanges(weak: WeakRef<WorkNode>, stamp: number, key: string, consume: (start: number, end: number, style: ConcreteStyle) => void): boolean {
+  visitGroupRanges(weak: WeakRef<WorkNode<WorkEntry>>, stamp: number, key: string, consume: (start: number, end: number, style: ConcreteStyle) => void): boolean {
     const node = weak.deref(); if (!node || !this.groupCurrent(node, stamp)) return false;
     const ready = node.ready!, member = ready.members.get(key); if (!member) return false;
     const pin = ready.pin.retain(), charge = ready.charge.retain();
@@ -514,17 +446,8 @@ export class SourceController {
       return valid && this.groupCurrent(node, stamp, ready.readers === 1);
     } finally { ready.readers--; pin.release(); charge.release(); }
   }
-  queuePreparation(group: SourceWorkGroup, local = false): void {
-    const node = this.work.get(group);
-    if (!node || this.disposed) return;
-    node.paused = false; this.setPending(node, local || node.pending === 'local' ? 'local' : 'native'); this.rewind(); this.schedule();
-  }
-  pausePreparation(group: SourceWorkGroup): void {
-    const node = this.work.get(group);
-    if (node && !node.paused) {
-      node.paused = true; this.setPending(node, false); node.epoch = this.refreshEpoch; this.reconcileWithdrawal();
-    }
-  }
+  queuePreparation(group: SourceWorkGroup, local = false): void { this.work.queue(group, local); }
+  pausePreparation(group: SourceWorkGroup): void { this.work.pause(group); }
   unregisterPreparation(group: SourceWorkGroup): void {
     this.drainRetirements(); this.releasePreparation(group, false);
   }
@@ -538,32 +461,13 @@ export class SourceController {
   }
 
   /** One revision/cursor reset, not a sweep or a second pending queue. */
-  refreshPreparations(): void {
-    if (this.disposed) return;
-    this.refreshEpoch++; this.rewind(); this.schedule();
-  }
-  private addWork(value: WorkEntry): void {
-    const node: WorkNode = { styleRevision: 0, value, pending: false, epoch: this.refreshEpoch, seen: -1, older: this.newest };
-    if (this.newest) this.newest.newer = node;
-    this.newest = node; this.work.set(value, node); this.rewind();
-  }
-  private rewind(): void { this.workPass++; this.cursor = this.newest; }
-  private setPending(node: WorkNode, pending: WorkNode['pending']): void {
-    if (node.pending === 'local') this.localPending--;
-    node.pending = pending;
-    if (pending === 'local') this.localPending++;
-  }
+  refreshPreparations(): void { this.work.refresh(); }
+  private rewind(): void { this.work.rewind(); }
   private removeWork(value: WorkEntry, deferred = false): boolean {
-    const node = this.work.get(value); if (!node) return false;
-    reportRuntime(this.options.diagnostic, { kind: 'released', scope: node, operation: '*' });
-    this.setPending(node, false); this.dropGroup(node, true);
-    for (const job of this.jobs.values()) if (job.style?.node.deref() === node) { releaseStyle(job); this.cancelJob(job, deferred); }
-    if (node.older) node.older.newer = node.newer;
-    if (node.newer) node.newer.older = node.older;
-    else this.newest = node.older;
-    if (this.cursor === node) this.cursor = node.older;
-    node.older = undefined; node.newer = undefined;
-    return this.work.delete(value);
+    return this.work.remove(value, node => reportRuntime(this.options.diagnostic, { kind: 'released', scope: node, operation: '*' }), node => {
+      this.dropGroup(node, true);
+      for (const job of this.jobs.values()) if (job.style?.node.deref() === node) { releaseStyle(job); this.cancelJob(job, deferred); }
+    });
   }
 
   observe(demand: SourceDemand): boolean {
@@ -628,7 +532,7 @@ export class SourceController {
        };
       if (this.preparing?.keys.has(key)) state.group = this.preparing;
       this.states.set(key, state);
-      if (!state.group) this.addWork(state);
+      if (!state.group) this.work.register(state);
        if (!fits) {
          state.blocked = true; state.styleDirty = false; state.refusedProvider = provider;
          this.changed(key);
@@ -703,7 +607,7 @@ export class SourceController {
 
   /** Current logical text for terminal projection; it remains owned by the same
    * native pool entry. Borrowing neither acknowledges colors nor retains a copy. */
-  borrowSource(key: string) {
+  borrowSource(key: string): BorrowedSource | undefined {
     const state = this.states.get(key), generation = state?.generation;
     if (!state || generation === undefined) return undefined;
     const source = this.pool.borrowSnapshot(generation);
@@ -810,7 +714,7 @@ export class SourceController {
     return result.accepted;
   }
   /** Fresh primitive capture with cached UTF8; never exposes owned row arrays. */
-  borrowPiSource(key: string) {
+  borrowPiSource(key: string): BorrowedPiSource | undefined {
     const state = this.piSources.get(key);
     const source = state?.generation === undefined ? undefined : this.pool.borrowSnapshot(state.generation);
     return source && state ? { ...source, generation: state.generation!, language: state.language, styleDirectives: state.styleDirectives } : undefined;
@@ -936,7 +840,7 @@ export class SourceController {
     for (const job of this.jobs.values()) if (job.provider === provider) {
       job.interrupted = true;
       const state = job.key === undefined ? undefined : this.states.get(job.key);
-      if (job.sourceWork && state && state.id === job.stateId && !state.retired && !state.uncertain) state.resumeProvider = provider;
+      if (job.operation === 'source' && state && state.id === job.stateId && !state.retired && !state.uncertain) state.resumeProvider = provider;
     }
     for (const state of this.states.values()) if (state.provider === provider && state.dirty && !state.blocked && !state.uncertain && !state.retired)
       state.resumeProvider = provider;
@@ -945,120 +849,86 @@ export class SourceController {
     if (!this.suspended || this.disposed) return;
     this.suspended = false; this.refreshPreparations(); this.rewind(); this.schedule();
   }
+  resumePreparation(): void { this.work.resumePreparation(); }
 
-  flush(): void {
-    if (this.suspended) { this.scheduled = false; return; }
-    if (this.pumping) return;
-    if (!this.yielding) this.scheduled = false;
-    this.pumping = true;
-    try {
-      const snapshot = this.provider.snapshot();
-      if (snapshot.generation !== this.leaseProvider) {
-        this.leaseProvider = snapshot.generation; this.remoteLeases = 0;
-        this.closes = this.closes.filter(close => { if (close.provider === snapshot.generation) return true; this.charge(-close.bytes); return false; });
-      }
-      const description = snapshot.availability === 'ready' ? snapshot.description : undefined;
-      const ready = !!description && this.enabled;
-      if (snapshot.generation !== this.workProvider || ready !== this.workReady) {
-        const withdrewProvider = this.workReady && this.enabled && !description;
-        this.workProvider = snapshot.generation; this.workReady = ready; this.rewind();
-        if (withdrewProvider) this.reconcileWithdrawal();
-      }
-      const jobLimit = description ? Math.min(CONTROLLER_LIMITS.jobs, description.limits.data_per_route) : 0;
-      if (description) while (this.closes.length && this.jobs.size < jobLimit) {
-        const index = this.closes.findIndex(close => !this.sourceBusy(close.ownerKey)); if (index === -1) break;
-        const bytes = this.reservation(0, 0, 0, 0, description);
-        if (!this.capacity(bytes)) { waitForCredit(this.owner); break; }
-        const close = this.closes.splice(index, 1)[0]!; this.charge(-close.bytes);
-        const job = this.job(close.ownerKey, close.generation, 0, snapshot.generation, description, bytes); job.close = close;
-        this.dispatch(job, { v: PROTOCOL_VERSION, ticket: job.ticket, instance: description.instance, op: 'stream.close',
-          key: close.key, generation: close.generation, lease: close.lease });
-      }
-      const full = () => this.creditBlocked || this.jobs.size >= jobLimit || flight.jobs >= CONTROLLER_LIMITS.jobs;
-      const dispatch = (state: SourceState | undefined): boolean => {
-        if (!description || !this.enabled || this.disposed || !state || state.retired || state.uncertain || this.sourceBusy(state.key)) return false;
-        if (state.resumeProvider !== undefined && state.resumeProvider !== snapshot.generation) {
-          state.resumeProvider = undefined;
-          if (state.provider !== snapshot.generation) this.restart(state, snapshot.generation, true);
-          else state.dirty = !state.empty;
-        }
-        if (!state.dirty || state.blocked || state.provider !== snapshot.generation) return false;
-        if (state.complete && state.parsedProvider !== state.provider && state.generation !== undefined) {
-          const data = this.pool.status(state.generation);
-          if (data?.complete && this.matchesContent(state, data.sourceVersion)) {
-            if (description.assets === state.parsedAssets && description.vocabulary.fingerprint === data.vocabulary) {
-              state.dirty = false; return false;
-            }
-            this.restart(state, state.provider, true);
-          }
-        }
-        if (full()) { waitForCredit(this.owner); return true; }
-        return this.prepare(state, description) === 'credit';
-      };
-      while (this.cursor && !this.disposed) {
-        if (this.preparations >= CONTROLLER_LIMITS.jobs) break;
-        const node = this.cursor, entry = node.value, pass = this.workPass;
-        // Reuse the registry's host-turn quota even when credits are full: local
-        // cache probes may continue, but a preview cannot sweep busy history.
-        if (this.selection) this.preparations++;
-        this.cursor = node.older; node.seen = pass;
-        if (!('preparation' in entry)) {
-          this.prepareStyles(node, description, full());
-          if (dispatch(entry)) {
-            this.retryScan = true; if (this.localPending || this.selection) continue;
-            this.cursor = node; break;
-          }
-          continue;
-        }
-        const preparation = entry.preparation.deref();
-        if (!preparation) { this.releasePreparation(entry, true); continue; }
-        if (node.paused) continue;
-        this.prepareStyles(node, description, full());
-        const refresh = node.epoch !== this.refreshEpoch;
-        if (node.pending || refresh && (preparation.needsRefresh?.(node === this.newest) ?? true)) {
-          const native = !!description && this.enabled && node.pending !== 'local' && (preparation.requiresCredit?.() ?? true);
-          if (native && full()) {
-            waitForCredit(this.owner);
-            this.retryScan = true; if (this.localPending || this.selection) continue;
-            this.cursor = node; break;
-          }
-          // A busy source may be skipped while a different owner uses the free slot.
-          // Its actual settlement rewinds this visited entry if it still owes work.
-          if (native && [...entry.keys].some(key => this.sourceBusy(key))) continue;
-          if (!this.selection && this.preparations >= CONTROLLER_LIMITS.jobs) { this.cursor = node; break; }
-          this.setPending(node, false); node.epoch = this.refreshEpoch; if (!this.selection) this.preparations++;
-          this.preparing = entry;
-          try { preparation.prepare(); this.updatePreparation(entry); } finally { this.preparing = undefined; }
-        } else node.epoch = this.refreshEpoch;
-        if (!this.work.has(entry) || pass !== this.workPass || node.pending || node.epoch !== this.refreshEpoch) continue;
-        this.prepareStyles(node, description, full());
-        let waiting = false;
-        for (const key of entry.keys) if (dispatch(this.states.get(key))) { waiting = true; break; }
-        if (waiting) {
-          this.retryScan = true; if (this.localPending || this.selection) continue;
-          this.cursor = node; break;
-        }
-      }
-    } finally {
-      this.pumping = false;
-      if (this.preparations && !this.yielding) {
-        this.yielding = true; this.scheduled = true;
-        setImmediate(preparationTurn(this.owner));
-      }
-      this.finishLifetime(); this.completeWork();
+  flush(): void { this.work.runTurn(); }
+
+  registrySuspended(): boolean { return this.suspended; }
+  registryDisposed(): boolean { return this.disposed; }
+  registryEnabled(): boolean { return this.enabled; }
+  registryHasSelection(): boolean { return !!this.selection; }
+  registryBeginTurn(): Description | undefined {
+    const snapshot = this.provider.snapshot();
+    if (snapshot.generation !== this.leaseProvider) {
+      this.leaseProvider = snapshot.generation; this.remoteLeases = 0;
+      this.closes = this.closes.filter(close => { if (close.provider === snapshot.generation) return true; this.charge(-close.bytes); return false; });
     }
+    const description = snapshot.availability === 'ready' ? snapshot.description : undefined;
+    const ready = !!description && this.enabled;
+    if (snapshot.generation !== this.workProvider || ready !== this.workReady) {
+      const withdrewProvider = this.workReady && this.enabled && !description;
+      this.workProvider = snapshot.generation; this.workReady = ready; this.rewind();
+      if (withdrewProvider) this.reconcileWithdrawal();
+    }
+    const jobLimit = description ? Math.min(CONTROLLER_LIMITS.jobs, description.limits.data_per_route) : 0;
+    if (description) while (this.closes.length && this.jobs.size < jobLimit) {
+      const index = this.closes.findIndex(close => !this.sourceBusy(close.ownerKey)); if (index === -1) break;
+      const bytes = this.reservation(0, 0, 0, 0, description);
+      if (!this.capacity(bytes)) { waitForCredit(this.owner); break; }
+      const close = this.closes.splice(index, 1)[0]!; this.charge(-close.bytes);
+      const job = this.job('close', close.ownerKey, close.generation, 0, snapshot.generation, description, bytes); job.close = close;
+      this.dispatch(job, { v: PROTOCOL_VERSION, ticket: job.ticket, instance: description.instance, op: 'stream.close',
+        key: close.key, generation: close.generation, lease: close.lease });
+    }
+    return description;
   }
-  /** Reset only after a host turn; neither direct flush nor reply microtasks may
-   * bypass the two-preparation barrier. An empty continuation stops immediately. */
-  resumePreparation(): void {
-    this.preparations = 0; this.yielding = false; this.scheduled = false; this.continueWork();
+  registryIsFull(description: Description | undefined, creditBlocked: boolean): boolean {
+    const jobLimit = description ? Math.min(CONTROLLER_LIMITS.jobs, description.limits.data_per_route) : 0;
+    return creditBlocked || this.jobs.size >= jobLimit || flight.jobs >= CONTROLLER_LIMITS.jobs;
   }
+  registryPrepareStyles(node: WorkNode<WorkEntry>, description: Description | undefined, full: boolean): void {
+    this.prepareStyles(node, description, full);
+  }
+  registryDispatch(state: SourceState | undefined, description: Description | undefined, full: () => boolean): boolean {
+    if (!description || !this.enabled || this.disposed || !state || state.retired || state.uncertain || this.sourceBusy(state.key)) return false;
+    if (state.resumeProvider !== undefined && state.resumeProvider !== this.workProvider) {
+      state.resumeProvider = undefined;
+      if (state.provider !== this.workProvider) this.restart(state, this.workProvider, true);
+      else state.dirty = !state.empty;
+    }
+    if (!state.dirty || state.blocked || state.provider !== this.workProvider) return false;
+    if (state.complete && state.parsedProvider !== state.provider && state.generation !== undefined) {
+      const data = this.pool.status(state.generation);
+      if (data?.complete && this.matchesContent(state, data.sourceVersion)) {
+        if (description.assets === state.parsedAssets && description.vocabulary.fingerprint === data.vocabulary) {
+          state.dirty = false; return false;
+        }
+        this.restart(state, state.provider, true);
+      }
+    }
+    if (full()) { waitForCredit(this.owner); return true; }
+    return this.prepare(state, description) === 'credit';
+  }
+  registrySource(key: string): SourceState | undefined { return this.states.get(key); }
+  registrySourceBusy(key: string): boolean { return this.sourceBusy(key); }
+  registryPrepareGroup(group: SourceWorkGroup, preparation: SourcePreparation): void {
+    this.preparing = group;
+    try { preparation.prepare(); this.updatePreparation(group); }
+    finally { this.preparing = undefined; }
+  }
+  registryWaitForCredit(): void { waitForCredit(this.owner); }
+  registryReconcileWithdrawal(): void { this.reconcileWithdrawal(); }
+  registryFinishTurn(): void { this.finishLifetime(); this.completeWork(); }
+  registryContinue(): void { this.continueWork(); }
+  registryResumePreparation(): void { this.resumePreparation(); }
+  registryRemoveCollected(group: SourceWorkGroup): void { this.releasePreparation(group, true); }
+
 
   /** Physical source authority survives payload retirement/off. Reading never
    * admits storage or dispatches work; absence alone is only fresh-key no-start. */
   workStatus(key: string): SourceWorkStatus {
     const state = this.states.get(key);
-    const pending = [...this.jobs.values()].some(job => job.sourceWork && !job.stopped && job.key === key);
+    const pending = [...this.jobs.values()].some(job => job.operation === 'source' && !job.stopped && job.key === key);
     const ready = !!state && this.enabled && !state.retired && this.provider.isReady(state.provider);
     const queued = ready && (state.dirty && !state.blocked && !state.uncertain
       || state.styleDirty && state.generation !== undefined && this.pool.status(state.generation)?.sourceVersion !== undefined);
@@ -1070,7 +940,7 @@ export class SourceController {
   /** Only the broker's successful owned-child close/reap receipt may call this.
    * Generation matching never releases replacement/peer source authority. */
   ownedStopped(provider: number): void {
-    for (const job of this.jobs.values()) if (job.provider === provider && job.sourceWork && job.kind === 'owned') {
+    for (const job of this.jobs.values()) if (job.provider === provider && job.operation === 'source' && job.kind === 'owned') {
       job.stopped = true; job.source = undefined;
       if (job.key !== undefined && this.states.get(job.key)?.id === job.stateId) this.changed(job.key);
     }
@@ -1083,7 +953,7 @@ export class SourceController {
       } else if (evidence) this.changed(state.key);
     }
   }
-  status(key: string) {
+  status(key: string): SourceRecordStatus | undefined {
     const state = this.states.get(key); if (!state || state.retired) return undefined;
     const current = state.generation === undefined ? undefined : this.pool.status(state.generation);
     const result = current?.sourceVersion !== undefined ? current : !state.previousCoverage || state.previous === undefined ? undefined : this.pool.status(state.previous);
@@ -1110,7 +980,7 @@ export class SourceController {
       if (this.states.get(key) === state && start < limit) consume(start, Math.min(end, limit), style);
     });
   }
-  stats() { return { ...this.counters, styleCaptures: [...this.jobs.values()].filter(job => job.style).length, unsettledJobs: this.jobs.size, captures: [...this.jobs.values()].filter(job => job.source).length,
+  stats(): SourceExecutionStats { return { ...this.counters, styleCaptures: [...this.jobs.values()].filter(job => job.style).length, unsettledJobs: this.jobs.size, captures: [...this.jobs.values()].filter(job => job.source).length,
     globalUnsettledJobs: flight.jobs, globalTransientBytes: flight.bytes, transientBytes: this.transientBytes, maxTransientBytes: this.maxTransientBytes,
       remoteLeases: this.remoteLeases, pendingCloses: this.closes.length, sourceRecords: this.states.size, piSourceRecords: this.piSources.size,
     guardRecords: [...this.states.values()].filter(state => state.generation === undefined || state.uncertain).length,
@@ -1171,7 +1041,7 @@ export class SourceController {
     if (this.disposed) return;
     this.completeWork(true); this.drainRetirements();
     for (const [entry, node] of this.work) { reportRuntime(this.options.diagnostic, { kind: 'released', scope: node, operation: '*' }); if ('preparation' in entry) { this.dropGroup(node, true); this.charge(-groupBytes); } }
-    this.work.clear(); this.newest = undefined; this.cursor = undefined; this.localPending = 0;
+    this.work.clear();
     this.setEnabled(false);
     // Pi fallback may have been captured while the native controller was already off.
     for (const key of this.piSources.keys()) this.removePiSource(key);
@@ -1195,7 +1065,7 @@ export class SourceController {
   private matchesContent(state: SourceState, version: number | undefined): boolean {
     return version !== undefined && version >= state.contentVersion && version <= state.version;
   }
-  private sourceBusy(key: string): boolean { return [...this.jobs.values()].some(job => (job.sourceWork || job.close) && job.key === key); }
+  private sourceBusy(key: string): boolean { return [...this.jobs.values()].some(job => (job.operation === 'source' || job.operation === 'close') && job.key === key); }
   private busy(key: string): boolean { return [...this.jobs.values()].some(job => job.key === key); }
   private wireKey(): string { return `source:${this.id}:${++this.wireSequence}`; }
   private log(level: DiagnosticLevel, explanation: string, fields?: DiagnosticFields): void {
@@ -1278,7 +1148,7 @@ export class SourceController {
   }
   private close(close: Omit<Close, 'bytes'>): void {
     if (!this.provider.isReady(close.provider) || this.closes.some(item => item.lease === close.lease)
-      || [...this.jobs.values()].some(job => job.close?.lease === close.lease)) return;
+      || [...this.jobs.values()].some(job => job.operation === 'close' && job.close?.lease === close.lease)) return;
     const bytes = 288 + 2*(close.key.length + close.ownerKey.length + close.lease.length);
     if (!this.charge(bytes)) { this.counters.cleanupRefusals++; return; }
     this.closes.push({ ...close, bytes });
@@ -1344,18 +1214,18 @@ export class SourceController {
       node.attempt = undefined;
     }
   }
-  private clearStyleRefusal(node: WorkNode): void {
+  private clearStyleRefusal(node: WorkNode<WorkEntry>): void {
     node.failedEpoch = undefined; node.failedRevision = undefined; node.failedVocabulary = undefined;
     node.failedCacheRevision = undefined; node.failedPalette = undefined; node.failedBindingRevision = undefined;
   }
-  private refuseStyles(node: WorkNode, vocabulary: string, epoch: number, revision: number): void {
+  private refuseStyles(node: WorkNode<WorkEntry>, vocabulary: string, epoch: number, revision: number): void {
     const selection = this.selection;
     if (this.work.get(node.value) !== node || this.styleEpoch !== epoch || node.styleRevision !== revision || !selection) return;
     node.failedEpoch = epoch; node.failedRevision = revision; node.failedVocabulary = vocabulary;
     node.failedCacheRevision = this.styleCache.get(this.styleKey(vocabulary, selection.rules))?.revision ?? 0;
     node.failedPalette = selection.palette; node.failedBindingRevision = selection.bindingRevision;
   }
-  private styleHealthOwner(style: StyleJob, provider: number): WorkNode | undefined {
+  private styleHealthOwner(style: StyleJob, provider: number): WorkNode<WorkEntry> | undefined {
     const node = style.node.deref();
     return node && this.work.get(node.value) === node && this.styleEpoch === style.epoch
       && node.styleRevision === style.revision && this.provider.isReady(provider) ? node : undefined;
@@ -1399,7 +1269,7 @@ export class SourceController {
         sourceVersion: display.sourceVersion, vocabulary, invalidation, charge });
     } finally { grant.close(); }
   }
-  private styleMembers(node: WorkNode): StyleMember[] | undefined {
+  private styleMembers(node: WorkNode<WorkEntry>): StyleMember[] | undefined {
     const entry = node.value, members: StyleMember[] = [];
     if (node.paused) return undefined;
     if ('preparation' in entry && (!entry.preparation.deref() || !node.seal || !this.sealMatches(entry, node.seal))) return undefined;
@@ -1420,7 +1290,7 @@ export class SourceController {
   private canDispatchStyles(description: Description | undefined, vocabulary: string): description is Description {
     return !!description && description.vocabulary.fingerprint === vocabulary && this.provider.isReady(this.workProvider);
   }
-  private prepareStyles(node: WorkNode, description: Description | undefined, full: boolean): void {
+  private prepareStyles(node: WorkNode<WorkEntry>, description: Description | undefined, full: boolean): void {
     const selection = this.selection;
     if (!selection || !this.enabled || this.disposed) return;
     // No descriptor enumeration/encoding for an uncached choice at full credits.
@@ -1449,7 +1319,7 @@ export class SourceController {
     if (full && !members.every(member => this.states.get(member.key)?.frozen
       ? this.pool.displayStatus(member.generation)?.sourceBytes === 0 : (this.pool.status(member.generation)?.currentContexts ?? 0) === 0)
       && !members.every(member => this.hasCoverage(member, vocabulary, selection.rules))) {
-      if (this.canDispatchStyles(description, vocabulary)) { this.retryScan = true; waitForCredit(this.owner); }
+      if (this.canDispatchStyles(description, vocabulary)) { this.work.requestRetry(); waitForCredit(this.owner); }
       return;
     }
     for (const member of members) {
@@ -1483,20 +1353,19 @@ export class SourceController {
     const grant = this.pool.budget.reserve(scratch); if (!grant) { refuse(); return; }
     let pendingCapture: SemanticCaptureGroup | undefined;
     try {
-      const unique = new Set<ContextRef>(), captureSelections: CaptureSelection[] = [];
-      const add = (ref: ContextRef) => { this.counters.styleContextVisits++; unique.add(ref); };
-      for (const member of members) {
+      const captureSelections: CaptureSelection[] = [];
+      const plan = collectStyleContexts(members, (member, add) => {
         const state = this.states.get(member.key), display = this.pool.displayStatus(member.generation);
         if (state?.frozen) {
-          if (!display) return;
+          if (!display) return false;
           captureSelections.push({ generation: member.generation, effectStamp: display.effectStamp });
-          if (!this.pool.visitDisplayContexts(member.generation, display.effectStamp, add)) return;
-        } else {
-          captureSelections.push(member.generation);
-          if (!this.pool.visitContexts(member.generation, add)) return;
+          return this.pool.visitDisplayContexts(member.generation, display.effectStamp, add);
         }
-      }
-      const refs = [...unique], missing = refs.filter(ref => !this.pool.arena.style(vocabulary, ref, selection.rules));
+        captureSelections.push(member.generation);
+        return this.pool.visitContexts(member.generation, add);
+      }, ref => !!this.pool.arena.style(vocabulary, ref, selection.rules), () => { this.counters.styleContextVisits++; });
+      if (!plan) return;
+      const { missing } = plan;
        if (!missing.length) {
          if (!this.publishStyles(members, selection, undefined, node, vocabulary)) refuse();
          else this.clearStyleRefusal(node);
@@ -1504,7 +1373,7 @@ export class SourceController {
        }
       if (failed) { refuse(); return; }
       if (full) {
-        if (this.canDispatchStyles(description, vocabulary)) { this.retryScan = true; waitForCredit(this.owner); }
+        if (this.canDispatchStyles(description, vocabulary)) { this.work.requestRetry(); waitForCredit(this.owner); }
         return;
       }
       const pending = [...this.jobs.values()].filter(job => job.style?.expected.vocabulary === vocabulary && job.style.expected.rules === selection.rules);
@@ -1517,13 +1386,12 @@ export class SourceController {
         const prior = overlap.style!;
         if (prior.epoch === epoch && revision <= prior.demandRevision)
           node.attempt = { outcome: prior.outcome, epoch, revision, vocabulary };
-        this.retryScan = true; return;
+        this.work.requestRetry(); return;
       }
       if (!this.canDispatchStyles(description, vocabulary)) return;
-      let encodedPeak = 0, capturePeak = 0, encodedFits = false;
-      this.pool.arena.encode(vocabulary, missing, bytes => { encodedFits = true; encodedPeak = bytes; return false; }, HIGHLIGHT_LIMITS.contextWords);
-      if (!encodedFits) { refuse(); this.counters.styleRejections++; return; }
-      if (members.length) this.pool.captureDisplays(captureSelections, bytes => { capturePeak = bytes; return false; });
+      const estimate = estimateStyleRepresentation(this.pool.arena, this.pool, vocabulary, missing, captureSelections, HIGHLIGHT_LIMITS.contextWords);
+      const { encodedPeak, capturePeak } = estimate;
+      if (!estimate.fits) { refuse(); this.counters.styleRejections++; return; }
       if (members.length && !capturePeak) { refuse(); return; }
       const decodedBytes = Math.min(this.maxDecodedBytes, 256 * (missing.length + 26) + 4 * missing.length + 258);
       const frameBytes = Math.min(OCCIPITAL_LIMITS.dataWireBytes, Math.max(description.limits.request_bytes, description.limits.reply_bytes));
@@ -1531,7 +1399,7 @@ export class SourceController {
       // the requested missing subset; the reply may arrive after parser advance.
       const bytes = 4 * frameBytes + encodedPeak + capturePeak + decodedBytes + scratch + 32768 + 1024 + members.length * 128 + missing.length * 16;
       if (bytes > this.maxTransientBytes) { refuse(); this.counters.styleRejections++; return; }
-      if (!this.capacity(bytes)) { this.creditBlocked = true; this.retryScan = true; waitForCredit(this.owner); return; }
+      if (!this.capacity(bytes)) { this.work.noteCreditBlocked(); this.work.requestRetry(); waitForCredit(this.owner); return; }
       const captured = members.length ? this.pool.captureDisplays(captureSelections, () => true) : undefined;
       if (captured) this.receipts(captured.released);
       if (captured && (!captured.accepted || !captured.group)) { refuse(); return; }
@@ -1539,7 +1407,7 @@ export class SourceController {
       const encoded = this.pool.arena.encode(vocabulary, missing, peak => this.styleReserve(members[0]?.generation, peak), HIGHLIGHT_LIMITS.contextWords);
       if (!encoded) { captures?.release(); refuse(); return; }
       this.counters.styleEncodes++;
-      const first = members[0], job = this.job(first?.key, first?.generation, first?.id, this.workProvider, description, bytes);
+      const first = members[0], job = this.job('style', first?.key, first?.generation, first?.id, this.workProvider, description, bytes);
       job.kind = this.provider.snapshot().kind;
       job.style = { expected: expectation(selection, vocabulary), captures, refs: missing, members,
         group: 'preparation' in node.value ? new WeakRef(node.value) : undefined, groupRevision: node.seal?.revision, node: new WeakRef(node), epoch, revision, demandRevision: this.styleRevision, outcome: { failed: false }, decodedBytes };
@@ -1562,7 +1430,7 @@ export class SourceController {
       if (unexpectedDiagnostic(error)) reportRuntime(this.options.diagnostic, { kind: 'failure', scope: node, operation: 'styles', area: 'syntax', code: diagnosticError(error) });
     }
   }
-  private publishStyles(members: readonly StyleMember[], selection: PreparedSelection, captures?: SemanticCaptureGroup, node?: WorkNode, vocabularyHint?: string): boolean {
+  private publishStyles(members: readonly StyleMember[], selection: PreparedSelection, captures?: SemanticCaptureGroup, node?: WorkNode<WorkEntry>, vocabularyHint?: string): boolean {
     if (!this.enabled || this.disposed || this.selection !== selection) return false;
     const vocabulary = captures?.captures[0]?.vocabulary ?? (members[0] && this.pool.status(members[0].generation)?.vocabulary) ?? vocabularyHint;
     if (vocabulary === undefined) return false;
@@ -1631,7 +1499,7 @@ export class SourceController {
     this.counters.stylePublications++; return true;
     } finally { groupGrant?.close(); }
   }
-  private publishGroup(node: WorkNode, members: readonly StyleMember[], selection: PreparedSelection, roles: StyleRoles,
+  private publishGroup(node: WorkNode<WorkEntry>, members: readonly StyleMember[], selection: PreparedSelection, roles: StyleRoles,
     vocabulary: string, grant: DataGrant, bytes: number): boolean {
     const entry = node.value;
     if (!('preparation' in entry) || !node.seal || !this.sealMatches(entry, node.seal) || !entry.preparation.deref()) return false;
@@ -1743,21 +1611,21 @@ export class SourceController {
       state.blocked = true; state.dirty = false; state.execution = 'not_started'; this.changed(state.key); return;
     }
     const append = !!state.lease, open = !append && !state.complete;
-    if (open && this.remoteLeases >= description.limits.leases_per_route) { this.retryScan = true; waitForCredit(this.owner); return; }
+    if (open && this.remoteLeases >= description.limits.leases_per_route) { this.work.requestRetry(); waitForCredit(this.owner); return; }
     const from = append ? state.committedUnits : 0, inputFrom = append ? basis.text.length : 0;
     const inputBytes = snapshot.utf8Bytes - (append ? basis.utf8Bytes : 0);
     const replacementBytes = snapshot.utf8Bytes - (append ? status.committedBytes : 0);
     const bytes = this.reservation(snapshot.text.length, snapshot.text.length - from, snapshot.text.length - inputFrom, replacementBytes, description);
     if (bytes > this.maxTransientBytes) { state.blocked = true; state.dirty = false; state.execution = 'not_started'; this.changed(state.key); return; }
-    if (!this.capacity(bytes)) { this.creditBlocked = true; waitForCredit(this.owner); return 'credit'; }
-    const job = this.job(state.key, state.generation, state.id, state.provider, description, bytes);
+    if (!this.capacity(bytes)) { this.work.noteCreditBlocked(); waitForCredit(this.owner); return 'credit'; }
+    const job = this.job('source', state.key, state.generation, state.id, state.provider, description, bytes);
     const replacementText = snapshot.text.slice(from);
     if (!coherent(replacementText)) { this.release(job); state.dirty = false; state.execution = 'not_started'; this.changed(state.key); return; }
     const expected: ExpectedSource = { key: status.key, generation: state.generation, source_version: snapshot.version,
        revision: status.revision + 1,
       source_bytes: snapshot.utf8Bytes, replace_from: append ? status.committedBytes : 0, complete: state.complete,
       ...(append ? { lease: state.lease! } : {}), replacementText };
-    job.sourceWork = true; job.kind = this.provider.snapshot().kind;
+    job.kind = this.provider.snapshot().kind;
     job.source = { capture: { version: snapshot.version, text: snapshot.text }, expected, replaceUnits: from, open,
       decodedBytes: this.maxDecodedBytes };
     const admission = this.options.admission ?? 'bounded_queue';
@@ -1777,9 +1645,9 @@ export class SourceController {
     if (open) this.remoteLeases++;
     this.counters.preparedBytes += inputBytes; state.dirty = false; state.execution = 'unsettled'; this.dispatch(job, request);
   }
-  private job(key: string | undefined, generation: number | undefined, stateId: number | undefined, provider: number, description: Description, bytes: number): Job {
+  private job(operation: JobOperation, key: string | undefined, generation: number | undefined, stateId: number | undefined, provider: number, description: Description, bytes: number): Job {
     const id = ++this.sequence;
-    const job: Job = { id, key, generation, stateId, provider, ticket: `controller:${this.id}:${id}`, description, bytes, abort: new AbortController(), reserved: true, replySize: {} };
+    const job: Job = { id, operation, key, generation, stateId, provider, ticket: `controller:${this.id}:${id}`, description, bytes, abort: new AbortController(), reserved: true, replySize: {} };
     job.lifetimeRef = new WeakRef(job); this.lifetime.jobs.add(job.lifetimeRef);
     flight.jobs++; flight.bytes += bytes; this.jobs.set(id, job); this.transientBytes += bytes;
     this.counters.peakTransientBytes = Math.max(this.counters.peakTransientBytes, this.transientBytes);
@@ -1810,20 +1678,13 @@ export class SourceController {
     }
   }
   /** Only the scheduled continuation drains render-pressure effects. A direct flush must stay inert. */
-  continueWork(): void { this.drainRetirements(); this.flush(); }
-  private schedule(): void {
-    if (this.scheduled) return;
-    this.scheduled = true; queueMicrotask(continuation(this.owner));
-  }
+  continueWork(): void { this.drainRetirements(); this.work.runTurn(); }
+  private schedule(): void { this.work.schedule(); }
   private reconcileWithdrawal(): void {
     // Credit interest is conservative; normal queue traversal reestablishes only the interest still owed.
     if (waiters.delete(this.owner)) this.wake();
   }
-  wake(): void {
-    this.creditBlocked = false;
-    if (this.retryScan) { this.retryScan = false; this.rewind(); }
-    this.schedule();
-  }
+  wake(): void { this.work.wake(); }
   private changed(key: string): void {
     if (!this.options.onChange || this.disposed || !this.states.has(key) && !this.piSources.has(key)) return;
     this.noticeKeys.add(key);
@@ -1848,12 +1709,13 @@ export class SourceController {
   }
   settle(job: Job, raw: unknown, rejected: boolean): void {
     if (!this.jobs.has(job.id)) return;
-    if (job.style || !job.source && !job.close && !job.sourceWork) { this.settleStyles(job, raw, rejected); return; }
+    if (job.operation === 'style') { this.settleStyles(job, raw, rejected); return; }
     if (job.key === undefined || job.generation === undefined || job.stateId === undefined) return;
     const providerCurrent = this.provider.isReady(job.provider), state = this.states.get(job.key);
-    const closeOwner = job.close?.health?.deref();
-    const healthOwner = job.close ? closeOwner && closeOwner === state ? closeOwner : undefined : state?.id === job.stateId ? state : undefined;
-    const healthOperation = job.close ? `lease:${job.close.generation}` : 'source';
+    const closeOwner = job.operation === 'close' ? job.close?.health?.deref() : undefined;
+    const healthOwner = job.operation === 'close' ? closeOwner && closeOwner === state ? closeOwner : undefined
+      : state?.id === job.stateId ? state : undefined;
+    const healthOperation = job.operation === 'close' ? `lease:${job.generation}` : 'source';
     const permission = this.workStatus(job.key);
     let changed = false;
     const useful = this.enabled && !this.disposed && !job.stopped && providerCurrent && !job.abort.signal.aborted
@@ -1866,19 +1728,19 @@ export class SourceController {
         this.log(!job.stopped && !job.abort.signal.aborted && !this.disposed && unexpectedDiagnostic(raw) ? 'ERROR' : 'WARN', 'Native request rejected; cancellation or rejection is not stop proof', { source: job.key, job: job.id, provider: job.provider,
           version: job.source?.expected.source_version, execution: raw instanceof RequestFailure ? raw.execution : 'unknown', code: diagnosticError(raw) });
         if (raw instanceof RequestFailure && raw.execution === 'not_started') {
-          if (job.source?.open && providerCurrent && this.leaseProvider === job.provider) this.remoteLeases = Math.max(0, this.remoteLeases - 1);
+          if (job.operation === 'source' && job.source?.open && providerCurrent && this.leaseProvider === job.provider) this.remoteLeases = Math.max(0, this.remoteLeases - 1);
           if (!job.stopped && state?.id === job.stateId && state.provider === job.provider && !state.uncertain) {
             state.execution = 'not_started'; changed = true;
           }
-          if (useful && !state.uncertain) {
+          if (job.operation === 'source' && job.source && useful && !state.uncertain) {
             state.execution = 'not_started';
             state.dirty = !this.matchesContent(state, job.source!.capture.version) || state.complete !== job.source!.expected.complete;
             changed = true;
           }
-        } else if (job.source) changed = this.unknown(job, 'unknown');
+        } else if (job.operation === 'source' && job.source) changed = this.unknown(job, 'unknown');
         return;
       }
-      if (job.close) {
+      if (job.operation === 'close') {
         decodeClosed(raw, job.ticket, job.description);
         if (healthOwner) reportRuntime(this.options.diagnostic, { kind: 'recovered', scope: healthOwner, operation: healthOperation });
         this.log('DEBUG', 'Native source lease close acknowledged', { source: job.key, job: job.id, provider: job.provider });
@@ -1958,8 +1820,7 @@ export class SourceController {
     } finally {
       this.release(job); this.schedule(); this.finishLifetime();
       const current = this.states.get(job.key), next = this.workStatus(job.key);
-      const node = current && this.work.get(current.group ?? current);
-      if (node?.seen === this.workPass && (node.pending || node.epoch !== this.refreshEpoch || current?.dirty || current?.styleDirty)) this.rewind();
+      if (current) this.work.revisit(current.group ?? current, current.dirty || current.styleDirty);
       if (current?.id === job.stateId && (changed || permission.execution !== next.execution
         || permission.fallbackEligible !== next.fallbackEligible)) {
         if (permission.execution !== next.execution || permission.fallbackEligible !== next.fallbackEligible)

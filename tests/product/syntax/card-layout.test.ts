@@ -11,7 +11,7 @@ import { CARD_ROLES } from '../../../src/appearance/card-roles.ts';
 import { compileStyleAnsi } from '../../../src/syntax/style-ansi.ts';
 import type { PreparedCard, PreparedRegion, ReadyCardPaint, CardDisplayInput } from '../../../src/syntax/cards.ts';
 import type { CardLayout, CardRows, CardFunding } from '../../../src/syntax/card-layout.ts';
-import { SourceController } from '../../../src/highlighting/controller.ts';
+import { SourceExecution } from '../../../src/highlighting/source-execution.ts';
 import { getThemeByName, setThemeInstance } from '../../../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js';
 import { createSemanticRuleDefinition } from '../../../src/syntax/semantic-rules.ts';
 import { fingerprintRules } from '../../../src/occipital/style-rules.ts';
@@ -339,7 +339,7 @@ function realCards() {
   let classifications = 0, samples = 0, sourceStyle = 0;
   const provider = { snapshot: () => ({ generation: 1, availability: 'initializing' as const, reason: 'initializing' as const, kind: 'owned' as const, initialShared: false }),
     isReady: () => false, classificationAccepted: () => false, request: async () => { sourceStyle++; throw Error('unexpected SOURCE/STYLE'); } };
-  const sources = new SourceController(provider), runtime = new SyntaxRuntime({ standaloneVersion: '0.0.0', settings: { load: async () => ({ ok: true, themePreference: { kind: 'pi', variant: 'dark' } }), update: async () => ({ ok: true }) },
+  const sources = new SourceExecution(provider), runtime = new SyntaxRuntime({ standaloneVersion: '0.0.0', settings: { load: async () => ({ ok: true, themePreference: { kind: 'pi', variant: 'dark' } }), update: async () => ({ ok: true }) },
     provider: { tryShared: async () => undefined, acquireOwned: async () => { throw Error('unexpected provider'); } } });
   const theme = getThemeByName('system')!; setThemeInstance(theme);
   const sampled = { owner: new WeakRef(theme), colors: theme.colors,
@@ -347,7 +347,7 @@ function realCards() {
     getBgAnsi(role: Parameters<typeof theme.getBgAnsi>[0]) { samples++; return theme.getBgAnsi(role); }, counters: () => ({ foreground: 0, background: 0 }) };
   runtime.palette(sampled);
   const effective = resolveTheme({ kind: 'pi', variant: 'dark' }).effective;
-  const cards = new CardSources<object>({ sources, snapshot: () => ({ enabled: true, provider: provider.snapshot(), selected: { kind: 'pi', variant: 'dark' },
+  const cards = new CardSources<object>({ cardSource: sources, sourceWork: sources, snapshot: () => ({ enabled: true, provider: provider.snapshot(), selected: { kind: 'pi', variant: 'dark' },
     effective, standaloneVersion: 'test' }) },
   { preparePaletteInput: (palette, revision, mode, f) => runtime.preparePaletteInput(palette, sampled, revision, mode, f),
     classify: text => { classifications++; return highlightCode(text, 'typescript'); }, invalidate() {}, requestRender() {} });
@@ -470,7 +470,7 @@ test('card layout: C7 group membership and indexed lookup work is linear within 
     const provider = { snapshot: () => ({ generation: 1, availability: 'ready' as const, reason: 'ready' as const, kind: 'shared' as const, initialShared: true, description }),
       isReady: (g: number) => g === 1, classificationAccepted: () => true,
       request: (_g: number, q: Record<string, any>) => new Promise<unknown>((resolve, reject) => pending.push({ q, resolve, reject, done: false })) };
-    const source = new SourceController(provider);
+    const source = new SourceExecution(provider);
     const keys = new Set(Array.from({ length: size }, (_, i) => 'member:' + i));
     const selection = syntheticSelection(1, 'group-scaling');
     const preparation = { keys, prepare() { for (const key of keys) source.observe({ key, text: 'x'.repeat(rangeCount!), version: 1, complete: true, language: 'text' }); }, needsRefresh: () => false, requiresCredit: () => false };
@@ -497,10 +497,10 @@ test('card layout: C7 group membership and indexed lookup work is linear within 
         const key = member.key;
         Object.defineProperty(member, 'key', { configurable: true, get() { keyReads++; return key; } });
       }
-      Reflect.set(source, 'currentDisplay', function(this: SourceController, ...args: unknown[]) { checks++; return original.apply(this, args); });
+      Reflect.set(source, 'currentDisplay', function(this: SourceExecution, ...args: unknown[]) { checks++; return original.apply(this, args); });
       try {
         assert.equal(view.visit(() => { for (const key of keys) {
-          let read: import('../../../src/highlighting/controller.ts').DisplayRangeReader | undefined;
+          let read: import('../../../src/highlighting/source-ports.ts').DisplayRangeReader | undefined;
           assert.equal(view.visit(member => { read = member(key)!.read; }), true);
           assert.equal(read!(() => { ranges++; assert.ok(view.role('code')); }), true);
         } }), true);
@@ -529,10 +529,10 @@ test('card layout: actual card demand and controller lookups are linear across n
     const provider = { snapshot: () => ({ generation: 1, availability: 'ready' as const, reason: 'ready' as const, kind: 'shared' as const, initialShared: true, description }),
       isReady: (g: number) => g === 1, classificationAccepted: () => true,
       request: (_g: number, q: Record<string, any>) => new Promise<unknown>((resolve, reject) => pending.push({ q, resolve, reject, done: false })) };
-    const source = new SourceController(provider, { onChange(keys, groups) { cards.sourceChanged(keys, groups); } }), owner = {};
+    const source = new SourceExecution(provider, { onChange(keys, groups) { cards.sourceChanged(keys, groups); } }), owner = {};
     const paletteOwner = new PaletteInputOwner(), effective = resolveTheme({ kind: 'theme', id: 'gruvbox', variant: 'dark' }).effective;
     const paletteRevision = paletteOwner.palette(undefined, effective);
-    const cards = new CardSources<object>({ sources: source, snapshot: () => ({ enabled: true, provider: provider.snapshot(), selected: { kind: 'theme', id: 'gruvbox', variant: 'dark' },
+    const cards = new CardSources<object>({ cardSource: source, sourceWork: source, snapshot: () => ({ enabled: true, provider: provider.snapshot(), selected: { kind: 'theme', id: 'gruvbox', variant: 'dark' },
       effective, standaloneVersion: 'test' }) },
     { preparePaletteInput: (palette, revision, mode, funding) => paletteOwner.prepare(undefined, palette, revision, mode, funding),
       classify: () => assert.fail('owned-palette card classified with Pi'), invalidate() {}, requestRender() {} });
@@ -563,7 +563,7 @@ test('card layout: actual card demand and controller lookups are linear across n
       let checks = 0, ranges = 0, slotReads = 0;
       for (const slot of slots) { const key = slot.key; Object.defineProperty(slot, 'key', { configurable: true, get() { slotReads++; return key; } }); }
       const original = Reflect.get(source, 'currentDisplay') as (...args: unknown[]) => unknown, before = source.stats(), calls = pending.length;
-      Reflect.set(source, 'currentDisplay', function(this: SourceController, ...args: unknown[]) { checks++; return original.apply(this, args); });
+      Reflect.set(source, 'currentDisplay', function(this: SourceExecution, ...args: unknown[]) { checks++; return original.apply(this, args); });
       try { assert.equal(cards.visit(owner, (_d, p) => {
         assert.equal(p.origin, 'owned');
         for (const key of keys) {

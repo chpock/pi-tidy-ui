@@ -32,7 +32,7 @@ export default function comparisonObserver(pi: ExtensionAPI) {
         let view: object | undefined;
         const accepted = consumer.visit(component, (display, paint) => {
           const sources = consumer.identities(component).map(identity => {
-            const source = client.sources.borrowSource(identity.key), basis = client.sources.displayBasis(identity.key);
+            const source = client.sourceWork.borrowSource(identity.key), basis = client.sourceWork.displayBasis(identity.key);
             const ranges: [number, number][] = [];
             let textSha256: string | undefined, rangesAccepted = false;
             const basisAccepted = paint.basis(identity.key, (text, read) => {
@@ -41,7 +41,7 @@ export default function comparisonObserver(pi: ExtensionAPI) {
             });
             return { ...identity, basisAccepted, rangesAccepted, textSha256, ranges,
               source: source && { sha256: sha256(source.text), bytes: source.utf8Bytes, complete: source.complete, version: source.version, generation: source.generation },
-              status: client.sources.status(identity.key), work: client.sources.workStatus(identity.key),
+              status: client.sourceWork.status(identity.key), work: client.sourceWork.workStatus(identity.key),
               display: basis && { version: basis.version, exactVersion: basis.exactVersion, complete: basis.complete,
                 generation: basis.generation, palette: basis.palette, rules: basis.rules, stamp: basis.stamp } };
           });
@@ -54,7 +54,7 @@ export default function comparisonObserver(pi: ExtensionAPI) {
         });
         views.push({ id, accepted, ...view });
       }
-      return { client: client?.snapshot(), source: client?.sources.stats(), preparations, views };
+      return { client: client?.snapshot(), source: client?.sourceStatistics.stats(), preparations, views };
     });
     return result;
   }

@@ -18,7 +18,7 @@ Pi: session, native components, public lifecycle and terminal
  supplied tool data -> adapters   -> prepared display and source demand
                                       |                   |
                                 color-free geometry       v
-                                      |          SourceController / providers
+                                      |          SourceExecution / providers
                                       |                   |
                                       |          validated stdio or shared RPC
                                       |                   |
@@ -102,7 +102,7 @@ and release boundaries.
 | Actual-width native visibility | The current native render, borrowed by the installed adapter | Routing, spacing, mouse and useful demand follow the same current facts | Recheck at the width/visit required by the guard; do not retain visibility proof across visits |
 | Hook and descriptor ownership | The installed adapter's still-owned hook-family descriptors | Borrow native behavior without replacing a later extension owner | Restore exact prior descriptors only while the adapter still owns each hook |
 | Selected preview/full view and logical display/source/service revisions | File-preview selection or Pi's read expansion; `CardSources`' explicit lifecycle update | Construct only the selected logical body and canonical source segments | A real view/source change or removal; read collapse releases its derived full view |
-| Source version/content aliases, parser lease and execution evidence | `SourceController`'s joint source/job state | Admit native work or eligible Pi fallback; historical colors never grant permission | Validated completion, typed no-start and exact generation-qualified cleanup have distinct effects |
+| Source version/content aliases, parser lease and execution evidence | `SourceExecution`'s joint source/job state | Admit native work or eligible Pi fallback; historical colors never grant permission | Validated completion, typed no-start and exact generation-qualified cleanup have distinct effects |
 | Outstanding physical DATA slots/bytes | Reserved jobs and module-incarnation physical accounting | All source/style work shares the existing admission capacity | Actual job settlement releases credit; abort, GC and fallback permission are not refunds |
 | Retained source/context/range/Pi data and shared charges | Local syntax storage and its existing pressure owner | Fund storage, borrow synchronously and release through the last holder | Exact receipts, eviction and owner lifetime; extracted stores get no new capacity |
 | Numeric grants and charges | `DataBudget`/`DataGrant`/`DataCharge` | Admit an operation's peak and transfer its numeric charge, never store its payload | Refund unused grant capacity; release the final charge owner |
@@ -146,7 +146,7 @@ Native-highlighting Off, frozen/hidden sources, explicit cache clearing, transpo
 | `user-card.ts`, `queued-card.ts`, `editor-card.ts`, `editor-status.ts`, `footer.ts` | [Message projections](user-queued-cards.md), [editor](editor.md), [footer accounting/composition](footer-spec.md) |
 | `render-cache.ts` | [Latest-layout ownership and animation](render-cache-spec.md) |
 | `src/syntax/` | [Highlighting pipeline](syntax-highlighting-spec.md), [prepared cards](syntax/prepared-cards.md), [Follow Pi](syntax/follow-pi.md) |
-| `src/highlighting/` | Source/work authority, extension workload limits, semantic storage, Pi fallback projection and ready-presentation mechanisms. See [work](syntax/work.md), [storage](syntax/storage.md), [prepared cards](syntax/prepared-cards.md) |
+| `src/highlighting/` | `source-execution.ts` owns joint source/job authority; its private `work-registry.ts` owns chronological turns; `style-preparation.ts` calculates under caller-held scratch, and `source-ports.ts` defines consumer capabilities. Workload limits, semantic/Pi storage and ready publication share the existing authorities. See [work](syntax/work.md), [storage](syntax/storage.md), [prepared cards](syntax/prepared-cards.md) |
 | `src/application/` | Extension syntax client/menu/runtime and Pi/settings/native-option wiring. See [providers](syntax/providers.md), [settings and menu](settings-menu-spec.md) |
 | `src/appearance/` | Pure theme-choice values, shared card roles and concrete style conversion; ANSI encoding remains in `src/syntax/style-ansi.ts`. Generic Occipital style shapes are the only permitted type-only native dependency. See [preferences and persistence](settings-menu-spec.md) and [palette roles](syntax/palettes.md) |
 | `src/resources/data-budget.ts` | Numeric budget, grants/charges and the operation-scoped funding capability. See [syntax storage](syntax/storage.md) |

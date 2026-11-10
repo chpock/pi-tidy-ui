@@ -8,6 +8,7 @@ import { type PiInputTheme, type PaletteInputLease } from '../syntax/pi-input.ts
 import { PaletteInputOwner } from '../syntax/pi-input-owner.ts';
 import type { ThemeDescription } from '../themes/selection.ts';
 import { resolveTheme } from '../themes/selection.ts';
+import type { CardSourcePort, SourceLifecyclePort, SourcePumpPort, SourceStatisticsPort, SourceWorkPort } from '../highlighting/source-ports.ts';
 
 interface Presentation {
   readonly active: boolean;
@@ -50,7 +51,11 @@ export class SyntaxRuntime implements SyntaxMenuOwner {
     void this.client.setEnabled(false).catch(startupFailure(this.owner));
   }
 
-  get sources() { return this.client.sources; }
+  get cardSource(): CardSourcePort { return this.client.cardSource; }
+  get sourceWork(): SourceWorkPort { return this.client.sourceWork; }
+  get sourceLifecycle(): SourceLifecyclePort { return this.client.sourceLifecycle; }
+  get sourcePump(): SourcePumpPort { return this.client.sourcePump; }
+  get sourceStatistics(): SourceStatisticsPort { return this.client.sourceStatistics; }
   snapshot() {
     const snapshot = this.client.snapshot();
     return { ...snapshot, enabled: this.enabled,

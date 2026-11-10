@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import { setTimeout as pause } from 'node:timers/promises';
 import tidyUi from '../../src/index.ts';
 import { createSyntaxOptions } from '../../src/application/syntax-options.ts';
-import { SourceController } from '../../src/highlighting/controller.ts';
+import { SourceExecution } from '../../src/highlighting/source-execution.ts';
 import type { StdioTransport } from '../../src/occipital/stdio.ts';
 import type { SharedTransport } from '../../src/occipital/shared.ts';
 import type { ProviderClock } from '../../src/occipital/provider.ts';
@@ -63,8 +63,8 @@ export default function syntaxDriver(pi: ExtensionAPI) {
       return updateSettings.apply(this, args);
     };
   }
-  const attached = SyntaxRuntime.prototype.attach, captured = SourceController.prototype.capturePiSource,
-    bridged = SourceController.prototype.adoptPiFlat, fetch = globalThis.fetch;
+  const attached = SyntaxRuntime.prototype.attach, captured = SourceExecution.prototype.capturePiSource,
+    bridged = SourceExecution.prototype.adoptPiFlat, fetch = globalThis.fetch;
   const brokerStats = () => client?.deref()?.broker.stats();
   const clientSnapshot = SyntaxClient.prototype.snapshot, clientStart = SyntaxClient.prototype.start;
   SyntaxClient.prototype.snapshot = function () {
@@ -73,7 +73,7 @@ export default function syntaxDriver(pi: ExtensionAPI) {
   };
   function startWithCaptureProducer(this: SyntaxClient, ...args: Parameters<SyntaxClient['start']>) {
     const result = clientStart.apply(this, args);
-    if (runtime?.deref()?.sources === this.sources && captureClient?.deref() !== this) {
+    if (runtime?.deref()?.sourceWork === this.sourceWork && captureClient?.deref() !== this) {
       stopCapture?.(); captureClient = new WeakRef(this); stopCapture = registerCaptureProducer(this, snapshot);
     }
     return result;
@@ -86,21 +86,21 @@ export default function syntaxDriver(pi: ExtensionAPI) {
     }
     return attached.apply(this, args);
   };
-  SourceController.prototype.capturePiSource = function (...args) {
+  SourceExecution.prototype.capturePiSource = function (...args) {
     counts.piCaptures++;
     const accepted = captured.apply(this, args);
     if (process.env.TIDY_UI_TEST_HIGHLIGHTING_LIMITS === '1') record({ type: 'highlighting_limits_pi_capture', key: args[0], version: args[1], text: args[2], language: args[3], accepted });
     if (process.env.TIDY_UI_TEST_PALETTE_OBSERVE === '1') record({ type: 'follow_pi_capture', key: args[0], version: args[1], text: args[2], language: args[3], accepted });
     return accepted;
   };
-  SourceController.prototype.adoptPiFlat = function (...args) { counts.piBridges++; return bridged.apply(this, args); };
+  SourceExecution.prototype.adoptPiFlat = function (...args) { counts.piBridges++; return bridged.apply(this, args); };
   globalThis.fetch = async () => { counts.downloads++; throw new Error('No network in the syntax fixture'); };
   const snapshot = () => {
     const current = runtime?.deref();
     client = undefined;
     const currentClient = current?.snapshot();
     return { node: process.version, controller, suspend: suspendProbe?.snapshot(), counts: { ...counts }, localWork: { ...localWork.snapshot(), ...paletteWork?.snapshot() }, pendingHeldReplies, client: currentClient, broker: brokerStats(),
-      source: current?.sources.stats(), transports: transports.map(t => t.stats()), sharedTransports: sharedTransports.map(t => t.stats()) };
+      source: current?.sourceStatistics.stats(), transports: transports.map(t => t.stats()), sharedTransports: sharedTransports.map(t => t.stats()) };
   };
   const uiNotices = new Map<ExtensionContext['ui'], ExtensionContext['ui']['notify']>();
   pi.on('session_start', (_event, ctx) => {
@@ -141,7 +141,7 @@ export default function syntaxDriver(pi: ExtensionAPI) {
               : payload.op === 'styles.resolve' ? 'style' : payload.op === 'stream.close' ? 'close' : undefined;
             if (kind) {
               if (kind === 'source') counts.sourceRequests++; else if (kind === 'style') counts.styleRequests++; else counts.closeRequests++;
-              record({ type: 'syntax_native_dispatch', transport: 'shared', kind, payload, jobs: runtime?.deref()?.sources.stats().globalUnsettledJobs });
+              record({ type: 'syntax_native_dispatch', transport: 'shared', kind, payload, jobs: runtime?.deref()?.sourceStatistics.stats().globalUnsettledJobs });
             }
             const reply = await request(payload, opts);
             if (kind) record({ type: 'syntax_native_reply', transport: 'shared', kind, payload, reply });
@@ -173,9 +173,9 @@ export default function syntaxDriver(pi: ExtensionAPI) {
             ? (existsSync(join(output, 'syntax-theme-phase')) ? readFileSync(join(output, 'syntax-theme-phase'), 'utf8') : 'initial') : undefined;
           if (kind) {
             if (kind === 'source') counts.sourceRequests++; else if (kind === 'style') counts.styleRequests++; else counts.closeRequests++;
-            record({ type: 'syntax_native_dispatch', kind, phase, payload, jobs: runtime?.deref()?.sources.stats().globalUnsettledJobs });
+            record({ type: 'syntax_native_dispatch', kind, phase, payload, jobs: runtime?.deref()?.sourceStatistics.stats().globalUnsettledJobs });
           }
-          if (phase && kind === 'source') record({ type: 'syntax_theme_dispatch', phase, payload, jobs: runtime?.deref()?.sources.stats().globalUnsettledJobs });
+          if (phase && kind === 'source') record({ type: 'syntax_theme_dispatch', phase, payload, jobs: runtime?.deref()?.sourceStatistics.stats().globalUnsettledJobs });
           let reply = await request(payload, opts);
           if (healthFaultPending && (payload.op === 'highlight' || payload.op === 'stream.open')
             && payload.sources.some(source => source.text.includes('THEME_WRITE'))) {
@@ -241,8 +241,8 @@ export default function syntaxDriver(pi: ExtensionAPI) {
     } finally {
       stopCapture?.(); stopCapture = undefined; captureClient = undefined;
       cardObservations?.restore(); localWork.restore(); paletteWork?.restore(); restoreNativePreparation?.();
-      SyntaxRuntime.prototype.attach = attached; SourceController.prototype.capturePiSource = captured;
-      SourceController.prototype.adoptPiFlat = bridged;
+      SyntaxRuntime.prototype.attach = attached; SourceExecution.prototype.capturePiSource = captured;
+      SourceExecution.prototype.adoptPiFlat = bridged;
       SyntaxClient.prototype.snapshot = clientSnapshot; globalThis.fetch = fetch;
       if (SyntaxClient.prototype.start === startWithCaptureProducer) SyntaxClient.prototype.start = clientStart;
       if (process.env.TIDY_UI_TEST_THEME_PREVIEW === '1') ExtensionSettings.prototype.update = updateSettings;

@@ -1,4 +1,5 @@
-import type { SourceController, DisplayRangeReader, PiProjectionReader } from '../../src/highlighting/controller.ts';
+import type { SourceExecution } from '../../src/highlighting/source-execution.ts';
+import type { DisplayRangeReader, PiProjectionReader } from '../../src/highlighting/source-ports.ts';
 import type { SyntaxResolution } from '../../src/syntax/work.ts';
 import { DataBudget } from '../../src/resources/data-budget.ts';
 import { measure, reflow } from '../../src/syntax/measured-rows.ts';
@@ -17,7 +18,7 @@ export function piSpans(projection: PiProjectionReader | undefined) {
 
 // Test-only composition of the accepted measurement/compiler/painter. Production
 // consumers must port separately; work.ts deliberately exports no painter.
-function project(sources: SourceController, resolution: SyntaxResolution, width: number | undefined): string[] | undefined {
+function project(sources: SourceExecution, resolution: SyntaxResolution, width: number | undefined): string[] | undefined {
   if (resolution.owner.deref() !== sources) return undefined;
   const budget = new DataBudget(4_000_000);
   const paint = (text: string, read: FlatRangeReader) => {
@@ -51,5 +52,5 @@ function project(sources: SourceController, resolution: SyntaxResolution, width:
   }
   return undefined;
 }
-export const fileRows = (sources: SourceController, resolution: SyntaxResolution) => project(sources, resolution, undefined);
-export const bashRows = (sources: SourceController, resolution: SyntaxResolution, width: number) => project(sources, resolution, width);
+export const fileRows = (sources: SourceExecution, resolution: SyntaxResolution) => project(sources, resolution, undefined);
+export const bashRows = (sources: SourceExecution, resolution: SyntaxResolution, width: number) => project(sources, resolution, width);

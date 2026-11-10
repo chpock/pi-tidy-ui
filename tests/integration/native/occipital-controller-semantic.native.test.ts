@@ -5,7 +5,7 @@ import { setImmediate as turn } from 'node:timers/promises';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { SourceController } from '../../../src/highlighting/controller.ts';
+import { SourceExecution } from '../../../src/highlighting/source-execution.ts';
 import { ProviderBroker } from '../../../src/occipital/provider.ts';
 import { StdioTransport } from '../../../src/occipital/stdio.ts';
 import { syntheticSelection } from '../../fixtures/test-style-selection.ts';
@@ -20,7 +20,7 @@ test('actual v4 controller: local palette changes preserve parse checkpoints, fi
     env: { ...process.env, HOME: root, XDG_CONFIG_HOME: root, XDG_DATA_HOME: root, XDG_CACHE_HOME: root, XDG_RUNTIME_DIR: root },
     requestDeadlineMs: 5000, terminateGraceMs: 100 });
   const broker = new ProviderBroker({ async tryShared() { return undefined; }, async acquireOwned() { return pipe; } });
-  const owner = new SourceController(broker, { deadlineMs: 5000 });
+  const owner = new SourceExecution(broker, { deadlineMs: 5000 });
   const drain = () => awaitFixture((async () => { while (owner.stats().unsettledJobs || owner.stats().pendingCloses) { owner.flush(); await turn(); } })());
   try {
     await awaitFixture(broker.start());

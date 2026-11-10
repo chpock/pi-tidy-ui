@@ -67,7 +67,7 @@ function client(t: TestContext, acquireOwned: ProviderOptions['acquireOwned'], h
 function brokerCleanup(value: SyntaxClient) {
   const stats = value.broker.stats();
   for (const key of ['activeCandidates', 'liveTimers', 'abortListeners', 'activeProbes'] as const) assert.equal(stats[key], 0, key);
-  assert.equal(value.sources.stats().globalUnsettledJobs, 0);
+  assert.equal(value.sourceStatistics.stats().globalUnsettledJobs, 0);
 }
 
 for (const fault of ['nonexecutable', 'malformed', 'incompatible', 'exit'] as const) {
@@ -95,7 +95,7 @@ for (const fault of ['nonexecutable', 'malformed', 'incompatible', 'exit'] as co
     assert.equal(owned.transports.length, fault === 'nonexecutable' ? 0 : 1);
     cleanup(owned.transports);
     await runtime.dispose(); assert.equal(f.health.snapshot().active, 0); assert.equal(f.health.snapshot().last?.state, 'released');
-    assert.equal(runtime.sources.stats().globalUnsettledJobs, 0);
+    assert.equal(runtime.sourceStatistics.stats().globalUnsettledJobs, 0);
     void view;
   });
 }

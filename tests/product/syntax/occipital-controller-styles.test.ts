@@ -2,7 +2,10 @@ import '../../fixtures/test-guard.mjs';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { setImmediate as turn } from 'node:timers/promises';
-import { SourceController, CONTROLLER_LIMITS, type SourceDemand, type SourcePreparation } from '../../../src/highlighting/controller.ts';
+import { SourceExecution } from '../../../src/highlighting/source-execution.ts';
+import { CONTROLLER_LIMITS } from '../../../src/highlighting/controller-limits.ts';
+import type { SourceDemand } from '../../../src/highlighting/source-ports.ts';
+import type { SourcePreparation } from '../../../src/highlighting/work-registry.ts';
 import { decodeSemanticDescription } from '../../../src/occipital/semantic-protocol.ts';
 import { CARD_ROLES, type CardRole } from '../../../src/appearance/card-roles.ts';
 import { fingerprintRules } from '../../../src/occipital/style-rules.ts';
@@ -68,7 +71,7 @@ class Peer {
   }
 }
 async function settled() { for (let i = 0; i < 5; i++) await turn(); }
-async function cleanup(owner: SourceController, peer: Peer) {
+async function cleanup(owner: SourceExecution, peer: Peer) {
   owner.dispose();
   for (let i = 0; i < peer.calls.length; i++) {
     const request = peer.calls[i]!;
@@ -78,7 +81,7 @@ async function cleanup(owner: SourceController, peer: Peer) {
   await settled();
   assert.equal(owner.stats().globalUnsettledJobs, 0);
 }
-function color(owner: SourceController, key = 'source') {
+function color(owner: SourceExecution, key = 'source') {
   const result: number[] = [];
   owner.displayBasis(key)?.visit((_text, ranges) => ranges((_from, _to, style) => {
     assert.equal(style.foreground.kind, 'rgb'); if (style.foreground.kind === 'rgb') result.push(style.foreground.r);
@@ -92,7 +95,7 @@ function roleRed(selection: { roles: Record<CardRole, ConcreteStyle> }) {
 }
 
 test('controller styles: held Bash V1 capture publishes first colors after parser V2, then current V2 progresses', async () => {
-  const peer = new Peer(), owner = new SourceController(peer);
+  const peer = new Peer(), owner = new SourceExecution(peer);
   try {
     owner.setStyleSelection(owned()); owner.observe(demand('source', 'echo one\n', 1, false)); owner.flush();
     peer.source(0, 'echo one\n'); await settled();
@@ -113,7 +116,7 @@ test('controller styles: held Bash V1 capture publishes first colors after parse
 });
 
 test('controller styles: palette A B A and local Pi rebinding reuse one palette-independent rule capture', async () => {
-  const peer = new Peer(), owner = new SourceController(peer);
+  const peer = new Peer(), owner = new SourceExecution(peer);
   try {
     owner.setStyleSelection(owned()); owner.observe(demand()); owner.flush(); peer.source(0, 'echo one\n'); await settled();
     peer.styleBinding(1); await settled(); assert.deepEqual(color(owner), [1]);
@@ -126,7 +129,7 @@ test('controller styles: palette A B A and local Pi rebinding reuse one palette-
 });
 
 test('controller styles: empty source and palette selections admit no SOURCE or STYLE request', async () => {
-  const peer = new Peer(), owner = new SourceController(peer);
+  const peer = new Peer(), owner = new SourceExecution(peer);
   try {
     owner.setStyleSelection(owned()); owner.observe(demand('source', '')); owner.flush();
     assert.equal(peer.calls.length, 0);
@@ -137,7 +140,7 @@ test('controller styles: empty source and palette selections admit no SOURCE or 
 });
 
 test('controller styles: two physical jobs plus 100 selections prepare only latest uncached demand', async () => {
-  const peer = new Peer(), owner = new SourceController(peer);
+  const peer = new Peer(), owner = new SourceExecution(peer);
   try {
     owner.setStyleSelection(owned()); owner.observe(demand('old')); owner.observe(demand('new')); owner.flush();
     assert.equal(peer.calls.length, 2);
@@ -154,7 +157,7 @@ test('controller styles: two physical jobs plus 100 selections prepare only late
 });
 
 test('controller styles: shared in-flight context is resolved once, rejected style preserves ready display without retry loop', async () => {
-  const peer = new Peer(), owner = new SourceController(peer);
+  const peer = new Peer(), owner = new SourceExecution(peer);
   try {
     owner.setStyleSelection(owned()); owner.observe(demand('old')); owner.flush(); peer.source(0, 'echo one\n'); await settled();
     owner.observe(demand('new')); owner.flush(); peer.source(2, 'echo one\n'); await settled();
@@ -167,7 +170,7 @@ test('controller styles: shared in-flight context is resolved once, rejected sty
 });
 
 test('controller styles: removal cancels without early credit release and style no-start cannot clear source uncertainty', async () => {
-  const peer = new Peer(), owner = new SourceController(peer);
+  const peer = new Peer(), owner = new SourceExecution(peer);
   try {
     owner.setStyleSelection(owned()); owner.observe(demand('source', 'echo one\n', 1, false)); owner.flush();
     peer.source(0, 'echo one\n'); await settled();
@@ -182,14 +185,14 @@ test('controller styles: removal cancels without early credit release and style 
   } finally { await cleanup(owner, peer); }
 });
 
-function group(owner: SourceController, keys: string[]) {
+function group(owner: SourceExecution, keys: string[]) {
   const preparation: SourcePreparation = { keys: new Set(keys), prepare() { for (const key of keys) owner.observe(demand(key)); }, needsRefresh() { return false; } };
   const work = owner.registerPreparation(preparation)!; owner.queuePreparation(work);
   return { preparation, work };
 }
 
 test('controller styles: complete multi-source group publishes atomically and late selection cannot publish half a card', async () => {
-  const peer = new Peer(), owner = new SourceController(peer), card = group(owner, ['left', 'right']);
+  const peer = new Peer(), owner = new SourceExecution(peer), card = group(owner, ['left', 'right']);
   try {
     owner.setStyleSelection(owned()); owner.flush();
     peer.source(0, 'echo one\n', 1, 0, 1); peer.source(1, 'echo one\n', 1, 0, 2); await settled();
@@ -205,7 +208,7 @@ test('controller styles: complete multi-source group publishes atomically and la
 });
 
 test('controller styles: cached binding rebind stays local with both SOURCE slots occupied', async () => {
-  const peer = new Peer(), owner = new SourceController(peer);
+  const peer = new Peer(), owner = new SourceExecution(peer);
   try {
     owner.setStyleSelection(owned(1, 1)); owner.observe(demand()); owner.flush(); peer.source(0, 'echo one\n'); await settled(); peer.styleBinding(1); await settled();
     owner.setStyleSelection(local(1, 1)); await settled(); assert.deepEqual(color(owner), [2]);
@@ -218,7 +221,7 @@ test('controller styles: cached binding rebind stays local with both SOURCE slot
 });
 
 test('controller styles: frozen scopes recolor without parser revival; paused group waits for explicit resume', async () => {
-  const peer = new Peer(), owner = new SourceController(peer), card = group(owner, ['source']);
+  const peer = new Peer(), owner = new SourceExecution(peer), card = group(owner, ['source']);
   try {
     owner.setStyleSelection(owned()); owner.flush(); peer.source(0, 'echo one\n'); await settled(); peer.style(1, 1); await settled();
     owner.freeze('source'); owner.setStyleSelection(owned(2)); await settled(); peer.style(2, 2); await settled();
@@ -231,7 +234,7 @@ test('controller styles: frozen scopes recolor without parser revival; paused gr
 });
 
 test('controller styles: stale vocabulary result stays under original identity and cannot revive or recolor replacement source', async () => {
-  const peer = new Peer(), owner = new SourceController(peer);
+  const peer = new Peer(), owner = new SourceExecution(peer);
   try {
     owner.setStyleSelection(owned()); owner.observe(demand()); owner.flush(); peer.source(0, 'echo one\n'); await settled();
     const oldDescription = peer.description;
@@ -248,19 +251,19 @@ test('controller styles: stale vocabulary result stays under original identity a
 });
 
 function trackedStyleOwner(peer: Peer) {
-  const owner = new SourceController(peer);
+  const owner = new SourceExecution(peer);
   owner.setStyleSelection(owned()); owner.observe(demand()); owner.flush();
   return owner;
 }
-function abandonedStyleOwner(owner: SourceController) {
+function abandonedStyleOwner(owner: SourceExecution) {
   return { owner: new WeakRef(owner), root: new WeakRef((owner as unknown as { pool: SemanticRetentionPool }).pool) };
 }
 
 test('controller styles: abandoned owner releases style captures and data but not held physical credit', async () => {
   assert.equal(typeof global.gc, 'function');
-  const peer = new Peer(); let owner: SourceController | undefined = trackedStyleOwner(peer);
+  const peer = new Peer(); let owner: SourceExecution | undefined = trackedStyleOwner(peer);
   peer.source(0, 'echo one\n'); await settled(); assert.equal(owner.stats().styleCaptures, 1);
-  const lifetime = abandonedStyleOwner(owner), budget = (owner as unknown as { pool: SemanticRetentionPool }).pool.budget; const witness = new SourceController(peer);
+  const lifetime = abandonedStyleOwner(owner), budget = (owner as unknown as { pool: SemanticRetentionPool }).pool.budget; const witness = new SourceExecution(peer);
   owner = undefined;
   try {
     // Do not retain the data root itself across the collection experiment.
@@ -273,7 +276,7 @@ test('controller styles: abandoned owner releases style captures and data but no
 });
 
 test('controller styles: unchanged physical/data limits fund two real captures; pressure denial has no warm retry loop', async () => {
-  const peer = new Peer(), owner = new SourceController(peer, { retention: { maxBytes: 180000 } });
+  const peer = new Peer(), owner = new SourceExecution(peer, { retention: { maxBytes: 180000 } });
   try {
     owner.setStyleSelection(compactSelection(1, 'selected', 'old')); owner.observe(demand('old')); owner.flush(); peer.source(0, 'echo one\n'); await settled();
     owner.observe(demand('new')); owner.flush(); peer.source(2, 'echo one\n', 1, 0, 2); await settled();
@@ -298,7 +301,7 @@ test('controller styles: unchanged physical/data limits fund two real captures; 
 });
 
 test('controller styles: two held STYLE jobs and 100 previews do not encode intermediate selections', async () => {
-  const peer = new Peer(), owner = new SourceController(peer);
+  const peer = new Peer(), owner = new SourceExecution(peer);
   try {
     owner.setStyleSelection(owned()); owner.observe(demand('old')); owner.flush(); peer.source(0, 'echo one\n'); await settled();
     owner.observe(demand('new')); owner.flush(); peer.source(2, 'echo one\n', 1, 0, 2); await settled();
@@ -317,7 +320,7 @@ test('controller styles: two held STYLE jobs and 100 previews do not encode inte
 });
 
 test('controller styles: explicit disposal releases pending style payload immediately and retains physical credit through terminal reply', async () => {
-  const peer = new Peer(), owner = new SourceController(peer);
+  const peer = new Peer(), owner = new SourceExecution(peer);
   owner.setStyleSelection(owned()); owner.observe(demand()); owner.flush(); peer.source(0, 'echo one\n'); await settled();
   assert.equal(owner.stats().styleCaptures, 1); owner.dispose(); owner.dispose();
   assert.equal(owner.stats().styleCaptures, 0); assert.equal(owner.stats().retention.entries, 0); assert.ok(owner.stats().retention.retainedBytes > 0);
@@ -326,7 +329,7 @@ test('controller styles: explicit disposal releases pending style payload immedi
 });
 
 test('controller styles: cached frozen semantic rules rebind local palettes offline across incompatible providers', async () => {
-  const peer = new Peer(), owner = new SourceController(peer);
+  const peer = new Peer(), owner = new SourceExecution(peer);
   try {
     owner.setStyleSelection(owned(1, 1)); owner.observe(demand()); owner.flush(); peer.source(0, 'echo one\n'); await settled(); peer.styleBinding(1); await settled();
     owner.setStyleSelection(local(1, 1)); await settled(); assert.deepEqual(color(owner), [2]); owner.freeze('source');
@@ -345,7 +348,7 @@ test('controller styles: cached frozen semantic rules rebind local palettes offl
 });
 
 test('controller styles: local funding refusal retries cached expressions after palette-only and binding-only changes', async () => {
-  const peer = new Peer(), budget = new DataBudget(1024 * 1024 * 1024), owner = new SourceController(peer, {
+  const peer = new Peer(), budget = new DataBudget(1024 * 1024 * 1024), owner = new SourceExecution(peer, {
     retention: { maxBytes: budget.limit, budget },
   });
   const initial = owned(1, 1), paletteA = { ...initial, palette: 'owned:palette-a' }, paletteB = { ...paletteA, palette: 'owned:palette-b' };
@@ -393,7 +396,7 @@ test('controller styles: local funding refusal retries cached expressions after 
 });
 
 test('controller styles: typed style denial preserves ready literals and never grants source restart authority', async () => {
-  const peer = new Peer(), owner = new SourceController(peer);
+  const peer = new Peer(), owner = new SourceExecution(peer);
   try {
     owner.setStyleSelection(owned()); owner.observe(demand()); owner.flush(); peer.source(0, 'echo one\n'); await settled(); peer.style(1, 11); await settled();
     owner.setStyleSelection(owned(2)); await settled(); peer.pending[2]!.reject(new RequestFailure('style refused', 'not_started')); await settled();
@@ -404,7 +407,7 @@ test('controller styles: typed style denial preserves ready literals and never g
 });
 
 test('controller styles: Off releases style payload without early credit, late publication or additional source acknowledgement', async () => {
-  const peer = new Peer(), owner = new SourceController(peer);
+  const peer = new Peer(), owner = new SourceExecution(peer);
   try {
     owner.setStyleSelection(owned()); owner.observe(demand()); owner.flush(); peer.source(0, 'echo one\n'); await settled();
     owner.setEnabled(false); assert.equal(owner.stats().styleCaptures, 0); assert.equal(owner.stats().retention.entries, 0);
@@ -414,7 +417,7 @@ test('controller styles: Off releases style payload without early credit, late p
   } finally { await cleanup(owner, peer); }
 });
 
-function supplyDecoratedBindings(owner: SourceController) {
+function supplyDecoratedBindings(owner: SourceExecution) {
   const ui = { marker: 'presentation owner must not cross the trusted-data seam' }, base = local();
   const decorated = { ...base.roles };
   for (const role of CARD_ROLES) { const style = { ...base.roles[role], ui }; decorated[role] = style; }
@@ -423,7 +426,7 @@ function supplyDecoratedBindings(owner: SourceController) {
   owner.setStyleSelection(input); return new WeakRef(ui);
 }
 test('controller styles: trusted local data copies discard incidental UI owner properties while a style request is held', async () => {
-  const peer = new Peer(), owner = new SourceController(peer), ui = supplyDecoratedBindings(owner);
+  const peer = new Peer(), owner = new SourceExecution(peer), ui = supplyDecoratedBindings(owner);
   try {
     owner.observe(demand()); owner.flush(); peer.source(0, 'echo one\n'); await settled(); assert.equal(owner.stats().styleCaptures, 1);
     for (let i = 0; i < 60; i++) { await turn(); global.gc!(); await turn(); }
@@ -431,13 +434,13 @@ test('controller styles: trusted local data copies discard incidental UI owner p
   } finally { await cleanup(owner, peer); }
 });
 
-function cardWithOwner(owner: SourceController, key: string) {
+function cardWithOwner(owner: SourceExecution, key: string) {
   const ui = { key }, preparation = { keys: new Set([key]), ui, prepare() { owner.observe(demand(key)); }, needsRefresh() { return false; } };
   const work = owner.registerPreparation(preparation)!; owner.queuePreparation(work); owner.flush();
   return { preparation, ui: new WeakRef(ui) };
 }
 test('controller styles: held group job does not retain its first card owner while another card remains active', async () => {
-  const peer = new Peer(), owner = new SourceController(peer); owner.setStyleSelection(owned());
+  const peer = new Peer(), owner = new SourceExecution(peer); owner.setStyleSelection(owned());
   let first: ReturnType<typeof cardWithOwner> | undefined = cardWithOwner(owner, 'old');
   peer.source(0, 'echo one\n'); await settled(); assert.equal(peer.calls[1]!.op, 'styles.resolve');
   const ui = first.ui, second = cardWithOwner(owner, 'new'); first = undefined;
@@ -452,7 +455,7 @@ test('controller styles: held group job does not retain its first card owner whi
 });
 
 test('controller styles: held cancelled STYLE does not block parser lease cleanup from using the other physical slot', async () => {
-  const peer = new Peer(), owner = new SourceController(peer);
+  const peer = new Peer(), owner = new SourceExecution(peer);
   try {
     owner.setStyleSelection(owned()); owner.observe(demand('source', 'echo one\n', 1, false)); owner.flush(); peer.source(0, 'echo one\n'); await settled();
     assert.equal(peer.calls[1]!.op, 'styles.resolve'); owner.remove('source'); owner.flush();
@@ -472,7 +475,7 @@ test('controller styles: a valid coalesced STYLE result cannot propagate its fir
       ...(typeof fields?.operation === 'string' ? { operation: fields.operation } : {}),
     });
   };
-  const owner = new SourceController(peer, { diagnostic, retention: { maxBytes: budget.limit, budget } });
+  const owner = new SourceExecution(peer, { diagnostic, retention: { maxBytes: budget.limit, budget } });
   const sourceReplies = new Set<number>();
   let card: ReturnType<typeof group> | undefined;
   try {
@@ -516,7 +519,7 @@ test('controller styles: a valid coalesced STYLE result cannot propagate its fir
 });
 
 test('controller styles: missing-context STYLE denial stays suppressed across palette and binding changes', async () => {
-  const peer = new Peer(), owner = new SourceController(peer);
+  const peer = new Peer(), owner = new SourceExecution(peer);
   try {
     const initial = owned(1, 1), palette = { ...initial, palette: 'owned:next-palette' };
     const binding = { ...owned(2, 1), palette: palette.palette };
@@ -543,7 +546,7 @@ test('controller styles: missing-context STYLE denial stays suppressed across pa
 });
 
 test('controller styles: denied selection does not warm retry but useful parser progress permits its new context demand', async () => {
-  const peer = new Peer(), owner = new SourceController(peer);
+  const peer = new Peer(), owner = new SourceExecution(peer);
   try {
     owner.setStyleSelection(owned()); owner.observe(demand('source', 'echo one\n', 1, false)); owner.flush(); peer.source(0, 'echo one\n'); await settled();
     peer.pending[1]!.reject(new RequestFailure('style refused', 'not_started')); await settled();
@@ -556,7 +559,7 @@ test('controller styles: denied selection does not warm retry but useful parser 
 
 
 test('controller styles review R1: one refusal must not suppress an unrelated parsed card', async () => {
-  const peer = new Peer(), owner = new SourceController(peer);
+  const peer = new Peer(), owner = new SourceExecution(peer);
   try {
     for (const key of ['C', 'B', 'A']) owner.observe(demand(key));
     owner.flush();
@@ -587,7 +590,7 @@ test('controller styles review R1: one refusal must not suppress an unrelated pa
 });
 
 test('controller styles review R2: cached palettes with missing contexts must not prepare at full credits', async () => {
-  const peer = new Peer(), owner = new SourceController(peer);
+  const peer = new Peer(), owner = new SourceExecution(peer);
   try {
     owner.setStyleSelection(owned()); owner.observe(demand('W')); owner.flush();
     peer.source(0, 'echo one\n', 1, 0, 1); await settled(); peer.style(1, 11); await settled();
@@ -621,7 +624,7 @@ test('controller styles review R2: cached palettes with missing contexts must no
 
 
 test('controller styles review R1: real capture-admission refusal stays local despite another card parsing again', async () => {
-  const peer = new Peer(), owner = new SourceController(peer);
+  const peer = new Peer(), owner = new SourceExecution(peer);
   const data = (owner as unknown as { pool: SemanticRetentionPool }).pool, capture = data.captureDisplays.bind(data);
   let captures = 0;
   // Exercise the real capture allocator's refusal path, not a fabricated reply.
@@ -646,7 +649,7 @@ test('controller styles review R1: real capture-admission refusal stays local de
 });
 
 test('controller styles review R1: failed old V1 cannot poison a newer V2 style demand', async () => {
-  const peer = new Peer(), owner = new SourceController(peer);
+  const peer = new Peer(), owner = new SourceExecution(peer);
   try {
     owner.setStyleSelection(owned()); owner.observe(demand('source', 'echo one\n', 1, false)); owner.flush(); peer.source(0, 'echo one\n'); await settled();
     owner.observe(demand('source', 'echo one\n# two\n', 2, false)); owner.flush(); peer.source(2, 'echo one\n# two\n', 2, 9, 2); await settled();
@@ -658,7 +661,7 @@ test('controller styles review R1: failed old V1 cannot poison a newer V2 style 
 });
 
 test('controller styles review R2: actual expression loss invalidates positive readiness even with palettes retained', async () => {
-  const peer = new Peer(), owner = new SourceController(peer), data = (owner as unknown as { pool: SemanticRetentionPool }).pool;
+  const peer = new Peer(), owner = new SourceExecution(peer), data = (owner as unknown as { pool: SemanticRetentionPool }).pool;
   try {
     owner.setStyleSelection(owned()); owner.observe(demand()); owner.flush(); peer.source(0, 'echo one\n'); await settled(); peer.style(1, 11); await settled();
     owner.setStyleSelection(owned(2)); await settled(); peer.style(2, 22); await settled();
@@ -678,7 +681,7 @@ test('controller styles review R2: actual expression loss invalidates positive r
 });
 
 test('controller styles review R2: semantic advance invalidates old coverage before previews at full slots', async () => {
-  const peer = new Peer(), owner = new SourceController(peer);
+  const peer = new Peer(), owner = new SourceExecution(peer);
   try {
     owner.setStyleSelection(owned()); owner.observe(demand('source', 'echo one\n', 1, false)); owner.flush(); peer.source(0, 'echo one\n'); await settled(); peer.style(1, 11); await settled();
     owner.setStyleSelection(owned(2)); await settled(); peer.style(2, 22); await settled(); owner.setStyleSelection(undefined);
@@ -694,7 +697,7 @@ test('controller styles review R2: semantic advance invalidates old coverage bef
 });
 
 test('controller styles review R2: completed coverage metadata releases with its collected source owner', async () => {
-  const peer = new Peer(); let owner: SourceController | undefined = trackedStyleOwner(peer);
+  const peer = new Peer(); let owner: SourceExecution | undefined = trackedStyleOwner(peer);
   peer.source(0, 'echo one\n'); await settled(); peer.style(1, 11); await settled(); assert.deepEqual(color(owner), [1]);
   const weak = abandonedStyleOwner(owner), budget = (owner as unknown as { pool: SemanticRetentionPool }).pool.budget;
   owner = undefined;
@@ -704,7 +707,7 @@ test('controller styles review R2: completed coverage metadata releases with its
 });
 
 test('controller styles review R1: an older coalesced request cannot deny a newer logical owner', async () => {
-  const peer = new Peer(), owner = new SourceController(peer);
+  const peer = new Peer(), owner = new SourceExecution(peer);
   try {
     owner.setStyleSelection(owned()); owner.observe(demand('old')); owner.flush(); peer.source(0, 'echo one\n'); await settled();
     owner.observe(demand('new')); owner.flush(); peer.source(2, 'echo one\n'); await settled(); assert.equal(peer.calls.length, 3);
@@ -718,7 +721,7 @@ test('controller styles review R1: an older coalesced request cannot deny a newe
 
 
 test('controller styles review R1: unsuccessful cache probes are remembered while later useful cache progress still publishes', async () => {
-  const peer = new Peer(), owner = new SourceController(peer);
+  const peer = new Peer(), owner = new SourceExecution(peer);
   try {
     for (const key of ['C', 'B', 'A']) owner.observe(demand(key));
     owner.flush();
@@ -751,7 +754,7 @@ function neutralSelection(seed = 1, ruleSeed = seed + 1) {
   return { ...base, definition, bindings,
     roles: { ...roles(1), title: { ...literal(71), background: literal(91).foreground, attributes: 1 }, code: { ...literal(29), attributes: 2 } } };
 }
-function styles(owner: SourceController, key = 'source') {
+function styles(owner: SourceExecution, key = 'source') {
   const result: ConcreteStyle[] = [];
   owner.displayBasis(key)?.visit((_text, ranges) => ranges((_from, _to, style) => result.push(style)));
   return result;
@@ -762,7 +765,7 @@ function expectedNeutral(neutral: 'title' | 'code', selection = neutralSelection
 }
 
 test('controller source neutral: identical Bash grammar shares expressions across explicit title and standalone code', async () => {
-  const peer = new Peer(), owner = new SourceController(peer);
+  const peer = new Peer(), owner = new SourceExecution(peer);
   try {
     owner.setStyleSelection(neutralSelection());
     // Deliberately misleading keys and identical grammar: origin is explicit data.
@@ -789,7 +792,7 @@ test('controller source neutral: identical Bash grammar shares expressions acros
 });
 
 test('controller source neutral: queued source and held style replies materialize the current local role', async () => {
-  const peer = new Peer(), owner = new SourceController(peer);
+  const peer = new Peer(), owner = new SourceExecution(peer);
   try {
     owner.setStyleSelection(neutralSelection()); const source = demand(); owner.observe(source); owner.flush();
     owner.observe({ ...source, neutral: 'title' }); owner.flush();
@@ -803,7 +806,7 @@ test('controller source neutral: queued source and held style replies materializ
 });
 
 test('controller source neutral: late STYLE refusal for a superseded local presentation cannot poison its successor', async () => {
-  const peer = new Peer(), owner = new SourceController(peer);
+  const peer = new Peer(), owner = new SourceExecution(peer);
   try {
     owner.setStyleSelection(neutralSelection()); const source = demand(); owner.observe(source); owner.flush(); peer.source(0, source.text); await settled();
     owner.observe({ ...source, neutral: 'title' }); owner.flush(); assert.equal(peer.calls.length, 2);
@@ -816,7 +819,7 @@ test('controller source neutral: late STYLE refusal for a superseded local prese
 });
 
 test('controller source neutral: a new generic rule revision retries while local role changes stay palette-independent', async () => {
-  const peer = new Peer(), owner = new SourceController(peer);
+  const peer = new Peer(), owner = new SourceExecution(peer);
   try {
     owner.setStyleSelection(neutralSelection()); const source = demand(); owner.observe(source); owner.flush(); peer.source(0, source.text); await settled();
     peer.pending[1]!.reject(new RequestFailure('code role refused', 'not_started')); await settled();
@@ -833,7 +836,7 @@ test('controller source neutral: a new generic rule revision retries while local
 });
 
 test('controller source neutral: fully cached rebind publishes at two occupied physical slots', async () => {
-  const peer = new Peer(), owner = new SourceController(peer);
+  const peer = new Peer(), owner = new SourceExecution(peer);
   try {
     owner.setStyleSelection(neutralSelection()); const source = demand(); owner.observe(source); owner.flush(); peer.source(0, source.text); await settled(); peer.styleDefinition(1); await settled();
     owner.observe(demand('held-a')); owner.observe(demand('held-b')); owner.flush(); assert.equal(owner.stats().unsettledJobs, 2);
@@ -849,7 +852,7 @@ test('controller source neutral: fully cached rebind publishes at two occupied p
 
 
 test('controller source neutral: STYLE refusal does not remove locally selected card roles', async () => {
-  const peer = new Peer(), owner = new SourceController(peer);
+  const peer = new Peer(), owner = new SourceExecution(peer);
   try {
     owner.setStyleSelection(neutralSelection()); const source = demand(); owner.observe(source); owner.flush(); peer.source(0, source.text); await settled();
     peer.pending[1]!.reject(new RequestFailure('STYLE refused', 'not_started')); await settled();
@@ -863,7 +866,7 @@ test('controller source neutral: STYLE refusal does not remove locally selected 
 
 
 test('controller ready palette: pending selection retains actual roles and separates read paint and geometry identities', async () => {
-  const peer = new Peer(), owner = new SourceController(peer);
+  const peer = new Peer(), owner = new SourceExecution(peer);
   try {
     owner.setStyleSelection(owned()); owner.observe(demand()); owner.flush();
     assert.equal(owner.displayBasis('source'), undefined);
@@ -893,7 +896,7 @@ test('controller ready palette: pending selection retains actual roles and separ
 });
 
 test('controller ready palette: removal successor and off invalidate saved roles without following a new source', async () => {
-  const peer = new Peer(), owner = new SourceController(peer);
+  const peer = new Peer(), owner = new SourceExecution(peer);
   try {
     owner.setStyleSelection(owned()); const selectedBytes = owner.stats().retention.retainedBytes;
     owner.observe(demand()); owner.flush(); peer.source(0, 'echo one\n'); await settled(); peer.style(1, 11); await settled();
@@ -914,12 +917,12 @@ test('controller ready palette: removal successor and off invalidate saved roles
 });
 
 async function collectedPaletteOwner(peer: Peer) {
-  const owner = new SourceController(peer); owner.setStyleSelection(owned()); owner.observe(demand('old'));
+  const owner = new SourceExecution(peer); owner.setStyleSelection(owned()); owner.observe(demand('old'));
   owner.flush(); peer.source(0, 'echo one\n'); await settled(); peer.style(1, 11); await settled();
   return { owner: new WeakRef(owner), basis: owner.displayBasis('old')! };
 }
 test('controller ready palette: saved role reader does not retain its first controller while a peer remains active', async () => {
-  const peer = new Peer(), old = await collectedPaletteOwner(peer), livePeer = new Peer(), live = new SourceController(livePeer);
+  const peer = new Peer(), old = await collectedPaletteOwner(peer), livePeer = new Peer(), live = new SourceExecution(livePeer);
   try {
     live.setStyleSelection(owned()); live.observe(demand('live')); live.flush(); livePeer.source(0, 'echo one\n'); await settled(); livePeer.style(1, 77); await settled();
     for (let i = 0; i < 60; i++) { await turn(); global.gc!(); await turn(); }
@@ -933,7 +936,7 @@ test('controller ready palette: saved role reader does not retain its first cont
 
 
 test('controller ready palette: equal-ink selected-palette and binding replacements invalidate weak readers but not geometry', async () => {
-  const peer = new Peer(), owner = new SourceController(peer), input = local();
+  const peer = new Peer(), owner = new SourceExecution(peer), input = local();
   try {
     owner.setStyleSelection(input); owner.observe(demand()); owner.flush(); peer.source(0, 'echo one\n'); await settled(); peer.style(1); await settled();
     for (const selection of [{ ...input, palette: 'same-inks' }, { ...input, palette: 'same-inks', bindingRevision: 2 }]) {
@@ -956,7 +959,7 @@ test('controller ready palette: equal-ink selected-palette and binding replaceme
 
 
 test('controller ready palette: unchanged-text stream finalization preserves ready geometry paint and typography', async () => {
-  const peer = new Peer(), owner = new SourceController(peer), text = 'echo one\n';
+  const peer = new Peer(), owner = new SourceExecution(peer), text = 'echo one\n';
   try {
     owner.setStyleSelection(owned()); owner.observe(demand('source', text, 1, false)); owner.flush();
     peer.source(0, text); await settled(); peer.style(1, 11); await settled();
@@ -977,7 +980,7 @@ test('controller ready palette: unchanged-text stream finalization preserves rea
 
 
 test('controller ready palette: finalized same-text view supports cached rebinding at full credits without reflow', async () => {
-  const peer = new Peer(), owner = new SourceController(peer), text = 'echo one\n';
+  const peer = new Peer(), owner = new SourceExecution(peer), text = 'echo one\n';
   try {
     owner.setStyleSelection(local(11, 42)); owner.observe(demand('source', text, 1, false)); owner.flush();
     peer.source(0, text); await settled(); peer.styleBinding(1); await settled();
@@ -998,7 +1001,7 @@ test('controller ready palette: finalized same-text view supports cached rebindi
 });
 
 test('controller ready palette: equal-length text correction cannot reuse a former text identity', async () => {
-  const peer = new Peer(), owner = new SourceController(peer), first = 'echo one\n', second = 'echo two\n';
+  const peer = new Peer(), owner = new SourceExecution(peer), first = 'echo one\n', second = 'echo two\n';
   try {
     owner.setStyleSelection(owned()); owner.observe(demand('source', first)); owner.flush();
     peer.source(0, first); await settled(); peer.style(1, 11); await settled();
@@ -1012,7 +1015,7 @@ test('controller ready palette: equal-length text correction cannot reuse a form
 });
 
 test('controller styles: ready-table enumeration scales with adopted contexts, not ranges or advanced parser demand', async () => {
-  const peer = new Peer(), owner = new SourceController(peer), text = 'x\n'.repeat(6000);
+  const peer = new Peer(), owner = new SourceExecution(peer), text = 'x\n'.repeat(6000);
   const capture = SemanticRanges.prototype.captureView;
   let viewPrototype: { visit: (...args: any[]) => unknown } | undefined;
   SemanticRanges.prototype.captureView = function (...args) {
@@ -1059,7 +1062,7 @@ test('controller styles: ready-table enumeration scales with adopted contexts, n
 });
 
 for (const throws of [false, true]) test(`controller styles: ready-table callback removal stops enumeration and pins palette through unwind (throws=${throws})`, async () => {
-  const peer = new Peer(), owner = new SourceController(peer);
+  const peer = new Peer(), owner = new SourceExecution(peer);
   try {
     owner.setStyleSelection(owned()); owner.observe(demand()); owner.flush(); peer.source(0, 'echo one\n'); await settled(); peer.style(1, 7); await settled();
     const basis = owner.displayBasis('source')!, root = Reflect.get(owner, 'pool') as SemanticRetentionPool;
@@ -1079,7 +1082,7 @@ for (const throws of [false, true]) test(`controller styles: ready-table callbac
 });
 
 test('controller volume limits: aggregate STYLE words refuse before encoding, without blocking a fitting card or reparsing', async () => {
-  const peer = new Peer(), owner = new SourceController(peer), card = group(owner, ['left', 'right']);
+  const peer = new Peer(), owner = new SourceExecution(peer), card = group(owner, ['left', 'right']);
   try {
     owner.flush(); assert.equal(peer.calls.length, 2);
     for (let i = 0; i < 2; i++) {
@@ -1109,7 +1112,7 @@ test('controller volume limits: aggregate STYLE words refuse before encoding, wi
 
 
 test('controller styles: retained V1 recolors every role after V2 STYLE refused without SOURCE replay', async () => {
-  const peer = new Peer(), owner = new SourceController(peer);
+  const peer = new Peer(), owner = new SourceExecution(peer);
   try {
     owner.setStyleSelection(owned()); owner.observe(demand('source', 'echo one\n', 1, false)); owner.flush();
     peer.source(0, 'echo one\n'); await settled(); peer.style(1, 11); await settled();
@@ -1140,7 +1143,7 @@ test('controller styles: retained V1 recolors every role after V2 STYLE refused 
 });
 
 for (const complete of [false, true]) test(`controller styles: empty local presentation then ${complete ? 'finite' : 'growing'} Bash starts a fresh parser`, async () => {
-  const peer = new Peer(), owner = new SourceController(peer);
+  const peer = new Peer(), owner = new SourceExecution(peer);
   try {
     owner.setStyleSelection(local()); owner.observe(demand('source', '', 1, false)); owner.flush(); await settled();
     assert.equal(peer.calls.length, 0, 'empty local paint needs no SOURCE');
@@ -1176,7 +1179,7 @@ for (const complete of [false, true]) test(`controller styles: empty local prese
 });
 
 test('controller styles: empty owned palette input cannot become the growing source parser acknowledgement', async () => {
-  const peer = new Peer(), owner = new SourceController(peer);
+  const peer = new Peer(), owner = new SourceExecution(peer);
   try {
     owner.setStyleSelection(owned()); owner.observe(demand('source', '', 1, false)); owner.flush(); await settled();
     assert.equal(peer.calls.length, 0, 'owned palette and empty source are prepared locally');
@@ -1193,7 +1196,7 @@ test('controller styles: empty owned palette input cannot become the growing sou
 });
 
 test('controller styles: clearing a parsed source then preparing empty paint does not advance the next parser', async () => {
-  const peer = new Peer(), owner = new SourceController(peer);
+  const peer = new Peer(), owner = new SourceExecution(peer);
   try {
     owner.setStyleSelection(local()); owner.observe(demand()); owner.flush(); peer.source(0, 'echo one\n'); await settled();
     peer.style(1); await settled(); assert.equal(owner.displayBasis('source')!.version, 1);
@@ -1208,7 +1211,7 @@ test('controller styles: clearing a parsed source then preparing empty paint doe
 });
 
 test('controller styles: empty paint does not authorize revision two from a fresh parser', async () => {
-  const peer = new Peer(), owner = new SourceController(peer);
+  const peer = new Peer(), owner = new SourceExecution(peer);
   try {
     owner.setStyleSelection(local()); owner.observe(demand('source', '', 1, false)); owner.flush(); await settled();
     assert.equal(owner.displayBasis('source')?.version, 1);
@@ -1221,7 +1224,7 @@ test('controller styles: empty paint does not authorize revision two from a fres
 
 
 for (const [name, selection] of [['local-rules', local()], ['owned-rules', owned()]] as const) test(`completion boundary: empty ${name} presentation settles while unrelated STYLE jobs occupy capacity`, async () => {
-  const peer = new Peer(), owner = new SourceController(peer), busyPeer = new Peer(), busyOwner = new SourceController(busyPeer);
+  const peer = new Peer(), owner = new SourceExecution(peer), busyPeer = new Peer(), busyOwner = new SourceExecution(busyPeer);
   try {
     owner.observe(demand()); owner.flush(); peer.source(0, 'echo one\n'); await settled();
     assert.equal(owner.status('source')?.acknowledgedVersion, 1);
@@ -1244,7 +1247,7 @@ for (const [name, selection] of [['local-rules', local()], ['owned-rules', owned
 
 
 test('completion boundary: a held generic STYLE reply uses the latest same-rule palette binding without another request', async () => {
-  const peer = new Peer(), owner = new SourceController(peer);
+  const peer = new Peer(), owner = new SourceExecution(peer);
   try {
     const initial = owned(1, 1), replacement = owned(2, 1);
     owner.setStyleSelection(initial); owner.observe(demand()); owner.flush(); peer.source(0, 'echo one\n'); await settled();
@@ -1264,7 +1267,7 @@ test('completion boundary: a held generic STYLE reply uses the latest same-rule 
 
 
 test('completion boundary: an old STYLE result cannot publish after the selected rule identity changes', async () => {
-  const peer = new Peer(), owner = new SourceController(peer);
+  const peer = new Peer(), owner = new SourceExecution(peer);
   try {
     owner.setStyleSelection(owned()); owner.observe(demand()); owner.flush(); peer.source(0, 'echo one\n'); await settled();
     assert.equal(peer.calls[1]!.op, 'styles.resolve');

@@ -5,7 +5,7 @@ import test from 'node:test';
 import { readFile, mkdtemp, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { SourceController } from '../../../../src/highlighting/controller.ts';
+import { SourceExecution } from '../../../../src/highlighting/source-execution.ts';
 import { ProviderBroker } from '../../../../src/occipital/provider.ts';
 import { StdioTransport } from '../../../../src/occipital/stdio.ts';
 import { CARD_ROLES, type CardRole } from '../../../../src/appearance/card-roles.ts';
@@ -60,7 +60,7 @@ test('Follow Pi actual pinned grammar: focused bindings, nested fonts and nonvac
     }
     return reply;
   });
-  const owner = new SourceController(broker, { deadlineMs: 5000, diagnostic(level, _area, _message, fields) {
+  const owner = new SourceExecution(broker, { deadlineMs: 5000, diagnostic(level, _area, _message, fields) {
     if (level === 'ERROR') errors.push(String(fields?.code));
   } });
   const definition = createSemanticRuleDefinition();

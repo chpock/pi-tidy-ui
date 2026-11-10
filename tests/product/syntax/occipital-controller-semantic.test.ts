@@ -2,7 +2,8 @@ import '../../fixtures/test-guard.mjs';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { setImmediate as turn } from 'node:timers/promises';
-import { SourceController, type SourceDemand } from '../../../src/highlighting/controller.ts';
+import { SourceExecution } from '../../../src/highlighting/source-execution.ts';
+import type { SourceDemand } from '../../../src/highlighting/source-ports.ts';
 import { decodeSemanticDescription } from '../../../src/occipital/semantic-protocol.ts';
 import { fingerprintRules } from '../../../src/occipital/style-rules.ts';
 import { RequestFailure } from '../../../src/occipital/request-failure.ts';
@@ -57,14 +58,14 @@ class Peer implements Pick<ProviderBroker, 'snapshot' | 'isReady' | 'request' | 
 const demand = (values: Partial<SourceDemand> = {}): SourceDemand => ({ key: 'source', version: 1, text: 'echo ready',
   language: 'bash', complete: true, ...values });
 async function settled() { await turn(); await turn(); }
-async function cleanup(owner: SourceController, peer: Peer) {
+async function cleanup(owner: SourceExecution, peer: Peer) {
   owner.dispose();
   for (let i = 0; i < peer.calls.length; i++) if (peer.calls[i]!.op === 'stream.close') peer.close(i);
   await settled();
 }
 
 test('controller v4 language selector rejects malformed identity but normalizes empty to path selection', async () => {
-  const peer = new Peer(), owner = new SourceController(peer), baseline = owner.stats().bookkeepingBytes;
+  const peer = new Peer(), owner = new SourceExecution(peer), baseline = owner.stats().bookkeepingBytes;
   try {
     for (const language of ['bad\u0001format', 'x'.repeat(129)])
       assert.throws(() => owner.observe(demand({ language })), /invalid source demand/);
@@ -78,7 +79,7 @@ test('controller v4 language selector rejects malformed identity but normalizes 
 });
 
 test('controller v4 source: generic SOURCE parses independently of locally selected style input without palette wire fields', async () => {
-  const peer = new Peer(), owner = new SourceController(peer);
+  const peer = new Peer(), owner = new SourceExecution(peer);
   try {
     assert.equal(owner.observe(demand()), true); owner.flush();
     assert.equal(peer.calls.length, 1);
@@ -96,7 +97,7 @@ test('controller v4 source: generic SOURCE parses independently of locally selec
 });
 
 test('controller v4 source: local palette supersession neither cancels parsing nor rejects its useful semantic result', async () => {
-  const peer = new Peer(), owner = new SourceController(peer);
+  const peer = new Peer(), owner = new SourceExecution(peer);
   try {
     owner.observe(demand()); owner.flush();
     owner.setStyleSelection(syntheticSelection(2)); owner.observe(demand()); owner.flush();
@@ -111,7 +112,7 @@ test('controller v4 source: local palette supersession neither cancels parsing n
 });
 
 test('controller v4 source: local palette change preserves a growing parser lease and sends only appended text', async () => {
-  const peer = new Peer(), owner = new SourceController(peer);
+  const peer = new Peer(), owner = new SourceExecution(peer);
   try {
     owner.observe(demand({ text: 'echo one\n', complete: false })); owner.flush();
     peer.reply(0, 'echo one\n'); await settled();
@@ -129,7 +130,7 @@ test('controller v4 source: local palette change preserves a growing parser leas
 });
 
 test('controller v4 source: changing local palette cannot clear an unknown physical source outcome', async () => {
-  const peer = new Peer(), owner = new SourceController(peer);
+  const peer = new Peer(), owner = new SourceExecution(peer);
   try {
     owner.observe(demand()); owner.flush();
     peer.pending[0]!.reject(new RequestFailure('lost reply')); await settled();
@@ -142,7 +143,7 @@ test('controller v4 source: changing local palette cannot clear an unknown physi
 });
 
 test('controller v4 source: removing an unsettled open closes its validated late lease without restoring data', async () => {
-  const peer = new Peer(), owner = new SourceController(peer);
+  const peer = new Peer(), owner = new SourceExecution(peer);
   try {
     owner.observe(demand({ complete: false })); owner.flush();
     owner.remove('source');
@@ -158,7 +159,7 @@ test('controller v4 source: removing an unsettled open closes its validated late
 });
 
 test('controller v4 source: validated parse refused by retention is acknowledged, not left physically unsettled', async () => {
-  const peer = new Peer(), owner = new SourceController(peer, { retention: { maxBytes: 2000 } });
+  const peer = new Peer(), owner = new SourceExecution(peer, { retention: { maxBytes: 2000 } });
   try {
     assert.equal(owner.observe(demand()), true); owner.flush();
     assert.equal(peer.calls.length, 1);
@@ -172,7 +173,7 @@ test('controller v4 source: validated parse refused by retention is acknowledged
 });
 
 test('controller v4 source: refused open storage retires the returned lease before any continuation', async () => {
-  const peer = new Peer(), owner = new SourceController(peer, { retention: { maxBytes: 2000 } });
+  const peer = new Peer(), owner = new SourceExecution(peer, { retention: { maxBytes: 2000 } });
   try {
     owner.observe(demand({ complete: false })); owner.flush();
     peer.reply(0, 'echo ready'); await settled();
@@ -186,7 +187,7 @@ test('controller v4 source: refused open storage retires the returned lease befo
 });
 
 test('controller v4 source: compatible provider replacement reuses finite scopes without parsing again', async () => {
-  const peer = new Peer(), owner = new SourceController(peer);
+  const peer = new Peer(), owner = new SourceExecution(peer);
   try {
     owner.observe(demand()); owner.flush(); peer.reply(0, 'echo ready'); await settled();
     const before = owner.status('source')!.generation;
@@ -202,7 +203,7 @@ test('controller v4 source: compatible provider replacement reuses finite scopes
 });
 
 test('controller v4 source: incompatible vocabulary replacement reparses from full source, not foreign scope IDs', async () => {
-  const peer = new Peer(), owner = new SourceController(peer);
+  const peer = new Peer(), owner = new SourceExecution(peer);
   try {
     owner.observe(demand()); owner.flush(); peer.reply(0, 'echo ready'); await settled();
     const before = owner.status('source')!.generation, next = semanticDescriptor('describe', 'replacement');
@@ -220,7 +221,7 @@ test('controller v4 source: incompatible vocabulary replacement reparses from fu
 });
 
 test('controller v4 source: confirmed scopes awaiting styles veto a duplicate Pi classifier without inventing source work', async () => {
-  const peer = new Peer(), owner = new SourceController(peer);
+  const peer = new Peer(), owner = new SourceExecution(peer);
   try {
     owner.observe(demand()); owner.flush(); peer.reply(0, 'echo ready'); await settled();
     assert.equal(owner.status('source')!.classificationVersion, 1);
@@ -237,20 +238,20 @@ function disposalWitness(original: SemanticRetentionPool['dispose'], notify: (cl
     notify(!this.admit('after-dispose', 1, 'late input').accepted);
   };
 }
-function trackRoot(owner: SourceController, notify: (closed: boolean) => void) {
+function trackRoot(owner: SourceExecution, notify: (closed: boolean) => void) {
   const root = (owner as unknown as { pool: SemanticRetentionPool }).pool;
   root.dispose = disposalWitness(root.dispose, notify);
   return new WeakRef(root);
 }
 function abandonedSource(peer: Peer, notify: (closed: boolean) => void) {
-  const owner = new SourceController(peer);
+  const owner = new SourceExecution(peer);
   const root = trackRoot(owner, notify);
   owner.observe(demand()); owner.flush();
   return { owner: new WeakRef(owner), root };
 }
 
 test('controller v4 lifetime: explicit disposal closes the data authority while physical work stays charged', async () => {
-  const peer = new Peer(), owner = new SourceController(peer);
+  const peer = new Peer(), owner = new SourceExecution(peer);
   let disposed = 0, closedRoots = 0;
   trackRoot(owner, closed => { disposed++; if (closed) closedRoots++; });
   owner.observe(demand()); owner.flush();
@@ -272,7 +273,7 @@ test('controller v4 lifetime: abandoned owner closes its data root through exist
   const peer = new Peer();
   let disposed = 0, closedRoots = 0;
   const first = abandonedSource(peer, closed => { disposed++; if (closed) closedRoots++; });
-  const active = new SourceController(peer);
+  const active = new SourceExecution(peer);
   active.observe(demand({ key: 'peer' })); active.flush();
   try {
     assert.equal(peer.calls.length, 2);
@@ -293,7 +294,7 @@ test('controller v4 lifetime: abandoned owner closes its data root through exist
 
 for (const text of ['x'.repeat(65537), 'é'.repeat(32769), '\n'.repeat(8193), '\n'.repeat(8192) + 'x']) {
   test(`controller volume limits: raw over-policy ${text.length} units refuse before source ownership`, async () => {
-    const peer = new Peer(), owner = new SourceController(peer);
+    const peer = new Peer(), owner = new SourceExecution(peer);
     try {
       assert.equal(owner.observe(demand({ text })), false);
       owner.flush(); await settled();
@@ -306,7 +307,7 @@ for (const text of ['x'.repeat(65537), 'é'.repeat(32769), '\n'.repeat(8193), '\
 
 test('controller volume limits: exact UTF8 and logical-line boundaries admit and settle', async () => {
   for (const text of ['é'.repeat(32768), '\n'.repeat(8192), '\n'.repeat(8191) + 'x']) {
-    const peer = new Peer(), owner = new SourceController(peer);
+    const peer = new Peer(), owner = new SourceExecution(peer);
     try {
       assert.equal(owner.observe(demand({ text })), true); owner.flush();
       assert.equal(peer.calls.length, 1); peer.reply(0, text); await settled();
@@ -318,7 +319,7 @@ test('controller volume limits: exact UTF8 and logical-line boundaries admit and
 });
 
 test('controller volume limits: refusal cannot erase an unsettled or unknown source outcome', async () => {
-  const peer = new Peer(), owner = new SourceController(peer);
+  const peer = new Peer(), owner = new SourceExecution(peer);
   try {
     owner.observe(demand()); owner.flush();
     const credit = owner.stats().transientBytes;
@@ -337,7 +338,7 @@ test('controller volume limits: refusal cannot erase an unsettled or unknown sou
 });
 
 test('controller volume limits: smaller negotiated SOURCE cap refuses before retaining the request', async () => {
-  const peer = new Peer(), owner = new SourceController(peer);
+  const peer = new Peer(), owner = new SourceExecution(peer);
   peer.description = { ...peer.description, limits: { ...peer.description.limits, source_bytes: 4 } };
   try {
     assert.equal(owner.observe(demand({ text: '12345' })), false); owner.flush(); await settled();
@@ -348,7 +349,7 @@ test('controller volume limits: smaller negotiated SOURCE cap refuses before ret
 });
 
 test('controller volume limits: negotiated DATA request refusal is no-start and cannot warm-retry', async () => {
-  const peer = new Peer(), owner = new SourceController(peer);
+  const peer = new Peer(), owner = new SourceExecution(peer);
   peer.description = { ...peer.description, limits: { ...peer.description.limits, request_bytes: 128 } };
   try {
     owner.observe(demand()); owner.flush(); await settled();
@@ -361,7 +362,7 @@ test('controller volume limits: negotiated DATA request refusal is no-start and 
 });
 
 test('controller volume limits: negotiated DATA reply refusal retains unknown source authority', async () => {
-  const peer = new Peer(), owner = new SourceController(peer);
+  const peer = new Peer(), owner = new SourceExecution(peer);
   peer.description = { ...peer.description, limits: { ...peer.description.limits, reply_bytes: 128 } };
   try {
     owner.observe(demand()); owner.flush(); peer.reply(0, 'echo ready'); await settled();
@@ -373,7 +374,7 @@ test('controller volume limits: negotiated DATA reply refusal retains unknown so
 });
 
 test('controller volume limits: Pi storage accepts only actual8KiB prefixes and warm versions do not rescan', async () => {
-  const peer = new Peer(), owner = new SourceController(peer), text = 'é'.repeat(4096);
+  const peer = new Peer(), owner = new SourceExecution(peer), text = 'é'.repeat(4096);
   try {
     assert.equal(owner.capturePiSource('pi', 1, text), true);
     assert.equal(owner.borrowPiSource('pi')!.text, text);
@@ -391,7 +392,7 @@ test('controller volume limits: Pi storage accepts only actual8KiB prefixes and 
 });
 
 test('controller volume limits: refused growing correction keeps its physical slot and closes a validated late lease', async () => {
-  const peer = new Peer(), owner = new SourceController(peer);
+  const peer = new Peer(), owner = new SourceExecution(peer);
   try {
     owner.observe(demand({ complete: false })); owner.flush();
     assert.equal(owner.observe(demand({ version: 2, text: 'x'.repeat(65537) })), false);
@@ -408,7 +409,7 @@ test('controller volume limits: refused growing correction keeps its physical sl
 
 for (const [kind, text] of [['bytes', 'x'.repeat(65537)], ['lines', '\n'.repeat(8193)]] as const) {
   test(`controller refusal review P1: empty to over-${kind} nonempty source never inherits exact coverage`, async () => {
-    const peer = new Peer(), owner = new SourceController(peer);
+    const peer = new Peer(), owner = new SourceExecution(peer);
     try {
       assert.equal(owner.observe(demand({ text: '' })), true);
       assert.equal(owner.status('source')!.exact, true);
@@ -427,7 +428,7 @@ for (const [kind, text] of [['bytes', 'x'.repeat(65537)], ['lines', '\n'.repeat(
 for (const field of ['language', 'path', 'provider', 'all'] as const) {
   test(`controller refusal review P2: changed ${field} identity is charged and repeated refusal is inert`, async () => {
     const peer = new Peer(), notifications: string[][] = [];
-    const owner = new SourceController(peer, { onChange: keys => notifications.push([...keys]) });
+    const owner = new SourceExecution(peer, { onChange: keys => notifications.push([...keys]) });
     try {
       const initial = demand({ text: '' });
       owner.observe(initial); await settled();
@@ -462,7 +463,7 @@ for (const field of ['language', 'path', 'provider', 'all'] as const) {
 }
 
 for (const providerChanged of [false, true]) for (const outcome of ['acknowledged', 'unknown'] as const) test(`controller refusal review: changed identity preserves held and ${outcome} previous source proof across provider change ${providerChanged}`, async () => {
-  const peer = new Peer(), owner = new SourceController(peer);
+  const peer = new Peer(), owner = new SourceExecution(peer);
   try {
     owner.observe(demand()); owner.flush();
     const credit = owner.stats().transientBytes;
@@ -489,7 +490,7 @@ for (const providerChanged of [false, true]) for (const outcome of ['acknowledge
 
 for (const outcome of ['acknowledged', 'unknown'] as const) test(`controller refusal review capacity: unfunded identity remains cheap with held and ${outcome} source evidence`, async () => {
   const peer = new Peer(), notifications: string[][] = [];
-  const owner = new SourceController(peer, { maxBookkeepingBytes: 1400, onChange: keys => notifications.push([...keys]) });
+  const owner = new SourceExecution(peer, { maxBookkeepingBytes: 1400, onChange: keys => notifications.push([...keys]) });
 
   try {
     owner.observe(demand()); owner.flush();
@@ -522,7 +523,7 @@ for (const outcome of ['acknowledged', 'unknown'] as const) test(`controller ref
 });
 
 test('controller v4 source: changing explicit language invalidates old work and queues the new grammar after settlement', async () => {
-  const peer = new Peer(), owner = new SourceController(peer);
+  const peer = new Peer(), owner = new SourceExecution(peer);
   try {
     const first = demand({ language: 'python', text: 'unchanged tail', path: undefined });
     assert.equal(owner.observe(first), true); owner.flush();

@@ -2,8 +2,7 @@ import '../../fixtures/test-guard.mjs';
 import assert from 'node:assert/strict';
 import { afterEach, test } from 'node:test';
 import { setImmediate as turn } from 'node:timers/promises';
-import { SourceController } from '../../../src/highlighting/controller.ts';
-import type { SyntaxClient } from '../../../src/application/syntax-client.ts';
+import { SourceExecution } from '../../../src/highlighting/source-execution.ts';
 import type { ProviderSnapshot } from '../../../src/occipital/provider.ts';
 import { RequestFailure } from '../../../src/occipital/request-failure.ts';
 import { DataBudget } from '../../../src/resources/data-budget.ts';
@@ -16,7 +15,7 @@ import { syntheticSelection } from '../../fixtures/test-style-selection.ts';
 import type { ThemeDescription } from '../../../src/themes/selection.ts';
 import type { RuleDefinition } from '../../../src/occipital/style-rules.ts';
 import { neutral, fileRows, bashRows, piSpans } from '../../fixtures/source-work-flat.ts';
-import { requestSyntax, resolveSyntax, type SyntaxDemand } from '../../../src/syntax/work.ts';
+import { requestSyntax, resolveSyntax, type SyntaxDemand, type SyntaxSourceClient } from '../../../src/syntax/work.ts';
 
 const fingerprint = 'a'.repeat(64);
 const ownedTheme: ThemeDescription = { kind: 'theme', id: 'gruvbox-dark', label: 'Gruvbox Dark', fingerprint };
@@ -70,13 +69,13 @@ class Host {
     await settled();
   }
 }
-const fixtures: { host: Host; sources: SourceController }[] = [];
-function fixture(ready = false, options: ConstructorParameters<typeof SourceController>[1] = {}) {
+const fixtures: { host: Host; sources: SourceExecution }[] = [];
+function fixture(ready = false, options: ConstructorParameters<typeof SourceExecution>[1] = {}) {
   const host = new Host(); host.ready = ready;
-  const sources = new SourceController(host, options);
+  const sources = new SourceExecution(host, options);
   sources.setStyleSelection(selection);
-  const client: Pick<SyntaxClient, 'sources' | 'snapshot'> & { enabled: boolean } = {
-    sources, enabled: true,
+  const client: SyntaxSourceClient & { enabled: boolean } = {
+    sourceWork: sources, enabled: true,
     snapshot() { return { enabled: this.enabled, provider: host.snapshot(), standaloneVersion: 'test', selected: { kind: 'theme', id: 'gruvbox', variant: 'dark' }, effective: ownedTheme }; }
   };
   fixtures.push({ host, sources });
@@ -390,8 +389,8 @@ test('syntax work stale classifier publication cannot install or mark a replacem
 });
 
 function collectibleReader() {
-  const host = new Host(), sources = new SourceController(host);
-  const client = { sources, snapshot: () => ({ enabled: false, provider: host.snapshot(), standaloneVersion: 'test', selected: { kind: 'pi' as const, variant: 'dark' as const } }) };
+  const host = new Host(), sources = new SourceExecution(host);
+  const client = { sourceWork: sources, snapshot: () => ({ enabled: false, provider: host.snapshot(), standaloneVersion: 'test', selected: { kind: 'pi' as const, variant: 'dark' as const } }) };
   requestSyntax(client, demand('x', 1, true, 'first'), () => ['\x1b[1mx\x1b[22m']);
   const reader = resolveSyntax(sources, demand('x', 1, true, 'first')).pi!;
   return { owner: new WeakRef(sources), reader };
@@ -449,7 +448,7 @@ test('syntax work Pi reset restores concrete neutral fonts and glyph mismatch re
 
 async function collectibleNativeReader() {
   const host = new Host(); host.ready = true;
-  const sources = new SourceController(host);
+  const sources = new SourceExecution(host);
   sources.setStyleSelection(selection);
   sources.observe({ key: 'first', version: 1, text: 'x', complete: true, language: 'bash' });
   sources.flush(); await host.answer(0, 'x'); await settled();

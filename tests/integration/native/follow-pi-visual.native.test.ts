@@ -6,7 +6,7 @@ import { readFile, writeFile, mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { getThemeByName } from '../../../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js';
-import { SourceController } from '../../../src/highlighting/controller.ts';
+import { SourceExecution } from '../../../src/highlighting/source-execution.ts';
 import { ProviderBroker } from '../../../src/occipital/provider.ts';
 import { StdioTransport } from '../../../src/occipital/stdio.ts';
 import { PI_MARKER_REGIONS, PI_RULE_BINDINGS, type PiMarkerBinding } from '../../../src/syntax/pi-adapter.ts';
@@ -57,7 +57,7 @@ test('Follow Pi early whole-source comparison: baseline, same-parent and role-sp
     return current;
   };
   const broker = new ProviderBroker({ async tryShared() { return undefined; }, async acquireOwned() { return pipe; } });
-  const owner = new SourceController(broker, { deadlineMs: 5000 });
+  const owner = new SourceExecution(broker, { deadlineMs: 5000 });
   const output = resolve('.test-artifacts/follow-pi-visual'); await mkdir(output, { recursive: true });
   const definition = createSemanticRuleDefinition();
   let revision = 0;

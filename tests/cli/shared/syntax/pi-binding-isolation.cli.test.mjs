@@ -35,22 +35,22 @@ function publicTheme(name, faint) {
   return new Theme(fg, bg, 'truecolor', { name: `shared-${name}`, dim: faint ? ['syntaxComment'] : [] });
 }
 function bind(client, theme, revision) {
-  assert.equal(client.sources.setStyleSelection({ definition: createSemanticRuleDefinition(),
+  assert.equal(client.cardSource.setStyleSelection({ definition: createSemanticRuleDefinition(),
     bindings: samplePiBindings(theme), roles: samplePiCardPalette(theme), bindingRevision: revision, palette: `pi:${revision}` }), true);
 }
 function observe(client) {
   const effective = client.snapshot().effective; assert.equal(effective.id, 'pi');
-  client.sources.observe({ key, version: 1, language: 'rust', text, complete: false });
-  client.sources.flush();
+  client.sourceWork.observe({ key, version: 1, language: 'rust', text, complete: false });
+  client.sourcePump.flush();
 }
 async function ready(client) {
   assert.equal(await client.whenSettled(), true, 'existing producers settle through the public completion boundary');
-  const stats = client.sources.stats();
-  assert.ok(client.sources.displayBasis(key));
+  const stats = client.sourceStatistics.stats();
+  assert.ok(client.sourceWork.displayBasis(key));
   assert.equal(stats.unsettledJobs, 0); assert.equal(stats.pendingCloses, 0);
 }
 function traffic(client) {
-  const broker = client.broker.stats(), source = client.sources.stats();
+  const broker = client.broker.stats(), source = client.sourceStatistics.stats();
   return { source: broker.sourceDispatches, style: broker.styleDispatches, accepted: broker.successfulClassifications,
     committedLineCalls: source.committedLineCalls, committedLineBytes: source.committedLineBytes,
     tailCalls: source.tailCalls, tailBytes: source.tailBytes };
@@ -64,12 +64,12 @@ function spy(t, client) {
   return records;
 }
 function geometry(client) {
-  const funding = client.sources.geometryFunding(); assert.ok(funding);
+  const funding = client.cardSource.geometryFunding(); assert.ok(funding);
   const measured = measure(text, funding.budget, funding.grant); assert.ok(measured);
   return { measured, funding };
 }
 function paint(client, geometry, width) {
-  const basis = client.sources.displayBasis(key); assert.ok(basis);
+  const basis = client.sourceWork.displayBasis(key); assert.ok(basis);
   const { funding, measured } = geometry, layout = reflow(measured, { mode: 'file', width }, funding.grant); assert.ok(layout);
   let painted;
   try {
@@ -137,7 +137,7 @@ function generic(records) {
     indices: reply.body.indices, styles: reply.body.styles, declaration: request.rules };
 }
 function released(peer, funding) {
-  const stats = peer.client.sources.stats(), transport = peer.transport().stats();
+  const stats = peer.client.sourceStatistics.stats(), transport = peer.transport().stats();
   assert.equal(stats.retention.retainedBytes, 0); assert.equal(stats.unsettledJobs, 0); assert.equal(stats.pendingCloses, 0);
   assert.equal(stats.transientBytes, 0); assert.equal(stats.remoteLeases, 0); assert.equal(stats.bookkeepingBytes, 0);
   assert.equal(funding.budget.stats().retainedBytes, 0); assert.equal(funding.budget.stats().outstandingPeakBytes, 0);
@@ -201,10 +201,10 @@ test('shared Follow Pi: two actual consumers isolate public palettes and typogra
     assert.deepEqual([traffic(a.client), traffic(b.client)], cold); assert.deepEqual(generic(ra), genericA); assert.deepEqual(generic(rb), genericB);
     const warmRebindWidthDelta = cold.map((before, i) => Object.fromEntries(Object.keys(before).map(name => [name, traffic([a, b][i].client)[name] - before[name]])));
     for (const delta of warmRebindWidthDelta) assert.ok(Object.values(delta).every(value => value === 0));
-    const survivorBasis = b.client.sources.displayBasis(key), survivorRows = paint(b.client, gb, 80), survivorBytes = gb.funding.budget.stats().retainedBytes;
+    const survivorBasis = b.client.sourceWork.displayBasis(key), survivorRows = paint(b.client, gb, 80), survivorBytes = gb.funding.budget.stats().retainedBytes;
     assert.ok(ga.funding.budget.stats().retainedBytes > 0); assert.ok(survivorBytes > 0);
     ga.measured.dispose(); await a.client.dispose();
-    await sharedPiProgress(() => !a.client.sources.stats().unsettledJobs && !a.client.sources.stats().pendingCloses);
+    await sharedPiProgress(() => !a.client.sourceStatistics.stats().unsettledJobs && !a.client.sourceStatistics.stats().pendingCloses);
     const departed = released(a, ga.funding);
     const afterDeparture = await sharedPiProgress(async () => {
       const description = await b.describe();
@@ -215,14 +215,14 @@ test('shared Follow Pi: two actual consumers isolate public palettes and typogra
     assert.equal(gb.measured.isValid, true); assert.equal(gb.funding.budget.stats().retainedBytes, survivorBytes);
     assert.deepEqual(paint(b.client, gb, 80), survivorRows); await checkPaint(survivorRows, dark);
     observe(b.client); await ready(b.client); assert.deepEqual(traffic(b.client), cold[1]);
-    b.client.sources.remove(key); await sharedPiProgress(() => { b.client.sources.flush(); return !b.client.sources.stats().pendingCloses && !b.client.sources.stats().unsettledJobs; });
+    b.client.cardSource.remove(key); await sharedPiProgress(() => { b.client.sourcePump.flush(); return !b.client.sourceStatistics.stats().pendingCloses && !b.client.sourceStatistics.stats().unsettledJobs; });
     const empty = await b.describe();
     assert.equal(empty.runtime.leases, 0); assert.equal(empty.runtime.data_jobs, 0);
     assert.equal(empty.runtime.data_bytes, singleRouteBaseline.runtime.data_bytes, 'native source charges return to the measured no-source baseline');
     gb.measured.dispose(); await b.client.dispose();
-    await sharedPiProgress(() => !b.client.sources.stats().unsettledJobs && !b.client.sources.stats().pendingCloses);
+    await sharedPiProgress(() => !b.client.sourceStatistics.stats().unsettledJobs && !b.client.sourceStatistics.stats().pendingCloses);
     const survivorReleased = released(b, gb.funding);
-    assert.equal(b.client.sources.stats().globalTransientBytes, 0); assert.equal(b.client.sources.stats().globalUnsettledJobs, 0);
+    assert.equal(b.client.sourceStatistics.stats().globalTransientBytes, 0); assert.equal(b.client.sourceStatistics.stats().globalUnsettledJobs, 0);
     evidence = { sharedPiIsolation: true, node: process.version, source: inputs.source, helper: binary, sharedHost: inputs.sharedHost,
       managedPid: live.runtime.pid, cold, generic: genericA, genericSha256: hash(genericA), colors, rebound,
       warmRebindWidthDelta, operations: [ra, rb].map(records => records.map(record => record.request.op)),

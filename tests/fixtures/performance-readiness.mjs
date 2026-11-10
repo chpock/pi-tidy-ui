@@ -49,7 +49,7 @@ export function preparedCardReady(consumer, owner, palettePrefix) {
   if (!state?.display || !state.paint || state.display.revision !== state.revision
     || !sourceMatches(consumer, state) || state.preparedTheme !== Reflect.get(consumer, 'themeRevision')) return false;
   if (!paletteInputObservation(consumer, state).matches) return false;
-  const client = Reflect.get(consumer, 'client'), sources = client.sources, wanted = new Map();
+  const client = Reflect.get(consumer, 'client'), sources = client.sourceWork ?? client.sources, wanted = new Map();
   for (const [key, slot] of state.slots) {
     const current = sources.status(key), display = sources.displayBasis(key);
     const classified = current?.exact && !current.protective && display

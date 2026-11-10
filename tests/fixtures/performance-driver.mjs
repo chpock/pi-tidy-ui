@@ -9,6 +9,10 @@ import { performanceBridge } from './performance-observer.mjs';
 import { waitForPerformanceReady } from './performance-readiness.mjs';
 import { workload, history } from '../../scripts/test/performance/workloads.mjs';
 
+// Historical comparison arms expose the same observations through their broad owner.
+const sourceWork = runtime => runtime?.sourceWork ?? runtime?.sources;
+const sourceStats = runtime => (runtime?.sourceStatistics ?? runtime?.sources)?.stats();
+
 const noSourceWork = ['dispatches', 'preparedBytes'];
 const noRPC = [...noSourceWork, 'styleDispatches', 'styleEncodes'];
 const warmWork = [...noRPC, 'layoutBuilds'];
@@ -38,7 +42,7 @@ export async function registerPerformanceDriver(pi, adapter) {
     running = true;
     const output = join(process.env.TIDY_UI_TEST_OUTPUT, preconditionOnly ? 'precondition.json' : 'performance.json');
     const phases = [], bridge = performanceBridge(); let allocationProfile = null;
-    const sourceCounters = () => runtime()?.sources.stats() ?? {};
+    const sourceCounters = () => sourceStats(runtime()) ?? {};
     const snapshot = () => {
       const presentation = controller(), getStats = presentation && Reflect.get(presentation, 'cacheStats');
       if (presentation) assert.equal(typeof getStats, 'function', 'benchmark presentation cache observation contract');
@@ -49,20 +53,20 @@ export async function registerPerformanceDriver(pi, adapter) {
     async function ready(palettePrefix) {
       const settled = await waitForPerformanceReady({ frame: () => bridge.frame(), pause, now: preconditionOnly ? Date.now : () => performance.now(), check: () => {
         if (scenario.variant !== 'on') return true;
-        const current = runtime(), stats = current?.sources.stats();
+        const current = runtime(), stats = sourceStats(current);
         return current?.snapshot().provider.availability === 'ready' && installed.ready(expectedIds, palettePrefix)
           && stats.unsettledJobs === 0 && stats.pendingCloses === 0;
       } });
       if (settled) return;
-      const current = runtime(), states = current && Reflect.get(current.sources, 'states');
-      const counters = current?.sources.stats();
+      const current = runtime(), sources = sourceWork(current), states = sources && Reflect.get(sources, 'states');
+      const counters = sourceStats(current);
       throw new Error(`Benchmark did not reach complete current-source/style readiness: ${JSON.stringify({ runtimeObserved: !!current,
         provider: current?.snapshot().provider.availability ?? null,
         source: counters ? { records: counters.sourceRecords, dispatches: counters.dispatches, styleDispatches: counters.styleDispatches,
           jobs: counters.unsettledJobs, closes: counters.pendingCloses, bookkeepingBytes: counters.bookkeepingBytes,
           retainedBytes: counters.retention.retainedBytes, entries: counters.retention.entries } : null,
         preparation: installed?.diagnostics(expectedIds),
-        states: states instanceof Map ? [...states.keys()].slice(0, 8).map(key => ({ key, exact: current.sources.status(key)?.exact, protective: current.sources.status(key)?.protective, basis: !!current.sources.displayBasis(key) })) : null })}`);
+        states: states instanceof Map ? [...states.keys()].slice(0, 8).map(key => ({ key, exact: sources.status(key)?.exact, protective: sources.status(key)?.protective, basis: !!sources.displayBasis(key) })) : null })}`);
     }
     function inspectTools() {
       const nodes = [], pending = [bridge.current.renderer.deref()], seen = new Set();

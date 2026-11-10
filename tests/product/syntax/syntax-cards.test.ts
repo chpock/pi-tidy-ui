@@ -13,7 +13,7 @@ import { getThemeByName, initTheme, setThemeInstance } from '../../../node_modul
 import { CardSources, type CardDisplayInput, type CardPreparation, type PreparedCard, type ReadyCardPaint } from '../../../src/syntax/cards.ts';
 import { DataBudget } from '../../../src/resources/data-budget.ts';
 import { layoutCard, type CardRows } from '../../../src/syntax/card-layout.ts';
-import { SourceController, type ControllerOptions } from '../../../src/highlighting/controller.ts';
+import { SourceExecution, type SourceExecutionOptions } from '../../../src/highlighting/source-execution.ts';
 import { decodeSemanticDescription } from '../../../src/occipital/semantic-protocol.ts';
 import { fingerprintRules } from '../../../src/occipital/style-rules.ts';
 import { CARD_ROLES } from '../../../src/appearance/card-roles.ts';
@@ -62,8 +62,8 @@ const edited = (diff = '-1 \tx\n+1 \ty\n   ...\n-9 a\n+9 b', revision = 1): Extr
   fileInput({ name: 'edit', args: { path: 'a.ts' }, result: { details: { diff } } }, revision);
 const read = (text: string, revision = 1, images: string[] = []): Extract<CardDisplayInput, { kind: 'file' }> => fileInput({ name: 'read',
   args: { path: 'a.ts', offset: 41 }, result: { content: [{ type: 'text', text }, ...images.map(data => ({ type: 'image' as const, data, mimeType: 'image/png' }))], isError: false } }, revision);
-const fixtures: { cards: CardSources<Owner>; sources: SourceController; runtime: SyntaxRuntime; paletteInputs: PaletteInputOwner; calls: { reject(error: unknown): void }[] }[] = [];
-function fixture(ready = false, options: ControllerOptions = {}, maxBookkeepingBytes?: number) {
+const fixtures: { cards: CardSources<Owner>; sources: SourceExecution; runtime: SyntaxRuntime; paletteInputs: PaletteInputOwner; calls: { reject(error: unknown): void }[] }[] = [];
+function fixture(ready = false, options: SourceExecutionOptions = {}, maxBookkeepingBytes?: number) {
   const env = { ready, enabled: true, generation: 1, vocabulary: 'a'.repeat(64), selected: { kind: 'pi', variant: 'dark' } as ThemePreference,
     classifications: [] as string[], invalidated: [] as Owner[], renders: 0, acquisitions: 0, paletteInputBytes: [] as number[], deniedPaletteInputs: 0, samples: 0, denyPaletteInput: false, failClassification: false,
     poison: false, beforeClassify: undefined as (() => void) | undefined, notices: [] as { keys: string[]; groups: number[] }[],
@@ -75,7 +75,7 @@ function fixture(ready = false, options: ControllerOptions = {}, maxBookkeepingB
     isReady: (g: number) => env.ready && g === env.generation, classificationAccepted: () => true,
     request: (_g: number, request: Frame) => new Promise<unknown>((resolve, reject) => calls.push({ request, resolve, reject })) };
   let cards: CardSources<Owner>;
-  const sources = new SourceController(provider, { ...options, onChange: (keys, groups = []) => { env.notices.push({ keys: [...keys], groups: [...groups] }); cards.sourceChanged(keys, groups); } });
+  const sources = new SourceExecution(provider, { ...options, onChange: (keys, groups = []) => { env.notices.push({ keys: [...keys], groups: [...groups] }); cards.sourceChanged(keys, groups); } });
   const runtime = new SyntaxRuntime({ standaloneVersion: '0.0.0', settings: { load: async () => ({ ok: true, themePreference: { kind: 'pi', variant: 'dark' } }), update: async () => ({ ok: true }) },
     provider: { tryShared: async () => undefined, acquireOwned: async () => { throw Error('unexpected provider'); } } });
   const paletteInputs = new PaletteInputOwner();
@@ -89,7 +89,7 @@ function fixture(ready = false, options: ControllerOptions = {}, maxBookkeepingB
     for (const reference of owners) if (reference.deref() === owner) return;
     owners.add(new WeakRef(owner));
   };
-  cards = new CardSources({ sources, snapshot: () => ({ enabled: env.enabled, provider: provider.snapshot(), selected: env.selected,
+  cards = new CardSources({ cardSource: sources, sourceWork: sources, snapshot: () => ({ enabled: env.enabled, provider: provider.snapshot(), selected: env.selected,
     effective: resolveTheme(env.selected).effective, standaloneVersion: 'test' }) }, {
     preparePaletteInput: (palette, revision, mode, funding, usePiFallback) => {
       env.acquisitions++; if (env.denyPaletteInput) { env.deniedPaletteInputs++; return undefined; }
@@ -1809,6 +1809,7 @@ for (const remaining of ['none', 'held-local', 'palette-change', 'retained-style
     }, acquireOwned: async () => { assert.fail('controlled shared recovery must not acquire owned'); } },
     onChange() { metadata++; cards?.metadataChanged(); if (client.snapshot().provider.availability === 'unavailable') terminalDelivered(); },
     onSourceChange(keys, groups) { cards?.sourceChanged(keys, groups); } });
+  const execution = client.sourceWork as SourceExecution;
   cards = new CardSources(client, { preparePiInput: funding => a.runtime.preparePaletteInput(
     resolveTheme({ kind: 'pi', variant: 'dark' }).effective, theme, a.runtime.palette(theme), 'truecolor', funding),
     classify: text => { classifications++; return highlightCode(text, 'typescript'); }, invalidate() {}, requestRender() {},
@@ -1817,13 +1818,13 @@ for (const remaining of ['none', 'held-local', 'palette-change', 'retained-style
       outcomes = [...receipt.outcomes];
       if (remaining === 'held-local' && phase === 'open') {
         phase = 'local';
-        for (const preparation of local) client.sources.queuePreparation(client.sources.registerPreparation(preparation)!, true);
+        for (const preparation of local) execution.queuePreparation(execution.registerPreparation(preparation)!, true);
       }
       fallbackPrepared();
     } });
-  const resume = client.sources.resumePreparation;
+  const resume = execution.registryResumePreparation;
   let phase = 'initial', stage = 'startup', withdrawalWakes = 0, releaseInitial: (() => void) | undefined, releaseLocal: (() => void) | undefined;
-  t.mock.method(client.sources, 'resumePreparation', function(this: SourceController) {
+  t.mock.method(execution, 'registryResumePreparation', function(this: SourceExecution) {
     if (phase === 'initial') { phase = 'initial-held'; releaseInitial = () => resume.call(this); initiallyYielded(); return; }
     if (phase === 'local' && visits.length > 0) { phase = 'local-held'; releaseLocal = () => resume.call(this); locallyYielded(); return; }
     return resume.call(this);
@@ -1838,17 +1839,17 @@ for (const remaining of ['none', 'held-local', 'palette-change', 'retained-style
     const p = client.snapshot().effective!;
     for (const key of ['a', 'b']) a.sources.observe({ key, text: key, version: 1, complete: true });
     a.sources.flush(); peer.source(); await awaitFixture(busy);
-    assert.equal(a.sources.stats().globalUnsettledJobs, 2); assert.equal(client.sources.stats().unsettledJobs, 0);
+    assert.equal(a.sources.stats().globalUnsettledJobs, 2); assert.equal(execution.stats().unsettledJobs, 0);
     assert.ok(releaseInitial); phase = 'open'; releaseInitial(); await settle();
-    assert.equal(client.sources.stats().waitingOwners, 1, 'B owns real credit interest after its actual SOURCE reply and preparation continuation');
+    assert.equal(execution.stats().waitingOwners, 1, 'B owns real credit interest after its actual SOURCE reply and preparation continuation');
     assert.equal(peer.calls.length, 2, 'only metadata and SOURCE were dispatched; STYLE waits on foreign credit');
     const key = cards.identities(owner)[0]!.key;
     const retained = remaining === 'retained-style';
     const latest = retained ? input : { ...written('const terminal = 2;', 2), palette: input.palette };
     if (!retained) { cards.updateDisplay(owner, latest); cards.useful(owner, latest.revision); await settle(); }
-    assert.equal(client.sources.status(key)!.version, retained ? 1 : 2, 'source ownership remains while native dispatch is credit-blocked');
-    assert.equal(client.sources.stats().waitingOwners, 1);
-    const generation = client.sources.status(key)!.generation;
+    assert.equal(execution.status(key)!.version, retained ? 1 : 2, 'source ownership remains while native dispatch is credit-blocked');
+    assert.equal(execution.stats().waitingOwners, 1);
+    const generation = execution.status(key)!.generation;
     let completion = client.whenSettled(), completed = false; void completion.then(() => { completed = true; });
     const beforeMetadata = metadata, bytes = a.sources.stats().globalTransientBytes;
     const recoverable = remaining === 'recoverable';
@@ -1860,7 +1861,7 @@ for (const remaining of ['none', 'held-local', 'palette-change', 'retained-style
     assert.equal(client.snapshot().provider.availability, recoverable ? 'transitioning' : 'unavailable');
     assert.equal(client.broker.stats().recoveryTimers, 0); assert.equal(client.broker.stats().activeProbes, 0);
     assert.equal(client.snapshot().effective?.id, 'pi'); assert.ok(metadata > beforeMetadata);
-    assert.equal(client.sources.status(key)!.generation, generation, 'metadata fallback retains the source rather than invoking a removal hook');
+    assert.equal(execution.status(key)!.generation, generation, 'metadata fallback retains the source rather than invoking a removal hook');
     assert.equal(peer.calls.length, 2); assert.equal(classifications, retained ? 0 : 1, 'only an unparsed FILE needs a real Pi classifier fallback');
     assert.deepEqual(outcomes, retained ? [] : ['pi']);
     assert.equal(cards.visit(owner, (display, paint) => { assert.equal(display.kind, 'file'); assert.equal(paint.origin, 'pi'); if (display.kind === 'file') assert.equal(display.rows.find(row => row.region)?.region?.text, retained ? 'const terminal = 1;' : 'const terminal = 2;'); }), true);
@@ -1868,11 +1869,11 @@ for (const remaining of ['none', 'held-local', 'palette-change', 'retained-style
       stage = 'local-continuation'; await awaitFixture(localYield);
       assert.ok(visits.length > 0 && visits.length < 3); assert.equal(completed, false, 'reentrant local work is owed by the original observation');
       cards.remove(owner); assert.equal(completed, false, 'withdrawing native interest cannot release a held local continuation');
-      assert.equal(client.sources.stats().unsettledJobs, 0); assert.ok(releaseLocal); phase = 'open'; releaseLocal();
+      assert.equal(execution.stats().unsettledJobs, 0); assert.ok(releaseLocal); phase = 'open'; releaseLocal();
     }
     if (remaining === 'palette-change' || retained) {
-      const wake = client.sources.wake;
-      t.mock.method(client.sources, 'wake', function(this: SourceController) { withdrawalWakes++; return wake.call(this); });
+      const wake = execution.wake;
+      t.mock.method(execution, 'wake', function(this: SourceExecution) { withdrawalWakes++; return wake.call(this); });
       theme = getThemeByName('dark')!; setThemeInstance(theme);
       const next = { ...latest, revision: 3, palette: a.runtime.palette(theme) };
       cards.updateDisplay(owner, next); cards.useful(owner, next.revision); await settle();
@@ -1880,10 +1881,10 @@ for (const remaining of ['none', 'held-local', 'palette-change', 'retained-style
       completion = client.whenSettled();
     }
     if (recoverable) {
-      assert.equal(await awaitFixture(client.sources.whenSettled()), true, 'source work can drain while the broker owes recovery');
+      assert.equal(await awaitFixture(execution.whenSettled()), true, 'source work can drain while the broker owes recovery');
       const brokerCompletion = client.broker.whenSettled(); let brokerCompleted = false; void brokerCompletion.then(() => { brokerCompleted = true; });
       await settle(); assert.equal(completed, false); assert.equal(brokerCompleted, false);
-      assert.equal(sharedAttempts, 2); assert.equal(client.sources.stats().waitingOwners, 0);
+      assert.equal(sharedAttempts, 2); assert.equal(execution.stats().waitingOwners, 0);
       assert.equal(a.sources.stats().globalUnsettledJobs, 2); assert.equal(a.sources.stats().globalTransientBytes, bytes);
       assert.ok(releaseRecovery); releaseRecovery(); assert.equal(await awaitFixture(brokerCompletion), true);
     }
@@ -1892,7 +1893,7 @@ for (const remaining of ['none', 'held-local', 'palette-change', 'retained-style
     if (remaining === 'held-local') assert.deepEqual(visits, [2, 1, 0]);
     assert.equal(a.sources.stats().globalUnsettledJobs, 2); assert.equal(a.sources.stats().globalTransientBytes, bytes);
   } catch (error) {
-    const state = client.sources.stats();
+    const state = execution.stats();
     console.log(JSON.stringify({ terminalProviderProbe: { remaining, stage, availability: client.snapshot().provider.availability,
       classifications, outcomes, withdrawalWakes, waitingOwners: state.waitingOwners, jobs: state.unsettledJobs, globalJobs: state.globalUnsettledJobs,
       closes: state.pendingCloses, recoveryTimers: client.broker.stats().recoveryTimers } }));

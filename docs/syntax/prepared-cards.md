@@ -2,6 +2,8 @@
 
 `CardSources` connects an eligible host component to the asynchronous source/style controller and one common literal-style renderer. Full display text, admitted classification text, measured geometry and ready paint are separate representations. The [rendering chapter](../rendering.md) explains common text units; the [source/style chapter](work.md) owns scheduling and fallback permission.
 
+`CardSources` consumes the card-facing and source/Pi capabilities from `src/highlighting/source-ports.ts`, plus narrow current metadata; it does not depend on the application client's implementation. Those capabilities reference one `SourceExecution`. Registering or queuing a preparation enters that owner's private chronological registry, not a card-owned scheduler. Borrowed display readers and operation-scoped geometry funding preserve their existing validity and release boundaries.
+
 ## The card record separates preparation from usefulness
 
 `CardSources` in `src/syntax/cards.ts` stores state in a weak map keyed by the host component. Its registry ticket holds weak owner/state/consumer references, source keys and detached cleanup receipts. The source controller can schedule the ticket without retaining the component or a duplicate source-text queue.

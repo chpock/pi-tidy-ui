@@ -16,7 +16,7 @@ import { CardSources } from '../../../src/syntax/cards.ts';
 import { measure, type MeasuredText, type MeasuredRowLayout, type GeometryPolicy } from '../../../src/syntax/measured-rows.ts';
 import { observeSyntaxLocalWork } from '../../fixtures/syntax-local-work.ts';
 import { stripVTControlCharacters } from 'node:util';
-import { SourceController } from '../../../src/highlighting/controller.ts';
+import { SourceExecution } from '../../../src/highlighting/source-execution.ts';
 import { ProviderBroker } from '../../../src/occipital/provider.ts';
 import { StdioTransport } from '../../../src/occipital/stdio.ts';
 import { DataBudget, DataCharge } from '../../../src/resources/data-budget.ts';
@@ -71,7 +71,7 @@ test('current consumer costs: actual owned SOURCE STYLE incremental contexts and
         return raw;
       });
     } };
-  const owner = new SourceController(provider, { deadlineMs: 5000 }), budget = owner.geometryFunding()!.budget;
+  const owner = new SourceExecution(provider, { deadlineMs: 5000 }), budget = owner.geometryFunding()!.budget;
   let peaks = { retainedPolicyBytes: 0, outstandingReservationBytes: 0, combinedPolicyBytes: 0, largestReservationBytes: 0, commits: 0, committedPolicyBytes: 0 };
   const sample = () => { const s = budget.stats(); peaks.retainedPolicyBytes = Math.max(peaks.retainedPolicyBytes, s.retainedBytes);
     peaks.outstandingReservationBytes = Math.max(peaks.outstandingReservationBytes, s.outstandingPeakBytes);
@@ -161,7 +161,7 @@ test('current consumer geometry: actual CardSources SDK preparation warm theme w
   const broker = new ProviderBroker({ async tryShared() { return undefined; }, async acquireOwned() { return pipe; } });
   class UI extends Container { requestRender() {} }
   let adapter: ReturnType<typeof installTidyUi> | undefined;
-  const owner = new SourceController(broker, { deadlineMs: 5000, onChange: (keys, groups) => adapter?.syntaxSourceChanged(keys, groups) });
+  const owner = new SourceExecution(broker, { deadlineMs: 5000, onChange: (keys, groups) => adapter?.syntaxSourceChanged(keys, groups) });
   const budget = owner.geometryFunding()!.budget;
   const observer = observeSyntaxLocalWork(text => text.includes('C22_'));
   let phase = 'setup', revision = 1, measurements = 0, reflows = 0, glyphs = 0, measurementBufferBytes = 0, layoutBufferBytes = 0, layoutRows = 0, layoutSpans = 0, paints = 0, paintMs = 0, measureMs = 0, reflowMs = 0, prepareMs = 0;
@@ -209,7 +209,7 @@ test('current consumer geometry: actual CardSources SDK preparation warm theme w
   try {
     await awaitFixture(broker.start()); let selected = resolveTheme({ kind: 'theme', id: 'gruvbox', variant: 'dark' }).effective;
     const ui = new UI(); themes.initTheme('dark', false);
-    adapter = installTidyUi(ui, () => themes.theme, { syntax: { client: { sources: owner, snapshot: () => ({ enabled: true,
+    adapter = installTidyUi(ui, () => themes.theme, { syntax: { client: { cardSource: owner, sourceWork: owner, sourcePump: owner, sourceStatistics: owner, snapshot: () => ({ enabled: true,
       selected: { kind: 'theme', id: selected.id.replace(/-dark$/u, ''), variant: 'dark' }, effective: selected, standaloneVersion: 'test', provider: broker.snapshot() }) },
       palette: () => revision, classify: () => assert.fail('ready native sources must not use Pi classifier') } });
     assert.equal(adapter.active, true, adapter.reason);
@@ -267,7 +267,7 @@ test('current consumer latency control: uninstrumented small owned sequence', as
   const pipe = new StdioTransport({ command: binary.path, args: ['--stdio'], cwd: root,
     env: { ...process.env, HOME: root, XDG_CONFIG_HOME: root, XDG_DATA_HOME: root, XDG_CACHE_HOME: root, XDG_RUNTIME_DIR: root }, requestDeadlineMs: 5000, terminateGraceMs: 100 });
   const broker = new ProviderBroker({ async tryShared() { return undefined; }, async acquireOwned() { return pipe; } });
-  const owner = new SourceController(broker, { deadlineMs: 5000 });
+  const owner = new SourceExecution(broker, { deadlineMs: 5000 });
   const timings: { phase: string; readyMs: number; eventLoopTurnMs: number; sourceDelta: number; styleDelta: number }[] = [];
   try {
     await awaitFixture(broker.start()); owner.setStyleSelection(ownedStyleSelection('gruvbox-dark'));
@@ -298,7 +298,7 @@ test('current consumer matching reference: uninstrumented cold finite 640-byte R
   const pipe = new StdioTransport({ command: binary.path, args: ['--stdio'], cwd: root,
     env: { ...process.env, HOME: root, XDG_CONFIG_HOME: root, XDG_DATA_HOME: root, XDG_CACHE_HOME: root, XDG_RUNTIME_DIR: root }, requestDeadlineMs: 5000, terminateGraceMs: 100 });
   const broker = new ProviderBroker({ async tryShared() { return undefined; }, async acquireOwned() { return pipe; } });
-  const owner = new SourceController(broker, { deadlineMs: 5000 });
+  const owner = new SourceExecution(broker, { deadlineMs: 5000 });
   try {
     await awaitFixture(broker.start());
     const paletteId = 'catppuccin-dark'; owner.setStyleSelection(ownedStyleSelection(paletteId));

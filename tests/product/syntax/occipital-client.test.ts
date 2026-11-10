@@ -1,3 +1,4 @@
+import { SourceExecution } from '../../../src/highlighting/source-execution.ts';
 import '../../fixtures/test-guard.mjs';
 import assert from 'node:assert/strict';
 import { afterEach, test } from 'node:test';
@@ -107,23 +108,23 @@ function demand(c: SyntaxClient, key = 'one') {
   return { key, version: 1, text: 'x', complete: true };
 }
 
-function nativeStyles(c: Pick<SyntaxClient, 'sources'>, id = native.id) {
-  c.sources.setStyleSelection(ownedStyleSelection(id)); c.sources.flush();
+function nativeStyles(c: Pick<SyntaxClient, 'cardSource' | 'sourcePump'>, id = native.id) {
+  c.cardSource.setStyleSelection(ownedStyleSelection(id)); c.sourcePump.flush();
 }
 async function parsedSources(f: ReturnType<typeof fixture>, keys: string[], firstContext = 1) {
   for (const [offset, key] of keys.entries()) {
-    f.c.sources.observe(demand(f.c, key)); f.c.sources.flush();
+    f.c.sourceWork.observe(demand(f.c, key)); f.c.sourcePump.flush();
     const index = f.peer.calls.length - 1; assert.equal(f.peer.calls[index]!.request.op, 'highlight');
     f.peer.answerSource(index, firstContext + offset); await settle();
   }
 }
 
 test('constructor, snapshots, source inspection and menu captures never load, acquire or dispatch', async () => {
-  const f = fixture(); const before = f.c.sources.stats(); const capture = f.c.captureMenu();
-  for (let i = 0; i < 20; i++) { f.c.snapshot(); f.c.sources.status('one'); f.c.sources.flush(); assert.equal(capture(), true); }
+  const f = fixture(); const before = f.c.sourceStatistics.stats(); const capture = f.c.captureMenu();
+  for (let i = 0; i < 20; i++) { f.c.snapshot(); f.c.sourceWork.status('one'); f.c.sourcePump.flush(); assert.equal(capture(), true); }
   assert.equal(f.store.loads, 0); assert.equal(f.store.writes.length, 0); assert.equal(f.sharedAttempts(), 0);
-  assert.equal(f.acquisitions(), 0); assert.equal(f.peer.calls.length, 0); assert.deepEqual(f.c.sources.stats(), before);
-  assert.equal(f.c.sources.observe({ key: 'one', version: 1, text: 'x', complete: true }), false);
+  assert.equal(f.acquisitions(), 0); assert.equal(f.peer.calls.length, 0); assert.deepEqual(f.c.sourceStatistics.stats(), before);
+  assert.equal(f.c.sourceWork.observe({ key: 'one', version: 1, text: 'x', complete: true }), false);
   assert.equal(f.c.snapshot().enabled, true); assert.equal(f.c.snapshot().effective, undefined);
   assert.equal(f.peer.calls.length, 0);
 });
@@ -141,7 +142,7 @@ for (const choice of [piPreference, themeChoice, preference('missing')] as Theme
 test('provider readiness does not publish a palette before settings load; explicit choice beats slow load', async () => {
   const restored = deferred<SettingsLoadResult>(), store = new Store(); store.loadResult = restored.promise; const f = fixture({}, store);
   const start = f.c.start(); await settle(); assert.ok(f.c.snapshot().provider.description); assert.equal(f.c.snapshot().effective, undefined);
-  assert.equal(f.c.sources.observe({ key: 'one', version: 1, text: 'x', complete: true }), false);
+  assert.equal(f.c.sourceWork.observe({ key: 'one', version: 1, text: 'x', complete: true }), false);
   const choice: ThemePreference = preference(native.id); await f.c.selectTheme(choice); choice.id = 'mutated';
   assert.deepEqual(f.c.snapshot().selected, themeChoice); assert.equal(f.c.snapshot().effective?.id, native.id);
   restored.resolve({ ok: true, themePreference: piPreference }); await start;
@@ -193,10 +194,10 @@ test('off retires sources and saves synchronously; captures never revive, includ
   assert.equal(f.sharedAttempts(), 0); assert.equal(f.store.loads, 1); assert.equal(f.c.snapshot().effective?.id, pi.id);
   await f.c.selectTheme(preference(native.id)); assert.equal(f.sharedAttempts(), 0);
   await f.c.setEnabled(true); assert.equal(disabled(), false); assert.equal(initial(), false); assert.equal(f.c.snapshot().effective?.id, native.id);
-  const live = f.c.captureMenu(); const source = demand(f.c); f.c.sources.observe(source); f.c.sources.flush();
+  const live = f.c.captureMenu(); const source = demand(f.c); f.c.sourceWork.observe(source); f.c.sourcePump.flush();
   const call = f.peer.calls.at(-1)!; const exit = deferred<void>(); f.peer.exit = exit.promise;
-  const stopping = f.c.setEnabled(false); assert.equal(call.options!.signal!.aborted, true); assert.equal(f.c.sources.stats().sourceRecords, 1, 'off retains paid primitive execution evidence, not native payload');
-  assert.equal(f.c.sources.stats().retention.retainedBytes, 0); assert.equal(live(), false);
+  const stopping = f.c.setEnabled(false); assert.equal(call.options!.signal!.aborted, true); assert.equal(f.c.sourceStatistics.stats().sourceRecords, 1, 'off retains paid primitive execution evidence, not native payload');
+  assert.equal(f.c.sourceStatistics.stats().retention.retainedBytes, 0); assert.equal(live(), false);
   assert.equal(f.c.snapshot().enabled, false); exit.resolve(); await stopping;
   await f.c.setEnabled(true); assert.equal(live(), false); assert.equal(f.store.loads, 1); assert.equal(f.store.writes.length, 1);
   const final = f.c.captureMenu(); await f.c.dispose(); assert.equal(final(), false); assert.equal(f.c.captureMenu()(), false);
@@ -219,13 +220,13 @@ test('unknown local theme warns once; palette choice is independent of provider 
 
 test('local palette changes never reparse or re-request SOURCE', async () => {
   const f = fixture(); await f.c.start(); await f.c.selectTheme(themeChoice);
-  const source = demand(f.c); f.c.sources.observe(source); f.c.sources.flush(); f.peer.answerSource(1); await settle();
-  const stats = f.c.sources.stats(), accepted = f.c.broker.stats().successfulClassifications;
+  const source = demand(f.c); f.c.sourceWork.observe(source); f.c.sourcePump.flush(); f.peer.answerSource(1); await settle();
+  const stats = f.c.sourceStatistics.stats(), accepted = f.c.broker.stats().successfulClassifications;
   const calls = f.peer.calls.length;
   await f.c.selectTheme(preference('solarized')); await settle();
   assert.equal(f.c.snapshot().effective?.id, 'solarized-dark');
   assert.equal(f.peer.calls.length, calls, 'owned palette selection is local and does not ask the helper for a theme catalogue');
-  assert.deepEqual(f.c.sources.stats(), stats); assert.equal(f.c.broker.stats().successfulClassifications, accepted);
+  assert.deepEqual(f.c.sourceStatistics.stats(), stats); assert.equal(f.c.broker.stats().successfulClassifications, accepted);
 });
 test('ordinary off/on preserves initialShared and does not restart an old return window', async () => {
   const clock = new Clock(), first = new Peer(); let attempts = 0;
@@ -239,7 +240,10 @@ test('ordinary off/on preserves initialShared and does not restart an old return
 
 function detachedOwner(peer: Peer) {
   const c = new SyntaxClient({ provider: { tryShared: async () => peer, acquireOwned: async () => new Peer() }, standaloneVersion: '0.1.0', settings: new Store() });
-  return { weak: new WeakRef(c), broker: c.broker, sources: c.sources, start: c.start() };
+  const execution = c.sourceWork;
+  assert.ok(execution instanceof SourceExecution);
+  assert.equal(c.sourcePump, execution); assert.equal(c.sourceStatistics, execution); assert.equal(c.sourceLifecycle, execution);
+  return { weak: new WeakRef(c), broker: c.broker, execution, start: c.start() };
 }
 test('retained production broker/source observer callbacks cannot retain first owner under active second client', async () => {
   assert.equal(typeof global.gc, 'function', 'run this control with --expose-gc');
@@ -247,10 +251,10 @@ test('retained production broker/source observer callbacks cannot retain first o
   const second = fixture(); await second.c.start();
   for (let i = 0; i < 100; i++) { await delay(0); global.gc!(); await delay(0); if (!first.weak.deref()) break; }
   assert.equal(first.weak.deref(), undefined); assert.equal(second.c.snapshot().provider.availability, 'ready');
-  first.sources.observe({ key: 'collected', version: 1, text: 'x', complete: true });
-  first.sources.flush(); peer.answerSource(1); await settle();
+  first.execution.observe({ key: 'collected', version: 1, text: 'x', complete: true });
+  first.execution.flush(); peer.answerSource(1); await settle();
   assert.equal(peer.calls.length, 2, 'retained source observer must not resurrect collected client metadata work');
-  assert.equal(second.c.snapshot().provider.availability, 'ready'); first.sources.dispose(); await first.broker.dispose();
+  assert.equal(second.c.snapshot().provider.availability, 'ready'); first.execution.dispose(); await first.broker.dispose();
 });
 
 test('explicit preference before start is not overwritten by startup restore; known late restore gates native work', async () => {
@@ -259,43 +263,43 @@ test('explicit preference before start is not overwritten by startup restore; kn
   const load = deferred<SettingsLoadResult>(), store = new Store(); store.loadResult = load.promise;
   const f = fixture({}, store); const start = f.c.start(); await settle();
   const piDemand = { key: 'one', version: 1, text: 'x', complete: true };
-  assert.equal(f.c.sources.observe(piDemand), false); f.c.sources.flush(); assert.equal(f.peer.calls.length, 1);
+  assert.equal(f.c.sourceWork.observe(piDemand), false); f.c.sourcePump.flush(); assert.equal(f.peer.calls.length, 1);
   load.resolve({ ok: true, themePreference: preference(native.id) }); await start;
-  f.c.sources.observe(demand(f.c)); f.c.sources.flush();
+  f.c.sourceWork.observe(demand(f.c)); f.c.sourcePump.flush();
   assert.equal(f.c.snapshot().effective?.id, native.id);
   assert.equal(Object.hasOwn(f.peer.calls[1]!.request.sources[0], 'profile'), false);
   assert.equal(Object.hasOwn(f.peer.calls[1]!.request.sources[0], 'fingerprint'), false);
   f.peer.answerSource(1); await settle(); nativeStyles(f.c); f.peer.answerStyle(2); await settle();
-  assert.ok(f.c.sources.displayBasis('one')); assert.equal(f.peer.calls[2]!.request.rules.revision, 2);
+  assert.ok(f.c.sourceWork.displayBasis('one')); assert.equal(f.peer.calls[2]!.request.rules.revision, 2);
   assert.equal(f.peer.calls[2]!.request.rules.binding_slots, 44);
   assert.equal(f.c.broker.stats().successfulClassifications, 1); assert.equal(f.c.broker.stats().styleDispatches, 1);
 });
 
 test('stale source reply after current content demand cannot publish or reset classification crash budget', async () => {
-  const f = fixture(); await f.c.start(); f.c.sources.observe(demand(f.c)); f.c.sources.flush();
+  const f = fixture(); await f.c.start(); f.c.sourceWork.observe(demand(f.c)); f.c.sourcePump.flush();
   const old = f.peer.calls[1]!; await f.c.selectTheme(preference(native.id));
-  f.c.sources.observe({ ...demand(f.c), version: 2, text: 'y' }); f.c.sources.flush();
+  f.c.sourceWork.observe({ ...demand(f.c), version: 2, text: 'y' }); f.c.sourcePump.flush();
   assert.equal(old.options?.signal?.aborted, true, 'content replacement retires parser work, unlike theme-only selection');
   assert.equal(old.options?.acceptRetired, true, 'canonical terminal evidence passes through the broker');
-  f.peer.answerSource(1); await settle(); assert.equal(f.c.sources.stats().staleReplies, 1);
-  assert.equal(f.c.broker.stats().successfulClassifications, 0); assert.equal(f.c.sources.status('one')?.classificationVersion, undefined);
+  f.peer.answerSource(1); await settle(); assert.equal(f.c.sourceStatistics.stats().staleReplies, 1);
+  assert.equal(f.c.broker.stats().successfulClassifications, 0); assert.equal(f.c.sourceWork.status('one')?.classificationVersion, undefined);
   assert.equal(Object.hasOwn(f.peer.calls[2]!.request.sources[0], 'profile'), false); f.peer.answerSource(2); await settle();
-  assert.equal(f.c.sources.status('one')?.exact, true); assert.equal(f.c.broker.stats().successfulClassifications, 1);
+  assert.equal(f.c.sourceWork.status('one')?.exact, true); assert.equal(f.c.broker.stats().successfulClassifications, 1);
 });
 
 test('theme-only selection accepts held SOURCE once while obsolete STYLE cannot publish the new definition', async () => {
-  const f = fixture(); await f.c.start(); f.c.sources.observe(demand(f.c)); f.c.sources.flush();
+  const f = fixture(); await f.c.start(); f.c.sourceWork.observe(demand(f.c)); f.c.sourcePump.flush();
   const source = f.peer.calls[1]!;
   await f.c.selectTheme(themeChoice); nativeStyles(f.c, 'gruvbox-dark');
-  f.c.sources.observe(demand(f.c)); f.c.sources.flush();
+  f.c.sourceWork.observe(demand(f.c)); f.c.sourcePump.flush();
   assert.equal(f.peer.calls.length, 2); assert.equal(source.options?.signal?.aborted, false);
-  f.peer.answerSource(1); await settle(); assert.equal(f.c.sources.status('one')?.exact, true);
+  f.peer.answerSource(1); await settle(); assert.equal(f.c.sourceWork.status('one')?.exact, true);
   assert.equal(f.c.broker.stats().successfulClassifications, 1); assert.equal(f.peer.calls[2]!.request.op, 'styles.resolve');
   nativeStyles(f.c, 'solarized-dark');
-  f.c.sources.observe(demand(f.c)); f.c.sources.flush();
+  f.c.sourceWork.observe(demand(f.c)); f.c.sourcePump.flush();
   assert.equal(f.peer.calls[2]!.options?.signal?.aborted, false, 'the shared semantic definition keeps its physical settlement');
-  f.peer.answerStyle(2); await settle(); assert.ok(f.c.sources.displayBasis('one'));
-  assert.equal(f.c.sources.stats().staleReplies, 0);
+  f.peer.answerStyle(2); await settle(); assert.ok(f.c.sourceWork.displayBasis('one'));
+  assert.equal(f.c.sourceStatistics.stats().staleReplies, 0);
   assert.equal(f.c.broker.stats().sourceDispatches, 1); assert.equal(f.c.broker.stats().styleDispatches, 1);
   assert.equal(f.c.broker.stats().successfulClassifications, 1); assert.equal(f.peer.calls.length, 3);
 });
@@ -309,7 +313,7 @@ test('late startup preference/provider completions after disposal neither publis
   const late = new Peer(); connection.resolve(late); load.resolve({ ok: true, themePreference: preference('missing') });
   await start; await settle(); assert.equal(acquired, 0); assert.equal(late.closes, 1); assert.equal(late.calls.length, 0);
   assert.equal(f.c.snapshot().provider.availability, 'disposed'); assert.equal(f.c.snapshot().effective, undefined);
-  assert.equal(f.c.sources.observe({ key: 'one', version: 1, text: 'x', complete: true }), false);
+  assert.equal(f.c.sourceWork.observe({ key: 'one', version: 1, text: 'x', complete: true }), false);
   assert.equal(f.notices(), notices); assert.equal(f.errors.length, 0); assert.equal(store.writes.length, 0);
 });
 
@@ -331,25 +335,25 @@ test('client forwards coalesced source keys without turning local palette change
   const packets: string[][] = [];
   const { c, peer } = fixture({ onSourceChange: (keys: readonly string[]) => { packets.push([...keys]); } });
   await c.start(); await settle(); assert.equal(packets.length, 0);
-  c.sources.observe(demand(c, 'one')); c.sources.observe(demand(c, 'two')); c.sources.flush();
+  c.sourceWork.observe(demand(c, 'one')); c.sourceWork.observe(demand(c, 'two')); c.sourcePump.flush();
   assert.equal(peer.calls.length, 3); peer.answerSource(1); peer.answerSource(2); await settle();
   assert.deepEqual(packets.map(keys => keys.toSorted()), [['one', 'two']]);
-  const before = c.sources.stats();
+  const before = c.sourceStatistics.stats();
   await c.selectTheme(themeChoice); await settle();
   assert.deepEqual(packets.map(keys => keys.toSorted()), [['one', 'two']]);
-  assert.equal(c.sources.stats().dispatches, before.dispatches);
-  assert.equal(c.sources.stats().preparedBytes, before.preparedBytes);
+  assert.equal(c.sourceStatistics.stats().dispatches, before.dispatches);
+  assert.equal(c.sourceStatistics.stats().preparedBytes, before.preparedBytes);
 });
 
 test('a throwing source-specific client observer cannot lose generic delivery or trigger metadata work', async () => {
   let sourceNotices = 0;
   const { c, peer, notices } = fixture({ onSourceChange: (_keys: readonly string[]) => { sourceNotices++; throw Error('external presentation'); } });
   await c.start(); await c.selectTheme(themeChoice); await settle(); const before = notices();
-  c.sources.observe(demand(c)); c.sources.flush(); peer.answerSource(1); await settle();
+  c.sourceWork.observe(demand(c)); c.sourcePump.flush(); peer.answerSource(1); await settle();
   assert.equal(sourceNotices, 1); nativeStyles(c); peer.fault(2, 'busy'); await settle();
   assert.equal(sourceNotices, 1, 'STYLE refusal is generic presentation state, not a new source/group publication'); assert.ok(notices() > before);
   assert.equal(peer.calls.filter(call => call.request.op === 'describe').length, 1);
-  const source = c.sources.stats(); assert.equal(source.globalUnsettledJobs, 0);
+  const source = c.sourceStatistics.stats(); assert.equal(source.globalUnsettledJobs, 0);
   assert.equal(c.broker.stats().successfulClassifications, 1); assert.equal(c.broker.stats().styleDispatches, 1);
   await c.setEnabled(false); await settle();
   c.acceptSourceChange(['one']); await settle();
@@ -363,15 +367,15 @@ test('client forwards useful canonical permission notices while off, never guess
     peer.exit = exit.promise;
     const f = fixture({ provider: { tryShared: async () => kind === 'shared' ? peer : undefined, acquireOwned: async () => peer },
       onSourceChange: keys => packets.push([...keys]) }, new Store(), peer);
-    await f.c.start(); f.c.sources.observe(demand(f.c)); f.c.sources.flush();
+    await f.c.start(); f.c.sourceWork.observe(demand(f.c)); f.c.sourcePump.flush();
     const off = f.c.setEnabled(false); await settle();
-    assert.equal(f.c.sources.workStatus('one').fallbackEligible, false);
-    assert.equal(f.c.sources.workStatus('unrelated').fallbackEligible, true);
-    assert.equal(f.c.sources.stats().retention.retainedBytes, 0);
+    assert.equal(f.c.sourceWork.workStatus('one').fallbackEligible, false);
+    assert.equal(f.c.sourceWork.workStatus('unrelated').fallbackEligible, true);
+    assert.equal(f.c.sourceStatistics.stats().retention.retainedBytes, 0);
     packets.length = 0;
     if (kind === 'failed') exit.reject(new Error('failed reap')); else exit.resolve();
     await off; await settle();
-    assert.equal(f.c.sources.workStatus('one').fallbackEligible, kind === 'owned');
+    assert.equal(f.c.sourceWork.workStatus('one').fallbackEligible, kind === 'owned');
     assert.deepEqual(packets, kind === 'owned' ? [['one']] : []);
     assert.equal(f.c.broker.stats().successfulClassifications, 0);
     assert.equal(peer.calls.length, 2, 'no hidden retry/native source work');
@@ -383,8 +387,8 @@ test('canonical client receives a fully validated retired shared outcome without
     const peer = new Peer(), packets: string[][] = [];
     peer.close = () => { peer.closes++; peer.end('closed'); return Promise.resolve(); };
     const f = fixture({ onSourceChange: keys => packets.push([...keys]) }, new Store(), peer);
-    await f.c.start(); f.c.sources.observe(demand(f.c)); f.c.sources.flush();
-    await f.c.setEnabled(false); await settle(); assert.equal(f.c.sources.workStatus('one').execution, 'unsettled');
+    await f.c.start(); f.c.sourceWork.observe(demand(f.c)); f.c.sourcePump.flush();
+    await f.c.setEnabled(false); await settle(); assert.equal(f.c.sourceWork.workStatus('one').execution, 'unsettled');
     if (outcome === 'complete') peer.answerSource(1);
     else if (outcome === 'not_started') peer.fault(1, 'busy');
     else if (outcome === 'malformed') peer.calls[1]!.resolve({ v: 4, status: 'ok' });
@@ -396,12 +400,12 @@ test('canonical client receives a fully validated retired shared outcome without
       peer.calls[1]!.resolve(reply);
     }
     await settle();
-    assert.equal(f.c.sources.workStatus('one').fallbackEligible, outcome === 'complete' || outcome === 'not_started');
-    assert.equal(f.c.sources.stats().staleReplies, outcome === 'complete' ? 1 : 0);
+    assert.equal(f.c.sourceWork.workStatus('one').fallbackEligible, outcome === 'complete' || outcome === 'not_started');
+    assert.equal(f.c.sourceStatistics.stats().staleReplies, outcome === 'complete' ? 1 : 0);
     assert.deepEqual(packets, [['one']]);
     assert.equal(f.c.broker.stats().successfulClassifications, 0);
-    assert.equal(f.c.sources.stats().retention.retainedBytes, 0);
-    assert.equal(f.c.sources.status('one'), undefined); assert.equal(peer.calls.length, 2);
+    assert.equal(f.c.sourceStatistics.stats().retention.retainedBytes, 0);
+    assert.equal(f.c.sourceWork.status('one'), undefined); assert.equal(peer.calls.length, 2);
   }
 });
 
@@ -503,7 +507,7 @@ test('completion boundary: client observes held preference restoration without i
 
 for (const action of ['suspend', 'dispose', 'off'] as const) test(`completion boundary: client ${action} cancels held producer work`, { timeout: 12000 }, async () => {
   const f = fixture(); await f.c.start();
-  f.c.sources.observe(demand(f.c)); f.c.sources.flush(); await settle();
+  f.c.sourceWork.observe(demand(f.c)); f.c.sourcePump.flush(); await settle();
   const completion = f.c.whenSettled();
   if (action === 'off') await f.c.setEnabled(false); else await f.c[action]();
   assert.equal(await completion, false);
@@ -511,20 +515,23 @@ for (const action of ['suspend', 'dispose', 'off'] as const) test(`completion bo
 
 async function detachedWaitingClient(peer: Peer) {
   const client = new SyntaxClient({ provider: { tryShared: async () => peer, acquireOwned: async () => new Peer() }, standaloneVersion: '0.2.0', settings: new Store() });
-  await client.start(); client.sources.observe(demand(client)); client.sources.flush();
-  return { weak: new WeakRef(client), sources: client.sources, broker: client.broker, completion: client.whenSettled() };
+  const execution = client.sourceWork;
+  assert.ok(execution instanceof SourceExecution);
+  assert.equal(client.sourcePump, execution); assert.equal(client.sourceStatistics, execution); assert.equal(client.sourceLifecycle, execution);
+  await client.start(); execution.observe(demand(client)); execution.flush();
+  return { weak: new WeakRef(client), execution, broker: client.broker, completion: client.whenSettled() };
 }
 test('completion boundary: source/provider completion callbacks do not retain their first client', { timeout: 12000 }, async () => {
   assert.equal(typeof global.gc, 'function');
   const peer = new Peer(), first = await detachedWaitingClient(peer), second = fixture(); await second.c.start();
   try {
-    assert.equal(first.sources.stats().unsettledJobs, 1);
+    assert.equal(first.execution.stats().unsettledJobs, 1);
     for (let i = 0; i < 100; i++) { await delay(0); global.gc!(); await delay(0); if (!first.weak.deref()) break; }
     assert.equal(first.weak.deref() === undefined, true);
     peer.answerSource(1); await settle();
     assert.equal(await first.completion, false, 'an abandoned client cannot acknowledge an operation from retained producer callbacks');
     assert.equal(second.c.snapshot().provider.availability, 'ready');
-  } finally { first.sources.dispose(); await first.broker.dispose(); }
+  } finally { first.execution.dispose(); await first.broker.dispose(); }
 });
 
 
@@ -559,8 +566,10 @@ test('completion boundary: cancelled source callbacks cannot cancel a successor 
   const f = fixture({}, store), start = f.c.start();
   let release: (() => void) | undefined, held!: () => void;
   const yielding = new Promise<void>(resolve => { held = resolve; });
-  const resume = f.c.sources.resumePreparation;
-  t.mock.method(f.c.sources, 'resumePreparation', function(this: typeof f.c.sources) {
+  const execution = f.c.sourceWork;
+  assert.ok(execution instanceof SourceExecution);
+  const resume = execution.resumePreparation;
+  t.mock.method(execution, 'resumePreparation', function(this: SourceExecution) {
     if (!release) { release = () => resume.call(this); held(); return; }
     return resume.call(this);
   });
@@ -568,7 +577,7 @@ test('completion boundary: cancelled source callbacks cannot cancel a successor 
   const tasks = Array.from({ length: 3 }, () => ({ keys: new Set<string>(), requiresCredit() { return false; }, needsRefresh() { return false; }, prepare() { visits++; } }));
   try {
     await f.c.broker.start();
-    for (const task of tasks) f.c.sources.queuePreparation(f.c.sources.registerPreparation(task)!, true);
+    for (const task of tasks) execution.queuePreparation(execution.registerPreparation(task)!, true);
     await yielding;
     const old = f.c.whenSettled(); f.c.suspend();
     const resumed = f.c.resume(), successor = f.c.whenSettled();

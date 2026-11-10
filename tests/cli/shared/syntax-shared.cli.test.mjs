@@ -108,7 +108,7 @@ test('occipital CLI: shared discovery, local palette selection, provider loss an
       await reaped(oldPid); await host.initialPeer.dispose();
 
       returnedPeer = await host.peer(); await peerSource(returnedPeer);
-      const newPid = returnedPeer.snapshot().provider.description.runtime.pid, peerBefore = returnedPeer.sources.stats();
+      const newPid = returnedPeer.snapshot().provider.description.runtime.pid, peerBefore = returnedPeer.sourceStatistics.stats();
       assert.notEqual(newPid, oldPid); assert.notEqual(newPid, owned.transports[0].pid);
       writeFileSync(host.alias, readFileSync(host.connection), { mode: 0o600 });
       await terminal.command('/tidy-ui-syntax-clock 60000');
@@ -126,7 +126,7 @@ test('occipital CLI: shared discovery, local palette selection, provider loss an
       const before = await settledStats(terminal, 'shared-warm-before');
       for (const width of [40, 100]) { await terminal.resize(width); await terminal.capture(`shared-width-${width}`); }
       const after = await settledStats(terminal, 'shared-warm-after'); assert.deepEqual(work(after), work(before));
-      assert.equal(returnedPeer.sources.stats().dispatches, peerBefore.dispatches, 'extension theme changes do not create unrelated peer work');
+      assert.equal(returnedPeer.sourceStatistics.stats().dispatches, peerBefore.dispatches, 'extension theme changes do not create unrelated peer work');
       const final = await captureThenRenderDiagnostics(terminal, 'shared-final');
       assert.deepEqual(traffic(terminal), initialTraffic); assert.deepEqual(persisted(final), initialData);
       assert.deepEqual(final.branch, initialBranch, 'UI status and local palette changes never become model/session records');

@@ -3,7 +3,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DataBudget } from '../../../src/resources/data-budget.ts';
 import { preparePiFlat } from '../../../src/syntax/pi-flat.ts';
-import { SourceController } from '../../../src/highlighting/controller.ts';
+import { SourceExecution } from '../../../src/highlighting/source-execution.ts';
 import { SemanticRetentionPool } from '../../../src/highlighting/semantic-retention.ts';
 import type { ConcreteStyle } from '../../../src/appearance/style-materialization.ts';
 import type { ProviderSnapshot } from '../../../src/occipital/provider.ts';
@@ -40,7 +40,7 @@ test('Pi ownership: denied or throwing stage header preserves original exclusive
 });
 
 test('Pi ownership: tickets pin snapshot through removal without granting work authority and consume rejected candidates', () => {
-  const source = new SourceController(provider); source.capturePiSource('a', 1, 'ab');
+  const source = new SourceExecution(provider); source.capturePiSource('a', 1, 'ab');
   const before = source.workStatus('a'), capture = source.borrowPiSource('a')!, ticket = source.piPreparation('a', capture.generation, 1, 1)!;
   assert.ok(ticket); assert.deepEqual(source.workStatus('a'), before);
   const stage = prepared(ticket.budget).stage()!; source.removePiSource('a');
@@ -50,7 +50,7 @@ test('Pi ownership: tickets pin snapshot through removal without granting work a
 });
 
 test('Pi ownership: root/budget/version guards, equal alias, same-palette replacement and refusal preserve old ready', () => {
-  const source = new SourceController(provider), foreign = new SourceController(provider); source.capturePiSource('a', 1, 'ab'); foreign.capturePiSource('a', 1, 'ab');
+  const source = new SourceExecution(provider), foreign = new SourceExecution(provider); source.capturePiSource('a', 1, 'ab'); foreign.capturePiSource('a', 1, 'ab');
   const capture = source.borrowPiSource('a')!, ticket = source.piPreparation('a', capture.generation, 1, 1)!;
   assert.equal(foreign.adoptPiFlat(ticket, 'ab', prepared(ticket.budget).stage()!), false);
   const wrong = new DataBudget(100_000); assert.equal(source.adoptPiFlat(ticket, 'ab', prepared(wrong).stage()!), false); assert.equal(wrong.stats().retainedBytes, 0);
@@ -69,7 +69,7 @@ test('Pi ownership: root/budget/version guards, equal alias, same-palette replac
 
 
 test('Pi ownership: old ready plus candidate plus metadata peak refuses atomically and every warm attempt stays cached', () => {
-  const source = new SourceController(provider, { retention: { maxBytes: 8000 } }); source.capturePiSource('a', 1, 'ab');
+  const source = new SourceExecution(provider, { retention: { maxBytes: 8000 } }); source.capturePiSource('a', 1, 'ab');
   const generation = source.borrowPiSource('a')!.generation, old = source.piPreparation('a', generation, 1, 1)!;
   assert.ok(source.adoptPiFlat(old, 'ab', prepared(old.budget).stage()!)); old.release();
   const reader = source.piProjection('a', 1, 1)!, ticket = source.piPreparation('a', generation, 1, 2)!;
@@ -91,7 +91,7 @@ test('Pi ownership: old ready plus candidate plus metadata peak refuses atomical
 
 test('Pi ownership: preparation removal/replacement/throw keeps exact snapshot data physically charged through conversion unwind', () => {
   for (const throwing of [false, true]) {
-    const source = new SourceController(provider); source.capturePiSource('a', 1, 'ab');
+    const source = new SourceExecution(provider); source.capturePiSource('a', 1, 'ab');
     const generation = source.borrowPiSource('a')!.generation, ticket = source.piPreparation('a', generation, 1, 1)!;
     const work = source.workStatus('a'), stop = new Error('classifier callback');
     const convert = () => preparePiFlat(ticket.text!, consume => {
@@ -110,7 +110,7 @@ test('Pi ownership: preparation removal/replacement/throw keeps exact snapshot d
 
 test('Pi ownership: same-palette replacement invalidates ranges/styles immediately and exceptions retain borrowed data until unwind', () => {
   for (const styles of [false, true]) for (const throwing of [false, true]) {
-    const source = new SourceController(provider); source.capturePiSource('a', 1, 'ab');
+    const source = new SourceExecution(provider); source.capturePiSource('a', 1, 'ab');
     const generation = source.borrowPiSource('a')!.generation, ticket = source.piPreparation('a', generation, 1, 1)!;
     assert.ok(source.adoptPiFlat(ticket, 'ab', prepared(ticket.budget).stage()!)); ticket.release();
     const reader = source.piProjection('a', 1, 1)!, stop = new Error('visitor'); let calls = 0;
@@ -131,7 +131,7 @@ test('Pi ownership: same-palette replacement invalidates ranges/styles immediate
 });
 
 function detachedOwner() {
-  const source = new SourceController(provider); source.capturePiSource('a', 1, 'ab');
+  const source = new SourceExecution(provider); source.capturePiSource('a', 1, 'ab');
   const ticket = source.piPreparation('a', source.borrowPiSource('a')!.generation, 1, 1)!;
   const projection = prepared(ticket.budget), stage = projection.stage()!;
   assert.ok(source.adoptPiFlat(ticket, 'ab', stage));
@@ -160,7 +160,7 @@ test('Pi ownership: root identity is stronger than shared budget and retired roo
 });
 
 test('Pi ownership: allocation exceptions dispose consumed candidate without replacing old ready or leaking grants', () => {
-  const source = new SourceController(provider); source.capturePiSource('a', 1, 'ab');
+  const source = new SourceExecution(provider); source.capturePiSource('a', 1, 'ab');
   const generation = source.borrowPiSource('a')!.generation, ticket = source.piPreparation('a', generation, 1, 1)!;
   assert.ok(source.adoptPiFlat(ticket, 'ab', prepared(ticket.budget).stage()!));
   const old = source.piProjection('a', 1, 1)!, before = ticket.budget.stats(), stage = prepared(ticket.budget).stage()!;
@@ -173,7 +173,7 @@ test('Pi ownership: allocation exceptions dispose consumed candidate without rep
 });
 
 test('Pi ownership: reservation processes every Pi pressure receipt before issuing actual additional credit', () => {
-  const source = new SourceController(provider, { retention: { maxBytes: 10000 } });
+  const source = new SourceExecution(provider, { retention: { maxBytes: 10000 } });
   source.capturePiSource('target', 1, 'ab'); source.capturePiSource('peer1', 1, 'p'.repeat(1000)); source.capturePiSource('peer2', 1, 'q'.repeat(1000));
   const generation = source.borrowPiSource('target')!.generation, ticket = source.piPreparation('target', generation, 1, 1)!;
   assert.equal(source.stats().retention.entries, 3); const work = source.workStatus('target');
@@ -193,7 +193,7 @@ test('Pi ownership: payload constructor exception empties stage and releases all
 
 
 test('Pi ownership: adoption exception still delivers pressure receipts for evicted peers', async () => {
-  const notices: string[] = [], source = new SourceController(provider, { retention: { maxBytes: 8000 }, onChange: keys => notices.push(...keys) });
+  const notices: string[] = [], source = new SourceExecution(provider, { retention: { maxBytes: 8000 }, onChange: keys => notices.push(...keys) });
   source.capturePiSource('a', 1, 'ab'); const ticket = source.piPreparation('a', source.borrowPiSource('a')!.generation, 1, 1)!;
   assert.ok(source.adoptPiFlat(ticket, 'ab', prepared(ticket.budget).stage()!));
   const stage = prepared(ticket.budget).stage()!, baseline = ticket.budget.stats().retainedBytes;

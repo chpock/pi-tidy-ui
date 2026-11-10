@@ -6,7 +6,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { stripVTControlCharacters as plain } from 'node:util';
 import { Container, Text } from '@earendil-works/pi-tui';
 import { createEditToolDefinition, highlightCode } from '@earendil-works/pi-coding-agent';
-import { SourceController } from '../../../src/highlighting/controller.ts';
+import { SourceExecution } from '../../../src/highlighting/source-execution.ts';
 import { installTidyUi } from '../../../src/index.ts';
 import { CardSources } from '../../../src/syntax/cards.ts';
 import { resolvePublicFileToolDefinition } from '../../fixtures/sdk-contract-support.ts';
@@ -20,7 +20,7 @@ function reviewFixture(t: TestContext) {
   const ui = new UI(), snapshot = { enabled: false, selected: { kind: 'pi', variant: 'dark' } as const, standaloneVersion: 'test',
     provider: { availability: 'disabled' as const, reason: 'disabled' as const, generation: 0, initialShared: false } };
   let adapter: ReturnType<typeof installTidyUi>, classifications = 0, depth = 0, preparations = 0, sequence = 0;
-  const sources = new SourceController({ snapshot: () => snapshot.provider, isReady: () => false,
+  const sources = new SourceExecution({ snapshot: () => snapshot.provider, isReady: () => false,
     classificationAccepted: () => false, request: () => { throw new Error('disabled provider must stay unused'); } },
     { onChange: (keys, groups) => adapter?.syntaxSourceChanged(keys, groups) });
   sources.setEnabled(false);
@@ -29,7 +29,7 @@ function reviewFixture(t: TestContext) {
     assert.equal(depth, 0, 'display preparation never occurs in render or passive mouse handling'); preparations++;
     return update.apply(this, args);
   });
-  adapter = installTidyUi(ui, () => themes.theme, { syntax: { client: { sources, snapshot: () => snapshot }, palette: () => 1,
+  adapter = installTidyUi(ui, () => themes.theme, { syntax: { client: { cardSource: sources, sourceWork: sources, sourcePump: sources, sourceStatistics: sources, snapshot: () => snapshot }, palette: () => 1,
     classify: (text, info) => { assert.equal(depth, 0); classifications++; return highlightCode(text, info.language); } } });
   const tool = (name: string, args: Record<string, unknown>, definition?: unknown) => {
     const resolvedDefinition = resolvePublicFileToolDefinition(name, definition, '/tmp');

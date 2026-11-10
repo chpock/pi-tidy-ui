@@ -14,7 +14,7 @@ import { visibleWidth } from '@earendil-works/pi-tui';
 import { hasHostInk } from '../../fixtures/host-cells.ts';
 import { Theme, createEditToolDefinition, createReadToolDefinition, createWriteToolDefinition, ToolExecutionComponent, type ExtensionAPI, type ExtensionContext, type ToolRendererResolver, type ToolRenderers } from '@earendil-works/pi-coding-agent';
 import tidyUi, { debugLoggingDiagnostics, type TidyUiRuntimeOptions } from '../../../src/index.ts';
-import { SourceController } from '../../../src/highlighting/controller.ts';
+import { SourceExecution } from '../../../src/highlighting/source-execution.ts';
 import { CardSources, type CardDisplayInput } from '../../../src/syntax/cards.ts';
 import { SyntaxRuntime } from '../../../src/application/syntax-runtime.ts';
 import { ExpectedOwnedUnavailable } from '../../../src/occipital/owned-startup.ts';
@@ -1519,9 +1519,9 @@ test('entry uses prepared file path and preserves actual SDK args/results on war
     writeToolDefinition(h), h.root as unknown as ConstructorParameters<typeof ToolExecutionComponent>[5], '/tmp');
   tool.setArgsComplete(); tool.updateResult({ content: [{ type: 'text', text: 'written' }], isError: false }, false); h.root.addChild(tool);
   const args = JSON.stringify(Reflect.get(tool, 'args')), result = JSON.stringify(Reflect.get(tool, 'result'));
-  const original = SourceController.prototype.adoptPiFlat;
+  const original = SourceExecution.prototype.adoptPiFlat;
   let stores = 0, inRender = false, storesInRender = 0;
-  SourceController.prototype.adoptPiFlat = function (...parameters) {
+  SourceExecution.prototype.adoptPiFlat = function (...parameters) {
     stores++; if (inRender) storesInRender++;
     return original.apply(this, parameters);
   };
@@ -1532,7 +1532,7 @@ test('entry uses prepared file path and preserves actual SDK args/results on war
     for (const width of [80, 60, 100, 80]) render(width);
     await settled(); assert.deepEqual(h.counts, before); assert.equal(stores, 1); assert.equal(storesInRender, 0);
     assert.equal(JSON.stringify(Reflect.get(tool, 'args')), args); assert.equal(JSON.stringify(Reflect.get(tool, 'result')), result);
-  } finally { SourceController.prototype.adoptPiFlat = original; }
+  } finally { SourceExecution.prototype.adoptPiFlat = original; }
 });
 
 
@@ -2042,8 +2042,8 @@ test('zero-width owned successful, pending, error, and expanded files never mate
   const denied = writeOwner(h, 'preview-funding-denied', writeSource('denied'));
   completeLiveWrite(h, denied);
   assert.ok(denied.render(80).length > 0, 'positive-width precondition prepares the original complete owner');
-  const geometryFunding = SourceController.prototype.geometryFunding; let deniedCalls = 0;
-  SourceController.prototype.geometryFunding = () => { deniedCalls++; return undefined; };
+  const geometryFunding = SourceExecution.prototype.geometryFunding; let deniedCalls = 0;
+  SourceExecution.prototype.geometryFunding = () => { deniedCalls++; return undefined; };
   try {
     assert.deepEqual(clickFile(denied), { handled: true }, 'the file card switches from full to bounded preview');
     const fallback = denied.render(80).join('\n');
@@ -2053,7 +2053,7 @@ test('zero-width owned successful, pending, error, and expanded files never mate
     assertNativeRendererCold(denied, 'call', 'unfunded owned preview remains custom');
     assertNativeRendererCold(denied, 'result', 'unfunded owned preview remains custom');
     assert.ok(deniedCalls > 0);
-  } finally { SourceController.prototype.geometryFunding = geometryFunding; }
+  } finally { SourceExecution.prototype.geometryFunding = geometryFunding; }
 
   const control = writeOwner(h, 'zero-native-control', writeSource('native'));
   const nativeRows = stockRender.call(control, 80);
@@ -2077,9 +2077,9 @@ test('zero-width predecessor spacing never materializes owned pending, error, or
       if (kind === 'error') previous.updateResult({ content: [{ type: 'text', text: 'failure' }], isError: true }, false);
       else if (kind === 'unfunded') {
         completeLiveWrite(h, previous);
-        const geometryFunding = SourceController.prototype.geometryFunding;
-        SourceController.prototype.geometryFunding = () => undefined;
-        try { previous.render(80); } finally { SourceController.prototype.geometryFunding = geometryFunding; }
+        const geometryFunding = SourceExecution.prototype.geometryFunding;
+        SourceExecution.prototype.geometryFunding = () => undefined;
+        try { previous.render(80); } finally { SourceExecution.prototype.geometryFunding = geometryFunding; }
       }
       previous.setExpanded(true);
       const follower = new ToolExecutionComponent('probe', `zero-predecessor-${kind}-follower`, {}, undefined, undefined,
@@ -2099,8 +2099,8 @@ test('valid full file preparation refusal stays custom and retries without chang
   const h = fixture(); await h.start();
   const tool = writeOwner(h, 'full-preparation-refusal', writeSource('preparation_refusal'));
   tool.setExpanded(true);
-  const geometryFunding = SourceController.prototype.geometryFunding; let refusals = 0;
-  SourceController.prototype.geometryFunding = function () { refusals++; return undefined; };
+  const geometryFunding = SourceExecution.prototype.geometryFunding; let refusals = 0;
+  SourceExecution.prototype.geometryFunding = function () { refusals++; return undefined; };
   try {
     completeLiveWrite(h, tool);
     const rows = tool.render(80).join('\n');
@@ -2110,7 +2110,7 @@ test('valid full file preparation refusal stays custom and retries without chang
     assert.doesNotMatch(rows, /preparation_refusal_row_13/u);
     assert.equal(Reflect.get(tool, 'expanded'), true, 'a funding refusal preserves Pi’s requested full mode');
     assert.ok(refusals > 0, 'the full-card preparation encountered the controlled refusal');
-  } finally { SourceController.prototype.geometryFunding = geometryFunding; }
+  } finally { SourceExecution.prototype.geometryFunding = geometryFunding; }
   tool.render(80);
   await settled();
   const recovered = tool.render(80).join('\n');
@@ -2121,7 +2121,7 @@ test('valid full file preparation refusal stays custom and retries without chang
 
 test('valid retained full file retries refused geometry without re-preparing its source', async () => {
   const h = fixture();
-  const originalFunding = SourceController.prototype.geometryFunding;
+  const originalFunding = SourceExecution.prototype.geometryFunding;
   const originalUpdate = CardSources.prototype.updateDisplay;
   let fileUpdates = 0, geometryAttempts = 0;
   try {
@@ -2136,7 +2136,7 @@ test('valid retained full file retries refused geometry without re-preparing its
       if (args[1].kind === 'file') fileUpdates++;
       return Reflect.apply(originalUpdate, this, args);
     };
-    SourceController.prototype.geometryFunding = function () { geometryAttempts++; return undefined; };
+    SourceExecution.prototype.geometryFunding = function () { geometryAttempts++; return undefined; };
     let rows = tool.render(100).join('\n');
     assert.match(rows, /Full file view unavailable within the current preparation or geometry budget/u);
     assert.doesNotMatch(rows, /geometry_refusal_row_13/u);
@@ -2148,14 +2148,14 @@ test('valid retained full file retries refused geometry without re-preparing its
     assert.ok(geometryAttempts > attemptsAfterRefusal, 'each repeated same-width frame actually retries geometry funding');
     assert.equal(fileUpdates, updatesAfterRefusal, 'repeated geometry refusal does not rebuild the accepted full source');
 
-    SourceController.prototype.geometryFunding = originalFunding;
+    SourceExecution.prototype.geometryFunding = originalFunding;
     rows = tool.render(100).join('\n');
     assert.match(rows, /geometry_refusal_row_13/u, 'the retained full source recovers when geometry funding returns');
     assert.equal(fileUpdates, updatesAfterRefusal, 'geometry recovery reuses the retained full source');
     assertNativeRendererCold(tool, 'call', 'recovered full layout remains custom');
     assertNativeRendererCold(tool, 'result', 'recovered full layout remains custom');
 
-    SourceController.prototype.geometryFunding = function (...args) {
+    SourceExecution.prototype.geometryFunding = function (...args) {
       geometryAttempts++;
       const funding = Reflect.apply(originalFunding, this, args);
       return funding && { budget: funding.budget, grant: () => undefined };
@@ -2169,12 +2169,12 @@ test('valid retained full file retries refused geometry without re-preparing its
     assert.ok(geometryAttempts > attemptsAfterPaintRefusal, 'each repeated same-width frame retries the denied layout geometry grant');
     assert.equal(fileUpdates, updatesAfterPaintRefusal, 'geometry-grant refusal does not discard or re-prepare the accepted full source');
 
-    SourceController.prototype.geometryFunding = originalFunding;
+    SourceExecution.prototype.geometryFunding = originalFunding;
     rows = tool.render(101).join('\n');
     assert.match(rows, /geometry_refusal_row_13/u, 'the same full source recovers after ordinary geometry funding returns');
     assert.equal(fileUpdates, updatesAfterPaintRefusal, 'layout recovery reuses the retained full source');
   } finally {
-    SourceController.prototype.geometryFunding = originalFunding;
+    SourceExecution.prototype.geometryFunding = originalFunding;
     CardSources.prototype.updateDisplay = originalUpdate;
     await h.stop();
   }
@@ -2588,8 +2588,8 @@ test('following-tool spacing never invokes native rows for owned pending, failed
     refused.updateResult({ content: [], isError: false }, false);
     assert.ok(refused.render(80).length > 0, 'the owned preview is prepared at useful width');
     const afterRefused = writeOwner(h, 'after-refused', writeSource('after_refused'));
-    const originalFunding = SourceController.prototype.geometryFunding; let refusals = 0;
-    SourceController.prototype.geometryFunding = () => { refusals++; return undefined; };
+    const originalFunding = SourceExecution.prototype.geometryFunding; let refusals = 0;
+    SourceExecution.prototype.geometryFunding = () => { refusals++; return undefined; };
     try {
       const refusedRows = refused.render(81);
       assert.ok(refusedRows.length > 0, 'a funded-preparation refusal still shows the bounded owned preview');
@@ -2597,7 +2597,7 @@ test('following-tool spacing never invokes native rows for owned pending, failed
       assert.doesNotThrow(() => afterRefused.render(81), 'sibling spacing remains safe after a file layout refuses funding');
       assertNativeRendererCold(refused, 'call', 'following-tool spacing keeps refused preview data on the owned path');
       assertNativeRendererCold(refused, 'result', 'following-tool spacing does not build the refused preview result renderer');
-    } finally { SourceController.prototype.geometryFunding = originalFunding; }
+    } finally { SourceExecution.prototype.geometryFunding = originalFunding; }
   } finally { await h.stop(); }
 });
 
@@ -2622,13 +2622,13 @@ test('unsupported saved-file preview uses the owned fallback for sibling spacing
 });
 
 test('valid full file cards stay owned across preparation and geometry refusal, then retry cold', async () => {
-  const h = fixture(); const originalFunding = SourceController.prototype.geometryFunding;
+  const h = fixture(); const originalFunding = SourceExecution.prototype.geometryFunding;
   try {
     await h.start();
     const tool = writeOwner(h, 'funded-full-retry', writeSource('funded_full_retry'));
     completeLiveWrite(h, tool);
 
-    SourceController.prototype.geometryFunding = () => undefined;
+    SourceExecution.prototype.geometryFunding = () => undefined;
     tool.setExpanded(true);
     let rows = tool.render(80).join('\n');
     assert.match(rows, /Full file view unavailable/);
@@ -2636,13 +2636,13 @@ test('valid full file cards stay owned across preparation and geometry refusal, 
     assertNativeRendererCold(tool, 'call', 'valid full preparation refusal remains on the owned path');
     assertNativeRendererCold(tool, 'result', 'valid full preparation refusal never constructs stock result output');
 
-    SourceController.prototype.geometryFunding = originalFunding;
+    SourceExecution.prototype.geometryFunding = originalFunding;
     tool.render(80); await settled();
     rows = tool.render(80).join('\n');
     assert.match(rows, /funded_full_retry_row_13/, 'ordinary later render retries the same requested full mode');
     assertNativeRendererCold(tool, 'call', 'successful cold retry remains custom');
 
-    SourceController.prototype.geometryFunding = function(...args) {
+    SourceExecution.prototype.geometryFunding = function(...args) {
       const funding = originalFunding.apply(this, args);
       return funding && { budget: funding.budget, grant: () => undefined };
     };
@@ -2652,10 +2652,10 @@ test('valid full file cards stay owned across preparation and geometry refusal, 
     assertNativeRendererCold(tool, 'call', 'valid full layout refusal does not fall through to the stock renderer');
     assertNativeRendererCold(tool, 'result', 'valid full layout refusal does not construct native result rows');
 
-    SourceController.prototype.geometryFunding = originalFunding;
+    SourceExecution.prototype.geometryFunding = originalFunding;
     rows = tool.render(81).join('\n');
     assert.match(rows, /funded_full_retry_row_13/, 'later geometry admission restores the full owned view');
-  } finally { SourceController.prototype.geometryFunding = originalFunding; await h.stop(); }
+  } finally { SourceExecution.prototype.geometryFunding = originalFunding; await h.stop(); }
 });
 
 test('accepted unsupported full metadata retains native fallback when paint publication is unavailable', async () => {
@@ -2713,7 +2713,7 @@ test('unsupported full file metadata reuses exact current native leaves across p
 
 test('expanded final error details refuse unbudgeted untrusted text without retaining a copied body', async () => {
   const h = fixture();
-  const originalFunding = SourceController.prototype.geometryFunding;
+  const originalFunding = SourceExecution.prototype.geometryFunding;
   let refusals = 0, budget: import('../../../src/resources/data-budget.ts').DataBudget | undefined, retainedBefore: number | undefined;
   try {
     await h.start();
@@ -2722,7 +2722,7 @@ test('expanded final error details refuse unbudgeted untrusted text without reta
     const marker = 'UNFUNDED_ERROR_TAIL';
     const body = `${'x'.repeat(2 * 1024 * 1024)}${marker}`;
     error.updateResult({ content: [{ type: 'text', text: body }], isError: true }, false);
-    SourceController.prototype.geometryFunding = function(...args) {
+    SourceExecution.prototype.geometryFunding = function(...args) {
       const funding = originalFunding.apply(this, args);
       if (!funding) return funding;
       budget = funding.budget; retainedBefore ??= budget.stats().retainedBytes;
@@ -2736,20 +2736,20 @@ test('expanded final error details refuse unbudgeted untrusted text without reta
     assert.match(rows, /\[error: tool call failed\]/u, 'budget refusal does not remove the known error status');
     assert.doesNotMatch(rows, new RegExp(marker), 'an unfunded full error body never reaches the card');
     assert.equal(budget?.stats().retainedBytes, retainedBefore, 'a refused detail keeps neither copied text nor measurement charges');
-    SourceController.prototype.geometryFunding = originalFunding;
+    SourceExecution.prototype.geometryFunding = originalFunding;
     error.updateResult({ content: [{ type: 'text', text: 'recovered error detail' }], isError: true }, false);
     assert.match(error.render(80).join('\n'), /recovered error detail/, 'a later funded error update prepares the new current detail');
-  } finally { SourceController.prototype.geometryFunding = originalFunding; await h.stop(); }
+  } finally { SourceExecution.prototype.geometryFunding = originalFunding; await h.stop(); }
 });
 
 
 test('expanded error details use actual measurement funding without the pending-preview limits', async () => {
   const h = fixture();
-  const originalFunding = SourceController.prototype.geometryFunding;
+  const originalFunding = SourceExecution.prototype.geometryFunding;
   const largestSingleGrant = 1024 * 1024;
   const grants: number[] = [];
   let budget: import('../../../src/resources/data-budget.ts').DataBudget | undefined;
-  SourceController.prototype.geometryFunding = function (...args) {
+  SourceExecution.prototype.geometryFunding = function (...args) {
     const funding = originalFunding.apply(this, args);
     if (!funding) return funding;
     budget = funding.budget;
@@ -2779,7 +2779,7 @@ test('expanded error details use actual measurement funding without the pending-
     assert.ok(lineRows.includes(newlineTail), 'funded final error text is not cut at the pending-preview physical-row ceiling');
     assert.doesNotMatch(lineRows, /additional file content is omitted/u);
     assert.doesNotMatch(lineRows, /File details are unavailable within the current geometry budget/u, 'the full detail was funded rather than refused');
-  } finally { SourceController.prototype.geometryFunding = originalFunding; await h.stop(); }
+  } finally { SourceExecution.prototype.geometryFunding = originalFunding; await h.stop(); }
 });
 
 test('entry batches full live file previews and keeps only the latest ten in host component order', async () => {
@@ -2890,9 +2890,9 @@ test('entry keeps pending and failed details bounded and lets explicit expansion
 
 test('collected expanded error owners release their funded details without a turn-wide sweep', { skip: !global.gc }, async () => {
   const h = fixture();
-  const originalFunding = SourceController.prototype.geometryFunding;
+  const originalFunding = SourceExecution.prototype.geometryFunding;
   let retainedBytes: (() => number) | undefined;
-  SourceController.prototype.geometryFunding = function (...args) {
+  SourceExecution.prototype.geometryFunding = function (...args) {
     const funding = originalFunding.apply(this, args);
     if (funding) retainedBytes = () => funding.budget.stats().retainedBytes;
     return funding;
@@ -2916,7 +2916,7 @@ test('collected expanded error owners release their funded details without a tur
     assert.equal(weak.deref(), undefined, 'the host can abandon a whole transcript owner without retaining it');
     assert.ok((retainedBytes?.() ?? bytes) < bytes, 'the weak-owner cleanup releases the detached funded measurement without scanning all records at turn_end');
   } finally {
-    SourceController.prototype.geometryFunding = originalFunding;
+    SourceExecution.prototype.geometryFunding = originalFunding;
     await h.stop();
   }
 });
@@ -2931,8 +2931,8 @@ test('pending full details reuse funded measurement when replacement input chang
     pending.setExpanded(true);
     assert.match(pending.render(80).join('\n'), /pending_line_8/);
 
-    const geometryFunding = SourceController.prototype.geometryFunding; const grants: number[] = [];
-    SourceController.prototype.geometryFunding = function(...args) {
+    const geometryFunding = SourceExecution.prototype.geometryFunding; const grants: number[] = [];
+    SourceExecution.prototype.geometryFunding = function(...args) {
       const funding = geometryFunding.apply(this, args);
       return funding && { budget: funding.budget, grant: (bytes: number) => { grants.push(bytes); return funding.grant(bytes); } };
     };
@@ -2949,7 +2949,7 @@ test('pending full details reuse funded measurement when replacement input chang
       pending.render(79); pending.render(70);
       assert.ok(grants.slice(beforeWarm).every(bytes => bytes < 10_000), `width-only reflow uses geometry-sized grants, not source-sized remeasurement grants: ${JSON.stringify(grants.slice(beforeWarm))}`);
       assertNativeRendererCold(pending, 'call', 'pending details retain the owned path after hidden replacement');
-    } finally { SourceController.prototype.geometryFunding = geometryFunding; }
+    } finally { SourceExecution.prototype.geometryFunding = geometryFunding; }
   } finally { await h.stop(); }
 });
 

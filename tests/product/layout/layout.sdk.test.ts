@@ -9,7 +9,7 @@ import { ToolExecutionComponent as NativeToolExecution, createEditToolDefinition
 import { cardGeometry, frameRows, insidePanel } from "../../../src/card-frame.ts";
 import { editorGeometry } from "../../../src/editor-card.ts";
 import { measureFileCard } from "../../../src/file-card.ts";
-import { SourceController } from "../../../src/highlighting/controller.ts";
+import { SourceExecution } from "../../../src/highlighting/source-execution.ts";
 import type { CardTheme } from "../../../src/card-theme.ts";
 import { hostCells, hasHostInk } from '../../fixtures/host-cells.ts';
 import { cardInputTheme } from '../../fixtures/sdk-contract-support.ts';
@@ -620,27 +620,27 @@ test("review F5: file service rows fit narrow widths with output padding", () =>
   const refused = new Tool("write", { path: "refused.ts", content: "const saved = true;" });
   refused.updateResult({ content: [], isError: false }, false); refused.setExpanded(true);
   const { controller } = setup([waiting, omitted, error, unsupported, refused], { outputPad: () => padding });
-  const originalFunding = SourceController.prototype.geometryFunding;
+  const originalFunding = SourceExecution.prototype.geometryFunding;
   try {
     for (padding of [0, 1, 2]) for (const width of [1, 2, 24, 60, 100]) {
       for (const [name, tool] of [["waiting", waiting], ["omitted", omitted], ["error", error], ["unsupported", unsupported]] as const) {
         const rows = tool.render(width);
         assert.ok(rows.every(row => visibleWidth(row) <= width), `${name}: width=${width}, padding=${padding}, rows=${JSON.stringify(rows)}`);
       }
-      SourceController.prototype.geometryFunding = () => undefined;
+      SourceExecution.prototype.geometryFunding = () => undefined;
       try {
         const rows = refused.render(width);
         assert.ok(rows.every(row => visibleWidth(row) <= width), `refused: width=${width}, padding=${padding}, rows=${JSON.stringify(rows)}`);
-      } finally { SourceController.prototype.geometryFunding = originalFunding; }
+      } finally { SourceExecution.prototype.geometryFunding = originalFunding; }
     }
     padding = 0;
     assert.ok(waiting.render(100).some(row => plain(row).includes("Waiting for file content.")));
     assert.ok(omitted.render(100).some(row => plain(row).includes("additional file content is omitted")));
     assert.ok(error.render(100).some(row => plain(row).includes("error without text details")));
     assert.ok(unsupported.render(100).some(row => plain(row).includes("No saved file change details are available")));
-    SourceController.prototype.geometryFunding = () => undefined;
+    SourceExecution.prototype.geometryFunding = () => undefined;
     try { assert.ok(refused.render(100).some(row => plain(row).includes("Full file view unavailable"))); }
-    finally { SourceController.prototype.geometryFunding = originalFunding; }
+    finally { SourceExecution.prototype.geometryFunding = originalFunding; }
   } finally { controller.restore(); }
 });
 

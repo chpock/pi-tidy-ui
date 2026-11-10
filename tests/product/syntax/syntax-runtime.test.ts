@@ -8,7 +8,7 @@ import type { TransportEnd } from '../../../src/occipital/transport-end.ts';
 import { semanticDescriptor } from '../../fixtures/semantic-provider.ts';
 import { CARD_ROLES, type CardRole } from '../../../src/appearance/card-roles.ts';
 import type { ConcreteStyle } from '../../../src/appearance/style-materialization.ts';
-import type { SourceController } from '../../../src/highlighting/controller.ts';
+import { SourceExecution } from '../../../src/highlighting/source-execution.ts';
 import { themePatch, type SettingsLoadResult, type SettingsSaveResult, type SyntaxTheme } from '../../../src/settings.ts';
 import type { ThemePreference } from '../../../src/appearance/theme-preference.ts';
 
@@ -67,6 +67,11 @@ function presentation() {
     } };
 }
 const runtimes = new Set<SyntaxRuntime>();
+function assertSourceOwner(runtime: SyntaxRuntime, owner: SourceExecution) {
+  for (const role of ['cardSource', 'sourceWork', 'sourceLifecycle', 'sourcePump', 'sourceStatistics'] as const) {
+    assert.equal(runtime[role] === owner, true, `${role} must expose the same execution owner`);
+  }
+}
 function fixture(enabled = true) {
   const store = new Store(), peers: Peer[] = [], errors: string[] = [], changes: boolean[] = [];
   let shared = 0, owned = 0;
@@ -74,8 +79,10 @@ function fixture(enabled = true) {
     provider: { tryShared: async () => { shared++; const peer = new Peer(); peers.push(peer); return peer; },
       acquireOwned: async () => { owned++; throw Error('unexpected owned startup'); } },
     notify: message => errors.push(message), enabled, enabledChanged: value => changes.push(value) });
-  const f = { runtime, store, peers, errors, changes, shared: () => shared, owned: () => owned };
-  runtimes.add(runtime); return f;
+  const f = { runtime, sources: runtime.sourceWork as SourceExecution, store, peers, errors, changes, shared: () => shared, owned: () => owned };
+  runtimes.add(runtime);
+  assert.equal(f.sources instanceof SourceExecution, true, 'consumer views expose the actual execution owner');
+  assertSourceOwner(runtime, f.sources); return f;
 }
 async function settled() { await turn(); }
 afterEach(async () => { for (const runtime of runtimes) await runtime.dispose(); runtimes.clear(); await settled(); });
@@ -91,13 +98,13 @@ function localSelection(revision = 1) {
   return { definition, bindingRevision: revision, palette: `local:${revision}`, bindings: [],
     roles: Object.fromEntries(CARD_ROLES.map(role => [role, style])) as Record<CardRole, ConcreteStyle> };
 }
-function emptyPreparation(sources: SourceController) {
+function emptyPreparation(sources: SourceExecution) {
   let preparations = 0;
   const preparation = { keys: new Set<string>(), prepare() { preparations++; }, needsRefresh() { return false; }, requiresCredit() { return false; } };
   const group = sources.registerPreparation(preparation)!; assert.ok(group);
   return { preparation, group, preparations: () => preparations, publish() { sources.queuePreparation(group, true); sources.flush(); } };
 }
-function queuedGroup(sources: SourceController, id: number) {
+function queuedGroup(sources: SourceExecution, id: number) {
   const pending = sources as unknown as { noticeScheduled: boolean; noticeGroups: Set<number> };
   assert.equal(pending.noticeScheduled, true, 'a real controller notice is scheduled before lifecycle changes');
   assert.deepEqual([...pending.noticeGroups], [id]);
@@ -130,27 +137,27 @@ test('only an active presentation starts one client asynchronously; repeated att
 
 test('source notification targets only its keyed current presentation without a second observe/flush', async () => {
   const f = fixture(), view = presentation(); f.runtime.attach(view); await settled();
-  assert.equal(f.runtime.sources.observe(demand(f.runtime)), true); f.runtime.sources.flush(); await settled();
+  assert.equal(f.sources.observe(demand(f.runtime)), true); f.sources.flush(); await settled();
   assert.deepEqual(f.peers[0]!.calls.map(c => c.request.op), ['describe', 'highlight']);
   f.peers[0]!.answer(1); await settled(); await settled();
   assert.deepEqual(view.calls.keys, [['one']]); assert.deepEqual(view.calls.groups, [[]]);
-  assert.equal(f.runtime.sources.status('one')?.acknowledgedVersion, 1, 'notice follows a validated v4 source reply');
+  assert.equal(f.sources.status('one')?.acknowledgedVersion, 1, 'notice follows a validated v4 source reply');
   for (let i = 0; i < 20; i++) f.runtime.snapshot(); await settled();
-  assert.equal(f.peers[0]!.calls.length, 2); assert.equal(f.runtime.sources.stats().globalUnsettledJobs, 0);
+  assert.equal(f.peers[0]!.calls.length, 2); assert.equal(f.sources.stats().globalUnsettledJobs, 0);
 });
 
 test('native off/on preserves the client lifetime but a retained old source veto survives off', async () => {
   const f = fixture(), view = presentation(); f.runtime.attach(view); await settled();
-  assert.equal(f.runtime.sources.observe(demand(f.runtime)), true); f.runtime.sources.flush(); await settled();
-  const sources = f.runtime.sources, initial = f.runtime.snapshot().provider.initialShared;
+  assert.equal(f.sources.observe(demand(f.runtime)), true); f.sources.flush(); await settled();
+  const sources = f.sources, initial = f.runtime.snapshot().provider.initialShared;
   // Peer.close confirms logical closure, not whether an already dispatched parser stopped.
   f.peers[0]!.close = async () => { f.peers[0]!.closes++; };
   await f.runtime.setEnabled(false); await settled();
-  assert.equal(f.runtime.sources, sources); assert.equal(f.runtime.snapshot().enabled, false);
-  assert.equal(f.runtime.sources.workStatus('one').fallbackEligible, false);
+  assertSourceOwner(f.runtime, sources); assert.equal(f.runtime.snapshot().enabled, false);
+  assert.equal(f.sources.workStatus('one').fallbackEligible, false);
   assert.deepEqual(f.changes, [false]); assert.equal(f.store.writes.length, 0);
   await f.runtime.setEnabled(true); await settled();
-  assert.equal(f.runtime.sources, sources); assert.equal(f.runtime.snapshot().provider.initialShared, initial);
+  assertSourceOwner(f.runtime, sources); assert.equal(f.runtime.snapshot().provider.initialShared, initial);
   assert.equal(f.shared(), 2); assert.deepEqual(f.changes, [false, true]);
   f.peers[0]!.answer(1); await settled();
 });
@@ -219,15 +226,16 @@ function borrowedClient() {
 test('first runtime is collectible while its borrowed client still has active provider callbacks', async () => {
   assert.equal(typeof global.gc, 'function');
   const borrowed = borrowedClient(); await settled();
-  const target = emptyPreparation(borrowed.client.sources);
+  const execution = borrowed.client.sourceWork as SourceExecution;
+  const target = emptyPreparation(execution);
   try {
     assert.equal(borrowed.client.snapshot().provider.availability, 'ready');
-    borrowed.client.sources.setStyleSelection(localSelection()); target.publish(); await settled();
+    execution.setStyleSelection(localSelection()); target.publish(); await settled();
     assert.deepEqual(borrowed.view.calls.groups, [[target.group.id]], 'borrowed client has exercised the real runtime callback');
     assert.equal(await collected(borrowed.reference), true);
     const before = structuredClone(borrowed.view.calls);
-    borrowed.client.sources.setStyleSelection(localSelection(2)); borrowed.client.sources.flush();
-    queuedGroup(borrowed.client.sources, target.group.id); await settled();
+    execution.setStyleSelection(localSelection(2)); execution.flush();
+    queuedGroup(execution, target.group.id); await settled();
     assert.equal(borrowed.client.snapshot().provider.availability, 'ready', 'the borrowed client stays active after its first runtime collects');
     await borrowed.client.setEnabled(false); await settled();
     assert.deepEqual(borrowed.view.calls, before, 'retained source and metadata callbacks cannot resurrect their installer');
@@ -261,7 +269,7 @@ test('actual SDK stable Theme proxy changes its palette generation on a real dar
 
 test('runtime v4: palette-only publication forwards only the exact useful group through the real weak client chain', async () => {
   const f = fixture(), view = presentation(); f.runtime.attach(view); await settled();
-  const sources = f.runtime.sources;
+  const sources = f.sources;
   assert.equal(sources.setStyleSelection(localSelection()), true); await settled();
   const dormant = emptyPreparation(sources), target = emptyPreparation(sources);
   try {
@@ -292,9 +300,9 @@ test('runtime v4: palette-only publication forwards only the exact useful group 
 
 test('runtime v4: a genuinely queued palette notice follows the current presentation, not a still-active former owner', async () => {
   const f = fixture(), old = presentation(), current = presentation(); f.runtime.attach(old); await settled();
-  const target = emptyPreparation(f.runtime.sources);
+  const target = emptyPreparation(f.sources);
   try {
-    f.runtime.sources.setStyleSelection(localSelection()); target.publish(); queuedGroup(f.runtime.sources, target.group.id);
+    f.sources.setStyleSelection(localSelection()); target.publish(); queuedGroup(f.sources, target.group.id);
     const before = structuredClone(old.calls); f.runtime.attach(current); await settled();
     assert.equal(old.active, true); assert.deepEqual(old.calls, before);
     assert.deepEqual(current.calls.keys, [[]]); assert.deepEqual(current.calls.groups, [[target.group.id]]);
@@ -305,26 +313,26 @@ test('runtime v4: a genuinely queued palette notice follows the current presenta
 
 test('runtime v4: inactive presentation suppresses a real queued notice and a later current owner receives fresh local publication', async () => {
   const f = fixture(), old = presentation(); f.runtime.attach(old); await settled();
-  const target = emptyPreparation(f.runtime.sources);
+  const target = emptyPreparation(f.sources);
   try {
-    f.runtime.sources.setStyleSelection(localSelection()); target.publish(); queuedGroup(f.runtime.sources, target.group.id);
+    f.sources.setStyleSelection(localSelection()); target.publish(); queuedGroup(f.sources, target.group.id);
     const before = structuredClone(old.calls); old.active = false; await settled();
     assert.deepEqual(old.calls, before);
     const current = presentation(); f.runtime.attach(current); await settled();
     const currentBefore = current.calls.metadata;
-    f.runtime.sources.setStyleSelection(localSelection(2)); f.runtime.sources.flush(); queuedGroup(f.runtime.sources, target.group.id);
+    f.sources.setStyleSelection(localSelection(2)); f.sources.flush(); queuedGroup(f.sources, target.group.id);
     await settled(); assert.deepEqual(current.calls.keys, [[]]); assert.deepEqual(current.calls.groups, [[target.group.id]]);
     assert.equal(current.calls.metadata - currentBefore, 1); assert.deepEqual(old.calls, before);
-    assert.equal(f.runtime.sources.stats().sourceRecords, 0);
+    assert.equal(f.sources.stats().sourceRecords, 0);
   } finally { void target.preparation; }
 });
 
 for (const lifecycle of ['dispose', 'off/on'] as const) {
   test(`runtime v4: ${lifecycle} suppresses an actually scheduled palette-only notice`, async () => {
     const f = fixture(), view = presentation(); f.runtime.attach(view); await settled();
-    const target = emptyPreparation(f.runtime.sources);
+    const target = emptyPreparation(f.sources);
     try {
-      f.runtime.sources.setStyleSelection(localSelection()); target.publish(); queuedGroup(f.runtime.sources, target.group.id);
+      f.sources.setStyleSelection(localSelection()); target.publish(); queuedGroup(f.sources, target.group.id);
       const before = structuredClone(view.calls);
       if (lifecycle === 'dispose') {
         await f.runtime.dispose(); await settled(); assert.deepEqual(view.calls, before);
@@ -332,10 +340,10 @@ for (const lifecycle of ['dispose', 'off/on'] as const) {
       } else {
         await f.runtime.setEnabled(false); await f.runtime.setEnabled(true); await settled();
         assert.deepEqual(view.calls.keys, []); assert.deepEqual(view.calls.groups, []);
-        f.runtime.sources.setStyleSelection(localSelection(2)); target.publish(); queuedGroup(f.runtime.sources, target.group.id);
+        f.sources.setStyleSelection(localSelection(2)); target.publish(); queuedGroup(f.sources, target.group.id);
         await settled(); assert.deepEqual(view.calls.keys, [[]]); assert.deepEqual(view.calls.groups, [[target.group.id]]);
       }
-      assert.equal(f.runtime.sources.stats().sourceRecords, 0);
+      assert.equal(f.sources.stats().sourceRecords, 0);
       assert.ok(f.peers.every(peer => peer.calls.every(c => c.request.op === 'describe')));
     } finally { void target.preparation; }
   });
@@ -354,23 +362,23 @@ test('runtime Pi input remains lazy across attachment, menu and current native s
   await f.runtime.prepareThemes(); f.runtime.previewTheme({ kind: 'theme', id: 'native-selected', variant: 'dark' });
   for (let i = 0; i < 20; i++) { f.runtime.snapshot(); f.runtime.palette(theme); }
   assert.deepEqual([fg, bg, budget.stats().retainedBytes], [0, 0, 0]);
-  const selected = f.runtime.snapshot().selected, stats = f.runtime.sources.stats(), calls = f.peers[0]!.calls.length;
+  const selected = f.runtime.snapshot().selected, stats = f.sources.stats(), calls = f.peers[0]!.calls.length;
   const palette = f.runtime.snapshot().effective!;
   const lease = f.runtime.preparePaletteInput(palette, theme, f.runtime.palette(theme), 'truecolor', funding)!; assert.ok(lease); assert.ok(fg > 0 && bg > 0);
-  assert.deepEqual(f.runtime.snapshot().selected, selected); assert.deepEqual(f.runtime.sources.stats(), stats);
+  assert.deepEqual(f.runtime.snapshot().selected, selected); assert.deepEqual(f.sources.stats(), stats);
   assert.equal(f.peers[0]!.calls.length, calls); assert.equal(f.store.writes.length, 0);
   lease.cleanupReceipt().release(); assert.equal(budget.stats().retainedBytes, 0);
 });
 
 test('runtime intentional suspend recovers outstanding source without destroying the source owner', async () => {
   const f = fixture(), view = presentation(); f.runtime.attach(view); await settled();
-  const sources = f.runtime.sources, initial = demand(f.runtime);
+  const sources = f.sources, initial = demand(f.runtime);
   sources.observe(initial); sources.flush(); await settled();
   const first = f.peers[0]!;
   f.runtime.suspend(); await settled();
-  assert.equal(first.closes, 1); assert.equal(f.shared(), 1); assert.equal(f.runtime.sources, sources);
+  assert.equal(first.closes, 1); assert.equal(f.shared(), 1); assertSourceOwner(f.runtime, sources);
   assert.equal(f.runtime.snapshot().enabled, true); assert.equal(f.runtime.snapshot().provider.reason, 'suspended');
-  f.runtime.resume(); await settled(); await settled(); sources.flush(); await settled();
+  f.runtime.resume(); await settled(); await settled(); assertSourceOwner(f.runtime, sources); sources.flush(); await settled();
   assert.equal(f.shared(), 2); assert.deepEqual(f.peers[1]!.calls.map(c => c.request.op), ['describe', 'highlight']);
   f.peers[1]!.answer(1); await settled(); assert.equal(sources.status(initial.key)?.exact, true);
   const before = f.peers[1]!.calls.length;

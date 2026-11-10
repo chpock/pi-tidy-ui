@@ -2,7 +2,10 @@ import '../../fixtures/test-guard.mjs';
 import assert from 'node:assert/strict';
 import { afterEach, test } from 'node:test';
 import { setImmediate as turn } from 'node:timers/promises';
-import { SourceController, CONTROLLER_LIMITS, sourceReservation, type SourceDemand } from '../../../src/highlighting/controller.ts';
+import { SourceExecution } from '../../../src/highlighting/source-execution.ts';
+import { CONTROLLER_LIMITS, sourceReservation } from '../../../src/highlighting/controller-limits.ts';
+import type { SourceDemand } from '../../../src/highlighting/source-ports.ts';
+import type { SourcePreparation } from '../../../src/highlighting/work-registry.ts';
 import { decodeSemanticDescription, SEMANTIC_PROTOCOL_VERSION as PROTOCOL_VERSION } from '../../../src/occipital/semantic-protocol.ts';
 import { semanticDescriptor } from '../../fixtures/semantic-provider.ts';
 import { SemanticRetentionPool } from '../../../src/highlighting/semantic-retention.ts';
@@ -31,7 +34,7 @@ function paintRows(painted: FlatPaintRows) {
 const fingerprint = 'a'.repeat(64);
 const description = decodeSemanticDescription(semanticDescriptor('describe', 'daemon'), 'describe');
 const fixtureHosts = new Set<Host>();
-const fixtureControllers = new Set<SourceController>();
+const fixtureControllers = new Set<SourceExecution>();
 type Call = { request: Record<string, any>; signal?: AbortSignal; deadlineMs?: number; resolve: (value: unknown) => void; reject: (error: unknown) => void };
 class Host {
   constructor() { fixtureHosts.add(this); }
@@ -83,16 +86,16 @@ class Host {
 function demand(text: string, version = 1, complete = false, key = 'source'): SourceDemand {
   return { key, version, text, language: 'bash', complete };
 }
-function fixture(options: ConstructorParameters<typeof SourceController>[1] = { deadlineMs: 1000 }) {
-  const host = new Host(), controller = new SourceController(host, options);
+function fixture(options: ConstructorParameters<typeof SourceExecution>[1] = { deadlineMs: 1000 }) {
+  const host = new Host(), controller = new SourceExecution(host, options);
   fixtureControllers.add(controller);
   return { host, controller };
 }
 // Source-only controls inspect canonical semantics, never claim these are ready colors.
-function semanticPool(controller: SourceController): SemanticRetentionPool {
+function semanticPool(controller: SourceExecution): SemanticRetentionPool {
   const pool = Reflect.get(controller, 'pool'); assert.ok(pool instanceof SemanticRetentionPool); return pool;
 }
-function ranges(controller: SourceController, key = 'source') {
+function ranges(controller: SourceExecution, key = 'source') {
   const pool = semanticPool(controller), status = controller.status(key);
   if (!status?.classificationVersion) return [];
   const states = Reflect.get(controller, 'states'); assert.ok(states instanceof Map);
@@ -264,8 +267,8 @@ test('remote stream leases remain bounded; empty sources never launch parse work
 test('first discarded controller collects while externally held request and second controller remain active', async () => {
   assert.ok(global.gc, 'run controller gate with --expose-gc');
   const host = new Host();
-  function discarded() { const c = new SourceController(host, { deadlineMs: 1000 }); c.observe(demand('first', 1, true)); c.flush(); return new WeakRef(c); }
-  const weak = discarded(); const second = new SourceController(host, { deadlineMs: 1000 }); second.observe(demand('second', 1, true)); second.flush();
+  function discarded() { const c = new SourceExecution(host, { deadlineMs: 1000 }); c.observe(demand('first', 1, true)); c.flush(); return new WeakRef(c); }
+  const weak = discarded(); const second = new SourceExecution(host, { deadlineMs: 1000 }); second.observe(demand('second', 1, true)); second.flush();
   second.observe(demand('third', 1, true, 'third')); second.flush();
   assert.equal(host.calls.length, 2); assert.equal(second.stats().globalUnsettledJobs, 2);
   const held = second.stats().globalTransientBytes;
@@ -539,7 +542,7 @@ test('exact frame admission stays transport-owned rather than an escaping estima
 });
 
 test('default source usefulness deadline is five minutes and no-start preserves newer waiting demand', async () => {
-  const host = new Host(), c = new SourceController(host); fixtureControllers.add(c);
+  const host = new Host(), c = new SourceExecution(host); fixtureControllers.add(c);
   c.observe(demand('first', 1, true)); c.flush(); assert.equal(host.calls[0]!.deadlineMs, 300000);
   c.observe(demand('first waiting', 2, true)); host.calls[0]!.reject(new RequestFailure('local preflight', 'not_started')); await settle();
   assert.equal(host.calls.length, 2); assert.equal(host.calls[1]!.request.sources[0].source_version, 2);
@@ -581,6 +584,55 @@ test('changed already-complete demand retires a pending one-shot instead of admi
 });
 
 
+test('paused grouped SOURCE remains fallback-ineligible until explicit resume', async () => {
+  const { host, controller: c } = fixture();
+  let current = demand('echo first\n', 1, false);
+  const preparation: SourcePreparation = {
+    keys: new Set(['source']),
+    prepare() { assert.equal(c.observe(current), true); },
+    needsRefresh() { return false; },
+  };
+  const group = c.registerPreparation(preparation)!;
+  c.queuePreparation(group);
+  c.flush();
+  assert.equal(host.calls.length, 1);
+  assert.equal(host.calls[0]!.request.op, 'stream.open');
+  host.answer(0); await settle();
+
+  c.pausePreparation(group);
+  current = demand('echo first\necho second\n', 2, false);
+  assert.equal(c.observe(current), true);
+  c.flush();
+  assert.equal(host.calls.length, 1);
+  const paused = c.workStatus('source');
+  assert.equal(paused.execution, 'not_started');
+  assert.equal(paused.fallbackEligible, false);
+  await settle();
+  c.flush(); await settle();
+  assert.equal(host.calls.length, 1, 'later turns still cannot dispatch paused grouped SOURCE');
+  const stillPaused = c.workStatus('source');
+  assert.equal(stillPaused.execution, 'not_started');
+  assert.equal(stillPaused.fallbackEligible, false);
+
+  c.queuePreparation(group);
+  await settle();
+  assert.equal(host.calls.length, 2);
+  assert.equal(host.calls[1]!.request.op, 'stream.append');
+  assert.equal(host.calls[1]!.request.append, 'echo second\n');
+  assert.equal(host.calls[1]!.request.source_version, 2);
+  const resumed = c.workStatus('source');
+  assert.equal(resumed.execution, 'unsettled');
+  assert.equal(resumed.fallbackEligible, false);
+
+  host.answer(1); await settle();
+  c.remove('source'); c.flush();
+  assert.equal(host.calls.length, 3);
+  assert.equal(host.calls[2]!.request.op, 'stream.close');
+  host.answer(2); await settle();
+  assert.equal(await awaitFixture(c.whenSettled()), true);
+  c.dispose();
+});
+
 test('review F1: held physical source attempt forbids fallback for original, changed, retired and reused demand', async () => {
   for (const mode of ['original', 'changed', 'retired', 'reused']) {
     const { host, controller: c } = fixture(); c.observe(demand('a\nt')); c.flush();
@@ -615,7 +667,7 @@ test('review F2: real broker retire/publish preserves completed aliases without 
   const broker = new ProviderBroker({ tryShared: async () => undefined, acquireOwned: async () => {
     if (++acquisitions === 1) return transport(first); await gate; return transport(next);
   } });
-  const c = new SourceController(broker); fixtureControllers.add(c);
+  const c = new SourceExecution(broker); fixtureControllers.add(c);
   try {
     await awaitFixture(broker.start()); const d = demand('echo x', 1, true); c.observe(d); c.flush(); first.answer(0); await settle();
     c.observe({ ...d, version: 2 }); const original = ranges(c); assert.deepEqual(original, [[0, 6, true]]);
@@ -745,14 +797,14 @@ test('throwing source observer cannot prevent classification, credit release or 
 
 test('source observer is validated before ownership and an empty source needs no asynchronous notice', async () => {
   const host = new Host();
-  assert.throws(() => new SourceController(host, { onChange: 1 as unknown as () => void }), /observer/);
+  assert.throws(() => new SourceExecution(host, { onChange: 1 as unknown as () => void }), /observer/);
   let notices = 0; const { controller } = fixture({ onChange: () => { notices++; } });
   controller.observe(demand('', 1, true)); controller.flush(); await settle();
   assert.equal(notices, 0); assert.equal(controller.stats().dispatches, 0);
 });
 
 function observedOwner(host: Host, onChange: () => void) {
-  const controller = new SourceController(host, { onChange });
+  const controller = new SourceExecution(host, { onChange });
   controller.observe(demand('first', 1, true)); controller.flush();
   return new WeakRef(controller);
 }
@@ -790,6 +842,52 @@ test('obsolete source callback cannot clear newer pending notice before a second
     assert.equal(notices, 1); assert.deepEqual(exact, [true]);
     assert.deepEqual(packets, [['b', 'c']], 'obsolete epoch cannot erase a current source key or deliver its old key');
   } finally { globalThis.queueMicrotask = original; }
+});
+
+test('CLOSE terminal reply releases its job without a stale source notice', async () => {
+  const notices: string[][] = [];
+  const { host, controller: c } = fixture({ deadlineMs: 1000, onChange: keys => notices.push([...keys]) });
+  c.observe(demand('echo close\n')); c.flush();
+  assert.equal(host.calls.length, 1);
+  assert.equal(host.calls[0]!.request.op, 'stream.open');
+  notices.length = 0;
+  host.answer(0); await settle();
+  assert.ok(notices.some(keys => keys.includes('source')), 'the live source observer delivers a positive change');
+  assert.equal(c.stats().remoteLeases, 1);
+  notices.length = 0;
+
+  c.remove('source'); c.flush();
+  assert.equal(host.calls.length, 2);
+  assert.equal(host.calls[1]!.request.op, 'stream.close');
+  const heldTransientBytes = c.stats().transientBytes;
+  const heldGlobalTransientBytes = c.stats().globalTransientBytes;
+  assert.ok(heldTransientBytes > 0);
+  assert.ok(heldGlobalTransientBytes > 0);
+  assert.equal(heldTransientBytes, heldGlobalTransientBytes);
+  const completion = c.whenSettled();
+  let completed = false; void completion.then(() => { completed = true; });
+  c.flush(); await settle();
+  notices.length = 0;
+  assert.equal(completed, false);
+  assert.equal(c.stats().unsettledJobs, 1);
+  assert.equal(c.stats().globalUnsettledJobs, 1);
+  assert.equal(c.stats().transientBytes, heldTransientBytes);
+  assert.equal(c.stats().globalTransientBytes, heldGlobalTransientBytes);
+
+  host.answer(1);
+  assert.equal(await awaitFixture(completion), true);
+  await settle();
+  assert.deepEqual(notices, []);
+  c.flush(); await settle();
+  assert.equal(host.calls.length, 2, 'a settled CLOSE is neither repeated nor redispatched');
+  const stats = c.stats();
+  assert.equal(stats.unsettledJobs, 0);
+  assert.equal(stats.globalUnsettledJobs, 0);
+  assert.equal(stats.transientBytes, 0);
+  assert.equal(stats.globalTransientBytes, 0);
+  assert.equal(stats.remoteLeases, 0);
+  assert.equal(stats.pendingCloses, 0);
+  c.dispose();
 });
 
 test('classification success is emitted only after full source validation, never warm cached visits or stream close', async () => {
@@ -962,7 +1060,7 @@ test('owned reap releases only matching source evidence, never newer job or shar
 });
 
 function retiredCaptureOwner(host: Host) {
-  const c = new SourceController(host); c.observe(demand('x', 1, true)); c.flush(); c.setEnabled(false);
+  const c = new SourceExecution(host); c.observe(demand('x', 1, true)); c.flush(); c.setEnabled(false);
   const job = (c as unknown as { jobs: Map<number, { source?: object }> }).jobs.values().next().value!;
   return { owner: new WeakRef(c), payload: new WeakRef(job.source!) };
 }
@@ -1164,21 +1262,21 @@ async function pendingStyle(complete = true) {
   assert.equal(result.host.calls[1]!.request.op, 'styles.resolve');
   return result;
 }
-function selectStyle(c: SourceController, id = 'selected', selectedFingerprint = fingerprint) {
+function selectStyle(c: SourceExecution, id = 'selected', selectedFingerprint = fingerprint) {
   const seed = Number.parseInt(selectedFingerprint.slice(0, 2), 16) || 1;
   assert.equal(c.setStyleSelection(syntheticSelection(seed, id)), true);
 }
 function selectionRuleFingerprint(selection: ReturnType<typeof syntheticSelection>) {
   return fingerprintRules(selection.definition);
 }
-async function paint(c: SourceController, host: Host, sourceIndex: number, red = 80) {
+async function paint(c: SourceExecution, host: Host, sourceIndex: number, red = 80) {
   host.answer(sourceIndex); await settle();
   const index = host.calls.length - 1;
   if (host.calls[index]!.request.op === 'styles.resolve') { host.style(index, red); await settle(); }
   assert.ok(c.displayBasis('source'), 'display checks require an independently validated STYLE result');
 }
 
-function displaySnapshot(controller: SourceController, key = 'source') {
+function displaySnapshot(controller: SourceExecution, key = 'source') {
   const basis = controller.displayBasis(key);
   if (!basis) return undefined;
   let text: string | undefined;
@@ -1285,7 +1383,7 @@ test('display basis: zero parser-call counters cannot conceal changed validated 
 });
 
 async function detachedDisplayOwner(host: Host) {
-  const controller = new SourceController(host);
+  const controller = new SourceExecution(host);
   selectStyle(controller); controller.observe(demand('owned display', 1, true)); controller.flush(); await paint(controller, host, 0);
   controller.freeze('source');
   return { owner: new WeakRef(controller), pool: new WeakRef((controller as unknown as { pool: object }).pool), view: controller.displayBasis('source')! };
@@ -1591,7 +1689,7 @@ for (const action of ['off', 'remove', 'dispose'] as const) test(`geometry fundi
 });
 
 function detachedGeometryFunding(host: Host) {
-  const controller = new SourceController(host);
+  const controller = new SourceExecution(host);
   return { weak: new WeakRef(controller), funding: controller.geometryFunding()! };
 }
 test('geometry funding: retained funding capability has no strong controller or source owner', async () => {
@@ -1601,7 +1699,7 @@ test('geometry funding: retained funding capability has no strong controller or 
   assert.equal(probe.weak.deref(), undefined); assert.equal(probe.funding.grant(0), undefined);
 });
 
-async function abandonedGeometryPreparation(controller: SourceController, kind: 'empty' | 'source' | 'palette') {
+async function abandonedGeometryPreparation(controller: SourceExecution, kind: 'empty' | 'source' | 'palette') {
   let preparation: { keys: Set<string>; prepare(): void } | undefined = {
     keys: new Set(kind === 'source' ? ['source'] : []),
     prepare() { if (kind === 'source') controller.observe(demand('held group source', 1, true)); },
@@ -1911,6 +2009,41 @@ for (const kind of ['owned', 'shared'] as const) test(`intentional suspend faile
 });
 
 
+for (const changeDuringPreparation of [false, true]) test(changeDuringPreparation
+  ? 'reentrant selection change preserves the same two-entry host-turn quota'
+  : 'active selection preserves the two-entry quota across direct flushes and microtasks', { timeout: 12000 }, async t => {
+  const { controller: c, host } = fixture(); host.ready = false;
+  if (!changeDuringPreparation) selectStyle(c);
+  const visits: number[] = [];
+  const tasks = Array.from({ length: 3 }, (_, index) => ({ keys: new Set<string>(), requiresCredit() { return false; }, prepare() {
+    visits.push(index); if (changeDuringPreparation && index === 2) selectStyle(c);
+  } }));
+  const heldVisits = changeDuringPreparation ? [2] : [2, 1];
+  let retained!: () => void;
+  const yielding = new Promise<void>(resolve => { retained = resolve; });
+  const resume = c.resumePreparation;
+  let release: (() => void) | undefined, held = false, completed = false;
+  t.mock.method(c, 'resumePreparation', function(this: SourceExecution) {
+    if (!held) { held = true; release = () => resume.call(this); retained(); return; }
+    return resume.call(this);
+  });
+  try {
+    for (const task of tasks) c.queuePreparation(c.registerPreparation(task)!, true);
+    await yielding;
+    assert.deepEqual(visits, heldVisits, 'a selection-triggered revisit consumes the same two-entry quota');
+    assert.equal(c.stats().unsettledJobs, 0);
+    c.flush(); await Promise.resolve(); c.flush(); await Promise.resolve(); c.flush();
+    assert.deepEqual(visits, heldVisits, 'direct flushes and microtasks do not reset the held host-turn quota');
+    const completion = c.whenSettled(); void completion.then(() => { completed = true; });
+    await turn(); assert.equal(completed, false, 'the held continuation still owns completion');
+    assert.deepEqual(visits, heldVisits);
+    assert.ok(release); const next = release; release = undefined; next();
+    assert.equal(await awaitFixture(completion), true);
+    assert.deepEqual(visits, [2, 1, 0], 'the host-turn continuation visits only the remaining entry');
+    assert.equal(host.calls.length, 0);
+  } finally { release?.(); c.dispose(); }
+});
+
 test('completion boundary: yielded preparation and its reentrant queue drain without native jobs', { timeout: 12000 }, async t => {
   const { controller: c, host } = fixture(); host.ready = false;
   const visits: number[] = [];
@@ -1923,7 +2056,7 @@ test('completion boundary: yielded preparation and its reentrant queue drain wit
   const yielding = new Promise<void>(resolve => { retained = resolve; });
   const resume = c.resumePreparation;
   let release: (() => void) | undefined, held = false, completed = false;
-  t.mock.method(c, 'resumePreparation', function(this: SourceController) {
+  t.mock.method(c, 'resumePreparation', function(this: SourceExecution) {
     if (!held) { held = true; release = () => resume.call(this); retained(); return; }
     return resume.call(this);
   });
@@ -1964,14 +2097,14 @@ test('completion boundary: Native Off still awaits queued local preparation', { 
 });
 
 function detachedCompletionOwner(host: Host) {
-  const controller = new SourceController(host, { deadlineMs: 1000 });
+  const controller = new SourceExecution(host, { deadlineMs: 1000 });
   controller.observe(demand('held completion', 1, true)); controller.flush();
   return { weak: new WeakRef(controller), completion: controller.whenSettled() };
 }
 test('completion boundary: pending observation does not retain an abandoned source owner or refund its held RPC', { timeout: 12000 }, async () => {
   assert.equal(typeof global.gc, 'function');
   const host = new Host(), first = detachedCompletionOwner(host);
-  const second = new SourceController(host, { deadlineMs: 1000 });
+  const second = new SourceExecution(host, { deadlineMs: 1000 });
   try {
     second.observe(demand('active peer', 1, true)); second.flush();
     for (let i = 0; i < 60; i++) { await turn(); global.gc!(); await turn(); if (!first.weak.deref()) break; }
@@ -2063,7 +2196,7 @@ for (const withdrawal of ['pause', 'unregister', 'remove', 'freeze', 'style'] as
   else if (withdrawal === 'style') { c.updatePreparation(group); selectStyle(c); }
   else c.observe(demand('withdrawn source', 1, true));
   const wake = c.wake;
-  t.mock.method(c, 'wake', function(this: SourceController) { wakes++; return wake.call(this); });
+  t.mock.method(c, 'wake', function(this: SourceExecution) { wakes++; return wake.call(this); });
   const withdraw = () => {
     if (withdrawal === 'pause') c.pausePreparation(group);
     else if (withdrawal === 'unregister') c.unregisterPreparation(group);
@@ -2093,7 +2226,7 @@ test('completion boundary: preparation release reconciles only after all member 
   } };
   const group = c.registerPreparation(preparation)!; c.queuePreparation(group, true); await turn();
   const completion = c.whenSettled(), bytes = c.stats().globalTransientBytes, wake = c.wake; let wakes = 0;
-  t.mock.method(c, 'wake', function(this: SourceController) {
+  t.mock.method(c, 'wake', function(this: SourceExecution) {
     wakes++; assert.equal(this.workStatus('first').version, undefined); assert.equal(this.workStatus('second').version, undefined);
     return wake.call(this);
   });
@@ -2113,7 +2246,7 @@ test('completion boundary: withdrawal reconciliation preserves LIFO and the ordi
   c.observe(demand('withdrawn newest', 1, true)); await turn();
   let held!: () => void, release: (() => void) | undefined;
   const yielding = new Promise<void>(resolve => { held = resolve; }), resume = c.resumePreparation;
-  t.mock.method(c, 'resumePreparation', function(this: SourceController) {
+  t.mock.method(c, 'resumePreparation', function(this: SourceExecution) {
     if (!release) { release = () => resume.call(this); held(); return; }
     return resume.call(this);
   });

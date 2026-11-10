@@ -37,7 +37,7 @@ If you are interested in **Occipital as a daemon**, start directly with its [sta
 | [Pipeline entry](syntax-highlighting-spec.md) | Surfaces, source/style/geometry/paint identities and lifecycle/reuse map |
 | [Providers](syntax/providers.md) | Construction/activation, discovery, exact runtime acquisition, selected/effective/ready palette state, bounded recovery and intentional suspension |
 | [Request adapters](syntax/requests.md) | Stdio/shared correlation, admission and decoding, caller wait versus physical settlement, failure origin and cleanup proof |
-| [Work controller](syntax/work.md) | Single weak chronological registry, SOURCE/STYLE scheduling, useful-prefix policy, fallback authority and atomic per-card publication |
+| [Work and execution](syntax/work.md) | Joint source/job authority, private weak chronological registry, consumer capabilities, SOURCE/STYLE scheduling, fallback and atomic per-card publication |
 | [Storage](syntax/storage.md) | Numeric grants and shared charges, operation-scoped geometry funding, source captures/range blocks, context arena, style groups, pins, pressure and release receipts |
 | [Prepared cards](syntax/prepared-cards.md) | Prepared source slots, full display versus classification, measured geometry, coherent paint, Pi ANSI conversion and accepted borrowed visits |
 | [Shebang hints](syntax/shebang-hints.md) | Curated interpreter map, exact line-1 provenance, `env` subset, generic language selector, optional-path fallback, source identity and per-side diff painting |

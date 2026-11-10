@@ -6,19 +6,19 @@ The transport adapters turn a published compatible provider into correlated oper
 
 The source controller creates the operation and retains the facts needed to validate its eventual outcome. The transport does not decide which source version is useful.
 
-For SOURCE, `SourceController.prepare` in `src/highlighting/controller.ts` captures the submitted snapshot, provider descriptor, source incarnation, expected next revision and exact replacement text. A finite source uses `highlight`; a growing source without a lease uses `stream.open`; a source with a validated live lease uses `stream.append`.
+For SOURCE, `SourceExecution.prepare` in `src/highlighting/source-execution.ts` captures the submitted snapshot, provider descriptor, source incarnation, expected next revision and exact replacement text. A finite source uses `highlight`; a growing source without a lease uses `stream.open`; a source with a validated live lease uses `stream.append`.
 
 An append has two different boundaries. Its request contains only bytes added after the last acknowledged full input. Its expected reply replaces coverage from the last committed parser boundary, which may be earlier because the previous final line was provisional. The controller therefore keeps both the acknowledged full-text basis and the committed offset. It does not validate the reply against whatever text happens to be latest when the promise resolves.
 
 STYLE captures different data. `prepareStyles` retains the semantic views and context handles needed to interpret the result, plus the vocabulary and rule expectation. The request contains missing context descriptions and rule input, not source text. Retaining a view keeps the request interpretable after source progress; it does not guarantee that the old candidate may still be published.
 
-Every controller job gets a unique ticket and call-local reply-size record. The broker’s generation-bound `request` is a pass-through, not another source queue or retry engine. Its reserved ticket prefix separates its metadata operations from controller operations.
+Every execution job gets a unique ticket and call-local reply-size record. Its explicit SOURCE/STYLE/CLOSE operation is independent of owned/shared provider kind and of retireable validation or STYLE-capture payloads. Retiring a payload cannot turn a held STYLE into SOURCE, erase SOURCE evidence or release the job's physical reservation. The request's selection charge remains held until actual settlement even if its STYLE captures were released earlier. The broker’s generation-bound `request` is a pass-through, not another source queue or retry engine. Its reserved ticket prefix separates its metadata operations from controller operations.
 
 `src/occipital/semantic-protocol.ts` owns the plain JSON request types. `SemanticDataRequest` distinguishes finite/open SOURCE, append, close and generic STYLE; the broker accepts only this DATA set. `SemanticTransportRequest` additionally permits source-free `describe` on CONTROL. The admission variants require a wait value for `bounded_queue` and forbid it for `try_now`; close has no admission fields. SOURCE hints permit absent or null language/path fields. Numeric ranges, array cardinality and incoming values still require runtime validation; request typing neither copies envelopes nor treats a raw reply as decoded.
 
 ## Preflight before encoding, validation before adoption
 
-The request path checks actual JSON policy size rather than rejecting a source from a worst-case text-size multiplier. `SourceController.dispatch` uses `dataJsonBytes` with the negotiated request cap before entering the provider. The transport then enforces its own lane and encoding bounds.
+The request path checks actual JSON policy size rather than rejecting a source from a worst-case text-size multiplier. `SourceExecution.dispatch` uses `dataJsonBytes` with the negotiated request cap before entering the provider. The transport then enforces its own lane and encoding bounds.
 
 `dataJsonBytes` in `src/occipital/data-json.ts` walks plain JSON values without invoking property getters or creating a source-sized JSON string. It counts escapes and UTF-8 representation, rejects cycles and unsupported object/value forms, and bounds nesting. Shared request encoding also rejects serialization hooks before calling `JSON.stringify`, then checks that the encoded size agrees. Stdio uses its own bounded encoder and adds the length frame.
 
