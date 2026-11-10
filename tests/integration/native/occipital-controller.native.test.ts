@@ -1,3 +1,4 @@
+import { HIGHLIGHT_LIMITS } from '../../../src/highlighting/limits.ts';
 import '../../fixtures/test-guard.mjs';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
@@ -79,7 +80,7 @@ test('actual product stdio controller opens, coalesces, finalizes and resolves c
     const raw = await awaitFixture(broker.request(broker.snapshot().generation, { v: VERSION, ticket: 'independent-batch', instance: descriptor.instance,
       op: 'highlight', admission: 'bounded_queue', queue_wait_ms: 1000, sources: [source] }, { deadlineMs: 5000 }));
     const chunk = decodeSemanticSourceReply(raw, 'independent-batch', descriptor, [{ key: source.key, generation: 1, source_version: 3,
-      revision: 1, replace_from: 0, source_bytes: Buffer.byteLength(fullText), complete: true, replacementText: fullText }], 16384).sources[0]!;
+      revision: 1, replace_from: 0, source_bytes: Buffer.byteLength(fullText), complete: true, replacementText: fullText }], 16384, HIGHLIGHT_LIMITS).sources[0]!;
     const independent: ReturnType<typeof semanticRows> = []; let from = 0;
     for (let i = 0; i < chunk.runs.length; i += 2) {
       const to = chunk.runs[i]!, context = chunk.runs[i + 1]!;

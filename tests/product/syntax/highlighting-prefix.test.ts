@@ -2,7 +2,7 @@ import '../../fixtures/test-guard.mjs';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { highlightingPrefix } from '../../../src/syntax/highlighting-prefix.ts';
-import { HIGHLIGHT_LIMITS } from '../../../src/occipital/limits.ts';
+import { HIGHLIGHT_LIMITS } from '../../../src/highlighting/limits.ts';
 
 for (const [text, cap, end, bytes] of [
   ['', 4, 0, 0], ['abcd', 4, 4, 4], ['abcé', 4, 3, 3], ['abéz', 4, 3, 4],

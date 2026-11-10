@@ -176,11 +176,11 @@ Pi fallback, semantic snapshots, contexts, styles and prepared geometry share th
 
 ## Highlighting volume policy
 
-Native admission, client decoding and classification-prefix selection enforce these bounds. They cover classification and its data exchange, not preparation, normalization, wrapping, painting or virtualization of the complete card.
+Native admission, client semantic decoding and classification-prefix selection enforce these bounds. The client workload ceilings and Occipital carrier ceilings are separate policies. They cover classification and its data exchange, not preparation, normalization, wrapping, painting or virtualization of the complete card.
 
 | Boundary | Default | Unit and scope |
 |---|---:|---|
-| Native classified source | **64 KiB** | UTF-8 bytes of the prefix of one logical source; not per line or update |
+| Client native-SOURCE cap | **64 KiB** | UTF-8 bytes of the prefix of one logical source; not per line or update |
 | Native classified lines | **8,192** | Logical lines in that prefix; stop at the first byte or line boundary |
 | Finite SOURCE batch | **64 KiB / 8,192 lines** | Sum over all sources, still at most eight sources; do not multiply the allowance by eight |
 | Public Pi fallback source | **8 KiB** | UTF-8 prefix, using the same bounded selection and line-count rules; file sources only |
@@ -189,6 +189,8 @@ Native admission, client decoding and classification-prefix selection enforce th
 | Decoded result | **2 MiB** | Existing controlled-allocation policy charge of the complete decoded SOURCE/STYLE message, inside the existing data authority |
 
 All limits are inclusive. Empty text has zero logical lines; count each LF plus one for a nonempty unterminated tail. A final LF does not invent another empty tail. Blank lines count. CR in CRLF does not introduce another line. Prefix selection respects complete Unicode scalar boundaries and counts UTF-8 bytes, not JavaScript UTF-16 units, terminal columns or JSON-escaped bytes. JSON escaping is independently included in the 512 KiB message check. Smaller negotiated existing limits remain authoritative. A provider advertising DATA `reply_bytes` above 512 KiB is not suitable for this consumer and is rejected before SOURCE/STYLE work: a local post-decode cap cannot protect Node from a shared SDK that has already parsed an oversized reply. Use the existing descriptor field, not a new protocol negotiation mode. A more generous input allowance alone does not require rejection because the client can send a smaller request; `line_bytes` remains the classified-per-line window, not a maximum accepted line-length constraint.
+
+The controller's explicit `SemanticDecodeLimits` policy caps source coverage, expanded context words and the controlled decoded-byte charge. Each decoder checks this policy in addition to the negotiated descriptor and its separately funded `availableBytes`; none is inferred from a generic wire integer maximum. The 512 KiB DATA body is an Occipital transport limit, not a highlight-decoding budget.
 
 ### Coverage, streaming and refusal
 
@@ -223,6 +225,6 @@ Bounds on bytes/lines/expansion are not hard time or whole-process memory guaran
 
 ### Configuration authority
 
-The production defaults are named together in `src/occipital/limits.ts` (`HIGHLIGHT_LIMITS`) and `crates/occipital/src/limits.rs`; `protocol/syntax-v4/highlighting-limits.json` is their shared numeric conformance fixture, not another runtime policy store. Keep the two small language-native tables and fixture in sync. No user-preference/menu/environment override or runtime file watcher is introduced. Increasing a coverage limit is not sufficient by itself: DATA size, expanded contexts, decoded charge and existing physical credits must still admit the corresponding work.
+The extension workload defaults are in `src/highlighting/limits.ts` (`HIGHLIGHT_LIMITS`); matching native classification values remain in `crates/occipital/src/limits.rs`. The DATA carrier ceiling is owned separately by `src/occipital/limits.ts` (`OCCIPITAL_LIMITS.dataWireBytes`). The unchanged six-field `HIGHLIGHT_LIMITS` aggregate references that native constant rather than defining another carrier value. It exactly matches `protocol/syntax-v4/highlighting-limits.json`; client conformance also checks the native carrier owner directly. No user-preference/menu/environment override or runtime file watcher is introduced. Increasing a coverage limit is not sufficient by itself: DATA size, expanded contexts, decoded charge and existing physical credits must still admit the corresponding work.
 
 See [volume-policy validation](../testing.md#syntax-and-palette-validation) for conformance, boundary and real-transport controls.

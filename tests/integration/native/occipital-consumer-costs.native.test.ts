@@ -1,3 +1,4 @@
+import { HIGHLIGHT_LIMITS } from '../../../src/highlighting/limits.ts';
 import '../../fixtures/test-guard.mjs';
 import assert from 'node:assert/strict';
 import test from 'node:test';
@@ -28,12 +29,14 @@ import { preparePaletteInput } from '../../../src/syntax/pi-input.ts';
 import { createSemanticRuleDefinition } from '../../../src/syntax/semantic-rules.ts';
 import type { ConcreteStyle } from '../../../src/appearance/style-materialization.ts';
 import { SemanticRetentionPool } from '../../../src/highlighting/semantic-retention.ts';
-import { decodeSemanticDescription, decodeSemanticSourceReply, decodeSemanticStyleReply, SEMANTIC_PROTOCOL_VERSION } from '../../../src/occipital/semantic-protocol.ts';
+import { decodeSemanticDescription, decodeSemanticSourceReply, decodeSemanticStyleReply, SEMANTIC_PROTOCOL_VERSION,
+  type SemanticDataRequest, type SemanticTransportRequest } from '../../../src/occipital/semantic-protocol.ts';
 import { fingerprintRules } from '../../../src/occipital/style-rules.ts';
 import { ownedStyleSelection } from '../../fixtures/owned-style-selection.ts';
 import { resolveTheme } from '../../../src/themes/selection.ts';
 
 const inputs = readInputs(), binary = validateNative(inputs);
+type SemanticRequestPayload<T = SemanticTransportRequest> = T extends { v: number; ticket: string } ? Omit<T, 'v' | 'ticket'> : never;
 const dist = dirname(fileURLToPath(import.meta.resolve('@earendil-works/pi-coding-agent')));
 const themes = await import(pathToFileURL(resolve(dist, 'modes/interactive/theme/theme.js')).href);
 themes.initTheme('dark', false);
@@ -48,9 +51,9 @@ test('current consumer costs: actual owned SOURCE STYLE incremental contexts and
   const requests: { phase: string; op: string; requestJsonBytes: number; responseJsonBytes: number; contexts: number; transportToParsedReplyMs: number; transportCreditAtDispatch: number; sourceRuns: number; decodedRangeCapacityBytes: number; decodedContextCapacityBytes: number }[] = [];
   const provider = { snapshot: () => broker.snapshot(), isReady: (generation: number) => broker.isReady(generation),
     classificationAccepted: (generation: number) => broker.classificationAccepted(generation),
-    request(generation: number, request: Record<string, unknown>, options?: Parameters<ProviderBroker['request']>[2]) {
+    request(generation: number, request: SemanticDataRequest, options?: Parameters<ProviderBroker['request']>[2]) {
       const record = { phase, op: String(request.op), requestJsonBytes: Buffer.byteLength(JSON.stringify(request)), responseJsonBytes: 0,
-        contexts: Array.isArray(request.contexts) ? request.contexts.length : 0, transportToParsedReplyMs: 0, transportCreditAtDispatch: 0, sourceRuns: 0, decodedRangeCapacityBytes: 0, decodedContextCapacityBytes: 0 };
+        contexts: request.op === 'styles.resolve' ? request.contexts.length : 0, transportToParsedReplyMs: 0, transportCreditAtDispatch: 0, sourceRuns: 0, decodedRangeCapacityBytes: 0, decodedContextCapacityBytes: 0 };
       requests.push(record); const start = performance.now();
       const response = broker.request(generation, request, options); record.transportCreditAtDispatch = pipe.stats().retainedBytes;
       return response.then(async raw => {
@@ -62,7 +65,7 @@ test('current consumer costs: actual owned SOURCE STYLE incremental contexts and
           record.sourceRuns += source.runs.length / 2;
           record.decodedRangeCapacityBytes += source.runs.length * 4;
           record.decodedContextCapacityBytes += inspectContextBatch([source.contexts], {
-            vocabularySize: broker.snapshot().description!.vocabulary.count, maxBytes: OCCIPITAL_LIMITS.retainedBytes }).words * 4;
+            vocabularySize: broker.snapshot().description!.vocabulary.count, maxBytes: OCCIPITAL_LIMITS.retainedBytes }, HIGHLIGHT_LIMITS).words * 4;
         }
         if (request.op === 'styles.resolve' && holdStyle) { holdStyle = false; arrived(); await new Promise<void>(resolve => { release = resolve; }); }
         return raw;
@@ -343,7 +346,7 @@ test('current consumer phase boundaries: generic v4 rule STYLE request and reply
   const pool = new SemanticRetentionPool(), budget = pool.budget;
   const timed = <T,>(work: () => T) => { const start = performance.now(); const value = work(); return { value, ms: performance.now() - start }; };
   let sequence = 0, sourceRequests = 0, styleRequests = 0;
-  const call = async (request: Record<string, unknown>) => {
+  const call = async (request: SemanticRequestPayload) => {
     const ticket = `phase-${++sequence}`, start = performance.now();
     if (request.op === 'highlight') sourceRequests++;
     if (request.op === 'styles.resolve') styleRequests++;
@@ -355,12 +358,12 @@ test('current consumer phase boundaries: generic v4 rule STYLE request and reply
     const descriptionReply = await call({ op: 'describe' }), description = decodeSemanticDescription(descriptionReply.value, descriptionReply.ticket);
     const definition = createSemanticRuleDefinition();
     const expectation = { vocabulary: description.vocabulary.fingerprint, rules: fingerprintRules(definition), bindingSlots: definition.binding_slots };
-    const styleRequest = (contexts: number[][]) => ({ op: 'styles.resolve', instance: description.instance, vocabulary: description.vocabulary.fingerprint,
-      rules: definition, admission: 'bounded_queue', queue_wait_ms: 1000, contexts });
+    const styleRequest = (contexts: number[][]) => ({ op: 'styles.resolve' as const, instance: description.instance, vocabulary: description.vocabulary.fingerprint,
+      rules: definition, admission: 'bounded_queue' as const, queue_wait_ms: 1000, contexts });
     const genericStyles = async (phase: string, contexts: number[][]) => {
       const reply = await call(styleRequest(contexts));
       const json = JSON.stringify(reply.value), parsed = timed(() => JSON.parse(json) as unknown);
-      const decoded = timed(() => decodeSemanticStyleReply(parsed.value, reply.ticket, description, expectation, contexts.length, OCCIPITAL_LIMITS.retainedBytes));
+      const decoded = timed(() => decodeSemanticStyleReply(parsed.value, reply.ticket, description, expectation, contexts.length, OCCIPITAL_LIMITS.retainedBytes, HIGHLIGHT_LIMITS));
       assert.equal(decoded.value.indices.length, contexts.length);
       rows.push({ phase, contexts: contexts.length, requestMs: reply.requestMs, jsonBytesEquivalent: Buffer.byteLength(json), jsonParseMs: parsed.ms,
         validationAndTypedDecodeMs: decoded.ms, expressions: decoded.value.styles.length,
@@ -384,7 +387,7 @@ test('current consumer phase boundaries: generic v4 rule STYLE request and reply
       const json = JSON.stringify(reply.value), parsed = timed(() => JSON.parse(json) as unknown);
       const expected = [{ key: workload.name, generation, source_version: 1, revision: 1,
         source_bytes: Buffer.byteLength(workload.text), replace_from: 0, complete: true, replacementText: workload.text }];
-      const decoded = timed(() => decodeSemanticSourceReply(parsed.value, reply.ticket, description, expected, OCCIPITAL_LIMITS.retainedBytes));
+      const decoded = timed(() => decodeSemanticSourceReply(parsed.value, reply.ticket, description, expected, OCCIPITAL_LIMITS.retainedBytes, HIGHLIGHT_LIMITS));
       assert.equal(decoded.value.sources.length, 1); const chunk = decoded.value.sources[0]!;
       const before = budget.stats().retainedBytes, adopted = timed(() => pool.installChunk(generation, chunk));
       assert.equal(adopted.value.accepted, true); assert.equal(chunk.runs.at(-2), Buffer.byteLength(workload.text));

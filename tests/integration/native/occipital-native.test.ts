@@ -6,13 +6,16 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { childEnv, readInputs, validateNative } from '../../../scripts/test/context.mjs';
 import { StdioTransport } from '../../../src/occipital/stdio.ts';
-import { HIGHLIGHT_LIMITS } from '../../../src/occipital/limits.ts';
-import { decodeSemanticDescription, decodeSemanticSourceReply, decodeSemanticStyleReply, SEMANTIC_PROTOCOL_VERSION as VERSION } from '../../../src/occipital/semantic-protocol.ts';
+import { OCCIPITAL_LIMITS } from '../../../src/occipital/limits.ts';
+import { HIGHLIGHT_LIMITS } from '../../../src/highlighting/limits.ts';
+import { decodeSemanticDescription, decodeSemanticSourceReply, decodeSemanticStyleReply, SEMANTIC_PROTOCOL_VERSION as VERSION,
+  type SemanticTransportRequest } from '../../../src/occipital/semantic-protocol.ts';
 import type { SemanticChunk } from '../../../src/occipital/semantic-source.ts';
 import { createSemanticRuleDefinition } from '../../../src/syntax/semantic-rules.ts';
 import { fingerprintRules } from '../../../src/occipital/style-rules.ts';
 
 const binary = validateNative(readInputs()).path;
+type SemanticRequestPayload<T = SemanticTransportRequest> = T extends { v: number; ticket: string } ? Omit<T, 'v' | 'ticket'> : never;
 async function fixture() {
   const root = await mkdtemp(join(tmpdir(), 'occipital-native-client-'));
   for (const name of ['home', 'config', 'data', 'cache', 'run']) await mkdir(join(root, name));
@@ -20,7 +23,7 @@ async function fixture() {
   Object.assign(env, { HOME: join(root, 'home'), XDG_CONFIG_HOME: join(root, 'config'), XDG_DATA_HOME: join(root, 'data'), XDG_CACHE_HOME: join(root, 'cache'), XDG_RUNTIME_DIR: join(root, 'run') });
   const transport = new StdioTransport({ command: binary, args: ['--stdio'], env, cwd: root, requestDeadlineMs: 10_000, terminateGraceMs: 100 });
   let sequence = 0;
-  async function call(request: Record<string, unknown>): Promise<any> {
+  async function call(request: SemanticRequestPayload): Promise<any> {
     const ticket = `call-${++sequence}`, reply = await transport.request({ ...request, v: VERSION, ticket }) as any;
     assert.equal(reply.ticket, ticket); assert.equal(reply.v, VERSION); return reply;
   }
@@ -28,7 +31,7 @@ async function fixture() {
   function decode(reply: any, text: string, version = 1, previous?: SemanticChunk, complete = true): SemanticChunk {
     return decodeSemanticSourceReply(reply, reply.ticket, descriptor, [{ key: 'code', generation: 1, source_version: version,
       revision: previous ? previous.revision + 1 : 1, source_bytes: Buffer.byteLength(text), replace_from: previous?.committed_bytes ?? 0, complete,
-      ...(previous?.lease ? { lease: previous.lease } : {}), replacementText: Buffer.from(text).subarray(previous?.committed_bytes ?? 0).toString('utf8') }], 64 << 20).sources[0]!;
+      ...(previous?.lease ? { lease: previous.lease } : {}), replacementText: Buffer.from(text).subarray(previous?.committed_bytes ?? 0).toString('utf8') }], 64 << 20, HIGHLIGHT_LIMITS).sources[0]!;
   }
   async function source(text: string, language = 'bash', complete = true) {
     const reply = await call({ op: complete ? 'highlight' : 'stream.open', instance: descriptor.instance, admission: 'bounded_queue', queue_wait_ms: 1000,
@@ -36,7 +39,7 @@ async function fixture() {
     assert.equal(reply.status, 'ok'); return decode(reply, text, 1, undefined, complete);
   }
   async function append(previous: SemanticChunk, delta: string, complete: boolean) {
-    return call({ op: 'stream.append', instance: descriptor.instance, admission: 'bounded_queue', queue_wait_ms: 1000, key: 'code', lease: previous.lease,
+    return call({ op: 'stream.append', instance: descriptor.instance, admission: 'bounded_queue', queue_wait_ms: 1000, key: 'code', lease: previous.lease!,
       generation: 1, source_version: previous.source_version + 1, base_revision: previous.revision, base_bytes: previous.source_bytes, append: delta, final: complete });
   }
   async function close() {
@@ -93,16 +96,17 @@ test('actual owned helper validates whole batches before work and resolves the c
     const reply = await f.call({ op: 'styles.resolve', instance: f.descriptor.instance, vocabulary: f.descriptor.vocabulary.fingerprint,
       admission: 'bounded_queue', queue_wait_ms: 1000, rules: definition, contexts });
     const result = decodeSemanticStyleReply(reply, reply.ticket, f.descriptor, { vocabulary: f.descriptor.vocabulary.fingerprint,
-      rules: fingerprintRules(definition), bindingSlots: definition.binding_slots }, contexts.length, 64 << 20);
+      rules: fingerprintRules(definition), bindingSlots: definition.binding_slots }, contexts.length, 64 << 20, HIGHLIGHT_LIMITS);
     assert.equal(result.indices.length, contexts.length);
     assert.equal(Object.hasOwn(reply.body, 'palette'), false);
     const beforeOldVersion = f.transport.stats();
     await assert.rejects(f.transport.request({ v: 3, ticket: 'old-v3-source', instance: f.descriptor.instance, op: 'highlight',
-      admission: 'bounded_queue', queue_wait_ms: 1000, sources: [{ key: 'old', generation: 1, source_version: 1, hint: { language: 'bash' }, text: 'echo old' }] }),
+      admission: 'bounded_queue', queue_wait_ms: 1000, sources: [{ key: 'old', generation: 1, source_version: 1, hint: { language: 'bash' }, text: 'echo old' }] } as unknown as SemanticTransportRequest),
     /stdio invalid request header/);
     assert.deepEqual(f.transport.stats(), beforeOldVersion, 'the TypeScript adapter rejects v3 before native dispatch');
     const rejected = await f.call({ op: 'stream.open', instance: f.descriptor.instance, admission: 'bounded_queue', queue_wait_ms: 1000,
-      sources: [{ key: 'first', generation: 1, source_version: 1, text: 'echo x' }, { key: 'second', generation: 0, source_version: 1, text: 'echo y' }] });
+      sources: [{ key: 'first', generation: 1, source_version: 1, hint: { language: null, path: null }, text: 'echo x' },
+        { key: 'second', generation: 0, source_version: 1, hint: { language: null, path: null }, text: 'echo y' }] });
     assert.equal(rejected.status, 'error'); assert.equal(rejected.error.execution, 'not_started'); assert.equal(Object.hasOwn(rejected, 'body'), false);
     assert.equal((await f.call({ op: 'describe' })).body.runtime.leases, 0);
     const large = await f.source('x'.repeat(8193)); assert.equal(large.source_bytes, 8193); assert.equal(large.counters.tail_bytes, 8193);
@@ -156,8 +160,8 @@ test('actual owned helper advertises bounded DATA and refuses byte or line overf
   const f = await fixture();
   try {
     assert.equal(f.descriptor.limits.source_bytes, HIGHLIGHT_LIMITS.sourceBytes);
-    assert.equal(f.descriptor.limits.request_bytes, HIGHLIGHT_LIMITS.dataWireBytes);
-    assert.equal(f.descriptor.limits.reply_bytes, HIGHLIGHT_LIMITS.dataWireBytes);
+    assert.equal(f.descriptor.limits.request_bytes, OCCIPITAL_LIMITS.dataWireBytes);
+    assert.equal(f.descriptor.limits.reply_bytes, OCCIPITAL_LIMITS.dataWireBytes);
     for (const text of ['a'.repeat(HIGHLIGHT_LIMITS.sourceBytes + 1), '\n'.repeat(HIGHLIGHT_LIMITS.sourceLines + 1)]) {
       const rejected = await f.call({ op: 'stream.open', instance: f.descriptor.instance, admission: 'bounded_queue', queue_wait_ms: 1000,
         sources: [{ key: 'code', generation: 1, source_version: 1, hint: { language: 'text' }, text }] });

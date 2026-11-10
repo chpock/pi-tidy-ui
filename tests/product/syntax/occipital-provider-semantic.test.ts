@@ -1,9 +1,11 @@
 import '../../fixtures/test-guard.mjs';
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { setImmediate as turn } from 'node:timers/promises';
 import { ProviderBroker, type ProviderTransport } from '../../../src/occipital/provider.ts';
 import type { TransportEnd } from '../../../src/occipital/transport-end.ts';
 import { semanticDescriptor } from '../../fixtures/semantic-provider.ts';
+import type { SemanticTransportRequest } from '../../../src/occipital/semantic-protocol.ts';
 
 const fingerprint = 'a'.repeat(64);
 function descriptor(ticket: unknown) { return semanticDescriptor(ticket, 'peer'); }
@@ -12,9 +14,9 @@ class Transport implements ProviderTransport {
   readonly ended = new Promise<TransportEnd>(resolve => { this.#end = resolve; });
   endReason: TransportEnd | undefined;
   closes = 0;
-  calls: { request: Record<string, unknown>; waitOnly?: boolean }[] = [];
-  reply: (request: Record<string, unknown>) => Promise<unknown> = async request => descriptor(request.ticket);
-  request(request: Record<string, unknown>, options?: Parameters<ProviderTransport['request']>[1]) {
+  calls: { request: SemanticTransportRequest; waitOnly?: boolean }[] = [];
+  reply: (request: SemanticTransportRequest) => Promise<unknown> = async request => descriptor(request.ticket);
+  request(request: SemanticTransportRequest, options?: Parameters<ProviderTransport['request']>[1]) {
     this.calls.push({ request, waitOnly: options?.waitOnly });
     return this.reply(request);
   }
@@ -55,6 +57,30 @@ for (const replyBytes of [524288, 524289, 64 << 20]) test(`semantic provider vol
   assert.equal(provider.snapshot().description!.limits.reply_bytes, 524288);
 });
 
+test('semantic provider: caller abort does not settle a DATA request before local transport settlement', async t => {
+  const transport = new Transport(), provider = broker(transport); t.after(() => provider.dispose());
+  await provider.start();
+  let settle!: (value: unknown) => void;
+  transport.reply = () => new Promise(resolve => { settle = resolve; });
+  const signal = new AbortController(), request = { v: 4 as const, op: 'highlight' as const, ticket: 'abort-race', instance: 'peer',
+    admission: 'try_now' as const, sources: [{ key: 'source', generation: 1, source_version: 1, hint: { language: null, path: null }, text: 'x' }] };
+  const response = provider.request(provider.snapshot().generation, request, { signal: signal.signal });
+  const settled = provider.whenSettled();
+  let responseState: 'pending' | 'fulfilled' | 'rejected' = 'pending', settledState: boolean | undefined;
+  void response.then(() => { responseState = 'fulfilled'; }, () => { responseState = 'rejected'; });
+  void settled.then(value => { settledState = value; });
+  signal.abort();
+  await turn();
+  assert.equal(signal.signal.aborted, true);
+  assert.equal(responseState, 'pending');
+  assert.equal(settledState, undefined);
+  const reply = { correlated: true };
+  settle(reply);
+  assert.deepEqual(await response, reply);
+  assert.equal(await settled, true);
+  assert.equal(responseState, 'fulfilled');
+});
+
 test('semantic provider: forwards the call-local measured reply size without retaining payloads', async t => {
   const transport = new Transport(), provider = broker(transport); t.after(() => provider.dispose());
   const original = transport.request.bind(transport), measured: { ticket?: string; bytes?: number } = {};
@@ -66,7 +92,7 @@ test('semantic provider: forwards the call-local measured reply size without ret
     return original(request, options);
   };
   await provider.start();
-  await provider.request(provider.snapshot().generation, { v: 4, op: 'highlight', ticket: 'measured' }, { replySize: measured });
+  await provider.request(provider.snapshot().generation, { v: 4, op: 'highlight', ticket: 'measured', instance: 'peer', admission: 'try_now', sources: [] }, { replySize: measured });
   assert.deepEqual(measured, { ticket: 'measured', bytes: 123 });
 });
 

@@ -1,3 +1,4 @@
+import { HIGHLIGHT_LIMITS } from '../../../src/highlighting/limits.ts';
 import '../../fixtures/test-guard.mjs';
 import { installProjection, visitProjection, projectionRanges } from '../../fixtures/pi-projection.ts';
 import assert from 'node:assert/strict';
@@ -13,11 +14,11 @@ import type { ContextRef } from '../../../src/highlighting/context-arena.ts';
 
 const vectors = JSON.parse(readFileSync(new URL('../../../protocol/syntax-v4/vectors.json', import.meta.url), 'utf8'));
 const vocabulary = 'a'.repeat(64), rules = 'b'.repeat(64), grant = () => true;
-const paths = decodeContextBatch([vectors.contexts[0].encoded], { vocabularySize: vectors.vocabulary_size, maxBytes: 1 << 20 }).batches[0]!;
+const paths = decodeContextBatch([vectors.contexts[0].encoded], { vocabularySize: vectors.vocabulary_size, maxBytes: 1 << 20 }, HIGHLIGHT_LIMITS).batches[0]!;
 const literalFixture = vectors.styles.find((vector: { name: string }) => vector.name === 'literal-binding-inherit-and-explicit-clear');
-const decoded = decodeStyleResult(literalFixture.body, { vocabulary, rules, bindingSlots: literalFixture.binding_slots }, literalFixture.context_count, 1 << 20);
+const decoded = decodeStyleResult(literalFixture.body, { vocabulary, rules, bindingSlots: literalFixture.binding_slots }, literalFixture.context_count, 1 << 20, HIGHLIGHT_LIMITS);
 const indexedFixture = vectors.styles.find((vector: { name: string }) => vector.name === 'indexed-is-not-guessed-rgb');
-const indexed = decodeStyleResult(indexedFixture.body, { vocabulary, rules, bindingSlots: indexedFixture.binding_slots }, indexedFixture.context_count, 1 << 20);
+const indexed = decodeStyleResult(indexedFixture.body, { vocabulary, rules, bindingSlots: indexedFixture.binding_slots }, indexedFixture.context_count, 1 << 20, HIGHLIGHT_LIMITS);
 const caller: ConcreteStyle = { foreground: { kind: 'terminal-default' }, background: { kind: 'terminal-default' }, attributes: 0 };
 const literalStyle = materializeStyle(decoded.styles[0]!, [], caller), indexedStyle = materializeStyle(indexed.styles[0]!, [], caller);
 
@@ -32,8 +33,7 @@ function chunk(key: string, generation: number, text: string, options: Partial<S
     : source_bytes > replace_from ? [source_bytes - replace_from, 1] : [];
   return decodeSemanticSources({ kind: 'source', vocabulary, sources: [{ ...metadata,
     committed_bytes: complete ? source_bytes : replace_from + Buffer.from(replacementText).lastIndexOf(10) + 1, contexts, runs,
-    counters: { committed_line_calls: 0, committed_line_bytes: 0, tail_calls: 0, tail_bytes: 0 } }] },
-  { vocabulary, vocabularySize: vectors.vocabulary_size, sourceBytes: 1 << 20, runs: 10000, batchSources: 8 }, [expected], 64 << 20).sources[0]!;
+    counters: { committed_line_calls: 0, committed_line_bytes: 0, tail_calls: 0, tail_bytes: 0 } }] }, { vocabulary, vocabularySize: vectors.vocabulary_size, sourceBytes: 1 << 20, runs: 10000, batchSources: 8 }, [expected], 64 << 20, HIGHLIGHT_LIMITS).sources[0]!;
 }
 function references(pool: SemanticRetentionPool, generation: number) {
   const refs = new Set<ContextRef>(); pool.visitRanges(generation, (_a, _b, ref) => { if (ref) refs.add(ref); }); return [...refs];

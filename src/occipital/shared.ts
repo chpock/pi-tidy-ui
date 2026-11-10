@@ -1,10 +1,10 @@
-import { SEMANTIC_CAPABILITY, SEMANTIC_PROTOCOL_VERSION, SEMANTIC_OPERATIONS } from './semantic-protocol.ts';
-import { HIGHLIGHT_LIMITS } from './limits.ts';
+import { SEMANTIC_CAPABILITY, SEMANTIC_PROTOCOL_VERSION, SEMANTIC_OPERATIONS, type SemanticTransportRequest } from './semantic-protocol.ts';
+import { OCCIPITAL_LIMITS } from './limits.ts';
 import { dataJsonBytes, type ReplySize } from './data-json.ts';
 import { RequestFailure } from './request-failure.ts';
 import type { TransportEnd } from './transport-end.ts';
 
-const DATA_BYTES = HIGHLIGHT_LIMITS.dataWireBytes;
+const DATA_BYTES = OCCIPITAL_LIMITS.dataWireBytes;
 export const SHARED_LIMITS = Object.freeze({
   dataCalls: 2, controlCalls: 1,
   requestBytes: DATA_BYTES, replyBytes: DATA_BYTES,
@@ -130,7 +130,7 @@ function field(value: Record<string, unknown>, key: string): unknown {
 }
 
 /** Count plain JSON before stringify, including escapes, without a source-sized temporary. */
-function encodeRequest(request: Record<string, unknown>, cap: number): Uint8Array {
+function encodeRequest(request: SemanticTransportRequest, cap: number): Uint8Array {
   let count: number;
   try { count = dataJsonBytes(request, cap, true); }
   catch (error) {
@@ -206,7 +206,7 @@ export class SharedTransport {
     void SharedTransport.initialize(owner, options.loadSdk ?? defaultLoader, options.connectionFile, identity, initMs);
   }
 
-  request(request: Record<string, unknown>, options: SharedRequestOptions = {}): Promise<unknown> {
+  request(request: SemanticTransportRequest, options: SharedRequestOptions = {}): Promise<unknown> {
     try {
       if (this.state !== 'ready' || !this.connection || !this.route) throw new SharedError('shared not ready');
       const deadlineMs = duration(options.deadlineMs ?? this.deadlineMs);

@@ -1,3 +1,4 @@
+import { HIGHLIGHT_LIMITS } from '../../../src/highlighting/limits.ts';
 import '../../fixtures/test-guard.mjs';
 import assert from 'node:assert/strict';
 import test from 'node:test';
@@ -6,7 +7,7 @@ import { ContextArena } from '../../../src/highlighting/context-arena.ts';
 import { decodeContextBatch, SemanticError } from '../../../src/occipital/semantic-codec.ts';
 
 const vocabulary = 'a'.repeat(64), grant = () => true;
-const decode = (rows: number[][][]) => decodeContextBatch(rows, { vocabularySize: 65536, maxBytes: 64 << 20 }).batches;
+const decode = (rows: number[][][]) => decodeContextBatch(rows, { vocabularySize: 65536, maxBytes: 64 << 20 }, HIGHLIGHT_LIMITS).batches;
 
 test('context arena: equivalent ordered contexts share handles across replies, but parsed-empty is not neutral zero', () => {
   const arena = new ContextArena();

@@ -1,3 +1,4 @@
+import { HIGHLIGHT_LIMITS } from '../../../src/highlighting/limits.ts';
 import '../../fixtures/test-guard.mjs';
 import assert from 'node:assert/strict';
 import test from 'node:test';
@@ -16,8 +17,7 @@ function chunk(text: string, contexts: number[][], runs: number[], options: Part
   const { replacementText: _text, ...metadata } = expected;
   return decodeSemanticSources({ kind: 'source', vocabulary, sources: [{ ...metadata,
     committed_bytes: complete ? source_bytes : replace_from + Buffer.from(replacementText).lastIndexOf(10) + 1,
-    contexts, runs, counters }] }, { vocabulary, vocabularySize: 100, sourceBytes: 1 << 20, runs: 1000, batchSources: 8 },
-  [expected], 64 << 20).sources[0]!;
+    contexts, runs, counters }] }, { vocabulary, vocabularySize: 100, sourceBytes: 1 << 20, runs: 1000, batchSources: 8 }, [expected], 64 << 20, HIGHLIGHT_LIMITS).sources[0]!;
 }
 function basis() {
   const arena = new ContextArena();

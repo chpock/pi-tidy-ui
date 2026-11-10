@@ -4,7 +4,7 @@ import type { DataCharge } from '../resources/data-budget.ts';
 import { preparePiFlat, type PiRowReader, type PreparedPiFlat } from './pi-flat.ts';
 import type { StagedPiProjection } from '../highlighting/pi-projection.ts';
 import type { ConcreteStyle } from '../appearance/style-materialization.ts';
-import { HIGHLIGHT_LIMITS } from '../occipital/limits.ts';
+import { HIGHLIGHT_LIMITS } from '../highlighting/limits.ts';
 import { highlightingPrefix } from './highlighting-prefix.ts';
 
 export type SyntaxDemand = SourceDemand & {

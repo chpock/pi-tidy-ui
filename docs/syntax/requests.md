@@ -14,6 +14,8 @@ STYLE captures different data. `prepareStyles` retains the semantic views and co
 
 Every controller job gets a unique ticket and call-local reply-size record. The broker’s generation-bound `request` is a pass-through, not another source queue or retry engine. Its reserved ticket prefix separates its metadata operations from controller operations.
 
+`src/occipital/semantic-protocol.ts` owns the plain JSON request types. `SemanticDataRequest` distinguishes finite/open SOURCE, append, close and generic STYLE; the broker accepts only this DATA set. `SemanticTransportRequest` additionally permits source-free `describe` on CONTROL. The admission variants require a wait value for `bounded_queue` and forbid it for `try_now`; close has no admission fields. SOURCE hints permit absent or null language/path fields. Numeric ranges, array cardinality and incoming values still require runtime validation; request typing neither copies envelopes nor treats a raw reply as decoded.
+
 ## Preflight before encoding, validation before adoption
 
 The request path checks actual JSON policy size rather than rejecting a source from a worst-case text-size multiplier. `SourceController.dispatch` uses `dataJsonBytes` with the negotiated request cap before entering the provider. The transport then enforces its own lane and encoding bounds.
@@ -32,7 +34,7 @@ A well-framed response is therefore not yet a valid source result, and a valid s
 
 For SOURCE, `semantic-source.ts` validates exact batch membership, versions, revisions, lease conditions and byte coverage. It checks scalar boundaries against the captured replacement suffix and checks the committed boundary against that supplied text. Context expansion is inspected for the complete response before typed context/range vectors are materialized. The adopted range representation uses absolute endpoints; the wire’s length pairs remain defined by the [protocol reference](../occipital/protocol.md).
 
-For STYLE, `semantic-protocol.ts` verifies the negotiated vocabulary and rule identity before adoption. `semantic-codec.ts` then validates the complete expression/context mapping and its controlled decoded cost. Structural validity alone cannot make data from another rule interpretation interchangeable.
+For STYLE, `semantic-protocol.ts` verifies the negotiated vocabulary and rule identity before adoption. `semantic-codec.ts` then validates the complete expression/context mapping and its controlled decoded cost. Native decoders require explicit read-only `SemanticDecodeLimits`: SOURCE uses source bytes, expanded context words and decoded units; context-only and STYLE decoders require only the fields they consume. The highlighting owner passes its existing immutable `HIGHLIGHT_LIMITS` directly. Policy ceilings remain separate from negotiated provider limits and the caller's already-funded `availableBytes`; SOURCE retains both its aggregate decoded clamp and its source-coverage clamp. Consumed policy values are checked as nonnegative safe integers, not restricted by wire-field integer widths. Effective SOURCE coverage may be zero after consumer-policy clamping: only empty sources can then fit, and their metadata still requires decoded funding. Negotiated descriptor limits remain strictly positive. Schema/identity checks and complete cost inspection still precede expanded vectors. Native has no hidden highlighting-policy default. Its separate `OCCIPITAL_LIMITS.dataWireBytes` carrier guard does not substitute for semantic expansion checks. Structural validity alone cannot make data from another rule interpretation interchangeable.
 
 ## Size evidence is call-local, not a payload cache
 
@@ -65,6 +67,8 @@ Closure requests route cleanup and closes this client’s connection. It does no
 The adapters also differ in how they obtain reply-size evidence: stdio measures received bytes, whereas shared transport counts the already-parsed application value. They share consumer semantics, not identical physical I/O ownership.
 
 ## A caller’s wait can end before the operation
+
+The broker's DATA API has no `waitOnly` option. Its single promise follows the correlated outcome or actual local transport release; aborting the caller's signal alone does not settle it. Local shared-connection cleanup can release that promise without proving remote execution stopped. The controller interprets those distinct facts without a second settlement promise or ledger.
 
 The transport has an optional wait-only policy for CONTROL callers. On an ordinary request, deadline expiry retires the transport with uncertain execution. For a wait-only CONTROL request, expiry rejects that caller’s wait while leaving its correlation, bytes and CONTROL slot owned until actual settlement; another metadata call cannot build an unbounded queue behind it. Current protocol negotiation uses source-free `describe`; there is no theme-catalogue operation.
 

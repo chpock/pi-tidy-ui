@@ -9,7 +9,8 @@ import { SemanticRetentionPool } from '../../../src/highlighting/semantic-retent
 import { fingerprintRules } from '../../../src/occipital/style-rules.ts';
 import { compactSelection, syntheticSelection } from '../../fixtures/test-style-selection.ts';
 import type { ConcreteStyle } from '../../../src/appearance/style-materialization.ts';
-import { HIGHLIGHT_LIMITS, OCCIPITAL_LIMITS } from '../../../src/occipital/limits.ts';
+import { OCCIPITAL_LIMITS } from '../../../src/occipital/limits.ts';
+import { HIGHLIGHT_LIMITS } from '../../../src/highlighting/limits.ts';
 import { RequestFailure } from '../../../src/occipital/request-failure.ts';
 import type { ProviderSnapshot } from '../../../src/occipital/provider.ts';
 import { ProviderBroker } from '../../../src/occipital/provider.ts';
@@ -434,7 +435,7 @@ test('SOURCE observation is independent of local palette selection and is not co
 
 test('current temporary family holds two full64KiB source jobs with independent2MiB decoded reservations', async () => {
   const l = HIGHLIGHT_LIMITS, { host, controller: c } = fixture();
-  const full = 7*l.sourceBytes + 4*l.dataWireBytes + l.decodedBytes + 32768 + 1024;
+  const full = 7*l.sourceBytes + 4*OCCIPITAL_LIMITS.dataWireBytes + l.decodedBytes + 32768 + 1024;
   assert.equal(CONTROLLER_LIMITS.transientBytes, 2*full);
   const text = 'x'.repeat(l.sourceBytes);
   assert.equal(c.observe(demand(text, 1, true, 'a')), true);

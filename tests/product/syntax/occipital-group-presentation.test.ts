@@ -8,7 +8,7 @@ import { CARD_ROLES, type CardRole } from '../../../src/appearance/card-roles.ts
 import { decodeSemanticDescription } from '../../../src/occipital/semantic-protocol.ts';
 import { fingerprintRules } from '../../../src/occipital/style-rules.ts';
 import { RequestFailure } from '../../../src/occipital/request-failure.ts';
-import { HIGHLIGHT_LIMITS } from '../../../src/occipital/limits.ts';
+import { HIGHLIGHT_LIMITS } from '../../../src/highlighting/limits.ts';
 import type { ConcreteStyle } from '../../../src/appearance/style-materialization.ts';
 import { semanticDescriptor } from '../../fixtures/semantic-provider.ts';
 import { createSemanticRuleDefinition, SEMANTIC_REGIONS } from '../../../src/syntax/semantic-rules.ts';

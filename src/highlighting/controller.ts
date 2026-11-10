@@ -6,7 +6,7 @@ import type { DataCharge, DataGrant, GeometryFunding } from '../resources/data-b
 import type { ContextRef } from './context-arena.ts';
 import { CARD_ROLES, type CardRole } from '../appearance/card-roles.ts';
 import type { SemanticCaptureGroup } from './semantic-capture.ts';
-import { decodeSemanticStyleReply, type SemanticStyleExpectation } from '../occipital/semantic-protocol.ts';
+import { decodeSemanticStyleReply, type SemanticDataRequest, type SemanticStyleExpectation } from '../occipital/semantic-protocol.ts';
 import type { CaptureSelection, ReadyDisplayUpdate } from './semantic-retention.ts';
 export type { StyleSelection } from './controller-styles.ts';
 import { type DiagnosticFields, type DiagnosticLevel, type DiagnosticSink, diagnose, diagnosticError, reportRuntime, unexpectedDiagnostic } from '../diagnostics.ts';
@@ -15,7 +15,8 @@ import { decodeSemanticClosed as decodeClosed, decodeSemanticSourceReply, SEMANT
 import type { SemanticExpectation as ExpectedSource } from '../occipital/semantic-source.ts';
 import type { ConcreteStyle } from '../appearance/style-materialization.ts';
 import { SemanticRetentionPool, type SemanticRelease as ReleaseReceipt } from './semantic-retention.ts';
-import { HIGHLIGHT_LIMITS, OCCIPITAL_LIMITS } from '../occipital/limits.ts';
+import { OCCIPITAL_LIMITS } from '../occipital/limits.ts';
+import { HIGHLIGHT_LIMITS } from './limits.ts';
 import { dataJsonBytes, type ReplySize } from '../occipital/data-json.ts';
 import { RequestFailure } from '../occipital/request-failure.ts';
 import type { ProviderBroker } from '../occipital/provider.ts';
@@ -1525,7 +1526,7 @@ export class SourceController {
       if (members.length) this.pool.captureDisplays(captureSelections, bytes => { capturePeak = bytes; return false; });
       if (members.length && !capturePeak) { refuse(); return; }
       const decodedBytes = Math.min(this.maxDecodedBytes, 256 * (missing.length + 26) + 4 * missing.length + 258);
-      const frameBytes = Math.min(HIGHLIGHT_LIMITS.dataWireBytes, Math.max(description.limits.request_bytes, description.limits.reply_bytes));
+      const frameBytes = Math.min(OCCIPITAL_LIMITS.dataWireBytes, Math.max(description.limits.request_bytes, description.limits.reply_bytes));
       // Complete-table materialization uses every captured context, not merely
       // the requested missing subset; the reply may arrive after parser advance.
       const bytes = 4 * frameBytes + encodedPeak + capturePeak + decodedBytes + scratch + 32768 + 1024 + members.length * 128 + missing.length * 16;
@@ -1548,9 +1549,12 @@ export class SourceController {
       job.styleCharge = this.selectionCharge!.retain();
       this.counters.styleDispatches++;
       const admission = this.options.admission ?? 'bounded_queue';
-      this.dispatch(job, { v: PROTOCOL_VERSION, ticket: job.ticket, instance: description.instance, op: 'styles.resolve', vocabulary, contexts: encoded,
-        rules: selection.input.definition, admission,
-        ...(admission === 'bounded_queue' ? { queue_wait_ms: Math.min(this.options.queueWaitMs ?? description.limits.queue_wait_ms, description.limits.queue_wait_ms) } : {}) });
+      const common = { v: PROTOCOL_VERSION as typeof PROTOCOL_VERSION, ticket: job.ticket, instance: description.instance, op: 'styles.resolve' as const,
+        vocabulary, contexts: encoded, rules: selection.input.definition };
+      const request = admission === 'bounded_queue'
+        ? { ...common, admission, queue_wait_ms: Math.min(this.options.queueWaitMs ?? description.limits.queue_wait_ms, description.limits.queue_wait_ms) }
+        : { ...common, admission };
+      this.dispatch(job, request);
     } finally { pendingCapture?.release(); grant.close(); }
     } catch (error) {
       refuse(); this.counters.styleRejections++;
@@ -1679,7 +1683,7 @@ export class SourceController {
         }
         return;
       }
-      const decoded = decodeSemanticStyleReply(raw, job.ticket, job.description, style.expected, style.refs.length, style.decodedBytes, job.replySize);
+      const decoded = decodeSemanticStyleReply(raw, job.ticket, job.description, style.expected, style.refs.length, style.decodedBytes, HIGHLIGHT_LIMITS, job.replySize);
       const reserve = (bytes: number) => this.styleReserve(undefined, bytes);
       if (!this.pool.arena.installStyles(style.expected.vocabulary, style.expected.rules, style.refs, decoded.styles, decoded.indices, reserve)) {
         this.refuseStyleJob(style); return;
@@ -1723,7 +1727,7 @@ export class SourceController {
   }
   private reservation(captureUnits: number, replacementUnits: number, inputUnits: number, replacementBytes: number, d: Description): number {
     return sourceReservation({ captureUnits, replacementUnits, inputUnits, replacementBytes,
-      frameBytes: Math.min(HIGHLIGHT_LIMITS.dataWireBytes, Math.max(d.limits.request_bytes, d.limits.reply_bytes)),
+      frameBytes: Math.min(OCCIPITAL_LIMITS.dataWireBytes, Math.max(d.limits.request_bytes, d.limits.reply_bytes)),
        decodedBytes: this.maxDecodedBytes });
   }
   private capacity(bytes: number): boolean {
@@ -1757,13 +1761,16 @@ export class SourceController {
     job.source = { capture: { version: snapshot.version, text: snapshot.text }, expected, replaceUnits: from, open,
       decodedBytes: this.maxDecodedBytes };
     const admission = this.options.admission ?? 'bounded_queue';
-    const common = { v: PROTOCOL_VERSION, ticket: job.ticket, instance: description.instance, admission,
-      ...(admission === 'bounded_queue' ? { queue_wait_ms: Math.min(this.options.queueWaitMs ?? description.limits.queue_wait_ms, description.limits.queue_wait_ms) } : {}) };
-    const request = append ? { ...common, op: 'stream.append', key: status.key, generation: state.generation, lease: state.lease,
-      base_revision: status.revision, base_bytes: basis.utf8Bytes, source_version: snapshot.version,
-       append: snapshot.text.slice(inputFrom), final: state.complete }
-      : { ...common, op: state.complete ? 'highlight' : 'stream.open', sources: [{ key: status.key,
-         generation: state.generation, source_version: snapshot.version,
+    const common = { v: PROTOCOL_VERSION, ticket: job.ticket, instance: description.instance } as const;
+    const admissionFields = admission === 'bounded_queue'
+      ? { admission, queue_wait_ms: Math.min(this.options.queueWaitMs ?? description.limits.queue_wait_ms, description.limits.queue_wait_ms) }
+      : { admission };
+    const request: SemanticDataRequest = append
+      ? { ...common, ...admissionFields, op: 'stream.append', key: status.key, generation: state.generation, lease: state.lease!,
+        base_revision: status.revision, base_bytes: basis.utf8Bytes, source_version: snapshot.version,
+        append: snapshot.text.slice(inputFrom), final: state.complete }
+      : { ...common, ...admissionFields, op: state.complete ? 'highlight' : 'stream.open', sources: [{ key: status.key,
+        generation: state.generation, source_version: snapshot.version,
         hint: { ...(state.language === undefined ? {} : { language: state.language }), ...(state.path === undefined ? {} : { path: state.path }) }, text: snapshot.text }] };
     // The transport/codec alone checks the actual encoded frame size. No JSON
     // serialization or worst-case-size rejection happens at this boundary.
@@ -1778,12 +1785,12 @@ export class SourceController {
     this.counters.peakTransientBytes = Math.max(this.counters.peakTransientBytes, this.transientBytes);
     this.counters.peakJobs = Math.max(this.counters.peakJobs, this.jobs.size); return job;
   }
-  private dispatch(job: Job, request: Record<string, unknown>): void {
+  private dispatch(job: Job, request: SemanticDataRequest): void {
     this.counters.dispatches++; const observers = completion(this.owner, job);
     this.log('DEBUG', 'Native job dispatched', { source: job.key, job: job.id, generation: job.generation, provider: job.provider,
       operation: typeof request.op === 'string' ? request.op : 'unknown', version: job.source?.expected.source_version,
       sourceBytes: job.source?.expected.source_bytes, reservedBytes: job.bytes });
-    try { dataJsonBytes(request, Math.min(HIGHLIGHT_LIMITS.dataWireBytes, job.description.limits.request_bytes)); }
+    try { dataJsonBytes(request, Math.min(OCCIPITAL_LIMITS.dataWireBytes, job.description.limits.request_bytes)); }
     catch { observers.failed(Object.assign(new RequestFailure('occipital data request byte limit', 'not_started'), { code: 'frame_limit' })); return; }
     try { void this.provider.request(job.provider, request, { signal: job.abort.signal, deadlineMs: this.options.deadlineMs, acceptRetired: true, replySize: job.replySize })
       .then(observers.reply, observers.failed).catch(ignored); } catch (error) { observers.failed(error); }
@@ -1880,7 +1887,7 @@ export class SourceController {
       }
       if (!job.source || job.stopped) return;
       const source = job.source, chunk = decodeSemanticSourceReply(raw, job.ticket, job.description,
-        [source.expected], source.decodedBytes, job.replySize).sources[0]!;
+        [source.expected], source.decodedBytes, HIGHLIGHT_LIMITS, job.replySize).sources[0]!;
       this.counters.decodedBytes += chunk.source_bytes - chunk.replace_from;
       if (!useful) {
         if (state?.id === job.stateId && state.provider === job.provider && !state.uncertain) {

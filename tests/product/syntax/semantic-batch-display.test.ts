@@ -1,3 +1,4 @@
+import { HIGHLIGHT_LIMITS } from '../../../src/highlighting/limits.ts';
 import '../../fixtures/test-guard.mjs';
 import assert from 'node:assert/strict';
 import test from 'node:test';
@@ -13,11 +14,11 @@ import { materializeStyle, type ConcreteStyle } from '../../../src/appearance/st
 
 const vectors = JSON.parse(readFileSync(new URL('../../../protocol/syntax-v4/vectors.json', import.meta.url), 'utf8'));
 const vocabulary = 'a'.repeat(64), rules = 'b'.repeat(64);
-const paths = decodeContextBatch([vectors.contexts[0].encoded], { vocabularySize: vectors.vocabulary_size, maxBytes: 1 << 20 }).batches[0]!;
+const paths = decodeContextBatch([vectors.contexts[0].encoded], { vocabularySize: vectors.vocabulary_size, maxBytes: 1 << 20 }, HIGHLIGHT_LIMITS).batches[0]!;
 const fixture = vectors.styles.find((value: { name: string }) => value.name === 'literal-binding-inherit-and-explicit-clear');
-const decoded = decodeStyleResult(fixture.body, { vocabulary, rules, bindingSlots: fixture.binding_slots }, fixture.context_count, 1 << 20);
+const decoded = decodeStyleResult(fixture.body, { vocabulary, rules, bindingSlots: fixture.binding_slots }, fixture.context_count, 1 << 20, HIGHLIGHT_LIMITS);
 const indexedFixture = vectors.styles.find((value: { name: string }) => value.name === 'indexed-is-not-guessed-rgb');
-const indexed = decodeStyleResult(indexedFixture.body, { vocabulary, rules, bindingSlots: indexedFixture.binding_slots }, indexedFixture.context_count, 1 << 20);
+const indexed = decodeStyleResult(indexedFixture.body, { vocabulary, rules, bindingSlots: indexedFixture.binding_slots }, indexedFixture.context_count, 1 << 20, HIGHLIGHT_LIMITS);
 const caller: ConcreteStyle = { foreground: { kind: 'terminal-default' }, background: { kind: 'terminal-default' }, attributes: 0 };
 const oldStyle = materializeStyle(decoded.styles[0]!, [], caller), nextStyle = materializeStyle(indexed.styles[0]!, [], caller);
 function source(key: string, generation: number, revision = 1): SemanticChunk {

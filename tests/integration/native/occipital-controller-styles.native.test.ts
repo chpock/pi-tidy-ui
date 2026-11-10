@@ -1,3 +1,4 @@
+import type { SemanticDataRequest } from '../../../src/occipital/semantic-protocol.ts';
 import '../../fixtures/test-guard.mjs';
 import assert from 'node:assert/strict';
 import test from 'node:test';
@@ -79,7 +80,7 @@ test('actual v4 styles executor: first selected palette V1 survives real parser 
   // style body are produced by the real broker/stdio/helper, not fixture ranges.
   const provider = { snapshot: () => broker.snapshot(), isReady: (generation: number) => broker.isReady(generation),
     classificationAccepted: (generation: number) => broker.classificationAccepted(generation),
-    request(generation: number, request: Record<string, unknown>, options?: Parameters<ProviderBroker['request']>[2]) {
+    request(generation: number, request: SemanticDataRequest, options?: Parameters<ProviderBroker['request']>[2]) {
       const result = broker.request(generation, request, options);
       if (request.op !== 'styles.resolve' || held) return result;
       held = true; return result.then(async value => { arrived(); await gate; return value; });
@@ -117,8 +118,8 @@ test('actual v4 empty-context group: selected local palette needs no helper styl
   const requests: { op: unknown; contexts: unknown; sourceFields: boolean }[] = [];
   const provider = { snapshot: () => broker.snapshot(), isReady: (generation: number) => broker.isReady(generation),
     classificationAccepted: (generation: number) => broker.classificationAccepted(generation),
-    request(generation: number, request: Record<string, unknown>, options?: Parameters<ProviderBroker['request']>[2]) {
-      requests.push({ op: request.op, contexts: request.contexts, sourceFields: ['sources', 'key', 'generation', 'source_version', 'text', 'lease'].some(key => key in request) });
+    request(generation: number, request: SemanticDataRequest, options?: Parameters<ProviderBroker['request']>[2]) {
+      requests.push({ op: request.op, contexts: request.op === 'styles.resolve' ? request.contexts : undefined, sourceFields: ['sources', 'key', 'generation', 'source_version', 'text', 'lease'].some(key => key in request) });
       return broker.request(generation, request, options);
     } };
   const owner = new SourceController(provider, { deadlineMs: 5000 });
@@ -159,7 +160,7 @@ for (const kind of ['follow-pi', 'owned'] as const) test(`actual v4 empty Bash: 
   const revisions: number[] = [], operations: string[] = [];
   const provider = { snapshot: () => broker.snapshot(), isReady: (generation: number) => broker.isReady(generation),
     classificationAccepted: (generation: number) => broker.classificationAccepted(generation),
-    async request(generation: number, request: Record<string, unknown>, options?: Parameters<ProviderBroker['request']>[2]) {
+    async request(generation: number, request: SemanticDataRequest, options?: Parameters<ProviderBroker['request']>[2]) {
       operations.push(String(request.op));
       const reply = await broker.request(generation, request, options) as { body?: { kind?: string; sources?: { revision: number }[] } };
       if (reply.body?.kind === 'source') revisions.push(...reply.body.sources!.map(source => source.revision));

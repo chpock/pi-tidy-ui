@@ -1,12 +1,12 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import type { EventEmitter } from 'node:events';
 import type { ReplySize } from './data-json.ts';
-import { SEMANTIC_PROTOCOL_VERSION, SEMANTIC_OPERATIONS } from './semantic-protocol.ts';
-import { HIGHLIGHT_LIMITS } from './limits.ts';
+import { SEMANTIC_PROTOCOL_VERSION, SEMANTIC_OPERATIONS, type SemanticTransportRequest } from './semantic-protocol.ts';
+import { OCCIPITAL_LIMITS } from './limits.ts';
 import { RequestFailure } from './request-failure.ts';
 import type { TransportEnd } from './transport-end.ts';
 
-const DATA_BYTES = HIGHLIGHT_LIMITS.dataWireBytes;
+const DATA_BYTES = OCCIPITAL_LIMITS.dataWireBytes;
 const CONTROL_REQUEST_BYTES = 4096;
 const CONTROL_REPLY_BYTES = 32 * 1024;
 const CANCEL_BYTES = 4096;
@@ -70,6 +70,7 @@ interface Pending {
   reject: (error: Error) => void;
 }
 interface Outgoing { ticket: string; cancel: boolean; bytes: Buffer | undefined }
+type CancelFrame = { v: typeof SEMANTIC_PROTOCOL_VERSION; cancel: string };
 class StdioError extends RequestFailure {}
 const ignoreSettlement = () => {};
 const operations: ReadonlySet<string> = new Set(SEMANTIC_OPERATIONS);
@@ -86,7 +87,7 @@ function finiteDuration(value: number, label: string): number {
 }
 
 /** Preflight plain JSON before stringify: no arbitrarily large escaped-string allocation. */
-function encode(value: Record<string, unknown>, cap: number): Buffer {
+function encode(value: SemanticTransportRequest | CancelFrame, cap: number): Buffer {
   let count = 0;
   const path = new Set<object>();
   function add(bytes: number) {
@@ -224,7 +225,7 @@ export class StdioTransport {
     }
   }
 
-  request(request: Record<string, unknown>, options: StdioRequestOptions = {}): Promise<unknown> {
+  request(request: SemanticTransportRequest, options: StdioRequestOptions = {}): Promise<unknown> {
     try {
       if (this.state !== 'running') throw new StdioError('stdio retired');
       const deadline = finiteDuration(options.deadlineMs ?? this.deadlineMs, 'deadline');

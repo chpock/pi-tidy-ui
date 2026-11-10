@@ -13,6 +13,7 @@ const sourceTypes = [ts.ScriptKind.TS, ts.ScriptKind.TSX, ts.ScriptKind.TS, ts.S
 const highlightingModules = [
   'src/highlighting/controller.ts',
   'src/highlighting/controller-limits.ts',
+  'src/highlighting/limits.ts',
   'src/highlighting/controller-styles.ts',
   'src/highlighting/context-arena.ts',
   'src/highlighting/semantic-ranges.ts',

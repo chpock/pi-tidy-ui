@@ -1,8 +1,8 @@
 // Transport-only adversarial peer. This is not a native highlighting fixture.
 import { createHash } from 'node:crypto';
 import { closeSync } from 'node:fs';
-import { HIGHLIGHT_LIMITS } from '../../src/occipital/limits.ts';
-const dataBytes = HIGHLIGHT_LIMITS.dataWireBytes;
+import { OCCIPITAL_LIMITS } from '../../src/occipital/limits.ts';
+const dataBytes = OCCIPITAL_LIMITS.dataWireBytes;
 
 const mode = process.argv[2] ?? 'echo';
 const replyControlCharacter = String.fromCodePoint(0x85);
@@ -26,6 +26,8 @@ function packet(value) {
   return Buffer.concat([header, body]);
 }
 function reply(request) {
+  const source = Array.isArray(request.sources) ? request.sources[0] : undefined;
+  const text = source?.text ?? request.text;
   if (request.fixtureExecution) return { v: 4, ticket: request.ticket, instance: 'fixture-instance', assets: 'fixture-assets',
     status: 'error', error: { code: 'cancelled', execution: request.fixtureExecution } };
   return {
@@ -33,9 +35,9 @@ function reply(request) {
     body: {
       pid: process.pid, sequence: ++sequence, cancelled: [...cancelled],
       ...(mode === 'context' ? { cwd: process.cwd(), env: process.env.OCCIPITAL_TEST_VALUE, argument: process.argv[3] } : {}),
-      text: mode === 'slow' ? undefined : request.text,
-      bytes: Buffer.byteLength(request.text ?? ''),
-      hash: createHash('sha256').update(request.text ?? '').digest('hex'),
+      text: mode === 'slow' ? undefined : text,
+      bytes: Buffer.byteLength(text ?? ''),
+      hash: createHash('sha256').update(text ?? '').digest('hex'),
     },
   };
 }

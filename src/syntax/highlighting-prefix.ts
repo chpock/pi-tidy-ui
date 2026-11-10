@@ -1,4 +1,4 @@
-import { HIGHLIGHT_LIMITS } from '../occipital/limits.ts';
+import { HIGHLIGHT_LIMITS } from '../highlighting/limits.ts';
 
 /** UTF16 endpoint and UTF8 size without allocating or encoding the visible suffix.
  * LF terminates a logical line; a terminal LF does not add an empty extra line.

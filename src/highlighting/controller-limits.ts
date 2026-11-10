@@ -1,4 +1,5 @@
-import { HIGHLIGHT_LIMITS, OCCIPITAL_LIMITS } from '../occipital/limits.ts';
+import { OCCIPITAL_LIMITS } from '../occipital/limits.ts';
+import { HIGHLIGHT_LIMITS } from './limits.ts';
 
 // Captured/codec application credit, not a V8/SDK/parser heap or RSS limit.
 // UTF16 captures/replacements/request slices and the suffix codec buffer are
@@ -12,7 +13,7 @@ export function sourceReservation(facts: { captureUnits: number; replacementUnit
 
 const fullFamily = sourceReservation({ captureUnits: HIGHLIGHT_LIMITS.sourceBytes, replacementUnits: HIGHLIGHT_LIMITS.sourceBytes,
   inputUnits: HIGHLIGHT_LIMITS.sourceBytes, replacementBytes: HIGHLIGHT_LIMITS.sourceBytes,
-  frameBytes: HIGHLIGHT_LIMITS.dataWireBytes, decodedBytes: HIGHLIGHT_LIMITS.decodedBytes });
+  frameBytes: OCCIPITAL_LIMITS.dataWireBytes, decodedBytes: HIGHLIGHT_LIMITS.decodedBytes });
 export const CONTROLLER_LIMITS = Object.freeze({ jobs: 2, transientBytes: 2 * fullFamily,
   bookkeepingBytes: OCCIPITAL_LIMITS.retainedBytes, restarts: 1 });
 

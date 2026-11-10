@@ -1,6 +1,7 @@
 import { diagnose, diagnosticError, reportRuntime, type DiagnosticFields, type DiagnosticSink } from '../diagnostics.ts';
 import type { ReplySize } from './data-json.ts';
-import { decodeSemanticDescription as decodeDescription, SEMANTIC_PROTOCOL_VERSION as PROTOCOL_VERSION, type SemanticDescription as Description } from './semantic-protocol.ts';
+import { decodeSemanticDescription as decodeDescription, SEMANTIC_PROTOCOL_VERSION as PROTOCOL_VERSION,
+  type SemanticDataRequest, type SemanticDescription as Description, type SemanticTransportRequest } from './semantic-protocol.ts';
 import { RequestFailure } from './request-failure.ts';
 import type { TransportEnd } from './transport-end.ts';
 import { ExpectedOwnedUnavailable } from './owned-startup.ts';
@@ -23,7 +24,7 @@ export interface ProviderTransport {
   readonly endReason: TransportEnd | undefined;
   /** Physical lanes, including metadata whose caller stopped waiting. */
   readonly hasPendingRequests?: boolean;
-  request(request: Record<string, unknown>, options?: { signal?: AbortSignal; deadlineMs?: number; waitOnly?: boolean; acceptRetired?: boolean; replySize?: ReplySize }): Promise<unknown>;
+  request(request: SemanticTransportRequest, options?: { signal?: AbortSignal; deadlineMs?: number; waitOnly?: boolean; acceptRetired?: boolean; replySize?: ReplySize }): Promise<unknown>;
   /** Shared: only this dedicated route/connection. Owned: resolves after child exit. */
   close(): Promise<void>;
 }
@@ -391,8 +392,10 @@ export class ProviderBroker {
   /** Generation-bound passthrough, no retries/queue/source storage. Caller owns
    * source admission/decoder and unique tickets (reserved broker: prefix excluded).
    * Transport owns source deadlines/cancellation and its existing data allowance.
+   * The single DATA promise follows correlated reply or actual local release;
+   * caller abort is not settlement. CONTROL waitOnly is transport-only.
    */
-  request(generation: number, request: Record<string, unknown>, options?: { signal?: AbortSignal; deadlineMs?: number; replySize?: ReplySize;
+  request(generation: number, request: SemanticDataRequest, options?: { signal?: AbortSignal; deadlineMs?: number; replySize?: ReplySize;
     /** Canonical source owner validates retired terminal outcomes for physical
      * permission ONLY, never stale publication or useful classification credit. */
     acceptRetired?: boolean }): Promise<unknown> {

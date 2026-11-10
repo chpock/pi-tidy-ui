@@ -177,7 +177,7 @@ export default function syntaxDriver(pi: ExtensionAPI) {
           }
           if (phase && kind === 'source') record({ type: 'syntax_theme_dispatch', phase, payload, jobs: runtime?.deref()?.sources.stats().globalUnsettledJobs });
           let reply = await request(payload, opts);
-          if (healthFaultPending && kind === 'source' && Array.isArray(payload.sources)
+          if (healthFaultPending && (payload.op === 'highlight' || payload.op === 'stream.open')
             && payload.sources.some(source => source.text.includes('THEME_WRITE'))) {
             healthFaultPending = false; reply = {}; record({ type: 'runtime_health_invalid_reply' });
           }

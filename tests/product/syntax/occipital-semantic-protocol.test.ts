@@ -2,10 +2,11 @@ import '../../fixtures/test-guard.mjs';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { decodeSemanticDescription, decodeSemanticEnvelope, decodeSemanticStyleReply, decodeSemanticSourceReply, decodeSemanticClosed } from '../../../src/occipital/semantic-protocol.ts';
-import { HIGHLIGHT_LIMITS } from '../../../src/occipital/limits.ts';
+import { OCCIPITAL_LIMITS } from '../../../src/occipital/limits.ts';
+import { HIGHLIGHT_LIMITS } from '../../../src/highlighting/limits.ts';
 const fp = 'a'.repeat(64), rules = 'b'.repeat(64);
 const limits = {
-  request_bytes: 64 << 20, reply_bytes: HIGHLIGHT_LIMITS.dataWireBytes, control_request_bytes: 64 << 10, control_reply_bytes: 64 << 10,
+  request_bytes: 64 << 20, reply_bytes: OCCIPITAL_LIMITS.dataWireBytes, control_request_bytes: 64 << 10, control_reply_bytes: 64 << 10,
   source_bytes: 64 << 20, line_bytes: 65536, batch_sources: 8, queue_wait_ms: 1000,
   state_pool_bytes: 256 << 20, leases: 4096, leases_per_route: 1024, runs: (64 << 20) / 4,
   idle_ms: 60000, age_ms: 600000, quantum_ms: 2, data_per_route: 2, control_per_route: 2, routes: 8, workers: 4,
@@ -47,7 +48,7 @@ test('semantic protocol v4: descriptor advertises the bounded source/style contr
 
 test('semantic protocol v4: rule identity is checked before typed style indices are allocated', () => {
   const expected = { vocabulary: fp, rules, bindingSlots: 0 } as const;
-  const result = decodeSemanticStyleReply(envelope(styles()), 'ticket', identity, expected, 1, 1 << 20);
+  const result = decodeSemanticStyleReply(envelope(styles()), 'ticket', identity, expected, 1, 1 << 20, HIGHLIGHT_LIMITS);
   assert.equal(result.styles.length, 1);
   assert.equal(Object.hasOwn(result, 'palette'), false);
   const wrong = { ...styles(), rules: 'd'.repeat(64) };
@@ -55,7 +56,7 @@ test('semantic protocol v4: rule identity is checked before typed style indices 
   let allocations = 0;
   globalThis.Uint32Array = new Proxy(original, { construct(target, args) { allocations++; return Reflect.construct(target, args); } });
   try {
-    assert.throws(() => decodeSemanticStyleReply(envelope(wrong), 'ticket', identity, expected, 1, 1 << 20));
+    assert.throws(() => decodeSemanticStyleReply(envelope(wrong), 'ticket', identity, expected, 1, 1 << 20, HIGHLIGHT_LIMITS));
     assert.equal(allocations, 0);
   } finally { globalThis.Uint32Array = original; }
 });
@@ -67,10 +68,10 @@ test('semantic protocol v4: source replies bind to described vocabulary and exac
     committed_bytes: 2, complete: true, contexts: [[0, 1]], runs: [2, 1], counters };
   const expected = { key: 'source', generation: 1, source_version: 1, revision: 1, source_bytes: 2, replace_from: 0, complete: true, replacementText: 'λ' };
   const source = { kind: 'source', vocabulary: fp, sources: [chunk] };
-  assert.deepEqual(decodeSemanticSourceReply(envelope(source), 'ticket', provider, [expected], 1 << 20).sources[0]!.contexts[0], new Uint32Array([1]));
+  assert.deepEqual(decodeSemanticSourceReply(envelope(source), 'ticket', provider, [expected], 1 << 20, HIGHLIGHT_LIMITS).sources[0]!.contexts[0], new Uint32Array([1]));
   for (const patch of [{ vocabulary: 'd'.repeat(64) }, { sources: [{ ...chunk, generation: 2 }] }, { sources: [{ ...chunk, profile: 'pi' }] }])
-    assert.throws(() => decodeSemanticSourceReply(envelope({ ...source, ...patch }), 'ticket', provider, [expected], 1 << 20));
-  assert.throws(() => decodeSemanticSourceReply(envelope(source, { instance: 'old' }), 'ticket', provider, [expected], 1 << 20));
+    assert.throws(() => decodeSemanticSourceReply(envelope({ ...source, ...patch }), 'ticket', provider, [expected], 1 << 20, HIGHLIGHT_LIMITS));
+  assert.throws(() => decodeSemanticSourceReply(envelope(source, { instance: 'old' }), 'ticket', provider, [expected], 1 << 20, HIGHLIGHT_LIMITS));
   decodeSemanticClosed(envelope({ kind: 'closed' }), 'ticket', provider);
   assert.throws(() => decodeSemanticClosed(envelope({ kind: 'closed', lease: 'other' }), 'ticket', provider));
 });
@@ -86,14 +87,14 @@ test('semantic protocol v4: raw DATA decoding enforces negotiated bytes before t
   const chunk = { key: 'source', generation: 1, source_version: 1, revision: 1, source_bytes: pairs, replace_from: 0,
     committed_bytes: pairs, complete: true, contexts: [[0, 1], [0, 2]], runs, counters };
   const expected = { key: 'source', generation: 1, source_version: 1, revision: 1, source_bytes: pairs, replace_from: 0, complete: true, replacementText: text };
-  const decoded = decodeSemanticSourceReply(envelope({ kind: 'source', vocabulary: fp, sources: [chunk] }), 'ticket', provider, [expected], 1 << 24);
+  const decoded = decodeSemanticSourceReply(envelope({ kind: 'source', vocabulary: fp, sources: [chunk] }), 'ticket', provider, [expected], 1 << 24, HIGHLIGHT_LIMITS);
   assert.equal(decoded.sources.length, 1);
   const original = globalThis.Uint32Array;
   let allocations = 0;
   globalThis.Uint32Array = new Proxy(original, { construct(target, args) { allocations++; return Reflect.construct(target, args); } });
   try {
     const smaller = { ...provider, limits: { ...provider.limits, reply_bytes: 2048 } };
-    assert.throws(() => decodeSemanticSourceReply(envelope({ kind: 'source', vocabulary: fp, sources: [chunk] }), 'ticket', smaller, [expected], 1 << 24));
+    assert.throws(() => decodeSemanticSourceReply(envelope({ kind: 'source', vocabulary: fp, sources: [chunk] }), 'ticket', smaller, [expected], 1 << 24, HIGHLIGHT_LIMITS));
     assert.equal(allocations, 0);
   } finally { globalThis.Uint32Array = original; }
 });
@@ -106,13 +107,13 @@ test('semantic protocol v4: smaller advertised run and batch caps apply before a
   const expected = (key: string) => ({ key, generation: 1, source_version: 1, revision: 1, source_bytes: 2,
     replace_from: 0, complete: true, replacementText: 'ab' });
   const body = (...sources: ReturnType<typeof source>[]) => envelope({ kind: 'source', vocabulary: fp, sources });
-  assert.equal(decodeSemanticSourceReply(body(source('a')), 'ticket', provider, [expected('a')], 1 << 20).sources.length, 1);
+  assert.equal(decodeSemanticSourceReply(body(source('a')), 'ticket', provider, [expected('a')], 1 << 20, HIGHLIGHT_LIMITS).sources.length, 1);
   const original = globalThis.Uint32Array;
   let allocations = 0;
   globalThis.Uint32Array = new Proxy(original, { construct(target, args) { allocations++; return Reflect.construct(target, args); } });
   try {
-    assert.throws(() => decodeSemanticSourceReply(body(source('a', [1, 1, 1, 0])), 'ticket', provider, [expected('a')], 1 << 20));
-    assert.throws(() => decodeSemanticSourceReply(body(source('a'), source('b')), 'ticket', provider, [expected('a'), expected('b')], 1 << 20));
+    assert.throws(() => decodeSemanticSourceReply(body(source('a', [1, 1, 1, 0])), 'ticket', provider, [expected('a')], 1 << 20, HIGHLIGHT_LIMITS));
+    assert.throws(() => decodeSemanticSourceReply(body(source('a'), source('b')), 'ticket', provider, [expected('a'), expected('b')], 1 << 20, HIGHLIGHT_LIMITS));
     assert.equal(allocations, 0);
   } finally { globalThis.Uint32Array = original; }
 });
@@ -132,7 +133,7 @@ test('semantic protocol v4: generic styles support more than 512 admitted foregr
   body.styles = Array.from({ length: count }, (_, i) => ({ foreground: { kind: 'rgb', r: Math.floor(i / 16), g: 0, b: 0 },
     background: { kind: 'rgb', r: 0, g: 0, b: 0 }, attributes: i % 16, attribute_mask: 31 }));
   body.indices = Array.from({ length: count }, (_, i) => i + 1);
-  const result = decodeSemanticStyleReply(envelope(body), 'ticket', identity, { vocabulary: fp, rules, bindingSlots: 0 }, count, 1 << 20);
+  const result = decodeSemanticStyleReply(envelope(body), 'ticket', identity, { vocabulary: fp, rules, bindingSlots: 0 }, count, 1 << 20, HIGHLIGHT_LIMITS);
   assert.equal(result.styles.length, count); assert.equal(result.indices.length, count); assert.equal(result.styles.at(-1)!.attributes, 7);
 });
 
@@ -140,12 +141,12 @@ test('semantic protocol v4: measured STYLE bytes preserve smaller caps, shape ch
   const expected = { vocabulary: fp, rules, bindingSlots: 0 } as const;
   const value = envelope(styles()), bytes = Buffer.byteLength(JSON.stringify(value));
   const measured = { ticket: 'ticket', bytes };
-  assert.equal(decodeSemanticStyleReply(value, 'ticket', identity, expected, 1, 1 << 20, measured).styles.length, 1);
+  assert.equal(decodeSemanticStyleReply(value, 'ticket', identity, expected, 1, 1 << 20, HIGHLIGHT_LIMITS, measured).styles.length, 1);
   const smaller = { ...identity, limits: { ...decodeSemanticDescription(envelope(descriptor()), 'ticket').limits, reply_bytes: bytes - 1 } };
-  assert.throws(() => decodeSemanticStyleReply(value, 'ticket', smaller, expected, 1, 1 << 20, measured), /byte limit/);
-  for (const invalid of [0, -1, NaN, Infinity, 0.5, HIGHLIGHT_LIMITS.dataWireBytes + 1])
-    assert.throws(() => decodeSemanticStyleReply(value, 'ticket', identity, expected, 1, 1 << 20, { ticket: 'ticket', bytes: invalid }), /byte limit/);
-  assert.throws(() => decodeSemanticStyleReply(value, 'ticket', smaller, expected, 1, 1 << 20, { ticket: 'another', bytes: 1 }), /byte limit/);
-  assert.throws(() => decodeSemanticStyleReply(envelope({ ...styles(), rules: 'd'.repeat(64) }), 'ticket', identity, expected, 1, 1 << 20, measured));
-  assert.throws(() => decodeSemanticStyleReply(envelope(styles(), { ticket: 'other' }), 'ticket', identity, expected, 1, 1 << 20, measured));
+  assert.throws(() => decodeSemanticStyleReply(value, 'ticket', smaller, expected, 1, 1 << 20, HIGHLIGHT_LIMITS, measured), /byte limit/);
+  for (const invalid of [0, -1, NaN, Infinity, 0.5, OCCIPITAL_LIMITS.dataWireBytes + 1])
+    assert.throws(() => decodeSemanticStyleReply(value, 'ticket', identity, expected, 1, 1 << 20, HIGHLIGHT_LIMITS, { ticket: 'ticket', bytes: invalid }), /byte limit/);
+  assert.throws(() => decodeSemanticStyleReply(value, 'ticket', smaller, expected, 1, 1 << 20, HIGHLIGHT_LIMITS, { ticket: 'another', bytes: 1 }), /byte limit/);
+  assert.throws(() => decodeSemanticStyleReply(envelope({ ...styles(), rules: 'd'.repeat(64) }), 'ticket', identity, expected, 1, 1 << 20, HIGHLIGHT_LIMITS, measured));
+  assert.throws(() => decodeSemanticStyleReply(envelope(styles(), { ticket: 'other' }), 'ticket', identity, expected, 1, 1 << 20, HIGHLIGHT_LIMITS, measured));
 });

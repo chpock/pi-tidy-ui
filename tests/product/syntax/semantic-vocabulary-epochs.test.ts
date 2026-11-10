@@ -1,3 +1,4 @@
+import { HIGHLIGHT_LIMITS } from '../../../src/highlighting/limits.ts';
 import '../../fixtures/test-guard.mjs';
 import { installProjection, visitProjection, projectionRanges } from '../../fixtures/pi-projection.ts';
 import assert from 'node:assert/strict';
@@ -15,11 +16,11 @@ import { materializeStyle, type ConcreteStyle } from '../../../src/appearance/st
 const A = 'a'.repeat(64), B = 'd'.repeat(64), rules = 'b'.repeat(64), grant = () => true;
 const vectors = JSON.parse(readFileSync(new URL('../../../protocol/syntax-v4/vectors.json', import.meta.url), 'utf8'));
 const literalFixture = vectors.styles.find((value: { name: string }) => value.name === 'literal-binding-inherit-and-explicit-clear');
-const decoded = decodeStyleResult(literalFixture.body, { vocabulary: A, rules, bindingSlots: literalFixture.binding_slots }, 4, 1 << 20);
+const decoded = decodeStyleResult(literalFixture.body, { vocabulary: A, rules, bindingSlots: literalFixture.binding_slots }, 4, 1 << 20, HIGHLIGHT_LIMITS);
 const base: ConcreteStyle = { foreground: { kind: 'terminal-default' }, background: { kind: 'terminal-default' }, attributes: 0 };
 const literal = materializeStyle(decoded.styles[0]!, [], base);
 const indexedFixture = vectors.styles.find((value: { name: string }) => value.name === 'indexed-is-not-guessed-rgb');
-const indexed = decodeStyleResult(indexedFixture.body, { vocabulary: A, rules, bindingSlots: indexedFixture.binding_slots }, 1, 1 << 20);
+const indexed = decodeStyleResult(indexedFixture.body, { vocabulary: A, rules, bindingSlots: indexedFixture.binding_slots }, 1, 1 << 20, HIGHLIGHT_LIMITS);
 const recolored = materializeStyle(indexed.styles[0]!, [], base);
 function source(vocabulary: string, key = 'source', generation = 1, options: Partial<SemanticExpectation> & { neutral?: boolean; parsedEmpty?: boolean } = {}) {
   const { neutral = false, parsedEmpty = false, ...metadata } = options;
@@ -30,8 +31,7 @@ function source(vocabulary: string, key = 'source', generation = 1, options: Par
   return decodeSemanticSources({ kind: 'source', vocabulary, sources: [{ ...wire,
     committed_bytes: expected.complete ? expected.source_bytes : expected.replace_from + Buffer.from(replacementText).lastIndexOf(10) + 1,
     contexts: neutral || !bytes ? [] : [parsedEmpty ? [0] : vectors.contexts[0].encoded[1]], runs: bytes ? [bytes, neutral ? 0 : 1] : [],
-    counters: { committed_line_calls: 0, committed_line_bytes: 0, tail_calls: 0, tail_bytes: 0 } }] },
-  { vocabulary, vocabularySize: vectors.vocabulary_size, sourceBytes: 1 << 20, runs: 1000, batchSources: 8 }, [expected], 64 << 20).sources[0]!;
+    counters: { committed_line_calls: 0, committed_line_bytes: 0, tail_calls: 0, tail_bytes: 0 } }] }, { vocabulary, vocabularySize: vectors.vocabulary_size, sourceBytes: 1 << 20, runs: 1000, batchSources: 8 }, [expected], 64 << 20, HIGHLIGHT_LIMITS).sources[0]!;
 }
 function refs(pool: SemanticRetentionPool, generation: number) {
   const result = new Set<ContextRef>(); pool.visitRanges(generation, (_a, _b, ref) => { if (ref) result.add(ref); }); return [...result];

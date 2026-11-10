@@ -1,8 +1,9 @@
 import { ProtocolError, RemoteFault, type Limits, type Description } from './protocol.ts';
-import { decodeStyleResult, SemanticError } from './semantic-codec.ts';
+import { decodeStyleResult, SemanticError, type SemanticDecodeLimits } from './semantic-codec.ts';
+import type { RuleDefinition } from './style-rules.ts';
 import type { StyleIdentity } from './style-types.ts';
 import { decodeSemanticSources, type SemanticExpectation } from './semantic-source.ts';
-import { HIGHLIGHT_LIMITS, OCCIPITAL_LIMITS } from './limits.ts';
+import { OCCIPITAL_LIMITS } from './limits.ts';
 import { replyJsonBytes, type ReplySize } from './data-json.ts';
 
 export const SEMANTIC_PROTOCOL_VERSION = 4;
@@ -10,6 +11,20 @@ export const SEMANTIC_CAPABILITY = 'syntax-highlight/v4';
 export const SEMANTIC_OPERATIONS = Object.freeze(['describe', 'highlight', 'stream.open', 'stream.append', 'stream.close', 'styles.resolve']);
 export interface SemanticDescription extends Description {}
 export interface SemanticStyleExpectation extends StyleIdentity {}
+
+type SemanticAdmission = { admission: 'try_now'; queue_wait_ms?: never }
+  | { admission: 'bounded_queue'; queue_wait_ms: number };
+type SemanticRequestHeader = { v: typeof SEMANTIC_PROTOCOL_VERSION; ticket: string; instance: string };
+type SemanticSourceHint = { language?: string | null; path?: string | null };
+type SemanticSourceInput = { key: string; generation: number; source_version: number; hint: SemanticSourceHint; text: string };
+type SemanticDescribeRequest = { v: typeof SEMANTIC_PROTOCOL_VERSION; op: 'describe'; ticket: string; instance?: string };
+export type SemanticDataRequest =
+  | (SemanticRequestHeader & SemanticAdmission & { op: 'highlight' | 'stream.open'; sources: SemanticSourceInput[] })
+  | (SemanticRequestHeader & SemanticAdmission & { op: 'stream.append'; key: string; lease: string; generation: number;
+      source_version: number; base_revision: number; base_bytes: number; append: string; final: boolean })
+  | (SemanticRequestHeader & { op: 'stream.close'; key: string; lease: string; generation: number })
+  | (SemanticRequestHeader & SemanticAdmission & { op: 'styles.resolve'; vocabulary: string; contexts: number[][]; rules: RuleDefinition });
+export type SemanticTransportRequest = SemanticDescribeRequest | SemanticDataRequest;
 const object = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === 'object' && !Array.isArray(v);
 const integer = (v: unknown, min = 0, max = 0xffffffff): v is number => typeof v === 'number' && Number.isSafeInteger(v) && v >= min && v <= max;
 const exact = (v: Record<string, unknown>, keys: readonly string[]) => Object.keys(v).length === keys.length && keys.every(key => Object.hasOwn(v, key));
@@ -57,7 +72,7 @@ export function decodeSemanticDescription(value: unknown, ticket: string): Seman
   }
   // Shared SDK parses replies before our boundary. An honest provider must
   // enforce the DATA cap itself; postparse clamping cannot make an older service safe.
-  if (limits.reply_bytes > HIGHLIGHT_LIMITS.dataWireBytes) return fail();
+  if (limits.reply_bytes > OCCIPITAL_LIMITS.dataWireBytes) return fail();
   const runtime = {} as Description['runtime'];
   for (const key of runtimeKeys) {
     const count = body.runtime[key]; if (!integer(count, key === 'pid' ? 1 : 0, Number.MAX_SAFE_INTEGER)) return fail();
@@ -76,21 +91,24 @@ export function decodeSemanticDescription(value: unknown, ticket: string): Seman
 
 export function decodeSemanticStyleReply(value: unknown, ticket: string,
   provider: Pick<SemanticDescription, 'instance' | 'assets' | 'vocabulary'> & Partial<Pick<SemanticDescription, 'limits'>>,
-  expected: SemanticStyleExpectation, contextCount: number, availableBytes: number, measured?: Readonly<ReplySize>): ReturnType<typeof decodeStyleResult> {
-  replyJsonBytes(value, ticket, Math.min(HIGHLIGHT_LIMITS.dataWireBytes, provider.limits?.reply_bytes ?? HIGHLIGHT_LIMITS.dataWireBytes), measured);
+  expected: SemanticStyleExpectation, contextCount: number, availableBytes: number, limits: Pick<SemanticDecodeLimits, 'decodedBytes'>,
+  measured?: Readonly<ReplySize>): ReturnType<typeof decodeStyleResult> {
+  replyJsonBytes(value, ticket, Math.min(OCCIPITAL_LIMITS.dataWireBytes, provider.limits?.reply_bytes ?? OCCIPITAL_LIMITS.dataWireBytes), measured);
   const body = decodeSemanticEnvelope(value, ticket, provider).body;
   if (expected.vocabulary !== provider.vocabulary.fingerprint) throw new SemanticError('identity_mismatch');
-  return decodeStyleResult(body, expected, contextCount, availableBytes);
+  return decodeStyleResult(body, expected, contextCount, availableBytes, limits);
 }
 
 export function decodeSemanticSourceReply(value: unknown, ticket: string, provider: SemanticDescription,
-  expected: readonly SemanticExpectation[], availableBytes: number, measured?: Readonly<ReplySize>): ReturnType<typeof decodeSemanticSources> {
-  replyJsonBytes(value, ticket, Math.min(HIGHLIGHT_LIMITS.dataWireBytes, provider.limits.reply_bytes), measured);
+  expected: readonly SemanticExpectation[], availableBytes: number, limits: SemanticDecodeLimits,
+  measured?: Readonly<ReplySize>): ReturnType<typeof decodeSemanticSources> {
+  replyJsonBytes(value, ticket, Math.min(OCCIPITAL_LIMITS.dataWireBytes, provider.limits.reply_bytes), measured);
   const body = decodeSemanticEnvelope(value, ticket, provider).body;
+  const sourceBytes = limits.sourceBytes;
   return decodeSemanticSources(body, { vocabulary: provider.vocabulary.fingerprint, vocabularySize: provider.vocabulary.count,
-    sourceBytes: Math.min(provider.limits.source_bytes, HIGHLIGHT_LIMITS.sourceBytes),
+    sourceBytes: Math.min(provider.limits.source_bytes, sourceBytes),
     runs: Math.min(provider.limits.runs, OCCIPITAL_LIMITS.runs),
-    batchSources: Math.min(provider.limits.batch_sources, OCCIPITAL_LIMITS.batchSources) }, expected, availableBytes);
+    batchSources: Math.min(provider.limits.batch_sources, OCCIPITAL_LIMITS.batchSources) }, expected, availableBytes, limits);
 }
 
 export function decodeSemanticClosed(value: unknown, ticket: string, provider: Pick<SemanticDescription, 'instance' | 'assets'>): void {

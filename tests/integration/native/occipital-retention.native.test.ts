@@ -1,3 +1,4 @@
+import { HIGHLIGHT_LIMITS } from '../../../src/highlighting/limits.ts';
 import '../../fixtures/test-guard.mjs';
 import assert from 'node:assert/strict';
 import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
@@ -35,7 +36,7 @@ test('actual running helper survives obsolete-download pruning and warm cleanup 
     admission: 'bounded_queue', queue_wait_ms: 1000,
     sources: [{ key: 'after-prune', generation: 1, source_version: 1, hint: { language: 'bash' }, text }] });
   const parsed = decodeSemanticSourceReply(reply, 'after-prune', descriptor, [{ key: 'after-prune', generation: 1, source_version: 1,
-    revision: 1, source_bytes: Buffer.byteLength(text), replace_from: 0, complete: true, replacementText: text }], 64 << 20).sources[0]!;
+    revision: 1, source_bytes: Buffer.byteLength(text), replace_from: 0, complete: true, replacementText: text }], 64 << 20, HIGHLIGHT_LIMITS).sources[0]!;
   assert.equal(parsed.source_bytes, Buffer.byteLength(text)); assert.equal(parsed.complete, true);
   assert.equal(parsed.counters.committed_line_calls, 1); assert.equal(transport.stats().spawnCount, 1);
   await transport.close();

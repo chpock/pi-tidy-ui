@@ -1,3 +1,4 @@
+import type { SemanticDataRequest, SemanticTransportRequest } from '../../../src/occipital/semantic-protocol.ts';
 import '../../fixtures/test-guard.mjs';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
@@ -15,7 +16,10 @@ const fixtureRetainedBytes=2*(2*fixtureDataBytes+STDIO_LIMITS.cancelBytes+8)
 function peer(mode = 'echo', requestDeadlineMs = 3000, terminateGraceMs = 40) {
   return new StdioTransport({ command: process.execPath, args: [fixture, mode], requestDeadlineMs, terminateGraceMs, dataBytes:fixtureDataBytes });
 }
-function data(ticket: string, text = '') { return { v: 4 as const, ticket, op: 'highlight' as const, text }; }
+function data(ticket: string, text = ''): SemanticDataRequest {
+  return { v: 4, ticket, instance: 'fixture-instance', op: 'highlight', admission: 'try_now',
+    sources: [{ key: 'fixture', generation: 1, source_version: 1, hint: {}, text }] };
+}
 function control(ticket: string) { return { v: 4 as const, ticket, op: 'describe' as const }; }
 function body(reply: unknown): Record<string, unknown> { return (reply as { body: Record<string, unknown> }).body; }
 async function eventually(predicate: () => boolean) {
@@ -55,9 +59,12 @@ for (const mode of ['reverse', 'chunks']) test(`correlates reversed ${mode} pack
   await p.close(); empty(p);
 });
 
-test('two held data calls reserve their slots while metadata has its own lane', async t => {
+test('held SOURCE and STYLE share DATA capacity while metadata has its own lane', async t => {
   const p = peer('hold'); t.after(() => p.close());
-  const a = p.request({ ...data('a'), op: 'styles.resolve' }); const b = p.request(data('b'));
+  const a = p.request({ v: 4, ticket: 'a', instance: 'fixture-instance', op: 'styles.resolve', admission: 'try_now',
+    vocabulary: 'a'.repeat(64), contexts: [], rules: { revision: 2, binding_slots: 0,
+      default: { foreground: { kind: 'inherit' }, background: { kind: 'inherit' }, attributes: 0, attribute_mask: 0 }, rules: [] } });
+  const b = p.request(data('b'));
   assert.equal(p.stats().unsettledData, 2);
   assert.ok(p.stats().retainedBytes > 2 * fixtureDataBytes);
   await assert.rejects(p.request(data('c')), /capacity/);
@@ -130,16 +137,17 @@ test('request bounds are UTF8/escaped JSON bytes; malformed headers are local re
   for (const ticket of ['', 'x'.repeat(65), '🙂'.repeat(17), 'a\u0085b', 'a\nb', '\ud800']) {
     await assert.rejects(p.request(data(ticket)), /request/);
   }
-  await assert.rejects(p.request({ ...data('v'), v: 2 }), disposition('not_started'));
-  await assert.rejects(p.request({ ...data('op'), op: 'cancel' }), /request/);
+  await assert.rejects(p.request({ ...data('v'), v: 2 } as unknown as SemanticTransportRequest), disposition('not_started'));
+  await assert.rejects(p.request({ ...data('op'), op: 'cancel' } as unknown as SemanticTransportRequest), /request/);
   await assert.rejects(p.request(data('huge', '🙂'.repeat(600000))), /limit/);
   await assert.rejects(p.request(data('escaped', '\u0000'.repeat(400000))), /limit/);
-  await assert.rejects(p.request({ ...control('huge-control'), text: 'x'.repeat(4096) }), /limit/);
-  const cyclic: Record<string, unknown> = data('cycle'); cyclic.self = cyclic;
-  await assert.rejects(p.request(cyclic), /request/);
-  const hook = Object.defineProperty(data('hook'), 'toJSON', { value: () => 'private text' });
+  const oversizedControl = { ...control('huge-control'), text: 'x'.repeat(4096) } as unknown as SemanticTransportRequest;
+  await assert.rejects(p.request(oversizedControl), /limit/);
+  const cyclic: Record<string, unknown> = { ...data('cycle') }; cyclic.self = cyclic;
+  await assert.rejects(p.request(cyclic as unknown as SemanticTransportRequest), /request/);
+  const hook = Object.defineProperty(data('hook'), 'toJSON', { value: () => 'private text' }) as unknown as SemanticTransportRequest;
   await assert.rejects(p.request(hook), /JSON hook/);
-  const getter = Object.defineProperty(data('getter'), 'v', { get() { throw new Error('stdio private source'); } });
+  const getter = Object.defineProperty(data('getter'), 'v', { get() { throw new Error('stdio private source'); } }) as unknown as SemanticTransportRequest;
   await assert.rejects(p.request(getter), { message: 'stdio invalid request JSON' });
   assert.equal(p.stats().unsettledData, 0);
   const r = await p.request(data('🙂'.repeat(16), 'exact'));
@@ -243,8 +251,10 @@ test('exact request/reply limits include UTF8 JSON bytes, not the four-byte pref
   const c = peer(); t.after(() => c.close());
   const base = { ...control('max-control'), text: '' };
   const maxControl = 'x'.repeat(4096 - Buffer.byteLength(JSON.stringify(base)));
-  assert.equal(body(await c.request({ ...base, text: maxControl })).text, maxControl);
-  await assert.rejects(c.request({ ...control('over-control'), text: maxControl + 'x' }), /limit/);
+  const maxControlRequest = { ...base, text: maxControl } as unknown as SemanticTransportRequest;
+  assert.equal(body(await c.request(maxControlRequest)).text, maxControl);
+  const overControlRequest = { ...control('over-control'), text: maxControl + 'x' } as unknown as SemanticTransportRequest;
+  await assert.rejects(c.request(overControlRequest), /limit/);
   for (const mode of ['reply-max', 'control-max']) {
     const r = peer(mode); t.after(() => r.close());
     const reply = await r.request(mode === 'reply-max' ? data('a') : control('a'));
@@ -430,7 +440,7 @@ test('typed stdio refusal proves only local pre-dispatch rejection; held work re
   const p=peer('hold');t.after(()=>p.close());
   const abort=new AbortController();abort.abort();
   await assert.rejects(p.request(data('aborted'),{signal:abort.signal}),disposition('not_started'));
-  await assert.rejects(p.request({...data('invalid'),v:99}),disposition('not_started'));
+  await assert.rejects(p.request({...data('invalid'),v:99} as unknown as SemanticTransportRequest),disposition('not_started'));
   assert.equal(p.stats().unsettledData,0);
   const a=p.request(data('a')),b=p.request(data('b'));
   await assert.rejects(p.request(data('capacity')),disposition('not_started'));
@@ -504,16 +514,18 @@ test('wait-only descriptor expiry keeps the process, source requests and control
   t.mock.timers.reset(); await p.close(); empty(p); gone(pid);
 });
 
-for (const op of ['highlight', 'styles.resolve']) test(`wait-only is refused on stdio ${op} calls without weakening ordinary deadlines`, async t => {
+for (const op of ['highlight', 'styles.resolve'] as const) test(`wait-only is refused on stdio ${op} calls without weakening ordinary deadlines`, async t => {
   const p = peer(); t.after(() => p.close());
-  await assert.rejects(p.request({ ...data('source', 'x'), op }, { waitOnly: true }), (e: unknown) => e instanceof RequestFailure && e.execution === 'not_started' && /control/.test(e.message));
+  const request = { ...data('source', 'x'), op } as unknown as SemanticTransportRequest;
+  await assert.rejects(p.request(request, { waitOnly: true }), (e: unknown) => e instanceof RequestFailure && e.execution === 'not_started' && /control/.test(e.message));
   assert.equal(p.stats().unsettledData, 0); await p.close(); empty(p);
 });
 
-for (const op of ['highlight', 'styles.resolve']) for (const outcome of ['ok', 'not_started', 'started'] as const) test(`canonical aborted stdio ${op} request preserves terminal ${outcome} evidence`, async t => {
+for (const op of ['highlight', 'styles.resolve'] as const) for (const outcome of ['ok', 'not_started', 'started'] as const) test(`canonical aborted stdio ${op} request preserves terminal ${outcome} evidence`, async t => {
   const p = peer('hold'); t.after(() => p.close());
   const abort = new AbortController(), options = { signal: abort.signal, acceptRetired: true };
-  const pending = p.request({ ...data('retired', 'original'), op, ...(outcome === 'ok' ? {} : { fixtureExecution: outcome }) }, options);
+  const request = { ...data('retired', 'original'), op, ...(outcome === 'ok' ? {} : { fixtureExecution: outcome }) } as unknown as SemanticTransportRequest;
+  const pending = p.request(request, options);
   let settled = false; void pending.then(() => { settled = true; }, () => { settled = true; });
   abort.abort();
   const inspection = await p.request(control('inspection'));
@@ -533,7 +545,7 @@ test('stdio volume limits: DATA preflight is 512KiB without consuming a physical
   const p = new StdioTransport({ command: process.execPath, args: [fixture, 'echo'], requestDeadlineMs: 3000, terminateGraceMs: 40 });
   t.after(() => p.close());
   assert.equal(STDIO_LIMITS.requestBytes, 524288); assert.equal(STDIO_LIMITS.replyBytes, 524288);
-  const huge = { ...data('too-large', 'x'.repeat(524288)), tail: Object.defineProperty({}, 'private', { enumerable: true, get() { assert.fail('preflight did not stop at limit'); } }) };
+  const huge = { ...data('too-large', 'x'.repeat(524288)), tail: Object.defineProperty({}, 'private', { enumerable: true, get() { assert.fail('preflight did not stop at limit'); } }) } as unknown as SemanticTransportRequest;
   await assert.rejects(p.request(huge), /byte limit/);
   assert.equal(p.stats().unsettledData, 0);
   assert.equal(body(await p.request(data('small', 'ok'))).text, 'ok');

@@ -1,5 +1,5 @@
-import { HIGHLIGHT_LIMITS, OCCIPITAL_LIMITS } from './limits.ts';
-import { inspectContextBatch, SemanticError } from './semantic-codec.ts';
+import { OCCIPITAL_LIMITS } from './limits.ts';
+import { inspectContextBatch, SemanticError, type SemanticDecodeLimits } from './semantic-codec.ts';
 import type { Counters } from './protocol.ts';
 
 export interface SemanticExpectation {
@@ -26,6 +26,7 @@ export interface SemanticChunk extends Omit<SemanticExpectation, 'replacementTex
 export interface SemanticSourceIdentity {
   vocabulary: string;
   vocabularySize: number;
+  /** Effective coverage after consumer-policy clamping, not an advertised provider limit. */
   sourceBytes: number;
   runs: number;
   batchSources: number;
@@ -94,20 +95,23 @@ function validate(value: unknown, expected: SemanticExpectation, sourceCap: numb
       complete: value.complete, ...(value.lease !== undefined ? { lease: value.lease as string } : {}), counters } };
 }
 
-/** Decodes a source body only AFTER caller-owned v3 header/ticket/assets validation.
+/** Decodes a source body only AFTER caller-owned v4 header/ticket/assets validation.
  * All identities, ranges and dictionaries pass before any owned vector is created.
  * No parser/theme/current-provider authority is inferred from these display data. */
-export function decodeSemanticSources(value: unknown, identity: SemanticSourceIdentity, expected: readonly SemanticExpectation[], availableBytes: number): {
+export function decodeSemanticSources(value: unknown, identity: SemanticSourceIdentity, expected: readonly SemanticExpectation[], availableBytes: number,
+  limits: SemanticDecodeLimits): {
   sources: SemanticChunk[]; policyBytes: number;
 } {
   if (!object(value) || !exact(value, ['kind', 'vocabulary', 'sources']) || value.kind !== 'source'
     || !/^[a-f0-9]{64}$/.test(identity.vocabulary) || value.vocabulary !== identity.vocabulary
-    || !integer(identity.sourceBytes, 1, OCCIPITAL_LIMITS.sourceBytes) || !integer(identity.runs, 1, OCCIPITAL_LIMITS.runs)
+    || !integer(identity.sourceBytes, 0, OCCIPITAL_LIMITS.sourceBytes) || !integer(identity.runs, 1, OCCIPITAL_LIMITS.runs)
     || !integer(identity.batchSources, 1, OCCIPITAL_LIMITS.batchSources) || !integer(availableBytes, 0, OCCIPITAL_LIMITS.retainedBytes)
     || !Array.isArray(value.sources) || expected.length < 1 || expected.length > identity.batchSources
     || expected.length !== value.sources.length) fail();
-  availableBytes = Math.min(availableBytes, HIGHLIGHT_LIMITS.decodedBytes);
-  const sourceCap = Math.min(identity.sourceBytes, HIGHLIGHT_LIMITS.sourceBytes);
+  const sourceBytes = limits.sourceBytes, decodedBytes = limits.decodedBytes;
+  if (!integer(sourceBytes, 0, Number.MAX_SAFE_INTEGER) || !integer(decodedBytes, 0, Number.MAX_SAFE_INTEGER)) fail();
+  availableBytes = Math.min(availableBytes, decodedBytes);
+  const sourceCap = Math.min(identity.sourceBytes, sourceBytes);
   const vocabulary = identity.vocabulary;
   const values = new Map<string, unknown>();
   let total = 0;
@@ -119,7 +123,7 @@ export function decodeSemanticSources(value: unknown, identity: SemanticSourceId
   }
   if (new Set(expected.map(source => source.key)).size !== expected.length) fail();
   const validated = expected.map(source => validate(values.get(source.key), source, sourceCap, identity.runs));
-  const contextPlan = inspectContextBatch(validated.map(source => source.contexts), { vocabularySize: identity.vocabularySize, maxBytes: availableBytes });
+  const contextPlan = inspectContextBatch(validated.map(source => source.contexts), { vocabularySize: identity.vocabularySize, maxBytes: availableBytes }, limits);
   const policyBytes = validated.reduce((bytes, source) => bytes + SOURCE_UNITS + source.wireRuns.length * 4,
     contextPlan.policyBytes + 32 + 2 * vocabulary.length);
   if (!Number.isSafeInteger(policyBytes) || policyBytes > availableBytes) throw new SemanticError('source_limit');

@@ -8,7 +8,7 @@ import { fingerprintRules } from '../../../src/occipital/style-rules.ts';
 import { RequestFailure } from '../../../src/occipital/request-failure.ts';
 import type { ProviderBroker } from '../../../src/occipital/provider.ts';
 import { semanticDescriptor } from '../../fixtures/semantic-provider.ts';
-import { HIGHLIGHT_LIMITS } from '../../../src/occipital/limits.ts';
+import { HIGHLIGHT_LIMITS } from '../../../src/highlighting/limits.ts';
 import { SemanticRetentionPool } from '../../../src/highlighting/semantic-retention.ts';
 import { syntheticSelection } from '../../fixtures/test-style-selection.ts';
 

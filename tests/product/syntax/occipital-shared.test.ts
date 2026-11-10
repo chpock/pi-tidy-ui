@@ -1,3 +1,4 @@
+import { HIGHLIGHT_LIMITS } from '../../../src/highlighting/limits.ts';
 import '../../fixtures/test-guard.mjs';
 import assert from 'node:assert/strict';
 import test from 'node:test';
@@ -6,7 +7,7 @@ import { RequestFailure } from '../../../src/occipital/request-failure.ts';
 import { SharedTransport, SHARED_LIMITS, type SharedSdk, type SharedClient, type SharedRouteHandle } from '../../../src/occipital/shared.ts';
 import { awaitFixture } from '../../fixtures/await-fixture.ts';
 import { semanticDescriptor } from '../../fixtures/semantic-provider.ts';
-import { decodeSemanticDescription, decodeSemanticSourceReply } from '../../../src/occipital/semantic-protocol.ts';
+import { decodeSemanticDescription, decodeSemanticSourceReply, type SemanticTransportRequest } from '../../../src/occipital/semantic-protocol.ts';
 
 function deferred<T>() {
   let resolve!: (value: T) => void, reject!: (error: unknown) => void;
@@ -14,7 +15,9 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 const identity = { project_root: '/fixture/project', harness: 'fixture', session: 'session' };
-const request = (ticket: string, op = 'highlight', text = '') => ({ v: 4, ticket, op, text });
+// Carrier tests intentionally send incomplete semantic frames to exercise transport validation and capacity.
+const testFrame = (value: unknown): SemanticTransportRequest => value as SemanticTransportRequest;
+const request = (ticket: string, op = 'highlight', text = '') => testFrame({ v: 4, ticket, op, text });
 const reply = (ticket: string) => ({ v: 4, ticket, instance: 'instance', assets: 'assets', status: 'ok', body: {} });
 function fixture() {
   const route: SharedRouteHandle = Object.freeze({ channel: 7, epoch: 9 });
@@ -121,10 +124,10 @@ test('bounded UTF8/escaped JSON preflight, no serialization hooks or SDK call on
   for (const ticket of ['', 'x'.repeat(65), '\ud800', 'a\n']) await assert.rejects(p.request(request(ticket)), /request/);
   for (const text of ['x'.repeat(2*1024*1024), '\u0000'.repeat(400000)]) await assert.rejects(p.request(request('large', 'highlight', text)), /byte limit/);
   await assert.rejects(p.request(request('control', 'describe', 'x'.repeat(4096))), /byte limit/);
-  const cycle = request('cyclic') as Record<string, unknown>; cycle.self = cycle;
-  await assert.rejects(p.request(cycle), /JSON/);
-  await assert.rejects(p.request({ ...request('bad'), v: 2 }), disposition('not_started'));
-  await assert.rejects(p.request({ ...request('bad'), op: 'call' }), /header/);
+  const cycle = { ...request('cyclic') } as unknown as Record<string, unknown>; cycle.self = cycle;
+  await assert.rejects(p.request(testFrame(cycle)), /JSON/);
+  await assert.rejects(p.request(testFrame({ ...request('bad'), v: 2 })), disposition('not_started'));
+  await assert.rejects(p.request(testFrame({ ...request('bad'), op: 'call' })), /header/);
   await assert.rejects(p.request(Object.defineProperty(request('hook'), 'toJSON', { value() { assert.fail('hook called'); } })), /JSON/);
   await assert.rejects(p.request(request('surrogate', 'highlight', '\ud800')), /JSON/);
   assert.equal(f.calls.length, 0); await p.close(); empty(p);
@@ -276,7 +279,7 @@ test('typed shared local refusal proves no SDK request and does not revoke held 
     assert.equal(f.calls.length,0);await f.ready(p);
     const abort=new AbortController();abort.abort();
     await assert.rejects(p.request(request('aborted'),{signal:abort.signal}),disposition('not_started'));
-    await assert.rejects(p.request({...request('invalid'),v:99}),disposition('not_started'));
+    await assert.rejects(p.request(testFrame({...request('invalid'),v:99})),disposition('not_started'));
     assert.equal(f.calls.length,0);
     const a=p.request(request('a')),b=p.request(request('b'));
     await assert.rejects(p.request(request('capacity')),disposition('not_started'));
@@ -546,12 +549,12 @@ test('shared reply size receipt avoids a second DATA traversal and keeps the neg
   const received = await pending, ingressReads = descriptors;
   assert.equal(measured.ticket, 'receipt'); assert.ok(measured.bytes! > 4096);
   assert.equal(ingressReads, values.length, 'the actual shared ingress validates the DATA array once');
-  const decoded = decodeSemanticSourceReply(received, 'receipt', provider, [expected], 1 << 20, measured);
+  const decoded = decodeSemanticSourceReply(received, 'receipt', provider, [expected], 1 << 20, HIGHLIGHT_LIMITS, measured);
   assert.equal(decoded.sources.length, 1);
   assert.equal(descriptors, ingressReads, 'the decoder does not recount transport-admitted DATA');
-  assert.throws(() => decodeSemanticSourceReply(received, 'receipt', { ...provider, limits: { ...provider.limits, reply_bytes: 1024 } }, [expected], 1 << 20, measured), /byte limit/);
+  assert.throws(() => decodeSemanticSourceReply(received, 'receipt', { ...provider, limits: { ...provider.limits, reply_bytes: 1024 } }, [expected], 1 << 20, HIGHLIGHT_LIMITS, measured), /byte limit/);
   assert.equal(descriptors, ingressReads, 'smaller negotiated limit is checked from the receipt before walking values');
-  assert.throws(() => decodeSemanticSourceReply({ ...raw, body: { ...raw.body, vocabulary: 'b'.repeat(64) } }, 'receipt', provider, [expected], 1 << 20, measured));
+  assert.throws(() => decodeSemanticSourceReply({ ...raw, body: { ...raw.body, vocabulary: 'b'.repeat(64) } }, 'receipt', provider, [expected], 1 << 20, HIGHLIGHT_LIMITS, measured));
   assert.equal(descriptors, ingressReads, 'size evidence never bypasses structural or identity validation');
 });
 

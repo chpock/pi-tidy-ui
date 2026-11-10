@@ -1,8 +1,13 @@
 // Flat context/style primitives for the active v4 application contract.
-import { HIGHLIGHT_LIMITS, OCCIPITAL_LIMITS } from './limits.ts';
+import { OCCIPITAL_LIMITS } from './limits.ts';
 import type { Ink, StyleExpression, StyleIdentity } from './style-types.ts';
 
 export interface ContextBounds { readonly vocabularySize: number; readonly maxBytes: number }
+export interface SemanticDecodeLimits {
+  readonly sourceBytes: number;
+  readonly contextWords: number;
+  readonly decodedBytes: number;
+}
 export type SemanticErrorCode = 'invalid_context' | 'unknown_scope' | 'context_limit'
   | 'invalid_style' | 'style_limit' | 'identity_mismatch' | 'invalid_source' | 'source_limit';
 export class SemanticError extends Error {
@@ -26,12 +31,15 @@ function charge(value: number, maximum: number, code: SemanticErrorCode): number
 /** Checks all dictionaries and expanded costs before allocating any expanded word vectors.
  * Repeated equivalent rows are legal and may subsequently share a client-arena entry.
  * Array position + 1 is a reply-local context ID; zero is unclassified, never parsed-empty. */
-export function inspectContextBatch(value: unknown, bounds: ContextBounds): {
+export function inspectContextBatch(value: unknown, bounds: ContextBounds,
+  limits: Pick<SemanticDecodeLimits, 'contextWords' | 'decodedBytes'>): {
   words: number; policyBytes: number; materialize: () => Uint32Array[][];
 } {
+  const contextWords = limits.contextWords, decodedBytes = limits.decodedBytes;
   if (!Array.isArray(value) || value.length > OCCIPITAL_LIMITS.batchSources
-    || !integer(bounds.vocabularySize, 1) || !integer(bounds.maxBytes, 0, OCCIPITAL_LIMITS.retainedBytes)) fail('invalid_context');
-  const maximum = Math.min(bounds.maxBytes, HIGHLIGHT_LIMITS.decodedBytes);
+    || !integer(bounds.vocabularySize, 1) || !integer(bounds.maxBytes, 0, OCCIPITAL_LIMITS.retainedBytes)
+    || !integer(contextWords, 0, Number.MAX_SAFE_INTEGER) || !integer(decodedBytes, 0, Number.MAX_SAFE_INTEGER)) fail('invalid_context');
+  const maximum = Math.min(bounds.maxBytes, decodedBytes);
   let words = 0, policyBytes = 0;
   for (const rows of value) {
     if (!Array.isArray(rows)) fail('invalid_context');
@@ -42,7 +50,7 @@ export function inspectContextBatch(value: unknown, bounds: ContextBounds): {
       const depth = row[0] + row.length - 1;
       policyBytes = charge(policyBytes + depth * WORD_UNITS, maximum, 'context_limit');
       for (let i = 1; i < row.length; i++) if (!integer(row[i], 1, bounds.vocabularySize)) fail('unknown_scope');
-      words = charge(words + depth, HIGHLIGHT_LIMITS.contextWords, 'context_limit');
+      words = charge(words + depth, contextWords, 'context_limit');
       previousDepth = depth;
     }
   }
@@ -60,10 +68,11 @@ export function inspectContextBatch(value: unknown, bounds: ContextBounds): {
   });
   return { materialize, words, policyBytes };
 }
-export function decodeContextBatch(value: unknown, bounds: ContextBounds): {
+export function decodeContextBatch(value: unknown, bounds: ContextBounds,
+  limits: Pick<SemanticDecodeLimits, 'contextWords' | 'decodedBytes'>): {
   batches: Uint32Array[][]; words: number; policyBytes: number;
 } {
-  const plan = inspectContextBatch(value, bounds);
+  const plan = inspectContextBatch(value, bounds, limits);
   return { batches: plan.materialize(), words: plan.words, policyBytes: plan.policyBytes };
 }
 
@@ -85,16 +94,19 @@ export function expressionKey(value: unknown, identity: Pick<StyleIdentity, 'bin
 }
 function copyInk(value: Ink): Ink { return { ...value }; }
 
-export function decodeStyleResult(value: unknown, identity: StyleIdentity, contextCount: number, maxBytes: number): {
+export function decodeStyleResult(value: unknown, identity: StyleIdentity, contextCount: number, maxBytes: number,
+  limits: Pick<SemanticDecodeLimits, 'decodedBytes'>): {
   styles: StyleExpression[]; indices: Uint32Array; policyBytes: number;
 } {
   if (!object(value) || !keys(value, ['kind', 'vocabulary', 'rules', 'styles', 'indices']) || value.kind !== 'styles') fail('invalid_style');
   if (!fingerprint(value.vocabulary) || !fingerprint(value.rules)
     || value.vocabulary !== identity.vocabulary || value.rules !== identity.rules) fail('identity_mismatch');
+  const decodedBytes = limits.decodedBytes;
   if (!integer(contextCount) || !integer(maxBytes, 0, OCCIPITAL_LIMITS.retainedBytes)
+    || !integer(decodedBytes, 0, Number.MAX_SAFE_INTEGER)
     || !Array.isArray(value.styles) || !Array.isArray(value.indices) || value.indices.length !== contextCount) fail('invalid_style');
-  maxBytes = Math.min(maxBytes, HIGHLIGHT_LIMITS.decodedBytes);
-  const policyBytes = charge(value.styles.length * STYLE_UNITS + contextCount * 4, maxBytes, 'style_limit');
+  const maximum = Math.min(maxBytes, decodedBytes);
+  const policyBytes = charge(value.styles.length * STYLE_UNITS + contextCount * 4, maximum, 'style_limit');
   const seen = new Set<string>();
   for (const style of value.styles) {
     const key = expressionKey(style, identity);

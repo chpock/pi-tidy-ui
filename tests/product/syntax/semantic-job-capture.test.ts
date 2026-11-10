@@ -1,3 +1,4 @@
+import { HIGHLIGHT_LIMITS } from '../../../src/highlighting/limits.ts';
 import '../../fixtures/test-guard.mjs';
 import { installProjection, visitProjection, projectionRanges } from '../../fixtures/pi-projection.ts';
 import assert from 'node:assert/strict';
@@ -12,7 +13,7 @@ import { materializeStyle, type ConcreteStyle } from '../../../src/appearance/st
 const vocabulary = 'a'.repeat(64), rules = 'b'.repeat(64);
 const vectors = JSON.parse(readFileSync(new URL('../../../protocol/syntax-v4/vectors.json', import.meta.url), 'utf8'));
 const fixture = vectors.styles.find((v: { name: string }) => v.name === 'literal-binding-inherit-and-explicit-clear');
-const decoded = decodeStyleResult(fixture.body, { vocabulary, rules, bindingSlots: fixture.binding_slots }, fixture.context_count, 1 << 20);
+const decoded = decodeStyleResult(fixture.body, { vocabulary, rules, bindingSlots: fixture.binding_slots }, fixture.context_count, 1 << 20, HIGHLIGHT_LIMITS);
 const base: ConcreteStyle = { foreground: { kind: 'terminal-default' }, background: { kind: 'terminal-default' }, attributes: 0 };
 const literal = materializeStyle(decoded.styles[0]!, [], base);
 function source(key: string, generation: number, revision = 1, complete = false, tail = 2): SemanticChunk {

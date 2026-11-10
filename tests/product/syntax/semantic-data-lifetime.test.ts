@@ -8,7 +8,8 @@ import { ContextArena } from '../../../src/highlighting/context-arena.ts';
 import { SemanticRanges } from '../../../src/highlighting/semantic-ranges.ts';
 import { SemanticRetentionPool } from '../../../src/highlighting/semantic-retention.ts';
 import { CONTROLLER_LIMITS, sourceReservation } from '../../../src/highlighting/controller-limits.ts';
-import { HIGHLIGHT_LIMITS, OCCIPITAL_LIMITS } from '../../../src/occipital/limits.ts';
+import { OCCIPITAL_LIMITS } from '../../../src/occipital/limits.ts';
+import { HIGHLIGHT_LIMITS } from '../../../src/highlighting/limits.ts';
 import type { SemanticChunk } from '../../../src/occipital/semantic-source.ts';
 const vocabulary = 'a'.repeat(64);
 const chunk = (key = 'a', generation = 1): SemanticChunk => ({ key, generation, vocabulary, source_version: 1, revision: 1,
@@ -41,7 +42,7 @@ test('data lifetime: tiny captures plus two full policy-bounded framing/decoded 
     for (const key of ['a', 'b']) { const g = root.admit(key, 1, 'x\nx').generation!; root.installChunk(g, chunk(key, g)); groups.push(root.captureDisplays([g], () => true).group!); }
     const privateBytes = groups.reduce((sum, group) => sum + group.reservationBytes, 0);
     const family = sourceReservation({ captureUnits: 0, replacementUnits: 0, inputUnits: 0, replacementBytes: 0,
-      frameBytes: HIGHLIGHT_LIMITS.dataWireBytes, decodedBytes: HIGHLIGHT_LIMITS.decodedBytes });
+      frameBytes: OCCIPITAL_LIMITS.dataWireBytes, decodedBytes: HIGHLIGHT_LIMITS.decodedBytes });
     const total = privateBytes + 2 * family;
     assert.ok(total <= CONTROLLER_LIMITS.transientBytes);
     console.log(JSON.stringify({ actualAdmission: { privateBytes, twoFramesAndDecodedWorkspace: 2 * family, total, authority: CONTROLLER_LIMITS.transientBytes } }));

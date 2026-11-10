@@ -27,13 +27,15 @@ host semantic update
 | Boundary | Owner/result | Read next |
 |---|---|---|
 | Runtime selection | Syntax runtime, provider broker, selected local palette and compatible available transport | [Providers](syntax/providers.md) |
-| Physical requests | Adapter correlation, descriptor/byte validation, caller waits and actual settlement | [Request adapters](syntax/requests.md) |
+| Physical requests | Typed native operations, adapter correlation, descriptor/carrier validation, explicit consumer decode bounds and actual settlement | [Request adapters](syntax/requests.md) |
 | Useful source/style work | `SourceController` and `SourceWork`; one chronological registry, per-source authority and card-group publication | [Work controller](syntax/work.md) |
 | Retained data | Grants/charges, text and semantic captures, context leases, styles and ready payloads | [Storage](syntax/storage.md) |
 | Card preparation and paint | `CardSources`, measured geometry, display signatures and borrowed accepted visits | [Prepared cards](syntax/prepared-cards.md) |
 | Follow Pi | Public color sampling, complete binding/semantic-rule tables, role-specific derivatives and typography | [Follow Pi reference](syntax/follow-pi.md) |
 | Local palettes | 44 common semantic slots, public Pi adapter, owned palette inputs and complete card roles | [Palette ownership](syntax/palettes.md) |
 | Color mathematics | Color representations, quantization, contrast and differentiated diff-surface algorithms | [Color model](color-model.md) |
+
+The highlighting owner supplies its unchanged [workload policy](syntax/work.md#highlighting-volume-policy) to native decoders; the native layer owns the separate DATA carrier ceiling, not a hidden UI policy. Caller-funded available bytes remain an independent bound.
 
 These are owned results, not a fixed number of RPCs. Cached contexts/styles and local bindings can restore ready paint while all native slots are busy. Parsing and preparation happen outside terminal rendering; render only borrows already prepared data and never waits for the daemon.
 
