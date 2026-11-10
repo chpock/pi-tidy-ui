@@ -178,7 +178,7 @@ test("edit context constant controls projection without fetching unavailable sou
     const before = Array.from({ length: 20 }, (_, index) => `source_${index + 1}`).join("\n") + "\n", after = before.replace("source_10\n", "changed_10\n");
     for (const count of [0, 1, 6]) {
       const configured = source.replace(declaration, `const DIFF_CONTEXT_LINES = ${count};`)
-        .replace(/from "([^"]+)"/gu, (_match, specifier: string) => `from ${JSON.stringify(specifier.startsWith(".") ? new URL(specifier, url).href : import.meta.resolve(specifier))}`);
+        .replace(/from (["'])([^"']+)\1/gu, (_match, _quote: string, specifier: string) => `from ${JSON.stringify(specifier.startsWith(".") ? new URL(specifier, url).href : import.meta.resolve(specifier))}`);
       const file = join(temporary, `edit-${count}.ts`); writeFileSync(file, configured);
       const alternate = await import(pathToFileURL(file).href);
       for (const available of [2, 8]) {

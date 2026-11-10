@@ -1,7 +1,9 @@
 import type { TerminalColorMode } from '@earendil-works/pi-tui';
 import { diagnose, type DiagnosticFields, type DiagnosticSink } from '../diagnostics.ts';
 import type { BashService } from '../bash-card.ts';
-import { contextRows, fileDiagnosticText, fileHeading, fileSources, readHeading, type PreparedFileCard } from '../file-card.ts';
+import { contextRows, fileDiagnosticText, fileHeading, readHeading } from '../file-card.ts';
+import type { PreparedFileCard } from '../cards/file-model.ts';
+import { fileSources, visitFileSegments } from '../cards/file-sources.ts';
 import type { BashToolReader, FileToolReader, ToolDiagnosticsIdentity } from '../tool-adapters/contracts.ts';
 import { CONTROLLER_LIMITS } from '../highlighting/controller-limits.ts';
 import type { CardSourcePort, GroupDisplayBasis, SourceDisplayBasis } from '../highlighting/source-ports.ts';
@@ -106,6 +108,7 @@ function refreshTicket(this: RecordTicket, newest: boolean) { return this.consum
 function creditTicket(this: RecordTicket) { return this.consumer.deref()?.requiresCredit(this) ?? false; }
 function renderNotice(owner: WeakRef<CardSources<object>>) { return () => owner.deref()?.renderPrepared(); }
 const keyBytes = (key: string) => RETENTION_LIMITS.entryAllowance + 2 * key.length;
+const sourceKey = (ticket: number, ordinal: number) => `card:${ticket}:${ordinal}`;
 function wireHint(value: string | undefined, cap: number) {
   return value && value.length <= cap && Buffer.byteLength(value) <= cap && !/[\p{Cc}\p{Cs}]/u.test(value) ? value : undefined;
 }
@@ -265,20 +268,13 @@ export class CardSources<Owner extends object> {
             const visible = file.view.preview || file.view.mode === 'code' ? file.view.lines : contextRows(file.view.lines);
             const indices = new Map(file.view.lines.map((line, index) => [line, index]));
             const coordinates = new Map<number, { oldSource?: FileRowDescriptor['oldSource']; nextSource?: FileRowDescriptor['nextSource'] }>();
-            let segment = 0;
-            for (const side of ['old', 'next'] as const) {
-              let previous: number | undefined, utf16 = 0, byte = 0, active = false;
-              for (let index = 0; index < file.view.lines.length; index++) {
-                const line = file.view.lines[index]!;
-                if (line.kind === 'gap') { if (active) segment++; previous = undefined; active = false; continue; }
-                const position = line[side]; if (position === undefined) continue;
-                if (!active || position !== previous! + 1) { if (active) segment++; active = true; utf16 = byte = 0; }
-                const key = `card:${ticket.id}:${segment}`;
-                const coordinate = coordinates.get(index) ?? {}; coordinate[side === 'old' ? 'oldSource' : 'nextSource'] = { key, utf16, byte }; coordinates.set(index, coordinate);
-                utf16 += line.logical.length + 1; byte += Buffer.byteLength(line.logical) + 1; previous = position;
-              }
-              if (active) segment++;
-            }
+            let previous = -1, utf16 = 0, byte = 0;
+            visitFileSegments(file.view.lines, (side, ordinal, index, line) => {
+              if (ordinal !== previous) { utf16 = byte = 0; previous = ordinal; }
+              const key = sourceKey(ticket.id, ordinal);
+              const coordinate = coordinates.get(index) ?? {}; coordinate[side === 'old' ? 'oldSource' : 'nextSource'] = { key, utf16, byte }; coordinates.set(index, coordinate);
+              utf16 += line.logical.length + 1; byte += Buffer.byteLength(line.logical) + 1;
+            });
             visible.forEach(line => {
               const index = indices.get(line) ?? -1;
               const coordinate = coordinates.get(index);
@@ -506,7 +502,7 @@ export class CardSources<Owner extends object> {
         const palette = this.currentPalette(state), piFallback = input.kind === 'file' && palette.kind === 'pi' && this.inputMatches(state, palette);
         let refused = 0;
       for (let index = 0; index < demands.length; index++) {
-        const key = `card:${ticket.id}:${index}`;
+        const key = sourceKey(ticket.id, index);
         if (!ticket.keys.has(key)) {
           const bytes = keyBytes(key); if (this.bytes + bytes > this.maxBytes) { refused++; continue; }
           ticket.keys.add(key); this.keys.set(key, ticket); this.bytes += bytes; ticket.bytes += bytes;

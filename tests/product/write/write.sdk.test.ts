@@ -134,7 +134,7 @@ test("write validates both metadata formats and classifies globally before conte
   const temporary = mkdtempSync(join(tmpdir(), "tidy-ui-write-context-"));
   try {
     const alternateSource = source.replace("const DIFF_CONTEXT_LINES = 3;", "const DIFF_CONTEXT_LINES = 0;")
-      .replace(/from "([^"]+)"/gu, (_match, specifier: string) =>
+      .replace(/from (["'])([^"']+)\1/gu, (_match, _quote: string, specifier: string) =>
         `from ${JSON.stringify(specifier.startsWith(".") ? new URL(specifier, url).href : import.meta.resolve(specifier))}`);
     const file = join(temporary, "file-card.ts"); writeFileSync(file, alternateSource);
     const alternate = await import(pathToFileURL(file).href);

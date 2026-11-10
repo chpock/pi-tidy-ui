@@ -1,5 +1,5 @@
 import { prepareFileCard, sourceRows } from '../../file-card.ts';
-import type { FileCardInput } from '../../file-card.ts';
+import type { FileCardInput } from '../../cards/file-model.ts';
 import type { FileToolReader, ToolAdapter, ToolCallSnapshot } from '../contracts.ts';
 import { aftFileReader } from './file.ts';
 import { resultDetails as details } from '../shared/result-details.ts';

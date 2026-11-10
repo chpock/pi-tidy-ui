@@ -1,5 +1,5 @@
 import type { BashService } from '../bash-card.ts';
-import type { PreparedFileCard } from '../file-card.ts';
+import type { PreparedFileCard } from '../cards/file-model.ts';
 import type { FilePreviewMode } from '../file-preview-state.ts';
 
 export type ToolCardKind = 'read' | 'write' | 'edit' | 'bash' | 'other';

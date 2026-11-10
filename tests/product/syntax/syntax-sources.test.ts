@@ -2,6 +2,7 @@ import '../../fixtures/test-guard.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { filePreviewText } from '../../../src/file-card.ts';
+import { fileSources } from '../../../src/cards/file-sources.ts';
 import { bashToolReaderFixture, prepareFileToolCall } from '../../fixtures/tool-adapters/reader-fixture.ts';
 import { fileCardFixture as renderFileCard, bashCardFixture as renderBashCard } from '../../fixtures/prepared-card.ts';
 import { stripVTControlCharacters } from 'node:util';
@@ -79,6 +80,31 @@ test('opposite-side changes neither enter a source nor break proven same-side co
     { side: 'old', text: 'removed\nshared\nremoved_again', rows: [0, 3, 4] },
     { side: 'next', text: 'added\nextra\nshared\nadded_again', rows: [1, 2, 3, 5] },
   ]);
+});
+
+test('empty positioned rows keep their own source segments across omissions', () => {
+  const plan = prepareFileToolCall(edit('-1 \n+1 \n  ...\n-5 old\n+5 next'))!;
+  assert.deepEqual(plan.sources, [
+    { side: 'old', text: '', rows: [0] },
+    { side: 'old', text: 'old', rows: [3] },
+    { side: 'next', text: '', rows: [1] },
+    { side: 'next', text: 'next', rows: [4] },
+  ]);
+});
+
+test('useful file-source joining does not compute display byte coordinates', t => {
+  const plan = prepareFileToolCall(edit('-1 \t😀\n+1 名\n  ...\n-9 old\n+9 next'), true)!;
+  assert.deepEqual(plan.sources, [], 'logical construction does not join source strings');
+  const original = Buffer.byteLength;
+  let encodes = 0;
+  t.mock.method(Buffer, 'byteLength', (...args: Parameters<typeof Buffer.byteLength>) => { encodes++; return original(...args); });
+  assert.deepEqual(fileSources(plan.view), [
+    { side: 'old', text: '\t😀', rows: [0] },
+    { side: 'old', text: 'old', rows: [3] },
+    { side: 'next', text: '名', rows: [1] },
+    { side: 'next', text: 'next', rows: [4] },
+  ]);
+  assert.equal(encodes, 0, 'only the display consumer needs UTF-8 row offsets');
 });
 
 test('Created and Replaced use saved diff; Wrote and explicitly truncated diff use submitted source', () => {

@@ -5,22 +5,8 @@ import { cardGeometry } from "./card-frame.ts";
 import { displayPath } from "./display-path.ts";
 import { wrapText } from "./text-wrap.ts";
 import { shebangLanguage } from "./syntax/shebang-language.ts";
-
-export type FileCardInput = {
-  readonly kind: 'read' | 'write' | 'edit';
-  readonly path: string;
-  readonly complete: boolean;
-  readonly failed: boolean;
-  readonly viewMode: 'full' | 'preview';
-  readonly content?: unknown;
-  readonly saved?: { readonly format: 'numbered' | 'unified'; readonly value: unknown };
-  readonly truncated?: boolean;
-  readonly noOp?: boolean;
-  readonly note?: string;
-  readonly readRows?: readonly { readonly text: string; readonly line?: number }[];
-};
-type DisplayLine = { kind: " " | "+" | "-"; text: string; old?: number; next?: number; hunk?: number } | { kind: "gap" };
-type DiffLine = (Exclude<DisplayLine, { kind: "gap" }> & { logical: string; languageHint?: string }) | { kind: "gap" };
+import type { FileCardInput, FileDisplayLine as DisplayLine, FileLogicalLine as DiffLine, FileView, SourceFileView, PreparedFileCard } from './cards/file-model.ts';
+import { fileSources } from './cards/file-sources.ts';
 
 // Display-only maximum on each side of a change; metadata may supply fewer rows.
 const DIFF_CONTEXT_LINES = 3;
@@ -128,11 +114,6 @@ function savedDiff(saved: FileCardInput['saved'], failed: boolean, content = tru
     ? unifiedDiff(saved.value, content, kinds, logicalOnly, maxRows, allowIncomplete) : undefined;
   return typeof saved.value === 'string' ? numberedDiff(saved.value, content, kinds, logicalOnly, maxRows) : undefined;
 }
-type FileView = { label: "Edited" | "Created" | "Replaced" | "Wrote" | "Edit" | "Write" | "Read"; mode: "inline" | "diff" | "code";
-  lines: readonly DisplayLine[]; note?: string; preview?: boolean; omitted?: boolean };
-type SourceFileView = Omit<FileView, "lines"> & { lines: DiffLine[] };
-
-
 /** Classify supplied rows before projecting context; validation-only calls never materialize code. */
 type PreviewText = { text: string; omitted: boolean };
 export function filePreviewText(source: string, maxUnits = FILE_PREVIEW_MAX_UNITS, maxRows = FILE_PREVIEW_MAX_ROWS): PreviewText {
@@ -214,19 +195,6 @@ function presentation(input: FileCardInput, content = true, logicalOnly = false)
   return { label: "Created", mode: "code", lines: diff };
 }
 
-export interface FileSource {
-  readonly side: "old" | "next";
-  readonly text: string;
-  readonly languageHint?: string;
-  /** Full prepared-view indices, not visible-context or wrapped row indices. */
-  readonly rows: readonly number[];
-}
-export interface PreparedFileCard {
-  readonly path: string;
-  readonly view: SourceFileView;
-  readonly sources: readonly FileSource[];
-}
-
 /** Lifecycle/demand preparation, never classifier work or a render-time callback.
  * Sources retain tabs and include all available context. Positions prove continuity;
  * explicit omissions always reset it. Missing source is not reconstructed/read.
@@ -236,31 +204,6 @@ export function prepareFileCard(input: FileCardInput, logicalOnly = false): Prep
   const view = presentation(input, true, logicalOnly);
   if (!view) return undefined;
   return { path: input.path, view, sources: logicalOnly ? [] : fileSources(view) };
-}
-
-/** Join only at the useful source boundary; lifecycle owners retain logical fragments. */
-export function fileSources(view: PreparedFileCard['view']): FileSource[] {
-  const sources: FileSource[] = [];
-  const first = (side: 'old' | 'next') => view.lines.find((line): line is Exclude<DiffLine, { kind: 'gap' }> => line.kind !== 'gap' && line[side] === 1)?.languageHint;
-  const oldCandidate = first('old'), nextCandidate = first('next');
-  for (const side of ["old", "next"] as const) {
-    const candidate = side === 'old' ? oldCandidate ?? nextCandidate : nextCandidate ?? oldCandidate;
-    let rows: number[] = [], parts: string[] = [], previous: number | undefined;
-    const flush = () => {
-      if (rows.length) sources.push({ side, text: parts.join("\n"), rows, ...(candidate ? { languageHint: candidate } : {}) });
-      rows = []; parts = []; previous = undefined;
-    };
-    for (let index = 0; index < view.lines.length; index++) {
-      const line = view.lines[index]!;
-      if (line.kind === "gap") { flush(); continue; }
-      const position = line[side];
-      if (position === undefined) continue;
-      if (previous !== undefined && position !== previous + 1) flush();
-      rows.push(index); parts.push(line.logical); previous = position;
-    }
-    flush();
-  }
-  return sources;
 }
 
 function headingPath(path: string, cwd: string | undefined): string {

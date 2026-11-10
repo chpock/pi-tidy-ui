@@ -552,13 +552,51 @@ test('cards render cold/warm geometry and gap/side mapping without source work',
   await settle(); assert.deepEqual([f.env.samples, f.env.classifications.length, f.sources.stats().dispatches], before);
 });
 
+test('file coordinates and useful demands share exact side-ordered segment identities and Unicode offsets', async () => {
+  const f = fixture(), owner = {};
+  const diff = '-1 #!/usr/bin/env python3\n+1 #!/usr/bin/env ruby\n 2 \t😀\n-3 \n+3 xé\n 4 tail\n  ...\n-9 名\n+9 Z\n-11 end\n+11 end2';
+  assert.equal(f.update(owner, edited(diff)), true);
+  let prefix: string | undefined;
+  const coordinate = (value: { readonly key: string; readonly utf16: number; readonly byte: number } | undefined) => {
+    if (!value) return undefined;
+    const boundary = value.key.lastIndexOf(':'), current = value.key.slice(0, boundary);
+    if (prefix === undefined) { prefix = current; assert.match(prefix, /^card:\d+$/u); }
+    else assert.equal(current, prefix, 'all segment keys belong to the same prepared owner');
+    return [Number(value.key.slice(boundary + 1)), value.utf16, value.byte];
+  };
+  let rows: unknown[] = [];
+  inspect(f, owner, display => {
+    if (display.kind !== 'file') assert.fail('expected file display');
+    rows = display.rows.map(row => [row.index, row.kind, coordinate(row.oldSource), coordinate(row.nextSource)]);
+  });
+  assert.deepEqual(rows, [
+    [0, '-', [0, 0, 0], undefined], [1, '+', undefined, [3, 0, 0]],
+    [2, ' ', [0, 23, 23], [3, 20, 20]], [3, '-', [0, 27, 29], undefined],
+    [4, '+', undefined, [3, 24, 26]], [5, ' ', [0, 28, 30], [3, 27, 30]],
+    [6, 'gap', undefined, undefined], [7, '-', [1, 0, 0], undefined],
+    [8, '+', undefined, [4, 0, 0]], [9, '-', [2, 0, 0], undefined], [10, '+', undefined, [5, 0, 0]],
+  ]);
+  assert.equal(f.calls.length, 0); assert.equal(f.env.classifications.length, 0, 'cold coordinates are not source demand');
+  f.cards.useful(owner, 1); await settle();
+  assert.deepEqual(f.env.classifications, ['#!/usr/bin/env python3\n\t😀\n\ntail', '名', 'end', '#!/usr/bin/env ruby\n\t😀\nxé\ntail', 'Z', 'end2']);
+  const slots = f.cards.identities(owner);
+  assert.deepEqual(slots.map(slot => slot.key), Array.from({ length: 6 }, (_value, index) => `${prefix}:${index}`));
+  assert.deepEqual(slots.map(slot => slot.language), ['python', 'python', 'python', 'ruby', 'ruby', 'ruby']);
+  const before = [f.env.classifications.length, f.calls.length, f.sources.stats().dispatches];
+  for (let frame = 0; frame < 25; frame++) { f.cards.useful(owner, 1); inspect(f, owner, () => {}); }
+  await settle(); assert.deepEqual([f.env.classifications.length, f.calls.length, f.sources.stats().dispatches], before);
+});
+
 test('cards file coordinates include omitted context and preserve tabs without measuring omitted rows', () => {
   const f = fixture(), owner = {};
   const diff = ['-1 old', '+1 new', ...Array.from({ length: 20 }, (_x, i) => ` ${i + 2} \t界${i}`), '-22 old', '+22 new'].join('\n');
   f.update(owner, edited(diff));
   inspect(f, owner, d => { if (d.kind !== 'file') assert.fail('file');
     assert.equal(d.rows.filter(r => r.kind === ' ').length, 6); assert.equal(d.rows.filter(r => r.kind === 'gap').length, 1);
-    const last = d.rows.find(r => r.old === 22)!; assert.ok(last.oldSource!.byte > 100); assert.ok(last.oldSource!.utf16 > 50);
+    const last = d.rows.find(r => r.old === 22)!;
+    // Ten single-digit and ten two-digit context suffixes precede the final change.
+    assert.equal(last.oldSource!.byte, 134); assert.equal(last.oldSource!.utf16, 94);
+    const next = d.rows.find(r => r.next === 22)!; assert.equal(next.nextSource!.byte, 134); assert.equal(next.nextSource!.utf16, 94);
     assert.equal(d.rows[2]!.region!.text[0], '\t');
   });
   assert.equal(f.calls.length, 0);

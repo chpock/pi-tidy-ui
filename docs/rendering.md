@@ -203,7 +203,7 @@ Native removal releases that owner's rows and useful syntax work, unless it is a
 - `src/index.ts`: presenter dispatch, latest-row adoption, predecessor spacing, transient prefix/separator composition and host ownership.
 - `src/card-frame.ts`, `src/card-theme.ts`: geometry/framing and paint interfaces.
 - `src/tool-adapters/summary.ts`, `src/summary-args.ts`: producer-selected compact arguments and the shared bounded-description formatter; `src/plain-text.ts` owns plain-block normalization.
-- `src/tool-adapters/`: producer-specific saved-field interpretation and reader identities; `src/bash-card.ts`, `src/file-card.ts`: shared producer-neutral logical display/service models. Source and presentation responsibilities are explained in their respective chapters.
+- `src/tool-adapters/`: producer-specific saved-field interpretation and reader identities; `src/cards/file-model.ts`, `src/cards/file-sources.ts`: logical file shapes and canonical segment rules; `src/bash-card.ts`, `src/file-card.ts`: shared Bash service and file normalization. Source and presentation responsibilities are explained in their respective chapters.
 - `src/user-card.ts`, `src/queued-card.ts`: native Markdown projection and prepared plain queue rows.
 - `src/syntax/cards.ts`, `measured-rows.ts`, `card-layout.ts`, `flat-paint.ts`: prepared source models, measured geometry, scenes and monotonic literal painting.
 - `src/render-cache.ts`: weak row accounting and detached release receipts.

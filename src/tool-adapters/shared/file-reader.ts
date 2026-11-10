@@ -1,4 +1,4 @@
-import type { PreparedFileCard } from '../../file-card.ts';
+import type { PreparedFileCard } from '../../cards/file-model.ts';
 import type { FilePreviewMode } from '../../file-preview-state.ts';
 import type { FileToolReader, PendingFileDetail, ReaderEstimateContext, ToolCallSnapshot, ToolDiagnosticsIdentity, FileDiagnostic, FileDetailSource } from '../contracts.ts';
 

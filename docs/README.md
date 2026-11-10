@@ -39,7 +39,7 @@ If you are interested in **Occipital as a daemon**, start directly with its [sta
 | [Request adapters](syntax/requests.md) | Stdio/shared correlation, admission and decoding, caller wait versus physical settlement, failure origin and cleanup proof |
 | [Work and execution](syntax/work.md) | Joint source/job authority, Pi fallback coordinator, same-node weak chronological registry, card-publication borrow lifetime, consumer capabilities, SOURCE/STYLE scheduling and atomic per-card publication |
 | [Storage](syntax/storage.md) | Numeric grants and shared charges, storage holders, Pi payload/ticket lifetime, ready-display stage/abort/commit, context arena, pressure and release receipts |
-| [Prepared cards](syntax/prepared-cards.md) | Prepared source slots, full display versus classification, measured geometry, coherent paint, Pi ANSI conversion and accepted borrowed visits |
+| [Prepared cards](syntax/prepared-cards.md) | Logical card models and canonical source segments, cold coordinates versus useful joining, prepared source slots, measured geometry, coherent paint, Pi ANSI conversion and accepted borrowed visits |
 | [Shebang hints](syntax/shebang-hints.md) | Curated interpreter map, exact line-1 provenance, `env` subset, generic language selector, optional-path fallback, source identity and per-side diff painting |
 | [Follow Pi](syntax/follow-pi.md) | Public Pi binding and semantic-rule tables, role-specific derived colors, provenance, contrast/quantization, font composition and rationale |
 | [Palette ownership](syntax/palettes.md) | Common 44-slot classifier, family/variant resolution to bundled concrete palette data, funded input leases, 28 complete card roles and authored TUI diff surfaces |

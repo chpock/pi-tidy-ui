@@ -36,7 +36,9 @@ const applicationModules = [
   'src/application/syntax-runtime.ts',
   'src/application/syntax-options.ts',
 ];
+const cardModules = ['src/cards/file-model.ts', 'src/cards/file-sources.ts'];
 const governedModules = new Set([
+  ...cardModules,
   'src/appearance/card-roles.ts',
   'src/appearance/theme-preference.ts',
   'src/appearance/style-materialization.ts',
@@ -46,6 +48,7 @@ const governedModules = new Set([
   ...applicationModules,
 ]);
 const pureModules = new Set([
+  'src/cards/file-model.ts',
   'src/appearance/card-roles.ts',
   'src/appearance/theme-preference.ts',
   'src/occipital/style-types.ts',
@@ -247,7 +250,7 @@ function collectProductionEdges(files) {
 }
 
 function assertKnownGovernedModule(path) {
-  const governed = path.startsWith('src/resources/') || path.startsWith('src/appearance/')
+  const governed = path.startsWith('src/cards/') || path.startsWith('src/resources/') || path.startsWith('src/appearance/')
     || path.startsWith('src/highlighting/') || path.startsWith('src/application/') || path === genericStyleTypesPath;
   if (governed && !governedModules.has(path)) throw new Error(`unclassified governed source module: ${path}`);
 }
@@ -266,6 +269,7 @@ function assertNativeDependency(edge) {
   if (target.startsWith('src/application/') || target.startsWith('src/highlighting/')
     || target.startsWith('src/syntax/') || target.startsWith('src/appearance/')
     || target.startsWith('src/themes/') || target.startsWith('src/tool-adapters/')
+    || target.startsWith('src/cards/') || target.startsWith('src/rendering/')
     || target === 'src/settings.ts' || presentationAndPayloadFiles.has(target)) {
     throw new Error(`native module imports application, highlighting or presentation ownership: ${edgeKey(edge)}`);
   }
@@ -285,7 +289,8 @@ function assertHighlightingDependency(edge) {
   if (!edge.source.startsWith('src/highlighting/')) return;
   const target = edge.target;
   if (target.startsWith('src/application/') || target.startsWith('src/syntax/') || target.startsWith('src/themes/')
-    || target.startsWith('src/tool-adapters/') || target === 'src/settings.ts' || presentationAndPayloadFiles.has(target)) {
+    || target.startsWith('src/tool-adapters/') || target.startsWith('src/cards/') || target.startsWith('src/rendering/')
+    || target === 'src/settings.ts' || presentationAndPayloadFiles.has(target)) {
     throw new Error(`highlighting module imports application or presentation ownership: ${edgeKey(edge)}`);
   }
 }
@@ -294,7 +299,7 @@ function assertRegistryDependency(edge) {
   if (edge.source !== 'src/highlighting/work-registry.ts') return;
   const target = edge.target;
   const domain = ['src/resources/', 'src/appearance/', 'src/occipital/', 'src/application/',
-    'src/syntax/', 'src/themes/', 'src/tool-adapters/', 'src/highlighting/storage/'].some(prefix => target.startsWith(prefix))
+    'src/syntax/', 'src/themes/', 'src/tool-adapters/', 'src/highlighting/storage/', 'src/cards/', 'src/rendering/'].some(prefix => target.startsWith(prefix))
     || ['src/highlighting/source-execution.ts', 'src/highlighting/source-ports.ts',
       'src/highlighting/controller-styles.ts', 'src/highlighting/style-preparation.ts',
       'src/highlighting/pi-fallback.ts', 'src/highlighting/pi-flat.ts', 'src/highlighting/card-publication.ts',
@@ -314,7 +319,22 @@ function assertStorageDependency(edge) {
   if (!allowed) throw new Error(`storage module imports execution or native operation ownership: ${edgeKey(edge)}`);
 }
 
+function assertCardDependency(edge) {
+  if (!edge.source.startsWith('src/cards/')) return;
+  const allowed = ['src/cards/', 'src/rendering/', 'src/resources/'].some(prefix => edge.target.startsWith(prefix))
+    || edge.target === 'src/highlighting/source-ports.ts';
+  if (!allowed) throw new Error(`card preparation imports outside its lower-level capabilities: ${edgeKey(edge)}`);
+}
+
+function assertCardReference(path, reference) {
+  if (reference.specifier === '@earendil-works/pi-coding-agent'
+    || reference.specifier.startsWith('@earendil-works/pi-coding-agent/')) {
+    throw new Error(`card preparation imports the Pi host SDK: ${path} -> ${reference.specifier} [${reference.kind}]`);
+  }
+}
+
 function assertEdgePolicy(edge) {
+  assertCardDependency(edge);
   assertRegistryDependency(edge);
   assertStorageDependency(edge);
   assertNativeDependency(edge);
@@ -324,6 +344,7 @@ function assertEdgePolicy(edge) {
     const nativeOrPayload = target.startsWith('src/occipital/') && target !== genericStyleTypesPath
       || target.startsWith('src/highlighting/') || target.startsWith('src/application/')
       || target.startsWith('src/syntax/') || target.startsWith('src/themes/') || target.startsWith('src/tool-adapters/')
+      || target.startsWith('src/cards/') || target.startsWith('src/rendering/')
       || presentationAndPayloadFiles.has(target);
     if (nativeOrPayload) throw new Error(`resource module imports native, UI or payload implementation: ${edgeKey(edge)}`);
     if (target === genericStyleTypesPath && edge.kind !== 'type-only') {
@@ -415,6 +436,19 @@ test('production imports preserve the migrated module boundaries', () => {
   ], 'concrete style materialization depends only on generic type-only wire shapes');
   const syntaxApplicationEdges = edges.filter(edge => edge.source.startsWith('src/syntax/') && edge.target.startsWith('src/application/'));
   assertNoSyntaxApplicationEdges(syntaxApplicationEdges);
+});
+
+test('logical file models belong to cards without legacy type forwarding or host SDK imports', () => {
+  const path = 'src/cards/file-model.ts', model = declarationExportNames(parseSource(path));
+  const legacy = declarationExportNames(parseSource('src/file-card.ts'));
+  const forwarded = reexportedSourceNames('src/file-card.ts', path);
+  for (const name of ['FileCardInput', 'FileSource', 'PreparedFileCard']) {
+    assert.ok(model.has(name), `cards owns logical file ${name}`);
+    assert.ok(!legacy.has(name) && !forwarded.has(name) && !forwarded.has('*'), `file-card must not forward logical ${name}`);
+  }
+  for (const file of productionFiles().filter(file => file.startsWith('src/cards/') && sourceExtensions.has(extname(file)))) {
+    for (const reference of moduleReferences(parseSource(file))) assertCardReference(file, reference);
+  }
 });
 
 test('native modules are independent of application, highlighting, presentation and Pi host SDK', () => {
@@ -562,4 +596,58 @@ test('chronological registry rejects domain ownership through type and value dep
   }
   assert.doesNotThrow(() => assertEdgePolicy({ source: 'src/highlighting/source-execution.ts',
     target: 'src/resources/data-budget.ts', kind: 'value' }));
+});
+
+
+test('card preparation uses narrow lower-level capabilities, never application or host ownership', () => {
+  for (const kind of ['type-only', 'value', 'mixed']) {
+    for (const target of ['src/application/syntax-client.ts', 'src/host/pi/tool.ts', 'src/presentation/tool.ts',
+      'src/settings.ts', 'src/highlighting/source-execution.ts']) {
+      assert.throws(() => assertEdgePolicy({ source: 'src/cards/new-owner.ts', target, kind }), /card preparation imports/);
+    }
+    for (const target of ['src/cards/file-model.ts', 'src/cards/file-sources.ts', 'src/rendering/prepared-card.ts']) {
+      for (const source of ['src/occipital/provider.ts', 'src/highlighting/source-execution.ts', 'src/resources/data-budget.ts']) {
+        assert.throws(() => assertEdgePolicy({ source, target, kind }), /imports/);
+      }
+      assert.throws(() => assertEdgePolicy({ source: 'src/highlighting/work-registry.ts', target, kind }), /chronological registry imports/);
+    }
+    for (const target of ['src/resources/data-budget.ts', 'src/highlighting/source-ports.ts', 'src/rendering/prepared-card.ts']) {
+      assert.doesNotThrow(() => assertEdgePolicy({ source: 'src/cards/new-owner.ts', target, kind }));
+    }
+    for (const specifier of ['@earendil-works/pi-coding-agent', '@earendil-works/pi-coding-agent/host']) {
+      assert.throws(() => assertCardReference('src/cards/new-owner.ts', { specifier, kind }), /card preparation imports the Pi host SDK/);
+    }
+    assert.doesNotThrow(() => assertCardReference('src/cards/new-owner.ts', { specifier: '@earendil-works/pi-tui', kind }));
+  }
+  assert.throws(() => assertKnownGovernedModule('src/cards/unclassified.ts'), /unclassified governed source module/);
+});
+
+
+test('card preparation rejects provider acquisition and private highlighting implementations', () => {
+  const source = 'src/cards/file-sources.ts';
+  for (const kind of ['type-only', 'value', 'mixed']) {
+    for (const target of ['src/occipital/provider.ts', 'src/occipital/acquisition.ts', 'src/occipital/discovery.ts',
+      'src/occipital/factories.ts', 'src/occipital/stdio.ts', 'src/occipital/shared.ts',
+      'src/occipital/semantic-codec.ts', 'src/highlighting/pi-fallback.ts', 'src/highlighting/card-publication.ts',
+      'src/highlighting/work-registry.ts', 'src/highlighting/style-preparation.ts', 'src/highlighting/storage/pi-projection.ts']) {
+      assert.throws(() => assertEdgePolicy({ source, target, kind }), /card preparation imports/);
+    }
+    assert.doesNotThrow(() => assertEdgePolicy({ source, target: 'src/highlighting/source-ports.ts', kind }));
+  }
+});
+
+
+test('card preparation accepts only its own models, rendering, numeric funding and narrow source ports', () => {
+  const source = 'src/cards/new-owner.ts';
+  for (const kind of ['type-only', 'value', 'mixed']) {
+    for (const target of ['src/syntax/work.ts', 'src/syntax/cards.ts', 'src/syntax/pi-input.ts',
+      'src/tool-adapters/contracts.ts', 'src/tool-adapters/aft/file.ts', 'src/themes/selection.ts',
+      'src/unclassified-owner.ts', ...presentationAndPayloadFiles]) {
+      assert.throws(() => assertEdgePolicy({ source, target, kind }), /card preparation imports/);
+    }
+    for (const target of ['src/cards/file-model.ts', 'src/cards/file-sources.ts',
+      'src/rendering/prepared-card.ts', 'src/resources/data-budget.ts', 'src/highlighting/source-ports.ts']) {
+      assert.doesNotThrow(() => assertEdgePolicy({ source, target, kind }));
+    }
+  }
 });
