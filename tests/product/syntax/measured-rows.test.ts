@@ -11,10 +11,10 @@ const widthKey = Symbol.for('test.measured-rows.width');
 const hooks = globalThis as typeof globalThis & { [widthKey]?: (text: string) => void };
 const widthModule = 'data:text/javascript,' + encodeURIComponent(`import { visibleWidth as original } from ${JSON.stringify(import.meta.resolve('@earendil-works/pi-tui'))}; export function visibleWidth(text) { globalThis[Symbol.for('test.measured-rows.width')]?.(text); return original(text); }`);
 const loader = registerHooks({ resolve(specifier, context, next) {
-  if (specifier === '@earendil-works/pi-tui' && context.parentURL?.endsWith('/src/syntax/measured-rows.ts')) return { url: widthModule, shortCircuit: true };
+  if (specifier === '@earendil-works/pi-tui' && context.parentURL?.endsWith('/src/rendering/measured-rows.ts')) return { url: widthModule, shortCircuit: true };
   return next(specifier, context);
 } });
-const { measure, prepareMeasuredAppend, reflow, GlyphFlag, SpanKind } = await import('../../../src/syntax/measured-rows.ts');
+const { measure, prepareMeasuredAppend, reflow, GlyphFlag, SpanKind } = await import('../../../src/rendering/measured-rows.ts');
 loader.deregister();
 type Measured = NonNullable<ReturnType<typeof measure>>;
 type Layout = NonNullable<ReturnType<typeof reflow>>;

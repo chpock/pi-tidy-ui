@@ -15,7 +15,7 @@ import type { GeometryFunding } from '../resources/data-budget.ts';
 import { type DataCharge, type DataCleanupReceipt } from '../resources/data-budget.ts';
 import { RETENTION_LIMITS } from '../highlighting/storage/retention.ts';
 import { CARD_ROLES, type CardRole } from '../appearance/card-roles.ts';
-import { measure, prepareMeasuredAppend, type MeasuredAppend } from './measured-rows.ts';
+import { measure, prepareMeasuredAppend, type MeasuredAppend } from '../rendering/measured-rows.ts';
 import type { FlatRangeReader, PreparedRegion, PreparedCard, ReadyCardPaint } from '../rendering/card-values.ts';
 import { compileCardStyles, type LiteralPaint } from '../rendering/card-styles.ts';
 import type { PaletteInputLease } from './pi-input.ts';

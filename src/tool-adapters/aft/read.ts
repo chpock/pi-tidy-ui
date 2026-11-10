@@ -1,4 +1,4 @@
-import { prepareFileCard, sourceRows } from '../../file-card.ts';
+import { prepareFileCard, sourceRows } from '../../cards/file-input.ts';
 import type { FileCardInput } from '../../cards/file-model.ts';
 import type { FileToolReader, ToolAdapter, ToolCallSnapshot } from '../contracts.ts';
 import { aftFileReader } from './file.ts';

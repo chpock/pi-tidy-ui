@@ -2,7 +2,7 @@ import '../../fixtures/test-guard.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { MAX_SHEBANG_BYTES, shebangLanguage } from '../../../src/syntax/shebang-language.ts';
+import { MAX_SHEBANG_BYTES, shebangLanguage } from '../../../src/cards/shebang-language.ts';
 
 const vectors = JSON.parse(readFileSync(new URL('../../../protocol/syntax-v4/source-hint-vectors.json', import.meta.url), 'utf8')) as {
   revision: number;

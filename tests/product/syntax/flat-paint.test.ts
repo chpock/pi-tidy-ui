@@ -12,11 +12,11 @@ const widthKey = Symbol.for('test.flat-paint.width');
 const hooks = globalThis as typeof globalThis & { [widthKey]?: () => void };
 const widthModule = 'data:text/javascript,' + encodeURIComponent(`import { visibleWidth as original } from ${JSON.stringify(import.meta.resolve('@earendil-works/pi-tui'))}; export function visibleWidth(text) { globalThis[Symbol.for('test.flat-paint.width')]?.(); return original(text); }`);
 const loader = registerHooks({ resolve(specifier, context, next) {
-  if (specifier === '@earendil-works/pi-tui' && (context.parentURL?.endsWith('/src/syntax/measured-rows.ts') || context.parentURL?.endsWith('/src/syntax/flat-paint.ts'))) return { url: widthModule, shortCircuit: true };
+  if (specifier === '@earendil-works/pi-tui' && (context.parentURL?.endsWith('/src/rendering/measured-rows.ts') || context.parentURL?.endsWith('/src/rendering/flat-paint.ts'))) return { url: widthModule, shortCircuit: true };
   return next(specifier, context);
 } });
-const { measure, reflow } = await import('../../../src/syntax/measured-rows.ts');
-const { paintFlat } = await import('../../../src/syntax/flat-paint.ts');
+const { measure, reflow } = await import('../../../src/rendering/measured-rows.ts');
+const { paintFlat } = await import('../../../src/rendering/flat-paint.ts');
 loader.deregister();
 type Painted = NonNullable<ReturnType<typeof paintFlat>>;
 type Reader = Parameters<typeof paintFlat>[3];

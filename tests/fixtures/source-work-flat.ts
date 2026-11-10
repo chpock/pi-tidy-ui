@@ -2,8 +2,8 @@ import type { SourceExecution } from '../../src/highlighting/source-execution.ts
 import type { DisplayRangeReader, PiProjectionReader } from '../../src/highlighting/source-ports.ts';
 import type { SyntaxResolution } from '../../src/syntax/work.ts';
 import { DataBudget } from '../../src/resources/data-budget.ts';
-import { measure, reflow } from '../../src/syntax/measured-rows.ts';
-import { paintFlat } from '../../src/syntax/flat-paint.ts';
+import { measure, reflow } from '../../src/rendering/measured-rows.ts';
+import { paintFlat } from '../../src/rendering/flat-paint.ts';
 import type { FlatRangeReader } from '../../src/rendering/card-values.ts';
 import { compileStyleAnsi, type AnsiStyle } from '../../src/appearance/style-ansi.ts';
 import type { ConcreteStyle } from '../../src/appearance/style-materialization.ts';

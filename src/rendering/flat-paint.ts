@@ -1,7 +1,7 @@
 import { DataBudget, type DataCharge, type DataGrantFactory, type DataCleanupReceipt } from '../resources/data-budget.ts';
 import { SpanKind, type MeasuredText, type MeasuredRowLayout } from './measured-rows.ts';
 import type { AnsiStyle } from '../appearance/style-ansi.ts';
-import type { FlatRangeReader } from '../rendering/card-values.ts';
+import type { FlatRangeReader } from './card-values.ts';
 /** Exact normalized UTF16 slices in the measurement's coordinates. A transient
  * fragment reader avoids retaining another joined display/source snapshot. */
 export type FlatText = string | ((start: number, end: number) => string);

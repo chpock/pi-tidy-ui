@@ -1,7 +1,7 @@
 import type { TerminalColorMode } from '@earendil-works/pi-tui';
 import type { CardRole } from '../appearance/card-roles.ts';
 import type { AnsiStyle } from '../appearance/style-ansi.ts';
-import type { MeasuredText } from '../syntax/measured-rows.ts';
+import type { MeasuredText } from './measured-rows.ts';
 
 export interface BashService {
   readonly description: string; readonly heading: string; readonly output: readonly string[];

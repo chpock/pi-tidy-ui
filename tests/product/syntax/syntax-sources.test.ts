@@ -1,7 +1,7 @@
 import '../../fixtures/test-guard.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { filePreviewText } from '../../../src/file-card.ts';
+import { filePreviewText } from '../../../src/cards/file-input.ts';
 import { fileSources } from '../../../src/cards/file-sources.ts';
 import { bashToolReaderFixture, prepareFileToolCall } from '../../fixtures/tool-adapters/reader-fixture.ts';
 import { fileCardFixture as renderFileCard, bashCardFixture as renderBashCard } from '../../fixtures/prepared-card.ts';

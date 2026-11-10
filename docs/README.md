@@ -16,7 +16,7 @@ If you are interested in **Occipital as a daemon**, start directly with its [sta
 | Chapter | What it explains |
 |---|---|
 | [Host integration](host-integration.md) | Composition root, actual host capture, public API versus inspected shapes, exact routing/visibility, descriptor/slot ownership, renderer transfer, events, Git metadata and shutdown |
-| [Rendering](rendering.md) | Representation pipeline, normalization, coordinate systems, framing responsibilities, reuse and worked width/theme/removal paths |
+| [Rendering](rendering.md) | Representation pipeline, renderer-owned numeric measurement and Bash/file reflow/scene policies, shared painting and framing, reuse and worked width/theme/removal paths |
 | [Tool producers and adapters](tool-adapters.md) | Producer-specific formats and summaries, per-call selection, deferred/funded decoding, source identity and isolated code/test scopes |
 | [Shared frame](card-frame-spec.md) | Exact geometry, Output padding, narrow widths, generic versus measured framing, ANSI boundaries and hit regions |
 | [Compact summaries](tool-summary-spec.md) | Field selection, bounded serialization, secret masking, wrapping/span recoloring and execution-prefix composition |

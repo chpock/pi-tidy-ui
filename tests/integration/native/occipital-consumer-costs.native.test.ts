@@ -11,9 +11,9 @@ import { performance } from 'node:perf_hooks';
 import { createHash } from 'node:crypto';
 import { Container } from '@earendil-works/pi-tui';
 import { installTidyUi } from '../../../src/index.ts';
-import { CardLayout } from '../../../src/syntax/card-layout.ts';
+import { CardLayout } from '../../../src/rendering/card-layout.ts';
 import { CardSources } from '../../../src/syntax/cards.ts';
-import { measure, type MeasuredText, type MeasuredRowLayout, type GeometryPolicy } from '../../../src/syntax/measured-rows.ts';
+import { measure, type MeasuredText, type MeasuredRowLayout, type GeometryPolicy } from '../../../src/rendering/measured-rows.ts';
 import { observeSyntaxLocalWork } from '../../fixtures/syntax-local-work.ts';
 import { stripVTControlCharacters } from 'node:util';
 import { SourceExecution } from '../../../src/highlighting/source-execution.ts';
@@ -37,13 +37,16 @@ import { resolveTheme } from '../../../src/themes/selection.ts';
 
 const inputs = readInputs(), binary = validateNative(inputs);
 function allocationSite(stack: string): string {
-  return stack.split('\n').map(line => line.match(/(?:^|[\\/])src[\\/](?:syntax|occipital|highlighting|appearance|application)[\\/](?:[\w-]+[\\/])*([\w-]+\.ts)(?::\d+(?::\d+)?)?/)?.[1])
+  return stack.split('\n').map(line => line.match(/(?:^|[\\/])src[\\/](?:syntax|occipital|highlighting|appearance|application|rendering)[\\/](?:[\w-]+[\\/])*([\w-]+\.ts)(?::\d+(?::\d+)?)?/)?.[1])
     .find(site => site && site !== 'data-budget.ts') ?? 'other';
 }
 test('native allocation observer retains raw labels for flat and nested source modules', () => {
   assert.equal(allocationSite(' at /repo/src/highlighting/source-execution.ts:1:1'), 'source-execution.ts');
   assert.equal(allocationSite(' at /repo/src/highlighting/storage/semantic-retention.ts:1:1'), 'semantic-retention.ts');
   assert.equal(allocationSite(' at /repo/src/highlighting/storage/ready-display-publication.ts:1:1'), 'ready-display-publication.ts');
+  assert.equal(allocationSite(' at /repo/src/rendering/measured-rows.ts:1:1'), 'measured-rows.ts');
+  assert.equal(allocationSite(' at /repo/src/rendering/card-layout.ts:1:1'), 'card-layout.ts');
+  assert.equal(allocationSite(String.raw` at C:\repo\src\rendering\flat-paint.ts:1:1`), 'flat-paint.ts');
   assert.equal(allocationSite(String.raw` at C:\repo\src\highlighting\storage\semantic-retention.ts:1:1`), 'semantic-retention.ts');
   assert.equal(allocationSite(' at /repo/scripts/semantic-retention.ts:1:1'), 'other');
 });

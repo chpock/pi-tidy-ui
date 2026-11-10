@@ -9,7 +9,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { installTidyUi } from '../../../src/index.ts';
 import { SourceExecution } from '../../../src/highlighting/source-execution.ts';
 import { DataBudget } from '../../../src/resources/data-budget.ts';
-import { measure, reflow } from '../../../src/syntax/measured-rows.ts';
+import { measure, reflow } from '../../../src/rendering/measured-rows.ts';
 import { CardSources } from '../../../src/syntax/cards.ts';
 import { SyntaxClient } from '../../../src/application/syntax-client.ts';
 import { preparePaletteInput } from '../../../src/syntax/pi-input.ts';

@@ -14,9 +14,9 @@ import { createSemanticRuleDefinition } from '../../../../src/syntax/semantic-ru
 import { samplePiBindings } from '../../../../src/syntax/pi-bindings.ts';
 import { samplePiCardPalette } from '../../../../src/syntax/pi-palette.ts';
 import { fingerprintRules } from '../../../../src/occipital/style-rules.ts';
-import { measure, reflow } from '../../../../src/syntax/measured-rows.ts';
+import { measure, reflow } from '../../../../src/rendering/measured-rows.ts';
 import { compileStyleAnsi } from '../../../../src/appearance/style-ansi.ts';
-import { paintFlat } from '../../../../src/syntax/flat-paint.ts';
+import { paintFlat } from '../../../../src/rendering/flat-paint.ts';
 
 const inputs = readInputs(), binary = validateNative(inputs);
 const dist = dirname(fileURLToPath(import.meta.resolve('@earendil-works/pi-coding-agent')));

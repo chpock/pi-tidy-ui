@@ -415,42 +415,33 @@ function buildFragmentRows(glyphs: Uint32Array, count: number, width: number, sp
   });
 }
 
-function buildRows(glyphs: Uint32Array, count: number, mode: 'file' | 'bash', width: number, spans: Words, rows: Words, prompt: boolean, maxRows: number): void {
-  if (!width || !maxRows) return;
-  let columns = 0, spanCount = 0, pendingKind = -1, pendingFirst = 0, pendingEnd = 0, pendingCells = 0, pendingOffset = 0;
-  const flush = () => {
-    if (pendingKind < 0) return;
-    spans.push(pendingKind); spans.push(pendingFirst); spans.push(pendingEnd); spans.push(pendingCells); spans.push(pendingOffset);
-    spanCount++; pendingKind = -1;
-  };
-  const append = (kind: number, first: number, end: number, cells: number, offset = 0) => {
-    const merge = pendingKind === kind && (kind === SpanKind.Source ? pendingEnd === first
-      : kind === SpanKind.Tab ? pendingFirst === first : kind === SpanKind.Prompt && pendingOffset + pendingCells === offset);
-    if (!merge) { flush(); pendingKind = kind; pendingFirst = first; pendingOffset = offset; pendingCells = 0; }
-    pendingEnd = end; pendingCells += cells; columns += cells;
-  };
-  const row = () => { flush(); rows.push(spanCount); rows.push(columns); columns = 0; return rows.length / 2 >= maxRows; };
-  if (mode === 'bash') {
-    if (prompt) for (let offset = 0; offset < 2; offset++) { if (columns === width && row()) return; append(SpanKind.Prompt, 0, 0, 1, offset); }
-    for (let i = 0; i < count; i++) {
-      const flags = glyphs[i * 4 + 3]!, size = glyphs[i * 4 + 2]!;
-      if (flags & GlyphFlag.Newline) { if (row()) return; }
-      else if (flags & GlyphFlag.Tab) {
-        // Calculate once at encounter, including a still-full preceding row.
-        let remaining = 8 - columns % 8;
-        while (remaining) {
-          if (columns === width && row()) return;
-          const cells = Math.min(remaining, width - columns);
-          append(SpanKind.Tab, i, i + 1, cells); remaining -= cells;
-        }
-      } else {
-        const replacement = size > width, cells = replacement ? 1 : size;
-        if (columns + cells > width && row()) return;
-        append(replacement ? SpanKind.Replacement : SpanKind.Source, i, i + 1, cells);
+type AppendSpan = (kind: number, first: number, end: number, cells: number, offset?: number) => void;
+type FinishRow = () => boolean;
+
+function buildBashRows(glyphs: Uint32Array, count: number, width: number, append: AppendSpan, row: FinishRow,
+  columns: () => number, prompt: boolean): void {
+  if (prompt) for (let offset = 0; offset < 2; offset++) { if (columns() === width && row()) return; append(SpanKind.Prompt, 0, 0, 1, offset); }
+  for (let i = 0; i < count; i++) {
+    const flags = glyphs[i * 4 + 3]!, size = glyphs[i * 4 + 2]!;
+    if (flags & GlyphFlag.Newline) { if (row()) return; }
+    else if (flags & GlyphFlag.Tab) {
+      // Calculate once at encounter, including a still-full preceding row.
+      let remaining = 8 - columns() % 8;
+      while (remaining) {
+        if (columns() === width && row()) return;
+        const cells = Math.min(remaining, width - columns());
+        append(SpanKind.Tab, i, i + 1, cells); remaining -= cells;
       }
+    } else {
+      const replacement = size > width, cells = replacement ? 1 : size;
+      if (columns() + cells > width && row()) return;
+      append(replacement ? SpanKind.Replacement : SpanKind.Source, i, i + 1, cells);
     }
-    row(); return;
   }
+  row();
+}
+
+function buildFileRows(glyphs: Uint32Array, count: number, width: number, append: AppendSpan, row: FinishRow): void {
   // File tabs use logical-line columns, not soft-wrap columns. Cursors may
   // stop inside one original tab; no expanded source string/vector is built.
   let glyph = 0, tabUsed = 0, logical = 0;
@@ -493,6 +484,25 @@ function buildRows(glyphs: Uint32Array, count: number, mode: 'file' | 'bash', wi
       if (glyph === count) row();
     }
   } while (glyph < count);
+}
+
+function buildRows(glyphs: Uint32Array, count: number, mode: 'file' | 'bash', width: number, spans: Words, rows: Words, prompt: boolean, maxRows: number): void {
+  if (!width || !maxRows) return;
+  let columns = 0, spanCount = 0, pendingKind = -1, pendingFirst = 0, pendingEnd = 0, pendingCells = 0, pendingOffset = 0;
+  const flush = () => {
+    if (pendingKind < 0) return;
+    spans.push(pendingKind); spans.push(pendingFirst); spans.push(pendingEnd); spans.push(pendingCells); spans.push(pendingOffset);
+    spanCount++; pendingKind = -1;
+  };
+  const append = (kind: number, first: number, end: number, cells: number, offset = 0) => {
+    const merge = pendingKind === kind && (kind === SpanKind.Source ? pendingEnd === first
+      : kind === SpanKind.Tab ? pendingFirst === first : kind === SpanKind.Prompt && pendingOffset + pendingCells === offset);
+    if (!merge) { flush(); pendingKind = kind; pendingFirst = first; pendingOffset = offset; pendingCells = 0; }
+    pendingEnd = end; pendingCells += cells; columns += cells;
+  };
+  const row = () => { flush(); rows.push(spanCount); rows.push(columns); columns = 0; return rows.length / 2 >= maxRows; };
+  if (mode === 'bash') buildBashRows(glyphs, count, width, append, row, () => columns, prompt);
+  else buildFileRows(glyphs, count, width, append, row);
 }
 
 export interface MeasuredAppend { readonly measured: MeasuredText; commit(): boolean; dispose(): void }

@@ -82,13 +82,13 @@ Source-key and group-ID notices are resolved through the existing ticket maps. T
 
 ## Measuring once and reflowing numbers
 
-`measured-rows.ts` represents measurement as numeric glyph data. Each grapheme contributes its UTF-16 end, UTF-8 end, display width and flags such as tab/newline/whitespace. A temporary per-measurement memo avoids repeated width calls for identical graphemes during that measurement; it is discarded before returning. The retained measurement owns numeric storage, not a long-lived text-key memo.
+`src/rendering/measured-rows.ts` represents measurement as numeric glyph data. Each grapheme contributes its UTF-16 end, UTF-8 end, display width and flags such as tab/newline/whitespace. A temporary per-measurement memo avoids repeated width calls for identical graphemes during that measurement; it is discarded before returning. The retained measurement owns numeric storage, not a long-lived text-key memo.
 
 Append preparation cannot assume that the old final grapheme remains complete. It remeasures that grapheme and the new suffix, stepping back farther when completing an isolated high surrogate could join the new scalar to the preceding grapheme. The candidate is checked before adoption. Commit transfers reusable capacity or adopts geometrically grown storage; failure preserves the old measurement.
 
 File headings additionally record shared fragment-boundary/separator flags in that same glyph record; other source measurements do not perform this classification. The [shared fragment kernel](../rendering.md#shared-fragment-wrapping) is used by heading layout, inline height reflow and compact text adapters. It does not replace source/diff wrapping. A fragment-policy marker prevents using missing heading annotations as valid input.
 
-Reflow consumes those stored widths and flags with a width/mode policy. It produces numeric rows and spans for source glyphs, tabs, replacement glyphs and Bash prompt cells. It does not resample the theme, invoke a classifier or call the width calculator again. Measurements retain their independent lifetime while layouts refer to their valid basis.
+Reflow consumes those stored widths and flags through separate Bash and file policies, sharing one packed span/row writer. Bash uses visual-column eight-cell tab stops and optional prompt cells; files use logical-line four-cell tab stops and their existing whitespace-boundary rules. Heading fragment reflow remains separate from both source policies. They produce numeric rows and spans for source glyphs, tabs, replacement glyphs and Bash prompt cells. It does not resample the theme, invoke a classifier or call the width calculator again. Measurements retain their independent lifetime while layouts refer to their valid basis.
 
 For a valid full file card, refusal of a later width-dependent layout geometry grant drops only the failed scene. The already-funded logical display and numeric measurements remain attached to the same owner so ordinary frames can retry geometry without repeating file-source preparation or measurement. A refusal before the logical display is accepted still releases partial construction and retries cold.
 
@@ -98,7 +98,7 @@ File paint identity also includes whether each retained source slot is eligible 
 
 ## Monotonic painting
 
-`paintFlat` in `src/syntax/flat-paint.ts` combines prepared row spans with ordered style ranges. It advances one row/span/glyph cursor as ranges arrive; it does not restart a source scan for each range.
+`paintFlat` in `src/rendering/flat-paint.ts` combines prepared row spans with ordered style ranges. It advances one row/span/glyph cursor as ranges arrive; it does not restart a source scan for each range.
 
 Before a style interval, gaps paint with the neutral style. Within the interval, eligibility is tested at the glyph’s original first-scalar byte offset. A whole grapheme receives that chosen style, including when a validated historical prefix ends inside the grapheme. Prompt spans use their dedicated role; tab/replacement spans use their prepared cell widths. After the final style interval, the remaining glyphs are neutral.
 

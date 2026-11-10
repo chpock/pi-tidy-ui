@@ -2,7 +2,7 @@ import '../../../../fixtures/test-guard.mjs';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { captureToolCall, createToolReader } from '../../../../../src/tool-adapters/registry.ts';
-import { FILE_PREVIEW_MAX_UNITS } from '../../../../../src/file-card.ts';
+import { FILE_PREVIEW_MAX_UNITS } from '../../../../../src/cards/file-input.ts';
 import { Tool, plain, setup } from '../../../../fixtures/sdk-contract-support.ts';
 
 for (const hiddenHeader of [false, true]) test(`AFT diff preview bounds format detection before a hidden suffix (header=${hiddenHeader})`, t => {

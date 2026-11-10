@@ -14,7 +14,7 @@ import { diagnose, reportRuntime, type DiagnosticFields, type DiagnosticSink } f
 import { stripVTControlCharacters } from "node:util";
 import { cleanFileDisplayText } from "./cards/file-display.ts";
 import { FilePreviewState, type FilePreviewMode } from './file-preview-state.ts';
-import { measure, reflow, SpanKind, type MeasuredText } from './syntax/measured-rows.ts';
+import { measure, reflow, SpanKind, type MeasuredText } from './rendering/measured-rows.ts';
 import { renderUserCard } from "./user-card.ts";
 import { prepareQueuedCard, projectQueuedCards, type QueuedCard } from "./queued-card.ts";
 import { EDITOR_TOP, EDITOR_BOTTOM, renderEditorCard, type EditorLayout } from "./editor-card.ts";
@@ -31,7 +31,7 @@ import { captureToolCall, createToolReader, supportsToolName, toolCardKind } fro
 import type { FileToolReader, ToolDiagnosticsIdentity, ToolReader } from './tool-adapters/contracts.ts';
 import { wrapText } from './text-wrap.ts';
 import { CardSources, type CardPreparation, type SyntaxCardClient } from "./syntax/cards.ts";
-import { layoutCard, type CardLayout, type CardRows, type BashPaintProof } from './syntax/card-layout.ts';
+import { layoutCard, type CardLayout, type CardRows, type BashPaintProof } from './rendering/card-layout.ts';
 import { PaletteInputOwner } from './syntax/pi-input-owner.ts';
 import type { PiInputTheme, PaletteInputLease } from './syntax/pi-input.ts';
 import { resolveTheme, type ThemeDescription } from './themes/selection.ts';

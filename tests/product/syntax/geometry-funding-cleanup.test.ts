@@ -3,8 +3,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { setImmediate as turn } from 'node:timers/promises';
 import { DataBudget, DataGrant, type DataGrantFactory } from '../../../src/resources/data-budget.ts';
-import { measure, reflow } from '../../../src/syntax/measured-rows.ts';
-import { paintFlat } from '../../../src/syntax/flat-paint.ts';
+import { measure, reflow } from '../../../src/rendering/measured-rows.ts';
+import { paintFlat } from '../../../src/rendering/flat-paint.ts';
 const neutral = { open: '', close: '' };
 async function collect(weak: WeakRef<object>) {
   for (let pass = 0; pass < 40; pass++) { await turn(); global.gc!(); await turn(); if (!weak.deref()) return; }

@@ -11,7 +11,8 @@ import { CARD_ROLES } from '../../../src/appearance/card-roles.ts';
 import { compileStyleAnsi } from '../../../src/appearance/style-ansi.ts';
 import type { CardDisplayInput } from '../../../src/syntax/cards.ts';
 import type { PreparedCard, PreparedRegion, ReadyCardPaint } from '../../../src/rendering/card-values.ts';
-import type { CardLayout, CardRows, CardFunding } from '../../../src/syntax/card-layout.ts';
+import type { CardLayout, CardRows, CardFunding } from '../../../src/rendering/card-layout.ts';
+import type { SceneConstruction } from '../../../src/rendering/scene-model.ts';
 import { SourceExecution } from '../../../src/highlighting/source-execution.ts';
 import { getThemeByName, setThemeInstance } from '../../../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js';
 import { createSemanticRuleDefinition } from '../../../src/syntax/semantic-rules.ts';
@@ -33,11 +34,11 @@ const widthModule = 'data:text/javascript,' + encodeURIComponent(`import { visib
 const styleModule = 'data:text/javascript,' + encodeURIComponent(`import { compileStyleAnsi as original } from ${JSON.stringify(import.meta.resolve('../../../src/appearance/style-ansi.ts'))}; export function compileStyleAnsi(...args) { globalThis[Symbol.for('test.card-layout.compile')]?.(); return original(...args); }`);
 const loader = registerHooks({ resolve(specifier, context, next) {
   if (specifier.endsWith('style-ansi.ts') && context.parentURL?.includes('/src/')) return { url: styleModule, shortCircuit: true };
-  if (specifier === '@earendil-works/pi-tui' && (context.parentURL?.endsWith('/src/syntax/measured-rows.ts') || context.parentURL?.endsWith('/src/card-frame.ts') || context.parentURL?.endsWith('/src/text-wrap.ts'))) return { url: widthModule, shortCircuit: true };
+  if (specifier === '@earendil-works/pi-tui' && (context.parentURL?.endsWith('/src/rendering/measured-rows.ts') || context.parentURL?.endsWith('/src/card-frame.ts') || context.parentURL?.endsWith('/src/text-wrap.ts'))) return { url: widthModule, shortCircuit: true };
   return next(specifier, context);
 } });
-const { measure } = await import('../../../src/syntax/measured-rows.ts');
-const { layoutCard } = await import('../../../src/syntax/card-layout.ts');
+const { measure } = await import('../../../src/rendering/measured-rows.ts');
+const { layoutCard } = await import('../../../src/rendering/card-layout.ts');
 const { CardSources } = await import('../../../src/syntax/cards.ts');
 const { PaletteInputOwner } = await import('../../../src/syntax/pi-input-owner.ts');
 const { SyntaxRuntime } = await import('../../../src/application/syntax-runtime.ts');
@@ -857,3 +858,18 @@ test('card layout: heading space-plus-mark graphemes remain visible', () => {
     assert.ok(rows(output).some(row => plain(row).includes('a \u0301')), 'a complete visible grapheme is not disposable layout space');
   } finally { output.dispose(); layout.dispose(); f.dispose(); }
 });
+
+// Compile-only consumer: composition may inspect geometry, not acquire lifecycle authority.
+function checkScenePolicyScope(build: SceneConstruction): void {
+  void build.scene.rows[0]?.left.entry;
+  void build.scene.entries[0]?.layout.rowCount;
+  // @ts-expect-error Cleanup receipts belong only to the scene owner.
+  void build.scene.children;
+  // @ts-expect-error Composition cannot dispose a retained numeric layout.
+  build.scene.entries[0]!.layout.dispose();
+  // @ts-expect-error Row additions must pass through funded construction.
+  build.scene.rows.push(build.scene.rows[0]!);
+  // @ts-expect-error Composition cannot acquire the measurement owner.
+  void build.scene.entries[0]!.measured;
+}
+void checkScenePolicyScope;

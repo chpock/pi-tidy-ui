@@ -37,8 +37,11 @@ const applicationModules = [
   'src/application/syntax-options.ts',
 ];
 const cardModules = ['src/cards/file-model.ts', 'src/cards/file-sources.ts', 'src/cards/file-display.ts',
+  'src/cards/file-input.ts', 'src/cards/shebang-language.ts',
   'src/cards/preparation.ts', 'src/cards/bash-preparation.ts', 'src/cards/file-preparation.ts'];
-const renderingModules = ['src/rendering/card-values.ts', 'src/rendering/card-styles.ts'];
+const renderingModules = ['src/rendering/card-values.ts', 'src/rendering/card-styles.ts',
+  'src/rendering/measured-rows.ts', 'src/rendering/flat-paint.ts', 'src/rendering/card-layout.ts',
+  'src/rendering/scene-model.ts', 'src/rendering/bash-scene.ts', 'src/rendering/file-scene.ts'];
 const governedModules = new Set([
   ...cardModules,
   ...renderingModules,
@@ -339,18 +342,17 @@ function assertCardReference(path, reference) {
 }
 
 function isRenderingModule(path) {
-  return path.startsWith('src/rendering/') || path === 'src/syntax/card-layout.ts';
+  return path.startsWith('src/rendering/');
 }
 
 function assertRenderingDependency(edge) {
   if (!isRenderingModule(edge.source)) return;
   const models = ['src/appearance/card-roles.ts', 'src/appearance/style-materialization.ts', 'src/appearance/style-ansi.ts'];
-  const opaqueMeasurement = edge.source === 'src/rendering/card-values.ts'
-    && edge.target === 'src/syntax/measured-rows.ts' && edge.kind === 'type-only';
-  const sceneKernel = edge.source === 'src/syntax/card-layout.ts'
-    && ['src/card-frame.ts', 'src/syntax/flat-paint.ts', 'src/syntax/measured-rows.ts'].includes(edge.target);
+  const geometryPrimitive = edge.source === 'src/rendering/card-layout.ts' && edge.target === 'src/card-frame.ts'
+    || edge.source === 'src/rendering/scene-model.ts' && edge.target === 'src/card-frame.ts' && edge.kind === 'type-only'
+    || edge.source === 'src/rendering/measured-rows.ts' && edge.target === 'src/text-wrap.ts';
   const allowed = edge.target.startsWith('src/rendering/') || edge.target.startsWith('src/resources/')
-    || models.includes(edge.target) || opaqueMeasurement || sceneKernel;
+    || models.includes(edge.target) || geometryPrimitive;
   if (!allowed) throw new Error(`rendering imports card, source-work or host ownership: ${edgeKey(edge)}`);
 }
 
@@ -684,14 +686,17 @@ test('card preparation accepts only its own models, rendering, numeric funding a
 
 
 test('rendering accepts concrete style and numeric data, never preparation or source-work owners', () => {
-  for (const source of ['src/rendering/new-owner.ts', 'src/syntax/card-layout.ts']) {
+  for (const source of ['src/rendering/new-owner.ts', 'src/rendering/card-layout.ts', 'src/rendering/measured-rows.ts',
+    'src/rendering/scene-model.ts', 'src/rendering/bash-scene.ts', 'src/rendering/file-scene.ts']) {
     for (const kind of ['type-only', 'value', 'mixed']) {
       for (const target of ['src/cards/file-model.ts', 'src/cards/file-sources.ts', 'src/syntax/cards.ts',
         'src/syntax/work.ts', 'src/highlighting/source-ports.ts', 'src/highlighting/source-execution.ts',
         'src/highlighting/storage/semantic-retention.ts', 'src/occipital/style-types.ts', 'src/occipital/provider.ts',
         'src/tool-adapters/contracts.ts', 'src/application/syntax-client.ts', 'src/host/pi/tool.ts',
-        'src/presentation/tool.ts', 'src/themes/selection.ts', 'src/appearance/theme-preference.ts', 'src/unclassified-owner.ts', ...presentationAndPayloadFiles]) {
-        if (source === 'src/syntax/card-layout.ts' && target === 'src/card-frame.ts') continue;
+        'src/presentation/tool.ts', 'src/themes/selection.ts', 'src/appearance/theme-preference.ts', 'src/text-wrap.ts', 'src/unclassified-owner.ts', ...presentationAndPayloadFiles]) {
+        if (source === 'src/rendering/card-layout.ts' && target === 'src/card-frame.ts'
+          || source === 'src/rendering/scene-model.ts' && target === 'src/card-frame.ts' && kind === 'type-only'
+          || source === 'src/rendering/measured-rows.ts' && target === 'src/text-wrap.ts') continue;
         assert.throws(() => assertEdgePolicy({ source, target, kind }), /rendering imports/);
       }
       for (const target of ['src/rendering/card-values.ts', 'src/rendering/card-styles.ts', 'src/resources/data-budget.ts',
@@ -704,11 +709,11 @@ test('rendering accepts concrete style and numeric data, never preparation or so
       assert.doesNotThrow(() => assertRenderingReference(source, { specifier: '@earendil-works/pi-tui', kind }));
     }
   }
-  assert.doesNotThrow(() => assertEdgePolicy({ source: 'src/rendering/card-values.ts', target: 'src/syntax/measured-rows.ts', kind: 'type-only' }));
-  for (const kind of ['value', 'mixed']) {
-    assert.throws(() => assertEdgePolicy({ source: 'src/rendering/card-values.ts', target: 'src/syntax/measured-rows.ts', kind }), /rendering imports/);
+  for (const kind of ['type-only', 'value', 'mixed']) {
+    assert.doesNotThrow(() => assertEdgePolicy({ source: 'src/rendering/card-layout.ts', target: 'src/card-frame.ts', kind }));
+    assert.doesNotThrow(() => assertEdgePolicy({ source: 'src/rendering/measured-rows.ts', target: 'src/text-wrap.ts', kind }));
   }
-  assert.throws(() => assertEdgePolicy({ source: 'src/rendering/new-owner.ts', target: 'src/syntax/measured-rows.ts', kind: 'type-only' }), /rendering imports/);
+  assert.doesNotThrow(() => assertEdgePolicy({ source: 'src/rendering/scene-model.ts', target: 'src/card-frame.ts', kind: 'type-only' }));
   assert.throws(() => assertKnownGovernedModule('src/rendering/unclassified.ts'), /unclassified governed source module/);
 });
 
@@ -717,7 +722,7 @@ test('render-facing card declarations belong to rendering, not preparation or lo
   const moved = new Map([
     ['src/syntax/cards.ts', ['PreparedRegion', 'PreparedBashRegions', 'FileRowDescriptor', 'PreparedCard', 'ReadyCardPaint']],
     ['src/bash-card.ts', ['BashService', 'BashServiceInput']],
-    ['src/syntax/flat-paint.ts', ['FlatRangeReader']],
+    ['src/rendering/flat-paint.ts', ['FlatRangeReader']],
   ]);
   for (const [legacyPath, names] of moved) {
     const legacy = declarationExportNames(parseSource(legacyPath));
@@ -731,5 +736,44 @@ test('render-facing card declarations belong to rendering, not preparation or lo
       assert.equal(values.has(name), true, `rendering owns ${name}`);
       assert.equal(forwarded.has(name), false, `${legacyPath} must not forward ${name}`);
     }
+  }
+});
+
+
+test('numeric measurement, reflow, scenes and flat painting have one renderer-owned declaration', () => {
+  const legacy = new Set(['src/syntax/measured-rows.ts', 'src/syntax/card-layout.ts', 'src/syntax/flat-paint.ts']);
+  for (const path of legacy) assert.equal(existsSync(resolve(projectRoot, path)), false, `superseded renderer seam must not forward: ${path}`);
+  const sources = productionFiles().filter(path => sourceExtensions.has(extname(path))
+    && (path.startsWith('src/rendering/') || legacy.has(path)))
+    .map(path => ({ path, names: declarationExportNames(parseSource(path)) }));
+  for (const name of ['MeasuredText', 'MeasuredRowLayout', 'GeometryRead', 'GeometryPolicy',
+    'measure', 'reflow', 'prepareMeasuredAppend', 'CardLayout', 'CardRows', 'layoutCard', 'FlatText', 'FlatPaintRows', 'paintFlat']) {
+    const owners = sources.filter(source => source.names.has(name)).map(source => source.path);
+    assert.equal(owners.length, 1, `${name} requires one declaration owner`);
+    assert.ok(owners[0].startsWith('src/rendering/'), `${name} belongs to rendering, not ${owners[0]}`);
+  }
+});
+
+test('rendering rejects syntax implementation dependencies even through opaque type-only contracts', () => {
+  for (const source of ['src/rendering/card-values.ts', 'src/rendering/new-owner.ts']) {
+    for (const target of ['src/syntax/measured-rows.ts', 'src/syntax/card-layout.ts', 'src/syntax/flat-paint.ts']) {
+      for (const kind of ['type-only', 'value', 'mixed']) {
+        assert.throws(() => assertRenderingDependency({ source, target, kind }), /rendering imports/);
+      }
+    }
+  }
+});
+
+test('saved file decoding and bounded logical preparation belong to cards, not heading or spacing helpers', () => {
+  const legacy = new Set(['src/file-card.ts', 'src/syntax/shebang-language.ts']);
+  assert.equal(existsSync(resolve(projectRoot, 'src/syntax/shebang-language.ts')), false, 'superseded shebang seam must not forward');
+  assert.equal(reexportedSourceNames('src/file-card.ts', 'src/cards/file-input.ts').size, 0, 'heading/spacing helper must not forward logical preparation');
+  const sources = productionFiles().filter(path => sourceExtensions.has(extname(path))
+    && (path.startsWith('src/cards/') || legacy.has(path)))
+    .map(path => ({ path, names: declarationExportNames(parseSource(path)) }));
+  for (const name of ['sourceRows', 'filePreviewText', 'prepareFileCard', 'shebangLanguage']) {
+    const owners = sources.filter(source => source.names.has(name)).map(source => source.path);
+    assert.equal(owners.length, 1, `${name} requires one declaration owner`);
+    assert.ok(owners[0].startsWith('src/cards/'), `${name} belongs to logical cards, not ${owners[0]}`);
   }
 });

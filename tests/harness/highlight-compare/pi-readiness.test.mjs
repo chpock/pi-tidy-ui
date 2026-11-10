@@ -59,7 +59,7 @@ test('Pi saved edit metadata preserves original context coordinates after a net 
   const { tmpdir } = await import('node:os');
   const { join } = await import('node:path');
   const { savedPiSession } = await import('../../../scripts/highlight-compare/adapters/pi-tidy-ui.mjs');
-  const { prepareFileCard } = await import('../../../src/file-card.ts');
+  const { prepareFileCard } = await import('../../../src/cards/file-input.ts');
   const directory = mkdtempSync(join(tmpdir(), 'hc-pi-diff-'));
   const input = { kind: 'diff', id: 'net-removal', filename: 'example.txt', before: 'first\nold\n\nshared\n', after: 'first\nnew\nshared\n',
     logicalRows: [

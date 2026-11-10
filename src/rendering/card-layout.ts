@@ -1,9 +1,12 @@
 import { cardGeometry, frameMeasuredRow, type CardGeometry } from '../card-frame.ts';
+import { buildBashScene } from './bash-scene.ts';
+import { buildFileScene } from './file-scene.ts';
+import type { Cell, Entry, RegionKind, Scene, SceneConstruction } from './scene-model.ts';
 import type { DataBudget, DataCharge, DataCleanupReceipt, DataGrantFactory } from '../resources/data-budget.ts';
 import type { CardRole } from '../appearance/card-roles.ts';
-import type { PreparedCard, PreparedRegion, ReadyCardPaint, FileRowDescriptor, FlatRangeReader } from '../rendering/card-values.ts';
+import type { PreparedCard, PreparedRegion, ReadyCardPaint, FileRowDescriptor, FlatRangeReader } from './card-values.ts';
 import { paintFlat, type FlatPaintRows } from './flat-paint.ts';
-import { reflow, SpanKind, type MeasuredRowLayout, type MeasuredText } from './measured-rows.ts';
+import { reflow, SpanKind } from './measured-rows.ts';
 import type { AnsiStyle } from '../appearance/style-ansi.ts';
 
 export interface CardLayoutOptions { width: number; outputPad?: number; expanded?: boolean }
@@ -39,12 +42,6 @@ function borrowNodes(node: ChargeNode | undefined) { for (let n = node; n; n = n
 function receipt(owner: WeakRef<{ dispose(): void }>, ledger: Ledger, children?: DataCleanupReceipt[]): DataCleanupReceipt {
   return { release() { const handle = owner.deref(); if (handle) handle.dispose(); else { for (const child of children ?? []) child.release(); ledger.release(); } } };
 }
-type RegionKind = 'command' | 'description' | 'heading' | 'output' | 'footer' | 'note' | 'diagnostic' | 'file';
-type Entry = { kind: RegionKind; index: number; role: CardRole; side?: 'old' | 'next'; measured: WeakRef<MeasuredText>; layout: MeasuredRowLayout; cells: number[]; blank: boolean[] };
-type Cell = { entry: number; row: number; width: number; gutter: number; line: number; side: 'old' | 'next' };
-type SceneRow = { left: Cell; right?: Cell };
-type Scene = { kind: PreparedCard['kind']; stamp: number; geometry: CardGeometry; framed: boolean; inset: number;
-  expandable: boolean; digits: number; entries: Entry[]; rows: SceneRow[]; children: DataCleanupReceipt[] };
 function region(display: PreparedCard, entry: Pick<Entry, 'kind' | 'index'>): PreparedRegion | undefined {
   if (display.kind === 'bash') {
     switch (entry.kind) {
@@ -61,6 +58,54 @@ function region(display: PreparedCard, entry: Pick<Entry, 'kind' | 'index'>): Pr
       case 'diagnostic': return display.diagnostics[entry.index];
       case 'file': return display.rows[entry.index]?.region;
     }
+  }
+}
+
+class SceneBuilder implements SceneConstruction {
+  readonly scene: Scene;
+  readonly available: number;
+  #display: PreparedCard;
+  #ledger: Ledger;
+  #funding: CardFunding;
+  constructor(display: PreparedCard, scene: Scene, available: number, ledger: Ledger, funding: CardFunding) {
+    this.#display = display; this.scene = scene; this.available = available;
+    this.#ledger = ledger; this.#funding = funding;
+  }
+  empty(width = this.available, entry = -1): Cell { return { entry, row: 0, width, gutter: 0, line: -1, side: 'next' }; }
+  append(left: Cell, right?: Cell): void { this.#ledger.add(this.#funding, 256); this.scene.rows.push({ left, right }); }
+  removeLastRow(): void { this.scene.rows.pop(); }
+  insertEmptyRow(index: number): void { this.#ledger.add(this.#funding, 256); this.scene.rows.splice(index, 0, { left: this.empty() }); }
+  entry(kind: RegionKind, index: number, role: CardRole, width: number, mode: 'file' | 'bash', prompt = false, maxRows?: number, side?: 'old' | 'next'): number {
+    const current = this.scene, funding = this.#funding;
+    const locator = { kind, index }, r = region(this.#display, locator); if (!r) throw refused;
+    this.#ledger.add(funding, 256);
+    const layout = reflow(r.measured, { mode, width, prompt, maxRows,
+      wrap: kind === 'heading' && mode === 'file' ? 'fragments' : undefined }, funding.grant); if (!layout) throw refused;
+    current.children.push(layout.cleanupReceipt());
+    this.#ledger.add(funding, 128 + layout.rowCount * 16);
+    const cells: number[] = [], blank: boolean[] = [];
+    if (!layout.visitRows((_i, count) => { cells.push(count); blank.push(true); })) throw refused;
+    // Preview trimming is a row predicate, not normalization or a new measurement.
+    if (kind === 'output' && !layout.withLookup(r.measured, read => {
+      let span = 0;
+      for (let row = 0; row < layout.rowCount; row++) for (; span < read.rowEnd(row); span++) read.span(span, (k, first, end) => {
+        if (k === SpanKind.Replacement || k === SpanKind.Prompt) blank[row] = false;
+        else if (k === SpanKind.Source) {
+          const temporary = new Ledger();
+          try {
+            const start = read.glyphStart(first), endIndex = read.glyphEnd(end - 1);
+            temporary.add(funding, 64 + (endIndex - start) * 2);
+            if (/\S/u.test(r.text.slice(start, endIndex))) blank[row] = false;
+          } finally { temporary.release(); }
+        }
+      });
+    }, funding.grant)) throw refused;
+    const id = current.entries.length;
+    current.entries.push({ ...locator, role, side, measured: new WeakRef(r.measured), layout, cells, blank }); return id;
+  }
+  lines(kind: RegionKind, index: number, role: CardRole, mode: 'file' | 'bash' = 'file', prompt = false): void {
+    const id = this.entry(kind, index, role, this.available, mode, prompt), e = this.scene.entries[id]!;
+    for (let row = 0; row < e.layout.rowCount; row++) this.append({ ...this.empty(), entry: id, row });
   }
 }
 
@@ -105,10 +150,8 @@ export class CardLayout {
   }
 }
 
-/** Provisional candidate: publish only after the OUTER CardSources.visit returns
- * true. On outer false/throw the caller releases every new candidate in finally,
- * retaining its previously accepted layout/output until commit. Independent
- * lifecycle removal and existing pressure eviction still release that cache. */
+/** Provisional scene: publish only after the outer prepared-card visit succeeds.
+ * Rejection releases the candidate while the prior accepted layout stays owned. */
 export function layoutCard(display: PreparedCard, options: CardLayoutOptions, funding: CardFunding): CardLayout | undefined {
   const ledger = new Ledger(); let scene: Scene | undefined, adopted = false;
   try {
@@ -120,129 +163,10 @@ export function layoutCard(display: PreparedCard, options: CardLayoutOptions, fu
     scene = { kind: display.kind, stamp: display.geometryStamp, geometry, framed: !inline, inset,
       expandable: false, digits: 1, entries: [], rows: [], children: [] };
     const current = scene;
-    const empty = (width = available, entry = -1): Cell => ({ entry, row: 0, width, gutter: 0, line: -1, side: 'next' });
-    const append = (left: Cell, right?: Cell) => { ledger.add(funding, 256); current.rows.push({ left, right }); };
-    const entry = (kind: RegionKind, index: number, role: CardRole, width: number, mode: 'file' | 'bash', prompt = false, maxRows?: number, side?: 'old' | 'next') => {
-      const locator = { kind, index }, r = region(display, locator); if (!r) throw refused;
-      ledger.add(funding, 256);
-      const layout = reflow(r.measured, { mode, width, prompt, maxRows,
-        wrap: kind === 'heading' && mode === 'file' ? 'fragments' : undefined }, funding.grant); if (!layout) throw refused;
-      current.children.push(layout.cleanupReceipt());
-      ledger.add(funding, 128 + layout.rowCount * 16);
-      const cells: number[] = [], blank: boolean[] = [];
-      if (!layout.visitRows((_i, count) => { cells.push(count); blank.push(true); })) throw refused;
-      // Preview trimming is a row predicate, not normalization or a new measurement.
-      if (kind === 'output' && !layout.withLookup(r.measured, read => {
-        let span = 0;
-        for (let row = 0; row < layout.rowCount; row++) for (; span < read.rowEnd(row); span++) read.span(span, (k, first, end) => {
-          if (k === SpanKind.Replacement || k === SpanKind.Prompt) blank[row] = false;
-          else if (k === SpanKind.Source) {
-            const temporary = new Ledger();
-            try {
-              const start = read.glyphStart(first), endIndex = read.glyphEnd(end - 1);
-              temporary.add(funding, 64 + (endIndex - start) * 2);
-              if (/\S/u.test(r.text.slice(start, endIndex))) blank[row] = false;
-            } finally { temporary.release(); }
-          }
-        });
-      }, funding.grant)) throw refused;
-      const id = current.entries.length;
-      current.entries.push({ ...locator, role, side, measured: new WeakRef(r.measured), layout, cells, blank }); return id;
-    };
-    const lines = (kind: RegionKind, index: number, role: CardRole, mode: 'file' | 'bash' = 'file', prompt = false) => {
-      const id = entry(kind, index, role, available, mode, prompt), e = current.entries[id]!;
-      for (let row = 0; row < e.layout.rowCount; row++) append({ ...empty(), entry: id, row });
-    };
     if (geometry.width && available) {
-      if (display.kind === 'bash') {
-        if (display.regions.description) lines('description', 0, 'service', 'bash');
-        if (display.regions.heading) lines('heading', 0, 'service', 'bash');
-        if (current.rows.length) append(empty());
-        lines('command', 0, 'title', 'bash', true);
-        const section = (first: number, end: number, role: CardRole) => {
-          const start = current.rows.length; let count = 0;
-          for (let i = first; i < end && (options.expanded || count < 11); i++) {
-            if (!display.regions.output[i]) {
-              // Empty service rows have no measurement, but are one visual row.
-              append(empty()); count++; continue;
-            }
-            // Bound the shared kernel (and therefore its painter) by this
-            // section's remaining preview plus its independent overflow proof.
-            const id = entry('output', i, role, available, 'bash', false, options.expanded ? undefined : 11 - count), e = current.entries[id]!;
-            for (let row = 0; row < e.layout.rowCount && (options.expanded || count < 11); row++, count++) append({ ...empty(), entry: id, row });
-          }
-          const overflow = count > 10;
-          if (overflow && !options.expanded) {
-            current.rows.pop();
-            while (current.rows.length > start) {
-              const c = current.rows[current.rows.length - 1]!.left;
-              if (c.entry >= 0 && !current.entries[c.entry]!.blank[c.row]) break;
-              current.rows.pop();
-            }
-            append(empty(available, -2));
-          }
-          if (current.rows.length > start) { ledger.add(funding, 256); current.rows.splice(start, 0, { left: empty() }); }
-          return overflow || !!options.expanded && count > 0;
-        };
-        const s = display.service, output = section(s.first, s.last, 'output');
-        if (display.regions.footer) { append(empty()); lines('footer', 0, display.service.error ? 'error' : 'footer', 'bash'); }
-        current.expandable = section(s.reminder, s.end, 'reminder') || output;
-      } else if (inline) {
-        if (display.heading) lines('heading', 0, display.error ? 'error' : 'muted');
-      } else {
-        if (display.heading) lines('heading', 0, 'muted');
-        current.digits = String(display.rows.reduce((max, r) => Math.max(max, r.old ?? 0, r.next ?? 0), 1)).length;
-        const plain = display.mode === 'code';
-        const split = !display.preview && !plain && geometry.width > 120 && display.rows.some(r => r.kind === '+') && display.rows.some(r => r.kind === '-');
-        const codeLimit = display.preview ? 10 : Number.POSITIVE_INFINITY;
-        let codeRows = 0, visualOverflow = display.preview === true && display.omitted === true;
-        const cell = (index: number, side: 'old' | 'next', width: number, maxRows?: number): Cell => {
-          if (index < 0) return empty(width);
-          const r = display.rows[index]!;
-          if (r.kind === 'gap') return empty(width, -3);
-          const size = current.digits + (plain ? 2 : 4), gutter = size < width ? size : 0;
-          const role = plain ? 'code' : r.kind === ' ' ? 'contextCode' : r.kind === '+' ? 'addedCode' : 'removedCode';
-          const id = entry('file', index, role, width - gutter, 'file', false, maxRows, side);
-          return { entry: id, row: 0, width, gutter, line: index, side };
-        };
-        const pair = (leftIndex: number, rightIndex: number) => {
-          const remaining = codeLimit - codeRows;
-          if (remaining <= 0) {
-            for (let i = Math.max(0, leftIndex, rightIndex); i < display.rows.length; i++) if (display.rows[i]!.kind !== 'gap') { visualOverflow = true; break; }
-            return;
-          }
-          const maxRows = Number.isFinite(remaining) ? remaining + 1 : undefined;
-          const leftWidth = Math.floor(available / 2), rightWidth = available - leftWidth;
-          const a = cell(leftIndex, split || display.rows[leftIndex]?.kind === '-' ? 'old' : 'next', split ? leftWidth : available, maxRows),
-            b = split ? cell(rightIndex, 'next', rightWidth, maxRows) : undefined;
-          const count = Math.max(a.entry < 0 ? 1 : current.entries[a.entry]!.layout.rowCount, b && b.entry >= 0 ? current.entries[b.entry]!.layout.rowCount : 1);
-          const shown = Math.min(count, remaining);
-          for (let row = 0; row < shown; row++) append({ ...a, row }, b ? { ...b, row } : undefined);
-          codeRows += shown;
-          if (count > remaining) visualOverflow = true;
-        };
-        if (display.rows.length) append(empty());
-        for (let i = 0; i < display.rows.length;) {
-          const r = display.rows[i]!;
-          if (!split || r.kind === ' ' || r.kind === 'gap') { pair(i, i); i++; continue; }
-          const start = i;
-          while (i < display.rows.length) {
-            const next = display.rows[i]!; if (next.kind === ' ' || next.kind === 'gap' || next.hunk !== r.hunk) break;
-            i++;
-          }
-          let before = start, after = start;
-          while (before < i || after < i) {
-            while (before < i && display.rows[before]!.kind !== '-') before++;
-            while (after < i && display.rows[after]!.kind !== '+') after++;
-            if (before < i || after < i) pair(before < i ? before++ : -1, after < i ? after++ : -1);
-          }
-        }
-        if (display.note) { append(empty()); lines('note', 0, 'muted'); }
-        if (visualOverflow) append(empty(available, -2));
-        current.expandable = visualOverflow;
-        if (display.diagnostics.length) append(empty());
-        for (let i = 0; i < display.diagnostics.length; i++) lines('diagnostic', i, 'diagnostic');
-      }
+      const build = new SceneBuilder(display, current, available, ledger, funding);
+      if (display.kind === 'bash') buildBashScene(display, options.expanded, build);
+      else buildFileScene(display, build);
     }
     if (current.entries.some(e => !e.layout.isValid)) return undefined;
     const result = new CardLayout(current, ledger); adopted = true; return result;

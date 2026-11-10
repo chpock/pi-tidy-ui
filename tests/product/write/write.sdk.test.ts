@@ -12,7 +12,8 @@ import { ToolExecutionComponent as NativeToolExecution, createWriteToolDefinitio
 import { describeArgs } from "../../../src/index.ts";
 import { fileCardFixture as renderFileCard } from "../../fixtures/prepared-card.ts";
 import { cardGeometry } from "../../../src/card-frame.ts";
-import { measureFileCard, prepareFileCard } from "../../../src/file-card.ts";
+import { measureFileCard } from "../../../src/file-card.ts";
+import { prepareFileCard } from '../../../src/cards/file-input.ts';
 import { prepareFileToolCall } from '../../fixtures/tool-adapters/reader-fixture.ts';
 import { generateDiffString, generateUnifiedPatch } from "../../../node_modules/@earendil-works/pi-coding-agent/dist/core/tools/edit-diff.js";
 import { initTheme, theme as nativeTheme } from "../../../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js";
