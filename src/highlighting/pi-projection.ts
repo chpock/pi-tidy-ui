@@ -1,5 +1,5 @@
 import type { DataBudget } from '../resources/data-budget.ts';
-import type { ConcreteStyle } from '../syntax/style-materialization.ts';
+import type { ConcreteStyle } from '../appearance/style-materialization.ts';
 
 /** Exclusive immutable data, not parser or classification authority. */
 export interface PiProjectionPayload {

@@ -1,16 +1,14 @@
 import { diagnose, type DiagnosticSink } from '../diagnostics.ts';
-import { getAgentDir, type ExtensionContext } from '@earendil-works/pi-coding-agent';
 import { createRequire } from 'node:module';
 import { open } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { ExtensionSettings } from '../settings.ts';
-import { notify } from '../notifications.ts';
-import type { SyntaxRuntimeOptions } from '../syntax/runtime.ts';
 import { createLocalOwnedFactory, createOwnedFactory, createSharedFactory } from './factories.ts';
 import { OCCIPITAL_LIMITS } from './limits.ts';
 import { ExpectedOwnedUnavailable } from './owned-startup.ts';
-import { NATIVE_RELEASE, type NativeReleaseDeclaration, type NativeTarget } from './release.ts';
+import type { NativeReleaseDeclaration, NativeTarget } from './release.ts';
+import type { SharedIdentity } from './shared.ts';
+import type { ProviderOptions } from './provider.ts';
 
 const require = createRequire(import.meta.url);
 const extensionRoot = fileURLToPath(new URL('../../', import.meta.url));
@@ -56,23 +54,26 @@ async function installedPayload(target: NativeTarget, version: string): Promise<
   } finally { await handle?.close(); }
 }
 
-/** Native filesystem/network work starts only after eligible presentation attachment. */
-export function createSyntaxOptions(ctx: Pick<ExtensionContext, 'cwd' | 'sessionManager' | 'ui'>,
-  release: NativeReleaseDeclaration | undefined = NATIVE_RELEASE, diagnostic?: DiagnosticSink): SyntaxRuntimeOptions {
-  const agentDir = getAgentDir(), cwd = ctx.cwd;
-  const identity = { harness: 'pi', session: ctx.sessionManager.getSessionId(), project_root: cwd };
-  // Local runs must never silently select a shared or published engine instead of the build under development.
+export interface NativeAcquisitionOptions {
+  readonly agentDir: string;
+  readonly cwd: string;
+  readonly identity: SharedIdentity;
+  readonly release: NativeReleaseDeclaration | undefined;
+  readonly diagnostic?: DiagnosticSink;
+  /** Constructed only for local development; the producer is not retained. */
+  readonly createOnMissing?: () => () => void;
+}
+
+export function createNativeAcquisition({ agentDir, cwd, identity, release, diagnostic, createOnMissing }: NativeAcquisitionOptions) {
   const local = development ? createLocalOwnedFactory({ command: join(extensionRoot, process.platform === 'win32' ? 'occipital.exe' : 'occipital'),
-    diagnostic, onMissing: missingLocalWarning(new WeakRef(ctx.ui)), requestDeadlineMs: OCCIPITAL_LIMITS.dataDeadlineMs, terminateGraceMs: 1000, cwd }) : undefined;
+    diagnostic, onMissing: createOnMissing?.(), requestDeadlineMs: OCCIPITAL_LIMITS.dataDeadlineMs, terminateGraceMs: 1000, cwd }) : undefined;
   diagnose(diagnostic, 'INFO', 'occipital', development ? 'Local development: colocated binary only; no shared service, download or build'
     : 'Published extension: shared-first, then exact declared native delivery', { version: release?.version ?? 'not declared' });
   return {
-    diagnostic,
     standaloneVersion: development ? 'local development' : release?.version ?? 'not declared',
-    settings: new ExtensionSettings({ agentDir }),
     provider: {
       tryShared: development ? async () => undefined : createSharedFactory({ identity, diagnostic, requestDeadlineMs: OCCIPITAL_LIMITS.dataDeadlineMs }),
-      async acquireOwned(signal) {
+      async acquireOwned(signal: AbortSignal) {
         if (local) return local(signal);
         const target = runtimeTarget();
         if (!target) throw new ExpectedOwnedUnavailable();
@@ -84,17 +85,6 @@ export function createSyntaxOptions(ctx: Pick<ExtensionContext, 'cwd' | 'session
         return createOwnedFactory({ diagnostic, release: { version: release.version, ...artifact }, cacheDir: join(agentDir, 'extensions', 'pi-tidy-ui', 'occipital'), installedPath,
           requestDeadlineMs: OCCIPITAL_LIMITS.dataDeadlineMs, terminateGraceMs: 1000, cwd })(signal);
       },
-    },
-  };
-}
-
-function missingLocalWarning(ui: WeakRef<ExtensionContext['ui']>): () => void {
-  let warned = false;
-  return () => {
-    if (warned) return;
-    const current = ui.deref();
-    if (!current) return;
-    warned = true;
-    notify(current, 'Local Occipital build not found next to this extension; using fallback highlighting without Occipital.', 'warning');
+    } satisfies Omit<ProviderOptions, 'onChange' | 'onOwnedStopped'>,
   };
 }

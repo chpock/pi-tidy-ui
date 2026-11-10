@@ -4,7 +4,7 @@ import { test } from 'node:test';
 import { setImmediate as turn } from 'node:timers/promises';
 import { Theme } from '@earendil-works/pi-coding-agent';
 import { getThemeByName } from '../../../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js';
-import { SyntaxRuntime } from '../../../src/syntax/runtime.ts';
+import { SyntaxRuntime } from '../../../src/application/syntax-runtime.ts';
 import { DataBudget, DataGrant, type DataGrantFactory } from '../../../src/resources/data-budget.ts';
 import type { GeometryFunding } from '../../../src/resources/data-budget.ts';
 import { CARD_ROLES } from '../../../src/appearance/card-roles.ts';

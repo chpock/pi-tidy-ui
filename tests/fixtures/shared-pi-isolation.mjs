@@ -8,7 +8,7 @@ import { createHash } from 'node:crypto';
 import { setImmediate as turn } from 'node:timers/promises';
 import { SubcClient } from '@cortexkit/subc-client';
 import { sharedHostEnv } from './shared-host-environment.mjs';
-import { SyntaxClient } from '../../src/occipital/client.ts';
+import { SyntaxClient } from '../../src/application/syntax-client.ts';
 import { createSharedFactory } from '../../src/occipital/factories.ts';
 import { runCleanupSteps } from './terminal-cleanup.mjs';
 

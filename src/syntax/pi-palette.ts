@@ -7,7 +7,7 @@ import { samplePiBindings, samplePiPrefix } from './pi-bindings.ts';
 import { effectiveColor, inkColor, outputInk } from './pi-color.ts';
 import { derivePiMarkerVariants, type PiDerivedMarker, type PiMarkerVariantContext } from './pi-variants.ts';
 import { PI_MARKER_BINDINGS, PI_MARKER_REGIONS, PI_RULE_BINDINGS, piBindingInkRole } from './pi-adapter.ts';
-import type { ConcreteStyle } from './style-materialization.ts';
+import type { ConcreteStyle } from '../appearance/style-materialization.ts';
 
 const foregrounds = {
   panel: 'toolOutput', plain: 'toolOutput', code: 'toolOutput', output: 'toolOutput',

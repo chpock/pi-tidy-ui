@@ -3,7 +3,7 @@ import type { ThemeColor } from '@earendil-works/pi-coding-agent';
 import type { LiteralInk } from '../occipital/style-types.ts';
 import { contrast, inkColor, luminance, outputInk } from './pi-color.ts';
 import { PI_MARKER_REGIONS, PI_RULE_BINDINGS } from './pi-adapter.ts';
-import type { StyleBinding } from './style-materialization.ts';
+import type { StyleBinding } from '../appearance/style-materialization.ts';
 
 export type PiDerivedMarker = 'headingMarker' | 'inlineCodeDelimiter' | 'linkDelimiter';
 const candidateStep = 0.005;

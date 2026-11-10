@@ -1,5 +1,5 @@
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
-import type { SyntaxRuntime } from '../../src/syntax/runtime.ts';
+import type { SyntaxRuntime } from '../../src/application/syntax-runtime.ts';
 
 interface PerformanceAdapter {
   runtime(): SyntaxRuntime | undefined;

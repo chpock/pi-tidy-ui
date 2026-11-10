@@ -11,7 +11,7 @@ import { CARD_ROLES } from '../../../src/appearance/card-roles.ts';
 import { compileStyleAnsi } from '../../../src/syntax/style-ansi.ts';
 import type { PreparedCard, PreparedRegion, ReadyCardPaint, CardDisplayInput } from '../../../src/syntax/cards.ts';
 import type { CardLayout, CardRows, CardFunding } from '../../../src/syntax/card-layout.ts';
-import { SourceController } from '../../../src/occipital/controller.ts';
+import { SourceController } from '../../../src/highlighting/controller.ts';
 import { getThemeByName, setThemeInstance } from '../../../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js';
 import { createSemanticRuleDefinition } from '../../../src/syntax/semantic-rules.ts';
 import { fingerprintRules } from '../../../src/occipital/style-rules.ts';
@@ -39,7 +39,7 @@ const { measure } = await import('../../../src/syntax/measured-rows.ts');
 const { layoutCard } = await import('../../../src/syntax/card-layout.ts');
 const { CardSources } = await import('../../../src/syntax/cards.ts');
 const { PaletteInputOwner } = await import('../../../src/syntax/pi-input-owner.ts');
-const { SyntaxRuntime } = await import('../../../src/syntax/runtime.ts');
+const { SyntaxRuntime } = await import('../../../src/application/syntax-runtime.ts');
 const glyphOracle = JSON.parse(readFileSync(new URL('../../fixtures/card-glyph-oracle.json', import.meta.url), 'utf8')).cases as { revision: number; width: number; outputPad: number; rows: string[] }[];
 loader.deregister();
 function funding(budget = new DataBudget(64_000_000)): CardFunding { return { budget, grant: bytes => budget.reserve(bytes) }; }
@@ -500,7 +500,7 @@ test('card layout: C7 group membership and indexed lookup work is linear within 
       Reflect.set(source, 'currentDisplay', function(this: SourceController, ...args: unknown[]) { checks++; return original.apply(this, args); });
       try {
         assert.equal(view.visit(() => { for (const key of keys) {
-          let read: import('../../../src/occipital/controller.ts').DisplayRangeReader | undefined;
+          let read: import('../../../src/highlighting/controller.ts').DisplayRangeReader | undefined;
           assert.equal(view.visit(member => { read = member(key)!.read; }), true);
           assert.equal(read!(() => { ranges++; assert.ok(view.role('code')); }), true);
         } }), true);

@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import tidyUi from '../../../src/index.ts';
-import { SyntaxClient } from '../../../src/occipital/client.ts';
+import { SyntaxClient } from '../../../src/application/syntax-client.ts';
 import { CardSources, type CardDisplayInput } from '../../../src/syntax/cards.ts';
 import { registerCaptureProducer } from '../../../tests/fixtures/terminal-capture.mjs';
 

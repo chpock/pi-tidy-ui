@@ -7,7 +7,7 @@ import { join, resolve } from 'node:path';
 import { setTimeout as pause } from 'node:timers/promises';
 import { sharedHostEnv } from './shared-host-environment.mjs';
 import { runCleanupSteps } from './terminal-cleanup.mjs';
-import { SyntaxClient } from '../../src/occipital/client.ts';
+import { SyntaxClient } from '../../src/application/syntax-client.ts';
 import { createSharedFactory } from '../../src/occipital/factories.ts';
 import { ExtensionSettings } from '../../src/settings.ts';
 import { SEMANTIC_CAPABILITY as CAPABILITY } from '../../src/occipital/semantic-protocol.ts';

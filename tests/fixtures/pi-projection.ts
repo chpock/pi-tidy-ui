@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import { preparePiFlat } from '../../src/syntax/pi-flat.ts';
-import type { ConcreteStyle } from '../../src/syntax/style-materialization.ts';
-import type { SemanticRetentionPool } from '../../src/occipital/semantic-retention.ts';
-import type { SourceController } from '../../src/occipital/controller.ts';
+import type { ConcreteStyle } from '../../src/appearance/style-materialization.ts';
+import type { SemanticRetentionPool } from '../../src/highlighting/semantic-retention.ts';
+import type { SourceController } from '../../src/highlighting/controller.ts';
 export const piNeutral: ConcreteStyle = { foreground: { kind: 'terminal-default' }, background: { kind: 'terminal-default' }, attributes: 0 };
 export function installProjection(pool: SemanticRetentionPool, generation: number, version: number, text: string, rows = text.split('\n')) {
   const preparation = pool.piPreparation(generation, version, 0), ticket = preparation.ticket;

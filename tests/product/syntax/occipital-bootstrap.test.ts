@@ -6,7 +6,8 @@ import { chmod, cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/prom
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createSyntaxOptions, nativePackageName, nativeTarget } from '../../../src/occipital/bootstrap.ts';
+import { createSyntaxOptions } from '../../../src/application/syntax-options.ts';
+import { nativePackageName, nativeTarget } from '../../../src/occipital/acquisition.ts';
 import type { ExtensionContext } from '@earendil-works/pi-coding-agent';
 import { RuntimeHealth } from '../../../src/runtime-health.ts';
 import { setImmediate as turn } from 'node:timers/promises';
@@ -20,7 +21,7 @@ async function isolatedDevelopment(t: import('node:test').TestContext, version =
   await cp(join(repo, 'src'), join(root, 'src'), { recursive: true });
   await writeFile(join(root, 'package.json'), JSON.stringify({ version, type: 'module' }));
   const { pathToFileURL } = await import('node:url');
-  return { root, bootstrap: await import(pathToFileURL(join(root, 'src/occipital/bootstrap.ts')).href) };
+  return { root, bootstrap: await import(pathToFileURL(join(root, 'src/application/syntax-options.ts')).href) };
 }
 
 const warnings: { message: string; level?: string }[] = [];
@@ -50,6 +51,18 @@ test('bootstrap development version uses only the colocated helper and aborted a
     assert.equal(downloads, 0);
     assert.equal(warnings.length, 0, 'aborted startup must not warn');
   } finally { globalThis.fetch = fetch; }
+});
+
+test('published bootstrap permits headless construction without starting a provider', async t => {
+  const { root, bootstrap } = await isolatedDevelopment(t, '0.2.0');
+  const headless = { cwd: root, sessionManager: ctx.sessionManager };
+  const unreadableUI = { ...headless, get ui() { throw new Error('Published construction must not read UI'); } };
+  for (const context of [headless, unreadableUI]) {
+    const options = bootstrap.createSyntaxOptions(context);
+    assert.equal(options.standaloneVersion, 'not declared');
+    assert.equal(typeof options.provider.tryShared, 'function');
+    assert.equal(typeof options.provider.acquireOwned, 'function');
+  }
 });
 
 test('development without local build warns once, never selects shared/release delivery, and keeps fallback available', async t => {
@@ -168,7 +181,7 @@ test('published bootstrap exact installed metadata hands verified payload to own
       const valid = { name, version, exports: { './package.json': './package.json' } };
       await writeFile(metadata, JSON.stringify(valid)); await writeFile(executable, body); await chmod(executable, 0o755);
       await writeFile(join(root, 'src/occipital/release.ts'), `export const NATIVE_RELEASE = ${JSON.stringify(release)};`);
-      const { createSyntaxOptions: publishedOptions } = await import((await import('node:url')).pathToFileURL(join(root, 'src/occipital/bootstrap.ts')).href);
+      const { createSyntaxOptions: publishedOptions } = await import((await import('node:url')).pathToFileURL(join(root, 'src/application/syntax-options.ts')).href);
       const options = publishedOptions({ ...ctx, cwd: directory } as ExtensionContext), transport = await options.provider.acquireOwned(new AbortController().signal);
        const { StdioTransport } = await import((await import('node:url')).pathToFileURL(join(root, 'src/occipital/stdio.ts')).href);
        assert.ok(transport instanceof StdioTransport);
@@ -196,7 +209,7 @@ test('published bootstrap exact installed metadata hands verified payload to own
 
 for (const mode of ['unsupported', 'undeclared', 'missing-artifact'] as const) test(`published bootstrap health: ${mode} distinguishes optional platform absence from broken package delivery`, async t => {
   const { root, bootstrap } = await isolatedDevelopment(t, '0.2.0');
-  const { SyntaxClient } = await import((await import('node:url')).pathToFileURL(join(root, 'src/occipital/client.ts')).href);
+  const { SyntaxClient } = await import((await import('node:url')).pathToFileURL(join(root, 'src/application/syntax-client.ts')).href);
   const notices: string[] = [], health = new RuntimeHealth(message => notices.push(message));
   const release: NativeReleaseDeclaration | undefined = mode === 'undeclared' ? undefined : { version: '0.1.0', artifacts: [] };
   const options = bootstrap.createSyntaxOptions(ctx, release, health.sink(() => {}));

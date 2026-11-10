@@ -1,6 +1,6 @@
 import { CARD_ROLES } from '../../src/appearance/card-roles.ts';
 import { createSemanticRuleDefinition, SEMANTIC_REGIONS } from '../../src/syntax/semantic-rules.ts';
-import type { ConcreteStyle } from '../../src/syntax/style-materialization.ts';
+import type { ConcreteStyle } from '../../src/appearance/style-materialization.ts';
 
 const ink = (red: number) => ({ kind: 'rgb' as const, r: red & 0xff, g: 120, b: 160 });
 const style = (red: number): ConcreteStyle => ({ foreground: ink(red), background: { kind: 'terminal-default' }, attributes: 0 });

@@ -6,7 +6,7 @@ import { Theme } from '@earendil-works/pi-coding-agent';
 import { getThemeByName } from '../../../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js';
 import { samplePiBindings } from '../../../src/syntax/pi-bindings.ts';
 import { PI_DIRECT_BINDINGS, PI_REGION_ROLES, PI_RULE_BINDINGS } from '../../../src/syntax/pi-adapter.ts';
-import { materializeStyle } from '../../../src/syntax/style-materialization.ts';
+import { materializeStyle } from '../../../src/appearance/style-materialization.ts';
 import { fingerprintRules } from '../../../src/occipital/style-rules.ts';
 
 function theme(mode: 'truecolor' | '256color', faint = true) {

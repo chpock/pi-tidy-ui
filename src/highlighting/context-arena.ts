@@ -1,7 +1,7 @@
-import { SemanticError } from './semantic-codec.ts';
-import type { Ink, StyleExpression } from './style-types.ts';
+import { SemanticError } from '../occipital/semantic-codec.ts';
+import type { Ink, StyleExpression } from '../occipital/style-types.ts';
 import { DataBudget, dataGrant, type DataCharge, type DataGrant } from '../resources/data-budget.ts';
-import { OCCIPITAL_LIMITS } from './limits.ts';
+import { OCCIPITAL_LIMITS } from '../occipital/limits.ts';
 
 export interface ContextRef { readonly id: number }
 export interface ContextLease {

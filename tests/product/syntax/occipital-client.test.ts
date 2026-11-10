@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { RuntimeHealth } from '../../../src/runtime-health.ts';
 import { reportRuntime } from '../../../src/diagnostics.ts';
-import { SyntaxClient, type SyntaxClientOptions } from '../../../src/occipital/client.ts';
+import { SyntaxClient, type SyntaxClientOptions } from '../../../src/application/syntax-client.ts';
 import { ExtensionSettings, SETTINGS_FILE_MAX_BYTES, type SettingsLoadResult, type SettingsPatch, type SettingsSaveResult,
   type SyntaxTheme } from '../../../src/settings.ts';
 import type { ThemePreference, ThemeVariant } from '../../../src/appearance/theme-preference.ts';

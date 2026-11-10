@@ -2,14 +2,14 @@ import '../../fixtures/test-guard.mjs';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { setImmediate as turn } from 'node:timers/promises';
-import { SourceController, type SourceDemand } from '../../../src/occipital/controller.ts';
+import { SourceController, type SourceDemand } from '../../../src/highlighting/controller.ts';
 import { decodeSemanticDescription } from '../../../src/occipital/semantic-protocol.ts';
 import { fingerprintRules } from '../../../src/occipital/style-rules.ts';
 import { RequestFailure } from '../../../src/occipital/request-failure.ts';
 import type { ProviderBroker } from '../../../src/occipital/provider.ts';
 import { semanticDescriptor } from '../../fixtures/semantic-provider.ts';
 import { HIGHLIGHT_LIMITS } from '../../../src/occipital/limits.ts';
-import { SemanticRetentionPool } from '../../../src/occipital/semantic-retention.ts';
+import { SemanticRetentionPool } from '../../../src/highlighting/semantic-retention.ts';
 import { syntheticSelection } from '../../fixtures/test-style-selection.ts';
 
 type Frame = Record<string, any>;

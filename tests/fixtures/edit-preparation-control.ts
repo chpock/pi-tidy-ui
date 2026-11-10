@@ -1,5 +1,5 @@
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
-import { SourceController } from '../../src/occipital/controller.ts';
+import { SourceController } from '../../src/highlighting/controller.ts';
 import presentationDriver from './presentation-driver.ts';
 import { createEventRecorder } from './terminal-output.ts';
 

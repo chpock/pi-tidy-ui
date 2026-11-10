@@ -1,6 +1,6 @@
 import type { ThemePreference } from '../appearance/theme-preference.ts';
 import type { ThemeDescription } from '../themes/selection.ts';
-import type { ProviderSnapshot } from './provider.ts';
+import type { ProviderSnapshot } from '../occipital/provider.ts';
 
 export type SyntaxMenuOutcome = { ok: true } | { ok: false; message: string };
 

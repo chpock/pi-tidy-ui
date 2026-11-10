@@ -3,7 +3,7 @@
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import tidyUi from '../../src/index.ts';
 import { DeferredRenderer } from '../../src/syntax/lazy-native-renderers.ts';
-import { createSyntaxOptions } from '../../src/occipital/bootstrap.ts';
+import { createSyntaxOptions } from '../../src/application/syntax-options.ts';
 import { ExpectedOwnedUnavailable } from '../../src/occipital/owned-startup.ts';
 import { createWriteCaptureGate, observeSyntaxCards } from './syntax-local-work.ts';
 import { createEventRecorder } from './terminal-output.ts';

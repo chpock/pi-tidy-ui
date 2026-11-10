@@ -1,7 +1,7 @@
 import '../../fixtures/test-guard.mjs';
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { SyntaxClient } from '../../../src/occipital/client.ts';
+import { SyntaxClient } from '../../../src/application/syntax-client.ts';
 import type { ProviderTransport } from '../../../src/occipital/provider.ts';
 import { themePatch, type SettingsLoadResult } from '../../../src/settings.ts';
 import type { ThemePreference } from '../../../src/appearance/theme-preference.ts';

@@ -1,5 +1,5 @@
 import type { TerminalColorMode } from '@earendil-works/pi-tui';
-import type { StyleSelection } from '../../src/occipital/controller-styles.ts';
+import type { StyleSelection } from '../../src/highlighting/controller-styles.ts';
 import { sampleOwnedPalette } from '../../src/themes/owned-palette.ts';
 import { createSemanticRuleDefinition } from '../../src/syntax/semantic-rules.ts';
 

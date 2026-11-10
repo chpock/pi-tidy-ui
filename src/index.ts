@@ -8,7 +8,7 @@ import { copyThemePreference, sameThemePreference, type ThemePreference } from '
 import { ExtensionSettings, processPreferences, type LocalPreferences, type SettingsLoadResult } from './settings.ts';
 import { bindTerminalLifecycle } from "./terminal-lifecycle.ts";
 import { TidyMenu, type TidyMenuOwner, type TidyMenuAction } from './tidy-menu.ts';
-import type { SyntaxMenuOutcome } from './occipital/menu.ts';
+import type { SyntaxMenuOutcome } from './application/syntax-menu.ts';
 import { type JournalOptions } from "./debug-log.ts";
 import { diagnose, reportRuntime, type DiagnosticFields, type DiagnosticSink } from "./diagnostics.ts";
 import { stripVTControlCharacters } from "node:util";
@@ -35,13 +35,13 @@ import { layoutCard, type CardLayout, type CardRows, type BashPaintProof } from 
 import { PaletteInputOwner } from './syntax/pi-input-owner.ts';
 import type { PiInputTheme, PaletteInputLease } from './syntax/pi-input.ts';
 import { resolveTheme, type ThemeDescription } from './themes/selection.ts';
-import { SourceController } from './occipital/controller.ts';
+import { SourceController } from './highlighting/controller.ts';
 import type { GeometryFunding } from './resources/data-budget.ts';
 import type { DataCharge, DataCleanupReceipt } from './resources/data-budget.ts';
 import type { PiClassifier } from "./syntax/work.ts";
-import type { SyntaxClient } from "./occipital/client.ts";
-import { createSyntaxOptions } from "./occipital/bootstrap.ts";
-import { SyntaxRuntime, type SyntaxRuntimeOptions } from "./syntax/runtime.ts";
+import type { SyntaxClient } from "./application/syntax-client.ts";
+import { createSyntaxOptions } from "./application/syntax-options.ts";
+import { SyntaxRuntime, type SyntaxRuntimeOptions } from "./application/syntax-runtime.ts";
 import { createLazyNativeRendererResolver, isDeferredStockEditComponent, isDeferredStockEditPair, isDeferredStockFileCall, isDeferredStockFilePair, isDeferredStockReadPair, releaseNativeRendererCache, updateNativeRendererArgs, stockEditCall, stockEditResult, type NativeRendererFailureReporter } from './syntax/lazy-native-renderers.ts';
 export { describeToolArgs as describeArgs } from "./tool-adapters/summary.ts";
 export { sanitize } from "./summary-args.ts";

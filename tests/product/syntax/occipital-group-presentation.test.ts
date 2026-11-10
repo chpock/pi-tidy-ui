@@ -2,14 +2,14 @@ import '../../fixtures/test-guard.mjs';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { setImmediate as turn } from 'node:timers/promises';
-import { SourceController, type SourcePreparation, type GroupDisplayBasis } from '../../../src/occipital/controller.ts';
-import { SemanticRetentionPool } from '../../../src/occipital/semantic-retention.ts';
+import { SourceController, type SourcePreparation, type GroupDisplayBasis } from '../../../src/highlighting/controller.ts';
+import { SemanticRetentionPool } from '../../../src/highlighting/semantic-retention.ts';
 import { CARD_ROLES, type CardRole } from '../../../src/appearance/card-roles.ts';
 import { decodeSemanticDescription } from '../../../src/occipital/semantic-protocol.ts';
 import { fingerprintRules } from '../../../src/occipital/style-rules.ts';
 import { RequestFailure } from '../../../src/occipital/request-failure.ts';
 import { HIGHLIGHT_LIMITS } from '../../../src/occipital/limits.ts';
-import type { ConcreteStyle } from '../../../src/syntax/style-materialization.ts';
+import type { ConcreteStyle } from '../../../src/appearance/style-materialization.ts';
 import { semanticDescriptor } from '../../fixtures/semantic-provider.ts';
 import { createSemanticRuleDefinition, SEMANTIC_REGIONS } from '../../../src/syntax/semantic-rules.ts';
 import { compactSelection } from '../../fixtures/test-style-selection.ts';
@@ -210,7 +210,7 @@ test('display text lifetime: removal, replacement and throw hold actual text unt
     const root = new SemanticRetentionPool(), text = 'owned:' + 'x'.repeat(8192), g = root.admit('a', 1, text).generation!, vocabulary = 'a'.repeat(64);
     root.installChunk(g, { key: 'a', generation: g, source_version: 1, revision: 1, source_bytes: text.length, replace_from: 0, committed_bytes: text.length, complete: true,
       vocabulary, contexts: [Uint32Array.of(1)], runs: Uint32Array.of(text.length, 1), counters: { committed_line_calls: 0, committed_line_bytes: 0, tail_calls: 0, tail_bytes: 0 } });
-    const contexts: { context: import('../../../src/occipital/context-arena.ts').ContextRef; style: ConcreteStyle }[] = [];
+    const contexts: { context: import('../../../src/highlighting/context-arena.ts').ContextRef; style: ConcreteStyle }[] = [];
     root.visitContexts(g, context => contexts.push({ context, style: literal(7) }));
     assert.equal(root.publishDisplay(g, { sourceVersion: 1, semanticStamp: root.status(g)!.semanticStamp,
       presentation: { vocabulary, rules: 'b'.repeat(64), palette: 'p', bindingRevision: 1, roles: roles(7), contexts } }).accepted, true);
@@ -266,7 +266,7 @@ test('group presentation: targeted notices coalesce exact group IDs and unregist
 });
 
 test('group presentation: SyntaxClient weak observer forwards group-only delivery without data RPC', async () => {
-  const { SyntaxClient } = await import('../../../src/occipital/client.ts');
+  const { SyntaxClient } = await import('../../../src/application/syntax-client.ts');
   const notices: { keys: readonly string[]; groups: readonly number[] }[] = [];
   const client = new SyntaxClient({ standaloneVersion: '0.1.5', initialTheme: { kind: 'pi', variant: 'dark' },
     settings: { async load() { return { ok: true, themePreference: { kind: 'pi', variant: 'dark' } }; }, async update() { return { ok: true }; } },
@@ -294,7 +294,7 @@ test('group presentation: escaped member ranges reject reentrant removal and kee
   try {
     owner.setStyleSelection(local(7)); c.start(); peer.source(0); await settle(); peer.style(1); await settle();
     const view = owner.groupPresentation(c.group)!;
-    let read: import('../../../src/occipital/controller.ts').DisplayRangeReader | undefined;
+    let read: import('../../../src/highlighting/controller.ts').DisplayRangeReader | undefined;
     assert.equal(view.visit(member => { read = member('one')!.read; }), true);
     let calls = 0;
     assert.equal(read!(() => {
@@ -548,7 +548,7 @@ test('group presentation: repeated rewrites retain the last coherent display whi
   try {
     owner.setStyleSelection(paletteInput()); owner.queuePreparation(group, true); owner.flush(); peer.source(0); await settle(); peer.style(1, 11); await settle();
     const original = owner.groupPresentation(group)!;
-    let oldMember: import('../../../src/occipital/controller.ts').GroupDisplayMember | undefined;
+    let oldMember: import('../../../src/highlighting/controller.ts').GroupDisplayMember | undefined;
     assert.equal(original.visit(member => { oldMember = member('bash'); }), true);
     assert.ok(oldMember);
     text = 'replacement\n'; version = 2; owner.queuePreparation(group, true); owner.flush(); await settle();
@@ -660,8 +660,8 @@ for (const throws of [false, true]) test(`group presentation: nested different-r
   try {
     owner.setStyleSelection(local(7)); first.start(); peer.source(0); await settle(); peer.style(1); await settle(); other.start(); await settle();
     const old = owner.groupPresentation(first.group)!, separate = owner.groupPresentation(other.group)!;
-    let escaped: ((key: string) => import('../../../src/occipital/controller.ts').GroupDisplayMember | undefined) | undefined;
-    let read: import('../../../src/occipital/controller.ts').DisplayRangeReader | undefined;
+    let escaped: ((key: string) => import('../../../src/highlighting/controller.ts').GroupDisplayMember | undefined) | undefined;
+    let read: import('../../../src/highlighting/controller.ts').DisplayRangeReader | undefined;
     const transaction = () => old.visit(member => {
       escaped = member; read = member('one')!.read;
       assert.equal(old.visit(nested => assert.equal(nested('one')!.read(() => {}), true)), true);
@@ -744,7 +744,7 @@ type AbandonedMemberKeepAlive = { owner: SourceController | undefined; preparati
 async function abandonedMember(peer: Peer) {
   const owner = new SourceController(peer), c = card(owner, ['first']);
   owner.setStyleSelection(local(7)); c.start(); peer.source(0); await settle(); peer.style(1); await settle();
-  let read: import('../../../src/occipital/controller.ts').DisplayRangeReader | undefined;
+  let read: import('../../../src/highlighting/controller.ts').DisplayRangeReader | undefined;
   owner.groupPresentation(c.group)!.visit(member => { read = member('first')!.read; });
   const keepAlive: AbandonedMemberKeepAlive = { owner, preparation: c.preparation };
   return { owner: new WeakRef(owner), preparation: new WeakRef(c.preparation), read: read!, budget: (Reflect.get(owner, 'pool') as SemanticRetentionPool).budget, keepAlive };
@@ -768,7 +768,7 @@ for (const site of ['visit', 'ranges', 'styles'] as const) test(`group presentat
   try {
     owner.setStyleSelection(local(7)); c.start(); peer.source(0); await settle(); peer.style(1); await settle();
     const view = owner.groupPresentation(c.group)!;
-    let read: import('../../../src/occipital/controller.ts').DisplayRangeReader | undefined;
+    let read: import('../../../src/highlighting/controller.ts').DisplayRangeReader | undefined;
     view.visit(member => { read = member('one')!.read; });
     const fail = () => { throw new Error('same ready failed'); };
     assert.throws(() => site === 'visit' ? view.visit(fail) : site === 'styles' ? view.visitStyles(fail) : read!(fail), /same ready failed/);

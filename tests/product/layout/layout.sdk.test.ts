@@ -9,7 +9,7 @@ import { ToolExecutionComponent as NativeToolExecution, createEditToolDefinition
 import { cardGeometry, frameRows, insidePanel } from "../../../src/card-frame.ts";
 import { editorGeometry } from "../../../src/editor-card.ts";
 import { measureFileCard } from "../../../src/file-card.ts";
-import { SourceController } from "../../../src/occipital/controller.ts";
+import { SourceController } from "../../../src/highlighting/controller.ts";
 import type { CardTheme } from "../../../src/card-theme.ts";
 import { hostCells, hasHostInk } from '../../fixtures/host-cells.ts';
 import { cardInputTheme } from '../../fixtures/sdk-contract-support.ts';

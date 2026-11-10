@@ -10,11 +10,32 @@ const sourceRoot = resolve(projectRoot, 'src');
 const sourceExtensions = new Set(['.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs']);
 const sourceTypes = [ts.ScriptKind.TS, ts.ScriptKind.TSX, ts.ScriptKind.TS, ts.ScriptKind.TS,
   ts.ScriptKind.JS, ts.ScriptKind.JSX, ts.ScriptKind.JS, ts.ScriptKind.JS];
+const highlightingModules = [
+  'src/highlighting/controller.ts',
+  'src/highlighting/controller-limits.ts',
+  'src/highlighting/controller-styles.ts',
+  'src/highlighting/context-arena.ts',
+  'src/highlighting/semantic-ranges.ts',
+  'src/highlighting/semantic-capture.ts',
+  'src/highlighting/semantic-retention.ts',
+  'src/highlighting/retention.ts',
+  'src/highlighting/pi-projection.ts',
+  'src/highlighting/ready-presentation.ts',
+];
+const applicationModules = [
+  'src/application/syntax-client.ts',
+  'src/application/syntax-menu.ts',
+  'src/application/syntax-runtime.ts',
+  'src/application/syntax-options.ts',
+];
 const governedModules = new Set([
   'src/appearance/card-roles.ts',
   'src/appearance/theme-preference.ts',
+  'src/appearance/style-materialization.ts',
   'src/occipital/style-types.ts',
   'src/resources/data-budget.ts',
+  ...highlightingModules,
+  ...applicationModules,
 ]);
 const pureModules = new Set([
   'src/appearance/card-roles.ts',
@@ -26,19 +47,11 @@ const movedPreferenceNames = new Set(['ThemeVariant', 'ThemePreference', 'copyTh
 const movedStyleTypeNames = new Set(['LiteralInk', 'Ink', 'StyleExpression', 'StyleIdentity']);
 const entryPath = 'src/index.ts';
 const genericStyleTypesPath = 'src/occipital/style-types.ts';
-const legacyAppearanceExceptions = [
-  { source: 'src/occipital/controller.ts', target: 'src/appearance/card-roles.ts', kind: 'mixed',
-    reason: 'The current controller uses shared card roles until its application mechanism moves out of Occipital.', removalCheckpoint: 'CP2' },
-  { source: 'src/occipital/controller-styles.ts', target: 'src/appearance/card-roles.ts', kind: 'mixed',
-    reason: 'The current style preparation uses shared card roles until its application mechanism moves out of Occipital.', removalCheckpoint: 'CP2' },
-  { source: 'src/occipital/ready-presentation.ts', target: 'src/appearance/card-roles.ts', kind: 'mixed',
-    reason: 'The current ready-presentation mechanism uses shared card roles until it moves out of Occipital.', removalCheckpoint: 'CP2' },
-  { source: 'src/occipital/semantic-retention.ts', target: 'src/appearance/card-roles.ts', kind: 'type-only',
-    reason: 'The current retention mechanism types its presentation roles until it moves out of Occipital.', removalCheckpoint: 'CP2' },
-  { source: 'src/occipital/client.ts', target: 'src/appearance/theme-preference.ts', kind: 'mixed',
-    reason: 'The current client uses the pure preference model until the application mechanism moves out of Occipital.', removalCheckpoint: 'CP2' },
-  { source: 'src/occipital/menu.ts', target: 'src/appearance/theme-preference.ts', kind: 'type-only',
-    reason: 'The current menu snapshot types use the pure preference model until the application mechanism moves out of Occipital.', removalCheckpoint: 'CP2' },
+const temporarySyntaxApplicationEdges = [
+  { source: 'src/syntax/cards.ts', target: 'src/application/syntax-client.ts', kind: 'type-only',
+    reason: 'Cards still read the existing client snapshot until their actual logical-card interface replaces this type dependency.', removalCheckpoint: 'CP5' },
+  { source: 'src/syntax/work.ts', target: 'src/application/syntax-client.ts', kind: 'type-only',
+    reason: 'Work still reads the existing client snapshot until the Pi-fallback/storage seam replaces this type dependency.', removalCheckpoint: 'CP4' },
 ];
 const presentationAndPayloadFiles = new Set([
   'src/bash-card.ts', 'src/card-frame.ts', 'src/card-theme.ts', 'src/diff-palette.ts',
@@ -232,7 +245,8 @@ function collectProductionEdges(files) {
 }
 
 function assertKnownGovernedModule(path) {
-  const governed = path.startsWith('src/resources/') || path.startsWith('src/appearance/') || path === genericStyleTypesPath;
+  const governed = path.startsWith('src/resources/') || path.startsWith('src/appearance/')
+    || path.startsWith('src/highlighting/') || path.startsWith('src/application/') || path === genericStyleTypesPath;
   if (governed && !governedModules.has(path)) throw new Error(`unclassified governed source module: ${path}`);
 }
 
@@ -240,21 +254,54 @@ function edgeKey({ source, target, kind }) {
   return `${source} -> ${target} [${kind}]`;
 }
 
-function assertExceptionInventory(actual, expected = legacyAppearanceExceptions) {
-  if (expected.some(exception => !exception.reason || !exception.removalCheckpoint)) {
-    throw new Error('each legacy appearance exception must name its reason and removal checkpoint');
+function assertTemporarySyntaxApplicationEdges(actual, expected = temporarySyntaxApplicationEdges) {
+  if (expected.some(edge => !edge.reason || !edge.removalCheckpoint || edge.kind !== 'type-only')) {
+    throw new Error('each temporary syntax-to-application edge must be type-only and name its removal checkpoint');
   }
   const actualKeys = actual.map(edgeKey).sort();
   const expectedKeys = expected.map(({ source, target, kind }) => `${source} -> ${target} [${kind}]`).sort();
   if (JSON.stringify(actualKeys) !== JSON.stringify(expectedKeys)) {
-    throw new Error(`legacy appearance exception inventory changed; actual=${JSON.stringify(actualKeys)} expected=${JSON.stringify(expectedKeys)}`);
+    throw new Error(`temporary syntax-to-application edge inventory changed; actual=${JSON.stringify(actualKeys)} expected=${JSON.stringify(expectedKeys)}`);
+  }
+}
+
+function assertNativeDependency(edge) {
+  if (!edge.source.startsWith('src/occipital/')) return;
+  const target = edge.target;
+  if (target.startsWith('src/application/') || target.startsWith('src/highlighting/')
+    || target.startsWith('src/syntax/') || target.startsWith('src/appearance/')
+    || target.startsWith('src/themes/') || target.startsWith('src/tool-adapters/')
+    || target === 'src/settings.ts' || presentationAndPayloadFiles.has(target)) {
+    throw new Error(`native module imports application, highlighting or presentation ownership: ${edgeKey(edge)}`);
+  }
+}
+
+function assertNativeReference(path, reference) {
+  if (reference.specifier === '@earendil-works/pi-coding-agent'
+    || reference.specifier.startsWith('@earendil-works/pi-coding-agent/')) {
+    throw new Error(`native module imports the Pi host SDK: ${path} -> ${reference.specifier} [${reference.kind}]`);
+  }
+  if (reference.specifier.startsWith('.')) assertNativeDependency({
+    source: path, target: resolveRelativeImport(path, reference.specifier), kind: reference.kind,
+  });
+}
+
+function assertHighlightingDependency(edge) {
+  if (!edge.source.startsWith('src/highlighting/')) return;
+  const target = edge.target;
+  if (target.startsWith('src/application/') || target.startsWith('src/syntax/') || target.startsWith('src/themes/')
+    || target.startsWith('src/tool-adapters/') || target === 'src/settings.ts' || presentationAndPayloadFiles.has(target)) {
+    throw new Error(`highlighting module imports application or presentation ownership: ${edgeKey(edge)}`);
   }
 }
 
 function assertEdgePolicy(edge) {
+  assertNativeDependency(edge);
+  assertHighlightingDependency(edge);
   if (edge.source.startsWith('src/resources/')) {
     const target = edge.target;
     const nativeOrPayload = target.startsWith('src/occipital/') && target !== genericStyleTypesPath
+      || target.startsWith('src/highlighting/') || target.startsWith('src/application/')
       || target.startsWith('src/syntax/') || target.startsWith('src/themes/') || target.startsWith('src/tool-adapters/')
       || presentationAndPayloadFiles.has(target);
     if (nativeOrPayload) throw new Error(`resource module imports native, UI or payload implementation: ${edgeKey(edge)}`);
@@ -265,6 +312,12 @@ function assertEdgePolicy(edge) {
   if (edge.source.startsWith('src/appearance/') && edge.target.startsWith('src/occipital/')) {
     if (edge.target !== genericStyleTypesPath || edge.kind !== 'type-only') {
       throw new Error(`appearance may depend on Occipital only through generic type-only style shapes: ${edgeKey(edge)}`);
+    }
+  }
+  if (edge.source.startsWith('src/syntax/') && edge.target.startsWith('src/application/')) {
+    const allowed = temporarySyntaxApplicationEdges.some(item => item.source === edge.source && item.target === edge.target);
+    if (!allowed || edge.kind !== 'type-only') {
+      throw new Error(`syntax may temporarily depend on application only through an approved type-only seam: ${edgeKey(edge)}`);
     }
   }
   if (edge.target === entryPath && edge.source !== entryPath) {
@@ -284,13 +337,13 @@ function assertBudgetBoundary(legacyExists, forwardedNames) {
 
 function assertMigratedContracts() {
   assertBudgetBoundary(existsSync(resolve(projectRoot, 'src/occipital/data-budget.ts')),
-    reexportedSourceNames('src/occipital/controller.ts', 'src/resources/data-budget.ts'));
+    reexportedSourceNames('src/highlighting/controller.ts', 'src/resources/data-budget.ts'));
   const roles = declarationExportNames(parseSource('src/appearance/card-roles.ts'));
   const preference = declarationExportNames(parseSource('src/appearance/theme-preference.ts'));
   const styles = declarationExportNames(parseSource(genericStyleTypesPath));
   const codec = declarationExportNames(parseSource('src/occipital/semantic-codec.ts'));
   const settings = declarationExportNames(parseSource('src/settings.ts'));
-  const controller = declarationExportNames(parseSource('src/occipital/controller.ts'));
+  const controller = declarationExportNames(parseSource('src/highlighting/controller.ts'));
   const budget = declarationExportNames(parseSource('src/resources/data-budget.ts'));
 
   for (const name of movedRoleNames) assert.ok(roles.has(name), `appearance/card-roles.ts must own ${name}`);
@@ -326,7 +379,7 @@ function assertPureMigratedModules() {
   for (const path of pureModules) assertImportFree(path, parseSource(path));
 }
 
-test('appearance owns the migrated role and preference contracts', () => {
+test('appearance owns shared roles, preferences and concrete style conversion', () => {
   assertMigratedContracts();
 });
 
@@ -336,8 +389,20 @@ test('production imports preserve the migrated module boundaries', () => {
   const edges = collectProductionEdges(files);
   for (const edge of edges) assertEdgePolicy(edge);
   assertPureMigratedModules();
-  const legacyEdges = edges.filter(edge => edge.source.startsWith('src/occipital/') && edge.target.startsWith('src/appearance/'));
-  assertExceptionInventory(legacyEdges);
+  const nativeAppearanceEdges = edges.filter(edge => edge.source.startsWith('src/occipital/') && edge.target.startsWith('src/appearance/'));
+  assert.deepEqual(nativeAppearanceEdges, [], 'native modules no longer depend on appearance owners');
+  const styleConversionEdges = edges.filter(edge => edge.source === 'src/appearance/style-materialization.ts');
+  assert.deepEqual(styleConversionEdges.map(edgeKey), [
+    `src/appearance/style-materialization.ts -> ${genericStyleTypesPath} [type-only]`,
+  ], 'concrete style materialization depends only on generic type-only wire shapes');
+  const temporaryEdges = edges.filter(edge => edge.source.startsWith('src/syntax/') && edge.target.startsWith('src/application/'));
+  assertTemporarySyntaxApplicationEdges(temporaryEdges);
+});
+
+test('native modules are independent of application, highlighting, presentation and Pi host SDK', () => {
+  for (const path of productionFiles().filter(path => path.startsWith('src/occipital/') && sourceExtensions.has(extname(path)))) {
+    for (const reference of moduleReferences(parseSource(path))) assertNativeReference(path, reference);
+  }
 });
 
 test('dependency parser and architecture rules reject synthetic boundary violations', () => {
@@ -379,7 +444,11 @@ test('dependency parser and architecture rules reject synthetic boundary violati
   assert.throws(() => assertImportFree('synthetic.ts', parseSource('synthetic.ts', "import { basename } from 'node:path';")), /must remain import-free/);
 
   assert.doesNotThrow(() => assertKnownGovernedModule('src/appearance/theme-preference.ts'));
+  assert.doesNotThrow(() => assertKnownGovernedModule('src/highlighting/controller.ts'));
+  assert.doesNotThrow(() => assertKnownGovernedModule('src/application/syntax-options.ts'));
   assert.throws(() => assertKnownGovernedModule('src/appearance/new-model.ts'), /unclassified governed source module/);
+  assert.throws(() => assertKnownGovernedModule('src/highlighting/new-owner.ts'), /unclassified governed source module/);
+  assert.throws(() => assertKnownGovernedModule('src/application/new-owner.ts'), /unclassified governed source module/);
   assert.doesNotThrow(() => assertEdgePolicy({
     source: 'src/appearance/new-adapter.ts', target: genericStyleTypesPath, kind: 'type-only',
   }));
@@ -395,20 +464,58 @@ test('dependency parser and architecture rules reject synthetic boundary violati
   assert.throws(() => assertEdgePolicy({
     source: 'src/resources/new-budget.ts', target: 'src/tool-adapters/file.ts', kind: 'type-only',
   }), /resource module imports native, UI or payload implementation/);
+  for (const target of ['src/highlighting/controller.ts', 'src/application/syntax-client.ts']) {
+    assert.throws(() => assertEdgePolicy({ source: 'src/resources/new-budget.ts', target, kind: 'type-only' }),
+      /resource module imports native, UI or payload implementation/);
+  }
+  assert.throws(() => assertEdgePolicy({ source: 'src/highlighting/new-owner.ts',
+    target: 'src/application/syntax-client.ts', kind: 'type-only' }), /highlighting module imports application/);
+  assert.throws(() => assertEdgePolicy({ source: 'src/highlighting/new-owner.ts',
+    target: 'src/syntax/cards.ts', kind: 'type-only' }), /highlighting module imports application/);
+  assert.doesNotThrow(() => assertEdgePolicy({ source: 'src/syntax/cards.ts',
+    target: 'src/application/syntax-client.ts', kind: 'type-only' }));
+  assert.doesNotThrow(() => assertEdgePolicy({ source: 'src/syntax/work.ts',
+    target: 'src/application/syntax-client.ts', kind: 'type-only' }));
+  assert.throws(() => assertEdgePolicy({ source: 'src/syntax/cards.ts',
+    target: 'src/application/syntax-client.ts', kind: 'value' }), /approved type-only seam/);
+  assert.throws(() => assertEdgePolicy({ source: 'src/syntax/new-owner.ts',
+    target: 'src/application/syntax-client.ts', kind: 'type-only' }), /approved type-only seam/);
+
+  for (const target of ['src/application/syntax-client.ts', 'src/highlighting/controller.ts',
+    'src/syntax/cards.ts', 'src/appearance/card-roles.ts', 'src/themes/catalog.ts',
+    'src/settings.ts', 'src/notifications.ts']) {
+    for (const kind of ['type-only', 'value']) assert.throws(() => assertNativeDependency({
+      source: 'src/occipital/new-native.ts', target, kind,
+    }), /native module imports application, highlighting or presentation ownership/);
+  }
+  assert.doesNotThrow(() => assertNativeDependency({
+    source: 'src/occipital/new-native.ts', target: 'src/resources/data-budget.ts', kind: 'type-only',
+  }));
+  for (const specifier of ['@earendil-works/pi-coding-agent', '@earendil-works/pi-coding-agent/host']) {
+    assert.throws(() => assertNativeReference('src/occipital/new-native.ts', { specifier, kind: 'type-only' }),
+      /native module imports the Pi host SDK/);
+  }
+  assert.doesNotThrow(() => assertNativeReference('src/occipital/new-native.ts', {
+    specifier: '@earendil-works/pi-tui', kind: 'value',
+  }));
 
   assert.doesNotThrow(() => assertBudgetBoundary(false, new Set()));
   assert.throws(() => assertBudgetBoundary(true, new Set()), /legacy Occipital budget module must stay deleted/);
-  const wildcard = parseSource('src/occipital/controller.ts', "export * from '../resources/data-budget.ts';");
+  const wildcard = parseSource('src/highlighting/controller.ts', "export * from '../resources/data-budget.ts';");
   assert.throws(() => assertBudgetBoundary(false,
-    reexportedSourceNames('src/occipital/controller.ts', 'src/resources/data-budget.ts', wildcard)), /controller must not forward/);
+    reexportedSourceNames('src/highlighting/controller.ts', 'src/resources/data-budget.ts', wildcard)), /controller must not forward/);
 
-  const expected = [{ source: 'src/occipital/client.ts', target: 'src/appearance/theme-preference.ts', kind: 'mixed',
-    reason: 'current client use', removalCheckpoint: 'CP2' }];
-  assert.doesNotThrow(() => assertExceptionInventory([expected[0]], expected));
-  assert.throws(() => assertExceptionInventory([], expected), /legacy appearance exception inventory changed/);
-  assert.throws(() => assertExceptionInventory([
-    { source: expected[0].source, target: expected[0].target, kind: 'type-only' },
-  ], expected), /legacy appearance exception inventory changed/);
-  assert.throws(() => assertExceptionInventory([expected[0]], [{ ...expected[0], removalCheckpoint: undefined }]),
-    /must name its reason and removal checkpoint/);
+  const expected = [
+    { source: 'src/syntax/cards.ts', target: 'src/application/syntax-client.ts', kind: 'type-only',
+      reason: 'current card snapshot', removalCheckpoint: 'CP5' },
+    { source: 'src/syntax/work.ts', target: 'src/application/syntax-client.ts', kind: 'type-only',
+      reason: 'current work snapshot', removalCheckpoint: 'CP4' },
+  ];
+  assert.doesNotThrow(() => assertTemporarySyntaxApplicationEdges(expected, expected));
+  assert.throws(() => assertTemporarySyntaxApplicationEdges([], expected), /temporary syntax-to-application edge inventory changed/);
+  assert.throws(() => assertTemporarySyntaxApplicationEdges([
+    { source: expected[0].source, target: expected[0].target, kind: 'value' }, expected[1],
+  ], expected), /temporary syntax-to-application edge inventory changed/);
+  assert.throws(() => assertTemporarySyntaxApplicationEdges(expected, [{ ...expected[0], removalCheckpoint: undefined }, expected[1]]),
+    /must be type-only and name its removal checkpoint/);
 });

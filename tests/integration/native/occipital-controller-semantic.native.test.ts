@@ -5,7 +5,7 @@ import { setImmediate as turn } from 'node:timers/promises';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { SourceController } from '../../../src/occipital/controller.ts';
+import { SourceController } from '../../../src/highlighting/controller.ts';
 import { ProviderBroker } from '../../../src/occipital/provider.ts';
 import { StdioTransport } from '../../../src/occipital/stdio.ts';
 import { syntheticSelection } from '../../fixtures/test-style-selection.ts';

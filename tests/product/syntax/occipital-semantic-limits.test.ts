@@ -4,7 +4,7 @@ import test from 'node:test';
 import { readFileSync } from 'node:fs';
 import { HIGHLIGHT_LIMITS, OCCIPITAL_LIMITS } from '../../../src/occipital/limits.ts';
 import { decodeContextBatch, decodeStyleResult, SemanticError } from '../../../src/occipital/semantic-codec.ts';
-import { ContextArena } from '../../../src/occipital/context-arena.ts';
+import { ContextArena } from '../../../src/highlighting/context-arena.ts';
 import { decodeSemanticSources } from '../../../src/occipital/semantic-source.ts';
 
 const vocabulary = 'a'.repeat(64), rules = 'b'.repeat(64);

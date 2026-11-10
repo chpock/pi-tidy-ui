@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { SourceController } from '../../src/occipital/controller.ts';
+import { SourceController } from '../../src/highlighting/controller.ts';
 import { CardSources, type CardDisplayInput } from '../../src/syntax/cards.ts';
 import { layoutCard } from '../../src/syntax/card-layout.ts';
 import { preparePaletteInput, type PiInputTheme } from '../../src/syntax/pi-input.ts';

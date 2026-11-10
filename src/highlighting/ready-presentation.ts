@@ -1,8 +1,8 @@
 import { CARD_ROLES, type CardRole } from '../appearance/card-roles.ts';
-import type { LiteralInk } from './style-types.ts';
+import type { LiteralInk } from '../occipital/style-types.ts';
 import type { DataCharge, DataGrant } from '../resources/data-budget.ts';
 import type { ContextRef } from './context-arena.ts';
-import type { ConcreteStyle } from '../syntax/style-materialization.ts';
+import type { ConcreteStyle } from '../appearance/style-materialization.ts';
 
 /** Already materialized, complete internal data. The caller establishes coverage
  * from its context demands before publication; no source or UI owner is allowed. */

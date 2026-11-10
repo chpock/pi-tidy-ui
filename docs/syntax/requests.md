@@ -6,7 +6,7 @@ The transport adapters turn a published compatible provider into correlated oper
 
 The source controller creates the operation and retains the facts needed to validate its eventual outcome. The transport does not decide which source version is useful.
 
-For SOURCE, `SourceController.prepare` in `src/occipital/controller.ts` captures the submitted snapshot, provider descriptor, source incarnation, expected next revision and exact replacement text. A finite source uses `highlight`; a growing source without a lease uses `stream.open`; a source with a validated live lease uses `stream.append`.
+For SOURCE, `SourceController.prepare` in `src/highlighting/controller.ts` captures the submitted snapshot, provider descriptor, source incarnation, expected next revision and exact replacement text. A finite source uses `highlight`; a growing source without a lease uses `stream.open`; a source with a validated live lease uses `stream.append`.
 
 An append has two different boundaries. Its request contains only bytes added after the last acknowledged full input. Its expected reply replaces coverage from the last committed parser boundary, which may be earlier because the previous final line was provisional. The controller therefore keeps both the acknowledged full-text basis and the committed offset. It does not validate the reply against whatever text happens to be latest when the promise resolves.
 

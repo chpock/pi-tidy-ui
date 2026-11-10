@@ -1,7 +1,7 @@
 // Theme-independent SOURCE streaming in a real owned helper; no terminal/FPS claim.
 import assert from 'node:assert/strict';
 import { readFileSync, writeFileSync } from 'node:fs';
-import { SyntaxClient } from '../../src/occipital/client.ts';
+import { SyntaxClient } from '../../src/application/syntax-client.ts';
 import { ownedStyleSelection } from './owned-style-selection.ts';
 import { createLocalOwnedFactory } from '../../src/occipital/factories.ts';
 import { readInputs, validateNative } from '../../scripts/test/context.mjs';

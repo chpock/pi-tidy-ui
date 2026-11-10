@@ -2,13 +2,13 @@ import '../../fixtures/test-guard.mjs';
 import assert from 'node:assert/strict';
 import { afterEach, test } from 'node:test';
 import { setImmediate as turn } from 'node:timers/promises';
-import { SyntaxRuntime } from '../../../src/syntax/runtime.ts';
+import { SyntaxRuntime } from '../../../src/application/syntax-runtime.ts';
 import type { ProviderTransport } from '../../../src/occipital/provider.ts';
 import type { TransportEnd } from '../../../src/occipital/transport-end.ts';
 import { semanticDescriptor } from '../../fixtures/semantic-provider.ts';
 import { CARD_ROLES, type CardRole } from '../../../src/appearance/card-roles.ts';
-import type { ConcreteStyle } from '../../../src/syntax/style-materialization.ts';
-import type { SourceController } from '../../../src/occipital/controller.ts';
+import type { ConcreteStyle } from '../../../src/appearance/style-materialization.ts';
+import type { SourceController } from '../../../src/highlighting/controller.ts';
 import { themePatch, type SettingsLoadResult, type SettingsSaveResult, type SyntaxTheme } from '../../../src/settings.ts';
 import type { ThemePreference } from '../../../src/appearance/theme-preference.ts';
 
@@ -214,7 +214,7 @@ async function collected(reference: WeakRef<object>) {
 }
 function borrowedClient() {
   const f = fixture(), view = presentation(); f.runtime.attach(view); runtimes.delete(f.runtime);
-  return { reference: new WeakRef(f.runtime), client: (f.runtime as unknown as { client: import('../../../src/occipital/client.ts').SyntaxClient }).client, view };
+  return { reference: new WeakRef(f.runtime), client: (f.runtime as unknown as { client: import('../../../src/application/syntax-client.ts').SyntaxClient }).client, view };
 }
 test('first runtime is collectible while its borrowed client still has active provider callbacks', async () => {
   assert.equal(typeof global.gc, 'function');

@@ -7,7 +7,7 @@ import { DataBudget } from '../../../src/resources/data-budget.ts';
 import { compileStyleAnsi } from '../../../src/syntax/style-ansi.ts';
 import { measure, reflow } from '../../../src/syntax/measured-rows.ts';
 import { paintFlat } from '../../../src/syntax/flat-paint.ts';
-import type { ConcreteStyle } from '../../../src/syntax/style-materialization.ts';
+import type { ConcreteStyle } from '../../../src/appearance/style-materialization.ts';
 import type { PiRowReader } from '../../../src/syntax/pi-flat.ts';
 import xterm from '@xterm/headless';
 

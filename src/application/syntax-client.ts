@@ -1,10 +1,10 @@
 import { diagnose, diagnosticError, reportRuntime, type DiagnosticFields, type DiagnosticSink, type RuntimeEvent } from '../diagnostics.ts';
 import { copyThemePreference, sameThemePreference, type ThemePreference } from '../appearance/theme-preference.ts';
 import { ExtensionSettings, themePatch } from '../settings.ts';
-import { SourceController, type ControllerOptions } from './controller.ts';
-import type { SyntaxMenuOutcome, SyntaxMenuOwner, SyntaxMenuSnapshot } from './menu.ts';
+import { SourceController, type ControllerOptions } from '../highlighting/controller.ts';
+import type { SyntaxMenuOutcome, SyntaxMenuOwner, SyntaxMenuSnapshot } from './syntax-menu.ts';
 import { resolveTheme, type ThemeDescription } from '../themes/selection.ts';
-import { ProviderBroker, type ProviderOptions, type ProviderSnapshot } from './provider.ts';
+import { ProviderBroker, type ProviderOptions, type ProviderSnapshot } from '../occipital/provider.ts';
 
 export interface SyntaxClientOptions {
   diagnostic?: DiagnosticSink;

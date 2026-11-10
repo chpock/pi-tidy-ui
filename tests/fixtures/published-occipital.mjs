@@ -88,8 +88,8 @@ try {
     globalThis.fetch = async (...args) => { urls.push(String(args[0])); const reply = await originalFetch(...args); if (reply.ok && reply.body) downloads++; return reply; };
     childProcess.spawn = function (file, ...args) { starts.push(file); return originalSpawn.call(this, file, ...args); };
     syncBuiltinESMExports();
-    const { createSyntaxOptions } = await load('occipital/bootstrap.ts');
-    const { SyntaxClient } = await load('occipital/client.ts');
+    const { createSyntaxOptions } = await load('application/syntax-options.ts');
+    const { SyntaxClient } = await load('application/syntax-client.ts');
     const { createSemanticRuleDefinition, SEMANTIC_REGIONS } = await load('syntax/semantic-rules.ts');
     const { fingerprintRules } = await load('occipital/style-rules.ts');
     const { sampleOwnedPalette } = await load('themes/owned-palette.ts');

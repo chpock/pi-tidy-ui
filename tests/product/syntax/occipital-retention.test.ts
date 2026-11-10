@@ -1,8 +1,8 @@
 import '../../fixtures/test-guard.mjs';
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { SemanticRetentionPool } from '../../../src/occipital/semantic-retention.ts';
-import { SemanticRanges } from '../../../src/occipital/semantic-ranges.ts';
+import { SemanticRetentionPool } from '../../../src/highlighting/semantic-retention.ts';
+import { SemanticRanges } from '../../../src/highlighting/semantic-ranges.ts';
 import type { SemanticChunk } from '../../../src/occipital/semantic-source.ts';
 import { installProjection, visitProjection } from '../../fixtures/pi-projection.ts';
 

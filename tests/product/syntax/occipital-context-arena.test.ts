@@ -2,7 +2,7 @@ import '../../fixtures/test-guard.mjs';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { setImmediate as turn } from 'node:timers/promises';
-import { ContextArena } from '../../../src/occipital/context-arena.ts';
+import { ContextArena } from '../../../src/highlighting/context-arena.ts';
 import { decodeContextBatch, SemanticError } from '../../../src/occipital/semantic-codec.ts';
 
 const vocabulary = 'a'.repeat(64), grant = () => true;

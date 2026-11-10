@@ -3,13 +3,13 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { readFileSync } from 'node:fs';
 import { setImmediate as turn } from 'node:timers/promises';
-import { SemanticRetentionPool, type ReadyDisplayCandidate, type ReadyPresentation } from '../../../src/occipital/semantic-retention.ts';
+import { SemanticRetentionPool, type ReadyDisplayCandidate, type ReadyPresentation } from '../../../src/highlighting/semantic-retention.ts';
 import { CARD_ROLES, type CardRole } from '../../../src/appearance/card-roles.ts';
 import { decodeContextBatch, decodeStyleResult } from '../../../src/occipital/semantic-codec.ts';
 import type { SemanticChunk } from '../../../src/occipital/semantic-source.ts';
-import { SemanticRanges, type SemanticRangeView } from '../../../src/occipital/semantic-ranges.ts';
-import type { ContextRef } from '../../../src/occipital/context-arena.ts';
-import { materializeStyle, type ConcreteStyle } from '../../../src/syntax/style-materialization.ts';
+import { SemanticRanges, type SemanticRangeView } from '../../../src/highlighting/semantic-ranges.ts';
+import type { ContextRef } from '../../../src/highlighting/context-arena.ts';
+import { materializeStyle, type ConcreteStyle } from '../../../src/appearance/style-materialization.ts';
 
 const vectors = JSON.parse(readFileSync(new URL('../../../protocol/syntax-v4/vectors.json', import.meta.url), 'utf8'));
 const vocabulary = 'a'.repeat(64), rules = 'b'.repeat(64);

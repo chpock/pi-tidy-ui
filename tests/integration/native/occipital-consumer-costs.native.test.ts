@@ -15,7 +15,7 @@ import { CardSources } from '../../../src/syntax/cards.ts';
 import { measure, type MeasuredText, type MeasuredRowLayout, type GeometryPolicy } from '../../../src/syntax/measured-rows.ts';
 import { observeSyntaxLocalWork } from '../../fixtures/syntax-local-work.ts';
 import { stripVTControlCharacters } from 'node:util';
-import { SourceController } from '../../../src/occipital/controller.ts';
+import { SourceController } from '../../../src/highlighting/controller.ts';
 import { ProviderBroker } from '../../../src/occipital/provider.ts';
 import { StdioTransport } from '../../../src/occipital/stdio.ts';
 import { DataBudget, DataCharge } from '../../../src/resources/data-budget.ts';
@@ -26,8 +26,8 @@ import { readInputs, validateNative } from '../../../scripts/test/context.mjs';
 import { awaitFixture } from '../../fixtures/await-fixture.ts';
 import { preparePaletteInput } from '../../../src/syntax/pi-input.ts';
 import { createSemanticRuleDefinition } from '../../../src/syntax/semantic-rules.ts';
-import type { ConcreteStyle } from '../../../src/syntax/style-materialization.ts';
-import { SemanticRetentionPool } from '../../../src/occipital/semantic-retention.ts';
+import type { ConcreteStyle } from '../../../src/appearance/style-materialization.ts';
+import { SemanticRetentionPool } from '../../../src/highlighting/semantic-retention.ts';
 import { decodeSemanticDescription, decodeSemanticSourceReply, decodeSemanticStyleReply, SEMANTIC_PROTOCOL_VERSION } from '../../../src/occipital/semantic-protocol.ts';
 import { fingerprintRules } from '../../../src/occipital/style-rules.ts';
 import { ownedStyleSelection } from '../../fixtures/owned-style-selection.ts';
@@ -194,7 +194,7 @@ test('current consumer geometry: actual CardSources SDK preparation warm theme w
     const result = commit.apply(this, args); if (this === budget) {
       // Numeric policy attribution, not allocation telemetry: the first source file
       // after the budget frames owns this charge. Keep no source/charge strongly.
-      const stack = new Error().stack ?? '', site = stack.split('\n').map(line => line.match(/src\/(?:syntax|occipital)\/([\w-]+\.ts)/)?.[1]).find(site => site && site !== 'data-budget.ts') ?? 'other';
+      const stack = new Error().stack ?? '', site = stack.split('\n').map(line => line.match(/src\/(?:syntax|occipital|highlighting|appearance|application)\/([\w-]+\.ts)/)?.[1]).find(site => site && site !== 'data-budget.ts') ?? 'other';
       charges.set(result, site); liveByAllocationSite[site] = (liveByAllocationSite[site] ?? 0) + result.bytes; sample();
     } return result;
   });

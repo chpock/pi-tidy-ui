@@ -2,10 +2,10 @@
 // Native ESM imports from an .mjs entry can otherwise observe another class copy.
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import tidyUi from '../../src/index.ts';
-import { SyntaxRuntime } from '../../src/syntax/runtime.ts';
+import { SyntaxRuntime } from '../../src/application/syntax-runtime.ts';
 import { CardSources } from '../../src/syntax/cards.ts';
 import { preparedHistoryReady, preparedHistoryPaintOriginCount, explainPreparedHistory } from './performance-readiness.mjs';
-import { createSyntaxOptions } from '../../src/occipital/bootstrap.ts';
+import { createSyntaxOptions } from '../../src/application/syntax-options.ts';
 import { createLocalOwnedFactory } from '../../src/occipital/factories.ts';
 import { registerPerformanceDriver } from './performance-driver.mjs';
 

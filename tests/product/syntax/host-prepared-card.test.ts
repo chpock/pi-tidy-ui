@@ -6,7 +6,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { stripVTControlCharacters as plain } from 'node:util';
 import { Container, Text } from '@earendil-works/pi-tui';
 import { createEditToolDefinition, highlightCode } from '@earendil-works/pi-coding-agent';
-import { SourceController } from '../../../src/occipital/controller.ts';
+import { SourceController } from '../../../src/highlighting/controller.ts';
 import { installTidyUi } from '../../../src/index.ts';
 import { CardSources } from '../../../src/syntax/cards.ts';
 import { resolvePublicFileToolDefinition } from '../../fixtures/sdk-contract-support.ts';

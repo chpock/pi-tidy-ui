@@ -46,7 +46,7 @@ If you are interested in **Occipital as a daemon**, start directly with its [sta
 | [TUI theme correspondence](syntax/opencode-tui-mapping.md) | Pinned OpenCode TUI catalogue/source, offline generation, all donor/font mappings, alpha backdrops and intentional classification limits |
 | [Color model](color-model.md) | Shared output conversion, Follow Pi diff derivation and uncorrected authored TUI surfaces |
 
-`src/occipital/` contains the extension's client mechanisms; it is not the Rust daemon and is not claimed to be an independently isolated SDK package. Native computation belongs to the next section.
+`src/application/` owns the extension's syntax client/menu/runtime/options wiring. `src/highlighting/` owns source work and retained semantic presentation; `src/occipital/` owns native acquisition and provider/transport contracts, not Pi settings or UI. These TypeScript modules are distinct from the Rust daemon and are not claimed to be an independently isolated SDK package. Native computation belongs to the next section.
 
 ## Occipital daemon
 

@@ -5,13 +5,13 @@ import test from 'node:test';
 import { readFile, mkdtemp, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { SourceController } from '../../../../src/occipital/controller.ts';
+import { SourceController } from '../../../../src/highlighting/controller.ts';
 import { ProviderBroker } from '../../../../src/occipital/provider.ts';
 import { StdioTransport } from '../../../../src/occipital/stdio.ts';
 import { CARD_ROLES, type CardRole } from '../../../../src/appearance/card-roles.ts';
 import { createSemanticRuleDefinition } from '../../../../src/syntax/semantic-rules.ts';
 import { fingerprintRules } from '../../../../src/occipital/style-rules.ts';
-import type { ConcreteStyle } from '../../../../src/syntax/style-materialization.ts';
+import type { ConcreteStyle } from '../../../../src/appearance/style-materialization.ts';
 import { readInputs, validateNative } from '../../../../scripts/test/context.mjs';
 import { awaitFixture } from '../../../fixtures/await-fixture.ts';
 

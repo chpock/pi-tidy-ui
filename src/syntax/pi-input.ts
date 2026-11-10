@@ -8,7 +8,7 @@ import { sampleOwnedPalette } from '../themes/owned-palette.ts';
 import { PI_MARKER_VARIANT_SCRATCH_BYTES } from './pi-variants.ts';
 import { PI_DIRECT_BINDINGS, PI_RULE_BINDINGS } from './pi-adapter.ts';
 import { compileStyleAnsi, type AnsiStyle } from './style-ansi.ts';
-import type { ConcreteStyle, StyleBinding } from './style-materialization.ts';
+import type { ConcreteStyle, StyleBinding } from '../appearance/style-materialization.ts';
 
 export type PiInputTheme = Pick<Theme, 'colors' | 'getFgAnsi' | 'getBgAnsi'>;
 interface InputData {

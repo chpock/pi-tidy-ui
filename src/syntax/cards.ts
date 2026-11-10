@@ -3,11 +3,11 @@ import { diagnose, type DiagnosticFields, type DiagnosticSink } from '../diagnos
 import type { BashService } from '../bash-card.ts';
 import { contextRows, fileDiagnosticText, fileHeading, fileSources, readHeading, type PreparedFileCard } from '../file-card.ts';
 import type { BashToolReader, FileToolReader, ToolDiagnosticsIdentity } from '../tool-adapters/contracts.ts';
-import type { SyntaxClient } from '../occipital/client.ts';
-import { CONTROLLER_LIMITS, type GroupDisplayBasis, type SourceController, type SourceDisplayBasis, type SourceWorkGroup } from '../occipital/controller.ts';
+import type { SyntaxClient } from '../application/syntax-client.ts';
+import { CONTROLLER_LIMITS, type GroupDisplayBasis, type SourceController, type SourceDisplayBasis, type SourceWorkGroup } from '../highlighting/controller.ts';
 import type { GeometryFunding } from '../resources/data-budget.ts';
 import { type DataCharge, type DataCleanupReceipt } from '../resources/data-budget.ts';
-import { RETENTION_LIMITS } from '../occipital/retention.ts';
+import { RETENTION_LIMITS } from '../highlighting/retention.ts';
 import { CARD_ROLES, type CardRole } from '../appearance/card-roles.ts';
 import { measure, prepareMeasuredAppend, type MeasuredAppend, type MeasuredText } from './measured-rows.ts';
 import type { FlatRangeReader } from './flat-paint.ts';
@@ -16,7 +16,7 @@ import { createSemanticRuleDefinition } from './semantic-rules.ts';
 import { fingerprintRules } from '../occipital/style-rules.ts';
 import { resolveTheme, type ThemeDescription } from '../themes/selection.ts';
 import { compileStyleAnsi, type AnsiStyle } from './style-ansi.ts';
-import type { ConcreteStyle } from './style-materialization.ts';
+import type { ConcreteStyle } from '../appearance/style-materialization.ts';
 import { requestSyntax, resolveSyntax, type PiClassifier, type SyntaxIdentity, type SyntaxWorkResult } from './work.ts';
 
 export type CardSourceInput = { palette: number } & (

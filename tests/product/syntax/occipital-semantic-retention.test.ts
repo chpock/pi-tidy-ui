@@ -3,7 +3,7 @@ import { installProjection, visitProjection, projectionRanges } from '../../fixt
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { setImmediate as turn } from 'node:timers/promises';
-import { SemanticRetentionPool } from '../../../src/occipital/semantic-retention.ts';
+import { SemanticRetentionPool } from '../../../src/highlighting/semantic-retention.ts';
 import type { SemanticChunk } from '../../../src/occipital/semantic-source.ts';
 
 const vocabulary = 'a'.repeat(64), rules = 'b'.repeat(64), grant = () => true;

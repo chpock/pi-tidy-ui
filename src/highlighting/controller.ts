@@ -6,19 +6,19 @@ import type { DataCharge, DataGrant, GeometryFunding } from '../resources/data-b
 import type { ContextRef } from './context-arena.ts';
 import { CARD_ROLES, type CardRole } from '../appearance/card-roles.ts';
 import type { SemanticCaptureGroup } from './semantic-capture.ts';
-import { decodeSemanticStyleReply, type SemanticStyleExpectation } from './semantic-protocol.ts';
+import { decodeSemanticStyleReply, type SemanticStyleExpectation } from '../occipital/semantic-protocol.ts';
 import type { CaptureSelection, ReadyDisplayUpdate } from './semantic-retention.ts';
 export type { StyleSelection } from './controller-styles.ts';
 import { type DiagnosticFields, type DiagnosticLevel, type DiagnosticSink, diagnose, diagnosticError, reportRuntime, unexpectedDiagnostic } from '../diagnostics.ts';
-import { RemoteFault } from './protocol.ts';
-import { decodeSemanticClosed as decodeClosed, decodeSemanticSourceReply, SEMANTIC_PROTOCOL_VERSION as PROTOCOL_VERSION, type SemanticDescription as Description } from './semantic-protocol.ts';
-import type { SemanticExpectation as ExpectedSource } from './semantic-source.ts';
-import type { ConcreteStyle } from '../syntax/style-materialization.ts';
+import { RemoteFault } from '../occipital/protocol.ts';
+import { decodeSemanticClosed as decodeClosed, decodeSemanticSourceReply, SEMANTIC_PROTOCOL_VERSION as PROTOCOL_VERSION, type SemanticDescription as Description } from '../occipital/semantic-protocol.ts';
+import type { SemanticExpectation as ExpectedSource } from '../occipital/semantic-source.ts';
+import type { ConcreteStyle } from '../appearance/style-materialization.ts';
 import { SemanticRetentionPool, type SemanticRelease as ReleaseReceipt } from './semantic-retention.ts';
-import { HIGHLIGHT_LIMITS, OCCIPITAL_LIMITS } from './limits.ts';
-import { dataJsonBytes, type ReplySize } from './data-json.ts';
-import { RequestFailure } from './request-failure.ts';
-import type { ProviderBroker } from './provider.ts';
+import { HIGHLIGHT_LIMITS, OCCIPITAL_LIMITS } from '../occipital/limits.ts';
+import { dataJsonBytes, type ReplySize } from '../occipital/data-json.ts';
+import { RequestFailure } from '../occipital/request-failure.ts';
+import type { ProviderBroker } from '../occipital/provider.ts';
 import { RETENTION_LIMITS } from './retention.ts';
 
 import { sourceFits, sourceReservation, CONTROLLER_LIMITS } from './controller-limits.ts';

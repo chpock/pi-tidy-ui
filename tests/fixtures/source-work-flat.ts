@@ -1,10 +1,10 @@
-import type { SourceController, DisplayRangeReader, PiProjectionReader } from '../../src/occipital/controller.ts';
+import type { SourceController, DisplayRangeReader, PiProjectionReader } from '../../src/highlighting/controller.ts';
 import type { SyntaxResolution } from '../../src/syntax/work.ts';
 import { DataBudget } from '../../src/resources/data-budget.ts';
 import { measure, reflow } from '../../src/syntax/measured-rows.ts';
 import { paintFlat, type FlatRangeReader } from '../../src/syntax/flat-paint.ts';
 import { compileStyleAnsi, type AnsiStyle } from '../../src/syntax/style-ansi.ts';
-import type { ConcreteStyle } from '../../src/syntax/style-materialization.ts';
+import type { ConcreteStyle } from '../../src/appearance/style-materialization.ts';
 
 export const neutral: ConcreteStyle = { foreground: { kind: 'rgb', r: 1, g: 2, b: 3 }, background: { kind: 'terminal-default' }, attributes: 0 };
 export function piSpans(projection: PiProjectionReader | undefined) {

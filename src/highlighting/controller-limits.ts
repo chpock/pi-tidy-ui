@@ -1,4 +1,4 @@
-import { HIGHLIGHT_LIMITS, OCCIPITAL_LIMITS } from './limits.ts';
+import { HIGHLIGHT_LIMITS, OCCIPITAL_LIMITS } from '../occipital/limits.ts';
 
 // Captured/codec application credit, not a V8/SDK/parser heap or RSS limit.
 // UTF16 captures/replacements/request slices and the suffix codec buffer are

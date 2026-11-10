@@ -78,3 +78,8 @@ test('Pi saved edit metadata preserves original context coordinates after a net 
     assert.equal(saved.args.newText, input.after);
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });
+
+test('Pi comparison observer imports the current application and card owners', async () => {
+  const { default: observer } = await import('../../../scripts/highlight-compare/adapters/pi-observer.ts');
+  assert.equal(typeof observer, 'function');
+});

@@ -2,8 +2,8 @@ import '../../fixtures/test-guard.mjs';
 import { installControllerProjection, installProjection } from '../../fixtures/pi-projection.ts';
 import assert from 'node:assert/strict';
 import { afterEach, test } from 'node:test';
-import { SourceController } from '../../../src/occipital/controller.ts';
-import { SemanticRetentionPool } from '../../../src/occipital/semantic-retention.ts';
+import { SourceController } from '../../../src/highlighting/controller.ts';
+import { SemanticRetentionPool } from '../../../src/highlighting/semantic-retention.ts';
 import type { ProviderSnapshot } from '../../../src/occipital/provider.ts';
 
 class Unavailable {

@@ -4,7 +4,7 @@
 
 ## Demand, execution and display advance independently
 
-`SourceController` in `src/occipital/controller.ts` keeps three kinds of information that must not be collapsed into one readiness flag:
+`SourceController` in `src/highlighting/controller.ts` keeps three kinds of information that must not be collapsed into one readiness flag:
 
 - **Current demand:** the owner’s requested text version, syntax hint, completion state and desired presentation.
 - **Execution evidence:** queued work, physically held SOURCE jobs, validated outcomes and unresolved earlier execution.

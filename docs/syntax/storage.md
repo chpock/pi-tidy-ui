@@ -4,7 +4,7 @@ The client separates logical source ownership from actual storage holders. This 
 
 ## Follow the storage holder, not just the source record
 
-`SemanticRetentionPool` in `src/occipital/semantic-retention.ts` owns source entries and the context arena. `SourceController` owns the pool and exposes the operation-scoped `GeometryFunding` capability to card preparation. It supplies numeric grants for card construction, palette preparation, paint and measured geometry; it neither authorizes SOURCE work or fallback nor owns retained payloads. This lets semantic data, Pi projections, measurements and compiled presentation participate in the same local logical-data authority without making the budget retain UI objects.
+`SemanticRetentionPool` in `src/highlighting/semantic-retention.ts` owns source entries and the context arena. `SourceController` owns the pool and exposes the operation-scoped `GeometryFunding` capability to card preparation. It supplies numeric grants for card construction, palette preparation, paint and measured geometry; it neither authorizes SOURCE work or fallback nor owns retained payloads. This lets semantic data, Pi projections, measurements and compiled presentation participate in the same local logical-data authority without making the budget retain UI objects.
 
 The allocation path is concrete:
 
@@ -38,7 +38,7 @@ A source entry can hold three snapshots:
 - **Latest:** newer observed text not yet replaced by an adopted basis.
 - **Displayed:** the text belonging to the current ready presentation.
 
-`AccountedSnapshot` in `src/occipital/semantic-capture.ts` separates snapshot metadata from the text charge. Equal text can share the underlying charge while preserving distinct version records.
+`AccountedSnapshot` in `src/highlighting/semantic-capture.ts` separates snapshot metadata from the text charge. Equal text can share the underlying charge while preserving distinct version records.
 
 `replaceSnapshot` admits a newer latest version without discarding the acknowledged basis. `installChunk` validates the captured request text against the entry and installs the corresponding semantic result. This matters when an intermediate request completes after the latest text has advanced again: its result belongs to its captured version, not automatically to latest.
 
@@ -48,7 +48,7 @@ The same principle applies to Pi fallback. Its flat payload belongs to a source 
 
 ## Committed blocks and the provisional tail
 
-`SemanticRanges` in `src/occipital/semantic-ranges.ts` stores committed range blocks plus one current provisional tail. A validated append adds newly committed blocks and replaces the tail. It does not copy the accumulated committed prefix into a new flat vector on every update.
+`SemanticRanges` in `src/highlighting/semantic-ranges.ts` stores committed range blocks plus one current provisional tail. A validated append adds newly committed blocks and replaces the tail. It does not copy the accumulated committed prefix into a new flat vector on every update.
 
 Each block owns its numeric ranges and a lease on the context descriptors it uses. The current-context index counts dictionary use incrementally. New committed/tail uses are added before old-tail uses are removed, so a context moving from provisional to committed data keeps its index presence.
 
@@ -60,7 +60,7 @@ Disposal invalidates the current range authority immediately. It removes the cur
 
 ## Context descriptors and expressions have different keys
 
-`ContextArena` in `src/occipital/context-arena.ts` interns validated ordered scope sequences under an explicit vocabulary fingerprint. A reply-local dictionary index is first translated into an arena handle. The handle is an opaque incarnation with its own lifetime; it is not a scope ID that another provider may interpret.
+`ContextArena` in `src/highlighting/context-arena.ts` interns validated ordered scope sequences under an explicit vocabulary fingerprint. A reply-local dictionary index is first translated into an arena handle. The handle is an opaque incarnation with its own lifetime; it is not a scope ID that another provider may interpret.
 
 A **descriptor lease** owns references to those handles. Range blocks, captured views and explicit pins keep descriptor storage alive through such ownership. Cold request encoding verifies every handle against the job’s vocabulary before generating front-coded rows. Drawing and reflow do not read scope words.
 

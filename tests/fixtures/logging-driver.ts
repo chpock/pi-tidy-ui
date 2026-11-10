@@ -4,8 +4,8 @@ import type { TUI } from '@earendil-works/pi-tui';
 import { debugLoggingDiagnostics } from '../../src/index.ts';
 import presentationDriver from './presentation-driver.ts';
 import syntaxDriver from './syntax-driver.ts';
-import { SyntaxRuntime } from '../../src/syntax/runtime.ts';
-import { SyntaxClient } from '../../src/occipital/client.ts';
+import { SyntaxRuntime } from '../../src/application/syntax-runtime.ts';
+import { SyntaxClient } from '../../src/application/syntax-client.ts';
 import { registerCaptureProducer } from './terminal-capture.mjs';
 
 /** The shortcut changes neither draft nor transcript. It requests a real frame
