@@ -38,7 +38,7 @@ If you are interested in **Occipital as a daemon**, start directly with its [sta
 | [Providers](syntax/providers.md) | Construction/activation, discovery, exact runtime acquisition, selected/effective/ready palette state, bounded recovery and intentional suspension |
 | [Request adapters](syntax/requests.md) | Stdio/shared correlation, admission and decoding, caller wait versus physical settlement, failure origin and cleanup proof |
 | [Work and execution](syntax/work.md) | Joint source/job authority, private weak chronological registry, consumer capabilities, SOURCE/STYLE scheduling, fallback and atomic per-card publication |
-| [Storage](syntax/storage.md) | Numeric grants and shared charges, operation-scoped geometry funding, source captures/range blocks, context arena, style groups, pins, pressure and release receipts |
+| [Storage](syntax/storage.md) | Numeric grants and shared charges, storage holders, Pi payload/ticket lifetime, ready-display stage/abort/commit, context arena, pressure and release receipts |
 | [Prepared cards](syntax/prepared-cards.md) | Prepared source slots, full display versus classification, measured geometry, coherent paint, Pi ANSI conversion and accepted borrowed visits |
 | [Shebang hints](syntax/shebang-hints.md) | Curated interpreter map, exact line-1 provenance, `env` subset, generic language selector, optional-path fallback, source identity and per-side diff painting |
 | [Follow Pi](syntax/follow-pi.md) | Public Pi binding and semantic-rule tables, role-specific derived colors, provenance, contrast/quantization, font composition and rationale |
@@ -46,7 +46,7 @@ If you are interested in **Occipital as a daemon**, start directly with its [sta
 | [TUI theme correspondence](syntax/opencode-tui-mapping.md) | Pinned OpenCode TUI catalogue/source, offline generation, all donor/font mappings, alpha backdrops and intentional classification limits |
 | [Color model](color-model.md) | Shared output conversion, Follow Pi diff derivation and uncorrected authored TUI surfaces |
 
-`src/application/` owns the extension's syntax client/menu/runtime/options wiring. `src/highlighting/` owns source work and retained semantic presentation; `src/occipital/` owns native acquisition and provider/transport contracts, not Pi settings or UI. These TypeScript modules are distinct from the Rust daemon and are not claimed to be an independently isolated SDK package. Native computation belongs to the next section.
+`src/application/` owns the extension's syntax client/menu/runtime/options wiring. `src/highlighting/` owns source work, while `src/highlighting/storage/` owns retained semantic payloads and synchronous ready-display storage transactions under the shared root budget. `src/occipital/` owns native acquisition and provider/transport contracts, not Pi settings or UI. These TypeScript modules are distinct from the Rust daemon and are not claimed to be an independently isolated SDK package. Native computation belongs to the next section.
 
 ## Occipital daemon
 

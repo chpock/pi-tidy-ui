@@ -31,7 +31,7 @@ import { reflow } from '../../../src/syntax/measured-rows.ts';
 import { paintFlat, type FlatRangeReader } from '../../../src/syntax/flat-paint.ts';
 import { stripVTControlCharacters } from 'node:util';
 import { bashToolReaderFixture, fileToolReaderFixture, type ToolCallFixture } from '../../fixtures/tool-adapters/reader-fixture.ts';
-import { RETENTION_LIMITS } from '../../../src/highlighting/retention.ts';
+import { RETENTION_LIMITS } from '../../../src/highlighting/storage/retention.ts';
 import type { ThemePreference } from '../../../src/appearance/theme-preference.ts';
 import { palettePreference } from '../../fixtures/palette-preference.ts';
 import { SyntaxClient } from '../../../src/application/syntax-client.ts';

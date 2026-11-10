@@ -3,8 +3,8 @@ import type { ProviderSnapshot } from '../occipital/provider.ts';
 import type { ConcreteStyle } from '../appearance/style-materialization.ts';
 import type { DataGrant, GeometryFunding } from '../resources/data-budget.ts';
 import type { StyleSelection } from './controller-styles.ts';
-import type { StagedPiProjection } from './pi-projection.ts';
-import type { PiPreparation } from './semantic-retention.ts';
+import type { StagedPiProjection } from './storage/pi-projection.ts';
+import type { PiPreparation } from './storage/pi-projection.ts';
 import type { SourcePreparation, SourceWorkGroup } from './work-registry.ts';
 
 export interface SourceDemand {

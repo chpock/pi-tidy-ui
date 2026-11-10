@@ -1,6 +1,7 @@
-import type { ContextRef } from './context-arena.ts';
-import type { ContextArena } from './context-arena.ts';
-import type { CaptureSelection, SemanticRetentionPool } from './semantic-retention.ts';
+import type { ContextRef } from './storage/context-arena.ts';
+import type { ContextArena } from './storage/context-arena.ts';
+import type { SemanticRetentionPool } from './storage/semantic-retention.ts';
+import type { CaptureSelection } from './storage/ready-display-publication.ts';
 
 export interface StyleContextPlan<Ref extends ContextRef> {
   readonly refs: Ref[];

@@ -1,55 +1,31 @@
-import type { PiProjectionPayload, StagedPiProjection } from './pi-projection.ts';
+import { PiPreparation, PiProjectionHolder, type PiProjectionPayload, type StagedPiProjection } from './pi-projection.ts';
 import { ContextArena, type ContextRef } from './context-arena.ts';
-import { SemanticError } from '../occipital/semantic-codec.ts';
-import { SemanticRanges, type SemanticRangeView } from './semantic-ranges.ts';
-import type { CardRole } from '../appearance/card-roles.ts';
-import type { ConcreteStyle } from '../appearance/style-materialization.ts';
-import { completeRoles, copyPresentation, equalPresentation, presentationPeak, type OwnedPresentation, type ReadyPresentation } from './ready-presentation.ts';
-export type { ReadyPresentation } from './ready-presentation.ts';
-import type { SemanticChunk } from '../occipital/semantic-source.ts';
-import { OCCIPITAL_LIMITS } from '../occipital/limits.ts';
-import { DataBudget, type DataCharge } from '../resources/data-budget.ts';
+import { SemanticError } from '../../occipital/semantic-codec.ts';
+import { SemanticRanges } from './semantic-ranges.ts';
+import type { CardRole } from '../../appearance/card-roles.ts';
+import type { ConcreteStyle } from '../../appearance/style-materialization.ts';
+import { completeRoles, equalPresentation, presentationPeak } from './ready-presentation.ts';
+import { displayMetadataBytes, ReadyDisplayPublication, readyDisplayBytes, type ReadyDisplayCandidate, type ReadyDisplayEntry, type ReadyDisplayUpdate } from './ready-display-publication.ts';
+import type { CaptureSelection } from './ready-display-publication.ts';
+import type { SemanticChunk } from '../../occipital/semantic-source.ts';
+import { OCCIPITAL_LIMITS } from '../../occipital/limits.ts';
+import { DataBudget, type DataCharge } from '../../resources/data-budget.ts';
 import { AccountedSnapshot, SemanticCapture, SemanticCaptureGroup } from './semantic-capture.ts';
-export type { SemanticCapture, SemanticCaptureGroup } from './semantic-capture.ts';
 
 type Snapshot = AccountedSnapshot;
 type SnapshotData = Readonly<{ version: number; text: string; utf8Bytes: number }>;
-type Bridge = { version: number; revision: number; payload: PiProjectionPayload; bytes: number; charge: DataCharge };
 
-/** Explicit charged source pin. Contains data and a payload-free authority token,
- * never the root/controller. release() is required even after root retirement. */
-export class PiPreparation {
-  readonly generation: number; readonly version: number; readonly palette: number; readonly budget: DataBudget;
-  readonly #owner: object; #snapshot?: Snapshot; #charge?: DataCharge;
-  constructor(owner: object, generation: number, palette: number, source: Snapshot, charge: DataCharge) {
-    this.#owner = owner; this.generation = generation; this.version = source.version; this.palette = palette;
-    this.budget = charge.budget; this.#snapshot = source; this.#charge = charge; Object.freeze(this);
-  }
-  get text(): string | undefined { return this.#snapshot?.text; }
-  get sourceBytes(): number | undefined { return this.#snapshot?.utf8Bytes; }
-  release(): void { this.#snapshot?.release(); this.#snapshot = undefined; this.#charge?.release(); this.#charge = undefined; }
-  static read(value: PiPreparation, owner: object): Snapshot | undefined {
-    return value instanceof PiPreparation && #owner in value && value.#owner === owner ? value.#snapshot : undefined;
-  }
-}
 type Account = { retainedBytes: number; snapshotBytes: number; rangeBytes: number; bridgeBytes: number; displayBytes: number;
   rangeRunBytes: number; displayOnlyRangeBytes: number; rangeStores: number; rangeViews: number; retainedTails: number; rangeBlocks: number; contextIndexBytes: number; currentContexts: number };
-type Display = { charge: DataCharge; token: object; view: SemanticRangeView; snapshot: Snapshot; semanticStamp: number; geometryStamp: number; effectStamp: number;
-  rules: string; palette: string; bindingRevision: number; colors: OwnedPresentation };
-export interface ReadyDisplayCandidate { readonly semanticStamp: number; readonly sourceVersion: number; readonly presentation: ReadyPresentation; readonly capture?: SemanticCapture }
-export interface ReadyDisplayUpdate { readonly generation: number; readonly candidate: ReadyDisplayCandidate }
-export type CaptureSelection = number | Readonly<{ generation: number; effectStamp: number }>;
-type DisplayPlan = { entry: Entry; old?: Display; newView?: SemanticRangeView; next?: Display };
-const displayPlanBytes = 512;
 const accountFields = ['retainedBytes', 'snapshotBytes', 'rangeBytes', 'bridgeBytes', 'displayBytes', 'rangeRunBytes',
   'displayOnlyRangeBytes', 'rangeStores', 'rangeViews', 'retainedTails', 'rangeBlocks', 'contextIndexBytes', 'currentContexts'] as const;
 const zeroAccount = (): Account => ({ retainedBytes: 0, snapshotBytes: 0, rangeBytes: 0, bridgeBytes: 0, displayBytes: 0,
   rangeRunBytes: 0, displayOnlyRangeBytes: 0, rangeStores: 0, rangeViews: 0, retainedTails: 0, rangeBlocks: 0, contextIndexBytes: 0, currentContexts: 0 });
-type Entry = { key: string; generation: number; charge: DataCharge; basis: Snapshot | undefined; latest?: Snapshot; ranges?: SemanticRanges;
-  bridge?: Bridge; display?: Display; capturePosition?: number; fundingPins?: number; charged: Account; semanticStamp: number; geometryStamp: number; effectStamp: number };
+type Entry = ReadyDisplayEntry & { key: string; generation: number; charge: DataCharge; basis: Snapshot | undefined; latest?: Snapshot; ranges?: SemanticRanges;
+  bridge?: PiProjectionHolder; capturePosition?: number; fundingPins?: number; charged: Account };
 export type SemanticRelease = Account & { attributedBytes: number; key: string; generation: number; reason: 'pressure' | 'replaced' | 'removed' | 'clear' };
 export type SemanticAdmission = { accepted: boolean; generation?: number; released: SemanticRelease[] };
-const uint32 = 0xffffffff, entryBytes = 1024, stringHeader = 32, bridgeHeader = 128;
+const uint32 = 0xffffffff, entryBytes = 1024, stringHeader = 32, bridgeHeader = 128, displayPlanBytes = 512;
 const refused = (): SemanticAdmission => ({ accepted: false, released: [] });
 const accepted = (): SemanticAdmission => ({ accepted: true, released: [] });
 const stringBytes = (text: string) => stringHeader + 2 * text.length;
@@ -59,8 +35,6 @@ const snapshotsBytes = (basis: Snapshot, latest?: Snapshot, display?: Snapshot) 
   + (display && display !== basis && display !== latest ? display.record.bytes : 0)
   + (latest && latest.textCharge !== basis.textCharge ? latest.textCharge.bytes : 0)
   + (display && display.textCharge !== basis.textCharge && display.textCharge !== latest?.textCharge ? display.textCharge.bytes : 0);
-const displayMetadataBytes = (rules: string, palette: string) => 256 + stringBytes(rules) + stringBytes(palette);
-const displayBytes = (display?: Display) => display ? displayMetadataBytes(display.rules, display.palette) + display.colors.bytes : 0;
 const rangeOwnership = (entry: Entry) => SemanticRanges.ownershipStats(entry.ranges, entry.display ? [entry.display.view] : []);
 
 /** One logical-data budget: snapshots, range blocks, shared contexts and their
@@ -121,7 +95,7 @@ export class SemanticRetentionPool {
     try {
       const latest = new AccountedSnapshot(version, text, prepared.utf8Bytes, grant, shared);
       entry.latest?.release(); entry.latest = latest;
-      if (entry.bridge && entry.bridge.version !== version && entry.bridge.version !== entry.basis!.version) { entry.bridge.payload.dispose(); entry.bridge.charge.release(); entry.bridge = undefined; }
+      if (entry.bridge) entry.bridge = entry.bridge.keepForSnapshots(entry.basis!.version, version);
       this.#reaccount(entry); this.#touch(entry); return { accepted: true, released };
     } finally { grant.close(); }
   }
@@ -155,7 +129,7 @@ export class SemanticRetentionPool {
       if (ranges !== entry.ranges || ranges.stats().displayRevision !== before.displayRevision) entry.semanticStamp++;
       entry.basis!.release(); entry.basis = basis; pending = undefined;
       if (entry.latest && entry.latest.version <= source.version) { entry.latest.release(); entry.latest = undefined; }
-      if (entry.bridge && entry.bridge.version !== source.version && entry.bridge.version !== entry.latest?.version) { entry.bridge.payload.dispose(); entry.bridge.charge.release(); entry.bridge = undefined; }
+      if (entry.bridge) entry.bridge = entry.bridge.keepForSnapshots(source.version, entry.latest?.version);
       entry.ranges = ranges; this.#reaccount(entry); this.#touch(entry); return { accepted: true, released };
     } catch (error) { if (ranges !== entry.ranges) ranges.dispose(); throw error; }
     finally { pending?.release(); grant.close(); }
@@ -272,50 +246,15 @@ export class SemanticRetentionPool {
     if (!this.#fund(updates, peak, released)) return { accepted: false, released };
     const grant = this.budget.reserve(peak)!;
     try {
-    const generations = new Set<number>();
-    for (const update of updates) {
-      if (generations.has(update.generation)) return { accepted: false, released };
-      generations.add(update.generation);
-      const known = new Set<ContextRef>();
-      for (const pair of update.candidate.presentation.contexts) {
-        if (known.has(pair.context)) return { accepted: false, released };
-        known.add(pair.context);
-      }
-      const capture = update.candidate.capture && SemanticCapture.read(update.candidate.capture, this.#captureOwner);
-      if (capture && (known.size !== capture.contexts.length || capture.contexts.some(ref => !known.has(ref)))) return { accepted: false, released };
-    }
-    const plans: DisplayPlan[] = [];
-    const abandon = () => { for (const plan of plans) { plan.newView?.release(); if (plan.next) { plan.next.snapshot.release(); plan.next.colors.charge.release(); plan.next.charge.release(); } } };
-    try {
-      for (const update of updates) {
-        const entry = this.#entries.get(update.generation)!, old = entry.display, candidate = update.candidate, input = candidate.presentation;
-        const sameView = !!old && old.semanticStamp === candidate.semanticStamp && old.snapshot.version === candidate.sourceVersion;
-        const equal = !!old && equalPresentation(old.colors, input);
-        const plan: DisplayPlan = { entry, old }; plans.push(plan);
-        if (sameView && equal && old!.rules === input.rules && old!.palette === input.palette && old!.bindingRevision === input.bindingRevision) continue;
-        const capture = candidate.capture && SemanticCapture.read(candidate.capture, this.#captureOwner);
-        const view = sameView ? old!.view : capture ? capture.view.retain(() => true, grant) : entry.ranges!.captureView(() => true, grant);
-        if (!view) { abandon(); return { accepted: false, released }; }
-        if (!sameView) plan.newView = view;
-        const colors = equal ? old!.colors : copyPresentation(input, grant);
-        if (equal) colors.charge.retain();
-        plan.next = { charge: grant.consume(displayMetadataBytes(input.rules, input.palette)), token: {}, view,
-          snapshot: (sameView ? old!.snapshot : capture ? capture.snapshot : entry.basis!).retain(), semanticStamp: candidate.semanticStamp,
-          geometryStamp: entry.geometryStamp + (sameView ? 0 : 1), effectStamp: entry.effectStamp + (sameView && equal ? 0 : 1),
-          rules: input.rules, palette: input.palette, bindingRevision: input.bindingRevision, colors };
-      }
-    } catch (error) { abandon(); throw error; }
-    // No user code runs during this commit; every slot is staged and funded.
-    for (const plan of plans) {
-      if (plan.next) {
-        plan.entry.display = plan.next;
-        plan.entry.geometryStamp = plan.next.geometryStamp; plan.entry.effectStamp = plan.next.effectStamp;
-        if (plan.old) { if (plan.newView) plan.old.view.release(); plan.old.snapshot.release(); plan.old.colors.charge.release(); plan.old.charge.release(); }
-        this.#reaccount(plan.entry);
-      }
-      this.#touch(plan.entry);
-    }
-    return { accepted: true, released };
+      const publication = ReadyDisplayPublication.stage(updates, grant, {
+        entry: generation => this.#entries.get(generation),
+        capture: value => SemanticCapture.read(value, this.#captureOwner),
+      });
+      if (!publication) return { accepted: false, released };
+      try {
+        publication.commit(entry => this.#reaccount(entry), entry => this.#touch(entry));
+        return { accepted: true, released };
+      } finally { publication.abort(); }
     } finally { grant.close(); }
   }
 
@@ -525,10 +464,10 @@ export class SemanticRetentionPool {
         if (!this.acceptsPiPreparation(ticket)) return { accepted: false, released };
         const entry = this.#entries.get(ticket.generation)!;
         charge = grant.consume(bridgeHeader);
-        const next: Bridge = { version: sharedText(entry, exactText)!.version, revision: ++this.#piRevision, payload,
-          bytes: bridgeHeader + payload.accountedBytes, charge };
+        const version = sharedText(entry, exactText)!.version, revision = ++this.#piRevision;
+        const next = new PiProjectionHolder(version, revision, payload, charge, bridgeHeader + payload.accountedBytes);
         const old = entry.bridge; entry.bridge = next; payload = undefined; charge = undefined;
-        old?.payload.dispose(); old?.charge.release(); this.#reaccount(entry); this.#touch(entry);
+        old?.dispose(); this.#reaccount(entry); this.#touch(entry);
         return { accepted: true, released };
       } finally { charge?.release(); grant.close(); }
     } finally { payload?.dispose(); staged.dispose(); }
@@ -546,7 +485,7 @@ export class SemanticRetentionPool {
     const entry = this.#entries.get(generation);
     if (!entry) return;
     entry.latest?.release(); entry.latest = undefined;
-    if (entry.bridge?.version !== entry.basis!.version) { entry.bridge?.payload.dispose(); entry.bridge?.charge.release(); entry.bridge = undefined; }
+    if (entry.bridge) entry.bridge = entry.bridge.keepForSnapshots(entry.basis!.version);
     this.#reaccount(entry);
   }
 
@@ -568,25 +507,23 @@ export class SemanticRetentionPool {
     return this.#entries.get(generation)?.ranges === ranges && ranges.stats().revision === revision;
   }
 
-  #piCursor(generation: number, revision: number) {
+  #piCursor(generation: number, revision: number): PiProjectionHolder | undefined {
     const entry = this.#entries.get(generation), bridge = entry?.bridge;
     if (!entry || !bridge || bridge.revision !== revision) return undefined;
-    this.#touch(entry); return { payload: bridge.payload, charge: bridge.charge.retain() };
+    this.#touch(entry); return bridge;
   }
   visitPiRanges(generation: number, revision: number, consume: (start: number, end: number, style: number) => void): boolean {
-    const cursor = this.#piCursor(generation, revision); if (!cursor) return false;
-    try { return cursor.payload.visitRanges(consume); } finally { cursor.charge.release(); }
+    return this.#piCursor(generation, revision)?.visitRanges(consume) ?? false;
   }
   visitPiStyles(generation: number, revision: number, consume: (index: number, style: ConcreteStyle) => void): boolean {
-    const cursor = this.#piCursor(generation, revision); if (!cursor) return false;
-    try { return cursor.payload.visitStyles(consume); } finally { cursor.charge.release(); }
+    return this.#piCursor(generation, revision)?.visitStyles(consume) ?? false;
   }
   piProjectionStatus(generation: number) {
     const entry = this.#entries.get(generation), bridge = entry?.bridge;
     if (!entry || !bridge) return undefined;
     this.#touch(entry);
-    return { version: bridge.version, revision: bridge.revision, sourceBytes: bridge.payload.sourceBytes,
-      rangeCount: bridge.payload.rangeCount, styleCount: bridge.payload.styleCount };
+    return { version: bridge.version, revision: bridge.revision, sourceBytes: bridge.sourceBytes,
+      rangeCount: bridge.rangeCount, styleCount: bridge.styleCount };
   }
 
   bridgeVersion(generation: number): number | undefined {
@@ -654,7 +591,7 @@ export class SemanticRetentionPool {
   }
   #reaccount(entry: Entry): void {
     const snapshotBytes = snapshotsBytes(entry.basis!, entry.latest, entry.display?.snapshot), ranges = rangeOwnership(entry), current = entry.ranges?.stats();
-    const rangeBytes = ranges.retainedBytes, colors = displayBytes(entry.display), bridgeBytes = entry.bridge?.bytes ?? 0;
+    const rangeBytes = ranges.retainedBytes, colors = readyDisplayBytes(entry.display), bridgeBytes = entry.bridge?.bytes ?? 0;
     const charged: Account = { retainedBytes: metadataBytes(entry.key) + snapshotBytes + rangeBytes + bridgeBytes + colors,
       snapshotBytes, rangeBytes, bridgeBytes, displayBytes: colors, rangeRunBytes: ranges.rangeBytes,
       displayOnlyRangeBytes: ranges.displayOnlyRangeBytes, rangeStores: ranges.stores, rangeViews: ranges.views,
@@ -666,7 +603,7 @@ export class SemanticRetentionPool {
   #release(entry: Entry, reason: SemanticRelease['reason']): SemanticRelease {
     const before = this.budget.stats().retainedBytes, charged = entry.charged;
     if (entry.display) { entry.display.view.release(); entry.display.snapshot.release(); entry.display.colors.charge.release(); entry.display.charge.release(); entry.display = undefined; }
-    entry.ranges?.dispose(); entry.basis!.release(); entry.latest?.release(); entry.bridge?.payload.dispose(); entry.bridge?.charge.release(); entry.charge.release();
+    entry.ranges?.dispose(); entry.basis!.release(); entry.latest?.release(); entry.bridge?.dispose(); entry.charge.release();
     const receipt = { key: entry.key, generation: entry.generation, reason, ...charged, attributedBytes: charged.retainedBytes,
       retainedBytes: before - this.budget.stats().retainedBytes };
     this.#entries.delete(entry.generation); this.#keys.delete(entry.key);

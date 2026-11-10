@@ -3,7 +3,7 @@ import { installControllerProjection, installProjection } from '../../fixtures/p
 import assert from 'node:assert/strict';
 import { afterEach, test } from 'node:test';
 import { SourceExecution } from '../../../src/highlighting/source-execution.ts';
-import { SemanticRetentionPool } from '../../../src/highlighting/semantic-retention.ts';
+import { SemanticRetentionPool } from '../../../src/highlighting/storage/semantic-retention.ts';
 import type { ProviderSnapshot } from '../../../src/occipital/provider.ts';
 
 class Unavailable {

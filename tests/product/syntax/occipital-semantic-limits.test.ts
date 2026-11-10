@@ -7,7 +7,7 @@ import { HIGHLIGHT_LIMITS } from '../../../src/highlighting/limits.ts';
 import { decodeContextBatch, decodeStyleResult, SemanticError, type SemanticDecodeLimits } from '../../../src/occipital/semantic-codec.ts';
 import { decodeSemanticDescription, decodeSemanticSourceReply } from '../../../src/occipital/semantic-protocol.ts';
 import { semanticDescriptor } from '../../fixtures/semantic-provider.ts';
-import { ContextArena } from '../../../src/highlighting/context-arena.ts';
+import { ContextArena } from '../../../src/highlighting/storage/context-arena.ts';
 import { decodeSemanticSources } from '../../../src/occipital/semantic-source.ts';
 
 const vocabulary = 'a'.repeat(64), rules = 'b'.repeat(64);

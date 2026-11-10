@@ -8,7 +8,7 @@ import type { SourceDemand } from '../../../src/highlighting/source-ports.ts';
 import type { SourcePreparation } from '../../../src/highlighting/work-registry.ts';
 import { decodeSemanticDescription, SEMANTIC_PROTOCOL_VERSION as PROTOCOL_VERSION } from '../../../src/occipital/semantic-protocol.ts';
 import { semanticDescriptor } from '../../fixtures/semantic-provider.ts';
-import { SemanticRetentionPool } from '../../../src/highlighting/semantic-retention.ts';
+import { SemanticRetentionPool } from '../../../src/highlighting/storage/semantic-retention.ts';
 import { fingerprintRules } from '../../../src/occipital/style-rules.ts';
 import { compactSelection, syntheticSelection } from '../../fixtures/test-style-selection.ts';
 import type { ConcreteStyle } from '../../../src/appearance/style-materialization.ts';

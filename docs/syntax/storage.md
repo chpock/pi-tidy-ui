@@ -4,7 +4,7 @@ The client separates logical source ownership from actual storage holders. This 
 
 ## Follow the storage holder, not just the source record
 
-`SemanticRetentionPool` in `src/highlighting/semantic-retention.ts` owns source entries and the context arena. `SourceExecution` owns the pool and exposes operation-scoped `GeometryFunding` through the card-facing capability. That funding capability supplies numeric grants for card construction, palette preparation, paint and measured geometry; it neither authorizes SOURCE work or fallback nor owns retained payloads. The registry and calculation-only style helper use this same root's funded operations, without independent capacity or charge ledgers. Semantic data, Pi projections, measurements and compiled presentation therefore participate in one existing local logical-data authority without making the budget retain UI objects.
+`SemanticRetentionPool` in `src/highlighting/storage/semantic-retention.ts` owns the source-entry index, the context arena and all retained-data pressure decisions. `SourceExecution` owns the pool and exposes operation-scoped `GeometryFunding` through the card-facing capability. That funding capability supplies numeric grants for card construction, palette preparation, paint and measured geometry; it neither authorizes SOURCE work or fallback nor owns retained payloads. The registry and calculation-only style helper use this same root's funded operations, without independent capacity or charge ledgers. Semantic data, Pi projections, measurements and compiled presentation therefore participate in one existing local logical-data authority without making the budget retain UI objects.
 
 The allocation path is concrete:
 
@@ -38,17 +38,17 @@ A source entry can hold three snapshots:
 - **Latest:** newer observed text not yet replaced by an adopted basis.
 - **Displayed:** the text belonging to the current ready presentation.
 
-`AccountedSnapshot` in `src/highlighting/semantic-capture.ts` separates snapshot metadata from the text charge. Equal text can share the underlying charge while preserving distinct version records.
+`AccountedSnapshot` in `src/highlighting/storage/semantic-capture.ts` separates snapshot metadata from the text charge. Equal text can share the underlying charge while preserving distinct version records.
 
 `replaceSnapshot` admits a newer latest version without discarding the acknowledged basis. `installChunk` validates the captured request text against the entry and installs the corresponding semantic result. This matters when an intermediate request completes after the latest text has advanced again: its result belongs to its captured version, not automatically to latest.
 
 Ready publication owns its own snapshot reference. Parser progress can therefore replace the basis without silently changing the text against which existing paint was prepared. Keeping that display is not a claim that current demand has been parsed.
 
-The same principle applies to Pi fallback. Its flat payload belongs to a source snapshot and projection revision. Retention adopts an already-staged payload; it does not keep the original classifier ANSI as an additional cache.
+The same principle applies to Pi fallback. Its flat payload belongs to a source snapshot and projection revision. `PiPreparation` in `src/highlighting/storage/pi-projection.ts` pins the root-branded snapshot and its existing 128-byte ticket charge without retaining the pool. The per-entry `PiProjectionHolder` owns the adopted flat payload and funded bridge-header charge; its synchronous visits retain that charge through callback unwind even if removal or replacement disposes the entry. At snapshot transitions the root supplies the surviving basis/latest versions; the holder releases a projection only when its version matches neither. It adds no pool, execution owner, map or capacity. Retention adopts an already-staged payload; it does not keep the original classifier ANSI as an additional cache.
 
 ## Committed blocks and the provisional tail
 
-`SemanticRanges` in `src/highlighting/semantic-ranges.ts` stores committed range blocks plus one current provisional tail. A validated append adds newly committed blocks and replaces the tail. It does not copy the accumulated committed prefix into a new flat vector on every update.
+`SemanticRanges` in `src/highlighting/storage/semantic-ranges.ts` stores committed range blocks plus one current provisional tail. A validated append adds newly committed blocks and replaces the tail. It does not copy the accumulated committed prefix into a new flat vector on every update.
 
 Each block owns its numeric ranges and a lease on the context descriptors it uses. The current-context index counts dictionary use incrementally. New committed/tail uses are added before old-tail uses are removed, so a context moving from provisional to committed data keeps its index presence.
 
@@ -60,7 +60,7 @@ Disposal invalidates the current range authority immediately. It removes the cur
 
 ## Context descriptors and expressions have different keys
 
-`ContextArena` in `src/highlighting/context-arena.ts` interns validated ordered scope sequences under an explicit vocabulary fingerprint. A reply-local dictionary index is first translated into an arena handle. The handle is an opaque incarnation with its own lifetime; it is not a scope ID that another provider may interpret.
+`ContextArena` in `src/highlighting/storage/context-arena.ts` interns validated ordered scope sequences under an explicit vocabulary fingerprint. A reply-local dictionary index is first translated into an arena handle. The handle is an opaque incarnation with its own lifetime; it is not a scope ID that another provider may interpret.
 
 A **descriptor lease** owns references to those handles. Range blocks, captured views and explicit pins keep descriptor storage alive through such ownership. Cold request encoding verifies every handle against the job’s vocabulary before generating front-coded rows. Drawing and reflow do not read scope words.
 
@@ -68,7 +68,9 @@ An expression is stored under a live context and immutable rule fingerprint. It 
 
 Expressions can be cleared under pressure while descriptors remain leased. Actual clearing advances the arena’s style-invalidation revision so controller coverage witnesses cannot rely on lost data. When the final descriptor user leaves, that context’s remaining expressions and charges leave with it.
 
-`ready-presentation.ts` owns a different representation: complete concrete roles and context styles copied into funded presentation storage. A synchronous borrowed expression does not itself lease the arena. A caller retaining materialized output must own and fund that output separately.
+`ready-presentation.ts` in `src/highlighting/storage/` owns a different representation: complete concrete roles and context styles copied into funded presentation storage. A synchronous borrowed expression does not itself lease the arena. A caller retaining materialized output must own and fund that output separately.
+
+`ReadyDisplayPublication` in `src/highlighting/storage/ready-display-publication.ts` owns the synchronous plan/stage/abort/commit lifecycle for a ready display. The retention root first validates candidates, protects the complete generation set, releases any pressure victims and obtains one aggregate old/new peak grant; only then is a publication transaction created. It stages every slot, reusing an identical view or literal table where the current identities permit, and commits only after all slots are ready. Abort releases staged views, snapshots and color charges but never adopted entries. Commit runs no consumer callback; the pool remains the sole entry/index, funding, pressure, receipt, reaccounting and recency authority. The transaction has no separate quota or persistent store.
 
 ## Capturing a STYLE job and pinning a ready group
 

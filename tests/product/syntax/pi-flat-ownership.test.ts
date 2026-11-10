@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { DataBudget } from '../../../src/resources/data-budget.ts';
 import { preparePiFlat } from '../../../src/syntax/pi-flat.ts';
 import { SourceExecution } from '../../../src/highlighting/source-execution.ts';
-import { SemanticRetentionPool } from '../../../src/highlighting/semantic-retention.ts';
+import { SemanticRetentionPool } from '../../../src/highlighting/storage/semantic-retention.ts';
 import type { ConcreteStyle } from '../../../src/appearance/style-materialization.ts';
 import type { ProviderSnapshot } from '../../../src/occipital/provider.ts';
 const neutral: ConcreteStyle = { foreground: { kind: 'terminal-default' }, background: { kind: 'terminal-default' }, attributes: 0 };

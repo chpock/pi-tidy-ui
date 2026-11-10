@@ -1,7 +1,7 @@
 import '../../fixtures/test-guard.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { SemanticRetentionPool } from '../../../src/highlighting/semantic-retention.ts';
+import { SemanticRetentionPool } from '../../../src/highlighting/storage/semantic-retention.ts';
 import { CONTROLLER_LIMITS } from '../../../src/highlighting/controller-limits.ts';
 import type { SemanticChunk } from '../../../src/occipital/semantic-source.ts';
 

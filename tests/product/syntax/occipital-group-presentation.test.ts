@@ -5,7 +5,7 @@ import { setImmediate as turn } from 'node:timers/promises';
 import { SourceExecution } from '../../../src/highlighting/source-execution.ts';
 import type { GroupDisplayBasis, GroupDisplayMember, DisplayRangeReader } from '../../../src/highlighting/source-ports.ts';
 import type { SourcePreparation } from '../../../src/highlighting/work-registry.ts';
-import { SemanticRetentionPool } from '../../../src/highlighting/semantic-retention.ts';
+import { SemanticRetentionPool } from '../../../src/highlighting/storage/semantic-retention.ts';
 import { CARD_ROLES, type CardRole } from '../../../src/appearance/card-roles.ts';
 import { decodeSemanticDescription } from '../../../src/occipital/semantic-protocol.ts';
 import { fingerprintRules } from '../../../src/occipital/style-rules.ts';
@@ -212,7 +212,7 @@ test('display text lifetime: removal, replacement and throw hold actual text unt
     const root = new SemanticRetentionPool(), text = 'owned:' + 'x'.repeat(8192), g = root.admit('a', 1, text).generation!, vocabulary = 'a'.repeat(64);
     root.installChunk(g, { key: 'a', generation: g, source_version: 1, revision: 1, source_bytes: text.length, replace_from: 0, committed_bytes: text.length, complete: true,
       vocabulary, contexts: [Uint32Array.of(1)], runs: Uint32Array.of(text.length, 1), counters: { committed_line_calls: 0, committed_line_bytes: 0, tail_calls: 0, tail_bytes: 0 } });
-    const contexts: { context: import('../../../src/highlighting/context-arena.ts').ContextRef; style: ConcreteStyle }[] = [];
+    const contexts: { context: import('../../../src/highlighting/storage/context-arena.ts').ContextRef; style: ConcreteStyle }[] = [];
     root.visitContexts(g, context => contexts.push({ context, style: literal(7) }));
     assert.equal(root.publishDisplay(g, { sourceVersion: 1, semanticStamp: root.status(g)!.semanticStamp,
       presentation: { vocabulary, rules: 'b'.repeat(64), palette: 'p', bindingRevision: 1, roles: roles(7), contexts } }).accepted, true);

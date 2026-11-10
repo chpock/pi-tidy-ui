@@ -2,8 +2,8 @@ import '../../fixtures/test-guard.mjs';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { setImmediate as turn } from 'node:timers/promises';
-import { ContextArena, type ContextRef } from '../../../src/highlighting/context-arena.ts';
-import { SemanticRanges } from '../../../src/highlighting/semantic-ranges.ts';
+import { ContextArena, type ContextRef } from '../../../src/highlighting/storage/context-arena.ts';
+import { SemanticRanges } from '../../../src/highlighting/storage/semantic-ranges.ts';
 import type { SemanticChunk } from '../../../src/occipital/semantic-source.ts';
 
 const vocabulary = 'a'.repeat(64), rules = 'b'.repeat(64), grant = () => true;

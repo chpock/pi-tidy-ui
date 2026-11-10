@@ -5,12 +5,13 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { readFileSync } from 'node:fs';
 import { setImmediate as turn } from 'node:timers/promises';
-import { SemanticRetentionPool, type ReadyPresentation } from '../../../src/highlighting/semantic-retention.ts';
+import { SemanticRetentionPool } from '../../../src/highlighting/storage/semantic-retention.ts';
+import type { ReadyPresentation } from '../../../src/highlighting/storage/ready-presentation.ts';
 import { CARD_ROLES, type CardRole } from '../../../src/appearance/card-roles.ts';
 import { decodeContextBatch, decodeStyleResult } from '../../../src/occipital/semantic-codec.ts';
 import { decodeSemanticSources, type SemanticChunk } from '../../../src/occipital/semantic-source.ts';
 import { materializeStyle, type ConcreteStyle } from '../../../src/appearance/style-materialization.ts';
-import type { ContextRef } from '../../../src/highlighting/context-arena.ts';
+import type { ContextRef } from '../../../src/highlighting/storage/context-arena.ts';
 
 const vectors = JSON.parse(readFileSync(new URL('../../../protocol/syntax-v4/vectors.json', import.meta.url), 'utf8'));
 const vocabulary = 'a'.repeat(64), rules = 'b'.repeat(64), grant = () => true;

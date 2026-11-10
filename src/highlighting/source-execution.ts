@@ -1,15 +1,14 @@
 import { concreteStyle, expectation, prepareSelection, selectionBytes, type PreparedSelection, type StyleRoles, type StyleSelection } from './controller-styles.ts';
 import { WorkRegistry, type GroupHold, type GroupMember, type GroupReady, type GroupReadyMember, type GroupSeal, type SourcePreparation, type SourceWorkGroup, type StyleAttempt, type WorkEntry as WorkEntryType, type WorkNode, type WorkTurnExecution } from './work-registry.ts';
 import { collectStyleContexts, estimateStyleRepresentation } from './style-preparation.ts';
-import type { StagedPiProjection } from './pi-projection.ts';
-import { PiPreparation } from './semantic-retention.ts';
-export type { PiPreparation } from './semantic-retention.ts';
+import type { StagedPiProjection } from './storage/pi-projection.ts';
+import { PiPreparation } from './storage/pi-projection.ts';
 import type { DataCharge, DataGrant, GeometryFunding } from '../resources/data-budget.ts';
-import type { ContextRef } from './context-arena.ts';
+import type { ContextRef } from './storage/context-arena.ts';
 import { CARD_ROLES, type CardRole } from '../appearance/card-roles.ts';
-import type { SemanticCaptureGroup } from './semantic-capture.ts';
+import type { SemanticCaptureGroup } from './storage/semantic-capture.ts';
 import { decodeSemanticStyleReply, type SemanticDataRequest, type SemanticStyleExpectation } from '../occipital/semantic-protocol.ts';
-import type { CaptureSelection, ReadyDisplayUpdate } from './semantic-retention.ts';
+import type { CaptureSelection, ReadyDisplayUpdate } from './storage/ready-display-publication.ts';
 export type { StyleSelection } from './controller-styles.ts';
 import { type DiagnosticFields, type DiagnosticLevel, type DiagnosticSink, diagnose, diagnosticError, reportRuntime, unexpectedDiagnostic } from '../diagnostics.ts';
 import { RemoteFault } from '../occipital/protocol.ts';
@@ -18,13 +17,13 @@ import type { SemanticExpectation as ExpectedSource } from '../occipital/semanti
 import type { ConcreteStyle } from '../appearance/style-materialization.ts';
 import type { BorrowedPiSource, BorrowedSource, CardSourcePort, DisplayRangeReader, GroupDisplayBasis, GroupDisplayMember, PiFailure, PiProjectionReader, SourceDemand, SourceDisplayBasis, SourceExecutionState, SourceExecutionStats, SourceLifecyclePort, SourcePumpPort, SourceRecordStatus, SourceStatisticsPort, SourceWorkStatus } from './source-ports.ts';
 export type { BorrowedPiSource, BorrowedSource, DisplayRangeReader, GroupDisplayBasis, PiFailure, PiProjectionReader, SourceDemand, SourceDisplayBasis, SourceExecutionState, SourceRecordStatus, SourceWorkStatus } from './source-ports.ts';
-import { SemanticRetentionPool, type SemanticRelease as ReleaseReceipt } from './semantic-retention.ts';
+import { SemanticRetentionPool, type SemanticRelease as ReleaseReceipt } from './storage/semantic-retention.ts';
 import { OCCIPITAL_LIMITS } from '../occipital/limits.ts';
 import { HIGHLIGHT_LIMITS } from './limits.ts';
 import { dataJsonBytes, type ReplySize } from '../occipital/data-json.ts';
 import { RequestFailure } from '../occipital/request-failure.ts';
 import type { ProviderBroker } from '../occipital/provider.ts';
-import { RETENTION_LIMITS } from './retention.ts';
+import { RETENTION_LIMITS } from './storage/retention.ts';
 
 import { sourceFits, sourceReservation, CONTROLLER_LIMITS } from './controller-limits.ts';
 export { sourceReservation, CONTROLLER_LIMITS } from './controller-limits.ts';

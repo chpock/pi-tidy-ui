@@ -8,7 +8,7 @@ import { join } from 'node:path';
 import { SourceExecution } from '../../../src/highlighting/source-execution.ts';
 import type { SourceDemand } from '../../../src/highlighting/source-ports.ts';
 import { decodeSemanticSourceReply, SEMANTIC_PROTOCOL_VERSION as VERSION } from '../../../src/occipital/semantic-protocol.ts';
-import { SemanticRetentionPool } from '../../../src/highlighting/semantic-retention.ts';
+import { SemanticRetentionPool } from '../../../src/highlighting/storage/semantic-retention.ts';
 import { StdioTransport } from '../../../src/occipital/stdio.ts';
 import { ProviderBroker } from '../../../src/occipital/provider.ts';
 import { awaitFixture } from '../../fixtures/await-fixture.ts';

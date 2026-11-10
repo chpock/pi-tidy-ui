@@ -108,7 +108,7 @@ Every visible scalar must match. Row boundaries must correspond to source newlin
 
 Accepted foregrounds and font state become immutable literal styles and byte ranges. Background controls are parsed but do not replace the supplied card surface. Detailed font/color interpretation belongs to [Follow Pi](follow-pi.md) and the [color model](../color-model.md).
 
-The result is staged and transferred into root retention; the original ANSI rows are released. Rendering then uses the common painter, not a second ANSI-row rendering branch. Since these styles contain literal colors rather than reversible semantic scopes, a changed effective fallback palette may require a newly permitted classification. Width changes do not.
+The result is staged and transferred to the root retention entry's `PiProjectionHolder` under the same logical-data budget; its ticket, payload and callback-held charge lifetimes are described in [storage](storage.md#latest-text-acknowledged-basis-and-displayed-text). The original ANSI rows are released. Rendering then uses the common painter, not a second ANSI-row rendering branch. Since these styles contain literal colors rather than reversible semantic scopes, a changed effective fallback palette may require a newly permitted classification. Width changes do not.
 
 ## Following one owner through its lifecycle
 

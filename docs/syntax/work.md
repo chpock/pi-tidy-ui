@@ -114,7 +114,7 @@ A **group seal** is the controller’s funded record of a preparation’s ordere
 
 Style work checks the seal before capturing candidates and again before publication. Reusing a key for another source incarnation cannot make an old reply a member of the new card.
 
-`publishStyles` constructs complete concrete roles and context styles for every member. `SemanticRetentionPool.publishDisplays` stages and funds the whole replacement set before committing any of it. All members must agree on vocabulary, rules, palette and binding identity; captured members must belong to the expected capture group. No user callback runs during the commit.
+`publishStyles` constructs complete concrete roles and context styles for every member. After the retention root funds the aggregate old/new peak, `SemanticRetentionPool.publishDisplays` delegates the synchronous plan, stage, abort and commit lifecycle to `ReadyDisplayPublication` in `src/highlighting/storage/ready-display-publication.ts`. The pool remains the sole index, pressure, reaccounting and release-receipt authority. All members must agree on vocabulary, rules, palette and binding identity; captured members must belong to the expected capture group. No user callback runs during the commit.
 
 The controller then publishes the card group’s roles and member readers. Its reader-validity stamp can advance while its paint stamp remains unchanged if visible roles and member effects are equal. Different cards can publish independently; this atomicity does not impose ordered network completion or a transcript-wide palette barrier.
 

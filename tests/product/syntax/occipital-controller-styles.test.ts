@@ -13,10 +13,10 @@ import { compactSelection, syntheticSelection } from '../../fixtures/test-style-
 import { RequestFailure } from '../../../src/occipital/request-failure.ts';
 import { DataBudget } from '../../../src/resources/data-budget.ts';
 import type { ConcreteStyle } from '../../../src/appearance/style-materialization.ts';
-import type { SemanticRetentionPool } from '../../../src/highlighting/semantic-retention.ts';
+import type { SemanticRetentionPool } from '../../../src/highlighting/storage/semantic-retention.ts';
 import { semanticDescriptor } from '../../fixtures/semantic-provider.ts';
 import type { DiagnosticSink } from '../../../src/diagnostics.ts';
-import { SemanticRanges } from '../../../src/highlighting/semantic-ranges.ts';
+import { SemanticRanges } from '../../../src/highlighting/storage/semantic-ranges.ts';
 import { awaitFixture } from '../../fixtures/await-fixture.ts';
 
 type Frame = Record<string, any>;

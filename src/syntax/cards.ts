@@ -8,7 +8,7 @@ import type { CardSourcePort, GroupDisplayBasis, SourceDisplayBasis } from '../h
 import type { SourceWorkGroup } from '../highlighting/work-registry.ts';
 import type { GeometryFunding } from '../resources/data-budget.ts';
 import { type DataCharge, type DataCleanupReceipt } from '../resources/data-budget.ts';
-import { RETENTION_LIMITS } from '../highlighting/retention.ts';
+import { RETENTION_LIMITS } from '../highlighting/storage/retention.ts';
 import { CARD_ROLES, type CardRole } from '../appearance/card-roles.ts';
 import { measure, prepareMeasuredAppend, type MeasuredAppend, type MeasuredText } from './measured-rows.ts';
 import type { FlatRangeReader } from './flat-paint.ts';

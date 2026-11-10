@@ -28,7 +28,7 @@ import { awaitFixture } from '../../fixtures/await-fixture.ts';
 import { preparePaletteInput } from '../../../src/syntax/pi-input.ts';
 import { createSemanticRuleDefinition } from '../../../src/syntax/semantic-rules.ts';
 import type { ConcreteStyle } from '../../../src/appearance/style-materialization.ts';
-import { SemanticRetentionPool } from '../../../src/highlighting/semantic-retention.ts';
+import { SemanticRetentionPool } from '../../../src/highlighting/storage/semantic-retention.ts';
 import { decodeSemanticDescription, decodeSemanticSourceReply, decodeSemanticStyleReply, SEMANTIC_PROTOCOL_VERSION,
   type SemanticDataRequest, type SemanticTransportRequest } from '../../../src/occipital/semantic-protocol.ts';
 import { fingerprintRules } from '../../../src/occipital/style-rules.ts';
@@ -36,6 +36,17 @@ import { ownedStyleSelection } from '../../fixtures/owned-style-selection.ts';
 import { resolveTheme } from '../../../src/themes/selection.ts';
 
 const inputs = readInputs(), binary = validateNative(inputs);
+function allocationSite(stack: string): string {
+  return stack.split('\n').map(line => line.match(/(?:^|[\\/])src[\\/](?:syntax|occipital|highlighting|appearance|application)[\\/](?:[\w-]+[\\/])*([\w-]+\.ts)(?::\d+(?::\d+)?)?/)?.[1])
+    .find(site => site && site !== 'data-budget.ts') ?? 'other';
+}
+test('native allocation observer retains raw labels for flat and nested source modules', () => {
+  assert.equal(allocationSite(' at /repo/src/highlighting/source-execution.ts:1:1'), 'source-execution.ts');
+  assert.equal(allocationSite(' at /repo/src/highlighting/storage/semantic-retention.ts:1:1'), 'semantic-retention.ts');
+  assert.equal(allocationSite(' at /repo/src/highlighting/storage/ready-display-publication.ts:1:1'), 'ready-display-publication.ts');
+  assert.equal(allocationSite(String.raw` at C:\repo\src\highlighting\storage\semantic-retention.ts:1:1`), 'semantic-retention.ts');
+  assert.equal(allocationSite(' at /repo/scripts/semantic-retention.ts:1:1'), 'other');
+});
 type SemanticRequestPayload<T = SemanticTransportRequest> = T extends { v: number; ticket: string } ? Omit<T, 'v' | 'ticket'> : never;
 const dist = dirname(fileURLToPath(import.meta.resolve('@earendil-works/pi-coding-agent')));
 const themes = await import(pathToFileURL(resolve(dist, 'modes/interactive/theme/theme.js')).href);
@@ -197,7 +208,7 @@ test('current consumer geometry: actual CardSources SDK preparation warm theme w
     const result = commit.apply(this, args); if (this === budget) {
       // Numeric policy attribution, not allocation telemetry: the first source file
       // after the budget frames owns this charge. Keep no source/charge strongly.
-      const stack = new Error().stack ?? '', site = stack.split('\n').map(line => line.match(/src\/(?:syntax|occipital|highlighting|appearance|application)\/([\w-]+\.ts)/)?.[1]).find(site => site && site !== 'data-budget.ts') ?? 'other';
+      const stack = new Error().stack ?? '', site = allocationSite(stack);
       charges.set(result, site); liveByAllocationSite[site] = (liveByAllocationSite[site] ?? 0) + result.bytes; sample();
     } return result;
   });

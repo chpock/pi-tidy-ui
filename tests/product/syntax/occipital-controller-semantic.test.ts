@@ -10,7 +10,7 @@ import { RequestFailure } from '../../../src/occipital/request-failure.ts';
 import type { ProviderBroker } from '../../../src/occipital/provider.ts';
 import { semanticDescriptor } from '../../fixtures/semantic-provider.ts';
 import { HIGHLIGHT_LIMITS } from '../../../src/highlighting/limits.ts';
-import { SemanticRetentionPool } from '../../../src/highlighting/semantic-retention.ts';
+import { SemanticRetentionPool } from '../../../src/highlighting/storage/semantic-retention.ts';
 import { syntheticSelection } from '../../fixtures/test-style-selection.ts';
 
 type Frame = Record<string, any>;

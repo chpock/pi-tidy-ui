@@ -18,13 +18,14 @@ const highlightingModules = [
   'src/highlighting/controller-limits.ts',
   'src/highlighting/limits.ts',
   'src/highlighting/controller-styles.ts',
-  'src/highlighting/context-arena.ts',
-  'src/highlighting/semantic-ranges.ts',
-  'src/highlighting/semantic-capture.ts',
-  'src/highlighting/semantic-retention.ts',
-  'src/highlighting/retention.ts',
-  'src/highlighting/pi-projection.ts',
-  'src/highlighting/ready-presentation.ts',
+  'src/highlighting/storage/context-arena.ts',
+  'src/highlighting/storage/semantic-ranges.ts',
+  'src/highlighting/storage/semantic-capture.ts',
+  'src/highlighting/storage/semantic-retention.ts',
+  'src/highlighting/storage/retention.ts',
+  'src/highlighting/storage/pi-projection.ts',
+  'src/highlighting/storage/ready-presentation.ts',
+  'src/highlighting/storage/ready-display-publication.ts',
 ];
 const applicationModules = [
   'src/application/syntax-client.ts',
@@ -286,7 +287,19 @@ function assertHighlightingDependency(edge) {
   }
 }
 
+function assertStorageDependency(edge) {
+  if (!edge.source.startsWith('src/highlighting/storage/')) return;
+  const allowed = edge.target.startsWith('src/highlighting/storage/')
+    || edge.target === 'src/resources/data-budget.ts'
+    || edge.target === 'src/appearance/card-roles.ts'
+    || edge.target === 'src/appearance/style-materialization.ts'
+    || ['src/occipital/semantic-codec.ts', 'src/occipital/semantic-source.ts',
+      'src/occipital/style-types.ts', 'src/occipital/limits.ts'].includes(edge.target);
+  if (!allowed) throw new Error(`storage module imports execution or native operation ownership: ${edgeKey(edge)}`);
+}
+
 function assertEdgePolicy(edge) {
+  assertStorageDependency(edge);
   assertNativeDependency(edge);
   assertHighlightingDependency(edge);
   if (edge.source.startsWith('src/resources/')) {
@@ -493,4 +506,25 @@ test('dependency parser and architecture rules reject synthetic boundary violati
   assert.throws(() => assertNoSyntaxApplicationEdges([
     { source: 'src/syntax/cards.ts', target: 'src/application/syntax-client.ts', kind: 'type-only' },
   ]), /syntax modules must not import application ownership/);
+});
+
+
+test('retained storage imports only its shared resource, model and wire-data leaves', () => {
+  const sources = ['src/highlighting/storage/semantic-retention.ts',
+    'src/highlighting/storage/pi-projection.ts', 'src/highlighting/storage/ready-display-publication.ts'];
+  const forbidden = ['src/highlighting/source-execution.ts', 'src/highlighting/source-ports.ts',
+    'src/highlighting/work-registry.ts', 'src/highlighting/style-preparation.ts',
+    'src/highlighting/limits.ts', 'src/syntax/work.ts', 'src/application/syntax-client.ts',
+    'src/occipital/provider.ts', 'src/occipital/broker.ts', 'src/occipital/client.ts',
+    'src/occipital/stdio.ts', 'src/occipital/shared.ts', 'src/occipital/semantic-protocol.ts'];
+  const allowed = ['src/highlighting/storage/context-arena.ts', 'src/resources/data-budget.ts',
+    'src/appearance/card-roles.ts', 'src/appearance/style-materialization.ts',
+    'src/occipital/semantic-codec.ts', 'src/occipital/semantic-source.ts',
+    'src/occipital/style-types.ts', 'src/occipital/limits.ts'];
+  for (const source of sources) for (const kind of ['type-only', 'value']) {
+    for (const target of forbidden) {
+      assert.throws(() => assertEdgePolicy({ source, target, kind }), /storage module imports execution or native operation ownership/);
+    }
+    for (const target of allowed) assert.doesNotThrow(() => assertEdgePolicy({ source, target, kind }));
+  }
 });
