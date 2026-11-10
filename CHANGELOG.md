@@ -53,6 +53,11 @@ been reconstructed.
 
 ### Fixed
 
+- Derive file-preview language hints and patch structure from original bounded
+  source rows before terminal-control cleanup. Refresh highlighting when raw hint
+  validity changes without changing displayed text, and preserve physical rows
+  across multiline control sequences. Like full views, previews reject
+  control-decorated patch envelopes while safely cleaning controls in source text.
 - Restore visible read/write/edit source cards after turning native syntax Off,
   instead of leaving them at a preparation placeholder when repaint happens before
   local paint recovery. Keep the selected theme and existing parser authority.

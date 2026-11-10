@@ -101,14 +101,21 @@ function savedDiff(saved: FileCardInput['saved'], failed: boolean, content = tru
     ? unifiedDiff(saved.value, content, kinds, logicalOnly, maxRows, allowIncomplete) : undefined;
   return typeof saved.value === 'string' ? numberedDiff(saved.value, content, kinds, logicalOnly, maxRows) : undefined;
 }
-/** Classify supplied rows before projecting context; validation-only calls never materialize code. */
 type PreviewText = { text: string; omitted: boolean };
-export function filePreviewText(source: string, maxUnits = FILE_PREVIEW_MAX_UNITS, maxRows = FILE_PREVIEW_MAX_ROWS): PreviewText {
-  const sourcePrefix = source.slice(0, maxUnits).replace(/\r\n?/gu, "\n"), bounded = clean(sourcePrefix), clipped = source.length > maxUnits;
+function boundedPreview(source: string, maxUnits: number, maxRows: number, kind: 'source' | 'display'): PreviewText {
+  const prefix = source.slice(0, maxUnits).replace(/\r\n?/gu, "\n"), clipped = source.length > maxUnits;
+  // Display excerpts select cleaned rows; source windows must preserve original row boundaries.
+  const bounded = kind === 'display' ? clean(prefix) : prefix;
   const end = clipped ? bounded.lastIndexOf("\n") : bounded.length;
   const complete = end < 0 ? "" : bounded.slice(0, end);
   const rows = Array.from(sourceRows(complete, true, maxRows + 1));
   return { text: rows.slice(0, maxRows).join("\n"), omitted: clipped || rows.length > maxRows };
+}
+export function filePreviewSource(source: string, maxUnits = FILE_PREVIEW_MAX_UNITS, maxRows = FILE_PREVIEW_MAX_ROWS): PreviewText {
+  return boundedPreview(source, maxUnits, maxRows, 'source');
+}
+export function filePreviewText(source: string, maxUnits = FILE_PREVIEW_MAX_UNITS, maxRows = FILE_PREVIEW_MAX_ROWS): PreviewText {
+  return boundedPreview(source, maxUnits, maxRows, 'display');
 }
 function previewRows(source: string, logicalOnly: boolean): DiffLine[] {
   if (!source) return [];
@@ -125,12 +132,12 @@ function previewPresentation(input: FileCardInput, logicalOnly: boolean): Source
   const useContent = input.kind === 'write' && (input.truncated === true || !input.saved);
   if (useContent) {
     if (typeof input.content !== 'string') return undefined;
-    const bounded = filePreviewText(input.content), parsed = previewRows(bounded.text, logicalOnly);
+    const bounded = filePreviewSource(input.content), parsed = previewRows(bounded.text, logicalOnly);
     omitted = bounded.omitted || parsed.length > FILE_PREVIEW_MAX_ROWS;
     lines = parsed.slice(0, FILE_PREVIEW_MAX_ROWS); mode = "code";
   } else {
     if (!input.saved || typeof input.saved.value !== 'string') return undefined;
-    const bounded = filePreviewText(input.saved.value);
+    const bounded = filePreviewSource(input.saved.value);
     const saved = { ...input.saved, value: bounded.text };
     const parsed = savedDiff(saved, false, true, undefined, logicalOnly, FILE_PREVIEW_MAX_ROWS, bounded.omitted);
     if (!parsed || parsed === "inline") return undefined;
@@ -152,6 +159,7 @@ function readPresentation(input: FileCardInput, logicalOnly: boolean): SourceFil
     ...(index === 0 && languageHint ? { languageHint } : {}) }));
   return { label: "Read", mode: "code", lines };
 }
+/** Classify supplied rows before projecting context; validation-only calls never materialize code. */
 export function filePresentation(input: FileCardInput, content = true, logicalOnly = false): SourceFileView | undefined {
   if (input.kind === 'read') return readPresentation(input, logicalOnly);
   if (input.viewMode === "preview") return previewPresentation(input, logicalOnly);

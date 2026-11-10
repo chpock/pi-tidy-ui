@@ -3240,3 +3240,41 @@ test('queued palette refresh rechecks lifecycle and preserves the current token'
     if (!stopped) await h.stop();
   }
 });
+
+
+test('file preview host refreshes raw shebang validity with unchanged cleaned text and keeps warm reads cold', async () => {
+  const preparations: Parameters<NonNullable<TidyUiRuntimeOptions['cardPreparation']>>[0][] = [];
+  const h = fixture('tui', false, undefined, undefined, event => preparations.push(event));
+  try {
+    await h.ready; await h.start();
+    const id = 'raw-preview-hint', content = `#!/usr/bin/python3\n${writeSource('raw_hint')}`;
+    const tool = writeOwner(h, id, content);
+    tool.setArgsComplete(); tool.updateResult({ content: [], isError: false }, false);
+    h.root.render(120); await settled();
+    assert.equal((clickFile(tool, 2) as { handled?: boolean } | undefined)?.handled, true);
+    assert.equal((clickFile(tool, 2) as { handled?: boolean } | undefined)?.handled, true);
+    await settled();
+    const updates = () => new Set(preparations.filter(event => event.phase === 'updated').map(event => event.update)).size;
+    const initial = updates(); assert.ok(initial > 0, 'the real host accepted the initial source');
+    const controlled = `\u001b[31m${content}`;
+    tool.updateArgs({ path: `${id}.ts`, content: controlled });
+    h.root.render(120); await settled();
+    assert.equal(updates(), initial + 1, 'a raw first-row validity change cannot reuse a stale grammar selection');
+
+    let reads = 0, rejectReads = false;
+    const replacement = { path: `${id}.ts`, get content() {
+      if (rejectReads) throw new Error('warm preview reread its original source');
+      reads++; return `${controlled}\n${'hidden suffix '.repeat(1000)}`;
+    } };
+    tool.updateArgs(replacement); h.root.render(120); await settled();
+    assert.equal(updates(), initial + 1, 'the same raw selected prefix ignores a new hidden suffix');
+    assert.ok(reads > 0, 'the replacement input was genuinely observed');
+    reads = 0; rejectReads = true;
+    try { for (const width of [120, 120, 72, 72, 120]) h.root.render(width); }
+    finally { rejectReads = false; }
+    assert.equal(reads, 0, 'warm frames and real width changes reuse the accepted input');
+
+    tool.updateArgs({ path: `${id}.ts`, content }); h.root.render(120); await settled();
+    assert.equal(updates(), initial + 2, 'restoring the valid original first row refreshes the selector again');
+  } finally { await h.stop(); }
+});

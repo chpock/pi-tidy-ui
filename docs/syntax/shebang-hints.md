@@ -6,7 +6,7 @@ The wire interpretation is versioned by [`source_hint_revision`](../occipital/pr
 
 ## Where the first line comes from
 
-The producer reader supplies the selected completed file input to the common `prepareFileCard` in `src/cards/file-input.ts`, which produces numbered logical source rows before display sanitization. The reviewed detector lives in `src/cards/shebang-language.ts`, alongside logical file decoding rather than rendering or native execution. Producer-specific saved-data decoding has already selected those rows; the common file preparation preserves their original row text, including terminal controls which the displayed/parser text may subsequently remove. The shebang detector runs against the original row; it must not turn ordinary text containing a control character into a valid shebang by first deleting that character.
+The producer reader supplies the selected completed file input to the common `prepareFileCard` in `src/cards/file-input.ts`, which produces numbered logical source rows before display sanitization. The reviewed detector lives in `src/cards/shebang-language.ts`, alongside logical file decoding rather than rendering or native execution. Producer-specific saved-data decoding has already selected those rows; the common file preparation preserves their original row text, including terminal controls which the displayed/parser text may subsequently remove. The shebang detector runs against the original row in both full and bounded preview views; it must not turn ordinary text containing a control character into a valid shebang by first deleting that character. Preview selects the original physical source rows before parsing the saved format and cleaning each row, so multiline terminal sequences cannot erase row boundaries or manufacture a valid patch envelope.
 
 The saved card coordinates are authoritative:
 
@@ -92,7 +92,7 @@ Consequently, a detected shebang overrides even a recognized file extension such
 
 ## Source identity and diff painting
 
-The selected `language` is part of SOURCE identity alongside text version and path. If the first line changes its recognized format while the displayed body stays the same, the owner advances its SOURCE identity and parses under the new grammar. A warm frame, width change or unrelated card does not itself create another SOURCE request. Styling and geometry identities remain independent of the grammar selector.
+The selected `language` is part of SOURCE identity alongside text version and path. A preview's producer identity retains the selected original prefix, not its cleaned display projection; changing the raw first row cannot reuse an obsolete hint merely because deleting controls produces the same displayed text. If the first line changes its recognized format while the displayed body stays the same, the owner advances its SOURCE identity and parses under the new grammar. A warm frame, width change or unrelated card does not itself create another SOURCE request. Styling and geometry identities remain independent of the grammar selector.
 
 For a streaming SOURCE, `stream.open` captures `language` with the parser state; `stream.append` cannot replace it. A changed selector requires the caller to retire that continuation and open a new source identity. File cards derive the selector from a shebang; other callers can provide an explicit language directly, including pathless text.
 

@@ -1,5 +1,5 @@
 import { getLanguageFromPath } from '@earendil-works/pi-coding-agent';
-import { FILE_PREVIEW_MAX_ROWS, FILE_PREVIEW_MAX_UNITS, filePreviewText, prepareFileCard, sourceRows } from '../../cards/file-input.ts';
+import { FILE_PREVIEW_MAX_ROWS, FILE_PREVIEW_MAX_UNITS, filePreviewSource, filePreviewText, prepareFileCard, sourceRows } from '../../cards/file-input.ts';
 import type { FileCardInput } from '../../cards/file-model.ts';
 import type { FilePreviewMode } from '../../file-preview-state.ts';
 import type { FileToolReader, PendingFileDetail, ReaderEstimateContext, ToolAdapter, ToolCallSnapshot } from '../contracts.ts';
@@ -24,7 +24,7 @@ function source(call: ToolCallSnapshot, kind: FileKind, mode: FilePreviewMode): 
   const diff = kind === 'edit' ? fileData(call).diff : undefined;
   const value = kind === 'write' ? args.content : diff !== undefined ? diff : args.newText;
   const text = typeof value === 'string' ? value : undefined;
-  const bounded = text === undefined ? undefined : mode === 'preview' ? filePreviewText(text) : { text, omitted: false };
+  const bounded = text === undefined ? undefined : mode === 'preview' ? filePreviewSource(text) : { text, omitted: false };
   return [kind, mode, path, kind === 'write' ? 'content' : diff !== undefined ? 'diff' : 'newText', bounded?.text, bounded?.omitted,
     mode === 'full' ? args.content : undefined, false, false, call.partial, call.resultFailed];
 }
@@ -37,7 +37,7 @@ function estimateBytes(call: ToolCallSnapshot, context: ReaderEstimateContext, k
   let units = (context.cwd?.length ?? 0) + (context.directory?.length ?? 0) + (context.language?.length ?? 0);
   for (const key of ['command', 'description', 'content', 'path', 'file_path', 'filePath']) {
     const value = call.args[key];
-    if (typeof value === 'string') units += size(context.mode === 'preview' && key === 'content' ? filePreviewText(value).text : value);
+    if (typeof value === 'string') units += size(context.mode === 'preview' && key === 'content' ? filePreviewSource(value).text : value);
   }
   if (kind === 'read' && context.mode !== 'preview') {
     let first = true;
@@ -47,7 +47,7 @@ function estimateBytes(call: ToolCallSnapshot, context: ReaderEstimateContext, k
     }
   }
   const diff = kind === 'edit' ? fileData(call).diff : undefined;
-  if (typeof diff === 'string') units += size(context.mode === 'preview' ? filePreviewText(diff).text : diff);
+  if (typeof diff === 'string') units += size(context.mode === 'preview' ? filePreviewSource(diff).text : diff);
   return 4096 + units * 6 + rows * 1024;
 }
 function prepare(call: ToolCallSnapshot, kind: FileKind, mode: FilePreviewMode, logicalOnly: boolean) {

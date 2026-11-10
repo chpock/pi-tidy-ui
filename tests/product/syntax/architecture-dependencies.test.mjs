@@ -771,7 +771,7 @@ test('saved file decoding and bounded logical preparation belong to cards, not h
   const sources = productionFiles().filter(path => sourceExtensions.has(extname(path))
     && (path.startsWith('src/cards/') || legacy.has(path)))
     .map(path => ({ path, names: declarationExportNames(parseSource(path)) }));
-  for (const name of ['sourceRows', 'filePreviewText', 'prepareFileCard', 'shebangLanguage']) {
+  for (const name of ['sourceRows', 'filePreviewSource', 'filePreviewText', 'prepareFileCard', 'shebangLanguage']) {
     const owners = sources.filter(source => source.names.has(name)).map(source => source.path);
     assert.equal(owners.length, 1, `${name} requires one declaration owner`);
     assert.ok(owners[0].startsWith('src/cards/'), `${name} belongs to logical cards, not ${owners[0]}`);

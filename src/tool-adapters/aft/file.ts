@@ -1,4 +1,4 @@
-import { filePreviewText, prepareFileCard } from '../../cards/file-input.ts';
+import { filePreviewSource, prepareFileCard } from '../../cards/file-input.ts';
 import type { FileCardInput, PreparedFileCard } from '../../cards/file-model.ts';
 import type { FilePreviewMode } from '../../file-preview-state.ts';
 import type { FileDiagnostic, FileToolReader, ToolAdapter, ToolCallSnapshot } from '../contracts.ts';
@@ -44,7 +44,7 @@ function source(base: FileToolReader, call: ToolCallSnapshot, kind: FileKind, mo
   if (kind === 'read') return base.source(mode);
   const data = fileData(call), selected = selectedSource(call, kind);
   const text = typeof selected.value === 'string' ? selected.value : undefined;
-  const bounded = text === undefined ? undefined : mode === 'preview' ? filePreviewText(text) : { text, omitted: false };
+  const bounded = text === undefined ? undefined : mode === 'preview' ? filePreviewSource(text) : { text, omitted: false };
   return [kind, mode, base.path(), selected.type, bounded?.text, bounded?.omitted,
     mode === 'full' ? call.args.content : undefined, data.truncated === true, data.noOp === true, call.partial, call.resultFailed];
 }
@@ -55,7 +55,7 @@ function note(call: ToolCallSnapshot, kind: FileKind, view: Pick<PreparedFileCar
 }
 function diffFormat(value: unknown, mode: FilePreviewMode): 'unified' | 'numbered' {
   if (typeof value !== 'string') return 'numbered';
-  const text = mode === 'preview' ? filePreviewText(value).text : value;
+  const text = mode === 'preview' ? filePreviewSource(value).text : value;
   return /^@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@/mu.test(text) ? 'unified' : 'numbered';
 }
 function prepare(base: FileToolReader, call: ToolCallSnapshot, kind: FileKind, mode: FilePreviewMode, logicalOnly: boolean) {
@@ -86,7 +86,7 @@ export function aftFileReader(call: ToolCallSnapshot, kind: FileKind): FileToolR
         return text.length;
       };
       for (const value of [kind === 'edit' ? undefined : data.diff, data.patch]) if (typeof value === 'string')
-        units += size(context.mode === 'preview' ? filePreviewText(value).text : value);
+        units += size(context.mode === 'preview' ? filePreviewSource(value).text : value);
       if (Array.isArray(data.diagnostics)) {
         if (context.mode === 'preview') { if (data.diagnostics.length) { units += 64; rows++; } }
         else for (const item of data.diagnostics) if (item && typeof item === 'object' && typeof item.message === 'string') {
