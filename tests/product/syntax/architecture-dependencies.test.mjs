@@ -64,6 +64,17 @@ const movedRoleNames = new Set(['CARD_ROLES', 'CardRole']);
 const movedPreferenceNames = new Set(['ThemeVariant', 'ThemePreference', 'copyThemePreference', 'sameThemePreference']);
 const movedStyleTypeNames = new Set(['LiteralInk', 'Ink', 'StyleExpression', 'StyleIdentity']);
 const entryPath = 'src/index.ts';
+const measuredRowsPath = 'src/rendering/measured-rows.ts';
+const presentationModePath = 'src/file-preview-state.ts';
+const presentationModeType = 'FilePreviewMode';
+const presentationCardModules = new Set(['src/cards/file-display.ts', 'src/cards/file-model.ts']);
+const piTuiDisplayBindings = new Set([
+  'visibleWidth', 'sliceByColumn', 'stripTerminalSequences', 'truncateToWidth', 'wrapTextWithAnsi', 'getOsc8LinkAtColumn',
+  'backgroundAnsi', 'foregroundAnsi', 'styleText', 'styleTextWithAnsi', 'Color', 'IndexedColor', 'indexedColor',
+  'colorToHex', 'colorToOkhsl', 'colorToOklch', 'colorToRgb', 'mixColors', 'ColorMixSpace', 'parseColor',
+  'OkhslChannels', 'OklchChannels', 'OklchColorValue', 'okhslColor', 'oklchColor', 'RgbColorValue', 'rgbColor',
+  'TerminalColorMode', 'TextAttributes', 'TextStyle',
+]);
 const genericStyleTypesPath = 'src/occipital/style-types.ts';
 const presentationAndPayloadFiles = new Set([
   'src/bash-card.ts', 'src/card-frame.ts', 'src/card-theme.ts', 'src/diff-palette.ts',
@@ -199,6 +210,9 @@ function moduleReferences(source) {
     else if (ts.isImportTypeNode(node) && ts.isLiteralTypeNode(node.argument)) add(node.argument.literal, 'type-only', 'import-type');
     else if (ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword && node.arguments.length > 0) {
       add(node.arguments[0], 'value', 'dynamic-import');
+    } else if (ts.isCallExpression(node) && ts.isIdentifier(node.expression)
+      && node.expression.text === 'require' && node.arguments.length > 0) {
+      add(node.arguments[0], 'value', 'require');
     } else if (ts.isImportEqualsDeclaration(node) && ts.isExternalModuleReference(node.moduleReference)) {
       add(node.moduleReference.expression, 'value', 'import-equals');
     }
@@ -243,11 +257,24 @@ function resolveRelativeImport(importer, specifier) {
   return projectPath(candidates[0]);
 }
 
+function targetsRelativeModule(importer, node, target) {
+  return Boolean(node) && ts.isStringLiteralLike(node) && node.text.startsWith('.')
+    && resolveRelativeImport(importer, node.text) === target;
+}
+
+function isPresentationModule(path) {
+  return path.startsWith('src/presentation/');
+}
+
 function collectProductionEdges(files) {
   const edges = [];
   for (const path of files) {
     if (!sourceExtensions.has(extname(path))) continue;
     const source = parseSource(path);
+    if (isPresentationModule(path)) {
+      for (const reference of moduleReferences(source)) assertPresentationReference(path, reference);
+      assertPresentationImports(path, source);
+    }
     for (const reference of moduleReferences(source)) {
       assertRenderingReference(path, reference);
       if (!reference.specifier.startsWith('.')) continue;
@@ -277,7 +304,7 @@ function assertNativeDependency(edge) {
   if (target.startsWith('src/application/') || target.startsWith('src/highlighting/')
     || target.startsWith('src/syntax/') || target.startsWith('src/appearance/')
     || target.startsWith('src/themes/') || target.startsWith('src/tool-adapters/')
-    || target.startsWith('src/cards/') || target.startsWith('src/rendering/')
+    || target.startsWith('src/cards/') || target.startsWith('src/rendering/') || isPresentationModule(target)
     || target === 'src/settings.ts' || presentationAndPayloadFiles.has(target)) {
     throw new Error(`native module imports application, highlighting or presentation ownership: ${edgeKey(edge)}`);
   }
@@ -298,7 +325,7 @@ function assertHighlightingDependency(edge) {
   const target = edge.target;
   if (target.startsWith('src/application/') || target.startsWith('src/syntax/') || target.startsWith('src/themes/')
     || target.startsWith('src/tool-adapters/') || target.startsWith('src/cards/') || target.startsWith('src/rendering/')
-    || target === 'src/settings.ts' || presentationAndPayloadFiles.has(target)) {
+    || isPresentationModule(target) || target === 'src/settings.ts' || presentationAndPayloadFiles.has(target)) {
     throw new Error(`highlighting module imports application or presentation ownership: ${edgeKey(edge)}`);
   }
 }
@@ -308,6 +335,7 @@ function assertRegistryDependency(edge) {
   const target = edge.target;
   const domain = ['src/resources/', 'src/appearance/', 'src/occipital/', 'src/application/',
     'src/syntax/', 'src/themes/', 'src/tool-adapters/', 'src/highlighting/storage/', 'src/cards/', 'src/rendering/'].some(prefix => target.startsWith(prefix))
+    || isPresentationModule(target)
     || ['src/highlighting/source-execution.ts', 'src/highlighting/source-ports.ts',
       'src/highlighting/controller-styles.ts', 'src/highlighting/style-preparation.ts',
       'src/highlighting/pi-fallback.ts', 'src/highlighting/pi-flat.ts', 'src/highlighting/card-publication.ts',
@@ -364,7 +392,148 @@ function assertRenderingReference(path, reference) {
   }
 }
 
+function assertPresentationReference(path, reference) {
+  if (!isPresentationModule(path)) return;
+  if (reference.specifier === '@earendil-works/pi-coding-agent'
+    || reference.specifier.startsWith('@earendil-works/pi-coding-agent/')) {
+    throw new Error(`presentation imports the Pi host SDK: ${path} -> ${reference.specifier} [${reference.kind}]`);
+  }
+}
+
+function isPiTuiSpecifier(specifier) {
+  return specifier === '@earendil-works/pi-tui' || specifier.startsWith('@earendil-works/pi-tui/');
+}
+
+function importTypeName(qualifier) {
+  if (!qualifier) return undefined;
+  if (ts.isIdentifier(qualifier)) return qualifier.text;
+  return ts.isQualifiedName(qualifier) ? qualifier.right.text : undefined;
+}
+
+function assertPresentationModeImports(path, source) {
+  const violations = [];
+  const isPreviewState = node => targetsRelativeModule(path, node, presentationModePath);
+  for (const statement of source.statements) {
+    if (ts.isImportDeclaration(statement) && isPreviewState(statement.moduleSpecifier)) {
+      const clause = statement.importClause, bindings = clause?.namedBindings;
+      const onlyModeType = !clause?.name && bindings && ts.isNamedImports(bindings) && bindings.elements.length > 0
+        && bindings.elements.every(element => (clause.isTypeOnly || element.isTypeOnly)
+          && (element.propertyName?.text ?? element.name.text) === presentationModeType);
+      if (!onlyModeType) violations.push('preview state other than its narrow type');
+    } else if (ts.isExportDeclaration(statement) && statement.moduleSpecifier && isPreviewState(statement.moduleSpecifier)) {
+      violations.push('preview-state re-export');
+    }
+  }
+  const visit = node => {
+    if (ts.isImportTypeNode(node) && isPreviewState(node.argument.literal)
+      && (node.isTypeOf || importTypeName(node.qualifier) !== presentationModeType)) {
+      violations.push('broad preview-state import type');
+    }
+    if (ts.isCallExpression(node) && node.arguments.length > 0 && isPreviewState(node.arguments[0])) {
+      if (node.expression.kind === ts.SyntaxKind.ImportKeyword) violations.push('dynamic preview-state import');
+      else if (ts.isIdentifier(node.expression) && node.expression.text === 'require') violations.push('preview-state require');
+    }
+    if (ts.isImportEqualsDeclaration(node) && ts.isExternalModuleReference(node.moduleReference)
+      && isPreviewState(node.moduleReference.expression)) violations.push('preview-state import-equals');
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  if (violations.length) throw new Error(`presentation imports more than the narrow view-mode type: ${violations.join(', ')}`);
+}
+
+function assertPresentationPiTuiComponents(path, source) {
+  const violations = [];
+  const isPiTui = node => Boolean(node) && ts.isStringLiteralLike(node) && isPiTuiSpecifier(node.text);
+  for (const statement of source.statements) {
+    if (ts.isImportDeclaration(statement) && isPiTui(statement.moduleSpecifier) && statement.importClause) {
+      const clause = statement.importClause, bindings = clause.namedBindings;
+      if (clause.name || bindings && ts.isNamespaceImport(bindings)) violations.push('broad pi-tui component access');
+      else if (bindings && ts.isNamedImports(bindings)) {
+        for (const element of bindings.elements) {
+          const name = element.propertyName?.text ?? element.name.text;
+          if (!piTuiDisplayBindings.has(name)) violations.push(`pi-tui component ${name}`);
+        }
+      }
+    } else if (ts.isExportDeclaration(statement) && statement.moduleSpecifier && isPiTui(statement.moduleSpecifier)) {
+      const clause = statement.exportClause;
+      if (!clause || ts.isNamespaceExport(clause)) violations.push('broad pi-tui re-export');
+      else if (ts.isNamedExports(clause)) {
+        for (const element of clause.elements) {
+          const name = element.propertyName?.text ?? element.name.text;
+          if (!piTuiDisplayBindings.has(name)) violations.push(`pi-tui component re-export ${name}`);
+        }
+      }
+    }
+  }
+  const visit = node => {
+    if (ts.isImportTypeNode(node) && isPiTui(node.argument.literal)
+      && (!node.qualifier || !piTuiDisplayBindings.has(importTypeName(node.qualifier)))) {
+      violations.push('pi-tui component import type');
+    }
+    if (ts.isCallExpression(node) && node.arguments.length > 0 && isPiTui(node.arguments[0])) {
+      if (node.expression.kind === ts.SyntaxKind.ImportKeyword) violations.push('dynamic pi-tui import');
+      else if (ts.isIdentifier(node.expression) && node.expression.text === 'require') violations.push('pi-tui require');
+    }
+    if (ts.isImportEqualsDeclaration(node) && ts.isExternalModuleReference(node.moduleReference)
+      && isPiTui(node.moduleReference.expression)) violations.push('pi-tui import-equals');
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  if (violations.length) throw new Error(`presentation imports Pi UI component shapes: ${violations.join(', ')}`);
+}
+
+function assertPresentationImports(path, source) {
+  assertPresentationModeImports(path, source);
+  assertPresentationPiTuiComponents(path, source);
+}
+
+function assertEntryMeasuredRowsCapability(path, source) {
+  if (path !== entryPath) return;
+  const violations = [];
+  const add = reason => violations.push(reason);
+  const targetsMeasuredRows = node => targetsRelativeModule(path, node, measuredRowsPath);
+
+  for (const statement of source.statements) {
+    if (ts.isImportDeclaration(statement) && targetsMeasuredRows(statement.moduleSpecifier)) {
+      const clause = statement.importClause, bindings = clause?.namedBindings;
+      if (!clause || clause.name || !bindings || !ts.isNamedImports(bindings)) add('broad import');
+      else for (const element of bindings.elements) {
+        const name = element.propertyName?.text ?? element.name.text;
+        if (name !== 'reflow' || clause.isTypeOnly || element.isTypeOnly) add(name);
+      }
+    } else if (ts.isExportDeclaration(statement) && statement.moduleSpecifier && targetsMeasuredRows(statement.moduleSpecifier)) {
+      add('re-export');
+    } else if (ts.isImportEqualsDeclaration(statement) && ts.isExternalModuleReference(statement.moduleReference)
+      && targetsMeasuredRows(statement.moduleReference.expression)) {
+      add('import-equals');
+    }
+  }
+
+  const visit = node => {
+    if (ts.isImportTypeNode(node) && targetsMeasuredRows(node.argument.literal)) add('import type');
+    if (ts.isCallExpression(node) && node.arguments.length > 0 && targetsMeasuredRows(node.arguments[0])) {
+      if (node.expression.kind === ts.SyntaxKind.ImportKeyword) add('dynamic import');
+      else if (ts.isIdentifier(node.expression) && node.expression.text === 'require') add('require');
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  if (violations.length) {
+    throw new Error(`extension entry may use measured rows only through named reflow; found ${violations.join(', ')}`);
+  }
+}
+
+function assertPresentationDependency(edge) {
+  if (!isPresentationModule(edge.source)) return;
+  const allowed = isPresentationModule(edge.target) || edge.target.startsWith('src/rendering/')
+    || edge.target.startsWith('src/resources/') || edge.target.startsWith('src/appearance/')
+    || presentationCardModules.has(edge.target)
+    || edge.target === presentationModePath && edge.kind === 'type-only';
+  if (!allowed) throw new Error(`presentation imports outside its display capabilities: ${edgeKey(edge)}`);
+}
+
 function assertEdgePolicy(edge) {
+  assertPresentationDependency(edge);
   assertRenderingDependency(edge);
   assertCardDependency(edge);
   assertRegistryDependency(edge);
@@ -377,11 +546,14 @@ function assertEdgePolicy(edge) {
       || target.startsWith('src/highlighting/') || target.startsWith('src/application/')
       || target.startsWith('src/syntax/') || target.startsWith('src/themes/') || target.startsWith('src/tool-adapters/')
       || target.startsWith('src/cards/') || target.startsWith('src/rendering/')
-      || presentationAndPayloadFiles.has(target);
+      || isPresentationModule(target) || presentationAndPayloadFiles.has(target);
     if (nativeOrPayload) throw new Error(`resource module imports native, UI or payload implementation: ${edgeKey(edge)}`);
     if (target === genericStyleTypesPath && edge.kind !== 'type-only') {
       throw new Error(`resource module imports native style types as values: ${edgeKey(edge)}`);
     }
+  }
+  if (edge.source.startsWith('src/appearance/') && isPresentationModule(edge.target)) {
+    throw new Error(`appearance imports presentation ownership: ${edgeKey(edge)}`);
   }
   if (edge.source.startsWith('src/appearance/') && edge.target.startsWith('src/occipital/')) {
     if (edge.target !== genericStyleTypesPath || edge.kind !== 'type-only') {
@@ -468,6 +640,113 @@ test('production imports preserve the migrated module boundaries', () => {
   ], 'concrete style materialization depends only on generic type-only wire shapes');
   const syntaxApplicationEdges = edges.filter(edge => edge.source.startsWith('src/syntax/') && edge.target.startsWith('src/application/'));
   assertNoSyntaxApplicationEdges(syntaxApplicationEdges);
+});
+
+test('extension entry keeps detail measurement authority out while heading reflow remains', () => {
+  assertEntryMeasuredRowsCapability(entryPath, parseSource(entryPath));
+});
+
+test('entry measurement imports accept heading reflow and reject detail capability routes', () => {
+  const safe = parseSource(entryPath, "import { reflow as headingReflow } from './rendering/measured-rows.ts';");
+  assert.doesNotThrow(() => assertEntryMeasuredRowsCapability(entryPath, safe));
+  const forbidden = [
+    "import { measure as detailMeasure } from './rendering/measured-rows.ts';",
+    "import type { MeasuredText as DetailText } from './rendering/measured-rows.ts';",
+    "import { SpanKind as DetailSpans } from './rendering/measured-rows.ts';",
+    "import * as measuredRows from './rendering/measured-rows.ts';",
+    "type DetailText = import('./rendering/measured-rows.ts').MeasuredText;",
+    "export { measure as detailMeasure } from './rendering/measured-rows.ts';",
+    "export * from './rendering/measured-rows.ts';",
+    "const measuredRows = import('./rendering/measured-rows.ts');",
+    "const measuredRows = require('./rendering/measured-rows.ts');",
+  ];
+  for (const text of forbidden) {
+    assert.throws(() => assertEntryMeasuredRowsCapability(entryPath, parseSource(entryPath, text)),
+      /only through named reflow/);
+  }
+});
+
+test('presentation dependencies stay within display capabilities and do not flow back from lower owners', () => {
+  const presentation = 'src/presentation/detail-owner.ts';
+  const allowed = [
+    ['src/presentation/detail-view.ts', 'value'],
+    ['src/cards/file-display.ts', 'value'],
+    ['src/cards/file-model.ts', 'type-only'],
+    ['src/rendering/measured-rows.ts', 'value'],
+    ['src/resources/data-budget.ts', 'type-only'],
+    ['src/appearance/card-roles.ts', 'value'],
+    [presentationModePath, 'type-only'],
+  ];
+  for (const [target, kind] of allowed) assert.doesNotThrow(() => assertPresentationDependency({ source: presentation, target, kind }));
+  const source = parseSource(presentation, `
+    import { cleanFileDisplayText } from '../cards/file-display.ts';
+    import type { FileCardInput } from '../cards/file-model.ts';
+    import { measure } from '../rendering/measured-rows.ts';
+    import { DataBudget } from '../resources/data-budget.ts';
+    import { CARD_ROLES } from '../appearance/card-roles.ts';
+    import type { FilePreviewMode as Mode } from '../file-preview-state.ts';
+    import { visibleWidth } from '@earendil-works/pi-tui';
+  `);
+  assertPresentationImports(presentation, source);
+  for (const reference of moduleReferences(source)) {
+    assertPresentationReference(presentation, reference);
+    if (reference.specifier.startsWith('.')) assert.doesNotThrow(() => assertEdgePolicy({
+      source: presentation, target: resolveRelativeImport(presentation, reference.specifier), kind: reference.kind,
+    }));
+  }
+  const importTypeMode = parseSource(presentation, "type Mode = import('../file-preview-state.ts').FilePreviewMode;");
+  assert.doesNotThrow(() => assertPresentationImports(presentation, importTypeMode));
+
+  const forbiddenRoutes = [
+    "import type { SyntaxRuntime as Runtime } from '../application/syntax-runtime.ts';",
+    "import * as provider from '../occipital/provider.ts';",
+    "type Limits = import('../highlighting/limits.ts').Limits;",
+    "export { prepareFileCard as prepare } from '../cards/file-input.ts';",
+    "const producers = import('../cards/file-sources.ts');",
+    "import type { ExtensionContext as HostContext } from '@earendil-works/pi-coding-agent';",
+    "import type { Component as HostComponent } from '@earendil-works/pi-tui';",
+    "import * as tui from '@earendil-works/pi-tui';",
+    "type HostComponent = import('@earendil-works/pi-tui').Component;",
+    "export type { Component as HostComponent } from '@earendil-works/pi-tui';",
+    "const tui = import('@earendil-works/pi-tui');",
+    "import { FilePreviewState } from '../file-preview-state.ts';",
+  ];
+  for (const text of forbiddenRoutes) {
+    const candidate = parseSource(presentation, text);
+    assert.throws(() => {
+      assertPresentationImports(presentation, candidate);
+      for (const reference of moduleReferences(candidate)) {
+        assertPresentationReference(presentation, reference);
+        if (reference.specifier.startsWith('.')) assertEdgePolicy({
+          source: presentation, target: resolveRelativeImport(presentation, reference.specifier), kind: reference.kind,
+        });
+      }
+    });
+  }
+  for (const sourceOwner of ['src/resources/data-budget.ts', 'src/occipital/provider.ts',
+    'src/highlighting/source-execution.ts', 'src/rendering/measured-rows.ts', 'src/cards/file-model.ts', 'src/appearance/style-ansi.ts']) {
+    for (const kind of ['type-only', 'value', 'mixed']) assert.throws(() => assertEdgePolicy({
+      source: sourceOwner, target: presentation, kind,
+    }), /imports|ownership/);
+  }
+});
+
+test('presentation accepts explicit display utilities rather than unclassified UI shapes', () => {
+  const path = 'src/presentation/detail-owner.ts';
+  for (const text of [
+    "import { Input as NativeInput } from '@earendil-works/pi-tui';",
+    "import type { Terminal as NativeTerminal } from '@earendil-works/pi-tui';",
+  ]) assert.throws(() => assertPresentationImports(path, parseSource(path, text)), /component/);
+});
+
+test('presentation follows literal require edges rather than hiding higher-level ownership', () => {
+  const path = 'src/presentation/detail-owner.ts';
+  const references = moduleReferences(parseSource(path, "const runtime = require('../application/syntax-runtime.ts');"));
+  assert.equal(references.length, 1);
+  const reference = references[0];
+  assert.throws(() => assertEdgePolicy({ source: path,
+    target: resolveRelativeImport(path, reference.specifier), kind: reference.kind,
+  }), /display capabilities/);
 });
 
 test('logical file models belong to cards without legacy type forwarding or host SDK imports', () => {

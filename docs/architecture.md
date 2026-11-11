@@ -34,6 +34,8 @@ Pi: session, native components, public lifecycle and terminal
                                    reflow -> literal paint -> frame -> latest rows
 ```
 
+Expanded pending/error file details have a separate presentation owner in `src/presentation/file-details.ts`. The host-facing entry selects the current producer and eligibility; that owner retains funded text/measurement, checks input identities, lends readonly render flags and projects rows. It receives an opaque owner key and operation-scoped numeric funding, not a component shape, provider or independent resource pool. Its [borrow and release contract](render-cache-spec.md#pending-and-failed-file-details) is separate from successful syntax-card preparation.
+
 The arrows denote responsibility and data flow, not a requirement to perform an RPC on every frame. Cached source, styles, geometry and ready rows have distinct reuse rules. When native highlighting is unavailable, eligible ordinary files may use cached public Pi highlighting converted to the same flat style representation; Bash never calls Pi's classifier. An owned palette never silently borrows missing syntax colors from Pi.
 
 Host libraries require Pi and pi-tui 1.0.1 or later; development copies are pinned to the supported minimum 1.0.1. Runtime imports use the public installed host packages, not bundled duplicate classes or private package paths. The Pi host adapter nevertheless inspects some private component **shapes** to establish safe integration. That narrower compatibility dependency and its fail-closed behavior are explicit in [host capture](host-integration.md#startup-and-attachment).
@@ -80,6 +82,7 @@ These are design constraints, not claims that every constant is uniquely optimal
 | Pi process | Local appearance/logging flags; two applied terminal-default values and owner-free exit cleanup | No component, UI adapter or session runtime survives reload through these process cells |
 | Session runtime | Settings/watch services, Git snapshot, health and journal observers, popup owner, syntax service composition | Old callbacks retain their old epoch/observer and cannot publish into a successor session |
 | Installed presentation adapter | Hooks/slots, weak component records, `CardSources` consumer | Full removal/reinstallation may allocate fresh source keys and occasionally repeat classification; ordinary redraw/Off-within-source does not erase execution evidence |
+| File-detail presentation owner | Expanded pending/error text, measurement and detached weak cleanup records | Native updates supply freshness; rendering borrows flags/rows without retaining a producer or gaining cleanup/funding authority |
 | Card/source owner | Current selected preview/full display (no body for compact read), classification demand/version, measured geometry, ready presentation | Current demand and historical display are separate; appearance changes do not prove SOURCE completion |
 | Local syntax storage | Budget grants and shared charges, text/range captures, context leases, styles, concrete ready payloads | Attribution, last reference and actual funded-storage release are separate events |
 | Occipital process | Bundled grammar assets/vocabulary, workers, process credits and generic rule preparation | It owns no palette catalogue, selected theme or palette-file access |

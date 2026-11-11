@@ -44,6 +44,8 @@ The stored representations have distinct purposes:
 | Ready paint | One compatible palette and source-style publication | That an unrelated/new source was parsed |
 | Painted rows | Complete terminal strings for the current scene/paint | Ownership of native/parser work that produced an earlier display |
 
+Expanded pending/error details use `src/presentation/file-details.ts` rather than syntax-card preparation. The entry supplies a draft at the semantic update boundary; the presentation owner retains text and numeric measurement under the existing geometry funding hook. Rendering borrows only current flags and asks that owner for width-specific rows, without receiving retained text, measurement or a grant. The [detail lifetime contract](render-cache-spec.md#pending-and-failed-file-details) explains refusal, refresh and cleanup.
+
 [Prepared syntax cards](syntax/prepared-cards.md) explains source grouping, measurement and flat-range painting; [syntax storage](syntax/storage.md) explains bounded logical-data ownership.
 
 ## Text domains and coordinate systems
@@ -200,6 +202,7 @@ Native removal releases that owner's rows and useful syntax work, unless it is a
 
 ## Implementation map
 
+- `src/presentation/file-details.ts`: funded pending/error detail retention, current render borrows, numeric row projection and weak detached cleanup.
 - `src/index.ts`: presenter dispatch, latest-row adoption, predecessor spacing, transient prefix/separator composition and host ownership.
 - `src/card-frame.ts`, `src/card-theme.ts`: geometry/framing and paint interfaces.
 - `src/tool-adapters/summary.ts`, `src/summary-args.ts`: producer-selected compact arguments and the shared bounded-description formatter; `src/plain-text.ts` owns plain-block normalization.

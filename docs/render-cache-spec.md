@@ -18,6 +18,14 @@ A candidate layout becomes retained only after its outer prepared-card visit suc
 
 Read's native Image output is composed after the retained text visit, never saved as another layout/payload copy. Read current host Image children each expanded frame and use their own width cache. Literal reservation rows remain empty and protocol anchors receive no ordinary padding. This is not a zero-allocation image frame or a claim that collapse frees Pi's image data; only owned text/geometry/paint is released. See [read image ownership](read-card-spec.md#images-a-host-owned-opaque-block).
 
+### Pending and failed file details
+
+`src/presentation/file-details.ts` owns the joined display text, numeric measurement and weak cleanup records for expanded pending/error details. The entry chooses eligibility, mode and the producer draft, then supplies that producer only to `prepare`; the store never retains a reader or gains native work/fallback authority. Funding is borrowed per operation from the existing geometry authority, not stored as a separate budget.
+
+`peek` checks current argument/result identities and mode, exposing only readonly `denied`, `omitted` and derived `hasText` flags on the stored record. This is a synchronous borrow, not an independently retained view. `rows` projects that same record at the caller's useful width and disposes temporary reflow immediately. Paint-retry branches can inspect flags without obtaining geometry or reading a producer. Empty rows and unavailable geometry remain distinct.
+
+Preparation may retry a denied record even though rendering must still see its refusal. Explicit host-update refresh can adopt equal bounded pending text without another charge; saved final-error sources retain their existing two-pass funded construction. Their producer draft supplies empty initial text; only the funded source pass materializes the saved fragments. Drop removes even an unfunded record. Clear, detach and finalization release text/measurement through detached idempotent receipts; the strong cleanup set holds only numeric receipts and weak owner references, not input, text or measured buffers. The caller's existing lifecycle still decides when to drop or clear.
+
 ### Terminal-default projection
 
 Terminal-color synchronization has one latest requested/reported numeric snapshot and one concrete-color projection, outside transcript accounting groups. It retains no tool/editor owner or width history. Native terminal-theme revisions and explicit retries queue synchronization outside render; unchanged ordinary/Working frames repeat no source read/report/projection/output. Local off stops metadata/application but can sample released profile RGB for remaining cards. Automatic mode adds no feature reports. The zero-row observer and one-shot public query deadlines are not a repeating clock. See the [terminal-color contract](terminal-colors-spec.md).

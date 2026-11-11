@@ -28,7 +28,7 @@ If you are interested in **Occipital as a daemon**, start directly with its [sta
 | [User and queued cards](user-queued-cards.md) | Native Markdown reframing versus full plain queue preparation, native traversal, geometric stripping and height-only selection |
 | [Editor](editor.md) | Stock-instance projection, paired widths, sentinels, cursor/mouse coordinates, native activity and below-editor metadata |
 | [Footer](footer-spec.md) | Semantic snapshots, usage/cache/context/title calculation, opaque producer-status packing and layout reuse |
-| [Retained layouts and animation](render-cache-spec.md) | One latest component-owned body, weak accounting versus real storage, invalidation/removal and host-driven spinner fallback |
+| [Retained layouts and animation](render-cache-spec.md) | One latest component-owned body, presentation-owned pending/error details, weak accounting versus real storage, invalidation/removal and host-driven spinner fallback |
 
 ## Extension-side highlighting
 

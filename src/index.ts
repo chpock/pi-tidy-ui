@@ -12,9 +12,9 @@ import type { SyntaxMenuOutcome } from './application/syntax-menu.ts';
 import { type JournalOptions } from "./debug-log.ts";
 import { diagnose, reportRuntime, type DiagnosticFields, type DiagnosticSink } from "./diagnostics.ts";
 import { stripVTControlCharacters } from "node:util";
-import { cleanFileDisplayText } from "./cards/file-display.ts";
+import { FileDetails, type FileDetailDraft, type FileDetailView } from './presentation/file-details.ts';
 import { FilePreviewState, type FilePreviewMode } from './file-preview-state.ts';
-import { measure, reflow, SpanKind, type MeasuredText } from './rendering/measured-rows.ts';
+import { reflow } from './rendering/measured-rows.ts';
 import { renderUserCard } from "./user-card.ts";
 import { prepareQueuedCard, projectQueuedCards, type QueuedCard } from "./queued-card.ts";
 import { EDITOR_TOP, EDITOR_BOTTOM, renderEditorCard, type EditorLayout } from "./editor-card.ts";
@@ -38,7 +38,6 @@ import { resolveTheme, type ThemeDescription } from './themes/selection.ts';
 import { SourceExecution } from './highlighting/source-execution.ts';
 import type { SourceLifecyclePort, SourcePumpPort, SourceStatisticsPort } from './highlighting/source-ports.ts';
 import type { GeometryFunding } from './resources/data-budget.ts';
-import type { DataCharge, DataCleanupReceipt } from './resources/data-budget.ts';
 import type { PiClassifier } from "./syntax/work.ts";
 import { createSyntaxOptions } from "./application/syntax-options.ts";
 import { SyntaxRuntime, type SyntaxRuntimeOptions } from "./application/syntax-runtime.ts";
@@ -353,34 +352,20 @@ export function installTidyUi(tui: LiveTui, getTheme: () => Palette, options: Ti
   let states = new WeakMap<ToolNode, { signature: unknown[]; entry: CacheEntry<Layout>; pool: RenderCache; gap?: number }>();
   type ReadImageWindow = { width: number; start: number; end: number };
   const readImageWindows = new WeakMap<ToolNode, ReadImageWindow>();
-  type FileDetailRecord = { owner: WeakRef<ToolNode>; receipt: DataCleanupReceipt };
-  type FileDetailSource = { prefix: string; text: string };
-  type FileDetailSources = () => Iterable<FileDetailSource>;
-  const fileDetailTextHeader = 64;
-  type FileDetailCache = { args: Record<string, unknown>; result?: ToolNode['result']; mode: FilePreviewMode; text: string; omitted: boolean;
-    error: boolean; pending: boolean; measured?: MeasuredText; record?: FileDetailRecord; denied: boolean };
-  let fileDetailCaches = new WeakMap<ToolNode, FileDetailCache>();
-  const fileDetailRecords = new Set<FileDetailRecord>();
-  const fileDetailFinalizer = new FinalizationRegistry<FileDetailRecord>(record => {
-    fileDetailRecords.delete(record); record.receipt.release();
+  const fileDetails = new FileDetails<ToolNode>({
+    args: node => node.args, result: node => node.result,
+    funding: () => cardClient?.cardSource.geometryFunding(),
+    failed: (node, error) => diagnose(options.diagnostic, 'ERROR', 'file-detail', 'Expanded file details could not be measured',
+      { call: node.toolCallId, error: error instanceof Error ? error.name : 'UnknownError' }),
   });
-  function releaseFileDetail(node: ToolNode): void {
-    const cached = fileDetailCaches.get(node); if (!cached) return;
-    fileDetailCaches.delete(node);
-    if (cached.record) { fileDetailFinalizer.unregister(cached.record); fileDetailRecords.delete(cached.record); cached.record.receipt.release(); }
-  }
-  function clearFileDetails(): void {
-    for (const record of fileDetailRecords) { fileDetailFinalizer.unregister(record); record.receipt.release(); }
-    fileDetailRecords.clear(); fileDetailCaches = new WeakMap();
-  }
   const forget = (node: ToolNode, cause = "source or lifecycle changed", preserveFileDetail = false) => { const state = states.get(node); state?.pool.drop(state.entry); states.delete(node);
-    if (!preserveFileDetail) releaseFileDetail(node);
+    if (!preserveFileDetail) fileDetails.drop(node);
     if (state) diagnose(options.diagnostic, "DEBUG", "cache", "Tool layout invalidated", { call: node.toolCallId, tool: node.toolName, cause }); };
   let userStates = new WeakMap<UserNode, { signature: unknown[]; entry: CacheEntry<Layout> }>();
   const forgetUser = (node: UserNode) => { cache.drop(userStates.get(node)?.entry); userStates.delete(node); };
   let queuedStates = new WeakMap<Component, { signature: unknown[]; entry: CacheEntry<QueuedCard> }>();
   const forgetQueued = (node: Component) => { cache.drop(queuedStates.get(node)?.entry); queuedStates.delete(node); };
-  const clearCache = () => { clearFileDetails(); cache.clear(); cardCache.clear(); preparedStates = new WeakMap(); states = new WeakMap(); userStates = new WeakMap(); queuedStates = new WeakMap();
+  const clearCache = () => { fileDetails.clear(); cache.clear(); cardCache.clear(); preparedStates = new WeakMap(); states = new WeakMap(); userStates = new WeakMap(); queuedStates = new WeakMap();
     diagnose(options.diagnostic, "INFO", "cache", "Presentation layouts cleared; native/source caches are unchanged"); };
   const cards = new Set([...DEFAULT_CARDS, ...options.cards ?? []]);
   const overrides = new Set(options.compact ?? []);
@@ -765,134 +750,20 @@ export function installTidyUi(tui: LiveTui, getTheme: () => Palette, options: Ti
   function preparedRows(layout: PreparedLayout | undefined): string[] {
     let rows: string[] | undefined; layout?.output.withRows(value => { rows = value; }); return rows ?? [];
   }
-  function buildFileDetail(node: ToolNode, mode: FilePreviewMode): { text: string; sources?: FileDetailSources; omitted: boolean; error: boolean; pending: boolean } {
+  function buildFileDetail(node: ToolNode, mode: FilePreviewMode): FileDetailDraft {
     const reader = toolReader(node);
     if (reader.kind === 'bash' || reader.kind === 'other' || reader.succeeded && reader.kind !== 'read')
       return { text: '', omitted: false, error: false, pending: false };
     const detail = reader.pendingDetail(mode);
     return detail.pending || mode === 'preview' ? detail : { ...detail, sources: () => reader.errorSources() };
   }
-  function fileDetailTextBytes(text: string): number {
-    const bytes = text.length * 2;
-    return Number.isSafeInteger(bytes) && bytes <= Number.MAX_SAFE_INTEGER - fileDetailTextHeader ? bytes + fileDetailTextHeader : Number.POSITIVE_INFINITY;
-  }
-  function fileDetailConstructionPeak(units: number, parts: number): number {
-    const maximum = Number.MAX_SAFE_INTEGER;
-    if (!Number.isSafeInteger(units) || units < 0 || !Number.isSafeInteger(parts) || parts < 0 ||
-      units > Math.floor((maximum - 4096 - fileDetailTextHeader) / 8)) return Number.POSITIVE_INFINITY;
-    const scratch = 4096 + units * 6;
-    const retainedText = fileDetailTextHeader + units * 2;
-    if (retainedText > maximum - scratch) return Number.POSITIVE_INFINITY;
-    const partOverhead = 64;
-    const available = maximum - scratch - retainedText;
-    if (parts > Math.floor(available / partOverhead)) return Number.POSITIVE_INFINITY;
-    // Three UTF-16-sized construction copies plus the separately charged joined text; no per-line descriptors are built here.
-    return scratch + retainedText + parts * partOverhead;
-  }
-  function retainFileDetail(node: ToolNode, detail: FileDetailCache, textCharge: DataCharge): void {
-    const measuredReceipt = detail.measured!.cleanupReceipt(); let released = false;
-    const receipt: DataCleanupReceipt = { release() {
-      if (released) return; released = true; measuredReceipt.release(); textCharge.release();
-    } };
-    const record = { owner: new WeakRef(node), receipt };
-    detail.record = record; fileDetailRecords.add(record); fileDetailFinalizer.register(node, record, record);
-  }
-  function detailCache(node: ToolNode, mode: FilePreviewMode, refreshContent = false): FileDetailCache {
-    const cached = fileDetailCaches.get(node);
-    // Native update methods can change content without replacing args/result.
-    if (!refreshContent && cached && !cached.denied && cached.args === node.args && cached.result === node.result && cached.mode === mode) return cached;
-    const detail = buildFileDetail(node, mode);
-    if (cached && !cached.denied && !detail.sources && cached.mode === mode && cached.text === detail.text && cached.omitted === detail.omitted &&
-      cached.error === detail.error && cached.pending === detail.pending) {
-      cached.args = node.args; cached.result = node.result; return cached;
-    }
-    releaseFileDetail(node);
-    const next: FileDetailCache = { text: detail.text, omitted: detail.omitted, error: detail.error, pending: detail.pending,
-      args: node.args, result: node.result, mode, denied: false };
-    if (detail.sources) {
-      let units = 0, parts = 0;
-      for (const source of detail.sources()) {
-        const addition = source.prefix.length + source.text.length + (parts ? 1 : 0);
-        if (!Number.isSafeInteger(addition) || units > Number.MAX_SAFE_INTEGER - addition || parts === Number.MAX_SAFE_INTEGER) {
-          units = Number.POSITIVE_INFINITY; break;
-        }
-        units += addition; parts++;
-      }
-      next.omitted = detail.omitted;
-      if (parts) {
-        const funding = cardClient?.cardSource.geometryFunding();
-        const estimate = fileDetailConstructionPeak(units, parts);
-        const reservation = funding && Number.isSafeInteger(estimate) ? funding.grant(estimate) : undefined;
-        if (!funding || !reservation) next.denied = true;
-        else {
-          let textCharge: DataCharge | undefined;
-          try {
-            const parts: string[] = []; let index = 0;
-            for (const { prefix, text } of detail.sources()) {
-              parts.push(`${index++ ? '\n' : ''}${prefix}${cleanFileDisplayText(text.replace(/\r\n?/gu, '\n'))}`);
-            }
-            next.omitted = detail.omitted;
-            next.text = parts.join('');
-            textCharge = reservation.consume(fileDetailTextBytes(next.text));
-            parts.length = 0;
-            reservation.close();
-            next.measured = measure(next.text, funding.budget, funding.grant);
-            if (next.measured) retainFileDetail(node, next, textCharge);
-            else { textCharge.release(); textCharge = undefined; next.text = ''; next.denied = true; }
-          } catch (error) {
-            textCharge?.release(); next.text = ''; next.denied = true;
-            diagnose(options.diagnostic, 'ERROR', 'file-detail', 'Expanded file details could not be measured', { call: node.toolCallId, error: error instanceof Error ? error.name : 'UnknownError' });
-          } finally { reservation.close(); }
-        }
-      }
-    } else if (next.text) {
-      const funding = cardClient?.cardSource.geometryFunding(), bytes = fileDetailTextBytes(next.text);
-      const reservation = funding && Number.isSafeInteger(bytes) ? funding.grant(bytes) : undefined;
-      if (!funding || !reservation) { next.text = ''; next.denied = true; }
-      else {
-        let textCharge: DataCharge | undefined;
-        try {
-          textCharge = reservation.consume(bytes); reservation.close();
-          next.measured = measure(next.text, funding.budget, funding.grant);
-          if (next.measured) retainFileDetail(node, next, textCharge);
-          else { textCharge.release(); textCharge = undefined; next.text = ''; next.denied = true; }
-        } catch (error) {
-          textCharge?.release(); next.text = ''; next.denied = true;
-          diagnose(options.diagnostic, 'ERROR', 'file-detail', 'Expanded file details could not be measured', { call: node.toolCallId, error: error instanceof Error ? error.name : 'UnknownError' });
-        } finally { reservation.close(); }
-      }
-    }
-    fileDetailCaches.set(node, next); return next;
-  }
   function prepareFileDetail(node: ToolNode, refreshContent = false): void {
     if (!active || quiescing || !attached(node) || fileSucceeded(node) || fileMode(node) !== 'full') {
-      releaseFileDetail(node);
+      fileDetails.drop(node);
       return;
     }
     ensureCards();
-    detailCache(node, 'full', refreshContent);
-  }
-  function detailRows(detail: FileDetailCache, width: number): string[] | undefined {
-    if (!detail.text) return [];
-    const measured = detail.measured, funding = cardClient?.cardSource.geometryFunding();
-    if (!measured || !measured.isValid || !funding) return;
-    const layout = reflow(measured, { mode: 'file', width }, funding.grant);
-    if (!layout) return;
-    const rows: string[] = []; let span = 0;
-    try {
-      const valid = layout.withLookup(measured, read => {
-        layout.visitRows((_row, _cells, spanCount) => {
-          let line = '';
-          for (let i = 0; i < spanCount; i++, span++) read.span(span, (kind, first, end, cells) => {
-            if (kind === SpanKind.Source && end > first) line += detail.text.slice(read.glyphStart(first), read.glyphEnd(end - 1));
-            else if (kind === SpanKind.Tab) line += ' '.repeat(cells);
-            else if (kind === SpanKind.Replacement) line += '�' + ' '.repeat(Math.max(0, cells - 1));
-          });
-          rows.push(line);
-        });
-      });
-      return valid ? rows : undefined;
-    } finally { layout.dispose(); }
+    fileDetails.prepare(node, 'full', buildFileDetail, refreshContent);
   }
   function fileDetailServiceRow(text: string, width: number, padding: number): string[] {
     // Pi's regular renderer rejects rows wider than the current transcript, even for fixed service copy.
@@ -900,7 +771,7 @@ export function installTidyUi(tui: LiveTui, getTheme: () => Palette, options: Ti
     const inset = Math.min(Math.max(0, padding), Math.floor((width - 1) / 2));
     return new Text(text, inset, 0).render(width);
   }
-  function fileErrorLayout(node: ToolNode, width: number, theme: Palette, padding: number, cwd: string | undefined, detail?: FileDetailCache): Layout {
+  function fileErrorLayout(node: ToolNode, width: number, theme: Palette, padding: number, cwd: string | undefined, detail?: FileDetailView): Layout {
     const geometry = cardGeometry(width, padding), available = geometry.contentWidth;
     const path = toolReader(node).path(), location = path ? argumentParts('write', { path }, cwd).object : undefined;
     const title = cardKind(node) === 'read' ? '→ Read' : cardKind(node) === 'edit' ? '← Edit' : '← Write';
@@ -908,7 +779,7 @@ export function installTidyUi(tui: LiveTui, getTheme: () => Palette, options: Ti
     const service = (text: string, role: ThemeColor) => wrapText(text, available, { wide: 'replace' }).map(row => theme.fg(role, row));
     const body = service(heading, 'muted');
     body.push('');
-    const output = detail && !detail.denied ? detailRows(detail, available) : undefined;
+    const output = detail && !detail.denied ? fileDetails.rows(detail, available) : undefined;
     if (output?.length) for (const row of output) body.push(theme.fg('toolOutput', row));
     else body.push(...service(!detail || detail.denied || output === undefined
       ? 'File details are unavailable within the current geometry budget.'
@@ -920,8 +791,7 @@ export function installTidyUi(tui: LiveTui, getTheme: () => Palette, options: Ti
     const theme = getTheme(), padding = outputPadding(), mode = fileMode(node) ?? 'preview';
     const cwd = (node.getRenderContext() as { cwd?: string } | undefined)?.cwd;
     return memo(node, toolLayoutKind(node), width, theme, cwd, padding, () => {
-      const cached = fileDetailCaches.get(node);
-      const detail = mode === 'full' && cached?.args === node.args && cached.result === node.result && cached.mode === mode ? cached : undefined;
+      const detail = mode === 'full' ? fileDetails.peek(node, mode) : undefined;
       if (mode === 'full' && !node.isPartial && node.result?.isError === true)
         return fileErrorLayout(node, width, theme, padding, cwd, detail);
       const summary = summaryRows(node, width, theme, padding, cardKind(node) === 'read' && mode === 'full' ? 'Read' : summaryName(node.toolName), cwd);
@@ -947,14 +817,14 @@ export function installTidyUi(tui: LiveTui, getTheme: () => Palette, options: Ti
             : node.result?.isError ? '  The tool reported an error without text details.' : '  Waiting for file content.';
         rows.push(...fileDetailServiceRow(theme.fg(refused ? 'muted' : node.result?.isError ? 'error' : 'muted', message), width, padding));
       }
-      else if (mode === 'full' && detail?.text && !paintRetry) {
-        const measured = detailRows(detail, width);
+      else if (mode === 'full' && detail?.hasText && !paintRetry) {
+        const measured = fileDetails.rows(detail, width);
         if (measured) rows.push(...measured);
         else rows.push(...fileDetailServiceRow(theme.fg('muted', '  File details are unavailable within the current geometry budget.'), width, padding));
       }
       if (detail?.omitted) rows.push(...fileDetailServiceRow(theme.fg('muted', '  … additional file content is omitted from this bounded view'), width, padding));
-      else if (!detail?.denied && node.result?.isError && mode === 'full' && !detail?.text) rows.push(...fileDetailServiceRow(theme.fg('error', '  The tool reported an error without text details.'), width, padding));
-      else if (!detail?.denied && (node.isPartial || !node.result) && mode === 'full' && !detail?.text) rows.push(...fileDetailServiceRow(theme.fg('muted', '  Waiting for file content.'), width, padding));
+      else if (!detail?.denied && node.result?.isError && mode === 'full' && !detail?.hasText) rows.push(...fileDetailServiceRow(theme.fg('error', '  The tool reported an error without text details.'), width, padding));
+      else if (!detail?.denied && (node.isPartial || !node.result) && mode === 'full' && !detail?.hasText) rows.push(...fileDetailServiceRow(theme.fg('muted', '  Waiting for file content.'), width, padding));
       if (mode === 'preview' && node.result && !node.isPartial) rows.push(...fileDetailServiceRow(theme.fg('muted', '  … (Click to expand)'), width, padding));
       return { ...summary, rows };
     });
@@ -1511,7 +1381,7 @@ export function installTidyUi(tui: LiveTui, getTheme: () => Palette, options: Ti
           return presentedRows(this, displayedRows, offset);
         }
         pauseSyntax(this);
-        if (filePresentationTool(this)) releaseFileDetail(this);
+        if (filePresentationTool(this)) fileDetails.drop(this);
         if (!eligible(this)) {
           removeAnimation(this);
           const lines = originalRender.call(this, width);

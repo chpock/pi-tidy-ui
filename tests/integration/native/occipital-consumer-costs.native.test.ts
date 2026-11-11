@@ -37,10 +37,10 @@ import { resolveTheme } from '../../../src/themes/selection.ts';
 
 const inputs = readInputs(), binary = validateNative(inputs);
 function allocationSite(stack: string): string {
-  return stack.split('\n').map(line => line.match(/(?:^|[\\/])src[\\/](?:syntax|occipital|highlighting|appearance|application|rendering)[\\/](?:[\w-]+[\\/])*([\w-]+\.ts)(?::\d+(?::\d+)?)?/)?.[1])
+  return stack.split('\n').map(line => line.match(/(?:^|[\\/])src[\\/](?:syntax|occipital|highlighting|appearance|application|rendering|presentation)[\\/](?:[\w-]+[\\/])*([\w-]+\.ts)(?::\d+(?::\d+)?)?/)?.[1])
     .find(site => site && site !== 'data-budget.ts') ?? 'other';
 }
-test('native allocation observer retains raw labels for flat and nested source modules', () => {
+test('native allocation observer retains raw labels for flat and nested source modules', async t => {
   assert.equal(allocationSite(' at /repo/src/highlighting/source-execution.ts:1:1'), 'source-execution.ts');
   assert.equal(allocationSite(' at /repo/src/highlighting/storage/semantic-retention.ts:1:1'), 'semantic-retention.ts');
   assert.equal(allocationSite(' at /repo/src/highlighting/storage/ready-display-publication.ts:1:1'), 'ready-display-publication.ts');
@@ -49,6 +49,12 @@ test('native allocation observer retains raw labels for flat and nested source m
   assert.equal(allocationSite(String.raw` at C:\repo\src\rendering\flat-paint.ts:1:1`), 'flat-paint.ts');
   assert.equal(allocationSite(String.raw` at C:\repo\src\highlighting\storage\semantic-retention.ts:1:1`), 'semantic-retention.ts');
   assert.equal(allocationSite(' at /repo/scripts/semantic-retention.ts:1:1'), 'other');
+  await t.test('POSIX presentation allocation label', () => {
+    assert.equal(allocationSite(' at /repo/src/presentation/example.ts:1:1'), 'example.ts');
+  });
+  await t.test('nested Windows presentation allocation label', () => {
+    assert.equal(allocationSite(String.raw` at C:\repo\src\presentation\nested\example.ts:1:1`), 'example.ts');
+  });
 });
 type SemanticRequestPayload<T = SemanticTransportRequest> = T extends { v: number; ticket: string } ? Omit<T, 'v' | 'ticket'> : never;
 const dist = dirname(fileURLToPath(import.meta.resolve('@earendil-works/pi-coding-agent')));
