@@ -2,7 +2,7 @@
 // Native integration and clean installed-package controls use their own providers.
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import tidyUi from '../../src/index.ts';
-import { DeferredRenderer } from '../../src/syntax/lazy-native-renderers.ts';
+import { DeferredRenderer } from '../../src/host/pi/lazy-native-renderers.ts';
 import { createSyntaxOptions } from '../../src/application/syntax-options.ts';
 import { ExpectedOwnedUnavailable } from '../../src/occipital/owned-startup.ts';
 import { createWriteCaptureGate, observeSyntaxCards } from './syntax-local-work.ts';

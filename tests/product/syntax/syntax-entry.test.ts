@@ -25,7 +25,7 @@ import { sampleOwnedPalette } from '../../../src/themes/owned-palette.ts';
 import { menuPage, withMenu, setAppearance, setLogging } from '../../helpers/menu-driver.ts';
 import { ExtensionSettings, themePreferenceFromSettings, type SettingsLoadResult, type SettingsPatch, type LocalPreferences } from '../../../src/settings.ts';
 import { FilePreviewState } from '../../../src/presentation/file-preview-state.ts';
-import { createLazyNativeRendererResolver, DeferredRenderer, isDeferredStockFilePair } from '../../../src/syntax/lazy-native-renderers.ts';
+import { createLazyNativeRendererResolver, DeferredRenderer, isDeferredStockFilePair } from '../../../src/host/pi/lazy-native-renderers.ts';
 import { extensionHarness as sharedExtensionHarness } from '../../fixtures/sdk-contract-support.ts';
 
 const dist = dirname(fileURLToPath(import.meta.resolve('@earendil-works/pi-coding-agent')));

@@ -44,6 +44,8 @@ The stock main editor is not a transcript-layout cache consumer. Each render pro
 
 ## Execution spinner
 
+`PresentationSpinner` in `src/presentation/spinner.ts` owns the weak participants, pass-time sample and single fallback deadline. The native session reports ordinary document begin/end, including whether it returned successfully; it owns neither another timer nor a copied animation state. Attachment/execution facts are borrowed from their current owners.
+
 Use one adapter-owned, unreferenced 100 ms **inactivity timeout**, not a periodic interval. Participation starts only when an attached, displayable compact call is rendered after actual execution starts. Argument streaming, completed/history calls, zero-width or native-zero-row calls, expanded/native tools, non-read image tools, and default Bash/edit/write cards start no animation resource. An executing compact read, including one with image output, follows ordinary summary participation; expanded read starts no compact spinner. There is no idle/background housekeeping timer.
 
 ### Why host-driven animation needs a fallback

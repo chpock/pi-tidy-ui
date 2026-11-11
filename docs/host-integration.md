@@ -1,6 +1,6 @@
 # Pi host integration and extension lifecycle
 
-`src/index.ts` is the composition root and the only live-host adapter. It connects Pi's lifecycle, actual component tree and public extension UI to otherwise host-independent presenters, syntax services, preferences and diagnostics. It does not replace tools, execute commands on their behalf or rewrite conversation records. The minimum supported host is Pi 1.0.1, whose public tool-renderer resolver is required for file-presentation laziness.
+`src/index.ts` is the application composition root. `src/host/pi/` owns the concrete native bindings and one live native installation; entry wiring connects those bindings and Pi's public lifecycle/UI to host-independent presenters, syntax services, preferences and diagnostics. It does not replace tools, execute commands on their behalf or rewrite conversation records. The minimum supported host is Pi 1.0.1, whose public tool-renderer resolver is required for file-presentation laziness.
 
 Start with the [system overview](architecture.md). This chapter owns attachment, compatibility, publication into a live session and teardown. The [rendering pipeline](rendering.md) owns text/layout work; [editor](editor.md), [footer](footer-spec.md), [terminal defaults](terminal-colors-spec.md) and [syntax providers](syntax/providers.md) specify their narrower state machines.
 
@@ -12,7 +12,7 @@ Pi loads the TypeScript extension entry point directly. Host classes/functions c
 | --- | --- | --- |
 | Extension factory | Registered flags/events/command; settings instance and preference-load promise | No UI or provider start merely from constructing the factory |
 | Current session runtime | Live context, lifecycle epoch, save-abort signal, confirmed theme, health/journal owners, current services | Replaced or retired through Pi lifecycle events; obsolete async results cannot publish into a successor |
-| Presentation adapter | Owned descriptors, weak parent edges, actual renderer/shell/tree/image/Markdown borrows and animation-clock observations | Supplies current host facts/capabilities; explicit appearance Off, failure or teardown restores hooks and releases presentation |
+| Native session | Owned descriptors, weak-keyed parent/index records, actual renderer/shell/tree/image/Markdown borrows and native widget observations | One liveness/failure/restoration authority; supplies current facts/capabilities without owning card policy, source jobs or row caches |
 | Presentation sessions and presenters | Per-component view/preview/currentness state, latest row/scene handles, preparation consumer and render/spacing/hit/update policy | No native component shapes or hook ownership; no source-execution, fallback or physical-job authority |
 | Component | Its latest prepared/painted representation and signature | Owner removal/collection, invalidation or replacement, with the synchronous renderer-transfer exception below |
 | Settings popup | One overlay, current page/selection and theme-preview rollback point | Popup close does not own the provider or dispose the session runtime |
@@ -21,6 +21,24 @@ Pi loads the TypeScript extension entry point directly. Host classes/functions c
 These are different lifetimes. A width change is not a new source owner; a popup close is not a provider failure; changing a session is not the same as temporarily yielding the terminal. Treating them alike would either discard reusable work or let stale work affect a new owner.
 
 The settings file persists only the confirmed code theme and terminal/native switches. Appearance and capture are process-only flags. See [persistence](settings-menu-spec.md#persistence) for validation and publication semantics.
+
+### Concrete native binding owners
+
+`NativeSession` is constructed before its presentation consumers are wired, but construction neither visits the tree nor publishes hooks. `install()` runs only after the real consumers and controller exist. Application composition keeps the source/palette/preparation owners; the native session receives their presentation operations, not a source client or funding pool.
+
+| Module | Native state and responsibility |
+| --- | --- |
+| `src/host/pi/native-session.ts` | Sole active/failure state, attachment/index metadata, Container dispatcher and weak one-microtask renderer retirement. It coordinates installation and ordered restoration of its private families. |
+| `src/host/pi/tool-components.ts` | Inspected tool fields, prototype/update descriptors, original renderer calls, exact stock/deferred-shell recognition and opaque image-row borrows. Actual-width visibility is queried, never cached here. |
+| `src/host/pi/user-components.ts` | Native user/Markdown field borrows and prototype/update descriptors. The caller's `UserPresenter` alone retains rows and signatures. Persistent wrappers have no installer-node parameter. |
+| `src/host/pi/native-editor.ts` | Joint ownership of editor geometry, placement descriptors, native status visibility and upper-widget/spacer observations. The session's single dispatcher invokes these observations; metadata and gap decisions read the same guarded records. |
+| `src/host/pi/lazy-native-renderers.ts` | Existing weak `context.state`-qualified stock renderer leaves, invocation inputs and eviction/retirement behavior, independent of the native session's prototype records. |
+| `src/host/pi/native-bindings.ts` | Public Pi classification binding, native Text service-row projection, guarded terminal-tracking read and weak current-footer-slot observation. It does not decide fallback permission or footer policy. |
+| `src/presentation/spinner.ts` | Presentation's existing weak compact-call participants, monotonic pass sample and single fallback deadline. Native document observation supplies begin/end notifications, not a second clock or per-frame aggregate snapshot. |
+
+Full restoration first disables native-session admission and releases application-owned presentation/source consumers. It restores still-owned Container/Spacer observers and tool/user methods, then restores editor placement flags, rebinds the same native editor, and only afterward releases editor presentation methods. Finally the application removes its metadata/Git owner and optionally requests repaint. The inactive/no-hook path disposes consumers without repeating editor rebinding. No generic cleanup stack or independently closable hook family changes this order.
+
+Footer eligibility, delayed installation, explicit reclaim and later-owner policy remain in application wiring. The native layer lends only a weak slot/owner observation and current editor eligibility; it does not forward arbitrary public UI operations or retain footer contents.
 
 ## Startup and attachment
 
@@ -115,7 +133,7 @@ For that specific clear:
 3. recheck actual attachment against the stable TUI;
 4. retain synchronously transferred owners; release only genuinely detached subtrees.
 
-This is neither a grace-period cache nor a timed session handoff. Appearance Off, failure and unload still release immediately. Parent/index observations repair stale positions lazily; they do not create a second strong tree registry. See [layout ownership](render-cache-spec.md#invalidation-and-ownership) and [syntax work ownership](syntax/work.md).
+This is neither a grace-period cache nor a timed session handoff. Appearance Off, failure and unload still release immediately. Parent/index observations are weak-keyed by child and repair stale positions from current native children; each live record holds its parent strongly. They do not create a second strong registry of children. See [layout ownership](render-cache-spec.md#invalidation-and-ownership) and [syntax work ownership](syntax/work.md).
 
 ## Semantic events and snapshots
 

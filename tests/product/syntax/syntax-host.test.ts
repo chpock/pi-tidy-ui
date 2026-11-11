@@ -1,6 +1,6 @@
 import { PiFallbackCoordinator } from '../../../src/highlighting/pi-fallback.ts';
 import '../../fixtures/test-guard.mjs';
-import { isDeferredStockEditComponent, isDeferredStockFileCall, isDeferredStockFilePair } from '../../../src/syntax/lazy-native-renderers.ts';
+import { isDeferredStockEditComponent, isDeferredStockFileCall, isDeferredStockFilePair } from '../../../src/host/pi/lazy-native-renderers.ts';
 import { hostCells, hasHostInk } from '../../fixtures/host-cells.ts';
 import type { ToolDefinition } from '@earendil-works/pi-coding-agent';
 import assert from 'node:assert/strict';
@@ -22,7 +22,7 @@ import { fingerprintRules } from '../../../src/occipital/style-rules.ts';
 import { resolveTheme } from '../../../src/themes/selection.ts';
 import { palettePreference } from '../../fixtures/palette-preference.ts';
 import { CardSources } from '../../../src/syntax/cards.ts';
-import { DeferredRenderer } from '../../../src/syntax/lazy-native-renderers.ts';
+import { DeferredRenderer } from '../../../src/host/pi/lazy-native-renderers.ts';
 import { sampleOwnedPalette } from '../../../src/themes/owned-palette.ts';
 import { PaletteInputOwner } from '../../../src/syntax/pi-input-owner.ts';
 import { observeSyntaxLocalWork } from '../../fixtures/syntax-local-work.ts';

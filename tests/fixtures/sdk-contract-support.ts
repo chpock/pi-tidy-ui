@@ -3,7 +3,7 @@ import { Container, Text, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import { CustomEditor, createEditToolDefinition, createReadToolDefinition, createWriteToolDefinition, type ExtensionAPI, type ExtensionContext, type ToolRendererResolver, type ToolRenderers } from "@earendil-works/pi-coding-agent";
 import tidyUi, { installTidyUi as installHost, type TidyUiOptions } from "../../src/index.ts";
 import type { SyntaxRuntimeOptions } from "../../src/application/syntax-runtime.ts";
-import { createLazyNativeRendererResolver } from "../../src/syntax/lazy-native-renderers.ts";
+import { createLazyNativeRendererResolver } from "../../src/host/pi/lazy-native-renderers.ts";
 import { getThemeByName } from '../../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js';
 export const cardInputTheme = getThemeByName('dark')!;
 // Synthetic ordinary formatters are not Pi-input themes. Custom cards consume

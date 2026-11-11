@@ -1,5 +1,8 @@
-import { VERSION, CustomEditor, highlightCode, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { Box, Container, Editor, Image, Markdown, Spacer, Text, TruncatedText, backgroundAnsi, type TerminalColorMode, type Component, type TuiMouseEvent, type TuiMouseEventResult } from "@earendil-works/pi-tui";
+import { VERSION, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { backgroundAnsi, type TerminalColorMode } from "@earendil-works/pi-tui";
+import { NativeSession } from './host/pi/native-session.ts';
+import { classifyNativeCode, nativeServiceRows, observeFooterSlot, terminalAppearanceTracking, type NativeFooterSlot } from './host/pi/native-bindings.ts';
+import { PresentationSpinner } from './presentation/spinner.ts';
 import { createRequire } from "node:module";
 import { SessionLogging } from "./session-logging.ts";
 import { RuntimeHealth } from './runtime-health.ts';
@@ -11,21 +14,19 @@ import { TidyMenu, type TidyMenuOwner, type TidyMenuAction } from './tidy-menu.t
 import type { SyntaxMenuOutcome } from './application/syntax-menu.ts';
 import { type JournalOptions } from "./debug-log.ts";
 import { diagnose, reportRuntime, type DiagnosticFields, type DiagnosticSink } from "./diagnostics.ts";
-import { stripVTControlCharacters } from "node:util";
 import type { FilePreviewMode } from './cards/file-preview-mode.ts';
 import { PresentationCacheOwner } from './presentation/cache-owner.ts';
 import { ToolPresentationSessions, type PresentationConstructionObserver } from './presentation/tool-sessions.ts';
 import { createToolPreparationPresenter } from './presentation/tool-preparation.ts';
-import { createToolViewPresenter, SPINNER_INTERVAL_MS, type NativeToolUpdate, type ToolUpdateName } from './presentation/tool-view-presenter.ts';
-import { ToolProducerPresenter, type ToolFieldAccessors } from './presentation/tool-producers.ts';
+import { createToolViewPresenter } from './presentation/tool-view-presenter.ts';
+import { ToolProducerPresenter } from './presentation/tool-producers.ts';
 import { ToolSummaryPresenter } from './presentation/tool-summary-presenter.ts';
 import { FileDetailPresenter } from './presentation/file-detail-presenter.ts';
 import { ToolPresentationPolicy } from './presentation/tool-policy.ts';
 import { ToolRoutingPresenter } from './presentation/tool-routing-presenter.ts';
-import { UserPresenter, type UserPresentationLayout } from './presentation/user-presenter.ts';
+import { UserPresenter } from './presentation/user-presenter.ts';
 import { QueuedPresenter } from './presentation/queued-presenter.ts';
-import { EDITOR_TOP, EDITOR_BOTTOM, renderEditorCard, type EditorLayout } from "./editor-card.ts";
-import { renderEditorStatus, type EditorStatusInfo } from "./editor-status.ts";
+import type { EditorStatusInfo } from './editor-status.ts';
 import { GitBranchSource, gitDiagnostics } from "./git-branch.ts";
 import { FOOTER_FIELDS, FooterView, footerFirstMessage, footerUsage, type FooterData } from "./footer.ts";
 import { TerminalColors, processTerminalDefaults, type DefaultColors } from "./terminal-colors.ts";
@@ -43,7 +44,7 @@ import type { GeometryFunding } from './resources/data-budget.ts';
 import type { PiClassifier } from "./syntax/work.ts";
 import { createSyntaxOptions } from "./application/syntax-options.ts";
 import { SyntaxRuntime, type SyntaxRuntimeOptions } from "./application/syntax-runtime.ts";
-import { createLazyNativeRendererResolver, isDeferredStockEditComponent, isDeferredStockEditPair, isDeferredStockFileCall, isDeferredStockFilePair, isDeferredStockReadPair, releaseNativeRendererCache, updateNativeRendererArgs, stockEditCall, stockEditResult, type NativeRendererFailureReporter } from './syntax/lazy-native-renderers.ts';
+import { createLazyNativeRendererResolver, type NativeRendererFailureReporter } from './host/pi/lazy-native-renderers.ts';
 export { describeToolArgs as describeArgs } from "./tool-adapters/summary.ts";
 export { sanitize } from "./summary-args.ts";
 const extensionVersion = (createRequire(import.meta.url)("../package.json") as { version: string }).version;
@@ -57,61 +58,8 @@ export function terminalColorDiagnostics() {
   return view ? { status: view.status(), counters: view.stats() } : undefined;
 }
 
-/** The private component contract verified against Pi 1.0.1; never import a second internal class. */
-interface ToolNode extends Component {
-  toolCallId: string;
-  toolName: string;
-  args: Record<string, unknown>;
-  expanded: boolean;
-  hideComponent: boolean;
-  isPartial: boolean;
-  executionStarted: boolean;
-  argsComplete: boolean;
-  result?: { content: { type: string; text?: string }[]; isError?: boolean; details?: unknown; role?: unknown };
-  markExecutionStarted(): void;
-  updateArgs(args: unknown): void;
-  updateResult(result: unknown, partial?: boolean): void;
-  setExpanded(expanded: boolean): void;
-  getRenderContext(): unknown;
-  getRenderShell(): string;
-  callRendererComponent?: Component;
-  getCallRenderer?(): unknown;
-  getResultRenderer?(): unknown;
-}
-interface UserNode extends Container {
-  text: string;
-  outputPad: number;
-  markdownTheme: object;
-  markdownTransformers: unknown[];
-  rebuild(): void;
-  setOutputPad(padding: number): void;
-}
-type UserRender = (this: UserNode, width: number) => string[];
-const userCandidate = (node: Component): node is UserNode =>
-  node instanceof Container && node.constructor.name === "UserMessageComponent";
-const compatibleUser = (node: UserNode) => typeof node.text === "string" &&
-  Number.isSafeInteger(node.outputPad) && node.outputPad >= 0 &&
-  typeof node.markdownTheme === "object" && node.markdownTheme !== null && Array.isArray(node.markdownTransformers) &&
-  typeof node.rebuild === "function" && typeof node.setOutputPad === "function" &&
-  node.children.length === 1 && node.children[0] instanceof Markdown;
-
-type LiveTui = Component & {
-  requestRender(): void;
-  terminal?: { readonly rows: number };
-  hasActiveSelection?(): boolean;
-  getFocusedComponent?(): Component | null;
-  setFocus?(component: Component | null): void;
-};
+type LiveTui = { requestRender(): void; invalidate(): void };
 type Palette = CardTheme;
-/** Approved one-field read; never infer absence/unknown shape as fixed mode. */
-export function terminalAppearanceTracking(tui: object): boolean | undefined {
-  try {
-    const value: unknown = Reflect.get(tui, "terminalColorSchemeNotificationsEnabled");
-    return typeof value === "boolean" ? value : undefined;
-  } catch { return undefined; }
-}
-type Render = (this: ToolNode, width: number) => string[];
-type Mouse = (this: ToolNode, event: TuiMouseEvent) => TuiMouseEventResult | undefined;
 
 export interface TidyUiOptions {
   diagnostic?: DiagnosticSink;
@@ -172,41 +120,12 @@ export interface TidyUiController {
 function localCardNotice(owner: WeakRef<TidyUiController>) {
   return (keys: readonly string[], groups?: readonly number[]) => owner.deref()?.syntaxSourceChanged(keys, groups);
 }
-type PreparedCardController = TidyUiController & { refreshPreparedPalette(node: ToolNode, token: object): void; retireRendererClears(): void };
-function rendererClearRetirement(adapter: WeakRef<PreparedCardController>) {
-  return () => adapter.deref()?.retireRendererClears();
-}
+type PreparedCardController = TidyUiController & { refreshPreparedPalette(node: object, token: object): void };
 const DEFAULT_CARDS = ["bash", "powershell", "write", "edit"];
-function candidate(node: Component): node is ToolNode {
-  const tool = node as Partial<ToolNode>;
-  return typeof tool.toolCallId === "string" && typeof tool.toolName === "string";
-}
-function compatible(node: ToolNode): boolean {
-  return node instanceof Container && typeof node.expanded === "boolean" &&
-    typeof node.hideComponent === "boolean" && typeof node.isPartial === "boolean" &&
-    typeof node.executionStarted === "boolean" && typeof node.argsComplete === "boolean" &&
-    !!node.args && typeof node.args === "object" && !Array.isArray(node.args) &&
-    typeof node.markExecutionStarted === "function" && typeof node.updateArgs === "function" && typeof node.updateResult === "function" &&
-    typeof node.setExpanded === "function" && typeof node.getRenderContext === "function" &&
-    typeof node.getRenderShell === "function" &&
-    typeof node.render === "function" && typeof node.handleMouse === "function";
-}
-
-const toolFields: ToolFieldAccessors<ToolNode> = {
-  name: node => node.toolName, id: node => node.toolCallId, args: node => node.args, result: node => node.result,
-  partial: node => node.isPartial, expanded: node => node.expanded, executionStarted: node => node.executionStarted,
-  argsComplete: node => node.argsComplete,
-};
-/** The only compatibility-sensitive adapter. It does not change tools or session entries. */
+/** Composes source and presentation owners against one native installation. */
 export function installTidyUi(tui: LiveTui, getTheme: () => Palette, options: InternalTidyUiOptions = {}): TidyUiController {
-  const toolProducer = new ToolProducerPresenter(toolFields);
-  let active = false;
-  let reason: string | undefined;
-  const parents = new WeakMap<Component, { parent: Container; index: number }>();
-  let rendererClears: WeakRef<Component>[] = [], rendererClearPending = false;
   const cacheOwner = new PresentationCacheOwner();
-  const cache = cacheOwner.ordinary;
-  const cardCache = cacheOwner.cards;
+  const cache = cacheOwner.ordinary, cardCache = cacheOwner.cards;
   const decisions = new WeakMap<object, Map<string, { choice: string; width: number; rows: number; geometry?: string }>>();
   function decision(owner: object, area: string, choice: string, width: number, rows: number, fields?: DiagnosticFields, geometry?: string): void {
     if (!options.diagnostic) return;
@@ -215,152 +134,100 @@ export function installTidyUi(tui: LiveTui, getTheme: () => Palette, options: In
     if (previous?.choice === choice && previous.width === width && previous.rows === rows && previous.geometry === geometry) return;
     if (!marks) { marks = new Map(); decisions.set(owner, marks); }
     marks.set(area, { choice, width, rows, geometry });
-    diagnose(options.diagnostic, "DEBUG", area, choice, { width, rows, ...fields });
+    diagnose(options.diagnostic, 'DEBUG', area, choice, { width, rows, ...fields });
   }
-  let lifecycleCallbacks = 0, lifecyclePhaseChanges = 0;
-  function nativePhase(node: ToolNode, operation: string): void {
-    lifecycleCallbacks++;
-    if (!options.diagnostic) return;
-    const phase = String(Number(node.isPartial) | Number(node.argsComplete) << 1 | Number(node.executionStarted) << 2
-      | Number(node.expanded) << 3 | Number(!!node.result) << 4 | Number(node.result?.isError === true) << 5);
-    if (decisions.get(node)?.get('tool-phase')?.geometry === phase) return;
-    lifecyclePhaseChanges++;
-    decision(node, 'tool-phase', 'Native tool phase changed; repeated same-phase callbacks counted only', 0, 0,
-      { call: node.toolCallId, tool: node.toolName, operation, partial: node.isPartial, complete: node.argsComplete,
-        executing: node.executionStarted, expanded: node.expanded, result: !!node.result, error: node.result?.isError === true }, phase);
-  }
-  function toolDecision(node: ToolNode, choice: string, width: number, rows: number): void {
-    if (options.diagnostic) decision(node, "tool", choice, width, rows, { call: node.toolCallId, tool: node.toolName,
-      expanded: node.expanded, hidden: node.hideComponent, partial: node.isPartial, complete: node.argsComplete });
-  }
-  // One plain snapshot per normal transcript pass; direct component visits read live settings.
   let passOutputPad: number | undefined;
   const outputPadding = () => passOutputPad ?? (options.outputPad?.() === 0 ? 0 : 1);
   let quiescing = false;
-  const animated = new Set<WeakRef<ToolNode>>();
-  let animationRefs = new WeakMap<ToolNode, WeakRef<ToolNode>>();
-  let spinnerTimer: ReturnType<typeof setTimeout> | undefined;
-  let spinnerEpoch: number | undefined, passSpinnerTime: number | undefined;
-  let spinnerGeneration = 0, spinnerPending = false;
-  let spinnerWakes = 0, spinnerRequests = 0;
-  function stopSpinner() {
-    if (spinnerTimer !== undefined) clearTimeout(spinnerTimer);
-    spinnerTimer = undefined;
-    spinnerGeneration++; // Cancel callbacks already queued for the old deadline/lifecycle.
-    spinnerPending = false;
-    spinnerEpoch = undefined;
+  // Construction only captures hooks; install invokes these ports after their consumers exist.
+  const native: NativeSession = new NativeSession(tui, {
+    theme: getTheme, decision,
+    tool: {
+      restorePreview: node => toolView.restorePreview(node), attach: node => toolView.attach(node),
+      render: (node, width, render) => toolView.render(node, width, render),
+      mouse: (node, event, render, mouse) => toolView.mouse(node, event, render, mouse),
+      update: (node, name, args, method) => toolView.update(node, name, args, method),
+      remove: node => toolView.remove(node), pause: node => toolView.pause(node),
+    },
+    user: {
+      forget: node => userPresenter.forget(node),
+      layout: (node, width, render) => {
+        const theme = getTheme(), padding = options.outputPad ? outputPadding() : native.user.padding(node);
+        return userPresenter.layout(node, width, theme, padding, native.user.text(node), native.user.padding(node),
+          native.user.markdown(node), native.user.markdownTheme(node), native.user.transformers(node), render);
+      },
+      present: (node, width, rows) => toolView.presentUser(node, width, rows),
+    },
+    queued: {
+      forget: node => queuedPresenter.forget(node),
+      project: (messages, width, height, hint, projected) =>
+        queuedPresenter.project(messages, width, height, getTheme(), outputPadding(), hint, projected),
+    },
+    document: {
+      running: () => passOutputPad !== undefined,
+      begin: () => { passOutputPad = outputPadding(); spinner.beginPass(); },
+      end: completed => { passOutputPad = undefined; spinner.endPass(completed); },
+    },
+    failure: message => {
+      diagnose(options.diagnostic, 'ERROR', 'compatibility', message);
+      reportRuntime(options.diagnostic, { kind: 'failure', scope: controller, operation: 'appearance', area: 'appearance', code: 'unsupported_host' });
+    },
+    release: full => {
+      if (full) {
+        const animation = spinner.snapshot();
+        diagnose(options.diagnostic, 'INFO', 'runtime', 'Presentation restoring native ownership; later owners remain untouched',
+          { animationWakes: animation.wakes, animationRequests: animation.requests });
+        filePreviewState.reset();
+      }
+      syntax?.dispose(); ownedSources?.dispose(); paletteOwner.dispose(); toolSessions.clearSyntax();
+      if (full) { spinner.reset(); clearCache(); }
+    },
+  }, {
+    nativeEditor: options.nativeEditor, editorStatus: options.editorStatus,
+    rerouteEditorStatus: options.rerouteEditorStatus, editorStatusRestored: options.editorStatusRestored, warn: options.warn,
+  });
+  const active = () => native.active, attached = (node: object) => native.attached(node);
+  const toolFields = native.fields;
+  const toolProducer = new ToolProducerPresenter(toolFields);
+  const spinner: PresentationSpinner<object> = new PresentationSpinner<object>({ active, quiescing: () => quiescing,
+    executing: node => toolView.executing(node), attached, requestRender: () => tui.requestRender(), fields: toolFields, diagnostic: options.diagnostic });
+  let lifecycleCallbacks = 0, lifecyclePhaseChanges = 0;
+  function nativePhase(node: object, operation: string): void {
+    lifecycleCallbacks++;
+    if (!options.diagnostic) return;
+    const phase = String(Number(toolFields.partial(node)) | Number(toolFields.argsComplete(node)) << 1 | Number(toolFields.executionStarted(node)) << 2
+      | Number(toolFields.expanded(node)) << 3 | Number(!!toolFields.result(node)) << 4 | Number(toolFields.result(node)?.isError === true) << 5);
+    if (decisions.get(node)?.get('tool-phase')?.geometry === phase) return;
+    lifecyclePhaseChanges++;
+    decision(node, 'tool-phase', 'Native tool phase changed; repeated same-phase callbacks counted only', 0, 0,
+      { call: toolFields.id(node), tool: toolFields.name(node), operation, partial: toolFields.partial(node), complete: toolFields.argsComplete(node),
+        executing: toolFields.executionStarted(node), expanded: toolFields.expanded(node), result: !!toolFields.result(node), error: toolFields.result(node)?.isError === true }, phase);
   }
-  function removeAnimation(node: ToolNode) {
-    const reference = animationRefs.get(node);
-    if (reference) { animated.delete(reference); animationRefs.delete(node);
-      diagnose(options.diagnostic, "DEBUG", "animation", "Tool stopped participating in the existing spinner", { call: node.toolCallId, tool: node.toolName }); }
-    if (!animated.size) stopSpinner();
+  function toolDecision(node: object, choice: string, width: number, rows: number): void {
+    if (options.diagnostic) decision(node, 'tool', choice, width, rows, { call: toolFields.id(node), tool: toolFields.name(node),
+      expanded: toolFields.expanded(node), hidden: native.tool.hidden(node), partial: toolFields.partial(node), complete: toolFields.argsComplete(node) });
   }
-  // Public tree edges also recognize the stable TUI proxy without probing its receiver.
-  function attached(node: Component): boolean {
-    let current = node;
-    while (current !== tui) {
-      if (current instanceof Container && tui instanceof Container && current.children === tui.children) return true;
-      const position = parents.get(current);
-      if (!position) return false;
-      const children = position.parent.children;
-      if (children[position.index] !== current) position.index = children.indexOf(current);
-      if (position.index < 0) return false;
-      current = position.parent;
-    }
-    return true;
-  }
-  const executing = (node: ToolNode) => toolView.executing(node);
-  function pruneAnimation() {
-    // Only the small weak set of painted running calls, never a full transcript traversal.
-    for (const reference of animated) {
-      const node = reference.deref();
-      if (!node) animated.delete(reference);
-      else if (!executing(node) || !attached(node)) removeAnimation(node);
-    }
-    if (!animated.size) stopSpinner();
-  }
-  function armSpinner() {
-    if (!active || quiescing || !animated.size || spinnerPending) return;
-    if (spinnerTimer !== undefined) clearTimeout(spinnerTimer);
-    const generation = ++spinnerGeneration;
-    // Native Working already drives whole-document frames. This is a fallback
-    // after 100ms without a successful document visit, not another periodic clock.
-    // Construct it here, never in animate(node)'s component-containing scope.
-    spinnerTimer = setTimeout(function tickSpinner() {
-      if (!active || generation !== spinnerGeneration) return;
-      spinnerTimer = undefined;
-      spinnerWakes++;
-      pruneAnimation();
-      if (!animated.size) return;
-      spinnerPending = true; // Wait for the host visit; do not flood a delayed/stopped TUI.
-      spinnerRequests++;
-      tui.requestRender(); // No global/native invalidation or custom body rebuild.
-    }, SPINNER_INTERVAL_MS);
-    spinnerTimer.unref?.();
-  }
-  function finishSpinnerPass() {
-    if (!active) return;
-    // Also prune on host-driven passes: Working may prevent the fallback from
-    // ever firing, so timeout-only cleanup would keep silent detachments alive.
-    pruneAnimation();
-    spinnerPending = false;
-    armSpinner();
-  }
-  function animate(node: ToolNode) {
-    if (!executing(node) || !attached(node)) { removeAnimation(node); return; }
-    if (!animationRefs.has(node)) {
-      const reference = new WeakRef(node); animationRefs.set(node, reference); animated.add(reference);
-      diagnose(options.diagnostic, "DEBUG", "animation", "Tool participates in the existing spinner; no logging clock added", { call: node.toolCallId, tool: node.toolName });
-    }
-    spinnerEpoch ??= passSpinnerTime ?? performance.now();
-    // Normal document passes arm once on successful return. Direct tool visits
-    // may start participation, but cannot acknowledge/postpone an existing frame.
-    if (passSpinnerTime === undefined && spinnerTimer === undefined) armSpinner();
-  }
-
-  const forget = (node: ToolNode, cause?: string, preserveFileDetail?: boolean) => toolView.forget(node, cause, preserveFileDetail);
-  const userPresenter = new UserPresenter<UserNode>(cache, options.diagnostic, options.presentationConstructionObserver);
-  const forgetUser = (node: UserNode) => userPresenter.forget(node);
-  const queuedPresenter = new QueuedPresenter<Component>(cache, options.diagnostic, options.presentationConstructionObserver);
-  const forgetQueued = (node: Component) => queuedPresenter.forget(node);
+  const userPresenter = new UserPresenter<object>(cache, options.diagnostic, options.presentationConstructionObserver);
+  const queuedPresenter = new QueuedPresenter<object>(cache, options.diagnostic, options.presentationConstructionObserver);
   const clearCache = () => { fileDetails.clear(); cacheOwner.clear(); toolSessions.clearLayouts(); userPresenter.clear(); queuedPresenter.clear();
-    diagnose(options.diagnostic, "INFO", "cache", "Presentation layouts cleared; native/source caches are unchanged"); };
+    diagnose(options.diagnostic, 'INFO', 'cache', 'Presentation layouts cleared; native/source caches are unchanged'); };
   const cards = new Set([...DEFAULT_CARDS, ...options.cards ?? []]);
   const overrides = new Set(options.compact ?? []);
   const nativeOverrides = new Set(options.cards ?? []);
-  const originalAdd = Container.prototype.addChild;
-  const containerRender = Object.getOwnPropertyDescriptor(Container.prototype, "render")!;
-  const containerClear = Container.prototype.clear;
-  const containerRemove = Container.prototype.removeChild;
-  const spacerRender = Object.getOwnPropertyDescriptor(Spacer.prototype, "render")!;
-  const truncatedRender = TruncatedText.prototype.render, truncatedInvalidate = TruncatedText.prototype.invalidate;
-  let widgetSpacerPass: { spacer: Spacer; width: number; rows?: number; blank?: boolean } | undefined;
-  let upperWidgetRows = new WeakMap<Container, { width: number; rows: number; spacer: WeakRef<Spacer> }>();
-  const patches = new Map<object, {
-    render: PropertyDescriptor; mouse: PropertyDescriptor; patchedRender: Render; patchedMouse: Mouse;
-    updates: { name: string; original?: PropertyDescriptor; wrapper: (...args: unknown[]) => unknown }[];
-  }>();
-
-  const userPatches = new Map<object, {
-    render: PropertyDescriptor; patchedRender: UserRender;
-    updates: { name: string; original?: PropertyDescriptor; wrapper: (...args: unknown[]) => unknown }[];
-  }>();
-  const refresh = () => { tui.invalidate(); tui.requestRender(); };
-  const toolSessions = new ToolPresentationSessions<ToolNode>({
-    args: node => node.args, result: node => node.result,
+  const toolSessions = new ToolPresentationSessions<object>({
+    args: toolFields.args, result: toolFields.result,
     funding: () => cardClient?.cardSource.geometryFunding(),
     failed: (node, error) => diagnose(options.diagnostic, 'ERROR', 'file-detail', 'Expanded file details could not be measured',
-      { call: node.toolCallId, error: error instanceof Error ? error.name : 'UnknownError' }),
+      { call: toolFields.id(node), error: error instanceof Error ? error.name : 'UnknownError' }),
   }, options.presentationConstructionObserver);
   const fileDetails = toolSessions.fileDetails;
-  const toolSummaryPresenter = new ToolSummaryPresenter<ToolNode>(toolProducer, fileDetails, toolSessions, cache);
+  const toolSummaryPresenter = new ToolSummaryPresenter(toolProducer, fileDetails, toolSessions, cache);
   const filePreviewState = toolSessions.filePreview;
   const toolPresentationPolicy = new ToolPresentationPolicy(toolProducer, toolSessions, {
-    active: () => active, name: node => node.toolName, toolCallId: node => node.toolCallId,
-    expanded: node => node.expanded, hidden: node => node.hideComponent, attached,
+    active, name: toolFields.name, toolCallId: toolFields.id,
+    expanded: toolFields.expanded, hidden: node => native.tool.hidden(node), attached,
   }, { cards, compact: overrides, native: nativeOverrides });
-  let syntax: CardSources<ToolNode> | undefined;
+  let syntax: CardSources<object> | undefined;
   let cardClient = options.syntax?.client;
   let selectedPalette = cardClient?.snapshot().effective ?? resolveTheme({ kind: 'pi', variant: 'dark' }).effective;
   let ownedSources: SourceLifecyclePort | undefined;
@@ -381,7 +248,7 @@ export function installTidyUi(tui: LiveTui, getTheme: () => Palette, options: In
       throw new Error('Custom cards require coherent public Pi theme input');
     return { theme, mode: theme.getColorMode() };
   }
-  function ensureCards(): CardSources<ToolNode> {
+  function ensureCards(): CardSources<object> {
     if (syntax) return syntax;
     if (!cardClient) {
       const snapshot = { enabled: false, selected: { kind: 'pi', variant: 'dark' } as const, standaloneVersion: extensionVersion,
@@ -394,8 +261,8 @@ export function installTidyUi(tui: LiveTui, getTheme: () => Palette, options: In
       cardClient = { cardSource: execution, sourceWork: execution, pi: execution.pi, sourcePump: execution, sourceStatistics: execution, snapshot: () => snapshot };
     }
     syntax = new CardSources(cardClient, {
-      diagnostic: options.diagnostic, identify: node => ({ call: node.toolCallId, tool: node.toolName }),
-      preparation: options.cardPreparation ? (node, receipt) => options.cardPreparation?.({ ...receipt, call: node.toolCallId, tool: node.toolName }) : undefined,
+      diagnostic: options.diagnostic, identify: node => ({ call: toolFields.id(node), tool: toolFields.name(node) }),
+      preparation: options.cardPreparation ? (node, receipt) => options.cardPreparation?.({ ...receipt, call: toolFields.id(node), tool: toolFields.name(node) }) : undefined,
       preparePaletteInput: (effective, revision, mode, funding, usePiFallback) => {
         const input = needsPiTheme(effective) ? publicInput() : undefined;
         const fallbackTheme = () => publicInput().theme;
@@ -403,27 +270,23 @@ export function installTidyUi(tui: LiveTui, getTheme: () => Palette, options: In
         if (effective.kind === 'pi' && options.preparePiInput) return options.preparePiInput(input!.theme, mode, funding);
         return paletteOwner.prepare(input?.theme, effective, revision, mode, funding, usePiFallback, fallbackTheme);
       },
-      classify: options.syntax?.classify ?? ((text, info) => highlightCode(text, info.language)),
-      invalidate: node => toolPreparation.invalidated(node), requestRender: () => { if (active && !quiescing) tui.requestRender(); },
+      classify: options.syntax?.classify ?? classifyNativeCode,
+      invalidate: node => toolPreparation.invalidated(node), requestRender: () => { if (active() && !quiescing) tui.requestRender(); },
     });
     return syntax;
   }
+  const nativeRows = (node: object, width: number) => native.tool.nativeRows(node, width);
   const toolRoutingPresenter = new ToolRoutingPresenter(toolPresentationPolicy, {
-    fileRenderer: node => {
-      const call = node.getCallRenderer?.(), result = node.getResultRenderer?.();
-      return isDeferredStockFileCall(call) && (result === undefined || isDeferredStockFilePair(call, result));
-    },
-    readRenderer: node => isDeferredStockReadPair(node.getCallRenderer?.(), node.getResultRenderer?.()),
-    selfShell: node => node.getRenderShell() === 'self',
-    deferredFilePair: node => isDeferredStockFilePair(node.getCallRenderer?.(), node.getResultRenderer?.()),
-    stockEditShell: nativeStockEditShell,
-    visible: (node, width) => nativeRows(node, width).length > 0,
+    fileRenderer: node => native.tool.fileRenderer(node), readRenderer: node => native.tool.readRenderer(node),
+    selfShell: node => native.tool.selfShell(node), deferredFilePair: node => native.tool.deferredFilePair(node),
+    stockEditShell: node => native.tool.stockEditShell(node), visible: (node, width) => nativeRows(node, width).length > 0,
   });
+  const forget = (node: object, cause?: string, preserveFileDetail?: boolean) => toolView.forget(node, cause, preserveFileDetail);
   const toolPreparation = createToolPreparationPresenter({
     fields: toolFields, producer: toolProducer, sessions: toolSessions, policy: toolPresentationPolicy, routing: toolRoutingPresenter,
     cards: () => syntax, ensureCards,
-    facts: { active: () => active, quiescing: () => quiescing, attached, hidden: node => node.hideComponent,
-      cwd: node => { const cwd = (node.getRenderContext() as { cwd?: unknown } | null | undefined)?.cwd; return typeof cwd === 'string' ? cwd : undefined; },
+    facts: { active, quiescing: () => quiescing, attached, hidden: node => native.tool.hidden(node),
+      cwd: node => { const cwd = (native.tool.context(node) as { cwd?: unknown } | null | undefined)?.cwd; return typeof cwd === 'string' ? cwd : undefined; },
       live: call => options.syntax?.isLiveCall?.(call) ?? true },
     palette: { needsInput: () => needsPiTheme(selectedPalette), input: publicInput, mode: terminalMode,
       generation: input => externalPaletteOwner ? options.syntax!.palette() : paletteOwner.palette(input?.theme, selectedPalette) },
@@ -431,28 +294,21 @@ export function installTidyUi(tui: LiveTui, getTheme: () => Palette, options: In
     refreshTarget: () => controller, requestRender: () => tui.requestRender(), flush: () => cardClient!.sourcePump.flush(),
   });
   const { unsupportedFullFile, observePalette, refusePreparedPresentation, refreshPalette, finishFileTurn } = toolPreparation;
-  const preparedPresenter = new PreparedLayoutPresenter<ToolNode>({
+  const fileMode = (node: object): FilePreviewMode | undefined => toolPresentationPolicy.fileMode(node);
+  const preparedPresenter = new PreparedLayoutPresenter<object>({
     sessions: toolSessions, ordinaryCache: cache, cardCache, producer: toolProducer,
-    active: () => active, outputPadding,
-    funding: () => cardClient?.cardSource.geometryFunding(),
-    visit: (node, consume) => syntax?.visit(node, consume) ?? false,
-    identities: node => syntax?.identities(node) ?? [],
-    fileMode, unsupportedFullFile,
-    refuse: refusePreparedPresentation, observePalette,
-    displayBasis: key => cardClient?.cardSource.displayBasis(key),
-    piDisplay: key => cardClient?.pi.borrowPiSource(key),
+    active, outputPadding, funding: () => cardClient?.cardSource.geometryFunding(),
+    visit: (node, consume) => syntax?.visit(node, consume) ?? false, identities: node => syntax?.identities(node) ?? [],
+    fileMode, unsupportedFullFile, refuse: refusePreparedPresentation, observePalette,
+    displayBasis: key => cardClient?.cardSource.displayBasis(key), piDisplay: key => cardClient?.pi.borrowPiSource(key),
     decision: (node, choice, width, rows, fields) => decision(node, 'syntax', choice, width, rows,
-      { call: node.toolCallId, tool: node.toolName, selected: fields.selected, origin: fields.origin }),
+      { call: toolFields.id(node), tool: toolFields.name(node), selected: fields.selected, origin: fields.origin }),
   });
-  function fileDetailServiceRow(text: string, width: number, inset: number): string[] {
-    return new Text(text, inset, 0).render(width);
-  }
-  const fileDetailPresenter = new FileDetailPresenter<ToolNode>({
+  const fileDetailPresenter = new FileDetailPresenter<object>({
     sessions: toolSessions, cache, producer: toolProducer, details: fileDetails, summaries: toolSummaryPresenter,
     theme: getTheme, padding: outputPadding, mode: fileMode,
-    cwd: node => (node.getRenderContext() as { cwd?: string } | undefined)?.cwd,
-    unsupported: node => syntax?.filePreparationOutcome(node) === 'unsupported',
-    serviceRows: fileDetailServiceRow,
+    cwd: node => (native.tool.context(node) as { cwd?: string } | undefined)?.cwd,
+    unsupported: node => syntax?.filePreparationOutcome(node) === 'unsupported', serviceRows: nativeServiceRows,
   });
   const toolView = createToolViewPresenter({
     fields: toolFields, producer: toolProducer, sessions: toolSessions, policy: toolPresentationPolicy,
@@ -461,650 +317,47 @@ export function installTidyUi(tui: LiveTui, getTheme: () => Palette, options: In
     cards: () => syntax, funding: () => cardClient?.cardSource.geometryFunding(), theme: getTheme, padding: outputPadding,
     paletteOrigin: () => needsPiTheme(selectedPalette) ? 'pi' : 'owned', decision: toolDecision, phase: nativePhase,
     invalidated: (node, cause) => diagnose(options.diagnostic, 'DEBUG', 'cache', 'Tool layout invalidated',
-      { call: node.toolCallId, tool: node.toolName, cause }),
+      { call: toolFields.id(node), tool: toolFields.name(node), cause }),
     host: {
-      active: () => active, quiescing: () => quiescing, attached, hidden: node => node.hideComponent,
-      cwd: node => (node.getRenderContext() as { cwd?: string } | undefined)?.cwd,
-      isTool: (node): node is ToolNode => candidate(node as Component),
-      siblings: node => parents.get(node as Component)?.parent.children ?? [],
-      index: (node, siblings) => {
-        const position = parents.get(node as Component); let current = position?.index ?? -1;
-        if (siblings[current] !== node) { current = siblings.indexOf(node); if (position) position.index = current; }
-        return current;
-      },
-      otherRows: (node, width) => {
-        const component = node as Component;
-        const render = userCandidate(component) ? userPatches.get(Object.getPrototypeOf(component))?.render.value as UserRender | undefined : undefined;
-        return render ? userLayout(component as UserNode, width, render).rows : nativeRows(component, width);
-      },
-      nativeRows, imageRows: nativeImageRows, releaseFileRenderer: releaseNativeFileRenderer,
-      syncRendererArgs: (node, kind) => {
-        const pair = kind === 'file' ? isDeferredStockFilePair(node.getCallRenderer?.(), node.getResultRenderer?.())
-          : isDeferredStockReadPair(node.getCallRenderer?.(), node.getResultRenderer?.());
-        if (!pair) return;
-        const context = node.getRenderContext() as { state?: unknown } | null | undefined;
-        updateNativeRendererArgs(context?.state, node.toolName, node.toolCallId, node.args);
-      },
-      selection: () => tui.hasActiveSelection?.() ?? false, setExpanded: (node, expanded) => node.setExpanded(expanded),
+      active, quiescing: () => quiescing, attached, hidden: node => native.tool.hidden(node),
+      cwd: node => (native.tool.context(node) as { cwd?: string } | undefined)?.cwd,
+      isTool: (node): node is object => native.tool.isTool(node), siblings: node => native.siblings(node),
+      index: (node, siblings) => native.index(node, siblings), otherRows: (node, width) => native.otherRows(node, width),
+      nativeRows, imageRows: (node, width) => native.tool.imageRows(node, width),
+      releaseFileRenderer: node => native.tool.releaseFileRenderer(node), syncRendererArgs: (node, kind) => native.tool.syncRendererArgs(node, kind),
+      selection: () => native.selection(), setExpanded: (node, expanded) => native.tool.setExpanded(node, expanded),
       requestRender: () => tui.requestRender(),
     },
-    animation: { animate, remove: removeAnimation, time: () => passSpinnerTime ?? performance.now(), epoch: () => spinnerEpoch },
+    animation: { animate: node => spinner.animate(node), remove: node => spinner.remove(node), time: () => spinner.time(), epoch: () => spinner.epoch() },
   });
-  function nativeImageRows(node: ToolNode, width: number): string[] {
-    const rendered: string[] = [], children = (node as unknown as Container).children;
-    for (let index = 0; index < children.length; index++) {
-      const child = children[index]!;
-      if (!(child instanceof Image)) continue;
-      const spacer = children[index - 1];
-      if (spacer instanceof Spacer) rendered.push(...spacer.render(width));
-      rendered.push(...child.render(width));
-    }
-    return rendered;
-  }
   const controller: PreparedCardController = {
     refreshPreparedPalette: refreshPalette,
-    retireRendererClears() {
-      const detached = rendererClears; rendererClears = []; rendererClearPending = false;
-      if (active) for (const reference of detached) { const node = reference.deref(); if (node && !attached(node)) releaseTree(node); }
-    },
-    get active() { return active; },
-    get reason() { return reason; },
-    get editorActive() {
-      const editor = statusEditor?.deref();
-      return !!(active && editor && managedStockEditor(editor));
-    },
-    get editorStatusActive() {
-      const editor = statusEditor?.deref();
-      return !!(active && options.editorStatus && editor && stockEditor(editor));
-    },
+    get active() { return native.active; }, get reason() { return native.reason; },
+    get editorActive() { return native.editorActive; }, get editorStatusActive() { return native.editorStatusActive; },
     cacheStats: () => cacheOwner.stats(),
     logSnapshot() {
       diagnose(options.diagnostic, 'INFO', 'tool', 'Native lifecycle callback counters; these are not source dispatches',
         { callbacks: lifecycleCallbacks, phaseChanges: lifecyclePhaseChanges });
-      diagnose(options.diagnostic, "INFO", "animation", "Snapshot of owned fallback animation; native Pi clock is not intercepted",
-        { wakes: spinnerWakes, requests: spinnerRequests, participants: animated.size, timer: spinnerTimer !== undefined, pending: spinnerPending });
+      diagnose(options.diagnostic, 'INFO', 'animation', 'Snapshot of owned fallback animation; native Pi clock is not intercepted', spinner.snapshot());
     },
-    renderEditorStatus(width, info) {
-      const editor = statusEditor?.deref(), state = editor && editorStates.get(editor);
-      if (!active || !options.editorStatus || !editor || !stockEditor(editor) || !state?.framed || state.width !== width) {
-        decision(tui, "editor-status", "Below-editor metadata withheld; owned stock geometry is unavailable", width, 0); return []; }
-      try {
-        if (editor.isShowingAutocomplete()) { decision(tui, "editor-status", "Below-editor metadata suppressed by public autocomplete state", width, 0); return []; }
-        const group = managedEditorSlots(editor)?.[2] as Container | undefined;
-        const activity = group?.render === observeWidgetRows ? nativeStatusRows.get(group) : undefined;
-        const idle = info.idle && !(activity?.width === width && activity.visible);
-        const rows = renderEditorStatus(width, getTheme(), { ...info, idle }, state.geometry);
-        decision(tui, "editor-status", idle ? "Below-editor metadata projected with Idle" : "Below-editor metadata projected; native activity stays in Pi-owned status container", width, rows.length);
-        return rows;
-      }
-      catch { fail("pi-tidy-ui could not render editor status; native rendering restored"); return []; }
-    },
+    renderEditorStatus: (width, info) => native.renderEditorStatus(width, info),
     clearCache,
-    syntaxSourceChanged(keys, groups) { if (active && !quiescing) syntax?.sourceChanged(keys, groups); },
-    beginFileTurn() { if (active && !quiescing) filePreviewState.beginTurn(); },
-    completeFileCall(toolCallId) { if (active && !quiescing) filePreviewState.completed(toolCallId); },
+    syntaxSourceChanged(keys, groups) { if (active() && !quiescing) syntax?.sourceChanged(keys, groups); },
+    beginFileTurn() { if (active() && !quiescing) filePreviewState.beginTurn(); },
+    completeFileCall(toolCallId) { if (active() && !quiescing) filePreviewState.completed(toolCallId); },
     finishFileTurn,
     syntaxMetadataChanged() {
-      if (active && !quiescing) {
+      if (active() && !quiescing) {
         selectedPalette = cardClient?.snapshot().effective ?? resolveTheme({ kind: 'pi', variant: 'dark' }).effective;
         const paletteRevision = externalPaletteOwner ? options.syntax!.palette()
           : paletteOwner.palette(needsPiTheme(selectedPalette) ? publicInput().theme : undefined, selectedPalette);
         syntax?.metadataChanged(paletteRevision);
       }
     },
-    quiesce() {
-      quiescing = true; stopSpinner(); animated.clear(); animationRefs = new WeakMap();
-    },
-    restore({ repaint = true } = {}) {
-      if (!active && !patches.size && !userPatches.size && !editorPatches.size) {
-        syntax?.dispose(); ownedSources?.dispose(); paletteOwner?.dispose(); toolSessions.clearSyntax(); return;
-      }
-      diagnose(options.diagnostic, "INFO", "runtime", "Presentation restoring native ownership; later owners remain untouched",
-        { animationWakes: spinnerWakes, animationRequests: spinnerRequests });
-      active = false;
-      filePreviewState.reset();
-      rendererClears = []; rendererClearPending = false;
-      syntax?.dispose(); ownedSources?.dispose(); paletteOwner?.dispose(); toolSessions.clearSyntax();
-      stopSpinner(); animated.clear(); animationRefs = new WeakMap();
-      clearCache();
-      if (Container.prototype.addChild === patchedAdd) Container.prototype.addChild = originalAdd;
-      if (Container.prototype.clear === patchedClear) Container.prototype.clear = containerClear;
-      if (Container.prototype.removeChild === patchedRemove) Container.prototype.removeChild = containerRemove;
-      if (Container.prototype.render === observeWidgetRows) Object.defineProperty(Container.prototype, "render", containerRender);
-      if (Spacer.prototype.render === observeWidgetSpacer) Object.defineProperty(Spacer.prototype, "render", spacerRender);
-      upperWidgetRows = new WeakMap(); nativeStatusRows = new WeakMap(); widgetSpacerPass = undefined;
-      for (const [prototype, patch] of patches) {
-        if (Object.getOwnPropertyDescriptor(prototype, "render")?.value === patch.patchedRender)
-          Object.defineProperty(prototype, "render", patch.render);
-        if (Object.getOwnPropertyDescriptor(prototype, "handleMouse")?.value === patch.patchedMouse)
-          Object.defineProperty(prototype, "handleMouse", patch.mouse);
-        for (const update of patch.updates) {
-          if (Object.getOwnPropertyDescriptor(prototype, update.name)?.value !== update.wrapper) continue;
-          if (update.original) Object.defineProperty(prototype, update.name, update.original);
-          else Reflect.deleteProperty(prototype, update.name);
-        }
-      }
-      patches.clear();
-      for (const [prototype, patch] of userPatches) {
-        if (Object.getOwnPropertyDescriptor(prototype, "render")?.value === patch.patchedRender)
-          Object.defineProperty(prototype, "render", patch.render);
-        for (const update of patch.updates) {
-          if (Object.getOwnPropertyDescriptor(prototype, update.name)?.value !== update.wrapper) continue;
-          if (update.original) Object.defineProperty(prototype, update.name, update.original);
-          else Reflect.deleteProperty(prototype, update.name);
-        }
-      }
-      userPatches.clear();
-      const restoredPlacement = new WeakSet<CustomEditor>();
-      for (const reference of editorFlagRefs) {
-        const editor = reference.deref(), flag = editor && editorFlags.get(editor);
-        const descriptor = editor && Object.getOwnPropertyDescriptor(editor, "embedWorkingStatus");
-        if (editor && flag && descriptor?.get === statusEmbedding && descriptor.configurable) {
-          Object.defineProperty(editor, "embedWorkingStatus", flag); restoredPlacement.add(editor);
-        }
-      }
-      try { rerouteNativeStatus(restoredPlacement); } catch { /* Retain native ownership on an unsupported host. */ }
-      editorFlagRefs.clear();
-      for (const [prototype, hooks] of editorPatches) for (const hook of hooks) {
-        if (Object.getOwnPropertyDescriptor(prototype, hook.name)?.value !== hook.wrapper) continue;
-        if (hook.original) Object.defineProperty(prototype, hook.name, hook.original);
-        else Reflect.deleteProperty(prototype, hook.name);
-      }
-      editorPatches.clear(); editorStates = new WeakMap(); editorPasses = new WeakMap(); statusEditor = undefined;
-      options.editorStatusRestored?.();
-      if (repaint) refresh();
-    },
+    quiesce() { quiescing = true; spinner.reset(); },
+    restore: settings => native.restore(settings),
   };
-  const fail = (message: string) => {
-    if (reason) return;
-    reason = message;
-    diagnose(options.diagnostic, "ERROR", "compatibility", message);
-    reportRuntime(options.diagnostic, { kind: 'failure', scope: controller, operation: 'appearance', area: 'appearance', code: 'unsupported_host' });
-    controller.restore();
-    options.warn?.(message);
-  };
-  function fileMode(node: ToolNode): FilePreviewMode | undefined { return toolPresentationPolicy.fileMode(node); }
-  function nativeStockEditShell(node: ToolNode): boolean {
-    // Stock edit always supplies a heading in an ordinary Box. Its native factory can reuse
-    // a previous custom Box, so both renderer identities AND the current component must qualify.
-    // Check every visit; no retained visibility proof or native-state mutation.
-    const callRenderer = node.getCallRenderer?.(), resultRenderer = node.getResultRenderer?.();
-    const stockEdit = callRenderer === stockEditCall && resultRenderer === stockEditResult &&
-      node.callRendererComponent instanceof Box && Object.getPrototypeOf(node.callRendererComponent) === Box.prototype &&
-      node.callRendererComponent.render === Box.prototype.render && node.callRendererComponent.clear === Box.prototype.clear &&
-      node.callRendererComponent.addChild === Box.prototype.addChild;
-    const deferredEdit = isDeferredStockEditPair(callRenderer, resultRenderer) &&
-      isDeferredStockEditComponent(node.callRendererComponent);
-    return node.constructor.name === 'ToolExecutionComponent' && node.toolName === 'edit' && typeof node.getCallRenderer === 'function' &&
-      typeof node.getResultRenderer === 'function' && (stockEdit || deferredEdit);
-  }
-
-  function nativeRows(node: Component, width: number): string[] {
-    const render = candidate(node) ? patches.get(Object.getPrototypeOf(node))?.render.value as Render | undefined : undefined;
-    return render ? render.call(node as ToolNode, width) : node.render(width);
-  }
-  function releaseNativeFileRenderer(node: ToolNode): void {
-    const context = node.getRenderContext() as { state?: unknown } | null | undefined;
-    releaseNativeRendererCache(context?.state);
-  }
-  function install(node: ToolNode) {
-    if (!compatible(node)) { fail("Tool component contract is incompatible; native rendering retained"); return; }
-    patchPrototype(Object.getPrototypeOf(node) as object);
-    toolView.attach(node);
-  }
-  // Persistent wrappers must be created in a scope with no tool-instance parameter.
-  function patchPrototype(prototype: object) {
-    if (patches.has(prototype)) return;
-    const render = Object.getOwnPropertyDescriptor(prototype, "render");
-    const mouse = Object.getOwnPropertyDescriptor(prototype, "handleMouse");
-    if (!render?.writable || !mouse?.writable || typeof render.value !== "function" || typeof mouse.value !== "function") {
-      fail("Tool rendering methods cannot be safely replaced; native rendering retained"); return;
-    }
-    const originalRender = render.value as Render;
-    const originalMouse = mouse.value as Mouse;
-    const patchedRender: Render = function (width) {
-      try { return toolView.render(this, width, originalRender); }
-      catch { fail("pi-tidy-ui could not render this component; native rendering restored"); return originalRender.call(this, width); }
-    };
-    const patchedMouse: Mouse = function (event) {
-      return toolView.mouse(this, event, originalRender, originalMouse);
-    };
-    const updateNames: ToolUpdateName[] = ['updateArgs', 'updateResult', 'setExpanded', 'invalidate', 'markExecutionStarted'];
-    for (const name of ['setShowImages', 'setImageWidthCells'] as const) {
-      const descriptor = Object.getOwnPropertyDescriptor(prototype, name);
-      if (typeof descriptor?.value === 'function' && descriptor.writable && descriptor.configurable) updateNames.push(name);
-    }
-    const argsCompleteDescriptor = Object.getOwnPropertyDescriptor(prototype, "setArgsComplete");
-    // Compatible older/foreign tools need not expose an observable finalization method.
-    if (typeof argsCompleteDescriptor?.value === "function" && argsCompleteDescriptor.writable && argsCompleteDescriptor.configurable)
-      updateNames.push("setArgsComplete");
-    const updates = updateNames.map((name) => {
-      const original = Object.getOwnPropertyDescriptor(prototype, name);
-      const method = (prototype as Record<string, unknown>)[name];
-      if (typeof method !== "function" || (original && (!original.writable || !original.configurable)) || (!original && !Object.isExtensible(prototype)))
-        throw new Error("Tool cache invalidation methods cannot be wrapped");
-      const wrapper = function (this: ToolNode, ...args: unknown[]) {
-        return toolView.update(this, name, args, method as NativeToolUpdate<ToolNode>);
-      };
-      return { name, original, wrapper };
-    });
-    patches.set(prototype, { render, mouse, patchedRender, patchedMouse, updates });
-    Object.defineProperty(prototype, "render", { ...render, value: patchedRender });
-    Object.defineProperty(prototype, "handleMouse", { ...mouse, value: patchedMouse });
-    for (const update of updates) Object.defineProperty(prototype, update.name,
-      { configurable: true, writable: true, ...update.original, value: update.wrapper });
-  }
-  function userLayout(node: UserNode, width: number, originalRender: UserRender): UserPresentationLayout {
-    const theme = getTheme(), padding = options.outputPad ? outputPadding() : node.outputPad;
-    return userPresenter.layout(node, width, theme, padding, node.text, node.outputPad, node.children[0], node.markdownTheme,
-      node.markdownTransformers, originalRender);
-  }
-  function installUser(node: UserNode) {
-    if (!compatibleUser(node)) { fail("User-message component contract is incompatible; native rendering retained"); return; }
-    patchUserPrototype(Object.getPrototypeOf(node) as object);
-  }
-  // Like tool hooks, these persistent closures are built without an installer-node parameter.
-  function patchUserPrototype(prototype: object) {
-    if (userPatches.has(prototype)) return;
-    const render = Object.getOwnPropertyDescriptor(prototype, "render");
-    if (!render?.writable || !render.configurable || typeof render.value !== "function") {
-      fail("User-message rendering cannot be safely replaced; native rendering retained"); return;
-    }
-    const originalRender = render.value as UserRender;
-    const patchedRender: UserRender = function (width) {
-      if (!active) return originalRender.call(this, width);
-      if (width < 1) return [];
-      try {
-        if (!compatibleUser(this)) throw new Error("User-message component contract changed");
-        const rows = userLayout(this, width, originalRender).rows;
-        decision(this, "user", "Native Markdown rows projected by user-card policy; inner fallback cause is unknown", width, rows.length);
-        return toolView.presentUser(this, width, rows);
-      } catch {
-        fail("pi-tidy-ui could not render this user message; native rendering restored");
-        return originalRender.call(this, width);
-      }
-    };
-    const updates = ["rebuild", "setOutputPad", "invalidate"].map((name) => {
-      const original = Object.getOwnPropertyDescriptor(prototype, name);
-      const method = (prototype as Record<string, unknown>)[name];
-      if (typeof method !== "function" || (original && (!original.writable || !original.configurable)) || (!original && !Object.isExtensible(prototype)))
-        throw new Error("User-message invalidation methods cannot be wrapped");
-      const wrapper = function (this: UserNode, ...args: unknown[]) { forgetUser(this); return method.apply(this, args); };
-      return { name, original, wrapper };
-    });
-    userPatches.set(prototype, { render, patchedRender, updates });
-    Object.defineProperty(prototype, "render", { ...render, value: patchedRender });
-    for (const update of updates) Object.defineProperty(prototype, update.name,
-      { configurable: true, writable: true, ...update.original, value: update.wrapper });
-  }
-  type EditorHook = { name: string; original: PropertyDescriptor | undefined; wrapper: Function };
-  const editorPatches = new Map<object, EditorHook[]>();
-  let statusEditor: WeakRef<CustomEditor> | undefined;
-  let editorStates = new WeakMap<CustomEditor, Omit<EditorLayout, "rows"> & { width: number; offsetY: number }>();
-  const editorFlags = new WeakMap<CustomEditor, PropertyDescriptor>();
-  const editorFlagRefs = new Set<WeakRef<CustomEditor>>();
-  const selfTransfers = new WeakMap<CustomEditor, Function>();
-  let installingEditorHooks = true, queuedEditorRoute = false;
-  let nativeStatusRows = new WeakMap<Container, { width: number; visible: boolean }>();
-  let editorPasses = new WeakMap<CustomEditor, { width: number; top: string; bottom: string }>();
-  // Public stock identities are resolved before installing any hooks. No editor
-  // instance is captured in these persistent closures; editing methods stay native.
-  const editorRender = Editor.prototype.render, editorMouse = Editor.prototype.handleMouse;
-  const editorPrototype = CustomEditor.prototype as unknown as Record<string, Function>;
-  const editorTop = editorPrototype.renderTopBorder!, editorBottom = editorPrototype.renderBottomBorder!;
-  function plainStockEditor(node: CustomEditor): boolean {
-    const hooks = editorPatches.get(CustomEditor.prototype);
-    return Object.getPrototypeOf(node) === CustomEditor.prototype && Object.getPrototypeOf(CustomEditor.prototype) === Editor.prototype &&
-      ["render", "handleMouse", "renderTopBorder", "renderBottomBorder"].every(name =>
-        (node as unknown as Record<string, unknown>)[name] === hooks?.find(hook => hook.name === name)?.wrapper) &&
-      node.getPaddingX === Editor.prototype.getPaddingX && node.getText === Editor.prototype.getText &&
-      (node.setText === Editor.prototype.setText || node.setText === selfTransfers.get(node)) &&
-      typeof node.borderColor === "function" && !!Object.getOwnPropertyDescriptor(node, "borderColor")?.writable &&
-      (options.nativeEditor?.() ?? true);
-  }
-  function managedStockEditor(node: CustomEditor): boolean {
-    return plainStockEditor(node) && (!options.editorStatus ||
-      Object.getOwnPropertyDescriptor(node, "embedWorkingStatus")?.get === statusEmbedding);
-  }
-  function stockEditor(node: CustomEditor): boolean { return managedStockEditor(node) && attached(node); }
-  // Public readonly in TypeScript, but an own configurable data field in the
-  // supported SDK. Native Pi consumes this flag and owns routing/lifecycle.
-  function statusEmbedding(this: CustomEditor): boolean {
-    return active && plainStockEditor(this) ? false : editorFlags.get(this)?.value as boolean;
-  }
-  function patchEditorPlacement(editor: CustomEditor) {
-    if (!options.editorStatus || editorFlags.has(editor) || !plainStockEditor(editor) ||
-      (options.rerouteEditorStatus && !managedEditorSlots(editor))) return;
-    const flag = Object.getOwnPropertyDescriptor(editor, "embedWorkingStatus");
-    const setter = Object.getOwnPropertyDescriptor(editor, "setText");
-    if (!flag?.configurable || !flag.writable || typeof flag.value !== "boolean" ||
-      (setter ? !setter.writable : !Object.isExtensible(editor))) return;
-    editorFlags.set(editor, flag); editorFlagRefs.add(new WeakRef(editor));
-    Object.defineProperty(editor, "embedWorkingStatus", { configurable: true, enumerable: flag.enumerable, get: statusEmbedding });
-    if (!installingEditorHooks && options.rerouteEditorStatus && !queuedEditorRoute) {
-      queuedEditorRoute = true;
-      // A selector can temporarily remove the default editor. Rebind after its
-      // normal attachment finishes, never inside addChild or with a modal mounted.
-      queueMicrotask(() => {
-        queuedEditorRoute = false;
-        if (active) try { rerouteNativeStatus(); }
-        catch { fail("pi-tidy-ui could not route native editor activity; native rendering restored"); }
-      });
-    }
-  }
-  function rerouteNativeStatus(restored?: WeakSet<CustomEditor>) {
-    if (!options.rerouteEditorStatus) return;
-    for (const reference of editorFlagRefs) {
-      const editor = reference.deref();
-      if (!editor || !plainStockEditor(editor) || !managedEditorSlots(editor) || !attached(editor) ||
-        (restored ? !restored.has(editor) : Object.getOwnPropertyDescriptor(editor, "embedWorkingStatus")?.get !== statusEmbedding)) continue;
-      const descriptor = Object.getOwnPropertyDescriptor(editor, "setText");
-      if (descriptor ? !descriptor.writable : !Object.isExtensible(editor)) continue;
-      const text = editor.getText(), transfers: string[] = [], focus = tui.getFocusedComponent?.();
-      // Native same-default rebinding copies getText() through setText(), which
-      // would reset cursor/undo and turn collapsed pastes into literal markers.
-      // Suppress only this synchronous self-transfer; no editor is constructed.
-      const setter = function (this: CustomEditor, value: string) {
-        if (this === editor) transfers.push(value); else Editor.prototype.setText.call(this, value);
-      };
-      selfTransfers.set(editor, setter);
-      Object.defineProperty(editor, "setText", { configurable: true, writable: true, ...descriptor, value: setter });
-      try {
-        options.rerouteEditorStatus();
-        if (transfers.length !== 1 || transfers[0] !== text || !attached(editor))
-          throw new Error("Native same-editor status routing contract changed");
-      } finally {
-        selfTransfers.delete(editor);
-        if (Object.getOwnPropertyDescriptor(editor, "setText")?.value === setter) {
-          if (descriptor) Object.defineProperty(editor, "setText", descriptor); else Reflect.deleteProperty(editor, "setText");
-        }
-        if (focus !== undefined && focus !== editor) tui.setFocus?.(focus);
-      }
-      return; // The public API has one current default editor, never a factory substitution.
-    }
-  }
-  // Both native modes retain seven managed public children, even when fullscreen
-  // paints a separate dock. Never infer this slot from names or arbitrary siblings.
-  function managedEditorSlots(editor: CustomEditor): Component[] | undefined {
-    const input = parents.get(editor)?.parent;
-    if (!input || Object.getPrototypeOf(input) !== Container.prototype || input.children.length !== 1 || input.children[0] !== editor)
-      return undefined;
-    const position = parents.get(input), slots = position?.parent.children;
-    if (!(tui instanceof Container) || !slots || slots !== tui.children || slots.length !== 7 || slots[4] !== input ||
-      !slots.every(node => Object.getPrototypeOf(node) === Container.prototype)) return undefined;
-    return slots;
-  }
-  function upperWidgetGroup(editor: CustomEditor): Container | undefined {
-    const slots = managedEditorSlots(editor);
-    if (!slots) return undefined;
-    const group = slots[3] as Container, spacer = group.children[0];
-    if (group.render !== observeWidgetRows || group.clear !== patchedClear || group.addChild !== patchedAdd ||
-      !spacer || Object.getPrototypeOf(spacer) !== Spacer.prototype || spacer.render !== observeWidgetSpacer)
-      return undefined;
-    return group;
-  }
-  // Observe the already-required native group render, not each widget and not a
-  // second render for spacing. This closure owns no installer/group/editor node.
-  function observeWidgetRows(this: Container, width: number): string[] {
-    const document = tui instanceof Container && (this === tui || (this === tui.children[0] && Object.getPrototypeOf(this) === Container.prototype));
-    if (!active || !document || passOutputPad !== undefined) return observeContainerRows.call(this, width);
-    try { passOutputPad = outputPadding(); }
-    catch { fail("Pi Output padding could not be read; native rendering restored"); return containerRender.value.call(this, width) as string[]; }
-    // Pi exposes no after-present event. A successful document render is the
-    // available signal, not proof of terminal output; diagnostic document visits
-    // count too. Never observe requestRender(), individual cards or private timers.
-    passSpinnerTime = performance.now();
-    let completed = false;
-    try {
-      const rows = observeContainerRows.call(this, width);
-      completed = true;
-      return rows;
-    } finally {
-      passOutputPad = undefined;
-      passSpinnerTime = undefined;
-      if (completed) finishSpinnerPass(); // A failed pass must not postpone fallback.
-    }
-  }
-  function renderQueuedProjection(group: Container, width: number, projections: { node: Component; rows: string[] }[]): string[] {
-    const restores: { node: Component; own?: PropertyDescriptor; render: Component["render"] }[] = [];
-    try {
-      for (const { node, rows } of projections) {
-        const own = Object.getOwnPropertyDescriptor(node, "render"), original = node.render;
-        const render = function (this: Component, requestedWidth: number) {
-          return requestedWidth === width ? rows : original.call(this, requestedWidth);
-        };
-        Object.defineProperty(node, "render", { configurable: true, writable: true, enumerable: own?.enumerable ?? false, value: render });
-        restores.push({ node, own, render });
-      }
-      // Container.render also refreshes native hit geometry and strong child
-      // references. Returning a fabricated block would leave that state stale.
-      // Feed it projected rows through call-local public methods, not private fields.
-      return containerRender.value.call(group, width) as string[];
-    } finally {
-      for (const { node, own, render } of restores) if (Object.getOwnPropertyDescriptor(node, "render")?.value === render) {
-        if (own) Object.defineProperty(node, "render", own); else Reflect.deleteProperty(node, "render");
-      }
-    }
-  }
-  // Pi owns queued items and their edit-all shortcut. Only this verified native
-  // prefix is projected; appended Bash/foreign components still render normally.
-  // TruncatedText has no public source getter, so read its own text data field,
-  // never queue/session internals or an arbitrary accessor. Do not patch its prototype.
-  function queuedRows(group: Container, width: number): string[] | undefined {
-    if (!(tui instanceof Container) || tui.children[1] !== group) return undefined;
-    const fallback = () => { for (const child of group.children) forgetQueued(child);
-      decision(group, "queued", "Queued-message projection delegated; no supported native prefix", width, 0); return undefined; };
-    const height = tui.terminal?.rows, slots = tui.children, children = group.children, spacer = children[0];
-    if (slots.length !== 7 || !slots.every(node => Object.getPrototypeOf(node) === Container.prototype) ||
-      group.render !== observeWidgetRows || group.addChild !== patchedAdd || group.clear !== patchedClear || group.removeChild !== patchedRemove ||
-      typeof height !== "number" || !Number.isSafeInteger(height) || height < 1 ||
-      !spacer || Object.getPrototypeOf(spacer) !== Spacer.prototype || spacer.render !== observeWidgetSpacer) return fallback();
-    const text = (node: Component): string | undefined => {
-      if (Object.getPrototypeOf(node) !== TruncatedText.prototype || node.render !== truncatedRender || node.invalidate !== truncatedInvalidate) return undefined;
-      const value: unknown = Object.getOwnPropertyDescriptor(node, "text")?.value;
-      return typeof value === "string" ? value : undefined;
-    };
-    const messages: { node: Component; raw: string; mode: "Steering" | "Follow-up"; prefix: number }[] = [];
-    let index = 1, hint = "";
-    for (; index < children.length; index++) {
-      const node = children[index]!, raw = text(node);
-      if (raw === undefined) return fallback();
-      // Inspect only the small native prefix on warm frames, not the entire body.
-      const match = /^(?:\x1b\[[0-9;:]*m)*(Steering|Follow-up): /u.exec(raw);
-      if (match) { messages.push({ node, raw, mode: match[1] as "Steering" | "Follow-up", prefix: match[0].length }); continue; }
-      const label = /^↳ (.+ to edit all queued messages)$/u.exec(stripVTControlCharacters(raw));
-      if (!label) return fallback();
-      hint = label[1]!; break;
-    }
-    if (!messages.length || !hint) return fallback();
-    const prefix = children.slice(0, index + 1);
-    if (!prefix.every(node => {
-      const own = Object.getOwnPropertyDescriptor(node, "render");
-      return own ? "value" in own && own.configurable : Object.isExtensible(node);
-    })) return fallback();
-    if (width < 1) return renderQueuedProjection(group, width, prefix.map(node => ({ node, rows: [] })));
-    const spacerRows = spacer.render(width);
-    if (spacerRows.length !== 1 || spacerRows[0] !== "") {
-      fallback();
-      return renderQueuedProjection(group, width, [{ node: spacer, rows: spacerRows }]);
-    }
-    const theme = getTheme(), padding = outputPadding();
-    const projected: { node: Component; rows: string[] }[] = [];
-    const rowCount = spacerRows.length + queuedPresenter.project(messages, width, height, theme, padding, hint, projected);
-    decision(group, "queued", "Verified queued-message prefix projected; Pi still owns editing and dock clipping", width, rowCount, { height, messages: messages.length });
-    return renderQueuedProjection(group, width, [{ node: spacer, rows: spacerRows },
-      ...projected,
-      { node: children[index]!, rows: [] }]);
-  }
-  function observeContainerRows(this: Container, width: number): string[] {
-    if (active) {
-      try { const rows = queuedRows(this, width); if (rows) return rows; }
-      catch { fail("pi-tidy-ui could not render queued messages; native rendering restored"); }
-    }
-    const position = active && parents.get(this);
-    const input = tui instanceof Container && position && position.parent.children === tui.children &&
-      (position.parent.children[3] === this || position.parent.children[2] === this) && position.parent.children[4];
-    const editor = input instanceof Container && input.children[0];
-    if (!(editor instanceof CustomEditor) || !stockEditor(editor))
-      return containerRender.value.call(this, width) as string[];
-    if (managedEditorSlots(editor)?.[2] === this) {
-      const rows = containerRender.value.call(this, width) as string[];
-      nativeStatusRows.set(this, { width, visible: rows.some(row => stripVTControlCharacters(row).trim().length > 0) });
-      return rows;
-    }
-    if (upperWidgetGroup(editor) !== this) return containerRender.value.call(this, width) as string[];
-    const previous = widgetSpacerPass;
-    const pass = { spacer: this.children[0] as Spacer, width } as NonNullable<typeof widgetSpacerPass>;
-    widgetSpacerPass = pass;
-    try {
-      const rows = containerRender.value.call(this, width) as string[];
-      if (pass.rows === 1 && pass.blank && rows.length >= 1 && rows[0] === "" && upperWidgetGroup(editor) === this)
-        upperWidgetRows.set(this, { width, rows: rows.length - 1, spacer: new WeakRef(pass.spacer) });
-      else upperWidgetRows.delete(this);
-      return rows;
-    } finally { widgetSpacerPass = previous; }
-  }
-  function observeWidgetSpacer(this: Spacer, width: number): string[] {
-    const rows = spacerRender.value.call(this, width) as string[];
-    if (widgetSpacerPass?.spacer === this && widgetSpacerPass.width === width) {
-      widgetSpacerPass.rows = rows.length;
-      widgetSpacerPass.blank = rows[0] === "";
-    }
-    return rows;
-  }
-  function editorGap(editor: CustomEditor, width: number): number {
-    const group = upperWidgetGroup(editor), measured = group && upperWidgetRows.get(group);
-    return group && group.children.length > 1 && measured?.width === width && measured.rows > 0 &&
-      measured.spacer.deref() === group.children[0] ? 1 : 0;
-  }
-  function patchEditorPrototype(prototype: object) {
-    if (editorPatches.has(prototype)) return;
-    if (editorPrototype.render !== editorRender || editorPrototype.handleMouse !== editorMouse ||
-      editorPrototype.renderBottomBorder !== editorBottom) return;
-    const patchedRender = function (this: CustomEditor, width: number): string[] {
-      if (!active || !stockEditor(this) || (width > 0 && width < 7)) {
-        editorStates.delete(this); const rows = editorRender.call(this, width);
-        decision(this, "editor", "Native editor delegated; ownership or narrow-width guard rejected", width, rows.length); return rows;
-      }
-      try {
-        const layout = renderEditorCard(width, this.getPaddingX(), getTheme(), (size, borderWidth) => {
-          if (borderWidth === undefined) return { rows: editorRender.call(this, size), top: "", bottom: "" };
-          const pass = { width: borderWidth, top: "", bottom: "" };
-          editorPasses.set(this, pass);
-          try { return { rows: editorRender.call(this, size), top: pass.top, bottom: pass.bottom }; }
-          finally { editorPasses.delete(this); }
-        });
-        const { rows, ...mapping } = layout;
-        const offsetY = mapping.framed ? editorGap(this, width) : 0;
-        editorStates.set(this, { ...mapping, width, offsetY });
-        decision(this, "editor", mapping.framed ? "Stock editor presentation projected; native input engine retained" : "Native editor projection fallback; inner geometry/content guard rejected", width, rows.length,
-          { nativeWidth: mapping.nativeWidth, offsetX: mapping.offsetX, offsetY }, `${mapping.nativeWidth}:${mapping.offsetX}:${offsetY}`);
-        if (mapping.framed && options.editorStatus) statusEditor = new WeakRef(this);
-        return offsetY ? ["", ...rows] : rows;
-      } catch {
-        fail("pi-tidy-ui could not render this editor; native rendering restored");
-        return editorRender.call(this, width);
-      }
-    };
-    const patchedMouse = function (this: CustomEditor, event: TuiMouseEvent) {
-      const state = editorStates.get(this);
-      if (!active || !stockEditor(this) || !state?.framed || state.width !== event.width)
-        return editorMouse.call(this, event);
-      if (event.y < state.offsetY) return undefined; // The outside separator is not input or autocomplete.
-      return editorMouse.call(this, { ...event, x: event.x - state.offsetX, y: event.y - state.offsetY,
-        width: state.nativeWidth, height: Math.max(0, event.height - state.offsetY) });
-    };
-    const border = (name: "top" | "bottom", original: Function) => function (this: CustomEditor, width: number, hidden: number): string {
-      const pass = editorPasses.get(this);
-      if (!pass) return original.call(this, width, hidden) as string;
-      const descriptor = Object.getOwnPropertyDescriptor(this, "borderColor")!, color = this.borderColor;
-      // Only stock border-decoration fragments pass through this callback.
-      // Native status literals/semantic styles use independent indicator callbacks.
-      Object.defineProperty(this, "borderColor", { ...descriptor, value: (text: string) => color.call(this, text.replaceAll("─", " ")) });
-      try { pass[name] = original.call(this, pass.width, hidden) as string; }
-      finally { Object.defineProperty(this, "borderColor", descriptor); }
-      return name === "top" ? EDITOR_TOP : EDITOR_BOTTOM;
-    };
-    const replacements = { render: patchedRender, handleMouse: patchedMouse,
-      renderTopBorder: border("top", editorTop), renderBottomBorder: border("bottom", editorBottom) };
-    const hooks = Object.entries(replacements).map(([name, wrapper]) => {
-      const original = Object.getOwnPropertyDescriptor(prototype, name);
-      if (original && (!original.writable || !original.configurable)) throw new Error("Native editor presentation hooks cannot be restored");
-      return { name, original, wrapper };
-    });
-    editorPatches.set(prototype, hooks);
-    for (const hook of hooks) Object.defineProperty(prototype, hook.name,
-      { configurable: true, writable: true, ...hook.original, value: hook.wrapper });
-  }
-  function visit(node: Component, parent?: Container, index = -1) {
-    if (!active) return;
-    if (parent) parents.set(node, { parent, index });
-    if (candidate(node)) {
-      toolView.restorePreview(node);
-      install(node);
-    } else if (userCandidate(node)) installUser(node);
-    else if (Object.getPrototypeOf(node) === CustomEditor.prototype) {
-      patchEditorPrototype(CustomEditor.prototype); patchEditorPlacement(node as CustomEditor);
-      if (stockEditor(node as CustomEditor)) statusEditor = new WeakRef(node as CustomEditor);
-    }
-    if (node instanceof Container) node.children.forEach((child, index) => visit(child, node, index));
-  }
-  function patchedAdd(this: Container, child: Component) {
-    originalAdd.call(this, child);
-    // A whole prebuilt subtree can be attached during history reconstruction.
-    visit(child, this, this.children.length - 1);
-  }
-  function releaseTree(node: Component) {
-    forgetQueued(node);
-    if (candidate(node)) toolView.remove(node);
-    else if (userCandidate(node)) forgetUser(node);
-    parents.delete(node);
-    if (node instanceof Container) for (const child of node.children) if (!attached(child)) releaseTree(child);
-  }
-  function pauseRendererTree(node: Component) {
-    if (candidate(node)) toolView.pause(node);
-    if (node instanceof Container) for (const child of node.children) pauseRendererTree(child);
-  }
-  function patchedRemove(this: Container, child: Component) {
-    containerRemove.call(this, child);
-    // A component already moved to another attached parent keeps its current layout.
-    if (!this.children.includes(child) && !attached(child)) releaseTree(child);
-  }
-  function patchedClear(this: Container) {
-    const children = this.children;
-    // Pi clears the current renderer before moving the same tree through its stable TUI reference.
-    const renderer = tui instanceof Container && this !== tui && children === tui.children;
-    containerClear.call(this);
-    for (const child of children) if (!this.children.includes(child) && !attached(child)) {
-      if (!renderer) releaseTree(child);
-      else { pauseRendererTree(child); rendererClears.push(new WeakRef(child)); }
-    }
-    if (rendererClears.length && !rendererClearPending) {
-      rendererClearPending = true;
-      queueMicrotask(rendererClearRetirement(new WeakRef(controller)));
-    }
-  }
-
-  if (!(tui instanceof Container) || typeof tui.requestRender !== "function") {
-    fail("The live Pi TUI does not share the host Container; native rendering retained");
-    return controller;
-  }
-  try {
-    active = true;
-    visit(tui);
-    if (active) {
-      Container.prototype.addChild = patchedAdd;
-      Container.prototype.clear = patchedClear;
-      Container.prototype.removeChild = patchedRemove;
-      Object.defineProperty(Container.prototype, "render", { ...containerRender, value: observeWidgetRows });
-      Object.defineProperty(Spacer.prototype, "render", { ...spacerRender, value: observeWidgetSpacer });
-      installingEditorHooks = false;
-      rerouteNativeStatus();
-      refresh();
-    }
-  } catch {
-    fail("pi-tidy-ui could not install its UI hooks; native rendering restored");
-  }
+  native.install();
   return controller;
 }
 
@@ -1328,7 +581,7 @@ export default function tidyUi(pi: ExtensionAPI, options: TidyUiRuntimeOptions =
     if (ownedFooter) { diagnose(logging?.sink, "INFO", "footer", "Owned footer released through public UI; native placement restored"); liveContext?.ui.setFooter(undefined); }
   }
   let footerRestoreQueued = false, footerStartQueued = false;
-  let pendingFooter: { slot: WeakRef<Container>; owner: WeakRef<Component> } | undefined;
+  let pendingFooter: NativeFooterSlot | undefined;
   function finishFooterStart() {
     if (!pendingFooter || !controller?.editorActive || footerStartQueued) return;
     footerStartQueued = true;
@@ -1339,8 +592,8 @@ export default function tidyUi(pi: ExtensionAPI, options: TidyUiRuntimeOptions =
       pendingFooter = undefined;
       // /reload can mount a selector during session_start. Wait for the default
       // input, but never claim a slot another extension replaced meanwhile.
-      const owner = pending?.owner.deref();
-      if (owner && liveContext && pending?.slot.deref()?.children[0] === owner) { diagnose(logging?.sink, "INFO", "footer", "Deferred footer installation allowed after stock editor return"); startFooter(liveContext); }
+      const current = pending.current();
+      if (current && liveContext) { diagnose(logging?.sink, "INFO", "footer", "Deferred footer installation allowed after stock editor return"); startFooter(liveContext); }
       else diagnose(logging?.sink, "INFO", "footer", "Deferred footer installation cancelled; former slot is no longer owned");
     });
   }
@@ -1422,9 +675,8 @@ export default function tidyUi(pi: ExtensionAPI, options: TidyUiRuntimeOptions =
     // A public widget factory exposes the actual live tree, including bundled CLI classes.
     // Remove the empty widget immediately: it is not part of our layout.
     ctx.ui.setWidget("pi-tidy-ui-capture", (tui) => {
-      const slot = tui.children.length === 7 ? tui.children[6] : undefined;
-      if (ctx.ui.getEditorComponent() === undefined && slot instanceof Container && slot.children.length === 1)
-        pendingFooter = { slot: new WeakRef(slot), owner: new WeakRef(slot.children[0]!) };
+      const slot = ctx.ui.getEditorComponent() === undefined ? observeFooterSlot(tui) : undefined;
+      if (slot) pendingFooter = slot;
       const sourceRuntime = ensureSyntax(ctx);
       if (controller) reportRuntime(diagnostic, { kind: 'released', scope: controller, operation: '*' });
       controller = installTidyUi(tui, palette, {

@@ -155,3 +155,37 @@ test("changed user-component contracts restore all owned hooks and retain exact 
     assert.equal(controller.cacheStats().entries, 0);
   } finally { controller.restore(); }
 });
+
+
+test('active user prototype hooks do not retain the first removed native message', async () => {
+  initTheme('dark', false);
+  assert.equal(typeof globalThis.gc, 'function');
+  const root = new Root();
+  function installFirst() {
+    const first = new UserMessageComponent('FIRST_NATIVE_USER');
+    root.addChild(first);
+    const controller = installTidyUi(root, () => nativeTheme);
+    root.render(80);
+    const reference = new WeakRef(first);
+    root.removeChild(first);
+    return { controller, reference };
+  }
+  const { controller, reference } = installFirst();
+  const peer = new UserMessageComponent('LIVE_NATIVE_USER');
+  try {
+    root.addChild(peer);
+    root.render(80);
+    assert.equal(controller.active, true);
+    assert.equal(controller.cacheStats().byKind.user.entries, 1);
+    let collected = false;
+    for (let attempt = 0; attempt < 32 && !collected; attempt++) {
+      await new Promise<void>(resolve => setImmediate(resolve));
+      globalThis.gc!();
+      collected = reference.deref() === undefined;
+    }
+    assert.equal(collected, true, 'persistent prototype wrappers must not capture their first installer');
+    assert.equal(controller.active, true);
+    assert.match(root.render(80).map(stripVTControlCharacters).join('\n'), /LIVE_NATIVE_USER/u);
+    assert.equal(controller.cacheStats().byKind.user.entries, 1);
+  } finally { controller.restore(); }
+});

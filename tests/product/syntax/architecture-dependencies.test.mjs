@@ -48,7 +48,7 @@ const presentationModules = [
   'src/presentation/queued-presenter.ts', 'src/presentation/tool-intents.ts', 'src/presentation/tool-policy.ts',
   'src/presentation/tool-producers.ts', 'src/presentation/tool-routing-presenter.ts', 'src/presentation/tool-sessions.ts', 'src/presentation/tool-summary-presenter.ts',
   'src/presentation/tool-preparation.ts', 'src/presentation/tool-view-presenter.ts',
-  'src/presentation/user-presenter.ts',
+  'src/presentation/user-presenter.ts', 'src/presentation/spinner.ts',
 ];
 const governedModules = new Set([
   ...presentationModules,
@@ -413,7 +413,9 @@ function assertPresentationReference(path, reference) {
 }
 
 function isPiTuiSpecifier(specifier) {
-  return specifier === '@earendil-works/pi-tui' || specifier.startsWith('@earendil-works/pi-tui/');
+  const tui = '@earendil-works/pi-tui';
+  return specifier === tui || specifier.startsWith(`${tui}/`)
+    || specifier.includes(`/${tui}/`) || specifier.endsWith(`/${tui}`);
 }
 
 function importTypeName(qualifier) {
@@ -453,7 +455,7 @@ function assertPresentationModeImports(path, source) {
   if (violations.length) throw new Error(`presentation imports more than the narrow view-mode type: ${violations.join(', ')}`);
 }
 
-function assertPresentationPiTuiComponents(path, source) {
+function assertPiTuiDisplayImports(path, source) {
   const violations = [];
   const isPiTui = node => Boolean(node) && ts.isStringLiteralLike(node) && isPiTuiSpecifier(node.text);
   for (const statement of source.statements) {
@@ -491,12 +493,52 @@ function assertPresentationPiTuiComponents(path, source) {
     ts.forEachChild(node, visit);
   };
   visit(source);
-  if (violations.length) throw new Error(`presentation imports Pi UI component shapes: ${violations.join(', ')}`);
+  if (violations.length) throw new Error(`${path} imports Pi UI component shapes: ${violations.join(', ')}`);
 }
 
 function assertPresentationImports(path, source) {
   assertPresentationModeImports(path, source);
-  assertPresentationPiTuiComponents(path, source);
+  assertPiTuiDisplayImports(path, source);
+}
+
+function assertApplicationHostImports(path, source) {
+  if (path !== entryPath && !path.startsWith('src/application/')) return;
+  assertPiTuiDisplayImports(path, source);
+  const sdk = '@earendil-works/pi-coding-agent';
+  const contextTypes = new Set(['ExtensionAPI', 'ExtensionContext']);
+  const configurationValues = new Set(['VERSION', 'getAgentDir']);
+  const isSdkSpecifier = specifier => specifier === sdk || specifier.includes(`${sdk}/`) || specifier.endsWith(`/${sdk}`);
+  const isSdk = node => Boolean(node) && ts.isStringLiteralLike(node) && isSdkSpecifier(node.text);
+  const allowedBindings = (bindings, typeOnly) => {
+    if (!bindings || !ts.isNamedImports(bindings) && !ts.isNamedExports(bindings)) return false;
+    return bindings.elements.length > 0 && bindings.elements.every(element => {
+      const name = element.propertyName?.text ?? element.name.text;
+      return (typeOnly || element.isTypeOnly ? contextTypes : configurationValues).has(name);
+    });
+  };
+  for (const reference of moduleReferences(source)) {
+    if (!isSdkSpecifier(reference.specifier)) continue;
+    if (reference.specifier !== sdk || ['dynamic-import', 'require', 'import-equals'].includes(reference.syntax))
+      throw new Error(`application imports broad or private Pi host SDK: ${path} -> ${reference.specifier}`);
+  }
+  for (const statement of source.statements) {
+    if (ts.isImportDeclaration(statement) && isSdk(statement.moduleSpecifier)) {
+      const clause = statement.importClause;
+      if (!clause || clause.name || !allowedBindings(clause.namedBindings, clause.isTypeOnly))
+        throw new Error(`application imports native Pi bindings instead of public context/configuration: ${path}`);
+    } else if (ts.isExportDeclaration(statement) && statement.moduleSpecifier && isSdk(statement.moduleSpecifier)) {
+      if (!allowedBindings(statement.exportClause, statement.isTypeOnly))
+        throw new Error(`application forwards native Pi bindings: ${path}`);
+    }
+  }
+  const visit = node => {
+    if (ts.isImportTypeNode(node) && isSdk(node.argument.literal)) {
+      const allowed = node.isTypeOf ? configurationValues : contextTypes;
+      if (!allowed.has(importTypeName(node.qualifier))) throw new Error(`application imports native Pi shape types: ${path}`);
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
 }
 
 function assertEntryPresentationOwnership(path, source) {
@@ -567,7 +609,7 @@ function assertPresentationDependency(edge) {
   const summaryFramePresentation = edge.source === 'src/presentation/tool-summary-presenter.ts'
     && ['src/card-frame.ts', 'src/card-theme.ts'].includes(edge.target)
     || edge.source === 'src/presentation/tool-view-presenter.ts' && edge.target === 'src/card-frame.ts';
-  const diagnosticSink = ['src/presentation/user-presenter.ts', 'src/presentation/queued-presenter.ts'].includes(edge.source)
+  const diagnosticSink = ['src/presentation/user-presenter.ts', 'src/presentation/queued-presenter.ts', 'src/presentation/spinner.ts'].includes(edge.source)
     && edge.target === 'src/diagnostics.ts';
   const producerInterpretation = edge.source === 'src/presentation/tool-producers.ts'
     && ['src/tool-adapters/registry.ts', 'src/tool-adapters/contracts.ts'].includes(edge.target);
@@ -580,6 +622,23 @@ function assertPresentationDependency(edge) {
     || edge.target === 'src/cards/display-input.ts' && edge.kind === 'type-only'
     || edge.target === presentationModePath && edge.kind === 'type-only';
   if (!allowed) throw new Error(`presentation imports outside its display capabilities: ${edgeKey(edge)}`);
+}
+
+const piHostShapeDependencies = new Set([
+  'src/presentation/tool-view-presenter.ts', 'src/presentation/tool-producers.ts',
+  'src/presentation/user-presenter.ts', 'src/presentation/queued-presenter.ts',
+  'src/card-theme.ts', 'src/diagnostics.ts', 'src/syntax/work.ts',
+]);
+
+function assertPiHostDependency(edge) {
+  if (edge.target.startsWith('src/host/pi/') && !edge.source.startsWith('src/host/pi/')
+    && edge.source !== entryPath && !edge.source.startsWith('src/application/')) {
+    throw new Error(`lower layer back-imports native host ownership: ${edgeKey(edge)}`);
+  }
+  if (!edge.source.startsWith('src/host/pi/')) return;
+  const allowed = edge.target.startsWith('src/host/pi/') || edge.target === 'src/editor-card.ts'
+    || edge.target === 'src/editor-status.ts' || edge.kind === 'type-only' && piHostShapeDependencies.has(edge.target);
+  if (!allowed) throw new Error(`native host binding imports application or presentation implementation: ${edgeKey(edge)}`);
 }
 
 function assertEdgePolicy(edge) {
@@ -616,6 +675,7 @@ function assertEdgePolicy(edge) {
   if (edge.target === entryPath && edge.source !== entryPath) {
     throw new Error(`production module back-imports the extension entry: ${edgeKey(edge)}`);
   }
+  assertPiHostDependency(edge);
 }
 
 function assertGovernedInventory(files) {
@@ -1162,4 +1222,96 @@ test('card preparation requests have one canonical card-domain model', () => {
   }), /card preparation imports/);
   assert.throws(() => assertEdgePolicy({ source: 'src/cards/file-preparation.ts',
     target: 'src/tool-adapters/contracts.ts', kind: 'type-only' }), /card preparation imports/);
+});
+
+
+test('entry and application composition leave concrete native UI and classification bindings in the host adapter', () => {
+  for (const path of productionFiles().filter(path => path === entryPath || path.startsWith('src/application/')))
+    assertApplicationHostImports(path, parseSource(path));
+  for (const path of productionFiles().filter(path => path.startsWith('src/host/pi/')))
+    assert.equal(reexportedSourceNames(entryPath, path).size, 0, `extension entry forwards native host bindings from ${path}`);
+});
+
+test('host import guard preserves public application capabilities without broad native access', () => {
+  for (const path of [entryPath, 'src/application/presentation-runtime.ts']) {
+    for (const text of [
+      "import { VERSION, getAgentDir, type ExtensionContext as Context } from '@earendil-works/pi-coding-agent';",
+      "import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';",
+      "type Context = import('@earendil-works/pi-coding-agent').ExtensionContext;",
+      "type AgentDirectory = typeof import('@earendil-works/pi-coding-agent').getAgentDir;",
+      "import { visibleWidth, backgroundAnsi, type TuiMouseEvent } from '@earendil-works/pi-tui';",
+    ]) assert.doesNotThrow(() => assertApplicationHostImports(path, parseSource(path, text)), text);
+    for (const text of [
+      "import { Container as NativeTree } from '@earendil-works/pi-tui';",
+      "import type { Component } from '@earendil-works/pi-tui';",
+      "export type { Editor } from '@earendil-works/pi-tui';",
+      "const native = require('@earendil-works/pi-tui');",
+      "import { CustomEditor as Input } from '@earendil-works/pi-coding-agent';",
+      "import { highlightCode } from '@earendil-works/pi-coding-agent';",
+      "import { getAgentDir, type CustomEditor } from '@earendil-works/pi-coding-agent';",
+      "import type * as NativeHost from '@earendil-works/pi-coding-agent';",
+      "export * from '@earendil-works/pi-coding-agent';",
+      "const native = import('@earendil-works/pi-coding-agent');",
+      "const native = require('@earendil-works/pi-coding-agent');",
+      "import NativeHost = require('@earendil-works/pi-coding-agent');",
+      "type Input = import('@earendil-works/pi-coding-agent').CustomEditor;",
+      "import { CustomEditor } from '@earendil-works/pi-coding-agent/dist/modes/interactive/components/custom-editor.js';",
+      "import { CustomEditor } from '../../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/components/custom-editor.js';",
+    ]) assert.throws(() => assertApplicationHostImports(path, parseSource(path, text)), /Pi|component/u, text);
+  }
+});
+
+
+test('Pi native binding leaves application, source and presentation implementations outside its ownership', () => {
+  const source = 'src/host/pi/new-binding.ts';
+  for (const target of ['src/application/syntax-runtime.ts', 'src/highlighting/source-execution.ts',
+    'src/resources/data-budget.ts', 'src/cards/preparation.ts', 'src/presentation/tool-view-presenter.ts',
+    'src/presentation/user-presenter.ts', 'src/render-cache.ts']) {
+    assert.throws(() => assertEdgePolicy({ source, target, kind: 'value', syntax: 'import' }),
+      /native host binding imports application or presentation implementation/u, target);
+  }
+  for (const target of ['src/application/syntax-runtime.ts', 'src/highlighting/source-execution.ts', 'src/resources/data-budget.ts']) {
+    assert.throws(() => assertEdgePolicy({ source, target, kind: 'type-only', syntax: 'import-type' }),
+      /native host binding imports application or presentation implementation/u, target);
+  }
+  for (const target of ['src/presentation/tool-view-presenter.ts', 'src/presentation/tool-producers.ts',
+    'src/presentation/user-presenter.ts', 'src/presentation/queued-presenter.ts',
+    'src/card-theme.ts', 'src/diagnostics.ts', 'src/syntax/work.ts']) {
+    assert.doesNotThrow(() => assertEdgePolicy({ source, target, kind: 'type-only', syntax: 'import' }), target);
+  }
+  for (const target of ['src/host/pi/other-binding.ts', 'src/editor-card.ts', 'src/editor-status.ts']) {
+    assert.doesNotThrow(() => assertEdgePolicy({ source, target, kind: 'value', syntax: 'import' }), target);
+  }
+});
+
+
+test('application host guard rejects private TUI component access through relative paths', () => {
+  for (const path of [entryPath, 'src/application/presentation-runtime.ts']) {
+    for (const text of [
+      "import { Container } from '../../node_modules/@earendil-works/pi-tui/dist/tui.js';",
+      "import type { Component } from '../../node_modules/@earendil-works/pi-tui/dist/tui.js';",
+      "export { Container } from '../../node_modules/@earendil-works/pi-tui/dist/tui.js';",
+      "const native = require('../../node_modules/@earendil-works/pi-tui/dist/tui.js');",
+      "const native = import('../../node_modules/@earendil-works/pi-tui/dist/tui.js');",
+      "import Native = require('../../node_modules/@earendil-works/pi-tui/dist/tui.js');",
+      "type Native = import('../../node_modules/@earendil-works/pi-tui/dist/tui.js').Container;",
+    ]) assert.throws(() => assertApplicationHostImports(path, parseSource(path, text)), /Pi|component/u, text);
+    assert.doesNotThrow(() => assertApplicationHostImports(path, parseSource(path,
+      "import { visibleWidth } from '../../node_modules/@earendil-works/pi-tui/dist/utils.js';")));
+  }
+});
+
+test('lower layers cannot back-import native host bindings for values or types', () => {
+  for (const source of ['src/highlighting/source-execution.ts', 'src/occipital/client.ts',
+    'src/resources/data-budget.ts', 'src/appearance/style-ansi.ts', 'src/cards/file-model.ts',
+    'src/rendering/card-layout.ts', 'src/presentation/tool-view-presenter.ts',
+    'src/syntax/cards.ts', 'src/themes/selection.ts', 'src/tool-adapters/pi/file.ts']) {
+    for (const kind of ['type-only', 'value', 'mixed']) assert.throws(() => assertEdgePolicy({
+      source, target: 'src/host/pi/native-bindings.ts', kind, syntax: 'import',
+    }), /host/u, `${source} [${kind}]`);
+  }
+  assert.doesNotThrow(() => assertEdgePolicy({ source: entryPath,
+    target: 'src/host/pi/native-bindings.ts', kind: 'value', syntax: 'import' }));
+  assert.doesNotThrow(() => assertEdgePolicy({ source: 'src/application/session.ts',
+    target: 'src/host/pi/native-session.ts', kind: 'value', syntax: 'import' }));
 });

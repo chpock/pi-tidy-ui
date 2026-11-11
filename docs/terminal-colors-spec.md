@@ -2,7 +2,7 @@
 
 ## Scope and controls
 
-pi-tidy-ui can synchronize the terminal's default background and foreground with a **fixed, file-backed Pi theme**. This affects the shared terminal, not just a card. It is independently implemented in `src/terminal-colors.ts`; `src/index.ts` owns the host integration and `src/terminal-lifecycle.ts` binds the public terminal start/stop boundary.
+pi-tidy-ui can synchronize the terminal's default background and foreground with a **fixed, file-backed Pi theme**. This affects the shared terminal, not just a card. It is independently implemented in `src/terminal-colors.ts`; `src/index.ts` coordinates eligibility and lifecycle, `src/host/pi/native-bindings.ts` owns the guarded native appearance observation, and `src/terminal-lifecycle.ts` binds the public terminal start/stop boundary.
 
 The feature defaults to Off: without a saved preference, neither terminal-default channel is set or reset. Explicit saved On/Off choices are retained; no startup migration or default write is performed. Bare `/tidy-ui` exposes **Set terminal colors from Pi theme**: On/Off requests application of Pi's theme to the terminal background and default text color, rather than reporting whether colors match. **Status & troubleshooting** shows the current effective state and **Reapply terminal colors**. See the [saved-preference contract](settings-menu-spec.md).
 

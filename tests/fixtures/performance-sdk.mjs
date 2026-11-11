@@ -6,7 +6,7 @@ import { ToolExecutionComponent, createEditToolDefinition, createWriteToolDefini
 import { renderLayoutFrame } from '../../node_modules/@earendil-works/pi-tui/dist/layout.js';
 import { UserMessageComponent } from '../../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/components/user-message.js';
 import { initTheme, theme } from '../../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js';
-import { createLazyNativeRendererResolver } from '../../src/syntax/lazy-native-renderers.ts';
+import { createLazyNativeRendererResolver } from '../../src/host/pi/lazy-native-renderers.ts';
 import { verifyPerformanceTools } from './performance-integrity.mjs';
 import { preparedCardReady, waitForPerformanceReady } from './performance-readiness.mjs';
 import { beginPhase, endPhase, afterGC, capabilities, startAllocationProfile, stopAllocationProfile, summarizeAllocationProfile } from '../../scripts/test/performance/metrics.mjs';

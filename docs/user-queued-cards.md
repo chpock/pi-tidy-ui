@@ -1,6 +1,6 @@
 # User messages and queued-message projection
 
-These two presenters share appearance and frame geometry, but consume different representations. User cards reframe native Markdown output. Queued cards prepare complete plain text before selecting a bounded preview. Neither changes message/queue ownership. See [host integration](host-integration.md) and [text representations](rendering.md).
+These two presenters share appearance and frame geometry, but consume different representations. User cards reframe native Markdown output. Queued cards prepare complete plain text before selecting a bounded preview. Neither changes message/queue ownership. Native user/Markdown borrows and prototype restoration live in `src/host/pi/user-components.ts`; guarded queue-prefix capture and native traversal live in `native-session.ts` in that same directory. Both call the separate presentation owners rather than retaining another copy of their layouts. See [host integration](host-integration.md) and [text representations](rendering.md).
 
 ## Internal representations and projection
 

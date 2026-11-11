@@ -11,14 +11,15 @@ export default async function colorDriver(pi: ExtensionAPI) {
   let tui: any, query: unknown, notify: unknown, scheme: unknown;
   const nativeOnly = process.env.TIDY_UI_TEST_COLORS_NATIVE === "1";
   let diagnostics: typeof import("../../src/index.ts").terminalColorDiagnostics | undefined;
-  let appearanceTracking: typeof import("../../src/index.ts").terminalAppearanceTracking = value => {
+  let appearanceTracking: typeof import("../../src/host/pi/native-bindings.ts").terminalAppearanceTracking = value => {
     try { const flag = Reflect.get(value, "terminalColorSchemeNotificationsEnabled"); return typeof flag === "boolean" ? flag : undefined; }
     catch { return undefined; }
   };
   // Native/first-late controls do not import production pi-tidy-ui until it is actually installed.
   if (!nativeOnly) {
     const module = await import("../../src/index.ts");
-    diagnostics = module.terminalColorDiagnostics; appearanceTracking = module.terminalAppearanceTracking;
+    diagnostics = module.terminalColorDiagnostics;
+    appearanceTracking = (await import("../../src/host/pi/native-bindings.ts")).terminalAppearanceTracking;
     const { default: presentationDriver } = await import("./presentation-driver.ts");
     await presentationDriver({ ...pi, registerCommand(name, options) {
       if (name === "tidy-ui") control = options.handler;

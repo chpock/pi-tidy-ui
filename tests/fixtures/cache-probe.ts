@@ -11,7 +11,8 @@ import { renderLayoutFrame } from "../../node_modules/@earendil-works/pi-tui/dis
 import { ToolExecutionComponent } from "../../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/components/tool-execution.js";
 import { UserMessageComponent } from "../../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/components/user-message.js";
 import { initTheme, theme } from "../../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js";
-import tidyUi, { installTidyUi, terminalAppearanceTracking } from "../../src/index.ts";
+import tidyUi, { installTidyUi } from "../../src/index.ts";
+import { terminalAppearanceTracking } from "../../src/host/pi/native-bindings.ts";
 import { TerminalColors, terminalColorExit } from "../../src/terminal-colors.ts";
 import { InteractiveMode } from "../../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/interactive-mode.js";
 import { menuPage, setAppearance } from "../helpers/menu-driver.ts";

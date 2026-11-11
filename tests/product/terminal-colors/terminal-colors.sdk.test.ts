@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { parseColor, TuiAltScreen, TuiMainScreen, type Terminal } from "@earendil-works/pi-tui";
-import { terminalAppearanceTracking } from "../../../src/index.ts";
+import { terminalAppearanceTracking } from "../../../src/host/pi/native-bindings.ts";
 import { colorToHex, rgbColor } from "@earendil-works/pi-tui";
 import { resolveTerminalDefaults, parseThemeDefaults, TerminalColors, type DefaultColors } from "../../../src/terminal-colors.ts";
 import { menuPage, setAppearance, setColors } from "../../helpers/menu-driver.ts";

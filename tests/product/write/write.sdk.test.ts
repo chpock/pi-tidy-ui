@@ -18,7 +18,7 @@ import { prepareFileToolCall } from '../../fixtures/tool-adapters/reader-fixture
 import { generateDiffString, generateUnifiedPatch } from "../../../node_modules/@earendil-works/pi-coding-agent/dist/core/tools/edit-diff.js";
 import { initTheme, theme as nativeTheme } from "../../../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js";
 import { Root, Tool, color, installTidyUi, mouse, plain, setup, type TuiMouseEvent } from "../../fixtures/sdk-contract-support.ts";
-import { createLazyNativeRendererResolver } from "../../../src/syntax/lazy-native-renderers.ts";
+import { createLazyNativeRendererResolver } from "../../../src/host/pi/lazy-native-renderers.ts";
 
 initTheme('dark', false);
 

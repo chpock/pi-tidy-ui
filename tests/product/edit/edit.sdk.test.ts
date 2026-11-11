@@ -21,7 +21,7 @@ import { generateDiffString, generateUnifiedPatch } from "../../../node_modules/
 import type { CardTheme } from "../../../src/card-theme.ts";
 import { Theme, initTheme, loadThemeFromPath, setThemeInstance, theme as nativeTheme } from "../../../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js";
 import { Root, Text, Tool, color, editDiff, installTidyUi, mouse, plain, setup, spinnerFrames, type TuiMouseEvent } from "../../fixtures/sdk-contract-support.ts";
-import { createLazyNativeRendererResolver } from "../../../src/syntax/lazy-native-renderers.ts";
+import { createLazyNativeRendererResolver } from "../../../src/host/pi/lazy-native-renderers.ts";
 
 initTheme('dark', false);
 

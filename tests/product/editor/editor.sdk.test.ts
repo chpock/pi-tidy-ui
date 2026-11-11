@@ -12,7 +12,7 @@ import { createChatViewport } from "../../../node_modules/@earendil-works/pi-cod
 import { renderLayoutFrame } from "../../../node_modules/@earendil-works/pi-tui/dist/layout.js";
 import { initTheme, theme as nativeTheme } from "../../../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js";
 import { setAppearance } from "../../helpers/menu-driver.ts";
-import { Container, CustomEditor, Text, color, editorSetup, extensionHarness, installTidyUi, mouse, type ExtensionContext, type TidyUiOptions } from "../../fixtures/sdk-contract-support.ts";
+import { Container, CustomEditor, Text, Tool, color, editorSetup, extensionHarness, installTidyUi, mouse, type ExtensionContext, type TidyUiOptions } from "../../fixtures/sdk-contract-support.ts";
 
 test("editor card uses configured exterior geometry without exchanging native state or caching input", () => {
   const nativeRender = Editor.prototype.render;
@@ -809,4 +809,104 @@ test("native activity same-editor routing restores another focused component", (
     controller.restore(); assert.equal(focused, other); assert.equal(editor.focused, false);
     assert.equal(editor.getText(), text); assert.deepEqual(editor.getCursor(), before);
   } finally { controller.restore(); }
+});
+
+
+test('failed native status rebinding restores placement before releasing editor hooks', () => {
+  const { root, editor, host, options } = nativeStatusEditorSetup();
+  editor.handleInput('\x1b[200~' + 'RETAINED_界_'.repeat(80) + '\x1b[201~');
+  editor.handleInput('\x1b[D');
+  const draft = { text: editor.getText(), expanded: editor.getExpandedText(), cursor: editor.getCursor() };
+  const placement = Object.getOwnPropertyDescriptor(editor, 'embedWorkingStatus');
+  const nativeSetter = editor.setText, ownSetter = Object.hasOwn(editor, 'setText');
+  const nativeRender = editor.render, nativeInput = editor.handleInput;
+  let disposed = 0, routes = 0;
+  const indicator = { kind: 'future-native-activity', render: () => ['NATIVE_ACTIVITY'], invalidate() {},
+    renderInBorder: () => 'NATIVE_ACTIVITY', renderSpinnerInBorder: () => 'S', dispose: () => disposed++ };
+  host.showStatusIndicator(indicator);
+  const controller = installTidyUi(root, () => color, { ...options, rerouteEditorStatus() {
+    options.rerouteEditorStatus!();
+    if (++routes === 1) throw new Error('Native status binding failed after switching placement');
+  } });
+  try {
+    assert.equal(controller.active, false);
+    assert.equal(routes, 2, 'the same public native API restores the previous placement');
+    assert.equal(host.editor === editor, true);
+    assert.equal(host.activeStatusIndicator === indicator, true);
+    assert.equal(host.activeWorkingIndicatorEmbedded, true);
+    assert.equal(host.statusContainer.children.length, 0);
+    assert.equal(disposed, 0, 'Toolview failure does not dispose native activity');
+    assert.deepEqual(Object.getOwnPropertyDescriptor(editor, 'embedWorkingStatus'), placement);
+    assert.equal(Object.hasOwn(editor, 'setText'), ownSetter);
+    assert.equal(editor.setText === nativeSetter, true);
+    assert.equal(editor.render === nativeRender, true);
+    assert.equal(editor.handleInput === nativeInput, true);
+    assert.deepEqual({ text: editor.getText(), expanded: editor.getExpandedText(), cursor: editor.getCursor() }, draft);
+    assert.match(editor.render(80).map(editorPlain).join('\n'), /NATIVE_ACTIVITY/u);
+    controller.restore();
+    assert.equal(routes, 2, 'a failed installation cannot rebind again on repeated release');
+  } finally { controller.restore(); host.clearStatusIndicator(); }
+});
+
+
+test('live editor and tool hooks retain no removed first installer or stale metadata', async () => {
+  assert.equal(typeof globalThis.gc, 'function');
+  // InteractiveMode deliberately retains its default editor across selectors; isolate adapter retention here.
+  function installFirst() {
+    const { root, editor } = editorSetup(1);
+    const tool = new Tool('foreign-tool'); root.addChild(tool);
+    const controller = installTidyUi(root, () => color, { editorStatus: true });
+    root.render(80);
+    assert.equal(controller.renderEditorStatus(80, { model: 'MODEL', provider: 'provider', thinking: 'off', idle: true }).length, 2);
+    const editorReference = new WeakRef(editor), toolReference = new WeakRef(tool);
+    root.removeChild(editor); root.removeChild(tool);
+    return { root, controller, editorReference, toolReference };
+  }
+  const { root, controller, editorReference, toolReference } = installFirst();
+  const peer = new Text('LIVE_NATIVE_PEER', 0, 0);
+  const nativeRows = peer.render(80).map(editorPlain);
+  root.addChild(peer);
+  try {
+    root.render(80);
+    let editorCollected = false, toolCollected = false;
+    for (let attempt = 0; attempt < 32 && (!editorCollected || !toolCollected); attempt++) {
+      await new Promise<void>(resolve => setImmediate(resolve));
+      globalThis.gc!();
+      editorCollected = editorReference.deref() === undefined;
+      toolCollected = toolReference.deref() === undefined;
+    }
+    assert.equal(editorCollected, true);
+    assert.equal(toolCollected, true);
+    assert.equal(controller.active, true);
+    assert.equal(controller.renderEditorStatus(80, { model: 'MODEL', provider: 'provider', thinking: 'off', idle: true }).length, 0);
+    controller.restore();
+    assert.deepEqual(root.render(80).map(editorPlain), nativeRows);
+  } finally { controller.restore(); }
+});
+
+
+test('metadata rejects a native status observation after a later container renderer takes ownership', () => {
+  const { root, host, options, frame } = nativeStatusEditorSetup();
+  const original = Object.getOwnPropertyDescriptor(Container.prototype, 'render')!;
+  const info = { model: 'MODEL', provider: 'provider', thinking: 'off', idle: true };
+  host.showStatusIndicator({ kind: 'future-native-status', render: () => ['NATIVE_STATUS'], invalidate() {},
+    renderInBorder: () => 'NATIVE_STATUS', renderSpinnerInBorder: () => 'S', dispose() {} });
+  const controller = installTidyUi(root, () => color, options);
+  try {
+    frame('regular', 80);
+    assert.doesNotMatch(controller.renderEditorStatus(80, info).map(editorPlain).join('\n'), /Idle/u);
+    const later = function (this: Container, width: number): string[] {
+      return this === host.statusContainer ? [] : original.value.call(this, width) as string[];
+    };
+    Container.prototype.render = later;
+    frame('regular', 80);
+    assert.match(controller.renderEditorStatus(80, info).map(editorPlain).join('\n'), /Idle/u,
+      'the old visible sample cannot override idle after the current foreign renderer has hidden the native block');
+    controller.restore();
+    assert.equal(Container.prototype.render === later, true);
+  } finally {
+    controller.restore();
+    Object.defineProperty(Container.prototype, 'render', original);
+    host.clearStatusIndicator();
+  }
 });
