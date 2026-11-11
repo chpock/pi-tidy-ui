@@ -1,6 +1,6 @@
 import { filePreviewSource, prepareFileCard } from '../../cards/file-input.ts';
 import type { FileCardInput, PreparedFileCard } from '../../cards/file-model.ts';
-import type { FilePreviewMode } from '../../file-preview-state.ts';
+import type { FilePreviewMode } from '../../cards/file-preview-mode.ts';
 import type { FileDiagnostic, FileToolReader, ToolAdapter, ToolCallSnapshot } from '../contracts.ts';
 import { pendingPiFile, piFileReader } from '../pi/file.ts';
 import { resultDetails as fileData } from '../shared/result-details.ts';

@@ -9,7 +9,7 @@ import { stripVTControlCharacters as plain } from 'node:util';
 import { DataBudget } from '../../../src/resources/data-budget.ts';
 import { CARD_ROLES } from '../../../src/appearance/card-roles.ts';
 import { compileStyleAnsi } from '../../../src/appearance/style-ansi.ts';
-import type { CardDisplayInput } from '../../../src/syntax/cards.ts';
+import type { CardDisplayInput } from '../../../src/cards/display-input.ts';
 import type { PreparedCard, PreparedRegion, ReadyCardPaint } from '../../../src/rendering/card-values.ts';
 import type { CardLayout, CardRows, CardFunding } from '../../../src/rendering/card-layout.ts';
 import type { SceneConstruction } from '../../../src/rendering/scene-model.ts';

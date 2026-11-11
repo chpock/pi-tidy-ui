@@ -14,11 +14,17 @@ import { CardSources } from '../../../src/syntax/cards.ts';
 import { SyntaxClient } from '../../../src/application/syntax-client.ts';
 import { preparePaletteInput } from '../../../src/syntax/pi-input.ts';
 import { CARD_ROLES } from '../../../src/appearance/card-roles.ts';
+import type { SavedToolResult } from '../../../src/tool-adapters/contracts.ts';
 import { hostCells } from '../../fixtures/host-cells.ts';
 import { samplePiPalette } from '../../../src/syntax/pi-palette.ts';
 import { compileStyleAnsi } from '../../../src/appearance/style-ansi.ts';
 import { resolvePublicFileToolDefinition } from '../../fixtures/sdk-contract-support.ts';
 import { bashToolReaderFixture, fileToolReaderFixture, type ToolCallFixture } from '../../fixtures/tool-adapters/reader-fixture.ts';
+
+type PresentationConstructionKind = 'session' | 'observation' | 'plan';
+type PresentationConstructionOptions = NonNullable<Parameters<typeof installTidyUi>[2]> & {
+  presentationConstructionObserver(kind: PresentationConstructionKind): void;
+};
 
 function fileInput(call: ToolCallFixture, revision: number, sourceRevision = revision, serviceRevision = revision, palette = 1) {
   const reader = fileToolReaderFixture(call);
@@ -32,6 +38,103 @@ function writeCaptureJournal(gate: ReturnType<typeof createWriteCaptureGate>, ob
     retire: (call: string, owner: object) => gate.retire(call, owner),
   };
 }
+
+test('presentation construction is cold-only across warm SDK render, document, mouse, and spacing visits', async () => {
+  const dist = dirname(fileURLToPath(import.meta.resolve('@earendil-works/pi-coding-agent')));
+  const { ToolExecutionComponent } = await import(pathToFileURL(resolve(dist, 'modes/interactive/components/tool-execution.js')).href);
+  const themes = await import(pathToFileURL(resolve(dist, 'modes/interactive/theme/theme.js')).href); themes.initTheme('dark', false);
+  class UI extends Container { requestRender() {} }
+  const ui = new UI(), constructions = { session: 0, observation: 0, plan: 0 };
+  const snapshot = () => ({ ...constructions });
+  const options: PresentationConstructionOptions = {
+    presentationConstructionObserver(kind) { constructions[kind]++; },
+  };
+  let adapter: ReturnType<typeof installTidyUi> | undefined;
+  try {
+    adapter = installTidyUi(ui as unknown as Parameters<typeof installTidyUi>[0], () => themes.theme, options);
+    const afterInstall = snapshot();
+    const definition = resolvePublicFileToolDefinition('read', undefined, '/tmp');
+    if (!definition) throw new Error('the real SDK read definition is unavailable');
+    const addRead = (id: string, path: string) => {
+      const owner = new ToolExecutionComponent('read', id, { path }, undefined,
+        definition as ConstructorParameters<typeof ToolExecutionComponent>[4],
+        ui as unknown as ConstructorParameters<typeof ToolExecutionComponent>[5], '/tmp');
+      ui.addChild(owner);
+      owner.updateResult({ content: [], isError: false }, false);
+      return owner;
+    };
+
+    const previous = addRead('cp7b-previous', `cp7b-removed-${'x'.repeat(110)}.txt`);
+    const previousRows = previous.render(80);
+    assert.ok(previousRows.length > 1, 'the real predecessor is tall enough to exercise visible spacing');
+    const afterPrevious = snapshot();
+
+    const current = addRead('cp7b-current', 'cp7b-before-update.txt');
+    const currentRows = current.render(80);
+    assert.equal(currentRows[0], '', 'the current SDK render includes the visible predecessor gap');
+    const cold = snapshot();
+
+    const directRows = current.render(80);
+    assert.equal(directRows[0], '', 'an identical direct render preserves the same spacing');
+    const documentRows = stripVTControlCharacters(ui.render(80).join('\n'));
+    assert.match(documentRows, /cp7b-removed/u);
+    assert.match(documentRows, /cp7b-before-update/u);
+    assert.equal(current.handleMouse({ type: 'click', button: 'right', x: 0, y: 0, screenX: 0, screenY: 0,
+      width: 80, height: 24, shift: false, alt: false, ctrl: false }), undefined,
+    'a non-activating hit test uses the same current predecessor layout');
+    current.render(80);
+    assert.deepEqual(snapshot(), cold, 'warm direct/document, mouse and spacing visits construct no seam objects');
+
+    ui.removeChild(previous);
+    assert.equal(adapter.cacheStats().entries, 1, 'removal releases predecessor rows while its component is still held');
+    const afterRemoval = stripVTControlCharacters(ui.render(80).join('\n'));
+    assert.doesNotMatch(afterRemoval, /cp7b-removed/u, 'removed predecessor rows do not return in the document');
+    current.updateArgs({ path: 'cp7b-after-update.txt' });
+    const afterCurrentness = stripVTControlCharacters(current.render(80).join('\n'));
+    assert.match(afterCurrentness, /cp7b-after-update/u, 'a current argument update is reflected');
+    assert.doesNotMatch(afterCurrentness, /cp7b-before-update/u, 'the superseded row is not restored');
+    ui.removeChild(current);
+    assert.equal(adapter.cacheStats().entries, 0, 'last-owner removal immediately releases the retained layout');
+    assert.doesNotMatch(stripVTControlCharacters(ui.render(80).join('\n')), /cp7b-after-update/u,
+      'owner cleanup prevents retained rows from reappearing');
+    assert.ok(afterPrevious.session > afterInstall.session, 'a cold real component constructs a presentation session');
+    assert.ok(cold.session > afterPrevious.session, 'a second real component gets its own presentation session');
+  } finally { adapter?.restore({ repaint: false }); }
+});
+
+test('a new installation observes compatible tool results updated in place while presentation was off', async () => {
+  const dist = dirname(fileURLToPath(import.meta.resolve('@earendil-works/pi-coding-agent')));
+  const themes = await import(pathToFileURL(resolve(dist, 'modes/interactive/theme/theme.js')).href); themes.initTheme('dark', false);
+  class UI extends Container { requestRender() {} }
+  class CompatibleTool extends Container {
+    toolName = 'write'; toolCallId = 'presentation-image-scope';
+    args = { path: '/tmp/scope.ts', content: 'const scoped = true;' };
+    expanded = false; hideComponent = false; isPartial = false; executionStarted = false; argsComplete = true;
+    result?: SavedToolResult;
+    render(_width: number) { return ['NATIVE_IMAGE_RESULT']; }
+    handleMouse() { return undefined; }
+    markExecutionStarted() { this.executionStarted = true; }
+    updateArgs(args: typeof this.args) { this.args = args; }
+    updateResult(result: SavedToolResult, partial = false) { this.result = result; this.isPartial = partial; }
+    setExpanded(value: boolean) { this.expanded = value; }
+    getRenderContext() { return { cwd: '/tmp' }; }
+    getRenderShell() { return 'component'; }
+  }
+  const ui = new UI(), owner = new CompatibleTool(); ui.addChild(owner);
+  const result = { content: [{ type: 'text', text: 'saved' }] as SavedToolResult['content'], isError: false };
+  let first: ReturnType<typeof installTidyUi> | undefined, second: ReturnType<typeof installTidyUi> | undefined;
+  try {
+    first = installTidyUi(ui as unknown as Parameters<typeof installTidyUi>[0], () => themes.theme);
+    owner.updateResult(result, false); owner.render(80);
+    await new Promise<void>(resolve => setImmediate(resolve));
+    assert.match(stripVTControlCharacters(owner.render(80).join('\n')), /scoped/u, 'the first installation prepares the ordinary text result');
+    first.restore({ repaint: false });
+    result.content = [{ type: 'image' }]; owner.updateResult(result, false);
+    const native = owner.render(80);
+    second = installTidyUi(ui as unknown as Parameters<typeof installTidyUi>[0], () => themes.theme);
+    assert.deepEqual(owner.render(80), native, 'a new installation must not retain the old text-only decision');
+  } finally { second?.restore({ repaint: false }); first?.restore({ repaint: false }); }
+});
 
 test('syntax local observations count actual source measurement, not unrelated segmentation or scalar reads', () => {
   const source = 'OBSERVED_SOURCE αβ\nsecond row', budget = new DataBudget(8 * 1024 * 1024), observer = observeSyntaxLocalWork(text => text === source);

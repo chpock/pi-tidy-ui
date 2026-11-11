@@ -1,6 +1,6 @@
 import type { BashService } from '../rendering/card-values.ts';
 import type { PreparedFileCard } from '../cards/file-model.ts';
-import type { FilePreviewMode } from '../file-preview-state.ts';
+import type { FilePreviewMode } from '../cards/file-preview-mode.ts';
 
 export type ToolCardKind = 'read' | 'write' | 'edit' | 'bash' | 'other';
 

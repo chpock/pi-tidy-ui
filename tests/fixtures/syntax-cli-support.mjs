@@ -160,7 +160,7 @@ async function scenario(terminal, native, awaitClassification = true, { ownedFal
     const display = await terminal.capture(`syntax-prefix-${phase}`);
     assert.equal(display.tools.find(t => t.name === 'bash').argsComplete, false);
     if (native) {
-      const snapshot = await stats(terminal, `prefix-${phase}`); assert.equal(snapshot.source.globalUnsettledJobs, 0);
+      const snapshot = await settledStats(terminal, `prefix-${phase}`); assert.equal(snapshot.source.globalUnsettledJobs, 0);
       assert.equal(snapshot.counts.piBridges, 0);
       assert.equal(snapshot.source.preparedBytes, offered.bytes + (phase === 4 ? prefixes[3].preparedBytes : 0),
         'wire source bytes are append-only except the explicitly counted nonappend resynchronization');
@@ -178,12 +178,12 @@ async function scenario(terminal, native, awaitClassification = true, { ownedFal
   await terminal.event('provider_gate');
   const pending = await terminal.capture('syntax-pending');
   const bash = pending.tools.find(t => t.name === 'bash'); assert.ok(bash); assert.equal(bash.argsComplete, false); assert.equal(bash.executionStarted, false);
-  if (native) { const s = await stats(terminal, 'pending'); assert.equal(s.counts.piBridges, 0); assert.ok(s.source.dispatches >= 1); }
+  if (native) { const s = await settledStats(terminal, 'pending'); assert.equal(s.counts.piBridges, 0); assert.ok(s.source.dispatches >= 1); }
   writeFileSync(`${terminal.output}/provider-go`, 'go');
   await until(() => existsSync(`${terminal.output}/syntax-shell-ready`), 'real Bash is running');
   const running = await terminal.capture('syntax-running');
   const active = running.tools.find(t => t.name === 'bash'); assert.equal(active.argsComplete, true); assert.equal(active.executionStarted, true);
-  if (native) { const s = await stats(terminal, 'running'); assert.equal(s.source.globalUnsettledJobs, 0); assert.equal(s.counts.piBridges, 0); }
+  if (native) { const s = await settledStats(terminal, 'running'); assert.equal(s.source.globalUnsettledJobs, 0); assert.equal(s.counts.piBridges, 0); }
   writeFileSync(`${terminal.output}/syntax-shell-final`, 'go'); await terminal.event('agent_end'); await terminal.settle();
   const calls = terminal.events().filter(e => e.type === 'call'), results = terminal.events().filter(e => e.type === 'result');
   assert.deepEqual(calls.map(e => e.name), ['bash', 'write', 'edit']); assert.equal(results.length, 3);

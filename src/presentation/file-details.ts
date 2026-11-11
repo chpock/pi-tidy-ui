@@ -1,5 +1,5 @@
 import { cleanFileDisplayText } from '../cards/file-display.ts';
-import type { FilePreviewMode } from '../file-preview-state.ts';
+import type { FilePreviewMode } from '../cards/file-preview-mode.ts';
 import { measure, reflow, SpanKind, type MeasuredText } from '../rendering/measured-rows.ts';
 import type { DataCharge, DataCleanupReceipt, GeometryFunding } from '../resources/data-budget.ts';
 

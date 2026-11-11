@@ -43,7 +43,12 @@ function assertCompact(dump) {
   assert.doesNotMatch(text, /unavailable/iu);
 }
 
-function assertExpanded(dump) {
+function assertExpanded(dump, terminal) {
+  const replies = terminal.events().filter(event => event.type === 'syntax_native_reply' && (event.kind === 'source' || event.kind === 'style'));
+  for (const { kind, reply } of replies) assert.equal(reply.status, 'ok',
+    `semantic ${kind} precondition failed: ${reply.error?.code ?? 'unknown'} / ${reply.error?.execution ?? 'unknown'}`);
+  for (const kind of ['source', 'style']) assert.ok(replies.some(event => event.kind === kind),
+    `a successful ${kind} reply must precede physical semantic-color acceptance`);
   const text = dump.screen.join('\n');
   assert.ok(text.includes(`→ Read ${file}`), 'the owned read card is expanded');
   assert.doesNotMatch(text, /unavailable/iu);
@@ -121,7 +126,7 @@ for (const mode of ['fullscreen', 'regular']) test(`captured AFT read: ${mode} s
 
       live.send('\x0f');
       const expanded = await captureThenRenderDiagnostics(live, 'aft-read-expanded');
-      assertExpanded(expanded);
+      assertExpanded(expanded, live);
       assert.ok(expanded.sample.localWork.sourceSegments > 0, 'expansion measures the returned Markdown source');
       assert.ok(expanded.sample.counts.sourceRequests > 0, 'expansion sends SOURCE to the prepared real Occipital helper');
       assert.ok(expanded.sample.counts.styleRequests > 0, 'the helper resolves semantic styles for the expanded Markdown');
@@ -130,11 +135,11 @@ for (const mode of ['fullscreen', 'regular']) test(`captured AFT read: ${mode} s
 
       const warm = await live.captureSettled('aft-read-warm');
       assert.deepEqual(sourceAndMeasurementWork(warm.sample), baseline, 'warm expanded rows issue no SOURCE or STYLE request or repeat measurement');
-      assertExpanded({ ...expanded, ...warm });
+      assertExpanded({ ...expanded, ...warm }, live);
 
       await live.resize(80);
       const resized = await captureThenRenderDiagnostics(live, 'aft-read-width-80');
-      assertExpanded(resized);
+      assertExpanded(resized, live);
       assert.deepEqual(sourceAndMeasurementWork(resized.sample), baseline, 'a width-only change issues no new SOURCE or STYLE request or repeat measurement');
 
       for (let cycle = 1; cycle <= 2; cycle++) {
@@ -143,7 +148,7 @@ for (const mode of ['fullscreen', 'regular']) test(`captured AFT read: ${mode} s
         assertCompact(closed);
         live.send('\x0f');
         const reopened = await captureThenRenderDiagnostics(live, `aft-read-reopened-${cycle}`);
-        assertExpanded(reopened);
+        assertExpanded(reopened, live);
       }
       assertCapturedRead(live);
       assert.deepEqual(traffic(live), originalTraffic, 'rendering and repeated expansion add no model/tool traffic');
@@ -159,7 +164,7 @@ for (const mode of ['fullscreen', 'regular']) test(`captured AFT read: ${mode} s
       assertCompact(replayCompact);
       replay.send('\x0f');
       const replayExpanded = await captureThenRenderDiagnostics(replay, 'aft-read-replay-expanded');
-      assertExpanded(replayExpanded);
+      assertExpanded(replayExpanded, replay);
       assert.equal(replay.events().filter(event => event.type === 'aft_read_fixture_disk_read').length, 0,
         'same-session replay never invokes the fixture filesystem read');
       assert.equal(traffic(replay).filter(event => event.type === 'call' || event.type === 'result').length, 0,

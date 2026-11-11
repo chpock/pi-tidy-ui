@@ -98,20 +98,28 @@ test("hiding completion badges never removes literal status glyphs from supplied
 });
 
 test("completion marker constant can restore success and failure symbols without error-body previews", async () => {
-  const sourceUrl = new URL("../../../src/index.ts", import.meta.url);
+  const indexUrl = new URL("../../../src/index.ts", import.meta.url);
+  const sourceUrl = new URL("../../../src/presentation/tool-summary-presenter.ts", import.meta.url);
   const source = readFileSync(sourceUrl, "utf8");
+  const indexSource = readFileSync(indexUrl, "utf8");
   const switchLine = "const SHOW_COMPLETION_MARKERS = false;";
-  assert.ok(source.includes(switchLine), "one source constant controls final markers and defaults to false");
-  const enabled = source.replace(switchLine, "const SHOW_COMPLETION_MARKERS = true;")
-    .replace(/from (["'])([^"']+)\1/gu, (_match, _quote: string, specifier: string) =>
-      `from ${JSON.stringify(specifier.startsWith(".") ? new URL(specifier, sourceUrl).href : import.meta.resolve(specifier))}`);
+  assert.ok(source.includes(switchLine), "the presentation owner controls final markers and defaults to false");
   const temporary = mkdtempSync(join(tmpdir(), "tidy-ui-completion-markers-"));
   let controller: ReturnType<typeof installTidyUi> | undefined;
   try {
-    mkdirSync(join(temporary, "src"));
-    writeFileSync(join(temporary, "package.json"), readFileSync(new URL("../package.json", sourceUrl)));
-    const file = join(temporary, "src/index.ts"); writeFileSync(file, enabled);
-    const alternate = await import(pathToFileURL(file).href);
+    const indexFile = join(temporary, "src/index.ts");
+    const presenterFile = join(temporary, "src/presentation/tool-summary-presenter.ts");
+    mkdirSync(join(temporary, "src/presentation"), { recursive: true });
+    writeFileSync(join(temporary, "package.json"), readFileSync(new URL("../package.json", indexUrl)));
+    const rewriteImports = (text: string, baseUrl: URL, overrides = new Map<string, string>()) => text
+      .replace(/from (["'])([^"']+)\1/gu, (_match, _quote: string, specifier: string) =>
+        `from ${JSON.stringify(overrides.get(specifier) ?? (specifier.startsWith(".") ? new URL(specifier, baseUrl).href : import.meta.resolve(specifier)))}`);
+    const enabledPresenter = rewriteImports(source.replace(switchLine, "const SHOW_COMPLETION_MARKERS = true;"), sourceUrl);
+    const enabledIndex = rewriteImports(indexSource, indexUrl,
+      new Map([["./presentation/tool-summary-presenter.ts", pathToFileURL(presenterFile).href]]));
+    writeFileSync(presenterFile, enabledPresenter);
+    writeFileSync(indexFile, enabledIndex);
+    const alternate = await import(pathToFileURL(indexFile).href);
     const root = new Root(), tool = new Tool(); root.addChild(tool);
     controller = alternate.installTidyUi(root, () => color);
     assert.equal(tool.render(80).at(-1), " → read a.txt ✓");

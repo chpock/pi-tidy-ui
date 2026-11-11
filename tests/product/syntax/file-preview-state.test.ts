@@ -2,7 +2,7 @@ import '../../fixtures/test-guard.mjs';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { setImmediate as turn } from 'node:timers/promises';
-import { FilePreviewState } from '../../../src/file-preview-state.ts';
+import { FilePreviewState } from '../../../src/presentation/file-preview-state.ts';
 
 type Owner = { call: number };
 const owner = (call: number): Owner => ({ call });

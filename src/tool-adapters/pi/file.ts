@@ -1,7 +1,7 @@
 import { getLanguageFromPath } from '@earendil-works/pi-coding-agent';
 import { FILE_PREVIEW_MAX_ROWS, FILE_PREVIEW_MAX_UNITS, filePreviewSource, filePreviewText, prepareFileCard, sourceRows } from '../../cards/file-input.ts';
 import type { FileCardInput } from '../../cards/file-model.ts';
-import type { FilePreviewMode } from '../../file-preview-state.ts';
+import type { FilePreviewMode } from '../../cards/file-preview-mode.ts';
 import type { FileToolReader, PendingFileDetail, ReaderEstimateContext, ToolAdapter, ToolCallSnapshot } from '../contracts.ts';
 import { createFileReader, type FileReaderBehavior } from '../shared/file-reader.ts';
 import { weakIdentity } from '../shared/identity.ts';

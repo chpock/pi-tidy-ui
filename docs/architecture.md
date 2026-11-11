@@ -9,13 +9,17 @@ Start with the [manual index](README.md). This chapter explains how the parts co
 ```text
 Pi: session, native components, public lifecycle and terminal
  |
- src/index.ts — host capture, ownership, presentation selection, events
+ src/index.ts — host composition, native ownership and events
  |       |                         |
  |       |                         +-- settings/menu, Git, terminal defaults,
  |       |                             diagnostics and runtime health
+ |       +-- src/presentation/ — typed intents, weak sessions,
+ |       |                       tool/user/queued presenters
  |       +-- native user/editor/footer integration
  |
- supplied tool data -> adapters   -> prepared display and source demand
+ supplied tool data -> adapters -> presentation policy/router -> presenters
+                                     |                           |
+                                     +-- prepared display and source demand
                                       |                   |
                                 color-free geometry       v
                                       |          SourceExecution / providers
@@ -34,7 +38,7 @@ Pi: session, native components, public lifecycle and terminal
                                    reflow -> literal paint -> frame -> latest rows
 ```
 
-Expanded pending/error file details have a separate presentation owner in `src/presentation/file-details.ts`. The host-facing entry selects the current producer and eligibility; that owner retains funded text/measurement, checks input identities, lends readonly render flags and projects rows. It receives an opaque owner key and operation-scoped numeric funding, not a component shape, provider or independent resource pool. Its [borrow and release contract](render-cache-spec.md#pending-and-failed-file-details) is separate from successful syntax-card preparation.
+Expanded pending/error file details have a separate presentation owner in `src/presentation/file-details.ts`. The host-facing entry captures actual component facts and native renderer capabilities; `ToolProducerPresenter` snapshots saved calls, `ToolPresentationPolicy` selects a typed intent, and `ToolRoutingPresenter` queries native visibility only through the supplied host ports. `ToolPresentationSessions` keeps weak per-component state and latest-layout handles; the summary, file-detail, prepared-layout, user and queued presenters own their corresponding projections. The tool-view presenter coordinates current render, spacing, hit and update decisions; the cold tool-preparation presenter owns revision/currentness, useful/paused-view transitions and coalesced refresh. Native sibling identities, shell recognition and rendered image rows are scoped host borrows, not copied component observations or cached visibility proof. `PreparedLayoutPresenter` remains the single owner of the prepared scene validity/stage/adopt/release transaction. These owners do not install host hooks, own native images or gain source-execution authority. Expanded pending/error details retain funded text/measurement, check input identities, lend readonly render flags and project rows. They receive an opaque owner key and operation-scoped numeric funding, not a component shape, provider or independent resource pool. Their [borrow and release contract](render-cache-spec.md#pending-and-failed-file-details) is separate from successful syntax-card preparation.
 
 The arrows denote responsibility and data flow, not a requirement to perform an RPC on every frame. Cached source, styles, geometry and ready rows have distinct reuse rules. When native highlighting is unavailable, eligible ordinary files may use cached public Pi highlighting converted to the same flat style representation; Bash never calls Pi's classifier. An owned palette never silently borrows missing syntax colors from Pi.
 
@@ -82,6 +86,7 @@ These are design constraints, not claims that every constant is uniquely optimal
 | Pi process | Local appearance/logging flags; two applied terminal-default values and owner-free exit cleanup | No component, UI adapter or session runtime survives reload through these process cells |
 | Session runtime | Settings/watch services, Git snapshot, health and journal observers, popup owner, syntax service composition | Old callbacks retain their old epoch/observer and cannot publish into a successor session |
 | Installed presentation adapter | Hooks/slots, weak component records, `CardSources` consumer | Full removal/reinstallation may allocate fresh source keys and occasionally repeat classification; ordinary redraw/Off-within-source does not erase execution evidence |
+| Tool presentation sessions | Weak per-component session facts, latest summary/file-layout handles and prepared-layout references; `tool-preparation.ts` owns cold currentness and useful/paused-view decisions | Latest rows follow component lifetime; the consumer-owned preparation port does not transfer card publication or source/job authority |
 | File-detail presentation owner | Expanded pending/error text, measurement and detached weak cleanup records | Native updates supply freshness; rendering borrows flags/rows without retaining a producer or gaining cleanup/funding authority |
 | Card/source owner | Current selected preview/full display (no body for compact read), classification demand/version, measured geometry, ready presentation | Current demand and historical display are separate; appearance changes do not prove SOURCE completion |
 | Local syntax storage | Budget grants and shared charges, text/range captures, context leases, styles, concrete ready payloads | Attribution, last reference and actual funded-storage release are separate events |
@@ -144,6 +149,7 @@ Native-highlighting Off, frozen/hidden sources, explicit cache clearing, transpo
 | Module family | Canonical explanation |
 |---|---|
 | `src/index.ts`, `git-branch.ts` | [Host integration, routing, events and Git service](host-integration.md) |
+| `src/presentation/` | Typed tool intents and native-visibility routing; weak component sessions and latest tool/user/queued layouts. `PreparedLayoutPresenter` owns the existing prepared-scene transaction; these presenters do not own native capture or source work. See [host dispatch](host-integration.md#presentation-dispatch), [rendering](rendering.md) and [retained layouts](render-cache-spec.md) |
 | `src/tool-adapters/summary.ts`, `src/summary-args.ts`, `display-path.ts`, `plain-text.ts`, `card-frame.ts`, `card-theme.ts` | [Producer-selected compact arguments](tool-adapters.md), [shared summary formatting](tool-summary-spec.md), [rendering representations](rendering.md), [frame contracts](card-frame-spec.md) |
 | `src/tool-adapters/` | [Producer formats, selection and source identity](tool-adapters.md), [Bash preparation](bash-card-spec.md), [edit representation](edit-card-spec.md), [write selection](write-card-spec.md), [read saved-result selection](read-card-spec.md) |
 | `user-card.ts`, `queued-card.ts`, `editor-card.ts`, `editor-status.ts`, `footer.ts` | [Message projections](user-queued-cards.md), [editor](editor.md), [footer accounting/composition](footer-spec.md) |

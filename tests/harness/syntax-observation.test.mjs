@@ -217,3 +217,40 @@ test('settled syntax scenarios: a failed owned-fallback observation cannot fall 
   await assert.rejects(syntax.scenario(f.terminal, false, true, { ownedFallback: true }), error => error === failure);
   assert.equal(f.order.includes('syntax-final'), false); assert.equal(f.order.includes('explicit-final-diagnostic'), false);
 });
+
+
+test('syntax scenario: a prefix snapshot waits for actual producer delivery, not a diagnostic file', async t => {
+  const f = resultFixture(t, { ...snapshot(), node: process.version,
+    counts: { describeReplies: 1, downloads: 0, piBridges: 0, sourceRequests: 1, styleRequests: 1, closeRequests: 0 },
+    localWork: {}, source: { globalUnsettledJobs: 0, preparedBytes: 1, committedLineCalls: 0, committedLineBytes: 0, tailCalls: 1 } });
+  let enter, release, entered = false, completed = false;
+  const waiting = new Promise(resolve => { enter = resolve; });
+  const delivery = new Promise(resolve => { release = resolve; });
+  const send = f.terminal.send;
+  f.terminal.send = command => { if (command !== 'run syntax-cards\r') send(command); };
+  f.terminal.ready = async () => {};
+  f.terminal.event = async (name, ordinal) => {
+    assert.equal(name, 'syntax_prefix');
+    if (ordinal !== 1) throw Object.assign(new Error('The observed prefix is complete'), { code: 'PREFIX_COMPLETE' });
+    f.current.source.globalUnsettledJobs = 1;
+  };
+  f.terminal.events = () => [{ type: 'syntax_prefix', phase: 0, bytes: 1 }];
+  f.terminal.capture = async () => ({ tools: [{ name: 'bash', argsComplete: false }] });
+  f.terminal.captureSettled = async () => {
+    if (f.current.source.globalUnsettledJobs) { entered = true; enter(); await delivery; }
+    return { sample: structuredClone(f.current) };
+  };
+  const outcome = syntax.scenario(f.terminal, true, false).then(
+    value => { completed = true; return { value }; }, error => { completed = true; return { error }; });
+  try {
+    await Promise.race([waiting, outcome]);
+    assert.equal(entered, true, 'a raw diagnostic snapshot cannot satisfy the scenario counter boundary');
+    assert.equal(completed, false, 'the actual source producer still owes delivery');
+    assert.equal(f.commands(), 0, 'observation must not issue a stats command while work is held');
+  } finally {
+    f.current.source.globalUnsettledJobs = 0;
+    release();
+    await outcome;
+  }
+  assert.equal((await outcome).error?.code, 'PREFIX_COMPLETE', 'released delivery permits the original prefix assertions and next phase');
+});

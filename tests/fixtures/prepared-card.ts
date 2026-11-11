@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { SourceExecution } from '../../src/highlighting/source-execution.ts';
-import { CardSources, type CardDisplayInput } from '../../src/syntax/cards.ts';
+import { CardSources } from '../../src/syntax/cards.ts';
+import type { CardDisplayInput } from '../../src/cards/display-input.ts';
 import { layoutCard } from '../../src/rendering/card-layout.ts';
 import { preparePaletteInput, type PiInputTheme } from '../../src/syntax/pi-input.ts';
 import { bashToolReaderFixture, fileToolReaderFixture, type ToolCallFixture } from './tool-adapters/reader-fixture.ts';

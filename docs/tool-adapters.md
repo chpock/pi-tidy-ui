@@ -2,7 +2,7 @@
 
 A **producer** is a built-in Pi tool or an extension that supplies tool arguments and results. A **tool adapter** interprets that producer's saved data for presentation. It does not execute, register or replace the tool.
 
-The adapter boundary separates knowledge of a producer's data format from the shared machinery that shows a card. The Pi host still owns components and native callbacks; the [prepared-card pipeline](syntax/prepared-cards.md) still owns grants, syntax work, measurements and paint.
+The adapter boundary separates knowledge of a producer's data format from the shared machinery that shows a card. `ToolProducerPresenter` captures the recognized saved call and `ToolPresentationPolicy` uses its semantic kind with host-supplied facts to select a typed route; `ToolRoutingPresenter` receives native visibility/renderer checks from the Pi host and does not acquire callbacks itself. The Pi host still owns components and native callbacks; the [prepared-card pipeline](syntax/prepared-cards.md) still owns grants, syntax work, measurements and paint.
 
 ## Code and test ownership
 
@@ -16,7 +16,9 @@ Producer-specific modules live under `src/tool-adapters/pi/` and `src/tool-adapt
 | Estimates over borrowed input and funded source decoding | Producer adapter |
 | Pending excerpts and complete saved error sources | Producer adapter |
 | Component attachment, native visibility, callbacks and restoration | [Pi host integration](host-integration.md) |
-| Expansion, preview-window policy, image children and hit testing | Shared host/card machinery |
+| Typed per-call presentation intent and shared route predicates | `src/presentation/tool-policy.ts` |
+| Native self-shell visibility and exact renderer-owner queries | `src/presentation/tool-routing-presenter.ts` through host-supplied ports |
+| Expansion, preview-window state, image children and hit testing | Shared host/presentation machinery |
 | Construction grants, source scheduling, retained measurements and paint | [Prepared cards](syntax/prepared-cards.md) |
 | Bounded serialization, masking, wrapping, frames and palette application | Shared presentation primitives |
 
@@ -33,7 +35,7 @@ Shared geometry, syntax authority, retention and lifecycle tests remain in their
 
 ## Resolve a call, not a name alone
 
-The actual tool name identifies user policy and the displayed call. The static production registry matches only the existing exact names `read`, `write`, `edit` and `bash`; each selected reader supplies a semantic presentation kind for shared routing and layout accounting. This internal seam adds no new production aliases, extension discovery or public adapter-registration API.
+The actual tool name identifies user policy and the displayed call. The static production registry matches only the existing exact names `read`, `write`, `edit` and `bash`; each selected reader supplies a semantic presentation kind for shared routing and layout accounting. `ToolPresentationPolicy` uses that kind to return internal route intent, while `ToolRoutingPresenter` applies the corresponding host-visibility check only where required. This internal seam adds no new production aliases, extension discovery or public adapter-registration API.
 
 A session can retain results from an earlier tool registration, so the active registry is not proof of who produced an old result. Recognize saved formats from the individual call; do not infer historical ownership from the currently installed extension. Recognition is deliberately separate from full validation: choosing a candidate must not split or decode the complete body. Synthetic registry names in tests exercise shared card routing, summaries, spacing and expansion, including the actual Pi tool component and retained foreign callbacks; they do not add production tool names or demonstrate loading a third-party extension.
 

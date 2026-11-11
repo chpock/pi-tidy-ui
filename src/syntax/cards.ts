@@ -6,7 +6,6 @@ import { prepareFileServices, prepareFileRows } from '../cards/file-preparation.
 import { cardSourceKey as sourceKey, type CardMeasurements } from '../cards/preparation.ts';
 import type { PreparedFileCard } from '../cards/file-model.ts';
 import { fileSources } from '../cards/file-sources.ts';
-import type { BashToolReader, FileToolReader, ToolDiagnosticsIdentity } from '../tool-adapters/contracts.ts';
 import { CONTROLLER_LIMITS } from '../highlighting/controller-limits.ts';
 import type { CardSourcePort, GroupDisplayBasis, SourceDisplayBasis } from '../highlighting/source-ports.ts';
 import type { PiFallbackPort } from '../highlighting/pi-fallback.ts';
@@ -26,14 +25,7 @@ import type { AnsiStyle } from '../appearance/style-ansi.ts';
 import type { ConcreteStyle } from '../appearance/style-materialization.ts';
 import { requestSyntax, resolveSyntax, type PiClassifier, type SyntaxIdentity, type SyntaxSourceClient, type SyntaxWorkResult } from './work.ts';
 
-export type CardSourceInput = { palette: number } & (
-  { kind: 'file'; reader: FileToolReader; diagnostics: ToolDiagnosticsIdentity; viewMode?: 'preview' | 'full' } |
-  { kind: 'bash'; reader: BashToolReader; complete: boolean }
-);
-export type CardDisplayInput = CardSourceInput & {
-  revision: number; sourceRevision: number; serviceRevision: number; mode: TerminalColorMode;
-  cwd?: string; directory?: string;
-};
+import type { CardDisplayInput } from '../cards/display-input.ts';
 export type CardPreparation = { readonly update: string; readonly revision: number; readonly palette: number; readonly sourceEligible: boolean } & (
   { readonly phase: 'updated' } |
   { readonly phase: 'prepared'; readonly applied: boolean; readonly refused: number; readonly publication: number; readonly outcomes: readonly SyntaxWorkResult['outcome'][] }

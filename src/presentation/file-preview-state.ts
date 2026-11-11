@@ -1,4 +1,4 @@
-export type FilePreviewMode = 'preview' | 'full';
+import type { FilePreviewMode } from '../cards/file-preview-mode.ts';
 
 export interface FilePreviewCandidate<Owner extends object> {
   owner: Owner;

@@ -36,13 +36,22 @@ const applicationModules = [
   'src/application/syntax-runtime.ts',
   'src/application/syntax-options.ts',
 ];
-const cardModules = ['src/cards/file-model.ts', 'src/cards/file-sources.ts', 'src/cards/file-display.ts',
-  'src/cards/file-input.ts', 'src/cards/shebang-language.ts',
+const cardModules = ['src/cards/file-model.ts', 'src/cards/file-sources.ts', 'src/cards/file-display.ts', 'src/cards/display-input.ts',
+  'src/cards/file-preview-mode.ts', 'src/cards/file-input.ts', 'src/cards/shebang-language.ts',
   'src/cards/preparation.ts', 'src/cards/bash-preparation.ts', 'src/cards/file-preparation.ts'];
 const renderingModules = ['src/rendering/card-values.ts', 'src/rendering/card-styles.ts',
   'src/rendering/measured-rows.ts', 'src/rendering/flat-paint.ts', 'src/rendering/card-layout.ts',
   'src/rendering/scene-model.ts', 'src/rendering/bash-scene.ts', 'src/rendering/file-scene.ts'];
+const presentationModules = [
+  'src/presentation/cache-owner.ts', 'src/presentation/card-preparation.ts', 'src/presentation/file-details.ts', 'src/presentation/file-preview-state.ts',
+  'src/presentation/file-detail-presenter.ts', 'src/presentation/prepared-layout-presenter.ts',
+  'src/presentation/queued-presenter.ts', 'src/presentation/tool-intents.ts', 'src/presentation/tool-policy.ts',
+  'src/presentation/tool-producers.ts', 'src/presentation/tool-routing-presenter.ts', 'src/presentation/tool-sessions.ts', 'src/presentation/tool-summary-presenter.ts',
+  'src/presentation/tool-preparation.ts', 'src/presentation/tool-view-presenter.ts',
+  'src/presentation/user-presenter.ts',
+];
 const governedModules = new Set([
+  ...presentationModules,
   ...cardModules,
   ...renderingModules,
   'src/appearance/card-roles.ts',
@@ -56,6 +65,7 @@ const governedModules = new Set([
 ]);
 const pureModules = new Set([
   'src/cards/file-model.ts',
+  'src/cards/file-preview-mode.ts',
   'src/appearance/card-roles.ts',
   'src/appearance/theme-preference.ts',
   'src/occipital/style-types.ts',
@@ -65,7 +75,7 @@ const movedPreferenceNames = new Set(['ThemeVariant', 'ThemePreference', 'copyTh
 const movedStyleTypeNames = new Set(['LiteralInk', 'Ink', 'StyleExpression', 'StyleIdentity']);
 const entryPath = 'src/index.ts';
 const measuredRowsPath = 'src/rendering/measured-rows.ts';
-const presentationModePath = 'src/file-preview-state.ts';
+const presentationModePath = 'src/cards/file-preview-mode.ts';
 const presentationModeType = 'FilePreviewMode';
 const presentationCardModules = new Set(['src/cards/file-display.ts', 'src/cards/file-model.ts']);
 const piTuiDisplayBindings = new Set([
@@ -73,13 +83,13 @@ const piTuiDisplayBindings = new Set([
   'backgroundAnsi', 'foregroundAnsi', 'styleText', 'styleTextWithAnsi', 'Color', 'IndexedColor', 'indexedColor',
   'colorToHex', 'colorToOkhsl', 'colorToOklch', 'colorToRgb', 'mixColors', 'ColorMixSpace', 'parseColor',
   'OkhslChannels', 'OklchChannels', 'OklchColorValue', 'okhslColor', 'oklchColor', 'RgbColorValue', 'rgbColor',
-  'TerminalColorMode', 'TextAttributes', 'TextStyle',
+  'TerminalColorMode', 'TextAttributes', 'TextStyle', 'TuiMouseEvent', 'TuiMouseEventResult',
 ]);
 const genericStyleTypesPath = 'src/occipital/style-types.ts';
 const presentationAndPayloadFiles = new Set([
   'src/bash-card.ts', 'src/card-frame.ts', 'src/card-theme.ts', 'src/diff-palette.ts',
   'src/display-path.ts', 'src/editor-card.ts', 'src/editor-status.ts', 'src/file-card.ts',
-  'src/file-preview-state.ts', 'src/footer.ts', 'src/index.ts', 'src/notifications.ts',
+  'src/footer.ts', 'src/index.ts', 'src/notifications.ts',
   'src/plain-text.ts', 'src/queued-card.ts', 'src/render-cache.ts', 'src/summary-args.ts',
   'src/tidy-menu.ts', 'src/user-card.ts',
 ]);
@@ -286,7 +296,7 @@ function collectProductionEdges(files) {
 
 function assertKnownGovernedModule(path) {
   const governed = path.startsWith('src/cards/') || path.startsWith('src/rendering/') || path.startsWith('src/resources/') || path.startsWith('src/appearance/')
-    || path.startsWith('src/highlighting/') || path.startsWith('src/application/') || path === genericStyleTypesPath;
+    || path.startsWith('src/highlighting/') || path.startsWith('src/application/') || path.startsWith('src/presentation/') || path === genericStyleTypesPath;
   if (governed && !governedModules.has(path)) throw new Error(`unclassified governed source module: ${path}`);
 }
 
@@ -357,8 +367,10 @@ function assertStorageDependency(edge) {
 
 function assertCardDependency(edge) {
   if (!edge.source.startsWith('src/cards/')) return;
+  const requestReaderTypes = edge.source === 'src/cards/display-input.ts'
+    && edge.target === 'src/tool-adapters/contracts.ts' && edge.kind === 'type-only';
   const allowed = ['src/cards/', 'src/rendering/', 'src/resources/'].some(prefix => edge.target.startsWith(prefix))
-    || edge.target === 'src/highlighting/source-ports.ts';
+    || edge.target === 'src/highlighting/source-ports.ts' || requestReaderTypes;
   if (!allowed) throw new Error(`card preparation imports outside its lower-level capabilities: ${edgeKey(edge)}`);
 }
 
@@ -487,6 +499,20 @@ function assertPresentationImports(path, source) {
   assertPresentationPiTuiComponents(path, source);
 }
 
+function assertEntryPresentationOwnership(path, source) {
+  if (path !== entryPath) return;
+  const implementations = new Set([
+    'src/render-cache.ts', 'src/rendering/card-layout.ts', 'src/user-card.ts', 'src/queued-card.ts',
+  ]);
+  for (const reference of moduleReferences(source)) {
+    if (reference.kind === 'type-only' || !reference.specifier.startsWith('.')) continue;
+    const target = resolveRelativeImport(path, reference.specifier);
+    if (implementations.has(target)) {
+      throw new Error(`extension entry imports layout ownership or row construction: ${target} [${reference.syntax}]`);
+    }
+  }
+}
+
 function assertEntryMeasuredRowsCapability(path, source) {
   if (path !== entryPath) return;
   const violations = [];
@@ -525,9 +551,33 @@ function assertEntryMeasuredRowsCapability(path, source) {
 
 function assertPresentationDependency(edge) {
   if (!isPresentationModule(edge.source)) return;
+  const cacheKernel = edge.target === 'src/render-cache.ts' &&
+    (edge.source === 'src/presentation/cache-owner.ts' || edge.kind === 'type-only' &&
+      ['src/presentation/tool-sessions.ts', 'src/presentation/user-presenter.ts', 'src/presentation/queued-presenter.ts',
+        'src/presentation/file-detail-presenter.ts', 'src/presentation/prepared-layout-presenter.ts',
+        'src/presentation/tool-summary-presenter.ts'].includes(edge.source));
+  const productRowBuilder = edge.source === 'src/presentation/user-presenter.ts' && edge.target === 'src/user-card.ts'
+    || edge.source === 'src/presentation/queued-presenter.ts' && edge.target === 'src/queued-card.ts';
+  const displayThemeType = ['src/presentation/user-presenter.ts', 'src/presentation/queued-presenter.ts',
+    'src/presentation/tool-summary-presenter.ts', 'src/presentation/file-detail-presenter.ts',
+    'src/presentation/tool-view-presenter.ts'].includes(edge.source)
+    && edge.target === 'src/card-theme.ts' && edge.kind === 'type-only';
+  const summaryPresentationDependencies = edge.source === 'src/presentation/tool-summary-presenter.ts'
+    && ['src/summary-args.ts', 'src/text-wrap.ts'].includes(edge.target);
+  const summaryFramePresentation = edge.source === 'src/presentation/tool-summary-presenter.ts'
+    && ['src/card-frame.ts', 'src/card-theme.ts'].includes(edge.target)
+    || edge.source === 'src/presentation/tool-view-presenter.ts' && edge.target === 'src/card-frame.ts';
+  const diagnosticSink = ['src/presentation/user-presenter.ts', 'src/presentation/queued-presenter.ts'].includes(edge.source)
+    && edge.target === 'src/diagnostics.ts';
+  const producerInterpretation = edge.source === 'src/presentation/tool-producers.ts'
+    && ['src/tool-adapters/registry.ts', 'src/tool-adapters/contracts.ts'].includes(edge.target);
+  const presentationAdapterContracts = ['src/presentation/tool-policy.ts', 'src/presentation/tool-sessions.ts'].includes(edge.source)
+    && edge.target === 'src/tool-adapters/contracts.ts' && edge.kind === 'type-only';
   const allowed = isPresentationModule(edge.target) || edge.target.startsWith('src/rendering/')
     || edge.target.startsWith('src/resources/') || edge.target.startsWith('src/appearance/')
-    || presentationCardModules.has(edge.target)
+    || presentationCardModules.has(edge.target) || cacheKernel || productRowBuilder || displayThemeType || diagnosticSink
+    || producerInterpretation || presentationAdapterContracts || summaryPresentationDependencies || summaryFramePresentation
+    || edge.target === 'src/cards/display-input.ts' && edge.kind === 'type-only'
     || edge.target === presentationModePath && edge.kind === 'type-only';
   if (!allowed) throw new Error(`presentation imports outside its display capabilities: ${edgeKey(edge)}`);
 }
@@ -642,6 +692,31 @@ test('production imports preserve the migrated module boundaries', () => {
   assertNoSyntaxApplicationEdges(syntaxApplicationEdges);
 });
 
+test('extension entry composes presenters without owning latest layouts or constructing their rows', () => {
+  assertEntryPresentationOwnership(entryPath, parseSource(entryPath));
+});
+
+test('entry presentation ownership guard resolves aliases, mixed imports and runtime load routes', () => {
+  assert.doesNotThrow(() => assertEntryPresentationOwnership(entryPath,
+    parseSource(entryPath, "import type { CacheStats } from './render-cache.ts';")));
+  for (const specifier of ['./render-cache.ts', './rendering/card-layout.ts', './user-card.ts', './queued-card.ts']) {
+    const forbidden = [
+      `import { implementation as alias } from '${specifier}';`,
+      `import { type Model, implementation } from '${specifier}';`,
+      `import * as implementation from '${specifier}';`,
+      `export { implementation } from '${specifier}';`,
+      `export * from '${specifier}';`,
+      `const implementation = import('${specifier}');`,
+      `const implementation = require('${specifier}');`,
+      `import implementation = require('${specifier}');`,
+    ];
+    for (const text of forbidden) {
+      assert.throws(() => assertEntryPresentationOwnership(entryPath, parseSource(entryPath, text)),
+        /entry imports layout ownership or row construction/);
+    }
+  }
+});
+
 test('extension entry keeps detail measurement authority out while heading reflow remains', () => {
   assertEntryMeasuredRowsCapability(entryPath, parseSource(entryPath));
 });
@@ -678,13 +753,22 @@ test('presentation dependencies stay within display capabilities and do not flow
     [presentationModePath, 'type-only'],
   ];
   for (const [target, kind] of allowed) assert.doesNotThrow(() => assertPresentationDependency({ source: presentation, target, kind }));
+  const preparedLayout = 'src/presentation/prepared-layout-presenter.ts';
+  assert.doesNotThrow(() => assertPresentationDependency({ source: preparedLayout, target: 'src/render-cache.ts', kind: 'type-only' }));
+  assert.throws(() => assertPresentationDependency({ source: preparedLayout, target: 'src/render-cache.ts', kind: 'value' }));
+  const summaryPresenter = 'src/presentation/tool-summary-presenter.ts';
+  assert.doesNotThrow(() => assertPresentationDependency({ source: summaryPresenter, target: 'src/render-cache.ts', kind: 'type-only' }));
+  assert.throws(() => assertPresentationDependency({ source: summaryPresenter, target: 'src/render-cache.ts', kind: 'value' }));
+  const sessions = 'src/presentation/tool-sessions.ts';
+  assert.doesNotThrow(() => assertPresentationDependency({ source: sessions, target: 'src/tool-adapters/contracts.ts', kind: 'type-only' }));
+  assert.throws(() => assertPresentationDependency({ source: sessions, target: 'src/tool-adapters/contracts.ts', kind: 'value' }));
   const source = parseSource(presentation, `
     import { cleanFileDisplayText } from '../cards/file-display.ts';
     import type { FileCardInput } from '../cards/file-model.ts';
     import { measure } from '../rendering/measured-rows.ts';
     import { DataBudget } from '../resources/data-budget.ts';
     import { CARD_ROLES } from '../appearance/card-roles.ts';
-    import type { FilePreviewMode as Mode } from '../file-preview-state.ts';
+    import type { FilePreviewMode as Mode } from '../cards/file-preview-mode.ts';
     import { visibleWidth } from '@earendil-works/pi-tui';
   `);
   assertPresentationImports(presentation, source);
@@ -694,7 +778,7 @@ test('presentation dependencies stay within display capabilities and do not flow
       source: presentation, target: resolveRelativeImport(presentation, reference.specifier), kind: reference.kind,
     }));
   }
-  const importTypeMode = parseSource(presentation, "type Mode = import('../file-preview-state.ts').FilePreviewMode;");
+  const importTypeMode = parseSource(presentation, "type Mode = import('../cards/file-preview-mode.ts').FilePreviewMode;");
   assert.doesNotThrow(() => assertPresentationImports(presentation, importTypeMode));
 
   const forbiddenRoutes = [
@@ -709,7 +793,7 @@ test('presentation dependencies stay within display capabilities and do not flow
     "type HostComponent = import('@earendil-works/pi-tui').Component;",
     "export type { Component as HostComponent } from '@earendil-works/pi-tui';",
     "const tui = import('@earendil-works/pi-tui');",
-    "import { FilePreviewState } from '../file-preview-state.ts';",
+    "import { FilePreviewMode } from '../cards/file-preview-mode.ts';",
   ];
   for (const text of forbiddenRoutes) {
     const candidate = parseSource(presentation, text);
@@ -1055,4 +1139,27 @@ test('saved file decoding and bounded logical preparation belong to cards, not h
     assert.equal(owners.length, 1, `${name} requires one declaration owner`);
     assert.ok(owners[0].startsWith('src/cards/'), `${name} belongs to logical cards, not ${owners[0]}`);
   }
+});
+
+
+test('card preparation requests have one canonical card-domain model', () => {
+  const implementation = parseSource('src/syntax/cards.ts');
+  const names = ['CardSourceInput', 'CardDisplayInput'];
+  for (const name of names) assert.equal(declarationExportNames(implementation).has(name), false,
+    `preparation implementation must not own the shared ${name} model`);
+  const model = parseSource('src/cards/display-input.ts');
+  for (const name of names) assert.ok(declarationExportNames(model).has(name), `missing canonical ${name}`);
+  assert.equal(reexportedSourceNames('src/syntax/cards.ts', 'src/cards/display-input.ts', implementation).size, 0,
+    'preparation implementation must not forward the moved input models');
+  for (const path of productionFiles().filter(path => sourceExtensions.has(extname(path)))) {
+    if (path === 'src/cards/display-input.ts') continue;
+    const declarations = declarationExportNames(parseSource(path));
+    for (const name of names) assert.equal(declarations.has(name), false, `${path} duplicates the shared ${name} model`);
+  }
+  assert.doesNotThrow(() => assertEdgePolicy({ source: 'src/cards/display-input.ts', target: 'src/tool-adapters/contracts.ts', kind: 'type-only' }));
+  for (const kind of ['value', 'mixed']) assert.throws(() => assertEdgePolicy({
+    source: 'src/cards/display-input.ts', target: 'src/tool-adapters/contracts.ts', kind,
+  }), /card preparation imports/);
+  assert.throws(() => assertEdgePolicy({ source: 'src/cards/file-preparation.ts',
+    target: 'src/tool-adapters/contracts.ts', kind: 'type-only' }), /card preparation imports/);
 });

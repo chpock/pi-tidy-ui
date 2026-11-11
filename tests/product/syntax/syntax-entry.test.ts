@@ -16,14 +16,15 @@ import { hasHostInk } from '../../fixtures/host-cells.ts';
 import { Theme, createEditToolDefinition, createReadToolDefinition, createWriteToolDefinition, ToolExecutionComponent, type ExtensionAPI, type ExtensionContext, type ToolRendererResolver, type ToolRenderers } from '@earendil-works/pi-coding-agent';
 import tidyUi, { debugLoggingDiagnostics, type TidyUiRuntimeOptions } from '../../../src/index.ts';
 import { SourceExecution } from '../../../src/highlighting/source-execution.ts';
-import { CardSources, type CardDisplayInput } from '../../../src/syntax/cards.ts';
+import { CardSources } from '../../../src/syntax/cards.ts';
+import type { CardDisplayInput } from '../../../src/cards/display-input.ts';
 import { SyntaxRuntime } from '../../../src/application/syntax-runtime.ts';
 import { ExpectedOwnedUnavailable } from '../../../src/occipital/owned-startup.ts';
 import { samplePiCardPalette } from '../../../src/syntax/pi-palette.ts';
 import { sampleOwnedPalette } from '../../../src/themes/owned-palette.ts';
 import { menuPage, withMenu, setAppearance, setLogging } from '../../helpers/menu-driver.ts';
 import { ExtensionSettings, themePreferenceFromSettings, type SettingsLoadResult, type SettingsPatch, type LocalPreferences } from '../../../src/settings.ts';
-import { FilePreviewState } from '../../../src/file-preview-state.ts';
+import { FilePreviewState } from '../../../src/presentation/file-preview-state.ts';
 import { createLazyNativeRendererResolver, DeferredRenderer, isDeferredStockFilePair } from '../../../src/syntax/lazy-native-renderers.ts';
 import { extensionHarness as sharedExtensionHarness } from '../../fixtures/sdk-contract-support.ts';
 

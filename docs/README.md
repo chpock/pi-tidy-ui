@@ -16,7 +16,7 @@ If you are interested in **Occipital as a daemon**, start directly with its [sta
 | Chapter | What it explains |
 |---|---|
 | [Host integration](host-integration.md) | Composition root, actual host capture, public API versus inspected shapes, exact routing/visibility, descriptor/slot ownership, renderer transfer, events, Git metadata and shutdown |
-| [Rendering](rendering.md) | Representation pipeline, renderer-owned numeric measurement and Bash/file reflow/scene policies, shared painting and framing, reuse and worked width/theme/removal paths |
+| [Rendering](rendering.md) | Component presentation/current routing, latest-layout owners, representation pipeline, renderer-owned measurement/reflow/scenes, shared painting and reuse/lifetime paths |
 | [Tool producers and adapters](tool-adapters.md) | Producer-specific formats and summaries, per-call selection, deferred/funded decoding, source identity and isolated code/test scopes |
 | [Shared frame](card-frame-spec.md) | Exact geometry, Output padding, narrow widths, generic versus measured framing, ANSI boundaries and hit regions |
 | [Compact summaries](tool-summary-spec.md) | Field selection, bounded serialization, secret masking, wrapping/span recoloring and execution-prefix composition |
@@ -46,7 +46,7 @@ If you are interested in **Occipital as a daemon**, start directly with its [sta
 | [TUI theme correspondence](syntax/opencode-tui-mapping.md) | Pinned OpenCode TUI catalogue/source, offline generation, all donor/font mappings, alpha backdrops and intentional classification limits |
 | [Color model](color-model.md) | Shared output conversion, Follow Pi diff derivation and uncorrected authored TUI surfaces |
 
-`src/application/` owns the extension's syntax client/menu/runtime/options wiring. `src/highlighting/` owns joint source/job execution, Pi fallback coordination, the chronological work registry and card-publication borrow lifetimes. `src/highlighting/storage/` owns retained semantic payloads and synchronous ready-display storage transactions under the shared root budget. `src/occipital/` owns native acquisition and provider/transport contracts, not Pi settings or UI. These TypeScript modules are distinct from the Rust daemon and are not claimed to be an independently isolated SDK package. Native computation belongs to the next section.
+`src/application/` owns the extension's syntax client/menu/runtime/options wiring. `src/presentation/` owns typed presentation routing, weak component sessions and the latest tool/user/queued projections; `src/index.ts` supplies real host facts and retains native callback/capture ownership. `src/highlighting/` owns joint source/job execution, Pi fallback coordination, the chronological work registry and card-publication borrow lifetimes. `src/highlighting/storage/` owns retained semantic payloads and synchronous ready-display storage transactions under the shared root budget. `src/occipital/` owns native acquisition and provider/transport contracts, not Pi settings or UI. These TypeScript modules are distinct from the Rust daemon and are not claimed to be an independently isolated SDK package. Native computation belongs to the next section.
 
 ## Occipital daemon
 
