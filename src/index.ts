@@ -797,9 +797,10 @@ export function installTidyUi(tui: LiveTui, getTheme: () => Palette, options: Ti
     const record = { owner: new WeakRef(node), receipt };
     detail.record = record; fileDetailRecords.add(record); fileDetailFinalizer.register(node, record, record);
   }
-  function detailCache(node: ToolNode, mode: FilePreviewMode): FileDetailCache {
+  function detailCache(node: ToolNode, mode: FilePreviewMode, refreshContent = false): FileDetailCache {
     const cached = fileDetailCaches.get(node);
-    if (cached && !cached.denied && cached.args === node.args && cached.result === node.result && cached.mode === mode) return cached;
+    // Native update methods can change content without replacing args/result.
+    if (!refreshContent && cached && !cached.denied && cached.args === node.args && cached.result === node.result && cached.mode === mode) return cached;
     const detail = buildFileDetail(node, mode);
     if (cached && !cached.denied && !detail.sources && cached.mode === mode && cached.text === detail.text && cached.omitted === detail.omitted &&
       cached.error === detail.error && cached.pending === detail.pending) {
@@ -863,13 +864,13 @@ export function installTidyUi(tui: LiveTui, getTheme: () => Palette, options: Ti
     }
     fileDetailCaches.set(node, next); return next;
   }
-  function prepareFileDetail(node: ToolNode): void {
+  function prepareFileDetail(node: ToolNode, refreshContent = false): void {
     if (!active || quiescing || !attached(node) || fileSucceeded(node) || fileMode(node) !== 'full') {
       releaseFileDetail(node);
       return;
     }
     ensureCards();
-    detailCache(node, 'full');
+    detailCache(node, 'full', refreshContent);
   }
   function detailRows(detail: FileDetailCache, width: number): string[] | undefined {
     if (!detail.text) return [];
@@ -1628,7 +1629,7 @@ export function installTidyUi(tui: LiveTui, getTheme: () => Palette, options: Ti
         observeFileTurn(this, name === 'updateResult');
         if (name !== "invalidate") nativePhase(this, name);
         observeSyntax(this);
-        if (filePresentationTool(this)) prepareFileDetail(this);
+        if (filePresentationTool(this)) prepareFileDetail(this, preserveFileDetail);
         if (name === 'setExpanded' && cardKind(this) !== 'bash' && this.expanded) dropPrepared(this);
         if (!quiescing && syntax && name === "updateResult" && interruptedLiveBash(toolReader(this), liveBashSource(this))) {
           syntax.freeze(this);

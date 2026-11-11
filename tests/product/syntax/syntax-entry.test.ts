@@ -3278,3 +3278,152 @@ test('file preview host refreshes raw shebang validity with unchanged cleaned te
     assert.equal(updates(), initial + 2, 'restoring the valid original first row refreshes the selector again');
   } finally { await h.stop(); }
 });
+
+
+test('expanded error details reuse their measured saved text across warm frames and resize, then release on removal', async (t) => {
+  const h = fixture();
+  const originalFunding = SourceExecution.prototype.geometryFunding, segment = Intl.Segmenter.prototype.segment;
+  let budget: import('../../../src/resources/data-budget.ts').DataBudget | undefined, sourceReads = 0, bodySegments = 0;
+  try {
+    await h.ready; await h.start();
+    t.mock.method(SourceExecution.prototype, 'geometryFunding', function (this: SourceExecution, ...args: Parameters<SourceExecution['geometryFunding']>) {
+      const funding = originalFunding.apply(this, args);
+      if (funding) budget = funding.budget;
+      return funding;
+    });
+    t.mock.method(Intl.Segmenter.prototype, 'segment', function (this: Intl.Segmenter, text: string) {
+      if (text.includes('MEASURED_ERROR_SOURCE')) bodySegments++;
+      return segment.call(this, text);
+    });
+    const owner = writeOwner(h, 'measured-error-lifetime', 'UNAPPLIED_PROPOSAL');
+    const content = [{ type: 'text' as const, text: 'MEASURED_ERROR_SOURCE\t界é\nSAVED_ERROR_TAIL' }];
+    const result = { content, isError: true };
+    Object.defineProperty(result, 'content', { configurable: true, get() { sourceReads++; return content; } });
+    owner.updateResult(result, false); owner.setExpanded(true);
+    const cold = plainRows(owner.render(80)); await settled();
+    assert.match(cold, /MEASURED_ERROR_SOURCE/u); assert.match(cold, /SAVED_ERROR_TAIL/u);
+    assert.ok(sourceReads > 0, 'cold preparation reads the actual saved error');
+    assert.ok(bodySegments > 0, 'cold preparation measures the saved error glyphs');
+    assert.ok(budget && budget.stats().retainedBytes > 0, 'the actual shared budget owns the retained error text and measurement');
+    const retained = budget.stats().retainedBytes;
+    sourceReads = 0; bodySegments = 0;
+    for (const width of [80, 80, 61, 36, 80]) assert.match(plainRows(owner.render(width)), /SAVED_ERROR_TAIL/u);
+    assert.equal(sourceReads, 0, 'unchanged and resized visits do not revisit saved source');
+    assert.equal(bodySegments, 0, 'width-only reflow does not measure the saved body again');
+    assert.equal(budget.stats().retainedBytes, retained, 'width history does not accumulate retained detail geometry');
+    assert.equal(budget.stats().outstandingPeakBytes, 0);
+    h.root.removeChild(owner);
+    assert.ok(budget.stats().retainedBytes < retained, 'removal releases the held detail while the caller still owns the component');
+    assert.equal(budget.stats().outstandingPeakBytes, 0);
+  } finally { await h.stop(); }
+});
+
+test('same-reference final-error updates refresh owned file details through the existing host lifecycle', async () => {
+  const h = fixture();
+  try {
+    await h.ready; await h.start();
+    const owner = writeOwner(h, 'same-reference-error', 'UNAPPLIED_PROPOSAL');
+    const result = { content: [{ type: 'text' as const, text: 'PREVIOUS_SAVED_ERROR' }], isError: true };
+    owner.updateResult(result, false); owner.setExpanded(true);
+    assert.match(plainRows(owner.render(80)), /PREVIOUS_SAVED_ERROR/u);
+    assert.equal(Reflect.get(owner, 'result') === result, true, 'the real SDK retains this result identity');
+    result.content[0]!.text = 'CURRENT_SAVED_ERROR';
+    owner.updateResult(result, false);
+    const current = plainRows(owner.render(80));
+    assert.match(current, /CURRENT_SAVED_ERROR/u, 'the update callback invalidates content even when the native result identity is reused');
+    assert.doesNotMatch(current, /PREVIOUS_SAVED_ERROR|UNAPPLIED_PROPOSAL/u);
+  } finally { await h.stop(); }
+});
+
+
+test('same-reference pending input refreshes visible details but reuses an unchanged bounded prefix', async (t) => {
+  const h = fixture();
+  try {
+    await h.ready; await h.start();
+    const source = ['PREVIOUS_PENDING_SOURCE', ...Array.from({ length: 12 }, (_, index) => `pending_stable_${index}`)].join('\n');
+    const owner = writeOwner(h, 'same-reference-pending', source);
+    const args = Reflect.get(owner, 'args') as { path: string; content: string };
+    owner.setExpanded(true);
+    assert.match(plainRows(owner.render(80)), /PREVIOUS_PENDING_SOURCE/u);
+    args.content = source.replace('PREVIOUS_PENDING_SOURCE', 'CURRENT_PENDING_SOURCE');
+    owner.updateArgs(args);
+    assert.equal(Reflect.get(owner, 'args') === args, true, 'the real SDK retains this argument identity');
+    const current = plainRows(owner.render(80));
+    assert.match(current, /CURRENT_PENDING_SOURCE/u);
+    assert.doesNotMatch(current, /PREVIOUS_PENDING_SOURCE/u);
+
+    const originalFunding = SourceExecution.prototype.geometryFunding; let grants = 0;
+    t.mock.method(SourceExecution.prototype, 'geometryFunding', function (this: SourceExecution, ...values: Parameters<SourceExecution['geometryFunding']>) {
+      const funding = originalFunding.apply(this, values);
+      return funding && { budget: funding.budget, grant: (bytes: number) => { grants++; return funding.grant(bytes); } };
+    });
+    args.content = `${args.content.slice(0, args.content.lastIndexOf('\n'))}\nCHANGED_HIDDEN_PENDING_SUFFIX`;
+    owner.updateArgs(args); await settled();
+    assert.equal(grants, 0, 'a same-object hidden-only change keeps the existing bounded text and measurement');
+    const hidden = plainRows(owner.render(80));
+    assert.match(hidden, /CURRENT_PENDING_SOURCE/u);
+    assert.doesNotMatch(hidden, /CHANGED_HIDDEN_PENDING_SUFFIX/u);
+  } finally { await h.stop(); }
+});
+
+test('same-reference partial-to-error completion replaces pending proposals with only the final saved error', async () => {
+  const h = fixture();
+  try {
+    await h.ready; await h.start();
+    const owner = writeOwner(h, 'same-reference-failure-phase', 'UNAPPLIED_PENDING_PROPOSAL');
+    const result = { content: [{ type: 'text' as const, text: 'PARTIAL_TOOL_RESULT' }], isError: false };
+    owner.updateResult(result, true); owner.setExpanded(true);
+    assert.match(plainRows(owner.render(80)), /UNAPPLIED_PENDING_PROPOSAL/u, 'pending expansion deliberately shows its bounded request');
+    result.isError = true; result.content[0]!.text = 'FINAL_SAVED_ERROR';
+    owner.updateResult(result, false);
+    const completed = plainRows(owner.render(80));
+    assert.match(completed, /FINAL_SAVED_ERROR/u);
+    assert.match(completed, /\[error: tool call failed\]/u);
+    assert.doesNotMatch(completed, /UNAPPLIED_PENDING_PROPOSAL|PARTIAL_TOOL_RESULT|Requested file content/u,
+      'final failure details do not reuse the pending request body even when the result identity is unchanged');
+  } finally { await h.stop(); }
+});
+
+
+test('same-reference pending edit fields refresh after an argument update', async () => {
+  const h = fixture();
+  try {
+    await h.ready; await h.start();
+    const owner = editOwner(h, 'same-reference-pending-edit');
+    const args = { path: 'same-reference-pending-edit.ts', edits: [{ oldText: 'ORIGINAL_EDIT_SOURCE', newText: 'PREVIOUS_PENDING_EDIT' }] };
+    owner.updateArgs(args); owner.setExpanded(true);
+    assert.match(plainRows(owner.render(80)), /PREVIOUS_PENDING_EDIT/u);
+    args.edits[0]!.newText = 'CURRENT_PENDING_EDIT'; owner.updateArgs(args);
+    const current = plainRows(owner.render(80));
+    assert.match(current, /ORIGINAL_EDIT_SOURCE/u); assert.match(current, /CURRENT_PENDING_EDIT/u);
+    assert.doesNotMatch(current, /PREVIOUS_PENDING_EDIT/u);
+  } finally { await h.stop(); }
+});
+
+test('argument completion refreshes pending fields already mutated in the same input object', async () => {
+  const h = fixture();
+  try {
+    await h.ready; await h.start();
+    const owner = writeOwner(h, 'same-reference-complete-args', 'PREVIOUS_INCOMPLETE_INPUT');
+    owner.setExpanded(true);
+    assert.match(plainRows(owner.render(80)), /PREVIOUS_INCOMPLETE_INPUT/u);
+    const args = Reflect.get(owner, 'args') as { content: string };
+    args.content = 'CURRENT_COMPLETED_INPUT'; owner.setArgsComplete();
+    const current = plainRows(owner.render(80));
+    assert.match(current, /CURRENT_COMPLETED_INPUT/u); assert.doesNotMatch(current, /PREVIOUS_INCOMPLETE_INPUT/u);
+  } finally { await h.stop(); }
+});
+
+test('same-reference read error updates retain the existing lifecycle invalidation behavior', async () => {
+  const h = fixture();
+  try {
+    await h.ready; await h.start();
+    const owner = readOwner(h, 'same-reference-read-error');
+    const result = { content: [{ type: 'text' as const, text: 'PREVIOUS_READ_ERROR' }], isError: true };
+    owner.updateResult(result, false); owner.setExpanded(true);
+    assert.match(plainRows(owner.render(80)), /PREVIOUS_READ_ERROR/u);
+    result.content[0]!.text = 'CURRENT_READ_ERROR'; owner.updateResult(result, false);
+    const current = plainRows(owner.render(80));
+    assert.match(current, /CURRENT_READ_ERROR/u); assert.doesNotMatch(current, /PREVIOUS_READ_ERROR/u);
+  } finally { await h.stop(); }
+});

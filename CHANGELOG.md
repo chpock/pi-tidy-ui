@@ -53,6 +53,9 @@ been reconstructed.
 
 ### Fixed
 
+- Refresh expanded write/edit details when updates reuse the same argument or
+  result object. Keep current pending text and replace pending proposals with the
+  saved error on final failure, while reusing unchanged bounded measurements.
 - Derive file-preview language hints and patch structure from original bounded
   source rows before terminal-control cleanup. Refresh highlighting when raw hint
   validity changes without changing displayed text, and preserve physical rows
