@@ -6,6 +6,8 @@ import * as fs from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { JournalOptions } from '../../../src/debug-log.ts';
+import { SessionLogging } from '../../../src/session-logging.ts';
+import { ApplicationPreferences } from '../../../src/application/preferences.ts';
 import { setImmediate as turn } from 'node:timers/promises';
 import { dirname, resolve } from 'node:path';
 import { pathToFileURL, fileURLToPath } from 'node:url';
@@ -1688,6 +1690,65 @@ test('entry logging escapes UI session metadata and separates switch/resume/relo
   }
 });
 
+for (const action of ['snapshot', 'retry'] as const)
+  test(`entry pending log ${action} preserves its distinct current-writer reads after session replacement`, { timeout: 12000 }, async () => {
+    const directory = await fs.mkdtemp(join(tmpdir(), 'tidy-log-currentness-'));
+    const status = SessionLogging.prototype.status, flush = SessionLogging.prototype.flush, enable = SessionLogging.prototype.setEnabled;
+    const identities = new Map<SessionLogging, number>(), reads: number[] = [];
+    let refuse = false, armed = false, first: SessionLogging | undefined, h: ReturnType<typeof fixture> | undefined;
+    let release!: () => void, entered!: () => void, failed!: (error: unknown) => void, completed!: () => void;
+    const held = new Promise<void>(resolve => { release = resolve; });
+    const entering = new Promise<void>((resolve, reject) => { entered = resolve; failed = reject; });
+    const finishing = new Promise<void>(resolve => { completed = resolve; });
+    const gate = (owner: SessionLogging, operation: Promise<void>) => {
+      if (!armed || owner !== first) return operation;
+      armed = false;
+      return operation.then(() => { entered(); return held; }, error => { failed(error); throw error; }).finally(completed);
+    };
+    const io = { ...fs, async open(...args: Parameters<typeof fs.open>) {
+      const handle = await fs.open(...args), writev = handle.writev.bind(handle);
+      handle.writev = <T extends readonly NodeJS.ArrayBufferView[]>(buffers: T, position?: number) => {
+        if (refuse) throw Object.assign(Error('PRIVATE_LOG_CURRENTNESS_DETAIL'), { code: 'ENOSPC' });
+        return writev(buffers, position);
+      };
+      return handle;
+    } };
+    try {
+      SessionLogging.prototype.status = function () {
+        if (!identities.has(this)) identities.set(this, identities.size);
+        reads.push(identities.get(this)!); return status.call(this);
+      };
+      if (action === 'snapshot') SessionLogging.prototype.flush = function () { return gate(this, flush.call(this)); };
+      else SessionLogging.prototype.setEnabled = function (enabled) {
+        const operation = enable.call(this, enabled); return enabled ? gate(this, operation) : operation;
+      };
+      h = fixture('tui', { root: directory, io }); await h.start(); await settled();
+      if (action === 'retry') {
+        refuse = true; await h.page('Status & troubleshooting', 'Diagnostic logs', 'Write state snapshot');
+        assert.equal(debugLoggingDiagnostics()!.state, 'failed'); refuse = false;
+      }
+      first = identities.keys().next().value; assert.equal(identities.size, 1);
+      await withMenu(h.command, h.ctx, async menu => {
+        await menu.select('Status & troubleshooting'); await menu.select('Diagnostic logs');
+        armed = true;
+        const pending = menu.select(action === 'snapshot' ? 'Write state snapshot' : 'Retry recording');
+        await Promise.race([entering, pending.then(() => { throw Error('The menu did not await the actual logging operation'); })]);
+        assert.equal(armed, false); menu.input('\x03'); await pending;
+      });
+      h.ctx.sessionManager.getSessionId = () => 'replacement-entry-fixture';
+      await h.start({ type: 'session_start', reason: 'resume' }); await settled();
+      await h.page('Status & troubleshooting', 'Diagnostic logs');
+      assert.equal(identities.size, 2); assert.equal(debugLoggingDiagnostics()!.state, 'active');
+      const before = { ...h.counts }; reads.length = 0;
+      release(); await finishing; await turn();
+      assert.deepEqual(reads, action === 'snapshot' ? [] : [1], 'snapshot fences its captured writer; retry inspects the current replacement exactly once');
+      assert.deepEqual(h.counts, before);
+    } finally {
+      release(); SessionLogging.prototype.status = status; SessionLogging.prototype.flush = flush; SessionLogging.prototype.setEnabled = enable;
+      await h?.stop(); await fs.rm(directory, { recursive: true, force: true });
+    }
+  });
+
 test('entry logging failure and disabled snapshot are truthful, isolate presentation, and retry only on explicit on', async () => {
   const root = await fs.mkdtemp(join(tmpdir(), 'tidy-log-entry-error-'));
   let refuse = false;
@@ -1876,6 +1937,59 @@ test('entry keeps theme and shared-switch cancellation scopes distinct across po
   } finally { SyntaxRuntime.prototype.setEnabled = setEnabled; releases.forEach(release => release({ ok: true })); await h.stop(); }
 });
 
+test('entry appearance confirmation awaits actual native cleanup before its preference application settles', async () => {
+  let release!: () => void, entered!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; }), entering = new Promise<void>(resolve => { entered = resolve; });
+  const dispose = SyntaxRuntime.prototype.dispose, setSwitch = ApplicationPreferences.prototype.setSwitch;
+  let completions = 0, changing: Promise<unknown> | undefined;
+  const h = fixture();
+  try {
+    await h.start(); await settled();
+    SyntaxRuntime.prototype.dispose = function () {
+      const stopped = dispose.call(this); entered(); return Promise.all([stopped, held]).then(() => {});
+    };
+    ApplicationPreferences.prototype.setSwitch = function (...args) {
+      return setSwitch.apply(this, args).then(outcome => { completions++; return outcome; });
+    };
+    changing = h.appearance(false); await entering; await turn();
+    assert.equal(completions, 0, 'the actual preference operation must still await the native cleanup promise');
+    release(); await changing;
+    assert.equal(completions, 1); assert.equal(h.counts.saves, 0); assert.match(h.view, /Tidy UI appearance\s+Off/u);
+  } finally {
+    release(); await changing?.catch(() => {});
+    SyntaxRuntime.prototype.dispose = dispose; ApplicationPreferences.prototype.setSwitch = setSwitch;
+    await h.stop();
+  }
+});
+
+test('entry native deactivation during confirmation reports an unsaved theme rather than a retired runtime', async () => {
+  let changed!: (value: SettingsLoadResult) => void, release!: (value: SettingsSaveResult) => void, written!: () => void;
+  let signal: AbortSignal | undefined;
+  const writes: SettingsPatch[] = [], entering = new Promise<void>(resolve => { written = resolve; });
+  const saving = new Promise<SettingsSaveResult>(resolve => { release = resolve; });
+  const h = fixture('tui', false, {
+    async load() { return { ok: true, themePreference: { kind: 'pi', variant: 'dark' } }; },
+    update(patch, options) { writes.push(structuredClone(patch)); signal = options?.signal; written(); return saving; },
+    watch(callback) { changed = callback; return () => {}; },
+  });
+  try {
+    await h.start(); await settled();
+    await withMenu(h.command, h.ctx, async menu => {
+      await menu.select('Code color theme');
+      const confirming = menu.select('GitHub');
+      await Promise.race([entering, confirming.then(() => { throw Error('The theme action did not enter persistence'); })]);
+      assert.equal(signal?.aborted, false);
+      changed({ ok: true, themePreference: { kind: 'theme', id: 'github', variant: 'dark' }, nativeHighlightingEnabled: false });
+      assert.equal(signal?.aborted, true, 'actual native deactivation retires the theme request, not the open application epoch');
+      release({ ok: true }); await confirming;
+      assert.match(menu.text().replace(/\s+/gu, ' '), /Theme applied for now, but not saved: Syntax theme selection could not be saved\./u);
+      assert.doesNotMatch(menu.text(), /closed runtime/u);
+    });
+    assert.deepEqual(writes, [{ syntaxTheme: { kind: 'theme', id: 'github' }, syntaxThemeVariant: 'dark' }]);
+    assert.equal(h.counts.constructed, 1);
+  } finally { release({ ok: true }); await h.stop(); }
+});
+
 test('entry reports an initial settings failure once through live runtime health, not a second syntax reader', async () => {
   let loads = 0;
   const h = fixture('tui', false, {
@@ -1901,7 +2015,7 @@ test('entry keeps a failed theme choice live until a later validated shared publ
   }, { appearanceEnabled: false, loggingEnabled: false });
   await h.start(); await h.page('Code color theme', 'GitHub');
   assert.match(h.view, /Code color theme\s+GitHub/u);
-  assert.match(h.view, /applied for now, but not saved/iu); assert.equal(saves, 1);
+  assert.match(h.view.replace(/\s+/gu, ' '), /Theme applied for now, but not saved: Settings could not be saved\./u); assert.equal(saves, 1);
   changed({ ok: true, themePreference: { kind: 'pi', variant: 'dark' }, nativeHighlightingEnabled: false });
   await h.page(); assert.match(h.view, /Code color theme\s+Follow Pi/u);
   assert.equal(saves, 1, 'a validated publication does not write the restored file choice back');

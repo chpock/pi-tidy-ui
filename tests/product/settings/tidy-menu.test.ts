@@ -738,6 +738,21 @@ for (const finish of ['escape', 'confirm'] as const) test(`settings sync: extern
   assert.deepEqual(f.calls, finish === 'escape' ? [] : [{ kind: 'theme', choice: preview }]);
 });
 
+for (const variant of ['dark', 'light'] as const) for (const finish of ['escape', 'confirm'] as const)
+  test(`settings sync: ${variant} picker preview keeps its pair across an opposite-variant publication until ${finish}`, async () => {
+    const f = fixture(); f.state.selected = { kind: 'pi', variant }; native(f);
+    await f.select('Code color theme'); await f.key('\x1b[B');
+    const preview = preference('aura', variant), external = preference('ayu', variant === 'dark' ? 'light' : 'dark');
+    assert.deepEqual(f.state.selected, preview);
+    const previews = f.previews.length;
+    assert.equal(f.menu.preferencesChanged(external), true);
+    assert.deepEqual(f.state.selected, preview); assert.equal(f.previews.length, previews); assert.equal(f.calls.length, 0);
+    await f.key(finish === 'escape' ? '\x1b' : '\r');
+    assert.deepEqual(f.state.selected, finish === 'escape' ? external : preview);
+    assert.deepEqual(f.calls, finish === 'escape' ? [] : [{ kind: 'theme', choice: preview }]);
+    assert.deepEqual(f.previews.at(-1), finish === 'escape' ? external : preview);
+  });
+
 test('runtime health menu: faults remain visible with logging off or unavailable and provider ready', async () => {
   const f = fixture(110, 45); native(f);
   f.state.loggingEnabled = false;

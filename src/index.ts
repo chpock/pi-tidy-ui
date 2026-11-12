@@ -11,9 +11,9 @@ import { ExtensionSettings, processPreferences, type LocalPreferences } from './
 import { ApplicationPreferences } from './application/preferences.ts';
 import { bindTerminalLifecycle } from "./terminal-lifecycle.ts";
 import { TidyMenu } from './tidy-menu.ts';
-import type { TidyMenuOwner, TidyMenuAction } from './application/menu-contract.ts';
+import type { TidyMenuOwner } from './application/menu-contract.ts';
 import { menuSnapshot, menuCacheDetails } from './application/menu-model.ts';
-import type { SyntaxMenuOutcome } from './application/syntax-menu.ts';
+import { performMenuAction } from './application/menu-actions.ts';
 import { type JournalOptions } from "./debug-log.ts";
 import { diagnose, reportRuntime, type DiagnosticFields, type DiagnosticSink } from "./diagnostics.ts";
 import type { FilePreviewMode } from './cards/file-preview-mode.ts';
@@ -760,54 +760,6 @@ export default function tidyUi(pi: ExtensionAPI, options: TidyUiRuntimeOptions =
   });
   function menuOwner(ctx: ExtensionContext, epoch: number): TidyMenuOwner {
     const current = () => lifecycle === epoch && !saveAbort.signal.aborted;
-    const retired: SyntaxMenuOutcome = { ok: false, message: 'This settings action belongs to a closed runtime.' };
-    async function act(action: TidyMenuAction): Promise<SyntaxMenuOutcome & { cache?: string[] }> {
-      if (!current()) return retired;
-      diagnose(logging?.sink, 'INFO', 'runtime', 'Settings menu action requested', { action: action.kind });
-      if (action.kind === 'switch') return preferences.setSwitch(action.key, action.value, { signal: saveAbort.signal, current }, {
-        appearance(value) {
-          if (value) start(ctx);
-          else {
-            pendingFooter = undefined; stopColors(); restoreFooter();
-            if (controller) reportRuntime(diagnostic, { kind: 'released', scope: controller, operation: '*' });
-            controller?.restore(); return stopSyntax();
-          }
-        },
-        terminalColors: value => applyTerminalPreference(value, ctx),
-        nativeHighlighting: value => syntax?.setEnabled(value),
-        logging: value => logging?.setEnabled(value),
-        recordingFailed: () => logging?.status().state === 'failed',
-      }, diagnostic);
-      if (action.kind === 'theme') {
-        const runtime = ensureSyntax(ctx);
-        const outcome = await preferences.confirmTheme(syntaxTheme!, action.choice);
-        if (!current() || syntax !== runtime) return retired;
-        return outcome.ok ? outcome : { ok: false, message: `Theme applied for now, but not saved: ${outcome.message}` };
-      }
-      if (action.kind === 'reapplyAppearance') {
-        if (!preferences.appearanceEnabled) return { ok: false, message: 'Turn on Tidy UI appearance first.' };
-        start(ctx);
-      } else if (action.kind === 'reapplyColors') {
-        if (!preferences.appearanceEnabled || !preferences.terminalColorsEnabled) return { ok: false, message: 'Turn on appearance and terminal color matching first.' };
-        if (colors) colors.reapply(); else startColors(ctx);
-      } else if (action.kind === 'clearCache') {
-        if (!controller?.active) return { ok: false, message: 'There are no active Tidy UI layouts to clear.' };
-        controller.clearCache(); ownedFooter?.clear();
-        return { ok: true, cache: owner.cacheDetails() };
-      } else if (action.kind === 'retryLogging') {
-        if (!preferences.loggingEnabled || !logging) return { ok: false, message: 'Turn on diagnostic recording first.' };
-        await logging.setEnabled(true);
-        if (logging.status().state !== 'active') return { ok: false, message: 'Recording could not be started. See the log status for details.' };
-      } else if (action.kind === 'snapshotLogs') {
-        const log = logging;
-        if (!log?.status().capture || log.status().state !== 'active')
-          return { ok: false, message: 'Snapshot not written: diagnostic recording is off or unavailable.' };
-        logSnapshot(); await log.flush();
-        if (!current() || logging !== log) return retired;
-        if (log.status().state !== 'active') return { ok: false, message: 'The diagnostic snapshot could not be written.' };
-      }
-      return current() ? { ok: true } : retired;
-    }
     const owner: TidyMenuOwner = {
       snapshot() {
         return menuSnapshot(preferences, { color: colors?.status().state, syntax: syntax?.snapshot(),
@@ -815,7 +767,50 @@ export default function tidyUi(pi: ExtensionAPI, options: TidyUiRuntimeOptions =
       },
       async prepareThemes() { if (current()) await ensureSyntax(ctx).prepareThemes(); },
       previewTheme(choice) { if (current()) syntax?.previewTheme(choice); },
-      act,
+      act: action => performMenuAction(action, {
+        preferences, scope: { signal: saveAbort.signal, current }, diagnostic, journal: logging?.sink,
+        switches: {
+          appearance(value) {
+            if (value) start(ctx);
+            else {
+              pendingFooter = undefined; stopColors(); restoreFooter();
+              if (controller) reportRuntime(diagnostic, { kind: 'released', scope: controller, operation: '*' });
+              controller?.restore(); return stopSyntax();
+            }
+          },
+          terminalColors: value => applyTerminalPreference(value, ctx),
+          nativeHighlighting: value => syntax?.setEnabled(value),
+          logging: value => logging?.setEnabled(value),
+          recordingFailed: () => logging?.status().state === 'failed',
+        },
+        applyAppearance: () => start(ctx),
+        reapplyTerminalColors() { if (colors) colors.reapply(); else startColors(ctx); },
+        async confirmTheme(choice) {
+          const runtime = ensureSyntax(ctx);
+          const outcome = await preferences.confirmTheme(syntaxTheme!, choice);
+          if (!current() || syntax !== runtime) return { kind: 'retired' };
+          return { kind: 'completed', outcome };
+        },
+        clearLayouts() {
+          if (!controller?.active) return undefined;
+          controller.clearCache(); ownedFooter?.clear();
+          return owner.cacheDetails();
+        },
+        recording: {
+          async retry() {
+            if (!preferences.loggingEnabled || !logging) return 'unavailable';
+            await logging.setEnabled(true);
+            return logging.status().state === 'active' ? 'active' : 'inactive';
+          },
+          async writeSnapshot() {
+            const log = logging;
+            if (!log?.status().capture || log.status().state !== 'active') return 'notCapturing';
+            logSnapshot(); await log.flush();
+            if (!current() || logging !== log) return 'retired';
+            return log.status().state === 'active' ? 'written' : 'writeFailed';
+          },
+        },
+      }),
       cacheDetails() {
         if (!controller) return menuCacheDetails();
         return menuCacheDetails({ stats: controller.cacheStats(), footer: ownedFooter?.retainedMemory(), heapUsedBytes: process.memoryUsage().heapUsed });

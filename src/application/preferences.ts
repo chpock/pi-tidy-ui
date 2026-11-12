@@ -1,7 +1,7 @@
 import { diagnose, diagnosticError, reportRuntime, type DiagnosticSink } from '../diagnostics.ts';
 import { copyThemePreference, sameThemePreference, type ThemePreference } from '../appearance/theme-preference.ts';
 import { themePatch, type ExtensionSettings, type LocalPreferences, type SettingsLoadResult, type Switches } from '../settings.ts';
-import type { SyntaxMenuOutcome } from './syntax-menu.ts';
+import { RETIRED_SETTINGS_ACTION as retired, type SyntaxMenuOutcome } from './syntax-menu.ts';
 
 export type PreferenceStore = Pick<ExtensionSettings, 'load' | 'update'> & Partial<Pick<ExtensionSettings, 'watch'>>;
 export interface PreferenceScope { readonly signal: AbortSignal; current(): boolean }
@@ -23,7 +23,6 @@ interface ThemeApplication {
   reportPreferenceIssue(message: string): void;
 }
 const SAVE_FAILED = 'Syntax theme selection could not be saved.';
-const retired: SyntaxMenuOutcome = { ok: false, message: 'This settings action belongs to a closed runtime.' };
 // Abort reasons must not retain a caller's receiver or native graph.
 const saveCancelled = new Error('Syntax preference retired');
 function activationNotice(owner: WeakRef<ThemeConfirmationScope>) { return () => owner.deref()?.activationChanged(); }

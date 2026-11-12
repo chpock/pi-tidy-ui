@@ -3,6 +3,7 @@ import type { ThemeDescription } from '../themes/selection.ts';
 import type { ProviderSnapshot } from '../occipital/provider.ts';
 
 export type SyntaxMenuOutcome = { ok: true } | { ok: false; message: string };
+export const RETIRED_SETTINGS_ACTION: SyntaxMenuOutcome = { ok: false, message: 'This settings action belongs to a closed runtime.' };
 
 export interface SyntaxMenuSnapshot {
   enabled: boolean;

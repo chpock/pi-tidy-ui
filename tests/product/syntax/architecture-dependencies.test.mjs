@@ -38,7 +38,8 @@ const syntaxApplicationModules = [
 ];
 const preferenceApplicationModules = ['src/application/preferences.ts'];
 const menuDataModules = ['src/application/menu-contract.ts', 'src/application/menu-model.ts'];
-const applicationModules = [...syntaxApplicationModules, ...preferenceApplicationModules, ...menuDataModules];
+const menuActionModules = ['src/application/menu-actions.ts'];
+const applicationModules = [...syntaxApplicationModules, ...preferenceApplicationModules, ...menuDataModules, ...menuActionModules];
 const cardModules = ['src/cards/file-model.ts', 'src/cards/file-sources.ts', 'src/cards/file-display.ts', 'src/cards/display-input.ts',
   'src/cards/file-preview-mode.ts', 'src/cards/file-input.ts', 'src/cards/shebang-language.ts',
   'src/cards/preparation.ts', 'src/cards/bash-preparation.ts', 'src/cards/file-preparation.ts'];
@@ -584,31 +585,44 @@ const menuDataDependencies = new Map([
   ])],
 ]);
 
-function assertMenuDataImports(path, source) {
-  const dependencies = menuDataDependencies.get(path);
+const menuActionDependencies = new Map([
+  ['src/application/menu-contract.ts', { types: ['TidyMenuAction', 'TidyMenuOwner'] }],
+  ['src/application/preferences.ts', { types: ['ApplicationPreferences', 'PreferenceScope', 'SwitchApplication'] }],
+  ['src/application/syntax-menu.ts', { types: ['SyntaxMenuOutcome'], values: ['RETIRED_SETTINGS_ACTION'] }],
+  ['src/appearance/theme-preference.ts', { types: ['ThemePreference'] }],
+  ['src/diagnostics.ts', { types: ['DiagnosticSink'], values: ['diagnose'] }],
+]);
+
+function assertNamedMenuImports(path, source, dependencies, label) {
   const rule = specifier => dependencies.get(specifier.startsWith('.') ? resolveRelativeImport(path, specifier) : specifier);
   const allowed = (dependency, name, typeOnly) => (dependency?.[typeOnly ? 'types' : 'values'] ?? []).includes(name);
   for (const reference of moduleReferences(source)) {
     assert.ok(['import', 'import-type'].includes(reference.syntax) && rule(reference.specifier),
-      `menu data imports ownership or broad module authority: ${path} -> ${reference.specifier} [${reference.syntax}]`);
+      `${label} imports ownership or broad module authority: ${path} -> ${reference.specifier} [${reference.syntax}]`);
   }
   for (const statement of source.statements) {
     if (!ts.isImportDeclaration(statement)) continue;
     const clause = statement.importClause, bindings = clause?.namedBindings;
     assert.ok(!clause?.name && bindings && ts.isNamedImports(bindings) && bindings.elements.length,
-      `menu data requires explicit data or helper capabilities: ${path}`);
+      `${label} requires explicit data or helper capabilities: ${path}`);
     for (const element of bindings.elements) assert.ok(allowed(rule(statement.moduleSpecifier.text),
       element.propertyName?.text ?? element.name.text, clause.isTypeOnly || element.isTypeOnly),
-    `menu data imports an implementation capability: ${path} -> ${statement.moduleSpecifier.text}`);
+    `${label} imports an implementation capability: ${path} -> ${statement.moduleSpecifier.text}`);
   }
   const visit = node => {
     if (ts.isImportTypeNode(node) && ts.isLiteralTypeNode(node.argument) && ts.isStringLiteralLike(node.argument.literal)) {
       assert.ok(!node.isTypeOf && allowed(rule(node.argument.literal.text), importTypeName(node.qualifier), true),
-        `menu data imports an implementation capability: ${path} -> ${node.argument.literal.text}`);
+        `${label} imports an implementation capability: ${path} -> ${node.argument.literal.text}`);
     }
     ts.forEachChild(node, visit);
   };
   visit(source);
+}
+function assertMenuDataImports(path, source) {
+  assertNamedMenuImports(path, source, menuDataDependencies.get(path), 'menu data');
+}
+function assertMenuActionImports(path, source) {
+  assertNamedMenuImports(path, source, menuActionDependencies, 'menu action policy');
 }
 
 function assertEntryPresentationOwnership(path, source) {
@@ -1513,4 +1527,51 @@ test('menu data boundary accepts narrow data and helpers without granting their 
     [model, "import * as journal from '../debug-log.ts';"],
     [model, "type Logger = typeof import('../debug-log.ts').TextJournal;"],
   ]) assert.throws(() => assertMenuDataImports(path, parseSource(path, text)), /menu data (imports|requires)/);
+});
+
+
+test('menu action policy depends on scoped application capabilities rather than concrete runtime owners', () => {
+  for (const path of menuActionModules) assertMenuActionImports(path, parseSource(path));
+});
+
+test('menu action dependency boundary accepts named policy data but rejects service and UI authority', () => {
+  const path = menuActionModules[0];
+  for (const text of [
+    "import type { TidyMenuAction as Action, TidyMenuOwner } from './menu-contract.ts';",
+    "import type { ApplicationPreferences, PreferenceScope, SwitchApplication } from './preferences.ts';",
+    "import { RETIRED_SETTINGS_ACTION as closed, type SyntaxMenuOutcome } from './syntax-menu.ts';",
+    "import { diagnose as record, type DiagnosticSink as Sink } from '../diagnostics.ts';",
+    "import type { ThemePreference } from '../appearance/theme-preference.ts';",
+    "type Scope = import('./preferences.ts').PreferenceScope;",
+  ]) assertMenuActionImports(path, parseSource(path, text));
+  for (const text of [
+    "import { ApplicationPreferences } from './preferences.ts';",
+    "import type { PreferenceStore } from './preferences.ts';",
+    "import { diagnose, reportRuntime } from '../diagnostics.ts';",
+    "import * as diagnostics from '../diagnostics.ts';",
+    "import type * as preferences from './preferences.ts';",
+    "import preferences from './preferences.ts';",
+    "import './syntax-menu.ts';",
+    "export { RETIRED_SETTINGS_ACTION } from './syntax-menu.ts';",
+    "export type { PreferenceScope } from './preferences.ts';",
+    "const preferences = await import('./preferences.ts');",
+    "const preferences = require('./preferences.ts');",
+    "import preferences = require('./preferences.ts');",
+    "type Preferences = typeof import('./preferences.ts').ApplicationPreferences;",
+    "type Logger = import('../session-logging.ts').SessionLogging;",
+    "import { SessionLogging as Writer } from '../session-logging.ts';",
+    "import type { SessionLogging } from '../session-logging.ts';",
+    "import { SyntaxRuntime } from './syntax-runtime.ts';",
+    "import { ExtensionSettings } from '../settings.ts';",
+    "import type { SourceExecution } from '../highlighting/source-execution.ts';",
+    "import type { PresentationCacheOwner } from '../presentation/cache-owner.ts';",
+    "import { RenderCache } from '../render-cache.ts';",
+    "import { OccipitalProvider } from '../occipital/provider.ts';",
+    "import { NativeSession } from '../host/pi/native-session.ts';",
+    "import { TidyMenu } from '../tidy-menu.ts';",
+    "import { menuSnapshot } from './menu-model.ts';",
+    "import type { ExtensionContext } from '@earendil-works/pi-coding-agent';",
+    "import type { Container } from '@earendil-works/pi-tui';",
+    "import { installTidyUi } from '../index.ts';",
+  ]) assert.throws(() => assertMenuActionImports(path, parseSource(path, text)), /menu action policy (imports|requires)/);
 });
