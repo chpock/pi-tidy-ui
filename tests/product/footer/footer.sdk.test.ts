@@ -13,7 +13,7 @@ import { InteractiveMode } from "../../../node_modules/@earendil-works/pi-coding
 import { initTheme, theme as nativeTheme } from "../../../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js";
 import { stripVTControlCharacters } from "node:util";
 import { setAppearance } from "../../helpers/menu-driver.ts";
-import { Container, CustomEditor, Text, editorSetup, fixtureSyntaxOptions, plain, tidyUi, type ExtensionAPI, type ExtensionContext } from "../../fixtures/sdk-contract-support.ts";
+import { Container, CustomEditor, Text, editorSetup, fixtureSettings, fixtureSyntaxOptions, plain, tidyUi, type ExtensionAPI, type ExtensionContext } from "../../fixtures/sdk-contract-support.ts";
 
 test("editor directory abbreviates the native home only at a path boundary before fitting", () => {
   const previous = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE };
@@ -345,7 +345,7 @@ async function footerSetup(foreignEditor = false, selectorAtStartup = false) {
   if (foreignEditor) ctx.ui.setEditorComponent(footerForeignEditor);
   if (selectorAtStartup) { input.clear(); input.addChild(new Text("NATIVE_RELOAD_BOX", 0, 0)); }
   append(); tidyUi(pi as unknown as ExtensionAPI, { logging: false, terminalDefaults: {}, localPreferences: { appearanceEnabled: true, loggingEnabled: true },
-    settings: fixtureSyntaxOptions().settings, syntax: fixtureSyntaxOptions }); await emit('session_start');
+    settings: fixtureSettings(), syntax: fixtureSyntaxOptions }); await emit('session_start');
   return { root, host, footer, native, ctx, manager, statuses, append, emit, editor, input,
     render: (width = 140) => footer.children[0]!.render(width), counts: () => ({ scans, contextReads }), authReads: () => authReads,
     nameReads: () => nameReads,

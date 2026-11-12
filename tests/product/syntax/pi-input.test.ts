@@ -13,13 +13,11 @@ import { samplePiPalette } from '../../../src/syntax/pi-palette.ts';
 import { compileStyleAnsi } from '../../../src/appearance/style-ansi.ts';
 
 function fixture() {
-  let loads = 0, writes = 0, providers = 0;
-  const runtime = new SyntaxRuntime({ standaloneVersion: '0.1.0-test',
-    settings: { load: async () => { loads++; return { ok: true, themePreference: { kind: 'pi', variant: 'dark' } }; },
-      update: async () => { writes++; return { ok: true }; } },
+  let providers = 0;
+  const runtime = new SyntaxRuntime({ standaloneVersion: '0.1.0-test', initialTheme: { kind: 'pi', variant: 'dark' },
     provider: { tryShared: async () => { providers++; return undefined; }, acquireOwned: async () => { providers++; throw Error('unexpected provider'); } } });
   const budget = new DataBudget(1_000_000), funding: GeometryFunding = { budget, grant: bytes => budget.reserve(bytes) };
-  return { runtime, budget, funding, counters: () => ({ loads, writes, providers }) };
+  return { runtime, budget, funding, providerStarts: () => providers };
 }
 function tracked(native: Theme) {
   let fg = 0, bg = 0;
@@ -60,7 +58,7 @@ test('Pi input: lazy identity reads allocate nothing; simultaneous owners share 
     assert.equal(compilations, CARD_ROLES.length, 'repeated acquire/read/width inputs never compile again');
     console.log(JSON.stringify({ piInputWarm: { sampled, compilations, repeatAcquisitions: 21, repeatCompilations: 0, repeatSamples: 0 } }));
     second.dispose(); assert.equal(f.budget.stats().retainedBytes, 0);
-    assert.deepEqual(f.counters(), { loads: 0, writes: 0, providers: 0 });
+    assert.equal(f.providerStarts(), 0);
   } finally { Object.freeze = freeze; await f.runtime.dispose(); }
 });
 
@@ -154,10 +152,10 @@ test('Pi input: mode and public palette replacement build once with old/new over
     assert.notEqual(light.paletteRevision, old.paletteRevision); const lightSamples = changed.counters();
     const lightCopy = prepare(f, changed, '256color', f.funding)!; assert.deepEqual(changed.counters(), lightSamples);
     assert.deepEqual(inspect(old), original); assert.deepEqual(f.runtime.snapshot().selected, selected);
-    assert.deepEqual(f.runtime.sourceStatistics.stats(), source); assert.deepEqual(f.counters(), { loads: 0, writes: 0, providers: 0 });
+    assert.deepEqual(f.runtime.sourceStatistics.stats(), source); assert.equal(f.providerStarts(), 0);
     for (const lease of [old, next, modeCopy, light, lightCopy]) lease.dispose();
     assert.equal(f.budget.stats().retainedBytes, 0);
-    console.log(JSON.stringify({ piInputModePalette: { modeSamples, lightSamples, oldNewOverlap: true, sourceChanges: 0, settingsWrites: 0, rpc: 0, finalBytes: 0 } }));
+    console.log(JSON.stringify({ piInputModePalette: { modeSamples, lightSamples, oldNewOverlap: true, sourceChanges: 0, rpc: 0, finalBytes: 0 } }));
   } finally { await f.runtime.dispose(); }
 });
 

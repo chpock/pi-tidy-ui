@@ -341,7 +341,7 @@ function realCards() {
   let classifications = 0, samples = 0, sourceStyle = 0;
   const provider = { snapshot: () => ({ generation: 1, availability: 'initializing' as const, reason: 'initializing' as const, kind: 'owned' as const, initialShared: false }),
     isReady: () => false, classificationAccepted: () => false, request: async () => { sourceStyle++; throw Error('unexpected SOURCE/STYLE'); } };
-  const sources = new SourceExecution(provider), runtime = new SyntaxRuntime({ standaloneVersion: '0.0.0', settings: { load: async () => ({ ok: true, themePreference: { kind: 'pi', variant: 'dark' } }), update: async () => ({ ok: true }) },
+  const sources = new SourceExecution(provider), runtime = new SyntaxRuntime({ standaloneVersion: '0.0.0', initialTheme: { kind: 'pi', variant: 'dark' },
     provider: { tryShared: async () => undefined, acquireOwned: async () => { throw Error('unexpected provider'); } } });
   const theme = getThemeByName('system')!; setThemeInstance(theme);
   const sampled = { owner: new WeakRef(theme), colors: theme.colors,

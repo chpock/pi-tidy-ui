@@ -1,7 +1,6 @@
 import { diagnose, reportRuntime } from '../diagnostics.ts';
 import type { PiFallbackPort } from '../highlighting/pi-fallback.ts';
 import { SyntaxClient, type SyntaxClientOptions } from './syntax-client.ts';
-import { type SyntaxMenuOwner } from './syntax-menu.ts';
 import type { ThemePreference } from '../appearance/theme-preference.ts';
 import type { TerminalColorMode } from '@earendil-works/pi-tui';
 import type { GeometryFunding } from '../resources/data-budget.ts';
@@ -31,7 +30,7 @@ function startupSuccess(owner: WeakRef<SyntaxRuntime>) { return () => owner.dere
 
 /** One extension runtime's existing client and public menu. Source ownership stays
  * with CardSources; this is not a second source store or a cross-adapter registry. */
-export class SyntaxRuntime implements SyntaxMenuOwner {
+export class SyntaxRuntime {
   private readonly client: SyntaxClient;
   private readonly options: SyntaxRuntimeOptions;
   private readonly owner = new WeakRef(this);
@@ -47,8 +46,8 @@ export class SyntaxRuntime implements SyntaxMenuOwner {
     this.options = options; this.paletteInput = new PaletteInputOwner(options.diagnostic,
       message => options.notify?.(message, 'error')); this.enabled = options.enabled ?? true;
     this.client = new SyntaxClient({ ...options, onChange: metadataNotice(this.owner), onSourceChange: sourceNotice(this.owner) });
-    // Construction is resource-free. Only attach or an explicit UI menu restores
-    // settings; a menu without an active adapter must never activate a provider.
+    // Construction is resource-free. Only attach activates a provider; an explicit
+    // menu may prepare already-supplied choice data without provider startup.
     void this.client.setEnabled(false).catch(startupFailure(this.owner));
   }
 
@@ -92,10 +91,11 @@ export class SyntaxRuntime implements SyntaxMenuOwner {
   }
   suspend(): void { if (!this.disposed) this.client.suspend(); }
   resume(): void { if (!this.disposed) void this.client.resume().catch(startupFailure(this.owner)); }
-  prepareThemes() { return this.disposed ? Promise.resolve() : this.client.restorePreference(); }
+  prepareThemes() { return this.disposed ? Promise.resolve() : this.client.prepareThemeInput(); }
   previewTheme(choice: ThemePreference) { this.client.previewTheme(choice); }
   applySavedTheme(choice: ThemePreference) { this.client.applySavedTheme(choice); }
-  selectTheme(choice: ThemePreference) { return this.client.selectTheme(choice); }
+  applyConfirmedTheme(choice: ThemePreference): void { this.client.applyConfirmedTheme(choice); }
+  reportPreferenceIssue(message: string): void { this.client.reportPreferenceIssue(message); }
   dispose(): Promise<void> {
     if (!this.disposed) { reportRuntime(this.options.diagnostic, { kind: 'released', scope: this, operation: '*' }); diagnose(this.options.diagnostic, 'INFO', 'syntax', 'Syntax runtime disposing; current source owners are retired'); this.disposed = true; ++this.epoch; this.presentation = undefined; this.paletteInput.dispose(); }
     return this.client.dispose();

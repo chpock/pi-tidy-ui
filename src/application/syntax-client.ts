@@ -1,10 +1,9 @@
-import { diagnose, diagnosticError, reportRuntime, type DiagnosticFields, type DiagnosticSink, type RuntimeEvent } from '../diagnostics.ts';
+import { diagnose, type DiagnosticFields, type DiagnosticSink, type RuntimeEvent } from '../diagnostics.ts';
 import { copyThemePreference, sameThemePreference, type ThemePreference } from '../appearance/theme-preference.ts';
-import { ExtensionSettings, themePatch } from '../settings.ts';
 import { SourceExecution, type SourceExecutionOptions } from '../highlighting/source-execution.ts';
 import type { CardSourcePort, SourceLifecyclePort, SourcePumpPort, SourceStatisticsPort, SourceWorkPort } from '../highlighting/source-ports.ts';
 import type { PiFallbackPort } from '../highlighting/pi-fallback.ts';
-import type { SyntaxMenuOutcome, SyntaxMenuOwner, SyntaxMenuSnapshot } from './syntax-menu.ts';
+import type { SyntaxMenuSnapshot } from './syntax-menu.ts';
 import { resolveTheme, type ThemeDescription } from '../themes/selection.ts';
 import { ProviderBroker, type ProviderOptions, type ProviderSnapshot } from '../occipital/provider.ts';
 
@@ -13,9 +12,10 @@ export interface SyntaxClientOptions {
   provider: Omit<ProviderOptions, 'onChange' | 'onOwnedStopped'>;
   /** Trusted delivery metadata, not a version discovery request. */
   standaloneVersion: string;
-  settings?: Pick<ExtensionSettings, 'load' | 'update'>;
-  /** A validated preference already loaded by the extension before activation. */
-  initialTheme?: ThemePreference;
+  /** Decided application input; any pending producer is started and owned by the caller. */
+  initialTheme?: ThemePreference | Promise<ThemePreference>;
+  onActivationChanged?: (enabled: boolean) => void;
+  onDisposed?: () => void;
   source?: Omit<SourceExecutionOptions, 'onChange'>;
   notify?: (message: string, type: 'error') => void;
   onChange?: () => void;
@@ -24,10 +24,6 @@ export interface SyntaxClientOptions {
   onSourceChange?: (keys: readonly string[], changedGroups?: readonly number[]) => void;
 }
 
-const SAVE_FAILED = 'Syntax theme selection could not be saved.';
-const LOAD_FAILED = 'Settings could not be read.';
-// Abort reasons can retain their creation stack; keep this outside receiver scopes.
-const saveCancelled = new Error('Syntax preference retired');
 // Each factory has its own receiver-free lexical scope, even when observers are
 // retained through a still-live broker/controller after the client is collected.
 function brokerDiagnostic(owner: WeakRef<SyntaxClient>, diagnostic?: DiagnosticSink): DiagnosticSink {
@@ -61,7 +57,7 @@ function menuCapture(owner: WeakRef<SyntaxClient>, epoch: number) { return () =>
 
 /** UI-independent composition only. Sources, transport recovery and disk publication
  * retain their existing owners; preference reconciliation never observes source text. */
-export class SyntaxClient implements SyntaxMenuOwner {
+export class SyntaxClient {
   readonly broker: ProviderBroker;
   readonly cardSource: CardSourcePort;
   readonly sourceWork: SourceWorkPort;
@@ -69,7 +65,9 @@ export class SyntaxClient implements SyntaxMenuOwner {
   readonly sourceLifecycle: SourceLifecyclePort;
   readonly sourcePump: SourcePumpPort;
   readonly sourceStatistics: SourceStatisticsPort;
-  private readonly settings: Pick<ExtensionSettings, 'load' | 'update'>;
+  private readonly initialTheme: ThemePreference | Promise<ThemePreference>;
+  private readonly onActivationChanged?: SyntaxClientOptions['onActivationChanged'];
+  private readonly onDisposed?: SyntaxClientOptions['onDisposed'];
   private readonly standaloneVersion: string;
   private readonly diagnostic?: DiagnosticSink;
   private readonly notify?: SyntaxClientOptions['notify'];
@@ -89,17 +87,17 @@ export class SyntaxClient implements SyntaxMenuOwner {
   private restore?: Promise<void>;
   private startup?: Promise<void>;
   private shutdown?: Promise<void>;
-  private save?: AbortController;
   private noticeScheduled = false;
   private delivering = false;
   private readonly completion: CompletionState = { parts: {} };
   private startupIssue = false;
 
   constructor(options: SyntaxClientOptions) {
-    this.settings = options.settings ?? new ExtensionSettings();
-    if (options.initialTheme) {
-      this.selected = copyThemePreference(options.initialTheme); this.preferenceKnown = true; this.restore = Promise.resolve();
+    this.initialTheme = options.initialTheme ?? { kind: 'pi', variant: 'dark' };
+    if (!(this.initialTheme instanceof Promise)) {
+      this.selected = copyThemePreference(this.initialTheme); this.preferenceKnown = true; this.restore = Promise.resolve();
     }
+    this.onActivationChanged = options.onActivationChanged; this.onDisposed = options.onDisposed;
     this.standaloneVersion = options.standaloneVersion; this.diagnostic = options.diagnostic;
     this.notify = options.notify; this.onChange = options.onChange; this.onSourceChange = options.onSourceChange;
     this.broker = new ProviderBroker({ ...options.provider, diagnostic: brokerDiagnostic(new WeakRef(this), options.diagnostic ?? options.provider.diagnostic), onChange: brokerObserver(new WeakRef(this)),
@@ -113,7 +111,7 @@ export class SyntaxClient implements SyntaxMenuOwner {
 
   start(): Promise<void> {
     if (this.disposed) return this.shutdown ?? Promise.resolve();
-    if (!this.startup) this.startup = Promise.all([this.restorePreference(), this.broker.start()]).then(() => {});
+    if (!this.startup) this.startup = Promise.all([this.prepareThemeInput(), this.broker.start()]).then(() => {});
     return this.startup;
   }
 
@@ -143,7 +141,8 @@ export class SyntaxClient implements SyntaxMenuOwner {
     const state = this.completion, completion = state.current; if (!completion) return;
     this.watchCompletion('sources', this.sourceLifecycle.whenSettled());
     this.watchCompletion('provider', this.broker.whenSettled());
-    this.watchCompletion('restore', this.restore);
+    // The supplied producer can already be running before explicit input preparation.
+    this.watchCompletion('restore', this.restore ?? (this.initialTheme instanceof Promise ? this.initialTheme : undefined));
     this.watchCompletion('startup', this.startup);
     if (this.noticeScheduled || this.delivering || Object.values(state.parts).some(part => !part.done)) return;
     state.current = undefined; completion.resolve(true);
@@ -157,32 +156,10 @@ export class SyntaxClient implements SyntaxMenuOwner {
       selected: copyThemePreference(this.selected), effective: this.effective ? { ...this.effective } : undefined, lastIssue: this.lastIssue };
   }
 
-  async selectTheme(choice: ThemePreference): Promise<SyntaxMenuOutcome> {
-    if (this.disposed) return { ok: false, message: SAVE_FAILED };
-    const selected = copyThemePreference(choice);
-    this.applyTheme(selected);
-    this.log('Syntax theme selected; applying before persistence', { choice: selected.kind, theme: selected.kind === 'theme' ? selected.id : 'Pi', revision: this.preferenceRevision });
-    this.cancelSave(); const save = new AbortController(); this.save = save;
-    try {
-      const result = await this.settings.update(themePatch(selected), { signal: save.signal });
-      if (this.disposed || save.signal.aborted || this.save !== save) { this.log('Theme save result ignored; request cancelled or retired'); return { ok: false, message: SAVE_FAILED }; }
-      if (!result.ok) {
-        diagnose(this.diagnostic, 'ERROR', 'settings', 'Theme persistence failed; selection remains session-local');
-        reportRuntime(this.diagnostic, { kind: 'failure', scope: this.settings, operation: 'save', area: 'settings', code: 'settings_save' });
-        this.issue(result.issue.message); return { ok: false, message: result.issue.message };
-      }
-      reportRuntime(this.diagnostic, { kind: 'recovered', scope: this.settings, operation: 'save' });
-      this.log('Syntax theme persisted'); return { ok: true };
-    } catch (error) {
-      this.log('Theme persistence did not complete', { code: diagnosticError(error), cancelled: save.signal.aborted });
-      if (!this.disposed && !save.signal.aborted && this.save === save) {
-        diagnose(this.diagnostic, 'ERROR', 'settings', 'Theme persistence failed unexpectedly', { code: diagnosticError(error) });
-        reportRuntime(this.diagnostic, { kind: 'failure', scope: this.settings, operation: 'save', area: 'settings', code: 'settings_save' });
-        this.issue(SAVE_FAILED);
-      }
-      return { ok: false, message: SAVE_FAILED };
-    } finally { if (this.save === save) this.save = undefined; }
+  applyConfirmedTheme(choice: ThemePreference): void {
+    if (!this.disposed) this.applyTheme(copyThemePreference(choice));
   }
+  reportPreferenceIssue(message: string): void { if (!this.disposed) this.issue(message); }
 
   /** Session-local application only; an earlier confirmed save remains independent. */
   previewTheme(choice: ThemePreference): void {
@@ -207,12 +184,12 @@ export class SyntaxClient implements SyntaxMenuOwner {
   setEnabled(enabled: boolean): Promise<void> {
     if (this.disposed) return this.shutdown ?? Promise.resolve();
     if (this.enabled === enabled) return Promise.resolve();
-    this.cancelCompletion(); this.enabled = enabled; ++this.menuEpoch; this.cancelSave();
+    this.cancelCompletion(); this.enabled = enabled; ++this.menuEpoch; this.onActivationChanged?.(enabled);
     this.log('Native highlighting session activation changed', { enabled });
     this.sourceLifecycle.setEnabled(enabled && this.preferenceKnown);
     const operation = this.broker.setEnabled(enabled);
     this.acceptBrokerChange();
-    return enabled ? Promise.all([this.restorePreference(), operation]).then(() => {}) : operation;
+    return enabled ? Promise.all([this.prepareThemeInput(), operation]).then(() => {}) : operation;
   }
 
   suspend(): void {
@@ -233,7 +210,7 @@ export class SyntaxClient implements SyntaxMenuOwner {
 
   dispose(): Promise<void> {
     if (this.shutdown) return this.shutdown;
-    this.cancelCompletion(); this.completion.parts = {}; this.disposed = true; ++this.menuEpoch; this.cancelSave(); this.sourceLifecycle.dispose();
+    this.cancelCompletion(); this.completion.parts = {}; this.disposed = true; ++this.menuEpoch; this.onDisposed?.(); this.sourceLifecycle.dispose();
     this.shutdown = this.broker.dispose(); this.provider = this.broker.snapshot(); this.effective = undefined;
     return this.shutdown;
   }
@@ -273,21 +250,15 @@ export class SyntaxClient implements SyntaxMenuOwner {
     finally { this.delivering = false; this.checkCompletion(); }
   }
 
-  restorePreference(): Promise<void> {
-    if (!this.restore) this.restore = this.loadPreference(this.preferenceRevision);
+  prepareThemeInput(): Promise<void> {
+    if (!this.restore) this.restore = this.acceptInitialTheme(this.preferenceRevision);
     return this.restore;
   }
-  private async loadPreference(revision: number): Promise<void> {
-    try {
-      const result = await this.settings.load();
-      if (this.disposed || revision !== this.preferenceRevision || this.preferenceRevision !== 0) return;
-      this.selected = copyThemePreference(result.themePreference); this.preferenceKnown = true;
-      this.log('Syntax preference restored', { ok: result.ok, choice: this.selected.kind, theme: this.selected.kind === 'theme' ? this.selected.id : 'Pi' });
-      if (!result.ok) this.issue(result.issue.message, true);
-    } catch {
-      if (this.disposed || revision !== this.preferenceRevision || this.preferenceRevision !== 0) return;
-      this.preferenceKnown = true; this.issue(LOAD_FAILED, true);
-    }
+  private async acceptInitialTheme(revision: number): Promise<void> {
+    const choice = await this.initialTheme;
+    if (this.disposed || revision !== this.preferenceRevision || this.preferenceRevision !== 0) return;
+    this.selected = copyThemePreference(choice); this.preferenceKnown = true;
+    this.log('Initial syntax choice prepared', { choice: this.selected.kind, theme: this.selected.kind === 'theme' ? this.selected.id : 'Pi' });
     this.reconcile();
   }
   private reconcile(): void {
@@ -305,7 +276,6 @@ export class SyntaxClient implements SyntaxMenuOwner {
     this.changed();
   }
   private log(explanation: string, fields?: DiagnosticFields): void { diagnose(this.diagnostic, 'INFO', 'syntax', explanation, fields); }
-  private cancelSave(): void { this.save?.abort(saveCancelled); this.save = undefined; }
   private issue(message: string, notify = false): void {
     this.lastIssue = message; this.changed();
     if (notify && !this.disposed) { try { this.notify?.(message, 'error'); } catch { /* UI is optional. */ } }

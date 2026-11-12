@@ -30,12 +30,14 @@ const highlightingModules = [
   'src/highlighting/storage/ready-presentation.ts',
   'src/highlighting/storage/ready-display-publication.ts',
 ];
-const applicationModules = [
+const syntaxApplicationModules = [
   'src/application/syntax-client.ts',
   'src/application/syntax-menu.ts',
   'src/application/syntax-runtime.ts',
   'src/application/syntax-options.ts',
 ];
+const preferenceApplicationModules = ['src/application/preferences.ts'];
+const applicationModules = [...syntaxApplicationModules, ...preferenceApplicationModules];
 const cardModules = ['src/cards/file-model.ts', 'src/cards/file-sources.ts', 'src/cards/file-display.ts', 'src/cards/display-input.ts',
   'src/cards/file-preview-mode.ts', 'src/cards/file-input.ts', 'src/cards/shebang-language.ts',
   'src/cards/preparation.ts', 'src/cards/bash-preparation.ts', 'src/cards/file-preparation.ts'];
@@ -539,6 +541,26 @@ function assertApplicationHostImports(path, source) {
     ts.forEachChild(node, visit);
   };
   visit(source);
+}
+
+function assertSyntaxChoiceImports(path, source) {
+  const supported = new Set(['src/diagnostics.ts', 'src/notifications.ts', ...syntaxApplicationModules]);
+  const domains = ['src/appearance/', 'src/occipital/', 'src/highlighting/', 'src/resources/', 'src/themes/'];
+  const paletteInputs = new Set(['src/syntax/pi-input.ts', 'src/syntax/pi-input-owner.ts']);
+  for (const reference of moduleReferences(source)) {
+    const target = reference.specifier.startsWith('.') ? resolveRelativeImport(path, reference.specifier) : reference.specifier;
+    const allowed = supported.has(target) || paletteInputs.has(target) || domains.some(domain => target.startsWith(domain))
+      || target === '@earendil-works/pi-coding-agent' || target === '@earendil-works/pi-tui';
+    assert.ok(allowed, `syntax application dependency exceeds choice/provider capabilities: ${path} -> ${reference.specifier}`);
+  }
+}
+
+function assertPreferenceImports(path, source) {
+  const supported = new Set(['src/settings.ts', 'src/diagnostics.ts', 'src/appearance/theme-preference.ts', 'src/application/syntax-menu.ts']);
+  for (const reference of moduleReferences(source)) {
+    const target = reference.specifier.startsWith('.') ? resolveRelativeImport(path, reference.specifier) : reference.specifier;
+    assert.ok(supported.has(target), `preference policy imports an implementation owner instead of decisions: ${path} -> ${reference.specifier}`);
+  }
 }
 
 function assertEntryPresentationOwnership(path, source) {
@@ -1314,4 +1336,76 @@ test('lower layers cannot back-import native host bindings for values or types',
     target: 'src/host/pi/native-bindings.ts', kind: 'value', syntax: 'import' }));
   assert.doesNotThrow(() => assertEdgePolicy({ source: 'src/application/session.ts',
     target: 'src/host/pi/native-session.ts', kind: 'value', syntax: 'import' }));
+});
+
+
+test('syntax composition consumes choices and provider facts without settings publication dependencies', () => {
+  const violations = [];
+  for (const path of syntaxApplicationModules) {
+    try { assertSyntaxChoiceImports(path, parseSource(path)); }
+    catch (error) { violations.push(`${path}: ${error.message}`); }
+  }
+  assert.deepEqual(violations, []);
+});
+
+test('syntax choice boundary permits domain inputs and rejects persistence and application ownership routes', () => {
+  const path = 'src/application/syntax-runtime.ts';
+  for (const specifier of ['../appearance/theme-preference.ts', '../diagnostics.ts', './syntax-client.ts',
+    '../highlighting/source-ports.ts', '../occipital/provider.ts', '../syntax/pi-input-owner.ts']) {
+    assert.doesNotThrow(() => assertSyntaxChoiceImports(path,
+      parseSource(path, `import { type Model, implementation as alias } from '${specifier}';`)));
+  }
+  for (const specifier of ['../settings.ts', './preferences.ts', '../index.ts', '../tidy-menu.ts', 'node:fs', 'fs/promises',
+    '@earendil-works/pi-coding-agent/dist/bundle/cli.js']) {
+    const forbidden = [
+      `import { implementation as alias } from '${specifier}';`,
+      `import { type Model, implementation } from '${specifier}';`,
+      `import type { Model } from '${specifier}';`,
+      `import * as implementation from '${specifier}';`,
+      `import '${specifier}';`,
+      `export { implementation } from '${specifier}';`,
+      `export type { Model } from '${specifier}';`,
+      `export * from '${specifier}';`,
+      `type Model = import('${specifier}').Model;`,
+      `const implementation = import('${specifier}');`,
+      `const implementation = require('${specifier}');`,
+      `import implementation = require('${specifier}');`,
+    ];
+    for (const text of forbidden) {
+      assert.throws(() => assertSyntaxChoiceImports(path, parseSource(path, text)), /exceeds choice\/provider capabilities/);
+    }
+  }
+});
+
+
+test('preference authority imports data and persistence without native or application implementation back-links', () => {
+  const violations = [];
+  for (const path of preferenceApplicationModules) {
+    try { assertPreferenceImports(path, parseSource(path)); }
+    catch (error) { violations.push(`${path}: ${error.message}`); }
+  }
+  assert.deepEqual(violations, []);
+});
+
+test('preference import policy accepts its actual data ports and rejects every native implementation route', () => {
+  const path = 'src/application/preferences.ts';
+  for (const specifier of ['../settings.ts', '../diagnostics.ts', '../appearance/theme-preference.ts', './syntax-menu.ts'])
+    assert.doesNotThrow(() => assertPreferenceImports(path, parseSource(path, `import { type Model, implementation as alias } from '${specifier}';`)));
+  for (const specifier of ['./syntax-client.ts', './syntax-runtime.ts', '../highlighting/source-execution.ts',
+    '../occipital/provider.ts', '../index.ts', '../host/pi/native-session.ts', '../tidy-menu.ts', 'node:fs', '@earendil-works/pi-coding-agent']) {
+    for (const text of [
+      `import { implementation as alias } from '${specifier}';`,
+      `import { type Model, implementation } from '${specifier}';`,
+      `import type { Model } from '${specifier}';`,
+      `import * as implementation from '${specifier}';`,
+      `import '${specifier}';`,
+      `export { implementation } from '${specifier}';`,
+      `export type { Model } from '${specifier}';`,
+      `export * from '${specifier}';`,
+      `type Model = import('${specifier}').Model;`,
+      `const implementation = import('${specifier}');`,
+      `const implementation = require('${specifier}');`,
+      `import implementation = require('${specifier}');`,
+    ]) assert.throws(() => assertPreferenceImports(path, parseSource(path, text)), /preference policy imports an implementation owner/);
+  }
 });

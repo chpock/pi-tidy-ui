@@ -23,7 +23,7 @@ import { ExpectedOwnedUnavailable } from '../../../src/occipital/owned-startup.t
 import { samplePiCardPalette } from '../../../src/syntax/pi-palette.ts';
 import { sampleOwnedPalette } from '../../../src/themes/owned-palette.ts';
 import { menuPage, withMenu, setAppearance, setLogging } from '../../helpers/menu-driver.ts';
-import { ExtensionSettings, themePreferenceFromSettings, type SettingsLoadResult, type SettingsPatch, type LocalPreferences } from '../../../src/settings.ts';
+import { ExtensionSettings, themePreferenceFromSettings, type SettingsLoadResult, type SettingsPatch, type SettingsSaveResult, type LocalPreferences } from '../../../src/settings.ts';
 import { FilePreviewState } from '../../../src/presentation/file-preview-state.ts';
 import { createLazyNativeRendererResolver, DeferredRenderer, isDeferredStockFilePair } from '../../../src/host/pi/lazy-native-renderers.ts';
 import { extensionHarness as sharedExtensionHarness } from '../../fixtures/sdk-contract-support.ts';
@@ -1828,6 +1828,84 @@ test('entry persists shared preferences; a same-process runtime restores local O
     assert.equal(next.counts.shared, 1); assert.equal(next.counts.owned, 1);
     assert.equal(debugLoggingDiagnostics()!.writes, 0); await next.stop();
   } finally { await first.stop(); await fs.rm(directory, { recursive: true, force: true }); }
+});
+
+test('entry keeps theme and shared-switch cancellation scopes distinct across popup replacement', { timeout: 12000 }, async () => {
+  const writes: { patch: SettingsPatch; signal?: AbortSignal }[] = [], releases: ((result: SettingsSaveResult) => void)[] = [];
+  const order: string[] = [], setEnabled = SyntaxRuntime.prototype.setEnabled;
+  let firstWritten!: () => void, secondWritten!: () => void;
+  const firstWrite = new Promise<void>(resolve => { firstWritten = resolve; });
+  const secondWrite = new Promise<void>(resolve => { secondWritten = resolve; });
+  const h = fixture('tui', false, {
+    async load() { return { ok: true, themePreference: { kind: 'pi', variant: 'dark' } }; },
+    update(patch, options) {
+      writes.push({ patch: structuredClone(patch), signal: options?.signal });
+      order.push(patch.syntaxTheme ? 'theme-write' : 'switch-write');
+      const pending = new Promise<SettingsSaveResult>(resolve => { releases.push(resolve); });
+      if (writes.length === 1) firstWritten(); else secondWritten();
+      return pending;
+    },
+  });
+  try {
+    await h.start(); await settled();
+    SyntaxRuntime.prototype.setEnabled = function (enabled) {
+      order.push(`native:${enabled}`); return setEnabled.call(this, enabled);
+    };
+    await withMenu(h.command, h.ctx, async menu => {
+      await menu.select('Code color theme'); menu.input('\r'); await firstWrite;
+      assert.equal(writes[0]!.signal!.aborted, false);
+      menu.input('\x03');
+    });
+    assert.equal(writes[0]!.signal!.aborted, false, 'closing a confirming popup does not retire its request');
+    await h.start({ type: 'session_start', reason: 'resume' });
+    assert.equal(h.counts.constructed, 1, 'a new start epoch reuses the existing active syntax owner');
+    assert.equal(writes[0]!.signal!.aborted, false, 'an epoch change alone does not retire that still-owned theme request');
+    await withMenu(h.command, h.ctx, async menu => {
+      await menu.select('Status & troubleshooting');
+      const changing = menu.select('Use Occipital highlighting'); await secondWrite;
+      assert.deepEqual(writes.map(write => write.patch), [
+        { syntaxTheme: { kind: 'pi' }, syntaxThemeVariant: 'dark' }, { nativeHighlightingEnabled: false },
+      ], 'both confirmations submit their own complete patch');
+      assert.deepEqual(order, ['theme-write', 'switch-write', 'native:false'], 'shared admission precedes the native cleanup call');
+      assert.equal(writes[0]!.signal!.aborted, true, 'actual native deactivation retires the theme request');
+      assert.equal(writes[1]!.signal!.aborted, false, 'that transition cannot abort the session-scoped switch save');
+      releases.forEach(release => release({ ok: true })); await changing;
+      assert.match(menu.text(), /Use Occipital highlighting\s+Off/u);
+    });
+    assert.equal(writes.length, 2);
+  } finally { SyntaxRuntime.prototype.setEnabled = setEnabled; releases.forEach(release => release({ ok: true })); await h.stop(); }
+});
+
+test('entry reports an initial settings failure once through live runtime health, not a second syntax reader', async () => {
+  let loads = 0;
+  const h = fixture('tui', false, {
+    async load() { loads++; return { ok: false, themePreference: { kind: 'pi', variant: 'dark' },
+      issue: { code: 'invalid-json', message: 'PRIVATE_INITIAL_SETTINGS_DETAIL' } }; },
+    async update() { return { ok: true }; },
+  }, { appearanceEnabled: false, loggingEnabled: false });
+  await h.start(); await settled();
+  assert.equal(h.notices.length, 1);
+  assert.match(h.notices[0]!, /^\[pi-tidy-ui\] Settings encountered an unexpected error/u);
+  assert.doesNotMatch(h.notices[0]!, /PRIVATE_INITIAL_SETTINGS_DETAIL/u);
+  await h.page('Status & troubleshooting'); assert.match(h.view, /Runtime errors: 1; active: 1/u);
+  assert.equal(loads, 1);
+  assert.equal(h.counts.constructed, 0); assert.equal(h.counts.shared, 0); assert.equal(h.counts.owned, 0);
+});
+
+test('entry keeps a failed theme choice live until a later validated shared publication replaces it', async () => {
+  let changed!: (value: SettingsLoadResult) => void, saves = 0;
+  const h = fixture('tui', false, {
+    async load() { return { ok: true, themePreference: { kind: 'pi', variant: 'dark' } }; },
+    async update() { saves++; return { ok: false, issue: { code: 'write-failed', message: 'Settings could not be saved.' } }; },
+    watch(callback) { changed = callback; return () => {}; },
+  }, { appearanceEnabled: false, loggingEnabled: false });
+  await h.start(); await h.page('Code color theme', 'GitHub');
+  assert.match(h.view, /Code color theme\s+GitHub/u);
+  assert.match(h.view, /applied for now, but not saved/iu); assert.equal(saves, 1);
+  changed({ ok: true, themePreference: { kind: 'pi', variant: 'dark' }, nativeHighlightingEnabled: false });
+  await h.page(); assert.match(h.view, /Code color theme\s+Follow Pi/u);
+  assert.equal(saves, 1, 'a validated publication does not write the restored file choice back');
+  assert.equal(h.counts.shared, 0); assert.equal(h.counts.owned, 0);
 });
 
 test('entry failed switch persistence reports applied-but-unsaved without undoing the live choice', async () => {

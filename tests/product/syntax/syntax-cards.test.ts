@@ -78,7 +78,7 @@ function fixture(ready = false, options: SourceExecutionOptions = {}, maxBookkee
     request: (_g: number, request: Frame) => new Promise<unknown>((resolve, reject) => calls.push({ request, resolve, reject })) };
   let cards: CardSources<Owner>;
   const sources = new SourceExecution(provider, { ...options, onChange: (keys, groups = []) => { env.notices.push({ keys: [...keys], groups: [...groups] }); cards.sourceChanged(keys, groups); } });
-  const runtime = new SyntaxRuntime({ standaloneVersion: '0.0.0', settings: { load: async () => ({ ok: true, themePreference: { kind: 'pi', variant: 'dark' } }), update: async () => ({ ok: true }) },
+  const runtime = new SyntaxRuntime({ standaloneVersion: '0.0.0', initialTheme: { kind: 'pi', variant: 'dark' },
     provider: { tryShared: async () => undefined, acquireOwned: async () => { throw Error('unexpected provider'); } } });
   const paletteInputs = new PaletteInputOwner();
   let theme = getThemeByName('system')!; setThemeInstance(theme);

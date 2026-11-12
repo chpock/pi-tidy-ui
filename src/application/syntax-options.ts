@@ -1,5 +1,4 @@
 import { getAgentDir, type ExtensionContext } from '@earendil-works/pi-coding-agent';
-import { ExtensionSettings } from '../settings.ts';
 import { notify } from '../notifications.ts';
 import { createNativeAcquisition } from '../occipital/acquisition.ts';
 import { NATIVE_RELEASE, type NativeReleaseDeclaration } from '../occipital/release.ts';
@@ -16,7 +15,6 @@ export function createSyntaxOptions(ctx: Pick<ExtensionContext, 'cwd' | 'session
   return {
     diagnostic,
     standaloneVersion: native.standaloneVersion,
-    settings: new ExtensionSettings({ agentDir }),
     provider: native.provider,
   };
 }

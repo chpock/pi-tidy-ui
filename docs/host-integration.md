@@ -10,8 +10,9 @@ Pi loads the TypeScript extension entry point directly. Host classes/functions c
 
 | Owner | Retained state | Boundary |
 | --- | --- | --- |
-| Extension factory | Registered flags/events/command; settings instance and preference-load promise | No UI or provider start merely from constructing the factory |
-| Current session runtime | Live context, lifecycle epoch, save-abort signal, confirmed theme, health/journal owners, current services | Replaced or retired through Pi lifecycle events; obsolete async results cannot publish into a successor |
+| Extension factory | Registered flags/events/command and one `ApplicationPreferences` owner | No UI or provider start merely from constructing the factory |
+| Application preferences | One initial read, confirmed theme/shared switches, process-local switch reference and pending confirmations | Outlives repeated start callbacks; native-incarnation theme cancellation remains distinct from application-epoch switch cancellation |
+| Current session runtime | Live context, lifecycle epoch and switch-save signal, health/journal owners, current services | Reused where still active or retired through Pi lifecycle events; obsolete async results cannot publish into a successor |
 | Native session | Owned descriptors, weak-keyed parent/index records, actual renderer/shell/tree/image/Markdown borrows and native widget observations | One liveness/failure/restoration authority; supplies current facts/capabilities without owning card policy, source jobs or row caches |
 | Presentation sessions and presenters | Per-component view/preview/currentness state, latest row/scene handles, preparation consumer and render/spacing/hit/update policy | No native component shapes or hook ownership; no source-execution, fallback or physical-job authority |
 | Component | Its latest prepared/painted representation and signature | Owner removal/collection, invalidation or replacement, with the synchronous renderer-transfer exception below |
@@ -44,8 +45,8 @@ Footer eligibility, delayed installation, explicit reclaim and later-owner polic
 
 1. Before flags, hooks, commands or preference I/O, the factory requires public `registerToolRenderer`; an older host fails immediately with a message naming the 1.0.1 minimum. On supported hosts it registers the exact-stock read/write/edit lazy resolver before session use.
 2. The factory registers `tidy-ui-card` and `tidy-ui-compact` string flags. Deprecated `tidy-ui-cache-mb` and `tidy-ui-card-cache-mb` are accepted but ignored: live layouts are not subject to those former eviction budgets. Supplying them produces a bounded warning when presentation starts.
-3. It starts one preference-load promise. Loading preferences does not construct the presentation adapter or start a syntax provider. The initial defaults are Follow Pi with terminal matching and native highlighting enabled; failures are reported rather than silently saved over the input file.
-4. `session_start` closes an old popup, increments the lifecycle epoch, aborts old unpublished save work, clears transient Bash-call IDs/name state and waits for preferences if necessary. A later epoch invalidates that continuation.
+3. It starts one preference-load promise. Loading preferences does not construct the presentation adapter or start a syntax provider. The initial defaults are Follow Pi, terminal matching Off and native highlighting On; failures are reported rather than silently saved over the input file.
+4. `session_start` closes an old popup, increments the lifecycle epoch, aborts old unpublished shared-switch saves, clears transient Bash-call IDs/name state and waits for preferences if necessary. A later epoch invalidates that continuation.
 5. Logging/health start from the public session identity. Presentation starts only in TUI mode with appearance enabled. Print/JSON/RPC paths do not install terminal presentation or open the menu.
 6. `startColors` establishes the zero-row terminal observer before presentation capture. Its factory binds public terminal start/stop to colors and `ensureSyntax(ctx)`. This can construct the syntax runtime, but construction leaves its client disabled: an observer may exist even if presentation attachment later fails.
 7. A separate zero-row public capture-widget factory obtains the actual live TUI. It is removed immediately: this is a capture mechanism, not an extra visible row. The adapter verifies that the TUI shares the imported `Container` identity, has the required operations and contains compatible component shapes.

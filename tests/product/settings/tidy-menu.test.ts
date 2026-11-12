@@ -217,9 +217,8 @@ test('theme picker previews a local stable ID, then restores its entry choice wi
 
 test('menu-only local theme preview does not prepare or read an asset until selected card input is requested', async () => {
   const f = fixture(); native(f);
-  let settingsLoads = 0, providerStarts = 0;
-  const runtime = new SyntaxRuntime({ standaloneVersion: '0.1.0-test',
-    settings: { load: async () => { settingsLoads++; return { ok: true, themePreference: { kind: 'pi', variant: 'dark' } }; }, update: async () => ({ ok: true }) },
+  let providerStarts = 0;
+  const runtime = new SyntaxRuntime({ standaloneVersion: '0.1.0-test', initialTheme: { kind: 'pi', variant: 'dark' },
     provider: { tryShared: async () => { providerStarts++; return undefined; }, acquireOwned: async () => { providerStarts++; throw Error('unexpected provider'); } } });
   let preparation: Promise<void> | undefined;
   f.owner.prepareThemes = () => {
@@ -237,7 +236,7 @@ test('menu-only local theme preview does not prepare or read an asset until sele
     await f.key('solarized');
     assert.deepEqual(runtime.snapshot().selected, preference('solarized-dark'));
     assert.deepEqual(observed.snapshot(), { opens: 0, reads: 0, ownerLookups: 0 });
-    assert.equal(settingsLoads, 1); assert.equal(providerStarts, 0);
+    assert.equal(providerStarts, 0);
     assert.equal(runtime.sourceStatistics.stats().sourceRecords, 0); assert.equal(runtime.sourceStatistics.stats().dispatches, 0);
 
     const palette = runtime.snapshot().effective; assert.ok(palette);
@@ -250,7 +249,7 @@ test('menu-only local theme preview does not prepare or read an asset until sele
     const warm = runtime.preparePaletteInput(palette, undefined, revision, 'truecolor', funding); assert.ok(warm); leases.push(warm);
     assert.deepEqual(observed.snapshot(), { opens: cold.opens, reads: cold.reads, ownerLookups: cold.ownerLookups + 1 },
       'a warm owner lookup reuses the compiled store without reopening or rereading its asset');
-    assert.equal(settingsLoads, 1); assert.equal(providerStarts, 0);
+    assert.equal(providerStarts, 0);
     assert.equal(runtime.sourceStatistics.stats().sourceRecords, 0); assert.equal(runtime.sourceStatistics.stats().dispatches, 0);
   } finally {
     for (const lease of leases) lease.dispose();

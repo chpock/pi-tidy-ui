@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { afterEach, test } from 'node:test';
 import { setImmediate as turn } from 'node:timers/promises';
 import { SyntaxRuntime } from '../../../src/application/syntax-runtime.ts';
+import { ApplicationPreferences } from '../../../src/application/preferences.ts';
 import type { ProviderTransport } from '../../../src/occipital/provider.ts';
 import type { TransportEnd } from '../../../src/occipital/transport-end.ts';
 import { semanticDescriptor } from '../../fixtures/semantic-provider.ts';
@@ -72,14 +73,19 @@ function assertSourceOwner(runtime: SyntaxRuntime, owner: SourceExecution) {
     assert.equal(runtime[role] === owner, true, `${role} must expose the same execution owner`);
   }
 }
-function fixture(enabled = true) {
-  const store = new Store(), peers: Peer[] = [], errors: string[] = [], changes: boolean[] = [];
+function fixture(enabled = true, inputStore?: Store) {
+  const store = inputStore ?? new Store(), peers: Peer[] = [], errors: string[] = [], changes: boolean[] = [];
+  const preferences = new ApplicationPreferences(store, { appearanceEnabled: true, loggingEnabled: true });
+  const themeScope = preferences.openThemeScope();
   let shared = 0, owned = 0;
-  const runtime = new SyntaxRuntime({ standaloneVersion: '0.1.0-test', settings: store,
+  const runtime = new SyntaxRuntime({ standaloneVersion: '0.1.0-test',
+    initialTheme: inputStore ? preferences.themeInput() : { kind: 'pi', variant: 'dark' },
+    onActivationChanged: themeScope.onActivationChanged, onDisposed: themeScope.onDisposed,
     provider: { tryShared: async () => { shared++; const peer = new Peer(); peers.push(peer); return peer; },
       acquireOwned: async () => { owned++; throw Error('unexpected owned startup'); } },
     notify: message => errors.push(message), enabled, enabledChanged: value => changes.push(value) });
-  const f = { runtime, sources: runtime.sourceWork as SourceExecution, store, peers, errors, changes, shared: () => shared, owned: () => owned };
+  themeScope.bind(runtime);
+  const f = { runtime, preferences, themeScope, sources: runtime.sourceWork as SourceExecution, store, peers, errors, changes, shared: () => shared, owned: () => owned };
   runtimes.add(runtime);
   assert.equal(f.sources instanceof SourceExecution, true, 'consumer views expose the actual execution owner');
   assertSourceOwner(runtime, f.sources); return f;
@@ -121,10 +127,10 @@ test('runtime construction and warm metadata/palette inspection do not restore s
 });
 
 test('only an active presentation starts one client asynchronously; repeated attachment is warm', async () => {
-  const f = fixture(), view = presentation(), load = deferred<SettingsLoadResult>();
-  f.store.loadResult = load.promise;
+  const view = presentation(), load = deferred<SettingsLoadResult>(), store = new Store(); store.loadResult = load.promise;
+  const f = fixture(true, store);
   f.runtime.attach({ ...view, active: false }); await settled();
-  assert.equal(f.shared(), 0); assert.equal(f.store.loads, 0);
+  assert.equal(f.shared(), 0); assert.equal(f.store.loads, 1, 'application wiring already started the supplied input producer');
   f.runtime.attach(view);
   assert.equal(f.shared(), 0, 'attach must return before discovery work starts');
   await settled(); assert.equal(f.store.loads, 1); assert.equal(f.shared(), 1);
@@ -164,7 +170,7 @@ test('native off/on preserves the client lifetime but a retained old source veto
 
 test('master-off menu status and native enable never start a provider without an active presentation', async () => {
   const f = fixture(false);
-  await f.runtime.prepareThemes(); await f.runtime.setEnabled(true); await settled();
+  await f.preferences.ready(); await f.runtime.prepareThemes(); await f.runtime.setEnabled(true); await settled();
   assert.equal(f.runtime.snapshot().enabled, true); assert.equal(f.runtime.snapshot().provider.availability, 'disabled');
   assert.equal(f.store.loads, 1); assert.equal(f.shared(), 0); assert.equal(f.owned(), 0);
   assert.deepEqual(f.changes, [true]); assert.equal(f.store.writes.length, 0);
@@ -173,12 +179,13 @@ test('master-off menu status and native enable never start a provider without an
 
 test('native-off remembered by a fresh presentation client does not start providers or persist enablement', async () => {
   const f = fixture(false); f.runtime.attach(presentation()); await settled();
-  assert.equal(f.shared(), 0); assert.equal(f.owned(), 0); assert.equal(f.store.loads, 1);
+  assert.equal(f.shared(), 0); assert.equal(f.owned(), 0); assert.equal(f.store.loads, 0, 'native activation does not read an application store');
   assert.equal(f.runtime.snapshot().enabled, false); assert.equal(f.store.writes.length, 0);
 });
 
 test('explicit preference preparation waits for saved theme without starting a provider', async () => {
-  const f = fixture(false), loaded = deferred<SettingsLoadResult>(); f.store.loadResult = loaded.promise;
+  const loaded = deferred<SettingsLoadResult>(), store = new Store(); store.loadResult = loaded.promise;
+  const f = fixture(false, store);
   const preparing = f.runtime.prepareThemes(); await settled();
   assert.equal(f.store.loads, 1); assert.equal(f.shared(), 0); assert.equal(f.owned(), 0);
   loaded.resolve({ ok: true, themePreference: { kind: 'theme', id: 'saved', variant: 'dark' } }); await preparing;
@@ -191,10 +198,55 @@ test('retired runtime preference preparation is inert', async () => {
   assert.equal(f.store.loads, 0); assert.equal(f.shared(), 0); assert.equal(f.store.writes.length, 0);
 });
 
+test('a detached native preference retains its theme save until actual presentation activation', async () => {
+  const f = fixture(false), save = deferred<SettingsSaveResult>();
+  await f.preferences.ready(); await f.runtime.prepareThemes(); f.store.saveResult = save.promise;
+  const selecting = f.preferences.confirmTheme(f.themeScope, { kind: 'theme', id: 'github', variant: 'dark' });
+  try {
+    assert.equal(f.store.writes.length, 1);
+    const signal = f.store.writes[0]!.signal!;
+    assert.equal(signal.aborted, false);
+    await f.runtime.setEnabled(false);
+    await f.runtime.setEnabled(true);
+    assert.equal(f.runtime.snapshot().enabled, true);
+    assert.equal(f.runtime.snapshot().provider.availability, 'disabled');
+    assert.equal(signal.aborted, false, 'requested enablement without an active presentation is not actual client activation');
+    assert.equal(f.shared(), 0); assert.equal(f.owned(), 0);
+    f.runtime.attach(presentation());
+    assert.equal(signal.aborted, false, 'attachment schedules activation rather than changing it synchronously');
+    await settled();
+    assert.equal(f.shared(), 1);
+    assert.equal(signal.aborted, true, 'actual activation retires the outstanding theme-save request');
+    save.resolve({ ok: true });
+    assert.equal((await selecting).ok, false, 'an already retired request cannot report current save success');
+    assert.deepEqual(f.runtime.snapshot().selected, { kind: 'theme', id: 'github', variant: 'dark' });
+    assert.equal(f.store.writes.length, 1); assert.equal(f.errors.length, 0);
+  } finally { save.resolve({ ok: true }); await selecting; }
+});
+
+test('saved choices, preview and terminal suspension leave a confirmed save independent of current paint', async () => {
+  const f = fixture(false), save = deferred<SettingsSaveResult>();
+  await f.preferences.ready(); await f.runtime.prepareThemes(); f.store.saveResult = save.promise;
+  const selecting = f.preferences.confirmTheme(f.themeScope, { kind: 'theme', id: 'github', variant: 'dark' });
+  try {
+    const signal = f.store.writes[0]!.signal!;
+    f.runtime.applySavedTheme({ kind: 'theme', id: 'github', variant: 'light' });
+    f.runtime.previewTheme({ kind: 'pi', variant: 'light' });
+    f.runtime.suspend(); f.runtime.resume(); await settled();
+    assert.equal(signal.aborted, false, 'selection-only and temporary terminal transitions do not retire confirmed persistence');
+    assert.equal(f.store.writes.length, 1); assert.equal(f.shared(), 0); assert.equal(f.owned(), 0);
+    save.resolve({ ok: true }); assert.equal((await selecting).ok, true);
+    assert.deepEqual(f.runtime.snapshot().selected, { kind: 'pi', variant: 'light' }, 'late confirmation does not overwrite the current preview');
+    assert.deepEqual(f.store.writes.map(write => ({ choice: write.choice, variant: write.variant })),
+      [{ choice: { kind: 'theme', id: 'github' }, variant: 'dark' }], 'only the original confirmed pair was submitted');
+    assert.equal(f.errors.length, 0);
+  } finally { save.resolve({ ok: true }); await selecting; }
+});
+
 test('disposal aborts an already delegated settings save, with no late UI or presentation resurrection', async () => {
   const f = fixture(), view = presentation(), save = deferred<SettingsSaveResult>();
   f.runtime.attach(view); await settled(); f.store.saveResult = save.promise;
-  const selecting = f.runtime.selectTheme({ kind: 'pi', variant: 'dark' }); assert.equal(f.store.writes.length, 1);
+  const selecting = f.preferences.confirmTheme(f.themeScope, { kind: 'pi', variant: 'dark' }); assert.equal(f.store.writes.length, 1);
   await f.runtime.dispose(); const before = structuredClone(view.calls);
   assert.equal(f.store.writes[0]!.signal!.aborted, true);
    assert.deepEqual({ syntaxTheme: f.store.writes[0]!.choice, syntaxThemeVariant: f.store.writes[0]!.variant },

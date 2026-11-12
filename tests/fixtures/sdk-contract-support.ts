@@ -1,7 +1,7 @@
 import "./test-guard.mjs";
 import { Container, Text, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import { CustomEditor, createEditToolDefinition, createReadToolDefinition, createWriteToolDefinition, type ExtensionAPI, type ExtensionContext, type ToolRendererResolver, type ToolRenderers } from "@earendil-works/pi-coding-agent";
-import tidyUi, { installTidyUi as installHost, type TidyUiOptions } from "../../src/index.ts";
+import tidyUi, { installTidyUi as installHost, type TidyUiOptions, type TidyUiRuntimeOptions } from "../../src/index.ts";
 import type { SyntaxRuntimeOptions } from "../../src/application/syntax-runtime.ts";
 import { createLazyNativeRendererResolver } from "../../src/host/pi/lazy-native-renderers.ts";
 import { getThemeByName } from '../../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js';
@@ -109,10 +109,12 @@ export function mouse(y: number, width = 80): TuiMouseEvent {
     width, height: 20, shift: false, alt: false, ctrl: false };
 }
 
+export function fixtureSettings(): NonNullable<TidyUiRuntimeOptions['settings']> {
+  return { async load() { return { ok: true, themePreference: { kind: 'pi', variant: 'dark' } }; }, async update() { return { ok: true }; } };
+}
 export function fixtureSyntaxOptions(): SyntaxRuntimeOptions {
-  return { standaloneVersion: "fixture", settings: {
-    async load() { return { ok: true, themePreference: { kind: "pi", variant: 'dark' } }; }, async update() { return { ok: true }; },
-  }, provider: { async tryShared() { return undefined; }, async acquireOwned() { throw new Error("fixture unavailable"); } } };
+  return { standaloneVersion: 'fixture', initialTheme: { kind: 'pi', variant: 'dark' },
+    provider: { async tryShared() { return undefined; }, async acquireOwned() { throw new Error('fixture unavailable'); } } };
 }
 
 export function extensionHarness(mode: "tui" | "print" | "json" | "rpc" = "tui", flagValues: Record<string, string> = {}) {
@@ -145,7 +147,7 @@ export function extensionHarness(mode: "tui" | "print" | "json" | "rpc" = "tui",
     },
   } } as unknown as ExtensionContext;
   tidyUi(api, { logging: false, terminalDefaults: {}, localPreferences: { appearanceEnabled: true, loggingEnabled: true },
-    settings: fixtureSyntaxOptions().settings, syntax: fixtureSyntaxOptions });
+    settings: fixtureSettings(), syntax: fixtureSyntaxOptions });
   return { root, ctx, events, commands, flags, widgets, notices, widgetComponents, widgetPlacements, toolRendererResolvers };
 }
 

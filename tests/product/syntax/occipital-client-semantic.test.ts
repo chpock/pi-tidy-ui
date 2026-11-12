@@ -2,6 +2,7 @@ import '../../fixtures/test-guard.mjs';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { SyntaxClient } from '../../../src/application/syntax-client.ts';
+import { ApplicationPreferences } from '../../../src/application/preferences.ts';
 import type { ProviderTransport } from '../../../src/occipital/provider.ts';
 import { themePatch, type SettingsLoadResult } from '../../../src/settings.ts';
 import type { ThemePreference } from '../../../src/appearance/theme-preference.ts';
@@ -26,12 +27,14 @@ class MetadataPeer implements ProviderTransport {
 function clientFixture(options: { theme?: ThemePreference; load?: () => Promise<SettingsLoadResult>; notify?: (message: string) => void } = {}) {
   const peer = new MetadataPeer();
   const saved: unknown[] = [];
-  const client = new SyntaxClient({ standaloneVersion: '0.1.5', initialTheme: options.theme,
-    settings: { async load() { return options.load ? options.load() : { ok: true, themePreference: { kind: 'pi', variant: 'dark' } }; },
-      async update(patch) { saved.push(patch); return { ok: true }; } }, notify: message => options.notify?.(message),
+  const preferences = new ApplicationPreferences({ async load() { return options.load ? options.load() : { ok: true, themePreference: { kind: 'pi', variant: 'dark' } }; },
+    async update(patch) { saved.push(patch); return { ok: true }; } }, { appearanceEnabled: true, loggingEnabled: true });
+  const themeScope = preferences.openThemeScope();
+  const client = new SyntaxClient({ standaloneVersion: '0.1.5', initialTheme: options.theme ?? preferences.themeInput(),
+    onActivationChanged: themeScope.onActivationChanged, onDisposed: themeScope.onDisposed, notify: message => options.notify?.(message),
     provider: { async tryShared() { return peer; }, async acquireOwned() { throw new Error('unexpected owned acquisition'); } },
   });
-  return { client, peer, saved };
+  themeScope.bind(client); return { client, preferences, themeScope, peer, saved };
 }
 
 const theme: ThemePreference = { kind: 'theme', id: 'gruvbox', variant: 'dark' };
@@ -50,11 +53,11 @@ test('v4 provider negotiation does not own the local palette catalogue', async (
 });
 
 test('owned palette stays effective while native execution is Off and theme selection sends no refresh request', async () => {
-  const { client, peer, saved } = clientFixture();
+  const { client, preferences, themeScope, peer, saved } = clientFixture();
   try {
     await client.start();
     await client.setEnabled(false);
-    await client.selectTheme(theme);
+    await preferences.confirmTheme(themeScope, theme);
     assert.equal(client.snapshot().enabled, false);
     assert.equal(client.snapshot().effective?.id, 'gruvbox-dark');
     assert.deepEqual(saved, [themePatch(theme)]);

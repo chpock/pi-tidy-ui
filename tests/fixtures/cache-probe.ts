@@ -12,6 +12,7 @@ import { ToolExecutionComponent } from "../../node_modules/@earendil-works/pi-co
 import { UserMessageComponent } from "../../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/components/user-message.js";
 import { initTheme, theme } from "../../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js";
 import tidyUi, { installTidyUi } from "../../src/index.ts";
+import type { SyntaxRuntimeOptions } from "../../src/application/syntax-runtime.ts";
 import { terminalAppearanceTracking } from "../../src/host/pi/native-bindings.ts";
 import { TerminalColors, terminalColorExit } from "../../src/terminal-colors.ts";
 import { InteractiveMode } from "../../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/interactive-mode.js";
@@ -212,8 +213,7 @@ try {
       registerToolRenderer(resolver: ToolRendererResolver) { footerResolvers.push(resolver); },
       registerCommand(name: string, options: { handler: Function }) { if (name === "tidy-ui") footerCommand = options.handler; },
     } as unknown as ExtensionAPI, { logging: { root: join(logDirectory, "footer") },
-      settings: { async load() { return { ok: true, themePreference: { kind: 'pi', variant: 'dark' } }; }, async update() { return { ok: true }; } }, syntax: () => ({ standaloneVersion: "gc",
-      settings: { async load() { return { ok: true, themePreference: { kind: "pi", variant: 'dark' } }; }, async update() { return { ok: true }; } },
+      settings: { async load() { return { ok: true, themePreference: { kind: 'pi', variant: 'dark' } }; }, async update() { return { ok: true }; } }, syntax: (): SyntaxRuntimeOptions => ({ standaloneVersion: "gc",
       provider: { async tryShared() { return undefined; }, async acquireOwned() { throw Error("isolated unavailable fixture"); } } }) });
     assert.equal(footerResolvers.length, 1, "the GC footer host models Pi's public renderer registration contract");
     for (const callback of handlers.get("session_start") ?? []) await callback({ reason: "startup" }, footerContext);

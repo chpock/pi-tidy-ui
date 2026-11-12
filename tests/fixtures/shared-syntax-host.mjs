@@ -9,7 +9,6 @@ import { sharedHostEnv } from './shared-host-environment.mjs';
 import { runCleanupSteps } from './terminal-cleanup.mjs';
 import { SyntaxClient } from '../../src/application/syntax-client.ts';
 import { createSharedFactory } from '../../src/occipital/factories.ts';
-import { ExtensionSettings } from '../../src/settings.ts';
 import { SEMANTIC_CAPABILITY as CAPABILITY } from '../../src/occipital/semantic-protocol.ts';
 
 export async function until(check, label) {
@@ -62,7 +61,7 @@ export async function sharedSyntaxHost(hostBinary, helperBinary) {
           catch (error) { if (error.code === 'capability_unprovided') return false; throw error; }
         }, 'actual shared capability publication');
       } finally { startup.close(); }
-      const client = new SyntaxClient({ standaloneVersion: '0.1.0', settings: new ExtensionSettings({ file: join(root, `peer-${clients.length}.json`) }),
+      const client = new SyntaxClient({ standaloneVersion: '0.1.0', initialTheme: { kind: 'pi', variant: 'dark' },
         provider: { tryShared: createSharedFactory({ identity: { project_root: root, harness: 'pi', session: `peer-${clients.length}` },
           discovery: { explicit: connection, env: {} }, requestDeadlineMs: 5000 }),
           acquireOwned: async () => { throw new Error('peer must remain shared'); } } });
