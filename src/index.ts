@@ -1,15 +1,16 @@
 import { VERSION, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { backgroundAnsi, type TerminalColorMode } from "@earendil-works/pi-tui";
 import { NativeSession } from './host/pi/native-session.ts';
-import { classifyNativeCode, nativeServiceRows, observeFooterSlot, terminalAppearanceTracking, type NativeFooterSlot } from './host/pi/native-bindings.ts';
+import { classifyNativeCode, nativeServiceRows, observeFooterSlot } from './host/pi/native-bindings.ts';
 import { PresentationSpinner } from './presentation/spinner.ts';
 import { createRequire } from "node:module";
-import { SessionLogging } from "./session-logging.ts";
-import { RuntimeHealth } from './runtime-health.ts';
+import { SessionDiagnostics } from './application/diagnostic-session.ts';
 import { notify } from './notifications.ts';
 import { ExtensionSettings, processPreferences, type LocalPreferences } from './settings.ts';
 import { ApplicationPreferences } from './application/preferences.ts';
-import { bindTerminalLifecycle } from "./terminal-lifecycle.ts";
+import { ApplicationScope } from './application/scope.ts';
+import { FooterSession } from './application/footer-session.ts';
+import { TerminalColorSession } from './application/terminal-color-session.ts';
 import { TidyMenu } from './tidy-menu.ts';
 import type { TidyMenuOwner } from './application/menu-contract.ts';
 import { menuSnapshot, menuCacheDetails } from './application/menu-model.ts';
@@ -30,8 +31,7 @@ import { UserPresenter } from './presentation/user-presenter.ts';
 import { QueuedPresenter } from './presentation/queued-presenter.ts';
 import type { EditorStatusInfo } from './editor-status.ts';
 import { GitBranchSource, gitDiagnostics } from "./git-branch.ts";
-import { FOOTER_FIELDS, FooterView, footerFirstMessage, footerUsage, type FooterData } from "./footer.ts";
-import { TerminalColors, processTerminalDefaults, type DefaultColors } from "./terminal-colors.ts";
+import type { DefaultColors } from './terminal-colors.ts';
 import type { CardTheme } from "./card-theme.ts";
 import type { CacheStats } from "./render-cache.ts";
 import { supportsToolName } from './tool-adapters/registry.ts';
@@ -50,16 +50,6 @@ import { createLazyNativeRendererResolver, type NativeRendererFailureReporter } 
 export { describeToolArgs as describeArgs } from "./tool-adapters/summary.ts";
 export { sanitize } from "./summary-args.ts";
 const extensionVersion = (createRequire(import.meta.url)("../package.json") as { version: string }).version;
-let terminalColorDebug: WeakRef<TerminalColors> | undefined;
-let loggingDebug: WeakRef<SessionLogging> | undefined;
-/** Existing in-memory journal status only, for actual CLI overhead controls. */
-export function debugLoggingDiagnostics() { return loggingDebug?.deref()?.status(); }
-/** Primitive current-instance counters for controlled CLI diagnostics; no retained owner. */
-export function terminalColorDiagnostics() {
-  const view = terminalColorDebug?.deref();
-  return view ? { status: view.status(), counters: view.stats() } : undefined;
-}
-
 type LiveTui = { requestRender(): void; invalidate(): void };
 type Palette = CardTheme;
 
@@ -376,18 +366,17 @@ export interface TidyUiRuntimeOptions {
   syntax?: (ctx: ExtensionContext) => SyntaxRuntimeOptions;
 }
 interface SyntaxContext { current?: ExtensionContext }
-interface DiagnosticContext extends SyntaxContext { session: string; logging?: SessionLogging }
-function diagnosticCapture(owner: WeakRef<DiagnosticContext>): DiagnosticSink {
-  return (level, area, message, fields) => owner.deref()?.logging?.sink(level, area, message, fields);
-}
-function runtimeNotice(owner: WeakRef<DiagnosticContext>) {
-  return (message: string) => { const ctx = owner.deref()?.current; if (ctx?.hasUI) notify(ctx.ui, message, 'error'); };
-}
 function syntaxNotice(owner: WeakRef<SyntaxContext>) {
   return (message: string, type: "error") => notify(owner.deref()?.current?.ui, message, type);
 }
-function loggingNotice(owner: WeakRef<SyntaxContext>) {
-  return (message: string) => { const ctx = owner.deref()?.current; if (ctx?.hasUI) notify(ctx.ui, message, 'warning'); };
+function nativeRendererFailureReporter(rendererSink: DiagnosticSink): NativeRendererFailureReporter {
+  return (scope, tool, slot, outcome) => {
+    const operation = `native-renderer:${tool}:${slot}`;
+    if (outcome === 'failure') {
+      diagnose(rendererSink, 'ERROR', 'appearance', 'Native file preview renderer failed; bounded fallback shown', { tool, slot });
+      reportRuntime(rendererSink, { kind: 'failure', scope, operation, area: 'appearance', code: 'native_renderer' });
+    } else reportRuntime(rendererSink, { kind: outcome, scope, operation });
+  };
 }
 
 export default function tidyUi(pi: ExtensionAPI, options: TidyUiRuntimeOptions = {}) {
@@ -405,8 +394,7 @@ export default function tidyUi(pi: ExtensionAPI, options: TidyUiRuntimeOptions =
   const local = options.localPreferences ?? processPreferences();
   const settings = options.settings ?? new ExtensionSettings();
   const preferences = new ApplicationPreferences(settings, local);
-  let lifecycle = 0;
-  let saveAbort = new AbortController();
+  const applicationScope = new ApplicationScope();
   let activeMenu: TidyMenu | undefined;
   let liveContext: ExtensionContext | undefined;
   let syntax: SyntaxRuntime | undefined;
@@ -414,62 +402,40 @@ export default function tidyUi(pi: ExtensionAPI, options: TidyUiRuntimeOptions =
   // Only primitive IDs for the current assistant stream; never retain message bodies/history.
   const liveBashCalls = new Set<string>();
   const syntaxContext: SyntaxContext = {};
-  let logging: SessionLogging | undefined, loggingContext: SyntaxContext | undefined;
-  let health: RuntimeHealth | undefined, diagnostic: DiagnosticSink | undefined, diagnosticContext: DiagnosticContext | undefined;
+  const diagnostics = new SessionDiagnostics(options.logging);
   function startLogging(ctx: ExtensionContext, reason: string) {
-    const identity = ctx.sessionManager.getSessionId();
-    if (diagnosticContext?.session !== identity) {
-      health?.dispose();
-      if (diagnosticContext) { diagnosticContext.current = undefined; diagnosticContext.logging = undefined; }
-      diagnosticContext = { current: ctx, session: identity };
-      const owner = new WeakRef(diagnosticContext);
-      health = new RuntimeHealth(runtimeNotice(owner)); diagnostic = health.sink(diagnosticCapture(owner));
-    } else diagnosticContext.current = ctx;
-    const rendererSink = diagnostic;
-    nativeRendererFailureBridge.current = (scope, tool, slot, outcome) => {
-      const operation = `native-renderer:${tool}:${slot}`;
-      if (outcome === 'failure') {
-        diagnose(rendererSink, 'ERROR', 'appearance', 'Native file preview renderer failed; bounded fallback shown', { tool, slot });
-        reportRuntime(rendererSink, { kind: 'failure', scope, operation, area: 'appearance', code: 'native_renderer' });
-      } else reportRuntime(rendererSink, { kind: outcome, scope, operation });
-    };
-    if (options.logging === false) return;
-    const session = ctx.sessionManager.getSessionId();
-    if (logging?.status().session === session) { if (loggingContext) loggingContext.current = ctx; return; }
-    const previous = logging; if (loggingContext) loggingContext.current = undefined;
-    void previous?.close("session switch");
-    loggingContext = { current: ctx };
-    logging = new SessionLogging({ session, sessionFile: ctx.sessionManager.getSessionFile(), cwd: ctx.cwd,
-      extension: extensionVersion, pi: VERSION, reason, mode: ctx.mode, provider: ctx.model?.provider, theme: ctx.ui.theme.name },
-      { ...options.logging, enabled: preferences.loggingEnabled, warn: loggingNotice(new WeakRef(loggingContext)) });
-    diagnosticContext!.logging = logging;
-    loggingDebug = new WeakRef(logging);
+    diagnostics.begin(ctx, reason, preferences.loggingEnabled, sink => {
+      nativeRendererFailureBridge.current = nativeRendererFailureReporter(sink);
+    });
   }
   function logSnapshot() {
+    const logging = diagnostics.journal;
     if (!logging?.status().capture) return;
     const sink = logging.sink;
     diagnose(sink, "INFO", "runtime", "Snapshot of existing runtime state", { presentation: preferences.appearanceEnabled, adapter: controller?.active ?? false,
-      syntax: preferences.nativeHighlightingEnabled, terminalColors: preferences.terminalColorsEnabled, footer: !!ownedFooter, mode: liveContext?.mode });
+      syntax: preferences.nativeHighlightingEnabled, terminalColors: preferences.terminalColorsEnabled, footer: footer.active, mode: liveContext?.mode });
     controller?.logSnapshot();
     diagnose(sink, "INFO", "git", "Snapshot of existing process Git counters", gitDiagnostics());
     if (controller) { const stats = controller.cacheStats(); diagnose(sink, "INFO", "cache", "Snapshot of existing layout counters", {
       entries: stats.entries, rows: stats.rows, bytes: stats.retainedBytes, hits: stats.hits, misses: stats.misses, builds: stats.builds,
       releases: stats.releases, collected: stats.collected }); }
-    if (health) { const status = health.snapshot(); diagnose(sink, 'INFO', 'runtime', 'Snapshot of runtime health; distinct from log write failures', { errors: status.errors, active: status.active, code: status.last?.code, state: status.last?.state }); }
+    const health = diagnostics.healthSnapshot();
+    if (health) diagnose(sink, 'INFO', 'runtime', 'Snapshot of runtime health; distinct from log write failures', { errors: health.errors, active: health.active, code: health.last?.code, state: health.last?.state });
     if (syntax) { const stats = syntax.sourceStatistics.stats(), snapshot = syntax.snapshot(); diagnose(sink, "INFO", "syntax", "Snapshot of existing source/provider state", {
       availability: snapshot.provider.availability, reason: snapshot.provider.reason, generation: snapshot.provider.generation,
       kind: snapshot.provider.kind, theme: snapshot.selected.kind, palette: snapshot.effective?.id,
       sourceRecords: stats.sourceRecords, piSourceRecords: stats.piSourceRecords, leases: stats.remoteLeases,
       jobs: stats.unsettledJobs, closes: stats.pendingCloses, bytes: stats.transientBytes, bookkeepingBytes: stats.bookkeepingBytes }); }
-    if (colors) diagnose(sink, "INFO", "terminal-colors", "Snapshot of existing terminal-color counters", { ...colors.status(), ...colors.stats() });
+    const colorStatus = colors.status();
+    if (colorStatus) diagnose(sink, "INFO", "terminal-colors", "Snapshot of existing terminal-color counters", { ...colorStatus, ...colors.stats() });
   }
   function ensureSyntax(ctx: ExtensionContext) {
     syntaxContext.current = ctx;
     if (!syntax) {
-      const theme = preferences.openThemeScope(diagnostic);
-      syntax = new SyntaxRuntime({ ...(options.syntax ? options.syntax(ctx) : createSyntaxOptions(ctx, undefined, diagnostic)),
+      const theme = preferences.openThemeScope(diagnostics.sink);
+      syntax = new SyntaxRuntime({ ...(options.syntax ? options.syntax(ctx) : createSyntaxOptions(ctx, undefined, diagnostics.sink)),
         initialTheme: preferences.themeInput(), onActivationChanged: theme.onActivationChanged, onDisposed: theme.onDisposed,
-        diagnostic, enabled: preferences.nativeHighlightingEnabled,
+        diagnostic: diagnostics.sink, enabled: preferences.nativeHighlightingEnabled,
         enabledChanged: value => preferences.acceptNativePreference(value), notify: syntaxNotice(new WeakRef(syntaxContext)) });
       theme.bind(syntax); syntaxTheme = theme;
     }
@@ -480,151 +446,29 @@ export default function tidyUi(pi: ExtensionAPI, options: TidyUiRuntimeOptions =
     syntax = undefined; syntaxTheme = undefined;
     return previous?.dispose();
   }
-  let colors: TerminalColors | undefined;
-  const colorWidget = "pi-tidy-ui-terminal-colors";
-  let detachColorLifecycle: (() => void) | undefined;
-  function stopColors(preserveDefaults = false) {
-    const previous = colors; colors = undefined;
-    detachColorLifecycle?.(); detachColorLifecycle = undefined;
-    if (previous) diagnose(logging?.sink, "INFO", "terminal-colors", "Terminal-color observer removed from public widget", { preserveDefaults });
-    previous?.dispose({ preserveDefaults });
-    if (previous) liveContext?.ui.setWidget(colorWidget, undefined);
-  }
-  function startColors(ctx: ExtensionContext) {
-    if (!preferences.appearanceEnabled || ctx.mode !== "tui") return;
-    if (colors) { colors.observe(); return; }
-    ctx.ui.setWidget(colorWidget, tui => {
-      const reference = new WeakRef(tui);
-      const view = new TerminalColors({
-        defaults: options.terminalDefaults ?? processTerminalDefaults(),
-        diagnostic,
-        snapshot() {
-          const current = liveContext!;
-          return { enabled: preferences.appearanceEnabled && preferences.terminalColorsEnabled && current?.mode === "tui", presenting: preferences.appearanceEnabled && current?.mode === "tui", theme: current.ui.theme,
-            configured: pi.getSettings().theme, automatic: detachColorLifecycle && reference.deref() ? terminalAppearanceTracking(reference.deref()!) : undefined };
-        },
-        source: name => name ? liveContext?.ui.getAllThemes?.().find(item => item.name === name)?.path : undefined,
-        write: data => {
-          const terminal = reference.deref()?.terminal;
-          if (!terminal || typeof terminal.write !== "function") throw new Error("Terminal writer unavailable");
-          terminal.write(data);
-        },
-        query: late => reference.deref()?.queryTerminalColors({ timeoutMs: 100, onLateReply: late }) ?? Promise.resolve({}),
-        changed: force => {
-          // A forced request resets TUI diff state, so wait until observer rendering returns.
-          if (force) queueMicrotask(() => { if (colors === view) reference.deref()?.requestRender(true); });
-          else reference.deref()?.requestRender();
-        },
-        warn: message => notify(liveContext?.ui, `Terminal colors: ${message}`, 'warning'),
-      });
-      detachColorLifecycle = bindTerminalLifecycle(tui.terminal, ensureSyntax(ctx), view);
-      colors = view; terminalColorDebug = new WeakRef(view);
-      view.observe();
-      return { render() { if (colors === view) view.observe(); return []; }, invalidate() { if (colors === view) view.observe(); } };
-    }, { placement: "belowEditor" });
-  }
-  function applyTerminalPreference(value: boolean, ctx: ExtensionContext) {
-    if (!value) colors?.observe();
-    else if (colors) colors.observe(true);
-    else startColors(ctx);
-  }
-  const palette = () => colors?.palette(liveContext!.ui.theme) ?? liveContext!.ui.theme;
+  const colors = new TerminalColorSession({
+    context: () => liveContext, appearanceEnabled: () => preferences.appearanceEnabled,
+    terminalColorsEnabled: () => preferences.terminalColorsEnabled,
+    diagnosticSink: () => diagnostics.sink, journalSink: () => diagnostics.journal?.sink,
+    themeSetting: () => pi.getSettings().theme, terminalLifecycle: ensureSyntax, defaults: () => options.terminalDefaults,
+  });
+  const palette = () => colors.palette(liveContext!.ui.theme);
   let directorySource: GitBranchSource | undefined;
-  let ownedFooter: FooterView | undefined;
-  let footerRender: WeakRef<{ requestRender(): void }> | undefined;
-  let footerEpoch = 0;
-  let footerName: { session: string; value: string | undefined } | undefined;
-  function restoreFooter() {
-    // Public dispose tells us when another owner replaced our component.
-    if (ownedFooter) { diagnose(logging?.sink, "INFO", "footer", "Owned footer released through public UI; native placement restored"); liveContext?.ui.setFooter(undefined); }
-  }
-  let footerRestoreQueued = false, footerStartQueued = false;
-  let pendingFooter: NativeFooterSlot | undefined;
-  function finishFooterStart() {
-    if (!pendingFooter || !controller?.editorActive || footerStartQueued) return;
-    footerStartQueued = true;
-    const pending = pendingFooter;
-    queueMicrotask(() => {
-      footerStartQueued = false;
-      if (pendingFooter !== pending) return;
-      pendingFooter = undefined;
-      // /reload can mount a selector during session_start. Wait for the default
-      // input, but never claim a slot another extension replaced meanwhile.
-      const current = pending.current();
-      if (current && liveContext) { diagnose(logging?.sink, "INFO", "footer", "Deferred footer installation allowed after stock editor return"); startFooter(liveContext); }
-      else diagnose(logging?.sink, "INFO", "footer", "Deferred footer installation cancelled; former slot is no longer owned");
-    });
-  }
-  function footerActive() {
-    if (controller?.editorActive) return true;
-    if (ownedFooter && !footerRestoreQueued) {
-      footerRestoreQueued = true;
-      diagnose(logging?.sink, "INFO", "footer", "Footer release queued after stock editor ownership lost");
-      // Finish native measurement before changing its footer container.
-      queueMicrotask(() => {
-        footerRestoreQueued = false;
-        if (!controller?.editorActive) restoreFooter();
-      });
-    }
-    return false;
-  }
-  function startFooter(ctx: ExtensionContext) {
-    if (ctx.mode !== "tui" || !preferences.appearanceEnabled || !controller?.editorActive || ownedFooter || typeof ctx.ui.setFooter !== "function") return;
-    pendingFooter = undefined;
-    const diagnostic = logging?.sink;
-    diagnose(diagnostic, "INFO", "footer", "Custom footer installed beside owned stock input");
-    ctx.ui.setFooter((_tui, _theme, data) => {
-      footerRender = new WeakRef(_tui);
-      let snapshot: FooterData | undefined;
-      let firstMessage: string | undefined;
-      let stamp: { epoch: number; session: string; leaf: string | null; model: ExtensionContext["model"] } | undefined;
-      const view = new FooterView(() => {
-        const current = liveContext!;
-        const manager = current.sessionManager, session = manager.getSessionId(), leaf = manager.getLeafId(), model = current.model;
-        if (footerName?.session !== session) footerName = { session, value: manager.getSessionName() };
-        if (stamp?.session !== session) firstMessage = undefined;
-        if (stamp?.session === session && stamp.leaf !== leaf) {
-          // Metadata-only appends move the leaf but do not change usage/context.
-          let entry = manager.getLeafEntry();
-          while (entry?.type === "session_info") {
-            if (entry.parentId === stamp.leaf) { stamp.leaf = leaf; break; }
-            entry = entry.parentId ? manager.getEntry(entry.parentId) : undefined;
-          }
-        }
-        const auto = pi.getSettings().compaction?.enabled ?? true;
-        const subscription = FOOTER_FIELDS.cost && !!model && (model.provider === "kimi-coding" ||
-          (current.modelRegistry.isUsingOAuth(model) && current.modelRegistry.getProvider(model.provider)?.auth.oauth?.isSubscription === true));
-        if (!snapshot || !stamp || stamp.epoch !== footerEpoch || stamp.session !== session || stamp.leaf !== leaf || stamp.model !== model) {
-          const entries = manager.getEntries();
-          firstMessage ??= footerFirstMessage(entries);
-          snapshot = { usage: footerUsage(entries), context: current.getContextUsage(), auto, subscription, sessionName: footerName.value ?? firstMessage ?? "(no messages)" };
-          diagnose(diagnostic, "DEBUG", "footer", "Footer usage snapshot refreshed by existing semantic boundary", { epoch: footerEpoch, session, model: model?.name, provider: model?.provider, auto });
-          stamp = { epoch: footerEpoch, session, leaf, model };
-        } else {
-          const sessionName = footerName.value ?? firstMessage ?? "(no messages)";
-          if (snapshot.auto !== auto || snapshot.subscription !== subscription || snapshot.sessionName !== sessionName)
-            snapshot = { ...snapshot, auto, subscription, sessionName };
-        }
-        return snapshot;
-      }, () => data.getExtensionStatuses(), () => liveContext!.ui.theme, footerActive, diagnostic);
-      ownedFooter = view;
-      return Object.assign(view, { dispose() {
-        view.clear(); snapshot = undefined; stamp = undefined; firstMessage = undefined;
-        diagnose(diagnostic, "INFO", "footer", "Public footer disposal observed; no replacement of a later owner");
-        if (ownedFooter === view) { ownedFooter = undefined; footerRender = undefined; }
-      } });
-    });
-  }
+  const footer = new FooterSession({
+    context: () => liveContext, appearanceEnabled: () => preferences.appearanceEnabled,
+    editorEligible: () => controller?.editorActive ?? false, journalSink: () => diagnostics.journal?.sink,
+    autoCompaction: () => pi.getSettings().compaction?.enabled ?? true,
+  });
   const statusWidget = "pi-tidy-ui-editor-status";
   const names = (flag: string) => String(pi.getFlag(flag) ?? "").split(",").map((name) => name.trim()).filter(Boolean);
-  function start(ctx: ExtensionContext) {
+  function startPresentation(ctx: ExtensionContext) {
     liveContext = ctx; syntaxContext.current = ctx;
     startLogging(ctx, "presentation startup");
-    footerEpoch++;
+    footer.advance();
     directorySource?.refresh(true);
-    if (ctx.mode !== "tui" || !preferences.appearanceEnabled) { diagnose(logging?.sink, "INFO", "runtime", "Presentation startup skipped", { mode: ctx.mode, enabled: preferences.appearanceEnabled }); return; }
-    startColors(ctx);
-    if (controller?.active) { diagnose(logging?.sink, "INFO", "runtime", "Existing presentation reused"); startFooter(ctx); return; }
+    if (ctx.mode !== "tui" || !preferences.appearanceEnabled) { diagnose(diagnostics.journal?.sink, "INFO", "runtime", "Presentation startup skipped", { mode: ctx.mode, enabled: preferences.appearanceEnabled }); return; }
+    colors.start(ctx);
+    if (controller?.active) { diagnose(diagnostics.journal?.sink, "INFO", "runtime", "Existing presentation reused"); footer.start(ctx); return; }
     if (!warnedBudgetFlags) {
       warnedBudgetFlags = true;
       for (const flag of retiredBudgetFlags) if (pi.getFlag(flag) !== undefined)
@@ -634,11 +478,11 @@ export default function tidyUi(pi: ExtensionAPI, options: TidyUiRuntimeOptions =
     // Remove the empty widget immediately: it is not part of our layout.
     ctx.ui.setWidget("pi-tidy-ui-capture", (tui) => {
       const slot = ctx.ui.getEditorComponent() === undefined ? observeFooterSlot(tui) : undefined;
-      if (slot) pendingFooter = slot;
+      if (slot) footer.defer(slot);
       const sourceRuntime = ensureSyntax(ctx);
-      if (controller) reportRuntime(diagnostic, { kind: 'released', scope: controller, operation: '*' });
+      if (controller) reportRuntime(diagnostics.sink, { kind: 'released', scope: controller, operation: '*' });
       controller = installTidyUi(tui, palette, {
-        diagnostic, cardPreparation: options.cardPreparation,
+        diagnostic: diagnostics.sink, cardPreparation: options.cardPreparation,
         syntax: { client: sourceRuntime, palette: () => sourceRuntime.palette({ colors: palette().colors! }), isLiveCall: id => liveBashCalls.has(id) },
          colorMode: () => liveContext!.ui.theme.getColorMode(),
          piInput: () => { const theme = liveContext!.ui.theme, projected = palette().colors as PiInputTheme['colors'], mode = theme.getColorMode();
@@ -656,20 +500,20 @@ export default function tidyUi(pi: ExtensionAPI, options: TidyUiRuntimeOptions =
           directorySource?.dispose(); directorySource = undefined;
           liveContext?.ui.setWidget(statusWidget, undefined);
         },
-        warn: (message) => { restoreFooter(); if (!diagnostic?.runtime) notify(liveContext?.ui, `Appearance disabled: ${message}`, 'warning'); },
+        warn: (message) => { footer.restore(); if (!diagnostics.sink?.runtime) notify(liveContext?.ui, `Appearance disabled: ${message}`, 'warning'); },
       });
-      diagnose(logging?.sink, "INFO", "runtime", "Presentation installation finished", { active: controller.active, reason: controller.reason });
+      diagnose(diagnostics.journal?.sink, "INFO", "runtime", "Presentation installation finished", { active: controller.active, reason: controller.reason });
       if (controller.active) sourceRuntime.attach(controller);
       return { render: () => [], invalidate() {} };
     });
     ctx.ui.setWidget("pi-tidy-ui-capture", undefined);
     if (controller?.active) ctx.ui.setWidget(statusWidget, (tui) => {
-      directorySource ??= new GitBranchSource(() => tui.requestRender(), { diagnostic });
+      directorySource ??= new GitBranchSource(() => tui.requestRender(), { diagnostic: diagnostics.sink });
       return {
       render(width) {
         const current = liveContext;
         if (!current || !controller?.active) return [];
-        finishFooterStart();
+        footer.finishStart();
         directorySource?.setDirectory(controller.editorStatusActive && typeof current.cwd === "string" ? current.cwd : undefined);
         return controller.renderEditorStatus(width, { model: current.model?.name || "No model",
           provider: current.model?.provider || "—", thinking: current.thinkingLevel ?? pi.getThinkingLevel(), idle: current.isIdle(),
@@ -677,12 +521,12 @@ export default function tidyUi(pi: ExtensionAPI, options: TidyUiRuntimeOptions =
       },
       invalidate() {},
     }; }, { placement: "belowEditor" });
-    startFooter(ctx);
+    footer.start(ctx);
   }
   const refreshFooter = (event: unknown, ctx: ExtensionContext) => {
-    liveContext = ctx; syntaxContext.current = ctx; footerEpoch++;
+    liveContext = ctx; syntaxContext.current = ctx; footer.advance();
     const kind = event && typeof event === "object" ? (event as { type?: unknown }).type : undefined;
-    diagnose(logging?.sink, "DEBUG", "runtime", "Pi semantic boundary observed; existing footer snapshot invalidated", {
+    diagnose(diagnostics.journal?.sink, "DEBUG", "runtime", "Pi semantic boundary observed; existing footer snapshot invalidated", {
       event: typeof kind === "string" && ["session_tree", "session_compact", "model_select", "message_end", "turn_end", "agent_end", "tool_execution_end"].includes(kind) ? kind : "unspecified",
       model: ctx.model?.name, provider: ctx.model?.provider, thinking: ctx.thinkingLevel });
   };
@@ -710,81 +554,83 @@ export default function tidyUi(pi: ExtensionAPI, options: TidyUiRuntimeOptions =
   };
   pi.on("tool_execution_end", refreshDirectory);
   pi.on("agent_end", (event, ctx) => { liveBashCalls.clear(); controller?.finishFileTurn(); refreshDirectory(event, ctx); });
-  pi.on('session_start', async (event, ctx) => {
+  async function startSession(ctx: ExtensionContext, reason: string) {
     activeMenu?.close(); activeMenu = undefined;
-    const current = ++lifecycle;
-    saveAbort.abort(); saveAbort = new AbortController();
-    liveBashCalls.clear(); footerName = undefined;
+    const current = applicationScope.beginSession();
+    liveBashCalls.clear(); footer.resetName();
     if (!preferences.initialized) await preferences.ready();
-    if (current !== lifecycle) return;
-    startLogging(ctx, event.reason); preferences.reportInitialIssue(diagnostic); start(ctx);
-    preferences.watch({ signal: saveAbort.signal, current: () => current === lifecycle && !saveAbort.signal.aborted }, {
-      terminalColors: value => applyTerminalPreference(value, ctx),
+    if (!applicationScope.isGeneration(current)) return;
+    startLogging(ctx, reason); preferences.reportInitialIssue(diagnostics.sink); startPresentation(ctx);
+    preferences.watch(applicationScope.scope(current), {
+      terminalColors: value => colors.applyPreference(value, ctx),
       theme(choice, changed) {
         const previewing = activeMenu?.preferencesChanged(choice);
         if (changed && !previewing) syntax?.applySavedTheme(choice);
       },
       nativeHighlighting: value => syntax?.setEnabled(value),
       nativeFailed: () => { if (ctx.hasUI) notify(ctx.ui, 'Native highlighting preference could not be applied.', 'warning'); },
-    }, diagnostic, logging?.sink);
-  });
+    }, diagnostics.sink, diagnostics.journal?.sink);
+  }
+  pi.on('session_start', (event, ctx) => startSession(ctx, event.reason));
   pi.on("session_info_changed", (event) => {
     // Async handlers may deliver old notifications last; reread current saved metadata once.
-    footerName = undefined;
-    if (ownedFooter) footerRender?.deref()?.requestRender();
-    logging?.nameChanged(event.name);
+    footer.nameChanged();
+    diagnostics.journal?.nameChanged(event.name);
   });
-  pi.on("session_shutdown", async (event, ctx) => {
-    ++lifecycle; saveAbort.abort(); preferences.stopWatching(); activeMenu?.close(); activeMenu = undefined;
-    liveBashCalls.clear(); footerName = undefined;
-    liveContext = ctx; logSnapshot(); pendingFooter = undefined; nativeRendererFailureBridge.current = undefined; health?.dispose();
+  function quiesceSession(ctx: ExtensionContext): void {
+    applicationScope.retire(); preferences.stopWatching(); activeMenu?.close(); activeMenu = undefined;
+    liveBashCalls.clear(); footer.resetName();
+    liveContext = ctx; logSnapshot(); footer.cancelDeferred(); nativeRendererFailureBridge.current = undefined; diagnostics.retireHealth();
     controller?.quiesce();
+  }
+  async function shutdownSession(ctx: ExtensionContext, reason: string) {
+    quiesceSession(ctx);
     try { await stopSyntax(); }
     finally {
-      try { await logging?.close(event.reason); }
+      try { await diagnostics.closeJournal(reason); }
       finally {
-        logging = undefined;
-        if (loggingContext) loggingContext.current = undefined; loggingContext = undefined;
-        try { stopColors(event.reason !== 'quit'); }
+        diagnostics.releaseJournal();
+        try { colors.stop(reason !== 'quit'); }
         finally {
-          try { restoreFooter(); }
+          try { footer.restore(); }
           finally {
             try { controller?.restore({ repaint: false }); }
             finally { controller = undefined; liveContext = undefined; syntaxContext.current = undefined;
-              if (diagnosticContext) { diagnosticContext.current = undefined; diagnosticContext.logging = undefined; }
-              diagnosticContext = undefined; diagnostic = undefined; health = undefined; }
+              diagnostics.release(); }
           }
         }
       }
     }
-  });
+  }
+  pi.on('session_shutdown', (event, ctx) => shutdownSession(ctx, event.reason));
   function menuOwner(ctx: ExtensionContext, epoch: number): TidyMenuOwner {
-    const current = () => lifecycle === epoch && !saveAbort.signal.aborted;
+    const scope = applicationScope.scope(epoch);
+    const current = scope.current;
     const owner: TidyMenuOwner = {
       snapshot() {
-        return menuSnapshot(preferences, { color: colors?.status().state, syntax: syntax?.snapshot(),
-          logs: logging?.status(), health: health?.snapshot(), appearance: controller });
+        return menuSnapshot(preferences, { color: colors.status()?.state, syntax: syntax?.snapshot(),
+          logs: diagnostics.journal?.status(), health: diagnostics.healthSnapshot(), appearance: controller });
       },
       async prepareThemes() { if (current()) await ensureSyntax(ctx).prepareThemes(); },
       previewTheme(choice) { if (current()) syntax?.previewTheme(choice); },
       act: action => performMenuAction(action, {
-        preferences, scope: { signal: saveAbort.signal, current }, diagnostic, journal: logging?.sink,
+        preferences, scope, diagnostic: diagnostics.sink, journal: diagnostics.journal?.sink,
         switches: {
           appearance(value) {
-            if (value) start(ctx);
+            if (value) startPresentation(ctx);
             else {
-              pendingFooter = undefined; stopColors(); restoreFooter();
-              if (controller) reportRuntime(diagnostic, { kind: 'released', scope: controller, operation: '*' });
+              footer.cancelDeferred(); colors.stop(); footer.restore();
+              if (controller) reportRuntime(diagnostics.sink, { kind: 'released', scope: controller, operation: '*' });
               controller?.restore(); return stopSyntax();
             }
           },
-          terminalColors: value => applyTerminalPreference(value, ctx),
+          terminalColors: value => colors.applyPreference(value, ctx),
           nativeHighlighting: value => syntax?.setEnabled(value),
-          logging: value => logging?.setEnabled(value),
-          recordingFailed: () => logging?.status().state === 'failed',
+          logging: value => diagnostics.journal?.setEnabled(value),
+          recordingFailed: () => diagnostics.journal?.status().state === 'failed',
         },
-        applyAppearance: () => start(ctx),
-        reapplyTerminalColors() { if (colors) colors.reapply(); else startColors(ctx); },
+        applyAppearance: () => startPresentation(ctx),
+        reapplyTerminalColors() { colors.reapply(ctx); },
         async confirmTheme(choice) {
           const runtime = ensureSyntax(ctx);
           const outcome = await preferences.confirmTheme(syntaxTheme!, choice);
@@ -793,27 +639,27 @@ export default function tidyUi(pi: ExtensionAPI, options: TidyUiRuntimeOptions =
         },
         clearLayouts() {
           if (!controller?.active) return undefined;
-          controller.clearCache(); ownedFooter?.clear();
+          controller.clearCache(); footer.clearLayouts();
           return owner.cacheDetails();
         },
         recording: {
           async retry() {
-            if (!preferences.loggingEnabled || !logging) return 'unavailable';
-            await logging.setEnabled(true);
-            return logging.status().state === 'active' ? 'active' : 'inactive';
+            if (!preferences.loggingEnabled || !diagnostics.journal) return 'unavailable';
+            await diagnostics.journal.setEnabled(true);
+            return diagnostics.journal.status().state === 'active' ? 'active' : 'inactive';
           },
           async writeSnapshot() {
-            const log = logging;
+            const log = diagnostics.journal;
             if (!log?.status().capture || log.status().state !== 'active') return 'notCapturing';
             logSnapshot(); await log.flush();
-            if (!current() || logging !== log) return 'retired';
+            if (!current() || diagnostics.journal !== log) return 'retired';
             return log.status().state === 'active' ? 'written' : 'writeFailed';
           },
         },
       }),
       cacheDetails() {
         if (!controller) return menuCacheDetails();
-        return menuCacheDetails({ stats: controller.cacheStats(), footer: ownedFooter?.retainedMemory(), heapUsedBytes: process.memoryUsage().heapUsed });
+        return menuCacheDetails({ stats: controller.cacheStats(), footer: footer.retainedMemory(), heapUsedBytes: process.memoryUsage().heapUsed });
       },
     };
     return owner;
@@ -823,21 +669,21 @@ export default function tidyUi(pi: ExtensionAPI, options: TidyUiRuntimeOptions =
     handler: async (args, ctx) => {
       if (args.trim()) { notify(ctx.ui, 'Usage: /tidy-ui — open the settings menu; command arguments are no longer supported.', 'warning'); return; }
       if (ctx.mode !== 'tui' || !ctx.hasUI) { notify(ctx.ui, 'menu is available only in terminal mode with UI.', 'info'); return; }
-      const epoch = lifecycle;
+      const epoch = applicationScope.generation;
       await preferences.ready();
-      if (epoch !== lifecycle) return;
-      preferences.reportInitialIssue(diagnostic);
+      if (!applicationScope.isGeneration(epoch)) return;
+      preferences.reportInitialIssue(diagnostics.sink);
       liveContext = ctx; syntaxContext.current = ctx;
-      if (loggingContext) loggingContext.current = ctx;
+      diagnostics.refreshJournalContext(ctx);
       activeMenu?.close();
       let opened: TidyMenu | undefined;
       try {
         await ctx.ui.custom<void>((tui, theme, _keys, done) => {
-          if (epoch !== lifecycle) { done(); return { render: () => [], invalidate() {} }; }
+          if (!applicationScope.isGeneration(epoch)) { done(); return { render: () => [], invalidate() {} }; }
           const menu = new TidyMenu(menuOwner(ctx, epoch), theme, () => tui.requestRender(), () => done(), () => tui.terminal.rows);
           opened = activeMenu = menu; return menu;
         }, { overlay: true, overlayOptions: { anchor: 'center', get width() { return opened?.preferredWidth() ?? 1; }, maxHeight: '100%', margin: 0 } });
-      } catch { if (epoch === lifecycle) notify(ctx.ui, 'Settings menu could not be opened.', 'error'); }
+      } catch { if (applicationScope.isGeneration(epoch)) notify(ctx.ui, 'Settings menu could not be opened.', 'error'); }
       finally { opened?.dispose(); if (activeMenu === opened) activeMenu = undefined; }
     },
   });

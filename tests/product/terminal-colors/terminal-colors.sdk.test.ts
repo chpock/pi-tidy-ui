@@ -490,3 +490,12 @@ test('terminal ownership: broken-source resume refreshes an unowned profile back
     assert.deepEqual(f.view.stats(), warm);
   } finally { f.view.dispose(); }
 });
+
+
+test('terminal binding selects health and initializes process defaults only at actual widget construction', () => {
+  const probe = new URL('../../fixtures/terminal-color-session-defaults.ts', import.meta.url).href;
+  const child = spawnSync(process.execPath, ['--expose-gc', '--input-type=module', '-e', `await import(${JSON.stringify(probe)});`],
+    { encoding: 'utf8', timeout: 15000 });
+  assert.equal(child.status, 0, child.stderr);
+  assert.deepEqual(JSON.parse(child.stdout), { listenerAdditions: 1, healthEpisodes: 2, errorNotices: 2, terminalPackets: 0 });
+});

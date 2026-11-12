@@ -7,6 +7,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { JournalOptions } from '../../../src/debug-log.ts';
 import { SessionLogging } from '../../../src/session-logging.ts';
+import { RuntimeHealth } from '../../../src/runtime-health.ts';
+import { diagnose, reportRuntime, type DiagnosticSink } from '../../../src/diagnostics.ts';
 import { ApplicationPreferences } from '../../../src/application/preferences.ts';
 import { setImmediate as turn } from 'node:timers/promises';
 import { dirname, resolve } from 'node:path';
@@ -16,7 +18,8 @@ import { cardGeometry } from '../../../src/card-frame.ts';
 import { visibleWidth } from '@earendil-works/pi-tui';
 import { hasHostInk } from '../../fixtures/host-cells.ts';
 import { Theme, createEditToolDefinition, createReadToolDefinition, createWriteToolDefinition, ToolExecutionComponent, type ExtensionAPI, type ExtensionContext, type ToolRendererResolver, type ToolRenderers } from '@earendil-works/pi-coding-agent';
-import tidyUi, { debugLoggingDiagnostics, type TidyUiRuntimeOptions } from '../../../src/index.ts';
+import tidyUi, { type TidyUiRuntimeOptions } from '../../../src/index.ts';
+import { debugLoggingDiagnostics } from '../../../src/application/diagnostic-session.ts';
 import { SourceExecution } from '../../../src/highlighting/source-execution.ts';
 import { CardSources } from '../../../src/syntax/cards.ts';
 import type { CardDisplayInput } from '../../../src/cards/display-input.ts';
@@ -27,7 +30,7 @@ import { sampleOwnedPalette } from '../../../src/themes/owned-palette.ts';
 import { menuPage, withMenu, setAppearance, setLogging } from '../../helpers/menu-driver.ts';
 import { ExtensionSettings, themePreferenceFromSettings, type SettingsLoadResult, type SettingsPatch, type SettingsSaveResult, type LocalPreferences } from '../../../src/settings.ts';
 import { FilePreviewState } from '../../../src/presentation/file-preview-state.ts';
-import { createLazyNativeRendererResolver, DeferredRenderer, isDeferredStockFilePair } from '../../../src/host/pi/lazy-native-renderers.ts';
+import { createLazyNativeRendererResolver, DeferredRenderer, isDeferredStockFilePair, type NativeRendererFailureReporter } from '../../../src/host/pi/lazy-native-renderers.ts';
 import { extensionHarness as sharedExtensionHarness } from '../../fixtures/sdk-contract-support.ts';
 
 const dist = dirname(fileURLToPath(import.meta.resolve('@earendil-works/pi-coding-agent')));
@@ -3619,4 +3622,232 @@ test('same-reference read error updates retain the existing lifecycle invalidati
     const current = plainRows(owner.render(80));
     assert.match(current, /CURRENT_READ_ERROR/u); assert.doesNotMatch(current, /PREVIOUS_READ_ERROR/u);
   } finally { await h.stop(); }
+});
+
+
+test('entry diagnostic journal remains open until actual syntax disposal settles', async () => {
+  const directory = await fs.mkdtemp(join(tmpdir(), 'tidy-cleanup-journal-'));
+  const dispose = SyntaxRuntime.prototype.dispose, close = SessionLogging.prototype.close, healthSink = RuntimeHealth.prototype.sink;
+  let h: ReturnType<typeof fixture> | undefined, outgoing: DiagnosticSink | undefined, closes = 0, stopping: Promise<void> | undefined;
+  let release!: () => void, entered!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; }), entering = new Promise<void>(resolve => { entered = resolve; });
+  RuntimeHealth.prototype.sink = function (journal) { outgoing = healthSink.call(this, journal); return outgoing; };
+  SessionLogging.prototype.close = function (reason) { closes++; return close.call(this, reason); };
+  try {
+    h = fixture('tui', { root: directory }); await h.ready; await h.start(); await settled();
+    assert.equal(h.counts.constructed, 1); assert.equal(Boolean(outgoing?.runtime), true);
+    SyntaxRuntime.prototype.dispose = function () {
+      const stopped = dispose.call(this); entered();
+      return Promise.all([stopped, held]).then(() => {
+        diagnose(outgoing, 'INFO', 'syntax', 'Cleanup journal ordering sentinel');
+      });
+    };
+    stopping = h.events.get('session_shutdown')!({ type: 'session_shutdown', reason: 'reload' }, h.ctx) as Promise<void>;
+    await Promise.race([entering, stopping.then(() => { throw Error('Shutdown did not await the actual syntax owner'); })]);
+    await turn();
+    assert.equal(closes, 0, 'the outgoing journal must not close while actual syntax cleanup is held');
+    release(); await stopping;
+    assert.equal(closes, 1);
+    const closed = (await fs.readdir(directory)).filter(name => name.endsWith('.closed.log'));
+    assert.equal(closed.length, 1);
+    const body = await fs.readFile(join(directory, closed[0]!), 'utf8');
+    assert.match(body, /Syntax runtime disposing; current source owners are retired/u);
+    assert.match(body, /Cleanup journal ordering sentinel/u, 'records after the held cleanup still reach the outgoing run');
+    assert.equal(debugLoggingDiagnostics()!.state, 'closed');
+  } finally {
+    release(); await stopping?.catch(() => {});
+    SyntaxRuntime.prototype.dispose = dispose; SessionLogging.prototype.close = close; RuntimeHealth.prototype.sink = healthSink;
+    await h?.stop(); await fs.rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('entry diagnostic binding owns active cells across GC and fences retained old sinks after session replacement', async () => {
+  const directory = await fs.mkdtemp(join(tmpdir(), 'tidy-session-observers-'));
+  const healthSink = RuntimeHealth.prototype.sink, status = SessionLogging.prototype.status, close = SessionLogging.prototype.close;
+  const sinks: DiagnosticSink[] = [], writers: SessionLogging[] = [], closing: Promise<void>[] = [];
+  let h: ReturnType<typeof fixture> | undefined;
+  RuntimeHealth.prototype.sink = function (journal) { const sink = healthSink.call(this, journal); sinks.push(sink); return sink; };
+  SessionLogging.prototype.status = function () { if (!writers.includes(this)) writers.push(this); return status.call(this); };
+  SessionLogging.prototype.close = function (reason) { const pending = close.call(this, reason); closing.push(pending); return pending; };
+  try {
+    h = fixture('tui', { root: directory }); await h.ready; await h.start(); await settled();
+    assert.equal(sinks.length, 1); assert.equal(writers.length, 1); assert.equal(typeof global.gc, 'function');
+    await turn(); global.gc!(); await turn(); global.gc!();
+    diagnose(sinks[0], 'INFO', 'runtime', 'First active observer sentinel');
+    const firstScope = {};
+    reportRuntime(sinks[0], { kind: 'failure', scope: firstScope, operation: 'observer-control', area: 'appearance', code: 'observer_control' });
+    await writers[0]!.flush(); await h.page('Status & troubleshooting');
+    assert.match(h.view, /Runtime errors: 1; active: 1/u);
+
+    h.ctx.sessionManager.getSessionId = () => 'replacement-observer-session';
+    await h.start({ type: 'session_start', reason: 'resume' }); await settled(); await Promise.all(closing);
+    assert.equal(sinks.length, 2); assert.equal(writers.length, 2); assert.equal(sinks[0] === sinks[1], false);
+    await h.page('Status & troubleshooting'); assert.match(h.view, /Runtime errors: 0; active: 0/u);
+    const notices = h.notices.length;
+    diagnose(sinks[0], 'INFO', 'runtime', 'Retired observer sentinel');
+    reportRuntime(sinks[0], { kind: 'failure', scope: firstScope, operation: 'late-observer', area: 'appearance', code: 'observer_control' });
+    await settled(); await h.page('Status & troubleshooting');
+    assert.match(h.view, /Runtime errors: 0; active: 0/u); assert.equal(h.notices.length, notices);
+
+    await turn(); global.gc!(); await turn(); global.gc!();
+    diagnose(sinks[1], 'INFO', 'runtime', 'Second active observer sentinel');
+    const secondScope = {};
+    reportRuntime(sinks[1], { kind: 'failure', scope: secondScope, operation: 'observer-control', area: 'appearance', code: 'observer_control' });
+    await writers[1]!.flush(); await h.page('Status & troubleshooting');
+    assert.match(h.view, /Runtime errors: 1; active: 1/u);
+    await h.stop();
+    assert.equal(debugLoggingDiagnostics()!.state, 'closed');
+    const first = await fs.readFile(writers[0]!.status().path, 'utf8'), second = await fs.readFile(writers[1]!.status().path, 'utf8');
+    assert.match(first, /First active observer sentinel/u); assert.doesNotMatch(first, /Second active observer sentinel|Retired observer sentinel/u);
+    assert.match(second, /Second active observer sentinel/u); assert.doesNotMatch(second, /First active observer sentinel|Retired observer sentinel/u);
+  } finally {
+    RuntimeHealth.prototype.sink = healthSink; SessionLogging.prototype.status = status; SessionLogging.prototype.close = close;
+    await h?.stop(); await Promise.all(closing); await fs.rm(directory, { recursive: true, force: true });
+  }
+});
+
+
+test('entry selects the native failure sink before synchronous journal clock callbacks', async () => {
+  const directory = await fs.mkdtemp(join(tmpdir(), 'tidy-observer-selection-'));
+  const healthSink = RuntimeHealth.prototype.sink;
+  let health: RuntimeHealth | undefined, probe: (() => void) | undefined, reports = 0;
+  RuntimeHealth.prototype.sink = function (journal) { health = this; return healthSink.call(this, journal); };
+  const h = fixture('tui', { root: directory, now() {
+    if (probe) { const report = probe; probe = undefined; reports++; report(); }
+    return Date.now();
+  } }, undefined, { appearanceEnabled: false, loggingEnabled: true });
+  try {
+    await h.ready;
+    const tool = writeOwner(h, 'journal-selection-order', 'const clockControl = 1;');
+    const wrapper = Reflect.get(tool, 'callRendererComponent');
+    assert.equal(wrapper instanceof DeferredRenderer, true);
+    const owner = Reflect.get(wrapper, 'owner'), report = Reflect.get(owner, 'report');
+    assert.equal(typeof report, 'function');
+    probe = () => Reflect.apply(report, owner, ['call', 'failure']);
+    await h.start(); await turn();
+    assert.equal(reports, 1, 'the existing journal clock actually invoked the native owner report');
+    assert.equal(health!.snapshot().errors, 1, 'the current health sink must already be selected during journal construction');
+    assert.equal(health!.snapshot().active, 1);
+    assert.equal(h.counts.constructed, 0, 'the control needs no syntax provider or presentation installation');
+    assertNativeRendererCold(tool, 'call', 'reporting through the actual native owner');
+  } finally {
+    probe = undefined; RuntimeHealth.prototype.sink = healthSink;
+    await h.stop(); await fs.rm(directory, { recursive: true, force: true });
+  }
+});
+
+
+test('entry native reporting reads the current provider while a retained selected callback stays with its original session', async () => {
+  const healthSink = RuntimeHealth.prototype.sink, health: RuntimeHealth[] = [];
+  RuntimeHealth.prototype.sink = function (journal) { health.push(this); return healthSink.call(this, journal); };
+  const h = fixture('tui', false, undefined, { appearanceEnabled: false, loggingEnabled: false });
+  try {
+    await h.ready; await h.start();
+    const tool = writeOwner(h, 'reporter-session-identity', 'const callbackControl = 1;');
+    const wrapper = Reflect.get(tool, 'callRendererComponent'); assert.equal(wrapper instanceof DeferredRenderer, true);
+    const owner = Reflect.get(wrapper, 'owner'), provider = Reflect.get(owner, 'reporter') as () => NativeRendererFailureReporter | undefined;
+    const selected = provider(); assert.equal(typeof selected, 'function'); assert.equal(health.length, 1);
+    h.ctx.sessionManager.getSessionId = () => 'replacement-native-reporter';
+    await h.start({ type: 'session_start', reason: 'resume' }); await turn();
+    assert.equal(health.length, 2); assert.equal(provider() === selected, false);
+    const notices = h.notices.length;
+    selected!(owner, 'write', 'call', 'failure'); await turn();
+    assert.equal(health[1]!.snapshot().errors, 0, 'the retained selected callback cannot be retargeted to replacement health');
+    assert.equal(h.notices.length, notices);
+    Reflect.apply(Reflect.get(owner, 'report'), owner, ['call', 'failure']); await turn();
+    assert.equal(health[1]!.snapshot().errors, 1, 'the same live native owner resolves the replacement provider at report time');
+    assert.equal(health[1]!.snapshot().active, 1);
+    assert.equal(h.notices.length, notices + 1); assert.equal(h.counts.constructed, 0);
+    assertNativeRendererCold(tool, 'call', 'reporter lifetime control');
+  } finally { RuntimeHealth.prototype.sink = healthSink; await h.stop(); }
+});
+
+
+test('entry terminal binding keeps syntax suspension active with local colors Off and detaches on shutdown', async () => {
+  const { TerminalColors } = await import('../../../src/terminal-colors.ts');
+  const syntaxStop = SyntaxRuntime.prototype.suspend, syntaxStart = SyntaxRuntime.prototype.resume;
+  const colorStop = TerminalColors.prototype.suspend, colorStart = TerminalColors.prototype.resume;
+  const events: string[] = [], packets: string[] = [];
+  const terminal = { start() { events.push('native-start'); }, stop() { events.push('native-stop'); }, write(data: string) { packets.push(data); } };
+  const h = fixture();
+  Object.assign(h.root, { terminal, terminalColorSchemeNotificationsEnabled: false, queryTerminalColors: async () => ({}) });
+  SyntaxRuntime.prototype.suspend = function() { events.push('syntax-stop'); return syntaxStop.call(this); };
+  SyntaxRuntime.prototype.resume = function() { events.push('syntax-start'); return syntaxStart.call(this); };
+  TerminalColors.prototype.suspend = function() { events.push('colors-stop'); return colorStop.call(this); };
+  TerminalColors.prototype.resume = function() { events.push('colors-start'); return colorStart.call(this); };
+  const nativeStart = terminal.start, nativeStop = terminal.stop;
+  try {
+    await h.start(); await settled();
+    assert.equal(h.counts.constructed, 1, 'the real default factory acquires its syntax lifetime even with default-Off colors');
+    assert.equal(terminal.stop !== nativeStop && terminal.start !== nativeStart, true, 'public terminal methods actually receive the shared binding');
+    const providers = { shared: h.counts.shared, owned: h.counts.owned };
+    assert.equal(providers.shared + providers.owned > 0, true, 'active presentation supplies a positive provider-acquisition control');
+    await h.start(); await settled();
+    assert.equal(h.counts.constructed, 1, 'same-session presentation startup reuses the existing binding');
+    terminal.stop(); terminal.start();
+    assert.deepEqual(events, ['syntax-stop', 'colors-stop', 'native-stop', 'native-start', 'syntax-start', 'colors-start']);
+    await settled();
+    assert.equal(packets.length, 0, 'local Off cannot apply or reset never-owned terminal channels');
+    assert.deepEqual({ shared: h.counts.shared, owned: h.counts.owned }, providers, 'same-session reuse and idle terminal handoff do not acquire another provider');
+    await h.stop();
+    assert.equal(terminal.start === nativeStart && terminal.stop === nativeStop, true, 'shutdown restores the native terminal descriptors');
+    events.length = 0; terminal.stop(); terminal.start();
+    assert.deepEqual(events, ['native-stop', 'native-start']);
+  } finally {
+    SyntaxRuntime.prototype.suspend = syntaxStop; SyntaxRuntime.prototype.resume = syntaxStart;
+    TerminalColors.prototype.suspend = colorStop; TerminalColors.prototype.resume = colorStart;
+  }
+});
+
+
+test('entry admits a popup after shutdown but keeps persistent, appearance and reapply actions retired until restart', async () => {
+  const h = fixture(), widget = h.ctx.ui.setWidget;
+  let installations = 0;
+  h.ctx.ui.setWidget = (name, content, options) => {
+    if (typeof content === 'function') installations++;
+    return Reflect.apply(widget, h.ctx.ui, [name, content, options]);
+  };
+  await h.start(); await settled(); await h.stop();
+  const before = { ...h.counts }, notices = [...h.notices], installed = installations;
+  await withMenu(h.command, h.ctx, async menu => {
+    assert.match(menu.text(), /Tidy UI appearance\s+On/u, 'the retired-generation command still mounts the real popup');
+    await menu.select('Set terminal colors from Pi theme');
+    assert.match(menu.text(), /This settings action belongs to a closed runtime\./u);
+    assert.match(menu.text(), /Set terminal colors from Pi theme\s+Off/u);
+    await menu.select('Tidy UI appearance');
+    assert.match(menu.text(), /This settings action belongs to a closed runtime\./u);
+    assert.match(menu.text(), /Tidy UI appearance\s+On/u, 'retired local actions cannot change the local choice');
+    await menu.select('Status & troubleshooting'); await menu.select('Reapply Tidy UI appearance');
+    assert.match(menu.text(), /This settings action belongs to a closed runtime\./u);
+  });
+  await settled();
+  assert.deepEqual(h.counts, before); assert.deepEqual(h.notices, notices); assert.equal(installations, installed);
+  await h.start({ type: 'session_start', reason: 'resume' }); await settled();
+  assert.equal(h.counts.constructed, before.constructed + 1, 'a genuine new start still installs a fresh runtime');
+  assert.equal(installations > installed, true);
+});
+
+test('entry pre-start persistent switch uses the initial live signal and shutdown retires that same signal', async () => {
+  const writes: { patch: SettingsPatch; signal?: AbortSignal }[] = [];
+  const h = fixture('tui', false, {
+    async load() { return { ok: true, themePreference: { kind: 'pi', variant: 'dark' } }; },
+    async update(patch, options) { writes.push({ patch: structuredClone(patch), signal: options?.signal }); return { ok: true }; },
+  });
+  await h.ready;
+  await withMenu(h.command, h.ctx, async menu => {
+    await menu.select('Status & troubleshooting'); await menu.select('Use Occipital highlighting');
+    assert.match(menu.text(), /Use Occipital highlighting\s+Off/u);
+    assert.doesNotMatch(menu.text(), /closed runtime/u);
+  });
+  assert.deepEqual(writes.map(write => write.patch), [{ nativeHighlightingEnabled: false }]);
+  assert.equal(writes[0]!.signal?.aborted, false, 'generation zero has a real live switch-save signal');
+  assert.equal(h.counts.constructed, 0); assert.equal(h.counts.shared, 0); assert.equal(h.counts.owned, 0);
+  await h.stop(); assert.equal(writes[0]!.signal?.aborted, true);
+  const notices = [...h.notices];
+  await withMenu(h.command, h.ctx, async menu => {
+    await menu.select('Status & troubleshooting'); await menu.select('Use Occipital highlighting');
+    assert.match(menu.text(), /This settings action belongs to a closed runtime\./u);
+    assert.match(menu.text(), /Use Occipital highlighting\s+Off/u);
+  });
+  assert.equal(writes.length, 1); assert.equal(h.counts.constructed, 0); assert.deepEqual(h.notices, notices);
 });

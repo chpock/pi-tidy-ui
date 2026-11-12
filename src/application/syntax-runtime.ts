@@ -28,8 +28,8 @@ function startupFailure(owner: WeakRef<SyntaxRuntime>) {
 }
 function startupSuccess(owner: WeakRef<SyntaxRuntime>) { return () => owner.deref()?.reportStartupSuccess(); }
 
-/** One extension runtime's existing client and public menu. Source ownership stays
- * with CardSources; this is not a second source store or a cross-adapter registry. */
+/** One application-side syntax incarnation and palette-input binding.
+ * SOURCE execution belongs to the client's SourceExecution; CardSources borrows its ports. */
 export class SyntaxRuntime {
   private readonly client: SyntaxClient;
   private readonly options: SyntaxRuntimeOptions;

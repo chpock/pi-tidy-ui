@@ -39,7 +39,10 @@ const syntaxApplicationModules = [
 const preferenceApplicationModules = ['src/application/preferences.ts'];
 const menuDataModules = ['src/application/menu-contract.ts', 'src/application/menu-model.ts'];
 const menuActionModules = ['src/application/menu-actions.ts'];
-const applicationModules = [...syntaxApplicationModules, ...preferenceApplicationModules, ...menuDataModules, ...menuActionModules];
+const diagnosticSessionModules = ['src/application/diagnostic-session.ts'];
+const presentationBindingModules = ['src/application/footer-session.ts', 'src/application/terminal-color-session.ts'];
+const currentnessModules = ['src/application/scope.ts'];
+const applicationModules = [...syntaxApplicationModules, ...preferenceApplicationModules, ...menuDataModules, ...menuActionModules, ...diagnosticSessionModules, ...presentationBindingModules, ...currentnessModules];
 const cardModules = ['src/cards/file-model.ts', 'src/cards/file-sources.ts', 'src/cards/file-display.ts', 'src/cards/display-input.ts',
   'src/cards/file-preview-mode.ts', 'src/cards/file-input.ts', 'src/cards/shebang-language.ts',
   'src/cards/preparation.ts', 'src/cards/bash-preparation.ts', 'src/cards/file-preparation.ts'];
@@ -593,7 +596,7 @@ const menuActionDependencies = new Map([
   ['src/diagnostics.ts', { types: ['DiagnosticSink'], values: ['diagnose'] }],
 ]);
 
-function assertNamedMenuImports(path, source, dependencies, label) {
+function assertNamedCapabilityImports(path, source, dependencies, label) {
   const rule = specifier => dependencies.get(specifier.startsWith('.') ? resolveRelativeImport(path, specifier) : specifier);
   const allowed = (dependency, name, typeOnly) => (dependency?.[typeOnly ? 'types' : 'values'] ?? []).includes(name);
   for (const reference of moduleReferences(source)) {
@@ -619,10 +622,136 @@ function assertNamedMenuImports(path, source, dependencies, label) {
   visit(source);
 }
 function assertMenuDataImports(path, source) {
-  assertNamedMenuImports(path, source, menuDataDependencies.get(path), 'menu data');
+  assertNamedCapabilityImports(path, source, menuDataDependencies.get(path), 'menu data');
 }
 function assertMenuActionImports(path, source) {
-  assertNamedMenuImports(path, source, menuActionDependencies, 'menu action policy');
+  assertNamedCapabilityImports(path, source, menuActionDependencies, 'menu action policy');
+}
+
+const diagnosticSessionDependencies = new Map([
+  ['@earendil-works/pi-coding-agent', { types: ['ExtensionContext'], values: ['VERSION'] }],
+  ['node:module', { values: ['createRequire'] }],
+  ['src/diagnostics.ts', { types: ['DiagnosticSink'] }],
+  ['src/debug-log.ts', { types: ['JournalOptions'] }],
+  ['src/notifications.ts', { values: ['notify'] }],
+  ['src/runtime-health.ts', { values: ['RuntimeHealth'] }],
+  ['src/session-logging.ts', { values: ['SessionLogging'] }],
+]);
+function assertDiagnosticSessionImports(path, source) {
+  assertNamedCapabilityImports(path, source, diagnosticSessionDependencies, 'session diagnostic binding');
+}
+const presentationBindingDependencies = new Map([
+  ['src/application/footer-session.ts', new Map([
+    ['@earendil-works/pi-coding-agent', { types: ['ExtensionContext'] }],
+    ['src/diagnostics.ts', { values: ['diagnose'], types: ['DiagnosticSink'] }],
+    ['src/footer.ts', { values: ['FOOTER_FIELDS', 'FooterView', 'footerFirstMessage', 'footerUsage'], types: ['FooterData'] }],
+    ['src/host/pi/native-bindings.ts', { types: ['NativeFooterSlot'] }],
+  ])],
+  ['src/application/terminal-color-session.ts', new Map([
+    ['@earendil-works/pi-coding-agent', { types: ['ExtensionContext'] }],
+    ['src/diagnostics.ts', { values: ['diagnose'], types: ['DiagnosticSink'] }],
+    ['src/notifications.ts', { values: ['notify'] }],
+    ['src/terminal-colors.ts', { values: ['TerminalColors', 'processTerminalDefaults'], types: ['DefaultColors', 'ColorTheme'] }],
+    ['src/terminal-lifecycle.ts', { values: ['bindTerminalLifecycle'], types: ['TerminalLifecycle'] }],
+    ['src/host/pi/native-bindings.ts', { values: ['terminalAppearanceTracking'] }],
+  ])],
+]);
+function assertPresentationBindingImports(path, source) {
+  assertNamedCapabilityImports(path, source, presentationBindingDependencies.get(path), 'application presentation binding');
+}
+function assertEntryPresentationBindingOwnership(path, source) {
+  const resolveTarget = specifier => {
+    const explicit = projectPath(resolve(dirname(resolve(projectRoot, path)), specifier));
+    const planned = [explicit, `${explicit}.ts`, explicit.replace(/\.js$/u, '.ts')].find(target => presentationBindingModules.includes(target));
+    return planned ?? (explicit.endsWith('.ts') ? explicit : resolveRelativeImport(path, specifier));
+  };
+  const implementations = new Set(['src/footer.ts', 'src/terminal-colors.ts', 'src/terminal-lifecycle.ts']);
+  for (const reference of moduleReferences(source)) {
+    if (!reference.specifier.startsWith('.')) continue;
+    const target = resolveTarget(reference.specifier);
+    if (reference.kind !== 'type-only' && implementations.has(target))
+      throw new Error(`entry owns footer or terminal-color binding implementation: ${target} [${reference.syntax}]`);
+    if (presentationBindingModules.includes(target) && reference.syntax !== 'import')
+      throw new Error(`entry forwards or broadly loads application presentation binding: ${target}`);
+  }
+  for (const statement of source.statements) {
+    if (!ts.isImportDeclaration(statement) || !ts.isStringLiteralLike(statement.moduleSpecifier)) continue;
+    const specifier = statement.moduleSpecifier.text;
+    if (!specifier.startsWith('.')) continue;
+    const target = resolveTarget(specifier);
+    if (!presentationBindingModules.includes(target)) continue;
+    const expected = target.endsWith('/footer-session.ts') ? 'FooterSession' : 'TerminalColorSession';
+    const clause = statement.importClause, bindings = clause?.namedBindings;
+    assert.ok(clause && !clause.name && bindings && ts.isNamedImports(bindings) && bindings.elements.length > 0
+      && bindings.elements.every(element => (element.propertyName?.text ?? element.name.text) === expected),
+    `entry imports observation or broad application binding authority: ${target}`);
+  }
+  if (declarationExportNames(source).has('terminalColorDiagnostics'))
+    throw new Error('entry forwards application presentation binding: terminalColorDiagnostics');
+}
+const currentnessDependencies = new Map([['src/application/preferences.ts', { types: ['PreferenceScope'] }]]);
+function assertCurrentnessImports(path, source) {
+  assertNamedCapabilityImports(path, source, currentnessDependencies, 'application currentness scope');
+}
+function defaultEntryCallable(source) {
+  const declaration = source.statements.find(node => ts.isFunctionDeclaration(node) && node.body
+    && node.modifiers?.some(modifier => modifier.kind === ts.SyntaxKind.DefaultKeyword));
+  if (declaration) return declaration;
+  const assignment = source.statements.find(node => ts.isExportAssignment(node) && !node.isExportEquals);
+  const localDefault = source.statements
+    .filter(node => ts.isExportDeclaration(node) && !node.moduleSpecifier && !node.isTypeOnly)
+    .flatMap(node => node.exportClause && ts.isNamedExports(node.exportClause) ? [...node.exportClause.elements] : [])
+    .find(node => node.name.text === 'default' && !node.isTypeOnly);
+  let expression = assignment?.expression ?? localDefault?.propertyName ?? localDefault?.name;
+  const visited = new Set();
+  while (expression) {
+    if (ts.isParenthesizedExpression(expression) || ts.isAsExpression(expression) || ts.isTypeAssertionExpression(expression)
+      || ts.isSatisfiesExpression(expression) || ts.isNonNullExpression(expression)) { expression = expression.expression; continue; }
+    if (ts.isArrowFunction(expression) || ts.isFunctionExpression(expression)) return expression;
+    if (!ts.isIdentifier(expression) || visited.has(expression.text)) return undefined;
+    const name = expression.text; visited.add(name);
+    const local = source.statements.find(node => ts.isFunctionDeclaration(node) && node.body && node.name?.text === name);
+    if (local) return local;
+    expression = source.statements.filter(ts.isVariableStatement).flatMap(node => [...node.declarationList.declarations])
+      .find(node => ts.isIdentifier(node.name) && node.name.text === name)?.initializer;
+  }
+}
+function assertEntryCurrentnessOwnership(path, source) {
+  for (const reference of moduleReferences(source)) {
+    if (!reference.specifier.startsWith('.')) continue;
+    const explicit = projectPath(resolve(dirname(resolve(projectRoot, path)), reference.specifier));
+    const target = [explicit, `${explicit}.ts`, explicit.replace(/\.js$/u, '.ts')].find(value => currentnessModules.includes(value));
+    if (target && reference.syntax !== 'import') throw new Error('entry forwards or broadly loads application currentness scope');
+  }
+  const visit = node => {
+    if ((ts.isIdentifier(node) || ts.isStringLiteralLike(node)) && node.text === 'AbortController')
+      throw new Error('entry owns an application abort controller');
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  const factory = defaultEntryCallable(source);
+  for (const statement of factory?.body?.statements ?? []) {
+    if (!ts.isVariableStatement(statement) || statement.declarationList.flags & ts.NodeFlags.Const) continue;
+    for (const declaration of statement.declarationList.declarations) {
+      if (declaration.initializer && ts.isNumericLiteral(declaration.initializer))
+        throw new Error('entry owns a mutable application numeric generation slot');
+    }
+  }
+}
+function assertEntryDiagnosticOwnership(path, source) {
+  const implementations = new Set(['src/runtime-health.ts', 'src/session-logging.ts']);
+  for (const reference of moduleReferences(source)) {
+    if (!reference.specifier.startsWith('.')) continue;
+    const target = reference.specifier.endsWith('.ts')
+      ? projectPath(resolve(dirname(resolve(projectRoot, path)), reference.specifier))
+      : resolveRelativeImport(path, reference.specifier);
+    if (reference.kind !== 'type-only' && implementations.has(target))
+      throw new Error(`entry owns session diagnostic implementation: ${target} [${reference.syntax}]`);
+    if (diagnosticSessionModules.includes(target) && reference.syntax.startsWith('export'))
+      throw new Error(`entry forwards session diagnostic observation: ${target} [${reference.syntax}]`);
+  }
+  if (declarationExportNames(source).has('debugLoggingDiagnostics'))
+    throw new Error('entry forwards session diagnostic observation: debugLoggingDiagnostics');
 }
 
 function assertEntryPresentationOwnership(path, source) {
@@ -1574,4 +1703,206 @@ test('menu action dependency boundary accepts named policy data but rejects serv
     "import type { Container } from '@earendil-works/pi-tui';",
     "import { installTidyUi } from '../index.ts';",
   ]) assert.throws(() => assertMenuActionImports(path, parseSource(path, text)), /menu action policy (imports|requires)/);
+});
+
+
+test('session diagnostic binding owns only health and journal observation dependencies', () => {
+  for (const path of diagnosticSessionModules) assertDiagnosticSessionImports(path, parseSource(path));
+});
+
+test('entry assembles diagnostic binding without owning health, journals or debug forwarding', () => {
+  assertEntryDiagnosticOwnership(entryPath, parseSource(entryPath));
+});
+
+test('diagnostic binding import boundary permits explicit observers but rejects operational ownership', () => {
+  const path = diagnosticSessionModules[0];
+  for (const text of [
+    "import { VERSION, type ExtensionContext } from '@earendil-works/pi-coding-agent';",
+    "import { createRequire } from 'node:module';",
+    "import { SessionLogging as Journal } from '../session-logging.ts';",
+    "import { RuntimeHealth } from '../runtime-health.ts';",
+    "import type { DiagnosticSink as Sink } from '../diagnostics.ts';",
+    "type Context = import('@earendil-works/pi-coding-agent').ExtensionContext;",
+    "import type { JournalOptions } from '../debug-log.ts';",
+    "import { notify } from '../notifications.ts';",
+  ]) assertDiagnosticSessionImports(path, parseSource(path, text));
+  for (const text of [
+    "import { diagnose } from '../diagnostics.ts';",
+    "import * as health from '../runtime-health.ts';",
+    "import { RuntimeHealth as Health, type RuntimeIssue } from '../runtime-health.ts';",
+    "type Health = typeof import('../runtime-health.ts').RuntimeHealth;",
+    "import { TextJournal } from '../debug-log.ts';",
+    "import '../session-logging.ts';",
+    "export { SessionLogging } from '../session-logging.ts';",
+    "const health = import('../runtime-health.ts');",
+    "const health = require('../runtime-health.ts');",
+    "import health = require('../runtime-health.ts');",
+    "import { SyntaxRuntime } from './syntax-runtime.ts';",
+    "import { ApplicationPreferences } from './preferences.ts';",
+    "import { ExtensionSettings } from '../settings.ts';",
+    "import type { TidyMenuOwner } from './menu-contract.ts';",
+    "import type { SourceExecution } from '../highlighting/source-execution.ts';",
+    "import type { TidyUiController } from '../index.ts';",
+    "import { NativeSession } from '../host/pi/native-session.ts';",
+    "import type { FooterView } from '../footer.ts';",
+    "import { TerminalColors } from '../terminal-colors.ts';",
+    "import type { Container } from '@earendil-works/pi-tui';",
+    "import { ToolExecutionComponent } from '@earendil-works/pi-coding-agent';",
+    "import * as fs from 'node:fs/promises';",
+  ]) assert.throws(() => assertDiagnosticSessionImports(path, parseSource(path, text)), /session diagnostic binding (imports|requires)/);
+});
+
+test('entry diagnostic ownership boundary accepts composition and rejects implementation loads and forwarders', () => {
+  for (const text of [
+    "import { SessionDiagnostics as Observations } from './application/diagnostic-session.ts';",
+    "import type { RuntimeHealth } from './runtime-health.ts';",
+    "import type { SessionLogging } from './session-logging.ts';",
+  ]) assertEntryDiagnosticOwnership(entryPath, parseSource(entryPath, text));
+  for (const text of [
+    "import { RuntimeHealth as Health } from './runtime-health.ts';",
+    "import { RuntimeHealth } from './runtime-health.js';",
+    "const journal = require('./session-logging');",
+    "import * as logging from './session-logging.ts';",
+    "import { type RuntimeIssue, RuntimeHealth } from './runtime-health.ts';",
+    "export { SessionLogging } from './session-logging.ts';",
+    "const logging = import('./session-logging.ts');",
+    "const logging = require('./session-logging.ts');",
+    "import logging = require('./session-logging.ts');",
+    "export { debugLoggingDiagnostics as status } from './application/diagnostic-session.ts';",
+    "export { debugLoggingDiagnostics } from './application/../application/diagnostic-session.ts';",
+    "export type { SessionDiagnostics } from './application/diagnostic-session.ts';",
+    "export function debugLoggingDiagnostics() {}",
+  ]) assert.throws(() => assertEntryDiagnosticOwnership(entryPath, parseSource(entryPath, text)), /entry (owns|forwards) session diagnostic/);
+});
+
+
+test('application footer and terminal bindings import only their named observation and lifecycle capabilities', () => {
+  for (const path of presentationBindingModules) assertPresentationBindingImports(path, parseSource(path));
+});
+
+test('entry delegates footer and terminal lifetimes without implementing or forwarding their observations', () => {
+  assertEntryPresentationBindingOwnership(entryPath, parseSource(entryPath));
+});
+
+test('presentation binding capability controls reject owner bags and retain exact native fact exceptions', () => {
+  for (const [path, dependencies] of presentationBindingDependencies) {
+    for (const [target, bindings] of dependencies) {
+      const specifier = target.startsWith('src/') ? `../${target.slice(4)}` : target;
+      for (const name of bindings.values ?? []) assert.doesNotThrow(() => assertPresentationBindingImports(path,
+        parseSource(path, `import { ${name} as allowed } from '${specifier}';`)));
+      for (const name of bindings.types ?? []) assert.doesNotThrow(() => assertPresentationBindingImports(path,
+        parseSource(path, `import type { ${name} as Allowed } from '${specifier}';`)));
+    }
+    for (const specifier of ['./preferences.ts', './syntax-runtime.ts', '../index.ts', '../highlighting/source-execution.ts',
+      '../settings.ts', '../render-cache.ts', '../tidy-menu.ts', './menu-contract.ts', '../host/pi/native-session.ts']) {
+      for (const snippet of [`import { Owner as alias } from '${specifier}';`, `import type { Owner } from '${specifier}';`,
+        `import { type Model, Owner } from '${specifier}';`, `export * from '${specifier}';`,
+        `const owner = import('${specifier}');`, `const owner = require('${specifier}');`,
+        `type Owner = import('${specifier}').Owner;`]) {
+        assert.throws(() => assertPresentationBindingImports(path, parseSource(path, snippet)), /application presentation binding/);
+      }
+    }
+    assert.throws(() => assertPresentationBindingImports(path,
+      parseSource(path, "import { observeFooterSlot } from '../host/pi/native-bindings.ts';")), /application presentation binding/);
+  }
+  assert.throws(() => assertPresentationBindingImports(presentationBindingModules[0],
+    parseSource(presentationBindingModules[0], "import { terminalAppearanceTracking } from '../host/pi/native-bindings.ts';")), /application presentation binding/);
+});
+
+test('entry binding controls cover alternate paths, mixed imports and renamed debug forwarding', () => {
+  assert.doesNotThrow(() => assertEntryPresentationBindingOwnership(entryPath,
+    parseSource(entryPath, "import type { DefaultColors } from './terminal-colors.ts';")));
+  for (const suffix of ['.ts', '.js', '']) {
+    for (const [name, file] of [['FooterSession', 'footer-session'], ['TerminalColorSession', 'terminal-color-session']]) {
+      const specifier = `./application/../application/${file}${suffix}`;
+      assert.doesNotThrow(() => assertEntryPresentationBindingOwnership(entryPath,
+        parseSource(entryPath, `import { ${name} as Binding } from '${specifier}';`)));
+      for (const snippet of [`import { terminalColorDiagnostics as renamed } from '${specifier}'; export { renamed as probe };`,
+        `import { ${name}, terminalColorDiagnostics } from '${specifier}';`, `import * as Binding from '${specifier}';`,
+        `export { ${name} } from '${specifier}';`, `const Binding = require('${specifier}');`,
+        `const Binding = import('${specifier}');`]) {
+        assert.throws(() => assertEntryPresentationBindingOwnership(entryPath, parseSource(entryPath, snippet)), /entry/);
+      }
+    }
+  }
+  for (const specifier of ['./footer.ts', './terminal-colors.ts', './terminal-lifecycle.ts']) {
+    for (const snippet of [`import { Implementation as alias } from '${specifier}';`,
+      `import { type Model, Implementation } from '${specifier}';`, `export * from '${specifier}';`,
+      `const implementation = require('${specifier}');`, `const implementation = import('${specifier}');`]) {
+      assert.throws(() => assertEntryPresentationBindingOwnership(entryPath, parseSource(entryPath, snippet)), /entry owns/);
+    }
+  }
+  assert.throws(() => assertEntryPresentationBindingOwnership(entryPath,
+    parseSource(entryPath, 'export function terminalColorDiagnostics() {}')), /entry forwards/);
+});
+
+
+test('application currentness scope consumes only the existing preference-scope type', () => {
+  for (const path of currentnessModules) assertCurrentnessImports(path, parseSource(path));
+});
+
+test('entry borrows currentness without another abort owner or factory-level numeric generation', () => {
+  assertEntryCurrentnessOwnership(entryPath, parseSource(entryPath));
+});
+
+test('currentness boundary controls reject service and abort authorities without banning immutable captured tokens', () => {
+  const path = currentnessModules[0];
+  assert.doesNotThrow(() => assertCurrentnessImports(path, parseSource(path, "import type { PreferenceScope as Scope } from './preferences.ts';")));
+  for (const snippet of ["import { ApplicationPreferences } from './preferences.ts';", "import * as Preferences from './preferences.ts';",
+    "import { type PreferenceScope, ApplicationPreferences } from './preferences.ts';", "import { notify } from '../notifications.ts';",
+    "import type { ExtensionContext } from '@earendil-works/pi-coding-agent';", "import type { NativeSession } from '../host/pi/native-session.ts';",
+    "import { RuntimeHealth } from '../runtime-health.ts';", "import type { SourceExecution } from '../highlighting/source-execution.ts';",
+    "export * from './preferences.ts';", "const preferences = require('./preferences.ts');", "const preferences = import('./preferences.ts');",
+    "type Owner = import('./preferences.ts').ApplicationPreferences;"]) {
+    assert.throws(() => assertCurrentnessImports(path, parseSource(path, snippet)), /application currentness scope/);
+  }
+  assert.doesNotThrow(() => assertEntryCurrentnessOwnership(entryPath, parseSource(entryPath,
+    'export default function tidyUi() { const captured = 0; let label = ""; return captured; }')));
+  assert.doesNotThrow(() => assertEntryCurrentnessOwnership(entryPath, parseSource(entryPath,
+    'export function installTidyUi() { let instrumentation = 0; }')));
+  for (const snippet of ['export default function tidyUi() { let generation = 0; }',
+    'const Controller = AbortController;', 'const Controller = globalThis["AbortController"];']) {
+    assert.throws(() => assertEntryCurrentnessOwnership(entryPath, parseSource(entryPath, snippet)), /entry owns/);
+  }
+  for (const suffix of ['.ts', '.js', '']) {
+    const specifier = `./application/../application/scope${suffix}`;
+    assert.doesNotThrow(() => assertEntryCurrentnessOwnership(entryPath,
+      parseSource(entryPath, `import { ApplicationScope as Scope } from '${specifier}';`)));
+    for (const snippet of [`export * from '${specifier}';`, `export { ApplicationScope as Scope } from '${specifier}';`,
+      `const Scope = require('${specifier}');`, `const Scope = import('${specifier}');`]) {
+      assert.throws(() => assertEntryCurrentnessOwnership(entryPath, parseSource(entryPath, snippet)), /entry forwards/);
+    }
+  }
+});
+
+for (const [form, snippet] of [
+  ['renamed declaration', 'export default function entry() { let generation = 0; }'],
+  ['anonymous declaration', 'export default function () { let generation = 0; }'],
+  ['arrow expression', 'export default () => { let generation = 0; };'],
+  ['referenced callable', 'const entry = () => { let generation = 0; }; export default entry;'],
+  ['local function export list', 'function tidyUi() { let generation = 0; } export { tidyUi as default };'],
+  ['local arrow export list', 'const entry = () => { let generation = 0; }; export { entry as default };'],
+  ['string-named export list', "const entry = () => { let generation = 0; }; export { entry as 'default' };"],
+  ['parenthesized assertion', 'export default ((() => { let generation = 0; }) as (() => void));'],
+  ['type assertion', 'export default <(() => void)>(() => { let generation = 0; });'],
+  ['satisfies expression', 'export default (() => { let generation = 0; }) satisfies (() => void);'],
+  ['nonnull expression', 'export default (() => { let generation = 0; })!;'],
+  ['local alias chain', 'const core = () => { let generation = 0; }; const entry = core; export default entry;'],
+  ['local function expression', 'const entry = function () { let generation = 0; }; export default entry;'],
+]) {
+  test(`entry currentness rejects a second generation in the ${form} default export`, () => {
+    assert.throws(() => assertEntryCurrentnessOwnership(entryPath, parseSource(entryPath, snippet)),
+      /entry owns a mutable application numeric generation slot/);
+  });
+}
+
+test('entry currentness does not confuse an unrelated named helper with the actual default entry', () => {
+  assert.doesNotThrow(() => assertEntryCurrentnessOwnership(entryPath, parseSource(entryPath,
+    'function tidyUi() { let instrumentation = 0; } export default function entry() { const captured = 0; return captured; }')));
+});
+
+
+test('entry currentness resolves a local default export list without taking ownership of an unrelated helper', () => {
+  assert.doesNotThrow(() => assertEntryCurrentnessOwnership(entryPath, parseSource(entryPath,
+    'function tidyUi() { let instrumentation = 0; } const entry = () => { const captured = 0; return captured; }; export { entry as default };')));
 });

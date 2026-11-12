@@ -1,7 +1,7 @@
 import { createEventRecorder } from './terminal-output.ts';
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import type { TUI } from '@earendil-works/pi-tui';
-import { debugLoggingDiagnostics } from '../../src/index.ts';
+import { debugLoggingDiagnostics } from '../../src/application/diagnostic-session.ts';
 import presentationDriver from './presentation-driver.ts';
 import syntaxDriver from './syntax-driver.ts';
 import { SyntaxRuntime } from '../../src/application/syntax-runtime.ts';

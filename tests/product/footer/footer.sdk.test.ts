@@ -12,7 +12,8 @@ import { renderEditorStatus, directoryStatus } from "../../../src/editor-status.
 import { InteractiveMode } from "../../../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/interactive-mode.js";
 import { initTheme, theme as nativeTheme } from "../../../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js";
 import { stripVTControlCharacters } from "node:util";
-import { setAppearance } from "../../helpers/menu-driver.ts";
+import { menuPage, setAppearance } from "../../helpers/menu-driver.ts";
+import type { JournalOptions } from "../../../src/debug-log.ts";
 import { Container, CustomEditor, Text, editorSetup, fixtureSettings, fixtureSyntaxOptions, plain, tidyUi, type ExtensionAPI, type ExtensionContext } from "../../fixtures/sdk-contract-support.ts";
 
 test("editor directory abbreviates the native home only at a path boundary before fitting", () => {
@@ -299,7 +300,8 @@ test("Git repository environment isolation removes case-variant redirect keys", 
 const footerForeignEditor: NonNullable<ReturnType<ExtensionContext["ui"]["getEditorComponent"]>> =
   (value, theme, keys) => new CustomEditor(value, theme, keys);
 
-async function footerSetup(foreignEditor = false, selectorAtStartup = false) {
+async function footerSetup(foreignEditor = false, selectorAtStartup = false,
+  logging: false | Omit<JournalOptions, 'warn' | 'enabled'> = false) {
   const { SessionManager } = await import("@earendil-works/pi-coding-agent");
   const { FooterComponent } = await import("../../../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/components/footer.js");
   initTheme("dark");
@@ -344,13 +346,14 @@ async function footerSetup(foreignEditor = false, selectorAtStartup = false) {
       cost: { input: cost, output: 0, cacheRead: 0, cacheWrite: 0, total: cost } } });
   if (foreignEditor) ctx.ui.setEditorComponent(footerForeignEditor);
   if (selectorAtStartup) { input.clear(); input.addChild(new Text("NATIVE_RELOAD_BOX", 0, 0)); }
-  append(); tidyUi(pi as unknown as ExtensionAPI, { logging: false, terminalDefaults: {}, localPreferences: { appearanceEnabled: true, loggingEnabled: true },
-    settings: fixtureSettings(), syntax: fixtureSyntaxOptions }); await emit('session_start');
+  append(); tidyUi(pi as unknown as ExtensionAPI, { logging, terminalDefaults: {}, localPreferences: { appearanceEnabled: true, loggingEnabled: true },
+    settings: fixtureSettings(), syntax: fixtureSyntaxOptions }); await emit('session_start', { reason: 'startup' });
   return { root, host, footer, native, ctx, manager, statuses, append, emit, editor, input,
     render: (width = 140) => footer.children[0]!.render(width), counts: () => ({ scans, contextReads }), authReads: () => authReads,
     nameReads: () => nameReads,
+    clearLayouts: () => menuPage(command! as any, ctx as unknown as ExtensionContext, ['Status & troubleshooting', 'Display cache', 'Clear saved layouts']),
     context(value: typeof context) { context = value; }, auto(value: boolean) { auto = value; }, subscription(value: boolean) { subscription = value; },
-    control: (action: string) => setAppearance(command! as any, ctx as unknown as ExtensionContext, action === 'on'), close: () => emit("session_shutdown") };
+    control: (action: string) => setAppearance(command! as any, ctx as unknown as ExtensionContext, action === 'on'), close: () => emit("session_shutdown", { reason: 'quit' }) };
 }
 
 test("footer uses structured native usage with requested ordering and no cwd/model", async () => {
@@ -860,4 +863,160 @@ test('Git diagnostics: expected absent reftable is quiet while refresh and watch
     assert.equal(gitDiagnostics().discoveries, before.discoveries + 4);
     assert.equal(gitDiagnostics().watchers, before.watchers + 2); assert.equal(source.branch(cwd), 'first');
   } finally { source.dispose(); rmSync(cwd, { recursive: true, force: true }); }
+});
+
+
+test('footer queued editor-loss release preserves a later public slot owner', async () => {
+  const f = await footerSetup();
+  try {
+    const owned = f.footer.children[0];
+    assert.equal(owned !== f.native, true, 'eligible startup installs the owned footer');
+    f.ctx.ui.setEditorComponent(footerForeignEditor);
+    f.root.render(100);
+    assert.equal(f.footer.children[0] === owned, true, 'measurement must not synchronously mutate the footer container');
+    const foreign = { render: () => ['LATER_QUEUED_FOOTER'], invalidate() {} };
+    f.ctx.ui.setFooter(() => foreign);
+    await Promise.resolve();
+    assert.equal(f.footer.children[0] === foreign, true, 'queued release cannot restore over a replacement');
+    f.ctx.ui.setEditorComponent(undefined);
+    f.root.render(100); await Promise.resolve();
+    assert.equal(f.footer.children[0] === foreign, true, 'returning input cannot reclaim the replacement');
+  } finally { await f.close(); }
+});
+
+test('footer queued initial install rechecks replacement and shutdown after measurement', async () => {
+  for (const transition of ['replacement', 'shutdown'] as const) {
+    const f = await footerSetup(false, true);
+    try {
+      assert.equal(f.footer.children[0] === f.native, true, 'selector postpones initial installation');
+      f.input.clear(); f.input.addChild(f.editor);
+      f.root.render(100);
+      assert.equal(f.footer.children[0] === f.native, true, 'initial install waits until measurement returns');
+      if (transition === 'replacement') {
+        const foreign = { render: () => ['LATER_QUEUED_STARTUP_FOOTER'], invalidate() {} };
+        f.ctx.ui.setFooter(() => foreign);
+        await Promise.resolve();
+        assert.equal(f.footer.children[0] === foreign, true, 'queued startup must validate the current slot owner');
+      } else {
+        const closing = f.emit('session_shutdown', { reason: 'reload' });
+        await Promise.resolve();
+        assert.equal(f.footer.children[0] === f.native, true, 'shutdown retires the queued install before source cleanup settles');
+        await closing;
+        assert.equal(f.footer.children[0] === f.native, true);
+      }
+    } finally { await f.close(); }
+  }
+});
+
+
+test('footer reinstall retains the saved name but reacquires exactly one per-view semantic snapshot', async () => {
+  const f = await footerSetup();
+  try {
+    f.statuses.clear();
+    f.manager.appendSessionInfo('RETAINED_FOOTER_NAME'); await f.emit('session_info_changed');
+    const initial = f.render(), first = f.counts(), names = f.nameReads();
+    assert.equal(initial.some(row => stripVTControlCharacters(row).includes('RETAINED_FOOTER_NAME')), true);
+    await f.control('off'); await f.control('on');
+    const restored = f.render();
+    assert.deepEqual(restored, initial);
+    assert.equal(f.nameReads(), names, 'appearance replacement does not invalidate the factory-lived name');
+    assert.deepEqual(f.counts(), { scans: first.scans + 1, contextReads: first.contextReads + 1 }, 'a new view owns a fresh semantic snapshot');
+    const warm = f.counts();
+    for (let i = 0; i < 8; i++) { f.render(80); f.render(140); }
+    assert.deepEqual(f.counts(), warm); assert.equal(f.nameReads(), names);
+    await f.control('off');
+    f.manager.appendSessionInfo('OFF_FOOTER_NAME'); await f.emit('session_info_changed');
+    await f.control('on');
+    assert.equal(f.render().some(row => stripVTControlCharacters(row).includes('OFF_FOOTER_NAME')), true);
+    assert.equal(f.nameReads(), names + 1, 'metadata delivered while off invalidates the name for the next view');
+    assert.deepEqual(f.counts(), { scans: warm.scans + 1, contextReads: warm.contextReads + 1 });
+    const updated = f.counts(); f.render(80); f.render();
+    assert.deepEqual(f.counts(), updated); assert.equal(f.nameReads(), names + 1);
+  } finally { await f.close(); }
+});
+
+test('footer clear-saved-layouts action releases rows without reacquiring usage or title snapshots', async () => {
+  const { footerDiagnostics } = await import('../../../src/footer.ts');
+  const f = await footerSetup();
+  try {
+    f.manager.appendMessage({ role: 'user', content: 'CLEAR_LAYOUT_TITLE', timestamp: 2 });
+    const first = f.render(), counts = f.counts(), diagnostics = footerDiagnostics(), names = f.nameReads();
+    assert.equal(f.host.customFooter.retainedMemory().entries, 1);
+    await f.clearLayouts();
+    assert.equal(f.host.customFooter.retainedMemory().entries, 0, 'the real command actually releases the footer layout');
+    assert.deepEqual(f.counts(), counts);
+    assert.deepEqual(f.render(), first);
+    assert.equal(f.host.customFooter.retainedMemory().entries, 1);
+    const rebuilt = footerDiagnostics();
+    assert.equal(rebuilt.aggregations, diagnostics.aggregations);
+    assert.equal(rebuilt.titleLookups, diagnostics.titleLookups); assert.equal(rebuilt.titleEntries, diagnostics.titleEntries);
+    assert.deepEqual(f.counts(), counts); assert.equal(f.nameReads(), names);
+    assert.equal(rebuilt.layouts, diagnostics.layouts + 1, 'one layout rebuild is distinct from semantic aggregation');
+    for (let i = 0; i < 8; i++) f.render();
+    assert.deepEqual(footerDiagnostics(), rebuilt);
+  } finally { await f.close(); }
+});
+
+test('retained footer views keep their installation journal while lifecycle logs follow the current journal', async (t) => {
+  const { SessionLogging } = await import('../../../src/session-logging.ts');
+  type Writer = InstanceType<typeof SessionLogging>;
+  const status = SessionLogging.prototype.status, writers = new Map<string, Writer>();
+  const deliveries: { session: string; area: string; message: string }[] = [];
+  t.mock.method(SessionLogging.prototype, 'status', function (this: Writer) {
+    const current = status.call(this);
+    if (!writers.has(current.session)) {
+      writers.set(current.session, this);
+      const sink = this.sink;
+      t.mock.method(this, 'sink', (...args: Parameters<Writer['sink']>) => {
+        deliveries.push({ session: current.session, area: args[1], message: args[2] });
+        sink(...args);
+      });
+    }
+    return current;
+  });
+  const directory = mkdtempSync(join(tmpdir(), 'footer-journal-routing-'));
+  let f: Awaited<ReturnType<typeof footerSetup>> | undefined;
+  const snapshot = 'Footer usage snapshot refreshed by existing semantic boundary';
+  const disposed = 'Public footer disposal observed; no replacement of a later owner';
+  const released = 'Owned footer released through public UI; native placement restored';
+  const colorsRemoved = 'Terminal-color observer removed from public widget';
+  const destinations = (message: string) => deliveries.filter(row => row.message === message).map(row => row.session);
+  try {
+    f = await footerSetup(false, false, { root: directory });
+    const first = f.manager.getSessionId(), view = f.footer.children[0];
+    assert.ok(writers.has(first), 'the real factory selected a real first journal');
+    await writers.get(first)!.ready();
+    assert.equal(writers.get(first)!.status().state, 'active');
+    f.render();
+    assert.deepEqual(destinations(snapshot), [first], 'cold view records reach its installation journal');
+
+    f.manager.newSession(); f.append();
+    const second = f.manager.getSessionId(); assert.notEqual(second, first);
+    await f.emit('session_start', { reason: 'startup' });
+    assert.equal(f.footer.children[0] === view, true, 'same presentation retains its existing public footer view');
+    assert.ok(writers.has(second), 'session replacement selected the second actual journal');
+    await writers.get(second)!.ready();
+    assert.equal(writers.get(second)!.status().state, 'active');
+    assert.equal(writers.get(first)!.status().capture, false, 'the outgoing journal is already closed');
+    deliveries.length = 0;
+    f.render();
+    assert.deepEqual(destinations(snapshot), [first], 'the retained view still invokes its old sink, not the current journal');
+
+    deliveries.length = 0;
+    await f.control('off');
+    assert.deepEqual(destinations(released), [second], 'public footer release selects the current journal');
+    assert.deepEqual(destinations(colorsRemoved), [second], 'color-widget removal selects the current journal');
+    assert.deepEqual(destinations(disposed), [first], 'public view disposal retains the installation sink');
+
+    await f.control('on');
+    deliveries.length = 0;
+    await f.close();
+    assert.deepEqual(destinations(released), [], 'the released current journal is not selected during footer teardown');
+    assert.deepEqual(destinations(colorsRemoved), [], 'the released current journal is not selected during color teardown');
+    assert.deepEqual(destinations(disposed), [second], 'late view delivery invokes its captured, now-closed sink');
+    for (const writer of writers.values()) await writer.flush();
+  } finally {
+    await f?.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
 });
