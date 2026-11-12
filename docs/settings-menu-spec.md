@@ -2,14 +2,19 @@
 
 ## Service and popup boundaries
 
-Four responsibilities cooperate without sharing one lifetime:
+These responsibilities cooperate across factory, session and popup lifetimes. The fixed data model owns no lifecycle:
 
 | Owner | Responsibility | Does not own |
 |---|---|---|
 | `ExtensionSettings` (`src/settings.ts`) | Validate/load the file, serialize local writes, preserve unknown data and watch external publication | Overlay state or provider startup |
 | `ApplicationPreferences` (`src/application/preferences.ts`) | Factory-lived confirmed intent, one initial read, validated publications and all confirmed theme/shared-switch admissions | Native activation, popup navigation or a second persistence queue |
 | `TidyMenu` (`src/tidy-menu.ts`) | One overlay with root/theme/support/service/log/cache pages, list/search/scroll state and the current preview rollback point | Session runtime, saved-file authority or source work |
-| Host `TidyMenuOwner` (`src/index.ts`) | Supply cached snapshots; connect typed actions and preference decisions to current presentation/color/log/native owners | Settings write policy, a second settings file or independent highlight queue |
+| Fixed menu data (`src/application/menu-contract.ts`, `menu-model.ts`) | Canonical action/owner/snapshot/page/row contracts; pure row, intent-to-action and status/cache text projections | Popup state, native widgets, service acquisition or action effects |
+| Composition `TidyMenuOwner` (`src/index.ts`) | Borrow cached facts and synchronous cache receipts; connect typed actions and preference decisions to current presentation/color/log/native owners | Settings write policy, a second settings file or independent highlight queue |
+
+The overlay imports its shared contracts directly from `menu-contract.ts`; it neither declares nor re-exports them. `menu-model.ts` derives fixed labels, help, values, availability and status text from supplied data, with no Pi UI dependency. Composition still borrows the actual cached facts and reads layout/footer/heap counters only when cache details are requested; text projection does not collect those facts or own their lifetimes.
+
+Each row has a stable widget value and a closed typed intent, separate from its label and last displayed value. Activation resolves switch negation and the root family/variant against a fresh snapshot, while picker choices use that visit's frozen variant. A rendered On/Off value or availability flag is not authorization to submit a stale action. Search previews use the newly projected first row, even before the native list has rendered that filter.
 
 The popup's `snapshot()` is read-only cached inspection. `prepareThemes()` consumes the application-supplied choice or its existing readiness producer without reading settings; `previewTheme()` changes the current palette selection synchronously without persistence or provider activation. `act()` handles confirmed switches/themes and explicit maintenance actions. The host guards asynchronous continuations with its session epoch; the popup separately guards its own close/page/visit identity. A provider generation change therefore need not destroy navigation, while a late action cannot reopen a closed overlay.
 

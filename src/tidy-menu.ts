@@ -1,39 +1,10 @@
 import type { Theme } from '@earendil-works/pi-coding-agent';
 import { Input, SelectList, getKeybindings, matchesKey, truncateToWidth, visibleWidth, wrapTextWithAnsi,
-  type Component, type SelectItem, type TuiMouseEvent, type TuiMouseEventResult } from '@earendil-works/pi-tui';
+  type Component, type TuiMouseEvent, type TuiMouseEventResult } from '@earendil-works/pi-tui';
 import { readableDiagnosticText } from './debug-log.ts';
-import { displayPath } from './display-path.ts';
 import { copyThemePreference, type ThemePreference, type ThemeVariant } from './appearance/theme-preference.ts';
-import type { Switches } from './settings.ts';
-import type { SyntaxMenuOutcome, SyntaxMenuSnapshot } from './application/syntax-menu.ts';
-import type { RuntimeHealthSnapshot } from './runtime-health.ts';
-import type { SessionLogging } from './session-logging.ts';
-import { SEMANTIC_PROTOCOL_VERSION as PROTOCOL_VERSION } from './occipital/semantic-protocol.ts';
-import { THEME_FAMILIES, themeFamilyEntry } from './themes/catalogue.ts';
-import { resolveTheme } from './themes/selection.ts';
-
-export type TidyMenuAction = { kind: 'switch'; key: keyof Switches; value: boolean }
-  | { kind: 'theme'; choice: ThemePreference }
-  | { kind: 'reapplyAppearance' | 'reapplyColors' | 'clearCache' | 'retryLogging' | 'snapshotLogs' };
-export interface TidyMenuSnapshot extends Switches {
-  selected: ThemePreference;
-  appearance: string;
-  terminalColors: string;
-  syntax?: SyntaxMenuSnapshot;
-  logs?: ReturnType<SessionLogging['status']>;
-  health?: RuntimeHealthSnapshot;
-}
-export interface TidyMenuOwner {
-  /** Cached state only. Opening the root/status never constructs or starts syntax. */
-  snapshot(): TidyMenuSnapshot;
-  prepareThemes(): Promise<void>;
-  /** Apply cached selection synchronously, without persisting or starting a provider. */
-  previewTheme(choice: ThemePreference): void;
-  act(action: TidyMenuAction): Promise<SyntaxMenuOutcome & { cache?: string[] }>;
-  cacheDetails(): string[];
-}
-type Page = 'root' | 'themes' | 'support' | 'service' | 'logs' | 'cache';
-interface Item extends SelectItem { valueText?: string; submenu?: boolean; disabled?: boolean; help: string }
+import type { TidyMenuAction, TidyMenuSnapshot, TidyMenuOwner, TidyMenuPage as Page, TidyMenuRow as Item, TidyMenuIntent } from './application/menu-contract.ts';
+import { menuRows, menuDetails, menuAction, menuThemeChoice, menuPageTitle, menuNavigation } from './application/menu-model.ts';
 const columnGap = 2;
 function itemColumns(items: Item[], width = Infinity) {
   let label = 0, value = 0;
@@ -47,21 +18,7 @@ function itemColumns(items: Item[], width = Infinity) {
   } else { label = Math.min(label, Math.max(1, available - arrow)); value = 0; }
   return { label, value, arrow };
 }
-const title: Record<Page, string> = { root: 'Tidy UI', themes: 'Code color theme', support: 'Status & troubleshooting',
-  service: 'Highlighting service details', logs: 'Diagnostic logs', cache: 'Display cache' };
-const onOff = (value: boolean) => value ? 'On' : 'Off';
 const safe = (value: string) => readableDiagnosticText(value);
-
-export function themeLabels(themes: typeof THEME_FAMILIES): string[] {
-  const labels = themes.map(theme => safe(theme.label));
-  return themes.map((theme, index) => labels.filter(label => label === labels[index]).length > 1 ||
-    ['Follow Pi theme', 'Back'].includes(labels[index]!)
-    ? `${labels[index]} [${JSON.stringify(theme.id)}]` : labels[index]!);
-}
-function selectedLabel(state: TidyMenuSnapshot): string {
-  const choice = state.selected;
-  return choice.kind === 'pi' ? 'Follow Pi' : safe(themeFamilyEntry(choice.id)?.label ?? choice.id);
-}
 
 /** One invocation owns one overlay. Syntax/provider generations cannot retire it. */
 export class TidyMenu implements Component {
@@ -152,16 +109,12 @@ export class TidyMenu implements Component {
     const original = this.originalTheme; this.originalTheme = undefined; this.themePreviewed = false; ++this.themeVisit;
     if (original) this.owner.previewTheme(original);
   }
-  private themeChoice(value: string): ThemePreference | undefined {
-    const variant = this.themeVariant;
-    if (!variant) return undefined;
-    if (value === 'theme:pi') return { kind: 'pi', variant };
-    const id = value.startsWith('theme:') ? value.slice(6) : undefined;
-    return id && themeFamilyEntry(id) ? { kind: 'theme', id, variant } : undefined;
+  private rowIntent(value: string): TidyMenuIntent | undefined {
+    return this.items.find(item => item.value === value)?.intent;
   }
-  private previewTheme(value: string): void {
+  private previewTheme(intent: TidyMenuIntent | undefined): void {
     if (this.closed || this.busy || this.page !== 'themes' || !this.originalTheme) return;
-    const choice = this.themeChoice(value);
+    const choice = intent && menuThemeChoice(intent, this.themeVariant);
     if (choice) { this.themePreviewed = true; this.owner.previewTheme(choice); }
   }
   private confirmTheme(choice: ThemePreference): void {
@@ -186,124 +139,41 @@ export class TidyMenu implements Component {
   }
   private activate(value: string): void {
     if (this.closed || this.busy) return;
+    const intent = this.rowIntent(value);
+    if (!intent) return;
     const state = this.owner.snapshot();
-    if (value === 'back') { this.back(); return; }
-    if (value === 'close') { this.close(); return; }
-    if (['themes', 'support', 'service', 'logs', 'cache'].includes(value)) { this.open(value as Page); return; }
-    const switches: Record<string, keyof Switches> = { appearance: 'appearanceEnabled', colors: 'terminalColorsEnabled', native: 'nativeHighlightingEnabled', logging: 'loggingEnabled' };
-    const key = switches[value];
-    if (key) { void this.perform({ kind: 'switch', key, value: !state[key] }); return; }
-    if (value === 'refresh-status') { this.listKey = ''; this.feedback('Status refreshed.'); return; }
-    if (value === 'refresh-cache') { this.cache = this.owner.cacheDetails(); this.feedback('Cache statistics refreshed.'); return; }
-    if (value === 'theme-variant' && state.selected.kind === 'theme') {
-      this.confirmTheme({ kind: 'theme', id: state.selected.id, variant: state.selected.variant === 'dark' ? 'light' : 'dark' }); return;
+    switch (intent.kind) {
+      case 'back': this.back(); return;
+      case 'close': this.close(); return;
+      case 'navigate': this.open(intent.page); return;
+      case 'refreshStatus': this.listKey = ''; this.feedback('Status refreshed.'); return;
+      case 'refreshCache': this.cache = this.owner.cacheDetails(); this.feedback('Cache statistics refreshed.'); return;
+      case 'toggle':
+      case 'toggleVariant':
+      case 'choosePi':
+      case 'chooseFamily':
+      case 'maintain': {
+        const action = menuAction(intent, state, this.themeVariant);
+        if (action?.kind === 'theme') this.confirmTheme(action.choice);
+        else if (action) void this.perform(action);
+        return;
+      }
+      default: { const unreachable: never = intent; return unreachable; }
     }
-    if (value === 'theme:pi' || value.startsWith('theme:')) {
-      const choice = this.themeChoice(value);
-      if (choice) this.confirmTheme(choice);
-      return;
-    }
-    if (['reapplyAppearance', 'reapplyColors', 'clearCache', 'retryLogging', 'snapshotLogs'].includes(value))
-      void this.perform({ kind: value as Exclude<TidyMenuAction, { key: unknown } | { choice: unknown }>['kind'] });
-  }
-  private navigation(): string {
-    return this.page === 'root' ? '↑↓ Navigate · Enter Select · Esc Close' : '↑↓ Navigate · Enter Select · Esc Back';
   }
   preferredWidth(): number {
     if (this.closed) return 1;
     const items = this.pageItems(this.owner.snapshot(), false);
     const columns = itemColumns(items);
     const content = 2 + columns.label + (columns.value ? columnGap + columns.value : 0) + columns.arrow;
-    return Math.min(72, Math.max(content, visibleWidth(title[this.page]), visibleWidth(this.navigation())) + 2);
+    return Math.min(72, Math.max(content, visibleWidth(menuPageTitle(this.page)), visibleWidth(menuNavigation(this.page))) + 2);
   }
   private pageItems(state: TidyMenuSnapshot, filtered = true): Item[] {
-    const back: Item = { value: 'back', label: 'Back', help: 'Return to the previous page.' };
-    const item = (value: string, label: string, help: string, valueText?: string, submenu = false, disabled = false): Item => ({ value, label, help, valueText, submenu, disabled });
-    switch (this.page) {
-      case 'root': return [
-        item('appearance', 'Tidy UI appearance', 'Style cards, messages, input and footer. Diagnostic logs are independent.', onOff(state.appearanceEnabled)),
-        item('themes', 'Code color theme', 'Colors for Bash commands and file previews; does not change Pi’s overall theme.', selectedLabel(state), true),
-        item('theme-variant', 'Code color variant', 'Choose the dark or light palette within the selected family.', state.selected.variant === 'dark' ? 'Dark' : 'Light', false, state.selected.kind === 'pi'),
-        item('colors', 'Set terminal colors from Pi theme', 'Set background and default text color from Pi’s theme. Pi controls automatic themes.', onOff(state.terminalColorsEnabled)),
-        item('support', 'Status & troubleshooting', 'Check what is active, resolve display problems, or collect diagnostics.', state.health?.active ? 'Issues' : undefined, true),
-        item('close', 'Close', 'Close this panel without changing anything.'),
-      ];
-      case 'themes': {
-        if (this.themeLoading || this.themeLoadFailed) return [back];
-        const query = filtered ? this.search.getValue().toLocaleLowerCase() : '';
-        const labels = themeLabels(THEME_FAMILIES);
-        const choices = [item('theme:pi', 'Follow Pi theme', 'Use Pi’s code colors.', state.selected.kind === 'pi' ? 'Selected' : undefined),
-          ...THEME_FAMILIES.map((family, index) => item(`theme:${family.id}`, labels[index]!, 'Preview this family. Enter saves; Esc restores the previous choice.',
-            state.selected.kind === 'theme' && state.selected.id === family.id ? 'Selected' : undefined))];
-        return [...choices.filter(choice => choice.label.toLocaleLowerCase().includes(query) ||
-          choice.value.slice(6).toLocaleLowerCase().includes(query)), back];
-      }
-      case 'support': return [
-        item('reapplyAppearance', 'Reapply Tidy UI appearance', 'Retry styling without switching it off first. Does not change your current preference.'),
-        item('reapplyColors', 'Reapply terminal colors', 'Retry the current color preference. Does not turn synchronization on if it is off.'),
-        item('native', 'Use Occipital highlighting', 'Native code colors. Off keeps Pi fallback for files and one color for Bash commands.', onOff(state.nativeHighlightingEnabled)),
-        item('service', 'Highlighting service details', 'Versions, connection, selected and effective code colors.', undefined, true),
-        item('logs', 'Diagnostic logs', 'Capture, paths, errors, and a snapshot of the current state.', undefined, true),
-        item('cache', 'Display cache', 'Statistics and cleanup of saved display layouts, not conversation or syntax data.', undefined, true),
-        item('refresh-status', 'Refresh status', 'Read current state only; never starts a service or highlights code.'), back,
-      ];
-      case 'logs': return [item('logging', 'Record diagnostic logs', 'Capture extension diagnostics independently of appearance.', onOff(state.loggingEnabled)),
-        ...(state.logs?.state === 'failed' ? [item('retryLogging', 'Retry recording', 'Retry the failed log destination without toggling the setting.')] : []),
-        item('snapshotLogs', 'Write state snapshot', 'Write current extension state to enabled diagnostic logs; does not enable capture.'),
-        item('refresh-status', 'Refresh status', 'Read existing logging counters and paths only.'), back];
-      case 'cache': return [item('refresh-cache', 'Refresh statistics', 'Read current cache counters.'),
-        item('clearCache', 'Clear saved layouts', 'Remove only display layouts. Following frames rebuild them; conversation and syntax data stay intact.'), back];
-      case 'service': return [back];
-    }
-  }
-  private healthSummary(state: TidyMenuSnapshot, syntaxOnly = false): string[] {
-    const health = state.health;
-    if (!health) return [];
-    const issues = health.issues.filter(issue => !syntaxOnly || issue.area === 'syntax');
-    const last = health.last;
-    return [
-      ...(!syntaxOnly ? [`Runtime status: ${health.active ? 'Problems detected' : 'No active runtime errors'}`,
-        `Runtime errors: ${health.errors}; active: ${health.active}`] : []),
-      ...issues.map(issue => `Unresolved ${issue.area}: ${safe(issue.code)} (${safe(issue.operation)}); ${safe(issue.time)}`),
-      ...(last && (!syntaxOnly || last.area === 'syntax') ? [`Last runtime error: ${safe(last.code)}; ${safe(last.time)}; ${last.state === 'released' ? 'owner removed; not a confirmed recovery' : last.state}`] : []),
-    ];
+    return menuRows(this.page, state, { query: filtered ? this.search.getValue() : undefined,
+      themeLoading: this.themeLoading, themeLoadFailed: this.themeLoadFailed });
   }
   private summary(state: TidyMenuSnapshot): string[] {
-    if (this.page === 'support') return [...this.healthSummary(state), `Appearance: ${state.appearance}`, `Terminal colors: ${state.terminalColors}`,
-      `Code colors: ${!state.appearanceEnabled ? 'Pi interface' : selectedLabel(state)}`];
-    if (this.page === 'themes') {
-      if (this.themeLoading) return ['Loading saved code theme…'];
-      if (this.themeLoadFailed) return ['Saved code theme could not be loaded. Reopen this page to retry.'];
-      const lines = [`Selected: ${selectedLabel(state)}`];
-      if (resolveTheme(state.selected).missing)
-        lines.push('The saved palette is unknown; using Follow Pi colors.');
-      if (state.selected.kind === 'theme' && !state.nativeHighlightingEnabled)
-        lines.push('Local palette colors remain active while syntax highlighting is off.');
-      else if (state.selected.kind === 'theme' && state.syntax?.provider.availability !== 'ready')
-        lines.push('Local palette colors remain active while the highlighting service is unavailable.');
-      return lines;
-    }
-    if (this.page === 'logs') {
-      const log = state.logs;
-      return [...this.healthSummary(state), ...(log ? [`Recording: ${log.capture ? log.state === 'failed' ? 'Failed; retry available' : 'On' : 'Off'}`,
-        ...(log.state === 'off' ? ['No log file created.'] : [`Journal: ${safe(displayPath(log.path))}`, `Session index: ${safe(displayPath(log.commonPath))}`]),
-        `Run: ${safe(log.run)}; session: ${safe(log.session)}`,
-        `Session name: ${safe(log.name ?? 'unknown')}`,
-        `Records: ${log.records}; writes: ${log.writes}`,
-        `Dropped records: ${log.dropped}; log write errors: ${log.writeErrors}`,
-        ...(log.dropped ? ['Some diagnostic records were lost because the log buffer was full.'] : []),
-        ...(log.failure ? [`Last logging issue: ${safe(log.failure)}`] : [])] : ['Diagnostic logging is unavailable in this host.'])];
-    }
-    if (this.page === 'cache') return this.cache;
-    if (this.page === 'service') {
-      const syntax = state.syntax, provider = syntax?.provider;
-      return [...this.healthSummary(state, true), `Native highlighting: ${onOff(state.nativeHighlightingEnabled)}`, `Service: ${provider ? `${provider.availability} (${provider.reason})` : 'Not started'}`,
-        `Provider: ${provider?.kind ?? 'none'}`, `Daemon version: ${safe(provider?.description?.backend_version ?? 'unavailable')}`,
-        `Protocol: ${provider?.description ? PROTOCOL_VERSION : 'unavailable'}`,
-        `Standalone version: ${safe(syntax?.standaloneVersion ?? 'not loaded')}`, `Selected theme: ${selectedLabel(state)}`,
-        `Effective code palette: ${safe(syntax?.effective?.label ?? 'unavailable')}`, `Last issue: ${safe(syntax?.lastIssue ?? 'none')}`];
-    }
-    return [];
+    return menuDetails(this.page, state, { themeLoading: this.themeLoading, themeLoadFailed: this.themeLoadFailed, cache: this.cache });
   }
 
   focused = false;
@@ -324,7 +194,7 @@ export class TidyMenu implements Component {
     const innerWidth = Math.max(1, width - (framed ? 2 : 0));
     const room = height - (framed ? 2 : 0);
     const rule = this.theme.fg('border', '─'.repeat(innerWidth));
-    const heading = sections ? [this.theme.fg('accent', this.theme.bold(title[this.page])), rule] : [];
+    const heading = sections ? [this.theme.fg('accent', this.theme.bold(menuPageTitle(this.page))), rule] : [];
     const helpHeight = height >= 4 ? 3 : 0;
     const fixed = heading.length + searchRows + (sections ? 2 : 0) + helpHeight;
     const noticeRoom = Math.max(0, room - fixed - 1 - Number(details.length > 0));
@@ -391,7 +261,7 @@ export class TidyMenu implements Component {
     }
     if (sections) {
       const paged = summaries.length > summaryRoom;
-      let navigation = (paged ? 'PgUp/PgDn details · ' : '') + this.navigation();
+      let navigation = (paged ? 'PgUp/PgDn details · ' : '') + menuNavigation(this.page);
       if (paged && visibleWidth(navigation) > innerWidth) navigation = '↑↓ · Enter · Esc Back · PgUp/PgDn';
       if (paged && visibleWidth(navigation) > innerWidth) navigation = 'Esc Back · PgUp/PgDn';
       body.push(rule, this.theme.fg('dim', navigation));
@@ -416,9 +286,9 @@ export class TidyMenu implements Component {
       !kb.matches(data, 'tui.select.down') && !kb.matches(data, 'tui.select.confirm')) {
       const before = this.search.getValue(); this.search.handleInput(data);
       if (this.search.getValue() !== before) {
-        const first = this.pageItems(this.owner.snapshot())[0]?.value;
-        this.selected.themes = first; this.listKey = '';
-        if (first) this.previewTheme(first);
+        const first = this.pageItems(this.owner.snapshot())[0];
+        this.selected.themes = first?.value; this.listKey = '';
+        if (first) this.previewTheme(first.intent);
       }
     } else {
       const down = kb.matches(data, 'tui.select.down'), up = kb.matches(data, 'tui.select.up');
@@ -428,7 +298,7 @@ export class TidyMenu implements Component {
       // Selection callbacks may synchronously close and dispose this popup.
       if (this.closed) return;
       this.skipDisabledRootSelection(down ? 1 : up ? -1 : 0);
-      const value = this.list.getSelectedItem()?.value; if (value) this.previewTheme(value);
+      const value = this.list.getSelectedItem()?.value; if (value) this.previewTheme(this.rowIntent(value));
     }
     if (!this.closed) this.requestRender();
   }
@@ -468,7 +338,7 @@ export class TidyMenu implements Component {
         this.skipDisabledRootSelection(event.type === 'wheel' ? Math.sign(event.wheelDelta ?? 0) : 0);
         // Press/click is one confirmation gesture; preview must not replace the
         // native list (and its pressed-row identity) between those two events.
-        if (event.type === 'wheel' && value) this.previewTheme(list.getSelectedItem()?.value ?? value);
+        if (event.type === 'wheel' && value) this.previewTheme(this.rowIntent(list.getSelectedItem()?.value ?? value));
       }
       this.requestRender();
     }

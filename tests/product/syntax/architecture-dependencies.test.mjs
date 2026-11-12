@@ -37,7 +37,8 @@ const syntaxApplicationModules = [
   'src/application/syntax-options.ts',
 ];
 const preferenceApplicationModules = ['src/application/preferences.ts'];
-const applicationModules = [...syntaxApplicationModules, ...preferenceApplicationModules];
+const menuDataModules = ['src/application/menu-contract.ts', 'src/application/menu-model.ts'];
+const applicationModules = [...syntaxApplicationModules, ...preferenceApplicationModules, ...menuDataModules];
 const cardModules = ['src/cards/file-model.ts', 'src/cards/file-sources.ts', 'src/cards/file-display.ts', 'src/cards/display-input.ts',
   'src/cards/file-preview-mode.ts', 'src/cards/file-input.ts', 'src/cards/shebang-language.ts',
   'src/cards/preparation.ts', 'src/cards/bash-preparation.ts', 'src/cards/file-preparation.ts'];
@@ -561,6 +562,53 @@ function assertPreferenceImports(path, source) {
     const target = reference.specifier.startsWith('.') ? resolveRelativeImport(path, reference.specifier) : reference.specifier;
     assert.ok(supported.has(target), `preference policy imports an implementation owner instead of decisions: ${path} -> ${reference.specifier}`);
   }
+}
+
+const menuDataDependencies = new Map([
+  ['src/application/menu-contract.ts', new Map([
+    ['src/appearance/theme-preference.ts', { types: ['ThemePreference', 'ThemeVariant'] }],
+    ['src/settings.ts', { types: ['Switches'] }],
+    ['src/application/syntax-menu.ts', { types: ['SyntaxMenuOutcome', 'SyntaxMenuSnapshot'] }],
+    ['src/runtime-health.ts', { types: ['RuntimeHealthSnapshot'] }],
+    ['src/session-logging.ts', { types: ['SessionLogging'] }],
+  ])],
+  ['src/application/menu-model.ts', new Map([
+    ['src/application/menu-contract.ts', { types: ['TidyMenuAction', 'TidyMenuSnapshot', 'TidyMenuPage', 'TidyMenuRow', 'TidyMenuIntent', 'TidyMenuCommandIntent'] }],
+    ['src/appearance/theme-preference.ts', { types: ['ThemePreference', 'ThemeVariant'] }],
+    ['src/render-cache.ts', { types: ['CacheStats'] }],
+    ['src/debug-log.ts', { values: ['readableDiagnosticText'] }],
+    ['src/display-path.ts', { values: ['displayPath'] }],
+    ['src/themes/catalogue.ts', { values: ['THEME_FAMILIES', 'themeFamilyEntry'] }],
+    ['src/themes/selection.ts', { values: ['resolveTheme'] }],
+    ['src/occipital/semantic-protocol.ts', { values: ['SEMANTIC_PROTOCOL_VERSION'] }],
+  ])],
+]);
+
+function assertMenuDataImports(path, source) {
+  const dependencies = menuDataDependencies.get(path);
+  const rule = specifier => dependencies.get(specifier.startsWith('.') ? resolveRelativeImport(path, specifier) : specifier);
+  const allowed = (dependency, name, typeOnly) => (dependency?.[typeOnly ? 'types' : 'values'] ?? []).includes(name);
+  for (const reference of moduleReferences(source)) {
+    assert.ok(['import', 'import-type'].includes(reference.syntax) && rule(reference.specifier),
+      `menu data imports ownership or broad module authority: ${path} -> ${reference.specifier} [${reference.syntax}]`);
+  }
+  for (const statement of source.statements) {
+    if (!ts.isImportDeclaration(statement)) continue;
+    const clause = statement.importClause, bindings = clause?.namedBindings;
+    assert.ok(!clause?.name && bindings && ts.isNamedImports(bindings) && bindings.elements.length,
+      `menu data requires explicit data or helper capabilities: ${path}`);
+    for (const element of bindings.elements) assert.ok(allowed(rule(statement.moduleSpecifier.text),
+      element.propertyName?.text ?? element.name.text, clause.isTypeOnly || element.isTypeOnly),
+    `menu data imports an implementation capability: ${path} -> ${statement.moduleSpecifier.text}`);
+  }
+  const visit = node => {
+    if (ts.isImportTypeNode(node) && ts.isLiteralTypeNode(node.argument) && ts.isStringLiteralLike(node.argument.literal)) {
+      assert.ok(!node.isTypeOf && allowed(rule(node.argument.literal.text), importTypeName(node.qualifier), true),
+        `menu data imports an implementation capability: ${path} -> ${node.argument.literal.text}`);
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
 }
 
 function assertEntryPresentationOwnership(path, source) {
@@ -1408,4 +1456,61 @@ test('preference import policy accepts its actual data ports and rejects every n
       `import implementation = require('${specifier}');`,
     ]) assert.throws(() => assertPreferenceImports(path, parseSource(path, text)), /preference policy imports an implementation owner/);
   }
+});
+
+
+test('fixed menu contracts have one application data owner without overlay forwarding', () => {
+  const overlayPath = 'src/tidy-menu.ts', contractPath = 'src/application/menu-contract.ts';
+  const names = ['TidyMenuAction', 'TidyMenuSnapshot', 'TidyMenuOwner'];
+  const overlay = parseSource(overlayPath);
+  for (const name of names) assert.equal(declarationExportNames(overlay).has(name), false,
+    `overlay implementation must not own the shared ${name} contract`);
+  const contract = parseSource(contractPath);
+  for (const name of names) assert.ok(declarationExportNames(contract).has(name), `missing canonical ${name}`);
+  assert.equal(reexportedSourceNames(overlayPath, contractPath, overlay).size, 0,
+    'overlay implementation must not forward the moved menu contracts');
+  for (const path of productionFiles().filter(path => sourceExtensions.has(extname(path)) && path !== contractPath)) {
+    const declarations = declarationExportNames(parseSource(path));
+    for (const name of names) assert.equal(declarations.has(name), false, `${path} duplicates the shared ${name} contract`);
+  }
+});
+
+test('fixed menu models depend only on canonical data and named pure display helpers', () => {
+  for (const path of menuDataModules) assertMenuDataImports(path, parseSource(path));
+});
+
+test('menu data boundary accepts narrow data and helpers without granting their implementation owners', () => {
+  const contract = 'src/application/menu-contract.ts', model = 'src/application/menu-model.ts';
+  for (const text of [
+    "import type { ThemePreference as Choice } from '../appearance/theme-preference.ts';",
+    "import type { Switches } from '../settings.ts';",
+    "type Snapshot = import('./syntax-menu.ts').SyntaxMenuSnapshot;",
+  ]) assert.doesNotThrow(() => assertMenuDataImports(contract, parseSource(contract, text)), text);
+  for (const text of [
+    "import { readableDiagnosticText as safe } from '../debug-log.ts';",
+    "import { THEME_FAMILIES, themeFamilyEntry as family } from '../themes/catalogue.ts';",
+    "import type { CacheStats as Statistics } from '../render-cache.ts';",
+  ]) assert.doesNotThrow(() => assertMenuDataImports(model, parseSource(model, text)), text);
+  for (const path of [contract, model]) {
+    for (const specifier of ['../tidy-menu.ts', '../index.ts', './preferences.ts', './syntax-runtime.ts',
+      '../host/pi/native-bindings.ts', '../highlighting/source-execution.ts', '@earendil-works/pi-tui']) {
+      for (const text of [
+        `import { implementation as alias } from '${specifier}';`,
+        `import type { Shape } from '${specifier}';`,
+        `import { type Shape, implementation } from '${specifier}';`,
+        `export type { Shape } from '${specifier}';`,
+        `type Shape = import('${specifier}').Shape;`,
+        `const implementation = import('${specifier}');`,
+        `const implementation = require('${specifier}');`,
+        `import implementation = require('${specifier}');`,
+      ]) assert.throws(() => assertMenuDataImports(path, parseSource(path, text)), /menu data imports/);
+    }
+  }
+  for (const [path, text] of [
+    [contract, "import { ExtensionSettings } from '../settings.ts';"],
+    [contract, "import type { ExtensionSettings } from '../settings.ts';"],
+    [model, "import { readableDiagnosticText, TextJournal } from '../debug-log.ts';"],
+    [model, "import * as journal from '../debug-log.ts';"],
+    [model, "type Logger = typeof import('../debug-log.ts').TextJournal;"],
+  ]) assert.throws(() => assertMenuDataImports(path, parseSource(path, text)), /menu data (imports|requires)/);
 });

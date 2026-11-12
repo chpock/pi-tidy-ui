@@ -2,7 +2,8 @@ import '../../fixtures/test-guard.mjs';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { stripVTControlCharacters as plain } from 'node:util';
-import { TidyMenu, type TidyMenuAction, type TidyMenuOwner, type TidyMenuSnapshot } from '../../../src/tidy-menu.ts';
+import { TidyMenu } from '../../../src/tidy-menu.ts';
+import type { TidyMenuAction, TidyMenuOwner, TidyMenuSnapshot } from '../../../src/application/menu-contract.ts';
 
 const colors = { fg: (_role: string, text: string) => text, bold: (text: string) => text };
 

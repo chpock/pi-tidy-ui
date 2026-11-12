@@ -4,7 +4,9 @@ import { test } from 'node:test';
 import { setImmediate as turn } from 'node:timers/promises';
 import { stripVTControlCharacters as plain } from 'node:util';
 import { visibleWidth } from '@earendil-works/pi-tui';
-import { TidyMenu, themeLabels, type TidyMenuOwner, type TidyMenuSnapshot, type TidyMenuAction } from '../../../src/tidy-menu.ts';
+import { TidyMenu } from '../../../src/tidy-menu.ts';
+import { themeLabels } from '../../../src/application/menu-model.ts';
+import type { TidyMenuOwner, TidyMenuSnapshot, TidyMenuAction } from '../../../src/application/menu-contract.ts';
 import { DataBudget } from '../../../src/resources/data-budget.ts';
 import { SyntaxRuntime } from '../../../src/application/syntax-runtime.ts';
 import { THEME_CATALOGUE, THEME_FAMILIES } from '../../../src/themes/catalogue.ts';
@@ -905,5 +907,66 @@ for (const query of ['github', 'no-matching-family']) test(`keyboard bounds: fil
       await f.key('\x1b[A'); assert.ok(selected().startsWith('GitHub'), 'inward navigation still works');
     }
     assert.equal(f.calls.length, 0);
+  } finally { f.menu.dispose(); }
+});
+
+
+test('switch activation uses the current preference, not the last rendered On/Off value', async () => {
+  for (const key of ['terminalColorsEnabled', 'nativeHighlightingEnabled'] as const) {
+    const f = fixture();
+    f.render();
+    if (key === 'terminalColorsEnabled') await f.key('\x1b[B');
+    else {
+      await f.select('Status & troubleshooting');
+      await f.key('\x1b[B'); await f.key('\x1b[B');
+    }
+    const label = key === 'terminalColorsEnabled' ? 'Set terminal colors from Pi theme' : 'Use Occipital highlighting';
+    assert.ok(f.render().some(row => row.includes('→ ') && row.includes(label)));
+    f.state[key] = false;
+    f.menu.handleInput('\r');
+    await turn();
+    assert.deepEqual(f.calls, [{ kind: 'switch', key, value: true }]);
+    assert.equal(f.state[key], true);
+    f.menu.dispose();
+  }
+});
+
+test('root variant activation uses the current confirmed family and variant without requiring a frame', async () => {
+  const f = fixture();
+  f.state.selected = { kind: 'theme', id: 'github', variant: 'dark' };
+  f.render(); await f.key('\x1b[B');
+  assert.ok(f.render().some(row => row.includes('→ ') && row.includes('Code color variant')));
+  f.state.selected = { kind: 'theme', id: 'gitlab', variant: 'light' };
+  f.menu.handleInput('\r');
+  await turn();
+  assert.deepEqual(f.calls, [{ kind: 'theme', choice: { kind: 'theme', id: 'gitlab', variant: 'dark' } }]);
+  f.menu.dispose();
+});
+
+test('root variant activation rechecks Follow Pi when the last frame still showed an enabled row', async () => {
+  const f = fixture();
+  f.state.selected = { kind: 'theme', id: 'github', variant: 'dark' };
+  f.render(); await f.key('\x1b[B');
+  assert.ok(f.render().some(row => row.includes('→ ') && row.includes('Code color variant')));
+  f.state.selected = { kind: 'pi', variant: 'light' };
+  f.menu.handleInput('\r');
+  await turn();
+  assert.equal(f.calls.length, 0);
+  assert.equal(f.previews.length, 0);
+  assert.deepEqual(f.state.selected, { kind: 'pi', variant: 'light' });
+  f.menu.dispose();
+});
+
+
+test('clearing theme search previews the newly revealed first row before another list frame', async () => {
+  const f = fixture();
+  try {
+    f.render(); await f.key('\r'); await f.key('github');
+    assert.deepEqual(f.previews.at(-1), { kind: 'theme', id: 'github', variant: 'dark' });
+    assert.equal(f.render().some(row => row.includes('Follow Pi theme')), false);
+    const saves = f.calls.length;
+    f.menu.handleInput('\x15');
+    assert.deepEqual(f.previews.at(-1), { kind: 'pi', variant: 'dark' });
+    assert.equal(f.calls.length, saves);
   } finally { f.menu.dispose(); }
 });

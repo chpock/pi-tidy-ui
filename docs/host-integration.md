@@ -159,7 +159,7 @@ This table describes the extension's handlers, not a claim that every Pi transit
 
 ## Settings actions and asynchronous ownership
 
-Bare `/tidy-ui` opens a single public custom overlay. Arguments report usage; non-TUI modes do not open it. Its owner reads cached state and issues explicit actions; opening root/status does not perform source classification or service discovery. The [menu](settings-menu-spec.md) owns navigation, preview/rollback and file validation.
+Bare `/tidy-ui` opens a single public custom overlay. Arguments report usage; non-TUI modes do not open it. Its owner borrows cached state and issues explicit actions; opening root/status does not perform source classification or service discovery. Application menu contracts and pure projections supply fixed rows, typed intentions and status/cache text; composition collects facts and captures synchronous cache receipts, while the overlay retains native navigation, gestures and preview/rollback. [Settings and menu](settings-menu-spec.md) separates those responsibilities from persistence validation.
 
 Actions capture the session epoch and save-abort signal. After awaited work they check those identities before updating the popup/runtime. Shared-switch persistence is queued **before** awaiting cleanup, so closing/reopening a popup cannot reverse confirmation order. A live application can succeed while persistence fails; the outcome explicitly says applied-but-not-saved rather than pretending to roll back the runtime.
 

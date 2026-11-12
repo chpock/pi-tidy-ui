@@ -10,7 +10,9 @@ import { notify } from './notifications.ts';
 import { ExtensionSettings, processPreferences, type LocalPreferences } from './settings.ts';
 import { ApplicationPreferences } from './application/preferences.ts';
 import { bindTerminalLifecycle } from "./terminal-lifecycle.ts";
-import { TidyMenu, type TidyMenuOwner, type TidyMenuAction } from './tidy-menu.ts';
+import { TidyMenu } from './tidy-menu.ts';
+import type { TidyMenuOwner, TidyMenuAction } from './application/menu-contract.ts';
+import { menuSnapshot, menuCacheDetails } from './application/menu-model.ts';
 import type { SyntaxMenuOutcome } from './application/syntax-menu.ts';
 import { type JournalOptions } from "./debug-log.ts";
 import { diagnose, reportRuntime, type DiagnosticFields, type DiagnosticSink } from "./diagnostics.ts";
@@ -808,37 +810,15 @@ export default function tidyUi(pi: ExtensionAPI, options: TidyUiRuntimeOptions =
     }
     const owner: TidyMenuOwner = {
       snapshot() {
-        const color = colors?.status().state;
-        const terminalColors = !preferences.appearanceEnabled ? 'Inactive while Tidy UI appearance is off' : !preferences.terminalColorsEnabled ? 'Off' :
-          color === 'automatic theme' || color === 'system theme' ? 'Controlled by Pi’s automatic/system theme' :
-          color === 'on' ? 'Matching Pi theme' : color === 'no source' ? 'No file-backed Pi theme available' :
-          color === 'source error' ? 'Theme could not be read; last valid colors retained' : color ?? 'Not started';
-        const snapshot = syntax?.snapshot();
-        return { appearanceEnabled: preferences.appearanceEnabled, terminalColorsEnabled: preferences.terminalColorsEnabled,
-          nativeHighlightingEnabled: preferences.nativeHighlightingEnabled, loggingEnabled: preferences.loggingEnabled,
-          selected: snapshot?.selected ?? preferences.selectedTheme, syntax: snapshot, logs: logging?.status(), health: health?.snapshot(), terminalColors,
-          appearance: !preferences.appearanceEnabled ? 'Off; using Pi’s interface' : !controller?.active ? controller?.reason ?? 'Not active' :
-            controller.editorActive ? 'Active' : 'Cards active; input styling not applied' };
+        return menuSnapshot(preferences, { color: colors?.status().state, syntax: syntax?.snapshot(),
+          logs: logging?.status(), health: health?.snapshot(), appearance: controller });
       },
       async prepareThemes() { if (current()) await ensureSyntax(ctx).prepareThemes(); },
       previewTheme(choice) { if (current()) syntax?.previewTheme(choice); },
       act,
       cacheDetails() {
-        if (!controller) return ['No active display cache.'];
-        const stats = controller.cacheStats();
-        const footer = ownedFooter?.retainedMemory() ?? { retainedBytes: 0, entries: 0, rows: 0 };
-        const diagnostic = { ...stats, footerLayout: footer,
-          presentationRetainedBytes: stats.retainedBytes + footer.retainedBytes, presentationEntries: stats.entries + footer.entries,
-          presentationRows: stats.rows + footer.rows, memoryScope: 'estimated pi-tidy-ui retained UTF-16 strings plus structural overhead; excludes Pi caches, Markdown/editor and temporary rendering',
-          processHeapUsedBytes: process.memoryUsage().heapUsed, processMemoryScope: 'whole Pi process, not pi-tidy-ui' };
-        return [`Saved layouts: ${stats.entries + footer.entries}; rows: ${stats.rows + footer.rows}`,
-          `Estimated retained memory: ${stats.retainedBytes + footer.retainedBytes} bytes`,
-          `Hits: ${stats.hits}; misses: ${stats.misses}; builds: ${stats.builds}; releases: ${stats.releases}; collected: ${stats.collected}`,
-          ...Object.entries(stats.byKind).map(([kind, memory]) => `${kind}: ${JSON.stringify(memory)}`),
-          `Footer: ${JSON.stringify(footer)}`,
-          'Scope: Tidy UI display layouts only; excludes Pi caches, syntax sources and temporary rendering.',
-          `Whole Pi process heap: ${diagnostic.processHeapUsedBytes} bytes (not Tidy UI memory)`,
-          'Diagnostic JSON:', JSON.stringify(diagnostic).replaceAll(' ', '\\u0020'), 'End diagnostic JSON'];
+        if (!controller) return menuCacheDetails();
+        return menuCacheDetails({ stats: controller.cacheStats(), footer: ownedFooter?.retainedMemory(), heapUsedBytes: process.memoryUsage().heapUsed });
       },
     };
     return owner;
