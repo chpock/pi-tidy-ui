@@ -28,7 +28,7 @@ function fixture(steering: string[], followUp: string[] = [], height = 60) {
   };
   let draft = "";
   const host: any = Object.assign(Object.create(InteractiveMode.prototype, { session: { value: session } }), {
-    pendingMessagesContainer: pending, compactionQueuedMessages: [],
+    pendingMessagesContainer: pending, compactionQueuedMessages: [], pendingBashComponents: [],
     getAppKeyDisplay: () => "Alt+Up", ui: root,
     editor: { getText: () => draft, setText: (text: string) => { draft = text; } },
   });

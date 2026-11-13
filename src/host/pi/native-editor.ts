@@ -52,6 +52,7 @@ export class NativeEditor {
   private spacerPass: { spacer: Spacer; width: number; rows?: number; blank?: boolean } | undefined;
   private passes = new WeakMap<CustomEditor, { width: number; top: string; bottom: string }>();
   private readonly nativeRender = Editor.prototype.render;
+  private readonly nativeExpandedText = Object.getOwnPropertyDescriptor(Editor.prototype, 'getExpandedText')?.value as Editor['getExpandedText'] | undefined;
   private readonly nativeMouse = Editor.prototype.handleMouse;
   private readonly prototype = CustomEditor.prototype as unknown as Record<string, Function>;
   private readonly nativeTop = this.prototype.renderTopBorder!;
@@ -153,7 +154,7 @@ export class NativeEditor {
       if (descriptor ? !descriptor.writable : !Object.isExtensible(editor)) continue;
       const text = editor.getText(), transfers: string[] = [], focus = this.tui.getFocusedComponent?.();
       // Suppress only the native API's synchronous redundant self-transfer. Its
-      // ordinary setText would reset cursor/undo and expand collapsed paste markers.
+      // ordinary setText clears paste bookkeeping and changes cursor/undo state.
       const setter = function (this: CustomEditor, value: string) {
         if (this === editor) transfers.push(value); else Editor.prototype.setText.call(this, value);
       };
@@ -161,7 +162,8 @@ export class NativeEditor {
       Object.defineProperty(editor, 'setText', { configurable: true, writable: true, ...descriptor, value: setter });
       try {
         this.options.rerouteEditorStatus();
-        if (transfers.length !== 1 || transfers[0] !== text || !this.ports.attached(editor))
+        if (transfers.length !== 1 || !this.ports.attached(editor) ||
+          (transfers[0] !== text && !this.matchesExpandedTransfer(editor, transfers[0]!)))
           throw new Error('Native same-editor status routing contract changed');
       } finally {
         this.selfTransfers.delete(editor);
@@ -172,6 +174,15 @@ export class NativeEditor {
       }
       return;
     }
+  }
+
+  private matchesExpandedTransfer(editor: CustomEditor, text: string): boolean {
+    // Descriptor lookup must not execute a foreign expanded-text accessor.
+    const method = Object.getOwnPropertyDescriptor(editor, 'getExpandedText')
+      ?? Object.getOwnPropertyDescriptor(CustomEditor.prototype, 'getExpandedText')
+      ?? Object.getOwnPropertyDescriptor(Editor.prototype, 'getExpandedText');
+    return typeof this.nativeExpandedText === 'function' && method?.value === this.nativeExpandedText &&
+      text === this.nativeExpandedText.call(editor);
   }
 
   private managedSlots(editor: CustomEditor): Component[] | undefined {

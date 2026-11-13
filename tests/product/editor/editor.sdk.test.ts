@@ -910,3 +910,93 @@ test('metadata rejects a native status observation after a later container rende
     host.clearStatusIndicator();
   }
 });
+
+
+test('native same-editor routing validates expanded pastes lazily and adds no warm draft reads', t => {
+  const nativeExpanded = Editor.prototype.getExpandedText;
+  let expandedReads = 0;
+  const probe = t.mock.method(Editor.prototype, 'getExpandedText', function (this: Editor) {
+    expandedReads++; return nativeExpanded.call(this);
+  });
+  try {
+    for (const mode of ['regular', 'fullscreen']) for (const collapsed of [false, true]) {
+      const { root, editor, host, options, frame } = nativeStatusEditorSetup();
+      host.options.tuiMode = mode;
+      if (collapsed) editor.handleInput('\x1b[200~' + 'PRESERVED_界_'.repeat(160) + '\x1b[201~');
+      else editor.setText('PRESERVED_DRAFT');
+      editor.handleInput('\x1b[D');
+      const state = () => ({ raw: editor.getText(), expanded: nativeExpanded.call(editor), cursor: editor.getCursor(),
+        pastes: [...(editor as any).pastes.entries()], undo: structuredClone((editor as any).undoStack), history: structuredClone((editor as any).history) });
+      const before = state(), setter = Object.getOwnPropertyDescriptor(editor, 'setText');
+      const placement = Object.getOwnPropertyDescriptor(editor, 'embedWorkingStatus');
+      assert.equal(before.raw !== before.expanded, collapsed, 'collapsed-paste control must differ from raw marker text');
+      let nativeReads = 0, routes = 0; expandedReads = 0;
+      const controller = installTidyUi(root, () => color, { ...options, rerouteEditorStatus() {
+        const reads = expandedReads; options.rerouteEditorStatus!(); nativeReads += expandedReads - reads; routes++;
+      } });
+      try {
+        assert.equal(controller.active, true); assert.equal(host.editor === editor, true);
+        assert.equal(editor.embedWorkingStatus, false); assert.deepEqual(state(), before);
+        assert.equal(expandedReads, nativeReads + (collapsed && nativeReads > 0 ? routes : 0));
+        const warmReads = expandedReads;
+        for (let i = 0; i < 20; i++) frame(mode, 100);
+        assert.equal(expandedReads, warmReads, 'ordinary frames never reread expanded draft content');
+        controller.restore();
+        assert.equal(routes, 2); assert.equal(expandedReads, nativeReads + (collapsed && nativeReads > 0 ? routes : 0));
+        assert.deepEqual(state(), before);
+        assert.deepEqual(Object.getOwnPropertyDescriptor(editor, 'setText'), setter);
+        assert.deepEqual(Object.getOwnPropertyDescriptor(editor, 'embedWorkingStatus'), placement);
+      } finally { controller.restore(); }
+    }
+  } finally { probe.mock.restore(); }
+});
+
+test('native same-editor routing never validates through a foreign expanded-text method or accessor', () => {
+  const nativeExpanded = Editor.prototype.getExpandedText;
+  for (const variant of ['accessor', 'foreign-function']) for (const collapsed of [false, true]) {
+    const { root, editor, host, options } = nativeStatusEditorSetup();
+    if (collapsed) editor.handleInput('\x1b[200~' + 'PRESERVED_'.repeat(180) + '\x1b[201~');
+    else editor.setText('PRESERVED_DRAFT');
+    const before = { raw: editor.getText(), expanded: nativeExpanded.call(editor), cursor: editor.getCursor() };
+    let reads = 0, nativeReads = 0;
+    Object.defineProperty(editor, 'getExpandedText', variant === 'accessor'
+      ? { configurable: true, get() { reads++; return nativeExpanded; } }
+      : { configurable: true, writable: true, value() { reads++; return 'FOREIGN_CHANGED_CONTENT'; } });
+    const descriptor = Object.getOwnPropertyDescriptor(editor, 'getExpandedText');
+    const controller = installTidyUi(root, () => color, { ...options, rerouteEditorStatus() {
+      const count = reads; options.rerouteEditorStatus!(); nativeReads += reads - count;
+    } });
+    try {
+      assert.equal(reads, nativeReads, 'only the real SDK may invoke its foreign public getter');
+      assert.equal(controller.active, nativeReads === 0 || (variant === 'accessor' && !collapsed));
+      assert.equal(host.editor === editor, true);
+      controller.restore();
+      assert.equal(reads, nativeReads);
+      assert.deepEqual({ raw: editor.getText(), expanded: nativeExpanded.call(editor), cursor: editor.getCursor() }, before);
+      assert.deepEqual(Object.getOwnPropertyDescriptor(editor, 'getExpandedText'), descriptor);
+    } finally { controller.restore(); }
+  }
+});
+
+test('native same-editor routing rejects absent or additional transfers without changing the draft', () => {
+  for (const violation of ['absent', 'additional']) {
+    const { root, editor, host, options } = nativeStatusEditorSetup();
+    editor.setText('PRESERVED_DRAFT'); editor.handleInput('\x1b[D');
+    const before = { raw: editor.getText(), expanded: editor.getExpandedText(), cursor: editor.getCursor() };
+    const setter = Object.getOwnPropertyDescriptor(editor, 'setText'), placement = Object.getOwnPropertyDescriptor(editor, 'embedWorkingStatus');
+    let routes = 0;
+    const controller = installTidyUi(root, () => color, { ...options, rerouteEditorStatus() {
+      routes++;
+      if (routes === 1 && violation === 'absent') return;
+      options.rerouteEditorStatus!();
+      if (routes === 1) editor.setText('UNEXPECTED_TRANSFER');
+    } });
+    try {
+      assert.equal(controller.active, false); assert.equal(routes, 2); assert.equal(host.editor === editor, true);
+      assert.deepEqual({ raw: editor.getText(), expanded: editor.getExpandedText(), cursor: editor.getCursor() }, before);
+      assert.deepEqual(Object.getOwnPropertyDescriptor(editor, 'setText'), setter);
+      assert.deepEqual(Object.getOwnPropertyDescriptor(editor, 'embedWorkingStatus'), placement);
+      controller.restore(); assert.equal(routes, 2);
+    } finally { controller.restore(); }
+  }
+});

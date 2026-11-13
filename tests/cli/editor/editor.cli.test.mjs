@@ -82,6 +82,10 @@ test('main editor user-card styling preserves real draft input, cursor, menus an
       for (const action of ['off', 'on']) {
         dump = await observe(terminal, `large-${action}`, action);
         assert.equal(dump.identity, identity); assert.equal(dump.after.expanded, paste);
+        if (action === 'on') {
+          assert.equal(dump.embedWorkingStatus, false, 'collapsed paste must not roll back native activity routing');
+          await check(dump, '[paste #');
+        }
       }
       terminal.send('\x1f'); await terminal.settle();
       terminal.send('/tidy-ui-d'); await terminal.settle(); dump = await observe(terminal, 'menu');

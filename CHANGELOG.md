@@ -53,6 +53,9 @@ been reconstructed.
 
 ### Fixed
 
+- Keep pi-tidy-ui active when enabling it with a collapsed pasted draft on Pi 1.5.2.
+  Preserve the same editor, paste state, cursor and undo/history while routing
+  native activity through Pi's separate status container.
 - Refresh expanded write/edit details when updates reuse the same argument or
   result object. Keep current pending text and replace pending proposals with the
   saved error on final failure, while reusing unchanged bounded measurements.
