@@ -71,8 +71,6 @@ export interface TidyUiOptions {
   colorMode?: () => TerminalColorMode;
   preparePaletteInput?: (palette: ThemeDescription, theme: PiInputTheme | undefined, revision: number, mode: TerminalColorMode,
     funding: GeometryFunding, usePiFallback?: boolean, fallbackTheme?: () => PiInputTheme) => PaletteInputLease | undefined;
-  /** Pi-only fallback for isolated embedders that do not supply the generic lease owner. */
-  preparePiInput?: (theme: PiInputTheme, mode: TerminalColorMode, funding: GeometryFunding) => PaletteInputLease | undefined;
   cards?: readonly string[];
   compact?: readonly string[];
   warn?: (reason: string) => void;
@@ -259,7 +257,6 @@ export function installTidyUi(tui: LiveTui, getTheme: () => Palette, options: In
         const input = needsPiTheme(effective) ? publicInput() : undefined;
         const fallbackTheme = () => publicInput().theme;
         if (options.preparePaletteInput) return options.preparePaletteInput(effective, input?.theme, revision, mode, funding, usePiFallback, fallbackTheme);
-        if (effective.kind === 'pi' && options.preparePiInput) return options.preparePiInput(input!.theme, mode, funding);
         return paletteOwner.prepare(input?.theme, effective, revision, mode, funding, usePiFallback, fallbackTheme);
       },
       classify: options.syntax?.classify ?? classifyNativeCode,

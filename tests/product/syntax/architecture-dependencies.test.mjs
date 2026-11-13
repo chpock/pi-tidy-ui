@@ -216,10 +216,11 @@ function exportKind(declaration) {
   return named.hasType ? 'mixed' : 'value';
 }
 
-function moduleReferences(source) {
+function moduleReferences(source, { includeComputed = false } = {}) {
   const references = [];
   const add = (node, kind, syntax) => {
     if (ts.isStringLiteralLike(node)) references.push({ specifier: node.text, kind, syntax });
+    else if (includeComputed) references.push({ specifier: `<computed ${syntax}>`, kind, syntax });
   };
   const visit = node => {
     if (ts.isImportDeclaration(node)) add(node.moduleSpecifier, bindingKind(node.importClause), 'import');
@@ -937,7 +938,7 @@ function assertMigratedContracts() {
 }
 
 function assertImportFree(path, source) {
-  const references = moduleReferences(source);
+  const references = moduleReferences(source, { includeComputed: true });
   assert.equal(references.length, 0, `${path} must remain import-free; found ${references.map(reference => reference.specifier).join(', ')}`);
 }
 
@@ -1122,6 +1123,46 @@ test('logical file models belong to cards without legacy type forwarding or host
 test('native modules are independent of application, highlighting, presentation and Pi host SDK', () => {
   for (const path of productionFiles().filter(path => path.startsWith('src/occipital/') && sourceExtensions.has(extname(path)))) {
     for (const reference of moduleReferences(parseSource(path))) assertNativeReference(path, reference);
+  }
+});
+
+test('import-free leaves reject computed dynamic import expressions', () => {
+  const violations = [
+    "const path = 'node:path'; void import(path);",
+    "const prefix = 'node:'; void import(prefix + 'path');",
+    "const segment = 'path'; void import(`node:${segment}`);",
+    "void import(('node:path'));",
+  ];
+  for (const text of violations) {
+    const source = parseSource('synthetic.ts', text);
+    assert.equal(source.parseDiagnostics.length, 0, text);
+    assert.throws(() => assertImportFree('synthetic.ts', source), /must remain import-free/, text);
+  }
+});
+
+test('import-free leaves reject computed direct require expressions', () => {
+  const violations = [
+    "const path = 'node:path'; require(path);",
+    "const prefix = 'node:'; require(prefix + 'path');",
+    "const segment = 'path'; require(`node:${segment}`);",
+    "require(('node:path'));",
+  ];
+  for (const text of violations) {
+    const source = parseSource('synthetic.ts', text);
+    assert.equal(source.parseDiagnostics.length, 0, text);
+    assert.throws(() => assertImportFree('synthetic.ts', source), /must remain import-free/, text);
+  }
+});
+
+test('import-free leaves accept ordinary text and non-loader member calls', () => {
+  for (const text of [
+    "export const note = \"import('node:path') and require('node:path')\";",
+    "// import('node:path'); require('node:path');\nexport type Choice = 'dark' | 'light';",
+    "const local = { require(value: string) { return value; } }; export const text = local.require('data');",
+  ]) {
+    const source = parseSource('synthetic.ts', text);
+    assert.equal(source.parseDiagnostics.length, 0, text);
+    assert.doesNotThrow(() => assertImportFree('synthetic.ts', source));
   }
 });
 

@@ -5,14 +5,14 @@ import test from "node:test";
 import { writeFileSync, readFileSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { pathToFileURL } from "node:url";
+import { withFileContext } from '../../fixtures/source-policy-variant.ts';
 import xterm from "@xterm/headless";
 import { Container, visibleWidth } from "@earendil-works/pi-tui";
 import { ToolExecutionComponent as NativeToolExecution, createWriteToolDefinition, createWriteTool, highlightCode, getLanguageFromPath } from "@earendil-works/pi-coding-agent";
 import { describeArgs } from "../../../src/index.ts";
 import { fileCardFixture as renderFileCard } from "../../fixtures/prepared-card.ts";
 import { cardGeometry } from "../../../src/card-frame.ts";
-import { measureFileCard } from "../../../src/file-card.ts";
+import { measureFileCard } from '../../fixtures/file-card-reference.ts';
 import { prepareFileCard } from '../../../src/cards/file-input.ts';
 import { prepareFileToolCall } from '../../fixtures/tool-adapters/reader-fixture.ts';
 import { generateDiffString, generateUnifiedPatch } from "../../../node_modules/@earendil-works/pi-coding-agent/dist/core/tools/edit-diff.js";
@@ -131,20 +131,13 @@ test("write validates both metadata formats and classifies globally before conte
   const multi = "@@ -1,1 +1,2 @@\n const retained = 1;\n+const first = 2;\n@@ -10,1 +11,0 @@\n-const erased = 10;\n";
   const node = { toolName: "write", args: { path: "example.ts" }, result: { details: { patch: multi } }, isPartial: false };
   assert.match(renderFileCard(node, undefined, 140, nativeTheme)!.rows.join(""), /← Replaced/);
-  const url = new URL("../../../src/cards/file-display.ts", import.meta.url), source = readFileSync(url, "utf8");
-  const temporary = mkdtempSync(join(tmpdir(), "tidy-ui-write-context-"));
-  try {
-    const alternateSource = source.replace("const DIFF_CONTEXT_LINES = 3;", "const DIFF_CONTEXT_LINES = 0;")
-      .replace(/from (["'])([^"']+)\1/gu, (_match, _quote: string, specifier: string) =>
-        `from ${JSON.stringify(specifier.startsWith(".") ? new URL(specifier, url).href : import.meta.resolve(specifier))}`);
-    const file = join(temporary, "file-card.ts"); writeFileSync(file, alternateSource);
-    const alternate = await import(pathToFileURL(file).href);
+  await withFileContext(0, alternate => {
     const prepared = prepareFileCard({ kind: 'write', path: 'example.ts', complete: true, failed: false, viewMode: 'full',
        saved: { format: 'numbered', value: " 1 OLD_CONTEXT\n+2 ADDED" } });
     assert.equal(prepared!.view.label, "Edited");
-    const rows = alternate.contextRows(prepared!.view.lines).map((row: { text?: string }) => row.text ?? "").join("\n");
+    const rows = alternate.contextRows(prepared!.view.lines).map(row => row.kind === 'gap' ? '' : row.text).join("\n");
     assert.match(rows, /ADDED/); assert.doesNotMatch(rows, /OLD_CONTEXT|Created/);
-  } finally { rmSync(temporary, { recursive: true, force: true }); }
+  });
 });
 
 test("write preview only consumes a bounded raw prefix and never claims a partial change class", () => {

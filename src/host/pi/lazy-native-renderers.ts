@@ -22,10 +22,6 @@ type RendererFailureReporterProvider = () => NativeRendererFailureReporter | und
 const stockRead = createReadToolDefinition('.');
 const stockWrite = createWriteToolDefinition('.');
 const stockEdit = createEditToolDefinition('.');
-export const stockReadCall = stockRead.renderCall;
-export const stockReadResult = stockRead.renderResult;
-export const stockWriteCall = stockWrite.renderCall;
-export const stockWriteResult = stockWrite.renderResult;
 export const stockEditCall = stockEdit.renderCall;
 export const stockEditResult = stockEdit.renderResult;
 
@@ -143,7 +139,6 @@ export class DeferredRenderer implements Component {
   private readonly slot: Slot;
   private invoke?: () => Component;
   private fallback?: () => Component;
-  private failed = false;
   private disposed = false;
 
   constructor(owner: RendererOwner, slot: Slot, invoke: () => Component, fallback: () => Component) {
@@ -177,9 +172,7 @@ export class DeferredRenderer implements Component {
       if (!invoke) throw new Error('Native renderer invocation is no longer available');
       this.component = invoke();
       this.owner?.report(this.slot, 'recovered');
-      this.failed = false;
     } catch {
-      this.failed = true;
       this.owner?.report(this.slot, 'failure');
       this.owner?.clearSlot(this.slot);
       this.component = this.createFallback();
@@ -195,7 +188,6 @@ export class DeferredRenderer implements Component {
     try {
       return component.render(width);
     } catch {
-      this.failed = true;
       this.owner?.report(this.slot, 'failure');
       this.owner?.clearSlot(this.slot);
       component = this.createFallback();

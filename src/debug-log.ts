@@ -22,7 +22,7 @@ export interface JournalOptions {
   warn?: (message: string) => void;
 }
 
-export function debugLogRoot(): string {
+function debugLogRoot(): string {
   const user = process.getuid ? String(process.getuid()) : (process.env.USERNAME ?? "user").replace(/[^a-zA-Z0-9_-]/gu, "_").slice(0, 64);
   return join(tmpdir(), `pi-tidy-ui-${user}`);
 }

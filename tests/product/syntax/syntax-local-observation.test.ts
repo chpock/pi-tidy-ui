@@ -357,7 +357,7 @@ test('write capture readiness distinguishes neutral, valid plain, stale source/p
   sources.setEnabled(false);
   let palette = 1, classifications = 0, onInvalidation: (() => void) | undefined;
   const cards = new CardSources({ cardSource: sources, sourceWork: sources, pi: sources.pi, snapshot: () => ({ enabled: false, selected: { kind: 'pi' as const, variant: 'dark' as const }, standaloneVersion: 'test', provider }) }, {
-    preparePiInput: funding => preparePaletteInput(themes.theme, 'pi', palette, 'truecolor', funding),
+    preparePaletteInput: (_palette, _revision, _mode, funding) => preparePaletteInput(themes.theme, 'pi', palette, 'truecolor', funding),
     classify: text => { classifications++; return text.split('\n'); }, invalidate() { onInvalidation?.(); }, requestRender() {},
   });
   const owner = { toolName: 'write', toolCallId: 'plain-call' };
@@ -423,7 +423,7 @@ for (const failure of ['failed', 'refused'] as const) test(`write capture gate s
   const sources = new SourceExecution({ snapshot: () => provider, isReady: () => false, classificationAccepted: () => false, request: () => assert.fail('no native work') }); sources.setEnabled(false);
   if (failure === 'refused') t.mock.method(sources.pi, 'capturePiSource', () => false);
   const cards = new CardSources({ cardSource: sources, sourceWork: sources, pi: sources.pi, snapshot: () => ({ enabled: false, selected: { kind: 'pi' as const, variant: 'dark' as const }, standaloneVersion: 'test', provider }) }, {
-    preparePiInput: funding => preparePaletteInput(themes.theme, 'pi', 1, 'truecolor', funding), classify: () => { throw Error('classifier failure'); }, invalidate() {}, requestRender() {},
+    preparePaletteInput: (_palette, _revision, _mode, funding) => preparePaletteInput(themes.theme, 'pi', 1, 'truecolor', funding), classify: () => { throw Error('classifier failure'); }, invalidate() {}, requestRender() {},
   });
   const owner = { toolName: 'write', toolCallId: 'failed-call' };
   try {
@@ -466,7 +466,7 @@ test('write capture review F1: empty dark roles cannot certify refused light rep
     } };
   });
   const cards = new CardSources({ cardSource: sources, sourceWork: sources, pi: sources.pi, snapshot: () => ({ enabled: false, selected: { kind: 'pi' as const, variant: 'dark' as const }, standaloneVersion: 'test', provider }) }, {
-    preparePiInput: funding => preparePaletteInput(themes.theme, 'pi', palette, 'truecolor', funding), classify: text => text.split('\n'), invalidate() {}, requestRender() {},
+    preparePaletteInput: (_palette, _revision, _mode, funding) => preparePaletteInput(themes.theme, 'pi', palette, 'truecolor', funding), classify: text => text.split('\n'), invalidate() {}, requestRender() {},
   });
   const owner = { toolName: 'write', toolCallId: 'empty-role-replacement' };
   const input = (revision: number) => fileInput({ name: 'write', args: { path: 'empty.ts', content: '' }, result: {} }, revision, 1, revision, palette);
@@ -519,7 +519,7 @@ for (const change of ['source', 'palette'] as const) for (const rejection of ['r
     const sources = new SourceExecution({ snapshot: () => provider, isReady: () => false, classificationAccepted: () => false, request: () => assert.fail('no native work') }); sources.setEnabled(false);
     let palette = 1;
     const cards = new CardSources({ cardSource: sources, sourceWork: sources, pi: sources.pi, snapshot: () => ({ enabled: false, selected: { kind: 'pi' as const, variant: 'dark' as const }, standaloneVersion: 'test', provider }) }, {
-      preparePiInput: funding => preparePaletteInput(themes.theme, 'pi', palette, 'truecolor', funding), classify: text => text.split('\n'), invalidate() {}, requestRender() {},
+      preparePaletteInput: (_palette, _revision, _mode, funding) => preparePaletteInput(themes.theme, 'pi', palette, 'truecolor', funding), classify: text => text.split('\n'), invalidate() {}, requestRender() {},
     });
     const owner = { toolName: 'write', toolCallId: 'transition-call' };
     const input = (revision: number) => fileInput({ name: 'write', args: { path: 'transition.ts', content: change === 'source' && revision === 2 ? 'source B' : 'source A' }, result: {} },
@@ -561,7 +561,7 @@ test('syntax local observations count an actual watched Bash suffix without repe
   const provider = { availability: 'disabled' as const, reason: 'disabled' as const, generation: 0, initialShared: false };
   const sources = new SourceExecution({ snapshot: () => provider, isReady: () => false, classificationAccepted: () => false, request: () => assert.fail('no native work') }); sources.setEnabled(false);
   const cards = new CardSources({ cardSource: sources, sourceWork: sources, pi: sources.pi, snapshot: () => ({ enabled: false, selected: { kind: 'pi' as const, variant: 'dark' as const }, standaloneVersion: 'test', provider }) }, {
-    preparePiInput: funding => preparePaletteInput(themes.theme, 'pi', 1, 'truecolor', funding), classify: () => assert.fail('no Bash Pi classification'), invalidate() {}, requestRender() {},
+    preparePaletteInput: (_palette, _revision, _mode, funding) => preparePaletteInput(themes.theme, 'pi', 1, 'truecolor', funding), classify: () => assert.fail('no Bash Pi classification'), invalidate() {}, requestRender() {},
   });
   const observer = observeSyntaxLocalWork(), owner = {}, command = ": 'STABLE_text e";
   const input = (revision: number, source: string) => ({ kind: 'bash' as const, reader: bashToolReaderFixture({ args: { command: source } }), complete: false,
@@ -603,7 +603,7 @@ for (const shape of ['empty', 'unsupported'] as const) test(`write capture disti
   const sources = new SourceExecution({ snapshot: () => provider, isReady: () => false, classificationAccepted: () => false,
     request: () => assert.fail('no native work') }); sources.setEnabled(false);
   const cards = new CardSources({ cardSource: sources, sourceWork: sources, pi: sources.pi, snapshot: () => ({ enabled: false, selected: { kind: 'pi' as const, variant: 'dark' as const }, standaloneVersion: 'test', provider }) }, {
-    preparePiInput: funding => preparePaletteInput(themes.theme, 'pi', 1, 'truecolor', funding),
+    preparePaletteInput: (_palette, _revision, _mode, funding) => preparePaletteInput(themes.theme, 'pi', 1, 'truecolor', funding),
     classify: text => text.split('\n'), invalidate() {}, requestRender() {},
   });
   const peer = { toolName: 'write', toolCallId: 'source-call' }, owner = { toolName: 'write', toolCallId: 'preview-call' };

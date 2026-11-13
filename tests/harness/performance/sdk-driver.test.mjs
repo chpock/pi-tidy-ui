@@ -30,7 +30,7 @@ for (const variant of ['native', 'off', 'on']) test(`performance SDK driver: tin
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });
 
-for (const [id, variant, iterations = 2] of [['stream', 'native', 110], ['stream', 'off', 110], ['lifetime', 'native'], ['lifetime', 'off'], ['lifetime', 'on'], ['arguments', 'on'], ['layout', 'on'], ['activity', 'native'], ['queued', 'on'], ['observer', 'native']])
+for (const [id, variant, iterations = 2] of [['stream', 'native', 110], ['stream', 'off', 110], ['lifetime', 'native'], ['lifetime', 'off'], ['lifetime', 'on'], ['arguments', 'on'], ['layout', 'on'], ['activity', 'native'], ['queued', 'native'], ['queued', 'off'], ['queued', 'on'], ['observer', 'native']])
   test(`performance SDK actions: ${id}/${variant} preserve their declared variant and complete real work`, () => {
     const inputs = readInputs(), directory = mkdtempSync(join(inputs.runRoot, 'performance-action-contract-'));
     const output = join(directory, 'target.json'), config = join(directory, 'config.json'), scenario = workload(id, variant, { cards: 4, iterations, warmup: 1, idleMs: 100 });

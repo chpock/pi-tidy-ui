@@ -1,10 +1,7 @@
 import "../../fixtures/test-guard.mjs";
 import assert from "node:assert/strict";
 import test from "node:test";
-import { writeFileSync, readFileSync, mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { pathToFileURL } from "node:url";
+import { withFileContext } from '../../fixtures/source-policy-variant.ts';
 import xterm from "@xterm/headless";
 import { visibleWidth, parseColor, colorToRgb, rgbColor, colorToOklch, Container } from "@earendil-works/pi-tui";
 import { ToolExecutionComponent as NativeToolExecution, createEditToolDefinition, highlightCode, getLanguageFromPath, type ToolRenderers } from "@earendil-works/pi-coding-agent";
@@ -14,13 +11,13 @@ import { CardSources } from "../../../src/syntax/cards.ts";
 import { samplePiCardPalette } from "../../../src/syntax/pi-palette.ts";
 import { compileStyleAnsi } from "../../../src/appearance/style-ansi.ts";
 import { cardGeometry } from "../../../src/card-frame.ts";
-import { measureFileCard } from "../../../src/file-card.ts";
+import { measureFileCard } from '../../fixtures/file-card-reference.ts';
 import { prepareFileCard } from '../../../src/cards/file-input.ts';
 import { prepareFileToolCall } from '../../fixtures/tool-adapters/reader-fixture.ts';
 import { generateDiffString, generateUnifiedPatch } from "../../../node_modules/@earendil-works/pi-coding-agent/dist/core/tools/edit-diff.js";
 import type { CardTheme } from "../../../src/card-theme.ts";
 import { Theme, initTheme, loadThemeFromPath, setThemeInstance, theme as nativeTheme } from "../../../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js";
-import { Root, Text, Tool, color, editDiff, installTidyUi, mouse, plain, setup, spinnerFrames, type TuiMouseEvent } from "../../fixtures/sdk-contract-support.ts";
+import { Root, Text, Tool, editDiff, installTidyUi, mouse, plain, setup, spinnerFrames, type TuiMouseEvent } from "../../fixtures/sdk-contract-support.ts";
 import { createLazyNativeRendererResolver } from "../../../src/host/pi/lazy-native-renderers.ts";
 
 initTheme('dark', false);
@@ -171,26 +168,16 @@ test("edit context merges overlapping windows once and marks omitted interiors",
 });
 
 test("edit context constant controls projection without fetching unavailable source", async () => {
-  const url = new URL("../../../src/cards/file-display.ts", import.meta.url), source = readFileSync(url, "utf8");
-  const declaration = "const DIFF_CONTEXT_LINES = 3;";
-  assert.ok(source.includes(declaration), "context is configured by one source constant, defaulting to three");
-  const temporary = mkdtempSync(join(tmpdir(), "tidy-ui-edit-context-"));
-  try {
-    const before = Array.from({ length: 20 }, (_, index) => `source_${index + 1}`).join("\n") + "\n", after = before.replace("source_10\n", "changed_10\n");
-    for (const count of [0, 1, 6]) {
-      const configured = source.replace(declaration, `const DIFF_CONTEXT_LINES = ${count};`)
-        .replace(/from (["'])([^"']+)\1/gu, (_match, _quote: string, specifier: string) => `from ${JSON.stringify(specifier.startsWith(".") ? new URL(specifier, url).href : import.meta.resolve(specifier))}`);
-      const file = join(temporary, `edit-${count}.ts`); writeFileSync(file, configured);
-      const alternate = await import(pathToFileURL(file).href);
-      for (const available of [2, 8]) {
-        const prepared = prepareFileCard({ kind: 'edit', path: 'example.txt', complete: true, failed: false, viewMode: 'full',
-          saved: { format: 'numbered', value: generateDiffString(before, after, available).diff } });
-        const text = alternate.contextRows(prepared!.view.lines).map((row: { text?: string }) => row.text ?? "").join("\n");
-        assert.equal([...text.matchAll(/source_(\d+)/g)].filter((match) => Number(match[1]) !== 10).length, 2 * Math.min(count, available));
-        assert.match(text, /source_10/); assert.match(text, /changed_10/);
-      }
+  const before = Array.from({ length: 20 }, (_, index) => `source_${index + 1}`).join("\n") + "\n", after = before.replace("source_10\n", "changed_10\n");
+  for (const count of [0, 1, 6] as const) await withFileContext(count, alternate => {
+    for (const available of [2, 8]) {
+      const prepared = prepareFileCard({ kind: 'edit', path: 'example.txt', complete: true, failed: false, viewMode: 'full',
+        saved: { format: 'numbered', value: generateDiffString(before, after, available).diff } });
+      const text = alternate.contextRows(prepared!.view.lines).map(row => row.kind === 'gap' ? '' : row.text).join("\n");
+      assert.equal([...text.matchAll(/source_(\d+)/g)].filter((match) => Number(match[1]) !== 10).length, 2 * Math.min(count, available));
+      assert.match(text, /source_10/); assert.match(text, /changed_10/);
     }
-  } finally { rmSync(temporary, { recursive: true, force: true }); }
+  });
 });
 
 test("edit context projection preserves syntax opened on the omitted fourth context line", async () => {

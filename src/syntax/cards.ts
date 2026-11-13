@@ -33,7 +33,6 @@ export type CardPreparation = { readonly update: string; readonly revision: numb
 export interface CardSourceHost<Owner extends object> {
   /** Cold acquisition only. The returned lease becomes this owner's responsibility. */
   preparePaletteInput?(palette: ThemeDescription, revision: number, mode: TerminalColorMode, funding: GeometryFunding, usePiFallback?: boolean): PaletteInputLease | undefined;
-  preparePiInput?(funding: GeometryFunding): PaletteInputLease | undefined;
   classify: PiClassifier;
   invalidate(owner: Owner): void;
   requestRender(): void;
@@ -305,8 +304,7 @@ export class CardSources<Owner extends object> {
       const previous = state.paint;
       const retainedGroup = previous?.group?.visit(() => {}) === true;
       const retainPrevious = retainedGroup || previous?.origin === 'owned' && !previous.group;
-      const candidate = this.host.preparePaletteInput?.(requested, input.palette, input.mode, funding, !retainPrevious)
-        ?? (requested.kind === 'pi' ? this.host.preparePiInput?.(funding) : undefined);
+      const candidate = this.host.preparePaletteInput?.(requested, input.palette, input.mode, funding, !retainPrevious);
       if (this.disposed || state.ticket !== ticket || state.input !== input || this.records.get(ticket.id) !== ticket) { candidate?.cleanupReceipt().release(); return; }
       if (candidate) {
         if (requested.kind === 'theme' && candidate.paletteId === 'pi') {

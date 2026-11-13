@@ -56,9 +56,11 @@ The output directory must be new. `results.json` is checkpointed after each repe
 | `arguments` | SDK | Empty-to-partial command argument formation, equal-text completion and ready passes |
 | `status` | CLI | Public extension-status updates in otherwise ready history |
 | `activity` | SDK | Actual native Loader timer requests, active fixed render passes and stopped-timer proof; not real-Pi FPS |
-| `queued` | SDK | Actual native queue construction absent/present and unsupported-prefix fallback, without model/queue delivery |
+| `queued` | SDK | Actual native queue construction absent/present and unsupported-prefix fallback in Native/Off/On, without model/queue delivery |
 | `source-stream` | SDK, On, real helper | SOURCE append/finalization, committed-prefix reuse, owned local style selection, STYLE readiness and explicit removal |
 | `observer` | SDK, Native | Matched light-observer wrappers Off/On on a real regular renderer and in-memory terminal |
+
+The queued fixture initializes both message queues and the native pending-Bash collection before invoking the selected host's real queue-display method. Its empty pending-Bash state does not simulate running commands or queue delivery; the Native/Off/On controls share that same host construction.
 
 The source-stream fixture installs a valid local generic-rule and palette binding before observing cards. SOURCE acknowledgement alone does not publish a `displayBasis`; readiness therefore requires current STYLE publication as well. The actual-helper regression at [performance-source-stream.native.test.mjs](../tests/integration/native/syntax/performance-source-stream.native.test.mjs) exercises this boundary, and its native integration placement makes the same-source helper a required input for the `syntax` group.
 

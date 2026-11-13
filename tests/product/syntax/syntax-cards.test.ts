@@ -1850,7 +1850,7 @@ for (const remaining of ['none', 'held-local', 'palette-change', 'retained-style
     onChange() { metadata++; cards?.metadataChanged(); if (client.snapshot().provider.availability === 'unavailable') terminalDelivered(); },
     onSourceChange(keys, groups) { cards?.sourceChanged(keys, groups); } });
   const execution = client.sourceWork as SourceExecution;
-  cards = new CardSources(client, { preparePiInput: funding => a.runtime.preparePaletteInput(
+  cards = new CardSources(client, { preparePaletteInput: (_palette, _revision, _mode, funding) => a.runtime.preparePaletteInput(
     resolveTheme({ kind: 'pi', variant: 'dark' }).effective, theme, a.runtime.palette(theme), 'truecolor', funding),
     classify: text => { classifications++; return highlightCode(text, 'typescript'); }, invalidate() {}, requestRender() {},
     preparation(_owner, receipt) {

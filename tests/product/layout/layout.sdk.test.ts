@@ -8,7 +8,7 @@ import { Box, visibleWidth, parseColor, colorToRgb } from "@earendil-works/pi-tu
 import { ToolExecutionComponent as NativeToolExecution, createEditToolDefinition } from "@earendil-works/pi-coding-agent";
 import { cardGeometry, frameRows, insidePanel } from "../../../src/card-frame.ts";
 import { editorGeometry } from "../../../src/editor-card.ts";
-import { measureFileCard } from "../../../src/file-card.ts";
+import { measureFileCard } from '../../fixtures/file-card-reference.ts';
 import { SourceExecution } from "../../../src/highlighting/source-execution.ts";
 import type { CardTheme } from "../../../src/card-theme.ts";
 import { hostCells, hasHostInk } from '../../fixtures/host-cells.ts';

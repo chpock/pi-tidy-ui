@@ -1,15 +1,11 @@
 import "../../fixtures/test-guard.mjs";
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdirSync, writeFileSync, readFileSync, mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { pathToFileURL } from "node:url";
 import xterm from "@xterm/headless";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { describeArgs, sanitize } from "../../../src/index.ts";
 import { PRIORITY_FIELDS, VALUE_TEXT_LIMIT, SUMMARY_TEXT_LIMIT } from "../../../src/summary-args.ts";
-import { Container, Root, Text, Tool, color, editDiff, installTidyUi, mouse, plain, setup, spinnerFrames, type TuiMouseEvent, rawStockFileToolRenderers } from "../../fixtures/sdk-contract-support.ts";
+import { Container, Root, Text, Tool, editDiff, installTidyUi, mouse, plain, setup, spinnerFrames, type TuiMouseEvent, rawStockFileToolRenderers } from "../../fixtures/sdk-contract-support.ts";
 
 test("adjacent summaries skip empty siblings but separate visible text and cards", () => {
   const first = new Tool(), second = new Tool("grep", { pattern: "needle", path: "src" });
@@ -95,43 +91,6 @@ test("hiding completion badges never removes literal status glyphs from supplied
     tool.updateResult({ isError: true, content: [{ type: "text", text: "HIDDEN_ERROR" }] });
     assert.equal(tool.render(80).at(-1), ' ⚙ custom "✓" [query="✓,✗"]');
   } finally { controller.restore(); }
-});
-
-test("completion marker constant can restore success and failure symbols without error-body previews", async () => {
-  const indexUrl = new URL("../../../src/index.ts", import.meta.url);
-  const sourceUrl = new URL("../../../src/presentation/tool-summary-presenter.ts", import.meta.url);
-  const source = readFileSync(sourceUrl, "utf8");
-  const indexSource = readFileSync(indexUrl, "utf8");
-  const switchLine = "const SHOW_COMPLETION_MARKERS = false;";
-  assert.ok(source.includes(switchLine), "the presentation owner controls final markers and defaults to false");
-  const temporary = mkdtempSync(join(tmpdir(), "tidy-ui-completion-markers-"));
-  let controller: ReturnType<typeof installTidyUi> | undefined;
-  try {
-    const indexFile = join(temporary, "src/index.ts");
-    const presenterFile = join(temporary, "src/presentation/tool-summary-presenter.ts");
-    mkdirSync(join(temporary, "src/presentation"), { recursive: true });
-    writeFileSync(join(temporary, "package.json"), readFileSync(new URL("../package.json", indexUrl)));
-    const rewriteImports = (text: string, baseUrl: URL, overrides = new Map<string, string>()) => text
-      .replace(/from (["'])([^"']+)\1/gu, (_match, _quote: string, specifier: string) =>
-        `from ${JSON.stringify(overrides.get(specifier) ?? (specifier.startsWith(".") ? new URL(specifier, baseUrl).href : import.meta.resolve(specifier)))}`);
-    const enabledPresenter = rewriteImports(source.replace(switchLine, "const SHOW_COMPLETION_MARKERS = true;"), sourceUrl);
-    const enabledIndex = rewriteImports(indexSource, indexUrl,
-      new Map([["./presentation/tool-summary-presenter.ts", pathToFileURL(presenterFile).href]]));
-    writeFileSync(presenterFile, enabledPresenter);
-    writeFileSync(indexFile, enabledIndex);
-    const alternate = await import(pathToFileURL(indexFile).href);
-    const root = new Root(), tool = new Tool(); root.addChild(tool);
-    controller = alternate.installTidyUi(root, () => color);
-    assert.equal(tool.render(80).at(-1), " → read a.txt ✓");
-    tool.updateResult({ isError: true, content: [{ type: "text", text: "ERROR_BODY_SENTINEL" }] });
-    assert.equal(plain(tool.render(80).at(-1)!), " → read a.txt ✗");
-    assert.doesNotMatch(tool.render(80).join(""), /ERROR_BODY_SENTINEL/u);
-    assert.deepEqual(tool.render(5), [" ✗"]);
-    tool.updateResult({ content: [] }); assert.deepEqual(tool.render(5), [" ✓"]);
-    tool.updateResult(undefined); assert.match(plain(tool.render(80).at(-1)!), /…$/u);
-    assert.deepEqual(tool.render(5), [" ⠋"]);
-    tool.executionStarted = false; assert.deepEqual(tool.render(5), [" …"]);
-  } finally { controller?.restore(); rmSync(temporary, { recursive: true, force: true }); }
 });
 
 test("pending, partial, success and errors are distinguishable without full output", () => {

@@ -320,17 +320,22 @@ test('controller display text lifetime: nested source callback removal retains a
   } finally { await cleanup(owner, peer); }
 });
 
-function ephemeralPreparation(owner: SourceExecution) {
-  const c = card(owner, []); c.start(); return { group: c.group, preparation: new WeakRef(c.preparation) };
+async function ephemeralPreparation(owner: SourceExecution) {
+  const c = card(owner, []), preparation = c.preparation;
+  c.start(); await settle();
+  const view = owner.groupPresentation(c.group);
+  assert.ok(view, 'ready publication is observed while its preparation is still owned');
+  assert.equal(ink(view.role('panel')), 7);
+  const retainedBytes = owner.stats().retention.retainedBytes;
+  return { preparation: new WeakRef(preparation), view, retainedBytes };
 }
 test('group presentation: collecting preparation releases its first ready role hold while controller and another group remain active', async () => {
   const peer = new Peer(), owner = new SourceExecution(peer), live = card(owner, []); owner.setStyleSelection(local(7)); live.start();
-  const gone = ephemeralPreparation(owner); await settle(); const view = owner.groupPresentation(gone.group)!;
   try {
-    const before = owner.stats().retention.retainedBytes;
+    const gone = await ephemeralPreparation(owner), before = gone.retainedBytes;
     for (let i = 0; i < 40; i++) { await turn(); global.gc!(); await turn(); if (!gone.preparation.deref()) break; }
     assert.equal(gone.preparation.deref(), undefined); owner.refreshPreparations(); await settle();
-    assert.equal(view.role('panel'), undefined); assert.ok(owner.stats().retention.retainedBytes < before);
+    assert.equal(gone.view.role('panel'), undefined); assert.ok(owner.stats().retention.retainedBytes < before);
     assert.equal(ink(owner.groupPresentation(live.group)!.role('panel')), 7);
   } finally { void live.preparation; await cleanup(owner, peer); }
 });

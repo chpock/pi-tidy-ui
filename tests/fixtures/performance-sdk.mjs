@@ -82,7 +82,7 @@ try {
       assert.equal(typeof QueueMode.prototype.updatePendingMessagesDisplay, 'function', 'selected host native queue construction contract');
       const slots = Array.from({ length: 7 }, () => new Container()); for (const slot of slots) root.addChild(slot); contentRoot = slots[0];
       queueHost = Object.assign(Object.create(QueueMode.prototype, { session: { value: { getSteeringMessages: () => [], getFollowUpMessages: () => [] } } }), {
-        pendingMessagesContainer: slots[1], compactionQueuedMessages: [], getAppKeyDisplay: () => 'Alt+Up', ui: root });
+        pendingMessagesContainer: slots[1], compactionQueuedMessages: [], pendingBashComponents: [], getAppKeyDisplay: () => 'Alt+Up', ui: root });
       queueHost.updatePendingMessagesDisplay();
     }
     viewport = new ScrollView(root, { primary: true, follow: 'none', scrollbar: 'hidden' });

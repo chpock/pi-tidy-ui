@@ -36,12 +36,11 @@ class InputCache {
   #store: WeakRef<Store>;
   constructor(store: Store) { this.#store = new WeakRef(store); }
   static prepare(theme: PiInputTheme | undefined, paletteId: string, paletteRevision: number, terminalMode: TerminalColorMode,
-    funding: GeometryFunding, cache?: InputCache): PiInputLease | undefined {
+    funding: GeometryFunding, cache?: InputCache): PaletteInputLease | undefined {
     return prepare(theme, paletteId, paletteRevision, terminalMode, funding, cache ? cache.#store.deref() : undefined);
   }
 }
 export type PaletteInputCache = InputCache;
-export type PiInputCache = PaletteInputCache;
 
 function fund(budget: DataBudget, bytes: number, funding?: DataGrantFactory): DataCharge {
   const grant = funding ? funding(bytes) : budget.reserve(bytes);
@@ -84,7 +83,7 @@ class InputLease {
   #store?: Store;
   #ownership: LeaseOwnership;
   #receipt: DataCleanupReceipt;
-  readonly cache: PiInputCache;
+  readonly cache: PaletteInputCache;
   readonly paletteId: string;
   readonly paletteRevision: number;
   readonly terminalMode: TerminalColorMode;
@@ -117,16 +116,10 @@ class InputLease {
   }
 }
 export type PaletteInputLease = InputLease;
-export type PiInputLease = PaletteInputLease;
 
 /** Outside-render only. A hit funds only a new handle, never resamples or
  * recompiles. The physical store, not the first lease, is the weak cache target. */
 export const preparePaletteInput = InputCache.prepare;
-/** Pi-only convenience used by embedders and focused compatibility controls. */
-export function preparePiInput(theme: PiInputTheme, paletteRevision: number, terminalMode: TerminalColorMode,
-  funding: GeometryFunding, cache?: PaletteInputCache): PaletteInputLease | undefined {
-  return preparePaletteInput(theme, 'pi', paletteRevision, terminalMode, funding, cache);
-}
 function prepare(theme: PiInputTheme | undefined, paletteId: string, paletteRevision: number, terminalMode: TerminalColorMode,
   funding: GeometryFunding, previous?: Store): PaletteInputLease | undefined {
   if (previous?.data && previous.ownership.owners && previous.paletteId === paletteId && previous.paletteRevision === paletteRevision && previous.terminalMode === terminalMode) {

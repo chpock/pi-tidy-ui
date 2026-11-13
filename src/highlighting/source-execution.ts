@@ -541,7 +541,6 @@ export class SourceExecution implements WorkTurnExecution<SourceState, Descripti
     const latest = state.generation === undefined ? undefined : this.pool.borrowSnapshot(state.generation);
     const providerChange = state.provider !== provider;
     const identityChange = language !== state.language || path !== state.path;
-    const latestComplete = state.complete;
     const formationChange = state.complete && !complete;
     // Local empty paint is not a native checkpoint. Start a fresh semantic
     // generation before real parsing instead of borrowing its local revision.
@@ -1317,7 +1316,7 @@ export class SourceExecution implements WorkTurnExecution<SourceState, Descripti
       state.displayVersion = display.complete && this.matchesContent(state, display.sourceVersion) ? state.version : undefined;
       state.styleDirty = display.semanticStamp !== this.pool.status(member.generation)?.semanticStamp;
     }
-    if (grouped && !this.publishGroup(grouped, members, selection, roles, vocabulary, groupGrant!, readyBytes)) return false;
+    if (grouped && !this.publishGroup(grouped, members, selection, roles, groupGrant!, readyBytes)) return false;
     if (grouped) for (const member of members) {
       const state = this.states.get(member.key)!;
       if (state.previous !== undefined && state.previous !== member.generation) {
@@ -1330,7 +1329,7 @@ export class SourceExecution implements WorkTurnExecution<SourceState, Descripti
     } finally { groupGrant?.close(); }
   }
   private publishGroup(node: WorkNode, members: readonly StyleMember[], selection: PreparedSelection, roles: StyleRoles,
-    vocabulary: string, grant: DataGrant, bytes: number): boolean {
+    grant: DataGrant, bytes: number): boolean {
     const entry = node.value;
     if (!('preparation' in entry) || !node.seal || !this.sealMatches(entry, node.seal) || !entry.preparation.deref()) return false;
     // The existing 512-byte/member allowance funds one ordered map association and scalar receipt.
