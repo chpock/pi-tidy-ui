@@ -30,6 +30,7 @@ import { sampleOwnedPalette } from '../../../src/themes/owned-palette.ts';
 import { menuPage, withMenu, setAppearance, setLogging } from '../../helpers/menu-driver.ts';
 import { ExtensionSettings, themePreferenceFromSettings, type SettingsLoadResult, type SettingsPatch, type SettingsSaveResult, type LocalPreferences } from '../../../src/settings.ts';
 import { FilePreviewState } from '../../../src/presentation/file-preview-state.ts';
+import { FileDetails } from '../../../src/presentation/file-details.ts';
 import { createLazyNativeRendererResolver, DeferredRenderer, isDeferredStockFilePair, type NativeRendererFailureReporter } from '../../../src/host/pi/lazy-native-renderers.ts';
 import { extensionHarness as sharedExtensionHarness } from '../../fixtures/sdk-contract-support.ts';
 
@@ -3763,6 +3764,38 @@ test('entry native reporting reads the current provider while a retained selecte
 });
 
 
+test('entry terminal stop defers cold and changed card preparation until useful return', async () => {
+  const preparations: Parameters<NonNullable<TidyUiRuntimeOptions['cardPreparation']>>[0][] = [];
+  const h = fixture('tui', false, undefined, undefined, event => preparations.push(event));
+  const terminal = { start() {}, stop() {}, write(_data: string) {} };
+  Object.assign(h.root, { terminal, terminalColorSchemeNotificationsEnabled: false, queryTerminalColors: async () => ({}) });
+  const counts = () => ({ updated: preparations.filter(event => event.phase === 'updated').length,
+    prepared: preparations.filter(event => event.phase === 'prepared').length });
+  try {
+    await h.ready; await h.start();
+    const existing = writeOwner(h, 'terminal-stop-existing', 'const before_stop = 1;');
+    existing.setArgsComplete(); completeLiveWrite(h, existing);
+    h.root.render(120); await settled();
+    assert.ok(counts().updated > 0 && counts().prepared > 0, 'the active SDK component positively controls real card preparation');
+
+    terminal.stop(); await settled();
+    const stopped = counts(), acquisitions = { shared: h.counts.shared, owned: h.counts.owned };
+    const cold = writeOwner(h, 'terminal-stop-cold', 'const cold_after_stop = 2;');
+    cold.setArgsComplete(); completeLiveWrite(h, cold);
+    existing.updateArgs({ path: 'terminal-stop-existing.ts', content: 'const latest_after_stop = 3;' });
+    await settled();
+    assert.deepEqual(counts(), stopped, 'SDK updates while stopped cannot admit, prepare or publish card replacements');
+    assert.deepEqual({ shared: h.counts.shared, owned: h.counts.owned }, acquisitions, 'stopped updates cannot reacquire the provider');
+
+    terminal.start(); h.root.render(120); await settled();
+    const rows = plainRows(h.root.render(120));
+    assert.match(rows, /cold_after_stop/u, 'normal useful return prepares the new component');
+    assert.match(rows, /latest_after_stop/u, 'normal useful return observes the latest changed input');
+    assert.doesNotMatch(rows, /before_stop/u, 'the changed component cannot revive stale source');
+    assert.ok(counts().updated > stopped.updated && counts().prepared > stopped.prepared);
+  } finally { await h.stop(); }
+});
+
 test('entry terminal binding keeps syntax suspension active with local colors Off and detaches on shutdown', async () => {
   const { TerminalColors } = await import('../../../src/terminal-colors.ts');
   const syntaxStop = SyntaxRuntime.prototype.suspend, syntaxStart = SyntaxRuntime.prototype.resume;
@@ -3851,3 +3884,226 @@ test('entry pre-start persistent switch uses the initial live signal and shutdow
   });
   assert.equal(writes.length, 1); assert.equal(h.counts.constructed, 0); assert.deepEqual(h.notices, notices);
 });
+
+test('entry terminal stop defers streamed Bash input and output preparation until useful return', async () => {
+  const preparations: Parameters<NonNullable<TidyUiRuntimeOptions['cardPreparation']>>[0][] = [];
+  const h = fixture('tui', false, undefined, undefined, event => preparations.push(event));
+  const terminal = { start() {}, stop() {}, write(_data: string) {} };
+  Object.assign(h.root, { terminal, terminalColorSchemeNotificationsEnabled: false, queryTerminalColors: async () => ({}) });
+  const make = (id: string, output: string) => {
+    const owner = new ToolExecutionComponent('bash', id, { command: `printf '${id}'` }, undefined, undefined,
+      h.root as unknown as ConstructorParameters<typeof ToolExecutionComponent>[5], '/tmp');
+    h.root.addChild(owner); owner.setArgsComplete();
+    owner.updateResult({ content: [{ type: 'text', text: output }], isError: false }, true);
+    owner.setExpanded(true); return owner;
+  };
+  const counts = () => ({ updated: preparations.filter(event => event.phase === 'updated').length,
+    prepared: preparations.filter(event => event.phase === 'prepared').length });
+  try {
+    await h.ready; await h.start();
+    const existing = make('stream-before-stop', 'BASH_BEFORE_STOP');
+    h.root.render(120); await settled();
+    assert.match(plainRows(h.root.render(120)), /BASH_BEFORE_STOP/u);
+    assert.ok(counts().updated > 0 && counts().prepared > 0, 'active Bash genuinely reaches the preparation owner');
+    terminal.stop(); await settled();
+    const stopped = counts();
+    make('stream-while-stopped', 'BASH_COLD_WHILE_STOPPED');
+    existing.updateArgs({ command: "printf 'BASH_LATEST_COMMAND'" });
+    existing.updateResult({ content: [{ type: 'text', text: 'BASH_LATEST_OUTPUT' }], isError: false }, true);
+    await settled();
+    assert.deepEqual(counts(), stopped, 'stopped Bash updates cannot admit input, output or replacement preparation');
+    terminal.start(); h.root.render(120); await settled();
+    const rows = plainRows(h.root.render(120));
+    assert.match(rows, /BASH_COLD_WHILE_STOPPED/u); assert.match(rows, /BASH_LATEST_COMMAND/u); assert.match(rows, /BASH_LATEST_OUTPUT/u);
+    assert.doesNotMatch(rows, /BASH_BEFORE_STOP/u);
+    assert.ok(counts().updated > stopped.updated && counts().prepared > stopped.prepared);
+  } finally { await h.stop(); }
+});
+
+for (const coldPhase of ['pending', 'error'] as const) {
+  test(`entry terminal stop defers ${coldPhase} file details and changed errors until useful return`, async () => {
+    const h = fixture(), terminal = { start() {}, stop() {}, write(_data: string) {} };
+    Object.assign(h.root, { terminal, terminalColorSchemeNotificationsEnabled: false, queryTerminalColors: async () => ({}) });
+    const prepare = FileDetails.prototype.prepare; let calls = 0;
+    FileDetails.prototype.prepare = function (...args) { calls++; return Reflect.apply(prepare, this, args); };
+    try {
+      await h.ready; await h.start();
+      const existing = readOwner(h, `detail-before-stop-${coldPhase}`);
+      existing.setArgsComplete(); existing.updateResult({ content: [{ type: 'text', text: 'DETAIL_BEFORE_STOP' }], isError: true }, false);
+      existing.setExpanded(true); h.root.render(120); await settled();
+      assert.match(plainRows(h.root.render(120)), /DETAIL_BEFORE_STOP/u);
+      assert.ok(calls > 0, 'the real detail owner prepared the active error');
+      terminal.stop(); await settled();
+      const stopped = calls, cold = readOwner(h, `detail-cold-${coldPhase}`);
+      cold.setArgsComplete();
+      if (coldPhase === 'error') cold.updateResult({ content: [{ type: 'text', text: 'DETAIL_COLD_ERROR' }], isError: true }, false);
+      cold.setExpanded(true);
+      existing.updateResult({ content: [{ type: 'text', text: 'DETAIL_LATEST_ERROR' }], isError: true }, false);
+      await settled();
+      assert.equal(calls, stopped, 'stopped pending/error lifecycle updates cannot build or replace file details');
+      terminal.start(); h.root.render(120); await settled();
+      const rows = plainRows(h.root.render(120));
+      assert.match(rows, /DETAIL_LATEST_ERROR/u); assert.doesNotMatch(rows, /DETAIL_BEFORE_STOP/u);
+      assert.match(rows, coldPhase === 'error' ? /DETAIL_COLD_ERROR/u : /Waiting for file content\./u);
+      assert.ok(calls > stopped, 'useful return prepares current details without waiting for native availability');
+    } finally { FileDetails.prototype.prepare = prepare; await h.stop(); }
+  });
+}
+
+test('entry terminal stop withdraws an already queued cold preparation and return reads latest SDK data', async () => {
+  const preparations: Parameters<NonNullable<TidyUiRuntimeOptions['cardPreparation']>>[0][] = [];
+  const h = fixture('tui', false, undefined, undefined, event => preparations.push(event));
+  const terminal = { start() {}, stop() {}, write(_data: string) {} };
+  Object.assign(h.root, { terminal, terminalColorSchemeNotificationsEnabled: false, queryTerminalColors: async () => ({}) });
+  try {
+    await h.ready; await h.start();
+    const stock = createReadToolDefinition('/tmp');
+    const foreign = { ...stock, renderShell: 'self' as const,
+      renderCall: () => new Text('foreign read call'), renderResult: () => new Text('foreign read result') };
+    const owner = new ToolExecutionComponent('read', 'queued-before-terminal-stop', { path: 'queued-before-stop.ts' }, undefined,
+      foreign, h.root as unknown as ConstructorParameters<typeof ToolExecutionComponent>[5], '/tmp');
+    h.root.addChild(owner); owner.setArgsComplete();
+    owner.updateResult({ content: [{ type: 'text', text: 'QUEUED_OLD_BODY' }], isError: false }, false); owner.setExpanded(true);
+    const rows = plainRows(owner.render(100));
+    assert.doesNotMatch(rows, /QUEUED_OLD_BODY/u);
+    assert.equal(preparations.length, 0, 'cold visibility only queues work; preparation has not executed on the render stack');
+    terminal.stop(); await settled();
+    assert.equal(preparations.length, 0, 'the queued callback cannot prepare after terminal stop');
+    owner.updateResult({ content: [{ type: 'text', text: 'QUEUED_LATEST_BODY' }], isError: false }, false);
+    await settled(); assert.equal(preparations.length, 0, 'inactive updates do not revive the queued work');
+    terminal.start(); h.root.render(120); await settled();
+    const recovered = plainRows(owner.render(100));
+    assert.match(recovered, /QUEUED_LATEST_BODY/u); assert.doesNotMatch(recovered, /QUEUED_OLD_BODY/u);
+    assert.ok(preparations.some(event => event.phase === 'prepared'), 'the ordinary useful frame eventually prepares the latest result');
+  } finally { await h.stop(); }
+});
+
+for (const kind of ['toolcall_start', 'toolcall_delta', 'toolcall_end']) {
+  test(`entry stopped cold Bash keeps public live identity through abandonment (${kind})`, async t => {
+    const h = fixture(), terminal = { start() {}, stop() {}, write(_data: string) {} };
+    Object.assign(h.root, { terminal, terminalColorSchemeNotificationsEnabled: false, queryTerminalColors: async () => ({}) });
+    const liveText = ": 'stopped-live", restoredText = ": 'restored-static";
+    let livePreparations = 0, liveObservations = 0, livePi = 0, restoredPreparations = 0, restoredPi = 0;
+    let restoredComplete = false;
+    const prepare = CardSources.prototype.prepare, observe = SourceExecution.prototype.observe, classify = PiFallbackCoordinator.prototype.classify;
+    t.mock.method(CardSources.prototype, 'prepare', function(this: CardSources<object>, ticket: Parameters<CardSources<object>['prepare']>[0]) {
+      const state = Reflect.get(ticket, 'state') as WeakRef<{ input?: CardDisplayInput }>;
+      const input = state.deref()?.input;
+      if (input?.kind === 'bash') {
+        if (input.reader.command() === liveText) livePreparations++;
+        if (input.reader.command() === restoredText) { restoredPreparations++; restoredComplete = input.complete; }
+      }
+      return prepare.call(this, ticket);
+    });
+    t.mock.method(SourceExecution.prototype, 'observe', function(this: SourceExecution, input: Parameters<SourceExecution['observe']>[0]) {
+      if (input.text === liveText) liveObservations++;
+      return observe.call(this, input);
+    });
+    t.mock.method(PiFallbackCoordinator.prototype, 'classify', function(this: PiFallbackCoordinator,
+      request: Parameters<PiFallbackCoordinator['classify']>[0], classifier: Parameters<PiFallbackCoordinator['classify']>[1]) {
+      if (request.text === liveText) livePi++;
+      if (request.text === restoredText) restoredPi++;
+      return classify.call(this, request, classifier);
+    });
+    const tool = (text: string) => {
+      const owner = new ToolExecutionComponent('bash', `stopped-${kind}`, { command: text }, undefined, undefined,
+        h.root as unknown as ConstructorParameters<typeof ToolExecutionComponent>[5], '/tmp');
+      h.root.addChild(owner); return owner;
+    };
+    const abort = (owner: ToolExecutionComponent) => owner.updateResult({ content: [{ type: 'text', text: 'Operation aborted' }], isError: true }, false);
+    try {
+      await h.ready; await h.start(); await settled(); terminal.stop(); await settled();
+      const message = { role: 'assistant', content: [{ type: 'toolCall', id: `stopped-${kind}`, name: 'bash', arguments: { command: liveText } }] };
+      await h.events.get('message_start')!({ type: 'message_start', message }, h.ctx);
+      await h.events.get('message_update')!({ type: 'message_update', message,
+        assistantMessageEvent: { type: kind, contentIndex: 0, partial: message } }, h.ctx);
+      const live = tool(liveText); abort(live);
+      await h.events.get('message_end')!({ type: 'message_end', message: { role: 'assistant', stopReason: 'aborted' } }, h.ctx);
+      await h.events.get('agent_end')!({ type: 'agent_end' }, h.ctx);
+      h.root.render(80); await settled();
+      assert.equal(livePreparations, 0); assert.equal(liveObservations, 0); assert.equal(livePi, 0);
+      terminal.start(); h.root.render(80); await settled();
+      for (let index = 0; index < 20; index++) h.root.render(80);
+      await settled();
+      assert.equal(livePreparations, 0, 'clearing the public ID set before return cannot turn an abandoned live call into static restoration');
+      assert.equal(liveObservations, 0); assert.equal(livePi, 0);
+      assert.equal(Reflect.get(live, 'argsComplete'), false); assert.equal(Reflect.get(live, 'executionStarted'), false);
+      h.root.removeChild(live);
+      const restored = tool(restoredText); abort(restored); h.root.render(80); await settled();
+      assert.equal(restoredPreparations, 1, 'a new owner with the released ID still receives one finite static preparation');
+      assert.equal(restoredComplete, true); assert.equal(restoredPi, 0, 'Bash never invokes the Pi classifier');
+      assert.equal(Reflect.get(restored, 'argsComplete'), false); assert.equal(Reflect.get(restored, 'executionStarted'), false);
+      for (let index = 0; index < 20; index++) h.root.render(80);
+      await settled(); assert.equal(restoredPreparations, 1); assert.equal(restoredPi, 0);
+    } finally { await h.stop(); }
+  });
+}
+
+for (const kind of ['bash', 'write'] as const) {
+  test(`entry terminal stop retains ready ${kind} rows without enabling new geometry`, async t => {
+    const preparations: Parameters<NonNullable<TidyUiRuntimeOptions['cardPreparation']>>[0][] = [];
+    const h = fixture('tui', false, undefined, undefined, event => preparations.push(event));
+    const terminal = { start() {}, stop() {}, write(_data: string) {} };
+    Object.assign(h.root, { terminal, terminalColorSchemeNotificationsEnabled: false, queryTerminalColors: async () => ({}) });
+    const grant = SourceExecution.prototype.grantGeometry;
+    let grants = 0;
+    t.mock.method(SourceExecution.prototype, 'grantGeometry', function(this: SourceExecution, ...args: Parameters<SourceExecution['grantGeometry']>) {
+      grants++; return grant.apply(this, args);
+    });
+    try {
+      await h.ready; await h.start();
+      const owner = kind === 'write' ? writeOwner(h, 'ready-stop-write', writeSource('READY_STOP_WRITE'))
+        : new ToolExecutionComponent('bash', 'ready-stop-bash', { command: "printf 'READY_STOP_BASH'" }, undefined, undefined,
+          h.root as unknown as ConstructorParameters<typeof ToolExecutionComponent>[5], '/tmp');
+      if (kind === 'bash') {
+        h.root.addChild(owner); owner.setArgsComplete(); owner.markExecutionStarted();
+        owner.updateResult({ content: [{ type: 'text', text: 'READY_STOP_OUTPUT' }], isError: false }, false);
+      } else completeLiveFile(h, owner);
+      owner.setExpanded(true); h.root.render(100); await settled();
+      const ready = owner.render(100);
+      assert.match(plainRows(ready), kind === 'bash' ? /READY_STOP_BASH/u : /READY_STOP_WRITE_row_0/u);
+      assert.ok(grants > 0, 'the active owner has genuinely funded its prepared geometry');
+      assert.ok(preparations.some(event => event.phase === 'prepared'));
+      assert.deepEqual(owner.render(100), ready, 'the ready rows already satisfy an ordinary warm frame');
+      terminal.stop(); await settled();
+      const stopped = { grants, preparations: preparations.length };
+      assert.deepEqual(owner.render(100), ready, 'a stopped owner borrows its paid current rows rather than a native or limitation fallback');
+      assert.deepEqual({ grants, preparations: preparations.length }, stopped, 'retained rows require no new geometry or preparation');
+      owner.render(90);
+      assert.deepEqual({ grants, preparations: preparations.length }, stopped, 'a different width cannot fund new geometry while work is stopped');
+      terminal.start(); h.root.render(90); await settled();
+      const resumed = owner.render(90);
+      assert.match(plainRows(resumed), kind === 'bash' ? /READY_STOP_BASH/u : /READY_STOP_WRITE_row_0/u);
+      assert.ok(grants > stopped.grants, 'ordinary active rendering may reflow at the new width again');
+    } finally { await h.stop(); }
+  });
+}
+
+for (const outcome of ['reject', 'throw'] as const) {
+  test(`entry ready rows remain provisional when the outer card visit must ${outcome}`, async () => {
+    const h = fixture();
+    const visit = CardSources.prototype.visit;
+    try {
+      await h.ready; await h.start();
+      const owner = writeOwner(h, `ready-visit-${outcome}`, writeSource('PROVISIONAL_READY'));
+      completeLiveFile(h, owner); owner.setExpanded(true);
+      h.root.render(100); await settled();
+      const ready = owner.render(100);
+      assert.match(plainRows(ready), /PROVISIONAL_READY_row_0/u);
+      let callbacks = 0;
+      CardSources.prototype.visit = function (node, consume) {
+        visit.call(this, node, (display, paint) => {
+          callbacks++; consume(display, paint);
+          if (outcome === 'throw') throw new Error('provisional ready visit interrupted');
+        });
+        return false;
+      };
+      const rejected = owner.render(100);
+      assert.ok(callbacks > 0, 'the real paid display reached the callback before rejection');
+      assert.notDeepEqual(rejected, ready, 'callback completion alone cannot authorize returning retained rows');
+      CardSources.prototype.visit = visit;
+      if (outcome === 'reject') assert.deepEqual(owner.render(100), ready, 'a rejected borrow preserves paid rows for a later accepted visit');
+      else assert.notDeepEqual(owner.render(100), ready, 'a thrown visitor retains the existing native-hook failure policy');
+    } finally { CardSources.prototype.visit = visit; await h.stop(); }
+  });
+}

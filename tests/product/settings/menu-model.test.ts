@@ -167,3 +167,14 @@ test('page titles and native keyboard help retain their fixed wording', () => {
   for (const page of ['themes', 'support', 'service', 'logs', 'cache'] as const)
     assert.equal(menuNavigation(page), '↑↓ Navigate · Enter Select · Esc Back');
 });
+
+for (const reason of ['activation_deferred', 'worker_unavailable', 'exhausted_route'] as const) {
+  test(`service details preserve the cached ${reason} reason without changing state`, () => {
+    const syntax = syntaxSnapshot(); syntax.provider = { ...syntax.provider, availability: 'unavailable', reason };
+    const snapshot = menuSnapshot(preferences(), { syntax }), before = structuredClone(snapshot);
+    for (let index = 0; index < 20; index++) {
+      assert.equal(menuDetails('service', snapshot, view).includes(`Service: unavailable (${reason})`), true);
+    }
+    assert.deepEqual(snapshot, before);
+  });
+}

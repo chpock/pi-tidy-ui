@@ -15,7 +15,7 @@ const fullFamily = sourceReservation({ captureUnits: HIGHLIGHT_LIMITS.sourceByte
   inputUnits: HIGHLIGHT_LIMITS.sourceBytes, replacementBytes: HIGHLIGHT_LIMITS.sourceBytes,
   frameBytes: OCCIPITAL_LIMITS.dataWireBytes, decodedBytes: HIGHLIGHT_LIMITS.decodedBytes });
 export const CONTROLLER_LIMITS = Object.freeze({ jobs: 2, transientBytes: 2 * fullFamily,
-  bookkeepingBytes: OCCIPITAL_LIMITS.retainedBytes, restarts: 1 });
+  bookkeepingBytes: OCCIPITAL_LIMITS.retainedBytes });
 
 export function sourceIdentifier(value: unknown, cap = 64): value is string {
   return typeof value === 'string' && value.length > 0 && value.length <= cap

@@ -10,7 +10,7 @@ import type { SourceDemand } from '../../../src/highlighting/source-ports.ts';
 import { decodeSemanticSourceReply, SEMANTIC_PROTOCOL_VERSION as VERSION } from '../../../src/occipital/semantic-protocol.ts';
 import { SemanticRetentionPool } from '../../../src/highlighting/storage/semantic-retention.ts';
 import { StdioTransport } from '../../../src/occipital/stdio.ts';
-import { ProviderBroker } from '../../../src/occipital/provider.ts';
+import { DEFAULT_PROVIDER_CLOCK, PROVIDER_LIMITS, ProviderBroker } from '../../../src/occipital/provider.ts';
 import { awaitFixture } from '../../fixtures/await-fixture.ts';
 import { readInputs, validateNative } from '../../../scripts/test/context.mjs';
 import { ownedStyleSelection } from '../../fixtures/owned-style-selection.ts';
@@ -128,27 +128,40 @@ test('review F2 pressure: six actual source bytes recover once after verified se
   } finally { c.dispose(); await awaitFixture(broker.dispose()); cleaned(transport, c); await rm(root, { recursive: true, force: true }); }
 });
 
-test('real owned exits stop after two restarts; only a validated six-byte source classification opens a fresh pair', async () => {
+test('real owned exits recover beyond two minute-spaced cycles without a successful SOURCE resetting the deadline', async () => {
   const root = await mkdtemp(join(tmpdir(), 'occipital-crash-budget-')), pipes: StdioTransport[] = [];
-  const broker = new ProviderBroker({ tryShared: async () => undefined, acquireOwned: async () => { const transport = pipe(root); pipes.push(transport); return transport; } });
+  let now = 0;
+  const clock = { ...DEFAULT_PROVIDER_CLOCK, now: () => now };
+  const broker = new ProviderBroker({ clock, tryShared: async () => undefined, acquireOwned: async () => { const transport = pipe(root); pipes.push(transport); return transport; } });
   const c = new SourceExecution(broker);
-  async function exitAndRecover() {
-    const generation = broker.snapshot().generation, transport = pipes.at(-1)!;
+  async function exitAndRecover(due: number) {
+    const generation = broker.snapshot().generation, transport = pipes.at(-1)!, count = pipes.length;
     process.kill(transport.stats().pid!, 'SIGKILL'); await awaitFixture(transport.ended); assert.equal(transport.endReason, 'lost');
-    await awaitFixture(broker.start()); assert.notEqual(broker.snapshot().generation, generation);
+    assert.equal(await awaitFixture(broker.whenSettled()), true);
+    assert.equal(broker.snapshot().availability, 'unavailable'); assert.equal(pipes.length, count);
+    assert.equal(broker.snapshot().recoveryAt, due);
+    if (now < due) {
+      await awaitFixture(broker.recover()); assert.equal(pipes.length, count, 'no early replacement after loss or useful classification');
+      now = due;
+    }
+    await awaitFixture(broker.recover()); assert.equal(broker.snapshot().availability, 'ready');
+    assert.notEqual(broker.snapshot().generation, generation); assert.equal(pipes.length, count + 1);
     assert.equal(transport.stats().childState, 'exited'); assert.throws(() => process.kill(transport.stats().pid!, 0), { code: 'ESRCH' });
     assert.equal(transport.stats().retainedBytes, 0); assert.equal(transport.stats().liveTimers, 0); assert.equal(transport.stats().ownedListeners, 0);
   }
   try {
-    await awaitFixture(broker.start()); await exitAndRecover(); await exitAndRecover();
+    await awaitFixture(broker.start()); await exitAndRecover(0); await exitAndRecover(PROVIDER_LIMITS.recoveryIntervalMs);
     assert.equal(pipes.length, 3); assert.equal(broker.stats().ownedRestarts, 2);
     const d = demand('echo x', 1, true); c.observe(d); c.flush(); await drain(c);
     assert.equal(c.status(d.key)!.exact, true); assert.equal(c.stats().dispatches, 1); assert.equal(broker.stats().successfulClassifications, 1);
     const retained = semanticRows(c); assert.ok(retained.length); assert.equal(retained.at(-1)!.to, 6);
     assert.equal(c.displayBasis(d.key), undefined, 'source-only success does not pretend a palette presentation was resolved');
-    await exitAndRecover(); await exitAndRecover(); await exitAndRecover();
-    assert.equal(pipes.length, 5); assert.equal(broker.stats().ownedRestarts, 4); assert.equal(broker.stats().ownedRestartStops, 1);
-    assert.equal(broker.snapshot().reason, 'restart_limit'); c.observe(d); c.flush();
+    await exitAndRecover(2 * PROVIDER_LIMITS.recoveryIntervalMs);
+    await exitAndRecover(3 * PROVIDER_LIMITS.recoveryIntervalMs);
+    await exitAndRecover(4 * PROVIDER_LIMITS.recoveryIntervalMs);
+    assert.equal(pipes.length, 6); assert.equal(broker.stats().ownedRestarts, 5);
+    assert.deepEqual(semanticRows(c), retained); assert.equal(c.status(d.key)!.exact, true);
+    c.observe(d); c.flush(); await drain(c);
     assert.deepEqual(semanticRows(c), retained); assert.equal(c.status(d.key)!.exact, true);
     assert.equal(c.stats().dispatches, 1); assert.equal(broker.stats().sourceDispatches, 1); assert.equal(broker.stats().styleDispatches, 0);
   } finally {

@@ -434,7 +434,10 @@ test('runtime intentional suspend recovers outstanding source without destroying
   assert.equal(f.shared(), 2); assert.deepEqual(f.peers[1]!.calls.map(c => c.request.op), ['describe', 'highlight']);
   f.peers[1]!.answer(1); await settled(); assert.equal(sources.status(initial.key)?.exact, true);
   const before = f.peers[1]!.calls.length;
-  f.runtime.suspend(); f.runtime.resume(); await settled(); sources.flush();
-  assert.equal(f.shared(), 2); assert.equal(f.peers[1]!.calls.length, before);
+  f.runtime.suspend(); f.runtime.resume(); await settled(); sources.flush(); await settled();
+  assert.equal(f.shared(), 3); assert.equal(f.peers[1]!.closes, 1);
+  assert.equal(f.peers[1]!.calls.length, before);
+  assert.deepEqual(f.peers[2]!.calls.map(c => c.request.op), ['describe'], 'idle return reconnects without reparsing complete source');
+  assertSourceOwner(f.runtime, sources); assert.equal(sources.status(initial.key)?.exact, true);
   assert.deepEqual(f.changes, []); assert.equal(f.store.writes.length, 0);
 });

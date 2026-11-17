@@ -71,6 +71,8 @@ test('current consumer costs: actual owned SOURCE STYLE incremental contexts and
   const requests: { phase: string; op: string; requestJsonBytes: number; responseJsonBytes: number; contexts: number; transportToParsedReplyMs: number; transportCreditAtDispatch: number; sourceRuns: number; decodedRangeCapacityBytes: number; decodedContextCapacityBytes: number }[] = [];
   const provider = { snapshot: () => broker.snapshot(), isReady: (generation: number) => broker.isReady(generation),
     classificationAccepted: (generation: number) => broker.classificationAccepted(generation),
+    recover: () => broker.recover(), workerUnavailable: (generation: number) => broker.workerUnavailable(generation),
+    exhaustedRoute: (generation: number) => broker.exhaustedRoute(generation),
     request(generation: number, request: SemanticDataRequest, options?: Parameters<ProviderBroker['request']>[2]) {
       const record = { phase, op: String(request.op), requestJsonBytes: Buffer.byteLength(JSON.stringify(request)), responseJsonBytes: 0,
         contexts: request.op === 'styles.resolve' ? request.contexts.length : 0, transportToParsedReplyMs: 0, transportCreditAtDispatch: 0, sourceRuns: 0, decodedRangeCapacityBytes: 0, decodedContextCapacityBytes: 0 };

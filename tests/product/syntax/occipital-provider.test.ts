@@ -8,7 +8,7 @@ import { semanticDescriptor } from '../../fixtures/semantic-provider.ts';
 import type { TransportEnd } from '../../../src/occipital/transport-end.ts';
 import { StdioTransport } from '../../../src/occipital/stdio.ts';
 import { SharedTransport, type SharedClient } from '../../../src/occipital/shared.ts';
-import { ProviderBroker, PROVIDER_LIMITS, type ProviderClock, type ProviderTransport, type ProviderOptions, type SharedNegotiator } from '../../../src/occipital/provider.ts';
+import { ProviderBroker, PROVIDER_LIMITS, DEFAULT_PROVIDER_CLOCK, type ProviderClock, type ProviderTransport, type ProviderOptions, type SharedNegotiator } from '../../../src/occipital/provider.ts';
 
 function deferred<T>() { let resolve!: (value:T)=>void; let reject!: (error:Error)=>void; const promise=new Promise<T>((yes,no)=>{resolve=yes;reject=no;});return {promise,resolve,reject}; }
 async function flush() { for(let i=0;i<50;i++) await Promise.resolve(); }
@@ -41,7 +41,7 @@ function setup(shared:ProviderOptions['tryShared'],owned?:Transport) {
   return {broker,clock,acquisitions:()=>acquisitions};
 }
 async function failover(shared:Transport,owned:Transport,probe:(signal:AbortSignal)=>Promise<ProviderTransport|undefined>=async()=>undefined) {
-  let calls=0;const s=setup(async signal=>++calls===1?shared:probe(signal),owned);await s.broker.start();const generation=s.broker.snapshot().generation;await s.broker.provenLoss(generation);assert.equal(s.broker.snapshot().kind,'owned');return {...s,calls:()=>calls};
+  let calls=0;const s=setup(async signal=>++calls===1?shared:probe(signal),owned);await s.broker.start();const generation=s.broker.snapshot().generation;await s.broker.provenLoss(generation);await s.broker.recover();assert.equal(s.broker.snapshot().kind,'owned');return {...s,calls:()=>calls};
 }
 function released(broker:ProviderBroker,clock:Clock) { const s=broker.stats();assert.equal(s.liveTimers,0);assert.equal(s.abortListeners,0);assert.equal(s.activeCandidates,0);assert.equal(s.activeProbes,0);assert.equal(clock.timers.size,0); }
 
@@ -51,6 +51,20 @@ test('initial compatible shared is source-free and requires zero binary acquisit
   assert.deepEqual(shared.requests.map(r=>r.op),['describe']);assert.deepEqual(Object.keys(shared.requests[0]!).sort(),['op','ticket','v']);assert.match(String(shared.requests[0]!.ticket),/^broker:/);
   await s.broker.dispose();assert.equal(shared.closes,1);released(s.broker,s.clock);
 });
+test('physical close starts and completes once across repeated suspend, Off and disposal', async () => {
+  const shared = new Transport(), exit = deferred<void>(); shared.exit = exit.promise;
+  const s = setup(async () => shared);
+  try {
+    await s.broker.start(); s.broker.suspend(); s.broker.suspend();
+    const off = s.broker.setEnabled(false);
+    assert.equal(shared.closes, 1); assert.equal(s.broker.stats().closesStarted, 1);
+    assert.equal(s.broker.stats().closesCompleted, 0);
+    exit.resolve(); await off; await s.broker.dispose();
+    assert.equal(shared.closes, 1); assert.equal(s.broker.stats().closesStarted, 1);
+    assert.equal(s.broker.stats().closesCompleted, 1); assert.equal(s.broker.stats().closeFailures, 0);
+  } finally { exit.resolve(); await s.broker.dispose(); released(s.broker, s.clock); }
+});
+
 test('initial standalone has no periodic probes even after owned loss',async()=>{
   const owned=new Transport(),s=setup(async()=>undefined,owned);await s.broker.start();await s.clock.advance(1200000);assert.equal(s.broker.snapshot().initialShared,false);assert.equal(s.broker.stats().sharedAttempts,1);assert.equal(s.broker.stats().probesStarted,0);await s.broker.provenLoss(s.broker.snapshot().generation);assert.equal(s.broker.stats().sharedAttempts,1);await s.broker.dispose();released(s.broker,s.clock);
 });
@@ -62,7 +76,7 @@ test('optional factory rejection does not escape startup; owned refusal leaves u
   const clock=new Clock(),broker=new ProviderBroker({clock,tryShared:async()=>{throw Error('SECRET');},acquireOwned:async()=>{throw Error('SECRET');}});await broker.start();assert.equal(broker.snapshot().availability,'unavailable');assert.equal(JSON.stringify(broker.snapshot()).includes('SECRET'),false);await broker.dispose();released(broker,clock);
 });
 test('proven shared loss performs exactly two bounded reconnects before takeover',async()=>{
-  const shared=new Transport(),owned=new Transport();let count=0;const pending=deferred<ProviderTransport|undefined>();const s=setup(async()=>++count===1?shared:pending.promise,owned);await s.broker.start();const loss=s.broker.provenLoss(s.broker.snapshot().generation);await flush();await s.clock.advance(PROVIDER_LIMITS.factoryMs*2);await loss;
+  const shared=new Transport(),owned=new Transport();let count=0;const pending=deferred<ProviderTransport|undefined>();const s=setup(async()=>++count===1?shared:pending.promise,owned);await s.broker.start();await s.broker.provenLoss(s.broker.snapshot().generation);assert.equal(s.broker.snapshot().availability,'unavailable');assert.equal(count,1);const recovery=s.broker.recover();await flush();await s.clock.advance(PROVIDER_LIMITS.factoryMs*2);await recovery;
   assert.equal(count,3);assert.equal(s.acquisitions(),1);assert.equal(shared.closes,1);assert.equal(s.broker.stats().reconnectAttempts,2);const late=new Transport();pending.resolve(late);await flush();assert.equal(late.closes,1);await s.broker.dispose();released(s.broker,s.clock);
 });
 test('source timeout/unknown outcome never implies actual transport loss',async()=>{
@@ -106,13 +120,13 @@ test('control namespace is reserved and provider incarnations have distinct tick
 });
 
 test('immediate compatible reconnect stays shared without owned takeover or periodic episode',async()=>{
-  const first=new Transport(),next=new Transport();let n=0;const s=setup(async()=>++n===1?first:next);await s.broker.start();const old=s.broker.snapshot().generation;await s.broker.provenLoss(old);await s.broker.provenLoss(old);assert.equal(s.acquisitions(),0);assert.equal(s.broker.stats().reconnectAttempts,1);assert.equal(s.broker.stats().recoveryEpisodes,0);assert.equal(s.broker.snapshot().kind,'shared');await s.broker.dispose();released(s.broker,s.clock);
+  const first=new Transport(),next=new Transport();let n=0;const s=setup(async()=>++n===1?first:next);await s.broker.start();const old=s.broker.snapshot().generation;await s.broker.provenLoss(old);assert.equal(s.broker.stats().sharedAttempts,1);assert.equal(s.acquisitions(),0);await s.broker.recover();await s.broker.provenLoss(old);assert.equal(s.acquisitions(),0);assert.equal(s.broker.stats().reconnectAttempts,1);assert.equal(s.broker.stats().recoveryEpisodes,0);assert.equal(s.broker.snapshot().kind,'shared');assert.equal(s.broker.snapshot().recoveryAt,undefined);await s.broker.dispose();released(s.broker,s.clock);
 });
 test('owned restart preserves the original window, including after expiry',async()=>{
-  const s=await failover(new Transport(),new Transport());await s.clock.advance(250000);await s.broker.provenLoss(s.broker.snapshot().generation);assert.equal(s.broker.stats().recoveryEpisodes,1);await s.clock.advance(350000);assert.equal(s.broker.stats().probesStarted,10);await s.broker.provenLoss(s.broker.snapshot().generation);await s.clock.advance(600000);assert.equal(s.broker.stats().recoveryEpisodes,1);assert.equal(s.broker.stats().probesStarted,10);await s.broker.dispose();released(s.broker,s.clock);
+  const s=await failover(new Transport(),new Transport());await s.clock.advance(250000);await s.broker.provenLoss(s.broker.snapshot().generation);await s.broker.recover();assert.equal(s.broker.stats().recoveryEpisodes,1);await s.clock.advance(350000);assert.equal(s.broker.stats().probesStarted,10);await s.broker.provenLoss(s.broker.snapshot().generation);await s.broker.recover();await s.clock.advance(600000);assert.equal(s.broker.stats().recoveryEpisodes,1);assert.equal(s.broker.stats().probesStarted,10);await s.broker.dispose();released(s.broker,s.clock);
 });
 test('a genuine shared loss after successful return starts a new finite episode',async()=>{
-  const returned=new Transport();let n=0;const s=await failover(new Transport(),new Transport(),async()=>++n===3?returned:undefined);await s.clock.advance(60000);assert.equal(s.broker.snapshot().kind,'shared');await s.broker.provenLoss(s.broker.snapshot().generation);assert.equal(s.broker.snapshot().kind,'owned');assert.equal(s.broker.stats().recoveryEpisodes,2);await s.clock.advance(60000);assert.equal(s.broker.stats().probesStarted,2);await s.broker.dispose();released(s.broker,s.clock);
+  const returned=new Transport();let n=0;const s=await failover(new Transport(),new Transport(),async()=>++n===3?returned:undefined);await s.clock.advance(60000);assert.equal(s.broker.snapshot().kind,'shared');await s.broker.provenLoss(s.broker.snapshot().generation);await s.broker.recover();assert.equal(s.broker.snapshot().kind,'owned');assert.equal(s.broker.stats().recoveryEpisodes,2);await s.clock.advance(60000);assert.equal(s.broker.stats().probesStarted,2);await s.broker.dispose();released(s.broker,s.clock);
 });
 test('late owned acquisition after dispose closes the child and never publishes',async()=>{
   const clock=new Clock(),held=deferred<ProviderTransport>(),broker=new ProviderBroker({clock,tryShared:async()=>undefined,acquireOwned:async()=>held.promise});const init=broker.start();await flush();await broker.dispose();await init;const child=new Transport();held.resolve(child);await flush();assert.equal(child.closes,1);assert.equal(broker.snapshot().availability,'disposed');released(broker,clock);
@@ -137,7 +151,7 @@ test('public StdioTransport fixture reap precedes returned source dispatch, with
   t.after(()=>owned.close());
   const first=new Transport(),returned=new Transport();let attempts=0;const clock=new Clock();
   const broker=new ProviderBroker({clock,tryShared:async()=>++attempts===1?first:attempts<=3?undefined:returned,acquireOwned:async()=>owned});t.after(()=>broker.dispose());
-  await broker.start();await broker.provenLoss(broker.snapshot().generation);assert.equal(broker.snapshot().kind,'owned');const pid=owned.stats().pid;assert.equal(typeof pid,'number');
+  await broker.start();await broker.provenLoss(broker.snapshot().generation);await broker.recover();assert.equal(broker.snapshot().kind,'owned');const pid=owned.stats().pid;assert.equal(typeof pid,'number');
   const generation=broker.snapshot().generation;const held=assert.rejects(broker.request(generation,dataRequest('source:held')),/retired/);
   returned.reply=async r=>{if(r.op!=='describe'){assert.equal(owned.stats().childState,'exited');assert.throws(()=>process.kill(pid!,0),{code:'ESRCH'});}return r.op==='describe'?descriptor(r.ticket):{answer:true};};
   await clock.advance(60000);
@@ -212,25 +226,52 @@ test('broker preserves explicit local no-start but normalizes opaque transport f
 });
 
 test('availability observer reports accepted metadata, no acquisition on shared and zero notifications on warm snapshots', async () => {
-  const clock = new Clock(), shared = new Transport(); let acquisitions = 0;
+  const clock = new Clock(), shared = new Transport(); let acquisitions = 0, sharedAttempts = 0;
   const seen: string[] = [];
-  const broker = new ProviderBroker({ clock, tryShared: async () => shared, acquireOwned: async () => { acquisitions++; return new Transport(); },
+  const broker = new ProviderBroker({ clock, tryShared: async () => { sharedAttempts++; return shared; }, acquireOwned: async () => { acquisitions++; return new Transport(); },
     onChange: () => { const s = broker.snapshot(); seen.push(`${s.availability}:${s.kind}:${s.description?.instance}`); } });
   try {
-    await broker.start(); await flush(); assert.deepEqual(seen, ['ready:shared:instance']);
+    await broker.start(); await flush();
+    assert.ok(seen.length >= 1 && seen.length <= 2, 'publication and guard-clear opportunities may coalesce');
+    assert.ok(seen.every(value => value === 'ready:shared:instance'));
+    const coldNotices = seen.length;
     for (let i = 0; i < 10; i++) { broker.snapshot(); broker.stats(); broker.isReady(broker.snapshot().generation); await broker.start(); }
-    await flush(); assert.equal(seen.length, 1); assert.equal(acquisitions, 0); assert.equal(shared.requests.length, 1);
+    await flush(); assert.equal(seen.length, coldNotices); assert.equal(sharedAttempts, 1);
+    assert.equal(acquisitions, 0); assert.equal(shared.requests.length, 1);
   } finally { await broker.dispose(); released(broker, clock); }
 });
 
 test('availability observer reports optional unavailable without exposing factory errors', async () => {
-  const clock = new Clock(), seen: string[] = [];
-  const broker = new ProviderBroker({ clock, tryShared: async () => { throw Error('private factory details'); }, acquireOwned: async () => { throw Error('private factory details'); },
+  const clock = new Clock(), seen: string[] = []; let sharedAttempts = 0, ownedAttempts = 0;
+  const broker = new ProviderBroker({ clock, tryShared: async () => { sharedAttempts++; throw Error('private factory details'); }, acquireOwned: async () => { ownedAttempts++; throw Error('private factory details'); },
     onChange: () => { seen.push(JSON.stringify(broker.snapshot())); } });
   try {
-    await broker.start(); await flush(); assert.equal(seen.length, 1);
-    assert.equal(JSON.parse(seen[0]!).availability, 'unavailable'); assert.equal(seen[0]!.includes('private factory'), false);
+    await broker.start(); await flush();
+    assert.ok(seen.length >= 1 && seen.length <= 2, 'refusal and guard-clear opportunities may coalesce');
+    for (const value of seen) {
+      const metadata = JSON.parse(value);
+      assert.equal(metadata.availability, 'unavailable'); assert.equal(metadata.reason, 'optional_unavailable');
+      assert.equal(value.includes('private factory'), false);
+    }
+    assert.ok(seen.some(value => JSON.parse(value).recoveryAt === clock.now()),
+      'a delivered post-operation opportunity must expose recovery admission after the acquisition guard clears');
+    const coldNotices = seen.length;
+    for (let i = 0; i < 10; i++) { broker.snapshot(); broker.stats(); await broker.start(); }
+    await flush(); assert.equal(seen.length, coldNotices); assert.equal(sharedAttempts, 1); assert.equal(ownedAttempts, 1);
   } finally { await broker.dispose(); released(broker, clock); }
+});
+
+test('late close of an unpublished candidate signals a fresh useful visit without changing the snapshot', async () => {
+  const clock = new Clock(), exit = deferred<void>(), candidate = new Transport(); candidate.exit = exit.promise;
+  candidate.reply = async () => ({}); let notices = 0;
+  const broker = new ProviderBroker({ clock, tryShared: async () => candidate, acquireOwned: async () => { throw Error('optional'); }, onChange: () => { notices++; } });
+  try {
+    const start = broker.start(); await flush(); assert.equal(candidate.closes, 1);
+    await clock.advance(PROVIDER_LIMITS.closeMs); await start; await flush();
+    assert.equal(broker.snapshot().availability, 'unavailable'); assert.equal(broker.snapshot().reason, 'optional_unavailable');
+    const beforeClose = notices; exit.resolve(); await flush();
+    assert.equal(broker.snapshot().reason, 'optional_unavailable'); assert.equal(notices, beforeClose + 1);
+  } finally { exit.resolve(); await broker.dispose(); released(broker, clock); }
 });
 
 test('availability observer sees native timer return and never publishes returned shared before actual owned exit', async () => {
@@ -239,7 +280,7 @@ test('availability observer sees native timer return and never publishes returne
   const broker = new ProviderBroker({ clock, tryShared: async () => ++attempts === 1 ? first : attempts <= 3 ? undefined : returned, acquireOwned: async () => owned,
     onChange: () => { const s = broker.snapshot(); seen.push(`${s.availability}:${s.kind}`); } });
   try {
-    await broker.start(); await broker.provenLoss(broker.snapshot().generation); await flush();
+    await broker.start(); await broker.provenLoss(broker.snapshot().generation); await broker.recover(); await flush();
     assert.equal(seen.at(-1), 'ready:owned'); const before = seen.length; owned.exit = exit.promise;
     await clock.advance(60000); assert.equal(seen.at(-1), 'transitioning:undefined');
     assert.equal(seen.slice(before).includes('ready:shared'), false); assert.equal(owned.closes, 1);
@@ -263,9 +304,12 @@ test('availability observer errors do not disturb readiness, exact recovery or r
   const broker = new ProviderBroker({ clock, tryShared: async () => ++attempts === 1 ? new Transport() : undefined, acquireOwned: async () => new Transport(),
     onChange: () => { notices++; throw Error('caller observer'); } });
   try {
-    await broker.start(); await flush(); assert.equal(broker.snapshot().kind, 'shared'); assert.equal(notices, 1);
-    await broker.provenLoss(broker.snapshot().generation); await flush();
-    assert.equal(broker.snapshot().kind, 'owned'); assert.equal(broker.stats().reconnectAttempts, 2); assert.equal(notices, 3);
+    await broker.start(); await flush(); assert.equal(broker.snapshot().kind, 'shared');
+    assert.ok(notices >= 1 && notices <= 2);
+    const beforeRecovery = notices;
+    await broker.provenLoss(broker.snapshot().generation); await broker.recover(); await flush();
+    assert.equal(broker.snapshot().kind, 'owned'); assert.equal(broker.stats().reconnectAttempts, 2);
+    assert.ok(notices > beforeRecovery, 'observer errors must not suppress subsequent recovery delivery');
   } finally { await broker.dispose(); released(broker, clock); }
 });
 
@@ -429,15 +473,17 @@ test('owned recovery admits two consecutive restarts, not an unlimited ready-gen
   const s = setup(async () => undefined);
   try {
     await s.broker.start(); assert.equal(s.acquisitions(), 1);
-    for (let i = 0; i < 2; i++) {
+    for (let restart = 0; restart < 3; restart++) {
       await s.broker.provenLoss(s.broker.snapshot().generation);
-      assert.equal(s.broker.snapshot().kind, 'owned'); assert.equal(s.acquisitions(), i + 2);
+      assert.equal(s.acquisitions(), restart + 1, 'retirement alone does not acquire');
+      const due = s.broker.snapshot().recoveryAt!;
+      assert.equal(due, restart === 0 ? s.clock.now() : s.clock.now() + PROVIDER_LIMITS.recoveryIntervalMs);
+      if (due > s.clock.now()) await s.clock.advance(due - s.clock.now());
+      await s.broker.recover();
+      assert.equal(s.acquisitions(), restart + 2);
+      assert.equal(s.broker.stats().ownedRestarts, restart + 1);
     }
-    await s.broker.provenLoss(s.broker.snapshot().generation);
-    assert.equal(s.acquisitions(), 3); assert.equal(s.broker.snapshot().availability, 'unavailable');
-    assert.equal(s.broker.snapshot().reason, 'restart_limit');
-    assert.equal(s.broker.stats().ownedRestarts, 2); assert.equal(s.broker.stats().ownedRestartStops, 1);
-    await s.broker.start(); assert.equal(s.acquisitions(), 3); released(s.broker, s.clock);
+    assert.equal(s.broker.stats().successfulClassifications, 0);
   } finally { await s.broker.dispose(); released(s.broker, s.clock); }
 });
 
@@ -445,14 +491,19 @@ test('only current validated classification resets owned crash budget; metadata/
   const s = setup(async () => undefined);
   try {
     await s.broker.start(); const obsolete = s.broker.snapshot().generation;
-    for (let i = 0; i < 2; i++) await s.broker.provenLoss(s.broker.snapshot().generation);
+    await s.broker.provenLoss(obsolete); await s.broker.recover();
     const generation = s.broker.snapshot().generation;
     await s.broker.request(generation, { v: 4, op:'describe',ticket:'source:metadata' } as unknown as SemanticDataRequest);
     await s.broker.request(generation, dataRequest('source:unvalidated'));
     assert.equal(s.broker.classificationAccepted(obsolete), false);
+    assert.equal(s.broker.classificationAccepted(generation), true);
     await s.broker.provenLoss(generation);
-    assert.equal(s.acquisitions(), 3); assert.equal(s.broker.snapshot().reason, 'restart_limit');
+    assert.equal(s.acquisitions(), 2); assert.equal(s.broker.snapshot().recoveryAt, PROVIDER_LIMITS.recoveryIntervalMs);
     assert.equal(s.broker.classificationAccepted(generation), false);
+    assert.equal(s.broker.stats().successfulClassifications, 1);
+    await s.broker.recover(); assert.equal(s.acquisitions(), 2, 'accepted classification does not erase the broker deadline');
+    await s.clock.advance(PROVIDER_LIMITS.recoveryIntervalMs); await s.broker.recover();
+    assert.equal(s.acquisitions(), 3);
   } finally { await s.broker.dispose(); released(s.broker, s.clock); }
 });
 
@@ -460,12 +511,14 @@ test('a successful validated current classification allows a fresh pair of owned
   const s = setup(async () => undefined);
   try {
     await s.broker.start();
-    for (let i = 0; i < 2; i++) await s.broker.provenLoss(s.broker.snapshot().generation);
     assert.equal(s.broker.classificationAccepted(s.broker.snapshot().generation), true);
-    for (let i = 0; i < 2; i++) await s.broker.provenLoss(s.broker.snapshot().generation);
-    assert.equal(s.acquisitions(), 5); assert.equal(s.broker.stats().ownedRestarts, 4);
-    await s.broker.provenLoss(s.broker.snapshot().generation);
-    assert.equal(s.acquisitions(), 5); assert.equal(s.broker.snapshot().reason, 'restart_limit');
+    for (let restart = 0; restart < 3; restart++) {
+      await s.broker.provenLoss(s.broker.snapshot().generation);
+      if (restart > 0) await s.clock.advance(PROVIDER_LIMITS.recoveryIntervalMs);
+      await s.broker.recover();
+      assert.equal(s.acquisitions(), restart + 2);
+    }
+    assert.equal(s.broker.stats().ownedRestarts, 3);
     assert.equal(s.broker.stats().successfulClassifications, 1);
   } finally { await s.broker.dispose(); released(s.broker, s.clock); }
 });
@@ -475,13 +528,17 @@ test('published owned lifetime consumes automatic loss exactly once and stops af
   const broker = new ProviderBroker({clock, tryShared:async()=>undefined, acquireOwned:async()=>{const t=new Transport();owned.push(t);return t;}});
   try {
     await broker.start(); assert.equal(owned.length,1);
-    for (let i=0;i<2;i++) {
-      owned[i]!.end('lost'); await flush(); assert.equal(owned.length,i+2);
-      assert.equal(owned[i]!.closes,1); assert.equal(broker.snapshot().kind,'owned');
-    }
-    owned[2]!.end('lost'); await flush();
-    assert.equal(owned.length,3); assert.equal(owned[2]!.closes,1); assert.equal(broker.snapshot().reason,'restart_limit');
-    assert.equal(broker.stats().sourceDispatches,0); assert.equal(broker.stats().ownedRestarts,2); released(broker,clock);
+    owned[0]!.end('lost'); await flush();
+    assert.equal(owned.length,1, 'transport loss waits for a useful guarded recovery call');
+    assert.equal(owned[0]!.closes,1); await broker.recover(); assert.equal(owned.length,2);
+    owned[1]!.end('lost'); await flush();
+    assert.equal(owned.length,2); assert.equal(broker.snapshot().recoveryAt,PROVIDER_LIMITS.recoveryIntervalMs);
+    await broker.recover(); assert.equal(owned.length,2);
+    await clock.advance(PROVIDER_LIMITS.recoveryIntervalMs); await broker.recover(); assert.equal(owned.length,3);
+    owned[2]!.end('lost'); await flush(); assert.equal(owned.length,3);
+    await clock.advance(PROVIDER_LIMITS.recoveryIntervalMs); await broker.recover();
+    assert.equal(owned.length,4); assert.equal(broker.stats().sourceDispatches,0);
+    assert.equal(broker.stats().ownedRestarts,3); released(broker,clock);
   } finally {await broker.dispose(); released(broker,clock);}
 });
 
@@ -490,10 +547,75 @@ test('published shared loss automatically performs two reconnects then owned tak
   const s=setup(async()=>++calls===1?shared:undefined);
   try {
     await s.broker.start(); shared.end('lost'); await flush();
+    assert.equal(calls,1); assert.equal(s.acquisitions(),0); assert.equal(s.broker.snapshot().availability,'unavailable');
+    await s.broker.recover();
     assert.equal(calls,3); assert.equal(shared.closes,1); assert.equal(s.acquisitions(),1);
     assert.equal(s.broker.snapshot().kind,'owned'); assert.equal(s.broker.snapshot().initialShared,true);
     assert.equal(s.broker.stats().reconnectAttempts,2); assert.equal(s.broker.stats().recoveryTimers,1);
   } finally {await s.broker.dispose();released(s.broker,s.clock);}
+});
+
+test('published worker-unavailable retirement is synchronous, local and cleanup-safe when observed', async () => {
+  const shared = new Transport(), clock = new Clock(); let calls = 0;
+  const retired: Array<{ generation: number; origin: string; availability: string; closes: number }> = [];
+  const broker = new ProviderBroker({ clock, tryShared: async () => { calls++; return shared; }, acquireOwned: async () => new Transport(),
+    onRetired(generation, origin) {
+      retired.push({ generation, origin, availability: broker.snapshot().availability, closes: shared.closes });
+      throw new Error('observer failure must not skip close');
+    } });
+  try {
+    await broker.start(); const generation = broker.snapshot().generation;
+    await broker.workerUnavailable(generation);
+    assert.deepEqual(retired, [{ generation, origin: 'worker_unavailable', availability: 'transitioning', closes: 0 }]);
+    assert.equal(broker.snapshot().reason, 'worker_unavailable'); assert.equal(broker.snapshot().recoveryAt, 0);
+    assert.equal(shared.closes, 1); assert.equal(calls, 1);
+  } finally { await broker.dispose(); released(broker, clock); }
+});
+
+test('exhausted route requires a current idle route and notifies only after its final request settles', async () => {
+  const shared = new Transport(), clock = new Clock(), source = deferred<unknown>(); const retired: string[] = [];
+  shared.reply = async request => request.op === 'describe' ? descriptor(request.ticket) : source.promise;
+  const broker = new ProviderBroker({ clock, tryShared: async () => shared, acquireOwned: async () => new Transport(),
+    onRetired: (_generation, origin) => { retired.push(origin); } });
+  try {
+    await broker.start(); const generation = broker.snapshot().generation;
+    let requestDone = false, requestError: unknown;
+    const pending = broker.request(generation, dataRequest('held')).then(() => { requestDone = true; }, error => { requestError = error; requestDone = true; });
+    let ignoredDone = false;
+    const ignored = broker.exhaustedRoute(generation).then(() => { ignoredDone = true; });
+    await flush(); assert.equal(ignoredDone, true); await ignored;
+    assert.equal(broker.snapshot().availability, 'ready'); assert.equal(shared.closes, 0); assert.deepEqual(retired, []);
+    source.resolve({ answer: true }); await flush();
+    assert.equal(requestDone, true); assert.equal(requestError, undefined); await pending;
+    let retiredDone = false;
+    const retirement = broker.exhaustedRoute(generation).then(() => { retiredDone = true; });
+    await flush(); assert.equal(retiredDone, true); await retirement;
+    assert.equal(broker.snapshot().reason, 'exhausted_route'); assert.equal(broker.snapshot().recoveryAt, 0);
+    assert.equal(shared.closes, 1); assert.deepEqual(retired, ['exhausted_route']);
+  } finally {
+    source.resolve({ answer: true }); let disposed = false;
+    const shutdown = broker.dispose().then(() => { disposed = true; }); await flush();
+    assert.equal(disposed, true, 'disposal completes after the request and route cleanup settle');
+    await shutdown; released(broker, clock);
+  }
+});
+
+test('retirement keeps the transport first origin when deliberate Off races delivery', async () => {
+  const shared = new Transport(), clock = new Clock();
+  const retired: Array<{ generation: number; origin: string; closes: number }> = [];
+  const broker = new ProviderBroker({ clock, tryShared: async () => shared, acquireOwned: async () => new Transport(),
+    onRetired: (generation, origin) => { retired.push({ generation, origin, closes: shared.closes }); } });
+  try {
+    await broker.start(); const generation = broker.snapshot().generation;
+    shared.end('uncertain'); const off = broker.setEnabled(false);
+    assert.deepEqual(retired, [{ generation, origin: 'uncertain', closes: 0 }]); await off; await flush();
+    assert.equal(shared.endReason, 'uncertain'); assert.equal(shared.closes, 1); assert.deepEqual(retired, [{ generation, origin: 'uncertain', closes: 0 }]);
+  } finally { await broker.dispose(); released(broker, clock); }
+});
+
+test('provider default clock is exported as the single production clock', () => {
+  assert.equal(typeof DEFAULT_PROVIDER_CLOCK.now, 'function');
+  assert.equal(typeof DEFAULT_PROVIDER_CLOCK.setTimeout, 'function');
 });
 
 for (const reason of ['uncertain','denied','closed'] as const)
@@ -511,7 +633,7 @@ test('a late previous published ending cannot retire or replace the new shared g
   const first=new Transport(), next=new Transport(); first.close=async()=>{first.closes++;}; let calls=0;
   const s=setup(async()=>++calls===1?first:next);
   try {
-    await s.broker.start(); await s.broker.provenLoss(s.broker.snapshot().generation);
+    await s.broker.start(); await s.broker.provenLoss(s.broker.snapshot().generation); await s.broker.recover();
     const generation=s.broker.snapshot().generation; first.end('lost'); await flush();
     assert.equal(s.broker.snapshot().generation,generation); assert.equal(s.broker.snapshot().kind,'shared');
     assert.equal(calls,2); assert.equal(s.acquisitions(),0); assert.equal(first.closes,1);
@@ -578,7 +700,7 @@ for(const phase of ['queued','discovery','describe','reconnect'] as const)
     let calls=0,acquisitions=0,signal:AbortSignal|undefined;
     candidate.reply=()=>reply.promise;
     const broker=new ProviderBroker({clock,tryShared:async attempt=>{signal=attempt;calls++;return phase==='describe'?candidate:phase==='reconnect'&&calls===1?first:held.promise;},acquireOwned:async()=>{acquisitions++;return new Transport();}});
-    let operation=broker.start(); if(phase==='reconnect') {await operation;operation=broker.provenLoss(broker.snapshot().generation);}
+    let operation=broker.start(); if(phase==='reconnect') {await operation;await broker.provenLoss(broker.snapshot().generation);operation=broker.recover();}
     if(phase!=='queued') await flush();
     await broker.setEnabled(false);await operation;assert.equal(broker.snapshot().availability,'disabled');
     if(phase==='queued') assert.equal(calls,0);else assert.equal(signal?.aborted,true);
@@ -614,11 +736,16 @@ test('session rapid off/on waits actual owned exit and old ending cannot retire 
 });
 
 test('session enable resets exhausted crash chain only after deliberate off',async()=>{
-  const s=setup(async()=>undefined);await s.broker.start();for(let i=0;i<3;i++)await s.broker.provenLoss(s.broker.snapshot().generation);
-  assert.equal(s.broker.snapshot().reason,'restart_limit');await s.broker.setEnabled(true);await s.broker.start();assert.equal(s.acquisitions(),3);
-  await s.broker.setEnabled(false);await s.broker.setEnabled(true);assert.equal(s.acquisitions(),4);assert.equal(s.broker.snapshot().initialShared,false);
-  for(let i=0;i<3;i++)await s.broker.provenLoss(s.broker.snapshot().generation);
-  assert.equal(s.acquisitions(),6);assert.equal(s.broker.stats().ownedRestarts,4);assert.equal(s.broker.snapshot().reason,'restart_limit');
+  const s=setup(async()=>undefined);await s.broker.start();
+  await s.broker.provenLoss(s.broker.snapshot().generation);await s.broker.recover();assert.equal(s.acquisitions(),2);
+  await s.broker.setEnabled(false);await s.broker.setEnabled(true);await flush();
+  assert.equal(s.broker.snapshot().reason,'activation_deferred');assert.equal(s.broker.snapshot().recoveryAt,PROVIDER_LIMITS.recoveryIntervalMs);
+  assert.equal(s.acquisitions(),2,'On does not reset or bypass the retained service deadline');
+  await s.clock.advance(PROVIDER_LIMITS.recoveryIntervalMs);await s.broker.recover();
+  assert.equal(s.acquisitions(),3);assert.equal(s.broker.snapshot().initialShared,false);
+  await s.broker.provenLoss(s.broker.snapshot().generation);assert.equal(s.acquisitions(),3);
+  await s.broker.recover();assert.equal(s.acquisitions(),4);assert.equal(s.broker.stats().ownedRestarts,2);
+  assert.equal(s.broker.snapshot().recoveryAt,undefined);
   await s.broker.dispose();released(s.broker,s.clock);
 });
 
@@ -638,7 +765,7 @@ test('session initial standalone memory survives enable selecting shared and lat
   const shared=new Transport();let calls=0;const s=setup(async()=>++calls===2?shared:undefined);
   await s.broker.start();await s.broker.setEnabled(false);await s.broker.setEnabled(true);
   assert.equal(s.broker.snapshot().kind,'shared');assert.equal(s.broker.snapshot().initialShared,false);
-  await s.broker.provenLoss(s.broker.snapshot().generation);assert.equal(s.broker.snapshot().kind,'owned');assert.equal(s.broker.stats().recoveryEpisodes,0);
+  await s.broker.provenLoss(s.broker.snapshot().generation);await s.broker.recover();assert.equal(s.broker.snapshot().kind,'owned');assert.equal(s.broker.stats().recoveryEpisodes,0);
   await s.broker.dispose();released(s.broker,s.clock);
 });
 
@@ -656,7 +783,7 @@ test('session on from initially shared starts no first episode; only later genui
   assert.equal(s.broker.snapshot().kind,'owned');assert.equal(s.broker.snapshot().initialShared,true);
   assert.equal(s.broker.stats().recoveryEpisodes,0);await s.clock.advance(1200000);assert.equal(calls,2);released(s.broker,s.clock);
   await s.broker.setEnabled(false);await s.broker.setEnabled(true);assert.equal(s.broker.snapshot().kind,'shared');
-  await s.broker.provenLoss(s.broker.snapshot().generation);assert.equal(s.broker.stats().recoveryEpisodes,1);
+  await s.broker.provenLoss(s.broker.snapshot().generation);await s.broker.recover();assert.equal(s.broker.stats().recoveryEpisodes,1);
   await s.clock.advance(60000);assert.equal(s.broker.stats().probesStarted,1);await s.broker.dispose();released(s.broker,s.clock);
 });
 
@@ -667,15 +794,22 @@ for(const phase of ['owned-describe','handoff','loss'] as const)
     if(phase==='owned-describe')owned.reply=()=>reply.promise;
     const broker=new ProviderBroker({clock,tryShared:async()=>{calls++;return phase==='owned-describe'?undefined:calls===1?shared:calls<=3?undefined:returned;},acquireOwned:async()=>{acquisitions++;return acquisitions===1?owned:new Transport();}});
     const started=broker.start();await flush();
-    if(phase!=='owned-describe') {await started;await broker.provenLoss(broker.snapshot().generation);}
+    if(phase!=='owned-describe') {await started;await broker.provenLoss(broker.snapshot().generation);await broker.recover();}
     if(phase==='handoff')await clock.advance(60000);
     if(phase==='loss') {owned.end('lost');await flush();}
     const off=broker.setEnabled(false);await clock.advance(PROVIDER_LIMITS.closeMs);await off;
     const beforeCalls=calls,on=broker.setEnabled(true);await flush();assert.equal(calls,beforeCalls);assert.equal(acquisitions,1);
     await clock.advance(PROVIDER_LIMITS.closeMs);await on;assert.equal(broker.snapshot().reason,'unproved_exit');
     exit.resolve();if(phase==='owned-describe')reply.resolve(descriptor(owned.requests[0]!.ticket));await started;await flush();
-    assert.equal(broker.snapshot().reason,'unproved_exit');assert.equal(acquisitions,1);assert.equal(owned.closes,1);
-    await broker.setEnabled(false);await broker.setEnabled(true);assert.equal(broker.snapshot().availability,'ready');
+    assert.equal(broker.snapshot().availability,'unavailable');
+    assert.equal(broker.snapshot().reason,phase==='loss'?'activation_deferred':'optional_unavailable');
+    assert.equal(acquisitions,1);assert.equal(owned.closes,1);
+    assert.equal(broker.snapshot().recoveryAt,phase==='owned-describe'?clock.now():PROVIDER_LIMITS.recoveryIntervalMs);
+    if(phase==='loss' && clock.now()<PROVIDER_LIMITS.recoveryIntervalMs) {
+      await broker.recover();assert.equal(acquisitions,1);
+      await clock.advance(PROVIDER_LIMITS.recoveryIntervalMs-clock.now());
+    }
+    await broker.recover();assert.equal(broker.snapshot().availability,'ready');
     assert.equal(broker.stats().handoffsSucceeded,0);await broker.dispose();released(broker,clock);
   });
 
@@ -790,7 +924,7 @@ for (const kind of ['owned', 'shared'] as const) test(`intentional suspend: ${ki
   held.resolve({ old: true }); await rejected;
   const resumed = broker.resume(); await flush();
   if (kind === 'owned') { assert.equal(acquired, 1); exit.resolve(); }
-  await resumed; await broker.resume();
+  await resumed; await flush(); await broker.recover(); await broker.resume();
   assert.equal(acquired, 2); assert.equal(broker.snapshot().availability, 'ready');
   assert.notEqual(broker.snapshot().generation, generation);
   assert.equal(broker.stats().ownedRestarts, 0, 'intentional stop is not a crash');
@@ -798,15 +932,18 @@ for (const kind of ['owned', 'shared'] as const) test(`intentional suspend: ${ki
 });
 
 test('intentional suspend: idle transport and existing failure are not replayed', async () => {
-  const transport = new Transport(), s = setup(async () => transport); await s.broker.start();
+  const first = new Transport(), returned = new Transport(); let attempts = 0;
+  const s = setup(async () => ++attempts === 1 ? first : returned); await s.broker.start();
   const generation = s.broker.snapshot().generation;
   s.broker.suspend();
   await assert.rejects(s.broker.request(generation, dataRequest('paused')));
-  await s.broker.resume();
-  assert.equal(transport.closes, 0); assert.equal(s.broker.snapshot().generation, generation);
-  await s.broker.transportEnded(generation, 'uncertain');
+  assert.equal(first.closes, 1); await s.broker.resume();
+  assert.equal(s.broker.snapshot().kind, 'shared'); assert.notEqual(s.broker.snapshot().generation, generation);
+  assert.equal(attempts, 2, 'a previously working idle route is reselected on terminal return');
+  const resumedGeneration = s.broker.snapshot().generation;
+  await s.broker.transportEnded(resumedGeneration, 'uncertain');
   s.broker.suspend(); await s.broker.resume();
-  assert.equal(s.broker.snapshot().reason, 'transport_uncertain'); assert.equal(s.broker.stats().sharedAttempts, 1);
+  assert.equal(s.broker.snapshot().reason, 'transport_uncertain'); assert.equal(attempts, 2);
   await s.broker.dispose(); released(s.broker, s.clock);
 });
 
@@ -855,14 +992,19 @@ test('intentional suspend keeps the existing crash budget and shared-return dead
 
 test('intentional suspend within proven owned-loss cleanup cannot bypass exhausted crash budget', async () => {
   const transports = [new Transport(), new Transport(), new Transport(), new Transport()], clock = new Clock(); let count = 0;
-  const broker = new ProviderBroker({ clock, tryShared: async () => undefined, acquireOwned: async () => transports[count++] });
+  const broker = new ProviderBroker({ clock, tryShared: async () => undefined, acquireOwned: async () => transports[count++]! });
   await broker.start();
-  await broker.provenLoss(broker.snapshot().generation); await broker.provenLoss(broker.snapshot().generation);
+  await broker.provenLoss(broker.snapshot().generation); await broker.recover();
+  await clock.advance(PROVIDER_LIMITS.recoveryIntervalMs);
+  await broker.provenLoss(broker.snapshot().generation); await broker.recover();
   const exit = deferred<void>(); transports[2]!.exit = exit.promise;
   const loss = broker.provenLoss(broker.snapshot().generation); await flush();
   broker.suspend(); const resumed = broker.resume(); exit.resolve(); await loss; await resumed;
-  assert.equal(count, 3); assert.equal(broker.snapshot().reason, 'restart_limit');
-  assert.equal(broker.stats().ownedRestarts, 2);
+  assert.equal(count, 3); assert.equal(broker.snapshot().reason, 'proven_loss');
+  assert.equal(broker.snapshot().recoveryAt, 2 * PROVIDER_LIMITS.recoveryIntervalMs);
+  await broker.recover(); assert.equal(count, 3, 'suspension cannot bypass the unexpired absolute deadline');
+  await clock.advance(PROVIDER_LIMITS.recoveryIntervalMs); await broker.recover();
+  assert.equal(count, 4); assert.equal(broker.stats().ownedRestarts, 3);
   await broker.dispose(); released(broker, clock);
 });
 
@@ -872,10 +1014,12 @@ test('intentional suspend within owned-loss cleanup retains the original shared-
   const exit = deferred<void>(); owned.exit = exit.promise;
   const loss = s.broker.provenLoss(s.broker.snapshot().generation); await flush();
   s.broker.suspend(); await s.clock.sleep(10000); const resumed = s.broker.resume(); exit.resolve(); await loss; await resumed;
-  assert.equal(s.broker.stats().ownedRestarts, 1); assert.equal(s.broker.stats().recoveryEpisodes, 1);
-  assert.equal(s.broker.stats().recoveryTimers, 1);
-  await s.clock.advance(580000); assert.equal(s.broker.stats().probesStarted, 10);
-  await s.clock.advance(60000); assert.equal(s.broker.stats().probesStarted, 10);
+  assert.equal(s.broker.stats().ownedRestarts, 0); assert.equal(s.broker.stats().recoveryEpisodes, 1);
+  assert.equal(s.broker.snapshot().recoveryAt, PROVIDER_LIMITS.recoveryIntervalMs);
+  await s.clock.advance(40000); await s.broker.recover();
+  assert.equal(s.broker.stats().ownedRestarts, 1); assert.equal(s.broker.stats().recoveryTimers, 1);
+  await s.clock.advance(540000); assert.equal(s.broker.stats().probesStarted, 9);
+  await s.clock.advance(60000); assert.equal(s.broker.stats().probesStarted, 9);
   await s.broker.dispose(); released(s.broker, s.clock);
 });
 
@@ -896,6 +1040,7 @@ test('intentional suspend during a shared handoff preserves the remaining return
   owned.exit = exit.promise; await s.clock.advance(60000);
   assert.equal(s.broker.snapshot().reason, 'handoff');
   s.broker.suspend(); await s.clock.sleep(10000); const resumed = s.broker.resume(); exit.resolve(); await resumed; await flush();
+  await s.broker.recover();
   assert.equal(returned.closes, 1); assert.equal(s.broker.snapshot().kind, 'owned');
   assert.equal(s.broker.stats().ownedRestarts, 0); assert.equal(s.broker.stats().recoveryEpisodes, 1);
   assert.equal(s.broker.stats().recoveryTimers, 1);
@@ -908,20 +1053,32 @@ test('intentional suspend during an already-charged crash acquisition does not c
   const pending = deferred<ProviderTransport>(), late = new Transport(), clock = new Clock(); let attempts = 0;
   const broker = new ProviderBroker({ clock, tryShared: async () => undefined,
     acquireOwned: async () => ++attempts === 2 ? pending.promise : new Transport() });
-  await broker.start(); const loss = broker.provenLoss(broker.snapshot().generation); await flush();
-  assert.equal(broker.stats().ownedRestarts, 1);
-  broker.suspend(); await loss; await broker.resume(); pending.resolve(late); await flush();
-  assert.equal(broker.snapshot().availability, 'ready'); assert.equal(broker.stats().ownedRestarts, 1);
-  assert.equal(late.closes, 1);
+  await broker.start(); await broker.provenLoss(broker.snapshot().generation);
+  const cycle = broker.recover(); await flush(); assert.equal(broker.stats().ownedRestarts, 1);
+  await clock.sleep(5000); broker.suspend(); await cycle;
+  await clock.sleep(3000); await broker.resume(); pending.resolve(late); await flush();
+  assert.equal(broker.snapshot().availability, 'unavailable'); assert.equal(broker.stats().ownedRestarts, 1);
+  assert.equal(late.closes, 1); assert.equal(attempts, 2);
+  assert.equal(broker.snapshot().recoveryAt, PROVIDER_LIMITS.recoveryIntervalMs);
+  await broker.recover(); assert.equal(attempts, 2);
+  await clock.advance(PROVIDER_LIMITS.recoveryIntervalMs - clock.now()); await broker.recover();
+  assert.equal(broker.snapshot().availability, 'ready'); assert.equal(attempts, 3);
+  assert.equal(broker.stats().ownedRestarts, 2);
+  await broker.provenLoss(broker.snapshot().generation); await broker.recover();
+  assert.equal(attempts, 3); assert.equal(broker.snapshot().recoveryAt, 2 * PROVIDER_LIMITS.recoveryIntervalMs);
   await broker.dispose(); released(broker, clock);
 });
 
 for (const sharedAvailable of [true, false]) test(`intentional suspend Off/on starts a fresh selection, shared=${sharedAvailable}`, async () => {
   let fresh = false;
   const s = await failover(new Transport(), new Transport(), async () => fresh && sharedAvailable ? new Transport() : undefined);
-  const initialShared = s.broker.snapshot().initialShared;
+  const initialShared = s.broker.snapshot().initialShared, calls = s.calls(), acquisitions = s.acquisitions();
   s.broker.suspend(); await s.broker.setEnabled(false); fresh = true; await s.broker.setEnabled(true);
   await s.broker.resume();
+  assert.equal(s.broker.snapshot().reason, 'activation_deferred');
+  assert.equal(s.broker.snapshot().recoveryAt, PROVIDER_LIMITS.recoveryIntervalMs);
+  await s.broker.recover(); assert.equal(s.calls(), calls); assert.equal(s.acquisitions(), acquisitions);
+  await s.clock.advance(PROVIDER_LIMITS.recoveryIntervalMs); await s.broker.recover();
   assert.equal(s.broker.snapshot().kind, sharedAvailable ? 'shared' : 'owned');
   assert.equal(s.broker.snapshot().initialShared, initialShared, 'initial discovery remains historical');
   const probes = s.broker.stats().probesStarted;
@@ -1025,7 +1182,7 @@ test('completion boundary: delivered provider notification can start recovery be
   let attempts = 0, recovery: Promise<void> | undefined;
   const broker = new ProviderBroker({ clock, tryShared: () => ++attempts === 1 ? Promise.resolve(first) : next.promise,
     acquireOwned: async () => { assert.fail('unexpected owned acquisition'); },
-    onChange() { if (!recovery && broker.snapshot().availability === 'ready') recovery = broker.provenLoss(broker.snapshot().generation); } });
+    onChange() { if (!recovery && broker.snapshot().availability === 'ready') recovery = broker.provenLoss(broker.snapshot().generation).then(() => broker.recover()); } });
   try {
     const start = broker.start(), completion = broker.whenSettled(); let completed = false;
     void completion.then(() => { completed = true; });
@@ -1037,3 +1194,64 @@ test('completion boundary: delivered provider notification can start recovery be
     assert.equal(broker.stats().reconnectAttempts, 1);
   } finally { next.resolve(replacement); await broker.dispose(); released(broker, clock); }
 });
+
+
+test('availability observer delivers a pending useful recovery without completing it or duplicating acquisition', async () => {
+  const clock = new Clock(), first = new Transport(), replacement = new Transport(), held = deferred<ProviderTransport | undefined>();
+  const seen: string[] = [];
+  let attempts = 0, owned = 0;
+  const broker = new ProviderBroker({ clock,
+    tryShared: async () => ++attempts === 1 ? first : held.promise,
+    acquireOwned: async () => { owned++; assert.fail('shared recovery must not acquire an owned helper'); },
+    onChange() { const status = broker.snapshot(); seen.push(`${status.availability}:${status.reason}`); } });
+  try {
+    await broker.start(); await flush();
+    assert.equal(seen.at(-1), 'ready:ready');
+    await broker.provenLoss(broker.snapshot().generation); await flush();
+    assert.equal(seen.at(-1), 'unavailable:proven_loss');
+    const recovery = broker.recover(), completion = broker.whenSettled();
+    let completed = false; void completion.then(() => { completed = true; });
+    await flush();
+    assert.equal(attempts, 2); assert.equal(broker.snapshot().availability, 'transitioning');
+    assert.equal(seen.at(-1), 'transitioning:proven_loss', 'metadata delivery is not deferred until the held factory settles');
+    assert.equal(completed, false, 'an availability notice cannot acknowledge the pending acquisition');
+    assert.equal(broker.recover() === recovery, true, 'the existing operation remains the acquisition admission guard');
+    assert.equal(attempts, 2); assert.equal(owned, 0);
+    held.resolve(replacement); await recovery;
+    assert.equal(await completion, true); await flush();
+    assert.equal(seen.at(-1), 'ready:ready');
+    assert.deepEqual(replacement.requests.map(request => request.op), ['describe']);
+    assert.equal(first.closes, 1); assert.equal(owned, 0);
+    const notices = seen.length;
+    for (let i = 0; i < 10; i++) { broker.snapshot(); broker.stats(); }
+    await flush(); assert.equal(seen.length, notices, 'unchanged observations are not notification producers');
+  } finally { held.resolve(replacement); await broker.dispose(); released(broker, clock); }
+});
+
+for (const kind of ['shared', 'owned'] as const) for (const reason of ['uncertain', 'denied', 'closed'] as const) {
+  test(`published ${kind} ${reason} recovery retains the actual route seed independently of preference cleanup`, async () => {
+    const clock = new Clock(), previous = new Transport(), next = new Transport();
+    let shared = 0, owned = 0;
+    const broker = new ProviderBroker({ clock,
+      tryShared: async () => ++shared === 1 && kind === 'shared' ? previous : undefined,
+      acquireOwned: async () => ++owned === 1 && kind === 'owned' ? previous : next });
+    try {
+      await broker.start(); assert.equal(broker.snapshot().kind, kind);
+      assert.equal(shared, 1); assert.equal(owned, kind === 'owned' ? 1 : 0);
+      previous.end(reason); await flush(); assert.equal(await broker.whenSettled(), true);
+      assert.equal(broker.snapshot().availability, 'unavailable'); assert.equal(broker.snapshot().reason, `transport_${reason}`);
+      assert.equal(previous.closes, 1); assert.equal(broker.stats().recoveryTimers, 0);
+      assert.equal(shared, 1); assert.equal(owned, kind === 'owned' ? 1 : 0, 'retirement itself cannot reacquire');
+      await broker.recover(); assert.equal(broker.snapshot().kind, 'owned');
+      assert.equal(shared, kind === 'shared' ? 1 + PROVIDER_LIMITS.reconnectAttempts : 1,
+        'shared reconnection retains its two attempts; owned reconnection does not restart initial discovery');
+      assert.equal(owned, kind === 'owned' ? 2 : 1);
+      assert.equal(broker.stats().ownedRestarts, kind === 'owned' ? 1 : 0);
+      assert.equal(broker.stats().recoveryEpisodes, kind === 'shared' ? 1 : 0);
+      assert.equal(broker.stats().recoveryTimers, kind === 'shared' ? 1 : 0,
+        'only owned fallback after an initially shared route starts the fresh bounded return episode');
+      assert.equal(next.requests.length, 1); assert.equal(next.requests[0]!.op, 'describe');
+      assert.equal(broker.stats().sourceDispatches, 0);
+    } finally { await broker.dispose(); released(broker, clock); }
+  });
+}

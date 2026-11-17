@@ -49,19 +49,11 @@ export class PreparedLayoutPresenter<Owner extends object> {
     const previousEntry = ports.sessions.preparedLayout(owner)?.entry;
     const previous = previousEntry?.value;
     const padding = ports.outputPadding();
-    const funding = ports.funding();
     const call = ports.producer.capture(owner);
     const kind = ports.producer.kindFrom(call);
     const filePresentation = kind === 'read' || kind === 'edit' || kind === 'write';
 
-    if (!funding) {
-      if (filePresentation && state.applied) {
-        if (ports.fileMode(owner) === 'full' && !ports.unsupportedFullFile(owner)) ports.sessions.dropPreparedLayout(owner);
-        ports.refuse(owner, 'file geometry funding refused');
-      }
-      return;
-    }
-
+    let funding: GeometryFunding | undefined;
     let scene: CardLayout | undefined;
     let output: CardRows | undefined;
     let candidate: PreparedLayout | undefined;
@@ -75,6 +67,8 @@ export class PreparedLayoutPresenter<Owner extends object> {
         const sameGeometry = previous?.scene.isRetained && previous.width === width && previous.padding === padding
           && previous.expanded === expanded && previous.geometryStamp === display.geometryStamp;
         if (sameGeometry && previous.output.isValid && previous.paintStamp === paint.paintStamp) { candidate = previous; return; }
+        funding = ports.funding();
+        if (!funding) return;
         scene = sameGeometry ? previous.scene : layoutCard(display, { width, outputPad: padding, expanded }, funding);
         if (!scene) return;
         let proof: BashPaintProof | undefined;
@@ -101,7 +95,7 @@ export class PreparedLayoutPresenter<Owner extends object> {
       if (!accepted || !candidate || !ports.active()) {
         if (ports.active() && accepted && !candidate && filePresentation && !nativeFile) {
           if (ports.fileMode(owner) === 'full' && !ports.unsupportedFullFile(owner)) ports.sessions.dropPreparedLayout(owner);
-          ports.refuse(owner, 'file geometry or paint funding refused');
+          ports.refuse(owner, funding ? 'file geometry or paint funding refused' : 'file geometry funding refused');
         }
         return undefined;
       }

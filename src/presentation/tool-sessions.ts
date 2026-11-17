@@ -43,7 +43,7 @@ export type ToolSyntaxState = {
   attempt: number; revision: number; sourceRevision: number; serviceRevision: number; identity: unknown[]; service: unknown[];
   fileInput?: FileInputSnapshot;
   palette?: number; paletteColors?: WeakRef<object>; mode?: TerminalColorMode; complete: boolean; live: boolean; applied: boolean; paused?: boolean; owned?: boolean;
-  refreshPending?: boolean; refreshToken?: object; refused?: boolean; paintRetry?: boolean;
+  refreshPending?: boolean; refreshToken?: object; refused?: boolean; paintRetry?: boolean; unreflected?: boolean;
   prefix?: { sourceRevision: number; basis: number; bytes: number };
 };
 

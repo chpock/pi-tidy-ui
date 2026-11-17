@@ -9,6 +9,7 @@ import { SessionManager } from '@earendil-works/pi-coding-agent';
 import { sampleOwnedPalette } from '../../../../src/themes/owned-palette.ts';
 import { PiTerminal } from "../../../fixtures/terminal-harness.mjs";
 import { closeTerminals, runCleanupSteps } from "../../../fixtures/terminal-cleanup.mjs";
+import { reaped } from "../../../fixtures/shared-syntax-host.mjs";
 import { assertSyntaxStockReference } from "../../../fixtures/syntax-stock-reference.mjs";
 import { nativeReady, semanticStyle, semanticPhaseReady, semanticSourceContext } from "../../../fixtures/syntax-observation.mjs";
 import { prepareSyntaxNative, inputs, scenario, traffic, persisted, stats, sourceColors, body, assertRestoredFilePreview, work, until, finish, settledStats, intermediateStats, captureThenRenderDiagnostics, stockReference, syntaxReady, savedThemeSession, themeForegrounds, expectedThemeColors, expressionForeground, expressionAttributes, initialThemeStats, retainedNativeThemeStats, themeMarkers, chooseTheme, shebangScenario, shebangContextColors, shebangStringColors } from "../../../fixtures/syntax-cli-support.mjs";
@@ -429,21 +430,30 @@ for (const mode of ['fullscreen', 'regular']) test(`occipital CLI: ${mode} onlin
       assert.deepEqual(raw(colored), raw(early)); assert.deepEqual(readFileSync(session), original); assert.equal(traffic(terminal).length, 0);
       assert.equal(started.source.preparedBytes, Buffer.byteLength(savedFirst) + Buffer.byteLength(savedSecond));
       assert.equal(started.counts.piBridges, 0); assert.equal(started.source.remoteLeases, 0);
-      rmSync(join(terminal.output, 'syntax-acquire-go')); process.kill(started.transports[0].pid, 'SIGKILL');
-      await terminal.event('syntax_acquire_gate', 2);
-      const lost = await stats(terminal, 'online-wait-recovery-deferred');
-      assert.notEqual(lost.client.provider.availability, 'ready'); assert.equal(lost.counts.acquisitions, 2);
+      const oldPid = started.transports[0].pid;
+      rmSync(join(terminal.output, 'syntax-acquire-go')); process.kill(oldPid, 'SIGKILL');
+      await reaped(oldPid);
+      await intermediateStats(terminal, 'online-wait-loss-observed', s => s.client.provider.availability === 'unavailable'
+        && s.transports[0].childState === 'exited');
+      const lost = await stats(terminal, 'online-wait-recovery-idle');
+      assert.equal(lost.client.provider.availability, 'unavailable'); assert.equal(lost.counts.acquisitions, 1);
+      assert.equal(lost.transports[0].pid, oldPid); assert.equal(lost.transports[0].childState, 'exited');
+      assert.throws(() => process.kill(oldPid, 0), { code: 'ESRCH' });
+      assert.deepEqual([lost.broker.sharedAttempts, lost.broker.ownedAttempts, lost.broker.reconnectAttempts],
+        [started.broker.sharedAttempts, started.broker.ownedAttempts, started.broker.reconnectAttempts], 'idle loss starts no provider attempt');
       assert.deepEqual(work(lost), work(started));
-      // Two real short Bash calls while the same client waits for its owned replacement.
+      // The first new command supplies the missing work that permits recovery.
       for (let round = 0; round < 2; round++) for (const current of [terminal, stock]) {
         current.send('run user-card\r'); await current.event('agent_end', round + 1); await current.settle();
       }
+      await terminal.event('syntax_acquire_gate', 2);
       const pending = await terminal.capture('online-wait-recovery-pending'), stockAfter = await stock.capture('online-wait-stock-after'), stockTraffic = traffic(stock);
       assert.deepEqual(raw(pending), raw(stockAfter)); assert.deepEqual(traffic(terminal), stockTraffic);
       assert.deepEqual(persisted(pending), persisted(stockAfter));
       await stock.close();
       const demanded = pending.tools.filter(tool => tool.name === 'bash').slice(2); assert.equal(demanded.length, 2);
       const paused = await stats(terminal, 'online-wait-recovery-demanded');
+      assert.notEqual(paused.client.provider.availability, 'ready'); assert.equal(paused.counts.acquisitions, 2);
       const { localWork: demandedLocal, ...pausedNative } = work(paused), { localWork: originalLocal, ...originalNative } = work(started);
       assert.deepEqual(pausedNative, originalNative, 'new local commands admit no native work while the provider is unavailable');
       assert.ok(demandedLocal.sourceSegments > originalLocal.sourceSegments, 'new commands and output legitimately prepare their own measurements');
@@ -457,11 +467,13 @@ for (const mode of ['fullscreen', 'regular']) test(`occipital CLI: ${mode} onlin
       assert.equal(rows.length, 2, 'both recovery-deferred command strings, not their output rows, are visible');
       for (const y of rows) assert.equal(restored.cells[y][restored.screen[y].indexOf('USER_BASH_OUTPUT')].fg, rgb(restored, 'syntaxString'));
       assert.equal(recovered.source.preparedBytes, started.source.preparedBytes + demanded.reduce((sum, tool) => sum + Buffer.byteLength(tool.args.command), 0), 'no already-colored saved command is classified again');
-      assert.equal(recovered.counts.piBridges, 0); assert.equal(recovered.counts.acquisitions, 2); assert.equal(recovered.source.remoteLeases, 0);
+      assert.equal(recovered.counts.piCaptures, 0); assert.equal(recovered.counts.piBridges, 0);
+      assert.equal(recovered.counts.acquisitions, 2); assert.equal(recovered.source.remoteLeases, 0);
       const persistedBytes = readFileSync(session);
       const warm = restored.sample;
       for (const width of [60, 100, 100]) { await terminal.resize(width); await terminal.capture(`online-wait-warm-${width}-${Date.now()}`); }
-      assert.deepEqual(work(await settledStats(terminal, 'online-wait-warm-final')), work(warm));
+      const after = await settledStats(terminal, 'online-wait-warm-final'); assert.deepEqual(work(after), work(warm));
+      assert.equal(after.counts.piCaptures, 0); assert.equal(after.counts.piBridges, 0);
       assert.deepEqual(readFileSync(session), persistedBytes); assert.deepEqual(raw(restored), raw(pending)); assert.deepEqual(traffic(terminal), stockTraffic);
       await finish(terminal);
       console.log(JSON.stringify({ onlineWait: terminal.output, stock: stock.output, node: recovered.node, mode, restoredSourceRequests: started.counts.sourceRequests,

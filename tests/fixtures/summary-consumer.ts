@@ -36,7 +36,7 @@ export function summaryConsumer(tool: Tool, Summary = ToolSummaryPresenter) {
     executing: (owner: object) => view.executing(owner), requestRender: noop, fields: toolFields });
   const preparation = createToolPreparationPresenter({ fields: toolFields, producer, sessions, policy, routing,
     cards: () => undefined, ensureCards: unexpected,
-    facts: { ...facts, quiescing: () => false, cwd: () => '/project', live: () => false },
+    facts: { ...facts, workActive: facts.active, quiescing: () => false, cwd: () => '/project', live: () => false },
     palette: { needsInput: () => false, input: unexpected, mode: () => 'truecolor', generation: unexpected },
     displayBasis: unexpected, invalidate: unexpected, forget: (owner, cause) => view.forget(owner, cause),
     refreshTarget: unexpected, requestRender: noop, flush: unexpected,

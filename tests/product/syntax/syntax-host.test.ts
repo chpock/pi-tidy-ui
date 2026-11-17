@@ -65,6 +65,9 @@ function fixture(ready = false, useDefaultClassifier = false, options: Pick<Tidy
     snapshot(): ProviderSnapshot { return { generation: env.generation, availability: env.ready ? 'ready' : 'initializing',
       reason: env.ready ? 'ready' : 'initializing', initialShared: false, kind: 'owned', description: env.ready ? description : undefined }; },
     isReady(g: number) { return env.ready && g === env.generation; }, classificationAccepted(g: number) { return this.isReady(g); },
+    recover: async () => assert.fail('manual host peer has no acquisition lifecycle'),
+    workerUnavailable: async () => assert.fail('manual host peer has no worker lifecycle'),
+    exhaustedRoute: async () => assert.fail('manual host peer must not exhaust its route'),
     request(_g: number, request: Record<string, unknown>) {
       assert.equal(env.depth, 0, 'no dispatch in render');
       if (request.op === 'styles.resolve') {
@@ -782,7 +785,7 @@ test('P1 injected stock edit is the actual stock self-shell Box and skips all na
     tool.updateResult({ content: [], details: { diff: '-1 x\n+1 y' } }, false);
     f.render(tool); await settled();
     assert.deepEqual(f.env.pi, ['x', 'y']);
-    assert.deepEqual(watch.counts().filter((_v, i) => i !== 5), [1, 1, 2, 0, 2, 0]);
+    assert.deepEqual(watch.counts().filter((_v, i) => i !== 5), [1, 1, 2, 2, 2, 0]);
     const prepared = watch.counts();
     await settled(); // Finish the one-shot host-yield barrier before warm measurements.
     assert.deepEqual(watch.counts(), prepared, 'an empty controller continuation does not revisit card preparation');

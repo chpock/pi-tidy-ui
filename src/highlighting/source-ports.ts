@@ -1,5 +1,5 @@
 import type { CardRole } from '../appearance/card-roles.ts';
-import type { ProviderSnapshot } from '../occipital/provider.ts';
+import type { ProviderRetirementOrigin, ProviderSnapshot } from '../occipital/provider.ts';
 import type { ConcreteStyle } from '../appearance/style-materialization.ts';
 import type { GeometryFunding } from '../resources/data-budget.ts';
 import type { StyleSelection } from './controller-styles.ts';
@@ -112,6 +112,7 @@ export interface SourceDisplayBasis {
 }
 
 export interface SourceWorkPort {
+  readonly active: boolean;
   observe(demand: SourceDemand): boolean;
   workStatus(key: string): SourceWorkStatus;
   borrowSource(key: string): BorrowedSource | undefined;
@@ -123,6 +124,7 @@ export interface SourceWorkPort {
 
 /** Operations used by the card preparation and paint consumer. */
 export interface CardSourcePort extends Pick<SourceWorkPort, 'workStatus' | 'borrowSource' | 'displayBasis'> {
+  readonly active: boolean;
   geometryFunding(group?: SourceWorkGroup): GeometryFunding | undefined;
   registerPreparation(preparation: SourcePreparation): SourceWorkGroup | undefined;
   updatePreparation(group: SourceWorkGroup): boolean;
@@ -137,10 +139,11 @@ export interface CardSourcePort extends Pick<SourceWorkPort, 'workStatus' | 'bor
 }
 
 export interface SourceLifecyclePort {
+  readonly active: boolean;
   whenSettled(): Promise<boolean>;
   setEnabled(enabled: boolean): void;
   suspend(): void;
-  interruptProvider(provider: number): void;
+  retireProvider(provider: number, origin: ProviderRetirementOrigin): void;
   resume(): void;
   dispose(): void;
   ownedStopped(provider: number): void;

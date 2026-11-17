@@ -34,6 +34,9 @@ class Peer {
   pending: { resolve(value: unknown): void; reject(error: unknown): void }[] = [];
   snapshot() { return { generation: this.generation, availability: 'ready' as const, reason: 'ready' as const, kind: 'shared' as const, initialShared: true, description: this.description }; }
   isReady(n: number) { return n === this.generation; }
+  async recover() { assert.fail('ready group peer must not be acquired'); }
+  async workerUnavailable() { assert.fail('group peer has no worker lifecycle'); }
+  async exhaustedRoute() { assert.fail('group peer must not exhaust its route'); }
   classificationAccepted() { this.useful++; return true; }
   request(_generation: number, request: Record<string, unknown>, options?: { signal?: AbortSignal }) {
     this.calls.push(request); this.signals.push(options?.signal);
@@ -607,10 +610,13 @@ test('group presentation: compatible recovery reuses complete newer parse indepe
     assert.equal(owner.status('bash')!.generation, parsedGeneration, 'complete compatible B annotations are useful even before B colors');
     assert.equal(owner.status('bash')!.acknowledgedVersion, undefined, 'new provider did not acknowledge the retained parse');
     assert.equal(owner.displayBasis('bash')!.exactVersion, undefined, 'historical A colors are not current B authority');
+    const beforeReply = peer.calls.length;
     peer.style(styleB, 22); await settle();
     assert.equal(peer.calls.filter(q => q.op === 'highlight' || q.op === 'stream.open').length, sourceCalls, 'recovery must not parse complete B again merely to retain A colors');
-    const retryStyle = peer.calls.findIndex((q, index) => index > styleB && q.op === 'styles.resolve'); assert.ok(retryStyle >= 0);
-    peer.style(retryStyle, 22); await settle();
+    assert.equal(peer.calls.length, beforeReply, 'compatible rebinding preserves the held generic STYLE attempt');
+    assert.equal(owner.status('bash')!.generation, parsedGeneration);
+    assert.equal(owner.status('bash')!.acknowledgedVersion, undefined, 'STYLE reuse is not a new-provider SOURCE acknowledgement');
+    assert.equal(owner.stats().unsettledJobs, 0); assert.equal(owner.stats().transientBytes, 0);
     assert.deepEqual(colors(owner.groupPresentation(group), ['bash']), [1, 1], 'compatible recovery reuses complete generic expressions and the selected local palette');
     assert.equal(original.role('panel'), undefined); assert.equal(peer.useful, 2);
     assert.equal(owner.stats().retention.entries, 1);

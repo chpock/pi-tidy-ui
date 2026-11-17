@@ -340,7 +340,10 @@ test('card layout: dense many-row/multi-source projection visits each reader onc
 function realCards() {
   let classifications = 0, samples = 0, sourceStyle = 0;
   const provider = { snapshot: () => ({ generation: 1, availability: 'initializing' as const, reason: 'initializing' as const, kind: 'owned' as const, initialShared: false }),
-    isReady: () => false, classificationAccepted: () => false, request: async () => { sourceStyle++; throw Error('unexpected SOURCE/STYLE'); } };
+    isReady: () => false, classificationAccepted: () => false, request: async () => { sourceStyle++; throw Error('unexpected SOURCE/STYLE'); },
+    recover: async () => assert.fail('layout fixture must not acquire a provider'),
+    workerUnavailable: async () => assert.fail('layout fixture has no native worker'),
+    exhaustedRoute: async () => assert.fail('layout fixture has no native route') };
   const sources = new SourceExecution(provider), runtime = new SyntaxRuntime({ standaloneVersion: '0.0.0', initialTheme: { kind: 'pi', variant: 'dark' },
     provider: { tryShared: async () => undefined, acquireOwned: async () => { throw Error('unexpected provider'); } } });
   const theme = getThemeByName('system')!; setThemeInstance(theme);
@@ -471,6 +474,9 @@ test('card layout: C7 group membership and indexed lookup work is linear within 
     const pending: { q: Record<string, any>; resolve(value: unknown): void; reject(error: unknown): void; done: boolean }[] = [];
     const provider = { snapshot: () => ({ generation: 1, availability: 'ready' as const, reason: 'ready' as const, kind: 'shared' as const, initialShared: true, description }),
       isReady: (g: number) => g === 1, classificationAccepted: () => true,
+      recover: async () => assert.fail('ready layout peer must not be acquired'),
+      workerUnavailable: async () => assert.fail('layout peer has no worker lifecycle'),
+      exhaustedRoute: async () => assert.fail('layout peer must not exhaust its route'),
       request: (_g: number, q: Record<string, any>) => new Promise<unknown>((resolve, reject) => pending.push({ q, resolve, reject, done: false })) };
     const source = new SourceExecution(provider);
     const keys = new Set(Array.from({ length: size }, (_, i) => 'member:' + i));
@@ -530,6 +536,9 @@ test('card layout: actual card demand and controller lookups are linear across n
     const pending: { q: Record<string, any>; resolve(value: unknown): void; reject(error: unknown): void; done: boolean }[] = [];
     const provider = { snapshot: () => ({ generation: 1, availability: 'ready' as const, reason: 'ready' as const, kind: 'shared' as const, initialShared: true, description }),
       isReady: (g: number) => g === 1, classificationAccepted: () => true,
+      recover: async () => assert.fail('ready layout peer must not be acquired'),
+      workerUnavailable: async () => assert.fail('layout peer has no worker lifecycle'),
+      exhaustedRoute: async () => assert.fail('layout peer must not exhaust its route'),
       request: (_g: number, q: Record<string, any>) => new Promise<unknown>((resolve, reject) => pending.push({ q, resolve, reject, done: false })) };
     const source = new SourceExecution(provider, { onChange(keys, groups) { cards.sourceChanged(keys, groups); } }), owner = {};
     const paletteOwner = new PaletteInputOwner(), effective = resolveTheme({ kind: 'theme', id: 'gruvbox', variant: 'dark' }).effective;

@@ -244,6 +244,9 @@ export function installTidyUi(tui: LiveTui, getTheme: () => Palette, options: In
       const snapshot = { enabled: false, selected: { kind: 'pi', variant: 'dark' } as const, standaloneVersion: extensionVersion,
         provider: { availability: 'disabled' as const, reason: 'disabled' as const, generation: 0, initialShared: false } };
       const execution = new SourceExecution({ snapshot: () => snapshot.provider, isReady: () => false,
+        recover: async () => { throw new Error('Disabled card provider requested recovery'); },
+        workerUnavailable: async () => { throw new Error('Disabled card provider reported a worker'); },
+        exhaustedRoute: async () => { throw new Error('Disabled card provider exhausted a route'); },
         classificationAccepted: () => { throw new Error('Disabled card provider accepted work'); },
         request: () => { throw new Error('Disabled card provider requested work'); } },
         { diagnostic: options.diagnostic, onChange: localCardNotice(new WeakRef(controller)) });
@@ -274,7 +277,7 @@ export function installTidyUi(tui: LiveTui, getTheme: () => Palette, options: In
   const toolPreparation = createToolPreparationPresenter({
     fields: toolFields, producer: toolProducer, sessions: toolSessions, policy: toolPresentationPolicy, routing: toolRoutingPresenter,
     cards: () => syntax, ensureCards,
-    facts: { active, quiescing: () => quiescing, attached, hidden: node => native.tool.hidden(node),
+    facts: { active, workActive: () => cardClient?.cardSource.active ?? true, quiescing: () => quiescing, attached, hidden: node => native.tool.hidden(node),
       cwd: node => { const cwd = (native.tool.context(node) as { cwd?: unknown } | null | undefined)?.cwd; return typeof cwd === 'string' ? cwd : undefined; },
       live: call => options.syntax?.isLiveCall?.(call) ?? true },
     palette: { needsInput: () => needsPiTheme(selectedPalette), input: publicInput, mode: terminalMode,

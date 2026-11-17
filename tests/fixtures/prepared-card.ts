@@ -13,7 +13,10 @@ import type { CardGeometry } from '../../src/card-frame.ts';
 export function preparedCard(input: CardDisplayInput, width: number, theme: PiInputTheme, outputPad = 1,
   classify?: (text: string, path: string) => string[], expanded = false) {
   const provider = { snapshot: () => ({ generation: 1, availability: 'initializing' as const, reason: 'initializing' as const, initialShared: false }),
-    isReady: () => false, classificationAccepted: () => false, request: async () => assert.fail('fixture must not dispatch native work') };
+    isReady: () => false, classificationAccepted: () => false, request: async () => assert.fail('fixture must not dispatch native work'),
+    recover: async () => assert.fail('fixture must not acquire a provider'),
+    workerUnavailable: async () => assert.fail('fixture has no native worker'),
+    exhaustedRoute: async () => assert.fail('fixture has no native route') };
   const sources = new SourceExecution(provider), owner = {};
   const cards = new CardSources({ cardSource: sources, sourceWork: sources, pi: sources.pi, snapshot: () => ({ enabled: true, provider: provider.snapshot(), selected: { kind: 'pi' as const, variant: 'dark' as const }, effective: resolveTheme({ kind: 'pi', variant: 'dark' }).effective, standaloneVersion: 'test' }) },
     { preparePaletteInput: (palette, revision, mode, funding) => preparePaletteInput(theme, palette.id, revision, mode, funding), classify: (text, info) => classify!(text, info.path!), invalidate() {}, requestRender() {} });

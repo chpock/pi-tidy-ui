@@ -33,6 +33,9 @@ class Host {
       initialShared: this.kind === 'shared', kind: this.kind, description: this.ready ? description : undefined };
   }
   isReady(generation: number) { return this.ready && generation === 1; }
+  async recover() { assert.fail('manual syntax peer has no acquisition lifecycle'); }
+  async workerUnavailable() { assert.fail('manual syntax peer has no worker lifecycle'); }
+  async exhaustedRoute() { assert.fail('manual syntax peer must not exhaust its route'); }
   classificationAccepted(generation: number) { return this.isReady(generation); }
   request(_generation: number, request: Record<string, unknown>) {
     return new Promise<unknown>((resolve, reject) => (request.op === 'styles.resolve' ? this.styles : this.calls).push({ request, resolve, reject }));
@@ -492,7 +495,7 @@ test('syntax work equal-text finalization and warmed Pi never remeasure UTF8', (
   try {
     const classify = (text: string) => { calls++; return highlight(text); };
     requestSyntax(client, d, classify);
-    const first = measurements; assert.equal(first, 1);
+    const first = measurements; assert.equal(first, 2, 'native admission and Pi each measure their retained input once');
     requestSyntax(client, d, classify);
     requestSyntax(client, { ...d, version: 2 }, classify);
     assert.equal(measurements, first); assert.equal(calls, 1);
@@ -530,12 +533,13 @@ for (const mode of ['initializing', 'unavailable', 'off'] as const) {
     let pi = 0;
     const identity = { ...demand('x'), fallback: 'neutral' as const };
     const result = requestSyntax(client, identity, () => { pi++; return ['x']; });
-    assert.equal(result.outcome, 'neutral'); assert.equal(result.awaitingProvider, mode === 'off' ? undefined : true);
+    assert.equal(result.outcome, 'neutral');
+    assert.equal(sources.borrowSource(identity.key)?.text, mode === 'off' ? undefined : 'x', 'active native input is admitted before readiness');
     const resolution = resolveSyntax(sources, sources.pi, identity);
     assert.equal(resolution.needsPi, false); assert.equal(resolution.pi, undefined);
     assert.equal(bashRows(sources, resolution, 12), undefined);
     assert.equal(pi, 0); assert.equal(host.calls.length, 0); assert.equal(sources.pi.borrowPiSource('source'), undefined);
-    assert.equal(sources.stats().retention.entries, 0);
+    assert.equal(sources.stats().retention.entries, mode === 'off' ? 0 : 1);
   });
 }
 test('syntax work neutral fallback ignores Pi retained by another surface and still uses native exact', async () => {
@@ -701,6 +705,7 @@ test('syntax work Pi neutral preserves real default/index/RGB fonts, resets and 
 
 test('syntax work preparation pins exact text through classifier removal and releases on unwind', () => {
   const { client, sources } = fixture(), d = demand('old');
+  assert.equal(sources.observe(d), true);
   const emptyBytes = sources.stats().retention.retainedBytes; let pinnedBytes = 0, pinnedText: string | undefined;
   const prepare = sources.pi.piPreparation.bind(sources.pi);
   let held: ReturnType<typeof sources.pi.piPreparation>;
@@ -761,6 +766,7 @@ test('syntax work inspected ANSI is funded throughout conversion and staging rec
 for (const point of ['conversion', 'staging', 'adoption'] as const) {
   test(`syntax work ${point} exception releases ticket, transient ANSI and every abandoned candidate`, () => {
     const { client, sources } = fixture(), d = demand();
+    assert.equal(sources.observe(d), true);
     const emptyBytes = sources.stats().retention.retainedBytes;
     const prepare = sources.pi.piPreparation.bind(sources.pi), reserve = sources.pi.reservePiData.bind(sources.pi);
     let held: ReturnType<typeof sources.pi.piPreparation>, baseline = 0, reservations = 0;
@@ -806,6 +812,7 @@ test('syntax work inspected ANSI refusal preserves an older ready palette withou
 
 test('syntax work source retirement during a conversion reservation abandons all charged data', () => {
   const { client, sources } = fixture(), d = demand();
+  assert.equal(sources.observe(d), true);
   const emptyBytes = sources.stats().retention.retainedBytes;
   const reserve = sources.pi.reservePiData.bind(sources.pi), prepare = sources.pi.piPreparation.bind(sources.pi);
   let held: ReturnType<typeof sources.pi.piPreparation>, calls = 0, pinnedBytes = 0;
@@ -930,4 +937,21 @@ test('syntax work cached Pi remains usable under queued and held native authorit
   assert.equal(after.globalTransientBytes, held.globalTransientBytes);
   assert.equal(after.bookkeepingBytes, held.bookkeepingBytes);
   assert.equal(after.retention.retainedBytes, held.retention.retainedBytes);
+});
+
+test('syntax work Native Off equal-text finalization keeps one Pi UTF8 measurement', () => {
+  const { client, sources } = fixture(); client.enabled = false; sources.setEnabled(false);
+  const d = demand('é\t😀'); let calls = 0, measurements = 0;
+  const byteLength = Buffer.byteLength;
+  Buffer.byteLength = (...args: Parameters<typeof Buffer.byteLength>) => {
+    if (args[0] === d.text) measurements++;
+    return byteLength(...args);
+  };
+  try {
+    const classify = (text: string) => { calls++; return highlight(text); };
+    assert.equal(requestSyntax(client, d, classify).outcome, 'pi'); assert.equal(measurements, 1);
+    assert.equal(requestSyntax(client, d, classify).outcome, 'pi');
+    assert.equal(requestSyntax(client, { ...d, version: 2 }, classify).outcome, 'pi');
+    assert.equal(measurements, 1); assert.equal(calls, 1); assert.equal(sources.stats().sourceRecords, 0);
+  } finally { Buffer.byteLength = byteLength; }
 });

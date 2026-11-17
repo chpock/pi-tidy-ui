@@ -10,6 +10,9 @@ class Unavailable {
   calls = 0;
   snapshot(): ProviderSnapshot { return { generation: 1, availability: 'unavailable', reason: 'optional_unavailable', initialShared: false }; }
   isReady() { return false; }
+  async recover() { assert.fail('Pi-only peer has no acquisition lifecycle'); }
+  async workerUnavailable() { assert.fail('Pi-only peer has no worker'); }
+  async exhaustedRoute() { assert.fail('Pi-only peer has no route'); }
   classificationAccepted() { return false; }
   request(): Promise<unknown> { this.calls++; return Promise.reject(new Error('unexpected dispatch')); }
 }

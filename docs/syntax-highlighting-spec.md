@@ -81,9 +81,9 @@ The [storage chapter](syntax/storage.md) defines vocabulary-qualified contexts a
 
 ## Intentional terminal suspension
 
-Pi's owned public terminal `stop`/successful `start` boundary preserves the session and draft while syntax admission is paused. Unfinished work is deliberately retired; resume uses the existing bounded queue, latest useful source text and actual owned cleanup or shared reconnection. Idle healthy providers need not restart. Late old work cannot publish, although already-started shared work can briefly finish independently.
+Pi's owned public terminal `stop`/successful `start` boundary preserves the session, draft and eligible ready representations. Stop ends card work and current completion observations and closes our connection even when idle. Already-sent requests can settle independently, but cannot publish late colors; their actual resource obligations remain until settlement or qualified cleanup. Successful start uses ordinary activation, current useful source and the same state/recovery rules used outside terminal handoff.
 
-The complete interruption/replay rules, accepted bounded duplicate, failed-start behavior and repeated-stop recovery are in [intentional terminal suspension](syntax/providers.md#intentional-terminal-suspension). This exception does not authorize recovery from ordinary uncertain timeouts. Terminal OSC defaults have their separate [channel lifecycle](terminal-colors-spec.md).
+The complete inactive-work, connection-close, failed-start and re-entry rules are in [intentional terminal suspension](syntax/providers.md#intentional-terminal-suspension). Useful native recovery after ordinary faults is separately bounded by the [provider recovery policy](syntax/providers.md); retry permission is not proof that old work stopped and does not refund credit or expand Pi fallback. Terminal OSC defaults have their separate [channel lifecycle](terminal-colors-spec.md).
 
 ## Navigation and validation
 

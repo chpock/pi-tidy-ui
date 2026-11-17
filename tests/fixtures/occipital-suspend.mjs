@@ -116,7 +116,15 @@ export async function runSuspendCase({ kind, mode, operation }, { binary, fixtur
        assert.deepEqual(work(await settledStats(t, 'warm')), work(next), 'warm frames and reflow do not replay or recompute');
        await suspend(t); t.send('fg\r'); await t.settle();
        const idle = await settledStats(t, 'idle-resume');
-       assert.equal(idle.client.provider.generation, next.client.provider.generation, 'idle provider is retained');
+       assert.equal(idle.client.provider.availability, 'ready');
+       assert.notEqual(idle.client.provider.generation, next.client.provider.generation, 'idle connection closes and ordinary activation reconnects');
+       const idlePid = next.client.provider.description.runtime.pid;
+       if (kind === 'owned') {
+         assert.notEqual(idle.client.provider.description.runtime.pid, idlePid);
+         const retired = idle.transports.find(transport => transport.pid === idlePid);
+         assert.equal(retired?.childState, 'exited'); assert.equal(retired.retainedBytes, 0); assert.equal(retired.liveTimers, 0);
+         assert.throws(() => process.kill(idlePid, 0), { code: 'ESRCH' });
+       } else assert.equal(idle.client.provider.description.runtime.pid, idlePid, 'shared service survives this client closing its idle connection');
        assert.deepEqual(work(idle), work(next), 'ready cards reuse sources, styles, palettes and geometry after idle suspend');
        paintProof(await captureThenRenderDiagnostics(t, 'idle-resume'));
       const report = { kind, mode, operation, configuredDeadlineMs: deadlineMs, lifecycle, pending, after, next,

@@ -39,6 +39,7 @@ impl Receipt {
     }
 }
 /// Abandoned work remains credited until actual worker settlement and reply disposal.
+/// Losing the delivery sender cannot establish that admitted work never started.
 pub struct Ticket {
     receiver: oneshot::Receiver<Delivery>,
     receipt: Arc<Receipt>,
@@ -55,13 +56,13 @@ impl Ticket {
                 Ok(Some(value))
             }
             Err(oneshot::error::TryRecvError::Empty) => Ok(None),
-            Err(_) => Err(Fault::not_started("worker_gone")),
+            Err(_) => Err(Fault::started("worker_gone")),
         }
     }
     pub async fn take(&mut self) -> Result<Delivery, Fault> {
         let delivery = (&mut self.receiver)
             .await
-            .map_err(|_| Fault::not_started("worker_gone"))?;
+            .map_err(|_| Fault::started("worker_gone"))?;
         self.owns_cancellation = false;
         Ok(delivery)
     }

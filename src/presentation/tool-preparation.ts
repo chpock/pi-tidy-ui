@@ -21,6 +21,7 @@ export interface ToolPreparationPorts<Owner extends object, Input extends Palett
   ensureCards(): CardPreparationPort<Owner>;
   facts: {
     active(): boolean;
+    workActive(): boolean;
     quiescing(): boolean;
     attached(owner: Owner): boolean;
     hidden(owner: Owner): boolean;
@@ -55,6 +56,7 @@ export interface ToolPreparationPresenter<Owner extends object> {
   observeSyntax(owner: Owner, readVisible?: boolean): ToolSyntaxState | undefined;
   syntaxEligible(owner: Owner, readVisible?: boolean): boolean;
   requestFilePreparation(owner: Owner, width: number): void;
+  observeFrame(owner: Owner, width: number): void;
   unsupportedFullFile(owner: Owner): boolean;
   pauseSyntax(owner: Owner): void;
   usefulSyntax(owner: Owner): void;
@@ -101,8 +103,21 @@ export function createToolPreparationPresenter<Owner extends object, Input exten
     queueMicrotask(paletteRefresh(new WeakRef(node), new WeakRef(ports.refreshTarget()), token));
     return true;
   }
+  function deferObservation(node: Owner): ToolSyntaxState {
+    const live = cardKind(node) === 'bash' && liveBashSource(node);
+    const state = seedFileState(node);
+    state.live = live; state.unreflected = true; cancelPreparedRefresh(state);
+    return state;
+  }
+  function observeFrame(node: Owner, width: number): void {
+    const state = sessions.syntax(node);
+    if (!state?.unreflected || !facts.active() || !facts.workActive() || facts.quiescing()
+      || width < 1 || !facts.attached(node) || facts.hidden(node)) return;
+    if (filePresentationTool(node) && !routing.fileVisible(node, width)) return;
+    schedulePreparedRefresh(node, state);
+  }
   function requestFilePreparation(node: Owner, width: number): void {
-    if (!facts.active() || facts.quiescing() || !filePresentationTool(node) || fileMode(node) === undefined || width < 1) return;
+    if (!facts.active() || !facts.workActive() || facts.quiescing() || !filePresentationTool(node) || fileMode(node) === undefined || width < 1) return;
     const state = seedFileState(node);
     if (!state.applied || state.paintRetry) schedulePreparedRefresh(node, state);
   }
@@ -136,8 +151,11 @@ export function createToolPreparationPresenter<Owner extends object, Input exten
   }
   function sameFileSource(a: FileSourceSnapshot, b: FileSourceSnapshot): boolean { return a.mode === b.mode && equalIdentity(a.key, b.key); }
   function observeSyntax(node: Owner, readVisible?: boolean): ToolSyntaxState | undefined {
+    if (!facts.active()) return;
+    if (!facts.workActive()) return deferObservation(node);
     const reader = toolReader(node);
     const prior = sessions.syntax(node);
+    if (prior) prior.unreflected = false;
     cancelPreparedRefresh(prior);
     if (!facts.quiescing() && filePresentationTool(node) && facts.attached(node) && !prior) seedFileState(node);
     if (!facts.quiescing() && filePresentationTool(node) && !facts.attached(node)) {
@@ -204,6 +222,7 @@ export function createToolPreparationPresenter<Owner extends object, Input exten
         : owner.updateDisplay(node, { ...common, kind: 'file', reader: fileInput!.reader, diagnostics: fileInput!.diagnostics,
           viewMode: viewMode!, cwd });
       if (sessions.syntax(node) !== state || state.attempt !== attempt) return;
+      if (!facts.workActive()) return deferObservation(node);
       if (!accepted) {
         if (filePresentationTool(node)) {
           if (viewMode === 'full') discardFullFile(node);
@@ -224,7 +243,7 @@ export function createToolPreparationPresenter<Owner extends object, Input exten
     return state;
   }
   function preparePrefix(node: Owner) {
-    const state = sessions.syntax(node); if (!state?.applied || cardKind(node) !== 'bash' || !cards()) return;
+    const state = sessions.syntax(node); if (!facts.workActive() || !state?.applied || cardKind(node) !== 'bash' || !cards()) return;
     const key = cards()!.identities(node)[0]?.key; if (!key) return;
     const basis = ports.displayBasis(key); if (!basis || state.prefix?.sourceRevision === state.sourceRevision && state.prefix.basis === basis.geometryStamp) return;
     let bytes = 0, valid = false;
@@ -245,11 +264,12 @@ export function createToolPreparationPresenter<Owner extends object, Input exten
     cards()?.pause(node);
   }
   function usefulSyntax(node: Owner) {
+    if (!facts.workActive()) return;
     const state = sessions.syntax(node);
     if (state?.applied && syntaxEligible(node)) { state.paused = false; cards()?.useful(node, state.revision); }
   }
   function observePalette(node: Owner, origin: 'owned' | 'pi') {
-    if (facts.quiescing() || !facts.attached(node) || facts.hidden(node)) return;
+    if (!facts.workActive() || facts.quiescing() || !facts.attached(node) || facts.hidden(node)) return;
     const width = sessions.lastRenderWidth(node);
     if (width === undefined || width < 1) return;
     const state = sessions.syntax(node); if (!state || state.refreshPending) return;
@@ -272,6 +292,8 @@ export function createToolPreparationPresenter<Owner extends object, Input exten
     if (!state || !state.refreshPending || state.refreshToken !== token) return;
     cancelPreparedRefresh(state);
     if (!facts.active() || facts.quiescing()) return;
+    if (!facts.workActive()) { state.unreflected = true; return; }
+    const unreflected = state.unreflected === true;
     if (filePresentationTool(node)) {
       const mode = fileMode(node), width = sessions.lastRenderWidth(node);
       if (!facts.attached(node) || facts.hidden(node) || mode === undefined || cardKind(node) === 'read' && mode !== 'full') {
@@ -281,6 +303,10 @@ export function createToolPreparationPresenter<Owner extends object, Input exten
       if (!routing.fileVisible(node, width)) { pauseSyntax(node); return; }
       const wasRefused = state.refused, previousRevision = state.revision;
       const current = observeSyntax(node, true);
+      if (unreflected) {
+        prepareFileDetail(node, true);
+        if (facts.workActive() && !policy.fileSucceeded(node)) ports.invalidate(node, 'current file details prepared after work resumed');
+      }
       if (current?.paintRetry) return;
       if (current?.applied && current.revision !== previousRevision) {
         usefulSyntax(node); ports.invalidate(node, 'prepared file presentation changed');
@@ -307,6 +333,7 @@ export function createToolPreparationPresenter<Owner extends object, Input exten
     return detail.pending || mode === 'preview' ? detail : { ...detail, sources: () => reader.errorSources() };
   }
   function prepareFileDetail(node: Owner, refreshContent = false): void {
+    if (facts.active() && !facts.workActive()) { deferObservation(node); return; }
     if (!facts.active() || facts.quiescing() || !facts.attached(node) || policy.fileSucceeded(node) || fileMode(node) !== 'full') {
       fileDetails.drop(node); return;
     }
@@ -336,11 +363,11 @@ export function createToolPreparationPresenter<Owner extends object, Input exten
     if (changed) ports.requestRender();
   }
   function settleInterrupted(node: Owner): void {
-    if (!facts.quiescing() && cards() && interruptedLiveBash(toolReader(node), liveBashSource(node))) {
+    if (facts.workActive() && !facts.quiescing() && cards() && interruptedLiveBash(toolReader(node), liveBashSource(node))) {
       cards()!.freeze(node); ports.flush();
     }
   }
-  return { seedFileState, observeSyntax, syntaxEligible, requestFilePreparation,
+  return { seedFileState, observeSyntax, syntaxEligible, requestFilePreparation, observeFrame,
     unsupportedFullFile, pauseSyntax, usefulSyntax, observePalette, refusePreparedPresentation, refreshPalette,
     invalidated, prepareFileDetail, observeFileTurn, finishFileTurn, settleInterrupted };
 }

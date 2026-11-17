@@ -31,6 +31,13 @@ been reconstructed.
 
 ### Changed
 
+- Recover useful native highlighting after service loss without a lifetime restart
+  cap. Space automatic recovery cycles and selected retryable request failures by
+  one minute; retain useful source work while connecting without requiring a new
+  card update. Retry permission does not authorize duplicate Pi classification.
+- At terminal stop, end card work and readiness waits and close the syntax
+  connection even when idle. On return, use ordinary activation and useful-work
+  recovery while retaining eligible ready cards.
 - Stop `/tidy-ui` arrow navigation at the first and last items instead of wrapping,
   including filtered theme lists; disabled items remain skipped.
 - Use only OpenCode TUI themes: 32 families and 64 Dark/Light variants, including
@@ -53,6 +60,9 @@ been reconstructed.
 
 ### Fixed
 
+- Prevent a retired native no-start refusal from blocking newly enabled work,
+  independently of whether the refusal arrives before or after Native Off/On.
+  Keep execution history and outstanding request reservations intact.
 - Keep pi-tidy-ui active when enabling it with a collapsed pasted draft on Pi 1.5.2.
   Preserve the same editor, paste state, cursor and undo/history while routing
   native activity through Pi's separate status container.

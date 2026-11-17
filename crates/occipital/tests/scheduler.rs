@@ -434,3 +434,48 @@ fn exact_full_pool_checkpoint_and_handoff_credits_transfer_without_peak_growth()
     worker.close("b");
     assert_eq!(worker.stats().bytes, 0);
 }
+
+fn lost_delivery(after_quantum: bool) -> occipital::runtime::Ticket {
+    let mut worker = scheduler();
+    worker.bind("a").unwrap();
+    let mut ticket = worker
+        .submit("a", source("lost", &"echo x\n".repeat(500), true), 0)
+        .unwrap();
+    assert!(ticket.try_take().unwrap().is_none());
+    if after_quantum {
+        worker.tick(0);
+        assert!(ticket.try_take().unwrap().is_none());
+    }
+    // Sender loss supplies no execution receipt, including when this fixture
+    // knows the request had not yet received its first worker quantum.
+    drop(worker);
+    ticket
+}
+
+#[test]
+fn queued_delivery_loss_is_conservative_on_poll() {
+    let fault = lost_delivery(false).try_take().err().unwrap();
+    assert_eq!(fault.code, "worker_gone");
+    assert!(fault.started, "sender loss cannot establish no-start");
+}
+
+#[test]
+fn started_delivery_loss_is_conservative_on_poll() {
+    let fault = lost_delivery(true).try_take().err().unwrap();
+    assert_eq!(fault.code, "worker_gone");
+    assert!(fault.started, "lost running work cannot establish no-start");
+}
+
+#[tokio::test]
+async fn queued_delivery_loss_is_conservative_on_await() {
+    let fault = lost_delivery(false).take().await.err().unwrap();
+    assert_eq!(fault.code, "worker_gone");
+    assert!(fault.started, "sender loss cannot establish no-start");
+}
+
+#[tokio::test]
+async fn started_delivery_loss_is_conservative_on_await() {
+    let fault = lost_delivery(true).take().await.err().unwrap();
+    assert_eq!(fault.code, "worker_gone");
+    assert!(fault.started, "lost running work cannot establish no-start");
+}

@@ -7,9 +7,10 @@ import { stripVTControlCharacters as plain } from 'node:util';
 import { sampleOwnedPalette } from '../../../../src/themes/owned-palette.ts';
 import { PiTerminal } from '../../../fixtures/terminal-harness.mjs';
 import { closeTerminals } from '../../../fixtures/terminal-cleanup.mjs';
+import { reaped } from '../../../fixtures/shared-syntax-host.mjs';
 import { syntaxToolData as raw } from '../../../fixtures/syntax-tool-data.mjs';
 import { nativeReady, semanticStyle } from '../../../fixtures/syntax-observation.mjs';
-import { prepareSyntaxNative, inputs, syntaxReady, settledStats, captureThenRenderDiagnostics, traffic, persisted, finish, chooseTheme, expressionForeground, expressionAttributes, work } from '../../../fixtures/syntax-cli-support.mjs';
+import { prepareSyntaxNative, inputs, syntaxReady, intermediateStats, settledStats, captureThenRenderDiagnostics, traffic, persisted, finish, chooseTheme, expressionForeground, expressionAttributes, work } from '../../../fixtures/syntax-cli-support.mjs';
 
 const { fixture, descriptor } = await prepareSyntaxNative();
 const nativeBytes = 65536, piBytes = 8192;
@@ -220,14 +221,23 @@ for (const kind of ['write', 'edit']) for (const policy of ['native', 'pi']) tes
     await live.observeAnimation(); let after = await settledStats(live, 'file-warm-after'); assert.deepEqual(work(after), work(before));
     if (kind === 'write' && policy === 'native') {
       const pid = after.transports.at(-1).pid; process.kill(pid, 'SIGKILL');
-      await live.event('syntax_acquired', 2);
-      after = await settledStats(live, 'bounded-owned-recovery', s => nativeReady(s) && s.counts.acquisitions === 2 && s.counts.describeReplies === 2);
+      await reaped(pid);
+      await intermediateStats(live, 'bounded-owned-exit-observed', s => s.client.provider.availability === 'unavailable'
+        && s.transports.at(-1).childState === 'exited');
+      after = await settledStats(live, 'bounded-owned-idle');
+      writeFileSync(join(live.output, 'bounded-owned-idle.json'), JSON.stringify(after, null, 2));
+      assert.equal(after.client.provider.availability, 'unavailable');
+      assert.equal(after.transports.length, before.transports.length);
+      assert.equal(after.transports.at(-1).pid, pid); assert.equal(after.transports.at(-1).childState, 'exited');
       assert.throws(() => process.kill(pid, 0), { code: 'ESRCH' });
-      assert.notEqual(after.transports.at(-1).pid, pid);
-      assert.deepEqual(work(after), work(before), 'actual helper recovery reuses the already validated bounded source/styles');
+      assert.equal(after.counts.acquisitions, before.counts.acquisitions);
+      assert.equal(after.counts.describeReplies, before.counts.describeReplies);
+      assert.deepEqual([after.broker.sharedAttempts, after.broker.ownedAttempts], [before.broker.sharedAttempts, before.broker.ownedAttempts],
+        'satisfied retained work does not start another provider factory');
+      assert.deepEqual(work(after), work(before), 'idle helper loss preserves the already validated bounded source/styles without new work');
       assert.equal(after.counts.piCaptures, 0);
-      const recovered = await captureThenRenderDiagnostics(live, 'bounded-recovered'); exactFile(recovered, fileSource, kind);
-      nativeCells(live, recovered, 'def VOLUME_PREFIX', 'def VOLUME_NATIVE_SUFFIX'); assert.deepEqual(raw(recovered), raw(shown));
+      const retained = await captureThenRenderDiagnostics(live, 'bounded-retained'); exactFile(retained, fileSource, kind);
+      nativeCells(live, retained, 'def VOLUME_PREFIX', 'def VOLUME_NATIVE_SUFFIX'); assert.deepEqual(raw(retained), raw(shown));
     }
     assert.deepEqual(readFileSync(shown.session), saved); assert.deepEqual(traffic(live), originalTraffic);
     assert.equal(after.source.remoteLeases, 0); assert.equal(after.source.globalUnsettledJobs, 0); assert.equal(after.node, inputs.node.version);

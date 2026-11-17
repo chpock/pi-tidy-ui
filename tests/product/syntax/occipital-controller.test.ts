@@ -47,6 +47,9 @@ class Host {
   streams = new Map<string, { text: string; revision: number; committed: number; lease: string }>();
   snapshot(): ProviderSnapshot { return { availability: this.ready ? 'ready' : 'initializing', reason: this.ready ? 'ready' : 'initializing', generation: this.generation, initialShared: false, kind: 'owned', description: this.ready ? this.description : undefined }; }
   isReady(generation: number) { return this.ready && generation === this.generation; }
+  async recover() { assert.fail('manual source peer has no acquisition lifecycle'); }
+  async workerUnavailable() { assert.fail('manual source peer has no worker lifecycle'); }
+  async exhaustedRoute() { assert.fail('manual source peer must not exhaust its route'); }
   request(_generation: number, request: Record<string, unknown>, options?: { signal?: AbortSignal; deadlineMs?: number }) {
     return new Promise<unknown>((resolve, reject) => this.calls.push({ request, signal: options?.signal, deadlineMs: options?.deadlineMs, resolve, reject }));
   }
@@ -108,6 +111,20 @@ function ranges(controller: SourceExecution, key = 'source') {
   return rows;
 }
 async function settle() { await turn(); }
+class Clock {
+  time = 0; next = 0;
+  timers = new Map<number, { at: number; callback(): void }>();
+  now() { return this.time; }
+  setTimeout(callback: () => void, ms: number) {
+    const id = ++this.next; this.timers.set(id, { at: this.time + ms, callback });
+    return { cancel: () => { this.timers.delete(id); }, unref() {} };
+  }
+  async advance(ms: number) {
+    this.time += ms;
+    for (const [id, timer] of [...this.timers]) if (timer.at <= this.time) { this.timers.delete(id); timer.callback(); }
+    await settle();
+  }
+}
 afterEach(async () => {
   for (const controller of fixtureControllers) controller.dispose();
   // Synthetic hosts deliberately hold promises; every terminal fixture outcome
@@ -163,8 +180,9 @@ test('empty final suffix is dispatched once and commits tail without invented by
   c.observe(demand('a\nt', 1, true)); c.flush(); assert.equal(host.calls.length, 2);
 });
 
-test('restart_required preserves independently valid semantics and retries latest once with fresh identity', async () => {
-  const { host, controller: c } = fixture(); c.observe(demand('a\nt')); c.flush(); host.answer(0); await settle();
+test('restart_required preserves independently valid semantics and spaces later reconstruction starts', async () => {
+  const clock = new Clock(), { host, controller: c } = fixture({ clock });
+  c.observe(demand('a\nt')); c.flush(); host.answer(0); await settle();
   c.observe(demand('a\ntx', 2)); c.flush(); host.fault(1, 'restart_required'); await settle();
   assert.equal(host.calls[2]!.request.op, 'stream.close'); host.answer(2); await settle();
   const restarted = host.calls[3]!.request;
@@ -173,9 +191,19 @@ test('restart_required preserves independently valid semantics and retries lates
   assert.notEqual(restarted.sources[0].key, host.calls[0]!.request.sources[0].key);
   assert.deepEqual(ranges(c), [[0, 2, true]]); assert.equal(c.status('source')!.acknowledgedVersion, undefined);
   host.fault(3, 'restart_required'); await settle();
-  assert.equal(c.status('source')!.execution, 'not_started'); assert.equal(c.status('source')!.protective, true);
+  assert.equal(c.status('source')!.execution, 'not_started');
+  assert.equal(c.status('source')!.protective, false, 'paced reconstruction is not a local storage or unknown-outcome refusal');
+  assert.equal(c.workStatus('source').fallbackEligible, false, 'native repair keeps its existing priority');
   for (let v = 3; v < 10; v++) { c.observe(demand('a\ntx'.padEnd(v + 3, 'x'), v)); c.flush(); }
   assert.equal(host.calls.length, 4); assert.equal(c.stats().restarts, 1);
+  await clock.advance(59999); c.flush(); assert.equal(host.calls.length, 4);
+  await clock.advance(1); assert.equal(host.calls.length, 5);
+  assert.equal(host.calls[4]!.request.op, 'stream.open');
+  assert.equal(host.calls[4]!.request.sources[0].text, 'a\ntx'.padEnd(12, 'x'));
+  assert.equal(host.calls[4]!.request.sources[0].source_version, 9);
+  assert.equal(c.status('source')!.acknowledgedVersion, undefined, 'a no-start opening supplied no parser checkpoint');
+  assert.equal(c.stats().restarts, 2); host.answer(4); await settle();
+  assert.equal(c.status('source')!.exact, true); assert.equal(c.stats().transientBytes, 0);
 });
 
 test('no-start refusal never loops unchanged work; untyped rejection stays unknown across new demands', async () => {
@@ -185,9 +213,15 @@ test('no-start refusal never loops unchanged work; untyped rejection stays unkno
   assert.equal(host.calls.length, 1);
   c.observe(demand('echo xy', 2, true)); c.flush(); host.calls[1]!.reject(new Error('anything')); await settle();
   assert.equal(c.status('source')!.execution, 'unknown'); assert.equal(c.status('source')!.fallbackEligible, false);
-  c.observe(demand('echo xyz', 3, true)); c.flush(); assert.equal(host.calls.length, 2);
+  c.observe(demand('echo xyz', 3, true)); c.flush(); assert.equal(host.calls.length, 3);
+  assert.equal(c.workStatus('source').execution, 'unsettled'); assert.equal(c.workStatus('source').fallbackEligible, false);
+  const credit = c.stats().transientBytes; assert.ok(credit > 0);
   host.generation++; c.observe(demand('echo xyz', 3, true)); c.flush(); assert.equal(host.calls.length, 3);
-  host.answer(2); await settle(); assert.equal(c.status('source')!.exact, true);
+  assert.equal(c.stats().transientBytes, credit, 'ready re-entry cannot overlap a still-held same-key request');
+  host.answer(2); await settle(); assert.equal(host.calls.length, 4); assert.deepEqual(ranges(c), []);
+  assert.equal(c.workStatus('source').fallbackEligible, false);
+  host.answer(3); await settle(); assert.equal(c.status('source')!.exact, true);
+  assert.equal(c.workStatus('source').fallbackEligible, false, 'new Native success cannot erase old unknown execution');
 });
 
 test('rewrite/language retire generations; theme selection preserves parser generation and lease', async () => {
@@ -205,10 +239,14 @@ test('rewrite/language retire generations; theme selection preserves parser gene
   assert.equal(c.status('source')!.exact, true); assert.equal(c.status('source')!.protective, false);
 });
 
-test('provider epoch change rejects late acknowledgement and allows only newly observed demand replay', async () => {
+test('provider epoch change rejects late adoption and automatically replays current admitted demand', async () => {
   const { host, controller: c } = fixture(); c.observe(demand('old', 1, true)); c.flush(); host.generation++;
-  host.answer(0); await settle(); assert.deepEqual(ranges(c), []); assert.equal(host.calls.length, 1);
-  c.observe(demand('old', 1, true)); c.flush(); host.answer(1); await settle(); assert.equal(c.status('source')!.exact, true);
+  host.answer(0); await settle(); assert.deepEqual(ranges(c), []); assert.equal(host.calls.length, 2);
+  assert.equal(c.status('source')!.exact, false); assert.deepEqual(host.acceptedClassifications, []);
+  assert.equal(host.calls[1]!.request.op, 'highlight'); assert.equal(host.calls[1]!.request.sources[0].text, 'old');
+  host.answer(1); await settle(); assert.equal(c.status('source')!.exact, true);
+  assert.deepEqual(host.acceptedClassifications, [host.generation]);
+  c.observe(demand('old', 1, true)); c.flush(); assert.equal(host.calls.length, 2, 'equal caller observation is not needed for recovery or a second parse');
 });
 
 test('pool pressure retires evicted leases, rejects late suffix, then caller re-admits fresh full source', async () => {
@@ -294,18 +332,28 @@ test('borrowed snapshot accessor reuses cached byte length and cannot mutate poo
   pool.remove(generation); assert.equal(pool.borrowSnapshot(generation), undefined);
 });
 
-test('unknown obsolete outcome blocks replacement and survives eviction/re-admission on same provider', async () => {
+test('unknown obsolete outcome serializes replacement and survives eviction/re-admission on same provider', async () => {
   const { host, controller: c } = fixture({ deadlineMs: 1000, retention: { maxBytes: 4096 } });
-  c.observe(demand('first')); c.flush(); c.observe(demand('rewrite', 2)); c.flush(); assert.equal(host.calls.length, 1);
+  c.observe(demand('first')); c.flush(); const firstCredit = c.stats().transientBytes;
+  c.observe(demand('rewrite', 2)); c.flush(); assert.equal(host.calls.length, 1);
+  assert.equal(c.stats().transientBytes, firstCredit, 'abort does not free the held old request');
   host.calls[0]!.reject(new Error('untyped rejection after abort')); await settle();
-  assert.equal(host.calls.length, 1); assert.equal(c.status('source')!.execution, 'unknown');
+  assert.equal(host.calls.length, 2); assert.equal(c.status('source')!.execution, 'unsettled');
+  assert.equal(c.workStatus('source').fallbackEligible, false); assert.equal(c.stats().globalUnsettledJobs, 1);
+  assert.equal(host.calls[1]!.request.sources[0].text, 'rewrite');
   c.observe(demand('o'.repeat(1300), 1, true, 'other')); c.flush();
   assert.equal(c.status('source')!.generation, undefined, 'pressure actually evicts the uncertain replacement');
-  host.answer(1); await settle();
-  c.retryEvicted('source'); c.observe(demand('rewrite', 3)); c.flush(); assert.equal(host.calls.length, 2);
+  assert.equal(c.workStatus('source').fallbackEligible, false);
+  assert.equal(host.calls.length, 3); assert.equal(host.calls[2]!.request.sources[0].text, 'o'.repeat(1300));
+  host.answer(2); await settle();
+  c.retryEvicted('source'); c.observe(demand('rewrite', 3)); c.flush(); assert.equal(host.calls.length, 3);
   assert.equal(c.status('source')!.fallbackEligible, false);
-  host.generation++; c.observe(demand('rewrite', 3)); c.flush(); host.answer(2); await settle();
-  assert.equal(c.status('source')!.exact, true);
+  host.generation++; c.observe(demand('rewrite', 3)); c.flush(); assert.equal(host.calls.length, 3);
+  assert.ok(c.stats().transientBytes > 0, 'eviction, re-admission and provider changes preserve actual held credit');
+  host.answer(1); await settle(); assert.equal(host.calls.length, 4);
+  assert.equal(c.workStatus('source').fallbackEligible, false);
+  host.answer(3); await settle(); assert.equal(c.status('source')!.exact, true);
+  assert.equal(c.workStatus('source').fallbackEligible, false); assert.equal(c.stats().transientBytes, 0);
 });
 
 test('retirement close waits for same-source append settlement rather than overlapping physical jobs', async () => {
@@ -368,7 +416,13 @@ test('bad decoded reply and explicit started fault cannot enable fallback or unc
     const { host, controller: c } = fixture(); c.observe(demand('echo x', 1, true)); c.flush();
     if (outcome === 'invalid') host.calls[0]!.resolve({ v: 1 }); else host.fault(0, 'engine_failure', 'started');
     await settle(); assert.equal(c.status('source')!.fallbackEligible, false); assert.equal(c.status('source')!.protective, true);
-    assert.deepEqual(ranges(c), []); c.observe(demand('echo xy', 2, true)); c.flush(); assert.equal(host.calls.length, 1);
+    assert.deepEqual(ranges(c), []);
+    for (let frame = 0; frame < 10; frame++) { c.observe(demand('echo x', 1, true)); c.flush(); }
+    assert.equal(host.calls.length, 1, 'unchanged frames are not a retry trigger');
+    c.observe(demand('echo xy', 2, true)); c.flush(); assert.equal(host.calls.length, 2);
+    assert.equal(c.workStatus('source').execution, 'unsettled'); assert.equal(c.workStatus('source').fallbackEligible, false);
+    assert.deepEqual(ranges(c), []); host.answer(1); await settle(); assert.equal(c.status('source')!.exact, true);
+    assert.equal(c.workStatus('source').fallbackEligible, false, 'changed Native work does not remove ordinary unknown history');
   }
 });
 
@@ -502,6 +556,14 @@ test('working-set pressure never evicts and resends on identical visits; explici
 test('unretainable result keeps a primitive refusal without repeated source measurements or dispatch', async () => {
   const { host, controller: c } = fixture({ retention: { maxBytes: 1500 } }); const d = demand('unretainable result', 1, true);
   c.observe(d); c.flush(); host.answer(0); await settle(); assert.equal(c.status(d.key)!.classificationVersion, undefined); assert.equal(c.workStatus(d.key).execution, 'acknowledged');
+  assert.equal(c.status(d.key)!.acknowledgedVersion, undefined);
+  assert.equal(c.status(d.key)!.protective, true);
+  assert.equal(c.status(d.key)!.exact, false);
+  assert.equal(c.status(d.key)!.execution, 'acknowledged');
+  assert.equal(c.status(d.key)!.fallbackEligible, true);
+  assert.equal(c.workStatus(d.key).fallbackEligible, true);
+  assert.equal(c.stats().unsettledJobs, 0);
+  assert.equal(c.stats().globalTransientBytes, 0);
   assert.deepEqual(host.acceptedClassifications, [host.generation], 'local retention pressure does not undo validated native success');
   const before = c.stats(), byteLength = Buffer.byteLength; let scans = 0;
   Buffer.byteLength = ((value: any, ...args: any[]) => { if (value === d.text) scans++; return (byteLength as any)(value, ...args); }) as typeof Buffer.byteLength;
@@ -605,13 +667,16 @@ test('paused grouped SOURCE remains fallback-ineligible until explicit resume', 
   c.flush();
   assert.equal(host.calls.length, 1);
   const paused = c.workStatus('source');
-  assert.equal(paused.execution, 'not_started');
+  assert.equal(paused.execution, 'acknowledged', 'the actual older attempt survives a new unparsed target');
+  assert.equal(paused.version, 2); assert.equal(c.status('source')!.acknowledgedVersion, 1);
+  assert.equal(c.status('source')!.exact, false);
   assert.equal(paused.fallbackEligible, false);
   await settle();
   c.flush(); await settle();
   assert.equal(host.calls.length, 1, 'later turns still cannot dispatch paused grouped SOURCE');
   const stillPaused = c.workStatus('source');
-  assert.equal(stillPaused.execution, 'not_started');
+  assert.equal(stillPaused.execution, 'acknowledged');
+  assert.equal(c.status('source')!.exact, false);
   assert.equal(stillPaused.fallbackEligible, false);
 
   c.queuePreparation(group);
@@ -675,13 +740,17 @@ test('review F2: real broker retire/publish preserves completed aliases without 
     assert.equal(broker.snapshot().availability, 'transitioning'); assert.equal(broker.snapshot().generation, generation + 1);
     c.observe({ ...d, version: 2 }); c.flush(); assert.deepEqual(ranges(c), original);
     assert.equal(c.status('source')!.acknowledgedVersion, undefined);
-    publish(); await awaitFixture(loss); assert.equal(broker.snapshot().generation, generation + 2);
+    await awaitFixture(loss); assert.equal(acquisitions, 1, 'a completed alias alone is not useful recovery demand');
+    assert.equal(broker.snapshot().generation, generation + 1);
+    const replacement = broker.recover(); publish(); await awaitFixture(replacement);
+    assert.equal(broker.snapshot().generation, generation + 2);
     c.observe({ ...d, version: 2 }); c.flush(); assert.deepEqual(ranges(c), original);
     assert.equal(c.status('source')!.exact, true); assert.equal(c.status('source')!.acknowledgedVersion, undefined);
     assert.equal(c.status('source')!.classificationVersion, 1);
     assert.equal(first.calls.length, 1); assert.equal(next.calls.length, 0); assert.equal(c.stats().dispatches, 1);
     assert.equal(c.stats().preparedBytes, 6);
-  } finally { publish(); c.dispose(); await awaitFixture(broker.dispose()); assert.equal(closes, 2); }
+  } finally { publish(); c.dispose(); await awaitFixture(broker.dispose()); }
+  assert.equal(closes, 2);
 });
 
 
@@ -1175,7 +1244,10 @@ for (const proof of ['owned_stop', 'validated_reply', 'typed_no_start', 'local_n
       else if (proof === 'typed_no_start') host.fault(0, 'busy');
       else host.calls[0]!.reject(new RequestFailure('local preflight', 'not_started'));
       await settle();
-      assert.equal(c.workStatus('source').execution, 'not_started');
+      assert.equal(c.workStatus('source').execution, proof === 'validated_reply' ? 'acknowledged' : 'not_started',
+        'captured execution remains truthful even though the unavailable target has no accepted semantics');
+      assert.equal(c.status('source')!.acknowledgedVersion, undefined);
+      assert.equal(c.status('source')!.classificationVersion, undefined); assert.equal(c.status('source')!.exact, false);
       assert.equal(c.workStatus('source').fallbackEligible, true);
       assert.deepEqual(packets, [['source']]); assert.equal(host.calls.length, 1);
       assert.deepEqual(host.acceptedClassifications, []); assert.deepEqual(ranges(c), []);
@@ -1427,7 +1499,12 @@ test('display basis: retaining rewrite colors does not clear unresolved same-pro
   assert.equal(c.displayStamp('source'), initial); assert.equal(c.workStatus('source').fallbackEligible, false);
   assert.equal(c.workStatus('source').execution, 'unknown');
   assert.deepEqual(host.calls.map(call => call.request.op), ['stream.open', 'styles.resolve', 'stream.append', 'stream.close']);
-  host.answer(3); await settle(); assert.equal(c.workStatus('source').execution, 'unknown');
+  host.answer(3); await settle(); assert.equal(c.workStatus('source').execution, 'unsettled');
+  assert.equal(host.calls.length, 5); assert.equal(host.calls[4]!.request.op, 'stream.open');
+  assert.equal(host.calls[4]!.request.sources[0].text, 'echo rewrite');
+  assert.equal(c.displayStamp('source'), initial); assert.equal(c.workStatus('source').fallbackEligible, false);
+  host.answer(4); await settle(); assert.equal(c.status('source')!.exact, true);
+  assert.equal(c.workStatus('source').execution, 'unknown'); assert.equal(c.workStatus('source').fallbackEligible, false);
 });
 
 test('stream review F2: rewrite then provider recovery never promotes historical colors into committed coverage', async () => {
@@ -1908,26 +1985,33 @@ for (const late of ['reply', 'rejection'] as const) test(`intentional suspend re
   const { host, controller: c } = fixture();
   c.observe(demand('before', 1, true)); c.flush();
   const bytes = c.stats().transientBytes; assert.ok(bytes > 0);
-  c.suspend(); c.interruptProvider(host.generation); host.ready = false; host.generation++;
-  c.observe(demand('latest', 2, true)); c.flush(); await settle();
+  c.suspend(); c.retireProvider(host.generation, 'suspended'); host.ready = false; host.generation++;
+  assert.equal(c.observe(demand('latest', 2, true)), false); c.flush(); await settle();
+  assert.equal(c.borrowSource('source')?.text, 'before', 'inactive observation cannot replace the admitted input');
   assert.equal(host.calls.length, 1); assert.equal(c.stats().transientBytes, bytes);
   assert.equal(c.workStatus('source').fallbackEligible, false);
   if (late === 'reply') host.answer(0); else host.calls[0]!.reject(new Error('intentional close'));
   await settle(); assert.equal(c.stats().unsettledJobs, 0); assert.equal(host.acceptedClassifications.length, 0);
-  host.ready = true; c.resume(); await settle(); c.flush();
+  host.ready = true; c.resume(); assert.equal(c.observe(demand('latest', 2, true)), true); await settle(); c.flush();
   assert.equal(host.calls.length, 2); assert.equal(host.calls[1]!.request.sources[0].text, 'latest');
   host.answer(1); await settle(); assert.equal(c.status('source')!.exact, true);
   c.flush(); await settle(); assert.equal(host.calls.length, 2);
 });
 
-test('intentional suspend does not replay frozen, removed or previously uncertain sources', async () => {
+test('intentional suspend preserves frozen exclusion and ordinary uncertainty during useful native re-entry', async () => {
   const { host, controller: c } = fixture();
   c.observe(demand('unknown', 1, true, 'unknown')); c.flush(); host.calls[0]!.reject(new Error('ordinary timeout')); await settle();
   c.observe(demand('freeze', 1, true, 'freeze')); c.flush();
-  c.suspend(); c.interruptProvider(host.generation); c.freeze('freeze');
+  c.suspend(); c.retireProvider(host.generation, 'suspended'); c.freeze('freeze');
   host.generation++; host.calls[1]!.reject(new Error('intentional close')); await settle();
-  c.resume(); await settle(); assert.equal(host.calls.length, 2);
-  assert.equal(c.workStatus('unknown').fallbackEligible, false);
+  assert.equal(c.workStatus('unknown').execution, 'unknown'); assert.equal(host.calls.length, 2);
+  c.resume(); await settle(); assert.equal(host.calls.length, 3);
+  assert.equal(host.calls[2]!.request.op, 'highlight'); assert.equal(host.calls[2]!.request.sources[0].text, 'unknown');
+  assert.equal(c.workStatus('unknown').execution, 'unsettled'); assert.equal(c.workStatus('unknown').fallbackEligible, false);
+  assert.equal(c.workStatus('freeze').fallbackEligible, false);
+  host.answer(2); await settle(); assert.equal(c.status('unknown')!.exact, true);
+  assert.equal(c.workStatus('unknown').execution, 'unknown'); assert.equal(c.workStatus('unknown').fallbackEligible, false);
+  assert.equal(host.calls.length, 3, 'frozen work is never parsed during ordinary re-entry');
 });
 
 test('intentional suspend reopens an interrupted append using latest full source and retains committed annotations', async () => {
@@ -1935,7 +2019,7 @@ test('intentional suspend reopens an interrupted append using latest full source
   c.observe(demand('line\ntail')); c.flush(); host.answer(0); await settle();
   c.observe(demand('line\ntails', 2)); c.flush(); assert.equal(host.calls[1]!.request.op, 'stream.append');
   const before = ranges(c);
-  c.suspend(); c.interruptProvider(host.generation); host.generation++;
+  c.suspend(); c.retireProvider(host.generation, 'suspended'); host.generation++;
   host.answer(1); await settle(); assert.deepEqual(ranges(c), before);
   c.resume(); await settle(); c.flush();
   assert.equal(host.calls[2]!.request.op, 'stream.open'); assert.equal(host.calls[2]!.request.sources[0].text, 'line\ntails');
@@ -1948,7 +2032,7 @@ test('intentional suspend retries STYLE without reparsing completed scopes', asy
   selectStyle(c);
   c.observe(demand('done', 1, true)); c.flush(); host.answer(0); await settle(); c.flush();
   assert.equal(host.calls[1]!.request.op, 'styles.resolve');
-  c.suspend(); c.interruptProvider(host.generation); host.generation++;
+  c.suspend(); c.retireProvider(host.generation, 'suspended'); host.generation++;
   host.calls[1]!.reject(new Error('deliberate style interruption')); await settle();
   c.resume(); await settle(); c.flush();
   assert.equal(host.calls[2]!.request.op, 'styles.resolve');
@@ -1971,7 +2055,7 @@ for (const kind of ['owned', 'shared'] as const) test(`intentional suspend follo
   const { host, controller: c } = fixture(); const original = host.snapshot.bind(host);
   host.snapshot = () => ({ ...original(), kind });
   c.observe(demand('pending', 1, true)); c.flush();
-  c.suspend(); c.interruptProvider(host.generation); c.setEnabled(false);
+  c.suspend(); c.retireProvider(host.generation, 'suspended'); c.setEnabled(false);
   assert.equal(c.workStatus('source').fallbackEligible, false, 'Off is not execution-stop proof');
   if (kind === 'owned') c.ownedStopped(host.generation);
   host.calls[0]!.reject(new Error('deliberate close')); await settle(); c.resume(); await settle();
@@ -1984,7 +2068,7 @@ for (const state of ['hidden', 'removed'] as const) test(`intentional suspend do
   const task = { keys: new Set(['source']), prepare() { c.observe(demand('body', 1, true)); } };
   const group = c.registerPreparation(task)!; c.queuePreparation(group); await settle();
   assert.equal(host.calls.length, 1);
-  c.suspend(); c.interruptProvider(host.generation);
+  c.suspend(); c.retireProvider(host.generation, 'suspended');
   if (state === 'hidden') c.pausePreparation(group); else { c.unregisterPreparation(group); c.remove('source'); }
   host.generation++; host.calls[0]!.reject(new Error('intentional close')); await settle(); c.resume(); await settle();
   assert.equal(host.calls.length, 1);
@@ -1999,7 +2083,7 @@ for (const kind of ['owned', 'shared'] as const) test(`intentional suspend faile
   let availability: 'initializing' | 'unavailable' = 'initializing';
   host.snapshot = () => host.ready ? { ...original(), kind } : { ...original(), availability };
   c.observe(demand('pending', 1, true)); c.flush();
-  c.suspend(); c.interruptProvider(host.generation); host.ready = false; host.generation++;
+  c.suspend(); c.retireProvider(host.generation, 'suspended'); host.ready = false; host.generation++;
   if (kind === 'owned') c.ownedStopped(host.generation - 1);
   host.calls[0]!.reject(new Error('deliberate close')); await settle(); c.resume(); await settle();
   assert.equal(c.workStatus('source').fallbackEligible, false, 'pending reacquisition keeps native recovery priority');
@@ -2343,4 +2427,579 @@ test('completion boundary: retention withdrawal preserves a genuinely queued lea
     assert.equal(waiting.host.calls.length, 2); assert.equal(waiting.host.calls[1]!.request.op, 'stream.close');
     waiting.host.answer(1); assert.equal(await awaitFixture(completion), true);
   } finally { busy.host.answer(0); busy.host.answer(1); for (let i = 1; i < waiting.host.calls.length; i++) waiting.host.answer(i); await settle(); }
+});
+
+for (const origin of ['deliberate retirement', 'ordinary loss'] as const) test(`queued native priority: ${origin} preserves never-dispatched fallback across reacquisition`, async () => {
+  const { host, controller: c } = fixture(), original = host.snapshot.bind(host);
+  let availability: 'initializing' | 'transitioning' | 'unavailable' = 'initializing';
+  host.snapshot = () => ({ ...original(), kind: 'shared', ...(host.ready ? {} : { availability }) });
+  c.observe(demand('held peer', 1, true, 'held-peer')); c.flush();
+  c.observe(demand('queued text', 1, true, 'queued'));
+  assert.equal(host.calls.length, 1, 'the second input is admitted but has never dispatched');
+  assert.equal(c.workStatus('queued').execution, 'not_started');
+  assert.equal(c.workStatus('queued').fallbackEligible, false, 'ready native work has its normal priority');
+  const bytes = c.stats().transientBytes;
+  c.suspend();
+  if (origin === 'deliberate retirement') c.retireProvider(host.generation, 'suspended');
+  host.ready = false; host.generation++;
+  host.calls[0]!.reject(new Error(origin)); await settle();
+  assert.equal(c.stats().unsettledJobs, 0);
+  assert.equal(c.stats().transientBytes, 0); assert.ok(bytes > 0);
+  c.resume(); await settle();
+  for (const phase of ['initializing', 'transitioning'] as const) {
+    availability = phase;
+    assert.equal(c.workStatus('queued').execution, 'not_started');
+    assert.equal(c.workStatus('queued').fallbackEligible, origin === 'ordinary loss', phase);
+  }
+  assert.equal(host.calls.length, 1);
+  availability = 'unavailable'; c.flush();
+  assert.equal(c.workStatus('queued').fallbackEligible, true, 'failed acquisition permits only this never-started input');
+  assert.equal(c.workStatus('held-peer').fallbackEligible, false, 'the held shared peer has separate execution authority');
+  host.ready = true; host.generation++;
+  if (origin === 'ordinary loss') c.observe(demand('queued text', 1, true, 'queued'));
+  c.flush();
+  const queued = host.calls.findIndex(call => call.request.sources?.[0]?.text === 'queued text');
+  assert.ok(queued >= 1, 'actual ready reconciliation can start the queued input');
+  assert.equal(host.calls.filter(call => call.request.sources?.[0]?.text === 'queued text').length, 1);
+  for (let index = 1; index < host.calls.length; index++) host.answer(index);
+  assert.equal(await c.whenSettled(), true);
+  assert.equal(c.status('queued')?.exact, true);
+});
+
+
+test('intentional shared withdrawal: unfunded observation preserves the barrier and funded readmission after payload loss ends its input scope', async () => {
+  const { host, controller: c } = fixture({ maxBookkeepingBytes: 1300 });
+  const original = host.snapshot.bind(host); let availability: 'initializing' | 'unavailable' = 'initializing';
+  host.snapshot = () => host.ready ? { ...original(), kind: 'shared' } : { ...original(), kind: 'shared', availability };
+  assert.equal(c.observe(demand('pending', 1, true)), true); c.flush();
+  assert.equal(host.calls.length, 1);
+  c.suspend(); c.retireProvider(host.generation, 'suspended'); host.ready = false; host.generation++;
+  host.calls[0]!.reject(new Error('deliberate close')); await settle(); c.resume(); await settle();
+  availability = 'unavailable'; c.flush();
+  assert.equal(c.stats().unsettledJobs, 0); assert.equal(c.stats().transientBytes, 0);
+  assert.equal(c.workStatus('source').execution, 'unsettled');
+  assert.equal(c.workStatus('source').fallbackEligible, false, 'unavailability waives priority only, not the held-withdrawal residue');
+  assert.equal(c.observe({ ...demand('pending', 2, true), path: 'x'.repeat(100) }), false);
+  assert.equal(c.borrowSource('source'), undefined, 'real metadata refusal removes the old native text');
+  assert.equal(c.workStatus('source').execution, 'unsettled');
+  assert.equal(c.workStatus('source').fallbackEligible, false, 'unfunded observation supplies no new admitted input');
+  assert.equal(c.observe(demand('pending', 3, true)), true);
+  assert.equal(c.borrowSource('source')?.text, 'pending');
+  assert.equal(c.workStatus('source').execution, 'not_started');
+  assert.equal(c.workStatus('source').fallbackEligible, true, 'funded readmission needs no proof of inequality to end the old input scope');
+  assert.equal(host.calls.length, 1, 'readmission and permission inspection dispatch no native work');
+});
+
+for (const operation of ['source', 'close'] as const) test(`physical settlement: ${operation} retains same-key exclusion during synchronous worker retirement`, async () => {
+  const host = new Host(); let closes = 0;
+  let endReason: 'closed' | undefined, resolveEnd!: (reason: 'closed') => void;
+  const ended = new Promise<'closed'>(resolve => { resolveEnd = resolve; });
+  const transport = { ended, get endReason() { return endReason; },
+    request: (request: Record<string, unknown>, options?: { signal?: AbortSignal; deadlineMs?: number }) => request.op === 'describe'
+      ? Promise.resolve(semanticDescriptor(request.ticket, description.instance)) : host.request(0, request, options),
+    close: async () => { closes++; endReason = 'closed'; resolveEnd('closed'); for (const call of host.calls) call.reject(new RequestFailure('cleanup', 'not_started')); } };
+  let c!: SourceExecution;
+  const observed: { logical: number; physical: number; beforeBytes: number; afterBytes: number; callsBefore: number; callsAfter: number; fallback: boolean }[] = [];
+  const broker = new ProviderBroker({ tryShared: async () => undefined, acquireOwned: async () => transport,
+    onRetired(generation, origin) {
+      c.retireProvider(generation, origin);
+      if (origin !== 'worker_unavailable') return;
+      const before = c.stats(), callsBefore = host.calls.length, fallback = c.workStatus('source').fallbackEligible;
+      c.observe(demand('new current input', 2, true)); c.flush();
+      observed.push({ logical: before.unsettledJobs, physical: before.globalUnsettledJobs, beforeBytes: before.transientBytes,
+        afterBytes: c.stats().transientBytes, callsBefore, callsAfter: host.calls.length, fallback });
+      c.suspend();
+    } });
+  c = new SourceExecution(broker); fixtureControllers.add(c);
+  try {
+    await awaitFixture(broker.start()); c.observe(demand('old input', 1, operation === 'source')); c.flush();
+    if (operation === 'close') { host.answer(0); await settle(); c.remove('source'); c.flush(); }
+    const fault = host.calls.length - 1;
+    assert.equal(host.calls[fault]!.request.op, operation === 'source' ? 'highlight' : 'stream.close');
+    host.fault(fault, 'worker_gone', 'not_started'); await settle();
+    assert.equal(observed.length, 1);
+    const during = observed[0]!;
+    assert.equal(during.logical, 0, 'faulting operation leaves logical membership before broker retirement');
+    assert.equal(during.physical, 1); assert.ok(during.beforeBytes > 0);
+    assert.equal(during.callsAfter, during.callsBefore, 'same-key SOURCE cannot start before the receiver-free physical finally');
+    assert.equal(during.afterBytes, during.beforeBytes, 'retirement does not create another reservation');
+    if (operation === 'source') assert.equal(during.fallback, false, 'held SOURCE keeps its physical fallback veto');
+    assert.equal(c.stats().globalUnsettledJobs, 0); assert.equal(c.stats().transientBytes, 0); assert.equal(closes, 1);
+  } finally { c.dispose(); await awaitFixture(broker.dispose()); for (const call of host.calls) call.reject(new RequestFailure('cleanup', 'not_started')); await settle(); }
+});
+
+for (const incarnation of ['current', 'reused'] as const) test(`physical settlement: ${incarnation} key permission delivery follows physical refund on a healthy route`, async () => {
+  const host = new Host(); let endReason: 'closed' | undefined, resolveEnd!: (reason: 'closed') => void;
+  const ended = new Promise<'closed'>(resolve => { resolveEnd = resolve; });
+  const broker = new ProviderBroker({ tryShared: async () => undefined, acquireOwned: async () => ({
+    ended, get endReason() { return endReason; },
+    request: (request: Record<string, unknown>, options?: { signal?: AbortSignal; deadlineMs?: number }) => request.op === 'describe'
+      ? Promise.resolve(semanticDescriptor(request.ticket, description.instance)) : host.request(0, request, options),
+    close: async () => { endReason = 'closed'; resolveEnd('closed'); for (const call of host.calls) call.reject(new RequestFailure('cleanup', 'not_started')); },
+  }) });
+  let c!: SourceExecution, reentered = false, notices = 0;
+  const observations: { phase: string; logical: number; physical: number; bytes: number; execution: string }[] = [];
+  const capture = (phase: string) => { const stats = c.stats(); observations.push({ phase, logical: stats.unsettledJobs,
+    physical: stats.globalUnsettledJobs, bytes: stats.transientBytes, execution: c.workStatus('source').execution }); };
+  c = new SourceExecution(broker, { onChange(keys) { if (keys.includes('source')) notices++; }, diagnostic(_level, _area, explanation, fields) {
+    if (explanation === 'Validated native result accepted' && fields?.version === 1) {
+      capture('accepted');
+      if (incarnation === 'reused') { c.remove('source'); c.observe(demand('new current input', 2, true)); c.flush(); }
+    }
+    if (!reentered && fields?.source === 'source' && (explanation.startsWith('Fallback permission available') || explanation.startsWith('Source authority prohibits'))) {
+      reentered = true; capture('permission');
+      if (incarnation === 'current') c.observe(demand('new current input', 2, true));
+      c.flush();
+    }
+  } }); fixtureControllers.add(c);
+  try {
+    await awaitFixture(broker.start()); c.observe(demand('old input', 1, true)); c.flush(); host.answer(0); await settle();
+    assert.deepEqual(observations.map(value => value.phase), ['accepted', 'permission'], 'neither diagnostic observation may disappear');
+    assert.equal(observations[0]!.logical, 1); assert.equal(observations[0]!.physical, 1);
+    assert.ok(observations[0]!.bytes > 0); assert.equal(observations[0]!.execution, 'unsettled');
+    assert.equal(observations[1]!.logical, 0); assert.equal(observations[1]!.physical, 0); assert.equal(observations[1]!.bytes, 0);
+    assert.equal(observations[1]!.execution, incarnation === 'current' ? 'acknowledged' : 'not_started');
+    assert.equal(notices, 1, 'physical permission delivery remains coalesced with the source notice');
+    assert.equal(host.calls.length, 2); assert.equal(host.calls[1]!.request.sources[0].text, 'new current input');
+    assert.equal(c.stats().globalUnsettledJobs, 1); assert.equal(c.stats().peakJobs, 1, 'same-key reentry cannot overlap the old reservation');
+    host.answer(1); await settle(); assert.equal(await c.whenSettled(), true);
+    assert.equal(c.stats().globalUnsettledJobs, 0); assert.equal(c.stats().transientBytes, 0); assert.equal(c.status('source')?.exact, true);
+  } finally { c.dispose(); await awaitFixture(broker.dispose()); for (const call of host.calls) call.reject(new RequestFailure('cleanup', 'not_started')); await settle(); }
+});
+
+test('physical settlement: disposed root drains queued lease cleanup without new card work', async () => {
+  const { host, controller: c } = fixture();
+  for (let index = 0; index < 3; index++) {
+    assert.equal(c.observe(demand(`open ${index}`, 1, false, `cleanup-${index}`)), true); c.flush(); host.answer(index); await settle();
+  }
+  assert.equal(c.stats().remoteLeases, 3); assert.equal(c.stats().unsettledJobs, 0);
+  c.dispose();
+  assert.equal(c.active, false); assert.equal(c.stats().sourceRecords, 0); assert.equal(c.stats().retention.entries, 0);
+  assert.equal(c.stats().pendingCloses, 1); assert.equal(c.stats().globalUnsettledJobs, 2);
+  host.answer(3); host.answer(4); await settle();
+  assert.equal(host.calls.length, 6, 'physical settlement admits the third already-owed lease CLOSE after disposal');
+  assert.equal(host.calls[5]!.request.op, 'stream.close'); assert.equal(c.stats().pendingCloses, 0);
+  assert.equal(c.stats().dispatches, 6, 'only three SOURCE and three cleanup operations were admitted');
+  host.answer(5); await settle();
+  assert.equal(c.stats().globalUnsettledJobs, 0); assert.equal(c.stats().transientBytes, 0); assert.equal(c.stats().bookkeepingBytes, 0);
+  assert.equal(c.observe(demand('late', 2)), false); c.flush(); assert.equal(host.calls.length, 6);
+});
+
+for (const change of ['growth before loss', 'growth after loss', 'final before loss', 'final after loss', 'rewrite', 'syntax', 'growth after loss with credit'] as const) {
+  test(`parser continuation: ${change} preserves its own formation and reconstruction scope`, async () => {
+    let now = 0, serial = 0;
+    const timers = new Map<number, { at: number; callback(): void }>();
+    const clock = { now: () => now, setTimeout(callback: () => void, ms: number) {
+      const id = ++serial; timers.set(id, { at: now + ms, callback });
+      return { cancel() { timers.delete(id); }, unref() {} };
+    } };
+    const withCredit = change.endsWith('with credit');
+    const smallReservation = sourceReservation({ captureUnits: 3, replacementUnits: 3, inputUnits: 3, replacementBytes: 3,
+      frameBytes: Math.min(OCCIPITAL_LIMITS.dataWireBytes, Math.max(description.limits.request_bytes, description.limits.reply_bytes)),
+      decodedBytes: HIGHLIGHT_LIMITS.decodedBytes });
+    assert.ok(smallReservation * 2 < CONTROLLER_LIMITS.transientBytes);
+    const { host, controller: c } = fixture({ clock, ...(withCredit ? { maxTransientBytes: smallReservation * 2 } : {}) });
+    const data = () => host.calls.filter(call => call.request.op !== 'stream.close');
+    const answeredCloses = new Set<number>();
+    async function closePending() {
+      for (let index = 0; index < host.calls.length; index++) if (host.calls[index]!.request.op === 'stream.close' && !answeredCloses.has(index)) {
+        answeredCloses.add(index); host.answer(index);
+      }
+      await settle();
+    }
+    async function advance(ms: number) {
+      now += ms;
+      for (const [id, timer] of [...timers]) if (timer.at <= now) { timers.delete(id); timer.callback(); }
+      await settle();
+    }
+    function answerLatest() { host.answer(host.calls.indexOf(data().at(-1)!)); }
+    c.observe(demand('a\nt')); c.flush(); answerLatest(); await settle();
+    c.observe(demand('a\ntx', 2)); c.flush(); host.fault(host.calls.indexOf(data().at(-1)!), 'restart_required'); await settle();
+    assert.equal(host.calls[2]!.request.op, 'stream.close'); await closePending();
+    assert.equal(data().length, 3); assert.equal(data().at(-1)!.request.op, 'stream.open');
+    answerLatest(); await settle();
+    assert.equal(c.status('source')?.acknowledgedVersion, 2); assert.equal(c.stats().restarts, 1);
+    await advance(1000);
+    c.observe(demand('a\ntxy', 3)); c.flush();
+    const failed = host.calls.indexOf(data().at(-1)!); assert.equal(host.calls[failed]!.request.op, 'stream.append');
+    const genuine = change === 'rewrite' || change === 'syntax';
+    const latest = { ...demand(change === 'rewrite' ? 'replacement\nvalue' : change.startsWith('final') ? 'a\ntxy' : 'a\ntxyz', 4, change.startsWith('final')),
+      language: change === 'syntax' ? 'python' : 'bash' };
+    if (change.endsWith('before loss')) { assert.equal(c.observe(latest), true); c.flush(); }
+    host.fault(failed, 'restart_required'); await settle(); await closePending();
+    if (!change.endsWith('before loss')) { assert.equal(c.observe(latest), true); c.flush(); await settle(); await closePending(); }
+    assert.equal(c.borrowSource('source')?.text, latest.text, 'latest admitted text is available during native repair');
+    let target = latest;
+    if (genuine) {
+      assert.equal(data().length, 5, 'a different formation does not wait for the old continuation');
+      assert.equal(data().at(-1)!.request.op, 'stream.open');
+      assert.equal(data().at(-1)!.request.sources[0].text, latest.text);
+      answerLatest(); await settle();
+      assert.equal(c.status('source')?.acknowledgedVersion, 4); assert.equal(c.stats().restarts, 1, 'ordinary parsing is not a reconstruction start');
+      target = { ...latest, text: latest.text + '\nz', version: 5 };
+      assert.equal(c.observe(target), true); c.flush();
+      const nextLoss = host.calls.indexOf(data().at(-1)!); assert.equal(host.calls[nextLoss]!.request.op, 'stream.append');
+      host.fault(nextLoss, 'restart_required'); await settle(); await closePending();
+    }
+    let peer: Call | undefined;
+    if (withCredit) {
+      assert.equal(c.observe(demand('x', 1, true, 'credit-peer')), true); c.flush(); await settle();
+      peer = data().at(-1)!; assert.equal(peer.request.sources[0].text, 'x');
+    }
+    const expected = (genuine ? 6 : 4) + (peer ? 1 : 0);
+    assert.equal(data().length, expected, 'compatible input cannot append to a lost continuation or bypass the pending interval');
+    await advance(58999); assert.equal(data().length, expected);
+    await advance(1); await closePending();
+    if (peer) {
+      assert.equal(data().length, expected, 'held peer bytes prevent the full reconstruction after its new generation was allocated');
+      assert.equal(c.stats().unsettledJobs, 1); assert.equal(c.stats().restarts, 1, 'allocation or credit wait is not a reconstruction start');
+      host.answer(host.calls.indexOf(peer)); await settle();
+    }
+    assert.equal(data().length, expected + 1);
+    assert.equal(data().at(-1)!.request.op, target.complete ? 'highlight' : 'stream.open');
+    assert.equal(data().at(-1)!.request.sources[0].text, target.text);
+    assert.equal(c.stats().restarts, 2, 'the same node retains its preceding reconstruction start through new formation');
+    answerLatest(); assert.equal(await c.whenSettled(), true);
+    assert.equal(c.status('source')?.acknowledgedVersion, target.version); assert.equal(c.status('source')?.exact, true);
+    if (withCredit) {
+      await advance(1000); assert.equal(c.observe({ ...target, text: target.text + '!', version: target.version + 1 }), true); c.flush();
+      const nextLoss = host.calls.indexOf(data().at(-1)!); host.fault(nextLoss, 'restart_required'); await settle(); await closePending();
+      const attempts = data().length;
+      await advance(58999); assert.equal(data().length, attempts, 'credit-delayed reconstruction establishes its actual start deadline');
+      await advance(1); await closePending(); assert.equal(data().length, attempts + 1); assert.equal(c.stats().restarts, 3);
+      answerLatest(); assert.equal(await c.whenSettled(), true);
+    }
+    const calls = host.calls.length; c.flush(); await settle(); assert.equal(host.calls.length, calls);
+    assert.equal(timers.size, 0);
+  });
+}
+
+
+for (const settlement of ['before Off', 'after Off'] as const) test(`native lifecycle: typed no-start ${settlement} preserves fresh On admission`, async () => {
+  const { host, controller: c } = fixture(), input = demand('echo same\n', 1, true);
+  assert.equal(c.observe(input), true); c.flush();
+  assert.deepEqual(host.calls.map(call => call.request.op), ['highlight']);
+  if (settlement === 'before Off') { host.calls[0]!.reject(new RequestFailure('not sent', 'not_started')); await settle(); }
+  c.setEnabled(false);
+  assert.equal(c.status(input.key), undefined); assert.equal(c.stats().retention.retainedBytes, 0);
+  if (settlement === 'after Off') {
+    assert.equal(c.workStatus(input.key).fallbackEligible, false, 'the cancelled call still holds its physical credit');
+    host.calls[0]!.reject(new RequestFailure('not sent', 'not_started')); await settle();
+  }
+  assert.equal(c.workStatus(input.key).execution, 'not_started');
+  assert.equal(c.workStatus(input.key).fallbackEligible, true);
+  assert.equal(c.stats().unsettledJobs, 0); assert.equal(c.stats().transientBytes, 0);
+  c.setEnabled(true); assert.equal(c.observe(input), true);
+  assert.equal(c.stats().unsettledJobs, 0); assert.equal(c.workStatus(input.key).fallbackEligible, false, 'fresh queued SOURCE retains native priority before dispatch');
+  c.flush();
+  assert.deepEqual(host.calls.map(call => call.request.op), ['highlight', 'highlight'], 'retired outcome cannot suppress fresh lifecycle work');
+  assert.equal(host.calls[1]!.request.sources[0].text, input.text);
+  host.answer(1); await settle();
+  assert.equal(c.status(input.key)!.exact, true); assert.equal(c.workStatus(input.key).execution, 'acknowledged');
+  assert.equal(c.stats().unsettledJobs, 0); assert.equal(c.stats().transientBytes, 0);
+});
+
+
+for (const settlement of ['before Off', 'after Off'] as const) test(`native lifecycle: shared history preserves Pi veto without retaining ${settlement} no-start suppression`, async () => {
+  const { host, controller: c } = fixture();
+  host.snapshot = () => ({ availability: 'ready', reason: 'ready', generation: host.generation, initialShared: true,
+    kind: 'shared', description: host.description });
+  assert.equal(c.observe(demand('echo first\n', 1, true)), true); c.flush();
+  host.calls[0]!.reject(new RequestFailure('old shared outcome unknown')); await settle();
+  assert.equal(c.workStatus('source').execution, 'unknown');
+  host.generation++;
+  const input = demand('echo current\n', 2, true);
+  assert.equal(c.observe(input), true); c.flush(); assert.equal(host.calls.length, 2);
+  if (settlement === 'before Off') { host.calls[1]!.reject(new RequestFailure('not sent', 'not_started')); await settle(); }
+  c.setEnabled(false);
+  assert.equal(c.stats().sourceRecords, 1, 'the old shared history still requires its paid record');
+  if (settlement === 'after Off') { host.calls[1]!.reject(new RequestFailure('not sent', 'not_started')); await settle(); }
+  assert.equal(c.stats().unsettledJobs, 0); assert.equal(c.stats().transientBytes, 0);
+  assert.equal(c.workStatus(input.key).execution, 'unknown'); assert.equal(c.workStatus(input.key).fallbackEligible, false);
+  c.setEnabled(true); assert.equal(c.observe(input), true);
+  assert.equal(c.workStatus(input.key).fallbackEligible, false, 're-admission cannot erase shared execution history');
+  c.flush(); assert.equal(host.calls.length, 3, 'history cannot turn an old no-start into a permanent native veto');
+  assert.equal(host.calls[2]!.request.op, 'highlight'); assert.equal(host.calls[2]!.request.sources[0].text, input.text);
+  host.answer(2); await settle();
+  assert.equal(c.status(input.key)!.exact, true); assert.equal(c.workStatus(input.key).execution, 'unknown');
+  assert.equal(c.workStatus(input.key).fallbackEligible, false, 'later success does not clear old shared uncertainty');
+  assert.equal(c.stats().unsettledJobs, 0); assert.equal(c.stats().transientBytes, 0);
+});
+
+test('native lifecycle: On before a retired typed no-start settles waits for physical credit then progresses', async () => {
+  const { host, controller: c } = fixture(), input = demand('echo same\n', 1, true);
+  assert.equal(c.observe(input), true); c.flush();
+  c.setEnabled(false); c.setEnabled(true); assert.equal(c.observe(input), true); c.flush();
+  assert.equal(host.calls.length, 1, 'a fresh target cannot reuse held physical credit');
+  assert.equal(c.workStatus(input.key).execution, 'unsettled'); assert.equal(c.workStatus(input.key).fallbackEligible, false);
+  host.calls[0]!.reject(new RequestFailure('not sent', 'not_started')); await settle(); c.flush();
+  assert.equal(host.calls.length, 2); assert.equal(host.calls[1]!.request.sources[0].text, input.text);
+  host.answer(1); await settle();
+  assert.equal(c.status(input.key)!.exact, true); assert.equal(c.workStatus(input.key).execution, 'acknowledged');
+  assert.equal(c.stats().unsettledJobs, 0); assert.equal(c.stats().transientBytes, 0);
+});
+
+test('pre-ready local SOURCE refusal stays protective through readiness and yields to admissible input', async () => {
+  const { host, controller } = fixture(); host.ready = false;
+  const oversized = demand('\n'.repeat(HIGHLIGHT_LIMITS.sourceLines + 1), 1, true, 'pre-ready-line-refusal');
+  assert.equal(controller.observe(oversized), false);
+  assert.equal(controller.status(oversized.key)?.protective, true, 'the current local line-limit refusal applies before a parser namespace exists');
+  assert.equal(controller.workStatus(oversized.key).execution, 'not_started');
+  assert.equal(controller.workStatus(oversized.key).fallbackEligible, true);
+  assert.equal(controller.borrowSource(oversized.key), undefined);
+  assert.equal(controller.observe(oversized), false); controller.flush();
+  assert.equal(controller.status(oversized.key)?.protective, true); assert.equal(host.calls.length, 0);
+  host.ready = true; controller.flush();
+  assert.equal(controller.status(oversized.key)?.protective, true, 'readiness alone cannot erase an unchanged local policy refusal');
+  assert.equal(controller.observe(oversized), false); assert.equal(controller.status(oversized.key)?.protective, true);
+  assert.equal(host.calls.length, 0);
+  assert.equal(controller.observe({ ...oversized, version: 2, text: 'const accepted = 1;' }), true); controller.flush();
+  assert.equal(host.calls.length, 1); assert.equal(host.calls[0]!.request.op, 'highlight'); host.answer(0); await settle();
+  assert.equal(await controller.whenSettled(), true);
+  assert.equal(controller.status(oversized.key)?.exact, true); assert.equal(controller.status(oversized.key)?.protective, false);
+  assert.equal(controller.stats().unsettledJobs, 0); assert.equal(controller.stats().transientBytes, 0);
+});
+
+
+test('pre-ready local SOURCE refusal reobservations do not rescan the same rejected input', async () => {
+  let notices = 0;
+  const { host, controller } = fixture({ onChange: () => { notices++; } }); host.ready = false;
+  const input = demand('\n'.repeat(HIGHLIGHT_LIMITS.sourceLines + 1), 1, true, 'pre-ready-refusal-warm');
+  assert.equal(controller.observe(input), false); await settle();
+  const before = notices, charCodeAt = String.prototype.charCodeAt;
+  let scans = 0;
+  String.prototype.charCodeAt = function (index) { if (String(this) === input.text) scans++; return charCodeAt.call(this, index); };
+  try {
+    for (let i = 0; i < 10; i++) { assert.equal(controller.observe(input), false); await settle(); }
+  } finally { String.prototype.charCodeAt = charCodeAt; }
+  assert.equal(scans, 0, 'an unchanged already-evaluated local refusal is cheap before readiness too');
+  assert.equal(notices, before, 'an unchanged local refusal requests no new frame');
+  assert.equal(controller.status(input.key)?.protective, true);
+  assert.equal(controller.workStatus(input.key).execution, 'not_started');
+  assert.equal(controller.workStatus(input.key).fallbackEligible, true);
+  assert.equal(host.calls.length, 0); assert.equal(controller.stats().unsettledJobs, 0);
+});
+
+for (const reobserve of [false, true]) test(`retained pre-ready SOURCE refused by negotiated byte limit retries on a larger-limit provider with reobservation ${reobserve}`, async () => {
+  const { host, controller } = fixture(); host.ready = false;
+  const input = demand('const accepted = 1;', 1, true, 'retained-negotiated-refusal');
+  assert.equal(controller.observe(input), true);
+  assert.equal(controller.borrowSource(input.key)?.text, input.text);
+  host.description.limits.source_bytes = 4; host.ready = true;
+  controller.flush(); await settle();
+  assert.equal(host.calls.length, 0); assert.equal(controller.status(input.key)?.protective, true);
+  assert.equal(controller.borrowSource(input.key)?.text, input.text, 'the negotiated-limit refusal retains its already-funded snapshot');
+  host.generation++; host.description.limits.source_bytes = HIGHLIGHT_LIMITS.sourceBytes;
+  if (reobserve) assert.equal(controller.observe(input), true);
+  assert.equal(controller.borrowSource(input.key)?.text, input.text);
+  controller.flush();
+  assert.equal(host.calls.length, 1, 'a new ready namespace can retry the retained snapshot against its own limit');
+  assert.equal(host.calls[0]!.request.op, 'highlight'); assert.equal(host.calls[0]!.request.sources[0].text, input.text);
+  host.answer(0); await settle();
+  assert.equal(await controller.whenSettled(), true);
+  assert.equal(controller.status(input.key)?.exact, true); assert.equal(controller.status(input.key)?.protective, false);
+  assert.equal(controller.stats().unsettledJobs, 0); assert.equal(controller.stats().transientBytes, 0);
+});
+
+
+test('snapshotless negotiated SOURCE refusal re-evaluates identical input under a larger-limit provider', async () => {
+  const { host, controller } = fixture(), input = demand('const accepted = 1;', 1, true, 'snapshotless-negotiated-refusal');
+  host.description.limits.source_bytes = 4;
+  assert.equal(controller.observe(input), false); await settle();
+  assert.equal(controller.borrowSource(input.key), undefined);
+  assert.equal(controller.status(input.key)?.protective, true); assert.equal(host.calls.length, 0);
+  host.generation++; host.description.limits.source_bytes = HIGHLIGHT_LIMITS.sourceBytes;
+  assert.equal(controller.observe(input), true, 'the prior observation scope cannot suppress reevaluation on a new provider');
+  controller.flush(); assert.equal(host.calls.length, 1);
+  assert.equal(host.calls[0]!.request.sources[0].text, input.text); host.answer(0); await settle();
+  assert.equal(controller.status(input.key)?.exact, true); assert.equal(controller.status(input.key)?.protective, false);
+  assert.equal(controller.stats().unsettledJobs, 0); assert.equal(controller.stats().transientBytes, 0);
+});
+
+for (const initiallyReady of [false, true]) test(`storage-refused SOURCE reevaluates once on provider change and stays inert thereafter (initial ready ${initiallyReady})`, async t => {
+  const { host, controller: c } = fixture({ retention: { maxBytes: 1 } }); host.ready = initiallyReady;
+  const input = demand('storage-refused-input', 1, true), pool = semanticPool(c), admit = pool.admit;
+  let admissions = 0, scans = 0;
+  t.mock.method(pool, 'admit', function(this: SemanticRetentionPool, ...args: Parameters<SemanticRetentionPool['admit']>) {
+    admissions++; return admit.apply(this, args);
+  });
+  assert.equal(c.observe(input), false); assert.equal(c.stats().sourceRecords, 1); assert.equal(c.status(input.key)!.protective, true);
+  const charCodeAt = String.prototype.charCodeAt;
+  t.mock.method(String.prototype, 'charCodeAt', function(this: string, index: number) { if (String(this) === input.text) scans++; return charCodeAt.call(this, index); });
+  const before = admissions;
+  for (let index = 0; index < 10; index++) assert.equal(c.observe(input), false);
+  assert.equal(scans, 0); assert.equal(admissions, before);
+  host.generation++; host.ready = true;
+  assert.equal(c.observe(input), false); assert.ok(scans > 0); assert.equal(admissions, before + 1);
+  scans = 0;
+  for (let index = 0; index < 10; index++) assert.equal(c.observe(input), false);
+  assert.equal(scans, 0); assert.equal(admissions, before + 1);
+  assert.equal(c.status(input.key)!.protective, true); c.flush(); assert.equal(await c.whenSettled(), true);
+  assert.equal(host.calls.length, 0); assert.equal(c.stats().unsettledJobs, 0); assert.equal(c.stats().transientBytes, 0);
+});
+
+for (const ready of [false, true]) test(`retained storage rejection has evaluation scope without promoting older input (new provider ready ${ready})`, async t => {
+  const { host, controller: c } = fixture({ retention: { maxBytes: 8192 } }), pool = semanticPool(c);
+  const initial = demand('a\n'), input = demand('a\n' + 'b'.repeat(8192), 2), replace = pool.replaceSnapshot;
+  let replacements = 0, scans = 0, recoveries = 0;
+  t.mock.method(pool, 'replaceSnapshot', function(this: SemanticRetentionPool, ...args: Parameters<SemanticRetentionPool['replaceSnapshot']>) {
+    replacements++; return replace.apply(this, args);
+  });
+  t.mock.method(host, 'recover', async () => { recoveries++; return false; });
+  const snapshot = host.snapshot.bind(host);
+  t.mock.method(host, 'snapshot', (): ProviderSnapshot => ({ ...snapshot(), availability: host.ready ? 'ready' : 'unavailable', reason: host.ready ? 'ready' : 'optional_unavailable' }));
+  assert.equal(c.observe(initial), true); const generation = c.status(input.key)!.generation!;
+  assert.equal(c.observe(input), false); assert.equal(c.status(input.key)!.generation, generation);
+  assert.equal(pool.borrowSnapshot(generation)!.text, initial.text); assert.equal(c.borrowSource(input.key), undefined);
+  const charCodeAt = String.prototype.charCodeAt;
+  t.mock.method(String.prototype, 'charCodeAt', function(this: string, index: number) { if (String(this) === input.text) scans++; return charCodeAt.call(this, index); });
+  const before = replacements;
+  for (let index = 0; index < 10; index++) c.observe(input);
+  assert.equal(scans, 0); assert.equal(replacements, before);
+  host.generation++; host.ready = ready;
+  assert.equal(c.observe(input), false); assert.ok(scans > 0); assert.equal(replacements, before + 1);
+  scans = 0;
+  for (let index = 0; index < 10; index++) c.observe(input);
+  assert.equal(scans, 0); assert.equal(replacements, before + 1);
+  assert.equal(c.status(input.key)!.protective, true); assert.equal(pool.borrowSnapshot(generation)!.text, initial.text);
+  c.flush(); await settle(); assert.equal(host.calls.length, 0); assert.equal(recoveries, 0);
+  assert.equal(c.stats().unsettledJobs, 0); assert.equal(c.stats().transientBytes, 0);
+});
+
+for (const trigger of ['provider-change', 'explicit-retry'] as const) test(`refused current input cannot dispatch an older retained snapshot after ${trigger}`, async () => {
+  const { host, controller: c } = fixture({ retention: { maxBytes: 8192 } });
+  const initial = demand('a\n'), input = demand('a\n' + 'b'.repeat(8192), 2);
+  assert.equal(c.observe(initial), true); assert.equal(c.observe(input), false); assert.equal(c.borrowSource(input.key), undefined);
+  if (trigger === 'provider-change') host.generation++;
+  else { assert.equal(c.retryEvicted(input.key), true); assert.equal(c.observe(input), false); }
+  c.flush(); assert.equal(host.calls.length, 0, 'an allocated older snapshot is not the refused current native input');
+  const current = demand('a\nb', 3, true);
+  assert.equal(c.observe(current), true); c.flush(); assert.equal(host.calls.length, 1);
+  const sent = host.calls[0]!.request.sources[0]; assert.equal(sent.text, current.text); assert.equal(sent.source_version, current.version);
+  host.answer(0); await settle(); assert.equal(await c.whenSettled(), true);
+  assert.equal(c.status(input.key)!.exact, true); assert.equal(c.status(input.key)!.protective, false);
+  assert.equal(c.stats().unsettledJobs, 0); assert.equal(c.stats().transientBytes, 0);
+});
+
+test('observation-triggered Bash restart refusal records its evaluating route without an extra warm admission', t => {
+  const { host, controller: c } = fixture({ retention: { maxBytes: 8192 } }), pool = semanticPool(c), admit = pool.admit;
+  const initial = demand('a\n'), replacement = demand('c'.repeat(8192), 2);
+  let admissions = 0, scans = 0;
+  t.mock.method(pool, 'admit', function(this: SemanticRetentionPool, ...args: Parameters<SemanticRetentionPool['admit']>) {
+    admissions++; return admit.apply(this, args);
+  });
+  assert.equal(c.observe(initial), true); host.generation++;
+  assert.equal(c.observe(replacement), false); assert.equal(c.status(initial.key)!.protective, true);
+  const before = admissions, charCodeAt = String.prototype.charCodeAt;
+  t.mock.method(String.prototype, 'charCodeAt', function(this: string, index: number) { if (String(this) === replacement.text) scans++; return charCodeAt.call(this, index); });
+  for (let index = 0; index < 10; index++) assert.equal(c.observe(replacement), false);
+  assert.equal(scans, 0); assert.equal(admissions, before); c.flush(); assert.equal(host.calls.length, 0);
+  assert.equal(c.stats().unsettledJobs, 0); assert.equal(c.stats().transientBytes, 0);
+});
+
+test('storage refusal preserves useful admission after a legitimate provider opportunity and actual budget release', async t => {
+  const { host, controller: c } = fixture({ retention: { maxBytes: 8192 } }), pool = semanticPool(c);
+  const input = demand('funded after release', 1, true), grant = pool.budget.reserve(pool.budget.limit);
+  assert.equal(grant !== undefined, true);
+  let admissions = 0; const admit = pool.admit;
+  t.mock.method(pool, 'admit', function(this: SemanticRetentionPool, ...args: Parameters<SemanticRetentionPool['admit']>) {
+    admissions++; return admit.apply(this, args);
+  });
+  try {
+    assert.equal(c.observe(input), false); assert.equal(c.status(input.key)!.protective, true); const before = admissions;
+    grant!.close();
+    for (let index = 0; index < 10; index++) assert.equal(c.observe(input), false);
+    assert.equal(admissions, before, 'freed budget is not permission for frame-driven admission');
+    host.generation++; assert.equal(c.observe(input), true); assert.equal(admissions, before + 1);
+    c.flush(); assert.equal(host.calls.length, 1); assert.equal(host.calls[0]!.request.sources[0].text, input.text);
+    assert.equal(host.calls[0]!.request.sources[0].source_version, input.version);
+    host.answer(0); await settle(); assert.equal(await c.whenSettled(), true);
+    assert.equal(c.status(input.key)!.exact, true); assert.equal(c.status(input.key)!.protective, false);
+    assert.equal(c.stats().unsettledJobs, 0); assert.equal(c.stats().transientBytes, 0);
+  } finally { grant!.close(); }
+});
+
+for (const outcome of ['acknowledged', 'not_started', 'unknown'] as const) test(`refused replacement retains ${outcome} evidence without replaying its older physical request`, async () => {
+  const { host, controller: c } = fixture({ retention: { maxBytes: 8192 } });
+  const initial = demand('a\n'), input = demand('a\n' + 'b'.repeat(8192), 2);
+  assert.equal(c.observe(initial), true); c.flush(); assert.equal(host.calls.length, 1);
+  assert.equal(c.observe(input), false); assert.equal(c.workStatus(input.key).execution, 'unsettled');
+  assert.equal(c.workStatus(input.key).fallbackEligible, false);
+  if (outcome === 'acknowledged') host.answer(0);
+  else if (outcome === 'not_started') host.fault(0, 'invalid_language');
+  else host.calls[0]!.reject(new Error('earlier response unavailable'));
+  await settle(); assert.equal(c.workStatus(input.key).execution, outcome); assert.equal(c.borrowSource(input.key), undefined);
+  host.generation++; c.flush(); await settle();
+  assert.equal(host.calls.length, 1); assert.equal(c.status(input.key)!.version, input.version);
+  assert.equal(c.workStatus(input.key).execution, outcome, 'a route change is not evidence about the old execution');
+  if (outcome === 'unknown') assert.equal(c.workStatus(input.key).fallbackEligible, false);
+  assert.equal(c.stats().unsettledJobs, 0); assert.equal(c.stats().transientBytes, 0);
+});
+
+for (const currentInput of [false, true]) test(`intentional retirement preserves priority only for funded current queued input (available ${currentInput})`, () => {
+  const { host, controller: c } = fixture({ retention: { maxBytes: 8192 } }), initial = demand('a\n');
+  assert.equal(c.observe(initial), true);
+  if (!currentInput) {
+    const refused = demand(initial.text + 'b'.repeat(8192), 2);
+    assert.equal(c.observe(refused), false); assert.equal(c.retryEvicted(initial.key), true); assert.equal(c.observe(refused), false);
+    assert.equal(c.borrowSource(initial.key), undefined);
+  }
+  assert.equal(c.workStatus(initial.key).fallbackEligible, !currentInput);
+  c.suspend(); c.retireProvider(host.generation, 'suspended'); host.ready = false; host.generation++; c.resume();
+  assert.equal(c.workStatus(initial.key).fallbackEligible, !currentInput,
+    'permission without current input cannot create priority during ordinary reacquisition');
+  assert.equal(c.workStatus(initial.key).execution, 'not_started'); assert.equal(host.calls.length, 0);
+  assert.equal(c.stats().unsettledJobs, 0); assert.equal(c.stats().transientBytes, 0);
+});
+
+test('intentional retirement retains real held SOURCE priority even when its newer input was refused', async () => {
+  const { host, controller: c } = fixture({ retention: { maxBytes: 8192 } }), initial = demand('a\n');
+  assert.equal(c.observe(initial), true); c.flush(); assert.equal(host.calls.length, 1);
+  const refused = demand(initial.text + 'b'.repeat(8192), 2);
+  assert.equal(c.observe(refused), false); assert.equal(c.retryEvicted(initial.key), true); assert.equal(c.observe(refused), false);
+  c.suspend(); c.retireProvider(host.generation, 'suspended'); host.ready = false; host.generation++; c.resume();
+  assert.equal(c.workStatus(initial.key).fallbackEligible, false); assert.equal(c.workStatus(initial.key).execution, 'unsettled');
+  assert.equal(c.stats().unsettledJobs, 1); assert.ok(c.stats().transientBytes > 0);
+  host.answer(0); await settle(); assert.equal(c.stats().unsettledJobs, 0); assert.equal(c.stats().transientBytes, 0);
+});
+
+test('returning to retained text after refused growth restores its proved content interval without funding a new snapshot', async () => {
+  const { host, controller: c } = fixture({ retention: { maxBytes: 8192 } }), pool = semanticPool(c), initial = demand('a\n');
+  assert.equal(c.observe(initial), true); c.flush(); host.answer(0); await settle();
+  assert.equal(c.status(initial.key)!.exact, true); assert.equal(c.status(initial.key)!.classificationVersion, 1);
+  const budget = pool.budget.stats(), grant = pool.budget.reserve(budget.limit - budget.retainedBytes - budget.outstandingPeakBytes);
+  assert.equal(grant !== undefined, true);
+  try {
+    assert.equal(c.observe(demand(initial.text + 'b'.repeat(8192), 2)), false); assert.equal(c.status(initial.key)!.exact, false);
+    const restored = demand(initial.text, 3);
+    assert.equal(c.observe(restored), false, 'even the small version alias is genuinely refused under the held budget grant');
+    const retained = pool.borrowSnapshot(c.status(initial.key)!.generation!)!;
+    assert.equal(retained.text, restored.text); assert.equal(retained.version, 1);
+    assert.equal(c.status(initial.key)!.exact, true, 'the already-funded matching classification still describes current text');
+    assert.equal(c.status(initial.key)!.classificationVersion, 1); assert.equal(c.status(initial.key)!.version, 3);
+    assert.equal(c.borrowSource(initial.key), undefined, 'current logical-version borrowing does not fabricate the unfunded alias');
+    assert.equal(c.observe(restored), true, 'warm availability can use the independently proved matching retained version');
+    assert.equal(host.calls.length, 1);
+    grant!.close(); c.flush(); assert.equal(host.calls.length, 1, 'restoring the content fact alone needs no duplicate parse');
+    assert.equal(c.observe(demand(initial.text, 4, true)), true); c.flush(); assert.equal(host.calls.length, 2);
+    assert.equal(host.calls[1]!.request.op, 'stream.append'); assert.equal(host.calls[1]!.request.append, ''); assert.equal(host.calls[1]!.request.final, true);
+    host.answer(1); await settle(); assert.equal(await c.whenSettled(), true);
+    assert.equal(c.status(initial.key)!.exact, true); assert.equal(c.status(initial.key)!.classificationVersion, 4);
+    assert.equal(c.stats().remoteLeases, 0); assert.equal(c.stats().unsettledJobs, 0); assert.equal(c.stats().transientBytes, 0);
+  } finally { grant!.close(); }
+});
+
+test('a funded intervening different text is not an alias when Bash returns to earlier characters', async () => {
+  const { host, controller: c } = fixture({ retention: { maxBytes: 8192 } }), initial = demand('a\n');
+  assert.equal(c.observe(initial), true); c.flush(); host.answer(0); await settle();
+  assert.equal(c.observe(demand('a\nb', 2)), true); assert.equal(c.status(initial.key)!.exact, false);
+  c.flush(); assert.equal(host.calls[1]!.request.op, 'stream.append');
+  host.answer(1); await settle(); assert.equal(c.status(initial.key)!.classificationVersion, 2); assert.equal(c.status(initial.key)!.exact, true);
+  const generation = c.status(initial.key)!.generation;
+  assert.equal(c.observe(demand(initial.text, 3)), true); assert.notEqual(c.status(initial.key)!.generation, generation);
+  assert.equal(c.status(initial.key)!.exact, false); c.flush(); assert.equal(host.calls[2]!.request.op, 'stream.close');
+  host.answer(2); await settle(); c.flush(); assert.equal(host.calls[3]!.request.op, 'stream.open');
+  assert.equal(host.calls[3]!.request.sources[0].text, initial.text); assert.equal(host.calls[3]!.request.sources[0].source_version, 3);
+  host.answer(3); await settle(); assert.equal(await c.whenSettled(), true); assert.equal(c.status(initial.key)!.exact, true);
+  assert.equal(c.stats().unsettledJobs, 0); assert.equal(c.stats().transientBytes, 0);
 });

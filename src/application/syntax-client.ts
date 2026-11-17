@@ -5,18 +5,18 @@ import type { CardSourcePort, SourceLifecyclePort, SourcePumpPort, SourceStatist
 import type { PiFallbackPort } from '../highlighting/pi-fallback.ts';
 import type { SyntaxMenuSnapshot } from './syntax-menu.ts';
 import { resolveTheme, type ThemeDescription } from '../themes/selection.ts';
-import { ProviderBroker, type ProviderOptions, type ProviderSnapshot } from '../occipital/provider.ts';
+import { DEFAULT_PROVIDER_CLOCK, ProviderBroker, type ProviderOptions, type ProviderRetirementOrigin, type ProviderSnapshot } from '../occipital/provider.ts';
 
 export interface SyntaxClientOptions {
   diagnostic?: DiagnosticSink;
-  provider: Omit<ProviderOptions, 'onChange' | 'onOwnedStopped'>;
+  provider: Omit<ProviderOptions, 'onChange' | 'onOwnedStopped' | 'onRetired'>;
   /** Trusted delivery metadata, not a version discovery request. */
   standaloneVersion: string;
   /** Decided application input; any pending producer is started and owned by the caller. */
   initialTheme?: ThemePreference | Promise<ThemePreference>;
   onActivationChanged?: (enabled: boolean) => void;
   onDisposed?: () => void;
-  source?: Omit<SourceExecutionOptions, 'onChange'>;
+  source?: Omit<SourceExecutionOptions, 'onChange' | 'clock'>;
   notify?: (message: string, type: 'error') => void;
   onChange?: () => void;
   /** Coalesced source keys and primitive group IDs for targeted presentation invalidation.
@@ -34,6 +34,9 @@ function brokerDiagnostic(owner: WeakRef<SyntaxClient>, diagnostic?: DiagnosticS
 }
 function brokerObserver(owner: WeakRef<SyntaxClient>) { return () => owner.deref()?.acceptBrokerChange(); }
 function ownedStopObserver(owner: WeakRef<SyntaxClient>) { return (generation: number) => owner.deref()?.sourceLifecycle.ownedStopped(generation); }
+function retirementObserver(owner: WeakRef<SyntaxClient>) {
+  return (generation: number, origin: ProviderRetirementOrigin) => owner.deref()?.sourceLifecycle.retireProvider(generation, origin);
+}
 function sourceObserver(owner: WeakRef<SyntaxClient>) { return (keys: readonly string[], groups?: readonly number[]) => owner.deref()?.acceptSourceChange(keys, groups); }
 type CompletionPart = 'sources' | 'provider' | 'restore' | 'startup';
 type ClientCompletion = { promise: Promise<boolean>; resolve(value: boolean): void };
@@ -100,10 +103,11 @@ export class SyntaxClient {
     this.onActivationChanged = options.onActivationChanged; this.onDisposed = options.onDisposed;
     this.standaloneVersion = options.standaloneVersion; this.diagnostic = options.diagnostic;
     this.notify = options.notify; this.onChange = options.onChange; this.onSourceChange = options.onSourceChange;
-    this.broker = new ProviderBroker({ ...options.provider, diagnostic: brokerDiagnostic(new WeakRef(this), options.diagnostic ?? options.provider.diagnostic), onChange: brokerObserver(new WeakRef(this)),
-      onOwnedStopped: ownedStopObserver(new WeakRef(this)) });
+    const clock = options.provider.clock ?? DEFAULT_PROVIDER_CLOCK;
+    this.broker = new ProviderBroker({ ...options.provider, clock, diagnostic: brokerDiagnostic(new WeakRef(this), options.diagnostic ?? options.provider.diagnostic), onChange: brokerObserver(new WeakRef(this)),
+      onRetired: retirementObserver(new WeakRef(this)), onOwnedStopped: ownedStopObserver(new WeakRef(this)) });
     this.provider = this.broker.snapshot();
-    const execution = new SourceExecution(this.broker, { ...options.source, diagnostic: options.diagnostic ?? options.source?.diagnostic, onChange: sourceObserver(new WeakRef(this)) });
+    const execution = new SourceExecution(this.broker, { ...options.source, clock, diagnostic: options.diagnostic ?? options.source?.diagnostic, onChange: sourceObserver(new WeakRef(this)) });
     this.cardSource = execution; this.sourceWork = execution; this.pi = execution.pi;
     this.sourceLifecycle = execution; this.sourcePump = execution; this.sourceStatistics = execution;
     this.sourceLifecycle.setEnabled(false);
@@ -196,8 +200,7 @@ export class SyntaxClient {
     if (this.disposed || this.suspended) return;
     this.cancelCompletion(); this.suspended = true; ++this.menuEpoch;
     this.sourceLifecycle.suspend();
-    const interrupted = this.broker.suspend();
-    if (interrupted !== undefined) this.sourceLifecycle.interruptProvider(interrupted);
+    this.broker.suspend();
     this.acceptBrokerChange();
   }
   resume(): Promise<void> {
@@ -226,9 +229,10 @@ export class SyntaxClient {
     this.startupIssue = true;
     try { this.notify?.('Syntax highlighting could not be started.', 'error'); } catch { /* UI is optional. */ }
   }
-  /** Internal weak broker observer; reconcile only real cached publication events. */
+  /** Schedule execution before filtering unchanged presentation metadata. */
   acceptBrokerChange(): void {
     if (this.disposed) return;
+    this.cardSource.refreshPreparations();
     const next = this.broker.snapshot(), previous = this.provider;
     if (next.availability === previous.availability && next.reason === previous.reason && next.generation === previous.generation
       && next.initialShared === previous.initialShared && next.kind === previous.kind && next.description === previous.description) return;

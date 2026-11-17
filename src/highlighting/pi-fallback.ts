@@ -34,6 +34,7 @@ export interface PiFallbackPort {
 
 interface PiFallbackAuthority {
   isDisposed(): boolean;
+  isActive(): boolean;
   charge(delta: number): boolean;
   wireKey(): string;
   receipts(receipts: readonly SemanticRelease[]): void;
@@ -90,7 +91,7 @@ export class PiFallbackCoordinator implements PiFallbackPort {
 
   /** Exact Pi fallback snapshots share the native result pool but do not require an enabled/available daemon. */
   capturePiSource(key: string, version: number, text: string, language?: string): boolean {
-    if (this.authority.isDisposed()) return false;
+    if (!this.authority.isActive()) return false;
     if (!identifier(key) || !Number.isInteger(version) || version < 0 || version > 0xffffffff
       || typeof text !== 'string' || language !== undefined && !identifier(language, 128)) throw new Error('invalid Pi source');
     let state = this.sources.get(key);
@@ -134,7 +135,7 @@ export class PiFallbackCoordinator implements PiFallbackPort {
   piPreparation(key: string, generation: number, version: number, palette: number): PiPreparation | undefined {
     if (!Number.isSafeInteger(palette) || palette < 0) throw new Error('invalid Pi palette revision');
     const state = this.sources.get(key);
-    if (this.authority.isDisposed() || !state || state.generation !== generation || state.version !== version
+    if (!this.authority.isActive() || !state || state.generation !== generation || state.version !== version
       || state.palette !== undefined && palette < state.palette || state.palette === palette && (state.failure !== undefined || state.projectionRefused)) return undefined;
     const released: SemanticRelease[] = [];
     let result: ReturnType<SemanticRetentionPool['piPreparation']>;
@@ -146,7 +147,7 @@ export class PiFallbackCoordinator implements PiFallbackPort {
   }
 
   private acceptsPreparation(ticket: PiPreparation): boolean {
-    if (this.authority.isDisposed() || !this.pool.acceptsPiPreparation(ticket)) return false;
+    if (!this.authority.isActive() || !this.pool.acceptsPiPreparation(ticket)) return false;
     const state = this.generations.get(ticket.generation);
     return !!state && state.version === ticket.version && state.palette === ticket.palette && !state.failure && !state.projectionRefused;
   }
@@ -192,7 +193,7 @@ export class PiFallbackCoordinator implements PiFallbackPort {
   recordPiFailure(key: string, generation: number, version: number, palette: number, failure: PiFailure): boolean {
     if (!Number.isSafeInteger(palette) || palette < 0 || failure !== 'threw' && failure !== 'invalid_rows') throw new Error('invalid Pi failure');
     const state = this.sources.get(key);
-    if (this.authority.isDisposed() || !state || state.generation !== generation || state.version !== version
+    if (!this.authority.isActive() || !state || state.generation !== generation || state.version !== version
       || state.palette !== undefined && palette < state.palette) return false;
     if (state.palette === palette && state.projectionRefused || this.projectionStatus(key, version, palette)) return false;
     const changed = state.palette !== palette || state.failure !== failure;
@@ -258,6 +259,7 @@ export class PiFallbackCoordinator implements PiFallbackPort {
 
   classify(request: PiClassificationRequest, classify: PiClassifier): PiClassificationResult {
     const { key, version, text, language, path, palette, neutral } = request;
+    if (!this.authority.isActive()) return { outcome: 'stale' };
     if (!this.capturePiSource(key, version, text, language)) return { outcome: 'refused' };
     const source = this.borrowPiSource(key);
     if (!source || source.version !== version || source.language !== language || source.text !== text) return { outcome: 'stale' };
@@ -275,7 +277,8 @@ export class PiFallbackCoordinator implements PiFallbackPort {
     const reserve = (bytes: number) => this.reservePiData(ticket, bytes);
     try {
       try { lines = ticket.text!.length ? classify(ticket.text!, { language, path }) : []; }
-      catch { return failed('threw'); }
+      catch { return this.authority.isActive() ? failed('threw') : { outcome: 'stale' }; }
+      if (!this.authority.isActive()) return { outcome: 'stale' };
       const bytes = ansiBytes(lines, ticket.budget.limit);
       if (bytes === undefined) return failed('invalid_rows');
       const grant = reserve(bytes);

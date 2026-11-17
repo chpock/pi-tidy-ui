@@ -41,7 +41,7 @@ export interface CardSourceHost<Owner extends object> {
   /** Observes accepted inputs and actual preparation completion; never requests work. */
   preparation?(owner: Owner, receipt: CardPreparation): void;
 }
-type Slot = SyntaxIdentity & { outcome: SyntaxWorkResult['outcome']; awaitingProvider?: true };
+type Slot = SyntaxIdentity & { outcome: SyntaxWorkResult['outcome'] };
 const noSlots: ReadonlyMap<string, Slot> = new Map();
 type Compiled = { charge: DataCharge; table: Map<ConcreteStyle, LiteralPaint>; roles: Record<CardRole, AnsiStyle>;
   literals: Readonly<Record<CardRole, ConcreteStyle>>;
@@ -137,7 +137,7 @@ export class CardSources<Owner extends object> {
   }
   /** Explicit cold lifecycle boundary. Never call from render. */
   updateDisplay(owner: Owner, input: CardDisplayInput): boolean {
-    if (this.disposed) return false;
+    if (this.disposed || !this.client.cardSource.active) return false;
     let state = this.states.get(owner);
     if (!state) { state = { revision: -1, sourceRevision: -1, serviceRevision: -1, version: 0, slots: noSlots, mutation: 0, geometry: 0 }; this.states.set(owner, state); }
     const ticket = this.register(owner, state); if (!ticket?.work) return false;
@@ -215,7 +215,7 @@ export class CardSources<Owner extends object> {
             rows });
         }
       }
-      if (!this.owned(owner, state, ticket) || state.mutation !== mutation) return false;
+      if (!this.client.cardSource.active || !this.owned(owner, state, ticket) || state.mutation !== mutation) return false;
       if (append && !append.commit()) return false;
       // Reused measurement receipts stay adopted; obsolete measurements release individually.
       const used = new Set<DataCleanupReceipt>();
@@ -254,7 +254,7 @@ export class CardSources<Owner extends object> {
   }
   useful(owner: Owner, revision: number): void {
     const state = this.states.get(owner), ticket = state?.ticket;
-    if (!state || !ticket || this.disposed || state.revision !== revision) return;
+    if (!state || !ticket || this.disposed || !this.client.cardSource.active || state.revision !== revision) return;
     if (state.frozen && !state.slots.size) return;
     const resumed = state.paused;
     state.paused = false;
@@ -294,7 +294,7 @@ export class CardSources<Owner extends object> {
   }
   private reconcileSelection(state: State, funding: GeometryFunding) {
     const ticket = state.ticket, input = state.input;
-    if (!ticket || !input) return;
+    if (!ticket || !input || !this.client.cardSource.active) return;
     const requested = this.requestedPalette(), requestedIdentity = this.inputIdentity(requested, input);
     if (state.paletteFallback && state.paletteFallback !== requestedIdentity) state.paletteFallback = undefined;
     let palette = this.currentPalette(state), identity = this.paletteIdentity(palette, input.palette, input.mode);
@@ -305,7 +305,7 @@ export class CardSources<Owner extends object> {
       const retainedGroup = previous?.group?.visit(() => {}) === true;
       const retainPrevious = retainedGroup || previous?.origin === 'owned' && !previous.group;
       const candidate = this.host.preparePaletteInput?.(requested, input.palette, input.mode, funding, !retainPrevious);
-      if (this.disposed || state.ticket !== ticket || state.input !== input || this.records.get(ticket.id) !== ticket) { candidate?.cleanupReceipt().release(); return; }
+      if (this.disposed || !this.client.cardSource.active || state.ticket !== ticket || state.input !== input || this.records.get(ticket.id) !== ticket) { candidate?.cleanupReceipt().release(); return; }
       if (candidate) {
         if (requested.kind === 'theme' && candidate.paletteId === 'pi') {
           state.paletteFallback = requestedIdentity; palette = resolveTheme({ kind: 'pi', variant: 'dark' }).effective;
@@ -345,8 +345,8 @@ export class CardSources<Owner extends object> {
     if (state.processed !== sourceStamp(state.input!) || state.preparedTheme !== this.themeRevision
       || state.preparedPalette !== this.inputIdentity(this.currentPalette(state), state.input!)) return true;
     for (const slot of state.slots.values()) {
-      if (slot.awaitingProvider && this.requiresCredit() || slot.fallback === 'pi' &&
-        (newest || slot.outcome === 'waiting') && resolveSyntax(this.client.sourceWork, this.client.pi, slot).needsPi) return true;
+      if (slot.fallback === 'pi' && (newest || slot.outcome === 'waiting')
+        && resolveSyntax(this.client.sourceWork, this.client.pi, slot).needsPi) return true;
       // Every eligible Pi FILE needs its first native SOURCE; retained semantic
       // SOURCE on compatible recovery must not be reclassified.
       if (state.input?.kind === 'file' && slot.outcome === 'pi' && !this.client.cardSource.borrowSource(slot.key)
@@ -410,7 +410,7 @@ export class CardSources<Owner extends object> {
     }
     // A resumed ready group already owns this source demand; do not rebuild its slots.
     if (state.processed === sourceStamp(state.input!) && state.preparedTheme === this.themeRevision
-      && [...state.slots.values()].every(slot => !slot.awaitingProvider && (input.kind === 'file' || slot.complete === input.complete))
+      && [...state.slots.values()].every(slot => input.kind === 'file' || slot.complete === input.complete)
       && state.preparedPalette === this.inputIdentity(this.currentPalette(state), input)
       && this.client.cardSource.groupPresentation(ticket.work)) { this.refreshPaint(owner, state); return; }
     if (!state.sourceEligible && ticket.keys.size) { this.pause(owner); this.refreshPaint(owner, state); return; }
@@ -443,7 +443,7 @@ export class CardSources<Owner extends object> {
         else Object.assign(slot, requestSyntax(this.client, { ...demand, fallback: 'neutral' }, this.host.classify));
         const status = this.client.cardSource.workStatus(key);
         this.log(owner, 'Syntax work evaluated outside render', { source: key, version: slot.version, units: demand.text.length,
-          language: slot.language ?? 'unknown', palette: slot.palette, outcome: slot.outcome, awaitingProvider: !!slot.awaitingProvider,
+          language: slot.language ?? 'unknown', palette: slot.palette, outcome: slot.outcome,
           execution: status.execution, fallbackEligible: status.fallbackEligible });
         if (!this.current(owner, state, ticket) || state.mutation !== mutation) {
           // A reentrant capture may finish after unregistering this ticket. Remove
@@ -462,7 +462,7 @@ export class CardSources<Owner extends object> {
     } finally { scratch?.release(); }
   }
   private refreshPaint(owner: Owner, state: State): boolean {
-    const ticket = state.ticket, input = state.input; if (!ticket?.work || !input) return false;
+    const ticket = state.ticket, input = state.input; if (!ticket?.work || !input || !this.client.cardSource.active) return false;
     const funding = this.client.cardSource.geometryFunding(ticket.work); if (!funding) return false;
     const selected = this.currentPalette(state), identity = this.paletteIdentity(selected, input.palette, input.mode);
     const availableGroup = this.client.cardSource.groupPresentation(ticket.work);
@@ -522,7 +522,7 @@ export class CardSources<Owner extends object> {
           if (!isOwned) for (const slot of state.slots.values()) { const projection = this.client.pi.piProjection(slot.key, slot.version, slot.palette); if (projection && !projection.visitStyles((_i, style) => consume(style))) return false; }
           return read.isValid; }, read.compiledRoles);
       }, funding.grant);
-      if (!next || !this.owned(owner, state, ticket) || state.mutation !== mutation || state.input !== input || state.paint !== previous) return false;
+      if (!next || !this.client.cardSource.active || !this.owned(owner, state, ticket) || state.mutation !== mutation || state.input !== input || state.paint !== previous) return false;
       const receipt = chargeReceipt(next.charge); state.paintReceipt?.release();
       const oldReceipt = state.paintReceipt; if (oldReceipt) ticket.receipts.delete(oldReceipt);
       state.paintReceipt = receipt; ticket.receipts.add(receipt); state.paint = next; state.paintToken = token; state.paintEffects = effects; state.paintEligibility = eligibility; state.paintSignature = signature; charge = undefined;
@@ -597,7 +597,7 @@ export class CardSources<Owner extends object> {
     this.invalidatePrepared(owner);
   }
   private owned(owner: Owner, state: State, ticket: RecordTicket): boolean { return !this.disposed && this.states.get(owner) === state && this.records.get(ticket.id) === ticket; }
-  private current(owner: Owner, state: State, ticket: RecordTicket): boolean { return this.owned(owner, state, ticket) && !state.paused; }
+  private current(owner: Owner, state: State, ticket: RecordTicket): boolean { return this.client.cardSource.active && this.owned(owner, state, ticket) && !state.paused; }
   private enqueue(ticket: RecordTicket, local = false): void { if (ticket.work && this.records.has(ticket.id)) this.client.cardSource.queuePreparation(ticket.work, local); }
   private invalidatePrepared(owner: Owner): void { this.host.invalidate(owner); if (!this.disposed && !this.renderScheduled) { this.renderScheduled = true; queueMicrotask(renderNotice(this.owner)); } }
   renderPrepared(): void { this.renderScheduled = false; if (!this.disposed) this.host.requestRender(); }
@@ -643,7 +643,7 @@ function cardVisit(display: PreparedCard | undefined, paint: Compiled | undefine
       paint!.group.visit(member => {
         const m = member(key); if (!m) return;
         if (display!.kind === 'file') {
-          // Offline preparation can advance the demand without observing new source text.
+          // Cold display updates can precede the corresponding useful SOURCE admission.
           const basis = sources!.displayBasis(key);
           if (!matchesFileBasis(basis, slot) || basis.generation !== m.generation || basis.version !== m.version || basis.stamp !== m.stamp) return;
         }

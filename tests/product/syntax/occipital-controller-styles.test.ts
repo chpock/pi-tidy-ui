@@ -35,6 +35,9 @@ class Peer {
   snapshot() { return { generation: this.generation, availability: this.ready ? 'ready' as const : 'unavailable' as const, reason: this.ready ? 'ready' as const : 'optional_unavailable' as const, kind: 'shared' as const,
     initialShared: true, description: this.ready ? this.description : undefined }; }
   isReady(generation: number) { return this.ready && generation === this.generation; }
+  async recover() { assert.fail('style peer has no acquisition lifecycle'); }
+  async workerUnavailable() { assert.fail('style peer has no worker lifecycle'); }
+  async exhaustedRoute() { assert.fail('style peer must not exhaust its route'); }
   classificationAccepted() { this.useful++; return true; }
   request(_generation: number, request: Record<string, unknown>, options?: { signal?: AbortSignal }) {
     this.calls.push(request); this.signals.push(options?.signal);
@@ -805,15 +808,14 @@ test('controller source neutral: queued source and held style replies materializ
   } finally { await cleanup(owner, peer); }
 });
 
-test('controller source neutral: late STYLE refusal for a superseded local presentation cannot poison its successor', async () => {
+test('controller source neutral: appearance-only rebinding preserves an in-flight generic STYLE outcome', async () => {
   const peer = new Peer(), owner = new SourceExecution(peer);
   try {
     owner.setStyleSelection(neutralSelection()); const source = demand(); owner.observe(source); owner.flush(); peer.source(0, source.text); await settled();
     owner.observe({ ...source, neutral: 'title' }); owner.flush(); assert.equal(peer.calls.length, 2);
     peer.pending[1]!.reject(new RequestFailure('STYLE refused', 'not_started')); await settled();
-    assert.equal(peer.calls.length, 3, 'the current local presentation can reconsider a superseded refusal');
-    assert.equal(peer.calls[2]!.op, 'styles.resolve');
-    peer.styleDefinition(2); await settled(); assert.deepEqual(styles(owner), [expectedNeutral('title')]);
+    assert.equal(peer.calls.length, 2, 'local inherited ink does not create a new generic subject');
+    assert.deepEqual(styles(owner), [], 'a rejected generic attempt cannot manufacture ready styles');
     assert.equal(peer.useful, 1); assert.equal(owner.workStatus('source').execution, 'acknowledged');
   } finally { await cleanup(owner, peer); }
 });
@@ -1276,5 +1278,30 @@ test('completion boundary: an old STYLE result cannot publish after the selected
     peer.style(1, 11); await settled(); assert.equal(owner.displayBasis('source'), undefined);
     peer.style(2, 22); assert.equal(await awaitFixture(owner.whenSettled()), true);
     assert.deepEqual(color(owner), [roleRed(owned(2))]); assert.equal(peer.useful, 1, 'selection replacement must not reparse the source');
+  } finally { await cleanup(owner, peer); }
+});
+
+
+test('controller styles: appearance-only toggles preserve a generic failure while genuinely new semantics can progress', async () => {
+  const peer = new Peer(), owner = new SourceExecution(peer);
+  try {
+    owner.setStyleSelection(neutralSelection()); const source = demand();
+    owner.observe(source); owner.flush(); peer.source(0, source.text); await settled();
+    peer.pending[1]!.reject(new RequestFailure('STYLE refused', 'not_started')); await settled();
+    const before = owner.stats();
+    for (let i = 0; i < 20; i++) {
+      owner.observe({ ...source, neutral: i % 2 ? 'code' : 'title' }); owner.flush(); await settled();
+    }
+    assert.equal(peer.calls.length, 2, 'appearance does not create a new generic request');
+    assert.equal(owner.stats().stylePreparations, before.stylePreparations);
+    assert.equal(owner.stats().styleContextVisits, before.styleContextVisits);
+    assert.equal(owner.workStatus(source.key).execution, 'acknowledged');
+    const changed = { ...source, text: 'echo genuinely new\n', version: 2, neutral: 'title' as const };
+    owner.observe(changed); owner.flush();
+    assert.equal(peer.calls[2]!.op, 'highlight'); peer.source(2, changed.text); await settled();
+    assert.equal(peer.calls[3]!.op, 'styles.resolve'); peer.styleDefinition(3); await settled();
+    assert.deepEqual(styles(owner), [expectedNeutral('title')]);
+    assert.equal(peer.calls.length, 4); assert.equal(peer.useful, 2);
+    assert.equal(owner.workStatus(source.key).execution, 'acknowledged');
   } finally { await cleanup(owner, peer); }
 });

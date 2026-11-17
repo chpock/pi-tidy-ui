@@ -75,6 +75,9 @@ function fixture(ready = false, options: SourceExecutionOptions = {}, maxBookkee
   const provider = { snapshot: () => ({ generation: env.generation, availability: env.ready ? 'ready' as const : 'initializing' as const,
     reason: env.ready ? 'ready' as const : 'initializing' as const, kind: 'owned' as const, initialShared: false, description: env.ready ? { ...description, vocabulary: { ...description.vocabulary, fingerprint: env.vocabulary } } : undefined }),
     isReady: (g: number) => env.ready && g === env.generation, classificationAccepted: () => true,
+    recover: async () => assert.fail('manual card peer has no acquisition lifecycle'),
+    workerUnavailable: async () => assert.fail('manual card peer has no worker lifecycle'),
+    exhaustedRoute: async () => assert.fail('manual card peer must not exhaust its route'),
     request: (_g: number, request: Frame) => new Promise<unknown>((resolve, reject) => calls.push({ request, resolve, reject })) };
   let cards: CardSources<Owner>;
   const sources = new SourceExecution(provider, { ...options, onChange: (keys, groups = []) => { env.notices.push({ keys: [...keys], groups: [...groups] }); cards.sourceChanged(keys, groups); } });
@@ -1199,7 +1202,7 @@ for (const native of [false, true]) test(`review F1: changed file never borrows 
     for (const { c, i } of pending) { if (c.request.op === 'styles.resolve') f.answerStyle(i); else f.answerSource(i, c.request.sources[0].text); }
     await settle();
   }
-  const key = f.cards.identities(owner)[0]!.key;
+  const key = f.cards.identities(owner)[0]!.key, oldGeneration = f.sources.status(key)?.generation;
   inspect(f, owner, (_d, p) => assert.ok(p.ranges(key), 'positive ready old-source control'));
   const calls = f.calls.length, classifications = f.env.classifications.length;
   if (native) {
@@ -1217,8 +1220,13 @@ for (const native of [false, true]) test(`review F1: changed file never borrows 
   f.cards.useful(owner, 2); await settle();
   if (!native) { assert.equal(f.env.classifications.length, classifications + 1); inspect(f, owner, (_d, p) => assert.ok(p.ranges(key))); }
   else {
-    assert.equal(f.sources.borrowSource(key)?.version, 1, 'offline preparation does not observe the new SOURCE');
-    assert.ok(f.sources.displayBasis(key), 'the canonical historical native display is still owned');
+    assert.equal(f.sources.borrowSource(key)?.version, 2, 'useful offline preparation admits current SOURCE before readiness');
+    assert.equal(f.sources.borrowSource(key)?.text, 'x');
+    assert.equal(typeof oldGeneration, 'number');
+    assert.notEqual(f.sources.status(key)?.generation, oldGeneration, 'an incompatible FILE has a new admitted generation');
+    assert.equal(f.sources.stats().retention.entries, 1, 'only the current admitted FILE generation remains retained');
+    assert.equal(f.sources.displayBasis(key), undefined, 'incompatible FILE admission retires its old canonical source basis');
+    assert.equal(f.sources.displayStamp(key), 0);
     inspect(f, owner, (d, p) => {
       if (d.kind !== 'file') assert.fail('file'); assert.equal(d.rows[0]!.region!.text, 'x');
       assert.equal(p.origin, 'owned'); assert.deepEqual(Object.keys(p.roles), CARD_ROLES);
@@ -1593,8 +1601,11 @@ test('renderer resume reuse: historical Follow Pi paint cannot suppress a source
   const key = f.cards.identities(owner)[0]!.key;
   assert.equal(f.sources.borrowSource(key)?.text, a);
   f.env.ready = false; f.cards.metadataChanged(); await settle();
+  const unavailableRequests = f.calls.length;
   f.use(owner, bash(b, true, 2)); await settle();
-  assert.equal(command(f, owner), b); assert.equal(f.sources.borrowSource(key)?.text, a);
+  assert.equal(command(f, owner), b); assert.equal(f.sources.borrowSource(key)?.text, b);
+  assert.equal(f.sources.displayBasis(key)?.version, 1, 'historical paint is separate from admitted current text');
+  assert.equal(f.calls.length, unavailableRequests, 'early SOURCE admission dispatches no request before readiness');
   const requests = f.calls.filter(c => c.request.op !== 'styles.resolve').length;
   f.env.ready = true; f.cards.metadataChanged(); await settle();
   const sources = f.calls.filter(c => c.request.op !== 'styles.resolve');
@@ -1817,6 +1828,7 @@ for (const remaining of ['none', 'held-local', 'palette-change', 'retained-style
   const a = fixture(true, { diagnostic: (_level, _area, explanation, fields) => {
     if (explanation === 'Native job dispatched' && fields?.operation === 'highlight' && ++dispatched === 2) bothBusy();
   } });
+  const initialJobs = a.sources.stats().globalUnsettledJobs, initialBytes = a.sources.stats().globalTransientBytes;
   class LifetimePeer implements ProviderTransport {
     private finish!: (reason: TransportEnd) => void;
     ended = new Promise<TransportEnd>(resolve => { this.finish = resolve; });
@@ -1837,6 +1849,14 @@ for (const remaining of ['none', 'held-local', 'palette-change', 'retained-style
         kind: 'source', vocabulary: 'a'.repeat(64), sources: [{ key: s.key, generation: s.generation, source_version: s.source_version,
           revision: 1, source_bytes: bytes, replace_from: 0, committed_bytes: bytes, complete: true, contexts: [[0, 1]], runs: [bytes, 1],
           counters: { committed_line_calls: 0, committed_line_bytes: 0, tail_calls: 1, tail_bytes: bytes } }] } });
+    }
+    styles() {
+      const call = this.calls.find(call => call.request.op === 'styles.resolve'); assert.ok(call);
+      const q = call.request;
+      call.resolve({ v: 4, ticket: q.ticket, instance: 'terminal', assets: 'assets', status: 'ok', body: {
+        kind: 'styles', vocabulary: q.vocabulary, rules: fingerprintRules(q.rules),
+        styles: q.contexts.map(() => ({ foreground: { kind: 'rgb', r: 11, g: 2, b: 3 }, background: { kind: 'inherit' }, attributes: 0, attribute_mask: 0 })),
+        indices: q.contexts.map(() => 1) } });
     }
   }
   const peer = new LifetimePeer(), replacement = new LifetimePeer(); let theme = getThemeByName('system')!; setThemeInstance(theme);
@@ -1862,16 +1882,21 @@ for (const remaining of ['none', 'held-local', 'palette-change', 'retained-style
       }
       fallbackPrepared();
     } });
-  const resume = execution.registryResumePreparation;
+  const resumePreparation = execution.resumePreparation;
   let phase = 'initial', stage = 'startup', withdrawalWakes = 0, releaseInitial: (() => void) | undefined, releaseLocal: (() => void) | undefined;
-  t.mock.method(execution, 'registryResumePreparation', function(this: SourceExecution) {
-    if (phase === 'initial') { phase = 'initial-held'; releaseInitial = () => resume.call(this); initiallyYielded(); return; }
-    if (phase === 'local' && visits.length > 0) { phase = 'local-held'; releaseLocal = () => resume.call(this); locallyYielded(); return; }
-    return resume.call(this);
+  t.mock.method(execution, 'resumePreparation', function(this: SourceExecution) {
+    const resume = () => resumePreparation.call(this);
+    if (phase === 'initial') { phase = 'initial-held'; releaseInitial = resume; initiallyYielded(); return; }
+    if (phase === 'local' && visits.length > 0) { phase = 'local-held'; releaseLocal = resume; locallyYielded(); return; }
+    resume();
   });
   const owner = {}, visits: number[] = [];
   const local = Array.from({ length: 3 }, (_, i) => ({ keys: new Set<string>(), needsRefresh() { return false; }, requiresCredit() { return false; }, prepare() { visits.push(i); } }));
   try {
+    assert.equal(initialJobs, 0); assert.equal(initialBytes, 0);
+    let unrelated = 0; globalThis.setImmediate(() => { unrelated++; }); await settle();
+    assert.equal(unrelated, 1, 'an unrelated host continuation cannot be mistaken for this execution owner yielding');
+    assert.equal(releaseInitial === undefined, true);
     await client.start(); assert.equal(await awaitFixture(client.whenSettled()), true);
     const input = { ...written('const terminal = 1;'), palette: a.runtime.palette(theme) };
     cards.updateDisplay(owner, input); cards.useful(owner, input.revision);
@@ -1926,12 +1951,69 @@ for (const remaining of ['none', 'held-local', 'palette-change', 'retained-style
       await settle(); assert.equal(completed, false); assert.equal(brokerCompleted, false);
       assert.equal(sharedAttempts, 2); assert.equal(execution.stats().waitingOwners, 0);
       assert.equal(a.sources.stats().globalUnsettledJobs, 2); assert.equal(a.sources.stats().globalTransientBytes, bytes);
-      assert.ok(releaseRecovery); releaseRecovery(); assert.equal(await awaitFixture(brokerCompletion), true);
+      assert.ok(releaseRecovery); releaseRecovery(); assert.equal(await awaitFixture(brokerCompletion), true); await settle();
+      stage = 'ready-credit';
+      assert.equal(client.snapshot().provider.availability, 'ready');
+      assert.deepEqual(replacement.calls.map(call => call.request.op), ['describe'], 'native work cannot bypass held foreign credit');
+      assert.equal(a.sources.stats().globalUnsettledJobs, 2); assert.equal(a.sources.stats().globalTransientBytes, bytes);
+      assert.equal(execution.stats().unsettledJobs, 0); assert.equal(execution.stats().pendingCloses, 0);
+      assert.equal(execution.stats().waitingOwners, 1);
+      assert.equal(execution.status(key)!.version, 2); assert.equal(execution.status(key)!.exact, false);
+      assert.equal(execution.status(key)!.protective, false); assert.equal(execution.status(key)!.acknowledgedVersion, undefined);
+      assert.equal(execution.borrowSource(key)?.text, 'const terminal = 2;');
+      assert.equal(execution.workStatus(key).fallbackEligible, false); assert.equal(classifications, 1);
+      assert.equal(completed, false, 'ready Pi paint does not settle the still-owed native target');
+      let sourceCompleted = false; const sourceCompletion = execution.whenSettled(); void sourceCompletion.then(() => { sourceCompleted = true; });
+      await settle(); assert.equal(sourceCompleted, false);
+      stage = 'foreign-retirement'; a.sources.dispose();
+      assert.equal(a.sources.stats().globalUnsettledJobs, 2, 'disposing a foreign owner is not physical settlement');
+      assert.equal(a.sources.stats().globalTransientBytes, bytes);
+      assert.equal(a.calls.filter(call => !call.done).length, 2);
+      for (const call of a.calls) if (!call.done) call.reject(new RequestFailure('cleanup', 'not_started'));
+      await settle(); stage = 'native-source';
+      assert.equal(a.sources.stats().transientBytes, 0);
+      assert.deepEqual(replacement.calls.map(call => call.request.op), ['describe', 'highlight']);
+      const target = replacement.calls[1]!.request.sources[0];
+      assert.equal(target.source_version, 2); assert.equal(target.text, 'const terminal = 2;');
+      assert.equal(target.generation, generation, 'recovery reuses the already-funded replacement target');
+      assert.equal(target.generation, execution.status(key)!.generation);
+      assert.equal(execution.stats().unsettledJobs, 1); assert.equal(execution.stats().globalUnsettledJobs, 1);
+      assert.equal(completed, false); assert.equal(sourceCompleted, false);
+      replacement.source(); await settle(); stage = 'native-style';
+      assert.deepEqual(replacement.calls.map(call => call.request.op), ['describe', 'highlight', 'styles.resolve']);
+      assert.equal(execution.status(key)!.acknowledgedVersion, 2);
+      assert.equal(execution.stats().unsettledJobs, 1); assert.equal(completed, false); assert.equal(sourceCompleted, false);
+      replacement.styles(); assert.equal(await awaitFixture(sourceCompletion), true);
     }
     stage = 'completion'; assert.equal(await awaitFixture(completion), true);
-    if (recoverable) { assert.equal(client.snapshot().provider.availability, 'ready'); assert.deepEqual(replacement.calls.map(call => call.request.op), ['describe']); }
     if (remaining === 'held-local') assert.deepEqual(visits, [2, 1, 0]);
-    assert.equal(a.sources.stats().globalUnsettledJobs, 2); assert.equal(a.sources.stats().globalTransientBytes, bytes);
+    if (recoverable) {
+      assert.equal(execution.status(key)!.acknowledgedVersion, 2); assert.equal(execution.status(key)!.exact, true);
+      let nativeStyle: string | undefined;
+      assert.equal(execution.visitRanges(key, (_start, _end, style) => {
+        assert.deepEqual(style.foreground, { kind: 'rgb', r: 11, g: 2, b: 3 });
+        const compiled = compileStyleAnsi(style, 'truecolor').open;
+        if (nativeStyle !== undefined) assert.equal(compiled, nativeStyle);
+        nativeStyle = compiled;
+      }), true);
+      assert.ok(nativeStyle);
+      assert.equal(cards.visit(owner, (display, paint) => {
+        assert.equal(display.kind, 'file'); if (display.kind !== 'file') return;
+        assert.equal(display.rows.find(row => row.region)?.region?.text, 'const terminal = 2;');
+        const ranges = paint.ranges(key); assert.ok(ranges);
+        let end = 0;
+        assert.equal(ranges((start, next, style) => { assert.equal(start, end); assert.equal(style.open, nativeStyle); end = next; }), true);
+        assert.equal(end, Buffer.byteLength('const terminal = 2;'), 'current card ranges use the completed native styles, not retained Pi fallback');
+      }), true);
+      assert.equal(execution.stats().waitingOwners, 0); assert.equal(execution.stats().unsettledJobs, 0);
+      assert.equal(a.sources.stats().globalUnsettledJobs, initialJobs); assert.equal(a.sources.stats().globalTransientBytes, initialBytes);
+      assert.equal(classifications, 1); assert.equal(sharedAttempts, 2);
+      const requests = replacement.calls.length;
+      assert.equal(await awaitFixture(client.whenSettled()), true); await settle();
+      assert.equal(replacement.calls.length, requests); assert.equal(classifications, 1);
+    } else {
+      assert.equal(a.sources.stats().globalUnsettledJobs, 2); assert.equal(a.sources.stats().globalTransientBytes, bytes);
+    }
   } catch (error) {
     const state = execution.stats();
     console.log(JSON.stringify({ terminalProviderProbe: { remaining, stage, availability: client.snapshot().provider.availability,

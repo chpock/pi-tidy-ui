@@ -15,7 +15,7 @@ import { syntheticSelection } from '../../fixtures/test-style-selection.ts';
 
 type Frame = Record<string, any>;
 const counters = { committed_line_calls: 0, committed_line_bytes: 0, tail_calls: 1, tail_bytes: 0 };
-class Peer implements Pick<ProviderBroker, 'snapshot' | 'isReady' | 'request' | 'classificationAccepted'> {
+class Peer implements Pick<ProviderBroker, 'snapshot' | 'isReady' | 'request' | 'classificationAccepted' | 'recover' | 'workerUnavailable' | 'exhaustedRoute'> {
   generation = 1;
   description = decodeSemanticDescription(semanticDescriptor('describe', 'instance'), 'describe');
   readonly calls: Frame[] = [];
@@ -25,6 +25,9 @@ class Peer implements Pick<ProviderBroker, 'snapshot' | 'isReady' | 'request' | 
   snapshot() { return { generation: this.generation, availability: 'ready' as const, reason: 'ready' as const,
     kind: 'shared' as const, initialShared: true, description: this.description }; }
   isReady(generation: number) { return generation === this.generation; }
+  async recover() { assert.fail('ready semantic peer must not be acquired'); }
+  async workerUnavailable() { assert.fail('semantic peer has no worker lifecycle'); }
+  async exhaustedRoute() { assert.fail('semantic peer must not exhaust its route'); }
   classificationAccepted(generation: number) { assert.equal(generation, this.generation); this.useful++; return true; }
   request(generation: number, request: Record<string, unknown>, options?: { signal?: AbortSignal }) {
     assert.equal(generation, this.generation);

@@ -80,6 +80,8 @@ test('actual v4 styles executor: first selected palette V1 survives real parser 
   // style body are produced by the real broker/stdio/helper, not fixture ranges.
   const provider = { snapshot: () => broker.snapshot(), isReady: (generation: number) => broker.isReady(generation),
     classificationAccepted: (generation: number) => broker.classificationAccepted(generation),
+    recover: () => broker.recover(), workerUnavailable: (generation: number) => broker.workerUnavailable(generation),
+    exhaustedRoute: (generation: number) => broker.exhaustedRoute(generation),
     request(generation: number, request: SemanticDataRequest, options?: Parameters<ProviderBroker['request']>[2]) {
       const result = broker.request(generation, request, options);
       if (request.op !== 'styles.resolve' || held) return result;
@@ -118,6 +120,8 @@ test('actual v4 empty-context group: selected local palette needs no helper styl
   const requests: { op: unknown; contexts: unknown; sourceFields: boolean }[] = [];
   const provider = { snapshot: () => broker.snapshot(), isReady: (generation: number) => broker.isReady(generation),
     classificationAccepted: (generation: number) => broker.classificationAccepted(generation),
+    recover: () => broker.recover(), workerUnavailable: (generation: number) => broker.workerUnavailable(generation),
+    exhaustedRoute: (generation: number) => broker.exhaustedRoute(generation),
     request(generation: number, request: SemanticDataRequest, options?: Parameters<ProviderBroker['request']>[2]) {
       requests.push({ op: request.op, contexts: request.op === 'styles.resolve' ? request.contexts : undefined, sourceFields: ['sources', 'key', 'generation', 'source_version', 'text', 'lease'].some(key => key in request) });
       return broker.request(generation, request, options);
@@ -160,6 +164,8 @@ for (const kind of ['follow-pi', 'owned'] as const) test(`actual v4 empty Bash: 
   const revisions: number[] = [], operations: string[] = [];
   const provider = { snapshot: () => broker.snapshot(), isReady: (generation: number) => broker.isReady(generation),
     classificationAccepted: (generation: number) => broker.classificationAccepted(generation),
+    recover: () => broker.recover(), workerUnavailable: (generation: number) => broker.workerUnavailable(generation),
+    exhaustedRoute: (generation: number) => broker.exhaustedRoute(generation),
     async request(generation: number, request: SemanticDataRequest, options?: Parameters<ProviderBroker['request']>[2]) {
       operations.push(String(request.op));
       const reply = await broker.request(generation, request, options) as { body?: { kind?: string; sources?: { revision: number }[] } };

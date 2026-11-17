@@ -8,7 +8,10 @@ import { SemanticRetentionPool } from '../../../src/highlighting/storage/semanti
 import type { ConcreteStyle } from '../../../src/appearance/style-materialization.ts';
 import type { ProviderSnapshot } from '../../../src/occipital/provider.ts';
 const neutral: ConcreteStyle = { foreground: { kind: 'terminal-default' }, background: { kind: 'terminal-default' }, attributes: 0 };
-const provider = { snapshot(): ProviderSnapshot { return { generation: 1, availability: 'unavailable', reason: 'optional_unavailable', initialShared: false }; }, isReady: () => false, classificationAccepted: () => false, request: () => Promise.reject(new Error('unexpected RPC')) };
+const provider = { snapshot(): ProviderSnapshot { return { generation: 1, availability: 'unavailable', reason: 'optional_unavailable', initialShared: false }; }, isReady: () => false, classificationAccepted: () => false,
+  recover: async () => assert.fail('Pi-only peer has no acquisition lifecycle'),
+  workerUnavailable: async () => assert.fail('Pi-only peer has no worker'),
+  exhaustedRoute: async () => assert.fail('Pi-only peer has no route'), request: () => Promise.reject(new Error('unexpected RPC')) };
 function prepared(budget: DataBudget, text = 'ab') {
   const result = preparePiFlat(text, consume => { consume(0, text[0] + '\x1b[31m' + text.slice(1)); return true; }, neutral, budget);
   assert.equal(result.outcome, 'ready'); if (result.outcome !== 'ready') throw Error('not ready'); return result.projection;

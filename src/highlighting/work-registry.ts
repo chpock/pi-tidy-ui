@@ -18,40 +18,21 @@ export type WorkNode<Entry, Metadata extends object> = Metadata & {
   paused?: boolean; older?: WorkNode<Entry, Metadata>; newer?: WorkNode<Entry, Metadata>;
 };
 
-export interface WorkTurnExecution<State extends { key: string }, Description, Metadata extends object> {
-  registrySuspended(): boolean;
-  registryDisposed(): boolean;
-  registryEnabled(): boolean;
-  registryHasSelection(): boolean;
-  registryBeginTurn(): Description | undefined;
-  registryIsFull(description: Description | undefined, creditBlocked: boolean): boolean;
-  registryPrepareStyles(node: WorkNode<WorkEntry<State>, Metadata>, description: Description | undefined, full: boolean): void;
-  registryDispatch(state: State | undefined, description: Description | undefined, full: () => boolean): boolean;
-  registrySource(key: string): State | undefined;
-  registrySourceBusy(key: string): boolean;
-  registryPrepareGroup(group: SourceWorkGroup, preparation: SourcePreparation): void;
-  registryWaitForCredit(): void;
-  registryReconcileWithdrawal(): void;
-  registryFinishTurn(): void;
-  registryContinue(): void;
-  registryResumePreparation(): void;
-  registryRemoveCollected(group: SourceWorkGroup): void;
+export interface WorkContinuation {
+  continueWork(): void;
+  resumePreparation(): void;
 }
 
-function isGroup<State>(entry: WorkEntry<State>): entry is SourceWorkGroup {
-  return typeof entry === 'object' && entry !== null && 'preparation' in entry;
+function scheduleContinuation(owner: WeakRef<WorkContinuation>) {
+  return () => owner.deref()?.continueWork();
+}
+function preparationTurn(owner: WeakRef<WorkContinuation>) {
+  return () => owner.deref()?.resumePreparation();
 }
 
-function scheduleContinuation<State extends { key: string }, Description, Metadata extends object>(owner: WeakRef<WorkTurnExecution<State, Description, Metadata>>) {
-  return () => owner.deref()?.registryContinue();
-}
-function preparationTurn<State extends { key: string }, Description, Metadata extends object>(owner: WeakRef<WorkTurnExecution<State, Description, Metadata>>) {
-  return () => owner.deref()?.registryResumePreparation();
-}
-
-/** Private chronological registry. It owns the sole synchronous pass and host-turn quota. */
-export class WorkRegistry<State extends { key: string }, Description, Metadata extends object> {
-  private readonly owner: WeakRef<WorkTurnExecution<State, Description, Metadata>>;
+/** Chronological membership, cursor and host-turn quota; execution owns visit policy. */
+export class WorkRegistry<State extends { key: string }, Metadata extends object> {
+  private readonly owner: WeakRef<WorkContinuation>;
   private readonly entries = new Map<WorkEntry<State>, WorkNode<WorkEntry<State>, Metadata>>();
   private newest?: WorkNode<WorkEntry<State>, Metadata>;
   private cursor?: WorkNode<WorkEntry<State>, Metadata>;
@@ -64,15 +45,20 @@ export class WorkRegistry<State extends { key: string }, Description, Metadata e
   private preparations = 0;
   private groupSequence = 0;
   private retryScan = false;
-  private creditBlocked = false;
+  private blockedCredit = false;
   private readonly preparationLimit: number;
 
-  constructor(owner: WeakRef<WorkTurnExecution<State, Description, Metadata>>, preparationLimit: number) {
+  constructor(owner: WeakRef<WorkContinuation>, preparationLimit: number) {
     this.owner = owner; this.preparationLimit = preparationLimit;
   }
 
   get size(): number { return this.entries.size; }
   get hasWorkTurn(): boolean { return this.scheduled || this.yielding || this.pumping; }
+  get currentPass(): number { return this.pass; }
+  get hasQuota(): boolean { return this.preparations < this.preparationLimit; }
+  get hasLocalPending(): boolean { return this.localPending > 0; }
+  get creditBlocked(): boolean { return this.blockedCredit; }
+  get exhausted(): boolean { return this.cursor === undefined; }
 
   get(value: WorkEntry<State>): WorkNode<WorkEntry<State>, Metadata> | undefined { return this.entries.get(value); }
   has(value: WorkEntry<State>): boolean { return this.entries.has(value); }
@@ -87,10 +73,26 @@ export class WorkRegistry<State extends { key: string }, Description, Metadata e
   }
   nextGroupId(): number { return ++this.groupSequence; }
   rewind(): void { this.pass++; this.cursor = this.newest; }
+  next(): WorkNode<WorkEntry<State>, Metadata> | undefined {
+    const node = this.cursor;
+    if (node) { this.cursor = node.older; node.seen = this.pass; }
+    return node;
+  }
+  isNewest(node: WorkNode<WorkEntry<State>, Metadata>): boolean { return node === this.newest; }
+  needsRefresh(node: WorkNode<WorkEntry<State>, Metadata>): boolean { return node.epoch !== this.refreshEpoch; }
+  current(node: WorkNode<WorkEntry<State>, Metadata>, pass: number): boolean {
+    return this.entries.get(node.value) === node && this.pass === pass && !node.pending && node.epoch === this.refreshEpoch;
+  }
+  restoreCursor(node: WorkNode<WorkEntry<State>, Metadata>, pass: number): void {
+    if (this.entries.get(node.value) === node && this.pass === pass) this.cursor = node;
+  }
   private setPending(node: WorkNode<WorkEntry<State>, Metadata>, pending: WorkPending): void {
     if (node.pending === 'local') this.localPending--;
     node.pending = pending;
     if (pending === 'local') this.localPending++;
+  }
+  markPrepared(node: WorkNode<WorkEntry<State>, Metadata>): void {
+    this.setPending(node, false); node.epoch = this.refreshEpoch;
   }
   remove(value: WorkEntry<State>, report: (node: WorkNode<WorkEntry<State>, Metadata>) => void,
     release: (node: WorkNode<WorkEntry<State>, Metadata>) => void): boolean {
@@ -106,24 +108,20 @@ export class WorkRegistry<State extends { key: string }, Description, Metadata e
     return this.entries.delete(value);
   }
   queue(group: SourceWorkGroup, local = false): void {
-    const node = this.entries.get(group); if (!node || this.owner.deref()?.registryDisposed()) return;
+    const node = this.entries.get(group); if (!node) return;
     node.paused = false; this.setPending(node, local || node.pending === 'local' ? 'local' : 'native'); this.rewind(); this.schedule();
   }
-  pause(group: SourceWorkGroup): void {
+  pause(group: SourceWorkGroup): boolean {
     const node = this.entries.get(group);
-    if (node && !node.paused) {
-      node.paused = true; this.setPending(node, false); node.epoch = this.refreshEpoch;
-      this.owner.deref()?.registryReconcileWithdrawal();
-    }
+    if (!node || node.paused) return false;
+    node.paused = true; this.setPending(node, false); node.epoch = this.refreshEpoch;
+    return true;
   }
-  refresh(): void {
-    if (this.owner.deref()?.registryDisposed()) return;
-    this.refreshEpoch++; this.rewind(); this.schedule();
-  }
+  refresh(): void { this.refreshEpoch++; this.rewind(); this.schedule(); }
   requestRetry(): void { this.retryScan = true; }
-  noteCreditBlocked(): void { this.creditBlocked = true; }
+  noteCreditBlocked(): void { this.blockedCredit = true; }
   wake(): void {
-    this.creditBlocked = false;
+    this.blockedCredit = false;
     if (this.retryScan) { this.retryScan = false; this.rewind(); }
     this.schedule();
   }
@@ -131,72 +129,24 @@ export class WorkRegistry<State extends { key: string }, Description, Metadata e
     if (this.scheduled) return;
     this.scheduled = true; queueMicrotask(scheduleContinuation(this.owner));
   }
-  resumePreparation(): void {
-    this.preparations = 0; this.yielding = false; this.scheduled = false;
-    this.owner.deref()?.registryContinue();
-  }
+  resumePreparation(): void { this.preparations = 0; this.yielding = false; this.scheduled = false; }
   revisit(value: WorkEntry<State>, executionOwed: boolean): void {
     const node = this.entries.get(value);
     if (node?.seen === this.pass && (node.pending || node.epoch !== this.refreshEpoch || executionOwed)) this.rewind();
   }
-
-  runTurn(): void {
-    const owner = this.owner.deref(); if (!owner) return;
-    if (owner.registrySuspended()) { this.scheduled = false; return; }
-    if (this.pumping) return;
+  enterTurn(active: boolean): boolean {
+    if (!active) { this.scheduled = false; return false; }
+    if (this.pumping) return false;
     if (!this.yielding) this.scheduled = false;
     this.pumping = true;
-    try {
-      const description = owner.registryBeginTurn();
-      const full = () => owner.registryIsFull(description, this.creditBlocked);
-      const dispatch = (state: State | undefined) => owner.registryDispatch(state, description, full);
-      while (this.cursor && !owner.registryDisposed()) {
-        if (this.preparations >= this.preparationLimit) break;
-        const node = this.cursor, entry = node.value, pass = this.pass;
-        if (owner.registryHasSelection()) this.preparations++;
-        this.cursor = node.older; node.seen = pass;
-        if (!isGroup(entry)) {
-          owner.registryPrepareStyles(node, description, full());
-          if (dispatch(entry)) {
-            this.retryScan = true; if (this.localPending || owner.registryHasSelection()) continue;
-            this.cursor = node; break;
-          }
-          continue;
-        }
-        const preparation = entry.preparation.deref();
-        if (!preparation) { owner.registryRemoveCollected(entry); continue; }
-        if (node.paused) continue;
-        owner.registryPrepareStyles(node, description, full());
-        const refresh = node.epoch !== this.refreshEpoch;
-        if (node.pending || refresh && (preparation.needsRefresh?.(node === this.newest) ?? true)) {
-          const native = !!description && owner.registryEnabled() && node.pending !== 'local' && (preparation.requiresCredit?.() ?? true);
-          if (native && full()) {
-            owner.registryWaitForCredit(); this.retryScan = true;
-            if (this.localPending || owner.registryHasSelection()) continue;
-            this.cursor = node; break;
-          }
-          if (native && [...entry.keys].some(key => owner.registrySourceBusy(key))) continue;
-          if (!owner.registryHasSelection() && this.preparations >= this.preparationLimit) { this.cursor = node; break; }
-          this.setPending(node, false); node.epoch = this.refreshEpoch;
-          if (!owner.registryHasSelection()) this.preparations++;
-          owner.registryPrepareGroup(entry, preparation);
-        } else node.epoch = this.refreshEpoch;
-        if (!this.entries.has(entry) || pass !== this.pass || node.pending || node.epoch !== this.refreshEpoch) continue;
-        owner.registryPrepareStyles(node, description, full());
-        let waiting = false;
-        for (const key of entry.keys) if (dispatch(owner.registrySource(key))) { waiting = true; break; }
-        if (waiting) {
-          this.retryScan = true; if (this.localPending || owner.registryHasSelection()) continue;
-          this.cursor = node; break;
-        }
-      }
-    } finally {
-      this.pumping = false;
-      if (this.preparations && !this.yielding) {
-        this.yielding = true; this.scheduled = true;
-        setImmediate(preparationTurn(this.owner));
-      }
-      owner.registryFinishTurn();
+    return true;
+  }
+  notePreparation(): void { this.preparations++; }
+  finishTurn(): void {
+    this.pumping = false;
+    if (this.preparations && !this.yielding) {
+      this.yielding = true; this.scheduled = true;
+      setImmediate(preparationTurn(this.owner));
     }
   }
 }

@@ -181,6 +181,9 @@ test('syntax card observations follow actual preparation and only outer-accepted
   const ui = new UI(), provider = { availability: 'disabled' as const, reason: 'disabled' as const, generation: 0, initialShared: false };
   let adapter: ReturnType<typeof installTidyUi> | undefined;
   const sources = new SourceExecution({ snapshot: () => provider, isReady: () => false, classificationAccepted: () => false,
+    recover: async () => assert.fail('disabled provider must not be acquired'),
+    workerUnavailable: async () => assert.fail('disabled provider has no worker'),
+    exhaustedRoute: async () => assert.fail('disabled provider has no route'),
     request: () => { throw Error('disabled'); } }, { onChange: (keys, groups) => adapter?.syntaxSourceChanged(keys, groups) });
   sources.setEnabled(false);
   const original = CardSources.prototype.visit, prepare = CardSources.prototype.prepare, events: SyntaxCardObservation[] = [], failure = new Error('outer visit failure');
@@ -353,7 +356,10 @@ test('write capture readiness distinguishes neutral, valid plain, stale source/p
   });
   const observer = observeSyntaxCards(() => {}, { writeCapture: writeCaptureJournal(gate, event => events.push(event)) });
   const provider = { availability: 'disabled' as const, reason: 'disabled' as const, generation: 0, initialShared: false };
-  const sources = new SourceExecution({ snapshot: () => provider, isReady: () => false, classificationAccepted: () => false, request: () => assert.fail('no native work') });
+  const sources = new SourceExecution({ snapshot: () => provider, isReady: () => false, classificationAccepted: () => false,
+    recover: async () => assert.fail('disabled provider must not be acquired'),
+    workerUnavailable: async () => assert.fail('disabled provider has no worker'),
+    exhaustedRoute: async () => assert.fail('disabled provider has no route'), request: () => assert.fail('no native work') });
   sources.setEnabled(false);
   let palette = 1, classifications = 0, onInvalidation: (() => void) | undefined;
   const cards = new CardSources({ cardSource: sources, sourceWork: sources, pi: sources.pi, snapshot: () => ({ enabled: false, selected: { kind: 'pi' as const, variant: 'dark' as const }, standaloneVersion: 'test', provider }) }, {
@@ -420,7 +426,10 @@ for (const failure of ['failed', 'refused'] as const) test(`write capture gate s
   const events: WriteCaptureObservation[] = [], gate = createWriteCaptureGate(event => events.push(event));
   const observer = observeSyntaxCards(() => {}, { writeCapture: writeCaptureJournal(gate, event => events.push(event)) });
   const provider = { availability: 'disabled' as const, reason: 'disabled' as const, generation: 0, initialShared: false };
-  const sources = new SourceExecution({ snapshot: () => provider, isReady: () => false, classificationAccepted: () => false, request: () => assert.fail('no native work') }); sources.setEnabled(false);
+  const sources = new SourceExecution({ snapshot: () => provider, isReady: () => false, classificationAccepted: () => false,
+    recover: async () => assert.fail('disabled provider must not be acquired'),
+    workerUnavailable: async () => assert.fail('disabled provider has no worker'),
+    exhaustedRoute: async () => assert.fail('disabled provider has no route'), request: () => assert.fail('no native work') }); sources.setEnabled(false);
   if (failure === 'refused') t.mock.method(sources.pi, 'capturePiSource', () => false);
   const cards = new CardSources({ cardSource: sources, sourceWork: sources, pi: sources.pi, snapshot: () => ({ enabled: false, selected: { kind: 'pi' as const, variant: 'dark' as const }, standaloneVersion: 'test', provider }) }, {
     preparePaletteInput: (_palette, _revision, _mode, funding) => preparePaletteInput(themes.theme, 'pi', 1, 'truecolor', funding), classify: () => { throw Error('classifier failure'); }, invalidate() {}, requestRender() {},
@@ -454,7 +463,10 @@ test('write capture review F1: empty dark roles cannot certify refused light rep
   });
   const observer = observeSyntaxCards(() => {}, { writeCapture: writeCaptureJournal(gate) });
   const provider = { availability: 'disabled' as const, reason: 'disabled' as const, generation: 0, initialShared: false };
-  const sources = new SourceExecution({ snapshot: () => provider, isReady: () => false, classificationAccepted: () => false, request: () => assert.fail('no native work') }); sources.setEnabled(false);
+  const sources = new SourceExecution({ snapshot: () => provider, isReady: () => false, classificationAccepted: () => false,
+    recover: async () => assert.fail('disabled provider must not be acquired'),
+    workerUnavailable: async () => assert.fail('disabled provider has no worker'),
+    exhaustedRoute: async () => assert.fail('disabled provider has no route'), request: () => assert.fail('no native work') }); sources.setEnabled(false);
   let palette = 1, deny = false, refused = 0;
   const funding = sources.geometryFunding.bind(sources);
   t.mock.method(sources, 'geometryFunding', (...args: Parameters<typeof funding>) => {
@@ -516,7 +528,10 @@ for (const change of ['source', 'palette'] as const) for (const rejection of ['r
     });
     const observer = observeSyntaxCards(() => {}, { writeCapture: writeCaptureJournal(gate) });
     const provider = { availability: 'disabled' as const, reason: 'disabled' as const, generation: 0, initialShared: false };
-    const sources = new SourceExecution({ snapshot: () => provider, isReady: () => false, classificationAccepted: () => false, request: () => assert.fail('no native work') }); sources.setEnabled(false);
+    const sources = new SourceExecution({ snapshot: () => provider, isReady: () => false, classificationAccepted: () => false,
+    recover: async () => assert.fail('disabled provider must not be acquired'),
+    workerUnavailable: async () => assert.fail('disabled provider has no worker'),
+    exhaustedRoute: async () => assert.fail('disabled provider has no route'), request: () => assert.fail('no native work') }); sources.setEnabled(false);
     let palette = 1;
     const cards = new CardSources({ cardSource: sources, sourceWork: sources, pi: sources.pi, snapshot: () => ({ enabled: false, selected: { kind: 'pi' as const, variant: 'dark' as const }, standaloneVersion: 'test', provider }) }, {
       preparePaletteInput: (_palette, _revision, _mode, funding) => preparePaletteInput(themes.theme, 'pi', palette, 'truecolor', funding), classify: text => text.split('\n'), invalidate() {}, requestRender() {},
@@ -559,7 +574,10 @@ test('syntax local observations count an actual watched Bash suffix without repe
   const dist = dirname(fileURLToPath(import.meta.resolve('@earendil-works/pi-coding-agent')));
   const themes = await import(pathToFileURL(resolve(dist, 'modes/interactive/theme/theme.js')).href); themes.initTheme('dark', false);
   const provider = { availability: 'disabled' as const, reason: 'disabled' as const, generation: 0, initialShared: false };
-  const sources = new SourceExecution({ snapshot: () => provider, isReady: () => false, classificationAccepted: () => false, request: () => assert.fail('no native work') }); sources.setEnabled(false);
+  const sources = new SourceExecution({ snapshot: () => provider, isReady: () => false, classificationAccepted: () => false,
+    recover: async () => assert.fail('disabled provider must not be acquired'),
+    workerUnavailable: async () => assert.fail('disabled provider has no worker'),
+    exhaustedRoute: async () => assert.fail('disabled provider has no route'), request: () => assert.fail('no native work') }); sources.setEnabled(false);
   const cards = new CardSources({ cardSource: sources, sourceWork: sources, pi: sources.pi, snapshot: () => ({ enabled: false, selected: { kind: 'pi' as const, variant: 'dark' as const }, standaloneVersion: 'test', provider }) }, {
     preparePaletteInput: (_palette, _revision, _mode, funding) => preparePaletteInput(themes.theme, 'pi', 1, 'truecolor', funding), classify: () => assert.fail('no Bash Pi classification'), invalidate() {}, requestRender() {},
   });
@@ -601,6 +619,9 @@ for (const shape of ['empty', 'unsupported'] as const) test(`write capture disti
   const gate = createWriteCaptureGate(() => {}), observer = observeSyntaxCards(() => {}, { writeCapture: writeCaptureJournal(gate) });
   const provider = { availability: 'disabled' as const, reason: 'disabled' as const, generation: 0, initialShared: false };
   const sources = new SourceExecution({ snapshot: () => provider, isReady: () => false, classificationAccepted: () => false,
+    recover: async () => assert.fail('disabled provider must not be acquired'),
+    workerUnavailable: async () => assert.fail('disabled provider has no worker'),
+    exhaustedRoute: async () => assert.fail('disabled provider has no route'),
     request: () => assert.fail('no native work') }); sources.setEnabled(false);
   const cards = new CardSources({ cardSource: sources, sourceWork: sources, pi: sources.pi, snapshot: () => ({ enabled: false, selected: { kind: 'pi' as const, variant: 'dark' as const }, standaloneVersion: 'test', provider }) }, {
     preparePaletteInput: (_palette, _revision, _mode, funding) => preparePaletteInput(themes.theme, 'pi', 1, 'truecolor', funding),

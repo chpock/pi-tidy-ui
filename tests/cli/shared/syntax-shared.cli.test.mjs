@@ -4,11 +4,11 @@ import { existsSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import test from 'node:test';
 import { PiTerminal } from '../../fixtures/terminal-harness.mjs';
 import { closeTerminals, runCleanupSteps } from '../../fixtures/terminal-cleanup.mjs';
-import { semanticSourceContext, semanticStyle, semanticPhaseReady } from '../../fixtures/syntax-observation.mjs';
+import { semanticSourceContext, semanticStyle, semanticPhaseReady, nativeReady } from '../../fixtures/syntax-observation.mjs';
 import { SEMANTIC_REGIONS } from '../../../src/syntax/semantic-rules.ts';
 import { sampleOwnedPalette } from '../../../src/themes/owned-palette.ts';
 import { sharedSyntaxHost, reaped } from '../../fixtures/shared-syntax-host.mjs';
-import { prepareSyntaxNative, requiredSharedHost, scenario, traffic, persisted, menuAction, chooseTheme, settledStats, captureThenRenderDiagnostics, work, peerSource, finish, body, shebangScenario, shebangContextColors, shebangStringColors, expressionForeground, expressionAttributes, sourceColors } from '../../fixtures/syntax-cli-support.mjs';
+import { prepareSyntaxNative, requiredSharedHost, scenario, traffic, persisted, menuAction, chooseTheme, stats, intermediateStats, settledStats, captureThenRenderDiagnostics, work, peerSource, finish, body, shebangScenario, shebangContextColors, shebangStringColors, expressionForeground, expressionAttributes, sourceColors } from '../../fixtures/syntax-cli-support.mjs';
 
 const { binary, fixture, descriptor } = await prepareSyntaxNative();
 
@@ -66,7 +66,8 @@ test('occipital CLI: shared discovery, local palette selection, provider loss an
   { timeout: 120000 }, async () => {
     const host = await sharedSyntaxHost(requiredSharedHost(), binary);
     const terminal = new PiTerminal('syntax-shared-transitions', { mode: 'fullscreen', extensions: [fixture],
-      extraEnv: { ...descriptor, SUBC_CONNECTION_FILE: host.alias, TIDY_UI_TEST_SYNTAX_SHARED: '1', TIDY_UI_TEST_PALETTE_OBSERVE: '1' } });
+      extraEnv: { ...descriptor, SUBC_CONNECTION_FILE: host.alias, TIDY_UI_TEST_SYNTAX_SHARED: '1', TIDY_UI_TEST_PALETTE_OBSERVE: '1',
+        TIDY_UI_TEST_SYNTAX_ACQUIRE_GATE: '1' } });
     let returnedPeer;
     try {
       const initial = await scenario(terminal, true), original = initial.sample;
@@ -97,15 +98,73 @@ test('occipital CLI: shared discovery, local palette selection, provider loss an
       const selectedPaint = await captureThenRenderDiagnostics(terminal, 'shared-owned-palette'), selectedColors = colors(selectedPaint, paletteId);
       assert.notDeepEqual(selectedColors, initialColors, 'the selected owned palette changes physical source ink');
 
-      rmSync(host.alias); process.kill(oldPid, 'SIGKILL'); await terminal.event('syntax_acquired');
-      const owned = await settledStats(terminal, 'owned-after-loss', s => s.client.provider.kind === 'owned' && s.client.effective.id === paletteId);
-      assert.equal(owned.broker.reconnectAttempts, 2); assert.equal(owned.counts.acquisitions, 1);
-      assert.equal(owned.client.provider.initialShared, true); assert.equal(owned.broker.recoveryTimers, 1);
-      assert.deepEqual(owned.client.selected, { kind: 'theme', id: 'catppuccin', variant: 'dark' });
+      rmSync(host.alias); process.kill(oldPid, 'SIGKILL'); await reaped(oldPid);
+      await intermediateStats(terminal, 'shared-loss-observed', s => s.client.provider.availability === 'unavailable');
+      const lost = await settledStats(terminal, 'shared-loss-idle');
+      assert.equal(lost.client.provider.availability, 'unavailable'); assert.equal(lost.counts.acquisitions, 0);
+      assert.equal(terminal.events().filter(event => event.type === 'syntax_acquire_gate').length, 0);
+      assert.deepEqual([lost.broker.sharedAttempts, lost.broker.ownedAttempts, lost.broker.reconnectAttempts],
+        [selectedPaint.sample.broker.sharedAttempts, selectedPaint.sample.broker.ownedAttempts, selectedPaint.sample.broker.reconnectAttempts],
+        'idle loss starts no provider attempt');
+      assert.deepEqual(work(lost), work(selectedPaint.sample));
       const offlinePaint = await captureThenRenderDiagnostics(terminal, 'owned-palette-after-loss');
       assert.deepEqual(colors(offlinePaint, paletteId), selectedColors,
         'the locally owned palette keeps the same physical source ink while its SOURCE/STYLE provider is unavailable');
-      await reaped(oldPid); await host.initialPeer.dispose();
+      assert.deepEqual(traffic(terminal), initialTraffic); assert.deepEqual(persisted(offlinePaint), initialData);
+      assert.deepEqual(offlinePaint.branch, initialBranch, 'idle provider loss and UI-only actions add no records');
+      await host.initialPeer.dispose();
+      const idleAfterPaint = await settledStats(terminal, 'shared-loss-idle-after-paint');
+      assert.deepEqual([idleAfterPaint.broker.sharedAttempts, idleAfterPaint.broker.ownedAttempts, idleAfterPaint.broker.reconnectAttempts],
+        [selectedPaint.sample.broker.sharedAttempts, selectedPaint.sample.broker.ownedAttempts, selectedPaint.sample.broker.reconnectAttempts],
+        'idle color capture and peer disposal start no provider attempt');
+
+      const command = ": 'STABLE_text é界 tail'", ends = terminal.events().filter(event => event.type === 'agent_end').length;
+      terminal.send('run bash-prefix-contract\r');
+      for (let phase = 0; phase < 3; phase++) {
+        await terminal.event('bash_contract_prefix', phase + 1);
+        writeFileSync(`${terminal.output}/bash-contract-go-${phase}`, 'go');
+      }
+      await terminal.event('agent_end', ends + 1); await terminal.settle();
+      await terminal.event('syntax_acquire_gate');
+      const pending = await terminal.capture('shared-loss-useful-pending'), held = await stats(terminal, 'shared-loss-useful-held');
+      assert.equal(pending.tools.length, 4); assert.equal(pending.tools[3].name, 'bash');
+      assert.equal(pending.tools[3].args.command, command); assert.equal(pending.tools[3].argsComplete, true);
+      assert.notEqual(held.client.provider.availability, 'ready'); assert.equal(held.counts.acquisitions, 1);
+      const { localWork: heldLocal, ...heldNative } = work(held), { localWork: lostLocal, ...lostNative } = work(lost);
+      assert.deepEqual(heldNative, lostNative); assert.ok(heldLocal.sourceSegments > lostLocal.sourceSegments);
+      assert.equal(held.source.sourceRecords, lost.source.sourceRecords + 1);
+      assert.equal(held.counts.piCaptures, 0); assert.equal(held.counts.piBridges, 0);
+      writeFileSync(`${terminal.output}/syntax-acquire-go`, 'go'); await terminal.event('syntax_acquired');
+      const owned = await settledStats(terminal, 'owned-after-loss', s => nativeReady(s) && s.client.provider.kind === 'owned' && s.client.effective.id === paletteId);
+      assert.equal(owned.broker.reconnectAttempts, 2); assert.equal(owned.counts.acquisitions, 1);
+      assert.equal(owned.client.provider.initialShared, true); assert.equal(owned.broker.recoveryTimers, 1);
+      assert.deepEqual(owned.client.selected, { kind: 'theme', id: 'catppuccin', variant: 'dark' });
+      assert.equal(owned.source.sourceRecords, held.source.sourceRecords);
+      assert.equal(owned.counts.sourceRequests, lost.counts.sourceRequests + 1);
+      assert.equal(owned.source.preparedBytes, lost.source.preparedBytes + Buffer.byteLength(command), 'only the new complete command is parsed');
+      assert.equal(owned.counts.piCaptures, 0); assert.equal(owned.counts.piBridges, 0);
+      const currentSource = terminal.events().filter(event => event.type === 'syntax_native_dispatch' && event.kind === 'source'
+        && event.payload.sources?.some(source => source.text === command));
+      assert.equal(currentSource.length, 1); assert.equal(currentSource[0].payload.op, 'highlight');
+      assert.equal(currentSource[0].payload.sources.length, 1); assert.equal(currentSource[0].payload.sources[0].hint.language, 'bash');
+      const reply = terminal.events().find(event => event.type === 'syntax_native_reply' && event.kind === 'source'
+        && event.payload.ticket === currentSource[0].payload.ticket);
+      assert.equal(reply?.reply.status, 'ok');
+      const commandColor = (dump, palette) => {
+        const y = dump.screen.findIndex(row => row.includes('STABLE_text')); assert.ok(y >= 0, 'new command is physically visible');
+        const resolved = semanticStyle(terminal.events(), 'STABLE_text', palette, 'bash'); assert.ok(resolved);
+        assert.equal(resolved.sourceEvent.payload.ticket, currentSource[0].payload.ticket);
+        const actual = dump.cells[y][dump.screen[y].indexOf('STABLE_text')].fg;
+        assert.equal(actual, expressionForeground(resolved.expression, dump, palette, 'toolTitle')); return actual;
+      };
+      const ownedPaint = await captureThenRenderDiagnostics(terminal, 'owned-after-useful-input'), ownedCommandColor = commandColor(ownedPaint, paletteId);
+      assert.deepEqual(colors(ownedPaint, paletteId), selectedColors);
+      const recoveryTraffic = traffic(terminal), recoveryData = persisted(ownedPaint), recoveryBranch = ownedPaint.branch;
+      assert.deepEqual(recoveryTraffic.slice(0, initialTraffic.length), initialTraffic);
+      assert.deepEqual(recoveryData.slice(0, initialData.length), initialData); assert.deepEqual(recoveryBranch.slice(0, initialBranch.length), initialBranch);
+      for (const [type, count] of [['call', 4], ['result', 4], ['model_context', 6]])
+        assert.equal(terminal.events().filter(event => event.type === type).length, count, type);
+      const beforeReturn = await settledStats(terminal, 'owned-before-shared-return');
 
       returnedPeer = await host.peer(); await peerSource(returnedPeer);
       const newPid = returnedPeer.snapshot().provider.description.runtime.pid, peerBefore = returnedPeer.sourceStatistics.stats();
@@ -116,23 +175,29 @@ test('occipital CLI: shared discovery, local palette selection, provider loss an
       assert.equal(returned.client.provider.description.runtime.pid, newPid);
       assert.equal(returned.broker.probesStarted, 1); assert.equal(returned.broker.handoffsSucceeded, 1);
       assert.equal(returned.broker.recoveryTimers, 0); assert.equal(returned.counts.acquisitions, 1);
+      assert.deepEqual(work(returned), work(beforeReturn), 'shared handoff reparses neither retained nor new complete source');
       await reaped(owned.transports[0].pid);
       const returnedPaint = await captureThenRenderDiagnostics(terminal, 'shared-owned-palette-returned');
       assert.deepEqual(colors(returnedPaint, paletteId), selectedColors, 'shared provider return preserves physical owned-palette ink');
+      assert.equal(commandColor(returnedPaint, paletteId), ownedCommandColor);
 
       await chooseTheme(terminal, 'pi');
       const pi = await settledStats(terminal, 'shared-pi-selected', s => s.client.effective.id === 'pi');
-      assert.equal(pi.client.selected.kind, 'pi'); sourceColors(await captureThenRenderDiagnostics(terminal, 'shared-pi-selected'));
+      const piPaint = await captureThenRenderDiagnostics(terminal, 'shared-pi-selected');
+      assert.equal(pi.client.selected.kind, 'pi'); sourceColors(piPaint); commandColor(piPaint, 'pi');
       const before = await settledStats(terminal, 'shared-warm-before');
       for (const width of [40, 100]) { await terminal.resize(width); await terminal.capture(`shared-width-${width}`); }
       const after = await settledStats(terminal, 'shared-warm-after'); assert.deepEqual(work(after), work(before));
+      assert.equal(after.counts.piCaptures, 0); assert.equal(after.counts.piBridges, 0);
       assert.equal(returnedPeer.sourceStatistics.stats().dispatches, peerBefore.dispatches, 'extension theme changes do not create unrelated peer work');
       const final = await captureThenRenderDiagnostics(terminal, 'shared-final');
-      assert.deepEqual(traffic(terminal), initialTraffic); assert.deepEqual(persisted(final), initialData);
-      assert.deepEqual(final.branch, initialBranch, 'UI status and local palette changes never become model/session records');
+      assert.deepEqual(traffic(terminal), recoveryTraffic); assert.deepEqual(persisted(final), recoveryData);
+      assert.deepEqual(final.branch, recoveryBranch, 'UI status and local palette changes never become model/session records');
       await finish(terminal); await peerSource(returnedPeer); process.kill(newPid, 0);
-      console.log(JSON.stringify({ sharedCli: terminal.output, node: after.node, calls: 3, results: 3,
-        providerLossRecovery: true, returnedSharedPid: newPid, warmWorkDelta: 0 }));
+      console.log(JSON.stringify({ sharedCli: terminal.output, node: after.node, calls: 4, results: 4, modelContexts: 6,
+        usefulInput: 'bash-prefix-contract', recoverySourceRequests: owned.counts.sourceRequests - lost.counts.sourceRequests,
+        recoveryStyleRequests: owned.counts.styleRequests - lost.counts.styleRequests,
+        redundantPreparedBytes: 0, handoffWorkDelta: 0, providerLossRecovery: true, returnedSharedPid: newPid, warmWorkDelta: 0 }));
     } finally { await runCleanupSteps(() => closeTerminals([terminal]), () => host.close()); }
   });
 

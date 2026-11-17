@@ -283,6 +283,7 @@ export function createToolViewPresenter<Owner extends object>(ports: ToolViewPor
     if (host.isTool(node)) sessions.setLastRenderWidth(node, width);
     if (cardKind(node) === 'read') sessions.clearImageWindow(node);
     if (host.quiescing()) return cleanupRows(node, width) ?? originalRender.call(node, width);
+    if (host.isTool(node)) preparation.observeFrame(node, width);
     if (width < 1 && fileMode(node) !== undefined && routing.fileSuppressed(node, width)) {
       animation.remove(node); pauseSyntax(node); return [];
     }

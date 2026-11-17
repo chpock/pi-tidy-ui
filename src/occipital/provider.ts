@@ -14,7 +14,7 @@ import { ExpectedOwnedUnavailable } from './owned-startup.ts';
  */
 export const PROVIDER_LIMITS = Object.freeze({
   factoryMs: 5000, ownedFactoryMs: 15000, controlMs: 5000, closeMs: 5000,
-  reconnectAttempts: 2, ownedRestarts: 2, recoveryIntervalMs: 60000, recoveryWindowMs: 600000,
+  reconnectAttempts: 2, recoveryIntervalMs: 60000, recoveryWindowMs: 600000,
   metadataBytes: 32768,
 });
 export interface ProviderTransport {
@@ -35,6 +35,7 @@ export interface ProviderClock {
 /** True transfers only metadata validation for this exact candidate, not publication
  * or source execution authority. False closes the rejected candidate. */
 export type SharedNegotiator = (transport: ProviderTransport) => Promise<boolean>;
+export type ProviderRetirementOrigin = TransportEnd | 'worker_unavailable' | 'exhausted_route' | 'handoff' | 'suspended' | 'disabled' | 'disposed';
 export interface ProviderOptions {
   diagnostic?: DiagnosticSink;
   /** Auth/discovery/catalogue/capability checks are factory-owned. Each successful
@@ -49,22 +50,24 @@ export interface ProviderOptions {
   tryShared(signal: AbortSignal, negotiate: SharedNegotiator): Promise<ProviderTransport | undefined>;
   acquireOwned(signal: AbortSignal): Promise<ProviderTransport>;
   clock?: ProviderClock;
-  /** Coalesced availability/publication notice; no request outcome or replay authority. */
+  /** Coalesced availability, cleanup and post-guard-clear opportunity. */
   onChange?: () => void;
+  /** Synchronous primitive retirement delivery before cancellation or close. */
+  onRetired?: (generation: number, origin: ProviderRetirementOrigin) => void;
   /** Published owned generation only, after actual successful child close/reap.
    * Shared disconnect, endReason, bounded-close failure and availability are not proof. */
   onOwnedStopped?: (generation: number) => void;
 }
 type Kind = 'shared' | 'owned';
 type Availability = 'initializing' | 'ready' | 'transitioning' | 'unavailable' | 'disabled' | 'disposed';
-type Reason = 'initializing' | 'ready' | 'proven_loss' | 'handoff' | 'optional_unavailable' | 'unproved_exit' | 'restart_limit' | 'transport_closed' | 'transport_uncertain' | 'transport_denied' | 'suspended' | 'disabled' | 'disposed';
+type Reason = 'initializing' | 'ready' | 'proven_loss' | 'handoff' | 'optional_unavailable' | 'unproved_exit' | 'activation_deferred' | 'worker_unavailable' | 'exhausted_route' | 'transport_closed' | 'transport_uncertain' | 'transport_denied' | 'suspended' | 'disabled' | 'disposed';
 export interface ProviderSnapshot {
   availability: Availability; reason: Reason; generation: number; kind?: Kind;
-  initialShared: boolean | undefined; description?: Description;
+  initialShared: boolean | undefined; description?: Description; readonly recoveryAt?: number;
 }
 export interface ProviderStats {
   sharedAttempts: number; ownedAttempts: number; reconnectAttempts: number; controls: number;
-  ownedRestarts: number; ownedRestartStops: number; successfulClassifications: number;
+  ownedRestarts: number; successfulClassifications: number;
   candidatesAccepted: number; candidatesRejected: number; activeCandidates: number;
   closesStarted: number; closesCompleted: number; closeFailures: number;
   recoveryEpisodes: number; probesScheduled: number; probesStarted: number; probesCompleted: number;
@@ -72,7 +75,11 @@ export interface ProviderStats {
   handoffsSucceeded: number; handoffsFailed: number; sourceDispatches: number; styleDispatches: number; staleReplies: number;
 }
 interface Candidate { transport: ProviderTransport; kind: Kind; description: Description }
-interface RecoveryTransition { cause: 'loss' | 'handoff'; kind: Kind; recovery: { start: number; end: number }; charged?: boolean }
+type SelectionSeed = 'initial' | 'previous_shared' | 'previous_owned' | 'handoff';
+type AcquisitionPurpose = 'initial' | 'working_resume' | 'automatic_failure';
+type FailureCause = 'proven_loss' | 'handoff' | 'optional_unavailable' | 'worker_unavailable' | 'exhausted_route' | 'transport_closed' | 'transport_uncertain' | 'transport_denied' | 'activation_deferred';
+interface AcquisitionIntent { purpose: AcquisitionPurpose; selection: SelectionSeed; cause?: FailureCause }
+interface AutomaticCycle { started: boolean; selection: SelectionSeed }
 interface SharedSelection {
   deadline: number; closed: boolean; busy: boolean; seen: WeakSet<ProviderTransport>; signal?: AbortSignal;
   selected?: Candidate; transferred?: WeakRef<ProviderTransport>;
@@ -81,17 +88,18 @@ function sharedNegotiator(owner: WeakRef<ProviderBroker>, epoch: number, selecti
   return transport => {
     const broker = owner.deref(), signal = selection.signal;
     if (!broker || selection.closed || !signal || signal.aborted) {
-      if (selection.transferred?.deref() !== transport) closeLate(transport);
+      if (selection.transferred?.deref() !== transport) broker ? broker.closeLateCandidate(transport, 'shared') : closeLate(transport);
       return Promise.resolve(false);
     }
     return broker.negotiateShared(transport, epoch, signal, selection);
   };
 }
-const realClock: ProviderClock = {
+export const DEFAULT_PROVIDER_CLOCK: ProviderClock = {
   now: () => performance.now(),
   setTimeout(callback, ms) { const timer = setTimeout(callback, ms); return { cancel: () => clearTimeout(timer), unref: () => { timer.unref(); } }; },
 };
 const ignored = () => {};
+function assertNever(value: never): never { throw new Error(`unexpected provider state: ${String(value)}`); }
 const closings = new WeakMap<ProviderTransport, Promise<boolean>>();
 function closeResource(transport: ProviderTransport): Promise<boolean> {
   const existing = closings.get(transport); if (existing) return existing;
@@ -157,9 +165,6 @@ function sourceObservers(owner: WeakRef<ProviderBroker>, generation: number, acc
   const check = () => { const broker = owner.deref(); if (!broker) cancelCompletion(slot); broker?.requestSettled(generation); if (!broker?.isReady(generation)) { broker?.metric('staleReplies', 1); if (!acceptRetired) throw new RequestFailure('occipital provider retired'); } };
   return { accept: (reply: unknown) => { check(); return reply; }, reject: (error: unknown): never => { check(); throw error instanceof RequestFailure ? error : new RequestFailure('occipital request outcome unknown'); } };
 }
-function ownedStopObserver(owner: WeakRef<ProviderBroker>, generation: number) {
-  return (success: boolean) => { if (success) owner.deref()?.notifyOwnedStopped(generation); };
-}
 type ProviderCompletion = { promise: Promise<boolean>; resolve(value: boolean): void };
 type CompletionSlot = { current?: ProviderCompletion };
 const providerSettled = Promise.resolve(true), providerCancelled = Promise.resolve(false);
@@ -184,8 +189,8 @@ function lifetimeObservers(owner: WeakRef<ProviderBroker>, generation: number) {
 let nextBroker = 0;
 
 /** Provider lifetime only. No sources, queues, replay, leases, results, palette or
- * render-node callbacks. Only confirmed transport loss enters automatic failover;
- * timeout, uncertain/policy/owner closure and parser state reset grant no such authority.
+ * render-node callbacks. Useful execution requests paced acquisition after failure;
+ * route replacement does not prove prior work stopped or grant fallback permission.
  */
 export class ProviderBroker {
   private readonly options: ProviderOptions;
@@ -201,9 +206,9 @@ export class ProviderBroker {
   private enabled = true;
   private suspended = false;
   private resumeNeeded = false;
-  private resumeKind?: Kind;
   private suspendedRecovery?: { start: number; end: number };
-  private transition?: RecoveryTransition;
+  private intent?: AcquisitionIntent;
+  private failureNotBefore?: number;
   private pendingRequests = 0;
   /** Last transferred owned child: bounded close failure is not actual exit proof. */
   private owned?: ProviderTransport;
@@ -221,10 +226,9 @@ export class ProviderBroker {
   private recoveryTimer?: ReturnType<ProviderClock['setTimeout']>;
   private recoveryEnd = 0;
   private recoveryStart = 0;
-  private consecutiveOwnedRestarts = 0;
   private readonly counters: ProviderStats = {
     sharedAttempts: 0, ownedAttempts: 0, reconnectAttempts: 0, controls: 0,
-    ownedRestarts: 0, ownedRestartStops: 0, successfulClassifications: 0,
+    ownedRestarts: 0, successfulClassifications: 0,
     candidatesAccepted: 0, candidatesRejected: 0, activeCandidates: 0,
     closesStarted: 0, closesCompleted: 0, closeFailures: 0,
     recoveryEpisodes: 0, probesScheduled: 0, probesStarted: 0, probesCompleted: 0,
@@ -233,12 +237,27 @@ export class ProviderBroker {
   };
   constructor(options: ProviderOptions) {
     if (options.onChange !== undefined && typeof options.onChange !== 'function'
+      || options.onRetired !== undefined && typeof options.onRetired !== 'function'
       || options.onOwnedStopped !== undefined && typeof options.onOwnedStopped !== 'function') throw new Error('invalid provider observer');
-    this.options = options; this.clock = options.clock ?? realClock;
+    this.options = options; this.clock = options.clock ?? DEFAULT_PROVIDER_CLOCK;
   }
   snapshot(): ProviderSnapshot {
+    const recoveryAt = this.recoveryAt();
     return { availability: this.availability, reason: this.reason, generation: this.generation,
-      kind: this.active?.kind, initialShared: this.initialShared, description: this.active?.description };
+      kind: this.active?.kind, initialShared: this.initialShared, description: this.active?.description,
+      ...(recoveryAt === undefined ? {} : { recoveryAt }) };
+  }
+  private recoveryAt(): number | undefined {
+    if (!this.enabled || this.suspended || this.availability !== 'unavailable' || this.pendingOperation
+      || this.counters.activeProbes > 0 || this.active || this.owned || this.reason === 'unproved_exit' || !this.intent) return;
+    switch (this.intent.cause) {
+      case 'proven_loss': case 'handoff': case 'optional_unavailable': case 'worker_unavailable':
+      case 'exhausted_route': case 'transport_closed': case 'transport_uncertain': case 'transport_denied':
+      case 'activation_deferred': case undefined: break;
+      default: return assertNever(this.intent.cause);
+    }
+    if (this.intent.purpose === 'working_resume') return this.clock.now();
+    return this.failureNotBefore ?? this.clock.now();
   }
   stats(): ProviderStats { return { ...this.counters }; }
   /** Primitive internal accounting, also read through stats() without raw data. */
@@ -263,35 +282,57 @@ export class ProviderBroker {
     const done = operationNotice(new WeakRef(this), operation, this.completion);
     void operation.then(done, done); return operation;
   }
-  /** Receiver-free observer of the already-running operation, never a startup demand. */
+  /** Receiver-free observer of the current operation, never a startup demand. */
   operationSettled(operation: Promise<void>): void {
-    if (this.pendingOperation === operation) this.pendingOperation = undefined;
-    this.completeWork();
+    if (this.pendingOperation !== operation) return;
+    this.pendingOperation = undefined;
+    if (this.resumeNeeded && this.enabled && !this.suspended && this.availability !== 'disposed') {
+      const intent = this.intent ?? { purpose: 'initial' as const, selection: 'initial' as const };
+      this.intent = intent; this.resumeNeeded = false;
+      if (intent.purpose === 'automatic_failure') this.unavailable(this.intentReason(intent));
+      else {
+        this.availability = 'initializing'; this.reason = 'suspended'; this.changed();
+        this.operation = this.trackOperation(this.enable(this.epoch, intent));
+      }
+    }
+    this.opportunity(); this.completeWork();
+  }
+  private static resumedOperation(owner: WeakRef<ProviderBroker>, epoch: number): () => Promise<void> | undefined {
+    return () => {
+      const broker = owner.deref();
+      return broker?.current(epoch) ? broker.operation : undefined;
+    };
   }
   start(): Promise<void> {
     if (!this.enabled || this.suspended || this.availability === 'disposed') return Promise.resolve();
     if (this.operation) return this.operation;
+    this.intent ??= { purpose: 'initial', selection: 'initial' };
     const epoch = this.epoch;
-    this.operation = this.trackOperation(this.select(epoch, true)); return this.operation;
+    this.operation = this.trackOperation(this.enable(epoch, this.intent)); return this.operation;
   }
-  /** Deliberate interruption is separate from timeout/loss and never enables a failed provider. */
+  /** Deliberate interruption is separate from timeout/loss and preserves its origin. */
   suspend(): number | undefined {
     if (this.suspended || this.availability === 'disposed') return;
     if (this.active?.transport.endReason !== undefined) void this.transportEnded(this.generation, this.active.transport.endReason).catch(ignored);
-    const interrupted = this.active && (this.pendingRequests > 0 || this.active.transport.hasPendingRequests === true) ? this.generation : undefined;
-    const recovering = this.availability === 'transitioning' && (this.reason === 'proven_loss' || this.reason === 'handoff');
-    if (this.availability === 'transitioning' && !recovering) this.unavailable(this.reason);
+    const previous = this.active;
+    const interrupted = previous && (this.pendingRequests > 0 || previous.transport.hasPendingRequests === true) ? this.generation : undefined;
+    const wasInitializing = this.availability === 'initializing' || this.availability === 'transitioning';
     this.suspended = true; cancelCompletion(this.completion);
-    this.resumeNeeded = this.enabled && (this.availability === 'initializing' || recovering || interrupted !== undefined);
-    this.resumeKind = this.active?.kind ?? this.transition?.kind ?? this.resumeKind;
-    this.suspendedRecovery = this.transition?.recovery ?? { start: this.recoveryStart, end: this.recoveryEnd };
-    ++this.epoch; this.cancelRecovery(); this.cancellation.abort();
-    if (this.resumeNeeded) {
-      if (this.active) this.candidates.add(this.active.transport);
+    this.resumeNeeded = this.enabled && (!!previous || (wasInitializing && this.intent !== undefined));
+    if (previous) {
+      this.intent = { purpose: 'working_resume', selection: previous.kind === 'shared' ? 'previous_shared' : 'previous_owned' };
+    } else if (this.intent) this.resumeNeeded ||= this.enabled;
+    this.suspendedRecovery = this.recoveryEnd ? { start: this.recoveryStart, end: this.recoveryEnd } : undefined;
+    ++this.epoch; this.cancelRecovery(true);
+    if (previous) {
+      const generation = this.generation;
+      this.candidates.add(previous.transport);
       this.retire('suspended');
-    }
+      this.notifyRetired(generation, previous.transport.endReason ?? 'suspended');
+    } else if (this.availability === 'transitioning') this.unavailable(this.reason);
+    this.cancellation.abort();
     const pending = [...this.candidates].map(transport => this.close(transport));
-    this.operation = this.trackOperation(Promise.all(pending).then(ignored));
+    this.operation = this.trackOperation(Promise.all([...pending, ...this.pendingCloses]).then(ignored));
     return interrupted;
   }
   resume(): Promise<void> {
@@ -300,14 +341,20 @@ export class ProviderBroker {
     this.cancellation = new AbortController();
     const recovery = this.suspendedRecovery; this.suspendedRecovery = undefined;
     if (recovery) { this.recoveryStart = recovery.start; this.recoveryEnd = recovery.end; }
-    const needed = this.resumeNeeded; this.resumeNeeded = false;
-    if (!this.enabled) return this.operation ?? Promise.resolve();
-    if (!needed) {
-      if (this.active?.transport.endReason !== undefined) return this.transportEnded(this.generation, this.active.transport.endReason);
-      this.scheduleRecovery(this.epoch); return this.operation ?? Promise.resolve();
+    const needed = this.resumeNeeded;
+    if (!this.enabled || !needed) {
+      this.resumeNeeded = false; this.opportunity(); return this.operation ?? Promise.resolve();
     }
+    const intent = this.intent ?? { purpose: 'initial' as const, selection: 'initial' as const };
+    this.intent = intent;
+    if (intent.purpose === 'automatic_failure') {
+      this.resumeNeeded = false; this.unavailable(this.intentReason(intent)); this.opportunity();
+      return this.pendingOperation?.then(ProviderBroker.resumedOperation(new WeakRef(this), this.epoch)) ?? Promise.resolve();
+    }
+    if (this.pendingOperation) return this.pendingOperation.then(ProviderBroker.resumedOperation(new WeakRef(this), this.epoch));
+    this.resumeNeeded = false;
     this.availability = 'initializing'; this.reason = 'suspended'; this.changed();
-    this.operation = this.trackOperation(this.enable(this.epoch, true)); return this.operation;
+    this.operation = this.trackOperation(this.enable(this.epoch, intent)); return this.operation;
   }
   /** Receiver-free request settlement must not debit a replacement generation. */
   requestSettled(generation: number): void { if (generation === this.generation) this.pendingRequests--; this.completeWork(); }
@@ -317,77 +364,138 @@ export class ProviderBroker {
     if (this.availability === 'disposed') return this.shutdown ?? Promise.resolve();
     if (this.enabled === enabled) return this.operation ?? Promise.resolve();
     cancelCompletion(this.completion);
-    this.enabled = enabled; this.resumeNeeded = enabled && this.suspended; this.transition = undefined;
-    this.resumeKind = undefined; this.suspendedRecovery = undefined;
+    this.enabled = enabled;
+    this.resumeNeeded = enabled && this.suspended;
+    this.suspendedRecovery = undefined; this.intent = undefined;
     const epoch = ++this.epoch;
-    this.cancelRecovery(); this.cancellation.abort();
-    if (this.active) this.candidates.add(this.active.transport);
+    this.cancelRecovery();
+    const previous = this.active, retiredGeneration = previous ? this.generation : undefined;
+    if (previous) this.candidates.add(previous.transport);
     this.pendingRequests = 0; this.active = undefined; ++this.generation;
     if (!enabled) {
       reportRuntime(this.options.diagnostic, { kind: 'released', scope: this, operation: 'startup' });
-      this.availability = 'disabled'; this.reason = 'disabled'; this.changed();
+      this.availability = 'disabled'; this.reason = 'disabled';
+      if (retiredGeneration !== undefined) this.notifyRetired(retiredGeneration, previous!.transport.endReason ?? 'disabled');
+      this.changed(); this.cancellation.abort();
       const pending = [...this.candidates].map(transport => this.close(transport));
       this.operation = this.trackOperation(Promise.all([...pending, ...this.pendingCloses]).then(ignored));
     } else {
-      this.cancellation = new AbortController(); this.consecutiveOwnedRestarts = 0;
+      this.cancellation.abort(); this.cancellation = new AbortController();
+      this.intent = { purpose: 'initial', selection: 'initial' };
       this.availability = 'initializing'; this.reason = 'initializing'; this.changed();
-      this.operation = this.trackOperation(this.suspended ? Promise.resolve() : this.enable(epoch));
+      this.operation = this.trackOperation(this.suspended ? Promise.resolve() : this.enable(epoch, this.intent));
     }
     return this.operation;
   }
-  private async enable(epoch: number, resumed = false): Promise<void> {
-    // A known child must actually exit before even verified shared source authority
-    // can be published. Pending acquisition/spawn cleanup remains factory-owned.
-    if (this.owned) {
-      let exited = false;
-      try { exited = await bounded(closeResource(this.owned), this.clock, PROVIDER_LIMITS.closeMs,
-        this.cancellation.signal, new WeakRef(this)); } catch { /* No exit proof. */ }
+  private async enable(epoch: number, intent: AcquisitionIntent): Promise<void> {
+    const previous = this.owned;
+    if (previous) {
+      const exited = await this.close(previous);
       if (!this.current(epoch)) return;
-      if (!exited) { this.unavailable('unproved_exit'); return; }
-      this.owned = undefined;
+      if (!exited || this.owned === previous) { this.unavailable('unproved_exit'); return; }
     }
     if (!this.current(epoch)) return;
-    if (resumed && this.transition) await this.continueRecovery(epoch, this.transition);
-    else if (resumed && this.resumeKind === 'owned') await this.takeOwned(epoch, false);
-    else {
-      const reconnect = resumed && this.resumeKind === 'shared';
-      await this.select(epoch, !reconnect, reconnect ? PROVIDER_LIMITS.reconnectAttempts : 1, reconnect);
+    if (this.pendingCloses.size) {
+      await Promise.all([...this.pendingCloses]);
+      if (!this.current(epoch)) return;
     }
+    if (intent.purpose !== 'working_resume' && this.failureNotBefore !== undefined && this.clock.now() < this.failureNotBefore) {
+      this.unavailable(intent.purpose === 'initial' ? 'activation_deferred' : this.intentReason(intent)); return;
+    }
+    await this.runSelection(epoch, intent);
   }
-  /** Caller must supply actual channel/process-loss proof for this generation.
-   * Rejections/latency/closed stats/remote state resets are not proof. Coalesced;
-   * stale events cannot act on replacement ownership.
-   */
+  /** Actual confirmed channel/process loss retires only this published route. */
   provenLoss(generation: number): Promise<void> {
     if (!this.isReady(generation)) return Promise.resolve();
     const previous = this.active!;
-    const recovery = { start: this.recoveryStart, end: this.recoveryEnd };
-    this.cancelRecovery(); this.cancellation.abort(); this.cancellation = new AbortController();
-    const epoch = ++this.epoch; this.retire('proven_loss');
-    this.transition = { cause: 'loss', kind: previous.kind, recovery };
-    this.operation = this.trackOperation(this.recover(epoch, previous, this.transition)); return this.operation;
+    const first = previous.transport.endReason;
+    if (first !== undefined && first !== 'lost') return this.transportEnded(generation, first);
+    return this.retireForFailure(generation, previous, 'proven_loss', 'proven_loss', 'lost', true);
   }
-  /** Internal public-lifetime delivery, bound to one published generation only.
-   * Uncertain/policy/owner closure invalidates availability but grants no replay. */
+  /** Actual transport lifetime, bound to one published generation only. */
   transportEnded(generation: number, reason: TransportEnd): Promise<void> {
     if (!this.isReady(generation)) return Promise.resolve();
-    if (reason === 'lost') return this.provenLoss(generation);
     const previous = this.active!;
-    this.cancelRecovery(); this.cancellation.abort(); this.cancellation = new AbortController();
-    const epoch = ++this.epoch, unavailable = `transport_${reason}` as Reason;
-    this.retire(unavailable); this.transition = undefined;
-    this.operation = this.trackOperation(this.finishEnd(epoch, previous, unavailable)); return this.operation;
+    const first = previous.transport.endReason ?? reason;
+    if (first === 'lost') return this.provenLoss(generation);
+    const cause: FailureCause = first === 'closed' ? 'transport_closed' : first === 'uncertain' ? 'transport_uncertain' : 'transport_denied';
+    return this.retireForFailure(generation, previous, cause, cause, first, false);
   }
-  private async finishEnd(epoch: number, previous: Candidate, reason: Reason): Promise<void> {
+  /** A validated current-generation native worker fault retires only this route. */
+  workerUnavailable(generation: number): Promise<void> {
+    if (!this.isReady(generation)) return Promise.resolve();
+    const previous = this.active!;
+    const first = previous.transport.endReason;
+    if (first !== undefined) return this.transportEnded(generation, first);
+    return this.retireForFailure(generation, previous, 'worker_unavailable', 'worker_unavailable', 'worker_unavailable', true);
+  }
+  /** Strict exhausted-capacity cleanup is not a fabricated transport failure. */
+  exhaustedRoute(generation: number): Promise<void> {
+    const previous = this.active;
+    if (!this.isReady(generation) || !previous || this.pendingOperation || this.counters.activeProbes > 0
+      || this.reason === 'handoff' || this.pendingRequests > 0 || previous.transport.hasPendingRequests === true
+      || (previous.kind === 'owned' && (this.owned !== previous.transport || this.ownedGeneration !== generation))
+      || (previous.kind === 'shared' && this.owned !== undefined)) return Promise.resolve();
+    const first = previous.transport.endReason;
+    if (first !== undefined) return this.transportEnded(generation, first);
+    return this.retireForFailure(generation, previous, 'exhausted_route', 'exhausted_route', 'exhausted_route', true);
+  }
+  private retireForFailure(generation: number, previous: Candidate, cause: FailureCause, reason: Reason, origin: ProviderRetirementOrigin, preservePreference: boolean): Promise<void> {
+    this.cancelRecovery(preservePreference);
+    this.intent = { purpose: 'automatic_failure', selection: previous.kind === 'shared' ? 'previous_shared' : 'previous_owned', cause };
+    const epoch = ++this.epoch;
+    this.retire(reason); this.notifyRetired(generation, origin);
+    this.cancellation.abort(); this.cancellation = new AbortController();
+    this.operation = this.trackOperation(this.finishRetirement(epoch, previous, reason)); return this.operation;
+  }
+  private async finishRetirement(epoch: number, previous: Candidate, reason: Reason): Promise<void> {
     const closed = await this.close(previous.transport);
-    if (this.current(epoch)) this.unavailable(previous.kind === 'owned' && !closed ? 'unproved_exit' : reason);
+    if (!this.current(epoch)) return;
+    if (previous.kind === 'owned' && !closed) this.unavailable('unproved_exit');
+    else this.unavailable(reason);
   }
-  /** Source owner reports a fully validated native classification, not metadata,
-   * a raw RPC success, cached colors or a retired generation. This alone resets
-   * the operator-selected two-restart crash chain; the broker never decodes sources. */
+  /** Notify the execution owner before cancellation can settle retired requests. */
+  private notifyRetired(generation: number, origin: ProviderRetirementOrigin): void {
+    try { this.options.onRetired?.(generation, origin); } catch { /* Retirement cleanup is mandatory even if an observer fails. */ }
+  }
+  private intentReason(intent: AcquisitionIntent): Reason {
+    if (intent.purpose === 'initial' && this.failureNotBefore !== undefined && this.clock.now() < this.failureNotBefore) return 'activation_deferred';
+    switch (intent.cause) {
+      case 'proven_loss': case 'handoff': case 'optional_unavailable': case 'worker_unavailable':
+      case 'exhausted_route': case 'transport_closed': case 'transport_uncertain': case 'transport_denied':
+      case 'activation_deferred': return intent.cause;
+      case undefined: return 'optional_unavailable';
+      default: return assertNever(intent.cause);
+    }
+  }
+  /** Useful execution calls this guarded entry; transport events never acquire. */
+  recover(): Promise<void> {
+    if (this.pendingOperation) return this.pendingOperation;
+    const intent = this.intent, recoveryAt = this.recoveryAt();
+    if (!intent || recoveryAt === undefined || this.clock.now() < recoveryAt || this.suspended || !this.enabled
+      || this.availability !== 'unavailable' || this.counters.activeProbes > 0) return Promise.resolve();
+    const epoch = ++this.epoch;
+    this.cancellation.abort(); this.cancellation = new AbortController();
+    this.availability = 'transitioning'; this.reason = this.intentReason(intent); this.changed();
+    const operation = this.owned || this.pendingCloses.size > 0
+      ? this.finishCleanupOnly(epoch, intent)
+      : this.runSelection(epoch, intent);
+    this.operation = this.trackOperation(operation); return this.operation;
+  }
+  private async finishCleanupOnly(epoch: number, intent: AcquisitionIntent): Promise<void> {
+    const owned = this.owned;
+    if (owned) {
+      const exited = await this.close(owned);
+      if (!this.current(epoch)) return;
+      if (!exited || this.owned === owned) { this.unavailable('unproved_exit'); return; }
+    } else if (this.pendingCloses.size) await Promise.all([...this.pendingCloses]);
+    if (this.current(epoch)) this.unavailable(this.intentReason(intent));
+  }
+  /** Source owner reports a fully validated useful current classification only;
+   * it is an observation metric and never resets provider recovery pacing. */
   classificationAccepted(generation: number): boolean {
     if (!this.isReady(generation)) return false;
-    this.consecutiveOwnedRestarts = 0; this.metric('successfulClassifications', 1); return true;
+    this.metric('successfulClassifications', 1); return true;
   }
   /** Generation-bound passthrough, no retries/queue/source storage. Caller owns
    * source admission/decoder and unique tickets (reserved broker: prefix excluded).
@@ -410,10 +518,14 @@ export class ProviderBroker {
   dispose(): Promise<void> {
     if (this.shutdown) return this.shutdown;
     cancelCompletion(this.completion);
-    ++this.epoch; this.cancelRecovery(); this.cancellation.abort();
+    const previous = this.active, retiredGeneration = previous ? this.generation : undefined;
+    ++this.epoch; this.cancelRecovery();
     reportRuntime(this.options.diagnostic, { kind: 'released', scope: this, operation: 'startup' });
-    const transports = new Set(this.candidates); if (this.active) transports.add(this.active.transport);
-    this.transition = undefined; this.resumeKind = undefined; this.pendingRequests = 0; this.active = undefined; ++this.generation; this.availability = 'disposed'; this.reason = 'disposed';
+    const transports = new Set(this.candidates); if (previous) transports.add(previous.transport);
+    this.intent = undefined; this.resumeNeeded = false; this.suspendedRecovery = undefined;
+    this.pendingRequests = 0; this.active = undefined; ++this.generation; this.availability = 'disposed'; this.reason = 'disposed';
+    if (retiredGeneration !== undefined) this.notifyRetired(retiredGeneration, previous!.transport.endReason ?? 'disposed');
+    this.cancellation.abort();
     const pending = [...transports].map(transport => this.close(transport));
     this.shutdown = Promise.all([...pending, ...this.pendingCloses]).then(ignored);
     return this.shutdown;
@@ -421,9 +533,10 @@ export class ProviderBroker {
   private current(epoch: number): boolean { return this.enabled && !this.suspended && this.epoch === epoch && this.availability !== 'disposed'; }
   private retire(reason: Reason) { this.pendingRequests = 0; this.active = undefined; ++this.generation; this.availability = 'transitioning'; this.reason = reason; this.changed(); }
   private publish(candidate: Candidate): boolean {
-    if (candidate.transport.endReason !== undefined) return false;
+    if (candidate.transport.endReason !== undefined || (candidate.kind === 'shared' && this.owned !== undefined)) return false;
     this.candidates.delete(candidate.transport); this.counters.activeCandidates = this.candidates.size;
-    this.transition = undefined; this.resumeKind = undefined; this.pendingRequests = 0; this.active = candidate; ++this.generation; this.availability = 'ready'; this.reason = 'ready';
+    if (candidate.kind === 'shared') this.cancelRecovery();
+    this.intent = undefined; this.pendingRequests = 0; this.active = candidate; ++this.generation; this.availability = 'ready'; this.reason = 'ready';
     reportRuntime(this.options.diagnostic, { kind: 'recovered', scope: this, operation: 'startup' });
     if (candidate.kind === 'owned') this.ownedGeneration = this.generation;
     const observers = lifetimeObservers(new WeakRef(this), this.generation);
@@ -431,7 +544,6 @@ export class ProviderBroker {
     this.changed(); return true;
   }
   private unavailable(reason: Reason) {
-    this.transition = undefined; this.resumeKind = undefined;
     const changed = this.availability !== 'unavailable' || this.reason !== reason;
     this.availability = 'unavailable'; this.reason = reason; if (changed) this.changed();
   }
@@ -440,6 +552,9 @@ export class ProviderBroker {
   private changed(): void {
     this.log('Provider publication changed', { availability: this.availability, reason: this.reason, version: this.active?.description.backend_version,
       pid: this.active?.description.runtime.pid });
+    this.opportunity();
+  }
+  private opportunity(): void {
     if (!this.options.onChange || this.availability === 'disposed' || this.noticeScheduled) return;
     this.noticeScheduled = true; queueMicrotask(availabilityNotice(new WeakRef(this), this.completion));
   }
@@ -456,43 +571,80 @@ export class ProviderBroker {
     this.log('Owned helper actually closed/reaped; source authority may use this receipt', { generation });
     try { this.options.onOwnedStopped?.(generation); } catch { /* Evidence delivery cannot disrupt cleanup. */ }
   }
+  closeLateCandidate(transport: ProviderTransport, kind: Kind): void {
+    if (kind === 'owned') {
+      if (this.owned && this.owned !== transport) { closeLate(transport); return; }
+      this.owned = transport; this.ownedGeneration = undefined;
+    }
+    void this.close(transport);
+  }
+  private static lateCandidateCloser(owner: WeakRef<ProviderBroker>, kind: Kind) {
+    return (transport: ProviderTransport | undefined) => {
+      if (!transport) return;
+      const broker = owner.deref();
+      if (broker) broker.closeLateCandidate(transport, kind); else closeLate(transport);
+    };
+  }
+  private static actualCloseObserver(owner: WeakRef<ProviderBroker>, transport: WeakRef<ProviderTransport>, generation: number | undefined) {
+    return (success: boolean) => owner.deref()?.actualCloseCompleted(transport.deref(), generation, success);
+  }
+  private actualCloseCompleted(transport: ProviderTransport | undefined, generation: number | undefined, success: boolean): void {
+    if (success && generation !== undefined) this.notifyOwnedStopped(generation);
+    let changed = false;
+    if (success && transport && this.owned === transport) {
+      this.owned = undefined; this.ownedGeneration = undefined;
+      if (this.availability === 'unavailable' && this.reason === 'unproved_exit' && this.intent) {
+        const reason = this.intentReason(this.intent);
+        changed = reason !== this.reason; this.reason = reason;
+      }
+    }
+    if (changed) this.changed(); else this.opportunity();
+  }
   private close(transport: ProviderTransport): Promise<boolean> {
     this.candidates.delete(transport); this.counters.activeCandidates = this.candidates.size;
     const existing = this.cleanup.get(transport); if (existing) return existing;
     const generation = transport === this.owned ? this.ownedGeneration : undefined;
+    if (!closings.has(transport)) this.metric('closesStarted', 1);
+    const actual = closeResource(transport);
+    void actual.then(ProviderBroker.actualCloseObserver(new WeakRef(this), new WeakRef(transport), generation));
     const pending = this.awaitClose(transport); this.cleanup.set(transport, pending);
-    // Observe the actual cleanup promise, not the bounded wait: a late successful
-    // reap remains proof for the OLD generation only, without starting recovery.
-    if (generation !== undefined) void closeResource(transport).then(ownedStopObserver(new WeakRef(this), generation));
     this.pendingCloses.add(pending); void pending.then(() => { this.pendingCloses.delete(pending); });
     return pending;
   }
   private async awaitClose(transport: ProviderTransport): Promise<boolean> {
-    if (!closings.has(transport)) this.metric('closesStarted', 1);
     try {
       const success = await bounded(closeResource(transport), this.clock, PROVIDER_LIMITS.closeMs, undefined, new WeakRef(this));
       this.metric(success ? 'closesCompleted' : 'closeFailures', 1);
       this.log(success ? 'Provider cleanup completed' : 'Provider cleanup wait expired; not exit proof', { owned: transport === this.owned }); return success;
     } catch (error) { this.metric('closeFailures', 1); this.log('Provider cleanup failed; not exit proof', { code: diagnosticError(error) }); return false; }
   }
-  private async candidate(kind: Kind, epoch: number): Promise<Candidate | undefined> {
+  private async candidate(kind: Kind, epoch: number, cycle?: AutomaticCycle): Promise<Candidate | undefined> {
     this.log('Provider candidate callback started; not proof of discovery or connection', { candidate: kind, stage: 'factory' });
     const signal = this.cancellation.signal;
     const attempt = new AbortController();
     const cancel = () => attempt.abort(); signal.addEventListener('abort', cancel, { once: true }); this.metric('abortListeners', 1);
     let transport: ProviderTransport | undefined;
     const selection: SharedSelection = { deadline: this.clock.now() + PROVIDER_LIMITS.factoryMs, closed: false, busy: false, seen: new WeakSet(), signal: attempt.signal };
-    const negotiate = sharedNegotiator(new WeakRef(this), epoch, selection);
-    this.metric(kind === 'shared' ? 'sharedAttempts' : 'ownedAttempts', 1);
+    const owner = new WeakRef(this), negotiate = sharedNegotiator(owner, epoch, selection);
     try {
       transport = await bounded(Promise.resolve().then(() => {
-        if (attempt.signal.aborted) throw new Error('cancelled');
+        if (attempt.signal.aborted || !this.current(epoch)) throw new Error('cancelled');
+        if (cycle && !cycle.started) {
+          this.failureNotBefore = this.clock.now() + PROVIDER_LIMITS.recoveryIntervalMs;
+          cycle.started = true;
+        }
+        if (cycle?.selection === 'previous_owned' && kind === 'owned') this.metric('ownedRestarts', 1);
+        this.metric(kind === 'shared' ? 'sharedAttempts' : 'ownedAttempts', 1);
         return kind === 'shared' ? this.options.tryShared(attempt.signal, negotiate) : this.options.acquireOwned(attempt.signal);
       }), this.clock,
-        kind === 'shared' ? PROVIDER_LIMITS.factoryMs : PROVIDER_LIMITS.ownedFactoryMs, signal, new WeakRef(this), closeLate);
+        kind === 'shared' ? PROVIDER_LIMITS.factoryMs : PROVIDER_LIMITS.ownedFactoryMs, signal, owner,
+        ProviderBroker.lateCandidateCloser(owner, kind));
       if (!transport) return undefined;
-      if (!this.current(epoch)) { closeLate(transport); return undefined; }
-      if (kind === 'owned') { this.owned = transport; this.ownedGeneration = undefined; }
+      if (!this.current(epoch)) { this.closeLateCandidate(transport, kind); return undefined; }
+      if (kind === 'owned') {
+        if (this.owned && this.owned !== transport) { await this.close(transport); this.unavailable('unproved_exit'); return undefined; }
+        this.owned = transport; this.ownedGeneration = undefined;
+      }
       if (transport.endReason !== undefined) throw new Error('candidate ended');
       if (kind === 'shared') {
         if (this.clock.now() >= selection.deadline) throw new Error('attempt expired');
@@ -537,10 +689,10 @@ export class ProviderBroker {
   }
   /** Internal module-scoped weak factory only; no source or publication authority. */
   async negotiateShared(transport: ProviderTransport, epoch: number, signal: AbortSignal, selection: SharedSelection): Promise<boolean> {
-    if (this.clock.now() >= selection.deadline) { if (!selection.seen.has(transport)) closeLate(transport); return false; }
+    if (this.clock.now() >= selection.deadline) { if (!selection.seen.has(transport)) this.closeLateCandidate(transport, 'shared'); return false; }
     if (selection.seen.has(transport)) return selection.selected?.transport === transport;
     selection.seen.add(transport);
-    if (selection.closed || selection.busy || selection.selected || signal.aborted || !this.current(epoch)) { closeLate(transport); return false; }
+    if (selection.closed || selection.busy || selection.selected || signal.aborted || !this.current(epoch)) { this.closeLateCandidate(transport, 'shared'); return false; }
     selection.busy = true;
     try {
       const candidate = await this.describeCandidate(transport, 'shared', epoch, signal, Math.floor(Math.min(PROVIDER_LIMITS.controlMs, selection.deadline - this.clock.now())));
@@ -549,68 +701,48 @@ export class ProviderBroker {
     } catch { this.metric('candidatesRejected', 1); await this.close(transport); return false; }
     finally { selection.busy = false; }
   }
-  private async select(epoch: number, initial: boolean, sharedAttempts = 1, beginEpisode = true): Promise<void> {
+  private async runSelection(epoch: number, intent: AcquisitionIntent): Promise<void> {
+    const automatic = intent.purpose === 'automatic_failure';
+    const cycle: AutomaticCycle | undefined = automatic ? { started: false, selection: intent.selection } : undefined;
+    const initial = intent.purpose === 'initial';
+    const sharedAttempts = intent.selection === 'initial' ? 1
+      : intent.selection === 'previous_shared' || intent.selection === 'handoff' ? PROVIDER_LIMITS.reconnectAttempts : 0;
     for (let i = 0; i < sharedAttempts && this.current(epoch); i++) {
       if (!initial) this.metric('reconnectAttempts', 1);
-      const shared = await this.candidate('shared', epoch);
-      if (shared) {
-        if (!this.current(epoch)) { await this.close(shared.transport); return; }
-        if (!this.publish(shared)) { await this.close(shared.transport); continue; }
-        if (initial && this.initialShared === undefined) this.initialShared = true;
-        return;
-      }
+      const shared = await this.candidate('shared', epoch, cycle);
+      if (!shared) continue;
+      if (!this.current(epoch)) { await this.close(shared.transport); return; }
+      if (!this.publish(shared)) { await this.close(shared.transport); continue; }
+      if (initial && this.initialShared === undefined) this.initialShared = true;
+      return;
     }
     if (!this.current(epoch)) return;
     if (initial && this.initialShared === undefined) this.initialShared = false;
-    await this.takeOwned(epoch, beginEpisode);
+    const owned = await this.candidate('owned', epoch, cycle);
+    if (!this.current(epoch)) { if (owned) await this.close(owned.transport); return; }
+    if (!owned || !this.publish(owned)) {
+      if (owned) await this.close(owned.transport);
+      if (intent.purpose !== 'automatic_failure') {
+        this.intent = { purpose: 'automatic_failure', selection: intent.selection, cause: 'optional_unavailable' };
+      }
+      if (this.reason !== 'unproved_exit') this.unavailable(this.owned ? 'unproved_exit' : this.intentReason(this.intent ?? intent));
+      return;
+    }
+    if (this.initialShared === true && this.recoveryEnd === 0 && intent.selection === 'previous_shared') this.beginRecovery(epoch);
+    else this.scheduleRecovery(epoch);
   }
   private startupFailed(): void {
     diagnose(this.options.diagnostic, 'ERROR', 'occipital', 'Owned helper startup failed; exception payload is not recorded');
     reportRuntime(this.options.diagnostic, { kind: 'failure', scope: this, operation: 'startup', area: 'syntax', code: 'startup_failed' });
-  }
-  private async takeOwned(epoch: number, beginEpisode = true): Promise<void> {
-    const owned = await this.candidate('owned', epoch);
-    if (!this.current(epoch)) { if (owned) await this.close(owned.transport); return; }
-    if (!owned) { if (this.reason !== 'unproved_exit') this.unavailable('optional_unavailable'); return; }
-    if (!this.publish(owned)) {
-      const exited = await this.close(owned.transport);
-      if (this.current(epoch)) { this.startupFailed(); this.unavailable(exited ? 'optional_unavailable' : 'unproved_exit'); }
-      return;
-    }
-    if (this.initialShared && beginEpisode) this.beginRecovery(epoch);
-    else if (!beginEpisode) this.scheduleRecovery(epoch);
-  }
-  private async recover(epoch: number, previous: Candidate, transition: RecoveryTransition): Promise<void> {
-    const closed = await this.close(previous.transport);
-    if (!this.current(epoch)) return;
-    if (previous.kind === 'owned' && !closed) { this.unavailable('unproved_exit'); return; }
-    await this.continueRecovery(epoch, transition);
-  }
-  private async continueRecovery(epoch: number, transition: RecoveryTransition): Promise<void> {
-    const { recovery } = transition;
-    this.recoveryStart = recovery.start; this.recoveryEnd = recovery.end;
-    if (transition.cause === 'handoff') await this.select(epoch, false, PROVIDER_LIMITS.reconnectAttempts, false);
-    else if (transition.kind === 'shared') await this.select(epoch, false, PROVIDER_LIMITS.reconnectAttempts);
-    else {
-      if (!transition.charged && this.consecutiveOwnedRestarts >= PROVIDER_LIMITS.ownedRestarts) {
-        this.log('Owned restart budget exhausted; awaiting deliberate re-enable', { attempts: this.consecutiveOwnedRestarts });
-        this.metric('ownedRestartStops', 1); this.unavailable('restart_limit'); return;
-      }
-      if (!transition.charged) {
-        transition.charged = true; this.consecutiveOwnedRestarts++; this.metric('ownedRestarts', 1);
-        this.log('Restarting after confirmed owned process loss and cleanup', { attempt: this.consecutiveOwnedRestarts });
-      }
-      await this.takeOwned(epoch, false);
-    }
   }
   private beginRecovery(epoch: number) {
     this.log('Bounded shared-return episode started');
     this.metric('recoveryEpisodes', 1); this.recoveryStart = this.clock.now(); this.recoveryEnd = this.recoveryStart + PROVIDER_LIMITS.recoveryWindowMs;
     this.scheduleRecovery(epoch);
   }
-  private cancelRecovery() {
+  private cancelRecovery(preservePreference = false) {
     if (this.recoveryTimer) { this.recoveryTimer.cancel(); this.recoveryTimer = undefined; this.metric('liveTimers', -1); this.metric('recoveryTimers', -1); }
-    this.recoveryEnd = 0;
+    if (!preservePreference) { this.recoveryStart = 0; this.recoveryEnd = 0; }
   }
   private scheduleRecovery(epoch: number) {
     if (!this.current(epoch) || this.active?.kind !== 'owned' || !this.recoveryEnd || this.recoveryTimer) return;
@@ -633,14 +765,18 @@ export class ProviderBroker {
       const shared = await this.candidate('shared', epoch);
       if (!shared) return;
       if (!this.current(epoch)) { await this.close(shared.transport); return; }
-      const owned = this.active;
+      const owned = this.active, generation = this.generation;
       if (!owned || owned.kind !== 'owned') { await this.close(shared.transport); return; }
+      if (owned.transport.endReason !== undefined) {
+        await this.transportEnded(generation, owned.transport.endReason);
+        await this.close(shared.transport); return;
+      }
       const recovery = { start: this.recoveryStart, end: this.recoveryEnd };
-      this.cancelRecovery(); this.retire('handoff');
-      this.transition = { cause: 'handoff', kind: 'owned', recovery };
+      this.intent = { purpose: 'automatic_failure', selection: 'handoff', cause: 'handoff' };
+      this.cancelRecovery(true); this.retire('handoff'); this.notifyRetired(generation, 'handoff');
       const exited = await this.close(owned.transport);
       if (!this.current(epoch)) { await this.close(shared.transport); return; }
-      if (!exited) {
+      if (!exited || this.owned === owned.transport) {
         this.metric('handoffsFailed', 1);
         await this.close(shared.transport);
         if (this.current(epoch)) this.unavailable('unproved_exit');
@@ -651,14 +787,19 @@ export class ProviderBroker {
         await this.close(shared.transport);
         if (!this.current(epoch)) return;
         this.recoveryStart = recovery.start; this.recoveryEnd = recovery.end;
-        await this.takeOwned(epoch, false);
-        return;
+        const fallback = await this.candidate('owned', epoch);
+        if (!this.current(epoch)) { if (fallback) await this.close(fallback.transport); return; }
+        if (!fallback || !this.publish(fallback)) {
+          if (fallback) await this.close(fallback.transport);
+          this.unavailable(this.owned ? 'unproved_exit' : 'optional_unavailable'); return;
+        }
+        this.scheduleRecovery(epoch); return;
       }
       this.metric('handoffsSucceeded', 1); this.log('Shared return completed after owned helper exit');
     } finally {
       this.metric('activeProbes', -1); this.metric('probesCompleted', 1);
       if (this.current(epoch)) this.scheduleRecovery(epoch);
-      this.completeWork();
+      this.opportunity(); this.completeWork();
     }
   }
 }

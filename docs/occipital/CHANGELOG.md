@@ -28,6 +28,12 @@ Release notes before the published 0.2.0 baseline have not been reconstructed.
   Old Rust paths and signatures are not retained. The executable interface,
   `syntax-highlight/v4` JSON/RPC contract and resource limits are unchanged.
 
+### Fixed
+
+- Report possible execution when a queued worker's reply is lost instead of
+  claiming the request definitely did not start. This requires the updated helper;
+  older protocol-compatible helpers retain their previous execution evidence.
+
 ## [0.3.0] - 2026-11-03
 
 ### Breaking changes

@@ -21,6 +21,9 @@ function reviewFixture(t: TestContext) {
     provider: { availability: 'disabled' as const, reason: 'disabled' as const, generation: 0, initialShared: false } };
   let adapter: ReturnType<typeof installTidyUi>, classifications = 0, depth = 0, preparations = 0, sequence = 0;
   const sources = new SourceExecution({ snapshot: () => snapshot.provider, isReady: () => false,
+    recover: async () => assert.fail('disabled provider must not be acquired'),
+    workerUnavailable: async () => assert.fail('disabled provider has no worker'),
+    exhaustedRoute: async () => assert.fail('disabled provider has no route'),
     classificationAccepted: () => false, request: () => { throw new Error('disabled provider must stay unused'); } },
     { onChange: (keys, groups) => adapter?.syntaxSourceChanged(keys, groups) });
   sources.setEnabled(false);

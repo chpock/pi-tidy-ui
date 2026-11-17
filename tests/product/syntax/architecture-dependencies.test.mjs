@@ -10,7 +10,9 @@ const sourceRoot = resolve(projectRoot, 'src');
 const sourceExtensions = new Set(['.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs']);
 const sourceTypes = [ts.ScriptKind.TS, ts.ScriptKind.TSX, ts.ScriptKind.TS, ts.ScriptKind.TS,
   ts.ScriptKind.JS, ts.ScriptKind.JSX, ts.ScriptKind.JS, ts.ScriptKind.JS];
+const sourceDecisionModules = ['src/highlighting/source-state.ts', 'src/highlighting/style-state.ts'];
 const highlightingModules = [
+  ...sourceDecisionModules,
   'src/highlighting/source-execution.ts',
   'src/highlighting/pi-fallback.ts',
   'src/highlighting/pi-flat.ts',
@@ -71,6 +73,7 @@ const governedModules = new Set([
   ...applicationModules,
 ]);
 const pureModules = new Set([
+  ...sourceDecisionModules,
   'src/cards/file-model.ts',
   'src/cards/file-preview-mode.ts',
   'src/appearance/card-roles.ts',
@@ -354,7 +357,7 @@ function assertRegistryDependency(edge) {
   const domain = ['src/resources/', 'src/appearance/', 'src/occipital/', 'src/application/',
     'src/syntax/', 'src/themes/', 'src/tool-adapters/', 'src/highlighting/storage/', 'src/cards/', 'src/rendering/'].some(prefix => target.startsWith(prefix))
     || isPresentationModule(target)
-    || ['src/highlighting/source-execution.ts', 'src/highlighting/source-ports.ts',
+    || [...sourceDecisionModules, 'src/highlighting/source-execution.ts', 'src/highlighting/source-ports.ts',
       'src/highlighting/controller-styles.ts', 'src/highlighting/style-preparation.ts',
       'src/highlighting/pi-fallback.ts', 'src/highlighting/pi-flat.ts', 'src/highlighting/card-publication.ts',
       'src/highlighting/controller-limits.ts', 'src/highlighting/limits.ts'].includes(target)
@@ -942,8 +945,8 @@ function assertImportFree(path, source) {
   assert.equal(references.length, 0, `${path} must remain import-free; found ${references.map(reference => reference.specifier).join(', ')}`);
 }
 
-function assertPureMigratedModules() {
-  for (const path of pureModules) assertImportFree(path, parseSource(path));
+function assertPureMigratedModules(readSource = parseSource) {
+  for (const path of pureModules) assertImportFree(path, readSource(path));
 }
 
 test('appearance owns shared roles, preferences and concrete style conversion', () => {
@@ -1946,4 +1949,31 @@ test('entry currentness does not confuse an unrelated named helper with the actu
 test('entry currentness resolves a local default export list without taking ownership of an unrelated helper', () => {
   assert.doesNotThrow(() => assertEntryCurrentnessOwnership(entryPath, parseSource(entryPath,
     'function tidyUi() { let instrumentation = 0; } const entry = () => { const captured = 0; return captured; }; export { entry as default };')));
+});
+
+
+for (const model of sourceDecisionModules) test(`pure work decision governance rejects module loading from ${model}`, () => {
+  const source = text => path => parseSource(path, path === model ? text : undefined);
+  assert.doesNotThrow(() => assertPureMigratedModules(source("export const next = (ready: boolean) => ready ? 'run' : 'wait';")));
+  for (const text of [
+    "import { setTimeout } from 'node:timers';",
+    "import type { SourceExecution } from './source-execution.ts';",
+    "export { SourceExecution } from './source-execution.ts';",
+    "export * from './source-execution.ts';",
+    "type Owner = import('./source-execution.ts').SourceExecution;",
+    "const dependency = import('node:timers');",
+    "const dependency = require('node:timers');",
+    "import dependency = require('node:timers');",
+    'const dependency = import(selectedModule);',
+    'const dependency = require(selectedModule);',
+  ]) {
+    assert.throws(() => assertPureMigratedModules(source(text)), /must remain import-free/, text);
+  }
+});
+
+test('chronological registry cannot depend on SOURCE or STYLE decision models', () => {
+  for (const target of sourceDecisionModules) for (const kind of ['type-only', 'value', 'mixed']) {
+    assert.throws(() => assertEdgePolicy({ source: 'src/highlighting/work-registry.ts', target, kind }),
+      /chronological registry imports/);
+  }
 });

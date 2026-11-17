@@ -135,6 +135,8 @@ Acknowledgment changes only a pending receipt to committed. If cancellation alre
 
 A refusal before computational work starts can report `not_started`. Once a source job has started, later errors retain that execution disposition. STYLE jobs also carry an execution disposition through preparation, computation and encoding. This flag describes execution authority, not whether a visible result was delivered or whether a parser counter is nonzero.
 
+If a `Ticket` loses its delivery sender, both polling and awaiting report `worker_gone` with the conservative `started` disposition: no delivery means there is no receipt proving that the admitted computation never ran. This applies even if the request might still have been queued. A known failure before worker handoff, including a rejected submission or bind, retains its genuine `not_started` evidence. Sender loss alone proves neither that old computation stopped nor that a separately managed shared service should be restarted.
+
 The important cleanup paths are:
 
 - **Invalid or unadmitted request:** no parser job is created. Any acquired temporary guards are released with their owned data.
