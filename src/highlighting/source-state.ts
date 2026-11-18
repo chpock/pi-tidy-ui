@@ -35,8 +35,22 @@ export const SOURCE_RETRY_MS = 60000;
 export function admittedSource(source: Readonly<SourceFacts>): boolean {
   return source.inputRevision > 0 && source.refusalCause !== 'metadataFunding';
 }
-export function matchingSourceVersion(source: Readonly<SourceFacts>, version: number | undefined): boolean {
+export function matchingSourceVersion(source: Readonly<Pick<SourceFacts, 'contentVersion' | 'version'>>, version: number | undefined): boolean {
   return version !== undefined && version >= source.contentVersion && version <= source.version;
+}
+
+export function classifySourceInput(source: Readonly<SourceFacts>, input: {
+  sameIdentity: boolean; sameObservation: boolean; complete: boolean; text: string; latestText?: string; localEmptyCoverage: boolean;
+}) {
+  const identityChanged = !input.sameIdentity;
+  const formationChanged = source.complete && !input.complete;
+  const equal = admittedSource(source) && input.sameIdentity && source.complete === input.complete
+    && (input.sameObservation || input.latestText === input.text);
+  const proved = identityChanged || admittedSource(source) && (source.complete !== input.complete
+    || input.latestText !== undefined && input.latestText !== input.text);
+  const rewrite = input.latestText !== undefined && (!input.text.startsWith(input.latestText)
+    || input.localEmptyCoverage || source.complete && input.text !== input.latestText);
+  return { identityChanged, formationChanged, equal, proved, rewrite };
 }
 export function applicableAttempt(source: Readonly<SourceFacts>): boolean {
   return source.attemptInput === source.inputRevision && source.attemptProvider === source.provider;
@@ -72,9 +86,13 @@ export function sourceExecution(source: Readonly<SourceFacts> | undefined, held:
   return source.attemptOutcome === 'acknowledged' ? 'acknowledged' : 'not_started';
 }
 
+function eligibleSource(source: Readonly<SourceFacts>): boolean {
+  return !source.frozen && !source.retired && admittedSource(source);
+}
+
 /** No mutation, acquisition or stored-work flag: compare the admitted target with current facts. */
 export function nextSource(source: Readonly<SourceFacts>, opportunity: SourceOpportunity): SourceDecision {
-  if (!opportunity.active || !opportunity.enabled || source.frozen || source.retired || !admittedSource(source) || !opportunity.available)
+  if (!opportunity.active || !opportunity.enabled || !eligibleSource(source) || !opportunity.available)
     return { kind: 'idle' };
   if (opportunity.held) return { kind: 'held' };
   if (opportunity.satisfied) return { kind: 'idle' };
@@ -95,7 +113,7 @@ export function nextSource(source: Readonly<SourceFacts>, opportunity: SourceOpp
 
 /** A retry entitlement alone never creates new priority over Pi. */
 export function queuedSource(source: Readonly<SourceFacts>, ready: boolean, available: boolean, satisfied: boolean): boolean {
-  if (!ready || !available || source.retired || source.frozen || !admittedSource(source) || satisfied) return false;
+  if (!ready || !available || !eligibleSource(source) || satisfied) return false;
   if (sourceRefused(source) && source.evictionEntitlement !== 'dispatch') return false;
   if (!applicableAttempt(source)) return true;
   return source.continuation === null || source.evictionEntitlement === 'dispatch';

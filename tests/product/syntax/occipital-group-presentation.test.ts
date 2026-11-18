@@ -742,6 +742,45 @@ for (const mode of ['remove', 'replace', 'off', 'dispose', 'pressure', 'throw'] 
   } finally { void c.preparation; await cleanup(owner, peer); }
 });
 
+test('group presentation: per-source palette commit survives a later membership refusal', async () => {
+  const peer = new Peer(), notices: { keys: string[]; groups: number[] }[] = [];
+  const owner = new SourceExecution(peer, { onChange: (keys, groups) => notices.push({ keys: [...keys], groups: [...(groups ?? [])] }) });
+  const c = card(owner, ['one']), root = Reflect.get(owner, 'pool') as SemanticRetentionPool;
+  const publishDisplays = root.publishDisplays;
+  try {
+    owner.setStyleSelection(local(7)); c.start(); peer.source(0); await settle(); peer.style(1); await settle();
+    assert.ok(owner.groupPresentation(c.group));
+    const oldSource = owner.displayBasis('one')!;
+    notices.length = 0;
+    let injected = false, publications = 0;
+    root.publishDisplays = function(updates) {
+      const result = publishDisplays.call(this, updates);
+      if (result.accepted) {
+        publications++;
+        if (!injected) { injected = true; c.keys.add('missing'); }
+      }
+      return result;
+    };
+    assert.equal(owner.setStyleSelection(local(9)), true); await settle();
+    assert.equal(injected, true, 'the real pool commit precedes the injected membership change');
+    assert.equal(publications, 1);
+    const source = owner.displayBasis('one')!;
+    assert.notEqual(source.stamp, oldSource.stamp);
+    assert.equal(ink(source.role('panel')), 9);
+    assert.equal(source.visitStyles(style => assert.equal(ink(style), 9)), true);
+    assert.equal(owner.groupPresentation(c.group), undefined, 'the later group seal check rejects changed membership');
+    assert.equal(notices.some(notice => notice.keys.includes('one')), true, 'the committed per-source notice is retained');
+    assert.equal(notices.some(notice => notice.groups.includes(c.group.id)), false, 'the refused group adds no ready notice');
+    root.publishDisplays = publishDisplays;
+    assert.equal(owner.updatePreparation(c.group), false, 'the injected extra member cannot seal without a source');
+    c.keys.delete('missing');
+    assert.equal(owner.updatePreparation(c.group), true, 'the restored membership can be sealed again');
+    c.start(); await settle();
+    assert.deepEqual(colors(owner.groupPresentation(c.group), ['one']), [9, 9]);
+    assert.equal(peer.calls.length, 2, 'local retry reuses the one SOURCE and STYLE result');
+  } finally { root.publishDisplays = publishDisplays; void c.preparation; await cleanup(owner, peer); }
+});
+
 test('group presentation: ready member collection funding denial is atomic and does not retry warm reads', async () => {
   const { DataBudget } = await import('../../../src/resources/data-budget.ts');
   const budget = new DataBudget(1_000_000), peer = new Peer(), owner = new SourceExecution(peer, { retention: { budget } }), c = card(owner, ['one']);

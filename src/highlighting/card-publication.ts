@@ -14,7 +14,7 @@ export interface CardPublicationMetadata {
   ready?: GroupReady;
 }
 
-export function createCardPublicationMetadata(): CardPublicationMetadata { return {}; }
+
 
 export function releaseGroupHold(hold: GroupHold): void {
   hold.pin.release(); hold.charge.release();

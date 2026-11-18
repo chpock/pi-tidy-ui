@@ -11,9 +11,26 @@ const sourceExtensions = new Set(['.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', 
 const sourceTypes = [ts.ScriptKind.TS, ts.ScriptKind.TSX, ts.ScriptKind.TS, ts.ScriptKind.TS,
   ts.ScriptKind.JS, ts.ScriptKind.JSX, ts.ScriptKind.JS, ts.ScriptKind.JS];
 const sourceDecisionModules = ['src/highlighting/source-state.ts', 'src/highlighting/style-state.ts'];
+const executionPath = 'src/highlighting/source-execution.ts';
+const publicationPath = 'src/highlighting/style-publication.ts';
+const executionRecordsPath = 'src/highlighting/execution-records.ts';
+const publicationTypeDependencies = new Set([
+  executionPath, executionRecordsPath, 'src/highlighting/work-registry.ts', 'src/resources/data-budget.ts',
+  'src/highlighting/storage/context-arena.ts', 'src/highlighting/storage/semantic-capture.ts',
+  'src/highlighting/storage/ready-display-publication.ts', 'src/highlighting/storage/semantic-retention.ts',
+  'src/highlighting/source-ports.ts', 'src/appearance/style-materialization.ts', 'src/occipital/provider.ts',
+]);
+const publicationRuntimeDependencies = new Set([
+  ...sourceDecisionModules, 'src/highlighting/controller-styles.ts', 'src/highlighting/card-publication.ts',
+  'src/highlighting/style-preparation.ts', 'src/appearance/card-roles.ts', 'src/occipital/semantic-protocol.ts',
+  'src/diagnostics.ts', 'src/occipital/protocol.ts', 'src/occipital/limits.ts',
+  'src/highlighting/limits.ts', 'src/highlighting/controller-limits.ts',
+]);
 const highlightingModules = [
   ...sourceDecisionModules,
   'src/highlighting/source-execution.ts',
+  'src/highlighting/style-publication.ts',
+  'src/highlighting/execution-records.ts',
   'src/highlighting/pi-fallback.ts',
   'src/highlighting/pi-flat.ts',
   'src/highlighting/card-publication.ts',
@@ -292,6 +309,7 @@ function collectProductionEdges(files) {
   for (const path of files) {
     if (!sourceExtensions.has(extname(path))) continue;
     const source = parseSource(path);
+    assertPublicationModule(path, source);
     if (isPresentationModule(path)) {
       for (const reference of moduleReferences(source)) assertPresentationReference(path, reference);
       assertPresentationImports(path, source);
@@ -360,9 +378,43 @@ function assertRegistryDependency(edge) {
     || [...sourceDecisionModules, 'src/highlighting/source-execution.ts', 'src/highlighting/source-ports.ts',
       'src/highlighting/controller-styles.ts', 'src/highlighting/style-preparation.ts',
       'src/highlighting/pi-fallback.ts', 'src/highlighting/pi-flat.ts', 'src/highlighting/card-publication.ts',
-      'src/highlighting/controller-limits.ts', 'src/highlighting/limits.ts'].includes(target)
+      publicationPath, executionRecordsPath, 'src/highlighting/controller-limits.ts', 'src/highlighting/limits.ts'].includes(target)
     || presentationAndPayloadFiles.has(target);
   if (domain) throw new Error(`chronological registry imports source, style, storage or presentation ownership: ${edgeKey(edge)}`);
+}
+
+function assertPublicationDependency(edge) {
+  if (edge.target === publicationPath && edge.source !== executionPath) {
+    throw new Error(`private style publication is used outside execution: ${edgeKey(edge)}`);
+  }
+  if (edge.target === executionRecordsPath && (![executionPath, publicationPath].includes(edge.source) || edge.kind !== 'type-only')) {
+    throw new Error(`execution records require a private type-only borrow: ${edgeKey(edge)}`);
+  }
+  if (edge.source !== publicationPath) return;
+  const allowed = publicationRuntimeDependencies.has(edge.target)
+    || publicationTypeDependencies.has(edge.target) && edge.kind === 'type-only';
+  if (!allowed) throw new Error(`style publication imports execution or physical ownership: ${edgeKey(edge)}`);
+}
+
+function assertPublicationModule(path, source) {
+  if (path === executionRecordsPath) {
+    for (const statement of source.statements) {
+      const erased = ts.isInterfaceDeclaration(statement) || ts.isTypeAliasDeclaration(statement)
+        || ts.isImportDeclaration(statement) && statement.importClause?.isTypeOnly
+        || ts.isExportDeclaration(statement) && statement.isTypeOnly || ts.isEmptyStatement(statement);
+      if (!erased) throw new Error('execution records must contain only erased type declarations');
+    }
+  }
+  if (path !== publicationPath) return;
+  for (const statement of source.statements) {
+    if (!ts.isImportDeclaration(statement) && !ts.isExportDeclaration(statement)) continue;
+    const module = statement.moduleSpecifier;
+    if (!module || !ts.isStringLiteralLike(module) || !module.text.startsWith('.')) continue;
+    if (!publicationTypeDependencies.has(resolveRelativeImport(path, module.text))) continue;
+    // Element-level type modifiers can leave an executable empty import after stripping.
+    const erased = ts.isImportDeclaration(statement) ? statement.importClause?.isTypeOnly : statement.isTypeOnly;
+    if (!erased) throw new Error('style publication type dependencies require whole-declaration erasure');
+  }
 }
 
 function assertStorageDependency(edge) {
@@ -866,6 +918,7 @@ function assertEdgePolicy(edge) {
   assertStorageDependency(edge);
   assertNativeDependency(edge);
   assertHighlightingDependency(edge);
+  assertPublicationDependency(edge);
   if (edge.source.startsWith('src/resources/')) {
     const target = edge.target;
     const nativeOrPayload = target.startsWith('src/occipital/') && target !== genericStyleTypesPath
@@ -1976,4 +2029,97 @@ test('chronological registry cannot depend on SOURCE or STYLE decision models', 
     assert.throws(() => assertEdgePolicy({ source: 'src/highlighting/work-registry.ts', target, kind }),
       /chronological registry imports/);
   }
+});
+
+
+test('STYLE publication is private to execution while its reverse dependency is type-only', () => {
+  const execution = 'src/highlighting/source-execution.ts', publication = 'src/highlighting/style-publication.ts';
+  for (const kind of ['type-only', 'value', 'mixed']) {
+    assert.doesNotThrow(() => assertEdgePolicy({ source: execution, target: publication, kind }));
+    assert.throws(() => assertEdgePolicy({ source: 'src/highlighting/pi-fallback.ts', target: publication, kind }), /private style publication/);
+  }
+  assert.doesNotThrow(() => assertEdgePolicy({ source: publication, target: execution, kind: 'type-only' }));
+  for (const kind of ['value', 'mixed']) {
+    assert.throws(() => assertEdgePolicy({ source: publication, target: execution, kind }), /style publication imports/);
+    for (const target of ['src/occipital/provider.ts', 'src/highlighting/work-registry.ts']) {
+      assert.throws(() => assertEdgePolicy({ source: publication, target, kind }), /style publication imports/);
+    }
+  }
+  for (const target of ['src/occipital/stdio.ts', 'src/occipital/shared.ts', 'src/highlighting/pi-fallback.ts']) {
+    for (const kind of ['type-only', 'value', 'mixed']) {
+      assert.throws(() => assertEdgePolicy({ source: publication, target, kind }), /style publication imports/);
+    }
+  }
+});
+
+test('flat execution records cannot become a runtime or external source capability', () => {
+  const records = 'src/highlighting/execution-records.ts';
+  for (const source of ['src/highlighting/source-execution.ts', 'src/highlighting/style-publication.ts']) {
+    assert.doesNotThrow(() => assertEdgePolicy({ source, target: records, kind: 'type-only' }));
+    for (const kind of ['value', 'mixed']) {
+      assert.throws(() => assertEdgePolicy({ source, target: records, kind }), /execution records/);
+    }
+  }
+  assert.throws(() => assertEdgePolicy({ source: 'src/highlighting/pi-fallback.ts', target: records, kind: 'type-only' }), /execution records/);
+  for (const target of ['src/highlighting/style-publication.ts', records]) {
+    for (const kind of ['type-only', 'value', 'mixed']) {
+      assert.throws(() => assertEdgePolicy({ source: 'src/highlighting/work-registry.ts', target, kind }), /chronological registry imports/);
+      assert.throws(() => assertEdgePolicy({ source: 'src/highlighting/storage/semantic-retention.ts', target, kind }), /storage module imports/);
+    }
+  }
+});
+
+
+test('publication type dependencies require complete erasure across aliases and reexports', () => {
+  const path = 'src/highlighting/style-publication.ts';
+  const erased = [
+    "import type { SourceExecution as Execution } from './source-execution.ts';",
+    "export type { SourceExecution } from './source-execution.js';",
+    "type Execution = import('./source-execution.ts').SourceExecution;",
+    "import type { SourceWorkGroup } from './work-registry.ts';",
+  ];
+  for (const text of erased) assert.doesNotThrow(() => assertPublicationModule(path, parseSource(path, text)));
+  for (const text of [
+    "import { SourceExecution as Execution } from './source-execution.ts';",
+    "import { type SourceExecution } from './source-execution.ts';",
+    "import { type SourceExecution, SourceExecution as Execution } from './source-execution.ts';",
+    "export { type SourceExecution } from './source-execution.ts';",
+    "export * from './source-execution.ts';",
+    "import './source-execution.ts';",
+  ]) {
+    assert.throws(() => assertPublicationModule(path, parseSource(path, text)), /whole-declaration erasure/);
+  }
+  for (const text of [
+    "import('./source-execution.ts');",
+    "const execution = require('./source-execution.ts');",
+    "import Execution = require('./source-execution.ts');",
+  ]) {
+    const references = moduleReferences(parseSource(path, text));
+    assert.equal(references.length, 1);
+    assert.throws(() => assertEdgePolicy({ source: path, target: 'src/highlighting/source-execution.ts', kind: references[0].kind }), /style publication imports/);
+  }
+});
+
+test('execution record declarations erase without initialization, values or phantom runtime exports', () => {
+  const path = 'src/highlighting/execution-records.ts';
+  for (const text of [
+    'export interface Record { version: number } export type Version = Record["version"];',
+    "import type { DataCharge as Charge } from '../resources/data-budget.ts'; export type Record = { charge: Charge };",
+    "export type { ContextRef } from './storage/context-arena.ts';",
+    "export type * from './source-state.ts';",
+    "type Provider = typeof import('../occipital/provider.ts');",
+  ]) assert.doesNotThrow(() => assertPublicationModule(path, parseSource(path, text)));
+  for (const text of [
+    "import { type ContextRef } from './storage/context-arena.ts';",
+    "export { type ContextRef } from './storage/context-arena.ts';",
+    "import './source-state.ts';",
+    "export { nextSource } from './source-state.ts';",
+    'export const runtimeValue = 1;',
+    'export class RuntimeRecord {}',
+    'function initialize() {}',
+    "const loaded = import('./source-state.ts');",
+    'declare const phantom: unknown;',
+    'export namespace RuntimeRecords { export const value = 1; }',
+    'export type Record = {}; (() => 0)();',
+  ]) assert.throws(() => assertPublicationModule(path, parseSource(path, text)), /only erased type declarations/);
 });

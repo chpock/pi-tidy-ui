@@ -28,7 +28,7 @@ host semantic update
 |---|---|---|
 | Runtime selection | Syntax runtime, provider broker, selected local palette and compatible available transport | [Providers](syntax/providers.md) |
 | Physical requests | Typed native operations, adapter correlation, descriptor/carrier validation, explicit consumer decode bounds and actual settlement | [Request adapters](syntax/requests.md) |
-| Useful source/style work | `SourceExecution` and its private `WorkRegistry`; joint source/job authority, canonical Pi permission, chronological turns and root-coordinated card publication | [Work and execution](syntax/work.md) |
+| Useful source/style work | `SourceExecution` keeps joint SOURCE/physical-job authority, Pi permission and chronological `WorkRegistry` turns; its private `StylePublication` owns STYLE and semantic group publication/reader validity | [Work and execution](syntax/work.md) |
 | Retained data | Grants/charges, text and semantic captures, context leases, styles and ready payloads | [Storage](syntax/storage.md) |
 | Card preparation and paint | `CardSources`, measured geometry, display signatures and borrowed accepted visits | [Prepared cards](syntax/prepared-cards.md) |
 | Follow Pi | Public color sampling, complete binding/semantic-rule tables, role-specific derivatives and typography | [Follow Pi reference](syntax/follow-pi.md) |

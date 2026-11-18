@@ -497,7 +497,9 @@ test('card layout: C7 group membership and indexed lookup work is linear within 
         }
       }
       const view = source.groupPresentation(group); assert.ok(view);
-      const original = Reflect.get(source, 'currentDisplay') as (...args: unknown[]) => unknown;
+      const publication = Reflect.get(source, 'publication') as object;
+      const original = Reflect.get(publication, 'currentDisplay') as (...args: unknown[]) => unknown;
+      assert.equal(typeof original, 'function', 'the counter must observe the actual display-validity owner');
       let checks = 0, ranges = 0, keyReads = 0;
       const work = Reflect.get(source, 'work') as Map<unknown, { ready: { members: any } }>;
       const members = work.get(group)!.ready.members;
@@ -505,14 +507,14 @@ test('card layout: C7 group membership and indexed lookup work is linear within 
         const key = member.key;
         Object.defineProperty(member, 'key', { configurable: true, get() { keyReads++; return key; } });
       }
-      Reflect.set(source, 'currentDisplay', function(this: SourceExecution, ...args: unknown[]) { checks++; return original.apply(this, args); });
+      Reflect.set(publication, 'currentDisplay', function(this: object, ...args: unknown[]) { checks++; return original.apply(this, args); });
       try {
         assert.equal(view.visit(() => { for (const key of keys) {
           let read: import('../../../src/highlighting/source-ports.ts').DisplayRangeReader | undefined;
           assert.equal(view.visit(member => { read = member(key)!.read; }), true);
           assert.equal(read!(() => { ranges++; assert.ok(view.role('code')); }), true);
         } }), true);
-      } finally { Reflect.set(source, 'currentDisplay', original); }
+      } finally { Reflect.set(publication, 'currentDisplay', original); }
       assert.equal(ranges, size! * rangeCount!);
       observed.push({ members: size!, emittedRanges: ranges, currentDisplayChecks: checks, memberKeyReads: keyReads });
       console.log(JSON.stringify({ controllerGroupReadScaling: observed.at(-1) }));
@@ -573,8 +575,10 @@ test('card layout: actual card demand and controller lookups are linear across n
       const slots = Array.from(state.slots.values()), keys = slots.map(slot => slot.key), count = keys.length; assert.equal(count, segments * 2);
       let checks = 0, ranges = 0, slotReads = 0;
       for (const slot of slots) { const key = slot.key; Object.defineProperty(slot, 'key', { configurable: true, get() { slotReads++; return key; } }); }
-      const original = Reflect.get(source, 'currentDisplay') as (...args: unknown[]) => unknown, before = source.stats(), calls = pending.length;
-      Reflect.set(source, 'currentDisplay', function(this: SourceExecution, ...args: unknown[]) { checks++; return original.apply(this, args); });
+      const publication = Reflect.get(source, 'publication') as object;
+      const original = Reflect.get(publication, 'currentDisplay') as (...args: unknown[]) => unknown, before = source.stats(), calls = pending.length;
+      assert.equal(typeof original, 'function', 'the counter must observe the actual display-validity owner');
+      Reflect.set(publication, 'currentDisplay', function(this: object, ...args: unknown[]) { checks++; return original.apply(this, args); });
       try { assert.equal(cards.visit(owner, (_d, p) => {
         assert.equal(p.origin, 'owned');
         for (const key of keys) {
@@ -584,8 +588,10 @@ test('card layout: actual card demand and controller lookups are linear across n
           assert.equal(p.basis(key, (text, read) => { assert.ok(text.length); assert.equal(read(() => { ranges++; }), true); }), true);
         }
         assert.equal(p.ranges('foreign:key'), undefined); assert.equal(p.basis('foreign:key', () => assert.fail('foreign source emitted text')), false);
-      }), true); } finally { Reflect.set(source, 'currentDisplay', original); }
-      assert.equal(ranges, 4 * count); assert.ok(checks <= 8 * count + 4 * ranges);
+      }), true); } finally { Reflect.set(publication, 'currentDisplay', original); }
+      assert.equal(ranges, 4 * count);
+      assert.ok(checks >= 2 * count, 'outer entry and exit must validate every actual member');
+      assert.ok(checks <= 8 * count + 4 * ranges);
       assert.ok(slotReads <= 2 * count, `card demand lookup must be linear: ${slotReads} key reads for ${count} sources`);
       assert.equal(pending.length, calls); assert.equal(source.stats().stylePreparations, before.stylePreparations);
       observed.push({ members: count, ranges, currentDisplayChecks: checks, slotKeyReads: slotReads });

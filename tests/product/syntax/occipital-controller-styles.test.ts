@@ -11,7 +11,7 @@ import { CARD_ROLES, type CardRole } from '../../../src/appearance/card-roles.ts
 import { fingerprintRules } from '../../../src/occipital/style-rules.ts';
 import { compactSelection, syntheticSelection } from '../../fixtures/test-style-selection.ts';
 import { RequestFailure } from '../../../src/occipital/request-failure.ts';
-import { DataBudget } from '../../../src/resources/data-budget.ts';
+import { DataBudget, type DataGrant } from '../../../src/resources/data-budget.ts';
 import type { ConcreteStyle } from '../../../src/appearance/style-materialization.ts';
 import type { SemanticRetentionPool } from '../../../src/highlighting/storage/semantic-retention.ts';
 import { semanticDescriptor } from '../../fixtures/semantic-provider.ts';
@@ -1305,3 +1305,109 @@ test('controller styles: appearance-only toggles preserve a generic failure whil
     assert.equal(owner.workStatus(source.key).execution, 'acknowledged');
   } finally { await cleanup(owner, peer); }
 });
+
+
+test('controller styles: synchronous frame refusal releases capture and physical credit without warm retry', async () => {
+  const peer = new Peer();
+  const descriptor = semanticDescriptor('describe', 'small-style-frame');
+  descriptor.body.limits.request_bytes = 1024;
+  peer.description = decodeSemanticDescription(descriptor, 'describe');
+  const selection = owned(), owner = new SourceExecution(peer);
+  try {
+    assert.ok(Buffer.byteLength(JSON.stringify(selection.definition)) > descriptor.body.limits.request_bytes,
+      'the actual STYLE declaration alone exceeds the negotiated request frame');
+    assert.equal(owner.setStyleSelection(selection), true);
+    assert.equal(owner.observe(demand()), true); owner.flush();
+    assert.equal(peer.calls.length, 1, 'the smaller SOURCE frame reaches the peer');
+    peer.source(0, 'echo one\n'); await settled();
+    const refused = owner.stats();
+    assert.equal(refused.styleDispatches, 1, 'one STYLE attempt reaches actual frame admission');
+    assert.equal(refused.styleEncodes, 1);
+    assert.equal(refused.dispatches, 2);
+    assert.equal(peer.calls.length, 1, 'frame rejection is synchronous and never submits STYLE to the peer');
+    assert.equal(refused.styleCaptures, 0); assert.equal(refused.unsettledJobs, 0);
+    assert.equal(refused.transientBytes, 0); assert.equal(refused.globalTransientBytes, 0);
+    assert.equal(refused.globalUnsettledJobs, 0);
+    assert.equal(refused.retention.outstandingPeakBytes, 0);
+    assert.equal(owner.displayBasis('source'), undefined);
+    assert.equal(owner.workStatus('source').execution, 'acknowledged', 'STYLE refusal does not rewrite SOURCE evidence');
+    for (let i = 0; i < 20; i++) owner.flush(); await settled();
+    const warm = owner.stats();
+    assert.equal(warm.stylePreparations, refused.stylePreparations, 'the current no-start refusal suppresses unchanged demand');
+    assert.equal(warm.styleDispatches, 1); assert.equal(peer.calls.length, 1);
+    assert.equal(warm.globalUnsettledJobs, 0); assert.equal(warm.globalTransientBytes, 0, 'repeated settlement cannot refund twice');
+  } finally { await cleanup(owner, peer); }
+  assert.equal(owner.stats().retention.retainedBytes, 0);
+});
+
+for (const phase of ['expressions', 'cache'] as const) {
+  test(`controller styles: real pressure receipt revokes held capture during ${phase} funding without stale publication`, async () => {
+    const peer = new Peer(), owner = new SourceExecution(peer);
+    const data = (owner as unknown as { pool: SemanticRetentionPool }).pool;
+    const install = data.arena.installStyles, reserve = data.reserve, budgetReserve = DataBudget.prototype.reserve;
+    let pressure: DataGrant | undefined;
+    let armed = false, withdrawals = 0, capturedAtWithdrawal = -1, capturedAfterReceipt = -1;
+    const fillAvailable = () => {
+      const stats = data.budget.stats();
+      pressure = data.budget.reserve(stats.limit - stats.retainedBytes - stats.outstandingPeakBytes);
+      assert.ok(pressure, 'hold real outstanding credit before the normal allocator chooses its victim');
+    };
+    try {
+      owner.observe(demand('keeper')); owner.flush(); peer.source(0, 'echo one\n'); await settled();
+      owner.observe(demand('target')); owner.flush(); peer.source(1, 'echo one\n'); await settled();
+      const target = owner.status('target')!.generation!, keeper = owner.status('keeper')!.generation!;
+      owner.setStyleSelection(compactSelection()); await settled();
+      assert.equal(peer.calls.length, 3); assert.equal(peer.calls[2]!.op, 'styles.resolve');
+      assert.equal(owner.stats().styleCaptures, 1);
+      assert.equal(data.status(keeper)?.generation, keeper, 'keep the shared context alive and target the older captured entry');
+      DataBudget.prototype.reserve = function (bytes) {
+        if (this === data.budget && withdrawals && capturedAfterReceipt === -1) capturedAfterReceipt = owner.stats().styleCaptures;
+        return budgetReserve.call(this, bytes);
+      };
+      data.reserve = function (generation, bytes) {
+        const result = reserve.call(this, generation, bytes);
+        if (armed && result.released.length) {
+          assert.equal(result.accepted, true);
+          assert.deepEqual(result.released.map(receipt => [receipt.generation, receipt.reason]), [[target, 'pressure']]);
+          withdrawals++;
+          capturedAtWithdrawal = owner.stats().styleCaptures;
+          pressure!.close(); pressure = undefined; armed = false;
+        }
+        return result;
+      };
+      data.arena.installStyles = function (vocabulary, rules, refs, expressions, indices, funding) {
+        const funded = (bytes: number) => {
+          if (phase === 'expressions') { fillAvailable(); armed = true; }
+          const accepted = funding(bytes);
+          if (phase === 'expressions') capturedAfterReceipt = owner.stats().styleCaptures;
+          return accepted;
+        };
+        const installed = install.call(this, vocabulary, rules, refs, expressions, indices, funded);
+        assert.equal(installed, true, 'the independently held shared context accepts generic expressions');
+        if (phase === 'cache') { fillAvailable(); armed = true; }
+        return installed;
+      };
+      peer.style(2); await settled();
+      assert.equal(withdrawals, 1, 'the actual pool reserve emitted one pressure withdrawal');
+      assert.equal(capturedAtWithdrawal, 1, 'the response still held its capture before receipt delivery');
+      assert.equal(capturedAfterReceipt, 0, 'synchronous receipt processing revokes the capture before the funded allocation continues');
+      assert.equal(peer.signals[2]!.aborted, true);
+      assert.equal(owner.status('target')!.generation, undefined);
+      assert.equal(owner.displayBasis('target'), undefined, 'the revoked local capture cannot publish a stale display');
+      assert.deepEqual(color(owner, 'keeper'), [1], 'the coalesced owner publishes the generic installed expression');
+      assert.equal(peer.calls.length, 3, 'receipt-driven cancellation does not repeat SOURCE or STYLE');
+      const complete = owner.stats();
+      assert.equal(complete.styleCaptures, 0); assert.equal(complete.unsettledJobs, 0);
+      assert.equal(complete.globalUnsettledJobs, 0); assert.equal(complete.transientBytes, 0); assert.equal(complete.globalTransientBytes, 0);
+      assert.equal(complete.retention.outstandingPeakBytes, 0);
+      assert.equal(complete.retention.styles, 1);
+      for (let i = 0; i < 20; i++) owner.flush(); await settled();
+      assert.equal(peer.calls.length, 3); assert.equal(owner.displayBasis('target'), undefined);
+      assert.equal(owner.stats().stylePreparations, complete.stylePreparations);
+    } finally {
+      pressure?.close(); data.reserve = reserve; data.arena.installStyles = install; DataBudget.prototype.reserve = budgetReserve;
+      await cleanup(owner, peer);
+    }
+    assert.equal(owner.stats().retention.retainedBytes, 0); assert.equal(data.budget.stats().outstandingPeakBytes, 0);
+  });
+}

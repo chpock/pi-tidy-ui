@@ -4,7 +4,6 @@ import type { SemanticRetentionPool } from './storage/semantic-retention.ts';
 import type { CaptureSelection } from './storage/ready-display-publication.ts';
 
 export interface StyleContextPlan<Ref extends ContextRef> {
-  readonly refs: Ref[];
   readonly missing: Ref[];
 }
 export interface StyleRepresentationEstimate {
@@ -19,8 +18,7 @@ export function collectStyleContexts<Member extends { generation: number }, Ref 
   const unique = new Set<Ref>();
   const add = (ref: Ref) => { visited(); unique.add(ref); };
   for (const member of members) if (!visit(member, add)) return undefined;
-  const refs = [...unique];
-  return { refs, missing: refs.filter(ref => !hasStyle(ref)) };
+  return { missing: [...unique].filter(ref => !hasStyle(ref)) };
 }
 
 export function estimateStyleRepresentation(arena: ContextArena, pool: SemanticRetentionPool, vocabulary: string,
