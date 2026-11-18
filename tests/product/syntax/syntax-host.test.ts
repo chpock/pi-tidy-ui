@@ -349,12 +349,14 @@ for (const refusal of ['palette', 'paint'] as const) test(`accepted read source 
     const accepted = updateDisplay.call(this, owner, input);
     if (accepted && owner === target && input.kind === 'file' && input.viewMode === 'full') {
       acceptedFullInputs++;
-      const current = (Reflect.get(this, 'states') as WeakMap<object, { display: unknown; charge: unknown }>).get(owner)!;
-      if (!basis) basis = { revision: input.revision, display: current.display, charge: current.charge };
+      const current = (Reflect.get(this, 'states') as WeakMap<object, { display: unknown; ticket?: { descriptorCharge?: DataCharge } }>).get(owner)!;
+      const charge = current.ticket?.descriptorCharge;
+      assert.ok(charge instanceof DataCharge && charge.bytes > 0, 'the logical display has a real accepted descriptor charge');
+      if (!basis) basis = { revision: input.revision, display: current.display, charge };
       else {
         assert.equal(input.revision, basis.revision, 'paint retry keeps its accepted input revision');
         assert.equal(current.display === basis.display, true, 'paint retry retains the exact logical display');
-        assert.equal(current.charge === basis.charge, true, 'paint retry retains the logical charge');
+        assert.equal(charge === basis.charge, true, 'paint retry retains the logical charge');
       }
     }
     return accepted;

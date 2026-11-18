@@ -495,7 +495,9 @@ test('write capture review F1: empty dark roles cannot certify refused light rep
     assert.ok(refused > 0, 'real compiled-role replacement funding was denied');
     assert.equal(state.preparedPalette, 'pi:2:truecolor'); assert.equal(state.paletteInput?.paletteRevision, 2);
     assert.deepEqual(retained, dark, 'actual old dark compiled roles remain, despite the current light lease/preparation');
-    const rejectedPaint = { preparedPalette: state.preparedPalette, lease: state.paletteInput?.paletteRevision, token: state.paintToken, publication: state.paint?.publication };
+    const rejectedPaint = { preparedPalette: state.preparedPalette, lease: state.paletteInput?.paletteRevision, token: state.paint?.token, publication: state.paint?.publication };
+    assert.match(rejectedPaint.token ?? '', /^pi:1:truecolor:/u);
+    assert.equal(typeof rejectedPaint.publication === 'number' && rejectedPaint.publication > 0, true);
     let resolved = false; waiting = gate.wait().then(() => { resolved = true; }); waiting.catch(() => {});
     await Promise.resolve(); assert.equal(resolved, false, 'old compiled roles cannot make the current light capture ready');
     assert.notEqual(events.at(-1)?.status, 'ready');
@@ -504,7 +506,12 @@ test('write capture review F1: empty dark roles cannot certify refused light rep
     const expected = await hostCells(['toolOutput', 'borderMuted'].map(role => themes.theme.bg('toolPendingBg', themes.theme.fg(role, 'X'))));
     assert.deepEqual(light, expected, 'adopted code/frame roles match real current public light Pi bindings');
     assert.notDeepEqual(light, dark); assert.equal(events.at(-1)?.status, 'ready');
-    console.log('C25C3_F1_BASE64 ' + Buffer.from(JSON.stringify({ refused, rejectedPaint, adoptedPaint: { token: state.paintToken, publication: state.paint?.publication },
+    const adoptedPaint = { token: state.paint?.token, publication: state.paint?.publication };
+    assert.match(adoptedPaint.token ?? '', /^pi:2:truecolor:/u);
+    assert.notEqual(adoptedPaint.token, rejectedPaint.token);
+    assert.ok(adoptedPaint.publication! > rejectedPaint.publication!);
+    assert.equal(events.at(-1)?.publication, adoptedPaint.publication);
+    console.log('C25C3_F1_BASE64 ' + Buffer.from(JSON.stringify({ refused, rejectedPaint, adoptedPaint,
       dark: dark.map(row => row[0]), light: light.map(row => row[0]), events })).toString('base64'));
   } finally { observer.restore(); gate.close(); await waiting?.catch(() => {}); cards.dispose(); sources.dispose(); themes.initTheme('dark', false); }
 });

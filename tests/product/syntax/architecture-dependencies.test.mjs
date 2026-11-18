@@ -310,12 +310,14 @@ function collectProductionEdges(files) {
     if (!sourceExtensions.has(extname(path))) continue;
     const source = parseSource(path);
     assertPublicationModule(path, source);
+    if (path === 'src/syntax/card-read.ts') assertNamedCapabilityImports(path, source, paidReadTypes, 'paid card reader');
     if (isPresentationModule(path)) {
       for (const reference of moduleReferences(source)) assertPresentationReference(path, reference);
       assertPresentationImports(path, source);
     }
     for (const reference of moduleReferences(source)) {
       assertRenderingReference(path, reference);
+      if (cardLeaves.has(path) && !reference.specifier.startsWith('.')) throw new Error(`card leaf imports external code: ${path} -> ${reference.specifier}`);
       if (!reference.specifier.startsWith('.')) continue;
       edges.push({ source: path, target: resolveRelativeImport(path, reference.specifier), kind: reference.kind, syntax: reference.syntax });
     }
@@ -910,7 +912,37 @@ function assertPiHostDependency(edge) {
   if (!allowed) throw new Error(`native host binding imports application or presentation implementation: ${edgeKey(edge)}`);
 }
 
+const paidReadTypes = new Map([
+  ['src/appearance/card-roles.ts', { types: ['CardRole'] }],
+  ['src/appearance/style-ansi.ts', { types: ['AnsiStyle'] }],
+  ['src/appearance/style-materialization.ts', { types: ['ConcreteStyle'] }],
+  ['src/highlighting/source-ports.ts', { types: ['DisplayRangeReader', 'GroupDisplayBasis', 'GroupDisplayMember', 'PiProjectionReader', 'SourceDisplayBasis'] }],
+  ['src/rendering/card-values.ts', { types: ['FlatRangeReader', 'PreparedCard', 'ReadyCardPaint'] }],
+  ['src/rendering/card-styles.ts', { types: ['LiteralPaint'] }],
+]);
+const cardLeaves = new Map([
+  ['src/syntax/card-display.ts', {
+    values: new Set(['src/file-card.ts', 'src/cards/bash-preparation.ts', 'src/cards/file-preparation.ts', 'src/rendering/measured-rows.ts']),
+    types: new Set(['src/cards/file-model.ts', 'src/cards/preparation.ts', 'src/cards/display-input.ts', 'src/rendering/card-values.ts', 'src/resources/data-budget.ts']),
+  }],
+  ['src/syntax/card-palette.ts', {
+    values: new Set(['src/themes/selection.ts', 'src/occipital/style-rules.ts', 'src/syntax/semantic-rules.ts']),
+    types: new Set(['src/cards/display-input.ts', 'src/highlighting/source-ports.ts', 'src/resources/data-budget.ts', 'src/syntax/pi-input.ts', 'src/syntax/work.ts']),
+  }],
+  ['src/syntax/card-read.ts', { values: new Set(), types: new Set(paidReadTypes.keys()) }],
+]);
+
+function assertCardLeafDependency(edge) {
+  const { source, target, kind } = edge;
+  if (cardLeaves.has(target) && source !== 'src/syntax/cards.ts')
+    throw new Error(`card leaf can only be used by the card owner: ${edgeKey(edge)}`);
+  const allowed = cardLeaves.get(source);
+  if (allowed && !allowed.values.has(target) && !(kind === 'type-only' && allowed.types.has(target)))
+    throw new Error(`card leaf imports outside its authority: ${edgeKey(edge)}`);
+}
+
 function assertEdgePolicy(edge) {
+  assertCardLeafDependency(edge);
   assertPresentationDependency(edge);
   assertRenderingDependency(edge);
   assertCardDependency(edge);
@@ -1448,6 +1480,36 @@ test('rendering accepts concrete style and numeric data, never preparation or so
   }
   assert.doesNotThrow(() => assertEdgePolicy({ source: 'src/rendering/scene-model.ts', target: 'src/card-frame.ts', kind: 'type-only' }));
   assert.throws(() => assertKnownGovernedModule('src/rendering/unclassified.ts'), /unclassified governed source module/);
+});
+
+test('card construction, palette selection and paid reader keep independent capabilities', () => {
+  for (const [source, target, kind] of [
+    ['src/syntax/cards.ts', 'src/syntax/card-read.ts', 'value'],
+    ['src/syntax/card-display.ts', 'src/rendering/measured-rows.ts', 'mixed'],
+    ['src/syntax/card-palette.ts', 'src/syntax/semantic-rules.ts', 'value'],
+    ['src/syntax/card-palette.ts', 'src/highlighting/source-ports.ts', 'type-only'],
+    ['src/syntax/card-read.ts', 'src/rendering/card-styles.ts', 'type-only'],
+    ['src/syntax/card-read.ts', 'src/highlighting/source-ports.ts', 'type-only'],
+  ]) assert.doesNotThrow(() => assertEdgePolicy({ source, target, kind }));
+  for (const [source, target, kind] of [
+    ['src/presentation/tool-preparation.ts', 'src/syntax/card-display.ts', 'value'],
+    ['src/syntax/card-display.ts', 'src/syntax/card-palette.ts', 'type-only'],
+    ['src/syntax/card-display.ts', 'src/highlighting/source-ports.ts', 'type-only'],
+    ['src/syntax/card-palette.ts', 'src/syntax/cards.ts', 'type-only'],
+    ['src/syntax/card-palette.ts', 'src/highlighting/source-ports.ts', 'mixed'],
+    ['src/syntax/card-read.ts', 'src/syntax/work.ts', 'type-only'],
+    ['src/syntax/card-read.ts', 'src/rendering/card-styles.ts', 'value'],
+    ['src/syntax/card-read.ts', 'src/resources/data-budget.ts', 'type-only'],
+    ['src/syntax/card-read.ts', 'src/syntax/pi-input.ts', 'type-only'],
+    ['src/syntax/card-read.ts', 'src/highlighting/pi-fallback.ts', 'type-only'],
+  ]) assert.throws(() => assertEdgePolicy({ source, target, kind }), /card leaf /u);
+  const reader = 'src/syntax/card-read.ts';
+  assert.doesNotThrow(() => assertNamedCapabilityImports(reader, parseSource(reader,
+    "import type { SourceDisplayBasis as Basis, PiProjectionReader } from '../highlighting/source-ports.ts';"), paidReadTypes, 'paid card reader'));
+  for (const snippet of [
+    "import type { CardSourcePort as Port } from '../highlighting/source-ports.ts';",
+    "type Port = import('../highlighting/source-ports.ts').CardSourcePort;",
+  ]) assert.throws(() => assertNamedCapabilityImports(reader, parseSource(reader, snippet), paidReadTypes, 'paid card reader'), /imports an implementation capability/u);
 });
 
 test('render-facing card declarations belong to rendering, not preparation or logical normalization', () => {

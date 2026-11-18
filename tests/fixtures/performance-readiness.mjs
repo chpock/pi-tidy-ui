@@ -1,54 +1,62 @@
 // Test-only private shape checks. No range walk, retained source copy or render hook.
 import assert from 'node:assert/strict';
 
-// B's frozen baseline stores a numeric Pi palette revision; the candidate stores
-// the full input identity. This adapter is test-only and rejects mixed shapes.
-function paletteInputObservation(consumer, state) {
+// Old frozen graphs have a numeric Pi revision; later graphs carry the full input identity.
+// Keep their private shape adapters separate and fail closed on incomplete mixtures.
+function paletteObservation(consumer) {
   const hasCurrentPalette = Reflect.has(consumer, 'currentPalette');
   const hasInputIdentity = Reflect.has(consumer, 'inputIdentity');
   assert.equal(hasCurrentPalette, hasInputIdentity, 'benchmark palette-input methods must be an all-or-none pair');
-  if (!state.input) return { kind: hasCurrentPalette ? 'identity' : 'revision', current: undefined, matches: false };
-
-  if (hasCurrentPalette) {
-    const currentPalette = Reflect.get(consumer, 'currentPalette'), inputIdentity = Reflect.get(consumer, 'inputIdentity');
-    assert.equal(typeof currentPalette, 'function', 'benchmark current-palette observation contract');
-    assert.equal(typeof inputIdentity, 'function', 'benchmark palette-input identity observation contract');
-    if (state.preparedPalette === undefined) return { kind: 'identity', current: undefined, matches: false };
-    assert.equal(typeof state.preparedPalette, 'string', 'candidate prepared palette must be a string identity');
-    const expected = Reflect.apply(inputIdentity, consumer, [Reflect.apply(currentPalette, consumer, [state]), state.input]);
-    assert.equal(typeof expected, 'string', 'benchmark palette-input identity must be a string');
-    return { kind: 'identity', current: expected, matches: state.preparedPalette === expected };
+  if (Reflect.has(consumer, 'paletteSelection')) {
+    assert.equal(hasCurrentPalette || Reflect.has(consumer, 'themeRevision'), false, 'mixed benchmark palette-owner shapes');
+    const selection = Reflect.get(consumer, 'paletteSelection');
+    assert.ok(selection && typeof selection.effective === 'function' && typeof selection.inputKey === 'function'
+      && Number.isSafeInteger(selection.revision), 'benchmark selection owner exposes its actual revision and input identity');
+    return { theme: selection.revision, inputKey: state => selection.inputKey(selection.effective(state.input, state.paletteFallback), state.input) };
   }
-
-  if (state.preparedPalette === undefined) {
-    return { kind: 'revision', current: state.pi?.paletteRevision, matches: state.paint?.origin === 'native' };
-  }
-  assert.ok(Number.isSafeInteger(state.preparedPalette), 'baseline prepared palette must be a numeric revision');
-  if (state.paint?.origin === 'native') return { kind: 'revision', current: state.pi?.paletteRevision, matches: true };
-  assert.equal(state.paint?.origin, 'pi', 'baseline completed palette must use Pi or native paint');
-  const current = state.pi?.paletteRevision;
-  return { kind: 'revision', current, matches: Number.isSafeInteger(current) && state.preparedPalette === current };
+  const theme = Reflect.get(consumer, 'themeRevision');
+  if (!hasCurrentPalette) return { theme };
+  const current = Reflect.get(consumer, 'currentPalette'), identity = Reflect.get(consumer, 'inputIdentity');
+  assert.equal(typeof current, 'function', 'benchmark current-palette observation contract');
+  assert.equal(typeof identity, 'function', 'benchmark palette-input identity observation contract');
+  return { theme, inputKey: state => Reflect.apply(identity, consumer, [Reflect.apply(current, consumer, [state]), state.input]) };
 }
 
-function sourceMatches(consumer, state) {
-  const identityBased = Reflect.has(consumer, 'currentPalette') || Reflect.has(consumer, 'inputIdentity');
-  if (identityBased) {
-    if (typeof state.processed !== 'string') return false;
-    const input = state.input;
-    if (!input || (input.kind !== 'file' && input.kind !== 'bash')) return false;
-    const view = input.kind === 'file' ? input.viewMode ?? 'full' : 'bash';
-    return state.processed === `${state.sourceRevision}:${view}`;
+function paletteInputObservation({ inputKey }, state) {
+  if (!state.input) return { matches: false };
+  if (inputKey) {
+    if (state.preparedPalette === undefined) return { matches: false };
+    assert.equal(typeof state.preparedPalette, 'string', 'candidate prepared palette must be a string identity');
+    const expected = inputKey(state);
+    assert.equal(typeof expected, 'string', 'benchmark palette-input identity must be a string');
+    return { current: expected, matches: state.preparedPalette === expected };
   }
-  return Number.isSafeInteger(state.processed) && state.processed === state.sourceRevision;
+  const current = state.pi?.paletteRevision;
+  if (state.preparedPalette !== undefined) assert.ok(Number.isSafeInteger(state.preparedPalette), 'baseline prepared palette must be a numeric revision');
+  const native = state.paint?.origin === 'native';
+  if (native || state.preparedPalette === undefined) return { current, matches: native };
+  assert.equal(state.paint?.origin, 'pi', 'baseline completed palette must use Pi or native paint');
+  return { current, matches: Number.isSafeInteger(current) && state.preparedPalette === current };
+}
+
+function sourceMatches({ inputKey }, state) {
+  if (!inputKey) return Number.isSafeInteger(state.processed) && state.processed === state.sourceRevision;
+  if (typeof state.processed !== 'string') return false;
+  const input = state.input;
+  if (!input || (input.kind !== 'file' && input.kind !== 'bash')) return false;
+  const view = input.kind === 'file' ? input.viewMode ?? 'full' : 'bash';
+  return state.processed === `${state.sourceRevision}:${view}`;
 }
 
 export function preparedCardReady(consumer, owner, palettePrefix) {
   const states = Reflect.get(consumer, 'states');
   assert.ok(states instanceof WeakMap, 'benchmark prepared-source observation contract');
   const state = states.get(owner);
-  if (!state?.display || !state.paint || state.display.revision !== state.revision
-    || !sourceMatches(consumer, state) || state.preparedTheme !== Reflect.get(consumer, 'themeRevision')) return false;
-  if (!paletteInputObservation(consumer, state).matches) return false;
+  if (!state?.display || !state.paint || state.display.revision !== state.revision) return false;
+  const palette = paletteObservation(consumer);
+  if (!sourceMatches(palette, state) || state.preparedTheme !== palette.theme) return false;
+  const mode = state.input?.mode;
+  if (mode === undefined || !paletteInputObservation(palette, state).matches) return false;
   const client = Reflect.get(consumer, 'client'), sources = client.sourceWork ?? client.sources;
   const piFallback = client.pi ?? sources, wanted = new Map();
   for (const [key, slot] of state.slots) {
@@ -63,6 +71,8 @@ export function preparedCardReady(consumer, owner, palettePrefix) {
   }
   let accepted = false;
   return consumer.visit(owner, (_display, paint) => {
+    // A failed replacement may leave the previous paint valid to read.
+    if (paint.mode !== mode) return;
     accepted = !palettePrefix || (palettePrefix === 'pi:' ? paint.origin === 'pi'
       : paint.origin === 'owned' && state.paint.group?.palette.startsWith(palettePrefix));
     for (const [key, expected] of wanted) {
@@ -103,12 +113,13 @@ export function preparedHistoryPaintOriginCount(consumer, expectedIds, origin) {
 }
 
 export function explainPreparedHistory(consumer, expectedIds) {
+  const palette = paletteObservation(consumer);
   return [...Reflect.get(consumer, 'records').values()].flatMap(ticket => {
     const owner = ticket.owner.deref(), state = ticket.state.deref();
     if (!owner || !expectedIds.has(owner.toolCallId) || !state) return [];
     return [{ id: owner.toolCallId, paused: state.paused, useful: state.useful, frozen: state.frozen, paint: state.paint?.origin, revision: [state.display?.revision, state.revision],
-      source: [state.processed, state.sourceRevision], theme: [state.preparedTheme, Reflect.get(consumer, 'themeRevision')],
-      palette: [state.preparedPalette, state.input ? paletteInputObservation(consumer, state).current : undefined, state.paint?.group?.palette], slots: [...state.slots.values()].map(slot => slot.outcome) }];
+      source: [state.processed, state.sourceRevision], theme: [state.preparedTheme, palette.theme],
+      palette: [state.preparedPalette, paletteInputObservation(palette, state).current, state.paint?.group?.palette], slots: [...state.slots.values()].map(slot => slot.outcome) }];
   }).slice(0, 8);
 }
 

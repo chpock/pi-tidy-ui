@@ -11,7 +11,7 @@ function fixture() {
   let native = true, pi = false, text = 'current', visit = true;
   Object.assign(input, { kind: 'file', viewMode: 'preview', sourceRevision: 2 });
   const state = { revision: 4, display: { revision: 4 }, sourceRevision: 2, processed: '2:preview', input,
-    paint: { origin: 'pi', group: { palette } }, preparedTheme: 5, preparedPalette: palette, slots: new Map([['key', slot]]) };
+    paint: { origin: 'pi', mode: 'truecolor', group: { palette } }, preparedTheme: 5, preparedPalette: palette, slots: new Map([['key', slot]]) };
   const consumer = { states: new WeakMap([[owner, state]]), themeRevision: 5, selectedPalette: piPalette,
     currentPalette(current) {
       const requested = this.selectedPalette;
@@ -22,7 +22,7 @@ function fixture() {
     client: { snapshot: () => ({ enabled: true }), sourceWork: { status: () => native ? status : undefined,
       displayBasis: () => native ? display : undefined, borrowSource: () => ({ text: 'current' }) },
       pi: { piProjection: () => pi ? {} : undefined, borrowPiSource: () => ({ text: 'current' }) } },
-    visit(_owner, consume) { if (!visit) return false; consume(state.display, { origin: state.paint.origin,
+    visit(_owner, consume) { if (!visit) return false; consume(state.display, { origin: state.paint.origin, mode: state.paint.mode,
       ranges() { return () => true; }, basis(_key, callback) { callback(text); return true; } }); return true; } };
   return { owner, state, consumer, status, display, set(value) { ({ native = native, pi = pi, text = text, visit = visit } = value); } };
 }
@@ -97,11 +97,50 @@ test('performance readiness: candidate input identity and baseline Pi revision u
   assert.notEqual(baseline.state.input, baseline.state.pi);
   assert.equal(preparedCardReady(baseline.consumer, baseline.owner), true);
   assert.equal(preparedHistoryPaintOriginCount(baseline.consumer, new Set(['one']), 'pi'), 1);
+  baseline.state.input.mode = '256color';
+  assert.equal(preparedCardReady(baseline.consumer, baseline.owner), false, 'a matching numeric revision does not certify the visited paint mode');
+  baseline.state.paint.mode = '256color';
+  assert.equal(preparedCardReady(baseline.consumer, baseline.owner), true);
   baseline.state.pi.paletteRevision = 4;
   assert.equal(preparedCardReady(baseline.consumer, baseline.owner), false);
   baseline.state.pi.paletteRevision = 3;
   baseline.state.input = undefined;
   assert.equal(preparedCardReady(baseline.consumer, baseline.owner), false);
+});
+
+function selectedFixture() {
+  const f = fixture(), requested = { kind: 'theme', id: 'bundled', fingerprint: 'asset' }, pi = { kind: 'pi' };
+  delete f.consumer.currentPalette; delete f.consumer.inputIdentity;
+  delete f.consumer.selectedPalette; delete f.consumer.themeRevision;
+  f.consumer.paletteSelection = {
+    revision: 5,
+    effective(input, tag) { return tag === this.inputKey(requested, input) ? pi : requested; },
+    inputKey(selected, input) { return `${selected.kind === 'pi' ? 'pi' : selected.id}:${input.palette}:${input.mode}`; },
+  };
+  f.state.paletteFallback = 'bundled:3:truecolor';
+  return f;
+}
+
+test('performance readiness: selection owner proves current per-card fallback, revision, mode and accepted visit', () => {
+  const f = selectedFixture();
+  assert.equal(preparedCardReady(f.consumer, f.owner, 'pi:'), true);
+  for (const mismatch of [
+    f => { f.consumer.paletteSelection.revision++; },
+    f => { f.state.paletteFallback = 'bundled:2:truecolor'; },
+    f => { f.state.input.palette++; },
+    f => { f.state.input.mode = '256color'; },
+    f => { f.state.processed = '2:full'; },
+    f => { f.state.paint.origin = 'owned'; },
+    f => { f.set({ visit: false }); },
+  ]) {
+    const stale = selectedFixture(); mismatch(stale);
+    assert.equal(preparedCardReady(stale.consumer, stale.owner, 'pi:'), false);
+  }
+  f.consumer.themeRevision = 5;
+  assert.throws(() => preparedCardReady(f.consumer, f.owner, 'pi:'), /mixed benchmark palette-owner shapes/u);
+  delete f.consumer.themeRevision;
+  delete f.consumer.paletteSelection.inputKey;
+  assert.throws(() => preparedCardReady(f.consumer, f.owner, 'pi:'), /selection owner exposes/u);
 });
 
 test('performance readiness: candidate source stamp includes the numeric revision and selected view mode', () => {

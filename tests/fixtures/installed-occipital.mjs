@@ -146,6 +146,8 @@ try {
     };
     childProcess.spawn = function (file, ...args) { starts.push(file); return originalSpawn.call(this, file, ...args); };
     syncBuiltinESMExports();
+    const { installTidyUi } = await load('index.ts');
+    assert.equal(typeof installTidyUi, 'function', 'The installed extension entry resolves the complete card preparation and read graph');
     const { createSyntaxOptions } = await load('application/syntax-options.ts');
     const { SyntaxClient } = await load('application/syntax-client.ts');
     const { createSemanticRuleDefinition, SEMANTIC_REGIONS } = await load('syntax/semantic-rules.ts');

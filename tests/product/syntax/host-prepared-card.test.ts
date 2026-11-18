@@ -9,6 +9,7 @@ import { createEditToolDefinition, highlightCode } from '@earendil-works/pi-codi
 import { SourceExecution } from '../../../src/highlighting/source-execution.ts';
 import { installTidyUi } from '../../../src/index.ts';
 import { CardSources } from '../../../src/syntax/cards.ts';
+import { DataCharge } from '../../../src/resources/data-budget.ts';
 import { resolvePublicFileToolDefinition } from '../../fixtures/sdk-contract-support.ts';
 const dist = dirname(fileURLToPath(import.meta.resolve('@earendil-works/pi-coding-agent')));
 const { ToolExecutionComponent } = await import(pathToFileURL(resolve(dist, 'modes/interactive/components/tool-execution.js')).href);
@@ -213,13 +214,21 @@ test('review F1: actual SDK reentrant funded update cannot apply an older attemp
     owner = this; const accepted = update.apply(this, args); if (!accepted) rejected++; return accepted;
   });
   const funding = f.sources.geometryFunding.bind(f.sources); let armed = true, reentered = false;
+  let outerCharge: DataCharge | undefined, pinnedWhileSuspended = false;
+  const descriptor = () => (Reflect.get(owner!, 'states') as WeakMap<object, { ticket?: { descriptorCharge?: DataCharge } }>).get(tool)?.ticket?.descriptorCharge;
   t.mock.method(f.sources, 'geometryFunding', (...args: Parameters<typeof funding>) => {
     const current = funding(...args); if (!current) return current;
     return { ...current, grant(bytes: number) {
       if (armed && owner) {
         armed = false; let applyingB = false;
         owner.visit(tool, display => { applyingB = display.kind === 'bash' && display.command.text === 'OUTER_B'; });
-        if (applyingB) { reentered = true; tool.updateArgs({ command: 'NEWEST_C' }); } else armed = true;
+        if (applyingB) {
+          reentered = true; outerCharge = descriptor();
+          assert.ok(outerCharge instanceof DataCharge && outerCharge.bytes > 0);
+          tool.updateArgs({ command: 'NEWEST_C' });
+          assert.notEqual(descriptor() === outerCharge, true);
+          outerCharge.retain().release(); pinnedWhileSuspended = true;
+        } else armed = true;
       }
       return current.grant(bytes);
     } };
@@ -227,6 +236,8 @@ test('review F1: actual SDK reentrant funded update cannot apply an older attemp
   themes.initTheme('light', false);
   try {
     tool.updateArgs({ command: 'OUTER_B' }); assert.equal(reentered, true, 'real palette funding reentered after descriptor adoption');
+    assert.equal(pinnedWhileSuspended, true, 'outer descriptor stays paid after the nested winner, without any visitor hold');
+    assert.throws(() => outerCharge!.retain(), /released data charge/u, 'outer descriptor is released on unwind');
     const rows = textRows(f.render(tool)); assert.match(rows, /\$ NEWEST_C/); assert.doesNotMatch(rows, /OUTER_B|ORIGINAL_A/);
     assert.ok(rejected > 0, 'the superseded outer update unwinds with false');
     tool.invalidate(); assert.match(textRows(f.render(tool)), /\$ NEWEST_C/);

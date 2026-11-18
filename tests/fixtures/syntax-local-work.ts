@@ -74,6 +74,14 @@ type WriteCaptureJournal = {
   retire(call: string, owner: object): void;
 };
 
+function observedThemeRevision(cards: CardSources<object>): number {
+  const selection: unknown = Reflect.get(cards, 'paletteSelection');
+  if (!selection || typeof selection !== 'object') throw new Error('missing card palette selection observer');
+  const revision: unknown = Reflect.get(selection, 'revision');
+  if (typeof revision !== 'number' || !Number.isSafeInteger(revision)) throw new Error('missing card palette revision');
+  return revision;
+}
+
 // Empty sources have no token table, but their role paint still needs adoption
 // proof, including the current-version eligibility represented by file paints.
 function currentEmptyPiPaint(state: CardState): boolean {
@@ -82,7 +90,7 @@ function currentEmptyPiPaint(state: CardState): boolean {
   const group = paint.group;
   if (group && (group.palette !== paint.palette || group.bindingRevision !== input.palette)) return false;
   const effects = `${input.mode}:`, eligibility = input.kind === 'file' ? `${state.version}:` : '';
-  return state.paintToken === `${paint.palette}:${group?.stamp ?? -(input.palette + 1)}:${effects}:${eligibility}`;
+  return paint.token === `${paint.palette}:${group?.stamp ?? -(input.palette + 1)}:${effects}:${eligibility}`;
 }
 
 // No source/projection borrowing here: successful work and compiled token maps
@@ -124,7 +132,7 @@ export function observeSyntaxCards(record: (event: SyntaxCardObservation) => voi
   const revokeWrite = (cards: CardSources<object>, owner: object, state?: CardState, force = false) => {
     const previous = writes?.get(owner); if (!identities || previous?.status !== 'ready') return;
     if (!force && state?.ticket?.owner.deref() === owner && previous.revision === state.revision
-      && previous.version === state.version && previous.palette === state.input?.palette && previous.theme === Reflect.get(cards, 'themeRevision')) return;
+      && previous.version === state.version && previous.palette === state.input?.palette && previous.theme === observedThemeRevision(cards)) return;
     publishWrite(owner, { ...previous, id: state?.ticket?.id, revision: state?.revision ?? previous.revision,
       version: state?.version, palette: state?.input?.palette, theme: state?.preparedTheme, publication: state?.paint?.publication ?? previous.publication,
       path: state?.display?.kind === 'file' ? state.display.path ?? previous.path : previous.path,
@@ -175,7 +183,7 @@ export function observeSyntaxCards(record: (event: SyntaxCardObservation) => voi
       const receipt = identity?.prior && state ? writeReceipt(state, identity.prior) : identity?.receipt;
       const currentSource = !!state && state.ticket === ticket && ticket?.owner.deref() === owner && state.revision === write.revision
         && state.processed === processingStamp(state) && state.preparedPalette === state.paint?.palette
-        && state.preparedTheme === Reflect.get(this, 'themeRevision')
+        && state.preparedTheme === observedThemeRevision(this)
         && [...state.slots.values()].every(slot => slot.version === state.version && slot.palette === state.input?.palette);
       const bad = currentSource && state && [...state.slots.values()].find(slot => slot.outcome === 'failed' || slot.outcome === 'refused' || slot.outcome === 'stale');
       const currentPaint = currentSource && receipt && state?.input?.palette === receipt.palette && state.version === receipt.version

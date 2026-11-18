@@ -102,7 +102,9 @@ Readers use weak owners plus primitive identity checks, and temporary holders re
 
 The consumer must stage output and publish only after the outer visit succeeds. A few successful inner callbacks are insufficient. On failure it releases the candidate layout/paint, leaving the existing accepted presentation intact.
 
-For example, removing a card unregisters its group and releases its descriptor, measurement and paint receipts. Root entries can then disappear, while a dispatched request still owns its physical reservation and a currently executing visitor still owns temporary holds. Their later settlement or callback exit completes release. None can restore the removed card’s publication authority.
+A weak `CardSources` ticket keeps the accepted descriptor and compiled-table charges, a detached palette release receipt, and a set of measurement receipts. These contain no strong card or display payload references. Replacing measurements does not touch the other holds. Discard drains all four obligations after pausing; removal unregisters first and then drains them. On component collection the ticket can unregister and return the same credit even if the `CardSources` object and its display have already been collected.
+
+Neither withdrawal nor charge release settles a dispatched request. A suspended display construction, paint operation or scoped visitor can also still hold its own pin. Physical settlement and synchronous unwind release their own credit independently and cannot restore the removed card’s publication authority.
 
 ## Context and style lifetime
 

@@ -10,12 +10,13 @@ import { afterEach, test } from 'node:test';
 import { setImmediate as turn } from 'node:timers/promises';
 import { highlightCode } from '@earendil-works/pi-coding-agent';
 import { getThemeByName, initTheme, setThemeInstance } from '../../../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js';
-import { CardSources, type CardPreparation } from '../../../src/syntax/cards.ts';
+import { CardSources, type CardPreparation, type CardSourceHost, type SyntaxCardClient } from '../../../src/syntax/cards.ts';
 import type { CardDisplayInput } from '../../../src/cards/display-input.ts';
 import type { PreparedCard, ReadyCardPaint, FlatRangeReader } from '../../../src/rendering/card-values.ts';
-import { DataBudget } from '../../../src/resources/data-budget.ts';
+import { DataBudget, DataCharge } from '../../../src/resources/data-budget.ts';
+import type { DiagnosticSink } from '../../../src/diagnostics.ts';
 import { layoutCard, type CardRows } from '../../../src/rendering/card-layout.ts';
-import { SourceExecution, type SourceExecutionOptions } from '../../../src/highlighting/source-execution.ts';
+import { SourceExecution, type SourceExecutionOptions, type SourceWorkGroup } from '../../../src/highlighting/source-execution.ts';
 import { decodeSemanticDescription } from '../../../src/occipital/semantic-protocol.ts';
 import { fingerprintRules } from '../../../src/occipital/style-rules.ts';
 import { CARD_ROLES } from '../../../src/appearance/card-roles.ts';
@@ -29,7 +30,7 @@ import { THEME_CATALOGUE } from '../../../src/themes/catalogue.ts';
 import { SyntaxRuntime } from '../../../src/application/syntax-runtime.ts';
 import { PaletteInputOwner } from '../../../src/syntax/pi-input-owner.ts';
 import { semanticDescriptor } from '../../fixtures/semantic-provider.ts';
-import { reflow } from '../../../src/rendering/measured-rows.ts';
+import { reflow, type prepareMeasuredAppend, type MeasuredText } from '../../../src/rendering/measured-rows.ts';
 import { paintFlat } from '../../../src/rendering/flat-paint.ts';
 import { stripVTControlCharacters } from 'node:util';
 import { bashToolReaderFixture, fileToolReaderFixture, type ToolCallFixture } from '../../fixtures/tool-adapters/reader-fixture.ts';
@@ -41,6 +42,7 @@ import type { ProviderTransport } from '../../../src/occipital/provider.ts';
 import type { TransportEnd } from '../../../src/occipital/transport-end.ts';
 import { awaitFixture } from '../../fixtures/await-fixture.ts';
 import { observePaletteInput } from '../../fixtures/palette-input-observer.mjs';
+import { preparedCardReady } from '../../fixtures/performance-readiness.mjs';
 
 type Frame = Record<string, any>;
 type Owner = { input?: CardDisplayInput };
@@ -65,7 +67,7 @@ const edited = (diff = '-1 \tx\n+1 \ty\n   ...\n-9 a\n+9 b', revision = 1): Extr
 const read = (text: string, revision = 1, images: string[] = []): Extract<CardDisplayInput, { kind: 'file' }> => fileInput({ name: 'read',
   args: { path: 'a.ts', offset: 41 }, result: { content: [{ type: 'text', text }, ...images.map(data => ({ type: 'image' as const, data, mimeType: 'image/png' }))], isError: false } }, revision);
 const fixtures: { cards: CardSources<Owner>; sources: SourceExecution; runtime: SyntaxRuntime; paletteInputs: PaletteInputOwner; calls: { reject(error: unknown): void }[] }[] = [];
-function fixture(ready = false, options: SourceExecutionOptions = {}, maxBookkeepingBytes?: number) {
+function fixture(ready = false, options: SourceExecutionOptions = {}, maxBookkeepingBytes?: number, diagnostic?: DiagnosticSink) {
   const env = { ready, enabled: true, generation: 1, vocabulary: 'a'.repeat(64), selected: { kind: 'pi', variant: 'dark' } as ThemePreference,
     classifications: [] as string[], invalidated: [] as Owner[], renders: 0, acquisitions: 0, paletteInputBytes: [] as number[], deniedPaletteInputs: 0, samples: 0, denyPaletteInput: false, failClassification: false,
     poison: false, beforeClassify: undefined as (() => void) | undefined, notices: [] as { keys: string[]; groups: number[] }[],
@@ -94,18 +96,27 @@ function fixture(ready = false, options: SourceExecutionOptions = {}, maxBookkee
     for (const reference of owners) if (reference.deref() === owner) return;
     owners.add(new WeakRef(owner));
   };
-  cards = new CardSources({ cardSource: sources, sourceWork: sources, pi: sources.pi, snapshot: () => ({ enabled: env.enabled, provider: provider.snapshot(), selected: env.selected,
-    effective: resolveTheme(env.selected).effective, standaloneVersion: 'test' }) }, {
+  const client: SyntaxCardClient = { cardSource: sources, sourceWork: sources, pi: sources.pi, snapshot: () => ({ enabled: env.enabled, provider: provider.snapshot(), selected: env.selected,
+    effective: resolveTheme(env.selected).effective, standaloneVersion: 'test' }) };
+  const host: CardSourceHost<Owner> = {
     preparePaletteInput: (palette, revision, mode, funding, usePiFallback) => {
       env.acquisitions++; if (env.denyPaletteInput) { env.deniedPaletteInputs++; return undefined; }
       const lease = paletteInputs.prepare(sampled, palette, revision, mode, funding, usePiFallback);
       if (lease) env.paletteInputBytes.push(lease.allocationBytes);
       return lease;
     },
-    classify: text => { env.classifications.push(text); env.beforeClassify?.(); if (env.failClassification) throw Error('classification failed'); return highlightCode(text, 'typescript'); },
-    invalidate: owner => env.invalidated.push(owner), requestRender: () => { env.renders++; },
-    preparation: (owner, receipt) => { env.preparations.push(receipt); if (receipt.phase === 'prepared') env.prepared?.(owner, receipt); } }, { maxBookkeepingBytes });
-  const f = { env, calls, sources, cards, runtime, paletteInputs, sampled, update(owner: Owner, input: CardDisplayInput) { trackOwner(owner); const current = { ...input, palette: paletteRevision }; owner.input = current; return cards.updateDisplay(owner, current); },
+    classify: (text: string) => { env.classifications.push(text); env.beforeClassify?.(); if (env.failClassification) throw Error('classification failed'); return highlightCode(text, 'typescript'); },
+    invalidate: (owner: Owner) => env.invalidated.push(owner), requestRender: () => { env.renders++; }, diagnostic,
+    preparation: (owner: Owner, receipt: CardPreparation) => { env.preparations.push(receipt); if (receipt.phase === 'prepared') env.prepared?.(owner, receipt); }
+  };
+  const createConsumer = () => new CardSources(client, host, { maxBookkeepingBytes });
+  cards = createConsumer();
+  const updateConsumer = (consumer: CardSources<Owner>, owner: Owner, input: CardDisplayInput) => {
+    trackOwner(owner); const current = { ...input, palette: paletteRevision }; owner.input = current; return consumer.updateDisplay(owner, current);
+  };
+  const f = { env, calls, sources, cards, runtime, paletteInputs, sampled, createConsumer,
+    updateConsumer,
+    update(owner: Owner, input: CardDisplayInput) { return updateConsumer(cards, owner, input); },
     forget(owner: Owner) { for (const reference of owners) if (reference.deref() === owner) owners.delete(reference); },
     use(owner: Owner, input: CardDisplayInput) { assert.equal(this.update(owner, input), true); cards.useful(owner, input.revision); },
     answerSource(i: number, text: string, context = 1, revision = 1, from = 0) {
@@ -155,6 +166,77 @@ async function collectFilePayload(reference: WeakRef<object>, description = 'dem
     if (!reference.deref()) return;
   }
   assert.fail(`${description} was retained while its owner stayed live`);
+}
+type CardStateProbe = { ticket?: { work?: SourceWorkGroup; descriptorCharge?: DataCharge }; display?: PreparedCard;
+  paletteInput?: { isValid: boolean }; paint?: { charge: DataCharge } };
+function cardState(cards: CardSources<Owner>, owner: Owner) {
+  return (Reflect.get(cards, 'states') as WeakMap<Owner, CardStateProbe>).get(owner);
+}
+function sourceWorkRegistry(sources: SourceExecution) {
+  return Reflect.get(sources, 'work') as { size: number; has(group: SourceWorkGroup): boolean };
+}
+function detachedConsumerCard(f: ReturnType<typeof fixture>, owner: Owner) {
+  const consumer = f.createConsumer();
+  assert.equal(f.updateConsumer(consumer, owner, written('target row one\ntarget row two')), true);
+  const state = cardState(consumer, owner); assert.ok(state?.ticket?.work); assert.equal(state.display?.kind, 'file');
+  if (state.display?.kind !== 'file') assert.fail('the target must own a prepared FILE display');
+  const rows = state.display.rows, measured = rows.find(row => row.region)?.region?.measured;
+  assert.ok(measured?.isValid, 'the target must have a paid measured row');
+  const consumerRef = new WeakRef(consumer), stateRef = new WeakRef(state), rowsRef = new WeakRef(rows), measuredRef = new WeakRef(measured);
+  return {
+    consumer: consumerRef, state: stateRef, rows: rowsRef, measured: measuredRef,
+    group: state.ticket.work, groupId: state.ticket.work.id,
+    initiallyLive: { consumer: consumerRef.deref() === consumer, state: stateRef.deref() === state, rows: rowsRef.deref() === rows, measured: measuredRef.deref() === measured },
+    paid: { descriptorBytes: state.ticket.descriptorCharge?.bytes ?? 0, paintBytes: state.paint?.charge.bytes ?? 0,
+      leaseValid: state.paletteInput?.isValid === true }
+  };
+}
+type SlotDiagnostic = { key: string; version: number; outcome: string; execution: string; fallbackEligible: boolean; submitted: number;
+  status: { version: number | undefined; execution: string; fallbackEligible: boolean } };
+type SourceObservation = { key: string; version: number };
+function diagnosticCardFixture() {
+  const diagnostics: SlotDiagnostic[] = [], submitted: SourceObservation[] = [], unregistered: number[] = [];
+  let onSecond: (() => void) | undefined, reentryError: string | undefined, reentryInvoked = false;
+  let readStatus: ((key: string) => ReturnType<SourceExecution['workStatus']>) | undefined;
+  const diagnostic: DiagnosticSink = (level, area, explanation, fields) => {
+    if (level !== 'DEBUG' || area !== 'syntax' || explanation !== 'Syntax work evaluated outside render'
+      || typeof fields?.source !== 'string' || typeof fields.version !== 'number' || typeof fields.outcome !== 'string'
+      || typeof fields.execution !== 'string' || typeof fields.fallbackEligible !== 'boolean') return;
+    const status = readStatus?.(fields.source);
+    diagnostics.push({ key: fields.source, version: fields.version, outcome: fields.outcome, execution: fields.execution,
+      fallbackEligible: fields.fallbackEligible, submitted: submitted.length,
+      status: { version: status?.version, execution: status?.execution ?? 'missing', fallbackEligible: status?.fallbackEligible ?? false } });
+    if (diagnostics.length === 2 && onSecond) {
+      const action = onSecond; onSecond = undefined; reentryInvoked = true;
+      try { action(); } catch (error) { reentryError = error instanceof Error ? error.message : String(error); }
+    }
+  };
+  const f = fixture(true, {}, undefined, diagnostic), observe = f.sources.observe.bind(f.sources), unregister = f.sources.unregisterPreparation.bind(f.sources);
+  readStatus = key => f.sources.workStatus(key);
+  f.sources.observe = demand => { submitted.push({ key: demand.key, version: demand.version }); return observe(demand); };
+  f.sources.unregisterPreparation = group => { unregistered.push(group.id); unregister(group); };
+  return { f, diagnostics, submitted, unregistered, get reentryInvoked() { return reentryInvoked; }, get reentryError() { return reentryError; },
+    reenterOnSecond(action: () => void) { onSecond = action; } };
+}
+const threeFragmentEdit = '-1 #!/usr/bin/env python3\n+1 #!/usr/bin/env ruby\n 2 \t😀\n-3 \n+3 xé\n 4 tail\n  ...\n-9 名\n+9 Z\n-11 end\n+11 end2';
+async function rejectPendingSourceCalls(f: ReturnType<typeof fixture>) {
+  for (let round = 0; round < 16; round++) {
+    const pending = f.calls.flatMap((call, index) => call.done ? [] : [index]);
+    if (!pending.length) break;
+    for (const index of pending) f.fault(index);
+    await settle();
+  }
+  assert.equal(f.calls.every(call => call.done), true, 'all held source requests settle');
+  const stats = f.sources.stats();
+  assert.equal(stats.globalUnsettledJobs, 0); assert.equal(stats.globalTransientBytes, 0);
+}
+function sourceIdentities(f: ReturnType<typeof fixture>, owner: Owner) {
+  return f.cards.identities(owner).map(({ key, version }) => ({ key, version }));
+}
+function assertDiagnosticStatus(events: SlotDiagnostic[]) {
+  assert.deepEqual(events.map(({ key, version, execution, fallbackEligible, status }) => ({ key, version, execution, fallbackEligible, status })),
+    events.map(({ key, version, execution, fallbackEligible }) => ({ key, version, execution, fallbackEligible,
+      status: { version, execution, fallbackEligible } })), 'each observer captured the real post-request work status');
 }
 function rowsFromLayout(output: CardRows) { const result: string[] = []; assert.equal(output.visitRows((_index, row) => result.push(row)), true); return result; }
 function command(f: ReturnType<typeof fixture>, owner: Owner) { let text: string | undefined; inspect(f, owner, d => { assert.equal(d.kind, 'bash'); if (d.kind === 'bash') text = d.command.text; }); return text; }
@@ -270,6 +352,8 @@ test('funding refusal cold-discards a full file view without unregistering same-
   assert.ok(fullMeasurement?.isValid);
   const retainedBefore = f.sources.stats().retention.retainedBytes;
   const workBefore = f.sources.workStatus(identity.key);
+  const physical = () => { const s = f.sources.stats(); return [s.globalUnsettledJobs, s.globalTransientBytes]; };
+  const held = physical(); assert.equal(workBefore.execution, 'unsettled'); assert.ok(held[0]! > 0 && held[1]! > 0);
   const originalFunding = f.sources.geometryFunding.bind(f.sources);
   f.sources.geometryFunding = () => undefined;
   try { assert.equal(f.update(owner, { ...written(fullText, 2), viewMode: 'preview' }), false); }
@@ -279,10 +363,12 @@ test('funding refusal cold-discards a full file view without unregistering same-
   assert.equal(fullMeasurement.isValid, false, 'old measured rows are released at the cold boundary');
   assert.deepEqual(f.cards.identities(owner), [identity], 'same-index key/version evidence remains registered');
   assert.deepEqual(f.sources.workStatus(identity.key), workBefore, 'unsettled SOURCE execution authority remains unchanged');
+  assert.deepEqual(physical(), held, 'turning down geometry leaves the actual request paid');
   assert.ok(f.sources.stats().retention.retainedBytes < retainedBefore, 'full display and compiled paint charges are released');
 
   f.answerSource(sourceCall, fullText);
   await settle();
+  assert.deepEqual(physical(), [0, 0]);
   assert.equal(f.cards.visit(owner, () => assert.fail('a late full-view reply cannot republish the discarded display')), false);
 
   const preview = { ...written(fullText, 3), viewMode: 'preview' as const };
@@ -428,7 +514,7 @@ test('cards use current Pi colors only when a failed owned palette has no prior 
   }
 });
 
-test('cards retain a funded no-group palette while a known replacement asset is corrupt, then recover', async () => {
+test('cards retain a funded no-group palette while a known replacement asset is corrupt, then recover', async t => {
   const f = fixture(false), owner: Owner = {}, target = fileURLToPath(new URL('../../../src/themes/palettes/gruvbox-light.json', import.meta.url));
   f.theme('catppuccin-dark'); f.use(owner, written('const value = 1;')); await settle();
   const previous = style(f, owner), sourceRevision = owner.input!.sourceRevision, sourceVersion = f.cards.identities(owner)[0]!.version;
@@ -450,8 +536,45 @@ test('cards retain a funded no-group palette while a known replacement asset is 
     for (let i = 0; i < 20; i++) f.cards.useful(owner, owner.input!.revision);
     await settle(); assert.equal(f.env.acquisitions, attempts, 'a memoized failed palette is not retried on warm visits');
     assert.equal(opens, 1);
+
+    const peer: Owner = {}, peerText = 'const new_palette_peer = 2;', bindings: string[] = [];
+    const setStyle = f.sources.setStyleSelection.bind(f.sources);
+    t.mock.method(f.sources, 'setStyleSelection', (selection: Parameters<typeof setStyle>[0]) => {
+      const accepted = setStyle(selection); if (accepted && selection) bindings.push(selection.palette); return accepted;
+    });
+    f.use(peer, written(peerText)); await settle();
+    const [a, b] = [f.cards.identities(owner)[0]!, f.cards.identities(peer)[0]!];
+    let peerRow: MeasuredText | undefined, ownerRow: MeasuredText | undefined;
+    inspect(f, owner, (display, paint) => {
+      if (display.kind !== 'file') assert.fail('file');
+      ownerRow = display.rows[0]?.region?.measured;
+      assert.equal(paint.origin, 'owned'); assert.equal(paint.roles.code.open, previous); assert.equal(paint.ranges(a.key), undefined);
+    });
+    const piRole = compileStyleAnsi(samplePiPalette(f.sampled, 'truecolor').roles.code, 'truecolor').open;
+    inspect(f, peer, (display, paint) => {
+      if (display.kind !== 'file') assert.fail('file');
+      peerRow = display.rows[0]?.region?.measured;
+      assert.equal(paint.origin, 'pi'); assert.equal(paint.roles.code.open, piRole); assert.ok(paint.ranges(b.key));
+    });
+    assert.equal(ownerRow?.isValid, true); assert.equal(peerRow?.isValid, true);
+    assert.deepEqual(f.env.classifications, [peerText]); assert.equal(f.calls.length, 0);
+    const work = () => ({ opens, acquisitions: f.env.acquisitions, requests: f.calls.length, classifications: [...f.env.classifications], bindings: [...bindings] });
+    const warm = work();
+    for (let i = 0; i < 4; i++) {
+      inspect(f, owner, () => {}); inspect(f, peer, () => {});
+    }
+    await settle(); assert.deepEqual(work(), warm);
     f.theme('catppuccin-light'); await settle();
-    assert.equal(style(f, owner), sampleOwnedPalette('catppuccin-light', 'truecolor').compiledRoles.code.open);
+    const expected = sampleOwnedPalette('catppuccin-light', 'truecolor').compiledRoles.code.open;
+    assert.equal(style(f, owner), expected);
+    for (const [card, row, key] of [[owner, ownerRow, a.key], [peer, peerRow, b.key]] as const) inspect(f, card, (display, paint) => {
+      if (display.kind !== 'file') assert.fail('file');
+      assert.equal(display.rows[0]?.region?.measured === row, true);
+      assert.equal(paint.origin, 'owned'); assert.equal(paint.roles.code.open, expected); assert.equal(paint.ranges(key), undefined);
+    });
+    const recovered = work();
+    for (let i = 0; i < 4; i++) { inspect(f, owner, () => {}); inspect(f, peer, () => {}); }
+    await settle(); assert.deepEqual(work(), recovered);
   } finally {
     Object.defineProperty(fs, 'openSync', { configurable: true, writable: true, value: originalOpen }); syncBuiltinESMExports();
     fs.rmSync(directory, { recursive: true, force: true });
@@ -710,6 +833,50 @@ test('cards visitor invalidates reentrantly, pins data through throw and clears 
   assert.throws(() => escaped!.kind, /stale/); assert.throws(() => paint!.roles, /stale/); assert.equal(paint!.ranges('missing'), undefined);
 });
 
+for (const throws of [false, true]) test(`duplicate FILE withdrawal releases acceptance, not a suspended visit, throws=${throws}`, () => {
+  const f = fixture(), peer = {}, owner = {};
+  f.theme('catppuccin-dark'); assert.equal(f.update(peer, written('peer persists')), true);
+  const budget = f.sources.geometryFunding()!.budget, peerOnly = budget.stats();
+  assert.equal(f.update(owner, written('withdrawn')), true);
+  const state = cardState(f.cards, owner)!;
+  const descriptor = state.ticket?.descriptorCharge, compiled = state.paint?.charge;
+  assert.ok(descriptor instanceof DataCharge && descriptor.bytes > 0);
+  assert.ok(compiled instanceof DataCharge && compiled.bytes > 0);
+  const error = new Error('visit consumer stopped');
+  const visit = () => f.cards.visit(owner, (display, paint) => {
+    assert.equal(display.kind, 'file'); assert.equal(paint.origin, 'owned');
+    f.cards.discardFile(owner); f.cards.discardFile(owner); f.cards.remove(owner); f.cards.remove(owner);
+    descriptor.retain().release(); compiled.retain().release();
+    assert.equal(f.cards.visit(owner, () => assert.fail('removed owner reused a pinned payload')), false);
+    assert.throws(() => display.kind, /stale card visit/u);
+    if (throws) throw error;
+  });
+  if (throws) assert.throws(visit, failure => failure === error);
+  else assert.equal(visit(), false);
+  assert.throws(() => descriptor.retain(), /released data charge/u);
+  assert.throws(() => compiled.retain(), /released data charge/u);
+  assert.deepEqual(budget.stats(), peerOnly); inspect(f, peer, () => {});
+});
+
+test('removing a FILE leaves physical request credit until the actual reply, with a live peer', async () => {
+  const f = fixture(true), peer = {}, owner = {}, text = 'const retiring_physical = true;';
+  f.theme('catppuccin-dark'); assert.equal(f.update(peer, written('peer persists')), true);
+  const budget = f.sources.geometryFunding()!.budget, peerOnly = budget.stats();
+  f.use(owner, written(text)); await settle();
+  const key = f.cards.identities(owner)[0]?.key;
+  assert.ok(key); assert.equal(f.sources.workStatus(key).execution, 'unsettled');
+  const call = f.calls.findIndex(item => !item.done && item.request.sources?.[0]?.text === text);
+  assert.ok(call >= 0);
+  const physical = () => { const s = f.sources.stats(); return [s.globalUnsettledJobs, s.globalTransientBytes]; };
+  const held = physical(); assert.equal(held[0], 1); assert.ok(held[1]! > 0);
+  f.cards.remove(owner); assert.deepEqual(physical(), held);
+  assert.equal(f.cards.visit(owner, () => assert.fail('removed owner')), false);
+  f.answerSource(call, text); await settle();
+  assert.deepEqual(physical(), [0, 0]); assert.deepEqual(budget.stats(), peerOnly);
+  assert.equal(f.cards.visit(owner, () => assert.fail('late reply reattached owner')), false);
+  inspect(f, peer, () => {});
+});
+
 test('cards first active owner collects and releases descriptors while consumer and peer live', async () => {
   const f = fixture(), peer = {}; f.use(peer, written('peer')); await settle();
   function abandoned() { const first = {}; f.use(first, written('first')); return new WeakRef(first); }
@@ -727,6 +894,77 @@ test('cards first active pending native owner collects with pending peer and con
   f.env.invalidated.length = 0;
   for (let i = 0; i < 60; i++) { await turn(); global.gc!(); await settle(); if (!first.deref()) break; }
   assert.equal(first.deref(), undefined); assert.equal(command(f, peer), 'peer');
+});
+
+test('cards collected consumer releases no payload until its component unregisters', async () => {
+  const f = fixture(), registered: number[] = [], unregistered: number[] = [];
+  const register = f.sources.registerPreparation.bind(f.sources), unregister = f.sources.unregisterPreparation.bind(f.sources);
+  f.sources.registerPreparation = preparation => { const group = register(preparation); if (group) registered.push(group.id); return group; };
+  f.sources.unregisterPreparation = group => { unregistered.push(group.id); unregister(group); };
+  const peerOwner = {};
+  assert.equal(f.update(peerOwner, written('peer row one\npeer row two')), true);
+  const peerPayload = weakFilePayloads(f, peerOwner), peerPaint = style(f, peerOwner);
+  const budget = f.sources.geometryFunding()!.budget, work = sourceWorkRegistry(f.sources);
+  const peerGroup = cardState(f.cards, peerOwner)?.ticket?.work; assert.ok(peerGroup && work.has(peerGroup));
+  const sourceBalance = () => {
+    const stats = f.sources.stats();
+    return { bookkeepingBytes: stats.bookkeepingBytes, globalBookkeepingBytes: stats.globalBookkeepingBytes,
+      sourceRecords: stats.sourceRecords, retentionBytes: stats.retention.retainedBytes,
+      unsettledJobs: stats.globalUnsettledJobs, transientBytes: stats.globalTransientBytes };
+  };
+  const peerOnly = { budget: budget.stats(), source: sourceBalance(), workSize: work.size, paletteAcquisitions: f.env.acquisitions,
+    paletteBytes: f.env.paletteInputBytes.length };
+  assert.equal(peerOnly.workSize, 1); assert.ok(peerOnly.budget.retainedBytes > 0);
+  assert.ok(peerOnly.source.bookkeepingBytes > 0); assert.equal(f.calls.length, 0);
+
+  let targetOwner: Owner | undefined = {};
+  const targetOwnerRef = new WeakRef(targetOwner);
+  const target = detachedConsumerCard(f, targetOwner);
+  assert.deepEqual(target.initiallyLive, { consumer: true, state: true, rows: true, measured: true });
+  assert.ok(target.paid.descriptorBytes > 0 && target.paid.paintBytes > 0 && target.paid.leaseValid);
+  assert.notEqual(target.groupId, peerGroup.id); assert.equal(registered.includes(target.groupId), true);
+  assert.equal(work.has(target.group), true); assert.equal(work.size, peerOnly.workSize + 1);
+  assert.ok(budget.stats().retainedBytes > peerOnly.budget.retainedBytes, 'target display, lease and paint add paid credit');
+  assert.ok(f.env.acquisitions > peerOnly.paletteAcquisitions);
+  assert.ok(f.env.paletteInputBytes.slice(peerOnly.paletteBytes).some(bytes => bytes > 0));
+  assert.equal(f.calls.length, 0, 'neither cold card submits useful source work');
+
+  await settle();
+  const targetPaid = budget.stats(), targetSource = sourceBalance();
+  assert.equal(target.consumer.deref() !== undefined, true); assert.equal(target.state.deref() !== undefined, true);
+  assert.equal(target.rows.deref() !== undefined, true); assert.equal(target.measured.deref() !== undefined, true);
+  assert.equal(targetOwnerRef.deref() === targetOwner, true, 'the component stays live during consumer/payload collection');
+  const collected = { consumer: false, state: false, rows: false, measured: false };
+  let observation = collected;
+  for (let pass = 0; pass < 60; pass++) {
+    await turn(); global.gc!();
+    observation = { consumer: target.consumer.deref() === undefined, state: target.state.deref() === undefined,
+      rows: target.rows.deref() === undefined, measured: target.measured.deref() === undefined };
+    if (observation.consumer && observation.state && observation.rows && observation.measured) break;
+  }
+  assert.deepEqual(observation, { consumer: true, state: true, rows: true, measured: true },
+    'the consumer, state and target-only row payloads collect while the component remains live');
+  assert.equal(targetOwnerRef.deref() === targetOwner, true);
+  assert.equal(work.has(target.group), true, 'the real source registration remains until component collection');
+  assert.equal(unregistered.includes(target.groupId), false, 'no unregister is delivered while the component lives');
+  assert.deepEqual(budget.stats(), targetPaid, 'the target credit remains paid after its consumer and rows collect');
+  assert.deepEqual(sourceBalance(), targetSource);
+  assert.equal(peerPayload.rows.deref() !== undefined, true); assert.equal(style(f, peerOwner), peerPaint);
+
+  f.env.invalidated.length = 0;
+  targetOwner = undefined;
+  let ownerCollected = false;
+  for (let pass = 0; pass < 60; pass++) {
+    await turn(); global.gc!();
+    ownerCollected = targetOwnerRef.deref() === undefined;
+    if (ownerCollected && unregistered.filter(id => id === target.groupId).length === 1) break;
+  }
+  assert.equal(ownerCollected, true, 'component collection is independently observed');
+  assert.equal(unregistered.filter(id => id === target.groupId).length, 1, 'the actual source unregister arrives exactly once');
+  assert.equal(work.has(target.group), false); assert.equal(work.size, peerOnly.workSize);
+  assert.deepEqual(budget.stats(), peerOnly.budget, 'only the peer display, lease and paint remain paid');
+  assert.deepEqual(sourceBalance(), peerOnly.source, 'source and bookkeeping balances return exactly to the live peer');
+  assert.equal(peerPayload.rows.deref() !== undefined, true); assert.equal(style(f, peerOwner), peerPaint, 'the peer remains readable with its selected palette');
 });
 
 test('cards eviction refusal and cached failure never cause warm frame retry spin', async () => {
@@ -1183,6 +1421,80 @@ test('cards file service diagnostics and notes are prepared while cwd updates re
 });
 
 
+test('diagnostic-only FILE update keeps paid source rows and releases only the displaced diagnostic', async t => {
+  const f = fixture(), control = fixture(), owner = {}, reference = {};
+  const text = 'const unchanged = 1;', path = 'diagnostic-descriptor-probe.ts';
+  const input = (message: string, revision: number, content = text, sourceRevision = 1) => ({
+    ...fileInput({ name: 'write', args: { path, content }, result: { details: { diagnostics: [{ severity: 'error', line: 1, message }] } } }, revision), sourceRevision,
+  });
+  const original = input('FIRST_DIAGNOSTIC', 1), latest = input('FINAL_DIAGNOSTIC', 2);
+  f.use(owner, original); control.use(reference, latest); await settle();
+  const before = [f.calls.length, f.env.classifications.length, f.env.acquisitions], identity = f.cards.identities(owner)[0]!;
+  let row: MeasuredText | undefined, retired: MeasuredText | undefined, role: string | undefined;
+  inspect(f, owner, (display, paint) => {
+    if (display.kind !== 'file') assert.fail('file');
+    row = display.rows[0]?.region?.measured; retired = display.diagnostics[0]?.measured;
+    role = paint.roles.code.open;
+    assert.ok(paint.ranges(identity.key), 'positive current source range before the service change');
+  });
+  assert.equal(row?.isValid, true); assert.equal(retired?.isValid, true); assert.ok(role);
+  const estimates: number[] = [], grants: number[] = [], realEstimate = latest.reader.estimateBytes;
+  latest.reader = { ...latest.reader, estimateBytes(context) {
+    const bytes = realEstimate.call(latest.reader, context); estimates.push(bytes); return bytes;
+  } };
+  const descriptorBytes = realEstimate.call(latest.reader, { mode: 'full', language: latest.reader.language() });
+  const funding = f.sources.geometryFunding.bind(f.sources);
+  t.mock.method(f.sources, 'geometryFunding', (...args: Parameters<typeof funding>) => {
+    const current = funding(...args);
+    return current && { budget: current.budget, grant(bytes: number) { grants.push(bytes); return current.grant(bytes); } };
+  });
+  f.use(owner, latest); await settle();
+  assert.equal(estimates.length, 0); assert.ok(grants.length > 0, 'the new diagnostic measurement is legitimately funded');
+  assert.equal(grants.filter(bytes => bytes === descriptorBytes).length, 0, 'no temporary descriptor grant on service-only replacement');
+  assert.equal(retired?.isValid, false); assert.equal(row?.isValid, true);
+  inspect(f, owner, (display, paint) => {
+    if (display.kind !== 'file') assert.fail('file');
+    assert.equal(display.rows[0]?.region?.measured === row, true);
+    assert.equal(display.diagnostics[0]?.measured.isValid, true);
+    assert.equal(display.diagnostics[0]?.text, 'Error [1]: FINAL_DIAGNOSTIC');
+    assert.equal(paint.roles.code.open, role); assert.ok(paint.ranges(identity.key));
+  });
+  assert.deepEqual(f.cards.identities(owner), [identity]);
+  assert.deepEqual([f.calls.length, f.env.classifications.length, f.env.acquisitions], before);
+  assert.deepEqual(funding()!.budget.stats(), control.sources.geometryFunding()!.budget.stats());
+  const changed = input('FINAL_DIAGNOSTIC', 3, 'const changed = 2;', 2);
+  const changedEstimate = changed.reader.estimateBytes({ mode: 'full', language: changed.reader.language() });
+  grants.length = 0;
+  assert.equal(f.update(owner, changed), true);
+  assert.equal(grants[0], changedEstimate, 'matched source change requests its actual descriptor estimate first');
+  f.cards.remove(owner); control.cards.remove(reference);
+  assert.deepEqual(funding()!.budget.stats(), control.sources.geometryFunding()!.budget.stats());
+});
+
+test('an unsupported FILE with new diagnostics still requests a descriptor before reading', t => {
+  const f = fixture(), owner = {}, input = (message: string, revision: number) => ({ ...fileInput({ name: 'edit', args: { path: 'unsupported.ts' },
+    result: { details: { patch: { unsupported: true }, diagnostics: [{ severity: 'error', message }] } } }, revision), sourceRevision: 1 });
+  assert.equal(f.update(owner, input('PRIOR_DIAGNOSTIC', 1)), true);
+  assert.equal(f.cards.filePreparationOutcome(owner), 'unsupported');
+  const next = input('REPLACEMENT_DIAGNOSTIC', 2), prepare = next.reader.prepareFile;
+  let decoded = 0;
+  next.reader = { ...next.reader, prepareFile(...args) { decoded++; return prepare.apply(this, args); } };
+  const descriptorBytes = next.reader.estimateBytes({ mode: 'full', language: next.reader.language() });
+  const funding = f.sources.geometryFunding.bind(f.sources), grants: number[] = [];
+  let deny = true;
+  t.mock.method(f.sources, 'geometryFunding', (...args: Parameters<typeof funding>) => {
+    const current = funding(...args);
+    return current && { budget: current.budget, grant(bytes: number) {
+      grants.push(bytes); return deny && bytes === descriptorBytes ? undefined : current.grant(bytes);
+    } };
+  });
+  assert.equal(f.update(owner, next), false); assert.deepEqual(grants, [descriptorBytes]); assert.equal(decoded, 0);
+  inspect(f, owner, display => { if (display.kind !== 'file') assert.fail('file'); assert.match(display.diagnostics[0]!.text, /PRIOR_DIAGNOSTIC/u); });
+  deny = false;
+  assert.equal(f.update(owner, next), true); assert.equal(decoded, 1);
+  inspect(f, owner, display => { if (display.kind !== 'file') assert.fail('file'); assert.match(display.diagnostics[0]!.text, /REPLACEMENT_DIAGNOSTIC/u); });
+});
+
 test('cards denied replacement palette input retains the prior complete paint until funding recovers', async () => {
   const f = fixture(true), owner = {}; await themeReady(f, owner); const before = style(f, owner), key = f.cards.identities(owner)[0]!.key;
   const funding = f.sources.geometryFunding.bind(f.sources), stamp = f.cards.displayStamp(owner);
@@ -1192,6 +1504,120 @@ test('cards denied replacement palette input retains the prior complete paint un
   assert.equal(f.cards.displayStamp(owner), stamp); assert.equal(f.env.classifications.length, 0);
   f.sources.geometryFunding = funding; f.update(owner, { ...bash('x\n', true), revision: 3 }); f.cards.useful(owner, 3); await settle();
   inspect(f, owner, (_d, p) => assert.equal(p.roles.code.open, sampleOwnedPalette('gruvbox-light', 'truecolor').compiledRoles.code.open));
+});
+
+for (const refusal of ['palette', 'table'] as const) test(`terminal mode stays old while ${refusal} replacement funding is denied`, async t => {
+  const f = fixture(), owner = {}, id = 'catppuccin-dark';
+  f.theme(id); f.use(owner, written('const unchanged_mode = 1;')); await settle();
+  const identity = f.cards.identities(owner)[0]!, before = [f.calls.length, f.env.classifications.length];
+  let row: MeasuredText | undefined, rgb = '';
+  inspect(f, owner, (display, paint) => {
+    if (display.kind !== 'file') assert.fail('file');
+    row = display.rows[0]?.region?.measured; rgb = paint.roles.code.open;
+    assert.equal(paint.mode, 'truecolor'); assert.match(rgb, /;2;/u);
+  });
+  assert.ok(row?.isValid);
+  const funding = f.sources.geometryFunding.bind(f.sources);
+  let active = true, denied = 0;
+  const beforePalette = f.env.paletteInputBytes.length;
+  const deniedAllocation = refusal === 'palette' ? 128 * 1024 : 4096 + CARD_ROLES.length * 2560 + 512;
+  t.mock.method(f.sources, 'geometryFunding', (...args: Parameters<typeof funding>) => {
+    const current = funding(...args);
+    return current && { budget: current.budget, grant(bytes: number) {
+      if (active && bytes === deniedAllocation) { denied++; return undefined; }
+      return current.grant(bytes);
+    } };
+  });
+  const next = { ...written('const unchanged_mode = 1;'), revision: 2, mode: '256color' as const };
+  assert.equal(f.update(owner, next), true);
+  assert.ok(denied > 0); assert.equal(f.env.paletteInputBytes.length > beforePalette, refusal === 'table');
+  inspect(f, owner, (display, paint) => {
+    if (display.kind !== 'file') assert.fail('file');
+    assert.equal(display.rows[0]?.region?.measured === row, true);
+    assert.equal(paint.mode, 'truecolor'); assert.equal(paint.roles.code.open, rgb);
+  });
+  active = false;
+  assert.equal(f.update(owner, { ...next, revision: 3 }), true);
+  inspect(f, owner, (display, paint) => {
+    if (display.kind !== 'file') assert.fail('file');
+    assert.equal(display.rows[0]?.region?.measured === row, true);
+    assert.equal(paint.mode, '256color'); assert.match(paint.roles.code.open, /;5;/u);
+    assert.equal(paint.roles.code.open, sampleOwnedPalette(id, '256color').compiledRoles.code.open);
+  });
+  assert.deepEqual(f.cards.identities(owner), [identity]); assert.deepEqual([f.calls.length, f.env.classifications.length], before);
+  const warm = [f.env.acquisitions, f.env.samples, f.calls.length, f.env.classifications.length];
+  for (let i = 0; i < 3; i++) inspect(f, owner, () => {});
+  assert.deepEqual([f.env.acquisitions, f.env.samples, f.calls.length, f.env.classifications.length], warm);
+});
+
+test('performance readiness rejects retained FILE colors after a new-mode paint grant is denied', async t => {
+  const f = fixture(), owner = {}, id = 'catppuccin-dark';
+  f.env.enabled = false; f.sources.setEnabled(false); f.theme(id);
+  const initial = written('const unchanged_mode = 1;');
+  f.use(owner, initial); assert.equal(await f.sources.whenSettled(), true);
+  inspect(f, owner, (_display, paint) => {
+    assert.equal(paint.mode, 'truecolor'); assert.match(paint.roles.code.open, /;2;/u);
+  });
+  assert.equal(f.cards.identities(owner).length, 1);
+  assert.equal(preparedCardReady(f.cards, owner), true);
+
+  const funding = f.sources.geometryFunding.bind(f.sources);
+  const tableBytes = 4096 + CARD_ROLES.length * 2560 + 512;
+  let deny = true, refused = 0;
+  t.mock.method(f.sources, 'geometryFunding', (...args: Parameters<typeof funding>) => {
+    const current = funding(...args);
+    return current && { budget: current.budget, grant(bytes: number) {
+      if (deny && bytes === tableBytes) { refused++; return undefined; }
+      return current.grant(bytes);
+    } };
+  });
+  const next = { ...initial, revision: 2, mode: '256color' as const };
+  f.use(owner, next); assert.equal(await f.sources.whenSettled(), true);
+  assert.ok(refused > 0);
+  inspect(f, owner, (_display, paint) => {
+    assert.equal(paint.mode, 'truecolor'); assert.match(paint.roles.code.open, /;2;/u);
+  });
+  assert.equal(preparedCardReady(f.cards, owner), false, 'valid old colors do not certify readiness for the requested mode');
+
+  deny = false;
+  f.use(owner, { ...next, revision: 3 }); assert.equal(await f.sources.whenSettled(), true);
+  inspect(f, owner, (_display, paint) => {
+    assert.equal(paint.mode, '256color'); assert.match(paint.roles.code.open, /;5;/u);
+  });
+  assert.equal(preparedCardReady(f.cards, owner), true);
+  assert.deepEqual([f.calls.length, f.env.classifications.length], [0, 0]);
+});
+
+test('paint replacement keeps its predecessor paid until a suspended compile unwinds', t => {
+  const f = fixture(), owner = {};
+  f.theme('catppuccin-dark'); assert.equal(f.update(owner, written('original paint')), true);
+  const state = () => (Reflect.get(f.cards, 'states') as WeakMap<object, { paint?: { charge: DataCharge } }>).get(owner);
+  const original = state()?.paint?.charge;
+  assert.ok(original instanceof DataCharge && original.bytes > 0);
+  const funding = f.sources.geometryFunding.bind(f.sources);
+  let reentered = 0, pinned = false;
+  t.mock.method(f.sources, 'geometryFunding', (...args: Parameters<typeof funding>) => {
+    const current = funding(...args);
+    return current && { budget: current.budget, grant(bytes: number) {
+      if (bytes === 4096 && reentered === 0) {
+        reentered++;
+        assert.equal(state()?.paint?.charge === original, true);
+        assert.equal(f.update(owner, written('nested paint', 3)), true);
+        const replacement = state()?.paint?.charge;
+        assert.ok(replacement instanceof DataCharge && replacement.bytes > 0);
+        assert.equal(replacement === original, false);
+        original.retain().release(); pinned = true;
+      }
+      return current.grant(bytes);
+    } };
+  });
+  f.update(owner, { ...written('original paint'), revision: 2, mode: '256color' });
+  assert.equal(reentered, 1); assert.equal(pinned, true);
+  assert.throws(() => original.retain(), /released data charge/u);
+  inspect(f, owner, (display, paint) => {
+    if (display.kind !== 'file') assert.fail('file');
+    assert.equal(display.rows[0]?.region?.text, 'nested paint'); assert.equal(paint.mode, 'truecolor');
+  });
 });
 
 for (const native of [false, true]) test(`review F1: changed file never borrows previous ranges before preparation, ownedPalette=${native}`, async () => {
@@ -2120,20 +2546,34 @@ test('read result text and rows participate in construction funding before prepa
 });
 
 
-test('card construction refunds a staged command append when later service preparation throws', () => {
+test('card construction refunds a staged command append when later service preparation throws', t => {
   const f = fixture(), owner = {}, initial = 'printf \ud83d';
   assert.equal(f.update(owner, bash(initial)), true);
   const budget = f.sources.geometryFunding()!.budget, before = budget.stats();
-  let measured: object | undefined;
+  let measured!: MeasuredText;
   inspect(f, owner, display => { if (display.kind !== 'bash') assert.fail('bash'); measured = display.command.measured; });
+  const ctor = measured.constructor as Function & { prepareAppend: typeof prepareMeasuredAppend };
+  const prepareAppend = ctor.prepareAppend;
+  assert.equal(typeof prepareAppend, 'function');
+  const staged: MeasuredText[] = [];
+  let commits = 0, abandoned = 0, serviceCalls = 0, stagedBytes = 0, liveAtService = false;
+  t.mock.method(ctor, 'prepareAppend', function (this: typeof ctor, ...args: Parameters<typeof prepareAppend>) {
+    const append = prepareAppend.apply(this, args); if (!append) return undefined;
+    staged.push(append.measured);
+    return { measured: append.measured,
+      commit() { const accepted = append.commit(); if (accepted) commits++; return accepted; },
+      dispose() { if (append.measured.isValid) abandoned++; append.dispose(); } };
+  });
   const input = bash(`${initial}\ude00 suffix`, false, 2);
-  let serviceCalls = 0, stagedBytes = 0;
   input.reader = { ...input.reader, prepareService() {
     serviceCalls++; stagedBytes = budget.stats().retainedBytes - before.retainedBytes;
+    liveAtService = staged.length === 1 && staged[0] !== measured && staged[0]?.isValid === true;
     throw new Error('service preparation failed');
   } };
   assert.throws(() => f.update(owner, input), /service preparation failed/u);
   assert.equal(serviceCalls, 1); assert.ok(stagedBytes > 0, 'the failure occurs with a genuinely funded replacement in progress');
+  assert.equal(liveAtService, true); assert.equal(staged[0]?.isValid, false);
+  assert.equal(commits, 0); assert.equal(abandoned, 1);
   assert.deepEqual(budget.stats(), before, 'the caller releases all candidate measurement, append and descriptor liability');
   inspect(f, owner, display => {
     if (display.kind !== 'bash') assert.fail('bash');
@@ -2142,6 +2582,8 @@ test('card construction refunds a staged command append when later service prepa
   });
   assert.equal(f.update(owner, bash(`${initial}\ude00 suffix`, false, 3)), true);
   assert.equal(command(f, owner), `${initial}\ude00 suffix`, 'a normal later append can still adopt the preserved numeric basis');
+  assert.equal(commits, 1); assert.equal(staged[1]?.isValid, true);
+  f.cards.remove(owner); assert.equal(staged[1]?.isValid, false);
   assert.equal(f.calls.length, 0); assert.equal(f.env.classifications.length, 0);
 });
 
@@ -2170,29 +2612,108 @@ test('card construction cannot replace a reentrant winner or retain its rejected
   assert.equal(f.calls.length, 0); assert.equal(f.env.classifications.length, 0);
 });
 
-test('card construction refusal after preview decoding drops full payloads but preserves unsettled execution', async () => {
+for (const stage of ['descriptor', 'measurement'] as const) test(stage === 'measurement'
+  ? 'card construction refusal after preview decoding drops full payloads but preserves unsettled execution'
+  : 'card preview descriptor refusal drops full payloads but preserves unsettled execution', async () => {
   const f = fixture(true), owner = {}, text = Array.from({ length: 24 }, (_, index) => `const row${index} = ${index};`).join('\n');
   f.theme(); f.use(owner, written(text)); await settle();
   const identity = f.cards.identities(owner)[0]!; assert.ok(identity);
   const work = f.sources.workStatus(identity.key), funding = f.sources.geometryFunding.bind(f.sources), budget = funding()!.budget;
   assert.equal(work.execution, 'unsettled');
   const outstanding = budget.stats().outstandingPeakBytes;
+  const physical = () => { const s = f.sources.stats(); return [s.globalUnsettledJobs, s.globalTransientBytes]; };
+  const held = physical(); assert.ok(held[0]! > 0 && held[1]! > 0);
   let measured: { readonly isValid: boolean } | undefined;
   inspect(f, owner, display => { if (display.kind !== 'file') assert.fail('file'); measured = display.rows[0]!.region!.measured; });
   const input = { ...written(text, 2), viewMode: 'preview' as const }, prepareFile = input.reader.prepareFile.bind(input.reader);
-  let decoded = 0, denied = 0, refuse = false;
-  input.reader = { ...input.reader, prepareFile(...args) { const file = prepareFile(...args); decoded++; refuse = true; return file; } };
+  let decoded = 0, denied = 0, registered = false;
+  const grants: number[] = [], descriptor = input.reader.estimateBytes({ mode: 'preview', language: input.reader.language() });
+  input.reader = { ...input.reader, prepareFile(...args) { const file = prepareFile(...args); decoded++; return file; } };
+  const { limit, retainedBytes, outstandingPeakBytes } = budget.stats();
+  const pressure = stage === 'descriptor' ? budget.reserve(limit - retainedBytes - outstandingPeakBytes) : undefined;
+  if (stage === 'descriptor') assert.ok(pressure, 'hold only remaining ordinary ledger capacity');
   f.sources.geometryFunding = group => {
-    const current = funding(group);
-    return current && { budget: current.budget, grant: bytes => { if (refuse) { denied++; return undefined; } return current.grant(bytes); } };
+    const current = funding(group); registered ||= !!current && !!group;
+    return current && { budget: current.budget, grant: bytes => {
+      grants.push(bytes);
+      if (stage === 'measurement' && decoded) { denied++; return undefined; }
+      const grant = current.grant(bytes); if (!grant) denied++;
+      return grant;
+    } };
   };
   try { assert.equal(f.update(owner, input), false); }
-  finally { f.sources.geometryFunding = funding; }
-  assert.equal(decoded, 1); assert.ok(denied > 0, 'logical decoding completed before actual measurement admission refused');
+  finally { f.sources.geometryFunding = funding; pressure?.close(); }
+  assert.equal(registered, true); assert.equal(grants[0], descriptor); assert.ok(denied > 0, 'the selected funding stage really declined');
+  if (stage === 'descriptor') assert.deepEqual(grants, [descriptor]);
+  assert.equal(decoded, stage === 'descriptor' ? 0 : 1);
   assert.equal(measured!.isValid, false); assert.equal(f.cards.visit(owner, () => assert.fail('refused preview retained a full view')), false);
   assert.deepEqual(f.cards.identities(owner), [identity]); assert.deepEqual(f.sources.workStatus(identity.key), work);
   assert.equal(budget.stats().outstandingPeakBytes, outstanding, 'candidate refusal does not refund an unsettled job reservation');
+  assert.deepEqual(physical(), held);
   const call = f.calls.findIndex(request => !request.done && request.request.sources?.[0]?.text === text);
   assert.ok(call >= 0); f.answerSource(call, text); await settle();
+  assert.deepEqual(physical(), [0, 0]); assert.equal(budget.stats().outstandingPeakBytes, 0);
   assert.equal(f.cards.visit(owner, () => assert.fail('late full reply revived a discarded presentation')), false);
+});
+
+for (const action of ['none', 'pause', 'replace', 'remove'] as const) test(`second actual FILE request diagnostic: ${action} preserves admission and stops only the abandoned traversal`, async () => {
+  const trace = diagnosticCardFixture(), { f } = trace, owner = {};
+  f.theme('catppuccin-dark');
+  assert.equal(f.update(owner, edited(threeFragmentEdit)), true);
+  const group = cardState(f.cards, owner)?.ticket?.work;
+  assert.ok(group);
+  let expectedKeys: string[] = [];
+  inspect(f, owner, display => {
+    if (display.kind !== 'file') assert.fail('FILE with both source sides');
+    expectedKeys = [...new Set(display.rows.flatMap(row => [row.oldSource?.key, row.nextSource?.key].filter(key => key !== undefined)))].sort();
+  });
+  assert.equal(expectedKeys.length, 6, 'the real FILE display has three fragments on each side');
+  const version = 1;
+  let nestedAccepted: boolean | undefined;
+  if (action !== 'none') trace.reenterOnSecond(() => {
+    if (action === 'pause') f.cards.pause(owner);
+    else if (action === 'remove') f.cards.remove(owner);
+    else {
+      nestedAccepted = f.update(owner, written('const winner_fragment = 3;', 2));
+      f.cards.useful(owner, 2);
+    }
+  });
+  f.cards.useful(owner, 1); await settle();
+  assert.equal(trace.reentryError, undefined); assert.equal(trace.reentryInvoked, action !== 'none');
+  assertDiagnosticStatus(trace.diagnostics);
+  const original = trace.submitted.filter(item => item.version === version);
+  const expected = action === 'none' ? expectedKeys.length : 2;
+  assert.deepEqual(original.map(item => item.key), expectedKeys.slice(0, expected));
+  assert.deepEqual(trace.diagnostics.slice(0, expected).map(({ key, version }) => ({ key, version })), original);
+  assert.deepEqual(trace.diagnostics.slice(0, expected).map(item => item.submitted), Array.from({ length: expected }, (_, i) => i + 1));
+  assert.equal(f.env.preparations.filter(receipt => receipt.phase === 'prepared' && receipt.revision === 1).length, action === 'none' ? 1 : 0);
+  assert.deepEqual(f.env.classifications, []);
+  const work = sourceWorkRegistry(f.sources), live = action !== 'remove';
+  assert.equal(work.has(group), live); assert.deepEqual(trace.unregistered, live ? [] : [group.id]);
+  if (action === 'replace') {
+    assert.equal(nestedAccepted, true);
+    assert.deepEqual(sourceIdentities(f, owner), [{ key: original[0]!.key, version: 2 }]);
+    assert.deepEqual(trace.submitted.slice(expected), [{ key: original[0]!.key, version: 2 }]);
+    assert.equal(f.sources.workStatus(original[0]!.key).version, 2);
+    inspect(f, owner, display => {
+      if (display.kind !== 'file') assert.fail('FILE winner');
+      assert.equal(display.rows[0]?.region?.text, 'const winner_fragment = 3;');
+    });
+  } else if (action === 'none') {
+    assert.deepEqual(sourceIdentities(f, owner), original);
+    assert.equal(f.env.preparations.filter(receipt => receipt.phase === 'prepared').length, 1);
+  } else {
+    assert.deepEqual(sourceIdentities(f, owner), []);
+    assert.equal(f.env.preparations.some(receipt => receipt.phase === 'prepared'), false);
+    for (const { key } of original) assert.equal(f.sources.workStatus(key).version, action === 'pause' ? version : undefined);
+  }
+  const stats = f.sources.stats();
+  // A pause of card preparation does not revoke the earlier two admitted SOURCE demands.
+  assert.equal(stats.globalUnsettledJobs > 0, action !== 'remove');
+  assert.equal(stats.globalTransientBytes > 0, stats.globalUnsettledJobs > 0);
+  if (action === 'pause') {
+    const dispatched = f.calls.flatMap(call => call.request.sources?.map((source: Frame) => source.text) ?? []);
+    assert.deepEqual(dispatched, ['#!/usr/bin/env python3\n\t😀\n\ntail', '名']);
+  }
+  await rejectPendingSourceCalls(f);
 });

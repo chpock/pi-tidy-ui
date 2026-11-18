@@ -5,6 +5,8 @@ import { visibleWidth } from "@earendil-works/pi-tui";
 import type { CardTheme } from "../../../../../src/card-theme.ts";
 import { bashBody } from "../../../../helpers/bash-body.ts";
 import { hasHostInk } from "../../../../fixtures/host-cells.ts";
+import { CardSources } from '../../../../../src/syntax/cards.ts';
+import type { MeasuredText } from '../../../../../src/rendering/measured-rows.ts';
 import { cardInputTheme, Root, bashTool, installTidyUi, mouse, plain, setup } from "../../../../fixtures/sdk-contract-support.ts";
 
 // Shapes follow AFT 0.59.0: raw-Bash repeat trailers and appended Pi tool_result text blocks.
@@ -154,6 +156,48 @@ test('bash reminders: partial snapshots remain ordinary until final and notice u
     assert.deepEqual(bashBody(tool, 100), ['$ false', '', 'NEW BODY', '', '[exit code: 7]', '', ...reminder('NEW NOTICE').split('\n')]);
     tool.updateResult({ content: [{ type: 'text', text: 'NO NOTICE' }] });
     assert.deepEqual(bashBody(tool, 100), ['$ false', '', 'NO NOTICE']);
+  } finally { controller.restore(); }
+});
+
+test('successful reminder-only Bash replaces the painted scene without remeasuring its text', async t => {
+  const root = new Root(), tool = bashTool('true'); root.addChild(tool);
+  const input = { colors: { ...cardInputTheme.colors, muted: cardInputTheme.colors.error },
+    getFgAnsi: (role: Parameters<typeof cardInputTheme.getFgAnsi>[0]) => cardInputTheme.getFgAnsi(role === 'muted' ? 'error' : role),
+    getBgAnsi: (role: Parameters<typeof cardInputTheme.getBgAnsi>[0]) => cardInputTheme.getBgAnsi(role) };
+  const update = CardSources.prototype.updateDisplay;
+  let cards: CardSources<object> | undefined;
+  t.mock.method(CardSources.prototype, 'updateDisplay', function(this: CardSources<object>, ...args: Parameters<typeof update>) {
+    if (args[0] === tool) cards = this;
+    return update.apply(this, args);
+  });
+  const controller = installTidyUi(root, () => cardInputTheme, { piInput: () => ({ theme: input, mode: cardInputTheme.getColorMode() }) });
+  const result = { content: [{ type: 'text' as const, text: reminder('NOTICE_SAME_ROWS') }] }, raw = structuredClone(result);
+  const snapshot = () => {
+    let geometry = -1, command: MeasuredText | undefined, measured: (MeasuredText | undefined)[] = [];
+    assert.ok(cards);
+    assert.equal(cards.visit(tool, display => {
+      if (display.kind !== 'bash') assert.fail('bash');
+      assert.equal(display.regions.footer, undefined);
+      geometry = display.geometryStamp; command = display.command.measured;
+      measured = display.regions.output.map(region => region?.measured);
+    }), true);
+    assert.ok(command?.isValid); assert.equal(measured.filter(item => item?.isValid).length, 3);
+    return { geometry, command, measured };
+  };
+  try {
+    tool.setExpanded(true); tool.updateResult(result, true);
+    const partial = tool.render(100), old = snapshot();
+    assert.equal(await hasHostInk(partial, cardInputTheme, 'error', 'NOTICE_SAME_ROWS'), false);
+    assert.deepEqual(tool.render(100), partial); assert.equal(snapshot().geometry, old.geometry);
+    tool.updateResult(result);
+    const final = tool.render(100), next = snapshot();
+    assert.equal(await hasHostInk(final, cardInputTheme, 'error', 'NOTICE_SAME_ROWS'), true);
+    assert.equal(next.command === old.command, true);
+    assert.equal(next.measured.length, old.measured.length);
+    assert.equal(next.measured.every((item, index) => item === old.measured[index]), true);
+    assert.ok(next.geometry > old.geometry, 'the row partition, not the measures, identifies scene geometry');
+    assert.deepEqual(tool.render(100), final); assert.equal(snapshot().geometry, next.geometry);
+    assert.deepEqual(result, raw); assert.deepEqual(tool.result, raw);
   } finally { controller.restore(); }
 });
 
