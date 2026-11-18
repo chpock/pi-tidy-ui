@@ -316,6 +316,122 @@ test("native status container preserves active unknown indicator and same-editor
   }
 });
 
+for (const outcome of ["attached", "selector", "restored"] as const) {
+  test(`late native editor attachment defers status routing: ${outcome}`, async () => {
+    const { root, editor, host, input, options } = nativeStatusEditorSetup();
+    editor.setText("retained draft"); editor.handleInput("\x1b[D");
+    const text = editor.getText(), cursor = editor.getCursor();
+    const indicator = new StatusIndicator("unknown-future-kind" as never, root as never, text => text, text => text, "Late activity");
+    const showSelector = () => {
+      const component = new Text("NATIVE_SELECTOR", 0, 0);
+      let close!: () => void;
+      host.showSelector((done: () => void) => { close = done; return { component, focus: component }; });
+      return { component, close };
+    };
+    host.showStatusIndicator(indicator);
+    let selector = showSelector(), routes = 0;
+    const controller = installTidyUi(root, () => color, { ...options, rerouteEditorStatus() {
+      routes++;
+      options.rerouteEditorStatus!();
+    } });
+    try {
+      assert.equal(controller.active, true);
+      assert.equal(controller.editorStatusActive, false);
+      assert.equal(input.children[0] === selector.component, true);
+      assert.equal(host.activeWorkingIndicatorEmbedded, true);
+      assert.equal(routes, 0, "no route while installing without a mounted stock editor");
+
+      selector.close();
+      assert.equal(input.children[0] === editor, true);
+      assert.equal(controller.editorStatusActive, true, "the live session has recognized the late editor");
+      assert.equal(routes, 0, "the native selector callback returns before adapter rebinding");
+      assert.equal(host.activeWorkingIndicatorEmbedded, true, "native placement has not changed yet");
+
+      if (outcome === "selector") selector = showSelector();
+      if (outcome === "restored") controller.restore();
+      const beforeMicrotask = routes;
+      await Promise.resolve();
+
+      if (outcome === "attached") {
+        assert.equal(routes, 1);
+        assert.equal(input.children[0] === editor, true);
+        assert.equal(host.activeWorkingIndicatorEmbedded, false);
+        assert.equal(host.statusContainer.children[0] === indicator, true);
+        showSelector().close();
+        assert.equal(routes, 1, "ordinary reattachment does not rebind synchronously");
+        await Promise.resolve();
+        assert.equal(routes, 1, "ordinary reattachment does not repeat a successful rebind");
+        assert.equal(host.statusContainer.children[0] === indicator, true);
+      } else {
+        assert.equal(routes, beforeMicrotask, "no deferred rebind for a selector or a retired installation");
+        assert.equal(input.children[0] === (outcome === "selector" ? selector.component : editor), true);
+        assert.equal(host.activeWorkingIndicatorEmbedded, true);
+        assert.equal(host.statusContainer.children.length, 0);
+        assert.equal(controller.active, outcome === "selector");
+      }
+      assert.equal(host.editor === editor, true);
+      assert.equal(host.activeStatusIndicator === indicator, true);
+      assert.equal(editor.getText(), text);
+      assert.deepEqual(editor.getCursor(), cursor);
+    } finally {
+      try { controller.restore(); }
+      finally { host.clearStatusIndicator(); }
+    }
+  });
+}
+
+test("late native status routing resumes after Pi replaces one selector with another", async () => {
+  initTheme("dark");
+  const { root, editor, host, input, options, frame } = nativeStatusEditorSetup();
+  const label = "Pending native activity";
+  const indicator = new StatusIndicator("working", root as never, text => text, text => text, label);
+  const draft = "first line\nretained draft";
+  editor.setText(draft); editor.handleInput("\x1b[D");
+  const cursor = editor.getCursor();
+  host.showStatusIndicator(indicator);
+  host.getLoginProviderOptions = (type: string) => type === "oauth"
+    ? [{ id: "fixture-provider", name: "Fixture provider", authType: "oauth" }] : [];
+  host.showLoginProviderSelector("oauth");
+  let routes = 0;
+  const controller = installTidyUi(root, () => color, { ...options, rerouteEditorStatus() {
+    routes++;
+    options.rerouteEditorStatus!();
+  } });
+  try {
+    const providerMenu = input.children[0];
+    assert.equal(controller.active, true);
+    assert.equal(controller.editorStatusActive, false);
+    assert.equal(host.activeWorkingIndicatorEmbedded, true);
+    assert.match(frame("regular").map(editorPlain).join("\n"), /Select provider to configure/u);
+    assert.ok(providerMenu?.handleInput);
+    providerMenu.handleInput("\x1b");
+    const methodMenu = input.children[0];
+    assert.equal(methodMenu !== providerMenu && methodMenu !== editor, true);
+    assert.match(frame("regular").map(editorPlain).join("\n"), /Select authentication method/u);
+    await Promise.resolve();
+    assert.equal(routes, 0, "do not rebind over the intervening Pi menu");
+    assert.equal(input.children[0] === methodMenu, true);
+
+    assert.ok(methodMenu?.handleInput);
+    methodMenu.handleInput("\x1b");
+    assert.equal(input.children[0] === editor, true);
+    assert.equal(routes, 0, "Pi completes the second attachment before rebinding");
+    await Promise.resolve();
+    assert.equal(routes, 1, "the next eligible attachment finishes the skipped transfer");
+    assert.equal(host.statusContainer.children[0] === indicator, true);
+    assert.equal(host.activeStatusIndicator === indicator, true);
+    assert.equal(host.editor === editor && input.children[0] === editor, true);
+    assert.match(frame("regular").map(editorPlain).join("\n"), /Pending native activity/u);
+    assert.equal(editor.getText(), draft);
+    assert.deepEqual(editor.getCursor(), cursor);
+    await Promise.resolve();
+    assert.equal(routes, 1, "the rebind's own attachment must not trigger a second transfer");
+  } finally {
+    try { controller.restore(); }
+    finally { host.clearStatusIndicator(); }
+  }
+});
+
 // Below-editor rows display Idle only; Pi owns all active status rendering.
 test("editor status never extracts native operation text and retains fixed editor geometry", () => {
   const { root, editor, host, options, frame } = nativeStatusEditorSetup();

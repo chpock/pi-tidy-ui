@@ -44,6 +44,7 @@ export class NativeEditor {
   private states = new WeakMap<CustomEditor, Omit<EditorLayout, 'rows'> & { width: number; offsetY: number }>();
   private readonly flags = new WeakMap<CustomEditor, PropertyDescriptor>();
   private readonly flagRefs = new Set<WeakRef<CustomEditor>>();
+  private readonly pendingRoutes = new WeakSet<CustomEditor>();
   private readonly selfTransfers = new WeakMap<CustomEditor, Function>();
   private installing = true;
   private queuedRoute = false;
@@ -116,13 +117,15 @@ export class NativeEditor {
     const editor = owner as CustomEditor;
     this.patchPrototype(CustomEditor.prototype);
     this.patchPlacement(editor);
-    if (this.stock(editor)) this.current = new WeakRef(editor);
+    if (!this.stock(editor)) return;
+    this.current = new WeakRef(editor);
+    if (!this.installing && !this.queuedRoute && this.pendingRoutes.has(editor) && this.managedSlots(editor)) this.deferRoute();
   }
 
   publishSpacer(): void {
     Object.defineProperty(Spacer.prototype, 'render', { ...this.nativeSpacer, value: this.observeSpacer });
   }
-  finishInstallation(): void { this.installing = false; this.reroute(); }
+  finishInstallation(): void { this.reroute(); this.installing = false; }
 
   private patchPlacement(editor: CustomEditor): void {
     if (!this.options.editorStatus || this.flags.has(editor) || !this.plainStock(editor) ||
@@ -133,15 +136,17 @@ export class NativeEditor {
       (setter ? !setter.writable : !Object.isExtensible(editor))) return;
     this.flags.set(editor, flag); this.flagRefs.add(new WeakRef(editor));
     Object.defineProperty(editor, 'embedWorkingStatus', { configurable: true, enumerable: flag.enumerable, get: this.statusEmbedding });
-    if (!this.installing && this.options.rerouteEditorStatus && !this.queuedRoute) {
-      this.queuedRoute = true;
-      // Rebind after normal attachment, never inside addChild or while a selector is mounted.
-      queueMicrotask(() => {
-        this.queuedRoute = false;
-        if (this.ports.active()) try { this.reroute(); }
-        catch { this.ports.fail('pi-tidy-ui could not route native editor activity; native rendering restored'); }
-      });
-    }
+    if (this.options.rerouteEditorStatus) this.pendingRoutes.add(editor);
+  }
+
+  private deferRoute(): void {
+    this.queuedRoute = true;
+    // Rebinding itself reattaches the editor. Keep the attempt coalesced until it returns.
+    queueMicrotask(() => {
+      try { if (this.ports.active()) this.reroute(); }
+      catch { this.ports.fail('pi-tidy-ui could not route native editor activity; native rendering restored'); }
+      finally { this.queuedRoute = false; }
+    });
   }
 
   private reroute(restored?: WeakSet<CustomEditor>): void {
@@ -149,7 +154,8 @@ export class NativeEditor {
     for (const reference of this.flagRefs) {
       const editor = reference.deref();
       if (!editor || !this.plainStock(editor) || !this.managedSlots(editor) || !this.ports.attached(editor) ||
-        (restored ? !restored.has(editor) : Object.getOwnPropertyDescriptor(editor, 'embedWorkingStatus')?.get !== this.statusEmbedding)) continue;
+        (restored ? !restored.has(editor) : !this.pendingRoutes.has(editor) ||
+          Object.getOwnPropertyDescriptor(editor, 'embedWorkingStatus')?.get !== this.statusEmbedding)) continue;
       const descriptor = Object.getOwnPropertyDescriptor(editor, 'setText');
       if (descriptor ? !descriptor.writable : !Object.isExtensible(editor)) continue;
       const text = editor.getText(), transfers: string[] = [], focus = this.tui.getFocusedComponent?.();
@@ -172,6 +178,7 @@ export class NativeEditor {
         }
         if (focus !== undefined && focus !== editor) this.tui.setFocus?.(focus);
       }
+      this.pendingRoutes.delete(editor);
       return;
     }
   }
