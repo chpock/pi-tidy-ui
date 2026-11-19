@@ -57,6 +57,14 @@ test('actual v4 generic styles executor: production broker SOURCE STYLE, binding
       preparedSourceBytes: owner.stats().preparedBytes, sourceTextBytes: Buffer.byteLength(source.text) + 4,
       styleCaptures: owner.stats().styleCaptures, peakJobs: owner.stats().peakJobs, transientBytes: owner.stats().transientBytes,
       retainedBytes: owner.stats().retention.retainedBytes, firstNativeRanges: first.length } }));
+    assert.equal(owner.status('bash')!.acknowledgedVersion, 2);
+    owner.observe({ ...source, version: 3, text: '', complete: true }); await drain();
+    const cleared = owner.status('bash')!;
+    assert.equal(owner.displayBasis('bash')?.version, 3);
+    assert.equal(cleared.exact, true);
+    assert.equal(broker.stats().sourceDispatches, before.sourceDispatches);
+    assert.equal(broker.stats().styleDispatches, before.styleDispatches);
+    assert.equal(cleared.acknowledgedVersion, undefined, 'clearing a real native result publishes empty paint without parser work');
     owner.remove('bash'); owner.remove('empty'); await drain();
     // Trusted desired configuration remains owned until disposal; all source/cache
     // payload and expression associations are released with their actual holders.

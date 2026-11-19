@@ -1,7 +1,7 @@
 import type { DataCharge } from '../resources/data-budget.ts';
 import type { PreparedSelection } from './controller-styles.ts';
 import type { ContextRef } from './storage/context-arena.ts';
-import type { SemanticCaptureGroup } from './storage/semantic-capture.ts';
+import type { SemanticCaptureGroup, SemanticCaptureGroupView } from './storage/semantic-capture.ts';
 import type { SemanticStyleExpectation, SemanticDescription as Description } from '../occipital/semantic-protocol.ts';
 import type { SemanticExpectation as ExpectedSource } from '../occipital/semantic-source.ts';
 import type { ReplySize } from '../occipital/data-json.ts';
@@ -35,12 +35,12 @@ export type SourceState = SourceFacts & {
 
 export type Close = { key: string; ownerKey: string; generation: number; lease: string; provider: number; bytes: number; health?: WeakRef<SourceState> };
 
-export type StyleMember = { key: string; id: number; generation: number };
+export type StyleMember = Readonly<{ key: string; id: number; generation: number }>;
 
 export type SourceSnapshot = NonNullable<ReturnType<SemanticRetentionPool['borrowSnapshot']>>;
 
 export type StyleJob = {
-  expected: SemanticStyleExpectation; captures?: SemanticCaptureGroup; refs: readonly ContextRef[];
+  expected: Readonly<SemanticStyleExpectation>; captures?: SemanticCaptureGroup; refs: readonly ContextRef[];
   members: readonly StyleMember[]; group?: WeakRef<SourceWorkGroup>; groupRevision?: number; node: WeakRef<PublicationNode>; epoch: number; revision: number; demandRevision: number; decodedBytes: number
 };
 
@@ -95,6 +95,11 @@ export type StyleOverlapView = Readonly<{
   style: Readonly<Pick<StyleJob, 'expected' | 'refs' | 'epoch' | 'demandRevision'>> | undefined;
   outcome: Readonly<StyleAttempt>;
 }>;
-export type StyleReplyView = Readonly<Pick<StyleRequest,
-  'id' | 'provider' | 'key' | 'ticket' | 'pendingRetire' | 'description' | 'replySize' | 'stopped' | 'origin' | 'style'>>
-  & { readonly abort: { readonly signal: Pick<AbortSignal, 'aborted'> }; outcome: StyleAttempt };
+export type StyleJobView = Readonly<Omit<StyleJob, 'captures'> & { captures?: SemanticCaptureGroupView }>;
+export type StyleReplyView = Readonly<Pick<StyleRequest, 'id' | 'provider' | 'key' | 'ticket' | 'pendingRetire' | 'stopped' | 'origin'> & {
+  description: Readonly<Omit<Description, 'limits'> & { limits: Readonly<Description['limits']> }>;
+  replySize: Readonly<ReplySize>;
+  style: StyleJobView | undefined;
+  abort: { readonly signal: Pick<AbortSignal, 'aborted'> };
+  outcome: StyleAttempt;
+}>;

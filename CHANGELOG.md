@@ -71,7 +71,9 @@ been reconstructed.
 - Keep the current activity indicator visible when Pi returns to an editor that
   first attached during a switch between two menus.
 - Restore Pi's native presentation if pi-tidy-ui cannot install its hooks on a
-  newly added component. Keep the component attached and warn once.
+  newly added component. Keep the component attached and warn once. Close the
+  highlighting connection on that failure and do not reopen it on terminal
+  return until a new presentation is installed.
 - Refresh expanded write/edit details when updates reuse the same argument or
   result object. Keep current pending text and replace pending proposals with the
   saved error on final failure, while reusing unchanged bounded measurements.

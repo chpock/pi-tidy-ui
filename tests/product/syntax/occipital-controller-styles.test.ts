@@ -1202,11 +1202,21 @@ test('controller styles: clearing a parsed source then preparing empty paint doe
   try {
     owner.setStyleSelection(local()); owner.observe(demand()); owner.flush(); peer.source(0, 'echo one\n'); await settled();
     peer.style(1); await settled(); assert.equal(owner.displayBasis('source')!.version, 1);
+    assert.equal(owner.status('source')!.acknowledgedVersion, 1);
+    const traffic = peer.calls.map(call => call.op);
     owner.observe(demand('source', '', 2, false)); owner.flush(); await settled();
     assert.equal(owner.displayBasis('source')!.version, 2);
+    const empty = owner.status('source')!;
+    assert.equal(empty.exact, true);
+    assert.equal(empty.classificationVersion, undefined);
+    assert.deepEqual(peer.calls.map(call => call.op), traffic, 'empty paint adds no native request');
+    assert.equal(owner.workStatus('source').execution, 'acknowledged', 'empty display does not erase the earlier execution fact');
+    assert.equal(empty.acknowledgedVersion, undefined, 'the locally published empty basis is not a native acknowledgement');
     owner.observe(demand('source', 'echo two\n', 3, false)); owner.flush();
     const open = peer.calls.length - 1; assert.equal(peer.calls[open]!.op, 'stream.open');
+    assert.equal(owner.status('source')!.acknowledgedVersion, undefined, 'regrowth is not acknowledged before the native reply');
     peer.source(open, 'echo two\n'); await settled();
+    assert.equal(owner.status('source')!.acknowledgedVersion, 3);
     assert.equal(owner.workStatus('source').execution, 'acknowledged'); assert.equal(owner.status('source')!.exact, true);
     assert.equal(owner.status('source')!.protective, false);
   } finally { await cleanup(owner, peer); }

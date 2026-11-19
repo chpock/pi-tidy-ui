@@ -43,6 +43,12 @@ export function publicationHasNoExecutionAuthority(source: PresentationRecord, n
   registry.clear();
   // @ts-expect-error Physical provider identity remains read-only.
   reply.provider = 1;
+  // @ts-expect-error Publication cannot overwrite transport-measured reply size.
+  reply.replySize.bytes = 1;
+  // @ts-expect-error Publication cannot change the transport's measurement correlation.
+  reply.replySize.ticket = 'other';
+  // @ts-expect-error Publication cannot change the negotiated limit used to validate this receipt.
+  reply.description.limits.reply_bytes = 1;
   // @ts-expect-error Publication cannot refund physical reservations.
   reply.reserved = false;
   // @ts-expect-error A cancellation observation is not an AbortController.
@@ -57,4 +63,22 @@ export function publicationHasNoExecutionAuthority(source: PresentationRecord, n
   host.physicalSettled(reply);
   // @ts-expect-error Activity is observed, not changed by publication.
   host.active = true;
+}
+
+export function publicationBorrowsAttachedStyle(style: NonNullable<StyleReplyView['style']>): void {
+  // @ts-expect-error Only execution may detach an attached capture group.
+  style.captures = undefined;
+  // @ts-expect-error Dispatch recorded this member's generation.
+  style.members[0]!.generation++;
+  // @ts-expect-error Settlement capacity is fixed at dispatch.
+  style.decodedBytes = 1;
+}
+
+export function publicationReadsAttachedCaptures(group: NonNullable<NonNullable<StyleReplyView['style']>['captures']>): void {
+  const capture = group.captures[0]!;
+  capture.visitContexts(() => {});
+  // @ts-expect-error Only execution may release the attached group.
+  group.release();
+  // @ts-expect-error Individual capture storage also belongs to execution.
+  capture.release();
 }

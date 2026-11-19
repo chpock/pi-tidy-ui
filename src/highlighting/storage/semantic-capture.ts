@@ -72,3 +72,7 @@ export class SemanticCaptureGroup {
   }
   release(): void { this.#charge?.release(); this.#charge = undefined; for (const capture of this.captures) capture.release(); }
 }
+
+/** Borrows the original branded captures without authority to release their storage. */
+export type SemanticCaptureView = Pick<SemanticCapture, keyof CaptureIdentity | 'visitContexts'>;
+export type SemanticCaptureGroupView = Readonly<{ captures: readonly SemanticCaptureView[] }>;

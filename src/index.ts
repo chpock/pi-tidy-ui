@@ -369,6 +369,9 @@ interface SyntaxContext { current?: ExtensionContext }
 function syntaxNotice(owner: WeakRef<SyntaxContext>) {
   return (message: string, type: "error") => notify(owner.deref()?.current?.ui, message, type);
 }
+function syntaxDetachFailure(sink?: DiagnosticSink) {
+  return () => diagnose(sink, 'ERROR', 'syntax', 'Could not deactivate highlighting after native presentation was restored');
+}
 function nativeRendererFailureReporter(rendererSink: DiagnosticSink): NativeRendererFailureReporter {
   return (scope, tool, slot, outcome) => {
     const operation = `native-renderer:${tool}:${slot}`;
@@ -481,7 +484,8 @@ export default function tidyUi(pi: ExtensionAPI, options: TidyUiRuntimeOptions =
       if (slot) footer.defer(slot);
       const sourceRuntime = ensureSyntax(ctx);
       if (controller) reportRuntime(diagnostics.sink, { kind: 'released', scope: controller, operation: '*' });
-      controller = installTidyUi(tui, palette, {
+      let installed: TidyUiController | undefined;
+      installed = installTidyUi(tui, palette, {
         diagnostic: diagnostics.sink, cardPreparation: options.cardPreparation,
         syntax: { client: sourceRuntime, palette: () => sourceRuntime.palette({ colors: palette().colors! }), isLiveCall: id => liveBashCalls.has(id) },
          colorMode: () => liveContext!.ui.theme.getColorMode(),
@@ -500,10 +504,16 @@ export default function tidyUi(pi: ExtensionAPI, options: TidyUiRuntimeOptions =
           directorySource?.dispose(); directorySource = undefined;
           liveContext?.ui.setWidget(statusWidget, undefined);
         },
-        warn: (message) => { footer.restore(); if (!diagnostics.sink?.runtime) notify(liveContext?.ui, `Appearance disabled: ${message}`, 'warning'); },
+        warn: (message) => {
+          // Native hooks and card work are already restored. Initial install failure has no attachment to revoke.
+          if (installed) void sourceRuntime.detach(installed).catch(syntaxDetachFailure(diagnostics.sink));
+          footer.restore();
+          if (!diagnostics.sink?.runtime) notify(liveContext?.ui, `Appearance disabled: ${message}`, 'warning');
+        },
       });
-      diagnose(diagnostics.journal?.sink, "INFO", "runtime", "Presentation installation finished", { active: controller.active, reason: controller.reason });
-      if (controller.active) sourceRuntime.attach(controller);
+      controller = installed;
+      diagnose(diagnostics.journal?.sink, "INFO", "runtime", "Presentation installation finished", { active: installed.active, reason: installed.reason });
+      if (installed.active) sourceRuntime.attach(installed);
       return { render: () => [], invalidate() {} };
     });
     ctx.ui.setWidget("pi-tidy-ui-capture", undefined);

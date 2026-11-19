@@ -1,6 +1,6 @@
 import type { DataCharge, DataGrant } from '../../resources/data-budget.ts';
 import type { ContextRef } from './context-arena.ts';
-import type { AccountedSnapshot, CaptureData, SemanticCapture } from './semantic-capture.ts';
+import type { AccountedSnapshot, CaptureData, SemanticCaptureView } from './semantic-capture.ts';
 import type { SemanticRangeView, SemanticRanges } from './semantic-ranges.ts';
 import { copyPresentation, equalPresentation, type OwnedPresentation, type ReadyPresentation } from './ready-presentation.ts';
 
@@ -20,7 +20,7 @@ export interface ReadyDisplayCandidate {
   readonly semanticStamp: number;
   readonly sourceVersion: number;
   readonly presentation: ReadyPresentation;
-  readonly capture?: SemanticCapture;
+  readonly capture?: SemanticCaptureView;
 }
 export interface ReadyDisplayUpdate { readonly generation: number; readonly candidate: ReadyDisplayCandidate }
 export type CaptureSelection = number | Readonly<{ generation: number; effectStamp: number }>;
@@ -35,7 +35,7 @@ export function readyDisplayBytes(display?: ReadyDisplay): number {
 type DisplayPlan<Entry extends ReadyDisplayEntry> = { entry: Entry; old?: ReadyDisplay; newView?: SemanticRangeView; next?: ReadyDisplay };
 interface ReadyDisplayAccess<Entry extends ReadyDisplayEntry> {
   entry(generation: number): Entry | undefined;
-  capture(value: SemanticCapture): CaptureData | undefined;
+  capture(value: SemanticCaptureView): CaptureData | undefined;
 }
 
 /** A synchronous funded transaction: all plans stage before any slot changes, and

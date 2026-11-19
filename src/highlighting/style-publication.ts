@@ -5,7 +5,7 @@ import { collectStyleContexts, estimateStyleRepresentation } from './style-prepa
 import type { DataCharge, DataGrant } from '../resources/data-budget.ts';
 import type { ContextRef } from './storage/context-arena.ts';
 import { CARD_ROLES, type CardRole } from '../appearance/card-roles.ts';
-import type { SemanticCaptureGroup } from './storage/semantic-capture.ts';
+import type { SemanticCaptureGroup, SemanticCaptureGroupView, SemanticCaptureView } from './storage/semantic-capture.ts';
 import { decodeSemanticStyleReply, type SemanticDescription as Description } from '../occipital/semantic-protocol.ts';
 import type { CaptureSelection, ReadyDisplayUpdate } from './storage/ready-display-publication.ts';
 import { diagnosticError, reportRuntime, unexpectedDiagnostic, type DiagnosticSink } from '../diagnostics.ts';
@@ -20,7 +20,7 @@ import type { ProviderBroker, ProviderClock } from '../occipital/provider.ts';
 import { matchingSourceVersion } from './source-state.ts';
 import { nextStyle, styleFaultCause, type StyleCause } from './style-state.ts';
 import type { SourceExecution } from './source-execution.ts';
-import type { PresentationRecord, PublicationNode, PublicationRegistry, StyleCache, StyleCleanup, StyleCounters, StyleFailure, StyleJob, StyleMember, StyleReplyView, StyleSubject } from './execution-records.ts';
+import type { PresentationRecord, PublicationNode, PublicationRegistry, StyleCache, StyleCleanup, StyleCounters, StyleFailure, StyleJobView, StyleMember, StyleReplyView, StyleSubject } from './execution-records.ts';
 
 export function displayGeneration(state: Pick<PresentationRecord, 'generation' | 'previous'>, pool: Pick<SemanticRetentionPool, 'displayStatus'>): number | undefined {
   return state.generation !== undefined && pool.displayStatus(state.generation) !== undefined ? state.generation : state.previous;
@@ -394,14 +394,14 @@ export class StylePublication {
     node.failedPalette = selection.palette; node.failedBindingRevision = selection.bindingRevision;
   }
 
-  private styleHealthOwner(style: StyleJob, provider: number): PublicationNode | undefined {
+  private styleHealthOwner(style: StyleJobView, provider: number): PublicationNode | undefined {
     const node = style.node.deref();
     return node && this.work.get(node.value) === node && this.styleEpoch === style.epoch
       && node.styleRevision === style.revision && this.provider.isReady(provider) ? node : undefined;
   }
 
   // After the generic expressions are installed, publication funding belongs to this owner only.
-  private refuseStyleOwner(style: StyleJob): void {
+  private refuseStyleOwner(style: StyleJobView): void {
     const node = style.node.deref();
     if (node) this.refuseStyles(node, style.expected.vocabulary, style.epoch, style.revision);
   }
@@ -644,7 +644,7 @@ export class StylePublication {
     } finally { pendingCapture?.release(); grant.close(); }
   }
 
-  private publishStyles(members: readonly StyleMember[], selection: PreparedSelection, captures?: SemanticCaptureGroup, node?: PublicationNode, vocabularyHint?: string): boolean {
+  private publishStyles(members: readonly StyleMember[], selection: PreparedSelection, captures?: SemanticCaptureGroupView, node?: PublicationNode, vocabularyHint?: string): boolean {
     if (!this.execution().publicationEnabled || !this.execution().active || this.selection !== selection) return false;
     const vocabulary = captures?.captures[0]?.vocabulary ?? (members[0] && this.pool.status(members[0].generation)?.vocabulary) ?? vocabularyHint;
     if (vocabulary === undefined) return false;
@@ -673,7 +673,7 @@ export class StylePublication {
       && members.every((member, i) => member.key === node.seal!.members[i]!.key && member.id === node.seal!.members[i]!.id);
   }
 
-  private materializeDisplays(members: readonly StyleMember[], selection: PreparedSelection, vocabulary: string, captures?: SemanticCaptureGroup): (ReadyDisplayUpdate & { bindingChanged: boolean })[] | undefined {
+  private materializeDisplays(members: readonly StyleMember[], selection: PreparedSelection, vocabulary: string, captures?: SemanticCaptureGroupView): (ReadyDisplayUpdate & { bindingChanged: boolean })[] | undefined {
     const updates: (ReadyDisplayUpdate & { bindingChanged: boolean })[] = [];
     for (let i = 0; i < members.length; i++) {
       const member = members[i]!, capture = captures?.captures[i], currentCapture = !!captures && members.length > 1;
@@ -701,7 +701,7 @@ export class StylePublication {
 
 
   private materializeContexts(state: PresentationRecord, generation: number, vocabulary: string, selection: PreparedSelection,
-    display: ReturnType<SemanticRetentionPool['displayStatus']>, capture?: SemanticCaptureGroup['captures'][number]): { context: ContextRef; style: ConcreteStyle }[] | undefined {
+    display: ReturnType<SemanticRetentionPool['displayStatus']>, capture?: SemanticCaptureView): { context: ContextRef; style: ConcreteStyle }[] | undefined {
     const contexts: { context: ContextRef; style: ConcreteStyle }[] = [];
     let complete = true;
     const add = (context: ContextRef) => {
@@ -779,7 +779,7 @@ export class StylePublication {
     let expressionsInstalled = false, workerUnavailable = false;
     let failureCause: StyleCause = 'retry';
     try {
-      if (!this.styleReplyActive(job, style)) { this.refuseInactiveStyleReply(job); return; }
+      if (!style || !this.styleReplyActive(job)) { this.refuseInactiveStyleReply(job); return; }
       if (rejected) { this.rejectStyleRequest(job, style, raw); return; }
       let decoded: ReturnType<typeof decodeSemanticStyleReply>;
       try { decoded = decodeSemanticStyleReply(raw, job.ticket, job.description, style.expected, style.refs.length, style.decodedBytes, HIGHLIGHT_LIMITS, job.replySize); }
@@ -807,8 +807,8 @@ export class StylePublication {
     } finally { this.execution().finishStyleReply(job, workerUnavailable); }
   }
 
-  private styleReplyActive(job: StyleReplyView, style: StyleJob | undefined): style is StyleJob {
-    return !!style && !this.execution().publicationDisposed && this.execution().publicationEnabled && this.execution().active && !job.stopped && !job.pendingRetire && !job.abort.signal.aborted;
+  private styleReplyActive(job: StyleReplyView): boolean {
+    return !this.execution().publicationDisposed && this.execution().publicationEnabled && this.execution().active && !job.stopped && !job.pendingRetire && !job.abort.signal.aborted;
   }
 
   private refuseInactiveStyleReply(job: StyleReplyView): void {
@@ -816,7 +816,7 @@ export class StylePublication {
     this.refuseStyleJob(job, job.origin && !intentional ? 'route' : 'withdrawn');
   }
 
-  private rejectStyleRequest(job: StyleReplyView, style: StyleJob, raw: unknown): void {
+  private rejectStyleRequest(job: StyleReplyView, style: StyleJobView, raw: unknown): void {
     this.refuseStyleJob(job, this.provider.isReady(job.provider) ? 'other' : 'route');
     const node = this.styleHealthOwner(style, job.provider);
     if (node && unexpectedDiagnostic(raw)) {
@@ -825,7 +825,7 @@ export class StylePublication {
     }
   }
 
-  private cacheInstalledStyles(style: StyleJob, reserve: (bytes: number) => boolean): boolean {
+  private cacheInstalledStyles(style: StyleJobView, reserve: (bytes: number) => boolean): boolean {
     const key = this.styleKey(style.expected.vocabulary, style.expected.rules);
     if (!this.styleCache.has(key)) {
       const bytes = 512;
@@ -840,7 +840,7 @@ export class StylePublication {
     return true;
   }
 
-  private publishStyleReply(style: StyleJob): void {
+  private publishStyleReply(style: StyleJobView): void {
     const selected = this.selection, group = style.group?.deref(), node = group && this.work.get(group);
     const current = this.provider.snapshot().description, preparation = group?.preparation.deref();
     if (preparation?.acceptsSelection && selected && !preparation.acceptsSelection(selected.palette, selected.rules)) return;

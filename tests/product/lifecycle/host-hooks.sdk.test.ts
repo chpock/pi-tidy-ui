@@ -1,11 +1,15 @@
 import '../../fixtures/test-guard.mjs';
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { setImmediate as turn } from 'node:timers/promises';
 import { Spacer, type Component } from '@earendil-works/pi-tui';
 import { UserMessageComponent } from '../../../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/components/user-message.js';
 import { initTheme } from '../../../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js';
 import type { DiagnosticSink, RuntimeEvent } from '../../../src/diagnostics.ts';
-import { Container, CustomEditor, Root, Tool, color, editorSetup, installTidyUi } from '../../fixtures/sdk-contract-support.ts';
+import type { ProviderTransport } from '../../../src/occipital/provider.ts';
+import { Container, CustomEditor, Root, Tool, color, editorSetup, extensionHarness, installTidyUi } from '../../fixtures/sdk-contract-support.ts';
+import { semanticDescriptor } from '../../fixtures/semantic-provider.ts';
+import { menuPage, setAppearance } from '../../helpers/menu-driver.ts';
 
 const families = [
   { prototype: Container.prototype, names: ['addChild', 'clear', 'removeChild', 'render'] },
@@ -181,21 +185,11 @@ test('late tool update-hook rejection retains the native subtree and restores th
   }
 });
 
-test('late user hook-publication exception rolls back methods that were already written', () => {
-  initTheme('dark', false);
-  const user = new UserMessageComponent('PRESERVED_USER_TEXT');
-  const nativeRows = user.render(80);
-  const root = new Root(), prototype = UserMessageComponent.prototype;
+function addUserWithPublicationFault(root: Container, user: UserMessageComponent) {
+  const prototype = UserMessageComponent.prototype, define = Object.defineProperty;
   const originalRender = Object.getOwnPropertyDescriptor(prototype, 'render')!;
-  const originals = ['render', 'rebuild', 'setOutputPad', 'invalidate'].map(name =>
-    ({ name, descriptor: Object.getOwnPropertyDescriptor(prototype, name) }));
-  const observed = observeAdmission();
-  const define = Object.defineProperty;
   let renderWrites = 0, renderWritesAtFault = 0, faults = 0;
-  const controller = installTidyUi(root, () => color, observed.options);
   try {
-    assert.equal(controller.active, true);
-    assert.equal(sameDescriptor(Object.getOwnPropertyDescriptor(prototype, 'render'), originalRender), true);
     Object.defineProperty = ((target: object, name: PropertyKey, descriptor: PropertyDescriptor) => {
       if (target === prototype && name === 'setOutputPad' && faults === 0) {
         faults++;
@@ -207,20 +201,133 @@ test('late user hook-publication exception rolls back methods that were already 
       return result;
     }) as typeof Object.defineProperty;
     const error = addError(root, user);
-    Object.defineProperty = define;
     assert.equal(faults, 1);
     assert.equal(renderWritesAtFault, 1, 'a render hook was published before the fault');
+    return error;
+  } finally { Object.defineProperty = define; }
+}
+
+test('late user hook-publication exception rolls back methods that were already written', () => {
+  initTheme('dark', false);
+  const user = new UserMessageComponent('PRESERVED_USER_TEXT');
+  const nativeRows = user.render(80);
+  const root = new Root(), prototype = UserMessageComponent.prototype;
+  const originals = ['render', 'rebuild', 'setOutputPad', 'invalidate'].map(name =>
+    ({ name, descriptor: Object.getOwnPropertyDescriptor(prototype, name) }));
+  const observed = observeAdmission();
+  const controller = installTidyUi(root, () => color, observed.options);
+  try {
+    assert.equal(controller.active, true);
+    assert.equal(sameDescriptor(Object.getOwnPropertyDescriptor(prototype, 'render'), originals[0]!.descriptor), true);
+    const error = addUserWithPublicationFault(root, user);
     assert.equal(root.children.length === 1 && root.children[0] === user, true);
     assertAddedWithoutError(error, controller.active);
     assertAdmissionFailure(controller, observed);
     for (const { name, descriptor } of originals)
       assert.equal(sameDescriptor(Object.getOwnPropertyDescriptor(prototype, name), descriptor), true, `exact prior ${name} descriptor`);
     assert.deepEqual(user.render(80), nativeRows);
-  } finally {
-    Object.defineProperty = define;
-    controller.restore();
-  }
+  } finally { controller.restore(); }
 });
+
+for (const phase of ['queued', 'describing', 'ready'] as const) {
+  test(`entry late presentation failure retires a ${phase} highlighting activation`, async () => {
+    initTheme('dark', false);
+    const traffic = { factory: 0, describe: 0, close: 0 };
+    const unexpected: string[] = [];
+    let releaseDescribe: (() => void) | undefined, describeSignal: AbortSignal | undefined;
+    let restoredWhenClosing: boolean | undefined;
+    let finishClose!: () => void;
+    const closeGate = new Promise<void>(resolve => { finishClose = resolve; });
+    const h = extensionHarness('tui', {}, () => ({ standaloneVersion: 'fixture', provider: {
+      async tryShared(): Promise<ProviderTransport> {
+        const first = ++traffic.factory === 1;
+        let closed = false, end!: (reason: 'closed') => void;
+        const ended = new Promise<'closed'>(resolve => { end = resolve; });
+        return { ended, get endReason() { return closed ? 'closed' as const : undefined; }, async request(request, options) {
+          if (request.op !== 'describe') { unexpected.push(request.op); throw new Error('unexpected data request'); }
+          traffic.describe++;
+          const reply = semanticDescriptor(request.ticket);
+          if (first && phase === 'describing') {
+            describeSignal = options?.signal;
+            return new Promise(resolve => { releaseDescribe = () => resolve(reply); });
+          }
+          return reply;
+        }, async close() {
+          traffic.close++;
+          if (first && phase === 'ready') {
+            restoredWhenClosing = sameDescriptor(Object.getOwnPropertyDescriptor(Container.prototype, 'addChild'), nativeAdd)
+              && sameDescriptor(Object.getOwnPropertyDescriptor(UserMessageComponent.prototype, 'render'), nativeRender);
+            await closeGate;
+          }
+          closed = true; end('closed');
+        } };
+      },
+      async acquireOwned() { unexpected.push('owned factory'); throw new Error('unexpected owned launch'); },
+    } }));
+    const settle = async () => { for (let i = 0; i < 5; i++) await turn(); };
+    const user = new UserMessageComponent('NATIVE_AFTER_PRESENTATION_FAILURE');
+    const nativeRows = user.render(80), terminal = h.root.terminal;
+    const nativeAdd = Object.getOwnPropertyDescriptor(Container.prototype, 'addChild');
+    const nativeRender = Object.getOwnPropertyDescriptor(UserMessageComponent.prototype, 'render');
+    const assertNative = () => {
+      assert.equal(h.root.children.includes(user), true, 'the child added by Pi remains attached');
+      assert.equal(sameDescriptor(Object.getOwnPropertyDescriptor(Container.prototype, 'addChild'), nativeAdd), true);
+      assert.equal(sameDescriptor(Object.getOwnPropertyDescriptor(UserMessageComponent.prototype, 'render'), nativeRender), true);
+      assert.deepEqual(user.render(80), nativeRows);
+    };
+    const fail = () => {
+      assert.equal(sameDescriptor(Object.getOwnPropertyDescriptor(Container.prototype, 'addChild'), nativeAdd), false);
+      assertAddedWithoutError(addUserWithPublicationFault(h.root, user), false);
+      assertNative();
+    };
+    const command = h.commands.get('tidy-ui')!.handler;
+    const service = () => menuPage(command, h.ctx, ['Status & troubleshooting', 'Highlighting service details']);
+    try {
+      h.root.clear(); await h.ready;
+      if (phase === 'queued') {
+        // The capture factory already returned and attached; activation's microtask has not run.
+        const widget = h.ctx.ui.setWidget;
+        let injected = false;
+        Object.assign(h.ctx.ui, { setWidget(name: string, factory: unknown, ...args: unknown[]) {
+          Reflect.apply(widget, this, [name, factory, ...args]);
+          if (!injected && name === 'pi-tidy-ui-capture' && factory === undefined) { injected = true; fail(); }
+        } });
+      }
+      await h.events.get('session_start')!({ type: 'session_start', reason: 'startup' }, h.ctx); await settle();
+      const opened = phase === 'queued' ? 0 : 1;
+      assert.deepEqual(traffic, { factory: opened, describe: opened, close: 0 });
+      if (phase === 'ready') assert.match(await service(), /Service: ready/u);
+      if (phase !== 'queued') fail(); else assertNative();
+      await settle();
+      assert.equal(traffic.close, opened, 'failure itself releases the existing route or candidate');
+      if (phase === 'ready') assert.equal(restoredWhenClosing, true, 'native methods are already restored when cleanup starts');
+      if (phase === 'describing') {
+        assert.equal(describeSignal?.aborted, true, 'a pending descriptor cannot publish into the failed presentation');
+        assert.ok(releaseDescribe); releaseDescribe(); await settle();
+      }
+      terminal.stop(); terminal.start(); await settle();
+      assertNative();
+      assert.deepEqual(traffic, { factory: opened, describe: opened, close: opened }, 'native terminal return does not reacquire');
+      assert.equal(h.notices.filter(message => message.includes('unsupported_host')).length, 1);
+      const disabled = await service();
+      assert.match(disabled, /Native highlighting: On/u, 'effective deactivation does not change the saved preference');
+      assert.match(disabled, /Service: disabled \(disabled\)/u, 'no late reply publishes a provider into the failed installation');
+      await setAppearance(command, h.ctx, true); await settle();
+      assert.equal(sameDescriptor(Object.getOwnPropertyDescriptor(Container.prototype, 'addChild'), nativeAdd), false,
+        'explicit reapply installs a new eligible presentation');
+      if (phase === 'ready') assert.equal(traffic.factory, opened, 'new acquisition waits for the old route close');
+      finishClose(); await settle();
+      assert.deepEqual(traffic, { factory: opened + 1, describe: opened + 1, close: opened });
+      terminal.stop(); await settle(); terminal.start(); await settle();
+      assert.deepEqual(traffic, { factory: opened + 2, describe: opened + 2, close: opened + 1 },
+        'ordinary terminal reentry still reacquires for an active installation');
+      assert.deepEqual(unexpected, [], 'the UI lifecycle issues no data requests or owned launch in this fixture');
+    } finally {
+      releaseDescribe?.(); finishClose();
+      await h.events.get('session_shutdown')!({ type: 'session_shutdown', reason: 'quit' }, h.ctx);
+    }
+  });
+}
 
 test('an exception from the captured native add propagates without disabling the adapter', () => {
   const root = new Root(), normal = new Tool(), child = new Container();

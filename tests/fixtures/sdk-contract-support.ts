@@ -117,7 +117,8 @@ export function fixtureSyntaxOptions(): SyntaxRuntimeOptions {
     provider: { async tryShared() { return undefined; }, async acquireOwned() { throw new Error('fixture unavailable'); } } };
 }
 
-export function extensionHarness(mode: "tui" | "print" | "json" | "rpc" = "tui", flagValues: Record<string, string> = {}) {
+export function extensionHarness(mode: "tui" | "print" | "json" | "rpc" = "tui", flagValues: Record<string, string> = {},
+  syntax: NonNullable<TidyUiRuntimeOptions['syntax']> = fixtureSyntaxOptions) {
   const root = new Root(); root.addChild(new Tool());
   const events = new Map<string, (event: unknown, ctx: ExtensionContext) => void>();
   const commands = new Map<string, { handler(args: string, ctx: ExtensionContext): Promise<void> }>();
@@ -146,9 +147,9 @@ export function extensionHarness(mode: "tui" | "print" | "json" | "rpc" = "tui",
       else { widgetComponents.delete(name); widgetPlacements.delete(name); }
     },
   } } as unknown as ExtensionContext;
-  tidyUi(api, { logging: false, terminalDefaults: {}, localPreferences: { appearanceEnabled: true, loggingEnabled: true },
-    settings: fixtureSettings(), syntax: fixtureSyntaxOptions });
-  return { root, ctx, events, commands, flags, widgets, notices, widgetComponents, widgetPlacements, toolRendererResolvers };
+  const ready = tidyUi(api, { logging: false, terminalDefaults: {}, localPreferences: { appearanceEnabled: true, loggingEnabled: true },
+    settings: fixtureSettings(), syntax });
+  return { root, ctx, events, commands, flags, widgets, notices, widgetComponents, widgetPlacements, toolRendererResolvers, ready };
 }
 
 export function bashTool(command = "echo hello") {

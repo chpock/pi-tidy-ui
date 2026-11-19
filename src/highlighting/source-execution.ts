@@ -713,9 +713,11 @@ export class SourceExecution implements WorkContinuation, CardSourcePort, Source
     // including a removed/reused key, remains the physical attempt authority.
     const execution = this.workStatus(key).execution;
     const provider = this.provider.snapshot();
+    // Publication may install zero-byte ranges for local empty paint without a parser reply.
+    const acknowledgedVersion = current && current.sourceBytes > 0 && provider.generation === state.parsedProvider && provider.availability === 'ready'
+      ? current.sourceVersion : undefined;
     return {
-      generation: state.generation, version: state.version,
-      acknowledgedVersion: provider.generation === state.parsedProvider && provider.availability === 'ready' ? current?.sourceVersion : undefined,
+      generation: state.generation, version: state.version, acknowledgedVersion,
       classificationVersion: state.empty ? undefined : result?.sourceVersion, committedBytes: result?.committedBytes ?? 0, exact,
       execution, availability: this.disposed ? 'disposed' : !this.enabled ? 'disabled' : provider.availability,
       protective: sourceRefused(state) || sourceUncertain(state), fallbackEligible: !exact && this.workStatus(key).fallbackEligible, complete: state.complete

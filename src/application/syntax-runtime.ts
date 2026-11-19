@@ -82,6 +82,12 @@ export class SyntaxRuntime {
     diagnose(this.options.diagnostic, 'INFO', 'syntax', 'Syntax runtime attached to presentation', { epoch: this.epoch });
     if (!this.scheduled) { this.scheduled = true; queueMicrotask(activation(this.owner)); }
   }
+  /** Retire only the failed installation's effective activation, not the saved preference. */
+  async detach(presentation: Presentation): Promise<void> {
+    if (this.presentation?.deref() !== presentation) return;
+    this.presentation = undefined; ++this.epoch;
+    return this.client.setEnabled(false);
+  }
   setEnabled(enabled: boolean): Promise<void> {
     if (this.disposed) return Promise.resolve();
     if (this.enabled !== enabled) {

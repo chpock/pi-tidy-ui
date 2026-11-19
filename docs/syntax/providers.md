@@ -68,7 +68,7 @@ The slot is released only after the transport’s actual `close()` promise settl
 
 ## Providers and lifecycle
 
-An eligible interactive adapter starts asynchronous selection automatically. Print/JSON/RPC loading, an inactive extension or constructing the client does not start a helper. Development version `0.0.0` uses only the colocated build, with a missing-build warning/fallback as specified [below](#binary-compatibility-and-delivery). Real-version packages select as follows:
+An eligible interactive adapter starts asynchronous selection automatically. Print/JSON/RPC loading, an inactive extension or constructing the client does not start a helper. A failed installed presentation revokes that activation after restoring native UI and removing its card work. The ordinary client disable path cancels pending acquisition and closes that client's route; it does not rewrite the saved preference. Terminal start can resume terminal colors but cannot re-enable that provider without a successful presentation attachment. A successful replacement follows the existing activation and cleanup rules. Development version `0.0.0` uses only the colocated build, with a missing-build warning/fallback as specified [below](#binary-compatibility-and-delivery). Real-version packages select as follows:
 
 1. Try a user-managed compatible Subconscious internal service using the public SDK/discovery contract. A connection file alone is not proof that Occipital is available.
 2. If none is usable, resolve the extension-declared **exact** owned Occipital release for the actual OS/architecture/ABI. Verify the installed payload or exact cache bytes; otherwise acquire that declared artifact. Never substitute a newer cached version or query a latest release.

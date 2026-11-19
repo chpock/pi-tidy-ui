@@ -78,7 +78,7 @@ Expressions can be cleared under pressure while descriptors remain leased. Actua
 
 The captured payload keeps its existing charges. The job funds additional capture/group/reference metadata rather than charging an imaginary second whole root. Validation is repeated after pressure/funding because nested acquisition can change what remains owned.
 
-For a multi-segment card, captured membership is one group, and members must be complete and vocabulary-compatible. Growing Bash uses its single source slot. The capture’s private group identity prevents unrelated otherwise-similar captures from being assembled into one replacement.
+For a multi-segment card, captured membership is one group, and members must be complete and vocabulary-compatible. Growing Bash uses its single source slot. The capture’s private group identity prevents unrelated otherwise-similar captures from being assembled into one replacement. The ready-display candidate carries a structural read view without release methods. The retention root checks the original capture’s runtime brand, pool owner and live group membership before staging a replacement; an object with the right TypeScript shape alone is not enough. The holder of the owning handle is responsible for releasing capture storage.
 
 Ready controller groups pin their exact generic rule definition, local palette identity and binding revision. Follow Pi retains its sampled input; an owned-palette group retains the validated palette input it uses. Dropping a cache’s ordinary reference therefore cannot free data still owned by a ready group. This is storage pinning, not a guarantee that the group remains current.
 
