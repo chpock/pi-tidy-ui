@@ -43,7 +43,8 @@ export type ToolSyntaxState = {
   attempt: number; revision: number; sourceRevision: number; serviceRevision: number; identity: unknown[]; service: unknown[];
   fileInput?: FileInputSnapshot;
   palette?: number; paletteColors?: WeakRef<object>; mode?: TerminalColorMode; complete: boolean; live: boolean; applied: boolean; paused?: boolean; owned?: boolean;
-  refreshPending?: boolean; refreshToken?: object; refused?: boolean; paintRetry?: boolean; unreflected?: boolean;
+  refreshPending?: boolean; refreshToken?: object; refused?: boolean; paintRetry?: boolean;
+  unreflected?: 'refresh' | 'bash-update';
   prefix?: { sourceRevision: number; basis: number; bytes: number };
 };
 
@@ -158,6 +159,11 @@ export class ToolPresentationSessions<Owner extends object> {
 
   syntax(owner: Owner): ToolSyntaxState | undefined {
     return this.syntaxes.get(owner);
+  }
+
+  hasCurrentDisplay(owner: Owner): boolean {
+    const state = this.syntax(owner);
+    return state?.applied === true && state.unreflected !== 'bash-update';
   }
 
   setSyntax(owner: Owner, state: ToolSyntaxState): void {

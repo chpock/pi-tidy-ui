@@ -60,6 +60,8 @@ been reconstructed.
 
 ### Fixed
 
+- Refresh Bash cards when output changes while the terminal is stopped (for
+  example, with an external editor open), without waiting for another input or resize.
 - Prevent a retired native no-start refusal from blocking newly enabled work,
   independently of whether the refusal arrives before or after Native Off/On.
   Keep execution history and outstanding request reservations intact.

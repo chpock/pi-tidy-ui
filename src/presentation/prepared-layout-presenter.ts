@@ -44,8 +44,7 @@ export class PreparedLayoutPresenter<Owner extends object> {
 
   prepare(owner: Owner, width: number): PreparedLayout | undefined {
     const { ports } = this;
-    const state = ports.sessions.syntax(owner);
-    if (!state?.applied) return;
+    if (!ports.sessions.hasCurrentDisplay(owner)) return;
     const previousEntry = ports.sessions.preparedLayout(owner)?.entry;
     const previous = previousEntry?.value;
     const padding = ports.outputPadding();

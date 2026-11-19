@@ -228,7 +228,7 @@ export function createToolViewPresenter<Owner extends object>(ports: ToolViewPor
       const previous = siblings[index]!;
       if (width > 0 && host.isTool(previous) && routing.bash(previous, width)) {
         const state = sessions.layout(previous);
-        if (state?.signature[0] !== 'summary' && sessions.syntax(previous)?.applied && cards()?.visit(previous, () => {}))
+        if (state?.signature[0] !== 'summary' && sessions.hasCurrentDisplay(previous) && cards()?.visit(previous, () => {}))
           return { compact: false, tool: true, height: 3 };
         return { compact: true, tool: true, height: summaryLayout(previous, width).rows.length };
       }
@@ -263,7 +263,7 @@ export function createToolViewPresenter<Owner extends object>(ports: ToolViewPor
   function cleanupRows(node: Owner, width: number): string[] | undefined {
     const prepared = sessions.preparedLayout(node)?.entry.value;
     if (prepared && prepared.width === width && width > 0 && prepared.gap !== undefined &&
-      prepared.scene.isValid && prepared.output.isValid && sessions.syntax(node)?.applied && syntaxEligible(node)) {
+      prepared.scene.isValid && prepared.output.isValid && sessions.hasCurrentDisplay(node) && syntaxEligible(node)) {
       if (!routing.fileVisible(node, width)) return [];
       const baseRows = preparedRows(prepared);
       const rows = cardKind(node) === 'read' ? readImageRows(node, width, baseRows, prepared.scene.framed) : baseRows;
@@ -420,11 +420,13 @@ export function createToolViewPresenter<Owner extends object>(ports: ToolViewPor
     sessions.clearImageWindow(node);
     if (name === 'setShowImages' || name === 'setImageWidthCells') return method.apply(node, args);
     const preserveFileDetail = policy.fileTool(node) && (name === 'updateArgs' || name === 'updateResult' || name === 'setArgsComplete');
-    if (name !== 'markExecutionStarted' && !(name === 'setExpanded' && args[0] === fields.expanded(node)))
+    const sameExpansion = name === 'setExpanded' && args[0] === fields.expanded(node);
+    if (name !== 'markExecutionStarted' && !sameExpansion)
       forget(node, name, preserveFileDetail);
     if (host.quiescing() && name !== 'markExecutionStarted') sessions.dropPreparedLayout(node);
     if (policy.filePresentationTool(node) && (name === 'updateArgs' || name === 'updateResult' || name === 'invalidate')) sessions.markFileSourcesDirty(node);
     if (name === 'invalidate') producer.forgetImageResult(fields.result(node));
+    const previousArgs = name === 'updateArgs' ? fields.args(node) : undefined;
     const result = method.apply(node, args);
     if (name === 'updateArgs') {
       if (policy.fileTool(node)) host.syncRendererArgs(node, 'file');
@@ -433,7 +435,7 @@ export function createToolViewPresenter<Owner extends object>(ports: ToolViewPor
     if (name === 'updateResult') producer.forgetImageResult(fields.result(node));
     preparation.observeFileTurn(node, name === 'updateResult');
     if (name !== 'invalidate') ports.phase(node, name);
-    observeSyntax(node);
+    observeSyntax(node, undefined, name === 'invalidate' || sameExpansion ? undefined : previousArgs ?? true);
     if (policy.filePresentationTool(node)) prepareFileDetail(node, preserveFileDetail);
     if (name === 'setExpanded' && cardKind(node) !== 'bash' && fields.expanded(node)) sessions.dropPreparedLayout(node);
     if (name === 'updateResult') preparation.settleInterrupted(node);

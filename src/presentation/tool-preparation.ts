@@ -51,9 +51,18 @@ function paletteRefresh<Owner extends object>(owner: WeakRef<Owner>, target: Wea
   return () => { const node = owner.deref(), current = target.deref(); if (node && current?.active) current.refreshPreparedPalette(node, token); };
 }
 
+// An argument update supplies the previous SDK record. Other updates may change the display.
+type ToolObservationUpdate = true | Record<string, unknown>;
+
+function equalArguments(before: Record<string, unknown>, after: Record<string, unknown>): boolean {
+  if (before === after) return true;
+  const keys = Object.keys(before);
+  return keys.length === Object.keys(after).length && keys.every(key => Object.hasOwn(after, key) && before[key] === after[key]);
+}
+
 export interface ToolPreparationPresenter<Owner extends object> {
   seedFileState(owner: Owner): ToolSyntaxState;
-  observeSyntax(owner: Owner, readVisible?: boolean): ToolSyntaxState | undefined;
+  observeSyntax(owner: Owner, readVisible?: boolean, update?: ToolObservationUpdate): ToolSyntaxState | undefined;
   syntaxEligible(owner: Owner, readVisible?: boolean): boolean;
   requestFilePreparation(owner: Owner, width: number): void;
   observeFrame(owner: Owner, width: number): void;
@@ -103,10 +112,17 @@ export function createToolPreparationPresenter<Owner extends object, Input exten
     queueMicrotask(paletteRefresh(new WeakRef(node), new WeakRef(ports.refreshTarget()), token));
     return true;
   }
-  function deferObservation(node: Owner): ToolSyntaxState {
-    const live = cardKind(node) === 'bash' && liveBashSource(node);
+  function deferObservation(node: Owner, update?: ToolObservationUpdate): ToolSyntaxState {
+    const bash = cardKind(node) === 'bash';
+    const live = bash && liveBashSource(node);
     const state = seedFileState(node);
-    state.live = live; state.unreflected = true; cancelPreparedRefresh(state);
+    state.live = live;
+    // Pi may reparse unchanged arguments. Compare only the shallow fields, never the result or source preparation.
+    if (state.unreflected !== 'bash-update') {
+      const changed = bash && (update === true || update && !equalArguments(update, fields.args(node)));
+      state.unreflected = changed ? 'bash-update' : 'refresh';
+    }
+    cancelPreparedRefresh(state);
     return state;
   }
   function observeFrame(node: Owner, width: number): void {
@@ -150,12 +166,13 @@ export function createToolPreparationPresenter<Owner extends object, Input exten
       && filePreviewMode(node) !== undefined && !policy.hasImage(node);
   }
   function sameFileSource(a: FileSourceSnapshot, b: FileSourceSnapshot): boolean { return a.mode === b.mode && equalIdentity(a.key, b.key); }
-  function observeSyntax(node: Owner, readVisible?: boolean): ToolSyntaxState | undefined {
+  function observeSyntax(node: Owner, readVisible?: boolean, update?: ToolObservationUpdate): ToolSyntaxState | undefined {
     if (!facts.active()) return;
-    if (!facts.workActive()) return deferObservation(node);
+    if (!facts.workActive()) return deferObservation(node, update);
     const reader = toolReader(node);
     const prior = sessions.syntax(node);
-    if (prior) prior.unreflected = false;
+    const pendingBashUpdate = prior?.unreflected === 'bash-update';
+    if (prior) prior.unreflected = undefined;
     cancelPreparedRefresh(prior);
     if (!facts.quiescing() && filePresentationTool(node) && facts.attached(node) && !prior) seedFileState(node);
     if (!facts.quiescing() && filePresentationTool(node) && !facts.attached(node)) {
@@ -222,7 +239,7 @@ export function createToolPreparationPresenter<Owner extends object, Input exten
         : owner.updateDisplay(node, { ...common, kind: 'file', reader: fileInput!.reader, diagnostics: fileInput!.diagnostics,
           viewMode: viewMode!, cwd });
       if (sessions.syntax(node) !== state || state.attempt !== attempt) return;
-      if (!facts.workActive()) return deferObservation(node);
+      if (!facts.workActive()) return deferObservation(node, pendingBashUpdate ? true : update);
       if (!accepted) {
         if (filePresentationTool(node)) {
           if (viewMode === 'full') discardFullFile(node);
@@ -292,8 +309,8 @@ export function createToolPreparationPresenter<Owner extends object, Input exten
     if (!state || !state.refreshPending || state.refreshToken !== token) return;
     cancelPreparedRefresh(state);
     if (!facts.active() || facts.quiescing()) return;
-    if (!facts.workActive()) { state.unreflected = true; return; }
-    const unreflected = state.unreflected === true;
+    if (!facts.workActive()) { state.unreflected ??= 'refresh'; return; }
+    const unreflected = state.unreflected !== undefined;
     if (filePresentationTool(node)) {
       const mode = fileMode(node), width = sessions.lastRenderWidth(node);
       if (!facts.attached(node) || facts.hidden(node) || mode === undefined || cardKind(node) === 'read' && mode !== 'full') {
@@ -315,8 +332,11 @@ export function createToolPreparationPresenter<Owner extends object, Input exten
       } else if (current && !current.paused) usefulSyntax(node);
       return;
     }
+    const replacesFallback = unreflected && !sessions.hasCurrentDisplay(node) && cardKind(node) === 'bash';
     const current = observeSyntax(node);
     if (current && !current.paused) usefulSyntax(node);
+    // The service rows can change without a paint notice, even while the command keeps its colors.
+    if (replacesFallback && current?.applied && facts.workActive()) ports.invalidate(node, 'current Bash presentation reflected after work resumed');
   }
   function invalidated(node: Owner): void {
     const state = sessions.syntax(node); let owned: boolean | undefined;

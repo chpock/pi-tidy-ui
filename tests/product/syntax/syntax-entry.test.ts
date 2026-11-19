@@ -10,10 +10,10 @@ import { SessionLogging } from '../../../src/session-logging.ts';
 import { RuntimeHealth } from '../../../src/runtime-health.ts';
 import { diagnose, reportRuntime, type DiagnosticSink } from '../../../src/diagnostics.ts';
 import { ApplicationPreferences } from '../../../src/application/preferences.ts';
-import { setImmediate as turn } from 'node:timers/promises';
+import { setImmediate as turn, setTimeout as sleep } from 'node:timers/promises';
 import { dirname, resolve } from 'node:path';
 import { pathToFileURL, fileURLToPath } from 'node:url';
-import { Container, Image, Spacer, Text, colorToHex, getCapabilities, setCapabilities, type Component, type TerminalColorMode } from '@earendil-works/pi-tui';
+import { Container, Image, Spacer, Text, TuiMainScreen, colorToHex, getCapabilities, setCapabilities, type Component, type Terminal, type TerminalColorMode } from '@earendil-works/pi-tui';
 import { cardGeometry } from '../../../src/card-frame.ts';
 import { visibleWidth } from '@earendil-works/pi-tui';
 import { hasHostInk } from '../../fixtures/host-cells.ts';
@@ -44,7 +44,7 @@ function fixture(mode = 'tui', logging: false | Omit<JournalOptions, 'warn' | 'e
   settings?: Pick<ExtensionSettings, 'load' | 'update'> & Partial<Pick<ExtensionSettings, 'watch'>>,
   localPreferences: LocalPreferences = { appearanceEnabled: true, loggingEnabled: true },
   cardPreparation?: TidyUiRuntimeOptions['cardPreparation'],
-  themePreference: SettingsLoadResult['themePreference'] = { kind: 'pi', variant: 'dark' }) {
+  themePreference: SettingsLoadResult['themePreference'] = { kind: 'pi', variant: 'dark' }, liveRoot?: TuiMainScreen) {
   const root = new UI(), events = new Map<string, (event: unknown, ctx: ExtensionContext) => unknown>();
   const commands = new Map<string, { handler(args: string, ctx: ExtensionContext): Promise<void> }>();
   const rendererResolvers: ToolRendererResolver[] = [];
@@ -61,7 +61,7 @@ function fixture(mode = 'tui', logging: false | Omit<JournalOptions, 'warn' | 'e
     sessionManager: { getSessionId: () => 'entry-fixture', getSessionFile: () => '/example/entry-fixture.jsonl',
       getSessionName: () => { throw Error('Logging must not scan history for a session name'); } }, ui: { theme: themes.theme,
       getEditorComponent: () => undefined, notify: (message: string) => notices.push(message),
-      setWidget(_name: string, factory?: (tui: UI) => unknown) { factory?.(root); } } } as unknown as ExtensionContext;
+      setWidget(_name: string, factory?: (tui: Container) => unknown) { factory?.(liveRoot ?? root); } } } as unknown as ExtensionContext;
   const pi = { registerToolRenderer: (resolver: ToolRendererResolver) => { rendererResolvers.push(resolver); },
     on: (name: string, callback: (event: unknown, ctx: ExtensionContext) => unknown) => { events.set(name, callback); },
     registerCommand: (name: string, command: { handler(args: string, ctx: ExtensionContext): Promise<void> }) => { commands.set(name, command); },
@@ -3919,6 +3919,89 @@ test('entry terminal stop defers streamed Bash input and output preparation unti
     assert.ok(counts().updated > stopped.updated && counts().prepared > stopped.prepared);
   } finally { await h.stop(); }
 });
+
+for (const update of ['partial', 'final', 'unchanged', 'cloned-args', 'description'] as const) {
+  test(`entry native resume publishes a ${update} Bash result without an extra trigger`, async () => {
+    const noop = () => {};
+    const old = 'BASH_OUTPUT_BEFORE_PAUSE', latest = 'BASH_OUTPUT_DURING_PAUSE';
+    const writes: string[] = [];
+    const terminal: Terminal = { columns: 100, rows: 40, kittyProtocolActive: false,
+      start: noop, stop: noop, drainInput: async () => {}, write: data => { writes.push(data); }, moveBy: noop,
+      hideCursor: noop, showCursor: noop, clearLine: noop, clearFromCursor: noop, clearScreen: noop,
+      setTitle: noop, setProgress: noop, ...{ setProgramStatus: noop } };
+    const frames: { rows: string; output: string }[] = [];
+    let drawing = false;
+    const root = new class extends TuiMainScreen {
+      protected override doRender() {
+        const start = writes.length;
+        drawing = true;
+        try {
+          super.doRender();
+          frames.push({ rows: plainRows(this.captureRenderState().previousLines), output: writes.slice(start).join('') });
+        } finally { drawing = false; }
+      }
+    }(terminal, false);
+    root.queryTerminalColors = async () => ({});
+    const preparations: { phase: string; drawing: boolean }[] = [];
+    const themePreference = { kind: 'pi', variant: 'dark' } as const;
+    const h = fixture('tui', false, {
+      async load() { return { ok: true, nativeHighlightingEnabled: false, terminalColorsEnabled: false, themePreference }; },
+      async update() { throw Error('unexpected settings write'); },
+    }, undefined, event => preparations.push({ phase: event.phase, drawing }), themePreference, root);
+    const drain = async () => {
+      // Wait for Pi's own scheduler only; rendering here would hide a missing request.
+      await settled();
+      for (let n = 0; n < 5 && Reflect.get(root, 'renderRequested'); n++) await sleep(20);
+      assert.equal(Reflect.get(root, 'renderRequested'), false, 'Pi completed all requested frames');
+    };
+    try {
+      await h.ready; await h.start(); root.start();
+      const previousDescription = 'BASH_DESCRIPTION_BEFORE_PAUSE';
+      let args = { command: 'echo unchanged-command', ...(update === 'description' ? { description: previousDescription } : {}) };
+      const bash = new ToolExecutionComponent('bash', 'resume-frame', args, undefined, undefined, root, '/tmp');
+      const result = (text: string) => ({ content: [{ type: 'text' as const, text }], isError: false });
+      root.addChild(bash); bash.setArgsComplete(); bash.setExpanded(true);
+      bash.updateResult(result(old), true);
+      root.requestRender(true); await drain();
+      assert.match(frames.at(-1)!.rows, new RegExp(`┃ ${old}`, 'u'));
+      if (update === 'description') assert.ok(frames.at(-1)!.rows.includes(previousDescription));
+      assert.ok(preparations.some(event => event.phase === 'prepared'), 'the initial frame is prepared');
+      const before = preparations.length, resumeIndex = frames.length;
+      root.stop();
+      if (update === 'partial' || update === 'final') bash.updateResult(result(latest), update === 'partial');
+      if (update === 'cloned-args') args = { ...args };
+      if (update === 'description') args = { ...args, description: latest };
+      // A streamed tool block can keep its arguments or get an equal-valued record.
+      bash.updateArgs(args); root.requestRender();
+      // Neither an identical argument notification nor repaint invalidation changes or supersedes Bash input.
+      root.invalidate();
+      await settled();
+      assert.equal(frames.length, resumeIndex);
+      assert.equal(preparations.length, before, 'stopped SDK updates start no preparation');
+
+      root.start(); root.requestRender(true); await drain();
+      const resumed = frames.slice(resumeIndex);
+      assert.ok(resumed.length > 0);
+      if (update === 'unchanged' || update === 'cloned-args') {
+        assert.equal(resumed[0]!.output.includes(old), true, 'unchanged paid rows are immediately visible');
+        assert.equal(preparations.length, before, 'unchanged resume performs no preparation');
+        assert.equal(resumed.length, 1, 'unchanged resume requires no replacement frame');
+        return;
+      }
+      assert.deepEqual(preparations.slice(before).filter(event => event.phase === 'updated').map(event => event.drawing), [false],
+        'the updated output was accepted exactly once outside rendering');
+      const end = resumed.at(-1)!;
+      assert.equal(resumed.some(frame => frame.output.includes(latest)) && end.rows.includes(latest), true,
+        'Pi writes the new result without input or a test-driven second frame');
+      const obsolete = update === 'description' ? previousDescription : old;
+      assert.ok(resumed.every(frame => !frame.rows.includes(obsolete)), 'no return frame presents stale full rows');
+      if (update === 'description') assert.ok(end.rows.includes(old), 'the output survives a change to the description');
+      assert.match(resumed[0]!.rows, /bash.*unchanged-command/u, 'first frame uses the existing compact summary');
+      assert.doesNotMatch(resumed[0]!.rows, /┃/u);
+      assert.equal(resumed.length, 2, 'the accepted result schedules exactly one replacement frame');
+    } finally { root.stop(); await h.stop(); }
+  });
+}
 
 for (const coldPhase of ['pending', 'error'] as const) {
   test(`entry terminal stop defers ${coldPhase} file details and changed errors until useful return`, async () => {

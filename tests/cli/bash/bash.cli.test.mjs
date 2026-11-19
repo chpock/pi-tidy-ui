@@ -1,10 +1,10 @@
 import '../../fixtures/test-guard.mjs';
 import assert from 'node:assert/strict';
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { stripVTControlCharacters } from 'node:util';
 import test from 'node:test';
-import { PiTerminal, artifacts, plain, lines, byName, assertFits, until } from '../../fixtures/terminal-harness.mjs';
+import { PiTerminal, artifacts, fixtures, plain, lines, byName, assertFits, until } from '../../fixtures/terminal-harness.mjs';
 import { closeTerminals } from '../../fixtures/terminal-cleanup.mjs';
 import { allBashCards, bashArguments, persisted, bashCard, bashScreenStyle, mouseAt, panelCells, moveAt, panelAt, bashPointerChecks, traffic, compactContent, bashGeometry, actualCommandCells, referenceCell, hardRows } from '../../fixtures/main-cli-support.mjs';
 
@@ -190,6 +190,46 @@ test('real CLI: gated actual built-in bash streaming and argument pending',
         gates: ['provider-go', 'shell-ready', 'shell-final'], snapshots: ['arguments pending', '12-row actual partial', 'expanded partial', '24-column partial', 'final'],
         checked: ['pending theme', 'partial output mouse expansion/collapse', 'resize recomputes hit regions', 'final replaces overlapping snapshots', 'Ctrl+O'] }, null, 2));
     } finally { await closeTerminals([live]); }
+  });
+
+test('real CLI: an expanded Bash card publishes output produced in the external editor pause',
+  { timeout: 45000 }, async () => {
+    const editor = 'bash-resume-editor.mjs';
+    // Pi splits this setting on spaces; use the prepared node and a workspace-relative script.
+    const live = new PiTerminal('bash-external-editor', { tidyUi: true,
+      agentSettings: { externalEditor: `node ./${editor}` },
+      tidyUiSettings: { nativeHighlightingEnabled: false, terminalColorsEnabled: false }, dimensions: { columns: 110, rows: 80 } });
+    const writeGate = name => writeFileSync(join(live.output, name), 'go');
+    const outputRow = (screen, text) => screen.some(row => row.trimEnd() === ` ┃ ${text}`);
+    try {
+      copyFileSync(join(fixtures, editor), join(live.work, editor));
+      await live.ready();
+      live.send('\x0f'); await live.settle();
+      live.send('run bash-stream\r'); await live.event('provider_gate'); writeGate('provider-go');
+      await until(() => live.events().some(event => event.type === 'execution_update' &&
+        JSON.stringify(event.partialResult).includes('LIVE_ROW_12')), 'real Bash partial result before the editor');
+      const before = await live.capture('before-external-editor');
+      assert.equal(before.bashShape, false);
+      assert.equal(byName(before, 'bash')[0].expanded, true);
+      assert.equal(outputRow(before.screen, 'LIVE_ROW_12'), true);
+      assert.equal(outputRow(before.screen, 'LIVE_FINAL'), false);
+
+      live.send('\x07');
+      await until(() => live.screen().some(row => row.includes('BASH_RESUME_EDITOR_ACTIVE')), 'Pi launched the gated external editor');
+      writeGate('shell-final'); await live.event('agent_end');
+      const results = live.events().filter(event => event.type === 'result' && event.name === 'bash');
+      assert.equal(results.length, 1);
+      assert.match(results[0].content[0].text, /\nLIVE_FINAL\n/u, 'the real Bash result contained the new line while Pi was stopped');
+      writeGate('editor-return');
+      // Do not send input, resize, fence, or capture until Pi actually writes the new row.
+      await until(async () => { live.health(); await live.queue; return outputRow(live.screen(), 'LIVE_FINAL'); },
+        'the resumed physical screen shows the new Bash output without an observation-induced redraw');
+      const resumed = await live.capture('after-external-editor');
+      assert.equal(outputRow(resumed.screen, 'LIVE_FINAL'), true);
+      assert.deepEqual(persisted(resumed).filter(entry => entry.role === 'toolResult' && entry.toolName === 'bash').map(entry => entry.content),
+        [results[0].content]);
+      assert.equal(live.events().filter(event => event.type === 'call' && event.name === 'bash').length, 1);
+    } finally { writeGate('editor-return'); await closeTerminals([live]); }
   });
 
 for (const mode of ['fullscreen', 'regular']) test(`real CLI: Bash formation stays compact through execution and replay (${mode})`,
