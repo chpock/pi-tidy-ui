@@ -78,7 +78,12 @@ export class NativeSession {
     const owner = this;
     this.add = function (this: Container, child: Component) {
       owner.originalAdd.call(this, child);
-      owner.visit(child, this, this.children.length - 1);
+      try { owner.visit(child, this, this.children.length - 1); }
+      catch (error) {
+        // A second fail() would hide an exception from restoration or warning.
+        if (owner.reason !== undefined) throw error;
+        owner.fail('pi-tidy-ui could not install its UI hooks; native rendering restored');
+      }
     };
     this.remove = function (this: Container, child: Component) {
       owner.originalRemove.call(this, child);
