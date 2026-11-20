@@ -1,5 +1,5 @@
-import { HIGHLIGHT_LIMITS } from '../../../src/highlighting/limits.ts';
 import '../../fixtures/test-guard.mjs';
+import { HIGHLIGHT_LIMITS } from '../../../src/highlighting/limits.ts';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';

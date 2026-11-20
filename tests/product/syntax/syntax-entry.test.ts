@@ -1,5 +1,5 @@
-import { PiFallbackCoordinator } from '../../../src/highlighting/pi-fallback.ts';
 import '../../fixtures/test-guard.mjs';
+import { PiFallbackCoordinator } from '../../../src/highlighting/pi-fallback.ts';
 import assert from 'node:assert/strict';
 import { afterEach, test } from 'node:test';
 import * as fs from 'node:fs/promises';

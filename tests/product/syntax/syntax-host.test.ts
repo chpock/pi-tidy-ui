@@ -1,5 +1,5 @@
-import { PiFallbackCoordinator } from '../../../src/highlighting/pi-fallback.ts';
 import '../../fixtures/test-guard.mjs';
+import { PiFallbackCoordinator } from '../../../src/highlighting/pi-fallback.ts';
 import { isDeferredStockEditComponent, isDeferredStockFileCall, isDeferredStockFilePair } from '../../../src/host/pi/lazy-native-renderers.ts';
 import { hostCells, hasHostInk } from '../../fixtures/host-cells.ts';
 import type { ToolDefinition } from '@earendil-works/pi-coding-agent';

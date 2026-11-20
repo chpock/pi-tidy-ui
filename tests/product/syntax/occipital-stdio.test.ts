@@ -1,5 +1,5 @@
-import type { SemanticDataRequest, SemanticTransportRequest } from '../../../src/occipital/semantic-protocol.ts';
 import '../../fixtures/test-guard.mjs';
+import type { SemanticDataRequest, SemanticTransportRequest } from '../../../src/occipital/semantic-protocol.ts';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';

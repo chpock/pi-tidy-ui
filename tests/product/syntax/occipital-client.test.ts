@@ -1,5 +1,5 @@
-import { SourceExecution } from '../../../src/highlighting/source-execution.ts';
 import '../../fixtures/test-guard.mjs';
+import { SourceExecution } from '../../../src/highlighting/source-execution.ts';
 import assert from 'node:assert/strict';
 import { afterEach, test } from 'node:test';
 import { setImmediate as turn, setTimeout as delay } from 'node:timers/promises';

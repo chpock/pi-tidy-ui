@@ -5,13 +5,15 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import test from 'node:test';
 import { SessionManager } from '@earendil-works/pi-coding-agent';
-import { PiTerminal } from '../../../fixtures/terminal-harness.mjs';
+import { PiTerminal, until as waitForTerminal } from '../../../fixtures/terminal-harness.mjs';
 import { closeTerminals, runCleanupSteps } from '../../../fixtures/terminal-cleanup.mjs';
 import { nativeReady } from '../../../fixtures/syntax-observation.mjs';
 import { prepareSyntaxNative, captureThenRenderDiagnostics, chooseTheme, settledStats, persisted, until, finish } from '../../../fixtures/syntax-cli-support.mjs';
 
 const { fixture, descriptor } = await prepareSyntaxNative();
 const rgb = hex => Number.parseInt(hex.replace('#', ''), 16);
+const commentMarkers = ['// TUI_PLAIN', '// TUI_CONTEXT', '# TUI_COMMENT'];
+const editPath = 'tui-diff.ts';
 
 async function savedCards() {
   const directory = await mkdtemp(resolve('.test-artifacts/tui-palette-'));
@@ -20,7 +22,7 @@ async function savedCards() {
   const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
   const cards = [
     { name: 'write', args: { path: 'tui-plain.ts', content: '// TUI_PLAIN\nconst TUI_WRITE=3;' }, details: {} },
-    { name: 'edit', args: { path: 'tui-diff.ts', oldText: '// TUI_CONTEXT\nconst TUI_OLD=1;', newText: '// TUI_CONTEXT\nconst TUI_NEW=2;' },
+    { name: 'edit', args: { path: editPath, oldText: '// TUI_CONTEXT\nconst TUI_OLD=1;', newText: '// TUI_CONTEXT\nconst TUI_NEW=2;' },
       details: { diff: ' 1 // TUI_CONTEXT\n-2 const TUI_OLD=1;\n+2 const TUI_NEW=2;' } },
     { name: 'bash', args: { command: 'printf "TUI_BASH"; # TUI_COMMENT' }, details: { exit_code: 0 } },
   ];
@@ -68,11 +70,52 @@ function assertColors(dump, id, syntax = true) {
     assert.equal(changed.cells[x].bg, rgb(gutter), `${id}/${sign}/gutter background`);
     assert.equal(changed.cells[x].fg, rgb(foreground), `${id}/${sign}/sign foreground`);
   }
-  if (syntax) for (const r of [plain, context, row(dump, '# TUI_COMMENT')]) {
-    assert.equal(r.cells[r.x].fg, rgb(e.comment), `${id}/TUI comment foreground`);
-    assert.ok(r.cells[r.x].italic, `${id}/TUI comment italic`);
+  if (syntax) for (const marker of commentMarkers) {
+    const r = row(dump, marker);
+    assert.equal(r.cells[r.x].fg, rgb(e.comment), `${id}/${marker} foreground`);
+    assert.ok(r.cells[r.x].italic, `${id}/${marker} italic`);
   }
 }
+
+function commentsPainted(terminal, id) {
+  if (terminal.rendering) return false;
+  const screen = terminal.screen(), buffer = terminal.term.buffer.active;
+  return commentMarkers.every(marker => {
+    const y = screen.findIndex(line => line.includes(marker));
+    const cell = y < 0 ? undefined : buffer.getLine(buffer.viewportY + y)?.getCell(screen[y].indexOf(marker));
+    return cell?.isFgRGB() && cell.getFgColor() === rgb(expected[id].comment) && cell.isItalic();
+  });
+}
+
+async function waitForReplayPaint(terminal, id, signal, alreadyRefused = false) {
+  const checkRefusal = () => {
+    signal.throwIfAborted();
+    const failures = terminal.events().filter(event => event.type === 'syntax_native_reply' && event.reply.status === 'error');
+    if (failures.length === 0) return false;
+    assert.ok(failures.length === 1 && !alreadyRefused, `${id}: more than one native refusal across replay startups`);
+    const [failure] = failures;
+    assert.ok(failure.kind === 'source' && failure.payload.op === 'highlight'
+      && failure.payload.sources.some(source => source.hint?.path === editPath)
+      && failure.reply.error.code === 'busy' && failure.reply.error.execution === 'not_started',
+    `${id}: unexpected replay refusal (${failure.kind}: ${failure.reply.error.code}/${failure.reply.error.execution})`);
+    return true;
+  };
+  const paint = `${id} physical comment paint (${terminal.output})`;
+  const first = await waitForTerminal(() => {
+    const retry = checkRefusal();
+    return commentsPainted(terminal, id) ? 'painted' : retry && 'retry';
+  }, paint);
+  if (first === 'retry') {
+    // No outstanding job does not mean the edit is ready while its 60-second retry is pending.
+    // Observe only terminal bytes and replies here; a fence or command can request a frame.
+    await waitForTerminal(() => {
+      checkRefusal();
+      return commentsPainted(terminal, id);
+    }, `${paint} after retry`, 75000);
+  }
+  return checkRefusal();
+}
+
 function sourceWork(stats) {
   return { requests: stats.counts.sourceRequests, styles: stats.counts.styleRequests, pi: stats.counts.piBridges,
     dispatches: stats.source.dispatches, lines: stats.source.committedLineCalls, bytes: stats.source.committedLineBytes,
@@ -80,7 +123,7 @@ function sourceWork(stats) {
 }
 
 for (const mode of ['fullscreen', 'regular']) test(`TUI palettes CLI: ${mode} authored code/context/gutters/fonts, source reuse, native Off and saved replay`,
-  { timeout: 120000 }, async () => {
+  { timeout: 120000 }, async t => {
     const saved = await savedCards(), terminals = [];
     const create = (label, config) => {
       const terminal = new PiTerminal(`tui-palette-${mode}-${label}`, { mode, session: saved.session, dimensions: { columns: 100, rows: 100 },
@@ -90,6 +133,7 @@ for (const mode of ['fullscreen', 'regular']) test(`TUI palettes CLI: ${mode} au
     try {
       const live = create('native', { syntaxTheme: { kind: 'theme', id: 'github' }, syntaxThemeVariant: 'dark' });
       await live.ready();
+      const initialRefusal = await waitForReplayPaint(live, 'github-dark', t.signal);
       await settledStats(live, 'tui-initial', s => nativeReady(s) && s.client.effective.id === 'github-dark');
       const initial = await captureThenRenderDiagnostics(live, 'tui-github'); assertColors(initial, 'github-dark');
       const baseline = sourceWork(initial.sample), original = persisted(initial);
@@ -119,7 +163,9 @@ for (const mode of ['fullscreen', 'regular']) test(`TUI palettes CLI: ${mode} au
       assert.deepEqual(sourceWork(off.sample), sourceWork(disabled), 'native-Off recoloring performs no native or Pi classification');
       await finish(live);
       const replay = create('restored', { syntaxTheme: { kind: 'theme', id: 'vercel' }, syntaxThemeVariant: 'light' });
-      await replay.ready(); await settledStats(replay, 'tui-replay-ready', s => nativeReady(s) && s.client.effective.id === 'vercel-light');
+      await replay.ready();
+      await waitForReplayPaint(replay, 'vercel-light', t.signal, initialRefusal);
+      await settledStats(replay, 'tui-replay-ready', s => nativeReady(s) && s.client.effective.id === 'vercel-light');
       const restored = await captureThenRenderDiagnostics(replay, 'tui-restored'); assertColors(restored, 'vercel-light');
       assert.deepEqual(persisted(restored), original);
       assert.equal(replay.events().filter(e => ['call', 'result', 'model_context'].includes(e.type)).length, 0);

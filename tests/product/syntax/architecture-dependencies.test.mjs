@@ -1,3 +1,4 @@
+import '../../fixtures/test-guard.mjs';
 import assert from 'node:assert/strict';
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { dirname, extname, relative, resolve, sep } from 'node:path';
