@@ -1726,12 +1726,16 @@ for (const action of ['snapshot', 'retry'] as const)
       else SessionLogging.prototype.setEnabled = function (enabled) {
         const operation = enable.call(this, enabled); return enabled ? gate(this, operation) : operation;
       };
-      h = fixture('tui', { root: directory, io }); await h.start(); await settled();
+      h = fixture('tui', { root: directory, io }); await h.start();
+      assert.equal(debugLoggingDiagnostics()!.session, 'entry-fixture');
+      first = identities.keys().next().value;
+      assert.ok(first); assert.equal(identities.size, 1);
+      await first.ready();
+      assert.equal(debugLoggingDiagnostics()!.state, 'active');
       if (action === 'retry') {
         refuse = true; await h.page('Status & troubleshooting', 'Diagnostic logs', 'Write state snapshot');
         assert.equal(debugLoggingDiagnostics()!.state, 'failed'); refuse = false;
       }
-      first = identities.keys().next().value; assert.equal(identities.size, 1);
       await withMenu(h.command, h.ctx, async menu => {
         await menu.select('Status & troubleshooting'); await menu.select('Diagnostic logs');
         armed = true;
@@ -1740,9 +1744,14 @@ for (const action of ['snapshot', 'retry'] as const)
         assert.equal(armed, false); menu.input('\x03'); await pending;
       });
       h.ctx.sessionManager.getSessionId = () => 'replacement-entry-fixture';
-      await h.start({ type: 'session_start', reason: 'resume' }); await settled();
+      await h.start({ type: 'session_start', reason: 'resume' });
       await h.page('Status & troubleshooting', 'Diagnostic logs');
-      assert.equal(identities.size, 2); assert.equal(debugLoggingDiagnostics()!.state, 'active');
+      assert.equal(debugLoggingDiagnostics()!.session, 'replacement-entry-fixture');
+      assert.equal(identities.size, 2);
+      const replacement = [...identities.keys()].find(owner => owner !== first);
+      assert.ok(replacement);
+      await replacement.ready();
+      assert.equal(debugLoggingDiagnostics()!.state, 'active');
       const before = { ...h.counts }; reads.length = 0;
       release(); await finishing; await turn();
       assert.deepEqual(reads, action === 'snapshot' ? [] : [1], 'snapshot fences its captured writer; retry inspects the current replacement exactly once');
