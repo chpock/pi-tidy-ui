@@ -2,6 +2,7 @@ import { VERSION, type ExtensionAPI, type ExtensionContext } from "@earendil-wor
 import { backgroundAnsi, type TerminalColorMode } from "@earendil-works/pi-tui";
 import { NativeSession } from './host/pi/native-session.ts';
 import { classifyNativeCode, nativeServiceRows, observeFooterSlot } from './host/pi/native-bindings.ts';
+import type { UserRows } from './host/pi/user-components.ts';
 import { PresentationSpinner } from './presentation/spinner.ts';
 import { createRequire } from "node:module";
 import { SessionDiagnostics } from './application/diagnostic-session.ts';
@@ -197,7 +198,7 @@ export function installTidyUi(tui: LiveTui, getTheme: () => Palette, options: In
     if (options.diagnostic) decision(node, 'tool', choice, width, rows, { call: toolFields.id(node), tool: toolFields.name(node),
       expanded: toolFields.expanded(node), hidden: native.tool.hidden(node), partial: toolFields.partial(node), complete: toolFields.argsComplete(node) });
   }
-  const userPresenter = new UserPresenter<object>(cache, options.diagnostic, options.presentationConstructionObserver);
+  const userPresenter = new UserPresenter<object, UserRows>(cache, options.diagnostic, options.presentationConstructionObserver);
   const queuedPresenter = new QueuedPresenter<object>(cache, options.diagnostic, options.presentationConstructionObserver);
   const clearCache = () => { fileDetails.clear(); cacheOwner.clear(); toolSessions.clearLayouts(); userPresenter.clear(); queuedPresenter.clear();
     diagnose(options.diagnostic, 'INFO', 'cache', 'Presentation layouts cleared; native/source caches are unchanged'); };

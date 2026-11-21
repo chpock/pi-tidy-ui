@@ -2742,13 +2742,13 @@ test('Ctrl+O and selection-safe clicks use owned file views; pending and failed 
     h.root.render(80);
     assertNativeRendererCold(failed, 'call', 'spacing for a following tool keeps failed details on the owned path');
     rejectContentRead = true;
-    let collapsed: string[] = [];
+    let collapsed: readonly string[] = [];
     assert.doesNotThrow(() => { collapsed = failed.render(80); }, 'collapsed error preview does not traverse result text');
     assert.ok(!collapsed.join('\n').includes('failed_detail_row_0'), 'failed result begins as a compact summary');
     rejectContentRead = false;
     assert.equal(clickFile(failed, 1)?.handled, true, `clicking the failed summary opens owned error details: ${JSON.stringify(failed.render(80))}`);
     rejectContentRead = true;
-    let expanded: string[] = [];
+    let expanded: readonly string[] = [];
     assert.doesNotThrow(() => { expanded = failed.render(80); }, 'expanded rows render the detail measured at the cold click boundary');
     rejectContentRead = false;
     assert.ok(expanded.join('\n').includes('failed_detail_row_1'), 'expanded final error keeps its complete saved rows within the shared bound');
@@ -3354,7 +3354,7 @@ test('predecessor measurement defers cold full write and edit preparation', asyn
       Reflect.set(predecessor, 'hideComponent', false);
 
       inRender = true;
-      let rows: string[];
+      let rows: readonly string[];
       try { rows = follower.render(80); } finally { inRender = false; }
       assert.ok(rows.length > 0, 'the following compact read remains visible');
       assert.equal(updatesInRender, 0, `${kind} predecessor measurement does not construct source/display rows inside the follower render`);

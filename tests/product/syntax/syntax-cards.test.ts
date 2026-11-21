@@ -70,7 +70,8 @@ const fixtures: { cards: CardSources<Owner>; sources: SourceExecution; runtime: 
 function fixture(ready = false, options: SourceExecutionOptions = {}, maxBookkeepingBytes?: number, diagnostic?: DiagnosticSink) {
   const env = { ready, enabled: true, generation: 1, vocabulary: 'a'.repeat(64), selected: { kind: 'pi', variant: 'dark' } as ThemePreference,
     classifications: [] as string[], invalidated: [] as Owner[], renders: 0, acquisitions: 0, paletteInputBytes: [] as number[], deniedPaletteInputs: 0, samples: 0, denyPaletteInput: false, failClassification: false,
-    poison: false, beforeClassify: undefined as (() => void) | undefined, notices: [] as { keys: string[]; groups: number[] }[],
+    poison: false, beforeClassify: undefined as (() => void) | undefined, highlight: (text: string) => highlightCode(text, 'typescript'),
+    notices: [] as { keys: string[]; groups: number[] }[],
     preparations: [] as CardPreparation[], prepared: undefined as ((owner: Owner, receipt: Extract<CardPreparation, { phase: 'prepared' }>) => void) | undefined };
   const calls: { request: Frame; resolve(value: unknown): void; reject(error: unknown): void; done?: boolean }[] = [];
   const description = decodeSemanticDescription(semanticDescriptor('describe', 'daemon'), 'describe');
@@ -105,7 +106,7 @@ function fixture(ready = false, options: SourceExecutionOptions = {}, maxBookkee
       if (lease) env.paletteInputBytes.push(lease.allocationBytes);
       return lease;
     },
-    classify: (text: string) => { env.classifications.push(text); env.beforeClassify?.(); if (env.failClassification) throw Error('classification failed'); return highlightCode(text, 'typescript'); },
+    classify: (text: string) => { env.classifications.push(text); env.beforeClassify?.(); if (env.failClassification) throw Error('classification failed'); return env.highlight(text); },
     invalidate: (owner: Owner) => env.invalidated.push(owner), requestRender: () => { env.renders++; }, diagnostic,
     preparation: (owner: Owner, receipt: CardPreparation) => { env.preparations.push(receipt); if (receipt.phase === 'prepared') env.prepared?.(owner, receipt); }
   };
@@ -586,7 +587,9 @@ test('cards retain a funded no-group palette while a known replacement asset is 
 });
 
 test('cards never seeds Follow Pi projections from a retained owned lease when Pi input replacement is denied', async () => {
-  const f = fixture(false), owner: Owner = {}; f.theme('gruvbox-dark'); f.use(owner, written('const value = 1;')); await settle();
+  const f = fixture(false), owner: Owner = {};
+  f.env.highlight = text => [text]; // Exercise absent foreground independently of the selected SDK's default code color.
+  f.theme('gruvbox-dark'); f.use(owner, written('const value = 1;')); await settle();
   const ownedColor = style(f, owner), classifications = [...f.env.classifications], acquisitions = f.env.acquisitions;
   const sourceRevision = owner.input!.sourceRevision, sourceVersion = f.cards.identities(owner)[0]!.version;
   const denials = f.env.deniedPaletteInputs;

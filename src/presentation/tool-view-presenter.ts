@@ -15,13 +15,13 @@ import type { PreparedLayoutPresenter } from './prepared-layout-presenter.ts';
 
 const SPINNER_FRAMES = Array.from('⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏');
 export const SPINNER_INTERVAL_MS = 100;
-export type NativeToolRender<Owner> = (this: Owner, width: number) => string[];
+export type NativeToolRender<Owner, NativeRows extends readonly string[]> = (this: Owner, width: number) => NativeRows;
 export type NativeToolMouse<Owner> = (this: Owner, event: TuiMouseEvent) => TuiMouseEventResult | undefined;
 export type NativeToolUpdate<Owner> = (this: Owner, ...args: unknown[]) => unknown;
 export type ToolUpdateName = 'updateArgs' | 'updateResult' | 'setExpanded' | 'invalidate' | 'markExecutionStarted'
   | 'setShowImages' | 'setImageWidthCells' | 'setArgsComplete';
 
-export interface ToolViewPorts<Owner extends object> {
+export interface ToolViewPorts<Owner extends object, NativeRows extends readonly string[]> {
   fields: ToolFieldAccessors<Owner>;
   producer: ToolProducerPresenter<Owner>;
   sessions: ToolPresentationSessions<Owner>;
@@ -45,8 +45,8 @@ export interface ToolViewPorts<Owner extends object> {
     isTool(owner: object): owner is Owner;
     siblings(owner: object): readonly object[];
     index(owner: object, siblings: readonly object[]): number;
-    otherRows(owner: object, width: number): string[];
-    nativeRows(owner: Owner, width: number): string[];
+    otherRows(owner: object, width: number): readonly string[];
+    nativeRows(owner: Owner, width: number): NativeRows;
     imageRows(owner: Owner, width: number): string[];
     releaseFileRenderer(owner: Owner): void;
     syncRendererArgs(owner: Owner, kind: 'file' | 'read'): void;
@@ -66,7 +66,7 @@ export interface ToolViewPorts<Owner extends object> {
 }
 
 /** Coordinates current view, spacing and hit geometry without owning source work or native component shapes. */
-export function createToolViewPresenter<Owner extends object>(ports: ToolViewPorts<Owner>) {
+export function createToolViewPresenter<Owner extends object, NativeRows extends readonly string[]>(ports: ToolViewPorts<Owner, NativeRows>) {
   const { fields, producer, sessions, policy, routing, preparation, host, animation, cards } = ports;
   const { pauseSyntax, usefulSyntax, syntaxEligible, requestFilePreparation, observePalette, observeSyntax,
     unsupportedFullFile, prepareFileDetail } = preparation;
@@ -128,7 +128,7 @@ export function createToolViewPresenter<Owner extends object>(ports: ToolViewPor
       return { rows: nativeRows(node, width), framed: false, native: true };
     return { ...fileDetailLayout(node, width), framed: false, native: false };
   }
-  function readImageRows(node: Owner, width: number, rows: string[], framed: boolean): string[] {
+  function readImageRows<Rows extends readonly string[]>(node: Owner, width: number, rows: Rows, framed: boolean): Rows | string[] {
     sessions.clearImageWindow(node);
     if (cardKind(node) !== 'read' || !fields.expanded(node) || !fields.result(node) || width < 1) return rows;
     const geometry = cardGeometry(width, ports.padding());
@@ -255,7 +255,7 @@ export function createToolViewPresenter<Owner extends object>(ports: ToolViewPor
     const previous = previousLayout(node, width);
     return previous ? previous.compact && previous.height === 1 ? 0 : 1 : 0;
   }
-  function nativeGap(node: Owner, width: number, lines: string[]): number {
+  function nativeGap(node: Owner, width: number, lines: readonly string[]): number {
     if (!host.active() || !lines.length || lines[0] === '') return 0;
     const previous = previousLayout(node, width);
     return previous?.tool && previous.height > 1 ? 1 : 0;
@@ -279,7 +279,7 @@ export function createToolViewPresenter<Owner extends object>(ports: ToolViewPor
     const rows = cardKind(node) === 'read' ? readImageRows(node, width, layout.rows, layout.framed === true) : layout.rows;
     return sessions.presentRows(node, rows, state.gap ?? 0);
   }
-  function render(node: Owner, width: number, originalRender: NativeToolRender<Owner>): string[] {
+  function render(node: Owner, width: number, originalRender: NativeToolRender<Owner, NativeRows>): NativeRows | string[] {
     if (host.isTool(node)) sessions.setLastRenderWidth(node, width);
     if (cardKind(node) === 'read') sessions.clearImageWindow(node);
     if (host.quiescing()) return cleanupRows(node, width) ?? originalRender.call(node, width);
@@ -341,7 +341,7 @@ export function createToolViewPresenter<Owner extends object>(ports: ToolViewPor
     if (policy.filePresentationTool(node) && (routing.fileRenderer(node) || routing.readRenderer(node))) host.releaseFileRenderer(node);
     return presentSummary(node, width);
   }
-  function mouse(node: Owner, event: TuiMouseEvent, originalRender: NativeToolRender<Owner>, originalMouse: NativeToolMouse<Owner>): TuiMouseEventResult | undefined {
+  function mouse(node: Owner, event: TuiMouseEvent, originalRender: NativeToolRender<Owner, NativeRows>, originalMouse: NativeToolMouse<Owner>): TuiMouseEventResult | undefined {
     if (!host.active()) return originalMouse.call(node, event);
     if (event.width < 1 && filePreviewMode(node) !== undefined) { pauseSyntax(node); return undefined; }
     if (host.quiescing()) return undefined;
@@ -412,7 +412,7 @@ export function createToolViewPresenter<Owner extends object>(ports: ToolViewPor
     host.requestRender();
     return { handled: true };
   }
-  function presentUser(node: object, width: number, rows: string[]): string[] {
+  function presentUser<Rows extends readonly string[]>(node: object, width: number, rows: Rows): Rows | string[] {
     const previous = rows.length ? previousLayout(node, width) : undefined;
     return previous && !previous.separator ? ['', ...rows] : rows;
   }

@@ -17,7 +17,7 @@ export interface FileDetailPresenterPorts<Owner extends object> {
   mode(owner: Owner): FilePreviewMode | undefined;
   cwd(owner: Owner): string | undefined;
   unsupported(owner: Owner): boolean;
-  serviceRows(text: string, width: number, inset: number): string[];
+  serviceRows(text: string, width: number, inset: number): readonly string[];
 }
 
 export class FileDetailPresenter<Owner extends object> {
@@ -44,7 +44,7 @@ export class FileDetailPresenter<Owner extends object> {
     return value;
   }
 
-  private serviceRows(text: string, width: number, padding: number): string[] {
+  private serviceRows(text: string, width: number, padding: number): readonly string[] {
     if (width < 1) return [];
     const inset = Math.min(Math.max(0, padding), Math.floor((width - 1) / 2));
     return this.ports.serviceRows(text, width, inset);

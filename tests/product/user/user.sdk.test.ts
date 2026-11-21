@@ -129,10 +129,11 @@ test("user-card hooks restore native methods without changing input/selection or
 
 test("user cards delegate terminal images and impossible narrow native glyph rows without clipping", () => {
   initTheme("dark", false);
-  const media = [zoneStart + "       ", "\x1b_Gi=1;IMAGE_PAYLOAD\x1b\\", zoneEnd + "       "];
+  const media = Object.freeze([zoneStart + "       ", "\x1b_Gi=1;IMAGE_PAYLOAD\x1b\\", zoneEnd + "       "]);
   const widths: number[] = [];
   const rendered = renderUserCard({}, 24, 1, nativeTheme, function (width) { widths.push(width); return media; });
-  assert.deepEqual(widths, [21, 24]); assert.equal(rendered.rows, media, "native protocol rows stay byte-identical");
+  assert.deepEqual(widths, [21, 24]);
+  assert.equal(rendered.rows, media, "delegation returns the original readonly protocol rows without copying them");
   const native = new UserMessageComponent("文字"), root = new Root(); root.addChild(native);
   const original = native.render(6), controller = installTidyUi(root, () => nativeTheme);
   try {

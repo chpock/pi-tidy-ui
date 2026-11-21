@@ -4,16 +4,16 @@ import type { RenderCache, CacheEntry } from '../render-cache.ts';
 import { diagnose, type DiagnosticSink } from '../diagnostics.ts';
 import type { PresentationConstructionObserver } from './tool-sessions.ts';
 
-export interface UserPresentationLayout {
-  rows: string[];
+export interface UserPresentationLayout<NativeRows extends readonly string[]> {
+  rows: NativeRows | string[];
   framed?: boolean;
   native?: boolean;
 }
 
-export type NativeUserRender<Owner extends object> = (this: Owner, width: number) => string[];
+export type NativeUserRender<Owner extends object, NativeRows extends readonly string[]> = (this: Owner, width: number) => NativeRows;
 
-export class UserPresenter<Owner extends object> {
-  private layouts = new WeakMap<Owner, { signature: unknown[]; entry: CacheEntry<UserPresentationLayout> }>();
+export class UserPresenter<Owner extends object, NativeRows extends readonly string[]> {
+  private layouts = new WeakMap<Owner, { signature: unknown[]; entry: CacheEntry<UserPresentationLayout<NativeRows>> }>();
 
   private readonly cache: RenderCache;
   private readonly diagnostic: DiagnosticSink | undefined;
@@ -35,7 +35,7 @@ export class UserPresenter<Owner extends object> {
   }
 
   layout(owner: Owner, width: number, theme: CardTheme, padding: number, text: string, outputPad: number,
-    markdown: unknown, markdownTheme: object, transformers: unknown[], renderNative: NativeUserRender<Owner>): UserPresentationLayout {
+    markdown: unknown, markdownTheme: object, transformers: unknown[], renderNative: NativeUserRender<Owner, NativeRows>): UserPresentationLayout<NativeRows> {
     const signature = [width, theme, theme.fg, theme.bg, padding, text, outputPad, markdown, markdownTheme, transformers];
     const state = this.layouts.get(owner);
     if (state && signature.every((value, index) => value === state.signature[index])) {

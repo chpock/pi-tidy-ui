@@ -216,7 +216,7 @@ export class ToolPresentationSessions<Owner extends object> {
     if (session) session.imageWindowVisible = false;
   }
 
-  presentRows(owner: Owner, rows: string[], offset: number): string[] {
+  presentRows<Rows extends readonly string[]>(owner: Owner, rows: Rows, offset: number): Rows | string[] {
     const window = this.imageWindow(owner);
     if (window) { window.start += offset; window.end += offset; }
     const layout = this.layouts.get(owner);

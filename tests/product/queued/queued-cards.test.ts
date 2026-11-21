@@ -35,12 +35,12 @@ function fixture(steering: string[], followUp: string[] = [], height = 60) {
   host.updatePendingMessagesDisplay();
   return { root, slots, pending, host, draft: () => draft };
 }
-const plain = (rows: string[]) => rows.map(row => stripVTControlCharacters(row).trimEnd());
-function content(rows: string[], width = 100, padding = 1): string[] {
+const plain = (rows: readonly string[]) => rows.map(row => stripVTControlCharacters(row).trimEnd());
+function content(rows: readonly string[], width = 100, padding = 1): string[] {
   const geometry = cardGeometry(width, padding);
   return plain(rows).filter(row => row.includes("┃")).map(row => row.slice(geometry.contentX));
 }
-function bodies(rows: string[], width = 100, padding = 1): string[][] {
+function bodies(rows: readonly string[], width = 100, padding = 1): string[][] {
   const result: string[][] = []; let body: string[] = [];
   for (const row of content(rows, width, padding)) {
     if (row.startsWith(" QUEUED · ")) { result.push(body.filter(Boolean)); body = []; }

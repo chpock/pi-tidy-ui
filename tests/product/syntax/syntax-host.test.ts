@@ -130,7 +130,7 @@ function fixture(ready = false, useDefaultClassifier = false, options: Pick<Tidy
     render(tool: InstanceType<typeof ToolExecutionComponent>, width = 60): string[] {
       env.depth++; try { return tool.render(width); } finally { env.depth--; }
     },
-    document(width = 60): string[] {
+    document(width = 60): readonly string[] {
       env.depth++; try { return ui.render(width); } finally { env.depth--; }
     },
     currentPiColors,
@@ -145,7 +145,7 @@ function fixture(ready = false, useDefaultClassifier = false, options: Pick<Tidy
   fixtures.push(value); return value;
 }
 async function settled() { for (let i = 0; i < 8; i++) await turn(); }
-const plain = (rows: string[]) => rows.map(stripVTControlCharacters);
+const plain = (rows: readonly string[]) => rows.map(stripVTControlCharacters);
 function counts(f: ReturnType<typeof fixture>) { return [f.env.pi.length, f.env.observes, f.env.captures, f.env.reads, f.calls.length]; }
 function sourceCounts(f: ReturnType<typeof fixture>) { return counts(f).filter((_value, index) => index !== 3); }
 function watchConsumer(f: ReturnType<typeof fixture>) {
@@ -657,7 +657,7 @@ test('host useful tickets count owned full/preview renders, not measurement, mou
 });
 
 test('host default classifier uses explicit public file language outside render and no-client adapter is unchanged', async () => {
-  const f = fixture(false, true), tool = written(f, 'const value = 1;');
+  const text = 'const value = 1;', f = fixture(false, true), tool = written(f, text);
   tool.setExpanded(true);
   const cold = f.render(tool); await settled();
   assert.equal(f.env.captures, 1); const warm = f.render(tool);
@@ -670,7 +670,22 @@ test('host default classifier uses explicit public file language outside render 
     assert.deepEqual(plain(tool.render(60)), plain(fileCardOracle(tool, '/tmp', 60, themes.theme,
       (code, path) => highlightCode(code, getLanguageFromPath(path)))!.rows));
     assert.equal(await hasHostInk(tool.render(60), themes.theme, 'syntaxKeyword', 'const'), true);
-    assert.equal(await hasHostInk(tool.render(60), themes.theme, 'toolOutput', 'value'), true, 'literal neutral code uses the prepared card role, not Pi ANSI default reset');
+    const rows = await hostCells(tool.render(60));
+    const sourceRow = rows.find(row => row.map(cell => cell.text).join('').includes(text));
+    assert.ok(sourceRow, 'rendered source occupies a single visible row');
+    const start = sourceRow.map(cell => cell.text).join('').indexOf(text);
+    const [source] = await hostCells(highlightCode(text, 'typescript'));
+    const neutral = (await hostCells([themes.theme.fg('toolOutput', 'x')]))[0]?.[0];
+    assert.ok(source && neutral);
+    for (let i = 0; i < text.length; i++) {
+      const expected = source[i]!;
+      if (!expected.text.trim()) continue;
+      const actual: typeof expected = sourceRow[start + i]!;
+      const wanted = expected.fgMode === 0 ? neutral : expected;
+      assert.equal(actual.text, expected.text, `source cell ${i}`);
+      assert.deepEqual([actual.fgMode, actual.fg], [wanted.fgMode, wanted.fg],
+        `source cell ${i}: preserve explicit Pi foreground; otherwise use the card role`);
+    }
     native.syntaxMetadataChanged(); native.syntaxSourceChanged([]);
     assert.deepEqual(f.env.pi, []);
   } finally { native.restore(); }

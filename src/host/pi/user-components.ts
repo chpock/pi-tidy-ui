@@ -1,5 +1,9 @@
 import { Container, Markdown } from '@earendil-works/pi-tui';
+import type { UserMessageComponent } from '@earendil-works/pi-coding-agent';
 import type { NativeUserRender, UserPresentationLayout } from '../../presentation/user-presenter.ts';
+
+export type UserRows = ReturnType<UserMessageComponent['render']>;
+type UserRender = NativeUserRender<object, UserRows>;
 
 interface UserNode extends Container {
   text: string;
@@ -14,15 +18,15 @@ export interface UserComponentPorts {
   active(): boolean;
   fail(message: string): void;
   forget(owner: object): void;
-  layout(owner: object, width: number, native: NativeUserRender<object>): UserPresentationLayout;
-  present(owner: object, width: number, rows: string[]): string[];
+  layout(owner: object, width: number, native: UserRender): UserPresentationLayout<UserRows>;
+  present(owner: object, width: number, rows: UserRows): UserRows;
   decision(owner: object, width: number, rows: number): void;
 }
 
 /** Borrows native Markdown and owns prototype restoration, never presentation rows. */
 export class UserComponents {
   private readonly patches = new Map<object, {
-    render: PropertyDescriptor; patchedRender: NativeUserRender<object>;
+    render: PropertyDescriptor; patchedRender: UserRender;
     updates: { name: string; original?: PropertyDescriptor; wrapper: (...args: unknown[]) => unknown }[];
   }>();
 
@@ -54,8 +58,8 @@ export class UserComponents {
   markdownTheme(owner: object): object { return (owner as UserNode).markdownTheme; }
   transformers(owner: object): unknown[] { return (owner as UserNode).markdownTransformers; }
 
-  borrowedRows(owner: object, width: number): string[] | undefined {
-    const render = this.isUser(owner) ? this.patches.get(Object.getPrototypeOf(owner))?.render.value as NativeUserRender<object> | undefined : undefined;
+  borrowedRows(owner: object, width: number): UserRows | undefined {
+    const render = this.isUser(owner) ? this.patches.get(Object.getPrototypeOf(owner))?.render.value as UserRender | undefined : undefined;
     return render ? this.ports.layout(owner, width, render).rows : undefined;
   }
 
@@ -67,8 +71,8 @@ export class UserComponents {
       this.ports.fail('User-message rendering cannot be safely replaced; native rendering retained'); return;
     }
     const owner = this, ports = this.ports;
-    const originalRender = render.value as NativeUserRender<object>;
-    const patchedRender: NativeUserRender<object> = function (width) {
+    const originalRender = render.value as UserRender;
+    const patchedRender: UserRender = function (width) {
       if (!ports.active()) return originalRender.call(this, width);
       if (width < 1) return [];
       try {

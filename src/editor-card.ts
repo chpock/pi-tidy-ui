@@ -7,8 +7,9 @@ import type { CardTheme } from "./card-theme.ts";
 // Native Editor text/menu rows occupy at least one column and cannot equal these.
 export const EDITOR_TOP = "\0";
 export const EDITOR_BOTTOM = "\0\0";
-export interface EditorProjection { rows: string[]; top: string; bottom: string }
-export interface EditorLayout { rows: string[]; framed: boolean; nativeWidth: number; offsetX: number; geometry?: CardGeometry }
+export interface EditorProjection<NativeRows> { rows: NativeRows; top: string; bottom: string }
+export interface EditorGeometry { framed: boolean; nativeWidth: number; offsetX: number; geometry?: CardGeometry }
+interface EditorLayout<NativeRows> extends EditorGeometry { rows: NativeRows | string[] }
 
 /** Editor padding controls exterior margins only; keep one inner cell per side. */
 export function editorGeometry(width: number, padding: number): CardGeometry {
@@ -20,10 +21,10 @@ export function editorGeometry(width: number, padding: number): CardGeometry {
 }
 
 /** Reframe native editing output, not draft source or private editing state. */
-export function renderEditorCard(width: number, padding: number, theme: CardTheme,
-  renderNative: (width: number, borderWidth?: number) => EditorProjection): EditorLayout {
+export function renderEditorCard<NativeRows extends readonly string[]>(width: number, padding: number, theme: CardTheme,
+  renderNative: (width: number, borderWidth?: number) => EditorProjection<NativeRows>): EditorLayout<NativeRows> {
   const geometry = editorGeometry(width, padding);
-  const fallback = (): EditorLayout => ({ rows: renderNative(width).rows, framed: false, nativeWidth: width, offsetX: 0 });
+  const fallback = (): EditorLayout<NativeRows> => ({ rows: renderNative(width).rows, framed: false, nativeWidth: width, offsetX: 0 });
   if (!geometry.width) return { rows: [], framed: false, nativeWidth: 0, offsetX: 0 };
   if (geometry.contentWidth < 2 || !Number.isSafeInteger(padding) || padding < 0 || padding > geometry.width) return fallback();
   // Native zero-padding layout reserves a cursor column; padded layout allows

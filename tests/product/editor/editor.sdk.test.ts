@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import xterm from "@xterm/headless";
 import { Editor, CURSOR_MARKER, Spacer, visibleWidth, truncateToWidth, colorToRgb, type Component } from "@earendil-works/pi-tui";
-import { editorGeometry } from "../../../src/editor-card.ts";
+import { editorGeometry, renderEditorCard } from "../../../src/editor-card.ts";
 import { editorPaint, editorPlain } from "../../fixtures/editor-paint.ts";
 import { renderEditorStatus } from "../../../src/editor-status.ts";
 import { IdleStatus, StatusIndicator } from "../../../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/components/status-indicator.js";
@@ -40,6 +40,19 @@ test("editor card uses configured exterior geometry without exchanging native st
     } finally { controller.restore(); }
     assert.match(editor.render(100).map(editorPlain).join(""), /─/u);
   }
+});
+
+test("editor geometry fallback returns borrowed native rows unchanged", () => {
+  const { editor } = editorSetup(2);
+  editor.setText("NATIVE_DRAFT");
+  const width = 7, rows = Object.freeze(editor.render(width));
+  const layout = renderEditorCard(width, editor.getPaddingX(), color, (size, borderWidth) => {
+    assert.equal(size, width);
+    assert.equal(borderWidth, undefined);
+    return { rows, top: "", bottom: "" };
+  });
+  assert.equal(layout.framed, false);
+  assert.equal(layout.rows, rows, "fallback borrows even readonly native rows without a copy");
 });
 
 test("editor card retains full-width hardware cursor in right internal padding", () => {

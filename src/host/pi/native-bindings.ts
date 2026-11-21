@@ -4,7 +4,7 @@ import type { PiClassifier } from '../../syntax/work.ts';
 
 export const classifyNativeCode: PiClassifier = (text, info) => highlightCode(text, info.language);
 
-export function nativeServiceRows(text: string, width: number, inset: number): string[] {
+export function nativeServiceRows(text: string, width: number, inset: number): readonly string[] {
   return new Text(text, inset, 0).render(width);
 }
 

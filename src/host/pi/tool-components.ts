@@ -1,8 +1,12 @@
 import { Box, Container, Image, Spacer, type Component } from '@earendil-works/pi-tui';
+import type { ToolExecutionComponent } from '@earendil-works/pi-coding-agent';
 import type { NativeToolRender, NativeToolMouse, NativeToolUpdate, ToolUpdateName } from '../../presentation/tool-view-presenter.ts';
 import type { ToolFieldAccessors } from '../../presentation/tool-producers.ts';
 import { isDeferredStockEditComponent, isDeferredStockEditPair, isDeferredStockFileCall, isDeferredStockFilePair,
   isDeferredStockReadPair, releaseNativeRendererCache, updateNativeRendererArgs, stockEditCall, stockEditResult } from './lazy-native-renderers.ts';
+
+type ToolRows = ReturnType<ToolExecutionComponent['render']>;
+type ToolRender = NativeToolRender<object, ToolRows>;
 
 /** The inspected native contract; never import a second internal ToolExecutionComponent class. */
 interface ToolNode extends Component {
@@ -36,14 +40,14 @@ export const toolFields: ToolFieldAccessors<object> = {
 export interface ToolComponentPorts {
   fail(message: string): void;
   attach(owner: object): void;
-  render(owner: object, width: number, native: NativeToolRender<object>): string[];
-  mouse(owner: object, event: Parameters<NativeToolMouse<object>>[0], render: NativeToolRender<object>, native: NativeToolMouse<object>): ReturnType<NativeToolMouse<object>>;
+  render(owner: object, width: number, native: ToolRender): ToolRows;
+  mouse(owner: object, event: Parameters<NativeToolMouse<object>>[0], render: ToolRender, native: NativeToolMouse<object>): ReturnType<NativeToolMouse<object>>;
   update(owner: object, name: ToolUpdateName, args: unknown[], native: NativeToolUpdate<object>): unknown;
 }
 
 type Patch = {
   render: PropertyDescriptor; mouse: PropertyDescriptor;
-  patchedRender: NativeToolRender<object>; patchedMouse: NativeToolMouse<object>;
+  patchedRender: ToolRender; patchedMouse: NativeToolMouse<object>;
   updates: { name: string; original?: PropertyDescriptor; wrapper: (...args: unknown[]) => unknown }[];
 };
 
@@ -88,9 +92,9 @@ export class ToolComponents {
       this.ports.fail('Tool rendering methods cannot be safely replaced; native rendering retained'); return;
     }
     const ports = this.ports;
-    const originalRender = render.value as NativeToolRender<object>;
+    const originalRender = render.value as ToolRender;
     const originalMouse = mouse.value as NativeToolMouse<object>;
-    const patchedRender: NativeToolRender<object> = function (width) {
+    const patchedRender: ToolRender = function (width) {
       try { return ports.render(this, width, originalRender); }
       catch { ports.fail('pi-tidy-ui could not render this component; native rendering restored'); return originalRender.call(this, width); }
     };
@@ -137,8 +141,8 @@ export class ToolComponents {
     this.patches.clear();
   }
 
-  nativeRows(owner: object, width: number): string[] {
-    const render = this.isTool(owner) ? this.patches.get(Object.getPrototypeOf(owner))?.render.value as NativeToolRender<object> | undefined : undefined;
+  nativeRows(owner: object, width: number): ToolRows {
+    const render = this.isTool(owner) ? this.patches.get(Object.getPrototypeOf(owner))?.render.value as ToolRender | undefined : undefined;
     return render ? render.call(owner, width) : (owner as Component).render(width);
   }
 

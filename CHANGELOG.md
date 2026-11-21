@@ -60,6 +60,8 @@ been reconstructed.
 
 ### Fixed
 
+- Support Pi 1.6's read-only renderer rows without changing native presentation
+  or raising the minimum supported Pi version.
 - Refresh Bash cards when output changes while the terminal is stopped (for
   example, with an external editor open), without waiting for another input or resize.
 - Prevent a retired native no-start refusal from blocking newly enabled work,

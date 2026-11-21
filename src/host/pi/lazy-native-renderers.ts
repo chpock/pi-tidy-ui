@@ -179,7 +179,7 @@ export class DeferredRenderer implements Component {
     }
   }
 
-  render(width: number): string[] {
+  render(width: number): ReturnType<Component['render']> {
     if (this.disposed) return [];
     this.owner?.prepareNative();
     this.materialize();

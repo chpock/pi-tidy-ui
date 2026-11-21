@@ -31,7 +31,7 @@ export function summaryConsumer(tool: Tool, Summary = ToolSummaryPresenter) {
     deferredFilePair: () => false, stockEditShell: () => false, visible: unexpected,
   });
   const summary = new Summary(producer, sessions.fileDetails, sessions, cache);
-  let view: ReturnType<typeof createToolViewPresenter<object>>;
+  let view: ReturnType<typeof createToolViewPresenter<object, never>>;
   const spinner = new PresentationSpinner({ ...facts, quiescing: () => false,
     executing: (owner: object) => view.executing(owner), requestRender: noop, fields: toolFields });
   const preparation = createToolPreparationPresenter({ fields: toolFields, producer, sessions, policy, routing,

@@ -1,7 +1,7 @@
 import { CustomEditor } from '@earendil-works/pi-coding-agent';
 import { Container, Editor, Spacer, type Component, type TuiMouseEvent } from '@earendil-works/pi-tui';
 import { stripVTControlCharacters } from 'node:util';
-import { EDITOR_TOP, EDITOR_BOTTOM, renderEditorCard, type EditorLayout } from '../../editor-card.ts';
+import { EDITOR_TOP, EDITOR_BOTTOM, renderEditorCard, type EditorGeometry } from '../../editor-card.ts';
 import { renderEditorStatus, type EditorStatusInfo } from '../../editor-status.ts';
 import type { CardTheme } from '../../card-theme.ts';
 import type { DiagnosticFields } from '../../diagnostics.ts';
@@ -41,7 +41,7 @@ type EditorHook = { name: string; original: PropertyDescriptor | undefined; wrap
 export class NativeEditor {
   private readonly patches = new Map<object, EditorHook[]>();
   private current: WeakRef<CustomEditor> | undefined;
-  private states = new WeakMap<CustomEditor, Omit<EditorLayout, 'rows'> & { width: number; offsetY: number }>();
+  private states = new WeakMap<CustomEditor, EditorGeometry & { width: number; offsetY: number }>();
   private readonly flags = new WeakMap<CustomEditor, PropertyDescriptor>();
   private readonly flagRefs = new Set<WeakRef<CustomEditor>>();
   private readonly pendingRoutes = new WeakSet<CustomEditor>();
@@ -58,7 +58,7 @@ export class NativeEditor {
   private readonly prototype = CustomEditor.prototype as unknown as Record<string, Function>;
   private readonly nativeTop = this.prototype.renderTopBorder!;
   private readonly nativeBottom = this.prototype.renderBottomBorder!;
-  private readonly nativeSpacer = Object.getOwnPropertyDescriptor(Spacer.prototype, 'render')!;
+  private readonly nativeSpacer = Object.getOwnPropertyDescriptor(Spacer.prototype, 'render')! as Omit<PropertyDescriptor, 'value'> & { value: Spacer['render'] };
   readonly observeSpacer: Spacer['render'];
   private readonly statusEmbedding: (this: CustomEditor) => boolean;
 
@@ -74,7 +74,7 @@ export class NativeEditor {
       return ports.active() && owner.plainStock(this) ? false : owner.flags.get(this)?.value as boolean;
     };
     this.observeSpacer = function (this: Spacer, width: number) {
-      const rows = owner.nativeSpacer.value.call(this, width) as string[];
+      const rows = owner.nativeSpacer.value.call(this, width);
       if (owner.spacerPass?.spacer === this && owner.spacerPass.width === width) {
         owner.spacerPass.rows = rows.length;
         owner.spacerPass.blank = rows[0] === '';
@@ -210,7 +210,7 @@ export class NativeEditor {
     return group;
   }
 
-  renderContainer(group: Container, width: number, native: Container['render']): string[] {
+  renderContainer(group: Container, width: number, native: Container['render']): ReturnType<Container['render']> {
     const parent = this.ports.active() && this.ports.parent(group);
     const input = this.tui instanceof Container && parent && parent.children === this.tui.children &&
       (parent.children[3] === group || parent.children[2] === group) && parent.children[4];
@@ -245,7 +245,7 @@ export class NativeEditor {
     if (this.prototype.render !== this.nativeRender || this.prototype.handleMouse !== this.nativeMouse ||
       this.prototype.renderBottomBorder !== this.nativeBottom) return;
     const owner = this, ports = this.ports;
-    const patchedRender = function (this: CustomEditor, width: number): string[] {
+    const patchedRender = function (this: CustomEditor, width: number): ReturnType<CustomEditor['render']> {
       if (!ports.active() || !owner.stock(this) || (width > 0 && width < 7)) {
         owner.states.delete(this); const rows = owner.nativeRender.call(this, width);
         ports.decision(this, 'editor', 'Native editor delegated; ownership or narrow-width guard rejected', width, rows.length); return rows;

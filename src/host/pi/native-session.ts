@@ -32,6 +32,9 @@ interface SessionOptions extends NativeEditorOptions {
   editorStatusRestored?: () => void;
 }
 
+type ContainerRows = ReturnType<Container['render']>;
+type QueuedRows = { node: Component; rows: ReturnType<Component['render']> };
+
 type ToolFacts = Pick<ToolComponents, 'isTool' | 'nativeRows' | 'imageRows' | 'hidden' | 'context' | 'setExpanded'
   | 'selfShell' | 'fileRenderer' | 'readRenderer' | 'deferredFilePair' | 'stockEditShell' | 'releaseFileRenderer' | 'syncRendererArgs'>;
 
@@ -54,7 +57,7 @@ export class NativeSession {
   readonly tool: ToolFacts;
   readonly user: Pick<UserComponents, 'text' | 'padding' | 'markdown' | 'markdownTheme' | 'transformers'>;
   private readonly originalAdd = Container.prototype.addChild;
-  private readonly originalRender = Object.getOwnPropertyDescriptor(Container.prototype, 'render')!;
+  private readonly originalRender = Object.getOwnPropertyDescriptor(Container.prototype, 'render')! as Omit<PropertyDescriptor, 'value'> & { value: Container['render'] };
   private readonly originalClear = Container.prototype.clear;
   private readonly originalRemove = Container.prototype.removeChild;
   private readonly truncatedRender = TruncatedText.prototype.render;
@@ -124,7 +127,7 @@ export class NativeSession {
     if (siblings[current] !== owner) { current = siblings.indexOf(owner); if (position) position.index = current; }
     return current;
   }
-  otherRows(owner: object, width: number): string[] {
+  otherRows(owner: object, width: number): readonly string[] {
     return this.users.borrowedRows(owner, width) ?? this.tools.nativeRows(owner, width);
   }
 
@@ -217,27 +220,27 @@ export class NativeSession {
     }
   }
 
-  private renderDocument(group: Container, width: number): string[] {
+  private renderDocument(group: Container, width: number): ContainerRows {
     const document = this.tui instanceof Container && (group === this.tui ||
       (group === this.tui.children[0] && Object.getPrototypeOf(group) === Container.prototype));
     if (!this.live || !document || this.ports.document.running()) return this.renderContainer(group, width);
     try { this.ports.document.begin(); }
-    catch { this.fail('Pi Output padding could not be read; native rendering restored'); return this.originalRender.value.call(group, width) as string[]; }
+    catch { this.fail('Pi Output padding could not be read; native rendering restored'); return this.originalRender.value.call(group, width); }
     let completed = false;
     try {
       const rows = this.renderContainer(group, width);
       completed = true; return rows;
     } finally { this.ports.document.end(completed); }
   }
-  private renderContainer(group: Container, width: number): string[] {
+  private renderContainer(group: Container, width: number): ContainerRows {
     if (this.live) {
       try { const rows = this.queuedRows(group, width); if (rows) return rows; }
       catch { this.fail('pi-tidy-ui could not render queued messages; native rendering restored'); }
     }
-    return this.editor.renderContainer(group, width, this.originalRender.value as Container['render']);
+    return this.editor.renderContainer(group, width, this.originalRender.value);
   }
 
-  private renderQueued(group: Container, width: number, projections: readonly { node: Component; rows: string[] }[]): string[] {
+  private renderQueued(group: Container, width: number, projections: readonly QueuedRows[]): ContainerRows {
     const restores: { node: Component; own?: PropertyDescriptor; render: Component['render'] }[] = [];
     try {
       for (const { node, rows } of projections) {
@@ -250,7 +253,7 @@ export class NativeSession {
       }
       // Native Container.render refreshes its hit geometry and strong traversal
       // references; returning a fabricated aggregate would leave both stale.
-      return this.originalRender.value.call(group, width) as string[];
+      return this.originalRender.value.call(group, width);
     } finally {
       for (const { node, own, render } of restores) if (Object.getOwnPropertyDescriptor(node, 'render')?.value === render) {
         if (own) Object.defineProperty(node, 'render', own); else Reflect.deleteProperty(node, 'render');
@@ -265,7 +268,7 @@ export class NativeSession {
     const value: unknown = Object.getOwnPropertyDescriptor(node, 'text')?.value;
     return typeof value === 'string' ? value : undefined;
   }
-  private queuedRows(group: Container, width: number): string[] | undefined {
+  private queuedRows(group: Container, width: number): ContainerRows | undefined {
     if (!(this.tui instanceof Container) || this.tui.children[1] !== group) return undefined;
     const fallback = () => {
       for (const child of group.children) this.ports.queued.forget(child);
@@ -302,6 +305,6 @@ export class NativeSession {
     this.ports.decision(group, 'queued', 'Verified queued-message prefix projected; Pi still owns editing and dock clipping', width, rowCount,
       { height, messages: messages.length });
     return this.renderQueued(group, width, [{ node: spacer, rows: spacerRows },
-      ...projected as { node: Component; rows: string[] }[], { node: children[index]!, rows: [] }]);
+      ...projected as QueuedRows[], { node: children[index]!, rows: [] }]);
   }
 }

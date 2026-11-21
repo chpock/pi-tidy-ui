@@ -7,8 +7,8 @@ const ZONE_START = "\x1b]133;A\x07";
 const ZONE_END = "\x1b]133;B\x07\x1b]133;C\x07";
 
 /** Reframe native Markdown, not its source: preserve transforms, syntax colors and links. */
-export function renderUserCard<Owner extends object>(owner: Owner, width: number, padding: number, theme: CardTheme,
-  renderNative: (this: Owner, width: number) => string[], outputPad = padding): { rows: string[] } {
+export function renderUserCard<Owner extends object, NativeRows extends readonly string[]>(owner: Owner, width: number, padding: number, theme: CardTheme,
+  renderNative: (this: Owner, width: number) => NativeRows, outputPad = padding): { rows: NativeRows | string[] } {
   const geometry = cardGeometry(width, outputPad);
   if (!geometry.width) return { rows: [] };
   // The native Markdown removes its own horizontal padding before wrapping/transforming.

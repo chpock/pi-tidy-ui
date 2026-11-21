@@ -8,6 +8,8 @@ Start with the [system overview](architecture.md). This chapter owns attachment,
 
 Pi loads the TypeScript extension entry point directly. Host classes/functions come through public imports of the runtime peer dependencies, not a bundled second Pi or a private-path component import. This matters for `instanceof`, exact prototype checks and the fact that Pi itself must continue calling the methods the adapter observes.
 
+Treat rows returned by a native renderer as borrowed, even when older SDKs declare a mutable array. Pi 1.6.0 permits cached, readonly render rows. An override follows the selected host method's return type; presentation code can read the borrowed rows or return them unchanged, without a defensive copy. Framing, spacing and image placement create their own rows when they change the output. Neither the host's cache nor any returned array is changed in place.
+
 | Owner | Retained state | Boundary |
 | --- | --- | --- |
 | Extension factory | Registered flags/events/command, one preference owner and focused diagnostic/footer/color bindings | No UI, journal or provider start merely from constructing these owners |
