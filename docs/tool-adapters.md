@@ -43,6 +43,8 @@ AFT numbered read is one example of format compatibility under the existing `rea
 
 ## Observe cheaply, prepare under funding
 
+Each file-view decision captures the saved call once. Eligibility, view mode and route selection reuse that observation within the decision. A successful file call that passes the ownership and override checks must have a path; its selected reader checks it once. Pending and failed calls can still show details without a path. A later decision reads the current call again; no observation is kept across decisions or passed through a native renderer callback.
+
 A deferred reader captures the observed argument/result references and phase values, not a mutable live component. Later source work must correspond to the identity under which it was admitted. Component updates and the existing stale-publication barriers remain authoritative.
 
 Observation selects the relevant saved values without joining, cleaning or parsing a full body. Source, service and diagnostic identities stay separate:

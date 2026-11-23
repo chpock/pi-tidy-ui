@@ -1,4 +1,4 @@
-import type { ToolCardKind } from '../tool-adapters/contracts.ts';
+import type { ToolCallSnapshot, ToolCardKind } from '../tool-adapters/contracts.ts';
 import type { ToolProducerPresenter } from './tool-producers.ts';
 import type { ToolPresentationSessions } from './tool-sessions.ts';
 import { selectToolPresentationIntent, type ToolPresentationIntent } from './tool-intents.ts';
@@ -57,28 +57,38 @@ export class ToolPresentationPolicy<Owner extends object> {
   }
 
   filePresentationEligible(owner: Owner): boolean {
-    const kind = this.kind(owner);
-    const readCompactOverride = kind === 'read' && this.overrides.compact.has(this.facts.name(owner));
-    const owned = this.facts.active() && !this.facts.hidden(owner) &&
-      (readCompactOverride || !this.overrides.compact.has(this.facts.name(owner)) && !this.overrides.native.has(this.facts.name(owner)));
-    const hasUsablePath = !this.fileSucceeded(owner) || !!this.producer.reader(owner).path();
-    if (kind === 'read') return owned && hasUsablePath;
-    return owned && (kind === 'edit' || kind === 'write') && hasUsablePath && !this.hasImage(owner);
+    const call = this.producer.capture(owner);
+    return this.fileEligible(owner, call, this.producer.kindFrom(call));
+  }
+
+  private fileEligible(owner: Owner, call: ToolCallSnapshot, kind: ToolCardKind): boolean {
+    if (kind !== 'read' && kind !== 'edit' && kind !== 'write') return false;
+    if (!this.facts.active() || this.facts.hidden(owner)) return false;
+    if (kind === 'read' ? !this.overrides.compact.has(call.name) && this.overrides.native.has(call.name)
+      : this.overrides.compact.has(call.name) || this.overrides.native.has(call.name)) return false;
+    if (call.hasResult && !call.partial && !call.resultFailed && !this.producer.readerFrom(call).path()) return false;
+    return kind === 'read' || !this.hasImage(owner);
   }
 
   readPresentationMode(owner: Owner): 'full' | undefined {
-    return this.kind(owner) === 'read' && this.filePresentationEligible(owner) && this.facts.expanded(owner) ? 'full' : undefined;
+    const call = this.producer.capture(owner);
+    return this.producer.kindFrom(call) === 'read' && this.fileEligible(owner, call, 'read') && this.facts.expanded(owner) ? 'full' : undefined;
   }
 
   filePreviewMode(owner: Owner): 'preview' | 'full' | undefined {
-    const kind = this.kind(owner);
-    if ((kind !== 'edit' && kind !== 'write') || !this.filePresentationEligible(owner) ||
-      this.fileSucceeded(owner) && !this.producer.reader(owner).path()) return undefined;
-    return this.sessions.fileMode(owner, this.facts.toolCallId(owner), this.facts.expanded(owner));
+    const call = this.producer.capture(owner), kind = this.producer.kindFrom(call);
+    return kind === 'edit' || kind === 'write' ? this.fileModeFrom(owner, call, kind) : undefined;
   }
 
   fileMode(owner: Owner): 'preview' | 'full' | undefined {
-    return this.kind(owner) === 'read' ? this.readPresentationMode(owner) : this.filePreviewMode(owner);
+    const call = this.producer.capture(owner);
+    return this.fileModeFrom(owner, call, this.producer.kindFrom(call));
+  }
+
+  private fileModeFrom(owner: Owner, call: ToolCallSnapshot, kind: ToolCardKind): 'preview' | 'full' | undefined {
+    if (!this.fileEligible(owner, call, kind)) return undefined;
+    if (kind === 'read') return this.facts.expanded(owner) ? 'full' : undefined;
+    return this.sessions.fileMode(owner, this.facts.toolCallId(owner), this.facts.expanded(owner));
   }
 
   eligible(owner: Owner): boolean {
@@ -111,7 +121,8 @@ export class ToolPresentationPolicy<Owner extends object> {
   }
 
   fileIntent(owner: Owner, width: number): ToolPresentationIntent {
-    const selected = this.kind(owner) === 'read' ? this.readPresentationMode(owner) === 'full' : this.filePresentationEligible(owner);
+    const call = this.producer.capture(owner), kind = this.producer.kindFrom(call);
+    const selected = this.fileEligible(owner, call, kind) && (kind !== 'read' || this.facts.expanded(owner));
     return selectToolPresentationIntent(width, selected, false, false);
   }
 }
