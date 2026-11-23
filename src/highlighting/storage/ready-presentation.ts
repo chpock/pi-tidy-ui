@@ -2,7 +2,7 @@ import { CARD_ROLES, type CardRole } from '../../appearance/card-roles.ts';
 import type { LiteralInk } from '../../occipital/style-types.ts';
 import type { DataCharge, DataGrant } from '../../resources/data-budget.ts';
 import type { ContextRef } from './context-arena.ts';
-import type { ConcreteStyle } from '../../appearance/style-materialization.ts';
+import { concreteStyleKey, type ConcreteStyle } from '../../appearance/style-materialization.ts';
 
 /** Already materialized, complete internal data. The caller establishes coverage
  * from its context demands before publication; no source or UI owner is allowed. */
@@ -45,7 +45,7 @@ export function equalPresentation(owned: OwnedPresentation, input: ReadyPresenta
 export function copyPresentation(input: ReadyPresentation, grant: DataGrant): OwnedPresentation {
   const literals = new Map<string, ConcreteStyle>();
   function copy(style: ConcreteStyle): ConcreteStyle {
-    const key = `${inkKey(style.foreground)}/${inkKey(style.background)}/${style.attributes}`;
+    const key = concreteStyleKey(style);
     let literal = literals.get(key);
     if (!literal) {
       literal = Object.freeze({ foreground: copyInk(style.foreground),
@@ -64,9 +64,6 @@ export function copyPresentation(input: ReadyPresentation, grant: DataGrant): Ow
 function copyInk(ink: LiteralInk): LiteralInk {
   return Object.freeze(ink.kind === 'rgb' ? { kind: 'rgb', r: ink.r, g: ink.g, b: ink.b }
     : ink.kind === 'indexed' ? { kind: 'indexed', index: ink.index } : { kind: 'terminal-default' });
-}
-function inkKey(ink: LiteralInk): string {
-  return ink.kind === 'rgb' ? `r${ink.r},${ink.g},${ink.b}` : ink.kind === 'indexed' ? `i${ink.index}` : 'd';
 }
 function sameInk(a: LiteralInk, b: LiteralInk): boolean {
   if (a.kind === 'rgb') return b.kind === 'rgb' && a.r === b.r && a.g === b.g && a.b === b.b;

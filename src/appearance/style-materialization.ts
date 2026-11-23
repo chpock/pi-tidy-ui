@@ -12,6 +12,14 @@ export interface ConcreteStyle {
   readonly attributes: number;
 }
 
+export function concreteStyleKey(style: ConcreteStyle): string {
+  return `${inkKey(style.foreground)}/${inkKey(style.background)}/${style.attributes}`;
+}
+
+function inkKey(ink: LiteralInk): string {
+  return ink.kind === 'rgb' ? `r${ink.r},${ink.g},${ink.b}` : ink.kind === 'indexed' ? `i${ink.index}` : 'd';
+}
+
 /** Materialize validated styles and sampled bindings once outside render. A
  * foreground role carries its own explicit typography; a background is color
  * only. Selector masks apply last, including zero-valued resets. Structural

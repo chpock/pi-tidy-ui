@@ -11,6 +11,7 @@ import type { ProviderBroker } from '../../../src/occipital/provider.ts';
 import { semanticDescriptor } from '../../fixtures/semantic-provider.ts';
 import { HIGHLIGHT_LIMITS } from '../../../src/highlighting/limits.ts';
 import { SemanticRetentionPool } from '../../../src/highlighting/storage/semantic-retention.ts';
+import { SemanticRanges } from '../../../src/highlighting/storage/semantic-ranges.ts';
 import { syntheticSelection } from '../../fixtures/test-style-selection.ts';
 
 type Frame = Record<string, any>;
@@ -223,6 +224,32 @@ test('controller v4 source: incompatible vocabulary replacement reparses from fu
   } finally { await cleanup(owner, peer); }
 });
 
+test('controller v4 source: a queue-only route restart checks the replacement text before dispatch', async (t) => {
+  const peer = new Peer(), owner = new SourceExecution(peer);
+  try {
+    owner.observe(demand()); owner.flush(); peer.reply(0, 'echo ready'); await settled();
+    const old = owner.status('source')!.generation!, descriptor = semanticDescriptor('describe', 'replacement');
+    descriptor.assets = descriptor.body.assets = 'replacement-assets';
+    peer.description = decodeSemanticDescription(descriptor, 'describe'); peer.generation++;
+    const reads: number[] = [], inspect = SemanticRetentionPool.prototype.inspectSource;
+    t.mock.method(SemanticRetentionPool.prototype, 'inspectSource', function (this: SemanticRetentionPool, generation: number) {
+      reads.push(generation); return inspect.call(this, generation);
+    });
+    const request = peer.request;
+    let checkedAtDispatch = false;
+    t.mock.method(peer, 'request', (...args: Parameters<Peer['request']>) => {
+      const sources = args[1].sources as { generation: number }[] | undefined;
+      if (sources?.length) checkedAtDispatch = reads.includes(sources[0]!.generation);
+      return request.apply(peer, args);
+    });
+    owner.refreshPreparations(); owner.flush();
+    const input = peer.calls[1]!.sources[0];
+    assert.equal(input.text, 'echo ready'); assert.notEqual(input.generation, old);
+    assert.ok(checkedAtDispatch, 'replacement text availability must be established before the peer receives it');
+    peer.reply(1, 'echo ready'); await settled(); assert.equal(owner.status('source')!.exact, true);
+  } finally { t.mock.restoreAll(); await cleanup(owner, peer); }
+});
+
 test('controller v4 source: confirmed scopes awaiting styles veto a duplicate Pi classifier without inventing source work', async () => {
   const peer = new Peer(), owner = new SourceExecution(peer);
   try {
@@ -233,6 +260,94 @@ test('controller v4 source: confirmed scopes awaiting styles veto a duplicate Pi
     assert.equal(owner.workStatus('source').fallbackEligible, false, 'pending style demand is not permission to parse the same source with Pi');
     assert.equal(peer.calls.length, 1);
   } finally { await cleanup(owner, peer); }
+});
+
+test('controller v4 source: checking work for parsed input needs no retention or range accounting report', async (t) => {
+  const peer = new Peer(), owner = new SourceExecution(peer);
+  try {
+    owner.observe(demand()); owner.flush(); peer.reply(0, 'echo ready'); await settled();
+    const status = t.mock.method(SemanticRetentionPool.prototype, 'status');
+    const ranges = t.mock.method(SemanticRanges.prototype, 'stats');
+    const work = owner.workStatus('source');
+    assert.equal(work.execution, 'acknowledged');
+    assert.equal(work.fallbackEligible, false, 'styles are still pending, not another parse');
+    assert.equal(peer.calls.length, 1);
+    assert.deepEqual([status.mock.callCount(), ranges.mock.callCount()], [0, 0], 'fallback permission');
+
+    const route = t.mock.method(peer, 'isReady');
+    const inspection = t.mock.method(SemanticRetentionPool.prototype, 'inspectSource');
+    const versions = t.mock.method(SemanticRetentionPool.prototype, 'snapshotVersion');
+    const held = (owner as unknown as { lifetime: { jobs: Set<WeakRef<object>> } }).lifetime.jobs;
+    let scans = 0;
+    const iterate = held[Symbol.iterator].bind(held);
+    held[Symbol.iterator] = () => { scans++; return iterate(); };
+    try { owner.refreshPreparations(); owner.flush(); } finally { Reflect.deleteProperty(held, Symbol.iterator); }
+    assert.ok(route.mock.calls.some(call => call.arguments[0] === peer.generation), 'queue reconsidered the source on its ready route');
+    assert.equal(peer.calls.length, 1, 'the matching finite result needs no second parse');
+    assert.deepEqual([status.mock.callCount(), ranges.mock.callCount()], [0, 0], 'idle queue visit');
+    assert.deepEqual([inspection.mock.callCount(), versions.mock.callCount(), scans], [1, 0, 1], 'one passive lookup, no text promotion and one physical-key scan');
+  } finally { t.mock.restoreAll(); await cleanup(owner, peer); }
+});
+
+test('controller v4 source: a snapshotless queue visit does not consult the retry clock', async (t) => {
+  const peer = new Peer(), clock = { now: () => 0, setTimeout() { return assert.fail('no retry'); } };
+  peer.description.limits.source_bytes = 1;
+  const owner = new SourceExecution(peer, { clock });
+  try {
+    assert.equal(owner.observe(demand()), false); await settled();
+    const route = t.mock.method(peer, 'isReady'), now = t.mock.method(clock, 'now');
+    owner.refreshPreparations(); owner.flush();
+    assert.ok(route.mock.calls.some(call => call.arguments[0] === peer.generation), 'the queue actually visited this ready route');
+    assert.equal(now.mock.callCount(), 0);
+    assert.equal(peer.calls.length, 0);
+  } finally { t.mock.restoreAll(); await cleanup(owner, peer); }
+});
+
+test('controller v4 source: polling an already parsed source does not displace a more recently used entry', async () => {
+  const peer = new Peer(), owner = new SourceExecution(peer, { retention: { maxBytes: 64 * 1024 } });
+  try {
+    owner.observe(demand()); owner.flush(); peer.reply(0, 'echo ready'); await settled();
+    const oldest = owner.status('source')!.generation!;
+    const pool = (owner as unknown as { pool: SemanticRetentionPool }).pool;
+    const recent = pool.admit('recent', 1, 'still in use').generation!;
+    assert.equal(pool.borrowSnapshot(recent)?.text, 'still in use');
+    owner.refreshPreparations(); owner.flush();
+    const { retainedBytes, maxBytes } = pool.stats();
+    const pressure = pool.reserve(undefined, maxBytes - retainedBytes + 1);
+    owner.receipts(pressure.released);
+    assert.deepEqual(pressure.released.map(r => r.generation), [oldest]);
+    assert.equal(pool.borrowSnapshot(recent)?.text, 'still in use');
+    assert.equal(peer.calls.length, 1, 'the queue did not start another parse');
+  } finally { await cleanup(owner, peer); }
+});
+
+for (const renewedUse of [false, true]) test(`controller v4 source: first parse deferred by occupied slots competes with ${renewedUse ? 'renewed' : 'earlier'} text use under pressure`, async () => {
+  const busy = new Peer(), holder = new SourceExecution(busy), peer = new Peer();
+  const owner = new SourceExecution(peer, { retention: { maxBytes: 64 * 1024 } });
+  try {
+    for (const key of ['busy-one', 'busy-two']) { holder.observe(demand({ key, text: key })); holder.flush(); }
+    assert.equal(busy.calls.length, 2);
+    const text = 'first parse'; assert.equal(owner.observe(demand({ text })), true);
+    const waiting = owner.status('source')!.generation!;
+    const pool = (owner as unknown as { pool: SemanticRetentionPool }).pool;
+    const used = pool.admit('borrowed', 1, 'peer text').generation!;
+    assert.equal(pool.borrowSnapshot(used)?.text, 'peer text');
+    owner.flush(); assert.equal(peer.calls.length, 0, 'physical credits are held elsewhere');
+    if (renewedUse) {
+      assert.equal(pool.borrowSnapshot(used)?.text, 'peer text');
+      for (let i = 0; i < 4; i++) { owner.refreshPreparations(); owner.flush(); }
+    }
+    const { retainedBytes, maxBytes } = pool.stats();
+    const pressure = pool.reserve(undefined, maxBytes - retainedBytes + 1); owner.receipts(pressure.released);
+    assert.ok(pressure.accepted); assert.deepEqual(pressure.released.map(r => r.generation), [renewedUse ? waiting : used]);
+    for (const [i, call] of busy.calls.entries()) busy.reply(i, call.sources[0].text);
+    await settled(); owner.flush(); await settled();
+    assert.deepEqual(peer.calls.map(q => q.sources[0].text), renewedUse ? [] : [text]);
+  } finally {
+    for (const [i, call] of busy.calls.entries()) busy.reply(i, call.sources[0].text);
+    for (const [i, call] of peer.calls.entries()) peer.reply(i, call.sources[0].text);
+    await cleanup(owner, peer); await cleanup(holder, busy);
+  }
 });
 
 function disposalWitness(original: SemanticRetentionPool['dispose'], notify: (closed: boolean) => void) {

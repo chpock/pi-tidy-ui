@@ -19,10 +19,12 @@ export interface PreparedLayoutPresenterPorts<Owner extends object> {
   sessions: ToolPresentationSessions<Owner>;
   ordinaryCache: RenderCache;
   cardCache: RenderCache;
-  producer: ToolProducerPresenter<Owner>;
+  expanded(owner: Owner): boolean;
+  kind: ToolProducerPresenter<Owner>['kind'];
   active(): boolean;
   outputPadding(): number;
   funding(): GeometryFunding | undefined;
+  /** True only if consume ran and its borrowed display and paint stayed current through return. */
   visit(owner: Owner, consume: (display: PreparedCard, paint: ReadyCardPaint) => void): boolean;
   identities(owner: Owner): readonly { key: string; version: number }[];
   fileMode(owner: Owner): FilePreviewMode | undefined;
@@ -48,9 +50,8 @@ export class PreparedLayoutPresenter<Owner extends object> {
     const previousEntry = ports.sessions.preparedLayout(owner)?.entry;
     const previous = previousEntry?.value;
     const padding = ports.outputPadding();
-    const call = ports.producer.capture(owner);
-    const kind = ports.producer.kindFrom(call);
-    const filePresentation = kind === 'read' || kind === 'edit' || kind === 'write';
+    const expandedAtEntry = ports.expanded(owner);
+    let kind: ReturnType<typeof ports.kind> | undefined;
 
     let funding: GeometryFunding | undefined;
     let scene: CardLayout | undefined;
@@ -58,14 +59,16 @@ export class PreparedLayoutPresenter<Owner extends object> {
     let candidate: PreparedLayout | undefined;
     let adopted = false;
     let nativeFile = false;
+    let historicalBash = false;
     try {
       const accepted = ports.visit(owner, (display, paint) => {
         if (display.kind === 'file' && display.mode === undefined) { nativeFile = true; return; }
         ports.observePalette(owner, paint.origin);
-        const expanded = display.kind === 'bash' ? call.expanded : display.preview !== true;
+        const expanded = display.kind === 'bash' ? expandedAtEntry : display.preview !== true;
         const sameGeometry = previous?.scene.isRetained && previous.width === width && previous.padding === padding
           && previous.expanded === expanded && previous.geometryStamp === display.geometryStamp;
         if (sameGeometry && previous.output.isValid && previous.paintStamp === paint.paintStamp) { candidate = previous; return; }
+        kind = ports.kind(owner);
         funding = ports.funding();
         if (!funding) return;
         scene = sameGeometry ? previous.scene : layoutCard(display, { width, outputPad: padding, expanded }, funding);
@@ -73,9 +76,9 @@ export class PreparedLayoutPresenter<Owner extends object> {
         let proof: BashPaintProof | undefined;
         if (display.kind === 'bash') {
           const key = ports.identities(owner)[0]?.key;
-          const prefix = ports.sessions.syntax(owner)?.prefix;
-          if (key && prefix && prefix.sourceRevision === ports.sessions.syntax(owner)?.sourceRevision) {
-            paint.basis(key, (_text, ranges) => { proof = { ranges, eligibleBytes: prefix.bytes }; });
+          const eligibleBytes = paint.bashPrefixBytes;
+          if (key && eligibleBytes) {
+            historicalBash = paint.basis(key, (_text, ranges) => { proof = { ranges, eligibleBytes }; });
           }
         }
         output = scene.paint(display, paint, funding, proof);
@@ -90,6 +93,7 @@ export class PreparedLayoutPresenter<Owner extends object> {
         ports.sessions.observeConstruction('plan');
       });
 
+      const filePresentation = kind === 'read' || kind === 'edit' || kind === 'write';
       if (accepted && nativeFile) ports.sessions.dropPreparedLayout(owner);
       if (!accepted || !candidate || !ports.active()) {
         if (ports.active() && accepted && !candidate && filePresentation && !nativeFile) {
@@ -122,7 +126,7 @@ export class PreparedLayoutPresenter<Owner extends object> {
       };
       const pool = candidate.scene.framed ? ports.cardCache : ports.ordinaryCache;
       pool.get(undefined);
-      const layoutKind: LayoutKind = kind === 'other' ? 'summary' : kind;
+      const layoutKind: LayoutKind = kind === 'other' ? 'summary' : kind!;
       const entry = pool.put(candidate, rows, layoutKind, preparedRelease(release));
       if (candidate.scene === previous?.scene && oldRelease) oldRelease.geometry = undefined;
       this.cleanup.set(entry, release);
@@ -133,7 +137,7 @@ export class PreparedLayoutPresenter<Owner extends object> {
       const identity = ports.identities(owner)[0];
       const basis = identity && ports.displayBasis(identity.key);
       const pi = identity && ports.piDisplay(identity.key);
-      const selected = kind === 'bash' ? ports.sessions.syntax(owner)?.prefix?.bytes ? 'historical-native-prefix' : 'toolTitle'
+      const selected = kind === 'bash' ? historicalBash ? 'historical-native-prefix' : 'toolTitle'
         : basis ? 'exact-native' : pi ? pi.styleDirectives ? 'styled-pi' : 'plain-pi' : 'waiting';
       ports.decision(owner, selected === 'historical-native-prefix' ? 'Validated historical-prefix display, not parser authority'
         : selected === 'plain-pi' ? 'Pi returned plain text; complete card palette supplies neutral ink'

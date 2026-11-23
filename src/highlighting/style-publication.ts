@@ -11,16 +11,16 @@ import type { CaptureSelection, ReadyDisplayUpdate } from './storage/ready-displ
 import { diagnosticError, reportRuntime, unexpectedDiagnostic, type DiagnosticSink } from '../diagnostics.ts';
 import { RemoteFault } from '../occipital/protocol.ts';
 import type { ConcreteStyle } from '../appearance/style-materialization.ts';
-import type { DisplayRangeReader, GroupDisplayBasis, GroupDisplayMember, SourceDisplayBasis } from './source-ports.ts';
+import type { DisplayExpressionReader, DisplayRangeReader, GroupDisplayBasis, GroupDisplayMember, SourceDisplayBasis } from './source-ports.ts';
 import type { SemanticRetentionPool } from './storage/semantic-retention.ts';
 import { OCCIPITAL_LIMITS } from '../occipital/limits.ts';
 import { HIGHLIGHT_LIMITS } from './limits.ts';
 import { sourceIdentifier as identifier } from './controller-limits.ts';
 import type { ProviderBroker, ProviderClock } from '../occipital/provider.ts';
 import { matchingSourceVersion } from './source-state.ts';
-import { nextStyle, styleFaultCause, type StyleCause } from './style-state.ts';
+import { nextStyle, styleFaultCause, type StyleAttempt, type StyleCause } from './style-state.ts';
 import type { SourceExecution } from './source-execution.ts';
-import type { PresentationRecord, PublicationNode, PublicationRegistry, StyleCache, StyleCleanup, StyleCounters, StyleFailure, StyleJobView, StyleMember, StyleReplyView, StyleSubject } from './execution-records.ts';
+import type { PresentationRecord, PublicationNode, PublicationRegistry, StyleCache, StyleCleanup, StyleCounters, StyleJobView, StyleMember, StyleReplyView, StyleSubject } from './execution-records.ts';
 
 export function displayGeneration(state: Pick<PresentationRecord, 'generation' | 'previous'>, pool: Pick<SemanticRetentionPool, 'displayStatus'>): number | undefined {
   return state.generation !== undefined && pool.displayStatus(state.generation) !== undefined ? state.generation : state.previous;
@@ -32,6 +32,14 @@ export function displayVisit(owner: WeakRef<PublicationExecution>, key: string, 
 
 export function displayRanges(owner: WeakRef<PublicationExecution>, key: string, id: number, generation: number, version: number, stamp: number): DisplayRangeReader {
   return consume => owner.deref()?.visitDisplayRanges(key, id, generation, version, stamp, consume) ?? false;
+}
+
+function expressionVisit(owner: WeakRef<PublicationExecution>, key: string, id: number, generation: number, version: number, stamp: number): SourceDisplayBasis['visitExpressions'] {
+  return consume => owner.deref()?.visitExpressionBasis(key, id, generation, version, stamp, consume) ?? false;
+}
+
+function expressionRanges(owner: WeakRef<PublicationExecution>, key: string, id: number, generation: number, version: number, stamp: number): DisplayExpressionReader {
+  return consume => owner.deref()?.visitExpressionRanges(key, id, generation, version, stamp, consume) ?? false;
 }
 
 export function displayRole(owner: WeakRef<PublicationExecution>, key: string, id: number, generation: number, version: number, stamp: number) {
@@ -300,7 +308,8 @@ export class StylePublication {
       complete: display.complete, exactVersion: state.displayVersion, geometryStamp: display.geometryStamp, paintStamp: display.effectStamp,
       role: displayRole(this.owner, key, state.id, generation, version, state.displayStamp),
       visitStyles: displayStyles(this.owner, key, state.id, generation, version, state.displayStamp),
-      visit: displayVisit(this.owner, key, state.id, generation, version, state.displayStamp)
+      visit: displayVisit(this.owner, key, state.id, generation, version, state.displayStamp),
+      visitExpressions: expressionVisit(this.owner, key, state.id, generation, version, state.displayStamp)
     };
   }
 
@@ -330,6 +339,24 @@ export class StylePublication {
     const valid = this.pool.visitDisplayText(generation, display.effectStamp, basis => {
       if (basis.version === version) consume(basis.text, displayRanges(this.owner, key, id, generation, version, stamp));
     });
+    return valid && this.currentDisplay(key, id, generation, version, stamp);
+  }
+
+  visitExpressionBasis(key: string, id: number, generation: number, version: number, stamp: number,
+    consume: Parameters<SourceDisplayBasis['visitExpressions']>[0]): boolean {
+    if (!this.currentDisplay(key, id, generation, version, stamp)) return false;
+    const effect = this.pool.displayStatus(generation)!.effectStamp;
+    const size = this.pool.displayPaintSize(generation, effect)!;
+    const accepted = this.pool.visitDisplayText(generation, effect, basis => {
+      consume(basis.text, size.runs, size.contexts, expressionRanges(this.owner, key, id, generation, version, stamp));
+    });
+    return accepted && this.currentDisplay(key, id, generation, version, stamp);
+  }
+
+  visitExpressionRanges(key: string, id: number, generation: number, version: number, stamp: number,
+    consume: Parameters<DisplayExpressionReader>[0]): boolean {
+    if (!this.currentDisplay(key, id, generation, version, stamp)) return false;
+    const valid = this.pool.visitDisplayExpressions(generation, this.pool.displayStatus(generation)!.effectStamp, consume);
     return valid && this.currentDisplay(key, id, generation, version, stamp);
   }
 
@@ -465,14 +492,14 @@ export class StylePublication {
     const selection = this.selection;
     if (!selection || !this.execution().publicationEnabled || !this.execution().active) return;
     const subject = this.styleSubject(node, selection, description); if (!subject) return;
-    const failure = this.styleFailure(node, subject, description); if (failure.blocked) return;
+    if (this.blockedStyleFailure(node, subject, description)) return;
     const refuse = () => this.refuseStyles(node, subject.vocabulary, subject.epoch, subject.revision);
     try {
       if ('preparation' in node.value) {
         const accepts = node.value.preparation.deref()?.acceptsSelection, preparation = node.value.preparation.deref();
         if (accepts && preparation && !accepts.call(preparation, selection.palette, selection.rules)) return;
       }
-      if (!this.execution().active || this.selection !== selection) return;
+      if (!this.currentStyleVisit(node, subject)) return;
       if (full && this.waitForUncoveredStyles(subject, description)) return;
       if (!this.qualifyStyleMembers(subject, refuse)) return;
       if (this.stylesCurrent(node, subject)) {
@@ -480,7 +507,7 @@ export class StylePublication {
         for (const member of subject.members) this.execution().source(member.key)!.styleDirty = false;
         return;
       }
-      this.prepareStyleContexts(node, subject, description, full, failure);
+      this.prepareStyleContexts(node, subject, description, full);
     } catch (error) {
       refuse(); this.counters.styleRejections++;
       this.execution().log(unexpectedDiagnostic(error) ? 'ERROR' : 'WARN', 'Local style preparation refused; source execution authority is unchanged', { code: diagnosticError(error) });
@@ -500,25 +527,45 @@ export class StylePublication {
     if (!members.length && !('preparation' in entry)) return;
     const first = members[0], state = first && this.execution().source(first.key)!;
     const vocabulary = (first && state?.frozen ? this.pool.displayStatus(first.generation)?.vocabulary : undefined)
-      ?? (first && this.pool.status(first.generation)?.vocabulary) ?? description?.vocabulary.fingerprint;
+      ?? (first && this.pool.styleSourceFacts(first.generation)?.vocabulary) ?? description?.vocabulary.fingerprint;
     if (!vocabulary && members.length) return;
     return { members, selection, vocabulary: vocabulary ?? '', epoch: this.styleEpoch, revision: node.styleRevision };
   }
 
-  private styleFailure(node: PublicationNode, subject: StyleSubject, description: Description | undefined): StyleFailure {
-    const { selection, vocabulary, epoch, revision } = subject, cache = this.styleCache.get(this.styleKey(vocabulary, selection.rules));
-    const attempt = node.attempt, matching = attempt?.epoch === epoch && attempt.revision === revision && attempt.vocabulary === vocabulary;
-    if (attempt && !matching) node.attempt = undefined;
-    const outcome = matching ? attempt.outcome : undefined;
-    const genericFailure = outcome?.cause !== undefined && outcome.cause !== 'installed' && outcome.cause !== 'withdrawn';
-    const observed = node.failedEpoch === epoch && node.failedRevision === revision && node.failedVocabulary === vocabulary;
-    const firstVisit = genericFailure && !observed;
-    if (firstVisit) this.refuseStyles(node, vocabulary, epoch, revision);
-    const failed = observed || firstVisit, opportunity = nextStyle(outcome, this.canDispatchStyles(description, vocabulary), this.execution().publicationWorkProvider, this.clock.now());
-    const localInput = node.failedPalette === selection.palette && node.failedBindingRevision === selection.bindingRevision;
-    const blocked = failed && !firstVisit && localInput && node.failedCacheRevision === (cache?.revision ?? 0)
-      && (!genericFailure || this.deferStyleOpportunity(opportunity, vocabulary));
-    return { failed, genericFailure, opportunity, blocked };
+  private currentStyleVisit(node: PublicationNode, subject: StyleSubject): boolean {
+    return this.execution().active && this.execution().publicationEnabled && this.selection === subject.selection
+      && !node.paused && node.styleRevision === subject.revision && this.work.get(node.value) === node;
+  }
+
+  private styleOutcome(node: PublicationNode, { vocabulary, epoch, revision }: StyleSubject): StyleAttempt | undefined {
+    const attempt = node.attempt;
+    return attempt?.epoch === epoch && attempt.revision === revision && attempt.vocabulary === vocabulary ? attempt.outcome : undefined;
+  }
+
+  private observedStyleFailure(node: PublicationNode, { vocabulary, epoch, revision }: StyleSubject): boolean {
+    return node.failedEpoch === epoch && node.failedRevision === revision && node.failedVocabulary === vocabulary;
+  }
+
+  private genericStyleFailure(outcome: StyleAttempt | undefined): boolean {
+    return outcome?.cause !== undefined && outcome.cause !== 'installed' && outcome.cause !== 'withdrawn';
+  }
+
+  private styleOpportunity(outcome: StyleAttempt | undefined, description: Description | undefined, vocabulary: string) {
+    return nextStyle(outcome, this.canDispatchStyles(description, vocabulary), this.execution().publicationWorkProvider, this.clock.now());
+  }
+
+  private blockedStyleFailure(node: PublicationNode, subject: StyleSubject, description: Description | undefined): boolean {
+    const { selection, vocabulary, epoch, revision } = subject;
+    const outcome = this.styleOutcome(node, subject);
+    if (!outcome && node.attempt) node.attempt = undefined;
+    if (!this.observedStyleFailure(node, subject)) {
+      if (this.genericStyleFailure(outcome)) this.refuseStyles(node, vocabulary, epoch, revision);
+      return false;
+    }
+    if (node.failedPalette !== selection.palette || node.failedBindingRevision !== selection.bindingRevision) return false;
+    const cache = this.styleCache.get(this.styleKey(vocabulary, selection.rules));
+    return node.failedCacheRevision === (cache?.revision ?? 0) && (!this.genericStyleFailure(outcome)
+      || this.deferStyleOpportunity(this.styleOpportunity(outcome, description, vocabulary), vocabulary));
   }
 
   private deferStyleOpportunity(opportunity: ReturnType<typeof nextStyle>, vocabulary: string): boolean {
@@ -536,20 +583,26 @@ export class StylePublication {
     return true;
   }
 
+  private currentStyleMember(member: StyleMember): PresentationRecord | undefined {
+    const state = this.execution().source(member.key);
+    if (state?.id !== member.id || state.retired && !state.frozen) return;
+    return (state.frozen ? state.previous : state.generation) === member.generation ? state : undefined;
+  }
+
   private qualifyStyleMembers(subject: StyleSubject, refuse: () => void): boolean {
     for (const member of subject.members) {
-      const state = this.execution().source(member.key)!;
-      let status = this.pool.status(member.generation); if (!status) return false;
-      if (state.empty && status.sourceVersion === undefined) {
+      const state = this.currentStyleMember(member); if (!state) return false;
+      let facts = this.pool.styleSourceFacts(member.generation); if (!facts) return false;
+      if (state.empty && facts.sourceVersion === undefined) {
         const result = this.pool.installChunk(member.generation, {
-          key: status.key, generation: member.generation,
+          key: facts.key, generation: member.generation,
           source_version: state.version, revision: 1, source_bytes: 0, replace_from: 0, committed_bytes: 0, complete: true,
           vocabulary: subject.vocabulary, contexts: [], runs: new Uint32Array(), counters: { committed_line_calls: 0, committed_line_bytes: 0, tail_calls: 0, tail_bytes: 0 }
         });
         this.execution().receipts(result.released); if (!result.accepted) { refuse(); return false; }
-        status = this.pool.status(member.generation)!;
+        facts = this.pool.styleSourceFacts(member.generation)!;
       }
-      if (status.sourceVersion === undefined || (state.frozen ? this.pool.displayStatus(member.generation)?.vocabulary ?? status.vocabulary : status.vocabulary) !== subject.vocabulary) return false;
+      if (facts.sourceVersion === undefined || (state.frozen ? this.pool.displayStatus(member.generation)?.vocabulary ?? facts.vocabulary : facts.vocabulary) !== subject.vocabulary) return false;
     }
     return true;
   }
@@ -559,16 +612,17 @@ export class StylePublication {
     return (!('preparation' in node.value) || !!node.ready && node.ready.rules === selection.rules
       && node.ready.palette === selection.palette && node.ready.bindingRevision === selection.bindingRevision
       && this.groupCurrent(node, node.ready.stamp)) && members.every(member => {
-        const state = this.execution().source(member.key)!, display = this.pool.displayStatus(member.generation), status = this.pool.status(member.generation)!;
+        const state = this.execution().source(member.key)!, display = this.pool.displayStatus(member.generation), facts = this.pool.styleSourceFacts(member.generation)!;
         return display?.rules === selection.rules && display.palette === selection.palette && display.bindingRevision === selection.bindingRevision
           && state.displayNeutral === state.neutral
-          && (state.frozen || display.semanticStamp === status.semanticStamp && matchingSourceVersion(state, display.sourceVersion));
+          && (state.frozen || display.semanticStamp === facts.semanticStamp && matchingSourceVersion(state, display.sourceVersion));
       });
   }
 
   private collectStyleMember(member: StyleMember, captures: CaptureSelection[], add: (context: ContextRef) => void): boolean {
-    const state = this.execution().source(member.key), display = this.pool.displayStatus(member.generation);
-    if (state?.frozen) {
+    const state = this.currentStyleMember(member); if (!state) return false;
+    if (state.frozen) {
+      const display = this.pool.displayStatus(member.generation);
       if (!display) return false;
       captures.push({ generation: member.generation, effectStamp: display.effectStamp });
       return this.pool.visitDisplayContexts(member.generation, display.effectStamp, add);
@@ -577,11 +631,15 @@ export class StylePublication {
     return this.pool.visitContexts(member.generation, add);
   }
 
-  private deferStyleRequest(node: PublicationNode, subject: StyleSubject, failure: StyleFailure, full: boolean, missing: readonly ContextRef[], description: Description | undefined): boolean {
+  private deferStyleRequest(node: PublicationNode, subject: StyleSubject, full: boolean, missing: readonly ContextRef[], description: Description | undefined): boolean {
     const { vocabulary, epoch, revision, selection } = subject;
-    if (failure.failed && !failure.genericFailure) { this.refuseStyles(node, vocabulary, epoch, revision); return true; }
-    if (failure.genericFailure && failure.opportunity.kind !== 'resolve') this.refuseStyles(node, vocabulary, epoch, revision);
-    if (this.deferStyleOpportunity(failure.opportunity, vocabulary)) return true;
+    // Scratch funding can synchronously withdraw this visit before the missing-context decision.
+    if (!this.currentStyleVisit(node, subject)) return true;
+    const outcome = this.styleOutcome(node, subject), failed = this.genericStyleFailure(outcome);
+    if (!failed && this.observedStyleFailure(node, subject)) { this.refuseStyles(node, vocabulary, epoch, revision); return true; }
+    const opportunity = this.styleOpportunity(outcome, description, vocabulary);
+    if (failed && opportunity.kind !== 'resolve') this.refuseStyles(node, vocabulary, epoch, revision);
+    if (this.deferStyleOpportunity(opportunity, vocabulary)) return true;
     if (full) {
       if (this.canDispatchStyles(description, vocabulary)) { this.work.requestRetry(); this.execution().waitForCredit(); }
       return true;
@@ -593,7 +651,7 @@ export class StylePublication {
     this.work.requestRetry(); return true;
   }
 
-  private prepareStyleContexts(node: PublicationNode, subject: StyleSubject, description: Description | undefined, full: boolean, failure: StyleFailure): void {
+  private prepareStyleContexts(node: PublicationNode, subject: StyleSubject, description: Description | undefined, full: boolean): void {
     const { members, selection, vocabulary, epoch, revision } = subject;
     const refuse = () => this.refuseStyles(node, vocabulary, epoch, revision);
     this.counters.stylePreparations++;
@@ -614,7 +672,7 @@ export class StylePublication {
         else { this.clearStyleRefusal(node); node.attempt = undefined; }
         return;
       }
-      if (this.deferStyleRequest(node, subject, failure, full, missing, description) || !this.canDispatchStyles(description, vocabulary)) return;
+      if (this.deferStyleRequest(node, subject, full, missing, description) || !this.canDispatchStyles(description, vocabulary)) return;
       const estimate = estimateStyleRepresentation(this.pool.arena, this.pool, vocabulary, missing, captureSelections, HIGHLIGHT_LIMITS.contextWords);
       const { encodedPeak, capturePeak } = estimate;
       if (!estimate.fits) { refuse(); this.counters.styleRejections++; return; }
@@ -631,6 +689,7 @@ export class StylePublication {
       const contexts = this.pool.arena.encode(vocabulary, missing, peak => this.styleReserve(members[0]?.generation, peak), HIGHLIGHT_LIMITS.contextWords);
       if (!contexts) { captures?.release(); refuse(); return; }
       this.counters.styleEncodes++;
+      if (!this.currentStyleVisit(node, subject) || !members.every(member => this.currentStyleMember(member))) return;
       this.execution().submitStyle({
         provider: this.execution().publicationWorkProvider, description, bytes, contexts, definition: selection.input.definition, charge: this.selectionCharge!,
         style: {
@@ -677,8 +736,7 @@ export class StylePublication {
     const updates: (ReadyDisplayUpdate & { bindingChanged: boolean })[] = [];
     for (let i = 0; i < members.length; i++) {
       const member = members[i]!, capture = captures?.captures[i], currentCapture = !!captures && members.length > 1;
-      const state = this.execution().source(member.key);
-      if (state?.id !== member.id || (state.frozen ? state.previous : state.generation) !== member.generation || state.retired && !state.frozen) return;
+      const state = this.currentStyleMember(member); if (!state) return;
       const status = this.pool.status(member.generation), display = this.pool.displayStatus(member.generation);
       if (!status || currentCapture && (status.semanticStamp !== capture!.semanticStamp || status.sourceVersion !== capture!.sourceVersion)) return;
       const contexts = this.materializeContexts(state, member.generation, vocabulary, selection, display, capture);
@@ -861,5 +919,5 @@ type PublicationExecution = Pick<SourceExecution,
   | 'publicationMaxTransientBytes' | 'publicationMaxDecodedBytes' | 'source' | 'sources' | 'receipts'
   | 'releaseSupersededBasis' | 'styleOverlap' | 'capacity' | 'waitForCredit' | 'submitStyle' | 'finishStyleReply'
   | 'reconcileCreditInterest' | 'noteWake' | 'requestProviderOpportunity' | 'changed' | 'changedGroup' | 'log'
-  | 'readGroupRole' | 'visitGroupStyles' | 'visitGroup' | 'readGroupMember' | 'visitGroupRanges'
+  | 'visitExpressionBasis' | 'visitExpressionRanges' | 'readGroupRole' | 'visitGroupStyles' | 'visitGroup' | 'readGroupMember' | 'visitGroupRanges'
   | 'readDisplayRole' | 'visitDisplayBasis' | 'visitDisplayStyles' | 'visitDisplayRanges'>;

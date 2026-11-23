@@ -74,7 +74,7 @@ export function preparedCardReady(consumer, owner, palettePrefix) {
     // A failed replacement may leave the previous paint valid to read.
     if (paint.mode !== mode) return;
     accepted = !palettePrefix || (palettePrefix === 'pi:' ? paint.origin === 'pi'
-      : paint.origin === 'owned' && state.paint.group?.palette.startsWith(palettePrefix));
+      : paint.origin === 'owned' && state.paint.groupStamp !== undefined && state.paint.palette.startsWith(palettePrefix));
     for (const [key, expected] of wanted) {
       if (expected.neutral) continue;
       if (!expected.classified) { if (!paint.ranges(key)) accepted = false; continue; }
@@ -119,7 +119,7 @@ export function explainPreparedHistory(consumer, expectedIds) {
     if (!owner || !expectedIds.has(owner.toolCallId) || !state) return [];
     return [{ id: owner.toolCallId, paused: state.paused, useful: state.useful, frozen: state.frozen, paint: state.paint?.origin, revision: [state.display?.revision, state.revision],
       source: [state.processed, state.sourceRevision], theme: [state.preparedTheme, palette.theme],
-      palette: [state.preparedPalette, paletteInputObservation(palette, state).current, state.paint?.group?.palette], slots: [...state.slots.values()].map(slot => slot.outcome) }];
+      palette: [state.preparedPalette, paletteInputObservation(palette, state).current, state.paint?.groupStamp !== undefined ? state.paint.palette : undefined], slots: [...state.slots.values()].map(slot => slot.outcome) }];
   }).slice(0, 8);
 }
 

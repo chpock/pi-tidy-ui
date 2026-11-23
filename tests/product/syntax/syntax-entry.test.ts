@@ -31,6 +31,9 @@ import { menuPage, withMenu, setAppearance, setLogging } from '../../helpers/men
 import { ExtensionSettings, themePreferenceFromSettings, type SettingsLoadResult, type SettingsPatch, type SettingsSaveResult, type LocalPreferences } from '../../../src/settings.ts';
 import { FilePreviewState } from '../../../src/presentation/file-preview-state.ts';
 import { FileDetails } from '../../../src/presentation/file-details.ts';
+import { PreparedLayoutPresenter } from '../../../src/presentation/prepared-layout-presenter.ts';
+import { RenderCache } from '../../../src/render-cache.ts';
+import { ToolProducerPresenter } from '../../../src/presentation/tool-producers.ts';
 import { createLazyNativeRendererResolver, DeferredRenderer, isDeferredStockFilePair, type NativeRendererFailureReporter } from '../../../src/host/pi/lazy-native-renderers.ts';
 import { extensionHarness as sharedExtensionHarness } from '../../fixtures/sdk-contract-support.ts';
 
@@ -4156,7 +4159,42 @@ for (const kind of ['bash', 'write'] as const) {
       assert.match(plainRows(ready), kind === 'bash' ? /READY_STOP_BASH/u : /READY_STOP_WRITE_row_0/u);
       assert.ok(grants > 0, 'the active owner has genuinely funded its prepared geometry');
       assert.ok(preparations.some(event => event.phase === 'prepared'));
+      const prepare = PreparedLayoutPresenter.prototype.prepare, capture = ToolProducerPresenter.prototype.capture;
+      const classify = ToolProducerPresenter.prototype.kindFrom;
+      let visiting = false, visits = 0, snapshots = 0, classifications = 0;
+      t.mock.method(PreparedLayoutPresenter.prototype, 'prepare', function(this: PreparedLayoutPresenter<object>, ...args: Parameters<typeof prepare>) {
+        visiting = true;
+        try { const result = prepare.apply(this, args); if (result) visits++; return result; }
+        finally { visiting = false; }
+      });
+      t.mock.method(ToolProducerPresenter.prototype, 'capture', function(this: ToolProducerPresenter<object>, node: object) {
+        if (visiting) snapshots++;
+        return capture.call(this, node);
+      });
+      t.mock.method(ToolProducerPresenter.prototype, 'kindFrom', function(this: ToolProducerPresenter<object>, ...args: Parameters<typeof classify>) {
+        if (visiting) classifications++;
+        return classify.apply(this, args);
+      });
+      const put = RenderCache.prototype.put, funding = SourceExecution.prototype.geometryFunding;
+      const miss: (['fund', number] | ['store', Parameters<typeof put>[2]])[] = [];
+      t.mock.method(SourceExecution.prototype, 'geometryFunding', function(this: SourceExecution) {
+        if (visiting) miss.push(['fund', classifications]);
+        return funding.call(this);
+      });
+      t.mock.method(RenderCache.prototype, 'put', function(this: RenderCache, ...args: Parameters<typeof put>) {
+        const entry = put.apply(this, args);
+        if (visiting) miss.push(['store', args[2]]);
+        return entry;
+      });
+      const warmGrants = grants;
       assert.deepEqual(owner.render(100), ready, 'the ready rows already satisfy an ordinary warm frame');
+      assert.ok(visits > 0, 'the prepared presenter actually supplied the warm layout');
+      assert.equal(grants, warmGrants, 'returning the retained layout needs no new geometry');
+      assert.deepEqual([snapshots, classifications], [0, 0], 'paid-layout reuse does not recapture or classify the tool call');
+      assert.deepEqual(miss, []);
+      owner.render(96);
+      assert.deepEqual(miss, [['fund', 1], ['store', kind]], 'a real width miss funds and accounts the classified layout');
+      assert.deepEqual(owner.render(100), ready);
       terminal.stop(); await settled();
       const stopped = { grants, preparations: preparations.length };
       assert.deepEqual(owner.render(100), ready, 'a stopped owner borrows its paid current rows rather than a native or limitation fallback');
@@ -4171,7 +4209,7 @@ for (const kind of ['bash', 'write'] as const) {
   });
 }
 
-for (const outcome of ['reject', 'throw'] as const) {
+for (const outcome of ['reject', 'throw', 'update'] as const) {
   test(`entry ready rows remain provisional when the outer card visit must ${outcome}`, async () => {
     const h = fixture();
     const visit = CardSources.prototype.visit;
@@ -4182,19 +4220,27 @@ for (const outcome of ['reject', 'throw'] as const) {
       h.root.render(100); await settled();
       const ready = owner.render(100);
       assert.match(plainRows(ready), /PROVISIONAL_READY_row_0/u);
-      let callbacks = 0;
+      let callbacks = 0, updatedVisit: boolean | undefined;
       CardSources.prototype.visit = function (node, consume) {
-        visit.call(this, node, (display, paint) => {
+        if (outcome === 'update' && callbacks) return visit.call(this, node, consume);
+        const accepted = visit.call(this, node, (display, paint) => {
           callbacks++; consume(display, paint);
           if (outcome === 'throw') throw new Error('provisional ready visit interrupted');
+          if (outcome === 'update') owner.updateArgs({ path: 'current.ts', content: writeSource('REENTERED_CURRENT') });
         });
+        if (outcome === 'update') { updatedVisit = accepted; return accepted; }
         return false;
       };
-      const rejected = owner.render(100);
+      const rejected = owner.render(outcome === 'update' ? 96 : 100);
       assert.ok(callbacks > 0, 'the real paid display reached the callback before rejection');
       assert.notDeepEqual(rejected, ready, 'callback completion alone cannot authorize returning retained rows');
       CardSources.prototype.visit = visit;
-      if (outcome === 'reject') assert.deepEqual(owner.render(100), ready, 'a rejected borrow preserves paid rows for a later accepted visit');
+      if (outcome === 'update') {
+        assert.equal(updatedVisit, false, 'the real source update revokes the provisional reflow');
+        assert.doesNotMatch(plainRows(rejected), /PROVISIONAL_READY_row_0/u);
+        await settled();
+        assert.match(plainRows(owner.render(96)), /REENTERED_CURRENT_row_0/u);
+      } else if (outcome === 'reject') assert.deepEqual(owner.render(100), ready, 'a rejected borrow preserves paid rows for a later accepted visit');
       else assert.notDeepEqual(owner.render(100), ready, 'a thrown visitor retains the existing native-hook failure policy');
     } finally { CardSources.prototype.visit = visit; await h.stop(); }
   });

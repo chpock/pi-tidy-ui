@@ -138,6 +138,11 @@ export class SemanticRanges {
   }
   #contextAt(index: number): ContextRef | undefined { return this.#store?.contexts?.keys[index]; }
 
+  parserProgress() {
+    if (!this.#identity) return undefined;
+    return { sourceVersion: this.#version, complete: this.#complete, vocabulary: this.#identity.vocabulary };
+  }
+
   /** Source-progress accounting only; captured display ownership is counted below. */
   stats() {
     const store = this.#store, tailBytes = store?.tail?.runs.byteLength ?? 0, prefixBytes = store?.prefixBytes ?? 0;
@@ -210,6 +215,7 @@ class RangeView {
   #charge: DataCharge | undefined;
   readonly vocabulary: string;
   readonly committedChunks: number;
+  readonly runCount: number;
   readonly revision: number;
   readonly displayRevision: number;
   readonly sourceVersion: number;
@@ -222,6 +228,7 @@ class RangeView {
     this.#charge = charge;
     this.#store = store; this.#tail = basis ? basis.#tail : store.tail;
     this.vocabulary = store.vocabulary; this.committedChunks = basis ? basis.committedChunks : store.blocks.length;
+    this.runCount = basis?.runCount ?? (store.prefixBytes + (this.#tail?.runs.byteLength ?? 0)) / 8;
     this.revision = revision; this.displayRevision = displayRevision; this.sourceVersion = sourceVersion;
     this.sourceBytes = sourceBytes; this.committedBytes = committedBytes; this.complete = complete;
     store.views.add(this);

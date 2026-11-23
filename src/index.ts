@@ -283,13 +283,13 @@ export function installTidyUi(tui: LiveTui, getTheme: () => Palette, options: In
       live: call => options.syntax?.isLiveCall?.(call) ?? true },
     palette: { needsInput: () => needsPiTheme(selectedPalette), input: publicInput, mode: terminalMode,
       generation: input => externalPaletteOwner ? options.syntax!.palette() : paletteOwner.palette(input?.theme, selectedPalette) },
-    displayBasis: key => cardClient?.cardSource.displayBasis(key), invalidate: (node, cause) => toolView.invalidatePrepared(node, cause), forget,
+    invalidate: (node, cause) => toolView.invalidatePrepared(node, cause), forget,
     refreshTarget: () => controller, requestRender: () => tui.requestRender(), flush: () => cardClient!.sourcePump.flush(),
   });
   const { unsupportedFullFile, observePalette, refusePreparedPresentation, refreshPalette, finishFileTurn } = toolPreparation;
   const fileMode = (node: object): FilePreviewMode | undefined => toolPresentationPolicy.fileMode(node);
   const preparedPresenter = new PreparedLayoutPresenter<object>({
-    sessions: toolSessions, ordinaryCache: cache, cardCache, producer: toolProducer,
+    sessions: toolSessions, ordinaryCache: cache, cardCache, expanded: toolFields.expanded, kind: node => toolProducer.kind(node),
     active, outputPadding, funding: () => cardClient?.cardSource.geometryFunding(),
     visit: (node, consume) => syntax?.visit(node, consume) ?? false, identities: node => syntax?.identities(node) ?? [],
     fileMode, unsupportedFullFile, refuse: refusePreparedPresentation, observePalette,

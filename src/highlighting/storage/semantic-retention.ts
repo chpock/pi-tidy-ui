@@ -11,9 +11,11 @@ import type { SemanticChunk } from '../../occipital/semantic-source.ts';
 import { OCCIPITAL_LIMITS } from '../../occipital/limits.ts';
 import { DataBudget, type DataCharge } from '../../resources/data-budget.ts';
 import { AccountedSnapshot, SemanticCapture, SemanticCaptureGroup } from './semantic-capture.ts';
+import type { StyleExpression } from '../../occipital/style-types.ts';
 
 type Snapshot = AccountedSnapshot;
 type SnapshotData = Readonly<{ version: number; text: string; utf8Bytes: number }>;
+type StyleSourceFacts = Readonly<{ key: string; sourceVersion: number | undefined; vocabulary: string | undefined; semanticStamp: number }>;
 
 type Account = { retainedBytes: number; snapshotBytes: number; rangeBytes: number; bridgeBytes: number; displayBytes: number;
   rangeRunBytes: number; displayOnlyRangeBytes: number; rangeStores: number; rangeViews: number; retainedTails: number; rangeBlocks: number; contextIndexBytes: number; currentContexts: number };
@@ -303,6 +305,11 @@ export class SemanticRetentionPool {
       rules: display.rules, palette: display.palette, bindingRevision: display.bindingRevision };
   }
 
+  displayPaintSize(generation: number, effectStamp: number) {
+    const display = this.#entries.get(generation)?.display;
+    if (display?.effectStamp === effectStamp) return { runs: display.view.runCount, contexts: display.colors.contextKeys.length };
+  }
+
   borrowDisplay(generation: number, effectStamp: number): SnapshotData | undefined {
     const entry = this.#entries.get(generation), display = entry?.display;
     if (!entry || !display || display.effectStamp !== effectStamp) return undefined;
@@ -329,6 +336,23 @@ export class SemanticRetentionPool {
     const entry = this.#entries.get(generation), display = entry?.display;
     if (!entry || !display || display.effectStamp !== effectStamp) return undefined;
     this.#touch(entry); return display.colors.roles[role];
+  }
+
+  visitDisplayExpressions(generation: number, effectStamp: number,
+    consume: (from: number, to: number, context: number, expression?: StyleExpression) => void): boolean {
+    const cursor = this.#displayCursor(generation, effectStamp);
+    if (!cursor) return false;
+    const alive = () => this.#displayMatches(generation, cursor.token);
+    let complete = true;
+    try {
+      cursor.view.visit((from, to, context) => {
+        if (!alive() || !complete) return;
+        const expression = context && this.arena.style(cursor.view.vocabulary, context, cursor.rules);
+        if (context && !expression) { complete = false; return; }
+        consume(from, to, context?.id ?? 0, expression);
+      });
+      return complete && alive();
+    } finally { cursor.paint.release(); }
   }
 
   /** Provisional visit: commit a consumer's result only if true is returned. An
@@ -406,7 +430,7 @@ export class SemanticRetentionPool {
     const entry = this.#entries.get(generation), display = entry?.display;
     if (!entry || !display || display.effectStamp !== effectStamp) return undefined;
     this.#touch(entry);
-    return { token: display.token, view: display.view, paint: display.colors.charge.retain() };
+    return { token: display.token, view: display.view, rules: display.rules, paint: display.colors.charge.retain() };
   }
   #displayMatches(generation: number, token: object): boolean {
     return this.#entries.get(generation)?.display?.token === token;
@@ -530,6 +554,33 @@ export class SemanticRetentionPool {
     const entry = this.#entries.get(generation);
     if (!entry) return undefined;
     this.#touch(entry); return entry.bridge?.version;
+  }
+
+  /** Scheduling is not consumption: scanning pending work must not promote a pressure victim. */
+  inspectSource(generation: number) {
+    const entry = this.#entries.get(generation);
+    if (!entry) return undefined;
+    return { textVersion: (entry.latest ?? entry.basis!).version, parsed: entry.ranges?.parserProgress() };
+  }
+
+  noteSourceUse(generation: number): void {
+    const entry = this.#entries.get(generation);
+    if (entry) this.#touch(entry);
+  }
+
+  snapshotVersion(generation: number): number | undefined {
+    const entry = this.#entries.get(generation);
+    if (!entry) return undefined;
+    this.#touch(entry);
+    return (entry.latest ?? entry.basis!).version;
+  }
+
+  styleSourceFacts(generation: number): StyleSourceFacts | undefined {
+    const entry = this.#entries.get(generation);
+    if (!entry) return undefined;
+    this.#touch(entry);
+    const ranges = entry.ranges?.parserProgress();
+    return { key: entry.key, sourceVersion: ranges?.sourceVersion, vocabulary: ranges?.vocabulary, semanticStamp: entry.semanticStamp };
   }
 
   status(generation: number) {

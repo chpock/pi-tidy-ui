@@ -531,8 +531,8 @@ test('card layout: C7 group membership and indexed lookup work is linear within 
 });
 
 
-test('card layout: actual card demand and controller lookups are linear across nested reads', async () => {
-  const observed: { members: number; ranges: number; currentDisplayChecks: number; slotKeyReads: number }[] = [];
+test('card layout: grouped capture validates once and warm reads do not consult the controller', async () => {
+  const observed: { members: number; ranges: number; groupVisits: number; currentDisplayChecks: number; slotKeyReads: number }[] = [];
   for (const segments of [2, 4, 8, 32]) {
     const description = decodeSemanticDescription(semanticDescriptor('describe', 'instance'), 'describe');
     const pending: { q: Record<string, any>; resolve(value: unknown): void; reject(error: unknown): void; done: boolean }[] = [];
@@ -542,7 +542,16 @@ test('card layout: actual card demand and controller lookups are linear across n
       workerUnavailable: async () => assert.fail('layout peer has no worker lifecycle'),
       exhaustedRoute: async () => assert.fail('layout peer must not exhaust its route'),
       request: (_g: number, q: Record<string, any>) => new Promise<unknown>((resolve, reject) => pending.push({ q, resolve, reject, done: false })) };
-    const source = new SourceExecution(provider, { onChange(keys, groups) { cards.sourceChanged(keys, groups); } }), owner = {};
+    let groupVisits = 0, mostVisitsInNotice = 0;
+    const source = new SourceExecution(provider, { onChange(keys, groups) {
+      const before = groupVisits;
+      cards.sourceChanged(keys, groups);
+      mostVisitsInNotice = Math.max(mostVisitsInNotice, groupVisits - before);
+    } }), owner = {};
+    const publication = Reflect.get(source, 'publication') as object;
+    const visitGroup = Reflect.get(publication, 'visitGroup') as (...args: unknown[]) => unknown;
+    assert.equal(typeof visitGroup, 'function', 'observe the full group borrow');
+    Reflect.set(publication, 'visitGroup', function(this: object, ...args: unknown[]) { groupVisits++; return visitGroup.apply(this, args); });
     const paletteOwner = new PaletteInputOwner(), effective = resolveTheme({ kind: 'theme', id: 'gruvbox', variant: 'dark' }).effective;
     const paletteRevision = paletteOwner.palette(undefined, effective);
     const cards = new CardSources<object>({ cardSource: source, sourceWork: source, pi: source.pi, snapshot: () => ({ enabled: true, provider: provider.snapshot(), selected: { kind: 'theme', id: 'gruvbox', variant: 'dark' },
@@ -575,8 +584,8 @@ test('card layout: actual card demand and controller lookups are linear across n
       const slots = Array.from(state.slots.values()), keys = slots.map(slot => slot.key), count = keys.length; assert.equal(count, segments * 2);
       let checks = 0, ranges = 0, slotReads = 0;
       for (const slot of slots) { const key = slot.key; Object.defineProperty(slot, 'key', { configurable: true, get() { slotReads++; return key; } }); }
-      const publication = Reflect.get(source, 'publication') as object;
       const original = Reflect.get(publication, 'currentDisplay') as (...args: unknown[]) => unknown, before = source.stats(), calls = pending.length;
+      const coldVisits = groupVisits;
       assert.equal(typeof original, 'function', 'the counter must observe the actual display-validity owner');
       Reflect.set(publication, 'currentDisplay', function(this: object, ...args: unknown[]) { checks++; return original.apply(this, args); });
       try { assert.equal(cards.visit(owner, (_d, p) => {
@@ -590,11 +599,12 @@ test('card layout: actual card demand and controller lookups are linear across n
         assert.equal(p.ranges('foreign:key'), undefined); assert.equal(p.basis('foreign:key', () => assert.fail('foreign source emitted text')), false);
       }), true); } finally { Reflect.set(publication, 'currentDisplay', original); }
       assert.equal(ranges, 4 * count);
-      assert.ok(checks >= 2 * count, 'outer entry and exit must validate every actual member');
-      assert.ok(checks <= 8 * count + 4 * ranges);
+      assert.equal(mostVisitsInNotice, 1, 'a new publication validates the whole group once, not once per member');
+      assert.equal(groupVisits, coldVisits, 'warm paint reads only card-owned ranges');
+      assert.equal(checks, 0, 'warm paint must not check parser storage');
       assert.ok(slotReads <= 2 * count, `card demand lookup must be linear: ${slotReads} key reads for ${count} sources`);
       assert.equal(pending.length, calls); assert.equal(source.stats().stylePreparations, before.stylePreparations);
-      observed.push({ members: count, ranges, currentDisplayChecks: checks, slotKeyReads: slotReads });
+      observed.push({ members: count, ranges, groupVisits: coldVisits, currentDisplayChecks: checks, slotKeyReads: slotReads });
     } finally {
       cards.dispose(); source.dispose(); paletteOwner.dispose(); for (const item of pending) item.reject(new RequestFailure('cleanup', 'not_started'));
       for (let i = 0; i < 8; i++) await turn();
@@ -604,7 +614,7 @@ test('card layout: actual card demand and controller lookups are linear across n
   console.log(JSON.stringify({ actualC9ControllerBorrowScaling: observed }));
 });
 
-test('card layout: actual C9 FILE exact projection then stale reader removal refuses colors without source recovery or geometry changes', async () => {
+test('card layout: withdrawing a FILE projection preserves its accepted colored rows without reclassification or reflow', async () => {
   const f = realCards(), owner = {};
   const input: CardDisplayInput = fileInput({ name: 'write', args: { path: 'a.ts', content: 'const x = 1;' }, result: {} });
   assert.equal(f.cards.updateDisplay(owner, input), true); f.cards.useful(owner, 1);
@@ -617,12 +627,15 @@ test('card layout: actual C9 FILE exact projection then stale reader removal ref
     sourceKey = d.rows[0]!.nextSource!.key;
     assert.ok(p.ranges(sourceKey)); layout = layoutCard(d, { width: 40 }, funding)!; out = layout.paint(d, p, funding)!;
   }), true);
-  const original = rows(out!).map(plain); out!.dispose();
+  const original = rows(out!); out!.dispose();
+  const identity = f.cards.identities(owner).find(slot => slot.key === sourceKey)!;
+  assert.ok(f.sources.pi.piProjection(sourceKey, identity.version, identity.palette));
   f.sources.remove(sourceKey);
+  assert.equal(f.sources.pi.piProjection(sourceKey, identity.version, identity.palette), undefined);
   assert.equal(f.cards.visit(owner, (d, p) => {
-    assert.equal(p.ranges(sourceKey), undefined); out = layout!.paint(d, p, funding)!;
+    assert.ok(p.ranges(sourceKey)); out = layout!.paint(d, p, funding)!;
   }), true);
-  assert.deepEqual(rows(out!).map(plain), original); assert.deepEqual(f.counters(), before);
+  assert.deepEqual(rows(out!), original); assert.deepEqual(f.counters(), before);
   out!.dispose(); layout!.dispose(); f.cards.dispose(); f.sources.dispose(); await f.runtime.dispose();
   assert.equal(funding.budget.stats().retainedBytes, 0);
 });

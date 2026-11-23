@@ -1213,7 +1213,7 @@ test('stream review F3: frozen semantic display survives zero width without thaw
   assert.equal(f.sources.stats().remoteLeases, 0);
 });
 
-test('stream review F5: restored frozen Bash processes actual display eviction while work remains paused', async () => {
+test('stream review F5: frozen Bash keeps its colors after actual parser eviction without resuming work', async () => {
   const maxBytes = 1 << 20, f = fixture(true, false, {}, { maxBytes }), text = 'echo retained', tool = f.tool('bash', { command: text });
   f.render(tool); await settled(); answer(f, 0, text, false, 0); await settled(); f.render(tool);
   const key = f.env.keys[0]!;
@@ -1230,12 +1230,11 @@ test('stream review F5: restored frozen Bash processes actual display eviction w
   } finally { unrelated.release(); }
   assert.equal(f.sources.displayBasis(key), undefined, 'genuine pool pressure released the frozen basis');
   f.sources.flush(); await settled();
-  assert.equal(f.ui.requests, requests + 1, 'display loss requests repaint before a manual render can mask the missed notification');
-  assert.equal(f.adapter.cacheStats().releases, releases, 'atomic replacement retains accepted output until the next outer visit commits');
+  assert.equal(f.ui.requests, requests, 'dropping parser data does not repaint an unchanged card');
   assert.equal(f.calls.length, calls + 1); assert.equal(f.calls.at(-1)!.request.op, 'highlight', 'only the unrelated peer is admitted');
-  const rows = f.render(tool, 60); assert.equal(await hasHostInk(rows, themes.theme, 'syntaxKeyword', text), false);
-  assert.equal(f.adapter.cacheStats().releases, releases + 1, 'the stale painted output releases on accepted replacement');
-  assert.ok(await hasHostInk(rows, themes.theme, 'toolTitle', text));
+  const rows = f.render(tool, 60); assert.ok(await hasHostInk(rows, themes.theme, 'syntaxKeyword', text));
+  assert.equal(f.adapter.cacheStats().releases, releases, 'the same-width ready layout is still valid');
+  assert.ok(await hasHostInk(f.render(tool, 24), themes.theme, 'syntaxKeyword', text), 'new width uses the same accepted coverage');
   await settled(); assert.equal(f.calls.length, calls + 1); assert.equal(f.env.pi.length, 0); assert.equal(f.sources.stats().remoteLeases, 0);
 });
 

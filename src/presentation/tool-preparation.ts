@@ -34,7 +34,6 @@ export interface ToolPreparationPorts<Owner extends object, Input extends Palett
     mode(): TerminalColorMode;
     generation(input: Input | undefined): number;
   };
-  displayBasis(key: string): { geometryStamp: number } | undefined;
   invalidate(owner: Owner, cause: string): void;
   forget(owner: Owner, cause: string): void;
   refreshTarget(): PreparedRefreshTarget<Owner>;
@@ -254,27 +253,9 @@ export function createToolPreparationPresenter<Owner extends object, Input exten
       Object.assign(state, common, { identity, service, ...(fileInput ? { fileInput } : {}), complete, applied: true,
         paintRetry, refused: paintRetry || paintOnlyRetry && state.refused === true, paletteColors: input ? new WeakRef(input.theme.colors) : undefined });
       if (paintRetry !== wasPaintRetry) ports.invalidate(node, paintRetry ? 'accepted file source has no funded paint' : 'accepted file paint recovered');
-      preparePrefix(node);
     }
     if (reader.kind === 'bash' && interruptedLiveBash(reader, liveBashSource(node))) owner.freeze(node);
     return state;
-  }
-  function preparePrefix(node: Owner) {
-    const state = sessions.syntax(node); if (!facts.workActive() || !state?.applied || cardKind(node) !== 'bash' || !cards()) return;
-    const key = cards()!.identities(node)[0]?.key; if (!key) return;
-    const basis = ports.displayBasis(key); if (!basis || state.prefix?.sourceRevision === state.sourceRevision && state.prefix.basis === basis.geometryStamp) return;
-    let bytes = 0, valid = false;
-    const accepted = cards()!.visit(node, (display, paint) => {
-      if (display.kind !== 'bash') return;
-      valid = paint.basis(key, text => {
-        const current = display.command.text; let i = 0;
-        while (i < text.length && i < current.length) {
-          const cp = text.codePointAt(i)!; if (cp !== current.codePointAt(i)) break;
-          bytes += cp < 128 ? 1 : cp < 2048 ? 2 : cp < 65536 ? 3 : 4; i += cp > 65535 ? 2 : 1;
-        }
-      });
-    });
-    if (accepted && valid) state.prefix = { sourceRevision: state.sourceRevision, basis: basis.geometryStamp, bytes };
   }
   function pauseSyntax(node: Owner) {
     const state = sessions.syntax(node); if (state) state.paused = true;
@@ -343,7 +324,6 @@ export function createToolPreparationPresenter<Owner extends object, Input exten
     const accepted = cards()?.visit(node, (_display, paint) => { owned = paint.origin === 'owned'; });
     if (accepted && state) state.owned = owned;
     else if (state && filePresentationTool(node)) { state.applied = false; dropPrepared(node); }
-    preparePrefix(node);
   }
   function buildFileDetail(node: Owner, mode: 'preview' | 'full'): FileDetailDraft {
     const reader = toolReader(node);

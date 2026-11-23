@@ -2,7 +2,7 @@ export type StyleCause = 'installed' | 'local' | 'refused' | 'retry' | 'route' |
 export interface StyleAttempt { provider: number; cause?: StyleCause; retryAt?: number }
 export type StyleDecision = { kind: 'resolve' | 'refused' | 'provider' } | { kind: 'delayed'; at: number };
 
-/** Called only after the subject has actual missing generic expressions. */
+/** Request policy for missing expressions or an unchanged, previously failed demand. */
 export function nextStyle(attempt: Readonly<StyleAttempt> | undefined, ready: boolean, provider: number, now: number): StyleDecision {
   if (attempt?.cause === 'refused' || attempt?.cause === 'local') return { kind: 'refused' };
   if (attempt?.cause === 'other' && (!ready || attempt.provider === provider)) return { kind: 'refused' };

@@ -46,6 +46,7 @@ export interface SourceExecutionOptions {
     * Keys and primitive group IDs target their still-owned presentation records. */
   onChange?: (keys: readonly string[], changedGroups?: readonly number[]) => void;
 }
+type RetainedSource = NonNullable<ReturnType<SemanticRetentionPool['inspectSource']>>;
 type Provider = Pick<ProviderBroker, 'snapshot' | 'isReady' | 'request' | 'classificationAccepted' | 'recover' | 'workerUnavailable' | 'exhaustedRoute'>;
 type WorkCompletion = { promise: Promise<boolean>; resolve(value: boolean): void };
 function workCompletion(): WorkCompletion {
@@ -325,9 +326,9 @@ export class SourceExecution implements WorkContinuation, CardSourcePort, Source
 
   observe(demand: SourceDemand): boolean {
     if (!this.enabled || !this.active) return false;
-    const state = this.states.get(demand.key), queued = state && this.sourceQueued(state), generation = state?.generation;
+    const state = this.states.get(demand.key), queued = state && this.sourceQueued(state, this.inspectSource(state)), generation = state?.generation;
     const accepted = this.observeDemand(demand);
-    if (state && (queued && !this.sourceQueued(state) || generation !== undefined && state.generation !== generation)) this.reconcileCreditInterest();
+    if (state && (queued && !(this.enabled && this.sourceQueued(state, this.inspectSource(state))) || generation !== undefined && state.generation !== generation)) this.reconcileCreditInterest();
     return accepted;
   }
   private refuseSource(state: SourceState, cause: SourceRefusal, provider = state.provider): void {
@@ -336,11 +337,12 @@ export class SourceExecution implements WorkContinuation, CardSourcePort, Source
     state.refusalGeneration = cause === 'requestLimit' || cause === 'encoding' ? state.generation : undefined;
   }
   private sourceAvailable(state: SourceState): state is SourceState & { generation: number } {
-    const data = state.generation === undefined ? undefined : this.pool.status(state.generation);
-    return matchingSourceVersion(state, data?.latestVersion ?? data?.basisVersion);
+    return state.generation !== undefined && matchingSourceVersion(state, this.pool.snapshotVersion(state.generation));
   }
-  private sourceSatisfied(state: SourceState): boolean {
-    const data = state.generation === undefined ? undefined : this.pool.status(state.generation);
+  private inspectSource(state: SourceState) {
+    return state.generation === undefined ? undefined : this.pool.inspectSource(state.generation);
+  }
+  private sourceSatisfied(state: SourceState, data: RetainedSource['parsed']): boolean {
     const route = this.provider.snapshot(), description = route.availability === 'ready' ? route.description : undefined;
     return sourceSatisfied(state, data && {
       sourceVersion: data.sourceVersion, complete: data.complete,
@@ -348,15 +350,16 @@ export class SourceExecution implements WorkContinuation, CardSourcePort, Source
       continuable: state.parsedProvider === state.provider && this.provider.isReady(state.provider) && !!state.continuation
     });
   }
-  private sourceQueued(state: SourceState, ready = this.provider.snapshot().availability === 'ready'): boolean {
-    return this.enabled && queuedSource(state, ready, this.sourceAvailable(state), this.sourceSatisfied(state));
+  private sourceQueued(state: SourceState, facts: RetainedSource | undefined, ready = this.provider.snapshot().availability === 'ready'): boolean {
+    return queuedSource(state, ready, matchingSourceVersion(state, facts?.textVersion), this.sourceSatisfied(state, facts?.parsed));
   }
-  private sourceDecision(state: SourceState): SourceDecision {
+  private sourceDecision(state: SourceState, held = this.keyOccupied(state.key, 'native')): SourceDecision {
+    const facts = this.inspectSource(state);
+    if (!matchingSourceVersion(state, facts?.textVersion)) return { kind: 'idle' };
     const node = this.work.get(state.group ?? state);
     return nextSource(state, {
-      active: this.active, enabled: this.enabled, held: this.keyOccupied(state.key, 'native'),
-      available: this.sourceAvailable(state), ready: this.provider.isReady(state.provider),
-      satisfied: this.sourceSatisfied(state), now: this.clock.now(), resyncAt: node?.resyncAt
+      active: this.active, enabled: this.enabled, held, available: true, ready: this.provider.isReady(state.provider),
+      satisfied: this.sourceSatisfied(state, facts?.parsed), now: this.clock.now(), resyncAt: node?.resyncAt
     });
   }
   private sourceOwed(state: SourceState): boolean {
@@ -480,6 +483,8 @@ export class SourceExecution implements WorkContinuation, CardSourcePort, Source
   readDisplayRole(key: string, id: number, generation: number, version: number, stamp: number, role: CardRole): ConcreteStyle | undefined { return this.publication.readDisplayRole(key, id, generation, version, stamp, role); }
   /** Internal weak-view delivery; source text never escapes as a stored field. */
   visitDisplayBasis(key: string, id: number, generation: number, version: number, stamp: number, consume: (text: string, read: DisplayRangeReader) => void): boolean { return this.publication.visitDisplayBasis(key, id, generation, version, stamp, consume); }
+  visitExpressionBasis(...args: Parameters<StylePublication['visitExpressionBasis']>): boolean { return this.publication.visitExpressionBasis(...args); }
+  visitExpressionRanges(...args: Parameters<StylePublication['visitExpressionRanges']>): boolean { return this.publication.visitExpressionRanges(...args); }
   visitDisplayStyles(key: string, id: number, generation: number, version: number, stamp: number, consume: (style: ConcreteStyle) => void): boolean { return this.publication.visitDisplayStyles(key, id, generation, version, stamp, consume); }
   visitDisplayRanges(key: string, id: number, generation: number, version: number, stamp: number, consume: (start: number, end: number, style: ConcreteStyle) => void): boolean { return this.publication.visitDisplayRanges(key, id, generation, version, stamp, consume); }
 
@@ -496,7 +501,7 @@ export class SourceExecution implements WorkContinuation, CardSourcePort, Source
     }
     if (origin === 'suspended') for (const state of this.states.values()) {
       if (state.provider === provider && !sourceUncertain(state)
-        && queuedSource(state, true, this.sourceAvailable(state), this.sourceSatisfied(state))) state.withdrawalProvider = provider;
+        && this.sourceQueued(state, this.inspectSource(state), true)) state.withdrawalProvider = provider;
     }
     this.work.rewind(); this.work.schedule();
   }
@@ -546,7 +551,7 @@ export class SourceExecution implements WorkContinuation, CardSourcePort, Source
   private runWorkTurn(): void {
     if (!this.work.enterTurn(!this.suspended)) return;
     try {
-      const description = this.beginWorkTurn(), full = () => this.nativeFull(description);
+      const description = this.beginWorkTurn(), full = () => this.nativeBlock(description) !== undefined;
       while (!this.disposed && !this.suspended && this.work.hasQuota) {
         const currentPass = this.work.currentPass;
         if (this.wakePass !== currentPass) { this.wakePass = currentPass; this.wakeMinimum = Number.POSITIVE_INFINITY; }
@@ -567,7 +572,7 @@ export class SourceExecution implements WorkContinuation, CardSourcePort, Source
   }
   private visitStandalone(node: WorkNode, description: Description | undefined, full: () => boolean, pass: number): 'continue' | 'credit-stop' {
     this.publication.prepare(node, description, full());
-    if (!this.dispatchSource(node.value as SourceState, description, full)) return 'continue';
+    if (!this.dispatchSource(node.value as SourceState, description)) return 'continue';
     return this.deferForCredit(node, pass);
   }
   private deferForCredit(node: WorkNode, pass: number): 'continue' | 'credit-stop' {
@@ -608,7 +613,7 @@ export class SourceExecution implements WorkContinuation, CardSourcePort, Source
     if (!this.work.current(node, pass) || this.suspended || this.disposed) return 'continue';
     this.publication.prepare(node, description, full());
     for (const key of entry.keys) {
-      if (!this.dispatchSource(this.states.get(key), description, full)) continue;
+      if (!this.dispatchSource(this.states.get(key), description)) continue;
       return this.deferForCredit(node, pass);
     }
     return 'continue';
@@ -641,43 +646,56 @@ export class SourceExecution implements WorkContinuation, CardSourcePort, Source
     }
     return description;
   }
-  private nativeFull(description: Description | undefined): boolean {
+  private nativeBlock(description: Description | undefined): 'slots' | 'bytes' | undefined {
     const jobLimit = description ? Math.min(CONTROLLER_LIMITS.jobs, description.limits.data_per_route) : 0;
-    return this.work.creditBlocked || this.jobs.size >= jobLimit || flight.jobs >= CONTROLLER_LIMITS.jobs;
+    if (this.jobs.size >= jobLimit || flight.jobs >= CONTROLLER_LIMITS.jobs) return 'slots';
+    return this.work.creditBlocked ? 'bytes' : undefined;
   }
-  private dispatchSource(state: SourceState | undefined, description: Description | undefined, full: () => boolean): boolean {
-    if (!state || !this.enabled || !this.active || state.retired || state.frozen || this.keyOccupied(state.key, 'native')
-      || this.closes.some(close => close.ownerKey === state.key)) return false;
-    if (description && !this.reconcileSourceRoute(state)) return false;
-    const decision = this.sourceDecision(state);
+  private dispatchSource(state: SourceState | undefined, description: Description | undefined): boolean {
+    if (!state || !this.enabled || !this.active || state.retired || state.frozen) return false;
+    const decision = this.dispatchDecision(state, description);
+    if (!decision) return false;
     if (decision.kind === 'delayed') { this.noteWake(decision.at); return false; }
     if (decision.kind === 'provider') { this.requestProviderOpportunity(); return false; }
     if (decision.kind !== 'parse' || !description) return false;
-    if (full()) { waitForCredit(this.owner); return true; }
+    const blocked = this.nativeBlock(description);
+    if (blocked) {
+      // A known byte denial blocks the queue, not necessarily this particular text.
+      if (blocked === 'slots' && state.generation !== undefined && state.waitedGeneration !== state.generation) {
+        this.pool.noteSourceUse(state.generation); state.waitedGeneration = state.generation;
+      }
+      waitForCredit(this.owner); return true;
+    }
     if (decision.reconstruction && state.generation !== undefined && (this.pool.status(state.generation)?.revision ?? 0) > 0) {
       this.restart(state, state.provider);
       if (this.closes.some(close => close.ownerKey === state.key)) { this.work.schedule(); return false; }
     }
     return this.prepare(state, description, decision.reconstruction) === 'credit';
   }
-  private reconcileSourceRoute(state: SourceState): boolean {
-    if (!this.provider.isReady(this.workProvider)) return false;
+  private dispatchDecision(state: SourceState, description: Description | undefined): SourceDecision | undefined {
+    if (description && !this.provider.isReady(this.workProvider)) return;
+    if (this.keyOccupied(state.key, 'native') || this.closes.some(close => close.ownerKey === state.key)) return;
+    if (!description) return this.sourceDecision(state, false);
     if (state.withdrawalProvider !== undefined && state.withdrawalProvider !== this.workProvider) state.withdrawalProvider = undefined;
-    if (!admittedSource(state) || !this.sourceAvailable(state)) return false;
-    if (state.provider !== this.workProvider && !this.sourceSatisfied(state)) {
-      if (this.pool.status(state.generation)?.sourceVersion === undefined && !state.continuation) {
+    if (!admittedSource(state)) return;
+    if (state.provider === this.workProvider) return this.sourceDecision(state, false);
+    const facts = this.inspectSource(state);
+    if (!matchingSourceVersion(state, facts?.textVersion)) return;
+    if (!this.sourceSatisfied(state, facts?.parsed)) {
+      if (!facts?.parsed && !state.continuation) {
         state.provider = this.workProvider; state.continuation = undefined;
       } else this.restart(state, this.workProvider);
     }
-    return true;
+    // Reconciliation can retire jobs and replace or lose the source generation.
+    return this.sourceDecision(state);
   }
 
   workStatus(key: string): SourceWorkStatus {
     const state = this.states.get(key);
     const pending = this.keyOccupied(key, 'fallback');
     const ready = !!state && this.enabled && !state.retired && this.provider.snapshot().availability === 'ready';
-    const queued = !!state && ready && (this.sourceQueued(state, ready)
-      || state.styleDirty && state.generation !== undefined && this.pool.status(state.generation)?.sourceVersion !== undefined);
+    const facts = ready ? this.inspectSource(state) : undefined;
+    const queued = !!state && ready && (this.sourceQueued(state, facts, ready) || state.styleDirty && facts?.parsed !== undefined);
     const execution = sourceExecution(state, pending);
     return {
       version: state?.version, execution, fallbackEligible: !this.disposed
@@ -1032,7 +1050,11 @@ export class SourceExecution implements WorkContinuation, CardSourcePort, Source
     const replacementBytes = snapshot.utf8Bytes - (append ? status.committedBytes : 0);
     const bytes = this.reservation(snapshot.text.length, snapshot.text.length - from, snapshot.text.length - inputFrom, replacementBytes, description);
     if (bytes > this.maxTransientBytes) { this.refuseSource(state, 'requestLimit'); this.changed(state.key); return; }
-    if (!this.capacity(bytes)) { this.work.noteCreditBlocked(); waitForCredit(this.owner); return 'credit'; }
+    if (!this.capacity(bytes)) {
+      // Sizing already borrowed this text; later slot waits are not another use.
+      state.waitedGeneration = state.generation;
+      this.work.noteCreditBlocked(); waitForCredit(this.owner); return 'credit';
+    }
     const job = this.job({ operation: 'source', key: state.key, generation: state.generation, stateId: state.id, inputRevision: state.inputRevision, source: undefined }, state.provider, description, bytes);
     if (!this.captureSourceRequest(job, state, snapshot, status, from, open)) return;
     const request = this.sourceRequest(job, state, basis);

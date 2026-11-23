@@ -3,6 +3,7 @@ import type { ProviderRetirementOrigin, ProviderSnapshot } from '../occipital/pr
 import type { ConcreteStyle } from '../appearance/style-materialization.ts';
 import type { GeometryFunding } from '../resources/data-budget.ts';
 import type { StyleSelection } from './controller-styles.ts';
+import type { StyleExpression } from '../occipital/style-types.ts';
 import type { SourcePreparation, SourceWorkGroup } from './work-registry.ts';
 
 export interface SourceDemand {
@@ -66,6 +67,7 @@ export interface PiProjectionReader {
   visitStyles(consume: (index: number, style: ConcreteStyle) => void): boolean;
 }
 export type DisplayRangeReader = (consume: (start: number, end: number, style: ConcreteStyle) => void) => boolean;
+export type DisplayExpressionReader = (consume: (start: number, end: number, context: number, expression?: StyleExpression) => void) => boolean;
 
 /** Historical display coordinates only, never parser/fallback/finite-work authority. */
 export interface GroupDisplayMember {
@@ -109,6 +111,8 @@ export interface SourceDisplayBasis {
   /** Adopted neutral and context literals, not a traversal of source ranges. */
   visitStyles(consume: (style: ConcreteStyle) => void): boolean;
   visit(consume: (text: string, read: DisplayRangeReader) => void): boolean;
+  /** Cold capture of accepted coverage; sizes bound a caller-funded display copy. */
+  visitExpressions(consume: (text: string, runs: number, contexts: number, read: DisplayExpressionReader) => void): boolean;
 }
 
 export interface SourceWorkPort {

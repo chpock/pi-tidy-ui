@@ -60,6 +60,8 @@ been reconstructed.
 
 ### Fixed
 
+- Keep accepted Bash and file syntax colors when parser data is evicted. Returning
+  to the card or resizing it preserves its highlighting without parsing it again.
 - Support Pi 1.6's read-only renderer rows without changing native presentation
   or raising the minimum supported Pi version.
 - Refresh Bash cards when output changes while the terminal is stopped (for

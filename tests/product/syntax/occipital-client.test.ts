@@ -9,6 +9,7 @@ import { join } from 'node:path';
 import { RuntimeHealth } from '../../../src/runtime-health.ts';
 import { reportRuntime } from '../../../src/diagnostics.ts';
 import { SyntaxClient, type SyntaxClientOptions } from '../../../src/application/syntax-client.ts';
+import { SyntaxRuntime } from '../../../src/application/syntax-runtime.ts';
 import { ApplicationPreferences, type PreferenceStore } from '../../../src/application/preferences.ts';
 import { ExtensionSettings, SETTINGS_FILE_MAX_BYTES, type SettingsLoadResult, type SettingsPatch, type SettingsSaveResult,
   type SyntaxTheme } from '../../../src/settings.ts';
@@ -2583,3 +2584,49 @@ for (const interruption of ['stop', 'selection'] as const) {
     assert.equal(preparation.keys.has(input.key), true);
   });
 }
+
+
+test('explicit Off withdraws pressure-retained Bash colors before a same-turn On', { timeout: 12000 }, async () => {
+  initTheme('system', false);
+  const theme = getThemeByName('system')!, first = new Peer(), next = new Peer();
+  let cards: CardSources<object> | undefined, acquisitions = 0, piCalls = 0;
+  const runtime = new SyntaxRuntime({ standaloneVersion: '0.2.0', initialTheme: themeChoice,
+    provider: { tryShared: async () => ++acquisitions === 1 ? first : next, acquireOwned: async () => assert.fail('shared route remains available') } });
+  const presentation = { active: true, syntaxMetadataChanged() { cards?.metadataChanged(runtime.palette(theme)); },
+    syntaxSourceChanged(keys: readonly string[], groups?: readonly number[]) { cards?.sourceChanged(keys, groups); } };
+  const owner = {}, text = 'echo ready';
+  try {
+    runtime.attach(presentation); await settle(); assert.equal(runtime.snapshot().provider.availability, 'ready');
+    cards = new CardSources(runtime, { preparePaletteInput: (palette, revision, mode, funding, fallback) => runtime.preparePaletteInput(palette, theme, revision, mode, funding, fallback),
+      classify() { piCalls++; return []; }, invalidate() {}, requestRender() {} });
+    const input = { kind: 'bash' as const, reader: bashToolReaderFixture({ args: { command: text } }), complete: true,
+      revision: 1, sourceRevision: 1, serviceRevision: 1, palette: runtime.palette(theme), mode: 'truecolor' as const };
+    assert.ok(cards.updateDisplay(owner, input)); cards.useful(owner, 1); await settle();
+    const source = first.calls.findIndex(call => call.request.op === 'highlight'); assert.ok(source >= 0); first.answerSource(source); await settle();
+    const q = first.calls.find(call => call.request.op === 'styles.resolve'); assert.ok(q);
+    q.resolve({ v: 4, ticket: q.request.ticket, instance: 'instance', assets: 'assets', status: 'ok', body: { kind: 'styles',
+      vocabulary: q.request.vocabulary, rules: fingerprintRules(q.request.rules), styles: [{ foreground: { kind: 'rgb', r: 11, g: 2, b: 3 },
+        background: { kind: 'inherit' }, attributes: 0, attribute_mask: 0 }], indices: q.request.contexts.map(() => 1) } });
+    assert.ok(await runtime.sourceLifecycle.whenSettled()); cards.freeze(owner); assert.ok(await runtime.sourceLifecycle.whenSettled());
+    const key = cards.identities(owner)[0]!.key;
+    const nativeBytes = () => {
+      let bytes = 0;
+      assert.ok(cards!.visit(owner, (_display, paint) => paint.ranges(key)?.((from, to, style) => {
+        if (style.open.includes('38;2;11;2;3m')) bytes += to - from;
+      })));
+      return bytes;
+    };
+    assert.equal(nativeBytes(), Buffer.byteLength(text));
+    const funding = runtime.cardSource.geometryFunding()!, used = funding.budget.stats();
+    const pressure = funding.grant(used.limit - used.retainedBytes - used.outstandingPeakBytes + 1);
+    assert.ok(pressure); pressure.close(); await settle();
+    assert.equal(runtime.cardSource.displayBasis(key), undefined);
+    assert.equal(nativeBytes(), Buffer.byteLength(text));
+    const off = runtime.setEnabled(false), on = runtime.setEnabled(true);
+    await Promise.all([off, on]); await settle(); assert.ok(await runtime.sourceLifecycle.whenSettled());
+    assert.equal(runtime.snapshot().enabled, true);
+    assert.equal(nativeBytes(), 0, 'Off withdrew the old native colors; a frozen card cannot acquire them again');
+    assert.deepEqual([...first.calls, ...next.calls].map(c => c.request.op).filter(op => op !== 'describe'), ['highlight', 'styles.resolve']);
+    assert.equal(piCalls, 0);
+  } finally { cards?.dispose(); await runtime.dispose(); }
+});

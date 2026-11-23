@@ -108,6 +108,38 @@ test('semantic retention: root pressure evicts actual oldest records and include
     sameSourcesWithoutIndexCharge: preload.retainedBytes - preload.contextIndexBytes, released: admission.released.map(receipt => receipt.key), finalBytes: pool.stats().retainedBytes } }));
 });
 
+test('semantic retention: observing the text version protects an unparsed entry; inspecting SOURCE work does not', () => {
+  const pool = new SemanticRetentionPool({ maxBytes: 8192 });
+  try {
+    const first = pool.admit('first', 1, 'abc').generation!;
+    const second = pool.admit('second', 2, 'xyz').generation!;
+    assert.equal(pool.snapshotVersion(first), 1);
+    assert.deepEqual(pool.inspectSource(second), { textVersion: 2, parsed: undefined });
+    const { maxBytes, retainedBytes } = pool.stats();
+    const pressure = pool.reserve(undefined, maxBytes - retainedBytes + 1);
+    assert.deepEqual(pressure.released.map(r => r.generation), [second]);
+    assert.equal(pool.snapshotVersion(first), 1);
+    assert.equal(pool.inspectSource(second), undefined);
+  } finally { pool.dispose(); }
+});
+
+test('semantic retention: STYLE reads protect unparsed entries and distinguish installed empty ranges from no ranges', () => {
+  const pool = new SemanticRetentionPool({ maxBytes: 8192 });
+  try {
+    const first = pool.admit('empty', 1, '').generation!, second = pool.admit('other', 1, 'xyz').generation!;
+    const unparsed = pool.styleSourceFacts(first)!;
+    assert.equal(unparsed.key, 'empty'); assert.equal(unparsed.sourceVersion, undefined); assert.equal(unparsed.vocabulary, undefined);
+    const { maxBytes, retainedBytes } = pool.stats();
+    assert.deepEqual(pool.reserve(undefined, maxBytes - retainedBytes + 1).released.map(r => r.generation), [second]);
+    assert.equal(pool.styleSourceFacts(second), undefined);
+    assert.ok(pool.installChunk(first, chunk('empty', first, '', { complete: true, contexts: [] })).accepted);
+    const installed = pool.styleSourceFacts(first)!;
+    assert.equal(installed.key, 'empty'); assert.equal(installed.sourceVersion, 1); assert.equal(installed.vocabulary, vocabulary);
+    assert.ok(installed.semanticStamp > unparsed.semanticStamp);
+    pool.remove(first); assert.equal(pool.styleSourceFacts(first), undefined);
+  } finally { pool.dispose(); }
+});
+
 test('semantic retention: an impossible reservation or stale suffix cannot destroy the protected basis', () => {
   const pool = new SemanticRetentionPool({ maxBytes: 4000 }), generation = pool.admit('a', 1, 'abc').generation!;
   pool.installChunk(generation, chunk('a', generation, 'abc'));

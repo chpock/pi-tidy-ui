@@ -8,7 +8,7 @@ import type { ReplySize } from '../occipital/data-json.ts';
 import type { ProviderRetirementOrigin } from '../occipital/provider.ts';
 import type { SourceFacts } from './source-state.ts';
 import type { SourceDemand, SourceExecutionStats } from './source-ports.ts';
-import type { nextStyle, StyleAttempt } from './style-state.ts';
+import type { StyleAttempt } from './style-state.ts';
 import type { SemanticRetentionPool } from './storage/semantic-retention.ts';
 import type { CardPublicationMetadata, GroupHold } from './card-publication.ts';
 import type { WorkRegistry, SourceWorkGroup, WorkEntry as WorkEntryType, WorkNode as WorkNodeType } from './work-registry.ts';
@@ -30,7 +30,7 @@ export type SourceState = SourceFacts & {
   // Its bounded protocol strings fit the existing per-entry bookkeeping allowance.
   displayStamp: number; displayEffect?: number; displayPalette?: string; displayRules?: string; displayVersion?: number; frozen?: boolean;
   language?: string; path?: string;
-  parsedAssets?: string; parsedProvider?: number; styleDirty: boolean; bytes: number;
+  parsedAssets?: string; parsedProvider?: number; waitedGeneration?: number; styleDirty: boolean; bytes: number;
 };
 
 export type Close = { key: string; ownerKey: string; generation: number; lease: string; provider: number; bytes: number; health?: WeakRef<SourceState> };
@@ -47,8 +47,6 @@ export type StyleJob = {
 export type StyleCache = { revision: number; charge: DataCharge };
 
 export type StyleSubject = Readonly<{ members: readonly StyleMember[]; selection: PreparedSelection; vocabulary: string; epoch: number; revision: number }>;
-
-export type StyleFailure = Readonly<{ failed: boolean; genericFailure: boolean; opportunity: ReturnType<typeof nextStyle>; blocked: boolean }>;
 
 export type StyleDispatch = {
   provider: number; description: Description; bytes: number; style: StyleJob; contexts: number[][];

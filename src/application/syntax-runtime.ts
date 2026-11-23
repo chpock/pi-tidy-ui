@@ -90,10 +90,14 @@ export class SyntaxRuntime {
   }
   setEnabled(enabled: boolean): Promise<void> {
     if (this.disposed) return Promise.resolve();
+    const withdraw = this.enabled && !enabled;
     if (this.enabled !== enabled) {
       this.enabled = enabled; ++this.epoch; this.options.enabledChanged?.(enabled);
     }
-    return this.client.setEnabled(enabled && this.presentation?.deref()?.active === true);
+    const operation = this.client.setEnabled(enabled && this.presentation?.deref()?.active === true);
+    // Deliver explicit withdrawal after source retirement, before a following On can hide it.
+    if (withdraw) this.metadataChanged();
+    return operation;
   }
   suspend(): void { if (!this.disposed) this.client.suspend(); }
   resume(): void { if (!this.disposed) void this.client.resume().catch(startupFailure(this.owner)); }

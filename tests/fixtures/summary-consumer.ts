@@ -38,10 +38,11 @@ export function summaryConsumer(tool: Tool, Summary = ToolSummaryPresenter) {
     cards: () => undefined, ensureCards: unexpected,
     facts: { ...facts, workActive: facts.active, quiescing: () => false, cwd: () => '/project', live: () => false },
     palette: { needsInput: () => false, input: unexpected, mode: () => 'truecolor', generation: unexpected },
-    displayBasis: unexpected, invalidate: unexpected, forget: (owner, cause) => view.forget(owner, cause),
+    invalidate: unexpected, forget: (owner, cause) => view.forget(owner, cause),
     refreshTarget: unexpected, requestRender: noop, flush: unexpected,
   });
-  const prepared = new PreparedLayoutPresenter({ sessions, ordinaryCache: cache, cardCache: cache, producer,
+  const prepared = new PreparedLayoutPresenter({ sessions, ordinaryCache: cache, cardCache: cache,
+    expanded: toolFields.expanded, kind: owner => producer.kind(owner),
     active: facts.active, outputPadding: () => 1, funding: () => undefined, visit: unexpected, identities: unexpected,
     fileMode: owner => policy.fileMode(owner), unsupportedFullFile: preparation.unsupportedFullFile,
     refuse: unexpected, observePalette: unexpected, displayBasis: unexpected, piDisplay: unexpected, decision: unexpected });

@@ -411,6 +411,54 @@ test('byte credit can serialize two admitted sources without preparing the waiti
   assert.equal(c.stats().transientBytes, 0); assert.equal(c.stats().peakJobs, 1);
 });
 
+for (const fillLastSlot of [false, true]) test(`waiting for byte credit after sizing does not displace a later text borrow (${fillLastSlot ? 'both slots now occupied' : 'one slot still free'})`, async () => {
+  const { host, controller: c } = fixture({ deadlineMs: 1000, maxTransientBytes: 50000, retention: { maxBytes: 8192 } });
+  host.description.limits.request_bytes = 1024; host.description.limits.reply_bytes = 1024;
+  c.observe(demand('one', 1, true)); c.observe(demand('two', 1, true, 'two'));
+  const waiting = c.status('source')!.generation!, running = c.status('two')!.generation!;
+  const pool = semanticPool(c), peer = pool.admit('borrowed', 1, 'peer').generation!;
+  c.flush();
+  assert.deepEqual(host.calls.map(call => call.request.sources[0].text), ['two']);
+  assert.equal(c.stats().transientBytes, 46101, 'bytes rather than a second occupied slot block the other request');
+  assert.equal(pool.borrowSnapshot(peer)?.text, 'peer');
+  const other = fillLastSlot ? fixture() : undefined;
+  if (other) {
+    other.controller.observe(demand('other', 1, true)); other.controller.flush();
+    assert.equal(other.host.calls.length, 1);
+  }
+  c.flush();
+  const { maxBytes, retainedBytes } = pool.stats();
+  const pressure = pool.reserve(running, maxBytes - retainedBytes + 1); c.receipts(pressure.released);
+  assert.ok(pressure.accepted); assert.deepEqual(pressure.released.map(r => r.generation), [waiting]);
+  host.answer(0); other?.host.answer(0); await settle();
+  assert.deepEqual(host.calls.map(call => call.request.sources[0].text), ['two']);
+  assert.deepEqual(c.workStatus('source'), { version: 1, execution: 'not_started', fallbackEligible: true });
+  assert.equal(c.observe(demand('one', 1, true)), false, 'ordinary polling does not re-admit the evicted input');
+});
+
+test('waiting to prepare a card does not count its previous text as a pending parse', async () => {
+  const { host, controller: c } = fixture(), busy = fixture();
+  let version = 1, preparations = 0;
+  const prepare: SourcePreparation = { keys: new Set(['source']), requiresCredit: () => true,
+    prepare() { preparations++; c.observe(demand(version === 1 ? 'old' : 'new', version, true)); } };
+  const group = c.registerPreparation(prepare)!;
+  c.queuePreparation(group); c.flush(); host.answer(0); await settle();
+  const old = c.status('source')!.generation!;
+  assert.equal(c.status('source')!.acknowledgedVersion, 1);
+  for (const key of ['a', 'b']) { busy.controller.observe(demand(key, 1, true, key)); busy.controller.flush(); }
+  assert.equal(busy.host.calls.length, 2);
+  const pool = semanticPool(c), peer = pool.admit('peer', 1, 'recent').generation!;
+  assert.equal(pool.borrowSnapshot(peer)?.text, 'recent');
+  version++; c.queuePreparation(group); c.flush();
+  assert.equal(preparations, 1, 'the new card input has not been prepared yet');
+  const { maxBytes, retainedBytes } = pool.stats();
+  const pressure = pool.reserve(undefined, maxBytes - retainedBytes + 1); c.receipts(pressure.released);
+  assert.ok(pressure.accepted); assert.deepEqual(pressure.released.map(r => r.generation), [old]);
+  busy.host.answer(0); busy.host.answer(1); await settle();
+  assert.deepEqual(host.calls.map(call => call.request.sources[0].text), ['old', 'new']);
+  host.answer(1); await settle(); assert.equal(c.status('source')!.acknowledgedVersion, 2);
+});
+
 test('bad decoded reply and explicit started fault cannot enable fallback or unchanged-frame retries', async () => {
   for (const outcome of ['invalid', 'started']) {
     const { host, controller: c } = fixture(); c.observe(demand('echo x', 1, true)); c.flush();

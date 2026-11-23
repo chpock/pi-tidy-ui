@@ -917,7 +917,6 @@ const paidReadTypes = new Map([
   ['src/appearance/card-roles.ts', { types: ['CardRole'] }],
   ['src/appearance/style-ansi.ts', { types: ['AnsiStyle'] }],
   ['src/appearance/style-materialization.ts', { types: ['ConcreteStyle'] }],
-  ['src/highlighting/source-ports.ts', { types: ['DisplayRangeReader', 'GroupDisplayBasis', 'GroupDisplayMember', 'PiProjectionReader', 'SourceDisplayBasis'] }],
   ['src/rendering/card-values.ts', { types: ['FlatRangeReader', 'PreparedCard', 'ReadyCardPaint'] }],
   ['src/rendering/card-styles.ts', { types: ['LiteralPaint'] }],
 ]);
@@ -1490,7 +1489,6 @@ test('card construction, palette selection and paid reader keep independent capa
     ['src/syntax/card-palette.ts', 'src/syntax/semantic-rules.ts', 'value'],
     ['src/syntax/card-palette.ts', 'src/highlighting/source-ports.ts', 'type-only'],
     ['src/syntax/card-read.ts', 'src/rendering/card-styles.ts', 'type-only'],
-    ['src/syntax/card-read.ts', 'src/highlighting/source-ports.ts', 'type-only'],
   ]) assert.doesNotThrow(() => assertEdgePolicy({ source, target, kind }));
   for (const [source, target, kind] of [
     ['src/presentation/tool-preparation.ts', 'src/syntax/card-display.ts', 'value'],
@@ -1503,14 +1501,17 @@ test('card construction, palette selection and paid reader keep independent capa
     ['src/syntax/card-read.ts', 'src/resources/data-budget.ts', 'type-only'],
     ['src/syntax/card-read.ts', 'src/syntax/pi-input.ts', 'type-only'],
     ['src/syntax/card-read.ts', 'src/highlighting/pi-fallback.ts', 'type-only'],
+    ['src/syntax/card-read.ts', 'src/highlighting/source-ports.ts', 'type-only'],
+    ['src/syntax/card-read.ts', 'src/syntax/card-coverage.ts', 'type-only'],
   ]) assert.throws(() => assertEdgePolicy({ source, target, kind }), /card leaf /u);
   const reader = 'src/syntax/card-read.ts';
   assert.doesNotThrow(() => assertNamedCapabilityImports(reader, parseSource(reader,
-    "import type { SourceDisplayBasis as Basis, PiProjectionReader } from '../highlighting/source-ports.ts';"), paidReadTypes, 'paid card reader'));
+    "import type { ReadyCardPaint as Paint } from '../rendering/card-values.ts';"), paidReadTypes, 'paid card reader'));
   for (const snippet of [
-    "import type { CardSourcePort as Port } from '../highlighting/source-ports.ts';",
+    "import type { SourceDisplayBasis as Basis } from '../highlighting/source-ports.ts';",
     "type Port = import('../highlighting/source-ports.ts').CardSourcePort;",
-  ]) assert.throws(() => assertNamedCapabilityImports(reader, parseSource(reader, snippet), paidReadTypes, 'paid card reader'), /imports an implementation capability/u);
+    "import type { NativeCoverage } from './card-coverage.ts';",
+  ]) assert.throws(() => assertNamedCapabilityImports(reader, parseSource(reader, snippet), paidReadTypes, 'paid card reader'), /imports ownership or broad module authority/u);
 });
 
 test('render-facing card declarations belong to rendering, not preparation or logical normalization', () => {

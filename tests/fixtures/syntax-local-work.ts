@@ -11,7 +11,9 @@ export const selectedSyntaxSource = (text: string) => text.startsWith("printf 'S
 
 export function observeSyntaxLocalWork(watches: (text: string) => boolean = selectedSyntaxSource) {
   let sourceSegments = 0, sourceSegmentUnits = 0, shebangFileSegments = 0, prefixScalarReads = 0, basisDepth = 0, sourceUpdateDepth = 0;
-  const segment = Intl.Segmenter.prototype.segment, scalar = String.prototype.codePointAt, visit = CardSources.prototype.visit, update = CardSources.prototype.updateDisplay;
+  const segment = Intl.Segmenter.prototype.segment, scalar = String.prototype.codePointAt, update = CardSources.prototype.updateDisplay;
+  const cards = CardSources.prototype as unknown as { updateBashPrefix(state: unknown): void };
+  const prefix = cards.updateBashPrefix;
   const observedSegment = function(this: Intl.Segmenter, text: string) {
     if (typeof text === 'string' && (sourceUpdateDepth || watches(text))) {
       const stack = new Error().stack;
@@ -23,17 +25,13 @@ export function observeSyntaxLocalWork(watches: (text: string) => boolean = sele
     return segment.call(this, text);
   };
   const observedScalar = function(this: string, index: number) {
-    // A geometry-only paint.basis visitor does not read any source scalars.
-    // Count actual reads inside an owned basis callback, not basis borrowing.
+    // Count actual scalar reads in the prepared prefix comparison, not basis borrowing.
     if (basisDepth && watches(String(this))) prefixScalarReads++;
     return scalar.call(this, index);
   };
-  const observedVisit = function(this: CardSources<object>, owner: object, consume: Parameters<typeof visit>[1]) {
-    return visit.call(this, owner, (display, paint) => {
-      const observedPaint = Object.create(paint, { basis: { value: (key: string, read: Parameters<typeof paint.basis>[1]) =>
-        paint.basis(key, (text, ranges) => { basisDepth++; try { read(text, ranges); } finally { basisDepth--; } }) } });
-      consume(display, observedPaint);
-    });
+  const observedPrefix: typeof prefix = function(this: CardSources<object>, state) {
+    basisDepth++;
+    try { prefix.call(this, state); } finally { basisDepth--; }
   };
   const observedUpdate = function(this: CardSources<object>, ...args: Parameters<typeof update>) {
     const input = args[1], selected = input.kind === 'bash' && input.reader.source().some(value => typeof value === 'string' && watches(value));
@@ -45,13 +43,13 @@ export function observeSyntaxLocalWork(watches: (text: string) => boolean = sele
   CardSources.prototype.updateDisplay = observedUpdate;
   Intl.Segmenter.prototype.segment = observedSegment;
   String.prototype.codePointAt = observedScalar;
-  CardSources.prototype.visit = observedVisit;
+  cards.updateBashPrefix = observedPrefix;
   return {
     snapshot: () => ({ sourceSegments, sourceSegmentUnits, shebangFileSegments, prefixScalarReads }),
     restore() {
       if (Intl.Segmenter.prototype.segment === observedSegment) Intl.Segmenter.prototype.segment = segment;
       if (String.prototype.codePointAt === observedScalar) String.prototype.codePointAt = scalar;
-      if (CardSources.prototype.visit === observedVisit) CardSources.prototype.visit = visit;
+      if (cards.updateBashPrefix === observedPrefix) cards.updateBashPrefix = prefix;
       if (CardSources.prototype.updateDisplay === observedUpdate) CardSources.prototype.updateDisplay = update;
     },
   };
@@ -87,10 +85,8 @@ function observedThemeRevision(cards: CardSources<object>): number {
 function currentEmptyPiPaint(state: CardState): boolean {
   const input = state.input, paint = state.paint;
   if (!input || !paint || paint.origin !== 'pi' || paint.mode !== input.mode || state.paletteInput?.terminalMode !== input.mode) return false;
-  const group = paint.group;
-  if (group && (group.palette !== paint.palette || group.bindingRevision !== input.palette)) return false;
-  const effects = `${input.mode}:`, eligibility = input.kind === 'file' ? `${state.version}:` : '';
-  return paint.token === `${paint.palette}:${group?.stamp ?? -(input.palette + 1)}:${effects}:${eligibility}`;
+  const eligibility = input.kind === 'file' ? `${state.version}:` : '';
+  return paint.paletteRevision === input.palette && paint.eligibility === eligibility && !paint.native.size && !paint.pi.size;
 }
 
 // No source/projection borrowing here: successful work and compiled token maps
@@ -106,7 +102,7 @@ function writeReceipt(state: CardState, before: { processed?: string; palette?: 
     || state.paletteInput?.paletteRevision !== input.palette || paint.mode !== input.mode || state.paletteInput.terminalMode !== input.mode || state.preparedTheme === undefined) return;
   const slots = [...state.slots.values()];
   if (!slots.length && !currentEmptyPiPaint(state)) return;
-  if (slots.some(slot => slot.outcome !== 'pi' || slot.version !== state.version || slot.palette !== input.palette || !paint.piTokens.has(slot.key))) return;
+  if (slots.some(slot => slot.outcome !== 'pi' || slot.version !== state.version || slot.palette !== input.palette || !paint.pi.has(slot.key))) return;
   if (state.display?.kind !== 'file' || state.display.rows.some(row => [row.oldSource, row.nextSource].some(source => source && !state.slots.has(source.key)))) return;
   // A new source/palette cannot reuse the old compiled token map if compilation
   // was refused after successful classification. Repeated cached work may reuse it.

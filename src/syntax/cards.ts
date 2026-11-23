@@ -4,7 +4,7 @@ import { cardSourceKey as sourceKey } from '../cards/preparation.ts';
 import type { PreparedFileCard } from '../cards/file-model.ts';
 import { fileSources } from '../cards/file-sources.ts';
 import { CONTROLLER_LIMITS } from '../highlighting/controller-limits.ts';
-import type { CardSourcePort, GroupDisplayBasis } from '../highlighting/source-ports.ts';
+import type { CardSourcePort, GroupDisplayBasis, GroupDisplayMember } from '../highlighting/source-ports.ts';
 import type { SourceWorkGroup } from '../highlighting/work-registry.ts';
 import type { GeometryFunding } from '../resources/data-budget.ts';
 import { type DataCharge, type DataCleanupReceipt } from '../resources/data-budget.ts';
@@ -12,6 +12,7 @@ import { RETENTION_LIMITS } from '../highlighting/storage/retention.ts';
 import { CARD_ROLES, type CardRole } from '../appearance/card-roles.ts';
 import type { PreparedCard, ReadyCardPaint } from '../rendering/card-values.ts';
 import { visitPreparedCard } from './card-read.ts';
+import { bindCoverage, captureNative, capturePi, fund, matchingPrefixBytes, type Coverage, type NativeCoverage } from './card-coverage.ts';
 import { beginDisplayBuild, displayEntry, reuseFileDescriptor, type BuiltDisplay, type DisplayEntry } from './card-display.ts';
 import { compileCardStyles, type LiteralPaint } from '../rendering/card-styles.ts';
 import type { PaletteInputLease, PiInputRead } from './pi-input.ts';
@@ -40,20 +41,21 @@ export interface CardSourceHost<Owner extends object> {
 type Slot = SyntaxIdentity & { outcome: SyntaxWorkResult['outcome'] };
 const noSlots: ReadonlyMap<string, Slot> = new Map();
 type Compiled = { charge: DataCharge; table: Map<ConcreteStyle, LiteralPaint>; roles: Record<CardRole, AnsiStyle>;
-  group?: GroupDisplayBasis; palette: string; paletteRevision: number; sourceRevision: number;
+  groupStamp?: number; groupPaint?: number; rules?: string; native: ReadonlyMap<string, NativeCoverage>;
+  pi: ReadonlyMap<string, Coverage>; holds: readonly DataCharge[]; palette: string; paletteRevision: number;
   publication: number; paintStamp: number; origin: 'owned' | 'pi'; mode: TerminalColorMode;
-  piTokens: Map<string, Map<number, ConcreteStyle>>; token: string; effects: string; eligibility: string; signature: string };
+  token: string; effects: string; eligibility: string; signature: string };
 type PaintTarget = { group?: GroupDisplayBasis; identity: string; isOwned: boolean; paletteReady: boolean;
   token: string; effects: string; eligibility: string };
-type PaintAttempt = { charge?: DataCharge };
+type PaintAttempt = { charge?: DataCharge; holds: DataCharge[] };
 type State = { input?: CardDisplayInput; revision: number; sourceRevision: number; serviceRevision: number;
   version: number; slots: ReadonlyMap<string, Slot>; sourceEligible?: boolean; display?: PreparedCard; file?: PreparedFileCard;
   paletteInput?: PaletteInputLease; paletteFallback?: string; paint?: Compiled; ticket?: RecordTicket; paused?: boolean; frozen?: boolean; expanded?: boolean;
-  useful?: boolean; processed?: string; preparedTheme?: number; preparedPalette?: string; mutation: number; geometry: number };
+  useful?: boolean; processed?: string; preparedTheme?: number; preparedPalette?: string; mutation: number; geometry: number; bashPrefix?: number };
 type RecordTicket = { id: number; owner: WeakRef<object>; state: WeakRef<State>; keys: Set<string>; bytes: number;
   consumer: WeakRef<CardSources<object>>; prepare(): void; acceptsSelection(palette: string, rules: string): boolean;
   needsRefresh(newest: boolean): boolean; requiresCredit(): boolean; work?: SourceWorkGroup;
-  measured: Set<DataCleanupReceipt>; descriptorCharge?: DataCharge; paletteCleanup?: DataCleanupReceipt; compiledCharge?: DataCharge };
+  measured: Set<DataCleanupReceipt>; descriptorCharge?: DataCharge; paletteCleanup?: DataCleanupReceipt; compiledCharge?: DataCharge; coverage?: readonly DataCharge[] };
 type Release = { consumer: WeakRef<CardSources<object>>; sources: WeakRef<CardSourcePort>; ticket: RecordTicket };
 let sequence = 0;
 const collected = new FinalizationRegistry<Release>(release => {
@@ -64,9 +66,10 @@ const collected = new FinalizationRegistry<Release>(release => {
 
 // The weak ticket keeps accepted numeric holds, never their display payloads.
 function releaseCardResources(ticket: RecordTicket): void {
-  const { descriptorCharge, compiledCharge, paletteCleanup, measured } = ticket;
-  ticket.descriptorCharge = ticket.compiledCharge = ticket.paletteCleanup = undefined;
+  const { descriptorCharge, compiledCharge, paletteCleanup, measured, coverage } = ticket;
+  ticket.descriptorCharge = ticket.compiledCharge = ticket.paletteCleanup = ticket.coverage = undefined;
   descriptorCharge?.release(); compiledCharge?.release(); paletteCleanup?.release();
+  for (const charge of coverage ?? []) charge.release();
   for (const receipt of measured) receipt.release();
   measured.clear();
 }
@@ -78,11 +81,6 @@ function renderNotice(owner: WeakRef<CardSources<object>>) { return () => owner.
 const keyBytes = (key: string) => RETENTION_LIMITS.entryAllowance + 2 * key.length;
 function wireHint(value: string | undefined, cap: number) {
   return value && value.length <= cap && Buffer.byteLength(value) <= cap && !/[\p{Cc}\p{Cs}]/u.test(value) ? value : undefined;
-}
-function fund(funding: GeometryFunding, bytes: number): DataCharge | undefined {
-  const grant = funding.grant(bytes); if (!grant) return undefined;
-  try { if (grant.budget !== funding.budget) throw new Error('foreign card funding'); return grant.consume(bytes); }
-  finally { grant.close(); }
 }
 function sourceStamp(input: CardDisplayInput) { return `${input.sourceRevision}:${input.kind === 'file' ? input.viewMode ?? 'full' : 'bash'}`; }
 function inputBytes(input: CardDisplayInput) {
@@ -207,7 +205,7 @@ export class CardSources<Owner extends object> {
   private installDisplay(state: State, input: CardDisplayInput, expanded: boolean, built: BuiltDisplay, sourceChanged: boolean): void {
     state.display = built.display; state.file = built.file; state.input = input; state.expanded = expanded;
     state.sourceEligible = input.kind === 'bash' ? built.bashSourceEligible ?? state.sourceEligible : !!built.file && !input.reader.failed;
-    if (sourceChanged) state.version++;
+    if (sourceChanged) { state.version++; this.updateBashPrefix(state); }
     state.sourceRevision = input.sourceRevision; state.serviceRevision = input.serviceRevision; state.revision = input.revision;
   }
   useful(owner: Owner, revision: number): void {
@@ -233,8 +231,7 @@ export class CardSources<Owner extends object> {
     let palette = selection.effective(input, state.paletteFallback), identity = groupKey(palette, input);
     if (!matchesLease(state.paletteInput, palette, input)) {
       const previous = state.paint;
-      const retainedGroup = previous?.group?.visit(() => {}) === true;
-      const retainPrevious = retainedGroup || previous?.origin === 'owned' && !previous.group;
+      const retainPrevious = !!previous?.native.size || previous?.origin === 'owned';
       const candidate = this.host.preparePaletteInput?.(requested, input.palette, input.mode, funding, !retainPrevious);
       if (!this.canAdoptPalette(state, ticket, input)) { candidate?.cleanupReceipt().release(); return; }
       if (candidate) {
@@ -274,7 +271,7 @@ export class CardSources<Owner extends object> {
     if (state.frozen) return !this.selectionConsidered(state, state.input!);
     if (state.processed !== sourceStamp(state.input!) || !this.selectionConsidered(state, state.input!)) return true;
     for (const slot of state.slots.values()) {
-      if (slot.fallback === 'pi' && (newest || slot.outcome === 'waiting')
+      if (slot.fallback === 'pi' && (newest || slot.outcome === 'waiting') && !this.retainedPi(state, state.input!, slot)
         && resolveSyntax(this.client.sourceWork, this.client.pi, slot).needsPi) return true;
       // Every eligible Pi FILE needs its first native SOURCE; retained semantic
       // SOURCE on compatible recovery must not be reclassified.
@@ -285,11 +282,18 @@ export class CardSources<Owner extends object> {
   }
   metadataChanged(paletteRevision?: number): void {
     if (this.disposed || !this.paletteSelection.sync(this.client.snapshot(), paletteRevision)) return;
-    if (paletteRevision !== undefined) for (const ticket of this.records.values()) {
+    const enabled = this.paletteSelection.enabled;
+    if (paletteRevision !== undefined || !enabled) for (const ticket of this.records.values()) {
       const state = ticket.state.deref();
-      if (!state?.input || state.input.palette === paletteRevision) continue;
-      state.input = { ...state.input, palette: paletteRevision };
-      state.mutation++;
+      if (!state?.input) continue;
+      if (paletteRevision !== undefined && state.input.palette !== paletteRevision) {
+        state.input = { ...state.input, palette: paletteRevision };
+        state.mutation++;
+      }
+      if (!enabled && state.paint?.native.size) {
+        const owner = ticket.owner.deref() as Owner | undefined;
+        if (owner && this.owned(owner, state, ticket)) this.withdrawNativePaint(owner, state, ticket);
+      }
     }
     this.client.cardSource.refreshPreparations();
   }
@@ -308,8 +312,9 @@ export class CardSources<Owner extends object> {
   }
 
   private needsPiAfterSourceChange(state: State): boolean {
-    if (state.paused || state.frozen || !state.useful || state.paint?.origin === 'owned') return false;
-    for (const slot of state.slots.values()) if (resolveSyntax(this.client.sourceWork, this.client.pi, slot).needsPi) return true;
+    if (state.paused || state.frozen || !state.useful || !state.input || state.paint?.origin === 'owned') return false;
+    for (const slot of state.slots.values()) if (!this.retainedPi(state, state.input, slot)
+      && !this.nativeForCurrentFile(state, slot) && resolveSyntax(this.client.sourceWork, this.client.pi, slot).needsPi) return true;
     return false;
   }
 
@@ -458,22 +463,53 @@ export class CardSources<Owner extends object> {
     return this.replacePaint(owner, state, ticket, input, previous, mutation, target, funding);
   }
 
+  private withdrawNativePaint(owner: Owner, state: State, ticket: RecordTicket): void {
+    const old = state.paint!;
+    const publication = ++this.publication;
+    state.paint = { ...old, groupStamp: undefined, groupPaint: undefined, rules: undefined,
+      native: new Map(), pi: new Map(), holds: [], table: new Map(), token: '', publication, paintStamp: publication };
+    state.bashPrefix = undefined;
+    ticket.coverage = undefined;
+    for (const charge of old.holds) charge.release();
+    if (!state.paused) this.invalidatePrepared(owner);
+  }
+
+  private nativeForCurrentFile(state: State, slot: Slot): boolean {
+    return state.input?.kind === 'file' && state.paint?.native.get(slot.key)?.version === state.version
+      && state.paint.paletteRevision === state.input.palette;
+  }
+
+  private updateBashPrefix(state: State): void {
+    const text = state.display?.kind === 'bash' && state.paint?.native.values().next().value?.text;
+    state.bashPrefix = typeof text === 'string' && state.display?.kind === 'bash'
+      ? matchingPrefixBytes(text, state.display.command.text) : undefined;
+  }
+
   private paintTarget(state: State, input: CardDisplayInput, work: SourceWorkGroup): PaintTarget {
     const selected = this.paletteSelection.effective(state.input, state.paletteFallback), identity = groupKey(selected, input);
     const available = this.client.cardSource.groupPresentation(work);
     const group = available?.palette === identity ? available : undefined;
     const isOwned = selected.kind === 'theme', paletteReady = matchesLease(state.paletteInput, selected, input);
-    const publication = group?.stamp ?? -(input.palette + 1);
-    const effects = this.paintEffects(input.mode, state.slots), eligibility = this.fileEligibility(state, input);
+    const previous = state.paint;
+    const keptNative = this.paletteSelection.enabled && !!previous?.native.size;
+    const publication = group?.stamp ?? (keptNative ? previous.groupStamp : undefined) ?? -(input.palette + 1);
+    const effects = isOwned || group || keptNative && previous?.pi.size === 0
+      ? `${input.mode}:` : this.paintEffects(state, input), eligibility = this.fileEligibility(state, input);
     return { group, identity, isOwned, paletteReady, effects, eligibility, token: `${identity}:${publication}:${effects}:${eligibility}` };
   }
 
-  private paintEffects(mode: TerminalColorMode, slots: State['slots']): string {
-    const effects = Array.from(slots.values(), slot => {
+  private retainedPi(state: State, input: CardDisplayInput, slot: Slot): Coverage | undefined {
+    const previous = state.paint, coverage = previous?.pi.get(slot.key);
+    if (coverage?.version === state.version && previous?.paletteRevision === input.palette) return coverage;
+  }
+
+  private paintEffects(state: State, input: CardDisplayInput): string {
+    const effects = Array.from(state.slots.values(), slot => {
+      if (slot.version !== state.version || slot.palette !== input.palette) return '';
       const projection = this.client.pi.piProjection(slot.key, slot.version, slot.palette);
-      return projection ? `${projection.generation}/${projection.revision}/${projection.palette}` : '';
+      return projection ? `${projection.generation}/${projection.revision}/${projection.palette}` : this.retainedPi(state, input, slot)?.effect ?? '';
     });
-    return `${mode}:${effects.filter(Boolean).join(',')}`;
+    return `${input.mode}:${effects.filter(Boolean).join(',')}`;
   }
 
   private fileEligibility(state: State, input: CardDisplayInput): string {
@@ -484,105 +520,133 @@ export class CardSources<Owner extends object> {
   private keepPreviousPaint(state: State, input: CardDisplayInput, previous: Compiled | undefined, target: PaintTarget): boolean {
     if (!previous) return false;
     const { group, paletteReady, identity } = target;
-    if (state.paused && group && group.stamp !== previous.group?.stamp) return true;
-    if (group || previous.sourceRevision !== input.sourceRevision) return false;
-    const replacementPending = !paletteReady || previous.group !== undefined && this.paletteSelection.enabled;
-    return replacementPending && (previous.palette !== identity || previous.paletteRevision !== input.palette || previous.mode !== input.mode);
+    if (!this.paletteSelection.enabled && previous.native.size) return false;
+    if (state.paused && group && group.stamp !== previous.groupStamp) return true;
+    return !group && !paletteReady && (previous.palette !== identity || previous.paletteRevision !== input.palette || previous.mode !== input.mode);
   }
 
   private replacePaint(owner: Owner, state: State, ticket: RecordTicket, input: CardDisplayInput, previous: Compiled | undefined,
     mutation: number, target: PaintTarget, funding: GeometryFunding): boolean {
     previous?.charge.retain();
+    for (const charge of previous?.holds ?? []) charge.retain();
     let scratch: DataCharge | undefined;
-    const attempt: PaintAttempt = {};
+    const attempt: PaintAttempt = { holds: [] };
     try {
       scratch = fund(funding, 4096);
       if (!scratch) return false;
       const next = this.buildTerminalPaint(state, input, previous, target, funding, attempt);
       if (!next || !this.client.cardSource.active || !this.owned(owner, state, ticket) || state.mutation !== mutation || state.input !== input || state.paint !== previous) return false;
       ticket.compiledCharge?.release(); ticket.compiledCharge = next.charge;
-      state.paint = next; attempt.charge = undefined;
+      for (const charge of ticket.coverage ?? []) charge.release();
+      ticket.coverage = next.holds;
+      state.paint = next; attempt.charge = undefined; attempt.holds = [];
+      if (input.kind === 'bash' && previous?.native.values().next().value?.text !== next.native.values().next().value?.text)
+        this.updateBashPrefix(state);
       if (previous && previous.paintStamp !== next.paintStamp && !state.paused) this.invalidatePrepared(owner);
       return true;
     } finally {
-      try {
-        if (state.paint === previous && this.owned(owner, state, ticket)) this.retireStaleReaders(owner, state);
-      } finally { attempt.charge?.release(); scratch?.release(); previous?.charge.release(); }
+      attempt.charge?.release(); scratch?.release(); previous?.charge.release();
+      for (const charge of attempt.holds) charge.release();
+      for (const charge of previous?.holds ?? []) charge.release();
     }
   }
 
   private buildTerminalPaint(state: State, input: CardDisplayInput, previous: Compiled | undefined, target: PaintTarget,
     funding: GeometryFunding, attempt: PaintAttempt): Compiled | undefined {
-    const { group, paletteReady, isOwned } = target;
-    if (group) {
-      const roles = groupRoles(group);
-      if (roles) return this.compileTerminalPaint(state, input, previous, target, funding, attempt, roles, consume => group.visitStyles(consume));
-      return;
-    }
-    if (!paletteReady) return;
+    if (!target.paletteReady) return;
     let result: Compiled | undefined;
-    state.paletteInput?.visit(read => {
-      result = this.compileTerminalPaint(state, input, previous, target, funding, attempt, read.roles,
-        consume => this.enumerateLocalStyles(state, read, isOwned, consume), read.compiledRoles);
+    const valid = state.paletteInput?.visit(read => {
+      const compile = (member?: (key: string) => GroupDisplayMember | undefined) => {
+        result = this.compileTerminalPaint(state, input, previous, target, funding, attempt, read, member);
+      };
+      if (!target.group) compile();
+      else if (!target.group.visit(compile)) result = undefined;
     }, funding.grant);
-    return result;
+    if (valid) return result;
   }
 
-  private enumerateLocalStyles(state: State, read: PiInputRead, isOwned: boolean, consume: (style: ConcreteStyle) => void): boolean {
-    for (const role of CARD_ROLES) consume(read.roles[role]);
-    if (!isOwned) for (const slot of state.slots.values()) {
+  private buildCoverage(state: State, input: CardDisplayInput, previous: Compiled | undefined, target: PaintTarget,
+    funding: GeometryFunding, attempt: PaintAttempt, read: PiInputRead, member?: (key: string) => GroupDisplayMember | undefined) {
+    const native = new Map<string, NativeCoverage>(), pi = new Map<string, Coverage>();
+    const bash = input.kind === 'bash';
+    const reuseNative = this.paletteSelection.enabled && previous?.rules && this.paletteSelection.accepts(target.identity, previous.rules);
+    for (const slot of state.slots.values()) {
+      if (!bash && slot.version !== state.version) continue;
+      const published = member?.(slot.key), basis = published && this.client.cardSource.displayBasis(slot.key);
+      if (basis && published.generation === basis.generation && published.version === basis.version && published.stamp === basis.stamp
+        && basis.language === slot.language && (bash || basis.complete && (basis.version === slot.version || basis.exactVersion === slot.version))) {
+        const coverage = captureNative(basis, read, bash, slot.version, funding);
+        if (!coverage) return;
+        attempt.holds.push(coverage.charge); native.set(slot.key, coverage); continue;
+      }
+      const oldNative = reuseNative ? previous!.native.get(slot.key) : undefined;
+      if (oldNative && (bash || oldNative.version === slot.version)) {
+        const rebind = previous!.palette !== target.identity || previous!.paletteRevision !== input.palette;
+        const bindingCharge = rebind ? fund(funding, oldNative.expressions.length * 320) : oldNative.bindingCharge?.retain();
+        if (bindingCharge) attempt.holds.push(bindingCharge);
+        if (rebind && (!bindingCharge || !read.isValid)) return;
+        attempt.holds.push(oldNative.charge.retain());
+        native.set(slot.key, rebind ? { ...oldNative, bindingCharge, literals: bindCoverage(oldNative.expressions, read, bash) } : oldNative);
+        continue;
+      }
+      if (bash || target.isOwned || slot.palette !== input.palette) continue;
       const projection = this.client.pi.piProjection(slot.key, slot.version, slot.palette);
-      if (projection && !projection.visitStyles((_i, style) => consume(style))) return false;
+      const oldPi = this.retainedPi(state, input, slot);
+      if (projection && oldPi?.effect !== `${projection.generation}/${projection.revision}/${projection.palette}`) {
+        const coverage = capturePi(projection, funding);
+        if (!coverage) return;
+        attempt.holds.push(coverage.charge); pi.set(slot.key, coverage);
+      } else if (oldPi) {
+        attempt.holds.push(oldPi.charge.retain()); pi.set(slot.key, oldPi);
+      }
     }
-    return read.isValid;
+    if (read.isValid) return { native, pi };
   }
 
   private compileTerminalPaint(state: State, input: CardDisplayInput, previous: Compiled | undefined, target: PaintTarget,
-    funding: GeometryFunding, attempt: PaintAttempt, roles: Readonly<Record<CardRole, ConcreteStyle>>,
-    enumerate: (consume: (style: ConcreteStyle) => void) => boolean, preparedRoles?: Readonly<Record<CardRole, AnsiStyle>>): Compiled | undefined {
-    const stage = compileCardStyles(roles, enumerate, input.mode,
-      count => attempt.charge = fund(funding, 4096 + count * 2560 + state.slots.size * 512), preparedRoles);
+    funding: GeometryFunding, attempt: PaintAttempt, read: PiInputRead, member?: (key: string) => GroupDisplayMember | undefined): Compiled | undefined {
+    const coverage = this.buildCoverage(state, input, previous, target, funding, attempt, read, member);
+    if (!coverage) return;
+    const roles = target.group ? groupRoles(target.group) : read.roles;
+    if (!roles) return;
+    const stage = compileCardStyles(roles, consume => {
+      for (const role of CARD_ROLES) consume(roles[role]);
+      for (const member of coverage.native.values()) for (const style of member.literals) consume(style, true);
+      for (const member of coverage.pi.values()) for (const style of member.literals) consume(style);
+      return read.isValid;
+    }, input.mode, count => this.fundTerminalPaint(funding, attempt, count, state.slots.size), target.group ? undefined : read.compiledRoles);
     if (!stage) return;
-    const piTokens = this.compiledPiTokens(state.slots, input.palette, target.isOwned, stage.add);
-    if (!piTokens) return;
     const signature = CARD_ROLES.map(role => stage.roles[role].open).join('|');
-    const same = previous && samePaintEffects(previous, state.paint, target, signature);
     const publication = ++this.publication;
     const { group, identity, isOwned, token, effects, eligibility } = target;
-    return { charge: stage.charge, table: stage.table, roles: Object.freeze(stage.roles), group, palette: identity,
-      paletteRevision: input.palette, sourceRevision: input.sourceRevision, publication, paintStamp: same ? previous.paintStamp : publication,
-      origin: isOwned ? 'owned' : 'pi', mode: input.mode, piTokens, token, effects, eligibility, signature };
+    const groupStamp = group?.stamp ?? (coverage.native.size ? previous?.groupStamp : undefined);
+    const groupPaint = group?.paintStamp ?? (coverage.native.size ? previous?.groupPaint : undefined);
+    const same = previous && samePaintEffects(previous, target, signature, groupPaint);
+    return { charge: stage.charge, holds: attempt.holds, table: stage.table, roles: Object.freeze(stage.roles), ...coverage,
+      groupStamp, groupPaint, rules: group?.rules ?? (coverage.native.size ? previous?.rules : undefined), palette: identity,
+      paletteRevision: input.palette, publication, paintStamp: same ? previous.paintStamp : publication,
+      origin: isOwned ? 'owned' : 'pi', mode: input.mode, token, effects, eligibility, signature };
+  }
+  private fundTerminalPaint(funding: GeometryFunding, attempt: PaintAttempt, styles: number, slots: number): DataCharge | undefined {
+    const total = 4096 + styles * 2560 + slots * 512;
+    const grant = funding.grant(total);
+    if (!grant) return;
+    try {
+      if (grant.budget !== funding.budget) throw new Error('foreign card funding');
+      // Off keeps one normal style per role, not the range lookup or its diff variants.
+      const roles = 4096 + CARD_ROLES.length * (2560 / 4);
+      attempt.charge = grant.consume(roles);
+      attempt.holds.push(grant.consume(total - roles));
+      return attempt.charge;
+    } finally { grant.close(); }
   }
 
-  private compiledPiTokens(slots: State['slots'], palette: number, isOwned: boolean, add: (style: ConcreteStyle) => void) {
-    const tokens = new Map<string, Map<number, ConcreteStyle>>();
-    if (isOwned) return tokens;
-    for (const slot of slots.values()) {
-      if (slot.palette !== palette) continue;
-      const projection = this.client.pi.piProjection(slot.key, slot.version, slot.palette);
-      if (!projection) continue;
-      const entries = new Map<number, ConcreteStyle>();
-      if (!projection.visitStyles((i, style) => { add(style); entries.set(i, style); })) return;
-      tokens.set(slot.key, entries);
-    }
-    return tokens;
-  }
-
-  private retireStaleReaders(owner: Owner, state: State): void {
-    const paint = state.paint;
-    if (!paint?.group || paint.group.visit(() => {})) return;
-    // Complete roles remain owned even when replacement lookup funding is denied.
-    // Reader loss changes paint, not geometry, and invalidates suspended visits.
-    state.mutation++; paint.group = undefined;
-    paint.publication = paint.paintStamp = ++this.publication;
-    if (!state.paused) this.invalidatePrepared(owner);
-  }
   /** One synchronous provisional borrow; never prepares display or paint. */
   visit(owner: Owner, consume: (display: PreparedCard, paint: ReadyCardPaint) => void): boolean {
     const state = this.states.get(owner);
     if (this.disposed || !state) return false;
     const mutation = state.mutation, paint = state.paint;
-    return visitPreparedCard(state, this.client,
+    return visitPreparedCard(state,
       () => !this.disposed && this.states.get(owner) === state && state.mutation === mutation && state.paint === paint, consume);
   }
   // Accepted metadata is knowable before palette paint publication, which may be denied independently.
@@ -651,7 +715,7 @@ function groupRoles(group: GroupDisplayBasis): Readonly<Record<CardRole, Concret
   return roles;
 }
 
-function samePaintEffects(previous: Compiled, installed: Compiled | undefined, target: PaintTarget, signature: string): boolean {
-  return signature === installed?.signature && (target.group?.paintStamp ?? 0) === (previous.group?.paintStamp ?? 0)
-    && previous.palette === target.identity && (target.isOwned || target.effects === installed?.effects) && target.eligibility === installed?.eligibility;
+function samePaintEffects(previous: Compiled, target: PaintTarget, signature: string, groupPaint: number | undefined): boolean {
+  return signature === previous.signature && groupPaint === previous.groupPaint && previous.palette === target.identity
+    && (target.isOwned || target.effects === previous.effects) && target.eligibility === previous.eligibility;
 }

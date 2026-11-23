@@ -1,5 +1,6 @@
 import '../../fixtures/test-guard.mjs';
 import { compileStyleAnsi } from '../../../src/appearance/style-ansi.ts';
+import { materializeStyle } from '../../../src/appearance/style-materialization.ts';
 import fs from 'node:fs';
 import { syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
@@ -128,11 +129,11 @@ function fixture(ready = false, options: SourceExecutionOptions = {}, maxBookkee
           ...(!complete || q.op === 'stream.append' ? { lease: q.lease ?? 'lease:1' } : {}), contexts: bytes === from ? [] : [[0, context]], runs: bytes === from ? [] : [bytes - from, 1],
           counters: { committed_line_calls: 1, committed_line_bytes: bytes, tail_calls: 0, tail_bytes: 0 } }] } });
     },
-    answerStyle(i: number, color = 11, bad = false) {
+    answerStyle(i: number, color = 11, bad = false, binding?: number) {
       const call = calls[i]!, q = call.request;
       call.done = true; call.resolve({ v: 4, ticket: q.ticket, instance: 'daemon', assets: 'assets', status: 'ok', body: { kind: 'styles', vocabulary: q.vocabulary,
         rules: bad ? 'f'.repeat(64) : fingerprintRules(q.rules),
-        styles: q.contexts.map(() => ({ foreground: { kind: 'rgb', r: color, g: 2, b: 3 }, background: { kind: 'inherit' }, attributes: 0, attribute_mask: 0 })),
+        styles: q.contexts.map(() => ({ foreground: binding === undefined ? { kind: 'rgb', r: color, g: 2, b: 3 } : { kind: 'binding', slot: binding }, background: { kind: 'inherit' }, attributes: 0, attribute_mask: 0 })),
         indices: q.contexts.map(() => 1) } });
     },
     fault(i: number, execution: 'not_started' | 'unknown' = 'not_started') { calls[i]!.done = true; calls[i]!.reject(new RequestFailure('busy', execution)); },
@@ -2719,4 +2720,181 @@ for (const action of ['none', 'pause', 'replace', 'remove'] as const) test(`seco
     assert.deepEqual(dispatched, ['#!/usr/bin/env python3\n\t😀\n\ntail', '名']);
   }
   await rejectPendingSourceCalls(f);
+});
+
+
+for (const kind of ['bash', 'file'] as const) test(`${kind} rows do not reset ANSI between adjacent spans with the same materialized style`, async () => {
+  const f = fixture(true), text = 'abcXYZ', owner = {}; f.theme();
+  const input = kind === 'bash' ? bash(text, true) : written(text);
+  f.use(owner, input); await settle();
+  const source = f.calls[0]!, q = source.request, s = q.sources[0];
+  assert.equal(q.op, 'highlight'); assert.equal(s.text, text);
+  source.done = true;
+  source.resolve({ v: 4, ticket: q.ticket, instance: 'daemon', assets: 'assets', status: 'ok', body: { kind: 'source', vocabulary: f.env.vocabulary,
+    sources: [{ key: s.key, generation: s.generation, source_version: s.source_version, revision: 1, replace_from: 0,
+      source_bytes: 6, committed_bytes: 6, complete: true, contexts: [[0, 1], [0, 2], [0, 3]], runs: [1, 1, 2, 2, 3, 3],
+      counters: { committed_line_calls: 1, committed_line_bytes: 6, tail_calls: 0, tail_bytes: 0 } }] } });
+  await settle();
+  const style = f.calls[1]!, r = style.request;
+  assert.equal(r.op, 'styles.resolve'); assert.deepEqual(r.contexts, [[0, 1], [0, 2], [0, 3]]);
+  const foreground = { kind: 'rgb', r: 11, g: 2, b: 3 }, regular = { foreground, background: { kind: 'inherit' }, attributes: 0, attribute_mask: 31 };
+  style.done = true;
+  style.resolve({ v: 4, ticket: r.ticket, instance: 'daemon', assets: 'assets', status: 'ok', body: {
+    kind: 'styles', vocabulary: r.vocabulary, rules: fingerprintRules(r.rules), indices: [1, 2, 3],
+    styles: [regular, { ...regular, background: { kind: 'rgb', r: 13, g: 14, b: 15 } }, { ...regular, attributes: 1 }]
+  } });
+  await settle();
+  const funding = f.sources.geometryFunding()!;
+  inspect(f, owner, (display, paint) => {
+    const key = f.cards.identities(owner)[0]!.key;
+    let ranges: FlatRangeReader | undefined;
+    if (display.kind === 'bash') assert.ok(paint.basis(key, (_text, read) => { ranges = read; }));
+    const layout = layoutCard(display, { width: 60 }, funding)!;
+    const laid = layout.paint(display, paint, funding, ranges && { ranges, eligibleBytes: 6 })!;
+    try {
+      const row = rowsFromLayout(laid).find(row => stripVTControlCharacters(row).includes(text))!;
+      assert.ok(row);
+      assert.equal(row.includes('mabc\u001b['), true, 'the first two semantic spans form one terminal segment');
+      assert.equal(row.includes('\u001b[1mXYZ'), true, 'font differences still start a separate segment');
+    } finally { laid.dispose(); layout.dispose(); }
+  });
+});
+
+test('both Bash cards keep their accepted colors within one shared 460 KiB budget', async () => {
+  const f = fixture(true, { retention: { maxBytes: 460 * 1024 } }), first = {}, later = {};
+  f.theme();
+  async function prepare(owner: Owner, text: string) {
+    f.use(owner, bash(text, true)); await settle();
+    for (let index = 0; index < f.calls.length; index++) {
+      const call = f.calls[index]!;
+      if (call.done) continue;
+      if (call.request.op === 'styles.resolve') f.answerStyle(index, 11);
+      else {
+        assert.equal(call.request.op, 'highlight');
+        assert.equal(call.request.sources[0].text, text);
+        f.answerSource(index, text);
+      }
+      await settle();
+    }
+  }
+  function verifyColor(owner: Owner, text: string) {
+    const key = f.cards.identities(owner)[0]!.key;
+    inspect(f, owner, (display, paint) => {
+      assert.equal(display.kind, 'bash');
+      let covered = 0;
+      assert.equal(paint.basis(key, (basis, ranges) => {
+        assert.equal(basis, text);
+        assert.equal(ranges((start, end, style) => {
+          assert.equal(start, covered); assert.ok(end > start); covered = end;
+          assert.match(style.open, /38;2;11;2;3/u, `${text} uses its accepted native color`);
+        }), true);
+      }), true, `accepted color coverage remains readable for ${text}`);
+      assert.equal(covered, Buffer.byteLength(text));
+    });
+  }
+  await prepare(first, 'echo FIRST'); verifyColor(first, 'echo FIRST');
+  const firstKey = f.cards.identities(first)[0]!.key;
+  assert.notEqual(f.sources.status(firstKey)?.generation, undefined);
+  await prepare(later, 'echo LATER'); verifyColor(later, 'echo LATER');
+  assert.equal(f.sources.status(firstKey)?.generation, undefined, 'ordinary preparation of the second card evicted the first parser entry');
+  verifyColor(first, 'echo FIRST');
+  const requests = f.calls.length;
+  for (let i = 0; i < 50; i++) { f.cards.useful(first, 1); f.cards.useful(later, 1); }
+  await settle(); verifyColor(first, 'echo FIRST'); verifyColor(later, 'echo LATER');
+  assert.equal(f.calls.length, requests);
+  const funding = f.sources.geometryFunding()!;
+  assert.ok(funding.budget.stats().retainedBytes <= 460 * 1024);
+  assert.equal(funding.budget.stats().outstandingPeakBytes, 0);
+  f.cards.remove(first); verifyColor(later, 'echo LATER'); f.cards.remove(later);
+});
+
+test('turning Occipital Off returns unused paint credit after an outstanding card read', async () => {
+  const f = fixture(true), owner = {}, text = 'echo INK';
+  f.theme(); f.use(owner, bash(text, true)); await settle();
+  f.answerSource(0, text); await settle();
+  f.answerStyle(1, 37); await settle();
+  const key = f.cards.identities(owner)[0]!.key, budget = f.sources.geometryFunding()!.budget;
+  f.env.enabled = false; f.sources.setEnabled(false);
+  const { limit, retainedBytes, outstandingPeakBytes } = budget.stats();
+  const occupied = budget.reserve(limit - retainedBytes - outstandingPeakBytes)!;
+  assert.ok(occupied);
+  try {
+    let code = '';
+    assert.equal(f.cards.visit(owner, (_display, paint) => {
+      assert.ok(paint.ranges(key)); code = paint.roles.code.open;
+      f.cards.metadataChanged();
+      assert.equal(paint.ranges(key), undefined, 'the old read loses authority immediately');
+      assert.equal(budget.reserve(16 * 1024), undefined, 'the outstanding read still pays for its held paint');
+    }), false);
+    const released = budget.reserve(16 * 1024);
+    assert.ok(released, 'Off returns the unused table credit without waiting for funding of replacement paint');
+    released.close();
+    inspect(f, owner, (_display, paint) => {
+      assert.equal(paint.ranges(key), undefined);
+      assert.equal(paint.roles.code.open, code, 'structural roles remain available without new funding');
+    });
+  } finally { occupied.close(); f.cards.remove(owner); f.sources.dispose(); }
+});
+
+test('a Pi-colored file keeps its accepted ranges after parser storage pressure without reclassification', async () => {
+  const f = fixture(), owner = {}, text = 'token';
+  f.env.enabled = false; f.sources.setEnabled(false); f.followPi();
+  f.env.highlight = input => [`\x1b[38;2;17;42;73m${input}\x1b[0m`];
+  f.use(owner, written(text)); await settle();
+  const key = f.cards.identities(owner)[0]!.key;
+  function verifyColor() {
+    inspect(f, owner, (_, paint) => {
+      let end = 0;
+      const ranges = paint.ranges(key); assert.ok(ranges, 'accepted FILE paint has ranges');
+      assert.ok(ranges((from, to, style) => { assert.equal(from, end); end = to; assert.match(style.open, /38;2;17;42;73/u); }));
+      assert.equal(end, Buffer.byteLength(text));
+    });
+  }
+  verifyColor(); assert.deepEqual(f.env.classifications, [text]);
+  const funding = f.sources.geometryFunding()!, stats = funding.budget.stats();
+  assert.ok(f.sources.pi.borrowPiSource(key));
+  const grant = funding.grant(stats.limit - stats.retainedBytes - stats.outstandingPeakBytes + 1);
+  assert.ok(grant); grant.close(); assert.equal(f.sources.pi.borrowPiSource(key), undefined);
+  await settle(); verifyColor(); assert.deepEqual(f.env.classifications, [text]);
+});
+
+
+test('pressure-evicted Bash coverage can rebind, keeps only the matching prefix after correction, and is withdrawn by Off', async () => {
+  const f = fixture(true), owner = {}, text = 'echo OLD', first = 'gruvbox-dark', next = 'gruvbox-light', slot = 1;
+  f.theme(first); f.use(owner, bash(text, true)); await settle();
+  f.answerSource(0, text); await settle();
+  assert.equal(f.calls[1]?.request.op, 'styles.resolve'); f.answerStyle(1, 11, false, slot); await settle();
+  const key = f.cards.identities(owner)[0]!.key;
+  const expected = (theme: string) => {
+    const { roles, bindings } = sampleOwnedPalette(theme, 'truecolor');
+    return compileStyleAnsi(materializeStyle({ foreground: { kind: 'binding', slot }, background: { kind: 'inherit' },
+      attributes: 0, attribute_mask: 0 }, bindings, roles.title, roles.code.background), 'truecolor').open;
+  };
+  const colors = () => {
+    const found: { to: number; ansi: string }[] = [];
+    inspect(f, owner, (_display, paint) => paint.ranges(key)?.((_from, to, style) => found.push({ to, ansi: style.open })));
+    return found;
+  };
+  assert.notEqual(expected(first), expected(next));
+  assert.deepEqual(colors(), [{ to: text.length, ansi: expected(first) }]);
+  const funding = f.sources.geometryFunding()!, usage = funding.budget.stats();
+  const pressure = funding.grant(usage.limit - usage.retainedBytes - usage.outstandingPeakBytes + 1);
+  assert.ok(pressure); pressure.close(); assert.equal(f.sources.status(key)?.generation, undefined); await settle();
+  f.theme(next); await settle();
+  assert.deepEqual(colors(), [{ to: text.length, ansi: expected(next) }]);
+  assert.equal(f.calls.length, 2, 'binding the new palette did not start SOURCE or STYLE work');
+  assert.equal(f.update(owner, bash('echo NEW', true, 2)), true);
+  assert.deepEqual(colors(), [{ to: 5, ansi: expected(next) }]);
+  await settle();
+  const replacement = f.calls.findIndex((call, index) => index >= 2 && call.request.op === 'highlight');
+  assert.ok(replacement >= 2); f.answerSource(replacement, 'echo NEW', 2); await settle();
+  const pendingStyle = f.calls.findIndex((call, index) => index > replacement && call.request.op === 'styles.resolve');
+  assert.ok(pendingStyle > replacement); f.answerStyle(pendingStyle, 89); await settle();
+  assert.deepEqual(colors().map(piece => piece.to), [8]);
+  assert.match(colors()[0]!.ansi, /38;2;89;2;3/u);
+  f.cards.freeze(owner);
+  const before = f.calls.length;
+  f.env.enabled = false; f.sources.setEnabled(false); f.cards.metadataChanged();
+  f.env.enabled = true; f.sources.setEnabled(true); f.cards.metadataChanged();
+  await settle(); assert.deepEqual(colors(), []); assert.equal(f.calls.length, before);
 });

@@ -40,6 +40,8 @@ export type PreparedCard = { readonly kind: 'bash'; readonly revision: number; r
 export interface ReadyCardPaint {
   readonly publication: number; readonly paintStamp: number; readonly mode: TerminalColorMode;
   readonly origin: 'owned' | 'pi'; readonly roles: Readonly<Record<CardRole, AnsiStyle>>;
+  /** Matching scalar-prefix bytes for the current Bash display, established during preparation. */
+  readonly bashPrefixBytes?: number;
   /** Accessors are valid only within the outer synchronous visit. No compilation occurs here. */
   ranges(key: string, surface?: 'added' | 'removed' | 'context'): FlatRangeReader | undefined;
   /** Historical text is borrowed under canonical ownership, never source authority. */

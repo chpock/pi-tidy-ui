@@ -11,7 +11,7 @@ function fixture() {
   let native = true, pi = false, text = 'current', visit = true;
   Object.assign(input, { kind: 'file', viewMode: 'preview', sourceRevision: 2 });
   const state = { revision: 4, display: { revision: 4 }, sourceRevision: 2, processed: '2:preview', input,
-    paint: { origin: 'pi', mode: 'truecolor', group: { palette } }, preparedTheme: 5, preparedPalette: palette, slots: new Map([['key', slot]]) };
+    paint: { origin: 'pi', mode: 'truecolor', groupStamp: 1, palette }, preparedTheme: 5, preparedPalette: palette, slots: new Map([['key', slot]]) };
   const consumer = { states: new WeakMap([[owner, state]]), themeRevision: 5, selectedPalette: piPalette,
     currentPalette(current) {
       const requested = this.selectedPalette;
@@ -226,7 +226,7 @@ test('performance readiness: SDK explicit-native-Off neutral Bash is ready, unex
 test('performance readiness: owned palette readiness is independent of Pi bindings', () => {
   const f = fixture(), palette = 'theme:gruvbox-dark:owned-palette-v1:truecolor';
   f.consumer.selectedPalette = { kind: 'theme', id: 'gruvbox-dark', fingerprint: 'owned-palette-v1' };
-  f.state.paint.origin = 'owned'; f.state.paint.group.palette = palette;
+  f.state.paint.origin = 'owned'; f.state.paint.palette = palette;
   f.state.preparedPalette = 'gruvbox-dark:3:truecolor'; f.display.palette = palette;
   assert.equal(preparedCardReady(f.consumer, f.owner, 'theme:gruvbox-dark:'), true);
   f.display.palette = 'theme:other:owned-palette-v1:truecolor';

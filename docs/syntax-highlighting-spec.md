@@ -71,7 +71,8 @@ The [storage chapter](syntax/storage.md) defines vocabulary-qualified contexts a
 | Live interrupted/frozen Bash | Retain a display basis and permit allowed recoloring/reflow; do not reopen SOURCE |
 | Restored card | A new finite saved-source owner, not continuation of the old live parser lease; a compact read admits no source until expansion |
 | Read full → compact | Release its derived full display/measurements/paint and syntax demand, preserving the host component and saved result |
-| Native-highlighting Off | SOURCE/provider work is disabled while local palette selection and neutral card roles remain active; canonical source-execution evidence is preserved |
+| Parser-storage pressure | Withdraw evicted SOURCE/STYLE or Pi projection data, leaving the card's [accepted display ranges](syntax/prepared-cards.md#reading-the-paid-presentation) paid and readable; no reparse on return or resize |
+| Native-highlighting Off | Disable SOURCE/provider work and withdraw native display colors; keep local palette selection and neutral card roles active, preserving source-execution evidence |
 | Transport loss | Bounded provider recovery only for the typed ending causes and unspent allowances |
 | Ordinary uncertain request timeout | Preserve conservative execution authority; do not silently classify through another path |
 | Terminal suspension | Explicitly retire unfinished work and replay only still-useful current demand after actual cleanup/reconnect |

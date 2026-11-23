@@ -45,7 +45,6 @@ export type ToolSyntaxState = {
   palette?: number; paletteColors?: WeakRef<object>; mode?: TerminalColorMode; complete: boolean; live: boolean; applied: boolean; paused?: boolean; owned?: boolean;
   refreshPending?: boolean; refreshToken?: object; refused?: boolean; paintRetry?: boolean;
   unreflected?: 'refresh' | 'bash-update';
-  prefix?: { sourceRevision: number; basis: number; bytes: number };
 };
 
 export interface ToolLayoutState {
