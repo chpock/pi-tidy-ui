@@ -115,6 +115,30 @@ test('group presentation: revisiting a current local palette does not consult re
   } finally { t.mock.restoreAll(); await cleanup(owner, peer); }
 });
 
+test('group presentation: identifying a STYLE subject reads each sealed source only once', async (t) => {
+  const peer = new Peer(), owner = new SourceExecution(peer), c = card(owner, ['left', 'right']);
+  try {
+    owner.setStyleSelection(local(7)); c.start(); await settle();
+    peer.source(0, 'x\n', 1); peer.source(1, 'x\n', 2); await settle();
+    peer.style(2); await settle();
+    const stamp = owner.groupPresentation(c.group)!.stamp, requests = peer.calls.length;
+    const publication = Reflect.get(owner, 'publication'), node = Reflect.get(owner, 'work').get(c.group);
+    let reads: string[] | undefined;
+    const source = t.mock.method(owner, 'source');
+    c.preparation.acceptsSelection = () => { reads = source.mock.calls.map(call => call.arguments[0]); return true; };
+    publication.prepare(node, peer.description, false);
+    assert.deepEqual(reads, ['left', 'right']);
+    assert.equal(owner.groupPresentation(c.group)!.stamp, stamp);
+    assert.equal(peer.calls.length, requests);
+
+    // A same-size reorder without resealing must be refused before the selection callback.
+    c.keys.delete('left'); c.keys.add('left'); reads = undefined;
+    publication.prepare(node, peer.description, false);
+    assert.equal(reads, undefined);
+    assert.equal(peer.calls.length, requests);
+  } finally { t.mock.restoreAll(); await cleanup(owner, peer); }
+});
+
 test('group presentation: confirming already published member colors needs no storage accounting report', async (t) => {
   const peer = new Peer(), owner = new SourceExecution(peer), c = card(owner, ['file']);
   try {

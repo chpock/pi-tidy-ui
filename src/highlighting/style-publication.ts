@@ -516,17 +516,26 @@ export class StylePublication {
   }
 
   private styleSubject(node: PublicationNode, selection: PreparedSelection, description: Description | undefined): StyleSubject | undefined {
-    const entry = node.value, members: StyleMember[] = [];
     if (node.paused) return;
-    if ('preparation' in entry && (!entry.preparation.deref() || !node.seal || !this.sealMatches(entry, node.seal))) return;
-    for (const key of 'preparation' in entry ? entry.keys : [entry.key]) {
-      const state = this.execution().source(key), generation = state?.frozen ? state.previous : state?.generation;
-      if (!state || state.retired && !state.frozen || generation === undefined) return;
+    const entry = node.value, members: StyleMember[] = [];
+    const grouped = 'preparation' in entry, seal = grouped ? node.seal : undefined;
+    if (grouped && (!entry.preparation.deref() || !seal || entry.keys.size !== seal.members.length)) return;
+    const execution = this.execution();
+    let firstFrozen = false;
+    for (const key of grouped ? entry.keys : [entry.key]) {
+      const state = execution.source(key);
+      if (!state || state.retired && !state.frozen) return;
+      if (seal) {
+        const member = seal.members[members.length]!;
+        if (member.key !== key || member.id !== state.id) return;
+      }
+      const generation = state.frozen ? state.previous : state.generation;
+      if (generation === undefined) return;
+      if (!members.length) firstFrozen = !!state.frozen;
       members.push({ key, id: state.id, generation });
     }
-    if (!members.length && !('preparation' in entry)) return;
-    const first = members[0], state = first && this.execution().source(first.key)!;
-    const vocabulary = (first && state?.frozen ? this.pool.displayStatus(first.generation)?.vocabulary : undefined)
+    const first = members[0];
+    const vocabulary = (first && firstFrozen ? this.pool.displayStatus(first.generation)?.vocabulary : undefined)
       ?? (first && this.pool.styleSourceFacts(first.generation)?.vocabulary) ?? description?.vocabulary.fingerprint;
     if (!vocabulary && members.length) return;
     return { members, selection, vocabulary: vocabulary ?? '', epoch: this.styleEpoch, revision: node.styleRevision };
