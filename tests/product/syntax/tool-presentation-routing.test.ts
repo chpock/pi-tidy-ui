@@ -169,6 +169,46 @@ test('a deferred stock read pair does not replace current self-shell render visi
   assert.deepEqual(harness.visibleWidths, [80, 100], 'render visibility is borrowed again at the current width');
 });
 
+test('card selection reads the current name and argument envelope, not the saved format or execution state', () => {
+  const { policy } = routingHarness();
+  let unrelatedReads = 0, formatReads = 0;
+  const args = new Proxy({ path: 'a.ts', edits: [] }, {
+    getOwnPropertyDescriptor(target, key) { formatReads++; return Reflect.getOwnPropertyDescriptor(target, key); },
+  });
+  const result = { content: [], get details() { formatReads++; return { patch: '@@ -1 +1 @@\n-old\n+new' }; } };
+  const node = owner('edit', args);
+  for (const key of ['id', 'result', 'partial', 'expanded', 'executionStarted', 'argsComplete'] as const) {
+    const value = key === 'result' ? result : node[key];
+    Object.defineProperty(node, key, { get() { unrelatedReads++; return value; } });
+  }
+  for (const name of ['read', 'write', 'edit', 'bash']) {
+    node.name = name;
+    assert.equal(policy.kind(node), name);
+  }
+  assert.deepEqual([unrelatedReads, formatReads], [0, 0]);
+  node.name = 'external';
+  assert.equal(policy.kind(node), undefined, 'a compatible-looking payload does not register a new card');
+  node.name = 'edit';
+  for (const invalid of [null, [], 'text']) {
+    Reflect.set(node, 'args', invalid);
+    assert.equal(policy.kind(node), undefined);
+  }
+  node.args = args;
+  assert.equal(policy.fileSucceeded(node), true, 'a decision requiring result state reads the current result');
+  assert.ok(unrelatedReads > 0);
+  assert.equal(formatReads, 0, 'classifying an already captured call does not select its decoder either');
+});
+
+test('compact eligibility observes the arguments once even without a dedicated card', () => {
+  const { policy, argumentReads } = routingHarness();
+  const node = owner('external', { path: 'a.ts' });
+  assert.equal(policy.eligible(node), true);
+  assert.equal(argumentReads(), 1);
+  Reflect.set(node, 'args', null);
+  assert.equal(policy.eligible(node), false);
+  assert.equal(argumentReads(), 2);
+});
+
 test('an individual file-view decision observes the saved arguments and validates a successful path only once', () => {
   const harness = routingHarness();
   const { policy } = harness;

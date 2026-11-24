@@ -7,6 +7,7 @@ import type { FilePreviewMode } from '../cards/file-preview-mode.ts';
 import type { LayoutKind, RenderCache } from '../render-cache.ts';
 import type { ToolPresentationLayout, ToolPresentationSessions } from './tool-sessions.ts';
 import { wrapText } from '../text-wrap.ts';
+import type { FileCardInput } from '../cards/file-model.ts';
 import type { ToolProducerPresenter } from './tool-producers.ts';
 
 export interface SummaryPresentationLayout extends ToolPresentationLayout {
@@ -18,6 +19,10 @@ export interface SummaryPresentationLayout extends ToolPresentationLayout {
 const SHOW_COMPLETION_MARKERS = false;
 
 type SummaryColor = Parameters<CardTheme['fg']>[0];
+
+function summaryGlyph(kind: ReturnType<ToolProducerPresenter<object>['kind']>): string {
+  return kind === 'read' ? '→' : kind === 'edit' || kind === 'write' ? '←' : '⚙';
+}
 
 function isSummaryPresentationLayout(layout: ToolPresentationLayout): layout is SummaryPresentationLayout {
   return typeof layout.prefixLength === 'number' && typeof layout.prefixLeft === 'number' && typeof layout.prefixSpace === 'boolean';
@@ -38,11 +43,10 @@ export class ToolSummaryPresenter<Owner extends object> {
   }
 
 
-  fileError(owner: Owner, width: number, theme: CardTheme, padding: number, cwd: string | undefined, detail?: FileDetailView): ToolPresentationLayout {
+  fileError(kind: FileCardInput['kind'], path: string | undefined, width: number, theme: CardTheme, padding: number,
+    cwd: string | undefined, detail?: FileDetailView): ToolPresentationLayout {
     const geometry = cardGeometry(width, padding), available = geometry.contentWidth;
-    const path = this.producer.reader(owner).path();
     const location = path ? argumentParts('write', { path }, cwd).object : undefined;
-    const kind = this.producer.kind(owner);
     const title = kind === 'read' ? '→ Read' : kind === 'edit' ? '← Edit' : '← Write';
     const heading = title + (location ? ` ${location}` : '');
     const service = (text: string, role: SummaryColor) => wrapText(text, available, { wide: 'replace' }).map(row => theme.fg(role, row));
@@ -76,22 +80,20 @@ export class ToolSummaryPresenter<Owner extends object> {
   private buildRows(width: number, theme: CardTheme, padding: number, title: string | undefined, cwd: string | undefined,
     call: ReturnType<ToolProducerPresenter<Owner>['capture']>): SummaryPresentationLayout {
     if (width < 1) return { rows: [], prefixLength: 0, prefixLeft: 0, prefixSpace: false };
-    const kind = this.producer.kindFrom(call);
-    const reader = this.producer.readerFrom(call);
     const available = width - padding, indent = padding + 2;
     const failed = !call.partial && call.resultFailed;
     const pending = call.partial || !call.hasResult;
     const marker = SHOW_COMPLETION_MARKERS ? pending ? '…' : failed ? '✗' : '✓' : '';
     const statusColor: SummaryColor = failed ? 'error' : pending ? 'muted' : 'success';
-    const glyph = kind === 'read' ? '→' : kind === 'edit' || kind === 'write' ? '←' : '⚙';
     if (available < indent + 2) {
       const left = Math.min(padding, Math.max(0, width - 1 - padding));
-      const prefix = theme.fg(marker ? statusColor : failed ? 'error' : 'dim', ' '.repeat(left) + (marker || glyph));
+      const prefix = theme.fg(marker ? statusColor : failed ? 'error' : 'dim', ' '.repeat(left) + (marker || summaryGlyph(this.producer.kindFrom(call))));
       return { rows: [prefix], prefixLength: prefix.length, prefixLeft: left, prefixSpace: false };
     }
-    const prefix = theme.fg(failed ? 'error' : 'dim', `${' '.repeat(padding)}${glyph} `);
+    const reader = this.producer.readerFrom(call);
+    const prefix = theme.fg(failed ? 'error' : 'dim', `${' '.repeat(padding)}${summaryGlyph(reader?.kind)} `);
     const parts: { color?: SummaryColor; text: string }[] = [{ color: 'toolTitle', text: title ?? summaryName(call.name) }];
-    const { pattern, object, params } = argumentParts(call.name, reader.summaryArgs(), cwd);
+    const { pattern, object, params } = argumentParts(call.name, reader?.summaryArgs() ?? call.args, cwd);
     if (pattern) {
       parts.push({ color: 'muted', text: ` ${pattern}` });
       if (object) parts.push({ color: 'dim', text: ' in ' }, { color: 'muted', text: object });

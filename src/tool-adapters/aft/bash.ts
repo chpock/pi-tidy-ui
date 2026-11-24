@@ -71,7 +71,6 @@ export function aftBashReader(call: ToolCallSnapshot) {
   };
 }
 export const aftBashAdapter: ToolAdapter = {
-  names: ['bash'], kind: 'bash',
   // Result envelopes are candidates, not provenance: plain output is a compatible subset.
   matches: call => call.hasResult || extendedArgs.some(key => Object.hasOwn(call.args, key)),
   create: aftBashReader,

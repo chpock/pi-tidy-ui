@@ -71,6 +71,17 @@ test("incompatible existing or future tool contract restores all owned hooks and
   assert.equal(diagnostics.filter(text => text === "Tool component contract is incompatible; native rendering retained").length, 2, "known failure is recorded once per adapter");
 });
 
+test('ordinary removal ends admission: adding the tool again checks its argument envelope', () => {
+  const tool = new Tool(), { root, controller } = setup([tool]);
+  try {
+    Reflect.apply(tool.updateArgs, tool, [null]);
+    assert.equal(controller.active, true);
+    root.removeChild(tool); root.addChild(tool);
+    assert.equal(controller.reason, 'Tool component contract is incompatible; native rendering retained');
+    assert.equal(controller.active, false);
+  } finally { controller.restore(); }
+});
+
 test("foreign TUI instance is left untouched with a compatibility warning", () => {
   const warnings: string[] = [];
   const controller = installTidyUi({} as Root, () => color, { warn: (reason) => warnings.push(reason) });
@@ -282,12 +293,21 @@ test("renderer replacement preserves cards and clicks without touching any nativ
     const descriptors = roots.map((root) => Object.getOwnPropertyDescriptor(root, "handleViewportInput"));
     const symbols = roots.map((root) => Object.getOwnPropertySymbols(root));
     const tool = bashTool(); tool.updateResult({ content: [{ type: "text", text: Array(11).fill("OUT").join("\n") }] }, tool.isPartial);
-    current.addChild(tool);
+    const read = new Tool('read', { path: 'before.ts' });
+    current.addChild(tool); current.addChild(read);
     const controller = installTidyUi(reference, () => color);
     try {
       const expected = tool.render(80);
       for (let index = 0; index < roots.length; index++) {
-        if (index) { current.clear(); current = roots[index]!; current.addChild(tool); }
+        if (index) {
+          Reflect.apply(read.updateArgs, read, [null]);
+          assert.ok(read.render(80).includes('NATIVE read'));
+          current.clear(); current = roots[index]!; current.addChild(tool); current.addChild(read);
+          assert.equal(controller.active, true, 'moving an admitted tool with unusable arguments does not disable its siblings');
+          assert.ok(read.render(80).includes('NATIVE read'));
+          read.updateArgs({ path: 'recovered.ts' });
+          assert.match(read.render(80).map(plain).join('\n'), /→ read recovered\.ts/u);
+        }
         assert.equal(controller.active, true); assert.deepEqual(tool.render(80), expected);
         assert.equal(tool.handleMouse({ ...mouse(2), type: "move", button: "none" }), undefined);
         assert.deepEqual(tool.render(80), expected);

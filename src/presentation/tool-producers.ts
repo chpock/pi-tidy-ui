@@ -1,4 +1,4 @@
-import { captureToolCall, createToolReader, toolCardKind } from '../tool-adapters/registry.ts';
+import { captureToolCall, createToolReader, isToolArgs, toolCards } from '../tool-adapters/registry.ts';
 import type { ToolCallObservation } from '../tool-adapters/registry.ts';
 import type { SavedToolResult, ToolCallSnapshot, ToolReader } from '../tool-adapters/contracts.ts';
 
@@ -28,7 +28,15 @@ export class ToolProducerPresenter<Owner extends object> {
   }
 
   kind(owner: Owner) {
-    return this.kindFrom(this.capture(owner));
+    return this.hasArgs(owner) ? this.kindForName(this.fields.name(owner)) : undefined;
+  }
+
+  kindForName(name: string) {
+    return toolCards.get(name)?.kind;
+  }
+
+  hasArgs(owner: Owner): boolean {
+    return isToolArgs(this.fields.args(owner));
   }
 
   hasImage(owner: Owner): boolean {
@@ -46,14 +54,14 @@ export class ToolProducerPresenter<Owner extends object> {
   }
 
   kindFrom(call: ToolCallSnapshot) {
-    return call.args && typeof call.args === 'object' && !Array.isArray(call.args) ? toolCardKind(call) : 'other';
+    return isToolArgs(call.args) ? this.kindForName(call.name) : undefined;
   }
 
-  reader(owner: Owner): ToolReader {
+  reader(owner: Owner): ToolReader | undefined {
     return this.readerFrom(this.capture(owner));
   }
 
-  readerFrom(call: ToolCallSnapshot): ToolReader {
+  readerFrom(call: ToolCallSnapshot): ToolReader | undefined {
     return createToolReader(call);
   }
 }

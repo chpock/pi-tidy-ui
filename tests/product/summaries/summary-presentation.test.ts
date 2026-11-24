@@ -21,6 +21,20 @@ test('compact summary consumer preserves shipped status and spinner policy', () 
   } finally { consumer.dispose(); }
 });
 
+test('a glyph-only summary does not inspect the saved format', () => {
+  const tool = new Tool('read', { path: 'current.ts' });
+  let formatReads = 0;
+  tool.isPartial = true; tool.executionStarted = false;
+  tool.result = { content: [], get details() { formatReads++; return {}; } };
+  const consumer = summaryConsumer(tool);
+  try {
+    assert.deepEqual(consumer.render(5).map(plain), [' →']);
+    assert.equal(formatReads, 0);
+    assert.deepEqual(consumer.render(80).map(plain), [' → read current.ts']);
+    assert.ok(formatReads > 0, 'the wider summary obtains arguments from the compatible reader');
+  } finally { consumer.dispose(); }
+});
+
 test('completion marker constant can restore success and failure symbols without error-body previews', async () => {
   await withCompletionMarkers(({ ToolSummaryPresenter }) => {
     const tool = new Tool(), consumer = summaryConsumer(tool, ToolSummaryPresenter);

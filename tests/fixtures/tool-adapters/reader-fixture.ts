@@ -1,5 +1,7 @@
-import type { BashToolReader, FileToolReader, SavedToolResult, ToolReader } from '../../../src/tool-adapters/contracts.ts';
-import { captureToolCall, createToolReader } from '../../../src/tool-adapters/registry.ts';
+import assert from 'node:assert/strict';
+import type { TestContext } from 'node:test';
+import type { BashToolReader, FileToolReader, SavedToolResult, ToolCardKind } from '../../../src/tool-adapters/contracts.ts';
+import { captureToolCall, createToolReader, toolCards } from '../../../src/tool-adapters/registry.ts';
 
 export interface ToolCallFixture {
   readonly name?: string;
@@ -14,7 +16,16 @@ export interface ToolCallFixture {
   readonly argsComplete?: boolean;
 }
 
-export function toolReaderFixture(input: ToolCallFixture, defaultName = 'other'): ToolReader {
+export function installTestToolNames(t: TestContext, names: Readonly<Record<string, ToolCardKind>>): void {
+  for (const [name, kind] of Object.entries(names)) {
+    const card = toolCards.get(kind);
+    assert.ok(card && !toolCards.has(name));
+    Map.prototype.set.call(toolCards, name, card);
+    t.after(() => { Map.prototype.delete.call(toolCards, name); });
+  }
+}
+
+function toolReaderFixture(input: ToolCallFixture, defaultName: string) {
   return createToolReader(captureToolCall({
     name: input.name ?? input.toolName ?? defaultName,
     id: input.id ?? 'test-tool-call',
@@ -29,14 +40,14 @@ export function toolReaderFixture(input: ToolCallFixture, defaultName = 'other')
 
 export function fileToolReaderFixture(input: ToolCallFixture, defaultName = 'edit'): FileToolReader {
   const reader = toolReaderFixture(input, defaultName);
-  if (reader.kind === 'read' || reader.kind === 'write' || reader.kind === 'edit') return reader;
-  throw new TypeError(`Expected a file tool reader, got ${reader.kind}`);
+  assert.ok(reader && reader.kind !== 'bash', 'expected a supported file tool reader');
+  return reader;
 }
 
 export function bashToolReaderFixture(input: ToolCallFixture): BashToolReader {
   const reader = toolReaderFixture(input, 'bash');
-  if (reader.kind === 'bash') return reader;
-  throw new TypeError(`Expected a Bash tool reader, got ${reader.kind}`);
+  assert.ok(reader?.kind === 'bash', 'expected a Bash tool reader');
+  return reader;
 }
 
 export function prepareFileToolCall(input: ToolCallFixture, logicalOnly = false, mode: 'full' | 'preview' = 'full') {

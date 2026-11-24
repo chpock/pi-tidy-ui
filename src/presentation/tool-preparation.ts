@@ -148,10 +148,10 @@ export function createToolPreparationPresenter<Owner extends object, Input exten
   }
   function liveBashSource(node: Owner): boolean { return sessions.syntax(node)?.live ?? facts.live(fields.id(node)); }
   function interruptedLiveBash(reader: ReturnType<typeof toolReader>, live: boolean): boolean {
-    return reader.kind === 'bash' && !reader.call.partial && reader.failed && reader.failurePhase() === 'formation' && live;
+    return reader?.kind === 'bash' && !reader.call.partial && reader.failed && reader.failurePhase() === 'formation' && live;
   }
   function syntaxEligible(node: Owner, readVisible?: boolean, reader = toolReader(node)): boolean {
-    if (!facts.active() || !facts.attached(node) || facts.hidden(node)) return false;
+    if (!reader || !facts.active() || !facts.attached(node) || facts.hidden(node)) return false;
     if (reader.kind === 'bash') {
       const cwd = facts.cwd(node);
       return policy.bashSourceSelected(node) && reader.hasCommand() && reader.directory(cwd) !== null
@@ -178,12 +178,12 @@ export function createToolPreparationPresenter<Owner extends object, Input exten
       const state = sessions.syntax(node); if (state) { state.applied = false; state.paintRetry = false; }
       pauseSyntax(node); return;
     }
-    if (reader.kind === 'other' || facts.quiescing() || !syntaxEligible(node, readVisible, reader)) {
+    if (!reader || facts.quiescing() || !syntaxEligible(node, readVisible, reader)) {
       const state = sessions.syntax(node); if (state) {
         state.applied = false; state.refused = false; state.paintRetry = false;
-        if (reader.kind !== 'bash') state.fileInput = undefined;
+        if (reader?.kind !== 'bash') state.fileInput = undefined;
       }
-      if (reader.kind !== 'bash') { dropPrepared(node); if (!facts.quiescing()) cards()?.discardFile(node); }
+      if (reader?.kind !== 'bash') { dropPrepared(node); if (!facts.quiescing()) cards()?.discardFile(node); }
       pauseSyntax(node); return;
     }
     const owner = ensureCards();
@@ -327,7 +327,7 @@ export function createToolPreparationPresenter<Owner extends object, Input exten
   }
   function buildFileDetail(node: Owner, mode: 'preview' | 'full'): FileDetailDraft {
     const reader = toolReader(node);
-    if (reader.kind === 'bash' || reader.kind === 'other' || reader.succeeded && reader.kind !== 'read')
+    if (!reader || reader.kind === 'bash' || reader.succeeded && reader.kind !== 'read')
       return { text: '', omitted: false, error: false, pending: false };
     const detail = reader.pendingDetail(mode);
     return detail.pending || mode === 'preview' ? detail : { ...detail, sources: () => reader.errorSources() };

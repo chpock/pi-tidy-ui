@@ -1,8 +1,6 @@
 import type { BashService } from '../rendering/card-values.ts';
-import type { PreparedFileCard } from '../cards/file-model.ts';
+import type { FileCardInput, PreparedFileCard } from '../cards/file-model.ts';
 import type { FilePreviewMode } from '../cards/file-preview-mode.ts';
-
-export type ToolCardKind = 'read' | 'write' | 'edit' | 'bash' | 'other';
 
 export interface SavedToolResult {
   readonly content?: readonly { readonly type: string; readonly text?: string }[];
@@ -50,7 +48,7 @@ export interface ReaderEstimateContext {
 }
 
 export interface FileToolReader {
-  readonly kind: 'read' | 'write' | 'edit';
+  readonly kind: FileCardInput['kind'];
   readonly call: ToolCallSnapshot;
   readonly argsRef: Record<string, unknown>;
   readonly resultRef?: SavedToolResult;
@@ -91,22 +89,10 @@ export interface BashToolReader {
   failurePhase(): 'formation' | 'execution' | undefined;
 }
 
-export interface GenericToolReader {
-  readonly kind: 'other';
-  readonly call: ToolCallSnapshot;
-  readonly argsRef: Record<string, unknown>;
-  readonly resultRef?: SavedToolResult;
-  readonly failed: boolean;
-  readonly succeeded: boolean;
-  path(): undefined;
-  summaryArgs(): Record<string, unknown>;
-}
-
-export type ToolReader = FileToolReader | BashToolReader | GenericToolReader;
+export type ToolReader = FileToolReader | BashToolReader;
+export type ToolCardKind = ToolReader['kind'];
 
 export interface ToolAdapter {
-  readonly names: readonly string[];
-  readonly kind: Exclude<ToolCardKind, 'other'>;
   matches(call: ToolCallSnapshot): boolean;
-  create(call: ToolCallSnapshot): FileToolReader | BashToolReader;
+  create(call: ToolCallSnapshot): ToolReader;
 }

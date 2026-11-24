@@ -10,8 +10,7 @@ for (const hiddenHeader of [false, true]) test(`AFT diff preview bounds format d
     + (hiddenHeader ? '\n@@ -1 +1 @@\n-OLD_HIDDEN\n+NEW_HIDDEN' : '');
   const reader = createToolReader(captureToolCall({ name: 'edit', id: 'prefix-format', args: { path: 'a.ts' },
     result: { content: [], details: { diff } }, partial: false, expanded: false, executionStarted: true, argsComplete: true }));
-  assert.equal(reader.kind, 'edit');
-  if (reader.kind !== 'edit') return;
+  assert.ok(reader?.kind === 'edit');
   const original = RegExp.prototype.test;
   let visits = 0, maximum = 0;
   t.mock.method(RegExp.prototype, 'test', function(this: RegExp, value: string) {

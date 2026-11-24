@@ -49,7 +49,7 @@ export interface ToolViewPorts<Owner extends object, NativeRows extends readonly
     nativeRows(owner: Owner, width: number): NativeRows;
     imageRows(owner: Owner, width: number): string[];
     releaseFileRenderer(owner: Owner): void;
-    syncRendererArgs(owner: Owner, kind: 'file' | 'read'): void;
+    syncRendererArgs(owner: Owner): void;
     selection(): boolean;
     setExpanded(owner: Owner, expanded: boolean): void;
     requestRender(): void;
@@ -79,7 +79,8 @@ export function createToolViewPresenter<Owner extends object, NativeRows extends
   function preparedRows(layout: PreparedLayout): string[] {
     let rows: string[] | undefined; layout.output.withRows(value => { rows = value; }); return rows ?? [];
   }
-  const fileDetailLayout = (node: Owner, width: number) => ports.detail.layout(node, width);
+  const fileDetailLayout = (node: Owner, width: number) => ports.detail.layout(node, width)
+    ?? { rows: nativeRows(node, width), framed: false, native: true };
   function executing(node: Owner): boolean {
     return fields.executionStarted(node) && (fields.partial(node) || !fields.result(node)) &&
       (host.isTool(node) && policy.eligible(node) || policy.ownedBash(node) && sessions.layout(node)?.signature[0] === 'summary');
@@ -117,8 +118,7 @@ export function createToolViewPresenter<Owner extends object, NativeRows extends
   function fileLayout(node: Owner, width: number) {
     const mode = fileMode(node);
     if (!fileSucceeded(node)) {
-      const layout = mode === 'full' ? fileDetailLayout(node, width) : summaryLayout(node, width);
-      return { ...layout, native: false };
+      return mode === 'full' ? fileDetailLayout(node, width) : summaryLayout(node, width);
     }
     if (cardKind(node) === 'read' && mode !== 'full')
       return { ...summaryLayout(node, width), framed: false, native: false };
@@ -126,7 +126,7 @@ export function createToolViewPresenter<Owner extends object, NativeRows extends
     if (layout) return { geometry: layout.scene.geometry, framed: layout.scene.framed, native: false, rows: preparedRows(layout) };
     if (cardKind(node) !== 'read' && (mode === undefined || mode === 'full' && unsupportedFullFile(node)))
       return { rows: nativeRows(node, width), framed: false, native: true };
-    return { ...fileDetailLayout(node, width), framed: false, native: false };
+    return fileDetailLayout(node, width);
   }
   function readImageRows<Rows extends readonly string[]>(node: Owner, width: number, rows: Rows, framed: boolean): Rows | string[] {
     sessions.clearImageWindow(node);
@@ -317,7 +317,7 @@ export function createToolViewPresenter<Owner extends object, NativeRows extends
       if ((routing.fileRenderer(node) || routing.readRenderer(node)) && !layout.native && (fileSucceeded(node) || fields.expanded(node))) host.releaseFileRenderer(node);
       if (!layout.native && layout.rows.length && (layout.framed || fileSucceeded(node))) usefulSyntax(node);
       else pauseSyntax(node);
-      const rows = layout.framed || fileSucceeded(node) || cardKind(node) === 'read' && fileMode(node) === 'full' ? layout.rows : [
+      const rows = layout.native || layout.framed || fileSucceeded(node) || cardKind(node) === 'read' && fileMode(node) === 'full' ? layout.rows : [
         ...paintSummary(node, width), ...layout.rows.slice(summaryLayout(node, width).rows.length),
       ];
       const displayedRows = cardKind(node) === 'read' ? readImageRows(node, width, rows, layout.framed === true) : rows;
@@ -428,15 +428,13 @@ export function createToolViewPresenter<Owner extends object, NativeRows extends
     if (name === 'invalidate') producer.forgetImageResult(fields.result(node));
     const previousArgs = name === 'updateArgs' ? fields.args(node) : undefined;
     const result = method.apply(node, args);
-    if (name === 'updateArgs') {
-      if (policy.fileTool(node)) host.syncRendererArgs(node, 'file');
-      else if (cardKind(node) === 'read') host.syncRendererArgs(node, 'read');
-    }
+    if (name === 'updateArgs') host.syncRendererArgs(node);
     if (name === 'updateResult') producer.forgetImageResult(fields.result(node));
     preparation.observeFileTurn(node, name === 'updateResult');
     if (name !== 'invalidate') ports.phase(node, name);
     observeSyntax(node, undefined, name === 'invalidate' || sameExpansion ? undefined : previousArgs ?? true);
     if (policy.filePresentationTool(node)) prepareFileDetail(node, preserveFileDetail);
+    else if (preserveFileDetail) sessions.fileDetails.drop(node);
     if (name === 'setExpanded' && cardKind(node) !== 'bash' && fields.expanded(node)) sessions.dropPreparedLayout(node);
     if (name === 'updateResult') preparation.settleInterrupted(node);
     if (!executing(node) || !host.attached(node)) animation.remove(node);

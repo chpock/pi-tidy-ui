@@ -317,7 +317,7 @@ export function installTidyUi(tui: LiveTui, getTheme: () => Palette, options: In
       isTool: (node): node is object => native.tool.isTool(node), siblings: node => native.siblings(node),
       index: (node, siblings) => native.index(node, siblings), otherRows: (node, width) => native.otherRows(node, width),
       nativeRows, imageRows: (node, width) => native.tool.imageRows(node, width),
-      releaseFileRenderer: node => native.tool.releaseFileRenderer(node), syncRendererArgs: (node, kind) => native.tool.syncRendererArgs(node, kind),
+      releaseFileRenderer: node => native.tool.releaseFileRenderer(node), syncRendererArgs: node => native.tool.syncRendererArgs(node),
       selection: () => native.selection(), setExpanded: (node, expanded) => native.tool.setExpanded(node, expanded),
       requestRender: () => tui.requestRender(),
     },

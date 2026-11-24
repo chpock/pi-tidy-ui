@@ -179,10 +179,13 @@ export class NativeSession {
 
   private visit(node: Component, parent?: Container, index = -1): void {
     if (!this.live) return;
+    const tool = this.tools.isTool(node);
+    // Renderer transfers keep the parent entry; ordinary removal deletes it.
+    const revisitingTool = tool && this.parents.has(node);
     if (parent) this.parents.set(node, { parent, index });
-    if (this.tools.isTool(node)) {
+    if (tool) {
       this.ports.tool.restorePreview(node);
-      this.tools.install(node);
+      this.tools.install(node, revisitingTool);
     } else if (this.users.isUser(node)) this.users.install(node);
     else if (this.editor.isEditor(node)) this.editor.install(node);
     if (node instanceof Container) node.children.forEach((child, index) => this.visit(child, node, index));

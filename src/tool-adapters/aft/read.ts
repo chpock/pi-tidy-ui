@@ -53,8 +53,6 @@ function aftSource(base: FileToolReader, call: ToolCallSnapshot, mode: 'full' | 
 
 export function aftReadAdapter(): ToolAdapter {
   return {
-    names: ['read'],
-    kind: 'read',
     matches: call => {
       const data = details(call);
       return ['success', 'start_line', 'end_line', 'lines_read'].some(key => Object.hasOwn(data, key));

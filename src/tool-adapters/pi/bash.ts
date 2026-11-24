@@ -3,7 +3,7 @@ import { prepareBashService } from '../../bash-card.ts';
 import type { BashReaderBehavior } from '../shared/bash-reader.ts';
 import { createBashReader } from '../shared/bash-reader.ts';
 import { commandFooter } from '../shared/command-footer.ts';
-import type { ReaderEstimateContext, ToolAdapter, ToolCallSnapshot } from '../contracts.ts';
+import type { ReaderEstimateContext, ToolCallSnapshot } from '../contracts.ts';
 
 function failurePhase(call: ToolCallSnapshot): 'formation' | 'execution' | undefined {
   if (call.executionStarted || call.result?.role === 'toolResult') return 'execution';
@@ -47,7 +47,3 @@ const behavior: BashReaderBehavior = {
   failurePhase,
 };
 export function piBashReader(call: ToolCallSnapshot) { return createBashReader(call, behavior); }
-
-export const piBashAdapter: ToolAdapter = {
-  names: ['bash'], kind: 'bash', matches: () => true, create: piBashReader,
-};

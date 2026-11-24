@@ -1201,6 +1201,21 @@ test('custom argument updates preserve native batching and keep retained stock l
   } finally { await h.stop(); }
 });
 
+test('a retained stock leaf receives a malformed argument update before a native frame', async () => {
+  const h = fixture();
+  try {
+    await h.ready; await h.start();
+    const tool = writeOwner(h, 'previous-stock-path', 'const previous_stock_source = 1;');
+    completeLiveWrite(h, tool); h.root.render(80); await settled();
+    assert.match(tool.render(80).join('\n'), /previous_stock_source/u);
+    tool.updateArgs([]);
+    const leaf = Reflect.get(tool, 'callRendererComponent') as Component;
+    const rows = leaf.render(80).join('\n');
+    assert.ok(rows.trim().length > 0);
+    assert.doesNotMatch(rows, /previous-stock-path|previous_stock_source/u);
+  } finally { await h.stop(); }
+});
+
 for (const replaceCall of [false, true]) test(`removing a stock result renderer excludes the retained owner from argument synchronization${replaceCall ? ' with a foreign call' : ''}`, async () => {
   const h = fixture();
   try {
@@ -2953,6 +2968,28 @@ test('expanded final error details refuse unbudgeted untrusted text without reta
 });
 
 
+test('a malformed argument update releases funded file details while the failed edit stays attached', async () => {
+  const h = fixture();
+  const original = SourceExecution.prototype.geometryFunding;
+  let budget: import('../../../src/resources/data-budget.ts').DataBudget | undefined, base: number | undefined;
+  try {
+    await h.start();
+    const tool = editOwner(h, 'invalidated-error-detail');
+    tool.updateResult({ content: [{ type: 'text', text: 'Repeated error detail. '.repeat(80) }], isError: true }, false);
+    SourceExecution.prototype.geometryFunding = function (...args) {
+      const funding = original.apply(this, args);
+      if (funding) { budget = funding.budget; base ??= budget.stats().retainedBytes; }
+      return funding;
+    };
+    tool.setExpanded(true);
+    assert.match(tool.render(80).join('\n'), /Repeated error detail/u);
+    assert.ok(budget !== undefined && base !== undefined && budget.stats().retainedBytes > base);
+    tool.updateArgs(null);
+    assert.equal(budget.stats().retainedBytes, base);
+    assert.ok(h.root.children.includes(tool));
+  } finally { SourceExecution.prototype.geometryFunding = original; await h.stop(); }
+});
+
 test('expanded error details use actual measurement funding without the pending-preview limits', async () => {
   const h = fixture();
   const originalFunding = SourceExecution.prototype.geometryFunding;
@@ -4160,7 +4197,7 @@ for (const kind of ['bash', 'write'] as const) {
       assert.ok(grants > 0, 'the active owner has genuinely funded its prepared geometry');
       assert.ok(preparations.some(event => event.phase === 'prepared'));
       const prepare = PreparedLayoutPresenter.prototype.prepare, capture = ToolProducerPresenter.prototype.capture;
-      const classify = ToolProducerPresenter.prototype.kindFrom;
+      const classify = ToolProducerPresenter.prototype.kind;
       let visiting = false, visits = 0, snapshots = 0, classifications = 0;
       t.mock.method(PreparedLayoutPresenter.prototype, 'prepare', function(this: PreparedLayoutPresenter<object>, ...args: Parameters<typeof prepare>) {
         visiting = true;
@@ -4171,7 +4208,7 @@ for (const kind of ['bash', 'write'] as const) {
         if (visiting) snapshots++;
         return capture.call(this, node);
       });
-      t.mock.method(ToolProducerPresenter.prototype, 'kindFrom', function(this: ToolProducerPresenter<object>, ...args: Parameters<typeof classify>) {
+      t.mock.method(ToolProducerPresenter.prototype, 'kind', function(this: ToolProducerPresenter<object>, ...args: Parameters<typeof classify>) {
         if (visiting) classifications++;
         return classify.apply(this, args);
       });

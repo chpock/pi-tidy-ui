@@ -102,7 +102,6 @@ export function aftFileReader(call: ToolCallSnapshot, kind: FileKind): FileToolR
 }
 export function aftFileAdapter(kind: FileKind): ToolAdapter {
   return {
-    names: [kind], kind,
     matches(call) {
       const data = fileData(call);
       return ['diff', 'patch', 'truncated', 'noOp', 'diagnostics'].some(key => Object.hasOwn(data, key))

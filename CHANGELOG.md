@@ -60,6 +60,8 @@ been reconstructed.
 
 ### Fixed
 
+- Keep pi-tidy-ui active if an attached tool receives malformed arguments. That
+  call uses its native renderer until it receives an argument object again.
 - Keep accepted Bash and file syntax colors when parser data is evicted. Returning
   to the card or resizing it preserves its highlighting without parsing it again.
 - Support Pi 1.6's read-only renderer rows without changing native presentation

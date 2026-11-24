@@ -2,7 +2,7 @@ import { getLanguageFromPath } from '@earendil-works/pi-coding-agent';
 import { FILE_PREVIEW_MAX_ROWS, FILE_PREVIEW_MAX_UNITS, filePreviewSource, filePreviewText, prepareFileCard, sourceRows } from '../../cards/file-input.ts';
 import type { FileCardInput } from '../../cards/file-model.ts';
 import type { FilePreviewMode } from '../../cards/file-preview-mode.ts';
-import type { FileToolReader, PendingFileDetail, ReaderEstimateContext, ToolAdapter, ToolCallSnapshot } from '../contracts.ts';
+import type { FileToolReader, PendingFileDetail, ReaderEstimateContext, ToolCallSnapshot } from '../contracts.ts';
 import { createFileReader, type FileReaderBehavior } from '../shared/file-reader.ts';
 import { weakIdentity } from '../shared/identity.ts';
 import { resultDetails as fileData } from '../shared/result-details.ts';
@@ -145,6 +145,3 @@ function behavior(kind: FileKind): FileReaderBehavior {
 }
 const behaviors = { read: behavior('read'), write: behavior('write'), edit: behavior('edit') };
 export function piFileReader(call: ToolCallSnapshot, kind: FileKind): FileToolReader { return createFileReader(call, behaviors[kind]); }
-export function piFileAdapter(kind: FileKind): ToolAdapter {
-  return { names: [kind], kind, matches: () => true, create: call => piFileReader(call, kind) };
-}

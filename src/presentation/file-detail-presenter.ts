@@ -1,6 +1,7 @@
 import type { CardTheme } from '../card-theme.ts';
 import type { FilePreviewMode } from '../cards/file-preview-mode.ts';
-import type { LayoutKind, RenderCache } from '../render-cache.ts';
+import type { RenderCache } from '../render-cache.ts';
+import type { FileCardInput } from '../cards/file-model.ts';
 import type { FileDetails } from './file-details.ts';
 import type { ToolProducerPresenter } from './tool-producers.ts';
 import type { ToolPresentationLayout, ToolPresentationSessions } from './tool-sessions.ts';
@@ -27,20 +28,20 @@ export class FileDetailPresenter<Owner extends object> {
     this.ports = ports;
   }
 
-  layout(owner: Owner, width: number): ToolPresentationLayout {
+  layout(owner: Owner, width: number): ToolPresentationLayout | undefined {
     const { ports } = this;
     const call = ports.producer.capture(owner);
     const kind = ports.producer.kindFrom(call);
+    if (kind === undefined || kind === 'bash') return;
     const theme = ports.theme(), padding = ports.padding(), mode = ports.mode(owner) ?? 'preview';
     const cwd = ports.cwd(owner);
-    const layoutKind: LayoutKind = kind === 'other' ? 'summary' : kind;
-    const signature = [layoutKind, width, padding, theme, theme.fg, call.args, call.result, call.expanded, call.partial, cwd, mode];
+    const signature = [kind, width, padding, theme, theme.fg, call.args, call.result, call.expanded, call.partial, cwd, mode];
 
     const reusable = ports.sessions.reusableLayout(owner, signature);
     if (reusable) return reusable;
     ports.sessions.dropLayout(owner);
     const value = this.build(owner, width, call, kind, theme, padding, mode, cwd);
-    ports.sessions.publishLayout(owner, signature, ports.cache, layoutKind, value);
+    ports.sessions.publishLayout(owner, signature, ports.cache, kind, value);
     return value;
   }
 
@@ -51,19 +52,18 @@ export class FileDetailPresenter<Owner extends object> {
   }
 
   private build(owner: Owner, width: number, call: ReturnType<ToolProducerPresenter<Owner>['capture']>,
-    kind: ReturnType<ToolProducerPresenter<Owner>['kindFrom']>, theme: CardTheme, padding: number, mode: FilePreviewMode,
+    kind: FileCardInput['kind'], theme: CardTheme, padding: number, mode: FilePreviewMode,
     cwd: string | undefined): ToolPresentationLayout {
     const { ports } = this;
     const detail = mode === 'full' ? ports.details.peek(owner, mode) : undefined;
       if (mode === 'full' && !call.partial && call.resultFailed)
-        return ports.summaries.fileError(owner, width, theme, padding, cwd, detail);
+        return ports.summaries.fileError(kind, ports.producer.readerFrom(call)?.path(), width, theme, padding, cwd, detail);
 
       const summary = ports.summaries.rows(owner, width, theme, padding, kind === 'read' && mode === 'full' ? 'Read' : undefined, cwd);
       const state = ports.sessions.syntax(owner);
       const paintRetry = state?.paintRetry === true;
       const rows = [...summary.rows];
-      const fileKind = kind === 'read' || kind === 'edit' || kind === 'write';
-      const succeeded = fileKind && call.hasResult && !call.partial && !call.resultFailed;
+      const succeeded = call.hasResult && !call.partial && !call.resultFailed;
       if (succeeded && mode === 'preview') {
         const unsupported = ports.unsupported(owner);
         const refused = state?.refused === true;

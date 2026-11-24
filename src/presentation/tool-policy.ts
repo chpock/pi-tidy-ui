@@ -32,7 +32,7 @@ export class ToolPresentationPolicy<Owner extends object> {
     this.overrides = overrides;
   }
 
-  kind(owner: Owner): ToolCardKind {
+  kind(owner: Owner): ToolCardKind | undefined {
     return this.producer.kind(owner);
   }
 
@@ -61,12 +61,12 @@ export class ToolPresentationPolicy<Owner extends object> {
     return this.fileEligible(owner, call, this.producer.kindFrom(call));
   }
 
-  private fileEligible(owner: Owner, call: ToolCallSnapshot, kind: ToolCardKind): boolean {
+  private fileEligible(owner: Owner, call: ToolCallSnapshot, kind: ToolCardKind | undefined): boolean {
     if (kind !== 'read' && kind !== 'edit' && kind !== 'write') return false;
     if (!this.facts.active() || this.facts.hidden(owner)) return false;
     if (kind === 'read' ? !this.overrides.compact.has(call.name) && this.overrides.native.has(call.name)
       : this.overrides.compact.has(call.name) || this.overrides.native.has(call.name)) return false;
-    if (call.hasResult && !call.partial && !call.resultFailed && !this.producer.readerFrom(call).path()) return false;
+    if (call.hasResult && !call.partial && !call.resultFailed && !this.producer.readerFrom(call)?.path()) return false;
     return kind === 'read' || !this.hasImage(owner);
   }
 
@@ -85,15 +85,15 @@ export class ToolPresentationPolicy<Owner extends object> {
     return this.fileModeFrom(owner, call, this.producer.kindFrom(call));
   }
 
-  private fileModeFrom(owner: Owner, call: ToolCallSnapshot, kind: ToolCardKind): 'preview' | 'full' | undefined {
+  private fileModeFrom(owner: Owner, call: ToolCallSnapshot, kind: ToolCardKind | undefined): 'preview' | 'full' | undefined {
     if (!this.fileEligible(owner, call, kind)) return undefined;
     if (kind === 'read') return this.facts.expanded(owner) ? 'full' : undefined;
     return this.sessions.fileMode(owner, this.facts.toolCallId(owner), this.facts.expanded(owner));
   }
 
   eligible(owner: Owner): boolean {
-    if (!this.facts.active() || this.facts.hidden(owner) || this.facts.expanded(owner)) return false;
-    const kind = this.kind(owner), name = this.facts.name(owner);
+    if (!this.facts.active() || this.facts.hidden(owner) || this.facts.expanded(owner) || !this.producer.hasArgs(owner)) return false;
+    const name = this.facts.name(owner), kind = this.producer.kindForName(name);
     const selected = kind === 'read'
       ? this.overrides.compact.has(name) || !this.overrides.native.has(name)
       : this.overrides.compact.has(name) || !this.overrides.cards.has(name) ||

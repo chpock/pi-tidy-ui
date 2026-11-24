@@ -1,7 +1,7 @@
 import { layoutCard, type BashPaintProof, type CardLayout, type CardRows } from '../rendering/card-layout.ts';
 import type { PreparedCard, ReadyCardPaint } from '../rendering/card-values.ts';
 import type { GeometryFunding } from '../resources/data-budget.ts';
-import type { CacheEntry, LayoutKind, RenderCache } from '../render-cache.ts';
+import type { CacheEntry, RenderCache } from '../render-cache.ts';
 import type { FilePreviewMode } from '../cards/file-preview-mode.ts';
 import type { ToolProducerPresenter } from './tool-producers.ts';
 import type { PreparedLayout, ToolPresentationSessions } from './tool-sessions.ts';
@@ -51,7 +51,7 @@ export class PreparedLayoutPresenter<Owner extends object> {
     const previous = previousEntry?.value;
     const padding = ports.outputPadding();
     const expandedAtEntry = ports.expanded(owner);
-    let kind: ReturnType<typeof ports.kind> | undefined;
+    let kind: ReturnType<typeof ports.kind>;
 
     let funding: GeometryFunding | undefined;
     let scene: CardLayout | undefined;
@@ -69,6 +69,7 @@ export class PreparedLayoutPresenter<Owner extends object> {
           && previous.expanded === expanded && previous.geometryStamp === display.geometryStamp;
         if (sameGeometry && previous.output.isValid && previous.paintStamp === paint.paintStamp) { candidate = previous; return; }
         kind = ports.kind(owner);
+        if (!kind) return;
         funding = ports.funding();
         if (!funding) return;
         scene = sameGeometry ? previous.scene : layoutCard(display, { width, outputPad: padding, expanded }, funding);
@@ -126,8 +127,7 @@ export class PreparedLayoutPresenter<Owner extends object> {
       };
       const pool = candidate.scene.framed ? ports.cardCache : ports.ordinaryCache;
       pool.get(undefined);
-      const layoutKind: LayoutKind = kind === 'other' ? 'summary' : kind!;
-      const entry = pool.put(candidate, rows, layoutKind, preparedRelease(release));
+      const entry = pool.put(candidate, rows, kind!, preparedRelease(release));
       if (candidate.scene === previous?.scene && oldRelease) oldRelease.geometry = undefined;
       this.cleanup.set(entry, release);
       ports.sessions.dropPreparedLayout(owner);

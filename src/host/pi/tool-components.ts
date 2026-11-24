@@ -66,19 +66,19 @@ export class ToolComponents {
     return typeof node.toolCallId === 'string' && typeof node.toolName === 'string';
   }
 
-  private compatible(node: ToolNode): boolean {
+  private compatible(node: ToolNode, revisiting: boolean): boolean {
     return node instanceof Container && typeof node.expanded === 'boolean' &&
       typeof node.hideComponent === 'boolean' && typeof node.isPartial === 'boolean' &&
       typeof node.executionStarted === 'boolean' && typeof node.argsComplete === 'boolean' &&
-      !!node.args && typeof node.args === 'object' && !Array.isArray(node.args) &&
+      (revisiting ? 'args' in node : !!node.args && typeof node.args === 'object' && !Array.isArray(node.args)) &&
       typeof node.markExecutionStarted === 'function' && typeof node.updateArgs === 'function' && typeof node.updateResult === 'function' &&
       typeof node.setExpanded === 'function' && typeof node.getRenderContext === 'function' &&
       typeof node.getRenderShell === 'function' &&
       typeof node.render === 'function' && typeof node.handleMouse === 'function';
   }
 
-  install(owner: object): void {
-    if (!this.compatible(owner as ToolNode)) { this.ports.fail('Tool component contract is incompatible; native rendering retained'); return; }
+  install(owner: object, revisiting: boolean): void {
+    if (!this.compatible(owner as ToolNode, revisiting)) { this.ports.fail('Tool component contract is incompatible; native rendering retained'); return; }
     this.patchPrototype(Object.getPrototypeOf(owner) as object);
     this.ports.attach(owner);
   }
@@ -189,10 +189,10 @@ export class ToolComponents {
     const context = this.context(owner) as { state?: unknown } | null | undefined;
     releaseNativeRendererCache(context?.state);
   }
-  syncRendererArgs(owner: object, kind: 'file' | 'read'): void {
+  syncRendererArgs(owner: object): void {
     const node = owner as ToolNode;
-    const pair = kind === 'file' ? isDeferredStockFilePair(node.getCallRenderer?.(), node.getResultRenderer?.())
-      : isDeferredStockReadPair(node.getCallRenderer?.(), node.getResultRenderer?.());
+    const pair = node.toolName === 'read' ? this.readRenderer(owner)
+      : (node.toolName === 'write' || node.toolName === 'edit') && this.deferredFilePair(owner);
     if (!pair) return;
     const context = this.context(owner) as { state?: unknown } | null | undefined;
     updateNativeRendererArgs(context?.state, node.toolName, node.toolCallId, node.args);
