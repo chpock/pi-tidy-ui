@@ -7,12 +7,63 @@ import { setImmediate as turn } from 'node:timers/promises';
 import test from 'node:test';
 import xterm from '@xterm/headless';
 import { createEventRecorder, writeDiagnosticJson } from '../fixtures/terminal-output.ts';
-import { PiTerminal, observeNativeReceipts } from '../fixtures/terminal-harness.mjs';
+import { createPtyOutputWriter, observeNativeReceipts, observeRenderFrames, PiTerminal } from '../fixtures/terminal-harness.mjs';
 
 import { CustomEditor } from '@earendil-works/pi-coding-agent';
 import foreignEditorExtension from '../fixtures/foreign-editor.ts';
 
 const { Terminal } = xterm;
+
+test('PTY output preserves styled UTF-8 glyphs and capture order across byte boundaries', async () => {
+  const text = 'a • — … é 界 🙂 𐀀 👩‍💻', id = 1;
+  const packet = Buffer.from(JSON.stringify({ type: 'capture', id })).toString('base64');
+  const bytes = Buffer.from(`\x1b[?2026h\x1b[38;2;17;34;51m${text}\x1b[39m\x1b[?2026l\x1b]777;tidy-test;${packet}\x07\r\nNEXT`);
+  const separator = bytes.indexOf(Buffer.from('•'));
+  assert.ok(separator > 0);
+  const partitions = [
+    [0, bytes.length],
+    [0, separator + 2, bytes.length],
+    ...Array.from({ length: bytes.length - 1 }, (_, i) => [0, i + 1, bytes.length]),
+    Array.from({ length: bytes.length + 1 }, (_, i) => i),
+  ];
+  let referenceCells;
+  for (const cuts of partitions) {
+    const term = new Terminal({ cols: 32, rows: 3, allowProposedApi: true }), state = {};
+    observeRenderFrames(term, state);
+    observeNativeReceipts(term, state);
+    state.nativeRequests.set(id, { type: 'capture', screen: true });
+    const write = createPtyOutputWriter(term);
+    try {
+      let last;
+      for (let i = 1; i < cuts.length; i++) last = write(bytes.subarray(cuts[i - 1], cuts[i]));
+      await last;
+      assert.equal(state.error, undefined);
+      assert.equal(state.completedRenders, 1);
+      assert.equal(state.snapshotCopies, 1);
+      const receipt = state.nativeReceipts.get(`capture:${id}`), snapshot = state.nativeSnapshots.get(receipt);
+      assert.ok(snapshot, 'the split native receipt still takes its screen snapshot');
+      assert.equal(snapshot.screen[0], text, `complete text before receipt, cuts: ${cuts.join(',')}`);
+      assert.equal(snapshot.screen[1], '', 'post-receipt output is not part of the snapshot');
+      assert.equal(snapshot.cells[0][2].fg, 0x112233);
+      assert.equal(snapshot.cells[0][2].text, '•');
+      if (referenceCells) assert.deepEqual(snapshot.cells, referenceCells, `physical attributes, cuts: ${cuts.join(',')}`);
+      else referenceCells = snapshot.cells;
+      assert.equal(term.buffer.active.getLine(1).translateToString(true), 'NEXT');
+    } finally { term.dispose(); }
+  }
+});
+
+test('PTY output keeps an incomplete tail out of the grid and does not carry it to another terminal', async () => {
+  const terminal = () => new Terminal({ cols: 16, rows: 2, allowProposedApi: true });
+  const first = terminal(), second = terminal();
+  try {
+    const writeFirst = createPtyOutputWriter(first), writeSecond = createPtyOutputWriter(second);
+    await writeFirst(Buffer.from([0x41, 0xe2, 0x80]));
+    await writeSecond(Buffer.from('B•'));
+    assert.equal(first.buffer.active.getLine(0).translateToString(true), 'A');
+    assert.equal(second.buffer.active.getLine(0).translateToString(true), 'B•');
+  } finally { first.dispose(); second.dispose(); }
+});
 
 function capturePublication(action, onPacket) {
   const original = process.stdout.write;

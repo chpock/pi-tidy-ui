@@ -91,6 +91,16 @@ export function observeNativeReceipts(term, state) {
   });
 }
 
+export function createPtyOutputWriter(term) {
+  // xterm 6 drops valid UTF-8 across some write boundaries (xterm.js #6003).
+  // Decode one stream per PTY without flushing an incomplete tail at shutdown.
+  const decoder = new TextDecoder('utf-8', { ignoreBOM: true });
+  return bytes => {
+    const text = decoder.decode(bytes, { stream: true });
+    return new Promise(done => term.write(text, done));
+  };
+}
+
 export class PiTerminal {
   // The integration-profile helper may supply additional isolated settings, environment and explicit extensions.
   constructor(name, { tidyUi = false, mode = 'fullscreen', session, flags = [],
@@ -199,6 +209,7 @@ export class PiTerminal {
       this.exited = { code, signal }; this.nativeRequests.clear(); this.nativeReceipts.clear(); this.nativeProgress.emit('progress');
     });
     this.child.on('close', () => { this.closed = true; this.nativeProgress.emit('progress'); });
+    const writePtyOutput = createPtyOutputWriter(this.term);
     this.rl = createInterface({ input: this.child.stdout });
     this.rl.on('line', (line) => {
       let forwardedData = false;
@@ -212,7 +223,7 @@ export class PiTerminal {
           else this.raw.push(data);
           this.lastOutput = Date.now();
           // Native parsing is FIFO: the newest callback also drains all earlier chunks.
-          this.queue = new Promise((done) => this.term.write(data, done));
+          this.queue = writePtyOutput(data);
           forwardedData = true;
         }
         if (frame.exit !== undefined) {
