@@ -162,7 +162,7 @@ This is not an extra height cache, a source-classification retry or another body
 
 Read's stock constructor spacer is not an image spacer and is not borrowed into the owned body. A hidden foreign read is skipped like any other hidden predecessor, whether compact or explicitly expanded. Its unknown self-shell visibility can still require native rendering; exact stock read does not need that probe.
 
-The next tool owns any required outside separator. A completed compact body with no separator can return its retained array directly; adding a separator or replacing an animated prefix can allocate a small composition array. Exact separation/interaction rules are in [summaries](tool-summary-spec.md#6-separation-and-visibility) and [frame hit testing](card-frame-spec.md).
+The next tool owns any required outside separator. An unchanged owned body can [reuse its final rows](render-cache-spec.md#work-per-frame) with or without a separator. Composing an animated prefix still creates a transient array. Exact separation and interaction rules are in [summaries](tool-summary-spec.md#6-separation-and-visibility) and [frame hit testing](card-frame-spec.md).
 
 ## Retention, accounting and pressure are different
 

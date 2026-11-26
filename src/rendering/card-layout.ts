@@ -184,6 +184,7 @@ export class CardRows {
   readonly rowCount: number;
   constructor(rows: string[], ledger: Ledger) { this.#rows = rows; this.#ledger = ledger; this.rowCount = rows.length; this.#receipt = receipt(new WeakRef(this), ledger); }
   get isValid() { return !!this.#rows; }
+  ownsRows(rows: readonly string[]): boolean { return this.#rows === rows; }
   cleanupReceipt() { return this.#receipt; }
   /** Operation-level borrow protects every charged row without traversing the
    * charge ledger. Consumers must not mutate or independently own the array. */

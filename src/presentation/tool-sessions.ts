@@ -34,6 +34,7 @@ export type PreparedLayout = {
   publication: number;
   origin: 'owned' | 'pi';
   gap?: number;
+  separatedRows?: WeakRef<string[]>;
 };
 
 export type FileSourceSnapshot = { mode: FilePreviewMode; key: readonly unknown[] };
@@ -52,6 +53,7 @@ export interface ToolLayoutState {
   entry: CacheEntry<ToolPresentationLayout>;
   pool: RenderCache;
   gap?: number;
+  separatedRows?: WeakRef<string[]>;
 }
 
 export interface PreparedLayoutState {
@@ -222,7 +224,16 @@ export class ToolPresentationSessions<Owner extends object> {
     if (layout) layout.gap = offset;
     const prepared = this.prepared.get(owner)?.entry.value;
     if (prepared) prepared.gap = offset;
-    return offset ? ['', ...rows] : rows;
+    if (!offset) return rows;
+    const current = layout?.entry.value;
+    const ordinaryRows: readonly string[] | undefined = current?.native ? undefined : current?.rows;
+    const owned = prepared?.output.ownsRows(rows) ? prepared : ordinaryRows === rows ? layout : undefined;
+    const prior = owned?.separatedRows?.deref();
+    if (prior) return prior;
+    const separated = ['', ...rows];
+    // Pi may retain its last frame. Reuse that array without holding a second body ourselves.
+    if (owned) owned.separatedRows = new WeakRef(separated);
+    return separated;
   }
 
   forgetSession(owner: Owner): void {

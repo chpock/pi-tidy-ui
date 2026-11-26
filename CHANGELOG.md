@@ -60,6 +60,8 @@ been reconstructed.
 
 - Show the saved location of the full Bash output, or the reason it could not
   be saved, outside the collapsed Bash preview when Pi supplies those details.
+- Reuse the final row arrays of unchanged tool cards with separators while Pi
+  retains them. On Pi 1.6 this also avoids comparing those rows one by one.
 
 ### Fixed
 

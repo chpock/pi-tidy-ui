@@ -627,6 +627,7 @@ The `summaries` group also owns `display-path.test.ts` and `display-path.cli.tes
 
 ### Streaming display versus work
 
+- On content frames with many ready cards, compare the number of separated row arrays and copied row slots against an unchanged-output control. Check equal rows/cells, no added syntax requests or retained body bytes, and separator changes after a predecessor is removed or moved. A view-only scroll does not exercise this path.
 - Bash full-output status stays visible outside the ten-row preview and does not make a short result expandable. Verify stock path and failure details, no removal of unmatched or interior output, and that partial results and unchanged saved session bytes are preserved.
 - Hold real or controlled replies while appending one-line and multiline commands. Matching historical foregrounds, including provisional tails, remain visible; every current character is shown and new graphemes are neutral unless their first scalar belongs to the matching prefix. Corrections never recover matching suffix islands. Include combining/variation/ZWJ/Prepend/surrogate boundaries, controls, tabs and narrow soft wraps.
 - Count dispatches, parser calls, body builds, explicit invalidations and host render requests independently. Waiting, same-text completion and completion-only acknowledgment do not rebuild unchanged bodies. A style-changed reply must repaint even when parser-call counts are zero. Final empty appends still settle real leases.

@@ -21,6 +21,35 @@ import { stripVTControlCharacters } from "node:util";
 import { menuPage, setAppearance } from "../../helpers/menu-driver.ts";
 import { Container, Root, Text, Tool, bashTool, color, editDiff, extensionHarness, installTidyUi, mouse, plain, setup, spinnerFrames } from "../../fixtures/sdk-contract-support.ts";
 
+test('unchanged tool rows with a separator let Pi reuse the previous array', () => {
+  const predecessor = bashTool('first'), tool = bashTool('second');
+  const { root, controller } = setup([predecessor, tool]);
+  try {
+    const first = tool.render(80);
+    assert.equal(first[0], '', 'the initial frame has an outside separator');
+    assert.equal(tool.render(80) === first, true, 'stable owned rows keep identity on a content frame');
+    root.removeChild(predecessor);
+    const leading = tool.render(80);
+    assert.deepEqual(leading, first.slice(1), 'neighbor removal changes only the exterior offset');
+    assert.equal(first[0], '', 'Pi may still hold the old borrowed array');
+    root.addChild(predecessor);
+    root.removeChild(tool);
+    root.addChild(tool);
+    const moved = tool.render(80);
+    assert.equal(moved[0], '');
+    assert.equal(tool.render(80) === moved, true);
+    const narrow = tool.render(36);
+    assert.equal(narrow === moved, false);
+    assert.ok(narrow.slice(1).every(row => visibleWidth(row) === 36));
+    tool.updateResult({ content: [{ type: 'text', text: 'SETTLED_CHANGE' }] });
+    const changed = tool.render(36);
+    assert.equal(changed === narrow, false);
+    assert.match(changed.map(plain).join('\n'), /SETTLED_CHANGE/u);
+    assert.doesNotMatch(narrow.map(plain).join('\n'), /SETTLED_CHANGE/u);
+    assert.equal(tool.render(36) === changed, true);
+  } finally { controller.restore(); }
+});
+
 test("shared frame accepts unrelated bodies and paint without host/tool state", () => {
   const g = cardGeometry(12);
   assert.deepEqual([g.marginLeft, g.marginRight, g.borderWidth, g.paddingLeft, g.paddingRight, g.contentX, g.contentWidth], [1, 1, 1, 1, 1, 3, 7]);

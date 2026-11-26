@@ -141,7 +141,7 @@ See [work authority](syntax/work.md), [storage lifetimes](syntax/storage.md),
 
 | Change | Work that changes | Work deliberately reused |
 |---|---|---|
-| Unchanged host frame | Cheap identity/validity checks, transient separator/spinner composition if needed | Ready source/style/geometry and latest completed body rows |
+| Unchanged host frame | Identity and validity checks; compose transient spinner rows or a missing [separated projection](render-cache-spec.md#work-per-frame) | Ready source/style/geometry and latest completed body rows |
 | Real width change | Reflow, projection and final rows | Source scopes, styles and measured glyph widths |
 | Palette preview/rollback | Local bindings/palette and coherent repaint; STYLE only for missing expressions | Theme-independent source and geometry; retained expressions allow local rollback |
 | File preview/full selection | Selected source/display identity and any newly exposed source preparation | Still-valid selected source fragments and measurements only under their exact view/prefix identities |
