@@ -308,7 +308,7 @@ for (const mode of ['regular', 'fullscreen']) test(`real CLI: settings popup nav
         assert.ok(bounds, 'the actual terminal paints the full popup frame');
         const { left, width, top, bottom } = bounds, rows = dump.screen.map(row => sliceByColumn(row, left, width));
         assert.equal(left, Math.floor((live.term.cols - width) / 2), 'the actual size is centered, not just its text');
-        assert.ok(width <= Math.min(72, live.term.cols));
+        assert.ok(width <= live.term.cols);
         const frame = rows.slice(top, bottom + 1), dividers = frame.flatMap((row, index) => /^├─+┤$/u.test(row) ? [index] : []);
         assert.equal(frame[1].slice(1, -1).trim(), heading);
         assert.deepEqual(dividers, [2, frame.length - 3]);
@@ -324,9 +324,13 @@ for (const mode of ['regular', 'fullscreen']) test(`real CLI: settings popup nav
           else assert.match(body.at(-1), /^(?:→ | {2}\S|\s*\(\d+\/\d+\)$)/u, 'a choice or scroll indicator precedes the footer');
           assert.doesNotMatch(body.join('\n'), /Use Pi’s code colors|Return to the previous page/u);
         } else {
-          assert.equal(frame.at(-6).slice(1, -1).trim(), '', 'a physical blank row separates the list and description');
-          help = frame.slice(-5, -3).map(row => row.slice(1, -1).trimEnd());
-          assert.equal(help.length, 2); assert.ok(help[0].trim());
+          assert.equal(frame[3].slice(1, -1).trim(), '', 'one physical blank row follows the header divider');
+          assert.match(frame[4], /^│(?:→ | {2})\S/u, 'the first choice follows that blank');
+          assert.match(frame.at(-6), /^│(?:(?:→ | {2})\S|\s*\(\d+\/\d+\)\s*│$)/u, 'the list ends before the help block');
+          assert.equal(frame.at(-5).slice(1, -1).trim(), '', 'one physical blank row separates the list and help');
+          help = frame.at(-4).slice(1, -1).trimEnd();
+          assert.ok(help, 'a single nonempty help row precedes the footer divider');
+          if (width > 24) assert.ok(!help.endsWith('…'), 'help fits without truncation at the preferred width');
         }
         assert.match(frame.at(-2), width >= 70 ? /↑↓ Navigate.*Enter Select.*Esc (?:Close|Back)/u : /↑↓ Navigate/u);
         assert.doesNotMatch(frame.join('\n'), /Choices are saved automatically|Applying|Saving|Applied and saved/u);
@@ -369,9 +373,15 @@ for (const mode of ['regular', 'fullscreen']) test(`real CLI: settings popup nav
         return column;
       };
       await live.resize(100, 30); await live.openTidyMenu();
-      checkLayout('Tidy UI'); checkRootColumns();
       const rootWidth = live.tidyFrame().width;
-      assert.ok(rootWidth < 72, 'ordinary settings size to their content, not a fixed 72-column window');
+      assert.equal(rootWidth, 61, 'the 51-column Follow Pi baseline grows by 20%, rounded to a whole column');
+      checkLayout('Tidy UI'); checkRootColumns();
+      if (mode === 'fullscreen') {
+        const { left, top } = live.tidyFrame();
+        live.send(`\x1b[<0;${left + 5};${top + 4}M\x1b[<0;${left + 5};${top + 4}m`);
+        await live.settle();
+        assert.ok(live.tidyHeading('Tidy UI') && live.tidyRows().some(row => row.startsWith('→ Code color theme')), 'clicking the top gap does not select or activate an item');
+      }
       for (const label of ['Tidy UI appearance', 'Set terminal colors from Pi theme', 'Status & troubleshooting', 'Close', 'Code color theme']) {
         await live.selectTidyItem(label, false); checkLayout('Tidy UI'); checkRootColumns();
         assert.equal(live.tidyFrame().width, rootWidth, 'moving selection/changing descriptions never resizes the page');
@@ -397,7 +407,7 @@ for (const mode of ['regular', 'fullscreen']) test(`real CLI: settings popup nav
       assert.equal(live.tidyFrame().width, rootWidth, 'Back restores the root intrinsic width');
       await live.resize(24, 12);
       await until(() => live.tidyFrame()?.width === 24 && live.tidyHeading('Tidy UI') && live.tidyRows().some(row => row.startsWith('→ Code color')), 'narrow popup redraw');
-      assert.ok(checkLayout('Tidy UI')[1].endsWith('…'), 'the real narrow description ellipsizes its second row');
+      assert.ok(checkLayout('Tidy UI').endsWith('…'), 'a narrow terminal shortens the one-line help without wrapping');
       const narrowColumn = checkRootColumns(true);
       for (const label of ['Set terminal colors from Pi theme', 'Status & troubleshooting', 'Close', 'Code color theme']) {
         await live.selectTidyItem(label, false); checkRootColumns(true, narrowColumn);
@@ -412,7 +422,7 @@ for (const mode of ['regular', 'fullscreen']) test(`real CLI: settings popup nav
       await until(() => live.tidyRows().some(row => row.startsWith('→ Code color theme') && row.includes('Follow Pi')), 'wide popup redraw');
       assert.equal(live.tidyFrame().width, rootWidth, 'widening restores intrinsic size, not terminal width');
       await live.selectTidyItem('Close', false);
-      assert.match(checkLayout('Tidy UI').join(' '), /Close this panel without changing anything\./u);
+      assert.match(checkLayout('Tidy UI'), /Close this menu\./u);
       live.send('\r');
       await until(async () => { await live.refreshTidyBounds(); return !live.tidyFrame(); }, 'Enter on Close dismisses the popup');
       await live.openTidyMenu(); await live.closeTidyMenu();

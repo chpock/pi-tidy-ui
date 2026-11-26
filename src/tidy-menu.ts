@@ -174,7 +174,8 @@ export class TidyMenu implements Component {
     const items = this.pageItems(this.owner.snapshot(), false);
     const columns = itemColumns(items);
     const content = 2 + columns.label + (columns.value ? columnGap + columns.value : 0) + columns.arrow;
-    return Math.min(72, Math.max(content, visibleWidth(menuPageTitle(this.page)), visibleWidth(menuNavigation(this.page))) + 2);
+    const fitted = Math.min(72, Math.max(content, visibleWidth(menuPageTitle(this.page)), visibleWidth(menuNavigation(this.page))) + 2);
+    return this.page === 'root' ? Math.round(fitted * 1.2) : fitted;
   }
   private pageItems(state: TidyMenuSnapshot, filtered = true): Item[] {
     return menuRows(this.page, state, { query: filtered ? this.search.getValue() : undefined,
@@ -192,11 +193,12 @@ export class TidyMenu implements Component {
     const height = Math.max(1, Math.floor(this.height()));
     const state = this.owner.snapshot();
     this.items = this.pageItems(state);
-    if (this.page === 'root' && state.selected.kind === 'pi' && this.selected.root === 'theme-variant') this.selected.root = 'themes';
+    const root = this.page === 'root';
+    if (root && state.selected.kind === 'pi' && this.selected.root === 'theme-variant') this.selected.root = 'themes';
     const details = this.summary(state);
     const hasDetails = Number(details.length > 0);
     const searchRows = this.page === 'themes' && !this.themeLoading && !this.themeLoadFailed && height >= 6 ? 1 : 0;
-    const helpHeight = this.page !== 'themes' && height >= 4 ? 3 : 0;
+    const helpHeight = this.page !== 'themes' && height >= 4 ? (root ? 2 : 3) : 0;
     // In tiny terminals keep the selectable row and details before adding chrome.
     const noticeHeight = this.notice ? Math.min(2, wrapTextWithAnsi(safe(this.notice), Math.max(1, width - (width >= 8 ? 2 : 0))).length) : 0;
     const sections = height >= 10 + hasDetails + searchRows + noticeHeight;
@@ -226,7 +228,8 @@ export class TidyMenu implements Component {
     this.detailOffset = Math.min(this.detailOffset, Math.max(0, summaries.length - Math.max(1, summaryRoom)));
     const summary = summaries.slice(this.detailOffset, this.detailOffset + summaryRoom).map(line => this.theme.fg('muted', line));
     const groupRoom = this.page === 'support' && available - summary.length >= 8 ? 3 : 0;
-    const listSpace = Math.max(1, available - summary.length - groupRoom);
+    const rootGap = root && sections && available > 2 ? 1 : 0;
+    const listSpace = Math.max(1, available - summary.length - groupRoom - rootGap);
     const searchGap = searchRows && listSpace > 3 ? 1 : 0;
     const themeBoundaries: number[] = [];
     const dividerPadding = '  ';
@@ -266,6 +269,7 @@ export class TidyMenu implements Component {
       this.list.onCancel = () => this.back();
     }
     const body = [...heading, ...summary];
+    if (rootGap) body.push('');
     this.search.focused = this.focused && this.page === 'themes';
     if (searchRows) {
       body.push(truncateToWidth(`Search: ${this.search.render(Math.max(1, innerWidth - 8))[0] ?? ''}`, innerWidth));
@@ -293,9 +297,12 @@ export class TidyMenu implements Component {
     body.push(...notice);
     if (helpHeight) {
       const help = this.items.find(item => item.value === this.list!.getSelectedItem()?.value)?.help ?? '';
-      const wrapped = wrapTextWithAnsi(help, innerWidth);
-      const second = wrapped.length > 2 ? truncateToWidth(wrapped[1] ?? '', innerWidth - 1, '') + '…' : wrapped[1] ?? '';
-      body.push('', this.theme.fg('muted', wrapped[0] ?? ''), this.theme.fg('muted', second));
+      if (root) body.push('', this.theme.fg('muted', truncateToWidth(help, innerWidth, '…')));
+      else {
+        const wrapped = wrapTextWithAnsi(help, innerWidth);
+        const second = wrapped.length > 2 ? truncateToWidth(wrapped[1] ?? '', innerWidth - 1, '') + '…' : wrapped[1] ?? '';
+        body.push('', this.theme.fg('muted', wrapped[0] ?? ''), this.theme.fg('muted', second));
+      }
     }
     if (sections) {
       const paged = summaries.length > summaryRoom;

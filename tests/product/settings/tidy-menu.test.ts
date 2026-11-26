@@ -68,9 +68,8 @@ test('terminal-color setting describes applying Pi defaults independently of eff
   f.state.terminalColors = 'Automatic Pi theme: native control';
   f.render(); await f.key('\x1b[B');
   assert.match(f.render().join('\n'), /→ Set terminal colors from Pi theme\s+On/u);
-  const help = helpRows(f.menu.render(f.menu.preferredWidth()).map(plain)).join(' ');
-  assert.match(help, /Set background and default text color from Pi’s theme\./u);
-  assert.match(help, /Pi controls automatic themes\./u);
+  const help = helpRows(f.menu.render(f.menu.preferredWidth()).map(plain), 1)[0]!;
+  assert.match(help, /Pi colors for terminal background and text/u);
   assert.equal(f.calls.length, 0, 'reading the preference does not apply colors');
   await f.key('\r');
   assert.deepEqual(f.calls, [{ kind: 'switch', key: 'terminalColorsEnabled', value: false }]);
@@ -412,11 +411,11 @@ for (const height of [5, 6]) for (const page of ['cache', 'logs'])
     assert.ok(f.render().some(row => row.includes('Appearance: Active')), 'Back returns to support');
   });
 
-function helpRows(rows: string[]): string[] {
+function helpRows(rows: string[], count = 2): string[] {
   const divider = rows.findLastIndex(row => /^├─+┤$/u.test(row));
   const body = divider < 0 ? rows : rows.slice(0, divider).map(row => row.startsWith('│') ? row.slice(1, -1).trimEnd() : row);
-  assert.equal(body.at(-3)?.trim(), '', 'one blank row precedes the two reserved description rows');
-  return body.slice(-2).map(row => row.trimEnd());
+  assert.equal(body.at(-count - 1)?.trim(), '', 'one blank row precedes the reserved help');
+  return body.slice(-count).map(row => row.trimEnd());
 }
 
 test('header and navigation occupy their own separated sections on every page', async () => {
@@ -426,7 +425,8 @@ test('header and navigation occupy their own separated sections on every page', 
     assert.equal(rows[1]?.slice(1, -1).trim(), heading);
     assert.deepEqual(dividers, [2, rows.length - 3]);
     assert.match(rows.at(-2)!, /↑↓ Navigate.*Enter Select.*Esc (?:Close|Back)/u);
-    if (heading !== 'Code color theme') assert.equal(helpRows(rows).length, 2);
+    if (heading === 'Tidy UI') assert.ok(helpRows(rows, 1)[0]);
+    else if (heading !== 'Code color theme') assert.equal(helpRows(rows).length, 2);
   };
   check('Tidy UI');
   await f.select('Code color theme'); check('Code color theme'); await f.key('\x1b');
@@ -436,15 +436,19 @@ test('header and navigation occupy their own separated sections on every page', 
   }
 });
 
-for (const [width, height] of [[70, 24], [24, 12], [24, 5]]) test(`description always reserves two rows, pads and ellipsizes at ${width}x${height}`, async () => {
-  const f = fixture(width, height);
-  const initial = helpRows(f.render());
-  assert.match(initial.join(' '), /Colors for Bash/u);
-  if (width === 24) assert.ok(initial[1]!.endsWith('…'), 'a third wrapped line is indicated by an ellipsis');
-  await f.key('\x1b[B'); await f.key('\x1b[B'); await f.key('\x1b[B');
-  const close = helpRows(f.render());
-  assert.match(close.join(' '), /Close this panel/u);
-  if (width === 70) assert.equal(close[1], '', 'short descriptions retain an empty second row');
+test('each root item has one short help line at the preferred width', async () => {
+  const f = fixture(); f.state.selected = preference('github-dark');
+  const descriptions = new Set<string>();
+  for (const label of ['Tidy UI appearance', 'Code color theme', 'Code color variant', 'Set terminal colors from Pi theme', 'Status & troubleshooting', 'Close']) {
+    if (label === 'Tidy UI appearance') { f.render(); await f.key('\x1b[A'); }
+    else await f.key('\x1b[B');
+    const rows = f.menu.render(f.menu.preferredWidth()).map(plain);
+    assert.ok(rows.some(row => row.startsWith(`│→ ${label}`)), label);
+    const [help] = helpRows(rows, 1);
+    assert.ok(help && !help.endsWith('…'), `full one-line help for ${label}`);
+    descriptions.add(help);
+  }
+  assert.equal(descriptions.size, 6);
   assert.equal(f.calls.length, 0);
 });
 
@@ -464,21 +468,21 @@ test('settings changes are silent before, during and after saving; errors do not
     return new Promise(resolve => { finish = resolve; });
   };
   await f.select('Set terminal colors from Pi theme'); quiet();
-  const pendingHelp = helpRows(f.render()); const pendingHeight = f.render().length;
+  const pendingHelp = helpRows(f.render(), 1); const pendingHeight = f.render().length;
   assert.match(f.render().join('\n'), /Set terminal colors from Pi theme.*Off/u);
   await f.key('\r');
   finish({ ok: true }); await turn(); quiet();
   assert.equal(f.render().length, pendingHeight, 'saving does not resize the panel');
-  assert.deepEqual(helpRows(f.render()), pendingHelp);
+  assert.deepEqual(helpRows(f.render(), 1), pendingHelp);
   f.perform = async () => ({ ok: false, message: 'SAVE_FAILURE' });
   await f.key('\r');
   assert.match(f.render().join('\n'), /SAVE_FAILURE/u);
-  assert.deepEqual(helpRows(f.render()), pendingHelp, 'error feedback cannot consume the description slot');
+  assert.deepEqual(helpRows(f.render(), 1), pendingHelp, 'error feedback cannot consume the description slot');
 });
 
 test('clicking separators, description, blank row or navigation cannot activate a setting', () => {
   const f = fixture(), rows = f.render();
-  const positions = [2, rows.length - 6, rows.length - 5, rows.length - 4, rows.length - 3, rows.length - 2];
+  const positions = [2, 3, rows.length - 5, rows.length - 4, rows.length - 3, rows.length - 2];
   for (const y of positions) for (const type of ['press', 'click'] as const) f.menu.handleMouse({
     type, button: 'left', x: 4, y, screenX: 4, screenY: y, width: 70, height: rows.length, shift: false, alt: false, ctrl: false,
   });
@@ -489,26 +493,26 @@ test('clicking separators, description, blank row or navigation cannot activate 
 test('description slots survive every short-height transition without clipping list or navigation', async () => {
   for (let height = 4; height <= 16; height++) {
     const f = fixture(24, height);
-    const check = () => {
+    const check = (count = 2) => {
       const rows = f.render(); assert.ok(rows.length <= height, `height ${height}`);
       assert.ok(rows.every(row => visibleWidth(row) <= 24));
-      assert.equal(helpRows(rows).length, 2);
+      assert.ok(helpRows(rows, count)[0]);
       assert.ok(rows.some(row => row.includes('→ ')), `the selected item stays visible at height ${height}`);
     };
-    check(); await f.key('\x1b[B'); await f.key('\x1b[B'); await f.key('\r'); check();
+    check(1); await f.key('\x1b[B'); await f.key('\x1b[B'); await f.key('\r'); check();
     await f.key('\x1b[B'); await f.key('\x1b[B'); await f.key('\x1b[B'); await f.key('\r'); check();
     await f.key('\x1b'); check();
     assert.equal(f.calls.length, 0);
   }
 });
 
-for (const height of [10, 11, 12]) test(`save errors remain readable beside both description rows at height ${height}`, async () => {
+for (const height of [10, 11, 12]) test(`root save errors remain readable beside the help row at height ${height}`, async () => {
   const f = fixture(24, height);
   f.perform = async action => { f.calls.push(action); return { ok: false, message: 'Settings were applied but not saved.' }; };
   f.render(); await f.key('\x1b[B'); await f.key('\r');
   assert.deepEqual(f.calls, [{ kind: 'switch', key: 'terminalColorsEnabled', value: false }]);
   assert.match(f.render().join('\n'), /not saved\./u);
-  assert.match(helpRows(f.render()).join(' '), /Set background/u);
+  assert.match(helpRows(f.render(), 1)[0]!, /^Use Pi colors/u);
   assert.ok(f.render().length <= height);
 });
 
@@ -529,19 +533,19 @@ test('a one-row failure retains chrome when all sections still fit', async () =>
   const rows = f.render();
   assert.equal(rows.filter(row => /^├─+┤$/u.test(row)).length, 2);
   assert.match(rows.join('\n'), /SAVE_FAILURE/u);
-  assert.equal(helpRows(rows).length, 2);
+  assert.ok(helpRows(rows, 1)[0]);
   assert.ok(rows.length <= 11);
 });
 
 test('preferred width fits root labels, values and navigation without stretching for descriptions', async () => {
   const f = fixture();
   const width = f.menu.preferredWidth();
-  assert.ok(width < 72, 'ordinary settings fit their labels and values below the page-width ceiling');
+  assert.equal(width, 61, 'standard Follow Pi root is 20% wider than its previous 51 columns');
   const rows = f.menu.render(width).map(plain);
   for (const label of ['Tidy UI appearance', 'Code color theme', 'Set terminal colors from Pi theme', 'Status & troubleshooting', 'Close'])
     assert.ok(rows.some(row => row.includes(label)), `complete label: ${label}`);
   assert.match(rows.join('\n'), /↑↓ Navigate · Enter Select · Esc Close/u);
-  assert.equal(helpRows(rows).length, 2, 'description space is fixed even when the text now fits in full');
+  assert.ok(helpRows(rows, 1)[0]);
   assert.ok(rows.every(row => visibleWidth(row) <= width));
   for (let i = 0; i < 15; i++) {
     await f.key('\x1b[B');
@@ -551,6 +555,14 @@ test('preferred width fits root labels, values and navigation without stretching
   await f.select('Set terminal colors from Pi theme');
   assert.equal(f.menu.preferredWidth(), width, 'error text wraps instead of widening the page');
   assert.equal(f.prepared, 0); assert.equal(f.cacheReads, 0);
+});
+
+test('root width still grows with the current theme label but stays bounded', () => {
+  const f = fixture();
+  f.state.selected = preference('x'.repeat(20));
+  assert.equal(f.menu.preferredWidth(), 74, 'a 62-column content fit is scaled and rounded independently');
+  f.state.selected = preference('x'.repeat(120));
+  assert.equal(f.menu.preferredWidth(), 86, 'the original 72-column ceiling bounds the scaled width');
 });
 
 test('theme picker measures the full fixed catalogue, not only visible or searched choices', async () => {

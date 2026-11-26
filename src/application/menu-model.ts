@@ -36,12 +36,12 @@ export function menuRows(page: TidyMenuPage, state: TidyMenuSnapshot, view: Menu
     valueText?: string, submenu = false, disabled = false): TidyMenuRow => ({ value, label, help, intent, valueText, submenu, disabled });
   switch (page) {
     case 'root': return [
-      item('appearance', 'Tidy UI appearance', 'Style cards, messages, input and footer. Diagnostic logs are independent.', { kind: 'toggle', key: 'appearanceEnabled' }, onOff(state.appearanceEnabled)),
-      item('themes', 'Code color theme', 'Colors for Bash commands and file previews; does not change Pi’s overall theme.', { kind: 'navigate', page: 'themes' }, selectedLabel(state), true),
-      item('theme-variant', 'Code color variant', 'Choose the dark or light palette within the selected family.', { kind: 'toggleVariant' }, state.selected.variant === 'dark' ? 'Dark' : 'Light', false, state.selected.kind === 'pi'),
-      item('colors', 'Set terminal colors from Pi theme', 'Set background and default text color from Pi’s theme. Pi controls automatic themes.', { kind: 'toggle', key: 'terminalColorsEnabled' }, onOff(state.terminalColorsEnabled)),
-      item('support', 'Status & troubleshooting', 'Check what is active, resolve display problems, or collect diagnostics.', { kind: 'navigate', page: 'support' }, state.health?.active ? 'Issues' : undefined, true),
-      item('close', 'Close', 'Close this panel without changing anything.', { kind: 'close' }),
+      item('appearance', 'Tidy UI appearance', 'Style cards, messages, input and footer.', { kind: 'toggle', key: 'appearanceEnabled' }, onOff(state.appearanceEnabled)),
+      item('themes', 'Code color theme', 'Choose colors for Bash and file previews.', { kind: 'navigate', page: 'themes' }, selectedLabel(state), true),
+      item('theme-variant', 'Code color variant', 'Switch between dark and light palettes.', { kind: 'toggleVariant' }, state.selected.variant === 'dark' ? 'Dark' : 'Light', false, state.selected.kind === 'pi'),
+      item('colors', 'Set terminal colors from Pi theme', 'Use Pi colors for terminal background and text.', { kind: 'toggle', key: 'terminalColorsEnabled' }, onOff(state.terminalColorsEnabled)),
+      item('support', 'Status & troubleshooting', 'Check status and troubleshoot display issues.', { kind: 'navigate', page: 'support' }, state.health?.active ? 'Issues' : undefined, true),
+      item('close', 'Close', 'Close this menu.', { kind: 'close' }),
     ];
     case 'themes': {
       if (view.themeLoading || view.themeLoadFailed) return [back];
