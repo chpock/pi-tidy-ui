@@ -118,6 +118,13 @@ export class ToolSummaryPresenter<Owner extends object> {
       }).join('');
       return (index === 0 ? prefix : ' '.repeat(indent)) + styled;
     });
+    if (reader?.kind === 'read') appendNotice(rows, reader.compactNotice?.(), theme, indent, available - indent);
     return { rows, prefixLength: prefix.length, prefixLeft: padding, prefixSpace: true };
   }
+}
+
+function appendNotice(rows: string[], notice: string | undefined, theme: CardTheme, indent: number, width: number): void {
+  if (!notice) return;
+  const prefix = ' '.repeat(indent);
+  for (const line of wrapText(notice, width)) rows.push(prefix + theme.fg('muted', line));
 }

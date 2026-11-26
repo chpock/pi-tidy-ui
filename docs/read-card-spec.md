@@ -52,6 +52,8 @@ Stock callback identity is an ownership proof, not the producer-data contract. C
 
 ## Images: a host-owned opaque block
 
+On Pi 1.6 and newer, a saved stock read can carry `details.imageUnsupportedByModel`: the model that requested the read received a placeholder, even when an image is available in the terminal. A completed successful read with that field set to a nonblank string shows a separate notice in both compact and full views. The narrow glyph-only summary still shows just its glyph. The notice is neither source text nor a numbered row. It describes the saved call, not the currently selected model. Older Pi results without the field are unchanged, including any notice already in their returned text. The adapter never writes the notice into the session or tool result.
+
 Pi creates images outside its text renderers. The adapter borrows the current public direct-child `Image` instances and their associated per-image spacing; it does not construct another image, read private image collections or call the original tool renderer to recover image rows. Pi retains image IDs, conversion, width caches, `showImages` and image-width settings.
 
 An expanded image read shows the saved text and the host image block at the card's content origin. The image rows are opaque terminal output, not source text:

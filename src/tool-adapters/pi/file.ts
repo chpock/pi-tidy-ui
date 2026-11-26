@@ -15,6 +15,12 @@ function pathOf(args: Record<string, unknown>): string | undefined {
   const path = args.path ?? args.file_path ?? args.filePath;
   return typeof path === 'string' && path.length ? path : undefined;
 }
+const imagePlaceholderNotice = '[The model does not support images; it saw a placeholder instead]';
+function readImageNotice(call: ToolCallSnapshot): string | undefined {
+  if (call.partial || call.resultFailed) return;
+  const model = fileData(call).imageUnsupportedByModel;
+  return typeof model === 'string' && model.trim() ? imagePlaceholderNotice : undefined;
+}
 function source(call: ToolCallSnapshot, kind: FileKind, mode: FilePreviewMode): readonly unknown[] {
   const args = call.args, path = pathOf(args);
   if (kind === 'read') {
@@ -45,6 +51,8 @@ function estimateBytes(call: ToolCallSnapshot, context: ReaderEstimateContext, k
       if (!first) units += size('\n');
       units += size(part.text); first = false;
     }
+    const note = readImageNotice(call);
+    if (note) { units += note.length; rows++; }
   }
   const diff = kind === 'edit' ? fileData(call).diff : undefined;
   if (typeof diff === 'string') units += size(context.mode === 'preview' ? filePreviewSource(diff).text : diff);
@@ -134,8 +142,12 @@ function behavior(kind: FileKind): FileReaderBehavior {
     source: (call, mode) => source(call, kind, mode),
     diagnostics: (_call, mode) => mode === 'preview' ? false : [],
     diagnosticText: () => [],
-    note: () => undefined,
-    service: (call, cwd, mode) => mode === 'preview' ? [cwd, call.partial, call.resultFailed] : [cwd, weakIdentity(call.result), call.partial],
+    note: kind === 'read' ? readImageNotice : () => undefined,
+    service: (call, cwd, mode) => {
+      if (mode === 'preview') return [cwd, call.partial, call.resultFailed];
+      const identity = [cwd, weakIdentity(call.result), call.partial];
+      return kind === 'read' ? [...identity, readImageNotice(call)] : identity;
+    },
     language: call => { const path = pathOf(call.args); return path ? getLanguageFromPath(path) : undefined; },
     summaryArgs: call => (kind === 'write' || kind === 'edit') && typeof call.args.path === 'string' && call.args.path.length ? { path: call.args.path } : call.args,
     estimateBytes: (call, context) => estimateBytes(call, context, kind),
@@ -144,4 +156,8 @@ function behavior(kind: FileKind): FileReaderBehavior {
   };
 }
 const behaviors = { read: behavior('read'), write: behavior('write'), edit: behavior('edit') };
-export function piFileReader(call: ToolCallSnapshot, kind: FileKind): FileToolReader { return createFileReader(call, behaviors[kind]); }
+export function piFileReader(call: ToolCallSnapshot, kind: FileKind): FileToolReader {
+  const reader = createFileReader(call, behaviors[kind]);
+  if (kind === 'read') reader.compactNotice = () => readImageNotice(call);
+  return reader;
+}

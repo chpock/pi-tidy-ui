@@ -60,6 +60,9 @@ been reconstructed.
 
 ### Fixed
 
+- Restore the warning on Pi 1.6 and newer when a model received a placeholder
+  instead of an image from `read`, in both compact and expanded views.
+
 - Keep pi-tidy-ui active if an attached tool receives malformed arguments. That
   call uses its native renderer until it receives an argument object again.
 - Keep accepted Bash and file syntax colors when parser data is evicted. Returning

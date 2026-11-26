@@ -58,6 +58,7 @@ export interface FileToolReader {
   source(mode: FilePreviewMode): readonly unknown[];
   diagnostics(mode: FilePreviewMode): ToolDiagnosticsIdentity;
   diagnosticText(): readonly FileDiagnostic[];
+  compactNotice?(): string | undefined;
   note(view: Pick<PreparedFileCard['view'], 'label' | 'mode'>): string | undefined;
   service(cwd: string | undefined, mode: FilePreviewMode): readonly unknown[];
   language(): string | undefined;

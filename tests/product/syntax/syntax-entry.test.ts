@@ -266,6 +266,36 @@ test('expanded read uses saved text, keeps stock callbacks cold, and retains Pi 
   } finally { await h.stop(); }
 });
 
+test('read shows the saved image capability warning without treating it as source', async () => {
+  const h = fixture();
+  try {
+    await h.ready; await h.start();
+    const owner = readOwner(h, 'image-model-notice', { path: 'saved-pixel.png' });
+    owner.setArgsComplete();
+    const result = { content: [{ type: 'text' as const, text: 'Read image file [image/png]' }], isError: false,
+      details: { imageUnsupportedByModel: 'previous-text-model' } };
+    owner.updateResult(result, false);
+    const warning = /does not support images; it saw a placeholder instead/u;
+    assert.match(plainRows(owner.render(100)), warning);
+    owner.setExpanded(true);
+    await settled();
+    const rows = owner.render(100).map(row => plainRows([row]));
+    assert.ok(rows.some(row => /1.*Read image file/u.test(row)), 'saved text still uses the numbered pane');
+    assert.equal(rows.filter(row => warning.test(row)).length, 1, 'the expanded warning is separate and appears once');
+    assert.ok(rows.every(row => !warning.test(row) || !/\b1\b/u.test(row)), 'the warning is not another source line');
+    assert.equal(Reflect.get(owner, 'result') === result, true, 'display must not rewrite the saved tool result');
+    assert.equal(result.content[0]?.text, 'Read image file [image/png]');
+    for (const details of [undefined, { imageUnsupportedByModel: 3 }, { imageUnsupportedByModel: '   ' }]) {
+      owner.setExpanded(false);
+      owner.updateResult({ ...result, details }, false);
+      assert.doesNotMatch(plainRows(owner.render(100)), warning);
+      owner.setExpanded(true);
+      await settled();
+      assert.doesNotMatch(plainRows(owner.render(100)), warning);
+    }
+  } finally { await h.stop(); }
+});
+
 test('pending and failed read cards stay owned when saved arguments have no path', async () => {
   const h = fixture();
   try {
