@@ -17,6 +17,7 @@ been reconstructed.
 
 ### Fixed
 
+- Leave two spaces between submenu arrows and the right edge of `/tidy-ui` menus.
 - Restore the confirmed code theme when moving the selection to Back, without
   leaving the picker or saving changes.
 - Widen `/tidy-ui` status and troubleshooting pages so fewer diagnostic lines

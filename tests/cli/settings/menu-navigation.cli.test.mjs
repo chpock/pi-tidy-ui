@@ -138,6 +138,16 @@ for (const mode of ['regular', 'fullscreen']) test(`diagnostic pages share a wid
       assert.equal(bounds.left, Math.floor((live.term.cols - bounds.width) / 2));
       return bounds.width;
     };
+    const checkSupportArrows = () => {
+      const { left, width } = live.tidyFrame();
+      const labels = ['Highlighting service details', 'Diagnostic logs', 'Display cache'];
+      const list = live.tidyRows(), screen = live.screen();
+      for (const label of labels) {
+        const y = list.findIndex(row => /^(?:→ | {2})/u.test(row) && row.slice(2).startsWith(label));
+        assert.ok(y >= 0, `${label} is visible`);
+        assert.match(sliceByColumn(screen[y], left, width), /› {2}│$/u, `${label} leaves two cells before the border`);
+      }
+    };
     const backTo = async title => {
       live.send('\x1b'); await live.settle();
       assert.ok(live.tidyHeading(title), `Escape returns to ${title}`);
@@ -147,6 +157,7 @@ for (const mode of ['regular', 'fullscreen']) test(`diagnostic pages share a wid
       const rootWidth = width(), support = 'Status & troubleshooting';
       await live.selectTidyItem(support);
       const pages = { [support]: width() };
+      checkSupportArrows();
       let runAndSession;
       for (const page of ['Highlighting service details', 'Diagnostic logs', 'Display cache']) {
         await live.selectTidyItem(page); pages[page] = width();
@@ -174,6 +185,7 @@ for (const mode of ['regular', 'fullscreen']) test(`diagnostic pages share a wid
       assert.equal(width(), diagnosticWidth, 'the wider frame recenters and restores its width');
       assert.ok(live.tidyRows().includes(cacheScope));
       await backTo(support); assert.equal(width(), diagnosticWidth);
+      await live.resize(72, 40); assert.equal(width(), 72); checkSupportArrows();
       await backTo('Tidy UI'); assert.equal(width(), rootWidth);
       await live.closeTidyMenu();
     } finally { await closeTerminals([live]); }

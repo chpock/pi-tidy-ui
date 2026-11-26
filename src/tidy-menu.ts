@@ -6,17 +6,22 @@ import { copyThemePreference, type ThemePreference, type ThemeVariant } from './
 import type { TidyMenuAction, TidyMenuSnapshot, TidyMenuOwner, TidyMenuPage as Page, TidyMenuRow as Item, TidyMenuIntent } from './application/menu-contract.ts';
 import { menuRows, menuDetails, menuAction, menuThemeChoice, menuPageTitle, menuNavigation } from './application/menu-model.ts';
 const columnGap = 2;
+const submenuPadding = '  ';
 const diagnosticWidth = 98; // Fits the 96-column cache scope note plus the frame.
 function itemColumns(items: Item[], width = Infinity) {
   let label = 0, value = 0;
   for (const item of items) { label = Math.max(label, visibleWidth(item.label)); value = Math.max(value, visibleWidth(item.valueText ?? '')); }
   const available = Math.max(1, width - 2);
-  const arrow = items.some(item => item.submenu) && available >= 4 ? columnGap + 1 : 0;
-  if (value && available - arrow >= columnGap + 2) {
+  const hasSubmenus = items.some(item => item.submenu);
+  const minText = hasSubmenus ? 2 : 1; // Leave room for a letter and the ellipsis before adding an arrow or value.
+  const arrowWidth = columnGap + 1;
+  const arrow = hasSubmenus && available >= arrowWidth + submenuPadding.length + minText ? arrowWidth : 0;
+  const textRoom = available - (arrow ? arrow + submenuPadding.length : 0);
+  if (value && (!hasSubmenus || arrow) && textRoom >= columnGap + 2 * minText) {
     // Preserve On/Off before allocating extra space to longer values in narrow terminals.
-    label = Math.min(label, Math.max(1, available - arrow - columnGap - Math.min(value, 3)));
-    value = Math.min(value, Math.max(0, available - arrow - columnGap - label));
-  } else { label = Math.min(label, Math.max(1, available - arrow)); value = 0; }
+    label = Math.min(label, Math.max(minText, textRoom - columnGap - Math.min(value, 3)));
+    value = Math.min(value, Math.max(0, textRoom - columnGap - label));
+  } else { label = Math.min(label, Math.max(1, textRoom)); value = 0; }
   return { label, value, arrow };
 }
 const safe = (value: string) => readableDiagnosticText(value);
@@ -174,6 +179,7 @@ export class TidyMenu implements Component {
     const items = this.pageItems(this.owner.snapshot(), false);
     const columns = itemColumns(items);
     const content = 2 + columns.label + (columns.value ? columnGap + columns.value : 0) + columns.arrow;
+    // The main menu's extra width already covers the arrow's right padding.
     const fitted = Math.min(72, Math.max(content, visibleWidth(menuPageTitle(this.page)), visibleWidth(menuNavigation(this.page))) + 2);
     return this.page === 'root' ? Math.round(fitted * 1.2) : fitted;
   }
@@ -250,7 +256,7 @@ export class TidyMenu implements Component {
     const formatted = this.items.map(item => {
       let label = truncateToWidth(item.label, columns.label, '…');
       if (columns.value) label += ' '.repeat(columns.label - visibleWidth(label) + columnGap) + truncateToWidth(item.valueText ?? '', columns.value, '…');
-      if (item.submenu && columns.arrow) label += ' '.repeat(innerWidth - 2 - visibleWidth(label) - 1) + '›';
+      if (item.submenu && columns.arrow) label += ' '.repeat(innerWidth - 3 - submenuPadding.length - visibleWidth(label)) + '›' + submenuPadding;
       if (item.disabled) label = this.theme.fg('dim', label);
       return { value: item.value, label };
     });

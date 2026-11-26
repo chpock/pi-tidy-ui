@@ -39,7 +39,7 @@ function fixture(width = 70, height = 24) {
   const select = async (label: string) => {
     let direction = '\x1b[B';
     for (let i = 0; i < 100; i++) {
-      if (render().some(row => /^.*[→›] /.test(row) && row.includes(label))) { await key('\r'); return; }
+      if (render().some(row => /^│?→ /u.test(row) && row.includes(label))) { await key('\r'); return; }
       const before = render().find(row => row.includes('→ '));
       await key(direction);
       if (render().find(row => row.includes('→ ')) === before) direction = '\x1b[A';
@@ -201,7 +201,8 @@ for (const [width, height] of [[70, 24], [24, 12], [24, 5], [24, 2], [24, 1]]) t
   }
   await f.key('\r');
   assert.deepEqual(f.calls, [{ kind: 'theme', choice: { kind: 'theme', id: themes.at(-1)!.id, variant: 'dark' } }]);
-  assert.ok(f.render().some(row => row.includes('→ Code color')), `confirmation returns to the main page with its theme entry selected: ${f.render().join('\n')}`);
+  const rows = f.render();
+  assert.ok(rows.some(row => /^│?→ Code colo.*› {2}│?$/u.test(row)), `confirmation returns to the main page with its theme entry selected: ${rows.join('\n')}`);
 });
 
 test('a wrapped theme selection still ends with a blank row before search', async () => {
@@ -609,13 +610,13 @@ const cellOf = (row: string, text: string) => {
 };
 function rootRows(f: ReturnType<typeof fixture>, width = f.menu.preferredWidth()) {
   const rows = f.menu.render(width).map(plain);
-  return ['Tidy', 'Code color', 'Set', 'Status', 'Close'].map(label => {
+  return ['Tidy', 'Code colo', 'Set', 'Status', 'Close'].map(label => {
     const row = rows.find(row => /^│[→ ] /u.test(row) && row.slice(3).startsWith(label));
     assert.ok(row, `missing root item ${label}: ${rows.join('\n')}`); return row;
   });
 }
 
-test('root reserves common left-aligned value and separate rightmost submenu columns', async () => {
+test('root reserves common left-aligned values and insets submenu arrows by two cells', async () => {
   const f = fixture(); f.state.appearanceEnabled = false;
   const width = f.menu.preferredWidth(), rows = rootRows(f);
   const valueColumn = cellOf(rows[0]!, 'Off');
@@ -627,7 +628,8 @@ test('root reserves common left-aligned value and separate rightmost submenu col
       'no label enters the value column, including labels on rows with no value');
   }
   const arrow = cellOf(rows[1]!, '›');
-  assert.equal(arrow, width - 2); assert.equal(cellOf(rows[3]!, '›'), arrow);
+  assert.equal(arrow, width - 4); assert.equal(cellOf(rows[3]!, '›'), arrow);
+  for (const row of [rows[1]!, rows[3]!]) assert.match(row, /› {2}│$/u);
   assert.ok(valueColumn + visibleWidth('Follow Pi') + 2 <= arrow, 'submenu indicator is not part of the value');
   for (let i = 0; i < 10; i++) { await f.key('\x1b[B'); assert.equal(f.menu.preferredWidth(), width); }
   assert.equal(f.calls.length, 0); assert.equal(f.prepared, 0);
@@ -637,14 +639,25 @@ for (const width of [24, 30, 40, 45, 72]) test(`shared root columns stay disjoin
   const f = fixture(); f.state.appearanceEnabled = false;
   const rows = rootRows(f, width), valueColumn = cellOf(rows[0]!, 'Off');
   assert.equal(cellOf(rows[2]!, 'On'), valueColumn);
-  const themeValue = rows[1]!.slice(rows[1]!.indexOf('Code color')).split(/ {2,}/u)[1]!;
+  const themeValue = rows[1]!.slice(3).split(/ {2,}/u)[1]!;
   assert.ok(themeValue); assert.equal(cellOf(rows[1]!, themeValue), valueColumn);
   for (const row of rows) {
     const label = row.slice(3).split(/ {2,}/u)[0]!.replace(/\s+│$/u, '').trimEnd();
     assert.ok(3 + visibleWidth(label) + 2 <= valueColumn, `label stays outside values: ${row}`);
     assert.ok(visibleWidth(row) <= width);
   }
-  assert.equal(cellOf(rows[1]!, '›'), width - 2); assert.equal(cellOf(rows[3]!, '›'), width - 2);
+  for (const row of [rows[1]!, rows[3]!]) assert.match(row, /› {2}│$/u);
+});
+
+for (const width of [7, 10, 11]) test(`a ${width}-column menu preserves the label before adding the inset arrow`, async () => {
+  const f = fixture(width);
+  const rows = f.render(), selected = rows.find(row => /^│?→ /u.test(row))!;
+  assert.ok(rows.every(row => visibleWidth(row) <= width));
+  assert.match(selected, /^│?→ C/u, 'the highlighted label starts with a real letter, not just an ellipsis');
+  if (width < 11) assert.doesNotMatch(selected, /›/u, 'the arrow is omitted if it cannot coexist with a readable label');
+  else assert.match(selected, /› {2}│$/u, 'show the arrow as soon as it can fit with the label');
+  await f.key('\r');
+  assert.equal(f.prepared, 1, 'the highlighted submenu still opens');
 });
 
 test('support actions share the toggle label column and a distinct submenu indicator column', async () => {
@@ -654,10 +667,12 @@ test('support actions share the toggle label column and a distinct submenu indic
     'Diagnostic logs', 'Display cache', 'Refresh status', 'Back'];
   const nativeRow = rows.find(row => row.includes('Use Occipital highlighting'))!;
   const valueColumn = cellOf(nativeRow, 'On');
+  const submenus = new Set(['Highlighting service details', 'Diagnostic logs', 'Display cache']);
   for (const label of labels) {
     const row = rows.find(row => /^│[→ ] /u.test(row) && row.includes(label)); assert.ok(row);
     assert.ok(cellOf(row, label) + visibleWidth(label) + 2 <= valueColumn);
-    if (row.includes('›')) assert.equal(cellOf(row, '›'), width - 2);
+    if (submenus.has(label)) assert.match(row, /› {2}│$/u);
+    else assert.doesNotMatch(row, /›/u);
   }
 });
 

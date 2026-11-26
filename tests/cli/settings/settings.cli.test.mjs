@@ -349,13 +349,14 @@ for (const mode of ['regular', 'fullscreen']) test(`real CLI: settings popup nav
         if (!narrow) for (const label of ['Tidy UI appearance', 'Code color theme', 'Code color variant', 'Set', 'Status', 'Close'])
           assert.ok(rows.some(row => /^(?:→ |  )/u.test(row) && row.slice(2).startsWith(label)), `root item is painted: ${label}`);
         const items = rows.flatMap((row, y) => {
-          if (!/^(?:→ |  )(?:Tidy|Code color|Set|Status|Close)/u.test(row)) return [];
+          if (!/^(?:→ |  )(?:Tidy|Code colo|Set|Status|Close)/u.test(row)) return [];
           const text = sliceByColumn(dump.screen[y], bounds.left + 1, bounds.width - 2);
           const value = / {2,}(Follow Pi|Fo…|Dark|Da…|On)(?:\s|›|$)/u.exec(text)?.[1];
-          if (/^(?:→ |  )(?:Tidy|Code color|Set)/u.test(row)) assert.ok(value, 'each visible setting keeps its value');
+          if (/^(?:→ |  )(?:Tidy|Code colo|Set)/u.test(row)) assert.ok(value, 'each visible setting keeps its value');
           if (value) assert.ok((narrow ? ['Fo…', 'Da…', 'On'] : ['Follow Pi', 'Dark', 'On']).includes(value), 'only narrow values are ellipsized');
           return [{ y, text, value }];
         });
+        if (!narrow) assert.equal(items.filter(item => item.text.includes('›')).length, 2, 'both main-menu submenu arrows are present');
         const anchor = items.find(item => item.value);
         const column = expectedColumn ?? (anchor ? anchor.text.indexOf(anchor.value) : -1);
         assert.ok(column >= 0);
@@ -367,8 +368,8 @@ for (const mode of ['regular', 'fullscreen']) test(`real CLI: settings popup nav
           const label = text.slice(2).split(/ {2,}/u)[0].trimEnd();
           assert.ok(2 + visibleWidth(label) + 2 <= column, 'every label ends before the shared value column');
           if (!text.includes('›')) continue;
-          assert.equal(text.lastIndexOf('›'), bounds.width - 3);
-          assert.equal(dump.cells[y][bounds.left + bounds.width - 2].text, '›', 'native physical arrow cell matches the separate column');
+          assert.match(text, /› {2}$/u, 'two physical spaces separate the arrow and the frame');
+          assert.equal(dump.cells[y][bounds.left + bounds.width - 4].text, '›', 'native physical arrow cell matches the inset column');
         }
         return column;
       };
@@ -406,11 +407,14 @@ for (const mode of ['regular', 'fullscreen']) test(`real CLI: settings popup nav
       live.send('\x1b'); await until(() => live.tidyHeading('Tidy UI') && live.tidyRows().some(row => row.startsWith('→ Code color theme')), 'Escape returns to the root');
       assert.equal(live.tidyFrame().width, rootWidth, 'Back restores the root intrinsic width');
       await live.resize(24, 12);
-      await until(() => live.tidyFrame()?.width === 24 && live.tidyHeading('Tidy UI') && live.tidyRows().some(row => row.startsWith('→ Code color')), 'narrow popup redraw');
+      await until(() => live.tidyFrame()?.width === 24 && live.tidyHeading('Tidy UI') && live.tidyRows().some(row => row.startsWith('→ Code colo')), 'narrow popup redraw');
       assert.ok(checkLayout('Tidy UI').endsWith('…'), 'a narrow terminal shortens the one-line help without wrapping');
       const narrowColumn = checkRootColumns(true);
       for (const label of ['Set terminal colors from Pi theme', 'Status & troubleshooting', 'Close', 'Code color theme']) {
         await live.selectTidyItem(label, false); checkRootColumns(true, narrowColumn);
+        if (label === 'Code color theme' || label === 'Status & troubleshooting') {
+          assert.match(live.tidyRows().find(row => row.startsWith('→ ')) ?? '', /›$/u, `${label} still paints its arrow at 24 columns`);
+        }
       }
       await live.selectTidyItem('Status & troubleshooting'); await live.selectTidyItem('Display cache');
       assert.ok(live.tidyRows().some(row => /Esc Back.*PgUp\/PgDn/u.test(row)), 'real 24-column detail navigation retains Back and paging keys');
