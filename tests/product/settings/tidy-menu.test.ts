@@ -205,6 +205,30 @@ for (const [width, height] of [[70, 24], [24, 12], [24, 5], [24, 2], [24, 1]]) t
   assert.ok(f.render().some(row => row.includes('→ Code color')), `confirmation returns to the main page with its theme entry selected: ${f.render().join('\n')}`);
 });
 
+test('a wrapped theme selection still ends with a blank row before search', async () => {
+  const f = fixture(24, 12);
+  f.state.selected = preference('synthwave84-dark'); native(f);
+  f.render(); await f.key('\r');
+  const content = f.render().filter(row => row.startsWith('│')).map(row => row.slice(1, -1).trimEnd());
+  const selected = content.findIndex(row => row.startsWith('Selected: '));
+  const search = content.findIndex(row => row.startsWith('Search:'));
+  assert.ok(selected >= 0 && search > selected);
+  assert.equal(content[search - 1], '', 'the blank follows the last wrapped row');
+  const selection = content.slice(selected, search - 1);
+  assert.ok(selection.length > 1, 'the fixture forces the selected label to wrap');
+  assert.equal(selection.join(' '), "Selected: Synthwave '84");
+  assert.ok(content.some(row => row.startsWith('→ ')), 'the list still has a selectable row');
+});
+
+test('a ten-row theme picker keeps its warning and list position visible', async () => {
+  const f = fixture(100, 10);
+  f.state.selected = preference('github-dark'); f.state.nativeHighlightingEnabled = false;
+  f.render(); await f.key('\r');
+  const rows = f.menu.render(Math.min(100, f.menu.preferredWidth())).map(plain);
+  assert.match(rows.join('\n'), /Local palette colors remain active/u);
+  assert.ok(rows.some(row => /\(\d+\/\d+\)/u.test(row)), 'the scrolling list retains its position indicator');
+});
+
 test('theme picker previews a local stable ID, then restores its entry choice without saving', async () => {
   const f = fixture(); native(f); f.state.selected = preference('gruvbox-dark');
   f.render(); await f.key('\r');
@@ -335,6 +359,31 @@ test('theme mouse confirmation returns to the main page and saves the clicked lo
   assert.equal(f.closed, 0);
 });
 
+for (const rebuild of [false, true]) test(`theme press at a recentered divider ${rebuild ? 'cannot outlive a rebuilt list' : 'keeps its original item'}`, async () => {
+  const f = fixture(70, 16); native(f); f.render(); await f.key('\r');
+  for (let i = 0; i < THEME_FAMILIES.length - 1; i++) await f.key('\x1b[B');
+  const family = THEME_FAMILIES.at(-1)!;
+  const before = f.render();
+  const y = before.findIndex(row => row.includes(family.label));
+  assert.ok(y >= 0 && !before.some(row => /^│\s*Back\s*│$/u.test(row)), 'the last family is in view but Back is not');
+  const event = { button: 'left' as const, x: 4, y, screenX: 4, screenY: y, width: 70, height: before.length, shift: false, alt: false, ctrl: false };
+  assert.equal(f.menu.handleMouse({ ...event, type: 'press' })?.handled, true);
+  assert.match(f.render()[y]!, /^│  ─+  │$/u, 'recentering places the divider above Back at the press coordinates');
+  assert.equal(f.calls.length, 0);
+  if (rebuild) {
+    f.menu.invalidate();
+    assert.match(f.render()[y]!, /^│  ─+  │$/u, 'the rebuilt layout has the same divider');
+    assert.equal(f.menu.handleMouse({ ...event, type: 'click' }), undefined);
+    await turn();
+    assert.equal(f.calls.length, 0, 'a click on decoration cannot reuse a retired list press');
+    return;
+  }
+  assert.equal(f.menu.handleMouse({ ...event, type: 'click' })?.handled, true);
+  await turn();
+  assert.deepEqual(f.calls, [{ kind: 'theme', choice: { kind: 'theme', id: family.id, variant: 'dark' } }]);
+  assert.ok(f.render().some(row => row.includes('Tidy UI appearance')));
+});
+
 test('Follow Pi remains a separate option from the fixed local palette catalogue', async () => {
   const f = fixture(); native(f); f.render(); await f.key('\r');
   assert.match(f.render().join('\n'), /Follow Pi theme/); assert.match(f.render().join('\n'), /Aura/);
@@ -377,7 +426,7 @@ test('header and navigation occupy their own separated sections on every page', 
     assert.equal(rows[1]?.slice(1, -1).trim(), heading);
     assert.deepEqual(dividers, [2, rows.length - 3]);
     assert.match(rows.at(-2)!, /↑↓ Navigate.*Enter Select.*Esc (?:Close|Back)/u);
-    assert.equal(helpRows(rows).length, 2);
+    if (heading !== 'Code color theme') assert.equal(helpRows(rows).length, 2);
   };
   check('Tidy UI');
   await f.select('Code color theme'); check('Code color theme'); await f.key('\x1b');
@@ -687,9 +736,44 @@ test('theme preview: empty search results and action rows do not become theme ch
   const f = fixture(); native(f, 2); f.render(); await f.key('\r'); await f.key('aura');
   assert.deepEqual(f.state.selected, preference('aura-dark'));
   const before = f.previews.length;
-  await f.key('not-a-theme'); assert.equal(f.previews.length, before);
-  await f.key('\x1b[B'); assert.equal(f.previews.length, before);
-  await f.key('\x1b'); assert.deepEqual(f.state.selected, { kind: 'pi', variant: 'dark' }); assert.equal(f.calls.length, 0);
+  await f.key('not-a-theme');
+  assert.match(f.render().join('\n'), /→ Back/u);
+  assert.deepEqual(f.state.selected, { kind: 'pi', variant: 'dark' });
+  assert.equal(f.previews.length, before + 1, 'Back-only search clears the active preview');
+  await f.key('\x1b[B'); await f.key('\x1b');
+  assert.equal(f.previews.length, before + 1, 'staying on or leaving Back does not repeat the rollback');
+  assert.equal(f.calls.length, 0);
+});
+
+for (const input of ['arrow', 'wheel'] as const) test(`theme preview: ${input} to Back restores the confirmed theme without leaving the picker`, async () => {
+  const f = fixture(); f.state.selected = preference('github', 'light');
+  await f.select('Code color theme'); await f.key('github');
+  const move = async (direction: 1 | -1) => {
+    if (input === 'arrow') { await f.key(direction === 1 ? '\x1b[B' : '\x1b[A'); return; }
+    const rows = f.render(), y = rows.findIndex(row => row.includes('→ '));
+    assert.ok(y >= 0);
+    f.menu.handleMouse({ type: 'wheel', button: 'none', wheelDelta: direction, x: 4, y, screenX: 4, screenY: y,
+      width: 70, height: rows.length, shift: false, alt: false, ctrl: false });
+  };
+  // A confirmation from another process is held until the current preview stops.
+  const confirmed = { kind: 'pi' as const, variant: 'dark' as const };
+  assert.equal(f.menu.preferencesChanged(confirmed), true);
+  await move(1);
+  assert.match(f.render().join('\n'), /→ Back/u);
+  assert.match(f.render().join('\n'), /Selected: Follow Pi/u);
+  assert.deepEqual(f.state.selected, confirmed);
+
+  const next = preference('github', 'dark');
+  assert.equal(f.menu.preferencesChanged(next), false, 'no local preview hides a confirmation while Back is selected');
+  f.state.selected = next; // Apply the external confirmation, as the menu owner does.
+  const rows = f.render().join('\n');
+  assert.match(rows, /→ Back/u);
+  assert.match(rows, /Selected: GitHub/u);
+  assert.match(rows, /  GitHub\s+Selected/u, 'the saved family also regains the inline marker');
+  await move(-1);
+  assert.match(f.render().join('\n'), /→ GitHub/u);
+  assert.deepEqual(f.state.selected, next);
+  assert.equal(f.calls.length, 0);
 });
 
 test('theme preview: loading from a cancelled visit cannot establish a later visit rollback point', async () => {

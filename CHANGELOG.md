@@ -7,8 +7,16 @@ been reconstructed.
 
 ## [Unreleased]
 
+### Changed
+
+- Add spacing around the `/tidy-ui` theme search and below Back. Replace the
+  description block with separators that distinguish Follow Pi and Back from
+  theme families without adding selectable rows.
+
 ### Fixed
 
+- Restore the confirmed code theme when moving the selection to Back, without
+  leaving the picker or saving changes.
 - Widen `/tidy-ui` status and troubleshooting pages so fewer diagnostic lines
   wrap. The popup still fits narrow terminals, and the main menu and theme
   picker keep their existing widths.

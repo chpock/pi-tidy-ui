@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import test from 'node:test';
+import { sliceByColumn } from '@earendil-works/pi-tui';
 import { PiTerminal } from '../../fixtures/terminal-harness.mjs';
 import { closeTerminals } from '../../fixtures/terminal-cleanup.mjs';
 
@@ -47,6 +48,83 @@ for (const mode of ['regular', 'fullscreen']) test(`menu keyboard bounds: real f
       assert.deepEqual(readFileSync(config), original, 'bounded navigation and previews save nothing');
       await live.closeTidyMenu();
       assert.equal(live.events().filter(event => ['call', 'result', 'model_context'].includes(event.type)).length, 0);
+    } finally { await closeTerminals([live]); }
+  });
+
+for (const mode of ['regular', 'fullscreen']) test(`theme picker separates the search, modes, families and Back (${mode})`,
+  { timeout: 60000 }, async () => {
+    const live = new PiTerminal(`menu-theme-groups-${mode}`, { tidyUi: true, mode,
+      tidyUiSettings: { syntaxTheme: { kind: 'pi' }, nativeHighlightingEnabled: false } });
+    const step = async data => { live.send(data); await live.settle(); };
+    const line = /^ {2}─+$/u;
+    const assertInsetDivider = y => {
+      const { left, width } = live.tidyFrame();
+      assert.match(sliceByColumn(live.screen()[y], left, width), /^│  ─+  │$/u, 'both edges leave two cells inside the frame');
+    };
+    const click = async y => {
+      const x = live.tidyFrame().left + 4;
+      await step(`\x1b[<0;${x + 1};${y + 1}M\x1b[<0;${x + 1};${y + 1}m`);
+    };
+    try {
+      await live.ready(); await live.resize(100, 30); await live.openTidyMenu();
+      const config = join(live.agent, 'extensions/pi-tidy-ui/config.json'), original = readFileSync(config);
+      await live.selectTidyItem('Code color theme');
+      const top = live.tidyRows();
+      const search = top.findIndex(row => row.startsWith('Search:'));
+      assert.ok(search >= 0);
+      assert.equal(top[search + 1], '', 'the search field ends with one empty row');
+      assert.match(top[search + 2], /^→ Follow Pi theme/u);
+      assert.match(top[search + 3], line, 'a divider separates Follow Pi from the first family');
+      assertInsetDivider(search + 3);
+      assert.match(top[search + 4], /^ {2}\S/u);
+      if (mode === 'fullscreen') {
+        const counter = top.findIndex(row => /^\s*\(1\/34\)$/u.test(row));
+        assert.ok(counter >= 0, 'only the real choices count as list items');
+        await click(search + 1); await click(search + 3); await click(counter);
+        assert.ok(live.tidyRows().some(row => row.startsWith('→ Follow Pi theme')), 'decoration and the scroll indicator do not select or confirm');
+      }
+      await live.resize(100, 46);
+      const full = live.tidyRows();
+      assert.ok(full.includes('  Back'), 'the last item fits when there is room for all choices and both lines');
+      assert.equal(full.filter(row => line.test(row)).length, 2);
+      assert.notEqual(full[full.indexOf('  Back') + 1], '', 'the blank does not displace choices or lines at exact fit');
+      await live.resize(100, 47);
+      const spaced = live.tidyRows(), fullBack = spaced.indexOf('  Back');
+      assert.ok(fullBack >= 0 && !spaced.some(row => /\(\d+\/34\)/u.test(row)));
+      assert.equal(spaced[fullBack + 1], '', 'one free row adds the blank below Back');
+      assert.match(spaced[fullBack + 2], /^─+$/u, 'the next row is the footer divider');
+      await live.resize(100, 30);
+      await step('\x1b[B');
+      assert.equal(live.tidyRows().find(row => row.startsWith('→ '))?.slice(2).split(/ {2,}/u)[0], top[search + 4].trim(), 'Down goes directly to the first family');
+      await step('\x1b[B'.repeat(40));
+      const bottom = live.tidyRows(), back = bottom.findIndex(row => row === '→ Back');
+      assert.ok(back >= 0);
+      assert.match(bottom[back - 1], line, 'a divider separates Back from the last family');
+      assertInsetDivider(back - 1);
+      assert.equal(bottom[back + 1], '', 'the blank stays directly under Back when scrolled');
+      assert.match(bottom[back + 2], /^\s*\(34\/34\)$/u);
+      assert.ok(bottom.includes('Selected: Follow Pi'), 'Back restores the confirmed theme while staying in the picker');
+      if (mode === 'fullscreen') {
+        await click(back - 1); await click(back + 1);
+        assert.ok(live.tidyRows().includes('→ Back'), 'clicking either decoration next to Back does not navigate');
+      }
+      await step('GitHub');
+      let filter = live.tidyRows(), filteredBack = filter.findIndex(row => /^  Back$/u.test(row));
+      assert.ok(filteredBack >= 0);
+      assert.match(filter[filteredBack - 1], line, 'a matching family and Back remain separated');
+      assert.equal(filter[filteredBack + 1], '', 'the filtered Back row has the same gap');
+      assert.ok(filter.includes('Selected: GitHub'), 'search previews a matching family');
+      await step('zz_no_such_theme');
+      filter = live.tidyRows(); filteredBack = filter.findIndex(row => row === '→ Back');
+      assert.ok(filteredBack >= 0);
+      const filteredSearch = filter.findIndex(row => row.startsWith('Search:'));
+      assert.equal(filteredBack, filteredSearch + 2, 'Back alone has no group separator');
+      assert.equal(filter[filteredBack + 1], '', 'the gap remains when Back is the only row');
+      assert.ok(filter.includes('Selected: Follow Pi'), 'a Back-only filter clears the previous preview');
+      assert.deepEqual(readFileSync(config), original, 'decoration, navigation and previews do not save settings');
+      await step('\r');
+      assert.ok(live.tidyHeading('Tidy UI'), 'Back remains an action');
+      await live.closeTidyMenu();
     } finally { await closeTerminals([live]); }
   });
 

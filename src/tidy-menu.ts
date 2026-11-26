@@ -74,7 +74,7 @@ export class TidyMenu implements Component {
       this.originalTheme = copyThemePreference(choice);
       if (!this.themePreviewed) {
         this.themeVariant = choice.variant;
-        this.selected.themes = choice.kind === 'pi' ? 'theme:pi' : `theme:${choice.id}`;
+        if (this.selected.themes !== 'back') this.selected.themes = choice.kind === 'pi' ? 'theme:pi' : `theme:${choice.id}`;
       }
     }
     this.listKey = ''; this.requestRender();
@@ -106,15 +106,21 @@ export class TidyMenu implements Component {
     }
     this.requestRender();
   }
+  private resetThemePreview(): void {
+    const original = this.originalTheme;
+    if (!this.themePreviewed || !original) return;
+    this.themePreviewed = false; this.themeVariant = original.variant;
+    this.owner.previewTheme(original);
+  }
   private restoreTheme(): void {
-    const original = this.originalTheme; this.originalTheme = undefined; this.themePreviewed = false; ++this.themeVisit;
-    if (original) this.owner.previewTheme(original);
+    this.resetThemePreview(); this.originalTheme = undefined; ++this.themeVisit;
   }
   private rowIntent(value: string): TidyMenuIntent | undefined {
     return this.items.find(item => item.value === value)?.intent;
   }
   private previewTheme(intent: TidyMenuIntent | undefined): void {
     if (this.closed || this.busy || this.page !== 'themes' || !this.originalTheme) return;
+    if (intent?.kind === 'back') { this.resetThemePreview(); return; }
     const choice = intent && menuThemeChoice(intent, this.themeVariant);
     if (choice) { this.themePreviewed = true; this.owner.previewTheme(choice); }
   }
@@ -188,23 +194,31 @@ export class TidyMenu implements Component {
     this.items = this.pageItems(state);
     if (this.page === 'root' && state.selected.kind === 'pi' && this.selected.root === 'theme-variant') this.selected.root = 'themes';
     const details = this.summary(state);
+    const hasDetails = Number(details.length > 0);
     const searchRows = this.page === 'themes' && !this.themeLoading && !this.themeLoadFailed && height >= 6 ? 1 : 0;
+    const helpHeight = this.page !== 'themes' && height >= 4 ? 3 : 0;
     // In tiny terminals keep the selectable row and details before adding chrome.
     const noticeHeight = this.notice ? Math.min(2, wrapTextWithAnsi(safe(this.notice), Math.max(1, width - (width >= 8 ? 2 : 0))).length) : 0;
-    const sections = height >= 10 + Number(details.length > 0) + searchRows + noticeHeight;
+    const sections = height >= 10 + hasDetails + searchRows + noticeHeight;
     const framed = width >= 8 && sections;
     const innerWidth = Math.max(1, width - (framed ? 2 : 0));
     const room = height - (framed ? 2 : 0);
     const rule = this.theme.fg('border', '─'.repeat(innerWidth));
     const heading = sections ? [this.theme.fg('accent', this.theme.bold(menuPageTitle(this.page))), rule] : [];
-    const helpHeight = height >= 4 ? 3 : 0;
     const fixed = heading.length + searchRows + (sections ? 2 : 0) + helpHeight;
-    const noticeRoom = Math.max(0, room - fixed - 1 - Number(details.length > 0));
+    const wrappedDetails = details.map(line => wrapTextWithAnsi(line, innerWidth));
+    let minimumDetails = hasDetails;
+    if (searchRows) {
+      const selection = wrappedDetails[0]!;
+      selection.push('');
+      minimumDetails = selection.length;
+    }
+    const noticeRoom = Math.max(0, room - fixed - 1 - minimumDetails);
     const notice = this.notice ? wrapTextWithAnsi(safe(this.notice), innerWidth).slice(0, Math.min(2, noticeRoom))
       .map(line => this.theme.fg(this.noticeError ? 'error' : 'muted', line)) : [];
-    const summaries = details.flatMap(line => wrapTextWithAnsi(line, innerWidth));
+    const summaries = wrappedDetails.flat();
     const available = room - fixed - notice.length;
-    const summaryRoom = Math.min(summaries.length, Math.max(available >= 2 ? 1 : 0,
+    const summaryRoom = Math.min(summaries.length, Math.max(0, Math.min(available - 1, minimumDetails),
       available - Math.min(this.items.length + 1, this.page === 'support' ? 9 : 4) - (this.page === 'support' ? 3 : 0)));
     this.detailHeight = summaryRoom;
     this.frameInset = framed ? 1 : 0;
@@ -212,8 +226,23 @@ export class TidyMenu implements Component {
     this.detailOffset = Math.min(this.detailOffset, Math.max(0, summaries.length - Math.max(1, summaryRoom)));
     const summary = summaries.slice(this.detailOffset, this.detailOffset + summaryRoom).map(line => this.theme.fg('muted', line));
     const groupRoom = this.page === 'support' && available - summary.length >= 8 ? 3 : 0;
-    const listRoom = Math.max(1, available - summary.length - groupRoom);
-    const maxVisible = Math.max(1, listRoom - 1);
+    const listSpace = Math.max(1, available - summary.length - groupRoom);
+    const searchGap = searchRows && listSpace > 3 ? 1 : 0;
+    const themeBoundaries: number[] = [];
+    const dividerPadding = '  ';
+    const dividerColumns = innerWidth - 2 * dividerPadding.length;
+    if (this.page === 'themes' && dividerColumns > 0 && this.items.length > 1) {
+      if (this.items.length > 2 && this.items[0]!.intent.kind === 'choosePi') themeBoundaries.push(1);
+      themeBoundaries.push(this.items.length - 1); // Back is always the last theme-picker row.
+    }
+    const choiceSpace = listSpace - searchGap;
+    const themeListHeight = this.items.length + themeBoundaries.length;
+    const wholeThemeListFits = this.page === 'themes' && themeListHeight <= choiceSpace;
+    // A scrolling window cannot include both ends, so reserve at most one line.
+    let separatorsLeft = wholeThemeListFits ? themeBoundaries.length : Math.min(1, themeBoundaries.length, Math.max(0, choiceSpace - 3));
+    const backGap = searchRows && (wholeThemeListFits ? themeListHeight < choiceSpace : choiceSpace - separatorsLeft > 3) ? 1 : 0;
+    const listRoom = choiceSpace - separatorsLeft - backGap;
+    const maxVisible = Math.max(1, listRoom - (wholeThemeListFits ? 0 : 1));
     const columns = itemColumns(this.pageItems(state, false), innerWidth);
     const formatted = this.items.map(item => {
       let label = truncateToWidth(item.label, columns.label, '…');
@@ -238,7 +267,10 @@ export class TidyMenu implements Component {
     }
     const body = [...heading, ...summary];
     this.search.focused = this.focused && this.page === 'themes';
-    if (searchRows) body.push(truncateToWidth(`Search: ${this.search.render(Math.max(1, innerWidth - 8))[0] ?? ''}`, innerWidth));
+    if (searchRows) {
+      body.push(truncateToWidth(`Search: ${this.search.render(Math.max(1, innerWidth - 8))[0] ?? ''}`, innerWidth));
+      if (searchGap) body.push('');
+    }
     const rows = this.list.render(innerWidth + 2).slice(0, listRoom);
     this.listHeight = rows.length;
     this.bodyWidth = innerWidth;
@@ -247,12 +279,16 @@ export class TidyMenu implements Component {
     const firstVisible = Math.max(0, Math.min(this.items.findIndex(item => item.value === this.list!.getSelectedItem()?.value) - Math.floor(maxVisible / 2), this.items.length - maxVisible));
     rows.forEach((row, index) => {
       const value = this.items[firstVisible + index]?.value;
+      if (separatorsLeft && index > 0 && index < maxVisible && themeBoundaries.includes(firstVisible + index)) {
+        body.push(this.theme.fg('dim', `${dividerPadding}${'─'.repeat(dividerColumns)}${dividerPadding}`)); separatorsLeft--;
+      }
       const group = ['reapplyAppearance', 'reapplyColors'].includes(value ?? '') ? 'Appearance' : ['native', 'service'].includes(value ?? '') ? 'Code highlighting' : 'Diagnostics';
       if (groupRoom && index < Math.min(maxVisible, this.items.length) && group !== previousGroup) {
         body.push(this.theme.fg('dim', group)); previousGroup = group;
       }
       this.mouseRows.set(body.length, { row: index, value: index < maxVisible ? value : undefined });
       body.push(row);
+      if (backGap && index < maxVisible && this.items[firstVisible + index]?.intent.kind === 'back') body.push('');
     });
     body.push(...notice);
     if (helpHeight) {
@@ -321,7 +357,9 @@ export class TidyMenu implements Component {
     if (event.type === 'click' && origin === 'disabled') return { handled: true };
     if (event.x < this.frameInset || event.x >= this.frameInset + this.bodyWidth) return undefined;
     const y = event.y - this.frameInset;
-    const target = this.mouseRows.get(y), row = target?.row;
+    const target = this.mouseRows.get(y);
+    // Recentering can replace the pressed row with decoration. The same native list still owns the press.
+    const row = acceptedClick && this.page === 'themes' && !target?.value ? 0 : target?.row;
     if (row === undefined && event.type !== 'wheel') return undefined;
     // A native press retains its original item when selection recenters the list.
     if (!acceptedClick && this.page === 'root' && target?.value === 'theme-variant' && this.owner.snapshot().selected.kind === 'pi' &&

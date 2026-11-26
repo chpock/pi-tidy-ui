@@ -312,9 +312,22 @@ for (const mode of ['regular', 'fullscreen']) test(`real CLI: settings popup nav
         const frame = rows.slice(top, bottom + 1), dividers = frame.flatMap((row, index) => /^├─+┤$/u.test(row) ? [index] : []);
         assert.equal(frame[1].slice(1, -1).trim(), heading);
         assert.deepEqual(dividers, [2, frame.length - 3]);
-        assert.equal(frame.at(-6).slice(1, -1).trim(), '', 'a physical blank row separates the list and description');
-        const help = frame.slice(-5, -3).map(row => row.slice(1, -1).trimEnd());
-        assert.equal(help.length, 2); assert.ok(help[0].trim());
+        let help;
+        if (heading === 'Code color theme') {
+          const body = frame.slice(3, -3).map(row => row.slice(1, -1).trimEnd());
+          const selected = body.findIndex(row => row.startsWith('Selected: '));
+          assert.ok(selected >= 0, 'the picker displays the current or previewed theme');
+          assert.equal(body[selected + 1], '', 'one physical blank row follows Selected');
+          assert.match(body[selected + 2], /\S/u, 'there is no second blank row');
+          assert.ok(body.findIndex(row => row.startsWith('Search:')) >= selected + 2, 'search follows the selected-theme summary');
+          if (body.at(-1) === '') assert.match(body.at(-2), /^(?:→ | {2})Back$/u, 'only the blank immediately below Back may precede the footer');
+          else assert.match(body.at(-1), /^(?:→ | {2}\S|\s*\(\d+\/\d+\)$)/u, 'a choice or scroll indicator precedes the footer');
+          assert.doesNotMatch(body.join('\n'), /Use Pi’s code colors|Return to the previous page/u);
+        } else {
+          assert.equal(frame.at(-6).slice(1, -1).trim(), '', 'a physical blank row separates the list and description');
+          help = frame.slice(-5, -3).map(row => row.slice(1, -1).trimEnd());
+          assert.equal(help.length, 2); assert.ok(help[0].trim());
+        }
         assert.match(frame.at(-2), width >= 70 ? /↑↓ Navigate.*Enter Select.*Esc (?:Close|Back)/u : /↑↓ Navigate/u);
         assert.doesNotMatch(frame.join('\n'), /Choices are saved automatically|Applying|Saving|Applied and saved/u);
         assert.ok(dump.cells[top + 1][left + 1].bold, 'the real heading is bold');
@@ -372,7 +385,7 @@ for (const mode of ['regular', 'fullscreen']) test(`real CLI: settings popup nav
       assert.ok(live.tidyRows().some(row => row.startsWith('→ Code color theme')), 'initial Enter is navigation, not a toggle');
       assert.ok(!live.tidyRows().some(row => /Occipital|cache|logs/u.test(row)), 'technical controls are nested');
       live.send('\r'); await until(() => live.tidyHeading('Code color theme') && live.tidyRows().some(row => row.includes('Follow Pi theme')), 'first Enter opens theme picker');
-      assert.equal(checkLayout('Code color theme')[1], '', 'a short description retains its empty second physical row');
+      checkLayout('Code color theme');
       const themeWidth = live.tidyFrame().width;
       assert.notEqual(themeWidth, rootWidth, 'the same public overlay changes actual bounds for a new page');
       live.send('zz_no_such_theme');
@@ -523,8 +536,16 @@ for (const mode of ['regular', 'fullscreen']) test(`settings sync: two real Pi p
     assert.ok(peer.tidyRows().some(row => /Tidy UI appearance\s+On$/u.test(row)));
     await live.terminalColors(false);
     await until(() => peer.tidyRows().some(row => /Set terminal colors from Pi theme\s+Off$/u.test(row)), 'peer applies saved terminal preference with no keyboard input');
+    await peer.selectTidyItem('Code color theme');
+    peer.send('GitHub');
+    await until(() => peer.tidyRows().includes('Selected: GitHub'), 'peer previews a theme without confirming it');
+    peer.send('\x1b[B');
+    await until(() => peer.tidyRows().includes('Selected: Gruvbox') && peer.tidyRows().includes('→ Back'), 'Back restores the saved family in the open picker');
     await live.tidyPage(['Code color theme', 'Follow Pi theme']);
-    await until(() => peer.tidyRows().some(row => /Code color theme.*Follow Pi/u.test(row)), 'peer applies confirmed theme with no keyboard input');
+    await until(() => peer.tidyRows().includes('Selected: Follow Pi'), 'peer applies the newly confirmed theme without keyboard input');
+    assert.ok(peer.tidyRows().includes('→ Back'), 'the watcher leaves the cursor on Back');
+    peer.send('\r');
+    await until(() => peer.tidyHeading('Tidy UI') && peer.tidyRows().some(row => /Code color theme.*Follow Pi/u.test(row)), 'Back returns to the root without saving');
     await live.openTidyMenu(); await live.selectTidyItem('Status & troubleshooting');
     assert.ok(live.tidyRows().some(row => /Use Occipital highlighting\s+Off$/u.test(row)));
     await peer.selectTidyItem('Status & troubleshooting'); await peer.selectTidyItem('Use Occipital highlighting'); await peer.closeTidyMenu();
