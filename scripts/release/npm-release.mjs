@@ -99,61 +99,71 @@ async function cancelBody(response) {
   try { await response.body?.cancel(); } catch { /* Cleanup cannot replace the classified response failure. */ }
 }
 
-const metadataReadinessMs = 120000;
-const metadataPollIntervalMs = 5000;
+const registryReadinessMs = 900000;
+const registryPollIntervalMs = 15000;
 const registryRequestTimeoutMs = 60000;
+
+function startRegistryReadiness({
+  now = () => performance.now(),
+  wait = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds)),
+  timeoutSignal = milliseconds => AbortSignal.timeout(milliseconds),
+} = {}) {
+  return { now, wait, timeoutSignal, deadline: now() + registryReadinessMs };
+}
+
+function registryReadFailure(stage, reason, readiness, attempt, rejected = false) {
+  const now = readiness.now();
+  // A delayed timeout callback must not admit a late response or body.
+  const expired = now >= attempt.expiresAt || attempt.signal.aborted;
+  if (now >= readiness.deadline || (expired && attempt.releaseLimited)) {
+    return new PublicRegistryVerificationError(stage, 'deadline');
+  }
+  if (expired || rejected) return new PublicRegistryVerificationError(stage, reason);
+}
 
 function metadataRequestURL(row) {
   try { return `https://registry.npmjs.org/${encodeURIComponent(row.name)}/${row.version}`; }
   catch { throw new PublicRegistryVerificationError('metadata', 'invalid-identity'); }
 }
 
-function metadataRequestTimeout(deadline, now, lastWasNotFound) {
-  const timeout = Math.floor(Math.min(registryRequestTimeoutMs, deadline - now()));
-  if (timeout < 1) {
-    throw new PublicRegistryVerificationError('metadata', lastWasNotFound ? 'not-found' : 'deadline', lastWasNotFound ? 404 : undefined);
-  }
-  return timeout;
-}
-
-async function requestMetadata(url, fetcher, timeoutSignal, timeout) {
-  try { return await fetcher(url, { signal: timeoutSignal(timeout), redirect: 'error' }); }
-  catch { throw new PublicRegistryVerificationError('metadata', 'transport'); }
-}
-
-async function waitForMetadata(response, deadline, now, wait) {
-  await cancelBody(response);
-  const remaining = deadline - now();
-  if (remaining < 1) throw new PublicRegistryVerificationError('metadata', 'not-found', 404);
-  try { await wait(Math.min(metadataPollIntervalMs, remaining)); }
-  catch { throw new PublicRegistryVerificationError('metadata', 'wait'); }
-}
-
-async function metadataRecord(response, deadline, now) {
-  if (!response.ok) {
+async function readPublicResponse(url, stage, fetcher, readiness) {
+  const { deadline, now, timeoutSignal, wait } = readiness;
+  let notFound = false;
+  for (;;) {
+    const startedAt = now(), remaining = deadline - startedAt;
+    const timeout = Math.floor(Math.min(registryRequestTimeoutMs, remaining));
+    if (timeout < 1) {
+      throw new PublicRegistryVerificationError(stage, notFound ? 'not-found' : 'deadline', notFound ? 404 : undefined);
+    }
+    const signal = timeoutSignal(timeout);
+    const attempt = { signal, expiresAt: startedAt + timeout, releaseLimited: remaining <= registryRequestTimeoutMs };
+    let response;
+    try { response = await fetcher(url, { signal, redirect: 'error' }); }
+    catch { throw registryReadFailure(stage, 'transport', readiness, attempt, true); }
+    const failure = registryReadFailure(stage, 'transport', readiness, attempt);
+    if (!failure && response.ok) return { response, attempt };
     await cancelBody(response);
-    throw new PublicRegistryVerificationError('metadata', 'http-status', response.status);
+    if (failure) throw failure;
+    if (response.status !== 404) throw new PublicRegistryVerificationError(stage, 'http-status', response.status);
+    notFound = true;
+    const delay = Math.floor(Math.min(registryPollIntervalMs, deadline - now()));
+    if (delay < 1) continue;
+    try { await wait(delay); }
+    catch { throw new PublicRegistryVerificationError(stage, 'wait'); }
   }
+}
+
+async function readMetadataRecord(row, fetcher, readiness) {
+  const { response, attempt } = await readPublicResponse(metadataRequestURL(row), 'metadata', fetcher, readiness);
   let text;
   try { text = await response.text(); }
-  catch { throw new PublicRegistryVerificationError('metadata', 'body-read'); }
+  catch { throw registryReadFailure('metadata', 'body-read', readiness, attempt, true); }
   let item;
   try { item = JSON.parse(text); }
   catch { throw new PublicRegistryVerificationError('metadata', 'invalid-json'); }
-  if (now() >= deadline) throw new PublicRegistryVerificationError('metadata', 'deadline');
+  const failure = registryReadFailure('metadata', 'body-read', readiness, attempt);
+  if (failure) throw failure;
   return item;
-}
-
-async function readMetadataRecord(row, fetcher, { now, wait, timeoutSignal }) {
-  const deadline = now() + metadataReadinessMs, url = metadataRequestURL(row);
-  let lastWasNotFound = false;
-  for (;;) {
-    const timeout = metadataRequestTimeout(deadline, now, lastWasNotFound);
-    const response = await requestMetadata(url, fetcher, timeoutSignal, timeout);
-    if (response.status !== 404) return metadataRecord(response, deadline, now);
-    lastWasNotFound = true;
-    await waitForMetadata(response, deadline, now, wait);
-  }
 }
 
 function requireMetadataIdentity(row, item) {
@@ -182,51 +192,41 @@ async function localArchiveSize(row) {
   catch { throw new PublicRegistryVerificationError('archive', 'local-file'); }
 }
 
-async function fetchArchive(url, fetcher, timeoutSignal) {
-  try { return await fetcher(url, { signal: timeoutSignal(registryRequestTimeoutMs), redirect: 'error' }); }
-  catch { throw new PublicRegistryVerificationError('archive', 'transport'); }
-}
-
-async function requireArchiveBody(response) {
-  if (!response.ok || !response.body) {
-    await cancelBody(response);
-    throw new PublicRegistryVerificationError('archive', response.ok ? 'missing-body' : 'http-status', response.ok ? undefined : response.status);
-  }
-  return response.body;
-}
-
 async function verifyArchiveStream(body, expectedSize, expectedIntegrity) {
   const hash = createHash('sha512'); let size = 0;
-  try {
-    for await (const chunk of body) {
-      size += chunk.byteLength;
-      if (size > expectedSize) throw new PublicRegistryVerificationError('archive', 'size-mismatch');
-      hash.update(chunk);
-    }
-  } catch (error) {
-    if (error instanceof PublicRegistryVerificationError) throw error;
-    throw new PublicRegistryVerificationError('archive', 'stream');
+  for await (const chunk of body) {
+    size += chunk.byteLength;
+    if (size > expectedSize) throw new PublicRegistryVerificationError('archive', 'size-mismatch');
+    hash.update(chunk);
   }
   if (size !== expectedSize) throw new PublicRegistryVerificationError('archive', 'size-mismatch');
   if ('sha512-' + hash.digest('base64') !== expectedIntegrity) throw new PublicRegistryVerificationError('archive', 'integrity-mismatch');
 }
 
-async function verifyArchiveBytes(row, url, fetcher, timeoutSignal) {
+async function verifyArchiveBytes(row, url, fetcher, readiness) {
   const expectedSize = await localArchiveSize(row);
-  const response = await fetchArchive(url, fetcher, timeoutSignal);
-  await verifyArchiveStream(await requireArchiveBody(response), expectedSize, row.integrity);
+  const { response, attempt } = await readPublicResponse(url, 'archive', fetcher, readiness);
+  if (!response.body) throw new PublicRegistryVerificationError('archive', 'missing-body');
+  try { await verifyArchiveStream(response.body, expectedSize, row.integrity); }
+  catch (error) {
+    if (error instanceof PublicRegistryVerificationError) throw error;
+    throw registryReadFailure('archive', 'stream', readiness, attempt, true);
+  }
+  const failure = registryReadFailure('archive', 'stream', readiness, attempt);
+  if (failure) throw failure;
 }
 
-export async function verifyPublicArchive(row, fetcher, verification = {}) {
-  const now = verification.now ?? (() => performance.now());
-  const wait = verification.wait ?? (milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds)));
-  const timeoutSignal = verification.timeoutSignal ?? (milliseconds => AbortSignal.timeout(milliseconds));
+export async function verifyPublicArchive(row, fetcher, verification) {
+  await verifyPublicPackage(row, fetcher, startRegistryReadiness(verification));
+}
+
+async function verifyPublicPackage(row, fetcher, readiness) {
   let stage = 'metadata';
   try {
-    const item = await readMetadataRecord(row, fetcher, { now, wait, timeoutSignal });
+    const item = await readMetadataRecord(row, fetcher, readiness);
     const url = metadataArchiveURL(row, item);
     stage = 'archive';
-    await verifyArchiveBytes(row, url, fetcher, timeoutSignal);
+    await verifyArchiveBytes(row, url, fetcher, readiness);
   } catch (error) {
     if (error instanceof PublicRegistryVerificationError) throw error;
     throw new PublicRegistryVerificationError(stage, 'internal');
@@ -276,8 +276,9 @@ export async function publishNpmRelease({ planPath, env = process.env, targets =
     if (item.name !== row.name || item.version !== row.version || item.integrity !== row.integrity) throw new Error('npm publish reply differs from prepared native tarball');
     receipt.outcome = 'published'; await save();
   }
+  const readiness = startRegistryReadiness(verification);
   for (let i = 0; i < plan.packages.length; i++) {
-    await verifyPublicArchive(plan.packages[i], fetcher, verification);
+    await verifyPublicPackage(plan.packages[i], fetcher, readiness);
     receipts.packages[i].registryByteVerified = true; await save();
   }
   return receipts;

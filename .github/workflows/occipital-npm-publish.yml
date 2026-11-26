@@ -25,7 +25,7 @@ jobs:
   publish:
     if: github.repository == 'chpock/pi-tidy-ui' && github.event_name == 'push' && github.ref == format('refs/tags/{0}', inputs.tag) && startsWith(inputs.tag, 'occipital-v')
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 30
     env:
       TAG: ${{ inputs.tag }}
       SOURCE_COMMIT: ${{ inputs.source-ref }}

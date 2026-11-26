@@ -289,10 +289,12 @@ test('provenance generation failure stops the native family without a fallback u
   assert.deepEqual(receipts.packages.map(row => row.outcome), ['unconfirmed', 'not-started', 'not-started', 'not-started', 'not-started']);
 });
 
-test('fresh upload waits through exact metadata 404 and a matching version waits without another upload', async t => {
+test('native upload waits for metadata and archive visibility without publishing twice', async t => {
   const { f, plan } = await planned(t, '0.1.5', ['linux-x64-gnu']), { publishNpmRelease } = await publisher();
   const row = plan.packages[0], baseFetcher = registryFetcher(plan);
-  let viewCount = 0, uploads = 0, metadata404s = 2, metadataRequests = 0, archiveRequests = 0;
+  const firstClock = verificationClock(0.25), secondClock = verificationClock(3.5);
+  let viewCount = 0, uploads = 0, metadataRequests = 0, archiveRequests = 0;
+  let clock = firstClock, metadataVisible = 300000.25, archiveVisible = 540000.25;
   const execute = async (_npm, args) => {
     if (args[0] === 'view') {
       viewCount++;
@@ -304,28 +306,29 @@ test('fresh upload waits through exact metadata 404 and a matching version waits
   };
   const fetcher = async (url, options) => {
     assert.ok(options.signal); assert.equal(options.redirect, 'error');
-    if (String(url).includes('/archive/')) archiveRequests++;
-    else {
+    if (String(url).includes('/archive/')) {
+      archiveRequests++;
+      if (clock.current() < archiveVisible) return new Response('pending', { status: 404 });
+    } else {
       metadataRequests++;
-      if (metadata404s > 0) { metadata404s--; return new Response('{}', { status: 404 }); }
+      if (clock.current() < metadataVisible) return new Response('{}', { status: 404 });
     }
     return baseFetcher(url, options);
   };
-  const firstClock = verificationClock(0.25);
   const first = await publishNpmRelease({ planPath: join(f.output, 'plan.json'), targets: ['linux-x64-gnu'], env: host, execute, fetcher, report: () => {}, verification: firstClock });
   assert.equal(first.packages[0].outcome, 'published'); assert.equal(first.packages[0].registryByteVerified, true);
-  assert.equal(uploads, 1); assert.equal(metadataRequests, 3); assert.equal(archiveRequests, 1);
-  assert.deepEqual(firstClock.waits, [5000, 5000]);
+  assert.equal(uploads, 1); assert.equal(metadataRequests, 21); assert.equal(archiveRequests, 17);
+  assert.equal(firstClock.current(), archiveVisible);
+  assert.deepEqual(firstClock.waits, Array(36).fill(15000));
 
-  metadata404s = 1;
-  const secondClock = verificationClock(3.5);
+  clock = secondClock; metadataVisible = 3.5; archiveVisible = 15003.5;
   const second = await publishNpmRelease({ planPath: join(f.output, 'plan.json'), targets: ['linux-x64-gnu'], env: host, execute, fetcher, report: () => {}, verification: secondClock });
   assert.equal(second.packages[0].outcome, 'already-published'); assert.equal(second.packages[0].registryByteVerified, true);
-  assert.equal(uploads, 1); assert.equal(metadataRequests, 5); assert.equal(archiveRequests, 2);
-  assert.deepEqual(secondClock.waits, [5000]);
+  assert.equal(uploads, 1); assert.equal(metadataRequests, 22); assert.equal(archiveRequests, 19);
+  assert.deepEqual(secondClock.waits, [15000]);
 });
 
-test('metadata readiness counts delayed request time and refuses a fractional near-deadline request', async t => {
+test('metadata readiness clips the last wait and refuses a fractional near-deadline request', async t => {
   const { f, plan } = await planned(t, '0.1.5', ['linux-x64-gnu']), { publishNpmRelease } = await publisher(), row = plan.packages[0];
   const clock = verificationClock(0.25); let requests = 0, archiveRequests = 0;
   const execute = async (_npm, args) => {
@@ -338,18 +341,19 @@ test('metadata readiness counts delayed request time and refuses a fractional ne
       if (String(url).includes('/archive/')) { archiveRequests++; return new Response('unexpected'); }
       requests++;
       if (requests === 1) clock.advance(59999.5);
+      if (requests === 56) clock.advance(2500);
       return new Response('{}', { status: 404 });
     },
   }), error => {
     assert.equal(error.stage, 'metadata'); assert.equal(error.reason, 'not-found'); assert.equal(error.status, 404);
     return true;
   });
-  assert.equal(requests, 12); assert.equal(archiveRequests, 0);
-  assert.deepEqual(clock.waits, Array(12).fill(5000));
-  assert.equal(clock.requestStarts[0], 0.25); assert.equal(clock.requestStarts.at(-1), 114999.75);
-  assert.equal(clock.current(), 119999.75); assert.equal(120000.25 - clock.current(), 0.5);
-  assert.equal(clock.requestTimeouts.at(-1), 5000);
-  assert.ok(clock.requestStarts.every(start => start < 120000.25));
+  assert.equal(requests, 56); assert.equal(archiveRequests, 0);
+  assert.deepEqual(clock.waits, [...Array(55).fill(15000), 12500]);
+  assert.equal(clock.requestStarts[0], 0.25); assert.equal(clock.requestStarts.at(-1), 884999.75);
+  assert.equal(clock.current(), 899999.75); assert.equal(900000.25 - clock.current(), 0.5);
+  assert.equal(clock.requestTimeouts.at(-1), 15000);
+  assert.ok(clock.requestStarts.every(start => start < 900000.25));
   const receipt = await json(join(f.output, 'receipts.json'));
   assert.equal(receipt.packages[0].outcome, 'already-published');
   assert.equal(receipt.packages[0].registryByteVerified, undefined);
@@ -410,7 +414,7 @@ test('native metadata body consumption counts against the readiness deadline', a
     }, fetcher: async url => {
       if (String(url).includes('/archive/')) archiveRequests++;
       return new Response(new ReadableStream({ pull(controller) {
-        clock.advance(120000);
+        clock.advance(900000);
         controller.enqueue(new TextEncoder().encode(JSON.stringify(item)));
         controller.close();
       } }, { highWaterMark: 0 }), { status: 200 });
@@ -419,7 +423,7 @@ test('native metadata body consumption counts against the readiness deadline', a
     assert.equal(error.stage, 'metadata'); assert.equal(error.reason, 'deadline'); assert.equal(error.status, undefined);
     return true;
   });
-  assert.equal(clock.current(), 120000.25);
+  assert.equal(clock.current(), 900000.25);
   assert.equal(archiveRequests, 0);
   const receipt = await json(join(f.output, 'receipts.json'));
   assert.equal(receipt.packages[0].outcome, 'already-published');
@@ -447,17 +451,17 @@ test('native fresh upload exhaustion persists published without a verification f
   });
   assert.deepEqual(calls.map(args => args[0]), ['view', 'publish']);
   assert.equal(uploads, 1);
-  assert.equal(requests.length, 24);
+  assert.equal(requests.length, 60);
   assert.equal(requests.every(url => url === `https://registry.npmjs.org/${encodeURIComponent(row.name)}/${row.version}`), true);
   assert.equal(requests.some(url => url.includes('/archive/')), false);
-  assert.deepEqual(clock.waits, Array(24).fill(5000));
+  assert.deepEqual(clock.waits, Array(60).fill(15000));
   const receipt = await json(join(f.output, 'receipts.json'));
   assert.equal(receipt.packages.length, 1);
   assert.equal(receipt.packages[0].outcome, 'published');
   assert.equal(receipt.packages[0].registryByteVerified, undefined);
 });
 
-test('post-publication verification waits only for exact metadata 404 and reads the exact raw archive', async t => {
+test('all matching native versions skip upload and verify the exact public archives', async t => {
   const { f, plan } = await planned(t), { publishNpmRelease } = await publisher(), requests = [], calls = [];
   const fetcher = registryFetcher(plan), execute = async (_npm, args) => {
     calls.push(args);
@@ -472,14 +476,40 @@ test('post-publication verification waits only for exact metadata 404 and reads 
   assert.equal(requests.filter(url => url.endsWith('/0.1.5')).length, 5);
   assert.equal(requests.filter(url => url.includes('/archive/')).length, 5);
   assert.equal(result.packages.filter(row => row.registryByteVerified).length, 5);
-  requests.length = 0;
-  const clock = verificationClock();
-  await assert.rejects(publishNpmRelease({ planPath: join(f.output, 'plan.json'), env: host, execute, verification: clock,
-    fetcher: async url => { requests.push(url); return new Response('{}', { status: 404 }); } }), error => {
-    assert.equal(error.stage, 'metadata'); assert.equal(error.reason, 'not-found'); assert.equal(error.status, 404); return true;
+});
+
+test('native verification starts after upload and shares its deadline across all five packages', async t => {
+  const { f, plan } = await planned(t), { publishNpmRelease } = await publisher(), baseFetcher = registryFetcher(plan);
+  const clock = verificationClock(), requests = [], uploads = [];
+  const [first, second] = plan.packages;
+  const metadata = row => `https://registry.npmjs.org/${encodeURIComponent(row.name)}/${row.version}`;
+  const archive = row => `https://registry.npmjs.org/archive/${row.target}`;
+  const verificationStart = 700000;
+  await assert.rejects(publishNpmRelease({ planPath: join(f.output, 'plan.json'), env: host, verification: clock, report: () => {},
+    execute: async (_, args) => {
+      if (args[0] === 'view') { clock.advance(20000); throw absent(); }
+      assert.equal(args[0], 'publish');
+      const row = plan.packages.find(row => row.tarball === args[1]);
+      uploads.push(row.name); clock.advance(120000);
+      return { stdout: JSON.stringify([{ name: row.name, version: row.version, integrity: row.integrity }]) };
+    }, fetcher: async (url, options) => {
+      url = String(url); requests.push(url);
+      if ((url === metadata(first) && clock.current() < verificationStart + 870000) || url === archive(second)) {
+        return new Response('pending', { status: 404 });
+      }
+      return baseFetcher(url, options);
+    },
+  }), error => {
+    assert.equal(error.stage, 'archive'); assert.equal(error.reason, 'not-found'); assert.equal(error.status, 404); return true;
   });
-  assert.equal(requests.length, 24, 'one missing package exhausts only its per-package visibility window');
-  assert.deepEqual(clock.waits, Array(24).fill(5000));
+  assert.deepEqual(uploads, plan.packages.map(row => row.name));
+  assert.deepEqual(requests, [...Array(59).fill(metadata(first)), archive(first), metadata(second), archive(second), archive(second)]);
+  assert.equal(clock.requestStarts[0], verificationStart);
+  assert.deepEqual(clock.requestTimeouts.slice(-4), [30000, 30000, 30000, 15000]);
+  assert.equal(clock.current(), verificationStart + 900000);
+  const { packages } = await json(join(f.output, 'receipts.json'));
+  assert.deepEqual(packages.map(row => row.outcome), Array(5).fill('published'));
+  assert.deepEqual(packages.map(row => row.registryByteVerified), [true, undefined, undefined, undefined, undefined]);
 });
 
 test('public verification cancels non-404 HTTP-error and oversized bodies without replacing the HTTP failure', async t => {

@@ -188,10 +188,10 @@ for (const version of ['0.1.0', '0.1.0-rc.1']) {
   });
 }
 
-test('fresh extension upload waits through metadata 404 and an existing version waits without another upload', async t => {
+test('extension upload waits through metadata and archive 404 without publishing twice', async t => {
   const f = await packed(t), { publishExtensionRelease } = await publisher();
   const calls = [], requests = [], baseFetcher = publicFetcher(f.publication, requests);
-  let viewCount = 0, uploads = 0, metadata404s = 2, metadataRequests = 0, archiveRequests = 0;
+  let viewCount = 0, uploads = 0, metadata404s = 2, archive404s = 2, metadataRequests = 0, archiveRequests = 0, cancelled404s = 0;
   const execute = async (_npm, args) => {
     calls.push(args);
     if (args[0] === 'view') {
@@ -207,21 +207,29 @@ test('fresh extension upload waits through metadata 404 and an existing version 
     if (String(url) === `https://registry.npmjs.org/${name}/${f.publication.version}`) {
       metadataRequests++;
       if (metadata404s > 0) { metadata404s--; return new Response('{}', { status: 404 }); }
-    } else archiveRequests++;
+    } else {
+      assert.equal(String(url), archiveURL);
+      archiveRequests++;
+      if (archive404s > 0) {
+        archive404s--;
+        return new Response(new ReadableStream({ cancel() { cancelled404s++; } }), { status: 404 });
+      }
+    }
     return baseFetcher(url, fetchOptions);
   };
   const firstClock = verificationClock(0.25);
   const first = await publishExtensionRelease(options(f, { execute, fetcher, verification: firstClock }));
   assert.equal(first.outcome, 'published'); assert.equal(first.registryByteVerified, true);
-  assert.equal(uploads, 1); assert.equal(metadataRequests, 3); assert.equal(archiveRequests, 1);
-  assert.deepEqual(firstClock.waits, [5000, 5000]);
+  assert.equal(uploads, 1); assert.equal(metadataRequests, 3); assert.equal(archiveRequests, 3);
+  assert.deepEqual(firstClock.waits, Array(4).fill(15000));
 
-  metadata404s = 1;
+  archive404s = 1;
   const secondClock = verificationClock(3.5);
   const second = await publishExtensionRelease(options(f, { execute, fetcher, verification: secondClock }));
   assert.equal(second.outcome, 'already-published'); assert.equal(second.registryByteVerified, true);
-  assert.equal(uploads, 1); assert.equal(metadataRequests, 5); assert.equal(archiveRequests, 2);
-  assert.deepEqual(secondClock.waits, [5000]);
+  assert.equal(uploads, 1); assert.equal(metadataRequests, 4); assert.equal(archiveRequests, 5);
+  assert.equal(cancelled404s, 3);
+  assert.deepEqual(secondClock.waits, [15000]);
   assert.deepEqual(calls.map(args => args[0]), ['view', 'publish', 'view']);
 });
 
@@ -328,7 +336,7 @@ test('extension metadata body consumption counts against the readiness deadline'
     }, fetcher: async url => {
       if (String(url) === archiveURL) archiveRequests++;
       return new Response(new ReadableStream({ pull(controller) {
-        clock.advance(120000);
+        clock.advance(900000);
         controller.enqueue(new TextEncoder().encode(JSON.stringify(item)));
         controller.close();
       } }, { highWaterMark: 0 }), { status: 200 });
@@ -337,12 +345,102 @@ test('extension metadata body consumption counts against the readiness deadline'
     assert.equal(error.stage, 'metadata'); assert.equal(error.reason, 'deadline'); assert.equal(error.status, undefined);
     return true;
   });
-  assert.equal(clock.current(), 120000.25);
+  assert.equal(clock.current(), 900000.25);
   assert.equal(archiveRequests, 0);
   const receipt = await json(join(f.root, 'receipts.json'));
   assert.equal(receipt.outcome, 'already-published');
   assert.equal(receipt.registryByteVerified, undefined);
 });
+
+test('archive download and body consumption share the remaining readiness deadline', async t => {
+  const f = await packed(t), { publishExtensionRelease } = await publisher(), clock = verificationClock();
+  const metadata = Response.json({ ...existing(f.publication), dist: { integrity: f.publication.integrity, tarball: archiveURL } });
+  let archiveRequests = 0;
+  await assert.rejects(publishExtensionRelease(options(f, { verification: clock,
+    execute: async (_npm, args) => {
+      assert.equal(args[0], 'view'); return { stdout: JSON.stringify(existing(f.publication)) };
+    }, fetcher: async url => {
+      if (String(url) !== archiveURL) return clock.current() < 885000 ? new Response(null, { status: 404 }) : metadata;
+      archiveRequests++;
+      return new Response(new ReadableStream({ pull(controller) {
+        clock.advance(15000);
+        controller.enqueue(bytes); controller.close();
+      } }, { highWaterMark: 0 }));
+    },
+  })), error => {
+    assert.equal(error.stage, 'archive'); assert.equal(error.reason, 'deadline'); assert.equal(error.status, undefined);
+    return true;
+  });
+  assert.equal(archiveRequests, 1);
+  assert.deepEqual(clock.requestTimeouts.slice(-2), [15000, 15000]);
+  assert.equal((await json(join(f.root, 'receipts.json'))).registryByteVerified, undefined);
+});
+
+test('archive body timeout distinguishes a capped request from the release deadline', async t => {
+  const f = await packed(t), { publishExtensionRelease } = await publisher();
+  for (const elapsed of [0, 885000]) {
+    const clock = verificationClock();
+    let timeoutController;
+    const verification = { ...clock, timeoutSignal(ms) {
+      clock.timeoutSignal(ms);
+      timeoutController = new AbortController();
+      return timeoutController.signal;
+    } };
+    let archiveRequests = 0;
+    await assert.rejects(publishExtensionRelease(options(f, { verification,
+      execute: async (_npm, args) => {
+        assert.equal(args[0], 'view'); return { stdout: JSON.stringify(existing(f.publication)) };
+      }, fetcher: async (url, { signal }) => {
+        if (String(url) !== archiveURL) return clock.current() < elapsed ? new Response(null, { status: 404 })
+          : Response.json({ ...existing(f.publication), dist: { integrity: f.publication.integrity, tarball: archiveURL } });
+        archiveRequests++;
+        assert.equal(signal, timeoutController.signal);
+        return new Response(new ReadableStream({ pull(controller) {
+          clock.advance(clock.requestTimeouts.at(-1) - 0.25);
+          timeoutController.abort(new DOMException('fixture timeout', 'TimeoutError'));
+          controller.error(signal.reason);
+        } }, { highWaterMark: 0 }));
+      },
+    })), error => {
+      assert.equal(error.stage, 'archive'); assert.equal(error.reason, elapsed ? 'deadline' : 'stream');
+      return true;
+    });
+    assert.equal(archiveRequests, 1);
+    assert.equal(clock.requestTimeouts.at(-1), elapsed ? 15000 : 60000);
+    assert.equal((await json(join(f.root, 'receipts.json'))).registryByteVerified, undefined);
+  }
+});
+
+for (const late of ['headers', 'body']) {
+  test(`archive retry rejects late ${late} before the timeout callback runs`, async t => {
+    const f = await packed(t), { publishExtensionRelease } = await publisher(), clock = verificationClock();
+    let metadataRequests = 0, archiveRequests = 0, bodiesRead = 0;
+    await assert.rejects(publishExtensionRelease(options(f, { verification: clock,
+      execute: async (_npm, args) => {
+        assert.equal(args[0], 'view'); return { stdout: JSON.stringify(existing(f.publication)) };
+      }, fetcher: async (url, { signal }) => {
+        if (String(url) !== archiveURL) {
+          metadataRequests++;
+          return Response.json({ ...existing(f.publication), dist: { integrity: f.publication.integrity, tarball: archiveURL } });
+        }
+        if (++archiveRequests === 1) return new Response(null, { status: 404 });
+        if (late === 'headers') clock.advance(60001);
+        assert.equal(signal.aborted, false);
+        return new Response(new ReadableStream({ pull(controller) {
+          bodiesRead++;
+          if (late === 'body') clock.advance(60001);
+          controller.enqueue(bytes); controller.close();
+        } }, { highWaterMark: 0 }));
+      },
+    })), error => {
+      assert.equal(error.stage, 'archive'); assert.equal(error.reason, late === 'headers' ? 'transport' : 'stream');
+      return true;
+    });
+    assert.equal(metadataRequests, 1); assert.equal(archiveRequests, 2); assert.equal(bodiesRead, late === 'body' ? 1 : 0);
+    assert.deepEqual(clock.waits, [15000]);
+    assert.equal((await json(join(f.root, 'receipts.json'))).registryByteVerified, undefined);
+  });
+}
 
 test('fresh extension upload exhaustion persists published without verification flag or archive request', async t => {
   const f = await packed(t), { publishExtensionRelease } = await publisher(), clock = verificationClock(0.25);
@@ -365,10 +463,10 @@ test('fresh extension upload exhaustion persists published without verification 
   });
   assert.deepEqual(calls.map(args => args[0]), ['view', 'publish']);
   assert.equal(uploads, 1);
-  assert.equal(requests.length, 24);
+  assert.equal(requests.length, 60);
   assert.equal(requests.every(url => url === `https://registry.npmjs.org/${name}/${f.publication.version}`), true);
   assert.equal(requests.some(url => url === archiveURL), false);
-  assert.deepEqual(clock.waits, Array(24).fill(5000));
+  assert.deepEqual(clock.waits, Array(60).fill(15000));
   const receipt = await json(join(f.root, 'receipts.json'));
   assert.equal(receipt.outcome, 'published');
   assert.equal(receipt.registryByteVerified, undefined);
@@ -436,8 +534,9 @@ for (const failure of ['metadata-http', 'metadata-json', 'metadata-name', 'metad
     await assert.rejects(publishExtensionRelease(options(f, { fetcher, verification, execute: async (_npm, args) => {
       npmCalls++; assert.equal(args[0], 'view'); return { stdout: JSON.stringify(existing(f.publication)) };
     } })), error => {
-      if (failure === 'metadata-http') {
-        assert.equal(error.stage, 'metadata'); assert.equal(error.reason, 'not-found'); assert.equal(error.status, 404);
+      if (failure === 'metadata-http' || failure === 'archive-http-404') {
+        assert.equal(error.stage, failure === 'metadata-http' ? 'metadata' : 'archive');
+        assert.equal(error.reason, 'not-found'); assert.equal(error.status, 404);
       } else if (failure === 'metadata-json') {
         assert.equal(error.stage, 'metadata'); assert.equal(error.reason, 'invalid-json');
       } else if (failure.startsWith('metadata-') && !failure.endsWith('redirect')) {
@@ -454,8 +553,10 @@ for (const failure of ['metadata-http', 'metadata-json', 'metadata-name', 'metad
       return true;
     });
     assert.equal(npmCalls, 1);
-    assert.equal(requests, failure === 'metadata-http' ? 24 : failure.startsWith('metadata-') || failure.startsWith('unsafe-') ? 1 : 2);
-    if (failure === 'metadata-http') assert.deepEqual(verification.waits, Array(24).fill(5000));
+    assert.equal(requests, failure === 'metadata-http' ? 60 : failure === 'archive-http-404' ? 61
+      : failure.startsWith('metadata-') || failure.startsWith('unsafe-') ? 1 : 2);
+    if (failure === 'metadata-http' || failure === 'archive-http-404') assert.deepEqual(verification.waits, Array(60).fill(15000));
+    else assert.deepEqual(verification.waits, []);
     if (failure === 'oversized') assert.equal(cancelled, 1, 'bounded stream is cancelled at the first oversized chunk');
     assert.notEqual((await json(join(f.root, 'receipts.json'))).registryByteVerified, true);
   });
