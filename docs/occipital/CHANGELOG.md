@@ -6,6 +6,8 @@ Release notes before the published 0.2.0 baseline have not been reconstructed.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-26
+
 ### Breaking changes
 
 - Reorganize the Rust library's SOURCE interface under `occipital::source`,
@@ -26,7 +28,8 @@ Release notes before the published 0.2.0 baseline have not been reconstructed.
   ControlDelivery}`; carrier entry points use `transport::{stdio, shared, frame}`.
   Runtime implementation modules and the CONTROL reservation constant are internal.
   Old Rust paths and signatures are not retained. The executable interface,
-  `syntax-highlight/v4` JSON/RPC contract and resource limits are unchanged.
+  `syntax-highlight/v4` JSON/RPC format, resolver revision 3 and advertised
+  resource limits are unchanged.
 
 ### Fixed
 

@@ -1,6 +1,6 @@
 # Occipital syntax-highlight/v4 — application contract
 
-This reference describes the coordinated v4 native producer, stdio/shared adapters and TypeScript consumers. The [syntax specification](../syntax-highlighting-spec.md) defines product behavior; [client volume policy](../syntax/work.md#highlighting-volume-policy) defines useful classification-prefix selection, while this reference owns exact advertised limits and message-size admission. Reject older protocol and resolver interpretations rather than guessing compatibility. The published Occipital 0.2.0 / pi-tidy-ui 0.1.1 pair remains on v3 until a separately authorized release.
+This reference describes the coordinated v4 native producer, stdio/shared adapters and TypeScript consumers. The [syntax specification](../syntax-highlighting-spec.md) defines product behavior; [client volume policy](../syntax/work.md#highlighting-volume-policy) defines useful classification-prefix selection, while this reference owns exact advertised limits and message-size admission. Reject older protocol and resolver interpretations rather than guessing compatibility. The historical Occipital 0.2.0 / pi-tidy-ui 0.1.1 pair uses v3 and cannot use this v4 contract.
 
 Controlled-allocation accounting is not an allocator/private-heap/RSS guarantee. Neither this protocol nor its bounded cooperative scheduler guarantees arbitrary-language latency or dense 10 MiB full-card admission.
 
