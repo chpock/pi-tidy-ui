@@ -183,7 +183,7 @@ A valid owned palette remains fixed across Pi theme changes. If a bundled asset 
 
 ## Binary compatibility and delivery
 
-The current consumer requires the exact [v4 capability and structural revisions](../occipital/protocol.md#version-identities-and-carriers) and [resolver/font interpretation](follow-pi.md#typography-strikethrough-and-compatibility). The currently published Occipital 0.2.0 / pi-tidy-ui 0.1.1 pair uses v3 and is incompatible with this working-tree contract; identical product names or a valid executable hash do not establish protocol compatibility. Published artifacts remain immutable.
+The current consumer requires the exact [v4 capability and structural revisions](../occipital/protocol.md#version-identities-and-carriers) and [resolver/font interpretation](follow-pi.md#typography-strikethrough-and-compatibility). The Occipital 0.2.0 / pi-tidy-ui 0.1.1 pair used v3. It is not compatible with the v4 contract; identical product names or a valid executable hash do not establish protocol compatibility. Published artifacts remain immutable.
 
 Exactly extension version **`0.0.0`** selects development: only `<extension-root>/occipital` (`occipital.exe` on Windows) may start. It does not use shared discovery, native npm payloads, a release cache, downloads or compilation. If the local build is missing, a `[pi-tidy-ui]` UI warning identifies the extension and Occipital is not used. Files retain cached Pi fallback; Bash retains whole-command `toolTitle`. Protocol admission and actual owned-process cleanup still apply. The extension root, not the current project directory, owns the binary.
 

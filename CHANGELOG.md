@@ -7,12 +7,15 @@ been reconstructed.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-26
+
 ### Breaking changes
 
 - Remove GUI-only code themes `amoled`, `oc-2`, `onedarkpro` and `shadesofpurple`,
-  and the unsupported transparent theme `lucent-orng`. Their saved selections remain
-  unchanged but fall back to Follow Pi with a missing-theme
-  notice; select another theme to replace them. New TUI `opencode` is not an `oc-2` alias.
+  and the unsupported transparent theme `lucent-orng`. A saved selection stays
+  unchanged. The extension warns that the theme is unavailable and uses Follow Pi
+  as the effective palette until you select another theme. TUI `opencode` is not
+  an `oc-2` alias.
 - Store the code-theme family in `syntaxTheme.id` and its variant separately in
   `syntaxThemeVariant` (`"dark"` or `"light"`). Missing or unsupported variants use
   Dark. Known legacy IDs such as `github-light` are recognized as the `github`
@@ -35,6 +38,8 @@ been reconstructed.
   cap. Space automatic recovery cycles and selected retryable request failures by
   one minute; retain useful source work while connecting without requiring a new
   card update. Retry permission does not authorize duplicate Pi classification.
+  Packaged Occipital 0.4.0 reports that a request may have run when its worker reply
+  is lost; older compatible shared helpers retain their previous reporting.
 - At terminal stop, end card work and readiness waits and close the syntax
   connection even when idle. On return, use ordinary activation and useful-work
   recovery while retaining eligible ready cards.
@@ -57,7 +62,6 @@ been reconstructed.
   Defer Pi's stock read text preparation while the owned card is active. Collapsed
   reads prepare no result body, and collapsing releases their derived full view.
   Appearance Off and explicit native-read policy retain Pi's presentation.
-
 - Show the saved location of the full Bash output, or the reason it could not
   be saved, outside the collapsed Bash preview when Pi supplies those details.
 - Reuse the final row arrays of unchanged tool cards with separators while Pi
