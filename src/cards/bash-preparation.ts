@@ -20,6 +20,7 @@ export function prepareBashRegions(service: BashService, expanded: boolean, prev
     heading: service.heading ? serviceRegion(service.heading, previous?.heading) : undefined,
     output: Object.freeze(service.output.map((text, index) => text && (index >= service.first && index < outputEnd || index >= service.reminder && index < reminderEnd)
       ? serviceRegion(text, previous?.output[index]) : undefined)),
+    notice: service.notice ? serviceRegion(service.notice, previous?.notice) : undefined,
     footer: service.footer ? serviceRegion(service.footer, previous?.footer) : undefined,
   });
 }

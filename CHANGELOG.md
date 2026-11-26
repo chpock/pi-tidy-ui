@@ -58,11 +58,13 @@ been reconstructed.
   reads prepare no result body, and collapsing releases their derived full view.
   Appearance Off and explicit native-read policy retain Pi's presentation.
 
+- Show the saved location of the full Bash output, or the reason it could not
+  be saved, outside the collapsed Bash preview when Pi supplies those details.
+
 ### Fixed
 
 - Restore the warning on Pi 1.6 and newer when a model received a placeholder
   instead of an image from `read`, in both compact and expanded views.
-
 - Keep pi-tidy-ui active if an attached tool receives malformed arguments. That
   call uses its native renderer until it receives an argument object again.
 - Keep accepted Bash and file syntax colors when parser data is evicted. Returning

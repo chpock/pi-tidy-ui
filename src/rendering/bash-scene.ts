@@ -33,6 +33,7 @@ export function buildBashScene(display: Extract<PreparedCard, { kind: 'bash' }>,
     return overflow || !!expanded && count > 0;
   };
   const s = display.service, output = section(s.first, s.last, 'output');
+  if (display.regions.notice) { build.append(build.empty()); build.lines('note', 0, 'warning', 'bash'); }
   if (display.regions.footer) { build.append(build.empty()); build.lines('footer', 0, display.service.error ? 'error' : 'footer', 'bash'); }
   current.expandable = section(s.reminder, s.end, 'reminder') || output;
 }

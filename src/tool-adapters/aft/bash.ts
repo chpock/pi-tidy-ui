@@ -1,6 +1,7 @@
 import { isAbsolute, resolve } from 'node:path';
 import type { ReaderEstimateContext, ToolAdapter, ToolCallSnapshot } from '../contracts.ts';
 import { piBashReader } from '../pi/bash.ts';
+import { bashOutputFileMessage, separateBashOutputNotice } from '../pi/bash-output.ts';
 import { prepareAftBashService } from './service.ts';
 import { resultDetails as data } from '../shared/result-details.ts';
 
@@ -51,7 +52,7 @@ export function aftBashReader(call: ToolCallSnapshot) {
     ...base,
     service: (directory: string | undefined) => [call.expanded, call.args.description, call.args.workdir, directory, call.resultFailed,
       call.partial, call.resultFailed ? call.executionStarted : undefined, call.resultFailed ? call.argsComplete : undefined,
-      exitCode(call), ...(call.result?.content?.flatMap(part => [part.type, part.text]) ?? [])],
+      exitCode(call), bashOutputFileMessage(call), ...(call.result?.content?.flatMap(part => [part.type, part.text]) ?? [])],
     directory(cwd: string | undefined) {
       const workdir = call.args.workdir;
       if (typeof workdir !== 'string' || !workdir.length) return undefined;
@@ -60,11 +61,15 @@ export function aftBashReader(call: ToolCallSnapshot) {
       return resolved === resolve(cwd) ? undefined : resolved;
     },
     estimateBytes: (context: ReaderEstimateContext) => base.estimateBytes(context) + extraBytes(call),
-    prepareService: (directory: string | undefined) => prepareAftBashService({
-      description: typeof call.args.description === 'string' ? call.args.description : undefined,
-      outputParts: outputParts(call), final: call.hasResult && !call.partial, error: call.resultFailed,
-      exitCode: exitCode(call), failurePhase: failurePhase(),
-    }, directory),
+    prepareService(directory: string | undefined) {
+      const parts = outputParts(call);
+      const notice = separateBashOutputNotice(parts, bashOutputFileMessage(call), call.resultFailed);
+      return prepareAftBashService({
+        description: typeof call.args.description === 'string' ? call.args.description : undefined,
+        outputParts: parts, final: call.hasResult && !call.partial, error: call.resultFailed,
+        exitCode: exitCode(call), failurePhase: failurePhase(), notice,
+      }, directory);
+    },
     isComplete: (live: boolean) => call.argsComplete || !call.partial && call.result?.role === 'toolResult'
       || !live && !call.partial && call.resultFailed && failurePhase() === 'formation',
     failurePhase,

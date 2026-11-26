@@ -49,6 +49,7 @@ function region(display: PreparedCard, entry: Pick<Entry, 'kind' | 'index'>): Pr
       case 'description': return display.regions.description;
       case 'heading': return display.regions.heading;
       case 'output': return display.regions.output[entry.index];
+      case 'note': return display.regions.notice;
       case 'footer': return display.regions.footer;
     }
   } else {

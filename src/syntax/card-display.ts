@@ -43,7 +43,7 @@ function collectMeasurements(display: PreparedCard, take: (region?: PreparedRegi
     const { command, regions } = display;
     take(command); take(regions.description); take(regions.heading);
     for (const region of regions.output) take(region);
-    take(regions.footer);
+    take(regions.notice); take(regions.footer);
   } else {
     take(display.heading); take(display.note);
     for (const region of display.diagnostics) take(region);

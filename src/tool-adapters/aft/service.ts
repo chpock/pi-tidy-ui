@@ -9,6 +9,7 @@ export interface AftBashServiceInput {
   readonly final: boolean;
   readonly error: boolean;
   readonly exitCode?: number;
+  readonly notice?: string;
   readonly failurePhase?: 'formation' | 'execution';
 }
 
@@ -83,5 +84,5 @@ export function prepareAftBashService(input: AftBashServiceInput, directory?: st
   else if (footer && code !== undefined && code !== 0 && last >= 2 && output[last - 1] === footer && !output[last - 2]!.trim()) last--;
   while (last > first && !output[last - 1]!.trim()) last--;
   while (first < last && !output[first]!.trim()) first++;
-  return prepareBashService({ description: input.description, output, first, last, reminder, end, footer, error }, directory);
+  return prepareBashService({ description: input.description, output, first, last, reminder, end, notice: input.notice, footer, error }, directory);
 }

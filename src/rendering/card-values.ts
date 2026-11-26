@@ -6,7 +6,7 @@ import type { MeasuredText } from './measured-rows.ts';
 export interface BashService {
   readonly description: string; readonly heading: string; readonly output: readonly string[];
   readonly first: number; readonly last: number; readonly reminder: number; readonly end: number;
-  readonly footer: string; readonly error: boolean;
+  readonly notice?: string; readonly footer: string; readonly error: boolean;
 }
 export type BashServiceInput = Omit<BashService, 'description' | 'heading'> & { readonly description?: string };
 
@@ -20,6 +20,7 @@ export interface PreparedBashRegions {
   /** Original service.output indices. Collapsed sections prepare only their first
    * eleven logical rows; empty/trimmed/footer-only rows need no measurement. */
   readonly output: readonly (PreparedRegion | undefined)[];
+  readonly notice?: PreparedRegion;
   readonly footer?: PreparedRegion;
 }
 export interface FileRowDescriptor {
