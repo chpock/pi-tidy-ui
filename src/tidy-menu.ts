@@ -6,6 +6,7 @@ import { copyThemePreference, type ThemePreference, type ThemeVariant } from './
 import type { TidyMenuAction, TidyMenuSnapshot, TidyMenuOwner, TidyMenuPage as Page, TidyMenuRow as Item, TidyMenuIntent } from './application/menu-contract.ts';
 import { menuRows, menuDetails, menuAction, menuThemeChoice, menuPageTitle, menuNavigation } from './application/menu-model.ts';
 const columnGap = 2;
+const diagnosticWidth = 98; // Fits the 96-column cache scope note plus the frame.
 function itemColumns(items: Item[], width = Infinity) {
   let label = 0, value = 0;
   for (const item of items) { label = Math.max(label, visibleWidth(item.label)); value = Math.max(value, visibleWidth(item.valueText ?? '')); }
@@ -163,6 +164,7 @@ export class TidyMenu implements Component {
   }
   preferredWidth(): number {
     if (this.closed) return 1;
+    if (this.page === 'support' || this.page === 'service' || this.page === 'logs' || this.page === 'cache') return diagnosticWidth;
     const items = this.pageItems(this.owner.snapshot(), false);
     const columns = itemColumns(items);
     const content = 2 + columns.label + (columns.value ? columnGap + columns.value : 0) + columns.arrow;

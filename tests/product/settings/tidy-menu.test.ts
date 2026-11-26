@@ -504,9 +504,7 @@ test('preferred width fits root labels, values and navigation without stretching
   assert.equal(f.prepared, 0); assert.equal(f.cacheReads, 0);
 });
 
-test('different pages measure the full fixed catalogue, not only visible or searched choices', async () => {
-  const cache = fixture(); await cache.select('Status & troubleshooting'); await cache.select('Display cache');
-  const cacheWidth = cache.menu.preferredWidth();
+test('theme picker measures the full fixed catalogue, not only visible or searched choices', async () => {
   const f = fixture(); native(f); const root = f.menu.preferredWidth();
   await f.select('Code color theme'); const themes = f.menu.preferredWidth();
   const labelWidth = Math.max(...themeLabels(THEME_FAMILIES).map(visibleWidth));
@@ -517,8 +515,6 @@ test('different pages measure the full fixed catalogue, not only visible or sear
   await f.key('solarized'); assert.equal(f.menu.preferredWidth(), themes, 'filtering does not shrink the picker');
   assert.ok(f.render().some(row => row.includes('→ Solarized')));
   await f.key('\x1b'); assert.equal(f.menu.preferredWidth(), root);
-  await f.select('Status & troubleshooting'); await f.select('Display cache');
-  assert.equal(f.menu.preferredWidth(), cacheWidth, 'cache actions measure their own contents after leaving the picker');
   assert.equal(f.calls.length, 0, 'measuring/navigating/filtering has no preference action');
 });
 
@@ -530,7 +526,7 @@ test('long diagnostic paths, IDs and detail scrolling do not widen a page or hid
   await f.select('Refresh statistics');
   assert.equal(f.menu.preferredWidth(), width);
   const rows = f.menu.render(width).map(plain);
-  assert.match(rows.at(-2)!, /↑↓.*Enter.*Esc.*PgUp\/PgDn/u);
+  for (const control of ['↑↓', 'Enter', 'Esc Back', 'PgUp/PgDn']) assert.ok(rows.at(-2)!.includes(control), `missing navigation key: ${control}`);
   assert.equal(helpRows(rows).length, 2);
   await f.key('\x1b[6~'); assert.equal(f.menu.preferredWidth(), width);
 });

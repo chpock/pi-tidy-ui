@@ -49,3 +49,54 @@ for (const mode of ['regular', 'fullscreen']) test(`menu keyboard bounds: real f
       assert.equal(live.events().filter(event => ['call', 'result', 'model_context'].includes(event.type)).length, 0);
     } finally { await closeTerminals([live]); }
   });
+
+for (const mode of ['regular', 'fullscreen']) test(`diagnostic pages share a wider, terminal-clamped popup (${mode})`,
+  { timeout: 60000 }, async () => {
+    const live = new PiTerminal(`menu-diagnostic-width-${mode}`, { tidyUi: true, mode,
+      tidyUiSettings: { syntaxTheme: { kind: 'pi' }, nativeHighlightingEnabled: false } });
+    const width = () => {
+      const bounds = live.tidyFrame();
+      assert.ok(bounds, 'diagnostic width is measured from the physical frame');
+      assert.equal(bounds.left, Math.floor((live.term.cols - bounds.width) / 2));
+      return bounds.width;
+    };
+    const backTo = async title => {
+      live.send('\x1b'); await live.settle();
+      assert.ok(live.tidyHeading(title), `Escape returns to ${title}`);
+    };
+    try {
+      await live.ready(); await live.resize(120, 40); await live.openTidyMenu();
+      const rootWidth = width(), support = 'Status & troubleshooting';
+      await live.selectTidyItem(support);
+      const pages = { [support]: width() };
+      let runAndSession;
+      for (const page of ['Highlighting service details', 'Diagnostic logs', 'Display cache']) {
+        await live.selectTidyItem(page); pages[page] = width();
+        if (page === 'Diagnostic logs') runAndSession = live.tidyRows().find(row => row.startsWith('Run: '));
+        if (page !== 'Display cache') await backTo(support);
+      }
+      const diagnosticWidth = pages[support];
+      assert.ok(diagnosticWidth > rootWidth, `diagnostics should be wider than the ${rootWidth}-column root: ${JSON.stringify(pages)}`);
+      assert.equal(diagnosticWidth, 98, 'a wide terminal leaves the preferred diagnostic width unchanged');
+      assert.ok(Object.values(pages).every(columns => columns === diagnosticWidth), 'the same frame width serves every diagnostic page');
+      assert.match(runAndSession ?? '', /^Run: [\da-f-]{36}; session: [\da-f-]{36}$/u, 'both diagnostic IDs fit on one physical row');
+      const cacheScope = 'Scope: Tidy UI display layouts only; excludes Pi caches, syntax sources and temporary rendering.';
+      assert.ok(live.tidyRows().includes(cacheScope), 'the cache scope fits on one physical row');
+      await live.resize(72, 40);
+      assert.equal(width(), 72, 'narrow terminal clamps the diagnostic frame');
+      const scopeIndex = () => live.tidyRows().findIndex(row => row.startsWith('Scope: '));
+      if (scopeIndex() < 0) { live.send('\x1b[6~'); await live.settle(); }
+      const scopeStart = scopeIndex();
+      assert.ok(scopeStart >= 0, 'cache paging reveals the wrapped scope');
+      assert.equal(live.tidyRows().slice(scopeStart, scopeStart + 2).map(row => row.trim()).join(' '), cacheScope,
+        'the same cache scope wraps across two physical rows');
+      assert.equal(width(), 72, 'paging does not resize the clamped frame');
+      live.send('\x1b[5~'); await live.settle();
+      await live.resize(100, 40);
+      assert.equal(width(), diagnosticWidth, 'the wider frame recenters and restores its width');
+      assert.ok(live.tidyRows().includes(cacheScope));
+      await backTo(support); assert.equal(width(), diagnosticWidth);
+      await backTo('Tidy UI'); assert.equal(width(), rootWidth);
+      await live.closeTidyMenu();
+    } finally { await closeTerminals([live]); }
+  });

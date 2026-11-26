@@ -7,6 +7,12 @@ been reconstructed.
 
 ## [Unreleased]
 
+### Fixed
+
+- Widen `/tidy-ui` status and troubleshooting pages so fewer diagnostic lines
+  wrap. The popup still fits narrow terminals, and the main menu and theme
+  picker keep their existing widths.
+
 ## [0.3.0] - 2026-11-26
 
 ### Breaking changes

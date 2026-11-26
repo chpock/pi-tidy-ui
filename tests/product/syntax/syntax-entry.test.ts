@@ -2182,9 +2182,9 @@ test('entry gives the same overlay live per-page sizing without remounts or pref
     const root = menu.width(); assert.ok(root < 72);
     for (let i = 0; i < 10; i++) { await menu.key('\x1b[B'); assert.equal(menu.width(), root); }
     await menu.select('Status & troubleshooting'); const support = menu.width();
-    assert.notEqual(support, root, 'one live options object exposes the new page width');
+    assert.ok(support > root, 'one live options object exposes the wider diagnostic page');
     await menu.select('Highlighting service details');
-    assert.ok(menu.width() < 50);
+    assert.equal(menu.width(), support, 'nested diagnostics keep the same width');
     await menu.key('\x1b'); assert.equal(menu.width(), support);
     await menu.key('\x1b'); assert.equal(menu.width(), root);
   });
