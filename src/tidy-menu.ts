@@ -36,8 +36,8 @@ export class TidyMenu implements Component {
   private readonly search = new Input();
   private closed = false;
   private busy = false;
-  private notice = '';
-  private noticeError = false;
+  private outcome?: { text: string; color: 'success' | 'error' };
+  private navigationRevision = 0;
   private themeLoading = false;
   private themeLoadFailed = false;
   private themeVisit = 0;
@@ -89,10 +89,10 @@ export class TidyMenu implements Component {
     if (this.page === 'root') { this.close(); return; }
     if (this.page === 'themes') this.restoreTheme();
     this.page = this.page === 'themes' || this.page === 'support' ? 'root' : 'support';
-    this.listKey = ''; this.detailOffset = 0; this.notice = ''; this.requestRender();
+    this.listKey = ''; this.detailOffset = 0; this.moved(); this.requestRender();
   }
   private open(page: Page): void {
-    this.page = page; this.listKey = ''; this.notice = ''; this.detailOffset = 0;
+    this.page = page; this.listKey = ''; this.detailOffset = 0; this.moved();
     if (page === 'cache') this.cache = this.owner.cacheDetails();
     if (page === 'themes') {
       const visit = ++this.themeVisit; this.themePreviewed = false; this.themeVariant = undefined;
@@ -106,7 +106,7 @@ export class TidyMenu implements Component {
         }
       }, () => {
         if (!this.closed && this.page === 'themes' && visit === this.themeVisit) { this.themeLoading = false; this.themeLoadFailed = true;
-          this.feedback('Saved code theme could not be loaded.', true); }
+          this.listKey = ''; this.requestRender(); }
       });
     }
     this.requestRender();
@@ -133,21 +133,30 @@ export class TidyMenu implements Component {
     this.originalTheme = undefined; this.themePreviewed = false; ++this.themeVisit;
     void this.perform({ kind: 'theme', choice });
   }
-  private feedback(message: string, error = false): void {
-    if (this.closed) return;
-    this.notice = message; this.noticeError = error; this.listKey = ''; this.requestRender();
+  private moved(): void {
+    this.outcome = undefined; ++this.navigationRevision;
+  }
+  private select(value: string): void {
+    if (this.selected[this.page] === value) return;
+    this.selected[this.page] = value; this.moved();
+  }
+  private feedback(text: string, color: 'success' | 'error' = 'success'): void {
+    this.outcome = { text, color };
   }
   private async perform(action: TidyMenuAction): Promise<void> {
     if (this.closed || this.busy) return;
-    this.busy = true; this.notice = ''; this.noticeError = false; this.requestRender();
-    try {
-      const outcome = await this.owner.act(action);
-      if (this.closed) return;
-      if (action.kind === 'clearCache' && outcome.cache) this.cache = outcome.cache;
-      if (action.kind === 'theme' && this.page === 'themes') { this.page = 'root'; this.detailOffset = 0; }
-      this.feedback(outcome.ok ? action.kind === 'theme' || action.kind === 'switch' ? '' : 'Done.' : outcome.message, !outcome.ok);
-    } catch { this.feedback('This action could not be completed.', true); }
-    finally { this.busy = false; if (!this.closed) this.requestRender(); }
+    const revision = this.navigationRevision;
+    this.busy = true; this.requestRender();
+    let outcome: Awaited<ReturnType<TidyMenuOwner['act']>>;
+    try { outcome = await this.owner.act(action); }
+    catch { outcome = { ok: false, message: 'This action could not be completed.' }; }
+    this.busy = false;
+    if (this.closed) return;
+    if (action.kind === 'clearCache' && outcome.cache) this.cache = outcome.cache;
+    const current = this.navigationRevision === revision;
+    if (action.kind === 'theme' && this.page === 'themes') { this.page = 'root'; this.detailOffset = 0; this.moved(); }
+    if (current) this.feedback(outcome.ok ? 'Done.' : outcome.message, outcome.ok ? 'success' : 'error');
+    this.requestRender();
   }
   private activate(value: string): void {
     if (this.closed || this.busy) return;
@@ -158,8 +167,8 @@ export class TidyMenu implements Component {
       case 'back': this.back(); return;
       case 'close': this.close(); return;
       case 'navigate': this.open(intent.page); return;
-      case 'refreshStatus': this.listKey = ''; this.feedback('Status refreshed.'); return;
-      case 'refreshCache': this.cache = this.owner.cacheDetails(); this.feedback('Cache statistics refreshed.'); return;
+      case 'refreshStatus': this.feedback('Status refreshed.'); this.requestRender(); return;
+      case 'refreshCache': this.cache = this.owner.cacheDetails(); this.feedback('Cache statistics refreshed.'); this.requestRender(); return;
       case 'toggle':
       case 'toggleVariant':
       case 'choosePi':
@@ -199,15 +208,14 @@ export class TidyMenu implements Component {
     const height = Math.max(1, Math.floor(this.height()));
     const state = this.owner.snapshot();
     this.items = this.pageItems(state);
-    const root = this.page === 'root';
-    if (root && state.selected.kind === 'pi' && this.selected.root === 'theme-variant') this.selected.root = 'themes';
+    const root = this.page === 'root', themes = this.page === 'themes';
+    if (root && state.selected.kind === 'pi' && this.selected.root === 'theme-variant') this.select('themes');
     const details = this.summary(state);
     const hasDetails = Number(details.length > 0);
     const searchRows = this.page === 'themes' && !this.themeLoading && !this.themeLoadFailed && height >= 6 ? 1 : 0;
-    const helpHeight = this.page !== 'themes' && height >= 4 ? (root ? 2 : 3) : 0;
+    const helpHeight = !themes && height >= 4 ? 2 : 0;
     // In tiny terminals keep the selectable row and details before adding chrome.
-    const noticeHeight = this.notice ? Math.min(2, wrapTextWithAnsi(safe(this.notice), Math.max(1, width - (width >= 8 ? 2 : 0))).length) : 0;
-    const sections = height >= 10 + hasDetails + searchRows + noticeHeight;
+    const sections = height >= 10 + hasDetails + searchRows;
     const framed = width >= 8 && sections;
     const innerWidth = Math.max(1, width - (framed ? 2 : 0));
     const room = height - (framed ? 2 : 0);
@@ -221,11 +229,8 @@ export class TidyMenu implements Component {
       selection.push('');
       minimumDetails = selection.length;
     }
-    const noticeRoom = Math.max(0, room - fixed - 1 - minimumDetails);
-    const notice = this.notice ? wrapTextWithAnsi(safe(this.notice), innerWidth).slice(0, Math.min(2, noticeRoom))
-      .map(line => this.theme.fg(this.noticeError ? 'error' : 'muted', line)) : [];
     const summaries = wrappedDetails.flat();
-    const available = room - fixed - notice.length;
+    const available = room - fixed;
     const summaryRoom = Math.min(summaries.length, Math.max(0, Math.min(available - 1, minimumDetails),
       available - Math.min(this.items.length + 1, this.page === 'support' ? 9 : 4) - (this.page === 'support' ? 3 : 0)));
     this.detailHeight = summaryRoom;
@@ -233,9 +238,11 @@ export class TidyMenu implements Component {
     this.detailLines = summaries;
     this.detailOffset = Math.min(this.detailOffset, Math.max(0, summaries.length - Math.max(1, summaryRoom)));
     const summary = summaries.slice(this.detailOffset, this.detailOffset + summaryRoom).map(line => this.theme.fg('muted', line));
-    const groupRoom = this.page === 'support' && available - summary.length >= 8 ? 3 : 0;
+    const afterSummary = available - summary.length;
+    const detailGap = !root && !themes && summary.length > 0 && afterSummary > Math.min(2, this.items.length) ? 1 : 0;
+    const groupRoom = this.page === 'support' && afterSummary - detailGap >= 8 ? 3 : 0;
     const rootGap = root && sections && available > 2 ? 1 : 0;
-    const listSpace = Math.max(1, available - summary.length - groupRoom - rootGap);
+    const listSpace = Math.max(1, afterSummary - detailGap - groupRoom - rootGap);
     const searchGap = searchRows && listSpace > 3 ? 1 : 0;
     const themeBoundaries: number[] = [];
     const dividerPadding = '  ';
@@ -271,11 +278,11 @@ export class TidyMenu implements Component {
       const index = this.items.findIndex(item => item.value === this.selected[this.page]);
       this.list.setSelectedIndex(Math.max(0, index));
       this.list.onSelect = item => this.activate(item.value);
-      this.list.onSelectionChange = item => { this.selected[this.page] = item.value; };
+      this.list.onSelectionChange = item => this.select(item.value);
       this.list.onCancel = () => this.back();
     }
     const body = [...heading, ...summary];
-    if (rootGap) body.push('');
+    if (rootGap || detailGap) body.push('');
     this.search.focused = this.focused && this.page === 'themes';
     if (searchRows) {
       body.push(truncateToWidth(`Search: ${this.search.render(Math.max(1, innerWidth - 8))[0] ?? ''}`, innerWidth));
@@ -300,15 +307,10 @@ export class TidyMenu implements Component {
       body.push(row);
       if (backGap && index < maxVisible && this.items[firstVisible + index]?.intent.kind === 'back') body.push('');
     });
-    body.push(...notice);
     if (helpHeight) {
       const help = this.items.find(item => item.value === this.list!.getSelectedItem()?.value)?.help ?? '';
-      if (root) body.push('', this.theme.fg('muted', truncateToWidth(help, innerWidth, '…')));
-      else {
-        const wrapped = wrapTextWithAnsi(help, innerWidth);
-        const second = wrapped.length > 2 ? truncateToWidth(wrapped[1] ?? '', innerWidth - 1, '') + '…' : wrapped[1] ?? '';
-        body.push('', this.theme.fg('muted', wrapped[0] ?? ''), this.theme.fg('muted', second));
-      }
+      const line = this.outcome ? safe(this.outcome.text) : help;
+      body.push('', this.theme.fg(this.outcome?.color ?? 'muted', truncateToWidth(line, innerWidth, '…')));
     }
     if (sections) {
       const paged = summaries.length > summaryRoom;
@@ -329,8 +331,10 @@ export class TidyMenu implements Component {
     if (matchesKey(data, 'ctrl+c')) { this.close(); return; }
     if (kb.matches(data, 'tui.select.cancel')) { this.back(); return; }
     if (matchesKey(data, 'pageUp') || matchesKey(data, 'pageDown')) {
-      this.detailOffset = Math.max(0, Math.min(this.detailLines.length - 1,
-        this.detailOffset + (matchesKey(data, 'pageUp') ? -1 : 1) * Math.max(1, this.detailHeight))); this.requestRender(); return;
+      const offset = Math.max(0, Math.min(this.detailLines.length - Math.max(1, this.detailHeight),
+        this.detailOffset + (matchesKey(data, 'pageUp') ? -1 : 1) * Math.max(1, this.detailHeight)));
+      if (offset !== this.detailOffset) { this.detailOffset = offset; this.moved(); this.requestRender(); }
+      return;
     }
     if (!this.list) return;
     if (this.page === 'themes' && !this.themeLoading && !this.themeLoadFailed && !kb.matches(data, 'tui.select.up') &&
@@ -338,7 +342,7 @@ export class TidyMenu implements Component {
       const before = this.search.getValue(); this.search.handleInput(data);
       if (this.search.getValue() !== before) {
         const first = this.pageItems(this.owner.snapshot())[0];
-        this.selected.themes = first?.value; this.listKey = '';
+        this.selected.themes = first?.value; this.listKey = ''; this.moved();
         if (first) this.previewTheme(first.intent);
       }
     } else {
@@ -360,7 +364,7 @@ export class TidyMenu implements Component {
     const next = Math.max(0, Math.min(this.items.length - 1, index + (direction < 0 ? -1 : 1)));
     this.list.setSelectedIndex(next);
     const value = this.list.getSelectedItem()?.value;
-    if (value) this.selected.root = value;
+    if (value) this.select(value);
   }
   handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
     if (this.closed || !this.list) return undefined;

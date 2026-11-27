@@ -54,20 +54,20 @@ export function menuRows(page: TidyMenuPage, state: TidyMenuSnapshot, view: Menu
         choice.value.slice(6).toLocaleLowerCase().includes(query)), back];
     }
     case 'support': return [
-      item('reapplyAppearance', 'Reapply Tidy UI appearance', 'Retry styling without switching it off first. Does not change your current preference.', { kind: 'maintain', action: 'reapplyAppearance' }),
-      item('reapplyColors', 'Reapply terminal colors', 'Retry the current color preference. Does not turn synchronization on if it is off.', { kind: 'maintain', action: 'reapplyColors' }),
-      item('native', 'Use Occipital highlighting', 'Native code colors. Off keeps Pi fallback for files and one color for Bash commands.', { kind: 'toggle', key: 'nativeHighlightingEnabled' }, onOff(state.nativeHighlightingEnabled)),
-      item('service', 'Highlighting service details', 'Versions, connection, selected and effective code colors.', { kind: 'navigate', page: 'service' }, undefined, true),
-      item('logs', 'Diagnostic logs', 'Capture, paths, errors, and a snapshot of the current state.', { kind: 'navigate', page: 'logs' }, undefined, true),
-      item('cache', 'Display cache', 'Statistics and cleanup of saved display layouts, not conversation or syntax data.', { kind: 'navigate', page: 'cache' }, undefined, true),
-      item('refresh-status', 'Refresh status', 'Read current state only; never starts a service or highlights code.', { kind: 'refreshStatus' }), back,
+      item('reapplyAppearance', 'Reapply Tidy UI appearance', 'Retry styling without changing your preference.', { kind: 'maintain', action: 'reapplyAppearance' }),
+      item('reapplyColors', 'Reapply terminal colors', 'Retry terminal color matching if it is on.', { kind: 'maintain', action: 'reapplyColors' }),
+      item('native', 'Use Occipital highlighting', 'Use native highlighting instead of the fallback.', { kind: 'toggle', key: 'nativeHighlightingEnabled' }, onOff(state.nativeHighlightingEnabled)),
+      item('service', 'Highlighting service details', 'Inspect the service and current code colors.', { kind: 'navigate', page: 'service' }, undefined, true),
+      item('logs', 'Diagnostic logs', 'Inspect logging or write a state snapshot.', { kind: 'navigate', page: 'logs' }, undefined, true),
+      item('cache', 'Display cache', 'Inspect or clear saved display layouts.', { kind: 'navigate', page: 'cache' }, undefined, true),
+      item('refresh-status', 'Refresh status', 'Read the current status without starting work.', { kind: 'refreshStatus' }), back,
     ];
-    case 'logs': return [item('logging', 'Record diagnostic logs', 'Capture extension diagnostics independently of appearance.', { kind: 'toggle', key: 'loggingEnabled' }, onOff(state.loggingEnabled)),
-      ...(state.logs?.state === 'failed' ? [item('retryLogging', 'Retry recording', 'Retry the failed log destination without toggling the setting.', { kind: 'maintain', action: 'retryLogging' })] : []),
-      item('snapshotLogs', 'Write state snapshot', 'Write current extension state to enabled diagnostic logs; does not enable capture.', { kind: 'maintain', action: 'snapshotLogs' }),
-      item('refresh-status', 'Refresh status', 'Read existing logging counters and paths only.', { kind: 'refreshStatus' }), back];
+    case 'logs': return [item('logging', 'Record diagnostic logs', 'Record diagnostics even when appearance is off.', { kind: 'toggle', key: 'loggingEnabled' }, onOff(state.loggingEnabled)),
+      ...(state.logs?.state === 'failed' ? [item('retryLogging', 'Retry recording', 'Retry the failed log destination.', { kind: 'maintain', action: 'retryLogging' })] : []),
+      item('snapshotLogs', 'Write state snapshot', 'Write the current state if recording is on.', { kind: 'maintain', action: 'snapshotLogs' }),
+      item('refresh-status', 'Refresh status', 'Read current log counters and paths.', { kind: 'refreshStatus' }), back];
     case 'cache': return [item('refresh-cache', 'Refresh statistics', 'Read current cache counters.', { kind: 'refreshCache' }),
-      item('clearCache', 'Clear saved layouts', 'Remove only display layouts. Following frames rebuild them; conversation and syntax data stay intact.', { kind: 'maintain', action: 'clearCache' }), back];
+      item('clearCache', 'Clear saved layouts', 'Clear only display layouts; later frames rebuild them.', { kind: 'maintain', action: 'clearCache' }), back];
     case 'service': return [back];
   }
 }

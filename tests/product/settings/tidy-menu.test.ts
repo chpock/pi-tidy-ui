@@ -17,7 +17,7 @@ const preference = (id: string, variant?: 'dark' | 'light') => {
   const suffix = /-(dark|light)$/u.exec(id)?.[1] as 'dark' | 'light' | undefined;
   return { kind: 'theme' as const, id: id.replace(/-(?:dark|light)$/u, ''), variant: variant ?? suffix ?? 'dark' };
 };
-function fixture(width = 70, height = 24) {
+function fixture(width = 70, height = 24, paint = colors) {
   const calls: TidyMenuAction[] = [];
   const previews: TidyMenuSnapshot['selected'][] = [];
   const state: TidyMenuSnapshot = { appearanceEnabled: true, terminalColorsEnabled: true, nativeHighlightingEnabled: true, loggingEnabled: true,
@@ -33,7 +33,7 @@ function fixture(width = 70, height = 24) {
   const owner: TidyMenuOwner = { snapshot: () => state, prepareThemes: async () => { prepared++; },
     previewTheme(choice) { const copy = structuredClone(choice); previews.push(copy); state.selected = copy; },
     act: action => perform(action), cacheDetails: () => { cacheReads++; return ['Cached layouts: 2', 'Estimated memory: 1 KiB']; } };
-  const menu = new TidyMenu(owner, colors as any, () => { renderRequests++; }, () => { closed++; }, () => height);
+  const menu = new TidyMenu(owner, paint as any, () => { renderRequests++; }, () => { closed++; }, () => height);
   const render = () => menu.render(width).map(plain);
   const key = async (data: string) => { menu.handleInput(data); await turn(); render(); };
   const select = async (label: string) => {
@@ -68,7 +68,7 @@ test('terminal-color setting describes applying Pi defaults independently of eff
   f.state.terminalColors = 'Automatic Pi theme: native control';
   f.render(); await f.key('\x1b[B');
   assert.match(f.render().join('\n'), /→ Set terminal colors from Pi theme\s+On/u);
-  const help = helpRows(f.menu.render(f.menu.preferredWidth()).map(plain), 1)[0]!;
+  const help = helpRows(f.menu.render(f.menu.preferredWidth()).map(plain))[0]!;
   assert.match(help, /Pi colors for terminal background and text/u);
   assert.equal(f.calls.length, 0, 'reading the preference does not apply colors');
   await f.key('\r');
@@ -412,11 +412,11 @@ for (const height of [5, 6]) for (const page of ['cache', 'logs'])
     assert.ok(f.render().some(row => row.includes('Appearance: Active')), 'Back returns to support');
   });
 
-function helpRows(rows: string[], count = 2): string[] {
+function helpRows(rows: string[]): string[] {
   const divider = rows.findLastIndex(row => /^├─+┤$/u.test(row));
   const body = divider < 0 ? rows : rows.slice(0, divider).map(row => row.startsWith('│') ? row.slice(1, -1).trimEnd() : row);
-  assert.equal(body.at(-count - 1)?.trim(), '', 'one blank row precedes the reserved help');
-  return body.slice(-count).map(row => row.trimEnd());
+  assert.equal(body.at(-2)?.trim(), '', 'one blank row precedes the reserved help');
+  return body.slice(-1).map(row => row.trimEnd());
 }
 
 test('header and navigation occupy their own separated sections on every page', async () => {
@@ -426,8 +426,7 @@ test('header and navigation occupy their own separated sections on every page', 
     assert.equal(rows[1]?.slice(1, -1).trim(), heading);
     assert.deepEqual(dividers, [2, rows.length - 3]);
     assert.match(rows.at(-2)!, /↑↓ Navigate.*Enter Select.*Esc (?:Close|Back)/u);
-    if (heading === 'Tidy UI') assert.ok(helpRows(rows, 1)[0]);
-    else if (heading !== 'Code color theme') assert.equal(helpRows(rows).length, 2);
+    if (heading !== 'Code color theme') assert.ok(helpRows(rows)[0]);
   };
   check('Tidy UI');
   await f.select('Code color theme'); check('Code color theme'); await f.key('\x1b');
@@ -445,7 +444,7 @@ test('each root item has one short help line at the preferred width', async () =
     else await f.key('\x1b[B');
     const rows = f.menu.render(f.menu.preferredWidth()).map(plain);
     assert.ok(rows.some(row => row.startsWith(`│→ ${label}`)), label);
-    const [help] = helpRows(rows, 1);
+    const [help] = helpRows(rows);
     assert.ok(help && !help.endsWith('…'), `full one-line help for ${label}`);
     descriptions.add(help);
   }
@@ -460,25 +459,67 @@ test('new pages describe their initially selected item before any selection move
   assert.match(helpRows(f.render()).join(' '), /Read current cache counters/u);
 });
 
-test('settings changes are silent before, during and after saving; errors do not replace description rows', async () => {
-  const f = fixture(); let finish!: (value: { ok: true }) => void;
-  const quiet = () => assert.doesNotMatch(f.render().join('\n'), /Choices are saved automatically|Saving|Applying|Applied and saved/u);
-  quiet();
-  f.perform = action => {
-    if (action.kind === 'switch') f.state[action.key] = action.value;
-    return new Promise(resolve => { finish = resolve; });
-  };
-  await f.select('Set terminal colors from Pi theme'); quiet();
-  const pendingHelp = helpRows(f.render(), 1); const pendingHeight = f.render().length;
-  assert.match(f.render().join('\n'), /Set terminal colors from Pi theme.*Off/u);
-  await f.key('\r');
-  finish({ ok: true }); await turn(); quiet();
-  assert.equal(f.render().length, pendingHeight, 'saving does not resize the panel');
-  assert.deepEqual(helpRows(f.render(), 1), pendingHelp);
+test('action outcomes replace only the help line and use the Pi success and error colors', async () => {
+  const ink = new Map<string, string>();
+  const f = fixture(70, 24, { ...colors, fg: (role, text) => { ink.set(text, role); return text; } });
+  const line = () => helpRows(f.render())[0]!;
+  let finish!: (value: { ok: true }) => void;
+  f.perform = () => new Promise(resolve => { finish = resolve; });
+  f.render(); await f.key('\x1b[B');
+  const hint = line(), height = f.render().length;
+  await f.key('\r'); assert.equal(line(), hint, 'pending work does not replace the hint');
+  finish({ ok: true }); await turn();
+  assert.equal(line(), 'Done.'); assert.equal(ink.get('Done.'), 'success');
+  assert.equal(f.render().length, height);
+  await f.key('\x1b[B'); assert.match(line(), /troubleshoot/u);
+  await f.key('\x1b[A'); assert.equal(line(), hint, 'returning does not restore the obsolete result');
   f.perform = async () => ({ ok: false, message: 'SAVE_FAILURE' });
-  await f.key('\r');
-  assert.match(f.render().join('\n'), /SAVE_FAILURE/u);
-  assert.deepEqual(helpRows(f.render(), 1), pendingHelp, 'error feedback cannot consume the description slot');
+  await f.key('\r'); assert.equal(line(), 'SAVE_FAILURE'); assert.equal(ink.get('SAVE_FAILURE'), 'error');
+  assert.equal(f.render().length, height);
+  const rows = f.render(), y = rows.findIndex(row => row.includes('→ Set terminal colors'));
+  assert.ok(y >= 0);
+  f.menu.handleMouse({ type: 'wheel', button: 'none', wheelDelta: 1, x: 4, y, screenX: 4, screenY: y,
+    width: 70, height: rows.length, shift: false, alt: false, ctrl: false });
+  assert.match(line(), /troubleshoot/u, 'mouse wheel navigation also resets the result');
+  await f.key('\x1b[A'); await f.key('\r'); assert.equal(line(), 'SAVE_FAILURE');
+  const current = f.render(), supportY = current.findIndex(row => row.includes('  Status & troubleshooting'));
+  assert.ok(supportY >= 0);
+  f.menu.handleMouse({ type: 'press', button: 'left', x: 4, y: supportY, screenX: 4, screenY: supportY,
+    width: 70, height: current.length, shift: false, alt: false, ctrl: false });
+  assert.match(line(), /troubleshoot/u, 'a press that changes selection clears the result before click');
+});
+
+test('a delayed action cannot show its result after navigation away and back', async () => {
+  const f = fixture(); let finish!: () => void;
+  f.perform = () => new Promise(resolve => { finish = () => resolve({ ok: true }); });
+  f.render(); await f.key('\x1b[B');
+  const hint = helpRows(f.render())[0];
+  await f.key('\r'); await f.key('\x1b[B'); await f.key('\x1b[A');
+  finish(); await turn();
+  assert.equal(helpRows(f.render())[0], hint);
+});
+
+test('a delayed cache clear still updates the information without replacing the new selection hint', async () => {
+  const f = fixture();
+  await f.select('Status & troubleshooting'); await f.select('Display cache');
+  let complete!: () => void;
+  f.perform = () => new Promise(resolve => { complete = () => resolve({ ok: true, cache: ['Cached layouts: 0'] }); });
+  await f.select('Clear saved layouts'); await f.key('\x1b[B');
+  complete(); await turn();
+  assert.ok(f.render().some(row => row.includes('Cached layouts: 0')));
+  assert.equal(helpRows(f.render())[0], 'Return to the previous page.');
+});
+
+test('a cache result survives boundary paging and clears when the information actually scrolls', async () => {
+  const f = fixture(70, 16);
+  f.owner.cacheDetails = () => Array.from({ length: 30 }, (_, i) => `Cache detail ${i + 1}`);
+  await f.select('Status & troubleshooting'); await f.select('Display cache');
+  await f.select('Refresh statistics');
+  const line = () => helpRows(f.render())[0];
+  assert.equal(line(), 'Cache statistics refreshed.');
+  await f.key('\x1b[5~'); assert.equal(line(), 'Cache statistics refreshed.');
+  await f.key('\x1b[6~'); assert.equal(line(), 'Read current cache counters.');
+  assert.ok(!f.render().some(row => /Cache detail 1\s*│/u.test(row)));
 });
 
 test('clicking separators, description, blank row or navigation cannot activate a setting', () => {
@@ -494,26 +535,25 @@ test('clicking separators, description, blank row or navigation cannot activate 
 test('description slots survive every short-height transition without clipping list or navigation', async () => {
   for (let height = 4; height <= 16; height++) {
     const f = fixture(24, height);
-    const check = (count = 2) => {
+    const check = () => {
       const rows = f.render(); assert.ok(rows.length <= height, `height ${height}`);
       assert.ok(rows.every(row => visibleWidth(row) <= 24));
-      assert.ok(helpRows(rows, count)[0]);
+      assert.ok(helpRows(rows)[0]);
       assert.ok(rows.some(row => row.includes('→ ')), `the selected item stays visible at height ${height}`);
     };
-    check(1); await f.key('\x1b[B'); await f.key('\x1b[B'); await f.key('\r'); check();
+    check(); await f.key('\x1b[B'); await f.key('\x1b[B'); await f.key('\r'); check();
     await f.key('\x1b[B'); await f.key('\x1b[B'); await f.key('\x1b[B'); await f.key('\r'); check();
     await f.key('\x1b'); check();
     assert.equal(f.calls.length, 0);
   }
 });
 
-for (const height of [10, 11, 12]) test(`root save errors remain readable beside the help row at height ${height}`, async () => {
+for (const height of [10, 11, 12]) test(`root save errors use a single truncated help row at height ${height}`, async () => {
   const f = fixture(24, height);
-  f.perform = async action => { f.calls.push(action); return { ok: false, message: 'Settings were applied but not saved.' }; };
+  f.perform = async action => { f.calls.push(action); return { ok: false, message: 'Not saved. Settings remain applied.' }; };
   f.render(); await f.key('\x1b[B'); await f.key('\r');
   assert.deepEqual(f.calls, [{ kind: 'switch', key: 'terminalColorsEnabled', value: false }]);
-  assert.match(f.render().join('\n'), /not saved\./u);
-  assert.match(helpRows(f.render(), 1)[0]!, /^Use Pi colors/u);
+  assert.match(helpRows(f.render())[0]!, /^Not saved\..*…$/u);
   assert.ok(f.render().length <= height);
 });
 
@@ -524,7 +564,7 @@ for (const page of ['support', 'logs']) test(`short ${page} page drops chrome be
   f.perform = async () => ({ ok: false, message: 'SAVE_FAILURE' });
   await f.key('\r');
   assert.match(f.render().join('\n'), /SAVE_FAILURE/u);
-  assert.equal(helpRows(f.render()).length, 2);
+  assert.ok(helpRows(f.render())[0]);
   assert.ok(f.render().length <= 11);
 });
 
@@ -534,7 +574,7 @@ test('a one-row failure retains chrome when all sections still fit', async () =>
   const rows = f.render();
   assert.equal(rows.filter(row => /^├─+┤$/u.test(row)).length, 2);
   assert.match(rows.join('\n'), /SAVE_FAILURE/u);
-  assert.ok(helpRows(rows, 1)[0]);
+  assert.ok(helpRows(rows)[0]);
   assert.ok(rows.length <= 11);
 });
 
@@ -546,7 +586,7 @@ test('preferred width fits root labels, values and navigation without stretching
   for (const label of ['Tidy UI appearance', 'Code color theme', 'Set terminal colors from Pi theme', 'Status & troubleshooting', 'Close'])
     assert.ok(rows.some(row => row.includes(label)), `complete label: ${label}`);
   assert.match(rows.join('\n'), /↑↓ Navigate · Enter Select · Esc Close/u);
-  assert.ok(helpRows(rows, 1)[0]);
+  assert.ok(helpRows(rows)[0]);
   assert.ok(rows.every(row => visibleWidth(row) <= width));
   for (let i = 0; i < 15; i++) {
     await f.key('\x1b[B');
@@ -589,7 +629,7 @@ test('long diagnostic paths, IDs and detail scrolling do not widen a page or hid
   assert.equal(f.menu.preferredWidth(), width);
   const rows = f.menu.render(width).map(plain);
   for (const control of ['↑↓', 'Enter', 'Esc Back', 'PgUp/PgDn']) assert.ok(rows.at(-2)!.includes(control), `missing navigation key: ${control}`);
-  assert.equal(helpRows(rows).length, 2);
+  assert.ok(helpRows(rows)[0]);
   await f.key('\x1b[6~'); assert.equal(f.menu.preferredWidth(), width);
 });
 
@@ -599,7 +639,7 @@ test('narrow detail pages keep Back and paging discoverable inside the actual fr
   for (let i = 0; i < 5; i++) await f.key('\x1b[B');
   await f.key('\r');
   assert.match(f.render().at(-2)!, /Esc Back.*PgUp\/PgDn/u);
-  assert.equal(helpRows(f.render()).length, 2);
+  assert.ok(helpRows(f.render())[0]);
   assert.ok(f.render().every(row => visibleWidth(row) <= 24));
 });
 
@@ -751,12 +791,33 @@ test('theme preview: closing during confirmed persistence is not rollback and la
   assert.deepEqual(f.render(), []); assert.equal(f.previews.length, before);
 });
 
+test('a delayed theme confirmation returns to the root without a stale result after picker navigation', async () => {
+  const f = fixture(); native(f); f.render(); await f.key('\r'); await f.key('\x1b[B');
+  let complete!: () => void;
+  f.perform = () => new Promise(resolve => { complete = () => resolve({ ok: true }); });
+  await f.key('\r'); await f.key('\x1b[B');
+  complete(); await turn();
+  const rows = f.render();
+  assert.ok(rows.some(row => row.includes('→ Code color theme')));
+  assert.match(helpRows(rows)[0]!, /Choose colors/u);
+});
+
 test('theme preview: failed confirmation keeps the live choice and does not silently revert on close', async () => {
   const f = fixture(); native(f, 1); f.render(); await f.key('\r'); await f.key('\x1b[B');
   f.perform = async action => { f.calls.push(action); return { ok: false, message: 'Applied but not saved.' }; };
-  await f.key('\r'); assert.match(f.render().join('\n'), /Applied but not saved/);
+  await f.key('\r'); assert.match(helpRows(f.render())[0]!, /Applied but not saved/);
   f.menu.close();
   assert.deepEqual(f.state.selected, preference('aura-dark')); assert.equal(f.calls.length, 1);
+});
+
+test('an unexpected theme confirmation failure returns to the root with a safe result', async () => {
+  const f = fixture(); native(f); f.render(); await f.key('\r'); await f.key('\x1b[B');
+  f.perform = async () => { throw new Error('PRIVATE_THEME_ERROR'); };
+  await f.key('\r');
+  const rows = f.render();
+  assert.ok(rows.some(row => row.includes('→ Code color theme')));
+  assert.match(helpRows(rows)[0]!, /could not be completed/i);
+  assert.doesNotMatch(rows.join('\n'), /PRIVATE_THEME_ERROR/u);
 });
 
 test('theme preview: empty search results and action rows do not become theme choices', async () => {

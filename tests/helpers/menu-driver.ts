@@ -38,7 +38,7 @@ export async function withMenu(handler: (args: string, ctx: ExtensionContext) =>
     do {
       await turn(); const rendered = text();
       if (!rendered) return;
-      // Settings actions are silent; wait for actual completion, not removed UI text.
+      // Wait for completion even if navigation or a tiny window hides the result.
       const busy = Reflect.get(component!, 'busy');
       assert.equal(typeof busy, 'boolean', 'SDK probe must observe the real pending-action flag');
       if (!busy && !/Loading saved code theme…/u.test(rendered)) return;

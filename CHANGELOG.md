@@ -9,6 +9,9 @@ been reconstructed.
 
 ### Changed
 
+- Separate diagnostic information from menu choices with a blank row. Show
+  success and failure in the selected item’s single hint row until you navigate,
+  without adding rows to the popup.
 - Widen the `/tidy-ui` main menu by 20%, add space above its choices, and
   shorten each choice’s hint to one line.
 - Add spacing around the `/tidy-ui` theme search and below Back. Replace the

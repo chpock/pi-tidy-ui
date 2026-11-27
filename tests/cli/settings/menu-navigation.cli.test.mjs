@@ -40,7 +40,7 @@ for (const mode of ['regular', 'fullscreen']) test(`menu keyboard bounds: real f
       await step('\x1b[A', 3); assert.match(selected(), /^→ Reapply Tidy UI appearance/u);
       await step('\x1b[B', 20); assert.match(selected(), /^→ Back/u);
       await step('\x1b[B', 3); assert.match(selected(), /^→ Back/u);
-      await live.resize(100, 5); await step('\x1b[A', 5);
+      await live.resize(100, 4); await step('\x1b[A', 5);
       assert.match(selected(), /^→ Use Occipital highlighting/u);
       assert.ok(!live.tidyRows().some(row => /\(\d+\/\d+\)/u.test(row)), 'compact support clips the position indicator');
       await live.selectTidyItem('Reapply Tidy UI appearance', false);
@@ -131,12 +131,22 @@ for (const mode of ['regular', 'fullscreen']) test(`theme picker separates the s
 for (const mode of ['regular', 'fullscreen']) test(`diagnostic pages share a wider, terminal-clamped popup (${mode})`,
   { timeout: 60000 }, async () => {
     const live = new PiTerminal(`menu-diagnostic-width-${mode}`, { tidyUi: true, mode,
-      tidyUiSettings: { syntaxTheme: { kind: 'pi' }, nativeHighlightingEnabled: false } });
+      tidyUiSettings: { syntaxTheme: { kind: 'pi' }, nativeHighlightingEnabled: false, terminalColorsEnabled: false } });
     const width = () => {
       const bounds = live.tidyFrame();
       assert.ok(bounds, 'diagnostic width is measured from the physical frame');
       assert.equal(bounds.left, Math.floor((live.term.cols - bounds.width) / 2));
       return bounds.width;
+    };
+    const checkSections = (lastDetail, firstChoice) => {
+      const rows = live.tidyRows(), footer = live.tidyFrame().bottom - 2;
+      const detail = rows.findIndex(row => row.startsWith(lastDetail));
+      assert.ok(detail >= 0, lastDetail);
+      assert.equal(rows[detail + 1], '', 'the information block is followed by one blank row');
+      assert.match(rows[detail + 2], firstChoice);
+      assert.match(rows[footer - 3], /^(?:→ | {2})\S/u, 'the last choice is two rows above the footer divider');
+      assert.equal(rows[footer - 2], '', 'one blank separates the choices from the hint');
+      assert.match(rows[footer - 1], /\S/u, 'one hint row sits just above the footer divider');
     };
     const checkSupportArrows = () => {
       const { left, width } = live.tidyFrame();
@@ -157,11 +167,38 @@ for (const mode of ['regular', 'fullscreen']) test(`diagnostic pages share a wid
       const rootWidth = width(), support = 'Status & troubleshooting';
       await live.selectTidyItem(support);
       const pages = { [support]: width() };
+      checkSections('Code colors:', /^Appearance$/u);
       checkSupportArrows();
+      const bottomLine = () => live.tidyRows()[live.tidyFrame().bottom - 3];
+      await live.selectTidyItem('Refresh status', false);
+      const before = live.tidyFrame(), hint = bottomLine();
+      await live.selectTidyItem('Refresh status');
+      assert.equal(bottomLine(), 'Status refreshed.');
+      assert.deepEqual(live.tidyFrame(), before, 'success leaves the physical bounds unchanged');
+      await live.selectTidyItem('Back', false);
+      assert.notEqual(bottomLine(), hint);
+      assert.equal(bottomLine(), 'Return to the previous page.');
+      await live.selectTidyItem('Reapply terminal colors', false);
+      const beforeFailure = live.tidyFrame();
+      live.send('\r'); await live.settle();
+      assert.match(bottomLine(), /turn on appearance and terminal color matching/i);
+      assert.deepEqual(live.tidyFrame(), beforeFailure, 'failure leaves the physical bounds unchanged');
       let runAndSession;
       for (const page of ['Highlighting service details', 'Diagnostic logs', 'Display cache']) {
         await live.selectTidyItem(page); pages[page] = width();
-        if (page === 'Diagnostic logs') runAndSession = live.tidyRows().find(row => row.startsWith('Run: '));
+        if (page === 'Highlighting service details') checkSections('Last issue:', /^→ Back$/u);
+        if (page === 'Diagnostic logs') {
+          runAndSession = live.tidyRows().find(row => row.startsWith('Run: '));
+          checkSections('Dropped records:', /^→ Record diagnostic logs/u);
+        }
+        if (page === 'Display cache') {
+          for (let i = 0; i < 8 && !live.tidyRows().includes('End diagnostic JSON'); i++) {
+            live.send('\x1b[6~'); await live.settle();
+          }
+          checkSections('End diagnostic JSON', /^→ Refresh statistics$/u);
+          live.send('\x1b[5~'.repeat(8)); await live.settle();
+          assert.ok(live.tidyRows().some(row => row.startsWith('Saved layouts:')), 'cache details return to the top');
+        }
         if (page !== 'Display cache') await backTo(support);
       }
       const diagnosticWidth = pages[support];
@@ -171,7 +208,7 @@ for (const mode of ['regular', 'fullscreen']) test(`diagnostic pages share a wid
       assert.match(runAndSession ?? '', /^Run: [\da-f-]{36}; session: [\da-f-]{36}$/u, 'both diagnostic IDs fit on one physical row');
       const cacheScope = 'Scope: Tidy UI display layouts only; excludes Pi caches, syntax sources and temporary rendering.';
       assert.ok(live.tidyRows().includes(cacheScope), 'the cache scope fits on one physical row');
-      await live.resize(72, 40);
+      await live.resize(72, 60);
       assert.equal(width(), 72, 'narrow terminal clamps the diagnostic frame');
       const scopeIndex = () => live.tidyRows().findIndex(row => row.startsWith('Scope: '));
       if (scopeIndex() < 0) { live.send('\x1b[6~'); await live.settle(); }
