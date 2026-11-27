@@ -85,7 +85,36 @@ test('runtime health: active failure and queued notifier do not retain a source 
   const f = fixture(), source = await abandonedFailure(f);
   let collected = false;
   for (let i = 0; i < 40; i++) { await turn(); global.gc!(); await turn(); if (!source.deref()) { collected = true; break; } }
-  assert.equal(collected, true); assert.equal(f.health.snapshot().active, 0); assert.equal(f.health.snapshot().last?.state, 'released');
+  assert.equal(collected, true);
+  for (let i = 0; i < 40 && f.health.snapshot().active; i++) { await turn(); global.gc!(); await turn(); }
+  assert.equal(f.health.snapshot().active, 0); assert.equal(f.health.snapshot().last?.state, 'released');
+});
+
+test('runtime health: reading does not release a collected owner before its cleanup callback', async () => {
+  assert.ok(global.gc, 'prepared GC context required');
+  const Original = globalThis.FinalizationRegistry, pending: (() => void)[] = [];
+  class DelayedRegistry<T> extends Original<T> {
+    constructor(callback: (held: T) => void) { super(held => pending.push(() => callback(held))); }
+  }
+  globalThis.FinalizationRegistry = DelayedRegistry;
+  let f: ReturnType<typeof fixture>;
+  try { f = fixture(); } finally { globalThis.FinalizationRegistry = Original; }
+  const source = await abandonedFailure(f), initial = f.health.snapshot();
+  let collected = false;
+  for (let i = 0; i < 40; i++) { await turn(); global.gc!(); await turn(); if (!source.deref()) { collected = true; break; } }
+  assert.equal(collected, true);
+  assert.deepEqual(f.health.snapshot(), initial, 'reading does not remove an unacknowledged GC release');
+  assert.deepEqual(f.health.snapshot(), initial, 'repeated reads have no effect');
+  for (let i = 0; i < 40 && !pending.length; i++) { await turn(); global.gc!(); await turn(); }
+  assert.equal(pending.length, 1, 'GC delivered the actual owner cleanup callback');
+  pending[0]!();
+  const settled = f.health.snapshot();
+  assert.equal(settled.errors, 1); assert.equal(settled.active, 0);
+  assert.deepEqual(settled.issues, []); assert.equal(settled.last?.state, 'released');
+  assert.deepEqual(f.health.snapshot(), settled);
+  const next = {};
+  f.fail(next); await turn();
+  assert.equal(f.notifications.length, 2, 'releasing the old incident also frees its notification category');
 });
 
 async function abandonedHealth() {

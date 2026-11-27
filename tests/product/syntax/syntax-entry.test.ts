@@ -1727,8 +1727,7 @@ test('Diagnostic logs samples the Pi name only on page entry and explicit refres
     assert.equal(h.sessionNameReads, 0, 'starting diagnostics does not look up the name');
     await h.withMenu(async menu => {
       await menu.select('Status & troubleshooting');
-      await menu.select('Refresh status');
-      assert.equal(h.sessionNameReads, 0, 'support status refresh does not look up the name');
+      assert.equal(h.sessionNameReads, 0, 'support status does not look up the name');
       await menu.select('Diagnostic logs');
       assert.match(menu.text(), /^Session name: Already named$/mu);
       assert.equal(h.sessionNameReads, 1);

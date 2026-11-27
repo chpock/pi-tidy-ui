@@ -6,7 +6,7 @@ import { wrapText } from './text-wrap.ts';
 import { cacheClearResult, cacheMenuDetails, isCacheMenuPage } from './application/cache-menu.ts';
 import { copyThemePreference, type ThemePreference, type ThemeVariant } from './appearance/theme-preference.ts';
 import { isDeepStrictEqual } from 'node:util';
-import type { CacheMenuPage, CacheMenuSnapshot, TidyMenuAction, TidyMenuSnapshot, TidyMenuOwner, TidyMenuPage as Page, TidyMenuRow as Item, TidyMenuIntent } from './application/menu-contract.ts';
+import type { CacheMenuSnapshot, TidyMenuAction, TidyMenuSnapshot, TidyMenuOwner, TidyMenuPage as Page, TidyMenuRow as Item, TidyMenuIntent } from './application/menu-contract.ts';
 import { menuRows, menuDetails, menuAction, menuThemeChoice, menuPageTitle, menuNavigation } from './application/menu-model.ts';
 const columnGap = 2;
 const submenuPadding = '  ';
@@ -50,7 +50,8 @@ export class TidyMenu implements Component {
   private themePreviewed = false;
   private cacheVisit?: { clearedLayouts?: number };
   private cacheSnapshot?: CacheMenuSnapshot;
-  private cacheTimer?: ReturnType<typeof setInterval>;
+  private pageTimer?: ReturnType<typeof setInterval>;
+  private paintedSupport?: { items: Item[]; details: string[] };
   private sessionName?: string;
   private detailOffset = 0;
   private listHeight = 0;
@@ -73,7 +74,7 @@ export class TidyMenu implements Component {
     this.dispose(); this.done();
   }
   dispose(): void {
-    this.closed = true; this.mousePressOrigin = undefined; this.stopCacheSampling(); this.cacheVisit = undefined; this.restoreTheme();
+    this.closed = true; this.mousePressOrigin = undefined; this.stopPageSampling(); this.cacheVisit = undefined; this.restoreTheme();
     if (this.list) { this.list.onSelect = undefined; this.list.onCancel = undefined; this.list.onSelectionChange = undefined; }
     this.list = undefined;
   }
@@ -95,14 +96,13 @@ export class TidyMenu implements Component {
   private back(): void {
     if (this.page === 'root') { this.close(); return; }
     if (this.page === 'themes') this.restoreTheme();
-    if (isCacheMenuPage(this.page)) this.stopCacheSampling();
     if (this.page === 'support') this.cacheVisit = undefined;
-    this.page = this.page === 'themes' || this.page === 'support' ? 'root' : 'support';
-    this.listKey = ''; this.detailOffset = 0; this.moved(); this.requestRender();
+    this.open(this.page === 'themes' || this.page === 'support' ? 'root' : 'support');
   }
   private open(page: Page): void {
+    this.stopPageSampling();
     this.page = page; this.listKey = ''; this.detailOffset = 0; this.moved();
-    if (isCacheMenuPage(page)) this.startCacheSampling(page);
+    this.startPageSampling(page);
     if (page === 'logs') this.sessionName = this.owner.readSessionName();
     if (page === 'themes') {
       const visit = ++this.themeVisit; this.themePreviewed = false; this.themeVariant = undefined;
@@ -121,17 +121,25 @@ export class TidyMenu implements Component {
     }
     this.requestRender();
   }
-  private startCacheSampling(page: CacheMenuPage): void {
-    this.cacheVisit ??= {};
-    this.cacheSnapshot = this.owner.cacheDetails(page);
-    this.cacheTimer = setInterval(() => {
-      const snapshot = this.owner.cacheDetails(page);
-      if (!isDeepStrictEqual(snapshot, this.cacheSnapshot)) { this.cacheSnapshot = snapshot; this.requestRender(); }
+  private startPageSampling(page: Page): void {
+    if (isCacheMenuPage(page)) {
+      this.cacheVisit ??= {};
+      this.cacheSnapshot = this.owner.cacheDetails(page);
+    } else if (page !== 'support') return;
+    this.pageTimer = setInterval(() => {
+      if (page === 'support') {
+        const state = this.owner.snapshot();
+        const support = { items: this.pageItems(state), details: this.summary(state) };
+        if (!isDeepStrictEqual(support, this.paintedSupport)) this.requestRender();
+      } else {
+        const snapshot = this.owner.cacheDetails(page);
+        if (!isDeepStrictEqual(snapshot, this.cacheSnapshot)) { this.cacheSnapshot = snapshot; this.requestRender(); }
+      }
     }, 1000);
-    this.cacheTimer.unref?.();
+    this.pageTimer.unref?.();
   }
-  private stopCacheSampling(): void {
-    clearInterval(this.cacheTimer); this.cacheTimer = undefined; this.cacheSnapshot = undefined;
+  private stopPageSampling(): void {
+    clearInterval(this.pageTimer); this.pageTimer = undefined; this.cacheSnapshot = undefined; this.paintedSupport = undefined;
   }
   private resetThemePreview(): void {
     const original = this.originalTheme;
@@ -238,6 +246,7 @@ export class TidyMenu implements Component {
     if (root && state.selected.kind === 'pi' && this.selected.root === 'theme-variant') this.select('themes');
     const cachePage = isCacheMenuPage(this.page) ? this.page : undefined;
     const details = cachePage ? undefined : this.summary(state);
+    if (this.page === 'support') this.paintedSupport = { items: this.items, details: details! };
     const hasDetails = Number(!!cachePage || !!details?.length);
     const searchRows = this.page === 'themes' && !this.themeLoading && !this.themeLoadFailed && height >= 6 ? 1 : 0;
     const helpHeight = !themes && height >= 4 ? 2 : 0;

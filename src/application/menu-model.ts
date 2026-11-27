@@ -60,7 +60,7 @@ export function menuRows(page: TidyMenuPage, state: TidyMenuSnapshot, view: Menu
       item('logs', 'Diagnostic logs', 'Inspect logging or write a state snapshot.', { kind: 'navigate', page: 'logs' }, undefined, true),
       item('cache', titles.cache, 'Inspect or clear saved display layouts.', { kind: 'navigate', page: 'cache' }, undefined, true),
       item('cacheActivity', titles.cacheActivity, 'See layout reuse, builds and releases.', { kind: 'navigate', page: 'cacheActivity' }, undefined, true),
-      item('refresh-status', 'Refresh status', 'Read the current status without starting work.', { kind: 'refreshStatus' }), back,
+      back,
     ];
     case 'logs': return [item('logging', 'Record diagnostic logs', 'Record diagnostics even when appearance is off.', { kind: 'toggle', key: 'loggingEnabled' }, onOff(state.loggingEnabled)),
       ...(state.logs?.state === 'failed' ? [item('retryLogging', 'Retry recording', 'Retry the failed log destination.', { kind: 'maintain', action: 'retryLogging' })] : []),

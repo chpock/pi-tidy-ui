@@ -25,7 +25,7 @@ export interface CacheMenuSnapshot {
   readonly heapUsedBytes?: number;
 }
 export interface TidyMenuOwner {
-  /** Cached state only. Opening the root/status never constructs or starts syntax. */
+  /** Read-only inspection. Rendering or polling status never starts work or reconciles health. */
   snapshot(): TidyMenuSnapshot;
   prepareThemes(): Promise<void>;
   /** Apply cached selection synchronously, without persisting or starting a provider. */

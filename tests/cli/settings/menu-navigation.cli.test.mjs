@@ -1,10 +1,11 @@
 import '../../fixtures/test-guard.mjs';
 import assert from 'node:assert/strict';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import test from 'node:test';
+import { fileURLToPath } from 'node:url';
 import { sliceByColumn } from '@earendil-works/pi-tui';
-import { PiTerminal } from '../../fixtures/terminal-harness.mjs';
+import { PiTerminal, until } from '../../fixtures/terminal-harness.mjs';
 import { observedClearResult } from '../../fixtures/cache-menu-observation.ts';
 import { closeTerminals } from '../../fixtures/terminal-cleanup.mjs';
 
@@ -41,7 +42,7 @@ for (const mode of ['regular', 'fullscreen']) test(`menu keyboard bounds: real f
       await step('\x1b[A', 3); assert.match(selected(), /^→ Reapply Tidy UI appearance/u);
       await step('\x1b[B', 20); assert.match(selected(), /^→ Back/u);
       await step('\x1b[B', 3); assert.match(selected(), /^→ Back/u);
-      await live.resize(100, 4); await step('\x1b[A', 6);
+      await live.resize(100, 4); await step('\x1b[A', 5);
       assert.match(selected(), /^→ Use Occipital highlighting/u);
       assert.ok(!live.tidyRows().some(row => /\(\d+\/\d+\)/u.test(row)), 'compact support clips the position indicator');
       await live.selectTidyItem('Reapply Tidy UI appearance', false);
@@ -173,7 +174,7 @@ for (const mode of ['regular', 'fullscreen']) test(`diagnostic pages share a wid
       const groupEnds = [
         [/^  Reapply terminal colors$/u, 'Code highlighting'],
         [/^  Highlighting service details\s+›$/u, 'Diagnostics'],
-        [/^  Refresh status$/u, '  Back'],
+        [/^  Layout cache activity\s+›$/u, '  Back'],
       ];
       const groupGaps = spaced => {
         const rows = live.tidyRows();
@@ -207,17 +208,11 @@ for (const mode of ['regular', 'fullscreen']) test(`diagnostic pages share a wid
       await live.selectTidyItem('Reapply terminal colors', false);
       live.send('\x1b[B'); await live.settle();
       assert.match(live.tidyRows().find(row => row.startsWith('→ ')) ?? '', /^→ Use Occipital highlighting/u);
-      await live.selectTidyItem('Refresh status', false);
+      await live.selectTidyItem('Layout cache activity', false);
       live.send('\x1b[B'); await live.settle();
       assert.ok(live.tidyRows().includes('→ Back'), 'Down skips the last gap and lands on Back');
+      assert.ok(!live.tidyRows().some(row => row.includes('Refresh status')));
       const bottomLine = () => live.tidyRows()[live.tidyFrame().bottom - 3];
-      await live.selectTidyItem('Refresh status', false);
-      const before = live.tidyFrame(), hint = bottomLine();
-      await live.selectTidyItem('Refresh status');
-      assert.equal(bottomLine(), 'Status refreshed.');
-      assert.deepEqual(live.tidyFrame(), before, 'success leaves the physical bounds unchanged');
-      await live.selectTidyItem('Back', false);
-      assert.notEqual(bottomLine(), hint);
       assert.equal(bottomLine(), 'Return to the previous page.');
       await live.selectTidyItem('Reapply terminal colors', false);
       const beforeFailure = live.tidyFrame();
@@ -265,8 +260,13 @@ for (const mode of ['regular', 'fullscreen']) test(`diagnostic pages share a wid
           await live.resize(120, 40);
           checkBackGap(true);
           await live.selectTidyItem('Refresh status', false);
+          const before = live.tidyFrame();
+          await live.selectTidyItem('Refresh status');
+          assert.equal(bottomLine(), 'Status refreshed.');
+          assert.deepEqual(live.tidyFrame(), before, 'manual refresh on Diagnostic logs still uses the existing hint row');
           live.send('\x1b[B'); await live.settle();
           assert.ok(live.tidyRows().includes('→ Back'), 'Down goes directly from Refresh status to Back');
+          assert.equal(bottomLine(), 'Return to the previous page.');
         }
         if (page === 'Layout cache activity') checkSections('A cache miss', /^→ Back$/u);
         if (page === 'Display cache') checkSections('Whole Pi JS heap:', /^→ Clear saved layouts$/u);
@@ -383,5 +383,29 @@ for (const mode of ['regular', 'fullscreen']) test(`cache opens two peer pages a
       await live.waitForScreen(() => live.tidyHeading(support), 'reenter troubleshooting with the preserved selection');
       await open(display);
       assert.equal(receipt(), undefined, 'a new troubleshooting visit has no prior result');
+    } finally { await closeTerminals([live]); }
+  });
+
+for (const mode of ['regular', 'fullscreen']) test(`troubleshooting repaints a health change without terminal input (${mode})`,
+  { timeout: 60000 }, async () => {
+    const driver = fileURLToPath(new URL('../../fixtures/live-status-driver.ts', import.meta.url));
+    const live = new PiTerminal(`live-troubleshooting-${mode}`, { mode, extensions: [driver],
+      tidyUiSettings: { nativeHighlightingEnabled: false, terminalColorsEnabled: false, loggingEnabled: false } });
+    try {
+      await live.ready(); await live.event('status_failed');
+      await live.resize(120, 40); await live.openTidyMenu(); await live.selectTidyItem('Status & troubleshooting');
+      assert.ok(live.tidyRows().includes('Runtime errors: 1; active: 1'));
+      assert.ok(live.tidyRows().some(row => /^Unresolved settings: settings_read/u.test(row)));
+      assert.ok(!live.tidyRows().some(row => row.includes('Refresh status')));
+      await live.selectTidyItem('Reapply terminal colors', false);
+      const config = join(live.agent, 'extensions/pi-tidy-ui/config.json'), previous = readFileSync(config);
+      writeFileSync(join(live.output, 'status-recover'), 'go');
+      await live.event('status_recovered');
+      await until(() => !live.rendering && live.tidyRows().includes('Runtime errors: 1; active: 0'), 'status table updates without a frame fence');
+      assert.ok(live.tidyRows().includes('Runtime status: No active runtime errors'));
+      assert.ok(live.tidyRows().some(row => /^Last runtime error: settings_read; .*; recovered$/u.test(row)));
+      assert.ok(live.tidyRows().includes('→ Reapply terminal colors'));
+      assert.deepEqual(readFileSync(config), previous);
+      assert.equal(live.events().filter(event => ['call', 'result', 'model_context'].includes(event.type)).length, 0);
     } finally { await closeTerminals([live]); }
   });

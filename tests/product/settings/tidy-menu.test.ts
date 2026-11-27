@@ -98,6 +98,39 @@ test('cache and log operations are behind support and remain explicit, not statu
   await f.select('Write state snapshot'); assert.equal(f.calls.at(-1)?.kind, 'snapshotLogs');
 });
 
+test('troubleshooting polls only while open and repaints only when its own status or choices change', async t => {
+  t.mock.timers.enable({ apis: ['setInterval'] });
+  const f = fixture(98, 36); let reads = 0, nameReads = 0;
+  t.after(() => f.menu.dispose());
+  f.owner.snapshot = () => { reads++; return f.state; };
+  f.owner.readSessionName = () => { nameReads++; return 'Current name'; };
+  await f.select('Status & troubleshooting');
+  const selected = () => f.render().find(row => row.startsWith('│→'));
+  assert.doesNotMatch(f.render().join('\n'), /Refresh status/u);
+  await f.key('\x1b[B'); const current = selected();
+  let requests = f.renderRequests, before = reads;
+  f.state.appearance = 'Changed appearance';
+  t.mock.timers.tick(999); assert.equal(reads, before); assert.equal(f.renderRequests, requests);
+  t.mock.timers.tick(1); assert.equal(reads, before + 1); assert.equal(f.renderRequests, ++requests);
+  assert.match(f.render().join('\n'), /Appearance: Changed appearance/u);
+  assert.equal(selected(), current, 'live updates do not move selection');
+  f.state.loggingEnabled = false;
+  t.mock.timers.tick(1000); assert.equal(f.renderRequests, requests, 'a change confined to another page needs no repaint');
+  f.state.nativeHighlightingEnabled = false;
+  t.mock.timers.tick(1000); assert.equal(f.renderRequests, ++requests);
+  assert.match(f.render().join('\n'), /Use Occipital highlighting\s+Off/u);
+  await f.select('Diagnostic logs'); assert.equal(nameReads, 1);
+  assert.match(f.render().join('\n'), /Refresh status/u);
+  before = reads; t.mock.timers.tick(2000); assert.equal(reads, before); assert.equal(nameReads, 1);
+  await f.select('Refresh status'); assert.equal(nameReads, 2);
+  await f.key('\x1b'); assert.match(f.render().join('\n'), /Appearance: Changed appearance/u);
+  before = reads; t.mock.timers.tick(1000); assert.equal(reads, before + 1, 'Back resumes just one timer');
+  await f.key('\x1b'); before = reads; t.mock.timers.tick(2000); assert.equal(reads, before, 'root has no timer');
+  await f.select('Status & troubleshooting'); f.menu.close();
+  before = reads; t.mock.timers.tick(2000); assert.equal(reads, before, 'closing stops sampling');
+  assert.deepEqual(f.calls, []); assert.equal(f.prepared, 0); assert.equal(f.cacheReads, 0);
+});
+
 for (const first of ['Display cache', 'Layout cache activity']) test(`only visible cache pages read their own live statistics: ${first}`, async t => {
   t.mock.timers.enable({ apis: ['setInterval'] });
   const f = fixture(98, 36); let live = 2, reads = 0;
@@ -112,7 +145,7 @@ for (const first of ['Display cache', 'Layout cache activity']) test(`only visib
     assert.equal(f.menu.preferredWidth(), 98);
   };
   f.owner.cacheDetails = () => { reads++; return cacheMenuSample(live); };
-  await f.select('Status & troubleshooting'); await f.select('Refresh status');
+  await f.select('Status & troubleshooting'); t.mock.timers.tick(1000);
   assert.equal(reads, 0, 'status does not sample the cache');
   await f.select(first); check(first, 2); assert.equal(reads, 1);
   live = 7;
@@ -380,8 +413,8 @@ test('fixed palette IDs remain separate from navigation and action values', asyn
   assert.equal(f.closed, 0);
 });
 
-test('status and Refresh do not prepare themes, read cache, or claim a protocol for an absent provider', async () => {
-  const f = fixture(); await f.select('Status & troubleshooting'); await f.select('Refresh status');
+test('status does not prepare themes, read cache, or claim a protocol for an absent provider', async () => {
+  const f = fixture(); await f.select('Status & troubleshooting');
   await f.select('Highlighting service details');
   assert.match(f.render().join('\n'), /Protocol: unavailable/);
   assert.equal(f.prepared, 0); assert.equal(f.cacheReads, 0); assert.equal(f.calls.length, 0);
@@ -775,7 +808,7 @@ test('support actions share the toggle label column and a distinct submenu indic
   const f = fixture(); await f.select('Status & troubleshooting');
   const width = f.menu.preferredWidth(), rows = f.menu.render(width).map(plain);
   const labels = ['Reapply Tidy UI appearance', 'Reapply terminal colors', 'Use Occipital highlighting', 'Highlighting service details',
-    'Diagnostic logs', 'Display cache', 'Layout cache activity', 'Refresh status', 'Back'];
+    'Diagnostic logs', 'Display cache', 'Layout cache activity', 'Back'];
   const nativeRow = rows.find(row => row.includes('Use Occipital highlighting'))!;
   const valueColumn = cellOf(nativeRow, 'On');
   const submenus = new Set(['Highlighting service details', 'Diagnostic logs', 'Display cache', 'Layout cache activity']);

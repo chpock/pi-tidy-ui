@@ -7,7 +7,7 @@ export interface RuntimeIssue {
 export interface RuntimeHealthSnapshot {
   errors: number; active: number; last?: RuntimeIssue; issues: RuntimeIssue[];
 }
-interface OwnedIssue { owner: WeakRef<object>; issue: RuntimeIssue; group: string }
+interface OwnedIssue { issue: RuntimeIssue; group: string }
 const labels: Record<RuntimeArea, string> = { syntax: 'Syntax highlighting', appearance: 'Interface styling',
   'terminal-colors': 'Terminal colors', settings: 'Settings', git: 'Git metadata' };
 function notification(owner: WeakRef<RuntimeHealth>) { return () => owner.deref()?.deliver(); }
@@ -17,6 +17,7 @@ export class RuntimeHealth {
   private readonly owners = new WeakMap<object, Map<string, OwnedIssue>>();
   private readonly active = new Set<OwnedIssue>();
   private readonly groups = new Map<string, number>();
+  private readonly collected = new FinalizationRegistry<OwnedIssue>(record => this.retire(record, 'released'));
   private errors = 0;
   private last?: RuntimeIssue;
   private disposed = false;
@@ -53,26 +54,25 @@ export class RuntimeHealth {
     const notify = !this.groups.has(group);
     const issue: RuntimeIssue = { area: event.area, operation: event.operation, code: event.code,
       time: new Date(this.now()).toISOString(), state: 'active' };
-    const record = { owner: new WeakRef(event.scope), issue, group };
+    const record = { issue, group };
     this.groups.set(group, (this.groups.get(group) ?? 0) + 1);
     const entries = operations ?? new Map<string, OwnedIssue>();
     if (!operations) this.owners.set(event.scope, entries);
     entries.set(event.operation, record); this.active.add(record); this.last = issue; this.errors++;
+    this.collected.register(event.scope, record, record);
     if (notify) {
       this.pending.set(group, issue);
       if (!this.scheduled) { this.scheduled = true; queueMicrotask(notification(this.owner)); }
     }
   }
   private retire(record: OwnedIssue, state: 'recovered' | 'released'): void {
-    record.issue.state = state; this.active.delete(record);
+    if (!this.active.delete(record)) return;
+    this.collected.unregister(record);
+    record.issue.state = state;
     const remaining = this.groups.get(record.group)! - 1;
     if (remaining) this.groups.set(record.group, remaining); else this.groups.delete(record.group);
   }
-  private sweep(): void {
-    for (const record of this.active) if (!record.owner.deref()) this.retire(record, 'released');
-  }
   snapshot(): RuntimeHealthSnapshot {
-    this.sweep();
     // One current example per subsystem, not an unbounded UI list of failed cards.
     const areas = new Map<RuntimeArea, RuntimeIssue>();
     for (const record of this.active) areas.set(record.issue.area, { ...record.issue });
