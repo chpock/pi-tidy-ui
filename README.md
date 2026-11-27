@@ -243,7 +243,7 @@ The root README is the user guide. For exact behavior and development work:
 - [Syntax highlighting](docs/syntax-highlighting-spec.md) · [Occipital](docs/occipital/README.md).
 - [Testing](docs/testing.md) · [Performance measurements](docs/performance-testing.md) · [Delivery and platform policy](docs/releases.md).
 
-Working from a Git checkout instead of npm? Development uses a locally built Occipital helper; see [source-build setup](docs/testing.md#provision-optional-inputs-from-a-fresh-clone) and the [development delivery contract](docs/releases.md#extension-delivery).
+Working from a Git checkout instead of npm? Development uses a locally built Occipital helper; see [development build and freshness checks](docs/testing.md#make-shortcuts) and the [development delivery contract](docs/releases.md#extension-delivery).
 
 The visual direction owes much to OpenCode; the editing, sessions and agent workflow remain Pi's. Licensed under [MIT](LICENSE).
 

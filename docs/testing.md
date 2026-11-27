@@ -38,6 +38,8 @@ Current [platform support](releases.md#supported-platforms) is GNU Linux x64/ARM
 
 ### Ordinary feature work
 
+Refresh the prepared source snapshot and run the affected `test:group` checks during the edit–test–fix loop. Before feature delivery, run `test:feature` for the common baseline plus affected real integrations. Run full unit/CLI unions and version/platform matrices only when contract impact requires them, including broad harness, compatibility or release changes.
+
 Start with one explicit graph (Linux, Node 22.19.0, Pi 1.0.1), not the operator's Pi or the entire compatibility matrix. A fresh Git clone with its reachable release history/tags is sufficient: no historical `.test-artifacts`, repository `node_modules`, installed Pi or personal transcripts are needed. The preparer itself uses Node built-ins and installs the selected graph into its owned runtime; do not install a second graph in the checkout first. Provision Node/npm compatible with each other, Git and the platform tools below. On local Linux graphical sessions, wrap **all fallible test commands below** in the [verified ordinary scope](#local-memory-containment-and-assertion-diagnostics); raw runner examples show selection arguments, not permission to run uncontained.
 
 ```sh
@@ -186,7 +188,9 @@ GNU Make/POSIX-shell entry points route checks to the same runner. `make` prints
 | Target | Scope |
 | --- | --- |
 | `make deps PI_VERSION=1.0.1 PREPARE_OUTPUT=...` | Prepare exact host dependencies; no implicit native build |
-| `make build RUST_ROOT=... CARGO_HOME=...` | Explicit offline locked local release build and colocated copy; requires pinned sysroot and owned prefilled Cargo home with no user config |
+| `make build RUST_ROOT=... CARGO_HOME=...` | Build and install the development helper from current native sources |
+| `make native-build RUST_ROOT=... CARGO_HOME=...` | Compile only; leave the installed checkout helper and its build record alone |
+| `make dev-check` | Read-only check of the installed helper and native source fingerprint; requires Node, not Cargo |
 | `make check INPUTS=...` | Strict selected-host TypeScript |
 | `make check-native INPUTS=...` | Offline Rust fmt, then strict all-targets Clippy |
 | `make test INPUTS=...`, `make test-gc INPUTS=...` | Same unit/SDK suite with mandatory GC and same-source native inputs |
@@ -203,7 +207,13 @@ GNU Make/POSIX-shell entry points route checks to the same runner. `make` prints
 
 Neutral native snapshots and `nativeTree` cover the Rust workspace, pinned Cargo/toolchain/config files and shared `protocol/` inputs. The protocol JSON vectors are compiled into Rust tests with `include_str!`; they must survive GNU/Make snapshot creation and changes to them invalidate native input provenance even when `.rs` files are unchanged. This does not add Pi or `node_modules` to native inputs. Repository JSON uses `*.json text eol=lf`: Git retains text diffs while every checkout preserves the LF bytes required by raw-hashed protocol-vector fixtures.
 
-The extension has no TypeScript bundling step. `make build` does not select/stamp a release, download inputs, install tools or start services; it disables Rustup automatic installation and checks Cargo/rustc against `rust-toolchain.toml`. `CARGO_TARGET_DIR` selects its build directory and `RUST_TARGET` an explicit target triple. A merely present colocated helper is not test provenance; use prepared native inputs. Native calibration examples are not implicit prerequisites.
+The extension has no TypeScript bundling step. Both build targets use offline locked Cargo, the pinned `RUST_ROOT` sysroot, and an owned prefilled `CARGO_HOME` without user config. They do not stamp a release, download inputs, install tools, or start Pi. `CARGO_TARGET_DIR` selects the Cargo output directory and `RUST_TARGET` an explicit target triple. `make build` must be able to execute the resulting helper locally; use `make native-build` for a target that cannot run on the build host. Native calibration examples are not implicit prerequisites.
+
+The colocated `occipital` (`occipital.exe` on Windows) is a live input for every Pi loading that checkout. Get explicit approval to install it or reload user Pi sessions. Install only with `make build`; test and CI binaries, including `--build-native` output, belong in isolated runtimes. Conversely, the installed development helper is not test provenance.
+
+`make build` checks the new helper's `--version` is `occipital 0.0.0` and the checkout's native inputs still match the compiled snapshot. It replaces the binary by rename, without writing to the old executable inode. It then renames the Git-ignored `.occipital-build.json` into place with the native snapshot fingerprint and SHA-256 of the installed bytes. A failed build or validation leaves the old installation intact. If the record update fails after replacement, rerun `make build`; a mismatched record cannot certify the new bytes. Use one build at a time per checkout and Cargo output directory. If the platform refuses to replace a running executable, the install fails rather than overwriting it in place.
+
+`make dev-check` distinguishes a missing helper, missing or invalid record, changed binary and changed native sources. It runs neither Cargo nor the helper and does not touch Pi. A TypeScript-only edit does not invalidate the native fingerprint. A successful check describes the file on disk, not a helper already running: reload or restart Pi to use the new file. An older installation without a build record needs one `make build` to establish it. The record detects accidental changes; it is not a signature or a reproducible-build guarantee.
 
 ```sh
 make check INPUTS=/absolute/path/to/prepared/inputs.json
@@ -214,7 +224,7 @@ make test-focus INPUTS=/absolute/path/to/prepared/inputs.json \
 make test-release INPUTS=/absolute/path/to/prepared/inputs.json
 ```
 
-`tests/harness/delivery/makefile.test.ts` executes the actual Makefile and GNU wrapper in disposable trees with inert executors, asserting arguments, phase order, outputs, failure propagation and real ABI admission. These are orchestration controls, not actual Rust/CLI acceptance. POSIX/GNU Make applicability is reported separately; platform inapplicability is not missing-input acceptance. `NODE`/`NPM` select existing executables, not runtime installers.
+`tests/harness/delivery/makefile.test.ts` executes the actual Makefile and GNU wrapper in disposable trees with inert executors. It covers arguments, phase order, failure propagation, ABI decisions, development install rejection, preservation of the previous executable inode, failed record publication and read-only freshness checks. For changes to the development install path, also run `make build` and `make dev-check` with real pinned tools in a disposable checkout and verify v4 `describe` and SOURCE over stdio there. The live checkout helper is not a test target. POSIX/GNU Make applicability is reported separately; platform inapplicability is not missing-input acceptance. `NODE`/`NPM` select existing executables, not runtime installers.
 
 ## Test selection and cadence
 

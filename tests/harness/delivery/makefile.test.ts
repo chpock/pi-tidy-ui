@@ -2,7 +2,7 @@ import "../../fixtures/test-guard.mjs";
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { spawnSync } from 'node:child_process';
-import { chmod, cp, mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from 'node:fs/promises';
+import { chmod, cp, mkdir, mkdtemp, open, readFile, readdir, realpath, rm, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { childEnv, readInputs, toolPath } from "../../../scripts/test/context.mjs";
 
@@ -14,7 +14,7 @@ if (!skip) assert.match(spawnSync(make, ['--version'], { env: childEnv(join(proc
 async function fixture(t: test.TestContext) {
   const root = await mkdtemp(join(process.env.TIDY_TEST_ROOT!, 'tidy-make space-'));
   t.after(() => rm(root, { recursive: true, force: true }));
-  for (const file of ['Makefile', 'rust-toolchain.toml', 'scripts/release', 'scripts/test', 'src/occipital/version.ts']) {
+  for (const file of ['Makefile', 'rust-toolchain.toml', 'scripts', 'src/occipital/version.ts']) {
     await mkdir(resolve(root, file, '..'), { recursive: true });
     await cp(join(repo, file), join(root, file), { recursive: true });
   }
@@ -39,7 +39,7 @@ const root=${JSON.stringify(root)}, tool=basename(process.argv[1]), args=process
 if(tool==='node' && args[0]==='-e') process.exit(0);
 if(tool==='uname') {console.log(control.arch ?? 'x86_64');process.exit(0);}
 if(tool==='getconf') {console.log('glibc '+(control.baseline ?? '2.28'));process.exit(0);}
-if(tool==='node' && args.includes('--input-type=module')) {
+if(tool==='node' && (args.includes('--input-type=module') || args[0]==='scripts/dev-occipital.mjs')) {
  const r=spawnSync(${JSON.stringify(process.execPath)},args,{env:process.env,stdio:'inherit'});process.exit(r.status??1);
 }
 appendFileSync(${JSON.stringify(log)},JSON.stringify({tool,args,offline:process.env.CARGO_NET_OFFLINE,home:process.env.CARGO_HOME,testRoot:process.env.TIDY_TEST_ROOT,autoInstall:process.env.RUSTUP_AUTO_INSTALL,toolchain:process.env.RUSTUP_TOOLCHAIN,ambient:process.env.AMBIENT_POISON,cwd:process.cwd(),repoConfig:tool==='cargo' && args[0]!=='--version' ? readFileSync(join(process.cwd(),'.cargo/config.toml'),'utf8'):undefined,sharedProtocol:tool==='cargo' && args[0]!=='--version' && control.requireProtocol ? readFileSync(join(process.cwd(),'protocol/syntax-v4/vectors.json'),'utf8'):undefined})+'\\n');
@@ -57,8 +57,9 @@ if(tool==='docker') {
 }
 if(tool==='readelf') {console.log('  0x0010:   Name: GLIBC_'+(control.glibc??'2.28')+'  Flags: none  Version: 2');process.exit(0);}
 if(tool==='cargo' && args[0]==='build') {
- const i=args.indexOf('--target'), target=i<0?'':args[i+1], path=join(process.env.CARGO_TARGET_DIR,target,'release');mkdirSync(path,{recursive:true});
- writeFileSync(join(path,'occipital'),'inert executable\\n',{mode:0o700});
+  const i=args.indexOf('--target'), target=control.alternateTarget ?? (i<0?'':args[i+1]), path=join(process.env.CARGO_TARGET_DIR,target,'release');mkdirSync(path,{recursive:true});
+  if(control.editDuringBuild) writeFileSync(join(root,'.cargo/config.toml'),'[build]\\nincremental = true\\n');
+  writeFileSync(join(path,'occipital'),'#!/bin/sh\\n[ "$1" = --version ] || exit 1\\nprintf "%s\\\\n" "occipital '+(control.version ?? '0.0.0')+'"\\n# '+(control.marker ?? 'inert executable')+'\\n',{mode:0o700});
 }
 `;
   for (const name of ['node', 'npm', 'cargo', 'rustc', 'readelf', 'docker', 'uname', 'getconf']) {
@@ -77,7 +78,7 @@ if(tool==='cargo' && args[0]==='build') {
 test('Makefile defaults to help without executing preparation, build or tests', { skip }, async t => {
   const f = await fixture(t), result = f.run([]);
   assert.equal(result.status, 0, result.stderr);
-  for (const name of ['build', 'check', 'test', 'test-gc', 'test-focus', 'test-native', 'test-syntax', 'test-terminal', 'test-release', 'test-installed']) assert.match(result.stdout, new RegExp('\\b'+name+'\\b'));
+  for (const name of ['build', 'dev-check', 'check', 'test', 'test-gc', 'test-focus', 'test-native', 'test-syntax', 'test-terminal', 'test-release', 'test-installed']) assert.match(result.stdout, new RegExp('\\b'+name+'\\b'));
   assert.deepEqual(await f.entries(), []);
 });
 
@@ -117,9 +118,91 @@ test('Makefile offline build requires explicit owned stores and pinned compiler 
   assert.equal(build.repoConfig, await readFile(join(f.root,'.cargo/config.toml'),'utf8'), 'owned repo Cargo config survives snapshot materialization');
   await assert.rejects(readFile(join(build.cwd, '.cargo/config.toml')), {code:'ENOENT'}, 'temporary native working tree is cleaned after build');
   assert.equal(build.offline, 'true'); assert.equal(build.autoInstall, '0'); assert.equal(build.toolchain, f.root); assert.equal(build.ambient, undefined); assert.ok(build.testRoot);
-  assert.equal(await readFile(join(f.root, 'occipital'), 'utf8'), 'inert executable\n');
+  assert.match(await readFile(join(f.root, 'occipital'), 'utf8'), /inert executable/);
   await writeFile(join(f.env.CARGO_HOME!, 'config.toml'), '[net]\noffline=false\n');
   assert.notEqual(f.run(['build']).status, 0, 'user Cargo configuration is not admitted');
+});
+
+test('development check distinguishes missing, unrecorded, modified and stale installs without running Cargo or the helper', { skip }, async t => {
+  const f = await fixture(t), helper = join(f.root, 'occipital');
+  const check = (error?: RegExp) => {
+    const result = f.run(['dev-check', 'RUST_ROOT=', 'CARGO_HOME=']);
+    if (error) { assert.notEqual(result.status, 0); assert.match(result.stderr, error); }
+    else assert.equal(result.status, 0, result.stderr);
+  };
+  check(/missing.*occipital/i);
+  await writeFile(helper, 'not a build', { mode: 0o700 });
+  check(/no installation record/i);
+  assert.deepEqual(await f.entries(), []);
+  const built = f.run(['build']); assert.equal(built.status, 0, built.stderr);
+  const bytes = await readFile(helper), calls = await f.entries();
+  check();
+  const record = join(f.root, '.occipital-build.json'), validRecord = await readFile(record);
+  await writeFile(record, '{}');
+  check(/invalid installation record/i);
+  await writeFile(record, validRecord);
+  await writeFile(join(f.root, 'src/occipital/version.ts'), '// TypeScript-only edit\n');
+  check();
+  const config = join(f.root, '.cargo/config.toml'), original = await readFile(config);
+  await writeFile(config, '[build]\nincremental = true\n');
+  check(/native sources changed/i);
+  await writeFile(config, original);
+  check();
+  await writeFile(helper, '#!/bin/sh\ntouch ran-during-dev-check\nexit 0\n');
+  check(/binary differs/i);
+  await assert.rejects(readFile(join(f.root, 'ran-during-dev-check')), { code: 'ENOENT' });
+  await writeFile(helper, bytes);
+  check();
+  assert.deepEqual(await f.entries(), calls);
+});
+
+test('only a validated development build replaces the executable, without rewriting the previous inode', { skip }, async t => {
+  const f = await fixture(t), helper = join(f.root, 'occipital');
+  const built = f.run(['build']); assert.equal(built.status, 0, built.stderr);
+  const old = await readFile(helper, 'utf8'), fd = await open(helper);
+  t.after(() => fd.close());
+  for (const [target, settings, error] of [
+    ['native-build', { marker: 'compile only' }, undefined],
+    ['build', { alternateTarget: 'alternate' }, /Cargo did not produce the expected executable/],
+    ['build', { fail: 'build' }, /Error 71/],
+    ['build', { version: '0.4.0' }, /expected occipital 0\.0\.0/i],
+    ['build', { editDuringBuild: true }, /native sources changed/i],
+  ] as const) {
+    await f.set(settings);
+    const result = f.run([target]);
+    if (error) { assert.notEqual(result.status, 0); assert.match(result.stderr, error); }
+    else assert.equal(result.status, 0, result.stderr);
+    assert.equal(await readFile(helper, 'utf8'), old);
+    if ('editDuringBuild' in settings) await writeFile(join(f.root, '.cargo/config.toml'), '[build]\nincremental = false\n');
+    assert.equal(f.run(['dev-check']).status, 0);
+  }
+  await f.set({ marker: 'new build' });
+  const replaced = f.run(['build']); assert.equal(replaced.status, 0, replaced.stderr);
+  assert.match(await readFile(helper, 'utf8'), /new build/);
+  assert.equal(await fd.readFile('utf8'), old);
+  assert.equal(f.run(['dev-check']).status, 0);
+});
+
+test('failed installation-record publication cannot certify the replaced executable', { skip }, async t => {
+  const f = await fixture(t), record = join(f.root, '.occipital-build.json');
+  const built = f.run(['build']); assert.equal(built.status, 0, built.stderr);
+  const originalRecord = await readFile(record);
+  await rm(record);
+  await mkdir(record);
+  await f.set({ marker: 'replacement before record failure' });
+  const failed = f.run(['build']);
+  assert.notEqual(failed.status, 0);
+  assert.match(await readFile(join(f.root, 'occipital'), 'utf8'), /replacement before record failure/);
+  const blocked = f.run(['dev-check']);
+  assert.notEqual(blocked.status, 0);
+  assert.match(blocked.stderr, /invalid installation record/i);
+  await rm(record, { recursive: true });
+  await writeFile(record, originalRecord);
+  const stale = f.run(['dev-check']);
+  assert.notEqual(stale.status, 0);
+  assert.match(stale.stderr, /binary differs/i);
+  const retried = f.run(['build']); assert.equal(retried.status, 0, retried.stderr);
+  assert.equal(f.run(['dev-check']).status, 0);
 });
 
 test('GNU native gate orders offline fmt/tests/allocator/lint/build/ABI and stops before later phases on failure', { skip }, async t => {

@@ -15,7 +15,6 @@ RUST_TARGET ?=
 EXE := $(if $(filter Windows_NT,$(OS)),.exe,)
 CARGO = $(RUST_ROOT)/bin/cargo$(EXE)
 RUSTC = $(RUST_ROOT)/bin/rustc$(EXE)
-NATIVE_BIN = $(CARGO_TARGET_DIR)/$(if $(strip $(RUST_TARGET)),$(RUST_TARGET)/,)release/occipital$(EXE)
 export TEST_FILES TEST_PATTERN
 RUN = "$(NODE)" scripts/test/run.mjs --inputs "$(INPUTS)"
 FILE_JOBS = $(if $(strip $(JOBS)),--jobs "$(JOBS)",)
@@ -26,39 +25,43 @@ RUST_ENV = env -i PATH="$(RUST_ROOT)/bin:/usr/bin:/bin" HOME="$(CARGO_HOME)/test
 # Copy one verified native snapshot into a neutral external tree for every direct gate.
 define NATIVE_RUN
 $(RUST_ENV) "$(NODE)" --input-type=module -e ' \
-  import {existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync} from "node:fs"; \
-  import {join} from "node:path"; \
+  import {mkdirSync, mkdtempSync, rmSync} from "node:fs"; \
+  import {join, resolve} from "node:path"; \
   import {spawnSync} from "node:child_process"; \
   import {materializeSource, snapshotIdentity} from "./scripts/test/prepare.mjs"; \
   import {verifyLinuxRuntime} from "./scripts/release/native-ci.mjs"; \
   import {rustLoaderEnvironment} from "./scripts/test/context.mjs"; \
-  const [phase, target, cargo, binary] = process.argv.slice(1), source = process.cwd(); \
-  const files = ["Cargo.toml", "Cargo.lock", "rust-toolchain.toml"].filter(name => existsSync(join(source, name))); \
-  const collect = directory => { if (!existsSync(join(source, directory))) return; for (const name of readdirSync(join(source, directory))) { const path = directory + "/" + name; if (statSync(join(source, path)).isDirectory()) collect(path); else if (statSync(join(source, path)).isFile()) files.push(path); } }; \
-  collect("crates"); collect("protocol"); collect(".cargo"); files.sort(); \
+  import {executable, installDevelopmentOccipital, nativeFiles} from "./scripts/dev-occipital.mjs"; \
+  const [phase, target, cargo] = process.argv.slice(1), source = process.cwd(); \
+  const output = resolve(process.env.CARGO_TARGET_DIR), binary = join(output, target, "release", executable); \
+  const files = nativeFiles(source); \
   const expected = snapshotIdentity(source, files).nativeTree, work = mkdtempSync("/tmp/tt-native-"); \
   let status = 0; \
   try { \
     if (materializeSource(source, work, files).nativeTree !== expected) throw new Error("Native source changed during materialization"); \
     const testRoot = join(work, "test-root"), home = join(work, "home"); mkdirSync(testRoot); mkdirSync(home); \
-    const env = {...process.env, ...rustLoaderEnvironment(process.env.RUSTUP_TOOLCHAIN), HOME: home, TIDY_TEST_ROOT: testRoot, TMPDIR: testRoot, TMP: testRoot, TEMP: testRoot}; \
+    const env = {...process.env, ...rustLoaderEnvironment(process.env.RUSTUP_TOOLCHAIN), CARGO_TARGET_DIR: output, HOME: home, TIDY_TEST_ROOT: testRoot, TMPDIR: testRoot, TMP: testRoot, TEMP: testRoot}; \
     const targets = target ? ["--target", target] : []; \
     const build = ["build", "--release", "--locked", "--offline", "-p", "occipital", ...targets]; \
     const lint = ["clippy", "--workspace", "--all-targets", "--locked", "--offline", ...targets, "--", "-D", "warnings"]; \
     const phases = phase === "gnu" ? [["fmt", "--all", "--check"], ["test", "--workspace", "--locked", "--offline", ...targets], ["test", "--locked", "--offline", "-p", "occipital", "--example", "engine_probe", ...targets, "allocator_diagnostic_tracks_the_actual_glibc_api"], lint, build] : [phase === "lint" ? lint : build]; \
+    /* Do not certify leftover output if Cargo emits to another path. */ \
+    if (phase === "install") rmSync(binary, {force:true}); \
     for (const args of phases) { const result = spawnSync(cargo, args, {cwd: work, env, stdio: "inherit"}); if (result.status !== 0) { status = result.status ?? 1; break; } } \
     if (status === 0 && phase === "gnu") await verifyLinuxRuntime(binary); \
+    if (status === 0 && phase === "install") installDevelopmentOccipital(source, binary, expected); \
   } finally { rmSync(work, {recursive: true, force: true}); } \
   process.exitCode = status; \
-' -- "$(1)" "$(RUST_TARGET)" "$(CARGO)" "$(NATIVE_BIN)"
+' -- "$(1)" "$(strip $(RUST_TARGET))" "$(CARGO)"
 endef
 
-.PHONY: _fixed-jobs-check help deps build native-build native-toolchain inputs-check check check-native test test-gc test-focus test-feature test-product test-rust test-rust-harness test-native test-syntax test-terminal test-release test-installed test-published pack-check native-smoke _native-lint _gnu-native
+.PHONY: _fixed-jobs-check help deps build dev-check native-build native-toolchain inputs-check check check-native test test-gc test-focus test-feature test-product test-rust test-rust-harness test-native test-syntax test-terminal test-release test-installed test-published pack-check native-smoke _native-lint _gnu-native
 
 help:
 	@printf '%-22s %s\n' \
 	  'deps' 'Prepare the exact PI_VERSION dependency graph (no implicit native build)' \
-	  'build' 'Offline pinned native build; requires explicit RUST_ROOT and owned CARGO_HOME' \
+	  'build' 'Build and install local Occipital; requires pinned RUST_ROOT and owned CARGO_HOME' \
+	  'dev-check' 'Check installed Occipital against current native sources without building' \
 	  'check' 'Strict selected-host TypeScript check; requires absolute INPUTS' \
 	  'check-native' 'Prepared offline Rust formatting and strict Clippy checks' \
 	  'test' 'Required same-source unit/SDK/GC coverage from prepared INPUTS' \
@@ -83,9 +86,11 @@ inputs-check:
 	@case "$(INPUTS)" in /*|[A-Za-z]:/*|[A-Za-z]:\\*) ;; *) printf 'Supply INPUTS=/absolute/path/inputs.json from explicit preparation.\n' >&2; exit 1 ;; esac
 	@test -f "$(INPUTS)" || { printf 'Prepared INPUTS not found: %s\n' "$(INPUTS)" >&2; exit 1; }
 
-build: native-build
-	cp "$(NATIVE_BIN)" "occipital$(EXE)"
-	chmod +x "occipital$(EXE)"
+build: native-toolchain
+	$(call NATIVE_RUN,install)
+
+dev-check:
+	@"$(NODE)" scripts/dev-occipital.mjs
 
 native-toolchain:
 	@set -eu; \
